@@ -170,8 +170,10 @@ def run_cases(boot: str, captures: str, address: str, symbol: str, lib: str,
         if sym:
             cmd += ['--replacement', sym, '--lib', lib]
             side_env = dict(os.environ, **(env or {}))
-        elif patch:
-            # The original side runs with a community patch applied: FILE:NAME.
+        if patch:
+            # Both sides run on an image with a community patch applied (FILE:NAME): in the game an
+            # option runs together with the patch, whose edits elsewhere (shared constants, other
+            # functions) stay in place; its edits inside the replaced function never run.
             path, _, name = patch.partition(':')
             cmd += ['--patch', path, '--patch-name', name]
         r = subprocess.run(cmd, capture_output=True, text=True, env=side_env)
@@ -251,7 +253,7 @@ def main() -> int:
     r.add_argument('--lib')
     r.add_argument('--out')
     r.add_argument('--patch', metavar='FILE:NAME',
-                   help='run the original with this community patch applied (checks an option against it)')
+                   help='run both sides on an image with this community patch applied (checks an option against it)')
     r.add_argument('--env', action='append', metavar='KEY=VALUE', help='environment for the replacement side')
     a = ap.parse_args()
 

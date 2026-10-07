@@ -125,8 +125,11 @@ original with that patch applied:
     tools/verify.py run --function frame_timing_frame_step --captures DIR \
         --patch third_party/bbport/patches/Bloodborne.xml:"60 FPS++" --env BB_TARGET_FPS=60
 
-`--patch FILE:NAME` writes the patch's bytes into the image for the original side only
-(`tools/harness.py --patch/--patch-name`); `--env` sets the replacement side's environment. Cases
+`--patch FILE:NAME` writes the patch's bytes into the image of both sides
+(`tools/harness.py --patch/--patch-name`): in the game the option runs together with the patch,
+so the patch's other edits (shared constants in the data segment, other functions) are in
+place for the replacement too, while its edits inside the replaced function never run. `--env`
+sets the replacement side's environment. Cases
 must give both sides enough script for the patched behaviour (a 1/30 s wait needs a longer clock
 than a 1/60 s one; both sides running out of script is inconclusive, not a match).
 
