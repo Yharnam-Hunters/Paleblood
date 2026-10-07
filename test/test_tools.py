@@ -3,6 +3,7 @@ import csv
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -344,13 +345,16 @@ class Verify(unittest.TestCase):
     def test_self_test(self):
         self.assertEqual(run('verify.py', '--self-test').returncode, 0)
 
-    def test_run_without_boot_is_bad_input(self):
-        env_boot = os.environ.pop('BB_BOOT', None)
+    def test_run_without_executable_is_bad_input(self):
+        saved = {k: os.environ.pop(k, None) for k in ('BB_ELF', 'BB_DATA_ROOT')}
+        os.environ['BB_DATA_ROOT'] = tempfile.mkdtemp()
         try:
             self.assertEqual(run('verify.py', 'run', '--function', 'x_y', '--captures', '/nonexistent').returncode, 3)
         finally:
-            if env_boot is not None:
-                os.environ['BB_BOOT'] = env_boot
+            shutil.rmtree(os.environ.pop('BB_DATA_ROOT'))
+            for k, v in saved.items():
+                if v is not None:
+                    os.environ[k] = v
 
     def test_compare_files(self):
         d = tempfile.mkdtemp()
@@ -363,6 +367,51 @@ class Verify(unittest.TestCase):
         self.assertEqual(run('verify.py', 'compare', f'{d}/o.json', f'{d}/r.json').returncode, 1)
         self.assertEqual(run('verify.py', 'compare', f'{d}/o.json', f'{d}/missing.json').returncode, 3)
         shutil.rmtree(d)
+
+
+class Loader(unittest.TestCase):
+    """runtime/loader.c through libpbloader.so, on a synthetic executable."""
+
+    def test_maps_relocates_and_binds(self):
+        sys.path.insert(0, os.path.join(ROOT, 'tools'))
+        sys.path.insert(0, os.path.join(ROOT, 'test'))
+        import ctypes
+        import harness
+        import ps4elf
+        code = bytes(range(0x20)) * 8 + bytes.fromhex('64488b042500000000') + bytes(7)
+        data = ps4elf.build(
+            segments=[(0, code, len(code), 5), (0x200, bytes(0x20), 0x100, 6)],
+            symbols=[('local', ps4elf.STT_FUNC, 0x40), ('FUNCNID#A#B', ps4elf.STT_FUNC, None),
+                     ('DATANID#C#D', ps4elf.STT_OBJECT, None)],
+            relocations=[(0x200, ps4elf.R_X86_64_RELATIVE, 0, 0x80), (0x208, ps4elf.R_X86_64_64, 1, 4),
+                         (0x210, ps4elf.R_X86_64_64, 3, 8)],
+            jump_slots=[(0x218, ps4elf.R_X86_64_JUMP_SLOT, 2, 0)], entry=0x10)
+        d = tempfile.mkdtemp()
+        try:
+            path = os.path.join(d, 'eboot.elf')
+            with open(path, 'wb') as f:
+                f.write(data)
+            exe = harness.open_executable(path)
+            self.assertEqual((exe['size'], exe['entry']), (0x300, 0x10))
+            self.assertEqual(exe['loads'], [(0, len(code), 5), (0x200, 0x100, 6)])
+            self.assertEqual(exe['names'], ['DATANID#C#D', 'FUNCNID#A#B'])
+            buf = ctypes.create_string_buffer(exe['size'])
+            base = ctypes.addressof(buf)
+            bind = harness.LOADER_BIND(lambda u, i, k: (0xD000 + 0x100 * i) if k == 1 else (0xF000 + 0x10 * i))
+            err = ctypes.create_string_buffer(256)
+            self.assertEqual(exe['loader'].rt_elf_map(exe['handle'], base, bind, None, err, 256), 0, err.value)
+            img = buf.raw
+            word = lambda off: struct.unpack_from('<Q', img, off)[0]
+            self.assertEqual(img[:0x100], bytes(range(0x20)) * 8)
+            self.assertEqual(word(0x200), base + 0x80)          # local address
+            self.assertEqual(word(0x208), base + 0x44)          # local symbol + addend
+            self.assertEqual(word(0x210), 0xD000 + 8)           # imported data + addend
+            self.assertEqual(word(0x218), 0xF000 + 0x10)        # imported function (index 1)
+            self.assertEqual(img[0x220:], bytes(0xe0))          # zero-filled
+            self.assertEqual(exe['loader'].rt_elf_thread_pointer_to_gs(exe['handle'], base), 1)
+            self.assertEqual(buf.raw[0x100], 0x65)
+        finally:
+            shutil.rmtree(d)
 
 
 if __name__ == '__main__':

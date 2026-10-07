@@ -6,12 +6,13 @@ the GPU and without starting the game, then compares what they did.
 
 ```
 verify.py run --function frame_timing_get_monotonic_ms --captures DIR \
-    --boot /path/to/bbport-data/out/boot.bin --lib build/game/libbbgame.so
+    --elf /path/to/elf/eboot.elf --lib build/game/libbbgame.so
 ```
 
-- `--boot`: the scaffold's prepared image of your own dump
-  (`third_party/bbport/scripts/prepare.py GAME_DIR --out DIR` writes `DIR/boot.bin`). Default
-  `$BB_BOOT`.
+- `--elf`: your own dump's executable, `elf/eboot.elf` (written by `tools/prepare_dump.sh`).
+  Default `$BB_ELF`, then `$BB_DATA_ROOT/elf/eboot.elf`. The harness maps it with Paleblood's own
+  loader (`runtime/loader.c`, built as `build/runtime/libpbloader.so`): segments copied in,
+  relocations applied, every import bound to a scripted stub.
 - `--lib`: the game library built from this repository. Default `$BB_GAME_LIB`, then
   `build/game/libbbgame.so`.
 - `--captures`: a directory of case files (below). Results go to `DIR/results/` (or `--out`).
@@ -24,7 +25,7 @@ pull request.
 `tools/harness.py` maps the image once per side and runs each case in a fork of it, so a crash
 or a hang loses only that case. It runs at low priority (`BB_NICE`, default 10). For each case:
 
-1. Maps the boot image at the scaffold's host address and applies its relocations.
+1. Maps the executable with our loader (`runtime/loader.c`) at the runtime's host address: segments, relocations, imports bound to stubs.
 2. Turns every imported library function into a stub. The case scripts each call: its return
    value and the bytes it writes through its pointer arguments. A call the case does not script
    is recorded as an error.

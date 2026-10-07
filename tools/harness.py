@@ -3,11 +3,11 @@
 """Run one function on one captured case, natively, and print a verify.py result case.
 
 usage:
-  harness.py --boot BOOT.bin (--case CASE.json | --cases DIR) --address 0xXXXXXXXX
+  harness.py --elf EBOOT.elf (--case CASE.json | --cases DIR) --address 0xXXXXXXXX
              [--replacement SYMBOL --lib LIB.so] [--timeout SECONDS]
 
-The boot image is the scaffold's prepared image of your own dump (bbport `scripts/prepare.py`,
-format BBPROBE2). It is mapped at the scaffold's host address, relocated, and every imported
+The executable (your own dump's eboot.elf) is read by Paleblood's loader (runtime/loader.c,
+through build/runtime/libpbloader.so), mapped at the runtime's host address, relocated, and every imported
 library function becomes a stub that the case scripts. Game functions listed in the case's
 `stubs` are replaced by scripted stubs too (a jump at their entry), on both sides. Without --replacement the original
 function at ADDRESS (a PS4 virtual address) runs; with it, SYMBOL from LIB runs after LIB's
@@ -96,7 +96,6 @@ XSTUB = 0x940000000
 IMPSTUB = 0x950000000
 IMPSTUB_SIZE = 96
 XSTUB_SIZE = 96
-FS_LOAD = bytes.fromhex('64488b042500000000')     # mov rax, fs:[0]
 ARCH_SET_GS, SYS_ARCH_PRCTL = 0x1001, 158
 NID_SALT = bytes.fromhex('518d64a635ded8c1e6b039b1c3e55230')
 
@@ -122,23 +121,48 @@ def mmap_fixed(address: int, size: int) -> None:
         raise BadInput(f'cannot map 0x{address:x} ({size} bytes): errno {ctypes.get_errno()}')
 
 
-def read_boot(path: str) -> dict:
-    with open(path, 'rb') as f:
-        d = f.read()
-    magic, size, entry, nloads, nrelocs, nnames, _caps = struct.unpack_from('<8sQQQQQQ', d, 0)
-    if magic != b'BBPROBE2':
-        raise BadInput(f'{path}: expected a BBPROBE2 boot image (bbport scripts/prepare.py)')
-    p = 56
-    loads = [struct.unpack_from('<QQQ', d, p + 24 * i) for i in range(nloads)]
-    p += 24 * nloads
-    names = [d[p + 128 * i:p + 128 * (i + 1)].split(b'\0', 1)[0].decode() for i in range(nnames)]
-    p += 128 * nnames
-    relocs = [struct.unpack_from('<QQqq', d, p + 32 * i) for i in range(nrelocs)]
-    p += 32 * nrelocs
-    image = d[p:p + size]
-    if len(image) != size:
-        raise BadInput(f'{path}: truncated image')
-    return {'size': size, 'loads': loads, 'names': names, 'relocs': relocs, 'image': image}
+LOADER_BIND = ctypes.CFUNCTYPE(ctypes.c_uint64, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int)
+
+
+def loader_library():
+    """runtime's executable loader as a shared library: $BB_LOADER, else the build's."""
+    path = os.environ.get('BB_LOADER') or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                                       'build', 'runtime', 'libpbloader.so')
+    if not os.path.isfile(path):
+        raise BadInput(f'{path}: build the repository first (the loader is runtime/loader.c)')
+    lib = ctypes.CDLL(path)
+    lib.rt_elf_open.restype = ctypes.c_void_p
+    lib.rt_elf_open.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_size_t]
+    for name in ('rt_elf_image_size', 'rt_elf_entry', 'rt_elf_load_count', 'rt_elf_import_count'):
+        getattr(lib, name).restype = ctypes.c_uint64
+        getattr(lib, name).argtypes = [ctypes.c_void_p]
+    lib.rt_elf_loads.restype = ctypes.POINTER(ctypes.c_uint64)
+    lib.rt_elf_loads.argtypes = [ctypes.c_void_p]
+    lib.rt_elf_import_name.restype = ctypes.c_char_p
+    lib.rt_elf_import_name.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    lib.rt_elf_map.restype = ctypes.c_int
+    lib.rt_elf_map.argtypes = [ctypes.c_void_p, ctypes.c_void_p, LOADER_BIND, ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t]
+    lib.rt_elf_thread_pointer_to_gs.restype = ctypes.c_size_t
+    lib.rt_elf_thread_pointer_to_gs.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    return lib
+
+
+def open_executable(path: str) -> dict:
+    """The executable, read by our loader (runtime/loader.c): sizes, loads and import names; it is
+    mapped by Machine."""
+    lib = loader_library()
+    error = ctypes.create_string_buffer(512)
+    handle = lib.rt_elf_open(path.encode(), error, len(error))
+    if not handle:
+        raise BadInput(error.value.decode(errors='replace'))
+    raw = lib.rt_elf_loads(handle)
+    loads = []
+    for i in range(lib.rt_elf_load_count(handle)):
+        # rt_elf_load: vaddr, memsz (u64), flags (u32, padded to 8)
+        loads.append((raw[3 * i], raw[3 * i + 1], raw[3 * i + 2] & 0xffffffff))
+    names = [lib.rt_elf_import_name(handle, i).decode() for i in range(lib.rt_elf_import_count(handle))]
+    return {'size': lib.rt_elf_image_size(handle), 'entry': lib.rt_elf_entry(handle), 'loads': loads, 'names': names,
+            'handle': handle, 'loader': lib}
 
 
 def hexint(v) -> int:
@@ -158,7 +182,6 @@ class Machine:
         self.callbacks = []
         b = boot
         mmap_fixed(IMAGE, b['size'])
-        ctypes.memmove(IMAGE, b['image'], b['size'])
         mmap_fixed(SANDBOX, SANDBOX_SIZE)
         mmap_fixed(XSTUB, STUB_SLOTS * XSTUB_SIZE)
         names = b['names']
@@ -182,24 +205,16 @@ class Machine:
             ctypes.memmove(wrapper, code, len(code))
             stub = b'\x48\xb8' + struct.pack('<Q', wrapper) + b'\xff\xe0'
             ctypes.memmove(CODE + PAGE + 16 * i, stub, len(stub))
-        for target, kind, value, addend in b['relocs']:
-            if kind == 0:
-                v = IMAGE + value
-            elif kind == 1:
-                v = CODE + PAGE + 16 * value
-            else:
-                v = DATA + PAGE * value + addend
-            ctypes.memmove(IMAGE + target, struct.pack('<Q', v), 8)
-        # As the runtime's loader does: the eboot reads its thread pointer with `mov rax, fs:[0]`;
-        # glibc owns FS, so that exact instruction in executable segments reads GS instead. A
-        # case sets the thread pointer with "gs".
-        for vaddr, memsz, flags in b['loads']:
-            if flags & 1:
-                code = ctypes.string_at(IMAGE + vaddr, memsz)
-                at = code.find(FS_LOAD)
-                while at >= 0:
-                    ctypes.memmove(IMAGE + vaddr + at, b'\x65', 1)
-                    at = code.find(FS_LOAD, at + len(FS_LOAD))
+        # Our loader copies the segments in, applies every relocation (imported functions go to
+        # their stubs, imported data to its page) and changes the executable's thread-pointer
+        # loads to read GS, where a case's "gs" points.
+        def bind(_user, index, kind):
+            return DATA + PAGE * index if kind == 1 else CODE + PAGE + 16 * index
+        self.bind = LOADER_BIND(bind)
+        error = ctypes.create_string_buffer(512)
+        if b['loader'].rt_elf_map(b['handle'], IMAGE, self.bind, None, error, len(error)):
+            raise BadInput(error.value.decode(errors='replace'))
+        b['loader'].rt_elf_thread_pointer_to_gs(b['handle'], IMAGE)
 
 
 class Run:
@@ -541,7 +556,7 @@ def batch(machine: Machine, cases_dir: str, address: str, target: int | None, ti
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('--boot', required=True)
+    ap.add_argument('--elf', required=True, help='the executable (eboot.elf)')
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument('--case', help='one case file; prints its result')
     g.add_argument('--cases', help='a directory of case files; prints {file stem: result}')
@@ -549,7 +564,7 @@ def main() -> int:
     ap.add_argument('--replacement')
     ap.add_argument('--lib')
     ap.add_argument('--timeout', type=int, default=20, help='per case, batch mode')
-    ap.add_argument('--patch', help='a shadPS4 patch file; with --patch-name, its bytes are written '
+    ap.add_argument('--patch', help='a community patch file (XML); with --patch-name, its bytes are written '
                     'into the image first (to check an option against the patch it replaces)')
     ap.add_argument('--patch-name')
     a = ap.parse_args()
@@ -559,7 +574,7 @@ def main() -> int:
     except OSError:
         pass
     try:
-        boot = read_boot(a.boot)
+        boot = open_executable(a.elf)
         machine = Machine(boot)
         if a.patch:
             if not a.patch_name:

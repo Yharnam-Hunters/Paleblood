@@ -56,21 +56,18 @@ def nid(name):
 
 
 def boot_image():
-    image = bytearray(SIZE)
-    image[:len(CODE)] = CODE
-    image[0x800:0x800 + len(STACK_CODE)] = STACK_CODE
-    image[0x1000:0x1000 + len(DATA)] = DATA
-    names = [nid('testImport') + '#A#A']
-    relocs = [(0x1000, 1, 0, 0), (0x1010, 0, 0x1008, 0)]
-    loads = [(0, 0x1000, 5), (0x1000, 0x20, 6)]
-    out = struct.pack('<8sQQQQQQ', b'BBPROBE2', SIZE, 0, len(loads), len(relocs), len(names), 0)
-    for ld in loads:
-        out += struct.pack('<QQQ', *ld)
-    for n in names:
-        out += n.encode().ljust(128, b'\0')
-    for r in relocs:
-        out += struct.pack('<QQqq', *r)
-    return out + bytes(image)
+    """The synthetic executable: code (with the stack-argument function at 0x800) and a data page
+    whose first word is the import's slot and whose word at +0x10 points at +0x8."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import ps4elf
+    code = bytearray(0x1000)
+    code[:len(CODE)] = CODE
+    code[0x800:0x800 + len(STACK_CODE)] = STACK_CODE
+    return ps4elf.build(
+        segments=[(0, bytes(code), 0x1000, 5), (0x1000, DATA, 0x20, 6)],
+        symbols=[(nid('testImport') + '#A#A', ps4elf.STT_FUNC, None)],
+        relocations=[(0x1010, ps4elf.R_X86_64_RELATIVE, 0, 0x1008)],
+        jump_slots=[(0x1000, ps4elf.R_X86_64_JUMP_SLOT, 1, 0)])
 
 
 CASE = {
@@ -86,7 +83,7 @@ CASE = {
 class Harness(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
-        self.boot = os.path.join(self.d, 'boot.bin')
+        self.boot = os.path.join(self.d, 'eboot.elf')
         with open(self.boot, 'wb') as f:
             f.write(boot_image())
         self.case = os.path.join(self.d, 'case.json')
@@ -97,7 +94,7 @@ class Harness(unittest.TestCase):
         shutil.rmtree(self.d)
 
     def side(self, lib=None):
-        cmd = [sys.executable, os.path.join(TOOLS, 'harness.py'), '--boot', self.boot,
+        cmd = [sys.executable, os.path.join(TOOLS, 'harness.py'), '--elf', self.boot,
                '--case', self.case, '--address', '0x00400000']
         if lib:
             cmd += ['--replacement', 'replacement', '--lib', lib]
@@ -169,7 +166,7 @@ class Harness(unittest.TestCase):
         case = dict(CASE, address='0x00400800', args={}, stack=['0x1', '0x20', '0x300'], returns='i64', imports=[])
         with open(self.case, 'w') as f:
             json.dump(case, f)
-        cmd = [sys.executable, os.path.join(TOOLS, 'harness.py'), '--boot', self.boot, '--case', self.case,
+        cmd = [sys.executable, os.path.join(TOOLS, 'harness.py'), '--elf', self.boot, '--case', self.case,
                '--address', '0x00400800']
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         self.assertEqual(r.returncode, 0, r.stderr)

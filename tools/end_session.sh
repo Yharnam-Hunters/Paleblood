@@ -26,7 +26,8 @@ run python3 tools/check_no_game_data.py --tracked
 step "game-agnostic runtime"
 run python3 tools/check_agnostic.py
 step "hook installed and executable"
-if [ -x .git/hooks/pre-commit ] && [ -x tools/hooks/pre-commit ]; then echo ok; else echo "FAILED: run tools/install_hooks.sh" >&2; status=1; fi
+hook=$(git rev-parse --git-path hooks/pre-commit)   # works in linked worktrees too
+if [ -x "$hook" ] && [ -x tools/hooks/pre-commit ]; then echo ok; else echo "FAILED: run tools/install_hooks.sh" >&2; status=1; fi
 
 if ! $audit_only; then
     step "tests"

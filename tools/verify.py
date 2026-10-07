@@ -5,13 +5,13 @@
 Design: docs/VERIFY.md.
 
 usage:
-  verify.py run --function NAME --captures DIR [--boot BOOT.bin] [--lib LIB.so] [--out DIR]
+  verify.py run --function NAME --captures DIR [--elf EBOOT.elf] [--lib LIB.so] [--out DIR]
   verify.py compare ORIGINAL.json REPLACEMENT.json
   verify.py --self-test
 
 run: every case file in DIR (*.json) goes through tools/harness.py twice, once on the
 original function and once on its replacement, each in its own process; the results are
-written to OUT (default DIR/results) and compared. --boot defaults to $BB_BOOT, --lib to
+written to OUT (default DIR/results) and compared. --elf defaults to $BB_ELF (then $BB_DATA_ROOT/elf/eboot.elf), --lib to
 $BB_GAME_LIB or build/game/libbbgame.so.
 
 Exit codes: 0 all cases match, 1 mismatch, 3 bad input.
@@ -35,6 +35,13 @@ MAX_REPORTED = 8
 class BadInput(Exception):
     pass
 
+
+
+def default_elf() -> str | None:
+    """$BB_DATA_ROOT/elf/eboot.elf (default ../data next to the repository), when it exists."""
+    root = os.environ.get('BB_DATA_ROOT') or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '..', 'data')
+    path = os.path.join(root, 'elf', 'eboot.elf')
+    return path if os.path.isfile(path) else None
 
 def split_addr(addr: str) -> tuple[str, int]:
     """'0x1234' -> ('', 0x1234); 'buf:out+0x4' -> ('buf:out', 4)."""
@@ -135,7 +142,7 @@ def lookup(name: str) -> tuple[str, str]:
 
 
 def run_side(boot: str, case: str, address: str, symbol: str | None, lib: str | None) -> dict:
-    cmd = [sys.executable, HARNESS, '--boot', boot, '--case', case, '--address', address]
+    cmd = [sys.executable, HARNESS, '--elf', boot, '--case', case, '--address', address]
     if symbol:
         cmd += ['--replacement', symbol, '--lib', lib]
     try:
@@ -164,7 +171,7 @@ def run_cases(boot: str, captures: str, address: str, symbol: str, lib: str,
             raise BadInput(f'{os.path.basename(path)} is for {case.get("address")}, not {address}')
     results: dict[str, list] = {}
     for side, sym in (('original', None), ('replacement', symbol)):
-        cmd = [sys.executable, HARNESS, '--boot', boot, '--cases', captures, '--address', address,
+        cmd = [sys.executable, HARNESS, '--elf', boot, '--cases', captures, '--address', address,
                '--timeout', str(CASE_TIMEOUT)]
         side_env = None
         if sym:
@@ -187,10 +194,10 @@ def run_cases(boot: str, captures: str, address: str, symbol: str, lib: str,
 
 def run(name: str, captures: str, boot: str | None, lib: str | None, out: str | None,
         patch: str | None = None, env: list | None = None) -> int:
-    boot = boot or os.environ.get('BB_BOOT')
+    boot = boot or os.environ.get('BB_ELF') or default_elf()
     lib = lib or os.environ.get('BB_GAME_LIB') or os.path.join(ROOT, 'build', 'game', 'libbbgame.so')
     if not boot or not os.path.isfile(boot):
-        raise BadInput('no boot image: pass --boot or set BB_BOOT (bbport scripts/prepare.py output)')
+        raise BadInput('no executable: pass --elf or set BB_ELF (your dump\'s eboot.elf, from tools/prepare_dump.sh)')
     if not os.path.isfile(lib):
         raise BadInput(f'no game library at {lib}: build the repository or pass --lib')
     address, symbol = lookup(name)
@@ -249,7 +256,7 @@ def main() -> int:
     r = sub.add_parser('run')
     r.add_argument('--function', required=True)
     r.add_argument('--captures', required=True)
-    r.add_argument('--boot')
+    r.add_argument('--elf', dest='boot', help='the executable (eboot.elf); default $BB_ELF, then $BB_DATA_ROOT/elf/eboot.elf')
     r.add_argument('--lib')
     r.add_argument('--out')
     r.add_argument('--patch', metavar='FILE:NAME',
