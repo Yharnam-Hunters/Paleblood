@@ -25,7 +25,12 @@ patch edit is broken in v1.09 ([QUIRKS.md](QUIRKS.md)).
 - `BB_TARGET_FPS` (30, 60, uncapped) does what the community frame-rate patches "30 FPS++",
   "60 FPS++" and "Uncap FPS++" do, in every replaced function they edit, and each part is
   checked against the patch itself (`tools/verify.py run --patch FILE:NAME --env ...`,
-  [VERIFY.md](docs/VERIFY.md)). Not yet measured on a real screen.
+  [VERIFY.md](docs/VERIFY.md)). Measured on a real screen (2026-10-07, 2560x1440 at 165 Hz, all
+  replacements hooked, `BB_TARGET_FPS=60` with "60 FPS++"): frame pacing median 16.67 ms, p99
+  16.69 ms, no frame over 1.5x the median.
+- The runtime fork now starts native: no upscaler, no jitter, full screen at the display's size.
+  With its temporal upscaler (FSR 3, jitter on), the sky showed the lower half of the screen
+  mirrored into it; at native it does not.
 - Unattended runs reach gameplay: `tools/play_route.py` plays `game/routes/*.route` (pad
   presses, keyboard text, waits on on-screen text): `new_game.route` goes from the title through
   character creation to the contract (which saves), `continue.route` loads that save into
