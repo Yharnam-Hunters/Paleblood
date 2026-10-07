@@ -1,6 +1,6 @@
 # Next targets
 
-The queue the per-function pipeline works through without asking (CLAUDE.md). One line per
+The queue the per-function pipeline works through. One line per
 target, in order; move a target to "Done" with its commit when it is verified. Decisions and
 blockers go to STATUS.md instead of being worked around.
 

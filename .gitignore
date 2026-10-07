@@ -1,6 +1,4 @@
 # Local session files (the pre-commit hook refuses these)
-CLAUDE.md
-.claude/
 notes/
 SESSION*.md
 KICKOFF*.md

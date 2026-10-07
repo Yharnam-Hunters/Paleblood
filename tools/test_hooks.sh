@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-2.0-or-later
-# Exercise the pre-commit hook in a throwaway clone: a fake ELF, a CLAUDE.md,
+# Exercise the pre-commit hook in a throwaway clone: a fake ELF, a local-only file,
 # and a stale progress number must each be refused; a clean change must pass.
 set -uo pipefail
 root=$(git rev-parse --show-toplevel)
@@ -54,8 +54,9 @@ git add game/render/shader.dat; expect fail "fake ELF under a harmless name" "st
 printf '\x7fELF\x02\x01\x01\x00fake' > eboot.elf
 git add -f eboot.elf; expect fail "fake eboot.elf" "never committed"
 
-echo "rules" > CLAUDE.md
-git add -f CLAUDE.md; expect fail "CLAUDE.md staged" "local session file staged"
+git config --add bb.localOnly 'LOCAL-ONLY\.md'
+echo "rules" > LOCAL-ONLY.md
+git add -f LOCAL-ONLY.md; expect fail "local-only file staged" "local-only file staged"
 
 # stale progress number: a replaced function with the README block never updated
 fixture_rows
@@ -81,11 +82,12 @@ git add -A; expect pass "consistent change with regenerated README"
 
 GIT_AUTHOR_NAME=Someone git commit -q --allow-empty -m "test: wrong identity" 2>/dev/null && { echo "FAIL wrong identity accepted"; rc=1; } || echo "ok   wrong identity refused"
 
-git commit -q --allow-empty -m "test: session link
+git config --add bb.refuseMessage '^private-link:'
+git commit -q --allow-empty -m "test: refused line
 
-Claude-Session: https://claude.ai/code/session_x" 2>/dev/null \
-    && { echo "FAIL session link accepted"; rc=1; } || echo "ok   session link in commit message refused"
-git commit -q --allow-empty -m "test: disclosure trailer
+Private-Link: https://example.invalid/x" 2>/dev/null \
+    && { echo "FAIL refused line accepted"; rc=1; } || echo "ok   bb.refuseMessage line in commit message refused"
+git commit -q --allow-empty -m "test: trailer
 
 Co-Authored-By: Someone <someone@example.invalid>" 2>/dev/null \
     && echo "ok   Co-Authored-By trailer accepted" || { echo "FAIL Co-Authored-By refused"; rc=1; }

@@ -23,8 +23,13 @@ upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null ||
 range="$upstream..HEAD"
 others=$(git log "$range" --format='%an <%ae>%n%cn <%ce>' | sort -u | grep -vx "$IDENT" || true)
 if [ -z "$others" ]; then echo "ok   authors and committers"; else echo "FAIL authors: $others"; fail=1; fi
-links=$(git log "$range" --format=%B | grep -ciE 'claude-session|claude\.ai/code' || true)
-if [ "$links" = 0 ]; then echo "ok   no session links"; else echo "FAIL $links session link(s) in unpushed commits"; fail=1; fi
+refused=0
+while IFS= read -r pattern; do
+    [ -n "$pattern" ] || continue
+    n=$(git log "$range" --format=%B | grep -ciE -- "$pattern" || true)
+    refused=$((refused + n))
+done < <(git config --get-all bb.refuseMessage || true)
+if [ "$refused" = 0 ]; then echo "ok   commit messages (bb.refuseMessage)"; else echo "FAIL $refused line(s) in unpushed commit messages match bb.refuseMessage"; fail=1; fi
 if [ -z "$(git status --porcelain)" ]; then echo "ok   clean working tree"; else echo "FAIL uncommitted changes"; fail=1; fi
 check "audit" tools/end_session.sh --audit
 check "hook tests" tools/test_hooks.sh

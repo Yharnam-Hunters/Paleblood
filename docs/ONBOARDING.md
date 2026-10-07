@@ -34,7 +34,7 @@ gh repo set-default Yharnam-Hunters/Paleblood
 tools/install_hooks.sh
 ```
 
-The hooks refuse game data, `CLAUDE.md` and stale progress numbers before they reach a commit.
+The hooks refuse game data and stale progress numbers before they reach a commit.
 
 ## 2. Prepare your own dump (10 minutes)
 
