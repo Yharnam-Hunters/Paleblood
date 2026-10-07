@@ -77,6 +77,8 @@ XSTUB = 0x940000000
 IMPSTUB = 0x950000000
 IMPSTUB_SIZE = 96
 XSTUB_SIZE = 96
+FS_LOAD = bytes.fromhex('64488b042500000000')     # mov rax, fs:[0]
+ARCH_SET_GS, SYS_ARCH_PRCTL = 0x1001, 158
 NID_SALT = bytes.fromhex('518d64a635ded8c1e6b039b1c3e55230')
 
 
@@ -167,6 +169,16 @@ class Machine:
             else:
                 v = DATA + PAGE * value + addend
             ctypes.memmove(IMAGE + target, struct.pack('<Q', v), 8)
+        # As the runtime's loader does: the eboot reads its thread pointer with `mov rax, fs:[0]`;
+        # glibc owns FS, so that exact instruction in executable segments reads GS instead. A
+        # case sets the thread pointer with "gs".
+        for vaddr, memsz, flags in b['loads']:
+            if flags & 1:
+                code = ctypes.string_at(IMAGE + vaddr, memsz)
+                at = code.find(FS_LOAD)
+                while at >= 0:
+                    ctypes.memmove(IMAGE + vaddr + at, b'\x65', 1)
+                    at = code.find(FS_LOAD, at + len(FS_LOAD))
 
 
 class Run:
@@ -230,12 +242,19 @@ class Run:
                        self.dispatch_stub(address, (a, b_, c, d, e, f), save))
             self.callbacks.append(cb)
             code = XSTUB + XSTUB_SIZE * i
-            # movabs r11, save; movdqu [r11], xmm0; movdqu [r11+16], xmm1; movabs rax, cb; jmp rax
+            # movabs r11, save; movdqu [r11], xmm0; movdqu [r11+16], xmm1; sub rsp, 8;
+            # movabs rax, cb; call rax; add rsp, 8; movq xmm0, rax; ret (a float return is
+            # scripted as its bit pattern, as for imports)
             stub = (b'\x49\xbb' + struct.pack('<Q', save) + b'\xf3\x41\x0f\x7f\x03' + b'\xf3\x41\x0f\x7f\x4b\x10' +
-                    b'\x48\xb8' + struct.pack('<Q', ctypes.cast(cb, ctypes.c_void_p).value) + b'\xff\xe0')
+                    b'\x48\x83\xec\x08' + b'\x48\xb8' + struct.pack('<Q', ctypes.cast(cb, ctypes.c_void_p).value) +
+                    b'\xff\xd0' + b'\x48\x83\xc4\x08' + b'\x66\x48\x0f\x6e\xc0' + b'\xc3')
             ctypes.memmove(code, stub, len(stub))
             jump = b'\xff\x25\x00\x00\x00\x00' + struct.pack('<Q', code)
             ctypes.memmove(self.guest(address), jump, len(jump))
+        if 'gs' in self.case:
+            # The guest thread pointer (gs:[0] must hold it too, as a TCB does).
+            if libc.syscall(SYS_ARCH_PRCTL, ARCH_SET_GS, ctypes.c_ulong(self.value(self.case['gs']))):
+                raise BadInput(f'arch_prctl(ARCH_SET_GS) failed: errno {ctypes.get_errno()}')
         for m in self.case.get('memory', []):
             target = m['addr']
             addr = self.value(target) if isinstance(target, str) and target.startswith('buf:') else self.guest(hexint(target))
