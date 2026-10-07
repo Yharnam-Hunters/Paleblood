@@ -18,8 +18,8 @@ One page per game system: summary, key functions, structs and globals, patch poi
 | | Functions | Bytes |
 |---|---:|---:|
 | Target (Ghidra export) | 157,757 | 42,487,347 |
-| Replaced | 18 (0.01%) | 5,877 (0.01%) |
-| Verified | 9 (0.01%) | 4,711 (0.01%) |
+| Replaced | 20 (0.01%) | 7,315 (0.02%) |
+| Verified | 11 (0.01%) | 6,149 (0.01%) |
 
 | System | Tracked | Replaced | Verified | Replaced bytes |
 |---|---:|---:|---:|---:|
@@ -30,4 +30,4 @@ One page per game system: summary, key functions, structs and globals, patch poi
 | input | 1 | 1 | 1 | 426 |
 | kernel | 1 | 1 | 1 | 204 |
 | loading | 0 | 0 | 0 | 0 |
-| render | 1 | 1 | 1 | 399 |
+| render | 3 | 3 | 3 | 1,837 |
