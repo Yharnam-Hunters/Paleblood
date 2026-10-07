@@ -148,10 +148,10 @@ repository, pick a good first issue or a target from [NEXT.md](NEXT.md), and rea
 |---|---|
 | `game/<system>/` | Replacement code, one directory per game system, with its case generators. |
 | `game/hooks.csv` | Hook registry: original address to replacement. |
-| `game/routes/` | Pad routes for unattended game runs. |
+| `game/routes/` | Pad routes for unattended game runs on the borrowed runtime (being removed). |
 | `runtime/` | The generic layer: hooks, capture, probes. Nothing specific to this game. |
 | `symbols/` | `functions.csv` (what we track) and `ghidra_functions.csv` (every function, the denominator). |
-| `tools/` | Verification harness, progress, validators, game runs, Ghidra scripts, hooks. |
+| `tools/` | Verification harness, boot harness, progress, validators, Ghidra scripts, hooks. |
 | `third_party/bbport/` | The borrowed runtime the project used until now; being removed (GPL-2.0-or-later). |
 | `docs/` | Onboarding, Ghidra setup, architecture, verification, system pages. |
 

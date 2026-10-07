@@ -24,7 +24,7 @@ body:
     id: repro
     attributes:
       label: Repro
-      description: verify.py output, in-game steps, or the command and its output. No game data.
+      description: verify.py output, or the command and its output. No game data.
     validations:
       required: true
   - type: checkboxes

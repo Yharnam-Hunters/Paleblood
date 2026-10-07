@@ -33,9 +33,9 @@ the [documentation site](https://yharnam-hunters.github.io/byrgenwerth-site/).
 2. **Fork** the repository on GitHub and clone your fork. Run `tools/install_hooks.sh` (the
    hooks refuse game data and other mistakes before they reach a commit).
 3. **Branch** from current `main`: one function or one tightly coupled cluster per branch.
-4. **Replace and verify** as in [docs/VERIFY.md](docs/VERIFY.md): `tools/verify.py` on cases
-   recorded in a real run and on edge cases, deliberately wrong versions that fail, and the
-   in-game test.
+4. **Replace and verify** as in [docs/VERIFY.md](docs/VERIFY.md): readable code
+   ([STYLE.md](STYLE.md)), `tools/verify.py` on the recorded cases in the capture library and on
+   edge cases, and deliberately wrong versions that fail; then the independent review.
 5. **Open a pull request** from your fork's branch to `main`, with the session report (below).
    Keep it small enough to review in one sitting.
 6. **CI and review** both have to pass. The first time you contribute, a maintainer approves
@@ -65,8 +65,7 @@ Every pull request that replaces code contains, in the description:
 
 - the `tools/verify.py run` output for each function, on cases recorded in a real run and on
   edge cases ([docs/VERIFY.md](docs/VERIFY.md)),
-- in-game test steps: what you did, where in the game, and what you saw, so a
-  reviewer can repeat it on their own dump,
+- the deliberately wrong versions you tried and how each failed (the mutation test),
 - the `symbols/functions.csv` and `game/hooks.csv` rows for the change.
 
 A function's status in `symbols/functions.csv` goes through three levels:
@@ -75,7 +74,7 @@ A function's status in `symbols/functions.csv` goes through three levels:
 |---|---|
 | `replaced` | it is in the hook registry and builds |
 | `edge-verified` | `verify.py` passes on its edge-case generator's cases, against the original |
-| `verified` | it also passes on inputs recorded in the game, and the in-game test |
+| `verified` | it also passes on inputs recorded in the game (the capture library), and the independent review approved it |
 
 `edge-verified` is for functions whose code the game doesn't reach where you can record (a
 Chalice Dungeon state, say, without a save that gets there). You don't upgrade it by hand:
@@ -183,4 +182,4 @@ maintainer in an issue or privately.
 Allowed if disclosed and verified. Disclose with a `Co-Authored-By` trailer on
 the commits or a note in the pull request description, and tick the box in the
 template. AI-assisted functions are verified like any other: `verify.py` output
-and the in-game test are mandatory, and the author answers for every line.
+and the independent review are mandatory, and the author answers for every line.

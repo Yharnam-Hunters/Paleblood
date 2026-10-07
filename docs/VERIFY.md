@@ -137,7 +137,7 @@ An option that does what a community patch did (`BB_TARGET_FPS`) is verified aga
 original with that patch applied:
 
     tools/verify.py run --function frame_timing_frame_step --captures DIR \
-        --patch third_party/bbport/patches/Bloodborne.xml:"60 FPS++" --env BB_TARGET_FPS=60
+        --patch "$BB_PATCHES:60 FPS++" --env BB_TARGET_FPS=60
 
 `--patch FILE:NAME` writes the patch's bytes into the image of both sides
 (`tools/harness.py --patch/--patch-name`): in the game the option runs together with the patch,
@@ -153,7 +153,12 @@ whatever a patch does to it.
 
 ## Which functions run: call counting probes
 
-Before replacing a candidate, find out whether a game run reaches it at all:
+`$BB_PATCHES` above is your own copy of the community patch file (the project does not ship it).
+
+These probes ran on the borrowed runtime, which is being removed; they come back with the runtime's
+generic capture. Until then, `tools/reloc_refs.py` (above) and the call graph tell whether a function
+can run at all. On the old runtime, before replacing a candidate, a game run showed whether it is
+reached:
 
     tools/draft.sh ADDRESS...                      # instruction boundaries
     tools/probe_list.py --elf ELF ADDRESS... > probes.txt

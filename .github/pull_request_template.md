@@ -9,8 +9,8 @@
 ### verify.py output
 <!-- Paste the output for each function. "Not run" blocks status `verified`, not `replaced`. -->
 
-### In-game test
-<!-- Steps: where in the game, what you did, what you saw. A reviewer must be able to repeat it. -->
+### Mutation test
+<!-- The deliberately wrong versions you tried and how each failed. -->
 
 ### Checklist
 - [ ] Based on current `main`; no other open PR touches the same functions
@@ -21,5 +21,5 @@
 - [ ] Readable ([STYLE.md](../STYLE.md)): `tools/check_readable.py` passes; no transcription (addresses, raw offsets, magic numbers, `_mm_` outside `game/engine/`, recording code) goes to `main`; `tools/readable_allowlist.txt` only shrinks
 - [ ] Independent review: <!-- who reviewed verification and readability (not the author), and the symbols/reviews.csv row; required before `verified` -->
 - [ ] `runtime/` stays generic
-- [ ] AI-assisted: <!-- yes / no. If yes: Co-Authored-By trailer on the commits or a note here, verified with verify.py and the in-game test -->
+- [ ] AI-assisted: <!-- yes / no. If yes: Co-Authored-By trailer on the commits or a note here, verified with verify.py and independently reviewed -->
 - [ ] Depends on: <!-- #PR, or none -->

@@ -100,8 +100,9 @@ It is the same whichever SelfUtil produced the ELF.
   the original function. Shorter functions cannot be hooked that way.
 - Nothing may jump into the first 14 bytes of a hooked function from elsewhere: check the
   references to the function's start region in Ghidra before hooking.
-- A replacement calls library functions through the game's own thunks (`rt::fn`), not through
-  host libraries, so the scaffold answers them exactly as it answers the original.
+- A replacement calls library functions through the game's own thunks (declared with
+  `RT_ORIGINAL`), not through host libraries, so whatever answers the original's calls (the
+  verification harness's stubs, or the runtime) answers the replacement's the same way.
 
 ## Verification traps
 

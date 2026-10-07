@@ -101,7 +101,8 @@ repository names the same function differently; the old name goes into the plate
 ## 4. Your first pull request (20 minutes)
 
 Good first issues are small, self-contained functions to identify and name, and system pages
-to document. Replacing code comes later, once the bbport-based test harness exists.
+to document. Replacing code is the next step: [VERIFY.md](VERIFY.md) shows how a replacement is proved
+against the original with `tools/verify.py`.
 
 1. Pick an issue labelled `good first issue` and comment that you take it.
 2. Look at the function in Ghidra. Work out what it does from its callers, callees and the
