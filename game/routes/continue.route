@@ -1,0 +1,13 @@
+# With a save (made by new_game.route): title -> notices -> Continue -> gameplay.
+# The first load after the contract plays the transfusion cutscene (no autosave yet): skip it
+# with options + cross if you see it; later loads start in Iosefka's Clinic.
+wait "play" 120
+wait "300" 75 cross every=4 nofail
++2 shot
+# Walk a few steps and look around (left stick forward, right stick sideways).
++1 ly=0 hold=2.5
++0.5 rx=255 hold=1.5
++0.5 ly=0 hold=2
++0.5 rx=0 hold=2
++1 shot
++6 shot

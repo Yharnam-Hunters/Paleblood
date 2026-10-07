@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Repo policy check, installed as .git/hooks/pre-commit by tools/install_hooks.sh.
+#   1. identity (only when `git config bb.enforceIdentity true`, set by --maintainer)
+#   2. CLAUDE.md and other local session files are never committed
+#   3. no game data (tools/check_no_game_data.py --staged)
+#   4. functions.csv, hooks.csv and the README progress block agree with the staged tree
+# Co-Authored-By trailers are allowed: they are the AI-assistance disclosure.
+# Installed as commit-msg too: session links (Claude-Session, claude.ai/code/session) are refused.
+set -euo pipefail
+
+if [ "$(basename "$0")" = "commit-msg" ]; then
+    hits=$(grep -v '^#' "$1" | grep -inE '^claude-session:|claude\.ai/code/session' || true)
+    if [ -n "$hits" ]; then
+        echo "commit-msg: session links are not committed (keep only the Co-Authored-By trailer):" >&2
+        echo "$hits" >&2
+        exit 1
+    fi
+    exit 0
+fi
+
+IDENT=$(git config --get bb.maintainerIdent || true)
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+
+fail() { echo "pre-commit: $*" >&2; exit 1; }
+
+if [ "$(git config --get bb.enforceIdentity || true)" = "true" ]; then
+    [ -n "$IDENT" ] || fail "bb.maintainerIdent is not set (run tools/install_hooks.sh --maintainer)"
+    for var in GIT_AUTHOR_IDENT GIT_COMMITTER_IDENT; do
+        who=$(git var "$var" | sed -E 's/ [0-9]+ [+-][0-9]{4}$//')
+        [ "$who" = "$IDENT" ] || fail "$var is '$who', expected '$IDENT'"
+    done
+fi
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+bad=$(printf '%s\n' "$staged" | grep -E '(^|/)(CLAUDE\.md|\.claude/|notes/|SESSION[^/]*\.md|KICKOFF[^/]*\.md)' || true)
+[ -z "$bad" ] || fail "local session file staged (gitignored on purpose):"$'\n'"$bad"
+
+python3 tools/check_no_game_data.py --staged || fail "game data check failed"
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+git checkout-index -a --prefix="$tmp/"
+python3 "$tmp/tools/validate_functions.py" --root "$tmp" || fail "functions.csv / hooks.csv validation failed"
+python3 "$tmp/tools/progress.py" --root "$tmp" --check \
+    || fail "README progress block is stale: run tools/progress.py --update-readme and stage README.md"
+exit 0

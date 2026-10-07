@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Everything the work needs on an Arch-based machine (CachyOS). One package per line:
+# <pacman package>  <what for>. Check: tools/check_deps.sh (prints one pacman command for what is missing).
+# This repository
+gcc                     C/C++ build
+cmake                   build
+make                    build
+python                  tools
+git                     repositories
+github-cli              issues, pull requests, CI
+# Your dump to checked ELFs (tools/prepare_dump.sh)
+rust                    cargo install orbis-pkg-util --version 0.1.0 --locked
+rsync                   merging the update over the base game
+unzip                   Ghidra and loader zips
+curl                    downloads
+# Ghidra (docs/GHIDRA.md)
+jdk-openjdk             Ghidra (JDK 21 or newer)
+# Scaffold: bbport (third_party/bbport, its shell.nix)
+ninja                   bbport build
+pkgconf                 bbport build
+glslang                 bbport shaders
+sdl3                    bbport window and input
+vulkan-headers          bbport renderer
+vulkan-icd-loader       bbport renderer
+boost                   bbport renderer
+fmt                     bbport renderer
+robin-map               bbport renderer
+xxhash                  bbport renderer
+libx11                  bbport window
+ffmpeg                  bbport video playback
+miniz                   bbport renderer
+zydis                   bbport renderer
+# Game runs without a monitor, frames, checks (tools/run_game.sh)
+xorg-server-xvfb        virtual display
+imagemagick             frame capture (import)
+vulkan-tools            vkcube, to check presentation on a display
+python-pillow           frame checks
+# Not packaged here: built into a user prefix (no sudo), see tools/check_deps.sh --prefix
+# magic_enum v0.9.8, VulkanMemoryAllocator v3.4.0, xbyak v7.43   -> ../tools/prefix (next to the repo)

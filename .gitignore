@@ -1,0 +1,36 @@
+# Local session files (the pre-commit hook refuses these)
+CLAUDE.md
+.claude/
+notes/
+SESSION*.md
+KICKOFF*.md
+
+# Game data and derived artifacts: never committed (CONTRIBUTING.md)
+*.elf
+*.self
+*.sprx
+*.prx
+*.pkg
+*.sfo
+*.pfs
+*.dump
+captures/
+dumps/
+extracted/
+
+# Decompiler projects and raw dumps
+*.gpr
+*.rep/
+*.gzf
+*.lock
+*.lock~
+ghidra_projects/
+
+# Build and generated output
+build/
+build-*/
+out/
+__pycache__/
+*.pyc
+.cache/
+compile_commands.json

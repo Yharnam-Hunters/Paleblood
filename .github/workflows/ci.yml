@@ -1,0 +1,50 @@
+# No game data is ever available here. Everything runs on the repository alone.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    name: build (${{ matrix.cc }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=${{ matrix.cc }}
+      - name: Build
+        run: cmake --build build -j
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  policy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject game data
+        run: python3 tools/check_no_game_data.py --tracked
+      - name: Validate functions.csv, ghidra_functions.csv, hooks.csv
+        run: python3 tools/validate_functions.py
+      - name: Game-agnostic runtime
+        run: python3 tools/check_agnostic.py
+      - name: README progress matches progress.py
+        run: python3 tools/progress.py --check
+      - name: Hooks behave
+        run: tools/test_hooks.sh
+
+  session-report:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: The pull request carries a session report
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s' "$BODY" > "$RUNNER_TEMP/pr-body.md"
+          python3 tools/session_report.py --check-body "$RUNNER_TEMP/pr-body.md"

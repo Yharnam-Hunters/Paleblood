@@ -1,0 +1,25 @@
+name: Document a system
+description: Write up how a game system works, for docs/systems/.
+title: "document: <system>"
+labels: ["documentation"]
+body:
+  - type: input
+    id: system
+    attributes:
+      label: System
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: What you will cover
+      description: Summary, key functions, structs and globals, patch points, open questions.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: How you found it
+      description: Addresses and behavior you observed. No dumps, no game data.
+    validations:
+      required: false

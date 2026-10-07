@@ -1,0 +1,33 @@
+<!-- Generated from the project documentation. Do not edit here: open an issue or a pull request. -->
+
+# Systems
+
+One page per game system: summary, key functions, structs and globals, patch points and open questions. The function tables come from `symbols/functions.csv`.
+
+- [Audio](audio.md)
+- [Camera](camera.md)
+- [Event](event.md)
+- [Frame timing](frame_timing.md)
+- [Input](input.md)
+- [Kernel](kernel.md)
+- [Loading](loading.md)
+- [Render](render.md)
+
+## Progress
+
+| | Functions | Bytes |
+|---|---:|---:|
+| Target (Ghidra export) | 157,757 | 42,487,347 |
+| Replaced | 16 (0.01%) | 5,052 (0.01%) |
+| Verified | 7 (0.00%) | 3,886 (0.01%) |
+
+| System | Tracked | Replaced | Verified | Replaced bytes |
+|---|---:|---:|---:|---:|
+| audio | 0 | 0 | 0 | 0 |
+| camera | 0 | 0 | 0 | 0 |
+| event | 1 | 1 | 1 | 368 |
+| frame_timing | 15 | 14 | 5 | 4,480 |
+| input | 0 | 0 | 0 | 0 |
+| kernel | 1 | 1 | 1 | 204 |
+| loading | 0 | 0 | 0 | 0 |
+| render | 0 | 0 | 0 | 0 |

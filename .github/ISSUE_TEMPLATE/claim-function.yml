@@ -1,0 +1,36 @@
+name: Claim function or cluster
+description: Say which function or tightly coupled cluster you will replace.
+title: "claim: <system>: <name or address>"
+labels: ["claim"]
+body:
+  - type: dropdown
+    id: system
+    attributes:
+      label: System
+      options: [frame_timing, camera, input, render, loading, audio, other]
+    validations:
+      required: true
+  - type: textarea
+    id: functions
+    attributes:
+      label: Functions
+      description: Addresses and sizes (0x + 8 hex digits). Addresses only, no decompiler output.
+      placeholder: "0x00401000  240 bytes  frame_timing_update_delta"
+    validations:
+      required: true
+  - type: textarea
+    id: plan
+    attributes:
+      label: What it does and how you will verify it
+      description: Behavior in your own words, the captures you will use, the in-game test.
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Confirm
+      options:
+        - label: No other open issue or PR claims these functions
+          required: true
+        - label: I will not post game data or raw decompiler output
+          required: true

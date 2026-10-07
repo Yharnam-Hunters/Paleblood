@@ -1,0 +1,5 @@
+# Words that must never appear in runtime/, test/ or tools/ (case-insensitive).
+bloodborne
+cusa03173
+yharnam
+fromsoftware

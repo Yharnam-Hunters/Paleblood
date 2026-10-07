@@ -1,0 +1,25 @@
+name: Bug
+description: A replacement behaves differently from the original, or tooling is wrong.
+title: "bug: <short description>"
+labels: ["bug"]
+body:
+  - type: input
+    id: function
+    attributes:
+      label: Function or tool
+      placeholder: "frame_timing_update_delta (0x00401000), or tools/progress.py"
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Repro
+      description: verify.py output, in-game steps, or the command and its output. No game data.
+    validations:
+      required: true
