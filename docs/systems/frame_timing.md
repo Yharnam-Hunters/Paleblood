@@ -53,8 +53,10 @@ twice or half-finished:
 3. With the busy flag set, it calls the dispatcher (`+0x40`, virtual `+0x30`), which runs the
    frame's tasks; then it clears the flag, flushes the second queue and steps the workers again.
 
-The dispatcher itself is the next thing to study: it is where the game's own per-frame work
-begins.
+The dispatcher (`0x0138a370`) is the last link: when its group record asks for it, it wakes
+every registered task (76 in Iosefka's Clinic), then fills a job with the record, the task table and
+the group mask and runs it through the same five steps as the workers. Each of those tasks is a
+piece of the game's own per-frame work, the next layer to map.
 
 ## Key functions
 
@@ -64,6 +66,7 @@ begins.
 | `0x0111a7f0` | 131 | `frame_timing_get_monotonic_ms` | verified | Milliseconds since its first call from CLOCK_MONOTONIC; keeps the first seconds in the clock state object |
 | `0x01388c60` | 16 | `frame_timing_task_run_all_01388c60` | verified | task manager: run the tasks of every group (0x01388c70 with -1) |
 | `0x01388c70` | 171 | `frame_timing_task_run_01388c70` | verified | task manager run: prepare the frame, dispatch through +0x40 (virtual +0x30) with +0x38 set, finish |
+| `0x0138a370` | 330 | `frame_timing_task_dispatch_0138a370` | verified | task dispatcher (virtual +0x30): wakes registered tasks, updates the group record, runs the job like the worker step |
 | `0x013d3520` | 87 | `frame_timing_task_013d3520` | verified | per-frame task: passes the frame-time descriptor and its seconds to three parts; Uncap FPS++ edits it |
 | `0x0143e490` | 174 | `frame_timing_task_flush_queue_0143e490` | verified | task manager queue flush: lock, run, destroy and free every queued object, empty the list, unlock |
 | `0x0143f9f0` | 18 | `frame_timing_task_set_frame_value_0143f9f0` | verified | task manager: copies the float at +0x8 of the frame information to the global 0x058b7e08 |

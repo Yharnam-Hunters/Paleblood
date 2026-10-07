@@ -6,8 +6,7 @@ blockers go to STATUS.md instead of being worked around.
 
 ## Queue
 
-1. The live functions the
-   60 FPS patches edit besides frame timing (47 live, 12 dead:
+1. The live functions the 60 FPS patches edit besides frame timing (47 live, 12 dead:
    `tools/patch_overlap.py ... --map`, `tools/reloc_refs.py`, `tools/refs_to.sh`). Done so far:
    the nine fixed-step state methods (Chalice Dungeon state machine; replaced, verified on edge
    cases stock and against "60 FPS++", waiting for a save that reaches the Chalice Dungeons).
