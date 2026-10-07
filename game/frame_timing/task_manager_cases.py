@@ -9,7 +9,9 @@ Writes OUT_ROOT/<function>/edge/*.json for each function: frame_timing_task_run_
 values), frame_timing_task_set_frame_value_0143f9f0 (the float copied bit for bit: zero,
 -0, NaN with a payload, a subnormal, infinity, an ordinary frame time),
 frame_timing_task_frame_024512a0 (the singleton present or missing) and
-frame_timing_task_run_01388c70 (already running; workers and dispatcher present or absent).
+frame_timing_task_run_01388c70 (already running; workers and dispatcher present or absent),
+frame_timing_task_flush_queue_0143e490 (no list, an empty list, objects of two classes) and
+frame_timing_task_workers_step_014400a0 (the three rounds over distinct queues).
 """
 import json
 import os
@@ -61,7 +63,49 @@ def task_run(cid, busy=0, workers=True, dispatcher=True, groups=0xffffffff):
             'imports': []}
 
 
+LOCK_ACQUIRE, LOCK_RELEASE, RUN_A, RUN_B, DTOR_A, DTOR_B, FREE = (0x00500100, 0x00500200, 0x00500300, 0x00500400,
+                                                         0x00500500, 0x00500600, 0x00500700)
+
+
+def flush(cid, objects=None):
+    """objects: None (no list) or a list of class names 'a' / 'b' (one queued object each)."""
+    b = {'queue': 0x18, 'lock': 16, 'lock_vt': 0x30, 'list': 0x18, 'items': 8 * max(1, len(objects or ())),
+         'vt_a': 0x18, 'vt_b': 0x18, 'alloc': 16, 'alloc_vt': 0x78}
+    m = [{'addr': 'buf:queue+8', 'pointer': 'lock'}, {'addr': 'buf:lock+0', 'pointer': 'lock_vt'},
+         {'addr': 'buf:lock_vt+24', 'guest': f'0x{LOCK_ACQUIRE:08x}'}, {'addr': 'buf:lock_vt+40', 'guest': f'0x{LOCK_RELEASE:08x}'},
+         {'addr': 'buf:vt_a+0', 'guest': f'0x{DTOR_A:08x}'}, {'addr': 'buf:vt_a+16', 'guest': f'0x{RUN_A:08x}'},
+         {'addr': 'buf:vt_b+0', 'guest': f'0x{DTOR_B:08x}'}, {'addr': 'buf:vt_b+16', 'guest': f'0x{RUN_B:08x}'},
+         {'addr': 'buf:alloc+0', 'pointer': 'alloc_vt'}, {'addr': 'buf:alloc_vt+112', 'guest': f'0x{FREE:08x}'}]
+    stubs = [{'address': f'0x{LOCK_ACQUIRE:08x}', 'argc': 2}, {'address': f'0x{LOCK_RELEASE:08x}', 'argc': 1}]
+    if objects is not None:
+        m.append({'addr': 'buf:queue+16', 'pointer': 'list'})
+        m += [{'addr': 'buf:list+8', 'pointer': 'items'}, {'addr': 'buf:list+16', 'pointer': f'items+{8 * len(objects)}'}]
+        for i, cls in enumerate(objects):
+            b[f'obj{i}'] = 16
+            m += [{'addr': f'buf:items+{8 * i}', 'pointer': f'obj{i}'}, {'addr': f'buf:obj{i}+0', 'pointer': f'vt_{cls}'}]
+            stubs += [{'address': f'0x{RUN_A if cls == "a" else RUN_B:08x}', 'argc': 1},
+                      {'address': f'0x{DTOR_A if cls == "a" else DTOR_B:08x}', 'argc': 1},
+                      {'address': '0x0247b720', 'argc': 1, 'ret': 'buf:alloc'}, {'address': f'0x{FREE:08x}', 'argc': 2}]
+    return {'schema': 1, 'address': '0x0143e490', 'id': cid, 'returns': 'void', 'args': {'rdi': 'buf:queue'},
+            'buffers': {k: {'size': v} for k, v in b.items()}, 'memory': m, 'stubs': stubs, 'imports': []}
+
+
+def workers(cid):
+    m = [{'addr': f'buf:w+{off}', 'bytes': struct.pack('<Q', 0x1000 * (i + 1)).hex()}
+         for i, off in enumerate((0x48, 0x50, 0x58, 0x60, 0x68))]
+    stubs = []
+    for _ in range(3):
+        stubs += [{'address': '0x0143d7c0', 'argc': 2}, {'address': '0x0143e030', 'argc': 3},
+                  {'address': '0x0143de20', 'argc': 1}, {'address': '0x0143deb0', 'argc': 1},
+                  {'address': '0x0143df10', 'argc': 1}]
+    return {'schema': 1, 'address': '0x014400a0', 'id': cid, 'returns': 'void', 'args': {'rdi': 'buf:w'},
+            'buffers': {'w': {'size': 0x70}}, 'memory': m, 'stubs': stubs, 'imports': []}
+
+
 CASES = {
+    'frame_timing_task_flush_queue_0143e490': [flush('no_list'), flush('empty_list', []), flush('one', ['a']),
+                                               flush('mixed', ['a', 'b', 'a'])],
+    'frame_timing_task_workers_step_014400a0': [workers('distinct_queues')],
     'frame_timing_task_frame_024512a0': [task_frame('manager_present', True), task_frame('manager_missing', False)],
     'frame_timing_task_run_01388c70': [
         task_run('typical'), task_run('already_running', busy=1), task_run('no_workers', workers=False),

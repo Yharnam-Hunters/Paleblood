@@ -9,7 +9,7 @@ blockers go to STATUS.md instead of being worked around.
 1. The task manager's frame (`0x024512a0`, called by the frame step): `FD4::FD4TaskManager`
    (singleton `0x058b2e30`) runs the frame's tasks through `0x01388c60` → `0x01388c70`, which
    brackets the dispatch (a virtual call on `+0x40`) with setup and teardown. Targets, smallest
-   first: `0x0143e490` (174 B), `0x014400a0` (180 B); then the dispatcher behind `+0x40`. The three
+   first: the dispatcher behind `+0x40` (virtual `+0x30`). The three
    empty functions it calls (`0x0143bcc0`, `0x0143bcd0`, `0x0143bce0`, 1 byte each) are too short
    to hook.
 2. Later (maintainer's choice, 2026-10-07: the task manager first): the live functions the
@@ -24,6 +24,7 @@ blockers go to STATUS.md instead of being worked around.
 
 ## Done
 
+- `0x0143e490` frame_timing_task_flush_queue_0143e490 and `0x014400a0` frame_timing_task_workers_step_014400a0: verified (200 and 53 recorded calls; the list re-read after each task cannot be made observable with stubs).
 - `0x024512a0` frame_timing_task_frame_024512a0 and `0x01388c70` frame_timing_task_run_01388c70: verified (51 recorded calls each; the singleton re-read after the fatal error cannot be told apart in the harness, whose stubs cannot set a global).
 - `0x01388c60` frame_timing_task_run_all_01388c60 and `0x0143f9f0` frame_timing_task_set_frame_value_0143f9f0: verified (task manager's frame; 51 recorded calls each).
 - `0x0111a7f0` frame_timing_get_monotonic_ms: verified (1a7c39e).

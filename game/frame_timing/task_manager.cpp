@@ -12,6 +12,15 @@
 //   +0x28 when set, 0x0143f9f0 on the frame), runs the dispatcher (+0x40, virtual +0x30 with +0x50,
 //   +0x48, the group mask and the frame) with +0x38 set, then finishes (0x0143e490 on +0x18,
 //   0x01440160 on +0x28 when set, 0x0143bce0 on +0x30).
+// - frame_timing_task_flush_queue_0143e490 (0x0143e490): when the queue has a list (+0x10), locks
+//   it (+0x8, virtual +0x18 with -1), runs every queued object (virtual +0x10; a null entry is
+//   called too, as the original does), destroys it (virtual +0x0) and frees it through the
+//   allocator 0x0247b720 finds for it (virtual +0x70), empties the list (end = begin) and unlocks
+//   (virtual +0x28).
+// - frame_timing_task_workers_step_014400a0 (0x014400a0; reached through the thunks 0x01440090
+//   and 0x01440160): three rounds over the worker queues +0x58, +0x68 and +0x60 of
+//   0x0143d7c0(+0x50, queue), 0x0143e030(+0x48, 0, +0x50), 0x0143de20, 0x0143deb0 and
+//   0x0143df10 on +0x48.
 // - frame_timing_task_set_frame_value_0143f9f0 (0x0143f9f0): copies the float at +0x8 of the
 //   frame's information to the global 0x058b7e08.
 #include <cstdint>
@@ -29,6 +38,9 @@ constexpr uint32_t frame_begin_a = 0x0143bcc0, frame_begin_b = 0x0143bcd0, frame
 constexpr uint32_t fatal_error = 0x024b55b0, task_manager = 0x058b2e30, debug_flag = 0x0596ccb0;
 constexpr uint32_t str_singleton_header = 0x04d3b369, str_singleton_func = 0x04d3b3bd, str_task_manager = 0x04d3b29f;
 constexpr uint32_t frame_value = 0x058b7e08;
+constexpr uint32_t allocator_of = 0x0247b720;
+constexpr uint32_t workers_select = 0x0143d7c0, workers_run = 0x0143e030, workers_a = 0x0143de20, workers_b = 0x0143deb0,
+                   workers_c = 0x0143df10;
 
 using TaskRun = void(void *manager, uint32_t groups, void *frame);
 using TaskRunAll = void(void *manager, void *frame);
@@ -133,4 +145,74 @@ extern "C" void bb_frame_timing_task_run_01388c70(unsigned char *manager, uint32
     }
     rt::fn<Begin>(frame_end)(get<void *>(manager, 0x30), 0);
     finish();
+}
+
+extern "C" void bb_frame_timing_task_flush_queue_0143e490(unsigned char *queue)
+{
+    rt::Recorder rec;
+    if (rec.begin("frame_timing_task_flush_queue_0143e490")) rec.pointer(queue, 0x10);
+    auto method_stub = [&](const void *object, unsigned slot, int argc, const std::string &extra = "") {
+        if (!rec.on()) return;
+        rec.pointer(object, 0);
+        const void *vtable = get<void *>(object, 0);
+        if (!rt::in_image(vtable)) rec.pointer(vtable, slot);
+        rec.stub("{\"address\": \"" + rt::guest_hex(rt::guest_of(get<void **>(object, 0)[slot / 8])) + "\", \"argc\": " +
+                 std::to_string(argc) + extra + "}");
+    };
+    auto finish = [&] { rec.write("0x0143e490", "\"rdi\": \"" + (rec.on() ? "buf:" + rec.name(queue) : std::string()) + "\""); };
+    if (!get<void *>(queue, 0x10)) return finish();
+    unsigned char *lock = get<unsigned char *>(queue, 0x8);
+    if (rec.on()) rec.pointer(queue, 0x8);
+    reinterpret_cast<void (*)(void *, uint32_t)>(get<void **>(lock, 0)[3])(lock, 0xffffffffu);
+    method_stub(lock, 0x18, 2);
+    unsigned char *list = get<unsigned char *>(queue, 0x10);
+    if (rec.on()) {
+        rec.pointer(list, 0x8);
+        rec.pointer(list, 0x10);
+    }
+    unsigned char **it = get<unsigned char **>(list, 0x8);
+    if (it != get<unsigned char **>(list, 0x10)) {
+        do {
+            unsigned char *object = *it;
+            if (rec.on()) rec.pointer(get<void *>(list, 0x8), static_cast<unsigned>(reinterpret_cast<unsigned char *>(it) -
+                                                                                     get<unsigned char *>(list, 0x8)));
+            void *run = get<void **>(object, 0)[2];
+            reinterpret_cast<void (*)(void *)>(run)(object);
+            method_stub(object, 0x10, 1);
+            if (object) {
+                unsigned char *allocator = rt::fn<unsigned char *(void *)>(allocator_of)(object);
+                if (rec.on()) rec.stub("{\"address\": \"0x0247b720\", \"argc\": 1, \"ret\": \"" + rec.value(allocator) + "\"}");
+                method_stub(object, 0x0, 1);
+                reinterpret_cast<void (*)(void *)>(get<void **>(object, 0)[0])(object);
+                method_stub(allocator, 0x70, 2);
+                reinterpret_cast<void (*)(void *, void *)>(get<void **>(allocator, 0)[14])(allocator, object);
+            }
+            ++it;
+            list = get<unsigned char *>(queue, 0x10);
+        } while (it != get<unsigned char **>(list, 0x10));
+        it = get<unsigned char **>(list, 0x8);
+    }
+    std::memcpy(list + 0x10, &it, sizeof it);
+    method_stub(lock, 0x28, 1);
+    reinterpret_cast<void (*)(void *)>(get<void **>(lock, 0)[5])(lock);
+    finish();
+}
+
+extern "C" void bb_frame_timing_task_workers_step_014400a0(unsigned char *workers)
+{
+    rt::Recorder rec;
+    if (rec.begin("frame_timing_task_workers_step_014400a0"))
+        for (unsigned off : {0x48u, 0x50u, 0x58u, 0x60u, 0x68u}) rec.bytes(workers, off, 8);
+    for (unsigned queue : {0x58u, 0x68u, 0x60u}) {
+        rt::fn<Void2>(workers_select)(get<void *>(workers, 0x50), get<void *>(workers, queue));
+        rt::fn<void(void *, int, void *)>(workers_run)(get<void *>(workers, 0x48), 0, get<void *>(workers, 0x50));
+        rt::fn<Void1>(workers_a)(get<void *>(workers, 0x48));
+        rt::fn<Void1>(workers_b)(get<void *>(workers, 0x48));
+        rt::fn<Void1>(workers_c)(get<void *>(workers, 0x48));
+        if (rec.on())
+            rec.stub("{\"address\": \"0x0143d7c0\", \"argc\": 2}, {\"address\": \"0x0143e030\", \"argc\": 3}, "
+                     "{\"address\": \"0x0143de20\", \"argc\": 1}, {\"address\": \"0x0143deb0\", \"argc\": 1}, "
+                     "{\"address\": \"0x0143df10\", \"argc\": 1}");
+    }
+    rec.write("0x014400a0", "\"rdi\": \"" + (rec.on() ? "buf:" + rec.name(workers) : std::string()) + "\"");
 }
