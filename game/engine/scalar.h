@@ -9,6 +9,14 @@
 
 namespace engine {
 
+// mulss, addss, subss with the operands in the original's order. Plain C++ `a * b` may be emitted
+// with the operands swapped (it is commutative), which changes which NaN's payload comes out when
+// both are NaN. These keep the order in our builds, as the NaN-payload edge cases check; a
+// compiler may in principle treat the intrinsics as commutative too.
+inline float multiply(float a, float b) { return _mm_cvtss_f32(_mm_mul_ss(_mm_set_ss(a), _mm_set_ss(b))); }
+inline float add(float a, float b) { return _mm_cvtss_f32(_mm_add_ss(_mm_set_ss(a), _mm_set_ss(b))); }
+inline float subtract(float a, float b) { return _mm_cvtss_f32(_mm_sub_ss(_mm_set_ss(a), _mm_set_ss(b))); }
+
 // Rounds up (roundss toward +infinity).
 __attribute__((target("sse4.1"))) inline float round_up(float x)
 {

@@ -42,6 +42,16 @@ and functions with names (`Vec4`, `with_w`, `all_equal`). Functions use those.
 **No recording code in functions.** Recording the inputs of a function is the runtime's job, not
 the function's: no recorder objects (`rec.`), capture JSON or `rt_capture_*` calls under `game/`.
 
+**Floating point as written.** The game library is built with `-ffp-contract=off -fno-fast-math`
+and nothing that lets the compiler fuse, reassociate or simplify float operations
+(`tools/check_float_flags.py` checks every game source's flags, in CI). A commutative operation
+(`+`, `*`, min, max) whose two operands can both be NaN uses the order-pinned helpers in
+`game/engine/scalar.h` (`engine::add`, `multiply`, `subtract`, `divide`, `min_of`, `max_of`; for
+vectors, `Vec4`'s operators) in the original's operand order: which NaN's payload survives depends
+on it, and plain `a + b` may be emitted with the operands swapped. With a constant or an
+integer-derived operand, plain operators are fine. Functions with float inputs get NaN-payload
+edge cases, which catch a swapped order.
+
 **Faithful, then clear.** The replacement does what the original does, including its quirks
 (a value read again after a fatal error, an unusual loop order). Keep the quirk, name it, and say
 in a comment why it is there. Restructure freely otherwise: early returns, helper functions,

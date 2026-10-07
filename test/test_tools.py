@@ -658,5 +658,33 @@ class Readable(unittest.TestCase):
             shutil.rmtree(d)
 
 
+class FloatFlags(unittest.TestCase):
+    """tools/check_float_flags.py on synthetic compilation databases."""
+
+    def check(self, flags):
+        d = tempfile.mkdtemp()
+        try:
+            src = os.path.join(ROOT, 'game', 'x', 'f.cpp')
+            with open(os.path.join(d, 'compile_commands.json'), 'w') as f:
+                json.dump([{'directory': d, 'file': src, 'command': 'c++ ' + ' '.join(flags) + ' -c ' + src}], f)
+            return subprocess.run([sys.executable, os.path.join(ROOT, 'tools', 'check_float_flags.py'), d],
+                                  capture_output=True, text=True)
+        finally:
+            shutil.rmtree(d)
+
+    def test_required_flags_pass(self):
+        self.assertEqual(self.check(['-O3', '-ffp-contract=off', '-fno-fast-math']).returncode, 0)
+
+    def test_fast_math_and_missing_flags_fail(self):
+        for flags in (['-O3', '-ffp-contract=off', '-fno-fast-math', '-ffast-math'],
+                      ['-Ofast', '-ffp-contract=off', '-fno-fast-math'],
+                      ['-O3', '-ffp-contract=off', '-fno-fast-math', '-fassociative-math'],
+                      ['-O3', '-fno-fast-math'],
+                      ['-O3', '-ffp-contract=off']):
+            r = self.check(flags)
+            self.assertEqual(r.returncode, 1, flags)
+            self.assertIn('float flags:', r.stderr)
+
+
 if __name__ == '__main__':
     unittest.main()
