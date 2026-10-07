@@ -13,6 +13,10 @@ if [ "${1:-}" = "--maintainer" ]; then
     git -C "$root" config bb.maintainerIdent "$ident"
     git -C "$root" config bb.enforceIdentity true
     echo "identity enforcement on: $ident"
+    # The push gate: git push runs tools/pre_push.sh and sends nothing when it fails.
+    chmod +x "$root/tools/hooks/pre-push" "$root/tools/pre_push.sh"
+    ln -sf ../../tools/hooks/pre-push "$root/.git/hooks/pre-push"
+    echo "pre-push hook installed: git push runs tools/pre_push.sh"
     # Automatic backups (tools/hooks/post-commit-backup.sh): BB_BACKUP_DIR (outside every
     # repository), BB_ARCHIVE_URL (optional archive repository), BB_BACKUP_BRANCH (default main).
     [ -n "${BB_BACKUP_DIR:-}" ] && git -C "$root" config bb.backupDir "$BB_BACKUP_DIR"

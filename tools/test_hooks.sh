@@ -3,6 +3,10 @@
 # Exercise the pre-commit hook in a throwaway clone: a fake ELF, a local-only file,
 # and a stale progress number must each be refused; a clean change must pass.
 set -uo pipefail
+# git exports GIT_DIR, GIT_INDEX_FILE and similar variables to hooks; the gate runs git in other
+# repositories (its tests clone one and commit there), so none of them may leak in.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+      GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_CEILING_DIRECTORIES
 root=$(git rev-parse --show-toplevel)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -114,6 +118,20 @@ git config user.email contributor@example.invalid
 git commit -q --allow-empty -m "test: contributor identity" 2>/dev/null \
     && echo "ok   contributor identity passes without --maintainer" \
     || { echo "FAIL contributor identity refused without --maintainer"; rc=1; }
+# The push gate is a real pre-push hook: a failing gate stops git push even when the push's output
+# is piped (the shell sees the pipe's status; git sees the hook's). A local bare repository
+# stands in for the remote.
+git init -q --bare "$tmp/remote.git"
+git remote add gate "$tmp/remote.git"
+command cp tools/pre_push.sh "$tmp/pre_push.real"
+printf '#!/bin/sh\necho "pre-push: NOT ready to push"\nexit 1\n' > tools/pre_push.sh
+git push gate HEAD:refs/heads/main 2>&1 | tail -1 >/dev/null
+if [ -z "$(git ls-remote gate)" ]; then echo "ok   a failing gate refuses a piped push"; else echo "FAIL a failing gate let a piped push through"; rc=1; fi
+printf '#!/bin/sh\nexit 0\n' > tools/pre_push.sh
+git push -q gate HEAD:refs/heads/main 2>&1 | tail -1 >/dev/null
+if [ -n "$(git ls-remote gate)" ]; then echo "ok   a passing gate lets the push through"; else echo "FAIL a passing gate blocked the push"; rc=1; fi
+command cp -f "$tmp/pre_push.real" tools/pre_push.sh
+
 tools/install_hooks.sh >/dev/null
 [ "$(git config --get bb.enforceIdentity || echo unset)" = "unset" ] \
     && echo "ok   install_hooks.sh without --maintainer leaves enforcement off" \

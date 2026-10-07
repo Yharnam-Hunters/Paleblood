@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Git pre-push hook: the push gate. `git push` sends nothing when tools/pre_push.sh fails, however
+# the push command is run or piped (the hook's exit status decides, not the shell's). Installed
+# by tools/install_hooks.sh --maintainer; never bypassed (no --no-verify).
+#
+# git gives the pushed refs on stdin ("local_ref local_sha remote_ref remote_sha"); the gate
+# checks exactly the commits each ref adds (BB_PUSH_RANGE: old..new, or new --not --remotes for
+# a ref the remote does not have yet).
+set -uo pipefail
+root=$(git rev-parse --show-toplevel)
+# git exports GIT_DIR, GIT_INDEX_FILE and similar variables to hooks; the gate runs git in other
+# repositories (its tests clone one and commit there), so none of them may leak in.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+      GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_CEILING_DIRECTORIES
+remote=${1:-origin}
+zero=0000000000000000000000000000000000000000
+refs=$(cat)
+status=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ -n "${local_sha:-}" ] || continue
+    [ "$local_sha" = "$zero" ] && continue   # deleting a remote ref: nothing to check
+    if [ "$remote_sha" != "$zero" ] && git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+        range="$remote_sha..$local_sha"
+    else
+        range="$local_sha --not --remotes=$remote"
+    fi
+    echo "pre-push: gate for $local_ref -> $remote $remote_ref"
+    BB_PUSH_RANGE="$range" "$root/tools/pre_push.sh" </dev/null || status=1
+done <<<"$refs"
+[ $status = 0 ] || echo "pre-push: refused; nothing was pushed" >&2
+exit $status
