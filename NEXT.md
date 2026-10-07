@@ -6,17 +6,26 @@ blockers go to STATUS.md instead of being worked around.
 
 ## Queue
 
-1. The live functions the 60 FPS patches edit besides frame timing (47 live, 12 dead:
+1. The task manager's frame (`0x024512a0`, called by the frame step): `FD4::FD4TaskManager`
+   (singleton `0x058b2e30`) runs the frame's tasks through `0x01388c60` → `0x01388c70`, which
+   brackets the dispatch (a virtual call on `+0x40`) with setup and teardown. Targets, smallest
+   first: `0x024512a0` (78 B), `0x01388c70` (171 B),
+   `0x0143e490` (174 B), `0x014400a0` (180 B); then the dispatcher behind `+0x40`. The three
+   empty functions it calls (`0x0143bcc0`, `0x0143bcd0`, `0x0143bce0`, 1 byte each) are too short
+   to hook.
+2. Later (maintainer's choice, 2026-10-07: the task manager first): the live functions the
+   60 FPS patches edit besides frame timing (47 live, 12 dead:
    `tools/patch_overlap.py ... --map`, `tools/reloc_refs.py`, `tools/refs_to.sh`). Done so far:
    the nine fixed-step state methods (Chalice Dungeon state machine; replaced, verified on edge
    cases stock and against "60 FPS++", waiting for a save that reaches the Chalice Dungeons).
    Still to do among those called in the clinic (probe run 2026-10-06, `continue.route`):
-   `0x02713870` (11.6 KB), `0x0183ac60` (20 KB). Work them smallest first; each option
-   part is checked against the patch that edits it (both sides patched, VERIFY.md).
-2. `0x024512a0` task update (the game's frame of work): analyze, split into targets.
+   `0x0183ac60` (20 KB; every frame-rate patch changes a jump and a flag) and `0x02713870`
+   (11.6 KB; its only edit, Uncap FPS++'s, is broken in v1.09: QUIRKS.md). Each option part is
+   checked against the patch that edits it (both sides patched, VERIFY.md).
 
 ## Done
 
+- `0x01388c60` frame_timing_task_run_all_01388c60 and `0x0143f9f0` frame_timing_task_set_frame_value_0143f9f0: verified (task manager's frame; 51 recorded calls each).
 - `0x0111a7f0` frame_timing_get_monotonic_ms: verified (1a7c39e).
 - `0x02434770` frame_timing_pace_frame: faithful replacement verified; `BB_TARGET_FPS` and `BB_LIMITER_WAIT` options.
 - `0x02418d20` frame_timing_frame_step: verified (first function with virtual calls).
