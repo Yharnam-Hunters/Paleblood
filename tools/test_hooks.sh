@@ -122,6 +122,7 @@ git commit -q --allow-empty -m "test: contributor identity" 2>/dev/null \
 # is piped (the shell sees the pipe's status; git sees the hook's). A local bare repository
 # stands in for the remote.
 git init -q --bare "$tmp/remote.git"
+git -C "$tmp/remote.git" config receive.shallowUpdate true   # CI checks out a shallow clone
 git remote add gate "$tmp/remote.git"
 command cp tools/pre_push.sh "$tmp/pre_push.real"
 printf '#!/bin/sh\necho "pre-push: NOT ready to push"\nexit 1\n' > tools/pre_push.sh
