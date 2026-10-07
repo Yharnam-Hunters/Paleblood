@@ -94,7 +94,9 @@ repository, pick a good first issue or a target from [NEXT.md](NEXT.md), and rea
 ## Documentation
 
 - **[The documentation site](https://yharnam-hunters.github.io/byrgenwerth-site/)**: how each
-  system works, the devlog, the progress dashboard and the address map.
+  system works, the devlog, the progress dashboard and the address map. It is also written as a
+  place to learn how a console game works and how it is reverse engineered and proved correct;
+  no console or game files needed to read it.
 - [`docs/systems/`](docs/systems/): one page per game system (generated; changes go through
   issues and pull requests).
 - [QUIRKS.md](QUIRKS.md): traps in Ghidra, the PS4 executable and the ABI.
