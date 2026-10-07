@@ -38,6 +38,24 @@ shares its own helpers, and no frame-rate patch touches any of them: they look l
 layer of a separate subsystem (unidentified; possibly middleware). Their system label may move
 once that subsystem is known.
 
+### The task manager's frame
+
+Each frame, the frame step hands the frame's work to `FD4::FD4TaskManager` (singleton
+`0x058b2e30`). The path is a good example of how an engine brackets its work so that nothing runs
+twice or half-finished:
+
+1. `0x024512a0` fetches the task manager and runs every task group (`0x01388c60`, mask `-1`).
+2. `0x01388c70` refuses to start while a frame is already running (a busy flag at `+0x38`). It
+   flushes the task queue that collected work since the last frame (`0x0143e490`: lock, run each
+   queued object, destroy and free it, empty the list, unlock), steps the worker threads' queues
+   (`0x014400a0`), and publishes the frame's value (`0x0143f9f0` copies a float from the frame's
+   information to a global).
+3. With the busy flag set, it calls the dispatcher (`+0x40`, virtual `+0x30`), which runs the
+   frame's tasks; then it clears the flag, flushes the second queue and steps the workers again.
+
+The dispatcher itself is the next thing to study: it is where the game's own per-frame work
+begins.
+
 ## Key functions
 
 | Address | Size | Name | Status | Notes |
@@ -45,8 +63,11 @@ once that subsystem is known.
 | `0x004632d0` | 67 | `frame_timing_get_time_us` | original | dead in the stock game: only unwind entries refer to it; the community frame-rate patches overwrite it as a code cave (gettimeofday in microseconds) |
 | `0x0111a7f0` | 131 | `frame_timing_get_monotonic_ms` | verified | Milliseconds since its first call from CLOCK_MONOTONIC; keeps the first seconds in the clock state object |
 | `0x01388c60` | 16 | `frame_timing_task_run_all_01388c60` | verified | task manager: run the tasks of every group (0x01388c70 with -1) |
+| `0x01388c70` | 171 | `frame_timing_task_run_01388c70` | verified | task manager run: prepare the frame, dispatch through +0x40 (virtual +0x30) with +0x38 set, finish |
 | `0x013d3520` | 87 | `frame_timing_task_013d3520` | verified | per-frame task: passes the frame-time descriptor and its seconds to three parts; Uncap FPS++ edits it |
+| `0x0143e490` | 174 | `frame_timing_task_flush_queue_0143e490` | verified | task manager queue flush: lock, run, destroy and free every queued object, empty the list, unlock |
 | `0x0143f9f0` | 18 | `frame_timing_task_set_frame_value_0143f9f0` | verified | task manager: copies the float at +0x8 of the frame information to the global 0x058b7e08 |
+| `0x014400a0` | 180 | `frame_timing_task_workers_step_014400a0` | verified | task manager workers: three rounds over the worker queues +0x58, +0x68, +0x60 |
 | `0x01f6a9f0` | 121 | `frame_timing_until_idle_01f6a9f0` | replaced | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
 | `0x0200d8a0` | 137 | `frame_timing_until_idle_0200d8a0` | replaced | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
 | `0x0200e100` | 121 | `frame_timing_until_idle_0200e100` | replaced | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
@@ -59,6 +80,7 @@ once that subsystem is known.
 | `0x02418d20` | 467 | `frame_timing_frame_step` | verified | Per frame: SprjWindow running check; creates SprjFlipper; calls the limiter; runs the task update; returns running and not quitting |
 | `0x02434520` | 552 | `frame_timing_flipper_init` | verified | SprjFlipper constructor: reads Game.FlipMode (default 4; pending default 3; clamped to 4); unset in the shipped config |
 | `0x02434770` | 2077 | `frame_timing_pace_frame` | verified | Frame limiter: target interval at +0x18 (1/30 or 1/60 s); sleeps then spins; 32-frame ring; every FPS patch edits it |
+| `0x024512a0` | 78 | `frame_timing_task_frame_024512a0` | verified | task manager frame entry from the frame step: FD4TaskManager singleton, then 0x01388c60 |
 ## Structs and globals
 
 - Clock state object, reached through the pointer at `0x056d6ae8`. Field `+0x10`: the
