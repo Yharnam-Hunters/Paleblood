@@ -13,6 +13,7 @@ One page per game system: summary, key functions, structs and globals, patch poi
 - [Input](input.md)
 - [Kernel](kernel.md)
 - [Loading](loading.md)
+- [Physics](physics.md)
 - [Render](render.md)
 
 ## Progress
@@ -20,8 +21,8 @@ One page per game system: summary, key functions, structs and globals, patch poi
 | | Functions | Bytes |
 |---|---:|---:|
 | Target (Ghidra export) | 157,757 | 42,487,347 |
-| Replaced | 22 (0.01%) | 10,987 (0.03%) |
-| Verified | 13 (0.01%) | 9,821 (0.02%) |
+| Replaced | 23 (0.01%) | 14,209 (0.03%) |
+| Verified | 14 (0.01%) | 13,043 (0.03%) |
 
 | System | Tracked | Replaced | Verified | Replaced bytes |
 |---|---:|---:|---:|---:|
@@ -34,4 +35,5 @@ One page per game system: summary, key functions, structs and globals, patch poi
 | input | 1 | 1 | 1 | 426 |
 | kernel | 1 | 1 | 1 | 204 |
 | loading | 0 | 0 | 0 | 0 |
+| physics | 1 | 1 | 1 | 3,222 |
 | render | 3 | 3 | 3 | 1,837 |
