@@ -56,6 +56,25 @@ TRAMPOLINE = bytes.fromhex(
 SENTINELS = {'rbx': 0x1111111111111111, 'rbp': 0x2222222222222222, 'r12': 0x3333333333333333,
              'r13': 0x4444444444444444, 'r14': 0x5555555555555555, 'r15': 0x6666666666666666}
 ARG_REGS = ('rdi', 'rsi', 'rdx', 'rcx', 'r8', 'r9')
+# Stack arguments (the case's "stack": values for [rsp+8], [rsp+16], ... at the call): the
+# trampoline pushes STACK_COUNT qwords from STACK_POINTER (an even count, so the call stays
+# aligned) and adds STACK_BYTES to rsp after it. The three slots sit in the trampoline's page.
+STACK_SLOTS = 0x800                         # offset in CODE: count, pointer, bytes
+
+
+def _stack_trampoline(base: bytes) -> bytes:
+    call = bytes.fromhex('31c041ffd2')      # xor eax, eax; call r10
+    at = base.index(call)
+
+    def rel(insn_end: int, slot: int) -> bytes:
+        return struct.pack('<i', STACK_SLOTS + slot - insn_end)
+    code = bytearray(base[:at])
+    code += bytes.fromhex('488b05') + rel(len(code) + 7, 0)        # mov rax, [count]
+    code += bytes.fromhex('4c8b1d') + rel(len(code) + 7, 8)        # mov r11, [pointer]
+    code += bytes.fromhex('4885c0' '7409' '48ffc8' '41ff34c3' 'ebf2')   # push [r11+8*rax], rax..1
+    code += call
+    code += bytes.fromhex('480325') + rel(len(code) + 7, 16)       # add rsp, [bytes]
+    return bytes(code) + base[at + len(call):]
 # Native stub for series entries (a wait that polls the clock calls it hundreds of thousands of
 # times): copies the next 16-byte value to *arg, counts the call, returns the scripted value;
 # when the series is used up it jumps to the Python dispatcher. State block: 0 remaining,
@@ -145,7 +164,9 @@ class Machine:
         names = b['names']
         mmap_fixed(DATA, max(1, len(names)) * PAGE)
         mmap_fixed(CODE, PAGE + 16 * (max(1, len(names)) + STUB_SLOTS))
-        ctypes.memmove(CODE, TRAMPOLINE, len(TRAMPOLINE))
+        code = _stack_trampoline(TRAMPOLINE)
+        assert len(code) < STACK_SLOTS
+        ctypes.memmove(CODE, code, len(code))
         self.proto = ctypes.CFUNCTYPE(ctypes.c_uint64, *[ctypes.c_uint64] * 6)
         mmap_fixed(IMPSTUB, max(1, len(names)) * IMPSTUB_SIZE)
         for i in range(len(names)):
@@ -400,6 +421,12 @@ class Run:
         unknown = set(args) - set(ARG_REGS) - {'xmm0', 'xmm1'}
         if unknown:
             raise BadInput(f'unknown argument registers {sorted(unknown)}')
+        stack = [self.value(v) for v in self.case.get('stack', [])]
+        if len(stack) % 2:
+            stack.append(0)
+        self.stack = (ctypes.c_uint64 * max(1, len(stack)))(*stack)
+        ctypes.memmove(CODE + STACK_SLOTS, struct.pack('<QQQ', len(stack), ctypes.addressof(self.stack),
+                                                       8 * len(stack)), 24)
         self.block[0] = target
         for i, reg in enumerate(ARG_REGS):
             self.block[1 + i] = self.value(args.get(reg, 0))

@@ -93,6 +93,8 @@ request. Keep them under `$BB_CAPTURES` (for example `/mnt/.../captures/<functio
   scripted with `ret` as the float's bit pattern (`"ret": "0x3f800000"`, for stubs and
   imports); case `args` may set `xmm0` and `xmm1` (hex bytes) for float arguments; `writes` stores what the real function stored through an argument
   (`bytes`, `pointer` to a buffer, or `guest` address), like library writes.
+- `stack`: stack arguments, in order (the 7th integer argument first), as numbers, `buf:` or
+  `guest:` values; the harness pushes them before the call and pops them after.
 - `gs`: the guest thread pointer (`buf:NAME+off`), for code that uses thread-local storage. As
   the runtime's loader does, the harness rewrites the game's `mov rax, fs:[0]` to read GS; the
   case puts the pointer itself at `gs:[0]` (a `memory` entry), as a TCB holds it, and the

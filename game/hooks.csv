@@ -4,6 +4,7 @@ address,replacement,system
 0x013d3520,bb_frame_timing_task_013d3520,frame_timing
 0x016efd00,bb_event_emk_add,event
 0x01972900,bb_input_pad_step_01972900,input
+0x01c0c2b0,bb_physics_instance_construct_01c0c2b0,physics
 0x01cbdb20,bb_character_frame_update_01cbdb20,character
 0x01f6a9f0,bb_frame_timing_until_idle_01f6a9f0,frame_timing
 0x0200d8a0,bb_frame_timing_until_idle_0200d8a0,frame_timing

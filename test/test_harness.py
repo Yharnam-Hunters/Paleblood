@@ -27,6 +27,8 @@ import verify  # noqa: E402
 
 CODE = bytes.fromhex('534889fb4883ec10bf070000004889e6ff15ea0f0000488b0424488b0def0f0000'
                      '4803014889038905eb0f00004883c4105bc3')
+# At 0x400800: return [rsp+8] + [rsp+16] + [rsp+24] (three stack arguments).
+STACK_CODE = bytes.fromhex('488b442408' '4803442410' '4803442418' 'c3')
 DATA = bytes.fromhex('0000000000000000000100000000000008100000000000000000000000000000')
 SIZE = 0x1020
 
@@ -56,6 +58,7 @@ def nid(name):
 def boot_image():
     image = bytearray(SIZE)
     image[:len(CODE)] = CODE
+    image[0x800:0x800 + len(STACK_CODE)] = STACK_CODE
     image[0x1000:0x1000 + len(DATA)] = DATA
     names = [nid('testImport') + '#A#A']
     relocs = [(0x1000, 1, 0, 0), (0x1010, 0, 0x1008, 0)]
@@ -161,6 +164,18 @@ class Harness(unittest.TestCase):
         r = self.side()
         self.assertIn({'addr': 'buf:out+0x0', 'bytes': '3413'}, r['writes'])
         self.assertNotIn('errors', r)
+
+    def test_stack_arguments(self):
+        case = dict(CASE, address='0x00400800', args={}, stack=['0x1', '0x20', '0x300'], returns='i64', imports=[])
+        with open(self.case, 'w') as f:
+            json.dump(case, f)
+        cmd = [sys.executable, os.path.join(TOOLS, 'harness.py'), '--boot', self.boot, '--case', self.case,
+               '--address', '0x00400800']
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = json.loads(r.stdout)
+        self.assertEqual(out['ret'], {'rax': '0x321'})
+        self.assertEqual(out['preserved']['rsp'], 'kept')
 
     def test_unscripted_import_is_reported(self):
         case = dict(CASE, imports=[])
