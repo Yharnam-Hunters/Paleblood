@@ -51,4 +51,5 @@ Scope still to map: draw submission, GNM command buffers, shaders, post-processi
 
 ## Open questions
 
-- Everything: this system has not been studied yet.
+- What the reference-counted objects in the per-frame list are, and what the two children are.
+- Draw submission, GNM command buffers, shaders and post-processing have not been studied yet.

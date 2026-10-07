@@ -30,4 +30,5 @@ Scope still to map: pad polling, mapping, dead zones, input buffering.
 
 ## Open questions
 
-- Everything: this system has not been studied yet.
+- What the two pad map entries keyed by globals are, and what the owner the step advances is.
+- Pad polling, mapping, dead zones and input buffering have not been studied yet.

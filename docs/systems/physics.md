@@ -30,12 +30,13 @@ into shared tables:
 
 ### How the motion values are rescaled
 
-The four values are 16-bit fixed-point numbers. The code widens each to 32 bits by putting it in
-the *upper* half of a float's bit pattern, multiplies the first three by 0.2 and all four by
-1.00390625, then shifts the bit patterns back down by 16 and packs them into 16 bits again with
-saturation. It is a neat example of doing fixed-point arithmetic with float instructions, and of
-why a replacement has to reproduce the exact instructions: the shift works on the float's bits,
-not its value.
+The four values are stored as the *top halves* of 32-bit floats (the format known as bfloat16):
+16 bits holding a float's sign, exponent and the top of its mantissa. The code widens each back
+to a float by putting it in the upper half of a float's bit pattern, multiplies the first three by
+0.2 and all four by 1.00390625, then keeps only the top 16 bits of each result again (an
+arithmetic shift of the bit pattern, then a saturating pack). It is a compact way to store floats
+at half the size, and an example of why a replacement has to reproduce the exact instructions:
+the truncation works on the float's bits, not its value.
 
 ## Key functions
 

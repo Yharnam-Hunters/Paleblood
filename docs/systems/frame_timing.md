@@ -130,9 +130,9 @@ An earlier version only changed the limiter. Because the hooked frame step no lo
 patches' delta-time code, at 60 FPS the game logic would still have been told every frame lasts
 1/30 s; checking against the patches found that, and that the limiter's own settings differed.
 
-The other functions the patches edit are not replaced yet, so for 60 FPS the community patch is
-still needed for them (`BB_FPS=60` in the scaffold); its edits inside our three functions do not
-run, and our option does their part. The frame rate has not been measured on a real display yet.
+The other functions the patches edit are not replaced yet, so a 60 FPS game would still need the
+community patch for them; its edits inside our three functions do not run, and our option does
+their part. The frame rate has not been measured on a real display.
 
 A second option, `BB_LIMITER_WAIT=sleep`, makes the limiter use the sleeping wait the game
 carries but never selects: it sleeps until about 5 ms before the frame's end and spins the
