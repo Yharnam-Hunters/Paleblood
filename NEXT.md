@@ -11,7 +11,7 @@ blockers go to STATUS.md instead of being worked around.
    the nine fixed-step state methods (Chalice Dungeon state machine; replaced, verified on edge
    cases stock and against "60 FPS++", waiting for a save that reaches the Chalice Dungeons).
    Still to do among those called in the clinic (probe run 2026-10-06, `continue.route`):
-   `0x0222bc10`, `0x0183ac60`, `0x02713870`, `0x01c0c2b0`. Work them smallest first; each option
+   `0x01c0c2b0` (3.2 KB), `0x02713870` (11.6 KB), `0x0183ac60` (20 KB). Work them smallest first; each option
    part is checked against the patch that edits it (both sides patched, VERIFY.md).
 2. `0x024512a0` task update (the game's frame of work): analyze, split into targets.
 
@@ -22,6 +22,7 @@ blockers go to STATUS.md instead of being worked around.
 - `0x02418d20` frame_timing_frame_step: verified (first function with virtual calls).
 - `0x02434520` frame_timing_flipper_init: verified.
 - `0x013d3520` frame_timing_task_013d3520: verified (stock and against Uncap FPS++).
+- `0x0222bc10` ai_hk_frame_update_0222bc10: verified (Havok AI manager; stock and 30/60/Uncap FPS++, 51 recorded frames; the debug display, axis frames, boxes and the manager-wide draw do not run in the clinic and are covered by edge cases).
 - `0x01cbdb20` character_frame_update_01cbdb20: verified (stock and 30/60/Uncap FPS++, 57 recorded calls; the name-string block does not run in the clinic and is covered by edge cases).
 - `0x025b2fb0` render_swap_chain_present: verified (GXSwapChainCtrl; stock and 30/60/Uncap FPS++, 51 recorded frames; in the clinic it presents with interval 1 without waiting).
 - `0x00fbc3e0` render_yebis_get_recursive_sample_parameters: verified (YEBIS middleware; stock and 30/60/Uncap FPS++, 54 recorded calls).
