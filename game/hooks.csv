@@ -2,6 +2,7 @@ address,replacement,system
 0x00fbc3e0,bb_render_yebis_get_recursive_sample_parameters,render
 0x0111a7f0,bb_frame_timing_get_monotonic_ms,frame_timing
 0x01388c60,bb_frame_timing_task_run_all_01388c60,frame_timing
+0x01388c70,bb_frame_timing_task_run_01388c70,frame_timing
 0x013d3520,bb_frame_timing_task_013d3520,frame_timing
 0x0143f9f0,bb_frame_timing_task_set_frame_value_0143f9f0,frame_timing
 0x016efd00,bb_event_emk_add,event
@@ -22,5 +23,6 @@ address,replacement,system
 0x02418d20,bb_frame_timing_frame_step,frame_timing
 0x02434520,bb_frame_timing_flipper_init,frame_timing
 0x02434770,bb_frame_timing_pace_frame,frame_timing
+0x024512a0,bb_frame_timing_task_frame_024512a0,frame_timing
 0x02483e80,bb_kernel_condition_wait,kernel
 0x025b2fb0,bb_render_swap_chain_present,render

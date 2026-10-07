@@ -3,7 +3,15 @@
 //
 // The frame step (0x02418d20) runs the frame's tasks through 0x024512a0 -> 0x01388c60 ->
 // 0x01388c70, which brackets the dispatch with setup and teardown.
+// - frame_timing_task_frame_024512a0 (0x024512a0): the frame step's entry: the task manager
+//   singleton (a missing one reports through the engine's fatal error and is read again), then
+//   0x01388c60(manager, frame). Its first argument is not used.
 // - frame_timing_task_run_all_01388c60 (0x01388c60): runs the tasks of every group (-1).
+// - frame_timing_task_run_01388c70 (0x01388c70): unless the manager is already running (+0x38),
+//   prepares the frame (0x0143bcc0 and 0x0143bcd0 on +0x30, 0x0143e490 on +0x10, 0x01440090 on
+//   +0x28 when set, 0x0143f9f0 on the frame), runs the dispatcher (+0x40, virtual +0x30 with +0x50,
+//   +0x48, the group mask and the frame) with +0x38 set, then finishes (0x0143e490 on +0x18,
+//   0x01440160 on +0x28 when set, 0x0143bce0 on +0x30).
 // - frame_timing_task_set_frame_value_0143f9f0 (0x0143f9f0): copies the float at +0x8 of the
 //   frame's information to the global 0x058b7e08.
 #include <cstdint>
@@ -15,10 +23,21 @@
 
 namespace {
 
-constexpr uint32_t task_run = 0x01388c70;
+constexpr uint32_t task_run = 0x01388c70, task_run_all = 0x01388c60;
+constexpr uint32_t frame_begin_a = 0x0143bcc0, frame_begin_b = 0x0143bcd0, frame_end = 0x0143bce0, queue_flush = 0x0143e490,
+                   worker_begin = 0x01440090, worker_end = 0x01440160, set_frame_value = 0x0143f9f0;
+constexpr uint32_t fatal_error = 0x024b55b0, task_manager = 0x058b2e30, debug_flag = 0x0596ccb0;
+constexpr uint32_t str_singleton_header = 0x04d3b369, str_singleton_func = 0x04d3b3bd, str_task_manager = 0x04d3b29f;
 constexpr uint32_t frame_value = 0x058b7e08;
 
 using TaskRun = void(void *manager, uint32_t groups, void *frame);
+using TaskRunAll = void(void *manager, void *frame);
+using Void1 = void(void *);
+using Void2 = void(void *, void *);
+using Begin = void(void *, uint64_t);
+using Dispatch = void(void *, void *, void *, uint32_t, void *);
+using Fatal = void(const char *, int, const char *, const char *, ...);
+template <typename T> T get(const void *p, unsigned off) { T v; std::memcpy(&v, static_cast<const char *>(p) + off, sizeof v); return v; }
 
 std::string hex64(const void *p)
 {
@@ -46,4 +65,72 @@ extern "C" void bb_frame_timing_task_set_frame_value_0143f9f0(const unsigned cha
     if (rec.begin("frame_timing_task_set_frame_value_0143f9f0")) rec.bytes(frame, 0x8, 4);
     std::memcpy(rt::ptr<unsigned char>(frame_value), frame + 0x8, 4);
     rec.write("0x0143f9f0", "\"rdi\": \"buf:" + (rec.on() ? rec.name(frame) : std::string()) + "\"");
+}
+
+extern "C" void bb_frame_timing_task_frame_024512a0(void *, void *frame)
+{
+    rt::Recorder rec;
+    rec.begin("frame_timing_task_frame_024512a0");
+    (void)*reinterpret_cast<volatile uint64_t *>(rt::ptr<uint64_t>(debug_flag));   // read and unused, as the original
+    void *manager = *rt::ptr<void *>(task_manager);
+    if (rec.on()) rec.global_pointer(task_manager);
+    if (!manager) {
+        rt::fn<Fatal>(fatal_error)(rt::ptr<char>(str_singleton_header), 0xb1, rt::ptr<char>(str_singleton_func),
+                                   rt::ptr<char>(str_task_manager));
+        if (rec.on()) rec.stub("{\"address\": \"0x024b55b0\", \"argc\": 4}");
+        manager = *rt::ptr<void *>(task_manager);
+    }
+    rt::fn<TaskRunAll>(task_run_all)(manager, frame);
+    if (rec.on()) {
+        rec.stub("{\"address\": \"0x01388c60\", \"argc\": 2}");
+        rec.write("0x024512a0", "\"rdi\": \"0x0\", \"rsi\": \"" + hex64(frame) + "\"");
+    }
+}
+
+extern "C" void bb_frame_timing_task_run_01388c70(unsigned char *manager, uint32_t groups, void *frame)
+{
+    rt::Recorder rec;
+    if (rec.begin("frame_timing_task_run_01388c70")) rec.bytes(manager, 0x38, 1);
+    auto stub = [&](const char *address, int argc) {
+        if (rec.on()) rec.stub(std::string("{\"address\": \"") + address + "\", \"argc\": " + std::to_string(argc) + "}");
+    };
+    auto finish = [&] {
+        if (rec.on())
+            rec.write("0x01388c70", "\"rdi\": \"buf:" + rec.name(manager) + "\", \"rsi\": \"" + std::to_string(groups) +
+                                        "\", \"rdx\": \"" + hex64(frame) + "\"");
+    };
+    if (manager[0x38]) return finish();
+    if (rec.on()) {
+        for (unsigned off : {0x10u, 0x18u, 0x28u, 0x30u, 0x48u, 0x50u}) rec.bytes(manager, off, 8);
+        rec.pointer(manager, 0x40);
+    }
+    rt::fn<Begin>(frame_begin_a)(get<void *>(manager, 0x30), reinterpret_cast<uintptr_t>(frame));
+    rt::fn<Begin>(frame_begin_b)(get<void *>(manager, 0x30), 0);
+    rt::fn<Void1>(queue_flush)(get<void *>(manager, 0x10));
+    stub("0x0143e490", 1);
+    if (void *workers = get<void *>(manager, 0x28)) {
+        rt::fn<Void1>(worker_begin)(workers);
+        stub("0x01440090", 1);
+    }
+    rt::fn<Void1>(set_frame_value)(frame);
+    stub("0x0143f9f0", 1);
+    manager[0x38] = 1;
+    if (unsigned char *dispatcher = get<unsigned char *>(manager, 0x40)) {
+        void *method = get<void **>(dispatcher, 0)[6];
+        reinterpret_cast<Dispatch *>(method)(dispatcher, get<void *>(manager, 0x50), get<void *>(manager, 0x48), groups, frame);
+        if (rec.on()) {
+            rec.pointer(dispatcher, 0);
+            if (!rt::in_image(get<void *>(dispatcher, 0))) rec.pointer(get<void *>(dispatcher, 0), 0x30);
+            rec.stub("{\"address\": \"" + rt::guest_hex(rt::guest_of(method)) + "\", \"argc\": 5}");
+        }
+    }
+    manager[0x38] = 0;
+    rt::fn<Void1>(queue_flush)(get<void *>(manager, 0x18));
+    stub("0x0143e490", 1);
+    if (void *workers = get<void *>(manager, 0x28)) {
+        rt::fn<Void1>(worker_end)(workers);
+        stub("0x01440160", 1);
+    }
+    rt::fn<Begin>(frame_end)(get<void *>(manager, 0x30), 0);
+    finish();
 }
