@@ -120,3 +120,14 @@ The game's code does continue there (a jump to the return, or to another report)
 when a replacement is tested with that function stubbed. If a draft's disassembly has a gap after
 such a call, disassemble the bytes directly (objdump on the ELF) before writing the replacement.
 Example: `kernel_condition_wait` (`0x02483e80`) returns -3 after the EINVAL report.
+
+## A community patch edit that calls into the middle of another function
+
+`Uncap FPS++` replaces `vmovss xmm4, [0x04d29e74]` (1/30 s) at `0x02715d71`, in
+`0x02713870`, with `call 0x027166f7` and three `nop`s. In v1.09, `0x027166f7` is in the middle
+of a static initialiser (`0x02716680`, 231 bytes), just before an engine fatal-error call and
+stores to globals; no line of any patch in the file writes code there. Run that way, the block
+would call the fatal error, overwrite the initialiser's globals and return through an epilogue
+whose pushes never happened. The patched block is a cold path placed after the function's
+return, so it may simply never run. There is nothing faithful to replicate: a replacement keeps
+the stock 1/30 s there, and the option check for `Uncap FPS++` cannot cover that block.
