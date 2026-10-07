@@ -89,7 +89,9 @@ request. Keep them under `$BB_CAPTURES` (for example `/mnt/.../captures/<functio
   buffer); `argi` picks which argument registers are compared (a register the caller leaves
   undefined must not be); `argmem: [{"arg": 1, "size": 16}]` also compares the bytes an
   argument points at (`"offset"` starts further in); `argf32: [0]` compares the float in xmm0
-  (`1`: xmm1) as its bit pattern; `writes` stores what the real function stored through an argument
+  (`1`: xmm1) as its bit pattern (for stubs and imports); a function that returns a float is
+  scripted with `ret` as the float's bit pattern (`"ret": "0x3f800000"`); case `args` may set
+  `xmm0` and `xmm1` (hex bytes) for float arguments; `writes` stores what the real function stored through an argument
   (`bytes`, `pointer` to a buffer, or `guest` address), like library writes.
 - `returns`: `i8`, `i32`, `i64`, `i128`, `f32`, `f64`, `vec` or `void`: which return registers count.
 

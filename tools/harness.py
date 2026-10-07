@@ -45,13 +45,14 @@ MAP_PRIVATE, MAP_ANONYMOUS, MAP_FIXED_NOREPLACE = 0x02, 0x20, 0x100000
 
 # call_capture(block): see docs/VERIFY.md. Block layout: 0 target, 8..48 rdi..r9, 56 rax,
 # 64 rdx, 72 xmm0, 88 xmm1, 104 rbx, 112 rbp, 120 r12, 128 r13, 136 r14, 144 r15,
-# 152 rsp before the call, 160 rsp after it. Callee-saved registers hold sentinels.
+# 152 rsp before the call, 160 rsp after it. Callee-saved registers hold sentinels. xmm0 and
+# xmm1 are loaded from their slots before the call (float arguments) and stored back after it.
 TRAMPOLINE = bytes.fromhex(
     '53554154415541564157574989fb48bb111111111111111148bd222222222222222249bc3333333333333333'
     '49bd444444444444444449be555555555555555549bf66666666666666664989a398000000498b7b08498b73'
-    '10498b5318498b4b204d8b43284d8b4b304d8b1331c041ffd24c8b1c244989433849895340f3410f7f4348f3'
-    '410f7f4b5849895b6849896b704d8963784d89ab800000004d89b3880000004d89bb900000004989a3a00000'
-    '005f415f415e415d415c5d5bc3')
+    '10498b5318498b4b204d8b43284d8b4b304d8b13f3410f6f4348f3410f6f4b5831c041ffd24c8b1c24498943'
+    '3849895340f3410f7f4348f3410f7f4b5849895b6849896b704d8963784d89ab800000004d89b3880000004d'
+    '89bb900000004989a3a00000005f415f415e415d415c5d5bc3')
 SENTINELS = {'rbx': 0x1111111111111111, 'rbp': 0x2222222222222222, 'r12': 0x3333333333333333,
              'r13': 0x4444444444444444, 'r14': 0x5555555555555555, 'r15': 0x6666666666666666}
 ARG_REGS = ('rdi', 'rsi', 'rdx', 'rcx', 'r8', 'r9')
@@ -70,6 +71,11 @@ SERIES = 0x930000000        # per-case native series stubs and their state
 # Internal-function stubs enter through a native prologue that saves xmm0 and xmm1 (float
 # arguments, compared with "argf32") at +64, then jumps to the Python dispatcher.
 XSTUB = 0x940000000
+# Library imports enter through a native wrapper (IMPSTUB_SIZE bytes each): it saves xmm0 and
+# xmm1 at +64 (float arguments, compared with "argf32"), calls the Python dispatcher and copies
+# its result into xmm0 too, so a float return is scripted as its bit pattern ("ret": "0x3f800000").
+IMPSTUB = 0x950000000
+IMPSTUB_SIZE = 96
 XSTUB_SIZE = 96
 NID_SALT = bytes.fromhex('518d64a635ded8c1e6b039b1c3e55230')
 
@@ -139,10 +145,19 @@ class Machine:
         mmap_fixed(CODE, PAGE + 16 * (max(1, len(names)) + STUB_SLOTS))
         ctypes.memmove(CODE, TRAMPOLINE, len(TRAMPOLINE))
         self.proto = ctypes.CFUNCTYPE(ctypes.c_uint64, *[ctypes.c_uint64] * 6)
+        mmap_fixed(IMPSTUB, max(1, len(names)) * IMPSTUB_SIZE)
         for i in range(len(names)):
             cb = self.proto(lambda a, b_, c, d, e, f, i=i: self.current.dispatch(i, (a, b_, c, d, e, f)))
             self.callbacks.append(cb)
-            stub = b'\x48\xb8' + struct.pack('<Q', ctypes.cast(cb, ctypes.c_void_p).value) + b'\xff\xe0'
+            wrapper = IMPSTUB + IMPSTUB_SIZE * i
+            save = wrapper + 64
+            # movabs r11, save; movdqu [r11], xmm0; movdqu [r11+16], xmm1; sub rsp, 8;
+            # movabs rax, cb; call rax; add rsp, 8; movq xmm0, rax; ret
+            code = (b'\x49\xbb' + struct.pack('<Q', save) + b'\xf3\x41\x0f\x7f\x03' + b'\xf3\x41\x0f\x7f\x4b\x10' +
+                    b'\x48\x83\xec\x08' + b'\x48\xb8' + struct.pack('<Q', ctypes.cast(cb, ctypes.c_void_p).value) +
+                    b'\xff\xd0' + b'\x48\x83\xc4\x08' + b'\x66\x48\x0f\x6e\xc0' + b'\xc3')
+            ctypes.memmove(wrapper, code, len(code))
+            stub = b'\x48\xb8' + struct.pack('<Q', wrapper) + b'\xff\xe0'
             ctypes.memmove(CODE + PAGE + 16 * i, stub, len(stub))
         for target, kind, value, addend in b['relocs']:
             if kind == 0:
@@ -295,6 +310,9 @@ class Run:
             queue.pop(0)
         argc = int(entry.get('argc', 0))
         self.calls.append({'import': entry['name'], 'args': [self.describe(a) for a in args[:argc]]})
+        if entry.get('argf32'):
+            save = IMPSTUB + IMPSTUB_SIZE * index + 64
+            self.calls[-1]['argf32'] = [ctypes.string_at(save + 16 * int(r), 4).hex() for r in entry['argf32']]
         if series:
             if series.get('format') != 'timeval_us' or int(series.get('offset', 0)):
                 raise BadInput(f"unsupported series {series.get('format')} at offset {series.get('offset', 0)}")
@@ -360,12 +378,15 @@ class Run:
 
     def run(self, target: int) -> dict:
         args = self.case.get('args', {})
-        unknown = set(args) - set(ARG_REGS)
+        unknown = set(args) - set(ARG_REGS) - {'xmm0', 'xmm1'}
         if unknown:
             raise BadInput(f'unknown argument registers {sorted(unknown)}')
         self.block[0] = target
         for i, reg in enumerate(ARG_REGS):
             self.block[1 + i] = self.value(args.get(reg, 0))
+        for reg, off in (('xmm0', 72), ('xmm1', 88)):
+            raw = bytes.fromhex(args.get(reg, '')).ljust(16, b'\0')[:16]
+            ctypes.memmove(ctypes.addressof(self.block) + off, raw, 16)
         before = self.snapshot()
         ctypes.CFUNCTYPE(None, ctypes.c_void_p)(CODE)(ctypes.addressof(self.block))
         for index in self.native:

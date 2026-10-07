@@ -1,4 +1,5 @@
 address,replacement,system
+0x00fbc3e0,bb_render_yebis_get_recursive_sample_parameters,render
 0x0111a7f0,bb_frame_timing_get_monotonic_ms,frame_timing
 0x013d3520,bb_frame_timing_task_013d3520,frame_timing
 0x016efd00,bb_event_emk_add,event
