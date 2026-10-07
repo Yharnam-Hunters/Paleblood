@@ -1,13 +1,14 @@
 # Contributing
 
-Paleblood rebuilds Bloodborne as a native PC source port, one verified function at a time.
+Paleblood is a decompilation of Bloodborne with its own runtime: the game's code rewritten as readable C++, one verified function at a time.
 <!-- status:start -->
-Today it runs on [bbport](third_party/), which loads the original executable with our replacements hooked in: 21 of 157757 functions are verified (0.01%).
+The game doesn't run on Paleblood yet: 21 of 157757 functions are verified (0.01%). On [our own runtime](runtime/) the executable's boot gets as far as `scePthreadAttrGetaffinity` (libkernel, called by libc.elf), with 238 of 686 system imports provided.
 <!-- status:end -->
 
 The goal is a complete source port: every function rewritten and proved, running on our own
-runtime ([README](README.md#the-goal)). It is open to everyone who wants to help. Reverse engineering, C and C++, PS4 internals, testing in
-the game and writing up how a system works all count, and the smallest correct pull request is
+runtime ([README](README.md#the-goal)). It is open to everyone who wants to help. Reverse
+engineering, C and C++, PS4 internals, the runtime's system libraries and writing up how a system
+works all count, and the smallest correct pull request is
 welcome.
 
 ## Getting started

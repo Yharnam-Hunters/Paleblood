@@ -202,12 +202,17 @@ def boot_stop(rt: dict) -> str:
 
 
 def status_sentence(d: dict, link: bool) -> str:
-    """Where the project stands, in one sentence: never "is a native port", only what runs today."""
+    """Where the project stands, in one or two sentences: the game does not run on Paleblood yet;
+    how many functions are verified, and how far the executable boots on our own runtime."""
     v, t = d['verified'], d['total']
-    runtime = '[bbport](third_party/)' if link else 'bbport'
-    return (f"Today it runs on {runtime}, which loads the original executable with our replacements "
-            f"hooked in: {v['functions']} of {t['functions']} functions are verified "
-            f"({fmt_pct(v['functions_pct'])}).")
+    text = (f"The game doesn't run on Paleblood yet: {v['functions']} of {t['functions']} functions are "
+            f"verified ({fmt_pct(v['functions_pct'])}).")
+    rt = d.get('runtime')
+    if rt:
+        runtime = '[our own runtime](runtime/)' if link else 'our own runtime'
+        text += (f" On {runtime} the executable's boot gets as far as {boot_stop(rt)}, with "
+                 f"{rt['imports_covered']} of {rt['imports_total']} system imports provided.")
+    return text
 
 
 def render_status(d: dict) -> str:
