@@ -1,10 +1,39 @@
 # Next targets
 
-The queue the per-function pipeline works through. One line per
-target, in order; move a target to "Done" with its commit when it is verified. Decisions and
-blockers go to STATUS.md instead of being worked around.
+Two tracks. Sessions alternate between them (decompilation, then runtime, then decompilation,
+...) unless the maintainer says otherwise; `Last session` below records which one ran last.
+One line per target, in order; move a target to "Done" with its commit when it is finished.
+Decisions and blockers go to STATUS.md instead of being worked around.
 
-## Queue
+Last session: runtime
+
+## Runtime track
+
+How far the executable boots on our own runtime (`runtime/boot.c`, `tools/boot.py`): the boot
+stops at the first system import we don't implement yet and names it. Each target implements
+what the boot stops at, clean room (CONTRIBUTING.md), then re-runs `tools/boot.py`.
+
+1. Generic input capture in the runtime: record a hooked function's inputs (arguments, the
+   memory it reads, its calls' results) from the runtime side, with no code in the function
+   (STYLE.md forbids recording code under `game/`). This replaces the per-function recorders that
+   were removed, so in-game recordings resume once the runtime runs the game, and
+   `tools/promote.py` can move `edge-verified` functions to `verified`.
+2. `scePthreadAttrGetaffinity` (libkernel), called by the game's own libc while it starts: needs
+   the main thread's CPU affinity mask on a PS4 (STATUS.md, "Open questions"). Then the next
+   import `tools/boot.py` names.
+3. Module loading at run time: when the game asks to load a module listed with action `stub` in
+   `game/modules.csv`, report it loaded without mapping it.
+
+Roadmap after the boot gets going: kernel, threads and memory; files; input; audio; video
+out; GNM and shaders (the largest). Claimable work per system call group is in the issues
+labelled `runtime`.
+
+## Decompilation track
+
+Readability burn-down first (STYLE.md; CONTRIBUTING.md, "Definition of done"): refactor each
+file in `tools/readable_allowlist.txt`, re-verify every recorded and edge case, get the
+independent review, remove its line. Order: `game/ai/hk_ai_frame_update.cpp`, then the others
+from the smallest up. New functions go to `main` only verified and readable.
 
 1. The live functions the 60 FPS patches edit besides frame timing (47 live, 12 dead:
    `tools/patch_overlap.py ... --map`, `tools/reloc_refs.py`, `tools/refs_to.sh`). Done so far:
@@ -16,6 +45,10 @@ blockers go to STATUS.md instead of being worked around.
    checked against the patch that edits it (both sides patched, VERIFY.md).
 
 ## Done
+
+- Runtime: libkernel `sceKernelGetProcParam`, `_sceKernelRtldSetApplicationHeapAPI`, the mutex and mutex attribute functions (SCE and POSIX names), `scePthreadSelf` and thread attributes (init, destroy, get).
+- Runtime: the game's own libc and libSceFios2 modules are mapped as guest code (`game/modules.csv`) and the executable's imports they export are bound to them; their functions are tracked in `symbols/module_functions.csv`, replaceable later like game functions.
+- Runtime: our own loader (`runtime/loader.c`) and boot harness (`runtime/boot.c`, `tools/boot.py`); the verification harness maps the executable with the loader.
 
 - `0x0138a370` frame_timing_task_dispatch_0138a370: verified (the task dispatcher; 51 recorded frames with 76 registered tasks each). With it the task manager's frame is done: `0x024512a0`, `0x01388c60`, `0x01388c70`, `0x0143e490`, `0x014400a0`, `0x0143f9f0`.
 - `0x0143e490` frame_timing_task_flush_queue_0143e490 and `0x014400a0` frame_timing_task_workers_step_014400a0: verified (200 and 53 recorded calls; the list re-read after each task cannot be made observable with stubs).

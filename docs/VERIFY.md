@@ -6,7 +6,7 @@ the GPU and without starting the game, then compares what they did.
 
 ```
 verify.py run --function frame_timing_get_monotonic_ms --captures DIR \
-    --elf /path/to/elf/eboot.elf --lib build/game/libbbgame.so
+    --lib build/game/libbbgame.so
 ```
 
 - `--elf`: your own dump's executable, `elf/eboot.elf` (written by `tools/prepare_dump.sh`).
@@ -45,12 +45,12 @@ replacement's.
 Case files hold inputs from your own dump and never go into the repository, an issue or a pull
 request. Keep them under `$BB_CAPTURES` (for example `/mnt/.../captures/<function>/`).
 
-- **Real runs.** Every replacement that records writes its inputs when the game runs with
-  `BB_CAPTURE_DIR` set (`runtime/capture.h`): one run feeds all hooked functions at once, into
-  `$BB_CAPTURE_DIR/<function>/<run>_NNNN.json`. Runs add to that library instead of
-  overwriting it, so verification reuses everything recorded so far: point `--captures` at the
-  function's directory. Per function and run: the first 50 calls, then every 1000th, up to 200.
-  Record only what the function reads, not whole objects.
+- **Real runs.** Inputs recorded while the game ran: one directory per function,
+  `$BB_CAPTURES/<function>/*.json`. Verification reuses everything recorded so far: point
+  `--captures` at the function's directory. Replacements do not record their own inputs
+  (STYLE.md: no recording code under `game/`); recording is the runtime's job, so new recordings
+  come once Paleblood's runtime runs the game. Until then a new function is `edge-verified`, and
+  `tools/promote.py` upgrades it when recordings for it exist.
 - **Edge cases.** A generator next to the replacement writes the situations a short run does
   not reach (`game/<system>/*_cases.py`).
 
@@ -115,6 +115,13 @@ differ. Write order is not compared.
 
 - The function runs alone: whatever it calls inside the game runs too, as original code,
   unless the case stubs it.
+
+## From edge-verified to verified
+
+A function whose edge cases pass is `edge-verified` (CONTRIBUTING.md, "Status"). Once cases
+recorded in the game exist for it (`CAPTURES/NAME/*.json`), `tools/promote.py` runs `verify.py`
+on them and on the edge cases again, and sets `verified` only if both pass completely. It runs
+at session end (`tools/end_session.sh`); `--dry-run` shows what it would do.
 
 ## Community patches and hooks
 

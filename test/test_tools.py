@@ -39,6 +39,8 @@ class Fixture(unittest.TestCase):
                    ['0x00402000', '50', 'camera_follow', 'camera', 'original', '']])
         write_csv(f'{self.d}/game/hooks.csv', ['address', 'replacement', 'system'],
                   [['0x00401000', 'bb_frame_timing_update', 'frame_timing']])
+        write_csv(f'{self.d}/symbols/reviews.csv', ['address', 'name', 'date', 'reviewer', 'verdict', 'notes'],
+                  [['0x00401000', 'frame_timing_update', '2026-01-01', 'independent session', 'approved', '']])
         with open(f'{self.d}/README.md', 'w') as f:
             f.write('<!-- target:start -->\n<!-- target:end -->\n<!-- progress:start -->\n<!-- progress:end -->\n')
 
@@ -125,7 +127,7 @@ class Validate(Fixture):
                    ['0x00402000', 'bb_camera_follow', 'camera']])
         r = run('validate_functions.py', '--root', self.d)
         self.assertEqual(r.returncode, 1)
-        self.assertIn("only replaced or verified", r.stderr)
+        self.assertIn("only replaced, edge-verified or verified", r.stderr)
 
 
 class Merge(Fixture):
@@ -410,6 +412,248 @@ class Loader(unittest.TestCase):
             self.assertEqual(img[0x220:], bytes(0xe0))          # zero-filled
             self.assertEqual(exe['loader'].rt_elf_thread_pointer_to_gs(exe['handle'], base), 1)
             self.assertEqual(buf.raw[0x100], 0x65)
+        finally:
+            shutil.rmtree(d)
+
+
+class Boot(unittest.TestCase):
+    """runtime/boot.c (pbboot) on synthetic executables, and the NID it computes."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.pbboot = os.environ.get('BB_PBBOOT') or os.path.join(ROOT, 'build', 'runtime', 'pbboot')
+        if not os.path.isfile(cls.pbboot):
+            raise unittest.SkipTest('pbboot not built')
+        sys.path.insert(0, os.path.join(ROOT, 'test'))
+        sys.path.insert(0, os.path.join(ROOT, 'tools'))
+
+    def boot(self, code: bytes, imports=()):
+        import ps4elf
+        page = bytearray(0x1000)
+        page[:len(code)] = code
+        data = ps4elf.build(
+            segments=[(0, bytes(page), 0x1000, 5), (0x1000, bytes(8 * max(1, len(imports))), 0x1000, 6)],
+            symbols=[(n, ps4elf.STT_FUNC, None) for n in imports],
+            relocations=[], jump_slots=[(0x1000 + 8 * i, ps4elf.R_X86_64_JUMP_SLOT, i + 1, 0) for i in range(len(imports))])
+        d = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(d, 'e.elf'), 'wb') as f:
+                f.write(data)
+            p = subprocess.run([self.pbboot, os.path.join(d, 'e.elf'), '--status', os.path.join(d, 's.json'),
+                                '--timeout', '5'], capture_output=True, text=True, timeout=60)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            with open(os.path.join(d, 's.json')) as f:
+                return json.load(f)
+        finally:
+            shutil.rmtree(d)
+
+    def test_entry_returns(self):
+        s = self.boot(b'\xc3')
+        self.assertEqual((s['outcome'], s['milestone'], s['imports_total']), ('returned', 'loaded', 0))
+
+    def test_first_unimplemented_import_is_named(self):
+        import harness
+        name = harness.nid('sceKernelOpen')
+        # call [rip + (0x1000 - 6)]: the first import's slot; then ret
+        s = self.boot(b'\xff\x15' + struct.pack('<i', 0x1000 - 6) + b'\xc3', [name + '#A#A'])
+        self.assertEqual(s['outcome'], 'unimplemented')
+        self.assertEqual(s['first_unimplemented']['nid'], name)
+        self.assertEqual(s['first_unimplemented']['caller'], 'eboot')
+        self.assertEqual((s['milestone'], s['imports_called'], s['imports_remaining']), ('files', 1, 1))
+
+    def test_fault_is_reported_with_offset(self):
+        s = self.boot(b'\x90' * 4 + b'\x48\x8b\x04\x25\x00\x00\x00\x00')    # mov rax, [0]
+        self.assertEqual(s['outcome'], 'fault')
+        self.assertEqual(s['fault']['at'], 'eboot+0x4')
+
+    def test_imports_bind_to_a_bundled_module(self):
+        import harness
+        import ps4elf
+        f = harness.nid('f') + '#B#A'
+        code = bytearray(0x1000)
+        code[:7] = b'\xff\x15' + struct.pack('<i', 0x1000 - 6) + b'\xc3'      # call [import slot]; ret
+        exe = ps4elf.build(segments=[(0, bytes(code), 0x1000, 5), (0x1000, bytes(8), 0x1000, 6)],
+                           symbols=[(f, ps4elf.STT_FUNC, None)], relocations=[],
+                           jump_slots=[(0x1000, ps4elf.R_X86_64_JUMP_SLOT, 1, 0)],
+                           libraries=[(ps4elf.DT_SCE_IMPORT_LIB, 'libfoo', 1)])
+        mcode = bytearray(0x1000)
+        mcode[0] = 0xc3                                       # the module's entry: ret
+        mcode[0x40:0x46] = b'\xb8\x2a\x00\x00\x00\xc3'      # f: mov eax, 42; ret
+        mod = ps4elf.build(segments=[(0, bytes(mcode), 0x1000, 5)], symbols=[(f, ps4elf.STT_FUNC, 0x40)],
+                           relocations=[], libraries=[(ps4elf.DT_SCE_EXPORT_LIB, 'libfoo', 1)])
+        d = tempfile.mkdtemp()
+        try:
+            for name, data in (('e.elf', exe), ('m.elf', mod)):
+                with open(os.path.join(d, name), 'wb') as fh:
+                    fh.write(data)
+            p = subprocess.run([self.pbboot, os.path.join(d, 'e.elf'), '--module', os.path.join(d, 'm.elf'),
+                                '--status', os.path.join(d, 's.json'), '--timeout', '5'],
+                               capture_output=True, text=True, timeout=60)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            with open(os.path.join(d, 's.json')) as fh:
+                s = json.load(fh)
+            self.assertEqual((s['outcome'], s['imports_bundled'], s['imports_remaining']), ('returned', 1, 0))
+            listing = subprocess.run([self.pbboot, os.path.join(d, 'e.elf'), '--module', os.path.join(d, 'm.elf'),
+                                      '--imports'], capture_output=True, text=True, timeout=60).stdout.split('\t')
+            self.assertEqual(listing[:2] + listing[3:6], ['eboot', 'libfoo', 'function', 'm.elf', '0x00000040'])
+        finally:
+            shutil.rmtree(d)
+
+    def test_c_nid_matches_python(self):
+        import ctypes
+        import harness
+        lib = harness.loader_library()
+        out = ctypes.create_string_buffer(12)
+        for name in ('sceKernelOpen', '_init_env', 'malloc', 'a'):
+            lib.rt_nid(name.encode(), out)
+            self.assertEqual(out.value.decode(), harness.nid(name))
+
+
+class Statuses(unittest.TestCase):
+    def test_progress_counts_edge_verified_and_runtime(self):
+        sys.path.insert(0, os.path.join(ROOT, 'tools'))
+        import progress
+        d = tempfile.mkdtemp()
+        try:
+            os.mkdir(os.path.join(d, 'symbols'))
+            with open(os.path.join(d, 'symbols', 'ghidra_functions.csv'), 'w') as f:
+                f.write('address,size\n0x00400000,10\n0x00400010,10\n0x00400020,10\n0x00400030,10\n')
+            with open(os.path.join(d, 'symbols', 'functions.csv'), 'w') as f:
+                f.write('address,size,name,system,status,notes\n0x00400000,10,a_x,a,replaced,\n'
+                        '0x00400010,10,a_y,a,edge-verified,\n0x00400020,10,a_z,a,verified,\n')
+            with open(os.path.join(d, 'symbols', 'boot.json'), 'w') as f:
+                json.dump({'outcome': 'unimplemented', 'milestone': 'entry', 'milestone_index': 1,
+                           'milestones': ['loaded', 'entry', 'threads'], 'imports_total': 4, 'imports_implemented': 1,
+                           'imports_bundled': 1, 'imports_remaining': 2,
+                           'first_unimplemented': {'caller': 'mod.elf', 'library': 'libc', 'symbol': 'f', 'nid': 'x'}}, f)
+            r = progress.compute(d)
+            self.assertEqual((r['replaced']['functions'], r['edge_verified']['functions'], r['verified']['functions']),
+                             (3, 2, 1))
+            self.assertEqual((r['runtime']['imports_pct'], r['runtime']['milestones']), (50.0, 2))
+            table = progress.render_progress(r)
+            self.assertIn('| Edge-verified | 2 (50.00%)', table)
+            self.assertIn('| Furthest boot milestone | entry (1 of 2) |', table)
+            self.assertIn("| System imports provided | 2 of 4 (50.00%): 1 by the game's own modules, 1 by the runtime; 2 remaining |", table)
+            self.assertIn('`f` (libc, called by mod.elf)', table)
+        finally:
+            shutil.rmtree(d)
+
+    def test_boot_history_records_changes_and_milestones(self):
+        sys.path.insert(0, os.path.join(ROOT, 'tools'))
+        import boot
+        d = tempfile.mkdtemp()
+        try:
+            os.mkdir(os.path.join(d, 'symbols'))
+            st = {'outcome': 'unimplemented', 'milestone': 'entry', 'milestone_index': 1, 'milestones': ['loaded', 'entry', 'files'],
+                  'imports_total': 4, 'imports_implemented': 0, 'imports_bundled': 1, 'imports_remaining': 3, 'imports_called': 1,
+                  'first_unimplemented': {'caller': 'eboot', 'library': 'libc', 'symbol': 'f', 'nid': 'x'}}
+            self.assertIsNone(boot.record(st, d, '2026-01-01'))
+            self.assertIsNone(boot.record(st, d, '2026-01-02'))            # unchanged: no new row
+            st2 = {**st, 'milestone': 'files', 'milestone_index': 2, 'imports_implemented': 1, 'imports_remaining': 2}
+            self.assertEqual(boot.record(st2, d, '2026-01-03'), 'files')
+            with open(os.path.join(d, 'symbols', 'boot_history.csv')) as f:
+                rows = f.read().splitlines()
+            self.assertEqual(rows[1:], ['2026-01-01,entry,1,4,1,0,3,eboot->libc:f', '2026-01-03,files,2,4,1,1,2,eboot->libc:f'])
+        finally:
+            shutil.rmtree(d)
+
+
+class Readable(unittest.TestCase):
+    """tools/check_readable.py (STYLE.md) and the review rule in validate_functions.py."""
+
+    def setUp(self):
+        sys.path.insert(0, os.path.join(ROOT, 'tools'))
+        import check_readable
+        self.c = check_readable
+
+    def found(self, code, path='game/x/f.cpp'):
+        return [p.split(': ', 1)[1].split(':')[0] if ': ' in p else p for p in self.c.problems(path, code)]
+
+    def test_transcription_patterns_fail(self):
+        bad = {
+            'rt::fn<Void>(0x01234567)(p);': 'call by address',
+            'int v = get<int32_t>(self, 0x2bc8);': 'offset access',
+            'put<float>(self, 16, v);': 'offset access',
+            'q = ptr_at(self, 0x10);': 'offset access',
+            'self[0x2c90] |= flag;': 'offset access',
+            'if (rec.on()) x = y;': 'recording code',
+            'int n = rt_capture_begin(name);': 'recording code',
+            'v = _mm_add_ps(a, b);': 'SSE intrinsic outside game/engine/',
+            'x = y * 30;': 'magic number 30 (name it',
+        }
+        for code, what in bad.items():
+            out = self.c.problems('game/x/f.cpp', code + '\n')
+            self.assertTrue(any(what in p for p in out), (code, out))
+        self.assertTrue(self.c.problems('game/x/f.cpp', 'const char *s = "{\\"schema\\": 1}";\n'))
+
+    def test_readable_code_passes(self):
+        code = (
+            '// a comment with 0x1234 and rec. in it\n'
+            'RT_ORIGINAL(0x02224090, ai_group_reset, void(AiGroup *, int32_t, int32_t));\n'
+            'RT_GLOBAL(0x059401a0, ai_manager_instance, AiManager *);\n'
+            'constexpr uint32_t debug_mark = 2,\n'
+            '                   other = 0x40;\n'
+            'struct AiOwner {\n'
+            '    uint8_t unknown_0x0000[0x2bc8];\n'
+            '    int32_t group_count;\n'
+            '};\n'
+            'static_assert(offsetof(AiOwner, group_count) == 0x2bc8);\n'
+            'void f(AiOwner *o) { for (int32_t i = 0; i < o->group_count; i++) ai_group_reset(nullptr, 1, 0); }\n'
+            'const char *name = "text 42";\n')
+        self.assertEqual(self.c.problems('game/x/f.cpp', code), [])
+        self.assertEqual(self.c.problems('game/engine/vector.h', 'inline V add(V a, V b) { return _mm_add_ps(a, b); }\n'), [])
+
+    def make_root(self, files, allow, funcs=None, reviews=None):
+        d = tempfile.mkdtemp()
+        os.makedirs(os.path.join(d, 'tools'))
+        with open(os.path.join(d, 'tools', 'readable_allowlist.txt'), 'w') as f:
+            f.write('# comment\n' + ''.join(a + '\n' for a in allow))
+        for rel, text in files.items():
+            os.makedirs(os.path.dirname(os.path.join(d, rel)), exist_ok=True)
+            with open(os.path.join(d, rel), 'w') as f:
+                f.write(text)
+        return d
+
+    def run_check(self, d, *extra):
+        return subprocess.run([sys.executable, os.path.join(ROOT, 'tools', 'check_readable.py'), '--root', d, *extra],
+                              capture_output=True, text=True)
+
+    def test_allowlist_only_shrinks(self):
+        bad, good = 'int x = get<int>(p, 0x10);\n', 'int x = p->field;\n'
+        d = self.make_root({'game/a/a.cpp': bad, 'game/a/b.cpp': good}, ['game/a/a.cpp'])
+        try:
+            self.assertEqual(self.run_check(d).returncode, 0)
+            base = os.path.join(d, 'base.txt')
+            with open(base, 'w') as f:
+                f.write('')                                         # the base had no entries
+            r = self.run_check(d, '--base-list', base)
+            self.assertEqual(r.returncode, 1)
+            self.assertIn('may only shrink', r.stderr)
+            with open(os.path.join(d, 'game/a/a.cpp'), 'w') as f:
+                f.write(good)                                       # fixed: the entry must go
+            r = self.run_check(d)
+            self.assertIn('passes now; remove it', r.stderr)
+            with open(os.path.join(d, 'game/a/c.cpp'), 'w') as f:
+                f.write(bad)                                        # a new file is never grandfathered
+            self.assertEqual(self.run_check(d, 'game/a/c.cpp').returncode, 1)
+        finally:
+            shutil.rmtree(d)
+
+    def test_verified_needs_an_approved_review_unless_grandfathered(self):
+        sys.path.insert(0, os.path.join(ROOT, 'tools'))
+        import validate_functions as v
+        d = self.make_root({'game/a/f.cpp': 'extern "C" void bb_a_f(void) {}\n'}, [])
+        try:
+            os.makedirs(os.path.join(d, 'symbols'))
+            funcs = [{'address': '0x00400000', 'name': 'a_f', 'status': 'verified', '_line': 2}]
+            self.assertTrue(v.check_reviews(d, funcs))
+            with open(os.path.join(d, 'symbols', 'reviews.csv'), 'w') as f:
+                f.write('address,name,date,reviewer,verdict,notes\n0x00400000,a_f,2026-10-07,independent session,approved,\n')
+            self.assertEqual(v.check_reviews(d, funcs), [])
+            with open(os.path.join(d, 'tools', 'readable_allowlist.txt'), 'w') as f:
+                f.write('game/a/f.cpp\n')
+            os.remove(os.path.join(d, 'symbols', 'reviews.csv'))
+            self.assertEqual(v.check_reviews(d, funcs), [])         # grandfathered
         finally:
             shutil.rmtree(d)
 

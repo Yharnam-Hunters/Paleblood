@@ -10,6 +10,10 @@ audit_only=false
 [ "${1:-}" = "--audit" ] && audit_only=true
 
 if ! $audit_only; then
+    # edge-verified functions with passing in-game recordings become verified; the boot harness
+    # records how far our runtime boots (both need your own executable; skipped without it)
+    python3 tools/promote.py || echo "promote: some edge-verified functions fail their recordings (above)" >&2
+    if [ -x build/runtime/pbboot ]; then python3 tools/boot.py || true; fi
     python3 tools/progress.py --update-readme
 fi
 

@@ -1,0 +1,44 @@
+{
+  "fault": null,
+  "first_unimplemented": {
+    "caller": "libc.elf",
+    "library": "libkernel",
+    "nid": "8+s5BzZjxSg",
+    "returns_to": "libc.elf+0x81ad5",
+    "symbol": "scePthreadAttrGetaffinity"
+  },
+  "imports_bundled": 219,
+  "imports_called": 7,
+  "imports_implemented": 19,
+  "imports_remaining": 448,
+  "imports_total": 686,
+  "milestone": "loaded",
+  "milestone_index": 0,
+  "milestones": [
+    "loaded",
+    "entry",
+    "threads",
+    "files",
+    "input",
+    "audio",
+    "video out",
+    "gpu",
+    "first flip"
+  ],
+  "modules": [
+    {
+      "exports": 2140,
+      "imports": 79,
+      "imports_remaining": 57,
+      "name": "libc.elf"
+    },
+    {
+      "exports": 165,
+      "imports": 83,
+      "imports_remaining": 71,
+      "name": "libSceFios2.elf"
+    }
+  ],
+  "outcome": "unimplemented",
+  "phase": "libc.elf"
+}

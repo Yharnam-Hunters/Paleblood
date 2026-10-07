@@ -1,0 +1,18 @@
+# Files under game/ written before the readability rule (STYLE.md). This list may only shrink:
+# refactor a file until tools/check_readable.py passes on it, re-verify it, then remove its line.
+game/ai/hk_ai_frame_update.cpp
+game/character/frame_update.cpp
+game/event/emk_add.cpp
+game/frame_timing/fixed_step_states.cpp
+game/frame_timing/flipper_init.cpp
+game/frame_timing/frame_limiter.cpp
+game/frame_timing/frame_step.cpp
+game/frame_timing/monotonic_clock.cpp
+game/frame_timing/task_013d3520.cpp
+game/frame_timing/task_manager.cpp
+game/input/pad_step.cpp
+game/kernel/condition_wait.cpp
+game/physics/instance_construct.cpp
+game/render/frame_update.cpp
+game/render/swap_chain_present.cpp
+game/render/yebis_sample_parameters.cpp

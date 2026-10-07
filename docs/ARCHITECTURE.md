@@ -42,6 +42,27 @@ Replacement code reaches game memory and functions through `runtime/guest.h`:
 function goes through the game's own thunk, so the scaffold's implementation answers it, as it
 does for the original.
 
+## Our own runtime (`runtime/`)
+
+bbport is borrowed: it loads the original executable today so that replacements can be recorded
+and tested in the game. Paleblood is building its own runtime in its place, written from the
+published PS4 formats and from observed behaviour, with no code from bbport, shadPS4 or other
+PS4 runtimes. bbport stays only until our runtime can run the game.
+
+1. **Loader** (done): `runtime/loader.c` reads the program headers and the SCE dynamic tables,
+   copies the segments into memory, applies every relocation and binds each import through a
+   callback. Its mapped image was checked identical, over the whole image, to the one bbport
+   prepared, and the verification harness maps the executable with it.
+2. **Headless runtime** (next): map the executable, bind its imports to our implementations of
+   the PS4 system libraries it calls (libc and libkernel first, then files, threads, time, pads,
+   saves, audio and video output, and the network and PSN libraries as stand-ins), with a null GPU
+   that completes all graphics work at once. Target: the game's logic runs from the title screen
+   into a save without drawing, which is enough to record inputs and test replacements in a real
+   run.
+3. **Graphics at the engine level:** instead of emulating the PS4's GPU (its command buffers and
+   GCN shaders), FromSoftware's own graphics layer (GX) is rebuilt on Vulkan, function by function,
+   like the rest of the game.
+
 ## Progress
 
 `symbols/ghidra_functions.csv` is the denominator: address and size only, from

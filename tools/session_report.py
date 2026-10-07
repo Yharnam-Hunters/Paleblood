@@ -6,7 +6,7 @@ usage: session_report.py [--base origin/main] [--verify RESULT.json ...] [--capt
        session_report.py --check-body FILE      (CI: the PR body has a valid report)
 
 Compares symbols/functions.csv on this branch with the merge base: functions named (new rows),
-replaced and verified (status changes). --verify takes the JSON that `tools/verify.py run`
+replaced, edge-verified and verified (status changes). --verify takes the JSON that `tools/verify.py run`
 prints (save it with `> result.json`), --captures the case directories used, counted only.
 Findings and open questions come from commit messages on the branch: lines starting with
 "Finding:" or "Question:". Prints Markdown to paste into the pull request, with a JSON block
@@ -37,13 +37,15 @@ def rows_of(text: str) -> dict:
 
 def function_changes(before: dict, after: dict) -> dict:
     """Named (new rows), replaced and verified (status reached on this branch)."""
-    out = {'named': [], 'replaced': [], 'verified': []}
+    out = {'named': [], 'replaced': [], 'edge-verified': [], 'verified': []}
     for addr, r in sorted(after.items()):
         old = before.get(addr)
         if old is None:
             out['named'].append({'address': addr, 'name': r['name'], 'system': r['system']})
-        if r['status'] in ('replaced', 'verified') and (old is None or old['status'] == 'original'):
+        if r['status'] in ('replaced', 'edge-verified', 'verified') and (old is None or old['status'] == 'original'):
             out['replaced'].append({'address': addr, 'name': r['name']})
+        if r['status'] == 'edge-verified' and (old is None or old['status'] in ('original', 'replaced')):
+            out['edge-verified'].append({'address': addr, 'name': r['name']})
         if r['status'] == 'verified' and (old is None or old['status'] != 'verified'):
             out['verified'].append({'address': addr, 'name': r['name']})
     return out
@@ -84,8 +86,8 @@ def render(report: dict) -> str:
     f = report['functions']
     lines = [START, '### Session report', '',
              f"Branch `{report['branch']}`, {report['commits']} commit(s) on `{report['base']}`.", '']
-    for key, title in (('named', 'Named'), ('replaced', 'Replaced'), ('verified', 'Verified')):
-        items = f[key]
+    for key, title in (('named', 'Named'), ('replaced', 'Replaced'), ('edge-verified', 'Edge-verified'), ('verified', 'Verified')):
+        items = f.get(key, [])
         lines.append(f'**{title}** ({len(items)}): ' +
                      (', '.join(f"`{i['name']}` (`{i['address']}`)" for i in items) if items else 'none'))
     lines.append('')

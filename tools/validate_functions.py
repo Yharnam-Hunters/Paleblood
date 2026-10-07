@@ -16,7 +16,8 @@ DEFAULT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ADDR = re.compile(r'^0x[0-9a-f]{8}$')
 IMAGE_BASE = 0x00400000
 NAME = re.compile(r'^[a-z][a-z0-9]*(_[a-z0-9]+)+$')
-STATUSES = ('original', 'replaced', 'verified')
+STATUSES = ('original', 'replaced', 'edge-verified', 'verified')
+HOOKED = ('replaced', 'edge-verified', 'verified')
 FUNC_HEADER = ['address', 'size', 'name', 'system', 'status', 'notes']
 EXPORT_HEADER = ['address', 'size']
 HOOK_HEADER = ['address', 'replacement', 'system']
@@ -124,8 +125,8 @@ def main() -> int:
             errs.append(f'{where}: no row in symbols/functions.csv for {h["address"]}')
             continue
         hooked.add(h['address'])
-        if f['status'] not in ('replaced', 'verified'):
-            errs.append(f"{where}: {f['name']} is '{f['status']}', only replaced or verified functions are hooked")
+        if f['status'] not in HOOKED:
+            errs.append(f"{where}: {f['name']} is '{f['status']}', only replaced, edge-verified or verified functions are hooked")
         if h['system'] != f['system']:
             errs.append(f"{where}: system '{h['system']}' differs from functions.csv ('{f['system']}')")
         if f['size'].isdigit() and int(f['size']) < 14:
@@ -133,12 +134,71 @@ def main() -> int:
         if h['replacement'] != 'bb_' + f['name']:
             errs.append(f"{where}: replacement must be 'bb_{f['name']}'")
     for r in funcs:
-        if r['status'] in ('replaced', 'verified') and r['address'] not in hooked:
+        if r['status'] in HOOKED and r['address'] not in hooked:
             errs.append(f"symbols/functions.csv:{r['_line']}: {r['name']} is {r['status']} but has no game/hooks.csv entry")
+
+    errs += check_reviews(root, funcs)
 
     for e in errs:
         print(f'validate: {e}', file=sys.stderr)
     return 1 if errs else 0
+
+
+REVIEW_HEADER = ['address', 'name', 'date', 'reviewer', 'verdict', 'notes']
+
+
+def defining_files(root: str, name: str) -> list[str]:
+    """Files under game/ that define the replacement bb_<name>."""
+    out = []
+    pattern = re.compile(rf'\bbb_{re.escape(name)}\s*\(')
+    for dp, _, fns in os.walk(os.path.join(root, 'game')):
+        for fn in fns:
+            if fn.endswith(('.c', '.cc', '.cpp')):
+                path = os.path.join(dp, fn)
+                with open(path, errors='replace') as f:
+                    if pattern.search(f.read()):
+                        out.append(os.path.relpath(path, root).replace(os.sep, '/'))
+    return out
+
+
+def check_reviews(root: str, funcs: list[dict]) -> list[str]:
+    """A verified function needs an approved independent review (symbols/reviews.csv), unless its
+    code is still grandfathered (tools/readable_allowlist.txt, STYLE.md)."""
+    errs = []
+    allow_path = os.path.join(root, 'tools', 'readable_allowlist.txt')
+    allow = set()
+    if os.path.isfile(allow_path):
+        with open(allow_path) as f:
+            allow = {ln.strip() for ln in f if ln.strip() and not ln.lstrip().startswith('#')}
+    path = os.path.join(root, 'symbols', 'reviews.csv')
+    reviews: dict[str, dict] = {}
+    if os.path.isfile(path):
+        with open(path, newline='') as f:
+            rd = csv.reader(f)
+            head = next(rd, None)
+            if head != REVIEW_HEADER:
+                return [f"symbols/reviews.csv: header must be {','.join(REVIEW_HEADER)}"]
+            for n, row in enumerate(rd, 2):
+                if len(row) != len(REVIEW_HEADER):
+                    errs.append(f'symbols/reviews.csv:{n}: expected {len(REVIEW_HEADER)} fields')
+                    continue
+                r = dict(zip(REVIEW_HEADER, row))
+                if r['verdict'] not in ('approved', 'changes requested'):
+                    errs.append(f"symbols/reviews.csv:{n}: verdict must be 'approved' or 'changes requested'")
+                if not r['reviewer'].strip():
+                    errs.append(f'symbols/reviews.csv:{n}: reviewer is empty')
+                reviews[r['address']] = r       # the latest row for an address counts
+    for r in funcs:
+        if r['status'] != 'verified':
+            continue
+        files = defining_files(root, r['name'])
+        if files and all(f in allow for f in files):
+            continue
+        rv = reviews.get(r['address'])
+        if not rv or rv['verdict'] != 'approved':
+            errs.append(f"symbols/functions.csv:{r['_line']}: {r['name']} is verified without an approved review "
+                        f"in symbols/reviews.csv (CONTRIBUTING.md, \"Definition of done\")")
+    return errs
 
 
 if __name__ == '__main__':

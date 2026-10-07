@@ -5,7 +5,8 @@ Paleblood rebuilds Bloodborne as a native PC source port, one verified function 
 Today it runs on [bbport](third_party/), which loads the original executable with our replacements hooked in: 21 of 157757 functions are verified (0.01%).
 <!-- status:end -->
 
-It is open to everyone who wants to help. Reverse engineering, C and C++, PS4 internals, testing in
+The goal is a complete source port: every function rewritten and proved, running on our own
+runtime ([README](README.md#the-goal)). It is open to everyone who wants to help. Reverse engineering, C and C++, PS4 internals, testing in
 the game and writing up how a system works all count, and the smallest correct pull request is
 welcome.
 
@@ -67,8 +68,36 @@ Every pull request that replaces code contains, in the description:
   reviewer can repeat it on their own dump,
 - the `symbols/functions.csv` and `game/hooks.csv` rows for the change.
 
-A function is `replaced` once it is in the hook registry and builds. It becomes
-`verified` only with passing `verify.py` output and the in-game test.
+A function's status in `symbols/functions.csv` goes through three levels:
+
+| Status | Means |
+|---|---|
+| `replaced` | it is in the hook registry and builds |
+| `edge-verified` | `verify.py` passes on its edge-case generator's cases, against the original |
+| `verified` | it also passes on inputs recorded in the game, and the in-game test |
+
+`edge-verified` is for functions whose code the game doesn't reach where you can record (a
+Chalice Dungeon state, say, without a save that gets there). You don't upgrade it by hand:
+`tools/promote.py` (run by `tools/end_session.sh`) re-runs every `edge-verified` function once
+recordings for it exist in your capture library, and marks it `verified` only if every recorded
+and edge case passes. A failure leaves it where it was and is reported.
+
+### Definition of done
+
+A function goes to `main` only when it is **verified and readable**:
+
+- **Readable** means it follows [STYLE.md](STYLE.md): named calls and globals instead of
+  addresses, structs with named fields instead of offsets, named constants, vector code only in
+  `game/engine/`, no recording code. `tools/check_readable.py` checks the mechanical part in the
+  pre-commit hook and in CI. A literal transcription of the disassembly is a fine way to start,
+  on your work branch; it never goes to `main`. Files written before this rule are listed in
+  `tools/readable_allowlist.txt`; that list may only shrink, and CI fails if it grows.
+- **Reviewed:** before a function becomes `verified`, an independent reviewer (not the author:
+  another contributor, or, for AI-assisted work, a separate review session that did not write
+  the code) checks the verification and the readability against STYLE.md, and approves. The
+  approval is a row in `symbols/reviews.csv` (address, name, date, reviewer, verdict, notes);
+  `tools/validate_functions.py` refuses a `verified` function without one, and
+  `tools/promote.py` won't promote without one.
 
 Investigation notes and logs go in the pull request, not in the repository. No screenshots or
 clips of the game there either (see Rules).
@@ -127,9 +156,9 @@ firmware, keys or decryption tools.
 
 Replacements may start from a draft: the decompiler's output for the function, written by
 `tools/draft.sh` from your own Ghidra project into a directory outside the repository. A draft
-is a starting point, never a commit: what gets committed is the replacement after it is renamed
-and restructured into readable code (names from `functions.csv`, no `FUN_`/`DAT_`/`local_`
-names, no decompiler artefacts) and verified like any other. The decompiler is often wrong about
+is a starting point, never a commit to `main`: what gets merged is the replacement after it is
+renamed and restructured into readable code ([STYLE.md](STYLE.md); names from `functions.csv`,
+no `FUN_`/`DAT_`/`local_` names, no decompiler artefacts) and verified like any other. The decompiler is often wrong about
 types, signedness and calling conventions, so the disassembly decides, not the draft.
 
 ## Commits

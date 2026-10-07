@@ -32,6 +32,16 @@ jobs:
         run: python3 tools/validate_functions.py
       - name: Game-agnostic runtime
         run: python3 tools/check_agnostic.py
+      - name: Readable game code (STYLE.md); the allowlist only shrinks
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            git fetch --depth=1 origin "${{ github.base_ref }}"
+            base=FETCH_HEAD
+          else
+            base="${{ github.event.before }}"
+            git fetch --depth=1 origin "$base" 2>/dev/null || base=
+          fi
+          python3 tools/check_readable.py ${base:+--base "$base"}
       - name: README progress matches progress.py
         run: python3 tools/progress.py --check
       - name: Hooks behave

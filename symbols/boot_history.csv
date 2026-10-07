@@ -1,0 +1,2 @@
+date,milestone,milestone_index,imports_total,imports_bundled,imports_implemented,imports_remaining,stops_at
+2026-10-07,loaded,0,686,219,19,448,libc.elf->libkernel:scePthreadAttrGetaffinity

@@ -1,0 +1,8 @@
+module,action,notes
+libc,map,the game's own C library module: mapped as guest code; exports bound to the executable's imports
+libSceFios2,map,the game's own file I/O module: mapped as guest code
+libSceFace,stub,the executable imports nothing from it: not mapped; a request to load it at run time will be reported as done
+libSceHand,stub,the executable imports nothing from it: not mapped; a request to load it at run time will be reported as done
+libSceHeadTracker,stub,the executable imports nothing from it: not mapped; a request to load it at run time will be reported as done
+libSceS3DConversion,stub,the executable imports nothing from it: not mapped; a request to load it at run time will be reported as done
+libSceSmart,stub,the executable imports nothing from it: not mapped; a request to load it at run time will be reported as done

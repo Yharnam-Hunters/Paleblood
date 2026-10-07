@@ -34,6 +34,9 @@ for path, row in (('symbols/functions.csv', f'{addr},{size},frame_timing_update,
     lines = open(path).read().splitlines()
     body = sorted(lines[1:] + [row], key=lambda l: int(l.split(',')[0], 16))
     open(path, 'w').write('\n'.join([lines[0]] + body) + '\n')
+# verified needs an approved independent review (CONTRIBUTING.md, "Definition of done")
+with open('symbols/reviews.csv', 'a') as f:
+    f.write(f'{addr},frame_timing_update,2026-01-01,independent session,approved,\n')
 PY
 }
 
@@ -79,6 +82,18 @@ void bb_frame_timing_update(void) {}
 C
 python3 tools/progress.py --update-readme >/dev/null
 git add -A; expect pass "consistent change with regenerated README"
+
+# readability (STYLE.md): a transcription never reaches the branch, and the allowlist only shrinks
+cat > game/frame_timing/raw.cpp <<'C'
+int raw(unsigned char *p) { return p[0x10]; }
+C
+git add -A; expect fail "transcription under game/" "not readable"
+
+cat > game/frame_timing/raw.cpp <<'C'
+int raw(unsigned char *p) { return p[0x10]; }
+C
+echo game/frame_timing/raw.cpp >> tools/readable_allowlist.txt
+git add -A; expect fail "allowlist grown" "may only shrink"
 
 GIT_AUTHOR_NAME=Someone git commit -q --allow-empty -m "test: wrong identity" 2>/dev/null && { echo "FAIL wrong identity accepted"; rc=1; } || echo "ok   wrong identity refused"
 

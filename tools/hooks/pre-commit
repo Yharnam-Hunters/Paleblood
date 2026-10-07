@@ -6,6 +6,7 @@
 #      in `git config --get-all bb.localOnly`)
 #   3. no game data (tools/check_no_game_data.py --staged)
 #   4. functions.csv, hooks.csv and the README progress block agree with the staged tree
+#   5. game/ is readable (tools/check_readable.py, STYLE.md); its allowlist only shrinks
 # Installed as commit-msg too: lines matching `git config --get-all bb.refuseMessage` (extended
 # regular expressions, case-insensitive) are refused.
 set -euo pipefail
@@ -52,4 +53,13 @@ git checkout-index -a --prefix="$tmp/"
 python3 "$tmp/tools/validate_functions.py" --root "$tmp" || fail "functions.csv / hooks.csv validation failed"
 python3 "$tmp/tools/progress.py" --root "$tmp" --check \
     || fail "README progress block is stale: run tools/progress.py --update-readme and stage README.md"
+if [ -f "$tmp/tools/check_readable.py" ]; then
+    # the list may only shrink against HEAD's (when HEAD has one: not on the commit introducing it)
+    base=()
+    if git show HEAD:tools/readable_allowlist.txt >"$tmp/.readable_base" 2>/dev/null; then
+        base=(--base-list "$tmp/.readable_base")
+    fi
+    python3 "$tmp/tools/check_readable.py" --root "$tmp" "${base[@]}" \
+        || fail "game/ is not readable (STYLE.md): see the lines above"
+fi
 exit 0
