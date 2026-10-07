@@ -1,32 +1,14 @@
-name: Document a system
-description: Write up how a game system works, for docs/systems/.
-title: "document: <system>"
-labels: ["documentation"]
 body:
   - type: markdown
     attributes:
       value: |
         **Your own copy.** Everything here starts from your own console and your own copy of the game. Requests for game files, pkgs, firmware, keys or decryption tools, or links to them, are removed and may lead to a ban. No screenshots, clips or images of the game, and nothing from your dump ([CONTRIBUTING.md](https://github.com/Yharnam-Hunters/Paleblood/blob/main/CONTRIBUTING.md#your-own-copy)).
-  - type: input
-    id: system
+  - type: textarea
+    id: text
     attributes:
-      label: System
+      label: What you made (tool output, code, findings; no screenshots or clips of the game)
     validations:
       required: true
-  - type: textarea
-    id: scope
-    attributes:
-      label: What you will cover
-      description: Summary, key functions, structs and globals, patch points, open questions.
-    validations:
-      required: true
-  - type: textarea
-    id: evidence
-    attributes:
-      label: How you found it
-      description: Addresses and behavior you observed. No dumps, no game data.
-    validations:
-      required: false
   - type: checkboxes
     id: own-copy
     attributes:

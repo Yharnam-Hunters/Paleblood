@@ -8,13 +8,16 @@ system works all count, and the smallest correct pull request is welcome.
 
 1. Read the [README](README.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the
    port works, and [QUIRKS.md](QUIRKS.md) for the traps.
-2. Get your own dump ready: you need your own legally obtained copy of Bloodborne (CUSA03173, EU)
-   with the 1.09 update. Nobody here will send you game files, and nobody will ask you for yours.
-3. Follow [docs/ONBOARDING.md](docs/ONBOARDING.md): from your dump to your first pull request in
-   about an hour.
+2. Start from your own console and your own copy: Bloodborne (CUSA03173, EU) with the 1.09
+   update, dumped from your own PS4 (see **Your own copy** below). Nobody here will send you
+   game files, and nobody will ask you for yours.
+3. Follow [docs/ONBOARDING.md](docs/ONBOARDING.md): from your own dump to your first pull
+   request in about an hour.
 4. Pick an issue labelled **good first issue**, or a target from [NEXT.md](NEXT.md).
 
-Questions go in the issue you are working on, or in a new issue. <!-- Discord invite link: to be added -->
+Questions go in [Discussions](https://github.com/Yharnam-Hunters/Paleblood/discussions) or in
+the issue you are working on. How the systems work, the devlog and the progress dashboard are on
+the [documentation site](https://yharnam-hunters.github.io/byrgenwerth-site/).
 
 ## Workflow
 
@@ -62,14 +65,32 @@ Every pull request that replaces code contains, in the description:
 A function is `replaced` once it is in the hook registry and builds. It becomes
 `verified` only with passing `verify.py` output and the in-game test.
 
-Investigation notes, screenshots and logs go in the pull request, not in the
-repository.
+Investigation notes and logs go in the pull request, not in the repository. No screenshots or
+clips of the game there either (see Rules).
+
+## Your own copy
+
+Everything here starts from your own console and your own copy of the game: you dump
+Bloodborne and its 1.09 update from your own PS4, and every tool in this repository works only
+on that dump, on your machine. The project does not provide or point to game files, pkgs,
+firmware, keys or decryption tools.
+
+- **Requests for game files, or links to them, are removed**, wherever they are posted: issues,
+  pull requests, Discussions, commits, comments. That includes pkgs, dumps, extracted files,
+  firmware and keys, and asking someone to "send" or "share" them. Repeated or deliberate
+  requests or links may lead to a ban from the organization.
+- Never attach anything from your dump to an issue, a pull request or a Discussion.
 
 ## Rules
 
 - **Never commit** game binaries (ELF, SELF, PRX, PKG), assets, extracted data,
-  decompiler projects or raw decompiler dumps, and no screenshots of game
-  content. The hook and CI reject them. If you are unsure, do not commit it.
+  decompiler projects or raw decompiler dumps. The hook and CI reject them. If you are unsure,
+  do not commit it.
+- **No screenshots, clips or images of the game**, anywhere in this repository or in bbport:
+  not in commits, issues, pull requests or Discussions. The hook and CI refuse image and video
+  files (by extension and by contents). The only images allowed are recordings of our own tools'
+  output (such as a terminal running `tools/verify.py`), under `docs/assets/` and listed in
+  `docs/assets/ALLOWLIST` with the command that produced them (`tools/terminal_gif.py`).
 - Write source, not a transcription. Readable names and structure; behavior has
   to match, bytes do not.
 - Do not leave `FUN_`, `DAT_`, `undefined8` or `local_` names from the
@@ -118,7 +139,8 @@ New source files start with `SPDX-License-Identifier: GPL-2.0-or-later`.
 ## Conduct
 
 Be kind and assume good faith. Review the code, not the person. Credit others' findings. No game
-piracy, no requests for game files, no harassment: those get removed. Report problems to the
+piracy, no requests for or links to game files (see **Your own copy**), no harassment: those get
+removed and may lead to a ban. Report problems to the
 maintainer in an issue or privately.
 
 ## AI-assisted work

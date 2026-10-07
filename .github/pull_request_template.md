@@ -16,7 +16,7 @@
 - [ ] Based on current `main`; no other open PR touches the same functions
 - [ ] One function or cluster
 - [ ] `symbols/functions.csv` and `game/hooks.csv` rows included; `tools/progress.py --update-readme` run
-- [ ] No game files, assets, binaries, decompiler projects or raw decompiler dumps
+- [ ] No game files, assets, binaries, decompiler projects or raw decompiler dumps; no screenshots or clips of the game; no links to game files (CONTRIBUTING.md, "Your own copy")
 - [ ] No `FUN_` / `DAT_` / `undefined8` / `local_` names left in the code
 - [ ] `runtime/` stays generic
 - [ ] AI-assisted: <!-- yes / no. If yes: Co-Authored-By trailer on the commits or a note here, verified with verify.py and the in-game test -->

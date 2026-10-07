@@ -1,0 +1,4 @@
+# Images allowed in this repository: recordings of our own tools' output only. No screenshots,
+# clips or images of the game, ever (CONTRIBUTING.md, Rules). tools/check_no_game_data.py refuses
+# any image or video file that is not listed here. One per line: path  # the command that made it
+docs/assets/verify.gif  # tools/terminal_gif.py --rows 25 running tools/verify.py run --function frame_timing_pace_frame on the recorded cases, stock and with --patch '...:60 FPS++' --env BB_TARGET_FPS=60

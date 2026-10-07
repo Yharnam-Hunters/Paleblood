@@ -3,6 +3,10 @@ description: A replacement behaves differently from the original, or tooling is 
 title: "bug: <short description>"
 labels: ["bug"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        **Your own copy.** Everything here starts from your own console and your own copy of the game. Requests for game files, pkgs, firmware, keys or decryption tools, or links to them, are removed and may lead to a ban. No screenshots, clips or images of the game, and nothing from your dump ([CONTRIBUTING.md](https://github.com/Yharnam-Hunters/Paleblood/blob/main/CONTRIBUTING.md#your-own-copy)).
   - type: input
     id: function
     attributes:
@@ -23,3 +27,10 @@ body:
       description: verify.py output, in-game steps, or the command and its output. No game data.
     validations:
       required: true
+  - type: checkboxes
+    id: own-copy
+    attributes:
+      label: Your own copy
+      options:
+        - label: This contains no game files, no links to them, and no screenshots or clips of the game.
+          required: true

@@ -1,10 +1,15 @@
-# Onboarding: from your dump to your first pull request
+# Onboarding: from your own dump to your first pull request
 
 Target: under an hour on a recent desktop. Every command below was run on Linux by the
-maintainer; measured times are from that machine. You need your own legally obtained
-Bloodborne pkgs: the base game and the 1.09 update for CUSA03173 (EU). Nobody in the
-project will send you game files, and nothing from your dump ever goes into a commit, an
-issue or a pull request.
+maintainer; measured times are from that machine.
+
+Everything starts from your own console and your own copy of Bloodborne (CUSA03173, EU) with
+the 1.09 update installed: you dump the base game and the update from your own PS4 as two pkg
+files. This guide begins once you have that dump; it does not cover dumping, and the project
+does not provide or point to game files, pkgs, firmware, keys or decryption tools
+([CONTRIBUTING.md](../CONTRIBUTING.md), "Your own copy"). Nobody in the project will send you
+game files, and nothing from your dump ever goes into a commit, an issue, a pull request or a
+Discussion.
 
 ## 0. Before you start (once)
 
@@ -31,12 +36,13 @@ tools/install_hooks.sh
 
 The hooks refuse game data, `CLAUDE.md` and stale progress numbers before they reach a commit.
 
-## 2. Prepare your dump (10 minutes)
+## 2. Prepare your own dump (10 minutes)
 
-Pick a directory **outside** the repository (the script refuses one inside it):
+The two pkgs you dumped from your PS4 go in. Pick a directory **outside** the repository for
+the output (the script refuses one inside it):
 
 ```
-tools/prepare_dump.sh /path/to/CUSA03173_base.pkg /path/to/CUSA03173_update_1.09.pkg ~/bb   # 570 s
+tools/prepare_dump.sh /path/to/your/base.pkg /path/to/your/update.pkg ~/bb   # 570 s
 ```
 
 It extracts both pkgs (they are only read), copies the update over the base, builds

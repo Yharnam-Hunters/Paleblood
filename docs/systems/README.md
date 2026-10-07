@@ -4,6 +4,7 @@
 
 One page per game system: summary, key functions, structs and globals, patch points and open questions. The function tables come from `symbols/functions.csv`.
 
+- [Ai](ai.md)
 - [Audio](audio.md)
 - [Camera](camera.md)
 - [Character](character.md)
@@ -19,11 +20,12 @@ One page per game system: summary, key functions, structs and globals, patch poi
 | | Functions | Bytes |
 |---|---:|---:|
 | Target (Ghidra export) | 157,757 | 42,487,347 |
-| Replaced | 21 (0.01%) | 8,294 (0.02%) |
-| Verified | 12 (0.01%) | 7,128 (0.02%) |
+| Replaced | 22 (0.01%) | 10,987 (0.03%) |
+| Verified | 13 (0.01%) | 9,821 (0.02%) |
 
 | System | Tracked | Replaced | Verified | Replaced bytes |
 |---|---:|---:|---:|---:|
+| ai | 1 | 1 | 1 | 2,693 |
 | audio | 0 | 0 | 0 | 0 |
 | camera | 0 | 0 | 0 | 0 |
 | character | 1 | 1 | 1 | 979 |

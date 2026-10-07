@@ -215,6 +215,40 @@ class GameData(unittest.TestCase):
         r = self.check('ok.c', b'int main(void) { return 0; }\n')
         self.assertEqual(r.returncode, 0, r.stderr)
 
+    PNG = b'\x89PNG\r\n\x1a\n' + b'\0' * 40
+
+    def test_image_refused(self):
+        self.assertEqual(self.check('shot.png', self.PNG).returncode, 1)
+
+    def test_image_by_contents_under_other_name(self):
+        self.assertEqual(self.check('notes.dat', self.PNG).returncode, 1)
+        self.assertEqual(self.check('clip.txt', b'\0\0\0\x18ftypmp42' + b'\0' * 40).returncode, 1)
+
+    def test_svg_refused(self):
+        self.assertEqual(self.check('art.txt', b'<svg xmlns="http://www.w3.org/2000/svg"></svg>').returncode, 1)
+
+    def allow(self, text):
+        os.makedirs(os.path.join(self.d, 'docs', 'assets'), exist_ok=True)
+        with open(os.path.join(self.d, 'docs', 'assets', 'ALLOWLIST'), 'w') as f:
+            f.write(text)
+        self.git('add', '-f', 'docs/assets/ALLOWLIST')
+
+    def test_allowlisted_tool_output_passes(self):
+        self.allow('docs/assets/verify.gif  # tools/verify.py run, terminal recording\n')
+        r = self.check('docs/assets/verify.gif', b'GIF89a' + b'\0' * 40)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_allowlist_needs_a_producer_and_the_assets_directory(self):
+        self.allow('docs/assets/verify.gif\n')
+        self.assertEqual(self.check('docs/assets/verify.gif', b'GIF89a' + b'\0' * 40).returncode, 1)
+        self.allow('docs/shot.png  # a tool\n')
+        os.makedirs(os.path.join(self.d, 'docs'), exist_ok=True)
+        self.assertEqual(self.check('docs/shot.png', self.PNG).returncode, 1)
+
+    def test_unlisted_file_in_assets_refused(self):
+        self.allow('docs/assets/verify.gif  # tools/verify.py run\n')
+        self.assertEqual(self.check('docs/assets/other.png', self.PNG).returncode, 1)
+
 
 class Agnostic(Fixture):
     def test_flags_tracked_name_and_address(self):
