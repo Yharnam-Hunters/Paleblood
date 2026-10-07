@@ -18,3 +18,4 @@ address,replacement,system
 0x02434520,bb_frame_timing_flipper_init,frame_timing
 0x02434770,bb_frame_timing_pace_frame,frame_timing
 0x02483e80,bb_kernel_condition_wait,kernel
+0x025b2fb0,bb_render_swap_chain_present,render
