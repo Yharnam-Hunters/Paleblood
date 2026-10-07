@@ -18,8 +18,8 @@ One page per game system: summary, key functions, structs and globals, patch poi
 | | Functions | Bytes |
 |---|---:|---:|
 | Target (Ghidra export) | 157,757 | 42,487,347 |
-| Replaced | 16 (0.01%) | 5,052 (0.01%) |
-| Verified | 7 (0.00%) | 3,886 (0.01%) |
+| Replaced | 18 (0.01%) | 5,877 (0.01%) |
+| Verified | 9 (0.01%) | 4,711 (0.01%) |
 
 | System | Tracked | Replaced | Verified | Replaced bytes |
 |---|---:|---:|---:|---:|
@@ -27,7 +27,7 @@ One page per game system: summary, key functions, structs and globals, patch poi
 | camera | 0 | 0 | 0 | 0 |
 | event | 1 | 1 | 1 | 368 |
 | frame_timing | 15 | 14 | 5 | 4,480 |
-| input | 0 | 0 | 0 | 0 |
+| input | 1 | 1 | 1 | 426 |
 | kernel | 1 | 1 | 1 | 204 |
 | loading | 0 | 0 | 0 | 0 |
-| render | 0 | 0 | 0 | 0 |
+| render | 1 | 1 | 1 | 399 |

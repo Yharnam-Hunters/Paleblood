@@ -10,11 +10,10 @@ blockers go to STATUS.md instead of being worked around.
    `tools/patch_overlap.py ... --map`, `tools/reloc_refs.py`, `tools/refs_to.sh`). Done so far:
    the nine fixed-step state methods (Chalice Dungeon state machine; replaced, verified on edge
    cases stock and against "60 FPS++", waiting for a save that reaches the Chalice Dungeons).
-   Called in the clinic (probe run 2026-10-06, `continue.route`): `0x02377bd0` (399 B, once a frame,
-   Uncap), `0x016efd00` (368 B), `0x00fbc3e0` (670 B),
-   `0x025b2fb0` (768 B, once a frame, Uncap), `0x01cbdb20` (979 B), `0x0222bc10`,
-   `0x0183ac60`, `0x02713870`, `0x01c0c2b0`. Work them smallest first; each option part is
-   checked against the patch that edits it.
+   Still to do among those called in the clinic (probe run 2026-10-06, `continue.route`):
+   `0x00fbc3e0` (670 B), `0x025b2fb0` (768 B, once a frame, Uncap), `0x01cbdb20` (979 B),
+   `0x0222bc10`, `0x0183ac60`, `0x02713870`, `0x01c0c2b0`. Work them smallest first; each option
+   part is checked against the patch that edits it (both sides patched, VERIFY.md).
 2. `0x024512a0` task update (the game's frame of work): analyze, split into targets.
 
 ## Done

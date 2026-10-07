@@ -82,6 +82,11 @@ our functions; disassembling the limiter with and without each patch shows exact
   relocated pointer). Many of the rest pass the same 1/30 s frame-time descriptor to an owner
   object, which the 60 FPS patches change to 1/60 s.
 
+The patches also rewrite dozens of shared constants in the data segment (the 1/30 s step at
+`0x04d29170` becomes 1/60 s, 1/90 s or, uncapped, 1/60 s), which code we have not replaced reads
+too. `BB_TARGET_FPS` covers only the replaced functions, so it is meant to run together with
+the patch; option checks run both sides on the patched image for that reason.
+
 `tools/patch_overlap.py` maps every patch line to the function it falls in, and lists the
 patches that do nothing while our hooks are installed.
 
