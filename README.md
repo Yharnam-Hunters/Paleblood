@@ -79,8 +79,9 @@ function. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains the pieces.
 One function or cluster per pull request, each verified with `tools/verify.py` and tested in
 the game. Every pull request carries a session report (`tools/session_report.py`): what was
 named, replaced and verified, the verify results, and the findings and open questions. CI checks
-it, along with the build, the tests and the no-game-data rule. Contributions are by invitation
-for now: see [CONTRIBUTING.md](CONTRIBUTING.md).
+it, along with the build, the tests and the no-game-data rule. **Everyone is welcome:** fork the
+repository, pick a good first issue or a target from [NEXT.md](NEXT.md), and read
+[CONTRIBUTING.md](CONTRIBUTING.md) first.
 
 ## Documentation
 

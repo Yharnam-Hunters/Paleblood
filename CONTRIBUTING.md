@@ -1,35 +1,47 @@
 # Contributing
 
-## Joining
+Paleblood is open to everyone who wants to help rebuild Bloodborne, one verified function at a
+time. Reverse engineering, C and C++, PS4 internals, testing in the game and writing up how a
+system works all count, and the smallest correct pull request is welcome.
 
-The project recruits by invitation. To join, contact the maintainer (Akhil Moola), directly
-or on the project's Discord server: <!-- Discord invite link: to be added -->(link to be added).
-Say what you would like to work on and what you have done before; reverse engineering, C or
-C++, PS4 homebrew or documentation all count. Once you are added, follow
-[docs/ONBOARDING.md](docs/ONBOARDING.md): from your dump to your first pull request in under an hour.
+## Getting started
 
-## Access
+1. Read the [README](README.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the
+   port works, and [QUIRKS.md](QUIRKS.md) for the traps.
+2. Get your own dump ready: you need your own legally obtained copy of Bloodborne (CUSA03173, EU)
+   with the 1.09 update. Nobody here will send you game files, and nobody will ask you for yours.
+3. Follow [docs/ONBOARDING.md](docs/ONBOARDING.md): from your dump to your first pull request in
+   about an hour.
+4. Pick an issue labelled **good first issue**, or a target from [NEXT.md](NEXT.md).
 
-The repositories are private and access is by request. Ask the maintainer (Akhil Moola); you
-are added to the organization with **Read** access. You need your own legally obtained dump of
-CUSA03173 (EU) v1.09 prepared as described in the README. Nobody here will send you game files.
+Questions go in the issue you are working on, or in a new issue. <!-- Discord invite link: to be added -->
 
 ## Workflow
 
-1. Find or open an issue. Use the **Claim function or cluster** template and comment before
-   you start; one open claim per function.
-2. **Fork** the repository (forking of private repositories is enabled for members). Your fork
-   stays private and is removed if your access ends.
-3. In your fork, branch from current `main`: one function or one tightly coupled cluster per
-   branch. Run `tools/install_hooks.sh`.
-4. Open a small pull request from your fork's branch to `main` here. Reviewers expect to read
-   it in one sitting.
-5. Review and CI both have to pass. Resolve conflicts yourself; rebasing and force-pushing
-   your own branch is fine.
-6. The maintainer merges.
+1. **Claim it.** Find or open an issue and comment before you start (the **Claim function or
+   cluster** template); one open claim per function, so nobody works twice.
+2. **Fork** the repository on GitHub and clone your fork. Run `tools/install_hooks.sh` (the
+   hooks refuse game data and other mistakes before they reach a commit).
+3. **Branch** from current `main`: one function or one tightly coupled cluster per branch.
+4. **Replace and verify** as in [docs/VERIFY.md](docs/VERIFY.md): `tools/verify.py` on cases
+   recorded in a real run and on edge cases, deliberately wrong versions that fail, and the
+   in-game test.
+5. **Open a pull request** from your fork's branch to `main`, with the session report (below).
+   Keep it small enough to review in one sitting.
+6. **CI and review** both have to pass. The first time you contribute, a maintainer approves
+   CI to run on your pull request. Resolve conflicts yourself; rebasing and force-pushing your
+   own branch is fine.
+7. A maintainer merges.
 
 Systems that lack documentation get a **Document a system** issue first: its page in
 [`docs/systems/`](docs/systems/) is the map for everyone else.
+
+### Your fork is public
+
+Forks of a public repository are public. Everything you push there, including branches you
+never open a pull request for, is visible to anyone: never push game files, dumps, decompiler
+projects or raw decompiler output, not even temporarily. Keep your dump, your Ghidra project,
+drafts and captures outside the repository (the tools default to `../data`, next to your clone).
 
 ## Pull request contents
 
@@ -71,8 +83,8 @@ repository.
 
 ## Naming
 
-- Systems are the directories under `game/` (`frame_timing`, `camera`, `input`,
-  `render`, `loading`, `audio`). A new system is a new directory and a
+- Systems are the directories under `game/` (`frame_timing`, `event`, `kernel`, `camera`,
+  `input`, `render`, `loading`, `audio`). A new system is a new directory and a
   **Document a system** issue.
 - `symbols/functions.csv` name: lowercase snake_case starting with the system,
   for example `frame_timing_update_delta`.
@@ -102,6 +114,12 @@ types, signedness and calling conventions, so the disassembly decides, not the d
 
 The project is GPL-2.0-or-later. By contributing you license your work under the same terms.
 New source files start with `SPDX-License-Identifier: GPL-2.0-or-later`.
+
+## Conduct
+
+Be kind and assume good faith. Review the code, not the person. Credit others' findings. No game
+piracy, no requests for game files, no harassment: those get removed. Report problems to the
+maintainer in an issue or privately.
 
 ## AI-assisted work
 

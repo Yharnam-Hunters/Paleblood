@@ -8,7 +8,7 @@ issue or a pull request.
 
 ## 0. Before you start (once)
 
-- Access: the maintainer adds you to the organization (see "Joining" in CONTRIBUTING.md).
+- A GitHub account. Read [CONTRIBUTING.md](../CONTRIBUTING.md) first (workflow, rules).
 - Tools: `git`, `gh` (logged in), `python3`, `rsync`, `g++`, `curl`, `unzip`, a JDK 21 or newer,
   and Rust's `cargo`.
 - About 70 GB of free disk for the extracted game, the converted executables and Ghidra.
@@ -20,7 +20,7 @@ export PATH=$HOME/.cargo/bin:$PATH
 
 ## 1. Fork and clone (2 minutes)
 
-Fork `Yharnam-Hunters/Paleblood` on GitHub (your fork stays private), then:
+Fork `Yharnam-Hunters/Paleblood` on GitHub (your fork is public: never push game files to it), then:
 
 ```
 gh repo clone <you>/Paleblood
