@@ -1,6 +1,10 @@
 # Paleblood
 
-*A native source port of Bloodborne, rebuilt one verified function at a time.*
+*Paleblood rebuilds Bloodborne as a native PC source port, one verified function at a time.*
+
+<!-- status:start -->
+Today it runs on [bbport](third_party/), which loads the original executable with our replacements hooked in: 20 of 157757 functions are verified (0.01%).
+<!-- status:end -->
 
 **[Start here](https://github.com/Yharnam-Hunters/Paleblood/issues/31)** ·
 **[Documentation](https://yharnam-hunters.github.io/byrgenwerth-site/)** ·

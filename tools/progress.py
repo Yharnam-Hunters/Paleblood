@@ -7,10 +7,12 @@ finds in the executable blocks of the target eboot (see tools/ghidra/).
 Numerator: rows of symbols/functions.csv with status replaced or verified
 (verified is a subset of replaced).
 
-usage: progress.py [--root DIR] [--out FILE] [--update-readme] [--check]
+usage: progress.py [--root DIR] [--out FILE] [--update-readme] [--check] [--status-line]
   (no flag)        print the progress JSON
   --out FILE       write the JSON to FILE
-  --update-readme  rewrite the progress and target blocks of README.md (and the progress
+  --status-line    print the current-status sentence (plain text, for issues and descriptions)
+  --update-readme  rewrite the status, progress and target blocks of README.md, the status
+                   block of CONTRIBUTING.md (and the progress
                    block of STATUS.md when it has one)
   --check          exit 1 if those blocks differ from the generated ones
 """
@@ -138,6 +140,19 @@ def render_progress(d: dict) -> str:
     ])
 
 
+def status_sentence(d: dict, link: bool) -> str:
+    """Where the project stands, in one sentence: never "is a native port", only what runs today."""
+    v, t = d['verified'], d['total']
+    runtime = '[bbport](third_party/)' if link else 'bbport'
+    return (f"Today it runs on {runtime}, which loads the original executable with our replacements "
+            f"hooked in: {v['functions']} of {t['functions']} functions are verified "
+            f"({fmt_pct(v['functions_pct'])}).")
+
+
+def render_status(d: dict) -> str:
+    return status_sentence(d, True) + '\n'
+
+
 def render_target(root: str) -> str:
     path = os.path.join(root, 'target.sha256')
     if not os.path.isfile(path):
@@ -166,9 +181,13 @@ def main() -> int:
     ap.add_argument('--out')
     ap.add_argument('--update-readme', action='store_true')
     ap.add_argument('--check', action='store_true')
+    ap.add_argument('--status-line', action='store_true')
     a = ap.parse_args()
 
     data = compute(a.root)
+    if a.status_line:
+        print(status_sentence(data, False))
+        return 0
     js = json.dumps(data, indent=2, sort_keys=True) + '\n'
     if a.out:
         with open(a.out, 'w') as f:
@@ -178,15 +197,17 @@ def main() -> int:
             sys.stdout.write(js)
         return 0
 
-    bodies = {'progress': render_progress(data), 'target': render_target(a.root)}
+    bodies = {'status': render_status(data), 'progress': render_progress(data), 'target': render_target(a.root)}
     stale = []
-    for name, blocks in (('README.md', bodies), ('STATUS.md', {'progress': bodies['progress']})):
+    for name, blocks in (('README.md', bodies), ('STATUS.md', {'progress': bodies['progress']}),
+                         ('CONTRIBUTING.md', {'status': bodies['status']})):
         path = os.path.join(a.root, name)
         if not os.path.isfile(path):
             continue
         with open(path) as f:
             cur = f.read()
-        if name == 'STATUS.md' and not block_re('progress').search(cur):
+        blocks = {k: b for k, b in blocks.items() if (name == 'README.md' and k != 'status') or block_re(k).search(cur)}
+        if not blocks:
             continue
         new = apply_blocks(cur, blocks)
         if new == cur:
