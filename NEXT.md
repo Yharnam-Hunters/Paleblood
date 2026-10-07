@@ -6,13 +6,7 @@ blockers go to STATUS.md instead of being worked around.
 
 ## Queue
 
-1. The task manager's frame (`0x024512a0`, called by the frame step): `FD4::FD4TaskManager`
-   (singleton `0x058b2e30`) runs the frame's tasks through `0x01388c60` → `0x01388c70`, which
-   brackets the dispatch (a virtual call on `+0x40`) with setup and teardown. Targets, smallest
-   first: the dispatcher behind `+0x40` (virtual `+0x30`). The three
-   empty functions it calls (`0x0143bcc0`, `0x0143bcd0`, `0x0143bce0`, 1 byte each) are too short
-   to hook.
-2. Later (maintainer's choice, 2026-10-07: the task manager first): the live functions the
+1. The live functions the
    60 FPS patches edit besides frame timing (47 live, 12 dead:
    `tools/patch_overlap.py ... --map`, `tools/reloc_refs.py`, `tools/refs_to.sh`). Done so far:
    the nine fixed-step state methods (Chalice Dungeon state machine; replaced, verified on edge
@@ -24,6 +18,7 @@ blockers go to STATUS.md instead of being worked around.
 
 ## Done
 
+- `0x0138a370` frame_timing_task_dispatch_0138a370: verified (the task dispatcher; 51 recorded frames with 76 registered tasks each). With it the task manager's frame is done: `0x024512a0`, `0x01388c60`, `0x01388c70`, `0x0143e490`, `0x014400a0`, `0x0143f9f0`.
 - `0x0143e490` frame_timing_task_flush_queue_0143e490 and `0x014400a0` frame_timing_task_workers_step_014400a0: verified (200 and 53 recorded calls; the list re-read after each task cannot be made observable with stubs).
 - `0x024512a0` frame_timing_task_frame_024512a0 and `0x01388c70` frame_timing_task_run_01388c70: verified (51 recorded calls each; the singleton re-read after the fatal error cannot be told apart in the harness, whose stubs cannot set a global).
 - `0x01388c60` frame_timing_task_run_all_01388c60 and `0x0143f9f0` frame_timing_task_set_frame_value_0143f9f0: verified (task manager's frame; 51 recorded calls each).

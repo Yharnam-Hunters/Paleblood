@@ -2,7 +2,7 @@
 
 Paleblood rebuilds Bloodborne as a native PC source port, one verified function at a time.
 <!-- status:start -->
-Today it runs on [bbport](third_party/), which loads the original executable with our replacements hooked in: 20 of 157757 functions are verified (0.01%).
+Today it runs on [bbport](third_party/), which loads the original executable with our replacements hooked in: 21 of 157757 functions are verified (0.01%).
 <!-- status:end -->
 
 It is open to everyone who wants to help. Reverse engineering, C and C++, PS4 internals, testing in

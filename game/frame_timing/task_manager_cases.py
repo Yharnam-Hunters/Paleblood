@@ -11,7 +11,9 @@ values), frame_timing_task_set_frame_value_0143f9f0 (the float copied bit for bi
 frame_timing_task_frame_024512a0 (the singleton present or missing) and
 frame_timing_task_run_01388c70 (already running; workers and dispatcher present or absent),
 frame_timing_task_flush_queue_0143e490 (no list, an empty list, objects of two classes) and
-frame_timing_task_workers_step_014400a0 (the three rounds over distinct queues).
+frame_timing_task_workers_step_014400a0 (the three rounds over distinct queues) and
+frame_timing_task_dispatch_0138a370 (count not negative; negative with entries found or not in
+the task table, with the wake flag set or clear; no entries).
 """
 import json
 import os
@@ -102,7 +104,40 @@ def workers(cid):
             'buffers': {'w': {'size': 0x70}}, 'memory': m, 'stubs': stubs, 'imports': []}
 
 
+def dispatch(cid, count=5, entries=(), flag70=1, groups=0xffffffff):
+    """entries: (id, found, flag84) per registered entry; used when count < 0."""
+    b = {'self': 0x78, 'record': 0x68, 'job': 0x20}
+    m = [{'addr': 'buf:self+72', 'pointer': 'record'}, {'addr': 'buf:self+80', 'pointer': 'job'},
+         {'addr': 'buf:self+104', 'bytes': struct.pack('<Q', 0x6800).hex()}, {'addr': 'buf:self+112', 'bytes': f'{flag70:02x}'},
+         {'addr': 'buf:record+24', 'bytes': struct.pack('<i', count).hex()}, {'addr': 'buf:record+96', 'bytes': '77'},
+         {'addr': 'buf:job+24', 'bytes': 'aaaaaaaa'}]
+    # The entry counter is stubbed in every case, so a call where none belongs is seen.
+    stubs = [{'address': '0x01389df0', 'argc': 1, 'ret': len(entries)}]
+    if count < 0:
+        for i, (ident, found, flag) in enumerate(entries):
+            b[f'entry{i}'] = 0x88
+            m += [{'addr': f'buf:entry{i}+0', 'bytes': struct.pack('<I', ident).hex()},
+                  {'addr': f'buf:entry{i}+132', 'bytes': f'{flag:02x}'}]
+            stubs += [{'address': '0x01389e10', 'argc': 2, 'ret': f'buf:entry{i}'},
+                      {'address': '0x0143f720', 'argc': 2, 'ret': hex(0x9000 + i) if found else '0x0'}]
+            if found:
+                stubs.append({'address': '0x0143ec40', 'argc': 1})
+                if flag:
+                    stubs.append({'address': '0x0143ed00', 'argc': 1})
+    stubs += [{'address': '0x0143c360', 'argc': 1}, {'address': '0x0143bef0', 'argc': 2, 'writes': [{'arg': 0, 'bytes': '0f000000'}]},
+              {'address': '0x0143d7c0', 'argc': 2}, {'address': '0x0143e030', 'argc': 3}, {'address': '0x0143de20', 'argc': 1},
+              {'address': '0x0143deb0', 'argc': 1}, {'address': '0x0143df10', 'argc': 1}, {'address': '0x0143c450', 'argc': 1}]
+    return {'schema': 1, 'address': '0x0138a370', 'id': cid, 'returns': 'void',
+            'args': {'rdi': 'buf:self', 'rsi': '0x5000', 'rdx': '0x4800', 'rcx': hex(groups)},
+            'buffers': {k: {'size': v} for k, v in b.items()}, 'memory': m, 'stubs': stubs, 'imports': []}
+
+
 CASES = {
+    'frame_timing_task_dispatch_0138a370': [
+        dispatch('count_positive'), dispatch('count_zero', count=0), dispatch('negative_no_entries', count=-1),
+        dispatch('negative_entries', count=-1, entries=((7, True, 0), (8, False, 1), (9, True, 1))),
+        dispatch('wake_flag_bit1', count=-3, entries=((5, True, 2),)),
+        dispatch('flag70_clear', flag70=0), dispatch('one_group', groups=4)],
     'frame_timing_task_flush_queue_0143e490': [flush('no_list'), flush('empty_list', []), flush('one', ['a']),
                                                flush('mixed', ['a', 'b', 'a'])],
     'frame_timing_task_workers_step_014400a0': [workers('distinct_queues')],
