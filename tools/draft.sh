@@ -12,7 +12,8 @@ data_root=${BB_DATA_ROOT:-$repo/../data}
 P=${BB_GHIDRA_PROJECT:-$data_root/ghidra/run1}
 N=${BB_GHIDRA_NAME:-bb_eboot}
 out=${BB_DRAFTS:-$data_root/drafts}
-case "$out/" in "$repo"/*) echo "draft: BB_DRAFTS must be outside the repository" >&2; exit 2;; esac
+out=$(realpath -m "$out")
+case "$out/" in "$(realpath -m "$repo")"/*) echo "draft: BB_DRAFTS must be outside the repository" >&2; exit 2;; esac
 mkdir -p "$out"
 nice -n 10 "$G/support/analyzeHeadless" "$P" "$N" -process eboot.elf -noanalysis -readOnly \
     -scriptPath "$repo/tools/ghidra" -postScript DraftExport.java "$out" "$@" 2>&1 \

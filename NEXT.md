@@ -24,6 +24,7 @@ blockers go to STATUS.md instead of being worked around.
 - `0x02418d20` frame_timing_frame_step: verified (first function with virtual calls).
 - `0x02434520` frame_timing_flipper_init: verified.
 - `0x013d3520` frame_timing_task_013d3520: verified (stock and against Uncap FPS++).
+- `0x01972900` input_pad_step_01972900: verified (stock and 30/60/Uncap FPS++; its advance branch was idle in the clinic, covered by edge cases).
 - `0x016efd00` event_emk_add: verified (stock and 60 FPS++; 50 calls recorded in gameplay).
 - `0x02483e80` kernel_condition_wait: verified; all waits in gameplay are untimed, so the FPS
   patches' `ret` on the timed path never runs.
