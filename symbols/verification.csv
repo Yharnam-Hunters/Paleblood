@@ -36,8 +36,12 @@ frame_timing_frame_step,edge,30,18,18,0,0,0c5186a7d9629826,2026-10-07
 frame_timing_frame_step,edge,60,18,18,0,0,0c5186a7d9629826,2026-10-07
 frame_timing_frame_step,edge,uncapped,18,18,0,0,0c5186a7d9629826,2026-10-07
 frame_timing_frame_step,option-recorded,60,51,51,0,0,0c5186a7d9629826,2026-10-07
-frame_timing_get_monotonic_ms,recorded,,1767,1767,0,0,6680cb72bb22c75f,2026-10-07
-frame_timing_get_monotonic_ms,edge,,10,10,0,0,6680cb72bb22c75f,2026-10-07
+frame_timing_get_monotonic_ms,recorded,,1767,1767,0,0,3a73b48ae6f6d5e8,2026-10-07
+frame_timing_get_monotonic_ms,edge,,10,10,0,0,3a73b48ae6f6d5e8,2026-10-07
+frame_timing_get_monotonic_ms,option-recorded,60,91,91,0,0,3a73b48ae6f6d5e8,2026-10-07
+frame_timing_get_monotonic_ms,option-recorded,uncapped,91,91,0,0,3a73b48ae6f6d5e8,2026-10-07
+frame_timing_get_monotonic_ms,option-recorded,wait-sleep,91,91,0,0,3a73b48ae6f6d5e8,2026-10-07
+frame_timing_get_monotonic_ms,option-recorded,wait-spin,91,91,0,0,3a73b48ae6f6d5e8,2026-10-07
 frame_timing_pace_frame,recorded,,585,585,0,0,a3d44cba82dab3c2,2026-10-07
 frame_timing_pace_frame,recorded,30,585,585,0,0,a3d44cba82dab3c2,2026-10-07
 frame_timing_pace_frame,recorded,60,585,585,0,0,a3d44cba82dab3c2,2026-10-07
