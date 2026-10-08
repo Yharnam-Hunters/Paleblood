@@ -114,7 +114,13 @@ render_frame_update_02377bd0,edge,,12,12,0,0,d2ebbd0c59932f64,2026-10-07
 render_frame_update_02377bd0,edge,30,12,12,0,0,d2ebbd0c59932f64,2026-10-07
 render_frame_update_02377bd0,edge,60,12,12,0,0,d2ebbd0c59932f64,2026-10-07
 render_frame_update_02377bd0,edge,uncapped,12,12,0,0,d2ebbd0c59932f64,2026-10-07
-render_swap_chain_present,recorded,,209,209,0,0,ded19a3861ab3d05,2026-10-07
-render_swap_chain_present,edge,,23,23,0,0,ded19a3861ab3d05,2026-10-07
+render_swap_chain_present,recorded,,209,209,0,0,cecf62710c015474,2026-10-07
+render_swap_chain_present,recorded,30,209,209,0,0,cecf62710c015474,2026-10-07
+render_swap_chain_present,recorded,60,209,209,0,0,cecf62710c015474,2026-10-07
+render_swap_chain_present,recorded,uncapped,209,209,0,0,cecf62710c015474,2026-10-07
+render_swap_chain_present,edge,,23,23,0,0,cecf62710c015474,2026-10-07
+render_swap_chain_present,edge,30,23,23,0,0,cecf62710c015474,2026-10-07
+render_swap_chain_present,edge,60,23,23,0,0,cecf62710c015474,2026-10-07
+render_swap_chain_present,edge,uncapped,23,23,0,0,cecf62710c015474,2026-10-07
 render_yebis_get_recursive_sample_parameters,recorded,,234,234,0,0,798d627022343d57,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,,23,23,0,0,798d627022343d57,2026-10-07

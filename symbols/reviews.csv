@@ -27,3 +27,4 @@ address,name,date,reviewer,verdict,notes
 0x02434770,frame_timing_pace_frame,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
 0x024512a0,frame_timing_task_frame_024512a0,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
 0x02483e80,kernel_condition_wait,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
+0x025b2fb0,render_swap_chain_present,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
