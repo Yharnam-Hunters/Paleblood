@@ -9,7 +9,7 @@ set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
 G=${BB_GHIDRA:-$repo/../tools/ghidra_12.0.3_PUBLIC}
 data_root=${BB_DATA_ROOT:-$repo/../data}
-P=${BB_GHIDRA_PROJECT:-$data_root/ghidra/run1}
+P=${BB_GHIDRA_PROJECT:-$data_root/ghidra/run1-classes}
 N=${BB_GHIDRA_NAME:-bb_eboot}
 out=${BB_DRAFTS:-$data_root/drafts}
 out=$(realpath -m "$out")

@@ -6,7 +6,7 @@
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
 G=${BB_GHIDRA:-$repo/../tools/ghidra_12.0.3_PUBLIC}
-P=${BB_GHIDRA_PROJECT:-${BB_DATA_ROOT:-$repo/../data}/ghidra/run1}
+P=${BB_GHIDRA_PROJECT:-${BB_DATA_ROOT:-$repo/../data}/ghidra/run1-classes}
 N=${BB_GHIDRA_NAME:-bb_eboot}
 nice -n 10 "$G/support/analyzeHeadless" "$P" "$N" -process eboot.elf -noanalysis -readOnly \
     -scriptPath "$repo/tools/ghidra" -postScript RefsTo.java "$@" 2>&1 \
