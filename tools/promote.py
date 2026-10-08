@@ -8,8 +8,11 @@ For each row of symbols/functions.csv with status edge-verified: if the capture 
 (--captures, default $BB_CAPTURES, then ../captures) holds recorded cases for it (CAPTURES/NAME/*.json),
 runs tools/verify.py on those and on its edge cases (CAPTURES/NAME/edge); when every case passes
 on both and the function's independent review is approved (symbols/reviews.csv, or its code is
-still grandfathered in tools/readable_allowlist.txt), the status becomes verified. Nothing
-changes otherwise; a failure is printed and makes the exit code 1. Without a capture library or an executable it does nothing and says so.
+still grandfathered in tools/readable_allowlist.txt), the status becomes verified. Both runs are
+recorded in symbols/verification.csv (verify.py --record; failing cases listed in
+symbols/quarantine.csv with their reason don't count as failures), and the function's whole
+record must then satisfy tools/validate_functions.py's rule for verified: no unexplained
+failure in any case set or option, nothing stale. Nothing changes otherwise; a failure is printed and makes the exit code 1. Without a capture library or an executable it does nothing and says so.
 """
 from __future__ import annotations
 
@@ -29,16 +32,20 @@ def cases(directory: str) -> int:
     return len(glob.glob(os.path.join(directory, '*.json')))
 
 
-def passes(name: str, directory: str) -> tuple[bool, str]:
-    p = subprocess.run([sys.executable, os.path.join(ROOT, 'tools', 'verify.py'), 'run', '--function', name,
-                        '--captures', directory], capture_output=True, text=True)
+def passes(name: str, directory: str, record: str | None) -> tuple[bool, str]:
+    cmd = [sys.executable, os.path.join(ROOT, 'tools', 'verify.py'), 'run', '--function', name, '--captures', directory]
+    if record:
+        cmd += ['--record', record]
+    p = subprocess.run(cmd, capture_output=True, text=True)
     try:
         r = json.loads(p.stdout)
     except json.JSONDecodeError:
         return False, (p.stderr.strip().splitlines() or ['no output'])[-1]
     n = cases(directory)
-    ok = p.returncode == 0 and r['failed'] == 0 and r['passed'] == r['cases'] == n
-    return ok, f"{r['passed']}/{n} passed"
+    failed = int(r['recorded']['failed']) if record else r['failed']
+    held = int(r['recorded']['quarantined']) if record else 0
+    ok = p.returncode == 0 and failed == 0 and r['cases'] == n
+    return ok, f"{r['passed']}/{n} passed" + (f', {held} quarantined' if held else '')
 
 
 def main() -> int:
@@ -72,8 +79,16 @@ def main() -> int:
         if check_reviews(ROOT, [{'address': row[head.index('address')], 'name': name, 'status': 'verified', '_line': 0}]):
             print(f'promote: {name}: recordings exist, but no approved review yet (symbols/reviews.csv); left edge-verified')
             continue
-        ok_r, msg_r = passes(name, recorded)
-        ok_e, msg_e = passes(name, edge) if ok_r else (False, 'not run')
+        record = None if a.dry_run else 'recorded'
+        ok_r, msg_r = passes(name, recorded, record)
+        ok_e, msg_e = passes(name, edge, record and 'edge') if ok_r else (False, 'not run')
+        if ok_r and ok_e and not a.dry_run:
+            import verification
+            problems = verification.check(ROOT, [{'name': name, 'status': 'verified', '_line': row[0]}])
+            if problems:
+                print(f'promote: {name}: recorded {msg_r}, edge {msg_e}, but: ' + '; '.join(problems), file=sys.stderr)
+                failed = True
+                continue
         if ok_r and ok_e:
             print(f'promote: {name}: recorded {msg_r}, edge {msg_e}: verified')
             row[status] = 'verified'

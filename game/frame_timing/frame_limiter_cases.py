@@ -81,14 +81,18 @@ def spin(start_offset_us=5_000, step_us=1_000, budget_us=34_000):
     return clock(T0 + start_offset_us, step_us, budget_us // step_us + 4)
 
 
+# Every case's clock and sleeps last long enough for the longest wait any setting makes (1/30 s
+# with BB_TARGET_FPS=30 / "30 FPS++"), so each case runs under every option; the harness ignores
+# scripted calls a run doesn't make. (Cases scripted for only a 1/60 s wait ran out of clock under
+# the 30 FPS option on both sides.)
 CASES = [
     case('mode0', flipper(mode=0), spin()),
     case('mode1_steady_30', flipper(mode=1), spin()),
-    case('mode2_60', flipper(mode=2), spin(budget_us=17_000)),
+    case('mode2_60', flipper(mode=2), spin()),
     case('mode3', flipper(mode=3), spin()),
     case('mode4', flipper(mode=4), spin()),
     case('mode_invalid_keeps_fields', flipper(mode=9, interval_bits=F60, sync=7), spin(budget_us=17_000)),
-    case('pending_mode_switch', flipper(mode=1, pending_mode=2, b276=1), spin(budget_us=17_000)),
+    case('pending_mode_switch', flipper(mode=1, pending_mode=2, b276=1), spin()),
     case('reset_flag', flipper(mode=2, b2c4=1), spin()),
     case('overrides', flipper(override_a=5, override_b=12), spin()),
     case('override_one', flipper(override_a=0xffffffff, override_b=3), spin()),
@@ -105,7 +109,7 @@ CASES = [
                                         ring=[(10_000, 1), (10_000, 0), (10_000, 1)]), spin()),
     case('forced_late_273', flipper(b273=1), clock(T0 + 5_000, 1_000, 2)),
     case('sleeping_wait', flipper(mode=4), clock(T0 + 1_000, 7_000, 8), spin_only=0, usleeps=6),
-    case('sleeping_wait_short', flipper(mode=2), clock(T0 + 14_000, 1_000, 6), spin_only=0, usleeps=2),
+    case('sleeping_wait_short', flipper(mode=2), clock(T0 + 14_000, 1_000, 40), spin_only=0, usleeps=16),
     case('notify_60', flipper(b274=1), spin(), notify=True),
     case('notify_missing', flipper(b274=1), spin(), notify=False),
     case('clock_backwards', flipper(mode=1), clock(T0 - 2_000_000, 40_000, 3)),
@@ -114,11 +118,6 @@ CASES = [
     case('interval_nan_forced_late', flipper(mode=9, interval_bits=0x7fc00000, b273=1), clock(T0 + 1_000, 1_000, 3)),
     case('interval_huge', flipper(mode=9, interval_bits=0x7f000000), clock(T0 + 1_000, 10**12, 3)),
     case('history_tiny_fps_zero', flipper(b273=1, history=[0.0] * 16), clock(T0 + 10, 1, 2)),
-    # The 60 FPS cases with clocks long enough for a 1/30 s wait, so BB_TARGET_FPS=30 can be
-    # checked against "30 FPS++" on them too (the original uses only part of the clock).
-    case('mode2_60_long_clock', flipper(mode=2), spin()),
-    case('pending_mode_switch_long_clock', flipper(mode=1, pending_mode=2, b276=1), spin()),
-    case('sleeping_wait_short_long_clock', flipper(mode=2), clock(T0 + 14_000, 1_000, 40), spin_only=0, usleeps=16),
 ]
 
 

@@ -33,7 +33,7 @@ fixture_rows() {
     python3 - "$addr" "$size" <<'PY'
 import sys
 addr, size = sys.argv[1], sys.argv[2]
-for path, row in (('symbols/functions.csv', f'{addr},{size},frame_timing_update,frame_timing,verified,'),
+for path, row in (('symbols/functions.csv', f'{addr},{size},frame_timing_update,frame_timing,replaced,'),
                   ('game/hooks.csv', f'{addr},bb_frame_timing_update,frame_timing')):
     lines = open(path).read().splitlines()
     body = sorted(lines[1:] + [row], key=lambda l: int(l.split(',')[0], 16))

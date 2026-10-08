@@ -12,6 +12,8 @@ import os
 import re
 import sys
 
+import verification
+
 DEFAULT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ADDR = re.compile(r'^0x[0-9a-f]{8}$')
 IMAGE_BASE = 0x00400000
@@ -138,6 +140,7 @@ def main() -> int:
             errs.append(f"symbols/functions.csv:{r['_line']}: {r['name']} is {r['status']} but has no game/hooks.csv entry")
 
     errs += check_reviews(root, funcs)
+    errs += verification.check(root, funcs)
 
     for e in errs:
         print(f'validate: {e}', file=sys.stderr)

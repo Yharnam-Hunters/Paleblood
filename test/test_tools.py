@@ -41,6 +41,11 @@ class Fixture(unittest.TestCase):
                   [['0x00401000', 'bb_frame_timing_update', 'frame_timing']])
         write_csv(f'{self.d}/symbols/reviews.csv', ['address', 'name', 'date', 'reviewer', 'verdict', 'notes'],
                   [['0x00401000', 'frame_timing_update', '2026-01-01', 'independent session', 'approved', '']])
+        # a clean, current verification record (no source file here, so the source hash is empty)
+        write_csv(f'{self.d}/symbols/verification.csv',
+                  ['function', 'cases', 'option', 'total', 'passed', 'failed', 'quarantined', 'source', 'date'],
+                  [['frame_timing_update', 'recorded', '', '3', '3', '0', '0', '', '2026-01-01'],
+                   ['frame_timing_update', 'edge', '', '2', '2', '0', '0', '', '2026-01-01']])
         with open(f'{self.d}/README.md', 'w') as f:
             f.write('<!-- target:start -->\n<!-- target:end -->\n<!-- progress:start -->\n<!-- progress:end -->\n')
 
@@ -684,6 +689,71 @@ class FloatFlags(unittest.TestCase):
             r = self.check(flags)
             self.assertEqual(r.returncode, 1, flags)
             self.assertIn('float flags:', r.stderr)
+
+
+class VerificationRecord(unittest.TestCase):
+    """tools/verification.py: the record, the quarantine and the rule for verified."""
+
+    def setUp(self):
+        sys.path.insert(0, os.path.join(ROOT, 'tools'))
+        import verification
+        self.v = verification
+        self.root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.root, 'game', 'x'))
+        os.makedirs(os.path.join(self.root, 'symbols'))
+        with open(os.path.join(self.root, 'game', 'x', 'helper.h'), 'w') as f:
+            f.write('inline int helper() { return 1; }\n')
+        with open(os.path.join(self.root, 'game', 'x', 'f.cpp'), 'w') as f:
+            f.write('#include "helper.h"\nextern "C" void bb_x_f(void) { helper(); }\n')
+        self.funcs = [{'name': 'x_f', 'status': 'verified', '_line': 2}]
+
+    def tearDown(self):
+        shutil.rmtree(self.root)
+
+    def quarantine(self, *cases):
+        self.v.write_csv(os.path.join(self.root, 'symbols', 'quarantine.csv'), self.v.QUARANTINE_HEADER,
+                         [{'function': 'x_f', 'cases': 'recorded', 'option': '', 'case': c, 'reason': 'why',
+                           'date': '2026-10-07'} for c in cases])
+
+    def test_clean_record_allows_verified(self):
+        self.v.record(self.root, 'x_f', 'recorded', '', ['a', 'b'], [])
+        self.v.record(self.root, 'x_f', 'edge', '', ['e'], [])
+        self.assertEqual(self.v.check(self.root, self.funcs), [])
+
+    def test_missing_edge_refuses_verified(self):
+        self.v.record(self.root, 'x_f', 'recorded', '', ['a'], [])
+        self.assertTrue(any('current edge result' in e for e in self.v.check(self.root, self.funcs)))
+
+    def test_unexplained_failure_refuses_verified(self):
+        self.v.record(self.root, 'x_f', 'recorded', '', ['a'], [])
+        self.v.record(self.root, 'x_f', 'edge', '', ['e'], [])
+        self.v.record(self.root, 'x_f', 'edge', '30', ['e', 'g'], ['g'])
+        self.assertTrue(any('unexplained failure' in e for e in self.v.check(self.root, self.funcs)))
+
+    def test_quarantined_failure_with_reason_is_allowed(self):
+        self.quarantine('b')
+        row = self.v.record(self.root, 'x_f', 'recorded', '', ['a', 'b'], ['b'])
+        self.assertEqual((row['failed'], row['quarantined']), ('0', '1'))
+        self.v.record(self.root, 'x_f', 'edge', '', ['e'], [])
+        self.assertEqual(self.v.check(self.root, self.funcs), [])
+
+    def test_quarantine_needs_a_reason(self):
+        self.v.write_csv(os.path.join(self.root, 'symbols', 'quarantine.csv'), self.v.QUARANTINE_HEADER,
+                         [{'function': 'x_f', 'cases': 'recorded', 'option': '', 'case': 'b', 'reason': ' ',
+                           'date': '2026-10-07'}])
+        self.assertTrue(any('needs its reason' in e for e in self.v.check(self.root, self.funcs)))
+
+    def test_changed_header_makes_the_record_stale(self):
+        self.v.record(self.root, 'x_f', 'recorded', '', ['a'], [])
+        self.v.record(self.root, 'x_f', 'edge', '', ['e'], [])
+        with open(os.path.join(self.root, 'game', 'x', 'helper.h'), 'a') as f:
+            f.write('// changed\n')
+        errs = self.v.check(self.root, self.funcs)
+        self.assertTrue(any('is for other code' in e for e in errs))
+        self.assertTrue(any('current recorded result' in e for e in errs))
+
+    def test_edge_verified_is_not_held_to_the_rule(self):
+        self.assertEqual(self.v.check(self.root, [dict(self.funcs[0], status='edge-verified')]), [])
 
 
 if __name__ == '__main__':

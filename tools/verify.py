@@ -6,6 +6,7 @@ Design: docs/VERIFY.md.
 
 usage:
   verify.py run --function NAME --captures DIR [--elf EBOOT.elf] [--lib LIB.so] [--out DIR]
+                [--patch FILE:NAME --env KEY=VALUE --option LABEL] [--record CASES]
   verify.py compare ORIGINAL.json REPLACEMENT.json
   verify.py --self-test
 
@@ -13,6 +14,10 @@ run: every case file in DIR (*.json) goes through tools/harness.py twice, once o
 original function and once on its replacement, each in its own process; the results are
 written to OUT (default DIR/results) and compared. --elf defaults to $BB_ELF (then $BB_DATA_ROOT/elf/eboot.elf), --lib to
 $BB_GAME_LIB or build/game/libbbgame.so.
+--record CASES (recorded, edge or option-recorded) writes the run's counts to
+symbols/verification.csv, with failing cases listed in symbols/quarantine.csv counted as
+quarantined (tools/verification.py); --option LABEL names the option checked (needed with
+--patch or --env when recording).
 
 Exit codes: 0 all cases match, 1 mismatch, 3 bad input.
 """
@@ -25,6 +30,8 @@ import json
 import os
 import subprocess
 import sys
+
+import verification
 
 SCHEMA = 1
 RETURN_REGS = ('rax', 'rdx', 'xmm0', 'xmm1')
@@ -193,7 +200,7 @@ def run_cases(boot: str, captures: str, address: str, symbol: str, lib: str,
 
 
 def run(name: str, captures: str, boot: str | None, lib: str | None, out: str | None,
-        patch: str | None = None, env: list | None = None) -> int:
+        patch: str | None = None, env: list | None = None, record: str | None = None, option: str = '') -> int:
     boot = boot or os.environ.get('BB_ELF') or default_elf()
     lib = lib or os.environ.get('BB_GAME_LIB') or os.path.join(ROOT, 'build', 'game', 'libbbgame.so')
     if not boot or not os.path.isfile(boot):
@@ -213,7 +220,15 @@ def run(name: str, captures: str, boot: str | None, lib: str | None, out: str | 
             json.dump(doc, f, indent=1, sort_keys=True)
     summary = compare(load(files['original']), load(files['replacement']))
     summary['function'] = name
+    if record:
+        names = [os.path.basename(p)[:-len('.json')] for p in sorted(glob.glob(os.path.join(captures, '*.json')))]
+        failing = [f['case'] for f in summary['failures']]
+        row = verification.record(ROOT, name, record, option, names, failing)
+        summary['recorded'] = {k: row[k] for k in ('cases', 'option', 'failed', 'quarantined', 'source')}
     print(json.dumps(summary, indent=2, sort_keys=True))
+    if record:
+        # quarantined cases (listed with their reason) do not fail a recorded run
+        return 1 if int(row['failed']) else 0
     return 1 if summary['failed'] else 0
 
 
@@ -262,6 +277,9 @@ def main() -> int:
     r.add_argument('--patch', metavar='FILE:NAME',
                    help='run both sides on an image with this community patch applied (checks an option against it)')
     r.add_argument('--env', action='append', metavar='KEY=VALUE', help='environment for the replacement side')
+    r.add_argument('--record', choices=verification.CASE_SETS,
+                   help='write the counts to symbols/verification.csv as this case set')
+    r.add_argument('--option', default='', help='the option this run checks, for --record (e.g. 30, uncapped)')
     a = ap.parse_args()
 
     if a.self_test:
@@ -276,7 +294,9 @@ def main() -> int:
         return 1 if out['failed'] else 0
     if a.cmd == 'run':
         try:
-            return run(a.function, a.captures, a.boot, a.lib, a.out, a.patch, a.env)
+            if a.record and (a.patch or a.env) and not a.option:
+                raise BadInput('--record with --patch or --env needs --option LABEL')
+            return run(a.function, a.captures, a.boot, a.lib, a.out, a.patch, a.env, a.record, a.option)
         except (BadInput, OSError, json.JSONDecodeError) as e:
             print(f'verify: {e}', file=sys.stderr)
             return 3

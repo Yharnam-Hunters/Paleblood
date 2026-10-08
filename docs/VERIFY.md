@@ -123,6 +123,26 @@ recorded in the game exist for it (`CAPTURES/NAME/*.json`), `tools/promote.py` r
 on them and on the edge cases again, and sets `verified` only if both pass completely. It runs
 at session end (`tools/end_session.sh`); `--dry-run` shows what it would do.
 
+## Recorded results and quarantine
+
+`verify.py run --record CASES` writes the run's counts to `symbols/verification.csv`, one row
+per function, case set (`recorded`, `edge`, or `option-recorded`: recorded in the game with an
+option on) and option (`--option LABEL`, needed with `--patch` or `--env`). The row carries a
+hash of the replacement's source, its defining file and the headers it includes, so a result
+belongs to the code it was run on; after any change, run the sets again. The file holds counts
+only, never case data.
+
+A case that can't be used goes in `symbols/quarantine.csv` (function, case set, option, case
+file name without `.json`, reason, date), and only when it can't be fixed: for example a
+recording made under an earlier version of an option, which lacks inputs the current option
+needs. A quarantined case that fails counts as quarantined, not failed. Quarantine is not for a
+mismatch between the original and the replacement: that is a bug to fix.
+
+`tools/validate_functions.py` (CI) refuses `verified` for a function without current `recorded`
+and `edge` results without an option, with any failure that is not quarantined in any of its
+current results, or with a result for other code. `promote.py` records the runs it makes and
+applies the same rule.
+
 ## Community patches and hooks
 
 A hooked function's original bytes no longer run, so a byte patch inside it does nothing while
