@@ -19,8 +19,14 @@ event_emk_add,recorded,,150,150,0,0,937b4dca128ba863,2026-10-07
 event_emk_add,recorded,60,150,150,0,0,937b4dca128ba863,2026-10-07
 event_emk_add,edge,,18,18,0,0,937b4dca128ba863,2026-10-07
 event_emk_add,edge,60,18,18,0,0,937b4dca128ba863,2026-10-07
-frame_timing_flipper_init,recorded,,13,13,0,0,5128205a09595cf1,2026-10-07
-frame_timing_flipper_init,edge,,9,9,0,0,5128205a09595cf1,2026-10-07
+frame_timing_flipper_init,recorded,,13,13,0,0,29a2f7c09f92f53d,2026-10-07
+frame_timing_flipper_init,recorded,30,13,13,0,0,29a2f7c09f92f53d,2026-10-07
+frame_timing_flipper_init,recorded,60,13,13,0,0,29a2f7c09f92f53d,2026-10-07
+frame_timing_flipper_init,recorded,uncapped,13,13,0,0,29a2f7c09f92f53d,2026-10-07
+frame_timing_flipper_init,edge,,9,9,0,0,29a2f7c09f92f53d,2026-10-07
+frame_timing_flipper_init,edge,30,9,9,0,0,29a2f7c09f92f53d,2026-10-07
+frame_timing_flipper_init,edge,60,9,9,0,0,29a2f7c09f92f53d,2026-10-07
+frame_timing_flipper_init,edge,uncapped,9,9,0,0,29a2f7c09f92f53d,2026-10-07
 frame_timing_frame_step,recorded,,769,769,0,0,aba5a18f249d7c0a,2026-10-07
 frame_timing_frame_step,edge,,18,18,0,0,aba5a18f249d7c0a,2026-10-07
 frame_timing_get_monotonic_ms,recorded,,1767,1767,0,0,6680cb72bb22c75f,2026-10-07
