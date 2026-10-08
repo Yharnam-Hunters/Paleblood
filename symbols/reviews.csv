@@ -1,4 +1,5 @@
 address,name,date,reviewer,verdict,notes
+0x00fbc3e0,render_yebis_get_recursive_sample_parameters,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
 0x0111a7f0,frame_timing_get_monotonic_ms,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
 0x01388c60,frame_timing_task_run_all_01388c60,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
 0x01388c70,frame_timing_task_run_01388c70,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run

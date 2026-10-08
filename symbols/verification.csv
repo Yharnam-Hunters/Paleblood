@@ -122,5 +122,11 @@ render_swap_chain_present,edge,,23,23,0,0,cecf62710c015474,2026-10-07
 render_swap_chain_present,edge,30,23,23,0,0,cecf62710c015474,2026-10-07
 render_swap_chain_present,edge,60,23,23,0,0,cecf62710c015474,2026-10-07
 render_swap_chain_present,edge,uncapped,23,23,0,0,cecf62710c015474,2026-10-07
-render_yebis_get_recursive_sample_parameters,recorded,,234,234,0,0,798d627022343d57,2026-10-07
-render_yebis_get_recursive_sample_parameters,edge,,23,23,0,0,798d627022343d57,2026-10-07
+render_yebis_get_recursive_sample_parameters,recorded,,234,234,0,0,6e6f0aa41d5607ce,2026-10-07
+render_yebis_get_recursive_sample_parameters,recorded,30,234,234,0,0,6e6f0aa41d5607ce,2026-10-07
+render_yebis_get_recursive_sample_parameters,recorded,60,234,234,0,0,6e6f0aa41d5607ce,2026-10-07
+render_yebis_get_recursive_sample_parameters,recorded,uncapped,234,234,0,0,6e6f0aa41d5607ce,2026-10-07
+render_yebis_get_recursive_sample_parameters,edge,,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
+render_yebis_get_recursive_sample_parameters,edge,30,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
+render_yebis_get_recursive_sample_parameters,edge,60,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
+render_yebis_get_recursive_sample_parameters,edge,uncapped,23,23,0,0,6e6f0aa41d5607ce,2026-10-07

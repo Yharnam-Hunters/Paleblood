@@ -6,67 +6,48 @@
 // `base_samples` taps each: how many passes, how many samples in the last one, and the scale of
 // the first pass. `mode` 1 wants an odd base, mode 2 an even one of at least 4; `max_passes`
 // (when positive) caps the passes. Every check reports through the C library's _Assert with the
-// middleware's file, line and condition, as the original does; the code goes on afterwards.
+// middleware's condition, as the original does; the code goes on afterwards.
 //
 // The community frame-rate patches (30, 60, 90 FPS++ and Uncap FPS++) all remove the first check
 // (base_samples >= 3): with BB_TARGET_FPS set it is skipped here too.
-#include <immintrin.h>
-
 #include <cstdint>
-#include <cstdio>
-#include <cstring>
-#include <string>
 
+#include "../engine/scalar.h"
 #include "../frame_timing/target_fps.h"
-#include "runtime/capture.h"
-#include "runtime/guest.h"
+#include "runtime/original.h"
 
 namespace {
 
-constexpr uint32_t assert_thunk = 0x02fbf178;   // _Assert(message, function)
-constexpr uint32_t flog_thunk = 0x02fbea78;     // _FLog(x, 0): natural logarithm
-constexpr uint32_t powf_thunk = 0x02fbe948;
-constexpr uint32_t str_function = 0x04c00f90;   // "GPUTexUtil_GetRecursiveSampleParameters"
-constexpr uint32_t msg_base3 = 0x04c00f2c, msg_mod = 0x04c00fb8, msg_base3_mode1 = 0x04c0100f, msg_mod0 = 0x04c01073,
-                   msg_base4 = 0x04c010cf, msg_texel = 0x04c01133, msg_final = 0x04c0119f;
-constexpr uint32_t k_one = 0x04bffd70, k_threshold = 0x04bffd74, k_minus_one = 0x04bffd78;   // 1.0, 1.1, -1.0
+// The executable's call stubs into the C library
+RT_ORIGINAL(0x02fbf178, c_assert, void(const char *message, const char *function));
+RT_ORIGINAL(0x02fbea78, c_flog, float(float x, int32_t base));   // base 0: natural logarithm
+RT_ORIGINAL(0x02fbe948, c_powf, float(float x, float y));
+constexpr int32_t natural_log = 0;
 
-using Assert = void(const char *message, const char *function);
-using FLog = float(float x, int base);
-using Powf = float(float x, float y);
+// The middleware's messages: the function, and one per failed condition
+RT_GLOBAL(0x04c00f90, function_name, const char);
+RT_GLOBAL(0x04c00f2c, message_base_at_least_3, const char);
+RT_GLOBAL(0x04c00fb8, message_odd_base, const char);
+RT_GLOBAL(0x04c0100f, message_odd_base_at_least_3, const char);
+RT_GLOBAL(0x04c01073, message_even_base, const char);
+RT_GLOBAL(0x04c010cf, message_even_base_at_least_4, const char);
+RT_GLOBAL(0x04c01133, message_texel_at_least_1, const char);
+RT_GLOBAL(0x04c0119f, message_final_samples_positive, const char);
 
-float constant(uint32_t address) { return *rt::ptr<float>(address); }
+// Float constants in the middleware's read-only data: 1.0, 1.1 and -1.0
+RT_GLOBAL(0x04bffd70, one, const float);
+RT_GLOBAL(0x04bffd74, pass_threshold, const float);
+RT_GLOBAL(0x04bffd78, minus_one, const float);
 
-void check(uint32_t message)
+constexpr int32_t mode_odd = 1, mode_even = 2;
+constexpr int32_t min_base_samples = 3, min_even_base_samples = 4;
+
+template <typename Message> void check_failed(const Message &message)
 {
-    rt::fn<Assert>(assert_thunk)(rt::ptr<const char>(message), rt::ptr<const char>(str_function));
+    c_assert(message.address(), function_name.address());
 }
 
-__attribute__((target("sse4.1"))) float ceil_ss(float x)
-{
-    return _mm_cvtss_f32(_mm_round_ss(_mm_set_ss(x), _mm_set_ss(x), _MM_FROUND_TO_POS_INF));
-}
-
-float max_ss(float a, float b) { return _mm_cvtss_f32(_mm_max_ss(_mm_set_ss(a), _mm_set_ss(b))); }
-int32_t truncate(float x) { return _mm_cvttss_si32(_mm_set_ss(x)); }
-
-std::string hex32(float f)
-{
-    uint32_t u;
-    std::memcpy(&u, &f, 4);
-    char b[16];
-    std::snprintf(b, sizeof b, "%08x", u);
-    return b;
-}
-
-std::string bits(float f)
-{
-    uint32_t u;
-    std::memcpy(&u, &f, 4);
-    char b[16];
-    std::snprintf(b, sizeof b, "%02x%02x%02x%02x", u & 0xff, (u >> 8) & 0xff, (u >> 16) & 0xff, u >> 24);
-    return b;
-}
+bool is_odd(int32_t n) { return (n & 1) != 0; }
 
 }  // namespace
 
@@ -74,96 +55,58 @@ extern "C" void bb_render_yebis_get_recursive_sample_parameters(int32_t base_sam
                                                                int32_t *out_passes, int32_t *out_final, float *out_scale,
                                                                float length, float texel)
 {
-    const int number = rt_capture_begin("render_yebis_get_recursive_sample_parameters");
-    std::string imports;
-    auto record = [&](const std::string &entry) { imports += (imports.empty() ? "" : ", ") + entry; };
-    auto assert_at = [&](uint32_t message) {
-        check(message);
-        if (number >= 0) record("{\"name\": \"_Assert\", \"argc\": 2}");
-    };
-    auto flog = [&](float x) {
-        const float r = rt::fn<FLog>(flog_thunk)(x, 0);
-        if (number >= 0) record("{\"name\": \"_FLog\", \"argc\": 1, \"argf32\": [0], \"ret\": \"0x" + hex32(r) + "\"}");
-        return r;
-    };
-    auto pow_f = [&](float x, float y) {
-        const float r = rt::fn<Powf>(powf_thunk)(x, y);
-        if (number >= 0) record("{\"name\": \"powf\", \"argc\": 0, \"argf32\": [0, 1], \"ret\": \"0x" + hex32(r) + "\"}");
-        return r;
-    };
-
-    if (base_samples <= 2 && frame_timing::target_fps() == frame_timing::Target::original)
-        assert_at(msg_base3);
+    if (base_samples < min_base_samples && frame_timing::target_fps() == frame_timing::Target::original)
+        check_failed(message_base_at_least_3);
     const float base = static_cast<float>(base_samples);
-    const int32_t odd = base_samples % 2;
-    if (mode == 1) {
-        if (odd == 0) assert_at(msg_mod);
-        if (base_samples <= 2) assert_at(msg_base3_mode1);
-    } else if (mode == 2) {
-        if (odd != 0) assert_at(msg_mod0);
-        if (base_samples <= 3) assert_at(msg_base4);
+    if (mode == mode_odd) {
+        if (!is_odd(base_samples)) check_failed(message_odd_base);
+        if (base_samples < min_base_samples) check_failed(message_odd_base_at_least_3);
+    } else if (mode == mode_even) {
+        if (is_odd(base_samples)) check_failed(message_even_base);
+        if (base_samples < min_even_base_samples) check_failed(message_even_base_at_least_4);
     }
 
-    // The texel spacing: clamped down so that one pass does not overshoot the length.
+    // The texel spacing, clamped down so that one pass does not overshoot the length.
     float spacing = texel;
-    bool use_one = false;
-    if (texel > constant(k_one) && base * texel >= length) {
+    bool spacing_too_small = false;
+    if (texel > one.get() && base * texel >= length) {
         spacing = length / base;
-        if (!(spacing > constant(k_one))) use_one = true;
+        if (!(spacing > one.get())) spacing_too_small = true;
     }
     float divisor;
-    if (use_one) {
-        divisor = constant(k_one);
-    } else if (spacing >= constant(k_one)) {
-        divisor = spacing;
+    if (spacing_too_small) {
+        divisor = one.get();
     } else {
-        assert_at(msg_texel);
+        if (!(spacing >= one.get())) check_failed(message_texel_at_least_1);
         divisor = spacing;
     }
 
-    float ratio = length / divisor + constant(k_one);
+    const float ratio = length / divisor + one.get();
     int32_t passes = 0, final_samples = 0;
     float scale = 0.0f;
-    if (ratio > constant(k_threshold)) {
-        const float log_ratio = flog(ratio);
-        const float log_base = flog(base);
-        passes = truncate(ceil_ss(max_ss(log_ratio / log_base, constant(k_one))));
+    if (ratio > pass_threshold.get()) {
+        const float log_ratio = c_flog(ratio, natural_log);
+        const float log_base = c_flog(base, natural_log);
+        passes = engine::truncate(engine::round_up(engine::max_of(log_ratio / log_base, one.get())));
         const float total = base * ratio;
-        const float power = pow_f(base, static_cast<float>(passes));
-        int32_t last = truncate(ceil_ss(total / power));
-        if (last <= 0) assert_at(msg_final);
+        const float power = c_powf(base, static_cast<float>(passes));
+        int32_t last = engine::truncate(engine::round_up(total / power));
+        if (last <= 0) check_failed(message_final_samples_positive);
         if (last == 0) last = base_samples;
-        int32_t parity;
-        if (mode == 1)
-            parity = last & 1;
-        else
-            parity = (~last & 1) | (mode != 2 ? 1 : 0);
-        final_samples = (parity ^ 1) + last;
+        // The last pass is rounded up to the mode's parity.
+        final_samples = last;
+        if (mode == mode_odd && !is_odd(last)) final_samples = last + 1;
+        if (mode == mode_even && is_odd(last)) final_samples = last + 1;
         if (final_samples > base_samples) final_samples = base_samples;
         if (max_passes > 0 && passes > max_passes) {
             passes = max_passes;
             final_samples = base_samples;
         }
-        const float power_less = pow_f(base, static_cast<float>(passes - 1));
-        scale = length / (power_less * static_cast<float>(final_samples) + constant(k_minus_one));
+        const float power_less = c_powf(base, static_cast<float>(passes - 1));
+        scale = length / (power_less * static_cast<float>(final_samples) + minus_one.get());
     }
 
     if (out_passes) *out_passes = passes;
     if (out_final) *out_final = final_samples;
     if (out_scale) *out_scale = scale;
-
-    if (number >= 0) {
-        char head[512];
-        std::snprintf(head, sizeof head,
-                      "{\"schema\": 1, \"address\": \"0x00fbc3e0\", \"id\": \"capture_%04d\", \"returns\": \"void\", "
-                      "\"args\": {\"rdi\": \"0x%x\", \"rsi\": \"0x%x\", \"rdx\": \"0x%x\", \"rcx\": \"%s\", \"r8\": \"%s\", "
-                      "\"r9\": \"%s\", \"xmm0\": \"%s\", \"xmm1\": \"%s\"}, ",
-                      number, static_cast<uint32_t>(base_samples), static_cast<uint32_t>(mode), static_cast<uint32_t>(max_passes),
-                      out_passes ? "buf:passes" : "0x0", out_final ? "buf:final" : "0x0", out_scale ? "buf:scale" : "0x0",
-                      bits(length).c_str(), bits(texel).c_str());
-        const std::string json = std::string(head) +
-            "\"buffers\": {\"passes\": {\"size\": 4}, \"final\": {\"size\": 4}, \"scale\": {\"size\": 4}}, "
-            "\"memory\": [], \"stubs\": [], \"imports\": [" + imports + "]}";
-        rt_capture_write("render_yebis_get_recursive_sample_parameters", number, json.c_str());
-    }
 }
