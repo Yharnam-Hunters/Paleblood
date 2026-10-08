@@ -15,8 +15,10 @@ character_frame_update_01cbdb20,edge,,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,edge,30,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,edge,60,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,edge,uncapped,39,39,0,0,b243fddb1ca6589a,2026-10-07
-event_emk_add,recorded,,150,150,0,0,3ee030443c8ddb20,2026-10-07
-event_emk_add,edge,,18,18,0,0,3ee030443c8ddb20,2026-10-07
+event_emk_add,recorded,,150,150,0,0,937b4dca128ba863,2026-10-07
+event_emk_add,recorded,60,150,150,0,0,937b4dca128ba863,2026-10-07
+event_emk_add,edge,,18,18,0,0,937b4dca128ba863,2026-10-07
+event_emk_add,edge,60,18,18,0,0,937b4dca128ba863,2026-10-07
 frame_timing_flipper_init,recorded,,13,13,0,0,5128205a09595cf1,2026-10-07
 frame_timing_flipper_init,edge,,9,9,0,0,5128205a09595cf1,2026-10-07
 frame_timing_frame_step,recorded,,769,769,0,0,aba5a18f249d7c0a,2026-10-07
