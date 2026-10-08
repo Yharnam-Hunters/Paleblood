@@ -21,6 +21,7 @@ address,name,date,reviewer,verdict,notes
 0x02012a60,frame_timing_request_7_02012a60,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
 0x02012bf0,frame_timing_until_idle_02012bf0,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
 0x0222bc10,ai_hk_frame_update_0222bc10,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
+0x02377bd0,render_frame_update_02377bd0,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
 0x02418d20,frame_timing_frame_step,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
 0x02434520,frame_timing_flipper_init,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
 0x02434770,frame_timing_pace_frame,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run

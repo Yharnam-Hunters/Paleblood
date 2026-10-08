@@ -1,263 +1,169 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Render: a per-frame update that ages a list of reference-counted objects and steps a child.
+// Render: a per-frame update that ages a list of reference-counted objects and steps two children.
 //
 // render_frame_update_02377bd0 (0x02377bd0, once a frame in gameplay; `step` is the caller's
 // frame argument, passed on unchanged):
-//   1. when +0x38 is set: 0x02379d60(&this->+0x8, list, &this->+0x28, *this->+0x30, this->+0x30,
-//      this->+0x38) (it may change the list);
-//   2. walks the list (sentinel at +0x10, next +0x0, prev +0x8, object +0x10): each object is
-//      updated with 0x02373850(object, step); when that returns false, the reference is dropped
-//      (atomic decrement of +0x8; at 1 the object's vtable slot 0 destroys it, at 0 or less the
-//      engine's "Invalid Unref()" fatal error is reported) and the node is unlinked and freed
-//      through the allocator at +0x20 (vtable slot +0x70), and the count at +0x18 goes down;
-//   3. when +0x80 is set: 0x0236e000(this->+0x80, step, RendMan->+0x28) (RendMan: singleton
-//      0x05940298);
-//   4. when +0x70 is set: its +0x20 = this->+0x98, then its vtable slot +0x40 with a frame time
-//      of 1/30 s (0 when +0x8c is set), and +0x8c = 0.
+//   1. when it has something to prepare, a prepare call that may change the list;
+//   2. walks the list: each object is updated with the step; when the update returns false, the
+//      reference is dropped (an atomic decrement: the last one destroys the object, a count
+//      already at 0 or below reports "Invalid Unref()" through the engine's fatal error), and
+//      the node is unlinked and freed;
+//   3. when it has the +0x80 child, updates it with the render manager's +0x28 object;
+//   4. when it has the +0x70 child, passes it a byte, then steps it with a frame time of 1/30 s
+//      (0 when the frame is held), and clears the hold.
 // BB_TARGET_FPS=uncapped does what "Uncap FPS++" does: step 4 passes the flipper's measured frame
-// time (+0x264) whatever +0x8c says, and step 3 drops the RendMan check.
+// time whatever the hold says, and step 3 drops the render manager check.
+#include <cstddef>
 #include <cstdint>
-#include <cstdio>
-#include <cstring>
-#include <map>
-#include <string>
 
+#include "../engine/allocator.h"
+#include "../engine/engine.h"
+#include "../frame_timing/flipper.h"
 #include "../frame_timing/target_fps.h"
-#include "runtime/capture.h"
-#include "runtime/guest.h"
+#include "runtime/original.h"
 
 namespace {
 
-constexpr uint32_t list_prepare = 0x02379d60, update_object = 0x02373850, update_child80 = 0x0236e000;
-constexpr uint32_t rendman_singleton = 0x05940298, flipper_singleton = 0x059404f8;
-constexpr uint32_t fatal_error = 0x024b55b0;
-constexpr uint32_t str_singleton_header = 0x04d3b369, str_singleton_func = 0x04d3b3bd, str_rendman = 0x04d3b1e1,
-                   str_bad_unref = 0x04d40331, k_frame_time = 0x04d29170;   // 1/30 s
+// A reference-counted object: the last reference destroys it through its first vtable slot.
+struct RefObject;
+struct RefObjectVtable {
+    void (*destroy)(RefObject *);
+};
+struct RefObject {
+    const RefObjectVtable *vtable;
+    int32_t references;
+};
+static_assert(offsetof(RefObject, references) == 0x8);
 
-using Prepare = void(void *, void *, void *, void *, void *, void *);
-using Update = uint8_t(void *object, void *step);
-using Child80 = void(void *child, void *step, void *rendman_field);
-using Fatal = void(const char *, int, const char *, ...);
-using Destroy = void(void *object);
-using Free = void(void *allocator, void *node);
-using Step = void(void *child, float frame_time);
+struct ListNode {
+    ListNode *next;
+    ListNode *prev;
+    RefObject *object;
+};
+static_assert(offsetof(ListNode, object) == 0x10);
 
-template <typename T> T get(const unsigned char *p, unsigned off) { T v; std::memcpy(&v, p + off, sizeof v); return v; }
-template <typename T> void put(unsigned char *p, unsigned off, T v) { std::memcpy(p + off, &v, sizeof v); }
-void *slot(void *object, unsigned off) { return (*static_cast<void ***>(object))[off / 8]; }
-
-uint32_t guest_address(const void *host)
-{
-    return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(host) - reinterpret_cast<uintptr_t>(rt_image) + RT_EBOOT_BASE);
-}
-
-std::string hexbytes(const void *p, size_t n)
-{
-    static const char digits[] = "0123456789abcdef";
-    std::string s;
-    for (size_t i = 0; i < n; i++) {
-        const unsigned b = static_cast<const unsigned char *>(p)[i];
-        s += digits[b >> 4];
-        s += digits[b & 15];
-    }
-    return s;
-}
-
-std::string addr(uint32_t v)
-{
-    char b[16];
-    std::snprintf(b, sizeof b, "0x%08x", v);
-    return b;
-}
-
-// Recording: the list as the walk sees it (after step 1), the objects' reference counts and the
-// update results, the destroy and free targets, and the child objects as stand-ins.
-struct Capture {
-    int number = -1;
-    std::string buffers, memory, stubs;
-    std::map<const void *, std::string> names;
-    void buffer(const std::string &n, unsigned size) { buffers += (buffers.empty() ? "" : ", ") + ("\"" + n + "\": {\"size\": " + std::to_string(size) + "}"); }
-    void mem(const std::string &e) { memory += (memory.empty() ? "" : ", ") + e; }
-    void stub(const std::string &e) { stubs += (stubs.empty() ? "" : ", ") + e; }
-    std::string name(const void *p, const char *prefix, unsigned size)
-    {
-        auto it = names.find(p);
-        if (it != names.end()) return it->second;
-        const std::string n = prefix + std::to_string(names.size());
-        names[p] = n;
-        buffer(n, size);
-        return n;
-    }
-    void pointer(const std::string &at, const std::string &to) { mem("{\"addr\": \"" + at + "\", \"pointer\": \"" + to + "\"}"); }
-    void raw(const std::string &at, const void *p, size_t n) { mem("{\"addr\": \"" + at + "\", \"bytes\": \"" + hexbytes(p, n) + "\"}"); }
-    void target(const std::string &vt, unsigned off, void *fn)
-    {
-        mem("{\"addr\": \"buf:" + vt + "+" + std::to_string(off) + "\", \"guest\": \"" + addr(guest_address(fn)) + "\"}");
-    }
+// The engine's list: a sentinel node, a size, and the allocator its nodes come from.
+struct RefList {
+    void *proxy;
+    ListNode *sentinel;
+    uint64_t size;
+    engine::Allocator *allocator;
 };
 
-void record_list(Capture &cap, unsigned char *self)
+struct Child70;
+struct Child70Vtable {
+    void *unknown_slots[8];
+    void (*step)(Child70 *, float frame_time);
+};
+static_assert(offsetof(Child70Vtable, step) == 0x40);
+struct Child70 {
+    const Child70Vtable *vtable;
+    uint8_t unknown_0x08[0x18];
+    uint8_t value_0x20;   // given the updater's byte at +0x98 every frame
+};
+static_assert(offsetof(Child70, value_0x20) == 0x20);
+
+struct Child80;
+struct PrepareState;
+struct RenderUpdater {
+    uint8_t unknown_0x00[0x8];
+    RefList list;
+    PrepareState *prepare_state;      // its address is passed to the prepare call
+    void **prepare_source;            // passed, and the pointer it holds
+    void *prepare_pending;            // set: run the prepare call
+    uint8_t unknown_0x40[0x30];
+    Child70 *child_70;
+    uint8_t unknown_0x78[0x8];
+    Child80 *child_80;
+    uint8_t unknown_0x88[0x4];
+    uint32_t hold_frame;              // set: step the +0x70 child by 0
+    uint8_t unknown_0x90[0x8];
+    uint8_t value_0x98;
+};
+static_assert(offsetof(RenderUpdater, list) == 0x8 && offsetof(RenderUpdater, prepare_state) == 0x28);
+static_assert(offsetof(RenderUpdater, prepare_source) == 0x30 && offsetof(RenderUpdater, prepare_pending) == 0x38);
+static_assert(offsetof(RenderUpdater, child_70) == 0x70 && offsetof(RenderUpdater, child_80) == 0x80);
+static_assert(offsetof(RenderUpdater, hold_frame) == 0x8c && offsetof(RenderUpdater, value_0x98) == 0x98);
+
+struct RendMan {
+    uint8_t unknown_0x00[0x28];
+    void *object_0x28;
+};
+static_assert(offsetof(RendMan, object_0x28) == 0x28);
+
+RT_ORIGINAL(0x02379d60, list_prepare,
+            void(RefList *, ListNode *sentinel, PrepareState **, void *source_value, void **source, void *pending));
+RT_ORIGINAL(0x02373850, object_update, uint8_t(RefObject *, void *step));
+RT_ORIGINAL(0x0236e000, child_80_update, void(Child80 *, void *step, void *rendman_object));
+RT_GLOBAL(0x05940298, rend_man_instance, RendMan *);
+RT_GLOBAL(0x04d3b1e1, rend_man_name, const char);
+RT_GLOBAL(0x04d40331, message_invalid_unref, const char);   // "Invalid Unref()"
+RT_GLOBAL(0x04d29170, thirtieth_second, const float);
+constexpr int32_t line_invalid_unref = 0x3e;
+
+void release(RefObject *object)
 {
-    unsigned char *sentinel = get<unsigned char *>(self, 0x10);
-    const std::string s = cap.name(sentinel, "node", 0x18);
-    cap.pointer("buf:self+16", s);
-    unsigned char *n = sentinel;
-    int guard = 0;
-    do {
-        unsigned char *next = get<unsigned char *>(n, 0x0);
-        const std::string a = cap.name(n, "node", 0x18), b = cap.name(next, "node", 0x18);
-        cap.pointer("buf:" + a + "+0", b);
-        cap.pointer("buf:" + b + "+8", a);
-        if (next != sentinel) {
-            void *object = get<void *>(next, 0x10);
-            if (object) {
-                const std::string o = cap.name(object, "obj", 16);
-                cap.pointer("buf:" + b + "+16", o);
-                cap.raw("buf:" + o + "+8", static_cast<unsigned char *>(object) + 8, 4);
-                const std::string vt = o + "_vt";
-                cap.buffer(vt, 8);
-                cap.pointer("buf:" + o, vt);
-                cap.target(vt, 0, slot(object, 0));
+    const int32_t before = __atomic_fetch_sub(&object->references, 1, __ATOMIC_SEQ_CST);
+    if (before == 1)
+        object->vtable->destroy(object);
+    else if (before <= 0)
+        engine::fatal_error(nullptr, line_invalid_unref, message_invalid_unref.address());
+}
+
+// Updates every object; drops and unlinks those whose update says they are done (and nodes
+// that hold no object).
+void age_objects(RenderUpdater *self, void *step)
+{
+    ListNode *node = self->list.sentinel->next;
+    while (node != self->list.sentinel) {
+        bool remove = true;
+        if (node->object) {
+            const uint8_t alive = object_update(node->object, step);
+            RefObject *object = node->object;
+            if (alive) {
+                remove = object == nullptr;
             } else {
-                cap.raw("buf:" + b + "+16", &object, 8);
+                release(object);
+                node->object = nullptr;
             }
         }
-        n = next;
-    } while (n != sentinel && ++guard < 256);
-    if (guard >= 256) cap.number = -1;   // a list too long to record
+        ListNode *next = node->next;
+        if (remove && node != self->list.sentinel) {
+            node->prev->next = next;
+            node->next->prev = node->prev;
+            self->list.allocator->free(node);
+            self->list.size--;
+        }
+        node = next;
+    }
 }
 
 }  // namespace
 
-extern "C" void bb_render_frame_update_02377bd0(unsigned char *self, void *step)
+extern "C" void bb_render_frame_update_02377bd0(RenderUpdater *self, void *step)
 {
-    Capture cap;
-    cap.number = rt_capture_begin("render_frame_update_02377bd0");
     const bool uncapped = frame_timing::target_fps() == frame_timing::Target::uncapped;
 
-    if (void *r9 = get<void *>(self, 0x38)) {
-        void *r8 = get<void *>(self, 0x30);
-        rt::fn<Prepare>(list_prepare)(self + 0x8, get<void *>(self, 0x10), self + 0x28, *static_cast<void **>(r8), r8, r9);
-        if (cap.number >= 0) {
-            cap.buffer("prep30", 8);
-            cap.buffer("prep38", 8);
-            cap.pointer("buf:self+48", "prep30");
-            cap.pointer("buf:self+56", "prep38");
-            cap.raw("buf:prep30", r8, 8);
-            cap.stub("{\"address\": \"0x02379d60\", \"argc\": 6}");
-        }
-    } else if (cap.number >= 0) {
-        cap.mem("{\"addr\": \"buf:self+56\", \"bytes\": \"0000000000000000\"}");
-    }
-    if (cap.number >= 0) {
-        record_list(cap, self);
-        void *allocator = get<void *>(self, 0x20);
-        cap.buffer("allocator", 8);
-        cap.buffer("allocator_vt", 0x78);
-        cap.pointer("buf:self+32", "allocator");
-        cap.pointer("buf:allocator", "allocator_vt");
-        cap.target("allocator_vt", 0x70, slot(allocator, 0x70));
-        uint64_t count = get<uint64_t>(self, 0x18);
-        cap.raw("buf:self+24", &count, 8);
-        // The flipper's measured frame time: read only with BB_TARGET_FPS=uncapped, recorded
-        // always so the option can be checked on real frames.
-        if (unsigned char *flipper = *rt::ptr<unsigned char *>(flipper_singleton)) {
-            cap.buffer("flipper", 0x2c8);
-            cap.pointer(addr(flipper_singleton), "flipper");
-            cap.raw("buf:flipper+612", flipper + 0x264, 4);
-        }
+    if (void *pending = self->prepare_pending)
+        list_prepare(&self->list, self->list.sentinel, &self->prepare_state, *self->prepare_source,
+                     self->prepare_source, pending);
+
+    age_objects(self, step);
+
+    if (Child80 *child = self->child_80) {
+        RendMan *rend_man = rend_man_instance.get();
+        if (!rend_man && !uncapped) engine::report_missing(rend_man_name.address());
+        child_80_update(child, step, rend_man->object_0x28);
     }
 
-    unsigned char *node = get<unsigned char *>(get<unsigned char *>(self, 0x10), 0x0);
-    while (node != get<unsigned char *>(self, 0x10)) {
-        unsigned char *next;
-        void *object = get<void *>(node, 0x10);
-        bool remove = true;
-        if (object) {
-            const uint8_t alive = rt::fn<Update>(update_object)(object, step);
-            if (cap.number >= 0) cap.stub("{\"address\": \"0x02373850\", \"argc\": 2, \"ret\": " + std::to_string(alive) + "}");
-            object = get<void *>(node, 0x10);
-            if (alive) {
-                remove = object == nullptr;
-            } else {
-                const int32_t old = __atomic_fetch_add(reinterpret_cast<int32_t *>(static_cast<unsigned char *>(object) + 8), -1,
-                                                       __ATOMIC_SEQ_CST);
-                if (old == 1) {
-                    void *destroy = slot(object, 0);
-                    reinterpret_cast<Destroy *>(destroy)(object);
-                    if (cap.number >= 0) cap.stub("{\"address\": \"" + addr(guest_address(destroy)) + "\", \"argc\": 1}");
-                } else if (old <= 0) {
-                    rt::fn<Fatal>(fatal_error)(nullptr, 0x3e, rt::ptr<const char>(str_bad_unref));
-                    if (cap.number >= 0) cap.stub("{\"address\": \"0x024b55b0\", \"argc\": 3}");
-                }
-                put<void *>(node, 0x10, nullptr);
-            }
-        }
-        next = get<unsigned char *>(node, 0x0);
-        if (remove && node != get<unsigned char *>(self, 0x10)) {
-            unsigned char *prev = get<unsigned char *>(node, 0x8);
-            put<unsigned char *>(prev, 0x0, next);
-            put<unsigned char *>(get<unsigned char *>(node, 0x0), 0x8, get<unsigned char *>(node, 0x8));
-            void *allocator = get<void *>(self, 0x20);
-            void *free_fn = slot(allocator, 0x70);
-            reinterpret_cast<Free *>(free_fn)(allocator, node);
-            if (cap.number >= 0) cap.stub("{\"address\": \"" + addr(guest_address(free_fn)) + "\", \"argc\": 2}");
-            put<uint64_t>(self, 0x18, get<uint64_t>(self, 0x18) - 1);
-        }
-        node = next;
-    }
-
-    if (unsigned char *child80 = get<unsigned char *>(self, 0x80)) {
-        unsigned char *rendman = *rt::ptr<unsigned char *>(rendman_singleton);
-        if (!rendman && !uncapped)
-            rt::fn<Fatal>(fatal_error)(rt::ptr<const char>(str_singleton_header), 0xb1, rt::ptr<const char>(str_singleton_func),
-                                       rt::ptr<const char>(str_rendman));
-        void *field = get<void *>(rendman, 0x28);
-        rt::fn<Child80>(update_child80)(child80, step, field);
-        if (cap.number >= 0) {
-            cap.buffer("child80", 8);
-            cap.buffer("rendman", 0x30);
-            cap.pointer("buf:self+128", "child80");
-            cap.pointer(addr(rendman_singleton), "rendman");
-            cap.raw("buf:rendman+40", &field, 8);
-            cap.stub("{\"address\": \"0x0236e000\", \"argc\": 3}");
-        }
-    } else if (cap.number >= 0) {
-        cap.mem("{\"addr\": \"buf:self+128\", \"bytes\": \"0000000000000000\"}");
-    }
-
-    if (unsigned char *child70 = get<unsigned char *>(self, 0x70)) {
-        child70[0x20] = self[0x98];
-        void *fn = slot(child70, 0x40);
-        const uint32_t held = get<uint32_t>(self, 0x8c);
+    if (Child70 *child = self->child_70) {
+        child->value_0x20 = self->value_0x98;
         float frame_time;
         if (uncapped)
-            frame_time = get<float>(*rt::ptr<unsigned char *>(flipper_singleton), 0x264);
+            frame_time = frame_timing::flipper_instance.get()->frame_seconds;
         else
-            frame_time = held != 0 ? 0.0f : *rt::ptr<float>(k_frame_time);
-        reinterpret_cast<Step *>(fn)(child70, frame_time);
-        put<uint32_t>(self, 0x8c, 0);
-        if (cap.number >= 0) {
-            cap.buffer("child70", 0x28);
-            cap.buffer("child70_vt", 0x48);
-            cap.pointer("buf:self+112", "child70");
-            cap.pointer("buf:child70", "child70_vt");
-            cap.target("child70_vt", 0x40, fn);
-            cap.raw("buf:self+140", &held, 4);
-            cap.raw("buf:self+152", self + 0x98, 1);
-            cap.stub("{\"address\": \"" + addr(guest_address(fn)) + "\", \"argc\": 1, \"argf32\": [0]}");
-        }
-    } else if (cap.number >= 0) {
-        cap.mem("{\"addr\": \"buf:self+112\", \"bytes\": \"0000000000000000\"}");
-    }
-
-    if (cap.number >= 0) {
-        char head[256];
-        std::snprintf(head, sizeof head,
-                      "{\"schema\": 1, \"address\": \"0x02377bd0\", \"id\": \"capture_%04d\", \"returns\": \"void\", "
-                      "\"args\": {\"rdi\": \"buf:self\", \"rsi\": \"buf:step\"}, ", cap.number);
-        const std::string json = std::string(head) + "\"buffers\": {\"self\": {\"size\": 160}, \"step\": {\"size\": 8}, " +
-                                 cap.buffers + "}, \"memory\": [" + cap.memory + "], \"stubs\": [" + cap.stubs + "], \"imports\": []}";
-        rt_capture_write("render_frame_update_02377bd0", cap.number, json.c_str());
+            frame_time = self->hold_frame != 0 ? 0.0f : thirtieth_second.get();
+        child->vtable->step(child, frame_time);
+        self->hold_frame = 0;
     }
 }
