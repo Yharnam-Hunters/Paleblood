@@ -88,8 +88,14 @@ frame_timing_until_idle_020128f0,edge,,5,5,0,0,6e78f71421f3aa94,2026-10-07
 frame_timing_until_idle_020128f0,edge,60,5,5,0,0,6e78f71421f3aa94,2026-10-07
 frame_timing_until_idle_02012bf0,edge,,5,5,0,0,6e78f71421f3aa94,2026-10-07
 frame_timing_until_idle_02012bf0,edge,60,5,5,0,0,6e78f71421f3aa94,2026-10-07
-input_pad_step_01972900,recorded,,202,202,0,0,f1089b8dd304385e,2026-10-07
-input_pad_step_01972900,edge,,13,13,0,0,f1089b8dd304385e,2026-10-07
+input_pad_step_01972900,recorded,,202,202,0,0,33cd4f4b94e06d58,2026-10-07
+input_pad_step_01972900,recorded,30,202,202,0,0,33cd4f4b94e06d58,2026-10-07
+input_pad_step_01972900,recorded,60,202,202,0,0,33cd4f4b94e06d58,2026-10-07
+input_pad_step_01972900,recorded,uncapped,202,202,0,0,33cd4f4b94e06d58,2026-10-07
+input_pad_step_01972900,edge,,13,13,0,0,33cd4f4b94e06d58,2026-10-07
+input_pad_step_01972900,edge,30,13,13,0,0,33cd4f4b94e06d58,2026-10-07
+input_pad_step_01972900,edge,60,13,13,0,0,33cd4f4b94e06d58,2026-10-07
+input_pad_step_01972900,edge,uncapped,13,13,0,0,33cd4f4b94e06d58,2026-10-07
 kernel_condition_wait,recorded,,527,527,0,0,afa1a2dc2395536a,2026-10-07
 kernel_condition_wait,edge,,12,12,0,0,afa1a2dc2395536a,2026-10-07
 physics_instance_construct_01c0c2b0,recorded,,119,119,0,0,36ab799ed0be903d,2026-10-07
