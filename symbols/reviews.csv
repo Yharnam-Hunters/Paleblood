@@ -1,5 +1,6 @@
 address,name,date,reviewer,verdict,notes
 0x0111a7f0,frame_timing_get_monotonic_ms,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
+0x013d3520,frame_timing_task_013d3520,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
 0x016efd00,event_emk_add,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
 0x01cbdb20,character_frame_update_01cbdb20,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
 0x01f6a9f0,frame_timing_until_idle_01f6a9f0,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
