@@ -7,8 +7,14 @@ ai_hk_frame_update_0222bc10,edge,,33,33,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,edge,30,33,33,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,edge,60,33,33,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,edge,uncapped,33,33,0,0,f6e94c85e455f408,2026-10-07
-character_frame_update_01cbdb20,recorded,,457,457,0,0,545bc142fc42f3d7,2026-10-07
-character_frame_update_01cbdb20,edge,,39,39,0,0,545bc142fc42f3d7,2026-10-07
+character_frame_update_01cbdb20,recorded,,457,457,0,0,b243fddb1ca6589a,2026-10-07
+character_frame_update_01cbdb20,recorded,30,457,457,0,0,b243fddb1ca6589a,2026-10-07
+character_frame_update_01cbdb20,recorded,60,457,457,0,0,b243fddb1ca6589a,2026-10-07
+character_frame_update_01cbdb20,recorded,uncapped,457,457,0,0,b243fddb1ca6589a,2026-10-07
+character_frame_update_01cbdb20,edge,,39,39,0,0,b243fddb1ca6589a,2026-10-07
+character_frame_update_01cbdb20,edge,30,39,39,0,0,b243fddb1ca6589a,2026-10-07
+character_frame_update_01cbdb20,edge,60,39,39,0,0,b243fddb1ca6589a,2026-10-07
+character_frame_update_01cbdb20,edge,uncapped,39,39,0,0,b243fddb1ca6589a,2026-10-07
 event_emk_add,recorded,,150,150,0,0,3ee030443c8ddb20,2026-10-07
 event_emk_add,edge,,18,18,0,0,3ee030443c8ddb20,2026-10-07
 frame_timing_flipper_init,recorded,,13,13,0,0,5128205a09595cf1,2026-10-07
