@@ -1,4 +1,13 @@
 address,name,date,reviewer,verdict,notes
 0x016efd00,event_emk_add,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
 0x01cbdb20,character_frame_update_01cbdb20,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
+0x01f6a9f0,frame_timing_until_idle_01f6a9f0,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
+0x0200d8a0,frame_timing_until_idle_0200d8a0,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
+0x0200e100,frame_timing_until_idle_0200e100,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
+0x0200e270,frame_timing_request_7_0200e270,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
+0x02012610,frame_timing_until_idle_02012610,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
+0x02012780,frame_timing_request_10_02012780,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
+0x020128f0,frame_timing_until_idle_020128f0,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
+0x02012a60,frame_timing_request_7_02012a60,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
+0x02012bf0,frame_timing_until_idle_02012bf0,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
 0x0222bc10,ai_hk_frame_update_0222bc10,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
