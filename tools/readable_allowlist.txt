@@ -1,6 +1,5 @@
 # Files under game/ written before the readability rule (STYLE.md). This list may only shrink:
 # refactor a file until tools/check_readable.py passes on it, re-verify it, then remove its line.
-game/frame_timing/frame_step.cpp
 game/frame_timing/monotonic_clock.cpp
 game/frame_timing/task_013d3520.cpp
 game/frame_timing/task_manager.cpp

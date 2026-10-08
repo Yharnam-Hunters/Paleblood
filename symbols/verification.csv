@@ -27,8 +27,15 @@ frame_timing_flipper_init,edge,,9,9,0,0,29a2f7c09f92f53d,2026-10-07
 frame_timing_flipper_init,edge,30,9,9,0,0,29a2f7c09f92f53d,2026-10-07
 frame_timing_flipper_init,edge,60,9,9,0,0,29a2f7c09f92f53d,2026-10-07
 frame_timing_flipper_init,edge,uncapped,9,9,0,0,29a2f7c09f92f53d,2026-10-07
-frame_timing_frame_step,recorded,,769,769,0,0,aba5a18f249d7c0a,2026-10-07
-frame_timing_frame_step,edge,,18,18,0,0,aba5a18f249d7c0a,2026-10-07
+frame_timing_frame_step,recorded,,769,769,0,0,0c5186a7d9629826,2026-10-07
+frame_timing_frame_step,recorded,30,769,769,0,0,0c5186a7d9629826,2026-10-07
+frame_timing_frame_step,recorded,60,769,769,0,0,0c5186a7d9629826,2026-10-07
+frame_timing_frame_step,recorded,uncapped,769,769,0,0,0c5186a7d9629826,2026-10-07
+frame_timing_frame_step,edge,,18,18,0,0,0c5186a7d9629826,2026-10-07
+frame_timing_frame_step,edge,30,18,18,0,0,0c5186a7d9629826,2026-10-07
+frame_timing_frame_step,edge,60,18,18,0,0,0c5186a7d9629826,2026-10-07
+frame_timing_frame_step,edge,uncapped,18,18,0,0,0c5186a7d9629826,2026-10-07
+frame_timing_frame_step,option-recorded,60,51,51,0,0,0c5186a7d9629826,2026-10-07
 frame_timing_get_monotonic_ms,recorded,,1767,1767,0,0,6680cb72bb22c75f,2026-10-07
 frame_timing_get_monotonic_ms,edge,,10,10,0,0,6680cb72bb22c75f,2026-10-07
 frame_timing_pace_frame,recorded,,585,585,0,0,a3d44cba82dab3c2,2026-10-07
