@@ -7,7 +7,6 @@ set -uo pipefail
 # repositories (its tests clone one and commit there), so none of them may leak in.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
       GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_CEILING_DIRECTORIES
-cd "$(git rev-parse --show-toplevel)"
 IDENT=$(git config --get bb.maintainerIdent || true)
 [ -n "$IDENT" ] || { echo "pre_push: bb.maintainerIdent is not set (tools/install_hooks.sh --maintainer)" >&2; exit 1; }
 fail=0
