@@ -8,6 +8,13 @@ The engine's core library (Dantelion2, "ClassLibrary/Core/Kernel" in its source 
 wrappers around the PS4 kernel for threads, mutexes and condition variables, which report every
 unexpected result through the engine's fatal error function (`0x024b55b0`, file, line, message).
 
+The runtime also supplies POSIX-like system imports such as `getpagesize`, `getpid`,
+`clock_gettime`, and `gettimeofday`. Their public contracts and the gaps in target-specific
+evidence are documented in the runtime system-call notes. In the game
+evidence reviewed so far, the frame limiter passes null as `gettimeofday`'s timezone argument;
+the numeric clock ID `4` is confirmed for `sceKernelClockGettime`, not for the imported
+`clock_gettime` wrapper.
+
 `kernel_condition_wait` (`0x02483e80`) waits on a condition variable: forever when the timeout
 is -1, else with a timed wait that returns -3 on timeout. It is called about 40 times a frame in
 gameplay. The community frame-rate patches replace its timed-wait call with a return that would

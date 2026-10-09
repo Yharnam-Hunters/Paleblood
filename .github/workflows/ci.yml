@@ -12,15 +12,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        cc: [gcc, clang]
+        include:
+          - cc: gcc
+            cxx: g++
+          - cc: clang
+            cxx: clang++
     steps:
       - uses: actions/checkout@v4
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=${{ matrix.cc }}
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=${{ matrix.cc }} -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
       - name: Build
         run: cmake --build build -j
-      - name: Test
-        run: ctest --test-dir build --output-on-failure
+      - name: RT_SYSLIB unit tests (every push and pull request)
+        run: ctest --test-dir build --output-on-failure --no-tests=error -R '^syslib$'
+      - name: Remaining CTest suite
+        run: ctest --test-dir build --output-on-failure --no-tests=error -E '^syslib$'
 
   policy:
     runs-on: ubuntu-24.04
@@ -52,9 +58,14 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: The pull request carries a session report
+        with:
+          fetch-depth: 0
+      - name: Validate report and runtime-only path from changed files
         env:
           BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           printf '%s' "$BODY" > "$RUNNER_TEMP/pr-body.md"
-          python3 tools/session_report.py --check-body "$RUNNER_TEMP/pr-body.md"
+          python3 tools/runtime_pr.py --check-pull-request \
+            --base "$BASE_SHA" --head "$HEAD_SHA" --body "$RUNNER_TEMP/pr-body.md"

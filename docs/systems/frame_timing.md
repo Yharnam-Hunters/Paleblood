@@ -26,6 +26,11 @@ The limiter:
 - keeps the last 32 frame times in a ring (index at `+0x260`) and derives a frame rate from
   their average (`+0x2b8`).
 
+`gettimeofday` supplies wall time, so it is not guaranteed to be monotonic. The frame limiter's
+confirmed call passes a null timezone pointer. The game's separate verified clock helper invokes
+`sceKernelClockGettime` with ID `4`, identified as `CLOCK_MONOTONIC`; that does not establish the
+IDs accepted by the imported libc `clock_gettime` wrapper. See the runtime system-call notes.
+
 `0x004632d0` is a small `gettimeofday` helper in microseconds that the stock game never calls:
 nothing calls it directly, and no relocated pointer (vtable or table slot) points at it. The
 frame-rate patches overwrite it and its neighbours with their own code (a code cave), so it is
@@ -71,18 +76,18 @@ piece of the game's own per-frame work, the next layer to map.
 | `0x0143e490` | 174 | `frame_timing_task_flush_queue_0143e490` | verified | task manager queue flush: lock, run, destroy and free every queued object, empty the list, unlock |
 | `0x0143f9f0` | 18 | `frame_timing_task_set_frame_value_0143f9f0` | verified | task manager: copies the float at +0x8 of the frame information to the global 0x058b7e08 |
 | `0x014400a0` | 180 | `frame_timing_task_workers_step_014400a0` | verified | task manager workers: three rounds over the worker queues +0x58, +0x68, +0x60 |
-| `0x01f6a9f0` | 121 | `frame_timing_until_idle_01f6a9f0` | replaced | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
-| `0x0200d8a0` | 137 | `frame_timing_until_idle_0200d8a0` | replaced | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
-| `0x0200e100` | 121 | `frame_timing_until_idle_0200e100` | replaced | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
-| `0x0200e270` | 151 | `frame_timing_request_7_0200e270` | replaced | state method: when idle in states 2..5, request 7 and advance the owner one fixed step (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
-| `0x02012610` | 121 | `frame_timing_until_idle_02012610` | replaced | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
-| `0x02012780` | 122 | `frame_timing_request_10_02012780` | replaced | state method: when idle, request 10 and advance the owner one fixed step (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
-| `0x020128f0` | 121 | `frame_timing_until_idle_020128f0` | replaced | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
-| `0x02012a60` | 151 | `frame_timing_request_7_02012a60` | replaced | state method: when idle in states 2..5, request 7 and advance the owner one fixed step (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
-| `0x02012bf0` | 121 | `frame_timing_until_idle_02012bf0` | replaced | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
+| `0x01f6a9f0` | 121 | `frame_timing_until_idle_01f6a9f0` | edge-verified | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
+| `0x0200d8a0` | 137 | `frame_timing_until_idle_0200d8a0` | edge-verified | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
+| `0x0200e100` | 121 | `frame_timing_until_idle_0200e100` | edge-verified | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
+| `0x0200e270` | 151 | `frame_timing_request_7_0200e270` | edge-verified | state method: when idle in states 2..5, request 7 and advance the owner one fixed step (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
+| `0x02012610` | 121 | `frame_timing_until_idle_02012610` | edge-verified | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
+| `0x02012780` | 122 | `frame_timing_request_10_02012780` | edge-verified | state method: when idle, request 10 and advance the owner one fixed step (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
+| `0x020128f0` | 121 | `frame_timing_until_idle_020128f0` | edge-verified | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
+| `0x02012a60` | 151 | `frame_timing_request_7_02012a60` | edge-verified | state method: when idle in states 2..5, request 7 and advance the owner one fixed step (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
+| `0x02012bf0` | 121 | `frame_timing_until_idle_02012bf0` | edge-verified | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
 | `0x02418d20` | 467 | `frame_timing_frame_step` | verified | Per frame: SprjWindow running check; creates SprjFlipper; calls the limiter; runs the task update; returns running and not quitting |
 | `0x02434520` | 552 | `frame_timing_flipper_init` | verified | SprjFlipper constructor: reads Game.FlipMode (default 4; pending default 3; clamped to 4); unset in the shipped config |
-| `0x02434770` | 2077 | `frame_timing_pace_frame` | verified | Frame limiter: target interval at +0x18 (1/30 or 1/60 s); sleeps then spins; 32-frame ring; every FPS patch edits it |
+| `0x02434770` | 2077 | `frame_timing_pace_frame` | edge-verified | Frame limiter: target interval at +0x18 (1/30 or 1/60 s); sleeps then spins; 32-frame ring; every FPS patch edits it |
 | `0x024512a0` | 78 | `frame_timing_task_frame_024512a0` | verified | task manager frame entry from the frame step: FD4TaskManager singleton, then 0x01388c60 |
 ## Structs and globals
 
