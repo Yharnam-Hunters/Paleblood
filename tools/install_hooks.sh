@@ -30,7 +30,12 @@ case "$hook_name" in
     post-commit) target=post-commit-backup.sh ;;
     *) echo "installed hook: unknown hook name ${0##*/}" >&2; exit 1 ;;
 esac
-BB_HOOK_NAME="$hook_name" exec "$root/tools/hooks/$target" "$@"
+if [ "$hook_name" = commit-msg ]; then
+    export BB_HOOK_NAME="$hook_name"
+    . "$root/tools/hooks/$target" "$@"
+    exit $?
+fi
+exec "$root/tools/hooks/$target" "$@"
 HOOK
     chmod +x "$tmp"
     mv -f -- "$tmp" "$dest"

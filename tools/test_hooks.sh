@@ -50,6 +50,23 @@ elif printf '%s' "$out" | grep -q "active-worktree-hook: reached"; then
 else
     echo "FAIL linked worktree used the wrong hook"; echo "$out"; rc=1
 fi
+cat > "$tmp/other/tools/hooks/pre-commit" <<'HOOK'
+#!/usr/bin/env bash
+if [ "$(basename "$0")" = commit-msg ]; then
+    echo "legacy-commit-msg-hook: reached"
+    exit 1
+fi
+exit 0
+HOOK
+echo "message hook dispatch" > "$tmp/other/docs/commit-msg-hook.md"
+git -C "$tmp/other" add docs/commit-msg-hook.md
+if out=$(git -C "$tmp/other" commit -q -m "test: active worktree commit-msg" 2>&1); then
+    echo "FAIL active worktree commit-msg hook accepted the commit"; rc=1
+elif printf '%s' "$out" | grep -q "legacy-commit-msg-hook: reached"; then
+    echo "ok   shared commit-msg hook preserves its name for legacy checks"
+else
+    echo "FAIL commit-msg dispatcher did not preserve the hook name"; echo "$out"; rc=1
+fi
 
 # A function for the fixtures: the first one of the committed export, or a synthetic one
 # appended to an empty export.
