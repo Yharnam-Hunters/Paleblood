@@ -110,7 +110,7 @@ def render(report: dict) -> str:
     return '\n'.join(lines) + '\n'
 
 
-def check_body(text: str) -> list:
+def check_body(text: str, required_replacements: list | None = None) -> list:
     errs = []
     if START not in text or END not in text:
         return ['the pull request has no session report (run tools/session_report.py and paste its output)']
@@ -121,12 +121,64 @@ def check_body(text: str) -> list:
         d = json.loads(m.group(1))
     except json.JSONDecodeError as e:
         return [f'the session report JSON does not parse: {e}']
+    if not isinstance(d, dict):
+        return ['the session report JSON must be an object']
     for key in ('functions', 'verify', 'findings', 'questions'):
         if key not in d:
             errs.append(f'the session report has no "{key}"')
-    for v in d.get('verify', []):
-        if v.get('failed'):
-            errs.append(f"verify.py reports {v['failed']} failing case(s) for {v.get('function')}")
+    functions = d.get('functions')
+    if not isinstance(functions, dict):
+        errs.append('the session report "functions" must be an object')
+        functions = {}
+    replacement_groups = ('replaced', 'edge-verified', 'verified')
+    replacements = []
+    for group in replacement_groups:
+        entries = functions.get(group, [])
+        if not isinstance(entries, list):
+            errs.append(f'the session report "functions.{group}" must be a list')
+            continue
+        replacements.extend(entries)
+    verify = d.get('verify', [])
+    if not isinstance(verify, list):
+        errs.append('the session report "verify" must be a list')
+        verify = []
+    for v in verify:
+        if not isinstance(v, dict):
+            errs.append('verify.py evidence entries must be objects')
+            continue
+        failed = v.get('failed', 0)
+        if isinstance(failed, int) and not isinstance(failed, bool) and failed:
+            errs.append(f"verify.py reports {failed} failing case(s) for {v.get('function')}")
+
+    replacement_names = set()
+    for replacement in replacements:
+        if not isinstance(replacement, dict) or not isinstance(replacement.get('name'), str) \
+                or not replacement['name'].strip():
+            errs.append('each replaced function needs a non-empty function name')
+            continue
+        name = replacement['name']
+        replacement_names.add(name)
+        matching = [v for v in verify if isinstance(v, dict) and v.get('function') == name]
+        if not matching:
+            errs.append(f'no matching verify.py evidence for replaced function "{name}"')
+            continue
+        valid = any(
+            type(v.get('cases')) is int and v['cases'] > 0
+            and type(v.get('passed')) is int and v['passed'] == v['cases']
+            and type(v.get('failed')) is int and v['failed'] == 0
+            for v in matching
+        )
+        if not valid:
+            errs.append(f'verify.py evidence for replaced function "{name}" is empty or incomplete')
+
+    if required_replacements is not None:
+        required_names = {item['name'] for item in required_replacements}
+        missing = sorted(required_names - replacement_names)
+        extra = sorted(replacement_names - required_names)
+        if missing:
+            errs.append('session report omits changed replacements: ' + ', '.join(missing))
+        if extra:
+            errs.append('session report lists replacements not changed from original: ' + ', '.join(extra))
     return errs
 
 

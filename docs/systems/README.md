@@ -22,8 +22,8 @@ One page per game system: summary, key functions, structs and globals, patch poi
 |---|---:|---:|
 | Target (Ghidra export) | 157,757 | 42,487,347 |
 | Replaced | 30 (0.02%) | 15,176 (0.04%) |
-| Edge-verified | 21 (0.01%) | 14,010 (0.03%) |
-| Verified | 21 (0.01%) | 14,010 (0.03%) |
+| Edge-verified | 30 (0.02%) | 15,176 (0.04%) |
+| Verified | 20 (0.01%) | 11,933 (0.03%) |
 
 Each row includes the next: verified functions are also edge-verified and replaced.
 
@@ -34,7 +34,7 @@ Each row includes the next: verified functions are also edge-verified and replac
 | camera | 0 | 0 | 0 | 0 | 0 |
 | character | 1 | 1 | 1 | 1 | 979 |
 | event | 1 | 1 | 1 | 1 | 368 |
-| frame_timing | 22 | 21 | 12 | 12 | 5,447 |
+| frame_timing | 22 | 21 | 21 | 11 | 5,447 |
 | input | 1 | 1 | 1 | 1 | 426 |
 | kernel | 1 | 1 | 1 | 1 | 204 |
 | loading | 0 | 0 | 0 | 0 | 0 |

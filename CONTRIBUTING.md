@@ -15,18 +15,41 @@ welcome.
 
 1. Read the [README](README.md) and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the
    port works, and [QUIRKS.md](QUIRKS.md) for the traps.
-2. Start from your own console and your own copy: Bloodborne (CUSA03173, EU) with the 1.09
-   update, dumped from your own PS4 (see **Your own copy** below). Nobody here will send you
-   game files, and nobody will ask you for yours.
-3. Follow [docs/ONBOARDING.md](docs/ONBOARDING.md): from your own dump to your first pull
-   request in about an hour.
-4. Pick an issue labelled **good first issue**, or a target from [NEXT.md](NEXT.md).
+2. Choose a track. Decompilation work uses your own console and your own game copy; follow
+   [docs/ONBOARDING.md](docs/ONBOARDING.md). Runtime system-call work needs no game files, dump,
+   or captures.
+3. Pick an issue labelled **good first issue**, a function in [issue #34](https://github.com/Yharnam-Hunters/Paleblood/issues/34),
+   or a target from [NEXT.md](NEXT.md).
 
 Questions go in [Discussions](https://github.com/Yharnam-Hunters/Paleblood/discussions) or in
 the issue you are working on. How the systems work, the devlog and the progress dashboard are on
 the [documentation site](https://yharnam-hunters.github.io/byrgenwerth-site/).
 
-## Workflow
+## Runtime system calls (issue #34)
+
+Runtime contributions are separate from decompilation. Read
+[docs/runtime-syscalls.md](docs/runtime-syscalls.md) and review the evidence for the call before
+implementing it. Claim one function or a tightly related group in issue #34 before starting, so
+maintainers can avoid duplicate work. Use a branch named `runtime/<function>`; for a group, use
+the lead function's name.
+
+Implement the call in `runtime/syslib/<group>.c` and register it with `RT_SYSLIB`. Add or update
+the applicable cases in `test/test_syslib.c`. Unknown target behavior must stay explicit and fail
+loudly; do not choose guessed return values just to advance `tools/boot.py`.
+
+Runtime code is clean-room: use public API documentation, independent reverse engineering, and
+observed behavior as facts. Do not copy or adapt code from bbport or shadPS4. Keep one call or a
+tightly related group in each PR. Runtime-only PRs need no proprietary game dump, captures, or
+function-level `verify.py` results. CI compiles with GCC and Clang, runs the RT_SYSLIB test and
+the rest of CTest, and retains the repository's policy checks. CI selects the concise runtime
+report from changed files, not a manually applied label. Include sources, confirmed behavior,
+unresolved questions, tests, and the clean-room basis in that report.
+
+After the PR merges, a maintainer runs `tools/boot.py` locally and posts the result on the PR.
+This boot check is not required from an outside contributor and does not require sharing game
+files or captures.
+
+## Decompilation workflow
 
 1. **Claim it.** Find or open an issue and comment before you start (the **Claim function or
    cluster** template); one open claim per function, so nobody works twice.
@@ -55,13 +78,16 @@ drafts and captures outside the repository (the tools default to `../data`, next
 
 ## Pull request contents
 
-Every pull request carries a **session report**: run `tools/session_report.py` on your branch
-(attach your `verify.py` results with `--verify` and the case directories with `--captures`) and
-paste its output into the PR. It lists the functions you named, replaced and verified, the
-verify results, and the findings and open questions from your commit messages (`Finding: ...`,
-`Question: ...` lines). CI checks that it is there and that no attached result fails.
+Runtime-only PRs with runtime implementation or RT_SYSLIB tests use the concise runtime report
+in the PR template. Documentation-only PRs use the concise documentation report. CI chooses the
+path from changed files, not a label; unknown code paths use the full **session report**.
+Decompilation and mixed-track PRs run the full report path even when they also change runtime
+files. Run `tools/session_report.py` on your branch (attach `verify.py` results with `--verify`
+and the case directories with `--captures`) and paste its output into the PR. CI checks that
+every function replacement in the report has matching, non-empty, passing verification evidence,
+and that the report includes each replacement status change found in `symbols/functions.csv`.
 
-Every pull request that replaces code contains, in the description:
+Every pull request that replaces game code contains, in the description:
 
 - the `tools/verify.py run` output for each function, on cases recorded in a real run and on
   edge cases ([docs/VERIFY.md](docs/VERIFY.md)),
@@ -108,9 +134,9 @@ A function goes to `main` only when it is **verified and readable**:
 Investigation notes and logs go in the pull request, not in the repository. No screenshots or
 clips of the game there either (see Rules).
 
-## Your own copy
+## Your own copy (decompilation work)
 
-Everything here starts from your own console and your own copy of the game: you dump
+Decompilation work starts from your own console and your own copy of the game: you dump
 Bloodborne and its 1.09 update from your own PS4, and every tool in this repository works only
 on that dump, on your machine. The project does not provide or point to game files, pkgs,
 firmware, keys or decryption tools.
@@ -185,7 +211,9 @@ maintainer in an issue or privately.
 
 ## AI-assisted work
 
-Allowed if disclosed and verified. Disclose with a `Co-Authored-By` trailer on
-the commits or a note in the pull request description, and tick the box in the
-template. AI-assisted functions are verified like any other: `verify.py` output
-and the independent review are mandatory, and the author answers for every line.
+Allowed if disclosed and verified. Every AI-assisted commit must keep a
+`Co-Authored-By` trailer naming the tool actually used. For Codex, use
+`Co-Authored-By: Codex <noreply@openai.com>`. A pull request note does not replace the trailer.
+Do not rewrite existing commits to add or change disclosure. AI-assisted decompilation is
+verified like any other: `verify.py` output and the independent review are mandatory, and the
+author answers for every line.
