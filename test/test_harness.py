@@ -141,6 +141,46 @@ class Harness(unittest.TestCase):
         out = verify.compare(res('original'), res('replacement'))
         self.assertEqual((out['cases'], out['failed']), (2, 0))
 
+    def test_capture_provenance_is_optional_but_bound_when_present(self):
+        caps = os.path.join(self.d, 'caps')
+        os.makedirs(caps)
+        path = os.path.join(caps, 'capture.json')
+        captured = dict(CASE, capture={'function': 'synthetic_function', 'run_id': 'test-run_1'})
+        with open(path, 'w') as f:
+            json.dump(captured, f)
+        lib = self.build(False)
+        results = verify.run_cases(self.boot, caps, '0x00400000', 'replacement', lib,
+                                   function='synthetic_function')
+        self.assertEqual(len(results['original']), 1)
+        with self.assertRaisesRegex(verify.BadInput, 'records .+, not'):
+            verify.run_cases(self.boot, caps, '0x00400000', 'replacement', lib,
+                             function='different_function')
+        captured['capture'] = {'function': 'synthetic_function', 'run_id': '../escape'}
+        with open(path, 'w') as f:
+            json.dump(captured, f)
+        with self.assertRaisesRegex(verify.BadInput, 'invalid capture run_id'):
+            verify.run_cases(self.boot, caps, '0x00400000', 'replacement', lib,
+                             function='synthetic_function')
+
+    def test_legacy_capture_without_provenance_replays(self):
+        caps = os.path.join(self.d, 'caps')
+        os.makedirs(caps)
+        with open(os.path.join(caps, 'legacy.json'), 'w') as f:
+            json.dump(CASE, f)
+        results = verify.run_cases(self.boot, caps, '0x00400000', 'replacement', self.build(False),
+                                   function='synthetic_function')
+        self.assertEqual(len(results['original']), 1)
+
+    def test_direct_harness_rejects_wrong_case_address(self):
+        wrong = dict(CASE, address='0x00400800')
+        with open(self.case, 'w') as f:
+            json.dump(wrong, f)
+        cmd = [sys.executable, os.path.join(TOOLS, 'harness.py'), '--elf', self.boot,
+               '--case', self.case, '--address', '0x00400000']
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 3)
+        self.assertIn('case is for 0x00400800', r.stderr)
+
     def test_stub_replaces_a_game_function(self):
         # Stub f itself at 0x400000 and call it through... the harness calls the stub directly.
         case = dict(CASE, stubs=[{'address': '0x00400000', 'ret': 5}], returns='i64', imports=[])

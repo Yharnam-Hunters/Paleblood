@@ -509,6 +509,8 @@ def load_replacement(lib_path: str, symbol: str, size: int) -> int:
 
 
 def run_case(machine: Machine, case: dict, address: str, target: int | None) -> dict:
+    if case.get('address') != address:
+        raise BadInput(f'case is for {case.get("address")}, not {address}')
     run = Run(machine.boot, case)
     run.setup(machine)
     return run.run(target if target is not None else run.guest(int(address, 0)))

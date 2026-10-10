@@ -70,6 +70,18 @@ request. Keep them under `$BB_CAPTURES` (for example `/mnt/.../captures/<functio
 }
 ```
 
+Runtime-generated cases may also include optional provenance, without changing the schema:
+
+```json
+"capture": {"function": "frame_timing_get_monotonic_ms", "run_id": "20261006-run2"}
+```
+
+The function name and run ID bind the case to the hooked function and one capture process. During
+`verify.py run`, provenance is checked against the requested function and the case's `address` is
+checked against that function's address. Legacy schema-1 cases without `capture` remain supported.
+Run IDs are filename-safe; case files are created exclusively with owner-only permissions, so a
+reused run ID and case number cannot silently replace an existing recording.
+
 - `args`: `rdi`..`r9`. A number, `buf:NAME[+off]`, or `guest:0xADDRESS` (a PS4 address).
 - `buffers`: sandbox memory, laid out in name order; `bytes` is hex, zero-padded to `size`.
 - `memory`: written before the call, at an image address or at `buf:NAME+off`: `bytes`,
