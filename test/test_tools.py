@@ -549,16 +549,58 @@ class Statuses(unittest.TestCase):
         d = tempfile.mkdtemp()
         try:
             os.mkdir(os.path.join(d, 'symbols'))
-            st = {'outcome': 'unimplemented', 'milestone': 'entry', 'milestone_index': 1, 'milestones': ['loaded', 'entry', 'files'],
+            st = {'outcome': 'unimplemented', 'phase': 'eboot', 'milestone': 'entry', 'milestone_index': 1,
+                  'milestones': ['loaded', 'entry', 'files'],
                   'imports_total': 4, 'imports_implemented': 0, 'imports_bundled': 1, 'imports_remaining': 3, 'imports_called': 1,
-                  'first_unimplemented': {'caller': 'eboot', 'library': 'libc', 'symbol': 'f', 'nid': 'x'}}
+                  'first_unimplemented': {'caller': 'eboot', 'library': 'libc', 'symbol': 'f', 'nid': 'x',
+                                          'returns_to': 'eboot+0x101'}}
             self.assertIsNone(boot.record(st, d, '2026-01-01'))
             self.assertIsNone(boot.record(st, d, '2026-01-02'))            # unchanged: no new row
+            moved = {**st, 'first_unimplemented': {**st['first_unimplemented'], 'returns_to': 'eboot+0x220'}}
+            self.assertIsNone(boot.record(moved, d, '2026-01-03'))          # same import/counts, new call site
+            fault = {'outcome': 'fault', 'phase': 'libc.elf', 'milestone': 'entry', 'milestone_index': 1,
+                     'imports_total': 4, 'imports_implemented': 0, 'imports_bundled': 1, 'imports_remaining': 3,
+                     'fault': {'at': 'libc.elf+0x455', 'signal': 11, 'address': '0x0'}}
+            self.assertIsNone(boot.record(fault, d, '2026-01-04'))
             st2 = {**st, 'milestone': 'files', 'milestone_index': 2, 'imports_implemented': 1, 'imports_remaining': 2}
-            self.assertEqual(boot.record(st2, d, '2026-01-03'), 'files')
+            self.assertEqual(boot.record(st2, d, '2026-01-05'), 'files')
             with open(os.path.join(d, 'symbols', 'boot_history.csv')) as f:
-                rows = f.read().splitlines()
-            self.assertEqual(rows[1:], ['2026-01-01,entry,1,4,1,0,3,eboot->libc:f', '2026-01-03,files,2,4,1,1,2,eboot->libc:f'])
+                rows = list(csv.DictReader(f))
+            self.assertEqual(len(rows), 4)
+            self.assertEqual([row['returns_to'] for row in rows], ['eboot+0x101', 'eboot+0x220', '', 'eboot+0x101'])
+            self.assertEqual((rows[2]['outcome'], rows[2]['phase'], rows[2]['fault_at'], rows[2]['fault_signal'],
+                              rows[2]['fault_address']), ('fault', 'libc.elf', 'libc.elf+0x455', '11', '0x0'))
+            self.assertEqual((rows[0]['milestone'], rows[-1]['milestone']), ('entry', 'files'))
+        finally:
+            shutil.rmtree(d)
+
+    def test_boot_history_preserves_legacy_rows_and_adds_diagnostics(self):
+        sys.path.insert(0, os.path.join(ROOT, 'tools'))
+        import boot
+        d = tempfile.mkdtemp()
+        try:
+            os.mkdir(os.path.join(d, 'symbols'))
+            path = os.path.join(d, 'symbols', 'boot_history.csv')
+            legacy = ['date', 'milestone', 'milestone_index', 'imports_total', 'imports_bundled',
+                      'imports_implemented', 'imports_remaining', 'stops_at']
+            with open(path, 'w', newline='') as f:
+                w = csv.DictWriter(f, fieldnames=legacy, lineterminator='\n')
+                w.writeheader()
+                w.writerow({'date': '2026-01-01', 'milestone': 'loaded', 'milestone_index': '0',
+                            'imports_total': '4', 'imports_bundled': '1', 'imports_implemented': '0',
+                            'imports_remaining': '3', 'stops_at': 'eboot->libc:f'})
+            status = {'outcome': 'unimplemented', 'phase': 'eboot', 'milestone': 'loaded', 'milestone_index': 0,
+                      'imports_total': 4, 'imports_bundled': 1, 'imports_implemented': 0, 'imports_remaining': 3,
+                      'first_unimplemented': {'caller': 'eboot', 'library': 'libc', 'symbol': 'f',
+                                              'returns_to': 'eboot+0x22'}}
+            boot.record(status, d, '2026-01-02')
+            with open(path, newline='') as f:
+                rows = list(csv.DictReader(f))
+            self.assertEqual(len(rows), 2)
+            self.assertEqual((rows[0]['date'], rows[0]['stops_at'], rows[0]['returns_to']),
+                             ('2026-01-01', 'eboot->libc:f', ''))
+            self.assertEqual((rows[1]['outcome'], rows[1]['phase'], rows[1]['returns_to']),
+                             ('unimplemented', 'eboot', 'eboot+0x22'))
         finally:
             shutil.rmtree(d)
 

@@ -15,7 +15,9 @@ mechanism lives here and the knowledge lives in `game/` as data.
 Roadmap, in order: loader (done) → kernel, threads and memory → files → input → audio → video
 out → GNM and shaders (the largest). `tools/boot.py` runs the boot harness and records how far
 it gets (`symbols/boot.json`, `symbols/boot_history.csv`, `symbols/imports.csv`); the README's
-progress table shows the import coverage and the furthest boot milestone.
+progress table shows the import coverage and the furthest boot milestone. The boot history keeps
+the outcome, phase, import return site, and guest fault location so changes to a failure's exact
+execution point remain visible even when import totals and the blocking symbol stay the same.
 
 Clean room: written from public documentation (NID databases, psdevwiki), our own
 reverse engineering and observed behaviour. No code copied from, or modelled line by line on,
