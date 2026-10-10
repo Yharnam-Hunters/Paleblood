@@ -133,7 +133,9 @@ differ. Write order is not compared.
 A function whose edge cases pass is `edge-verified` (CONTRIBUTING.md, "Status"). Once cases
 recorded in the game exist for it (`CAPTURES/NAME/*.json`), `tools/promote.py` runs `verify.py`
 on them and on the edge cases again, and sets `verified` only if both pass completely. It runs
-at session end (`tools/end_session.sh`); `--dry-run` shows what it would do.
+at session end (`tools/end_session.sh`); `--dry-run` shows what it would do. Comparison result
+JSON is written to a temporary directory outside the capture library and discarded after each
+run, so promotion does not add generated files beside the source cases.
 
 ## Recorded results and quarantine
 
