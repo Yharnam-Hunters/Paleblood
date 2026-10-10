@@ -10,12 +10,14 @@
    everything else does nothing when it is not. */
 
 #include <cstdint>
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <map>
 #include <set>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "runtime/capture.h"
 #include "runtime/guest.h"
@@ -60,7 +62,7 @@ public:
 
     bool begin(const char *function)
     {
-        name_ = function;
+        name_ = function ? function : "";
         number = rt_capture_begin(function);
         return on();
     }
@@ -122,16 +124,23 @@ public:
                const std::string &extra = "")
     {
         if (!on()) return;
+        const char *run = rt_capture_run_id();
+        if (!run) return;
         char head[160];
         std::snprintf(head, sizeof head, "{\"schema\": 1, \"address\": \"%s\", \"id\": \"capture_%04d\", \"returns\": \"%s\", ",
                       address.c_str(), number, returns.c_str());
         std::string bufs;
+        std::vector<std::pair<std::string, unsigned>> ordered;
         for (const auto &b : bufs_)
-            bufs += (bufs.empty() ? "" : ", ") + ("\"" + b.second.name + "\": {\"size\": " + std::to_string(b.second.size) + "}");
-        const std::string json = std::string(head) + "\"args\": {" + args + "}, \"buffers\": {" + bufs + "}, \"memory\": [" +
+            ordered.emplace_back(b.second.name, b.second.size);
+        std::sort(ordered.begin(), ordered.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+        for (const auto &b : ordered)
+            bufs += (bufs.empty() ? "" : ", ") + ("\"" + b.first + "\": {\"size\": " + std::to_string(b.second) + "}");
+        const std::string capture = "\"capture\": {\"function\": \"" + std::string(name_) + "\", \"run_id\": \"" + run + "\"}, ";
+        const std::string json = std::string(head) + capture + "\"args\": {" + args + "}, \"buffers\": {" + bufs + "}, \"memory\": [" +
                                  memory + "], \"stubs\": [" + stubs + "], \"imports\": [" + imports + "]" +
                                  (extra.empty() ? "" : ", " + extra) + "}";
-        rt_capture_write(name_, number, json.c_str());
+        rt_capture_write(name_.c_str(), number, json.c_str());
     }
 
 private:
@@ -144,7 +153,7 @@ private:
         if (!seen_.insert({addr, n}).second) return;
         memory += (memory.empty() ? "" : ", ") + ("{\"addr\": \"" + addr + "\", " + rest + "}");
     }
-    const char *name_ = "";
+    std::string name_;
     std::map<const void *, Buf> bufs_;
     std::set<std::pair<std::string, unsigned>> seen_;
 };

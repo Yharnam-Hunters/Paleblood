@@ -28,6 +28,7 @@ import csv
 import glob
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -165,7 +166,7 @@ def run_side(boot: str, case: str, address: str, symbol: str | None, lib: str | 
 
 
 def run_cases(boot: str, captures: str, address: str, symbol: str, lib: str,
-              patch: str | None = None, env: dict | None = None) -> dict:
+              patch: str | None = None, env: dict | None = None, function: str | None = None) -> dict:
     """Both sides of every case file in CAPTURES: {'original': [...], 'replacement': [...]}.
     One harness process per side maps the image once and forks per case."""
     cases = sorted(glob.glob(os.path.join(captures, '*.json')))
@@ -176,6 +177,18 @@ def run_cases(boot: str, captures: str, address: str, symbol: str, lib: str,
             case = json.load(f)
         if case.get('address') != address:
             raise BadInput(f'{os.path.basename(path)} is for {case.get("address")}, not {address}')
+        capture = case.get('capture')
+        if capture is not None:
+            if not isinstance(capture, dict):
+                raise BadInput(f'{os.path.basename(path)} has invalid capture provenance')
+            captured_function = capture.get('function')
+            if not isinstance(captured_function, str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,127}', captured_function) or captured_function in ('.', '..'):
+                raise BadInput(f'{os.path.basename(path)} has invalid capture function')
+            if function is not None and captured_function != function:
+                raise BadInput(f'{os.path.basename(path)} records {capture.get("function")!r}, not {function!r}')
+            run_id = capture.get('run_id')
+            if not isinstance(run_id, str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,63}', run_id) or run_id in ('.', '..'):
+                raise BadInput(f'{os.path.basename(path)} has invalid capture run_id')
     results: dict[str, list] = {}
     for side, sym in (('original', None), ('replacement', symbol)):
         cmd = [sys.executable, HARNESS, '--elf', boot, '--cases', captures, '--address', address,
@@ -209,7 +222,7 @@ def run(name: str, captures: str, boot: str | None, lib: str | None, out: str | 
         raise BadInput(f'no game library at {lib}: build the repository or pass --lib')
     address, symbol = lookup(name)
     extra = dict(e.split('=', 1) for e in (env or []))
-    results = run_cases(boot, captures, address, symbol, lib, patch, extra)
+    results = run_cases(boot, captures, address, symbol, lib, patch, extra, name)
     out = out or os.path.join(captures, 'results')
     os.makedirs(out, exist_ok=True)
     files = {}

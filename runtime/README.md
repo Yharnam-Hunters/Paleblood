@@ -10,7 +10,7 @@ mechanism lives here and the knowledge lives in `game/` as data.
 | Boot harness | `boot.c` (`pbboot`) | runs the executable's entry on the runtime; stops at the first unimplemented import and names it |
 | System libraries | `syslib/*.c`, `include/runtime/syslib.h` | implementations by library and symbol (`RT_SYSLIB`), one file per system call group |
 | NIDs | `nid.c`, `include/runtime/nid.h` | symbol name to NID |
-| Hooks and captures | `hooks.c`, `capture.c`, `probe.c`, `plugin.c` | the hook registry and input recording used for verification |
+| Hooks and captures | `hooks.c`, `capture.c`, `include/runtime/recorder.hpp`, `probe.c`, `plugin.c` | the hook registry and opt-in input recording used for verification; recorder output carries function/run provenance and stable buffer ordering |
 
 Roadmap, in order: loader (done) → kernel, threads and memory → files → input → audio → video
 out → GNM and shaders (the largest). `tools/boot.py` runs the boot harness and records how far

@@ -14,6 +14,8 @@ extern "C" {
 
 /* Returns the case number to record for this call, or -1 when nothing is recorded. */
 int rt_capture_begin(const char *function);
+/* Stable identifier shared by cases in this capture process; NULL if capture is unavailable. */
+const char *rt_capture_run_id(void);
 /* Writes the case file; `json` is the complete case object. */
 void rt_capture_write(const char *function, int case_number, const char *json);
 
