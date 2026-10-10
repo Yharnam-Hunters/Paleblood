@@ -756,5 +756,38 @@ class VerificationRecord(unittest.TestCase):
         self.assertEqual(self.v.check(self.root, [dict(self.funcs[0], status='edge-verified')]), [])
 
 
+class Promotion(unittest.TestCase):
+    """tools/promote.py keeps generated verification results out of the capture library."""
+
+    def test_verification_output_is_temporary_and_outside_capture_directory(self):
+        from unittest import mock
+        from types import SimpleNamespace
+
+        sys.path.insert(0, os.path.join(ROOT, 'tools'))
+        import promote
+        with tempfile.TemporaryDirectory(prefix='capture-library-') as captures:
+            capture_dir = os.path.join(captures, 'sample_function')
+            os.mkdir(capture_dir)
+            for name in ('case_a.json', 'case_b.json'):
+                with open(os.path.join(capture_dir, name), 'w') as f:
+                    json.dump({}, f)
+            observed = {}
+
+            def verify(cmd, **kwargs):
+                out = cmd[cmd.index('--out') + 1]
+                observed['out'] = out
+                observed['capture_dir'] = cmd[cmd.index('--captures') + 1]
+                self.assertTrue(os.path.isdir(out))
+                return SimpleNamespace(returncode=0,
+                                       stdout=json.dumps({'cases': 2, 'passed': 2, 'failed': 0}),
+                                       stderr='')
+
+            with mock.patch.object(promote.subprocess, 'run', side_effect=verify):
+                self.assertEqual(promote.passes('sample_function', capture_dir, None), (True, '2/2 passed'))
+            self.assertEqual(observed['capture_dir'], capture_dir)
+            self.assertNotEqual(os.path.commonpath([capture_dir, observed['out']]), capture_dir)
+            self.assertFalse(os.path.exists(observed['out']))
+
+
 if __name__ == '__main__':
     unittest.main()

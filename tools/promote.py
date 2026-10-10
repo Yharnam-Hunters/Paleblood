@@ -24,6 +24,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -36,7 +37,10 @@ def passes(name: str, directory: str, record: str | None) -> tuple[bool, str]:
     cmd = [sys.executable, os.path.join(ROOT, 'tools', 'verify.py'), 'run', '--function', name, '--captures', directory]
     if record:
         cmd += ['--record', record]
-    p = subprocess.run(cmd, capture_output=True, text=True)
+    # verify.py otherwise writes original/replacement result JSON under CAPTURES/results.
+    # Keep comparison artifacts separate from the source cases in both normal and dry runs.
+    with tempfile.TemporaryDirectory(prefix='paleblood-promote-') as output:
+        p = subprocess.run(cmd + ['--out', output], capture_output=True, text=True)
     try:
         r = json.loads(p.stdout)
     except json.JSONDecodeError:

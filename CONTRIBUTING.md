@@ -2,7 +2,7 @@
 
 Paleblood is a decompilation of Bloodborne with its own runtime: the game's code rewritten as readable C++, one verified function at a time.
 <!-- status:start -->
-The game doesn't run on Paleblood yet: 20 of 157757 functions are verified (0.01%). On [our own runtime](runtime/) the executable's boot gets as far as `scePthreadAttrGetaffinity` (libkernel, called by libc.elf), with 238 of 686 system imports provided.
+The game doesn't run on Paleblood yet: 21 of 157757 functions are verified (0.01%). On [our own runtime](runtime/) the executable's boot gets as far as `scePthreadAttrGetaffinity` (libkernel, called by libc.elf), with 238 of 686 system imports provided.
 <!-- status:end -->
 
 The goal is a complete source port: every function rewritten and proved, running on our own
