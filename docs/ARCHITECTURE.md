@@ -53,7 +53,10 @@ being removed. The game does not run on Paleblood until this roadmap is far enou
    image was checked byte-identical to the one the old runtime prepared, and the verification
    harness uses it.
 2. **Generic capture:** recording a function's inputs from the runtime side, with no recording
-   code inside replacements, so recordings of real play come from the runtime.
+   code inside replacements, so recordings of real play come from the runtime. The host's current
+   direct-jump hook interface has no return-aware observer or typed descriptors; the isolated
+   design and synthetic proof in [capture architecture](capture-architecture.md) do not connect
+   capture to production hooks.
 3. **Kernel, threads and memory**, then 4. **files**, 5. **input**, 6. **audio**, 7. **video out**.
 8. **GNM and shaders**, the largest part: graphics are rebuilt at the engine level, by replacing
    the game's own graphics layer (GX) with our Vulkan code, rather than emulating the PS4's GPU.
