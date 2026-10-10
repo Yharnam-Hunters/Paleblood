@@ -46,9 +46,10 @@ bad=$(printf '%s\n' "$staged" | grep -E "(^|/)($local_only)" || true)
 
 python3 tools/check_no_game_data.py --staged || fail "game data check failed"
 
-tmp=$(mktemp -d /tmp/pb-precommit.XXXXXXXX)
+tmp_parent=${TMPDIR:-/tmp}
+tmp=$(mktemp -d "$tmp_parent/pb-precommit.XXXXXXXX")
 cleanup_tmp() {
-    if [ "${tmp%/*}" != /tmp ] || [[ "${tmp##*/}" != pb-precommit.* ]]; then
+    if [[ "$tmp" != "$tmp_parent"/pb-precommit.* ]]; then
         echo "pre-commit: refusing to clean unexpected temporary path: $tmp" >&2
         return 1
     fi

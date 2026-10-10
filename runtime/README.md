@@ -12,6 +12,17 @@ mechanism lives here and the knowledge lives in `game/` as data.
 | NIDs | `nid.c`, `include/runtime/nid.h` | symbol name to NID |
 | Hooks and captures | `hooks.c`, `capture.c`, `include/runtime/recorder.hpp`, `probe.c`, `plugin.c` | hook registry and opt-in case writer; production hook dispatch does not yet observe calls or connect the Recorder to replacements; serialized cases carry function/run provenance and stable buffer ordering |
 
+## Host v1 hook callback
+
+`runtime/host_hooks.c` provides a Paleblood-owned implementation for the version-1
+`install_hook(offset, size, target)` callback. The host calls `rt_host_hooks_initialize` with its
+v1 interface before `bbgame_init`; the callback then writes a 14-byte x86-64 indirect absolute
+jump at the image-relative function entry. This form preserves every guest argument register.
+The host must keep the mapped image writable and executable until hook installation finishes.
+The callback bounds-checks the complete function extent and rejects short functions and null
+targets. It is an additive host component; the existing scaffold still owns full game loading and
+execution.
+
 Roadmap, in order: loader (done) → kernel, threads and memory → files → input → audio → video
 out → GNM and shaders (the largest). `tools/boot.py` runs the boot harness and records how far
 it gets (`symbols/boot.json`, `symbols/boot_history.csv`, `symbols/imports.csv`); the README's

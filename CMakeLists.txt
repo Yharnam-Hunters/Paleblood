@@ -25,6 +25,10 @@ add_test(NAME hooks COMMAND test_hooks)
 add_executable(test_plugin test/test_plugin.c runtime/plugin.c runtime/hooks.c)
 target_include_directories(test_plugin PRIVATE runtime/include)
 add_test(NAME plugin COMMAND test_plugin)
+
+add_executable(test_host_hooks test/test_host_hooks.c runtime/host_hooks.c)
+target_include_directories(test_host_hooks PRIVATE runtime/include)
+add_test(NAME host_hooks COMMAND test_host_hooks)
 add_executable(test_capture test/test_capture.cpp)
 target_link_libraries(test_capture bbrt)
 add_test(NAME capture COMMAND test_capture)
@@ -32,7 +36,8 @@ add_executable(test_capture_poc test/test_capture_poc.cpp)
 add_test(NAME capture_poc_fail_closed COMMAND test_capture_poc --self-test)
 add_test(NAME capture_poc_replay
          COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/capture_poc_integration.py $<TARGET_FILE:test_capture_poc>)
-set_tests_properties(capture_poc_replay PROPERTIES ENVIRONMENT "CC=${CMAKE_C_COMPILER}")
+set_tests_properties(capture_poc_replay PROPERTIES
+    ENVIRONMENT "CC=${CMAKE_C_COMPILER};BB_LOADER=$<TARGET_FILE:pbloader>")
 # System library implementations, compiled in directly so the linker keeps every RT_SYSLIB entry
 file(GLOB PB_TEST_SYSLIB CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/runtime/syslib/*.c)
 add_executable(test_syslib test/test_syslib.c runtime/process.c ${PB_TEST_SYSLIB})

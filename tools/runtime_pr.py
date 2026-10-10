@@ -21,7 +21,7 @@ import session_report
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-RUNTIME_TEST_FILES = {'test/test_syslib.c', 'test/test_plugin.c'}
+RUNTIME_TEST_FILES = {'test/test_syslib.c', 'test/test_plugin.c', 'test/test_host_hooks.c'}
 RUNTIME_CODE_SUFFIXES = {'.c', '.cc', '.cpp', '.h', '.hh', '.hpp', '.s', '.S'}
 RUNTIME_DOC_FILES = {
     'docs/runtime.md',
@@ -32,8 +32,10 @@ RUNTIME_DOC_FILES = {
 RUNTIME_CHANGE_FILES = {
     'CMakeLists.txt',
     'runtime/CMakeLists.txt',
+    'runtime/README.md',
     'test/CMakeLists.txt',
     'test/test_syslib.c',
+    'tools/runtime_pr.py',
     *RUNTIME_DOC_FILES,
 }
 
