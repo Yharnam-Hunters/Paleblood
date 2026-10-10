@@ -21,7 +21,7 @@ import session_report
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-RUNTIME_TEST_FILES = {'test/test_syslib.c'}
+RUNTIME_TEST_FILES = {'test/test_syslib.c', 'test/test_plugin.c'}
 RUNTIME_CODE_SUFFIXES = {'.c', '.cc', '.cpp', '.h', '.hh', '.hpp', '.s', '.S'}
 RUNTIME_DOC_FILES = {
     'docs/runtime.md',

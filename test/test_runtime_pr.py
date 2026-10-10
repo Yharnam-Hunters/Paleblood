@@ -67,6 +67,12 @@ def decomp_body(replaced=None, verify=None):
 
 
 class ChangedFileClassification(unittest.TestCase):
+    def test_scaffold_host_contract_test_uses_runtime_path(self):
+        paths = ['CMakeLists.txt', 'test/test_plugin.c']
+        self.assertEqual(runtime_pr.classify_paths(paths), {
+            'classification': 'runtime-only', 'runtime_changed': True,
+        })
+
     def test_runtime_implementation_and_its_tests_use_runtime_path(self):
         paths = ['runtime/syslib/time.c', 'test/test_syslib.c', 'docs/runtime-syscalls.md']
         self.assertEqual(runtime_pr.classify_paths(paths), {
