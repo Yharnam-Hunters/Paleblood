@@ -8,20 +8,21 @@ set -uo pipefail
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
       GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE GIT_CEILING_DIRECTORIES
 root=$(git rev-parse --show-toplevel)
-tmp=$(mktemp -d /tmp/pb-hook-tests.XXXXXXXX)
+tmp_parent=${TMPDIR:-/tmp}
+tmp=$(mktemp -d "$tmp_parent/pb-hook-tests.XXXXXXXX")
 cleanup_tmp() {
-    if [ "${tmp%/*}" != /tmp ] || [[ "${tmp##*/}" != pb-hook-tests.* ]]; then
+    if [[ "$tmp" != "$tmp_parent"/pb-hook-tests.* ]]; then
         echo "test_hooks: refusing to clean unexpected temporary path: $tmp" >&2
         return 1
     fi
     [ ! -d "$tmp" ] || rm -r -- "$tmp"
 }
 trap cleanup_tmp EXIT
-git clone -q "$root" "$tmp/r"
+git clone -q "$root" "$tmp/r" || { echo "test_hooks: cannot create temporary clone" >&2; exit 2; }
 command cp "$root/tools/hooks/pre-commit" "$tmp/r/tools/hooks/pre-commit"
 command cp "$root/tools/install_hooks.sh" "$tmp/r/tools/install_hooks.sh"
 command cp "$root/tools/pre_push.sh" "$tmp/r/tools/pre_push.sh"
-cd "$tmp/r"
+cd "$tmp/r" || { echo "test_hooks: cannot enter temporary clone" >&2; exit 2; }
 git rev-parse --verify -q HEAD >/dev/null || { echo "test_hooks: clone has no commit"; exit 2; }
 git config user.name "Test Maintainer"
 git config user.email maintainer@example.invalid
