@@ -29,6 +29,8 @@ static void *fn(const char *library, const char *symbol)
 typedef int (*f1)(void **);
 typedef int (*f2i)(void **, int);
 typedef int (*finit)(void **, void **, const char *);
+typedef uint32_t (*f_u32_u32)(uint32_t);
+typedef uint16_t (*f_u16_u16)(uint16_t);
 
 int main(void)
 {
@@ -38,6 +40,10 @@ int main(void)
     const f1 ainit = (f1)fn("libkernel", "scePthreadMutexattrInit"), adestroy = (f1)fn("libkernel", "scePthreadMutexattrDestroy");
     const f2i settype = (f2i)fn("libkernel", "scePthreadMutexattrSettype");
     const f1 plock = (f1)fn("libScePosix", "pthread_mutex_lock");
+    const f_u32_u32 htonl = (f_u32_u32)fn("libSceNet", "sceNetHtonl");
+    const f_u16_u16 htons = (f_u16_u16)fn("libSceNet", "sceNetHtons");
+    const f_u32_u32 ntohl = (f_u32_u32)fn("libSceNet", "sceNetNtohl");
+    const f_u16_u16 ntohs = (f_u16_u16)fn("libSceNet", "sceNetNtohs");
     if (failures) return 1;
 
     /* default (error-checking): relocking is EDEADLK (FreeBSD 11), as an SCE code */
@@ -73,6 +79,16 @@ int main(void)
     static unsigned char block[0x40];
     rt_process.proc_param = block;
     CHECK(((void *(*)(void))fn("libkernel", "sceKernelGetProcParam"))() == block);
+
+    /* The PS4 host is little-endian AMD64; the network representation is big-endian. */
+    CHECK(htonl(UINT32_C(0x12345678)) == UINT32_C(0x78563412));
+    CHECK(htons(UINT16_C(0x1234)) == UINT16_C(0x3412));
+    CHECK(ntohl(UINT32_C(0x78563412)) == UINT32_C(0x12345678));
+    CHECK(ntohs(UINT16_C(0x3412)) == UINT16_C(0x1234));
+    CHECK(htonl(0) == 0 && ntohl(0) == 0);
+    CHECK(htons(UINT16_MAX) == UINT16_MAX && ntohs(UINT16_MAX) == UINT16_MAX);
+    CHECK(ntohl(htonl(UINT32_C(0x01020304))) == UINT32_C(0x01020304));
+    CHECK(ntohs(htons(UINT16_C(0x0102))) == UINT16_C(0x0102));
 
     if (!failures) puts("syslib: ok");
     return failures != 0;
