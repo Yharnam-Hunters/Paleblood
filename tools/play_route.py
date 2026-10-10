@@ -6,7 +6,7 @@ usage: play_route.py ROUTE PAD_FILE FRAMES_DIR [DISPLAY]
 
 A route is a list of lines, played in order ('#' starts a comment):
 
-  50 cross               at 50 s after the start, press cross (bbport pad file tokens:
+  50 cross               at 50 s after the start, press cross (host pad file tokens:
                          cross circle square triangle up down left right options l1 ... lx=0..255)
   +2 down hold=1         2 s after the previous line, hold down for 1 s (default hold 0.3 s)
   +1 shot                save a screenshot (frames/<run>/rNNNN.N.png)

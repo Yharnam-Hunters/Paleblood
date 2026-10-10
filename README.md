@@ -60,14 +60,15 @@ Two tracks get there, side by side:
   own level, by replacing the game's graphics layer with our Vulkan code, not by emulating the
   PS4's GPU. Written clean-room: public documentation and our own reverse engineering only.
 
-The game will run on Paleblood once the runtime is far enough along that road; until then it
-does not.
+Paleblood's own runtime does not yet run the full game. The current native run path still uses an
+external scaffold through the documented host interface; keep it until the project-owned runtime
+can replace that path and pass the same run checks.
 
 ## Where it stands
 
-- **A transition is in progress.** Until now the original executable ran on a borrowed runtime
-  (bbport, a fork carrying shadPS4's graphics code) with our replacements hooked in. That is being
-  removed; the inputs recorded on it stay in use for verification.
+- **The game-run scaffold is still active.** Full game runs use the external scaffold documented
+  in `third_party/README.md`; it supplies the host and graphics layers while Paleblood's runtime
+  grows. Recorded inputs remain usable by the independent verification harness.
 - **Our runtime:** the loader maps the executable and the game's own C library and file system
   modules; the boot runs the executable's entry and the C library's start-up and stops at the
   first system function not written yet (the status line above says which).
@@ -148,11 +149,11 @@ repository, pick a good first issue or a target from [NEXT.md](NEXT.md), and rea
 |---|---|
 | `game/<system>/` | Replacement code, one directory per game system, with its case generators. |
 | `game/hooks.csv` | Hook registry: original address to replacement. |
-| `game/routes/` | Pad routes for unattended game runs on the borrowed runtime (being removed). |
+| `game/routes/` | Pad routes for unattended game runs through the current host scaffold. |
 | `runtime/` | The generic layer: hooks, capture, probes. Nothing specific to this game. |
 | `symbols/` | `functions.csv` (what we track) and `ghidra_functions.csv` (every function, the denominator). |
 | `tools/` | Verification harness, boot harness, progress, validators, Ghidra scripts, hooks. |
-| `third_party/bbport/` | The borrowed runtime the project used until now; being removed (GPL-2.0-or-later). |
+| `third_party/bbport/` | Active external run scaffold; retained until a verified project-owned replacement is available. See its license and integration notes in `third_party/README.md`. |
 | `docs/` | Onboarding, Ghidra setup, architecture, verification, system pages. |
 
 ## Target
@@ -184,16 +185,16 @@ a85c286a110f406682dafc97819318eedc9aa1591b79465f1ef9c1929655de8c  libSceSmart.el
   (CUSA03173, EU) with the 1.09 update, dumped from your own PS4. The project does not provide
   or point to game files, pkgs, firmware, keys or decryption tools, and requests for or links to
   them are removed ([CONTRIBUTING.md](CONTRIBUTING.md), "Your own copy").
-- **No images of the game.** No screenshots, clips or images of the game are kept here or in
-  bbport; the checks refuse them. The only images are recordings of our own tools.
+- **No images of the game.** No screenshots, clips or extracted game images are kept here or in
+  other project repositories; the checks refuse them. The only images are recordings of our own tools.
 - **Not affiliated.** This is a fan project. It is not affiliated with, endorsed by or sponsored
   by Sony Interactive Entertainment or FromSoftware. Bloodborne and related names are trademarks
   of their respective owners.
 
 ## License
 
-GPL-2.0-or-later ([LICENSE](LICENSE)). The borrowed runtime being removed (bbport) is
-GPL-2.0-or-later and contains shadPS4 code. The license covers this project's own code only; it
-grants no right in the game or its code.
+GPL-2.0-or-later ([LICENSE](LICENSE)). The active external run scaffold has its own GPL-2.0-or-later
+license and attribution notice in `third_party/README.md`; that notice does not grant any right in
+the game or its code.
 
 *Fear the old blood.*

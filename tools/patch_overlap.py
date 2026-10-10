@@ -4,7 +4,7 @@
 
 usage: patch_overlap.py PATCHES.xml [--map] [--root DIR]
 
-PATCHES.xml is a shadPS4-style patch file (<Metadata Name=...> blocks of
+PATCHES.xml is a community patch XML file (<Metadata Name=...> blocks of
 <Line Type="bytes|bytes16|bytes32|..." Address="0x..." Value="..."/>), with addresses at the
 same base as ours. A hooked function's original bytes are no longer run, so a patch line inside
 it silently does nothing while the hook is installed (and the hook's jump may land on the
