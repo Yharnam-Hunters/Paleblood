@@ -11,7 +11,8 @@ bound to them.
 Writes, from the run:
   symbols/boot.json           where the boot stops, the furthest boot milestone and the import
                               counts (read by tools/progress.py)
-  symbols/boot_history.csv    a dated row whenever any of those change
+  symbols/boot_history.csv    a dated row whenever boot progress or its failure location changes;
+                              includes the outcome, phase, return site, and guest fault details
   symbols/imports.csv         every import of the executable and the mapped modules: importer,
                               library, symbol, kind, provider (a module, "runtime", or empty);
                               tools/runtime_issues.py groups it
@@ -37,7 +38,8 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HISTORY_FIELDS = ('date', 'milestone', 'milestone_index', 'imports_total', 'imports_bundled', 'imports_implemented',
-                  'imports_remaining', 'stops_at')
+                  'imports_remaining', 'stops_at', 'outcome', 'phase', 'returns_to', 'fault_at', 'fault_signal',
+                  'fault_address')
 KEPT = ('phase', 'outcome', 'milestone', 'milestone_index', 'milestones', 'imports_total', 'imports_implemented',
         'imports_bundled', 'imports_remaining', 'imports_called', 'modules', 'first_unimplemented', 'fault')
 IMPORT_FIELDS = ('importer', 'library', 'symbol', 'kind', 'provider')
@@ -85,11 +87,23 @@ def record(status: dict, root: str, today: str) -> str | None:
     if os.path.isfile(path):
         with open(path, newline='') as f:
             rows = list(csv.DictReader(f))
-    row = {'date': today, 'stops_at': stops_at(kept)}
-    for k in HISTORY_FIELDS[1:-1]:
+    first = kept.get('first_unimplemented') or {}
+    fault = kept.get('fault') or {}
+    row = {
+        'date': today,
+        'stops_at': stops_at(kept),
+        'outcome': kept.get('outcome', ''),
+        'phase': kept.get('phase', ''),
+        'returns_to': first.get('returns_to', ''),
+        'fault_at': fault.get('at', ''),
+        'fault_signal': fault.get('signal', ''),
+        'fault_address': fault.get('address', ''),
+    }
+    for k in ('milestone', 'milestone_index', 'imports_total', 'imports_bundled', 'imports_implemented',
+              'imports_remaining'):
         row[k] = str(kept.get(k, 0))
     last = rows[-1] if rows else None
-    if not last or any(last.get(k) != row[k] for k in HISTORY_FIELDS[1:]):
+    if not last or any(last.get(k, '') != row[k] for k in HISTORY_FIELDS[1:]):
         rows.append(row)
         with open(path, 'w', newline='') as f:
             w = csv.DictWriter(f, fieldnames=HISTORY_FIELDS, lineterminator='\n', restval='')
