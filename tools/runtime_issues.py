@@ -7,8 +7,9 @@ usage: runtime_issues.py [--group KEY] [--json]
 Each group is a set of PS4 system libraries, in the runtime roadmap's order. The issue body lists
 every function of those libraries the executable imports, with what is implemented, so a
 contributor can claim a group (or part of one). Imports of the executable and of the game's own
-modules count once per library and symbol; one is done when a module or the runtime provides it.
-Every number comes from symbols/imports.csv (written by tools/boot.py). --json prints
+modules count once per library and symbol; one is done when a module provides it or the runtime
+registers its symbol with RT_SYSLIB. The imported-symbol list and denominators come from
+symbols/imports.csv (written by tools/boot.py). --json prints
 [{key, title, body}]; otherwise the bodies as text.
 """
 from __future__ import annotations
@@ -17,6 +18,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -57,6 +59,9 @@ GROUPS = (
      'way the system does, so the game takes its offline paths.'),
 )
 BUNDLED = ('libc', 'libSceFios2')
+RT_SYSLIB = re.compile(
+    r'\bRT_SYSLIB\s*\(\s*"([^"]+)"\s*,\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*\)')
+C_COMMENT = re.compile(r'/\*.*?\*/|//[^\n]*', re.S)
 
 
 def read_imports(root: str) -> list[dict]:
@@ -85,10 +90,28 @@ def check_coverage(rows: list[dict]) -> list[str]:
     return sorted({r['library'] for r in rows} - known)
 
 
-def issue(group: tuple, rows: list[dict]) -> dict:
+def read_runtime_entries(root: str) -> set[tuple[str, str]]:
+    """Return registered (library, symbol) pairs from the runtime's RT_SYSLIB entries."""
+    directory = os.path.join(root, 'runtime', 'syslib')
+    entries = set()
+    if not os.path.isdir(directory):
+        return entries
+    for name in sorted(os.listdir(directory)):
+        if not name.endswith(('.c', '.cc', '.cpp')):
+            continue
+        path = os.path.join(directory, name)
+        with open(path, encoding='utf-8') as source:
+            text = C_COMMENT.sub('', source.read())
+        entries.update((match.group(1), match.group(2)) for match in RT_SYSLIB.finditer(text))
+    return entries
+
+
+def issue(group: tuple, rows: list[dict], runtime_entries: set[tuple[str, str]] | None = None) -> dict:
     key, title, libs, about = group
     mine = [r for r in rows if r['library'] in libs]
-    done = sum(r['implemented'] == 'yes' for r in mine)
+    runtime_entries = runtime_entries or set()
+    implemented = lambda r: r['implemented'] == 'yes' or (r['library'], r['symbol']) in runtime_entries
+    done = sum(implemented(r) for r in mine)
     lines = [f'Runtime track, system call group **{title}** ({done} of {len(mine)} imported functions '
              f'implemented). {about}', '',
              'Claim the group, or one library of it, by commenting here. Implement in '
@@ -100,10 +123,10 @@ def issue(group: tuple, rows: list[dict]) -> dict:
         fns = [r for r in mine if r['library'] == lib]
         if not fns:
             continue
-        lines.append(f"### {lib} ({sum(r['implemented'] == 'yes' for r in fns)} of {len(fns)})")
+        lines.append(f"### {lib} ({sum(implemented(r) for r in fns)} of {len(fns)})")
         lines.append('')
         for r in fns:
-            mark = 'x' if r['implemented'] == 'yes' else ' '
+            mark = 'x' if implemented(r) else ' '
             kind = ' (data)' if r['kind'] == 'data' else ''
             by = '' if r['importers'] == {'eboot'} else ' (used by ' + ', '.join(sorted(r['importers'])) + ')'
             lines.append(f"- [{mark}] `{r['symbol']}`{kind}{by}")
@@ -118,11 +141,12 @@ def main() -> int:
     ap.add_argument('--json', action='store_true')
     a = ap.parse_args()
     rows = read_imports(ROOT)
+    runtime_entries = read_runtime_entries(ROOT)
     missing = check_coverage(rows)
     if missing:
         print(f"runtime_issues: libraries in no group: {', '.join(missing)}", file=sys.stderr)
         return 1
-    out = [issue(g, rows) for g in GROUPS if not a.group or g[0] == a.group]
+    out = [issue(g, rows, runtime_entries) for g in GROUPS if not a.group or g[0] == a.group]
     if a.json:
         json.dump(out, sys.stdout, indent=1)
         print()
