@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+#define _POSIX_C_SOURCE 200809L
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -96,6 +97,21 @@ int main(void)
     failed |= check(rt_hook_count() == 2 && rt_hook_lookup(0x00401000u) == replacement_one &&
                     rt_hook_lookup(0x00402000u) == replacement_two,
                     "registered replacements must remain available by guest address");
+
+    reset_observations();
+    failed |= check(setenv("BB_HOOK_SKIP", "replacement_two", 1) == 0,
+                    "hook-name skip setting must be configurable");
+    failed |= check(bbgame_init(&host) == 0, "host must initialize with one hook skipped by name");
+    failed |= check(installed_count == 1 && installed[0].offset == 0x1000 && probe_count == 1,
+                    "name skip must omit only the selected hook and continue initialization");
+
+    reset_observations();
+    failed |= check(setenv("BB_HOOK_SKIP", "0x00401000", 1) == 0,
+                    "hook-address skip setting must be configurable");
+    failed |= check(bbgame_init(&host) == 0, "host must initialize with one hook skipped by address");
+    failed |= check(installed_count == 1 && installed[0].offset == 0x2000 && probe_count == 1,
+                    "address skip must omit only the selected hook and continue initialization");
+    failed |= check(unsetenv("BB_HOOK_SKIP") == 0, "hook skip setting must be removed after the test");
 
     reset_observations();
     install_error = 1;
