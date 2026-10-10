@@ -29,29 +29,28 @@ yet; confirm or correct them when you hit them.
 ## Address conventions
 
 All addresses in this repository are **PS4 virtual addresses: the ELF `p_vaddr` plus
-`0x400000`**, with Ghidra's image base set to `0x400000`. This is what the community
-patches (shadPS4 and GoldHEN XML) use, and what bbport's patch compiler converts from.
+`0x400000`**, with Ghidra's image base set to `0x400000`. Community patch files use the same
+address convention.
 
 Three conventions exist, one constant apart. V is the ELF `p_vaddr`.
 
 | Convention | Address | Where it appears |
 |---|---|---|
-| ELF vaddr, "guest offset" | V | bbport's loader logs and hook sites, its `game_check.py` |
-| PS4 virtual address | V + 0x400000 | **ours**, Ghidra, community XML patches |
-| bbport host address | V + 0x800000000 | the running bbport process |
+| ELF virtual address | V | ELF program headers and file layout |
+| PS4 virtual address | V + 0x400000 | **ours**, Ghidra, community patch files |
 
-To convert ours to a bbport guest offset, subtract `0x400000`. `tools/validate_functions.py`
-rejects any address below `0x00400000`, which catches a base-0 import by mistake.
+To convert an address to the ELF virtual address, subtract `0x400000`.
+`tools/validate_functions.py` rejects any address below `0x00400000`, which catches a base-0
+import by mistake.
 
 Checked against the target image (read-only):
-- bbport's five guest-hook sites hold their expected bytes at V, not at V + 0x400000.
 - The community "Performance Patch" address `0x0261B108` minus `0x400000` holds
   `c7 45 b4 06 00 00 00` (`mov dword [rbp-0x4c], 6`), which the patch changes to 9.
 
 Tool-independent identity: the loaded image (loadable segments copied to their `p_vaddr`,
 SHA-256) of this target is
-`071df19c8880086d97182dbc057bc8cb37badaca57d9112683836b24a0444c0a`, the value bbport pins.
-It is the same whichever SelfUtil produced the ELF.
+`071df19c8880086d97182dbc057bc8cb37badaca57d9112683836b24a0444c0a`. It is the same whichever
+SelfUtil build produced the ELF.
 
 ## Ghidra itself
 

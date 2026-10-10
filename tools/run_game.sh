@@ -11,7 +11,7 @@
 #   the capture library $BB_CAPTURE_DIR (default ../captures next to the repo).
 # - $BB_DISPLAY=:NN runs on that Xvfb display (started if needed, stopped after) and saves a
 #   frame every 15 s to $BB_DATA_DIR/frames/<run>/; unset uses the current display.
-# - Needs: $BB_SCAFFOLD (the bbport checkout with a build), $BB_GAME_DIR (merged dump),
+# - Needs: $BB_SCAFFOLD (the active external host scaffold checkout with a build), $BB_GAME_DIR (merged dump),
 #   $BB_DATA_DIR (writable, outside the repository). $BB_FPS (default 30: no frame-rate patches).
 # - $BB_ROUTE: a pad route (timed presses, waits on on-screen text; tools/play_route.py), so
 #   unattended runs get past the menus. Its log is <run log>.route.

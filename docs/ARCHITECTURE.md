@@ -43,15 +43,15 @@ original (the harness's stubs, or the runtime) answers the replacement the same 
 
 ## Our own runtime (`runtime/`)
 
-Paleblood's own runtime, written clean-room from public documentation (the published PS4
+Paleblood's own runtime is written clean-room from public documentation (the published PS4
 formats, NID databases), our own reverse engineering and observed behaviour, with no code from
-any emulator or other PS4 runtime. The borrowed runtime the project used until now (bbport) is
-being removed. The game does not run on Paleblood until this roadmap is far enough along:
+any emulator or other PS4 runtime. Full game runs still use the active external host scaffold
+described in `third_party/README.md`; it remains until Paleblood's runtime can replace it without
+losing the current run capability. The project-owned runtime roadmap is:
 
 1. **Loader** (done): `runtime/loader.c` maps the executable and the game's own C library and file
    system modules, applies every relocation and binds each import through a callback. Its mapped
-   image was checked byte-identical to the one the old runtime prepared, and the verification
-   harness uses it.
+   image is checked against the target image, and the verification harness uses it.
 2. **Generic capture:** recording a function's inputs from the runtime side, with no recording
    code inside replacements, so recordings of real play come from the runtime. The host's current
    direct-jump hook interface has no return-aware observer or typed descriptors; the isolated

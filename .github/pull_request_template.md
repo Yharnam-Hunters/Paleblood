@@ -22,7 +22,7 @@ AI-assisted commits: include a `Co-Authored-By` trailer naming the actual tool u
 does not replace it.
 
 <!-- runtime-report:start -->
-<!-- runtime-report-json {"schema":1,"track":"runtime","calls":["replace with call name(s)"],"sources":["replace with public source or repository evidence"],"confirmed":["replace with confirmed behavior"],"unresolved":[],"tests":["replace with command and result; CI also runs RT_SYSLIB"],"clean_room":true,"no_emulator_code":true,"clean_room_basis":"replace with the independent evidence used; no bbport or shadPS4 code used","game_data":false,"function_verify":"not-required","maintainer_boot":"pending-after-merge"} -->
+<!-- runtime-report-json {"schema":1,"track":"runtime","calls":["replace with call name(s)"],"sources":["replace with public source or repository evidence"],"confirmed":["replace with confirmed behavior"],"unresolved":[],"tests":["replace with command and result; CI also runs RT_SYSLIB"],"clean_room":true,"no_emulator_code":true,"clean_room_basis":"replace with the independent evidence used; no external runtime code copied or modeled","game_data":false,"function_verify":"not-required","maintainer_boot":"pending-after-merge"} -->
 <!-- runtime-report:end -->
 
 ### Documentation-only report

@@ -15,21 +15,21 @@ unzip                   Ghidra and loader zips
 curl                    downloads
 # Ghidra (docs/GHIDRA.md)
 jdk-openjdk             Ghidra (JDK 21 or newer)
-# Scaffold: bbport (third_party/bbport, its shell.nix)
-ninja                   bbport build
-pkgconf                 bbport build
-glslang                 bbport shaders
-sdl3                    bbport window and input
-vulkan-headers          bbport renderer
-vulkan-icd-loader       bbport renderer
-boost                   bbport renderer
-fmt                     bbport renderer
-robin-map               bbport renderer
-xxhash                  bbport renderer
-libx11                  bbport window
-ffmpeg                  bbport video playback
-miniz                   bbport renderer
-zydis                   bbport renderer
+# Active external game-run scaffold: third_party/bbport (retained until a project-owned replacement passes run checks)
+ninja                   external scaffold build
+pkgconf                 external scaffold build
+glslang                 external scaffold shaders
+sdl3                    external scaffold window and input
+vulkan-headers          external scaffold renderer
+vulkan-icd-loader       external scaffold renderer
+boost                   external scaffold renderer
+fmt                     external scaffold renderer
+robin-map               external scaffold renderer
+xxhash                  external scaffold renderer
+libx11                  external scaffold window
+ffmpeg                  external scaffold video playback
+miniz                   external scaffold renderer
+zydis                   external scaffold renderer
 # Game runs without a monitor, frames, checks (tools/run_game.sh)
 xorg-server-xvfb        virtual display
 imagemagick             frame capture (import)

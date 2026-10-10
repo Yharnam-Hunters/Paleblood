@@ -38,7 +38,8 @@ the applicable cases in `test/test_syslib.c`. Unknown target behavior must stay 
 loudly; do not choose guessed return values just to advance `tools/boot.py`.
 
 Runtime code is clean-room: use public API documentation, independent reverse engineering, and
-observed behavior as facts. Do not copy or adapt code from bbport or shadPS4. Keep one call or a
+observed behavior as facts. Do not copy, adapt, or model implementation code from another PS4
+runtime or emulator. Keep one call or a
 tightly related group in each PR. Runtime-only PRs need no proprietary game dump, captures, or
 function-level `verify.py` results. CI compiles with GCC and Clang, runs the RT_SYSLIB test and
 the rest of CTest, and retains the repository's policy checks. CI selects the concise runtime
@@ -152,7 +153,7 @@ firmware, keys or decryption tools.
 - **Never commit** game binaries (ELF, SELF, PRX, PKG), assets, extracted data,
   decompiler projects or raw decompiler dumps. The hook and CI reject them. If you are unsure,
   do not commit it.
-- **No screenshots, clips or images of the game**, anywhere in this repository or in bbport:
+- **No screenshots, clips or images of the game**, anywhere in this repository or other project repositories:
   not in commits, issues, pull requests or Discussions. The hook and CI refuse image and video
   files (by extension and by contents). The only images allowed are recordings of our own tools'
   output (such as a terminal running `tools/verify.py`), under `docs/assets/` and listed in
@@ -180,8 +181,8 @@ firmware, keys or decryption tools.
 - A function must be at least 14 bytes to be hooked (the jump), checked by the validator.
 - Addresses: `0x` and 8 lowercase hex digits, ascending in every CSV. They are PS4
   virtual addresses, **Ghidra image base `0x400000`**: the ELF `p_vaddr` plus `0x400000`, the
-  same as the community patches. Import the eboot with that base. bbport's guest offsets are
-  these minus `0x400000` (QUIRKS.md, "Address conventions").
+  same as the community patch files. Import the eboot with that base. Raw ELF virtual addresses
+  are these minus `0x400000` (QUIRKS.md, "Address conventions").
 - `notes` in `functions.csv`: one line, 200 characters at most.
 
 ## Drafts
