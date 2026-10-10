@@ -87,7 +87,7 @@ piece of the game's own per-frame work, the next layer to map.
 | `0x02012bf0` | 121 | `frame_timing_until_idle_02012bf0` | edge-verified | state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet) |
 | `0x02418d20` | 467 | `frame_timing_frame_step` | verified | Per frame: SprjWindow running check; creates SprjFlipper; calls the limiter; runs the task update; returns running and not quitting |
 | `0x02434520` | 552 | `frame_timing_flipper_init` | verified | SprjFlipper constructor: reads Game.FlipMode (default 4; pending default 3; clamped to 4); unset in the shipped config |
-| `0x02434770` | 2077 | `frame_timing_pace_frame` | edge-verified | Frame limiter: target interval at +0x18 (1/30 or 1/60 s); sleeps then spins; 32-frame ring; every FPS patch edits it |
+| `0x02434770` | 2077 | `frame_timing_pace_frame` | verified | Frame limiter: target interval at +0x18 (1/30 or 1/60 s); sleeps then spins; 32-frame ring; every FPS patch edits it |
 | `0x024512a0` | 78 | `frame_timing_task_frame_024512a0` | verified | task manager frame entry from the frame step: FD4TaskManager singleton, then 0x01388c60 |
 ## Structs and globals
 
