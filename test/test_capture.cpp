@@ -27,8 +27,8 @@ static std::string read_file(const std::string &path)
 
 int main()
 {
-    char temp[] = "/tmp/pb-capture-test.XXXXXX";
-    char *root = mkdtemp(temp);
+    auto temp = (std::filesystem::temp_directory_path() / "pb-capture-test.XXXXXX").string();
+    char *root = mkdtemp(temp.data());
     CHECK(root != nullptr);
     if (!root) return 1;
     setenv("BB_CAPTURE_DIR", root, 1);
