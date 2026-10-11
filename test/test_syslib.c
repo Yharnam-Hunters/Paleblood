@@ -252,6 +252,17 @@ int main(void)
     CHECK(netctl_unregister(netctl_id_b) == 0);
     CHECK(netctl_check() == 0 && netctl_callbacks_run == 0);
 
+    /* the target page size has no public source, so both entries stop by name */
+    void (*posix_getpagesize)(void) = (void (*)(void))fn("libScePosix", "getpagesize");
+    void (*kernel_getpagesize)(void) = (void (*)(void))fn("libkernel", "getpagesize");
+    CHECK(died_in_fatal(posix_getpagesize));
+    CHECK(died_in_fatal(kernel_getpagesize));
+    /* Registered so a boot that reaches the call names it, but not counted as implemented: the
+       fatal alone does not prove the classification, since an absent entry would also never be
+       reported as implemented. */
+    CHECK(!is_implemented("libScePosix", "getpagesize"));
+    CHECK(!is_implemented("libkernel", "getpagesize"));
+
     if (!failures) puts("syslib: ok");
     return failures != 0;
 }
