@@ -4,9 +4,13 @@
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 static int failures;
 #define CHECK(cond)                                                                                \
@@ -28,9 +32,61 @@ static void *fn(const char *library, const char *symbol)
 
 typedef int (*f1)(void **);
 typedef int (*f2i)(void **, int);
+typedef int (*f_state)(int *);
+typedef int (*f_check)(void);
+typedef int (*f_register)(void *, void *, int *);
+typedef int (*f_unregister)(int);
+typedef int (*f_info)(int, void *);
+typedef int (*f_nat)(void *);
 typedef int (*finit)(void **, void **, const char *);
 typedef uint32_t (*f_u32_u32)(uint32_t);
 typedef uint16_t (*f_u16_u16)(uint16_t);
+
+/* libSceNetCtl, the offline group (issue #41). rt_fatal aborts the process (runtime/process.c), so a
+   fatal path can only be proved in a child: fork, call the entry the way the guest does, and check
+   the signal it died on. netctl_shared is MAP_SHARED and poisoned, so a child that wrote into the
+   buffer it was handed would still be visible here even though the child never returns. */
+static void *netctl_get_state_entry, *netctl_check_entry, *netctl_register_entry, *netctl_unregister_entry;
+static void *netctl_get_info_entry, *netctl_get_nat_info_entry;
+static char *netctl_shared;
+static int netctl_callbacks_run;
+
+static void netctl_must_not_run(void) { netctl_callbacks_run++; }
+
+static int netctl_state(int *state) { return ((f_state)netctl_get_state_entry)(state); }
+static int netctl_check(void) { return ((f_check)netctl_check_entry)(); }
+static int netctl_register(void *callback, void *arg, int *id)
+{
+    return ((f_register)netctl_register_entry)(callback, arg, id);
+}
+static int netctl_unregister(int id) { return ((f_unregister)netctl_unregister_entry)(id); }
+static int netctl_info(int module, void *info) { return ((f_info)netctl_get_info_entry)(module, info); }
+static int netctl_nat(void *nat_info) { return ((f_nat)netctl_get_nat_info_entry)(nat_info); }
+
+static int died_in_fatal(void (*call)(void))
+{
+    const pid_t child = fork();
+    if (child == 0) {
+        call();
+        _exit(1); /* the call returned, so the answer was not the fatal being proved */
+    }
+    int status = 0;
+    if (waitpid(child, &status, 0) < 0) return 0;
+    return WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
+}
+
+/* The paths whose PS4 answer is not established. The ids are file-scope so a child can unregister
+   one the parent registered before forking. */
+static int netctl_id_a, netctl_id_b;
+static void state_into_null(void) { netctl_state(NULL); }
+static void register_null_callback(void) { netctl_register(NULL, NULL, &netctl_id_a); }
+static void register_null_id(void) { netctl_register((void *)netctl_must_not_run, NULL, NULL); }
+static void unregister_id_a(void) { netctl_unregister(netctl_id_a); }
+static void unregister_unknown_id(void) { netctl_unregister(0x7fff); }
+static void info_of_module_one(void) { netctl_info(1, netctl_shared); }
+/* A size-prefixed buffer of the shape the guest's own sites build (16 at offset 0), on the child's
+   stack: the fatal must not write through it, and netctl_shared stays the untouched witness. */
+static void nat_info_with_size(void) { int nat[4] = {16, 0, 0, 0}; netctl_nat(nat); }
 
 int main(void)
 {
@@ -89,6 +145,53 @@ int main(void)
     CHECK(htons(UINT16_MAX) == UINT16_MAX && ntohs(UINT16_MAX) == UINT16_MAX);
     CHECK(ntohl(htonl(UINT32_C(0x01020304))) == UINT32_C(0x01020304));
     CHECK(ntohs(htons(UINT16_C(0x0102))) == UINT16_C(0x0102));
+
+    /* libSceNetCtl: the offline answers (issue #41). */
+    netctl_get_state_entry = fn("libSceNetCtl", "sceNetCtlGetState");
+    netctl_check_entry = fn("libSceNetCtl", "sceNetCtlCheckCallback");
+    netctl_register_entry = fn("libSceNetCtl", "sceNetCtlRegisterCallback");
+    netctl_unregister_entry = fn("libSceNetCtl", "sceNetCtlUnregisterCallback");
+    netctl_get_info_entry = fn("libSceNetCtl", "sceNetCtlGetInfo");
+    netctl_get_nat_info_entry = fn("libSceNetCtl", "sceNetCtlGetNatInfo");
+    if (failures) return 1;
+    netctl_shared = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (netctl_shared == MAP_FAILED) { perror("mmap"); return 1; }
+    char poisoned[64];
+    memset(poisoned, 0xa5, sizeof poisoned);
+    memset(netctl_shared, 0xa5, sizeof poisoned);
+
+    int state = -1;
+    CHECK(netctl_state(&state) == 0 && state == 0);   /* the disconnected state */
+    CHECK(netctl_check() == 0);                       /* nothing is due yet */
+
+    /* A registered callback is kept, not run: offline there is no state change to report. The id
+       comes back through the caller's pointer, which is what the guest's own sites read back. */
+    CHECK(netctl_register((void *)netctl_must_not_run, &state, &netctl_id_a) == 0);
+    CHECK(netctl_id_a != 0 && netctl_id_a != -1);       /* written, and never the unwritten look */
+    CHECK(netctl_check() == 0);
+    CHECK(netctl_callbacks_run == 0);
+
+    /* Keyed by id rather than by state: a second registration is its own registration, and each
+       removes under its own id. */
+    CHECK(netctl_register((void *)netctl_must_not_run, NULL, &netctl_id_b) == 0);
+    CHECK(netctl_id_b != netctl_id_a);
+    CHECK(netctl_unregister(netctl_id_a) == 0);
+    CHECK(netctl_check() == 0 && netctl_callbacks_run == 0);
+
+    /* Every answer the PS4 has not established stops the process instead of guessing, and the two
+       structure calls stop before writing through a buffer whose layout is not established. */
+    CHECK(died_in_fatal(unregister_id_a));             /* an id already removed */
+    CHECK(died_in_fatal(unregister_unknown_id));       /* an id never handed back */
+    CHECK(died_in_fatal(state_into_null));             /* no error value for a bad pointer */
+    CHECK(died_in_fatal(register_null_callback));      /* no answer for a null callback */
+    CHECK(died_in_fatal(register_null_id));            /* no answer for a null id slot */
+    CHECK(died_in_fatal(info_of_module_one));
+    CHECK(died_in_fatal(nat_info_with_size));
+    CHECK(memcmp(netctl_shared, poisoned, sizeof poisoned) == 0);
+
+    /* The store survived all of that, because every fatal above was in a child. */
+    CHECK(netctl_unregister(netctl_id_b) == 0);
+    CHECK(netctl_check() == 0 && netctl_callbacks_run == 0);
 
     if (!failures) puts("syslib: ok");
     return failures != 0;
