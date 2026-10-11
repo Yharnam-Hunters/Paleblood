@@ -4,6 +4,7 @@
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
+#include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -118,6 +119,23 @@ static void info_of_module_one(void) { netctl_info(1, netctl_shared); }
 /* A size-prefixed buffer of the shape the guest's own sites build (16 at offset 0), on the child's
    stack: the fatal must not write through it, and netctl_shared stays the untouched witness. */
 static void nat_info_with_size(void) { int nat[4] = {16, 0, 0, 0}; netctl_nat(nat); }
+typedef int *(*f_intp)(void);
+
+/* sceNetErrnoLoc seen from a second host thread: that thread's own cell, and the value it found
+   in it before writing. The entry it calls is parked in a file-scope variable so the thread needs
+   no casts and no registry walk of its own. */
+static f_intp errno_loc_entry;
+static int *second_cell;
+static int second_initial;
+
+static void *errno_loc_thread(void *unused)
+{
+    (void)unused;
+    second_cell = errno_loc_entry();
+    second_initial = *second_cell;
+    *second_cell = 22;
+    return NULL;
+}
 
 int main(void)
 {
@@ -136,6 +154,7 @@ int main(void)
     const f_u32_u32 ntohl = (f_u32_u32)fn("libSceNet", "sceNetNtohl");
     const f_u16_u16 ntohs = (f_u16_u16)fn("libSceNet", "sceNetNtohs");
     net_inet_pton_entry = fn("libSceNet", "sceNetInetPton");
+    const f_intp errno_loc = (f_intp)fn("libSceNet", "sceNetErrnoLoc");
     if (failures) return 1;
 
     /* default (error-checking): relocking is EDEADLK (FreeBSD 11), as an SCE code */
@@ -251,6 +270,29 @@ int main(void)
     /* The store survived all of that, because every fatal above was in a child. */
     CHECK(netctl_unregister(netctl_id_b) == 0);
     CHECK(netctl_check() == 0 && netctl_callbacks_run == 0);
+    /* libSceNet's errno location: one cell per thread, the guest's to read and write. The runtime
+       is offline and no implemented call sets the network errno, so a fresh cell reads 0. */
+    /* Registered as an implementation, not a diagnostic: the call's contract (a location per
+       thread) has an answer under either reading of the unknown cell contents. Contrast
+       getpagesize, whose value is the whole contract, so it is RT_SYSLIB_UNRESOLVED. */
+    CHECK(is_implemented("libSceNet", "sceNetErrnoLoc"));
+    int *cell = errno_loc();
+    CHECK(cell != NULL);                          /* a location, never nothing */
+    CHECK(errno_loc() == cell);                   /* the same location on every call */
+    CHECK(*cell == 0);                            /* no error yet */
+    *cell = 11;
+    CHECK(*errno_loc() == 11);                    /* the caller's write is visible through it */
+
+    /* a second host thread gets its own cell: the errno is per-thread, not process-wide */
+    pthread_t thread;
+    errno_loc_entry = errno_loc;
+    second_cell = NULL;
+    CHECK(pthread_create(&thread, NULL, errno_loc_thread, NULL) == 0);
+    CHECK(pthread_join(thread, NULL) == 0);
+    CHECK(second_cell != NULL && second_cell != cell); /* a different cell */
+    CHECK(second_initial == 0);                   /* also starts at no error yet */
+    CHECK(*cell == 11);                           /* its write left this cell alone */
+    CHECK(*second_cell == 22);                    /* its write is visible in its cell */
 
     if (!failures) puts("syslib: ok");
     return failures != 0;

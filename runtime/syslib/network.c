@@ -1,5 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* System call group: networking. */
+/* System call group: networking: the byte-order helpers, the observed AF_INET conversion, and
+   the location of the network errno. The runtime is offline: nothing here opens a socket, and no
+   implemented call can fail with a network error, so the errno cell below is never written.
+
+   Every entry's evidence, and the premise of each inference, is recorded in
+   docs/runtime-syscalls.md. Where the PS4 behavior is not established the entry stops loudly by
+   name; runtime/include/runtime/syslib.h separates an implementation from such a diagnostic. */
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
@@ -44,3 +50,13 @@ static int net_inet_pton(int family, const char *source, void *destination)
     return inet_pton(AF_INET, source, destination);
 }
 RT_SYSLIB("libSceNet", sceNetInetPton, net_inet_pton);
+
+/* The calling thread's network errno cell: one static thread-local int, zero-initialized, whose
+   address the caller reads and writes. The thread-locality and the initial value are inferences
+   from public sources, each with its premise stated in docs/runtime-syscalls.md ("Network errno
+   location"), not observed PS4 behavior. No implemented call in this group writes the cell, so a
+   guest reads 0 or its own writes; the first call that must set it settles the encoding then. */
+static _Thread_local int net_errno = 0;
+
+static int *net_errno_loc(void) { return &net_errno; }
+RT_SYSLIB("libSceNet", sceNetErrnoLoc, net_errno_loc);
