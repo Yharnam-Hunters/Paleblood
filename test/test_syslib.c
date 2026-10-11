@@ -42,6 +42,7 @@ typedef int (*f_unregister)(int);
 typedef int (*f_info)(int, void *);
 typedef int (*f_nat)(void *);
 typedef int (*finit)(void **, void **, const char *);
+typedef int (*f_equal)(void *, void *);
 typedef uint32_t (*f_u32_u32)(uint32_t);
 typedef uint16_t (*f_u16_u16)(uint16_t);
 
@@ -141,6 +142,16 @@ int main(void)
     static unsigned char block[0x40];
     rt_process.proc_param = block;
     CHECK(((void *(*)(void))fn("libkernel", "sceKernelGetProcParam"))() == block);
+
+    /* a thread variable equals itself and nothing else: the same object pointer is the same thread */
+    static unsigned char main_stack[0x100];
+    rt_thread_register_main(main_stack, sizeof main_stack);
+    void *const self = ((void *(*)(void))fn("libkernel", "scePthreadSelf"))();
+    const f_equal equal = (f_equal)fn("libkernel", "scePthreadEqual");
+    unsigned char other;
+    CHECK(self && equal(self, self) != 0);
+    CHECK(equal(self, &other) == 0 && equal(&other, self) == 0);
+    CHECK(equal(self, NULL) == 0);
 
     /* The PS4 host is little-endian AMD64; the network representation is big-endian. */
     CHECK(htonl(UINT32_C(0x12345678)) == UINT32_C(0x78563412));
