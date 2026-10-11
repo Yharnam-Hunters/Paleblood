@@ -14,7 +14,8 @@ Writes, from the run:
   symbols/boot_history.csv    a dated row whenever boot progress or its failure location changes;
                               includes the outcome, phase, return site, and guest fault details
   symbols/imports.csv         every import of the executable and the mapped modules: importer,
-                              library, symbol, kind, provider (a module, "runtime", or empty);
+                              library, symbol, kind, provider (a module, "runtime",
+                              "runtime-unresolved", or empty);
                               tools/runtime_issues.py groups it
   symbols/module_functions.csv the mapped modules' functions the executable or another module
                               uses: tracked like game functions (status original), replaceable later
@@ -41,7 +42,8 @@ HISTORY_FIELDS = ('date', 'milestone', 'milestone_index', 'imports_total', 'impo
                   'imports_remaining', 'stops_at', 'outcome', 'phase', 'returns_to', 'fault_at', 'fault_signal',
                   'fault_address')
 KEPT = ('phase', 'outcome', 'milestone', 'milestone_index', 'milestones', 'imports_total', 'imports_implemented',
-        'imports_bundled', 'imports_remaining', 'imports_called', 'modules', 'first_unimplemented', 'fault')
+        'imports_bundled', 'imports_unresolved', 'imports_remaining', 'imports_called', 'modules',
+        'first_unimplemented', 'fault')
 IMPORT_FIELDS = ('importer', 'library', 'symbol', 'kind', 'provider')
 MODULE_FIELDS = ('module', 'offset', 'size', 'symbol', 'status')
 
@@ -123,7 +125,7 @@ def write_listing(listing: str, root: str) -> None:
             continue
         importer, library, symbol, kind, provider, offset, size = line.split('\t')
         imports.add((importer, library, symbol, kind, provider))
-        if provider and provider != 'runtime':
+        if provider and provider not in ('runtime', 'runtime-unresolved'):
             functions[(provider, offset)] = (provider, offset, size, symbol, 'original')
     with open(os.path.join(root, 'symbols', 'imports.csv'), 'w', newline='') as f:
         w = csv.writer(f, lineterminator='\n')

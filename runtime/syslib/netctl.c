@@ -183,7 +183,7 @@ static int netctl_get_info(int module, void *info)
     snprintf(question, sizeof question, "no established PS4 answer for module id %d", module);
     rt_fatal("sceNetCtlGetInfo", question);
 }
-RT_SYSLIB("libSceNetCtl", sceNetCtlGetInfo, netctl_get_info);
+RT_SYSLIB_UNRESOLVED("libSceNetCtl", sceNetCtlGetInfo, netctl_get_info);
 
 /* Reports the NAT type of the connection.
 
@@ -206,4 +206,4 @@ static int netctl_get_nat_info(void *nat_info)
              *(const int *)nat_info);
     rt_fatal("sceNetCtlGetNatInfo", question);
 }
-RT_SYSLIB("libSceNetCtl", sceNetCtlGetNatInfo, netctl_get_nat_info);
+RT_SYSLIB_UNRESOLVED("libSceNetCtl", sceNetCtlGetNatInfo, netctl_get_nat_info);

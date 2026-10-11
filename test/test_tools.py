@@ -529,7 +529,7 @@ class Statuses(unittest.TestCase):
             with open(os.path.join(d, 'symbols', 'boot.json'), 'w') as f:
                 json.dump({'outcome': 'unimplemented', 'milestone': 'entry', 'milestone_index': 1,
                            'milestones': ['loaded', 'entry', 'threads'], 'imports_total': 4, 'imports_implemented': 1,
-                           'imports_bundled': 1, 'imports_remaining': 2,
+                           'imports_bundled': 1, 'imports_unresolved': 1, 'imports_remaining': 2,
                            'first_unimplemented': {'caller': 'mod.elf', 'library': 'libc', 'symbol': 'f', 'nid': 'x'}}, f)
             r = progress.compute(d)
             self.assertEqual((r['replaced']['functions'], r['edge_verified']['functions'], r['verified']['functions']),
@@ -538,7 +538,8 @@ class Statuses(unittest.TestCase):
             table = progress.render_progress(r)
             self.assertIn('| Edge-verified | 2 (50.00%)', table)
             self.assertIn('| Furthest boot milestone | entry (1 of 2) |', table)
-            self.assertIn("| System imports provided | 2 of 4 (50.00%): 1 by the game's own modules, 1 by the runtime; 2 remaining |", table)
+            self.assertIn("| System imports implemented | 2 of 4 (50.00%): 1 by the game's own modules, 1 by the runtime |", table)
+            self.assertIn('| Other imports | 1 registered fail-loud diagnostics, 1 unbound |', table)
             self.assertIn('`f` (libc, called by mod.elf)', table)
         finally:
             shutil.rmtree(d)

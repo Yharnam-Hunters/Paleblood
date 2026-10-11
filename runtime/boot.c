@@ -60,7 +60,7 @@ static const struct {
 };
 #define MILESTONES (sizeof milestones / sizeof milestones[0])
 
-enum provider { NONE, MODULE, RUNTIME };
+enum provider { NONE, MODULE, RUNTIME, RUNTIME_UNRESOLVED };
 
 typedef struct {
     const char *path, *label;
@@ -276,7 +276,9 @@ static void resolve(object *o)
             nid[RT_NID_SIZE - 1] = '#', nid[RT_NID_SIZE] = 0;
             if (!strncmp(name, nid, RT_NID_SIZE) && library && !strcmp(library, s->library)) {
                 o->bound[i] = s->fn;
-                o->provider[i] = RUNTIME;
+                o->provider[i] = s->capability == RT_SYSLIB_CAPABILITY_IMPLEMENTED
+                                     ? RUNTIME
+                                     : RUNTIME_UNRESOLVED;
             }
         }
     }
@@ -366,7 +368,8 @@ int main(int argc, char **argv)
                 const char *lib = rt_elf_import_library(o->elf, i);
                 const char *provider = o->provider[i] == MODULE    ? objects[o->provider_object[i]].label
                                        : o->provider[i] == RUNTIME ? "runtime"
-                                                                   : "";
+                                       : o->provider[i] == RUNTIME_UNRESOLVED ? "runtime-unresolved"
+                                                                             : "";
                 unsigned long long offset = 0, size = 0;
                 if (o->provider[i] == MODULE) {
                     const rt_elf *pe = objects[o->provider_object[i]].elf;
@@ -479,10 +482,11 @@ int main(int argc, char **argv)
         }
         if (hit) reached = (int)m;
     }
-    size_t from_modules = 0, from_runtime = 0;
+    size_t from_modules = 0, from_runtime = 0, from_unresolved = 0;
     for (size_t i = 0; i < objects[0].imports; i++) {
         from_modules += objects[0].provider[i] == MODULE;
         from_runtime += objects[0].provider[i] == RUNTIME;
+        from_unresolved += objects[0].provider[i] == RUNTIME_UNRESOLVED;
     }
 
     const char *stop_name = NULL, *stop_library = NULL, *stop_caller = NULL;
@@ -507,10 +511,10 @@ int main(int argc, char **argv)
     if (outcome == FAULT) printf(": signal %d at %s, address 0x%llx", fault_signal, at, (unsigned long long)fault_address);
     if (outcome == TIMEOUT) printf(" after %d s, at %s", timeout, at);
     if (outcome == EXITED) printf(" with code %d", exit_code);
-    printf("\npbboot: milestone %s; executable imports %zu: %zu from bundled modules, %zu from the runtime, %zu remaining; "
-           "imports called %zu\n",
+    printf("\npbboot: milestone %s; executable imports %zu: %zu from bundled modules, %zu implemented by the runtime, "
+           "%zu unresolved diagnostics, %zu unbound; imports called %zu\n",
            reached >= 0 ? milestones[reached].name : "loaded", objects[0].imports, from_modules, from_runtime,
-           objects[0].imports - from_modules - from_runtime, called_total);
+           from_unresolved, objects[0].imports - from_modules - from_runtime - from_unresolved, called_total);
     if (trace)
         for (size_t k = 0; k < object_count; k++)
             for (size_t i = 0; i < objects[k].imports; i++)
@@ -534,12 +538,14 @@ int main(int argc, char **argv)
         for (size_t m = 0; m < MILESTONES; m++) fprintf(f, ", \"%s\"", milestones[m].name);
         fprintf(f,
                 "],\n  \"imports_total\": %zu,\n  \"imports_implemented\": %zu,\n  \"imports_bundled\": %zu,\n"
-                "  \"imports_remaining\": %zu,\n  \"imports_called\": %zu,\n",
-                objects[0].imports, from_runtime, from_modules, objects[0].imports - from_modules - from_runtime, called_total);
+                "  \"imports_unresolved\": %zu,\n  \"imports_remaining\": %zu,\n  \"imports_called\": %zu,\n",
+                objects[0].imports, from_runtime, from_modules, from_unresolved,
+                objects[0].imports - from_modules - from_runtime, called_total);
         fprintf(f, "  \"modules\": [");
         for (size_t k = 1; k < object_count; k++) {
             size_t remaining = 0;
-            for (size_t i = 0; i < objects[k].imports; i++) remaining += objects[k].provider[i] == NONE;
+            for (size_t i = 0; i < objects[k].imports; i++)
+                remaining += objects[k].provider[i] == NONE || objects[k].provider[i] == RUNTIME_UNRESOLVED;
             fprintf(f, "%s{\"name\": ", k > 1 ? ", " : "");
             json_string(f, objects[k].label);
             fprintf(f, ", \"imports\": %zu, \"imports_remaining\": %zu, \"exports\": %zu}", objects[k].imports, remaining,

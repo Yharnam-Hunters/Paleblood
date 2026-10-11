@@ -1,3 +1,4 @@
+import csv
 import os
 import sys
 import tempfile
@@ -5,9 +6,48 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tools'))
 import runtime_issues
+import boot
 
 
 class RuntimeIssueStatusTests(unittest.TestCase):
+    def test_netctl_unresolved_entries_are_registered_but_not_implemented(self):
+        entries = runtime_issues.read_runtime_entries(runtime_issues.ROOT)
+
+        self.assertTrue({
+            ('libSceNetCtl', 'sceNetCtlGetState'),
+            ('libSceNetCtl', 'sceNetCtlCheckCallback'),
+            ('libSceNetCtl', 'sceNetCtlRegisterCallback'),
+            ('libSceNetCtl', 'sceNetCtlUnregisterCallback'),
+        }.issubset(entries))
+        self.assertNotIn(('libSceNetCtl', 'sceNetCtlGetInfo'), entries)
+        self.assertNotIn(('libSceNetCtl', 'sceNetCtlGetNatInfo'), entries)
+
+        rows = runtime_issues.read_imports(runtime_issues.ROOT)
+        body = runtime_issues.issue(runtime_issues.GROUPS[-1], rows, entries)['body']
+        self.assertIn('### libSceNetCtl (4 of 6)', body)
+        self.assertIn('- [ ] `sceNetCtlGetInfo`', body)
+        self.assertIn('- [ ] `sceNetCtlGetNatInfo`', body)
+
+    def test_runtime_unresolved_provider_does_not_count_as_implemented(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, 'symbols'))
+            with open(os.path.join(root, 'symbols', 'imports.csv'), 'w', encoding='utf-8') as imports:
+                imports.write('importer,library,symbol,kind,provider\n')
+                imports.write('eboot,libSceNetCtl,sceNetCtlGetInfo,function,runtime-unresolved\n')
+
+            rows = runtime_issues.read_imports(root)
+
+        self.assertEqual('no', rows[0]['implemented'])
+
+    def test_boot_listing_does_not_track_unresolved_runtime_as_a_module(self):
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, 'symbols'))
+            boot.write_listing(
+                'eboot\tlibSceNetCtl\tsceNetCtlGetInfo\tfunction\truntime-unresolved\t0x0\t0\n', root)
+
+            with open(os.path.join(root, 'symbols', 'module_functions.csv'), newline='', encoding='utf-8') as listing:
+                self.assertEqual(['module', 'offset', 'size', 'symbol', 'status'], next(csv.reader(listing)))
+
     def test_registered_symbols_are_read_from_runtime_sources(self):
         with tempfile.TemporaryDirectory() as root:
             directory = os.path.join(root, 'runtime', 'syslib')

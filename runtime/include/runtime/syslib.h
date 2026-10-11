@@ -18,10 +18,16 @@
 extern "C" {
 #endif
 
+typedef enum {
+    RT_SYSLIB_CAPABILITY_UNRESOLVED = 0,
+    RT_SYSLIB_CAPABILITY_IMPLEMENTED = 1,
+} rt_syslib_capability;
+
 typedef struct {
     const char *library;   /* "libkernel", "libc", "libScePad", ... */
     const char *symbol;    /* "sceKernelGetProcessTime", "malloc", ... */
     void *fn;              /* called with the System V AMD64 convention, as the PS4 does */
+    rt_syslib_capability capability;
 } rt_syslib_entry;
 
 /* All entries, from every group (gathered by the linker; see RT_SYSLIB and RT_SYSLIB_UNRESOLVED). */
@@ -30,18 +36,20 @@ const rt_syslib_entry *rt_syslib_end(void);
 
 #define RT_SYSLIB_CAT2(a, b) a##b
 #define RT_SYSLIB_CAT(a, b) RT_SYSLIB_CAT2(a, b)
-#define RT_SYSLIB_REGISTER(entry, library, symbol, fn)                                                     \
+#define RT_SYSLIB_REGISTER(entry, library, symbol, fn, capability)                                        \
     __attribute__((used, section("rt_syslib"), aligned(sizeof(void *)))) static const rt_syslib_entry     \
-        entry = {library, #symbol, (void *)(fn)}
+        entry = {library, #symbol, (void *)(fn), capability}
 /* RT_SYSLIB("libkernel", sceKernelUsleep, my_usleep); at file scope. Use only when the runtime
    provides the imported behavior. tools/runtime_issues.py counts these as implemented. */
 #define RT_SYSLIB(library, symbol, fn) \
-    RT_SYSLIB_REGISTER(RT_SYSLIB_CAT(rt_syslib_entry_, __LINE__), library, symbol, fn)
+    RT_SYSLIB_REGISTER(RT_SYSLIB_CAT(rt_syslib_entry_, __LINE__), library, symbol, fn, \
+                       RT_SYSLIB_CAPABILITY_IMPLEMENTED)
 /* A registered fail-loud diagnostic for a behavior that remains unresolved. The loader can bind
    this entry and report the specific call when reached, but runtime issue coverage must leave it
    unchecked. */
 #define RT_SYSLIB_UNRESOLVED(library, symbol, fn) \
-    RT_SYSLIB_REGISTER(RT_SYSLIB_CAT(rt_syslib_unresolved_entry_, __LINE__), library, symbol, fn)
+    RT_SYSLIB_REGISTER(RT_SYSLIB_CAT(rt_syslib_unresolved_entry_, __LINE__), library, symbol, fn, \
+                       RT_SYSLIB_CAPABILITY_UNRESOLVED)
 
 #ifdef __cplusplus
 }

@@ -108,8 +108,11 @@ def runtime(root: str) -> dict | None:
         b = json.load(f)
     bundled = b.get('imports_bundled', 0)
     covered = bundled + b['imports_implemented']
+    unresolved = b.get('imports_unresolved', 0)
     return {'imports_total': b['imports_total'], 'imports_implemented': b['imports_implemented'],
             'imports_bundled': bundled, 'imports_covered': covered,
+            'imports_unresolved': unresolved,
+            'imports_unbound': b['imports_total'] - covered - unresolved,
             'imports_remaining': b['imports_total'] - covered,
             'imports_pct': pct(covered, b['imports_total']),
             'milestone': b['milestone'], 'milestone_index': b['milestone_index'],
@@ -181,9 +184,11 @@ def render_runtime(rt: dict | None) -> list[str]:
     return [
         '| Runtime | |',
         '|---|---|',
-        f"| System imports provided | {rt['imports_covered']} of {rt['imports_total']} "
+        f"| System imports implemented | {rt['imports_covered']} of {rt['imports_total']} "
         f"({fmt_pct(rt['imports_pct'])}): {rt['imports_bundled']} by the game's own modules, "
-        f"{rt['imports_implemented']} by the runtime; {rt['imports_remaining']} remaining |",
+        f"{rt['imports_implemented']} by the runtime |",
+        f"| Other imports | {rt['imports_unresolved']} registered fail-loud diagnostics, "
+        f"{rt['imports_unbound']} unbound |",
         f"| Furthest boot milestone | {rt['milestone']} ({rt['milestone_index']} of {rt['milestones']}) |",
         f"| Boot stops at | {boot_stop(rt)} |",
         '',
@@ -211,7 +216,7 @@ def status_sentence(d: dict, link: bool) -> str:
     if rt:
         runtime = '[our own runtime](runtime/)' if link else 'our own runtime'
         text += (f" On {runtime} the executable's boot gets as far as {boot_stop(rt)}, with "
-                 f"{rt['imports_covered']} of {rt['imports_total']} system imports provided.")
+                 f"{rt['imports_covered']} of {rt['imports_total']} system imports implemented.")
     return text
 
 

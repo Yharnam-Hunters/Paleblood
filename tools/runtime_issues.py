@@ -8,7 +8,8 @@ Each group is a set of PS4 system libraries, in the runtime roadmap's order. The
 every function of those libraries the executable imports, with what is implemented, so a
 contributor can claim a group (or part of one). Imports of the executable and of the game's own
 modules count once per library and symbol; one is done when a module provides it or the runtime
-registers its symbol with RT_SYSLIB. The imported-symbol list and denominators come from
+registers its symbol with RT_SYSLIB. RT_SYSLIB_UNRESOLVED entries are callable diagnostics, not
+implementations. The imported-symbol list and denominators come from
 symbols/imports.csv (written by tools/boot.py). --json prints
 [{key, title, body}]; otherwise the bodies as text.
 """
@@ -79,7 +80,7 @@ def read_imports(root: str) -> list[dict]:
                                                                 'kind': r['kind'], 'implemented': 'no',
                                                                 'importers': set()})
             row['importers'].add(r['importer'])
-            if r['provider']:
+            if r['provider'] and r['provider'] != 'runtime-unresolved':
                 row['implemented'] = 'yes'
     return [rows[k] for k in sorted(rows)]
 
@@ -91,7 +92,7 @@ def check_coverage(rows: list[dict]) -> list[str]:
 
 
 def read_runtime_entries(root: str) -> set[tuple[str, str]]:
-    """Return registered (library, symbol) pairs from the runtime's RT_SYSLIB entries."""
+    """Return implemented (library, symbol) pairs from ordinary RT_SYSLIB entries."""
     directory = os.path.join(root, 'runtime', 'syslib')
     entries = set()
     if not os.path.isdir(directory):
