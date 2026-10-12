@@ -24,7 +24,22 @@ yet; confirm or correct them when you hit them.
   segment, so Ghidra will not resolve imports by itself.
 - SelfUtil-Patched removes the repeated data before the first segment (at
   0x4000) and patches the version segment. Another SelfUtil build can produce a
-  different file with different hashes: always check `target.sha256`.
+  different file with different hashes: always check `target.sha256`, and check
+  the loaded image too (`target.image.sha256`), which no build choice changes.
+- The v1.09 executable is not region-specific (confirmed 2026-10-11).
+  Evidence: a US package - `CUSA00900`, content id
+  `UP9000-CUSA00900_00-BLOODBORNE000000`, app version 1.09 merged over the
+  base, region and title id read from `sce_sys/param.sfo` - converted with the
+  pinned SelfUtil build (`tools/selfutil/build.sh`, commit `53ca642b`) into
+  ELFs that reproduce every hash in `target.sha256`: `eboot.elf`
+  `ca8813862d7b1345…` and all seven system modules. It also reproduces the
+  build-independent loaded image in `target.image.sha256`,
+  `071df19c8880086d…`. `tools/check_target.py <elf-dir>` prints the nine
+  `ok` lines. So the hashes decide whether a dump lines up with our
+  addresses; the title id does not. Two corollaries: a pre-patched executable
+  (a frame-rate or debug-menu repack) breaks the loaded-image pin, so that pin
+  doubles as an integrity check; and an untested region or version (JP
+  `CUSA00208`, any other AppVer) stays unknown until its own check says `ok`.
 
 ## Address conventions
 

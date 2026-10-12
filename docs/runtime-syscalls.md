@@ -11,13 +11,15 @@ but do not count as implemented or as supplied imports in progress reports.
 
 `symbols/imports.csv` records `getpagesize` and `gettimeofday` as imports of `eboot` from `libScePosix`; `libc.elf` imports `clock_gettime`, `getpagesize`, `getpid`, and `gettimeofday` from `libkernel`. Import rows establish that the names are required, not their arguments, return values at every call site, or all clock IDs.
 
+The eight hash-verified target images (`eboot.elf` and the seven modules, `tools/check_target.py`) all state `p_align` 0x4000 for every `PT_LOAD` segment, with `p_offset` congruent to `p_vaddr` modulo 0x4000 (the difference is exactly 0x4000 in each; `readelf -l` prints the headers).
+
 The decompiled frame limiter calls `gettimeofday` with a null timezone argument. A separate [verified clock helper](../game/frame_timing/monotonic_clock.cpp) calls `sceKernelClockGettime` with clock ID `4`, named `CLOCK_MONOTONIC` in that code. This confirms one monotonic clock request in the game; it does not establish every ID passed through the imported `clock_gettime` wrapper, or that no other ID is used in unexamined code.
 
 ## Interfaces and known behavior
 
 | Function | Arguments and representation | Publicly documented result and errors | Evidence and open questions for PS4 |
 |---|---|---|---|
-| `getpagesize(void)` | No arguments. Returns the target's page size in bytes. The numeric value is platform-specific. | `getpagesize` is not in current POSIX; portable code is directed to `sysconf(_SC_PAGESIZE)`. Linux and FreeBSD document the byte count; their manuals do not define a general error return for this function. Linux exposes it as a libc interface, not necessarily a dedicated kernel syscall. | The import is present. The target page-size value and behavior under unusual target configurations are not established here. Do not hard-code the build host's page size. |
+| `getpagesize(void)` | No arguments. Returns the target's page size in bytes. The numeric value is platform-specific. | `getpagesize` is not in current POSIX; portable code is directed to `sysconf(_SC_PAGESIZE)`. Linux and FreeBSD document the byte count; their manuals do not define a general error return for this function. Linux exposes it as a libc interface, not necessarily a dedicated kernel syscall. FreeBSD notes the system page size may differ from the underlying hardware page size. | The import is present twice (`eboot` from `libScePosix`, `libc.elf` from `libkernel`), so both library names are registered against one implementation. The target images bound the value but do not pick one: every `PT_LOAD` of the eight hash-verified ELFs has `p_align` 0x4000 with `p_offset` congruent to `p_vaddr` modulo 0x4000, and the ELF ABI's congruence rule then limits the system page size to a divisor of 16384 (4096, 8192 or 16384); `p_align` is the alignment the image requires, not the page size the system reports. Stock FreeBSD on AMD64 uses 4096, and Sony's open-source page confirms the FreeBSD kernel is used but publishes the upstream sources, not the console's modifications, so no public source names the PS4's own value. The runtime entry is therefore registered with `RT_SYSLIB_UNRESOLVED`, so a boot that reaches it names the call, and it does not count as implemented (`runtime/syslib/kernel.c`). What would settle it: one observed `getpagesize()` or `sysconf(_SC_PAGESIZE)` result on a console, or a guest call site whose page arithmetic shows the granularity the system uses. See the section "getpagesize: observed, inferred, unknown" below; do not hard-code the build host's page size.
 | `getpid(void)` | No arguments. Returns a `pid_t` naming the calling process. | POSIX specifies that it succeeds and has no error return. Linux process IDs are scoped by PID namespaces; other systems have their own process-ID scope and lifecycle rules. | The import is present, but this repository does not establish the guest-visible process ID or its scope. Returning the host PID is not justified by the API contract alone. |
 | `clock_gettime(clock_id, tp)` | `clock_id` selects a clock; `tp` points to a `struct timespec`. On the POSIX interface, `tv_sec` is seconds and `tv_nsec` is nanoseconds in `[0, 1,000,000,000)`. The exact target structure layout still needs ABI evidence. | POSIX uses `0` for success and `-1` with `errno` for failure. An unsupported clock ID is an `EINVAL` case. Linux and BSD manuals document additional pointer-error details; use the target contract rather than assuming the host's errno mapping. | The imported wrapper is present. The verified `sceKernelClockGettime` call requests ID `4` (`CLOCK_MONOTONIC`). That is evidence for the SCE entry point only, not proof of the libc wrapper's IDs. Other IDs and exact PS4 error and pointer handling remain unresolved. Unknown IDs must not silently return a fabricated time. |
 | `gettimeofday(tv, tz)` | `tv` points to a `struct timeval`: seconds since the Epoch and microseconds in `[0, 1,000,000)`. The historical timezone argument is passed as null at the confirmed game call site. The exact target structure layout still needs ABI evidence. | The wall clock can jump and is not a monotonic elapsed-time source. Historical POSIX specified a zero return on success and left errors undefined; Linux documents `-1`/`EFAULT` for inaccessible pointers and ignores the timezone argument. POSIX.1-2024 removed the interface. | The imported wrapper and game call sites are present; the game passes null for the second argument. Exact target behavior for bad pointers, non-null timezone arguments, and error mapping is not established. Do not silently ignore an error without evidence. |
@@ -40,6 +42,45 @@ This evidence supports only the four integer conversions. It says nothing about 
 The executable imports `sceNetInetPton` from `libSceNet`. Target call-site inspection found four unconditional call instructions (at `0x0085785e`, `0x011c7a7b`, `0x02f984f6`, and `0x02df348d`); each passes address family `2` and supplies the result as an IPv4 address. The consumers use a positive return as success. This establishes Bloodborne's observed call shape, not every address family supported by the PS4 library. The import thunk and pointer-table references are not additional call sites.
 
 For the observed AF_INET path, the runtime uses the documented BSD [`inet_pton(3)` contract](https://man.freebsd.org/cgi/man.cgi?query=inet_pton): parse dotted-decimal IPv4 text into four network-order bytes, return 1 for valid input and 0 for malformed input. This conversion does not open a socket or perform network I/O. Other target address families and null-pointer error behavior remain unresolved, so the runtime emits a named diagnostic for those inputs instead of forwarding host-specific errors.
+
+## `getpagesize`: observed, inferred, unknown
+
+**Observed in our target** (read-only; the eight images verify against `target.sha256` and
+`target.image.sha256`):
+
+- `symbols/imports.csv` has exactly two `getpagesize` rows - `eboot` from `libScePosix` and
+  `libc.elf` from `libkernel`. No `sysconf` and no quad-page call is imported, so this is the only
+  page-size query the guest has.
+- All sixteen `PT_LOAD` segments of those eight images have `p_align` `0x4000`, and in every one
+  `p_offset - p_vaddr` is exactly `0x4000`.
+- Three guest call sites share one shape: `0x00e04168`, `0x00e04939` and `0x00e05cf9`, each inside
+  functions `0x00e04140`, `0x00e045c0` and `0x00e05a80`. Each is a lazy initialiser: a guard tests
+  `0x05859ec0`, the call is made, the result is `cltq`-extended, `blsr %rax,%rcx` with `jne` rejects
+  it unless it is a power of two, and the value is cached in `0x05859ec8` beside three fixed
+  siblings (`0x10000`, `0x40000`, `0x200000`).
+- `0x05859ec8` has exactly five cross-references in the executable: the three writes above and two
+  reads, all inside those same three functions. None of them compares the cached value against a
+  constant, and no other function reads it.
+
+**Inferred, and the premise each inference needs**:
+
+- The ELF ABI takes `p_align` of a loadable segment to be a multiple of the system page size, and
+  requires `p_offset` and `p_vaddr` to be congruent modulo the page size. *If the PS4 loader follows
+  both rules for these segments*, a page size larger than `0x4000` could not map them at their
+  fixed addresses, while any power-of-two divisor of `0x4000` could.
+- Restricting that to `0x1000`, `0x2000` and `0x4000` adds a second assumption - that the page size
+  is at least 4096 - which is ours, not observed. The guest's own `blsr` check is consistent with
+  every power of two and selects none of them.
+- So `p_align` bounds the candidate set under our premises; it does not measure the value the kernel
+  returns, and none of the three candidates is established.
+
+**Unknown**: the number the PS4 reports. Stock FreeBSD on AMD64 uses 4096 (`PAGE_SHIFT 12`,
+`sys/amd64/include/param.h`), and Sony's open-source page confirms a FreeBSD kernel but publishes
+the upstream sources rather than the console's modifications, so that value describes the ancestor
+and not the target. Our own loader does not depend on a page size either: it copies `PT_LOAD`
+segments at byte-exact `p_vaddr` into one image buffer (`runtime/loader.c`, `rt_elf_map`) and uses
+`p_align` only for TLS, and the `4096`s in `runtime/boot.c` are host allocation sizes. What would
+settle it: one observed `getpagesize()` or `sysconf(_SC_PAGESIZE)` result on a console.
 
 ## Network connection state (`libSceNetCtl`, issue #41)
 
@@ -120,6 +161,8 @@ Implement the established contract and test the `RT_SYSLIB` entry through its li
 - [POSIX `getpid`](https://pubs.opengroup.org/onlinepubs/9699919799/functions/getpid.html)
 - [Older POSIX `gettimeofday` specification](https://pubs.opengroup.org/onlinepubs/009604599/functions/gettimeofday.html)
 - [FreeBSD `getpagesize(3)`](https://man.freebsd.org/cgi/man.cgi?query=getpagesize&sektion=3&manpath=FreeBSD+13.3-RELEASE)
+- [ELF ABI, program headers and `p_align`](https://refspecs.linuxfoundation.org/elf/gabi4%2B/ch5.pheader.html) (loadable segments must be congruent modulo the page size; `p_align` is the alignment the loader honors)
+- [FreeBSD AMD64 `param.h`](https://github.com/freebsd/freebsd/blob/releng/9.1/sys/amd64/include/param.h) (stock `PAGE_SIZE` 4096) and [Sony's open-source page for the PS4](https://www.playstation.com/en-us/oss/ps4/)
 - [FreeBSD `clock_gettime(2)`](https://man.freebsd.org/cgi/man.cgi?query=clock_gettime&sektion=2&manpath=FreeBSD+15.1-STABLE) and [`gettimeofday(2)`](https://man.freebsd.org/cgi/man.cgi?query=gettimeofday&sektion=2&manpath=FreeBSD+14.4-RELEASE)
 - [Linux `getpagesize(2)`](https://man7.org/linux/man-pages/man2/getpagesize.2.html), [`getpid(2)`](https://man7.org/linux/man-pages/man2/getpid.2.html), [`clock_gettime(2)`](https://man7.org/linux/man-pages/man2/clock_gettime.2.html), and [`gettimeofday(2)`](https://man7.org/linux/man-pages/man2/gettimeofday.2.html)
 - [PSP2SDK `sceNetHtonl`/`sceNetHtons`/`sceNetNtohl`/`sceNetNtohs` declarations](https://psp2sdk.github.io/net_8h.html)

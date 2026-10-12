@@ -30,7 +30,8 @@ METRIC_FIELDS = ("address", "instruction_count", "complexity", "fixture_difficul
 RELEVANCE_FIELDS = ("address", "score", "source")
 DEFAULT_RANK_WEIGHTS = {"feasibility": 20, "dependency": 15, "fixture_difficulty": 10,
                         "analysis_confidence": 10, "unlock": 15, "runtime_relevance": 15,
-                        "ownership": 5}
+                        "ownership": 5, "original_execution": 15, "engineering_effort": 5,
+                        "test_infrastructure": 5}
 
 
 def sha256(path: Path) -> str:
@@ -362,6 +363,11 @@ def write_snapshot(path: Path, functions: list[dict], edges: list[dict], metadat
     db = connect(path)
     try:
         db.execute("BEGIN IMMEDIATE")
+        current = db.execute("SELECT value FROM metadata WHERE key='catalog_identity'").fetchone()
+        if current and json.loads(current[0]) != metadata.get("catalog_identity"):
+            exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='qualifications'").fetchone()
+            if exists:
+                db.execute("DELETE FROM qualifications")
         db.execute("DELETE FROM functions")
         db.execute("DELETE FROM edges")
         for index, row in enumerate(functions, 1):
@@ -492,7 +498,7 @@ def rank_functions(functions: list[dict], edges: list[dict], limit: int = 50,
         if row["replacement_status"] in ("replaced", "edge-verified", "verified"):
             continue
         ownership = row["ownership"]["status"]
-        if ownership == "claimed":
+        if ownership in {"claimed", "contributor_owned", "active_automation_worker", "already_implemented"}:
             continue
         reasons = []
         component_scores = {}
@@ -518,9 +524,13 @@ def rank_functions(functions: list[dict], edges: list[dict], limit: int = 50,
             count = (len(call_info["direct"]) + len(call_info["indirect"])
                      + len(call_info["imports"]) + len(call_info["unresolved_direct"])
                      + len(call_info["unresolved_indirect"]))
+            memory_complete = row.get("memory_dependencies", {}).get("complete", False)
             ratio = 1 if count == 0 else 0.8 if count <= 3 else 0.53 if count <= 10 else 0.2
-            add("dependency", ratio, True,
-                f"complete call scan records {count} internal, imported, or unresolved call sites")
+            if not memory_complete:
+                ratio = min(ratio, 0.25)
+            add("dependency", ratio, memory_complete,
+                f"static call scan records {count} call sites; memory/global dependency completeness is "
+                + ("established" if memory_complete else "unknown"))
         else:
             add("dependency", 0.13, False, "call/dependency scan is unknown; conservative low score")
         if row["fixture_difficulty"] != "unknown":
@@ -528,13 +538,17 @@ def rank_functions(functions: list[dict], edges: list[dict], limit: int = 50,
             add("fixture_difficulty", ratio, True,
                 f"assessed as {row['fixture_difficulty']} by analysis metadata")
         elif row["instruction_count"] is not None:
-            ratio = 1 if row["instruction_count"] <= 12 else 0.7 if row["instruction_count"] <= 40 else 0.3
+            ratio = 0.5 if row["instruction_count"] <= 12 else 0.35 if row["instruction_count"] <= 40 else 0.2
             add("fixture_difficulty", ratio, False,
                 f"estimate unknown; {row['instruction_count']} instructions used only as a size proxy")
         else:
             add("fixture_difficulty", 0.1, False, "instruction count and fixture difficulty are unknown")
-        if row["boundary"]["status"] == "ghidra-defined":
-            add("analysis_confidence", 1, True, f"entry/size comes from {row['boundary']['evidence']}")
+        qualification = row.get("qualification") or {}
+        if qualification.get("boundary_class") == "cross_tool_supported":
+            add("analysis_confidence", 1, True, "ELF extent and independent decoder corroborate the Ghidra entry")
+        elif row["boundary"]["status"] == "ghidra-defined":
+            add("analysis_confidence", 0.1, False,
+                f"Ghidra-defined extent only ({row['boundary']['evidence']}); independent support is pending")
         else:
             add("analysis_confidence", 0, False, "boundary evidence is unknown")
         beneficiaries = len(reverse.get(row["address"], ()))
@@ -552,14 +566,32 @@ def rank_functions(functions: list[dict], edges: list[dict], limit: int = 50,
                 f"tracked subsystem {row['system']}; boot relevance is not established")
         else:
             add("runtime_relevance", 0.07, False, "subsystem and runtime/boot relevance are unknown")
-        if ownership == "no_recorded_claim":
-            add("ownership", 1, True, "no issue/PR claim matched the supplied snapshot; confirm before assignment")
+        if ownership in {"no_recorded_claim", "confirmed_unclaimed"}:
+            add("ownership", 1, True, "all configured ownership sources were checked; no claim matched")
         else:
             add("ownership", 0.2, False, "evidence is unavailable; confirm before assignment")
+        if qualification.get("eligible_for_original_execution"):
+            add("original_execution", 1, True, "candidate passed the bounded original-instruction safety gates")
+        elif qualification:
+            add("original_execution", 0.1, False,
+                "qualification attempted; blockers remain: " + "; ".join(qualification.get("blockers", [])))
+        else:
+            add("original_execution", 0.1, False, "not yet examined by the qualification campaign")
+        if size is not None and row.get("instruction_count") is not None:
+            effort_ratio = 1 if size <= 32 else 0.7 if size <= 128 else 0.3
+            add("engineering_effort", effort_ratio, False,
+                f"{size} bytes and {row['instruction_count']} instructions; this is only a size estimate")
+        else:
+            add("engineering_effort", 0.1, False, "size estimate is unavailable")
+        if qualification.get("eligible_for_original_execution"):
+            add("test_infrastructure", 1, True, "the generic original-code harness path is available")
+        else:
+            add("test_infrastructure", 0.2, False,
+                "candidate-specific harness readiness has not been established")
         score = round(sum(item["weighted_score"] for item in component_scores.values()), 3)
         results.append({"address": row["address"], "name": row["name"], "system": row["system"],
-                        "score": score, "confidence_percent": round(100 * known / 7),
-                        "eligibility": "eligible" if ownership == "no_recorded_claim" else "conditional",
+                        "score": score, "confidence_percent": round(100 * known / len(weights)),
+                        "eligibility": "eligible" if ownership in {"no_recorded_claim", "confirmed_unclaimed"} else "conditional",
                         "ownership": ownership, "component_scores": component_scores, "reasons": reasons})
     return sorted(results, key=lambda item: (-item["score"], -item["confidence_percent"], item["address"]))[:limit]
 
@@ -576,6 +608,19 @@ def _json(value: object, as_json: bool) -> None:
                 print(json.dumps(item, sort_keys=True))
         else:
             print(value)
+
+
+def current_qualification_records(state: Path, root: Path) -> list[dict]:
+    """Return only cached decisions made by the current qualification toolchain."""
+    import function_qualification as qualification
+    cached = qualification.load_qualifications(state)
+    if not cached:
+        return []
+    try:
+        tool_identity = qualification.qualification_tool_identity(root)
+    except (OSError, ValueError):
+        return []
+    return qualification.load_qualifications(state, tool_identity)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -606,10 +651,28 @@ def parser() -> argparse.ArgumentParser:
     leaves.add_argument("--limit", type=int, default=100)
     unresolved = sub.add_parser("unresolved", help="list unresolved call sites from complete call scans")
     unresolved.add_argument("address", nargs="?")
-    cluster = sub.add_parser("cluster", help="show known call graph SCCs and dependency clusters")
+    cluster = sub.add_parser("cluster", aliases=["clusters"], help="show known call graph SCCs and dependency clusters")
     cluster.add_argument("address", nargs="?")
+    cluster.add_argument("--eligible", action="store_true", help="restrict clusters to qualified execution candidates")
     export = sub.add_parser("export", help="write a portable JSON catalog")
     export.add_argument("output", type=Path)
+    ownership = sub.add_parser("ownership", help="synchronize repository and local work ownership")
+    ownership_sub = ownership.add_subparsers(dest="ownership_command", required=True)
+    ownership_sync = ownership_sub.add_parser("sync", help="check all available ownership sources")
+    ownership_sync.add_argument("--repo", help="GitHub owner/repository (default: parse origin remote)")
+    ownership_sync.add_argument("--output", type=Path, help="optional path for a local evidence snapshot")
+    qualify = sub.add_parser("qualify", help="run a bounded candidate qualification campaign")
+    qualify.add_argument("--batch-size", type=int, default=20)
+    qualify.add_argument("--executable", type=Path, required=True, help="local ELF used by this catalog")
+    qualify.add_argument("--image-base", type=lambda value: int(value, 0), default=0x400000)
+    qualify.add_argument("--refresh", action="store_true", help="ignore cached qualification decisions")
+    eligible = sub.add_parser("eligible", help="list qualified candidates at one milestone")
+    eligible.add_argument("--stage", choices=("fixture-generation", "original-execution", "replacement-development"),
+                          default="original-execution")
+    explain = sub.add_parser("explain", help="explain one candidate's qualification")
+    explain.add_argument("address")
+    blockers = sub.add_parser("blockers", help="summarize blockers in the latest campaign")
+    blockers.add_argument("--limit", type=int, default=30)
     sub.add_parser("invalidate", help="invalidate cached state after input or assumption changes")
     return p
 
@@ -635,11 +698,60 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 db.execute("BEGIN IMMEDIATE")
                 db.execute("DELETE FROM functions"); db.execute("DELETE FROM edges"); db.execute("DELETE FROM metadata")
+                for table in ("qualifications", "ownership_snapshots"):
+                    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                        db.execute(f"DELETE FROM {table}")
                 db.commit()
                 result = {"invalidated": "all", "reason": "input or analysis assumptions changed"}
             finally:
                 db.close()
             _json(result, args.json)
+            return 0
+        if args.command == "ownership":
+            import function_qualification as qualification
+            repo = args.repo or qualification.repository_slug(args.root)
+            snapshot = qualification.synchronize_ownership(args.root, repo)
+            qualification.cache_snapshot(args.state, snapshot)
+            if args.output:
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                temp_name = None
+                try:
+                    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=args.output.parent,
+                                                     prefix=args.output.name + ".", suffix=".tmp", delete=False) as temp:
+                        temp_name = temp.name
+                        temp.write(json.dumps(snapshot, indent=2, sort_keys=True) + "\n")
+                        temp.flush()
+                        os.fsync(temp.fileno())
+                    os.replace(temp_name, args.output)
+                    temp_name = None
+                finally:
+                    if temp_name:
+                        os.unlink(temp_name)
+            _json(snapshot, args.json)
+            return 0
+        if args.command == "qualify":
+            import function_qualification as qualification
+            functions, edges, metadata = load_snapshot(args.state)
+            executable_sha, segments = qualification.read_elf_executable_segments(args.executable, args.image_base)
+            if not metadata.get("executable_sha256") or executable_sha != metadata["executable_sha256"]:
+                raise ValueError("local executable SHA-256 does not match the built analysis catalog")
+            snapshot = qualification.load_ownership(args.state)
+            if not qualification.ownership_snapshot_is_current(snapshot):
+                raise ValueError("ownership snapshot is incomplete, untimestamped, or older than 24 hours; "
+                                 "run ownership sync successfully before qualifying")
+            metadata["qualification_tools"] = qualification.qualification_tool_identity(args.root)
+            previous = {} if args.refresh else {item["address"]: item
+                                                 for item in qualification.load_qualifications(
+                                                     args.state, metadata["qualification_tools"])}
+            decisions = qualification.qualify_rows(functions, edges, snapshot, executable_sha,
+                                                   args.executable, segments, metadata, args.batch_size, previous)
+            qualification.save_qualifications(args.state, decisions)
+            counts: dict[str, int] = defaultdict(int)
+            for item in decisions:
+                counts[item["classification"]] += 1
+            _json({"catalog_identity": metadata.get("catalog_identity"), "executable_sha256": executable_sha,
+                   "analyzed": len(decisions), "qualification_counts": dict(sorted(counts.items())),
+                   "results": decisions}, args.json)
             return 0
         functions, edges, metadata = load_snapshot(args.state)
         by_address = {row["address"]: row for row in functions}
@@ -657,12 +769,70 @@ def main(argv: list[str] | None = None) -> int:
                       "ownership_known": sum(r["ownership"]["status"] != "unknown" for r in functions),
                       "replacement_coverage": statuses.get("replaced", 0) + statuses.get("edge-verified", 0)
                       + statuses.get("verified", 0),
-                      "strictly_eligible_candidates": sum(
-                          r["replacement_status"] not in ("replaced", "edge-verified", "verified")
-                          and r["ownership"]["status"] == "no_recorded_claim" for r in functions),
+                      "phase1_strictly_eligible_candidates": metadata.get("strictly_eligible_candidates", 0),
                       "conditional_candidates": sum(
                           r["replacement_status"] not in ("replaced", "edge-verified", "verified")
                           and r["ownership"]["status"] == "unknown" for r in functions)}
+            try:
+                import function_qualification as qualification
+                owner_snapshot = qualification.load_ownership(args.state)
+                owner_counts: dict[str, int] = defaultdict(int)
+                if owner_snapshot.get("snapshot_complete"):
+                    by_addr: dict[str, set[str]] = defaultdict(set)
+                    by_name: dict[str, set[str]] = defaultdict(set)
+                    for claim in owner_snapshot.get("claims", []):
+                        if claim.get("address"):
+                            by_addr[claim["address"]].add(claim.get("kind", "unknown"))
+                        if claim.get("symbol"):
+                            by_name[claim["symbol"]].add(claim.get("kind", "unknown"))
+                    by_system: dict[str, set[str]] = defaultdict(set)
+                    for claim in owner_snapshot.get("claims", []):
+                        if claim.get("system"):
+                            by_system[claim["system"]].add(claim.get("kind", "unknown"))
+                    for function in functions:
+                        if function["replacement_status"] in ("replaced", "edge-verified", "verified"):
+                            owner_counts["already_implemented"] += 1
+                        else:
+                            kinds = (by_addr.get(function["address"], set())
+                                     | by_name.get(function.get("name"), set())
+                                     | by_system.get(function.get("system"), set()))
+                            has_contributor = bool(kinds & {"contributor", "active_pr", "repository_claim"})
+                            has_local = "local_assignment" in kinds
+                            if has_contributor and has_local:
+                                owner_counts["ownership_conflict"] += 1
+                            elif has_contributor:
+                                owner_counts["contributor_owned"] += 1
+                            elif has_local:
+                                owner_counts["active_automation_worker"] += 1
+                            else:
+                                owner_counts["confirmed_unclaimed"] += 1
+                else:
+                    owner_counts["unknown"] = len(functions)
+                qualified = current_qualification_records(args.state, args.root)
+                result["ownership_source_snapshot_complete"] = owner_snapshot.get("snapshot_complete", False)
+                result["ownership_source_snapshot_fresh"] = qualification.ownership_snapshot_is_current(owner_snapshot)
+                result["ownership_source_checks"] = owner_snapshot.get("sources", [])
+                result["ownership_classification_counts"] = dict(sorted(owner_counts.items()))
+                result["ownership_resolved"] = len(functions) - owner_counts.get("unknown", 0)
+                result["ownership_known"] = result["ownership_resolved"]
+                result["conditional_candidates"] = owner_counts.get("unknown", 0)
+                result["confirmed_unclaimed_candidates"] = owner_counts.get("confirmed_unclaimed", 0)
+                result["independently_confirmed_boundaries"] = metadata.get("independently_confirmed_boundaries", 0)
+                result["qualification_records"] = len(qualified)
+                result["cross_tool_supported_boundaries_in_campaign"] = sum(
+                    row.get("boundary_class") == "cross_tool_supported" for row in qualified)
+                result["qualification_classification_counts"] = {
+                    key: sum(row.get("classification") == key for row in qualified)
+                    for key in sorted({row.get("classification") for row in qualified})}
+                result["qualified_for_fixture_generation"] = sum(
+                    row.get("eligible_for_fixture_generation", False) for row in qualified)
+                result["qualified_for_original_execution"] = sum(
+                    row.get("eligible_for_original_execution", False) for row in qualified)
+                result["qualified_for_replacement_development"] = sum(
+                    row.get("eligible_for_replacement_development", False) for row in qualified)
+                result["strictly_eligible_candidates"] = result["qualified_for_original_execution"]
+            except (ImportError, sqlite3.Error):
+                result["qualification_state"] = "unavailable"
             _json(result, args.json)
         elif args.command == "function":
             _json(by_address.get(address(args.address), {"address": address(args.address), "status": "not found"}), args.json)
@@ -680,7 +850,39 @@ def main(argv: list[str] | None = None) -> int:
             _json(out, args.json)
         elif args.command == "rank":
             weights = json.loads(args.weights.read_text(encoding="utf-8")) if args.weights else None
-            _json(rank_functions(functions, edges, args.limit, weights), args.json)
+            import function_qualification as qualification
+            decisions = {item["address"]: item for item in current_qualification_records(args.state, args.root)}
+            owner_snapshot = qualification.load_ownership(args.state)
+            claims_by_address: dict[str, list[dict]] = defaultdict(list)
+            claims_by_symbol: dict[str, list[dict]] = defaultdict(list)
+            claims_by_system: dict[str, list[dict]] = defaultdict(list)
+            for claim in owner_snapshot.get("claims", []):
+                if claim.get("address"):
+                    claims_by_address[claim["address"]].append(claim)
+                if claim.get("symbol"):
+                    claims_by_symbol[claim["symbol"]].append(claim)
+                if claim.get("system"):
+                    claims_by_system[claim["system"]].append(claim)
+            ranked_functions = []
+            for row in functions:
+                enriched = dict(row)
+                enriched["qualification"] = decisions.get(row["address"], {})
+                if owner_snapshot.get("snapshot_complete"):
+                    matches = (claims_by_address.get(row["address"], [])
+                               + claims_by_symbol.get(row.get("name"), [])
+                               + claims_by_system.get(row.get("system"), []))
+                    kinds = {claim.get("kind") for claim in matches}
+                    if row["replacement_status"] in {"replaced", "edge-verified", "verified"} or "implemented" in kinds:
+                        ownership_status = "already_implemented"
+                    elif kinds & {"contributor", "active_pr", "repository_claim"}:
+                        ownership_status = "contributor_owned"
+                    elif "local_assignment" in kinds:
+                        ownership_status = "active_automation_worker"
+                    else:
+                        ownership_status = "confirmed_unclaimed"
+                    enriched["ownership"] = {**row["ownership"], "status": ownership_status}
+                ranked_functions.append(enriched)
+            _json(rank_functions(ranked_functions, edges, args.limit, weights), args.json)
         elif args.command == "leaves":
             forward, _ = graph(edges)
             known = [row for row in functions if row["calls"]["analysis_complete"]
@@ -694,9 +896,19 @@ def main(argv: list[str] | None = None) -> int:
                         and (not args.address or row["address"] == address(args.address))
                         and (row["calls"]["unresolved_direct"] or row["calls"]["unresolved_indirect"])]
             _json(selected, args.json)
-        elif args.command == "cluster":
+        elif args.command in ("cluster", "clusters"):
             forward, _ = graph(edges)
+            eligible_addresses = None
+            if args.eligible:
+                import function_qualification as qualification
+                eligible_addresses = {item["address"] for item in current_qualification_records(args.state, args.root)
+                                      if item.get("eligible_for_original_execution")}
+                edges = [edge for edge in edges if edge["caller"] in eligible_addresses
+                         and edge.get("callee") in eligible_addresses]
+                forward, _ = graph(edges)
             graph_nodes = {row["address"] for row in functions if row["calls"]["analysis_complete"]}
+            if eligible_addresses is not None:
+                graph_nodes &= eligible_addresses
             graph_nodes.update(forward)
             for targets in forward.values(): graph_nodes.update(targets)
             sccs = strongly_connected_components(graph_nodes, forward)
@@ -719,7 +931,8 @@ def main(argv: list[str] | None = None) -> int:
                        "analyzed_isolated_functions": sum(len(part) == 1 for part in clusters),
                        "analyzed_leaf_count": sum(row["calls"]["analysis_complete"]
                            and not forward.get(row["address"]) for row in functions),
-                       "cluster_count": len(clusters), "edge_analysis_incomplete":
+                       "cluster_count": len(clusters), "eligible_filter": args.eligible,
+                       "edge_analysis_incomplete":
                        metadata.get("functions_with_static_call_scan", 0) < len(functions)}, args.json)
         elif args.command == "export":
             args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -739,6 +952,65 @@ def main(argv: list[str] | None = None) -> int:
                 if temp_name:
                     os.unlink(temp_name)
             _json({"exported": str(args.output), "functions": len(functions), "edges": len(edges)}, args.json)
+        elif args.command in ("eligible", "explain", "blockers"):
+            import function_qualification as qualification
+            decisions = current_qualification_records(args.state, args.root)
+            by_decision = {item["address"]: item for item in decisions}
+            if args.command == "eligible":
+                stage_field = {"fixture-generation": "eligible_for_fixture_generation",
+                               "original-execution": "eligible_for_original_execution",
+                               "replacement-development": "eligible_for_replacement_development"}[args.stage]
+                _json([item for item in decisions if item.get(stage_field)], args.json)
+            elif args.command == "explain":
+                key = address(args.address)
+                explanation = by_decision.get(key)
+                if explanation is None:
+                    import function_qualification as qualification
+                    row = by_address.get(key)
+                    snapshot = qualification.load_ownership(args.state)
+                    owner = (qualification.classify_ownership(key, row.get("name") if row else None, snapshot,
+                                                              row.get("system") if row else None)
+                             if row else {"status": "unknown", "blockers": ["address is absent from the catalog"]})
+                    explanation = {"address": key, "classification": "not_yet_analyzed",
+                                   "reason": "candidate is outside the latest qualification batch",
+                                   "ownership": owner,
+                                   "catalog_function": ({"size_bytes": row.get("size_bytes"),
+                                                        "replacement_status": row.get("replacement_status"),
+                                                        "boundary": row.get("boundary"),
+                                                        "instruction_count": row.get("instruction_count"),
+                                                        "calls": row.get("calls"),
+                                                        "memory_dependencies": row.get("memory_dependencies")}
+                                                       if row else None)}
+                _json(explanation, args.json)
+            else:
+                blockers: dict[str, int] = defaultdict(int)
+                for item in decisions:
+                    for reason in item.get("blockers", []):
+                        blockers[reason] += 1
+                summary = sorted(({"reason": reason, "count": count} for reason, count in blockers.items()),
+                                 key=lambda item: (-item["count"], item["reason"]))
+                import function_qualification as qualification
+                snapshot = qualification.load_ownership(args.state)
+                claim_addresses = {claim.get("address") for claim in snapshot.get("claims", [])
+                                   if claim.get("address")}
+                claim_names = {claim.get("symbol") for claim in snapshot.get("claims", [])
+                               if claim.get("symbol")}
+                claim_systems = {claim.get("system") for claim in snapshot.get("claims", [])
+                                 if claim.get("system")}
+                ownership_counts: dict[str, int] = defaultdict(int)
+                for row in functions:
+                    if row["replacement_status"] in ("replaced", "edge-verified", "verified"):
+                        ownership_counts["already_implemented"] += 1
+                    elif (row["address"] in claim_addresses or row.get("name") in claim_names
+                          or row.get("system") in claim_systems):
+                        ownership_counts["claimed_or_assigned"] += 1
+                    elif snapshot.get("snapshot_complete"):
+                        ownership_counts["confirmed_unclaimed"] += 1
+                    else:
+                        ownership_counts["unknown"] += 1
+                _json({"analyzed": len(decisions), "ownership_snapshot_complete": snapshot.get("snapshot_complete", False),
+                       "ownership_counts": dict(sorted(ownership_counts.items())),
+                       "qualification_blockers": summary[:args.limit]}, args.json)
         return 0
     except (OSError, ValueError, sqlite3.Error, json.JSONDecodeError) as error:
         print(f"function_catalog: {error}", file=sys.stderr)
