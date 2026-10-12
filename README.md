@@ -153,6 +153,7 @@ repository, pick a good first issue or a target from [NEXT.md](NEXT.md), and rea
 | `game/routes/` | Pad routes for unattended game runs through the current host scaffold. |
 | `runtime/` | The generic layer: hooks, capture, probes. Nothing specific to this game. |
 | `symbols/` | `functions.csv` (what we track) and `ghidra_functions.csv` (every function, the denominator). |
+| Function intelligence | [`docs/FUNCTION_CATALOG.md`](docs/FUNCTION_CATALOG.md): local catalog, dependency evidence, ranking, and CLI. |
 | `tools/` | Verification harness, boot harness, progress, validators, Ghidra scripts, hooks. |
 | `third_party/bbport/` | Active external run scaffold; retained until a verified project-owned replacement is available. See its license and integration notes in `third_party/README.md`. |
 | `docs/` | Onboarding, Ghidra setup, architecture, verification, system pages. |
