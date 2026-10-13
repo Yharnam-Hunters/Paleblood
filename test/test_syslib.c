@@ -173,14 +173,17 @@ int main(void)
     rt_process.proc_param = block;
     CHECK(((void *(*)(void))fn("libkernel", "sceKernelGetProcParam"))() == block);
 
-    /* a thread variable equals itself and nothing else: the same object pointer is the same thread */
+    /* a thread variable equals itself and nothing else: the same object pointer is the same thread.
+       The runtime has a single guest thread so far (scePthreadCreate is not implemented), so the
+       unequal cases compare it with a pointer that is not a thread: they exercise pointer inequality
+       only, not two distinct valid thread handles. */
     static unsigned char main_stack[0x100];
     rt_thread_register_main(main_stack, sizeof main_stack);
     void *const self = ((void *(*)(void))fn("libkernel", "scePthreadSelf"))();
     const f_equal equal = (f_equal)fn("libkernel", "scePthreadEqual");
-    unsigned char other;
+    unsigned char not_a_thread;
     CHECK(self && equal(self, self) != 0);
-    CHECK(equal(self, &other) == 0 && equal(&other, self) == 0);
+    CHECK(equal(self, &not_a_thread) == 0 && equal(&not_a_thread, self) == 0);
     CHECK(equal(self, NULL) == 0);
 
     /* The PS4 host is little-endian AMD64; the network representation is big-endian. */
