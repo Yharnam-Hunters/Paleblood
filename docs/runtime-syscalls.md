@@ -23,6 +23,7 @@ The decompiled frame limiter calls `gettimeofday` with a null timezone argument.
 | `getpid(void)` | No arguments. Returns a `pid_t` naming the calling process. | POSIX specifies that it succeeds and has no error return. Linux process IDs are scoped by PID namespaces; other systems have their own process-ID scope and lifecycle rules. | The import is present, but this repository does not establish the guest-visible process ID or its scope. Returning the host PID is not justified by the API contract alone. |
 | `clock_gettime(clock_id, tp)` | `clock_id` selects a clock; `tp` points to a `struct timespec`. On the POSIX interface, `tv_sec` is seconds and `tv_nsec` is nanoseconds in `[0, 1,000,000,000)`. The exact target structure layout still needs ABI evidence. | POSIX uses `0` for success and `-1` with `errno` for failure. An unsupported clock ID is an `EINVAL` case. Linux and BSD manuals document additional pointer-error details; use the target contract rather than assuming the host's errno mapping. | The imported wrapper is present. The verified `sceKernelClockGettime` call requests ID `4` (`CLOCK_MONOTONIC`). That is evidence for the SCE entry point only, not proof of the libc wrapper's IDs. Other IDs and exact PS4 error and pointer handling remain unresolved. Unknown IDs must not silently return a fabricated time. |
 | `gettimeofday(tv, tz)` | `tv` points to a `struct timeval`: seconds since the Epoch and microseconds in `[0, 1,000,000)`. The historical timezone argument is passed as null at the confirmed game call site. The exact target structure layout still needs ABI evidence. | The wall clock can jump and is not a monotonic elapsed-time source. Historical POSIX specified a zero return on success and left errors undefined; Linux documents `-1`/`EFAULT` for inaccessible pointers and ignores the timezone argument. POSIX.1-2024 removed the interface. | The imported wrapper and game call sites are present; the game passes null for the second argument. Exact target behavior for bad pointers, non-null timezone arguments, and error mapping is not established. Do not silently ignore an error without evidence. |
+| `sceNetErrnoLoc(void)` | No arguments. Returns the address of the calling thread's network errno, an `int` cell the caller reads and writes through that address. | The errno-location pattern is FreeBSD's: `intro(2)` defines `errno` as `(*__error())`, where `__error()` "returns a pointer to a field in the thread specific structure". POSIX adds that the value is defined only after a call documented to set it, that no function sets it to 0, and that an application needing it should set it to 0 before a call. | The import is present. The Vita-era declaration (`include/psp2/net/net.h` in vita-headers, "Get pointer to last network errno") returns a pointer to `int`; Vita is another operating system, so this is evidence of shape, not a PS4 value. The PS4's own libc reaches errno through FreeBSD's location call (`__error`, imported from `libkernel` per symbols/imports.csv), supporting a per-thread cell. Open for PS4: whether the network errno is thread-local, which calls set it and whether they store a FreeBSD errno or a library-specific code, and the initial value. The runtime never writes the cell, so no implemented call depends on those answers; the first implemented call that must set it has to settle the encoding first. |
 
 ## Clock IDs and platform differences
 
@@ -111,6 +112,45 @@ fatal that names the question and the evidence that would close it.
 no public source, so no path in `runtime/syslib/netctl.c` returns one: a case that would need an error
 value stops the boot by name instead.
 
+## Network errno location (`sceNetErrnoLoc`, issue #41)
+
+**Observed.** `sceNetErrnoLoc` is imported by `eboot` from `libSceNet` (`symbols/imports.csv`). The
+public Vita-era declaration, `int *sceNetErrnoLoc(void)` in `include/psp2/net/net.h` of
+vitasdk/vita-headers, is documented there as "Get pointer to last network errno" and returns a
+pointer to `int`. For the PS4's *own* `errno`, the location-call convention is visible on this
+target: the executable, `libc.elf` and `libSceFios2.elf` all import `__error` from `libkernel`
+(`symbols/imports.csv`), FreeBSD's name for it, and FreeBSD's `intro(2)` defines `errno` as
+`(*__error())` where `__error()` "returns a pointer to a field in the thread specific structure for
+threads other than the initial thread. For the initial thread and non-threaded processes,
+`__error()` returns a pointer to a global" - a cell per thread either way, whose address the caller
+receives to read and write. `QUIRKS.md` records the calling convention but not this one; the import
+table is where it shows.
+
+**Inferred, and the premise each step needs.** That the *network* errno sits in a per-thread cell
+follows from the FreeBSD pattern and the PS4's own use of it for `errno`; the premise is that
+`libSceNet` shares libc's convention, and no public source states that for the PS4. That the cell
+starts at 0 rests on C zero-initialization of static storage plus POSIX's documented usage - the
+value is defined only after a call documented to set it, no function sets it to 0, and an
+application that needs it "should set it to 0 before a function call" - so 0 means "no error yet"
+and the caller owns the cell. FreeBSD's error table also lists 0 as "Undefined error: 0. Not used.",
+so 0 never names an error. Both are conventions we follow, not PS4 behavior we measured.
+
+**Unknown.** Which calls set the network errno, and whether they store a FreeBSD `errno` or the
+library's own codes - the Vita-era header gives its resolver a separate numbering
+(`SCE_NET_RESOLVER_E*` from 220) on a different operating system, which suggests the library may not
+use plain errnos at all. Also unknown: whether the PS4's own cell starts at 0. Nothing depends on
+those answers here, because no implemented `libSceNet` call can fail with a network error - nothing
+in this group opens a socket - so the runtime never writes the cell and a guest reads 0 or its own
+writes. The first implemented call that must set the cell has to settle the encoding first.
+
+**Why this entry counts as implemented while `getpagesize` does not.** The call has an answer we can
+give under either reading of the unknowns: a location exists for the calling thread, so it returns
+one, with no arguments to reject and no error return. The unresolved part is the *contents* of the
+cell, not the call's contract. `getpagesize` is the opposite: the value is the whole contract, and we
+do not know it, so it registers as `RT_SYSLIB_UNRESOLVED`. `sceNetErrnoLoc` is registered with plain
+`RT_SYSLIB` and `test/test_syslib.c` asserts the per-thread behavior by calling it from a second host
+thread, so the inference is at least pinned to what we ship.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
@@ -126,7 +166,11 @@ Implement the established contract and test the `RT_SYSLIB` entry through its li
 - [FreeBSD `clock_gettime(2)`](https://man.freebsd.org/cgi/man.cgi?query=clock_gettime&sektion=2&manpath=FreeBSD+15.1-STABLE) and [`gettimeofday(2)`](https://man.freebsd.org/cgi/man.cgi?query=gettimeofday&sektion=2&manpath=FreeBSD+14.4-RELEASE)
 - [Linux `getpagesize(2)`](https://man7.org/linux/man-pages/man2/getpagesize.2.html), [`getpid(2)`](https://man7.org/linux/man-pages/man2/getpid.2.html), [`clock_gettime(2)`](https://man7.org/linux/man-pages/man2/clock_gettime.2.html), and [`gettimeofday(2)`](https://man7.org/linux/man-pages/man2/gettimeofday.2.html)
 - [PSP2SDK `sceNetHtonl`/`sceNetHtons`/`sceNetNtohl`/`sceNetNtohs` declarations](https://psp2sdk.github.io/net_8h.html)
+- [vitasdk/vita-headers `include/psp2/net/net.h` (`sceNetErrnoLoc` declaration)](https://github.com/vitasdk/vita-headers/blob/master/include/psp2/net/net.h)
+- [FreeBSD `intro(2)` ERRORS (`__error()`, the errno location)](https://man.freebsd.org/cgi/man.cgi?query=errno&sektion=2)
 - [FreeBSD `htonl(3)`/`htons(3)`/`ntohl(3)`/`ntohs(3)`](https://man.freebsd.org/cgi/man.cgi?format=html&query=htons&sektion=3)
 - [vitasdk/vita-headers `psp2/net/netctl.h`](https://github.com/vitasdk/vita-headers/blob/master/include/psp2/net/netctl.h) - PS Vita, a different operating system: shape of the `SceNetCtl` declarations, never a PS4 value
 - [PSP2SDK `psp2/net/netctl.h` file reference](https://psp2sdk.github.io/netctl_8h.html) and [vitasdk `SceNetCtl` user group](https://docs.vitasdk.org/group__SceNetCtlUser.html) - the same declarations, with no prose describing any return value in this group
 - [vitasdk/vita-headers `psp2/error.h`](https://github.com/vitasdk/vita-headers/blob/master/include/psp2/error.h) - `0 on success` as the documented SCE-family return convention
+
+- [POSIX `errno` (value semantics)](https://pubs.opengroup.org/onlinepubs/9699919799/functions/errno.html)
