@@ -42,6 +42,13 @@ static guest_thread *thread_self(void)
     return current;
 }
 
+/* Two thread variables name the same thread when they hold the same object pointer. Non-zero when
+   equal, zero otherwise, with no error return (FreeBSD pthread_equal(3)). */
+static int thread_equal(guest_thread *a, guest_thread *b)
+{
+    return a == b;
+}
+
 static int attr_init(guest_attr **attr)
 {
     if (!attr) return SCE_KERNEL_ERROR(BSD_EINVAL);
@@ -70,6 +77,7 @@ static int attr_get(guest_thread *thread, guest_attr **attr)
 }
 
 RT_SYSLIB("libkernel", scePthreadSelf, thread_self);
+RT_SYSLIB("libkernel", scePthreadEqual, thread_equal);
 RT_SYSLIB("libkernel", scePthreadAttrInit, attr_init);
 RT_SYSLIB("libkernel", scePthreadAttrDestroy, attr_destroy);
 RT_SYSLIB("libkernel", scePthreadAttrGet, attr_get);
