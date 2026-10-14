@@ -55,8 +55,11 @@ ok       eboot.elf
 ok       eboot.elf (loaded image)
 ```
 
-Every line must say `ok`. A mismatch means a different region, version or dump: stop, it will
-not line up with anyone else's addresses. `tools/check_target.py ~/bb/elf` repeats the check.
+Every line must say `ok`. A mismatch means a different version or a different dump: stop, it will not
+line up with anyone else's addresses. The title id is not the test: Bloodborne's US (`CUSA00900`) and
+EU (`CUSA03173`) v1.09 releases convert to the same executable, the same system modules and the same
+loaded image, so a US dump whose lines all say `ok` is exactly as good, and a dump of another app
+version is not. `tools/check_target.py ~/bb/elf` repeats the check.
 
 ## 3. Ghidra (15 minutes, most of it the download)
 

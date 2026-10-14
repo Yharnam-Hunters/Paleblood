@@ -25,12 +25,29 @@ analyzeHeadless PROJECT_DIR bb_eboot -import /path/to/eboot.elf \
     -loader-imageBase 0x400000 \
     -scriptPath tools/ghidra \
     -postScript ExportFunctions.java OUT/ghidra_functions.csv \
-    -postScript ImportReport.java OUT/import_report.txt
+    -postScript ImportReport.java OUT/import_report.txt \
+    -postScript ExportFunctionAnalysis.java OUT/call_edges.csv OUT/function_metrics.csv
 ```
 
 - `eboot.elf` is the SELF converted to ELF (target hashes in `target.sha256`).
 - Full auto-analysis runs by default. `ExportFunctions.java` refuses a base other than
   `0x400000` and writes address and size only.
+- `ExportFunctionAnalysis.java` writes call edges (including unresolved call instructions),
+  instruction counts, a conditional-branch complexity estimate, and referenced data addresses.
+  Its `analysis_complete` marker means the script scanned that Ghidra-defined function body; it
+  does not validate indirect targets or prove function behavior. The script emits no instruction
+  bytes or decompiler text. Import the two CSVs into the local scheduler with the matching local
+  executable, explicit Ghidra version, and current issue/PR ownership snapshot, for example:
+
+  ```sh
+  python3 tools/function_catalog.py --state ~/.cache/paleblood/function-catalog.sqlite3 build \
+      --executable /path/to/eboot.elf --edges OUT/call_edges.csv \
+      --metrics OUT/function_metrics.csv --analysis-version 'Ghidra 12.0.3 / ExportFunctionAnalysis 1' \
+      --claims /path/to/open-work-claims.json
+  ```
+
+  The catalog stores the executable hash, not its local path. See
+  [Function intelligence catalog](FUNCTION_CATALOG.md) for field definitions and unknown handling.
 - Check the export with `tools/validate_functions.py` after copying it to `symbols/`, then run
   `tools/progress.py --update-readme`.
 - Full auto-analysis of the eboot took about 26 minutes on the maintainer's machine with the
