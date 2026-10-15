@@ -113,6 +113,51 @@ fatal that names the question and the evidence that would close it.
 no public source, so no path in `runtime/syslib/netctl.c` returns one: a case that would need an error
 value stops the boot by name instead.
 
+## Thread attribute detach state (`scePthreadAttrSetdetachstate`, issue #34)
+
+`eboot` and `libSceFios2.elf` import `scePthreadAttrSetdetachstate` from `libkernel`, and `eboot`
+imports `pthread_attr_setdetachstate` from `libScePosix` (`symbols/imports.csv`). Each source below
+establishes a different part:
+
+- **What the call does:** POSIX `pthread_attr_setdetachstate`. A thread created with the attribute
+  starts detached for `PTHREAD_CREATE_DETACHED` and joinable for `PTHREAD_CREATE_JOINABLE`.
+- **Invalid detach state:** POSIX and FreeBSD's `pthread_attr(3)` both make any other value
+  `EINVAL`.
+- **Invalid attribute variable:** POSIX leaves a null or uninitialised attribute undefined and only
+  recommends `EINVAL`, and the FreeBSD manual lists no error for it. The behaviour comes from
+  FreeBSD libthr's `_pthread_attr_setdetachstate` (`lib/libthr/thread/thr_attr.c`), which returns
+  `EINVAL` when the variable is null or holds no attribute object.
+- **The numbers:** FreeBSD's `<pthread.h>` defines the two states as `0` and `1`. The OpenOrbis
+  homebrew SDK header (`include/orbis/_types/pthread.h`) defines `ORBIS_PTHREAD_CREATE_JOINABLE` and
+  `ORBIS_PTHREAD_CREATE_DETACHED` with the same values. That header follows FreeBSD's text, so it
+  corroborates the numbers rather than measuring them independently.
+
+As with the mutex functions (`runtime/syslib/kernel_mutex.c`), the SCE name returns `0x80020000`
+plus the error number, and the POSIX name returns the number itself.
+
+Still open: the detach state a fresh attribute starts with, and the one `scePthreadAttrGet` copies
+from a running thread. Both are values the system supplies. POSIX makes joinable the default, but
+nothing we can cite confirms what the PS4 reports. In FreeBSD libthr, `_pthread_create`
+(`thr_create.c`) uses that same default (`_pthread_attr_default`) when it is given no attribute
+variable or an empty one. The runtime treats both cases as the unknown default, so the outcome, a
+fatal, does not depend on the PS4 matching libthr there.
+
+How the runtime keeps that open:
+
+- The attribute records a state only when one is set (`has_detach_state`). `scePthreadAttrGet`
+  replaces the whole attribute, as libthr's `pthread_attr_get_np` does, so a state set before the
+  copy is dropped.
+- By convention, thread creation reads the state through `rt_thread_attr_detach_state`
+  (`runtime/include/runtime/process.h`) and never from the field. A fresh attribute's field holds
+  zero, which is the joinable value, so reading the field directly would assume joinable silently.
+- For no variable, an empty variable, or a state nobody set, the reader stops the process
+  (`rt_fatal`), names the call that asked, and says which of those cases it hit.
+
+What would settle it: an observed `scePthreadAttrGetdetachstate` result on a console, for a fresh
+attribute and for one filled by `scePthreadAttrGet` from the main thread. Guest call sites would
+also settle it: a thread created without a detach state being set, then joined or detached
+(`scePthreadJoin`, `pthread_join` and `scePthreadDetach` are imported).
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
@@ -133,3 +178,6 @@ Implement the established contract and test the `RT_SYSLIB` entry through its li
 - [vitasdk/vita-headers `psp2/net/netctl.h`](https://github.com/vitasdk/vita-headers/blob/master/include/psp2/net/netctl.h) - PS Vita, a different operating system: shape of the `SceNetCtl` declarations, never a PS4 value
 - [PSP2SDK `psp2/net/netctl.h` file reference](https://psp2sdk.github.io/netctl_8h.html) and [vitasdk `SceNetCtl` user group](https://docs.vitasdk.org/group__SceNetCtlUser.html) - the same declarations, with no prose describing any return value in this group
 - [vitasdk/vita-headers `psp2/error.h`](https://github.com/vitasdk/vita-headers/blob/master/include/psp2/error.h) - `0 on success` as the documented SCE-family return convention
+- [POSIX `pthread_attr_setdetachstate`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_attr_getdetachstate.html) - the detach state semantics, the invalid-value error, and the recommended `EINVAL` for an uninitialised attribute
+- [FreeBSD `pthread_attr(3)`](https://man.freebsd.org/cgi/man.cgi?query=pthread_attr_setdetachstate&sektion=3), [libthr `thr_attr.c`](https://cgit.freebsd.org/src/tree/lib/libthr/thread/thr_attr.c) (`_pthread_attr_setdetachstate`, `_pthread_attr_get_np`), [`thr_create.c`](https://cgit.freebsd.org/src/tree/lib/libthr/thread/thr_create.c) (`_pthread_create`: the default attribute for a null or empty variable) and [`include/pthread.h`](https://cgit.freebsd.org/src/tree/include/pthread.h) (`PTHREAD_CREATE_JOINABLE`, `PTHREAD_CREATE_DETACHED`)
+- [OpenOrbis `include/orbis/_types/pthread.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/_types/pthread.h) - the PS4 homebrew SDK's `ORBIS_PTHREAD_CREATE_*` values, which follow FreeBSD's
