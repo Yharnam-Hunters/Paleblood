@@ -87,6 +87,59 @@ class Differential(unittest.TestCase):
         self.assertGreaterEqual(len(float_values), 8)
         self.assertIn("00000080000000000000000000000000", float_values)  # negative zero
 
+    def test_coverage_summary_maps_complete_fixture_inputs_to_blocks_and_edges(self):
+        block = "guest:0x400100"
+        edge = {"from": block, "to": "guest:0x400110", "kind": "conditional",
+                "outcome": "taken", "branch_instruction": "guest:0x400108", "hits": 1}
+        sides = {"original": [
+            {"id": "covered", "instruction_trace": {"control_flow_coverage": {
+                "status": "complete", "feedback_eligible": True, "reason": None,
+                "blocks": [{"address": block, "hits": 1}], "edges": [edge]}}},
+            {"id": "unknown", "instruction_trace": {"control_flow_coverage": {
+                # Reject inconsistent persisted evidence even if its flag is accidentally true.
+                "status": "partial", "feedback_eligible": True, "reason": "limit",
+                "blocks": [], "edges": []}}},
+        ]}
+        summary = differential.summarize_control_flow_coverage(sides)["by_side"]["original"]
+        self.assertEqual(summary["status"], "partial")
+        self.assertEqual(summary["block_coverage"], {block: ["covered"]})
+        self.assertEqual(summary["fixture_coverage"]["unknown"]["status"], "partial")
+        self.assertEqual(summary["fixture_coverage"]["unknown"]["blocks"], [])
+        self.assertFalse(summary["fixture_coverage"]["unknown"]["feedback_eligible"])
+        self.assertEqual(summary["feedback_fixture_count"], 1)
+
+    def test_coverage_feedback_prioritizes_seed_with_unobserved_branch_outcome(self):
+        first, second = self.case(), self.case()
+        first["id"], second["id"] = "branch-seed", "unmeasured-seed"
+        first["args"]["rdi"], second["args"]["rdi"] = "0x1", "0x2"
+        first_path, second_path = Path("branch.json"), Path("unmeasured.json")
+        report = {"coverage_feedback": {"schema": 1, "by_side": {
+            "original": {"fixture_coverage": {"branch": {
+                "status": "complete", "feedback_eligible": True,
+                "edges": [{"kind": "conditional", "outcome": "taken",
+                           "branch_instruction": "guest:0x400110"}]}},
+                "novelty_by_fixture": {"branch": {"new_blocks": ["b"], "new_edges": ["e"]}},
+                "unobserved_conditional_outcomes": [{"instruction": "guest:0x400110",
+                                                     "observed": ["taken"], "unobserved": ["fallthrough"]}]},
+            "replacement": {"fixture_coverage": {}, "novelty_by_fixture": {},
+                            "unobserved_conditional_outcomes": []}}}}
+        ordered = differential.coverage_seed_priorities([(first_path, first), (second_path, second)], report)
+        self.assertEqual(ordered[0][1]["id"], "branch-seed")
+        generated = differential.explore_fixtures([(first_path, first), (second_path, second)],
+                                                   {**ABI, "arguments": [
+                                                       {"register": "rdi", "type": "uint32_t", "direction": "input"}]},
+                                                   6, 29, report, "a" * 64)
+        self.assertEqual(generated[0]["id"], "branch-seed")
+        self.assertEqual(generated[0]["coverage_guidance"]["status"], "ranked")
+        self.assertEqual(generated[0]["coverage_guidance"]["report_sha256"], "a" * 64)
+        self.assertEqual(generated[1]["exploration"]["source_fixture"], "branch")
+        self.assertIn("conditional outcome", " ".join(generated[1]["coverage_guidance"]["reasons"]))
+        self.assertEqual(generated[4]["coverage_guidance"]["status"], "unknown")
+
+    def test_coverage_prioritization_rejects_non_differential_reports(self):
+        with self.assertRaises(differential.DifferentialError):
+            differential.coverage_seed_priorities([(Path("x.json"), self.case())], {})
+
     def test_minimizer_preserves_mismatch_class_and_is_bounded(self):
         case = self.case()
         case["memory"] = [{"addr": "0x00401000", "bytes": "01020304"}]

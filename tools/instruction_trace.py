@@ -23,10 +23,12 @@ PTRACE_TRACEME, PTRACE_PEEKDATA, PTRACE_POKEDATA = 0, 2, 5
 PTRACE_CONT, PTRACE_KILL, PTRACE_SINGLESTEP = 7, 8, 9
 PTRACE_GETREGS, PTRACE_SETREGS = 12, 13
 CS_ARCH_X86, CS_MODE_64, CS_OPT_DETAIL, CS_OPT_ON = 3, 1 << 3, 2, 3
-CS_OP_MEM, CS_AC_READ, CS_AC_WRITE = 3, 1, 2
+CS_OP_IMM, CS_OP_MEM, CS_AC_READ, CS_AC_WRITE = 2, 3, 1, 2
+CS_GRP_JUMP, CS_GRP_CALL, CS_GRP_RET = 1, 2, 3
 WORD = ctypes.sizeof(ctypes.c_long)
 MAX_EVENTS = 4096
 MAX_GAPS = 256
+MAX_CFG_STEPS = 100_000
 STRING_MEMORY_MNEMONICS = {
     "movsb", "movsw", "movsq", "stosb", "stosw", "stosd", "stosq",
     "lodsb", "lodsw", "lodsd", "lodsq", "scasb", "scasw", "scasd", "scasq",
@@ -164,11 +166,15 @@ class Capstone:
             raise TraceUnavailable(f"Capstone could not decode instruction at 0x{address:x}")
         try:
             insn = output.contents
-            detail = insn.detail.contents.arch.x86
+            instruction_detail = insn.detail.contents
+            detail = instruction_detail.arch.x86
             operands = []
             operand_sizes = []
+            branch_target = None
             for operand in detail.operands[:detail.op_count]:
                 operand_sizes.append(operand.size)
+                if operand.type == CS_OP_IMM and branch_target is None:
+                    branch_target = int(operand.value.imm) & ((1 << 64) - 1)
                 if operand.type != CS_OP_MEM:
                     continue
                 mem = operand.value.mem
@@ -177,18 +183,98 @@ class Capstone:
                                  "segment": name(mem.segment), "scale": mem.scale,
                                  "disp": mem.disp, "size": operand.size, "access": operand.access})
             raw = bytes(insn.bytes[:insn.size])
+            groups = instruction_detail.groups[:instruction_detail.groups_count]
+            if CS_GRP_RET in groups:
+                flow_kind = "return"
+            elif CS_GRP_CALL in groups:
+                flow_kind = "call"
+            elif CS_GRP_JUMP in groups:
+                flow_kind = "jump" if insn.mnemonic.decode().lower() in ("jmp", "jmpq") else "conditional"
+            else:
+                flow_kind = None
             return {"size": insn.size, "mnemonic": insn.mnemonic.decode(),
                     "text": insn.op_str.decode(), "operands": operands, "bytes": raw.hex(),
                     "vex_or_evex": raw[:1] in (b"\xc4", b"\xc5", b"\x62"),
                     "address_size": detail.addr_size,
                     "prefixes": [value for value in detail.prefix if value],
-                    "operand_sizes": operand_sizes}
+                    "operand_sizes": operand_sizes, "control_flow": flow_kind,
+                    "branch_target": branch_target if flow_kind else None}
         finally:
             self.lib.cs_free(output, count)
 
 
 class TraceUnavailable(RuntimeError):
     pass
+
+
+def _stable_location(pc: int, identity: str, ranges: list[tuple[int, int, str]]) -> str | None:
+    """Use stable guest or module-relative addresses instead of tracee ASLR addresses."""
+    if not any(lo <= pc < hi and label == identity for lo, hi, label in ranges):
+        return None
+    if identity == "original":
+        return f"guest:0x{pc - 0x800000000 + 0x400000:x}"
+    base = min(lo for lo, _, label in ranges if label == identity)
+    return f"{identity}:+0x{pc - base:x}"
+
+
+def _control_flow_coverage(steps: list[tuple], ranges: list[tuple[int, int, str]],
+                           trace_complete: bool, stop_reason: str | None,
+                           collection_truncated: bool, flow_error: str | None) -> dict:
+    """Summarize dynamically observed blocks and edges; incomplete data is never zero coverage."""
+    if not steps:
+        return {"schema": 1, "status": "unavailable", "feedback_eligible": False,
+                "reason": "no guest instructions were observed", "blocks": [], "edges": []}
+
+    leaders: set[tuple[str, int]] = {(steps[0][0], steps[0][1])}
+    for identity, _pc, next_pc, flow_kind, branch_target, _outcome, _size in steps:
+        if not flow_kind:
+            continue
+        if branch_target is not None:
+            target_identity = next((label for lo, hi, label in ranges if lo <= branch_target < hi), None)
+            if target_identity:
+                leaders.add((target_identity, branch_target))
+        next_identity = next((label for lo, hi, label in ranges if lo <= next_pc < hi), None)
+        if next_identity:
+            leaders.add((next_identity, next_pc))
+
+    block_hits: dict[str, int] = {}
+    edge_hits: dict[tuple[str, str, str, str, str], int] = {}
+    current_block: str | None = None
+    previous_identity: str | None = None
+    previous_flow = False
+    for identity, pc, next_pc, flow_kind, _branch_target, outcome, _size in steps:
+        location = _stable_location(pc, identity, ranges)
+        if location is None:
+            continue
+        if current_block is None or previous_identity != identity or previous_flow or (identity, pc) in leaders:
+            current_block = location
+            block_hits[location] = block_hits.get(location, 0) + 1
+        if flow_kind:
+            target_identity = next((label for lo, hi, label in ranges if lo <= next_pc < hi), None)
+            destination = _stable_location(next_pc, target_identity, ranges) if target_identity else "exit"
+            edge = (current_block, destination or "unavailable", flow_kind, outcome or "unknown", location)
+            edge_hits[edge] = edge_hits.get(edge, 0) + 1
+        previous_identity = identity
+        previous_flow = bool(flow_kind)
+
+    blocks = [{"address": address, "hits": hits} for address, hits in sorted(block_hits.items())]
+    edges = [{"from": source, "to": target, "kind": kind, "outcome": outcome,
+              "branch_instruction": instruction, "hits": hits}
+             for (source, target, kind, outcome, instruction), hits in sorted(edge_hits.items())]
+    complete = not collection_truncated and not flow_error and stop_reason is None
+    reasons = []
+    if collection_truncated:
+        reasons.append(f"CFG step limit {MAX_CFG_STEPS} reached")
+    if flow_error:
+        reasons.append(flow_error)
+    if stop_reason:
+        reasons.append(f"instruction trace stopped: {stop_reason}")
+    feedback_eligible = complete and trace_complete
+    if complete and not trace_complete:
+        reasons.append("instruction trace was incomplete; observed CFG is not used for fixture feedback")
+    return {"schema": 1, "status": "complete" if complete else "partial",
+            "feedback_eligible": feedback_eligible, "reason": "; ".join(reasons) or None,
+            "blocks": blocks, "edges": edges}
 
 
 def _instruction_support_issue(insn: dict) -> tuple[str, str] | None:
@@ -441,6 +527,9 @@ def trace_child(pid: int, target: int, boot: dict, case: dict,
         buffer_offset += (pages + 1) * 4096
     result = {"schema": 1, "complete": True, "instruction_limit": instruction_limit,
               "instructions": 0, "events": [], "gaps": [], "skipped_host_calls": 0}
+    cfg_steps: list[tuple] = []
+    cfg_collection_truncated = False
+    cfg_error = None
     entry_sp = None
     breakpoint_saved = _breakpoint(libc, pid, target)
     _ptrace(libc, PTRACE_CONT, pid)
@@ -617,6 +706,39 @@ def trace_child(pid: int, target: int, boot: dict, case: dict,
         if not os.WIFSTOPPED(status):
             break
         after_regs = _regs(libc, pid)
+        next_pc = after_regs.rip
+        flow_kind = insn["control_flow"]
+        branch_target = insn["branch_target"]
+        flow_outcome = None
+        fallthrough = pc + insn["size"]
+        if flow_kind == "conditional":
+            if branch_target is None:
+                cfg_error = f"conditional branch at 0x{pc:x} has no decoded target"
+            elif next_pc == branch_target:
+                flow_outcome = "taken"
+            elif next_pc == fallthrough:
+                flow_outcome = "fallthrough"
+            else:
+                cfg_error = f"conditional branch at 0x{pc:x} reached an unexpected target"
+        elif flow_kind in ("jump", "call"):
+            if branch_target is not None and next_pc != branch_target:
+                cfg_error = f"direct {flow_kind} at 0x{pc:x} did not reach its decoded target"
+            flow_outcome = "direct" if branch_target is not None else "indirect"
+        elif flow_kind == "return":
+            flow_outcome = "return"
+        elif next_pc != fallthrough:
+            cfg_error = f"unclassified control transfer at 0x{pc:x} ({insn['mnemonic']})"
+        next_identity = next((label for lo, hi, label in ranges if lo <= next_pc < hi), None)
+        if flow_kind and flow_kind != "return" and next_identity is None and cfg_error is None:
+            cfg_error = f"{flow_kind} at 0x{pc:x} leaves instrumented code ranges"
+        if len(cfg_steps) < MAX_CFG_STEPS:
+            cfg_steps.append((identity, pc, next_pc, flow_kind, branch_target, flow_outcome, insn["size"]))
+        else:
+            cfg_collection_truncated = True
+        if cfg_error:
+            mark_gap(pc, cfg_error, insn["mnemonic"], "control_flow")
+            if "unclassified control transfer" in cfg_error or "unexpected target" in cfg_error:
+                result["stop_reason"] = "unclassified_control_flow"
         for item in events:
             if item["access"] in ("read", "read_write") and item["before"] is None and item["valid_region"]:
                 mark_gap(pc, "read bytes could not be observed")
@@ -643,6 +765,10 @@ def trace_child(pid: int, target: int, boot: dict, case: dict,
                 break
         if result.get("stop_reason") == "event_limit":
             break
+        if result.get("stop_reason") == "unclassified_control_flow":
+            _ptrace(libc, PTRACE_KILL, pid)
+            _, status = os.waitpid(pid, 0)
+            break
         if os.WIFSIGNALED(status) or os.WIFEXITED(status):
             break
         if os.WSTOPSIG(status) != signal.SIGTRAP:
@@ -658,6 +784,9 @@ def trace_child(pid: int, target: int, boot: dict, case: dict,
                          for pc, mnemonic, capability, reason in sorted(gaps_seen))
     result["trace_version"] = "capstone5-ptrace-x86_64-v2"
     result["identity"] = "original_or_replacement_guest_instructions"
+    result["control_flow_coverage"] = _control_flow_coverage(
+        cfg_steps, ranges, result["complete"], result.get("stop_reason"),
+        cfg_collection_truncated, cfg_error)
     if os.WIFSTOPPED(status):
         _ptrace(libc, PTRACE_KILL, pid)
         _, status = os.waitpid(pid, 0)

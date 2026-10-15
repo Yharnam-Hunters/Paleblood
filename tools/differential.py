@@ -32,7 +32,7 @@ import verify  # noqa: E402
 import verification  # noqa: E402
 
 SCHEMA = 1
-ENGINE_VERSION = "1.2.0"
+ENGINE_VERSION = "1.3.0"
 ABI_REQUIRED_FIELDS = {"calling_convention", "confidence", "evidence", "stack_alignment",
                        "arguments", "returns", "input_regions", "writable_regions", "execution_limits"}
 
@@ -485,7 +485,82 @@ def run_differential(name: str, elf: Path, fixture_rows: list[tuple[Path, dict]]
     replacement = {"schema": verify.SCHEMA, "address": address, "cases": sides["replacement"]}
     comparison = verify.compare(original, replacement)
     return {"function": name, "address": address, "original": original,
-            "replacement": replacement, "comparison": comparison}
+            "replacement": replacement, "comparison": comparison,
+            "coverage_feedback": summarize_control_flow_coverage(sides)}
+
+
+def summarize_control_flow_coverage(sides: dict[str, list[dict]]) -> dict:
+    """Report per-fixture CFG evidence and use only complete traces for feedback."""
+    result = {"schema": 1, "by_side": {}}
+    for side, executions in sides.items():
+        by_fixture = {}
+        block_inputs: dict[str, list[str]] = {}
+        edge_inputs: dict[str, list[str]] = {}
+        branches: dict[str, set[str]] = {}
+        complete_count = 0
+        for execution in executions:
+            fixture_id = str(execution.get("id", "unknown"))
+            trace = execution.get("instruction_trace") or {}
+            coverage = trace.get("control_flow_coverage")
+            if not isinstance(coverage, dict):
+                by_fixture[fixture_id] = {"status": "unavailable", "feedback_eligible": False,
+                                          "reason": "instruction tracing did not provide CFG coverage",
+                                          "blocks": [], "edges": []}
+                continue
+            blocks = [item.get("address") for item in coverage.get("blocks", []) if item.get("address")]
+            edges = [item for item in coverage.get("edges", []) if isinstance(item, dict)]
+            feedback_eligible = (coverage.get("status") == "complete"
+                                 and coverage.get("feedback_eligible") is True)
+            fixture_record = {"status": coverage.get("status", "unavailable"),
+                              "feedback_eligible": feedback_eligible,
+                              "reason": coverage.get("reason"), "blocks": blocks,
+                              "edges": edges}
+            by_fixture[fixture_id] = fixture_record
+            if not feedback_eligible:
+                continue
+            complete_count += 1
+            for block in set(blocks):
+                block_inputs.setdefault(block, []).append(fixture_id)
+            for edge in edges:
+                key = canonical({field: edge.get(field) for field in
+                                 ("from", "to", "kind", "outcome", "branch_instruction")})
+                edge_inputs.setdefault(key, []).append(fixture_id)
+                if edge.get("kind") == "conditional" and edge.get("outcome") in ("taken", "fallthrough"):
+                    branches.setdefault(str(edge.get("branch_instruction")), set()).add(edge["outcome"])
+
+        missing_outcomes = []
+        for instruction, outcomes in sorted(branches.items()):
+            missing = sorted({"taken", "fallthrough"} - outcomes)
+            if missing:
+                missing_outcomes.append({"instruction": instruction, "observed": sorted(outcomes),
+                                         "unobserved": missing})
+        per_fixture_novelty = {}
+        observed_blocks: set[str] = set()
+        observed_edges: set[str] = set()
+        for fixture_id, record in by_fixture.items():
+            if not record["feedback_eligible"]:
+                continue
+            blocks = set(record["blocks"])
+            edges = {canonical({field: edge.get(field) for field in
+                                ("from", "to", "kind", "outcome", "branch_instruction")})
+                     for edge in record["edges"]}
+            new_blocks = sorted(blocks - observed_blocks)
+            new_edges = sorted(edges - observed_edges)
+            per_fixture_novelty[fixture_id] = {"new_blocks": new_blocks, "new_edges": new_edges}
+            observed_blocks.update(blocks)
+            observed_edges.update(edges)
+        result["by_side"][side] = {
+            "status": ("unavailable" if not executions or not any(record["status"] != "unavailable"
+                                                                     for record in by_fixture.values())
+                       else "complete" if complete_count == len(executions) else "partial"),
+            "feedback_eligible": complete_count > 0,
+            "feedback_fixture_count": complete_count,
+            "fixture_coverage": by_fixture,
+            "novelty_by_fixture": per_fixture_novelty,
+            "block_coverage": {key: sorted(value) for key, value in sorted(block_inputs.items())},
+            "edge_coverage": {key: sorted(value) for key, value in sorted(edge_inputs.items())},
+            "unobserved_conditional_outcomes": missing_outcomes}
+    return result
 
 
 def mismatch_kinds(diffs: list[str]) -> frozenset[str]:
@@ -552,7 +627,58 @@ def minimize_fixture(case: dict, evaluate, max_attempts: int = 64) -> tuple[dict
     return current, attempts
 
 
-def explore_fixtures(fixtures: list[tuple[Path, dict]], abi: dict, limit: int, seed: int) -> list[dict]:
+def coverage_seed_priorities(fixtures: list[tuple[Path, dict]], report: dict) -> list[tuple[Path, dict, dict]]:
+    """Rank fixture seeds only from complete prior coverage; unknown evidence stays unknown."""
+    feedback = report.get("coverage_feedback")
+    if not isinstance(feedback, dict) or feedback.get("schema") != 1:
+        raise DifferentialError("coverage report must contain coverage_feedback schema 1")
+    sides = feedback.get("by_side")
+    if not isinstance(sides, dict):
+        raise DifferentialError("coverage report is missing per-side CFG data")
+    ranked = []
+    for index, (path, case) in enumerate(fixtures):
+        fixture_id = path.stem
+        score = 0
+        reasons = []
+        known = False
+        for side, side_data in sides.items():
+            if not isinstance(side_data, dict):
+                continue
+            record = side_data.get("fixture_coverage", {}).get(fixture_id)
+            if not isinstance(record, dict) or record.get("status") != "complete" \
+                    or record.get("feedback_eligible") is not True:
+                continue
+            known = True
+            novelty = side_data.get("novelty_by_fixture", {}).get(fixture_id, {})
+            new_blocks = len(novelty.get("new_blocks", []))
+            new_edges = len(novelty.get("new_edges", []))
+            if new_blocks or new_edges:
+                score += new_blocks + 2 * new_edges
+                reasons.append(f"{side} trace introduced {new_blocks} blocks and {new_edges} edges")
+            missing = {item.get("instruction"): item.get("unobserved", [])
+                       for item in side_data.get("unobserved_conditional_outcomes", [])}
+            branch_sites = {edge.get("branch_instruction") for edge in record.get("edges", [])
+                            if edge.get("kind") == "conditional"}
+            opportunities = sum(len(missing.get(site, [])) for site in branch_sites)
+            if opportunities:
+                score += 3 * opportunities
+                reasons.append(f"{side} trace reached {opportunities} conditional outcome(s) not yet observed")
+        if known and not reasons:
+            reasons.append("complete prior coverage found no novel edge or uncovered conditional outcome")
+        if not known:
+            reasons.append("no complete prior coverage matches this fixture; order remains evidence-unknown")
+        guidance = {"status": "ranked" if known else "unknown", "score": score if known else None,
+                    "reasons": reasons}
+        ranked.append((path, case, {"index": index, "guidance": guidance,
+                                    "priority": score if known else None}))
+    ranked.sort(key=lambda item: (item[2]["priority"] is None,
+                                 -(item[2]["priority"] or 0), item[2]["index"]))
+    return ranked
+
+
+def explore_fixtures(fixtures: list[tuple[Path, dict]], abi: dict, limit: int, seed: int,
+                     coverage_report: dict | None = None,
+                     coverage_report_sha256: str | None = None) -> list[dict]:
     """Generate bounded typed-value, explicit-alias, and floating-point variants.
 
     Pointer aliasing is generated only when both ABI arguments explicitly opt in with
@@ -561,8 +687,24 @@ def explore_fixtures(fixtures: list[tuple[Path, dict]], abi: dict, limit: int, s
     if limit < 1 or limit > 10000:
         raise DifferentialError("fixture limit must be between 1 and 10000")
     generated = []
-    for path, base in fixtures:
-        generated.append(json.loads(canonical(base)))
+    if coverage_report is None:
+        ordered_fixtures = [(path, base, None) for path, base in fixtures]
+    else:
+        ordered_fixtures = [(path, base, metadata)
+                            for path, base, metadata in coverage_seed_priorities(fixtures, coverage_report)]
+    for path, base, priority in ordered_fixtures:
+        base_copy = json.loads(canonical(base))
+        if priority is not None:
+            base_copy["coverage_guidance"] = {**priority["guidance"],
+                                               "report_sha256": coverage_report_sha256}
+        generated.append(base_copy)
+
+        def record_variant(variant: dict) -> None:
+            if priority is not None:
+                variant["coverage_guidance"] = {**priority["guidance"],
+                                                "report_sha256": coverage_report_sha256}
+            generated.append(variant)
+
         for argument in abi.get("arguments", []):
             register = argument.get("register")
             value_type = argument.get("type", "")
@@ -604,7 +746,7 @@ def explore_fixtures(fixtures: list[tuple[Path, dict]], abi: dict, limit: int, s
                 variant["args"][register] = value
                 variant["exploration"] = {"seed": seed, "source_fixture": path.stem,
                                            "register": register, "value": value}
-                generated.append(variant)
+                record_variant(variant)
         pointer_args = [item for item in abi.get("arguments", [])
                         if item.get("type", "").endswith("*") and item.get("alias_safe") is True
                         and item.get("register") in base.get("args", {})]
@@ -622,9 +764,11 @@ def explore_fixtures(fixtures: list[tuple[Path, dict]], abi: dict, limit: int, s
                 variant["exploration"] = {"seed": seed, "source_fixture": path.stem,
                                            "alias": [left["register"], right["register"]],
                                            "value": left_value}
-                generated.append(variant)
-    # Seed affects reproducible ordering when a caller imposes a smaller budget.
-    random.Random(seed).shuffle(generated)
+                record_variant(variant)
+    # Without coverage, retain the prior seeded exploration order. With coverage, the seed
+    # order is evidence-ranked and variants remain in deterministic ABI declaration order.
+    if coverage_report is None:
+        random.Random(seed).shuffle(generated)
     return generated[:limit]
 
 
@@ -639,6 +783,18 @@ def bundle_markdown(bundle: dict) -> str:
     else:
         summary = result.get("comparison", result)
         outcome = f"{summary.get('passed', 0)} passed, {summary.get('failed', 0)} failed"
+    coverage = result.get("coverage_feedback", {})
+    coverage_lines = []
+    for side, details in coverage.get("by_side", {}).items():
+        coverage_lines.append(
+            f"- {side}: {details.get('status', 'unavailable')}; "
+            f"{len(details.get('block_coverage', {}))} blocks, "
+            f"{len(details.get('edge_coverage', {}))} edges from "
+            f"{details.get('feedback_fixture_count', 0)} feedback-eligible fixtures")
+        for fixture_id, fixture in details.get("fixture_coverage", {}).items():
+            coverage_lines.append(
+                f"  - `{fixture_id}`: {fixture.get('status', 'unavailable')}, "
+                f"{len(fixture.get('blocks', []))} blocks, {len(fixture.get('edges', []))} edges")
     limitations = bundle["limitations"]
     return ("# Differential evidence\n\n"
             f"- Address: `{identity['address']}`\n"
@@ -646,6 +802,7 @@ def bundle_markdown(bundle: dict) -> str:
             f"- Fixture SHA-256: `{identity['fixture_sha256']}`\n"
             f"- Result: {outcome}\n"
             f"- Run identity: `{bundle['run_id']}`\n\n"
+            "## Control-flow coverage\n\n" + ("\n".join(coverage_lines) or "- unavailable (no CFG report)\n") + "\n\n"
             "## Limits\n\n" + "\n".join(f"- {item}" for item in limitations) + "\n")
 
 
@@ -770,6 +927,8 @@ def main() -> int:
             child.add_argument("--out", type=Path, required=True)
             child.add_argument("--max-fixtures", type=int, default=64)
             child.add_argument("--seed", type=int, default=0)
+            child.add_argument("--coverage-from", type=Path,
+                               help="prior differential JSON; complete CFG paths prioritize seed fixtures")
         if command in ("original", "differential", "minimize"):
             child.add_argument("--elf", type=Path, default=Path(os.environ.get("BB_ELF", "")))
             child.add_argument("--timeout", type=int)
@@ -803,9 +962,11 @@ def main() -> int:
             finally:
                 db.close()
             payload = {"runs": len(records), "latest": [record.get("identity", {}).get("address") for record in records[:20]],
-                       "blockers": ["dynamic memory reads", "byte-precise memory-access bounds",
-                                    "instruction-level first-divergence trace", "control-flow coverage",
-                                    "systematic pointer-alias exploration", "systematic floating-point edge exploration"]
+                       "blockers": ["exact instruction-aligned register-state divergence",
+                                    "static/full-executable CFG coverage",
+                                    "branch-predicate-directed fixture generation",
+                                    "combinatorial pointer-alias and floating-point exploration",
+                                    "unclassified implicit-memory instruction families"]
                        if args.command == "blockers" else []}
         elif args.command == "candidate":
             candidate = catalog_candidate(args.state, args.address)
@@ -838,7 +999,10 @@ def main() -> int:
             blockers = validate_abi(abi)
             if blockers:
                 raise DifferentialError("fixture exploration blocked: " + "; ".join(blockers))
-            generated = explore_fixtures(fixtures, abi, args.max_fixtures, args.seed)
+            coverage_report = read_json(args.coverage_from) if args.coverage_from else None
+            coverage_sha = digest_file(args.coverage_from) if args.coverage_from else None
+            generated = explore_fixtures(fixtures, abi, args.max_fixtures, args.seed,
+                                         coverage_report, coverage_sha)
             args.out.mkdir(parents=True, exist_ok=True)
             for case in generated:
                 identifier = str(case.get("id", ""))
@@ -848,7 +1012,15 @@ def main() -> int:
                              (json.dumps(case, indent=2, sort_keys=True) + "\n").encode())
             payload = {"address": catalog.address(args.address), "seed": args.seed,
                        "generated": len(generated), "output": str(args.out),
-                       "coverage_note": "bounded typed-value, explicitly safe alias, and float-edge generation; no dynamic coverage feedback"}
+                       "coverage_note": ("bounded ABI-guided variants ranked from complete prior CFG evidence"
+                                         if coverage_report else
+                                         "bounded typed-value, explicitly safe alias, and float-edge generation; no prior CFG ranking"),
+                       "coverage_report_sha256": coverage_sha,
+                       "coverage_guidance": [{"id": case.get("id"),
+                                              "status": case.get("coverage_guidance", {}).get("status", "not_requested"),
+                                              "score": case.get("coverage_guidance", {}).get("score"),
+                                              "reasons": case.get("coverage_guidance", {}).get("reasons", [])}
+                                             for case in generated if case.get("coverage_guidance")]}
         elif args.command == "original":
             elf_sha = executable_identity(args.elf)
             fixtures, abi = load_fixtures(args.cases, args.address)
@@ -926,11 +1098,16 @@ def main() -> int:
                                       fixture_status="loaded",
                                       original_status="failed" if failed_original else "passed",
                                       differential_status="failed" if comparison["failed"] else "passed",
+                                      coverage_status=("available" if any(
+                                          side.get("feedback_eligible")
+                                          for side in result["coverage_feedback"]["by_side"].values())
+                                          else "partial" if args.trace_instructions else "unavailable"),
                                       mismatch_status="mismatch" if comparison["failed"] else "none",
                                       blockers=([] if args.trace_instructions else
-                                                ["instruction-level memory accesses were not enabled"])
-                                      + ["unsupported implicit/AVX memory classes make traces incomplete",
-                                         "no instruction-aligned register divergence or CFG coverage"],
+                                                ["instruction-level memory and CFG coverage were not enabled"])
+                                      + ["unsupported implicit-memory families remain a bounded audit risk",
+                                         "instruction-level register-state alignment remains unavailable",
+                                         "coverage-guided seed ranking does not solve branch predicates or relax ABI rules"],
                                       evidence_ref=run_id)
             payload = {"run_id": run_id, **result}
         elif args.command == "minimize":
