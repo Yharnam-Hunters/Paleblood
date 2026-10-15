@@ -158,6 +158,11 @@ single-stepped, so the trace and CFG remain incomplete and cannot qualify for au
 verification. Existing scripted import and stub records remain a separate mediated-access channel
 and are not presented as instruction-level events.
 
+For example, the recorded `frame_timing_get_monotonic_ms` canary reaches guest address
+`0x802bbfe58`, where an indirect jump enters the harness bridge for `sceKernelClockGettime`.
+That boundary explains why the trace is incomplete; it does not establish execution inside the
+host dispatcher or prove behavior beyond the recorded guest instructions.
+
 The first-divergence report compares memory events in execution order and reports the earliest
 different recorded event with both sides' instruction addresses and register snapshots. Original
 and replacement PCs are not aligned: different instruction counts and addresses are allowed. An
