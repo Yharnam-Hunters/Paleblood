@@ -112,6 +112,10 @@ def boot_image():
     code[0xb20:0xb26] = bytes.fromhex('f3480faec7c3')                 # rdfsbase rdi, changes address state
     code[0xb30:0xb34] = bytes.fromhex('0fc7f0c3')                     # rdrand eax, nondeterministic
     code[0xb40:0xb46] = bytes.fromhex('f3480faee8c3')                 # incsspq rax, implicit shadow stack
+    # Conditional paths with stable direct branch targets for CFG coverage tests.
+    code[0xc00:0xc11] = bytes.fromhex('83ff00 7406 b801000000 c3 b802000000 c3')
+    # A two-iteration loop covers both the taken and fallthrough outcomes of JNZ.
+    code[0xc20:0xc2a] = bytes.fromhex('b902000000 ffc9 75fc c3')
     return ps4elf.build(
         segments=[(0, bytes(code), 0x1000, 5), (0x1000, DATA, 0x20, 6)],
         symbols=[(nid('testImport') + '#A#A', ps4elf.STT_FUNC, None)],
@@ -243,6 +247,8 @@ class Harness(unittest.TestCase):
         self.assertEqual(trace['stop_reason'], 'unsupported_instruction')
         self.assertEqual(trace['instructions'], 0, 'unsupported instruction must not execute')
         gap = trace['gaps'][0]
+        self.assertEqual(trace['control_flow_coverage']['status'], 'unavailable')
+        self.assertFalse(trace['control_flow_coverage']['feedback_eligible'])
         self.assertEqual(gap['mnemonic'], mnemonic)
         self.assertEqual(gap['capability'], capability)
         self.assertIn('0x', gap['instruction'])
@@ -355,6 +361,82 @@ class Harness(unittest.TestCase):
         events = [event for event in result['instruction_trace']['events']
                   if event['region'] == 'buf:memory']
         self.assertEqual([(event['access'], event['width']) for event in events], [('read', 8)])
+
+    def test_control_flow_coverage_reports_fixture_branch_paths(self):
+        fixtures = [
+            {'schema': 1, 'address': '0x00400c00', 'id': 'branch-zero', 'returns': 'i32',
+             'args': {'rdi': '0x0'}, 'buffers': {}, 'memory': [], 'imports': [], 'stubs': []},
+            {'schema': 1, 'address': '0x00400c00', 'id': 'branch-nonzero', 'returns': 'i32',
+             'args': {'rdi': '0x1'}, 'buffers': {}, 'memory': [], 'imports': [], 'stubs': []},
+        ]
+        coverages = {}
+        for case in fixtures:
+            result = self.traced_case(case, '0x00400c00')
+            coverage = result['instruction_trace']['control_flow_coverage']
+            self.assertEqual(coverage['status'], 'complete', coverage)
+            self.assertTrue(coverage['feedback_eligible'], coverage)
+            coverages[case['id']] = coverage
+        zero_edges = [edge for edge in coverages['branch-zero']['edges']
+                      if edge['kind'] == 'conditional']
+        nonzero_edges = [edge for edge in coverages['branch-nonzero']['edges']
+                         if edge['kind'] == 'conditional']
+        self.assertEqual([(edge['branch_instruction'], edge['outcome']) for edge in zero_edges],
+                         [('guest:0x400c03', 'taken')])
+        self.assertEqual([(edge['branch_instruction'], edge['outcome']) for edge in nonzero_edges],
+                         [('guest:0x400c03', 'fallthrough')])
+        self.assertIn('guest:0x400c0b', {block['address'] for block in coverages['branch-zero']['blocks']})
+        self.assertIn('guest:0x400c05', {block['address'] for block in coverages['branch-nonzero']['blocks']})
+
+    def test_control_flow_coverage_reports_loop_backedge_and_exit(self):
+        case = {'schema': 1, 'address': '0x00400c20', 'id': 'loop-two', 'returns': 'void',
+                'args': {}, 'buffers': {}, 'memory': [], 'imports': [], 'stubs': []}
+        result = self.traced_case(case, '0x00400c20')
+        coverage = result['instruction_trace']['control_flow_coverage']
+        self.assertEqual(coverage['status'], 'complete', coverage)
+        loop_edges = [edge for edge in coverage['edges'] if edge['branch_instruction'] == 'guest:0x400c27']
+        self.assertEqual({edge['outcome'] for edge in loop_edges}, {'taken', 'fallthrough'})
+        taken = next(edge for edge in loop_edges if edge['outcome'] == 'taken')
+        self.assertEqual((taken['to'], taken['hits']), ('guest:0x400c25', 1))
+
+    def test_linear_path_has_complete_zero_conditional_coverage(self):
+        case = {'schema': 1, 'address': '0x00400900', 'id': 'linear', 'returns': 'i32',
+                'args': {}, 'buffers': {}, 'memory': [], 'imports': [], 'stubs': []}
+        coverage = self.traced_case(case, '0x00400900')['instruction_trace']['control_flow_coverage']
+        self.assertEqual(coverage['status'], 'complete', coverage)
+        self.assertTrue(coverage['feedback_eligible'])
+        self.assertTrue(coverage['blocks'])
+        self.assertFalse([edge for edge in coverage['edges'] if edge['kind'] == 'conditional'])
+
+    def test_wrong_branch_mutation_fails_comparison_and_changes_covered_edge(self):
+        case = {'schema': 1, 'address': '0x00400c00', 'id': 'branch-mutation', 'returns': 'i32',
+                'args': {'rdi': '0x0'}, 'buffers': {}, 'memory': [], 'imports': [], 'stubs': []}
+        path = os.path.join(self.d, 'branch-mutation.json')
+        with open(path, 'w') as stream:
+            json.dump(case, stream)
+        source = os.path.join(self.d, 'branch-mutation.c')
+        library = os.path.join(self.d, 'branch-mutation.so')
+        with open(source, 'w') as stream:
+            stream.write('#include <stdint.h>\n'
+                         'typedef struct { uint32_t version; unsigned char *image; uint64_t image_size; '
+                         'int (*install_hook)(uint64_t,uint64_t,const void *); } host_t;\n'
+                         'int bbgame_init(const host_t *host) { (void)host; return 0; }\n'
+                         'uint32_t replacement(uint32_t value) { return value ? 2u : 1u; }\n')
+        subprocess.run([os.environ.get('CC', 'cc'), '-shared', '-fPIC', '-O0', '-o', library, source], check=True)
+        self.trace_instructions = True
+        try:
+            original = self.side_case(path, address='0x00400c00')
+            replacement = self.side_case(path, library, '0x00400c00')
+        finally:
+            self.trace_instructions = False
+        compared = verify.compare(
+            {'schema': 1, 'address': '0x00400c00', 'cases': [original]},
+            {'schema': 1, 'address': '0x00400c00', 'cases': [replacement]})
+        self.assertEqual(compared['failed'], 1)
+        original_coverage = original['instruction_trace']['control_flow_coverage']
+        replacement_coverage = replacement['instruction_trace']['control_flow_coverage']
+        self.assertEqual(original_coverage['status'], 'complete')
+        self.assertEqual(replacement_coverage['status'], 'complete')
+        self.assertNotEqual(original_coverage['edges'], replacement_coverage['edges'])
 
     def test_first_divergence_diagnostic_allows_equivalent_instruction_paths(self):
         case = {'schema': 1, 'address': '0x00400990', 'id': 'different-path', 'returns': 'i32',

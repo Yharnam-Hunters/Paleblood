@@ -29,6 +29,20 @@ the classified families and their boundaries; it must be extended whenever a new
 special memory operation is identified. An unlisted architectural implicit-memory instruction
 is a remaining coverage risk and must not be treated as approved support evidence until audited.
 
+For supported instructions, dynamic CFG coverage records basic-block entries and observed outgoing
+edges per fixture. Conditional outcomes, loop backedges, calls, returns, and observed indirect
+targets are represented using guest virtual addresses or replacement module-relative offsets.
+Coverage states are `complete`, `partial`, or `unavailable`; an unsupported instruction before the
+first step has unavailable coverage, while a fully observed linear path can have complete coverage
+with zero branch edges. Partial or memory-incomplete traces are excluded from feedback. This is
+bounded per-fixture path coverage, not a complete static CFG for the executable.
+
+The differential result maps blocks and edges back to fixture IDs. `tools/differential.py explore`
+accepts `--coverage-from <differential.json>` to rank seed fixtures with newly observed edges or a
+conditional outcome whose counterpart has not yet been seen. The ranking is advisory and only
+uses complete prior traces. Seeds without complete matching evidence are labeled `unknown` rather
+than treated as zero-risk. Generated inputs remain subject to the same evidence-backed ABI rules.
+
 Unsupported instructions stop before execution. The trace is marked incomplete and
 `tools/verify.py compare` fails the case even if both sides stop at the same instruction. Its
 diagnostic names the guest address, decoded mnemonic, capability category, and reason. POP/RSP

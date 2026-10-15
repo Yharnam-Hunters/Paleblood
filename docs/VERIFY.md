@@ -164,11 +164,45 @@ differ but no earlier memory-event difference exists, the report says that no ea
 divergence was observed. This is not instruction-by-instruction register comparison and does not
 claim an exact machine-state first divergence.
 
+When instruction tracing is enabled, each side also reports `control_flow_coverage`. It records
+executed basic-block entries and control-flow edges, including conditional outcomes, calls,
+returns, indirect transfers, and loop backedges. Original addresses use guest virtual addresses;
+replacement addresses use module-relative offsets so ASLR does not change the report. Differential
+JSON maps each block and edge back to the fixture IDs that exercised it and retains a per-fixture
+coverage record. Human-readable evidence bundles summarize the same results.
+
+Coverage has explicit `complete`, `partial`, and `unavailable` states. `unavailable` means no
+usable instruction path was observed. It is distinct from a complete trace with zero conditional
+branch edges; return edges can still be present in that result.
+Partial traces, step-limit truncation, unknown control transfers,
+or failed instruction tracing are never used as fixture-prioritization evidence. A trace with a
+memory or execution-scope failure may retain observed CFG data, but its `feedback_eligible` value
+is false.
+
+After collecting differential JSON, pass it to bounded ABI-guided generation to prioritize seeds
+that introduced new blocks/edges or reached a conditional branch whose other outcome is not yet
+observed:
+
+```sh
+python3 tools/differential.py explore 0x0111a7f0 --cases CASES --out GENERATED \
+    --max-fixtures 64 --seed 7 --coverage-from previous-differential.json
+```
+
+The report hash and per-seed reasons are recorded on generated fixtures. Only complete prior
+coverage contributes a score; fixtures without a matching complete result remain explicitly
+`unknown` and keep deterministic input order after evidence-ranked seeds. This prioritizes seeds
+for existing typed boundary, float-edge, nullability, and explicitly ABI-approved alias variants;
+it does not infer branch predicates, invent pointer contracts, change fixture values beyond the
+existing ABI-guided generator, or establish new game behavior. Coverage is per observed fixture,
+not a proof that every block or edge in the executable has been found.
+
 This increment observes supported Capstone-classified explicit x86-64 memory operands and the
-modeled implicit stack effects described in the [instruction-trace support matrix](INSTRUCTION_TRACE_SUPPORT.md).
+modeled implicit stack effects described in the [instruction-trace support matrix](INSTRUCTION_TRACE_SUPPORT.md),
+and records bounded dynamic CFG coverage for supported instruction traces.
 Known string/repeat, VEX/EVEX memory, system, atomic, and special-memory instruction families are
 rejected before execution. The tracer does not observe arbitrary host-library instructions,
-asynchronous accesses, or CFG coverage. A complete trace means complete only for the matrix's
+asynchronous accesses, or complete static CFG discovery. Dynamic coverage is limited to the
+executed path in each fixture. A complete trace means complete only for the matrix's
 supported scope; Capstone does not identify every possible implicit-memory instruction, so a newly
 discovered family must be added to the rejection classification before relying on it. Single-
 stepping is slow and intended for bounded verification fixtures, not boot runs. The tracer
