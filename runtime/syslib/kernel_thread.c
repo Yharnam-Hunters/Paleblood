@@ -9,6 +9,7 @@
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
+#include <sched.h>
 #include <stdint.h>
 #include <stdlib.h>
 
@@ -49,6 +50,27 @@ static int thread_equal(guest_thread *a, guest_thread *b)
     return a == b;
 }
 
+/* sched_yield: the calling thread gives up the processor and the call returns 0 (POSIX and FreeBSD
+   sched_yield(2), which define no error for it). A guest thread runs on a host thread, so the
+   host's yield is the same request. A host failure has no FreeBSD error number we could report, so
+   it stops by name instead. */
+static int kernel_sched_yield(void)
+{
+    if (sched_yield() != 0) rt_fatal("sched_yield", "the host did not yield the processor");
+    return 0;
+}
+
+/* scePthreadYield asks for the same yield, but its PS4-visible signature is not established:
+   FreeBSD's pthread_yield(3) returns nothing, Linux's returns an int, and no PS4-specific public
+   source or guest call site we can cite says which one the guest sees. Returning would leave the
+   value a caller might read undefined, so the call stops by name. It is registered with
+   RT_SYSLIB_UNRESOLVED: a boot that reaches it names the call, and coverage leaves the import
+   unchecked, since a diagnostic is not an implementation. */
+static void thread_yield(void)
+{
+    rt_fatal("scePthreadYield", "the PS4 return behaviour is not established by public evidence");
+}
+
 static int attr_init(guest_attr **attr)
 {
     if (!attr) return SCE_KERNEL_ERROR(BSD_EINVAL);
@@ -78,6 +100,8 @@ static int attr_get(guest_thread *thread, guest_attr **attr)
 
 RT_SYSLIB("libkernel", scePthreadSelf, thread_self);
 RT_SYSLIB("libkernel", scePthreadEqual, thread_equal);
+RT_SYSLIB("libkernel", sched_yield, kernel_sched_yield);
+RT_SYSLIB_UNRESOLVED("libkernel", scePthreadYield, thread_yield);
 RT_SYSLIB("libkernel", scePthreadAttrInit, attr_init);
 RT_SYSLIB("libkernel", scePthreadAttrDestroy, attr_destroy);
 RT_SYSLIB("libkernel", scePthreadAttrGet, attr_get);

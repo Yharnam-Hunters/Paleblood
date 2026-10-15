@@ -186,6 +186,19 @@ int main(void)
     CHECK(equal(self, &not_a_thread) == 0 && equal(&not_a_thread, self) == 0);
     CHECK(equal(self, NULL) == 0);
 
+    /* sched_yield gives up the processor and succeeds with 0, every time. That the host scheduler
+       actually ran another thread is not observable from here, so only the contract's result is
+       checked. */
+    const f_check yield = (f_check)fn("libkernel", "sched_yield");
+    CHECK(yield() == 0 && yield() == 0);
+    CHECK(is_implemented("libkernel", "sched_yield"));
+
+    /* scePthreadYield's PS4 signature (no result, or an int) is not established, so the entry stops
+       by name and is registered without counting as implemented. */
+    void (*pthread_yield_entry)(void) = (void (*)(void))fn("libkernel", "scePthreadYield");
+    CHECK(died_in_fatal(pthread_yield_entry));
+    CHECK(!is_implemented("libkernel", "scePthreadYield"));
+
     /* The PS4 host is little-endian AMD64; the network representation is big-endian. */
     CHECK(htonl(UINT32_C(0x12345678)) == UINT32_C(0x78563412));
     CHECK(htons(UINT16_C(0x1234)) == UINT16_C(0x3412));
