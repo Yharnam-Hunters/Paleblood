@@ -3,9 +3,10 @@
 """Bounded Linux x86-64 instruction tracing for the differential harness.
 
 The tracer single-steps only declared guest/replacement executable ranges. It uses Capstone's
-operand access metadata to record explicit memory operands and handles the common implicit stack
-effects of call/ret/push/pop/leave. Calls into uninstrumented host code are stepped over with a
-temporary return breakpoint. Unsupported implicit-memory instructions make coverage incomplete.
+operand access metadata to record supported explicit memory operands and models selected implicit
+stack effects. Known unsupported string, vector-memory, system, atomic, and special-memory forms
+are rejected before execution. Calls into uninstrumented host code are stepped over with a
+temporary return breakpoint and make coverage incomplete.
 """
 from __future__ import annotations
 
@@ -31,6 +32,30 @@ STRING_MEMORY_MNEMONICS = {
     "lodsb", "lodsw", "lodsd", "lodsq", "scasb", "scasw", "scasd", "scasq",
     "cmpsb", "cmpsw", "cmpsd", "cmpsq", "insb", "insw", "insd",
     "outsb", "outsw", "outsd",
+}
+SYSTEM_INSTRUCTIONS = {
+    "syscall", "sysret", "sysretq", "sysenter", "sysexit", "int", "int1", "int3",
+    "into", "iret", "iretd", "iretq", "lcall", "ljmp", "retf", "retfq", "rsm",
+    "hlt", "cli", "sti", "clts", "invd", "wbinvd", "swapgs", "rdmsr", "wrmsr",
+    "rdpmc", "rdtsc", "rdtscp", "in", "out", "monitor", "mwait", "umonitor",
+    "umwait", "tpause", "vmcall", "vmmcall", "vmrun", "vmlaunch", "vmresume",
+    "vmexit", "vmclear", "vmxon", "vmxoff", "vmptrld", "vmptrst", "vmread", "vmwrite",
+    "vmfunc", "vmload", "vmsave", "invept", "invvpid", "clgi", "stgi", "skinit",
+    "xsetbv", "encls", "enclu", "enclv", "xbegin", "xend", "xabort", "xtest",
+    "enqcmd", "enqcmds", "tdcall", "seamcall", "seamret", "rdpkru", "wrpkru",
+    "rdfsbase", "wrfsbase", "rdgsbase", "wrgsbase", "incsspd", "incsspq",
+    "rstorssp", "saveprevssp", "setssbsy", "clrssbsy", "wrss", "wrssd", "wrssq",
+    "wrussd", "wrussq",
+}
+NONDETERMINISTIC_INSTRUCTIONS = {"rdrand", "rdseed"}
+STATE_MEMORY_INSTRUCTIONS = {
+    "enter", "xlat", "xlatb", "bound", "lgdt", "lidt", "sgdt", "sidt", "lldt",
+    "ltr", "sldt", "str", "verr", "verw", "smsw", "lmsw", "invlpg", "invpcid",
+    "clflush", "clflushopt", "clwb", "clzero", "fxsave", "fxsave64", "fxrstor",
+    "fxrstor64", "xsave", "xsave64", "xsaveopt", "xsaveopt64", "xsavec", "xsavec64",
+    "xsaves", "xsaves64", "xrstor", "xrstor64", "xrstors", "xrstors64", "fnsave",
+    "fnsave64", "frstor", "frstor64", "fnstenv", "fstenv", "fldenv", "ldmxcsr",
+    "stmxcsr", "maskmovq", "maskmovdqu", "vmaskmovdqu", "movdir64b", "cldemote",
 }
 
 
@@ -141,7 +166,9 @@ class Capstone:
             insn = output.contents
             detail = insn.detail.contents.arch.x86
             operands = []
+            operand_sizes = []
             for operand in detail.operands[:detail.op_count]:
+                operand_sizes.append(operand.size)
                 if operand.type != CS_OP_MEM:
                     continue
                 mem = operand.value.mem
@@ -153,13 +180,63 @@ class Capstone:
             return {"size": insn.size, "mnemonic": insn.mnemonic.decode(),
                     "text": insn.op_str.decode(), "operands": operands, "bytes": raw.hex(),
                     "vex_or_evex": raw[:1] in (b"\xc4", b"\xc5", b"\x62"),
-                    "address_size": detail.addr_size}
+                    "address_size": detail.addr_size,
+                    "prefixes": [value for value in detail.prefix if value],
+                    "operand_sizes": operand_sizes}
         finally:
             self.lib.cs_free(output, count)
 
 
 class TraceUnavailable(RuntimeError):
     pass
+
+
+def _instruction_support_issue(insn: dict) -> tuple[str, str] | None:
+    """Return the capability/reason for semantics this tracer deliberately rejects."""
+    words = insn["mnemonic"].lower().split()
+    mnemonic = words[-1] if words else ""
+    operands = insn["operands"]
+    prefixes = set(insn.get("prefixes", ()))
+    repeat = bool(prefixes.intersection((0xF2, 0xF3))) or any(
+        word in ("rep", "repe", "repz", "repne", "repnz") for word in words[:-1])
+
+    string_operation = mnemonic in STRING_MEMORY_MNEMONICS
+    if mnemonic in ("movsd", "cmpsd"):
+        # These spellings also name scalar SSE instructions. The string encodings have
+        # implicit RSI/RDI memory operands and no XMM operands in Capstone's text.
+        string_operation = "xmm" not in insn["text"].lower()
+    if string_operation:
+        if repeat:
+            return "repeat_string_memory", f"REP/REPE/REPNE string operation {insn['mnemonic']} is not traced"
+        return "string_memory", f"implicit string memory operation {insn['mnemonic']} is not traced"
+
+    if insn["vex_or_evex"] and operands:
+        return "vex_evex_memory", "VEX/EVEX memory access semantics are not traced"
+    if 0xF0 in prefixes and operands:
+        return "atomic_memory", "LOCK-prefixed memory operation has unmodeled atomic semantics"
+    if mnemonic == "xchg" and operands:
+        return "atomic_memory", "memory XCHG has implicit atomic semantics"
+    if mnemonic in SYSTEM_INSTRUCTIONS:
+        return "system_instruction", f"system/control instruction {insn['mnemonic']} has opaque effects"
+    if mnemonic in NONDETERMINISTIC_INSTRUCTIONS:
+        return "nondeterministic_instruction", f"hardware-random instruction {insn['mnemonic']} is not replayable"
+    if mnemonic in ("cmpxchg8b", "cmpxchg16b"):
+        return "atomic_memory", f"{insn['mnemonic']} has implicit atomic semantics"
+    if mnemonic in STATE_MEMORY_INSTRUCTIONS or mnemonic.startswith(("prefetch", "xsave", "xrstor")):
+        return "special_memory_operation", f"special memory operation {insn['mnemonic']} has unmodeled access semantics"
+    segment_operand = insn["text"].strip().lower()
+    if mnemonic in ("push", "pop") and segment_operand in {"cs", "ds", "es", "fs", "gs", "ss"}:
+        return "stack_segment_state", (f"segment-register {segment_operand} {insn['mnemonic']} "
+                                        "has unmodeled stack width or state effects")
+    if mnemonic in ("call", "ret") and 0x66 in prefixes:
+        return "stack_width", f"operand-size override on {insn['mnemonic']} is not modeled"
+
+    for index, operand in enumerate(operands):
+        if operand["access"] not in (CS_AC_READ, CS_AC_WRITE, CS_AC_READ | CS_AC_WRITE):
+            return "memory_access_classification", f"decoder did not classify memory operand {index}"
+        if operand["size"] <= 0 or operand["size"] > 64:
+            return "memory_access_width", f"memory operand {index} width {operand['size']} is unsupported"
+    return None
 
 
 def _ptrace(libc, request: int, pid: int, address: int = 0, data: int = 0) -> int:
@@ -378,9 +455,12 @@ def trace_child(pid: int, target: int, boot: dict, case: dict,
     _setregs(libc, pid, regs)
     gaps_seen = set()
 
-    def mark_gap(pc: int, reason: str) -> None:
+    active_mnemonic = "<outside_instrumented_range>"
+
+    def mark_gap(pc: int, reason: str, mnemonic: str | None = None,
+                 capability: str = "instruction_semantics") -> None:
         result["complete"] = False
-        gap = (pc, reason)
+        gap = (pc, mnemonic or active_mnemonic, capability, reason)
         if gap in gaps_seen:
             return
         if len(gaps_seen) < MAX_GAPS:
@@ -391,6 +471,7 @@ def trace_child(pid: int, target: int, boot: dict, case: dict,
     while True:
         regs = _regs(libc, pid)
         pc = regs.rip
+        active_mnemonic = "<outside_instrumented_range>"
         identity = next((label for lo, hi, label in ranges if lo <= pc < hi), None)
         if identity is None:
             # Skip foreign host code by breaking at its return address if it returns into a
@@ -401,7 +482,8 @@ def trace_child(pid: int, target: int, boot: dict, case: dict,
                 if any(lo <= return_pc < hi for lo, hi, _ in ranges):
                     saved = _breakpoint(libc, pid, return_pc)
                     result["skipped_host_calls"] += 1
-                    mark_gap(pc, "host call body is outside instrumented executable ranges")
+                    mark_gap(pc, "host call body is outside instrumented executable ranges",
+                             "host_call", "execution_scope")
                     _ptrace(libc, PTRACE_CONT, pid)
                     _, status = os.waitpid(pid, 0)
                     if os.WIFSTOPPED(status) and os.WSTOPSIG(status) == signal.SIGTRAP:
@@ -441,64 +523,86 @@ def trace_child(pid: int, target: int, boot: dict, case: dict,
         try:
             insn = decoder.decode(pc, code or b"")
         except TraceUnavailable as error:
-            mark_gap(pc, str(error))
-            _ptrace(libc, PTRACE_SINGLESTEP, pid)
+            active_mnemonic = "<undecoded>"
+            mark_gap(pc, str(error), capability="instruction_decode")
+            result["stop_reason"] = "unsupported_instruction_decode"
+            _ptrace(libc, PTRACE_KILL, pid)
             _, status = os.waitpid(pid, 0)
-            result["instructions"] += 1
-            if not os.WIFSTOPPED(status):
-                break
-            continue
+            break
         raw = bytes.fromhex(insn["bytes"])
-        if insn["vex_or_evex"] and insn["operands"]:
-            result["complete"] = False
-            mark_gap(pc, "VEX/EVEX memory semantics are outside this trace version")
+        active_mnemonic = insn["mnemonic"]
+        issue = _instruction_support_issue(insn)
+        if issue:
+            capability, reason = issue
+            mark_gap(pc, reason, insn["mnemonic"], capability)
+            result["stop_reason"] = "unsupported_instruction"
+            # Do not execute an instruction whose memory or privileged side effects are
+            # outside the trace model. A partial trace can never look complete or mutate
+            # the fixture further after the unsupported operation.
+            _ptrace(libc, PTRACE_KILL, pid)
+            _, status = os.waitpid(pid, 0)
+            break
         events = []
-        mnemonic = insn["mnemonic"]
+        mnemonic = insn["mnemonic"].lower().split()[-1]
         pop_has_memory_destination = False
+        unsupported_operand = None
         for index, operand in enumerate(insn["operands"]):
             access = operand["access"]
             if access not in (CS_AC_READ, CS_AC_WRITE, CS_AC_READ | CS_AC_WRITE):
-                mark_gap(pc, f"decoder did not classify memory operand {index}")
-                continue
+                unsupported_operand = ("memory_access_classification",
+                                       f"decoder did not classify memory operand {index}")
+                break
             pop_rsp_increment = 0
             if mnemonic == "pop":
                 pop_has_memory_destination = True
                 if access != CS_AC_WRITE:
-                    mark_gap(pc, "POP memory destination access classification is unsupported")
-                    continue
+                    unsupported_operand = ("stack_memory", "POP memory destination access classification is unsupported")
+                    break
                 base, index_register = operand["base"], operand["index"]
                 if operand["size"] not in (2, 8) or insn["address_size"] not in (4, 8):
-                    mark_gap(pc, "POP memory destination has unsupported operand or address size")
-                    continue
+                    unsupported_operand = ("stack_memory", "POP memory destination has unsupported operand or address size")
+                    break
                 if index_register in ("rsp", "esp"):
-                    mark_gap(pc, "POP memory destination uses unsupported RSP index encoding")
-                    continue
+                    unsupported_operand = ("stack_memory", "POP memory destination uses unsupported RSP index encoding")
+                    break
                 if base in ("rsp", "esp"):
                     pop_rsp_increment = operand["size"]
             address, address_gaps = _effective_address(operand, regs, pc, insn["size"],
                                                        insn["address_size"], pop_rsp_increment)
             for gap in address_gaps:
-                mark_gap(pc, gap)
+                unsupported_operand = ("effective_address", gap)
             if address is None:
-                continue
+                break
             events.append(_event(address, operand["size"], bool(access & CS_AC_READ),
                                  bool(access & CS_AC_WRITE), regs, pc, identity, regions,
                                  libc, pid, insn, index))
+        if unsupported_operand:
+            capability, reason = unsupported_operand
+            mark_gap(pc, reason, insn["mnemonic"], capability)
+            result["stop_reason"] = "unsupported_instruction"
+            _ptrace(libc, PTRACE_KILL, pid)
+            _, status = os.waitpid(pid, 0)
+            break
         # x86 stack effects not always exposed as explicit memory operands.
         implicit = None
         stack_width = 8
         if mnemonic in ("push", "pop"):
-            stack_width = next((op["size"] for op in insn["operands"] if op["size"] in (2, 8)), 8)
-        if mnemonic == "call" or mnemonic == "push" or mnemonic == "pushfq":
+            stack_width = insn["operand_sizes"][0] if insn["operand_sizes"] else 0
+            if stack_width not in (2, 8):
+                mark_gap(pc, f"stack operand width {stack_width} is unsupported",
+                         insn["mnemonic"], "stack_width")
+                result["stop_reason"] = "unsupported_instruction"
+                _ptrace(libc, PTRACE_KILL, pid)
+                _, status = os.waitpid(pid, 0)
+                break
+        if mnemonic in ("pushf", "pushfd", "pushfq", "popf", "popfd", "popfq"):
+            stack_width = 2 if 0x66 in insn["prefixes"] else 8
+        if mnemonic == "call" or mnemonic == "push" or mnemonic in ("pushf", "pushfd", "pushfq"):
             implicit = (regs.rsp - stack_width, stack_width, False, True, None)
-        elif mnemonic.startswith("ret") or mnemonic == "pop" or mnemonic == "popfq":
+        elif mnemonic == "ret" or mnemonic == "pop" or mnemonic in ("popf", "popfd", "popfq"):
             implicit = (regs.rsp, stack_width, True, False, None)
         elif mnemonic == "leave":
             implicit = (regs.rbp, 8, True, False, None)
-        elif mnemonic in STRING_MEMORY_MNEMONICS or (
-                mnemonic == "movsd" and "xmm" not in insn["text"].lower()) or mnemonic in (
-                "enter", "xlat", "syscall", "sysenter", "int", "int1", "int3", "iret", "iretq"):
-            mark_gap(pc, f"implicit memory behavior not instrumented for {mnemonic}")
         if implicit:
             address, width, read, write, _ = implicit
             implicit_event = _event(address, width, read, write, regs, pc, identity, regions,
@@ -542,14 +646,17 @@ def trace_child(pid: int, target: int, boot: dict, case: dict,
         if os.WIFSIGNALED(status) or os.WIFEXITED(status):
             break
         if os.WSTOPSIG(status) != signal.SIGTRAP:
-            result["complete"] = False
-            result["stop_reason"] = f"signal_{os.WSTOPSIG(status)}"
-            _ptrace(libc, PTRACE_CONT, pid, 0, os.WSTOPSIG(status))
+            signum = os.WSTOPSIG(status)
+            mark_gap(pc, f"instruction stopped with signal {signum}",
+                     active_mnemonic, "instruction_exception")
+            result["stop_reason"] = f"instruction_signal_{signum}"
+            _ptrace(libc, PTRACE_KILL, pid)
             _, status = os.waitpid(pid, 0)
             break
-    result["gaps"].extend({"instruction": f"0x{pc:x}", "reason": reason}
-                         for pc, reason in sorted(gaps_seen))
-    result["trace_version"] = "capstone5-ptrace-x86_64-v1"
+    result["gaps"].extend({"instruction": f"0x{pc:x}", "mnemonic": mnemonic,
+                           "capability": capability, "reason": reason}
+                         for pc, mnemonic, capability, reason in sorted(gaps_seen))
+    result["trace_version"] = "capstone5-ptrace-x86_64-v2"
     result["identity"] = "original_or_replacement_guest_instructions"
     if os.WIFSTOPPED(status):
         _ptrace(libc, PTRACE_KILL, pid)

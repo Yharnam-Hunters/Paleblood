@@ -164,13 +164,16 @@ differ but no earlier memory-event difference exists, the report says that no ea
 divergence was observed. This is not instruction-by-instruction register comparison and does not
 claim an exact machine-state first divergence.
 
-This increment observes Capstone-classified explicit x86-64 memory operands and the common
-implicit stack effects of `call`, `ret`, `push`, `pop`, and `leave`. It does not yet trace arbitrary
-host-library instructions, every implicit/string/system memory operation, AVX/VEX memory
-semantics, asynchronous accesses, or CFG coverage. Unsupported classes mark the trace incomplete;
-therefore a complete trace means complete only for the supported scope. Single-stepping is slow
-and is intended for bounded verification fixtures, not boot runs. The tracer requires Linux
-`ptrace` permission and the Capstone 5 detail ABI. It records no executable bytes or game captures.
+This increment observes supported Capstone-classified explicit x86-64 memory operands and the
+modeled implicit stack effects described in the [instruction-trace support matrix](INSTRUCTION_TRACE_SUPPORT.md).
+Known string/repeat, VEX/EVEX memory, system, atomic, and special-memory instruction families are
+rejected before execution. The tracer does not observe arbitrary host-library instructions,
+asynchronous accesses, or CFG coverage. A complete trace means complete only for the matrix's
+supported scope; Capstone does not identify every possible implicit-memory instruction, so a newly
+discovered family must be added to the rejection classification before relying on it. Single-
+stepping is slow and intended for bounded verification fixtures, not boot runs. The tracer
+requires Linux `ptrace` permission and the Capstone 5 detail ABI. It records no executable bytes
+or game captures.
 
 Per Intel's [POP instruction semantics](https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-vol-2a-manual.pdf),
 for `POP` to a memory destination based on `RSP`/`ESP`, the implicit stack read is traced at the

@@ -89,6 +89,29 @@ def boot_image():
     # PUSH [rsp] reads from pre-decrement RSP and stores at RSP-8. Used to guard the
     # neighboring stack-instruction semantics while POP's special case is corrected.
     code[0x9e0:0x9e0 + 17] = bytes.fromhex('48 89e0 48 83c708 48 89fc ff3424 4889c4 c3')
+    # Unsupported-memory fixtures stop before execution and must produce actionable gaps.
+    code[0xa00:0xa02] = bytes.fromhex('a4c3')                         # movsb
+    code[0xa10:0xa13] = bytes.fromhex('f3a4c3')                       # rep movsb
+    code[0xa20:0xa23] = bytes.fromhex('f2aec3')                       # repne scasb
+    code[0xa28:0xa2b] = bytes.fromhex('f3a6c3')                       # repe cmpsb
+    code[0xa30:0xa35] = bytes.fromhex('c5fe6f07c3')                   # vmovdqu ymm0, [rdi]
+    code[0xa40:0xa47] = bytes.fromhex('62f17f086f07c3')               # evex vmovdqu8
+    code[0xa50:0xa53] = bytes.fromhex('0f05c3')                       # syscall
+    code[0xa60:0xa63] = bytes.fromhex('d7c3')                         # xlatb
+    code[0xa70:0xa74] = bytes.fromhex('0fae07c3')                      # fxsave [rdi]
+    code[0xa80:0xa85] = bytes.fromhex('f00fc107c3')                   # lock xadd [rdi], eax
+    code[0xa90:0xa9e] = bytes.fromhex('4889e2 4889fc 6650 6658 4889d4 c3')
+    code[0xab0:0xab5] = bytes.fromhex('f20f1007c3')                   # scalar SSE movsd xmm0, [rdi]
+    code[0xac0:0xac5] = bytes.fromhex('660ff7c1c3')                   # maskmovdqu [rdi], xmm1 implicit
+    code[0xad0:0xad6] = bytes.fromhex('660f38f807c3')                 # movdir64b: implicit dest via RAX
+    code[0xae0:0xae4] = bytes.fromhex('0f1c07c3')                     # cldemote [rdi], unclassified access
+    code[0xaf0:0xaf3] = bytes.fromhex('0fa0c3')                       # push fs, width is not inferred
+    code[0xaf8:0xafb] = bytes.fromhex('0fa1c3')                       # pop fs changes segment state
+    code[0xb00:0xb05] = bytes.fromhex('c5f9f7c1c3')                   # vmaskmovdqu uses implicit RDI
+    code[0xb10:0xb15] = bytes.fromhex('480fc70fc3')                   # cmpxchg16b [rdi], implicit atomic
+    code[0xb20:0xb26] = bytes.fromhex('f3480faec7c3')                 # rdfsbase rdi, changes address state
+    code[0xb30:0xb34] = bytes.fromhex('0fc7f0c3')                     # rdrand eax, nondeterministic
+    code[0xb40:0xb46] = bytes.fromhex('f3480faee8c3')                 # incsspq rax, implicit shadow stack
     return ps4elf.build(
         segments=[(0, bytes(code), 0x1000, 5), (0x1000, DATA, 0x20, 6)],
         symbols=[(nid('testImport') + '#A#A', ps4elf.STT_FUNC, None)],
@@ -206,6 +229,33 @@ class Harness(unittest.TestCase):
         return [event for event in result['instruction_trace']['events']
                 if event['region'] == 'buf:stack']
 
+    def _unsupported_instruction_case(self, address, args=None):
+        case = {'schema': 1, 'address': address, 'id': f'unsupported-{address}', 'returns': 'void',
+                'args': args or {'rdi': 'buf:memory', 'rsi': 'buf:source', 'rcx': 1},
+                'buffers': {'memory': {'size': 128}, 'source': {'size': 128}},
+                'memory': [], 'imports': [], 'stubs': []}
+        return self.traced_case(case, address)
+
+    def _assert_incomplete_instruction(self, address, capability, mnemonic):
+        result = self._unsupported_instruction_case(address)
+        trace = result['instruction_trace']
+        self.assertFalse(trace['complete'], trace)
+        self.assertEqual(trace['stop_reason'], 'unsupported_instruction')
+        self.assertEqual(trace['instructions'], 0, 'unsupported instruction must not execute')
+        gap = trace['gaps'][0]
+        self.assertEqual(gap['mnemonic'], mnemonic)
+        self.assertEqual(gap['capability'], capability)
+        self.assertIn('0x', gap['instruction'])
+        compared = verify.compare(
+            {'schema': 1, 'address': address, 'cases': [{'id': 'same', **result}]},
+            {'schema': 1, 'address': address, 'cases': [{'id': 'same', **result}]})
+        self.assertEqual(compared['failed'], 1)
+        self.assertIn(gap['instruction'], compared['failures'][0]['diffs'][0])
+        self.assertIn(mnemonic, compared['failures'][0]['diffs'][0])
+        self.assertIn(capability, compared['failures'][0]['diffs'][0])
+        self.assertIn(gap['reason'], compared['failures'][0]['diffs'][0])
+        return trace
+
     def test_pop_rsp_uses_post_increment_destination_and_pre_increment_stack_read(self):
         result = self._rsp_fixture('0x004009a0', 16)
         events = self._stack_buffer_events(result)
@@ -257,6 +307,54 @@ class Harness(unittest.TestCase):
         # The source uses pre-decrement RSP; the implicit destination is one word below it.
         self.assertEqual([(event['access'], event['region_offset']) for event in events[:2]],
                          [('read', '+0x8'), ('write', '+0x0')])
+
+    def test_string_and_repeat_memory_forms_fail_closed_with_diagnostics(self):
+        self._assert_incomplete_instruction('0x00400a00', 'string_memory', 'movsb')
+        self._assert_incomplete_instruction('0x00400a10', 'repeat_string_memory', 'rep movsb')
+        self._assert_incomplete_instruction('0x00400a20', 'repeat_string_memory', 'repne scasb')
+        self._assert_incomplete_instruction('0x00400a28', 'repeat_string_memory', 'repe cmpsb')
+
+    def test_vex_and_evex_memory_operands_fail_before_execution(self):
+        self._assert_incomplete_instruction('0x00400a30', 'vex_evex_memory', 'vmovdqu')
+        self._assert_incomplete_instruction('0x00400a40', 'vex_evex_memory', 'vmovdqu8')
+
+    def test_system_and_special_implicit_memory_operations_fail_closed(self):
+        self._assert_incomplete_instruction('0x00400a50', 'system_instruction', 'syscall')
+        self._assert_incomplete_instruction('0x00400a60', 'special_memory_operation', 'xlatb')
+        self._assert_incomplete_instruction('0x00400a70', 'special_memory_operation', 'fxsave')
+        self._assert_incomplete_instruction('0x00400a80', 'atomic_memory', 'lock xadd')
+        self._assert_incomplete_instruction('0x00400ac0', 'special_memory_operation', 'maskmovdqu')
+        self._assert_incomplete_instruction('0x00400ad0', 'special_memory_operation', 'movdir64b')
+        self._assert_incomplete_instruction('0x00400ae0', 'special_memory_operation', 'cldemote')
+        self._assert_incomplete_instruction('0x00400af0', 'stack_segment_state', 'push')
+        self._assert_incomplete_instruction('0x00400af8', 'stack_segment_state', 'pop')
+        self._assert_incomplete_instruction('0x00400b00', 'special_memory_operation', 'vmaskmovdqu')
+        self._assert_incomplete_instruction('0x00400b10', 'atomic_memory', 'cmpxchg16b')
+        self._assert_incomplete_instruction('0x00400b20', 'system_instruction', 'rdfsbase')
+        self._assert_incomplete_instruction('0x00400b30', 'nondeterministic_instruction', 'rdrand')
+        self._assert_incomplete_instruction('0x00400b40', 'system_instruction', 'incsspq')
+
+    def test_16_bit_register_push_and_pop_trace_exact_stack_width(self):
+        case = {'schema': 1, 'address': '0x00400a90', 'id': 'stack-width-16', 'returns': 'void',
+                'args': {'rdi': 'buf:stack+0x2'},
+                'buffers': {'stack': {'size': 4, 'bytes': '00000000'}},
+                'memory': [], 'imports': [], 'stubs': []}
+        result = self.traced_case(case, '0x00400a90')
+        events = self._stack_buffer_events(result)
+        self.assertTrue(result['instruction_trace']['complete'], result['instruction_trace'])
+        self.assertEqual([(event['access'], event['width'], event['region_offset']) for event in events],
+                         [('write', 2, '+0x0'), ('read', 2, '+0x0')])
+
+    def test_scalar_sse_movsd_memory_operand_is_not_misclassified_as_string(self):
+        case = {'schema': 1, 'address': '0x00400ab0', 'id': 'scalar-movsd', 'returns': 'void',
+                'args': {'rdi': 'buf:memory'},
+                'buffers': {'memory': {'size': 8, 'bytes': '8877665544332211'}},
+                'memory': [], 'imports': [], 'stubs': []}
+        result = self.traced_case(case, '0x00400ab0')
+        self.assertTrue(result['instruction_trace']['complete'], result['instruction_trace'])
+        events = [event for event in result['instruction_trace']['events']
+                  if event['region'] == 'buf:memory']
+        self.assertEqual([(event['access'], event['width']) for event in events], [('read', 8)])
 
     def test_first_divergence_diagnostic_allows_equivalent_instruction_paths(self):
         case = {'schema': 1, 'address': '0x00400990', 'id': 'different-path', 'returns': 'i32',

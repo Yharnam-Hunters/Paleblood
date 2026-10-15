@@ -76,6 +76,19 @@ def byte_map(writes: list[dict]) -> dict[tuple[str, int], int]:
 def compare_case(orig: dict, repl: dict) -> list[str]:
     diffs: list[str] = []
     for side, d in (('original', orig), ('replacement', repl)):
+        trace = d.get('instruction_trace')
+        if trace and not trace.get('complete', False):
+            gaps = trace.get('gaps', [])
+            if gaps:
+                gap = gaps[0]
+                diffs.append(
+                    f'{side}: instruction trace incomplete at {gap.get("instruction", "unknown address")} '
+                    f'{gap.get("mnemonic", "<unknown>")} '
+                    f'[{gap.get("capability", "unknown capability")}]: '
+                    f'{gap.get("reason", trace.get("stop_reason", "unsupported access class"))}')
+            else:
+                diffs.append(f'{side}: instruction trace incomplete: '
+                             f'{trace.get("stop_reason", "unsupported access class")}')
         if 'fault' in d:
             diffs.append(f"{side}: {d['fault']}")
         for e in d.get('errors', []):
@@ -121,8 +134,6 @@ def compare_case(orig: dict, repl: dict) -> list[str]:
                      f'replacement {repl.get("redzone_writes", [])}')
     for side, result in (('original', orig), ('replacement', repl)):
         trace = result.get('instruction_trace')
-        if trace and not trace.get('complete', False):
-            diffs.append(f'{side}: instruction memory trace incomplete: {trace.get("stop_reason", "unsupported access class")}')
         if trace:
             invalid = [event for event in trace.get('events', []) if not event.get('valid_region', False)]
             if invalid:
