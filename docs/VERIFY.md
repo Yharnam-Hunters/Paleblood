@@ -151,9 +151,17 @@ undeclared bytes remain out of bounds even when the process mapping permits them
 The trace is deliberately fail-closed. An undeclared/out-of-bounds access, missing byte snapshot,
 unsupported memory operand, instruction/event limit, or skipped host-call body marks the trace
 incomplete; differential comparison reports it as a failure. A host call is listed as a gap
-because its native instructions are outside the ranges being traced. Existing scripted import and
-stub records remain a separate mediated-access channel and are not presented as instruction-level
-events.
+because its native instructions are outside the ranges being traced. When a guest import thunk
+enters a harness-generated import bridge, the trace identifies the scripted import by name and
+records an `external_import_dispatch` gap. The bridge and its C/Python dispatcher are not
+single-stepped, so the trace and CFG remain incomplete and cannot qualify for automated
+verification. Existing scripted import and stub records remain a separate mediated-access channel
+and are not presented as instruction-level events.
+
+For example, the recorded `frame_timing_get_monotonic_ms` canary reaches guest address
+`0x802bbfe58`, where an indirect jump enters the harness bridge for `sceKernelClockGettime`.
+That boundary explains why the trace is incomplete; it does not establish execution inside the
+host dispatcher or prove behavior beyond the recorded guest instructions.
 
 The first-divergence report compares memory events in execution order and reports the earliest
 different recorded event with both sides' instruction addresses and register snapshots. Original
