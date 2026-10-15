@@ -24,6 +24,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOOLS = os.path.join(ROOT, 'tools')
 sys.path.insert(0, TOOLS)
 import verify  # noqa: E402
+import automation_pipeline  # noqa: E402
 
 CODE = bytes.fromhex('534889fb4883ec10bf070000004889e6ff15ea0f0000488b0424488b0def0f0000'
                      '4803014889038905eb0f00004883c4105bc3')
@@ -112,6 +113,10 @@ def boot_image():
     code[0xb20:0xb26] = bytes.fromhex('f3480faec7c3')                 # rdfsbase rdi, changes address state
     code[0xb30:0xb34] = bytes.fromhex('0fc7f0c3')                     # rdrand eax, nondeterministic
     code[0xb40:0xb46] = bytes.fromhex('f3480faee8c3')                 # incsspq rax, implicit shadow stack
+    # A guest function calls a local import thunk; the thunk jumps through the imported GOT
+    # slot to the harness bridge, matching the eboot -> sceKernelClockGettime boundary shape.
+    code[0xb50:0xb61] = bytes.fromhex('4883ec084889fee8140000004883c408c3')
+    code[0xb70:0xb76] = bytes.fromhex('ff258a040000')                 # jmp [rip + 0x48a] -> 0x1000
     # Conditional paths with stable direct branch targets for CFG coverage tests.
     code[0xc00:0xc11] = bytes.fromhex('83ff00 7406 b801000000 c3 b802000000 c3')
     # A two-iteration loop covers both the taken and fallthrough outcomes of JNZ.
@@ -271,6 +276,34 @@ class Harness(unittest.TestCase):
         self.assertEqual(events[1]['before'], '0000000000000000')
         self.assertEqual(events[1]['after'], '8877665544332211')
         self.assertTrue(all(event['valid_region'] for event in events))
+
+    def test_harness_import_transition_is_named_and_never_complete(self):
+        case = dict(CASE, address='0x00400b50', id='import-thunk')
+        result = self.traced_case(case, '0x00400b50')
+        trace = result['instruction_trace']
+        self.assertFalse(trace['complete'], trace)
+        self.assertEqual(trace['control_flow_coverage']['status'], 'partial')
+        self.assertFalse(trace['control_flow_coverage']['feedback_eligible'])
+        transition, = trace['external_transitions']
+        self.assertEqual(transition['kind'], 'harness_import_dispatch')
+        self.assertEqual(transition['symbol'], 'testImport')
+        self.assertEqual(transition['trace_status'], 'incomplete')
+        self.assertEqual(transition['instruction'], 'guest:0x400b70')
+        self.assertIn('C/Python dispatcher is outside guest instruction tracing', transition['reason'])
+        boundary_gap, = [gap for gap in trace['gaps']
+                         if gap['capability'] == 'control_flow' and
+                         'enters the harness import trampoline' in gap['reason']]
+        self.assertEqual(boundary_gap['mnemonic'], 'jmp')
+        self.assertEqual(int(boundary_gap['instruction'], 16) - 0x800000000 + 0x400000,
+                         0x400b70)
+        self.assertFalse(any(gap['mnemonic'] == 'mov' and gap['reason'] == boundary_gap['reason']
+                             for gap in trace['gaps']), trace['gaps'])
+
+        failed_side = {'cases': [{'id': result['id'], 'instruction_trace': trace}]}
+        comparison = {'cases': 1, 'passed': 1, 'failed': 0}
+        with self.assertRaisesRegex(automation_pipeline.PipelineError, 'incomplete instruction trace'):
+            automation_pipeline.assert_result_sufficient(
+                {'comparison': comparison, 'original': failed_side, 'replacement': failed_side}, 1)
 
     def test_pop_rsp_displacement_uses_incremented_stack_pointer(self):
         result = self._rsp_fixture('0x004009b0', 24)
