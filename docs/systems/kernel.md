@@ -23,6 +23,22 @@ gameplay. The community frame-rate patches replace its timed-wait call with a re
 jump to a garbage address if it ran; every wait recorded in gameplay is untimed, so it never
 does.
 
+### Runtime thread-call implementations
+
+These are Paleblood runtime services, not newly decompiled game functions. Merged [PR #62](https://github.com/Yharnam-Hunters/Paleblood/pull/62)
+implements `scePthreadEqual` by comparing the object pointers used as guest thread handles. Its
+synthetic registry tests cover one handle compared with itself, distinct handles in both argument
+orders, and null; the public FreeBSD `pthread_equal(3)` contract supports zero for unequal and
+nonzero for equal, but the PS4's exact nonzero value is unknown. Merged [PR #72](https://github.com/Yharnam-Hunters/Paleblood/pull/72)
+implements imported `sched_yield` by yielding the host thread and returning zero, following POSIX
+and FreeBSD's documented contract. Unit tests check the result but cannot show that another host
+thread actually ran.
+
+The similarly named `scePthreadYield` remains registered as an unresolved, fail-loud diagnostic.
+FreeBSD's `pthread_yield` returns `void`, Linux's analogue returns `int`, and no PS4 declaration or
+inspected guest call site settles the guest-visible signature. Do not infer that it is implemented
+from its registry entry. None of these changes has been verified by a new Bloodborne boot.
+
 ## Key functions
 
 | Address | Size | Name | Status | Notes |
