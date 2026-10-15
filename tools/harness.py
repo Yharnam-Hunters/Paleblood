@@ -41,6 +41,7 @@ STACK_WINDOW = 1 << 20
 RUNAWAY = 1000              # unscripted calls before a case is abandoned
 
 PROT_RWX = 7
+PROT_NONE = 0
 MAP_PRIVATE, MAP_ANONYMOUS, MAP_FIXED_NOREPLACE = 0x02, 0x20, 0x100000
 
 # call_capture(block): see docs/VERIFY.md. Block layout: 0 target, 8..48 rdi..r9, 56 rax,
@@ -74,7 +75,14 @@ def _stack_trampoline(base: bytes) -> bytes:
     code += bytes.fromhex('4885c0' '7409' '48ffc8' '41ff34c3' 'ebf2')   # push [r11+8*rax], rax..1
     code += call
     code += bytes.fromhex('480325') + rel(len(code) + 7, 16)       # add rsp, [bytes]
-    return bytes(code) + base[at + len(call):]
+    suffix = base[at + len(call):]
+    restore_block = bytes.fromhex('4c8b1c24')
+    restore_at = suffix.index(restore_block) + len(restore_block)
+    # The saved entry rdi is the block pointer restored into r11 here. Caller-saved registers are
+    # observations only; comparisons opt in explicitly and otherwise ignore unspecified values.
+    observed = bytes.fromhex('4989bba80000004989b3b000000049898bb80000004d8983c00000004d898bc80000004d8993d00000004d899bd8000000')
+    suffix = suffix[:restore_at] + observed + suffix[restore_at:]
+    return bytes(code) + suffix
 # Native stub for series entries (a wait that polls the clock calls it hundreds of thousands of
 # times): copies the next 16-byte value to *arg, counts the call, returns the scripted value;
 # when the series is used up it jumps to the Python dispatcher. State block: 0 remaining,
@@ -112,6 +120,8 @@ def nid(name: str) -> str:
 libc = ctypes.CDLL(None, use_errno=True)
 libc.mmap.restype = ctypes.c_void_p
 libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_long]
+libc.mprotect.restype = ctypes.c_int
+libc.mprotect.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
 
 
 def mmap_fixed(address: int, size: int) -> None:
@@ -222,11 +232,13 @@ class Run:
         self.boot, self.case = boot, case
         self.calls: list[dict] = []
         self.errors: list[str] = []
-        self.block = (ctypes.c_uint64 * 22)()
+        self.block = (ctypes.c_uint64 * 28)()
         self.scripts: dict[str, list] = {}
         for entry in case.get('imports', []):
             self.scripts.setdefault(nid(entry['name']), []).append(entry)
         self.buffers: dict[str, tuple[int, int]] = {}
+        self.redzones: list[tuple[int, bytes, str]] = []
+        self.access_trace: list[dict] = []
         self.callbacks = []
         self.native: dict[int, dict] = {}      # import index -> series stub state
         self.keep = []
@@ -264,14 +276,27 @@ class Run:
         for name in sorted(self.case.get('buffers', {})):
             spec = self.case['buffers'][name]
             size = int(spec['size'])
+            if size < 0 or size > SANDBOX_SIZE:
+                raise BadInput(f'buffer {name}: size is outside the sandbox limit')
             data = bytes.fromhex(spec.get('bytes', ''))
             if len(data) > size:
                 raise BadInput(f'buffer {name}: more bytes than its size')
-            self.buffers[name] = (SANDBOX + off, size)
-            ctypes.memmove(SANDBOX + off, data + bytes(size - len(data)), size)
-            off = (off + size + 15) // 16 * 16
-            if off > SANDBOX_SIZE:
-                raise BadInput('buffers exceed the sandbox')
+            start = SANDBOX + off
+            self.buffers[name] = (start, size)
+            ctypes.memmove(start, data + bytes(size - len(data)), size)
+            payload_pages = max(1, (size + PAGE - 1) // PAGE)
+            redzone_start = start + size
+            redzone_end = start + payload_pages * PAGE
+            if redzone_end > redzone_start:
+                redzone = bytes((0xA5 ^ ((i * 29 + len(name)) & 0xff)) for i in range(redzone_end - redzone_start))
+                ctypes.memmove(redzone_start, redzone, len(redzone))
+                self.redzones.append((redzone_start, redzone, name))
+            guard = start + payload_pages * PAGE
+            if off + (payload_pages + 1) * PAGE > SANDBOX_SIZE:
+                raise BadInput('buffers and guard pages exceed the sandbox')
+            if libc.mprotect(guard, PAGE, PROT_NONE):
+                raise BadInput(f'cannot install guard page after buffer {name}: errno {ctypes.get_errno()}')
+            off += (payload_pages + 1) * PAGE
         for i, address in enumerate(sorted(self.stub_scripts)):
             save = XSTUB + XSTUB_SIZE * i + 64
             cb = proto(lambda a, b_, c, d, e, f, address=address, save=save:
@@ -300,6 +325,7 @@ class Run:
                 data = struct.pack('<Q', self.guest(hexint(m['guest'])))
             else:
                 data = bytes.fromhex(m['bytes'])
+            self.check_memory(addr, len(data), write=True, source="fixture_setup")
             ctypes.memmove(addr, data, len(data))
 
     def guest(self, ps4: int) -> int:
@@ -312,10 +338,47 @@ class Run:
             name, _, off = v[4:].partition('+')
             if name not in self.buffers:
                 raise BadInput(f'unknown buffer {name}')
-            return self.buffers[name][0] + (int(off, 0) if off else 0)
+            offset = int(off, 0) if off else 0
+            if offset < 0 or offset > self.buffers[name][1]:
+                raise BadInput(f'pointer {v} is outside its declared buffer')
+            return self.buffers[name][0] + offset
         if isinstance(v, str) and v.startswith('guest:'):
             return self.guest(int(v[6:], 0))
         return hexint(v) & 0xffffffffffffffff
+
+    def check_memory(self, address: int, size: int, write: bool = False,
+                     source: str = "scripted_callback") -> None:
+        """Validate an observed harness-mediated access against declared regions.
+
+        This records accesses made by scripted imports/stubs and fixture setup. It does not
+        instrument arbitrary guest load/store instructions; those remain an explicit limitation.
+        """
+        if size < 0:
+            raise BadInput('negative memory access size')
+        for start, length in self.buffers.values():
+            if start <= address and address + size <= start + length:
+                if source != "fixture_setup":
+                    self.access_trace.append({"access": "write" if write else "read",
+                                              "address": self.describe(address), "size": size,
+                                              "source": source, "region": self.describe(start)})
+                return
+        stack_top = self.block[19]
+        if stack_top and stack_top - STACK_WINDOW <= address and address + size <= stack_top:
+            if source != "fixture_setup":
+                self.access_trace.append({"access": "write" if write else "read",
+                                          "address": self.describe(address), "size": size,
+                                          "source": source, "region": "stack"})
+            return
+        required_flag = 2 if write else 4
+        for vaddr, memsz, flags in self.boot['loads']:
+            if flags & required_flag and IMAGE + vaddr <= address and address + size <= IMAGE + vaddr + memsz:
+                if source != "fixture_setup":
+                    self.access_trace.append({"access": "write" if write else "read",
+                                              "address": self.describe(address), "size": size,
+                                              "source": source, "region": "guest_image"})
+                return
+        direction = 'write' if write else 'read'
+        raise BadInput(f'scripted {direction} 0x{address:x}+0x{size:x} is outside declared readable/writable regions')
 
     def describe(self, v: int) -> str:
         top = self.block[19]
@@ -372,6 +435,7 @@ class Run:
             if series.get('format') != 'timeval_us' or int(series.get('offset', 0)):
                 raise BadInput(f"unsupported series {series.get('format')} at offset {series.get('offset', 0)}")
             pack = lambda v: struct.pack('<qq', int(v) // 1_000_000, int(v) % 1_000_000)
+            self.check_memory(args[int(series['arg'])], 16, write=True, source="import_series")
             ctypes.memmove(args[int(series['arg'])], pack(series['values'][i]), 16)
             ret = hexint(entry.get('ret', 0)) & 0xffffffffffffffff
             n = self.native.get(index)
@@ -390,7 +454,9 @@ class Run:
             data = bytes.fromhex(w['bytes'])
             if 'size' in w and len(data) != int(w['size']):
                 self.errors.append(f"{entry['name']}: write of {len(data)} bytes, the case says {w['size']}")
-            ctypes.memmove(args[int(w['arg'])] + int(w.get('offset', 0)), data, len(data))
+            address = args[int(w['arg'])] + int(w.get('offset', 0))
+            self.check_memory(address, len(data), write=True, source="import_write")
+            ctypes.memmove(address, data, len(data))
         return hexint(entry.get('ret', 0)) & 0xffffffffffffffff
 
     def dispatch_stub(self, address: int, args: tuple, save: int = 0) -> int:
@@ -408,6 +474,7 @@ class Run:
             record.setdefault('argf32', []).append(ctypes.string_at(save + 16 * int(r), 4).hex())
         for m in entry.get('argmem', []):
             at = args[int(m['arg'])] + int(m.get('offset', 0))
+            self.check_memory(at, int(m['size']), source="stub_argument")
             record.setdefault('argmem', []).append(ctypes.string_at(at, int(m['size'])).hex())
         self.calls.append(record)
         for w in entry.get('writes', []):
@@ -418,7 +485,9 @@ class Run:
                 data = struct.pack('<Q', self.guest(hexint(w['guest'])))
             else:
                 data = bytes.fromhex(w['bytes'])
-            ctypes.memmove(args[int(w['arg'])] + int(w.get('offset', 0)), data, len(data))
+            address = args[int(w['arg'])] + int(w.get('offset', 0))
+            self.check_memory(address, len(data), write=True, source="stub_write")
+            ctypes.memmove(address, data, len(data))
         return self.value(entry.get('ret', 0))
 
     # execution -------------------------------------------------------------------------
@@ -436,6 +505,10 @@ class Run:
         unknown = set(args) - set(ARG_REGS) - {'xmm0', 'xmm1'}
         if unknown:
             raise BadInput(f'unknown argument registers {sorted(unknown)}')
+        observed = self.case.get('observe_registers', [])
+        allowed = {'rdi', 'rsi', 'rdx', 'rcx', 'r8', 'r9', 'r10', 'r11'}
+        if not isinstance(observed, list) or any(reg not in allowed for reg in observed):
+            raise BadInput('observe_registers must list caller-saved GPR names supported by the harness')
         stack = [self.value(v) for v in self.case.get('stack', [])]
         if len(stack) % 2:
             stack.append(0)
@@ -453,6 +526,13 @@ class Run:
         for index in self.native:
             self.finish_series(index)
         after = self.snapshot()
+        redzone_writes = []
+        for start, expected, name in self.redzones:
+            actual = ctypes.string_at(start, len(expected))
+            changed = [i for i, (old, new) in enumerate(zip(expected, actual)) if old != new]
+            if changed:
+                redzone_writes.append({"buffer": name, "first_offset": self.buffers[name][1] + changed[0],
+                                       "changed_bytes": len(changed)})
         out: dict = {'id': self.case.get('id', 'case')}
         returns = self.case.get('returns', 'i64')
         rax, rdx = self.block[7], self.block[8]
@@ -472,6 +552,15 @@ class Run:
         regs = dict(zip(SENTINELS, self.block[13:19]))
         out['preserved'] = {r: 'kept' if regs[r] == SENTINELS[r] else f'0x{regs[r]:x}' for r in SENTINELS}
         out['preserved']['rsp'] = 'kept' if self.block[20] == self.block[19] else 'unbalanced'
+        register_values = {
+            'rdi': f'0x{self.block[21]:x}', 'rsi': f'0x{self.block[22]:x}',
+            'rdx': f'0x{self.block[8]:x}',
+            'rcx': f'0x{self.block[23]:x}', 'r8': f'0x{self.block[24]:x}',
+            'r9': f'0x{self.block[25]:x}', 'r10': f'0x{self.block[26]:x}',
+            'r11': f'0x{self.block[27]:x}',
+        }
+        out['observed_registers'] = sorted(set(observed))
+        out['registers'] = {reg: register_values[reg] for reg in out['observed_registers']}
         writes = []
         for start, old in before.items():
             new = after[start]
@@ -486,6 +575,11 @@ class Run:
                 writes.append({'addr': self.describe(start + i), 'bytes': new[i:j].hex()})
                 i = j
         out['writes'] = writes
+        out['access_trace'] = self.access_trace
+        out['access_trace_scope'] = "harness-mediated scripted accesses; guest instructions are not instrumented"
+        out['redzone_writes'] = redzone_writes
+        if redzone_writes:
+            out.setdefault('errors', []).append('buffer redzone modified: ' + json.dumps(redzone_writes, sort_keys=True))
         out['calls'] = self.calls
         if self.errors:
             out['errors'] = self.errors
@@ -516,42 +610,84 @@ def run_case(machine: Machine, case: dict, address: str, target: int | None) -> 
     return run.run(target if target is not None else run.guest(int(address, 0)))
 
 
-def batch(machine: Machine, cases_dir: str, address: str, target: int | None, timeout: int) -> dict:
+def _run_isolated(machine: Machine, case: dict, address: str, target: int | None,
+                  timeout: int, trace: bool, trace_limit: int, replacement_lib: str | None) -> dict:
+    import signal
+    r, w = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(r)
+        signal.alarm(timeout)
+        try:
+            if trace:
+                sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+                import instruction_trace
+                instruction_trace.trace_me()
+            result = run_case(machine, case, address, target)
+            code = 0
+        except BadInput as error:
+            result, code = {'bad_input': str(error)}, 3
+        except Exception as error:
+            result, code = {'bad_input': f'instruction tracing failed: {error}'}, 3
+        with os.fdopen(w, 'w') as stream:
+            json.dump(result, stream, sort_keys=True)
+        os._exit(code)
+    os.close(w)
+    trace_result = None
+    if trace:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import instruction_trace
+        target_address = target if target is not None else IMAGE + int(address, 0) - EBOOT_BASE
+        try:
+            trace_result = instruction_trace.trace_child(pid, target_address, machine.boot, case,
+                                                        replacement_lib, trace_limit)
+        except (OSError, ValueError, instruction_trace.TraceUnavailable) as error:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
+            os.close(r)
+            raise BadInput(f'instruction tracing unavailable: {error}') from error
+    with os.fdopen(r) as stream:
+        data = stream.read()
+    if trace_result is not None and '_tracee_wait_status' in trace_result:
+        status = trace_result.pop('_tracee_wait_status')
+    else:
+        _, status = os.waitpid(pid, 0)
+    if os.WIFSIGNALED(status):
+        sig = os.WTERMSIG(status)
+        result = {'fault': f'timeout after {timeout} s' if sig == signal.SIGALRM else f'signal {sig}'}
+    elif os.WEXITSTATUS(status) == 3:
+        raise BadInput(json.loads(data)['bad_input'])
+    elif os.WEXITSTATUS(status) != 0 or not data:
+        result = {'fault': f'exit {os.WEXITSTATUS(status)}'}
+    else:
+        result = json.loads(data)
+    if trace_result is not None:
+        result['instruction_trace'] = trace_result
+    return result
+
+
+def batch(machine: Machine, cases_dir: str, address: str, target: int | None, timeout: int,
+          trace: bool = False, trace_limit: int = 100_000,
+          replacement_lib: str | None = None) -> dict:
     """Every *.json in CASES_DIR, each in a fork of the mapped machine: a crash or a hang loses
     only that case. Returns {file stem: result}."""
     import glob
-    import signal
     out = {}
     for path in sorted(glob.glob(os.path.join(cases_dir, '*.json'))):
         stem = os.path.splitext(os.path.basename(path))[0]
         with open(path) as f:
             case = json.load(f)
-        r, w = os.pipe()
-        pid = os.fork()
-        if pid == 0:
-            os.close(r)
-            signal.alarm(timeout)
-            try:
-                res = run_case(machine, case, address, target)
-                code = 0
-            except BadInput as e:
-                res, code = {'bad_input': str(e)}, 3
-            with os.fdopen(w, 'w') as f:
-                json.dump(res, f, sort_keys=True)
-            os._exit(code)
-        os.close(w)
-        with os.fdopen(r) as f:
-            data = f.read()
-        _, status = os.waitpid(pid, 0)
-        if os.WIFSIGNALED(status):
-            sig = os.WTERMSIG(status)
-            out[stem] = {'fault': f'timeout after {timeout} s' if sig == signal.SIGALRM else f'signal {sig}'}
-        elif os.WEXITSTATUS(status) == 3:
-            raise BadInput(f'{stem}: {json.loads(data)["bad_input"]}')
-        elif os.WEXITSTATUS(status) != 0 or not data:
-            out[stem] = {'fault': f'exit {os.WEXITSTATUS(status)}'}
-        else:
-            out[stem] = json.loads(data)
+        try:
+            out[stem] = _run_isolated(machine, case, address, target, timeout, trace,
+                                      trace_limit, replacement_lib)
+        except BadInput as error:
+            raise BadInput(f'{stem}: {error}') from error
         out[stem]['id'] = stem
     return out
 
@@ -566,6 +702,10 @@ def main() -> int:
     ap.add_argument('--replacement')
     ap.add_argument('--lib')
     ap.add_argument('--timeout', type=int, default=20, help='per case, batch mode')
+    ap.add_argument('--trace-instructions', action='store_true',
+                    help='trace bounded x86-64 guest/replacement memory operands (Linux + Capstone 5)')
+    ap.add_argument('--trace-instruction-limit', type=int, default=100_000,
+                    help='maximum single-stepped instructions per case')
     ap.add_argument('--patch', help='a community patch file (XML); with --patch-name, its bytes are written '
                     'into the image first (to check an option against the patch it replaces)')
     ap.add_argument('--patch-name')
@@ -592,11 +732,15 @@ def main() -> int:
             if not a.lib:
                 raise BadInput('--replacement needs --lib')
             target = load_replacement(a.lib, a.replacement, boot['size'])
+        if a.trace_instruction_limit < 1 or a.trace_instruction_limit > 10_000_000:
+            raise BadInput('--trace-instruction-limit must be 1..10000000')
         if a.case:
             with open(a.case) as f:
-                result = run_case(machine, json.load(f), a.address, target)
+                result = _run_isolated(machine, json.load(f), a.address, target, a.timeout,
+                                       a.trace_instructions, a.trace_instruction_limit, a.lib)
         else:
-            result = batch(machine, a.cases, a.address, target, a.timeout)
+            result = batch(machine, a.cases, a.address, target, a.timeout,
+                           a.trace_instructions, a.trace_instruction_limit, a.lib)
     except (OSError, ValueError, KeyError, BadInput, json.JSONDecodeError, AttributeError) as e:
         print(f'harness: {e}', file=sys.stderr)
         return 3

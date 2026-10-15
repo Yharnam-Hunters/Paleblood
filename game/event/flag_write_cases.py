@@ -9,6 +9,24 @@ import sys
 
 ADDRESS = '0x017cfcc0'
 GROUP_SIZE = 16
+ABI = {
+    'calling_convention': 'sysv_amd64',
+    'confidence': 'supported',
+    'evidence': [
+        'symbols/verification.csv:event_flag_write edge result (14 original-instruction cases)',
+        'game/event/flag_write.cpp: replacement prototype and argument widths',
+    ],
+    'stack_alignment': 16,
+    'arguments': [
+        {'register': 'rdi', 'type': 'FlagStore *', 'direction': 'inout'},
+        {'register': 'rsi', 'type': 'uint32_t', 'direction': 'input'},
+        {'register': 'rdx', 'type': 'uint32_t', 'direction': 'input'},
+    ],
+    'returns': {'type': 'void'},
+    'input_regions': ['store', 'header', 'root', 'terminal'],
+    'writable_regions': ['bits', 'pages'],
+    'execution_limits': {'timeout_seconds': 20, 'unscripted_call_limit': 1000},
+}
 
 
 def u32(value):
@@ -25,6 +43,7 @@ def make_case(case_id, flag_id, enabled, *, root_group=5, left_group=None,
         'schema': 1,
         'address': ADDRESS,
         'id': case_id,
+        'abi': ABI,
         'returns': 'void',
         'args': {'rdi': 'buf:store', 'rsi': hex(flag_id), 'rdx': hex(enabled)},
         'buffers': {

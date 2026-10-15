@@ -76,6 +76,19 @@ def byte_map(writes: list[dict]) -> dict[tuple[str, int], int]:
 def compare_case(orig: dict, repl: dict) -> list[str]:
     diffs: list[str] = []
     for side, d in (('original', orig), ('replacement', repl)):
+        trace = d.get('instruction_trace')
+        if trace and not trace.get('complete', False):
+            gaps = trace.get('gaps', [])
+            if gaps:
+                gap = gaps[0]
+                diffs.append(
+                    f'{side}: instruction trace incomplete at {gap.get("instruction", "unknown address")} '
+                    f'{gap.get("mnemonic", "<unknown>")} '
+                    f'[{gap.get("capability", "unknown capability")}]: '
+                    f'{gap.get("reason", trace.get("stop_reason", "unsupported access class"))}')
+            else:
+                diffs.append(f'{side}: instruction trace incomplete: '
+                             f'{trace.get("stop_reason", "unsupported access class")}')
         if 'fault' in d:
             diffs.append(f"{side}: {d['fault']}")
         for e in d.get('errors', []):
@@ -88,6 +101,15 @@ def compare_case(orig: dict, repl: dict) -> list[str]:
             b = repl.get(group, {}).get(r)
             if a != b:
                 diffs.append(f'{group}.{r}: original {a} replacement {b}')
+    original_observed = set(orig.get('observed_registers', []))
+    replacement_observed = set(repl.get('observed_registers', []))
+    if original_observed != replacement_observed:
+        diffs.append('registers: compared-register declarations differ')
+    for reg in sorted(original_observed & replacement_observed):
+        a = orig.get('registers', {}).get(reg)
+        b = repl.get('registers', {}).get(reg)
+        if a != b:
+            diffs.append(f'registers.{reg}: original {a} replacement {b}')
     mo, mr = byte_map(orig.get('writes', [])), byte_map(repl.get('writes', []))
     bad = sorted(a for a in set(mo) | set(mr) if mo.get(a) != mr.get(a))
     for a in bad[:MAX_REPORTED]:
@@ -98,6 +120,27 @@ def compare_case(orig: dict, repl: dict) -> list[str]:
         diffs.append(f'memory: {len(bad) - MAX_REPORTED} more differing bytes')
     if orig.get('calls', []) != repl.get('calls', []):
         diffs.append('calls: external call sequence or arguments differ')
+    original_accesses = orig.get('access_trace', [])
+    replacement_accesses = repl.get('access_trace', [])
+    if original_accesses != replacement_accesses:
+        index = next((i for i, pair in enumerate(zip(original_accesses, replacement_accesses))
+                      if pair[0] != pair[1]), min(len(original_accesses), len(replacement_accesses)))
+        original_event = original_accesses[index] if index < len(original_accesses) else '<no event>'
+        replacement_event = replacement_accesses[index] if index < len(replacement_accesses) else '<no event>'
+        diffs.append(f'mediated memory access trace first difference at event {index}: '
+                     f'original {original_event}; replacement {replacement_event}')
+    if orig.get('redzone_writes', []) != repl.get('redzone_writes', []):
+        diffs.append(f'buffer redzones: original {orig.get("redzone_writes", [])}; '
+                     f'replacement {repl.get("redzone_writes", [])}')
+    for side, result in (('original', orig), ('replacement', repl)):
+        trace = result.get('instruction_trace')
+        if trace:
+            invalid = [event for event in trace.get('events', []) if not event.get('valid_region', False)]
+            if invalid:
+                diffs.append(f'{side}: instruction memory bounds violation at {invalid[0].get("instruction")} '
+                             f'{invalid[0].get("access")} {invalid[0].get("address")}+{invalid[0].get("width")}')
+    if bool(orig.get('instruction_trace')) != bool(repl.get('instruction_trace')):
+        diffs.append('instruction memory trace is missing from one execution side')
     return diffs
 
 
@@ -110,16 +153,46 @@ def compare(orig: dict, repl: dict) -> dict:
     oc = {c['id']: c for c in orig['cases']}
     rc = {c['id']: c for c in repl['cases']}
     failures = []
+    diagnostics = []
     for cid in sorted(set(oc) | set(rc)):
         if cid not in oc or cid not in rc:
             failures.append({'case': cid, 'diffs': ['case missing from one side']})
             continue
         d = compare_case(oc[cid], rc[cid])
+        original_trace = oc[cid].get('instruction_trace')
+        replacement_trace = rc[cid].get('instruction_trace')
+        if original_trace or replacement_trace:
+            oe = (original_trace or {}).get('events', [])
+            re = (replacement_trace or {}).get('events', [])
+            signature = lambda event: tuple(event.get(key) for key in
+                                             ('access', 'region', 'region_offset', 'width', 'before', 'after'))
+            first = next((index for index, (left, right) in enumerate(zip(oe, re))
+                          if signature(left) != signature(right)), min(len(oe), len(re)))
+            has_difference = first < max(len(oe), len(re))
+            if has_difference:
+                left = oe[first] if first < len(oe) else None
+                right = re[first] if first < len(re) else None
+                detail = {'classification': 'bounded_memory_trace_difference', 'event_index': first,
+                          'observable_result_mismatch': bool(d), 'original': left, 'replacement': right,
+                          'note': ('This is the earliest differing recorded memory event, not PC alignment. '
+                                   'When final observable outputs match, it can represent an equivalent internal path.')}
+            elif d:
+                detail = {'classification': 'observable_mismatch_without_memory_trace_difference',
+                          'observable_result_mismatch': True,
+                          'compared_state_differences': d,
+                          'note': 'The mismatch is in compared final state/calls; no earlier differing memory event was observed.'}
+            else:
+                detail = {'classification': 'no_observable_divergence', 'observable_result_mismatch': False,
+                          'note': 'Final compared state agrees; differing instruction counts or PCs are not treated as failures.'}
+            detail['trace_complete'] = bool(original_trace and replacement_trace and
+                                             original_trace.get('complete') and replacement_trace.get('complete'))
+            diagnostics.append({'case': cid, 'first_divergence': detail})
         if d:
             failures.append({'case': cid, 'diffs': d})
     n = len(set(oc) | set(rc))
     return {'schema': SCHEMA, 'address': orig.get('address'), 'cases': n,
-            'passed': n - len(failures), 'failed': len(failures), 'failures': failures}
+            'passed': n - len(failures), 'failed': len(failures), 'failures': failures,
+            'instruction_diagnostics': diagnostics}
 
 
 def load(path: str) -> dict:
@@ -149,14 +222,18 @@ def lookup(name: str) -> tuple[str, str]:
     return address, hooks[0]['replacement']
 
 
-def run_side(boot: str, case: str, address: str, symbol: str | None, lib: str | None) -> dict:
+def run_side(boot: str, case: str, address: str, symbol: str | None, lib: str | None,
+             timeout: int = CASE_TIMEOUT, trace_instructions: bool = False,
+             trace_limit: int = 100_000) -> dict:
     cmd = [sys.executable, HARNESS, '--elf', boot, '--case', case, '--address', address]
     if symbol:
         cmd += ['--replacement', symbol, '--lib', lib]
+    if trace_instructions:
+        cmd += ['--trace-instructions', '--trace-instruction-limit', str(trace_limit)]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=CASE_TIMEOUT)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        return {'fault': f'timeout after {CASE_TIMEOUT} s'}
+        return {'fault': f'timeout after {timeout} s'}
     if r.returncode == 3:
         raise BadInput(f'{os.path.basename(case)}: {r.stderr.strip()}')
     if r.returncode != 0:
@@ -166,7 +243,9 @@ def run_side(boot: str, case: str, address: str, symbol: str | None, lib: str | 
 
 
 def run_cases(boot: str, captures: str, address: str, symbol: str, lib: str,
-              patch: str | None = None, env: dict | None = None, function: str | None = None) -> dict:
+              patch: str | None = None, env: dict | None = None, function: str | None = None,
+              timeout: int = CASE_TIMEOUT, trace_instructions: bool = False,
+              trace_limit: int = 100_000) -> dict:
     """Both sides of every case file in CAPTURES: {'original': [...], 'replacement': [...]}.
     One harness process per side maps the image once and forks per case."""
     cases = sorted(glob.glob(os.path.join(captures, '*.json')))
@@ -191,8 +270,7 @@ def run_cases(boot: str, captures: str, address: str, symbol: str, lib: str,
                 raise BadInput(f'{os.path.basename(path)} has invalid capture run_id')
     results: dict[str, list] = {}
     for side, sym in (('original', None), ('replacement', symbol)):
-        cmd = [sys.executable, HARNESS, '--elf', boot, '--cases', captures, '--address', address,
-               '--timeout', str(CASE_TIMEOUT)]
+        cmd = [sys.executable, HARNESS, '--elf', boot, '--cases', captures, '--address', address]
         side_env = None
         if sym:
             cmd += ['--replacement', sym, '--lib', lib]
@@ -203,7 +281,14 @@ def run_cases(boot: str, captures: str, address: str, symbol: str, lib: str,
             # functions) stay in place; its edits inside the replaced function never run.
             path, _, name = patch.partition(':')
             cmd += ['--patch', path, '--patch-name', name]
-        r = subprocess.run(cmd, capture_output=True, text=True, env=side_env)
+        cmd += ['--timeout', str(timeout)]
+        if trace_instructions:
+            cmd += ['--trace-instructions', '--trace-instruction-limit', str(trace_limit)]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, env=side_env,
+                               timeout=timeout * len(cases) + 30)
+        except subprocess.TimeoutExpired as error:
+            raise BadInput(f'{side}: total harness timeout exceeded') from error
         if r.returncode != 0:
             raise BadInput(f'{side}: {r.stderr.strip()[-400:]}')
         by_file = json.loads(r.stdout)
@@ -213,7 +298,9 @@ def run_cases(boot: str, captures: str, address: str, symbol: str, lib: str,
 
 
 def run(name: str, captures: str, boot: str | None, lib: str | None, out: str | None,
-        patch: str | None = None, env: list | None = None, record: str | None = None, option: str = '') -> int:
+        patch: str | None = None, env: list | None = None, record: str | None = None,
+        option: str = '', timeout: int = CASE_TIMEOUT, trace_instructions: bool = False,
+        trace_limit: int = 100_000) -> int:
     boot = boot or os.environ.get('BB_ELF') or default_elf()
     lib = lib or os.environ.get('BB_GAME_LIB') or os.path.join(ROOT, 'build', 'game', 'libbbgame.so')
     if not boot or not os.path.isfile(boot):
@@ -222,7 +309,8 @@ def run(name: str, captures: str, boot: str | None, lib: str | None, out: str | 
         raise BadInput(f'no game library at {lib}: build the repository or pass --lib')
     address, symbol = lookup(name)
     extra = dict(e.split('=', 1) for e in (env or []))
-    results = run_cases(boot, captures, address, symbol, lib, patch, extra, name)
+    results = run_cases(boot, captures, address, symbol, lib, patch, extra, name, timeout,
+                        trace_instructions, trace_limit)
     out = out or os.path.join(captures, 'results')
     os.makedirs(out, exist_ok=True)
     files = {}
@@ -287,6 +375,11 @@ def main() -> int:
     r.add_argument('--elf', dest='boot', help='the executable (eboot.elf); default $BB_ELF, then $BB_DATA_ROOT/elf/eboot.elf')
     r.add_argument('--lib')
     r.add_argument('--out')
+    r.add_argument('--timeout', type=int, default=CASE_TIMEOUT, help='per case timeout in seconds')
+    r.add_argument('--trace-instructions', action='store_true',
+                   help='single-step guest memory operands (Linux x86-64, Capstone 5 required)')
+    r.add_argument('--trace-instruction-limit', type=int, default=100_000,
+                   help='bounded single-step instruction limit per fixture')
     r.add_argument('--patch', metavar='FILE:NAME',
                    help='run both sides on an image with this community patch applied (checks an option against it)')
     r.add_argument('--env', action='append', metavar='KEY=VALUE', help='environment for the replacement side')
@@ -309,7 +402,12 @@ def main() -> int:
         try:
             if a.record and (a.patch or a.env) and not a.option:
                 raise BadInput('--record with --patch or --env needs --option LABEL')
-            return run(a.function, a.captures, a.boot, a.lib, a.out, a.patch, a.env, a.record, a.option)
+            if a.timeout < 1 or a.timeout > 3600:
+                raise BadInput('--timeout must be between 1 and 3600 seconds')
+            if a.trace_instruction_limit < 1 or a.trace_instruction_limit > 10_000_000:
+                raise BadInput('--trace-instruction-limit must be between 1 and 10000000')
+            return run(a.function, a.captures, a.boot, a.lib, a.out, a.patch, a.env, a.record,
+                       a.option, a.timeout, a.trace_instructions, a.trace_instruction_limit)
         except (BadInput, OSError, json.JSONDecodeError) as e:
             print(f'verify: {e}', file=sys.stderr)
             return 3

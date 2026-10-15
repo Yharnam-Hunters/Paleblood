@@ -6,6 +6,7 @@ gcc                     C/C++ build
 cmake                   build
 make                    build
 python                  tools
+capstone                optional bounded x86-64 instruction-memory tracing (Capstone 5)
 git                     repositories
 github-cli              issues, pull requests, CI
 # Your dump to checked ELFs (tools/prepare_dump.sh)

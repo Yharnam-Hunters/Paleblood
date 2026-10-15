@@ -128,6 +128,72 @@ differ. Write order is not compared.
 - The function runs alone: whatever it calls inside the game runs too, as original code,
   unless the case stubs it.
 
+## Optional instruction-level memory trace
+
+On Linux x86-64 with Capstone 5 installed, a case can also single-step instructions in the
+declared guest executable and replacement shared-object ranges. The CI pins Capstone 5.0.9. The
+tracer prefers the matching shared library bundled with the optional Python wheel, then falls back
+to the installed system library:
+
+```sh
+python3 tools/harness.py --elf "$BB_ELF" --case "$CASE" --address 0xADDRESS \
+    --trace-instructions --trace-instruction-limit 100000
+```
+
+`tools/verify.py run` and the catalog-backed `tools/differential.py differential` command accept
+the same `--trace-instructions` and `--trace-instruction-limit` options. Traces record the
+instruction identity/address, decoded memory operand, read/write class, byte width, effective
+address, declared region and offset, pre-access bytes, post-write bytes, and a bounded GPR snapshot.
+The bounds check uses the exact declared buffer length rather than its mapped redzone size, so
+unaligned, overlapping, aliased, and same-value writes are reported. Accesses to adjacent but
+undeclared bytes remain out of bounds even when the process mapping permits them.
+
+The trace is deliberately fail-closed. An undeclared/out-of-bounds access, missing byte snapshot,
+unsupported memory operand, instruction/event limit, or skipped host-call body marks the trace
+incomplete; differential comparison reports it as a failure. A host call is listed as a gap
+because its native instructions are outside the ranges being traced. Existing scripted import and
+stub records remain a separate mediated-access channel and are not presented as instruction-level
+events.
+
+The first-divergence report compares memory events in execution order and reports the earliest
+different recorded event with both sides' instruction addresses and register snapshots. Original
+and replacement PCs are not aligned: different instruction counts and addresses are allowed. An
+event-trace difference with equal final observable results is labeled a bounded internal-path
+difference, not a behavioral failure. If final return values, writes, calls, or observed registers
+differ but no earlier memory-event difference exists, the report says that no earlier memory
+divergence was observed. This is not instruction-by-instruction register comparison and does not
+claim an exact machine-state first divergence.
+
+This increment observes supported Capstone-classified explicit x86-64 memory operands and the
+modeled implicit stack effects described in the [instruction-trace support matrix](INSTRUCTION_TRACE_SUPPORT.md).
+Known string/repeat, VEX/EVEX memory, system, atomic, and special-memory instruction families are
+rejected before execution. The tracer does not observe arbitrary host-library instructions,
+asynchronous accesses, or CFG coverage. A complete trace means complete only for the matrix's
+supported scope; Capstone does not identify every possible implicit-memory instruction, so a newly
+discovered family must be added to the rejection classification before relying on it. Single-
+stepping is slow and intended for bounded verification fixtures, not boot runs. The tracer
+requires Linux `ptrace` permission and the Capstone 5 detail ABI. It records no executable bytes
+or game captures.
+
+Per Intel's [POP instruction semantics](https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-vol-2a-manual.pdf),
+for `POP` to a memory destination based on `RSP`/`ESP`, the implicit stack read is traced at the
+pre-instruction stack pointer, then the destination effective address is calculated with the
+stack pointer advanced by the popped operand width. This covers direct, displacement, and SIB
+indexed forms such as `[rsp]`, `[rsp+disp]`, and `[rsp+index*scale+disp]`. The destination is
+bounds-checked at that post-increment address. Unknown POP destination access classifications or
+unsupported operand/address sizes make the trace incomplete. `PUSH [rsp]` remains different: its
+explicit source address uses pre-decrement RSP, and its implicit write is at RSP minus the pushed
+width.
+
+The deterministic synthetic regression tests run with the repository test suite:
+
+```sh
+BB_LOADER=build/runtime/libpbloader.so python3 -m unittest test.test_harness test.test_differential
+```
+
+These tests validate instrumentation behavior only. They are not original-game fixtures and do not
+increase any function's verification status.
+
 ## From edge-verified to verified
 
 A function whose edge cases pass is `edge-verified` (CONTRIBUTING.md, "Status"). Once cases
@@ -202,3 +268,60 @@ reached:
 displaced instructions and jumps back; the function itself is unchanged. Counts are rewritten
 every 2 s. Entries whose bytes differ (hooked or patched) are skipped, and prologues that cannot
 move (RIP-relative, branches) are refused by `probe_list.py`.
+
+## Differential engine (Phase 2)
+
+`tools/differential.py` orchestrates the same Paleblood loader and guest-instruction harness, then
+compares original-instruction results with a registered Paleblood replacement. It uses the
+existing Phase 1 SQLite catalog (`--state` selects that database) for resumable case results and
+run state; it does not keep a second catalog or change function verification status.
+
+Before execution, provide `abi.json` in the fixture directory or an `abi` object in every fixture.
+The manifest states the supported `sysv_amd64` calling convention, evidence, 16-byte stack
+alignment, typed arguments and return, declared input and writable buffers, and a bounded timeout.
+Missing or uncertain ABI evidence blocks execution. Fixture memory values and pointer relationships
+must be fixed and serializable. The runner uses the fixture timeout by default; `--timeout` can
+only reduce that limit. The guest entry fixture is populated according to the declared PS4 x86-64
+System V register/stack convention. A replacement is called as a native Linux x86-64 function;
+only the explicitly shared convention is compared, and the engine does not emulate PS4 process or
+kernel behavior.
+
+Example using the existing edge fixture generator for `event_flag_write`:
+
+```sh
+STATE="${XDG_CACHE_HOME:-$HOME/.cache}/paleblood/function-catalog.sqlite3"
+python3 game/event/flag_write_cases.py "$BB_CAPTURES/event_flag_write/edge"
+tools/differential.py --state "$STATE" fixtures 0x017cfcc0 \
+    --cases "$BB_CAPTURES/event_flag_write/edge"
+tools/differential.py --state "$STATE" differential 0x017cfcc0 \
+    --cases "$BB_CAPTURES/event_flag_write/edge" \
+    --function event_flag_write --elf "$BB_ELF" --lib build/game/libbbgame.so --resume
+tools/differential.py --state "$STATE" evidence 0x017cfcc0 --out "$HOME/bb-backup/differential-evidence"
+```
+
+The differential command requires a current catalog qualification or an existing registered
+replacement. Its cache key includes executable, fixture, ABI, catalog/qualification, replacement
+source and binary, loader, harness, verifier, and engine identities. `--resume` reuses a side only
+when the complete key and fixture identity match. Evidence bundles contain hashes and fixture
+definitions but no executable bytes; keep them outside public repositories because real capture
+fixtures may contain private game state. The minimizer is bounded and writes both the untouched
+failing fixture and its minimized form.
+
+`explore` performs seeded, bounded variation for explicitly typed integers and float/double ABI
+arguments. It includes zero, signed/unsigned boundaries, finite floating-point edges, infinities,
+NaNs, and alias cases only for pointer arguments whose ABI record explicitly sets
+`alias_safe: true`. It is not coverage guided. Each result is still a candidate fixture and must
+be reviewed for contract validity before execution.
+
+The harness records its mediated scripted import/stub reads and writes in `access_trace`, including
+direction, byte count, region, and source. It also checks a deterministic byte redzone after each
+declared buffer, reporting the first changed offset; the existing guard page catches accesses past
+the allocation page. The redzone detects guest writes into padding, but cannot observe reads,
+same-value writes, or the exact instruction that accessed a byte. Direct guest memory instructions
+are not dynamically traced. The harness still compares return values, ABI-preserved state,
+explicitly selected caller-saved registers, scripted calls, and final changed writable bytes.
+
+Instruction-level first-divergence state traces and control-flow/CFG coverage remain unavailable.
+No coverage feedback is used to steer exploration. These are blockers for broad automated batch
+decompilation. A match is evidence for supplied fixtures only; it does not promote a function or
+establish observed original-game behavior.

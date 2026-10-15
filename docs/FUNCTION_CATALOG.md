@@ -175,3 +175,20 @@ does not meet the project's full `verified` promotion bar. Ghidra reports 28 kno
 and no call sites within its body; its data-reference list is empty. Pointer-derived memory and
 global-state dependencies remain unknown. This example shows how the catalog reports the evidence
 and its limits together.
+
+## Differential evidence state
+
+`tools/differential.py` stores resumable Phase 2 run and per-side fixture results in the same
+SQLite database as this catalog. Evidence is keyed by executable, function address, fixture set,
+ABI manifest, qualification snapshot, replacement source and binary, and execution tool sources. A
+changed key causes a fresh run; old evidence remains available for audit but is not reused as
+current evidence. The `verification_state` table tracks fixture, original-run, differential,
+coverage, mismatch, blockers, and evidence-reference fields separately. It does not edit canonical
+function status files or promote a function.
+
+Original execution, differential fixture success, edge verification, and full verification remain
+distinct states. The engine records harness-mediated scripted memory accesses and checks a
+deterministic byte redzone after declared buffers for guest writes into allocation padding. It does
+not observe arbitrary guest loads/stores, same-value writes, or access instruction addresses;
+redzones cannot detect reads. Instruction-level first-divergence traces and CFG coverage remain
+unavailable and must stay explicit in qualification and progress reports.

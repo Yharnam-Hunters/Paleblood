@@ -19,6 +19,8 @@ jobs:
             cxx: clang++
     steps:
       - uses: actions/checkout@v4
+      - name: Install optional instruction-trace dependency
+        run: python3 -m pip install --disable-pip-version-check capstone==5.0.9
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=${{ matrix.cc }} -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
       - name: Build
@@ -27,6 +29,16 @@ jobs:
         run: ctest --test-dir build --output-on-failure --no-tests=error -R '^syslib$'
       - name: Remaining CTest suite
         run: ctest --test-dir build --output-on-failure --no-tests=error -E '^syslib$'
+      - name: Differential harness and instruction-trace tests
+        env:
+          CC: ${{ matrix.cc }}
+          BB_LOADER: build/runtime/libpbloader.so
+        run: python3 -m unittest discover -s test -p 'test_harness.py'
+      - name: Differential engine tests
+        env:
+          CC: ${{ matrix.cc }}
+          BB_LOADER: build/runtime/libpbloader.so
+        run: python3 -m unittest discover -s test -p 'test_differential.py'
 
   policy:
     runs-on: ubuntu-24.04
