@@ -282,6 +282,7 @@ class Harness(unittest.TestCase):
         result = self.traced_case(case, '0x00400b50')
         trace = result['instruction_trace']
         self.assertFalse(trace['complete'], trace)
+        self.assertEqual(trace['skipped_host_calls'], 1)
         self.assertEqual(trace['control_flow_coverage']['status'], 'partial')
         self.assertFalse(trace['control_flow_coverage']['feedback_eligible'])
         transition, = trace['external_transitions']
