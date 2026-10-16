@@ -4,6 +4,8 @@
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
+#include <string.h>
+
 /* The process parameter block: the executable's PT_SCE_PROCPARAM segment as mapped. */
 static void *kernel_get_proc_param(void)
 {
@@ -41,3 +43,21 @@ static void kernel_getpagesize(void)
 }
 RT_SYSLIB_UNRESOLVED("libScePosix", getpagesize, kernel_getpagesize);
 RT_SYSLIB_UNRESOLVED("libkernel", getpagesize, kernel_getpagesize);
+
+/* memcpy and memset, imported by libSceFios2.elf from libSceLibcInternal (symbols/imports.csv). ISO C
+   (7.24.2.1 and 7.24.6.1) fixes their whole result for valid arguments: memcpy copies n bytes from
+   the source to the destination, memset writes c converted to unsigned char into the first n bytes,
+   and both return the destination. No target-specific value is involved, so the host's own functions
+   carry out the same contract. What the standard leaves undefined (overlapping memcpy regions, null
+   pointers) is not modelled: no PS4-specific behaviour for those cases is established. */
+static void *libc_memcpy(void *dest, const void *src, size_t n)
+{
+    return memcpy(dest, src, n);
+}
+RT_SYSLIB("libSceLibcInternal", memcpy, libc_memcpy);
+
+static void *libc_memset(void *dest, int c, size_t n)
+{
+    return memset(dest, c, n);
+}
+RT_SYSLIB("libSceLibcInternal", memset, libc_memset);
