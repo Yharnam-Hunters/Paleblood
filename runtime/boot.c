@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* pbboot: runs a PS4 executable's entry on Paleblood's runtime, as far as the runtime goes.
 
-     pbboot EBOOT.elf [--module MODULE.elf]... [--nids NID_DB.xml] [--status OUT.json]
-            [--timeout SECONDS] [--trace]
+     pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--nids NID_DB.xml]
+            [--status OUT.json] [--timeout SECONDS] [--trace]
      pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]
             (list every import: importer, library, symbol, kind, provider, provider offset, size)
 
@@ -11,6 +11,11 @@
    library when one of the modules exports it, else to the runtime's implementation
    (runtime/syslib.h), else to a trampoline that stops the run and names it. Each module's entry
    (its constructors, then its start function) runs before the executable's entry.
+
+   A module the title ships but that is deliberately not mapped is named with --stub-module, by its
+   system module id and library name: when the guest asks the system module library to load it,
+   the runtime reports it loaded without mapping it (runtime/syslib/kernel_sysmodule.c), and the
+   run reports which of them were loaded.
 
    Every import call is counted, so the run also reports the boot milestones reached: the first
    call to each milestone's system functions (threads, files, input, audio, video out, GPU
@@ -305,8 +310,24 @@ static void where(uint64_t address, char *out, size_t size)
     snprintf(out, size, "host+0x%llx", (unsigned long long)address);
 }
 
+/* --stub-module ID:NAME, the id in C notation (0x0038). Returns 0 when it was added. */
+static int add_stub_module(const char *arg)
+{
+    char *end;
+    const char *colon = strchr(arg, ':');
+    if (!colon || !colon[1] || rt_process.stub_module_count == RT_MAX_STUB_MODULES) return -1;
+    errno = 0;
+    const unsigned long id = strtoul(arg, &end, 0);
+    if (errno || end == arg || end != colon || id > UINT16_MAX) return -1;
+    for (uint32_t i = 0; i < rt_process.stub_module_count; i++)
+        if (rt_process.stub_modules[i].id == id) return -1;
+    rt_process.stub_modules[rt_process.stub_module_count++] = (rt_stub_module){(uint16_t)id, colon + 1, 0};
+    return 0;
+}
+
 static const char *usage =
-    "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--nids NID_DB.xml] [--status OUT.json] [--timeout S] [--trace]\n"
+    "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--nids NID_DB.xml]\n"
+    "              [--status OUT.json] [--timeout S] [--trace]\n"
     "       pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]\n";
 
 int main(int argc, char **argv)
@@ -319,6 +340,12 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--timeout") && i + 1 < argc) timeout = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--module") && i + 1 < argc && object_count && object_count < MAX_OBJECTS)
             objects[object_count++].path = argv[++i];
+        else if (!strcmp(argv[i], "--stub-module") && i + 1 < argc) {
+            if (add_stub_module(argv[++i])) {
+                fprintf(stderr, "pbboot: --stub-module %s: want a new ID:NAME, the id 16 bits\n", argv[i]);
+                return 2;
+            }
+        }
         else if (!strcmp(argv[i], "--trace")) trace = 1;
         else if (!strcmp(argv[i], "--imports")) list = 1;
         else if (argv[i][0] != '-' && !object_count) objects[object_count++].path = argv[i];
@@ -515,6 +542,13 @@ int main(int argc, char **argv)
            "%zu unresolved diagnostics, %zu unbound; imports called %zu\n",
            reached >= 0 ? milestones[reached].name : "loaded", objects[0].imports, from_modules, from_runtime,
            from_unresolved, objects[0].imports - from_modules - from_runtime - from_unresolved, called_total);
+    if (rt_process.stub_module_count) {
+        printf("pbboot: stub modules loaded:");
+        size_t loaded = 0;
+        for (uint32_t i = 0; i < rt_process.stub_module_count; i++)
+            if (rt_process.stub_modules[i].loaded) printf(" %s", rt_process.stub_modules[i].name), loaded++;
+        printf("%s (%zu of %u)\n", loaded ? "" : " none", loaded, rt_process.stub_module_count);
+    }
     if (trace)
         for (size_t k = 0; k < object_count; k++)
             for (size_t i = 0; i < objects[k].imports; i++)
@@ -550,6 +584,13 @@ int main(int argc, char **argv)
             json_string(f, objects[k].label);
             fprintf(f, ", \"imports\": %zu, \"imports_remaining\": %zu, \"exports\": %zu}", objects[k].imports, remaining,
                     rt_elf_export_count(objects[k].elf));
+        }
+        fprintf(f, "],\n  \"stub_modules\": [");
+        for (uint32_t i = 0; i < rt_process.stub_module_count; i++) {
+            const rt_stub_module *m = &rt_process.stub_modules[i];
+            fprintf(f, "%s{\"name\": ", i ? ", " : "");
+            json_string(f, m->name);
+            fprintf(f, ", \"id\": \"0x%04x\", \"loaded\": %s}", (unsigned)m->id, m->loaded ? "true" : "false");
         }
         fprintf(f, "],\n  \"first_unimplemented\": ");
         if (outcome == UNIMPLEMENTED) {

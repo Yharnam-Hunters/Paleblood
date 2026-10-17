@@ -3,6 +3,7 @@ import csv
 import json
 import os
 import shutil
+import signal
 import struct
 import subprocess
 import sys
@@ -503,6 +504,74 @@ class Boot(unittest.TestCase):
             self.assertEqual(listing[:2] + listing[3:6], ['eboot', 'libfoo', 'function', 'm.elf', '0x00000040'])
         finally:
             shutil.rmtree(d)
+
+    def run_sysmodule_load(self, module_id: int, stubs: list[str]):
+        """A synthetic executable whose entry calls sceSysmoduleLoadModule(module_id) and returns."""
+        import harness
+        import ps4elf
+        load = harness.nid('sceSysmoduleLoadModule') + '#B#A'
+        code = bytearray(0x1000)
+        # sub rsp, 8 (the callee's stack 16-byte aligned, as the ABI wants); mov edi, module_id;
+        # call [import slot]; add rsp, 8; ret
+        code[:20] = (b'\x48\x83\xec\x08' + b'\xbf' + struct.pack('<I', module_id) + b'\xff\x15' +
+                     struct.pack('<i', 0x1000 - 15) + b'\x48\x83\xc4\x08' + b'\xc3')
+        exe = ps4elf.build(segments=[(0, bytes(code), 0x1000, 5), (0x1000, bytes(8), 0x1000, 6)],
+                           symbols=[(load, ps4elf.STT_FUNC, None)], relocations=[],
+                           jump_slots=[(0x1000, ps4elf.R_X86_64_JUMP_SLOT, 1, 0)],
+                           libraries=[(ps4elf.DT_SCE_IMPORT_LIB, 'libSceSysmodule', 1)])
+        d = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(d, 'e.elf'), 'wb') as fh:
+                fh.write(exe)
+            args = [a for stub in stubs for a in ('--stub-module', stub)]
+            p = subprocess.run([self.pbboot, os.path.join(d, 'e.elf'), *args, '--status', os.path.join(d, 's.json'),
+                                '--timeout', '5'], capture_output=True, text=True, timeout=60)
+            status = None
+            if os.path.isfile(os.path.join(d, 's.json')):
+                with open(os.path.join(d, 's.json')) as fh:
+                    status = json.load(fh)
+            return p, status
+        finally:
+            shutil.rmtree(d)
+
+    def test_stub_module_load_is_reported_done(self):
+        p, s = self.run_sysmodule_load(0x7f01, ['0x7f01:libSceTestStub', '0x7f02:libSceOtherTestStub'])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual((s['outcome'], s['imports_implemented'], s['imports_remaining']), ('returned', 1, 0))
+        self.assertEqual(s['stub_modules'], [{'name': 'libSceTestStub', 'id': '0x7f01', 'loaded': True},
+                                             {'name': 'libSceOtherTestStub', 'id': '0x7f02', 'loaded': False}])
+        self.assertIn('stub modules loaded: libSceTestStub (1 of 2)', p.stdout)
+
+    def test_loading_a_module_that_is_not_a_stub_stops_by_name(self):
+        p, _ = self.run_sysmodule_load(0x7f03, ['0x7f01:libSceTestStub'])
+        self.assertEqual(p.returncode, -signal.SIGABRT)
+        self.assertIn('sceSysmoduleLoadModule: module 0x7f03: not a stub module', p.stderr)
+
+    def test_bad_stub_module_arguments_are_refused(self):
+        exe = os.path.join(ROOT, 'no-such.elf')
+        for bad in (['0x7f01'], ['0x7f01:'], ['0x10000:libSceTestStub'], ['x:libSceTestStub'],
+                    ['0x7f01:libSceTestStub', '0x7f01:libSceOtherTestStub']):
+            args = [a for stub in bad for a in ('--stub-module', stub)]
+            p = subprocess.run([self.pbboot, exe, *args], capture_output=True, text=True, timeout=60)
+            self.assertEqual(p.returncode, 2, (bad, p.stderr))
+
+    def test_boot_passes_stub_modules_with_their_ids(self):
+        import boot
+        d = tempfile.mkdtemp()
+        try:
+            os.makedirs(os.path.join(d, 'game'))
+            path = os.path.join(d, 'game', 'modules.csv')
+            with open(path, 'w') as fh:
+                fh.write('module,action,sysmodule,notes\nlibA,map,,mapped\nlibB,stub,0x0038,stub\n')
+            self.assertEqual(boot.mapped_modules(d), ['libA'])
+            self.assertEqual(boot.stub_module_args(d), ['--stub-module', '0x0038:libB'])
+            with open(path, 'a') as fh:
+                fh.write('libC,stub,,a stub without its id\n')
+            with self.assertRaises(ValueError):
+                boot.stub_module_args(d)
+        finally:
+            shutil.rmtree(d)
+        self.assertTrue(boot.stub_module_args(ROOT))      # every stub in the game's own list has its id
 
     def test_c_nid_matches_python(self):
         import ctypes

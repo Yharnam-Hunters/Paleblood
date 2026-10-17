@@ -11,11 +11,24 @@
 extern "C" {
 #endif
 
+/* A module the title ships that the runtime answers for without mapping it (the game's own data
+   lists them; tools/boot.py passes each to runtime/boot.c as --stub-module ID:NAME). A request to
+   load it through the system module library is reported as done (runtime/syslib/sysmodule.c). */
+typedef struct {
+    uint16_t id;         /* its system module id, the one sceSysmoduleLoadModule is given */
+    const char *name;    /* its library name, for reports */
+    int loaded;          /* the guest has loaded it and not unloaded it since */
+} rt_stub_module;
+
+#define RT_MAX_STUB_MODULES 32
+
 typedef struct {
     void *image;         /* where the executable is mapped */
     uint64_t image_size;
     void *proc_param;    /* its process parameter block (PT_SCE_PROCPARAM), or NULL */
     void **heap_api;     /* the C library's heap functions, as it registered them, or NULL */
+    rt_stub_module stub_modules[RT_MAX_STUB_MODULES];
+    uint32_t stub_module_count;
 } rt_process_info;
 
 extern rt_process_info rt_process;

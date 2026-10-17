@@ -54,6 +54,7 @@ typedef int (*f_equal)(void *, void *);
 typedef uint32_t (*f_u32_u32)(uint32_t);
 typedef uint16_t (*f_u16_u16)(uint16_t);
 typedef int (*f_inet_pton)(int, const char *, void *);
+typedef int32_t (*f_sysmodule)(uint16_t);
 
 static void *net_inet_pton_entry;
 static int net_pton_unknown_family(void)
@@ -119,6 +120,17 @@ static void info_of_module_one(void) { netctl_info(1, netctl_shared); }
 /* A size-prefixed buffer of the shape the guest's own sites build (16 at offset 0), on the child's
    stack: the fatal must not write through it, and netctl_shared stays the untouched witness. */
 static void nat_info_with_size(void) { int nat[4] = {16, 0, 0, 0}; netctl_nat(nat); }
+
+/* libSceSysmodule: a stub module (one the title ships but the runtime does not map) loads as done.
+   The ids here are made up; the real ones come from the game's data through runtime/boot.c. */
+enum { STUB_ID = 0x7f01, OTHER_STUB_ID = 0x7f02, NOT_A_STUB_ID = 0x7f03 };
+static f_sysmodule sysmodule_load, sysmodule_is_loaded, sysmodule_unload;
+static void load_not_a_stub(void) { sysmodule_load(NOT_A_STUB_ID); }
+static void is_loaded_not_a_stub(void) { sysmodule_is_loaded(NOT_A_STUB_ID); }
+static void unload_not_a_stub(void) { sysmodule_unload(NOT_A_STUB_ID); }
+static void load_stub_again(void) { sysmodule_load(STUB_ID); }
+static void is_loaded_other_stub(void) { sysmodule_is_loaded(OTHER_STUB_ID); }
+static void unload_other_stub(void) { sysmodule_unload(OTHER_STUB_ID); }
 
 int main(void)
 {
@@ -263,6 +275,35 @@ int main(void)
     CHECK(netctl_id_b != netctl_id_a);
     CHECK(netctl_unregister(netctl_id_a) == 0);
     CHECK(netctl_check() == 0 && netctl_callbacks_run == 0);
+
+    /* Loading a stub module marks it loaded and maps nothing; asking about it says loaded (0), and
+       unloading clears the mark so it can be loaded again. Each answer the system's documentation
+       does not give - a module the runtime cannot load, a second load, the "not loaded" error -
+       stops by name. */
+    sysmodule_load = (f_sysmodule)fn("libSceSysmodule", "sceSysmoduleLoadModule");
+    sysmodule_is_loaded = (f_sysmodule)fn("libSceSysmodule", "sceSysmoduleIsLoaded");
+    sysmodule_unload = (f_sysmodule)fn("libSceSysmodule", "sceSysmoduleUnloadModule");
+    CHECK(is_implemented("libSceSysmodule", "sceSysmoduleLoadModule"));
+    CHECK(is_implemented("libSceSysmodule", "sceSysmoduleIsLoaded"));
+    CHECK(is_implemented("libSceSysmodule", "sceSysmoduleUnloadModule"));
+    if (failures) return 1;
+    rt_process.stub_modules[0] = (rt_stub_module){STUB_ID, "libSceTestStub", 0};
+    rt_process.stub_modules[1] = (rt_stub_module){OTHER_STUB_ID, "libSceOtherTestStub", 0};
+    rt_process.stub_module_count = 2;
+    CHECK(died_in_fatal(load_not_a_stub));
+    CHECK(died_in_fatal(is_loaded_not_a_stub));
+    CHECK(died_in_fatal(unload_not_a_stub));
+    CHECK(died_in_fatal(is_loaded_other_stub));       /* a stub not loaded yet */
+    CHECK(died_in_fatal(unload_other_stub));
+    CHECK(sysmodule_load(STUB_ID) == 0 && rt_process.stub_modules[0].loaded);
+    CHECK(!rt_process.stub_modules[1].loaded);        /* only the module asked for */
+    CHECK(sysmodule_is_loaded(STUB_ID) == 0);
+    CHECK(died_in_fatal(load_stub_again));
+    CHECK(sysmodule_unload(STUB_ID) == 0 && !rt_process.stub_modules[0].loaded);
+    CHECK(sysmodule_load(STUB_ID) == 0 && sysmodule_is_loaded(STUB_ID) == 0);
+    /* the id is 16 bits: the upper half of the register the guest passes it in is not part of it */
+    CHECK(((int32_t (*)(uint32_t))(void *)sysmodule_unload)(UINT32_C(0xabcd0000) | STUB_ID) == 0);
+    CHECK(!rt_process.stub_modules[0].loaded);
 
     /* Every answer the PS4 has not established stops the process instead of guessing, and the two
        structure calls stop before writing through a buffer whose layout is not established. */

@@ -31,6 +31,22 @@ patch edit is broken in v1.09, [QUIRKS.md](QUIRKS.md)). The task manager's frame
 
 ## Recent results
 
+- Runtime: module loading at run time. `sceSysmoduleLoadModule` (libSceSysmodule, the only way the
+  executable asks for a module) reports a module listed with action `stub` in `game/modules.csv`
+  loaded without mapping it; `sceSysmoduleIsLoaded` and `sceSysmoduleUnloadModule` answer for it
+  too. The ids are the public system module ids (OpenOrbis toolchain, after psdevwiki), recorded in
+  the new `sysmodule` column; `tools/boot.py` passes them to `pbboot` as `--stub-module ID:NAME`, so
+  `runtime/` still names no module, and `symbols/boot.json` gains `stub_modules` (which were
+  loaded). Not yet re-run on the executable: the boot should still stop by name before the first
+  load, with the executable's three libSceSysmodule imports now counted as implemented by the
+  runtime.
+- Module loading (`libSceSysmodule`): the error values (a module not loaded, an id the system does
+  not know) and whether a second load of a loaded module is counted or refused are not public, so
+  each stops the boot by name; so does a module that is not a stub, since the runtime cannot load a
+  system module yet. Which ids the executable passes, and whether it reads more than success, is
+  unobserved until the boot gets past direct memory (`docs/runtime-syscalls.md`, "Module loading at
+  run time").
+
 - `BB_TARGET_FPS` (30, 60, uncapped) does what the community frame-rate patches "30 FPS++",
   "60 FPS++" and "Uncap FPS++" do, in every replaced function they edit, and each part is
   checked against the patch itself (`tools/verify.py run --patch FILE:NAME --env ...`,

@@ -6,11 +6,13 @@ usage: boot.py [--elf EBOOT.elf] [--nids NID_DB.xml] [--timeout S] [--trace] [--
 
 The game's own system modules listed in game/modules.csv with action "map" are mapped next to the
 executable (from the same directory: NAME.elf), and the executable's imports they export are
-bound to them.
+bound to them. Those with action "stub" are not mapped: each is passed with its system module id
+(the "sysmodule" column), and a request to load it at run time is reported as done.
 
 Writes, from the run:
-  symbols/boot.json           where the boot stops, the furthest boot milestone and the import
-                              counts (read by tools/progress.py)
+  symbols/boot.json           where the boot stops, the furthest boot milestone, the import
+                              counts (read by tools/progress.py) and which stub modules the
+                              guest loaded
   symbols/boot_history.csv    a dated row whenever boot progress or its failure location changes;
                               includes the outcome, phase, return site, and guest fault details
   symbols/imports.csv         every import of the executable and the mapped modules: importer,
@@ -43,7 +45,7 @@ HISTORY_FIELDS = ('date', 'milestone', 'milestone_index', 'imports_total', 'impo
                   'fault_address')
 KEPT = ('phase', 'outcome', 'milestone', 'milestone_index', 'milestones', 'imports_total', 'imports_implemented',
         'imports_bundled', 'imports_unresolved', 'imports_remaining', 'imports_called', 'modules',
-        'first_unimplemented', 'fault')
+        'stub_modules', 'first_unimplemented', 'fault')
 IMPORT_FIELDS = ('importer', 'library', 'symbol', 'kind', 'provider')
 MODULE_FIELDS = ('module', 'offset', 'size', 'symbol', 'status')
 
@@ -61,12 +63,29 @@ def default_nids() -> str | None:
     return hits[-1] if hits else None
 
 
-def mapped_modules(root: str) -> list[str]:
+def module_rows(root: str) -> list[dict]:
     path = os.path.join(root, 'game', 'modules.csv')
     if not os.path.isfile(path):
         return []
     with open(path, newline='') as f:
-        return [r['module'] for r in csv.DictReader(f) if r['action'] == 'map']
+        return list(csv.DictReader(f))
+
+
+def mapped_modules(root: str) -> list[str]:
+    return [r['module'] for r in module_rows(root) if r['action'] == 'map']
+
+
+def stub_module_args(root: str) -> list[str]:
+    """--stub-module ID:NAME for every module with action "stub"; one without an id is an error."""
+    args = []
+    for r in module_rows(root):
+        if r['action'] != 'stub':
+            continue
+        sysmodule = (r.get('sysmodule') or '').strip()
+        if not sysmodule:
+            raise ValueError(f"game/modules.csv: {r['module']}: a stub module needs its sysmodule id")
+        args += ['--stub-module', f"{sysmodule}:{r['module']}"]
+    return args
 
 
 def stops_at(b: dict) -> str:
@@ -167,11 +186,16 @@ def main() -> int:
                   file=sys.stderr)
             return 3
         objects += ['--module', path]
+    try:
+        stubs = stub_module_args(ROOT)
+    except ValueError as e:
+        print(f'boot: {e}', file=sys.stderr)
+        return 3
     nids = a.nids or default_nids()
     names = ['--nids', nids] if nids else []
     with tempfile.TemporaryDirectory() as d:
         out = os.path.join(d, 'status.json')
-        cmd = [pbboot, *objects, '--status', out, '--timeout', str(a.timeout), *names]
+        cmd = [pbboot, *objects, *stubs, '--status', out, '--timeout', str(a.timeout), *names]
         if a.trace:
             cmd.append('--trace')
         # The guest runs in this process's child; a hard limit covers a runaway harness.
