@@ -4,8 +4,9 @@
 
 ## Summary
 
-Enemy and NPC behaviour runs on Havok AI, driven by the game's `SprjHkAiManager` (singleton
-`0x059401a0`). Once a frame, `ai_hk_frame_update_0222bc10` (`0x0222bc10`):
+The game steps a shared Havok AI world through `SprjHkAiManager` (singleton `0x059401a0`). The
+verified wrapper does not establish which enemy or NPC decisions that world supplies. Once a
+frame, `ai_hk_frame_update_0222bc10` (`0x0222bc10`):
 
 - steps the Havok AI world with a fixed time step of 1/30 s;
 - with its second flag (always set in the recordings), copies the frame object's matrices to the
