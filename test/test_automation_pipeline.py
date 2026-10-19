@@ -94,10 +94,10 @@ class AutomationPipeline(unittest.TestCase):
         self.assertTrue(pipeline.validate_abi_evidence(["missing/evidence.md"]))
 
     def test_new_candidate_requires_per_fixture_capture_provenance(self):
-        valid = [{"id": "run_1", "capture": {"function": "target", "run_id": "run"}}]
+        valid = [{"id": "run_1", "capture": {"function": "target", "run_id": "run", "executable_sha256": "a" * 64}}]
         invalid = [{"id": "unattributed"}]
         self.assertEqual(pipeline.recorded_provenance_blockers(
-            valid, "target", regression_only=False, verification_records=[], minimum=1), [])
+            valid, "target", regression_only=False, verification_records=[], minimum=1, executable_sha="a" * 64), [])
         self.assertTrue(pipeline.recorded_provenance_blockers(
             invalid, "target", regression_only=False, verification_records=[], minimum=1))
         legacy_record = [{"current": True, "cases": "recorded", "passed": 2, "failed": 0}]

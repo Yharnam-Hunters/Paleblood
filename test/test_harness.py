@@ -25,6 +25,8 @@ TOOLS = os.path.join(ROOT, 'tools')
 sys.path.insert(0, TOOLS)
 import verify  # noqa: E402
 import automation_pipeline  # noqa: E402
+import differential  # noqa: E402
+from pathlib import Path
 
 CODE = bytes.fromhex('534889fb4883ec10bf070000004889e6ff15ea0f0000488b0424488b0def0f0000'
                      '4803014889038905eb0f00004883c4105bc3')
@@ -145,6 +147,22 @@ CASE = {
 @unittest.skipUnless(sys.platform == 'linux' and shutil.which(os.environ.get('CC', 'cc')),
                      'needs Linux x86-64 and a C compiler')
 class Harness(unittest.TestCase):
+    def test_original_preflight_traces_native_fixture_and_skips_abi_manifest(self):
+        directory = Path(self.d) / 'preflight'
+        directory.mkdir()
+        case = {'schema': 1, 'address': '0x00400900', 'id': 'input-id', 'returns': 'i64',
+                'args': {}, 'buffers': {}, 'memory': [], 'imports': [], 'stubs': []}
+        (directory / 'fixture.json').write_text(json.dumps(case))
+        (directory / 'abi.json').write_text(json.dumps({'calling_convention': 'synthetic metadata'}))
+        result = differential.run_original(Path(self.boot), directory, case['address'], 5, True, 100)
+        self.assertEqual(len(result['cases']), 1)
+        execution, = result['cases']
+        self.assertEqual(execution['id'], 'fixture')
+        self.assertEqual(execution['ret']['rax'], '0x7')
+        self.assertTrue(execution['instruction_trace']['complete'])
+        self.assertEqual(execution['instruction_trace']['instructions'], 2)
+        self.assertTrue(execution['instruction_trace']['control_flow_coverage']['feedback_eligible'])
+
     def setUp(self):
         self.d = tempfile.mkdtemp()
         self.boot = os.path.join(self.d, 'eboot.elf')

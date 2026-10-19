@@ -132,6 +132,8 @@ def load_fixtures(directory: Path, address: str) -> tuple[list[tuple[Path, dict]
         raise DifferentialError(f"fixture directory does not exist: {directory}")
     cases = []
     for path in sorted(directory.glob("*.json")):
+        if path.name == "abi.json":
+            continue
         case = read_json(path)
         if case.get("schema") != verify.SCHEMA:
             raise DifferentialError(f"{path.name}: unsupported fixture schema")
@@ -269,8 +271,11 @@ def catalog_candidate(state: Path, address: str) -> dict:
     if row is None:
         raise DifferentialError(f"{catalog.address(address)} is absent from the local Phase 1 catalog")
     decision = next((record for record in records if record.get("address") == catalog.address(address)), None)
-    return {"function": json.loads(row[0]), "catalog_identity": metadata,
-            "qualification": decision}
+    function = json.loads(row[0])
+    owner = qualification.classify_ownership(function["address"], function.get("name"),
+                                             qualification.load_ownership(state), function.get("system"))
+    return {"function": function, "catalog_identity": metadata,
+            "qualification": decision, "ownership": owner}
 
 
 def source_identity(name: str) -> dict:
@@ -428,9 +433,12 @@ def current_run(state: Path, address: str, run_id: str | None = None) -> dict:
     return json.loads(row[0])
 
 
-def run_original(elf: Path, cases_dir: Path, address: str, timeout: int) -> dict:
+def run_original(elf: Path, cases_dir: Path, address: str, timeout: int,
+                 trace_instructions: bool = False, trace_limit: int = 100_000) -> dict:
     command = [sys.executable, str(ROOT / "tools/harness.py"), "--elf", str(elf),
                "--cases", str(cases_dir), "--address", catalog.address(address), "--timeout", str(timeout)]
+    if trace_instructions:
+        command += ["--trace-instructions", "--trace-instruction-limit", str(trace_limit)]
     try:
         result = subprocess.run(command, capture_output=True, text=True,
                                 timeout=timeout * len(list(cases_dir.glob("*.json"))) + 30)
@@ -439,9 +447,15 @@ def run_original(elf: Path, cases_dir: Path, address: str, timeout: int) -> dict
     if result.returncode:
         raise DifferentialError(f"original harness failed ({result.returncode}): {result.stderr.strip()[-600:]}")
     try:
-        return json.loads(result.stdout)
+        by_file = json.loads(result.stdout)
     except json.JSONDecodeError as error:
         raise DifferentialError(f"original harness returned invalid JSON: {error}") from error
+    expected = sorted(path.stem for path in cases_dir.glob("*.json") if path.name != "abi.json")
+    if not isinstance(by_file, dict) or set(by_file) != set(expected) or \
+            any(not isinstance(case, dict) for case in by_file.values()):
+        raise DifferentialError("original harness returned an incomplete or malformed fixture inventory")
+    return {"schema": verify.SCHEMA, "address": catalog.address(address),
+            "cases": [{**by_file[key], "id": key} for key in expected]}
 
 
 def cached_case(state: Path, cache_key: str, side: str, fixture_id: str) -> dict | None:
@@ -780,7 +794,9 @@ def bundle_markdown(bundle: dict) -> str:
     result = bundle["result"]
     if result.get("kind") == "original_only":
         execution = result.get("execution", {})
-        cases = list(execution.values()) if isinstance(execution, dict) else []
+        cases = execution.get("cases", []) if isinstance(execution, dict) else []
+        if not cases and isinstance(execution, dict):
+            cases = [case for case in execution.values() if isinstance(case, dict)]  # Legacy evidence.
         faults = sum("fault" in case or "errors" in case for case in cases)
         outcome = f"original only: {len(cases)} execution(s), {faults} fault/error result(s); no replacement comparison"
     else:
@@ -855,16 +871,17 @@ def write_bundle(destination: Path, stored: dict, run_id: str) -> None:
               "tool_versions": {"python": platform.python_version(), "engine": ENGINE_VERSION,
                                 "platform": platform.system() + " " + platform.machine()},
               "compilers": compiler_identity(identity.get("build_configuration")),
-              "coverage": {"available": False, "reason": "harness does not emit instruction or CFG coverage"},
-              "memory_access_trace": {"available": "scripted_only",
-                                      "reason": "harness-mediated import/stub accesses are recorded; guest loads/stores are not instrumented"},
-              "memory_reads": {"available": False,
-                               "reason": "arbitrary guest memory reads are not dynamically traced"},
+              "coverage": {"available": None, "status": "inspect_per_fixture",
+                           "reason": "per-case control_flow_coverage determines bounded CFG availability and feedback eligibility"},
+              "memory_access_trace": {"available": None, "status": "inspect_per_fixture",
+                                      "reason": "per-case instruction_trace distinguishes observed supported guest accesses from gaps"},
+              "memory_reads": {"available": None, "status": "inspect_per_fixture",
+                               "reason": "only supported completely traced guest paths establish bounded memory-read evidence"},
               "first_divergence": {"available": False,
-                                   "reason": "harness compares final observations; it does not trace instruction-by-instruction state"},
+                                   "reason": "bounded observation diagnostics cannot establish exact equivalent-instruction alignment"},
               "limitations": ["Redzones detect changed guest writes into buffer padding, but not reads, same-value writes, or the exact access instruction.",
-                             "No instruction-level first-divergence trace or control-flow coverage is emitted.",
-                             "Alias cases require explicit alias_safe ABI evidence; exploration does not use coverage feedback.",
+                             "Instruction tracing is opt-in and bounded; unsupported instructions or unobserved host bodies make it incomplete.",
+                             "Alias cases require explicit alias_safe ABI evidence; CFG feedback requires complete per-fixture observations.",
                              "A differential result is not a verified-function promotion or proof of real-game behavior.",
                              "Gameplay fixture definitions are private machine data; keep this bundle outside public repositories and do not upload it."]}
     destination.mkdir(parents=True, exist_ok=True)
@@ -940,6 +957,7 @@ def main() -> int:
             child.add_argument("--lib", type=Path, default=Path(os.environ.get("BB_GAME_LIB", "")))
         if command == "differential":
             child.add_argument("--resume", action="store_true", help="reuse completed sides from the same evidence key")
+        if command in ("original", "differential"):
             child.add_argument("--trace-instructions", action="store_true",
                                help="trace bounded native guest/replacement memory events (Linux + Capstone 5)")
             child.add_argument("--trace-instruction-limit", type=int, default=100_000)
@@ -1025,6 +1043,8 @@ def main() -> int:
                                               "reasons": case.get("coverage_guidance", {}).get("reasons", [])}
                                              for case in generated if case.get("coverage_guidance")]}
         elif args.command == "original":
+            if not 1 <= args.trace_instruction_limit <= 10_000_000:
+                raise DifferentialError("--trace-instruction-limit must be between 1 and 10000000")
             elf_sha = executable_identity(args.elf)
             fixtures, abi = load_fixtures(args.cases, args.address)
             blockers = validate_abi(abi)
@@ -1036,24 +1056,39 @@ def main() -> int:
             if not (candidate.get("qualification") or {}).get("eligible_for_original_execution") and function_status not in (
                     "replaced", "edge-verified", "verified"):
                 raise DifferentialError("catalog candidate is not currently eligible for original execution")
-            result = run_original(args.elf, args.cases, args.address, timeout)
+            result = run_original(args.elf, args.cases, args.address, timeout,
+                                  args.trace_instructions, args.trace_instruction_limit)
             fixture_hash = digest_bytes("".join(digest_file(path) for path, _ in fixtures).encode())
             result_data = {"execution": result, "fixture_count": len(fixtures),
                            "fixture_definitions": [case for _, case in fixtures],
                            "capture_provenance": "gameplay" if any(case.get("capture") for _, case in fixtures) else "synthetic_or_edge",
                            "kind": "original_only"}
             identity = run_identity(args.address, elf_sha, fixture_hash, abi, None,
-                                    candidate.get("qualification"), candidate.get("catalog_identity"))
+                                    candidate.get("qualification"), candidate.get("catalog_identity"),
+                                    instruction_trace={"enabled": args.trace_instructions,
+                                                       "instruction_limit": args.trace_instruction_limit})
             run_id = save_run(args.state, identity, result_data)
             failed_original = any("fault" in case or case.get("errors") for case in result.get("cases", []))
+            complete_trace = False
+            if args.trace_instructions:
+                import candidate_inventory
+                evidence = candidate_inventory.original_trace_status(
+                    {"identity": identity, "result": result_data}, address=catalog.address(args.address),
+                    executable_sha=elf_sha, fixture_sha=fixture_hash, abi=abi,
+                    ids=[path.stem for path, case in fixtures], root=ROOT)
+                complete_trace = evidence["status"] == "complete"
+                failed_original = failed_original or not complete_trace
             update_verification_state(args.state, args.address,
                                       digest_bytes(canonical(identity).encode()),
                                       fixture_status="loaded",
                                       original_status="failed" if failed_original else "passed",
-                                      blockers=["replacement comparison not run", "control-flow coverage unavailable"],
+                                      coverage_status="complete" if complete_trace else "unavailable_or_incomplete",
+                                      blockers=["replacement comparison not run"] +
+                                               ([] if complete_trace else ["complete original instruction/CFG evidence unavailable"]),
                                       evidence_ref=run_id)
             payload = {"address": catalog.address(args.address), "executable_sha256": elf_sha,
                        "run_id": run_id, "fixtures": len(fixtures), "result": result,
+                       "original_trace_complete": complete_trace,
                        "note": "original instructions only; no replacement comparison"}
         elif args.command == "differential":
             if args.trace_instruction_limit < 1 or args.trace_instruction_limit > 10_000_000:
@@ -1166,6 +1201,8 @@ def main() -> int:
         else:
             raise DifferentialError("unsupported command")
         print_result(payload, getattr(args, "json", False))
+        if args.command == "original" and args.trace_instructions and failed_original:
+            return 1
         return 0
     except (DifferentialError, verify.BadInput, OSError, sqlite3.Error, ValueError, KeyError) as error:
         print(f"differential: {error}", file=sys.stderr)

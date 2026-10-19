@@ -7,6 +7,9 @@ the executable. The portable `export` command writes JSON without machine-specif
 Optional [type intelligence](TYPE_INTELLIGENCE.md) adds bounded RTTI/vtable candidates,
 class/function relationships, conservative classifications and licensed community research hints.
 These enrich ranking and retain unknowns; they do not establish ABI or behavior qualifications.
+The [automation trial inventory](CANDIDATE_ELIGIBILITY.md) joins fresh ownership and qualification
+with private recorded-fixture, ABI and complete instruction/CFG evidence. It reports missing
+prerequisites separately and uses the same SQLite state as this catalog.
 
 ## Evidence and unknowns
 

@@ -11,7 +11,11 @@ replacement source. A normal candidate must have a fresh catalog decision
 `eligible_for_replacement_development`, a complete current ownership snapshot declaring it
 `confirmed_unclaimed`, an evidence-backed ABI manifest, and the minimum number of local recorded
 original-game fixtures. Each fixture for a new candidate must include the recorder's function and
-run-ID provenance; legacy fixture sets are accepted only for a regression canary backed by a
+run-ID provenance and exact capture executable SHA-256; generated/exploration cases cannot count
+as recordings. New candidates also require a current [trial inventory](CANDIDATE_ELIGIBILITY.md)
+and complete original-only instruction-memory/CFG evidence. Both are recomputed against current
+inputs during eligibility checks; an old report or forged eligibility flag cannot authorize a run.
+Legacy fixture sets are accepted only for a regression canary backed by a
 current passing recorded-verification row. ABI evidence references must resolve to repository
 files or HTTPS sources. Existing verified functions are refused except in `--regression-only`
 mode, which cannot create a function PR or affect verification counts.
@@ -51,6 +55,7 @@ python3 tools/automation_pipeline.py 0x01234567 \
   --name analyzed_function \
   --state "$BB_CATALOG_STATE" --elf "$BB_ELF" \
   --captures "$BB_CAPTURES/analyzed_function" --abi /private/abi.json \
+  --eligibility-report /private/trial-inventory.json --trace-evidence /private/original-evidence.json \
   --patch /private/replacement.patch \
   --worktree-root /private/paleblood-automation-worktrees \
   --output /private/paleblood-automation-runs --dry-run

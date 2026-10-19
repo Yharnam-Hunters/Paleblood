@@ -252,7 +252,7 @@ def run_cases(boot: str, captures: str, address: str, symbol: str, lib: str,
               trace_limit: int = 100_000) -> dict:
     """Both sides of every case file in CAPTURES: {'original': [...], 'replacement': [...]}.
     One harness process per side maps the image once and forks per case."""
-    cases = sorted(glob.glob(os.path.join(captures, '*.json')))
+    cases = sorted(p for p in glob.glob(os.path.join(captures, '*.json')) if os.path.basename(p) != 'abi.json')
     if not cases:
         raise BadInput(f'no case files in {captures}')
     for path in cases:
@@ -326,7 +326,8 @@ def run(name: str, captures: str, boot: str | None, lib: str | None, out: str | 
     summary = compare(load(files['original']), load(files['replacement']))
     summary['function'] = name
     if record:
-        names = [os.path.basename(p)[:-len('.json')] for p in sorted(glob.glob(os.path.join(captures, '*.json')))]
+        names = [os.path.basename(p)[:-len('.json')] for p in sorted(glob.glob(os.path.join(captures, '*.json')))
+                 if os.path.basename(p) != 'abi.json']
         failing = [f['case'] for f in summary['failures']]
         row = verification.record(ROOT, name, record, option, names, failing)
         summary['recorded'] = {k: row[k] for k in ('cases', 'option', 'failed', 'quarantined', 'source')}
