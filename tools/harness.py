@@ -695,6 +695,8 @@ def batch(machine: Machine, cases_dir: str, address: str, target: int | None, ti
     import glob
     out = {}
     for path in sorted(glob.glob(os.path.join(cases_dir, '*.json'))):
+        if os.path.basename(path) == 'abi.json':
+            continue
         stem = os.path.splitext(os.path.basename(path))[0]
         with open(path) as f:
             case = json.load(f)
