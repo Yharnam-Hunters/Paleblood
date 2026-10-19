@@ -503,8 +503,16 @@ def _restore_breakpoint(libc, pid: int, address: int, saved: tuple[int, int]) ->
     _poke(libc, pid, word_address, (current & ~(0xff << shift)) | (original_byte << shift))
 
 
+def _harness_import_at(address: int, import_targets: list[dict]) -> dict | None:
+    """Identify only the harness-generated import entry ranges supplied by the caller."""
+    return next((item for item in import_targets
+                 if item["entry"] <= address < item["entry_end"] or
+                 item["wrapper"] <= address < item["wrapper_end"]), None)
+
+
 def trace_child(pid: int, target: int, boot: dict, case: dict,
-                replacement: str | None = None, instruction_limit: int = 100_000) -> dict:
+                replacement: str | None = None, instruction_limit: int = 100_000,
+                import_targets: list[dict] | None = None) -> dict:
     """Trace a TRACEME child, returning per-instruction memory events and explicit gaps."""
     libc = ctypes.CDLL(None, use_errno=True)
     libc.ptrace.restype = ctypes.c_long
@@ -525,8 +533,10 @@ def trace_child(pid: int, target: int, boot: dict, case: dict,
                         "read": True, "write": True})
         pages = max(1, (size + 4095) // 4096)
         buffer_offset += (pages + 1) * 4096
+    import_targets = import_targets or []
     result = {"schema": 1, "complete": True, "instruction_limit": instruction_limit,
-              "instructions": 0, "events": [], "gaps": [], "skipped_host_calls": 0}
+              "instructions": 0, "events": [], "gaps": [], "skipped_host_calls": 0,
+              "external_transitions": []}
     cfg_steps: list[tuple] = []
     cfg_collection_truncated = False
     cfg_error = None
@@ -563,6 +573,7 @@ def trace_child(pid: int, target: int, boot: dict, case: dict,
         active_mnemonic = "<outside_instrumented_range>"
         identity = next((label for lo, hi, label in ranges if lo <= pc < hi), None)
         if identity is None:
+            import_bridge = _harness_import_at(pc, import_targets)
             # Skip foreign host code by breaking at its return address if it returns into a
             # declared range. Otherwise let the tracee finish (normal return to Python).
             try:
@@ -571,8 +582,15 @@ def trace_child(pid: int, target: int, boot: dict, case: dict,
                 if any(lo <= return_pc < hi for lo, hi, _ in ranges):
                     saved = _breakpoint(libc, pid, return_pc)
                     result["skipped_host_calls"] += 1
-                    mark_gap(pc, "host call body is outside instrumented executable ranges",
-                             "host_call", "execution_scope")
+                    if import_bridge:
+                        import_name = import_bridge["name"]
+                        reason = (f"harness import trampoline for {import_name} and its C/Python "
+                                  "dispatcher are outside guest instruction tracing; scripted "
+                                  "effects are recorded separately")
+                        mark_gap(pc, reason, "import_dispatch", "external_import_dispatch")
+                    else:
+                        mark_gap(pc, "host call body is outside instrumented executable ranges",
+                                 "host_call", "execution_scope")
                     _ptrace(libc, PTRACE_CONT, pid)
                     _, status = os.waitpid(pid, 0)
                     if os.WIFSTOPPED(status) and os.WSTOPSIG(status) == signal.SIGTRAP:
@@ -711,33 +729,50 @@ def trace_child(pid: int, target: int, boot: dict, case: dict,
         branch_target = insn["branch_target"]
         flow_outcome = None
         fallthrough = pc + insn["size"]
+        step_cfg_error = None
         if flow_kind == "conditional":
             if branch_target is None:
-                cfg_error = f"conditional branch at 0x{pc:x} has no decoded target"
+                step_cfg_error = f"conditional branch at 0x{pc:x} has no decoded target"
             elif next_pc == branch_target:
                 flow_outcome = "taken"
             elif next_pc == fallthrough:
                 flow_outcome = "fallthrough"
             else:
-                cfg_error = f"conditional branch at 0x{pc:x} reached an unexpected target"
+                step_cfg_error = f"conditional branch at 0x{pc:x} reached an unexpected target"
         elif flow_kind in ("jump", "call"):
             if branch_target is not None and next_pc != branch_target:
-                cfg_error = f"direct {flow_kind} at 0x{pc:x} did not reach its decoded target"
+                step_cfg_error = f"direct {flow_kind} at 0x{pc:x} did not reach its decoded target"
             flow_outcome = "direct" if branch_target is not None else "indirect"
         elif flow_kind == "return":
             flow_outcome = "return"
         elif next_pc != fallthrough:
-            cfg_error = f"unclassified control transfer at 0x{pc:x} ({insn['mnemonic']})"
+            step_cfg_error = f"unclassified control transfer at 0x{pc:x} ({insn['mnemonic']})"
         next_identity = next((label for lo, hi, label in ranges if lo <= next_pc < hi), None)
-        if flow_kind and flow_kind != "return" and next_identity is None and cfg_error is None:
-            cfg_error = f"{flow_kind} at 0x{pc:x} leaves instrumented code ranges"
+        if flow_kind and flow_kind != "return" and next_identity is None and step_cfg_error is None:
+            import_bridge = _harness_import_at(next_pc, import_targets)
+            if import_bridge:
+                import_name = import_bridge["name"]
+                reason = (f"{flow_kind} at 0x{pc:x} enters the harness import trampoline for "
+                          f"{import_name}; the C/Python dispatcher is outside guest instruction "
+                          "tracing")
+                step_cfg_error = reason
+                transition = {"instruction": _stable_location(pc, identity, ranges),
+                              "kind": "harness_import_dispatch", "symbol": import_name,
+                              "trace_status": "incomplete", "reason": reason}
+                if transition not in result["external_transitions"]:
+                    result["external_transitions"].append(transition)
+            else:
+                step_cfg_error = f"{flow_kind} at 0x{pc:x} leaves instrumented code ranges"
         if len(cfg_steps) < MAX_CFG_STEPS:
             cfg_steps.append((identity, pc, next_pc, flow_kind, branch_target, flow_outcome, insn["size"]))
         else:
             cfg_collection_truncated = True
-        if cfg_error:
-            mark_gap(pc, cfg_error, insn["mnemonic"], "control_flow")
-            if "unclassified control transfer" in cfg_error or "unexpected target" in cfg_error:
+        if step_cfg_error:
+            if cfg_error is None:
+                cfg_error = step_cfg_error
+            mark_gap(pc, step_cfg_error, insn["mnemonic"], "control_flow")
+            if ("unclassified control transfer" in step_cfg_error or
+                    "unexpected target" in step_cfg_error):
                 result["stop_reason"] = "unclassified_control_flow"
         for item in events:
             if item["access"] in ("read", "read_write") and item["before"] is None and item["valid_region"]:
@@ -782,7 +817,7 @@ def trace_child(pid: int, target: int, boot: dict, case: dict,
     result["gaps"].extend({"instruction": f"0x{pc:x}", "mnemonic": mnemonic,
                            "capability": capability, "reason": reason}
                          for pc, mnemonic, capability, reason in sorted(gaps_seen))
-    result["trace_version"] = "capstone5-ptrace-x86_64-v2"
+    result["trace_version"] = "capstone5-ptrace-x86_64-v3"
     result["identity"] = "original_or_replacement_guest_instructions"
     result["control_flow_coverage"] = _control_flow_coverage(
         cfg_steps, ranges, result["complete"], result.get("stop_reason"),

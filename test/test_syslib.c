@@ -331,6 +331,22 @@ int main(void)
     CHECK(!is_implemented("libScePosix", "getpagesize"));
     CHECK(!is_implemented("libkernel", "getpagesize"));
 
+    /* memcpy and memset (libSceLibcInternal): ISO C fixes the bytes written and the returned
+       destination. The guard bytes past n prove nothing beyond n is touched. */
+    void *(*libc_memcpy)(void *, const void *, size_t) =
+        (void *(*)(void *, const void *, size_t))fn("libSceLibcInternal", "memcpy");
+    void *(*libc_memset)(void *, int, size_t) = (void *(*)(void *, int, size_t))fn("libSceLibcInternal", "memset");
+    const unsigned char source[5] = {1, 2, 3, 4, 5};
+    unsigned char copy[6] = {0, 0, 0, 0, 0, 0xee};
+    CHECK(libc_memcpy(copy, source, 5) == copy);
+    CHECK(memcmp(copy, source, 5) == 0 && copy[5] == 0xee);
+    CHECK(libc_memcpy(copy, (const unsigned char[1]){0x77}, 0) == copy && copy[0] == 1);
+    unsigned char filled[4] = {0, 0, 0, 0xee};
+    CHECK(libc_memset(filled, 0x1a5, 3) == filled);           /* c is converted to unsigned char */
+    CHECK(filled[0] == 0xa5 && filled[1] == 0xa5 && filled[2] == 0xa5 && filled[3] == 0xee);
+    CHECK(libc_memset(filled, 0, 0) == filled && filled[0] == 0xa5);
+    CHECK(is_implemented("libSceLibcInternal", "memcpy") && is_implemented("libSceLibcInternal", "memset"));
+
     if (!failures) puts("syslib: ok");
     return failures != 0;
 }

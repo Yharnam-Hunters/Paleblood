@@ -610,6 +610,20 @@ def run_case(machine: Machine, case: dict, address: str, target: int | None) -> 
     return run.run(target if target is not None else run.guest(int(address, 0)))
 
 
+def _trace_import_targets(boot: dict, case: dict) -> list[dict]:
+    """Describe generated import bridges so an out-of-range edge names its external call."""
+    scripted_names = {nid(entry["name"]): entry["name"] for entry in case.get("imports", [])}
+    targets = []
+    for index, raw in enumerate(boot["names"]):
+        symbol = raw.split("#", 1)[0]
+        targets.append({"name": scripted_names.get(symbol, symbol),
+                        "entry": CODE + PAGE + 16 * index,
+                        "entry_end": CODE + PAGE + 16 * index + 16,
+                        "wrapper": IMPSTUB + IMPSTUB_SIZE * index,
+                        "wrapper_end": IMPSTUB + IMPSTUB_SIZE * (index + 1)})
+    return targets
+
+
 def _run_isolated(machine: Machine, case: dict, address: str, target: int | None,
                   timeout: int, trace: bool, trace_limit: int, replacement_lib: str | None) -> dict:
     import signal
@@ -640,7 +654,8 @@ def _run_isolated(machine: Machine, case: dict, address: str, target: int | None
         target_address = target if target is not None else IMAGE + int(address, 0) - EBOOT_BASE
         try:
             trace_result = instruction_trace.trace_child(pid, target_address, machine.boot, case,
-                                                        replacement_lib, trace_limit)
+                                                        replacement_lib, trace_limit,
+                                                        import_targets=_trace_import_targets(machine.boot, case))
         except (OSError, ValueError, instruction_trace.TraceUnavailable) as error:
             try:
                 os.kill(pid, signal.SIGKILL)
