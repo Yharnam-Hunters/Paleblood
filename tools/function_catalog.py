@@ -31,7 +31,7 @@ RELEVANCE_FIELDS = ("address", "score", "source")
 DEFAULT_RANK_WEIGHTS = {"feasibility": 20, "dependency": 15, "fixture_difficulty": 10,
                         "analysis_confidence": 10, "unlock": 15, "runtime_relevance": 15,
                         "ownership": 5, "original_execution": 15, "engineering_effort": 5,
-                        "test_infrastructure": 5}
+                        "test_infrastructure": 5, "type_context": 10}
 
 
 def sha256(path: Path) -> str:
@@ -354,12 +354,13 @@ def connect(path: Path) -> sqlite3.Connection:
           reference TEXT, source TEXT NOT NULL, confidence TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS edges_caller ON edges(caller);
       CREATE INDEX IF NOT EXISTS edges_callee ON edges(callee);
+      CREATE TABLE IF NOT EXISTS intelligence_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL);
     """)
     return db
 
 
 def write_snapshot(path: Path, functions: list[dict], edges: list[dict], metadata: dict,
-                   fail_after: int | None = None) -> None:
+                   fail_after: int | None = None, intelligence_snapshot: dict | None = None) -> None:
     db = connect(path)
     try:
         db.execute("BEGIN IMMEDIATE")
@@ -381,6 +382,9 @@ def write_snapshot(path: Path, functions: list[dict], edges: list[dict], metadat
         db.execute("DELETE FROM metadata")
         db.executemany("INSERT INTO metadata VALUES (?, ?)",
                        [(key, canonical(value)) for key, value in metadata.items()])
+        db.execute("DELETE FROM intelligence_snapshot")
+        if intelligence_snapshot is not None:
+            db.execute("INSERT INTO intelligence_snapshot VALUES (1, ?)", (canonical(intelligence_snapshot),))
         db.commit()
     except Exception:
         db.rollback()
@@ -588,6 +592,13 @@ def rank_functions(functions: list[dict], edges: list[dict], limit: int = 50,
         else:
             add("test_infrastructure", 0.2, False,
                 "candidate-specific harness readiness has not been established")
+        context = row.get("type_intelligence", {})
+        if context.get("names") and not row.get("classification", {}).get("conflict"):
+            add("type_context", 0.6, True, "type names and explicit relationships aid investigation; ABI and behavior remain unproven")
+        elif context.get("relations"):
+            add("type_context", 0.2, False, "table references exist but named type/relationship confidence is incomplete")
+        else:
+            add("type_context", 0, False, "no recovered type evidence")
         score = round(sum(item["weighted_score"] for item in component_scores.values()), 3)
         results.append({"address": row["address"], "name": row["name"], "system": row["system"],
                         "score": score, "confidence_percent": round(100 * known / len(weights)),
@@ -673,6 +684,15 @@ def parser() -> argparse.ArgumentParser:
     explain.add_argument("address")
     blockers = sub.add_parser("blockers", help="summarize blockers in the latest campaign")
     blockers.add_argument("--limit", type=int, default=30)
+    intelligence = sub.add_parser("intelligence", help="import/query local type, table and classification evidence")
+    intel_sub = intelligence.add_subparsers(dest="intelligence_command", required=True)
+    intel_import = intel_sub.add_parser("import")
+    intel_import.add_argument("artifact", type=Path)
+    intel_import.add_argument("--community-mappings", type=Path)
+    intel_sub.add_parser("status")
+    for kind in ("types", "vtables"):
+        query = intel_sub.add_parser(kind)
+        query.add_argument("--limit", type=int, default=20)
     sub.add_parser("invalidate", help="invalidate cached state after input or assumption changes")
     return p
 
@@ -698,13 +718,27 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 db.execute("BEGIN IMMEDIATE")
                 db.execute("DELETE FROM functions"); db.execute("DELETE FROM edges"); db.execute("DELETE FROM metadata")
-                for table in ("qualifications", "ownership_snapshots"):
+                for table in ("qualifications", "ownership_snapshots", "intelligence_snapshot"):
                     if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
                         db.execute(f"DELETE FROM {table}")
                 db.commit()
                 result = {"invalidated": "all", "reason": "input or analysis assumptions changed"}
             finally:
                 db.close()
+            _json(result, args.json)
+            return 0
+        if args.command == "intelligence":
+            import function_intelligence as intelligence
+            if args.intelligence_command == "import":
+                result = intelligence.import_artifact(args.state, args.artifact, args.community_mappings)
+            elif args.intelligence_command == "status":
+                _, _, metadata = load_snapshot(args.state)
+                result = metadata.get("intelligence_summary", {"status": "unavailable"})
+            else:
+                if args.limit < 0:
+                    raise ValueError("limit must be nonnegative")
+                snapshot = intelligence.load_artifact(args.state)
+                result = snapshot.get("artifact", {}).get(args.intelligence_command, [])[:args.limit]
             _json(result, args.json)
             return 0
         if args.command == "ownership":
