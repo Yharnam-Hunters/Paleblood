@@ -18,6 +18,10 @@ record rather than a second, incompatible ownership representation.
 Supported type relationships, classification conflicts and measured complexity influence bounded
 qualification ordering after call and memory constraints. They do not override qualification
 blockers. An execution-investigation candidate is not a replacement-development candidate.
+The static dependency scan distinguishes `LEA` address arithmetic from a load. It records the
+calculation explicitly; a later dereference still needs memory fixtures. That distinction can
+remove a false execution-investigation blocker, but cannot establish a pointer's extent, a
+function signature, gameplay provenance or replacement eligibility.
 
 ## Inventory local captures
 

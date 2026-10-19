@@ -121,6 +121,32 @@ class QualificationTests(unittest.TestCase):
         self.assertFalse(result["eligible_for_fixture_generation"])
         self.assertIn("data-memory", " ".join(result["blockers"]))
 
+    def test_lea_calculates_an_address_without_reading_memory(self):
+        for code in (bytes.fromhex("488d4708c3"), bytes.fromhex("488d442408c3")):
+            self.elf.write_bytes(self.make_elf(code))
+            _, segments = qualification.read_elf_executable_segments(self.elf)
+            row = self.row(code_size=len(code), instruction_count=2)
+            result = qualification.boundary_and_dependency_evidence(
+                row, [{"caller": "0x004000f0", "callee": row["address"], "kind": "direct"}], self.elf, segments)
+            decoded = qualification._decode_with_objdump(code, 0x400100)
+            self.assertTrue(decoded[0]["is_address_calculation"])
+            self.assertFalse(decoded[0]["is_memory"])
+            self.assertFalse(decoded[0]["is_stack_memory"])
+            self.assertTrue(result["eligible_for_original_execution"])
+            self.assertFalse(result["eligible_for_replacement_development"])
+            self.assertEqual(result["dependencies"]["memory_accesses"][0]["access"], "address_calculation")
+
+    def test_load_through_a_lea_result_still_requires_memory_fixtures(self):
+        code = bytes.fromhex("488d4708488b00c3")
+        self.elf.write_bytes(self.make_elf(code))
+        _, segments = qualification.read_elf_executable_segments(self.elf)
+        row = self.row(code_size=len(code), instruction_count=3)
+        result = qualification.boundary_and_dependency_evidence(
+            row, [{"caller": "0x004000f0", "callee": row["address"], "kind": "direct"}], self.elf, segments)
+        self.assertFalse(result["eligible_for_original_execution"])
+        self.assertEqual([access["access"] for access in result["dependencies"]["memory_accesses"]],
+                         ["address_calculation", "read", "read"])
+
     def test_boundary_uncertainty_and_overlaps_are_blocked(self):
         row = self.row()
         uncertain = qualification.boundary_and_dependency_evidence(row, [], self.elf, self.segments)

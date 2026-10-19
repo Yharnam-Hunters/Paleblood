@@ -15,7 +15,7 @@ from pathlib import Path
 
 import function_catalog as catalog
 
-QUALIFICATION_VERSION = "0.4.0"
+QUALIFICATION_VERSION = "0.4.1"
 OWNERSHIP_MAX_AGE_SECONDS = 24 * 60 * 60
 REQUIRED_OWNERSHIP_SOURCES = {"replacement_registry", "repository_ownership_metadata",
                               "open_issues_and_comments", "open_pull_requests", "local_work_assignments"}
@@ -330,12 +330,15 @@ def _decode_with_objdump(code: bytes, start: int) -> list[dict]:
         raw_bytes = bytes.fromhex(match.group(2))
         mnemonic = (match.group(3) or "").lower()
         operands = match.group(4).strip().lower()
-        explicit_memory = "[" in operands
-        stack_memory = mnemonic.split(".")[0] in IMPLICIT_STACK_MEMORY or "[rsp" in operands or "[rbp" in operands
+        address_calculation = mnemonic == "lea"
+        explicit_memory = "[" in operands and not address_calculation
+        stack_memory = not address_calculation and (
+            mnemonic.split(".")[0] in IMPLICIT_STACK_MEMORY or "[rsp" in operands or "[rbp" in operands)
         implicit_pointer = mnemonic.split(".")[0] in IMPLICIT_POINTER_MEMORY
         instructions.append({"address": int(match.group(1), 16), "size": len(raw_bytes),
                              "bytes": raw_bytes.hex(), "mnemonic": mnemonic, "operands": operands,
                              "is_memory": explicit_memory or stack_memory or implicit_pointer,
+                             "is_address_calculation": address_calculation,
                              "is_stack_memory": stack_memory, "is_call": mnemonic.startswith("call"),
                              "is_indirect_call": mnemonic.startswith("call") and "[" in operands,
                              "is_branch": mnemonic.startswith(("j", "loop")),
@@ -434,7 +437,7 @@ def boundary_and_dependency_evidence(row: dict, edges: list[dict], elf_path: Pat
     static_references = row.get("memory_dependencies", {}).get("static_references")
     accesses = []
     for insn in decoded:
-        if not insn["is_memory"]:
+        if not insn["is_memory"] and not insn["is_address_calculation"]:
             continue
         operands = insn["operands"].split(",")
         destination_is_memory = "[" in operands[0] if operands else False
