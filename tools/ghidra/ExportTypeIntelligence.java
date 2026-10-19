@@ -20,6 +20,7 @@ import ghidra.program.model.symbol.Reference;
 import ghidra.program.model.symbol.ReferenceIterator;
 import ghidra.program.model.symbol.Symbol;
 import ghidra.program.model.symbol.SymbolType;
+import ghidra.program.model.symbol.SymbolIterator;
 
 public class ExportTypeIntelligence extends GhidraScript {
     private static final int SLOT_LIMIT = 256;
@@ -41,9 +42,20 @@ public class ExportTypeIntelligence extends GhidraScript {
     private boolean dataPointer(long value) {
         if (value <= 0) return false;
         MemoryBlock block = currentProgram.getMemory().getBlock(addr(value));
-        return block != null && block.isInitialized() && block.isRead() && !block.isExecute();
+        // Constants can share an RX segment; execute permission does not invalidate data.
+        return block != null && block.isInitialized() && block.isRead();
     }
     private long word(long value) throws Exception { return currentProgram.getMemory().getLong(addr(value)); }
+    private String metaSymbolName(long addressPoint) {
+        // Imported vtables live in Ghidra's uninitialized EXTERNAL block. Their
+        // address point is symbol + 16; no imported object body is read here.
+        for (Symbol symbol : currentProgram.getSymbolTable().getSymbols(addr(addressPoint - 16))) {
+            String name = symbol.getName(true);
+            if (name.contains("__si_class_type_info") || name.contains("__vmi_class_type_info") ||
+                name.contains("__class_type_info")) return name;
+        }
+        return "";
+    }
     private String encodedName(long pointer) throws Exception {
         if (!dataPointer(pointer)) return null;
         StringBuilder name = new StringBuilder();
@@ -62,11 +74,10 @@ public class ExportTypeIntelligence extends GhidraScript {
         try {
             long metaTable = word(pointer);
             String encoded = encodedName(word(pointer + 8));
-            if (!dataPointer(metaTable) || encoded == null) return null;
+            String metaName = metaSymbolName(metaTable);
+            if ((!dataPointer(metaTable) && metaName.isEmpty()) || encoded == null) return null;
             List<Map<String, Object>> bases = new ArrayList<>();
             String baseStatus = "unknown";
-            Symbol metaSymbol = currentProgram.getSymbolTable().getPrimarySymbol(addr(metaTable - 16));
-            String metaName = metaSymbol == null ? "" : metaSymbol.getName(true);
             if (metaName.contains("__si_class_type_info")) {
                 long base = word(pointer + 16);
                 if (dataPointer(base)) {
@@ -87,10 +98,13 @@ public class ExportTypeIntelligence extends GhidraScript {
                     }
                     baseStatus = "bounded_abi_layout_candidate";
                 }
+            } else if (metaName.contains("__class_type_info")) {
+                baseStatus = "bounded_abi_layout_candidate";
             }
             Map<String, Object> type = record("id", "rtti:" + hex(pointer), "address", hex(pointer),
                 "name", null, "encoded_name", encoded, "bases", bases, "bases_status", baseStatus,
-                "source", "mapped data vptr/name-pointer pair referenced by candidate vtable header",
+                "source", metaName.isEmpty() ? "mapped data vptr/name-pointer pair referenced by candidate vtable header" :
+                    "typeinfo vptr at identified RTTI meta-vtable symbol + 16, with mapped encoded name",
                 "confidence", "structural_candidate");
             types.put(pointer, type);
             return type;
@@ -158,6 +172,20 @@ public class ExportTypeIntelligence extends GhidraScript {
         }
         long scanned = 0;
         boolean truncated = false;
+        // Offset references to imported RTTI meta-vtables identify standalone typeinfo
+        // records even when the imported vtable body is not present in this program.
+        SymbolIterator allSymbols = currentProgram.getSymbolTable().getAllSymbols(true);
+        while (allSymbols.hasNext()) {
+            Symbol symbol = allSymbols.next();
+            if (!symbol.getName(true).contains("class_type_info")) continue;
+            ReferenceIterator uses = currentProgram.getReferenceManager().getReferencesTo(symbol.getAddress());
+            while (uses.hasNext()) {
+                Reference use = uses.next();
+                if (!use.getFromAddress().isMemoryAddress()) continue;
+                long pointer = use.getFromAddress().getOffset();
+                if ((pointer & 7) == 0) typeAt(pointer);
+            }
+        }
         for (MemoryBlock block : currentProgram.getMemory().getBlocks()) {
             if (!block.isInitialized() || !block.isRead() || block.isExecute()) continue;
             long start = (block.getStart().getOffset() + 7) & ~7L;
@@ -183,11 +211,12 @@ public class ExportTypeIntelligence extends GhidraScript {
         for (Map<String, Object> relation : relations) {
             String id = (String)relation.get("type_id");
             if (id != null && id.startsWith("namespace:") && namespaces.add(id)) typeRecords.add(record(
-                "id", id, "address", null, "name", id.substring(10), "encoded_name", null, "bases", new ArrayList<>(),
-                "bases_status", "unknown", "source", "Ghidra class namespace", "confidence", "symbol_supported"));
+                "id", id, "address", null, "name", id.substring(10).matches("class_[0-9a-fA-F]+") ? null : id.substring(10),
+                "encoded_name", null, "bases", new ArrayList<>(), "bases_status", "unknown",
+                "source", "Ghidra class namespace; address-derived labels remain unnamed", "confidence", "symbol_supported"));
         }
         Map<String, Object> output = record("schema", 1, "executable_sha256", currentProgram.getExecutableSHA256(),
-            "analysis_version", "Ghidra " + Application.getApplicationVersion() + " / ExportTypeIntelligence 1",
+            "analysis_version", "Ghidra " + Application.getApplicationVersion() + " / ExportTypeIntelligence 2",
             "types", typeRecords, "vtables", new ArrayList<>(tables.values()), "relations", relations, "functions", symbols,
             "scan", record("bytes_scanned", scanned, "limit_bytes", limit, "truncated", truncated, "slot_limit", SLOT_LIMIT,
                 "limitations", Arrays.asList("Itanium-shaped structural candidates, not independently confirmed C++ layouts",

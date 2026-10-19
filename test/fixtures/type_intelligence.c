@@ -9,10 +9,13 @@ int fixture_second(int value) { return value - 1; }
 uintptr_t fixture___class_type_info[] = {0, 0, (uintptr_t)fixture_first, (uintptr_t)fixture_second};
 uintptr_t fixture___si_class_type_info[] = {0, 0, (uintptr_t)fixture_first, (uintptr_t)fixture_second};
 uintptr_t fixture___vmi_class_type_info[] = {0, 0, (uintptr_t)fixture_first, (uintptr_t)fixture_second};
+// Uninitialized symbol-backed metadata models an imported meta-vtable address
+// point. The exporter must identify the symbol without reading its absent body.
+uintptr_t fixture_bss___class_type_info[4];
 
 struct Type { uintptr_t *meta; const char *name; };
 struct Type fixture_a = {fixture___class_type_info + 2, "8FixtureA"};
-struct Type fixture_b = {fixture___class_type_info + 2, "8FixtureB"};
+struct Type fixture_b = {fixture_bss___class_type_info + 2, "8FixtureB"};
 struct Single { struct Type type; struct Type *base; };
 struct Single fixture_single = {{fixture___si_class_type_info + 2, "13FixtureSingle"}, &fixture_a};
 struct Base { struct Type *type; int64_t offset_flags; };

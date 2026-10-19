@@ -97,6 +97,19 @@ class FunctionIntelligence(unittest.TestCase):
         self.assertEqual(summary['classification']['unknown']['functions'], 3)
         self.assertEqual(sum(c['functions'] for c in summary['classification'].values()), 3)
 
+    def test_middleware_origin_requires_named_slots_not_referencing_callers(self):
+        raw = artifact()
+        raw['types'][0]['name'] = 'FMOD::SyntheticType'
+        rows, summary = intelligence.annotate(self.functions, intelligence.normalize(raw, 'a' * 64), [])
+        self.assertEqual(summary['classification']['middleware']['functions'], 2)
+        self.assertEqual(rows[2]['classification']['category'], 'unknown')
+        self.assertFalse(rows[0]['classification']['behavior_established'])
+        raw['functions'] = [{'address': '0x1000', 'name': 'unit_thunk', 'thunk': True,
+                             'source': 'synthetic thunk', 'confidence': 'analysis_supported'}]
+        rows, _ = intelligence.annotate(self.functions, intelligence.normalize(raw, 'a' * 64), [])
+        self.assertTrue(rows[0]['classification']['conflict'])
+        self.assertEqual(rows[0]['classification']['category'], 'unknown')
+
     def test_community_mapping_requires_provenance_and_never_proves_target_layout(self):
         mapping = {'type_name': 'UnitDerived', 'label': 'possible actor family', 'category': 'game_engine',
                    'source_url': 'https://example.org/research', 'license': 'Apache-2.0', 'revision': 'commit123',

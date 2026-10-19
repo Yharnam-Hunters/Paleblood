@@ -20,7 +20,14 @@ Keep this metadata outside the public repository too.
 The bounded scan examines initialized readable non-executable memory at eight-byte alignment.
 It looks for an Itanium-shaped offset-to-top/typeinfo header followed by pointers to existing
 Ghidra function entries. A nonzero typeinfo reference needs a mapped vptr/name-pointer pair and
-a bounded, plausible encoded class name. A zero typeinfo reference needs at least two function
+a bounded, plausible encoded class name. Metadata names may be in readable executable mappings;
+execute permission alone does not invalidate a data pointer. References to imported RTTI
+meta-vtable symbols also identify standalone typeinfo records without a local vtable body.
+An identified meta-vtable symbol at `vptr - 16` can reside in Ghidra's uninitialized
+external-symbol block: its body is not read or presumed present. Unidentified unmapped
+or uninitialized vptrs remain rejected. Address-derived `class_<hex>` namespace labels
+remain unnamed rather than becoming recovered class names.
+A zero typeinfo reference needs at least two function
 pointers and remains an **untyped pointer-table candidate**, which may be another kind of table.
 Positive offset-to-top construction tables, relative/encoded tables, arbitrary name strings,
 unrecognized custom RTTI, and pointers without Ghidra functions are not recovered by this scan.
@@ -72,6 +79,10 @@ Totals and percentages use the entire catalog function count as the denominator.
 classification remains unknown. Current automatic positive rules are deliberately narrow:
 Ghidra thunk analysis supports a compiler-thunk label; a recovered `std::` function symbol
 supports a library label. These are analysis/symbol classifications, not behavioral verification.
+Virtual slots in unambiguous RTTI-named `FMOD::` tables support a structural middleware-origin
+hypothesis, citing the vendor's [published namespace usage](https://www.fmod.com/docs/2.04/api/studio-api-getting-started.html).
+Table references from callers do not support that classification. This rule identifies neither
+the target's middleware version nor the behavior of a particular function.
 The committed denominator excludes thunks, so importing thunk symbols may classify zero catalog
 functions. Conflicting positive classifications remain unknown with their evidence preserved.
 
@@ -101,7 +112,7 @@ For an optional Ghidra integration regression, compile the project-owned metadat
 `cc -fno-pie -no-pie test/fixtures/type_intelligence.c -o "$PRIVATE_OUTPUT/type-fixture.elf"`.
 Import/analyze that ELF in a separate scratch project and run the same exporter. It provides
 single/multiple-inheritance-shaped records, a secondary table and stripped table, without target
-bytes. This tests extraction mechanics only; the normal Python suite tests normalization,
+bytes, including an uninitialized symbol-backed meta-vtable. This tests extraction mechanics only; the normal Python suite tests normalization,
 conflicts, duplicate records, cache identity, atomic rollback and ranking.
 
 The explainable `type_context` ranking component defaults to weight 10. Unambiguous named

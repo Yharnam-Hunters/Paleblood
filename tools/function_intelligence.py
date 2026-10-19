@@ -165,6 +165,18 @@ def annotate(functions: list[dict], artifact: dict, mappings: list[dict]) -> tup
         names = {name for key in related if not by_type[key]["ambiguous"] for name in by_type[key]["names"]}
         hints = [item for item in mappings if item["type_name"] in names]
         assertions = []
+        # Only slots in named structural tables support this origin hypothesis.
+        # A mere reference to a middleware table does not make its caller middleware.
+        for relation in relations:
+            type_record = by_type.get(relation.get("type_id"))
+            if relation["role"] != "virtual_slot" or not type_record or type_record["ambiguous"]:
+                continue
+            for name in type_record["names"]:
+                if name.startswith("FMOD::"):
+                    assertions.append({"category": "middleware", "confidence": "structural_candidate",
+                                       "source": "virtual slot in RTTI-named FMOD table; origin hypothesis, not behavior",
+                                       "source_url": "https://www.fmod.com/docs/2.04/api/studio-api-getting-started.html",
+                                       "type_id": relation["type_id"], "vtable": relation["vtable"], "name": name})
         for symbol in labels.get(row["address"], []):
             if symbol["thunk"]:
                 assertions.append({"category": "compiler_generated", **evidence(symbol), "name": symbol["name"]})
