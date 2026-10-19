@@ -16,6 +16,8 @@ uintptr_t fixture_bss___class_type_info[4];
 struct Type { uintptr_t *meta; const char *name; };
 struct Type fixture_a = {fixture___class_type_info + 2, "8FixtureA"};
 struct Type fixture_b = {fixture_bss___class_type_info + 2, "8FixtureB"};
+// Standard-namespace substitution is valid without the nested-name N prefix.
+struct Type fixture_std = {fixture_bss___class_type_info + 2, "St17_SyntheticFixture"};
 struct Single { struct Type type; struct Type *base; };
 struct Single fixture_single = {{fixture___si_class_type_info + 2, "13FixtureSingle"}, &fixture_a};
 struct Base { struct Type *type; int64_t offset_flags; };
@@ -25,6 +27,7 @@ struct Multiple fixture_multiple = {{fixture___vmi_class_type_info + 2, "15Fixtu
 
 uintptr_t fixture_vtable_a[] = {0, (uintptr_t)&fixture_a, (uintptr_t)fixture_first, (uintptr_t)fixture_second};
 uintptr_t fixture_vtable_b[] = {0, (uintptr_t)&fixture_b, (uintptr_t)fixture_second, (uintptr_t)fixture_first};
+uintptr_t fixture_vtable_std[] = {0, (uintptr_t)&fixture_std, (uintptr_t)fixture_first, (uintptr_t)fixture_second};
 uintptr_t fixture_vtable_single[] = {0, (uintptr_t)&fixture_single, (uintptr_t)fixture_first, (uintptr_t)fixture_second};
 uintptr_t fixture_vtable_multiple[] = {0, (uintptr_t)&fixture_multiple, (uintptr_t)fixture_first, (uintptr_t)fixture_second};
 uintptr_t fixture_vtable_secondary[] = {(uintptr_t)-16, (uintptr_t)&fixture_multiple, (uintptr_t)fixture_second};

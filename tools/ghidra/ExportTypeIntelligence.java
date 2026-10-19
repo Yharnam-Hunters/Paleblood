@@ -61,7 +61,7 @@ public class ExportTypeIntelligence extends GhidraScript {
         StringBuilder name = new StringBuilder();
         for (int i = 0; i < 512; i++) {
             int c = currentProgram.getMemory().getByte(addr(pointer + i)) & 255;
-            if (c == 0) return name.toString().matches("\\*?(?:N|[0-9])[A-Za-z0-9_$.*]+") ? name.toString() : null;
+            if (c == 0) return name.toString().matches("\\*?(?:N|St|[0-9])[A-Za-z0-9_$.*]+") ? name.toString() : null;
             if (c < 33 || c > 126) return null;
             name.append((char)c);
         }

@@ -112,7 +112,8 @@ For an optional Ghidra integration regression, compile the project-owned metadat
 `cc -fno-pie -no-pie test/fixtures/type_intelligence.c -o "$PRIVATE_OUTPUT/type-fixture.elf"`.
 Import/analyze that ELF in a separate scratch project and run the same exporter. It provides
 single/multiple-inheritance-shaped records, a secondary table and stripped table, without target
-bytes, including an uninitialized symbol-backed meta-vtable. This tests extraction mechanics only; the normal Python suite tests normalization,
+bytes, including an uninitialized symbol-backed meta-vtable and an `St` standard-namespace encoded
+name. This tests extraction mechanics only; the normal Python suite tests normalization,
 conflicts, duplicate records, cache identity, atomic rollback and ranking.
 
 The explainable `type_context` ranking component defaults to weight 10. Unambiguous named
