@@ -92,7 +92,7 @@ class Differential(unittest.TestCase):
         edge = {"from": block, "to": "guest:0x400110", "kind": "conditional",
                 "outcome": "taken", "branch_instruction": "guest:0x400108", "hits": 1}
         sides = {"original": [
-            {"id": "covered", "instruction_trace": {"control_flow_coverage": {
+            {"id": "covered", "instruction_trace": {"complete": True, "control_flow_coverage": {
                 "status": "complete", "feedback_eligible": True, "reason": None,
                 "blocks": [{"address": block, "hits": 1}], "edges": [edge]}}},
             {"id": "unknown", "instruction_trace": {"control_flow_coverage": {

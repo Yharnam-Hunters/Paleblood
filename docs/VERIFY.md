@@ -163,6 +163,35 @@ For example, the recorded `frame_timing_get_monotonic_ms` canary reaches guest a
 That boundary explains why the trace is incomplete; it does not establish execution inside the
 host dispatcher or prove behavior beyond the recorded guest instructions.
 
+### Import-boundary observations
+
+Instruction tracing also emits `import_observations` for recognized harness bridges that have
+a return address in an instrumented range. These are **entry/return snapshots**, not instruction
+traces of the import. Each record identifies the original/replacement side, import symbol, stable
+return location, raw GPR values before/after, and selected memory bytes before/after. Registers
+are raw observations; the observer does not infer argument types or ABI-defined results.
+
+The observer samples the active stack from boundary RSP toward the target's entry return slot
+(at most 512 bytes), then declared fixture buffers in deterministic order, within a shared
+4,096-byte budget per import and 32 observations per fixture. It reports omitted bytes, truncated
+regions, unreadable slices as `null`, and returns not observed. A changed offset reports a net
+byte difference, not the instruction or number of writes that produced it. Stack sampling does
+not declare those bytes valid import arguments. Snapshots remain private fixture evidence.
+
+Host reads, same-value writes, temporary changes restored before return, memory outside those
+slices, floating-point/vector state, external effects, and the host CFG remain unobserved. Raw
+registers and snapshot bytes are not compared as if all were ABI-defined observable state. The
+existing mediated-access log remains separate. Comparison, automation acceptance, and CFG
+feedback reject external-execution evidence even if a result incorrectly labels its trace or CFG
+complete. Import snapshots cannot qualify a function for verification.
+
+The smallest safe real-function trial uses a sufficiently evidenced, recorded, import-free path
+whose instructions and memory accesses stay within the supported trace scope. A real import body
+would instead need supported native instruction execution, declared memory/TLS state, and full
+traceable control flow, including any further calls or system transitions. Expanding the code
+range to arbitrary C/Python host libraries or replaying recorded writes does not meet that
+requirement. Until that prerequisite exists, the clock regression must continue to fail closed.
+
 The first-divergence report compares memory events in execution order and reports the earliest
 different recorded event with both sides' instruction addresses and register snapshots. Original
 and replacement PCs are not aligned: different instruction counts and addresses are allowed. An

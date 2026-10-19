@@ -24,6 +24,16 @@ def synthetic_result(count=2, complete=True):
 
 
 class AutomationPipeline(unittest.TestCase):
+    def test_external_observations_cannot_be_relabelled_complete(self):
+        for evidence in ({'skipped_host_calls': 1},
+                         {'external_transitions': [{'kind': 'harness_import_dispatch'}]},
+                         {'import_observations': [{'status': 'returned'}]}):
+            with self.subTest(evidence=evidence):
+                result = synthetic_result()
+                result['original']['cases'][0]['instruction_trace'].update(evidence)
+                with self.assertRaisesRegex(pipeline.PipelineError, 'untraced external execution'):
+                    pipeline.assert_result_sufficient(result, 2)
+
     def test_synthetic_end_to_end_success_is_resumable_and_non_promoting(self):
         identity = {"address": "0x400000", "patch": "sha"}
         with tempfile.TemporaryDirectory() as temporary:

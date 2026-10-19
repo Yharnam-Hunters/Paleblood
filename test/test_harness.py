@@ -117,6 +117,11 @@ def boot_image():
     # slot to the harness bridge, matching the eboot -> sceKernelClockGettime boundary shape.
     code[0xb50:0xb61] = bytes.fromhex('4883ec084889fee8140000004883c408c3')
     code[0xb70:0xb76] = bytes.fromhex('ff258a040000')                 # jmp [rip + 0x48a] -> 0x1000
+    # Preserve the buffer pointer and loop counter around 33 calls to the same import thunk.
+    repeated_import = bytes.fromhex('53 4154 4883ec08 4989fc bb21000000 '
+                                    '4c89e7 4c89e6 e8d6ffffff ffcb 75f1 '
+                                    '4883c408 415c 5b c3')
+    code[0xb80:0xb80 + len(repeated_import)] = repeated_import
     # Conditional paths with stable direct branch targets for CFG coverage tests.
     code[0xc00:0xc11] = bytes.fromhex('83ff00 7406 b801000000 c3 b802000000 c3')
     # A two-iteration loop covers both the taken and fallthrough outcomes of JNZ.
@@ -299,12 +304,64 @@ class Harness(unittest.TestCase):
                          0x400b70)
         self.assertFalse(any(gap['mnemonic'] == 'mov' and gap['reason'] == boundary_gap['reason']
                              for gap in trace['gaps']), trace['gaps'])
+        observation, = trace['import_observations']
+        self.assertEqual(observation['status'], 'returned')
+        self.assertEqual(observation['identity'], 'original')
+        self.assertEqual(observation['symbol'], 'testImport')
+        self.assertEqual(observation['return_location'], 'guest:0x400b5c')
+        self.assertFalse(observation['instruction_coverage'])
+        self.assertFalse(observation['memory_access_coverage'])
+        self.assertFalse(observation['cfg_feedback_eligible'])
+        out, = [item for item in observation['memory'] if item['region'] == 'buf:out']
+        self.assertEqual(out['before'], '0000000000000000')
+        self.assertEqual(out['after'], '3412000000000000')
+        self.assertEqual(out['changed_offsets'], [0, 1])
+        self.assertIn('same-value writes', observation['unobserved'])
 
         failed_side = {'cases': [{'id': result['id'], 'instruction_trace': trace}]}
         comparison = {'cases': 1, 'passed': 1, 'failed': 0}
         with self.assertRaisesRegex(automation_pipeline.PipelineError, 'incomplete instruction trace'):
             automation_pipeline.assert_result_sufficient(
                 {'comparison': comparison, 'original': failed_side, 'replacement': failed_side}, 1)
+
+    def test_import_snapshot_observes_same_value_write_only_as_unchanged_bytes(self):
+        case = dict(CASE, address='0x00400b50', id='same-value-import',
+                    imports=[{'name': 'testImport', 'argc': 2, 'ret': 9,
+                              'writes': [{'arg': 1, 'bytes': '00' * 8}]}])
+        result = self.traced_case(case, '0x00400b50')
+        trace = result['instruction_trace']
+        observation, = trace['import_observations']
+        out, = [item for item in observation['memory'] if item['region'] == 'buf:out']
+        self.assertEqual(out['changed_offsets'], [])
+        self.assertEqual(observation['registers_after']['rax'], '0x9')
+        self.assertTrue(any(item['source'] == 'import_write' for item in result['access_trace']))
+        self.assertFalse(trace['complete'])
+        self.assertFalse(trace['control_flow_coverage']['feedback_eligible'])
+        self.assertTrue(any('untraced external execution' in difference
+                            for difference in verify.compare_case(result, result)))
+
+    def test_import_observation_limit_does_not_restore_trace_completeness(self):
+        case = dict(CASE, address='0x00400b80', id='many-imports',
+                    imports=[{'name': 'testImport', 'argc': 2, 'ret': 0} for _ in range(33)])
+        trace = self.traced_case(case, '0x00400b80')['instruction_trace']
+        self.assertEqual(trace['skipped_host_calls'], 33)
+        self.assertEqual(len(trace['import_observations']), 32)
+        self.assertTrue(trace['import_observations_truncated'])
+        self.assertTrue(all(item['status'] == 'returned' for item in trace['import_observations']))
+        self.assertFalse(trace['complete'])
+        self.assertFalse(trace['control_flow_coverage']['feedback_eligible'])
+
+    def test_import_observation_keeps_replacement_execution_identity(self):
+        self.trace_instructions = True
+        try:
+            result = self.side(self.build())
+        finally:
+            self.trace_instructions = False
+        observation, = result['instruction_trace']['import_observations']
+        self.assertEqual(observation['identity'], 'replacement')
+        self.assertEqual(observation['status'], 'returned')
+        self.assertEqual(observation['symbol'], 'testImport')
+        self.assertFalse(result['instruction_trace']['complete'])
 
     def test_pop_rsp_displacement_uses_incremented_stack_pointer(self):
         result = self._rsp_fixture('0x004009b0', 24)

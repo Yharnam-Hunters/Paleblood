@@ -167,6 +167,9 @@ def assert_result_sufficient(result: dict, minimum_fixtures: int) -> None:
                 gap = (trace.get("gaps") or [{}])[0]
                 raise PipelineError(f"{side}/{case.get('id', '?')}: incomplete instruction trace: "
                                     f"{gap.get('reason', trace.get('stop_reason', 'unknown'))}")
+            if trace.get("skipped_host_calls") or trace.get("external_transitions") or trace.get("import_observations"):
+                raise PipelineError(f"{side}/{case.get('id', '?')}: untraced external execution; "
+                                    "boundary observations cannot qualify instruction or CFG coverage")
             coverage = trace.get("control_flow_coverage")
             if not isinstance(coverage, dict) or coverage.get("status") != "complete" \
                     or coverage.get("feedback_eligible") is not True \
