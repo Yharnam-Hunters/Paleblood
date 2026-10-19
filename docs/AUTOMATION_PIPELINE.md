@@ -65,3 +65,23 @@ The synthetic tests for stage success, rejection, interruption recovery, and PR 
 the orchestrator's control flow only. They are not evidence of Bloodborne behavior or function
 equivalence. A passing differential run also does not promote a function: the project's existing
 verification evidence and independent review remain mandatory.
+
+## Real-function trial prerequisites
+
+The recorded clock regression is not a successful automation trial: its guest import thunk at
+`0x802bbfe58` transfers to the harness's `sceKernelClockGettime` dispatcher. Import-boundary
+snapshots can diagnose entry/return state but do not observe the skipped host body. Traces remain
+incomplete, CFG feedback stays disabled, and the acceptance gate rejects them, including results
+whose completeness labels contradict external-execution evidence.
+
+Local fixture availability must be checked each session. Recorded cases for already verified
+functions support regression replay only. Synthetic edges for an unimplemented function do not
+satisfy recorded-input provenance. Ghidra discovery, historical unclaimed status, or a past
+execution-investigation qualification cannot substitute for fresh ownership checks, supported
+boundaries, an independently established ABI/behavior contract, and matching recorded fixtures.
+
+Before adding autonomous source generation, demonstrate a real unimplemented candidate passing
+these prerequisites and both compiler runs with complete memory/CFG observations. The smallest
+safe alternative to the clock boundary is an evidenced import-free candidate with recorded inputs;
+the pipeline must refuse absent evidence rather than generate a replacement or draft PR. Source
+generation itself remains manual through the prewritten clean-room patch interface.

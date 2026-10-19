@@ -509,11 +509,14 @@ def summarize_control_flow_coverage(sides: dict[str, list[dict]]) -> dict:
                 continue
             blocks = [item.get("address") for item in coverage.get("blocks", []) if item.get("address")]
             edges = [item for item in coverage.get("edges", []) if isinstance(item, dict)]
-            feedback_eligible = (coverage.get("status") == "complete"
+            external_execution = bool(trace.get("skipped_host_calls") or trace.get("external_transitions") or
+                                      trace.get("import_observations"))
+            feedback_eligible = (trace.get("complete") is True and not external_execution
+                                 and coverage.get("status") == "complete"
                                  and coverage.get("feedback_eligible") is True)
-            fixture_record = {"status": coverage.get("status", "unavailable"),
+            fixture_record = {"status": "partial" if external_execution else coverage.get("status", "unavailable"),
                               "feedback_eligible": feedback_eligible,
-                              "reason": coverage.get("reason"), "blocks": blocks,
+                              "reason": "untraced external execution" if external_execution else coverage.get("reason"), "blocks": blocks,
                               "edges": edges}
             by_fixture[fixture_id] = fixture_record
             if not feedback_eligible:

@@ -21,6 +21,7 @@ understood.
 | Special memory operations | Unsupported; fail closed before executing the instruction | Includes `XLAT`, `ENTER`, descriptor-table operations, prefetch/cache-maintenance operations, FPU/SIMD save/restore or environment images whose access footprint is special or feature-dependent, `MASKMOVQ`/`MASKMOVDQU`/`VMASKMOVDQU`'s implicit RDI destination, and `MOVDIR64B`'s register-addressed destination. |
 | Undecodable instructions and unexpected execution signals | Unsupported; fail closed | The trace includes the instruction address when known, mnemonic (or `<undecoded>`), capability, and rejection reason. The instruction is not stepped again. |
 | Calls into host code outside declared guest/replacement ranges | Partial; trace is incomplete | The tracer may step over the host call to let a fixture finish, but the call body is explicitly reported as an `execution_scope` gap. Such a trace cannot pass differential verification. |
+| Recognized harness import entry/return snapshots | Diagnostic only; trace and CFG remain partial | Bounded GPR and stack/buffer snapshots report net changes, not reads, same-value writes, transient writes, host instructions, or host CFG. Missing/truncated bytes remain explicit. These observations are excluded from verification acceptance and coverage feedback. See [VERIFY.md](VERIFY.md#import-boundary-observations). |
 
 The implementation's classified implicit and special families are explicit in
 `tools/instruction_trace.py`. Capstone does not provide a universal flag for every instruction

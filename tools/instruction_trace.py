@@ -29,6 +29,9 @@ WORD = ctypes.sizeof(ctypes.c_long)
 MAX_EVENTS = 4096
 MAX_GAPS = 256
 MAX_CFG_STEPS = 100_000
+MAX_IMPORT_OBSERVATIONS = 32
+MAX_IMPORT_SNAPSHOT_BYTES = 4096
+MAX_IMPORT_STACK_BYTES = 512
 STRING_MEMORY_MNEMONICS = {
     "movsb", "movsw", "movsq", "stosb", "stosw", "stosd", "stosq",
     "lodsb", "lodsw", "lodsd", "lodsq", "scasb", "scasw", "scasd", "scasq",
@@ -510,6 +513,75 @@ def _harness_import_at(address: int, import_targets: list[dict]) -> dict | None:
                  item["wrapper"] <= address < item["wrapper_end"]), None)
 
 
+def _snapshot_memory(libc, pid: int, address: int, size: int) -> bytes | None:
+    """Read a bounded diagnostic slice; partial reads are unavailable, never zero-filled."""
+    if not 0 < size <= MAX_IMPORT_SNAPSHOT_BYTES:
+        return None
+    chunks = []
+    for offset in range(0, size, 64):
+        chunk = _read_memory(libc, pid, address + offset, min(64, size - offset))
+        if chunk is None:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _begin_import_observation(libc, pid: int, regs: Registers, entry_sp: int,
+                              regions: list[dict], symbol: str, return_location: str,
+                              origin: str) -> tuple[dict, list[tuple]]:
+    """Snapshot entry state without asserting host memory-access or instruction coverage."""
+    spans = []
+    # The active stack slice is diagnostic storage, not an inferred import pointer argument
+    # or ABI declaration. The return slot is included; the caller's inactive stack is not.
+    stack_size = max(0, entry_sp + 8 - regs.rsp)
+    if stack_size and _region(regs.rsp, min(stack_size, MAX_IMPORT_STACK_BYTES), False, regions)[1]:
+        spans.append(("active_stack", regs.rsp, stack_size))
+    stack_status = "sampled" if spans else "unavailable"
+    spans.extend((item["name"], item["start"], item["end"] - item["start"])
+                 for item in regions if item["name"].startswith("buf:"))
+    remaining = MAX_IMPORT_SNAPSHOT_BYTES
+    snapshots, pending = [], []
+    for name, address, size in spans:
+        width = min(size, remaining, MAX_IMPORT_STACK_BYTES if name == "active_stack" else remaining)
+        if width <= 0:
+            continue
+        before = _snapshot_memory(libc, pid, address, width)
+        snapshots.append({"region": name, "offset": 0, "size": width,
+                          "region_size": size, "truncated": width < size,
+                          "before": before.hex() if before is not None else None,
+                          "after": None, "changed_offsets": None})
+        pending.append((address, width, before))
+        remaining -= width
+    observation = {
+        "symbol": symbol, "identity": origin, "kind": "harness_import_boundary_snapshot",
+        "status": "entered", "return_location": return_location,
+        "instruction_coverage": False, "memory_access_coverage": False,
+        "cfg_feedback_eligible": False,
+        "registers_before": {name: f"0x{getattr(regs, name):x}" for name, _ in Registers._fields_},
+        "registers_after": None, "memory": snapshots,
+        "stack_snapshot_status": stack_status,
+        "stack_snapshot_reason": None if stack_status == "sampled" else
+                                 "active stack interval is empty or outside declared readable regions",
+        "snapshot_budget_bytes": MAX_IMPORT_SNAPSHOT_BYTES,
+        "omitted_bytes": sum(size for _, _, size in spans) - sum(size for _, size, _ in pending),
+        "unobserved": ["host instructions and CFG", "memory reads", "same-value writes",
+                       "transient writes restored before return", "memory outside snapshot slices",
+                       "floating-point/vector state and external side effects"],
+    }
+    return observation, pending
+
+
+def _finish_import_observation(libc, pid: int, regs: Registers, observation: dict,
+                               pending: list[tuple]) -> None:
+    observation["status"] = "returned"
+    observation["registers_after"] = {name: f"0x{getattr(regs, name):x}" for name, _ in Registers._fields_}
+    for item, (address, size, before) in zip(observation["memory"], pending):
+        after = _snapshot_memory(libc, pid, address, size)
+        item["after"] = after.hex() if after is not None else None
+        if before is not None and after is not None:
+            item["changed_offsets"] = [offset for offset, (a, b) in enumerate(zip(before, after)) if a != b]
+
+
 def trace_child(pid: int, target: int, boot: dict, case: dict,
                 replacement: str | None = None, instruction_limit: int = 100_000,
                 import_targets: list[dict] | None = None) -> dict:
@@ -536,7 +608,7 @@ def trace_child(pid: int, target: int, boot: dict, case: dict,
     import_targets = import_targets or []
     result = {"schema": 1, "complete": True, "instruction_limit": instruction_limit,
               "instructions": 0, "events": [], "gaps": [], "skipped_host_calls": 0,
-              "external_transitions": []}
+              "external_transitions": [], "import_observations": []}
     cfg_steps: list[tuple] = []
     cfg_collection_truncated = False
     cfg_error = None
@@ -580,6 +652,19 @@ def trace_child(pid: int, target: int, boot: dict, case: dict,
                 return_pc = _read_memory(libc, pid, regs.rsp, 8)
                 return_pc = struct.unpack("<Q", return_pc)[0] if return_pc else 0
                 if any(lo <= return_pc < hi for lo, hi, _ in ranges):
+                    observation, pending = None, []
+                    if import_bridge:
+                        if len(result["import_observations"]) < MAX_IMPORT_OBSERVATIONS:
+                            # A replacement may call an original guest import thunk. Keep
+                            # execution-side identity distinct from the last code-range label.
+                            origin = "replacement" if replacement else "original"
+                            return_identity = next(label for lo, hi, label in ranges if lo <= return_pc < hi)
+                            observation, pending = _begin_import_observation(
+                                libc, pid, regs, entry_sp, regions, import_bridge["name"],
+                                _stable_location(return_pc, return_identity, ranges), origin)
+                            result["import_observations"].append(observation)
+                        else:
+                            result["import_observations_truncated"] = True
                     saved = _breakpoint(libc, pid, return_pc)
                     result["skipped_host_calls"] += 1
                     if import_bridge:
@@ -603,6 +688,8 @@ def trace_child(pid: int, target: int, boot: dict, case: dict,
                             break
                         regs.rip = return_pc
                         _setregs(libc, pid, regs)
+                        if observation is not None:
+                            _finish_import_observation(libc, pid, regs, observation, pending)
                         continue
                     if os.WIFSTOPPED(status):
                         result["complete"] = False
@@ -814,10 +901,14 @@ def trace_child(pid: int, target: int, boot: dict, case: dict,
             _ptrace(libc, PTRACE_KILL, pid)
             _, status = os.waitpid(pid, 0)
             break
+    for observation in result["import_observations"]:
+        if observation["status"] == "entered":
+            observation["status"] = "return_not_observed"
+            observation["reason"] = result.get("stop_reason", "tracee exited before return breakpoint")
     result["gaps"].extend({"instruction": f"0x{pc:x}", "mnemonic": mnemonic,
                            "capability": capability, "reason": reason}
                          for pc, mnemonic, capability, reason in sorted(gaps_seen))
-    result["trace_version"] = "capstone5-ptrace-x86_64-v3"
+    result["trace_version"] = "capstone5-ptrace-x86_64-v4"
     result["identity"] = "original_or_replacement_guest_instructions"
     result["control_flow_coverage"] = _control_flow_coverage(
         cfg_steps, ranges, result["complete"], result.get("stop_reason"),

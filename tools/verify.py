@@ -77,6 +77,10 @@ def compare_case(orig: dict, repl: dict) -> list[str]:
     diffs: list[str] = []
     for side, d in (('original', orig), ('replacement', repl)):
         trace = d.get('instruction_trace')
+        if trace and (trace.get('skipped_host_calls') or trace.get('external_transitions') or
+                      trace.get('import_observations')):
+            diffs.append(f'{side}: untraced external execution; import boundary observations '
+                         'do not establish instruction-memory or CFG coverage')
         if trace and not trace.get('complete', False):
             gaps = trace.get('gaps', [])
             if gaps:
