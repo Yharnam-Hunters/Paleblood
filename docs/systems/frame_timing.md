@@ -141,7 +141,10 @@ patches' delta-time code, at 60 FPS the game logic would still have been told ev
 
 The other functions the patches edit are not replaced yet, so a 60 FPS game would still need the
 community patch for them; its edits inside our three functions do not run, and our option does
-their part. The frame rate has not been measured on a real display.
+their part. A saved October 7 measurement with the external host scaffold, all replacements
+hooked, and `BB_TARGET_FPS=60` reports a median frame time of 16.67 ms and p99 of 16.69 ms. <!-- number:ok -->
+That historical result is recorded in [Paleblood's status evidence](https://github.com/Yharnam-Hunters/Paleblood/blob/af97b90bb1e88853adfc04b8da2b3d7506516565/STATUS.md#recent-results);
+it is not a real-display result from Paleblood's project-owned boot path.
 
 A second option, `BB_LIMITER_WAIT=sleep`, makes the limiter use the sleeping wait the game
 carries but never selects: it sleeps until about 5 ms before the frame's end and spins the
