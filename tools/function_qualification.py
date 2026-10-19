@@ -564,11 +564,17 @@ def qualification_tool_identity(root: Path) -> dict:
 
 def qualify_rows(functions: list[dict], edges: list[dict], snapshot: dict, executable_sha: str,
                  elf_path: Path, segments: list[dict], metadata: dict | None = None,
-                 batch_size: int = 20, previous: dict[str, dict] | None = None) -> list[dict]:
+                 batch_size: int = 20, previous: dict[str, dict] | None = None,
+                 addresses: list[str] | None = None) -> list[dict]:
     if batch_size < 1:
         raise ValueError("batch size must be positive")
+    requested = {catalog.address(address) for address in addresses} if addresses else None
+    if requested and requested - {row["address"] for row in functions}:
+        raise ValueError("requested qualification address is absent from the catalog")
     candidates = []
     for row in functions:
+        if requested is not None and row["address"] not in requested:
+            continue
         owner = classify_ownership(row["address"], row.get("name"), snapshot, row.get("system"))
         if owner["status"] in {"already_implemented", "contributor_owned", "active_automation_worker"}:
             continue

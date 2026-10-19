@@ -674,6 +674,7 @@ def parser() -> argparse.ArgumentParser:
     ownership_sync.add_argument("--output", type=Path, help="optional path for a local evidence snapshot")
     qualify = sub.add_parser("qualify", help="run a bounded candidate qualification campaign")
     qualify.add_argument("--batch-size", type=int, default=20)
+    qualify.add_argument("--address", action="append", help="investigate selected entries with full catalog safety checks")
     qualify.add_argument("--executable", type=Path, required=True, help="local ELF used by this catalog")
     qualify.add_argument("--image-base", type=lambda value: int(value, 0), default=0x400000)
     qualify.add_argument("--refresh", action="store_true", help="ignore cached qualification decisions")
@@ -800,7 +801,8 @@ def main(argv: list[str] | None = None) -> int:
                                                  for item in qualification.load_qualifications(
                                                      args.state, metadata["qualification_tools"])}
             decisions = qualification.qualify_rows(functions, edges, snapshot, executable_sha,
-                                                   args.executable, segments, metadata, args.batch_size, previous)
+                                                   args.executable, segments, metadata, args.batch_size, previous,
+                                                   addresses=args.address)
             qualification.save_qualifications(args.state, decisions)
             counts: dict[str, int] = defaultdict(int)
             for item in decisions:

@@ -22,6 +22,10 @@ The static dependency scan distinguishes `LEA` address arithmetic from a load. I
 calculation explicitly; a later dereference still needs memory fixtures. That distinction can
 remove a false execution-investigation blocker, but cannot establish a pointer's extent, a
 function signature, gameplay provenance or replacement eligibility.
+For a selected investigation, pass `qualify --address ADDRESS` (repeat for a short list).
+This limits which entries are investigated while retaining the full catalog for overlap checks,
+the existing graph and ownership gates. An absent address is an error; selecting an entry does
+not claim it or make it eligible.
 
 ## Inventory local captures
 

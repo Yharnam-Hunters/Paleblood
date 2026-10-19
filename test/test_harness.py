@@ -128,6 +128,11 @@ def boot_image():
     code[0xc00:0xc11] = bytes.fromhex('83ff00 7406 b801000000 c3 b802000000 c3')
     # A two-iteration loop covers both the taken and fallthrough outcomes of JNZ.
     code[0xc20:0xc2a] = bytes.fromhex('b902000000 ffc9 75fc c3')
+    # Project-owned address arithmetic: an undeclared address expression is not a load.
+    code[0xc40:0xc45] = bytes.fromhex('8d447707 c3')                 # lea eax, [rdi+rsi*2+7]
+    # A real dereference through the computed address must still be checked.
+    code[0xc50:0xc58] = bytes.fromhex('488d4708 0fb600 c3')
+    code[0xc60:0xc68] = bytes.fromhex('8d047509000000 c3')         # lea eax, [rsi*2+9], no base
     return ps4elf.build(
         segments=[(0, bytes(code), 0x1000, 5), (0x1000, DATA, 0x20, 6)],
         symbols=[(nid('testImport') + '#A#A', ps4elf.STT_FUNC, None)],
@@ -428,6 +433,40 @@ class Harness(unittest.TestCase):
         self._assert_incomplete_instruction('0x00400a10', 'repeat_string_memory', 'rep movsb')
         self._assert_incomplete_instruction('0x00400a20', 'repeat_string_memory', 'repne scasb')
         self._assert_incomplete_instruction('0x00400a28', 'repeat_string_memory', 'repe cmpsb')
+
+    def test_lea_outside_declared_regions_is_address_arithmetic_not_a_read(self):
+        import instruction_trace
+        decoder = instruction_trace.Capstone()
+        decoded = decoder.decode(0x400c40, bytes.fromhex('8d447707'))
+        self.assertTrue(decoded['address_calculation'])
+        self.assertEqual(decoded['operands'], [])
+        self.assertEqual(len(decoded['address_operands']), 1)
+        issue = instruction_trace._instruction_support_issue({**decoded, 'address_calculation': False})
+        self.assertEqual(issue[0], 'address_calculation')
+        case = {'schema': 1, 'address': '0x00400c40', 'id': 'lea-only', 'returns': 'i32',
+                'args': {'rdi': '0x0', 'rsi': '0x1'}, 'buffers': {}, 'memory': [], 'imports': [], 'stubs': []}
+        result = self.traced_case(case, case['address'])
+        self.assertEqual(result['ret']['rax'], '0x9')
+        trace = result['instruction_trace']
+        self.assertTrue(trace['complete'], trace)
+        self.assertEqual([event['mnemonic'] for event in trace['events']], ['ret'])
+        self.assertTrue(trace['control_flow_coverage']['feedback_eligible'])
+        indexed = self.traced_case({**case, 'address': '0x00400c60'}, '0x00400c60')
+        self.assertEqual(indexed['ret']['rax'], '0xb')
+        self.assertTrue(indexed['instruction_trace']['complete'], indexed['instruction_trace'])
+        self.assertEqual([event['mnemonic'] for event in indexed['instruction_trace']['events']], ['ret'])
+
+    def test_real_load_through_lea_result_still_fails_bounds_checks(self):
+        case = {'schema': 1, 'address': '0x00400c50', 'id': 'lea-then-load', 'returns': 'i32',
+                'args': {'rdi': 'buf:data'}, 'buffers': {'data': {'size': 4, 'bytes': '00000000'}},
+                'memory': [], 'imports': [], 'stubs': []}
+        result = self.traced_case(case, case['address'])
+        trace = result['instruction_trace']
+        self.assertFalse(trace['complete'])
+        self.assertFalse(any(event['mnemonic'] == 'lea' for event in trace['events']))
+        self.assertTrue(any(event['mnemonic'] == 'movzx' and event.get('bounds_violation') for event in trace['events']))
+        self.assertFalse(trace['control_flow_coverage']['feedback_eligible'])
+        self.assertTrue(any('instruction memory bounds violation' in diff for diff in verify.compare_case(result, result)))
 
     def test_vex_and_evex_memory_operands_fail_before_execution(self):
         self._assert_incomplete_instruction('0x00400a30', 'vex_evex_memory', 'vmovdqu')

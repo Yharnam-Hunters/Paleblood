@@ -147,6 +147,24 @@ class QualificationTests(unittest.TestCase):
         self.assertEqual([access["access"] for access in result["dependencies"]["memory_accesses"]],
                          ["address_calculation", "read", "read"])
 
+    def test_selected_entry_retains_full_catalog_overlap_checks(self):
+        row = self.row()
+        overlapping = self.row(address="0x00400101", code_size=2, instruction_count=1)
+        results = qualification.qualify_rows([row, overlapping], [], self.snapshot(), self.sha,
+            self.elf, self.segments, addresses=[row["address"]])
+        self.assertEqual([item["address"] for item in results], [row["address"]])
+        self.assertEqual(results[0]["boundary_class"], "overlapping_extent")
+        self.assertFalse(results[0]["eligible_for_original_execution"])
+
+    def test_selected_entry_rejects_absent_and_preserves_contributor_ownership(self):
+        row = self.row()
+        with self.assertRaisesRegex(ValueError, "absent"):
+            qualification.qualify_rows([row], [], self.snapshot(), self.sha, self.elf, self.segments,
+                                       addresses=["0x00400900"])
+        snapshot = self.snapshot([{"address": row["address"], "kind": "contributor", "owner": "synthetic"}])
+        self.assertEqual(qualification.qualify_rows([row], [], snapshot, self.sha, self.elf, self.segments,
+                                                   addresses=[row["address"]]), [])
+
     def test_boundary_uncertainty_and_overlaps_are_blocked(self):
         row = self.row()
         uncertain = qualification.boundary_and_dependency_evidence(row, [], self.elf, self.segments)
