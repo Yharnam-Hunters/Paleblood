@@ -63,9 +63,13 @@ def validate_abi_evidence(references: list, root: Path = ROOT) -> list[str]:
 
 
 def recorded_provenance_blockers(cases: list[dict], name: str, *, regression_only: bool,
-                                 verification_records: list[dict], minimum: int) -> list[str]:
+                                 verification_records: list[dict], minimum: int,
+                                 executable_sha: str | None = None) -> list[str]:
     """Require recorder metadata for new candidates; legacy verified sets need a current record."""
     captured = [case.get("capture") for case in cases]
+    if not regression_only:
+        import candidate_inventory
+        return candidate_inventory.provenance_blockers(cases, name, executable_sha)
     if regression_only and not any(captured):
         supported = any(item.get("current") and item.get("cases") == "recorded"
                         and int(item.get("passed", 0)) >= minimum and int(item.get("failed", 0)) == 0
@@ -226,7 +230,7 @@ class Runner:
         if self.args.regression_only:
             if self.args.patch or function.get("replacement_status") != "verified":
                 raise PipelineError("regression-only mode requires an already verified function and no patch")
-            records = function.get("verification", {}).get("records", [])
+            records = (function.get("verification") or {}).get("records", [])
             if not any(item.get("current") and item.get("cases") == "recorded" and
                        int(item.get("passed", 0)) > 0 and int(item.get("failed", 0)) == 0 for item in records):
                 raise PipelineError("regression-only mode requires current passing recorded verification evidence")
@@ -234,7 +238,7 @@ class Runner:
         else:
             if self.args.patch is None:
                 raise PipelineError("full automation requires a prewritten clean-room replacement patch; source generation is unavailable")
-            if function.get("replacement_status") not in (None, "unimplemented", "discovered"):
+            if function.get("replacement_status") not in ("original", "untracked"):
                 raise PipelineError("candidate already has a replacement; use regression-only mode for a canary")
             if decision.get("classification") != "eligible_for_replacement_development" \
                     or decision.get("eligible_for_replacement_development") is not True:
@@ -265,10 +269,24 @@ class Runner:
             raise PipelineError(f"insufficient local recorded fixtures: {len(recorded)} < {self.args.minimum_fixtures}")
         provenance_errors = recorded_provenance_blockers(
             [case for _, case in recorded], name, regression_only=self.args.regression_only,
-            verification_records=function.get("verification", {}).get("records", []),
-            minimum=self.args.minimum_fixtures)
+            verification_records=(function.get("verification") or {}).get("records", []),
+            minimum=self.args.minimum_fixtures, executable_sha=sha256(self.args.elf))
         if provenance_errors:
             raise PipelineError("fixture provenance is incomplete: " + "; ".join(provenance_errors[:5]))
+        if not self.args.regression_only:
+            import candidate_inventory
+            if not self.args.eligibility_report or not self.args.trace_evidence:
+                raise PipelineError("new candidates require a current eligibility report and complete original trace evidence")
+            bundle = differential.read_json(self.args.trace_evidence)
+            current = candidate_inventory.inspect(function, self.args.captures,
+                {"catalog_identity": candidate["catalog_identity"], "executable_sha256": sha256(self.args.elf)},
+                candidate["ownership"], decision, minimum=self.args.minimum_fixtures, trace_bundle=bundle)
+            report = differential.read_json(self.args.eligibility_report)
+            saved = next((row for row in report.get("rows", []) if row.get("address") == self.args.address), {})
+            try:
+                candidate_inventory.require_current_report(saved, current)
+            except ValueError as error:
+                raise PipelineError(str(error)) from error
         return {"kind": kind, "address": self.args.address, "name": name,
                 "qualification": decision.get("classification", "already_verified_regression_only"),
                 "ownership": candidate.get("ownership", {}).get("status", "not_applicable"),
@@ -600,6 +618,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--recorded-limit", type=int, default=64)
     parser.add_argument("--generated-fixtures", type=int, default=16)
     parser.add_argument("--minimum-fixtures", type=int, default=32)
+    parser.add_argument("--eligibility-report", type=Path, help="current trial-inventory output for a new candidate")
+    parser.add_argument("--trace-evidence", type=Path, help="current complete original-instruction evidence bundle")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--trace-limit", type=int, default=100_000)
     parser.add_argument("--jobs", type=int, default=max(1, os.cpu_count() or 1))
@@ -638,6 +658,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.patch:
             differential.ensure_private_output(args.patch)
             args.patch = args.patch.resolve()
+        for path in (args.eligibility_report, args.trace_evidence):
+            if path:
+                differential.ensure_private_output(path)
+                if not path.is_file():
+                    raise differential.DifferentialError("eligibility/trace evidence file unavailable")
     except differential.DifferentialError as error:
         print(f"private input/output location required: {error}", file=sys.stderr)
         return 2
@@ -694,11 +719,15 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as error:
         print(f"invalid candidate address: {error}", file=sys.stderr)
         return 2
+    args.address = catalog_address
     identity = {"address": catalog_address, "name": args.name,
                 "base": args.base, "elf_sha256": sha256(args.elf),
                 "captures_sha256": hashlib.sha256("".join(sha256(path) for path in sorted(args.captures.glob("*.json"))).encode()).hexdigest(),
                 "abi_sha256": sha256(args.abi), "patch_sha256": patch_sha,
                 "pipeline_source_sha256": sha256(Path(__file__).resolve()),
+                "eligibility_report_sha256": sha256(args.eligibility_report) if args.eligibility_report else None,
+                "trace_evidence_sha256": sha256(args.trace_evidence) if args.trace_evidence else None,
+                "inventory_source_sha256": sha256(ROOT / "tools/candidate_inventory.py"),
                 "catalog_identity": catalog_identity, "regression_only": args.regression_only,
                 "qualification_sha256": qualification_identity,
                 "ownership_snapshot_sha256": ownership_identity,
