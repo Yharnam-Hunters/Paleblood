@@ -11,6 +11,23 @@ The game's event system: `SprjEmkSystem` (event entries kept in keyed lists) wor
 allocates, constructs and inserts one in key order, and advances a new entry once by a fixed
 1/30 s step. It runs hundreds of times in a minute of gameplay in Iosefka's Clinic.
 
+### Writing an event flag
+
+`event_flag_write` (`0x017cfcc0`) changes one stored bit. It divides the flag ID by the store's
+configured flags-per-group value, finds an exact matching group in a keyed tree, and selects either
+a direct storage pointer or a stride-based offset into shared storage. A missing group, unsupported
+storage kind, or null storage pointer leaves memory unchanged. Within a byte, flags are numbered
+from the most significant bit; a nonzero `enabled` argument sets the selected bit and zero clears
+it while retaining its neighbors.
+
+This replacement is **edge-verified**, not fully verified. The merged
+[source and layout](https://github.com/Yharnam-Hunters/Paleblood/blob/af97b90bb1e88853adfc04b8da2b3d7506516565/game/event/flag_write.cpp)
+and [verification record](https://github.com/Yharnam-Hunters/Paleblood/blob/af97b90bb1e88853adfc04b8da2b3d7506516565/symbols/verification.csv)
+report matching original-instruction results on 14 constructed edge fixtures. Those cover tree
+search paths, byte boundaries, set/clear operations, missing groups, and storage selection.
+They do not identify a real flag ID's gameplay meaning, establish a zero group-size contract, or
+replace recorded gameplay cases. No fixture was rerun for this article.
+
 ## Key functions
 
 | Address | Size | Name | Status | Notes |
