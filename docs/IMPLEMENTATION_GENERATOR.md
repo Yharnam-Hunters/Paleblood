@@ -131,6 +131,9 @@ Interrupting an in-flight provider consumes an attempt; it cannot cause unlimite
 completed response can resume after interruption. Ambiguous attempts require inspection or a
 deliberate new configuration, not silent resubmission. Model generation need not be deterministic;
 the saved request/response and hashes make an accepted proposal replayable.
+Nested provider processes bind their lifetime to their parent so an interrupted adapter cannot
+leave its separately grouped coding CLI running. A regression kills the adapter and checks that
+the nested provider also terminates.
 
 ## Handoff to the existing pipeline
 

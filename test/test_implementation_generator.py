@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -240,6 +241,40 @@ class GeneratorTests(GeneratorFixture, unittest.TestCase):
         self.assertEqual(generator.validate_response(json.loads(response), self.package), SOURCE)
         with self.assertRaises(subprocess.TimeoutExpired):
             generator.bounded_process([sys.executable, "-c", "import time; time.sleep(30)"], self.directory, 1)
+
+    def test_nested_provider_dies_when_its_adapter_is_killed(self):
+        pid_file = self.directory / "provider.pid"
+        child = "import os,time; from pathlib import Path; Path(" + repr(str(pid_file)) + ").write_text(str(os.getpid())); time.sleep(30)"
+        parent = ("import sys; from pathlib import Path; sys.path.insert(0," + repr(str(ROOT / "tools")) + "); "
+                  "import implementation_generator as g; g.bounded_process(" + repr([sys.executable, "-c", child])
+                  + ",Path(" + repr(str(self.directory)) + "),20)")
+        adapter = subprocess.Popen([sys.executable, "-c", parent], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        child_pid = None
+        try:
+            deadline = time.monotonic() + 5
+            while not pid_file.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(pid_file.exists(), "provider did not start within its bound")
+            child_pid = int(pid_file.read_text())
+            adapter.kill()
+            adapter.wait(timeout=5)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                status = Path(f"/proc/{child_pid}/stat")
+                if not status.exists() or status.read_text().split(")", 1)[1].split()[0] == "Z":
+                    break
+                time.sleep(0.01)
+            else:
+                self.fail("nested provider survived the death of its adapter")
+        finally:
+            if adapter.poll() is None:
+                adapter.kill()
+                adapter.wait(timeout=5)
+            if child_pid:
+                try:
+                    os.kill(child_pid, 9)
+                except ProcessLookupError:
+                    pass
 
     def test_interrupted_generation_consumes_budget_without_unbounded_retry(self):
         with patch.object(generator, "bounded_process", side_effect=KeyboardInterrupt):

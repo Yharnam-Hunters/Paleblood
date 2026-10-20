@@ -10,6 +10,7 @@ in this process. The existing automation pipeline remains the authority for draf
 from __future__ import annotations
 
 import argparse
+import ctypes
 import fcntl
 import hashlib
 import json
@@ -177,7 +178,13 @@ def provider_config(path: Path) -> dict:
     return {**config, "timeout_seconds": timeout, "max_attempts": attempts}
 
 
-def process_limits(seconds: int) -> None:
+def process_limits(seconds: int, parent_pid: int) -> None:
+    # A configured adapter can create another process group (the Codex CLI does).
+    # Parent-death propagation prevents that nested provider outliving an interrupted run.
+    if ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGKILL, 0, 0, 0):
+        raise OSError(ctypes.get_errno(), "could not bind provider lifetime to its parent")
+    if os.getppid() != parent_pid:
+        os.kill(os.getpid(), signal.SIGKILL)
     os.umask(0o077)
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     resource.setrlimit(resource.RLIMIT_CPU, (seconds, seconds + 1))
@@ -193,10 +200,11 @@ def bounded_process(argv: list[str], directory: Path, seconds: int, input_bytes:
     env = {"PATH": "/usr/bin:/bin", "LANG": "C", "HOME": str(directory), "TMPDIR": str(directory),
            "PYTHONNOUSERSITE": "1"}
     env.update(environment or {})
+    parent_pid = os.getpid()
     with tempfile.TemporaryFile(dir=directory) as output, tempfile.TemporaryFile(dir=directory) as errors:
         child = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=output, stderr=errors,
                                  cwd=directory, env=env, start_new_session=True,
-                                 preexec_fn=lambda: process_limits(seconds))
+                                 preexec_fn=lambda: process_limits(seconds, parent_pid))
         try:
             child.communicate(input=input_bytes, timeout=seconds)
         finally:
