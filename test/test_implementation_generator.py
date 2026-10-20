@@ -250,18 +250,30 @@ class GeneratorTests(GeneratorFixture, unittest.TestCase):
                   + ",Path(" + repr(str(self.directory)) + "),20)")
         adapter = subprocess.Popen([sys.executable, "-c", parent], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         child_pid = None
+        terminated = False
         try:
             deadline = time.monotonic() + 5
-            while not pid_file.exists() and time.monotonic() < deadline:
+            while time.monotonic() < deadline:
+                try:
+                    text = pid_file.read_text()
+                except FileNotFoundError:
+                    text = ""
+                if text.isdecimal():
+                    child_pid = int(text)
+                    break
                 time.sleep(0.01)
-            self.assertTrue(pid_file.exists(), "provider did not start within its bound")
-            child_pid = int(pid_file.read_text())
+            self.assertIsNotNone(child_pid, "provider did not start within its bound")
             adapter.kill()
             adapter.wait(timeout=5)
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
-                status = Path(f"/proc/{child_pid}/stat")
-                if not status.exists() or status.read_text().split(")", 1)[1].split()[0] == "Z":
+                try:
+                    status = Path(f"/proc/{child_pid}/stat").read_text()
+                except FileNotFoundError:
+                    terminated = True
+                    break
+                if status.split(")", 1)[1].split()[0] == "Z":
+                    terminated = True
                     break
                 time.sleep(0.01)
             else:
@@ -270,7 +282,7 @@ class GeneratorTests(GeneratorFixture, unittest.TestCase):
             if adapter.poll() is None:
                 adapter.kill()
                 adapter.wait(timeout=5)
-            if child_pid:
+            if child_pid and not terminated:
                 try:
                     os.kill(child_pid, 9)
                 except ProcessLookupError:
