@@ -295,7 +295,7 @@ class IsolatedGeneratorTests(GeneratorFixture, unittest.TestCase):
     def test_execution_has_no_home_credentials_or_writable_run_state(self):
         sentinel = self.directory / "state.json"
         sentinel.write_text("unchanged")
-        script = "from pathlib import Path; assert not Path('/home/spike').exists(); Path('/work/state.json').write_text('bad')"
+        script = "from pathlib import Path; assert not Path('/home').exists(); Path('/work/state.json').write_text('bad')"
         with self.assertRaises(generator.GenerationError):
             generator.sandbox(self.directory, ["python3", "-c", script], 5)
         self.assertEqual(sentinel.read_text(), "unchanged")
