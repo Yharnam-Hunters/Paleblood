@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Opt-in orchestration for a qualified function's reviewable verification run.
 
-This coordinates the existing catalog, differential engine, CMake build, and GitHub CLI. It
-does not generate replacement source and never changes function verification status.
+This coordinates the existing catalog, differential engine, CMake build, and GitHub CLI. It can
+consume an opt-in generator proposal with a separately reviewed integration patch. It never
+changes function verification status.
 """
 from __future__ import annotations
 
@@ -27,7 +28,7 @@ import differential  # noqa: E402
 import function_catalog as catalog  # noqa: E402
 import function_qualification as qualification  # noqa: E402
 
-PIPELINE_VERSION = "0.1.1"
+PIPELINE_VERSION = "0.1.2"
 STAGES = ("eligibility", "worktree", "fixture_generation", "build", "differential", "validation", "evidence")
 
 
@@ -208,6 +209,20 @@ def patch_scope_blockers(paths: list[str]) -> list[str]:
             and not path.startswith(allowed_prefixes)]
 
 
+def generation_report_blockers(report: dict, address: str, executable_sha: str) -> list[str]:
+    """Generation is a proposal, never proof of eligibility or original-game equivalence."""
+    problems = []
+    if report.get("mode") != "qualified" or report.get("provider", {}).get("kind") != "model":
+        problems.append("experimental/mock generation cannot enter a real-function PR pipeline")
+    if report.get("address") != address or report.get("identity", {}).get("executable_sha256") != executable_sha:
+        problems.append("generation report candidate/executable identity differs")
+    if report.get("generated") is not True or report.get("compiled") is not True:
+        problems.append("generation and compilation stages are incomplete")
+    if not isinstance(report.get("source_sha256"), str) or len(report["source_sha256"]) != 64:
+        problems.append("generation source identity is absent")
+    return problems
+
+
 class Runner:
     def __init__(self, args: argparse.Namespace, identity: dict, run_id: str):
         self.args = args
@@ -237,7 +252,7 @@ class Runner:
             kind = "regression_canary_only"
         else:
             if self.args.patch is None:
-                raise PipelineError("full automation requires a prewritten clean-room replacement patch; source generation is unavailable")
+                raise PipelineError("full automation requires a clean-room integration patch, including for generated proposals")
             if function.get("replacement_status") not in ("original", "untracked"):
                 raise PipelineError("candidate already has a replacement; use regression-only mode for a canary")
             if decision.get("classification") != "eligible_for_replacement_development" \
@@ -287,6 +302,11 @@ class Runner:
                 candidate_inventory.require_current_report(saved, current)
             except ValueError as error:
                 raise PipelineError(str(error)) from error
+        if getattr(self.args, "generation_report", None):
+            report = differential.read_json(self.args.generation_report)
+            problems = generation_report_blockers(report, self.args.address, sha256(self.args.elf))
+            if problems:
+                raise PipelineError("; ".join(problems))
         return {"kind": kind, "address": self.args.address, "name": name,
                 "qualification": decision.get("classification", "already_verified_regression_only"),
                 "ownership": candidate.get("ownership", {}).get("status", "not_applicable"),
@@ -327,6 +347,8 @@ class Runner:
                                       cwd=self.worktree, text=True, stdout=subprocess.PIPE,
                                       stderr=subprocess.PIPE)
             if reverse.returncode == 0:
+                self.reject_verification_promotion()
+                self.check_generated_source()
                 return {"path": str(self.worktree), "branch": branch, "base": self.base,
                         "patch_sha256": sha256(self.args.patch), "resumed_after_patch": True}
             command(["git", "apply", "--check", str(self.args.patch)], self.worktree)
@@ -341,8 +363,23 @@ class Runner:
             if any((self.worktree / path).is_symlink() for path in changed):
                 raise PipelineError("candidate patch may not add or alter symlinks")
         self.reject_verification_promotion()
+        self.check_generated_source()
         return {"branch": branch, "base": self.base,
                 "patch_sha256": sha256(self.args.patch) if self.args.patch else None}
+
+    def check_generated_source(self) -> None:
+        if getattr(self.args, "generation_report", None):
+            relative = Path(self.args.generated_source_path)
+            path = self.worktree / relative
+            if relative.is_absolute() or ".." in relative.parts or not relative.parts \
+                    or relative.parts[0] != "game" or path.is_symlink() or not path.is_file() \
+                    or self.worktree.resolve() not in path.resolve().parents:
+                raise PipelineError("generated source must be a regular game source in the isolated worktree")
+            report = differential.read_json(self.args.generation_report)
+            if sha256(path) != report.get("source_sha256"):
+                raise PipelineError("integration patch does not contain the exact generated source")
+            if report.get("symbol") != "bb_" + self.args.name:
+                raise PipelineError("generated symbol differs from the required registry symbol")
 
     def reject_verification_promotion(self) -> None:
         if self.args.regression_only:
@@ -493,7 +530,9 @@ class Runner:
                                    for label, data in self.state["completed"]["build"].items()},
                   "differential": comparison_summary,
                   "validation": self.state["completed"]["validation"],
-                  "automation": {"replacement_generation": "not automated; accepts a prewritten patch",
+                  "automation": {"replacement_generation": ("opt-in provider stage; manual integration patch"
+                                                               if getattr(self.args, "generation_report", None)
+                                                               else "prewritten clean-room patch"),
                                  "function_status_promotion": "never automated",
                                  "merge": "never automated", "wiki": "not modified"}}
         evidence = self.private / "evidence.json"
@@ -506,7 +545,8 @@ class Runner:
                   f"- Differential: GCC and Clang each passed "
                     f"{report['differential']['gcc']['passed']}/"
                     f"{report['differential']['gcc']['cases']} fixtures",
-                    "- Function verification status changed: no", "- Replacement generation automated: no",
+                    "- Function verification status changed: no",
+                    "- Replacement origin: " + report["automation"]["replacement_generation"],
                     "", "This report contains fixture identifiers and aggregate results only; private fixture bodies are not exported.", ""]
         (self.private / "evidence.md").write_text("\n".join(markdown), encoding="utf-8")
         return {"json": str(evidence), "markdown": str(self.private / "evidence.md"),
@@ -527,6 +567,10 @@ class Runner:
             except BlockingIOError as error:
                 raise PipelineError("this run is already active in another process") from error
             self.state = load_state(self.state_path, self.identity)
+            if "eligibility" in self.state["completed"]:
+                # Wall-clock ownership freshness can expire without changing file hashes.
+                # A resumed run cannot reuse yesterday's authorization for a generated PR.
+                self.stage_eligibility()
             for name in STAGES:
                 if name in self.state["completed"]:
                     continue
@@ -610,7 +654,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--elf", type=Path, required=True, help="locally held target ELF; never copied")
     parser.add_argument("--captures", type=Path, required=True, help="private original-game fixture directory")
     parser.add_argument("--abi", type=Path, required=True, help="evidence-backed ABI JSON manifest")
-    parser.add_argument("--patch", type=Path, help="prewritten clean-room git patch; source generation is unavailable")
+    parser.add_argument("--patch", type=Path, help="clean-room integration patch, prewritten or generator-backed")
+    parser.add_argument("--generation-report", type=Path, help="optional private implementation-generator report")
+    parser.add_argument("--generated-source-path", help="exact generated game source path included in the integration patch")
     parser.add_argument("--regression-only", action="store_true", help="allow a verified function only as a non-promoting canary")
     parser.add_argument("--base", default="origin/main")
     parser.add_argument("--worktree-root", type=Path, required=True)
@@ -634,6 +680,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--dry-run cannot be combined with --open-draft-pr")
     if args.regression_only and args.open_draft_pr:
         parser.error("regression-only runs cannot create function PRs")
+    if bool(args.generation_report) != bool(args.generated_source_path) or args.generation_report and args.regression_only:
+        parser.error("generated proposals need both report and source path and cannot use regression-only mode")
     return args
 
 
@@ -658,7 +706,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.patch:
             differential.ensure_private_output(args.patch)
             args.patch = args.patch.resolve()
-        for path in (args.eligibility_report, args.trace_evidence):
+        for path in (args.eligibility_report, args.trace_evidence, args.generation_report):
             if path:
                 differential.ensure_private_output(path)
                 if not path.is_file():
@@ -724,6 +772,8 @@ def main(argv: list[str] | None = None) -> int:
                 "base": args.base, "elf_sha256": sha256(args.elf),
                 "captures_sha256": hashlib.sha256("".join(sha256(path) for path in sorted(args.captures.glob("*.json"))).encode()).hexdigest(),
                 "abi_sha256": sha256(args.abi), "patch_sha256": patch_sha,
+                "generation_report_sha256": sha256(args.generation_report) if args.generation_report else None,
+                "generated_source_path": args.generated_source_path,
                 "pipeline_source_sha256": sha256(Path(__file__).resolve()),
                 "eligibility_report_sha256": sha256(args.eligibility_report) if args.eligibility_report else None,
                 "trace_evidence_sha256": sha256(args.trace_evidence) if args.trace_evidence else None,

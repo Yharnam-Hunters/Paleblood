@@ -6,8 +6,10 @@ PRs, or touch Byrgenwerth.
 
 ## Current boundary
 
-The command accepts a **prewritten clean-room patch** with `--patch`. It does not generate
-replacement source. A normal candidate must have a fresh catalog decision
+The command accepts a **clean-room integration patch** with `--patch`. Source can be prewritten
+or proposed by the optional [implementation generator](IMPLEMENTATION_GENERATOR.md). Generation
+is disabled by default, and experimental/mock output cannot enter a function PR. Registration and
+readable integration are still manual. A normal candidate must have a fresh catalog decision
 `eligible_for_replacement_development`, a complete current ownership snapshot declaring it
 `confirmed_unclaimed`, an evidence-backed ABI manifest, and the minimum number of local recorded
 original-game fixtures. Each fixture for a new candidate must include the recorder's function and
@@ -85,8 +87,10 @@ satisfy recorded-input provenance. Ghidra discovery, historical unclaimed status
 execution-investigation qualification cannot substitute for fresh ownership checks, supported
 boundaries, an independently established ABI/behavior contract, and matching recorded fixtures.
 
-Before adding autonomous source generation, demonstrate a real unimplemented candidate passing
+Before admitting generated source to a real-function PR, demonstrate a real unimplemented candidate passing
 these prerequisites and both compiler runs with complete memory/CFG observations. The smallest
 safe alternative to the clock boundary is an evidenced import-free candidate with recorded inputs;
-the pipeline must refuse absent evidence rather than generate a replacement or draft PR. Source
-generation itself remains manual through the prewritten clean-room patch interface.
+the pipeline must refuse absent evidence rather than admit a replacement or draft PR. Experimental
+generation remains private and cannot bypass this boundary. Optional `--generation-report` and
+`--generated-source-path` attach exact proposal provenance to the supplied integration patch;
+the recorded-game and qualification gates still run independently.

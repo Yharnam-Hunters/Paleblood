@@ -89,7 +89,9 @@ Pass `--eligibility-report` and `--trace-evidence` along with the existing priva
 executable and prewritten clean-room patch. The pipeline recomputes inventory eligibility; it does
 not trust a saved Boolean. It still builds and differentially checks the patch under both compilers,
 enforces all existing memory/CFG/provenance gates, and permits only an explicitly requested draft PR.
-See [AUTOMATION_PIPELINE.md](AUTOMATION_PIPELINE.md). Source generation remains manual. No command
+See [AUTOMATION_PIPELINE.md](AUTOMATION_PIPELINE.md). The optional
+[generator](IMPLEMENTATION_GENERATOR.md) can propose quarantined source; readable integration and
+the existing evidence gates remain separate. No command
 here promotes function status, merges a PR or publishes documentation.
 
 Import snapshots at `sceKernelClockGettime` remain diagnostic evidence only. They do not trace the
