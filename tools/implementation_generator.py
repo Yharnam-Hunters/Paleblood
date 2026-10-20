@@ -325,7 +325,8 @@ def replay(directory: Path, package: dict, elf: Path, loader: Path, cases: Path)
     for _, case in rows:
         expected = "i32" if signature["returns"] == "uint32_t" else "i64"
         if case.get("returns") != expected or set(case.get("args", {})) != set(REGISTERS[:len(signature["arguments"])]) \
-                or any(case.get(key) for key in ("buffers", "memory", "imports", "stubs", "observe_registers", "stack_args")):
+                or any(case.get(key) for key in ("buffers", "memory", "imports", "stubs", "observe_registers",
+                                                  "stack", "stack_args", "gs")):
             raise GenerationError("fixture exceeds the scalar ABI or declared dependency contract")
     mounts = [(ROOT / "tools", "/tools"), (elf, "/executable.elf"), (loader, "/loader.so"), (cases, "/cases")]
     environment = {"BB_LOADER": "/loader.so"}
