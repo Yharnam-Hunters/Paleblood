@@ -9,8 +9,8 @@
   },
   "imports_bundled": 219,
   "imports_called": 7,
-  "imports_implemented": 30,
-  "imports_remaining": 437,
+  "imports_implemented": 33,
+  "imports_remaining": 434,
   "imports_total": 686,
   "imports_unresolved": 4,
   "milestone": "loaded",
@@ -36,10 +36,37 @@
     {
       "exports": 165,
       "imports": 83,
-      "imports_remaining": 67,
+      "imports_remaining": 65,
       "name": "libSceFios2.elf"
     }
   ],
   "outcome": "unimplemented",
-  "phase": "libc.elf"
+  "phase": "libc.elf",
+  "stub_modules": [
+    {
+      "id": "0x0038",
+      "loaded": false,
+      "name": "libSceFace"
+    },
+    {
+      "id": "0x0093",
+      "loaded": false,
+      "name": "libSceHand"
+    },
+    {
+      "id": "0x00cb",
+      "loaded": false,
+      "name": "libSceHeadTracker"
+    },
+    {
+      "id": "0x0086",
+      "loaded": false,
+      "name": "libSceS3DConversion"
+    },
+    {
+      "id": "0x0039",
+      "loaded": false,
+      "name": "libSceSmart"
+    }
+  ]
 }

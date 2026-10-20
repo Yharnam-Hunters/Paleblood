@@ -56,6 +56,54 @@ today.
 second load of a loaded module is counted, ignored or refused. Each is a named fatal until a console
 measurement or a guest call site settles it.
 
+## `scePthreadAttrGetaffinity`: the startup consumer and missing evidence
+
+An affinity mask identifies the CPUs on which a thread may run. The current startup stop is a
+query for the main thread's mask. Returning success without the correct output would change the
+CPU count that the bundled C library stores; it would not implement the query.
+
+**Observed in the hash-pinned bundled `libc.elf`:** the function at module offset `0x81a80`
+initializes a thread attribute, obtains the current thread, and copies its attributes. If those
+operations succeed, its call at `libc.elf+0x81ad0` passes the address of that attribute variable
+in RDI and the address of a zero-initialized eight-byte stack slot in RSI. This is a two-pointer
+interface, not FreeBSD's three-argument interface with an explicit buffer size. The return site
+is `libc.elf+0x81ad5`, matching the genuine boot diagnostic. The caller does not check the affinity
+query's return value: after destroying the attribute it reads the slot, counts its set bits
+across 64 bits, and stores a 32-bit count. This establishes the consumer's memory requirements,
+not the real query's write width, the actual mask or its complete error contract.
+
+The original consumer also ran through the existing harness on nine private constructed
+fixtures with scripted imports, using each compiler's loader. It produced the expected counts
+for zero, low-bit, high-bit and all-bit masks, and exercised both earlier failure branches.
+A scripted nonzero affinity return with a supplied mask still produced that mask's count,
+corroborating that this caller ignores the return. These are original-consumer observations
+under synthetic import behavior, **not** observations of PS4 affinity, recorded gameplay,
+complete instruction-trace verification or an original-versus-replacement comparison. No
+function status changes follow from them.
+
+**Public supporting evidence:** the OpenOrbis homebrew header
+[`libkernel.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/0a1aaf9dd4a92695538bdeb09fb056d06dd11725/include/orbis/libkernel.h#L463)
+declares a signed 32-bit return and an attribute pointer plus an output pointer. Its comment
+explicitly leaves the mask type unfinished; the declaration is corroboration, not a measured
+PS4 contract. The [FreeBSD 9.3 affinity manual](https://man.freebsd.org/cgi/man.cgi?query=pthread_attr_affinity_np&sektion=3&manpath=FreeBSD+9.3-RELEASE)
+describes retrieving a stored attribute mask, success/error returns and invalid attributes, but
+its API includes a size argument absent at this target call. Its errors and CPU-set layout
+cannot simply be assigned to the SCE interface.
+
+**Still required before implementation:** independently establish the main thread's actual
+mask, how a fresh attribute differs from one filled by `scePthreadAttrGet`, the exact output
+write extent, success/error results, and invalid/null attribute or output handling. Host CPU
+availability and a guessed console core count establish none of these. No specific affinity
+implementation is added or registered by this investigation; the import remains unbound.
+
+A useful target measurement would record the console/firmware and executable identities, the
+results of attribute initialization and copying from `scePthreadSelf`, the getter's return bits,
+the output bytes with adjacent canaries, and repeated observations without changing affinity.
+Check current claims in [issue #34](https://github.com/Yharnam-Hunters/Paleblood/issues/34) before
+taking implementation work; mentions of the boot blocker are not themselves contributor claims.
+Generic gameplay capture remains separate contributor-owned work, not a reason to synthesize
+the missing affinity observation.
+
 ## Clock IDs and platform differences
 
 The only clock ID confirmed by a decompiled game call in this repository is `4`, used with `sceKernelClockGettime` and identified there as `CLOCK_MONOTONIC`. This does not prove that the game passes `4` to the imported `clock_gettime` wrapper. POSIX defines clock identifiers symbolically; their numeric values are implementation-specific. Linux adds clocks such as `CLOCK_MONOTONIC_RAW` and `CLOCK_BOOTTIME`; FreeBSD has its own clock set, including `CLOCK_UPTIME` variants. Their names and numeric values are not interchangeable evidence for PS4 behavior.

@@ -371,9 +371,9 @@ eboot,libSceSaveDataDialog,sceSaveDataDialogTerminate,function,
 eboot,libSceSaveDataDialog,sceSaveDataDialogUpdateStatus,function,
 eboot,libSceSsl,sceSslInit,function,
 eboot,libSceSsl,sceSslTerm,function,
-eboot,libSceSysmodule,sceSysmoduleIsLoaded,function,
-eboot,libSceSysmodule,sceSysmoduleLoadModule,function,
-eboot,libSceSysmodule,sceSysmoduleUnloadModule,function,
+eboot,libSceSysmodule,sceSysmoduleIsLoaded,function,runtime
+eboot,libSceSysmodule,sceSysmoduleLoadModule,function,runtime
+eboot,libSceSysmodule,sceSysmoduleUnloadModule,function,runtime
 eboot,libSceSystemService,sceSystemServiceGetStatus,function,
 eboot,libSceSystemService,sceSystemServiceHideSplashScreen,function,
 eboot,libSceSystemService,sceSystemServiceLaunchWebBrowser,function,
@@ -705,8 +705,8 @@ libSceFios2.elf,libSceLibcInternal,printf,function,
 libSceFios2.elf,libSceLibcInternal,time,function,
 libSceFios2.elf,libSceLibcInternal,vprintf,function,
 libSceFios2.elf,libSceLibcInternal,vsnprintf,function,
-libSceFios2.elf,libSceSysmodule,sceSysmoduleLoadModule,function,
-libSceFios2.elf,libSceSysmodule,sceSysmoduleUnloadModule,function,
+libSceFios2.elf,libSceSysmodule,sceSysmoduleLoadModule,function,runtime
+libSceFios2.elf,libSceSysmodule,sceSysmoduleUnloadModule,function,runtime
 libSceFios2.elf,libkernel,__error,function,
 libSceFios2.elf,libkernel,__stack_chk_fail,function,
 libSceFios2.elf,libkernel,__stack_chk_guard,data,
