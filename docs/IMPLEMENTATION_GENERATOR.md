@@ -98,7 +98,7 @@ quarantined; human review is mandatory before production integration.
 GCC and Clang compile the proposal with an exact-signature assertion, warnings as errors and the
 project's floating-point flags. Compilation and replay require Linux bubblewrap user/mount/PID
 namespaces. They have no network, home directory, Git credentials or repository write access.
-Only explicit input files, `/usr` and a private run directory are mounted; replay mounts the run
+Only explicit input files, `/usr`, the host's read-only `/lib`/`/lib64` runtime layout and a private run directory are mounted; replay mounts the run
 read-only. Missing namespace support is a blocker, never an unsafe fallback. CPU, address-space,
 wall-clock, file/output and attempt limits are bounded. Limits are per process, not a claim of a
 system-wide cgroup quota or protection against kernel vulnerabilities.

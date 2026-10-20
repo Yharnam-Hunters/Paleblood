@@ -90,6 +90,17 @@ class GeneratorTests(GeneratorFixture, unittest.TestCase):
         with self.assertRaisesRegex(generator.GenerationError, "every Git worktree"):
             generator.private_location(other / "analysis" / "output.json")
 
+    def test_sandbox_preserves_multiarch_loader_layout_as_read_only(self):
+        with patch.object(generator.shutil, "which", return_value="/usr/bin/bwrap"), \
+                patch.object(generator, "bounded_process", return_value=b"") as process:
+            generator.sandbox(self.directory, ["true"], 5)
+        command = process.call_args.args[0]
+        triples = [command[index:index + 3] for index in range(len(command) - 2)]
+        for library_root in ("/lib", "/lib64"):
+            if Path(library_root).is_dir():
+                self.assertIn(["--ro-bind", library_root, library_root], triples)
+        self.assertNotIn(["--symlink", "usr/lib", "/lib64"], triples)
+
     def test_rejects_missing_abi_or_unbound_notes(self):
         self.abi["arguments"][0].pop("type")
         with self.assertRaisesRegex(generator.GenerationError, "ABI"):

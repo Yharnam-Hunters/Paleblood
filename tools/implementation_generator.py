@@ -225,11 +225,16 @@ def sandbox(directory: Path, argv: list[str], seconds: int, *, mounts: list[tupl
         raise GenerationError("bubblewrap is required; generated code cannot run unsandboxed")
     command = [bwrap, "--unshare-all", "--die-with-parent", "--new-session", "--cap-drop", "ALL",
                "--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin",
-               "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib", "/lib64",
-               "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--dir", "/work",
+               ]
+    # Preserve the host loader layout instead of assuming /lib64 == /usr/lib.
+    # Debian/Ubuntu use a multiarch loader link in /lib64; Arch uses /usr/lib.
+    for library_root in ("/lib", "/lib64"):
+        if Path(library_root).is_dir():
+            command.extend(["--ro-bind", library_root, library_root])
+    command.extend(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--dir", "/work",
                "--bind" if writable else "--ro-bind", str(directory.resolve()), "/work", "--chdir", "/work", "--clearenv",
                "--setenv", "PATH", "/usr/bin:/bin", "--setenv", "HOME", "/tmp",
-               "--setenv", "TMPDIR", "/tmp", "--setenv", "PYTHONNOUSERSITE", "1"]
+               "--setenv", "TMPDIR", "/tmp", "--setenv", "PYTHONNOUSERSITE", "1"])
     for source, target in mounts:
         command.extend(["--ro-bind", str(source.resolve()), target])
     for key, value in (environment or {}).items():
