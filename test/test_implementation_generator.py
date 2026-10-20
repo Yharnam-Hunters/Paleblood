@@ -300,6 +300,18 @@ class IsolatedGeneratorTests(GeneratorFixture, unittest.TestCase):
             generator.sandbox(self.directory, ["python3", "-c", script], 5)
         self.assertEqual(sentinel.read_text(), "unchanged")
 
+    def test_offline_namespace_is_separate_and_child_capabilities_are_dropped(self):
+        host_network = os.readlink("/proc/self/ns/net")
+        script = ("import json,os,socket; from pathlib import Path; "
+                  "status=Path('/proc/self/status').read_text().splitlines(); "
+                  "caps=next(line.split()[1] for line in status if line.startswith('CapEff:')); "
+                  "print(json.dumps({'net':os.readlink('/proc/self/ns/net'), 'caps':int(caps,16), "
+                  "'interfaces':[name for _,name in socket.if_nameindex()]}))")
+        observed = json.loads(generator.sandbox(self.directory, ["python3", "-c", script], 5))
+        self.assertNotEqual(observed["net"], host_network)
+        self.assertEqual(observed["caps"], 0)
+        self.assertLessEqual(set(observed["interfaces"]), {"lo"})
+
     def test_synthetic_original_replacement_and_wrong_behavior(self):
         loader = os.environ.get("BB_LOADER")
         if not loader or not Path(loader).is_file():
