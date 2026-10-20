@@ -100,6 +100,11 @@ class GeneratorTests(GeneratorFixture, unittest.TestCase):
             if Path(library_root).is_dir():
                 self.assertIn(["--ro-bind", library_root, library_root], triples)
         self.assertNotIn(["--symlink", "usr/lib", "/lib64"], triples)
+        driver = Path(shutil.which("g++")).resolve()
+        alternative = self.directory / "compiler-alternative"
+        alternative.symlink_to(driver)
+        with patch.object(generator.shutil, "which", return_value=str(alternative)):
+            self.assertEqual(generator.compiler_path("g++"), driver)
 
     def test_rejects_missing_abi_or_unbound_notes(self):
         self.abi["arguments"][0].pop("type")
@@ -134,7 +139,8 @@ class GeneratorTests(GeneratorFixture, unittest.TestCase):
 
     def test_incomplete_listing_and_unsupported_instructions_fail_closed(self):
         for code in (bytes.fromhex("8d47"), bytes.fromhex("f3a4c3"), bytes.fromhex("8b07c3"),
-                     bytes.fromhex("eb00c3"), bytes.fromhex("c390"), bytes.fromhex("66c3")):
+                     bytes.fromhex("eb00c3"), bytes.fromhex("c390"), bytes.fromhex("66c3"),
+                     bytes.fromhex("0f20c0c3"), bytes.fromhex("8ce0c3")):
             with self.subTest(code=code.hex()), self.assertRaises(generator.GenerationError):
                 generator.instruction_listing(code, 0x400100)
 

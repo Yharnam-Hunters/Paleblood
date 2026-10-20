@@ -92,7 +92,8 @@ def instruction_listing(code: bytes, start: int) -> list[dict]:
         size = instruction["size"]
         issue = instruction_trace._instruction_support_issue(instruction)
         mnemonic = instruction["mnemonic"]
-        if issue or mnemonic not in LEAF_MNEMONICS or instruction["operands"]:
+        special_register = re.search(r"\b(?:[cdefgs]s|[cd]r[0-9]+|[xyz]mm[0-9]+|mm[0-7])\b", instruction["text"])
+        if issue or mnemonic not in LEAF_MNEMONICS or instruction["operands"] or special_register:
             raise GenerationError("unsupported generation instruction: " + mnemonic)
         if not 0 < size <= len(code) - offset:
             raise GenerationError("incomplete instruction listing")
@@ -272,12 +273,26 @@ def translation_unit(source: str, signature: dict) -> str:
             + 'extern "C" int bbgame_init(const void *) { return 0; }\n')
 
 
+def compiler_path(name: str) -> Path:
+    configured = shutil.which(name)
+    if not configured:
+        raise GenerationError("required compiler is unavailable: " + name)
+    driver = Path(configured).resolve()
+    if Path("/usr") not in driver.parents:
+        raise GenerationError("compiler installation is outside the supported read-only /usr toolchain mount")
+    return driver
+
+
 def compile_source(directory: Path, source: str, signature: dict) -> dict:
     (directory / "candidate.cpp").write_text(translation_unit(source, signature), encoding="utf-8")
     results = {}
     for compiler in ("g++", "clang++"):
-        version = sandbox(directory, [compiler, "--version"], 10).decode().splitlines()[0]
-        sandbox(directory, [compiler, "-std=c++20", "-O2", "-Wall", "-Wextra", "-Werror",
+        # Resolve /etc/alternatives links without exposing the host configuration directory.
+        driver = [str(compiler_path(compiler))]
+        if compiler == "clang++":
+            driver.append("--driver-mode=g++")
+        version = sandbox(directory, driver + ["--version"], 10).decode().splitlines()[0]
+        sandbox(directory, driver + ["-std=c++20", "-O2", "-Wall", "-Wextra", "-Werror",
                             "-ffp-contract=off", "-fno-fast-math", "-fPIC", "-shared",
                             "candidate.cpp", "-o", compiler + ".so"], 30, writable=True)
         results[compiler] = {"version": version, "library_sha256": catalog.sha256(directory / (compiler + ".so"))}
@@ -351,7 +366,8 @@ def generate(package: dict, config: dict, output: Path, *, enabled: bool,
                 "executable_sha256": package["executable_sha256"],
                 "provider_artifacts_sha256": [catalog.sha256(Path(arg)) for arg in config["argv"] if Path(arg).is_file()],
                 "generator_sha256": catalog.sha256(Path(__file__)),
-                "compiler_versions": {c: pipeline.compiler_version(c) for c in ("g++", "clang++")}}
+                "compiler_versions": {c: pipeline.compiler_version(c) for c in ("g++", "clang++")},
+                "compiler_sha256": {c: catalog.sha256(compiler_path(c)) for c in ("g++", "clang++")}}
     directory = output / digest(identity)[:16]
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (directory / "lock").open("w") as lock:
