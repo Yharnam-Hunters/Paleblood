@@ -62,3 +62,4 @@ Summary:
 - [ ] `runtime/` stays generic
 - [ ] AI-assisted: <!-- yes / no. Every AI-assisted commit needs a Co-Authored-By trailer naming the actual tool; for Codex: Co-Authored-By: Codex <noreply@openai.com> -->
 - [ ] Depends on: <!-- #PR, or none -->
+- [ ] Handoff: <!-- optional: if someone else continues this work, paste `tools/handoff.py show --markdown` below -->

@@ -25,6 +25,43 @@ Questions go in [Discussions](https://github.com/Yharnam-Hunters/Paleblood/discu
 the issue you are working on. How the systems work, the devlog and the progress dashboard are on
 the [documentation site](https://yharnam-hunters.github.io/byrgenwerth-site/).
 
+## Working by hand, with Codex, or with Claude Code
+
+AI is optional. Everyone uses the same steps, tools and checks, whoever or whatever types the
+code:
+
+1. **Set up.** Clone your fork, run `tools/install_hooks.sh`, build
+   (`cmake -S . -B build && cmake --build build -j`) and run the tests
+   (`ctest --test-dir build` and `python3 -m unittest discover -s test -p 'test_*.py'`).
+2. **Claim** the call in issue #34 (runtime) or with a claim issue (decompilation) before you
+   start; one open claim per function.
+3. **Branch per task**: `runtime/<function>` or one function or cluster per branch. Parallel
+   tasks get their own `git worktree add`.
+4. **Evidence first.** Runtime calls rest on public documentation, independent reverse
+   engineering or observed behavior, clean room (above). A function's calling convention and
+   arguments come from the disassembly. Synthetic fixtures and edge cases are useful, but only
+   cases recorded in a genuine run count as recordings; say which you have.
+5. **Verify differentially**: `tools/verify.py run` against the original ([docs/VERIFY.md](docs/VERIFY.md)).
+   A green CI run is not verification.
+6. **Report and open the PR**: paste the report the template asks for (`tools/session_report.py`
+   for code, the concise runtime or documentation report otherwise).
+7. **Disclose AI help** with a `Co-Authored-By` trailer on every commit it touched, naming the
+   tool actually used (**AI-assisted work**, below). Credit stays with you: you answer for every
+   line.
+
+**Handing over.** Sessions don't share chat history, so a task moves between people and tools
+through the repository. Before you stop, run
+`tools/handoff.py write --tool manual|codex|claude --task "..." --next "..."` (add `--test`,
+`--blocker`, `--ownership`, `--claim`, `--recordings` as they apply). It writes
+`.handoff/HANDOFF.md`, which is git-ignored, from the branch's real state. The next session reads
+it first and checks it with `tools/handoff.py check`. `tools/handoff.py show --markdown` prints it
+for an issue or pull request; it refuses local paths, tokens and session links.
+
+**By hand:** follow the steps above. **Codex:** keep a local `AGENTS.md` in your clone that says
+"Follow CONTRIBUTING.md; start from `.handoff/HANDOFF.md` if it exists." **Claude Code:** keep a
+local `CLAUDE.md` containing `@CONTRIBUTING.md` and the same line. Both files are git-ignored and
+the pre-commit hook refuses them, so your own setup never lands in a commit.
+
 ## Runtime system calls (issue #34)
 
 Runtime contributions are separate from decompilation. Read

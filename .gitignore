@@ -5,6 +5,7 @@ CLAUDE.md
 notes/
 SESSION*.md
 KICKOFF*.md
+.handoff/
 
 # Game data and derived artifacts: never committed (CONTRIBUTING.md)
 *.elf

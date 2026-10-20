@@ -348,6 +348,32 @@ class SessionReport(unittest.TestCase):
         report['verify'][0]['failed'] = 1
         self.assertTrue(any('failing' in e for e in self.sr.check_body(self.sr.render(report))))
 
+    def test_body_structure_is_checked(self):
+        def report(**changes):
+            r = {'schema': 1, 'base': 'origin/main', 'branch': 'x', 'commits': 0,
+                 'functions': {'named': [{'address': '0x1', 'name': 'a', 'system': 's'}],
+                               'replaced': [], 'edge-verified': [], 'verified': []},
+                 'verify': [], 'captures': [], 'findings': [], 'questions': []}
+            r.update(changes)
+            # Written by hand, as a contributor's edited body would be: render() is not involved.
+            return '\n'.join([self.sr.START, '<!-- session-report-json ' + json.dumps(r) + ' -->',
+                              self.sr.END])
+        self.assertEqual(self.sr.check_body(report()), [])
+        cases = {
+            'schema': report(schema=2),
+            'branch': report(branch=''),
+            'commits': report(commits=-1),
+            'captures': report(captures='none'),
+            'findings': report(findings=[1]),
+            'unknown function group': report(functions={'renamed': []}),
+            'string address and name': report(functions={'named': [{'address': 1, 'name': 'a'}]}),
+        }
+        for needle, body in cases.items():
+            with self.subTest(needle=needle):
+                self.assertTrue(any(needle in e for e in self.sr.check_body(body)), self.sr.check_body(body))
+        body = report(commits=True)
+        self.assertTrue(any('commits' in e for e in self.sr.check_body(body)))
+
 
 class Verify(unittest.TestCase):
     def test_self_test(self):

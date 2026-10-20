@@ -122,6 +122,9 @@ git add -f LOCAL-ONLY.md; expect fail "local-only file staged" "local-only file 
 echo "rules" > AGENTS.md
 git add -f AGENTS.md; expect fail "AGENTS.md staged" "local-only file staged"
 
+mkdir -p .handoff && echo '{}' > .handoff/handoff.json
+git add -f .handoff/handoff.json; expect fail "handoff staged" "local-only file staged"
+
 # stale progress number: a replaced function with the README block never updated
 fixture_rows
 cat > game/frame_timing/update.c <<'C'

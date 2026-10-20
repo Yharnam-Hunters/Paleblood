@@ -110,6 +110,38 @@ def render(report: dict) -> str:
     return '\n'.join(lines) + '\n'
 
 
+def structure_errors(d: dict) -> list:
+    """The fields render() always writes, with their types: tools that read reports back (and
+    reviewers) can rely on them without guessing."""
+    errs = []
+    if d.get('schema') != 1:
+        errs.append('the session report "schema" must be 1 (run tools/session_report.py)')
+    for key in ('base', 'branch'):
+        if not isinstance(d.get(key), str) or not d[key].strip():
+            errs.append(f'the session report "{key}" must be a non-empty string')
+    commits = d.get('commits')
+    if type(commits) is not int or commits < 0:
+        errs.append('the session report "commits" must be a non-negative integer')
+    for key in ('captures', 'findings', 'questions'):
+        if key in d and not isinstance(d[key], list):
+            errs.append(f'the session report "{key}" must be a list')
+    for key in ('findings', 'questions'):
+        if isinstance(d.get(key), list) and not all(isinstance(x, str) for x in d[key]):
+            errs.append(f'the session report "{key}" entries must be strings')
+    functions = d.get('functions')
+    if isinstance(functions, dict):
+        for group, entries in sorted(functions.items()):
+            if group not in ('named', 'replaced', 'edge-verified', 'verified'):
+                errs.append(f'the session report has an unknown function group "{group}"')
+                continue
+            for entry in entries if isinstance(entries, list) else []:
+                if not isinstance(entry, dict) or not all(
+                        isinstance(entry.get(k), str) and entry[k].strip() for k in ('address', 'name')):
+                    errs.append(f'each "functions.{group}" entry needs a string address and name')
+                    break
+    return errs
+
+
 def check_body(text: str, required_replacements: list | None = None) -> list:
     errs = []
     if START not in text or END not in text:
@@ -126,6 +158,7 @@ def check_body(text: str, required_replacements: list | None = None) -> list:
     for key in ('functions', 'verify', 'findings', 'questions'):
         if key not in d:
             errs.append(f'the session report has no "{key}"')
+    errs += structure_errors(d)
     functions = d.get('functions')
     if not isinstance(functions, dict):
         errs.append('the session report "functions" must be an object')
