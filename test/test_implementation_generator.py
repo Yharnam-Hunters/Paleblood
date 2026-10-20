@@ -269,7 +269,7 @@ class GeneratorTests(GeneratorFixture, unittest.TestCase):
             while time.monotonic() < deadline:
                 try:
                     status = Path(f"/proc/{child_pid}/stat").read_text()
-                except FileNotFoundError:
+                except (FileNotFoundError, ProcessLookupError):
                     terminated = True
                     break
                 if status.split(")", 1)[1].split()[0] == "Z":
