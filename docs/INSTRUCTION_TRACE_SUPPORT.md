@@ -10,6 +10,7 @@ understood.
 | Instruction family | Status | Current guarantee |
 | --- | --- | --- |
 | Legacy scalar instructions with explicit memory operands | Supported when Capstone supplies a known read/write class and a 1–64-byte width | Effective address, declared-region bounds, bytes before the instruction, and bytes after writes are recorded. Invalid address registers, segments, widths, or access classifications stop the trace before the instruction executes. |
+| `LEA` register/address-expression form (opcode `8D`) | Supported address calculation, not a memory access | The decoder retains the address expression separately and single-steps the instruction without a load/store event. A computed address need not name a valid data region. Real loads/stores through its result still receive the normal bounds checks. An ambiguous LEA operand layout or LOCK prefix fails closed. |
 | Legacy MMX/SSE explicit memory operands | Supported when the operation has a single, fully described memory operand no wider than 64 bytes | Operand bytes are observed as above. `MOVSD`/`CMPSD` string spellings are distinguished from scalar SSE using Capstone's operand text. |
 | Near `CALL`/`RET`, `PUSH`/`POP`, `PUSHF`/`POPF`, and `LEAVE` | Supported for modeled near control transfer and 2- or 8-byte stack widths | Implicit stack read/write is traced. `POP` to an RSP/ESP-based memory destination uses post-increment RSP/ESP; the popped source read uses pre-increment RSP. `PUSH [rsp]` reads from pre-decrement RSP. 16-bit register stack operations have synthetic tests. Segment-register push/pop is rejected because stack width and segment/interrupt-shadow state are not modeled; far calls/returns are rejected. |
 | `MOVS`, `CMPS`, `STOS`, `LODS`, `SCAS`, `INS`, and `OUTS` string operations | Unsupported; fail closed before executing the instruction | Implicit RSI/RDI accesses, index/flag changes, and I/O behavior are not traced. |
@@ -49,6 +50,10 @@ Unsupported instructions stop before execution. The trace is marked incomplete a
 diagnostic names the guest address, decoded mnemonic, capability category, and reason. POP/RSP
 effective-address tests and out-of-bounds destination tests are retained in
 `test/test_harness.py`.
+The LEA regression also checks a deliberate real-load variant: address arithmetic alone is
+complete, while dereferencing the resulting out-of-bounds address remains incomplete and fails
+verification. This follows the LEA effective-address semantics in the Intel instruction reference
+linked below; recognizing the mnemonic does not grant support to other pseudo-memory operands.
 
 Instruction-family details were checked against the [Intel SDM Volume 2B](https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-vol-2b-manual.pdf)
 and [combined Volume 2 instruction reference](https://cdrdv2-public.intel.com/774492/325383-sdm-vol-2abcd.pdf), including the implicit RDI destination of `MASKMOVDQU`, the register-addressed 64-byte destination of `MOVDIR64B`, and the implicit atomic behavior of `CMPXCHG8B`/`CMPXCHG16B`.

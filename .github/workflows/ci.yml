@@ -21,6 +21,28 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install optional instruction-trace dependency
         run: python3 -m pip install --disable-pip-version-check capstone==5.0.9
+      - name: Install isolated generator dependency
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap apparmor
+      - name: Configure the bubblewrap namespace permission on the CI runner
+        # Ubuntu restricts user namespaces unless the sandbox executable has an application profile.
+        # Configure only that launcher; keep AppArmor and global namespace restrictions enabled.
+        run: |
+          for profile in /etc/apparmor.d/bwrap /etc/apparmor.d/bwrap-userns-restrict; do
+            if [ -f "$profile" ]; then
+              sudo apparmor_parser -r "$profile"
+              exit 0
+            fi
+          done
+          # Minimal Ubuntu application policy, scoped to the sandbox launcher on this
+          # disposable runner. No global sysctl changes or workstation installation.
+          sudo tee /etc/apparmor.d/paleblood-generator-bwrap >/dev/null <<'PROFILE'
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile paleblood-generator-bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+          }
+          PROFILE
+          sudo apparmor_parser -r /etc/apparmor.d/paleblood-generator-bwrap
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=${{ matrix.cc }} -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
       - name: Build
@@ -39,6 +61,12 @@ jobs:
           CC: ${{ matrix.cc }}
           BB_LOADER: build/runtime/libpbloader.so
         run: python3 -m unittest discover -s test -p 'test_differential.py'
+      - name: Opt-in generator regression tests (no model calls)
+        env:
+          CC: ${{ matrix.cc }}
+          BB_LOADER: build/runtime/libpbloader.so
+          BB_REQUIRE_GENERATOR_SANDBOX: '1'
+        run: python3 -m unittest discover -s test -p 'test_implementation_generator.py' -v
 
   policy:
     runs-on: ubuntu-24.04

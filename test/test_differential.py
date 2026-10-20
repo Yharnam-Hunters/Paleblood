@@ -282,6 +282,10 @@ class Differential(unittest.TestCase):
                                                      "result": original_only["result"], "limitations": [],
                                                      "run_id": "0123456789abcdef"})
             self.assertIn("no replacement comparison", rendered)
+            original_only['result']['execution'] = {'schema': 1, 'address': '0x00400000',
+                                                    'cases': [{'id': 'one', 'fault': 'synthetic'}]}
+            rendered = differential.bundle_markdown({**original_only, 'limitations': [], 'run_id': '0123456789abcdef'})
+            self.assertIn('1 execution(s), 1 fault/error', rendered)
             with self.assertRaisesRegex(differential.DifferentialError, "outside the public repository"):
                 differential.ensure_private_output(ROOT / "evidence")
             with self.assertRaisesRegex(differential.DifferentialError, "run ID"):

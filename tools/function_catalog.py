@@ -31,7 +31,7 @@ RELEVANCE_FIELDS = ("address", "score", "source")
 DEFAULT_RANK_WEIGHTS = {"feasibility": 20, "dependency": 15, "fixture_difficulty": 10,
                         "analysis_confidence": 10, "unlock": 15, "runtime_relevance": 15,
                         "ownership": 5, "original_execution": 15, "engineering_effort": 5,
-                        "test_infrastructure": 5}
+                        "test_infrastructure": 5, "type_context": 10}
 
 
 def sha256(path: Path) -> str:
@@ -354,20 +354,21 @@ def connect(path: Path) -> sqlite3.Connection:
           reference TEXT, source TEXT NOT NULL, confidence TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS edges_caller ON edges(caller);
       CREATE INDEX IF NOT EXISTS edges_callee ON edges(callee);
+      CREATE TABLE IF NOT EXISTS intelligence_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL);
     """)
     return db
 
 
 def write_snapshot(path: Path, functions: list[dict], edges: list[dict], metadata: dict,
-                   fail_after: int | None = None) -> None:
+                   fail_after: int | None = None, intelligence_snapshot: dict | None = None) -> None:
     db = connect(path)
     try:
         db.execute("BEGIN IMMEDIATE")
         current = db.execute("SELECT value FROM metadata WHERE key='catalog_identity'").fetchone()
         if current and json.loads(current[0]) != metadata.get("catalog_identity"):
-            exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='qualifications'").fetchone()
-            if exists:
-                db.execute("DELETE FROM qualifications")
+            for table in ("qualifications", "candidate_inventories"):
+                if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                    db.execute(f"DELETE FROM {table}")
         db.execute("DELETE FROM functions")
         db.execute("DELETE FROM edges")
         for index, row in enumerate(functions, 1):
@@ -381,6 +382,9 @@ def write_snapshot(path: Path, functions: list[dict], edges: list[dict], metadat
         db.execute("DELETE FROM metadata")
         db.executemany("INSERT INTO metadata VALUES (?, ?)",
                        [(key, canonical(value)) for key, value in metadata.items()])
+        db.execute("DELETE FROM intelligence_snapshot")
+        if intelligence_snapshot is not None:
+            db.execute("INSERT INTO intelligence_snapshot VALUES (1, ?)", (canonical(intelligence_snapshot),))
         db.commit()
     except Exception:
         db.rollback()
@@ -498,7 +502,7 @@ def rank_functions(functions: list[dict], edges: list[dict], limit: int = 50,
         if row["replacement_status"] in ("replaced", "edge-verified", "verified"):
             continue
         ownership = row["ownership"]["status"]
-        if ownership in {"claimed", "contributor_owned", "active_automation_worker", "already_implemented"}:
+        if ownership in {"claimed", "contributor_owned", "active_automation_worker", "already_implemented", "ownership_conflict"}:
             continue
         reasons = []
         component_scores = {}
@@ -588,6 +592,13 @@ def rank_functions(functions: list[dict], edges: list[dict], limit: int = 50,
         else:
             add("test_infrastructure", 0.2, False,
                 "candidate-specific harness readiness has not been established")
+        context = row.get("type_intelligence", {})
+        if context.get("names") and not row.get("classification", {}).get("conflict"):
+            add("type_context", 0.6, True, "type names and explicit relationships aid investigation; ABI and behavior remain unproven")
+        elif context.get("relations"):
+            add("type_context", 0.2, False, "table references exist but named type/relationship confidence is incomplete")
+        else:
+            add("type_context", 0, False, "no recovered type evidence")
         score = round(sum(item["weighted_score"] for item in component_scores.values()), 3)
         results.append({"address": row["address"], "name": row["name"], "system": row["system"],
                         "score": score, "confidence_percent": round(100 * known / len(weights)),
@@ -663,6 +674,7 @@ def parser() -> argparse.ArgumentParser:
     ownership_sync.add_argument("--output", type=Path, help="optional path for a local evidence snapshot")
     qualify = sub.add_parser("qualify", help="run a bounded candidate qualification campaign")
     qualify.add_argument("--batch-size", type=int, default=20)
+    qualify.add_argument("--address", action="append", help="investigate selected entries with full catalog safety checks")
     qualify.add_argument("--executable", type=Path, required=True, help="local ELF used by this catalog")
     qualify.add_argument("--image-base", type=lambda value: int(value, 0), default=0x400000)
     qualify.add_argument("--refresh", action="store_true", help="ignore cached qualification decisions")
@@ -673,6 +685,22 @@ def parser() -> argparse.ArgumentParser:
     explain.add_argument("address")
     blockers = sub.add_parser("blockers", help="summarize blockers in the latest campaign")
     blockers.add_argument("--limit", type=int, default=30)
+    intelligence = sub.add_parser("intelligence", help="import/query local type, table and classification evidence")
+    intel_sub = intelligence.add_subparsers(dest="intelligence_command", required=True)
+    intel_import = intel_sub.add_parser("import")
+    intel_import.add_argument("artifact", type=Path)
+    intel_import.add_argument("--community-mappings", type=Path)
+    intel_sub.add_parser("status")
+    for kind in ("types", "vtables"):
+        query = intel_sub.add_parser(kind)
+        query.add_argument("--limit", type=int, default=20)
+    trials = sub.add_parser("trial-inventory", help="audit private recorded fixtures and automation readiness")
+    trials.add_argument("--captures", type=Path, action="append", required=True)
+    trials.add_argument("--address", action="append")
+    trials.add_argument("--minimum-recorded", type=int, default=32)
+    trials.add_argument("--limit", type=int, default=20)
+    trials.add_argument("--trace-evidence", type=Path, action="append", default=[])
+    trials.add_argument("--output", type=Path)
     sub.add_parser("invalidate", help="invalidate cached state after input or assumption changes")
     return p
 
@@ -698,13 +726,42 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 db.execute("BEGIN IMMEDIATE")
                 db.execute("DELETE FROM functions"); db.execute("DELETE FROM edges"); db.execute("DELETE FROM metadata")
-                for table in ("qualifications", "ownership_snapshots"):
+                for table in ("qualifications", "ownership_snapshots", "intelligence_snapshot", "candidate_inventories"):
                     if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
                         db.execute(f"DELETE FROM {table}")
                 db.commit()
                 result = {"invalidated": "all", "reason": "input or analysis assumptions changed"}
             finally:
                 db.close()
+            _json(result, args.json)
+            return 0
+        if args.command == "intelligence":
+            import function_intelligence as intelligence
+            if args.intelligence_command == "import":
+                result = intelligence.import_artifact(args.state, args.artifact, args.community_mappings)
+            elif args.intelligence_command == "status":
+                _, _, metadata = load_snapshot(args.state)
+                result = metadata.get("intelligence_summary", {"status": "unavailable"})
+            else:
+                if args.limit < 0:
+                    raise ValueError("limit must be nonnegative")
+                snapshot = intelligence.load_artifact(args.state)
+                result = snapshot.get("artifact", {}).get(args.intelligence_command, [])[:args.limit]
+            _json(result, args.json)
+            return 0
+        if args.command == "trial-inventory":
+            import candidate_inventory
+            import differential
+            for path in [args.state, *args.captures, *args.trace_evidence]:
+                differential.ensure_private_output(path)
+            if args.output:
+                differential.ensure_private_output(args.output)
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+            result = candidate_inventory.campaign(args.state, args.captures, addresses=args.address,
+                                                  minimum=args.minimum_recorded, limit=args.limit,
+                                                  evidence_paths=args.trace_evidence)
+            if args.output:
+                differential.atomic_write(args.output, (canonical(result) + "\n").encode())
             _json(result, args.json)
             return 0
         if args.command == "ownership":
@@ -744,7 +801,8 @@ def main(argv: list[str] | None = None) -> int:
                                                  for item in qualification.load_qualifications(
                                                      args.state, metadata["qualification_tools"])}
             decisions = qualification.qualify_rows(functions, edges, snapshot, executable_sha,
-                                                   args.executable, segments, metadata, args.batch_size, previous)
+                                                   args.executable, segments, metadata, args.batch_size, previous,
+                                                   addresses=args.address)
             qualification.save_qualifications(args.state, decisions)
             counts: dict[str, int] = defaultdict(int)
             for item in decisions:
@@ -777,35 +835,22 @@ def main(argv: list[str] | None = None) -> int:
                 import function_qualification as qualification
                 owner_snapshot = qualification.load_ownership(args.state)
                 owner_counts: dict[str, int] = defaultdict(int)
-                if owner_snapshot.get("snapshot_complete"):
-                    by_addr: dict[str, set[str]] = defaultdict(set)
-                    by_name: dict[str, set[str]] = defaultdict(set)
+                if qualification.ownership_snapshot_is_current(owner_snapshot):
+                    by_addr, by_name, by_system = defaultdict(list), defaultdict(list), defaultdict(list)
                     for claim in owner_snapshot.get("claims", []):
                         if claim.get("address"):
-                            by_addr[claim["address"]].add(claim.get("kind", "unknown"))
+                            by_addr[claim["address"]].append(claim)
                         if claim.get("symbol"):
-                            by_name[claim["symbol"]].add(claim.get("kind", "unknown"))
-                    by_system: dict[str, set[str]] = defaultdict(set)
-                    for claim in owner_snapshot.get("claims", []):
+                            by_name[claim["symbol"]].append(claim)
                         if claim.get("system"):
-                            by_system[claim["system"]].add(claim.get("kind", "unknown"))
+                            by_system[claim["system"]].append(claim)
                     for function in functions:
-                        if function["replacement_status"] in ("replaced", "edge-verified", "verified"):
-                            owner_counts["already_implemented"] += 1
-                        else:
-                            kinds = (by_addr.get(function["address"], set())
-                                     | by_name.get(function.get("name"), set())
-                                     | by_system.get(function.get("system"), set()))
-                            has_contributor = bool(kinds & {"contributor", "active_pr", "repository_claim"})
-                            has_local = "local_assignment" in kinds
-                            if has_contributor and has_local:
-                                owner_counts["ownership_conflict"] += 1
-                            elif has_contributor:
-                                owner_counts["contributor_owned"] += 1
-                            elif has_local:
-                                owner_counts["active_automation_worker"] += 1
-                            else:
-                                owner_counts["confirmed_unclaimed"] += 1
+                        matches = (by_addr.get(function["address"], [])
+                                   + by_name.get(function.get("name"), [])
+                                   + by_system.get(function.get("system"), []))
+                        owner = qualification.classify_ownership(function["address"], function.get("name"),
+                            {**owner_snapshot, "claims": matches}, function.get("system"))
+                        owner_counts[owner["status"]] += 1
                 else:
                     owner_counts["unknown"] = len(functions)
                 qualified = current_qualification_records(args.state, args.root)
@@ -867,20 +912,11 @@ def main(argv: list[str] | None = None) -> int:
             for row in functions:
                 enriched = dict(row)
                 enriched["qualification"] = decisions.get(row["address"], {})
-                if owner_snapshot.get("snapshot_complete"):
-                    matches = (claims_by_address.get(row["address"], [])
+                matches = (claims_by_address.get(row["address"], [])
                                + claims_by_symbol.get(row.get("name"), [])
                                + claims_by_system.get(row.get("system"), []))
-                    kinds = {claim.get("kind") for claim in matches}
-                    if row["replacement_status"] in {"replaced", "edge-verified", "verified"} or "implemented" in kinds:
-                        ownership_status = "already_implemented"
-                    elif kinds & {"contributor", "active_pr", "repository_claim"}:
-                        ownership_status = "contributor_owned"
-                    elif "local_assignment" in kinds:
-                        ownership_status = "active_automation_worker"
-                    else:
-                        ownership_status = "confirmed_unclaimed"
-                    enriched["ownership"] = {**row["ownership"], "status": ownership_status}
+                enriched["ownership"] = qualification.classify_ownership(
+                    row["address"], row.get("name"), {**owner_snapshot, "claims": matches}, row.get("system"))
                 ranked_functions.append(enriched)
             _json(rank_functions(ranked_functions, edges, args.limit, weights), args.json)
         elif args.command == "leaves":

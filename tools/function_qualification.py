@@ -15,8 +15,10 @@ from pathlib import Path
 
 import function_catalog as catalog
 
-QUALIFICATION_VERSION = "0.3.0"
+QUALIFICATION_VERSION = "0.4.1"
 OWNERSHIP_MAX_AGE_SECONDS = 24 * 60 * 60
+REQUIRED_OWNERSHIP_SOURCES = {"replacement_registry", "repository_ownership_metadata",
+                              "open_issues_and_comments", "open_pull_requests", "local_work_assignments"}
 HEX_ADDRESS = re.compile(r"(?<![A-Za-z0-9_])0x([0-9a-fA-F]{8,16})(?![A-Za-z0-9_])", re.IGNORECASE)
 INSTRUCTION = re.compile(r"^\s*([0-9a-f]+):\s+((?:[0-9a-f]{2}\s+)+)([^\s]+)?\s*(.*)$")
 TERMINATORS = {"ret", "retf", "iret", "iretq", "jmp", "jmpq", "ud2", "int3"}
@@ -328,12 +330,15 @@ def _decode_with_objdump(code: bytes, start: int) -> list[dict]:
         raw_bytes = bytes.fromhex(match.group(2))
         mnemonic = (match.group(3) or "").lower()
         operands = match.group(4).strip().lower()
-        explicit_memory = "[" in operands
-        stack_memory = mnemonic.split(".")[0] in IMPLICIT_STACK_MEMORY or "[rsp" in operands or "[rbp" in operands
+        address_calculation = mnemonic == "lea"
+        explicit_memory = "[" in operands and not address_calculation
+        stack_memory = not address_calculation and (
+            mnemonic.split(".")[0] in IMPLICIT_STACK_MEMORY or "[rsp" in operands or "[rbp" in operands)
         implicit_pointer = mnemonic.split(".")[0] in IMPLICIT_POINTER_MEMORY
         instructions.append({"address": int(match.group(1), 16), "size": len(raw_bytes),
                              "bytes": raw_bytes.hex(), "mnemonic": mnemonic, "operands": operands,
                              "is_memory": explicit_memory or stack_memory or implicit_pointer,
+                             "is_address_calculation": address_calculation,
                              "is_stack_memory": stack_memory, "is_call": mnemonic.startswith("call"),
                              "is_indirect_call": mnemonic.startswith("call") and "[" in operands,
                              "is_branch": mnemonic.startswith(("j", "loop")),
@@ -432,7 +437,7 @@ def boundary_and_dependency_evidence(row: dict, edges: list[dict], elf_path: Pat
     static_references = row.get("memory_dependencies", {}).get("static_references")
     accesses = []
     for insn in decoded:
-        if not insn["is_memory"]:
+        if not insn["is_memory"] and not insn["is_address_calculation"]:
             continue
         operands = insn["operands"].split(",")
         destination_is_memory = "[" in operands[0] if operands else False
@@ -493,17 +498,21 @@ def boundary_and_dependency_evidence(row: dict, edges: list[dict], elf_path: Pat
 
 def classify_ownership(address: str, name: str | None, snapshot: dict,
                        system: str | None = None) -> dict:
-    if not snapshot.get("snapshot_complete"):
-        return {"status": "unknown", "evidence": [], "blockers": ["one or more ownership sources were not checked"]}
     matches = [claim for claim in snapshot.get("claims", [])
                if claim.get("address") == address
                or (name and claim.get("symbol") == name)
                or (system and claim.get("system") == system)]
+    if not ownership_snapshot_is_current(snapshot):
+        return {"status": "unknown", "claims": matches, "evidence": snapshot.get("sources", []),
+                "snapshot_sha256": snapshot.get("snapshot_sha256"),
+                "blockers": ["ownership sources are missing, incomplete, stale or future-dated; refresh without releasing claims"]}
     implemented = [claim for claim in matches if claim.get("kind") == "implemented"]
     contributor = [claim for claim in matches if claim.get("kind") in {"contributor", "active_pr", "repository_claim"}]
     automation = [claim for claim in matches if claim.get("kind") == "local_assignment"]
     if implemented:
         status = "already_implemented"
+    elif (contributor and automation) or len({c.get("owner") for c in contributor}) > 1:
+        status = "ownership_conflict"
     elif contributor:
         status = "contributor_owned"
     elif automation:
@@ -514,7 +523,7 @@ def classify_ownership(address: str, name: str | None, snapshot: dict,
     return {"status": status, "claims": matches, "snapshot_sha256": snapshot.get("snapshot_sha256"),
             "evidence": evidence,
             "blockers": ["conflicting ownership evidence requires human resolution"]
-            if contributor and automation else []}
+            if status == "ownership_conflict" else []}
 
 
 def ownership_snapshot_is_current(snapshot: dict, now: int | None = None) -> bool:
@@ -522,11 +531,15 @@ def ownership_snapshot_is_current(snapshot: dict, now: int | None = None) -> boo
     if not snapshot.get("snapshot_complete") or not isinstance(snapshot.get("checked_at"), int):
         return False
     sources = snapshot.get("sources", [])
+    names = [source.get("source") for source in sources]
+    if not REQUIRED_OWNERSHIP_SOURCES.issubset(set(names)) or len(names) != len(set(names)):
+        return False
     if not sources or any(source.get("status") != "complete"
                           or not isinstance(source.get("checked_at"), int) for source in sources):
         return False
-    age = (int(time.time()) if now is None else now) - snapshot["checked_at"]
-    return 0 <= age <= OWNERSHIP_MAX_AGE_SECONDS
+    current = int(time.time()) if now is None else now
+    return all(0 <= current - stamp <= OWNERSHIP_MAX_AGE_SECONDS
+               for stamp in [snapshot["checked_at"], *(source["checked_at"] for source in sources)])
 
 
 def qualification_key(row: dict, metadata: dict, ownership: dict, executable_sha: str) -> str:
@@ -551,11 +564,17 @@ def qualification_tool_identity(root: Path) -> dict:
 
 def qualify_rows(functions: list[dict], edges: list[dict], snapshot: dict, executable_sha: str,
                  elf_path: Path, segments: list[dict], metadata: dict | None = None,
-                 batch_size: int = 20, previous: dict[str, dict] | None = None) -> list[dict]:
+                 batch_size: int = 20, previous: dict[str, dict] | None = None,
+                 addresses: list[str] | None = None) -> list[dict]:
     if batch_size < 1:
         raise ValueError("batch size must be positive")
+    requested = {catalog.address(address) for address in addresses} if addresses else None
+    if requested and requested - {row["address"] for row in functions}:
+        raise ValueError("requested qualification address is absent from the catalog")
     candidates = []
     for row in functions:
+        if requested is not None and row["address"] not in requested:
+            continue
         owner = classify_ownership(row["address"], row.get("name"), snapshot, row.get("system"))
         if owner["status"] in {"already_implemented", "contributor_owned", "active_automation_worker"}:
             continue
@@ -573,6 +592,9 @@ def qualify_rows(functions: list[dict], edges: list[dict], snapshot: dict, execu
                                       + len(item[0]["calls"]["unresolved_direct"])
                                       + len(item[0]["calls"]["unresolved_indirect"]),
                                       bool(item[0]["memory_dependencies"].get("static_references")),
+                                      bool(item[0].get("classification", {}).get("conflict")),
+                                      not bool(item[0].get("type_intelligence", {}).get("names")),
+                                      item[0].get("complexity", {}).get("value") or 1 << 30,
                                       item[0].get("size_bytes") or 1 << 30,
                                       item[0]["address"]))
     overlapping: set[str] = set()
@@ -699,6 +721,8 @@ def cache_snapshot(state: Path, snapshot: dict) -> None:
         old = db.execute("SELECT snapshot_sha256 FROM ownership_snapshots WHERE id=1").fetchone()
         if old and old[0] != snapshot["snapshot_sha256"]:
             db.execute("DELETE FROM qualifications")
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='candidate_inventories'").fetchone():
+                db.execute("DELETE FROM candidate_inventories")
         db.execute("INSERT INTO ownership_snapshots VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET "
                    "snapshot_sha256=excluded.snapshot_sha256,data=excluded.data",
                    (snapshot["snapshot_sha256"], catalog.canonical(snapshot)))

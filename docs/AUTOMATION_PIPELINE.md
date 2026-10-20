@@ -6,12 +6,18 @@ PRs, or touch Byrgenwerth.
 
 ## Current boundary
 
-The command accepts a **prewritten clean-room patch** with `--patch`. It does not generate
-replacement source. A normal candidate must have a fresh catalog decision
+The command accepts a **clean-room integration patch** with `--patch`. Source can be prewritten
+or proposed by the optional [implementation generator](IMPLEMENTATION_GENERATOR.md). Generation
+is disabled by default, and experimental/mock output cannot enter a function PR. Registration and
+readable integration are still manual. A normal candidate must have a fresh catalog decision
 `eligible_for_replacement_development`, a complete current ownership snapshot declaring it
 `confirmed_unclaimed`, an evidence-backed ABI manifest, and the minimum number of local recorded
 original-game fixtures. Each fixture for a new candidate must include the recorder's function and
-run-ID provenance; legacy fixture sets are accepted only for a regression canary backed by a
+run-ID provenance and exact capture executable SHA-256; generated/exploration cases cannot count
+as recordings. New candidates also require a current [trial inventory](CANDIDATE_ELIGIBILITY.md)
+and complete original-only instruction-memory/CFG evidence. Both are recomputed against current
+inputs during eligibility checks; an old report or forged eligibility flag cannot authorize a run.
+Legacy fixture sets are accepted only for a regression canary backed by a
 current passing recorded-verification row. ABI evidence references must resolve to repository
 files or HTTPS sources. Existing verified functions are refused except in `--regression-only`
 mode, which cannot create a function PR or affect verification counts.
@@ -51,6 +57,7 @@ python3 tools/automation_pipeline.py 0x01234567 \
   --name analyzed_function \
   --state "$BB_CATALOG_STATE" --elf "$BB_ELF" \
   --captures "$BB_CAPTURES/analyzed_function" --abi /private/abi.json \
+  --eligibility-report /private/trial-inventory.json --trace-evidence /private/original-evidence.json \
   --patch /private/replacement.patch \
   --worktree-root /private/paleblood-automation-worktrees \
   --output /private/paleblood-automation-runs --dry-run
@@ -80,8 +87,10 @@ satisfy recorded-input provenance. Ghidra discovery, historical unclaimed status
 execution-investigation qualification cannot substitute for fresh ownership checks, supported
 boundaries, an independently established ABI/behavior contract, and matching recorded fixtures.
 
-Before adding autonomous source generation, demonstrate a real unimplemented candidate passing
+Before admitting generated source to a real-function PR, demonstrate a real unimplemented candidate passing
 these prerequisites and both compiler runs with complete memory/CFG observations. The smallest
 safe alternative to the clock boundary is an evidenced import-free candidate with recorded inputs;
-the pipeline must refuse absent evidence rather than generate a replacement or draft PR. Source
-generation itself remains manual through the prewritten clean-room patch interface.
+the pipeline must refuse absent evidence rather than admit a replacement or draft PR. Experimental
+generation remains private and cannot bypass this boundary. Optional `--generation-report` and
+`--generated-source-path` attach exact proposal provenance to the supplied integration patch;
+the recorded-game and qualification gates still run independently.

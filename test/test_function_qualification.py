@@ -44,7 +44,8 @@ class QualificationTests(unittest.TestCase):
     def snapshot(claims=(), complete=True):
         return {"snapshot_complete": complete, "claims": list(claims),
                 "checked_at": int(time.time()),
-                "sources": [{"source": "issues", "status": "complete", "checked_at": int(time.time())}]}
+                "sources": [{"source": source, "status": "complete", "checked_at": int(time.time())}
+                            for source in sorted(qualification.REQUIRED_OWNERSHIP_SOURCES)]}
 
     @staticmethod
     def row(address="0x00400100", code_size=3, instruction_count=2):
@@ -58,7 +59,7 @@ class QualificationTests(unittest.TestCase):
         owner = qualification.classify_ownership("0x00400100", "candidate", self.snapshot([
             {"address": "0x00400100", "source": "issue", "kind": "contributor"},
             {"address": "0x00400100", "source": "worktree", "kind": "local_assignment"}]))
-        self.assertEqual(owner["status"], "contributor_owned")
+        self.assertEqual(owner["status"], "ownership_conflict")
         self.assertTrue(owner["blockers"])
 
     def test_missing_ownership_source_remains_unknown(self):
@@ -68,8 +69,7 @@ class QualificationTests(unittest.TestCase):
 
     def test_ownership_snapshot_must_be_complete_timestamped_and_fresh(self):
         current = int(time.time())
-        fresh = {"snapshot_complete": True, "checked_at": current,
-                 "sources": [{"status": "complete", "checked_at": current}]}
+        fresh = self.snapshot()
         stale = {**fresh, "checked_at": current - qualification.OWNERSHIP_MAX_AGE_SECONDS - 1}
         missing_timestamp = {"snapshot_complete": True, "sources": [{"status": "complete"}]}
         self.assertTrue(qualification.ownership_snapshot_is_current(fresh, now=current))
@@ -120,6 +120,50 @@ class QualificationTests(unittest.TestCase):
             self.elf, self.segments)
         self.assertFalse(result["eligible_for_fixture_generation"])
         self.assertIn("data-memory", " ".join(result["blockers"]))
+
+    def test_lea_calculates_an_address_without_reading_memory(self):
+        for code in (bytes.fromhex("488d4708c3"), bytes.fromhex("488d442408c3")):
+            self.elf.write_bytes(self.make_elf(code))
+            _, segments = qualification.read_elf_executable_segments(self.elf)
+            row = self.row(code_size=len(code), instruction_count=2)
+            result = qualification.boundary_and_dependency_evidence(
+                row, [{"caller": "0x004000f0", "callee": row["address"], "kind": "direct"}], self.elf, segments)
+            decoded = qualification._decode_with_objdump(code, 0x400100)
+            self.assertTrue(decoded[0]["is_address_calculation"])
+            self.assertFalse(decoded[0]["is_memory"])
+            self.assertFalse(decoded[0]["is_stack_memory"])
+            self.assertTrue(result["eligible_for_original_execution"])
+            self.assertFalse(result["eligible_for_replacement_development"])
+            self.assertEqual(result["dependencies"]["memory_accesses"][0]["access"], "address_calculation")
+
+    def test_load_through_a_lea_result_still_requires_memory_fixtures(self):
+        code = bytes.fromhex("488d4708488b00c3")
+        self.elf.write_bytes(self.make_elf(code))
+        _, segments = qualification.read_elf_executable_segments(self.elf)
+        row = self.row(code_size=len(code), instruction_count=3)
+        result = qualification.boundary_and_dependency_evidence(
+            row, [{"caller": "0x004000f0", "callee": row["address"], "kind": "direct"}], self.elf, segments)
+        self.assertFalse(result["eligible_for_original_execution"])
+        self.assertEqual([access["access"] for access in result["dependencies"]["memory_accesses"]],
+                         ["address_calculation", "read", "read"])
+
+    def test_selected_entry_retains_full_catalog_overlap_checks(self):
+        row = self.row()
+        overlapping = self.row(address="0x00400101", code_size=2, instruction_count=1)
+        results = qualification.qualify_rows([row, overlapping], [], self.snapshot(), self.sha,
+            self.elf, self.segments, addresses=[row["address"]])
+        self.assertEqual([item["address"] for item in results], [row["address"]])
+        self.assertEqual(results[0]["boundary_class"], "overlapping_extent")
+        self.assertFalse(results[0]["eligible_for_original_execution"])
+
+    def test_selected_entry_rejects_absent_and_preserves_contributor_ownership(self):
+        row = self.row()
+        with self.assertRaisesRegex(ValueError, "absent"):
+            qualification.qualify_rows([row], [], self.snapshot(), self.sha, self.elf, self.segments,
+                                       addresses=["0x00400900"])
+        snapshot = self.snapshot([{"address": row["address"], "kind": "contributor", "owner": "synthetic"}])
+        self.assertEqual(qualification.qualify_rows([row], [], snapshot, self.sha, self.elf, self.segments,
+                                                   addresses=[row["address"]]), [])
 
     def test_boundary_uncertainty_and_overlaps_are_blocked(self):
         row = self.row()
@@ -201,10 +245,10 @@ class QualificationTests(unittest.TestCase):
         database.commit()
         database.close()
         checked_at = int(time.time())
-        source = {"source": "issues", "status": "complete", "checked_at": checked_at}
+        sources = self.snapshot()['sources']
         qualification.cache_snapshot(state, {"snapshot_sha256": "owner", "claims": [],
                                              "checked_at": checked_at, "snapshot_complete": True,
-                                             "sources": [source]})
+                                             "sources": sources})
         cached = {"address": "0x00400100", "qualification_cache_key": "key",
                   "qualification_version": qualification.QUALIFICATION_VERSION,
                   "catalog_identity": "fixture-catalog", "ownership_snapshot_sha256": "owner",
@@ -213,7 +257,7 @@ class QualificationTests(unittest.TestCase):
                   "eligible_for_original_execution": True}
         qualification.save_qualifications(state, [cached])
         current = qualification.load_qualifications(state, {"objdump_version": "1"})
-        self.assertEqual(current[0]["ownership"]["evidence"], [source])
+        self.assertEqual(current[0]["ownership"]["evidence"], sources)
         self.assertEqual(current[0]["ownership_revalidated_at"], checked_at)
         self.assertEqual(qualification.load_qualifications(state, {"objdump_version": "2"}), [])
 

@@ -23,7 +23,7 @@ PTRACE_TRACEME, PTRACE_PEEKDATA, PTRACE_POKEDATA = 0, 2, 5
 PTRACE_CONT, PTRACE_KILL, PTRACE_SINGLESTEP = 7, 8, 9
 PTRACE_GETREGS, PTRACE_SETREGS = 12, 13
 CS_ARCH_X86, CS_MODE_64, CS_OPT_DETAIL, CS_OPT_ON = 3, 1 << 3, 2, 3
-CS_OP_IMM, CS_OP_MEM, CS_AC_READ, CS_AC_WRITE = 2, 3, 1, 2
+CS_OP_REG, CS_OP_IMM, CS_OP_MEM, CS_AC_READ, CS_AC_WRITE = 1, 2, 3, 1, 2
 CS_GRP_JUMP, CS_GRP_CALL, CS_GRP_RET = 1, 2, 3
 WORD = ctypes.sizeof(ctypes.c_long)
 MAX_EVENTS = 4096
@@ -186,6 +186,15 @@ class Capstone:
                                  "segment": name(mem.segment), "scale": mem.scale,
                                  "disp": mem.disp, "size": operand.size, "access": operand.access})
             raw = bytes(insn.bytes[:insn.size])
+            mnemonic = insn.mnemonic.decode()
+            # Capstone represents LEA's address expression as a memory operand,
+            # but opcode 8D computes an address without loading or storing there.
+            address_calculation = (mnemonic.lower() == "lea" and detail.opcode[0] == 0x8D and
+                                   detail.op_count == 2 and detail.operands[0].type == CS_OP_REG and
+                                   detail.operands[1].type == CS_OP_MEM)
+            address_operands = operands if address_calculation else []
+            if address_calculation:
+                operands = []
             groups = instruction_detail.groups[:instruction_detail.groups_count]
             if CS_GRP_RET in groups:
                 flow_kind = "return"
@@ -195,8 +204,9 @@ class Capstone:
                 flow_kind = "jump" if insn.mnemonic.decode().lower() in ("jmp", "jmpq") else "conditional"
             else:
                 flow_kind = None
-            return {"size": insn.size, "mnemonic": insn.mnemonic.decode(),
+            return {"size": insn.size, "mnemonic": mnemonic,
                     "text": insn.op_str.decode(), "operands": operands, "bytes": raw.hex(),
+                    "address_calculation": address_calculation, "address_operands": address_operands,
                     "vex_or_evex": raw[:1] in (b"\xc4", b"\xc5", b"\x62"),
                     "address_size": detail.addr_size,
                     "prefixes": [value for value in detail.prefix if value],
@@ -288,6 +298,8 @@ def _instruction_support_issue(insn: dict) -> tuple[str, str] | None:
     prefixes = set(insn.get("prefixes", ()))
     repeat = bool(prefixes.intersection((0xF2, 0xF3))) or any(
         word in ("rep", "repe", "repz", "repne", "repnz") for word in words[:-1])
+    if mnemonic == "lea" and (not insn.get("address_calculation") or 0xF0 in prefixes):
+        return "address_calculation", "LEA opcode/operand layout or LOCK prefix is unsupported"
 
     string_operation = mnemonic in STRING_MEMORY_MNEMONICS
     if mnemonic in ("movsd", "cmpsd"):
@@ -908,7 +920,7 @@ def trace_child(pid: int, target: int, boot: dict, case: dict,
     result["gaps"].extend({"instruction": f"0x{pc:x}", "mnemonic": mnemonic,
                            "capability": capability, "reason": reason}
                          for pc, mnemonic, capability, reason in sorted(gaps_seen))
-    result["trace_version"] = "capstone5-ptrace-x86_64-v4"
+    result["trace_version"] = "capstone5-ptrace-x86_64-v5"
     result["identity"] = "original_or_replacement_guest_instructions"
     result["control_flow_coverage"] = _control_flow_coverage(
         cfg_steps, ranges, result["complete"], result.get("stop_reason"),
