@@ -9,10 +9,10 @@
   },
   "imports_bundled": 219,
   "imports_called": 7,
-  "imports_implemented": 28,
-  "imports_remaining": 439,
+  "imports_implemented": 30,
+  "imports_remaining": 437,
   "imports_total": 686,
-  "imports_unresolved": 2,
+  "imports_unresolved": 4,
   "milestone": "loaded",
   "milestone_index": 0,
   "milestones": [
@@ -30,13 +30,13 @@
     {
       "exports": 2140,
       "imports": 79,
-      "imports_remaining": 57,
+      "imports_remaining": 55,
       "name": "libc.elf"
     },
     {
       "exports": 165,
       "imports": 83,
-      "imports_remaining": 71,
+      "imports_remaining": 67,
       "name": "libSceFios2.elf"
     }
   ],
