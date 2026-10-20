@@ -118,6 +118,10 @@ fail. Evidence retains both execution sides under an identity binding package, f
 compiled libraries and relevant tool sources. Trace differences between equivalent internal paths
 remain diagnostic, not mismatches solely because PCs differ.
 
+Scalar replay also rejects the harness's `stack` argument list and `gs` thread-pointer setup.
+Neither is declared by this increment's register-only ABI. The legacy `stack_args` spelling is
+also refused; checking that spelling alone does not constrain the harness's actual stack input.
+
 Replay here is deliberately **constructed-input regression**, even if someone supplies JSON with
 capture metadata. It never sets `genuine_original_game_differential_passed`. That status and PR
 eligibility require the existing independent pipeline with recorded provenance and its minimum

@@ -69,6 +69,21 @@ class GeneratorFixture:
 
 
 class GeneratorTests(GeneratorFixture, unittest.TestCase):
+    def test_scalar_replay_rejects_undeclared_stack_and_thread_state_before_execution(self):
+        cases = self.directory / "cases"
+        cases.mkdir()
+        (cases / "abi.json").write_text(json.dumps(self.abi))
+        fixture = {"schema": 1, "address": self.package["address"],
+                   "args": {"rdi": 1}, "returns": "i32"}
+        # These are actual harness inputs, rather than inferred C++ argument types.
+        for field, value in (("stack", [7]), ("gs", "guest:0x00401000")):
+            with self.subTest(field=field):
+                (cases / "fixture.json").write_text(json.dumps({**fixture, field: value}))
+                with patch.object(generator, "sandbox", side_effect=AssertionError("undeclared state executed")), \
+                        patch.object(generator.catalog, "sha256", return_value="synthetic"):
+                    with self.assertRaisesRegex(generator.GenerationError, "scalar ABI"):
+                        generator.replay(self.directory, self.package, self.elf, self.elf, cases)
+
     def test_analysis_is_complete_and_binds_identity_without_raw_bytes_or_paths(self):
         self.assertEqual(len(self.package["instruction_listing"]), 2)
         self.assertEqual(self.package["mode"], "experimental")
