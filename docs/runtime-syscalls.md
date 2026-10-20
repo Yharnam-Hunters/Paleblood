@@ -236,6 +236,24 @@ attribute and for one filled by `scePthreadAttrGet` from the main thread. Guest 
 also settle it: a thread created without a detach state being set, then joined or detached
 (`scePthreadJoin`, `pthread_join` and `scePthreadDetach` are imported).
 
+## POSIX names of the thread self and attribute calls (`libScePosix`, issue #34)
+
+`eboot` imports `pthread_self`, `pthread_attr_init` and `pthread_attr_destroy` from `libScePosix`
+(`symbols/imports.csv`), next to the `libkernel` SCE names the runtime already implements. They
+are the same calls with the POSIX error convention, as for the mutex and detach-state calls:
+
+- `pthread_self` has no error return (POSIX), so it answers what `scePthreadSelf` answers: the
+  calling thread's own variable value. With no guest thread registered on the host thread it stops
+  by the name the guest used.
+- `pthread_attr_init` allocates the attribute object and stores it in the variable; `ENOMEM` when
+  it cannot (POSIX; FreeBSD libthr's `_pthread_attr_init`). `pthread_attr_destroy` frees it and
+  empties the variable; `EINVAL` for a missing or empty variable (libthr's
+  `_pthread_attr_destroy`). The POSIX names return the error number itself, the SCE names
+  `0x80020000` plus it, and an object made under one name is freed under the other.
+- A missing variable passed to `pthread_attr_init` is undefined in POSIX and unchecked in libthr.
+  The runtime answers `EINVAL` under both names, as the SCE name already did; no PS4 source or
+  call site says otherwise.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
@@ -259,5 +277,6 @@ Implement the established contract and test the `RT_SYSLIB` entry through its li
 - [vitasdk/vita-headers `psp2/error.h`](https://github.com/vitasdk/vita-headers/blob/master/include/psp2/error.h) - `0 on success` as the documented SCE-family return convention
 - [OpenOrbis PS4 toolchain `Sysmodule.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/Sysmodule.h) and [`_types/sysmodule.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/_types/sysmodule.h) - the `sceSysmoduleLoadModule`, `sceSysmoduleIsLoaded` and `sceSysmoduleUnloadModule` declarations and return convention, and the system module ids (after [psdevwiki, "Libraries"](https://www.psdevwiki.com/ps4/Libraries))
 - [POSIX `pthread_attr_setdetachstate`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_attr_getdetachstate.html) - the detach state semantics, the invalid-value error, and the recommended `EINVAL` for an uninitialised attribute
+- [POSIX `pthread_self`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_self.html) and [`pthread_attr_init`/`pthread_attr_destroy`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_attr_destroy.html)
 - [FreeBSD `pthread_attr(3)`](https://man.freebsd.org/cgi/man.cgi?query=pthread_attr_setdetachstate&sektion=3), [libthr `thr_attr.c`](https://cgit.freebsd.org/src/tree/lib/libthr/thread/thr_attr.c) (`_pthread_attr_setdetachstate`, `_pthread_attr_get_np`), [`thr_create.c`](https://cgit.freebsd.org/src/tree/lib/libthr/thread/thr_create.c) (`_pthread_create`: the default attribute for a null or empty variable) and [`include/pthread.h`](https://cgit.freebsd.org/src/tree/include/pthread.h) (`PTHREAD_CREATE_JOINABLE`, `PTHREAD_CREATE_DETACHED`)
 - [OpenOrbis `include/orbis/_types/pthread.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/_types/pthread.h) - the PS4 homebrew SDK's `ORBIS_PTHREAD_CREATE_*` values, which follow FreeBSD's

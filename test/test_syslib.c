@@ -4,6 +4,7 @@
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
+#include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -96,6 +97,20 @@ static int netctl_register(void *callback, void *arg, int *id)
 static int netctl_unregister(int id) { return ((f_unregister)netctl_unregister_entry)(id); }
 static int netctl_info(int module, void *info) { return ((f_info)netctl_get_info_entry)(module, info); }
 static int netctl_nat(void *nat_info) { return ((f_nat)netctl_get_nat_info_entry)(nat_info); }
+
+/* pthread_self on a host thread with no guest thread registered: the guest thread is per host
+   thread, so a fresh host thread has none, and the call must stop by its own name. */
+static void *(*posix_self_entry)(void);
+static void *call_posix_self(void *unused)
+{
+    (void)unused;
+    return posix_self_entry();
+}
+static void posix_self_on_unregistered_thread(void)
+{
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, call_posix_self, NULL) == 0) pthread_join(thread, NULL);
+}
 
 static int died_in_fatal(void (*call)(void))
 {
@@ -261,6 +276,27 @@ int main(void)
     CHECK(died_in_fatal(read_detach_state_without_variable));
     CHECK(is_implemented("libkernel", "scePthreadAttrSetdetachstate"));
     CHECK(is_implemented("libScePosix", "pthread_attr_setdetachstate"));
+
+    /* The POSIX names of self, attribute init and destroy answer as the SCE names do, with the
+       errno itself instead of an SCE code, and share the same attribute objects. */
+    posix_self_entry = (void *(*)(void))fn("libScePosix", "pthread_self");
+    const f1 posix_attr_init = (f1)fn("libScePosix", "pthread_attr_init");
+    const f1 posix_attr_destroy = (f1)fn("libScePosix", "pthread_attr_destroy");
+    if (failures) return 1;
+    CHECK(posix_self_entry() == self);
+    CHECK(died_in_fatal(posix_self_on_unregistered_thread));
+    void *posix_attr = NULL;
+    CHECK(posix_attr_init(&posix_attr) == 0 && posix_attr);
+    CHECK(posix_set_detach(&posix_attr, 1) == 0 && detach_state_of(&posix_attr) == 1);
+    CHECK(posix_attr_destroy(&posix_attr) == 0 && posix_attr == NULL);
+    CHECK(posix_attr_destroy(&posix_attr) == 22 && posix_attr_destroy(NULL) == 22);
+    CHECK(posix_attr_init(NULL) == 22);
+    /* The SCE names keep their codes, and an object from one name is freed by the other. */
+    CHECK(thread_attr_init(NULL) == (int)0x80020016 && thread_attr_destroy(&posix_attr) == (int)0x80020016);
+    CHECK(posix_attr_init(&posix_attr) == 0 && thread_attr_destroy(&posix_attr) == 0 && posix_attr == NULL);
+    CHECK(thread_attr_init(&posix_attr) == 0 && posix_attr_destroy(&posix_attr) == 0 && posix_attr == NULL);
+    CHECK(is_implemented("libScePosix", "pthread_self"));
+    CHECK(is_implemented("libScePosix", "pthread_attr_init") && is_implemented("libScePosix", "pthread_attr_destroy"));
 
     /* sched_yield gives up the processor and succeeds with 0, every time. That the host scheduler
        actually ran another thread is not observable from here, so only the contract's result is
