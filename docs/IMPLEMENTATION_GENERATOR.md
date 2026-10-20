@@ -103,6 +103,12 @@ read-only. Missing namespace support is a blocker, never an unsafe fallback. CPU
 wall-clock, file/output and attempt limits are bounded. Limits are per process, not a claim of a
 system-wide cgroup quota or protection against kernel vulnerabilities.
 
+On Ubuntu runners the build installs bubblewrap and loads its distribution-provided AppArmor
+profile to permit the sandbox's user namespace. Global AppArmor restrictions remain enabled and
+network isolation is unchanged. An absent/invalid vendor profile or unavailable sandbox fails the
+required regression job. This follows Ubuntu's documented
+[per-application namespace policy](https://discourse.ubuntu.com/t/understanding-apparmor-user-namespace-restriction/58007).
+
 Optional replay reuses the existing native harness, loader, tracer, comparator and strict memory/
 CFG gate. Both compilers must pass the exact same 1–64 fixtures; missing cases, ABI conflicts,
 unexpected pointer/import/global assumptions, partial traces, host transitions and mismatches

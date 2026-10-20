@@ -22,7 +22,19 @@ jobs:
       - name: Install optional instruction-trace dependency
         run: python3 -m pip install --disable-pip-version-check capstone==5.0.9
       - name: Install isolated generator dependency
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap apparmor
+      - name: Load the distribution's bubblewrap namespace profile
+        # Ubuntu restricts user namespaces unless the sandbox executable has its vendor profile.
+        # Load only that profile; keep AppArmor and all global namespace restrictions enabled.
+        run: |
+          for profile in /etc/apparmor.d/bwrap /etc/apparmor.d/bwrap-userns-restrict; do
+            if [ -f "$profile" ]; then
+              sudo apparmor_parser -r "$profile"
+              exit 0
+            fi
+          done
+          echo 'Required distribution bubblewrap AppArmor profile is unavailable' >&2
+          exit 1
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=${{ matrix.cc }} -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
       - name: Build
