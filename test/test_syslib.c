@@ -10,6 +10,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 static int unresolved_test_entry(void) { return -1; }
@@ -108,6 +109,18 @@ static int died_in_fatal(void (*call)(void))
     if (waitpid(child, &status, 0) < 0) return 0;
     return WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
 }
+
+/* Microseconds elapsed since `start` on the host's monotonic clock: the sleeps are checked as
+   lasting at least what was asked, never as an exact duration. */
+static int64_t elapsed_us(const struct timespec *start)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (int64_t)(now.tv_sec - start->tv_sec) * 1000000 + (now.tv_nsec - start->tv_nsec) / 1000;
+}
+
+static int (*posix_usleep_entry)(uint32_t);
+static void usleep_one_second(void) { posix_usleep_entry(1000000); }
 
 /* The paths whose PS4 answer is not established. The ids are file-scope so a child can unregister
    one the parent registered before forking. */
@@ -410,6 +423,19 @@ int main(void)
     CHECK(filled[0] == 0xa5 && filled[1] == 0xa5 && filled[2] == 0xa5 && filled[3] == 0xee);
     CHECK(libc_memset(filled, 0, 0) == filled && filled[0] == 0xa5);
     CHECK(is_implemented("libSceLibcInternal", "memcpy") && is_implemented("libSceLibcInternal", "memset"));
+
+    /* sceKernelUsleep and usleep sleep at least the microseconds asked and return 0. usleep's
+       one-second-or-more range has no established PS4 answer, so it stops by name. */
+    int (*kernel_usleep)(uint32_t) = (int (*)(uint32_t))fn("libkernel", "sceKernelUsleep");
+    posix_usleep_entry = (int (*)(uint32_t))fn("libScePosix", "usleep");
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    CHECK(kernel_usleep(2000) == 0 && elapsed_us(&start) >= 2000);
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    CHECK(posix_usleep_entry(1500) == 0 && elapsed_us(&start) >= 1500);
+    CHECK(kernel_usleep(0) == 0 && posix_usleep_entry(0) == 0);
+    CHECK(died_in_fatal(usleep_one_second));
+    CHECK(is_implemented("libkernel", "sceKernelUsleep") && is_implemented("libScePosix", "usleep"));
 
     if (!failures) puts("syslib: ok");
     return failures != 0;
