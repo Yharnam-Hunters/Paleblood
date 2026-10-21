@@ -63,6 +63,12 @@ loader override conflicts with that request and is rejected by Hopper. Allow the
 analysis to finish rather than combining those flags.
 
 Each batch exports the complete REA Evidence bundle, then requests `close_binary` in cleanup.
+If a completed procedure inventory or function dossier exceeds REA's MCP response budget, the
+exporter uses the reported retained Evidence ID to export the same session immediately. It reads
+the complete private bundle (up to 256 MiB), checks the export acknowledgement, and selects exactly
+that ID with the requested operation and image hash. The original transport error and recovered
+complete Evidence are both preserved; the producer is not repeated. A dossier still has to pass
+the function-entry and native-profile checks before it counts as exported.
 Timed-out requests are cancelled and given a bounded drain interval. If a request does not drain,
 or REA cannot confirm cleanup, the command fails and records cleanup as unconfirmed. Follow the
 provider's diagnostic before reopening a target; process exit alone does not establish that a

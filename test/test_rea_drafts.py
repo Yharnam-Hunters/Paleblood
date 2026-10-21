@@ -21,6 +21,7 @@ from ps4elf import build  # noqa: E402
 PEER = r'''
 import hashlib, json, pathlib, sys, time
 config_path = pathlib.Path(sys.argv[1])
+retained = []
 for line in sys.stdin:
     request = json.loads(line)
     config = json.loads(config_path.read_text())
@@ -45,8 +46,9 @@ for line in sys.stdin:
         elif name == 'close_binary':
             content = {'result': {'closed': True}}
         else:
-            content = {'evidence_id': 'ev_' + 'a' * 64,
+            content = {'evidence_id': 'ev_' + hashlib.sha256((name + json.dumps(arguments, sort_keys=True)).encode()).hexdigest(),
                        'subject': {'digest': {'sha256': image_hash}},
+                       'operation': name,
                        'analysis_profile': {'digest': config.get('profile', 'p' * 64)}}
             if name == 'list_procedures':
                 value = [{'address': hex(address + config.get('analysis_base', 0))} for address in (0x1000, 0x1010)]
@@ -58,10 +60,40 @@ for line in sys.stdin:
                 value = {'pseudocode': '' if config.get('no_pseudocode') else 'synthetic placeholder',
                          'procedure': {'address': '0xff0' if config.get('wrong_dossier') else arguments['procedure']}}
             elif name == 'export_evidence_bundle':
-                pathlib.Path(arguments['path']).write_text('{}\n')
-                value = {'exported': True}
-            content['normalized_result'] = value
+                records = json.loads(json.dumps(retained))
+                if config.get('bundle_neighbor') and records:
+                    neighbor = json.loads(json.dumps(records[-1]))
+                    neighbor['evidence_id'] = 'ev_' + 'f' * 64
+                    neighbor['operation'] = 'other_operation'
+                    neighbor['subject']['digest']['sha256'] = 'f' * 64
+                    records.insert(0, neighbor)
+                if config.get('bundle_wrong_target'):
+                    for record in records:
+                        record['subject']['digest']['sha256'] = 'e' * 64
+                if config.get('bundle_wrong_operation'):
+                    for record in records:
+                        record['operation'] = 'other_operation'
+                if config.get('bundle_duplicate') and records:
+                    records.append(records[-1])
+                if config.get('bundle_missing'):
+                    records = []
+                bundle = pathlib.Path(arguments['path'])
+                bundle.write_text(json.dumps({'records': records}) + '\n')
+                value = None
+                content = {'result': {'path': str(bundle), 'bytes': bundle.stat().st_size,
+                                      'records': len(records), 'unknowns': 0}}
+            if name != 'export_evidence_bundle':
+                content['normalized_result'] = value
+                retained.append(content)
         result = {'structuredContent': content}
+        if ((name == 'list_procedures' and config.get('oversized_inventory')) or
+                (name == 'analyze_function' and config.get('oversized_dossier'))):
+            ident = content['evidence_id']
+            error = {'error': {'code': 'resource_constraint', 'details': {
+                'operation': name, 'resource': config.get('constraint_resource', 'transport'),
+                'reported_limits': {'evidence_id': ident,
+                    'evidence_reference': {'kind': 'retained-evidence', 'evidence_id': ident}}}}}
+            result = {'isError': True, 'content': [{'type': 'text', 'text': json.dumps(error)}]}
         if name == 'close_binary' and config.get('fail_close'):
             result = {'isError': True, 'content': [{'type': 'text', 'text': 'cleanup_incomplete'}]}
     print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
@@ -255,6 +287,51 @@ class ReaDraftTests(unittest.TestCase):
         self.args.provenance.write_text(json.dumps(provenance))
         self.configuration["image_sha256"] = drafts.digest(self.image)
         self.assertEqual(self.run_export()["pseudocode"], 2)
+
+    def test_oversized_inventory_recovers_exact_retained_record_without_repeating_producer(self):
+        self.configuration.update(oversized_inventory=True, bundle_neighbor=True)
+        report = self.run_export()
+        self.assertEqual(report["statuses"], {"dossier": 2, "missing-procedure": 1})
+        self.assertEqual(len(self.calls("list_procedures")), 1)
+        self.assertEqual(len(self.calls("analyze_function")), 2)
+        self.assertEqual(len(self.calls("export_evidence_bundle")), 2)  # recovery, then final ledger
+        run = self.args.output / report["directory"]
+        self.assertTrue(json.loads((run / "procedures.json").read_text())["result"]["isError"])
+        recovered = json.loads((run / "procedures-retained-evidence.json").read_text())
+        self.assertEqual(recovered["operation"], "list_procedures")
+        self.assertEqual(recovered["subject"]["digest"]["sha256"], drafts.digest(self.image))
+
+    def test_oversized_dossiers_recover_once_and_resume_uses_the_complete_record_hash(self):
+        self.configuration.update(oversized_dossier=True, bundle_neighbor=True)
+        report = self.run_export()
+        self.assertEqual(report["pseudocode"], 2)
+        self.assertEqual(len(self.calls("analyze_function")), 2)
+        self.assertEqual(len(self.calls("export_evidence_bundle")), 3)
+        row = self.state()["functions"]["0x00401000"]
+        self.assertTrue(row["file"].endswith("-retained-evidence.json"))
+        self.assertEqual(json.loads((self.args.output / row["file"]).read_text())["operation"], "analyze_function")
+        self.args.resume = True
+        self.assertEqual(self.run_export()["attempted"], 0)
+        self.assertEqual(len(self.calls("analyze_function")), 2)
+
+    def test_retained_inventory_recovery_refuses_wrong_target_operation_missing_or_duplicate_id(self):
+        for field in ("bundle_wrong_target", "bundle_wrong_operation", "bundle_missing", "bundle_duplicate"):
+            with self.subTest(field=field):
+                self.args.output = self.base / field
+                self.configuration = {"log": str(self.base / (field + ".jsonl")),
+                    "image_sha256": drafts.digest(self.image), "oversized_inventory": True, field: True}
+                with self.assertRaisesRegex(RuntimeError, "retained transport recovery failed"):
+                    self.run_export()
+                self.assertEqual(len(self.calls("list_procedures")), 1)
+                self.assertEqual(self.calls("analyze_function"), [])
+                self.assertEqual(len(self.calls("close_binary")), 1)
+
+    def test_nontransport_resource_error_does_not_trigger_retained_recovery(self):
+        self.configuration.update(oversized_inventory=True, constraint_resource="memory")
+        with self.assertRaisesRegex(RuntimeError, "resource_constraint"):
+            self.run_export()
+        self.assertEqual(len(self.calls("export_evidence_bundle")), 1)  # final ledger only
+        self.assertEqual(len(self.calls("list_procedures")), 1)
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import re
 import shutil
 import struct
 import subprocess
@@ -21,6 +22,7 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = 1
+MAX_RETAINED_BUNDLE_BYTES = 256 * 1024 * 1024
 REQUIRED_TOOLS = {"open_binary", "close_binary", "list_procedures", "procedure_info",
                   "address_to_file_offset", "analyze_function", "export_evidence_bundle"}
 
@@ -137,6 +139,79 @@ def evidence(response: dict) -> dict:
     if not isinstance(value, dict):
         raise ValueError("REA structured result is not an object")
     return value
+
+
+class RetainedEvidenceError(RuntimeError):
+    """A completed producer could not be recovered from its retained Evidence."""
+
+
+def transport_reference(response: dict, operation: str) -> str | None:
+    """Select only REA's completed-operation transport error with an exact retained ID."""
+    result = response.get("result", {})
+    if not result.get("isError"):
+        return None
+    payload = result.get("structuredContent")
+    if payload is None:
+        texts = [item["text"] for item in result.get("content", []) if item.get("type") == "text"]
+        if len(texts) != 1:
+            return None
+        try:
+            payload = json.loads(texts[0])
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(payload, dict) or not isinstance(payload.get("error"), dict):
+        return None
+    error = payload["error"]
+    details = error.get("details", {})
+    if (error.get("code") != "resource_constraint" or details.get("resource") != "transport"
+            or details.get("operation") != operation):
+        return None
+    limits = details.get("reported_limits", {})
+    reference = limits.get("evidence_reference", {})
+    ident = reference.get("evidence_id")
+    if (reference.get("kind") != "retained-evidence" or not isinstance(ident, str)
+            or re.fullmatch(r"ev_[a-f0-9]{64}", ident) is None
+            or limits.get("evidence_id", ident) != ident):
+        raise RetainedEvidenceError("transport error has no consistent retained Evidence reference")
+    return ident
+
+
+def complete_evidence(client, response: dict, operation: str, image_sha256: str,
+                      run_dir: Path, label: str) -> tuple[dict, Path | None]:
+    """Recover oversized results from a same-session export, without rerunning the producer."""
+    ident = transport_reference(response, operation)
+    if ident is None:
+        return evidence(response), None
+    path = run_dir / f"{label}-retained-{uuid.uuid4().hex}.json"
+    try:
+        exported = client.tool("export_evidence_bundle", {"path": str(path)})
+        save(path.with_suffix(".export.json"), exported)
+        acknowledgement = evidence(exported).get("result", {})
+        if acknowledgement.get("path") != str(path) or path.is_symlink() or not path.is_file():
+            raise ValueError("retained bundle export did not acknowledge the requested private file")
+        size = path.stat().st_size
+        if size > MAX_RETAINED_BUNDLE_BYTES or acknowledgement.get("bytes") != size:
+            raise ValueError("retained bundle size is inconsistent or exceeds the 256 MiB read bound")
+        bundle = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(bundle, dict) or not isinstance(bundle.get("records"), list):
+            raise ValueError("retained export has no complete records array")
+        records = bundle["records"]
+        if any(not isinstance(record, dict) for record in records) or acknowledgement.get("records") != len(records):
+            raise ValueError("retained bundle record count is inconsistent")
+        matches = [record for record in records if record.get("evidence_id") == ident]
+        if len(matches) != 1:
+            raise ValueError("retained bundle does not contain exactly one requested Evidence ID")
+        selected = matches[0]
+        if (selected.get("operation") != operation
+                or selected.get("subject", {}).get("digest", {}).get("sha256") != image_sha256):
+            raise ValueError("retained Evidence operation or target identity does not match the producer")
+        if "normalized_result" not in selected or not isinstance(selected.get("analysis_profile"), dict):
+            raise ValueError("retained Evidence lacks the complete result or native profile")
+        recovered = run_dir / f"{label}-retained-evidence.json"
+        save(recovered, selected)
+        return selected, recovered
+    except (OSError, ValueError, RuntimeError, KeyError, TypeError) as error:
+        raise RetainedEvidenceError(f"retained transport recovery failed for {ident}: {error}") from error
 
 
 class Client:
@@ -287,7 +362,8 @@ def run(args: argparse.Namespace, *, command: list[str] | None = None) -> dict:
             raise ValueError("REA opened a different image")
         response = client.tool("list_procedures", {})
         save(run_dir / "procedures.json", response)
-        inventory = evidence(response)
+        inventory, _ = complete_evidence(client, response, "list_procedures", identity["image_sha256"],
+                                         run_dir, "procedures")
         analysis_profile = inventory.get("analysis_profile", {}).get("digest")
         if not analysis_profile:
             raise ValueError("REA inventory has no native analysis profile digest")
@@ -318,7 +394,10 @@ def run(args: argparse.Namespace, *, command: list[str] | None = None) -> dict:
                     response = client.tool("analyze_function", {"procedure": hex(native)})
                     path = run_dir / f"{key}.json"
                     save(path, response)
-                    dossier = evidence(response)
+                    dossier, recovered = complete_evidence(client, response, "analyze_function", identity["image_sha256"],
+                                                           run_dir, key)
+                    if recovered is not None:
+                        path = recovered
                     if dossier.get("subject", {}).get("digest", {}).get("sha256") != identity["image_sha256"]:
                         raise ValueError("function dossier belongs to a different image")
                     if dossier.get("analysis_profile", {}).get("digest") != analysis_profile:
@@ -332,7 +411,7 @@ def run(args: argparse.Namespace, *, command: list[str] | None = None) -> dict:
                                normalized.get("facet_availability", {}).get("pseudocode", {}).get("available") is not False)
                 except (RuntimeError, ValueError, KeyError) as error:
                     row.update(status="error", error=str(error))
-                    if "resource_constraint" in str(error) and "transport" in str(error):
+                    if isinstance(error, RetainedEvidenceError) or ("resource_constraint" in str(error) and "transport" in str(error)):
                         row["status"] = "retained-transport-limited"
                         raise RuntimeError("analysis exceeded transport limits; inspect the exported Evidence bundle") from error
                     if "cleanup_incomplete" in str(error):
