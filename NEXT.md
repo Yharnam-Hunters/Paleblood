@@ -44,6 +44,9 @@ from the smallest up. New functions go to `main` only verified and readable.
 
 ## Done
 
+- `0x0111abb0` kernel_mutex_create: edge-verified (26 synthetic cases and eight rejected
+  mutations; independent review passed; gameplay recordings unavailable).
+
 - `0x011c4970` engine_compare_signed_strings: edge-verified (18 synthetic cases and five
   rejected mutations; independent review passed; gameplay recordings unavailable).
 
