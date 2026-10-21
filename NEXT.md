@@ -28,10 +28,9 @@ labelled `runtime`.
 
 ## Decompilation track
 
-Readability burn-down first (STYLE.md; CONTRIBUTING.md, "Definition of done"): refactor each
-file in `tools/readable_allowlist.txt`, re-verify every recorded and edge case, get the
-independent review, remove its line. Order: `game/ai/hk_ai_frame_update.cpp`, then the others
-from the smallest up. New functions go to `main` only verified and readable.
+Every replacement must follow STYLE.md and CONTRIBUTING.md's definition of done. The
+readability allowlist is clear; keep it that way. New functions go to `main` only verified
+and readable. Progress-branch functions without gameplay recordings remain `edge-verified`.
 
 1. The live functions the 60 FPS patches edit besides frame timing (historical map: 47 live, 12 dead;
    `tools/patch_overlap.py ... --map`, `tools/reloc_refs.py`, `tools/refs_to.sh`). Done so far:
@@ -43,8 +42,17 @@ from the smallest up. New functions go to `main` only verified and readable.
    `Uncap FPS++` write order: a later live route bypasses an overlapping malformed call,
    QUIRKS.md). Each option part is
    checked against the patch that edits it (both sides patched, VERIFY.md).
+   Camera reconstruction still needs exact numeric primitives, dependency/output contracts
+   and whole-function cases; corrected static coverage alone is insufficient. In the record
+   cache, three copied record-padding bytes have unresolved indirect write sources. Preserve
+   full memory comparison while resolving those contracts.
 
 ## Done
+
+- `0x0183fad0` camera_follow_pitch: edge-verified (32 synthetic cases and 7 rejected
+  mutations; independent review passed; gameplay recordings unavailable).
+  One operand-order variant survives under QEMU; both compiler assemblies preserve the original
+  order explicitly. See QUIRKS.md for this coverage limit.
 
 - `0x0111acf0` kernel_mutex_unlock: edge-verified (20 synthetic cases and eight rejected
   mutations; independent review passed; gameplay recordings unavailable).

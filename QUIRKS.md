@@ -111,6 +111,14 @@ SelfUtil build produced the ELF.
   an `unaff_*` or `CONCAT` expression is a sign to read the disassembly.
 - Float comparisons that look odd (`ucomiss` plus parity checks) encode NaN
   handling that the replacement has to keep.
+- A scalar SSE intrinsic is not by itself an operand-order constraint. In the follow-camera
+  pitch getter, optimized Clang swapped the horizontal add operands and widened two scalar
+  squares to a packed multiply. GCC preserved the order in the tested build. The dedicated
+  `engine::horizontal_length` helper constrains the four scalar instructions and uses distinct
+  read/write registers. Distinct-NaN-payload fixtures check the argument passed to `atan2f`,
+  but the tested QEMU VM did not distinguish a deliberately swapped horizontal-add variant.
+  Keep that survivor as an explicit coverage limitation; optimized assembly independently
+  confirms the intended instruction order in both compiler builds.
 
 ## Imports and system calls
 

@@ -15,8 +15,8 @@ The game doesn't run on Paleblood yet: 21 of 157757 functions are verified (0.01
 | | Functions | Bytes |
 |---|---:|---:|
 | Target (Ghidra export) | 157757 | 42487347 |
-| Replaced | 41 (0.03%) | 16240 (0.04%) |
-| Edge-verified | 41 (0.03%) | 16240 (0.04%) |
+| Replaced | 42 (0.03%) | 16319 (0.04%) |
+| Edge-verified | 42 (0.03%) | 16319 (0.04%) |
 | Verified | 21 (0.01%) | 14010 (0.03%) |
 
 Each row includes the next: verified functions are also edge-verified and replaced.
@@ -139,7 +139,7 @@ repository, pick a good first issue or a target from [NEXT.md](NEXT.md), and rea
   system works, the devlog, the progress dashboard and the address map. It is also written as a
   place to learn how a console game works and how it is reverse engineered and proved correct;
   no console or game files needed to read it.
-- [`docs/systems/`](docs/systems/): one page per game system (generated; changes go through
+- [`docs/systems/`](docs/systems/): one page per game system (changes go through
   issues and pull requests).
 - [QUIRKS.md](QUIRKS.md): traps in Ghidra, the PS4 executable and the ABI.
 - [docs/VERIFY.md](docs/VERIFY.md): how replacements are proved, cases, captures, probes.
