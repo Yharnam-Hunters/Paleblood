@@ -44,6 +44,9 @@ from the smallest up. New functions go to `main` only verified and readable.
 
 ## Done
 
+- `0x0111a8a0` kernel_thread_self: edge-verified (seven synthetic cases and four rejected
+  mutations; independent review passed; gameplay recordings pending).
+
 - `0x0111a880` frame_timing_sleep_ms: edge-verified (10 synthetic cases and four rejected
   mutations; independent review passed; gameplay recordings pending).
 
