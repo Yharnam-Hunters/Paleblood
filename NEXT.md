@@ -5,7 +5,7 @@ Two tracks. Sessions alternate between them (decompilation, then runtime, then d
 One line per target, in order; move a target to "Done" with its commit when it is finished.
 Decisions and blockers go to STATUS.md instead of being worked around.
 
-Last session: runtime
+Last session: decompilation
 
 ## Runtime track
 
@@ -43,6 +43,9 @@ from the smallest up. New functions go to `main` only verified and readable.
    checked against the patch that edits it (both sides patched, VERIFY.md).
 
 ## Done
+
+- `0x0111a760` frame_timing_get_monotonic_us: edge-verified (20 synthetic cases and five
+  rejected mutations; independent static/readability review passed; gameplay recordings pending).
 
 - Runtime: libkernel `sceKernelGetProcParam`, `_sceKernelRtldSetApplicationHeapAPI`, the mutex and mutex attribute functions (SCE and POSIX names), `scePthreadSelf` and thread attributes (init, destroy, get).
 - Runtime: the game's own libc and libSceFios2 modules are mapped as guest code (`game/modules.csv`) and the executable's imports they export are bound to them; their functions are tracked in `symbols/module_functions.csv`, replaceable later like game functions.
