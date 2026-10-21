@@ -45,3 +45,4 @@ address,replacement,system
 0x024512a0,bb_frame_timing_task_frame_024512a0,frame_timing
 0x02483e80,bb_kernel_condition_wait,kernel
 0x025b2fb0,bb_render_swap_chain_present,render
+0x02a44140,bb_engine_destroy_wide_string_02a44140,engine

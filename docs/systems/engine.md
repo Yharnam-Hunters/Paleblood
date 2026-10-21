@@ -9,6 +9,7 @@ verification status is tracked in [the function registry](../../symbols/function
 | `0x011c4990` | Compare a bounded prefix using signed byte values |
 | `0x01314320` | Resolve an enabled entry manager's handle through its low-word index |
 | `0x0217ffb0` | Initialize one guarded static empty wide string |
+| `0x02a44140` | Release a wide string and reset it to empty inline storage |
 
 ## Static wide string
 
@@ -57,3 +58,19 @@ The authored edge fixtures supply all eight available info-output bytes and comp
 and old guard at the registration call. They cover allocator publication and capture, returning
 diagnostics, guard widths, preserved bytes, ignored registration results and callback effects.
 They are synthetic inputs; genuine gameplay recordings remain required for full verification.
+
+## Wide-string destructor
+
+The destructor at `0x02a44140` compares the complete unsigned capacity with eight. Values below
+eight skip the allocator entirely. All other values call the allocator's `free` slot at `0x70`,
+passing the captured heap pointer even when it is null. The ownership byte does not participate
+in this decision. The callback receives the original object fields before any reset.
+
+After the callback returns, the destructor writes capacity seven, length zero and a two-byte
+zero terminator at the beginning of inline storage. It leaves the allocator, ownership byte,
+leading unknown word, remaining union bytes and padding alone. Callback changes to those
+preserved fields survive; changes to capacity, length or the first code unit are overwritten.
+The callback's return value is ignored, and the destructor has no defined return value.
+
+The authored cases cover unsigned capacity boundaries and high bits, ignored ownership,
+null heap pointers, callback snapshots and changes, exact reset widths and surrounding canaries.
