@@ -77,6 +77,17 @@ SelfUtil build produced the ELF.
   `-loader-imageBase 0x400000` (`-loader-baseAddr` is ignored by this loader).
 - `-loader "Orbis ELF"` is rejected by headless as an invalid loader name; leave `-loader` out,
   the Orbis loader is picked automatically for this file.
+- Ghidra 12.1.4's [VEX `VSQRTSS` and `VSQRTSD` rules](https://github.com/NationalSecurityAgency/ghidra/blob/Ghidra_12.1.4_build/Ghidra/Processors/x86/data/languages/avx.sinc)
+  reverse the two source roles. The low
+  result must be the square root of source 2 (ModRM), with the upper lanes from source 1
+  (VEX.vvvv), as specified in [Intel's instruction manual](https://cdrdv2-public.intel.com/774492/325383-sdm-vol-2abcd.pdf).
+  For `vsqrtss xmm1,xmm0,xmm1`, distinct low inputs 9 and 25 must produce 5, retaining XMM0's
+  upper lanes. The stock rules produce 3 and retain XMM1's upper lanes. This was checked with
+  synthetic single/double probes in the x86-64 verification VM and through REA before and after
+  correcting an isolated private SDK copy. The original SDK remains intact; record the modified
+  SLEIGH/SLA hashes and start a fresh REA output directory when using the correction. The follow
+  camera update and pitch getter contain affected instructions. Instruction coverage alone
+  does not establish correct decompiler semantics.
 
 ## Calling convention
 
@@ -136,16 +147,23 @@ when a replacement is tested with that function stubbed. If a draft's disassembl
 such a call, disassemble the bytes directly (objdump on the ELF) before writing the replacement.
 Example: `kernel_condition_wait` (`0x02483e80`) returns -3 after the EINVAL report.
 
-## A community patch edit that calls into the middle of another function
+## Replay overlapping community patch writes in order
 
-`Uncap FPS++` replaces `vmovss xmm4, [0x04d29e74]` (1/30 s) at `0x02715d71`, in
-`0x02713870`, with `call 0x027166f7` and three `nop`s. In v1.09, `0x027166f7` is in the middle
-of a static initialiser (`0x02716680`, 231 bytes), just before an engine fatal-error call and
-stores to globals; no line of any patch in the file writes code there. Run that way, the block
-would call the fatal error, overwrite the initialiser's globals and return through an epilogue
-whose pushes never happened. The patched block is a cold path placed after the function's
-return, so it may simply never run. There is nothing faithful to replicate: a replacement keeps
-the stock 1/30 s there, and the option check for `Uncap FPS++` cannot cover that block.
+The [community XML at commit e344639](https://github.com/shadps4-emu/ps4_cheats/blob/e34463942099072e5d8f5e2bcb3d7d927683b349/PATCHES/Bloodborne.xml)
+contains overlapping `Uncap FPS++` writes inside `0x02713870`. A five-byte call write at
+`0x02715d71` is partly overwritten by a later write starting at `0x02715d75`. The resulting
+instruction calls `0xffffffff917166f7`; analyzing the first write alone gives the wrong target.
+A still later edit at `0x02713d76` replaces the incoming stock branch with a live path that
+loads `SprjFlipper::frame_seconds`, applies scalar `min` with 1/30 s, and jumps past the malformed
+residual code to `0x02715d79`. Direct intraprocedural control-flow walking finds no reachable
+incoming edge to the malformed call. This does not establish the absence of unknown external
+jumps.
+
+The invalid-owner route instead reads `0x0575a908`, initialized by this patch to bits
+`0x3c088889` (1/120 s). A replacement must reproduce the reachable patched routes, including
+their float operand order, rather than keep the stock time step because one isolated edit
+looks invalid. Retain the exact XML revision and replay all its writes before reasoning about
+option coverage; other revisions may differ.
 
 ## Unknown FMOD thread names do not initialize the affinity output
 

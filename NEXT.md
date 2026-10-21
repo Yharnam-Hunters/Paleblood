@@ -33,13 +33,15 @@ file in `tools/readable_allowlist.txt`, re-verify every recorded and edge case, 
 independent review, remove its line. Order: `game/ai/hk_ai_frame_update.cpp`, then the others
 from the smallest up. New functions go to `main` only verified and readable.
 
-1. The live functions the 60 FPS patches edit besides frame timing (47 live, 12 dead:
+1. The live functions the 60 FPS patches edit besides frame timing (historical map: 47 live, 12 dead;
    `tools/patch_overlap.py ... --map`, `tools/reloc_refs.py`, `tools/refs_to.sh`). Done so far:
    the nine fixed-step state methods (Chalice Dungeon state machine; replaced, verified on edge
    cases stock and against "60 FPS++", waiting for a save that reaches the Chalice Dungeons).
    Still to do among those called in the clinic (probe run 2026-10-06, `continue.route`):
-   `0x0183ac60` (20 KB; every frame-rate patch changes a jump and a flag) and `0x02713870`
-   (11.6 KB; its only edit, Uncap FPS++'s, is broken in v1.09: QUIRKS.md). Each option part is
+   `0x0183ac60` (20 KB; the full FPS options edit fourteen sites, including twelve time-scaling
+   trampolines; see docs/systems/camera.md) and `0x02713870` (11.6 KB; replay the complete
+   `Uncap FPS++` write order: a later live route bypasses an overlapping malformed call,
+   QUIRKS.md). Each option part is
    checked against the patch that edits it (both sides patched, VERIFY.md).
 
 ## Done
