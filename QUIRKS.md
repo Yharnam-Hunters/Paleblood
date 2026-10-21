@@ -146,3 +146,13 @@ would call the fatal error, overwrite the initialiser's globals and return throu
 whose pushes never happened. The patched block is a cold path placed after the function's
 return, so it may simply never run. There is nothing faithful to replicate: a replacement keeps
 the stock 1/30 s there, and the option check for `Uncap FPS++` cannot cover that block.
+
+## Unknown FMOD thread names do not initialize the affinity output
+
+The thread-name affinity lookup (`0x0111a8c0`) returns zero even when no name matches, leaving
+its output untouched. Its thread-creation caller (`0x0111a9f0`) passes an uninitialized stack
+slot to that lookup and later passes the slot's contents to `scePthreadAttrSetaffinity`.
+The caller at `0x01118420` accepts a name argument; it does not establish that every name is
+one the lookup recognizes. The creation wrapper remains original until this path's contract
+is established. Adding a default affinity mask would invent behavior; testing only recognized
+names would leave this path unresolved.
