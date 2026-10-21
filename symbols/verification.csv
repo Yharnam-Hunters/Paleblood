@@ -140,3 +140,4 @@ kernel_mutex_create,edge,,26,26,0,0,c18c39ebc633cc90,2026-10-21
 kernel_mutex_destroy,edge,,17,17,0,0,b71b8ef859690cc5,2026-10-21
 engine_compare_signed_prefix,edge,,24,24,0,0,8a6a903a0ad00ffa,2026-10-21
 kernel_mutex_lock,edge,,20,20,0,0,a424c87376084e89,2026-10-21
+kernel_mutex_unlock,edge,,20,20,0,0,202db4e3da7f3970,2026-10-21

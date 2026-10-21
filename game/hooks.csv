@@ -8,6 +8,7 @@ address,replacement,system
 0x0111abb0,bb_kernel_mutex_create,kernel
 0x0111ac80,bb_kernel_mutex_destroy,kernel
 0x0111acd0,bb_kernel_mutex_lock,kernel
+0x0111acf0,bb_kernel_mutex_unlock,kernel
 0x011c4970,bb_engine_compare_signed_strings,engine
 0x011c4990,bb_engine_compare_signed_prefix,engine
 0x01388c60,bb_frame_timing_task_run_all_01388c60,frame_timing
