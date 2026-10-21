@@ -10,6 +10,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -19,7 +20,7 @@ from ps4elf import build  # noqa: E402
 
 
 PEER = r'''
-import hashlib, json, pathlib, sys, time
+import hashlib, json, pathlib, sys
 config_path = pathlib.Path(sys.argv[1])
 retained = []
 for line in sys.stdin:
@@ -41,7 +42,8 @@ for line in sys.stdin:
         name, arguments = params['name'], params['arguments']
         image_hash = config['image_sha256']
         if name == 'open_binary':
-            time.sleep(config.get('open_delay', 0))
+            if config.get('stall_open'):
+                continue  # Leave this request pending while still reading cancellation/EOF.
             content = {'result': {'sha256': image_hash}}
         elif name == 'close_binary':
             content = {'result': {'closed': True}}
@@ -230,11 +232,35 @@ class ReaDraftTests(unittest.TestCase):
         self.assertIn("different procedure", self.state()["functions"]["0x00401000"]["error"])
 
     def test_timeout_records_unconfirmed_cleanup_without_issuing_concurrent_calls(self):
-        self.configuration["open_delay"] = 0.5
-        self.args.timeout = 0.1
-        with self.assertRaisesRegex(RuntimeError, "timed out"):
-            self.run_export()
+        self.configuration["stall_open"] = True
+        waits = []
+
+        class PendingOpenTimeoutClient(drafts.Client):
+            def request(self, method, params):
+                self.inject_timeout = method == 'tools/call' and params.get('name') == 'open_binary'
+                return super().request(method, params)
+
+            def _receive(self, timeout):
+                if self.inject_timeout:
+                    waits.append(timeout)
+                    raise drafts.queue.Empty
+                return super()._receive(timeout)
+
+        # Initialize and discover tools normally. Inject expiration only after the native open
+        # has been sent, both for its initial wait and the cancellation drain; no wall clock race.
+        with mock.patch.object(drafts, 'Client', PendingOpenTimeoutClient):
+            with self.assertRaisesRegex(RuntimeError, "timed out; pending=True"):
+                self.run_export()
         self.assertEqual(self.state()["runs"][-1]["cleanup"], "unconfirmed")
+        self.assertEqual(len(waits), 2)
+        opened = self.calls("open_binary")
+        self.assertEqual(len(opened), 1)
+        cancellations = [request for request in self.requests()
+                         if request.get('method') == 'notifications/cancelled']
+        self.assertEqual(len(cancellations), 1)
+        self.assertEqual(cancellations[0]['params']['requestId'], opened[0]['id'])
+        self.assertEqual([request['method'] for request in self.requests()[:3]],
+                         ['initialize', 'notifications/initialized', 'tools/list'])
         self.assertEqual(self.calls("analyze_function"), [])
         self.assertEqual(self.calls("close_binary"), [])
 
