@@ -49,6 +49,9 @@ and readable. Progress-branch functions without gameplay recordings remain `edge
 
 ## Done
 
+- `0x0183fb20` camera_follow_yaw: edge-verified (30 synthetic cases and 7 rejected
+  mutations; independent review passed; gameplay recordings unavailable).
+
 - `0x0183fad0` camera_follow_pitch: edge-verified (32 synthetic cases and 7 rejected
   mutations; independent review passed; gameplay recordings unavailable).
   One operand-order variant survives under QEMU; both compiler assemblies preserve the original

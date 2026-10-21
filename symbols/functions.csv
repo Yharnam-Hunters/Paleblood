@@ -22,6 +22,7 @@ address,size,name,system,status,notes
 0x016efd00,368,event_emk_add,event,verified,SprjEmkSystem: find or add an event entry in two keyed lists; first advance with the 1/30 s step (1/60 s in the 60 FPS patches)
 0x017cfcc0,177,event_flag_write,event,edge-verified,finds an exact event-flag group in a tree and sets or clears one bit
 0x0183fad0,79,camera_follow_pitch,camera,edge-verified,Pitch from the forward basis; preserve scalar square underflow and zero fallback; call atan2 and XOR the returned sign bits
+0x0183fb20,43,camera_follow_yaw,camera,edge-verified,Yaw from the forward X/Z direction; exact signed-zero fallback preserves stored angle; unordered components reach atan2 unchanged
 0x01972900,426,input_pad_step_01972900,input,verified,"FD4PadManager map: marks two entries, advances an owner by the frame-time step (patched to 1/15 or 1/240 s; the advance branch is idle in the clinic)"
 0x01c0c2b0,3222,physics_instance_construct_01c0c2b0,physics,verified,"physics instance constructor over a body set: back-links, shape copy, controller (step 1/30 s; 60 FPS patches 1/60), motion rescale, listeners"
 0x01cbdb20,979,character_frame_update_01cbdb20,character,verified,"per-frame character update: throw animation event, points stat regeneration (stamina-like, -50..max), time-step descriptor; the 30/60 FPS patches fix its frame time"
