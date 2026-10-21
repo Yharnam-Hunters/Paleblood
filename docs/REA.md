@@ -39,6 +39,37 @@ be in a file-backed executable `PT_LOAD`; REA must return that exact function en
 original-file offset before a dossier is collected. A lookup that returns a neighboring or
 containing procedure is rejected.
 
+Ghidra's Orbis loader used image base `0x01000000` in the tested provider profile. Its native
+coordinates are therefore catalog addresses plus `0x00c00000`. Use the original pinned ELF
+and `--analysis-base 0x01000000` for that profile; the exact-entry and source-offset checks
+still apply. A caller-supplied `REA_GHIDRA_SEED_FILE` can supply missing entry hints as TSV:
+
+```text
+0x01d1a760	function	clock_microseconds
+0x0243ac60	function	catalog_0183ac60
+```
+
+Seed addresses are literal loaded Ghidra addresses, not catalog addresses. Seed adjacent
+entries as needed to keep a provider from merging them, and retain the seed file privately.
+Seeds are analyst assertions rather than independent evidence of a function boundary.
+
+```sh
+JAVA_HOME=/path/to/jdk \
+GHIDRA_INSTALL_DIR=/path/to/ghidra \
+REA_GHIDRA_SEED_FILE=/path/to/private/seeds.tsv \
+REA_GHIDRA_STARTUP_TIMEOUT_MS=1800000 \
+python3 tools/rea_drafts.py /path/to/eboot.elf 0x0183ac60 \
+    --output /path/to/private/rea-ghidra --provider ghidra \
+    --analysis-base 0x01000000 --timeout 1900
+```
+
+The tested full-image Ghidra startup took about 20 minutes. Scope the environment to this
+invocation and allow startup to finish before requesting dossiers. Cached Ghidra resumes also
+bind the seed file's contents, Java path, language, compiler specification and disabled analyzer
+settings before returning cached results. Changed settings require a fresh output directory.
+Keep the complete Evidence bundles: they let later work inspect matching results without
+repeating native analysis.
+
 `--all --limit 8` selects a bounded catalog pass, with eight uncached function attempts by default.
 `--resume` reuses successful dossier files only when their hashes, input and catalog identities,
 provider environment, server/tool inventory and observed native analysis profile match. Previously
