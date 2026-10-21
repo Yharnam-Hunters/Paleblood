@@ -69,7 +69,36 @@ instruction coverage, not semantic correctness or verification.
   be replaced with an assumed unit axis.
 - The supplied C library's `_FSin` export dispatches a zero 32-bit integer selector to `sinf`
   and a nonzero selector to `cosf`. Both are tail calls; the wrapper does not narrow the
-  selector to a byte or short. The update uses selectors zero and one for its paired rotations.
+  selector to a byte or short. The update uses selectors zero and one for its paired rotations,
+  and explicitly clears ESI at every call. Preserve that argument even though neither selected
+  library body consumes it.
+
+## Original helper call contracts
+
+These are observed SysV64 register and memory contracts for calling the original helpers.
+They establish usable bindings without asserting the original C++ source declarations or
+replacing the helpers with host math.
+
+| Address | Inputs and outputs |
+|---|---|
+| `0x00848e80` | RDI aligned 16-byte quaternion output, RSI 16-byte axis input, XMM0.low angle; input read before output store; no deliberate return value |
+| `0x01e4d420` | RDI 16-byte quaternion output, full XMM0 by-value rotation vector; returns the output pointer in RAX |
+| `0x0083d4d0` | RDI aligned 48-byte position/quaternion/scale input, RSI aligned 64-byte matrix output; the camera uses disjoint storage |
+| `0x01c090e0` | RDI world, ESI filter, RDX origin, RCX displacement, XMM0.low radius, R8 optional hit position, R9 optional hit normal, entry `[rsp+8]` optional fraction pointer; returns Boolean in AL |
+
+The sphere query reads complete 16-byte input vectors. A hit writes four bytes through a
+non-null fraction pointer and sixteen bytes through each non-null vector output; a miss leaves
+the outputs untouched. The camera uses filter `0x25`, no normal output, and six query sites.
+The independently assigned float radius leaves the fraction pointer as the seventh GP argument.
+The differential harness must capture that overflow slot and permit bounded writes through it.
+
+Territory debug rendering captures the renderer and selected state before calling that state's
+vtable slot `+0x28`. The original writes ESI with `0xffffffff`, defining the complete RSI value
+as `0x00000000ffffffff`; a full-width wire binding must preserve it. After the call, it reselects
+the state from the captured renderer for setting `+0x70` and its dirty flag. Later vector and
+settings writes still use the initially captured state. Reloading the manager's renderer or
+using one state identity for all these effects would change behavior if the virtual call alters
+the selection.
 
 ## Patch points
 
@@ -89,10 +118,8 @@ support cannot be inferred from the jump/flag edits alone.
 
 - Reconstruct the update in readable stages with exact effect order, including cold blocks,
   selective finite-value rollback, consumed request flags and ordered territory traversal.
-- Establish complete rotation/matrix helper conventions.
-  The sphere-query call uses a float radius, six integer/pointer registers, a stack fraction
-  output, optional vector outputs and an AL Boolean result. Its dependency behavior and the
-  territory debug-render virtual call still need coverage before replacement.
+- Exercise the established original helper bindings, including the sphere fraction output and
+  debug-render state reselection, in complete-update differential fixtures before replacement.
 - Preserve reciprocal-square-root refinements, packed polynomial math, angle reduction,
   conversion/rounding behavior, NaN payloads and scalar operand order. The original Ghidra 12.1.4
   VEX scalar-root rules reversed source roles; an isolated private correction was checked against

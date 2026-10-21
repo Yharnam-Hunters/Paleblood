@@ -147,6 +147,9 @@ class CandidateInventory(unittest.TestCase):
         bundle['identity']['harness_sha256'] = 'old'
         self.assertEqual(self.report(bundle)['instruction_trace']['status'], 'stale')
         bundle = self.bundle()
+        bundle['identity']['call_arguments_sha256'] = 'old'
+        self.assertEqual(self.report(bundle)['instruction_trace']['status'], 'stale')
+        bundle = self.bundle()
         bundle['result']['execution']['cases'][0]['instruction_trace']['events'] = [{'width': 1, 'valid_region': False}]
         self.assertFalse(self.report(bundle)['automation_trial_eligible'])
         for malformed in (None, {'cases': [{'id': []}]}, {'cases': 'unavailable'}):
