@@ -137,3 +137,4 @@ render_yebis_get_recursive_sample_parameters,edge,uncapped,23,23,0,0,6e6f0aa41d5
 audio_fmod_thread_affinity_lookup,edge,,21,21,0,0,8abaccecd8e6ac90,2026-10-21
 engine_compare_signed_strings,edge,,18,18,0,0,74f4fd8ab8a917df,2026-10-21
 kernel_mutex_create,edge,,26,26,0,0,c18c39ebc633cc90,2026-10-21
+kernel_mutex_destroy,edge,,17,17,0,0,b71b8ef859690cc5,2026-10-21

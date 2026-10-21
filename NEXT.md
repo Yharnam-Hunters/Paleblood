@@ -44,6 +44,9 @@ from the smallest up. New functions go to `main` only verified and readable.
 
 ## Done
 
+- `0x0111ac80` kernel_mutex_destroy: edge-verified (17 synthetic cases and six rejected
+  mutations; independent review passed; gameplay recordings unavailable).
+
 - `0x0111abb0` kernel_mutex_create: edge-verified (26 synthetic cases and eight rejected
   mutations; independent review passed; gameplay recordings unavailable).
 
