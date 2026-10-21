@@ -148,3 +148,4 @@ camera_follow_yaw,edge,,30,30,0,0,0dc95ee0af3f5491,2026-10-21
 engine_entry_manager_resolve,edge,,25,25,0,0,a48b88b0d51ea5c1,2026-10-21
 kernel_semaphore_create,edge,,22,22,0,0,6eb580cbe2062e91,2026-10-21
 kernel_semaphore_destroy,edge,,22,22,0,0,2c49f7b010f80cfb,2026-10-21
+kernel_semaphore_wait,edge,,22,22,0,0,ce742838186d2510,2026-10-21
