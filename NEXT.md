@@ -44,6 +44,9 @@ from the smallest up. New functions go to `main` only verified and readable.
 
 ## Done
 
+- `0x011c4970` engine_compare_signed_strings: edge-verified (18 synthetic cases and five
+  rejected mutations; independent review passed; gameplay recordings unavailable).
+
 - `0x0111a8c0` audio_fmod_thread_affinity_lookup: edge-verified (21 synthetic cases and six
   rejected mutations; independent review passed; gameplay recordings unavailable).
 
