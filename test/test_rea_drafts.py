@@ -280,6 +280,40 @@ class ReaDraftTests(unittest.TestCase):
             else:
                 os.environ[key] = before
 
+    def test_cached_resume_refuses_changed_ghidra_seed_contents_at_the_same_path(self):
+        seed = self.base / 'synthetic-seeds.json'
+        seed.write_text('{"synthetic_seed": 1}')
+        self.args.provider = 'ghidra'
+        self.args.addresses = ['0x00401000']
+        with mock.patch.dict(os.environ, {'REA_GHIDRA_SEED_FILE': str(seed)}):
+            self.run_export()
+            self.assertEqual(self.state()['identity']['ghidra_seed_sha256'], drafts.digest(seed))
+            self.args.resume = True
+            self.assertEqual(self.run_export()['attempted'], 0)
+            seed.write_text('{"synthetic_seed": 2}')
+            with self.assertRaisesRegex(ValueError, 'resume identity changed'):
+                self.run_export()
+        self.assertEqual(len(self.calls('open_binary')), 1)
+
+    def test_cached_resume_refuses_changed_ghidra_language_analyzers_compiler_and_java(self):
+        seed = self.base / 'synthetic-seeds.json'
+        seed.write_text('{"synthetic_seed": 1}')
+        self.args.provider = 'ghidra'
+        self.args.addresses = ['0x00401000']
+        for key in ('REA_GHIDRA_LANGUAGE_ID', 'REA_GHIDRA_COMPILER_SPEC_ID',
+                    'REA_GHIDRA_DISABLED_ANALYZERS', 'JAVA_HOME'):
+            with self.subTest(setting=key), mock.patch.dict(os.environ, {
+                    'REA_GHIDRA_SEED_FILE': str(seed), key: 'synthetic-first'}):
+                self.args.output = self.base / key
+                self.configuration['log'] = str(self.base / (key + '.jsonl'))
+                self.args.resume = False
+                self.run_export()
+                self.args.resume = True
+                os.environ[key] = 'synthetic-second'
+                with self.assertRaisesRegex(ValueError, 'resume identity changed'):
+                    self.run_export()
+                self.assertEqual(len(self.calls('open_binary')), 1)
+
     def test_refuses_repository_output_and_unknown_addresses_before_startup(self):
         self.args.output = self.root / "drafts"
         with self.assertRaisesRegex(ValueError, "outside the repository"):

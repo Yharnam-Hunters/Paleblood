@@ -305,10 +305,19 @@ def run(args: argparse.Namespace, *, command: list[str] | None = None) -> dict:
         raise ValueError("requested address is absent from the pinned function catalog")
     for address in selected:
         file_offset(mappings, address - args.image_base)
+    environment_keys = ("HOPPER_LOADER_ARGS_JSON", "HOPPER_LAUNCHER_PATH",
+                        "GHIDRA_INSTALL_DIR", "REA_IDA_MCP_CONFIG", "REA_KUNA_COMMAND")
+    if args.provider == "ghidra":
+        environment_keys += ("JAVA_HOME", "REA_GHIDRA_LANGUAGE_ID", "REA_GHIDRA_COMPILER_SPEC_ID",
+                             "REA_GHIDRA_DISABLED_ANALYZERS", "REA_GHIDRA_NATIVEAOT_JAR", "REA_GHIDRA_SEED_FILE")
+    environment = {key: os.environ.get(key) for key in environment_keys}
     identity.update(version=VERSION, catalog_sha256=digest(catalog_path), provider=args.provider,
-                    image_base=args.image_base, analysis_base=args.analysis_base, provider_environment={
-                        key: os.environ.get(key) for key in ("HOPPER_LOADER_ARGS_JSON", "HOPPER_LAUNCHER_PATH",
-                        "GHIDRA_INSTALL_DIR", "REA_IDA_MCP_CONFIG", "REA_KUNA_COMMAND")})
+                    image_base=args.image_base, analysis_base=args.analysis_base, provider_environment=environment)
+    if args.provider == "ghidra":
+        seed = environment["REA_GHIDRA_SEED_FILE"]
+        # A wholly cached resume returns before opening a provider, so readback cannot detect
+        # changed seed contents at the same path. Bind that input before the early return.
+        identity["ghidra_seed_sha256"] = digest(Path(seed)) if seed else None
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     state_path = output / "drafts.json"
     if state_path.is_symlink():
