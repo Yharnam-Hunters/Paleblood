@@ -44,6 +44,9 @@ from the smallest up. New functions go to `main` only verified and readable.
 
 ## Done
 
+- `0x0111a880` frame_timing_sleep_ms: edge-verified (10 synthetic cases and four rejected
+  mutations; independent review passed; gameplay recordings pending).
+
 - `0x0111a760` frame_timing_get_monotonic_us: edge-verified (20 synthetic cases and five
   rejected mutations; independent static/readability review passed; gameplay recordings pending).
 
