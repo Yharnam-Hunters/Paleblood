@@ -82,6 +82,26 @@ class Differential(unittest.TestCase):
                 with self.assertRaises(differential.DifferentialError):
                     differential.validate_fixture_case(case, 'invalid-interior-pointer')
 
+    def test_sse_inputs_load_as_raw_bytes_instead_of_address_expressions(self):
+        for register in ('xmm0', 'xmm1'):
+            for raw in ('', 'ab', '0000803f', '4523c17f2143c5ff0000008000000000', '00 ab CD ef'):
+                with self.subTest(register=register, raw=raw), tempfile.TemporaryDirectory() as tmp:
+                    case = self.case()
+                    case['args'][register] = raw
+                    path = Path(tmp) / 'case.json'
+                    path.write_text(json.dumps(case))
+                    rows, _ = differential.load_fixtures(Path(tmp), '0x400000')
+                    self.assertEqual(rows[0][1]['args'][register], raw)
+
+    def test_sse_inputs_reject_malformed_or_truncated_register_values(self):
+        for register in ('xmm0', 'xmm1'):
+            for value in (0, True, None, [], '0x3f800000', 'buf:out', 'guest:0x400000', 'abc', 'gg', '00' * 17):
+                with self.subTest(register=register, value=value):
+                    case = self.case()
+                    case['args'][register] = value
+                    with self.assertRaisesRegex(differential.DifferentialError, register):
+                        differential.validate_fixture_case(case, 'invalid-sse')
+
     def test_exploration_is_seeded_bounded_and_abi_guided(self):
         case = self.case()
         with tempfile.TemporaryDirectory() as tmp:
@@ -102,12 +122,18 @@ class Differential(unittest.TestCase):
             {"register": "xmm0", "type": "float", "direction": "input"},
         ]}
         case = self.case()
+        case['abi'] = abi
         case["args"] = {"rdi": "buf:left", "rsi": "buf:right", "xmm0": "00000000000000000000000000000000"}
         case["buffers"] = {"left": {"size": 4}, "right": {"size": 4}}
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "base.json"
             path.write_text(json.dumps(case))
             generated = differential.explore_fixtures([(path, case)], abi, 100, 19)
+            path.unlink()
+            for index, fixture in enumerate(generated):
+                (Path(tmp) / f'generated-{index}.json').write_text(json.dumps(fixture))
+            loaded, _ = differential.load_fixtures(Path(tmp), '0x400000')
+            self.assertEqual(len(loaded), len(generated))
         alias = next(row for row in generated if "alias" in row.get("exploration", {}))
         self.assertEqual(alias["args"]["rsi"], "buf:left")
         float_values = {row["args"]["xmm0"] for row in generated if row.get("exploration", {}).get("register") == "xmm0"}

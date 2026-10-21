@@ -108,6 +108,10 @@ reused run ID and case number cannot silently replace an existing recording.
   scripted with `ret` as the float's bit pattern (`"ret": "0x3f800000"`, for stubs and
   imports); case `args` may set `xmm0` and `xmm1` (hex bytes) for float arguments; `writes` stores what the real function stored through an argument
   (`bytes`, `pointer` to a buffer, or `guest` address), like library writes.
+- XMM input strings are raw little-endian hexadecimal bytes, without a `0x` prefix. Short
+  values are padded with zero bytes to 16 bytes; an empty string supplies zero in every lane.
+  The differential frontend rejects malformed strings and values longer than 16 bytes,
+  rather than treating them as GP address expressions or silently dropping upper bytes.
 - Scripted GP selectors are integer indices `0..15`: `0..5` select `rdi` through `r9`, and
   `6..15` select up to ten consecutive overflow qwords starting at the callee's entry
   `[rsp+8]`. `argc` must be an integer `0..16`; selectors may inspect slots omitted by
