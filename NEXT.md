@@ -49,6 +49,9 @@ and readable. Progress-branch functions without gameplay recordings remain `edge
 
 ## Done
 
+- `0x01314320` engine_entry_manager_resolve: edge-verified (25 synthetic cases and 9 rejected
+  mutations; independent review passed; gameplay recordings unavailable).
+
 - `0x0183fb20` camera_follow_yaw: edge-verified (30 synthetic cases and 7 rejected
   mutations; independent review passed; gameplay recordings unavailable).
 
