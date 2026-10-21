@@ -49,6 +49,9 @@ and readable. Progress-branch functions without gameplay recordings remain `edge
 
 ## Done
 
+- `0x0111ad10` kernel_semaphore_create: edge-verified (22 synthetic cases and 11 rejected
+  mutations; independent review passed; gameplay recordings unavailable).
+
 - `0x01314320` engine_entry_manager_resolve: edge-verified (25 synthetic cases and 9 rejected
   mutations; independent review passed; gameplay recordings unavailable).
 

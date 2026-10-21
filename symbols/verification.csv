@@ -144,3 +144,4 @@ kernel_mutex_unlock,edge,,20,20,0,0,202db4e3da7f3970,2026-10-21
 camera_follow_pitch,edge,,32,32,0,0,734df11e115979fd,2026-10-21
 camera_follow_yaw,edge,,30,30,0,0,0dc95ee0af3f5491,2026-10-21
 engine_entry_manager_resolve,edge,,25,25,0,0,a48b88b0d51ea5c1,2026-10-21
+kernel_semaphore_create,edge,,22,22,0,0,6eb580cbe2062e91,2026-10-21
