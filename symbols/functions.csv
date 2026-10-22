@@ -22,6 +22,7 @@ address,size,name,system,status,notes
 0x011c4970,29,engine_compare_signed_strings,engine,edge-verified,Compare zero-terminated strings by signed bytes and return their first differing byte subtraction
 0x011c4990,47,engine_compare_signed_prefix,engine,edge-verified,Compare signed bytes up to a signed 32-bit bound; always compare the first byte even for zero or negative lengths
 0x01314320,54,engine_entry_manager_resolve,engine,edge-verified,Resolve an enabled low32 handle index with unsigned bounds; reject full-width handle and entry sentinels; return opaque table pointers unchanged
+0x0132c6c0,81,engine_resize_cache_storage,engine,edge-verified,Release old opaque storage before clearing it; save low32 size; reload mutable allocator/vtable before aligned allocation and publish full pointer; synthetic returning callback wire only
 0x01388c60,16,frame_timing_task_run_all_01388c60,frame_timing,verified,task manager: run the tasks of every group (0x01388c70 with -1)
 0x01388c70,171,frame_timing_task_run_01388c70,frame_timing,verified,"task manager run: prepare the frame, dispatch through +0x40 (virtual +0x30) with +0x38 set, finish"
 0x0138a370,330,frame_timing_task_dispatch_0138a370,frame_timing,verified,"task dispatcher (virtual +0x30): wakes registered tasks, updates the group record, runs the job like the worker step"
