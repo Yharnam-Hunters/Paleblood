@@ -21,6 +21,7 @@ address,replacement,system
 0x011c4970,bb_engine_compare_signed_strings,engine
 0x011c4990,bb_engine_compare_signed_prefix,engine
 0x01314320,bb_engine_entry_manager_resolve,engine
+0x0132c590,bb_engine_release_cache_storage,engine
 0x0132c6c0,bb_engine_resize_cache_storage,engine
 0x01388c60,bb_frame_timing_task_run_all_01388c60,frame_timing
 0x01388c70,bb_frame_timing_task_run_01388c70,frame_timing
