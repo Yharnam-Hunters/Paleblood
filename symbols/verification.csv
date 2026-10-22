@@ -109,6 +109,7 @@ kernel_condition_wait,recorded,,527,527,0,0,3c1f1aa3690e430e,2026-10-07
 kernel_condition_wait,edge,,12,12,0,0,3c1f1aa3690e430e,2026-10-07
 kernel_file_close,edge,,16,16,0,0,dd5e8d7e2fc6dbe7,2026-10-22
 kernel_file_read_count,edge,,28,28,0,0,51f69eb647c97230,2026-10-22
+kernel_file_seek_absolute,edge,,28,28,0,0,928af19f641c7b3b,2026-10-22
 kernel_thread_self,edge,,7,7,0,0,75626151a8bb5eab,2026-10-21
 physics_instance_construct_01c0c2b0,recorded,,119,119,0,0,ca3412adb293c909,2026-10-07
 physics_instance_construct_01c0c2b0,recorded,30,119,119,0,0,ca3412adb293c909,2026-10-07

@@ -2,6 +2,7 @@ address,replacement,system
 0x00fbc3e0,bb_render_yebis_get_recursive_sample_parameters,render
 0x0111a6b0,bb_kernel_file_close,kernel
 0x0111a6e0,bb_kernel_file_read_count,kernel
+0x0111a720,bb_kernel_file_seek_absolute,kernel
 0x0111a760,bb_frame_timing_get_monotonic_us,frame_timing
 0x0111a7f0,bb_frame_timing_get_monotonic_ms,frame_timing
 0x0111a880,bb_frame_timing_sleep_ms,frame_timing
