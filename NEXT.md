@@ -37,17 +37,18 @@ and readable. Progress-branch functions without gameplay recordings remain `edge
    the nine fixed-step state methods (Chalice Dungeon state machine; replaced, verified on edge
    cases stock and against "60 FPS++", waiting for a save that reaches the Chalice Dungeons).
    Still to do among those called in the clinic (probe run 2026-10-06, `continue.route`):
-   `0x0183ac60` (20 KB; the full FPS options edit fourteen sites, including twelve time-scaling
-   trampolines; see docs/systems/camera.md) and `0x02713870` (11.6 KB; replay the complete
-   `Uncap FPS++` write order: a later live route bypasses an overlapping malformed call,
-   QUIRKS.md). Each option part is
-   checked against the patch that edits it (both sides patched, VERIFY.md).
-   Camera reconstruction still needs exact numeric primitives, dependency/output contracts
-   and whole-function cases; corrected static coverage alone is insufficient. In the record
-   cache, three copied record-padding bytes have unresolved indirect write sources. Preserve
-   full memory comparison while resolving those contracts.
+   `0x02713870` (11.6 KB; replay the complete `Uncap FPS++` write order: a later live route
+   bypasses an overlapping malformed call, QUIRKS.md). Each option part is checked against
+   the patch that edits it (both sides patched, VERIFY.md). Three copied record-padding bytes
+   have unresolved indirect write sources. Preserve full memory comparison while resolving
+   those contracts.
 
 ## Done
+
+- `0x0183ac60` camera_update_follow: readable complete update (20,076 reachable bytes),
+  edge-verified with its 64-case generator for stock and 30/60/uncapped behavior.
+  The scalar entry preserves full physical XMM0 through a hidden vector body; gameplay
+  recordings remain unavailable. See [camera notes](docs/systems/camera.md).
 
 - `0x0111ad10` kernel_semaphore_create: edge-verified (22 synthetic cases and 11 rejected
   mutations; independent review passed; gameplay recordings unavailable).

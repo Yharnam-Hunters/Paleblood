@@ -15,9 +15,11 @@ names. Unused debug fields remain padding, and the complete guest class size is 
 
 ## Key functions
 
-The header declares the original entry points. Replacement status is tracked in
-[`symbols/functions.csv`](../../symbols/functions.csv); the update remains original while its
-dependency contracts and complete behavior are reconstructed.
+The header declares the original entry points. The readable update is in
+[`game/camera/update.cpp`](../../game/camera/update.cpp), with stages under `game/camera/update/`.
+Replacement status is tracked in [`symbols/functions.csv`](../../symbols/functions.csv).
+The update has a 64-case synthetic edge generator for stock behavior and each supported FPS
+option; genuine gameplay recordings are still required for `verified` status.
 
 | Address | Role | Confirmed ABI |
 |---|---|---|
@@ -26,15 +28,27 @@ dependency contracts and complete behavior are reconstructed.
 | `0x0183fb20` | Yaw getter | RDI camera; float result in XMM0 |
 
 The update's known caller, `0x018368b0`, calls it at `0x01836c00` and `0x01836e15`, then copies
-the camera transform and projection fields. Incoming XMM0 is a scalar time step, even though the
-original spills a full SIMD register and the initial decompiler signature omitted it.
+the camera transform and projection fields. The public prototype declares a scalar float time
+step, but the original spills and later uses all 128 physical bits of XMM0. The public replacement
+entry performs a tail jump to a hidden body accepting `engine::Vec4`, preserving the opaque upper
+96 bits without a scalar reload or conversion. This machine boundary is specific to x86-64
+SysV; it does not assume the upper lanes are dead.
 
-The catalog's update size, 20,055 bytes, is not a contiguous body boundary: its endpoint
-`0x0183fab7` falls inside an instruction in a reachable cold block. Original-byte control-flow
-walking agrees with the native analysis on 3,884 instructions / 20,076 bytes, in inclusive ranges
+The catalog's former update size, 20,055 bytes, ended inside an instruction in a reachable cold
+block. Its corrected size is the 20,076 reachable bytes established by original-byte control-flow
+walking and independent analysis: 3,884 instructions, in inclusive ranges
 `0x0183ac60..0x0183f791` and `0x0183f793..0x0183facc`. The single intervening byte and the three
 bytes before the next function at `0x0183fad0` are unreachable NOP padding. This establishes
-instruction coverage, not semantic correctness or verification.
+instruction coverage; edge verification is a separate execution check.
+
+## Readable update
+
+The stages preserve the original effect order: parameter selection and the null-subject return;
+subject compensation, control and fresh transforms; target and angular/input updates; frame and
+translation construction; candidate collision, wall-wing escape and chase; final orientation and
+collision; finite-value rollback, ordered territory traversal and safe margins. Saved vectors and
+object identities remain distinct from fields reloaded after callbacks. The six original vector
+math helpers retain their observed calling contracts, including the full-XMM0 quaternion input.
 
 ## Structs and globals
 
@@ -103,29 +117,46 @@ the selection.
 ## Patch points
 
 The [community patch XML at commit e344639](https://github.com/shadps4-emu/ps4_cheats/blob/e34463942099072e5d8f5e2bcb3d7d927683b349/PATCHES/Bloodborne.xml)
-has two camera edits in `30 FPS++` and
-`60FPS++ (no deltatime)`: `0x0183dc96` redirects a jump to include chase-rate adaptation, and
-`0x0183dcfe` changes the immediate that sets wall-escape mode when both wing queries miss.
+contains two shared camera edits: `0x0183dc96` redirects the wall-off path into the chase-rate
+tail, and `0x0183dcfe` changes the mode stored when both wing queries miss. `BB_TARGET_FPS=30`
+reproduces these edits. `BB_TARGET_FPS=60` and `uncapped` additionally reproduce twelve time-scaling
+trampolines, covering all fourteen camera edit sites. An unset option selects the stock behavior.
+The XML also has 90/120 FPS variants; no additional product options are introduced here.
 
-`60 FPS++`, `90 FPS++`, `120 FPS++` and `Uncap FPS++` additionally install twelve camera
-trampolines. They adjust parameter/distance interpolation, subject and target chase, direct pitch,
-and chase-rate recovery using `SprjFlipper::frame_seconds`. Different sites use a 1/60 or 1/30
-time cap, nonlinear rate conversion, complement conversion, or simple time multiplication.
-All fourteen in-function edit sites and their cave dependencies need differential coverage;
-support cannot be inferred from the jump/flag edits alone.
+Each measured-time site reloads the global `SprjFlipper` pointer and its `frame_seconds` member
+at `+0x264`, including after callbacks. These unchecked reads remain independent of the incoming
+physical XMM0 time register. Sites retain their literal 1/60 or 1/30 caps and operation trees for
+rational gain conversion, complement conversion, direct pitch multiplication and rate recovery;
+algebraically equivalent reassociation can change floating-point results.
 
-## Open questions
+The wall-off redirect has a further effect: although it clears escape mode and skips escape
+rotation, the tail tests retained R14b from the wall-global address, whose low byte is `0x94`.
+It therefore copies the escape chase rates into the live rates even with wall mode zero.
+The replacement preserves that path separately from the both-miss and null-query paths.
 
-- Reconstruct the update in readable stages with exact effect order, including cold blocks,
-  selective finite-value rollback, consumed request flags and ordered territory traversal.
-- Exercise the established original helper bindings, including the sphere fraction output and
-  debug-render state reselection, in complete-update differential fixtures before replacement.
-- Preserve reciprocal-square-root refinements, packed polynomial math, angle reduction,
-  conversion/rounding behavior, NaN payloads and scalar operand order. The original Ghidra 12.1.4
-  VEX scalar-root rules reversed source roles; an isolated private correction was checked against
-  Intel's specification, a synthetic x86-64 run and REA decompilation. Earlier pseudocode must
-  not be used as the semantic authority for affected instructions.
-- Validate stock behavior and each supported FPS option against original bytes and the actual
-  patch, with synthetic edge cases, rejected mutations and independent review. Genuine gameplay
-  recordings are still required for full verification; static layout evidence does not replace
-  them.
+## Verification limits
+
+The complete update uses synthetic edge cases for stock, 30, 60 and uncapped behavior.
+Authored input graphs and bounded callback aliases exercise specific contracts; their labels
+do not establish every gameplay path or callback mutation. Genuine gameplay recordings remain
+unavailable, so the update's status is at most `edge-verified`.
+
+The private O2 counter-tests distinguished eight of thirteen deliberate variants in 19 of 31
+assigned comparisons, with no safety or execution failures. They detected disabled measured
+time, cached frame-time reads after all three callback aliases, missing pitch or parameter
+scaling, the both-miss mode, wall-off rate copies, hardware square-root substitution, and
+suppressed territory debug effects.
+
+Five controls survived every assigned case: substituting the standard rational form for the
+blended, distance or complement forms; retaining the stock 30 FPS recovery factor; and clearing
+the incoming upper 96 XMM0 bits. These outcomes do not establish equivalence or dead lanes.
+The source retains the instruction-proven formulas and physical-register bridge. The
+`chase_front_selector` fixture explicitly uses zero chase gain, so that below-cap case does
+not establish sensitivity to a nonzero front gain. The parameter-scaling control also survives
+`fps_rounded_distance_difference`, and the both-miss control survives `stock_reset_nonboolean`.
+These are limits of those fixed assignments; no cases were retuned or quarantined.
+
+Reciprocal-square-root refinements, packed polynomial math, angle reduction, conversions and
+operand order remain explicit. The original Ghidra 12.1.4 VEX scalar-root rules reversed source
+roles; an isolated correction was checked against Intel's specification, a synthetic x86-64 run
+and REA decompilation. Original instructions remain the authority for affected operations.

@@ -26,6 +26,7 @@ address,size,name,system,status,notes
 0x014400a0,180,frame_timing_task_workers_step_014400a0,frame_timing,verified,"task manager workers: three rounds over the worker queues +0x58, +0x68, +0x60"
 0x016efd00,368,event_emk_add,event,verified,SprjEmkSystem: find or add an event entry in two keyed lists; first advance with the 1/30 s step (1/60 s in the 60 FPS patches)
 0x017cfcc0,177,event_flag_write,event,edge-verified,finds an exact event-flag group in a tree and sets or clears one bit
+0x0183ac60,20076,camera_update_follow,camera,edge-verified,Complete follow update; full physical XMM0 preserved; stock and 30/60/uncapped edge cases; gameplay recordings unavailable
 0x0183fad0,79,camera_follow_pitch,camera,edge-verified,Pitch from the forward basis; preserve scalar square underflow and zero fallback; call atan2 and XOR the returned sign bits
 0x0183fb20,43,camera_follow_yaw,camera,edge-verified,Yaw from the forward X/Z direction; exact signed-zero fallback preserves stored angle; unordered components reach atan2 unchanged
 0x01972900,426,input_pad_step_01972900,input,verified,"FD4PadManager map: marks two entries, advances an owner by the frame-time step (patched to 1/15 or 1/240 s; the advance branch is idle in the clinic)"
