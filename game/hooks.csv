@@ -1,5 +1,6 @@
 address,replacement,system
 0x00fbc3e0,bb_render_yebis_get_recursive_sample_parameters,render
+0x0111a620,bb_kernel_file_open,kernel
 0x0111a6b0,bb_kernel_file_close,kernel
 0x0111a6e0,bb_kernel_file_read_count,kernel
 0x0111a720,bb_kernel_file_seek_absolute,kernel
