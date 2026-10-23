@@ -22,6 +22,7 @@ address,size,name,system,status,notes
 0x0111b060,14,kernel_optional_word_one,kernel,edge-verified,Write one to the optional 32-bit output and return full zero; mechanical leaf only; original logical API unknown
 0x0111b0b0,37,kernel_optional_words,kernel,edge-verified,"Write 132 then 48000 then 6 through optional 32-bit outputs, including overlapping byte views; return full zero; original logical API unknown"
 0x011c4510,15,engine_store_word_product,engine,edge-verified,Store low 32-bit input at owner+0x18 and modulo-32-bit product times four at owner+0x1c; valid unaligned byte view and full zero return; field meanings unknown
+0x011c47f0,29,engine_byte_length_modulo32,engine,edge-verified,Count bytes before NUL modulo32; return zero-extended low32 length. Readable terminated views only; original API unknown
 0x011c4810,34,engine_copy_bytes_until_zero,engine,edge-verified,Copy unsigned bytes forward through the first zero including its store and return the full original destination; valid finite byte views and admitted aliases only; original logical API unknown
 0x011c4840,38,engine_copy_bytes_counted,engine,edge-verified,Use low32 count before access; zero count touches neither pointer; copy forward through zero or count without padding; return full original destination; bounded views and aliases; API unknown
 0x011c48f0,18,engine_map_low_byte,engine,edge-verified,Map the low byte A-Z to lowercase; sign extend the resulting byte to 32 bits then zero extend to 64 bits; original logical API unknown
