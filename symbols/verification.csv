@@ -19,6 +19,7 @@ character_frame_update_01cbdb20,edge,,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,edge,30,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,edge,60,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,edge,uncapped,39,39,0,0,b243fddb1ca6589a,2026-10-07
+engine_append_bytes_counted_terminated,edge,,45,45,0,0,78db0c699d01070a,2026-10-23
 engine_append_bytes_until_zero,edge,,29,29,0,0,296d08d4c26043bd,2026-10-23
 engine_byte_length_modulo32,edge,,30,30,0,0,5ababf4478d33939,2026-10-23
 engine_copy_bytes_counted,edge,,54,54,0,0,507616377ebdcf65,2026-10-23

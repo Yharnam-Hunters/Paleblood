@@ -25,6 +25,7 @@ address,replacement,system
 0x011c4810,bb_engine_copy_bytes_until_zero,engine
 0x011c4840,bb_engine_copy_bytes_counted,engine
 0x011c4870,bb_engine_append_bytes_until_zero,engine
+0x011c48b0,bb_engine_append_bytes_counted_terminated,engine
 0x011c48f0,bb_engine_map_low_byte,engine
 0x011c4970,bb_engine_compare_signed_strings,engine
 0x011c4990,bb_engine_compare_signed_prefix,engine
