@@ -5,7 +5,7 @@ Two tracks. Sessions alternate between them (decompilation, then runtime, then d
 One line per target, in order; move a target to "Done" with its commit when it is finished.
 Decisions and blockers go to STATUS.md instead of being worked around.
 
-Last session: runtime
+Last session: decompilation
 
 ## Runtime track
 
@@ -28,21 +28,71 @@ labelled `runtime`.
 
 ## Decompilation track
 
-Readability burn-down first (STYLE.md; CONTRIBUTING.md, "Definition of done"): refactor each
-file in `tools/readable_allowlist.txt`, re-verify every recorded and edge case, get the
-independent review, remove its line. Order: `game/ai/hk_ai_frame_update.cpp`, then the others
-from the smallest up. New functions go to `main` only verified and readable.
+Every replacement must follow STYLE.md and CONTRIBUTING.md's definition of done. The
+readability allowlist is clear; keep it that way. New functions go to `main` only verified
+and readable. Progress-branch functions without gameplay recordings remain `edge-verified`.
 
-1. The live functions the 60 FPS patches edit besides frame timing (47 live, 12 dead:
+1. The live functions the 60 FPS patches edit besides frame timing (historical map: 47 live, 12 dead;
    `tools/patch_overlap.py ... --map`, `tools/reloc_refs.py`, `tools/refs_to.sh`). Done so far:
    the nine fixed-step state methods (Chalice Dungeon state machine; replaced, verified on edge
    cases stock and against "60 FPS++", waiting for a save that reaches the Chalice Dungeons).
    Still to do among those called in the clinic (probe run 2026-10-06, `continue.route`):
-   `0x0183ac60` (20 KB; every frame-rate patch changes a jump and a flag) and `0x02713870`
-   (11.6 KB; its only edit, Uncap FPS++'s, is broken in v1.09: QUIRKS.md). Each option part is
-   checked against the patch that edits it (both sides patched, VERIFY.md).
+   `0x02713870` (11.6 KB; replay the complete `Uncap FPS++` write order: a later live route
+   bypasses an overlapping malformed call, QUIRKS.md). Each option part is checked against
+   the patch that edits it (both sides patched, VERIFY.md). Three copied record-padding bytes
+   have unresolved indirect write sources. Preserve full memory comparison while resolving
+   those contracts.
 
 ## Done
+
+- `0x0183ac60` camera_update_follow: readable complete update (20,076 reachable bytes),
+  edge-verified with its 64-case generator for stock and 30/60/uncapped behavior.
+  The scalar entry preserves full physical XMM0 through a hidden vector body; gameplay
+  recordings remain unavailable. See [camera notes](docs/systems/camera.md).
+
+- `0x0111ad10` kernel_semaphore_create: edge-verified (22 synthetic cases and 11 rejected
+  mutations; independent review passed; gameplay recordings unavailable).
+
+- `0x01314320` engine_entry_manager_resolve: edge-verified (25 synthetic cases and 9 rejected
+  mutations; independent review passed; gameplay recordings unavailable).
+
+- `0x0183fb20` camera_follow_yaw: edge-verified (30 synthetic cases and 7 rejected
+  mutations; independent review passed; gameplay recordings unavailable).
+
+- `0x0183fad0` camera_follow_pitch: edge-verified (32 synthetic cases and 7 rejected
+  mutations; independent review passed; gameplay recordings unavailable).
+  One operand-order variant survives under QEMU; both compiler assemblies preserve the original
+  order explicitly. See QUIRKS.md for this coverage limit.
+
+- `0x0111acf0` kernel_mutex_unlock: edge-verified (20 synthetic cases and eight rejected
+  mutations; independent review passed; gameplay recordings unavailable).
+
+- `0x0111acd0` kernel_mutex_lock: edge-verified (20 synthetic cases and eight rejected
+  mutations; independent review passed; gameplay recordings unavailable).
+
+- `0x011c4990` engine_compare_signed_prefix: edge-verified (24 synthetic cases and six
+  rejected mutations; independent review passed; gameplay recordings unavailable).
+
+- `0x0111ac80` kernel_mutex_destroy: edge-verified (17 synthetic cases and six rejected
+  mutations; independent review passed; gameplay recordings unavailable).
+
+- `0x0111abb0` kernel_mutex_create: edge-verified (26 synthetic cases and eight rejected
+  mutations; independent review passed; gameplay recordings unavailable).
+
+- `0x011c4970` engine_compare_signed_strings: edge-verified (18 synthetic cases and five
+  rejected mutations; independent review passed; gameplay recordings unavailable).
+
+- `0x0111a8c0` audio_fmod_thread_affinity_lookup: edge-verified (21 synthetic cases and six
+  rejected mutations; independent review passed; gameplay recordings unavailable).
+
+- `0x0111a8a0` kernel_thread_self: edge-verified (seven synthetic cases and four rejected
+  mutations; independent review passed; gameplay recordings pending).
+
+- `0x0111a880` frame_timing_sleep_ms: edge-verified (10 synthetic cases and four rejected
+  mutations; independent review passed; gameplay recordings pending).
+
+- `0x0111a760` frame_timing_get_monotonic_us: edge-verified (20 synthetic cases and five
+  rejected mutations; independent static/readability review passed; gameplay recordings pending).
 
 - Runtime: libkernel `sceKernelGetProcParam`, `_sceKernelRtldSetApplicationHeapAPI`, the mutex and mutex attribute functions (SCE and POSIX names), `scePthreadSelf` and thread attributes (init, destroy, get).
 - Runtime: the game's own libc and libSceFios2 modules are mapped as guest code (`game/modules.csv`) and the executable's imports they export are bound to them; their functions are tracked in `symbols/module_functions.csv`, replaceable later like game functions.

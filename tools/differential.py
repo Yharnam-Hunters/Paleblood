@@ -30,9 +30,10 @@ import function_catalog as catalog  # noqa: E402
 import function_qualification as qualification  # noqa: E402
 import verify  # noqa: E402
 import verification  # noqa: E402
+from call_arguments import ArgumentError, required_arguments  # noqa: E402
 
 SCHEMA = 1
-ENGINE_VERSION = "1.3.0"
+ENGINE_VERSION = "1.4.0"
 ABI_REQUIRED_FIELDS = {"calling_convention", "confidence", "evidence", "stack_alignment",
                        "arguments", "returns", "input_regions", "writable_regions", "execution_limits"}
 
@@ -185,6 +186,15 @@ def load_fixtures(directory: Path, address: str) -> tuple[list[tuple[Path, dict]
 
 def validate_fixture_case(case: dict, name: str) -> None:
     """Reject nondeterministic expressions and fixture memory writes outside declared buffers."""
+    for field in ('imports', 'stubs'):
+        entries = case.get(field, [])
+        if not isinstance(entries, list):
+            raise DifferentialError(f'{name}: {field} must be a list')
+        for index, entry in enumerate(entries):
+            try:
+                required_arguments(entry)
+            except ArgumentError as error:
+                raise DifferentialError(f'{name}: {field}[{index}]: {error}') from error
     buffers = case.get("buffers", {})
     for buffer_name, spec in buffers.items():
         if not isinstance(spec, dict) or not isinstance(spec.get("size"), int) or spec["size"] < 0:
@@ -224,7 +234,18 @@ def validate_fixture_case(case: dict, name: str) -> None:
             raise DifferentialError(f"{name}: {where} is nondeterministic or unsupported: {value!r}") from error
 
     for register, value in case.get("args", {}).items():
-        reference(value, f"args.{register}")
+        if register in ("xmm0", "xmm1"):
+            # The harness takes raw little-endian register bytes, not an address expression.
+            try:
+                if not isinstance(value, str):
+                    raise TypeError
+                raw = bytes.fromhex(value)
+            except (TypeError, ValueError) as error:
+                raise DifferentialError(f"{name}: args.{register} needs hexadecimal register bytes") from error
+            if len(raw) > 16:
+                raise DifferentialError(f"{name}: args.{register} exceeds the 16-byte register")
+        else:
+            reference(value, f"args.{register}")
     for index, value in enumerate(case.get("stack", [])):
         reference(value, f"stack[{index}]")
     for index, entry in enumerate(case.get("memory", [])):
@@ -245,8 +266,8 @@ def validate_fixture_case(case: dict, name: str) -> None:
                 start = int(offset, 0) if offset else 0
                 if start + len(data) > buffers[region]["size"]:
                     raise DifferentialError(f"{name}: memory[{index}] writes beyond buffer {region}")
-        elif "pointer" in entry and entry["pointer"] not in buffers:
-            raise DifferentialError(f"{name}: memory[{index}] points to unknown buffer")
+        elif "pointer" in entry:
+            reference(f"buf:{entry['pointer']}", f"memory[{index}].pointer")
 
 
 def executable_identity(path: Path) -> str:
@@ -363,6 +384,7 @@ def run_identity(address: str, elf_sha: str, fixture_hash: str, abi: dict | None
     return {"schema": SCHEMA, "engine_version": ENGINE_VERSION,
             "engine_sha256": digest_file(ROOT / "tools/differential.py"),
             "harness_sha256": digest_file(ROOT / "tools/harness.py"),
+            "call_arguments_sha256": digest_file(ROOT / "tools/call_arguments.py"),
             "instruction_trace_sha256": digest_file(ROOT / "tools/instruction_trace.py"),
             "verify_sha256": digest_file(ROOT / "tools/verify.py"),
             "loader_sha256": digest_file(ROOT / "runtime/loader.c"),

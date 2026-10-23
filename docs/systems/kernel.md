@@ -44,6 +44,31 @@ from its registry entry. None of these changes has been verified by a new Bloodb
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
 | `0x02483e80` | 204 | `kernel_condition_wait` | verified | Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path |
+| `0x0111ad80` | 23 | `kernel_semaphore_destroy` | edge-verified | Forward the opaque handle to kernel deletion; translate nonzero low32 results to `0x21` |
+| `0x0111ada0` | 30 | `kernel_semaphore_wait` | edge-verified | Wait for one unit with a null timeout pointer; translate nonzero low32 results to `0x21` |
+| `0x0111adc0` | 28 | `kernel_semaphore_signal` | edge-verified | Signal one unit through the opaque handle; translate nonzero low32 results to `0x21` |
+
+### Audio semaphores
+
+`kernel_semaphore_destroy` (`0x0111ad80`, 23 bytes) passes its complete opaque handle,
+including null, to `sceKernelDeleteSema`. The wrapper reads the kernel result's low
+32 bits and returns zero on success or the engine error `0x21` for every nonzero
+result. Kernel side effects survive unchanged. The callers own their handle storage
+and any surrounding handle clearing.
+
+`kernel_semaphore_wait` (`0x0111ada0`, 30 bytes) forwards the opaque handle to
+`sceKernelWaitSema`, requests one unit, and supplies a null timeout pointer. It preserves
+kernel side effects and uses the same low-32-bit result translation.
+
+`kernel_semaphore_signal` (`0x0111adc0`, 28 bytes) forwards the complete opaque
+handle, including null, to `sceKernelSignalSema` and supplies a count of one. It retains
+kernel side effects and translates every nonzero low-32-bit result to `0x21`.
+
+The constructed edge cases cover full-width and null handles, upper return-register
+noise, positive and negative errors, opaque argument forwarding, and bounded kernel
+writes with canaries. They validate this wrapper boundary with scripted calls;
+genuine gameplay recordings remain unavailable.
+
 ## Structs and globals
 
 Not documented yet.

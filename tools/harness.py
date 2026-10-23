@@ -30,6 +30,8 @@ import os
 import struct
 import sys
 
+from call_arguments import ArgumentError, required_arguments
+
 IMAGE = 0x800000000         # host address of guest offset 0, as in the scaffold
 EBOOT_BASE = 0x400000       # PS4 virtual address of guest offset 0
 SANDBOX = 0x900000000       # case buffers
@@ -102,8 +104,8 @@ XSTUB = 0x940000000
 # xmm1 at +64 (float arguments, compared with "argf32"), calls the Python dispatcher and copies
 # its result into xmm0 too, so a float return is scripted as its bit pattern ("ret": "0x3f800000").
 IMPSTUB = 0x950000000
-IMPSTUB_SIZE = 96
-XSTUB_SIZE = 96
+IMPSTUB_SIZE = 128
+XSTUB_SIZE = 128
 ARCH_SET_GS, SYS_ARCH_PRCTL = 0x1001, 158
 NID_SALT = bytes.fromhex('518d64a635ded8c1e6b039b1c3e55230')
 
@@ -182,6 +184,18 @@ def hexint(v) -> int:
 STUB_SLOTS = 64             # internal-function stubs per case
 
 
+def callback_wrapper(callback, save: int) -> bytes:
+    """Save incoming SSE arguments and entry RSP before aligning for Python."""
+    code = (b'\x49\xbb' + struct.pack('<Q', save) +
+            b'\xf3\x41\x0f\x7f\x03' + b'\xf3\x41\x0f\x7f\x4b\x10' +
+            b'\x49\x89\x63\x20' +  # mov [r11+32], rsp: overflow slot zero is [rsp+8]
+            b'\x48\x83\xec\x08' + b'\x48\xb8' +
+            struct.pack('<Q', ctypes.cast(callback, ctypes.c_void_p).value) +
+            b'\xff\xd0' + b'\x48\x83\xc4\x08' + b'\x66\x48\x0f\x6e\xc0' + b'\xc3')
+    assert len(code) <= 64
+    return code
+
+
 class Machine:
     """The image mapped and relocated once, import stubs in place. Library calls dispatch to
     the current Run, so cases can share one mapping (each runs in its own fork)."""
@@ -203,15 +217,12 @@ class Machine:
         self.proto = ctypes.CFUNCTYPE(ctypes.c_uint64, *[ctypes.c_uint64] * 6)
         mmap_fixed(IMPSTUB, max(1, len(names)) * IMPSTUB_SIZE)
         for i in range(len(names)):
-            cb = self.proto(lambda a, b_, c, d, e, f, i=i: self.current.dispatch(i, (a, b_, c, d, e, f)))
+            cb = self.proto(lambda a, b_, c, d, e, f, i=i:
+                            self.current.callback(self.current.dispatch, i, (a, b_, c, d, e, f)))
             self.callbacks.append(cb)
             wrapper = IMPSTUB + IMPSTUB_SIZE * i
             save = wrapper + 64
-            # movabs r11, save; movdqu [r11], xmm0; movdqu [r11+16], xmm1; sub rsp, 8;
-            # movabs rax, cb; call rax; add rsp, 8; movq xmm0, rax; ret
-            code = (b'\x49\xbb' + struct.pack('<Q', save) + b'\xf3\x41\x0f\x7f\x03' + b'\xf3\x41\x0f\x7f\x4b\x10' +
-                    b'\x48\x83\xec\x08' + b'\x48\xb8' + struct.pack('<Q', ctypes.cast(cb, ctypes.c_void_p).value) +
-                    b'\xff\xd0' + b'\x48\x83\xc4\x08' + b'\x66\x48\x0f\x6e\xc0' + b'\xc3')
+            code = callback_wrapper(cb, save)
             ctypes.memmove(wrapper, code, len(code))
             stub = b'\x48\xb8' + struct.pack('<Q', wrapper) + b'\xff\xe0'
             ctypes.memmove(CODE + PAGE + 16 * i, stub, len(stub))
@@ -233,6 +244,15 @@ class Run:
         self.calls: list[dict] = []
         self.errors: list[str] = []
         self.block = (ctypes.c_uint64 * 28)()
+        for field in ('imports', 'stubs'):
+            entries = case.get(field, [])
+            if not isinstance(entries, list):
+                raise BadInput(f'{field} must be a list')
+            for index, entry in enumerate(entries):
+                try:
+                    required_arguments(entry)
+                except ArgumentError as error:
+                    raise BadInput(f'{field}[{index}]: {error}') from error
         self.scripts: dict[str, list] = {}
         for entry in case.get('imports', []):
             self.scripts.setdefault(nid(entry['name']), []).append(entry)
@@ -256,7 +276,11 @@ class Run:
         for i, raw in enumerate(names):
             entries = self.scripts.get(raw.split('#')[0], [])
             args = {int(e['series']['arg']) for e in entries if 'series' in e}
-            if args and args <= {0, 1} and len(args) == 1:
+            # The compressed path cannot observe per-call selectors or stack values.
+            simple = all(required_arguments(e) <= 6 and
+                         not any(e.get(field) for field in ('argi', 'argmem', 'argf32', 'writes'))
+                         for e in entries if 'series' in e)
+            if simple and args and args <= {0, 1} and len(args) == 1:
                 series_imports.append((i, args.pop()))
         if series_imports:
             mmap_fixed(SERIES, PAGE * (1 + len(series_imports) // 32))
@@ -264,7 +288,7 @@ class Run:
                 state = SERIES + 128 * n
                 code = state + 48
                 ctypes.memmove(state, bytes(48), 48)
-                ctypes.memmove(state + 24, struct.pack('<Q', ctypes.cast(machine.callbacks[i], ctypes.c_void_p).value), 8)
+                ctypes.memmove(state + 24, struct.pack('<Q', IMPSTUB + IMPSTUB_SIZE * i), 8)
                 stub = SERIES_STUB[arg].replace(struct.pack('<Q', 0x1122334455667788), struct.pack('<Q', state))
                 ctypes.memmove(code, stub, len(stub))
                 jump = b'\x48\xb8' + struct.pack('<Q', code) + b'\xff\xe0'
@@ -300,15 +324,10 @@ class Run:
         for i, address in enumerate(sorted(self.stub_scripts)):
             save = XSTUB + XSTUB_SIZE * i + 64
             cb = proto(lambda a, b_, c, d, e, f, address=address, save=save:
-                       self.dispatch_stub(address, (a, b_, c, d, e, f), save))
+                       self.callback(self.dispatch_stub, address, (a, b_, c, d, e, f), save))
             self.callbacks.append(cb)
             code = XSTUB + XSTUB_SIZE * i
-            # movabs r11, save; movdqu [r11], xmm0; movdqu [r11+16], xmm1; sub rsp, 8;
-            # movabs rax, cb; call rax; add rsp, 8; movq xmm0, rax; ret (a float return is
-            # scripted as its bit pattern, as for imports)
-            stub = (b'\x49\xbb' + struct.pack('<Q', save) + b'\xf3\x41\x0f\x7f\x03' + b'\xf3\x41\x0f\x7f\x4b\x10' +
-                    b'\x48\x83\xec\x08' + b'\x48\xb8' + struct.pack('<Q', ctypes.cast(cb, ctypes.c_void_p).value) +
-                    b'\xff\xd0' + b'\x48\x83\xc4\x08' + b'\x66\x48\x0f\x6e\xc0' + b'\xc3')
+            stub = callback_wrapper(cb, save)
             ctypes.memmove(code, stub, len(stub))
             jump = b'\xff\x25\x00\x00\x00\x00' + struct.pack('<Q', code)
             ctypes.memmove(self.guest(address), jump, len(jump))
@@ -392,6 +411,35 @@ class Run:
         return f'0x{v:x}'
 
     # library calls ---------------------------------------------------------------------
+    def callback(self, dispatch, *args) -> int:
+        """Keep script failures in the result instead of losing ctypes exceptions."""
+        try:
+            return dispatch(*args)
+        except Exception as error:
+            self.errors.append(f'scripted callback: {type(error).__name__}: {error}')
+            return 0
+
+    def call_arguments(self, entry: dict, args: tuple, save: int) -> tuple:
+        count = required_arguments(entry)
+        if count <= 6:
+            return args
+        stack = ctypes.c_uint64.from_address(save + 32).value + 8
+        size = (count - 6) * 8
+        self.check_memory(stack, size, source='callback_stack_arguments')
+        return args + struct.unpack('<' + 'Q' * (count - 6), ctypes.string_at(stack, size))
+
+    def call_record(self, entry: dict, args: tuple, save: int, identity: dict) -> dict:
+        picks = entry.get('argi', list(range(entry.get('argc', 0))))
+        record = {**identity, 'args': [self.describe(args[i]) for i in picks]}
+        for register in entry.get('argf32', []):
+            record.setdefault('argf32', []).append(ctypes.string_at(save + 16 * register, 4).hex())
+        for item in entry.get('argmem', []):
+            address = args[item['arg']] + int(item.get('offset', 0))
+            size = int(item['size'])
+            self.check_memory(address, size, source='stub_argument' if 'call' in identity else 'import_argument')
+            record.setdefault('argmem', []).append(ctypes.string_at(address, size).hex())
+        return record
+
     def finish_series(self, index: int) -> None:
         """Fold the calls a native series stub served into the record of its first call."""
         n = self.native.get(index)
@@ -426,11 +474,9 @@ class Run:
                 queue.pop(0)
         else:
             queue.pop(0)
-        argc = int(entry.get('argc', 0))
-        self.calls.append({'import': entry['name'], 'args': [self.describe(a) for a in args[:argc]]})
-        if entry.get('argf32'):
-            save = IMPSTUB + IMPSTUB_SIZE * index + 64
-            self.calls[-1]['argf32'] = [ctypes.string_at(save + 16 * int(r), 4).hex() for r in entry['argf32']]
+        save = IMPSTUB + IMPSTUB_SIZE * index + 64
+        args = self.call_arguments(entry, args, save)
+        self.calls.append(self.call_record(entry, args, save, {'import': entry['name']}))
         if series:
             if series.get('format') != 'timeval_us' or int(series.get('offset', 0)):
                 raise BadInput(f"unsupported series {series.get('format')} at offset {series.get('offset', 0)}")
@@ -467,16 +513,8 @@ class Run:
             self.calls.append({'call': name, 'args': []})
             return 0
         entry = queue.pop(0)
-        picks = entry.get('argi', list(range(int(entry.get('argc', 0)))))
-        record = {'call': name, 'args': [self.describe(args[i]) for i in picks]}
-        for r in entry.get('argf32', []):
-            # Float arguments: xmm0 / xmm1 as their 32-bit pattern.
-            record.setdefault('argf32', []).append(ctypes.string_at(save + 16 * int(r), 4).hex())
-        for m in entry.get('argmem', []):
-            at = args[int(m['arg'])] + int(m.get('offset', 0))
-            self.check_memory(at, int(m['size']), source="stub_argument")
-            record.setdefault('argmem', []).append(ctypes.string_at(at, int(m['size'])).hex())
-        self.calls.append(record)
+        args = self.call_arguments(entry, args, save)
+        self.calls.append(self.call_record(entry, args, save, {'call': name}))
         for w in entry.get('writes', []):
             # What the real function stored through a pointer argument (e.g. a constructor).
             if 'pointer' in w:
@@ -564,6 +602,8 @@ class Run:
         writes = []
         for start, old in before.items():
             new = after[start]
+            if old == new:
+                continue
             i, n = 0, len(old)
             while i < n:
                 if old[i] == new[i]:

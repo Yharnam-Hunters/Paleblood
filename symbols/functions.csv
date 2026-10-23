@@ -1,7 +1,41 @@
 address,size,name,system,status,notes
 0x004632d0,67,frame_timing_get_time_us,frame_timing,original,dead in the stock game: only unwind entries refer to it; the community frame-rate patches overwrite it as a code cave (gettimeofday in microseconds)
 0x00fbc3e0,670,render_yebis_get_recursive_sample_parameters,render,verified,"YEBIS GPUTexUtil_GetRecursiveSampleParameters: blur pass count, last-pass samples and scale; the FPS patches drop its first assertion"
+0x0111a620,129,kernel_file_open,kernel,edge-verified,Capture guest guard; open with zero flags and mode; fstat consumes only supplied DWORD+0x48; publish unaligned four-byte then eight-byte outputs; synthetic returning wire cases only
+0x0111a6b0,23,kernel_file_close,kernel,edge-verified,Forward the full opaque descriptor; translate nonzero low32 close status to 19; synthetic wire edge cases only
+0x0111a6e0,60,kernel_file_read_count,kernel,edge-verified,Zero-extend requested count; publish exactly four transferred bytes after imported buffer writes; full64 result controls errors and short reads; synthetic wire edge cases only
+0x0111a720,22,kernel_file_seek_absolute,kernel,edge-verified,Forward the full opaque descriptor and zero-extended unsigned32 absolute offset; full64 seek result sign maps to 0 or 19; synthetic wire edge cases only
+0x0111a740,20,engine_write_stderr,engine,edge-verified,Forward the string and imported _Stderr object address to fputs; ignore its return and return zero; synthetic wire edge cases only
+0x0111a760,131,frame_timing_get_monotonic_us,frame_timing,edge-verified,Microseconds since the shared monotonic clock base; unsigned 32-bit seconds and nanoseconds truncate and wrap; clock failures preserve output and state
 0x0111a7f0,131,frame_timing_get_monotonic_ms,frame_timing,verified,Milliseconds since its first call from CLOCK_MONOTONIC; keeps the first seconds in the clock state object
+0x0111a880,19,frame_timing_sleep_ms,frame_timing,edge-verified,Convert milliseconds to microseconds with uint32 wrapping; always call the kernel and discard its result
+0x0111a8a0,26,kernel_thread_self,kernel,edge-verified,Copy the complete opaque current-thread handle to the output and return zero
+0x0111a8c0,290,audio_fmod_thread_affinity_lookup,audio,edge-verified,FMOD thread-name affinity masks; eight 64-bit slots; nonblocking uses a 23-byte prefix; unknown names leave output untouched
+0x0111abb0,207,kernel_mutex_create,kernel,edge-verified,Create a recursive mutex in static or allocated storage; low-byte ownership flag; publish storage only after all kernel stages succeed; no error cleanup
+0x0111ac80,78,kernel_mutex_destroy,kernel,edge-verified,Destroy the mutex and release storage only after kernel success with a zero low-byte static flag; errors map to 0x21; ignore release result
+0x0111acd0,30,kernel_mutex_lock,kernel,edge-verified,Accept a null mutex without a call; preserve the full kernel pointer and API writes; map any nonzero low32 result to 0x21
+0x0111acf0,30,kernel_mutex_unlock,kernel,edge-verified,Accept a null mutex without a call; forward its full pointer to unlock; preserve API writes and translate nonzero low32 results to 0x21
+0x0111ad10,103,kernel_semaphore_create,kernel,edge-verified,Create the fixed empty FIFO semaphore; preserve all six API arguments and full opaque handle; publish only after low32 kernel success; errors map to 0x21
+0x0111ad80,23,kernel_semaphore_destroy,kernel,edge-verified,Forward the full opaque handle including null to kernel deletion; preserve kernel writes and translate any nonzero low32 result to 0x21
+0x0111ada0,30,kernel_semaphore_wait,kernel,edge-verified,Wait for one unit using the full opaque handle including null and a null timeout pointer; preserve kernel writes; nonzero low32 results map to 0x21
+0x0111adc0,28,kernel_semaphore_signal,kernel,edge-verified,Signal one unit using the full opaque handle including null; preserve kernel writes and translate every nonzero low32 result to 0x21
+0x0111b060,14,kernel_optional_word_one,kernel,edge-verified,Write one to the optional 32-bit output and return full zero; mechanical leaf only; original logical API unknown
+0x0111b0b0,37,kernel_optional_words,kernel,edge-verified,"Write 132 then 48000 then 6 through optional 32-bit outputs, including overlapping byte views; return full zero; original logical API unknown"
+0x011c4510,15,engine_store_word_product,engine,edge-verified,Store low 32-bit input at owner+0x18 and modulo-32-bit product times four at owner+0x1c; valid unaligned byte view and full zero return; field meanings unknown
+0x011c47f0,29,engine_byte_length_modulo32,engine,edge-verified,Count bytes before NUL modulo32; return zero-extended low32 length. Readable terminated views only; original API unknown
+0x011c4810,34,engine_copy_bytes_until_zero,engine,edge-verified,Copy unsigned bytes forward through the first zero including its store and return the full original destination; valid finite byte views and admitted aliases only; original logical API unknown
+0x011c4840,38,engine_copy_bytes_counted,engine,edge-verified,Use low32 count before access; zero count touches neither pointer; copy forward through zero or count without padding; return full original destination; bounded views and aliases; API unknown
+0x011c4870,51,engine_append_bytes_until_zero,engine,edge-verified,Scan destination to NUL; copy source forward through NUL and return original destination. Admitted finite alias views only; original API unknown
+0x011c48b0,60,engine_append_bytes_counted_terminated,engine,edge-verified,Use low32 count; zero touches neither pointer. Append forward through source NUL or write extra NUL after count bytes; no padding. Capacity count+1; admitted aliases; original API unknown
+0x011c48f0,18,engine_map_low_byte,engine,edge-verified,Map the low byte A-Z to lowercase; sign extend the resulting byte to 32 bits then zero extend to 64 bits; original logical API unknown
+0x011c4910,44,engine_map_ascii_upper_inplace,engine,edge-verified,Map only ASCII a-z to A-Z through the first NUL; retain all other bytes and return the original full pointer. Admitted finite views only; original API unknown
+0x011c4940,44,engine_map_ascii_lower_inplace,engine,edge-verified,Map only ASCII A-Z to a-z through the first NUL; retain all other bytes and return the original full pointer. Admitted finite views only; original API unknown
+0x011c4970,29,engine_compare_signed_strings,engine,edge-verified,Compare zero-terminated strings by signed bytes and return their first differing byte subtraction
+0x011c4990,47,engine_compare_signed_prefix,engine,edge-verified,Compare signed bytes up to a signed 32-bit bound; always compare the first byte even for zero or negative lengths
+0x011c49c0,56,engine_compare_ascii_folded_signed_bytes,engine,edge-verified,Fold ASCII A-Z on both loaded bytes before left-NUL test; subtract signed bytes and zero-extend the low32 result. Read-only bounded aliases; original API unknown
+0x01314320,54,engine_entry_manager_resolve,engine,edge-verified,Resolve an enabled low32 handle index with unsigned bounds; reject full-width handle and entry sentinels; return opaque table pointers unchanged
+0x0132c590,49,engine_release_cache_storage,engine,edge-verified,Release nonnull opaque storage through owner allocator before eight-byte clear; null path leaves fields untouched; inferred void with zero known code callers; synthetic returning callback wire only
+0x0132c6c0,81,engine_resize_cache_storage,engine,edge-verified,Release old opaque storage before clearing it; save low32 size; reload mutable allocator/vtable before aligned allocation and publish full pointer; synthetic returning callback wire only
 0x01388c60,16,frame_timing_task_run_all_01388c60,frame_timing,verified,task manager: run the tasks of every group (0x01388c70 with -1)
 0x01388c70,171,frame_timing_task_run_01388c70,frame_timing,verified,"task manager run: prepare the frame, dispatch through +0x40 (virtual +0x30) with +0x38 set, finish"
 0x0138a370,330,frame_timing_task_dispatch_0138a370,frame_timing,verified,"task dispatcher (virtual +0x30): wakes registered tasks, updates the group record, runs the job like the worker step"
@@ -11,6 +45,9 @@ address,size,name,system,status,notes
 0x014400a0,180,frame_timing_task_workers_step_014400a0,frame_timing,verified,"task manager workers: three rounds over the worker queues +0x58, +0x68, +0x60"
 0x016efd00,368,event_emk_add,event,verified,SprjEmkSystem: find or add an event entry in two keyed lists; first advance with the 1/30 s step (1/60 s in the 60 FPS patches)
 0x017cfcc0,177,event_flag_write,event,edge-verified,finds an exact event-flag group in a tree and sets or clears one bit
+0x0183ac60,20076,camera_update_follow,camera,edge-verified,Complete follow update; full physical XMM0 preserved; stock and 30/60/uncapped edge cases; gameplay recordings unavailable
+0x0183fad0,79,camera_follow_pitch,camera,edge-verified,Pitch from the forward basis; preserve scalar square underflow and zero fallback; call atan2 and XOR the returned sign bits
+0x0183fb20,43,camera_follow_yaw,camera,edge-verified,Yaw from the forward X/Z direction; exact signed-zero fallback preserves stored angle; unordered components reach atan2 unchanged
 0x01972900,426,input_pad_step_01972900,input,verified,"FD4PadManager map: marks two entries, advances an owner by the frame-time step (patched to 1/15 or 1/240 s; the advance branch is idle in the clinic)"
 0x01c0c2b0,3222,physics_instance_construct_01c0c2b0,physics,verified,"physics instance constructor over a body set: back-links, shape copy, controller (step 1/30 s; 60 FPS patches 1/60), motion rescale, listeners"
 0x01cbdb20,979,character_frame_update_01cbdb20,character,verified,"per-frame character update: throw animation event, points stat regeneration (stamina-like, -50..max), time-step descriptor; the 30/60 FPS patches fix its frame time"
@@ -23,6 +60,7 @@ address,size,name,system,status,notes
 0x020128f0,121,frame_timing_until_idle_020128f0,frame_timing,edge-verified,state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet)
 0x02012a60,151,frame_timing_request_7_02012a60,frame_timing,edge-verified,"state method: when idle in states 2..5, request 7 and advance the owner one fixed step (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet)"
 0x02012bf0,121,frame_timing_until_idle_02012bf0,frame_timing,edge-verified,state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet)
+0x0217ffb0,205,engine_initialize_static_wide_string_0217ffb0,engine,edge-verified,Guarded static empty wide string; byte-only entry test; captured allocator; exact partial stores; destructor registration before full guard publication
 0x0222bc10,2693,ai_hk_frame_update_0222bc10,ai,verified,"SprjHkAiManager per-frame update: steps the AI world by 1/30 s (the 60 FPS patches: 1/60), AI debug display and drawing"
 0x02377bd0,399,render_frame_update_02377bd0,render,verified,"per-frame: ages a list of ref-counted objects, updates RendMan-side child, steps another child by 1/30 s (Uncap: measured frame time)"
 0x02418d20,467,frame_timing_frame_step,frame_timing,verified,Per frame: SprjWindow running check; creates SprjFlipper; calls the limiter; runs the task update; returns running and not quitting
@@ -31,3 +69,4 @@ address,size,name,system,status,notes
 0x024512a0,78,frame_timing_task_frame_024512a0,frame_timing,verified,"task manager frame entry from the frame step: FD4TaskManager singleton, then 0x01388c60"
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
 0x025b2fb0,768,render_swap_chain_present,render,verified,"GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0)"
+0x02a44140,59,engine_destroy_wide_string_02a44140,engine,edge-verified,WideString destructor; unsigned capacity >=8 frees even null; ignores owns; callback before capacity and size reset and two-byte terminator
