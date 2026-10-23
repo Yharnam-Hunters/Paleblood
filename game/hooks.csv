@@ -21,6 +21,7 @@ address,replacement,system
 0x0111b060,bb_kernel_optional_word_one,kernel
 0x0111b0b0,bb_kernel_optional_words,kernel
 0x011c4510,bb_engine_store_word_product,engine
+0x011c4810,bb_engine_copy_bytes_until_zero,engine
 0x011c48f0,bb_engine_map_low_byte,engine
 0x011c4970,bb_engine_compare_signed_strings,engine
 0x011c4990,bb_engine_compare_signed_prefix,engine
