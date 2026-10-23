@@ -20,6 +20,7 @@ address,size,name,system,status,notes
 0x0111ada0,30,kernel_semaphore_wait,kernel,edge-verified,Wait for one unit using the full opaque handle including null and a null timeout pointer; preserve kernel writes; nonzero low32 results map to 0x21
 0x0111adc0,28,kernel_semaphore_signal,kernel,edge-verified,Signal one unit using the full opaque handle including null; preserve kernel writes and translate every nonzero low32 result to 0x21
 0x0111b060,14,kernel_optional_word_one,kernel,edge-verified,Write one to the optional 32-bit output and return full zero; mechanical leaf only; original logical API unknown
+0x0111b0b0,37,kernel_optional_words,kernel,edge-verified,"Write 132 then 48000 then 6 through optional 32-bit outputs, including overlapping byte views; return full zero; original logical API unknown"
 0x011c4970,29,engine_compare_signed_strings,engine,edge-verified,Compare zero-terminated strings by signed bytes and return their first differing byte subtraction
 0x011c4990,47,engine_compare_signed_prefix,engine,edge-verified,Compare signed bytes up to a signed 32-bit bound; always compare the first byte even for zero or negative lengths
 0x01314320,54,engine_entry_manager_resolve,engine,edge-verified,Resolve an enabled low32 handle index with unsigned bounds; reject full-width handle and entry sentinels; return opaque table pointers unchanged
