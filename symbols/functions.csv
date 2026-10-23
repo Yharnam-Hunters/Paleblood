@@ -28,6 +28,7 @@ address,size,name,system,status,notes
 0x011c4870,51,engine_append_bytes_until_zero,engine,edge-verified,Scan destination to NUL; copy source forward through NUL and return original destination. Admitted finite alias views only; original API unknown
 0x011c48b0,60,engine_append_bytes_counted_terminated,engine,edge-verified,Use low32 count; zero touches neither pointer. Append forward through source NUL or write extra NUL after count bytes; no padding. Capacity count+1; admitted aliases; original API unknown
 0x011c48f0,18,engine_map_low_byte,engine,edge-verified,Map the low byte A-Z to lowercase; sign extend the resulting byte to 32 bits then zero extend to 64 bits; original logical API unknown
+0x011c4910,44,engine_map_ascii_upper_inplace,engine,edge-verified,Map only ASCII a-z to A-Z through the first NUL; retain all other bytes and return the original full pointer. Admitted finite views only; original API unknown
 0x011c4970,29,engine_compare_signed_strings,engine,edge-verified,Compare zero-terminated strings by signed bytes and return their first differing byte subtraction
 0x011c4990,47,engine_compare_signed_prefix,engine,edge-verified,Compare signed bytes up to a signed 32-bit bound; always compare the first byte even for zero or negative lengths
 0x01314320,54,engine_entry_manager_resolve,engine,edge-verified,Resolve an enabled low32 handle index with unsigned bounds; reject full-width handle and entry sentinels; return opaque table pointers unchanged
