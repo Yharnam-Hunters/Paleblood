@@ -32,6 +32,7 @@ address,size,name,system,status,notes
 0x011c4940,44,engine_map_ascii_lower_inplace,engine,edge-verified,Map only ASCII A-Z to a-z through the first NUL; retain all other bytes and return the original full pointer. Admitted finite views only; original API unknown
 0x011c4970,29,engine_compare_signed_strings,engine,edge-verified,Compare zero-terminated strings by signed bytes and return their first differing byte subtraction
 0x011c4990,47,engine_compare_signed_prefix,engine,edge-verified,Compare signed bytes up to a signed 32-bit bound; always compare the first byte even for zero or negative lengths
+0x011c49c0,56,engine_compare_ascii_folded_signed_bytes,engine,edge-verified,Fold ASCII A-Z on both loaded bytes before left-NUL test; subtract signed bytes and zero-extend the low32 result. Read-only bounded aliases; original API unknown
 0x01314320,54,engine_entry_manager_resolve,engine,edge-verified,Resolve an enabled low32 handle index with unsigned bounds; reject full-width handle and entry sentinels; return opaque table pointers unchanged
 0x0132c590,49,engine_release_cache_storage,engine,edge-verified,Release nonnull opaque storage through owner allocator before eight-byte clear; null path leaves fields untouched; inferred void with zero known code callers; synthetic returning callback wire only
 0x0132c6c0,81,engine_resize_cache_storage,engine,edge-verified,Release old opaque storage before clearing it; save low32 size; reload mutable allocator/vtable before aligned allocation and publish full pointer; synthetic returning callback wire only
