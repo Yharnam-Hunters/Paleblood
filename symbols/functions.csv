@@ -25,6 +25,7 @@ address,size,name,system,status,notes
 0x011c47f0,29,engine_byte_length_modulo32,engine,edge-verified,Count bytes before NUL modulo32; return zero-extended low32 length. Readable terminated views only; original API unknown
 0x011c4810,34,engine_copy_bytes_until_zero,engine,edge-verified,Copy unsigned bytes forward through the first zero including its store and return the full original destination; valid finite byte views and admitted aliases only; original logical API unknown
 0x011c4840,38,engine_copy_bytes_counted,engine,edge-verified,Use low32 count before access; zero count touches neither pointer; copy forward through zero or count without padding; return full original destination; bounded views and aliases; API unknown
+0x011c4870,51,engine_append_bytes_until_zero,engine,edge-verified,Scan destination to NUL; copy source forward through NUL and return original destination. Admitted finite alias views only; original API unknown
 0x011c48f0,18,engine_map_low_byte,engine,edge-verified,Map the low byte A-Z to lowercase; sign extend the resulting byte to 32 bits then zero extend to 64 bits; original logical API unknown
 0x011c4970,29,engine_compare_signed_strings,engine,edge-verified,Compare zero-terminated strings by signed bytes and return their first differing byte subtraction
 0x011c4990,47,engine_compare_signed_prefix,engine,edge-verified,Compare signed bytes up to a signed 32-bit bound; always compare the first byte even for zero or negative lengths
