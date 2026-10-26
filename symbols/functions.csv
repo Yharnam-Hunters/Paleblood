@@ -23,6 +23,7 @@ address,size,name,system,status,notes
 0x020128f0,121,frame_timing_until_idle_020128f0,frame_timing,edge-verified,state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet)
 0x02012a60,151,frame_timing_request_7_02012a60,frame_timing,edge-verified,"state method: when idle in states 2..5, request 7 and advance the owner one fixed step (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet)"
 0x02012bf0,121,frame_timing_until_idle_02012bf0,frame_timing,edge-verified,state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (a Chalice Dungeon state machine: built next to SprjHolygrail; not reached by the routes yet)
+0x0217ffb0,205,engine_initialize_static_wide_string_0217ffb0,engine,edge-verified,Guarded static empty wide string; byte-only entry test; captured allocator; exact partial stores; destructor registration before full guard publication
 0x0222bc10,2693,ai_hk_frame_update_0222bc10,ai,verified,"SprjHkAiManager per-frame update: steps the AI world by 1/30 s (the 60 FPS patches: 1/60), AI debug display and drawing"
 0x02377bd0,399,render_frame_update_02377bd0,render,verified,"per-frame: ages a list of ref-counted objects, updates RendMan-side child, steps another child by 1/30 s (Uncap: measured frame time)"
 0x02418d20,467,frame_timing_frame_step,frame_timing,verified,Per frame: SprjWindow running check; creates SprjFlipper; calls the limiter; runs the task update; returns running and not quitting
@@ -31,3 +32,4 @@ address,size,name,system,status,notes
 0x024512a0,78,frame_timing_task_frame_024512a0,frame_timing,verified,"task manager frame entry from the frame step: FD4TaskManager singleton, then 0x01388c60"
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
 0x025b2fb0,768,render_swap_chain_present,render,verified,"GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0)"
+0x02a44140,59,engine_destroy_wide_string_02a44140,engine,edge-verified,WideString destructor; unsigned capacity >=8 frees even null; ignores owns; callback before capacity and size reset and two-byte terminator

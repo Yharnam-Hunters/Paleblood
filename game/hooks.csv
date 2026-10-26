@@ -22,6 +22,7 @@ address,replacement,system
 0x020128f0,bb_frame_timing_until_idle_020128f0,frame_timing
 0x02012a60,bb_frame_timing_request_7_02012a60,frame_timing
 0x02012bf0,bb_frame_timing_until_idle_02012bf0,frame_timing
+0x0217ffb0,bb_engine_initialize_static_wide_string_0217ffb0,engine
 0x0222bc10,bb_ai_hk_frame_update_0222bc10,ai
 0x02377bd0,bb_render_frame_update_02377bd0,render
 0x02418d20,bb_frame_timing_frame_step,frame_timing
@@ -30,3 +31,4 @@ address,replacement,system
 0x024512a0,bb_frame_timing_task_frame_024512a0,frame_timing
 0x02483e80,bb_kernel_condition_wait,kernel
 0x025b2fb0,bb_render_swap_chain_present,render
+0x02a44140,bb_engine_destroy_wide_string_02a44140,engine
