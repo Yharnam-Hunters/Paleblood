@@ -4,7 +4,10 @@
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
+#include <errno.h>
+#include <stdint.h>
 #include <string.h>
+#include <time.h>
 
 /* The process parameter block: the executable's PT_SCE_PROCPARAM segment as mapped. */
 static void *kernel_get_proc_param(void)
@@ -61,3 +64,36 @@ static void *libc_memset(void *dest, int c, size_t n)
     return memset(dest, c, n);
 }
 RT_SYSLIB("libSceLibcInternal", memset, libc_memset);
+
+/* Sleeps the calling thread for at least the given number of microseconds. A guest thread runs on
+   a host thread, so the host thread sleeps. A host signal that interrupts the sleep is not a guest
+   event (the runtime delivers no signals to the guest), so the sleep resumes with the time left. */
+static void sleep_microseconds(const char *caller, uint32_t microseconds)
+{
+    struct timespec left = {.tv_sec = microseconds / 1000000, .tv_nsec = (long)(microseconds % 1000000) * 1000};
+    while (nanosleep(&left, &left) != 0)
+        if (errno != EINTR) rt_fatal(caller, "the host could not sleep");
+}
+
+/* sceKernelUsleep, imported by eboot and libSceFios2.elf from libkernel. The guest's own verified
+   call sites take it as int(uint32_t microseconds) and expect 0 back; docs/runtime-syscalls.md
+   names them. */
+static int kernel_usleep(uint32_t microseconds)
+{
+    sleep_microseconds("sceKernelUsleep", microseconds);
+    return 0;
+}
+RT_SYSLIB("libkernel", sceKernelUsleep, kernel_usleep);
+
+/* usleep, imported by eboot from libScePosix: suspends the thread for the given microseconds and
+   returns 0 (FreeBSD usleep(3); useconds_t is 32-bit unsigned there). One second or more is the
+   open case: SUSv2 lets usleep fail with EINVAL from 1000000 on, FreeBSD sleeps instead, and no
+   PS4-specific source says which answer the guest gets, so that range stops by name. */
+static int posix_usleep(uint32_t microseconds)
+{
+    if (microseconds >= 1000000)
+        rt_fatal("usleep", "the PS4 answer for one second or more (sleep, or EINVAL) is not established");
+    sleep_microseconds("usleep", microseconds);
+    return 0;
+}
+RT_SYSLIB("libScePosix", usleep, posix_usleep);

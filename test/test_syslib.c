@@ -4,12 +4,14 @@
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
+#include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 static int unresolved_test_entry(void) { return -1; }
@@ -97,6 +99,20 @@ static int netctl_unregister(int id) { return ((f_unregister)netctl_unregister_e
 static int netctl_info(int module, void *info) { return ((f_info)netctl_get_info_entry)(module, info); }
 static int netctl_nat(void *nat_info) { return ((f_nat)netctl_get_nat_info_entry)(nat_info); }
 
+/* pthread_self on a host thread with no guest thread registered: the guest thread is per host
+   thread, so a fresh host thread has none, and the call must stop by its own name. */
+static void *(*posix_self_entry)(void);
+static void *call_posix_self(void *unused)
+{
+    (void)unused;
+    return posix_self_entry();
+}
+static void posix_self_on_unregistered_thread(void)
+{
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, call_posix_self, NULL) == 0) pthread_join(thread, NULL);
+}
+
 static int died_in_fatal(void (*call)(void))
 {
     const pid_t child = fork();
@@ -108,6 +124,18 @@ static int died_in_fatal(void (*call)(void))
     if (waitpid(child, &status, 0) < 0) return 0;
     return WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
 }
+
+/* Microseconds elapsed since `start` on the host's monotonic clock: the sleeps are checked as
+   lasting at least what was asked, never as an exact duration. */
+static int64_t elapsed_us(const struct timespec *start)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (int64_t)(now.tv_sec - start->tv_sec) * 1000000 + (now.tv_nsec - start->tv_nsec) / 1000;
+}
+
+static int (*posix_usleep_entry)(uint32_t);
+static void usleep_one_second(void) { posix_usleep_entry(1000000); }
 
 /* The paths whose PS4 answer is not established. The ids are file-scope so a child can unregister
    one the parent registered before forking. */
@@ -262,6 +290,27 @@ int main(void)
     CHECK(is_implemented("libkernel", "scePthreadAttrSetdetachstate"));
     CHECK(is_implemented("libScePosix", "pthread_attr_setdetachstate"));
 
+    /* The POSIX names of self, attribute init and destroy answer as the SCE names do, with the
+       errno itself instead of an SCE code, and share the same attribute objects. */
+    posix_self_entry = (void *(*)(void))fn("libScePosix", "pthread_self");
+    const f1 posix_attr_init = (f1)fn("libScePosix", "pthread_attr_init");
+    const f1 posix_attr_destroy = (f1)fn("libScePosix", "pthread_attr_destroy");
+    if (failures) return 1;
+    CHECK(posix_self_entry() == self);
+    CHECK(died_in_fatal(posix_self_on_unregistered_thread));
+    void *posix_attr = NULL;
+    CHECK(posix_attr_init(&posix_attr) == 0 && posix_attr);
+    CHECK(posix_set_detach(&posix_attr, 1) == 0 && detach_state_of(&posix_attr) == 1);
+    CHECK(posix_attr_destroy(&posix_attr) == 0 && posix_attr == NULL);
+    CHECK(posix_attr_destroy(&posix_attr) == 22 && posix_attr_destroy(NULL) == 22);
+    CHECK(posix_attr_init(NULL) == 22);
+    /* The SCE names keep their codes, and an object from one name is freed by the other. */
+    CHECK(thread_attr_init(NULL) == (int)0x80020016 && thread_attr_destroy(&posix_attr) == (int)0x80020016);
+    CHECK(posix_attr_init(&posix_attr) == 0 && thread_attr_destroy(&posix_attr) == 0 && posix_attr == NULL);
+    CHECK(thread_attr_init(&posix_attr) == 0 && posix_attr_destroy(&posix_attr) == 0 && posix_attr == NULL);
+    CHECK(is_implemented("libScePosix", "pthread_self"));
+    CHECK(is_implemented("libScePosix", "pthread_attr_init") && is_implemented("libScePosix", "pthread_attr_destroy"));
+
     /* sched_yield gives up the processor and succeeds with 0, every time. That the host scheduler
        actually ran another thread is not observable from here, so only the contract's result is
        checked. */
@@ -410,6 +459,19 @@ int main(void)
     CHECK(filled[0] == 0xa5 && filled[1] == 0xa5 && filled[2] == 0xa5 && filled[3] == 0xee);
     CHECK(libc_memset(filled, 0, 0) == filled && filled[0] == 0xa5);
     CHECK(is_implemented("libSceLibcInternal", "memcpy") && is_implemented("libSceLibcInternal", "memset"));
+
+    /* sceKernelUsleep and usleep sleep at least the microseconds asked and return 0. usleep's
+       one-second-or-more range has no established PS4 answer, so it stops by name. */
+    int (*kernel_usleep)(uint32_t) = (int (*)(uint32_t))fn("libkernel", "sceKernelUsleep");
+    posix_usleep_entry = (int (*)(uint32_t))fn("libScePosix", "usleep");
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    CHECK(kernel_usleep(2000) == 0 && elapsed_us(&start) >= 2000);
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    CHECK(posix_usleep_entry(1500) == 0 && elapsed_us(&start) >= 1500);
+    CHECK(kernel_usleep(0) == 0 && posix_usleep_entry(0) == 0);
+    CHECK(died_in_fatal(usleep_one_second));
+    CHECK(is_implemented("libkernel", "sceKernelUsleep") && is_implemented("libScePosix", "usleep"));
 
     if (!failures) puts("syslib: ok");
     return failures != 0;

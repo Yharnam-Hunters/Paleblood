@@ -49,11 +49,17 @@ void rt_thread_register_main(void *stack, uint64_t stack_size)
     current = &main_thread;
 }
 
-static guest_thread *thread_self(void)
+/* The calling thread's own variable value, under either name; it has no error return (POSIX
+   pthread_self). Without a registered guest thread there is nothing to answer, so the call stops
+   by the name the guest used. */
+static guest_thread *self_for(const char *caller)
 {
-    if (!current) rt_fatal("scePthreadSelf", "no guest thread registered on this host thread");
+    if (!current) rt_fatal(caller, "no guest thread registered on this host thread");
     return current;
 }
+
+static guest_thread *thread_self(void) { return self_for("scePthreadSelf"); }
+static guest_thread *posix_thread_self(void) { return self_for("pthread_self"); }
 
 /* Two thread variables name the same thread when they hold the same object pointer. Non-zero when
    equal, zero otherwise, with no error return (FreeBSD pthread_equal(3)). */
@@ -83,22 +89,31 @@ static void thread_yield(void)
     rt_fatal("scePthreadYield", "the PS4 return behaviour is not established by public evidence");
 }
 
+/* Allocates an attribute object and stores it in the variable; ENOMEM when it cannot (POSIX
+   pthread_attr_init, FreeBSD libthr's _pthread_attr_init in thr_attr.c). A missing variable is
+   undefined in POSIX and unchecked in libthr; the runtime answers EINVAL, as the SCE name always
+   has here. Both names share this, returning the FreeBSD error number. */
 static int attr_init(guest_attr **attr)
 {
-    if (!attr) return SCE_KERNEL_ERROR(BSD_EINVAL);
+    if (!attr) return BSD_EINVAL;
     guest_attr *a = calloc(1, sizeof *a);
-    if (!a) return SCE_KERNEL_ERROR(BSD_ENOMEM);
+    if (!a) return BSD_ENOMEM;
     *attr = a;
     return 0;
 }
 
+/* Frees the attribute object and empties the variable; EINVAL for a missing variable or one that
+   holds no object (libthr's _pthread_attr_destroy in thr_attr.c). */
 static int attr_destroy(guest_attr **attr)
 {
-    if (!attr || !*attr) return SCE_KERNEL_ERROR(BSD_EINVAL);
+    if (!attr || !*attr) return BSD_EINVAL;
     free(*attr);
     *attr = NULL;
     return 0;
 }
+
+static int sce_attr_init(guest_attr **attr) { return sce(attr_init(attr)); }
+static int sce_attr_destroy(guest_attr **attr) { return sce(attr_destroy(attr)); }
 
 /* Copies a running thread's attributes into an initialised attribute object. The copy replaces
    everything the object held (libthr's pthread_attr_get_np copies the whole attribute block), so a
@@ -145,11 +160,14 @@ RT_SYSLIB("libkernel", scePthreadSelf, thread_self);
 RT_SYSLIB("libkernel", scePthreadEqual, thread_equal);
 RT_SYSLIB("libkernel", sched_yield, kernel_sched_yield);
 RT_SYSLIB_UNRESOLVED("libkernel", scePthreadYield, thread_yield);
-RT_SYSLIB("libkernel", scePthreadAttrInit, attr_init);
-RT_SYSLIB("libkernel", scePthreadAttrDestroy, attr_destroy);
+RT_SYSLIB("libkernel", scePthreadAttrInit, sce_attr_init);
+RT_SYSLIB("libkernel", scePthreadAttrDestroy, sce_attr_destroy);
 RT_SYSLIB("libkernel", scePthreadAttrGet, attr_get);
 RT_SYSLIB("libkernel", scePthreadAttrSetdetachstate, sce_attr_set_detach_state);
 
-/* libScePosix: errno values. pthread_attr_init and pthread_attr_destroy are not registered yet, so
-   eboot's own POSIX path stops at those first. */
+/* libScePosix: the same calls under their POSIX names, returning the errno values themselves.
+   pthread_self has no error return, so it answers exactly as scePthreadSelf does. */
+RT_SYSLIB("libScePosix", pthread_self, posix_thread_self);
+RT_SYSLIB("libScePosix", pthread_attr_init, attr_init);
+RT_SYSLIB("libScePosix", pthread_attr_destroy, attr_destroy);
 RT_SYSLIB("libScePosix", pthread_attr_setdetachstate, attr_set_detach_state);
