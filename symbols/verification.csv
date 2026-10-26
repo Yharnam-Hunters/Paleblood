@@ -15,6 +15,8 @@ character_frame_update_01cbdb20,edge,,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,edge,30,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,edge,60,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,edge,uncapped,39,39,0,0,b243fddb1ca6589a,2026-10-07
+engine_compare_signed_prefix,edge,,24,24,0,0,8a6a903a0ad00ffa,2026-10-26
+engine_compare_signed_strings,edge,,18,18,0,0,74f4fd8ab8a917df,2026-10-26
 event_emk_add,recorded,,150,150,0,0,937b4dca128ba863,2026-10-07
 event_emk_add,recorded,60,150,150,0,0,937b4dca128ba863,2026-10-07
 event_emk_add,edge,,18,18,0,0,937b4dca128ba863,2026-10-07
