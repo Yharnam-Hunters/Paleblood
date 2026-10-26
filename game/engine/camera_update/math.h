@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+// Follow-camera ordered math facade. The namespace split preserves the recovered trees.
+#pragma once
+#include <bit>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include "../vector.h"
+#include "vector_bits.h"
+#include "reciprocal_root.h"
+#include "frame_policy.h"
+#include "parameter_math.h"
+#include "subject_math.h"
+#include "control_math.h"
+#include "subject_transform_math.h"
+#include "target_math.h"
+#include "angular_mode_math.h"
+#include "locked_geometry_math.h"
+#include "front_chase_math.h"
+#include "rotation_dispatch_math.h"
+#include "free_input_math.h"
+#include "angle_frame_math.h"
+#include "translation_compensation_math.h"
+#include "candidate_collision_math.h"
+#include "wing_escape_math.h"
+#include "chase_math.h"
+#include "orientation_math.h"
+#include "final_collision_math.h"
+#include "territory_math.h"
