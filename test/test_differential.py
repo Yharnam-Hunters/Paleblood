@@ -292,5 +292,26 @@ class Differential(unittest.TestCase):
                 differential.write_bundle(output, stored, "../../escape")
 
 
+    def test_sse_inputs_load_as_raw_bytes_instead_of_address_expressions(self):
+        for register in ('xmm0', 'xmm1'):
+            for raw in ('', 'ab', '0000803f', '4523c17f2143c5ff0000008000000000', '00 ab CD ef'):
+                with self.subTest(register=register, raw=raw), tempfile.TemporaryDirectory() as tmp:
+                    case = self.case()
+                    case['args'][register] = raw
+                    path = Path(tmp) / 'case.json'
+                    path.write_text(json.dumps(case))
+                    rows, _ = differential.load_fixtures(Path(tmp), '0x400000')
+                    self.assertEqual(rows[0][1]['args'][register], raw)
+
+    def test_sse_inputs_reject_malformed_or_truncated_register_values(self):
+        for register in ('xmm0', 'xmm1'):
+            for value in (0, True, None, [], '0x3f800000', 'buf:out', 'guest:0x400000', 'abc', 'gg', '00' * 17):
+                with self.subTest(register=register, value=value):
+                    case = self.case()
+                    case['args'][register] = value
+                    with self.assertRaisesRegex(differential.DifferentialError, register):
+                        differential.validate_fixture_case(case, 'invalid-sse')
+
+
 if __name__ == "__main__":
     unittest.main()
