@@ -2,6 +2,7 @@ address,size,name,system,status,notes
 0x004632d0,67,frame_timing_get_time_us,frame_timing,original,dead in the stock game: only unwind entries refer to it; the community frame-rate patches overwrite it as a code cave (gettimeofday in microseconds)
 0x00fbc3e0,670,render_yebis_get_recursive_sample_parameters,render,verified,"YEBIS GPUTexUtil_GetRecursiveSampleParameters: blur pass count, last-pass samples and scale; the FPS patches drop its first assertion"
 0x0111a7f0,131,frame_timing_get_monotonic_ms,frame_timing,verified,Milliseconds since its first call from CLOCK_MONOTONIC; keeps the first seconds in the clock state object
+0x0111a8a0,26,kernel_thread_self,kernel,edge-verified,Copy the complete opaque current-thread handle to the output and return zero
 0x01388c60,16,frame_timing_task_run_all_01388c60,frame_timing,verified,task manager: run the tasks of every group (0x01388c70 with -1)
 0x01388c70,171,frame_timing_task_run_01388c70,frame_timing,verified,"task manager run: prepare the frame, dispatch through +0x40 (virtual +0x30) with +0x38 set, finish"
 0x0138a370,330,frame_timing_task_dispatch_0138a370,frame_timing,verified,"task dispatcher (virtual +0x30): wakes registered tasks, updates the group record, runs the job like the worker step"
