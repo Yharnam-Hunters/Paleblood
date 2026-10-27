@@ -15,6 +15,9 @@ $BB_DATA_ROOT/merged/sce_sys/param.sfo), a row with source "unread" is passed as
 (default $BB_APP0, then $BB_DATA_ROOT/merged) is your copy's application directory, which the
 runtime serves read-only as /app0.
 
+Each row of game/module_hooks.csv replaces a function inside a mapped module before any guest code
+runs: action "return" makes it return at once, "stop" ends the run there by name.
+
 Writes, from the run:
   symbols/boot.json           where the boot stops, the furthest boot milestone, the import
                               counts (read by tools/progress.py) and which stub modules the
@@ -52,7 +55,8 @@ HISTORY_FIELDS = ('date', 'milestone', 'milestone_index', 'imports_total', 'impo
                   'fault_address')
 KEPT = ('phase', 'outcome', 'milestone', 'milestone_index', 'milestones', 'imports_total', 'imports_implemented',
         'imports_bundled', 'imports_unresolved', 'imports_remaining', 'imports_called', 'modules',
-        'stub_modules', 'first_unimplemented', 'fault')
+        'stub_modules', 'module_hooks', 'first_unimplemented', 'stopped_by_hook', 'fault')
+MODULE_HOOK_ACTIONS = ('return', 'stop')
 IMPORT_FIELDS = ('importer', 'library', 'symbol', 'kind', 'provider')
 MODULE_FIELDS = ('module', 'offset', 'size', 'symbol', 'status')
 SFO_INTEGER = 0x0404
@@ -166,10 +170,39 @@ def system_param_args(overrides: list[str]) -> list[str]:
     return [a for k in sorted(params) for a in ('--system-param', f'{k}={params[k]}')]
 
 
+def module_hook_args(root: str) -> list[str]:
+    """--module-hook MODULE.elf:OFFSET:SIZE:ACTION:NAME for every row of game/module_hooks.csv. A row
+    for a module game/modules.csv does not map, an unknown action, a non-numeric offset or size, or
+    an empty name is an error."""
+    path = os.path.join(root, 'game', 'module_hooks.csv')
+    if not os.path.isfile(path):
+        return []
+    mapped = set(mapped_modules(root))
+    args = []
+    with open(path, newline='') as f:
+        for r in csv.DictReader(f):
+            where = f"game/module_hooks.csv: {r['module']} {r['offset']}"
+            if r['module'] not in mapped:
+                raise ValueError(f'{where}: the module is not mapped (game/modules.csv)')
+            if r['action'] not in MODULE_HOOK_ACTIONS:
+                raise ValueError(f"{where}: action {r['action']!r} is neither return nor stop")
+            if not r['name']:
+                raise ValueError(f'{where}: no name')
+            try:
+                offset, size = int(r['offset'], 0), int(r['size'], 0)
+            except ValueError:
+                raise ValueError(f'{where}: offset and size must be numbers') from None
+            args += ['--module-hook', f"{r['module']}.elf:{offset:#x}:{size}:{r['action']}:{r['name']}"]
+    return args
+
+
 def stops_at(b: dict) -> str:
     s = b.get('first_unimplemented')
     if s:
         return f"{s['caller']}->{s['library']}:{s['symbol'] or s['nid']}"
+    h = b.get('stopped_by_hook')
+    if h:
+        return f"{h['module']}:{h['name']} (stop hook)"
     if b.get('fault'):
         return f"{b['outcome']} at {b['fault']['at']}"
     return b['outcome']
@@ -186,7 +219,7 @@ def record(status: dict, root: str, today: str) -> str | None:
     if os.path.isfile(path):
         with open(path, newline='') as f:
             rows = list(csv.DictReader(f))
-    first = kept.get('first_unimplemented') or {}
+    first = kept.get('first_unimplemented') or kept.get('stopped_by_hook') or {}
     fault = kept.get('fault') or {}
     row = {
         'date': today,
@@ -273,6 +306,7 @@ def main() -> int:
         stubs += app_param_args(ROOT, a.param_sfo or default_param_sfo())
         stubs += system_param_args(a.system_param)
         stubs += ['--app0', a.app0 or default_app0()]
+        hooks = module_hook_args(ROOT)
     except (ValueError, OSError) as e:
         print(f'boot: {e}', file=sys.stderr)
         return 3
@@ -280,7 +314,7 @@ def main() -> int:
     names = ['--nids', nids] if nids else []
     with tempfile.TemporaryDirectory() as d:
         out = os.path.join(d, 'status.json')
-        cmd = [pbboot, *objects, *stubs, '--status', out, '--timeout', str(a.timeout), *names]
+        cmd = [pbboot, *objects, *stubs, *hooks, '--status', out, '--timeout', str(a.timeout), *names]
         if a.trace:
             cmd.append('--trace')
         # The guest runs in this process's child; a hard limit covers a runaway harness.

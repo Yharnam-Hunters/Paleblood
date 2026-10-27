@@ -282,6 +282,15 @@ class Agnostic(Fixture):
         open(f'{self.d}/runtime/a.c', 'w').write('int a = 0x00402000;\n')
         self.assertEqual(run('check_agnostic.py', '--root', self.d).returncode, 1)
 
+    def test_flags_a_module_hook_offset(self):
+        os.makedirs(f'{self.d}/runtime')
+        os.makedirs(f'{self.d}/game', exist_ok=True)
+        open(f'{self.d}/game/module_hooks.csv', 'w').write('module,offset,size,action,name\nlibA,0x00012340,8,stop,f\n')
+        open(f'{self.d}/runtime/a.c', 'w').write('int ok;\n')
+        self.assertEqual(run('check_agnostic.py', '--root', self.d).returncode, 0)
+        open(f'{self.d}/runtime/a.c', 'w').write('long a = 0x00012340;\n')
+        self.assertEqual(run('check_agnostic.py', '--root', self.d).returncode, 1)
+
 
 class PatchOverlap(Fixture):
     def write_patches(self, lines):
@@ -684,6 +693,247 @@ class Boot(unittest.TestCase):
                 boot.app_param_args(d, sfo_path)
         finally:
             shutil.rmtree(d)
+
+    def run_pbboot(self, files: dict, modules: list[str], hooks: list[str]):
+        """Writes files (name -> bytes), runs pbboot on e.elf with the modules and module hooks, and
+        returns the process and its status (None when none was written)."""
+        d = tempfile.mkdtemp()
+        try:
+            for name, data in files.items():
+                with open(os.path.join(d, name), 'wb') as fh:
+                    fh.write(data)
+            args = [a for m in modules for a in ('--module', os.path.join(d, m))]
+            args += [a for hook in hooks for a in ('--module-hook', hook)]
+            p = subprocess.run([self.pbboot, os.path.join(d, 'e.elf'), *args, '--status', os.path.join(d, 's.json'),
+                                '--timeout', '5'], capture_output=True, text=True, timeout=60)
+            status = None
+            if os.path.isfile(os.path.join(d, 's.json')):
+                with open(os.path.join(d, 's.json')) as fh:
+                    status = json.load(fh)
+            return p, status
+        finally:
+            shutil.rmtree(d)
+
+    def boot_with_module_hooks(self, hooks: list[str]):
+        """An executable that returns at once, and a module whose entry sets eax, calls g (+0x40,
+        which calls an unbound import), traps unless eax came back unchanged, then calls h (+0x80,
+        seven bytes: mov eax, 42; nop; ret). Every call keeps the callee's stack 16-byte aligned. The
+        data segment's memory size (0x1010) leaves the image's end off a page boundary."""
+        import harness
+        import ps4elf
+        exe = ps4elf.build(segments=[(0, b'\xc3' + bytes(0xfff), 0x1000, 5)], symbols=[], relocations=[])
+        code = bytearray(0x1000)
+        code[0x00:0x21] = (b'\x48\x83\xec\x08' +                        # sub rsp, 8
+                           b'\xb8\x34\x12\x00\x00' +                    # mov eax, 0x1234
+                           b'\xe8' + struct.pack('<i', 0x40 - 0x0e) +   # call g
+                           b'\x3d\x34\x12\x00\x00\x74\x02\x0f\x0b' +    # cmp eax, 0x1234; je +2; ud2
+                           b'\xe8' + struct.pack('<i', 0x80 - 0x1c) +   # call h
+                           b'\x48\x83\xc4\x08\xc3')                     # add rsp, 8; ret
+        code[0x40:0x4f] = (b'\x48\x83\xec\x08' + b'\xff\x15' + struct.pack('<i', 0x1000 - 0x4a) +  # g: call [slot]
+                           b'\x48\x83\xc4\x08\xc3')
+        code[0x80:0x87] = b'\xb8\x2a\x00\x00\x00\x90\xc3'                                         # h
+        mod = ps4elf.build(segments=[(0, bytes(code), 0x1000, 5), (0x1000, bytes(8), 0x1010, 6)],
+                           symbols=[(harness.nid('sceKernelOpen') + '#A#A', ps4elf.STT_FUNC, None)], relocations=[],
+                           jump_slots=[(0x1000, ps4elf.R_X86_64_JUMP_SLOT, 1, 0)])
+        return self.run_pbboot({'e.elf': exe, 'm.elf': mod}, ['m.elf'], hooks)
+
+    def test_module_hook_return_skips_a_function(self):
+        p, s = self.boot_with_module_hooks([])
+        self.assertEqual((p.returncode, s['outcome'], s['first_unimplemented']['caller']),
+                         (0, 'unimplemented', 'm.elf'))
+        # returned, not a fault: the stub left eax as the caller had it
+        p, s = self.boot_with_module_hooks(['m.elf:0x40:15:return:g'])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual((s['outcome'], s['stopped_by_hook'], s['fault']), ('returned', None, None))
+        self.assertEqual(s['module_hooks'], [{'module': 'm.elf', 'offset': '0x40', 'action': 'return', 'name': 'g'}])
+
+    def test_module_hook_stop_names_the_function_and_its_caller(self):
+        # h is seven bytes: too short for an absolute jump, long enough for the relative one
+        p, s = self.boot_with_module_hooks(['m.elf:0x40:15:return:g', 'm.elf:0x80:7:stop:ns::h'])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual((s['outcome'], s['phase'], s['first_unimplemented']), ('stopped', 'm.elf', None))
+        self.assertEqual(s['stopped_by_hook'],
+                         {'module': 'm.elf', 'offset': '0x80', 'name': 'ns::h', 'returns_to': 'm.elf+0x1c'})
+        self.assertIn('ns::h is replaced by a stop, called from m.elf+0x1c', p.stdout)
+
+    def guest_thread_files(self, after_create: bytes) -> dict:
+        """A module whose entry creates a guest thread, then runs after_create (at +0x48) on the main
+        thread; the thread calls h (+0x180, seven bytes)."""
+        import harness
+        import ps4elf
+        exe = ps4elf.build(segments=[(0, b'\xc3' + bytes(0xfff), 0x1000, 5)], symbols=[], relocations=[])
+        code = bytearray(0x1000)
+        # sub rsp, 0x28; attr init, stack size 1 MiB, detach state 0; create(&thread, &attr, worker, 0, 0)
+        code[0x00:0x48] = bytes.fromhex(
+            '4883ec28488d7c2408ff15f10f0000488d7c2408be00001000ff15e90f0000488d7c240831f6ff15e40f0000'
+            '488d7c2410488d742408488d15c300000031c94531c0ff15d00f0000')
+        code[0x48:0x48 + len(after_create)] = after_create
+        code[0x100:0x10e] = bytes.fromhex('4883ec08e8770000004883c408c3')       # worker: call h; ret
+        code[0x180:0x187] = b'\xb8\x2a\x00\x00\x00\x90\xc3'                     # h
+        names = ['scePthreadAttrInit', 'scePthreadAttrSetstacksize', 'scePthreadAttrSetdetachstate',
+                 'scePthreadCreate']
+        mod = ps4elf.build(segments=[(0, bytes(code), 0x1000, 5), (0x1000, bytes(32), 0x1000, 6)],
+                           symbols=[(harness.nid(n) + '#B#A', ps4elf.STT_FUNC, None) for n in names], relocations=[],
+                           jump_slots=[(0x1000 + 8 * i, ps4elf.R_X86_64_JUMP_SLOT, i + 1, 0) for i in range(4)],
+                           libraries=[(ps4elf.DT_SCE_IMPORT_LIB, 'libkernel', 1)])
+        return {'e.elf': exe, 'm.elf': mod}
+
+    def test_module_hook_stop_on_a_guest_thread_is_reported_once(self):
+        # the main thread spins (pause; jmp back): only the guest thread can stop the run
+        files = self.guest_thread_files(b'\xf3\x90\xeb\xfc')
+        for _ in range(5):
+            p, s = self.run_pbboot(files, ['m.elf'], ['m.elf:0x180:7:stop:ns::h'])
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertEqual((s['outcome'], s['stopped_by_hook']),
+                             ('stopped', {'module': 'm.elf', 'offset': '0x180', 'name': 'ns::h',
+                                          'returns_to': 'm.elf+0x109'}))
+
+    def test_a_stop_racing_a_fault_is_reported_whole(self):
+        # the main thread faults (ud2) while the guest thread reaches the stop: either may win, but
+        # only one, and the report must be whole every time
+        files = self.guest_thread_files(b'\x0f\x0b')
+        for _ in range(20):
+            p, s = self.run_pbboot(files, ['m.elf'], ['m.elf:0x180:7:stop:ns::h'])
+            self.assertEqual(p.returncode, 0, p.stderr)
+            self.assertIsNotNone(s, p.stderr)
+            self.assertIn(s['outcome'], ('stopped', 'fault'))
+            self.assertEqual(s['stopped_by_hook'] is not None, s['outcome'] == 'stopped')
+            self.assertEqual(s['fault'] is not None, s['outcome'] == 'fault')
+
+    def test_module_hooks_go_in_before_any_module_runs(self):
+        """Module a (started first) calls f, exported by module b; f calls an unbound import. A hook
+        in b must already be in place when the entry of a runs."""
+        import harness
+        import ps4elf
+        f = harness.nid('f') + '#B#A'
+        exe = ps4elf.build(segments=[(0, b'\xc3' + bytes(0xfff), 0x1000, 5)], symbols=[], relocations=[])
+        acode = bytearray(0x1000)
+        acode[:15] = (b'\x48\x83\xec\x08' + b'\xff\x15' + struct.pack('<i', 0x1000 - 0x0a) +   # call [slot of f]
+                      b'\x48\x83\xc4\x08\xc3')
+        a = ps4elf.build(segments=[(0, bytes(acode), 0x1000, 5), (0x1000, bytes(8), 0x1000, 6)],
+                         symbols=[(f, ps4elf.STT_FUNC, None)], relocations=[],
+                         jump_slots=[(0x1000, ps4elf.R_X86_64_JUMP_SLOT, 1, 0)],
+                         libraries=[(ps4elf.DT_SCE_IMPORT_LIB, 'libfoo', 1)])
+        bcode = bytearray(0x1000)
+        bcode[0] = 0xc3                                                                  # entry of b: ret
+        bcode[0x40:0x4f] = (b'\x48\x83\xec\x08' + b'\xff\x15' + struct.pack('<i', 0x1000 - 0x4a) +  # f
+                            b'\x48\x83\xc4\x08\xc3')
+        unbound = harness.nid('sceKernelOpen') + '#A#A'
+        b = ps4elf.build(segments=[(0, bytes(bcode), 0x1000, 5), (0x1000, bytes(8), 0x1000, 6)],
+                         symbols=[(f, ps4elf.STT_FUNC, 0x40), (unbound, ps4elf.STT_FUNC, None)], relocations=[],
+                         jump_slots=[(0x1000, ps4elf.R_X86_64_JUMP_SLOT, 2, 0)],
+                         libraries=[(ps4elf.DT_SCE_EXPORT_LIB, 'libfoo', 1)])
+        files = {'e.elf': exe, 'a.elf': a, 'b.elf': b}
+        p, s = self.run_pbboot(files, ['a.elf', 'b.elf'], [])
+        self.assertEqual((s['outcome'], s['phase'], s['first_unimplemented']['caller']),
+                         ('unimplemented', 'a.elf', 'b.elf'))
+        p, s = self.run_pbboot(files, ['a.elf', 'b.elf'], ['b.elf:0x40:15:return:f'])
+        self.assertEqual((p.returncode, s['outcome']), (0, 'returned'), p.stderr)
+
+    def test_bad_module_hooks_are_refused_before_the_run(self):
+        # malformed: an unknown action, no name, a missing field, a sign, a space, a stray letter, no module
+        for bad in ('m.elf:0x80:7:skip:h', 'm.elf:0x80:7:stop:', 'm.elf:0x80:stop:h', 'm.elf:-1:7:stop:h',
+                    'm.elf:+1:7:stop:h', 'm.elf: 1:7:stop:h', 'm.elf:0x80:7x:stop:h', ':0x80:7:stop:h'):
+            p, s = self.boot_with_module_hooks([bad])
+            self.assertEqual((p.returncode, s), (2, None), (bad, p.stderr))
+        p, s = self.boot_with_module_hooks([f'm.elf:{0x100 + 8 * i:#x}:5:return:f{i}' for i in range(17)])
+        self.assertEqual((p.returncode, s), (2, None))
+        self.assertIn('more than 16 module hooks', p.stderr)
+        # no such module; the executable (by file and by its label); under five bytes; data; across the
+        # executable segment's end; past the image; a size that would wrap around
+        for bad in ('x.elf:0x80:7:stop:h', 'e.elf:0x0:5:return:e', 'eboot:0x0:5:return:e', 'm.elf:0x80:4:stop:h',
+                    'm.elf:0x1000:5:return:d', 'm.elf:0xffe:5:stop:h', 'm.elf:0x2011:5:stop:h',
+                    'm.elf:0x40:0xffffffffffffffff:return:g'):
+            p, s = self.boot_with_module_hooks([bad])
+            self.assertEqual((p.returncode, s), (3, None), (bad, p.stderr))
+        # overlapping and duplicate hooks: the second would overwrite the first one's jump
+        for pair in (['m.elf:0x40:15:return:g', 'm.elf:0x42:5:return:g2'],
+                     ['m.elf:0x80:7:stop:h', 'm.elf:0x80:7:return:h']):
+            p, s = self.boot_with_module_hooks(pair)
+            self.assertEqual((p.returncode, s), (3, None), (pair, p.stderr))
+            self.assertIn('overlaps', p.stderr)
+        # the last five bytes of the executable segment are a place for a jump
+        p, s = self.boot_with_module_hooks(['m.elf:0x40:15:return:g', 'm.elf:0xffb:5:return:edge'])
+        self.assertEqual((p.returncode, s['outcome']), (0, 'returned'), p.stderr)
+
+    def test_boot_passes_module_hooks(self):
+        import boot
+        d = tempfile.mkdtemp()
+        try:
+            os.makedirs(os.path.join(d, 'game'))
+            with open(os.path.join(d, 'game', 'modules.csv'), 'w') as fh:
+                fh.write('module,action,sysmodule,notes\nlibA,map,,mapped\nlibB,stub,0x0038,stub\n')
+            path = os.path.join(d, 'game', 'module_hooks.csv')
+            self.assertEqual(boot.module_hook_args(d), [])                 # no file: no hooks
+            header = 'module,offset,size,action,name\n'
+            with open(path, 'w') as fh:
+                fh.write(header + 'libA,0x00000010,128,return,probe\nlibA,0x20,7,stop,ns::reader\n')
+            self.assertEqual(boot.module_hook_args(d), ['--module-hook', 'libA.elf:0x10:128:return:probe',
+                                                        '--module-hook', 'libA.elf:0x20:7:stop:ns::reader'])
+            # a stub module is not mapped; an unknown action; no name; not a number
+            for bad in ('libB,0x10,8,stop,f', 'libA,0x10,8,skip,f', 'libA,0x10,8,stop,', 'libA,ten,8,stop,f'):
+                with open(path, 'w') as fh:
+                    fh.write(header + bad + '\n')
+                with self.assertRaises(ValueError, msg=bad):
+                    boot.module_hook_args(d)
+        finally:
+            shutil.rmtree(d)
+        for arg in boot.module_hook_args(ROOT)[1::2]:                     # the game's own file parses
+            self.assertRegex(arg, r'^[^:]+\.elf:0x[0-9a-f]+:\d+:(return|stop):.+$')
+
+    def test_boot_hands_the_module_hooks_to_the_harness(self):
+        import boot
+        d = tempfile.mkdtemp()
+        try:
+            for name in ['eboot', *boot.mapped_modules(ROOT)]:
+                open(os.path.join(d, f'{name}.elf'), 'wb').close()
+            fake = os.path.join(d, 'pbboot')          # records its arguments and writes an empty status
+            with open(fake, 'w') as fh:
+                fh.write('#!/usr/bin/env python3\nimport json, sys\n'
+                         f'json.dump(sys.argv[1:], open({os.path.join(d, "argv.json")!r}, "w"))\n'
+                         'open(sys.argv[sys.argv.index("--status") + 1], "w").write("{}")\n')
+            os.chmod(fake, 0o755)
+            # A parameter file holding the one integer game/app_params.csv reads (PSF: header, key
+            # index, keys, data).
+            keys = b'USER_DEFINED_PARAM_1\0'
+            sfo = struct.pack('<4sIIII', b'\0PSF', 0x101, 20 + 16, 20 + 16 + len(keys), 1)
+            sfo += struct.pack('<HHIII', 0, 0x0404, 4, 4, 0) + keys + struct.pack('<i', 1)
+            with open(os.path.join(d, 'param.sfo'), 'wb') as fh:
+                fh.write(sfo)
+            p = subprocess.run([sys.executable, os.path.join(ROOT, 'tools', 'boot.py'), '--elf',
+                                os.path.join(d, 'eboot.elf'), '--param-sfo', os.path.join(d, 'param.sfo'),
+                                '--app0', d, '--no-record'],
+                               env={**os.environ, 'BB_PBBOOT': fake, 'BB_NID_DB': ''},
+                               capture_output=True, text=True, timeout=60)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            with open(os.path.join(d, 'argv.json')) as fh:
+                argv = json.load(fh)
+            hooks = [a for i, a in enumerate(argv) if i and argv[i - 1] == '--module-hook']
+            self.assertEqual(hooks, boot.module_hook_args(ROOT)[1::2])
+        finally:
+            shutil.rmtree(d)
+
+    def test_a_stop_hook_is_recorded_as_where_the_boot_stops(self):
+        import boot
+        hook = {'module': 'm.elf', 'offset': '0x80', 'name': 'ns::h', 'returns_to': 'm.elf+0xe'}
+        status = {'outcome': 'stopped', 'phase': 'm.elf', 'milestone': 'loaded', 'milestone_index': 0,
+                  'first_unimplemented': None, 'stopped_by_hook': hook, 'fault': None,
+                  'module_hooks': [{'module': 'm.elf', 'offset': '0x80', 'action': 'stop', 'name': 'ns::h'}]}
+        d = tempfile.mkdtemp()
+        try:
+            os.makedirs(os.path.join(d, 'symbols'))
+            boot.record(status, d, '2026-10-27')
+            with open(os.path.join(d, 'symbols', 'boot.json')) as fh:
+                kept = json.load(fh)
+            self.assertEqual((kept['stopped_by_hook'], kept['module_hooks']), (hook, status['module_hooks']))
+            with open(os.path.join(d, 'symbols', 'boot_history.csv'), newline='') as fh:
+                row = list(csv.DictReader(fh))[-1]
+            self.assertEqual((row['stops_at'], row['outcome'], row['returns_to']),
+                             ('m.elf:ns::h (stop hook)', 'stopped', 'm.elf+0xe'))
+        finally:
+            shutil.rmtree(d)
+        import progress                                                  # the README's "Boot stops at"
+        self.assertEqual(progress.boot_stop(status), '`ns::h` (a stop hook in m.elf, called from `m.elf+0xe`)')
 
     def test_c_nid_matches_python(self):
         import ctypes
