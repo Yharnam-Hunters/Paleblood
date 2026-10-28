@@ -473,6 +473,12 @@ int main(void)
     CHECK(died_in_fatal(usleep_one_second));
     CHECK(is_implemented("libkernel", "sceKernelUsleep") && is_implemented("libScePosix", "usleep"));
 
+    /* __stack_chk_fail never returns: the program ends. That stop is the whole contract, so the
+       entry counts as implemented, unlike the fail-loud diagnostics above. */
+    void (*stack_chk_fail)(void) = (void (*)(void))fn("libkernel", "__stack_chk_fail");
+    CHECK(died_in_fatal(stack_chk_fail));
+    CHECK(is_implemented("libkernel", "__stack_chk_fail"));
+
     if (!failures) puts("syslib: ok");
     return failures != 0;
 }
