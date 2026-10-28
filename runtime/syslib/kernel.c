@@ -97,3 +97,15 @@ static int posix_usleep(uint32_t microseconds)
     return 0;
 }
 RT_SYSLIB("libScePosix", usleep, posix_usleep);
+
+/* __stack_chk_fail, imported by eboot, libSceFios2.elf and libc.elf from libkernel. Code built with
+   the stack protector calls it when a function's saved canary no longer matches the guard, that is,
+   when the function's stack frame was overwritten. The LSB contract is void(void) and fixes the
+   whole guest-visible result: the call does not return and the program ends (FreeBSD's libc
+   reports it and aborts). So stopping the process by name is the implementation, not a placeholder
+   for an unknown answer. The guard itself, __stack_chk_guard, is a separate data import. */
+static void kernel_stack_chk_fail(void)
+{
+    rt_fatal("__stack_chk_fail", "the guest's stack protector found a stack frame overwritten");
+}
+RT_SYSLIB("libkernel", __stack_chk_fail, kernel_stack_chk_fail);
