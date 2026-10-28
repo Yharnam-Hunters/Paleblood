@@ -224,7 +224,18 @@ def validate_fixture_case(case: dict, name: str) -> None:
             raise DifferentialError(f"{name}: {where} is nondeterministic or unsupported: {value!r}") from error
 
     for register, value in case.get("args", {}).items():
-        reference(value, f"args.{register}")
+        if register in ("xmm0", "xmm1"):
+            # The harness takes raw little-endian register bytes, not an address expression.
+            try:
+                if not isinstance(value, str):
+                    raise TypeError
+                raw = bytes.fromhex(value)
+            except (TypeError, ValueError) as error:
+                raise DifferentialError(f"{name}: args.{register} needs hexadecimal register bytes") from error
+            if len(raw) > 16:
+                raise DifferentialError(f"{name}: args.{register} exceeds the 16-byte register")
+        else:
+            reference(value, f"args.{register}")
     for index, value in enumerate(case.get("stack", [])):
         reference(value, f"stack[{index}]")
     for index, entry in enumerate(case.get("memory", [])):
