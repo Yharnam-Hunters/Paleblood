@@ -2,6 +2,14 @@
 
 # Audio
 
+The audio system covers sound playback, mixing and music. It has not been studied yet.
+
+**At a glance**
+
+- **Scope:** Sound playback, mixing, music.
+- **Verified:** Nothing yet.
+- **Open:** Everything.
+
 ## Summary
 
 Not documented yet. Scope: sound playback, mixing, music.
@@ -9,13 +17,15 @@ Not documented yet. Scope: sound playback, mixing, music.
 ## Key functions
 
 No functions tracked yet.
+
 ## Structs and globals
 
 None documented yet. Record each as: name, address, size, layout, who reads and writes it.
 
 ## Patch points
 
-None documented yet. Record each as: address, what the original does there, what the replacement or a mod would change, and the risk.
+None documented yet. Record each as: address, what the original does there, what the
+replacement or a mod would change, and the risk.
 
 ## Open questions
 

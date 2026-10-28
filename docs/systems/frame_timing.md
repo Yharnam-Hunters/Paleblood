@@ -2,50 +2,89 @@
 
 # Frame timing
 
+How the game paces its frames: a frame step that runs once a frame, a frame limiter that waits out each frame's budget, and a task manager that runs the frame's work.
+
+**At a glance**
+
+- **Scope:** Frame pacing, delta time, vsync and the main loop's time step.
+- **Verified:** The frame step, the frame limiter, the flipper constructor and the task manager's frame path are replaced and verified.
+- **Our option:** `BB_TARGET_FPS` does in code what the community frame-rate patches do in these functions.
+- **Open:** A few limiter fields, the owner of the `0x0111a...` clock layer, and most functions the 60 FPS patches edit.
+
 ## Summary
 
-Scope: frame pacing, delta time, vsync and the main loop's time step.
+### The frame step
 
-**The frame limiter** is `frame_timing_pace_frame` (`0x02434770`), a method of the
-`SprjFlipper` singleton, called once per frame from `frame_timing_frame_step` (`0x02418d20`).
-The frame step checks that the `SprjWindow` is running, creates the flipper on first use
-(`frame_timing_flipper_init`, `0x02434520`), runs the limiter, then the task update with a
-small 1/30 s descriptor, asks a quit gate and a quit query, and returns whether the game keeps
-running. Both the limiter and the frame step are replaced and verified.
+`frame_timing_frame_step` (`0x02418d20`) runs once per frame. In order, it:
 
-The limiter:
+1. checks that the `SprjWindow` is running;
+2. creates the `SprjFlipper` singleton on first use (`frame_timing_flipper_init`, `0x02434520`);
+3. runs the frame limiter, `frame_timing_pace_frame` (`0x02434770`), a method of that flipper;
+4. runs the task update with a small 1/30 s descriptor;
+5. asks a quit gate and a quit query, and returns whether the game keeps running.
 
-- applies the flip mode, read from the config value `Game.FlipMode` by the constructor (a
-  pending mode at `+0xc` replaces the current one at `+0x8` when `+0x276` is set). Modes 0 and
-  1: sync interval 2, 1/30 s; mode 2: sync interval 1, 1/60 s; modes 3 and 4: sync interval 1,
-  1/30 s. The frame interval is a float at `+0x18`, the sync interval at `+0x10`;
-- reads the time with `gettimeofday` in microseconds;
-- waits out the frame's budget, shortened when recent frames ran late. A switch in the build
-  (`0x013e3980`, always 1) selects the spinning wait, which polls the clock without sleeping
-  (hundreds of thousands of reads in a long frame); a sleeping wait is compiled in but unused;
-- keeps the last 32 frame times in a ring (index at `+0x260`) and derives a frame rate from
-  their average (`+0x2b8`).
+Both the limiter and the frame step are replaced and verified.
+
+### The frame limiter
+
+Each frame the limiter does four things.
+
+**It applies the flip mode.** The constructor reads the mode from the config value
+`Game.FlipMode`. A pending mode at `+0xc` replaces the current one at `+0x8` when `+0x276` is
+set. The mode chooses the sync interval (stored at `+0x10`) and the frame interval (a float at
+`+0x18`):
+
+| Flip mode | Sync interval | Frame interval |
+|---|---|---|
+| 0 and 1 | 2 | 1/30 s |
+| 2 | 1 | 1/60 s |
+| 3 and 4 | 1 | 1/30 s |
+
+**It reads the time** with `gettimeofday`, in microseconds.
+
+**It waits out the frame's budget**, shortened when recent frames ran late. A switch in the build
+(`0x013e3980`, always 1) selects the spinning wait, which polls the clock without sleeping
+(hundreds of thousands of reads in a long frame). A sleeping wait is compiled in but unused.
+
+**It keeps the last 32 frame times** in a ring (index at `+0x260`) and derives a frame rate from
+their average (`+0x2b8`).
+
+### Which clock the game reads
 
 `gettimeofday` supplies wall time, so it is not guaranteed to be monotonic. The frame limiter's
 confirmed call passes a null timezone pointer. The game's separate verified clock helper invokes
 `sceKernelClockGettime` with ID `4`, identified as `CLOCK_MONOTONIC`; that does not establish the
-IDs accepted by the imported libc `clock_gettime` wrapper. See the runtime system-call notes.
+IDs accepted by the imported libc `clock_gettime` wrapper. See the
+runtime system-call notes.
+
+Two other clock functions are easy to mistake for part of the limiter:
+
+- `0x004632d0` is a small `gettimeofday` helper in microseconds that the stock game never calls:
+  nothing calls it directly, and no relocated pointer (vtable or table slot) points at it. The
+  frame-rate patches overwrite it and its neighbours with their own code (a code cave), so it is
+  not replaced.
+- The millisecond clock `frame_timing_get_monotonic_ms` (`0x0111a7f0`), its microsecond twin
+  `0x0111a760` and the sleep wrapper `0x0111a880` are not on the limiter's path. They look like
+  the timing layer of a separate subsystem.
+
+<details>
+<summary>Correction (2026-10-06): the 0x0111a... clocks are a separate layer</summary>
+
+The millisecond clock `frame_timing_get_monotonic_ms` (`0x0111a7f0`), its microsecond twin
+`0x0111a760` and the sleep wrapper `0x0111a880` are not on the limiter's path. All 52 of
+their callers sit in one region (`0x0110e...`-`0x0121b...`) that shares its own helpers, and
+no frame-rate patch touches any of them: they look like the timing layer of a separate
+subsystem (unidentified; possibly middleware). Their system label may move once that
+subsystem is known.
+
+</details>
+
+### Frame time in game logic
 
 The frame step also passes time into character updates. One verified update accumulates a
 per-frame points value using that time and retains fractional progress between frames. Its
-evidence and unresolved stat identity are documented in Stats & Progression.
-
-`0x004632d0` is a small `gettimeofday` helper in microseconds that the stock game never calls:
-nothing calls it directly, and no relocated pointer (vtable or table slot) points at it. The
-frame-rate patches overwrite it and its neighbours with their own code (a code cave), so it is
-not replaced.
-
-**Correction (2026-10-06).** The millisecond clock `frame_timing_get_monotonic_ms`
-(`0x0111a7f0`), its microsecond twin `0x0111a760` and the sleep wrapper `0x0111a880` are not on
-the limiter's path. All 52 of their callers sit in one region (`0x0110e...`-`0x0121b...`) that
-shares its own helpers, and no frame-rate patch touches any of them: they look like the timing
-layer of a separate subsystem (unidentified; possibly middleware). Their system label may move
-once that subsystem is known.
+evidence and unresolved stat identity are documented in
+Stats & Progression.
 
 ### The task manager's frame
 
@@ -73,6 +112,7 @@ piece of the game's own per-frame work, the next layer to map.
 |---|---:|---|---|---|
 | `0x004632d0` | 67 | `frame_timing_get_time_us` | original | dead in the stock game: only unwind entries refer to it; the community frame-rate patches overwrite it as a code cave (gettimeofday in microseconds) |
 | `0x0111a7f0` | 131 | `frame_timing_get_monotonic_ms` | verified | Milliseconds since its first call from CLOCK_MONOTONIC; keeps the first seconds in the clock state object |
+| `0x0111a880` | 19 | `frame_timing_sleep_ms` | edge-verified | Convert milliseconds to microseconds with uint32 wrapping; always call the kernel and discard its result |
 | `0x01388c60` | 16 | `frame_timing_task_run_all_01388c60` | verified | task manager: run the tasks of every group (0x01388c70 with -1) |
 | `0x01388c70` | 171 | `frame_timing_task_run_01388c70` | verified | task manager run: prepare the frame, dispatch through +0x40 (virtual +0x30) with +0x38 set, finish |
 | `0x0138a370` | 330 | `frame_timing_task_dispatch_0138a370` | verified | task dispatcher (virtual +0x30): wakes registered tasks, updates the group record, runs the job like the worker step |
@@ -93,11 +133,30 @@ piece of the game's own per-frame work, the next layer to map.
 | `0x02434520` | 552 | `frame_timing_flipper_init` | verified | SprjFlipper constructor: reads Game.FlipMode (default 4; pending default 3; clamped to 4); unset in the shipped config |
 | `0x02434770` | 2077 | `frame_timing_pace_frame` | verified | Frame limiter: target interval at +0x18 (1/30 or 1/60 s); sleeps then spins; 32-frame ring; every FPS patch edits it |
 | `0x024512a0` | 78 | `frame_timing_task_frame_024512a0` | verified | task manager frame entry from the frame step: FD4TaskManager singleton, then 0x01388c60 |
+
 ## Structs and globals
 
 - Clock state object, reached through the pointer at `0x056d6ae8`. Field `+0x10`: the
   seconds of the first clock call (32-bit), written once by the first call of either clock
   wrapper and read by every later call. The rest of the object is not documented.
+
+The `SprjFlipper` fields named on this page, gathered in one place:
+
+| Offset | Meaning |
+|---|---|
+| `+0x8` | Current flip mode |
+| `+0xc` | Pending flip mode |
+| `+0x10` | Sync interval |
+| `+0x14` | Unknown |
+| `+0x18` | Frame interval (float) |
+| `+0x260` | Index into the ring of recent frame times |
+| `+0x264` | Measured frame time |
+| `+0x268`, `+0x26c` | Set how many recent late frames the catch-up sums (meaning open); the patches zero the vblank word at `+0x268` |
+| `+0x271`, `+0x272` | Clear flags |
+| `+0x276` | Apply the pending flip mode |
+| `+0x2b8` | Frame rate derived from the ring's average |
+| `+0x2bc`, `+0x2c0` | Override counters |
+| `+0x2c4` | Reset flag |
 
 ## Patch points
 
@@ -123,32 +182,59 @@ The patches also rewrite dozens of shared constants in the data segment (the 1/3
 too. `BB_TARGET_FPS` covers only the replaced functions, so it is meant to run together with
 the patch; option checks run both sides on the patched image for that reason.
 
+<details>
+<summary>How the patch edits were mapped</summary>
+
 `tools/patch_overlap.py` maps every patch line to the function it falls in, and lists the
 patches that do nothing while our hooks are installed.
+
+</details>
 
 ## Our option: BB_TARGET_FPS
 
 `BB_TARGET_FPS=30`, `60` or `uncapped` does in code what `30 FPS++`, `60 FPS++` and
 `Uncap FPS++` do in the three functions above. Unset keeps the original behaviour exactly.
 
-Each part is checked against the patch itself: `tools/verify.py run --patch FILE:NAME --env
-BB_TARGET_FPS=...` runs the original with the patch's bytes applied against our replacement with
-the option, on the edge cases and on frames recorded in the game at 60 FPS.
-
-An earlier version only changed the limiter. Because the hooked frame step no longer ran the
-patches' delta-time code, at 60 FPS the game logic would still have been told every frame lasts
-1/30 s; checking against the patches found that, and that the limiter's own settings differed.
+The option has to cover the frame step as well as the limiter. A faster limiter alone would
+still tell the game logic that every frame lasts 1/30 s; the delta time comes from the frame
+step (see the patch points above).
 
 The other functions the patches edit are not replaced yet, so a 60 FPS game would still need the
 community patch for them; its edits inside our three functions do not run, and our option does
-their part. A saved October 7 measurement with the external host scaffold, all replacements
-hooked, and `BB_TARGET_FPS=60` reports a median frame time of 16.67 ms and p99 of 16.69 ms. <!-- number:ok -->
-That historical result is recorded in [Paleblood's status evidence](https://github.com/Yharnam-Hunters/Paleblood/blob/af97b90bb1e88853adfc04b8da2b3d7506516565/STATUS.md#recent-results);
-it is not a real-display result from Paleblood's project-owned boot path.
+their part.
 
 A second option, `BB_LIMITER_WAIT=sleep`, makes the limiter use the sleeping wait the game
 carries but never selects: it sleeps until about 5 ms before the frame's end and spins the
 rest, so a fast machine does not keep a core busy waiting.
+
+<details>
+<summary>How the option is checked against the patches</summary>
+
+Each part is checked against the patch itself: `tools/verify.py run --patch FILE:NAME --env
+BB_TARGET_FPS=...` runs the original with the patch's bytes applied against our replacement
+with the option, on the edge cases and on frames recorded in the game at 60 FPS.
+
+</details>
+
+<details>
+<summary>Recorded frame times at 60 FPS (October 7)</summary>
+
+A saved October 7 measurement with the external host scaffold, all replacements hooked, and
+`BB_TARGET_FPS=60` reports a median frame time of 16.67 ms and p99 of 16.69 ms. <!-- number:ok -->
+That historical result is recorded in [Paleblood's status evidence](https://github.com/Yharnam-Hunters/Paleblood/blob/af97b90bb1e88853adfc04b8da2b3d7506516565/STATUS.md#recent-results);
+it is not a real-display result from Paleblood's project-owned boot path.
+
+</details>
+
+<details>
+<summary>History: the first version changed only the limiter</summary>
+
+An earlier version only changed the limiter. Because the hooked frame step no longer ran the
+patches' delta-time code, at 60 FPS the game logic would still have been told every frame
+lasts 1/30 s; checking against the patches found that, and that the limiter's own settings
+differed.
+
+</details>
 
 ## Open questions
 
