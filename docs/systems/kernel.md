@@ -39,6 +39,18 @@ FreeBSD's `pthread_yield` returns `void`, Linux's analogue returns `int`, and no
 inspected guest call site settles the guest-visible signature. Do not infer that it is implemented
 from its registry entry. None of these changes has been verified by a new Bloodborne boot.
 
+Later runtime merges extend the same thread and timing group. [PR #81](https://github.com/Yharnam-Hunters/Paleblood/pull/81)
+adds the detach-state setters for thread attributes under both the SCE and POSIX names. Reading a
+detach state that the system itself supplies still stops by name, because the PS4 default is not
+established. [PR #95](https://github.com/Yharnam-Hunters/Paleblood/pull/95) registers the POSIX
+names `pthread_self`, `pthread_attr_init` and `pthread_attr_destroy`. They return the FreeBSD error
+number where the SCE names return `0x80020000` plus it. [PR #94](https://github.com/Yharnam-Hunters/Paleblood/pull/94)
+sleeps the host thread for `sceKernelUsleep`, the call the verified frame limiter and swap-chain
+present functions make, and for `usleep` below one second. [PR #97](https://github.com/Yharnam-Hunters/Paleblood/pull/97)
+ends the program by name on `__stack_chk_fail`. These are runtime services checked by synthetic
+registry tests, not decompiled game functions. The current boot stop, `scePthreadAttrGetaffinity`,
+remains unimplemented until the main thread's real affinity mask is established.
+
 ## Key functions
 
 | Address | Size | Name | Status | Notes |
