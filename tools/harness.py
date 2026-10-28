@@ -564,6 +564,8 @@ class Run:
         writes = []
         for start, old in before.items():
             new = after[start]
+            if old == new:
+                continue
             i, n = 0, len(old)
             while i < n:
                 if old[i] == new[i]:
