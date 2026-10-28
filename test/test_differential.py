@@ -55,6 +55,33 @@ class Differential(unittest.TestCase):
             with self.assertRaisesRegex(differential.DifferentialError, "omits declared ABI arguments"):
                 differential.load_fixtures(Path(tmp), "0x400000")
 
+    def test_scripted_call_selectors_are_bounded_before_execution(self):
+        for field in ('imports', 'stubs'):
+            valid = {'argc': 0, 'argi': [15], 'argmem': [{'arg': 6, 'size': 4}],
+                     'writes': [{'arg': 7, 'bytes': '00'}], 'argf32': [0, 1]}
+            differential.validate_fixture_case({**self.case(), field: [valid]}, 'bounded')
+            invalid = [('argc', -1), ('argc', 17), ('argc', True), ('argc', 1.5),
+                       ('argi', [-1]), ('argi', [16]), ('argi', ['6']),
+                       ('argmem', [{'arg': 16, 'size': 4}]),
+                       ('writes', [{'arg': -1, 'bytes': '00'}]),
+                       ('series', {'arg': 16}), ('argf32', [2]), ('argf32', [-1]),
+                       ('argmem', [None]), ('writes', {}), ('series', [])]
+            for selector, value in invalid:
+                with self.subTest(field=field, selector=selector, value=value):
+                    case = {**self.case(), field: [{**valid, selector: value}]}
+                    with self.assertRaisesRegex(differential.DifferentialError, selector):
+                        differential.validate_fixture_case(case, 'invalid')
+
+    def test_memory_pointer_presets_accept_bounded_buffer_offsets(self):
+        case = {**self.case(), 'buffers': {'graph': {'size': 32}},
+                'memory': [{'addr': 'buf:graph', 'pointer': 'graph+0x10'}]}
+        differential.validate_fixture_case(case, 'interior-pointer')
+        for pointer in ('missing', 'graph+-1', 'graph+33', 'graph+invalid'):
+            with self.subTest(pointer=pointer):
+                case['memory'][0]['pointer'] = pointer
+                with self.assertRaises(differential.DifferentialError):
+                    differential.validate_fixture_case(case, 'invalid-interior-pointer')
+
     def test_exploration_is_seeded_bounded_and_abi_guided(self):
         case = self.case()
         with tempfile.TemporaryDirectory() as tmp:

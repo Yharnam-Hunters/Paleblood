@@ -85,27 +85,38 @@ reused run ID and case number cannot silently replace an existing recording.
 - `args`: `rdi`..`r9`. A number, `buf:NAME[+off]`, or `guest:0xADDRESS` (a PS4 address).
 - `buffers`: sandbox memory, laid out in name order; `bytes` is hex, zero-padded to `size`.
 - `memory`: written before the call, at an image address or at `buf:NAME+off`: `bytes`,
-  `pointer` (a buffer's address) or `guest` (the host address of a PS4 address, for example a
+  `pointer` (`NAME[+off]` within a buffer) or `guest` (the host address of a PS4 address, for example a
   game function a fake vtable points at, which the case then stubs).
 - `imports`: scripted calls in order, per library function. `name` is the function name (its
-  NID is computed); `argc` arguments are recorded and compared. A write may give `size`: a
+  NID is computed); `argc` arguments are recorded and compared. Both imports and stubs accept
+  `argi`, `argmem`, and `argf32` as described below. A write may give `size`: a
   write whose bytes do not have that length is reported as an error (a truncated capture).
   For long runs of the same call (a wait that polls the clock), one entry can stand for many
   calls: `"series": {"arg": 0, "format": "timeval_us", "values": [t0, t1, ...]}` writes the
   next value (microseconds, as a `struct timeval`) on each call, one call per value. A native
   stub serves a series without entering Python, and the run records it once with a `count`;
-  both sides are recorded the same way, so the number of calls is still compared.
+  both sides are recorded the same way, so the number of calls is still compared. Calls that
+  inspect stack arguments or use per-call selectors enter Python on every call instead.
 - `stubs`: game functions to replace by scripted stubs, `[{"address": "0x...", "ret": 1,
   "argc": 0}]`, consumed in order per address. Use it for calls whose result the case must fix
   (a flag the real run computed elsewhere). Stubbed calls are recorded and compared like
   library calls, as `{"call": address}`. `ret` may be `buf:NAME` (an allocator returning a
-  buffer); `argi` picks which argument registers are compared (a register the caller leaves
+  buffer); `argi` picks which GP argument slots are compared (a register the caller leaves
   undefined must not be); `argmem: [{"arg": 1, "size": 16}]` also compares the bytes an
   argument points at (`"offset"` starts further in); `argf32: [0]` compares the float in xmm0
   (`1`: xmm1) as its bit pattern (for stubs and imports); a function that returns a float is
   scripted with `ret` as the float's bit pattern (`"ret": "0x3f800000"`, for stubs and
   imports); case `args` may set `xmm0` and `xmm1` (hex bytes) for float arguments; `writes` stores what the real function stored through an argument
   (`bytes`, `pointer` to a buffer, or `guest` address), like library writes.
+- Scripted GP selectors are integer indices `0..15`: `0..5` select `rdi` through `r9`, and
+  `6..15` select up to ten consecutive overflow qwords starting at the callee's entry
+  `[rsp+8]`. `argc` must be an integer `0..16`; selectors may inspect slots omitted by
+  `argc`. The native bridge saves entry RSP before entering Python, and stack reads and
+  pointer accesses retain the declared memory bounds. These slots model full-width SysV64
+  pointer/integer overflow arguments. Mixed aggregates, alignment gaps, and unspecified
+  upper padding of narrower integers require separate ABI evidence. SSE selectors `argf32`
+  remain independent (`0` or `1`); a float does not consume a GP slot. Invalid selectors
+  reject the fixture before execution; callback access errors make the result fail.
 - `stack`: stack arguments, in order (the 7th integer argument first), as numbers, `buf:` or
   `guest:` values; the harness pushes them before the call and pops them after.
 - `gs`: the guest thread pointer (`buf:NAME+off`), for code that uses thread-local storage. As
