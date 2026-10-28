@@ -7,6 +7,10 @@ ai_hk_frame_update_0222bc10,edge,,33,33,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,edge,30,33,33,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,edge,60,33,33,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,edge,uncapped,33,33,0,0,f6e94c85e455f408,2026-10-07
+camera_update_follow,edge,,64,64,0,0,62628db2a7db74ff,2026-10-26
+camera_update_follow,edge,30,64,64,0,0,62628db2a7db74ff,2026-10-26
+camera_update_follow,edge,60,64,64,0,0,62628db2a7db74ff,2026-10-26
+camera_update_follow,edge,uncapped,64,64,0,0,62628db2a7db74ff,2026-10-26
 character_frame_update_01cbdb20,recorded,,457,457,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,recorded,30,457,457,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,recorded,60,457,457,0,0,b243fddb1ca6589a,2026-10-07

@@ -10,6 +10,7 @@ address,replacement,system
 0x014400a0,bb_frame_timing_task_workers_step_014400a0,frame_timing
 0x016efd00,bb_event_emk_add,event
 0x017cfcc0,bb_event_flag_write,event
+0x0183ac60,bb_camera_update_follow,camera
 0x01972900,bb_input_pad_step_01972900,input
 0x01c0c2b0,bb_physics_instance_construct_01c0c2b0,physics
 0x01cbdb20,bb_character_frame_update_01cbdb20,character
