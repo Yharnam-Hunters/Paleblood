@@ -61,6 +61,19 @@ EU (`CUSA03173`) v1.09 releases convert to the same executable, the same system 
 loaded image, so a US dump whose lines all say `ok` is exactly as good, and a dump of another app
 version is not. `tools/check_target.py ~/bb/elf` repeats the check.
 
+If your dump is already extracted and has the 1.09 update merged, use its directory directly:
+
+```
+tools/prepare_dump.sh --extracted /path/to/your/game-backup /private/output/paleblood
+```
+
+This reads `eboot.bin` and `sce_module/*.prx`, builds the same pinned converter under
+`OUT_DIR/tools`, writes converted executables to `OUT_DIR/elf`, and runs both target checks.
+It does not extract packages or copy the game data, so `orbis-pkg-util` and `rsync` are not
+needed for this mode. The input stays untouched. The output must be outside the repository and
+must not overlap the input directory; symlinks are resolved before these checks. A successful
+conversion still needs every hash check to say `ok` before using the repository's addresses.
+
 ## 3. Ghidra (15 minutes, most of it the download)
 
 Ghidra 12.0.3 and the GhidraOrbis loader built for it (details in [GHIDRA.md](GHIDRA.md)):
