@@ -5,6 +5,7 @@
 #include "runtime/syslib.h"
 
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -113,6 +114,50 @@ static void posix_self_on_unregistered_thread(void)
     if (pthread_create(&thread, NULL, call_posix_self, NULL) == 0) pthread_join(thread, NULL);
 }
 
+/* Condition variables, waited on by host threads: a waiter needs no guest thread, only the cond
+   and mutex objects the SCE calls made. */
+typedef int (*f_cond_wait)(void **, void **);
+typedef int (*f_cond_timedwait)(void **, void **, uint32_t);
+static f1 cond_lock, cond_unlock, cond_signal_entry;
+static f_cond_wait cond_wait_entry;
+static f_cond_timedwait cond_timedwait_entry;
+static finit cond_init_entry;
+static void *cond_shared, *cond_mutex, *cond_recursive_mutex;
+static int cond_ready, cond_go, cond_woken;
+
+/* Counts itself ready and waits for the go, all under the mutex: once the main thread holds the
+   mutex and sees the count, every counted waiter is inside its wait. */
+static void *cond_waiter(void *unused)
+{
+    (void)unused;
+    cond_lock(&cond_mutex);
+    cond_ready++;
+    int r = 0;
+    while (!cond_go && !r) r = cond_wait_entry(&cond_shared, &cond_mutex);
+    if (!r) cond_woken++;
+    cond_unlock(&cond_mutex);
+    return NULL;
+}
+
+/* Gets the mutex only once the main thread's wait has released it, then signals. */
+static void *cond_signaler(void *unused)
+{
+    (void)unused;
+    cond_lock(&cond_mutex);
+    cond_go = 1;
+    cond_signal_entry(&cond_shared);
+    cond_unlock(&cond_mutex);
+    return NULL;
+}
+
+static void cond_wait_recursive(void) { cond_wait_entry(&cond_shared, &cond_recursive_mutex); }
+static void cond_timedwait_recursive(void) { cond_timedwait_entry(&cond_shared, &cond_recursive_mutex, 1000); }
+static void cond_init_with_attribute(void)
+{
+    void *cond = NULL, *attr = &cond; /* a variable holding some object */
+    cond_init_entry(&cond, &attr, "cond");
+}
+
 static int died_in_fatal(void (*call)(void))
 {
     const pid_t child = fork();
@@ -217,6 +262,99 @@ int main(void)
     CHECK(unlock(&r) == 0 && unlock(&r) == 0 && unlock(&r) == 0);
     CHECK(destroy(&r) == 0);
     CHECK(adestroy(&a) == 0 && a == NULL);
+
+    /* Condition variables (SCE names): SCE codes for FreeBSD libthr's errors, and a timed wait
+       that takes microseconds from now (the guest's call site and OpenOrbis agree on that). */
+    cond_init_entry = (finit)fn("libkernel", "scePthreadCondInit");
+    const f1 cond_destroy = (f1)fn("libkernel", "scePthreadCondDestroy");
+    const f1 cond_broadcast = (f1)fn("libkernel", "scePthreadCondBroadcast");
+    cond_signal_entry = (f1)fn("libkernel", "scePthreadCondSignal");
+    cond_wait_entry = (f_cond_wait)fn("libkernel", "scePthreadCondWait");
+    cond_timedwait_entry = (f_cond_timedwait)fn("libkernel", "scePthreadCondTimedwait");
+    cond_lock = lock;
+    cond_unlock = unlock;
+    if (failures) return 1;
+    alarm(60); /* a wake that never comes kills the test with SIGALRM instead of hanging it */
+    CHECK(cond_init_entry(&cond_shared, NULL, "cond") == 0 && cond_shared && cond_shared != (void *)1);
+    CHECK(init(&cond_mutex, NULL, "cond mutex") == 0);
+    CHECK(cond_signal_entry(&cond_shared) == 0 && cond_broadcast(&cond_shared) == 0); /* nobody to wake */
+
+    /* A timeout is ETIMEDOUT, after at least the time asked, with the mutex held again. */
+    struct timespec cond_start;
+    CHECK(lock(&cond_mutex) == 0);
+    clock_gettime(CLOCK_MONOTONIC, &cond_start);
+    CHECK(cond_timedwait_entry(&cond_shared, &cond_mutex, 2000) == (int)0x8002003c);
+    CHECK(elapsed_us(&cond_start) >= 2000);
+    CHECK(cond_timedwait_entry(&cond_shared, &cond_mutex, 0) == (int)0x8002003c);
+    CHECK(unlock(&cond_mutex) == 0);
+
+    /* Waiting without owning the mutex is EPERM, also for one never locked (the static
+       initializer, which stays as it is); a destroyed or missing mutex is EINVAL. */
+    void *never_locked = NULL, *destroyed_mutex = (void *)2;
+    CHECK(cond_wait_entry(&cond_shared, &cond_mutex) == (int)0x80020001);
+    CHECK(cond_timedwait_entry(&cond_shared, &cond_mutex, 1000) == (int)0x80020001);
+    CHECK(cond_wait_entry(&cond_shared, &never_locked) == (int)0x80020001 && never_locked == NULL);
+    CHECK(cond_wait_entry(&cond_shared, &destroyed_mutex) == (int)0x80020016);
+    CHECK(cond_wait_entry(&cond_shared, NULL) == (int)0x80020016);
+
+    /* Signal wakes the waiting main thread, which has the mutex again when the wait returns. */
+    pthread_t signaler;
+    CHECK(lock(&cond_mutex) == 0);
+    if (pthread_create(&signaler, NULL, cond_signaler, NULL)) { perror("pthread_create"); return 1; }
+    int woke = 0;
+    while (!cond_go && !woke) woke = cond_wait_entry(&cond_shared, &cond_mutex);
+    CHECK(woke == 0 && cond_go == 1);
+    CHECK(unlock(&cond_mutex) == 0);
+    pthread_join(signaler, NULL);
+
+    /* Broadcast wakes every waiter; while they wait, destroying the cond is EBUSY. */
+    pthread_t waiters[2];
+    cond_go = 0;
+    for (int i = 0; i < 2; i++)
+        if (pthread_create(&waiters[i], NULL, cond_waiter, NULL)) { perror("pthread_create"); return 1; }
+    for (;;) {
+        CHECK(lock(&cond_mutex) == 0);
+        if (cond_ready == 2) break;
+        CHECK(unlock(&cond_mutex) == 0);
+        sched_yield();
+    }
+    CHECK(cond_destroy(&cond_shared) == (int)0x80020010);
+    cond_go = 1;
+    CHECK(cond_broadcast(&cond_shared) == 0);
+    CHECK(unlock(&cond_mutex) == 0);
+    for (int i = 0; i < 2; i++) pthread_join(waiters[i], NULL);
+    CHECK(cond_woken == 2);
+
+    /* What the host cannot do as the system does stops by name: a recursive mutex (released one
+       level instead of all) and a condition attribute object (not established). */
+    CHECK(ainit(&a) == 0 && settype(&a, 2) == 0 && init(&cond_recursive_mutex, &a, NULL) == 0);
+    CHECK(adestroy(&a) == 0);
+    CHECK(died_in_fatal(cond_wait_recursive));
+    CHECK(died_in_fatal(cond_timedwait_recursive));
+    CHECK(died_in_fatal(cond_init_with_attribute));
+    CHECK(destroy(&cond_recursive_mutex) == 0);
+    void *empty_attr = NULL, *default_cond = NULL;  /* an empty attribute variable: the defaults */
+    CHECK(cond_init_entry(&default_cond, &empty_attr, NULL) == 0 && default_cond && cond_destroy(&default_cond) == 0);
+
+    /* Destroyed, the variable holds 1 and every call on it is EINVAL. */
+    CHECK(cond_destroy(&cond_shared) == 0 && cond_shared == (void *)1);
+    CHECK(cond_destroy(&cond_shared) == (int)0x80020016);
+    CHECK(cond_signal_entry(&cond_shared) == (int)0x80020016 && cond_broadcast(&cond_shared) == (int)0x80020016);
+    CHECK(lock(&cond_mutex) == 0 && cond_wait_entry(&cond_shared, &cond_mutex) == (int)0x80020016);
+    CHECK(cond_timedwait_entry(&cond_shared, &cond_mutex, 0) == (int)0x80020016 && unlock(&cond_mutex) == 0);
+    CHECK(cond_init_entry(NULL, NULL, NULL) == (int)0x80020016 && cond_destroy(NULL) == (int)0x80020016);
+    CHECK(cond_signal_entry(NULL) == (int)0x80020016 && cond_broadcast(NULL) == (int)0x80020016);
+
+    /* The static initializer (NULL) becomes a cond on first use; destroyed unused, it stays NULL. */
+    void *static_cond = NULL;
+    CHECK(cond_destroy(&static_cond) == 0 && static_cond == NULL);
+    CHECK(cond_signal_entry(&static_cond) == 0 && static_cond && static_cond != (void *)1);
+    CHECK(cond_destroy(&static_cond) == 0 && static_cond == (void *)1);
+    CHECK(destroy(&cond_mutex) == 0);
+    alarm(0);
+    CHECK(is_implemented("libkernel", "scePthreadCondInit") && is_implemented("libkernel", "scePthreadCondDestroy"));
+    CHECK(is_implemented("libkernel", "scePthreadCondSignal") && is_implemented("libkernel", "scePthreadCondBroadcast"));
+    CHECK(is_implemented("libkernel", "scePthreadCondWait") && is_implemented("libkernel", "scePthreadCondTimedwait"));
 
     /* the process parameter block comes from the loaded executable */
     static unsigned char block[0x40];
