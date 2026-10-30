@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* System call group: audio. Audio output start-up (libSceAudioOut): initializing the library,
-   opening an output port and setting its volumes.
+/* System call group: audio. Audio output (libSceAudioOut): initializing the library, opening an
+   output port, setting its volumes and handing it sound.
 
    Facts used: the OpenOrbis homebrew SDK's AudioOut.h declares int32_t sceAudioOutInit(void) and
    int32_t sceAudioOutOpen(user, port type, index, length, sample rate, param); its _types headers
@@ -20,8 +20,10 @@
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <time.h>
 
 #define SCE_AUDIO_OUT_ERROR_ALREADY_INIT ((int32_t)0x8026000Eu)
 #define SCE_AUDIO_OUT_ERROR_NOT_INIT ((int32_t)0x8026000Fu)
@@ -41,6 +43,8 @@ enum { MAX_CHANNELS = 8, VOLUME_LARGEST_SEEN = 32768 };
 typedef struct {
     uint32_t length, rate, format, channels;
     int32_t volume[MAX_CHANNELS];
+    pthread_mutex_t lock;
+    struct timespec played; /* when the buffer handed over last finishes playing (monotonic) */
 } audio_port;
 
 static atomic_int initialized;
@@ -64,7 +68,7 @@ static int32_t audio_out_open(int32_t user, int32_t port_type, int32_t index, ui
         rt_fatal(fn, "a length, rate or format other than the observed 256 float samples at 48000 Hz, 2 or 8 channels");
     const int handle = atomic_fetch_add(&ports_opened, 1) + 1; /* handles from 1 */
     if (handle > MAX_PORTS) rt_fatal(fn, "more ports than the runtime hands out handles for");
-    ports[handle] = (audio_port){length, rate, format, format == FORMAT_FLOAT_8CH ? 8 : 2, {0}};
+    ports[handle] = (audio_port){length, rate, format, format == FORMAT_FLOAT_8CH ? 8 : 2, {0}, PTHREAD_MUTEX_INITIALIZER, {0, 0}};
     return handle;
 }
 
@@ -90,6 +94,41 @@ static int32_t audio_out_set_volume(int32_t handle, int32_t flag, const int32_t 
     return 0;
 }
 
+/* int32_t sceAudioOutOutput(int32_t handle, const void *samples), as the SDK's AudioOut.h declares
+   it. The executable's audio thread (0x0111b93c) hands its port one block at a time (length samples
+   for every channel), advances its ring buffer when the result is not negative, and loops with no
+   wait of its own: the call itself paces the thread, returning once the port has room for the next
+   block. The runtime plays nothing yet: each port takes one block per length / rate seconds (256
+   samples at 48000 Hz: 5.33 ms), and a call waits until the block before it would have finished
+   playing, then answers 0 (the caller only checks the sign). A port that falls behind starts again
+   from now. A missing block and a handle the runtime did not hand out stop by name. */
+enum { NANOSECONDS_PER_SECOND = 1000000000 };
+
+static int64_t nanoseconds(const struct timespec *t) { return (int64_t)t->tv_sec * NANOSECONDS_PER_SECOND + t->tv_nsec; }
+
+static int32_t audio_out_output(int32_t handle, const void *samples)
+{
+    static const char fn[] = "sceAudioOutOutput";
+    if (handle < 1 || handle > atomic_load(&ports_opened))
+        rt_fatal(fn, "a handle the runtime did not hand out: the error value is not established");
+    if (!samples) rt_fatal(fn, "no samples: what the system does then is not established");
+    audio_port *const port = &ports[handle];
+    const int64_t block = (int64_t)port->length * NANOSECONDS_PER_SECOND / port->rate;
+    pthread_mutex_lock(&port->lock);
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    int64_t wait_until = nanoseconds(&port->played);
+    if (wait_until > nanoseconds(&now))
+        clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &port->played, NULL);
+    else
+        wait_until = nanoseconds(&now); /* idle or behind: this block starts now */
+    const int64_t done = wait_until + block;
+    port->played = (struct timespec){done / NANOSECONDS_PER_SECOND, done % NANOSECONDS_PER_SECOND};
+    pthread_mutex_unlock(&port->lock);
+    return 0;
+}
+
 RT_SYSLIB("libSceAudioOut", sceAudioOutInit, audio_out_init);
+RT_SYSLIB("libSceAudioOut", sceAudioOutOutput, audio_out_output);
 RT_SYSLIB("libSceAudioOut", sceAudioOutOpen, audio_out_open);
 RT_SYSLIB("libSceAudioOut", sceAudioOutSetVolume, audio_out_set_volume);
