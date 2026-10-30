@@ -681,6 +681,19 @@ nanoseconds (`kern_clock_gettime`).
 **What stops by name:** other clocks and a missing timespec. Their errors go through `errno`,
 which the runtime does not model.
 
+## Process time (`sceKernelGetProcessTime`, issue #34)
+
+`uint64_t sceKernelGetProcessTime(void)`, as the OpenOrbis homebrew SDK's `libkernel.h` declares
+it, is the time since the process started.
+
+Its unit is microseconds. The executable turns it into seconds by dividing by 1,000,000:
+- at `0x00e4fb6e`, through the compiler's multiply by `0x431bde83` and shift by 50;
+- at `0x0252607e`, through a division by the double 1000000.0.
+
+It also seeds a random generator with it (`0x00835dba`).
+
+**What the runtime does.** It measures from its own start, on the host's monotonic clock.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
