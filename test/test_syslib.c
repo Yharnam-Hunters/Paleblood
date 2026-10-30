@@ -574,6 +574,14 @@ static void ajm_register_unknown_context(void) { ajm_register_fn(99, 1, 0); }
 static void ajm_register_other_module(void) { ajm_register_fn(ajm_test_context, 2, 0); }
 static void ajm_register_twice(void) { ajm_register_fn(ajm_test_context, 1, 0); }
 
+/* libSceAudioOut start-up: initialize once, then open the observed main port. */
+typedef int32_t (*f_ao_init)(void);
+typedef int32_t (*f_ao_open)(int32_t, int32_t, int32_t, uint32_t, uint32_t, uint32_t);
+static f_ao_open ao_open_fn;
+static void ao_open_eight_channels(void) { ao_open_fn(0xff, 0, 0, 256, 48000, 5); }
+static void ao_open_other_rate(void) { ao_open_fn(0xff, 0, 0, 256, 44100, 4); }
+static void ao_open_other_user(void) { ao_open_fn(1, 0, 0, 256, 48000, 4); }
+
 int main(void)
 {
     /* Unresolved entries are still callable diagnostics, but are not reported as implemented. */
@@ -1497,6 +1505,19 @@ int main(void)
         CHECK(died_in_fatal(ajm_register_other_module));
         CHECK(ajm_register_fn(context, 1, 0) == 0);
         CHECK(died_in_fatal(ajm_register_twice));
+    }
+
+    /* sceAudioOutInit / sceAudioOutOpen. */
+    const f_ao_init ao_init_fn = (f_ao_init)fn("libSceAudioOut", "sceAudioOutInit");
+    ao_open_fn = (f_ao_open)fn("libSceAudioOut", "sceAudioOutOpen");
+    if (ao_init_fn && ao_open_fn) {
+        CHECK(ao_open_fn(0xff, 0, 0, 256, 48000, 4) == (int32_t)0x8026000Fu); /* before init */
+        CHECK(ao_init_fn() == 0 && ao_init_fn() == (int32_t)0x8026000Eu);
+        const int32_t h1 = ao_open_fn(0xff, 0, 0, 256, 48000, 4), h2 = ao_open_fn(0xff, 0, 0, 256, 48000, 4);
+        CHECK(h1 > 0 && h2 > 0 && h1 != h2);
+        CHECK(died_in_fatal(ao_open_eight_channels));
+        CHECK(died_in_fatal(ao_open_other_rate));
+        CHECK(died_in_fatal(ao_open_other_user));
     }
 
     if (!failures) puts("syslib: ok");

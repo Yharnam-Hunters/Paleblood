@@ -719,6 +719,27 @@ belongs to the batch and instance calls, which stop by name until they are imple
 - a context the runtime did not hand out;
 - registering a module twice.
 
+## Audio output start-up (`sceAudioOutInit`, `sceAudioOutOpen`, issue #37)
+
+The OpenOrbis homebrew SDK's `AudioOut.h` declares `int32_t sceAudioOutInit(void)` and
+`int32_t sceAudioOutOpen(user, port type, index, length, sample rate, param)`. Its `_types`
+headers give:
+- port type 0 (main);
+- format 4 (float stereo);
+- the error codes `0x8026000E` (already initialized) and `0x8026000F` (not initialized).
+
+**What the executable does:**
+- Its only init call (`0x0111b665`) accepts success or exactly `0x8026000E`.
+- Its only open (`0x0111b69d`) passes user `0xff` (the system user in the SDK's user types), the
+  main port, index 0, 256 samples, 48000 Hz and format 4 (or 5 for eight channels). It keeps a
+  non-negative result as the port handle.
+
+**What the runtime does.** It records each open port and hands out handles from 1. Sound output
+belongs to the output calls, which stop by name until they are implemented.
+
+**What stops by name:** any open other than the observed one (format 5 is not in the public list),
+and running out of handles.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
