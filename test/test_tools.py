@@ -594,6 +594,13 @@ class Boot(unittest.TestCase):
             p = subprocess.run([self.pbboot, exe, *args], capture_output=True, text=True, timeout=60)
             self.assertEqual(p.returncode, 2, (bad, p.stderr))
 
+    def test_bad_system_param_arguments_are_refused(self):
+        exe = os.path.join(ROOT, 'no-such.elf')
+        for bad in (['1'], ['1='], ['x=3'], ['1=3x'], ['1=3', '1=4']):
+            args = [a for param in bad for a in ('--system-param', param)]
+            p = subprocess.run([self.pbboot, exe, *args], capture_output=True, text=True, timeout=60)
+            self.assertEqual(p.returncode, 2, (bad, p.stderr))
+
     def test_bad_app_param_arguments_are_refused(self):
         exe = os.path.join(ROOT, 'no-such.elf')
         for bad in (['1'], ['1='], ['x=3'], ['1=3x'], ['-1=3'], ['1=0x100000000'], ['boot=3'],
@@ -619,6 +626,14 @@ class Boot(unittest.TestCase):
         finally:
             shutil.rmtree(d)
         self.assertTrue(boot.stub_module_args(ROOT))      # every stub in the game's own list has its id
+
+    def test_boot_system_params_default_and_override(self):
+        import boot
+        self.assertEqual(boot.system_param_args([]), ['--system-param', '1=1'])
+        self.assertEqual(boot.system_param_args(['1=18', '0x4=5']),
+                         ['--system-param', '1=18', '--system-param', '4=5'])
+        with self.assertRaises(ValueError):
+            boot.system_param_args(['language=18'])
 
     def test_boot_passes_runtime_modules_and_app_params(self):
         import boot

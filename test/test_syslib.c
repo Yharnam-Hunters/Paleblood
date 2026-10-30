@@ -410,6 +410,12 @@ static f_us_ids us_initial_user, us_login_list;
 static void us_terminate_uninitialized(void) { us_terminate(); }
 static void us_initial_user_uninitialized(void) { int32_t u; us_initial_user(&u); }
 
+/* System settings: answered from rt_process.system_params. */
+typedef int32_t (*f_sys_param)(int32_t, int32_t *);
+static f_sys_param sys_param;
+static void sys_param_unset(void) { int32_t v; sys_param(4, &v); }
+static void sys_param_no_variable(void) { sys_param(1, NULL); }
+
 int main(void)
 {
     /* Unresolved entries are still callable diagnostics, but are not reported as implemented. */
@@ -1068,6 +1074,18 @@ int main(void)
     if (cd_init) {
         CHECK(cd_init() == 0);
         CHECK(cd_init() == (int32_t)0x80b80002u);
+    }
+
+    /* libSceSystemService: the language the person running the runtime chose. */
+    sys_param = (f_sys_param)fn("libSceSystemService", "sceSystemServiceParamGetInt");
+    if (sys_param) {
+        rt_process.system_params[0] = (rt_system_param){1, 18};
+        rt_process.system_param_count = 1;
+        int32_t value = -1;
+        CHECK(sys_param(1, &value) == 0 && value == 18);
+        CHECK(died_in_fatal(sys_param_unset));
+        CHECK(died_in_fatal(sys_param_no_variable));
+        rt_process.system_param_count = 0;
     }
 
     if (!failures) puts("syslib: ok");
