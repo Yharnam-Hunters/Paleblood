@@ -14,6 +14,8 @@
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <time.h>
+#include <stdlib.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 static int unresolved_test_entry(void) { return -1; }
@@ -598,6 +600,13 @@ typedef int32_t (*f_ao_output)(int32_t, const void *);
 static f_ao_output ao_output_fn;
 static void ao_output_no_samples(void) { ao_output_fn(1, NULL); }
 static void ao_volume_too_loud(void) { const int32_t v[8] = {40000}; ao_volume_fn(ao_stereo_port, 0x1, v); }
+
+/* sceKernelStat under /app0, served from a scratch directory. */
+typedef int32_t (*f_kstat)(const char *, void *);
+static f_kstat kstat_fn;
+static void kstat_outside(void) { unsigned char st[120]; kstat_fn("/download0/x", st); }
+static void kstat_dotdot(void) { unsigned char st[120]; kstat_fn("/app0/../etc/passwd", st); }
+static void kstat_prefix_only(void) { unsigned char st[120]; kstat_fn("/app0x/file", st); }
 
 int main(void)
 {
@@ -1579,6 +1588,78 @@ int main(void)
             CHECK(elapsed >= 100000 && elapsed < 300000);
             ao_output_fn = ao_output;
             CHECK(died_in_fatal(ao_output_no_samples));
+        }
+    }
+
+    /* sceKernelStat: FreeBSD's 120-byte stat from the host file; ENOENT and ENOTDIR as SCE codes. */
+    kstat_fn = (f_kstat)fn("libkernel", "sceKernelStat");
+    if (kstat_fn) {
+        char dir[] = "/tmp/pb-app0-XXXXXX";
+        const char *tmp = getenv("TMPDIR");
+        static char dir_buf[512];
+        snprintf(dir_buf, sizeof dir_buf, "%s/pb-app0-XXXXXX", tmp ? tmp : "/tmp");
+        char *app0 = mkdtemp(tmp ? dir_buf : dir);
+        CHECK(app0 != NULL);
+        if (app0) {
+            char file[600];
+            snprintf(file, sizeof file, "%s/data.bin", app0);
+            FILE *f = fopen(file, "w");
+            if (f) { fwrite("0123456789", 1, 10, f); fclose(f); }
+            chmod(file, 0644);
+            rt_process.app0_dir = app0;
+            unsigned char st[120];
+            memset(st, 0xee, sizeof st);
+            CHECK(kstat_fn("/app0/data.bin", st) == 0);
+            uint16_t mode; int64_t size;
+            memcpy(&mode, st + 8, 2); memcpy(&size, st + 0x48, 8);
+            CHECK((mode & 0170000) == 0100000 && (mode & 0777) == 0444 && size == 10);
+            CHECK(kstat_fn("/app0", st) == 0 && (memcpy(&mode, st + 8, 2), (mode & 0170000) == 0040000));
+            CHECK(kstat_fn("/app0/missing.bin", st) == (int32_t)0x80020002u);
+            CHECK(kstat_fn("/app0/data.bin/inside", st) == (int32_t)0x80020014u);
+            CHECK(died_in_fatal(kstat_outside));
+            CHECK(died_in_fatal(kstat_dotdot));
+            CHECK(died_in_fatal(kstat_prefix_only));
+            /* Open, read, seek, pread, fstat and close the same file, read-only. */
+            typedef int32_t (*f_open)(const char *, int32_t, uint32_t);
+            typedef int64_t (*f_read)(int32_t, void *, uint64_t);
+            typedef int64_t (*f_pread)(int32_t, void *, uint64_t, int64_t);
+            typedef int64_t (*f_lseek)(int32_t, int64_t, int32_t);
+            typedef int32_t (*f_fd)(int32_t);
+            typedef int32_t (*f_fstat)(int32_t, void *);
+            const f_open kopen = (f_open)fn("libkernel", "sceKernelOpen");
+            const f_read kread = (f_read)fn("libkernel", "sceKernelRead");
+            const f_pread kpread = (f_pread)fn("libkernel", "sceKernelPread");
+            const f_lseek klseek = (f_lseek)fn("libkernel", "sceKernelLseek");
+            const f_fd kclose = (f_fd)fn("libkernel", "sceKernelClose");
+            const f_fstat kfstat = (f_fstat)fn("libkernel", "sceKernelFstat");
+            if (kopen && kread && kpread && klseek && kclose && kfstat) {
+                const int32_t fd = kopen("/app0/data.bin", 0, 0555);
+                CHECK(fd >= 3);
+                char buf[16] = {0};
+                CHECK(kread(fd, buf, 4) == 4 && !memcmp(buf, "0123", 4));
+                CHECK(kread(fd, buf, 16) == 6 && !memcmp(buf, "456789", 6));
+                CHECK(kread(fd, buf, 16) == 0);
+                CHECK(klseek(fd, 2, 0) == 2 && kread(fd, buf, 2) == 2 && !memcmp(buf, "23", 2));
+                CHECK(klseek(fd, -1, 2) == 9 && klseek(fd, 1, 1) == 10);
+                CHECK(klseek(fd, 0, 7) == (int32_t)0x80020016u && klseek(fd, -1, 0) == (int32_t)0x80020016u); /* sign-extended */
+                CHECK(kpread(fd, buf, 3, 7) == 3 && !memcmp(buf, "789", 3));
+                memset(st, 0, sizeof st);
+                CHECK(kfstat(fd, st) == 0 && (memcpy(&size, st + 0x48, 8), size == 10));
+                const int32_t fd2 = kopen("/app0/data.bin", 0, 0);
+                CHECK(fd2 > 0 && fd2 != fd);
+                CHECK(kclose(fd) == 0 && kclose(fd) == (int32_t)0x80020009u);
+                CHECK(kread(fd, buf, 1) == (int32_t)0x80020009u);
+                CHECK(kopen("/app0/data.bin", 0, 0) == fd); /* the lowest free number again */
+                CHECK(kclose(fd) == 0 && kclose(fd2) == 0);
+                CHECK(kopen("/app0/missing.bin", 0, 0) == (int32_t)0x80020002u);
+                CHECK(kopen("/app0/data.bin", 2, 0) == (int32_t)0x8002001eu);     /* O_RDWR: EROFS */
+                CHECK(kopen("/app0/new.bin", 0x201, 0644) == (int32_t)0x8002001eu); /* O_CREAT */
+                CHECK(kopen("/app0/missing.bin", 1, 0) == (int32_t)0x80020002u);   /* lookup first */
+                CHECK(access(file, F_OK) == 0); /* nothing was written or created */
+            }
+            unlink(file);
+            rmdir(app0);
+            rt_process.app0_dir = NULL;
         }
     }
 

@@ -56,6 +56,7 @@ typedef struct {
     int app_boot_param_unread; /* --app-param boot=unread: the title never reads the boot parameter */
     rt_system_param system_params[RT_MAX_SYSTEM_PARAMS];
     uint32_t system_param_count;
+    const char *app0_dir;    /* --app0: the host directory that holds the title's /app0 (read-only) */
     /* The executable's thread-local storage template (its PT_TLS segment): every guest thread's
        block is a copy of it, placed just below the thread pointer (x86-64 variant II). */
     const void *tls_image;
