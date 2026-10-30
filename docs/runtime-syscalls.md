@@ -756,6 +756,22 @@ The executable's only call (`0x0111b6d6`) passes its new port, flag `0xff` and e
 - a missing array;
 - a volume outside 0–32768.
 
+## Attribute priority (`scePthreadAttrSetschedparam`, issue #34)
+
+`scePthreadAttrSetschedparam(attr, const struct sched_param *param)` sets the priority
+(`sched_param`'s one int) of a thread created with the attribute. OpenOrbis' `libkernel.h` gives
+the shape; libthr's `_pthread_attr_setschedparam` gives the semantics.
+
+**What the executable does.** Its thread wrapper (`0x0111aafd`) sets it without explicit-scheduling
+inheritance. So under libthr's default (`PTHREAD_INHERIT_SCHED`), the new thread still starts at
+its creator's priority. The wrapper then sets the priority itself with `scePthreadSetprio`
+(`0x0111ab46`).
+
+**What the runtime does.** It records the priority on the attribute. A variable holding no
+attribute is `EINVAL` (libthr).
+
+**What stops by name:** a missing param, and a priority outside 256–767.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.

@@ -453,6 +453,8 @@ static f_getprio tc_getprio;
 static f_setprio tc_setprio;
 static int32_t tc_seen_priority;
 static void setprio_out_of_range(void) { tc_setprio(tc_self(), 0xff); }
+typedef int (*f_attr_schedparam)(void **, const int32_t *);
+static f_attr_schedparam tc_attr_schedparam;
 static void main_thread_declared(void)
 {
     static uint64_t param[8] = {0x40, 0, 0, 0, 0, 0x1234, 0, 0}; /* a slot in +0x18..+0x37 set */
@@ -484,6 +486,7 @@ static void *tc_attr(int with_stack, int with_detach, int detach)
     if (with_detach) ((f2i)fn("libkernel", "scePthreadAttrSetdetachstate"))(&a, detach);
     return a;
 }
+static void attr_schedparam_out_of_range(void) { void *a = tc_attr(1, 1, 0); const int32_t p = 0x300; tc_attr_schedparam(&a, &p); }
 static void tc_create_no_attr(void) { void *t; tc_create(&t, NULL, tc_entry, NULL, "t"); }
 static void tc_create_no_stack(void) { void *t, *a = tc_attr(0, 1, 0); tc_create(&t, &a, tc_entry, NULL, "t"); }
 static void tc_create_no_detach(void) { void *t, *a = tc_attr(1, 0, 0); tc_create(&t, &a, tc_entry, NULL, "t"); }
@@ -1317,9 +1320,20 @@ int main(void)
         CHECK(died_in_fatal(main_thread_declared));
         CHECK(tc_setprio(tc_self(), 0x123) == 0); /* the worker below inherits it */
     }
+    tc_attr_schedparam = (f_attr_schedparam)fn("libkernel", "scePthreadAttrSetschedparam");
+    if (tc_attr_schedparam && tc_create && tc_self) {
+        void *empty = NULL;
+        const int32_t p = 0x2ff;
+        CHECK(tc_attr_schedparam(&empty, &p) == (int)0x80020016);
+        CHECK(died_in_fatal(attr_schedparam_out_of_range));
+    }
     if (tc_create && tc_affinity && tc_self) {
         void *thread = NULL, *attr = tc_attr(1, 1, 0);
         int marker = 0;
+        if (tc_attr_schedparam) {
+            const int32_t explicit_priority = 0x2ff; /* ignored: the attribute inherits (libthr default) */
+            CHECK(tc_attr_schedparam(&attr, &explicit_priority) == 0);
+        }
         CHECK(tc_create(&thread, &attr, tc_entry, &marker, "worker") == 0 && thread);
         CHECK((uintptr_t)thread < (1ull << 40));
         for (int i = 0; i < 100000 && !atomic_load(&tc_done); i++) sched_yield();

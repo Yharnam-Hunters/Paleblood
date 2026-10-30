@@ -62,6 +62,8 @@ typedef struct {
     int detach_state;
     int has_sched_policy;
     int sched_policy;
+    int has_sched_priority;
+    int32_t sched_priority;
 } guest_attr;
 
 static int sce(int bsd) { return bsd ? SCE_KERNEL_ERROR(bsd) : 0; }
@@ -453,3 +455,24 @@ static int set_priority(guest_thread *thread, int32_t priority)
     return 0;
 }
 RT_SYSLIB("libkernel", scePthreadSetprio, set_priority);
+
+/* scePthreadAttrSetschedparam(attr, const struct sched_param *param): the priority (sched_param's
+   one int, sched_priority) of a thread created with the attribute (OpenOrbis' libkernel.h declares
+   the shape; libthr's _pthread_attr_setschedparam). The executable's thread wrapper (0x0111aafd)
+   sets it with no explicit-scheduling inheritance, so under libthr's default (PTHREAD_INHERIT_SCHED)
+   the new thread still starts at its creator's priority, and the wrapper then sets the priority
+   itself with scePthreadSetprio (0x0111ab46). The runtime records it on the attribute. A variable
+   holding no attribute is EINVAL (libthr); a missing param and a priority outside 256..767 stop by
+   name (their answers are not established). */
+static int sce_attr_set_sched_param(guest_attr **attr, const int32_t *param)
+{
+    static const char fn[] = "scePthreadAttrSetschedparam";
+    if (!attr || !*attr) return SCE_KERNEL_ERROR(BSD_EINVAL);
+    if (!param) rt_fatal(fn, "no param: the answer is not established");
+    if (*param < PRIORITY_HIGHEST_SEEN || *param > PRIORITY_LOWEST_SEEN)
+        rt_fatal(fn, "a priority outside 256..767, the range the executable uses: the answer is not established");
+    (*attr)->has_sched_priority = 1;
+    (*attr)->sched_priority = *param;
+    return 0;
+}
+RT_SYSLIB("libkernel", scePthreadAttrSetschedparam, sce_attr_set_sched_param);
