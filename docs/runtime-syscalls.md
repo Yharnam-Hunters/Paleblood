@@ -756,6 +756,27 @@ The executable's only call (`0x0111b6d6`) passes its new port, flag `0xff` and e
 - a missing array;
 - a volume outside 0–32768.
 
+## Attribute priority and CPU mask (`scePthreadAttrSetschedparam`, `scePthreadAttrSetaffinity`, issue #34)
+
+`scePthreadAttrSetschedparam(attr, const struct sched_param *param)` sets the priority
+(`sched_param`'s one int) of a thread created with the attribute. OpenOrbis' `libkernel.h` gives
+the shape; libthr's `_pthread_attr_setschedparam` gives the semantics.
+
+**What the executable does.** Its thread wrapper (`0x0111aafd`) sets it without explicit-scheduling
+inheritance. So under libthr's default (`PTHREAD_INHERIT_SCHED`), the new thread still starts at
+its creator's priority. The wrapper then sets the priority itself with `scePthreadSetprio`
+(`0x0111ab46`).
+
+**What the runtime does.** It records the priority on the attribute. A variable holding no
+attribute is `EINVAL` (libthr).
+
+**What stops by name:** a missing param, and a priority outside 256–767.
+
+`scePthreadAttrSetaffinity(attr, uint64_t mask)` is the wrapper's next call (`0x0111ab0e`), with
+the CPU mask its caller chose. As for `scePthreadSetaffinity`, the runtime records the mask (the
+created thread takes it) and the host schedules. An empty mask stops by name, and a variable
+holding no attribute is `EINVAL`.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.

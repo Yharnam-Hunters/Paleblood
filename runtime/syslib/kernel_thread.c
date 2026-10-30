@@ -62,6 +62,9 @@ typedef struct {
     int detach_state;
     int has_sched_policy;
     int sched_policy;
+    int has_sched_priority;
+    int32_t sched_priority;
+    uint64_t affinity;      /* the CPU mask scePthreadAttrSetaffinity recorded, 0: none */
 } guest_attr;
 
 static int sce(int bsd) { return bsd ? SCE_KERNEL_ERROR(bsd) : 0; }
@@ -269,6 +272,7 @@ static int create_thread(guest_thread **thread, guest_attr **attr, void *(*entry
     t->entry = entry;
     t->argument = argument;
     if (name) strncpy(t->name, name, sizeof t->name - 1);
+    t->affinity = a->affinity; /* the attribute's CPU mask, if it has one */
     if (current) memcpy(t->signal_mask, current->signal_mask, sizeof t->signal_mask); /* inherited (POSIX) */
     t->priority = current ? current->priority : SCE_KERNEL_PRIO_FIFO_DEFAULT; /* inherited (libthr default) */
     pthread_attr_t host;
@@ -453,3 +457,38 @@ static int set_priority(guest_thread *thread, int32_t priority)
     return 0;
 }
 RT_SYSLIB("libkernel", scePthreadSetprio, set_priority);
+
+/* scePthreadAttrSetschedparam(attr, const struct sched_param *param): the priority (sched_param's
+   one int, sched_priority) of a thread created with the attribute (OpenOrbis' libkernel.h declares
+   the shape; libthr's _pthread_attr_setschedparam). The executable's thread wrapper (0x0111aafd)
+   sets it with no explicit-scheduling inheritance, so under libthr's default (PTHREAD_INHERIT_SCHED)
+   the new thread still starts at its creator's priority, and the wrapper then sets the priority
+   itself with scePthreadSetprio (0x0111ab46). The runtime records it on the attribute. A variable
+   holding no attribute is EINVAL (libthr); a missing param and a priority outside 256..767 stop by
+   name (their answers are not established). */
+static int sce_attr_set_sched_param(guest_attr **attr, const int32_t *param)
+{
+    static const char fn[] = "scePthreadAttrSetschedparam";
+    if (!attr || !*attr) return SCE_KERNEL_ERROR(BSD_EINVAL);
+    if (!param) rt_fatal(fn, "no param: the answer is not established");
+    if (*param < PRIORITY_HIGHEST_SEEN || *param > PRIORITY_LOWEST_SEEN)
+        rt_fatal(fn, "a priority outside 256..767, the range the executable uses: the answer is not established");
+    (*attr)->has_sched_priority = 1;
+    (*attr)->sched_priority = *param;
+    return 0;
+}
+RT_SYSLIB("libkernel", scePthreadAttrSetschedparam, sce_attr_set_sched_param);
+
+/* scePthreadAttrSetaffinity(attr, uint64_t mask): the CPU set of a thread created with the
+   attribute (OpenOrbis' libkernel.h declares it with a 64-bit mask). The executable's thread wrapper
+   (0x0111ab0e) passes the mask its caller chose. As for scePthreadSetaffinity, the runtime records
+   the mask (the created thread takes it) and the host schedules; an empty mask stops by name and a
+   variable holding no attribute is EINVAL. */
+static int sce_attr_set_affinity(guest_attr **attr, uint64_t mask)
+{
+    if (!attr || !*attr) return SCE_KERNEL_ERROR(BSD_EINVAL);
+    if (!mask) rt_fatal("scePthreadAttrSetaffinity", "an empty CPU mask: the answer is not established");
+    (*attr)->affinity = mask;
+    return 0;
+}
+RT_SYSLIB("libkernel", scePthreadAttrSetaffinity, sce_attr_set_affinity);
