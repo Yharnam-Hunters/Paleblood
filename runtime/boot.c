@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* pbboot: runs a PS4 executable's entry on Paleblood's runtime, as far as the runtime goes.
 
-     pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--nids NID_DB.xml]
+     pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--nids NID_DB.xml]
             [--status OUT.json] [--timeout SECONDS] [--trace]
      pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]
             (list every import: importer, library, symbol, kind, provider, provider offset, size)
@@ -310,6 +310,32 @@ static void where(uint64_t address, char *out, size_t size)
     snprintf(out, size, "host+0x%llx", (unsigned long long)address);
 }
 
+/* --app-param ID=VALUE, ID=unread or boot=unread (game/app_params.csv, through tools/boot.py).
+   Returns 0 when it was added. */
+static int add_app_param(const char *arg)
+{
+    const char *eq = strchr(arg, '=');
+    if (!eq || !eq[1]) return -1;
+    const int unread = !strcmp(eq + 1, "unread");
+    if (!strncmp(arg, "boot=", 5)) {
+        if (!unread || rt_process.app_boot_param_unread) return -1;
+        rt_process.app_boot_param_unread = 1;
+        return 0;
+    }
+    char *end;
+    const long id = strtol(arg, &end, 0);
+    if (end != eq || id < 0 || id > INT32_MAX || rt_process.app_param_count == RT_MAX_APP_PARAMS) return -1;
+    long value = 0;
+    if (!unread) {
+        value = strtol(eq + 1, &end, 0);
+        if (*end || value < INT32_MIN || value > INT32_MAX) return -1;
+    }
+    for (uint32_t i = 0; i < rt_process.app_param_count; i++)
+        if (rt_process.app_params[i].id == id) return -1;
+    rt_process.app_params[rt_process.app_param_count++] = (rt_app_param){(int32_t)id, unread, (int32_t)value};
+    return 0;
+}
+
 /* --stub-module ID:NAME, the id in C notation (0x0038). Returns 0 when it was added. */
 static int add_stub_module(const char *arg)
 {
@@ -326,7 +352,7 @@ static int add_stub_module(const char *arg)
 }
 
 static const char *usage =
-    "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--nids NID_DB.xml]\n"
+    "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--nids NID_DB.xml]\n"
     "              [--status OUT.json] [--timeout S] [--trace]\n"
     "       pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]\n";
 
@@ -343,6 +369,12 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--stub-module") && i + 1 < argc) {
             if (add_stub_module(argv[++i])) {
                 fprintf(stderr, "pbboot: --stub-module %s: want a new ID:NAME, the id 16 bits\n", argv[i]);
+                return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "--app-param") && i + 1 < argc) {
+            if (add_app_param(argv[++i])) {
+                fprintf(stderr, "pbboot: --app-param %s: want a new ID=VALUE, ID=unread or boot=unread\n", argv[i]);
                 return 2;
             }
         }

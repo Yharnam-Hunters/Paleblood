@@ -6,3 +6,4 @@ libSceHand,stub,0x0093,the executable imports nothing from it: not mapped; a req
 libSceHeadTracker,stub,0x00cb,the executable imports nothing from it: not mapped; a request to load it (sceSysmoduleLoadModule with its system module id) is reported as done
 libSceS3DConversion,stub,0x0086,the executable imports nothing from it: not mapped; a request to load it (sceSysmoduleLoadModule with its system module id) is reported as done
 libSceSmart,stub,0x0039,the executable imports nothing from it: not mapped; a request to load it (sceSysmoduleLoadModule with its system module id) is reported as done
+libSceAppContent,runtime,0x00b4,"a system module (not shipped with the title): the runtime provides its functions (runtime/syslib/app_content.c), so a load is reported as done; the executable imports sceAppContentInitialize, sceAppContentAppParamGetInt and sceAppContentGetAddcontInfoList from it"

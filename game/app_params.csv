@@ -1,0 +1,7 @@
+id,source,key,notes
+boot,unread,,"sceAppContentInitialize's boot parameter: the executable zeroes it (0x05aa0220) and passes it only to that call; nothing else reads it"
+0,unread,,"the SKU flag: the executable passes 0x05aa0248 only to sceAppContentAppParamGetInt (0x024261e6) and never reads it"
+1,sfo,USER_DEFINED_PARAM_1,"read by the executable afterwards (0x05528a00; at 0x02426284 and four other sites)"
+2,unread,,"the executable passes 0x05aa024c only to sceAppContentAppParamGetInt (0x02426208) and never reads it"
+3,unread,,"the executable passes 0x05aa0250 only to sceAppContentAppParamGetInt (0x02426219) and never reads it"
+4,unread,,"the executable passes 0x05aa0254 only to sceAppContentAppParamGetInt (0x0242622a) and never reads it"
