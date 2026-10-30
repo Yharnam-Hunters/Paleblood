@@ -287,13 +287,16 @@ The signatures match the OpenOrbis homebrew SDK's `libkernel.h`, as supporting e
   answer sizes them from the runtime's pool.
 - **Allocation.** It takes the lowest start at or above the search start that fits before the
   search end.
+- **GPU access.** The executable maps with protection 3 and `0x33`, CPU and GPU read/write
+  (`0x10` and `0x20` in the public SDK list). The runtime has no GPU yet, so the host mapping
+  takes the CPU bits.
 - **What stops by name.** Every case whose PS4 answer is not established stops with the function's
   name:
   - lengths, starts or alignments that are not multiples of 16 KiB (the granularity the
     executable's calls use);
   - memory types other than 0, 3 and 10;
   - map flags, and an address hint without flags;
-  - protection other than CPU read and write;
+  - protection other than CPU and GPU read and write;
   - a range that does not fit or was not allocated;
   - releasing part of a range or a mapped one;
   - the error values.
