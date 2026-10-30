@@ -231,6 +231,58 @@ static void *detach_reader_attr;
 static void read_detach_state(void) { (void)detach_state_of(&detach_reader_attr); }
 static void read_detach_state_without_variable(void) { (void)detach_state_of(NULL); }
 
+/* Read-write locks. The write lock belongs to a thread, so some answers are checked from a second
+   host thread: it needs no guest thread, only the rwlock object the SCE calls made. */
+static finit rwlock_init;
+static f1 rwlock_rdlock, rwlock_wrlock, rwlock_tryrdlock, rwlock_trywrlock, rwlock_unlock;
+static void *rwlock_shared;
+static pthread_mutex_t rwlock_done_guard = PTHREAD_MUTEX_INITIALIZER;
+static int rwlock_reader_done; /* read and written under rwlock_done_guard */
+static int reader_done(void)
+{
+    pthread_mutex_lock(&rwlock_done_guard);
+    const int done = rwlock_reader_done;
+    pthread_mutex_unlock(&rwlock_done_guard);
+    return done;
+}
+
+typedef struct {
+    f1 call;
+    int result;
+} rwlock_call;
+static void *rwlock_call_run(void *arg)
+{
+    rwlock_call *c = arg;
+    c->result = c->call(&rwlock_shared);
+    return NULL;
+}
+/* The entry's answer for rwlock_shared, called on a new host thread. */
+static int rwlock_from_other_thread(f1 call)
+{
+    rwlock_call c = {call, -1};
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, rwlock_call_run, &c)) return -1;
+    pthread_join(thread, NULL);
+    return c.result;
+}
+static void *rwlock_blocked_reader(void *unused)
+{
+    (void)unused;
+    const int r = rwlock_rdlock(&rwlock_shared);
+    pthread_mutex_lock(&rwlock_done_guard);
+    rwlock_reader_done = 1;
+    pthread_mutex_unlock(&rwlock_done_guard);
+    if (r == 0) rwlock_unlock(&rwlock_shared);
+    return NULL;
+}
+static void rwlock_wrlock_again(void) { rwlock_wrlock(&rwlock_shared); }
+static void rwlock_rdlock_while_writing(void) { rwlock_rdlock(&rwlock_shared); }
+static void rwlock_init_with_attribute(void)
+{
+    void *lock = NULL, *attr = &lock; /* a variable holding some object */
+    rwlock_init(&lock, &attr, "lock");
+}
+
 /* Direct memory: the calls as the guest makes them. The stops are file-scope so a child can make
    them on a range the parent allocated before forking. */
 typedef size_t (*f_dm_size)(void);
@@ -905,6 +957,75 @@ int main(void)
     void (*stack_chk_fail)(void) = (void (*)(void))fn("libkernel", "__stack_chk_fail");
     CHECK(died_in_fatal(stack_chk_fail));
     CHECK(is_implemented("libkernel", "__stack_chk_fail"));
+
+    /* Read-write locks (SCE names): SCE codes for FreeBSD libthr's and the umtx lock's errors. */
+    rwlock_init = (finit)fn("libkernel", "scePthreadRwlockInit");
+    const f1 rwlock_destroy = (f1)fn("libkernel", "scePthreadRwlockDestroy");
+    rwlock_rdlock = (f1)fn("libkernel", "scePthreadRwlockRdlock");
+    rwlock_wrlock = (f1)fn("libkernel", "scePthreadRwlockWrlock");
+    rwlock_tryrdlock = (f1)fn("libkernel", "scePthreadRwlockTryrdlock");
+    rwlock_trywrlock = (f1)fn("libkernel", "scePthreadRwlockTrywrlock");
+    rwlock_unlock = (f1)fn("libkernel", "scePthreadRwlockUnlock");
+    if (failures) return 1;
+    alarm(60); /* a lock that never comes kills the test with SIGALRM instead of hanging it */
+    CHECK(rwlock_init(&rwlock_shared, NULL, "rwlock") == 0 && rwlock_shared && rwlock_shared != (void *)1);
+
+    /* Readers share the lock, the same thread too, and keep a writer out; each read lock is
+       unlocked once, and an unlock with nothing held is EPERM. */
+    CHECK(rwlock_rdlock(&rwlock_shared) == 0 && rwlock_rdlock(&rwlock_shared) == 0);
+    CHECK(rwlock_tryrdlock(&rwlock_shared) == 0);
+    CHECK(rwlock_from_other_thread(rwlock_tryrdlock) == 0);  /* a reader on another thread */
+    CHECK(rwlock_trywrlock(&rwlock_shared) == (int)0x80020010);
+    CHECK(rwlock_from_other_thread(rwlock_trywrlock) == (int)0x80020010);
+    for (int i = 0; i < 4; i++) CHECK(rwlock_unlock(&rwlock_shared) == 0);
+    CHECK(rwlock_unlock(&rwlock_shared) == (int)0x80020001);
+
+    /* The writer keeps everyone else out, and only the writer unlocks it. */
+    CHECK(rwlock_wrlock(&rwlock_shared) == 0);
+    CHECK(rwlock_tryrdlock(&rwlock_shared) == (int)0x80020010 && rwlock_trywrlock(&rwlock_shared) == (int)0x80020010);
+    CHECK(rwlock_from_other_thread(rwlock_tryrdlock) == (int)0x80020010);
+    CHECK(rwlock_from_other_thread(rwlock_unlock) == (int)0x80020001);
+    /* Locking again while holding the write lock would wait forever on the system: stops by name. */
+    CHECK(died_in_fatal(rwlock_wrlock_again));
+    CHECK(died_in_fatal(rwlock_rdlock_while_writing));
+    /* A reader on another thread waits until the writer unlocks. */
+    pthread_t reader;
+    if (pthread_create(&reader, NULL, rwlock_blocked_reader, NULL)) { perror("pthread_create"); return 1; }
+    usleep(20000);
+    CHECK(reader_done() == 0);
+    CHECK(rwlock_unlock(&rwlock_shared) == 0);
+    pthread_join(reader, NULL);
+    CHECK(reader_done() == 1);
+    CHECK(rwlock_unlock(&rwlock_shared) == (int)0x80020001);
+
+    /* An attribute object is not established; an empty attribute variable means the defaults. */
+    CHECK(died_in_fatal(rwlock_init_with_attribute));
+    void *empty_rwlock_attr = NULL, *default_rwlock = NULL;
+    CHECK(rwlock_init(&default_rwlock, &empty_rwlock_attr, NULL) == 0 && default_rwlock && rwlock_destroy(&default_rwlock) == 0);
+
+    /* Destroying does not check whether the lock is held (libthr). Destroyed, the variable holds 1
+       and every call on it is EINVAL; so is a missing variable. */
+    CHECK(rwlock_rdlock(&rwlock_shared) == 0);
+    CHECK(rwlock_destroy(&rwlock_shared) == 0 && rwlock_shared == (void *)1);
+    CHECK(rwlock_destroy(&rwlock_shared) == (int)0x80020016);
+    CHECK(rwlock_rdlock(&rwlock_shared) == (int)0x80020016 && rwlock_wrlock(&rwlock_shared) == (int)0x80020016);
+    CHECK(rwlock_tryrdlock(&rwlock_shared) == (int)0x80020016 && rwlock_trywrlock(&rwlock_shared) == (int)0x80020016);
+    CHECK(rwlock_unlock(&rwlock_shared) == (int)0x80020016);
+    CHECK(rwlock_init(NULL, NULL, NULL) == (int)0x80020016 && rwlock_destroy(NULL) == (int)0x80020016);
+    CHECK(rwlock_rdlock(NULL) == (int)0x80020016 && rwlock_unlock(NULL) == (int)0x80020016);
+
+    /* The static initializer (NULL) becomes a rwlock on first lock; unlocked before that, it is
+       EPERM, and destroyed unused it stays NULL. */
+    void *static_rwlock = NULL;
+    CHECK(rwlock_unlock(&static_rwlock) == (int)0x80020001 && static_rwlock == NULL);
+    CHECK(rwlock_destroy(&static_rwlock) == 0 && static_rwlock == NULL);
+    CHECK(rwlock_wrlock(&static_rwlock) == 0 && static_rwlock && static_rwlock != (void *)1);
+    CHECK(rwlock_unlock(&static_rwlock) == 0 && rwlock_destroy(&static_rwlock) == 0 && static_rwlock == (void *)1);
+    alarm(0);
+    CHECK(is_implemented("libkernel", "scePthreadRwlockInit") && is_implemented("libkernel", "scePthreadRwlockDestroy"));
+    CHECK(is_implemented("libkernel", "scePthreadRwlockRdlock") && is_implemented("libkernel", "scePthreadRwlockWrlock"));
+    CHECK(is_implemented("libkernel", "scePthreadRwlockTryrdlock") && is_implemented("libkernel", "scePthreadRwlockTrywrlock"));
+    CHECK(is_implemented("libkernel", "scePthreadRwlockUnlock"));
 
     /* Direct memory, the way a title's startup heap uses it: the size, then a 2 MiB aligned range
        below it, mapped read/write where the system picks, released if the map fails. */
