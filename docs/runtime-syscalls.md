@@ -389,6 +389,32 @@ value variable.
 A local boot with the affinity probe and the rwlocks let through (not committed) loads the module,
 passes these calls, and stops next at `pthread_cond_init` (`libScePosix`).
 
+## Thread attributes: stack size and scheduling policy (issue #34)
+
+The executable's thread wrapper (`0x02a3b324`–`0x02a3b46e`) sets up each thread like this:
+
+1. It initializes an attribute.
+2. It sets the stack size: the caller's size, or 64 KiB by default. If that is refused, it retries
+   with 16 KiB and reports a fatal error if that fails too.
+3. It sets detach state 0 and scheduling policy 1.
+4. It creates the thread with `(&thread, &attr, entry, argument, name)`, comparing a failure with
+   EPERM, EINVAL and EAGAIN as SCE codes.
+5. It destroys the attribute and sets the new thread's affinity to a mask of the six bits `0x3f`.
+
+What the runtime does:
+
+- **`scePthreadAttrSetstacksize`** and **`pthread_attr_setstacksize`** record the size. The stack's
+  address is left to the system, as libthr keeps one address and size per attribute.
+- **Sizes below 16 KiB** are refused with EINVAL. libthr refuses sizes below its minimum that way,
+  and the executable's wrapper names the PS4's minimum: its callers pass smaller sizes, and when
+  one is refused it asks again for exactly 16 KiB (`0x02a3b383`).
+- **`scePthreadAttrSetschedpolicy`** records one of FreeBSD's three policies (FIFO 1, OTHER 2,
+  RR 3). libthr refuses any other with ENOTSUP, whose SCE value is not established, so another
+  policy stops by name.
+- **A missing attribute** answers EINVAL (as an SCE code under the SCE names).
+
+Thread creation itself and per-thread affinity are separate entries.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
