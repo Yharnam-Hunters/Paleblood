@@ -303,7 +303,9 @@ static void dm_allocate_odd_alignment(void) { int64_t s; dm_allocate(0, 1ll << 3
 static void dm_allocate_unknown_type(void) { int64_t s; dm_allocate(0, 1ll << 30, DM_PAGE, DM_PAGE, 7, &s); }
 static void dm_allocate_no_variable(void) { dm_allocate(0, 1ll << 30, DM_PAGE, DM_PAGE, 0, NULL); }
 static void dm_map_with_flags(void) { void *a = NULL; dm_map(&a, DM_PAGE, DM_RW, 0x10, dm_unmapped, DM_PAGE); }
-static void dm_map_with_hint(void) { void *a = (void *)0x10000000; dm_map(&a, DM_PAGE, DM_RW, 0, dm_unmapped, DM_PAGE); }
+static void *dm_in_use;
+static void dm_map_hint_in_use(void) { void *a = dm_in_use; dm_map(&a, DM_PAGE, DM_RW, 0, dm_mapped, DM_PAGE); }
+static void dm_map_hint_misaligned(void) { void *a = (void *)0xfd00004000; dm_map(&a, DM_PAGE, DM_RW, 0, dm_mapped, DM_ALIGN); }
 static void dm_map_exec(void) { void *a = NULL; dm_map(&a, DM_PAGE, DM_RW | 0x4, 0, dm_unmapped, DM_PAGE); }
 static void dm_map_unallocated(void) { void *a = NULL; dm_map(&a, DM_PAGE, DM_RW, 0, 1ll << 32, DM_PAGE); }
 static void dm_map_past_range(void) { void *a = NULL; dm_map(&a, 2 * DM_PAGE, DM_RW, 0, dm_unmapped, DM_PAGE); }
@@ -1138,7 +1140,13 @@ int main(void)
         CHECK(died_in_fatal(dm_allocate_unknown_type));
         CHECK(died_in_fatal(dm_allocate_no_variable));
         CHECK(died_in_fatal(dm_map_with_flags));
-        CHECK(died_in_fatal(dm_map_with_hint));
+        /* A free, aligned address hint is where the map goes; one in use or off the alignment stops. */
+        void *hinted = (void *)0xfd00000000;
+        CHECK(dm_map(&hinted, DM_PAGE, DM_RW, 0, first, DM_PAGE) == 0 && hinted == (void *)0xfd00000000);
+        if (a && hinted == (void *)0xfd00000000) CHECK(((volatile unsigned char *)hinted)[0] == 0xa5);
+        dm_in_use = a;
+        CHECK(died_in_fatal(dm_map_hint_in_use));
+        CHECK(died_in_fatal(dm_map_hint_misaligned));
         CHECK(died_in_fatal(dm_map_exec));
         /* GPU access (0x10 read, 0x20 write) is accepted; the CPU bits make the host mapping. */
         void *gpu = NULL;
@@ -1684,6 +1692,14 @@ int main(void)
             rmdir(app0);
             rt_process.app0_dir = NULL;
         }
+    }
+
+    /* sceGnmGetTheTessellationFactorRingBufferBaseAddress: a reserved address the engine can map. */
+    typedef uint64_t (*f_tf_base)(void);
+    const f_tf_base tf_base = (f_tf_base)fn("libSceGnmDriver", "sceGnmGetTheTessellationFactorRingBufferBaseAddress");
+    if (tf_base) {
+        const uint64_t base = tf_base();
+        CHECK(base && base < (1ull << 40) && base % 0x10000 == 0 && tf_base() == base);
     }
 
     if (!failures) puts("syslib: ok");

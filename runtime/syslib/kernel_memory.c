@@ -24,7 +24,7 @@
    host mapping of that range, so two maps of one range see the same bytes, as physical memory
    does. Its size is this runtime's choice (RT_DIRECT_MEMORY_SIZE), not a measured PS4 value. Every
    case whose PS4 answer is not established stops by the function's name instead of guessing: map
-   flags, an address hint, protection beyond CPU and GPU read/write, a range that does not fit, releasing
+   flags, an address hint in use or off the alignment, protection beyond CPU and GPU read/write, a range that does not fit, releasing
    part of an allocation or a mapped one, and the error values. */
 #define _GNU_SOURCE
 #include "runtime/process.h"
@@ -162,7 +162,6 @@ static int32_t map_direct_memory(void **address, uint64_t length, int32_t protec
     static const char name[] = "sceKernelMapDirectMemory";
     if (!address) rt_fatal(name, "no variable for the address: the error value is not established");
     if (flags) rt_fatal(name, "map flags (a fixed address and the others) are not established");
-    if (*address) rt_fatal(name, "an address hint without flags: how the system uses it is not established");
     /* The runtime has no GPU yet: GPU access is accepted and the host mapping takes the CPU bits. */
     if (!protection || (protection & ~(PROT_CPU_READ | PROT_CPU_WRITE | PROT_GPU_READ | PROT_GPU_WRITE)))
         rt_fatal(name, "protection other than CPU and GPU read and write is not established");
@@ -174,16 +173,27 @@ static int32_t map_direct_memory(void **address, uint64_t length, int32_t protec
     pthread_mutex_lock(&pool_lock);
     const int range = range_holding((uint64_t)start, length);
     if (range < 0) rt_fatal(name, "a range that was not allocated: the error value is not established");
-    /* Reserve enough to place an aligned address, then put the range's pages there. */
-    const uint64_t reserve = length + alignment;
-    unsigned char *base = mmap(NULL, reserve, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-    if (base == MAP_FAILED) rt_fatal(name, "the host has no address space for the map");
-    unsigned char *aligned = (unsigned char *)(((uintptr_t)base + alignment - 1) & ~(uintptr_t)(alignment - 1));
     const int host_protection = (protection & PROT_CPU_READ ? PROT_READ : 0) | (protection & PROT_CPU_WRITE ? PROT_WRITE : 0);
-    if (mmap(aligned, length, host_protection, MAP_SHARED | MAP_FIXED, pool(name), (off_t)start) == MAP_FAILED)
-        rt_fatal(name, "the host cannot map the range");
-    if (aligned > base) munmap(base, (size_t)(aligned - base));
-    if (aligned + length < base + reserve) munmap(aligned + length, (size_t)(base + reserve - (aligned + length)));
+    unsigned char *aligned;
+    if (*address) {
+        /* An address hint, as FreeBSD's mmap takes one without MAP_FIXED: the map goes there when the
+           range is free. A hint in use (where the system then maps is not established) and one off
+           the alignment stop by name. */
+        aligned = *address;
+        if ((uintptr_t)aligned & (alignment - 1)) rt_fatal(name, "an address hint off the alignment: the answer is not established");
+        void *const got = mmap(aligned, length, host_protection, MAP_SHARED | MAP_FIXED_NOREPLACE, pool(name), (off_t)start);
+        if (got != aligned) rt_fatal(name, "an address hint in use: where the system then maps is not established");
+    } else {
+        /* Reserve enough to place an aligned address, then put the range's pages there. */
+        const uint64_t reserve = length + alignment;
+        unsigned char *base = mmap(NULL, reserve, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        if (base == MAP_FAILED) rt_fatal(name, "the host has no address space for the map");
+        aligned = (unsigned char *)(((uintptr_t)base + alignment - 1) & ~(uintptr_t)(alignment - 1));
+        if (mmap(aligned, length, host_protection, MAP_SHARED | MAP_FIXED, pool(name), (off_t)start) == MAP_FAILED)
+            rt_fatal(name, "the host cannot map the range");
+        if (aligned > base) munmap(base, (size_t)(aligned - base));
+        if (aligned + length < base + reserve) munmap(aligned + length, (size_t)(base + reserve - (aligned + length)));
+    }
     ranges[range].maps++;
     pthread_mutex_unlock(&pool_lock);
     note_mapping(name, aligned, length, protection);
