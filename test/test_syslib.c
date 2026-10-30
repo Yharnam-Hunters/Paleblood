@@ -151,8 +151,23 @@ static void *cond_signaler(void *unused)
     return NULL;
 }
 
-static void cond_wait_recursive(void) { cond_wait_entry(&cond_shared, &cond_recursive_mutex); }
-static void cond_timedwait_recursive(void) { cond_timedwait_entry(&cond_shared, &cond_recursive_mutex, 1000); }
+/* Takes the recursive mutex only if the main thread's wait released every level it held. */
+static f1 cond_trylock;
+static int cond_recursive_go;
+static void *cond_recursive_signaler(void *unused)
+{
+    (void)unused;
+    for (int i = 0; i < 200000; i++) {
+        if (cond_trylock(&cond_recursive_mutex) == 0) {
+            cond_recursive_go = 1;
+            cond_signal_entry(&cond_shared);
+            cond_unlock(&cond_recursive_mutex);
+            return NULL;
+        }
+        sched_yield();
+    }
+    return NULL;
+}
 static void cond_init_with_attribute(void)
 {
     void *cond = NULL, *attr = &cond; /* a variable holding some object */
@@ -584,12 +599,25 @@ int main(void)
     for (int i = 0; i < 2; i++) pthread_join(waiters[i], NULL);
     CHECK(cond_woken == 2);
 
-    /* What the host cannot do as the system does stops by name: a recursive mutex (released one
-       level instead of all) and a condition attribute object (not established). */
+    /* A recursive mutex held twice: the wait releases both levels (another thread can take the
+       mutex), and when it returns the caller holds both again (libthr _mutex_cv_unlock/_lock). */
     CHECK(ainit(&a) == 0 && settype(&a, 2) == 0 && init(&cond_recursive_mutex, &a, NULL) == 0);
     CHECK(adestroy(&a) == 0);
-    CHECK(died_in_fatal(cond_wait_recursive));
-    CHECK(died_in_fatal(cond_timedwait_recursive));
+    CHECK(cond_wait_entry(&cond_shared, &cond_recursive_mutex) == (int)0x80020001); /* not owned */
+    cond_trylock = trylock;
+    CHECK(lock(&cond_recursive_mutex) == 0 && lock(&cond_recursive_mutex) == 0);
+    for (int round = 0; round < 2; round++) { /* the second round needs the depth the first restored */
+        cond_recursive_go = 0;
+        pthread_t recursive_signaler;
+        if (pthread_create(&recursive_signaler, NULL, cond_recursive_signaler, NULL)) { perror("pthread_create"); return 1; }
+        for (int i = 0; i < 50 && !cond_recursive_go; i++)
+            cond_timedwait_entry(&cond_shared, &cond_recursive_mutex, 100000);
+        pthread_join(recursive_signaler, NULL);
+        CHECK(cond_recursive_go == 1);
+    }
+    CHECK(unlock(&cond_recursive_mutex) == 0 && unlock(&cond_recursive_mutex) == 0);
+    CHECK(unlock(&cond_recursive_mutex) == (int)0x80020001); /* both levels given back, no more */
+    /* A condition attribute object is not established and stops by name. */
     CHECK(died_in_fatal(cond_init_with_attribute));
     CHECK(destroy(&cond_recursive_mutex) == 0);
     void *empty_attr = NULL, *default_cond = NULL;  /* an empty attribute variable: the defaults */

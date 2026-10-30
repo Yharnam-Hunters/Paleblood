@@ -40,6 +40,10 @@ typedef struct {
 typedef struct {
     pthread_mutex_t host;
     int type;
+    /* A recursive mutex's owner and how many times it holds it (0: free), changed only while the
+       host mutex is held, so a condition wait can release every level and take them back. */
+    pthread_t owner;
+    int depth;
 } guest_mutex;
 
 static pthread_mutex_t static_init = PTHREAD_MUTEX_INITIALIZER;
@@ -80,8 +84,24 @@ static int mutex_create(guest_mutex **out, int type, int protocol)
         return bsd_errno(r);
     }
     m->type = type;
+    m->depth = 0;
     *out = m;
     return 0;
+}
+
+/* After the host lock succeeded: one more level held by the caller (recursive mutexes only). */
+static int note_locked(guest_mutex *m, int host_result)
+{
+    if (!host_result && m->type == TYPE_RECURSIVE) {
+        m->owner = pthread_self();
+        m->depth++;
+    }
+    return bsd_errno(host_result);
+}
+
+static int owned_by_caller(const guest_mutex *m)
+{
+    return m->depth > 0 && pthread_equal(m->owner, pthread_self());
 }
 
 static int mutex_init(guest_mutex **mutex, guest_mutexattr **attr)
@@ -115,14 +135,14 @@ static int mutex_lock(guest_mutex **mutex)
 {
     guest_mutex *m;
     const int r = mutex_get(mutex, &m);
-    return r ? r : bsd_errno(pthread_mutex_lock(&m->host));
+    return r ? r : note_locked(m, pthread_mutex_lock(&m->host));
 }
 
 static int mutex_trylock(guest_mutex **mutex)
 {
     guest_mutex *m;
     const int r = mutex_get(mutex, &m);
-    return r ? r : bsd_errno(pthread_mutex_trylock(&m->host));
+    return r ? r : note_locked(m, pthread_mutex_trylock(&m->host));
 }
 
 static int mutex_unlock(guest_mutex **mutex)
@@ -132,6 +152,7 @@ static int mutex_unlock(guest_mutex **mutex)
     /* never locked, so not owned by the caller */
     if (m == MUTEX_INITIALIZER || m == MUTEX_ADAPTIVE_INITIALIZER) return BSD_EPERM;
     if (m == MUTEX_DESTROYED) return BSD_EINVAL;
+    if (m->type == TYPE_RECURSIVE && owned_by_caller(m)) m->depth--; /* the host unlock below succeeds */
     return bsd_errno(pthread_mutex_unlock(&m->host));
 }
 
@@ -261,9 +282,11 @@ static int cond_broadcast(guest_cond **cond)
 
 /* Waits with the mutex, until `deadline` on the monotonic clock when there is one. libthr answers
    EPERM when the caller does not own the mutex, for every type; the host checks that for the
-   error-checking (default) type only. libthr releases a recursive mutex completely for the wait,
-   the host one level only, so a recursive mutex stops by name. */
-static int cond_wait(const char *caller, guest_cond **cond, guest_mutex **mutex, const struct timespec *deadline)
+   error-checking (default) type only. For a recursive mutex libthr saves how many levels the caller
+   holds, releases the mutex completely for the wait and takes every level back afterwards
+   (_mutex_cv_unlock and _mutex_cv_lock, thr_mutex.c); the host's wait releases one level only, so
+   the runtime releases the others itself around it. */
+static int cond_wait(guest_cond **cond, guest_mutex **mutex, const struct timespec *deadline)
 {
     guest_cond *c;
     int r = cond_get(cond, &c);
@@ -271,11 +294,19 @@ static int cond_wait(const char *caller, guest_cond **cond, guest_mutex **mutex,
     if (!mutex || *mutex == MUTEX_DESTROYED) return BSD_EINVAL;
     guest_mutex *m = *mutex;
     if (m == MUTEX_INITIALIZER || m == MUTEX_ADAPTIVE_INITIALIZER) return BSD_EPERM; /* never locked */
-    if (m->type == TYPE_RECURSIVE)
-        rt_fatal(caller, "a recursive mutex: the host would release one level, the system every level");
+    const int recursive = m->type == TYPE_RECURSIVE;
+    if (recursive && !owned_by_caller(m)) return BSD_EPERM;
+    const int levels = recursive ? m->depth : 0;
+    for (int i = 1; i < levels; i++) pthread_mutex_unlock(&m->host); /* all but the one the wait releases */
+    if (recursive) m->depth = 0;
     atomic_fetch_add(&c->waiters, 1);
     r = deadline ? pthread_cond_timedwait(&c->host, &m->host, deadline) : pthread_cond_wait(&c->host, &m->host);
     atomic_fetch_sub(&c->waiters, 1);
+    if (recursive) {
+        for (int i = 1; i < levels; i++) pthread_mutex_lock(&m->host);
+        m->owner = pthread_self();
+        m->depth = levels;
+    }
     return bsd_errno(r);
 }
 
@@ -318,11 +349,11 @@ static int sce_cond_init(guest_cond **c, void **a, const char *name) { (void)nam
 static int sce_cond_destroy(guest_cond **c) { return sce(cond_destroy(c)); }
 static int sce_cond_signal(guest_cond **c) { return sce(cond_signal(c)); }
 static int sce_cond_broadcast(guest_cond **c) { return sce(cond_broadcast(c)); }
-static int sce_cond_wait(guest_cond **c, guest_mutex **m) { return sce(cond_wait("scePthreadCondWait", c, m, NULL)); }
+static int sce_cond_wait(guest_cond **c, guest_mutex **m) { return sce(cond_wait(c, m, NULL)); }
 static int sce_cond_timedwait(guest_cond **c, guest_mutex **m, uint32_t microseconds)
 {
     const struct timespec deadline = deadline_after(microseconds);
-    return sce(cond_wait("scePthreadCondTimedwait", c, m, &deadline));
+    return sce(cond_wait(c, m, &deadline));
 }
 RT_SYSLIB("libkernel", scePthreadCondInit, sce_cond_init);
 RT_SYSLIB("libkernel", scePthreadCondDestroy, sce_cond_destroy);
@@ -335,7 +366,7 @@ RT_SYSLIB("libkernel", scePthreadCondTimedwait, sce_cond_timedwait);
    timespec and the clock it is measured on are not established from evidence yet, so a call stays
    unbound and stops the boot by name. */
 static int posix_cond_init(guest_cond **c, void **a) { return cond_init("pthread_cond_init", c, a); }
-static int posix_cond_wait(guest_cond **c, guest_mutex **m) { return cond_wait("pthread_cond_wait", c, m, NULL); }
+static int posix_cond_wait(guest_cond **c, guest_mutex **m) { return cond_wait(c, m, NULL); }
 RT_SYSLIB("libScePosix", pthread_cond_init, posix_cond_init);
 RT_SYSLIB("libScePosix", pthread_cond_destroy, cond_destroy);
 RT_SYSLIB("libScePosix", pthread_cond_signal, cond_signal);
