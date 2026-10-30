@@ -80,14 +80,43 @@ void *rt_tls_block_create(void)
     return tp;
 }
 
-static guest_thread main_thread;
+/* A thread variable's value fits in 40 bits. The executable's own lock (0x024368c0) records its
+   owner as scePthreadSelf's answer masked with 0xffffffffff and then compares that with the whole
+   answer, so a thread whose object lies above 2^40 never owns a lock it has just taken and waits on
+   itself. The host heap lies above 2^40, so thread objects come from a range the runtime reserves
+   below it, clear of the executable and modules (runtime/boot.c places those from 0x800000000). */
+#define THREAD_OBJECTS_BASE 0xf000000000ull
+enum { THREAD_OBJECT_SLOTS = 4096 };
+
+static guest_thread *thread_objects;
+static uint32_t thread_objects_used;
+static pthread_mutex_t thread_objects_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* A zeroed thread object below 2^40. Objects are never reused: no call ends a thread's object yet. */
+static guest_thread *thread_object_new(const char *caller)
+{
+    pthread_mutex_lock(&thread_objects_lock);
+    if (!thread_objects) {
+        void *const want = (void *)(uintptr_t)THREAD_OBJECTS_BASE;
+        void *const got = mmap(want, THREAD_OBJECT_SLOTS * sizeof(guest_thread), PROT_READ | PROT_WRITE,
+                               MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+        if (got != want) rt_fatal(caller, "the host cannot reserve the thread objects' range below 2^40");
+        thread_objects = got;
+    }
+    if (thread_objects_used == THREAD_OBJECT_SLOTS) rt_fatal(caller, "more threads than the thread objects' range holds");
+    guest_thread *const t = &thread_objects[thread_objects_used++];
+    pthread_mutex_unlock(&thread_objects_lock);
+    return t;
+}
+
 static _Thread_local guest_thread *current;
 
 void rt_thread_register_main(void *stack, uint64_t stack_size)
 {
-    main_thread.stack = stack;
-    main_thread.stack_size = stack_size;
-    current = &main_thread;
+    guest_thread *const t = current ? current : thread_object_new("the main thread");
+    t->stack = stack;
+    t->stack_size = stack_size;
+    current = t;
 }
 
 /* The calling thread's own variable value, under either name; it has no error return (POSIX
@@ -206,8 +235,7 @@ static int create_thread(guest_thread **thread, guest_attr **attr, void *(*entry
     if (!a->has_stack) rt_fatal(fn, "no stack size set: the PS4 default is not established");
     if (a->stack) rt_fatal(fn, "a stack the guest supplies: not supported yet");
     const int detach_state = rt_thread_attr_detach_state((void *const *)attr, fn); /* stops when not set */
-    guest_thread *t = calloc(1, sizeof *t);
-    if (!t) rt_fatal(fn, "the host has no memory for the thread");
+    guest_thread *t = thread_object_new(fn);
     t->stack_size = a->stack_size;
     t->stack = mmap(NULL, t->stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
     if (t->stack == MAP_FAILED) rt_fatal(fn, "the host cannot map the thread's stack");
