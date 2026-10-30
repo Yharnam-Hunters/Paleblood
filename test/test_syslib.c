@@ -421,6 +421,15 @@ typedef int32_t (*f_np_restrict)(const void *);
 static f_np_restrict np_restrict;
 static void np_restrict_null(void) { np_restrict(NULL); }
 
+/* Flexible memory: fresh host memory at an address the runtime picks. */
+typedef int32_t (*f_flex_map)(void **, uint64_t, int32_t, int32_t);
+static f_flex_map flex_map;
+static void flex_no_variable(void) { flex_map(NULL, 0x4000, 3, 0); }
+static void flex_hint(void) { void *a = (void *)0x10000000; flex_map(&a, 0x4000, 3, 0); }
+static void flex_flags(void) { void *a = NULL; flex_map(&a, 0x4000, 3, 0x10); }
+static void flex_partial_page(void) { void *a = NULL; flex_map(&a, 0x1000, 3, 0); }
+static void flex_exec(void) { void *a = NULL; flex_map(&a, 0x4000, 7, 0); }
+
 int main(void)
 {
     /* Unresolved entries are still callable diagnostics, but are not reported as implemented. */
@@ -1106,6 +1115,25 @@ int main(void)
         const uint8_t params[0x20] = {0};
         CHECK(np_restrict(params) == 0);
         CHECK(died_in_fatal(np_restrict_null));
+    }
+
+    /* sceKernelMapFlexibleMemory: zeroed, writable memory; GPU access accepted. */
+    flex_map = (f_flex_map)fn("libkernel", "sceKernelMapFlexibleMemory");
+    if (flex_map) {
+        void *a = NULL, *b = NULL;
+        CHECK(flex_map(&a, 0x8000, 3, 0) == 0 && a);
+        CHECK(flex_map(&b, 0x4000, 0x33, 0) == 0 && b && b != a);
+        if (a) {
+            volatile unsigned char *m = a;
+            CHECK(m[0] == 0 && m[0x7fff] == 0);
+            m[0x7fff] = 7;
+            CHECK(m[0x7fff] == 7);
+        }
+        CHECK(died_in_fatal(flex_no_variable));
+        CHECK(died_in_fatal(flex_hint));
+        CHECK(died_in_fatal(flex_flags));
+        CHECK(died_in_fatal(flex_partial_page));
+        CHECK(died_in_fatal(flex_exec));
     }
 
     if (!failures) puts("syslib: ok");
