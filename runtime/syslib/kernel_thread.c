@@ -50,6 +50,7 @@ typedef struct {
     char name[32];
     uint64_t affinity;      /* the mask scePthreadSetaffinity recorded, 0: none yet */
     pthread_t host;
+    uint32_t signal_mask[4]; /* the guest's blocked signals, a FreeBSD sigset_t (_sigprocmask) */
 } guest_thread;
 
 typedef struct {
@@ -244,6 +245,7 @@ static int create_thread(guest_thread **thread, guest_attr **attr, void *(*entry
     t->entry = entry;
     t->argument = argument;
     if (name) strncpy(t->name, name, sizeof t->name - 1);
+    if (current) memcpy(t->signal_mask, current->signal_mask, sizeof t->signal_mask); /* inherited (POSIX) */
     pthread_attr_t host;
     pthread_attr_init(&host);
     if (detach_state == DETACH_DETACHED) pthread_attr_setdetachstate(&host, PTHREAD_CREATE_DETACHED);
@@ -363,3 +365,37 @@ RT_SYSLIB("libScePosix", pthread_attr_init, attr_init);
 RT_SYSLIB("libScePosix", pthread_attr_destroy, attr_destroy);
 RT_SYSLIB("libScePosix", pthread_attr_setdetachstate, attr_set_detach_state);
 RT_SYSLIB("libScePosix", pthread_attr_setstacksize, posix_attr_set_stack_size);
+
+/* _sigprocmask(int how, const sigset_t *set, sigset_t *old): the calling thread's blocked signals,
+   FreeBSD's sigprocmask(2). A FreeBSD sigset_t is four 32-bit words, signal n at bit n - 1; how is
+   SIG_BLOCK (1), SIG_UNBLOCK (2) or SIG_SETMASK (3), and is ignored when there is no new set;
+   SIGKILL (9) and SIGSTOP (17) can never be blocked and are dropped silently (kern_sigprocmask).
+   The bundled libc's setjmp (libc.elf+0x2fcb0) reads the mask with SIG_BLOCK and no new set, and
+   its longjmp (libc.elf+0x2fd00) puts it back with SIG_SETMASK.
+
+   No signal is delivered to the guest yet, so the runtime keeps each guest thread's mask, a new
+   thread starting with its creator's, and does not apply it to the host thread. Its errors are
+   reported through the guest's errno, which the runtime does not model, so an unknown how stops
+   by name. */
+enum { SIG_HOW_BLOCK = 1, SIG_HOW_UNBLOCK = 2, SIG_HOW_SETMASK = 3 };
+#define BSD_SIGKILL_BIT (1u << (9 - 1))
+#define BSD_SIGSTOP_BIT (1u << (17 - 1))
+
+static int signal_proc_mask(int how, const uint32_t *set, uint32_t *old)
+{
+    static const char fn[] = "_sigprocmask";
+    guest_thread *const self = self_for(fn);
+    if (old) memcpy(old, self->signal_mask, sizeof self->signal_mask);
+    if (!set) return 0;
+    for (int i = 0; i < 4; i++) {
+        switch (how) {
+        case SIG_HOW_BLOCK: self->signal_mask[i] |= set[i]; break;
+        case SIG_HOW_UNBLOCK: self->signal_mask[i] &= ~set[i]; break;
+        case SIG_HOW_SETMASK: self->signal_mask[i] = set[i]; break;
+        default: rt_fatal(fn, "an unknown how: the error is reported through errno, which is not modelled");
+        }
+    }
+    self->signal_mask[0] &= ~(BSD_SIGKILL_BIT | BSD_SIGSTOP_BIT);
+    return 0;
+}
+RT_SYSLIB("libkernel", _sigprocmask, signal_proc_mask);

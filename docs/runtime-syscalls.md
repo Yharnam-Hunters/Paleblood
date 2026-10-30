@@ -621,6 +621,22 @@ keeping the header.
 - a missing name or value;
 - a mode other than the observed 0 (the modes are not public).
 
+## Signal masks (`_sigprocmask`, issue #34)
+
+`_sigprocmask(how, set, old)` is FreeBSD's `sigprocmask(2)`: the calling thread's blocked signals.
+A FreeBSD `sigset_t` is four 32-bit words, with signal n at bit n - 1. `how` is `SIG_BLOCK` (1),
+`SIG_UNBLOCK` (2) or `SIG_SETMASK` (3), and is ignored when there is no new set. SIGKILL and SIGSTOP
+can never be blocked, and are dropped silently.
+
+The bundled libc's `setjmp` (`libc.elf+0x2fcb0`) reads the mask with `SIG_BLOCK` and no new set, and
+its `longjmp` (`libc.elf+0x2fd00`) puts it back with `SIG_SETMASK`.
+
+**What the runtime does.** No signal is delivered to the guest yet. So the runtime keeps each guest
+thread's mask, a new thread starting with its creator's, and does not apply it to the host thread.
+
+**What stops by name:** an unknown `how`. Its error is reported through the guest's `errno`, which
+the runtime does not model.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
