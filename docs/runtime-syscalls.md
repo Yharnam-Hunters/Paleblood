@@ -296,6 +296,45 @@ Measured with a local boot that let the libc affinity probe return (not committe
 calls the executable's heap setup succeeds and the boot reaches `entry`. It stops next at
 `scePthreadRwlockInit`.
 
+## Kernel semaphores (`libkernel`, issue #34)
+
+`eboot` imports `sceKernelCreateSema`, `sceKernelDeleteSema`, `sceKernelWaitSema`,
+`sceKernelSignalSema` and `sceKernelPollSema` (`symbols/imports.csv`). Its own calls are the
+evidence here. They include the audio wrappers at `0x0111ad10`–`0x0111adc0` and the wrappers at
+`0x0084ac20`–`0x0084ac83`:
+
+- **Create:** `(&handle, name, attr, initial, max, NULL)`, with attr 1 or 2, initial 0 or passed
+  through, and max `0xffff`, 1, or passed through.
+- **Wait:** `(handle, 1, NULL)`, with no timeout.
+- **Signal:** `(handle, 1)` or a count passed through.
+- **Delete:** `(handle)`.
+- **Results:** every result is compared with 0.
+
+The signatures, and attr 1 = FIFO and 2 = priority wake order, match the OpenOrbis homebrew SDK
+headers (supporting evidence only).
+
+**What the runtime does.** A semaphore is a runtime object behind the handle. Wait blocks until the
+units are there, and waiters are served in the order they arrived. Signal adds units and wakes the
+waiters.
+
+**What stops by name.** Every case whose PS4 answer is not established stops with the function's
+name:
+- timeouts;
+- a missing semaphore, variable or name;
+- an option parameter, and attributes other than 1 and 2;
+- counts outside `0 <= initial <= max`;
+- signalling past the maximum;
+- a poll that cannot be satisfied now;
+- deleting a semaphore with waiters;
+- a second waiter under priority order (guest thread priorities are not modelled);
+- a wait for more than one unit behind another waiter (whether it may be passed is not
+  established);
+- the error values.
+
+A local boot that let the affinity probe and the rwlocks through (not committed) stopped next at
+`sceKernelCreateSema`. With throwaway answers past it, the next stops were `gettimeofday`, then
+`sceSysmoduleLoadModule` for system module `0x00b4`.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
