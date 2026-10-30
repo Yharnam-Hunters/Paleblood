@@ -458,6 +458,15 @@ typedef int32_t (*f_http_nonblock)(int32_t, int32_t);
 static f_http_nonblock http_nonblock_fn;
 static void http_nonblock_unknown(void) { http_nonblock_fn(999, 1); }
 static void http_nonblock_value(void) { http_nonblock_fn(1, 2); }
+typedef int32_t (*f_http_epoll)(int32_t, void **);
+static f_http_epoll http_epoll_fn;
+static void http_epoll_unknown(void) { void *h = NULL; http_epoll_fn(999, &h); }
+static void http_epoll_no_slot(void) { http_epoll_fn(http_test_context, NULL); }
+typedef int32_t (*f_http_header)(int32_t, const char *, const char *, int32_t);
+static f_http_header http_header_fn;
+static void http_header_unknown(void) { http_header_fn(999, "Accept", "*/*", 0); }
+static void http_header_no_value(void) { http_header_fn(1, "Accept", NULL, 0); }
+static void http_header_mode(void) { http_header_fn(1, "Accept", "*/*", 1); }
 
 int main(void)
 {
@@ -1204,6 +1213,21 @@ int main(void)
                     CHECK(http_nonblock_fn(t1, 1) == 0 && http_nonblock_fn(t1, 0) == 0);
                     CHECK(died_in_fatal(http_nonblock_unknown));
                     CHECK(died_in_fatal(http_nonblock_value));
+                }
+                http_epoll_fn = (f_http_epoll)fn("libSceHttp", "sceHttpCreateEpoll");
+                if (http_epoll_fn) {
+                    void *h1 = NULL, *h2 = NULL;
+                    CHECK(http_epoll_fn(http, &h1) == 0 && h1);
+                    CHECK(http_epoll_fn(http, &h2) == 0 && h2 && h2 != h1);
+                    CHECK(died_in_fatal(http_epoll_unknown));
+                    CHECK(died_in_fatal(http_epoll_no_slot));
+                }
+                http_header_fn = (f_http_header)fn("libSceHttp", "sceHttpAddRequestHeader");
+                if (http_header_fn) {
+                    CHECK(http_header_fn(t1, "Accept", "*/*", 0) == 0);
+                    CHECK(died_in_fatal(http_header_unknown));
+                    CHECK(died_in_fatal(http_header_no_value));
+                    CHECK(died_in_fatal(http_header_mode));
                 }
             }
         }
