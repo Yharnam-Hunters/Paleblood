@@ -498,6 +498,14 @@ person running it chose:
 
 **What stops by name:** a setting nobody gave a value, and a missing variable.
 
+## Content restriction (`sceNpSetContentRestriction`, issue #41)
+
+The executable's only call, at `0x023b704f`, passes a parameter block it built on its stack (an
+age from a table and a pointer to a restriction list), and it discards the result.
+
+The call tells the system which online content the title restricts. The offline runtime offers no
+online content, so there is nothing to record and it answers 0. A missing block stops by name.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
