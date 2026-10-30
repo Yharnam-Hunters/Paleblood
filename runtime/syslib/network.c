@@ -155,3 +155,21 @@ static int32_t http_create_template(int32_t context, const char *user_agent, int
     return template_id;
 }
 RT_SYSLIB("libSceHttp", sceHttpCreateTemplate, http_create_template);
+
+/* sceHttpSetNonblock(int32_t id, int32_t enable): OpenOrbis' Http.h names it without a signature,
+   so the shape comes from the executable's only call (0x013d1d41), which passes the template id it
+   just created and 1, and discards the result (eax is overwritten right after). The runtime records
+   the choice; offline, nothing ever blocks on a network. It answers 0. An id the runtime did not
+   hand out, and a value other than 0 or 1, stop by name. */
+static uint8_t http_template_nonblocking[MAX_HTTP_TEMPLATES + 1];
+
+static int32_t http_set_nonblock(int32_t id, int32_t enable)
+{
+    static const char fn[] = "sceHttpSetNonblock";
+    if (id < 1 || id > atomic_load(&http_templates_created))
+        rt_fatal(fn, "an id the runtime did not hand out: the error value is not established");
+    if (enable != 0 && enable != 1) rt_fatal(fn, "a value other than 0 or 1 is not established");
+    http_template_nonblocking[id] = (uint8_t)enable;
+    return 0;
+}
+RT_SYSLIB("libSceHttp", sceHttpSetNonblock, http_set_nonblock);

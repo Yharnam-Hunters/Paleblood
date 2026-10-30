@@ -454,6 +454,10 @@ static void http_template_unknown_context(void) { http_template_fn(999, "agent",
 static void http_template_no_agent(void) { http_template_fn(http_test_context, NULL, 2, 1); }
 static void http_template_version(void) { http_template_fn(http_test_context, "agent", 3, 1); }
 static void http_template_proxy(void) { http_template_fn(http_test_context, "agent", 2, 0); }
+typedef int32_t (*f_http_nonblock)(int32_t, int32_t);
+static f_http_nonblock http_nonblock_fn;
+static void http_nonblock_unknown(void) { http_nonblock_fn(999, 1); }
+static void http_nonblock_value(void) { http_nonblock_fn(1, 2); }
 
 int main(void)
 {
@@ -1195,6 +1199,12 @@ int main(void)
                 CHECK(died_in_fatal(http_template_no_agent));
                 CHECK(died_in_fatal(http_template_version));
                 CHECK(died_in_fatal(http_template_proxy));
+                http_nonblock_fn = (f_http_nonblock)fn("libSceHttp", "sceHttpSetNonblock");
+                if (http_nonblock_fn) {
+                    CHECK(http_nonblock_fn(t1, 1) == 0 && http_nonblock_fn(t1, 0) == 0);
+                    CHECK(died_in_fatal(http_nonblock_unknown));
+                    CHECK(died_in_fatal(http_nonblock_value));
+                }
             }
         }
         CHECK(net_term_fn() == 0);

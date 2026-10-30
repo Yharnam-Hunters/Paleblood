@@ -573,7 +573,7 @@ back on teardown. So each call answers a context id; offline, a context is only 
 
 **What stops by name:** an id the runtime did not hand out, and a size of 0.
 
-## HTTP templates (`sceHttpCreateTemplate`, issue #41)
+## HTTP templates (`sceHttpCreateTemplate`, `sceHttpSetNonblock`, issue #41)
 
 `sceHttpCreateTemplate(int32_t context, const char *user_agent, int32_t version, int32_t proxy)`,
 as the OpenOrbis homebrew SDK's `Http.h` declares it. Its version list has 1 for HTTP/1.0 and 2
@@ -588,6 +588,11 @@ HTTP call. Offline, a template is only an id.
 - no user agent;
 - a version other than HTTP/1.0 or 1.1;
 - a proxy value other than the observed 1 (its meaning is not public).
+
+`sceHttpSetNonblock(id, enable)` comes next. OpenOrbis names it without a signature, so its shape
+comes from the executable's only call (`0x013d1d41`): the new template id and 1, with the result
+discarded. The runtime records the choice and answers 0; offline, nothing ever blocks on a network.
+An unknown id, and a value other than 0 or 1, stop by name.
 
 ## Implementation rule
 
