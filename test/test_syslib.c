@@ -486,6 +486,9 @@ static void *tc_attr(int with_stack, int with_detach, int detach)
     if (with_detach) ((f2i)fn("libkernel", "scePthreadAttrSetdetachstate"))(&a, detach);
     return a;
 }
+typedef int (*f_attr_affinity)(void **, uint64_t);
+static f_attr_affinity tc_attr_affinity;
+static void attr_affinity_empty(void) { void *a = tc_attr(1, 1, 0); tc_attr_affinity(&a, 0); }
 static void attr_schedparam_out_of_range(void) { void *a = tc_attr(1, 1, 0); const int32_t p = 0x300; tc_attr_schedparam(&a, &p); }
 static void tc_create_no_attr(void) { void *t; tc_create(&t, NULL, tc_entry, NULL, "t"); }
 static void tc_create_no_stack(void) { void *t, *a = tc_attr(0, 1, 0); tc_create(&t, &a, tc_entry, NULL, "t"); }
@@ -1326,6 +1329,13 @@ int main(void)
         const int32_t p = 0x2ff;
         CHECK(tc_attr_schedparam(&empty, &p) == (int)0x80020016);
         CHECK(died_in_fatal(attr_schedparam_out_of_range));
+    }
+    tc_attr_affinity = (f_attr_affinity)fn("libkernel", "scePthreadAttrSetaffinity");
+    if (tc_attr_affinity && tc_create) {
+        void *empty = NULL, *a = tc_attr(1, 1, 0);
+        CHECK(tc_attr_affinity(&empty, 0x3f) == (int)0x80020016);
+        CHECK(tc_attr_affinity(&a, 0x3f) == 0);
+        CHECK(died_in_fatal(attr_affinity_empty));
     }
     if (tc_create && tc_affinity && tc_self) {
         void *thread = NULL, *attr = tc_attr(1, 1, 0);

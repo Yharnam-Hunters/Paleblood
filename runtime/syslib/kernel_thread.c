@@ -64,6 +64,7 @@ typedef struct {
     int sched_policy;
     int has_sched_priority;
     int32_t sched_priority;
+    uint64_t affinity;      /* the CPU mask scePthreadAttrSetaffinity recorded, 0: none */
 } guest_attr;
 
 static int sce(int bsd) { return bsd ? SCE_KERNEL_ERROR(bsd) : 0; }
@@ -271,6 +272,7 @@ static int create_thread(guest_thread **thread, guest_attr **attr, void *(*entry
     t->entry = entry;
     t->argument = argument;
     if (name) strncpy(t->name, name, sizeof t->name - 1);
+    t->affinity = a->affinity; /* the attribute's CPU mask, if it has one */
     if (current) memcpy(t->signal_mask, current->signal_mask, sizeof t->signal_mask); /* inherited (POSIX) */
     t->priority = current ? current->priority : SCE_KERNEL_PRIO_FIFO_DEFAULT; /* inherited (libthr default) */
     pthread_attr_t host;
@@ -476,3 +478,17 @@ static int sce_attr_set_sched_param(guest_attr **attr, const int32_t *param)
     return 0;
 }
 RT_SYSLIB("libkernel", scePthreadAttrSetschedparam, sce_attr_set_sched_param);
+
+/* scePthreadAttrSetaffinity(attr, uint64_t mask): the CPU set of a thread created with the
+   attribute (OpenOrbis' libkernel.h declares it with a 64-bit mask). The executable's thread wrapper
+   (0x0111ab0e) passes the mask its caller chose. As for scePthreadSetaffinity, the runtime records
+   the mask (the created thread takes it) and the host schedules; an empty mask stops by name and a
+   variable holding no attribute is EINVAL. */
+static int sce_attr_set_affinity(guest_attr **attr, uint64_t mask)
+{
+    if (!attr || !*attr) return SCE_KERNEL_ERROR(BSD_EINVAL);
+    if (!mask) rt_fatal("scePthreadAttrSetaffinity", "an empty CPU mask: the answer is not established");
+    (*attr)->affinity = mask;
+    return 0;
+}
+RT_SYSLIB("libkernel", scePthreadAttrSetaffinity, sce_attr_set_affinity);
