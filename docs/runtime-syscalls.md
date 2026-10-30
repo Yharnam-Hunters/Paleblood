@@ -866,6 +866,25 @@ guest asked for, GPU bits included, and answers that.
 - an address outside those mappings (other memory is not tracked yet);
 - a missing variable.
 
+## GNM: the tessellation factor ring (`sceGnmGetTheTessellationFactorRingBufferBaseAddress`, issue #39)
+
+Graphics are rebuilt at the engine level (issue #39), so the GNM calls answer what the engine
+expects back; the GPU is not emulated.
+
+The OpenOrbis homebrew SDK's `GnmDriver.h` only names this call. The executable's only call
+(`0x02ad3fb4`) takes a 64-bit address and maps 128 KiB of direct memory there, for the GPU's
+tessellation factors: `sceKernelMapDirectMemory` with that address as a hint, protection `0x33`,
+alignment `0x10000`.
+
+**What the runtime does.** The PS4 answers a fixed address of its own. The runtime answers one it
+reserves for this, `0xfe00000000`: below 2^40, and clear of the executable, modules and thread
+objects. It is the runtime's choice, not the PS4's value: the engine only maps it and hands it back
+to the GPU calls.
+
+For this, `sceKernelMapDirectMemory` now takes an address hint as FreeBSD's `mmap` does without
+`MAP_FIXED`: the map goes there when the range is free. A hint in use (where the system then maps
+is not established) and one off the alignment stop by name.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
