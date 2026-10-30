@@ -577,6 +577,8 @@ int main(void)
     const f_equal equal = (f_equal)fn("libkernel", "scePthreadEqual");
     unsigned char not_a_thread;
     CHECK(self && equal(self, self) != 0);
+    /* The executable keeps a thread variable's value in 40 bits (its lock at 0x024368c0). */
+    CHECK((uintptr_t)self < (1ull << 40));
     CHECK(equal(self, &not_a_thread) == 0 && equal(&not_a_thread, self) == 0);
     CHECK(equal(self, NULL) == 0);
 
@@ -1040,6 +1042,7 @@ int main(void)
         void *thread = NULL, *attr = tc_attr(1, 1, 0);
         int marker = 0;
         CHECK(tc_create(&thread, &attr, tc_entry, &marker, "worker") == 0 && thread);
+        CHECK((uintptr_t)thread < (1ull << 40));
         for (int i = 0; i < 100000 && !atomic_load(&tc_done); i++) sched_yield();
         CHECK(atomic_load(&tc_done) == 1);
         CHECK(tc_seen_argument == &marker && tc_seen_self == thread && tc_seen_self != tc_self());

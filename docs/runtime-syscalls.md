@@ -509,6 +509,15 @@ age from a table and a pointer to a restriction list), and it discards the resul
 The call tells the system which online content the title restricts. The offline runtime offers no
 online content, so there is nothing to record and it answers 0. A missing block stops by name.
 
+## Thread variables fit in 40 bits (issue #34)
+
+The executable keeps a thread variable's value in 40 bits. Its lock at `0x024368c0` records the
+owner as `scePthreadSelf()` masked with `0xffffffffff`, then compares that with the whole answer.
+
+A thread object above 2^40 would never own a lock it had just taken, and would wait on itself
+(a local boot hung there). The host heap lies above 2^40, so the runtime allocates thread objects,
+the main thread's included, from a range it reserves below it, at `0xf000000000`.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
