@@ -469,6 +469,18 @@ The executable initializes the service twice:
 A local boot (affinity probe and rwlocks let through, not committed) stops next at
 `sceCommonDialogInitialize`.
 
+## The common dialog's initialize (`libSceCommonDialog`, issue #40)
+
+`sceCommonDialogInitialize` is the only call `eboot` imports from `libSceCommonDialog`. It takes
+no arguments (OpenOrbis `CommonDialog.h`, as supporting evidence).
+
+The executable calls it twice:
+- at `0x024e1e8c`, logging a failure;
+- at `0x02023fbb`, accepting success or exactly `0x80b80002`.
+
+So the first call succeeds and a repeat answers `0x80b80002`, the "already initialized" code. No
+dialog is shown: each dialog library's own calls do that, and none is provided yet.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
