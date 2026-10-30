@@ -719,7 +719,7 @@ belongs to the batch and instance calls, which stop by name until they are imple
 - a context the runtime did not hand out;
 - registering a module twice.
 
-## Audio output start-up (`sceAudioOutInit`, `sceAudioOutOpen`, `sceAudioOutSetVolume`, issue #37)
+## Audio output (`sceAudioOutInit`, `sceAudioOutOpen`, `sceAudioOutSetVolume`, `sceAudioOutOutput`, issue #37)
 
 The OpenOrbis homebrew SDK's `AudioOut.h` declares `int32_t sceAudioOutInit(void)` and
 `int32_t sceAudioOutOpen(user, port type, index, length, sample rate, param)`. Its `_types`
@@ -755,6 +755,20 @@ The executable's only call (`0x0111b6d6`) passes its new port, flag `0xff` and e
 - a flag naming a channel the port does not have;
 - a missing array;
 - a volume outside 0–32768.
+
+`int32_t sceAudioOutOutput(handle, const void *samples)`, as the SDK declares it, hands a port
+sound. The executable's audio thread (`0x0111b93c`) hands its port one block at a time (`length`
+samples for every channel). It advances its ring buffer when the result is not negative, and loops
+with no wait of its own. So the call itself paces the thread: it returns once the port has room for
+the next block.
+
+**What the runtime does.** It plays nothing yet.
+- Each port takes one block per `length / rate` seconds (256 samples at 48000 Hz: 5.33 ms).
+- A call waits until the block before it would have finished playing, then answers 0 (the caller
+  only checks the sign).
+- A port that falls behind starts again from now.
+
+**What stops by name:** a missing block, and a handle the runtime did not hand out.
 
 ## Attribute priority and CPU mask (`scePthreadAttrSetschedparam`, `scePthreadAttrSetaffinity`, issue #34)
 

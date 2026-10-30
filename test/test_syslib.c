@@ -594,6 +594,9 @@ static int32_t ao_stereo_port;
 static const int32_t ao_unity[8] = {32768, 32768, 32768, 32768, 32768, 32768, 32768, 32768};
 static void ao_volume_extra_channel(void) { ao_volume_fn(ao_stereo_port, 0x7, ao_unity); }
 static void ao_volume_unknown_port(void) { ao_volume_fn(99, 0x3, ao_unity); }
+typedef int32_t (*f_ao_output)(int32_t, const void *);
+static f_ao_output ao_output_fn;
+static void ao_output_no_samples(void) { ao_output_fn(1, NULL); }
 static void ao_volume_too_loud(void) { const int32_t v[8] = {40000}; ao_volume_fn(ao_stereo_port, 0x1, v); }
 
 int main(void)
@@ -1562,6 +1565,20 @@ int main(void)
             CHECK(died_in_fatal(ao_volume_extra_channel));
             CHECK(died_in_fatal(ao_volume_unknown_port));
             CHECK(died_in_fatal(ao_volume_too_loud));
+        }
+        /* sceAudioOutOutput paces the caller: 20 blocks of 256 samples at 48 kHz take ~107 ms. */
+        const f_ao_output ao_output = (f_ao_output)fn("libSceAudioOut", "sceAudioOutOutput");
+        if (ao_output) {
+            static float block[256 * 8];
+            const int32_t port = ao_open_fn(0xff, 0, 0, 256, 48000, 5);
+            CHECK(ao_output(port, block) == 0); /* an idle port takes the first block at once */
+            struct timespec start;
+            clock_gettime(CLOCK_MONOTONIC, &start);
+            for (int i = 0; i < 20; i++) CHECK(ao_output(port, block) == 0);
+            const long elapsed = elapsed_us(&start);
+            CHECK(elapsed >= 100000 && elapsed < 300000);
+            ao_output_fn = ao_output;
+            CHECK(died_in_fatal(ao_output_no_samples));
         }
     }
 
