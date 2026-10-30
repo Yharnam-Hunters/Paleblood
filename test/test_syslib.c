@@ -1334,6 +1334,14 @@ int main(void)
         CHECK(died_in_fatal(clock_unknown));
         CHECK(died_in_fatal(clock_no_timespec));
     }
+    /* sceKernelClockGettime: the same clocks; errors as SCE codes (EINVAL, EFAULT). */
+    const f_clock_gettime sce_clock = (f_clock_gettime)fn("libkernel", "sceKernelClockGettime");
+    if (sce_clock) {
+        int64_t mono[2] = {-1, -1};
+        CHECK(sce_clock(4, mono) == 0 && mono[0] >= 0 && mono[1] >= 0 && mono[1] < 1000000000);
+        CHECK(sce_clock(1, mono) == (int)0x80020016);
+        CHECK(sce_clock(4, NULL) == (int)0x8002000e);
+    }
 
     /* sceKernelGetProcessTime: microseconds since the process started, never going back. */
     const f_u64 process_time = (f_u64)fn("libkernel", "sceKernelGetProcessTime");

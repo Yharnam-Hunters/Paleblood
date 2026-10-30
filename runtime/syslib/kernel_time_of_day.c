@@ -59,29 +59,46 @@ static int32_t sce_gettimeofday(guest_timeval *tv)
    answers CLOCK_SECOND with the wall clock's whole seconds and 0 nanoseconds (kern_clock_gettime).
    The runtime answers the clocks whose meaning FreeBSD fixes and the host has: CLOCK_REALTIME (0)
    and CLOCK_SECOND from the host's wall clock, CLOCK_MONOTONIC (4) from the host's monotonic clock.
-   Other clocks and a missing timespec stop by name: their errors go through errno, which the runtime
-   does not model. */
+   FreeBSD answers another clock with EINVAL and a timespec it cannot write with EFAULT.
+
+   sceKernelClockGettime(id, tp) is the same call under its SCE name, which returns 0x80020000 plus
+   the error number; the executable's call (0x0111a815) asks for clock 4 and treats anything but 0
+   as failure. The POSIX name reports errors through errno, which the runtime does not model, so
+   its errors stop by name. */
 enum { BSD_CLOCK_REALTIME = 0, BSD_CLOCK_MONOTONIC = 4, BSD_CLOCK_SECOND = 13 };
+enum { BSD_EFAULT = 14, BSD_EINVAL = 22 };
 
 typedef struct {
     int64_t seconds;
     int64_t nanoseconds;
 } guest_timespec;
 
-static int clock_get_time(int32_t id, guest_timespec *tp)
+/* 0, or the FreeBSD error number. */
+static int read_clock(int32_t id, guest_timespec *tp)
 {
-    static const char fn[] = "clock_gettime";
-    if (!tp) rt_fatal(fn, "no timespec: the error goes through errno, which is not modelled");
     struct timespec ts;
     switch (id) {
     case BSD_CLOCK_REALTIME:
     case BSD_CLOCK_SECOND: clock_gettime(CLOCK_REALTIME, &ts); break;
     case BSD_CLOCK_MONOTONIC: clock_gettime(CLOCK_MONOTONIC, &ts); break;
-    default: rt_fatal(fn, "a clock other than CLOCK_REALTIME, CLOCK_MONOTONIC or CLOCK_SECOND is not implemented");
+    default: return BSD_EINVAL;
     }
+    if (!tp) return BSD_EFAULT;
     tp->seconds = ts.tv_sec;
     tp->nanoseconds = id == BSD_CLOCK_SECOND ? 0 : ts.tv_nsec;
     return 0;
+}
+
+static int posix_clock_gettime(int32_t id, guest_timespec *tp)
+{
+    if (read_clock(id, tp)) rt_fatal("clock_gettime", "an unknown clock or no timespec: errno is not modelled");
+    return 0;
+}
+
+static int32_t sce_clock_gettime(int32_t id, guest_timespec *tp)
+{
+    const int error = read_clock(id, tp);
+    return error ? (int32_t)(0x80020000u + (unsigned)error) : 0;
 }
 
 /* uint64_t sceKernelGetProcessTime(void), as the OpenOrbis homebrew SDK's libkernel.h declares it:
@@ -107,5 +124,6 @@ static uint64_t get_process_time(void)
 RT_SYSLIB("libScePosix", gettimeofday, posix_gettimeofday);
 RT_SYSLIB("libkernel", gettimeofday, posix_gettimeofday);
 RT_SYSLIB("libkernel", sceKernelGettimeofday, sce_gettimeofday);
-RT_SYSLIB("libkernel", clock_gettime, clock_get_time);
+RT_SYSLIB("libkernel", clock_gettime, posix_clock_gettime);
+RT_SYSLIB("libkernel", sceKernelClockGettime, sce_clock_gettime);
 RT_SYSLIB("libkernel", sceKernelGetProcessTime, get_process_time);
