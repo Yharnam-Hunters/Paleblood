@@ -333,6 +333,27 @@ static void ac_init_boot_param_not_declared(void)
     rt_process.app_boot_param_unread = 0;
     ac_init(init, boot);
 }
+/* POSIX names of the condition variable calls: errno values, the same objects as the SCE names. */
+typedef int (*f_pc_init)(void **, void **);
+typedef int (*f_pc_one)(void **);
+typedef int (*f_pc_wait)(void **, void **);
+static f_pc_init pc_init;
+static f_pc_one pc_signal;
+static f_pc_wait pc_wait;
+static void *pc_cond, *pc_mutex;
+static int pc_go, pc_woken;
+static int (*pc_lock)(void **), (*pc_unlock)(void **);
+static void *pc_waiter(void *unused)
+{
+    (void)unused;
+    pc_lock(&pc_mutex);
+    int r = 0;
+    while (!pc_go && !r) r = pc_wait(&pc_cond, &pc_mutex);
+    if (!r) pc_woken = 1;
+    pc_unlock(&pc_mutex);
+    return NULL;
+}
+static void pc_init_with_attribute(void) { void *c = NULL, *attr = &c; pc_init(&c, &attr); }
 
 int main(void)
 {
@@ -887,6 +908,38 @@ int main(void)
     }
     CHECK(is_implemented("libSceAppContent", "sceAppContentInitialize") &&
           is_implemented("libSceAppContent", "sceAppContentAppParamGetInt"));
+    /* libScePosix pthread_cond_*: errno values; pthread_cond_timedwait stays unbound. */
+    pc_init = (f_pc_init)fn("libScePosix", "pthread_cond_init");
+    const f_pc_one pc_destroy = (f_pc_one)fn("libScePosix", "pthread_cond_destroy");
+    pc_signal = (f_pc_one)fn("libScePosix", "pthread_cond_signal");
+    const f_pc_one pc_broadcast = (f_pc_one)fn("libScePosix", "pthread_cond_broadcast");
+    pc_wait = (f_pc_wait)fn("libScePosix", "pthread_cond_wait");
+    const f_pc_init pm_init = (f_pc_init)fn("libScePosix", "pthread_mutex_init");
+    pc_lock = (int (*)(void **))fn("libScePosix", "pthread_mutex_lock");
+    pc_unlock = (int (*)(void **))fn("libScePosix", "pthread_mutex_unlock");
+    const f1 sce_cond_destroy = (f1)fn("libkernel", "scePthreadCondDestroy");
+    if (pc_init && pc_destroy && pc_signal && pc_broadcast && pc_wait && pm_init && pc_lock && pc_unlock && sce_cond_destroy) {
+        void *c = NULL;
+        CHECK(pc_init(&c, NULL) == 0 && c);
+        CHECK(pc_broadcast(&c) == 0 && pc_signal(&c) == 0);
+        CHECK(pc_destroy(&c) == 0);
+        CHECK(pc_destroy(&c) == 22);                  /* EINVAL itself under the POSIX name */
+        CHECK(sce_cond_destroy(&c) == (int)0x80020016u); /* and as an SCE code under the SCE name */
+        CHECK(pc_init(&pc_cond, NULL) == 0 && pm_init(&pc_mutex, NULL) == 0);
+        pthread_t t;
+        pthread_create(&t, NULL, pc_waiter, NULL);
+        for (int i = 0; i < 200; i++) sched_yield();
+        CHECK(pc_lock(&pc_mutex) == 0);
+        pc_go = 1;
+        CHECK(pc_signal(&pc_cond) == 0);
+        CHECK(pc_unlock(&pc_mutex) == 0);
+        pthread_join(t, NULL);
+        CHECK(pc_woken == 1);
+        CHECK(died_in_fatal(pc_init_with_attribute));
+    }
+    CHECK(is_implemented("libScePosix", "pthread_cond_init") && is_implemented("libScePosix", "pthread_cond_wait") &&
+          is_implemented("libScePosix", "pthread_cond_signal") && is_implemented("libScePosix", "pthread_cond_broadcast") &&
+          is_implemented("libScePosix", "pthread_cond_destroy") && !is_implemented("libScePosix", "pthread_cond_timedwait"));
 
     if (!failures) puts("syslib: ok");
     return failures != 0;
