@@ -74,6 +74,7 @@ typedef struct {
     /* The import running now (between its entry and the return pad). */
     int in_import;
     uint64_t import_return;
+    uint64_t import_rsp;                /* rsp at the import's entry: its return slot */
     uint64_t snap_ptr[6];
     size_t snap_len[6];
     uint8_t *snap;                     /* 6 * SNAPSHOT bytes */
@@ -359,7 +360,9 @@ static int note(trace_state *t, uint64_t addr, uint64_t n, int write, int *input
 static void step(trace_state *t, ucontext_t *uc);
 
 /* Native code reached through an import's slot: snapshot what each pointer argument points at,
-   send the return to the pad, and let the import run untraced. */
+   send the return to the pad, and let the import run untraced. Any argument register may hold a
+   stale pointer, so only bytes above the return slot are compared: below it are the import's own
+   frames (and the trap handler's), which the caller cannot see once the import returns. */
 static int import_enter(trace_state *t, ucontext_t *uc, const import_target *imp)
 {
     greg_t *g = uc->uc_mcontext.gregs;
@@ -376,6 +379,7 @@ static int import_enter(trace_state *t, ucontext_t *uc, const import_target *imp
     if (read_self(t, rsp, &ret, 8)) return -1;
     t->calls[t->ncalls] = (rt_trace_import_call){imp->name, 0, t->nwrites, 0};
     t->import_return = ret;
+    t->import_rsp = rsp;
     *(uint64_t *)(uintptr_t)rsp = (uint64_t)(uintptr_t)return_pad;
     t->in_import = 1;
     g[REG_EFL] &= ~(greg_t)TRAP_FLAG;
@@ -394,7 +398,11 @@ static void import_return(trace_state *t, ucontext_t *uc)
         if (!t->snap_len[i]) continue;
         if (read_self(t, t->snap_ptr[i], now, t->snap_len[i])) continue;
         const uint8_t *before = t->snap + i * SNAPSHOT;
-        for (size_t off = 0; off < t->snap_len[i];) {
+        const uint64_t visible = t->import_rsp + 8;  /* above the return slot */
+        size_t off = 0;
+        if (t->snap_ptr[i] < visible)
+            off = visible - t->snap_ptr[i] < t->snap_len[i] ? (size_t)(visible - t->snap_ptr[i]) : t->snap_len[i];
+        while (off < t->snap_len[i]) {
             if (now[off] == before[off]) { off++; continue; }
             size_t end = off;
             while (end < t->snap_len[i] && now[end] != before[end]) end++;

@@ -102,7 +102,10 @@ loaded from the slot), the call runs natively and is recorded instead of ending 
 tracer snapshots up to 4096 bytes behind each argument register, sends the import's return to a
 one-byte `int3` pad, and lets it run untraced. At the pad it records the return value and every byte
 that changed behind each pointer argument, notes those bytes as written (later reads of them are not
-inputs: the case's script writes them), puts the real return address back and resumes tracing. The
+inputs: the case's script writes them), puts the real return address back and resumes tracing. Only
+bytes above the return slot are compared: an unused argument register can hold a stale pointer below
+the stack, where the import's own frames and the trap handler write, and none of that is visible to
+the caller once the import returns. The
 case scripts each call in order: `{"name", "argc": 0, "ret", "writes": [{"arg", "offset", "bytes"}]}`.
 Reads of an import's slot are never inputs, since the verifier binds its own stub there.
 

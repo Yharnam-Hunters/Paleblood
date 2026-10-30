@@ -92,11 +92,14 @@ increment:
     ret
 
 /* 0x2c0: int32_t use_import(int32_t *out) { return fill(out, 7) + *out; } where fill is an
-   import, called through a thunk and its slot as executables call system functions. */
+   import, called through a thunk and its slot as executables call system functions. rdx is left
+   pointing below the stack, as compiled code often leaves an unused argument register: what the
+   import's own frames do there is not something it wrote for the caller. */
     .org 0x2c0
     push %rbx
     mov %rdi, %rbx
     mov $7, %esi
+    lea -512(%rsp), %rdx
     call import_thunk
     add (%rbx), %eax
     pop %rbx
