@@ -524,6 +524,10 @@ static void flex_no_variable(void) { flex_map(NULL, 0x4000, 3, 0); }
 static void flex_hint(void) { void *a = (void *)0x10000000; flex_map(&a, 0x4000, 3, 0); }
 static void flex_flags(void) { void *a = NULL; flex_map(&a, 0x4000, 3, 0x10); }
 static void flex_partial_page(void) { void *a = NULL; flex_map(&a, 0x1000, 3, 0); }
+typedef int32_t (*f_qmp_fn)(const void *, void **, void **, int32_t *);
+static f_qmp_fn qmp_fn;
+static void qmp_unmapped(void) { int32_t p; static char not_mapped; qmp_fn(&not_mapped, NULL, NULL, &p); }
+static void qmp_with_end(void) { int32_t p; void *end; static char x; qmp_fn(&x, NULL, &end, &p); }
 static void flex_exec(void) { void *a = NULL; flex_map(&a, 0x4000, 7, 0); }
 
 /* libSceNet start-up: initialize once, a repeat answers 0x80410110; pools are ids. */
@@ -1442,6 +1446,17 @@ int main(void)
         CHECK(died_in_fatal(flex_flags));
         CHECK(died_in_fatal(flex_partial_page));
         CHECK(died_in_fatal(flex_exec));
+        /* sceKernelQueryMemoryProtection: the protection asked for, GPU bits included. */
+        typedef int32_t (*f_qmp)(const void *, void **, void **, int32_t *);
+        const f_qmp qmp = (f_qmp)fn("libkernel", "sceKernelQueryMemoryProtection");
+        if (qmp && a && b) {
+            int32_t prot = -1;
+            CHECK(qmp((char *)a + 0x7fff, NULL, NULL, &prot) == 0 && prot == 3);
+            CHECK(qmp(b, NULL, NULL, &prot) == 0 && prot == 0x33);
+            qmp_fn = qmp;
+            CHECK(died_in_fatal(qmp_unmapped));
+            CHECK(died_in_fatal(qmp_with_end));
+        }
     }
 
     /* sceNetInit / sceNetTerm / sceNetPoolCreate. */

@@ -134,6 +134,28 @@ static int range_holding(uint64_t start, uint64_t length)
     return -1;
 }
 
+/* The guest mappings the runtime made (direct and flexible memory), with the protection the guest
+   asked for, GPU bits included, for sceKernelQueryMemoryProtection. Neither kind is ever unmapped
+   yet, so the list only grows. */
+typedef struct {
+    uintptr_t start;
+    uint64_t length;
+    int32_t protection;
+} guest_mapping;
+
+enum { MAX_MAPPINGS = 4096 };
+static pthread_mutex_t mappings_lock = PTHREAD_MUTEX_INITIALIZER;
+static guest_mapping mappings[MAX_MAPPINGS];
+static int mapping_count;
+
+static void note_mapping(const char *caller, void *start, uint64_t length, int32_t protection)
+{
+    pthread_mutex_lock(&mappings_lock);
+    if (mapping_count == MAX_MAPPINGS) rt_fatal(caller, "more mappings than the runtime records");
+    mappings[mapping_count++] = (guest_mapping){(uintptr_t)start, length, protection};
+    pthread_mutex_unlock(&mappings_lock);
+}
+
 static int32_t map_direct_memory(void **address, uint64_t length, int32_t protection, int32_t flags, int64_t start,
                                  uint64_t alignment)
 {
@@ -164,6 +186,7 @@ static int32_t map_direct_memory(void **address, uint64_t length, int32_t protec
     if (aligned + length < base + reserve) munmap(aligned + length, (size_t)(base + reserve - (aligned + length)));
     ranges[range].maps++;
     pthread_mutex_unlock(&pool_lock);
+    note_mapping(name, aligned, length, protection);
     *address = aligned;
     return 0;
 }
@@ -206,7 +229,32 @@ static int32_t map_flexible_memory(void **address, uint64_t length, int32_t prot
     const int host_protection = (protection & PROT_CPU_READ ? PROT_READ : 0) | (protection & PROT_CPU_WRITE ? PROT_WRITE : 0);
     void *const mapped = mmap(NULL, length, host_protection, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (mapped == MAP_FAILED) rt_fatal(name, "the host cannot map the memory");
+    note_mapping(name, mapped, length, protection);
     *address = mapped;
+    return 0;
+}
+
+/* sceKernelQueryMemoryProtection(void *address, void **start, void **end, int32_t *protection), as
+   the OpenOrbis homebrew SDK's libkernel.h declares it: the protection of the mapping that holds
+   an address. The executable's helpers (0x02abad98, 0x02abadf8) pass no start or end and test the
+   protection's CPU read bit (1) and GPU read bit (0x10) of memory it mapped. The runtime answers
+   the protection asked for when it made the mapping. A start or end (whether end is inclusive is
+   not established), an address outside the mappings it made (other memory is not tracked yet) and
+   a missing variable stop by name. */
+static int32_t query_memory_protection(const void *address, void **start, void **end, int32_t *protection)
+{
+    static const char name[] = "sceKernelQueryMemoryProtection";
+    if (start || end) rt_fatal(name, "a start or end: whether end is inclusive is not established");
+    if (!protection) rt_fatal(name, "no variable for the protection: the error value is not established");
+    const uintptr_t at = (uintptr_t)address;
+    pthread_mutex_lock(&mappings_lock);
+    int found = -1;
+    for (int i = 0; i < mapping_count; i++)
+        if (at >= mappings[i].start && at - mappings[i].start < mappings[i].length) found = i;
+    const int32_t answer = found >= 0 ? mappings[found].protection : 0;
+    pthread_mutex_unlock(&mappings_lock);
+    if (found < 0) rt_fatal(name, "an address outside the runtime's direct and flexible mappings: not tracked yet");
+    *protection = answer;
     return 0;
 }
 
@@ -215,3 +263,4 @@ RT_SYSLIB("libkernel", sceKernelAllocateDirectMemory, allocate_direct_memory);
 RT_SYSLIB("libkernel", sceKernelMapDirectMemory, map_direct_memory);
 RT_SYSLIB("libkernel", sceKernelReleaseDirectMemory, release_direct_memory);
 RT_SYSLIB("libkernel", sceKernelMapFlexibleMemory, map_flexible_memory);
+RT_SYSLIB("libkernel", sceKernelQueryMemoryProtection, query_memory_protection);

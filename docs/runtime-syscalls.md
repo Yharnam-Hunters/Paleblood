@@ -849,6 +849,23 @@ flags 0 (`O_RDONLY`) and mode 0555.
 - **Seeking.** A whence other than 0, 1 or 2 (`SEEK_SET`, `SEEK_CUR`, `SEEK_END`, the same on
   FreeBSD and Linux), and a seek before the start, are `EINVAL`.
 
+## Memory protection queries (`sceKernelQueryMemoryProtection`, issue #34)
+
+`sceKernelQueryMemoryProtection(void *address, void **start, void **end, int32_t *protection)`, as
+the OpenOrbis homebrew SDK's `libkernel.h` declares it, gives the protection of the mapping that
+holds an address.
+
+**What the executable does.** Its helpers (`0x02abad98`, `0x02abadf8`) pass no start or end. They
+test the protection's CPU read bit (1) and GPU read bit (`0x10`), on memory the game mapped itself.
+
+**What the runtime does.** It records every direct and flexible mapping with the protection the
+guest asked for, GPU bits included, and answers that.
+
+**What stops by name:**
+- a start or end (whether end is inclusive is not established);
+- an address outside those mappings (other memory is not tracked yet);
+- a missing variable.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
