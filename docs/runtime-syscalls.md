@@ -637,6 +637,34 @@ thread's mask, a new thread starting with its creator's, and does not apply it t
 **What stops by name:** an unknown `how`. Its error is reported through the guest's `errno`, which
 the runtime does not model.
 
+## Thread priorities (`scePthreadGetprio`, `scePthreadSetprio`, issue #34)
+
+`scePthreadGetprio(thread, int32_t *priority)` and `scePthreadSetprio(thread, priority)`, as the
+OpenOrbis homebrew SDK's `libkernel.h` declares them.
+
+**What the executable does.** Its only reader (`0x02a3b59d`) reads the current priority before
+choosing a new one from a class. It sets priorities from 256 (`0x100`) to 767 (`0x2ff`), at
+`0x02a3b63d` and `0x0111ab46`.
+
+**Where a thread's priority comes from:**
+- **The main thread.** An executable may declare its main thread's settings in its process
+  parameters (`sceUserMainThreadPriority` and the like, which homebrew titles define). Without
+  them the main thread runs at `SCE_KERNEL_PRIO_FIFO_DEFAULT`, 700 (libretro's public
+  `ps4_defines.h`). The executable passes the same 700 (`0x2bc`) as a priority to
+  `sceUserServiceInitialize`.
+- **This executable's block** holds no main thread settings: after relocation only the C library's
+  parameter pointer (`+0x38`) is set, and `+0x18` to `+0x37` are empty.
+- **Created threads.** A thread created without explicit scheduling inherits its creator's
+  priority (FreeBSD libthr's default attribute, `PTHREAD_INHERIT_SCHED`). The executable sets none.
+
+**What the runtime does.** It records priorities. The host schedules the threads, so priorities
+change nothing else.
+
+**What stops by name:**
+- main thread settings in the process parameters (which slot is the priority is not established);
+- a priority outside 256–767;
+- a missing thread or variable.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
