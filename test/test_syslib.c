@@ -267,6 +267,32 @@ static void rwlock_init_with_attribute(void)
     rwlock_init(&lock, &attr, "lock");
 }
 
+/* Direct memory: the calls as the guest makes them. The stops are file-scope so a child can make
+   them on a range the parent allocated before forking. */
+typedef size_t (*f_dm_size)(void);
+typedef int32_t (*f_dm_allocate)(int64_t, int64_t, uint64_t, uint64_t, int32_t, int64_t *);
+typedef int32_t (*f_dm_map)(void **, uint64_t, int32_t, int32_t, int64_t, uint64_t);
+typedef int32_t (*f_dm_release)(int64_t, uint64_t);
+static f_dm_allocate dm_allocate;
+static f_dm_map dm_map;
+static f_dm_release dm_release;
+static int64_t dm_mapped, dm_unmapped;
+enum { DM_LENGTH = 0x7400000, DM_ALIGN = 0x200000, DM_RW = 3, DM_PAGE = 0x4000 };
+static void dm_allocate_too_much(void) { int64_t s; dm_allocate(0, 1ll << 33, 1ull << 33, DM_ALIGN, 0, &s); }
+static void dm_allocate_no_room(void) { int64_t s; dm_allocate(0, DM_PAGE, 2 * DM_PAGE, DM_PAGE, 0, &s); }
+static void dm_allocate_odd_length(void) { int64_t s; dm_allocate(0, 1ll << 30, DM_PAGE + 1, DM_PAGE, 0, &s); }
+static void dm_allocate_odd_alignment(void) { int64_t s; dm_allocate(0, 1ll << 30, DM_PAGE, 3 * DM_PAGE, 0, &s); }
+static void dm_allocate_unknown_type(void) { int64_t s; dm_allocate(0, 1ll << 30, DM_PAGE, DM_PAGE, 7, &s); }
+static void dm_allocate_no_variable(void) { dm_allocate(0, 1ll << 30, DM_PAGE, DM_PAGE, 0, NULL); }
+static void dm_map_with_flags(void) { void *a = NULL; dm_map(&a, DM_PAGE, DM_RW, 0x10, dm_unmapped, DM_PAGE); }
+static void dm_map_with_hint(void) { void *a = (void *)0x10000000; dm_map(&a, DM_PAGE, DM_RW, 0, dm_unmapped, DM_PAGE); }
+static void dm_map_gpu(void) { void *a = NULL; dm_map(&a, DM_PAGE, DM_RW | 0x10, 0, dm_unmapped, DM_PAGE); }
+static void dm_map_unallocated(void) { void *a = NULL; dm_map(&a, DM_PAGE, DM_RW, 0, 1ll << 32, DM_PAGE); }
+static void dm_map_past_range(void) { void *a = NULL; dm_map(&a, 2 * DM_PAGE, DM_RW, 0, dm_unmapped, DM_PAGE); }
+static void dm_release_mapped(void) { dm_release(dm_mapped, DM_LENGTH); }
+static void dm_release_part(void) { dm_release(dm_mapped, DM_PAGE); }
+static void dm_release_unknown(void) { dm_release(1ll << 32, DM_PAGE); }
+
 int main(void)
 {
     /* Unresolved entries are still callable diagnostics, but are not reported as implemented. */
@@ -737,6 +763,59 @@ int main(void)
     CHECK(is_implemented("libkernel", "scePthreadRwlockRdlock") && is_implemented("libkernel", "scePthreadRwlockWrlock"));
     CHECK(is_implemented("libkernel", "scePthreadRwlockTryrdlock") && is_implemented("libkernel", "scePthreadRwlockTrywrlock"));
     CHECK(is_implemented("libkernel", "scePthreadRwlockUnlock"));
+
+    /* Direct memory, the way a title's startup heap uses it: the size, then a 2 MiB aligned range
+       below it, mapped read/write where the system picks, released if the map fails. */
+    const f_dm_size dm_size = (f_dm_size)fn("libkernel", "sceKernelGetDirectMemorySize");
+    dm_allocate = (f_dm_allocate)fn("libkernel", "sceKernelAllocateDirectMemory");
+    dm_map = (f_dm_map)fn("libkernel", "sceKernelMapDirectMemory");
+    dm_release = (f_dm_release)fn("libkernel", "sceKernelReleaseDirectMemory");
+    if (dm_size && dm_allocate && dm_map && dm_release) {
+        const uint64_t pool = dm_size();
+        CHECK(pool >= DM_LENGTH && pool % DM_PAGE == 0);
+        int64_t first = -1, second = -1;
+        CHECK(dm_allocate(0, (int64_t)pool, DM_LENGTH, DM_ALIGN, 0, &first) == 0);
+        CHECK(first >= 0 && first % DM_ALIGN == 0 && (uint64_t)first + DM_LENGTH <= pool);
+        CHECK(dm_allocate(0, (int64_t)pool, DM_LENGTH, DM_ALIGN, 0, &second) == 0);
+        CHECK(second % DM_ALIGN == 0 && (second >= first + DM_LENGTH || second + DM_LENGTH <= first));
+        void *a = NULL, *b = NULL;
+        CHECK(dm_map(&a, DM_LENGTH, DM_RW, 0, first, DM_ALIGN) == 0 && a && (uintptr_t)a % DM_ALIGN == 0);
+        CHECK(dm_map(&b, DM_LENGTH, DM_RW, 0, first, DM_ALIGN) == 0 && b && b != a);
+        if (a && b) {
+            /* Two maps of one range are the same memory, as physical memory is. */
+            ((volatile unsigned char *)a)[DM_LENGTH - 1] = 0x5a;
+            ((volatile unsigned char *)a)[0] = 0xa5;
+            CHECK(((volatile unsigned char *)b)[DM_LENGTH - 1] == 0x5a && ((volatile unsigned char *)b)[0] == 0xa5);
+        }
+        /* A range never mapped can be released, and its space is found again. */
+        CHECK(dm_release(second, DM_LENGTH) == 0);
+        int64_t again = -1;
+        CHECK(dm_allocate(0, (int64_t)pool, DM_LENGTH, DM_ALIGN, 0, &again) == 0 && again == second);
+        /* The search range bounds where a range goes. */
+        int64_t windowed = -1;
+        CHECK(dm_allocate(1ll << 30, (1ll << 30) + DM_ALIGN, DM_PAGE, DM_PAGE, 0, &windowed) == 0 && windowed == 1ll << 30);
+        dm_mapped = first;
+        dm_unmapped = windowed;
+        /* The answers that are not established stop by name. */
+        CHECK(died_in_fatal(dm_allocate_too_much));
+        CHECK(died_in_fatal(dm_allocate_no_room));
+        CHECK(died_in_fatal(dm_allocate_odd_length));
+        CHECK(died_in_fatal(dm_allocate_odd_alignment));
+        CHECK(died_in_fatal(dm_allocate_unknown_type));
+        CHECK(died_in_fatal(dm_allocate_no_variable));
+        CHECK(died_in_fatal(dm_map_with_flags));
+        CHECK(died_in_fatal(dm_map_with_hint));
+        CHECK(died_in_fatal(dm_map_gpu));
+        CHECK(died_in_fatal(dm_map_unallocated));
+        CHECK(died_in_fatal(dm_map_past_range));
+        CHECK(died_in_fatal(dm_release_mapped));
+        CHECK(died_in_fatal(dm_release_part));
+        CHECK(died_in_fatal(dm_release_unknown));
+    }
+    CHECK(is_implemented("libkernel", "sceKernelGetDirectMemorySize") &&
+          is_implemented("libkernel", "sceKernelAllocateDirectMemory") &&
+          is_implemented("libkernel", "sceKernelMapDirectMemory") &&
+          is_implemented("libkernel", "sceKernelReleaseDirectMemory"));
 
     if (!failures) puts("syslib: ok");
     return failures != 0;

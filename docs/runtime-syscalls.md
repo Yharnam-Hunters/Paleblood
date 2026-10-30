@@ -258,6 +258,45 @@ are the same calls with the POSIX error convention, as for the mutex and detach-
   The runtime answers `EINVAL` under both names, as the SCE name already did; no PS4 source or
   call site says otherwise.
 
+## Direct memory (`libkernel`, issue #34)
+
+`eboot` imports `sceKernelGetDirectMemorySize`, `sceKernelAllocateDirectMemory`,
+`sceKernelMapDirectMemory` and `sceKernelReleaseDirectMemory` (`symbols/imports.csv`). Its first
+use is the startup heap, at `0x02481a80`:
+
+1. It asks for the size.
+2. It allocates `0x7400000` bytes, aligned to `0x200000`, anywhere from 0 to that size, with memory
+   type 0.
+3. It maps the range read/write (protection 3) with flags 0, so the system picks the address, at
+   the same alignment.
+4. If the map fails, it releases the range.
+5. On any failure it logs an error and builds its heap from a null base, so these calls have to
+   succeed.
+
+The signatures match the OpenOrbis homebrew SDK's `libkernel.h`, as supporting evidence only.
+
+- **The pool.** Direct memory is a host memory file. An allocation is a range of it and a map is a
+  host mapping of that range, so two maps of one range see the same bytes.
+- **The size.** `sceKernelGetDirectMemorySize` answers the size of that pool (5 GiB), a choice of
+  the runtime. The PS4's value is not established here. A title that sizes its allocations from the
+  answer sizes them from the runtime's pool.
+- **Allocation.** It takes the lowest start at or above the search start that fits before the
+  search end.
+- **What stops by name.** Every case whose PS4 answer is not established stops with the function's
+  name:
+  - lengths, starts or alignments that are not multiples of 16 KiB (the granularity the
+    executable's calls use);
+  - memory types other than 0, 3 and 10;
+  - map flags, and an address hint without flags;
+  - protection other than CPU read and write;
+  - a range that does not fit or was not allocated;
+  - releasing part of a range or a mapped one;
+  - the error values.
+
+Measured with a local boot that let the libc affinity probe return (not committed): with these four
+calls the executable's heap setup succeeds and the boot reaches `entry`. It stops next at
+`scePthreadRwlockInit`.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
