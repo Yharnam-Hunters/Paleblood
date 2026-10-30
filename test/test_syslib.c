@@ -556,6 +556,12 @@ static void http_header_unknown(void) { http_header_fn(999, "Accept", "*/*", 0);
 static void http_header_no_value(void) { http_header_fn(1, "Accept", NULL, 0); }
 static void http_header_mode(void) { http_header_fn(1, "Accept", "*/*", 1); }
 
+/* clock_gettime with FreeBSD's clock numbers. */
+typedef int (*f_clock_gettime)(int32_t, int64_t *);
+static f_clock_gettime clock_gettime_fn;
+static void clock_unknown(void) { int64_t ts[2]; clock_gettime_fn(1, ts); }
+static void clock_no_timespec(void) { clock_gettime_fn(0, NULL); }
+
 int main(void)
 {
     /* Unresolved entries are still callable diagnostics, but are not reported as implemented. */
@@ -1434,6 +1440,19 @@ int main(void)
         CHECK(net_term_fn() == 0);
         CHECK(net_init_fn() == 0);  /* initialized again after a terminate */
         CHECK(net_term_fn() == 0);
+    }
+
+    /* clock_gettime: CLOCK_SECOND (13) is the wall clock in whole seconds; 0 and 4 as FreeBSD. */
+    clock_gettime_fn = (f_clock_gettime)fn("libkernel", "clock_gettime");
+    if (clock_gettime_fn) {
+        int64_t second[2] = {-1, -1}, real[2] = {-1, -1}, mono1[2], mono2[2];
+        CHECK(clock_gettime_fn(13, second) == 0 && second[1] == 0);
+        CHECK(clock_gettime_fn(0, real) == 0 && real[1] >= 0 && real[1] < 1000000000);
+        CHECK(second[0] > 1600000000 && (real[0] == second[0] || real[0] == second[0] + 1));
+        CHECK(clock_gettime_fn(4, mono1) == 0 && clock_gettime_fn(4, mono2) == 0);
+        CHECK(mono2[0] > mono1[0] || (mono2[0] == mono1[0] && mono2[1] >= mono1[1]));
+        CHECK(died_in_fatal(clock_unknown));
+        CHECK(died_in_fatal(clock_no_timespec));
     }
 
     if (!failures) puts("syslib: ok");

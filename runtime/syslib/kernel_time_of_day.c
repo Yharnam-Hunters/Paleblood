@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* System call group: kernel, threads and memory. The time of day (libkernel, libScePosix).
+/* System call group: kernel, threads and memory. The time of day and clock_gettime (libkernel,
+   libScePosix).
 
    Facts used:
    - gettimeofday(struct timeval *, struct timezone *) is POSIX; the PS4's system is FreeBSD, whose
@@ -52,6 +53,38 @@ static int32_t sce_gettimeofday(guest_timeval *tv)
     return time_of_day(tv, NULL, "sceKernelGettimeofday");
 }
 
+/* clock_gettime(clockid_t id, struct timespec *tp): POSIX, with FreeBSD's clock numbers and amd64
+   struct timespec (two 64-bit fields, seconds and nanoseconds). The bundled libc's time()
+   (libc.elf+0x2f030) asks for clock 13, FreeBSD's CLOCK_SECOND, and returns its seconds; FreeBSD
+   answers CLOCK_SECOND with the wall clock's whole seconds and 0 nanoseconds (kern_clock_gettime).
+   The runtime answers the clocks whose meaning FreeBSD fixes and the host has: CLOCK_REALTIME (0)
+   and CLOCK_SECOND from the host's wall clock, CLOCK_MONOTONIC (4) from the host's monotonic clock.
+   Other clocks and a missing timespec stop by name: their errors go through errno, which the runtime
+   does not model. */
+enum { BSD_CLOCK_REALTIME = 0, BSD_CLOCK_MONOTONIC = 4, BSD_CLOCK_SECOND = 13 };
+
+typedef struct {
+    int64_t seconds;
+    int64_t nanoseconds;
+} guest_timespec;
+
+static int clock_get_time(int32_t id, guest_timespec *tp)
+{
+    static const char fn[] = "clock_gettime";
+    if (!tp) rt_fatal(fn, "no timespec: the error goes through errno, which is not modelled");
+    struct timespec ts;
+    switch (id) {
+    case BSD_CLOCK_REALTIME:
+    case BSD_CLOCK_SECOND: clock_gettime(CLOCK_REALTIME, &ts); break;
+    case BSD_CLOCK_MONOTONIC: clock_gettime(CLOCK_MONOTONIC, &ts); break;
+    default: rt_fatal(fn, "a clock other than CLOCK_REALTIME, CLOCK_MONOTONIC or CLOCK_SECOND is not implemented");
+    }
+    tp->seconds = ts.tv_sec;
+    tp->nanoseconds = id == BSD_CLOCK_SECOND ? 0 : ts.tv_nsec;
+    return 0;
+}
+
 RT_SYSLIB("libScePosix", gettimeofday, posix_gettimeofday);
 RT_SYSLIB("libkernel", gettimeofday, posix_gettimeofday);
 RT_SYSLIB("libkernel", sceKernelGettimeofday, sce_gettimeofday);
+RT_SYSLIB("libkernel", clock_gettime, clock_get_time);
