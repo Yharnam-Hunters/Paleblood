@@ -518,6 +518,29 @@ A thread object above 2^40 would never own a lock it had just taken, and would w
 (a local boot hung there). The host heap lies above 2^40, so the runtime allocates thread objects,
 the main thread's included, from a range it reserves below it, at `0xf000000000`.
 
+## Flexible memory (`sceKernelMapFlexibleMemory`, issue #34)
+
+`sceKernelMapFlexibleMemory(void **address, size_t length, int32_t protection, int32_t flags)` maps
+memory the system provides without a range of the direct memory pool. The signature is
+corroborated by the OpenOrbis homebrew SDK's `libkernel.h`.
+
+The executable's only call, at `0x02481dbe`:
+- presets the address to 0;
+- rounds the length up to 16 KiB;
+- passes protection 3 or `0x33` and flags 0;
+- on success, requires a non-null address.
+
+**What the runtime does.** It maps fresh zeroed host memory at an address it picks, with the CPU
+bits of the protection; GPU access is accepted, as for direct memory. The PS4 limits a title's
+flexible memory to a budget. The budget is not established and the runtime does not enforce it.
+
+**What stops by name:**
+- an address hint;
+- map flags;
+- other protection bits;
+- a length that is not whole 16 KiB pages;
+- a missing variable.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.

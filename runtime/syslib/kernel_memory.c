@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* System call group: kernel, threads and memory. Direct memory (libkernel): the pool of physical
-   memory a title allocates ranges of and maps into its address space.
+   memory a title allocates ranges of and maps into its address space; and flexible memory, which
+   the system maps for a title without a range of that pool (sceKernelMapFlexibleMemory, at the
+   end of this file).
 
    Facts used:
    - The signatures: size_t sceKernelGetDirectMemorySize(void); int32_t
@@ -181,7 +183,35 @@ static int32_t release_direct_memory(int64_t start, uint64_t length)
     return 0;
 }
 
+/* Flexible memory: int32_t sceKernelMapFlexibleMemory(void **address, size_t length, int32_t
+   protection, int32_t flags) (the OpenOrbis homebrew SDK's libkernel.h, corroborating the shape).
+   The executable's only call (0x02481dbe) presets the address to 0, rounds the length up to 16 KiB,
+   passes protection 3 or 0x33 and flags 0, and on success requires a non-null address.
+
+   The runtime maps fresh zeroed host memory at an address it picks, with the CPU bits of the
+   protection (GPU access is accepted, as for direct memory). The PS4 limits a title's flexible
+   memory to a budget; the budget is not established here and is not enforced. What else is not
+   established stops by name: an address hint, map flags, other protection bits, a length that is
+   not whole 16 KiB pages, and a missing variable. */
+static int32_t map_flexible_memory(void **address, uint64_t length, int32_t protection, int32_t flags)
+{
+    static const char name[] = "sceKernelMapFlexibleMemory";
+    if (!address) rt_fatal(name, "no variable for the address: the error value is not established");
+    if (flags) rt_fatal(name, "map flags are not established");
+    if (*address) rt_fatal(name, "an address hint: how the system uses it is not established");
+    if (!protection || (protection & ~(PROT_CPU_READ | PROT_CPU_WRITE | PROT_GPU_READ | PROT_GPU_WRITE)))
+        rt_fatal(name, "protection other than CPU and GPU read and write is not established");
+    if (!length || !is_page_multiple(length))
+        rt_fatal(name, "a length that is not whole 16 KiB pages: the answer is not established");
+    const int host_protection = (protection & PROT_CPU_READ ? PROT_READ : 0) | (protection & PROT_CPU_WRITE ? PROT_WRITE : 0);
+    void *const mapped = mmap(NULL, length, host_protection, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (mapped == MAP_FAILED) rt_fatal(name, "the host cannot map the memory");
+    *address = mapped;
+    return 0;
+}
+
 RT_SYSLIB("libkernel", sceKernelGetDirectMemorySize, get_direct_memory_size);
 RT_SYSLIB("libkernel", sceKernelAllocateDirectMemory, allocate_direct_memory);
 RT_SYSLIB("libkernel", sceKernelMapDirectMemory, map_direct_memory);
 RT_SYSLIB("libkernel", sceKernelReleaseDirectMemory, release_direct_memory);
+RT_SYSLIB("libkernel", sceKernelMapFlexibleMemory, map_flexible_memory);
