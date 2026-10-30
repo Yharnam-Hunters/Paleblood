@@ -416,6 +416,11 @@ static f_sys_param sys_param;
 static void sys_param_unset(void) { int32_t v; sys_param(4, &v); }
 static void sys_param_no_variable(void) { sys_param(1, NULL); }
 
+/* libSceNpManager: content restriction, offline. */
+typedef int32_t (*f_np_restrict)(const void *);
+static f_np_restrict np_restrict;
+static void np_restrict_null(void) { np_restrict(NULL); }
+
 int main(void)
 {
     /* Unresolved entries are still callable diagnostics, but are not reported as implemented. */
@@ -1086,6 +1091,14 @@ int main(void)
         CHECK(died_in_fatal(sys_param_unset));
         CHECK(died_in_fatal(sys_param_no_variable));
         rt_process.system_param_count = 0;
+    }
+
+    /* sceNpSetContentRestriction: offline, nothing to restrict; a missing block stops by name. */
+    np_restrict = (f_np_restrict)fn("libSceNpManager", "sceNpSetContentRestriction");
+    if (np_restrict) {
+        const uint8_t params[0x20] = {0};
+        CHECK(np_restrict(params) == 0);
+        CHECK(died_in_fatal(np_restrict_null));
     }
 
     if (!failures) puts("syslib: ok");
