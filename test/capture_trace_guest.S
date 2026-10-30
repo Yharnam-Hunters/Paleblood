@@ -91,9 +91,29 @@ increment:
 3:  mov $7, %eax
     ret
 
+/* 0x2c0: int32_t use_import(int32_t *out) { return fill(out, 7) + *out; } where fill is an
+   import, called through a thunk and its slot as executables call system functions. */
+    .org 0x2c0
+    push %rbx
+    mov %rdi, %rbx
+    mov $7, %esi
+    call import_thunk
+    add (%rbx), %eax
+    pop %rbx
+    ret
+
+    .org 0x2e0
+import_thunk:
+    jmp *import_slot(%rip)
+
     .org 0x1000
 global:
     .long 1000
+
+/* 0x1800: the import's slot; the test (or the verifier's loader) binds it. */
+    .org 0x1800
+import_slot:
+    .quad 0
     .org 0x2000
     .globl capture_trace_guest_end
 capture_trace_guest_end:

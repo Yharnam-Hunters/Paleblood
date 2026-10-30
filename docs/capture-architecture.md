@@ -96,14 +96,41 @@ Limits: a traced call runs on a private stack, so a function that keeps the addr
 stack arguments after it returns, unwinds past its caller (`longjmp`), or switches stacks or fibers
 mid-call is not safe to trace; none is known among the hooked functions.
 
+**Imports** (`runtime/trace.c`, `runtime/capture_hooks.c`). When traced code reaches native code
+at the address an import's slot holds (through `call [slot]`, a `jmp [slot]` thunk, or a register
+loaded from the slot), the call runs natively and is recorded instead of ending the trace: the
+tracer snapshots up to 4096 bytes behind each argument register, sends the import's return to a
+one-byte `int3` pad, and lets it run untraced. At the pad it records the return value and every byte
+that changed behind each pointer argument, notes those bytes as written (later reads of them are not
+inputs: the case's script writes them), puts the real return address back and resumes tracing. The
+case scripts each call in order: `{"name", "argc": 0, "ret", "writes": [{"arg", "offset", "bytes"}]}`.
+Reads of an import's slot are never inputs, since the verifier binds its own stub there.
+
+The host's loader binds the imports, so the runtime finds the slots itself at install time: it maps
+the executable (`BB_ELF`) again into scratch memory with each function import bound to a numbered
+marker, finds the slots holding markers, and names each from the symbol list (`BB_CAPTURE_IMPORTS`,
+`symbols/imports.csv`; `tools/run_game.sh` points it there) by matching each name's NID. A slot whose
+NID has no name in the list is not scripted, and a call through it ends the trace.
+
+Limits: arguments are not compared (`argc` 0), since their count is not known; a return value is
+scripted from `rax`, so an import returning a float is not reproduced; memory an import changes
+other than behind its pointer arguments (a global, `errno`) is not scripted, so such a case fails
+verification rather than passing wrongly; an import that calls back into guest code runs those
+callbacks untraced (replay runs no callback either); one that unwinds past its caller ends the trace.
+
+**Proof.** `test/test_capture_trace.cpp` traces a guest function that calls an import through a thunk
+and its slot: the import runs, its result and the bytes it wrote are recorded, what it wrote is not
+an input, its slot is not an input, and tracing resumes. `test/test_capture_hooks.cpp` hooks the same
+function: with the executable and the symbol list the slot is found and named and the call gives a
+case; without them it gives none. Both replay through `tools/verify.py` with the verifier's own
+import stub bound by NID (`capture_trace_replay`, `capture_hooks_replay`).
+
 ### Next steps
 
-1. **Imports**: a call that leaves the image through an import is recorded instead of stopping the
-   trace: its name, arguments and return value, and the bytes it changed behind its pointer
-   arguments (compared page by page before and after), become the case's scripted `imports`; the
-   trace resumes when it returns.
-2. **Thread-local storage**: a `gs:` access becomes a buffer for the thread block and the case's
+1. **Thread-local storage**: a `gs:` access becomes a buffer for the thread block and the case's
    `gs` value.
+2. **Import arguments**: compare an import's arguments once their count is data (a declaration
+   list per import), as hooks carry their return class.
 
 ## Typed descriptors (earlier proof)
 

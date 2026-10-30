@@ -29,6 +29,10 @@ enum {
     PRIVATE_STACK = 16 << 20,
     TRAP_FLAG = 0x100,
     DIRECTION_FLAG = 0x400,
+    IMPORT_CALL_LIMIT = 256,
+    WRITE_LIMIT = 4096,
+    WRITE_BYTES = 1 << 20,
+    SNAPSHOT = 4096,                       /* bytes compared behind each pointer argument */
 };
 #define DEFAULT_STEP_LIMIT 200000ull
 
@@ -67,11 +71,32 @@ typedef struct {
     unsigned xmm_written;              /* bit n: xmm n written by the traced code */
     const char *incomplete;
     pid_t pid;
+    /* The import running now (between its entry and the return pad). */
+    int in_import;
+    uint64_t import_return;
+    uint64_t snap_ptr[6];
+    size_t snap_len[6];
+    uint8_t *snap;                     /* 6 * SNAPSHOT bytes */
+    rt_trace_import_call *calls;
+    size_t ncalls;
+    rt_trace_write *writes;
+    size_t nwrites;
+    uint8_t *write_bytes;
+    size_t write_used;
 } trace_state;
 
 static __thread trace_state *current;
 static const rt_trace_redirect *redirects;
 static size_t redirect_count;
+/* Imports by the native address their slot holds, and their slots (reads of a slot are not
+   inputs: the verifier binds its own stub there). */
+typedef struct {
+    uint64_t target, slot;
+    const char *name;
+} import_target;
+static import_target *imports;
+static size_t import_count;
+static uint8_t *return_pad;            /* an int3 the imports return to */
 static struct sigaction previous;
 static pthread_once_t installed = PTHREAD_ONCE_INIT;
 static int install_error;
@@ -290,6 +315,109 @@ static const void *redirected(uint64_t rip)
     return NULL;
 }
 
+void rt_trace_set_imports(const rt_trace_import *table, size_t count)
+{
+    import_target *next = calloc(count ? count : 1, sizeof *next);
+    size_t n = 0;
+    for (size_t i = 0; next && i < count; i++) {
+        uint64_t target;
+        memcpy(&target, table[i].slot, sizeof target);
+        if (target)
+            next[n++] = (import_target){target, (uint64_t)(uintptr_t)table[i].slot, table[i].name};
+    }
+    for (size_t i = 1; i < n; i++)              /* by target; few entries, insertion sort */
+        for (size_t j = i; j > 0 && next[j - 1].target > next[j].target; j--) {
+            const import_target x = next[j];
+            next[j] = next[j - 1];
+            next[j - 1] = x;
+        }
+    imports = next;                             /* set once, before any trace; never freed */
+    import_count = n;
+}
+
+static const import_target *import_at(uint64_t target)
+{
+    size_t lo = 0, hi = import_count;
+    while (lo < hi) {
+        const size_t mid = lo + (hi - lo) / 2;
+        if (imports[mid].target == target) return &imports[mid];
+        if (imports[mid].target < target) lo = mid + 1;
+        else hi = mid;
+    }
+    return NULL;
+}
+
+static int import_slot(uint64_t addr, uint64_t n)
+{
+    for (size_t i = 0; i < import_count; i++)
+        if (addr < imports[i].slot + 8 && addr + n > imports[i].slot) return 1;
+    return 0;
+}
+
+static int read_self(trace_state *t, uint64_t addr, void *out, size_t n);
+static int note(trace_state *t, uint64_t addr, uint64_t n, int write, int *input);
+static void step(trace_state *t, ucontext_t *uc);
+
+/* Native code reached through an import's slot: snapshot what each pointer argument points at,
+   send the return to the pad, and let the import run untraced. */
+static int import_enter(trace_state *t, ucontext_t *uc, const import_target *imp)
+{
+    greg_t *g = uc->uc_mcontext.gregs;
+    if (t->ncalls >= IMPORT_CALL_LIMIT) return -1;
+    static const int args[6] = {REG_RDI, REG_RSI, REG_RDX, REG_RCX, REG_R8, REG_R9};
+    for (int i = 0; i < 6; i++) {
+        t->snap_ptr[i] = (uint64_t)g[args[i]];
+        struct iovec local = {t->snap + i * SNAPSHOT, SNAPSHOT}, remote = {(void *)(uintptr_t)t->snap_ptr[i], SNAPSHOT};
+        const long got = t->snap_ptr[i] >= 4096 ? syscall(SYS_process_vm_readv, t->pid, &local, 1, &remote, 1, 0) : -1;
+        t->snap_len[i] = got > 0 ? (size_t)got : 0;
+    }
+    uint64_t ret;
+    const uint64_t rsp = (uint64_t)g[REG_RSP];
+    if (read_self(t, rsp, &ret, 8)) return -1;
+    t->calls[t->ncalls] = (rt_trace_import_call){imp->name, 0, t->nwrites, 0};
+    t->import_return = ret;
+    *(uint64_t *)(uintptr_t)rsp = (uint64_t)(uintptr_t)return_pad;
+    t->in_import = 1;
+    g[REG_EFL] &= ~(greg_t)TRAP_FLAG;
+    return 0;
+}
+
+/* Back from the import at the pad: record its result and the bytes it changed, then go on
+   tracing at its real return address. */
+static void import_return(trace_state *t, ucontext_t *uc)
+{
+    greg_t *g = uc->uc_mcontext.gregs;
+    rt_trace_import_call *c = &t->calls[t->ncalls++];
+    c->ret = (uint64_t)g[REG_RAX];
+    uint8_t now[SNAPSHOT];
+    for (int i = 0; i < 6 && !t->incomplete; i++) {
+        if (!t->snap_len[i]) continue;
+        if (read_self(t, t->snap_ptr[i], now, t->snap_len[i])) continue;
+        const uint8_t *before = t->snap + i * SNAPSHOT;
+        for (size_t off = 0; off < t->snap_len[i];) {
+            if (now[off] == before[off]) { off++; continue; }
+            size_t end = off;
+            while (end < t->snap_len[i] && now[end] != before[end]) end++;
+            if (t->nwrites >= WRITE_LIMIT || t->write_used + (end - off) > WRITE_BYTES) {
+                t->incomplete = "an import changed too much memory to script";
+                break;
+            }
+            memcpy(t->write_bytes + t->write_used, now + off, end - off);
+            t->writes[t->nwrites++] = (rt_trace_write){(uint8_t)i, (uint32_t)off, (uint32_t)(end - off), t->write_used};
+            t->write_used += end - off;
+            c->writes++;
+            /* Later reads of these bytes see what the import wrote, which the case scripts. */
+            note(t, t->snap_ptr[i] + off, end - off, 1, NULL);
+            off = end;
+        }
+    }
+    t->in_import = 0;
+    g[REG_RIP] = (greg_t)t->import_return;
+    if (t->incomplete) return;              /* finish untraced */
+    g[REG_EFL] |= TRAP_FLAG;
+    step(t, uc);
+}
+
 static void step(trace_state *t, ucontext_t *uc)
 {
     greg_t *g = uc->uc_mcontext.gregs;
@@ -304,8 +432,11 @@ static void step(trace_state *t, ucontext_t *uc)
     int inside = 0;
     for (size_t i = 0; i < t->ranges; i++)
         inside |= rip >= (uintptr_t)t->code[i].lo && rip < (uintptr_t)t->code[i].hi;
-    if (!inside)
-        return stop(t, uc, "the call left the traced code (an import or other native code)");
+    if (!inside) {
+        const import_target *imp = import_at(rip);
+        if (imp && !import_enter(t, uc, imp)) return;
+        return stop(t, uc, imp ? "too many import calls to script" : "the call left the traced code (native code that is not a listed import)");
+    }
     if (++t->steps > t->step_limit)
         return stop(t, uc, "instruction limit reached (BB_TRACE_STEP_LIMIT)");
 
@@ -349,6 +480,8 @@ static void step(trace_state *t, ucontext_t *uc)
             return stop(t, uc, "an operand of unknown size");
         if (count > 1 && (g[REG_EFL] & DIRECTION_FLAG))
             ea -= (count - 1) * op->size;
+        if (import_slot(ea, n))
+            continue;                       /* an import's slot: the verifier binds its stub there */
         if (op->access & CS_AC_READ) {
             int input = 0;
             if (note(t, ea, n, 0, &input))
@@ -368,7 +501,11 @@ static void on_trap(int sig, siginfo_t *info, void *context)
 {
     trace_state *t = current;
     if (t) {
-        step(t, (ucontext_t *)context);
+        ucontext_t *uc = (ucontext_t *)context;
+        if (t->in_import && (uint64_t)uc->uc_mcontext.gregs[REG_RIP] == (uint64_t)(uintptr_t)return_pad + 1)
+            import_return(t, uc);
+        else if (!t->in_import)
+            step(t, uc);
         return;
     }
     if (previous.sa_flags & SA_SIGINFO) {
@@ -390,6 +527,9 @@ static void install(void)
     sa.sa_flags = SA_SIGINFO;
     sigemptyset(&sa.sa_mask);
     install_error = sigaction(SIGTRAP, &sa, &previous);
+    return_pad = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (return_pad == MAP_FAILED || (return_pad[0] = 0xcc, mprotect(return_pad, 4096, PROT_READ | PROT_EXEC)))
+        install_error = -1;
 }
 
 static int compare_u64(const void *a, const void *b)
@@ -418,6 +558,16 @@ static int collect(trace_state *t, rt_trace_log *log)
         log->flags[i] = s->flags;
     }
     memcpy(log->qword, t->qword, t->qwords * sizeof *t->qword);
+    log->imports = malloc((t->ncalls ? t->ncalls : 1) * sizeof *log->imports);
+    log->writes = malloc((t->nwrites ? t->nwrites : 1) * sizeof *log->writes);
+    log->write_bytes = malloc(t->write_used ? t->write_used : 1);
+    if (!log->imports || !log->writes || !log->write_bytes)
+        return -1;
+    memcpy(log->imports, t->calls, t->ncalls * sizeof *t->calls);
+    memcpy(log->writes, t->writes, t->nwrites * sizeof *t->writes);
+    memcpy(log->write_bytes, t->write_bytes, t->write_used);
+    log->import_count = t->ncalls;
+    log->write_count = t->nwrites;
     log->qword_count = t->qwords;
     log->stack_slots = t->stack_slots;
     log->steps = t->steps;
@@ -433,6 +583,9 @@ void rt_trace_log_free(rt_trace_log *log)
     free(log->value);
     free(log->flags);
     free(log->qword);
+    free(log->imports);
+    free(log->writes);
+    free(log->write_bytes);
     memset(log, 0, sizeof *log);
 }
 
@@ -453,7 +606,11 @@ int rt_trace_call(const void *entry, const rt_trace_args *args, const rt_code_ra
     unsigned char *stack = mmap(NULL, PRIVATE_STACK, PROT_READ | PROT_WRITE,
                                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     t.qword = malloc(QWORD_LIMIT * sizeof *t.qword);
-    int ok = t.table != MAP_FAILED && stack != MAP_FAILED && t.qword &&
+    t.snap = malloc(6 * SNAPSHOT);
+    t.calls = malloc(IMPORT_CALL_LIMIT * sizeof *t.calls);
+    t.writes = malloc(WRITE_LIMIT * sizeof *t.writes);
+    t.write_bytes = malloc(WRITE_BYTES);
+    int ok = t.table != MAP_FAILED && stack != MAP_FAILED && t.qword && t.snap && t.calls && t.writes && t.write_bytes &&
              cs_open(CS_ARCH_X86, CS_MODE_64, &t.cs) == CS_ERR_OK;
     if (ok && (cs_option(t.cs, CS_OPT_DETAIL, CS_OPT_ON) != CS_ERR_OK || !(t.insn = cs_malloc(t.cs)))) {
         cs_close(&t.cs);
@@ -463,6 +620,10 @@ int rt_trace_call(const void *entry, const rt_trace_args *args, const rt_code_ra
         if (t.table != MAP_FAILED && t.table) munmap(t.table, table_bytes);
         if (stack != MAP_FAILED) munmap(stack, PRIVATE_STACK);
         free(t.qword);
+        free(t.snap);
+        free(t.calls);
+        free(t.writes);
+        free(t.write_bytes);
         return -1;
     }
 
@@ -498,6 +659,8 @@ int rt_trace_call(const void *entry, const rt_trace_args *args, const rt_code_ra
     current = &t;
     rt_trace_enter(&frame);
     current = NULL;
+    if (t.in_import && !t.incomplete)
+        t.incomplete = "an import did not return to the trace (it unwound past it)";
 
     result->rax = frame.rax;
     result->rdx = frame.rdx;
@@ -513,6 +676,10 @@ int rt_trace_call(const void *entry, const rt_trace_args *args, const rt_code_ra
     munmap(t.table, table_bytes);
     munmap(stack, PRIVATE_STACK);
     free(t.qword);
+    free(t.snap);
+    free(t.calls);
+    free(t.writes);
+    free(t.write_bytes);
     return 0;
 }
 

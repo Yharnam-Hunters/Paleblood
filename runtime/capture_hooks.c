@@ -17,7 +17,12 @@
    expects), the runtime has the tracer, the hook table gives a return class, the entry
    relocates, and no branch in the function jumps back into its first bytes. Every other hook
    jumps straight to its replacement, as before. A function whose traces keep giving no case
-   (GIVE_UP in a row) is not traced again in this run. */
+   (GIVE_UP in a row) is not traced again in this run.
+
+   Imports: the host's loader binds them, so their slots are found by mapping the executable
+   (BB_ELF) again into scratch memory with each import bound to a numbered marker, and named
+   from the symbol list (BB_CAPTURE_IMPORTS, symbols/imports.csv) by matching each name's NID.
+   Without them, a call into an import ends the trace and gives no case. */
 #define _GNU_SOURCE
 #include "runtime/capture_hooks.h"
 
@@ -34,6 +39,8 @@
 #include "runtime/capture.h"
 #include "runtime/capture_trace.h"
 #include "runtime/guest.h"
+#include "runtime/loader.h"
+#include "runtime/nid.h"
 #include "runtime/trace.h"
 
 enum { HOOK_JUMP = 14, THUNK_SIZE = 32, MAX_HOOKS = 1024, REACH = 0x70000000, GIVE_UP = 3 };
@@ -66,6 +73,110 @@ static size_t redirect_count;
 static unsigned char *code_block;     /* relocated entries, then thunks */
 static size_t code_size;
 static rt_code_range image_range, code_range;
+
+#define IMPORT_MARKER 0xfeed000000000000ull
+
+typedef struct {
+    char nid[RT_NID_SIZE];
+    char *name;
+} named_nid;
+
+static uint64_t bind_marker(void *user, size_t index, int kind)
+{
+    (void)user;
+    return kind == RT_ELF_IMPORT_FUNCTION ? IMPORT_MARKER | index : 0;
+}
+
+static int compare_nid(const void *a, const void *b)
+{
+    return strcmp(((const named_nid *)a)->nid, ((const named_nid *)b)->nid);
+}
+
+/* NID to name for every symbol in the list (the third column of symbols/imports.csv). */
+static named_nid *read_names(const char *path, size_t *count)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) return NULL;
+    size_t n = 0, cap = 1024;
+    named_nid *out = malloc(cap * sizeof *out);
+    char line[512];
+    for (int first = 1; out && fgets(line, sizeof line, f); first = 0) {
+        if (first) continue;                                   /* header */
+        char *symbol = strchr(line, ',');
+        symbol = symbol ? strchr(symbol + 1, ',') : NULL;
+        if (!symbol) continue;
+        symbol++;
+        const size_t len = strcspn(symbol, ",\r\n");
+        if (!len) continue;
+        if (n == cap) {
+            named_nid *more = realloc(out, (cap *= 2) * sizeof *out);
+            if (!more) break;
+            out = more;
+        }
+        out[n].name = strndup(symbol, len);
+        if (!out[n].name) break;
+        rt_nid(out[n].name, out[n].nid);
+        n++;
+    }
+    fclose(f);
+    if (out) qsort(out, n, sizeof *out, compare_nid);
+    *count = n;
+    return out;
+}
+
+/* The import table for the tracer: each function import's slot in the live image, by name. */
+static size_t find_imports(unsigned char *image, uint64_t image_size, rt_trace_import **table)
+{
+    const char *elf_path = getenv("BB_ELF"), *names_path = getenv("BB_CAPTURE_IMPORTS");
+    *table = NULL;
+    if (!elf_path || !*elf_path || !names_path || !*names_path) {
+        fprintf(stderr, "capture: BB_ELF or BB_CAPTURE_IMPORTS is not set: calls into imports end a trace\n");
+        return 0;
+    }
+    char error[256];
+    rt_elf *elf = rt_elf_open(elf_path, error, sizeof error);
+    size_t nnames = 0;
+    named_nid *names = read_names(names_path, &nnames);
+    const uint64_t size = elf ? rt_elf_image_size(elf) : 0;
+    unsigned char *scratch = size && size <= image_size
+        ? mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0) : MAP_FAILED;
+    rt_trace_import *out = NULL;
+    size_t n = 0;
+    if (!elf || !names || scratch == MAP_FAILED || rt_elf_map(elf, scratch, bind_marker, NULL, error, sizeof error)) {
+        fprintf(stderr, "capture: cannot find the import slots (%s): calls into imports end a trace\n",
+                !elf || !names ? "cannot read BB_ELF or BB_CAPTURE_IMPORTS" : error);
+    } else {
+        size_t cap = 256;
+        out = malloc(cap * sizeof *out);
+        const rt_elf_load *loads = rt_elf_loads(elf);
+        for (size_t l = 0; out && l < rt_elf_load_count(elf); l++) {
+            if (!(loads[l].flags & 2)) continue;                /* slots are in writable segments */
+            for (uint64_t off = loads[l].vaddr & ~7ull; off + 8 <= loads[l].vaddr + loads[l].memsz && off + 8 <= size; off += 8) {
+                uint64_t v;
+                memcpy(&v, scratch + off, 8);
+                if ((v & 0xffff000000000000ull) != IMPORT_MARKER) continue;
+                const size_t index = (size_t)(v & 0xffffffffull);
+                if (index >= rt_elf_import_count(elf)) continue;
+                named_nid key;
+                snprintf(key.nid, sizeof key.nid, "%.11s", rt_elf_import_name(elf, index));
+                const named_nid *hit = bsearch(&key, names, nnames, sizeof *names, compare_nid);
+                if (!hit) continue;                              /* a name we do not know: not scripted */
+                if (n == cap) {
+                    rt_trace_import *more = realloc(out, (cap *= 2) * sizeof *out);
+                    if (!more) break;
+                    out = more;
+                }
+                out[n++] = (rt_trace_import){image + off, hit->name};
+            }
+        }
+        fprintf(stderr, "capture: %zu import slot(s) named\n", n);
+    }
+    if (scratch != MAP_FAILED) munmap(scratch, size);
+    if (elf) rt_elf_close(elf);
+    /* The names stay: the table points at them for the rest of the run. */
+    *table = out;
+    return n;
+}
 
 /* A block within REACH of the image, so relocated RIP-relative operands still reach their data. */
 static unsigned char *map_near(unsigned char *image, uint64_t image_size, size_t size)
@@ -147,6 +258,9 @@ int rt_capture_hooks_prepare(unsigned char *image, uint64_t image_size, const rt
     }
     qsort(redirects, redirect_count, sizeof *redirects, compare_redirect);
     rt_trace_set_redirects(redirects, redirect_count);
+    rt_trace_import *import_table;
+    const size_t imports = find_imports(image, image_size, &import_table);
+    rt_trace_set_imports(import_table, imports);
     image_range = (rt_code_range){image, image + image_size};
     code_range = (rt_code_range){code_block, code_block + count * RT_RELOCATE_MAX};
     fprintf(stderr, "capture: %zu of %zu hooked function(s) can be recorded\n", recorded, count);

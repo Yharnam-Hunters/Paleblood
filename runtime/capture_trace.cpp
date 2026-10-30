@@ -9,7 +9,9 @@
      case gives it the buffer's address (`pointer`) or the image address (`guest`), so it still
      points at the same thing in the verifier's sandbox.
    - Arguments and stack arguments that point into a buffer or the image are written the same way;
-     other values are numbers. */
+     other values are numbers.
+   - Imports the call made are scripted in order: return value, and the bytes each changed behind
+     its pointer arguments. */
 #include "runtime/capture_trace.h"
 
 #include <algorithm>
@@ -190,6 +192,27 @@ private:
     std::vector<Region> regions_;
 };
 
+/* The imports the call made, scripted in order: name, return value, and what each changed behind
+   its pointer arguments. Arguments are not compared (argc 0): their count is not known here. */
+std::string imports(const rt_trace_log &log)
+{
+    std::string out;
+    for (size_t i = 0; i < log.import_count; i++) {
+        const rt_trace_import_call &c = log.imports[i];
+        std::string writes;
+        for (size_t w = c.first_write; w < c.first_write + c.writes; w++) {
+            const rt_trace_write &x = log.writes[w];
+            writes += (writes.empty() ? "" : ", ") + ("{\"arg\": " + std::to_string(x.arg) + ", \"offset\": " +
+                                                      std::to_string(x.offset) + ", \"bytes\": \"" +
+                                                      bytes_hex(log.write_bytes + x.data, x.size) + "\"}");
+        }
+        out += (out.empty() ? "" : ", ") + ("{\"name\": \"" + std::string(c.name) + "\", \"argc\": 0, \"ret\": " +
+                                             std::to_string(static_cast<unsigned long long>(c.ret)) + ", \"writes\": [" +
+                                             writes + "]}");
+    }
+    return out;
+}
+
 }  // namespace
 
 std::string rt::traced_case(const rt_trace_log &log, const rt_trace_args &args, const rt_traced_function &f,
@@ -210,7 +233,7 @@ std::string rt::traced_case(const rt_trace_log &log, const rt_trace_args &args, 
     return "{\"schema\": 1, \"address\": \"" + guest_hex(f.address) + "\", \"id\": \"" + id + "\", \"returns\": \"" +
            f.returns + "\", \"capture\": {\"function\": \"" + f.function + "\", \"run_id\": \"" + run +
            "\"}, \"args\": {" + arguments + "}, \"stack\": [" + stack + "], \"buffers\": {" + b.buffers() +
-           "}, \"memory\": [" + b.memory() + "], \"stubs\": [], \"imports\": []}";
+           "}, \"memory\": [" + b.memory() + "], \"stubs\": [], \"imports\": [" + imports(log) + "]}";
 }
 
 extern "C" int rt_capture_traced_call(const rt_traced_function *f, int number, const rt_trace_args *args,

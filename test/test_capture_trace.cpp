@@ -27,6 +27,13 @@ unsigned char *rt_image;
 
 namespace {
 
+/* The import use_import calls: writes v * 3 through out and returns 5. */
+int32_t fill(int32_t *out, int32_t v)
+{
+    *out = v * 3;
+    return 5;
+}
+
 struct Inner { int32_t pad, value; };
 struct Outer { int64_t pad; Inner *inner; };
 
@@ -87,6 +94,7 @@ struct Fixture {
     int32_t counter = 40;
     char src[24] = "trace this to the case";
     char dst[24] = {};
+    int32_t filled = 0x55555555;
 };
 
 int self_test()
@@ -124,6 +132,19 @@ int self_test()
     r = trace(0x140, arguments(reinterpret_cast<uint64_t>(f.dst), reinterpret_cast<uint64_t>(f.src), sizeof f.src), log);
     check(!log.incomplete && !std::memcmp(f.dst, f.src, sizeof f.src) && read_input(log, &f.src[23], 0) &&
           written(log, &f.dst[0]) && written(log, &f.dst[23]), "rep movsb: whole ranges");
+    rt_trace_log_free(&log);
+
+    /* An import: run natively, recorded with its result and what it wrote, and tracing resumes. */
+    int32_t filled = 0x55555555;
+    r = trace(0x2c0, arguments(reinterpret_cast<uint64_t>(&filled)), log);
+    check(!log.incomplete && r.rax == 5 + 21 && filled == 21, "import: result, and tracing resumed after it");
+    check(log.import_count == 1 && !std::strcmp(log.imports[0].name, "testFill") && log.imports[0].ret == 5 &&
+          log.imports[0].writes == 1 && log.writes[0].arg == 0 && log.writes[0].offset == 0 && log.writes[0].size == 4 &&
+          log.write_bytes[log.writes[0].data] == 21, "import: name, result and the byte it changed");
+    check(!read_input(log, &filled, 21) && written(log, &filled), "import: what it wrote is not an input");
+    for (size_t i = 0; i < log.count; i++)
+        check(log.addr[i] < reinterpret_cast<uintptr_t>(image + 0x1800) ||
+              log.addr[i] >= reinterpret_cast<uintptr_t>(image + 0x1808), "import: its slot is not an input");
     rt_trace_log_free(&log);
 
     /* What a case cannot express: the call still runs to the end, but there is no case. */
@@ -172,10 +193,6 @@ int emit(const char *dir)
 {
     setenv("BB_CAPTURE_DIR", dir, 1);
     setenv("BB_CAPTURE_RUN", "synthetic", 1);
-    std::string path = std::string(dir) + "/image.bin";
-    FILE *out = std::fopen(path.c_str(), "wb");
-    if (!out || std::fwrite(image, 1, image_size, out) != image_size || std::fclose(out)) return 1;
-
     Fixture f;
     const rt_code_range whole = {image, image + image_size};
     struct Call { rt_traced_function function; rt_trace_args args; };
@@ -193,6 +210,7 @@ int emit(const char *dir)
         {{"capture_trace_twice", 0x4000c0, "i32", at(0x0c0)}, arguments(reinterpret_cast<uint64_t>(&f.counter))},
         {{"capture_trace_copy", 0x400140, "void", at(0x140)},
          arguments(reinterpret_cast<uint64_t>(f.dst), reinterpret_cast<uint64_t>(f.src), sizeof f.src)},
+        {{"capture_trace_use_import", 0x4002c0, "i32", at(0x2c0)}, arguments(reinterpret_cast<uint64_t>(&f.filled))},
     };
     for (const Call &c : calls) {
         const int number = rt_capture_begin(c.function.function);
@@ -215,12 +233,30 @@ int main(int argc, char **argv)
     if (image == MAP_FAILED) return 1;
     std::memcpy(image, capture_trace_guest_start, image_size);
     rt_image = image;
+    /* Bind the import, as a loader would, and list it for the tracer. The image file the replay
+       builds from is written before binding (emit), so its slot holds 0 for the verifier to bind. */
+    static const rt_trace_import import_table[] = {{image + 0x1800, "testFill"}};
     if (!rt_trace_available()) {
         std::puts("capture trace: built without Capstone; nothing to test");
         return 0;
     }
-    if (argc == 2 && !std::strcmp(argv[1], "--self-test")) return self_test();
-    if (argc == 3 && !std::strcmp(argv[1], "--emit")) return emit(argv[2]);
+    const auto bind = [] {
+        const uint64_t target = reinterpret_cast<uintptr_t>(fill);
+        std::memcpy(image + 0x1800, &target, sizeof target);
+        rt_trace_set_imports(import_table, 1);
+    };
+    if (argc == 2 && !std::strcmp(argv[1], "--self-test")) return bind(), self_test();
+    if (argc == 3 && !std::strcmp(argv[1], "--image")) {
+        FILE *out = std::fopen(argv[2], "wb");
+        return out && std::fwrite(image, 1, image_size, out) == image_size && !std::fclose(out) ? 0 : 1;
+    }
+    if (argc == 3 && !std::strcmp(argv[1], "--emit")) {
+        const std::string path = std::string(argv[2]) + "/image.bin";
+        FILE *out = std::fopen(path.c_str(), "wb");
+        if (!out || std::fwrite(image, 1, image_size, out) != image_size || std::fclose(out)) return 1;
+        bind();
+        return emit(argv[2]);
+    }
     std::fprintf(stderr, "usage: %s --self-test | --emit DIR\n", argv[0]);
     return 2;
 }

@@ -8,8 +8,9 @@
    be recorded at all.
 
    --self-test  checks those behaviours, recording into a temporary directory.
-   --emit DIR   records into DIR (with DIR/image.bin, the image before hooking) for
-                test/capture_trace_integration.py. */
+   --emit DIR   records into DIR for test/capture_trace_integration.py.
+   --image FILE writes the image before binding and hooking, which the replay builds its
+                executable from. */
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -31,7 +32,14 @@ namespace {
 struct Inner { int32_t pad, value; };
 struct Outer { int64_t pad; Inner *inner; };
 
-int scale_calls, twice_calls, increment_calls, copy_calls, call_native_calls, count_down_calls;
+int scale_calls, twice_calls, increment_calls, copy_calls, call_native_calls, count_down_calls, use_import_calls;
+
+/* The import use_import calls; the test binds its slot as a loader would. */
+int32_t fill(int32_t *out, int32_t v)
+{
+    *out = v * 3;
+    return 5;
+}
 
 }  // namespace
 
@@ -47,6 +55,7 @@ static int32_t twice_replacement(int32_t *p) { ++twice_calls; ++*p; return ++*p;
 static void copy_replacement(char *dst, const char *src, size_t n) { ++copy_calls; std::memcpy(dst, src, n); }
 static void call_native_replacement(void (**fn)()) { ++call_native_calls; (*fn)(); }
 static int32_t count_down_replacement(int32_t) { ++count_down_calls; return 7; }
+static int32_t use_import_replacement(int32_t *out) { ++use_import_calls; return fill(out, 7) + *out; }
 
 /* The table plugin.c installs, sorted by address. */
 extern const rt_hook_entry game_hooks[];
@@ -57,6 +66,7 @@ const rt_hook_entry game_hooks[] = {
     {0x00400140u, 0x40u, "bb_capture_trace_copy", reinterpret_cast<rt_hook_fn>(copy_replacement), "void"},
     {0x00400200u, 0x40u, "bb_capture_trace_call_native", reinterpret_cast<rt_hook_fn>(call_native_replacement), "void"},
     {0x00400280u, 0x40u, "bb_capture_trace_count_down", reinterpret_cast<rt_hook_fn>(count_down_replacement), "i32"},
+    {0x004002c0u, 0x20u, "bb_capture_trace_use_import", reinterpret_cast<rt_hook_fn>(use_import_replacement), "i32"},
 };
 extern const unsigned game_hook_count;
 const unsigned game_hook_count = sizeof game_hooks / sizeof game_hooks[0];
@@ -87,14 +97,15 @@ int run(const std::string &dir, bool self_test)
                                                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
     if (image == MAP_FAILED) return 1;
     std::memcpy(image, capture_trace_guest_start, size);
-    FILE *out = std::fopen((dir + "/image.bin").c_str(), "wb");
-    if (!out || std::fwrite(image, 1, size, out) != size || std::fclose(out)) return 1;
+    const uint64_t target = reinterpret_cast<uintptr_t>(fill);
+    std::memcpy(image + 0x1800, &target, sizeof target);    /* the loader binds the import */
 
     /* increment and count_down are not wanted: called directly, they reach their replacements. */
     setenv("BB_CAPTURE_DIR", dir.c_str(), 1);
     setenv("BB_CAPTURE_RUN", "hooks", 1);
     setenv("BB_CAPTURE_TRACE", "1", 1);
-    setenv("BB_CAPTURE_ONLY", "capture_trace_scale,capture_trace_twice,capture_trace_copy,capture_trace_call_native,capture_trace_count_down", 1);
+    setenv("BB_CAPTURE_ONLY", "capture_trace_scale,capture_trace_twice,capture_trace_copy,capture_trace_call_native,capture_trace_count_down,"
+           "capture_trace_use_import", 1);
     rt_host host = {RT_HOST_API_VERSION, image, size, nullptr};
     if (rt_host_hooks_initialize(&host) || bbgame_init(&host)) {
         std::fprintf(stderr, "capture hooks: bbgame_init failed\n");
@@ -131,6 +142,15 @@ int run(const std::string &dir, bool self_test)
     for (int i = 0; i < 4; i++) call_native(&native);
     check(native_calls == 4 && call_native_calls == 1, "call_native: traced three times without a case, then replaced");
 
+    /* With the executable and the symbol list (BB_ELF, BB_CAPTURE_IMPORTS), the import's slot is
+       named and the call is recorded; without them it ends the trace. Either way the original
+       ran and gave its result. */
+    int32_t filled = 0;
+    auto use_import = reinterpret_cast<int32_t (*)(int32_t *)>(image + 0x2c0);
+    check(use_import(&filled) == 26 && filled == 21 && use_import_calls == 0, "use_import: traced, the import ran");
+    const char *elf = std::getenv("BB_ELF");
+    check(exists(dir + "/capture_trace_use_import/hooks_0000.json") == (elf && *elf), "use_import: a case exactly when imports are named");
+
     if (self_test) {
         check(exists(dir + "/capture_trace_scale/hooks_0000.json"), "scale: case written");
         check(exists(dir + "/capture_trace_twice/hooks_0000.json"), "twice: case written");
@@ -163,6 +183,11 @@ int main(int argc, char **argv)
         return rc;
     }
     if (argc == 3 && !std::strcmp(argv[1], "--emit")) return run(argv[2], false);
+    if (argc == 3 && !std::strcmp(argv[1], "--image")) {
+        FILE *out = std::fopen(argv[2], "wb");
+        const size_t size = static_cast<size_t>(capture_trace_guest_end - capture_trace_guest_start);
+        return out && std::fwrite(capture_trace_guest_start, 1, size, out) == size && !std::fclose(out) ? 0 : 1;
+    }
     std::fprintf(stderr, "usage: %s --self-test | --emit DIR\n", argv[0]);
     return 2;
 }

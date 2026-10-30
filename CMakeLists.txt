@@ -45,7 +45,7 @@ target_link_libraries(test_capture_hooks bbrt)
 add_test(NAME capture_hooks COMMAND test_capture_hooks --self-test)
 add_test(NAME capture_hooks_replay
          COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/capture_trace_integration.py $<TARGET_FILE:test_capture_hooks>
-                 capture_trace_scale capture_trace_twice capture_trace_copy)
+                 capture_trace_scale capture_trace_twice capture_trace_copy capture_trace_use_import)
 set_tests_properties(capture_hooks_replay PROPERTIES
     ENVIRONMENT "CC=${CMAKE_C_COMPILER};BB_LOADER=$<TARGET_FILE:pbloader>")
 add_executable(test_capture_poc test/test_capture_poc.cpp)

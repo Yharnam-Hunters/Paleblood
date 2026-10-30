@@ -19,6 +19,8 @@ void rt_trace_log_free(rt_trace_log *log) { (void)log; }
 
 int rt_trace_active(void) { return 0; }
 
+void rt_trace_set_imports(const rt_trace_import *table, size_t count) { (void)table, (void)count; }
+
 void rt_trace_set_redirects(const rt_trace_redirect *table, size_t count) { (void)table, (void)count; }
 
 int rt_trace_relocate(const void *src, size_t min_bytes, void *dst, size_t *copied, size_t *written)

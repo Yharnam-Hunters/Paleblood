@@ -60,7 +60,7 @@ losing the current run capability. The project-owned runtime roadmap is:
    the original under a single-step tracer that notes every byte it reads before writing it, and
    the trace becomes a schema-1 case ([capture architecture](capture-architecture.md)). Hooked calls
    are recorded this way when `BB_CAPTURE_TRACE=1`, proven on synthetic code replayed by
-   `tools/verify.py`; imports and thread-local storage are the next steps.
+   `tools/verify.py`, imports scripted from their results and writes; thread-local storage is next.
 3. **Kernel, threads and memory**, then 4. **files**, 5. **input**, 6. **audio**, 7. **video out**.
 8. **GNM and shaders**, the largest part: graphics are rebuilt at the engine level, by replacing
    the game's own graphics layer (GX) with our Vulkan code, rather than emulating the PS4's GPU.

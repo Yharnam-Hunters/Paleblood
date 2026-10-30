@@ -11,8 +11,8 @@
    every byte the code reads before writing it is an input, and every byte it writes is noted, so
    the case can give it somewhere to write. The function's own stack frame is left out; reads of
    its stack arguments are counted. The call always runs to the end and its result is returned:
-   when something cannot be traced (an instruction or operand the tracer does not model, code
-   outside the range, a size limit), tracing stops, the call finishes untraced, and the log says
+   when something cannot be traced (an instruction or operand the tracer does not model, native
+   code that is not a listed import, a size limit), tracing stops, the call finishes untraced, and the log says
    why, so no case is written from it. Only available when built with Capstone. */
 
 #include <stddef.h>
@@ -43,6 +43,20 @@ typedef struct {
 
 enum { RT_TRACE_READ = 1, RT_TRACE_WRITTEN = 2 };
 
+/* An import the traced code called: its result and what it changed behind its pointer
+   arguments, as the case scripts it (docs/VERIFY.md, "imports"). */
+typedef struct {
+    uint8_t arg;               /* rdi = 0 ... r9 = 5 */
+    uint32_t offset, size;     /* bytes at arg + offset */
+    size_t data;               /* into rt_trace_log.write_bytes */
+} rt_trace_write;
+
+typedef struct {
+    const char *name;          /* from the import table */
+    uint64_t ret;              /* rax on return */
+    size_t first_write, writes;
+} rt_trace_import_call;
+
 typedef struct {
     size_t count;              /* bytes, in ascending address order */
     uint64_t *addr;
@@ -51,6 +65,11 @@ typedef struct {
     size_t qword_count;        /* addresses of the eight-byte reads that were inputs */
     uint64_t *qword;
     unsigned stack_slots;      /* stack arguments read: 0 .. RT_TRACE_STACK_SLOTS */
+    size_t import_count;       /* imports called, in order */
+    rt_trace_import_call *imports;
+    size_t write_count;
+    rt_trace_write *writes;
+    uint8_t *write_bytes;
     uint64_t steps;            /* instructions traced */
     const char *incomplete;    /* NULL when the whole call was traced; else why it was not */
 } rt_trace_log;
@@ -75,6 +94,16 @@ typedef struct {
     const void *from, *to;
 } rt_trace_redirect;
 void rt_trace_set_redirects(const rt_trace_redirect *table, size_t count);
+
+/* Imports the traced code may call: the image slot each is called through and its name. When
+   traced code calls or jumps through a listed slot into native code, the call runs untraced and
+   is recorded (name, return value, bytes changed behind its pointer arguments), and tracing
+   resumes when it returns. Sorted by `slot`; the table must outlive every trace. */
+typedef struct {
+    const void *slot;
+    const char *name;
+} rt_trace_import;
+void rt_trace_set_imports(const rt_trace_import *table, size_t count);
 
 enum { RT_RELOCATE_MAX = 64 };   /* bytes of relocated entry code, including the jump back */
 
