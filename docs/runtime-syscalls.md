@@ -719,6 +719,43 @@ belongs to the batch and instance calls, which stop by name until they are imple
 - a context the runtime did not hand out;
 - registering a module twice.
 
+## Audio output start-up (`sceAudioOutInit`, `sceAudioOutOpen`, `sceAudioOutSetVolume`, issue #37)
+
+The OpenOrbis homebrew SDK's `AudioOut.h` declares `int32_t sceAudioOutInit(void)` and
+`int32_t sceAudioOutOpen(user, port type, index, length, sample rate, param)`. Its `_types`
+headers give:
+- port type 0 (main);
+- format 4 (float stereo);
+- the error codes `0x8026000E` (already initialized) and `0x8026000F` (not initialized).
+
+**What the executable does:**
+- Its only init call (`0x0111b665`) accepts success or exactly `0x8026000E`.
+- Its only open (`0x0111b69d`) passes user `0xff` (the system user in the SDK's user types), the
+  main port, index 0, 256 samples, 48000 Hz and a format. It keeps a non-negative result as the
+  port handle.
+- The format is the executable's own evidence. Its output callback (`0x0111b600`) accepts 2 or 8
+  channels and passes `4 | (channels == 8)`. So 4 is float stereo (as in the SDK) and 5 is float
+  with eight channels. The boot opens eight channels.
+- A second open (`0x0111b6fc`) passes port type 1 with the same settings, and does not check the
+  result. The PS4 name of type 1 is not public; the sibling Vita SDK calls it BGM.
+
+**What the runtime does.** It records each open port and hands out handles from 1. Sound output
+belongs to the output calls, which stop by name until they are implemented.
+
+**What stops by name:** any open other than the observed ones, and running out of handles.
+
+`int32_t sceAudioOutSetVolume(handle, flag, int32_t *volume)`, as the SDK declares it, comes next.
+The executable's only call (`0x0111b6d6`) passes its new port, flag `0xff` and eight volumes of
+32768, and treats nonzero as failure. Flag bit n selects channel n, whose volume is `volume[n]`.
+
+**What the runtime does.** It records the volumes.
+
+**What stops by name:**
+- a handle it did not hand out;
+- a flag naming a channel the port does not have;
+- a missing array;
+- a volume outside 0–32768.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
