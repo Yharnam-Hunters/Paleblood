@@ -25,7 +25,7 @@ jobs:
       - name: Install optional instruction-trace dependency
         run: python3 -m pip install --disable-pip-version-check capstone==5.0.9
       - name: Install isolated generator dependency
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap apparmor
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap apparmor libcapstone-dev
       - name: Configure the bubblewrap namespace permission on the CI runner
         # Ubuntu restricts user namespaces unless the sandbox executable has an application profile.
         # Configure only that launcher; keep AppArmor and global namespace restrictions enabled.

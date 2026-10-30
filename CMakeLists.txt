@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 cmake_minimum_required(VERSION 3.20)
-project(paleblood C CXX)
+project(paleblood C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 20)
@@ -32,6 +32,13 @@ add_test(NAME host_hooks COMMAND test_host_hooks)
 add_executable(test_capture test/test_capture.cpp)
 target_link_libraries(test_capture bbrt)
 add_test(NAME capture COMMAND test_capture)
+add_executable(test_capture_trace test/test_capture_trace.cpp test/capture_trace_guest.S)
+target_link_libraries(test_capture_trace bbrt)
+add_test(NAME capture_trace COMMAND test_capture_trace --self-test)
+add_test(NAME capture_trace_replay
+         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/capture_trace_integration.py $<TARGET_FILE:test_capture_trace>)
+set_tests_properties(capture_trace_replay PROPERTIES
+    ENVIRONMENT "CC=${CMAKE_C_COMPILER};BB_LOADER=$<TARGET_FILE:pbloader>")
 add_executable(test_capture_poc test/test_capture_poc.cpp)
 add_test(NAME capture_poc_fail_closed COMMAND test_capture_poc --self-test)
 add_test(NAME capture_poc_replay

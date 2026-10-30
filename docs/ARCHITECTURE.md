@@ -53,10 +53,11 @@ losing the current run capability. The project-owned runtime roadmap is:
    system modules, applies every relocation and binds each import through a callback. Its mapped
    image is checked against the target image, and the verification harness uses it.
 2. **Generic capture:** recording a function's inputs from the runtime side, with no recording
-   code inside replacements, so recordings of real play come from the runtime. The host's current
-   direct-jump hook interface has no return-aware observer or typed descriptors; the isolated
-   design and synthetic proof in [capture architecture](capture-architecture.md) do not connect
-   capture to production hooks.
+   code inside replacements, so recordings of real play come from the runtime. A sampled call runs
+   the original under a single-step tracer that notes every byte it reads before writing it, and
+   the trace becomes a schema-1 case ([capture architecture](capture-architecture.md)). The tracer
+   and case builder are done and proven on synthetic code replayed by `tools/verify.py`; connecting
+   them to production hooks, imports and thread-local storage are the next steps.
 3. **Kernel, threads and memory**, then 4. **files**, 5. **input**, 6. **audio**, 7. **video out**.
 8. **GNM and shaders**, the largest part: graphics are rebuilt at the engine level, by replacing
    the game's own graphics layer (GX) with our Vulkan code, rather than emulating the PS4's GPU.
