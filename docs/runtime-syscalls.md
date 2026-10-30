@@ -541,6 +541,23 @@ flexible memory to a budget. The budget is not established and the runtime does 
 - a length that is not whole 16 KiB pages;
 - a missing variable.
 
+## Network library start-up (`sceNetInit`, `sceNetTerm`, `sceNetPoolCreate`, issue #41)
+
+The names and argument shapes come from the OpenOrbis homebrew SDK's `Net.h`, which declares
+`sceNetTerm` as returning nothing; the executable reads its result. The behaviour comes from the
+executable's own calls:
+- **`sceNetInit`.** Seven subsystems each call it once, behind a flag of their own. One
+  (`0x011c7992`) accepts success or exactly `0x80410110`, and then does not terminate the library
+  itself. So a repeat initialize answers `0x80410110`, "already initialized".
+- **`sceNetTerm`.** Its callers (`0x011c79d9`) accept 0 or exactly `0x804101c8`. Which condition
+  gives the second is not established, so terminating a library that is not initialized stops by
+  name.
+- **`sceNetPoolCreate`.** Every call passes a name and flags 0, treats a negative result as
+  failure, and keeps the result as a pool id it passes on. The runtime hands out ids from 1.
+
+The runtime is offline: initializing touches no network. A pool before initialize, without a name
+or size, or with flags stops by name.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.

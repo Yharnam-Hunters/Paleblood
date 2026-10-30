@@ -430,6 +430,16 @@ static void flex_flags(void) { void *a = NULL; flex_map(&a, 0x4000, 3, 0x10); }
 static void flex_partial_page(void) { void *a = NULL; flex_map(&a, 0x1000, 3, 0); }
 static void flex_exec(void) { void *a = NULL; flex_map(&a, 0x4000, 7, 0); }
 
+/* libSceNet start-up: initialize once, a repeat answers 0x80410110; pools are ids. */
+typedef int32_t (*f_net_none)(void);
+typedef int32_t (*f_net_pool)(const char *, int32_t, int32_t);
+static f_net_none net_term_fn;
+static f_net_pool net_pool_fn;
+static void net_term_uninitialized(void) { net_term_fn(); }
+static void net_pool_uninitialized(void) { net_pool_fn("pool", 0x1000, 0); }
+static void net_pool_flags(void) { net_pool_fn("pool", 0x1000, 1); }
+static void net_pool_no_name(void) { net_pool_fn(NULL, 0x1000, 0); }
+
 int main(void)
 {
     /* Unresolved entries are still callable diagnostics, but are not reported as implemented. */
@@ -1134,6 +1144,24 @@ int main(void)
         CHECK(died_in_fatal(flex_flags));
         CHECK(died_in_fatal(flex_partial_page));
         CHECK(died_in_fatal(flex_exec));
+    }
+
+    /* sceNetInit / sceNetTerm / sceNetPoolCreate. */
+    const f_net_none net_init_fn = (f_net_none)fn("libSceNet", "sceNetInit");
+    net_term_fn = (f_net_none)fn("libSceNet", "sceNetTerm");
+    net_pool_fn = (f_net_pool)fn("libSceNet", "sceNetPoolCreate");
+    if (net_init_fn && net_term_fn && net_pool_fn) {
+        CHECK(died_in_fatal(net_term_uninitialized));
+        CHECK(died_in_fatal(net_pool_uninitialized));
+        CHECK(net_init_fn() == 0);
+        CHECK(net_init_fn() == (int32_t)0x80410110u);
+        const int32_t a = net_pool_fn("FD4HttpMan", 0x4000, 0), b = net_pool_fn("other", 0x1000, 0);
+        CHECK(a >= 0 && b >= 0 && a != b);
+        CHECK(died_in_fatal(net_pool_flags));
+        CHECK(died_in_fatal(net_pool_no_name));
+        CHECK(net_term_fn() == 0);
+        CHECK(net_init_fn() == 0);  /* initialized again after a terminate */
+        CHECK(net_term_fn() == 0);
     }
 
     if (!failures) puts("syslib: ok");
