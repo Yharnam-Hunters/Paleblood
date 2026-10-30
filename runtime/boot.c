@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* pbboot: runs a PS4 executable's entry on Paleblood's runtime, as far as the runtime goes.
 
-     pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--nids NID_DB.xml]
+     pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--nids NID_DB.xml]
             [--status OUT.json] [--timeout SECONDS] [--trace]
      pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]
             (list every import: importer, library, symbol, kind, provider, provider offset, size)
@@ -361,6 +361,22 @@ static int add_app_param(const char *arg)
     return 0;
 }
 
+/* --system-param ID=VALUE, a console system setting (tools/boot.py). Returns 0 when it was added. */
+static int add_system_param(const char *arg)
+{
+    const char *eq = strchr(arg, '=');
+    if (!eq || !eq[1] || rt_process.system_param_count == RT_MAX_SYSTEM_PARAMS) return -1;
+    char *end;
+    const long id = strtol(arg, &end, 0);
+    if (end != eq || id < 0 || id > INT32_MAX) return -1;
+    const long value = strtol(eq + 1, &end, 0);
+    if (*end || value < INT32_MIN || value > INT32_MAX) return -1;
+    for (uint32_t i = 0; i < rt_process.system_param_count; i++)
+        if (rt_process.system_params[i].id == id) return -1;
+    rt_process.system_params[rt_process.system_param_count++] = (rt_system_param){(int32_t)id, (int32_t)value};
+    return 0;
+}
+
 /* --stub-module ID:NAME, the id in C notation (0x0038). Returns 0 when it was added. */
 static int add_stub_module(const char *arg)
 {
@@ -377,7 +393,7 @@ static int add_stub_module(const char *arg)
 }
 
 static const char *usage =
-    "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--nids NID_DB.xml]\n"
+    "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--nids NID_DB.xml]\n"
     "              [--status OUT.json] [--timeout S] [--trace]\n"
     "       pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]\n";
 
@@ -394,6 +410,12 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--stub-module") && i + 1 < argc) {
             if (add_stub_module(argv[++i])) {
                 fprintf(stderr, "pbboot: --stub-module %s: want a new ID:NAME, the id 16 bits\n", argv[i]);
+                return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "--system-param") && i + 1 < argc) {
+            if (add_system_param(argv[++i])) {
+                fprintf(stderr, "pbboot: --system-param %s: want a new ID=VALUE\n", argv[i]);
                 return 2;
             }
         }

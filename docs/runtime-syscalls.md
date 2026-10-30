@@ -481,6 +481,23 @@ The executable calls it twice:
 So the first call succeeds and a repeat answers `0x80b80002`, the "already initialized" code. No
 dialog is shown: each dialog library's own calls do that, and none is provided yet.
 
+## System settings (`sceSystemServiceParamGetInt`, issue #40)
+
+`sceSystemServiceParamGetInt(id, int32_t *value)` reads a console system setting. The setting
+ids and the language codes come from the OpenOrbis homebrew SDK's `_types/sys_service.h` (id 1 is
+the language, and 1 there is English (United States)).
+
+All nine of the executable's call sites ask for id 1, into a variable preset to -1. They accept
+codes 0–20 and fall back to a default otherwise.
+
+**What the runtime does.** A setting is the console owner's choice, so the runtime answers what the
+person running it chose:
+- `tools/boot.py` passes `--system-param ID=VALUE`;
+- it defaults the language to 1 (English, United States);
+- `--system-param 1=18`, for example, chooses English (United Kingdom).
+
+**What stops by name:** a setting nobody gave a value, and a missing variable.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.

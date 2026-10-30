@@ -140,6 +140,24 @@ def app_param_args(root: str, sfo_path: str) -> list[str]:
     return args
 
 
+# The console's system settings the runtime answers (sceSystemServiceParamGetInt): id 1 is the
+# language, 1 English (United States) in the public id list. Your own choice overrides it:
+# --system-param ID=VALUE.
+SYSTEM_PARAM_DEFAULTS = {1: 1}
+
+
+def system_param_args(overrides: list[str]) -> list[str]:
+    """--system-param for every default, each replaced by an override of the same id."""
+    params = dict(SYSTEM_PARAM_DEFAULTS)
+    for item in overrides:
+        key, _, value = item.partition('=')
+        try:
+            params[int(key, 0)] = int(value, 0)
+        except ValueError:
+            raise ValueError(f'--system-param {item}: want ID=VALUE')
+    return [a for k in sorted(params) for a in ('--system-param', f'{k}={params[k]}')]
+
+
 def stops_at(b: dict) -> str:
     s = b.get('first_unimplemented')
     if s:
@@ -223,6 +241,8 @@ def main() -> int:
     ap.add_argument('--timeout', type=int, default=30)
     ap.add_argument('--trace', action='store_true')
     ap.add_argument('--param-sfo', default=None, help="your own copy's sce_sys/param.sfo")
+    ap.add_argument('--system-param', action='append', default=[], metavar='ID=VALUE',
+                    help='a console system setting, e.g. 1=18 for English (United Kingdom)')
     ap.add_argument('--no-record', action='store_true', help='run and print only')
     a = ap.parse_args()
     elf = a.elf or default_elf()
@@ -242,6 +262,7 @@ def main() -> int:
     try:
         stubs = stub_module_args(ROOT)
         stubs += app_param_args(ROOT, a.param_sfo or default_param_sfo())
+        stubs += system_param_args(a.system_param)
     except (ValueError, OSError) as e:
         print(f'boot: {e}', file=sys.stderr)
         return 3

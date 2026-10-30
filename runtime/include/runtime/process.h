@@ -34,6 +34,16 @@ typedef struct {
 
 #define RT_MAX_APP_PARAMS 16
 
+/* A console system setting (the language, ...), as the person running the runtime chooses it
+   (tools/boot.py passes each to runtime/boot.c as --system-param ID=VALUE).
+   sceSystemServiceParamGetInt answers from these (runtime/syslib/system_service.c). */
+typedef struct {
+    int32_t id;
+    int32_t value;
+} rt_system_param;
+
+#define RT_MAX_SYSTEM_PARAMS 16
+
 typedef struct {
     void *image;         /* where the executable is mapped */
     uint64_t image_size;
@@ -44,6 +54,8 @@ typedef struct {
     rt_app_param app_params[RT_MAX_APP_PARAMS];
     uint32_t app_param_count;
     int app_boot_param_unread; /* --app-param boot=unread: the title never reads the boot parameter */
+    rt_system_param system_params[RT_MAX_SYSTEM_PARAMS];
+    uint32_t system_param_count;
     /* The executable's thread-local storage template (its PT_TLS segment): every guest thread's
        block is a copy of it, placed just below the thread pointer (x86-64 variant II). */
     const void *tls_image;
