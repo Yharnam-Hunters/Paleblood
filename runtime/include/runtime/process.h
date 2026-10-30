@@ -22,6 +22,18 @@ typedef struct {
 
 #define RT_MAX_STUB_MODULES 32
 
+/* A title's application parameter, as the game's own data declares it (game/app_params.csv; tools/boot.py
+   passes each to runtime/boot.c as --app-param ID=VALUE or ID=unread): the value the title's own
+   parameter file holds, or "unread" when the evidence shows the title never reads the answer.
+   sceAppContentAppParamGetInt answers from these (runtime/syslib/app_content.c). */
+typedef struct {
+    int32_t id;
+    int unread;     /* answer success without writing: the title never reads the value */
+    int32_t value;
+} rt_app_param;
+
+#define RT_MAX_APP_PARAMS 16
+
 typedef struct {
     void *image;         /* where the executable is mapped */
     uint64_t image_size;
@@ -29,6 +41,9 @@ typedef struct {
     void **heap_api;     /* the C library's heap functions, as it registered them, or NULL */
     rt_stub_module stub_modules[RT_MAX_STUB_MODULES];
     uint32_t stub_module_count;
+    rt_app_param app_params[RT_MAX_APP_PARAMS];
+    uint32_t app_param_count;
+    int app_boot_param_unread; /* --app-param boot=unread: the title never reads the boot parameter */
 } rt_process_info;
 
 extern rt_process_info rt_process;

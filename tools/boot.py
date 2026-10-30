@@ -2,12 +2,16 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Runs the boot harness (runtime/boot.c) on your executable and records the result.
 
-usage: boot.py [--elf EBOOT.elf] [--nids NID_DB.xml] [--timeout S] [--trace] [--no-record]
+usage: boot.py [--elf EBOOT.elf] [--param-sfo PARAM.SFO] [--nids NID_DB.xml] [--timeout S] [--trace] [--no-record]
 
 The game's own system modules listed in game/modules.csv with action "map" are mapped next to the
 executable (from the same directory: NAME.elf), and the executable's imports they export are
-bound to them. Those with action "stub" are not mapped: each is passed with its system module id
-(the "sysmodule" column), and a request to load it at run time is reported as done.
+bound to them. Those with action "stub" (shipped, nothing imported from them) or "runtime" (a
+system module whose functions the runtime provides) are not mapped: each is passed with its system
+module id (the "sysmodule" column), and a request to load it at run time is reported as done.
+The title's application parameters come from game/app_params.csv: a row with source "sfo" takes
+its value from your own copy's parameter file (--param-sfo, default $BB_PARAM_SFO, then
+$BB_DATA_ROOT/merged/sce_sys/param.sfo), a row with source "unread" is passed as such.
 
 Writes, from the run:
   symbols/boot.json           where the boot stops, the furthest boot milestone, the import
@@ -35,6 +39,7 @@ import datetime
 import glob
 import json
 import os
+import struct
 import subprocess
 import sys
 import tempfile
@@ -48,6 +53,7 @@ KEPT = ('phase', 'outcome', 'milestone', 'milestone_index', 'milestones', 'impor
         'stub_modules', 'first_unimplemented', 'fault')
 IMPORT_FIELDS = ('importer', 'library', 'symbol', 'kind', 'provider')
 MODULE_FIELDS = ('module', 'offset', 'size', 'symbol', 'status')
+SFO_INTEGER = 0x0404
 
 
 def default_elf() -> str:
@@ -76,15 +82,61 @@ def mapped_modules(root: str) -> list[str]:
 
 
 def stub_module_args(root: str) -> list[str]:
-    """--stub-module ID:NAME for every module with action "stub"; one without an id is an error."""
+    """--stub-module ID:NAME for every module with action "stub" (shipped, not mapped) or "runtime"
+    (a system module the runtime provides): a load of either is answered as done without mapping
+    anything. One without an id is an error."""
     args = []
     for r in module_rows(root):
-        if r['action'] != 'stub':
+        if r['action'] not in ('stub', 'runtime'):
             continue
         sysmodule = (r.get('sysmodule') or '').strip()
         if not sysmodule:
             raise ValueError(f"game/modules.csv: {r['module']}: a stub module needs its sysmodule id")
         args += ['--stub-module', f"{sysmodule}:{r['module']}"]
+    return args
+
+
+def default_param_sfo() -> str:
+    root = os.environ.get('BB_DATA_ROOT') or os.path.join(ROOT, '..', 'data')
+    return os.environ.get('BB_PARAM_SFO') or os.path.join(root, 'merged', 'sce_sys', 'param.sfo')
+
+
+def sfo_integers(path: str) -> dict[str, int]:
+    """The 32-bit integer entries of a parameter file (PSF: a header, an index of keys, the data)."""
+    with open(path, 'rb') as f:
+        data = f.read()
+    magic, _version, key_table, data_table, count = struct.unpack_from('<4sIIII', data, 0)
+    if magic != b'\0PSF':
+        raise ValueError(f'{path}: not a parameter file')
+    integers = {}
+    for i in range(count):
+        key_at, fmt, length, _max, data_at = struct.unpack_from('<HHIII', data, 20 + 16 * i)
+        key_start = key_table + key_at
+        key = data[key_start:data.index(b'\0', key_start)].decode('ascii')
+        if fmt == SFO_INTEGER and length == 4:
+            integers[key] = struct.unpack_from('<i', data, data_table + data_at)[0]
+    return integers
+
+
+def app_param_args(root: str, sfo_path: str) -> list[str]:
+    """--app-param for every row of game/app_params.csv: "sfo" rows take the value of their key in
+    the title's own parameter file (which must hold it), "unread" rows pass through."""
+    path = os.path.join(root, 'game', 'app_params.csv')
+    if not os.path.isfile(path):
+        return []
+    with open(path, newline='') as f:
+        rows = list(csv.DictReader(f))
+    integers = sfo_integers(sfo_path) if any(r['source'] == 'sfo' for r in rows) else {}
+    args = []
+    for r in rows:
+        if r['source'] == 'unread':
+            args += ['--app-param', f"{r['id']}=unread"]
+        elif r['source'] == 'sfo':
+            if r['key'] not in integers:
+                raise ValueError(f"{sfo_path}: no integer {r['key']} (game/app_params.csv, id {r['id']})")
+            args += ['--app-param', f"{r['id']}={integers[r['key']]}"]
+        else:
+            raise ValueError(f"game/app_params.csv: id {r['id']}: source must be sfo or unread")
     return args
 
 
@@ -170,6 +222,7 @@ def main() -> int:
     ap.add_argument('--nids', default=None)
     ap.add_argument('--timeout', type=int, default=30)
     ap.add_argument('--trace', action='store_true')
+    ap.add_argument('--param-sfo', default=None, help="your own copy's sce_sys/param.sfo")
     ap.add_argument('--no-record', action='store_true', help='run and print only')
     a = ap.parse_args()
     elf = a.elf or default_elf()
@@ -188,7 +241,8 @@ def main() -> int:
         objects += ['--module', path]
     try:
         stubs = stub_module_args(ROOT)
-    except ValueError as e:
+        stubs += app_param_args(ROOT, a.param_sfo or default_param_sfo())
+    except (ValueError, OSError) as e:
         print(f'boot: {e}', file=sys.stderr)
         return 3
     nids = a.nids or default_nids()

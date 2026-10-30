@@ -55,6 +55,12 @@ it would have satisfied still shows up unbound in `symbols/imports.csv` and stop
 beyond success, and which ids they pass, is not yet observed: the boot stops before the first load
 today.
 
+**System modules the runtime provides**: a module the title does not ship but loads by id (it is part
+of the system) can be listed with action `runtime` once the runtime implements the functions the
+executable imports from it. `tools/boot.py` passes it like a stub, so a load is reported as done,
+and its imports bind to the runtime's entries by name. The first is `libSceAppContent` (`0x00b4` in
+the OpenOrbis id list), below.
+
 **Unknown**: the error values (a module not loaded, an id the system does not know), and whether a
 second load of a loaded module is counted, ignored or refused. Each is a named fatal until a console
 measurement or a guest call site settles it.
@@ -349,6 +355,39 @@ FreeBSD's `sys_gettimeofday` does.
 What stops by name:
 - a timezone argument (obsolete in POSIX; what the PS4 fills in is not established);
 - a missing timeval for `sceKernelGettimeofday` (its error value is not established).
+
+## Application content (`libSceAppContent`, issue #34)
+
+`eboot` loads system module `0x00b4` (`libSceAppContent` in the OpenOrbis id list). It imports
+`sceAppContentInitialize`, `sceAppContentAppParamGetInt` and `sceAppContentGetAddcontInfoList`
+from it. The public toolchain header names these functions but gives no signatures, so the shapes
+come from the executable's own calls at `0x024261d8`–`0x0242622a`:
+
+- **Initialize:** `sceAppContentInitialize(init, boot)`. Both structures are zeroed first and the
+  result is not checked.
+- **Parameters:** `sceAppContentAppParamGetInt(id, int32_t *value)` for ids 0 to 4, each into a
+  global, results not checked.
+
+Ids 1–4 are the title's `USER_DEFINED_PARAM_1`–`4` from its own `sce_sys/param.sfo`. Id 0 is the
+SKU flag, which the system answers. Neither the boot parameter's contents, the SKU answer, the
+answer for a key the file lacks, nor the error values are public.
+
+**Which answers this executable observes.** A scan of every RIP-relative reference shows that the
+boot parameter and the outputs for ids 0, 2, 3 and 4 are only passed to these calls. Nothing reads
+them afterwards. Only id 1's output is read (at five sites).
+
+**How the runtime answers.** It answers only what the game's own data declares, in
+`game/app_params.csv`:
+- an id with source `sfo` gets its value from the user's own parameter file (read by
+  `tools/boot.py` and passed as `--app-param ID=VALUE`);
+- an id with source `unread` succeeds without being written;
+- `boot` set to `unread` lets the initialize call pass over the boot parameter.
+
+Anything else stops by name: an undeclared id, a boot parameter not declared unread, and a missing
+value variable.
+
+A local boot with the affinity probe and the rwlocks let through (not committed) loads the module,
+passes these calls, and stops next at `pthread_cond_init` (`libScePosix`).
 
 ## Implementation rule
 
