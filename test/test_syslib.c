@@ -447,6 +447,13 @@ static f_http_init http_init_fn;
 static int32_t http_test_pool, http_test_ssl;
 static void http_init_unknown_pool(void) { http_init_fn(999, http_test_ssl, 0x4000); }
 static void http_init_unknown_ssl(void) { http_init_fn(http_test_pool, 999, 0x4000); }
+typedef int32_t (*f_http_template)(int32_t, const char *, int32_t, int32_t);
+static f_http_template http_template_fn;
+static int32_t http_test_context;
+static void http_template_unknown_context(void) { http_template_fn(999, "agent", 2, 1); }
+static void http_template_no_agent(void) { http_template_fn(http_test_context, NULL, 2, 1); }
+static void http_template_version(void) { http_template_fn(http_test_context, "agent", 3, 1); }
+static void http_template_proxy(void) { http_template_fn(http_test_context, "agent", 2, 0); }
 
 int main(void)
 {
@@ -1178,6 +1185,17 @@ int main(void)
             CHECK(http >= 0 && http_init_fn(b, http_test_ssl, 0x4000) != http);
             CHECK(died_in_fatal(http_init_unknown_pool));
             CHECK(died_in_fatal(http_init_unknown_ssl));
+            /* Templates over an HTTP context: the executable's call passes HTTP/1.1 and proxy 1. */
+            http_template_fn = (f_http_template)fn("libSceHttp", "sceHttpCreateTemplate");
+            if (http_template_fn) {
+                http_test_context = http;
+                const int32_t t1 = http_template_fn(http, "agent", 2, 1);
+                CHECK(t1 >= 0 && http_template_fn(http, "agent", 1, 1) != t1);
+                CHECK(died_in_fatal(http_template_unknown_context));
+                CHECK(died_in_fatal(http_template_no_agent));
+                CHECK(died_in_fatal(http_template_version));
+                CHECK(died_in_fatal(http_template_proxy));
+            }
         }
         CHECK(net_term_fn() == 0);
         CHECK(net_init_fn() == 0);  /* initialized again after a terminate */

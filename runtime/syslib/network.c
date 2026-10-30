@@ -129,3 +129,29 @@ static int32_t http_init(int32_t pool, int32_t ssl, uint64_t pool_size)
     return context;
 }
 RT_SYSLIB("libSceHttp", sceHttpInit, http_init);
+
+/* HTTP templates: sceHttpCreateTemplate(int32_t context, const char *user_agent, int32_t version,
+   int32_t proxy), as the OpenOrbis homebrew SDK's Http.h declares it; its version list has 1 for
+   HTTP/1.0 and 2 for HTTP/1.1. The executable's only call (0x013d1d32) passes the HTTP context id,
+   its user agent string, version 2 and proxy 1, keeps the result as a template id and passes it
+   straight to the next HTTP call. The runtime is offline: a template is only an id. What is not
+   established stops by name: a context the runtime did not hand out, no user agent, a version
+   other than HTTP/1.0 or 1.1, and a proxy value other than the observed 1 (its meaning is not
+   public). */
+enum { HTTP_VERSION_1_0 = 1, HTTP_VERSION_1_1 = 2, HTTP_PROXY_OBSERVED = 1, MAX_HTTP_TEMPLATES = 64 };
+
+static atomic_int http_templates_created;
+
+static int32_t http_create_template(int32_t context, const char *user_agent, int32_t version, int32_t proxy)
+{
+    static const char fn[] = "sceHttpCreateTemplate";
+    if (context < 1 || context > atomic_load(&http_contexts_created))
+        rt_fatal(fn, "an HTTP context the runtime did not hand out: the error value is not established");
+    if (!user_agent) rt_fatal(fn, "no user agent: the error value is not established");
+    if (version != HTTP_VERSION_1_0 && version != HTTP_VERSION_1_1) rt_fatal(fn, "an HTTP version that is not established");
+    if (proxy != HTTP_PROXY_OBSERVED) rt_fatal(fn, "a proxy value other than the observed 1: its meaning is not established");
+    const int template_id = atomic_fetch_add(&http_templates_created, 1) + 1; /* ids from 1 */
+    if (template_id > MAX_HTTP_TEMPLATES) rt_fatal(fn, "more templates than the runtime hands out ids for");
+    return template_id;
+}
+RT_SYSLIB("libSceHttp", sceHttpCreateTemplate, http_create_template);

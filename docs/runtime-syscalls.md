@@ -573,6 +573,22 @@ back on teardown. So each call answers a context id; offline, a context is only 
 
 **What stops by name:** an id the runtime did not hand out, and a size of 0.
 
+## HTTP templates (`sceHttpCreateTemplate`, issue #41)
+
+`sceHttpCreateTemplate(int32_t context, const char *user_agent, int32_t version, int32_t proxy)`,
+as the OpenOrbis homebrew SDK's `Http.h` declares it. Its version list has 1 for HTTP/1.0 and 2
+for HTTP/1.1.
+
+The executable's only call (`0x013d1d32`) passes the HTTP context id, its user agent string,
+version 2 and proxy 1. It keeps the result as a template id and passes it straight to the next
+HTTP call. Offline, a template is only an id.
+
+**What stops by name:**
+- a context the runtime did not hand out;
+- no user agent;
+- a version other than HTTP/1.0 or 1.1;
+- a proxy value other than the observed 1 (its meaning is not public).
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
