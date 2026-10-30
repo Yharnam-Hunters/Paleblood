@@ -606,6 +606,21 @@ belongs to other calls, which stop by name until they are implemented.
 
 **What stops by name:** an HTTP context the runtime did not hand out, and a missing slot.
 
+## HTTP request headers (`sceHttpAddRequestHeader`, issue #41)
+
+`sceHttpAddRequestHeader(id, name, value, mode)`, as the OpenOrbis homebrew SDK's `Http.h`
+declares it. The executable's only call (`0x013d1ed5`) adds a header to its template with mode 0,
+and treats only 0 as success.
+
+A header only matters to a request the library sends. Offline, no request is ever sent, because
+every sending call stops by name. So the runtime checks the arguments and answers 0 without
+keeping the header.
+
+**What stops by name:**
+- an id that is not one of the runtime's templates;
+- a missing name or value;
+- a mode other than the observed 0 (the modes are not public).
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.

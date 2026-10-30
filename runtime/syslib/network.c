@@ -199,3 +199,23 @@ static int32_t http_create_epoll(int32_t context, http_epoll **handle)
     return 0;
 }
 RT_SYSLIB("libSceHttp", sceHttpCreateEpoll, http_create_epoll);
+
+/* sceHttpAddRequestHeader(int32_t id, const char *name, const char *value, int32_t mode), as the
+   OpenOrbis homebrew SDK's Http.h declares it. The executable's only call (0x013d1ed5) adds a
+   header to its template with mode 0 and treats only 0 as success. A header only matters to a
+   request the library sends, and offline no request is ever sent (every sending call stops by
+   name), so the runtime checks the arguments and answers 0 without keeping the header. An id
+   that is not one of the runtime's templates, a missing name or value, and a mode other than the
+   observed 0 (the modes are not public) stop by name. */
+enum { HTTP_HEADER_MODE_OBSERVED = 0 };
+
+static int32_t http_add_request_header(int32_t id, const char *name, const char *value, int32_t mode)
+{
+    static const char fn[] = "sceHttpAddRequestHeader";
+    if (id < 1 || id > atomic_load(&http_templates_created))
+        rt_fatal(fn, "an id that is not one of the runtime's templates: the error value is not established");
+    if (!name || !value) rt_fatal(fn, "no header name or value: the error value is not established");
+    if (mode != HTTP_HEADER_MODE_OBSERVED) rt_fatal(fn, "a mode other than the observed 0 is not established");
+    return 0;
+}
+RT_SYSLIB("libSceHttp", sceHttpAddRequestHeader, http_add_request_header);
