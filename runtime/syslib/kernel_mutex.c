@@ -210,10 +210,10 @@ static int cond_create(guest_cond **out)
 
 /* An empty attribute variable means the defaults (libthr). No imported call creates a condition
    attribute, so what one the guest passes would hold is not established. */
-static int cond_init(guest_cond **cond, void **attr)
+static int cond_init(const char *caller, guest_cond **cond, void **attr)
 {
     if (!cond) return BSD_EINVAL;
-    if (attr && *attr) rt_fatal("scePthreadCondInit", "condition attributes are not established");
+    if (attr && *attr) rt_fatal(caller, "condition attributes are not established");
     return cond_create(cond);
 }
 
@@ -314,7 +314,7 @@ RT_SYSLIB("libkernel", scePthreadMutexattrSettype, sce_attr_settype);
 RT_SYSLIB("libkernel", scePthreadMutexattrSetprotocol, sce_attr_setprotocol);
 
 /* scePthreadCondInit's third argument is a name too. */
-static int sce_cond_init(guest_cond **c, void **a, const char *name) { (void)name; return sce(cond_init(c, a)); }
+static int sce_cond_init(guest_cond **c, void **a, const char *name) { (void)name; return sce(cond_init("scePthreadCondInit", c, a)); }
 static int sce_cond_destroy(guest_cond **c) { return sce(cond_destroy(c)); }
 static int sce_cond_signal(guest_cond **c) { return sce(cond_signal(c)); }
 static int sce_cond_broadcast(guest_cond **c) { return sce(cond_broadcast(c)); }
@@ -330,6 +330,17 @@ RT_SYSLIB("libkernel", scePthreadCondSignal, sce_cond_signal);
 RT_SYSLIB("libkernel", scePthreadCondBroadcast, sce_cond_broadcast);
 RT_SYSLIB("libkernel", scePthreadCondWait, sce_cond_wait);
 RT_SYSLIB("libkernel", scePthreadCondTimedwait, sce_cond_timedwait);
+
+/* libScePosix: the same calls with errno values. pthread_cond_timedwait is left out: its absolute
+   timespec and the clock it is measured on are not established from evidence yet, so a call stays
+   unbound and stops the boot by name. */
+static int posix_cond_init(guest_cond **c, void **a) { return cond_init("pthread_cond_init", c, a); }
+static int posix_cond_wait(guest_cond **c, guest_mutex **m) { return cond_wait("pthread_cond_wait", c, m, NULL); }
+RT_SYSLIB("libScePosix", pthread_cond_init, posix_cond_init);
+RT_SYSLIB("libScePosix", pthread_cond_destroy, cond_destroy);
+RT_SYSLIB("libScePosix", pthread_cond_signal, cond_signal);
+RT_SYSLIB("libScePosix", pthread_cond_broadcast, cond_broadcast);
+RT_SYSLIB("libScePosix", pthread_cond_wait, posix_cond_wait);
 
 /* libScePosix: errno values */
 static int posix_mutex_init(guest_mutex **m, guest_mutexattr **a) { return mutex_init(m, a); }
