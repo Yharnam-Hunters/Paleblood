@@ -665,6 +665,22 @@ change nothing else.
 - a priority outside 256–767;
 - a missing thread or variable.
 
+## `clock_gettime` (libkernel, issue #34)
+
+`clock_gettime(clockid_t id, struct timespec *tp)` is POSIX, with FreeBSD's clock numbers and
+amd64 `struct timespec` (two 64-bit fields, seconds and nanoseconds).
+
+The bundled libc's `time()` (`libc.elf+0x2f030`) asks for clock 13 and returns its seconds. Clock
+13 is FreeBSD's `CLOCK_SECOND`, which FreeBSD answers with the wall clock's whole seconds and 0
+nanoseconds (`kern_clock_gettime`).
+
+**What the runtime does.** It answers the clocks whose meaning FreeBSD fixes and the host has:
+- `CLOCK_REALTIME` (0) and `CLOCK_SECOND` (13), from the host's wall clock;
+- `CLOCK_MONOTONIC` (4), from the host's monotonic clock.
+
+**What stops by name:** other clocks and a missing timespec. Their errors go through `errno`,
+which the runtime does not model.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
