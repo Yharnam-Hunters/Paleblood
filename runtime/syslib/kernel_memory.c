@@ -10,8 +10,10 @@
      sceKernelReleaseDirectMemory(off_t start, size_t length). The OpenOrbis homebrew SDK header
      (include/orbis/libkernel.h) declares them so; it corroborates the shapes, not the behaviour.
    - Protection bits are FreeBSD's VM_PROT_READ (1) and VM_PROT_WRITE (2) for the CPU (the same
-     header names them ORBIS_KERNEL_PROT_CPU_READ/WRITE); memory type 0 is write-back memory
-     (ORBIS_KERNEL_WB_ONION there).
+     header names them ORBIS_KERNEL_PROT_CPU_READ/WRITE) and 0x10 and 0x20 for the GPU
+     (ORBIS_KERNEL_PROT_GPU_READ/WRITE); memory type 0 is write-back memory (ORBIS_KERNEL_WB_ONION
+     there). The executable maps with protection 3 (CPU read/write) and 0x33 (CPU and GPU
+     read/write).
    - A title's own first use (an executable's startup heap) asks for the size, allocates a range
      below it with an alignment, maps it read/write at an address the system picks (flags 0), and
      releases the range if the map fails.
@@ -20,7 +22,7 @@
    host mapping of that range, so two maps of one range see the same bytes, as physical memory
    does. Its size is this runtime's choice (RT_DIRECT_MEMORY_SIZE), not a measured PS4 value. Every
    case whose PS4 answer is not established stops by the function's name instead of guessing: map
-   flags, an address hint, protection beyond CPU read/write, a range that does not fit, releasing
+   flags, an address hint, protection beyond CPU and GPU read/write, a range that does not fit, releasing
    part of an allocation or a mapped one, and the error values. */
 #define _GNU_SOURCE
 #include "runtime/process.h"
@@ -40,7 +42,7 @@
    in docs/runtime-syscalls.md), so anything finer stops by name instead of being rounded. */
 #define DIRECT_PAGE 0x4000ull
 
-enum { PROT_CPU_READ = 0x1, PROT_CPU_WRITE = 0x2 };
+enum { PROT_CPU_READ = 0x1, PROT_CPU_WRITE = 0x2, PROT_GPU_READ = 0x10, PROT_GPU_WRITE = 0x20 };
 enum { MEMORY_TYPE_WB_ONION = 0x0, MEMORY_TYPE_WC_GARLIC = 0x3, MEMORY_TYPE_WB_GARLIC = 0xa };
 enum { MAX_RANGES = 1024 };
 
@@ -137,8 +139,9 @@ static int32_t map_direct_memory(void **address, uint64_t length, int32_t protec
     if (!address) rt_fatal(name, "no variable for the address: the error value is not established");
     if (flags) rt_fatal(name, "map flags (a fixed address and the others) are not established");
     if (*address) rt_fatal(name, "an address hint without flags: how the system uses it is not established");
-    if (!protection || (protection & ~(PROT_CPU_READ | PROT_CPU_WRITE)))
-        rt_fatal(name, "protection other than CPU read and write is not established");
+    /* The runtime has no GPU yet: GPU access is accepted and the host mapping takes the CPU bits. */
+    if (!protection || (protection & ~(PROT_CPU_READ | PROT_CPU_WRITE | PROT_GPU_READ | PROT_GPU_WRITE)))
+        rt_fatal(name, "protection other than CPU and GPU read and write is not established");
     if (!length || !is_page_multiple(length) || start < 0 || !is_page_multiple((uint64_t)start))
         rt_fatal(name, "a range that is not whole 16 KiB pages: the answer is not established");
     if (!is_power_of_two(alignment) || !is_page_multiple(alignment))

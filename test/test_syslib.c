@@ -235,7 +235,7 @@ static void dm_allocate_unknown_type(void) { int64_t s; dm_allocate(0, 1ll << 30
 static void dm_allocate_no_variable(void) { dm_allocate(0, 1ll << 30, DM_PAGE, DM_PAGE, 0, NULL); }
 static void dm_map_with_flags(void) { void *a = NULL; dm_map(&a, DM_PAGE, DM_RW, 0x10, dm_unmapped, DM_PAGE); }
 static void dm_map_with_hint(void) { void *a = (void *)0x10000000; dm_map(&a, DM_PAGE, DM_RW, 0, dm_unmapped, DM_PAGE); }
-static void dm_map_gpu(void) { void *a = NULL; dm_map(&a, DM_PAGE, DM_RW | 0x10, 0, dm_unmapped, DM_PAGE); }
+static void dm_map_exec(void) { void *a = NULL; dm_map(&a, DM_PAGE, DM_RW | 0x4, 0, dm_unmapped, DM_PAGE); }
 static void dm_map_unallocated(void) { void *a = NULL; dm_map(&a, DM_PAGE, DM_RW, 0, 1ll << 32, DM_PAGE); }
 static void dm_map_past_range(void) { void *a = NULL; dm_map(&a, 2 * DM_PAGE, DM_RW, 0, dm_unmapped, DM_PAGE); }
 static void dm_release_mapped(void) { dm_release(dm_mapped, DM_LENGTH); }
@@ -864,7 +864,11 @@ int main(void)
         CHECK(died_in_fatal(dm_allocate_no_variable));
         CHECK(died_in_fatal(dm_map_with_flags));
         CHECK(died_in_fatal(dm_map_with_hint));
-        CHECK(died_in_fatal(dm_map_gpu));
+        CHECK(died_in_fatal(dm_map_exec));
+        /* GPU access (0x10 read, 0x20 write) is accepted; the CPU bits make the host mapping. */
+        void *gpu = NULL;
+        CHECK(dm_map(&gpu, DM_PAGE, DM_RW | 0x30, 0, dm_unmapped, DM_PAGE) == 0 && gpu);
+        if (gpu) ((volatile unsigned char *)gpu)[0] = 1;
         CHECK(died_in_fatal(dm_map_unallocated));
         CHECK(died_in_fatal(dm_map_past_range));
         CHECK(died_in_fatal(dm_release_mapped));
