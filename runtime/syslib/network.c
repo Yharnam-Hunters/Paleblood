@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* System call group: networking (libSceNet): byte order, address conversion, and the library's
-   start-up. */
+/* System call group: networking (libSceNet): byte order, address conversion, and the start-up of
+   the network, SSL and HTTP libraries (libSceNet, libSceSsl, libSceHttp). */
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
@@ -94,3 +94,38 @@ static int32_t net_pool_create(const char *name, int32_t size, int32_t flags)
     return pool;
 }
 RT_SYSLIB("libSceNet", sceNetPoolCreate, net_pool_create);
+
+/* The SSL and HTTP libraries' start-up: sceSslInit(size_t pool_size) and sceHttpInit(int32_t
+   pool, int32_t ssl, size_t pool_size), as the OpenOrbis homebrew SDK's Ssl.h and Http.h declare
+   them. The executable's HTTP manager (0x013d1fc0 and 0x013d2050) creates a network pool, then calls
+   sceSslInit with a size, then sceHttpInit with the pool id, the SSL result and the same size; it
+   treats a negative result as failure, keeps each non-negative one as an id, and passes each id
+   back on teardown. So each call answers a context id. The runtime is offline: a context is only
+   an id. What is not established stops by name: an id the runtime did not hand out, and a size of
+   0. */
+enum { MAX_SSL_CONTEXTS = 64, MAX_HTTP_CONTEXTS = 64 };
+
+static atomic_int ssl_contexts_created;
+static atomic_int http_contexts_created;
+
+static int32_t ssl_init(uint64_t pool_size)
+{
+    static const char fn[] = "sceSslInit";
+    if (!pool_size) rt_fatal(fn, "a size of 0: the error value is not established");
+    const int context = atomic_fetch_add(&ssl_contexts_created, 1) + 1; /* ids from 1 */
+    if (context > MAX_SSL_CONTEXTS) rt_fatal(fn, "more contexts than the runtime hands out ids for");
+    return context;
+}
+RT_SYSLIB("libSceSsl", sceSslInit, ssl_init);
+
+static int32_t http_init(int32_t pool, int32_t ssl, uint64_t pool_size)
+{
+    static const char fn[] = "sceHttpInit";
+    if (pool < 1 || pool > atomic_load(&net_pools_created) || ssl < 1 || ssl > atomic_load(&ssl_contexts_created))
+        rt_fatal(fn, "a pool or SSL id the runtime did not hand out: the error value is not established");
+    if (!pool_size) rt_fatal(fn, "a size of 0: the error value is not established");
+    const int context = atomic_fetch_add(&http_contexts_created, 1) + 1; /* ids from 1 */
+    if (context > MAX_HTTP_CONTEXTS) rt_fatal(fn, "more contexts than the runtime hands out ids for");
+    return context;
+}
+RT_SYSLIB("libSceHttp", sceHttpInit, http_init);

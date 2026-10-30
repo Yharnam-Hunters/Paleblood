@@ -558,6 +558,21 @@ executable's own calls:
 The runtime is offline: initializing touches no network. A pool before initialize, without a name
 or size, or with flags stops by name.
 
+## SSL and HTTP library start-up (`sceSslInit`, `sceHttpInit`, issue #41)
+
+`sceSslInit(size_t pool_size)` and `sceHttpInit(int32_t pool, int32_t ssl, size_t pool_size)`, as
+the OpenOrbis homebrew SDK's `Ssl.h` and `Http.h` declare them.
+
+The executable's HTTP manager (`0x013d1fc0` and `0x013d2050`):
+- creates a network pool;
+- then calls `sceSslInit` with a size;
+- then calls `sceHttpInit` with the pool id, the SSL result and the same size.
+
+It treats a negative result as failure, keeps each non-negative one as an id, and passes each id
+back on teardown. So each call answers a context id; offline, a context is only an id.
+
+**What stops by name:** an id the runtime did not hand out, and a size of 0.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
