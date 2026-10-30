@@ -594,6 +594,14 @@ class Boot(unittest.TestCase):
             p = subprocess.run([self.pbboot, exe, *args], capture_output=True, text=True, timeout=60)
             self.assertEqual(p.returncode, 2, (bad, p.stderr))
 
+    def test_bad_app_param_arguments_are_refused(self):
+        exe = os.path.join(ROOT, 'no-such.elf')
+        for bad in (['1'], ['1='], ['x=3'], ['1=3x'], ['-1=3'], ['1=0x100000000'], ['boot=3'],
+                    ['1=3', '1=unread'], ['boot=unread', 'boot=unread']):
+            args = [a for param in bad for a in ('--app-param', param)]
+            p = subprocess.run([self.pbboot, exe, *args], capture_output=True, text=True, timeout=60)
+            self.assertEqual(p.returncode, 2, (bad, p.stderr))
+
     def test_boot_passes_stub_modules_with_their_ids(self):
         import boot
         d = tempfile.mkdtemp()
@@ -611,6 +619,42 @@ class Boot(unittest.TestCase):
         finally:
             shutil.rmtree(d)
         self.assertTrue(boot.stub_module_args(ROOT))      # every stub in the game's own list has its id
+
+    def test_boot_passes_runtime_modules_and_app_params(self):
+        import boot
+        import struct as st
+        d = tempfile.mkdtemp()
+        try:
+            os.makedirs(os.path.join(d, 'game'))
+            with open(os.path.join(d, 'game', 'modules.csv'), 'w') as fh:
+                fh.write('module,action,sysmodule,notes\nlibR,runtime,0x00b4,provided\n')
+            self.assertEqual(boot.stub_module_args(d), ['--stub-module', '0x00b4:libR'])
+            # A parameter file with one string and two integers (PSF: header, key index, keys, data).
+            keys = b'TITLE\0USER_DEFINED_PARAM_1\0OTHER\0'
+            entries = [(0, 0x0204, 4, 4, 0), (6, 0x0404, 4, 4, 4), (27, 0x0404, 4, 4, 8)]
+            key_table = 20 + 16 * len(entries)
+            data_table = key_table + len(keys)
+            sfo = st.pack('<4sIIII', b'\0PSF', 0x101, key_table, data_table, len(entries))
+            sfo += b''.join(st.pack('<HHIII', *e) for e in entries) + keys + b'abc\0' + st.pack('<ii', 13, -2)
+            sfo_path = os.path.join(d, 'param.sfo')
+            with open(sfo_path, 'wb') as fh:
+                fh.write(sfo)
+            self.assertEqual(boot.sfo_integers(sfo_path), {'USER_DEFINED_PARAM_1': 13, 'OTHER': -2})
+            params = os.path.join(d, 'game', 'app_params.csv')
+            with open(params, 'w') as fh:
+                fh.write('id,source,key,notes\nboot,unread,,n\n0,unread,,n\n1,sfo,USER_DEFINED_PARAM_1,n\n')
+            self.assertEqual(boot.app_param_args(d, sfo_path),
+                             ['--app-param', 'boot=unread', '--app-param', '0=unread', '--app-param', '1=13'])
+            with open(params, 'a') as fh:
+                fh.write('2,sfo,USER_DEFINED_PARAM_2,not in the file\n')
+            with self.assertRaises(ValueError):
+                boot.app_param_args(d, sfo_path)
+            with open(params, 'w') as fh:
+                fh.write('id,source,key,notes\n3,guess,,n\n')
+            with self.assertRaises(ValueError):
+                boot.app_param_args(d, sfo_path)
+        finally:
+            shutil.rmtree(d)
 
     def test_c_nid_matches_python(self):
         import ctypes

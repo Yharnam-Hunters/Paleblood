@@ -320,6 +320,20 @@ static f_sce_tod tod_sce;
 static void tod_with_zone(void) { tod_timeval tv; int zone[2] = {0, 0}; tod_posix(&tv, zone); }
 static void tod_sce_null(void) { tod_sce(NULL); }
 
+/* Application content: the runtime answers only what the game's data declares (rt_process). */
+typedef int32_t (*f_ac_init)(void *, void *);
+typedef int32_t (*f_ac_param)(int32_t, int32_t *);
+static f_ac_init ac_init;
+static f_ac_param ac_param;
+static void ac_undeclared_param(void) { int32_t v; ac_param(9, &v); }
+static void ac_param_no_variable(void) { ac_param(1, NULL); }
+static void ac_init_boot_param_not_declared(void)
+{
+    char init[32] = {0}, boot[40] = {0};
+    rt_process.app_boot_param_unread = 0;
+    ac_init(init, boot);
+}
+
 int main(void)
 {
     /* Unresolved entries are still callable diagnostics, but are not reported as implemented. */
@@ -847,6 +861,32 @@ int main(void)
     }
     CHECK(is_implemented("libScePosix", "gettimeofday") && is_implemented("libkernel", "gettimeofday") &&
           is_implemented("libkernel", "sceKernelGettimeofday"));
+
+    /* libSceAppContent: declared values are written, unread ones succeed without writing, the
+       boot parameter is passed over only when declared unread, everything else stops by name. */
+    ac_init = (f_ac_init)fn("libSceAppContent", "sceAppContentInitialize");
+    ac_param = (f_ac_param)fn("libSceAppContent", "sceAppContentAppParamGetInt");
+    if (ac_init && ac_param) {
+        rt_process.app_params[0] = (rt_app_param){1, 0, 13};
+        rt_process.app_params[1] = (rt_app_param){0, 1, 0};
+        rt_process.app_param_count = 2;
+        rt_process.app_boot_param_unread = 1;
+        char init[32] = {0}, boot[40];
+        memset(boot, 0x5a, sizeof boot);
+        CHECK(ac_init(init, boot) == 0);
+        CHECK(boot[0] == 0x5a && boot[sizeof boot - 1] == 0x5a); /* not written */
+        int32_t value = -7;
+        CHECK(ac_param(1, &value) == 0 && value == 13);
+        value = -7;
+        CHECK(ac_param(0, &value) == 0 && value == -7);
+        CHECK(died_in_fatal(ac_undeclared_param));
+        CHECK(died_in_fatal(ac_param_no_variable));
+        CHECK(died_in_fatal(ac_init_boot_param_not_declared));
+        rt_process.app_param_count = 0;
+        rt_process.app_boot_param_unread = 0;
+    }
+    CHECK(is_implemented("libSceAppContent", "sceAppContentInitialize") &&
+          is_implemented("libSceAppContent", "sceAppContentAppParamGetInt"));
 
     if (!failures) puts("syslib: ok");
     return failures != 0;
