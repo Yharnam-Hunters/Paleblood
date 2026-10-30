@@ -241,6 +241,74 @@ static void dm_release_mapped(void) { dm_release(dm_mapped, DM_LENGTH); }
 static void dm_release_part(void) { dm_release(dm_mapped, DM_PAGE); }
 static void dm_release_unknown(void) { dm_release(1ll << 32, DM_PAGE); }
 
+/* Kernel semaphores. Waiters are host threads; the stops are file-scope so a child can make them. */
+typedef int32_t (*f_sema_create)(void **, const char *, uint32_t, int32_t, int32_t, const void *);
+typedef int32_t (*f_sema_one)(void *);
+typedef int32_t (*f_sema_wait)(void *, int32_t, uint32_t *);
+typedef int32_t (*f_sema_count)(void *, int32_t);
+static f_sema_create sema_create;
+static f_sema_one sema_delete;
+static f_sema_wait sema_wait;
+static f_sema_count sema_signal, sema_poll;
+static void *sema_shared, *sema_prio;
+static int sema_order[2], sema_served;
+static pthread_mutex_t sema_order_lock = PTHREAD_MUTEX_INITIALIZER;
+enum { SEMA_FIFO = 1, SEMA_PRIO = 2 };
+
+static void *sema_waiter(void *tag)
+{
+    if (sema_wait(sema_shared, 1, NULL) == 0) {
+        pthread_mutex_lock(&sema_order_lock);
+        sema_order[sema_served++] = (int)(intptr_t)tag;
+        pthread_mutex_unlock(&sema_order_lock);
+    }
+    return NULL;
+}
+/* How many waiters have been served, read under the lock their threads write it under (a plain
+   read in a spin loop may be hoisted out of it by the compiler). */
+static int sema_served_now(void)
+{
+    pthread_mutex_lock(&sema_order_lock);
+    const int n = sema_served;
+    pthread_mutex_unlock(&sema_order_lock);
+    return n;
+}
+static void *sema_prio_waiter(void *unused) { (void)unused; sema_wait(sema_prio, 1, NULL); return NULL; }
+/* The runtime's semaphore object, mirrored (runtime/syslib/kernel_sema.c) so a test can see how
+   many waiters are inside the wait before it signals; keep the two in step. */
+typedef struct {
+    pthread_mutex_t lock;
+    pthread_cond_t changed;
+    int32_t count, max;
+    uint32_t attr;
+    uint64_t next_ticket, serving;
+    int waiters;
+} sema_mirror;
+static int sema_waiters(void *s)
+{
+    sema_mirror *m = s;
+    pthread_mutex_lock(&m->lock);
+    const int n = m->waiters;
+    pthread_mutex_unlock(&m->lock);
+    return n;
+}
+
+static void sema_create_no_variable(void) { sema_create(NULL, "s", SEMA_FIFO, 0, 1, NULL); }
+static void sema_create_bad_attr(void) { void *s; sema_create(&s, "s", 4, 0, 1, NULL); }
+static void sema_create_option(void) { void *s; int opt = 0; sema_create(&s, "s", SEMA_FIFO, 0, 1, &opt); }
+static void sema_create_initial_over_max(void) { void *s; sema_create(&s, "s", SEMA_FIFO, 2, 1, NULL); }
+static void sema_wait_with_timeout(void) { uint32_t t = 1000; sema_wait(sema_shared, 1, &t); }
+static void sema_wait_null(void) { sema_wait(NULL, 1, NULL); }
+static void sema_signal_past_max(void) { sema_signal(sema_shared, 0x10000); }
+static void sema_poll_empty(void) { sema_poll(sema_shared, 1); }
+static void sema_second_prio_waiter(void)
+{
+    pthread_t first;
+    pthread_create(&first, NULL, sema_prio_waiter, NULL);
+    while (sema_waiters(sema_prio) < 1) sched_yield();
+    sema_wait(sema_prio, 1, NULL);
+}
+
 int main(void)
 {
     /* Unresolved entries are still callable diagnostics, but are not reported as implemented. */
@@ -695,6 +763,55 @@ int main(void)
           is_implemented("libkernel", "sceKernelAllocateDirectMemory") &&
           is_implemented("libkernel", "sceKernelMapDirectMemory") &&
           is_implemented("libkernel", "sceKernelReleaseDirectMemory"));
+
+    /* Kernel semaphores, as the executable uses them: created with attr 1 or 2 and no option, one
+       unit waited for with no timeout, units signalled, deleted. */
+    sema_create = (f_sema_create)fn("libkernel", "sceKernelCreateSema");
+    sema_delete = (f_sema_one)fn("libkernel", "sceKernelDeleteSema");
+    sema_wait = (f_sema_wait)fn("libkernel", "sceKernelWaitSema");
+    sema_signal = (f_sema_count)fn("libkernel", "sceKernelSignalSema");
+    sema_poll = (f_sema_count)fn("libkernel", "sceKernelPollSema");
+    if (sema_create && sema_delete && sema_wait && sema_signal && sema_poll) {
+        void *s = NULL;
+        CHECK(sema_create(&s, "single", SEMA_PRIO, 1, 1, NULL) == 0 && s);
+        CHECK(sema_wait(s, 1, NULL) == 0);
+        CHECK(sema_signal(s, 1) == 0 && sema_poll(s, 1) == 0);
+        CHECK(sema_signal(s, 1) == 0 && sema_delete(s) == 0);
+        /* Two waiters on an empty FIFO semaphore are served in the order they arrived. One round
+           would pass by chance half the time if the order were ignored, so it is repeated. */
+        CHECK(sema_create(&sema_shared, "fifo", SEMA_FIFO, 0, 0xffff, NULL) == 0);
+        for (int round = 0; round < 16; round++) {
+            sema_served = 0;
+            sema_order[0] = sema_order[1] = 0;
+            pthread_t a, b;
+            pthread_create(&a, NULL, sema_waiter, (void *)(intptr_t)1);
+            while (sema_waiters(sema_shared) < 1) sched_yield();
+            pthread_create(&b, NULL, sema_waiter, (void *)(intptr_t)2);
+            while (sema_waiters(sema_shared) < 2) sched_yield();
+            CHECK(sema_signal(sema_shared, 1) == 0);
+            while (sema_served_now() < 1) sched_yield();
+            CHECK(sema_order[0] == 1);
+            CHECK(sema_signal(sema_shared, 1) == 0);
+            pthread_join(a, NULL);
+            pthread_join(b, NULL);
+            CHECK(sema_served == 2 && sema_order[1] == 2);
+        }
+        CHECK(sema_create(&sema_prio, "prio", SEMA_PRIO, 0, 1, NULL) == 0);
+        /* The answers that are not established stop by name. */
+        CHECK(died_in_fatal(sema_create_no_variable));
+        CHECK(died_in_fatal(sema_create_bad_attr));
+        CHECK(died_in_fatal(sema_create_option));
+        CHECK(died_in_fatal(sema_create_initial_over_max));
+        CHECK(died_in_fatal(sema_wait_with_timeout));
+        CHECK(died_in_fatal(sema_wait_null));
+        CHECK(died_in_fatal(sema_signal_past_max));
+        CHECK(died_in_fatal(sema_poll_empty));
+        CHECK(died_in_fatal(sema_second_prio_waiter));
+        CHECK(sema_delete(sema_shared) == 0);
+    }
+    CHECK(is_implemented("libkernel", "sceKernelCreateSema") && is_implemented("libkernel", "sceKernelDeleteSema") &&
+          is_implemented("libkernel", "sceKernelWaitSema") && is_implemented("libkernel", "sceKernelSignalSema") &&
+          is_implemented("libkernel", "sceKernelPollSema"));
 
     if (!failures) puts("syslib: ok");
     return failures != 0;
