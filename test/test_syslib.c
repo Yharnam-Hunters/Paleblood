@@ -7,6 +7,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -286,7 +287,7 @@ static void dm_allocate_unknown_type(void) { int64_t s; dm_allocate(0, 1ll << 30
 static void dm_allocate_no_variable(void) { dm_allocate(0, 1ll << 30, DM_PAGE, DM_PAGE, 0, NULL); }
 static void dm_map_with_flags(void) { void *a = NULL; dm_map(&a, DM_PAGE, DM_RW, 0x10, dm_unmapped, DM_PAGE); }
 static void dm_map_with_hint(void) { void *a = (void *)0x10000000; dm_map(&a, DM_PAGE, DM_RW, 0, dm_unmapped, DM_PAGE); }
-static void dm_map_gpu(void) { void *a = NULL; dm_map(&a, DM_PAGE, DM_RW | 0x10, 0, dm_unmapped, DM_PAGE); }
+static void dm_map_exec(void) { void *a = NULL; dm_map(&a, DM_PAGE, DM_RW | 0x4, 0, dm_unmapped, DM_PAGE); }
 static void dm_map_unallocated(void) { void *a = NULL; dm_map(&a, DM_PAGE, DM_RW, 0, 1ll << 32, DM_PAGE); }
 static void dm_map_past_range(void) { void *a = NULL; dm_map(&a, 2 * DM_PAGE, DM_RW, 0, dm_unmapped, DM_PAGE); }
 static void dm_release_mapped(void) { dm_release(dm_mapped, DM_LENGTH); }
@@ -406,6 +407,109 @@ static void *pc_waiter(void *unused)
     return NULL;
 }
 static void pc_init_with_attribute(void) { void *c = NULL, *attr = &c; pc_init(&c, &attr); }
+
+/* Thread attribute setters: stack size and scheduling policy. */
+typedef int (*f_attr_u64)(void **, uint64_t);
+typedef int (*f_attr_int)(void **, int);
+static f_attr_u64 ta_stack;
+static f_attr_int ta_policy;
+static void ta_policy_unknown(void) { void *a = &a; ta_policy(&a, 4); }
+
+/* Thread creation: the entry is host code here, called with the guest's convention. */
+typedef int (*f_create)(void **, void **, void *(*)(void *), void *, const char *);
+typedef int (*f_setaffinity)(void *, uint64_t);
+typedef void *(*f_self)(void);
+static f_create tc_create;
+static f_setaffinity tc_affinity;
+static f_self tc_self;
+static void *tc_seen_self, *tc_seen_argument;
+static uint64_t tc_seen_tp, tc_seen_tp_word;
+static uintptr_t tc_seen_local;
+static atomic_int tc_done;
+static void *tc_entry(void *argument)
+{
+    int local = 0;
+    tc_seen_argument = argument;
+    tc_seen_self = tc_self();
+    uint64_t tp, word;
+    __asm__ volatile("mov %%gs:0, %0" : "=r"(word));
+    tp = word; /* the thread pointer's first word is the thread pointer itself */
+    tc_seen_tp = tp;
+    tc_seen_tp_word = *(uint64_t *)(uintptr_t)tp;
+    tc_seen_local = (uintptr_t)&local;
+    atomic_store(&tc_done, 1);
+    return NULL;
+}
+static void *tc_attr(int with_stack, int with_detach, int detach)
+{
+    void *a = NULL;
+    ((f1)fn("libkernel", "scePthreadAttrInit"))(&a);
+    if (with_stack) ((int (*)(void **, uint64_t))fn("libkernel", "scePthreadAttrSetstacksize"))(&a, 0x10000);
+    if (with_detach) ((f2i)fn("libkernel", "scePthreadAttrSetdetachstate"))(&a, detach);
+    return a;
+}
+static void tc_create_no_attr(void) { void *t; tc_create(&t, NULL, tc_entry, NULL, "t"); }
+static void tc_create_no_stack(void) { void *t, *a = tc_attr(0, 1, 0); tc_create(&t, &a, tc_entry, NULL, "t"); }
+static void tc_create_no_detach(void) { void *t, *a = tc_attr(1, 0, 0); tc_create(&t, &a, tc_entry, NULL, "t"); }
+static void tc_affinity_empty(void) { tc_affinity(tc_seen_self, 0); }
+
+/* The user service's start-up calls. */
+typedef int32_t (*f_us_init)(const uint32_t *);
+typedef int32_t (*f_us_none)(void);
+typedef int32_t (*f_us_ids)(int32_t *);
+static f_us_none us_terminate;
+static f_us_ids us_initial_user, us_login_list;
+static void us_terminate_uninitialized(void) { us_terminate(); }
+static void us_initial_user_uninitialized(void) { int32_t u; us_initial_user(&u); }
+
+/* System settings: answered from rt_process.system_params. */
+typedef int32_t (*f_sys_param)(int32_t, int32_t *);
+static f_sys_param sys_param;
+static void sys_param_unset(void) { int32_t v; sys_param(4, &v); }
+static void sys_param_no_variable(void) { sys_param(1, NULL); }
+
+/* libSceNpManager: content restriction, offline. */
+typedef int32_t (*f_np_restrict)(const void *);
+static f_np_restrict np_restrict;
+static void np_restrict_null(void) { np_restrict(NULL); }
+
+/* Flexible memory: fresh host memory at an address the runtime picks. */
+typedef int32_t (*f_flex_map)(void **, uint64_t, int32_t, int32_t);
+static f_flex_map flex_map;
+static void flex_no_variable(void) { flex_map(NULL, 0x4000, 3, 0); }
+static void flex_hint(void) { void *a = (void *)0x10000000; flex_map(&a, 0x4000, 3, 0); }
+static void flex_flags(void) { void *a = NULL; flex_map(&a, 0x4000, 3, 0x10); }
+static void flex_partial_page(void) { void *a = NULL; flex_map(&a, 0x1000, 3, 0); }
+static void flex_exec(void) { void *a = NULL; flex_map(&a, 0x4000, 7, 0); }
+
+/* libSceNet start-up: initialize once, a repeat answers 0x80410110; pools are ids. */
+typedef int32_t (*f_net_none)(void);
+typedef int32_t (*f_net_pool)(const char *, int32_t, int32_t);
+static f_net_none net_term_fn;
+static f_net_pool net_pool_fn;
+static void net_term_uninitialized(void) { net_term_fn(); }
+static void net_pool_uninitialized(void) { net_pool_fn("pool", 0x1000, 0); }
+static void net_pool_flags(void) { net_pool_fn("pool", 0x1000, 1); }
+static void net_pool_no_name(void) { net_pool_fn(NULL, 0x1000, 0); }
+
+/* libSceSsl / libSceHttp start-up: context ids. */
+typedef int32_t (*f_ssl_init)(uint64_t);
+typedef int32_t (*f_http_init)(int32_t, int32_t, uint64_t);
+static f_http_init http_init_fn;
+static int32_t http_test_pool, http_test_ssl;
+static void http_init_unknown_pool(void) { http_init_fn(999, http_test_ssl, 0x4000); }
+static void http_init_unknown_ssl(void) { http_init_fn(http_test_pool, 999, 0x4000); }
+typedef int32_t (*f_http_template)(int32_t, const char *, int32_t, int32_t);
+static f_http_template http_template_fn;
+static int32_t http_test_context;
+static void http_template_unknown_context(void) { http_template_fn(999, "agent", 2, 1); }
+static void http_template_no_agent(void) { http_template_fn(http_test_context, NULL, 2, 1); }
+static void http_template_version(void) { http_template_fn(http_test_context, "agent", 3, 1); }
+static void http_template_proxy(void) { http_template_fn(http_test_context, "agent", 2, 0); }
+typedef int32_t (*f_http_nonblock)(int32_t, int32_t);
+static f_http_nonblock http_nonblock_fn;
+static void http_nonblock_unknown(void) { http_nonblock_fn(999, 1); }
+static void http_nonblock_value(void) { http_nonblock_fn(1, 2); }
 
 int main(void)
 {
@@ -563,6 +667,8 @@ int main(void)
     const f_equal equal = (f_equal)fn("libkernel", "scePthreadEqual");
     unsigned char not_a_thread;
     CHECK(self && equal(self, self) != 0);
+    /* The executable keeps a thread variable's value in 40 bits (its lock at 0x024368c0). */
+    CHECK((uintptr_t)self < (1ull << 40));
     CHECK(equal(self, &not_a_thread) == 0 && equal(&not_a_thread, self) == 0);
     CHECK(equal(self, NULL) == 0);
 
@@ -919,7 +1025,11 @@ int main(void)
         CHECK(died_in_fatal(dm_allocate_no_variable));
         CHECK(died_in_fatal(dm_map_with_flags));
         CHECK(died_in_fatal(dm_map_with_hint));
-        CHECK(died_in_fatal(dm_map_gpu));
+        CHECK(died_in_fatal(dm_map_exec));
+        /* GPU access (0x10 read, 0x20 write) is accepted; the CPU bits make the host mapping. */
+        void *gpu = NULL;
+        CHECK(dm_map(&gpu, DM_PAGE, DM_RW | 0x30, 0, dm_unmapped, DM_PAGE) == 0 && gpu);
+        if (gpu) ((volatile unsigned char *)gpu)[0] = 1;
         CHECK(died_in_fatal(dm_map_unallocated));
         CHECK(died_in_fatal(dm_map_past_range));
         CHECK(died_in_fatal(dm_release_mapped));
@@ -1061,6 +1171,167 @@ int main(void)
     CHECK(is_implemented("libScePosix", "pthread_cond_init") && is_implemented("libScePosix", "pthread_cond_wait") &&
           is_implemented("libScePosix", "pthread_cond_signal") && is_implemented("libScePosix", "pthread_cond_broadcast") &&
           is_implemented("libScePosix", "pthread_cond_destroy") && !is_implemented("libScePosix", "pthread_cond_timedwait"));
+
+    /* scePthreadAttrSetstacksize / Setschedpolicy and pthread_attr_setstacksize, on attributes
+       made by scePthreadAttrInit. */
+    ta_stack = (f_attr_u64)fn("libkernel", "scePthreadAttrSetstacksize");
+    ta_policy = (f_attr_int)fn("libkernel", "scePthreadAttrSetschedpolicy");
+    const f_attr_u64 ta_posix_stack = (f_attr_u64)fn("libScePosix", "pthread_attr_setstacksize");
+    const f1 ta_init = (f1)fn("libkernel", "scePthreadAttrInit"), ta_destroy = (f1)fn("libkernel", "scePthreadAttrDestroy");
+    if (ta_stack && ta_policy && ta_posix_stack && ta_init && ta_destroy) {
+        void *a = NULL;
+        CHECK(ta_init(&a) == 0);
+        CHECK(ta_stack(&a, 0x10000) == 0 && ta_stack(&a, 0x4000) == 0 && ta_posix_stack(&a, 0x20000) == 0);
+        CHECK(ta_policy(&a, 1) == 0 && ta_policy(&a, 2) == 0 && ta_policy(&a, 3) == 0);
+        void *none = NULL;
+        CHECK(ta_stack(&none, 0x10000) == (int)0x80020016u && ta_posix_stack(&none, 0x10000) == 22);
+        CHECK(ta_policy(&none, 1) == (int)0x80020016u);
+        /* Below 16 KiB is refused, as the executable expects: it then asks for exactly 16 KiB. */
+        CHECK(ta_stack(&a, 0x3fff) == (int)0x80020016u && ta_posix_stack(&a, 0x1000) == 22);
+        CHECK(died_in_fatal(ta_policy_unknown));
+        CHECK(ta_destroy(&a) == 0);
+    }
+
+    /* scePthreadCreate: the guest runs on a new host thread, on its own stack, with GS pointing at
+       a fresh TLS block, registered for scePthreadSelf. */
+    tc_create = (f_create)fn("libkernel", "scePthreadCreate");
+    tc_affinity = (f_setaffinity)fn("libkernel", "scePthreadSetaffinity");
+    tc_self = (f_self)fn("libkernel", "scePthreadSelf");
+    if (tc_create && tc_affinity && tc_self) {
+        void *thread = NULL, *attr = tc_attr(1, 1, 0);
+        int marker = 0;
+        CHECK(tc_create(&thread, &attr, tc_entry, &marker, "worker") == 0 && thread);
+        CHECK((uintptr_t)thread < (1ull << 40));
+        for (int i = 0; i < 100000 && !atomic_load(&tc_done); i++) sched_yield();
+        CHECK(atomic_load(&tc_done) == 1);
+        CHECK(tc_seen_argument == &marker && tc_seen_self == thread && tc_seen_self != tc_self());
+        CHECK(tc_seen_tp && tc_seen_tp_word == tc_seen_tp);
+        CHECK(tc_seen_local < (uintptr_t)&marker - 0x100000 || tc_seen_local > (uintptr_t)&marker + 0x100000);
+        CHECK(tc_affinity(thread, 0x3f) == 0);
+        atomic_store(&tc_done, 0);
+        void *detached = NULL, *dattr = tc_attr(1, 1, 1);
+        CHECK(tc_create(&detached, &dattr, tc_entry, NULL, NULL) == 0 && detached);
+        for (int i = 0; i < 100000 && !atomic_load(&tc_done); i++) sched_yield();
+        CHECK(atomic_load(&tc_done) == 1 && tc_seen_self == detached);
+        CHECK(died_in_fatal(tc_create_no_attr));
+        CHECK(died_in_fatal(tc_create_no_stack));
+        CHECK(died_in_fatal(tc_create_no_detach));
+        CHECK(died_in_fatal(tc_affinity_empty));
+    }
+
+    /* libSceUserService: one user, logged in from the start; a second initialize answers
+       0x80960003, as the executable's second site expects. */
+    const f_us_init us_init = (f_us_init)fn("libSceUserService", "sceUserServiceInitialize");
+    us_terminate = (f_us_none)fn("libSceUserService", "sceUserServiceTerminate");
+    us_initial_user = (f_us_ids)fn("libSceUserService", "sceUserServiceGetInitialUser");
+    us_login_list = (f_us_ids)fn("libSceUserService", "sceUserServiceGetLoginUserIdList");
+    if (us_init && us_terminate && us_initial_user && us_login_list) {
+        CHECK(died_in_fatal(us_terminate_uninitialized));
+        CHECK(died_in_fatal(us_initial_user_uninitialized));
+        const uint32_t params[4] = {0x2bc, 0, 0, 0};
+        CHECK(us_init(params) == 0);
+        CHECK(us_init(params) == (int32_t)0x80960003u);
+        int32_t user = -7, list[4] = {-7, -7, -7, -7};
+        CHECK(us_initial_user(&user) == 0 && user != -1 && user != 0xff && user != -7);
+        CHECK(us_login_list(list) == 0 && list[0] == user && list[1] == -1 && list[2] == -1 && list[3] == -1);
+        CHECK(us_terminate() == 0);
+        CHECK(us_init(params) == 0);    /* initialized again after a terminate */
+        CHECK(us_terminate() == 0);
+    }
+
+    /* libSceCommonDialog: the first initialize succeeds, a repeat answers 0x80b80002 as the
+       executable's second site expects. */
+    const f_us_none cd_init = (f_us_none)fn("libSceCommonDialog", "sceCommonDialogInitialize");
+    if (cd_init) {
+        CHECK(cd_init() == 0);
+        CHECK(cd_init() == (int32_t)0x80b80002u);
+    }
+
+    /* libSceSystemService: the language the person running the runtime chose. */
+    sys_param = (f_sys_param)fn("libSceSystemService", "sceSystemServiceParamGetInt");
+    if (sys_param) {
+        rt_process.system_params[0] = (rt_system_param){1, 18};
+        rt_process.system_param_count = 1;
+        int32_t value = -1;
+        CHECK(sys_param(1, &value) == 0 && value == 18);
+        CHECK(died_in_fatal(sys_param_unset));
+        CHECK(died_in_fatal(sys_param_no_variable));
+        rt_process.system_param_count = 0;
+    }
+
+    /* sceNpSetContentRestriction: offline, nothing to restrict; a missing block stops by name. */
+    np_restrict = (f_np_restrict)fn("libSceNpManager", "sceNpSetContentRestriction");
+    if (np_restrict) {
+        const uint8_t params[0x20] = {0};
+        CHECK(np_restrict(params) == 0);
+        CHECK(died_in_fatal(np_restrict_null));
+    }
+
+    /* sceKernelMapFlexibleMemory: zeroed, writable memory; GPU access accepted. */
+    flex_map = (f_flex_map)fn("libkernel", "sceKernelMapFlexibleMemory");
+    if (flex_map) {
+        void *a = NULL, *b = NULL;
+        CHECK(flex_map(&a, 0x8000, 3, 0) == 0 && a);
+        CHECK(flex_map(&b, 0x4000, 0x33, 0) == 0 && b && b != a);
+        if (a) {
+            volatile unsigned char *m = a;
+            CHECK(m[0] == 0 && m[0x7fff] == 0);
+            m[0x7fff] = 7;
+            CHECK(m[0x7fff] == 7);
+        }
+        CHECK(died_in_fatal(flex_no_variable));
+        CHECK(died_in_fatal(flex_hint));
+        CHECK(died_in_fatal(flex_flags));
+        CHECK(died_in_fatal(flex_partial_page));
+        CHECK(died_in_fatal(flex_exec));
+    }
+
+    /* sceNetInit / sceNetTerm / sceNetPoolCreate. */
+    const f_net_none net_init_fn = (f_net_none)fn("libSceNet", "sceNetInit");
+    net_term_fn = (f_net_none)fn("libSceNet", "sceNetTerm");
+    net_pool_fn = (f_net_pool)fn("libSceNet", "sceNetPoolCreate");
+    if (net_init_fn && net_term_fn && net_pool_fn) {
+        CHECK(died_in_fatal(net_term_uninitialized));
+        CHECK(died_in_fatal(net_pool_uninitialized));
+        CHECK(net_init_fn() == 0);
+        CHECK(net_init_fn() == (int32_t)0x80410110u);
+        const int32_t a = net_pool_fn("FD4HttpMan", 0x4000, 0), b = net_pool_fn("other", 0x1000, 0);
+        CHECK(a >= 0 && b >= 0 && a != b);
+        CHECK(died_in_fatal(net_pool_flags));
+        CHECK(died_in_fatal(net_pool_no_name));
+        /* The HTTP manager's order: pool, SSL context, HTTP context over both. */
+        const f_ssl_init ssl_init_fn = (f_ssl_init)fn("libSceSsl", "sceSslInit");
+        http_init_fn = (f_http_init)fn("libSceHttp", "sceHttpInit");
+        if (ssl_init_fn && http_init_fn) {
+            http_test_pool = a;
+            http_test_ssl = ssl_init_fn(0x4000);
+            CHECK(http_test_ssl >= 0 && ssl_init_fn(0x4000) != http_test_ssl);
+            const int32_t http = http_init_fn(a, http_test_ssl, 0x4000);
+            CHECK(http >= 0 && http_init_fn(b, http_test_ssl, 0x4000) != http);
+            CHECK(died_in_fatal(http_init_unknown_pool));
+            CHECK(died_in_fatal(http_init_unknown_ssl));
+            /* Templates over an HTTP context: the executable's call passes HTTP/1.1 and proxy 1. */
+            http_template_fn = (f_http_template)fn("libSceHttp", "sceHttpCreateTemplate");
+            if (http_template_fn) {
+                http_test_context = http;
+                const int32_t t1 = http_template_fn(http, "agent", 2, 1);
+                CHECK(t1 >= 0 && http_template_fn(http, "agent", 1, 1) != t1);
+                CHECK(died_in_fatal(http_template_unknown_context));
+                CHECK(died_in_fatal(http_template_no_agent));
+                CHECK(died_in_fatal(http_template_version));
+                CHECK(died_in_fatal(http_template_proxy));
+                http_nonblock_fn = (f_http_nonblock)fn("libSceHttp", "sceHttpSetNonblock");
+                if (http_nonblock_fn) {
+                    CHECK(http_nonblock_fn(t1, 1) == 0 && http_nonblock_fn(t1, 0) == 0);
+                    CHECK(died_in_fatal(http_nonblock_unknown));
+                    CHECK(died_in_fatal(http_nonblock_value));
+                }
+            }
+        }
+        CHECK(net_term_fn() == 0);
+        CHECK(net_init_fn() == 0);  /* initialized again after a terminate */
+        CHECK(net_term_fn() == 0);
+    }
 
     if (!failures) puts("syslib: ok");
     return failures != 0;

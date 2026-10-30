@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* pbboot: runs a PS4 executable's entry on Paleblood's runtime, as far as the runtime goes.
 
-     pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--nids NID_DB.xml]
+     pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--nids NID_DB.xml]
             [--status OUT.json] [--timeout SECONDS] [--trace]
      pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]
             (list every import: importer, library, symbol, kind, provider, provider offset, size)
@@ -32,8 +32,10 @@
 
 #include <asm/prctl.h>
 #include <errno.h>
+#include <pthread.h>
 #include <setjmp.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -88,20 +90,41 @@ static const char *const outcome_names[] = {"running", "unimplemented", "fault",
 
 static sigjmp_buf back_to_host;
 static volatile enum outcome outcome = RUNNING;
+/* The host thread that runs the boot. A stop on any other guest thread is recorded there and the
+   main thread is told (SIGUSR1) to make the report; only the first stop counts. */
+static pthread_t main_thread;
+static atomic_int stopped = 0;
 static volatile uint32_t stopped_at;            /* object << 20 | import index of the unimplemented call */
 static volatile uint64_t stopped_from;          /* the guest's return address of that call */
 static volatile uint64_t fault_rip, fault_address;
 static volatile int fault_signal;
 static volatile int exit_code;
 
+/* Claims the run's one stop; false when another thread stopped first. */
+static int claim_stop(void)
+{
+    int expected = 0;
+    return atomic_compare_exchange_strong(&stopped, &expected, 1);
+}
+
+/* After a stop is recorded: unwind on the main thread; on another guest thread, wake the main one
+   to make the report and wait for the process to end there. */
+static _Noreturn void unwind(void)
+{
+    if (pthread_equal(pthread_self(), main_thread)) siglongjmp(back_to_host, 1);
+    pthread_kill(main_thread, SIGUSR1);
+    for (;;) pause();
+}
+
 /* Entered from an unimplemented import's trampoline (edi = object << 20 | import). Never returns. */
 static __attribute__((noinline)) void unimplemented(uint32_t which)
 {
+    if (!claim_stop()) for (;;) pause();
     /* the trampoline jumped here, so the return address is the guest's call site */
     stopped_from = (uint64_t)(uintptr_t)__builtin_return_address(0);
     stopped_at = which;
     outcome = UNIMPLEMENTED;
-    siglongjmp(back_to_host, 1);
+    unwind();
 }
 
 static void guest_exit(int code)
@@ -114,6 +137,8 @@ static void guest_exit(int code)
 static void on_signal(int sig, siginfo_t *info, void *context)
 {
     const ucontext_t *uc = context;
+    if (sig == SIGUSR1) siglongjmp(back_to_host, 1); /* a worker stopped; its outcome is recorded */
+    if (!claim_stop()) for (;;) pause();
     if (sig == SIGALRM) {
         outcome = TIMEOUT;
     } else {
@@ -122,7 +147,7 @@ static void on_signal(int sig, siginfo_t *info, void *context)
         fault_address = (uint64_t)(uintptr_t)info->si_addr;
     }
     fault_rip = (uint64_t)uc->uc_mcontext.gregs[REG_RIP];
-    siglongjmp(back_to_host, 1);
+    unwind();
 }
 
 /* Calls fn(a, b, c) on the guest stack: rt_boot_call(fn, a, stack_top, b, c). */
@@ -336,6 +361,22 @@ static int add_app_param(const char *arg)
     return 0;
 }
 
+/* --system-param ID=VALUE, a console system setting (tools/boot.py). Returns 0 when it was added. */
+static int add_system_param(const char *arg)
+{
+    const char *eq = strchr(arg, '=');
+    if (!eq || !eq[1] || rt_process.system_param_count == RT_MAX_SYSTEM_PARAMS) return -1;
+    char *end;
+    const long id = strtol(arg, &end, 0);
+    if (end != eq || id < 0 || id > INT32_MAX) return -1;
+    const long value = strtol(eq + 1, &end, 0);
+    if (*end || value < INT32_MIN || value > INT32_MAX) return -1;
+    for (uint32_t i = 0; i < rt_process.system_param_count; i++)
+        if (rt_process.system_params[i].id == id) return -1;
+    rt_process.system_params[rt_process.system_param_count++] = (rt_system_param){(int32_t)id, (int32_t)value};
+    return 0;
+}
+
 /* --stub-module ID:NAME, the id in C notation (0x0038). Returns 0 when it was added. */
 static int add_stub_module(const char *arg)
 {
@@ -352,7 +393,7 @@ static int add_stub_module(const char *arg)
 }
 
 static const char *usage =
-    "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--nids NID_DB.xml]\n"
+    "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--nids NID_DB.xml]\n"
     "              [--status OUT.json] [--timeout S] [--trace]\n"
     "       pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]\n";
 
@@ -369,6 +410,12 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--stub-module") && i + 1 < argc) {
             if (add_stub_module(argv[++i])) {
                 fprintf(stderr, "pbboot: --stub-module %s: want a new ID:NAME, the id 16 bits\n", argv[i]);
+                return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "--system-param") && i + 1 < argc) {
+            if (add_system_param(argv[++i])) {
+                fprintf(stderr, "pbboot: --system-param %s: want a new ID=VALUE\n", argv[i]);
                 return 2;
             }
         }
@@ -480,13 +527,15 @@ int main(int argc, char **argv)
     /* Thread pointer (x86-64 variant II): the executable's TLS block just below the thread control
        block, whose first word points to itself. Modules reach their TLS through __tls_get_addr. */
     const rt_elf_tls *tls = rt_elf_tls_segment(objects[0].elf);
-    const uint64_t align = tls->align > 16 ? tls->align : 16;
-    const uint64_t tls_size = (tls->memsz + align - 1) / align * align;
-    unsigned char *tls_block = aligned_alloc(align, tls_size + 4096);
-    memset(tls_block, 0, tls_size + 4096);
-    unsigned char *tp = tls_block + tls_size;
-    if (tls->filesz) memcpy(tp - tls_size, objects[0].image + tls->vaddr, tls->filesz);
-    *(uint64_t *)tp = (uint64_t)(uintptr_t)tp;
+    rt_process.tls_image = objects[0].image + tls->vaddr;
+    rt_process.tls_filesz = tls->filesz;
+    rt_process.tls_memsz = tls->memsz;
+    rt_process.tls_align = tls->align;
+    unsigned char *tp = rt_tls_block_create();
+    if (!tp) {
+        fprintf(stderr, "pbboot: no memory for the thread-local storage block\n");
+        return 3;
+    }
     if (syscall(SYS_arch_prctl, ARCH_SET_GS, (unsigned long)(uintptr_t)tp)) {
         fprintf(stderr, "pbboot: arch_prctl: %s\n", strerror(errno));
         return 3;
@@ -498,7 +547,8 @@ int main(int argc, char **argv)
     struct sigaction sa = {0};
     sa.sa_sigaction = on_signal;
     sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_NODEFER;
-    static const int signals[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGTRAP, SIGALRM};
+    static const int signals[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGTRAP, SIGALRM, SIGUSR1};
+    main_thread = pthread_self();
     for (size_t i = 0; i < sizeof signals / sizeof signals[0]; i++) sigaction(signals[i], &sa, NULL);
 
     unsigned char *stack_top = stack + STACK_SIZE - 64;
