@@ -64,7 +64,7 @@ Two other clock functions are easy to mistake for part of the limiter:
   frame-rate patches overwrite it and its neighbours with their own code (a code cave), so it is
   not replaced.
 - The millisecond clock `frame_timing_get_monotonic_ms` (`0x0111a7f0`), its microsecond twin
-  `0x0111a760` and the sleep wrapper `0x0111a880` are not on the limiter's path. They look like
+  `0x0111a760` and the sleep wrapper `0x0111a880` (now replaced, see below) are not on the limiter's path. They look like
   the timing layer of a separate subsystem.
 
 <details>
@@ -76,6 +76,44 @@ their callers sit in one region (`0x0110e...`-`0x0121b...`) that shares its own 
 no frame-rate patch touches any of them: they look like the timing layer of a separate
 subsystem (unidentified; possibly middleware). Their system label may move once that
 subsystem is known.
+
+</details>
+
+### The fixed-step state methods
+
+Many small objects in the game advance in fixed steps of 1/30 s, whatever the real frame time is.
+The community "60 FPS++" patch changes those steps to 1/60 s, so knowing exactly which functions it
+edits, and what each belongs to, is part of running the game faster than 30 FPS. Paleblood has
+replaced a growing set of them in `game/frame_timing/fixed_step_states.cpp`.
+
+The latest belong to the **Chalice Dungeon gate**, the object behind the ritual altar:
+
+- **Its steps have names.** The gate (`SprjDungeonGateIns`) keeps a table of 24 steps whose names
+  are in the executable. They give its states their meaning: loading a channel, no chalice, a local
+  or online ritual, a local or online dungeon, and an error display.
+- **Finding the gate.** The game finds the current gate through `SprjHolygrail`. The highest of
+  seven event flags, 9020 to 9026, picks one of eight gate slots; with none set, it uses the last
+  slot.
+- **Waiting for it.** Two methods advance the gate while it is busy and are done once it is idle.
+  Two more wait until it is idle in a dungeon mode, or in a ritual mode.
+
+The millisecond sleep wrapper (`0x0111a880`), which is not on the limiter's path, is replaced too.
+It converts the engine's millisecond delay to the kernel's microseconds. It multiplies in 32 bits,
+as the original does, so very large delays wrap, and it always reports success.
+
+<details>
+<summary>Fixed-step methods: PRs, contributors and evidence</summary>
+
+- [#104](https://github.com/Yharnam-Hunters/Paleblood/pull/104) by
+  [@evill33t](https://github.com/evill33t): the millisecond sleep wrapper.
+- [#138](https://github.com/Yharnam-Hunters/Paleblood/pull/138): five `SprjDungeonGateIns`
+  methods that step the gate's state (`0x01eb5390`, `0x01eb5490`, and the event handlers at
+  `0x01eb9020`, `0x01ebb090`, `0x01ebf060`).
+- [#141](https://github.com/Yharnam-Hunters/Paleblood/pull/141): four methods that find the
+  gate through `SprjHolygrail` (`0x0200f970`, `0x020118f0`, `0x01f03210`, `0x01f03680`).
+- Status: **replaced**, not verified. Each was compared with the original function on authored
+  edge cases, stock and with the 60 FPS++ edits, and wrong variants were rejected. None was
+  checked on frames recorded from a real game run.
 
 </details>
 
