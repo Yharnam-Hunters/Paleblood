@@ -374,11 +374,17 @@ static void *tc_seen_self, *tc_seen_argument;
 static uint64_t tc_seen_tp, tc_seen_tp_word;
 static uintptr_t tc_seen_local;
 static atomic_int tc_done;
+/* _sigprocmask: each guest thread's blocked signals, a FreeBSD sigset_t of four words. */
+typedef int (*f_sigmask)(int, const uint32_t *, uint32_t *);
+static f_sigmask tc_sigmask;
+static uint32_t tc_seen_mask[4];
+static void sigmask_bad_how(void) { const uint32_t set[4] = {0}; tc_sigmask(4, set, NULL); }
 static void *tc_entry(void *argument)
 {
     int local = 0;
     tc_seen_argument = argument;
     tc_seen_self = tc_self();
+    if (tc_sigmask) tc_sigmask(1, NULL, tc_seen_mask);
     uint64_t tp, word;
     __asm__ volatile("mov %%gs:0, %0" : "=r"(word));
     tp = word; /* the thread pointer's first word is the thread pointer itself */
@@ -1085,6 +1091,23 @@ int main(void)
     tc_create = (f_create)fn("libkernel", "scePthreadCreate");
     tc_affinity = (f_setaffinity)fn("libkernel", "scePthreadSetaffinity");
     tc_self = (f_self)fn("libkernel", "scePthreadSelf");
+    tc_sigmask = (f_sigmask)fn("libkernel", "_sigprocmask");
+    if (tc_sigmask && tc_self) {
+        /* Block, read back, unblock; SIGKILL (bit 8) and SIGSTOP (bit 16) are never blocked. */
+        uint32_t old[4] = {7, 7, 7, 7};
+        CHECK(tc_sigmask(1, NULL, old) == 0 && !old[0] && !old[1] && !old[2] && !old[3]);
+        const uint32_t block[4] = {0x80 | 0x100 | 0x10000, 0, 0, 0x2};
+        CHECK(tc_sigmask(1, block, NULL) == 0);
+        CHECK(tc_sigmask(1, NULL, old) == 0 && old[0] == 0x80 && old[3] == 0x2);
+        const uint32_t unblock[4] = {0x80, 0, 0, 0};
+        CHECK(tc_sigmask(2, unblock, old) == 0 && old[0] == 0x80);
+        CHECK(tc_sigmask(1, NULL, old) == 0 && old[0] == 0 && old[3] == 0x2);
+        const uint32_t set_to[4] = {0x4, 0, 0, 0};
+        CHECK(tc_sigmask(3, set_to, NULL) == 0);
+        CHECK(tc_sigmask(1, NULL, old) == 0 && old[0] == 0x4 && old[3] == 0);
+        CHECK(tc_sigmask(99, NULL, NULL) == 0); /* how is ignored without a new set */
+        CHECK(died_in_fatal(sigmask_bad_how));
+    }
     if (tc_create && tc_affinity && tc_self) {
         void *thread = NULL, *attr = tc_attr(1, 1, 0);
         int marker = 0;
@@ -1094,6 +1117,7 @@ int main(void)
         CHECK(atomic_load(&tc_done) == 1);
         CHECK(tc_seen_argument == &marker && tc_seen_self == thread && tc_seen_self != tc_self());
         CHECK(tc_seen_tp && tc_seen_tp_word == tc_seen_tp);
+        CHECK(!tc_sigmask || (tc_seen_mask[0] == 0x4 && tc_seen_mask[3] == 0)); /* inherited */
         CHECK(tc_seen_local < (uintptr_t)&marker - 0x100000 || tc_seen_local > (uintptr_t)&marker + 0x100000);
         CHECK(tc_affinity(thread, 0x3f) == 0);
         atomic_store(&tc_done, 0);
