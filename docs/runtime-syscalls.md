@@ -731,14 +731,16 @@ headers give:
 **What the executable does:**
 - Its only init call (`0x0111b665`) accepts success or exactly `0x8026000E`.
 - Its only open (`0x0111b69d`) passes user `0xff` (the system user in the SDK's user types), the
-  main port, index 0, 256 samples, 48000 Hz and format 4 (or 5 for eight channels). It keeps a
-  non-negative result as the port handle.
+  main port, index 0, 256 samples, 48000 Hz and a format. It keeps a non-negative result as the
+  port handle.
+- The format is the executable's own evidence. Its output callback (`0x0111b600`) accepts 2 or 8
+  channels and passes `4 | (channels == 8)`. So 4 is float stereo (as in the SDK) and 5 is float
+  with eight channels. The boot opens eight channels.
 
 **What the runtime does.** It records each open port and hands out handles from 1. Sound output
 belongs to the output calls, which stop by name until they are implemented.
 
-**What stops by name:** any open other than the observed one (format 5 is not in the public list),
-and running out of handles.
+**What stops by name:** any open other than the observed ones, and running out of handles.
 
 ## Implementation rule
 
