@@ -791,7 +791,7 @@ the CPU mask its caller chose. As for `scePthreadSetaffinity`, the runtime recor
 created thread takes it) and the host schedules. An empty mask stops by name, and a variable
 holding no attribute is `EINVAL`.
 
-## The title's files: `/app0` and `sceKernelStat` (issue #35)
+## The title's files: `/app0`, `sceKernelStat`, opening and reading (issue #35)
 
 The title reads its own data under `/app0`, the console's read-only mount of its package. The
 runtime serves `/app0` from your own copy and never writes to it:
@@ -820,6 +820,23 @@ runtime serves `/app0` from your own copy and never writes to it:
 
 **Errors.** A missing file answers `ENOENT`, and a missing directory component `ENOTDIR` (the same
 numbers on FreeBSD and Linux). Any other host error stops by name.
+
+### Opening and reading
+
+`sceKernelOpen`, `sceKernelRead`, `sceKernelPread`, `sceKernelLseek`, `sceKernelFstat` and
+`sceKernelClose` are FreeBSD's `open(2)`, `read(2)`, `pread(2)`, `lseek(2)`, `fstat(2)` and
+`close(2)` under their SCE names. The OpenOrbis homebrew SDK's `libkernel.h` declares the shapes.
+Each returns a result, or `0x80020000` plus the error number. The executable opens its data with
+flags 0 (`O_RDONLY`) and mode 0555.
+
+**What the runtime does:**
+- **Opening.** It opens the host file read-only. A request to write, create, truncate or append
+  answers `EROFS`, as FreeBSD does on a read-only mount. The lookup comes first: a missing file
+  without `O_CREAT` is `ENOENT`. Other flag bits stop by name.
+- **Descriptors.** A descriptor is the runtime's own number, from 3 up, standing for a host
+  descriptor (the title only passes it back). One the runtime did not hand out is `EBADF`.
+- **Seeking.** A whence other than 0, 1 or 2 (`SEEK_SET`, `SEEK_CUR`, `SEEK_END`, the same on
+  FreeBSD and Linux), and a seek before the start, are `EINVAL`.
 
 ## Implementation rule
 

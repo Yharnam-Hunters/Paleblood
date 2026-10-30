@@ -1619,6 +1619,44 @@ int main(void)
             CHECK(died_in_fatal(kstat_outside));
             CHECK(died_in_fatal(kstat_dotdot));
             CHECK(died_in_fatal(kstat_prefix_only));
+            /* Open, read, seek, pread, fstat and close the same file, read-only. */
+            typedef int32_t (*f_open)(const char *, int32_t, uint32_t);
+            typedef int64_t (*f_read)(int32_t, void *, uint64_t);
+            typedef int64_t (*f_pread)(int32_t, void *, uint64_t, int64_t);
+            typedef int64_t (*f_lseek)(int32_t, int64_t, int32_t);
+            typedef int32_t (*f_fd)(int32_t);
+            typedef int32_t (*f_fstat)(int32_t, void *);
+            const f_open kopen = (f_open)fn("libkernel", "sceKernelOpen");
+            const f_read kread = (f_read)fn("libkernel", "sceKernelRead");
+            const f_pread kpread = (f_pread)fn("libkernel", "sceKernelPread");
+            const f_lseek klseek = (f_lseek)fn("libkernel", "sceKernelLseek");
+            const f_fd kclose = (f_fd)fn("libkernel", "sceKernelClose");
+            const f_fstat kfstat = (f_fstat)fn("libkernel", "sceKernelFstat");
+            if (kopen && kread && kpread && klseek && kclose && kfstat) {
+                const int32_t fd = kopen("/app0/data.bin", 0, 0555);
+                CHECK(fd >= 3);
+                char buf[16] = {0};
+                CHECK(kread(fd, buf, 4) == 4 && !memcmp(buf, "0123", 4));
+                CHECK(kread(fd, buf, 16) == 6 && !memcmp(buf, "456789", 6));
+                CHECK(kread(fd, buf, 16) == 0);
+                CHECK(klseek(fd, 2, 0) == 2 && kread(fd, buf, 2) == 2 && !memcmp(buf, "23", 2));
+                CHECK(klseek(fd, -1, 2) == 9 && klseek(fd, 1, 1) == 10);
+                CHECK(klseek(fd, 0, 7) == (int32_t)0x80020016u && klseek(fd, -1, 0) == (int32_t)0x80020016u); /* sign-extended */
+                CHECK(kpread(fd, buf, 3, 7) == 3 && !memcmp(buf, "789", 3));
+                memset(st, 0, sizeof st);
+                CHECK(kfstat(fd, st) == 0 && (memcpy(&size, st + 0x48, 8), size == 10));
+                const int32_t fd2 = kopen("/app0/data.bin", 0, 0);
+                CHECK(fd2 > 0 && fd2 != fd);
+                CHECK(kclose(fd) == 0 && kclose(fd) == (int32_t)0x80020009u);
+                CHECK(kread(fd, buf, 1) == (int32_t)0x80020009u);
+                CHECK(kopen("/app0/data.bin", 0, 0) == fd); /* the lowest free number again */
+                CHECK(kclose(fd) == 0 && kclose(fd2) == 0);
+                CHECK(kopen("/app0/missing.bin", 0, 0) == (int32_t)0x80020002u);
+                CHECK(kopen("/app0/data.bin", 2, 0) == (int32_t)0x8002001eu);     /* O_RDWR: EROFS */
+                CHECK(kopen("/app0/new.bin", 0x201, 0644) == (int32_t)0x8002001eu); /* O_CREAT */
+                CHECK(kopen("/app0/missing.bin", 1, 0) == (int32_t)0x80020002u);   /* lookup first */
+                CHECK(access(file, F_OK) == 0); /* nothing was written or created */
+            }
             unlink(file);
             rmdir(app0);
             rt_process.app0_dir = NULL;
