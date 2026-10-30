@@ -24,6 +24,15 @@ enum { BSD_ENOMEM = 12, BSD_EINVAL = 22 };
    them rather than measuring them. */
 enum { DETACH_JOINABLE = 0, DETACH_DETACHED = 1 };
 
+/* SCHED_FIFO, SCHED_OTHER and SCHED_RR in FreeBSD's <sched.h>; libthr accepts only these three
+   (_pthread_attr_setschedpolicy, thr_attr.c). The executable asks for 1. */
+enum { SCHED_POLICY_FIFO = 1, SCHED_POLICY_OTHER = 2, SCHED_POLICY_RR = 3 };
+/* The smallest stack size: libthr refuses a size below its minimum with EINVAL
+   (_pthread_attr_setstacksize, thr_attr.c), and the executable's thread wrapper names the PS4's:
+   when its first size is refused it asks again for exactly 16 KiB (0x02a3b383), and it is given
+   sizes below that by its callers. */
+#define MIN_STACK_SIZE 0x4000u
+
 typedef struct {
     void *stack;
     uint64_t stack_size;
@@ -35,6 +44,8 @@ typedef struct {
     uint64_t stack_size;
     int has_detach_state;
     int detach_state;
+    int has_sched_policy;
+    int sched_policy;
 } guest_attr;
 
 static int sce(int bsd) { return bsd ? SCE_KERNEL_ERROR(bsd) : 0; }
@@ -143,6 +154,39 @@ static int sce_attr_set_detach_state(guest_attr **attr, int state)
     return sce(attr_set_detach_state(attr, state));
 }
 
+/* The stack size of a thread created with the attribute (POSIX pthread_attr_setstacksize). It
+   replaces a stack copied in by scePthreadAttrGet: libthr keeps one stack address and size per
+   attribute, and setting the size alone leaves the address to the system (no stack set). */
+static int attr_set_stack_size(guest_attr **attr, uint64_t size)
+{
+    if (!attr || !*attr || size < MIN_STACK_SIZE) return BSD_EINVAL;
+    (*attr)->has_stack = 1;
+    (*attr)->stack = NULL;
+    (*attr)->stack_size = size;
+    return 0;
+}
+
+static int sce_attr_set_stack_size(guest_attr **attr, uint64_t size)
+{
+    return sce(attr_set_stack_size(attr, size));
+}
+static int posix_attr_set_stack_size(guest_attr **attr, uint64_t size)
+{
+    return attr_set_stack_size(attr, size);
+}
+
+/* The scheduling policy of a thread created with the attribute. libthr refuses any policy but its
+   three with ENOTSUP; that refusal's SCE value is not established, so another policy stops by name. */
+static int sce_attr_set_sched_policy(guest_attr **attr, int policy)
+{
+    if (!attr || !*attr) return SCE_KERNEL_ERROR(BSD_EINVAL);
+    if (policy != SCHED_POLICY_FIFO && policy != SCHED_POLICY_OTHER && policy != SCHED_POLICY_RR)
+        rt_fatal("scePthreadAttrSetschedpolicy", "a policy other than FIFO, OTHER and RR");
+    (*attr)->has_sched_policy = 1;
+    (*attr)->sched_policy = policy;
+    return 0;
+}
+
 /* Read the state through this, never from the field: a fresh attribute's detach_state is zero,
    which is the joinable value, so reading the field would assume joinable silently. The two
    messages tell a boot log which unknown the guest reached. */
@@ -164,6 +208,8 @@ RT_SYSLIB("libkernel", scePthreadAttrInit, sce_attr_init);
 RT_SYSLIB("libkernel", scePthreadAttrDestroy, sce_attr_destroy);
 RT_SYSLIB("libkernel", scePthreadAttrGet, attr_get);
 RT_SYSLIB("libkernel", scePthreadAttrSetdetachstate, sce_attr_set_detach_state);
+RT_SYSLIB("libkernel", scePthreadAttrSetstacksize, sce_attr_set_stack_size);
+RT_SYSLIB("libkernel", scePthreadAttrSetschedpolicy, sce_attr_set_sched_policy);
 
 /* libScePosix: the same calls under their POSIX names, returning the errno values themselves.
    pthread_self has no error return, so it answers exactly as scePthreadSelf does. */
@@ -171,3 +217,4 @@ RT_SYSLIB("libScePosix", pthread_self, posix_thread_self);
 RT_SYSLIB("libScePosix", pthread_attr_init, attr_init);
 RT_SYSLIB("libScePosix", pthread_attr_destroy, attr_destroy);
 RT_SYSLIB("libScePosix", pthread_attr_setdetachstate, attr_set_detach_state);
+RT_SYSLIB("libScePosix", pthread_attr_setstacksize, posix_attr_set_stack_size);

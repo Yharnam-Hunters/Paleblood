@@ -355,6 +355,13 @@ static void *pc_waiter(void *unused)
 }
 static void pc_init_with_attribute(void) { void *c = NULL, *attr = &c; pc_init(&c, &attr); }
 
+/* Thread attribute setters: stack size and scheduling policy. */
+typedef int (*f_attr_u64)(void **, uint64_t);
+typedef int (*f_attr_int)(void **, int);
+static f_attr_u64 ta_stack;
+static f_attr_int ta_policy;
+static void ta_policy_unknown(void) { void *a = &a; ta_policy(&a, 4); }
+
 int main(void)
 {
     /* Unresolved entries are still callable diagnostics, but are not reported as implemented. */
@@ -940,6 +947,26 @@ int main(void)
     CHECK(is_implemented("libScePosix", "pthread_cond_init") && is_implemented("libScePosix", "pthread_cond_wait") &&
           is_implemented("libScePosix", "pthread_cond_signal") && is_implemented("libScePosix", "pthread_cond_broadcast") &&
           is_implemented("libScePosix", "pthread_cond_destroy") && !is_implemented("libScePosix", "pthread_cond_timedwait"));
+
+    /* scePthreadAttrSetstacksize / Setschedpolicy and pthread_attr_setstacksize, on attributes
+       made by scePthreadAttrInit. */
+    ta_stack = (f_attr_u64)fn("libkernel", "scePthreadAttrSetstacksize");
+    ta_policy = (f_attr_int)fn("libkernel", "scePthreadAttrSetschedpolicy");
+    const f_attr_u64 ta_posix_stack = (f_attr_u64)fn("libScePosix", "pthread_attr_setstacksize");
+    const f1 ta_init = (f1)fn("libkernel", "scePthreadAttrInit"), ta_destroy = (f1)fn("libkernel", "scePthreadAttrDestroy");
+    if (ta_stack && ta_policy && ta_posix_stack && ta_init && ta_destroy) {
+        void *a = NULL;
+        CHECK(ta_init(&a) == 0);
+        CHECK(ta_stack(&a, 0x10000) == 0 && ta_stack(&a, 0x4000) == 0 && ta_posix_stack(&a, 0x20000) == 0);
+        CHECK(ta_policy(&a, 1) == 0 && ta_policy(&a, 2) == 0 && ta_policy(&a, 3) == 0);
+        void *none = NULL;
+        CHECK(ta_stack(&none, 0x10000) == (int)0x80020016u && ta_posix_stack(&none, 0x10000) == 22);
+        CHECK(ta_policy(&none, 1) == (int)0x80020016u);
+        /* Below 16 KiB is refused, as the executable expects: it then asks for exactly 16 KiB. */
+        CHECK(ta_stack(&a, 0x3fff) == (int)0x80020016u && ta_posix_stack(&a, 0x1000) == 22);
+        CHECK(died_in_fatal(ta_policy_unknown));
+        CHECK(ta_destroy(&a) == 0);
+    }
 
     if (!failures) puts("syslib: ok");
     return failures != 0;
