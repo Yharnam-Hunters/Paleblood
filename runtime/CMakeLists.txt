@@ -13,7 +13,7 @@ else()
     set(PB_TRACE_SOURCES trace_none.c)
     message(STATUS "capture tracing: off (Capstone not found)")
 endif()
-add_library(bbrt STATIC hooks.c plugin.c host_hooks.c capture.c capture_trace.cpp probe.c loader.c nid.c
+add_library(bbrt STATIC hooks.c plugin.c host_hooks.c capture.c capture_trace.cpp capture_hooks.c capture_entry.S probe.c loader.c nid.c
             ${PB_TRACE_SOURCES})
 target_include_directories(bbrt PUBLIC include)
 if(CAPSTONE_FOUND)

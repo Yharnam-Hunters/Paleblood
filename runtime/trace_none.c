@@ -16,3 +16,19 @@ int rt_trace_call(const void *entry, const rt_trace_args *args, const rt_code_ra
 }
 
 void rt_trace_log_free(rt_trace_log *log) { (void)log; }
+
+int rt_trace_active(void) { return 0; }
+
+void rt_trace_set_redirects(const rt_trace_redirect *table, size_t count) { (void)table, (void)count; }
+
+int rt_trace_relocate(const void *src, size_t min_bytes, void *dst, size_t *copied, size_t *written)
+{
+    (void)src, (void)min_bytes, (void)dst, (void)copied, (void)written;
+    return -1;
+}
+
+int rt_trace_branches_into(const void *fn, size_t size, size_t n)
+{
+    (void)fn, (void)size, (void)n;
+    return 1;
+}

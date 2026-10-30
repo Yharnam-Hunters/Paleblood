@@ -44,7 +44,7 @@ rt_trace_enter:
     .hidden rt_trace_landing
     .type rt_trace_landing, @function
 rt_trace_landing:
-    mov 128(%rsp), %r11         /* RT_TRACE_STACK_SLOTS * 8 past the return address slot */
+    mov 512(%rsp), %r11         /* RT_TRACE_STACK_SLOTS * 8 past the return address slot */
     mov %rax, 200(%r11)
     mov %rdx, 208(%r11)
     movdqu %xmm0, 216(%r11)

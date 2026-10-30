@@ -24,6 +24,7 @@ target_link_libraries(test_hooks bbrt)
 add_test(NAME hooks COMMAND test_hooks)
 add_executable(test_plugin test/test_plugin.c runtime/plugin.c runtime/hooks.c)
 target_include_directories(test_plugin PRIVATE runtime/include)
+target_link_libraries(test_plugin bbrt)
 add_test(NAME plugin COMMAND test_plugin)
 
 add_executable(test_host_hooks test/test_host_hooks.c runtime/host_hooks.c)
@@ -38,6 +39,14 @@ add_test(NAME capture_trace COMMAND test_capture_trace --self-test)
 add_test(NAME capture_trace_replay
          COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/capture_trace_integration.py $<TARGET_FILE:test_capture_trace>)
 set_tests_properties(capture_trace_replay PROPERTIES
+    ENVIRONMENT "CC=${CMAKE_C_COMPILER};BB_LOADER=$<TARGET_FILE:pbloader>")
+add_executable(test_capture_hooks test/test_capture_hooks.cpp test/capture_trace_guest.S)
+target_link_libraries(test_capture_hooks bbrt)
+add_test(NAME capture_hooks COMMAND test_capture_hooks --self-test)
+add_test(NAME capture_hooks_replay
+         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/capture_trace_integration.py $<TARGET_FILE:test_capture_hooks>
+                 capture_trace_scale capture_trace_twice capture_trace_copy)
+set_tests_properties(capture_hooks_replay PROPERTIES
     ENVIRONMENT "CC=${CMAKE_C_COMPILER};BB_LOADER=$<TARGET_FILE:pbloader>")
 add_executable(test_capture_poc test/test_capture_poc.cpp)
 add_test(NAME capture_poc_fail_closed COMMAND test_capture_poc --self-test)

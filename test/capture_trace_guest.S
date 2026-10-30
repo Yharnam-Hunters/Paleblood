@@ -80,6 +80,17 @@ increment:
     jnz 1b
     ret
 
+/* 0x280: int32_t count_down(int32_t n) { while (n) n--; return 7; } its loop jumps back into
+   the first bytes, which a hook overwrites: this function cannot be recorded. */
+    .org 0x280
+    mov %edi, %ecx
+2:  test %ecx, %ecx
+    jz 3f
+    dec %ecx
+    jmp 2b
+3:  mov $7, %eax
+    ret
+
     .org 0x1000
 global:
     .long 1000

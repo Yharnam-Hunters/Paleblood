@@ -11,7 +11,7 @@ mechanism lives here and the knowledge lives in `game/` as data.
 | System libraries | `syslib/*.c`, `include/runtime/syslib.h` | implementations by library and symbol (`RT_SYSLIB`), one file per system call group |
 | NIDs | `nid.c`, `include/runtime/nid.h` | symbol name to NID |
 | Hooks and captures | `hooks.c`, `capture.c`, `include/runtime/recorder.hpp`, `probe.c`, `plugin.c` | hook registry and opt-in case writer; production hook dispatch does not yet observe calls or connect the Recorder to replacements; serialized cases carry function/run provenance and stable buffer ordering |
-| Tracing capture | `trace.c`, `trace_entry.S`, `capture_trace.cpp`, `include/runtime/trace.h`, `include/runtime/capture_trace.h` | single-steps a call (Capstone) and turns every byte it read before writing into a schema-1 case; fail-closed; not yet connected to hooks (docs/capture-architecture.md). Without Capstone, `trace_none.c` |
+| Tracing capture | `trace.c`, `trace_entry.S`, `capture_trace.cpp`, `capture_hooks.c`, `capture_entry.S`, `include/runtime/trace.h`, `include/runtime/capture_trace.h`, `include/runtime/capture_hooks.h` | with `BB_CAPTURE_TRACE=1`, sampled hooked calls run the original single-stepped (Capstone) from a relocated entry, and every byte it read before writing becomes a schema-1 case; fail-closed; imports and thread-local storage not yet (docs/capture-architecture.md). Without Capstone, `trace_none.c` |
 
 ## Host v1 hook callback
 

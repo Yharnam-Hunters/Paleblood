@@ -25,9 +25,9 @@ expressed in a case, tracing stops and the rest of the call runs natively; the l
 and no case is written. Fail-closed reasons today: an instruction the tracer does not model
 (`xsave`, `fxsave`, `xlat`, `syscall`, `int3`, ...), a segment-relative access (thread-local
 storage), a vector-indexed access (gather, scatter), a read of `xmm2`..`xmm7` before the code writes
-it (cases give only `xmm0` and `xmm1`), a stack argument past the 22nd, code outside the traced
+it (cases give only `xmm0` and `xmm1`), a stack argument past the 70th, code outside the traced
 ranges (an import or other native code), unreadable memory, the instruction limit
-(`BB_TRACE_STEP_LIMIT`, default five million) or the byte-table limit.
+(`BB_TRACE_STEP_LIMIT`, default 200,000) or the byte-table limit.
 
 **Case** (`runtime/capture_trace.cpp`). A complete trace becomes a schema-1 case:
 
@@ -55,19 +55,54 @@ and the instruction limit give no case while the call still completes.
 passes against a native replacement, and a replacement with one deliberate change per function
 fails.
 
+**Hooked calls** (`runtime/capture_hooks.c`, `runtime/capture_entry.S`). With capture on
+(`BB_CAPTURE_DIR`) and tracing asked for (`BB_CAPTURE_TRACE=1`), `bbgame_init` prepares each hook
+before installing it, while the original is still intact:
+
+1. The original's first instructions (at least the 14 bytes the hook's jump overwrites) are copied
+   into a block mapped within reach of the image, with RIP-relative operands and 32-bit relative
+   calls and jumps rewritten to keep their targets, followed by a jump back into the rest of the
+   original (`rt_trace_relocate`).
+2. A function whose own branches jump back into those first bytes (a loop at its very start) is not
+   recorded: its original can no longer run once hooked (`rt_trace_branches_into`). Nor is one that
+   short branches or out-of-reach operands keep from relocating, or one without a return class.
+3. The hook's target becomes a small thunk that loads the hook's record and enters
+   `rt_capture_entry`, which saves every argument register (and `al`, for variadic calls) and the
+   caller's stack pointer, then asks `rt_capture_dispatch` what to do.
+4. A redirect maps the original's entry to its relocated copy: traced code that calls another
+   hooked function follows that function's original, as the verifier runs it.
+
+At run time an unsampled call, or any call while the thread is already tracing, goes on to the
+replacement with every register exactly as it arrived. A sampled call (`runtime/capture.h`: the
+first 50 calls, then every 1000th, at most 200, filtered by `BB_CAPTURE_ONLY`) runs the original
+under the tracer from its relocated entry, with the caller's arguments and up to 64 stack
+arguments copied, and returns the original's result to the caller; the case is written when the
+trace is complete. Reads of the relocated code itself (the jump back reads its own target) are not
+inputs. A function whose traces give no case three times in a row is not traced again in the run.
+Tracing costs microseconds per instruction (default limit 200,000 per call), so it is opt-in and
+best paired with `BB_CAPTURE_ONLY`.
+
+`game/hooks.csv` carries each function's return class (`returns`), checked against the
+replacement's declaration by `tools/validate_functions.py`.
+
+**Proof.** `test/test_capture_hooks.cpp` hooks six synthetic functions through `bbgame_init` and the
+version-1 host installer and calls them through the image, as the game does: sampled calls run the
+original traced and return its result, unwanted calls reach the replacement, a traced original's
+call to another hooked function follows that function's original, a function with a loop into its
+first bytes is never recorded, and one whose trace always leaves for native code stops being traced
+after three tries. The recorded cases replay through `tools/verify.py` (`capture_hooks_replay`).
+
+Limits: a traced call runs on a private stack, so a function that keeps the address of one of its
+stack arguments after it returns, unwinds past its caller (`longjmp`), or switches stacks or fibers
+mid-call is not safe to trace; none is known among the hooked functions.
+
 ### Next steps
 
-1. **Hooked calls** (the production path): the hook target becomes a per-hook entry that keeps
-   every argument register and the caller's stack; an unsampled call goes on to the replacement,
-   a sampled one runs the original's code under the tracer from a relocated copy of its first
-   instructions (the hook jump overwrites them), and the result returns to the caller. Inside a
-   trace, a call that reaches another hooked function continues into that original's relocated
-   entry, as replay runs the original. `game/hooks.csv` gains the `returns` column.
-2. **Imports**: a call that leaves the image through an import is recorded instead of stopping the
+1. **Imports**: a call that leaves the image through an import is recorded instead of stopping the
    trace: its name, arguments and return value, and the bytes it changed behind its pointer
    arguments (compared page by page before and after), become the case's scripted `imports`; the
    trace resumes when it returns.
-3. **Thread-local storage**: a `gs:` access becomes a buffer for the thread block and the case's
+2. **Thread-local storage**: a `gs:` access becomes a buffer for the thread block and the case's
    `gs` value.
 
 ## Typed descriptors (earlier proof)

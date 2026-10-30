@@ -38,8 +38,8 @@ class Fixture(unittest.TestCase):
                   ['address', 'size', 'name', 'system', 'status', 'notes'],
                   [['0x00401000', '100', 'frame_timing_update', 'frame_timing', 'verified', ''],
                    ['0x00402000', '50', 'camera_follow', 'camera', 'original', '']])
-        write_csv(f'{self.d}/game/hooks.csv', ['address', 'replacement', 'system'],
-                  [['0x00401000', 'bb_frame_timing_update', 'frame_timing']])
+        write_csv(f'{self.d}/game/hooks.csv', ['address', 'replacement', 'system', 'returns'],
+                  [['0x00401000', 'bb_frame_timing_update', 'frame_timing', 'void']])
         write_csv(f'{self.d}/symbols/reviews.csv', ['address', 'name', 'date', 'reviewer', 'verdict', 'notes'],
                   [['0x00401000', 'frame_timing_update', '2026-01-01', 'independent session', 'approved', '']])
         # a clean, current verification record (no source file here, so the source hash is empty)
@@ -122,15 +122,15 @@ class Validate(Fixture):
         self.assertIn('below the image base', r.stderr)
 
     def test_replaced_needs_hook(self):
-        write_csv(f'{self.d}/game/hooks.csv', ['address', 'replacement', 'system'], [])
+        write_csv(f'{self.d}/game/hooks.csv', ['address', 'replacement', 'system', 'returns'], [])
         r = run('validate_functions.py', '--root', self.d)
         self.assertEqual(r.returncode, 1)
         self.assertIn('no game/hooks.csv entry', r.stderr)
 
     def test_hook_for_original_rejected(self):
-        write_csv(f'{self.d}/game/hooks.csv', ['address', 'replacement', 'system'],
-                  [['0x00401000', 'bb_frame_timing_update', 'frame_timing'],
-                   ['0x00402000', 'bb_camera_follow', 'camera']])
+        write_csv(f'{self.d}/game/hooks.csv', ['address', 'replacement', 'system', 'returns'],
+                  [['0x00401000', 'bb_frame_timing_update', 'frame_timing', 'void'],
+                   ['0x00402000', 'bb_camera_follow', 'camera', 'void']])
         r = run('validate_functions.py', '--root', self.d)
         self.assertEqual(r.returncode, 1)
         self.assertIn("only replaced, edge-verified or verified", r.stderr)

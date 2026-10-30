@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Replay cases recorded by tracing (test_capture_trace --emit) through tools/verify.py.
+"""Replay cases recorded by tracing (test_capture_trace or test_capture_hooks --emit) through
+tools/verify.py.
 
 Each synthetic guest function is traced once, as the runtime would trace a hooked original; the
 recorded case must then pass the ordinary verifier, original against a native replacement, and a
@@ -60,8 +61,9 @@ def compile_library(root: str, name: str, broken: bool) -> str:
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        raise SystemExit('usage: capture_trace_integration.py TEST_CAPTURE_TRACE')
+    if len(sys.argv) < 2:
+        raise SystemExit('usage: capture_trace_integration.py EMITTER [FUNCTION ...]')
+    expected = sys.argv[2:] or list(FUNCTIONS)
     with tempfile.TemporaryDirectory(prefix='pb-capture-trace-') as root:
         captures = os.path.join(root, 'captures')
         os.mkdir(captures)
@@ -78,22 +80,23 @@ def main() -> int:
                                       symbols=[], relocations=[], jump_slots=[]))
         good = compile_library(root, 'replacement', broken=False)
         bad = compile_library(root, 'broken', broken=True)
-        for name, (address, symbol) in FUNCTIONS.items():
+        for name in expected:
+            address, symbol = FUNCTIONS[name]
             cases = os.path.join(captures, name)
             for path in os.listdir(cases):
                 with open(os.path.join(cases, path), encoding='utf-8') as stream:
                     case = json.load(stream)
-                assert case['capture'] == {'function': name, 'run_id': 'synthetic'}, case
+                assert case['capture']['function'] == name, case
                 assert case['address'] == address, case
             sides = verify.run_cases(boot, cases, address, symbol, good, function=name)
             report = verify.compare({'schema': 1, 'address': address, 'cases': sides['original']},
                                     {'schema': 1, 'address': address, 'cases': sides['replacement']})
-            assert (report['cases'], report['passed'], report['failed']) == (1, 1, 0), (name, report)
+            assert report['cases'] >= 1 and report['failed'] == 0, (name, report)
             broken = verify.run_cases(boot, cases, address, symbol, bad, function=name)
             mismatch = verify.compare({'schema': 1, 'address': address, 'cases': sides['original']},
                                       {'schema': 1, 'address': address, 'cases': broken['replacement']})
-            assert mismatch['failed'] == 1, (name, mismatch)
-        print(f'capture trace replay: {len(FUNCTIONS)}/{len(FUNCTIONS)} traced cases passed; '
+            assert mismatch['failed'] == mismatch['cases'], (name, mismatch)
+        print(f'capture trace replay: {len(expected)}/{len(expected)} traced functions passed; '
               'every deliberate change detected')
     return 0
 
