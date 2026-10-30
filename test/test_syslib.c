@@ -711,8 +711,8 @@ int main(void)
 
     /* An attribute object is not established; an empty attribute variable means the defaults. */
     CHECK(died_in_fatal(rwlock_init_with_attribute));
-    void *empty_attr = NULL, *default_rwlock = NULL;
-    CHECK(rwlock_init(&default_rwlock, &empty_attr, NULL) == 0 && default_rwlock && rwlock_destroy(&default_rwlock) == 0);
+    void *empty_rwlock_attr = NULL, *default_rwlock = NULL;
+    CHECK(rwlock_init(&default_rwlock, &empty_rwlock_attr, NULL) == 0 && default_rwlock && rwlock_destroy(&default_rwlock) == 0);
 
     /* Destroying does not check whether the lock is held (libthr). Destroyed, the variable holds 1
        and every call on it is EINVAL; so is a missing variable. */
