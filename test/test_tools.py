@@ -627,6 +627,20 @@ class Boot(unittest.TestCase):
             shutil.rmtree(d)
         self.assertTrue(boot.stub_module_args(ROOT))      # every stub in the game's own list has its id
 
+    def test_boot_app0_defaults_to_the_merged_copy(self):
+        import boot
+        old = {k: os.environ.pop(k, None) for k in ('BB_APP0', 'BB_DATA_ROOT')}
+        try:
+            os.environ['BB_DATA_ROOT'] = '/data/root'
+            self.assertEqual(boot.default_app0(), '/data/root/merged')
+            os.environ['BB_APP0'] = '/my/copy'
+            self.assertEqual(boot.default_app0(), '/my/copy')
+        finally:
+            for k, v in old.items():
+                os.environ.pop(k, None)
+                if v is not None:
+                    os.environ[k] = v
+
     def test_boot_system_params_default_and_override(self):
         import boot
         self.assertEqual(boot.system_param_args([]), ['--system-param', '1=1'])

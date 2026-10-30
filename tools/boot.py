@@ -11,7 +11,9 @@ system module whose functions the runtime provides) are not mapped: each is pass
 module id (the "sysmodule" column), and a request to load it at run time is reported as done.
 The title's application parameters come from game/app_params.csv: a row with source "sfo" takes
 its value from your own copy's parameter file (--param-sfo, default $BB_PARAM_SFO, then
-$BB_DATA_ROOT/merged/sce_sys/param.sfo), a row with source "unread" is passed as such.
+$BB_DATA_ROOT/merged/sce_sys/param.sfo), a row with source "unread" is passed as such. --app0
+(default $BB_APP0, then $BB_DATA_ROOT/merged) is your copy's application directory, which the
+runtime serves read-only as /app0.
 
 Writes, from the run:
   symbols/boot.json           where the boot stops, the furthest boot milestone, the import
@@ -94,6 +96,12 @@ def stub_module_args(root: str) -> list[str]:
             raise ValueError(f"game/modules.csv: {r['module']}: a stub module needs its sysmodule id")
         args += ['--stub-module', f"{sysmodule}:{r['module']}"]
     return args
+
+
+def default_app0() -> str:
+    """Your own copy's application directory, which the runtime serves read-only as /app0."""
+    root = os.environ.get('BB_DATA_ROOT') or os.path.join(ROOT, '..', 'data')
+    return os.environ.get('BB_APP0') or os.path.join(root, 'merged')
 
 
 def default_param_sfo() -> str:
@@ -241,6 +249,7 @@ def main() -> int:
     ap.add_argument('--timeout', type=int, default=30)
     ap.add_argument('--trace', action='store_true')
     ap.add_argument('--param-sfo', default=None, help="your own copy's sce_sys/param.sfo")
+    ap.add_argument('--app0', default=None, help="your own copy's application directory (served read-only as /app0)")
     ap.add_argument('--system-param', action='append', default=[], metavar='ID=VALUE',
                     help='a console system setting, e.g. 1=18 for English (United Kingdom)')
     ap.add_argument('--no-record', action='store_true', help='run and print only')
@@ -263,6 +272,7 @@ def main() -> int:
         stubs = stub_module_args(ROOT)
         stubs += app_param_args(ROOT, a.param_sfo or default_param_sfo())
         stubs += system_param_args(a.system_param)
+        stubs += ['--app0', a.app0 or default_app0()]
     except (ValueError, OSError) as e:
         print(f'boot: {e}', file=sys.stderr)
         return 3

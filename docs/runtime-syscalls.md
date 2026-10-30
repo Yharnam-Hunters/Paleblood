@@ -791,6 +791,36 @@ the CPU mask its caller chose. As for `scePthreadSetaffinity`, the runtime recor
 created thread takes it) and the host schedules. An empty mask stops by name, and a variable
 holding no attribute is `EINVAL`.
 
+## The title's files: `/app0` and `sceKernelStat` (issue #35)
+
+The title reads its own data under `/app0`, the console's read-only mount of its package. The
+runtime serves `/app0` from your own copy and never writes to it:
+- `tools/boot.py --app0 DIR` chooses the copy, defaulting to `$BB_APP0`, then
+  `$BB_DATA_ROOT/merged`.
+- `pbboot` takes it as `--app0`.
+- A path under any other mount, and one with a `..` component (which could leave the copy), stops by
+  name.
+
+`sceKernelStat(path, struct stat *)` is FreeBSD's `stat(2)` under its SCE name, which returns
+`0x80020000` plus the error number. The PS4's `struct stat` is FreeBSD 9's amd64 layout, 120 bytes
+(OpenOrbis' `_types/kernel.h`, `OrbisKernelStat`).
+
+**What the executable does.** Its call at `0x02474519` asks whether
+`/app0/dvdroot_ps4/sound/sprj_mixer.fev` exists:
+- 0 means yes;
+- exactly `0x80020002` (`ENOENT`) means no;
+- anything else goes to its error path.
+
+**What the runtime does.** It fills the structure from the host file:
+- type, size, block count and size, link count and times;
+- the permission bits without write (the mount is read-only);
+- device and inode numbers as the host's (they only identify the file);
+- the birth time as the modification time (the host's stat has none);
+- owner, group, flags and generation 0.
+
+**Errors.** A missing file answers `ENOENT`, and a missing directory component `ENOTDIR` (the same
+numbers on FreeBSD and Linux). Any other host error stops by name.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.

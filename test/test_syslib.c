@@ -14,6 +14,8 @@
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <time.h>
+#include <stdlib.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 static int unresolved_test_entry(void) { return -1; }
@@ -598,6 +600,13 @@ typedef int32_t (*f_ao_output)(int32_t, const void *);
 static f_ao_output ao_output_fn;
 static void ao_output_no_samples(void) { ao_output_fn(1, NULL); }
 static void ao_volume_too_loud(void) { const int32_t v[8] = {40000}; ao_volume_fn(ao_stereo_port, 0x1, v); }
+
+/* sceKernelStat under /app0, served from a scratch directory. */
+typedef int32_t (*f_kstat)(const char *, void *);
+static f_kstat kstat_fn;
+static void kstat_outside(void) { unsigned char st[120]; kstat_fn("/download0/x", st); }
+static void kstat_dotdot(void) { unsigned char st[120]; kstat_fn("/app0/../etc/passwd", st); }
+static void kstat_prefix_only(void) { unsigned char st[120]; kstat_fn("/app0x/file", st); }
 
 int main(void)
 {
@@ -1579,6 +1588,40 @@ int main(void)
             CHECK(elapsed >= 100000 && elapsed < 300000);
             ao_output_fn = ao_output;
             CHECK(died_in_fatal(ao_output_no_samples));
+        }
+    }
+
+    /* sceKernelStat: FreeBSD's 120-byte stat from the host file; ENOENT and ENOTDIR as SCE codes. */
+    kstat_fn = (f_kstat)fn("libkernel", "sceKernelStat");
+    if (kstat_fn) {
+        char dir[] = "/tmp/pb-app0-XXXXXX";
+        const char *tmp = getenv("TMPDIR");
+        static char dir_buf[512];
+        snprintf(dir_buf, sizeof dir_buf, "%s/pb-app0-XXXXXX", tmp ? tmp : "/tmp");
+        char *app0 = mkdtemp(tmp ? dir_buf : dir);
+        CHECK(app0 != NULL);
+        if (app0) {
+            char file[600];
+            snprintf(file, sizeof file, "%s/data.bin", app0);
+            FILE *f = fopen(file, "w");
+            if (f) { fwrite("0123456789", 1, 10, f); fclose(f); }
+            chmod(file, 0644);
+            rt_process.app0_dir = app0;
+            unsigned char st[120];
+            memset(st, 0xee, sizeof st);
+            CHECK(kstat_fn("/app0/data.bin", st) == 0);
+            uint16_t mode; int64_t size;
+            memcpy(&mode, st + 8, 2); memcpy(&size, st + 0x48, 8);
+            CHECK((mode & 0170000) == 0100000 && (mode & 0777) == 0444 && size == 10);
+            CHECK(kstat_fn("/app0", st) == 0 && (memcpy(&mode, st + 8, 2), (mode & 0170000) == 0040000));
+            CHECK(kstat_fn("/app0/missing.bin", st) == (int32_t)0x80020002u);
+            CHECK(kstat_fn("/app0/data.bin/inside", st) == (int32_t)0x80020014u);
+            CHECK(died_in_fatal(kstat_outside));
+            CHECK(died_in_fatal(kstat_dotdot));
+            CHECK(died_in_fatal(kstat_prefix_only));
+            unlink(file);
+            rmdir(app0);
+            rt_process.app0_dir = NULL;
         }
     }
 
