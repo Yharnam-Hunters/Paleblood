@@ -401,6 +401,15 @@ static void tc_create_no_stack(void) { void *t, *a = tc_attr(0, 1, 0); tc_create
 static void tc_create_no_detach(void) { void *t, *a = tc_attr(1, 0, 0); tc_create(&t, &a, tc_entry, NULL, "t"); }
 static void tc_affinity_empty(void) { tc_affinity(tc_seen_self, 0); }
 
+/* The user service's start-up calls. */
+typedef int32_t (*f_us_init)(const uint32_t *);
+typedef int32_t (*f_us_none)(void);
+typedef int32_t (*f_us_ids)(int32_t *);
+static f_us_none us_terminate;
+static f_us_ids us_initial_user, us_login_list;
+static void us_terminate_uninitialized(void) { us_terminate(); }
+static void us_initial_user_uninitialized(void) { int32_t u; us_initial_user(&u); }
+
 int main(void)
 {
     /* Unresolved entries are still callable diagnostics, but are not reported as implemented. */
@@ -1031,6 +1040,26 @@ int main(void)
         CHECK(died_in_fatal(tc_create_no_stack));
         CHECK(died_in_fatal(tc_create_no_detach));
         CHECK(died_in_fatal(tc_affinity_empty));
+    }
+
+    /* libSceUserService: one user, logged in from the start; a second initialize answers
+       0x80960003, as the executable's second site expects. */
+    const f_us_init us_init = (f_us_init)fn("libSceUserService", "sceUserServiceInitialize");
+    us_terminate = (f_us_none)fn("libSceUserService", "sceUserServiceTerminate");
+    us_initial_user = (f_us_ids)fn("libSceUserService", "sceUserServiceGetInitialUser");
+    us_login_list = (f_us_ids)fn("libSceUserService", "sceUserServiceGetLoginUserIdList");
+    if (us_init && us_terminate && us_initial_user && us_login_list) {
+        CHECK(died_in_fatal(us_terminate_uninitialized));
+        CHECK(died_in_fatal(us_initial_user_uninitialized));
+        const uint32_t params[4] = {0x2bc, 0, 0, 0};
+        CHECK(us_init(params) == 0);
+        CHECK(us_init(params) == (int32_t)0x80960003u);
+        int32_t user = -7, list[4] = {-7, -7, -7, -7};
+        CHECK(us_initial_user(&user) == 0 && user != -1 && user != 0xff && user != -7);
+        CHECK(us_login_list(list) == 0 && list[0] == user && list[1] == -1 && list[2] == -1 && list[3] == -1);
+        CHECK(us_terminate() == 0);
+        CHECK(us_init(params) == 0);    /* initialized again after a terminate */
+        CHECK(us_terminate() == 0);
     }
 
     if (!failures) puts("syslib: ok");

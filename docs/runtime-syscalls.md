@@ -443,6 +443,32 @@ leave the timeout and that signal to the main thread.
 A local boot with the affinity probe and the rwlocks let through (not committed) reaches the
 `threads` milestone and stops next at `sceUserServiceInitialize`.
 
+## The user service's start-up calls (`libSceUserService`, issue #36)
+
+`eboot` imports `sceUserServiceInitialize`, `sceUserServiceTerminate`,
+`sceUserServiceGetInitialUser` and `sceUserServiceGetLoginUserIdList`, among others. The shapes
+match the OpenOrbis homebrew SDK's `UserService.h` and `_types/user.h` (supporting evidence only):
+- the parameter block holds a `uint32_t` priority;
+- the login list is four user ids, an unused slot holding -1;
+- id `0xFF` is the system's.
+
+The executable initializes the service twice:
+- once at `0x024e1e69`, with priority `0x2bc`;
+- again at `0x010ba1ac`, where it accepts success or exactly `0x80960003`. So a second initialize
+  answers `0x80960003`, the "already initialized" code.
+
+**What the runtime does.** It models one user, the person running it, logged in from the start:
+- `GetInitialUser` answers that user's id;
+- the login list holds it, then three -1 slots;
+- the id is a handle the runtime hands out, never -1 or `0xFF`, because the PS4's ids are the
+  system's and a title only passes them back.
+
+**What stops by name:** a call before initialize, a missing argument, and the other error values.
+
+`sceUserServiceGetUserName` and `sceUserServiceGetEvent` stay unbound until the boot reaches them.
+A local boot (affinity probe and rwlocks let through, not committed) stops next at
+`sceCommonDialogInitialize`.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
