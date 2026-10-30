@@ -594,6 +594,18 @@ comes from the executable's only call (`0x013d1d41`): the new template id and 1,
 discarded. The runtime records the choice and answers 0; offline, nothing ever blocks on a network.
 An unknown id, and a value other than 0 or 1, stop by name.
 
+## HTTP waiting handles (`sceHttpCreateEpoll`, issue #41)
+
+OpenOrbis names `sceHttpCreateEpoll` without a signature, so its shape comes from the executable's
+only use, a tail call at `0x013d1d82`. It passes the HTTP context id and the address of an
+eight-byte slot preset to 0, and its caller (`0x023e4567`) discards the result.
+
+A handle is an object the library allocates and the title only passes back, so the runtime
+allocates one per call and answers 0. What the title later does with it (waiting on requests)
+belongs to other calls, which stop by name until they are implemented.
+
+**What stops by name:** an HTTP context the runtime did not hand out, and a missing slot.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.

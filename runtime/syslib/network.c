@@ -7,6 +7,7 @@
 #include <arpa/inet.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 enum { SCE_AF_INET = 2 };
 
@@ -173,3 +174,28 @@ static int32_t http_set_nonblock(int32_t id, int32_t enable)
     return 0;
 }
 RT_SYSLIB("libSceHttp", sceHttpSetNonblock, http_set_nonblock);
+
+/* sceHttpCreateEpoll(int32_t context, void **handle): OpenOrbis' Http.h names it without a
+   signature, so the shape comes from the executable's only use, a tail call at 0x013d1d82. It
+   passes the HTTP context id and the address of an eight-byte slot it preset to 0, and its caller
+   (0x023e4567) discards the result. A handle is an object the library allocates, which the title
+   only passes back, so the runtime allocates one per call and answers 0. What the title later does
+   with it (waiting on requests) belongs to other calls, which stop by name until implemented. An
+   HTTP context the runtime did not hand out and a missing slot stop by name. */
+typedef struct {
+    int32_t context;
+} http_epoll;
+
+static int32_t http_create_epoll(int32_t context, http_epoll **handle)
+{
+    static const char fn[] = "sceHttpCreateEpoll";
+    if (context < 1 || context > atomic_load(&http_contexts_created))
+        rt_fatal(fn, "an HTTP context the runtime did not hand out: the error value is not established");
+    if (!handle) rt_fatal(fn, "no slot for the handle: the error value is not established");
+    http_epoll *const epoll = calloc(1, sizeof *epoll);
+    if (!epoll) rt_fatal(fn, "the host has no memory for the handle");
+    epoll->context = context;
+    *handle = epoll;
+    return 0;
+}
+RT_SYSLIB("libSceHttp", sceHttpCreateEpoll, http_create_epoll);
