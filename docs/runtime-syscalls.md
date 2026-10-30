@@ -666,7 +666,7 @@ change nothing else.
 - a priority outside 256–767;
 - a missing thread or variable.
 
-## `clock_gettime` (libkernel, issue #34)
+## `clock_gettime` and `sceKernelClockGettime` (libkernel, issue #34)
 
 `clock_gettime(clockid_t id, struct timespec *tp)` is POSIX, with FreeBSD's clock numbers and
 amd64 `struct timespec` (two 64-bit fields, seconds and nanoseconds).
@@ -681,6 +681,24 @@ nanoseconds (`kern_clock_gettime`).
 
 **What stops by name:** other clocks and a missing timespec. Their errors go through `errno`,
 which the runtime does not model.
+
+`sceKernelClockGettime(id, tp)` is the same call under its SCE name. It returns `0x80020000` plus
+the error number: `EINVAL` for another clock and `EFAULT` for a missing timespec, as FreeBSD
+answers them. The executable's call (`0x0111a815`) asks for clock 4, and treats anything but 0 as
+failure.
+
+## Process time (`sceKernelGetProcessTime`, issue #34)
+
+`uint64_t sceKernelGetProcessTime(void)`, as the OpenOrbis homebrew SDK's `libkernel.h` declares
+it, is the time since the process started.
+
+Its unit is microseconds. The executable turns it into seconds by dividing by 1,000,000:
+- at `0x00e4fb6e`, through the compiler's multiply by `0x431bde83` and shift by 50;
+- at `0x0252607e`, through a division by the double 1000000.0.
+
+It also seeds a random generator with it (`0x00835dba`).
+
+**What the runtime does.** It measures from its own start, on the host's monotonic clock.
 
 ## Implementation rule
 

@@ -561,6 +561,7 @@ typedef int (*f_clock_gettime)(int32_t, int64_t *);
 static f_clock_gettime clock_gettime_fn;
 static void clock_unknown(void) { int64_t ts[2]; clock_gettime_fn(1, ts); }
 static void clock_no_timespec(void) { clock_gettime_fn(0, NULL); }
+typedef uint64_t (*f_u64)(void);
 
 int main(void)
 {
@@ -1453,6 +1454,24 @@ int main(void)
         CHECK(mono2[0] > mono1[0] || (mono2[0] == mono1[0] && mono2[1] >= mono1[1]));
         CHECK(died_in_fatal(clock_unknown));
         CHECK(died_in_fatal(clock_no_timespec));
+    }
+    /* sceKernelClockGettime: the same clocks; errors as SCE codes (EINVAL, EFAULT). */
+    const f_clock_gettime sce_clock = (f_clock_gettime)fn("libkernel", "sceKernelClockGettime");
+    if (sce_clock) {
+        int64_t mono[2] = {-1, -1};
+        CHECK(sce_clock(4, mono) == 0 && mono[0] >= 0 && mono[1] >= 0 && mono[1] < 1000000000);
+        CHECK(sce_clock(1, mono) == (int)0x80020016);
+        CHECK(sce_clock(4, NULL) == (int)0x8002000e);
+    }
+
+    /* sceKernelGetProcessTime: microseconds since the process started, never going back. */
+    const f_u64 process_time = (f_u64)fn("libkernel", "sceKernelGetProcessTime");
+    if (process_time) {
+        const uint64_t t1 = process_time();
+        struct timespec pause = {0, 20 * 1000 * 1000};
+        nanosleep(&pause, NULL);
+        const uint64_t t2 = process_time();
+        CHECK(t1 < 600ull * 1000000 && t2 >= t1 + 15000 && t2 < t1 + 5000000); /* 20 ms later, in µs */
     }
 
     if (!failures) puts("syslib: ok");
