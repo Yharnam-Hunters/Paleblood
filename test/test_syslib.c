@@ -446,12 +446,27 @@ typedef int (*f_sigmask)(int, const uint32_t *, uint32_t *);
 static f_sigmask tc_sigmask;
 static uint32_t tc_seen_mask[4];
 static void sigmask_bad_how(void) { const uint32_t set[4] = {0}; tc_sigmask(4, set, NULL); }
+/* Thread priorities: the main thread starts at 700 unless the executable declares otherwise. */
+typedef int (*f_getprio)(void *, int32_t *);
+typedef int (*f_setprio)(void *, int32_t);
+static f_getprio tc_getprio;
+static f_setprio tc_setprio;
+static int32_t tc_seen_priority;
+static void setprio_out_of_range(void) { tc_setprio(tc_self(), 0xff); }
+static void main_thread_declared(void)
+{
+    static uint64_t param[8] = {0x40, 0, 0, 0, 0, 0x1234, 0, 0}; /* a slot in +0x18..+0x37 set */
+    rt_process.proc_param = param;
+    static unsigned char stack[0x100];
+    rt_thread_register_main(stack, sizeof stack);
+}
 static void *tc_entry(void *argument)
 {
     int local = 0;
     tc_seen_argument = argument;
     tc_seen_self = tc_self();
     if (tc_sigmask) tc_sigmask(1, NULL, tc_seen_mask);
+    if (tc_getprio) tc_getprio(tc_self(), &tc_seen_priority);
     uint64_t tp, word;
     __asm__ volatile("mov %%gs:0, %0" : "=r"(word));
     tp = word; /* the thread pointer's first word is the thread pointer itself */
@@ -1257,6 +1272,17 @@ int main(void)
         CHECK(tc_sigmask(99, NULL, NULL) == 0); /* how is ignored without a new set */
         CHECK(died_in_fatal(sigmask_bad_how));
     }
+    tc_getprio = (f_getprio)fn("libkernel", "scePthreadGetprio");
+    tc_setprio = (f_setprio)fn("libkernel", "scePthreadSetprio");
+    if (tc_getprio && tc_setprio && tc_self) {
+        int32_t priority = 0;
+        CHECK(tc_getprio(tc_self(), &priority) == 0 && priority == 700);
+        CHECK(tc_setprio(tc_self(), 0x2ff) == 0 && tc_getprio(tc_self(), &priority) == 0 && priority == 0x2ff);
+        CHECK(tc_setprio(tc_self(), 0x100) == 0 && tc_getprio(tc_self(), &priority) == 0 && priority == 0x100);
+        CHECK(died_in_fatal(setprio_out_of_range));
+        CHECK(died_in_fatal(main_thread_declared));
+        CHECK(tc_setprio(tc_self(), 0x123) == 0); /* the worker below inherits it */
+    }
     if (tc_create && tc_affinity && tc_self) {
         void *thread = NULL, *attr = tc_attr(1, 1, 0);
         int marker = 0;
@@ -1267,6 +1293,7 @@ int main(void)
         CHECK(tc_seen_argument == &marker && tc_seen_self == thread && tc_seen_self != tc_self());
         CHECK(tc_seen_tp && tc_seen_tp_word == tc_seen_tp);
         CHECK(!tc_sigmask || (tc_seen_mask[0] == 0x4 && tc_seen_mask[3] == 0)); /* inherited */
+        CHECK(!tc_getprio || tc_seen_priority == 0x123); /* inherited */
         CHECK(tc_seen_local < (uintptr_t)&marker - 0x100000 || tc_seen_local > (uintptr_t)&marker + 0x100000);
         CHECK(tc_affinity(thread, 0x3f) == 0);
         atomic_store(&tc_done, 0);

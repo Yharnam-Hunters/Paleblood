@@ -51,6 +51,7 @@ typedef struct {
     uint64_t affinity;      /* the mask scePthreadSetaffinity recorded, 0: none yet */
     pthread_t host;
     uint32_t signal_mask[4]; /* the guest's blocked signals, a FreeBSD sigset_t (_sigprocmask) */
+    int32_t priority;        /* scePthreadGetprio / scePthreadSetprio */
 } guest_thread;
 
 typedef struct {
@@ -112,11 +113,34 @@ static guest_thread *thread_object_new(const char *caller)
 
 static _Thread_local guest_thread *current;
 
+/* Thread priorities. A PS4 executable may declare its main thread's settings in its process
+   parameters (sceUserMainThreadPriority and the like, which homebrew titles define); without them
+   the main thread runs at SCE_KERNEL_PRIO_FIFO_DEFAULT, 700 (libretro's public ps4_defines.h; the
+   executable passes the same 700, 0x2bc, as a priority to sceUserServiceInitialize). This
+   executable's block holds no main thread settings: after relocation only the C library's
+   parameter pointer (+0x38) is set and +0x18 to +0x37 are empty. Where those slots are not empty,
+   which one is the priority is not established, so the main thread stops by name. A thread
+   created without explicit scheduling inherits its creator's priority (FreeBSD libthr's default
+   attribute, PTHREAD_INHERIT_SCHED); the executable sets none. */
+#define SCE_KERNEL_PRIO_FIFO_DEFAULT 700
+enum { PROC_PARAM_MAIN_THREAD_FIRST = 0x18, PROC_PARAM_MAIN_THREAD_END = 0x38 };
+
+static int32_t main_thread_priority(void)
+{
+    const unsigned char *param = rt_process.proc_param;
+    if (param)
+        for (int at = PROC_PARAM_MAIN_THREAD_FIRST; at < PROC_PARAM_MAIN_THREAD_END; at += 8)
+            if (*(const uint64_t *)(param + at))
+                rt_fatal("the main thread", "the executable declares main thread settings: their layout is not established");
+    return SCE_KERNEL_PRIO_FIFO_DEFAULT;
+}
+
 void rt_thread_register_main(void *stack, uint64_t stack_size)
 {
     guest_thread *const t = current ? current : thread_object_new("the main thread");
     t->stack = stack;
     t->stack_size = stack_size;
+    t->priority = main_thread_priority();
     current = t;
 }
 
@@ -246,6 +270,7 @@ static int create_thread(guest_thread **thread, guest_attr **attr, void *(*entry
     t->argument = argument;
     if (name) strncpy(t->name, name, sizeof t->name - 1);
     if (current) memcpy(t->signal_mask, current->signal_mask, sizeof t->signal_mask); /* inherited (POSIX) */
+    t->priority = current ? current->priority : SCE_KERNEL_PRIO_FIFO_DEFAULT; /* inherited (libthr default) */
     pthread_attr_t host;
     pthread_attr_init(&host);
     if (detach_state == DETACH_DETACHED) pthread_attr_setdetachstate(&host, PTHREAD_CREATE_DETACHED);
@@ -399,3 +424,32 @@ static int signal_proc_mask(int how, const uint32_t *set, uint32_t *old)
     return 0;
 }
 RT_SYSLIB("libkernel", _sigprocmask, signal_proc_mask);
+
+/* scePthreadGetprio(thread, int32_t *priority) and scePthreadSetprio(thread, priority), as the
+   OpenOrbis homebrew SDK's libkernel.h declares them. The executable's only reader (0x02a3b59d)
+   reads the current priority before choosing a new one from a class, and sets priorities from
+   256 (0x100) to 767 (0x2ff) (0x02a3b63d, 0x0111ab46). The runtime records the priority; the host
+   schedules the thread, so priorities change nothing else. A priority outside the range the
+   executable uses, and a missing thread or variable, stop by name (their answers are not
+   established). */
+enum { PRIORITY_HIGHEST_SEEN = 0x100, PRIORITY_LOWEST_SEEN = 0x2ff };
+
+static int get_priority(guest_thread *thread, int32_t *priority)
+{
+    static const char fn[] = "scePthreadGetprio";
+    if (!thread || !priority) rt_fatal(fn, "no thread or variable: the error value is not established");
+    *priority = thread->priority;
+    return 0;
+}
+RT_SYSLIB("libkernel", scePthreadGetprio, get_priority);
+
+static int set_priority(guest_thread *thread, int32_t priority)
+{
+    static const char fn[] = "scePthreadSetprio";
+    if (!thread) rt_fatal(fn, "no thread: the error value is not established");
+    if (priority < PRIORITY_HIGHEST_SEEN || priority > PRIORITY_LOWEST_SEEN)
+        rt_fatal(fn, "a priority outside 256..767, the range the executable uses: the answer is not established");
+    thread->priority = priority;
+    return 0;
+}
+RT_SYSLIB("libkernel", scePthreadSetprio, set_priority);
