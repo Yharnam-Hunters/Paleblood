@@ -736,6 +736,8 @@ headers give:
 - The format is the executable's own evidence. Its output callback (`0x0111b600`) accepts 2 or 8
   channels and passes `4 | (channels == 8)`. So 4 is float stereo (as in the SDK) and 5 is float
   with eight channels. The boot opens eight channels.
+- A second open (`0x0111b6fc`) passes port type 1 with the same settings, and does not check the
+  result. The PS4 name of type 1 is not public; the sibling Vita SDK calls it BGM.
 
 **What the runtime does.** It records each open port and hands out handles from 1. Sound output
 belongs to the output calls, which stop by name until they are implemented.

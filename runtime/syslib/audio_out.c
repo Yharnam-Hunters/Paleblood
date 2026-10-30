@@ -10,7 +10,9 @@
    user in the SDK's user types), the main port, index 0, 256 samples, 48000 Hz and a format, and
    keeps a non-negative result as the port handle. The format is the executable's own evidence: its
    output callback (0x0111b600) accepts 2 or 8 channels and passes 4 | (channels == 8), so 4 is float
-   stereo (as in the SDK) and 5 is float with eight channels; the boot opens eight channels.
+   stereo (as in the SDK) and 5 is float with eight channels; the boot opens eight channels. A
+   second open (0x0111b6fc) passes port type 1 with the same settings and does not check the
+   result; the PS4 name of type 1 is not public (the sibling Vita SDK calls it BGM).
 
    The runtime records each open port and hands out handles from 1; sound output belongs to the
    output calls, which stop by name until they are implemented. What is not established stops by
@@ -26,6 +28,7 @@
 enum {
     USER_SYSTEM = 0xff,
     PORT_TYPE_MAIN = 0,
+    PORT_TYPE_SECOND_SEEN = 1,
     FORMAT_FLOAT_STEREO = 4,
     FORMAT_FLOAT_8CH = 5,
     OBSERVED_LENGTH = 256,
@@ -55,8 +58,8 @@ static int32_t audio_out_open(int32_t user, int32_t port_type, int32_t index, ui
 {
     static const char fn[] = "sceAudioOutOpen";
     if (!atomic_load(&initialized)) return SCE_AUDIO_OUT_ERROR_NOT_INIT;
-    if (user != USER_SYSTEM || port_type != PORT_TYPE_MAIN || index != 0)
-        rt_fatal(fn, "a user, port type or index other than the observed system user's main port 0");
+    if (user != USER_SYSTEM || (port_type != PORT_TYPE_MAIN && port_type != PORT_TYPE_SECOND_SEEN) || index != 0)
+        rt_fatal(fn, "a user, port type or index other than the observed system user's port types 0 and 1, index 0");
     if (length != OBSERVED_LENGTH || rate != OBSERVED_RATE || (format != FORMAT_FLOAT_STEREO && format != FORMAT_FLOAT_8CH))
         rt_fatal(fn, "a length, rate or format other than the observed 256 float samples at 48000 Hz, 2 or 8 channels");
     const int handle = atomic_fetch_add(&ports_opened, 1) + 1; /* handles from 1 */
