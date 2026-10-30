@@ -7,6 +7,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -361,6 +362,44 @@ typedef int (*f_attr_int)(void **, int);
 static f_attr_u64 ta_stack;
 static f_attr_int ta_policy;
 static void ta_policy_unknown(void) { void *a = &a; ta_policy(&a, 4); }
+
+/* Thread creation: the entry is host code here, called with the guest's convention. */
+typedef int (*f_create)(void **, void **, void *(*)(void *), void *, const char *);
+typedef int (*f_setaffinity)(void *, uint64_t);
+typedef void *(*f_self)(void);
+static f_create tc_create;
+static f_setaffinity tc_affinity;
+static f_self tc_self;
+static void *tc_seen_self, *tc_seen_argument;
+static uint64_t tc_seen_tp, tc_seen_tp_word;
+static uintptr_t tc_seen_local;
+static atomic_int tc_done;
+static void *tc_entry(void *argument)
+{
+    int local = 0;
+    tc_seen_argument = argument;
+    tc_seen_self = tc_self();
+    uint64_t tp, word;
+    __asm__ volatile("mov %%gs:0, %0" : "=r"(word));
+    tp = word; /* the thread pointer's first word is the thread pointer itself */
+    tc_seen_tp = tp;
+    tc_seen_tp_word = *(uint64_t *)(uintptr_t)tp;
+    tc_seen_local = (uintptr_t)&local;
+    atomic_store(&tc_done, 1);
+    return NULL;
+}
+static void *tc_attr(int with_stack, int with_detach, int detach)
+{
+    void *a = NULL;
+    ((f1)fn("libkernel", "scePthreadAttrInit"))(&a);
+    if (with_stack) ((int (*)(void **, uint64_t))fn("libkernel", "scePthreadAttrSetstacksize"))(&a, 0x10000);
+    if (with_detach) ((f2i)fn("libkernel", "scePthreadAttrSetdetachstate"))(&a, detach);
+    return a;
+}
+static void tc_create_no_attr(void) { void *t; tc_create(&t, NULL, tc_entry, NULL, "t"); }
+static void tc_create_no_stack(void) { void *t, *a = tc_attr(0, 1, 0); tc_create(&t, &a, tc_entry, NULL, "t"); }
+static void tc_create_no_detach(void) { void *t, *a = tc_attr(1, 0, 0); tc_create(&t, &a, tc_entry, NULL, "t"); }
+static void tc_affinity_empty(void) { tc_affinity(tc_seen_self, 0); }
 
 int main(void)
 {
@@ -966,6 +1005,32 @@ int main(void)
         CHECK(ta_stack(&a, 0x3fff) == (int)0x80020016u && ta_posix_stack(&a, 0x1000) == 22);
         CHECK(died_in_fatal(ta_policy_unknown));
         CHECK(ta_destroy(&a) == 0);
+    }
+
+    /* scePthreadCreate: the guest runs on a new host thread, on its own stack, with GS pointing at
+       a fresh TLS block, registered for scePthreadSelf. */
+    tc_create = (f_create)fn("libkernel", "scePthreadCreate");
+    tc_affinity = (f_setaffinity)fn("libkernel", "scePthreadSetaffinity");
+    tc_self = (f_self)fn("libkernel", "scePthreadSelf");
+    if (tc_create && tc_affinity && tc_self) {
+        void *thread = NULL, *attr = tc_attr(1, 1, 0);
+        int marker = 0;
+        CHECK(tc_create(&thread, &attr, tc_entry, &marker, "worker") == 0 && thread);
+        for (int i = 0; i < 100000 && !atomic_load(&tc_done); i++) sched_yield();
+        CHECK(atomic_load(&tc_done) == 1);
+        CHECK(tc_seen_argument == &marker && tc_seen_self == thread && tc_seen_self != tc_self());
+        CHECK(tc_seen_tp && tc_seen_tp_word == tc_seen_tp);
+        CHECK(tc_seen_local < (uintptr_t)&marker - 0x100000 || tc_seen_local > (uintptr_t)&marker + 0x100000);
+        CHECK(tc_affinity(thread, 0x3f) == 0);
+        atomic_store(&tc_done, 0);
+        void *detached = NULL, *dattr = tc_attr(1, 1, 1);
+        CHECK(tc_create(&detached, &dattr, tc_entry, NULL, NULL) == 0 && detached);
+        for (int i = 0; i < 100000 && !atomic_load(&tc_done); i++) sched_yield();
+        CHECK(atomic_load(&tc_done) == 1 && tc_seen_self == detached);
+        CHECK(died_in_fatal(tc_create_no_attr));
+        CHECK(died_in_fatal(tc_create_no_stack));
+        CHECK(died_in_fatal(tc_create_no_detach));
+        CHECK(died_in_fatal(tc_affinity_empty));
     }
 
     if (!failures) puts("syslib: ok");

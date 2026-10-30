@@ -44,9 +44,17 @@ typedef struct {
     rt_app_param app_params[RT_MAX_APP_PARAMS];
     uint32_t app_param_count;
     int app_boot_param_unread; /* --app-param boot=unread: the title never reads the boot parameter */
+    /* The executable's thread-local storage template (its PT_TLS segment): every guest thread's
+       block is a copy of it, placed just below the thread pointer (x86-64 variant II). */
+    const void *tls_image;
+    uint64_t tls_filesz, tls_memsz, tls_align;
 } rt_process_info;
 
 extern rt_process_info rt_process;
+
+/* A new thread-local storage block from the executable's template, returning its thread pointer
+   (whose first word points to itself); NULL when the host has no memory for it. */
+void *rt_tls_block_create(void);
 
 /* Registers the calling host thread as the guest's main thread, running on the given stack. */
 void rt_thread_register_main(void *stack, uint64_t stack_size);
