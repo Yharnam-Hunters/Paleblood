@@ -21,6 +21,7 @@
 #include "runtime/syslib.h"
 
 #include <pthread.h>
+#include <string.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <time.h>
@@ -128,7 +129,27 @@ static int32_t audio_out_output(int32_t handle, const void *samples)
     return 0;
 }
 
+/* int32_t sceAudioOutGetPortState(int32_t handle, void *state), as the SDK's AudioOut.h declares it;
+   its _types/audio_out.h gives the state's layout (32 bytes): a 16-bit output, an 8-bit channel
+   count, a volume and a 64-bit flag. The executable's only call (0x0111bb41) asks about its second
+   port and reads only output, testing it for 0. The runtime plays nothing on the host, so no port
+   is output anywhere: it answers output 0 (this must change when the runtime plays sound) and 0 in
+   the fields whose encoding is not established. An unknown handle and a missing state stop by
+   name. */
+enum { PORT_STATE_SIZE = 32 };
+
+static int32_t audio_out_get_port_state(int32_t handle, void *state)
+{
+    static const char fn[] = "sceAudioOutGetPortState";
+    if (handle < 1 || handle > atomic_load(&ports_opened))
+        rt_fatal(fn, "a handle the runtime did not hand out: the error value is not established");
+    if (!state) rt_fatal(fn, "no state: the error value is not established");
+    memset(state, 0, PORT_STATE_SIZE); /* output 0: not heard anywhere */
+    return 0;
+}
+
 RT_SYSLIB("libSceAudioOut", sceAudioOutInit, audio_out_init);
+RT_SYSLIB("libSceAudioOut", sceAudioOutGetPortState, audio_out_get_port_state);
 RT_SYSLIB("libSceAudioOut", sceAudioOutOutput, audio_out_output);
 RT_SYSLIB("libSceAudioOut", sceAudioOutOpen, audio_out_open);
 RT_SYSLIB("libSceAudioOut", sceAudioOutSetVolume, audio_out_set_volume);
