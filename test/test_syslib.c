@@ -1062,6 +1062,14 @@ int main(void)
         CHECK(us_terminate() == 0);
     }
 
+    /* libSceCommonDialog: the first initialize succeeds, a repeat answers 0x80b80002 as the
+       executable's second site expects. */
+    const f_us_none cd_init = (f_us_none)fn("libSceCommonDialog", "sceCommonDialogInitialize");
+    if (cd_init) {
+        CHECK(cd_init() == 0);
+        CHECK(cd_init() == (int32_t)0x80b80002u);
+    }
+
     if (!failures) puts("syslib: ok");
     return failures != 0;
 }
