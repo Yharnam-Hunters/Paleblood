@@ -8,7 +8,7 @@ The input system handles the controller pads. This page covers the once-a-frame 
 
 - **Scope:** `input_pad_step_01972900`, the per-frame step of the `FD4PadManager` pad map.
 - **Verified:** The step marks two pad entries and, when its owner is ready, advances the owner by a frame-time step.
-- **Open:** What the two entries and the owner are; pad polling, mapping, dead zones and input buffering.
+- **Open:** What the two entries and the owner are; where the pad is polled; mapping, dead zones and input buffering.
 
 ## Summary
 
@@ -23,6 +23,26 @@ The input system handles the controller pads. This page covers the once-a-frame 
 While the hunter stands in Iosefka's Clinic the advance branch stays idle.
 
 Scope still to map: pad polling, mapping, dead zones, input buffering.
+
+### What the game asks the system for
+
+The executable's imports show which input libraries it uses, and which calls from each:
+
+| Library | Calls the game imports | What that tells us |
+|---|---|---|
+| `libScePad` | `scePadInit`, `scePadOpen`, `scePadClose`, `scePadReadState`, `scePadGetControllerInformation`, `scePadSetVibration`, `scePadResetOrientation`, `scePadSetAngularVelocityDeadbandState`, `scePadSetTiltCorrectionState` | The game reads the pad's latest state once per poll (`scePadReadState`), not the buffered history (`scePadRead` is not imported). It drives vibration and sets up the motion sensor. |
+| `libSceMouse` | `sceMouseInit`, `sceMouseOpen`, `sceMouseClose`, `sceMouseRead` | A mouse path exists, set up by three small functions around `0x02a8c000`. |
+| `libSceUserService` | `sceUserServiceInitialize`, `sceUserServiceGetInitialUser`, `sceUserServiceGetLoginUserIdList`, `sceUserServiceGetUserName`, `sceUserServiceGetEvent`, `sceUserServiceTerminate` | Pads and the mouse are opened for a user, starting with the user who launched the game. |
+| `libSceImeDialog` | `sceImeDialogInit`, `sceImeDialogGetStatus`, `sceImeDialogGetResult`, `sceImeDialogAbort`, `sceImeDialogTerm` | Typed text (the character name, for example) goes through the system keyboard dialog; there is no keyboard library. |
+
+Functions already found, still unnamed (open to claim):
+
+| Address | Size | Library calls | Likely role |
+|---|---|---|---|
+| `0x02a9c790` | 84 | `scePadSetVibration` | sets a pad's vibration |
+| `0x02a8bf30` | 108 | `sceMouseOpen`, `sceMouseClose`, `sceUserServiceGetInitialUser` | mouse open or reopen |
+| `0x02a8c210` | 164 | `sceMouseInit`, `sceSysmoduleLoadModule`; calls `0x02a8c420`, `0x02a8d2b0` | mouse setup: loads the module, initialises, opens |
+| `0x02a8c420` | 108 | `sceMouseOpen`, `sceMouseClose`, `sceUserServiceGetInitialUser` | mouse open or reopen (a twin of `0x02a8bf30`) |
 
 ## Key functions
 
@@ -60,4 +80,8 @@ change it:
 ## Open questions
 
 - What the two pad map entries keyed by globals are, and what the owner the step advances is.
-- Pad polling, mapping, dead zones and input buffering have not been studied yet.
+- Where `scePadReadState` is called, and what the game keeps of each state (the start of pad polling).
+- Pad mapping, dead zones and input buffering have not been studied yet. Dead zones are not set
+  through the library (only the motion sensor's deadband is), so the sticks' dead zones are the
+  game's own code.
+- Whether the mouse path is used by anything in the shipped game.

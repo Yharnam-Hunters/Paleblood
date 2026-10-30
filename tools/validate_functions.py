@@ -22,7 +22,12 @@ STATUSES = ('original', 'replaced', 'edge-verified', 'verified')
 HOOKED = ('replaced', 'edge-verified', 'verified')
 FUNC_HEADER = ['address', 'size', 'name', 'system', 'status', 'notes']
 EXPORT_HEADER = ['address', 'size']
-HOOK_HEADER = ['address', 'replacement', 'system']
+HOOK_HEADER = ['address', 'replacement', 'system', 'returns']
+# Return classes a recorded case can compare (docs/VERIFY.md), and the C/C++ return types of each.
+RETURN_CLASSES = {'void': {'void'}, 'i8': {'bool', 'int8_t', 'uint8_t', 'char'},
+                  'i32': {'int', 'unsigned', 'int32_t', 'uint32_t'},
+                  'i64': {'int64_t', 'uint64_t', 'size_t', 'intptr_t', 'uintptr_t', 'pointer'},
+                  'f32': {'float'}, 'f64': {'double'}}
 MAX_NOTE = 200
 
 
@@ -135,6 +140,12 @@ def main() -> int:
             errs.append(f"{where}: {f['name']} is {f['size']} bytes; a hook needs at least 14 (QUIRKS.md)")
         if h['replacement'] != 'bb_' + f['name']:
             errs.append(f"{where}: replacement must be 'bb_{f['name']}'")
+        elif h['returns'] not in RETURN_CLASSES:
+            errs.append(f"{where}: returns '{h['returns']}' is not one of {', '.join(sorted(RETURN_CLASSES))}")
+        else:
+            declared = replacement_return_type(root, h['replacement'])
+            if declared is not None and declared not in RETURN_CLASSES[h['returns']]:
+                errs.append(f"{where}: returns '{h['returns']}' but {h['replacement']} returns '{declared}'")
     for r in funcs:
         if r['status'] in HOOKED and r['address'] not in hooked:
             errs.append(f"symbols/functions.csv:{r['_line']}: {r['name']} is {r['status']} but has no game/hooks.csv entry")
@@ -148,6 +159,20 @@ def main() -> int:
 
 
 REVIEW_HEADER = ['address', 'name', 'date', 'reviewer', 'verdict', 'notes']
+
+
+def replacement_return_type(root: str, replacement: str) -> str | None:
+    """The return type of `extern "C" TYPE replacement(` under game/ ('pointer' for any pointer),
+    or None when no such definition is found."""
+    pattern = re.compile(r'extern "C"\s+([\w ]+?)\s*(\*?)\s*\b' + re.escape(replacement) + r'\s*\(')
+    for dp, _, fns in os.walk(os.path.join(root, 'game')):
+        for fn in fns:
+            if fn.endswith(('.c', '.cc', '.cpp')):
+                with open(os.path.join(dp, fn), errors='replace') as f:
+                    m = pattern.search(f.read())
+                if m:
+                    return 'pointer' if m.group(2) else ' '.join(m.group(1).split()).replace('const ', '')
+    return None
 
 
 def defining_files(root: str, name: str) -> list[str]:

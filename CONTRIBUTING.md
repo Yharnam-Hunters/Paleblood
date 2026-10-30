@@ -79,7 +79,9 @@ observed behavior as facts. Do not copy, adapt, or model implementation code fro
 runtime or emulator. Keep one call or a
 tightly related group in each PR. Runtime-only PRs need no proprietary game dump, captures, or
 function-level `verify.py` results. CI compiles with GCC and Clang, runs the RT_SYSLIB test and
-the rest of CTest, and retains the repository's policy checks. CI selects the concise runtime
+the rest of CTest, and retains the repository's policy checks. It also builds and tests your PR
+merged with each other open PR that is ready for review (`tools/combined_check.py`), so two PRs
+that pass alone but break together are found before either is queued. CI selects the concise runtime
 report from changed files, not a manually applied label. Include sources, confirmed behavior,
 unresolved questions, tests, and the clean-room basis in that report.
 

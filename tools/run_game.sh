@@ -53,6 +53,10 @@ if [ "$mode" = hook ]; then
     export BB_CAPTURE_DIR=${BB_CAPTURE_DIR:-$(cd "$repo/.." && pwd)/captures} BB_CAPTURE_RUN=$run
     # BB_CAPTURE=0: hooks without recording; BB_CAPTURE_ONLY=fn,...: record only those. Recording
     # every hooked function slows frames enough to crash the runtime in the opening cutscene.
+    # BB_CAPTURE_TRACE=1 records hooked calls by tracing their originals one instruction at a
+    # time (docs/capture-architecture.md): far slower still, so pair it with BB_CAPTURE_ONLY.
+    # Imports called inside a trace are scripted when BB_ELF names your eboot.elf.
+    export BB_CAPTURE_IMPORTS=${BB_CAPTURE_IMPORTS:-$repo/symbols/imports.csv}
     [ "${BB_CAPTURE:-1}" = 0 ] && unset BB_CAPTURE_DIR BB_CAPTURE_RUN
 fi
 

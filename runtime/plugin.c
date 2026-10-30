@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "runtime/capture_hooks.h"
 #include "runtime/guest.h"
 #include "runtime/host.h"
 #include "runtime/hooks.h"
@@ -40,6 +41,12 @@ int bbgame_init(const rt_host *host)
     rt_image = host->image;
     if (rt_hooks_install(game_hooks, game_hook_count))
         return 1;
+    /* With capture on, hooks that can be recorded jump to a recording thunk; the relocated copies
+       of their first instructions must be taken now, before the hooks overwrite them. */
+    const void **targets = calloc(game_hook_count ? game_hook_count : 1, sizeof *targets);
+    if (!targets)
+        return 1;
+    rt_capture_hooks_prepare(host->image, host->image_size, game_hooks, game_hook_count, targets);
     unsigned installed = 0;
     for (unsigned i = 0; i < game_hook_count; i++) {
         const rt_hook_entry *h = &game_hooks[i];
@@ -49,11 +56,13 @@ int bbgame_init(const rt_host *host)
         }
         installed++;
         if (h->address < RT_EBOOT_BASE ||
-            host->install_hook(h->address - RT_EBOOT_BASE, h->size, (const void *)h->fn)) {
+            host->install_hook(h->address - RT_EBOOT_BASE, h->size, targets[i])) {
             fprintf(stderr, "bbgame: cannot hook %s at 0x%08x (%u bytes)\n", h->name, h->address, h->size);
+            free(targets);
             return 1;
         }
     }
+    free(targets);
     fprintf(stderr, "bbgame: %u hook(s) installed\n", installed);
     return rt_probes_install(host->image, host->image_size);
 }

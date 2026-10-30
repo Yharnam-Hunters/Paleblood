@@ -25,7 +25,7 @@ jobs:
       - name: Install optional instruction-trace dependency
         run: python3 -m pip install --disable-pip-version-check capstone==5.0.9
       - name: Install isolated generator dependency
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap apparmor
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap apparmor libcapstone-dev
       - name: Configure the bubblewrap namespace permission on the CI runner
         # Ubuntu restricts user namespaces unless the sandbox executable has an application profile.
         # Configure only that launcher; keep AppArmor and global namespace restrictions enabled.
@@ -100,7 +100,39 @@ jobs:
         run: tools/test_hooks.sh
       - name: Contributor tooling (session report, handoff)
         working-directory: test
-        run: python3 -m unittest test_handoff test_runtime_pr test_tools.SessionReport
+        run: python3 -m unittest test_handoff test_runtime_pr test_tools.SessionReport test_combined_check
+
+  # Two pull requests can pass alone and break together; the merge queue would stop the second,
+  # but only once it is queued. This checks every pair early. Runs unprivileged, like the build.
+  combined:
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install the build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libcapstone-dev
+      - name: Fetch the other open pull requests that are ready for review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SELF: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr list --repo "$GITHUB_REPOSITORY" --base main --state open --limit 100 \
+            --json number,isDraft --jq '.[] | select(.isDraft | not) | .number' | sort -n > "$RUNNER_TEMP/others"
+          : > "$RUNNER_TEMP/refs"
+          while read -r n; do
+            [ "$n" = "$SELF" ] && continue
+            git fetch -q origin "pull/$n/head:refs/remotes/pr/$n" && echo "#$n=pr/$n" >> "$RUNNER_TEMP/refs"
+          done < "$RUNNER_TEMP/others"
+      - name: Build and test together with each
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python3 tools/combined_check.py --base "$BASE_SHA" --summary "$GITHUB_STEP_SUMMARY" $(cat "$RUNNER_TEMP/refs")
 
   session-report:
     if: github.event_name == 'pull_request'

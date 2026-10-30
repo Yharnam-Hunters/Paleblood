@@ -12,10 +12,19 @@ address,name,date,reviewer,verdict,notes
 0x01972900,input_pad_step_01972900,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
 0x01c0c2b0,physics_instance_construct_01c0c2b0,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
 0x01cbdb20,character_frame_update_01cbdb20,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
+0x01eb5390,frame_timing_dungeon_gate_step_init_for_channel_load,2026-10-30,independent session,approved,"readable replacement (STYLE.md); edge cases stock and against 60 FPS++, 13 mutants killed; round 1 changes requested, all addressed"
+0x01eb5490,frame_timing_dungeon_gate_step_mode_switch,2026-10-30,independent session,approved,"readable replacement (STYLE.md); edge cases stock and against 60 FPS++, 13 mutants killed; round 1 changes requested, all addressed"
+0x01eb9020,frame_timing_dungeon_gate_on_event_0,2026-10-30,independent session,approved,"readable replacement (STYLE.md); edge cases stock and against 60 FPS++, 13 mutants killed; round 1 changes requested, all addressed"
+0x01ebb090,frame_timing_dungeon_gate_on_event_1000,2026-10-30,independent session,approved,"readable replacement (STYLE.md); edge cases stock and against 60 FPS++, 13 mutants killed; round 1 changes requested, all addressed"
+0x01ebf060,frame_timing_dungeon_gate_on_event_3000,2026-10-30,independent session,approved,"readable replacement (STYLE.md); edge cases stock and against 60 FPS++, 13 mutants killed; round 1 changes requested, all addressed"
+0x01f03210,frame_timing_holygrail_wait_for_dungeon_mode,2026-10-30,independent session,approved,"readable replacement (STYLE.md); edge cases stock and against 60 FPS++, 12 mutants killed; round 1 changes requested, all addressed"
+0x01f03680,frame_timing_holygrail_wait_for_ritual_mode,2026-10-30,independent session,approved,"readable replacement (STYLE.md); edge cases stock and against 60 FPS++, 12 mutants killed; round 1 changes requested, all addressed"
 0x01f6a9f0,frame_timing_until_idle_01f6a9f0,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
 0x0200d8a0,frame_timing_until_idle_0200d8a0,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
 0x0200e100,frame_timing_until_idle_0200e100,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
 0x0200e270,frame_timing_request_7_0200e270,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
+0x0200f970,frame_timing_holygrail_until_idle_0200f970,2026-10-30,independent session,approved,"readable replacement (STYLE.md); edge cases stock and against 60 FPS++, 12 mutants killed; round 1 changes requested, all addressed"
+0x020118f0,frame_timing_holygrail_until_idle_020118f0,2026-10-30,independent session,approved,"readable replacement (STYLE.md); edge cases stock and against 60 FPS++, 12 mutants killed; round 1 changes requested, all addressed"
 0x02012610,frame_timing_until_idle_02012610,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
 0x02012780,frame_timing_request_10_02012780,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
 0x020128f0,frame_timing_until_idle_020128f0,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run

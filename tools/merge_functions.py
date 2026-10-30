@@ -7,15 +7,18 @@ usage: merge_functions.py ROWS.csv [--root DIR]
 New addresses are added; a row for an address already present must agree on the name, or the
 merge stops and lists the conflicts (rename in the CSV on purpose, not by merging). The
 result is sorted by address and checked with tools/validate_functions.py; on a failure
-functions.csv is left as it was.
+functions.csv is left as it was. The file is replaced in one step (a temporary file renamed over
+it), so an error part way never leaves it half written.
 """
 from __future__ import annotations
 
 import argparse
 import csv
+import io
 import os
 import subprocess
 import sys
+import tempfile
 
 DEFAULT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HEADER = ['address', 'size', 'name', 'system', 'status', 'notes']
@@ -26,7 +29,24 @@ def read(path: str) -> list[dict]:
         rd = csv.DictReader(f)
         if rd.fieldnames != HEADER:
             raise SystemExit(f'merge: {path}: header must be {",".join(HEADER)}')
-        return list(rd)
+        rows = list(rd)
+    for n, r in enumerate(rows, start=2):
+        if None in r or None in r.values():
+            # A row with more fields than the header (an unquoted comma in its notes) or fewer.
+            raise SystemExit(f'merge: {path}:{n}: expected {len(HEADER)} fields; quote a field that has a comma')
+    return rows
+
+
+def replace_file(path: str, text: str) -> None:
+    """Writes text to path in one step: a temporary file next to it, renamed over it."""
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix='.functions-', suffix='.csv')
+    try:
+        with os.fdopen(fd, 'w', newline='') as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
 
 
 def main() -> int:
@@ -49,15 +69,15 @@ def main() -> int:
         return 1
     with open(target, newline='') as f:
         before = f.read()
-    with open(target, 'w', newline='') as f:
-        w = csv.DictWriter(f, fieldnames=HEADER, lineterminator='\n')
-        w.writeheader()
-        for k in sorted(cur, key=lambda x: int(x, 16)):
-            w.writerow(cur[k])
+    out = io.StringIO()
+    w = csv.DictWriter(out, fieldnames=HEADER, lineterminator='\n')
+    w.writeheader()
+    for k in sorted(cur, key=lambda x: int(x, 16)):
+        w.writerow(cur[k])
+    replace_file(target, out.getvalue())
     v = subprocess.run([sys.executable, os.path.join(DEFAULT_ROOT, 'tools', 'validate_functions.py'), '--root', a.root])
     if v.returncode:
-        with open(target, 'w', newline='') as f:
-            f.write(before)
+        replace_file(target, before)
         print('merge: validation failed, functions.csv restored', file=sys.stderr)
         return 1
     print(f'merge: {added} row(s) added')

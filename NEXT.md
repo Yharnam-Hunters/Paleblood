@@ -5,7 +5,7 @@ Two tracks. Sessions alternate between them (decompilation, then runtime, then d
 One line per target, in order; move a target to "Done" with its commit when it is finished.
 Decisions and blockers go to STATUS.md instead of being worked around.
 
-Last session: runtime
+Last session: decompilation
 
 ## Runtime track
 
@@ -36,7 +36,13 @@ from the smallest up. New functions go to `main` only verified and readable.
 1. The live functions the 60 FPS patches edit besides frame timing (47 live, 12 dead:
    `tools/patch_overlap.py ... --map`, `tools/reloc_refs.py`, `tools/refs_to.sh`). Done so far:
    the nine fixed-step state methods (Chalice Dungeon state machine; replaced, verified on edge
-   cases stock and against "60 FPS++", waiting for a save that reaches the Chalice Dungeons).
+   cases stock and against "60 FPS++", waiting for a save that reaches the Chalice Dungeons), and
+   five methods of SprjDungeonGateIns, which owns that state (two steps of its step machine and
+   three event handlers; edge-verified the same way). The owner's own small methods that 60 FPS++
+   edits (`0x01ea3fc0`, `0x01ea4040`, `0x01ea40e0`, `0x01ea54d0`, `0x01ea62e0`) are copies nothing
+   calls or points to (dead). Larger live ones near them (each called directly): `0x01ea47a0`,
+   `0x01ea4a10`, `0x01ea4cb0`, `0x01ea5280`, `0x01ea5670`, `0x01ea5850`, `0x01ea5e20`,
+   `0x01ea6080`, `0x01ec3ef0`.
    Still to do among those called in the clinic (probe run 2026-10-06, `continue.route`):
    `0x0183ac60` (20 KB; every frame-rate patch changes a jump and a flag) and `0x02713870`
    (11.6 KB; its only edit, Uncap FPS++'s, is broken in v1.09: QUIRKS.md). Each option part is
@@ -44,6 +50,12 @@ from the smallest up. New functions go to `main` only verified and readable.
 
 ## Done
 
+- `0x01f03210`, `0x01f03680`, `0x0200f970`, `0x020118f0`: state methods that find the current
+  Chalice Dungeon gate through SprjHolygrail (event flags 9020..9026 pick it), advance it while
+  busy and report on its mode: edge-verified (stock and against "60 FPS++").
+- `0x01eb5390`, `0x01eb5490`, `0x01eb9020`, `0x01ebb090`, `0x01ebf060`: SprjDungeonGateIns
+  STEP_Init_forChannelLoad, STEP_ModeSwitch and the handlers of events 0, 1000 and 3000:
+  edge-verified (stock and against "60 FPS++"); waiting for a save that reaches the Chalice Dungeons.
 - Runtime: libkernel `sceKernelGetProcParam`, `_sceKernelRtldSetApplicationHeapAPI`, the mutex and mutex attribute functions (SCE and POSIX names), `scePthreadSelf` and thread attributes (init, destroy, get).
 - Runtime: the game's own libc and libSceFios2 modules are mapped as guest code (`game/modules.csv`) and the executable's imports they export are bound to them; their functions are tracked in `symbols/module_functions.csv`, replaceable later like game functions.
 - Runtime: our own loader (`runtime/loader.c`) and boot harness (`runtime/boot.c`, `tools/boot.py`); the verification harness maps the executable with the loader.

@@ -12,10 +12,10 @@ static int failures;
 int main(void)
 {
     static const rt_hook_entry good[] = {
-        { 0x00000010u, 16, "a", fn_a }, { 0x00000200u, 16, "b", fn_b }, { 0x00009000u, 16, "c", fn_c },
+        { 0x00000010u, 16, "a", fn_a, 0 }, { 0x00000200u, 16, "b", fn_b, 0 }, { 0x00009000u, 16, "c", fn_c, 0 },
     };
-    static const rt_hook_entry unsorted[] = { { 0x20u, 16, "b", fn_b }, { 0x10u, 16, "a", fn_a } };
-    static const rt_hook_entry dup[] = { { 0x10u, 16, "a", fn_a }, { 0x10u, 16, "b", fn_b } };
+    static const rt_hook_entry unsorted[] = { { 0x20u, 16, "b", fn_b, 0 }, { 0x10u, 16, "a", fn_a, 0 } };
+    static const rt_hook_entry dup[] = { { 0x10u, 16, "a", fn_a, 0 }, { 0x10u, 16, "b", fn_b, 0 } };
 
     CHECK(rt_hooks_install(unsorted, 2) == -1);
     CHECK(rt_hooks_install(dup, 2) == -1);

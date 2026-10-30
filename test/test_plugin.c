@@ -25,8 +25,8 @@ static void replacement_one(void) {}
 static void replacement_two(void) {}
 
 const rt_hook_entry game_hooks[] = {
-    {0x00401000u, 8u, "replacement_one", replacement_one},
-    {0x00402000u, 12u, "replacement_two", replacement_two},
+    {0x00401000u, 8u, "replacement_one", replacement_one, 0},
+    {0x00402000u, 12u, "replacement_two", replacement_two, 0},
 };
 const unsigned game_hook_count = sizeof game_hooks / sizeof game_hooks[0];
 

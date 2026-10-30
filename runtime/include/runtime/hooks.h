@@ -16,6 +16,7 @@ typedef struct {
     uint32_t size;             /* its size in bytes (symbols/functions.csv) */
     const char *name;
     rt_hook_fn fn;
+    const char *returns;       /* return class for recorded cases (game/hooks.csv), or NULL */
 } rt_hook_entry;
 
 /* Install a table sorted by strictly ascending address. Returns 0, or -1 if the

@@ -25,8 +25,9 @@ def main() -> int:
         out.append(f"void {r['replacement']}(void);")
     out += ['', 'const rt_hook_entry game_hooks[] = {']
     for r in rows:
-        out.append(f"    {{ {r['address']}u, {sizes[r['address']]}u, \"{r['replacement']}\", (rt_hook_fn){r['replacement']} }},")
-    out += ['    { 0, 0, 0, 0 }', '};', f'const unsigned game_hook_count = {len(rows)}u;', '']
+        returns = f'"{r["returns"]}"' if r.get('returns') else '0'
+        out.append(f"    {{ {r['address']}u, {sizes[r['address']]}u, \"{r['replacement']}\", (rt_hook_fn){r['replacement']}, {returns} }},")
+    out += ['    { 0, 0, 0, 0, 0 }', '};', f'const unsigned game_hook_count = {len(rows)}u;', '']
     with open(sys.argv[3], 'w') as f:
         f.write('\n'.join(out))
     return 0
