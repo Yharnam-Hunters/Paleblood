@@ -440,6 +440,14 @@ static void net_pool_uninitialized(void) { net_pool_fn("pool", 0x1000, 0); }
 static void net_pool_flags(void) { net_pool_fn("pool", 0x1000, 1); }
 static void net_pool_no_name(void) { net_pool_fn(NULL, 0x1000, 0); }
 
+/* libSceSsl / libSceHttp start-up: context ids. */
+typedef int32_t (*f_ssl_init)(uint64_t);
+typedef int32_t (*f_http_init)(int32_t, int32_t, uint64_t);
+static f_http_init http_init_fn;
+static int32_t http_test_pool, http_test_ssl;
+static void http_init_unknown_pool(void) { http_init_fn(999, http_test_ssl, 0x4000); }
+static void http_init_unknown_ssl(void) { http_init_fn(http_test_pool, 999, 0x4000); }
+
 int main(void)
 {
     /* Unresolved entries are still callable diagnostics, but are not reported as implemented. */
@@ -1159,6 +1167,18 @@ int main(void)
         CHECK(a >= 0 && b >= 0 && a != b);
         CHECK(died_in_fatal(net_pool_flags));
         CHECK(died_in_fatal(net_pool_no_name));
+        /* The HTTP manager's order: pool, SSL context, HTTP context over both. */
+        const f_ssl_init ssl_init_fn = (f_ssl_init)fn("libSceSsl", "sceSslInit");
+        http_init_fn = (f_http_init)fn("libSceHttp", "sceHttpInit");
+        if (ssl_init_fn && http_init_fn) {
+            http_test_pool = a;
+            http_test_ssl = ssl_init_fn(0x4000);
+            CHECK(http_test_ssl >= 0 && ssl_init_fn(0x4000) != http_test_ssl);
+            const int32_t http = http_init_fn(a, http_test_ssl, 0x4000);
+            CHECK(http >= 0 && http_init_fn(b, http_test_ssl, 0x4000) != http);
+            CHECK(died_in_fatal(http_init_unknown_pool));
+            CHECK(died_in_fatal(http_init_unknown_ssl));
+        }
         CHECK(net_term_fn() == 0);
         CHECK(net_init_fn() == 0);  /* initialized again after a terminate */
         CHECK(net_term_fn() == 0);
