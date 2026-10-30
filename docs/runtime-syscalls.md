@@ -719,7 +719,7 @@ belongs to the batch and instance calls, which stop by name until they are imple
 - a context the runtime did not hand out;
 - registering a module twice.
 
-## Audio output start-up (`sceAudioOutInit`, `sceAudioOutOpen`, issue #37)
+## Audio output start-up (`sceAudioOutInit`, `sceAudioOutOpen`, `sceAudioOutSetVolume`, issue #37)
 
 The OpenOrbis homebrew SDK's `AudioOut.h` declares `int32_t sceAudioOutInit(void)` and
 `int32_t sceAudioOutOpen(user, port type, index, length, sample rate, param)`. Its `_types`
@@ -741,6 +741,18 @@ headers give:
 belongs to the output calls, which stop by name until they are implemented.
 
 **What stops by name:** any open other than the observed ones, and running out of handles.
+
+`int32_t sceAudioOutSetVolume(handle, flag, int32_t *volume)`, as the SDK declares it, comes next.
+The executable's only call (`0x0111b6d6`) passes its new port, flag `0xff` and eight volumes of
+32768, and treats nonzero as failure. Flag bit n selects channel n, whose volume is `volume[n]`.
+
+**What the runtime does.** It records the volumes.
+
+**What stops by name:**
+- a handle it did not hand out;
+- a flag naming a channel the port does not have;
+- a missing array;
+- a volume outside 0–32768.
 
 ## Implementation rule
 

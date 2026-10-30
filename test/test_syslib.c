@@ -581,6 +581,13 @@ static f_ao_open ao_open_fn;
 static void ao_open_s16(void) { ao_open_fn(0xff, 0, 0, 256, 48000, 1); }
 static void ao_open_other_rate(void) { ao_open_fn(0xff, 0, 0, 256, 44100, 4); }
 static void ao_open_other_user(void) { ao_open_fn(1, 0, 0, 256, 48000, 4); }
+typedef int32_t (*f_ao_volume)(int32_t, int32_t, const int32_t *);
+static f_ao_volume ao_volume_fn;
+static int32_t ao_stereo_port;
+static const int32_t ao_unity[8] = {32768, 32768, 32768, 32768, 32768, 32768, 32768, 32768};
+static void ao_volume_extra_channel(void) { ao_volume_fn(ao_stereo_port, 0x7, ao_unity); }
+static void ao_volume_unknown_port(void) { ao_volume_fn(99, 0x3, ao_unity); }
+static void ao_volume_too_loud(void) { const int32_t v[8] = {40000}; ao_volume_fn(ao_stereo_port, 0x1, v); }
 
 int main(void)
 {
@@ -1519,6 +1526,16 @@ int main(void)
         CHECK(died_in_fatal(ao_open_s16));
         CHECK(died_in_fatal(ao_open_other_rate));
         CHECK(died_in_fatal(ao_open_other_user));
+        ao_volume_fn = (f_ao_volume)fn("libSceAudioOut", "sceAudioOutSetVolume");
+        if (ao_volume_fn) {
+            const int32_t eight = ao_open_fn(0xff, 0, 0, 256, 48000, 5);
+            CHECK(ao_volume_fn(eight, 0xff, ao_unity) == 0); /* the boot's call */
+            ao_stereo_port = h1;
+            CHECK(ao_volume_fn(h1, 0x3, ao_unity) == 0);
+            CHECK(died_in_fatal(ao_volume_extra_channel));
+            CHECK(died_in_fatal(ao_volume_unknown_port));
+            CHECK(died_in_fatal(ao_volume_too_loud));
+        }
     }
 
     if (!failures) puts("syslib: ok");

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* System call group: audio. Audio output start-up (libSceAudioOut): initializing the library and
-   opening an output port.
+/* System call group: audio. Audio output start-up (libSceAudioOut): initializing the library,
+   opening an output port and setting its volumes.
 
    Facts used: the OpenOrbis homebrew SDK's AudioOut.h declares int32_t sceAudioOutInit(void) and
    int32_t sceAudioOutOpen(user, port type, index, length, sample rate, param); its _types headers
@@ -33,8 +33,11 @@ enum {
     MAX_PORTS = 8,
 };
 
+enum { MAX_CHANNELS = 8, VOLUME_LARGEST_SEEN = 32768 };
+
 typedef struct {
-    uint32_t length, rate, format;
+    uint32_t length, rate, format, channels;
+    int32_t volume[MAX_CHANNELS];
 } audio_port;
 
 static atomic_int initialized;
@@ -58,9 +61,32 @@ static int32_t audio_out_open(int32_t user, int32_t port_type, int32_t index, ui
         rt_fatal(fn, "a length, rate or format other than the observed 256 float samples at 48000 Hz, 2 or 8 channels");
     const int handle = atomic_fetch_add(&ports_opened, 1) + 1; /* handles from 1 */
     if (handle > MAX_PORTS) rt_fatal(fn, "more ports than the runtime hands out handles for");
-    ports[handle] = (audio_port){length, rate, format};
+    ports[handle] = (audio_port){length, rate, format, format == FORMAT_FLOAT_8CH ? 8 : 2, {0}};
     return handle;
+}
+
+/* int32_t sceAudioOutSetVolume(int32_t handle, int32_t flag, int32_t *volume), as the SDK's AudioOut.h
+   declares it. The executable's only call (0x0111b6d6) passes its new port, flag 0xff and eight
+   volumes of 32768, and treats nonzero as failure: flag bit n selects channel n, whose volume is
+   volume[n]. The runtime records them. A handle it did not hand out, a flag naming a channel the
+   port does not have, a missing array and a volume outside 0..32768 stop by name. */
+static int32_t audio_out_set_volume(int32_t handle, int32_t flag, const int32_t *volume)
+{
+    static const char fn[] = "sceAudioOutSetVolume";
+    if (handle < 1 || handle > atomic_load(&ports_opened))
+        rt_fatal(fn, "a handle the runtime did not hand out: the error value is not established");
+    audio_port *const port = &ports[handle];
+    if (!volume || !flag || (uint32_t)flag >> port->channels)
+        rt_fatal(fn, "no volumes, or a flag naming a channel the port does not have: the answer is not established");
+    for (uint32_t channel = 0; channel < port->channels; channel++) {
+        if (!(flag & (1 << channel))) continue;
+        if (volume[channel] < 0 || volume[channel] > VOLUME_LARGEST_SEEN)
+            rt_fatal(fn, "a volume outside 0..32768: the answer is not established");
+        port->volume[channel] = volume[channel];
+    }
+    return 0;
 }
 
 RT_SYSLIB("libSceAudioOut", sceAudioOutInit, audio_out_init);
 RT_SYSLIB("libSceAudioOut", sceAudioOutOpen, audio_out_open);
+RT_SYSLIB("libSceAudioOut", sceAudioOutSetVolume, audio_out_set_volume);
