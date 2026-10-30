@@ -700,6 +700,25 @@ It also seeds a random generator with it (`0x00835dba`).
 
 **What the runtime does.** It measures from its own start, on the host's monotonic clock.
 
+## Audio job manager start-up (`sceAjmInitialize`, `sceAjmModuleRegister`, issue #37)
+
+The audio job manager (libSceAjm) decodes compressed audio in batches of jobs. The OpenOrbis
+homebrew SDK's `Ajm.h` names these two calls without signatures, so their shapes come from the
+executable's only calls:
+- **`0x01118a65`:** runs while its context variable still holds -1, and passes 0 and the
+  variable's address. A nonzero result is failure.
+- **`0x01118a81`:** then passes that context, 1 and 0, and again treats nonzero as failure.
+
+**What the runtime does.** It hands out a context id and records the registered module. Decoding
+belongs to the batch and instance calls, which stop by name until they are implemented.
+
+**What stops by name:**
+- a nonzero first argument to initialize;
+- a module other than the observed 1 (which codec it names is not public);
+- a nonzero third argument;
+- a context the runtime did not hand out;
+- registering a module twice.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
