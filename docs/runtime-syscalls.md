@@ -413,7 +413,35 @@ What the runtime does:
   policy stops by name.
 - **A missing attribute** answers EINVAL (as an SCE code under the SCE names).
 
-Thread creation itself and per-thread affinity are separate entries.
+## Thread creation (`scePthreadCreate`, `scePthreadSetaffinity`, issue #34)
+
+**`scePthreadCreate(&thread, &attr, entry, argument, name)`** runs the guest on a new host thread:
+
+1. The thread gets its own guest stack, of the attribute's size.
+2. It gets its own TLS block, a copy of the executable's template as the main thread's is, and its
+   thread pointer goes in GS.
+3. It is registered, so `scePthreadSelf` answers the new thread's handle.
+4. `entry(argument)` is called with the guest's convention. A return ends the thread (POSIX).
+5. The attribute's detach state decides whether the host thread is joinable.
+
+The scheduling policy is recorded, but the host schedules the thread: guest priorities are not
+modelled.
+
+What stops by name:
+- no attribute, or no stack size or detach state on it (the PS4 defaults are not established);
+- a stack address the guest supplies;
+- the error values.
+
+**`scePthreadSetaffinity`** records the CPU mask. The executable sets it once per thread, within
+`0x3f`. Scheduling is left to the host, because the host's CPUs say nothing about the PS4's. An
+empty mask stops by name.
+
+**Stops on other threads.** A worker thread can fault or reach an unimplemented import. The boot
+records the first such stop and wakes the main thread (`SIGUSR1`) to make the usual report. Workers
+leave the timeout and that signal to the main thread.
+
+A local boot with the affinity probe and the rwlocks let through (not committed) reaches the
+`threads` milestone and stops next at `sceUserServiceInitialize`.
 
 ## Implementation rule
 

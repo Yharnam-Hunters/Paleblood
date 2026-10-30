@@ -11,9 +11,16 @@
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
+#include <asm/prctl.h>
+#include <pthread.h>
 #include <sched.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 
 enum { BSD_ENOMEM = 12, BSD_EINVAL = 22 };
 #define SCE_KERNEL_ERROR(e) ((int)(0x80020000u + (unsigned)(e)))
@@ -36,6 +43,13 @@ enum { SCHED_POLICY_FIFO = 1, SCHED_POLICY_OTHER = 2, SCHED_POLICY_RR = 3 };
 typedef struct {
     void *stack;
     uint64_t stack_size;
+    /* Threads created by scePthreadCreate (the main thread leaves these empty). */
+    void *(*entry)(void *);
+    void *argument;
+    void *tls;              /* its thread pointer */
+    char name[32];
+    uint64_t affinity;      /* the mask scePthreadSetaffinity recorded, 0: none yet */
+    pthread_t host;
 } guest_thread;
 
 typedef struct {
@@ -49,6 +63,22 @@ typedef struct {
 } guest_attr;
 
 static int sce(int bsd) { return bsd ? SCE_KERNEL_ERROR(bsd) : 0; }
+
+/* The executable's TLS template copied into a fresh block, the thread pointer just above it
+   (x86-64 variant II), the pointer's first word pointing to itself. */
+void *rt_tls_block_create(void)
+{
+    const uint64_t align = rt_process.tls_align > 16 ? rt_process.tls_align : 16;
+    const uint64_t size = (rt_process.tls_memsz + align - 1) / align * align;
+    enum { CONTROL_BLOCK = 4096 };
+    unsigned char *block = aligned_alloc(align, size + CONTROL_BLOCK);
+    if (!block) return NULL;
+    memset(block, 0, size + CONTROL_BLOCK);
+    unsigned char *tp = block + size;
+    if (rt_process.tls_filesz) memcpy(tp - size, rt_process.tls_image, rt_process.tls_filesz);
+    *(uint64_t *)tp = (uint64_t)(uintptr_t)tp;
+    return tp;
+}
 
 static guest_thread main_thread;
 static _Thread_local guest_thread *current;
@@ -120,6 +150,91 @@ static int attr_destroy(guest_attr **attr)
     if (!attr || !*attr) return BSD_EINVAL;
     free(*attr);
     *attr = NULL;
+    return 0;
+}
+
+/* Calls entry(argument) on the guest stack, with the System V convention the guest uses, and returns
+   its result: rt_thread_call(entry, argument, stack_top). */
+void *rt_thread_call(void *(*entry)(void *), void *argument, void *stack_top);
+__asm__(".text\n"
+        ".globl rt_thread_call\n"
+        "rt_thread_call:\n"
+        "  push %rbp\n  push %rbx\n  push %r12\n  push %r13\n  push %r14\n  push %r15\n"
+        "  mov %rsp, %r12\n"
+        "  mov %rdx, %rsp\n"
+        "  mov %rdi, %rax\n"
+        "  mov %rsi, %rdi\n"
+        "  call *%rax\n"
+        "  mov %r12, %rsp\n"
+        "  pop %r15\n  pop %r14\n  pop %r13\n  pop %r12\n  pop %rbx\n  pop %rbp\n"
+        "  ret\n");
+
+/* A created thread's host side: the guest's thread pointer in GS, the boot's timeout and
+   worker-stop signals left to the main thread, the thread registered for scePthreadSelf, then the
+   guest's entry on its own stack. A return from the entry ends the thread (POSIX). */
+static void *thread_start(void *raw)
+{
+    guest_thread *t = raw;
+    sigset_t main_only;
+    sigemptyset(&main_only);
+    sigaddset(&main_only, SIGALRM);
+    sigaddset(&main_only, SIGUSR1);
+    pthread_sigmask(SIG_BLOCK, &main_only, NULL);
+    if (syscall(SYS_arch_prctl, ARCH_SET_GS, (unsigned long)(uintptr_t)t->tls))
+        rt_fatal("scePthreadCreate", "the host refused the new thread's thread pointer");
+    current = t;
+    /* The System V convention wants the stack 16-byte aligned at the call. */
+    enum { STACK_TOP_RESERVE = 64, STACK_ALIGN = 16 };
+    const uintptr_t top = ((uintptr_t)t->stack + t->stack_size - STACK_TOP_RESERVE) & ~(uintptr_t)(STACK_ALIGN - 1);
+    rt_thread_call(t->entry, t->argument, (void *)top);
+    return NULL;
+}
+
+/* scePthreadCreate(thread, attr, entry, argument, name), as the executable's thread wrapper calls
+   it: an attribute with a stack size and a detach state, a name. The guest runs on a host thread
+   with its own guest stack and TLS block. What the runtime does not know stops by name: a missing
+   attribute or stack size (the PS4 defaults), a stack address the guest supplies, and the error
+   values. The scheduling policy is recorded but the host schedules the thread: priorities are not
+   modelled. */
+static int create_thread(guest_thread **thread, guest_attr **attr, void *(*entry)(void *), void *argument,
+                         const char *name)
+{
+    static const char fn[] = "scePthreadCreate";
+    if (!thread || !entry) rt_fatal(fn, "no thread variable or entry: the error value is not established");
+    const guest_attr *a = attr ? *attr : NULL;
+    if (!a) rt_fatal(fn, "no attribute object: the PS4 default stack size is not established");
+    if (!a->has_stack) rt_fatal(fn, "no stack size set: the PS4 default is not established");
+    if (a->stack) rt_fatal(fn, "a stack the guest supplies: not supported yet");
+    const int detach_state = rt_thread_attr_detach_state((void *const *)attr, fn); /* stops when not set */
+    guest_thread *t = calloc(1, sizeof *t);
+    if (!t) rt_fatal(fn, "the host has no memory for the thread");
+    t->stack_size = a->stack_size;
+    t->stack = mmap(NULL, t->stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+    if (t->stack == MAP_FAILED) rt_fatal(fn, "the host cannot map the thread's stack");
+    t->tls = rt_tls_block_create();
+    if (!t->tls) rt_fatal(fn, "the host has no memory for the thread's TLS block");
+    t->entry = entry;
+    t->argument = argument;
+    if (name) strncpy(t->name, name, sizeof t->name - 1);
+    pthread_attr_t host;
+    pthread_attr_init(&host);
+    if (detach_state == DETACH_DETACHED) pthread_attr_setdetachstate(&host, PTHREAD_CREATE_DETACHED);
+    const int r = pthread_create(&t->host, &host, thread_start, t);
+    pthread_attr_destroy(&host);
+    if (r) rt_fatal(fn, "the host could not create the thread");
+    *thread = t;
+    return 0;
+}
+
+/* The CPU set a thread may run on. The executable sets it once, right after creating the thread,
+   within 0x3f; the runtime records it and leaves scheduling to the host (which CPUs the host has
+   says nothing about the PS4's). An empty mask's answer is not established and stops by name. */
+static int set_affinity(guest_thread *thread, uint64_t mask)
+{
+    static const char fn[] = "scePthreadSetaffinity";
+    if (!thread) rt_fatal(fn, "no thread: the error value is not established");
+    if (!mask) rt_fatal(fn, "an empty CPU mask: the answer is not established");
+    thread->affinity = mask;
     return 0;
 }
 
@@ -210,6 +325,8 @@ RT_SYSLIB("libkernel", scePthreadAttrGet, attr_get);
 RT_SYSLIB("libkernel", scePthreadAttrSetdetachstate, sce_attr_set_detach_state);
 RT_SYSLIB("libkernel", scePthreadAttrSetstacksize, sce_attr_set_stack_size);
 RT_SYSLIB("libkernel", scePthreadAttrSetschedpolicy, sce_attr_set_sched_policy);
+RT_SYSLIB("libkernel", scePthreadCreate, create_thread);
+RT_SYSLIB("libkernel", scePthreadSetaffinity, set_affinity);
 
 /* libScePosix: the same calls under their POSIX names, returning the errno values themselves.
    pthread_self has no error return, so it answers exactly as scePthreadSelf does. */
