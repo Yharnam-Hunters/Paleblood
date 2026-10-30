@@ -309,6 +309,17 @@ static void sema_second_prio_waiter(void)
     sema_wait(sema_prio, 1, NULL);
 }
 
+/* The time of day: a timeval of two 64-bit fields, seconds and microseconds. */
+typedef struct {
+    int64_t seconds, microseconds;
+} tod_timeval;
+typedef int (*f_tod)(tod_timeval *, const void *);
+typedef int32_t (*f_sce_tod)(tod_timeval *);
+static f_tod tod_posix;
+static f_sce_tod tod_sce;
+static void tod_with_zone(void) { tod_timeval tv; int zone[2] = {0, 0}; tod_posix(&tv, zone); }
+static void tod_sce_null(void) { tod_sce(NULL); }
+
 int main(void)
 {
     /* Unresolved entries are still callable diagnostics, but are not reported as implemented. */
@@ -812,6 +823,30 @@ int main(void)
     CHECK(is_implemented("libkernel", "sceKernelCreateSema") && is_implemented("libkernel", "sceKernelDeleteSema") &&
           is_implemented("libkernel", "sceKernelWaitSema") && is_implemented("libkernel", "sceKernelSignalSema") &&
           is_implemented("libkernel", "sceKernelPollSema"));
+
+    /* The time of day is the host's wall clock, under all three names. */
+    tod_posix = (f_tod)fn("libScePosix", "gettimeofday");
+    f_tod tod_kernel = (f_tod)fn("libkernel", "gettimeofday");
+    tod_sce = (f_sce_tod)fn("libkernel", "sceKernelGettimeofday");
+    if (tod_posix && tod_kernel && tod_sce) {
+        struct timespec before, after;
+        tod_timeval a = {-1, -1}, b = {-1, -1}, c = {-1, -1};
+        clock_gettime(CLOCK_REALTIME, &before);
+        CHECK(tod_posix(&a, NULL) == 0 && tod_kernel(&b, NULL) == 0 && tod_sce(&c) == 0);
+        clock_gettime(CLOCK_REALTIME, &after);
+        const tod_timeval *all[] = {&a, &b, &c};
+        for (int i = 0; i < 3; i++) {
+            const int64_t us = all[i]->seconds * 1000000 + all[i]->microseconds;
+            CHECK(all[i]->microseconds >= 0 && all[i]->microseconds < 1000000);
+            CHECK(us >= (int64_t)before.tv_sec * 1000000 + before.tv_nsec / 1000);
+            CHECK(us <= (int64_t)after.tv_sec * 1000000 + after.tv_nsec / 1000);
+        }
+        CHECK(tod_posix(NULL, NULL) == 0); /* FreeBSD: no timeval, nothing filled, success */
+        CHECK(died_in_fatal(tod_with_zone));
+        CHECK(died_in_fatal(tod_sce_null));
+    }
+    CHECK(is_implemented("libScePosix", "gettimeofday") && is_implemented("libkernel", "gettimeofday") &&
+          is_implemented("libkernel", "sceKernelGettimeofday"));
 
     if (!failures) puts("syslib: ok");
     return failures != 0;

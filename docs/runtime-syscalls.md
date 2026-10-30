@@ -335,6 +335,21 @@ A local boot that let the affinity probe and the rwlocks through (not committed)
 `sceKernelCreateSema`. With throwaway answers past it, the next stops were `gettimeofday`, then
 `sceSysmoduleLoadModule` for system module `0x00b4`.
 
+## Time of day (`gettimeofday`, `sceKernelGettimeofday`, issue #34)
+
+`eboot` imports `gettimeofday` from `libScePosix`, `libc.elf` imports it from `libkernel`, and
+`libSceFios2.elf` imports `sceKernelGettimeofday` (`symbols/imports.csv`). The executable's own
+call, at `0x024e2703`, passes a timeval on its stack and no timezone, and reads both fields as
+64-bit values. That matches FreeBSD's amd64 `struct timeval`: seconds, then microseconds.
+
+The runtime answers the host's wall clock, under all three names, because the guest asks the
+system it runs on. It returns 0. Given no timeval, the POSIX names fill nothing and succeed, as
+FreeBSD's `sys_gettimeofday` does.
+
+What stops by name:
+- a timezone argument (obsolete in POSIX; what the PS4 fills in is not established);
+- a missing timeval for `sceKernelGettimeofday` (its error value is not established).
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
