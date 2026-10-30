@@ -1589,6 +1589,14 @@ int main(void)
             ao_output_fn = ao_output;
             CHECK(died_in_fatal(ao_output_no_samples));
         }
+        /* sceAudioOutGetPortState: nothing is heard, so output (the first 16 bits) is 0. */
+        typedef int32_t (*f_ao_state)(int32_t, void *);
+        const f_ao_state ao_state = (f_ao_state)fn("libSceAudioOut", "sceAudioOutGetPortState");
+        if (ao_state) {
+            unsigned char state[32];
+            memset(state, 0xee, sizeof state);
+            CHECK(ao_state(h1, state) == 0 && state[0] == 0 && state[1] == 0 && state[31] == 0);
+        }
     }
 
     /* sceKernelStat: FreeBSD's 120-byte stat from the host file; ENOENT and ENOTDIR as SCE codes. */

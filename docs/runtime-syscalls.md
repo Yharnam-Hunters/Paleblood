@@ -770,6 +770,17 @@ the next block.
 
 **What stops by name:** a missing block, and a handle the runtime did not hand out.
 
+`int32_t sceAudioOutGetPortState(handle, void *state)`, as the SDK declares it, reports a port's
+state. Its `_types/audio_out.h` gives the layout (32 bytes): a 16-bit output, an 8-bit channel
+count, a volume and a 64-bit flag. The executable's only call (`0x0111bb41`) asks about its second
+port, and reads only output, testing it for 0.
+
+**What the runtime does.** It plays nothing on the host, so no port is output anywhere. It answers
+output 0, and 0 in the fields whose encoding is not established. This must change when the runtime
+plays sound.
+
+**What stops by name:** an unknown handle, and a missing state.
+
 ## Attribute priority and CPU mask (`scePthreadAttrSetschedparam`, `scePthreadAttrSetaffinity`, issue #34)
 
 `scePthreadAttrSetschedparam(attr, const struct sched_param *param)` sets the priority
