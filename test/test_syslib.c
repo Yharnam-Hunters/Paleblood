@@ -563,6 +563,17 @@ static void clock_unknown(void) { int64_t ts[2]; clock_gettime_fn(1, ts); }
 static void clock_no_timespec(void) { clock_gettime_fn(0, NULL); }
 typedef uint64_t (*f_u64)(void);
 
+/* libSceAjm start-up: a context id, then the observed module 1 registered once. */
+typedef int32_t (*f_ajm_init)(int64_t, uint32_t *);
+typedef int32_t (*f_ajm_register)(uint32_t, uint32_t, uint64_t);
+static f_ajm_init ajm_init_fn;
+static f_ajm_register ajm_register_fn;
+static uint32_t ajm_test_context;
+static void ajm_init_reserved(void) { uint32_t c; ajm_init_fn(1, &c); }
+static void ajm_register_unknown_context(void) { ajm_register_fn(99, 1, 0); }
+static void ajm_register_other_module(void) { ajm_register_fn(ajm_test_context, 2, 0); }
+static void ajm_register_twice(void) { ajm_register_fn(ajm_test_context, 1, 0); }
+
 int main(void)
 {
     /* Unresolved entries are still callable diagnostics, but are not reported as implemented. */
@@ -1472,6 +1483,20 @@ int main(void)
         nanosleep(&pause, NULL);
         const uint64_t t2 = process_time();
         CHECK(t1 < 600ull * 1000000 && t2 >= t1 + 15000 && t2 < t1 + 5000000); /* 20 ms later, in µs */
+    }
+
+    /* sceAjmInitialize / sceAjmModuleRegister. */
+    ajm_init_fn = (f_ajm_init)fn("libSceAjm", "sceAjmInitialize");
+    ajm_register_fn = (f_ajm_register)fn("libSceAjm", "sceAjmModuleRegister");
+    if (ajm_init_fn && ajm_register_fn) {
+        uint32_t context = 0xffffffffu;
+        CHECK(ajm_init_fn(0, &context) == 0 && context != 0xffffffffu && context != 0);
+        ajm_test_context = context;
+        CHECK(died_in_fatal(ajm_init_reserved));
+        CHECK(died_in_fatal(ajm_register_unknown_context));
+        CHECK(died_in_fatal(ajm_register_other_module));
+        CHECK(ajm_register_fn(context, 1, 0) == 0);
+        CHECK(died_in_fatal(ajm_register_twice));
     }
 
     if (!failures) puts("syslib: ok");
