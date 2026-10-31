@@ -305,6 +305,10 @@ static void dm_allocate_no_variable(void) { dm_allocate(0, 1ll << 30, DM_PAGE, D
 static void dm_map_with_flags(void) { void *a = NULL; dm_map(&a, DM_PAGE, DM_RW, 0x10, dm_unmapped, DM_PAGE); }
 static void *dm_in_use;
 static void dm_map_hint_in_use(void) { void *a = dm_in_use; dm_map(&a, DM_PAGE, DM_RW, 0, dm_mapped, DM_PAGE); }
+typedef int32_t (*f_vq)(const void *, int32_t, void *, uint64_t);
+static f_vq vq_fn;
+static void vq_flags(void) { unsigned char info[0x48]; vq_fn(dm_in_use, 1, info, sizeof info); }
+static void vq_size(void) { unsigned char info[0x48]; vq_fn(dm_in_use, 0, info, 0x40); }
 static void dm_map_hint_misaligned(void) { void *a = (void *)0xfd00004000; dm_map(&a, DM_PAGE, DM_RW, 0, dm_mapped, DM_ALIGN); }
 static void dm_map_exec(void) { void *a = NULL; dm_map(&a, DM_PAGE, DM_RW | 0x4, 0, dm_unmapped, DM_PAGE); }
 static void dm_map_unallocated(void) { void *a = NULL; dm_map(&a, DM_PAGE, DM_RW, 0, 1ll << 32, DM_PAGE); }
@@ -1147,6 +1151,25 @@ int main(void)
         dm_in_use = a;
         CHECK(died_in_fatal(dm_map_hint_in_use));
         CHECK(died_in_fatal(dm_map_hint_misaligned));
+        /* sceKernelVirtualQuery on a direct map: its start, its offset in the pool, direct. */
+        vq_fn = (f_vq)fn("libkernel", "sceKernelVirtualQuery");
+        if (vq_fn && hinted == (void *)0xfd00000000) {
+            unsigned char info[0x48];
+            memset(info, 0xee, sizeof info);
+            CHECK(vq_fn((char *)hinted + 0x100, 0, info, sizeof info) == 0);
+            uint64_t start, end; int64_t offset; int32_t prot, type; uint32_t bits;
+            memcpy(&start, info, 8); memcpy(&end, info + 8, 8); memcpy(&offset, info + 0x10, 8);
+            memcpy(&prot, info + 0x18, 4); memcpy(&type, info + 0x1c, 4); memcpy(&bits, info + 0x20, 4);
+            CHECK(start == 0xfd00000000 && end == start + DM_PAGE && offset == first && prot == DM_RW && type == 0);
+            CHECK((bits & 0x2) && !(bits & 0x1) && (bits & 0x10) && info[0x24] == 0);
+            /* A map deeper in the pool reports its own offset there. */
+            void *deep = (void *)0xfd00100000;
+            CHECK(dm_map(&deep, DM_PAGE, DM_RW, 0, windowed, DM_PAGE) == 0 && deep == (void *)0xfd00100000);
+            CHECK(vq_fn(deep, 0, info, sizeof info) == 0 && (memcpy(&offset, info + 0x10, 8), offset == windowed));
+            CHECK(windowed != 0);
+            CHECK(died_in_fatal(vq_flags));
+            CHECK(died_in_fatal(vq_size));
+        }
         CHECK(died_in_fatal(dm_map_exec));
         /* GPU access (0x10 read, 0x20 write) is accepted; the CPU bits make the host mapping. */
         void *gpu = NULL;
@@ -1461,6 +1484,14 @@ int main(void)
             int32_t prot = -1;
             CHECK(qmp((char *)a + 0x7fff, NULL, NULL, &prot) == 0 && prot == 3);
             CHECK(qmp(b, NULL, NULL, &prot) == 0 && prot == 0x33);
+            typedef int32_t (*f_vq2)(const void *, int32_t, void *, uint64_t);
+            const f_vq2 vq = (f_vq2)fn("libkernel", "sceKernelVirtualQuery");
+            if (vq) { /* a flexible map: the flexible bit, no offset */
+                unsigned char info[0x48]; uint32_t bits; int64_t off; uint64_t start;
+                CHECK(vq((char *)a + 0x10, 0, info, sizeof info) == 0);
+                memcpy(&bits, info + 0x20, 4); memcpy(&off, info + 0x10, 8); memcpy(&start, info, 8);
+                CHECK((bits & 0x1) && !(bits & 0x2) && off == 0 && start == (uint64_t)(uintptr_t)a);
+            }
             qmp_fn = qmp;
             CHECK(died_in_fatal(qmp_unmapped));
             CHECK(died_in_fatal(qmp_with_end));

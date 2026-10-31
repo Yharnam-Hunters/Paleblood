@@ -885,6 +885,37 @@ For this, `sceKernelMapDirectMemory` now takes an address hint as FreeBSD's `mma
 `MAP_FIXED`: the map goes there when the range is free. A hint in use (where the system then maps
 is not established) and one off the alignment stop by name.
 
+## Virtual memory queries (`sceKernelVirtualQuery`, issue #34)
+
+`sceKernelVirtualQuery(address, flags, info *, size)`, as the OpenOrbis homebrew SDK's `libkernel.h`
+and `_types/kernel.h` (`OrbisKernelVirtualQueryInfo`) declare it, describes the mapping that holds
+an address. The answer is a 0x48-byte structure:
+
+| Offset | Field |
+|---|---|
+| `0x00`, `0x08` | start and end |
+| `0x10` | the direct memory offset |
+| `0x18` | protection |
+| `0x1c` | memory type |
+| `0x20` | flag bits: flexible 1, direct 2, stack 4, pooled 8, committed `0x10` |
+| `0x24` | a 32-byte name |
+
+**What the executable does.** Every call passes flags 0 and size 0x48, and reads the start, the
+offset or the direct bit:
+- `0x02d0328c` works out an address's place in direct memory as `offset + (address - start)`;
+- `0x02ad3f5e`, `0x02ad4066` and `0x02ad423e` release the direct memory at the offset.
+
+**What the runtime does.** It answers from its record of direct and flexible mappings: start,
+offset, protection as asked for, memory type, flexible or direct, committed, and no name. No call
+reads the end, and whether it is inclusive is not established; the runtime writes the address just
+past the mapping.
+
+**What stops by name:**
+- flags other than 0;
+- a size other than 0x48;
+- an address outside those mappings (other memory is not tracked yet);
+- a missing structure.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
