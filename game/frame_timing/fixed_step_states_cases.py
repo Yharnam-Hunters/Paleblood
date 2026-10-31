@@ -4,7 +4,7 @@
 
 usage: fixed_step_states_cases.py CAPTURES_DIR
 
-Writes CAPTURES_DIR/<function>/edge/*.json for all twenty methods. The owner's advance method
+Writes CAPTURES_DIR/<function>/edge/*.json for all twenty-one methods. The owner's advance method
 (vtable slot +0xd0) is a stand-in game function the case stubs; its descriptor is compared, and
 it leaves the busy count (and for the gate, the state) the case says. Covers idle and busy owners,
 staying busy after the advance, and states around the 2..5 range of request_7 (with wraparound
@@ -17,7 +17,9 @@ different gates, so the wrong one shows), every mode, and the state query's answ
 advances that move the state into the error or server dungeon mode between its steps. For the
 owner check 0x01ea5280: each gate on it (busy, mode, FrpgNetMan's four flags, the id), and the
 reference counts of the looked-up object and of the handle it replaces (none, the same object,
-another one; counts that destroy an object or report an invalid unref).
+another one; counts that destroy an object or report an invalid unref). For the entry check
+0x01ea4a10: the same gates, the search of its list (empty, no match, a match with no object,
+several matches), the handle swap, and destroys that rewrite the entry or make the owner busy.
 """
 import json
 import os
@@ -42,7 +44,7 @@ HOLYGRAIL_METHODS = [  # (address, name)
     ('0x01f03210', 'holygrail_wait_for_dungeon_mode'), ('0x01f03680', 'holygrail_wait_for_ritual_mode'),
     ('0x0200f970', 'holygrail_until_idle_0200f970'), ('0x020118f0', 'holygrail_until_idle_020118f0'),
 ]
-SLOT_METHOD, OWNER_CHECK = '0x01ec3ef0', '0x01ea5280'
+SLOT_METHOD, OWNER_CHECK, ENTRY_CHECK = '0x01ec3ef0', '0x01ea5280', '0x01ea4a10'
 FRPG_NET_MAN, LOOKUP, FATAL_ERROR, DESTROY = '0x0593b120', '0x02265290', '0x024b55b0', '0x00400080'
 HANDLE = 0xd0  # the owner's handle
 INNER = 0x200  # an unused span of the owner that can hold an object
@@ -211,6 +213,102 @@ def check_cases():
     return out
 
 
+ENTRY = 0x150     # one entry of the entry check's list: key at +0, object at +8
+SPARE = 0x20      # an unused span of an entry that can hold an object
+
+
+def entry_case(cid, busy=0, state=1, flags=(1, 0, 0, 0), key=5, entries=(), handle=None, refs=None,
+               rewrite=None, advances=((0, 1),)):
+    """The entry check. entries: (key, object) per entry, object 'new', 'other', None or 'inner' (an
+    object inside entry 0's spare span). handle: the owner's handle ('new', 'other', 'inner',
+    'in_owner' or None). rewrite: (entry index, object or None) that the inner object's destroy
+    stores into an entry, for the original's second read of it. An 'in_owner' handle lives inside
+    the owner (at +0x200): its destroy records the owner's handle as it runs (the original still
+    holds the old one then) and sets the owner's busy word."""
+    refs = refs or {}
+    n = max(len(entries), 1)
+    c = {'schema': 1, 'address': ENTRY_CHECK, 'id': cid, 'returns': 'i8',
+         'args': {'rdi': 'buf:owner', 'rsi': 'buf:list', 'rdx': f'0x{key & 0xffffffff:x}'},
+         'buffers': {'owner': {'size': 0x270}, 'owner_vt': {'size': 216}, 'net': {'size': 0xa60}, 'list': {'size': 0x20},
+                     'entries': {'size': n * ENTRY}, 'obj_vt': {'size': 8}, 'new': {'size': 0x10}, 'other': {'size': 0x10}},
+         'memory': [{'addr': 'buf:owner', 'pointer': 'owner_vt'}, {'addr': 'buf:owner_vt+208', 'guest': ADVANCE},
+                    {'addr': f'buf:owner+{STATE}', 'bytes': u32(state)}, {'addr': f'buf:owner+{REQUEST}', 'bytes': u32(0x55)},
+                    {'addr': f'buf:owner+{BUSY}', 'bytes': u32(busy)}, {'addr': FRPG_NET_MAN, 'pointer': 'net'},
+                    {'addr': 'buf:list+16', 'pointer': 'entries'}, {'addr': 'buf:list+24', 'pointer': f'entries+{len(entries) * ENTRY}'},
+                    {'addr': 'buf:obj_vt', 'guest': DESTROY},
+                    {'addr': 'buf:new', 'pointer': 'obj_vt'}, {'addr': 'buf:other', 'pointer': 'obj_vt'},
+                    {'addr': f'buf:entries+{SPARE}', 'pointer': 'obj_vt'},
+                    {'addr': 'buf:new+8', 'bytes': u32(refs.get('new', 1))}, {'addr': 'buf:other+8', 'bytes': u32(refs.get('other', 1))},
+                    {'addr': f'buf:entries+{SPARE + 8}', 'bytes': u32(refs.get('inner', 1))}] +
+                   [{'addr': f'buf:net+{off}', 'bytes': f'{v:02x}'} for off, v in zip((0x8, 0x9f6, 0x9f8, 0xa50), flags)],
+         'imports': []}
+
+    def place(addr, obj):
+        if obj is None:
+            return {'addr': addr, 'bytes': '00' * 8}
+        return {'addr': addr, 'pointer': {'inner': f'entries+{SPARE}', 'in_owner': f'owner+{INNER}'}.get(obj, obj)}
+    for i, (k, obj) in enumerate(entries):
+        c['memory'] += [{'addr': f'buf:entries+{i * ENTRY}', 'bytes': u32(k)}, place(f'buf:entries+{i * ENTRY + 8}', obj)]
+    c['memory'].append(place(f'buf:owner+{HANDLE}', handle))
+    first_destroy = []
+    if handle == 'inner':
+        writes = []
+        if rewrite:
+            i, obj = rewrite
+            at = i * ENTRY + 8 - SPARE
+            writes.append({'arg': 0, 'offset': at, 'pointer': obj} if obj else {'arg': 0, 'offset': at, 'bytes': '00' * 8})
+        first_destroy = [{'address': DESTROY, 'argc': 1, 'argi': [0], 'writes': writes}]
+    elif handle == 'in_owner':
+        c['memory'] += [{'addr': f'buf:owner+{INNER}', 'pointer': 'obj_vt'}, {'addr': f'buf:owner+{INNER + 8}', 'bytes': u32(1)}]
+        first_destroy = [{'address': DESTROY, 'argc': 1, 'argi': [0],
+                          'argmem': [{'arg': 0, 'offset': HANDLE - INNER, 'size': 8}],
+                          'writes': [{'arg': 0, 'offset': BUSY - INNER, 'bytes': u32(1)}]}]
+    c['stubs'] = first_destroy + \
+        [*[{'address': DESTROY, 'argc': 1, 'argi': [0]}] * 4, *[{'address': FATAL_ERROR, 'argc': 3, 'argi': [0, 1, 2]}] * 4] + \
+        [{'address': ADVANCE, 'argc': 2, 'argi': [0, 1],
+          'argmem': [{'arg': 1, 'size': 12}, {'arg': 0, 'offset': HANDLE, 'size': 8}, {'arg': 0, 'offset': STATE, 'size': 12}],
+          'writes': [{'arg': 0, 'offset': STATE, 'bytes': u32(s_)}, {'arg': 0, 'offset': BUSY, 'bytes': u32(b_)}]}
+         for b_, s_ in advances]
+    return c
+
+
+def entry_cases():
+    hit = ((5, 'new'),)
+    out = [entry_case('busy', busy=1, entries=hit), entry_case('busy_negative', busy=-1, entries=hit)]
+    out += [entry_case(f'state_{s:x}', state=s, entries=hit) for s in (0, 2, 6, 0xffffffff)]
+    out += [entry_case('net_008_clear', flags=(0, 0, 0, 0), entries=hit), entry_case('net_9f6_set', flags=(1, 1, 0, 0), entries=hit),
+            entry_case('net_9f8_set', flags=(1, 0, 1, 0), entries=hit), entry_case('net_a50_set', flags=(1, 0, 0, 1), entries=hit),
+            entry_case('net_other_bytes', flags=(0x80, 0, 0, 0), entries=hit)]
+    # The search: empty, no key, a key with no object, the first of several matches, the last entry.
+    out += [entry_case('empty_list'), entry_case('no_key', entries=((4, 'new'), (6, 'other'))),
+            entry_case('key_without_object', entries=((5, None),)),
+            entry_case('skips_entry_without_object', entries=((5, None), (5, 'new'))),
+            entry_case('first_of_two', entries=((5, 'new'), (5, 'other'))),
+            entry_case('match_last', entries=((1, 'other'), (2, 'other'), (5, 'new'))),
+            entry_case('key_negative', key=-3, entries=((-3, 'new'),)), entry_case('key_zero', key=0, entries=((0, 'new'),)),
+            entry_case('key_high_bits', key=5, entries=((5 | 0x10000, 'new'), (5, 'other')))]
+    # The handle: none, the same object (untouched), another one (released: kept, destroyed, reported).
+    out += [entry_case('held_none', entries=hit), entry_case('held_same', entries=hit, handle='new', refs={'new': 2}),
+            entry_case('held_same_no_reference', entries=hit, handle='new', refs={'new': 0}),
+            entry_case('held_other_shared', entries=hit, handle='other', refs={'other': 3}),
+            entry_case('held_other_last', entries=hit, handle='other'),
+            entry_case('held_other_no_reference', entries=hit, handle='other', refs={'other': 0}),
+            entry_case('new_with_no_reference', entries=hit, refs={'new': 0}),
+            entry_case('new_negative_reference', entries=hit, handle='other', refs={'new': -1})]
+    # The old handle's destroy rewrites the entry: the original reads the entry's object again.
+    out += [entry_case('destroy_clears_entry', entries=hit, handle='inner', rewrite=(0, None)),
+            entry_case('destroy_swaps_entry', entries=hit, handle='inner', rewrite=(0, 'other')),
+            entry_case('destroy_keeps_entry', entries=hit, handle='inner'),
+            entry_case('destroy_rewrites_other_entry', entries=((5, 'new'), (5, 'other')), handle='inner', rewrite=(1, None)),
+            entry_case('destroy_makes_busy', entries=hit, handle='in_owner'),
+            # A busy owner after the swap ends the search: a second match is not tried.
+            entry_case('destroy_makes_busy_two_matches', entries=((5, 'new'), (5, 'other')), handle='in_owner')]
+    # Request 4 only when idle; the advance may leave the owner busy or change its state.
+    out += [entry_case('advance_leaves_busy', entries=hit, advances=((1, 1),)),
+            entry_case('advance_changes_state', entries=hit, advances=((0, 6),))]
+    return out
+
+
 def slot_cases():
     out = []
     # Idle in every mode and past them: request 7 is taken twice in 2..5 (before and after the
@@ -357,6 +455,12 @@ def main():
             with open(os.path.join(out, f"{c['id']}.json"), 'w') as f:
                 json.dump(c, f, indent=1)
             n += 1
+    out = os.path.join(sys.argv[1], 'frame_timing_gate_entry_check', 'edge')
+    os.makedirs(out, exist_ok=True)
+    for c in entry_cases():
+        with open(os.path.join(out, f"{c['id']}.json"), 'w') as f:
+            json.dump(c, f, indent=1)
+        n += 1
     out = os.path.join(sys.argv[1], 'frame_timing_gate_owner_check', 'edge')
     os.makedirs(out, exist_ok=True)
     for c in check_cases():
