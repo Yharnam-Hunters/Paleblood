@@ -18,22 +18,14 @@
 
 #include "../engine/allocator.h"
 #include "../engine/engine.h"
+#include "../engine/ref_object.h"
 #include "../frame_timing/flipper.h"
 #include "../frame_timing/target_fps.h"
 #include "runtime/original.h"
 
 namespace {
 
-// A reference-counted object: the last reference destroys it through its first vtable slot.
-struct RefObject;
-struct RefObjectVtable {
-    void (*destroy)(RefObject *);
-};
-struct RefObject {
-    const RefObjectVtable *vtable;
-    int32_t references;
-};
-static_assert(offsetof(RefObject, references) == 0x8);
+using engine::RefObject;
 
 struct ListNode {
     ListNode *next;
@@ -97,19 +89,7 @@ RT_ORIGINAL(0x02373850, object_update, uint8_t(RefObject *, void *step));
 RT_ORIGINAL(0x0236e000, child_80_update, void(Child80 *, void *step, void *rendman_object));
 RT_GLOBAL(0x05940298, rend_man_instance, RendMan *);
 RT_GLOBAL(0x04d3b1e1, rend_man_name, const char);
-RT_GLOBAL(0x04d40331, message_invalid_unref, const char);   // "Invalid Unref()"
 RT_GLOBAL(0x04d29170, thirtieth_second, const float);
-constexpr int32_t line_invalid_unref = 0x3e;
-
-void release(RefObject *object)
-{
-    const int32_t before = __atomic_fetch_sub(&object->references, 1, __ATOMIC_SEQ_CST);
-    if (before == 1)
-        object->vtable->destroy(object);
-    else if (before <= 0)
-        engine::fatal_error(nullptr, line_invalid_unref, message_invalid_unref.address());
-}
-
 // Updates every object; drops and unlinks those whose update says they are done (and nodes
 // that hold no object).
 void age_objects(RenderUpdater *self, void *step)
@@ -123,7 +103,7 @@ void age_objects(RenderUpdater *self, void *step)
             if (alive) {
                 remove = object == nullptr;
             } else {
-                release(object);
+                engine::release(object);
                 node->object = nullptr;
             }
         }
