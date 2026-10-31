@@ -4,7 +4,7 @@
 
 usage: fixed_step_states_cases.py CAPTURES_DIR
 
-Writes CAPTURES_DIR/<function>/edge/*.json for all twenty-one methods. The owner's advance method
+Writes CAPTURES_DIR/<function>/edge/*.json for all twenty-two methods. The owner's advance method
 (vtable slot +0xd0) is a stand-in game function the case stubs; its descriptor is compared, and
 it leaves the busy count (and for the gate, the state) the case says. Covers idle and busy owners,
 staying busy after the advance, and states around the 2..5 range of request_7 (with wraparound
@@ -20,6 +20,8 @@ reference counts of the looked-up object and of the handle it replaces (none, th
 another one; counts that destroy an object or report an invalid unref). For the entry check
 0x01ea4a10: the same gates, the search of its list (empty, no match, a match with no object,
 several matches), the handle swap, and destroys that rewrite the entry or make the owner busy.
+For the ritual handle reset 0x01ea5670: each state, the server ritual mode's gates and flag bit,
+a missing FrpgNetMan in the local ritual mode, and a rebuild that makes the owner busy.
 """
 import json
 import os
@@ -44,7 +46,8 @@ HOLYGRAIL_METHODS = [  # (address, name)
     ('0x01f03210', 'holygrail_wait_for_dungeon_mode'), ('0x01f03680', 'holygrail_wait_for_ritual_mode'),
     ('0x0200f970', 'holygrail_until_idle_0200f970'), ('0x020118f0', 'holygrail_until_idle_020118f0'),
 ]
-SLOT_METHOD, OWNER_CHECK, ENTRY_CHECK = '0x01ec3ef0', '0x01ea5280', '0x01ea4a10'
+SLOT_METHOD, OWNER_CHECK, ENTRY_CHECK, HANDLE_RESET = '0x01ec3ef0', '0x01ea5280', '0x01ea4a10', '0x01ea5670'
+REBUILD_HANDLE = '0x01e9cb80'
 FRPG_NET_MAN, LOOKUP, FATAL_ERROR, DESTROY = '0x0593b120', '0x02265290', '0x024b55b0', '0x00400080'
 HANDLE = 0xd0  # the owner's handle
 INNER = 0x200  # an unused span of the owner that can hold an object
@@ -309,6 +312,59 @@ def entry_cases():
     return out
 
 
+def reset_case(cid, busy=0, state=2, flags=(1, 0, 0, 0), net=True, handle=True, flag_bits=0,
+               rebuild_sets_busy=False, advances=((0, 1),)):
+    """The ritual handle reset. net: whether FrpgNetMan exists. handle: whether the owner has a
+    handle object; flag_bits its byte at +0x10c. The call to 0x01e9cb80 is stubbed: it records
+    the handle it is given and may set the owner's busy word (it gets the handle's address, inside
+    the owner). Not covered: the handle read again after a missing-FrpgNetMan report (a stub can
+    only write through its own arguments, and the report's are strings)."""
+    c = {'schema': 1, 'address': HANDLE_RESET, 'id': cid, 'returns': 'i8',
+         'args': {'rdi': 'buf:owner'},
+         'buffers': {'owner': {'size': 0x270}, 'owner_vt': {'size': 216}, 'net': {'size': 0xa60},
+                     'obj_vt': {'size': 8}, 'object': {'size': 0x130}},
+         'memory': [{'addr': 'buf:owner', 'pointer': 'owner_vt'}, {'addr': 'buf:owner_vt+208', 'guest': ADVANCE},
+                    {'addr': f'buf:owner+{STATE}', 'bytes': u32(state)}, {'addr': f'buf:owner+{REQUEST}', 'bytes': u32(0x55)},
+                    {'addr': f'buf:owner+{BUSY}', 'bytes': u32(busy)},
+                    {'addr': FRPG_NET_MAN, 'pointer': 'net'} if net else {'addr': FRPG_NET_MAN, 'bytes': '00' * 8},
+                    {'addr': 'buf:object', 'pointer': 'obj_vt'}, {'addr': 'buf:object+8', 'bytes': u32(1)},
+                    {'addr': 'buf:object+268', 'bytes': f'{flag_bits:02x}'}, {'addr': 'buf:object+292', 'bytes': u32(0xdeadbeef)},
+                    {'addr': f'buf:owner+{HANDLE}', 'pointer': 'object'} if handle else {'addr': f'buf:owner+{HANDLE}', 'bytes': '00' * 8}] +
+                   [{'addr': f'buf:net+{off}', 'bytes': f'{v:02x}'} for off, v in zip((0x8, 0x9f6, 0x9f8, 0xa50), flags)],
+         'stubs': [{'address': REBUILD_HANDLE, 'argc': 1, 'argi': [0], 'ret': 1,
+                    'argmem': [{'arg': 0, 'size': 8}],
+                    'writes': [{'arg': 0, 'offset': BUSY - HANDLE, 'bytes': u32(1)}] if rebuild_sets_busy else []},
+                   *[{'address': FATAL_ERROR, 'argc': 4, 'argi': [0, 1, 2, 3]}] * 2] +
+                  [{'address': ADVANCE, 'argc': 2, 'argi': [0, 1],
+                    'argmem': [{'arg': 1, 'size': 12}, {'arg': 0, 'offset': STATE, 'size': 12}],
+                    'writes': [{'arg': 0, 'offset': STATE, 'bytes': u32(s_)}, {'arg': 0, 'offset': BUSY, 'bytes': u32(b_)}]}
+                   for b_, s_ in advances],
+         'imports': []}
+    return c
+
+
+def reset_cases():
+    out = [reset_case('busy', busy=1), reset_case('busy_negative', busy=-1)]
+    out += [reset_case(f'state_{s:x}', state=s) for s in (0, 1, 4, 5, 6, 0xffffffff)]
+    # The local ritual mode: no gates; the handle's word is cleared when there is a handle.
+    out += [reset_case('local_with_handle'), reset_case('local_without_handle', handle=False),
+            reset_case('local_gates_closed', flags=(0, 1, 1, 1)), reset_case('local_flag_bit_ignored', flag_bits=1),
+            reset_case('local_no_net_with_handle', net=False), reset_case('local_no_net_without_handle', net=False, handle=False)]
+    # The server ritual mode: the gates, then the handle's flag bit 0.
+    out += [reset_case('server_with_handle', state=3), reset_case('server_without_handle', state=3, handle=False),
+            reset_case('server_net_008_clear', state=3, flags=(0, 0, 0, 0)), reset_case('server_net_9f6_set', state=3, flags=(1, 1, 0, 0)),
+            reset_case('server_net_9f8_set', state=3, flags=(1, 0, 1, 0)), reset_case('server_net_a50_set', state=3, flags=(1, 0, 0, 1)),
+            reset_case('server_flag_bit_set', state=3, flag_bits=1), reset_case('server_flag_other_bits', state=3, flag_bits=0xfe),
+            reset_case('server_flag_all_bits', state=3, flag_bits=0xff),
+            # The gates close even with no handle: nothing is passed on.
+            reset_case('server_without_handle_gates_closed', state=3, handle=False, flags=(0, 0, 0, 0)),
+            reset_case('server_without_handle_9f8_set', state=3, handle=False, flags=(1, 0, 1, 0))]
+    # Request 8 only when idle after the call to 0x01e9cb80; the advance may leave it busy or change the state.
+    out += [reset_case('rebuild_makes_busy', rebuild_sets_busy=True), reset_case('server_rebuild_makes_busy', state=3, rebuild_sets_busy=True),
+            reset_case('advance_leaves_busy', advances=((1, 2),)), reset_case('advance_changes_state', advances=((0, 6),))]
+    return out
+
+
 def slot_cases():
     out = []
     # Idle in every mode and past them: request 7 is taken twice in 2..5 (before and after the
@@ -455,6 +511,12 @@ def main():
             with open(os.path.join(out, f"{c['id']}.json"), 'w') as f:
                 json.dump(c, f, indent=1)
             n += 1
+    out = os.path.join(sys.argv[1], 'frame_timing_gate_ritual_handle_reset', 'edge')
+    os.makedirs(out, exist_ok=True)
+    for c in reset_cases():
+        with open(os.path.join(out, f"{c['id']}.json"), 'w') as f:
+            json.dump(c, f, indent=1)
+        n += 1
     out = os.path.join(sys.argv[1], 'frame_timing_gate_entry_check', 'edge')
     os.makedirs(out, exist_ok=True)
     for c in entry_cases():

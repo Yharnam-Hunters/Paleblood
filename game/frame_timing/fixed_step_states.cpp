@@ -172,6 +172,20 @@ struct GateEntryList {
 };
 static_assert(offsetof(GateEntryList, begin) == 0x10 && offsetof(GateEntryList, end) == 0x18);
 
+// What the owner's handle points to, as the ritual handle reset (0x01ea5670) reads it: a
+// reference-counted object with a flag bit and a word whose meanings are not known.
+struct HandleObject {
+    engine::RefObject base;
+    uint8_t unknown_0x010[0xfc];
+    uint8_t flags_10c;  // bit 0 stops the reset in the server ritual mode
+    uint8_t unknown_0x10d[0x17];
+    uint32_t value_124;  // cleared by the reset
+};
+static_assert(offsetof(HandleObject, flags_10c) == 0x10c && offsetof(HandleObject, value_124) == 0x124);
+// Called with the handle's address by the reset, which ignores its result; not replaced, and what
+// it does is not analyzed (the name only says how the reset uses it).
+RT_ORIGINAL(0x01e9cb80, pass_handle_on, void(engine::RefObject **handle));
+
 // The id the owner check is given: its first 64 bits hold INT64_MIN when there is none. That it
 // names an online session is a guess from FrpgNetMan's part in the check.
 struct SessionId {
@@ -187,7 +201,8 @@ RT_ORIGINAL(0x01ec3000, step_machine_count_step, void(DungeonGate *));
 // What the methods return (the state machine's codes; their names are not known).
 constexpr uint32_t result_still_busy = 1, result_done = 2, result_not_now = 4;
 // The requests the owner is given while it advances.
-constexpr uint32_t request_none = 0, request_1 = 1, request_2 = 2, request_4 = 4, request_6 = 6, request_7 = 7, request_10 = 10;
+constexpr uint32_t request_none = 0, request_1 = 1, request_2 = 2, request_4 = 4, request_6 = 6, request_7 = 7, request_8 = 8,
+                   request_10 = 10;
 // What the handler of event 3000 leaves in value_6a0.
 constexpr int32_t value_6a0_reset = -1;
 // What request 2 sets value_26c to.
@@ -324,14 +339,21 @@ void leave_ritual_or_dungeon_mode(StateOwner *owner)
     leave_error_mode(owner);
 }
 
-// The gates both online checks open with ("online" is a guess from FrpgNetMan's part): the owner
-// idle in mode 1 (no Holygrail), and FrpgNetMan's four bytes. A missing FrpgNetMan is reported and
-// the singleton read again, as the original does (engine::require).
+// FrpgNetMan's four bytes, as the online methods test them ("online" is a guess from FrpgNetMan's
+// part). A missing FrpgNetMan is reported and the singleton read again, as the original does
+// (engine::require).
+bool net_allows()
+{
+    const FrpgNetMan *net = engine::require(frpg_net_man_instance, frpg_net_man_name.address());
+    return net->flag_008 != 0 && net->flag_9f8 == 0 && net->flag_9f6 == 0 && net->flag_a50 == 0;
+}
+
+// The gates both online checks open with: the owner idle in mode 1 (no Holygrail), then
+// FrpgNetMan's four bytes.
 bool online_gates_open(const StateOwner *owner)
 {
     if (owner->busy != 0 || owner->state != mode_no_holygrail) return false;
-    const FrpgNetMan *net = engine::require(frpg_net_man_instance, frpg_net_man_name.address());
-    return net->flag_008 != 0 && net->flag_9f8 == 0 && net->flag_9f6 == 0 && net->flag_a50 == 0;
+    return net_allows();
 }
 
 // Keeps an entry's object as the owner's handle: an unchanged handle is left alone; otherwise the
@@ -425,6 +447,37 @@ extern "C" bool bb_frame_timing_gate_entry_check(StateOwner *owner, GateEntryLis
         return take_request(owner, request_4);
     }
     return false;
+}
+
+// The ritual handle reset (0x01ea5670): when the owner is idle in the local ritual mode, or in the
+// server ritual mode with FrpgNetMan's bytes allowing it and the handle's flag bit 0 clear, clears the
+// handle's word at +0x124 (if there is a handle), passes the handle on to 0x01e9cb80, then requests 8
+// if still idle and reports true; every other path reports false.
+extern "C" bool bb_frame_timing_gate_ritual_handle_reset(StateOwner *owner)
+{
+    if (owner->busy != 0) return false;
+    if (owner->state == mode_server_ritual) {
+        if (!net_allows()) return false;
+        // The original checks FrpgNetMan again here with the pointer the gates just read, so that
+        // check cannot fail and is left out.
+        const auto *object = reinterpret_cast<const HandleObject *>(owner->handle);
+        if (object && (object->flags_10c & 1) != 0) return false;
+    } else if (owner->state != mode_local_ritual) {
+        return false;
+    }
+    if (owner->handle) {
+        // A missing FrpgNetMan is reported, then the handle read again: the word is cleared only
+        // if there still is one (code after the fatal error call that Ghidra drops; QUIRKS.md).
+        bool clear = true;
+        if (!frpg_net_man_instance.get()) {
+            engine::report_missing(frpg_net_man_name.address());
+            clear = owner->handle != nullptr;
+        }
+        if (clear) reinterpret_cast<HandleObject *>(owner->handle)->value_124 = 0;
+    }
+    pass_handle_on(&owner->handle);
+    if (owner->busy != 0) return false;
+    return take_request(owner, request_8);
 }
 
 // Leaves a ritual or dungeon mode, then asks the check on the owner: when it says yes, settles and
