@@ -39,3 +39,4 @@ address,name,date,reviewer,verdict,notes
 0x02483e80,kernel_condition_wait,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
 0x025b2fb0,render_swap_chain_present,2026-10-07,independent session,approved,readable refactor of the transcription (STYLE.md); every recorded and edge case re-run
 0x01ec3ef0,frame_timing_leave_modes_around_owner_check_01ec3ef0,2026-10-31,independent session,approved,"readable replacement (STYLE.md); 37 edge cases stock and against 60 FPS++, 6 mutants killed; round 1 changes requested, all addressed"
+0x02377bd0,render_frame_update_02377bd0,2026-10-31,independent session,approved,"refactor: reference counting moved to game/engine/ref_object.h, behaviour unchanged; 208 recorded and 12 edge cases re-run stock, 30, 60 and uncapped"
