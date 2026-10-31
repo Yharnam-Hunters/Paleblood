@@ -1,6 +1,7 @@
 address,size,name,system,status,notes
 0x004632d0,67,frame_timing_get_time_us,frame_timing,original,dead in the stock game: only unwind entries refer to it; the community frame-rate patches overwrite it as a code cave (gettimeofday in microseconds)
 0x00fbc3e0,670,render_yebis_get_recursive_sample_parameters,render,verified,"YEBIS GPUTexUtil_GetRecursiveSampleParameters: blur pass count, last-pass samples and scale; the FPS patches drop its first assertion"
+0x0111a740,20,engine_write_stderr,engine,edge-verified,Forward the string and imported _Stderr object address to fputs; ignore its return and return zero; synthetic wire edge cases only
 0x0111a7f0,131,frame_timing_get_monotonic_ms,frame_timing,verified,Milliseconds since its first call from CLOCK_MONOTONIC; keeps the first seconds in the clock state object
 0x0111a880,19,frame_timing_sleep_ms,frame_timing,edge-verified,Convert milliseconds to microseconds with uint32 wrapping; always call the kernel and discard its result
 0x0111a8a0,26,kernel_thread_self,kernel,edge-verified,Copy the complete opaque current-thread handle to the output and return zero
