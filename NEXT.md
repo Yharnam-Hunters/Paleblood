@@ -5,7 +5,7 @@ Two tracks. Sessions alternate between them (decompilation, then runtime, then d
 One line per target, in order; move a target to "Done" with its commit when it is finished.
 Decisions and blockers go to STATUS.md instead of being worked around.
 
-Last session: decompilation
+Last session: runtime
 
 ## Runtime track
 
@@ -13,14 +13,19 @@ How far the executable boots on our own runtime (`runtime/boot.c`, `tools/boot.p
 stops at the first system import we don't implement yet and names it. Each target implements
 what the boot stops at, clean room (CONTRIBUTING.md), then re-runs `tools/boot.py`.
 
-1. Generic input capture in the runtime: record a hooked function's inputs (arguments, the
-   memory it reads, its calls' results) from the runtime side, with no code in the function
-   (STYLE.md forbids recording code under `game/`). This replaces the per-function recorders that
-   were removed, so in-game recordings resume once the runtime runs the game, and
-   `tools/promote.py` can move `edge-verified` functions to `verified`.
-2. `scePthreadAttrGetaffinity` (libkernel), called by the game's own libc while it starts: needs
-   the main thread's CPU affinity mask on a PS4 (STATUS.md, "Open questions"). Then the next
-   import `tools/boot.py` names.
+1. `scePthreadAttrGetaffinity` (libkernel), called by the game's own libc while it starts: needs
+   the main thread's CPU affinity mask on a PS4 (STATUS.md, "Open questions") and a way to replace
+   a function inside a bundled module (claimed by BluePinetree on #34). Merged `main` stops here.
+   Past it (local discovery boots), the boot reaches milestone `audio` and stops at:
+2. `sceGnmValidateCommandBuffers`: the engine reads exactly `0x80d13fff` as "validation
+   unavailable" (`0x02abb950`); that code has no public name yet. The next GNM call after it,
+   `sceGnmDispatchInitDefaultHardwareState`, writes the GPU's own packets into the engine's
+   command buffer, so GNM is not answerable call by call: the engine builds its command buffers
+   itself and only submits them (map of all 50 imports on #39).
+3. The engine's renderer (its `GX` graphics framework), above where its command buffers are
+   built: the per-frame routine `0x025d5f80` (it submits at `0x025d861b`), the submit-and-flip
+   helpers `0x02ab0ce0` and `0x02ab0e30`, and the other submit clusters listed on #39. This is
+   where the graphics get rebuilt.
 
 Roadmap after the boot gets going: kernel, threads and memory; files; input; audio; video
 out; GNM and shaders (the largest). Claimable work per system call group is in the issues
@@ -49,6 +54,15 @@ from the smallest up. New functions go to `main` only verified and readable.
    checked against the patch that edits it (both sides patched, VERIFY.md).
 
 ## Done
+
+- Runtime, 2026-10-30/31 (#143-#180): direct and flexible memory with protection and virtual
+  queries; semaphores, condition variables (recursive waits), thread creation, priorities,
+  attributes and signal masks; thread handles below 2^40; the time of day, FreeBSD clocks and
+  process time; the console's start-up services (user, common dialog, language, app content,
+  content restriction); the network, SSL and HTTP libraries' offline start-up; audio (AJM start,
+  output ports, volume, real-time pacing, port state); /app0 and read-only file access; kernel
+  event queues; video out ports, buffers and hsync flips; the first GNM calls (tessellation
+  factor ring, compute queues). Generic input capture landed in #133-#135.
 
 - `0x01f03210`, `0x01f03680`, `0x0200f970`, `0x020118f0`: state methods that find the current
   Chalice Dungeon gate through SprjHolygrail (event flags 9020..9026 pick it), advance it while
