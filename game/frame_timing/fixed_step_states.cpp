@@ -25,6 +25,7 @@
 #include <cstdint>
 
 #include "../engine/engine.h"
+#include "../engine/ref_object.h"
 #include "frame_time.h"
 #include "runtime/original.h"
 
@@ -52,13 +53,16 @@ enum GateMode : uint32_t {
 
 struct StateOwner {
     const StateOwnerVtable *vtable;
-    uint8_t unknown_0x008[0x254];
+    uint8_t unknown_0x008[0xc8];
+    engine::RefObject *handle;  // what the owner check looked up for its id (0x01ea5280)
+    uint8_t unknown_0x0d8[0x184];
     uint32_t state;  // a GateMode
     uint32_t request;
     int32_t busy;
     uint8_t unknown_0x268[0x4];
     float value_26c;  // set to 10 with request 2; its meaning is not known
 };
+static_assert(offsetof(StateOwner, handle) == 0xd0);
 static_assert(offsetof(StateOwner, state) == 0x25c && offsetof(StateOwner, request) == 0x260 &&
               offsetof(StateOwner, busy) == 0x264 && offsetof(StateOwner, value_26c) == 0x26c);
 
@@ -131,9 +135,35 @@ RT_ORIGINAL(0x01ea5570, gate_state_query, bool(StateOwner *));
 
 constexpr uint32_t gate_flag_first = 9020, gate_flag_count = 7;
 
-// A check on the owner with the method's second argument: false unless the owner is idle in
-// mode 1 (no Holygrail); it then reads FrpgNetMan. Its meaning is not known.
-RT_ORIGINAL(0x01ea5280, gate_owner_check, bool(StateOwner *, void *argument));
+// A check on the owner with an id (0x01ea5280, replaced below; 0x01ec3ef0 calls it through its
+// original address).
+struct SessionId;
+RT_ORIGINAL(0x01ea5280, gate_owner_check, bool(StateOwner *, SessionId *id));
+
+// FrpgNetMan, the online manager: four of its bytes gate the owner check, each tested for zero
+// (their meaning is not known).
+struct FrpgNetMan {
+    uint8_t unknown_0x000[0x8];
+    uint8_t flag_008;  // must be nonzero
+    uint8_t unknown_0x009[0x9ed];
+    uint8_t flag_9f6;  // must be zero
+    uint8_t unknown_0x9f7[0x1];
+    uint8_t flag_9f8;  // must be zero
+    uint8_t unknown_0x9f9[0x57];
+    uint8_t flag_a50;  // must be zero
+};
+static_assert(offsetof(FrpgNetMan, flag_008) == 0x8 && offsetof(FrpgNetMan, flag_9f6) == 0x9f6 &&
+              offsetof(FrpgNetMan, flag_9f8) == 0x9f8 && offsetof(FrpgNetMan, flag_a50) == 0xa50);
+RT_GLOBAL(0x0593b120, frpg_net_man_instance, FrpgNetMan *);
+RT_GLOBAL(0x04d3ad45, frpg_net_man_name, const char);
+
+// The id the owner check is given: its first 64 bits hold INT64_MIN when there is none.
+struct SessionId {
+    int64_t value;
+};
+constexpr int64_t no_session_id = INT64_MIN;
+// Fills *found with the object for an id, holding a reference the caller drops (or with null).
+RT_ORIGINAL(0x02265290, lookup_session_object, void(engine::RefObject **found, SessionId *id));
 
 // The step machine's step counter; past 27 steps it also builds a debug message.
 RT_ORIGINAL(0x01ec3000, step_machine_count_step, void(DungeonGate *));
@@ -141,7 +171,7 @@ RT_ORIGINAL(0x01ec3000, step_machine_count_step, void(DungeonGate *));
 // What the methods return (the state machine's codes; their names are not known).
 constexpr uint32_t result_still_busy = 1, result_done = 2, result_not_now = 4;
 // The requests the owner is given while it advances.
-constexpr uint32_t request_none = 0, request_1 = 1, request_2 = 2, request_10 = 10, request_7 = 7;
+constexpr uint32_t request_none = 0, request_1 = 1, request_2 = 2, request_6 = 6, request_10 = 10, request_7 = 7;
 // What the handler of event 3000 leaves in value_6a0.
 constexpr int32_t value_6a0_reset = -1;
 // What request 2 sets value_26c to.
@@ -278,6 +308,32 @@ void leave_ritual_or_dungeon_mode(StateOwner *owner)
     leave_error_mode(owner);
 }
 
+// Keeps the object found for an id as the owner's handle, in the original's order of reference
+// counts: the lookup's reference is swapped for one of the owner's own; an unchanged handle drops
+// the extra one.
+void keep_handle(StateOwner *owner, engine::RefObject *found)
+{
+    engine::RefObject *held = nullptr;
+    if (found) {
+        engine::retain(found);
+        engine::release(found);  // the lookup's reference
+        held = found;
+    }
+    if (owner->handle == held) {
+        if (held) engine::release(held);
+        return;
+    }
+    if (owner->handle) {
+        engine::release(owner->handle);
+        owner->handle = nullptr;
+    }
+    owner->handle = held;
+    if (held) {
+        engine::retain(held);
+        engine::release(held);
+    }
+}
+
 }  // namespace
 
 extern "C" uint32_t bb_frame_timing_until_idle_01f6a9f0(StateAt8 *self) { return until_idle(self->owner); }
@@ -291,15 +347,33 @@ extern "C" void bb_frame_timing_request_10_02012780(StateAt8 *self) { advance_wi
 extern "C" uint32_t bb_frame_timing_request_7_0200e270(StateAt8 *self) { return advance_with_request_7(self->owner); }
 extern "C" uint32_t bb_frame_timing_request_7_02012a60(StateAt8 *self) { return advance_with_request_7(self->owner); }
 
+// The owner check (0x01ea5280): when the owner is idle in mode 1 (no Holygrail), FrpgNetMan's
+// flags allow it and the id is set, keeps the object found for the id as the owner's handle, then
+// requests 6 if still idle and reports true; every other path reports false. With no FrpgNetMan
+// the original reads through the report call's return value; this reads the singleton again
+// (engine::require), a path the game never reaches.
+extern "C" bool bb_frame_timing_gate_owner_check(StateOwner *owner, SessionId *id)
+{
+    if (owner->busy != 0 || owner->state != mode_no_holygrail) return false;
+    const FrpgNetMan *net = engine::require(frpg_net_man_instance, frpg_net_man_name.address());
+    if (net->flag_008 == 0 || net->flag_9f8 != 0 || net->flag_9f6 != 0 || net->flag_a50 != 0) return false;
+    if (id->value == no_session_id) return false;
+    engine::RefObject *found = nullptr;
+    lookup_session_object(&found, id);
+    keep_handle(owner, found);
+    if (owner->busy != 0) return false;
+    return take_request(owner, request_6);
+}
+
 // Leaves a ritual or dungeon mode, then asks the check on the owner: when it says yes, settles and
 // reports true in the server dungeon mode, otherwise leaves the error mode. Every other path leaves
 // the ritual or dungeon mode again and reports false. The original sets only the low byte of eax
 // for true (al = 1); its only caller (0x018bb383) ignores the result.
-extern "C" bool bb_frame_timing_leave_modes_around_owner_check_01ec3ef0(GateSlotAt8 *self, void *argument)
+extern "C" bool bb_frame_timing_leave_modes_around_owner_check_01ec3ef0(GateSlotAt8 *self, SessionId *id)
 {
     StateOwner *owner = &(*self->gate)->owner;
     leave_ritual_or_dungeon_mode(owner);
-    if (gate_owner_check(owner, argument)) {
+    if (gate_owner_check(owner, id)) {
         advance_if_busy(owner);
         if (owner->state == mode_server_dungeon) return true;
         leave_error_mode(owner);
