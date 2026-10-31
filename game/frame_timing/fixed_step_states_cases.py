@@ -300,7 +300,9 @@ def entry_cases():
             entry_case('destroy_swaps_entry', entries=hit, handle='inner', rewrite=(0, 'other')),
             entry_case('destroy_keeps_entry', entries=hit, handle='inner'),
             entry_case('destroy_rewrites_other_entry', entries=((5, 'new'), (5, 'other')), handle='inner', rewrite=(1, None)),
-            entry_case('destroy_makes_busy', entries=hit, handle='in_owner')]
+            entry_case('destroy_makes_busy', entries=hit, handle='in_owner'),
+            # A busy owner after the swap ends the search: a second match is not tried.
+            entry_case('destroy_makes_busy_two_matches', entries=((5, 'new'), (5, 'other')), handle='in_owner')]
     # Request 4 only when idle; the advance may leave the owner busy or change its state.
     out += [entry_case('advance_leaves_busy', entries=hit, advances=((1, 1),)),
             entry_case('advance_changes_state', entries=hit, advances=((0, 6),))]

@@ -324,9 +324,9 @@ void leave_ritual_or_dungeon_mode(StateOwner *owner)
     leave_error_mode(owner);
 }
 
-// The gates both online checks open with: the owner idle in mode 1 (no Holygrail), and FrpgNetMan's
-// four bytes. With no FrpgNetMan the original reads through the report call's return value; this
-// reads the singleton again (engine::require), a path the game never reaches.
+// The gates both online checks open with ("online" is a guess from FrpgNetMan's part): the owner
+// idle in mode 1 (no Holygrail), and FrpgNetMan's four bytes. A missing FrpgNetMan is reported and
+// the singleton read again, as the original does (engine::require).
 bool online_gates_open(const StateOwner *owner)
 {
     if (owner->busy != 0 || owner->state != mode_no_holygrail) return false;
@@ -407,8 +407,9 @@ extern "C" bool bb_frame_timing_gate_owner_check(StateOwner *owner, SessionId *i
 // The entry check (0x01ea4a10): when the online gates are open, finds the first entry with the key
 // that holds an object, keeps that object as the owner's handle, then requests 4 if still idle and
 // reports true; no such entry, or any other path, reports false. The list's end is read once, as
-// the original does. Before keeping a match it checks FrpgNetMan again: a missing one is reported
-// and the search goes on to the next entry, as in the original (the report returns).
+// the original does. Before keeping a match it checks FrpgNetMan again: a missing one is reported,
+// then the entry's object is read again and the entry kept if it still holds one, otherwise the
+// search goes on (0x01ea4b17; decompilers that treat the report as not returning hide this).
 extern "C" bool bb_frame_timing_gate_entry_check(StateOwner *owner, GateEntryList *list, int32_t key)
 {
     if (!online_gates_open(owner)) return false;
@@ -417,7 +418,7 @@ extern "C" bool bb_frame_timing_gate_entry_check(StateOwner *owner, GateEntryLis
         if (entry->key != key || !entry->object) continue;
         if (!frpg_net_man_instance.get()) {
             engine::report_missing(frpg_net_man_name.address());
-            continue;
+            if (!entry->object) continue;
         }
         keep_entry_object(owner, entry);
         if (owner->busy != 0) return false;
