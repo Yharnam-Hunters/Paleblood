@@ -45,9 +45,7 @@ from the smallest up. New functions go to `main` only verified and readable.
    five methods of SprjDungeonGateIns, which owns that state (two steps of its step machine and
    three event handlers; edge-verified the same way). The owner's own small methods that 60 FPS++
    edits (`0x01ea3fc0`, `0x01ea4040`, `0x01ea40e0`, `0x01ea54d0`, `0x01ea62e0`) are copies nothing
-   calls or points to (dead). Larger live ones near them (each called directly): `0x01ea47a0`,
-   `0x01ea4a10`, `0x01ea4cb0`, `0x01ea5280`, `0x01ea5670`, `0x01ea5850`, `0x01ea5e20`,
-   `0x01ea6080`.
+   calls or points to (dead). The larger live ones near them are done too (see Done).
    Still to do among those called in the clinic (probe run 2026-10-06, `continue.route`):
    `0x0183ac60` (20 KB; every frame-rate patch changes a jump and a flag) and `0x02713870`
    (11.6 KB; its only edit, Uncap FPS++'s, is broken in v1.09: QUIRKS.md). Each option part is
@@ -55,6 +53,14 @@ from the smallest up. New functions go to `main` only verified and readable.
 
 ## Done
 
+- The Chalice Dungeon gate state's online methods (#186, #188, #192, #194, #196, #198, #199), all
+  edge-verified stock and against "60 FPS++" with an independent review each: the owner check
+  `0x01ea5280`, entry check `0x01ea4a10`, ritual handle and slot resets `0x01ea5670`/`0x01ea5850`,
+  readiness check `0x01ea5c90` with the pass-on twins `0x01ea5e20`/`0x01ea6080`, handle creation
+  `0x01ea47a0` and level creation `0x01ea4cb0` (event flags 6228..6287). Shared on the way: the
+  engine's reference counting (`game/engine/ref_object.h`, #185) and the event-flag store
+  (`game/event/flag_store.h`, #199). Drafts now decode the code Ghidra drops after the fatal error
+  call (`; GAP:`, #189).
 - `0x01ec3ef0`: a state method on the Chalice Dungeon gate behind a slot: leaves ritual and dungeon
   modes (request 7) and the error mode (request 10) around the owner check `0x01ea5280`, true when
   it says yes in the server dungeon mode: edge-verified (stock and against "60 FPS++").
