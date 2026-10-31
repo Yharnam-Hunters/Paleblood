@@ -182,8 +182,9 @@ struct HandleObject {
     uint32_t value_124;  // cleared by the reset
 };
 static_assert(offsetof(HandleObject, flags_10c) == 0x10c && offsetof(HandleObject, value_124) == 0x124);
-// Called with the handle's address by the reset; not replaced, and what it does is not analyzed.
-RT_ORIGINAL(0x01e9cb80, rebuild_handle, bool(engine::RefObject **handle));
+// Called with the handle's address by the reset, which ignores its result; not replaced, and what
+// it does is not analyzed (the name only says how the reset uses it).
+RT_ORIGINAL(0x01e9cb80, pass_handle_on, void(engine::RefObject **handle));
 
 // The id the owner check is given: its first 64 bits hold INT64_MIN when there is none. That it
 // names an online session is a guess from FrpgNetMan's part in the check.
@@ -450,7 +451,7 @@ extern "C" bool bb_frame_timing_gate_entry_check(StateOwner *owner, GateEntryLis
 
 // The ritual handle reset (0x01ea5670): when the owner is idle in the local ritual mode, or in the
 // server ritual mode with FrpgNetMan's bytes allowing it and the handle's flag bit 0 clear, clears the
-// handle's word at +0x124 (if there is a handle), passes the handle to 0x01e9cb80, then requests 8
+// handle's word at +0x124 (if there is a handle), passes the handle on to 0x01e9cb80, then requests 8
 // if still idle and reports true; every other path reports false.
 extern "C" bool bb_frame_timing_gate_ritual_handle_reset(StateOwner *owner)
 {
@@ -466,7 +467,7 @@ extern "C" bool bb_frame_timing_gate_ritual_handle_reset(StateOwner *owner)
     }
     if (owner->handle) {
         // A missing FrpgNetMan is reported, then the handle read again: the word is cleared only
-        // if there still is one (code a draft shows only with its gaps decoded).
+        // if there still is one (code after the fatal error call that Ghidra drops; QUIRKS.md).
         bool clear = true;
         if (!frpg_net_man_instance.get()) {
             engine::report_missing(frpg_net_man_name.address());
@@ -474,7 +475,7 @@ extern "C" bool bb_frame_timing_gate_ritual_handle_reset(StateOwner *owner)
         }
         if (clear) reinterpret_cast<HandleObject *>(owner->handle)->value_124 = 0;
     }
-    rebuild_handle(&owner->handle);
+    pass_handle_on(&owner->handle);
     if (owner->busy != 0) return false;
     return take_request(owner, request_8);
 }
