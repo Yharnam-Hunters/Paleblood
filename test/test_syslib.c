@@ -642,6 +642,23 @@ static void *eq_trigger_later(void *unused)
 static void eq_wait_timeout(void) { unsigned char ev[32]; int32_t n; uint32_t usec = 10; eq_wait_fn(eq_test_queue, ev, 1, &n, &usec); }
 static void eq_wait_no_count(void) { unsigned char ev[32]; eq_wait_fn(eq_test_queue, ev, 1, NULL, NULL); }
 
+/* Video out: open, buffers, an hsync flip that completes at once and wakes the flip queue. */
+typedef int32_t (*f_vo_open)(int32_t, int32_t, int32_t, const void *);
+typedef int32_t (*f_vo_rate)(int32_t, int32_t);
+typedef int32_t (*f_vo_event)(rt_equeue *, int32_t, void *);
+typedef void (*f_vo_attr)(void *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+typedef int32_t (*f_vo_register)(int32_t, int32_t, void *const *, int32_t, const void *);
+typedef int32_t (*f_vo_flip)(int32_t, int32_t, int32_t, int64_t);
+typedef int32_t (*f_vo_status)(int32_t, void *);
+static f_vo_flip vo_flip_fn;
+static f_vo_status vo_status_fn;
+static f_vo_open vo_open_fn;
+static int32_t vo_handle;
+static void vo_status_before_flip(void) { unsigned char st[64]; vo_status_fn(vo_handle, st); }
+static void vo_flip_vsync(void) { vo_flip_fn(vo_handle, 0, 1, 0); }
+static void vo_flip_bad_buffer(void) { vo_flip_fn(vo_handle, 9, 2, 0); }
+static void vo_open_other(void) { vo_open_fn(0xff, 0, 0, NULL); }
+
 int main(void)
 {
     /* Unresolved entries are still callable diagnostics, but are not reported as implemented. */
@@ -1795,6 +1812,40 @@ int main(void)
         CHECK(died_in_fatal(eq_wait_timeout));
         CHECK(died_in_fatal(eq_wait_no_count));
         CHECK(eq_delete(eq_test_queue) == 0);
+    }
+
+    /* libSceVideoOut: the executable's frame cycle. */
+    vo_open_fn = (f_vo_open)fn("libSceVideoOut", "sceVideoOutOpen");
+    const f_vo_rate vo_rate = (f_vo_rate)fn("libSceVideoOut", "sceVideoOutSetFlipRate");
+    const f_vo_event vo_event = (f_vo_event)fn("libSceVideoOut", "sceVideoOutAddFlipEvent");
+    const f_vo_attr vo_attr = (f_vo_attr)fn("libSceVideoOut", "sceVideoOutSetBufferAttribute");
+    const f_vo_register vo_register = (f_vo_register)fn("libSceVideoOut", "sceVideoOutRegisterBuffers");
+    vo_flip_fn = (f_vo_flip)fn("libSceVideoOut", "sceVideoOutSubmitFlip");
+    vo_status_fn = (f_vo_status)fn("libSceVideoOut", "sceVideoOutGetFlipStatus");
+    const f_eq_create vo_eq_create = (f_eq_create)fn("libkernel", "sceKernelCreateEqueue");
+    if (vo_open_fn && vo_rate && vo_event && vo_attr && vo_register && vo_flip_fn && vo_status_fn && vo_eq_create && eq_wait_fn) {
+        vo_handle = vo_open_fn(0, 0, 0, NULL);
+        CHECK(vo_handle > 0 && vo_rate(vo_handle, 0) == 0);
+        rt_equeue *flips = NULL;
+        CHECK(vo_eq_create(&flips, "flip") == 0 && vo_event(flips, vo_handle, NULL) == 0);
+        uint32_t attr[10];
+        memset(attr, 0xee, sizeof attr);
+        vo_attr(attr, 0x80000000u, 0, 0, 1920, 1080, 1920);
+        CHECK(attr[0] == 0x80000000u && attr[1] == 0 && attr[3] == 1920 && attr[4] == 1080 && attr[5] == 1920 && attr[6] == 0);
+        static uint32_t frame_a[16], frame_b[16];
+        void *const buffers[2] = {frame_a, frame_b};
+        CHECK(vo_register(vo_handle, 0, buffers, 2, attr) == 0);
+        CHECK(died_in_fatal(vo_status_before_flip));
+        CHECK(vo_flip_fn(vo_handle, 1, 2, 77) == 0);
+        unsigned char ev[32]; int32_t n = 0; int64_t data;
+        CHECK(eq_wait_fn(flips, ev, 1, &n, NULL) == 0 && n == 1 && (memcpy(&data, ev + 16, 8), data == 77));
+        unsigned char st[64]; uint64_t count; int64_t arg; int32_t current;
+        CHECK(vo_status_fn(vo_handle, st) == 0);
+        memcpy(&count, st, 8); memcpy(&arg, st + 0x18, 8); memcpy(&current, st + 0x38, 4);
+        CHECK(count == 1 && arg == 77 && current == 1);
+        CHECK(died_in_fatal(vo_flip_vsync));
+        CHECK(died_in_fatal(vo_flip_bad_buffer));
+        CHECK(died_in_fatal(vo_open_other));
     }
 
     if (!failures) puts("syslib: ok");
