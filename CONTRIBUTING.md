@@ -236,7 +236,10 @@ Replacements may start from a draft: the decompiler's output for the function, w
 is a starting point, never a commit to `main`: what gets merged is the replacement after it is
 renamed and restructured into readable code ([STYLE.md](STYLE.md); names from `functions.csv`,
 no `FUN_`/`DAT_`/`local_` names, no decompiler artefacts) and verified like any other. The decompiler is often wrong about
-types, signedness and calling conventions, so the disassembly decides, not the draft.
+types, signedness and calling conventions, so the disassembly decides, not the draft. Ghidra
+also leaves out of a function the bytes after a call it treats as not returning (the engine's
+error report, for one, returns), so a draft marks each such span with `; GAP:` and decodes it:
+the original runs that code.
 
 ## Commits
 
