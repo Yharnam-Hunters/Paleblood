@@ -111,6 +111,10 @@ The latest belong to the **Chalice Dungeon gate**, the object behind the ritual 
   first entry with a given key that holds an object, and keeps that object as the gate's handle in
   the same way, with request 4 instead of 6. When the gate becomes busy while the old handle is let
   go, it stops and reports failure rather than trying the next entry.
+- **Letting the handle go again.** In a ritual mode a third method resets the handle. In the
+  local ritual mode it always may; in the server ritual mode only when the online manager's bytes
+  allow it and a flag bit in the handled object is clear. It clears one word of that object, hands
+  the handle to a routine not yet analyzed (`0x01e9cb80`), and gives the gate request 8.
 
 The millisecond sleep wrapper (`0x0111a880`), which is not on the limiter's path, is replaced too.
 It converts the engine's millisecond delay to the kernel's microseconds. It multiplies in 32 bits,
@@ -134,6 +138,8 @@ as the original does, so very large delays wrap, and it always reports success.
 - [#188](https://github.com/Yharnam-Hunters/Paleblood/pull/188): the entry check (`0x01ea4a10`,
   one 60 FPS++ edit). Part of it sits in bytes the decompiler leaves out after an error report;
   see [Ghidra & PS4 Quirks](../../QUIRKS.md).
+- [#192](https://github.com/Yharnam-Hunters/Paleblood/pull/192): the ritual handle reset
+  (`0x01ea5670`, one 60 FPS++ edit).
 - Status: **replaced**, not verified. Each was compared with the original function on authored
   edge cases, stock and with the 60 FPS++ edits, and wrong variants were rejected. None was
   checked on frames recorded from a real game run.
@@ -183,6 +189,7 @@ piece of the game's own per-frame work, the next layer to map.
 | `0x014400a0` | 180 | `frame_timing_task_workers_step_014400a0` | verified | task manager workers: three rounds over the worker queues +0x58, +0x68, +0x60 |
 | `0x01ea4a10` | 501 | `frame_timing_gate_entry_check` | edge-verified | entry check of the Chalice Dungeon gate state: online gates as 0x01ea5280; keeps the first keyed entry's object as its handle, then request 4 |
 | `0x01ea5280` | 553 | `frame_timing_gate_owner_check` | edge-verified | owner check of the Chalice Dungeon gate state: idle in mode 1, FrpgNetMan flags and an id allow it; keeps the object for the id as its handle, then request 6 |
+| `0x01ea5670` | 451 | `frame_timing_gate_ritual_handle_reset` | edge-verified | ritual handle reset of the Chalice Dungeon gate state: in a ritual mode (server: online gates, flag bit clear) clears the handle's +0x124, rebuilds it, then request 8 |
 | `0x01eb5390` | 182 | `frame_timing_dungeon_gate_step_init_for_channel_load` | edge-verified | SprjDungeonGateIns::STEP_Init_forChannelLoad: when the gate state is idle in ChannelLoad, request 2 and advance it one fixed step (1/30 s; 1/60 s in the 60 FPS patches) |
 | `0x01eb5490` | 246 | `frame_timing_dungeon_gate_step_mode_switch` | edge-verified | SprjDungeonGateIns::STEP_ModeSwitch: advance the gate state one fixed step while busy, then go to the first step of its mode |
 | `0x01eb9020` | 303 | `frame_timing_dungeon_gate_on_event_0` | edge-verified | SprjDungeonGateIns handler of event 0: request 1, then request 2, each advancing the gate state one fixed step |
