@@ -315,7 +315,7 @@ def entry_cases():
 def reset_case(cid, busy=0, state=2, flags=(1, 0, 0, 0), net=True, handle=True, flag_bits=0,
                rebuild_sets_busy=False, advances=((0, 1),)):
     """The ritual handle reset. net: whether FrpgNetMan exists. handle: whether the owner has a
-    handle object; flag_bits its byte at +0x10c. The rebuild (0x01e9cb80) is stubbed: it records
+    handle object; flag_bits its byte at +0x10c. The call to 0x01e9cb80 is stubbed: it records
     the handle it is given and may set the owner's busy word (it gets the handle's address, inside
     the owner). Not covered: the handle read again after a missing-FrpgNetMan report (a stub can
     only write through its own arguments, and the report's are strings)."""
@@ -359,7 +359,7 @@ def reset_cases():
             # The gates close even with no handle: nothing is passed on.
             reset_case('server_without_handle_gates_closed', state=3, handle=False, flags=(0, 0, 0, 0)),
             reset_case('server_without_handle_9f8_set', state=3, handle=False, flags=(1, 0, 1, 0))]
-    # Request 8 only when idle after the rebuild; the advance may leave it busy or change the state.
+    # Request 8 only when idle after the call to 0x01e9cb80; the advance may leave it busy or change the state.
     out += [reset_case('rebuild_makes_busy', rebuild_sets_busy=True), reset_case('server_rebuild_makes_busy', state=3, rebuild_sets_busy=True),
             reset_case('advance_leaves_busy', advances=((1, 2),)), reset_case('advance_changes_state', advances=((0, 6),))]
     return out

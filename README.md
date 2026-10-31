@@ -16,7 +16,7 @@ The game doesn't run on Paleblood yet: 21 of 157757 functions are verified (0.01
 |---|---:|---:|
 | Target (Ghidra export) | 157757 | 42487347 |
 | Replaced | 45 (0.03%) | 19932 (0.05%) |
-| Edge-verified | 44 (0.03%) | 19481 (0.05%) |
+| Edge-verified | 45 (0.03%) | 19932 (0.05%) |
 | Verified | 21 (0.01%) | 14010 (0.03%) |
 
 Each row includes the next: verified functions are also edge-verified and replaced.
