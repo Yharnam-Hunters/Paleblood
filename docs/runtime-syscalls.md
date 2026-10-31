@@ -933,6 +933,31 @@ queue for the engine-level graphics layer, and answers ids from 1.
 
 **What stops by name:** mapping the same pipe and queue twice, and a missing ring or read pointer.
 
+## Kernel event queues (`sceKernelCreateEqueue`, `sceKernelWaitEqueue`, `sceKernelDeleteEqueue`, issue #34)
+
+The PS4 kernel is FreeBSD's, whose kqueue delivers `struct kevent`: ident (64-bit), filter (16-bit),
+flags (16-bit), fflags (32-bit), data (64-bit) and udata (a pointer), 32 bytes on amd64. The OpenOrbis
+homebrew SDK's `libkernel.h` declares create and delete; its `_types/kernel.h` lists the filters
+(display -13, graphics core -14, ...).
+
+**What the executable does.** Right after asking video out for a flip, it waits with room for one
+event, a variable for how many came back, and no timeout (`0x015e41b6`, `0x02ad6f26`). So the wait
+blocks until the flip is done.
+
+**What the runtime does:**
+- The queue is a list of registrations, added and triggered by the runtime's own event sources
+  (`runtime/include/runtime/equeue.h`; video out is the first).
+- A wait returns the triggered events, oldest first, and clears them, so each is reported once per
+  trigger.
+- An event's flags and fflags are 0: what the PS4 sets there is not established, and no caller reads
+  them.
+
+**What stops by name:**
+- a timeout (no call passes one);
+- deleting a queue a thread is waiting on;
+- an event array or count that does not fit;
+- the error values.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.

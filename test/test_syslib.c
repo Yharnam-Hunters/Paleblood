@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* The runtime's system library implementations, called the way the guest calls them: through the
    RT_SYSLIB registry, by library and symbol. */
+#include "runtime/equeue.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
@@ -623,6 +624,23 @@ typedef int32_t (*f_cq_t)(uint32_t, uint32_t, void *, uint32_t, volatile uint32_
 static f_cq_t cq_fn;
 static void cq_twice(void) { static uint32_t r[16]; static volatile uint32_t p; cq_fn(0, 0, r, 16, &p); }
 static void cq_no_ring(void) { static volatile uint32_t p; cq_fn(1, 0, NULL, 16, &p); }
+
+/* Kernel event queues: a wait blocks until a runtime event source triggers a registration. */
+typedef int32_t (*f_eq_create)(rt_equeue **, const char *);
+typedef int32_t (*f_eq_delete)(rt_equeue *);
+typedef int32_t (*f_eq_wait)(rt_equeue *, void *, int32_t, int32_t *, const void *);
+static f_eq_wait eq_wait_fn;
+static rt_equeue *eq_test_queue;
+static void *eq_trigger_later(void *unused)
+{
+    (void)unused;
+    struct timespec pause = {0, 20 * 1000 * 1000};
+    nanosleep(&pause, NULL);
+    rt_equeue_trigger(eq_test_queue, RT_EVFILT_DISPLAY, 6, 42);
+    return NULL;
+}
+static void eq_wait_timeout(void) { unsigned char ev[32]; int32_t n; uint32_t usec = 10; eq_wait_fn(eq_test_queue, ev, 1, &n, &usec); }
+static void eq_wait_no_count(void) { unsigned char ev[32]; eq_wait_fn(eq_test_queue, ev, 1, NULL, NULL); }
 
 int main(void)
 {
@@ -1747,6 +1765,36 @@ int main(void)
         CHECK(qa > 0 && qb > 0 && qa != qb);
         CHECK(died_in_fatal(cq_twice));
         CHECK(died_in_fatal(cq_no_ring));
+    }
+
+    /* sceKernelCreateEqueue / WaitEqueue / DeleteEqueue. */
+    const f_eq_create eq_create = (f_eq_create)fn("libkernel", "sceKernelCreateEqueue");
+    const f_eq_delete eq_delete = (f_eq_delete)fn("libkernel", "sceKernelDeleteEqueue");
+    eq_wait_fn = (f_eq_wait)fn("libkernel", "sceKernelWaitEqueue");
+    if (eq_create && eq_delete && eq_wait_fn) {
+        CHECK(eq_create(&eq_test_queue, "flip") == 0 && eq_test_queue);
+        int marker;
+        CHECK(rt_equeue_add(eq_test_queue, RT_EVFILT_DISPLAY, 6, &marker) == 0);
+        CHECK(rt_equeue_trigger(eq_test_queue, RT_EVFILT_GRAPHICS_CORE, 1, 0) == -1); /* not registered */
+        pthread_t trigger;
+        if (pthread_create(&trigger, NULL, eq_trigger_later, NULL)) { perror("pthread_create"); return 1; }
+        unsigned char ev[2][32];
+        int32_t n = -1;
+        CHECK(eq_wait_fn(eq_test_queue, ev, 1, &n, NULL) == 0 && n == 1); /* woken by the other thread */
+        pthread_join(trigger, NULL);
+        uint64_t ident; int16_t filter; int64_t data; void *udata;
+        memcpy(&ident, ev[0], 8); memcpy(&filter, ev[0] + 8, 2); memcpy(&data, ev[0] + 16, 8); memcpy(&udata, ev[0] + 24, 8);
+        CHECK(ident == 6 && filter == -13 && data == 42 && udata == &marker);
+        /* Two triggered events come back oldest first, each once. */
+        CHECK(rt_equeue_add(eq_test_queue, RT_EVFILT_GRAPHICS_CORE, 1, NULL) == 0);
+        CHECK(rt_equeue_trigger(eq_test_queue, RT_EVFILT_GRAPHICS_CORE, 1, 7) == 0);
+        CHECK(rt_equeue_trigger(eq_test_queue, RT_EVFILT_DISPLAY, 6, 8) == 0);
+        CHECK(eq_wait_fn(eq_test_queue, ev, 2, &n, NULL) == 0 && n == 2);
+        memcpy(&filter, ev[0] + 8, 2); memcpy(&data, ev[1] + 16, 8);
+        CHECK(filter == -14 && data == 8);
+        CHECK(died_in_fatal(eq_wait_timeout));
+        CHECK(died_in_fatal(eq_wait_no_count));
+        CHECK(eq_delete(eq_test_queue) == 0);
     }
 
     if (!failures) puts("syslib: ok");
