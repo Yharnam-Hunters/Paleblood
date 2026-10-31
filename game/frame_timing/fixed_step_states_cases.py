@@ -4,7 +4,7 @@
 
 usage: fixed_step_states_cases.py CAPTURES_DIR
 
-Writes CAPTURES_DIR/<function>/edge/*.json for all twenty-six methods. The owner's advance method
+Writes CAPTURES_DIR/<function>/edge/*.json for all twenty-seven methods. The owner's advance method
 (vtable slot +0xd0) is a stand-in game function the case stubs; its descriptor is compared, and
 it leaves the busy count (and for the gate, the state) the case says. Covers idle and busy owners,
 staying busy after the advance, and states around the 2..5 range of request_7 (with wraparound
@@ -28,7 +28,9 @@ list's block (the block held before the call is freed). For the readiness check 
 the two methods that pass the handle on (0x01ea5e20, 0x01ea6080): each state, the gates, the
 handle's word at +0x50, and a pass-on call that makes the owner busy. Not covered: the readiness
 check's missing-FrpgNetMan report, which the original follows with a null read; the pass-on
-methods' reports, which that check's FrpgNetMan read makes unreachable.
+methods' reports, which that check's FrpgNetMan read makes unreachable. For the handle creation
+0x01ea47a0: the gate, the old handle's release, the name (no entry, either kind, inline or heap
+text), the created object's reference counts, and a missing FrpgNetMan.
 """
 import json
 import os
@@ -60,6 +62,8 @@ HEAP_TRAITS, HEAP_FREE, OTHER_HEAP_FREE = '0x00400090', '0x004000a0', '0x004000b
 SLOTS = 0x188  # sixteen slots of 12 bytes: key, active, unknown
 READY, PASS_KIND_1, PASS_KIND_2 = '0x01ea5c90', '0x01ea5e20', '0x01ea6080'
 PASS_LOCAL, PASS_SERVER = '0x02265170', '0x02265960'
+CREATE_HANDLE, FILL_PART1, FILL_PART2, CREATE_OBJECT = '0x01ea47a0', '0x0231fbc0', '0x01eaf9d0', '0x01e9a8f0'
+NAME_ROOT, DEFAULT_NAME = '0x0593b130', '0x04dd85f0'
 FRPG_NET_MAN, LOOKUP, FATAL_ERROR, DESTROY = '0x0593b120', '0x02265290', '0x024b55b0', '0x00400080'
 HANDLE = 0xd0  # the owner's handle
 INNER = 0x200  # an unused span of the owner that can hold an object
@@ -508,6 +512,85 @@ def pass_cases(address):
     return out
 
 
+def create_case(cid, busy=0, state=1, net=True, handle=None, refs=None, entry=True, kind=0, capacity=3,
+                created='new', old_destroy_sets_busy=False, advances=((0, 1),)):
+    """The handle creation. handle: the owner's handle before ('old', 'in_owner' or None); entry:
+    whether there is a current name entry, of this kind, whose names have this capacity (8 or more:
+    the text is on the heap); created: what 0x01e9a8f0 creates ('new', 'old' or None). The two
+    blocks live on the stack: their fill stubs write a pattern and the creation stub records it."""
+    refs = refs or {}
+    c = {'schema': 1, 'address': CREATE_HANDLE, 'id': cid, 'returns': 'i8',
+         'args': {'rdi': 'buf:owner', 'rsi': 'buf:source'},
+         'buffers': {'owner': {'size': 0x270}, 'owner_vt': {'size': 216}, 'net': {'size': 0xa80}, 'source': {'size': 0x20},
+                     'root': {'size': 0x10}, 'holder': {'size': 0x5d8}, 'current': {'size': 8}, 'entry': {'size': 0xf0},
+                     'heap_text': {'size': 0x20}, 'obj_vt': {'size': 8}, 'new': {'size': 0x10}, 'old': {'size': 0x10}},
+         'memory': [{'addr': 'buf:owner', 'pointer': 'owner_vt'}, {'addr': 'buf:owner_vt+208', 'guest': ADVANCE},
+                    {'addr': f'buf:owner+{STATE}', 'bytes': u32(state)}, {'addr': f'buf:owner+{REQUEST}', 'bytes': u32(0x55)},
+                    {'addr': f'buf:owner+{BUSY}', 'bytes': u32(busy)},
+                    {'addr': FRPG_NET_MAN, 'pointer': 'net'} if net else {'addr': FRPG_NET_MAN, 'bytes': '00' * 8},
+                    {'addr': 'buf:source+16', 'bytes': u32(0xc0ffee)},
+                    {'addr': NAME_ROOT, 'pointer': 'root'}, {'addr': 'buf:root+8', 'pointer': 'holder'},
+                    {'addr': f'buf:holder+{0x5d0}', 'pointer': 'current'},
+                    {'addr': 'buf:current', 'pointer': 'entry'} if entry else {'addr': 'buf:current', 'bytes': '00' * 8},
+                    {'addr': 'buf:entry+12', 'bytes': u32(kind)},
+                    {'addr': 'buf:obj_vt', 'guest': DESTROY},
+                    {'addr': 'buf:new', 'pointer': 'obj_vt'}, {'addr': 'buf:old', 'pointer': 'obj_vt'},
+                    {'addr': 'buf:new+8', 'bytes': u32(refs.get('new', 1))}, {'addr': 'buf:old+8', 'bytes': u32(refs.get('old', 1))}],
+         'imports': []}
+    for name_at in (0x18, 0xc8):  # both names: inline text, or a pointer to the heap text
+        c['memory'].append({'addr': f'buf:entry+{name_at + 0x20}', 'bytes': struct.pack('<Q', capacity).hex()})
+        if capacity >= 8:
+            c['memory'].append({'addr': f'buf:entry+{name_at + 8}', 'pointer': 'heap_text'})
+        else:
+            c['memory'].append({'addr': f'buf:entry+{name_at + 8}', 'bytes': f'{name_at:02x}' * 16})
+    if handle == 'in_owner':
+        c['memory'] += [{'addr': f'buf:owner+{HANDLE}', 'pointer': f'owner+{INNER}'}, {'addr': f'buf:owner+{INNER}', 'pointer': 'obj_vt'},
+                        {'addr': f'buf:owner+{INNER + 8}', 'bytes': u32(1)}]
+    elif handle:
+        c['memory'].append({'addr': f'buf:owner+{HANDLE}', 'pointer': handle})
+    else:
+        c['memory'].append({'addr': f'buf:owner+{HANDLE}', 'bytes': '00' * 8})
+    stubs = []
+    if handle == 'in_owner':
+        stubs.append({'address': DESTROY, 'argc': 1, 'argi': [0], 'argmem': [{'arg': 0, 'offset': HANDLE - INNER, 'size': 8}],
+                      'writes': [{'arg': 0, 'offset': BUSY - INNER, 'bytes': u32(1)}] if old_destroy_sets_busy else []})
+    stubs += [{'address': FILL_PART1, 'argc': 3, 'argi': [1, 2], 'writes': [{'arg': 0, 'offset': 0, 'bytes': '11' * 8}]},
+              {'address': FILL_PART2, 'argc': 2, 'argi': [1], 'writes': [{'arg': 0, 'offset': 0, 'bytes': '22' * 0x48}]},
+              {'address': CREATE_OBJECT, 'argc': 6, 'argi': [2, 4, 5],
+               'argmem': [{'arg': 1, 'size': 8}, {'arg': 3, 'size': 0x48}],
+               'writes': [{'arg': 0, 'offset': 0, 'pointer': created} if created else {'arg': 0, 'offset': 0, 'bytes': '00' * 8}]},
+              # The report's fourth argument (rcx) is unset for an invalid unref, so it is not compared.
+              *[{'address': DESTROY, 'argc': 1, 'argi': [0]}] * 4, *[{'address': FATAL_ERROR, 'argc': 4, 'argi': [0, 1, 2]}] * 4]
+    stubs += [{'address': ADVANCE, 'argc': 2, 'argi': [0, 1],
+               'argmem': [{'arg': 1, 'size': 12}, {'arg': 0, 'offset': HANDLE, 'size': 8}, {'arg': 0, 'offset': STATE, 'size': 12}],
+               'writes': [{'arg': 0, 'offset': STATE, 'bytes': u32(s_)}, {'arg': 0, 'offset': BUSY, 'bytes': u32(b_)}]}
+              for b_, s_ in advances]
+    c['stubs'] = stubs
+    return c
+
+
+def create_cases():
+    out = [create_case('busy', busy=1), create_case('busy_negative', busy=-1)]
+    out += [create_case(f'state_{s:x}', state=s) for s in (0, 2, 3, 6, 0xffffffff)]
+    # The old handle is dropped first: none, shared, its last reference, already at 0.
+    out += [create_case('no_handle'), create_case('old_shared', handle='old', refs={'old': 2}),
+            create_case('old_last', handle='old'), create_case('old_no_reference', handle='old', refs={'old': 0}),
+            create_case('old_destroy_makes_busy', handle='in_owner', old_destroy_sets_busy=True),
+            create_case('old_destroy_leaves_idle', handle='in_owner')]
+    # The name: no entry (the default), kind 0 or 1 or other, inline or heap text, the capacity's edge.
+    out += [create_case('no_entry', entry=False), create_case('kind_0_inline'), create_case('kind_1_inline', kind=1),
+            create_case('kind_2_inline', kind=2), create_case('kind_minus_1', kind=-1),
+            create_case('kind_0_heap', capacity=8), create_case('kind_1_heap', kind=1, capacity=8),
+            create_case('capacity_7', capacity=7), create_case('capacity_huge', kind=1, capacity=0xffffffffffffffff)]
+    # The created object: none, with no references (the pair destroys it), the old handle again.
+    out += [create_case('created_none', created=None), create_case('created_no_reference', refs={'new': 0}),
+            create_case('created_negative_reference', refs={'new': -1}),
+            create_case('created_is_old', handle='old', created='old', refs={'old': 2})]
+    out += [create_case('no_net', net=False), create_case('no_net_no_entry', net=False, entry=False)]
+    out += [create_case('advance_leaves_busy', advances=((1, 1),)), create_case('advance_changes_state', advances=((0, 6),))]
+    return out
+
+
 def slot_cases():
     out = []
     # Idle in every mode and past them: request 7 is taken twice in 2..5 (before and after the
@@ -662,6 +745,12 @@ def main():
             with open(os.path.join(out, f"{c['id']}.json"), 'w') as f:
                 json.dump(c, f, indent=1)
             n += 1
+    out = os.path.join(sys.argv[1], 'frame_timing_gate_create_handle', 'edge')
+    os.makedirs(out, exist_ok=True)
+    for c in create_cases():
+        with open(os.path.join(out, f"{c['id']}.json"), 'w') as f:
+            json.dump(c, f, indent=1)
+        n += 1
     out = os.path.join(sys.argv[1], 'frame_timing_gate_ritual_slot_reset', 'edge')
     os.makedirs(out, exist_ok=True)
     for c in slot_reset_cases():

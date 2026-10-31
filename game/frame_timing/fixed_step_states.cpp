@@ -258,6 +258,74 @@ RT_ORIGINAL(0x01e9cd20, pass_handle_on_with_items, void(engine::RefObject **hand
 // it does is not analyzed (the name only says how the reset uses it).
 RT_ORIGINAL(0x01e9cb80, pass_handle_on, void(engine::RefObject **handle));
 
+// What the handle creation (0x01ea47a0) is given: an object with a word at +0x10 that it passes on
+// (its meaning, like the object's, is not known).
+struct CreationSource {
+    uint8_t unknown_0x000[0x10];
+    uint32_t value_010;
+};
+// The two blocks the creation fills on its stack before creating the handle object. The original
+// leaves the first 0x20 bytes before the second block (nothing else there is live yet) and the
+// second 72 bytes, up to its stack canary.
+constexpr size_t creation_part1_bytes = 0x20, creation_part2_bytes = 0x48;
+struct CreationPart1 {
+    uint8_t bytes[creation_part1_bytes];
+};
+struct CreationPart2 {
+    uint8_t bytes[creation_part2_bytes];
+};
+RT_ORIGINAL(0x0231fbc0, fill_creation_part1, void(CreationPart1 *out, CreationSource *source, uint32_t value));
+RT_ORIGINAL(0x01eaf9d0, fill_creation_part2, void(CreationPart2 *out, CreationSource *source));
+// Creates the handle object, holding a reference the caller drops (or null); not replaced.
+RT_ORIGINAL(0x01e9a8f0, create_handle_object,
+            void(engine::RefObject **out, CreationPart1 *part1, CreationSource *source, CreationPart2 *part2,
+                 void *net_block, const void *name));
+
+// The engine's string as the creation reads a name from it: the text is inline while the capacity
+// is below 8, else at the pointer stored there (whether it is narrow or wide is not known).
+constexpr size_t engine_string_inline_bytes = 0x10;
+struct EngineString {
+    uint8_t unknown_0x000[0x8];
+    union {
+        uint8_t inline_text[engine_string_inline_bytes];
+        const void *heap_text;
+    };
+    uint8_t unknown_0x018[0x8];
+    uint64_t capacity;
+};
+static_assert(offsetof(EngineString, inline_text) == 0x8 && offsetof(EngineString, capacity) == 0x20);
+constexpr uint64_t engine_string_inline_capacity = 8;
+const void *text_of(const EngineString *string)
+{
+    return string->capacity >= engine_string_inline_capacity ? string->heap_text : string->inline_text;
+}
+
+// The entry the creation takes its name from: kind 1 names it at +0xc8, any other kind at +0x18.
+struct NameEntry {
+    uint8_t unknown_0x000[0xc];
+    int32_t kind;
+    uint8_t unknown_0x010[0x8];
+    EngineString name_018;
+    uint8_t unknown_0x040[0x88];
+    EngineString name_0c8;
+};
+static_assert(offsetof(NameEntry, name_018) == 0x18 && offsetof(NameEntry, name_0c8) == 0xc8);
+// The singleton next to FrpgNetMan (0x0593b130, its class not known; read without a check): its
+// object at +8 points at +0x5d0 to where the current name entry is kept (null for none).
+struct NameHolder {
+    uint8_t unknown_0x000[0x5d0];
+    NameEntry **current;
+};
+struct NameRoot {
+    uint8_t unknown_0x000[0x8];
+    NameHolder *holder;
+};
+static_assert(offsetof(NameHolder, current) == 0x5d0 && offsetof(NameRoot, holder) == 0x8);
+RT_GLOBAL(0x0593b130, name_root_instance, NameRoot *);
+RT_GLOBAL(0x04dd85f0, default_name, const uint8_t);  // used when there is no entry
+// FrpgNetMan's block at +0xa68, which the creation passes on.
+constexpr size_t frpg_net_man_creation_block = 0xa68;
+
 // The id the owner check is given: its first 64 bits hold INT64_MIN when there is none. That it
 // names an online session is a guess from FrpgNetMan's part in the check.
 struct SessionId {
@@ -273,7 +341,7 @@ RT_ORIGINAL(0x01ec3000, step_machine_count_step, void(DungeonGate *));
 // What the methods return (the state machine's codes; their names are not known).
 constexpr uint32_t result_still_busy = 1, result_done = 2, result_not_now = 4;
 // The requests the owner is given while it advances.
-constexpr uint32_t request_none = 0, request_1 = 1, request_2 = 2, request_4 = 4, request_6 = 6, request_7 = 7, request_8 = 8, request_9 = 9,
+constexpr uint32_t request_none = 0, request_1 = 1, request_2 = 2, request_3 = 3, request_4 = 4, request_6 = 6, request_7 = 7, request_8 = 8, request_9 = 9,
                    request_10 = 10;
 // What the handler of event 3000 leaves in value_6a0.
 constexpr int32_t value_6a0_reset = -1;
@@ -444,18 +512,12 @@ void keep_entry_object(StateOwner *owner, const GateEntry *entry)
     if (object) engine::retain(object);
 }
 
-// Keeps the object found for an id as the owner's handle, in the original's order of reference
-// counts: the lookup's reference is swapped for one of the owner's own; an unchanged handle drops
-// the extra one. Each retain-then-release pair leaves the count as it was but is the original's
-// exact sequence: an object that arrives with no references is destroyed by it (or reported).
-void keep_handle(StateOwner *owner, engine::RefObject *found)
+// Makes an object the caller holds a reference to the owner's handle, in the original's order of
+// reference counts: an unchanged handle drops the caller's reference; otherwise the old handle is
+// released and cleared, the object stored, and a reference taken and the caller's dropped (the
+// pair leaves the count as it was but destroys an object that arrives with no references).
+void adopt_handle(StateOwner *owner, engine::RefObject *held)
 {
-    engine::RefObject *held = nullptr;
-    if (found) {
-        engine::retain(found);
-        engine::release(found);  // the lookup's reference
-        held = found;
-    }
     if (owner->handle == held) {
         if (held) engine::release(held);
         return;
@@ -469,6 +531,21 @@ void keep_handle(StateOwner *owner, engine::RefObject *found)
         engine::retain(held);
         engine::release(held);
     }
+}
+
+// Keeps the object found for an id as the owner's handle, in the original's order of reference
+// counts: the lookup's reference is swapped for one of the owner's own; an unchanged handle drops
+// the extra one. Each retain-then-release pair leaves the count as it was but is the original's
+// exact sequence: an object that arrives with no references is destroyed by it (or reported).
+void keep_handle(StateOwner *owner, engine::RefObject *found)
+{
+    engine::RefObject *held = nullptr;
+    if (found) {
+        engine::retain(found);
+        engine::release(found);  // the lookup's reference
+        held = found;
+    }
+    adopt_handle(owner, held);
 }
 
 }  // namespace
@@ -621,6 +698,34 @@ bool pass_handle_on_with_kind(StateOwner *owner, int32_t kind)
 }
 
 }  // namespace
+
+// The handle creation (0x01ea47a0, also called from 0x01eb9270 and 0x01f038b0): when the owner is
+// idle in mode 1 (no Holygrail), drops its handle, fills two blocks from the source, creates a
+// handle object from them, FrpgNetMan's block at +0xa68 and the current entry's name (or the
+// default), adopts it as the owner's handle, then requests 3 if still idle and reports true.
+extern "C" bool bb_frame_timing_gate_create_handle(StateOwner *owner, CreationSource *source)
+{
+    if (owner->busy != 0 || owner->state != mode_no_holygrail) return false;
+    if (owner->handle) {
+        engine::release(owner->handle);
+        owner->handle = nullptr;
+    }
+    NameHolder *const holder = name_root_instance.get()->holder;
+    CreationPart1 part1;
+    fill_creation_part1(&part1, source, source->value_010);
+    CreationPart2 part2;
+    fill_creation_part2(&part2, source);
+    FrpgNetMan *net = engine::require(frpg_net_man_instance, frpg_net_man_name.address());
+    void *const net_block = reinterpret_cast<uint8_t *>(net) + frpg_net_man_creation_block;
+    const NameEntry *entry = *holder->current;
+    const void *name = default_name.address();
+    if (entry) name = text_of(entry->kind == 1 ? &entry->name_0c8 : &entry->name_018);
+    engine::RefObject *created = nullptr;
+    create_handle_object(&created, &part1, source, &part2, net_block, name);
+    adopt_handle(owner, created);
+    if (owner->busy != 0) return false;
+    return take_request(owner, request_3);
+}
 
 // The readiness check as its own method (0x01ea5c90, also called from 0x01ebecd0).
 extern "C" bool bb_frame_timing_gate_ritual_or_dungeon_ready(StateOwner *owner) { return ritual_or_dungeon_ready(owner); }
