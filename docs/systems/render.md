@@ -71,7 +71,9 @@ Scope still to map: draw submission, GNM command buffers, shaders, post-processi
 | `+0x8c` | the held flag |
 | `+0x98` | a byte copied into the `+0x70` child each frame |
 
-**Reference-counted objects**: vtable slot 0 destroys, count at `+0x8` (atomic).
+**Reference-counted objects**: vtable slot 0 destroys, count at `+0x8` (atomic). The engine shares this
+reference counting across systems since [#185](https://github.com/Yharnam-Hunters/Paleblood/pull/185);
+the frame update was re-verified unchanged on all its recorded and edge cases.
 
 ## Patch points
 
