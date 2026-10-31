@@ -158,8 +158,12 @@ def check_case(cid, busy=0, state=1, flags=(1, 0, 0, 0), session=7, found=None, 
                     'writes': [{'arg': 0, 'offset': 0, 'pointer': found} if found else
                                {'arg': 0, 'offset': 0, 'bytes': '00' * 8}]},
                    # Room for every destroy and invalid-unref report a path can make (unused ones do not count).
+                   # An object inside the owner records the owner's handle when it is destroyed (the
+                   # original still holds the old one then).
                    *([{'address': DESTROY, 'argc': 1, 'argi': [0],
-                       'writes': [{'arg': 0, 'offset': BUSY - INNER, 'bytes': u32(1)}]}] if destroy_sets_busy else []),
+                       'argmem': [{'arg': 0, 'offset': HANDLE - INNER, 'size': 8}],
+                       'writes': [{'arg': 0, 'offset': BUSY - INNER, 'bytes': u32(1)}] if destroy_sets_busy else []}]
+                     if handle == 'inner' else []),
                    *[{'address': DESTROY, 'argc': 1, 'argi': [0]}] * 4,
                    *[{'address': FATAL_ERROR, 'argc': 3, 'argi': [0, 1, 2]}] * 4] +
                   [{'address': ADVANCE, 'argc': 2, 'argi': [0, 1],

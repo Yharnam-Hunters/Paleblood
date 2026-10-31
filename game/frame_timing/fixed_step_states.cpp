@@ -157,7 +157,8 @@ static_assert(offsetof(FrpgNetMan, flag_008) == 0x8 && offsetof(FrpgNetMan, flag
 RT_GLOBAL(0x0593b120, frpg_net_man_instance, FrpgNetMan *);
 RT_GLOBAL(0x04d3ad45, frpg_net_man_name, const char);
 
-// The id the owner check is given: its first 64 bits hold INT64_MIN when there is none.
+// The id the owner check is given: its first 64 bits hold INT64_MIN when there is none. That it
+// names an online session is a guess from FrpgNetMan's part in the check.
 struct SessionId {
     int64_t value;
 };
@@ -171,7 +172,7 @@ RT_ORIGINAL(0x01ec3000, step_machine_count_step, void(DungeonGate *));
 // What the methods return (the state machine's codes; their names are not known).
 constexpr uint32_t result_still_busy = 1, result_done = 2, result_not_now = 4;
 // The requests the owner is given while it advances.
-constexpr uint32_t request_none = 0, request_1 = 1, request_2 = 2, request_6 = 6, request_10 = 10, request_7 = 7;
+constexpr uint32_t request_none = 0, request_1 = 1, request_2 = 2, request_6 = 6, request_7 = 7, request_10 = 10;
 // What the handler of event 3000 leaves in value_6a0.
 constexpr int32_t value_6a0_reset = -1;
 // What request 2 sets value_26c to.
@@ -310,7 +311,8 @@ void leave_ritual_or_dungeon_mode(StateOwner *owner)
 
 // Keeps the object found for an id as the owner's handle, in the original's order of reference
 // counts: the lookup's reference is swapped for one of the owner's own; an unchanged handle drops
-// the extra one.
+// the extra one. Each retain-then-release pair leaves the count as it was but is the original's
+// exact sequence: an object that arrives with no references is destroyed by it (or reported).
 void keep_handle(StateOwner *owner, engine::RefObject *found)
 {
     engine::RefObject *held = nullptr;

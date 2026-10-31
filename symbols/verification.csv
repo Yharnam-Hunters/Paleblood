@@ -20,8 +20,8 @@ event_emk_add,recorded,60,150,150,0,0,937b4dca128ba863,2026-10-07
 event_emk_add,edge,,18,18,0,0,937b4dca128ba863,2026-10-07
 event_emk_add,edge,60,18,18,0,0,937b4dca128ba863,2026-10-07
 event_flag_write,edge,,14,14,0,0,6aefc6e7432f84b0,2026-10-11
-frame_timing_dungeon_gate_on_event_0,edge,,25,25,0,0,fc2f5bf84a6964a3,2026-10-31
-frame_timing_dungeon_gate_on_event_0,edge,60,25,25,0,0,fc2f5bf84a6964a3,2026-10-31
+frame_timing_dungeon_gate_on_event_0,edge,,25,25,0,0,022e25059f315f85,2026-10-31
+frame_timing_dungeon_gate_on_event_0,edge,60,25,25,0,0,022e25059f315f85,2026-10-31
 frame_timing_dungeon_gate_on_event_1000,edge,,22,22,0,0,fc2f5bf84a6964a3,2026-10-31
 frame_timing_dungeon_gate_on_event_1000,edge,60,22,22,0,0,fc2f5bf84a6964a3,2026-10-31
 frame_timing_dungeon_gate_on_event_3000,edge,,22,22,0,0,fc2f5bf84a6964a3,2026-10-31
