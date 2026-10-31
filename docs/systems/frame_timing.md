@@ -107,6 +107,10 @@ The latest belong to the **Chalice Dungeon gate**, the object behind the ritual 
   and destroys it when the last one lets go, so swapping the handle drops the old object's count
   and takes one on the new. Finally, if the gate is still idle, it gives the gate request 6 and
   reports success. That the id names an online session is a guess.
+- **Its sibling, the entry check.** It opens with the same gates, then searches a list for the
+  first entry with a given key that holds an object, and keeps that object as the gate's handle in
+  the same way, with request 4 instead of 6. When the gate becomes busy while the old handle is let
+  go, it stops and reports failure rather than trying the next entry.
 
 The millisecond sleep wrapper (`0x0111a880`), which is not on the limiter's path, is replaced too.
 It converts the engine's millisecond delay to the kernel's microseconds. It multiplies in 32 bits,
@@ -127,6 +131,9 @@ as the original does, so very large delays wrap, and it always reports success.
 - [#186](https://github.com/Yharnam-Hunters/Paleblood/pull/186): the check itself
   (`0x01ea5280`, one 60 FPS++ edit), using the engine's shared reference counting from
   [#185](https://github.com/Yharnam-Hunters/Paleblood/pull/185).
+- [#188](https://github.com/Yharnam-Hunters/Paleblood/pull/188): the entry check (`0x01ea4a10`,
+  one 60 FPS++ edit). Part of it sits in bytes the decompiler leaves out after an error report;
+  see [Ghidra & PS4 Quirks](../../QUIRKS.md).
 - Status: **replaced**, not verified. Each was compared with the original function on authored
   edge cases, stock and with the 60 FPS++ edits, and wrong variants were rejected. None was
   checked on frames recorded from a real game run.
