@@ -61,6 +61,8 @@ frame_timing_holygrail_wait_for_dungeon_mode,edge,,59,59,0,0,9e64c9d40ab65315,20
 frame_timing_holygrail_wait_for_dungeon_mode,edge,60,59,59,0,0,9e64c9d40ab65315,2026-10-30
 frame_timing_holygrail_wait_for_ritual_mode,edge,,59,59,0,0,9e64c9d40ab65315,2026-10-30
 frame_timing_holygrail_wait_for_ritual_mode,edge,60,59,59,0,0,9e64c9d40ab65315,2026-10-30
+frame_timing_leave_modes_around_owner_check_01ec3ef0,edge,,37,37,0,0,d2a8f603e25472b4,2026-10-31
+frame_timing_leave_modes_around_owner_check_01ec3ef0,edge,60,37,37,0,0,d2a8f603e25472b4,2026-10-31
 frame_timing_pace_frame,recorded,,585,585,0,0,a3d44cba82dab3c2,2026-10-09
 frame_timing_pace_frame,recorded,30,585,585,0,0,a3d44cba82dab3c2,2026-10-07
 frame_timing_pace_frame,recorded,60,585,585,0,0,a3d44cba82dab3c2,2026-10-07

@@ -4,7 +4,7 @@
 
 usage: fixed_step_states_cases.py CAPTURES_DIR
 
-Writes CAPTURES_DIR/<function>/edge/*.json for all eighteen methods. The owner's advance method
+Writes CAPTURES_DIR/<function>/edge/*.json for all nineteen methods. The owner's advance method
 (vtable slot +0xd0) is a stand-in game function the case stubs; its descriptor is compared, and
 it leaves the busy count (and for the gate, the state) the case says. Covers idle and busy owners,
 staying busy after the advance, and states around the 2..5 range of request_7 (with wraparound
@@ -12,7 +12,9 @@ values). For SprjDungeonGateIns: every mode and values past them, events with th
 missing one of the two flags, and advances that change the state between event 0's two requests;
 the gate's set_step and method_38 and the step counter are stubbed and compared. For the four
 methods that find the gate through SprjHolygrail: event-flag bits picking each slot (eight
-different gates, so the wrong one shows), every mode, and the state query's answer.
+different gates, so the wrong one shows), every mode, and the state query's answer. For
+0x01ec3ef0 (the gate behind a slot): every mode, busy and idle, the owner check's answer, and
+advances that move the state into the error or server dungeon mode between its steps.
 """
 import json
 import os
@@ -37,6 +39,7 @@ HOLYGRAIL_METHODS = [  # (address, name)
     ('0x01f03210', 'holygrail_wait_for_dungeon_mode'), ('0x01f03680', 'holygrail_wait_for_ritual_mode'),
     ('0x0200f970', 'holygrail_until_idle_0200f970'), ('0x020118f0', 'holygrail_until_idle_020118f0'),
 ]
+SLOT_METHOD, OWNER_CHECK = '0x01ec3ef0', '0x01ea5280'
 HOLYGRAIL, EVENT_FLAG_MAN = '0x0593e9e8', '0x0593b100'
 READ_FLAG_BITS, GATE_STATE_QUERY = '0x017cfd80', '0x01ea5570'
 GATE_SLOTS = 8
@@ -102,6 +105,64 @@ def gate_case(address, cid, busy, state, advances=(), event_id=None, flags=GATE_
     if event_id is not None:
         c['args'].update({'rsi': 'buf:event', 'rdx': (event_id & 0xffffffff) if rdx is None else rdx})
     return c
+
+
+def slot_case(cid, busy, state, advances=(), check=0):
+    """0x01ec3ef0: its object holds a slot that points to the gate. advances: (busy, state) the
+    owner is left with by each call of its advance method; check: the owner check's answer."""
+    owner_at = lambda off: f'buf:gate+{OWNER + off}'
+    return {'schema': 1, 'address': SLOT_METHOD, 'id': cid, 'returns': 'i8',
+            'args': {'rdi': 'buf:self', 'rsi': 'buf:argument'},
+            'buffers': {'self': {'size': 0x10}, 'slot': {'size': 0x8}, 'gate': {'size': OWNER + 0x270},
+                        'owner_vt': {'size': 216}, 'argument': {'size': 0x10}},
+            'memory': [{'addr': 'buf:self+8', 'pointer': 'slot'}, {'addr': 'buf:slot', 'pointer': 'gate'},
+                       {'addr': owner_at(0), 'pointer': 'owner_vt'}, {'addr': owner_at(STATE), 'bytes': u32(state)},
+                       {'addr': owner_at(REQUEST), 'bytes': u32(0x55)}, {'addr': owner_at(BUSY), 'bytes': u32(busy)},
+                       {'addr': 'buf:owner_vt+208', 'guest': ADVANCE}],
+            'stubs': [{'address': OWNER_CHECK, 'argc': 2, 'argi': [0, 1], 'ret': check}] +
+                     [{'address': ADVANCE, 'argc': 2, 'argi': [0, 1],
+                       'argmem': [{'arg': 1, 'size': 12}, {'arg': 0, 'offset': STATE, 'size': 12}],
+                       'writes': [{'arg': 0, 'offset': STATE, 'bytes': u32(s_)}, {'arg': 0, 'offset': BUSY, 'bytes': u32(b_)}]}
+                      for b_, s_ in advances],
+            'imports': []}
+
+
+def slot_cases():
+    out = []
+    # Idle in every mode and past them: request 7 is taken twice in 2..5 (before and after the
+    # check), never elsewhere; the advances leave the state where it was.
+    for state in (0, 1, 2, 3, 4, 5, 6, 7, 0xffffffff, 0x80000002):
+        taken = 2 <= state <= 5
+        for check in (0, 1):
+            adv = [(0, state)] * ((1 if check and state == 5 else 2) if taken else 0)
+            if check and state == 6:
+                adv = [(0, 6)]  # request 10 when idle in the error mode
+            out.append(slot_case(f'idle_state_{state:x}_check_{check}', 0, state, adv, check))
+    # Busy: no request; after a yes, one advance while busy.
+    out += [slot_case('busy_check_no', 1, 3), slot_case('busy_check_yes_settles', 1, 3, [(1, 3)], 1),
+            slot_case('busy_negative_check_yes', -1, 5, [(0, 5)], 1)]
+    # Request 7 leads to the error mode: request 10 follows (and with a yes, again after the check;
+    # the closing request 7 is not taken in mode 6).
+    out += [slot_case('request_7_to_error', 0, 3, [(0, 6), (0, 6)]),
+            slot_case('request_7_to_error_check_yes', 0, 3, [(0, 6), (0, 6), (0, 6)], 1),
+            slot_case('request_7_leaves_busy', 0, 4, [(1, 4), (0, 4), (0, 4)]),
+            slot_case('request_7_leaves_busy_then_error', 0, 2, [(1, 2), (0, 6), (0, 6)])]
+    # The error mode entered while busy: request 10 is skipped, one advance while busy runs.
+    out += [slot_case('error_entered_busy', 0, 3, [(1, 6), (1, 6), (0, 6)]),
+            slot_case('error_entered_busy_check_yes', 0, 3, [(1, 6), (1, 6), (1, 6), (0, 6), (0, 6)], 1)]
+    # Request 10 leaves the owner busy: the advance after it runs.
+    out += [slot_case('request_10_leaves_busy', 0, 3, [(0, 6), (1, 6), (0, 6)])]
+    # The closing request 7's own follow-ups: it leaves the owner busy, or leads to the error mode.
+    out += [slot_case('closing_request_7_to_error', 0, 3, [(0, 3), (0, 6), (0, 6)]),
+            slot_case('closing_request_7_leaves_busy', 0, 4, [(0, 4), (1, 4), (0, 4)])]
+    # After a yes, the busy advance leads to the error mode.
+    out += [slot_case('check_yes_busy_advance_to_error', 1, 2, [(0, 6), (0, 6)], 1),
+            slot_case('check_yes_busy_in_error', 1, 6, [(1, 6), (0, 6)], 1)]
+    # A yes in the server dungeon mode reports true after settling; reaching it any other way does not.
+    out += [slot_case('check_yes_settles_into_server_dungeon', 1, 2, [(0, 5)], 1),
+            slot_case('request_7_into_server_dungeon_check_yes', 0, 3, [(0, 5)], 1),
+            slot_case('check_yes_local_dungeon', 0, 4, [(0, 4), (0, 4)], 1)]
+    return out
 
 
 def holygrail_case(address, cid, bits, gates, advances=(), query=1):
@@ -212,6 +273,12 @@ def main():
             with open(os.path.join(out, f"{c['id']}.json"), 'w') as f:
                 json.dump(c, f, indent=1)
             n += 1
+    out = os.path.join(sys.argv[1], 'frame_timing_leave_modes_around_owner_check_01ec3ef0', 'edge')
+    os.makedirs(out, exist_ok=True)
+    for c in slot_cases():
+        with open(os.path.join(out, f"{c['id']}.json"), 'w') as f:
+            json.dump(c, f, indent=1)
+        n += 1
     for address, name in GATE_METHODS:
         out = os.path.join(sys.argv[1], f'frame_timing_{name}', 'edge')
         os.makedirs(out, exist_ok=True)

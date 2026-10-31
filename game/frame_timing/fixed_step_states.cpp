@@ -14,6 +14,9 @@
 //     request; otherwise report that it cannot.
 // Four more methods find the gate through SprjHolygrail: the highest of seven event flags picks
 // which of its gates is current; they advance it while busy and report on its mode.
+// One method of an object that holds a pointer to the gate's slot (0x01ec3ef0) moves the state out
+// of a ritual or dungeon mode with request 7, and out of the error mode with request 10, around a
+// check on the owner (0x01ea5280, which reads FrpgNetMan).
 // And five methods of SprjDungeonGateIns itself: two steps of its step machine
 // (STEP_Init_forChannelLoad, STEP_ModeSwitch) and three handlers of events it registered for,
 // which store whether their request was taken. None of the five returns anything: on every path
@@ -100,6 +103,13 @@ struct DungeonGate {
 static_assert(offsetof(DungeonGate, owner) == 0x108 && offsetof(DungeonGate, request_taken) == 0x378 &&
               offsetof(DungeonGate, value_6a0) == 0x6a0);
 
+// 0x01ec3ef0's object: at +0x8, the slot that points to the gate.
+struct GateSlotAt8 {
+    uint8_t unknown_0x00[0x8];
+    DungeonGate **gate;
+};
+static_assert(offsetof(GateSlotAt8, gate) == 0x8);
+
 // SprjHolygrail (the Chalice Dungeons) keeps its gates in an array; seven event flags from 9020
 // say which one is current (the highest flag set; none set selects the last).
 struct Holygrail {
@@ -120,6 +130,10 @@ RT_ORIGINAL(0x017cfd80, event_flag_read_bits, uint32_t(EventFlagMan *, uint32_t 
 RT_ORIGINAL(0x01ea5570, gate_state_query, bool(StateOwner *));
 
 constexpr uint32_t gate_flag_first = 9020, gate_flag_count = 7;
+
+// A check on the owner with the method's second argument: false unless the owner is idle in
+// mode 1 (no Holygrail); it then reads FrpgNetMan. Its meaning is not known.
+RT_ORIGINAL(0x01ea5280, gate_owner_check, bool(StateOwner *, void *argument));
 
 // The step machine's step counter; past 27 steps it also builds a debug message.
 RT_ORIGINAL(0x01ec3000, step_machine_count_step, void(DungeonGate *));
@@ -242,6 +256,28 @@ uint32_t advance_with_request_7(StateOwner *owner)
     return result_done;
 }
 
+void advance_if_busy(StateOwner *owner)
+{
+    if (owner->busy != 0) advance(owner);
+}
+
+// Out of the error mode: request 10 when idle, then one more advance while busy.
+void leave_error_mode(StateOwner *owner)
+{
+    if (owner->state != mode_display_error) return;
+    advance_with_request_10(owner);
+    advance_if_busy(owner);
+}
+
+// Out of a ritual or dungeon mode with request 7; if that was taken, settle, and leave the error
+// mode the request may have led to.
+void leave_ritual_or_dungeon_mode(StateOwner *owner)
+{
+    if (advance_with_request_7(owner) != result_done) return;
+    advance_if_busy(owner);
+    leave_error_mode(owner);
+}
+
 }  // namespace
 
 extern "C" uint32_t bb_frame_timing_until_idle_01f6a9f0(StateAt8 *self) { return until_idle(self->owner); }
@@ -254,6 +290,23 @@ extern "C" uint32_t bb_frame_timing_until_idle_0200d8a0(StateAt10 *self) { retur
 extern "C" void bb_frame_timing_request_10_02012780(StateAt8 *self) { advance_with_request_10(self->owner); }
 extern "C" uint32_t bb_frame_timing_request_7_0200e270(StateAt8 *self) { return advance_with_request_7(self->owner); }
 extern "C" uint32_t bb_frame_timing_request_7_02012a60(StateAt8 *self) { return advance_with_request_7(self->owner); }
+
+// Leaves a ritual or dungeon mode, then asks the check on the owner: when it says yes, settles and
+// reports true in the server dungeon mode, otherwise leaves the error mode. Every other path leaves
+// the ritual or dungeon mode again and reports false. The original sets only the low byte of eax
+// for true (al = 1); its only caller (0x018bb383) ignores the result.
+extern "C" bool bb_frame_timing_leave_modes_around_owner_check_01ec3ef0(GateSlotAt8 *self, void *argument)
+{
+    StateOwner *owner = &(*self->gate)->owner;
+    leave_ritual_or_dungeon_mode(owner);
+    if (gate_owner_check(owner, argument)) {
+        advance_if_busy(owner);
+        if (owner->state == mode_server_dungeon) return true;
+        leave_error_mode(owner);
+    }
+    leave_ritual_or_dungeon_mode(owner);
+    return false;
+}
 
 // SprjDungeonGateIns::STEP_Init_forChannelLoad: once the gate is idle in ChannelLoad, request 2.
 extern "C" void bb_frame_timing_dungeon_gate_step_init_for_channel_load(DungeonGate *gate)
