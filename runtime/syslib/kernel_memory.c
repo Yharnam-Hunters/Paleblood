@@ -135,12 +135,16 @@ static int range_holding(uint64_t start, uint64_t length)
 }
 
 /* The guest mappings the runtime made (direct and flexible memory), with the protection the guest
-   asked for, GPU bits included, for sceKernelQueryMemoryProtection. Neither kind is ever unmapped
-   yet, so the list only grows. */
+   asked for, GPU bits included, for sceKernelQueryMemoryProtection and sceKernelVirtualQuery; a
+   direct map also keeps its offset in the pool and its range's memory type. Neither kind is ever
+   unmapped yet, so the list only grows. */
 typedef struct {
     uintptr_t start;
     uint64_t length;
     int32_t protection;
+    int direct;          /* 1: direct memory, 0: flexible memory */
+    int64_t offset;      /* direct memory: where the map starts in the pool */
+    int32_t memory_type; /* direct memory: its range's type */
 } guest_mapping;
 
 enum { MAX_MAPPINGS = 4096 };
@@ -148,12 +152,26 @@ static pthread_mutex_t mappings_lock = PTHREAD_MUTEX_INITIALIZER;
 static guest_mapping mappings[MAX_MAPPINGS];
 static int mapping_count;
 
-static void note_mapping(const char *caller, void *start, uint64_t length, int32_t protection)
+static void note_mapping(const char *caller, guest_mapping mapping)
 {
     pthread_mutex_lock(&mappings_lock);
     if (mapping_count == MAX_MAPPINGS) rt_fatal(caller, "more mappings than the runtime records");
-    mappings[mapping_count++] = (guest_mapping){(uintptr_t)start, length, protection};
+    mappings[mapping_count++] = mapping;
     pthread_mutex_unlock(&mappings_lock);
+}
+
+/* The recorded mapping that holds an address, copied into *out; 0 when there is none. */
+static int mapping_holding(uintptr_t at, guest_mapping *out)
+{
+    pthread_mutex_lock(&mappings_lock);
+    int found = 0;
+    for (int i = 0; i < mapping_count && !found; i++)
+        if (at >= mappings[i].start && at - mappings[i].start < mappings[i].length) {
+            *out = mappings[i];
+            found = 1;
+        }
+    pthread_mutex_unlock(&mappings_lock);
+    return found;
 }
 
 static int32_t map_direct_memory(void **address, uint64_t length, int32_t protection, int32_t flags, int64_t start,
@@ -195,8 +213,9 @@ static int32_t map_direct_memory(void **address, uint64_t length, int32_t protec
         if (aligned + length < base + reserve) munmap(aligned + length, (size_t)(base + reserve - (aligned + length)));
     }
     ranges[range].maps++;
+    const int32_t memory_type = ranges[range].memory_type;
     pthread_mutex_unlock(&pool_lock);
-    note_mapping(name, aligned, length, protection);
+    note_mapping(name, (guest_mapping){(uintptr_t)aligned, length, protection, 1, start, memory_type});
     *address = aligned;
     return 0;
 }
@@ -239,7 +258,7 @@ static int32_t map_flexible_memory(void **address, uint64_t length, int32_t prot
     const int host_protection = (protection & PROT_CPU_READ ? PROT_READ : 0) | (protection & PROT_CPU_WRITE ? PROT_WRITE : 0);
     void *const mapped = mmap(NULL, length, host_protection, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (mapped == MAP_FAILED) rt_fatal(name, "the host cannot map the memory");
-    note_mapping(name, mapped, length, protection);
+    note_mapping(name, (guest_mapping){(uintptr_t)mapped, length, protection, 0, 0, 0});
     *address = mapped;
     return 0;
 }
@@ -256,15 +275,54 @@ static int32_t query_memory_protection(const void *address, void **start, void *
     static const char name[] = "sceKernelQueryMemoryProtection";
     if (start || end) rt_fatal(name, "a start or end: whether end is inclusive is not established");
     if (!protection) rt_fatal(name, "no variable for the protection: the error value is not established");
-    const uintptr_t at = (uintptr_t)address;
-    pthread_mutex_lock(&mappings_lock);
-    int found = -1;
-    for (int i = 0; i < mapping_count; i++)
-        if (at >= mappings[i].start && at - mappings[i].start < mappings[i].length) found = i;
-    const int32_t answer = found >= 0 ? mappings[found].protection : 0;
-    pthread_mutex_unlock(&mappings_lock);
-    if (found < 0) rt_fatal(name, "an address outside the runtime's direct and flexible mappings: not tracked yet");
-    *protection = answer;
+    guest_mapping m;
+    if (!mapping_holding((uintptr_t)address, &m))
+        rt_fatal(name, "an address outside the runtime's direct and flexible mappings: not tracked yet");
+    *protection = m.protection;
+    return 0;
+}
+
+/* sceKernelVirtualQuery(const void *address, int32_t flags, info *, size_t size), as the OpenOrbis
+   homebrew SDK's libkernel.h and _types/kernel.h (OrbisKernelVirtualQueryInfo) declare it: the
+   mapping that holds an address, in a 0x48-byte structure: start and end (0x00, 0x08), the direct
+   memory offset (0x10), protection (0x18), memory type (0x1c), flag bits at 0x20 (flexible 1,
+   direct 2, stack 4, pooled 8, committed 0x10) and a 32-byte name (0x24). Every call in the
+   executable passes flags 0 and size 0x48, and reads the start, the offset or the direct bit: one
+   (0x02d0328c) works out an address's place in direct memory as offset + (address - start), others
+   release the direct memory at the offset (0x02ad3f5e, 0x02ad4066, 0x02ad423e).
+
+   The runtime answers from its record of direct and flexible mappings: start, offset, protection
+   as asked for, memory type, flexible or direct, committed, no name. No call reads the end, and
+   whether it is inclusive is not established; the runtime writes the address just past the
+   mapping. Flags other than 0, another size, an address outside those mappings (other memory is
+   not tracked yet) and a missing structure stop by name. */
+enum { VIRTUAL_QUERY_INFO_SIZE = 0x48, VQ_FLEXIBLE = 0x1, VQ_DIRECT = 0x2, VQ_COMMITTED = 0x10 };
+
+typedef struct {
+    uint64_t start, end;
+    int64_t offset;
+    int32_t protection, memory_type;
+    uint32_t bits;
+    char name[32];
+} virtual_query_info;
+_Static_assert(sizeof(virtual_query_info) == VIRTUAL_QUERY_INFO_SIZE, "OrbisKernelVirtualQueryInfo is 0x48 bytes");
+
+static int32_t virtual_query(const void *address, int32_t flags, virtual_query_info *info, uint64_t size)
+{
+    static const char name[] = "sceKernelVirtualQuery";
+    if (flags) rt_fatal(name, "flags other than 0 are not established");
+    if (!info || size != VIRTUAL_QUERY_INFO_SIZE) rt_fatal(name, "no structure, or a size other than 0x48");
+    guest_mapping m;
+    if (!mapping_holding((uintptr_t)address, &m))
+        rt_fatal(name, "an address outside the runtime's direct and flexible mappings: not tracked yet");
+    *info = (virtual_query_info){
+        .start = m.start,
+        .end = m.start + m.length,
+        .offset = m.direct ? m.offset : 0,
+        .protection = m.protection,
+        .memory_type = m.direct ? m.memory_type : 0,
+        .bits = (m.direct ? VQ_DIRECT : VQ_FLEXIBLE) | VQ_COMMITTED,
+    };
     return 0;
 }
 
@@ -274,3 +332,4 @@ RT_SYSLIB("libkernel", sceKernelMapDirectMemory, map_direct_memory);
 RT_SYSLIB("libkernel", sceKernelReleaseDirectMemory, release_direct_memory);
 RT_SYSLIB("libkernel", sceKernelMapFlexibleMemory, map_flexible_memory);
 RT_SYSLIB("libkernel", sceKernelQueryMemoryProtection, query_memory_protection);
+RT_SYSLIB("libkernel", sceKernelVirtualQuery, virtual_query);
