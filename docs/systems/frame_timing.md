@@ -129,7 +129,7 @@ The latest belong to the **Chalice Dungeon gate**, the object behind the ritual 
   gate is idle in mode 1. One drops the old handle, builds a new handled object from two blocks of
   data, a block of the online manager and a name (the current name entry's, or a default), and
   gives request 3. The other reads four "levels" from event flags: for each of four base flags, the
-  highest level from 9 down to 1 whose flag is set (flag numbers 6221 to 6287, every seventh one
+  highest level from 9 down to 1 whose flag is set (flag numbers 6228 to 6287, every seventh one
   belonging to the same column). It builds the handled object from those four levels and gives
   request 5. What the levels and the flags stand for in the game is not known yet.
 
