@@ -89,12 +89,48 @@ public class DraftExport extends GhidraScript {
                 out.println(res.getDecompiledFunction() == null ? "(no output)" : res.getDecompiledFunction().getC());
                 out.println("## disassembly");
                 it = currentProgram.getListing().getInstructions(f.getBody(), true);
+                Instruction previous = null;
                 while (it.hasNext()) {
                     Instruction ins = it.next();
+                    // Bytes between two listed instructions are outside the function body: most
+                    // often code after a call Ghidra treats as not returning (the original runs
+                    // it when the call returns). Mark them so a reader decodes them from the binary.
+                    if (previous != null) {
+                        long gap = ins.getAddress().getOffset() - previous.getMaxAddress().getOffset() - 1;
+                        if (gap > 0) {
+                            out.printf("  ; GAP: %d byte(s) outside the function body, decoded here (often code after"
+                                + " a call treated as not returning, which runs when it returns):%n", gap);
+                            printGap(out, previous.getMaxAddress().add(1), ins.getAddress());
+                        }
+                    }
                     out.printf("  %s  %s%n", ins.getAddress(), ins);
+                    previous = ins;
                 }
             }
             println("DRAFT " + name);
+        }
+    }
+
+    // Decodes [start, end) without changing the program (the project is opened read-only); bytes
+    // that do not decode are printed raw.
+    private void printGap(PrintWriter out, ghidra.program.model.address.Address start,
+                          ghidra.program.model.address.Address end) {
+        ghidra.app.util.PseudoDisassembler pseudo = new ghidra.app.util.PseudoDisassembler(currentProgram);
+        ghidra.program.model.address.Address at = start;
+        while (at.compareTo(end) < 0) {
+            try {
+                ghidra.app.util.PseudoInstruction p = pseudo.disassemble(at);
+                if (p == null || p.getLength() <= 0) throw new Exception("no decode");
+                out.printf("  ; %s  %s%n", at, p);
+                at = at.add(p.getLength());
+            } catch (Exception e) {
+                try {
+                    out.printf("  ; %s  db 0x%02x%n", at, currentProgram.getMemory().getByte(at) & 0xff);
+                } catch (Exception m) {
+                    out.printf("  ; %s  (unreadable)%n", at);
+                }
+                at = at.add(1);
+            }
         }
     }
 }
