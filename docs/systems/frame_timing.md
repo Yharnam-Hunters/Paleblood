@@ -181,6 +181,7 @@ piece of the game's own per-frame work, the next layer to map.
 | `0x0143e490` | 174 | `frame_timing_task_flush_queue_0143e490` | verified | task manager queue flush: lock, run, destroy and free every queued object, empty the list, unlock |
 | `0x0143f9f0` | 18 | `frame_timing_task_set_frame_value_0143f9f0` | verified | task manager: copies the float at +0x8 of the frame information to the global 0x058b7e08 |
 | `0x014400a0` | 180 | `frame_timing_task_workers_step_014400a0` | verified | task manager workers: three rounds over the worker queues +0x58, +0x68, +0x60 |
+| `0x01ea4a10` | 501 | `frame_timing_gate_entry_check` | edge-verified | entry check of the Chalice Dungeon gate state: online gates as 0x01ea5280; keeps the first keyed entry's object as its handle, then request 4 |
 | `0x01ea5280` | 553 | `frame_timing_gate_owner_check` | edge-verified | owner check of the Chalice Dungeon gate state: idle in mode 1, FrpgNetMan flags and an id allow it; keeps the object for the id as its handle, then request 6 |
 | `0x01eb5390` | 182 | `frame_timing_dungeon_gate_step_init_for_channel_load` | edge-verified | SprjDungeonGateIns::STEP_Init_forChannelLoad: when the gate state is idle in ChannelLoad, request 2 and advance it one fixed step (1/30 s; 1/60 s in the 60 FPS patches) |
 | `0x01eb5490` | 246 | `frame_timing_dungeon_gate_step_mode_switch` | edge-verified | SprjDungeonGateIns::STEP_ModeSwitch: advance the gate state one fixed step while busy, then go to the first step of its mode |
