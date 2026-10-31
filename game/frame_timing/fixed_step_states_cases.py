@@ -4,7 +4,7 @@
 
 usage: fixed_step_states_cases.py CAPTURES_DIR
 
-Writes CAPTURES_DIR/<function>/edge/*.json for all twenty-two methods. The owner's advance method
+Writes CAPTURES_DIR/<function>/edge/*.json for all twenty-three methods. The owner's advance method
 (vtable slot +0xd0) is a stand-in game function the case stubs; its descriptor is compared, and
 it leaves the busy count (and for the gate, the state) the case says. Covers idle and busy owners,
 staying busy after the advance, and states around the 2..5 range of request_7 (with wraparound
@@ -21,7 +21,10 @@ another one; counts that destroy an object or report an invalid unref). For the 
 0x01ea4a10: the same gates, the search of its list (empty, no match, a match with no object,
 several matches), the handle swap, and destroys that rewrite the entry or make the owner busy.
 For the ritual handle reset 0x01ea5670: each state, the server ritual mode's gates and flag bit,
-a missing FrpgNetMan in the local ritual mode, and a rebuild that makes the owner busy.
+a missing FrpgNetMan in the local ritual mode, and a rebuild that makes the owner busy. For the
+ritual slot reset 0x01ea5850: the same gates, which of the sixteen slots are listed, the heap made
+on first use and its traits, and a call to 0x01e9cd20 that makes the owner busy or swaps the
+list's block (the block held before the call is freed).
 """
 import json
 import os
@@ -48,6 +51,9 @@ HOLYGRAIL_METHODS = [  # (address, name)
 ]
 SLOT_METHOD, OWNER_CHECK, ENTRY_CHECK, HANDLE_RESET = '0x01ec3ef0', '0x01ea5280', '0x01ea4a10', '0x01ea5670'
 REBUILD_HANDLE = '0x01e9cb80'
+SLOT_RESET, CONTAINER_HEAP, MAKE_HEAP, APPEND_ITEM, PASS_WITH_ITEMS = '0x01ea5850', '0x05940670', '0x02fa2b10', '0x01e9d960', '0x01e9cd20'
+HEAP_TRAITS, HEAP_FREE = '0x00400090', '0x004000a0'  # unused guest addresses: the heap's vtable slots, stubbed
+SLOTS = 0x188  # sixteen slots of 12 bytes: key, active, unknown
 FRPG_NET_MAN, LOOKUP, FATAL_ERROR, DESTROY = '0x0593b120', '0x02265290', '0x024b55b0', '0x00400080'
 HANDLE = 0xd0  # the owner's handle
 INNER = 0x200  # an unused span of the owner that can hold an object
@@ -365,6 +371,83 @@ def reset_cases():
     return out
 
 
+def slot_reset_case(cid, busy=0, state=2, flags=(1, 0, 0, 0), net=True, handle=True, flag_bits=0, active=(0,),
+                    actives=None, heap=True, traits=0x20, pass_sets_busy=False, pass_swaps_block=False,
+                    advances=((0, 1),)):
+    """The ritual slot reset. active: the indices of the active slots (actives: their active words).
+    heap: whether the container heap exists yet (otherwise 0x02fa2b10 makes it); traits: the byte
+    its slot 0x20 reports. The list lives on the stack, so the stubs record its contents, not its
+    address; the append stub grows it by writing into it, as the real one does."""
+    actives = actives or {i: 1 for i in active}
+    c = {'schema': 1, 'address': SLOT_RESET, 'id': cid, 'returns': 'i8',
+         'args': {'rdi': 'buf:owner', 'rsi': 'buf:values'},
+         'buffers': {'owner': {'size': 0x270}, 'owner_vt': {'size': 216}, 'net': {'size': 0xa60},
+                     'obj_vt': {'size': 8}, 'object': {'size': 0x130}, 'values': {'size': 64},
+                     'heap': {'size': 8}, 'heap_vt': {'size': 0x78}, 'items': {'size': 16 * 12}, 'other_items': {'size': 16 * 12}},
+         'memory': [{'addr': 'buf:owner', 'pointer': 'owner_vt'}, {'addr': 'buf:owner_vt+208', 'guest': ADVANCE},
+                    {'addr': f'buf:owner+{STATE}', 'bytes': u32(state)}, {'addr': f'buf:owner+{REQUEST}', 'bytes': u32(0x55)},
+                    {'addr': f'buf:owner+{BUSY}', 'bytes': u32(busy)},
+                    {'addr': FRPG_NET_MAN, 'pointer': 'net'} if net else {'addr': FRPG_NET_MAN, 'bytes': '00' * 8},
+                    {'addr': 'buf:object', 'pointer': 'obj_vt'}, {'addr': 'buf:object+8', 'bytes': u32(1)},
+                    {'addr': 'buf:object+268', 'bytes': f'{flag_bits:02x}'}, {'addr': 'buf:object+292', 'bytes': u32(0xdeadbeef)},
+                    {'addr': f'buf:owner+{HANDLE}', 'pointer': 'object'} if handle else {'addr': f'buf:owner+{HANDLE}', 'bytes': '00' * 8},
+                    {'addr': CONTAINER_HEAP, 'pointer': 'heap'} if heap else {'addr': CONTAINER_HEAP, 'bytes': '00' * 8},
+                    {'addr': 'buf:heap', 'pointer': 'heap_vt'}, {'addr': 'buf:heap_vt+32', 'guest': HEAP_TRAITS},
+                    {'addr': 'buf:heap_vt+112', 'guest': HEAP_FREE}] +
+                   [{'addr': f'buf:values+{4 * i}', 'bytes': u32(0x100 + i)} for i in range(16)] +
+                   [{'addr': f'buf:owner+{SLOTS + 12 * i}', 'bytes': u32(0x50 + i) + u32(actives.get(i, 0)) + u32(0x77)} for i in range(16)] +
+                   [{'addr': f'buf:net+{off}', 'bytes': f'{v:02x}'} for off, v in zip((0x8, 0x9f6, 0x9f8, 0xa50), flags)],
+         'imports': []}
+    listed = [i for i in range(16) if actives.get(i, 0) != 0]
+    stubs = [] if heap else [{'address': MAKE_HEAP, 'argc': 0, 'ret': 'buf:heap'}]
+    stubs.append({'address': HEAP_TRAITS, 'argc': 3, 'argi': [1, 2], 'writes': [{'arg': 0, 'offset': 0, 'bytes': f'{traits:02x}'}]})
+    stubs += [{'address': FATAL_ERROR, 'argc': 4, 'argi': [0, 1, 2]}] * 2
+    for k, _ in enumerate(listed, 1):
+        stubs.append({'address': APPEND_ITEM, 'argc': 2, 'argi': [],
+                      'argmem': [{'arg': 1, 'size': 12}, {'arg': 0, 'offset': 8, 'size': 32}],
+                      'writes': [{'arg': 0, 'offset': 8, 'pointer': 'items'}, {'arg': 0, 'offset': 16, 'pointer': f'items+{12 * k}'},
+                                 {'arg': 0, 'offset': 24, 'pointer': 'items+192'}]})
+    pass_writes = []
+    if pass_sets_busy:
+        pass_writes.append({'arg': 0, 'offset': BUSY - HANDLE, 'bytes': u32(1)})
+    if pass_swaps_block:
+        pass_writes.append({'arg': 1, 'offset': 8, 'pointer': 'other_items'})
+    stubs.append({'address': PASS_WITH_ITEMS, 'argc': 2, 'argi': [0],
+                  'argmem': [{'arg': 0, 'size': 8}, {'arg': 1, 'offset': 8, 'size': 32}], 'writes': pass_writes})
+    stubs += [{'address': ADVANCE, 'argc': 2, 'argi': [0, 1],
+               'argmem': [{'arg': 1, 'size': 12}, {'arg': 0, 'offset': STATE, 'size': 12}],
+               'writes': [{'arg': 0, 'offset': STATE, 'bytes': u32(s_)}, {'arg': 0, 'offset': BUSY, 'bytes': u32(b_)}]}
+              for b_, s_ in advances]
+    stubs.append({'address': HEAP_FREE, 'argc': 2, 'argi': [0, 1]})
+    c['stubs'] = stubs
+    return c
+
+
+def slot_reset_cases():
+    out = [slot_reset_case('busy', busy=1), slot_reset_case('busy_negative', busy=-1)]
+    out += [slot_reset_case(f'state_{s:x}', state=s) for s in (0, 1, 4, 5, 6, 0xffffffff)]
+    # Which slots are listed: none (nothing passed on, nothing freed), one, the last, several, all.
+    out += [slot_reset_case('no_active_slot', active=()), slot_reset_case('first_slot'), slot_reset_case('last_slot', active=(15,)),
+            slot_reset_case('three_slots', active=(0, 3, 15)), slot_reset_case('all_slots', active=tuple(range(16))),
+            slot_reset_case('active_word_values', actives={2: 0xffffffff, 5: 0x80000000, 9: 0})]
+    # The handle: none, and a missing FrpgNetMan in the local ritual mode.
+    out += [slot_reset_case('without_handle', handle=False), slot_reset_case('no_net_with_handle', net=False),
+            slot_reset_case('no_net_without_handle', net=False, handle=False)]
+    # The server ritual mode: the gates, the handle's flag bit.
+    out += [slot_reset_case('server', state=3), slot_reset_case('server_without_handle', state=3, handle=False),
+            slot_reset_case('server_net_008_clear', state=3, flags=(0, 0, 0, 0)), slot_reset_case('server_net_9f6_set', state=3, flags=(1, 1, 0, 0)),
+            slot_reset_case('server_net_9f8_set', state=3, flags=(1, 0, 1, 0)), slot_reset_case('server_net_a50_set', state=3, flags=(1, 0, 0, 1)),
+            slot_reset_case('server_flag_bit_set', state=3, flag_bits=1), slot_reset_case('server_flag_other_bits', state=3, flag_bits=0xfe),
+            slot_reset_case('server_without_handle_gates_closed', state=3, handle=False, flags=(0, 0, 0, 0))]
+    # The heap: made on first use; traits without bit 5 are reported and the reset goes on.
+    out += [slot_reset_case('heap_made', heap=False), slot_reset_case('heap_made_no_slot', heap=False, active=()),
+            slot_reset_case('heap_traits_without_bit', traits=0xdf), slot_reset_case('heap_traits_all_bits', traits=0xff)]
+    # The call to 0x01e9cd20: it may make the owner busy, or swap the list's block (the old one is freed).
+    out += [slot_reset_case('pass_makes_busy', pass_sets_busy=True), slot_reset_case('pass_swaps_block', pass_swaps_block=True),
+            slot_reset_case('advance_leaves_busy', advances=((1, 2),)), slot_reset_case('advance_changes_state', advances=((0, 6),))]
+    return out
+
+
 def slot_cases():
     out = []
     # Idle in every mode and past them: request 7 is taken twice in 2..5 (before and after the
@@ -511,6 +594,12 @@ def main():
             with open(os.path.join(out, f"{c['id']}.json"), 'w') as f:
                 json.dump(c, f, indent=1)
             n += 1
+    out = os.path.join(sys.argv[1], 'frame_timing_gate_ritual_slot_reset', 'edge')
+    os.makedirs(out, exist_ok=True)
+    for c in slot_reset_cases():
+        with open(os.path.join(out, f"{c['id']}.json"), 'w') as f:
+            json.dump(c, f, indent=1)
+        n += 1
     out = os.path.join(sys.argv[1], 'frame_timing_gate_ritual_handle_reset', 'edge')
     os.makedirs(out, exist_ok=True)
     for c in reset_cases():

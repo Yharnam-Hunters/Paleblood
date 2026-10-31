@@ -51,18 +51,27 @@ enum GateMode : uint32_t {
     mode_display_error = 6,
 };
 
+constexpr uint32_t slot_count = 16;  // the owner's slots, which the ritual slot reset lists
+
 struct StateOwner {
     const StateOwnerVtable *vtable;
     uint8_t unknown_0x008[0xc8];
     engine::RefObject *handle;  // what the owner check looked up for its id (0x01ea5280)
-    uint8_t unknown_0x0d8[0x184];
+    uint8_t unknown_0x0d8[0xb0];
+    struct Slot {
+        uint32_t key;
+        uint32_t active;  // a slot counts when nonzero
+        uint8_t unknown_0x008[0x4];
+    } slots[slot_count];  // what the ritual slot reset (0x01ea5850) collects
+    uint8_t unknown_0x248[0x14];
     uint32_t state;  // a GateMode
     uint32_t request;
     int32_t busy;
     uint8_t unknown_0x268[0x4];
     float value_26c;  // set to 10 with request 2; its meaning is not known
 };
-static_assert(offsetof(StateOwner, handle) == 0xd0);
+static_assert(offsetof(StateOwner, handle) == 0xd0 && offsetof(StateOwner, slots) == 0x188 &&
+              sizeof(StateOwner::Slot) == 12);
 static_assert(offsetof(StateOwner, state) == 0x25c && offsetof(StateOwner, request) == 0x260 &&
               offsetof(StateOwner, busy) == 0x264 && offsetof(StateOwner, value_26c) == 0x26c);
 
@@ -182,6 +191,54 @@ struct HandleObject {
     uint32_t value_124;  // cleared by the reset
 };
 static_assert(offsetof(HandleObject, flags_10c) == 0x10c && offsetof(HandleObject, value_124) == 0x124);
+// One of the owner's active slots as the ritual slot reset collects it: the slot's key, its index,
+// and the caller's value for that index.
+struct SlotItem {
+    uint32_t key;
+    uint32_t index;
+    uint32_t value;
+};
+static_assert(sizeof(SlotItem) == 12);
+
+// An engine heap, as a container keeps it: slot 0x20 reports its traits (bit 5 of the first byte:
+// containers may use it), slot 0x70 frees a block.
+struct Heap;
+struct HeapTraits {
+    uint8_t bits;
+    uint8_t unknown_0x001[0xf];  // the original leaves 16 bytes for the report (its stack canary follows)
+};
+constexpr uint8_t heap_allows_containers = 0x20;
+struct HeapVtable {
+    uint8_t unknown_0x000[0x20];
+    void (*report_traits)(HeapTraits *out, Heap *heap, int32_t zero);
+    uint8_t unknown_0x028[0x48];
+    void (*free)(Heap *heap, void *block);
+};
+static_assert(offsetof(HeapVtable, report_traits) == 0x20 && offsetof(HeapVtable, free) == 0x70);
+struct Heap {
+    const HeapVtable *vtable;
+};
+
+// The heap the slot reset's list is built on: made on first use (0x02fa2b10).
+RT_GLOBAL(0x05940670, container_heap, Heap *);
+RT_ORIGINAL(0x02fa2b10, make_container_heap, Heap *());
+RT_GLOBAL(0x04b37dc0, message_incompatible_heap, const char);  // "Tried to create container with incompatible heap."
+constexpr int32_t line_incompatible_heap = 0x3e;
+
+// The engine's growable list of slot items: the first 8 bytes are not set by the slot reset.
+struct SlotItemList {
+    uint64_t unknown_0x000;
+    SlotItem *begin;
+    SlotItem *end;
+    SlotItem *capacity;
+    Heap *heap;
+};
+static_assert(offsetof(SlotItemList, begin) == 0x8 && offsetof(SlotItemList, heap) == 0x20);
+// Appends a copy of an item (0x01e9d960, not replaced).
+RT_ORIGINAL(0x01e9d960, append_slot_item, void(SlotItemList *list, const SlotItem *item));
+// Called with the handle's address and the list (0x01e9cd20, not replaced; not analyzed).
+RT_ORIGINAL(0x01e9cd20, pass_handle_on_with_items, void(engine::RefObject **handle, SlotItemList *list));
+
 // Called with the handle's address by the reset, which ignores its result; not replaced, and what
 // it does is not analyzed (the name only says how the reset uses it).
 RT_ORIGINAL(0x01e9cb80, pass_handle_on, void(engine::RefObject **handle));
@@ -449,35 +506,82 @@ extern "C" bool bb_frame_timing_gate_entry_check(StateOwner *owner, GateEntryLis
     return false;
 }
 
+namespace {
+
+// When either ritual reset may run: the owner idle in the local ritual mode, or in the server
+// ritual mode with FrpgNetMan's bytes allowing it and the handle's flag bit 0 clear. The original
+// checks FrpgNetMan again with the pointer the bytes were just read through, so that check cannot
+// fail and is left out.
+bool ritual_reset_allowed(const StateOwner *owner)
+{
+    if (owner->busy != 0) return false;
+    if (owner->state == mode_local_ritual) return true;
+    if (owner->state != mode_server_ritual || !net_allows()) return false;
+    const auto *object = reinterpret_cast<const HandleObject *>(owner->handle);
+    return !object || (object->flags_10c & 1) == 0;
+}
+
+// Clears the handle's word at +0x124, if there is a handle. A missing FrpgNetMan is reported, then
+// the handle read again: the word is cleared only if there still is one (code after the fatal
+// error call that Ghidra drops; QUIRKS.md).
+void clear_handle_word(StateOwner *owner)
+{
+    if (!owner->handle) return;
+    if (!frpg_net_man_instance.get()) {
+        engine::report_missing(frpg_net_man_name.address());
+        if (!owner->handle) return;
+    }
+    reinterpret_cast<HandleObject *>(owner->handle)->value_124 = 0;
+}
+
+}  // namespace
+
 // The ritual handle reset (0x01ea5670): when the owner is idle in the local ritual mode, or in the
 // server ritual mode with FrpgNetMan's bytes allowing it and the handle's flag bit 0 clear, clears the
 // handle's word at +0x124 (if there is a handle), passes the handle on to 0x01e9cb80, then requests 8
 // if still idle and reports true; every other path reports false.
 extern "C" bool bb_frame_timing_gate_ritual_handle_reset(StateOwner *owner)
 {
-    if (owner->busy != 0) return false;
-    if (owner->state == mode_server_ritual) {
-        if (!net_allows()) return false;
-        // The original checks FrpgNetMan again here with the pointer the gates just read, so that
-        // check cannot fail and is left out.
-        const auto *object = reinterpret_cast<const HandleObject *>(owner->handle);
-        if (object && (object->flags_10c & 1) != 0) return false;
-    } else if (owner->state != mode_local_ritual) {
-        return false;
-    }
-    if (owner->handle) {
-        // A missing FrpgNetMan is reported, then the handle read again: the word is cleared only
-        // if there still is one (code after the fatal error call that Ghidra drops; QUIRKS.md).
-        bool clear = true;
-        if (!frpg_net_man_instance.get()) {
-            engine::report_missing(frpg_net_man_name.address());
-            clear = owner->handle != nullptr;
-        }
-        if (clear) reinterpret_cast<HandleObject *>(owner->handle)->value_124 = 0;
-    }
+    if (!ritual_reset_allowed(owner)) return false;
+    clear_handle_word(owner);
     pass_handle_on(&owner->handle);
     if (owner->busy != 0) return false;
     return take_request(owner, request_8);
+}
+
+// The ritual slot reset (0x01ea5850): allowed as the ritual handle reset is, it lists the owner's
+// active slots (each with the caller's value for its index) on the container heap; with none it
+// reports false. Otherwise it clears the handle's word, passes the handle and the list to
+// 0x01e9cd20, requests 8 if still idle and reports true. The list's block is freed last: the one
+// it held before that call, as the original keeps it.
+extern "C" bool bb_frame_timing_gate_ritual_slot_reset(StateOwner *owner, const uint32_t *values)
+{
+    if (!ritual_reset_allowed(owner)) return false;
+    Heap *&heap = container_heap.get();
+    if (!heap) heap = make_container_heap();
+    Heap *const list_heap = heap;
+    HeapTraits traits;
+    list_heap->vtable->report_traits(&traits, list_heap, 0);
+    if ((traits.bits & heap_allows_containers) == 0)
+        engine::fatal_error(nullptr, line_incompatible_heap, message_incompatible_heap.address());
+
+    SlotItemList list{};
+    list.heap = list_heap;
+    for (uint32_t index = 0; index < slot_count; ++index) {
+        const StateOwner::Slot &slot = owner->slots[index];
+        if (slot.active == 0) continue;
+        const SlotItem item{slot.key, index, values[index]};
+        append_slot_item(&list, &item);
+    }
+    SlotItem *const block = list.begin;
+    bool requested = false;
+    if (list.begin != list.end) {
+        clear_handle_word(owner);
+        pass_handle_on_with_items(&owner->handle, &list);
+        if (owner->busy == 0) requested = take_request(owner, request_8);
+    }
+    if (block) list.heap->vtable->free(list.heap, block);
+    return requested;
 }
 
 // Leaves a ritual or dungeon mode, then asks the check on the owner: when it says yes, settles and
