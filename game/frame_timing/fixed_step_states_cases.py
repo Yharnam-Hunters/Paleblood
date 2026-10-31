@@ -513,23 +513,28 @@ def pass_cases(address):
 
 
 def create_case(cid, busy=0, state=1, net=True, handle=None, refs=None, entry=True, kind=0, capacity=3,
-                created='new', old_destroy_sets_busy=False, advances=((0, 1),)):
+                created='new', old_destroy_sets_busy=False, root_in_source=False, advances=((0, 1),)):
     """The handle creation. handle: the owner's handle before ('old', 'in_owner' or None); entry:
     whether there is a current name entry, of this kind, whose names have this capacity (8 or more:
     the text is on the heap); created: what 0x01e9a8f0 creates ('new', 'old' or None). The two
-    blocks live on the stack: their fill stubs write a pattern and the creation stub records it."""
+    blocks live on the stack: their fill stubs write a pattern and the creation stub records it.
+    root_in_source places the name root inside the source, where the second fill stub replaces its
+    holder with one that has no entry: the original read the holder before the fills."""
     refs = refs or {}
     c = {'schema': 1, 'address': CREATE_HANDLE, 'id': cid, 'returns': 'i8',
          'args': {'rdi': 'buf:owner', 'rsi': 'buf:source'},
          'buffers': {'owner': {'size': 0x270}, 'owner_vt': {'size': 216}, 'net': {'size': 0xa80}, 'source': {'size': 0x20},
                      'root': {'size': 0x10}, 'holder': {'size': 0x5d8}, 'current': {'size': 8}, 'entry': {'size': 0xf0},
-                     'heap_text': {'size': 0x20}, 'obj_vt': {'size': 8}, 'new': {'size': 0x10}, 'old': {'size': 0x10}},
+                     'heap_text': {'size': 0x20}, 'obj_vt': {'size': 8}, 'new': {'size': 0x10}, 'old': {'size': 0x10},
+                     'other_holder': {'size': 0x5d8}, 'other_current': {'size': 8}},
          'memory': [{'addr': 'buf:owner', 'pointer': 'owner_vt'}, {'addr': 'buf:owner_vt+208', 'guest': ADVANCE},
                     {'addr': f'buf:owner+{STATE}', 'bytes': u32(state)}, {'addr': f'buf:owner+{REQUEST}', 'bytes': u32(0x55)},
                     {'addr': f'buf:owner+{BUSY}', 'bytes': u32(busy)},
                     {'addr': FRPG_NET_MAN, 'pointer': 'net'} if net else {'addr': FRPG_NET_MAN, 'bytes': '00' * 8},
                     {'addr': 'buf:source+16', 'bytes': u32(0xc0ffee)},
-                    {'addr': NAME_ROOT, 'pointer': 'root'}, {'addr': 'buf:root+8', 'pointer': 'holder'},
+                    {'addr': NAME_ROOT, 'pointer': 'source' if root_in_source else 'root'},
+                    {'addr': 'buf:source+8' if root_in_source else 'buf:root+8', 'pointer': 'holder'},
+                    {'addr': f'buf:other_holder+{0x5d0}', 'pointer': 'other_current'}, {'addr': 'buf:other_current', 'bytes': '00' * 8},
                     {'addr': f'buf:holder+{0x5d0}', 'pointer': 'current'},
                     {'addr': 'buf:current', 'pointer': 'entry'} if entry else {'addr': 'buf:current', 'bytes': '00' * 8},
                     {'addr': 'buf:entry+12', 'bytes': u32(kind)},
@@ -555,7 +560,8 @@ def create_case(cid, busy=0, state=1, net=True, handle=None, refs=None, entry=Tr
         stubs.append({'address': DESTROY, 'argc': 1, 'argi': [0], 'argmem': [{'arg': 0, 'offset': HANDLE - INNER, 'size': 8}],
                       'writes': [{'arg': 0, 'offset': BUSY - INNER, 'bytes': u32(1)}] if old_destroy_sets_busy else []})
     stubs += [{'address': FILL_PART1, 'argc': 3, 'argi': [1, 2], 'writes': [{'arg': 0, 'offset': 0, 'bytes': '11' * 8}]},
-              {'address': FILL_PART2, 'argc': 2, 'argi': [1], 'writes': [{'arg': 0, 'offset': 0, 'bytes': '22' * 0x48}]},
+              {'address': FILL_PART2, 'argc': 2, 'argi': [1], 'writes': [{'arg': 0, 'offset': 0, 'bytes': '22' * 0x48}] +
+               ([{'arg': 1, 'offset': 8, 'pointer': 'other_holder'}] if root_in_source else [])},
               {'address': CREATE_OBJECT, 'argc': 6, 'argi': [2, 4, 5],
                'argmem': [{'arg': 1, 'size': 8}, {'arg': 3, 'size': 0x48}],
                'writes': [{'arg': 0, 'offset': 0, 'pointer': created} if created else {'arg': 0, 'offset': 0, 'bytes': '00' * 8}]},
@@ -581,7 +587,11 @@ def create_cases():
     out += [create_case('no_entry', entry=False), create_case('kind_0_inline'), create_case('kind_1_inline', kind=1),
             create_case('kind_2_inline', kind=2), create_case('kind_minus_1', kind=-1),
             create_case('kind_0_heap', capacity=8), create_case('kind_1_heap', kind=1, capacity=8),
-            create_case('capacity_7', capacity=7), create_case('capacity_huge', kind=1, capacity=0xffffffffffffffff)]
+            create_case('capacity_7', capacity=7), create_case('capacity_huge', kind=1, capacity=0xffffffffffffffff),
+            # The kind is a full 32-bit word; the capacity a full 64-bit one.
+            create_case('kind_0x101', kind=0x101), create_case('capacity_2_pow_32', capacity=0x100000000),
+            # The name root is read before the fills, which may change what it points to.
+            create_case('root_read_before_fills', root_in_source=True)]
     # The created object: none, with no references (the pair destroys it), the old handle again.
     out += [create_case('created_none', created=None), create_case('created_no_reference', refs={'new': 0}),
             create_case('created_negative_reference', refs={'new': -1}),

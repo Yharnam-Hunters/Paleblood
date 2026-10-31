@@ -264,10 +264,10 @@ struct CreationSource {
     uint8_t unknown_0x000[0x10];
     uint32_t value_010;
 };
-// The two blocks the creation fills on its stack before creating the handle object. The original
-// leaves the first 0x20 bytes before the second block (nothing else there is live yet) and the
-// second 72 bytes, up to its stack canary.
-constexpr size_t creation_part1_bytes = 0x20, creation_part2_bytes = 0x48;
+// The two blocks the creation fills on its stack before creating the handle object: the first is
+// one 32-bit word (0x0231fbc0 writes a single dword; the original's slot is 8 bytes, up to the
+// created object's), the second 72 bytes (0x01eaf9d0 writes qwords at +0 to +0x40).
+constexpr size_t creation_part1_bytes = 0x8, creation_part2_bytes = 0x48;
 struct CreationPart1 {
     uint8_t bytes[creation_part1_bytes];
 };
