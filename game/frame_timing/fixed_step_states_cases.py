@@ -4,7 +4,7 @@
 
 usage: fixed_step_states_cases.py CAPTURES_DIR
 
-Writes CAPTURES_DIR/<function>/edge/*.json for all twenty-seven methods. The owner's advance method
+Writes CAPTURES_DIR/<function>/edge/*.json for all twenty-eight methods. The owner's advance method
 (vtable slot +0xd0) is a stand-in game function the case stubs; its descriptor is compared, and
 it leaves the busy count (and for the gate, the state) the case says. Covers idle and busy owners,
 staying busy after the advance, and states around the 2..5 range of request_7 (with wraparound
@@ -30,7 +30,9 @@ handle's word at +0x50, and a pass-on call that makes the owner busy. Not covere
 check's missing-FrpgNetMan report, which the original follows with a null read; the pass-on
 methods' reports, which that check's FrpgNetMan read makes unreachable. For the handle creation
 0x01ea47a0: the gate, the old handle's release, the name (no entry, either kind, inline or heap
-text), the created object's reference counts, and a missing FrpgNetMan.
+text), the created object's reference counts, and a missing FrpgNetMan. For the level creation
+0x01ea4cb0: the online gates, and a real event-flag store (a three-node tree, both storage kinds,
+an unknown kind, no storage, a missing group) with each column's highest set level.
 """
 import json
 import os
@@ -64,6 +66,9 @@ READY, PASS_KIND_1, PASS_KIND_2 = '0x01ea5c90', '0x01ea5e20', '0x01ea6080'
 PASS_LOCAL, PASS_SERVER = '0x02265170', '0x02265960'
 CREATE_HANDLE, FILL_PART1, FILL_PART2, CREATE_OBJECT = '0x01ea47a0', '0x0231fbc0', '0x01eaf9d0', '0x01e9a8f0'
 NAME_ROOT, DEFAULT_NAME = '0x0593b130', '0x04dd85f0'
+LEVEL_CREATION, CREATE_FROM_LEVELS, EVENT_FLAG_MAN = '0x01ea4cb0', '0x02265580', '0x0593b100'
+LEVEL_BASES = (0x184d, 0x184e, 0x184f, 0x1850)
+FLAGS_PER_GROUP = 64  # the levels' flags fall in groups 97 and 98
 FRPG_NET_MAN, LOOKUP, FATAL_ERROR, DESTROY = '0x0593b120', '0x02265290', '0x024b55b0', '0x00400080'
 HANDLE = 0xd0  # the owner's handle
 INNER = 0x200  # an unused span of the owner that can hold an object
@@ -601,6 +606,115 @@ def create_cases():
     return out
 
 
+def level_flag(column, level):
+    return LEVEL_BASES[column] + 7 * level
+
+
+def levels_case(cid, busy=0, state=1, flags=(1, 0, 0, 0), set_flags=(), kinds=None, null_storage=(), missing=(),
+                full=(), handle=None, refs=None, created='new', old_destroy_sets_busy=False, advances=((0, 1),)):
+    """The level creation. set_flags: the event flags set. The store's tree has nodes for groups 97
+    (left), 98 (root) and 99 (right); kinds: a group's storage kind (2 own block, 1 strided slot,
+    other: none); null_storage: groups whose storage is null; missing: groups left out of the tree;
+    full: groups whose own bytes are all set. handle 'in_owner' places the old handle inside the
+    owner; old_destroy_sets_busy makes its destroy set the owner's busy word."""
+    kinds = kinds or {}
+    refs = refs or {}
+    c = {'schema': 1, 'address': LEVEL_CREATION, 'id': cid, 'returns': 'i8',
+         'args': {'rdi': 'buf:owner'},
+         'buffers': {'owner': {'size': 0x270}, 'owner_vt': {'size': 216}, 'net': {'size': 0xa60},
+                     'store': {'size': 0x40}, 'header': {'size': 0x38}, 'strided': {'size': 0x40},
+                     'obj_vt': {'size': 8}, 'new': {'size': 0x10}, 'old': {'size': 0x10}},
+         'memory': [{'addr': 'buf:owner', 'pointer': 'owner_vt'}, {'addr': 'buf:owner_vt+208', 'guest': ADVANCE},
+                    {'addr': f'buf:owner+{STATE}', 'bytes': u32(state)}, {'addr': f'buf:owner+{REQUEST}', 'bytes': u32(0x55)},
+                    {'addr': f'buf:owner+{BUSY}', 'bytes': u32(busy)}, {'addr': FRPG_NET_MAN, 'pointer': 'net'},
+                    {'addr': EVENT_FLAG_MAN, 'pointer': 'store'},
+                    {'addr': 'buf:store+28', 'bytes': u32(FLAGS_PER_GROUP) + u32(16)},  # flags per group, stride
+                    {'addr': 'buf:store+40', 'pointer': 'strided'}, {'addr': 'buf:store+56', 'pointer': 'header'},
+                    {'addr': 'buf:header+25', 'bytes': '01'},  # the sentinel
+                    {'addr': 'buf:obj_vt', 'guest': DESTROY},
+                    {'addr': 'buf:new', 'pointer': 'obj_vt'}, {'addr': 'buf:old', 'pointer': 'obj_vt'},
+                    {'addr': 'buf:new+8', 'bytes': u32(refs.get('new', 1))}, {'addr': 'buf:old+8', 'bytes': u32(refs.get('old', 1))}] +
+                   [{'addr': f'buf:net+{off}', 'bytes': f'{v:02x}'} for off, v in zip((0x8, 0x9f6, 0x9f8, 0xa50), flags)],
+         'imports': []}
+    groups = [g for g in (97, 98, 99) if g not in missing]
+    for g in (97, 98, 99):
+        c['buffers'][f'node{g}'] = {'size': 0x38}
+        c['buffers'][f'bits{g}'] = {'size': 8}
+    for i, g in enumerate(groups):
+        kind = kinds.get(g, 2)
+        if 98 in groups:  # balanced: 98 at the root
+            left = 'node97' if g == 98 and 97 in groups else 'header'
+            right = 'node99' if g == 98 and 99 in groups else 'header'
+        else:  # without 98, a chain to the right in group order (still a search tree)
+            left, right = 'header', f'node{groups[i + 1]}' if i + 1 < len(groups) else 'header'
+        c['memory'] += [{'addr': f'buf:node{g}', 'pointer': left}, {'addr': f'buf:node{g}+16', 'pointer': right},
+                        {'addr': f'buf:node{g}+32', 'bytes': u32(g)}, {'addr': f'buf:node{g}+40', 'bytes': u32(kind)}]
+        if g in null_storage:
+            c['memory'].append({'addr': f'buf:node{g}+48', 'bytes': '00' * 8})
+        elif kind == 1:
+            c['memory'].append({'addr': f'buf:node{g}+48', 'bytes': struct.pack('<Q', g - 97).hex()})  # slot index
+        else:
+            c['memory'].append({'addr': f'buf:node{g}+48', 'pointer': f'bits{g}'})
+    root = 'node98' if 98 in groups else (f'node{groups[0]}' if groups else 'header')
+    c['memory'].append({'addr': 'buf:header+8', 'pointer': root})
+    bits = {}
+    for flag in set_flags:
+        g, within = divmod(flag, FLAGS_PER_GROUP)
+        target = f'strided+{16 * (g - 97) + (within >> 3)}' if kinds.get(g, 2) == 1 else f'bits{g}+{within >> 3}'
+        bits[target] = bits.get(target, 0) | (1 << (7 - (within & 7)))
+    c['memory'] += [{'addr': f'buf:{t}', 'bytes': f'{v:02x}'} for t, v in sorted(bits.items())]
+    c['memory'] += [{'addr': f'buf:bits{g}', 'bytes': 'ff' * 8} for g in full]
+    first_destroy = []
+    if handle == 'in_owner':
+        c['memory'] += [{'addr': f'buf:owner+{HANDLE}', 'pointer': f'owner+{INNER}'}, {'addr': f'buf:owner+{INNER}', 'pointer': 'obj_vt'},
+                        {'addr': f'buf:owner+{INNER + 8}', 'bytes': u32(1)}]
+        first_destroy = [{'address': DESTROY, 'argc': 1, 'argi': [0], 'argmem': [{'arg': 0, 'offset': HANDLE - INNER, 'size': 8}],
+                          'writes': [{'arg': 0, 'offset': BUSY - INNER, 'bytes': u32(1)}] if old_destroy_sets_busy else []}]
+    else:
+        c['memory'].append({'addr': f'buf:owner+{HANDLE}', 'pointer': handle} if handle else {'addr': f'buf:owner+{HANDLE}', 'bytes': '00' * 8})
+    c['stubs'] = first_destroy + [{'address': CREATE_FROM_LEVELS, 'argc': 2, 'argi': [], 'argmem': [{'arg': 1, 'size': 16}],
+                   'writes': [{'arg': 0, 'offset': 0, 'pointer': created} if created else {'arg': 0, 'offset': 0, 'bytes': '00' * 8}]},
+                  *[{'address': DESTROY, 'argc': 1, 'argi': [0]}] * 4, *[{'address': FATAL_ERROR, 'argc': 4, 'argi': [0, 1, 2]}] * 4] + \
+        [{'address': ADVANCE, 'argc': 2, 'argi': [0, 1],
+          'argmem': [{'arg': 1, 'size': 12}, {'arg': 0, 'offset': HANDLE, 'size': 8}, {'arg': 0, 'offset': STATE, 'size': 12}],
+          'writes': [{'arg': 0, 'offset': STATE, 'bytes': u32(s_)}, {'arg': 0, 'offset': BUSY, 'bytes': u32(b_)}]}
+         for b_, s_ in advances]
+    return c
+
+
+def levels_cases():
+    f = level_flag
+    out = [levels_case('busy', busy=1), levels_case('busy_negative', busy=-1)]
+    out += [levels_case(f'state_{s:x}', state=s) for s in (0, 2, 3, 6)]
+    out += [levels_case('net_008_clear', flags=(0, 0, 0, 0)), levels_case('net_9f6_set', flags=(1, 1, 0, 0)),
+            levels_case('net_9f8_set', flags=(1, 0, 1, 0)), levels_case('net_a50_set', flags=(1, 0, 0, 1))]
+    # The levels: none set, the highest wins, each column alone, the edges 1 and 9, level 0's flag ignored.
+    out += [levels_case('no_flags'), levels_case('all_level_9', set_flags=[f(c, 9) for c in range(4)]),
+            levels_case('all_level_1', set_flags=[f(c, 1) for c in range(4)]),
+            levels_case('highest_wins', set_flags=[f(0, 2), f(0, 5), f(0, 3), f(1, 1), f(1, 9)]),
+            levels_case('mixed_columns', set_flags=[f(0, 4), f(1, 7), f(2, 2), f(3, 8)]),
+            levels_case('level_0_flag_ignored', set_flags=[f(c, 0) for c in range(4)]),
+            levels_case('level_10_flag_ignored', set_flags=[f(c, 10) for c in range(4)]),
+            levels_case('neighbour_flags', set_flags=[f(0, 5) + 4, f(3, 6) - 4])]
+    everything = [f(c, l) for c in range(4) for l in range(1, 10)]
+    # The store: strided storage, an unknown kind, no storage, a missing group.
+    out += [levels_case('strided_98', set_flags=everything, kinds={98: 1}), levels_case('strided_97', set_flags=everything, kinds={97: 1}),
+            levels_case('unknown_kind_98', set_flags=everything, kinds={98: 3}), levels_case('null_storage_97', set_flags=everything, null_storage=(97,)),
+            levels_case('missing_group_98', set_flags=everything, missing=(98,)), levels_case('missing_group_97', set_flags=everything, missing=(97,)),
+            levels_case('only_group_99', set_flags=everything, missing=(97, 98)),
+            # A missing group next to a full one: only the exact group counts.
+            levels_case('missing_97_beside_full_98', missing=(97,), full=(98,)),
+            levels_case('missing_98_beside_full_99', missing=(98,), full=(99, 97))]
+    # The handle: none, another one, the created object with no references or none created.
+    out += [levels_case('held_old', handle='old', set_flags=[f(0, 3)]), levels_case('held_old_shared', handle='old', refs={'old': 2}),
+            levels_case('created_no_reference', refs={'new': 0}), levels_case('created_none', created=None),
+            levels_case('created_is_held', handle='new', refs={'new': 2}),
+            levels_case('old_destroy_makes_busy', handle='in_owner', old_destroy_sets_busy=True),
+            levels_case('old_destroy_leaves_idle', handle='in_owner')]
+    out += [levels_case('advance_leaves_busy', advances=((1, 1),)), levels_case('advance_changes_state', advances=((0, 6),))]
+    return out
+
+
 def slot_cases():
     out = []
     # Idle in every mode and past them: request 7 is taken twice in 2..5 (before and after the
@@ -755,6 +869,12 @@ def main():
             with open(os.path.join(out, f"{c['id']}.json"), 'w') as f:
                 json.dump(c, f, indent=1)
             n += 1
+    out = os.path.join(sys.argv[1], 'frame_timing_gate_create_handle_from_levels', 'edge')
+    os.makedirs(out, exist_ok=True)
+    for c in levels_cases():
+        with open(os.path.join(out, f"{c['id']}.json"), 'w') as f:
+            json.dump(c, f, indent=1)
+        n += 1
     out = os.path.join(sys.argv[1], 'frame_timing_gate_create_handle', 'edge')
     os.makedirs(out, exist_ok=True)
     for c in create_cases():

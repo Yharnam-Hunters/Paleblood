@@ -26,6 +26,7 @@
 
 #include "../engine/engine.h"
 #include "../engine/ref_object.h"
+#include "../event/flag_store.h"
 #include "frame_time.h"
 #include "runtime/original.h"
 
@@ -130,7 +131,7 @@ struct Holygrail {
     DungeonGate **gates;
 };
 static_assert(offsetof(Holygrail, gates) == 0x8);
-struct EventFlagMan;
+using EventFlagMan = event::FlagStore;  // SprjEventFlagMan
 
 RT_GLOBAL(0x0593e9e8, holygrail_instance, Holygrail *);
 RT_GLOBAL(0x04d3448c, holygrail_name, const char);
@@ -326,6 +327,18 @@ RT_GLOBAL(0x04dd85f0, default_name, const uint8_t);  // used when there is no en
 // FrpgNetMan's block at +0xa68, which the creation passes on.
 constexpr size_t frpg_net_man_creation_block = 0xa68;
 
+// The four levels the level creation (0x01ea4cb0) reads from event flags: for each of four base
+// flags, the highest level from 9 down to 1 whose flag (base + 7 * level) is set, else 0. What
+// the levels and flags stand for is not known.
+constexpr uint32_t level_columns = 4, highest_level = 9, level_flag_stride = 7;
+constexpr uint32_t level_flag_bases[level_columns] = {0x184d, 0x184e, 0x184f, 0x1850};
+struct FlagLevels {
+    int32_t level[level_columns];
+};
+// Creates a handle object from the levels, holding a reference the caller drops (or null); not
+// replaced.
+RT_ORIGINAL(0x02265580, create_handle_from_levels, void(engine::RefObject **out, const FlagLevels *levels));
+
 // The id the owner check is given: its first 64 bits hold INT64_MIN when there is none. That it
 // names an online session is a guess from FrpgNetMan's part in the check.
 struct SessionId {
@@ -341,7 +354,7 @@ RT_ORIGINAL(0x01ec3000, step_machine_count_step, void(DungeonGate *));
 // What the methods return (the state machine's codes; their names are not known).
 constexpr uint32_t result_still_busy = 1, result_done = 2, result_not_now = 4;
 // The requests the owner is given while it advances.
-constexpr uint32_t request_none = 0, request_1 = 1, request_2 = 2, request_3 = 3, request_4 = 4, request_6 = 6, request_7 = 7, request_8 = 8, request_9 = 9,
+constexpr uint32_t request_none = 0, request_1 = 1, request_2 = 2, request_3 = 3, request_4 = 4, request_5 = 5, request_6 = 6, request_7 = 7, request_8 = 8, request_9 = 9,
                    request_10 = 10;
 // What the handler of event 3000 leaves in value_6a0.
 constexpr int32_t value_6a0_reset = -1;
@@ -725,6 +738,33 @@ extern "C" bool bb_frame_timing_gate_create_handle(StateOwner *owner, CreationSo
     adopt_handle(owner, created);
     if (owner->busy != 0) return false;
     return take_request(owner, request_3);
+}
+
+// The highest level whose flag is set for one base flag, or 0. Each read checks SprjEventFlagMan
+// first (a missing one is reported and the singleton read again, as the original does).
+int32_t highest_set_level(uint32_t base)
+{
+    for (uint32_t level = highest_level; level != 0; --level) {
+        EventFlagMan *flags = engine::require(event_flag_man_instance, event_flag_man_name.address());
+        if (event::read_flag(flags, level * level_flag_stride + base)) return static_cast<int32_t>(level);
+    }
+    return 0;
+}
+
+// The level creation (0x01ea4cb0, also called from 0x01ebea30 and 0x0200da40): when the online
+// gates are open, reads the four flag levels, creates a handle object from them, adopts it as the
+// owner's handle, then requests 5 if still idle and reports true.
+extern "C" bool bb_frame_timing_gate_create_handle_from_levels(StateOwner *owner)
+{
+    if (!online_gates_open(owner)) return false;
+    FlagLevels levels;
+    for (uint32_t column = 0; column < level_columns; ++column)
+        levels.level[column] = highest_set_level(level_flag_bases[column]);
+    engine::RefObject *created = nullptr;
+    create_handle_from_levels(&created, &levels);
+    adopt_handle(owner, created);
+    if (owner->busy != 0) return false;
+    return take_request(owner, request_5);
 }
 
 // The readiness check as its own method (0x01ea5c90, also called from 0x01ebecd0).
