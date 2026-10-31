@@ -50,3 +50,4 @@ address,name,date,reviewer,verdict,notes
 0x01ea47a0,frame_timing_gate_create_handle,2026-10-31,independent session,approved,"round 2: callees disassembled (part 1 one dword, part 2 0x48); kind width, capacity width and root read order now tested; 33 edge cases stock and 60"
 0x01ea4cb0,frame_timing_gate_create_handle_from_levels,2026-10-31,independent session,approved,"round 2: inlined flag reads match read_flag on every path; non-power-of-two group sizes added; levels layout checked; 39 edge cases stock and 60"
 0x017cfcc0,event_flag_write,2026-10-31,independent session,approved,"refactor onto game/event/flag_store.h, behaviour unchanged; group size 11 case added; 15 edge cases"
+0x0111a8a0,kernel_thread_self,2026-10-31,independent session,approved,"64-bit store of the scePthreadSelf result, return 0 (i32); 7 edge cases re-run on current main; four mutants caught"
