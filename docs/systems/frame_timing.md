@@ -125,6 +125,13 @@ The latest belong to the **Chalice Dungeon gate**, the object behind the ritual 
   have one word at zero. Two methods that differ only in a "kind" number (1 or 2) run that check,
   clear two words of the handled object, hand the handle on with the kind (to one routine in the
   local modes, another in the server modes, neither analyzed yet), and give request 9.
+- **Creating the handle.** Two methods make the handle in the first place, both only while the
+  gate is idle in mode 1. One drops the old handle, builds a new handled object from two blocks of
+  data, a block of the online manager and a name (the current name entry's, or a default), and
+  gives request 3. The other reads four "levels" from event flags: for each of four base flags, the
+  highest level from 9 down to 1 whose flag is set (flag numbers 6221 to 6287, every seventh one
+  belonging to the same column). It builds the handled object from those four levels and gives
+  request 5. What the levels and the flags stand for in the game is not known yet.
 
 The millisecond sleep wrapper (`0x0111a880`), which is not on the limiter's path, is replaced too.
 It converts the engine's millisecond delay to the kernel's microseconds. It multiplies in 32 bits,
@@ -155,6 +162,10 @@ as the original does, so very large delays wrap, and it always reports success.
 - [#196](https://github.com/Yharnam-Hunters/Paleblood/pull/196): the readiness check
   (`0x01ea5c90`) and the two pass-on methods (`0x01ea5e20`, `0x01ea6080`; one 60 FPS++ edit
   each).
+- [#198](https://github.com/Yharnam-Hunters/Paleblood/pull/198): the handle creation
+  (`0x01ea47a0`, one 60 FPS++ edit).
+- [#199](https://github.com/Yharnam-Hunters/Paleblood/pull/199): the level creation
+  (`0x01ea4cb0`, one 60 FPS++ edit), with the event-flag store shared with the event system.
 - Status: **replaced**, not verified. Each was compared with the original function on authored
   edge cases, stock and with the 60 FPS++ edits, and wrong variants were rejected. None was
   checked on frames recorded from a real game run.
@@ -202,7 +213,9 @@ piece of the game's own per-frame work, the next layer to map.
 | `0x0143e490` | 174 | `frame_timing_task_flush_queue_0143e490` | verified | task manager queue flush: lock, run, destroy and free every queued object, empty the list, unlock |
 | `0x0143f9f0` | 18 | `frame_timing_task_set_frame_value_0143f9f0` | verified | task manager: copies the float at +0x8 of the frame information to the global 0x058b7e08 |
 | `0x014400a0` | 180 | `frame_timing_task_workers_step_014400a0` | verified | task manager workers: three rounds over the worker queues +0x58, +0x68, +0x60 |
+| `0x01ea47a0` | 611 | `frame_timing_gate_create_handle` | edge-verified | handle creation of the Chalice Dungeon gate state: idle in mode 1, drops the handle, creates one from two filled blocks, FrpgNetMan+0xa68 and a name, adopts it, request 3 |
 | `0x01ea4a10` | 501 | `frame_timing_gate_entry_check` | edge-verified | entry check of the Chalice Dungeon gate state: online gates as 0x01ea5280; keeps the first keyed entry's object as its handle, then request 4 |
+| `0x01ea4cb0` | 1472 | `frame_timing_gate_create_handle_from_levels` | edge-verified | level creation of the Chalice Dungeon gate state: online gates; four highest set levels (event flags 0x184d+i+7*level), a handle object from them, adopted; request 5 |
 | `0x01ea5280` | 553 | `frame_timing_gate_owner_check` | edge-verified | owner check of the Chalice Dungeon gate state: idle in mode 1, FrpgNetMan flags and an id allow it; keeps the object for the id as its handle, then request 6 |
 | `0x01ea5670` | 451 | `frame_timing_gate_ritual_handle_reset` | edge-verified | ritual handle reset of the Chalice Dungeon gate state: in a ritual mode (server: online gates, flag bit clear) clears the handle's +0x124, rebuilds it, then request 8 |
 | `0x01ea5850` | 708 | `frame_timing_gate_ritual_slot_reset` | edge-verified | ritual slot reset of the Chalice Dungeon gate state: as 0x01ea5670, but lists the active slots on the container heap and passes them on with the handle |
