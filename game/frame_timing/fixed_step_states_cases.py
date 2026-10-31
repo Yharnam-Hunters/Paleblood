@@ -52,7 +52,7 @@ HOLYGRAIL_METHODS = [  # (address, name)
 SLOT_METHOD, OWNER_CHECK, ENTRY_CHECK, HANDLE_RESET = '0x01ec3ef0', '0x01ea5280', '0x01ea4a10', '0x01ea5670'
 REBUILD_HANDLE = '0x01e9cb80'
 SLOT_RESET, CONTAINER_HEAP, MAKE_HEAP, APPEND_ITEM, PASS_WITH_ITEMS = '0x01ea5850', '0x05940670', '0x02fa2b10', '0x01e9d960', '0x01e9cd20'
-HEAP_TRAITS, HEAP_FREE = '0x00400090', '0x004000a0'  # unused guest addresses: the heap's vtable slots, stubbed
+HEAP_TRAITS, HEAP_FREE, OTHER_HEAP_FREE = '0x00400090', '0x004000a0', '0x004000b0'  # unused guest addresses: heaps' vtable slots, stubbed
 SLOTS = 0x188  # sixteen slots of 12 bytes: key, active, unknown
 FRPG_NET_MAN, LOOKUP, FATAL_ERROR, DESTROY = '0x0593b120', '0x02265290', '0x024b55b0', '0x00400080'
 HANDLE = 0xd0  # the owner's handle
@@ -373,7 +373,7 @@ def reset_cases():
 
 def slot_reset_case(cid, busy=0, state=2, flags=(1, 0, 0, 0), net=True, handle=True, flag_bits=0, active=(0,),
                     actives=None, heap=True, traits=0x20, pass_sets_busy=False, pass_swaps_block=False,
-                    advances=((0, 1),)):
+                    pass_swaps_heap=False, advances=((0, 1),)):
     """The ritual slot reset. active: the indices of the active slots (actives: their active words).
     heap: whether the container heap exists yet (otherwise 0x02fa2b10 makes it); traits: the byte
     its slot 0x20 reports. The list lives on the stack, so the stubs record its contents, not its
@@ -383,7 +383,8 @@ def slot_reset_case(cid, busy=0, state=2, flags=(1, 0, 0, 0), net=True, handle=T
          'args': {'rdi': 'buf:owner', 'rsi': 'buf:values'},
          'buffers': {'owner': {'size': 0x270}, 'owner_vt': {'size': 216}, 'net': {'size': 0xa60},
                      'obj_vt': {'size': 8}, 'object': {'size': 0x130}, 'values': {'size': 64},
-                     'heap': {'size': 8}, 'heap_vt': {'size': 0x78}, 'items': {'size': 16 * 12}, 'other_items': {'size': 16 * 12}},
+                     'heap': {'size': 8}, 'heap_vt': {'size': 0x78}, 'other_heap': {'size': 8}, 'other_heap_vt': {'size': 0x78},
+                     'items': {'size': 16 * 12}, 'other_items': {'size': 16 * 12}},
          'memory': [{'addr': 'buf:owner', 'pointer': 'owner_vt'}, {'addr': 'buf:owner_vt+208', 'guest': ADVANCE},
                     {'addr': f'buf:owner+{STATE}', 'bytes': u32(state)}, {'addr': f'buf:owner+{REQUEST}', 'bytes': u32(0x55)},
                     {'addr': f'buf:owner+{BUSY}', 'bytes': u32(busy)},
@@ -393,7 +394,8 @@ def slot_reset_case(cid, busy=0, state=2, flags=(1, 0, 0, 0), net=True, handle=T
                     {'addr': f'buf:owner+{HANDLE}', 'pointer': 'object'} if handle else {'addr': f'buf:owner+{HANDLE}', 'bytes': '00' * 8},
                     {'addr': CONTAINER_HEAP, 'pointer': 'heap'} if heap else {'addr': CONTAINER_HEAP, 'bytes': '00' * 8},
                     {'addr': 'buf:heap', 'pointer': 'heap_vt'}, {'addr': 'buf:heap_vt+32', 'guest': HEAP_TRAITS},
-                    {'addr': 'buf:heap_vt+112', 'guest': HEAP_FREE}] +
+                    {'addr': 'buf:heap_vt+112', 'guest': HEAP_FREE},
+                    {'addr': 'buf:other_heap', 'pointer': 'other_heap_vt'}, {'addr': 'buf:other_heap_vt+112', 'guest': OTHER_HEAP_FREE}] +
                    [{'addr': f'buf:values+{4 * i}', 'bytes': u32(0x100 + i)} for i in range(16)] +
                    [{'addr': f'buf:owner+{SLOTS + 12 * i}', 'bytes': u32(0x50 + i) + u32(actives.get(i, 0)) + u32(0x77)} for i in range(16)] +
                    [{'addr': f'buf:net+{off}', 'bytes': f'{v:02x}'} for off, v in zip((0x8, 0x9f6, 0x9f8, 0xa50), flags)],
@@ -412,13 +414,16 @@ def slot_reset_case(cid, busy=0, state=2, flags=(1, 0, 0, 0), net=True, handle=T
         pass_writes.append({'arg': 0, 'offset': BUSY - HANDLE, 'bytes': u32(1)})
     if pass_swaps_block:
         pass_writes.append({'arg': 1, 'offset': 8, 'pointer': 'other_items'})
+    if pass_swaps_heap:
+        pass_writes.append({'arg': 1, 'offset': 32, 'pointer': 'other_heap'})
     stubs.append({'address': PASS_WITH_ITEMS, 'argc': 2, 'argi': [0],
                   'argmem': [{'arg': 0, 'size': 8}, {'arg': 1, 'offset': 8, 'size': 32}], 'writes': pass_writes})
     stubs += [{'address': ADVANCE, 'argc': 2, 'argi': [0, 1],
                'argmem': [{'arg': 1, 'size': 12}, {'arg': 0, 'offset': STATE, 'size': 12}],
                'writes': [{'arg': 0, 'offset': STATE, 'bytes': u32(s_)}, {'arg': 0, 'offset': BUSY, 'bytes': u32(b_)}]}
               for b_, s_ in advances]
-    stubs.append({'address': HEAP_FREE, 'argc': 2, 'argi': [0, 1]})
+    # The free goes through the list's heap as it is after the call (0x01ea5ae3 reads it again).
+    stubs.append({'address': OTHER_HEAP_FREE if pass_swaps_heap else HEAP_FREE, 'argc': 2, 'argi': [0, 1]})
     c['stubs'] = stubs
     return c
 
@@ -431,6 +436,8 @@ def slot_reset_cases():
             slot_reset_case('three_slots', active=(0, 3, 15)), slot_reset_case('all_slots', active=tuple(range(16))),
             slot_reset_case('active_word_values', actives={2: 0xffffffff, 5: 0x80000000, 9: 0})]
     # The handle: none, and a missing FrpgNetMan in the local ritual mode.
+    # The local ritual mode tests neither FrpgNetMan's bytes nor the handle's flag bit.
+    out += [slot_reset_case('local_flag_bit_ignored', flag_bits=1), slot_reset_case('local_gates_closed', flags=(0, 1, 1, 1))]
     out += [slot_reset_case('without_handle', handle=False), slot_reset_case('no_net_with_handle', net=False),
             slot_reset_case('no_net_without_handle', net=False, handle=False)]
     # The server ritual mode: the gates, the handle's flag bit.
@@ -444,6 +451,7 @@ def slot_reset_cases():
             slot_reset_case('heap_traits_without_bit', traits=0xdf), slot_reset_case('heap_traits_all_bits', traits=0xff)]
     # The call to 0x01e9cd20: it may make the owner busy, or swap the list's block (the old one is freed).
     out += [slot_reset_case('pass_makes_busy', pass_sets_busy=True), slot_reset_case('pass_swaps_block', pass_swaps_block=True),
+            slot_reset_case('pass_swaps_heap', pass_swaps_heap=True),
             slot_reset_case('advance_leaves_busy', advances=((1, 2),)), slot_reset_case('advance_changes_state', advances=((0, 6),))]
     return out
 

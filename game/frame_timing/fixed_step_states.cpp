@@ -225,7 +225,8 @@ RT_ORIGINAL(0x02fa2b10, make_container_heap, Heap *());
 RT_GLOBAL(0x04b37dc0, message_incompatible_heap, const char);  // "Tried to create container with incompatible heap."
 constexpr int32_t line_incompatible_heap = 0x3e;
 
-// The engine's growable list of slot items: the first 8 bytes are not set by the slot reset.
+// The engine's growable list of slot items. The original leaves its first 8 bytes as they were on
+// the stack; the replacement zeroes them, which nothing observes (0x01e9d960 does not read them).
 struct SlotItemList {
     uint64_t unknown_0x000;
     SlotItem *begin;
