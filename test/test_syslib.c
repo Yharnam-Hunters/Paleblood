@@ -618,6 +618,12 @@ static void kstat_outside(void) { unsigned char st[120]; kstat_fn("/download0/x"
 static void kstat_dotdot(void) { unsigned char st[120]; kstat_fn("/app0/../etc/passwd", st); }
 static void kstat_prefix_only(void) { unsigned char st[120]; kstat_fn("/app0x/file", st); }
 
+/* GNM compute queues. */
+typedef int32_t (*f_cq_t)(uint32_t, uint32_t, void *, uint32_t, volatile uint32_t *);
+static f_cq_t cq_fn;
+static void cq_twice(void) { static uint32_t r[16]; static volatile uint32_t p; cq_fn(0, 0, r, 16, &p); }
+static void cq_no_ring(void) { static volatile uint32_t p; cq_fn(1, 0, NULL, 16, &p); }
+
 int main(void)
 {
     /* Unresolved entries are still callable diagnostics, but are not reported as implemented. */
@@ -1731,6 +1737,16 @@ int main(void)
     if (tf_base) {
         const uint64_t base = tf_base();
         CHECK(base && base < (1ull << 40) && base % 0x10000 == 0 && tf_base() == base);
+    }
+    /* sceGnmMapComputeQueue: ids from 1 (the engine treats 0 as failure); a pipe and queue once. */
+    cq_fn = (f_cq_t)fn("libSceGnmDriver", "sceGnmMapComputeQueue");
+    if (cq_fn) {
+        static uint32_t ring_a[0x400], ring_b[0x400];
+        static volatile uint32_t read_a, read_b;
+        const int32_t qa = cq_fn(0, 0, ring_a, 0x400, &read_a), qb = cq_fn(0, 1, ring_b, 0x400, &read_b);
+        CHECK(qa > 0 && qb > 0 && qa != qb);
+        CHECK(died_in_fatal(cq_twice));
+        CHECK(died_in_fatal(cq_no_ring));
     }
 
     if (!failures) puts("syslib: ok");

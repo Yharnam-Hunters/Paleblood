@@ -916,6 +916,23 @@ past the mapping.
 - an address outside those mappings (other memory is not tracked yet);
 - a missing structure.
 
+## GNM: compute queues (`sceGnmMapComputeQueue`, issue #39)
+
+OpenOrbis' `GnmDriver.h` only names this call, so its shape comes from the engine's wrapper
+(`0x01489a80`, called from its compute queue setup at `0x0148c7b0`).
+
+**What the engine does:**
+- The wrapper passes the pipe and queue from the queue object, the ring buffer, its size in dwords,
+  and the address of the GPU's read pointer.
+- A negative result is failure. Otherwise the wrapper keeps the result as the queue's id, and sets
+  the read pointer to 0.
+- The setup then reports success only when that id is not 0.
+
+**What the runtime does.** It does not run the GPU, so the ring is never read. It records each
+queue for the engine-level graphics layer, and answers ids from 1.
+
+**What stops by name:** mapping the same pipe and queue twice, and a missing ring or read pointer.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
