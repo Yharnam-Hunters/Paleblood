@@ -611,24 +611,30 @@ def level_flag(column, level):
 
 
 def levels_case(cid, busy=0, state=1, flags=(1, 0, 0, 0), set_flags=(), kinds=None, null_storage=(), missing=(),
-                full=(), handle=None, refs=None, created='new', old_destroy_sets_busy=False, advances=((0, 1),)):
+                full=(), handle=None, refs=None, created='new', old_destroy_sets_busy=False, per_group=FLAGS_PER_GROUP,
+                advances=((0, 1),)):
     """The level creation. set_flags: the event flags set. The store's tree has nodes for groups 97
     (left), 98 (root) and 99 (right); kinds: a group's storage kind (2 own block, 1 strided slot,
     other: none); null_storage: groups whose storage is null; missing: groups left out of the tree;
     full: groups whose own bytes are all set. handle 'in_owner' places the old handle inside the
-    owner; old_destroy_sets_busy makes its destroy set the owner's busy word."""
+    owner; old_destroy_sets_busy makes its destroy set the owner's busy word. per_group: the store's
+    flags per group (not a power of two, to show the division); the three groups around the
+    levels' flags take its place (97, 98, 99 for 64; kinds, missing and full name those groups)."""
+    middle = level_flag(0, 9) // per_group  # the group of the highest level's first flag
+    ids = (middle - 1, middle, middle + 1)
+    group_bytes = per_group // 8 + 1
     kinds = kinds or {}
     refs = refs or {}
     c = {'schema': 1, 'address': LEVEL_CREATION, 'id': cid, 'returns': 'i8',
          'args': {'rdi': 'buf:owner'},
          'buffers': {'owner': {'size': 0x270}, 'owner_vt': {'size': 216}, 'net': {'size': 0xa60},
-                     'store': {'size': 0x40}, 'header': {'size': 0x38}, 'strided': {'size': 0x40},
+                     'store': {'size': 0x40}, 'header': {'size': 0x38}, 'strided': {'size': 0x80},
                      'obj_vt': {'size': 8}, 'new': {'size': 0x10}, 'old': {'size': 0x10}},
          'memory': [{'addr': 'buf:owner', 'pointer': 'owner_vt'}, {'addr': 'buf:owner_vt+208', 'guest': ADVANCE},
                     {'addr': f'buf:owner+{STATE}', 'bytes': u32(state)}, {'addr': f'buf:owner+{REQUEST}', 'bytes': u32(0x55)},
                     {'addr': f'buf:owner+{BUSY}', 'bytes': u32(busy)}, {'addr': FRPG_NET_MAN, 'pointer': 'net'},
                     {'addr': EVENT_FLAG_MAN, 'pointer': 'store'},
-                    {'addr': 'buf:store+28', 'bytes': u32(FLAGS_PER_GROUP) + u32(16)},  # flags per group, stride
+                    {'addr': 'buf:store+28', 'bytes': u32(per_group) + u32(16)},  # flags per group, stride
                     {'addr': 'buf:store+40', 'pointer': 'strided'}, {'addr': 'buf:store+56', 'pointer': 'header'},
                     {'addr': 'buf:header+25', 'bytes': '01'},  # the sentinel
                     {'addr': 'buf:obj_vt', 'guest': DESTROY},
@@ -636,34 +642,35 @@ def levels_case(cid, busy=0, state=1, flags=(1, 0, 0, 0), set_flags=(), kinds=No
                     {'addr': 'buf:new+8', 'bytes': u32(refs.get('new', 1))}, {'addr': 'buf:old+8', 'bytes': u32(refs.get('old', 1))}] +
                    [{'addr': f'buf:net+{off}', 'bytes': f'{v:02x}'} for off, v in zip((0x8, 0x9f6, 0x9f8, 0xa50), flags)],
          'imports': []}
-    groups = [g for g in (97, 98, 99) if g not in missing]
-    for g in (97, 98, 99):
+    low, mid, high = ids
+    groups = [g for g in ids if g not in missing]
+    for g in ids:
         c['buffers'][f'node{g}'] = {'size': 0x38}
-        c['buffers'][f'bits{g}'] = {'size': 8}
+        c['buffers'][f'bits{g}'] = {'size': group_bytes}
     for i, g in enumerate(groups):
         kind = kinds.get(g, 2)
-        if 98 in groups:  # balanced: 98 at the root
-            left = 'node97' if g == 98 and 97 in groups else 'header'
-            right = 'node99' if g == 98 and 99 in groups else 'header'
-        else:  # without 98, a chain to the right in group order (still a search tree)
+        if mid in groups:  # balanced: the middle group at the root
+            left = f'node{low}' if g == mid and low in groups else 'header'
+            right = f'node{high}' if g == mid and high in groups else 'header'
+        else:  # without it, a chain to the right in group order (still a search tree)
             left, right = 'header', f'node{groups[i + 1]}' if i + 1 < len(groups) else 'header'
         c['memory'] += [{'addr': f'buf:node{g}', 'pointer': left}, {'addr': f'buf:node{g}+16', 'pointer': right},
                         {'addr': f'buf:node{g}+32', 'bytes': u32(g)}, {'addr': f'buf:node{g}+40', 'bytes': u32(kind)}]
         if g in null_storage:
             c['memory'].append({'addr': f'buf:node{g}+48', 'bytes': '00' * 8})
         elif kind == 1:
-            c['memory'].append({'addr': f'buf:node{g}+48', 'bytes': struct.pack('<Q', g - 97).hex()})  # slot index
+            c['memory'].append({'addr': f'buf:node{g}+48', 'bytes': struct.pack('<Q', g - low).hex()})  # slot index
         else:
             c['memory'].append({'addr': f'buf:node{g}+48', 'pointer': f'bits{g}'})
-    root = 'node98' if 98 in groups else (f'node{groups[0]}' if groups else 'header')
+    root = f'node{mid}' if mid in groups else (f'node{groups[0]}' if groups else 'header')
     c['memory'].append({'addr': 'buf:header+8', 'pointer': root})
     bits = {}
     for flag in set_flags:
-        g, within = divmod(flag, FLAGS_PER_GROUP)
-        target = f'strided+{16 * (g - 97) + (within >> 3)}' if kinds.get(g, 2) == 1 else f'bits{g}+{within >> 3}'
+        g, within = divmod(flag, per_group)
+        target = f'strided+{16 * (g - low) + (within >> 3)}' if kinds.get(g, 2) == 1 else f'bits{g}+{within >> 3}'
         bits[target] = bits.get(target, 0) | (1 << (7 - (within & 7)))
     c['memory'] += [{'addr': f'buf:{t}', 'bytes': f'{v:02x}'} for t, v in sorted(bits.items())]
-    c['memory'] += [{'addr': f'buf:bits{g}', 'bytes': 'ff' * 8} for g in full]
+    c['memory'] += [{'addr': f'buf:bits{g}', 'bytes': 'ff' * group_bytes} for g in full]
     first_destroy = []
     if handle == 'in_owner':
         c['memory'] += [{'addr': f'buf:owner+{HANDLE}', 'pointer': f'owner+{INNER}'}, {'addr': f'buf:owner+{INNER}', 'pointer': 'obj_vt'},
@@ -704,7 +711,11 @@ def levels_cases():
             levels_case('only_group_99', set_flags=everything, missing=(97, 98)),
             # A missing group next to a full one: only the exact group counts.
             levels_case('missing_97_beside_full_98', missing=(97,), full=(98,)),
-            levels_case('missing_98_beside_full_99', missing=(98,), full=(99, 97))]
+            levels_case('missing_98_beside_full_99', missing=(98,), full=(99, 97)),
+            # Group sizes that are not powers of two: the division by the store's group size.
+            levels_case('group_size_100', set_flags=[f(0, 4), f(1, 9), f(2, 1), f(3, 6)], per_group=100),
+            levels_case('group_size_48', set_flags=[f(0, 8), f(1, 3), f(2, 7), f(3, 2)], per_group=48),
+            levels_case('group_size_48_strided', set_flags=everything, per_group=48, kinds={130: 1})]
     # The handle: none, another one, the created object with no references or none created.
     out += [levels_case('held_old', handle='old', set_flags=[f(0, 3)]), levels_case('held_old_shared', handle='old', refs={'old': 2}),
             levels_case('created_no_reference', refs={'new': 0}), levels_case('created_none', created=None),

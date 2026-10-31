@@ -38,7 +38,7 @@ def u64(value):
 
 
 def make_case(case_id, flag_id, enabled, *, root_group=5, left_group=None,
-              right_group=None, kind=2, storage_index=0, initial=b'\0' * 8, stride=8):
+              right_group=None, kind=2, storage_index=0, initial=b'\0' * 8, stride=8, group_size=GROUP_SIZE):
     case = {
         'schema': 1,
         'address': ADDRESS,
@@ -55,7 +55,7 @@ def make_case(case_id, flag_id, enabled, *, root_group=5, left_group=None,
             'pages': {'size': 64},
         },
         'memory': [
-            {'addr': 'buf:store+0x1c', 'bytes': u32(GROUP_SIZE)},
+            {'addr': 'buf:store+0x1c', 'bytes': u32(group_size)},
             {'addr': 'buf:store+0x20', 'bytes': u32(stride)},
             {'addr': 'buf:store+0x28', 'pointer': 'pages'},
             {'addr': 'buf:store+0x38', 'pointer': 'header'},
@@ -115,6 +115,8 @@ CASES = [
     make_case('unsupported_storage_kind', 80, 1, kind=0),
     make_case('null_direct_storage', 80, 1, kind=2, initial=b'\0' * 8),
     make_case('maximum_flag_id', 0xffffffff, 1, root_group=0x0fffffff),
+    # A group size that is not a power of two: flag 57 is group 5, bit 2, with 11 flags a group.
+    make_case('group_size_11', 57, 1, group_size=11),
 ]
 
 
