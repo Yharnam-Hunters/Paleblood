@@ -113,6 +113,7 @@ infer that it is implemented from its registry entry.
 
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
+| `0x0111a8a0` | 26 | `kernel_thread_self` | edge-verified | Copy the complete opaque current-thread handle to the output and return zero |
 | `0x02483e80` | 204 | `kernel_condition_wait` | verified | Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path |
 
 ## Structs and globals
