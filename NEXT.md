@@ -5,7 +5,7 @@ Two tracks. Sessions alternate between them (decompilation, then runtime, then d
 One line per target, in order; move a target to "Done" with its commit when it is finished.
 Decisions and blockers go to STATUS.md instead of being worked around.
 
-Last session: runtime
+Last session: decompilation
 
 ## Runtime track
 
@@ -47,7 +47,7 @@ from the smallest up. New functions go to `main` only verified and readable.
    edits (`0x01ea3fc0`, `0x01ea4040`, `0x01ea40e0`, `0x01ea54d0`, `0x01ea62e0`) are copies nothing
    calls or points to (dead). Larger live ones near them (each called directly): `0x01ea47a0`,
    `0x01ea4a10`, `0x01ea4cb0`, `0x01ea5280`, `0x01ea5670`, `0x01ea5850`, `0x01ea5e20`,
-   `0x01ea6080`, `0x01ec3ef0`.
+   `0x01ea6080`.
    Still to do among those called in the clinic (probe run 2026-10-06, `continue.route`):
    `0x0183ac60` (20 KB; every frame-rate patch changes a jump and a flag) and `0x02713870`
    (11.6 KB; its only edit, Uncap FPS++'s, is broken in v1.09: QUIRKS.md). Each option part is
@@ -55,6 +55,9 @@ from the smallest up. New functions go to `main` only verified and readable.
 
 ## Done
 
+- `0x01ec3ef0`: a state method on the Chalice Dungeon gate behind a slot: leaves ritual and dungeon
+  modes (request 7) and the error mode (request 10) around the owner check `0x01ea5280`, true when
+  it says yes in the server dungeon mode: edge-verified (stock and against "60 FPS++").
 - Runtime, 2026-10-30/31 (#143-#180): direct and flexible memory with protection and virtual
   queries; semaphores, condition variables (recursive waits), thread creation, priorities,
   attributes and signal masks; thread handles below 2^40; the time of day, FreeBSD clocks and
