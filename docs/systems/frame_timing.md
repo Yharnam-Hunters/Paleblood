@@ -96,6 +96,10 @@ The latest belong to the **Chalice Dungeon gate**, the object behind the ritual 
   slot.
 - **Waiting for it.** Two methods advance the gate while it is busy and are done once it is idle.
   Two more wait until it is idle in a dungeon mode, or in a ritual mode.
+- **Leaving a mode.** One method, held by an object that points to the gate, takes the gate out of
+  a ritual or dungeon mode (request 7) and out of the error mode (request 10), around a check on
+  the gate that reads the online manager, and reports when the check passes in the online dungeon
+  mode. What its caller does with that answer is not known: the caller ignores it.
 
 The millisecond sleep wrapper (`0x0111a880`), which is not on the limiter's path, is replaced too.
 It converts the engine's millisecond delay to the kernel's microseconds. It multiplies in 32 bits,
@@ -111,6 +115,8 @@ as the original does, so very large delays wrap, and it always reports success.
   `0x01eb9020`, `0x01ebb090`, `0x01ebf060`).
 - [#141](https://github.com/Yharnam-Hunters/Paleblood/pull/141): four methods that find the
   gate through `SprjHolygrail` (`0x0200f970`, `0x020118f0`, `0x01f03210`, `0x01f03680`).
+- [#182](https://github.com/Yharnam-Hunters/Paleblood/pull/182): the method that leaves the
+  gate's modes around the check `0x01ea5280` (`0x01ec3ef0`, eleven 60 FPS++ edits).
 - Status: **replaced**, not verified. Each was compared with the original function on authored
   edge cases, stock and with the 60 FPS++ edits, and wrong variants were rejected. None was
   checked on frames recorded from a real game run.
