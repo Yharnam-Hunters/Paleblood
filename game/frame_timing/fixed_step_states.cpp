@@ -157,6 +157,21 @@ static_assert(offsetof(FrpgNetMan, flag_008) == 0x8 && offsetof(FrpgNetMan, flag
 RT_GLOBAL(0x0593b120, frpg_net_man_instance, FrpgNetMan *);
 RT_GLOBAL(0x04d3ad45, frpg_net_man_name, const char);
 
+// The list the entry check (0x01ea4a10) searches: entries of 0x150 bytes, each a key and an object.
+struct GateEntry {
+    int32_t key;
+    uint8_t unknown_0x004[0x4];
+    engine::RefObject *object;
+    uint8_t unknown_0x010[0x140];
+};
+static_assert(sizeof(GateEntry) == 0x150 && offsetof(GateEntry, object) == 0x8);
+struct GateEntryList {
+    uint8_t unknown_0x000[0x10];
+    GateEntry *begin;
+    GateEntry *end;
+};
+static_assert(offsetof(GateEntryList, begin) == 0x10 && offsetof(GateEntryList, end) == 0x18);
+
 // The id the owner check is given: its first 64 bits hold INT64_MIN when there is none. That it
 // names an online session is a guess from FrpgNetMan's part in the check.
 struct SessionId {
@@ -172,7 +187,7 @@ RT_ORIGINAL(0x01ec3000, step_machine_count_step, void(DungeonGate *));
 // What the methods return (the state machine's codes; their names are not known).
 constexpr uint32_t result_still_busy = 1, result_done = 2, result_not_now = 4;
 // The requests the owner is given while it advances.
-constexpr uint32_t request_none = 0, request_1 = 1, request_2 = 2, request_6 = 6, request_7 = 7, request_10 = 10;
+constexpr uint32_t request_none = 0, request_1 = 1, request_2 = 2, request_4 = 4, request_6 = 6, request_7 = 7, request_10 = 10;
 // What the handler of event 3000 leaves in value_6a0.
 constexpr int32_t value_6a0_reset = -1;
 // What request 2 sets value_26c to.
@@ -309,6 +324,32 @@ void leave_ritual_or_dungeon_mode(StateOwner *owner)
     leave_error_mode(owner);
 }
 
+// The gates both online checks open with: the owner idle in mode 1 (no Holygrail), and FrpgNetMan's
+// four bytes. With no FrpgNetMan the original reads through the report call's return value; this
+// reads the singleton again (engine::require), a path the game never reaches.
+bool online_gates_open(const StateOwner *owner)
+{
+    if (owner->busy != 0 || owner->state != mode_no_holygrail) return false;
+    const FrpgNetMan *net = engine::require(frpg_net_man_instance, frpg_net_man_name.address());
+    return net->flag_008 != 0 && net->flag_9f8 == 0 && net->flag_9f6 == 0 && net->flag_a50 == 0;
+}
+
+// Keeps an entry's object as the owner's handle: an unchanged handle is left alone; otherwise the
+// old one is released and the entry's object is read again (releasing may have run a destructor),
+// stored, and retained.
+void keep_entry_object(StateOwner *owner, const GateEntry *entry)
+{
+    engine::RefObject *object = entry->object;
+    if (owner->handle == object) return;
+    if (owner->handle) {
+        engine::release(owner->handle);
+        owner->handle = nullptr;
+        object = entry->object;
+    }
+    owner->handle = object;
+    if (object) engine::retain(object);
+}
+
 // Keeps the object found for an id as the owner's handle, in the original's order of reference
 // counts: the lookup's reference is swapped for one of the owner's own; an unchanged handle drops
 // the extra one. Each retain-then-release pair leaves the count as it was but is the original's
@@ -349,22 +390,40 @@ extern "C" void bb_frame_timing_request_10_02012780(StateAt8 *self) { advance_wi
 extern "C" uint32_t bb_frame_timing_request_7_0200e270(StateAt8 *self) { return advance_with_request_7(self->owner); }
 extern "C" uint32_t bb_frame_timing_request_7_02012a60(StateAt8 *self) { return advance_with_request_7(self->owner); }
 
-// The owner check (0x01ea5280): when the owner is idle in mode 1 (no Holygrail), FrpgNetMan's
-// flags allow it and the id is set, keeps the object found for the id as the owner's handle, then
-// requests 6 if still idle and reports true; every other path reports false. With no FrpgNetMan
-// the original reads through the report call's return value; this reads the singleton again
-// (engine::require), a path the game never reaches.
+// The owner check (0x01ea5280): when the online gates are open and the id is set, keeps the object
+// found for the id as the owner's handle, then requests 6 if still idle and reports true; every
+// other path reports false.
 extern "C" bool bb_frame_timing_gate_owner_check(StateOwner *owner, SessionId *id)
 {
-    if (owner->busy != 0 || owner->state != mode_no_holygrail) return false;
-    const FrpgNetMan *net = engine::require(frpg_net_man_instance, frpg_net_man_name.address());
-    if (net->flag_008 == 0 || net->flag_9f8 != 0 || net->flag_9f6 != 0 || net->flag_a50 != 0) return false;
+    if (!online_gates_open(owner)) return false;
     if (id->value == no_session_id) return false;
     engine::RefObject *found = nullptr;
     lookup_session_object(&found, id);
     keep_handle(owner, found);
     if (owner->busy != 0) return false;
     return take_request(owner, request_6);
+}
+
+// The entry check (0x01ea4a10): when the online gates are open, finds the first entry with the key
+// that holds an object, keeps that object as the owner's handle, then requests 4 if still idle and
+// reports true; no such entry, or any other path, reports false. The list's end is read once, as
+// the original does. Before keeping a match it checks FrpgNetMan again: a missing one is reported
+// and the search goes on to the next entry, as in the original (the report returns).
+extern "C" bool bb_frame_timing_gate_entry_check(StateOwner *owner, GateEntryList *list, int32_t key)
+{
+    if (!online_gates_open(owner)) return false;
+    GateEntry *const end = list->end;
+    for (GateEntry *entry = list->begin; entry != end; ++entry) {
+        if (entry->key != key || !entry->object) continue;
+        if (!frpg_net_man_instance.get()) {
+            engine::report_missing(frpg_net_man_name.address());
+            continue;
+        }
+        keep_entry_object(owner, entry);
+        if (owner->busy != 0) return false;
+        return take_request(owner, request_4);
+    }
+    return false;
 }
 
 // Leaves a ritual or dungeon mode, then asks the check on the owner: when it says yes, settles and
