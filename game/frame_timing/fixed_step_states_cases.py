@@ -4,7 +4,7 @@
 
 usage: fixed_step_states_cases.py CAPTURES_DIR
 
-Writes CAPTURES_DIR/<function>/edge/*.json for all twenty-three methods. The owner's advance method
+Writes CAPTURES_DIR/<function>/edge/*.json for all twenty-six methods. The owner's advance method
 (vtable slot +0xd0) is a stand-in game function the case stubs; its descriptor is compared, and
 it leaves the busy count (and for the gate, the state) the case says. Covers idle and busy owners,
 staying busy after the advance, and states around the 2..5 range of request_7 (with wraparound
@@ -24,7 +24,11 @@ For the ritual handle reset 0x01ea5670: each state, the server ritual mode's gat
 a missing FrpgNetMan in the local ritual mode, and a rebuild that makes the owner busy. For the
 ritual slot reset 0x01ea5850: the same gates, which of the sixteen slots are listed, the heap made
 on first use and its traits, and a call to 0x01e9cd20 that makes the owner busy or swaps the
-list's block (the block held before the call is freed).
+list's block (the block held before the call is freed). For the readiness check 0x01ea5c90 and
+the two methods that pass the handle on (0x01ea5e20, 0x01ea6080): each state, the gates, the
+handle's word at +0x50, and a pass-on call that makes the owner busy. Not covered: the readiness
+check's missing-FrpgNetMan report, which the original follows with a null read; the pass-on
+methods' reports, which that check's FrpgNetMan read makes unreachable.
 """
 import json
 import os
@@ -54,6 +58,8 @@ REBUILD_HANDLE = '0x01e9cb80'
 SLOT_RESET, CONTAINER_HEAP, MAKE_HEAP, APPEND_ITEM, PASS_WITH_ITEMS = '0x01ea5850', '0x05940670', '0x02fa2b10', '0x01e9d960', '0x01e9cd20'
 HEAP_TRAITS, HEAP_FREE, OTHER_HEAP_FREE = '0x00400090', '0x004000a0', '0x004000b0'  # unused guest addresses: heaps' vtable slots, stubbed
 SLOTS = 0x188  # sixteen slots of 12 bytes: key, active, unknown
+READY, PASS_KIND_1, PASS_KIND_2 = '0x01ea5c90', '0x01ea5e20', '0x01ea6080'
+PASS_LOCAL, PASS_SERVER = '0x02265170', '0x02265960'
 FRPG_NET_MAN, LOOKUP, FATAL_ERROR, DESTROY = '0x0593b120', '0x02265290', '0x024b55b0', '0x00400080'
 HANDLE = 0xd0  # the owner's handle
 INNER = 0x200  # an unused span of the owner that can hold an object
@@ -456,6 +462,52 @@ def slot_reset_cases():
     return out
 
 
+def pass_case(address, cid, busy=0, state=2, flags=(1, 0, 0, 0), handle=True, word_050=0, pass_sets_busy=False,
+              advances=((0, 1),)):
+    """The readiness check (READY) or a pass-on method. handle: whether the owner has a handle
+    object; word_050 its word at +0x50. The pass-on calls are stubbed: they record the handle they
+    are given and may set the owner's busy word (they get the handle's address, inside the owner)."""
+    c = {'schema': 1, 'address': address, 'id': cid, 'returns': 'i8',
+         'args': {'rdi': 'buf:owner'},
+         'buffers': {'owner': {'size': 0x270}, 'owner_vt': {'size': 216}, 'net': {'size': 0xa60},
+                     'obj_vt': {'size': 8}, 'object': {'size': 0x130}},
+         'memory': [{'addr': 'buf:owner', 'pointer': 'owner_vt'}, {'addr': 'buf:owner_vt+208', 'guest': ADVANCE},
+                    {'addr': f'buf:owner+{STATE}', 'bytes': u32(state)}, {'addr': f'buf:owner+{REQUEST}', 'bytes': u32(0x55)},
+                    {'addr': f'buf:owner+{BUSY}', 'bytes': u32(busy)}, {'addr': FRPG_NET_MAN, 'pointer': 'net'},
+                    {'addr': 'buf:object', 'pointer': 'obj_vt'}, {'addr': 'buf:object+8', 'bytes': u32(1)},
+                    {'addr': 'buf:object+80', 'bytes': u32(word_050)},
+                    {'addr': 'buf:object+284', 'bytes': u32(0x11111111) + u32(0x22222222) + u32(0x33333333)},
+                    {'addr': f'buf:owner+{HANDLE}', 'pointer': 'object'} if handle else {'addr': f'buf:owner+{HANDLE}', 'bytes': '00' * 8}] +
+                   [{'addr': f'buf:net+{off}', 'bytes': f'{v:02x}'} for off, v in zip((0x8, 0x9f6, 0x9f8, 0xa50), flags)],
+         'imports': []}
+    writes = [{'arg': 0, 'offset': BUSY - HANDLE, 'bytes': u32(1)}] if pass_sets_busy else []
+    c['stubs'] = [{'address': a, 'argc': 2, 'argi': [0, 1], 'argmem': [{'arg': 0, 'size': 8}], 'writes': writes}
+                  for a in (PASS_LOCAL, PASS_SERVER)] + \
+        [*[{'address': FATAL_ERROR, 'argc': 4, 'argi': [0, 1, 2, 3]}] * 2] + \
+        [{'address': ADVANCE, 'argc': 2, 'argi': [0, 1],
+          'argmem': [{'arg': 1, 'size': 12}, {'arg': 0, 'offset': STATE, 'size': 12}],
+          'writes': [{'arg': 0, 'offset': STATE, 'bytes': u32(s_)}, {'arg': 0, 'offset': BUSY, 'bytes': u32(b_)}]}
+         for b_, s_ in advances]
+    return c
+
+
+def pass_cases(address):
+    out = [pass_case(address, 'busy', busy=1), pass_case(address, 'busy_negative', busy=-1)]
+    out += [pass_case(address, f'state_{s:x}', state=s) for s in (0, 1, 6, 7, 0xffffffff)]
+    for s, mode in ((2, 'local_ritual'), (3, 'server_ritual'), (4, 'local_dungeon'), (5, 'server_dungeon')):
+        out += [pass_case(address, mode, state=s), pass_case(address, f'{mode}_without_handle', state=s, handle=False),
+                pass_case(address, f'{mode}_word_050_set', state=s, word_050=1),
+                pass_case(address, f'{mode}_word_050_high', state=s, word_050=0x80000000),
+                pass_case(address, f'{mode}_net_008_clear', state=s, flags=(0, 0, 0, 0)),
+                pass_case(address, f'{mode}_net_9f6_set', state=s, flags=(1, 1, 0, 0)),
+                pass_case(address, f'{mode}_net_9f8_set', state=s, flags=(1, 0, 1, 0)),
+                pass_case(address, f'{mode}_net_a50_set', state=s, flags=(1, 0, 0, 1)),
+                pass_case(address, f'{mode}_pass_makes_busy', state=s, pass_sets_busy=True)]
+    out += [pass_case(address, 'advance_leaves_busy', advances=((1, 2),)),
+            pass_case(address, 'advance_changes_state', state=5, advances=((0, 6),))]
+    return out
+
+
 def slot_cases():
     out = []
     # Idle in every mode and past them: request 7 is taken twice in 2..5 (before and after the
@@ -599,6 +651,14 @@ def main():
         out = os.path.join(sys.argv[1], f'frame_timing_{name}', 'edge')
         os.makedirs(out, exist_ok=True)
         for c in holygrail_cases(address):
+            with open(os.path.join(out, f"{c['id']}.json"), 'w') as f:
+                json.dump(c, f, indent=1)
+            n += 1
+    for address, name in ((READY, 'frame_timing_gate_ritual_or_dungeon_ready'), (PASS_KIND_1, 'frame_timing_gate_pass_on_kind_1'),
+                          (PASS_KIND_2, 'frame_timing_gate_pass_on_kind_2')):
+        out = os.path.join(sys.argv[1], name, 'edge')
+        os.makedirs(out, exist_ok=True)
+        for c in pass_cases(address):
             with open(os.path.join(out, f"{c['id']}.json"), 'w') as f:
                 json.dump(c, f, indent=1)
             n += 1

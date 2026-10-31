@@ -181,16 +181,30 @@ struct GateEntryList {
 };
 static_assert(offsetof(GateEntryList, begin) == 0x10 && offsetof(GateEntryList, end) == 0x18);
 
-// What the owner's handle points to, as the ritual handle reset (0x01ea5670) reads it: a
-// reference-counted object with a flag bit and a word whose meanings are not known.
+// What the owner's handle points to, as the gate methods read it (0x01ea5670, 0x01ea5850,
+// 0x01ea5c90, 0x01ea5e20, 0x01ea6080): a reference-counted object with a flag bit and words whose
+// meanings are not known.
 struct HandleObject {
     engine::RefObject base;
-    uint8_t unknown_0x010[0xfc];
+    uint8_t unknown_0x010[0x40];
+    uint32_t word_050;  // must be zero for the readiness check (server modes) and to pass the handle on
+    uint8_t unknown_0x054[0xb8];
     uint8_t flags_10c;  // bit 0 stops the reset in the server ritual mode
-    uint8_t unknown_0x10d[0x17];
-    uint32_t value_124;  // cleared by the reset
+    uint8_t unknown_0x10d[0xf];
+    uint32_t value_11c;  // cleared before the handle is passed on (0x01ea5e20, 0x01ea6080)
+    uint32_t value_120;  // likewise
+    uint32_t value_124;  // cleared by the ritual resets
 };
-static_assert(offsetof(HandleObject, flags_10c) == 0x10c && offsetof(HandleObject, value_124) == 0x124);
+static_assert(offsetof(HandleObject, word_050) == 0x50 && offsetof(HandleObject, flags_10c) == 0x10c &&
+              offsetof(HandleObject, value_11c) == 0x11c && offsetof(HandleObject, value_120) == 0x120 &&
+              offsetof(HandleObject, value_124) == 0x124);
+HandleObject *as_handle_object(engine::RefObject *handle) { return reinterpret_cast<HandleObject *>(handle); }
+
+// Called with the handle's address and a kind (1 or 2) when the handle is passed on, in the local
+// modes (0x02265170) or the server modes (0x02265960); not replaced, and what they do is not
+// analyzed (their results are ignored).
+RT_ORIGINAL(0x02265170, pass_on_in_local_mode, void(engine::RefObject **handle, int32_t kind));
+RT_ORIGINAL(0x02265960, pass_on_in_server_mode, void(engine::RefObject **handle, int32_t kind));
 // One of the owner's active slots as the ritual slot reset collects it: the slot's key, its index,
 // and the caller's value for that index.
 struct SlotItem {
@@ -259,7 +273,7 @@ RT_ORIGINAL(0x01ec3000, step_machine_count_step, void(DungeonGate *));
 // What the methods return (the state machine's codes; their names are not known).
 constexpr uint32_t result_still_busy = 1, result_done = 2, result_not_now = 4;
 // The requests the owner is given while it advances.
-constexpr uint32_t request_none = 0, request_1 = 1, request_2 = 2, request_4 = 4, request_6 = 6, request_7 = 7, request_8 = 8,
+constexpr uint32_t request_none = 0, request_1 = 1, request_2 = 2, request_4 = 4, request_6 = 6, request_7 = 7, request_8 = 8, request_9 = 9,
                    request_10 = 10;
 // What the handler of event 3000 leaves in value_6a0.
 constexpr int32_t value_6a0_reset = -1;
@@ -522,20 +536,99 @@ bool ritual_reset_allowed(const StateOwner *owner)
     return !object || (object->flags_10c & 1) == 0;
 }
 
-// Clears the handle's word at +0x124, if there is a handle. A missing FrpgNetMan is reported, then
-// the handle read again: the word is cleared only if there still is one (code after the fatal
-// error call that Ghidra drops; QUIRKS.md).
+// Before each use of the handle the original checks FrpgNetMan: a missing one is reported, then
+// the handle read again from the owner (code after the fatal error call that Ghidra drops;
+// QUIRKS.md). Returns the handle to go on with, which may now be null.
+engine::RefObject *handle_after_net_check(const StateOwner *owner, engine::RefObject *handle)
+{
+    if (frpg_net_man_instance.get()) return handle;
+    engine::report_missing(frpg_net_man_name.address());
+    return owner->handle;
+}
+
+// Clears the handle's word at +0x124, if there is a handle (and still is after the check).
 void clear_handle_word(StateOwner *owner)
 {
     if (!owner->handle) return;
-    if (!frpg_net_man_instance.get()) {
-        engine::report_missing(frpg_net_man_name.address());
-        if (!owner->handle) return;
+    if (engine::RefObject *handle = handle_after_net_check(owner, owner->handle))
+        as_handle_object(handle)->value_124 = 0;
+}
+
+// The readiness check (0x01ea5c90, replaced below as its own method too): the owner idle in a
+// local ritual or dungeon mode with FrpgNetMan's bytes allowing it, or in a server one with them
+// allowing it and a handle whose word at +0x50 is zero. The original checks FrpgNetMan again with
+// the pointer the bytes were just read through before reading the handle; that cannot fail and is
+// left out.
+bool ritual_or_dungeon_ready(const StateOwner *owner)
+{
+    if (owner->busy != 0) return false;
+    switch (owner->state) {
+    case mode_local_ritual:
+    case mode_local_dungeon:
+        return net_allows();
+    case mode_server_ritual:
+    case mode_server_dungeon: {
+        if (!net_allows()) return false;
+        const auto *object = reinterpret_cast<const HandleObject *>(owner->handle);
+        return object && object->word_050 == 0;
     }
-    reinterpret_cast<HandleObject *>(owner->handle)->value_124 = 0;
+    default:
+        return false;
+    }
+}
+
+// Passing the handle on (0x01ea5e20 with kind 1, 0x01ea6080 with kind 2): when ready, clears the
+// handle's words at +0x11c and +0x120, passes it on for the mode (local or server) if its word at
+// +0x50 is zero, then requests 9 if still idle and reports true. Each use of the handle follows
+// the FrpgNetMan check above; a handle gone after one skips the steps that follow.
+bool pass_handle_on_with_kind(StateOwner *owner, int32_t kind)
+{
+    if (!ritual_or_dungeon_ready(owner)) return false;
+    engine::RefObject *held = nullptr;
+    if (engine::RefObject *handle = owner->handle) {
+        handle = handle_after_net_check(owner, handle);
+        if (handle) {
+            as_handle_object(handle)->value_11c = 0;
+            handle = handle_after_net_check(owner, handle);
+            if (handle) {
+                as_handle_object(handle)->value_120 = 0;
+                held = handle;
+            }
+        }
+    }
+    // The original switches on the state again; after the readiness check its default cannot be reached.
+    bool local_mode = false;
+    switch (owner->state) {
+    case mode_local_ritual:
+    case mode_local_dungeon:
+        local_mode = true;
+        break;
+    case mode_server_ritual:
+    case mode_server_dungeon:
+        break;
+    default:
+        return false;
+    }
+    if (held) held = handle_after_net_check(owner, held);
+    if (held && as_handle_object(held)->word_050 == 0) {
+        if (local_mode)
+            pass_on_in_local_mode(&owner->handle, kind);
+        else
+            pass_on_in_server_mode(&owner->handle, kind);
+    }
+    if (owner->busy != 0) return false;
+    return take_request(owner, request_9);
 }
 
 }  // namespace
+
+// The readiness check as its own method (0x01ea5c90, also called from 0x01ebecd0).
+extern "C" bool bb_frame_timing_gate_ritual_or_dungeon_ready(StateOwner *owner) { return ritual_or_dungeon_ready(owner); }
+
+// Passing the handle on with kind 1 (0x01ea5e20) and kind 2 (0x01ea6080): see pass_handle_on_with_kind.
+constexpr int32_t pass_on_kind_1 = 1, pass_on_kind_2 = 2;
+extern "C" bool bb_frame_timing_gate_pass_on_kind_1(StateOwner *owner) { return pass_handle_on_with_kind(owner, pass_on_kind_1); }
+extern "C" bool bb_frame_timing_gate_pass_on_kind_2(StateOwner *owner) { return pass_handle_on_with_kind(owner, pass_on_kind_2); }
 
 // The ritual handle reset (0x01ea5670): when the owner is idle in the local ritual mode, or in the
 // server ritual mode with FrpgNetMan's bytes allowing it and the handle's flag bit 0 clear, clears the
