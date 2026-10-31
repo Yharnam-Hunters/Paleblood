@@ -146,6 +146,8 @@ The game's code does continue there (a jump to the return, or to another report)
 when a replacement is tested with that function stubbed. If a draft's disassembly has a gap after
 such a call, disassemble the bytes directly (objdump on the ELF) before writing the replacement.
 Example: `kernel_condition_wait` (`0x02483e80`) returns -3 after the EINVAL report.
+Since #189, `tools/draft.sh` marks each such span with `; GAP:` and decodes it. Example:
+`0x01ea4a10` (#188) re-reads an entry at `0x01ea4b17` after the report and goes on to keep it.
 
 ## Replay overlapping community patch writes in order
 
