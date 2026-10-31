@@ -958,6 +958,39 @@ blocks until the flip is done.
 - an event array or count that does not fit;
 - the error values.
 
+## Video out (`libSceVideoOut`, issue #38)
+
+The OpenOrbis homebrew SDK's `VideoOut.h` declares the calls. Its `_types/video.h` gives:
+- the 40-byte buffer attribute: format, tiling mode, aspect, width, height, pitch in pixels;
+- the 64-byte flip status: flip count, two times, the flip argument, pending counts, current buffer;
+- flip rates (0: 60 Hz, 1: 30 Hz, 2: 20 Hz) and flip modes (1: vsync, 2: hsync).
+
+**What the executable does.** It sets video out up twice, in the same order (`0x015e488e` and
+`0x02ad61d4`):
+1. open, with (0, 0, 0, no parameter);
+2. flip rate 0;
+3. an event queue with a flip event;
+4. a buffer attribute (format `0x80000000`; 1920 × 1080 in the first);
+5. its buffers.
+
+Each frame, it submits a flip with mode 2 and waits on the queue (`0x015e419a`, then
+`0x015e41b6`). Its other loop (`0x02ad6ee9`) reads the flip status until the flip argument reaches
+the frame it submitted.
+
+**What the runtime does.** It has no display yet. It keeps each port's buffers and status, and an
+hsync flip completes at once:
+- the current buffer and flip argument change, and the flip count grows;
+- the port's flip events are triggered.
+
+The flip event's ident is 0, and its data the flip argument. The PS4's values are not established,
+and no caller reads them.
+
+**What stops by name:**
+- a vsync flip, and other flip modes or rates;
+- a flip status before the first flip (its initial argument is not established);
+- other open arguments;
+- errors.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
