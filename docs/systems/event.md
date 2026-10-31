@@ -44,6 +44,12 @@ function first works out which group holds the flag, then which bit in that grou
 
 A missing group, unsupported storage kind, or null storage pointer leaves memory unchanged.
 
+**Reading a flag** follows the same path. Since [#199](https://github.com/Yharnam-Hunters/Paleblood/pull/199)
+the store's layout and lookup are shared code, also used to read flags: an ID that is negative as a
+signed 32-bit number, a missing group or missing storage reads as a clear flag. The game itself
+inlines this read where it needs it; one such place is the Chalice Dungeon gate state's level
+creation (see [Frame timing](frame_timing.md)).
+
 This replacement is **edge-verified**, not fully verified: it matches the original on
 constructed edge cases, not on recorded gameplay.
 
@@ -55,6 +61,9 @@ The merged
 and [verification record](https://github.com/Yharnam-Hunters/Paleblood/blob/af97b90bb1e88853adfc04b8da2b3d7506516565/symbols/verification.csv)
 report matching original-instruction results on 14 constructed edge fixtures. Those cover tree
 search paths, byte boundaries, set/clear operations, missing groups, and storage selection.
+Since [#199](https://github.com/Yharnam-Hunters/Paleblood/pull/199) the write uses the shared
+store code and was recorded again on 15 fixtures, one more with a group size that is not a
+power of two.
 
 </details>
 
