@@ -26,8 +26,9 @@ ritual slot reset 0x01ea5850: the same gates, which of the sixteen slots are lis
 on first use and its traits, and a call to 0x01e9cd20 that makes the owner busy or swaps the
 list's block (the block held before the call is freed). For the readiness check 0x01ea5c90 and
 the two methods that pass the handle on (0x01ea5e20, 0x01ea6080): each state, the gates, the
-handle's word at +0x50, and a pass-on call that makes the owner busy. Not covered: their
-missing-FrpgNetMan reports, which the readiness check's own FrpgNetMan read makes unreachable.
+handle's word at +0x50, and a pass-on call that makes the owner busy. Not covered: the readiness
+check's missing-FrpgNetMan report, which the original follows with a null read; the pass-on
+methods' reports, which that check's FrpgNetMan read makes unreachable.
 """
 import json
 import os

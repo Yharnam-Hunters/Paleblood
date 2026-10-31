@@ -181,8 +181,9 @@ struct GateEntryList {
 };
 static_assert(offsetof(GateEntryList, begin) == 0x10 && offsetof(GateEntryList, end) == 0x18);
 
-// What the owner's handle points to, as the ritual handle reset (0x01ea5670) reads it: a
-// reference-counted object with a flag bit and a word whose meanings are not known.
+// What the owner's handle points to, as the gate methods read it (0x01ea5670, 0x01ea5850,
+// 0x01ea5c90, 0x01ea5e20, 0x01ea6080): a reference-counted object with a flag bit and words whose
+// meanings are not known.
 struct HandleObject {
     engine::RefObject base;
     uint8_t unknown_0x010[0x40];
@@ -195,7 +196,8 @@ struct HandleObject {
     uint32_t value_124;  // cleared by the ritual resets
 };
 static_assert(offsetof(HandleObject, word_050) == 0x50 && offsetof(HandleObject, flags_10c) == 0x10c &&
-              offsetof(HandleObject, value_11c) == 0x11c && offsetof(HandleObject, value_124) == 0x124);
+              offsetof(HandleObject, value_11c) == 0x11c && offsetof(HandleObject, value_120) == 0x120 &&
+              offsetof(HandleObject, value_124) == 0x124);
 HandleObject *as_handle_object(engine::RefObject *handle) { return reinterpret_cast<HandleObject *>(handle); }
 
 // Called with the handle's address and a kind (1 or 2) when the handle is passed on, in the local
@@ -594,6 +596,7 @@ bool pass_handle_on_with_kind(StateOwner *owner, int32_t kind)
             }
         }
     }
+    // The original switches on the state again; after the readiness check its default cannot be reached.
     bool local_mode = false;
     switch (owner->state) {
     case mode_local_ritual:
