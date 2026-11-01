@@ -114,6 +114,32 @@ taking implementation work; mentions of the boot blocker are not themselves cont
 Generic gameplay capture remains separate contributor-owned work, not a reason to synthesize
 the missing affinity observation.
 
+**How the boot gets past it without a value.** These are observations from static analysis of the
+hash-pinned `eboot.elf`, `libc.elf` and `libSceFios2.elf` (Ghidra 12.0.3 with GhidraOrbis, issue
+#34), not guarantees:
+- The probe's count is stored at `libc.elf+0xd1c54`. That lies past the RW segment's file size, so
+  it starts zero.
+- The probe returns nothing. It is reached only by a tail jump from the initializer at `+0x5fad0`,
+  which the module's `DT_INIT` runs.
+- The count's only reader found is the exported `std::thread::hardware_concurrency()` at
+  `+0x5fac0`.
+- No reference to that function was found in those three objects, none of them imports it, and
+  none imports `sceKernelDlsym`.
+
+So `game/module_hooks.csv` replaces two functions before any guest code runs:
+- the probe (`+0x81a80`, 128 bytes) with `return`, so the affinity query is never made and the
+  count stays zero;
+- `hardware_concurrency` (`+0x5fac0`, 7 bytes) with `stop`, so a caller ends the run by name
+  instead of reading a count nobody established.
+
+`pbboot --module-hook` writes each as a five-byte relative jump to a stub in the module's slot. A
+`return` stub leaves every register as the caller had it. A `stop` is reported like an
+unimplemented import: the status names the hook and its caller in `stopped_by_hook`.
+`scePthreadAttrGetaffinity` stays unbound.
+
+The hook guards calls only. A direct read of `+0xd1c54` that the analysis missed would see 0, not
+a measured count. The offsets fit only the pinned `libc.elf` (`target.sha256`).
+
 ## Clock IDs and platform differences
 
 The only clock ID confirmed by a decompiled game call in this repository is `4`, used with `sceKernelClockGettime` and identified there as `CLOCK_MONOTONIC`. This does not prove that the game passes `4` to the imported `clock_gettime` wrapper. POSIX defines clock identifiers symbolically; their numeric values are implementation-specific. Linux adds clocks such as `CLOCK_MONOTONIC_RAW` and `CLOCK_BOOTTIME`; FreeBSD has its own clock set, including `CLOCK_UPTIME` variants. Their names and numeric values are not interchangeable evidence for PS4 behavior.
