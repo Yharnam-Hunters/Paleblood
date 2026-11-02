@@ -156,6 +156,8 @@ render_frame_update_02377bd0,edge,,12,12,0,0,dd4fcc5a0d365609,2026-10-31
 render_frame_update_02377bd0,edge,30,12,12,0,0,dd4fcc5a0d365609,2026-10-31
 render_frame_update_02377bd0,edge,60,12,12,0,0,dd4fcc5a0d365609,2026-10-31
 render_frame_update_02377bd0,edge,uncapped,12,12,0,0,dd4fcc5a0d365609,2026-10-31
+render_pack_record_mapping_word,edge,,497,497,0,0,e10c7ad641a01fdb,2026-11-02
+render_read_record_mapping_word,edge,,96,96,0,0,1d01d6b2d87e995d,2026-11-02
 render_swap_chain_present,recorded,,209,209,0,0,cecf62710c015474,2026-10-07
 render_swap_chain_present,recorded,30,209,209,0,0,cecf62710c015474,2026-10-07
 render_swap_chain_present,recorded,60,209,209,0,0,cecf62710c015474,2026-10-07
