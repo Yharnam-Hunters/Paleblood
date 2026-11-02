@@ -671,6 +671,9 @@ int main(void)
     const f1 ainit = (f1)fn("libkernel", "scePthreadMutexattrInit"), adestroy = (f1)fn("libkernel", "scePthreadMutexattrDestroy");
     const f2i settype = (f2i)fn("libkernel", "scePthreadMutexattrSettype");
     const f1 plock = (f1)fn("libScePosix", "pthread_mutex_lock");
+    const f1 punlock = (f1)fn("libScePosix", "pthread_mutex_unlock");
+    const f1 kplock = (f1)fn("libkernel", "pthread_mutex_lock");
+    const f1 kpunlock = (f1)fn("libkernel", "pthread_mutex_unlock");
     const f_u32_u32 htonl = (f_u32_u32)fn("libSceNet", "sceNetHtonl");
     const f_u16_u16 htons = (f_u16_u16)fn("libSceNet", "sceNetHtons");
     const f_u32_u32 ntohl = (f_u32_u32)fn("libSceNet", "sceNetNtohl");
@@ -688,6 +691,21 @@ int main(void)
     CHECK(unlock(&m) == (int)0x80020001);         /* not the owner: EPERM */
     CHECK(destroy(&m) == 0 && m == (void *)2);
     CHECK(lock(&m) == (int)0x80020016);           /* destroyed: EINVAL */
+
+    /* IPMI imports the POSIX names from libkernel. Both namespaces operate on the same
+       owned mutex and return BSD errno values, including when SCE names created it. */
+    void *cross = NULL;
+    CHECK(kpunlock(&cross) == 1 && cross == NULL);
+    CHECK(kplock(&cross) == 0 && cross);
+    CHECK(plock(&cross) == 11);
+    CHECK(punlock(&cross) == 0);
+    CHECK(lock(&cross) == 0);
+    CHECK(kplock(&cross) == 11);
+    CHECK(kpunlock(&cross) == 0);
+    CHECK(kpunlock(&cross) == 1);
+    CHECK(destroy(&cross) == 0 && cross == (void *)2);
+    CHECK(kplock(&cross) == 22 && kpunlock(&cross) == 22);
+    CHECK(kplock(NULL) == 22 && kpunlock(NULL) == 22);
 
     /* a static initializer (NULL) becomes a mutex on first lock */
     void *s = NULL;
