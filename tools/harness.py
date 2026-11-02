@@ -48,6 +48,7 @@ MAP_PRIVATE, MAP_ANONYMOUS, MAP_FIXED_NOREPLACE = 0x02, 0x20, 0x100000
 # 64 rdx, 72 xmm0, 88 xmm1, 104 rbx, 112 rbp, 120 r12, 128 r13, 136 r14, 144 r15,
 # 152 rsp before the call, 160 rsp after it. Callee-saved registers hold sentinels. xmm0 and
 # xmm1 are loaded from their slots before the call (float arguments) and stored back after it.
+# The rax slot also supplies an optional incoming machine-register value; it defaults to zero.
 TRAMPOLINE = bytes.fromhex(
     '53554154415541564157574989fb48bb111111111111111148bd222222222222222249bc3333333333333333'
     '49bd444444444444444449be555555555555555549bf66666666666666664989a398000000498b7b08498b73'
@@ -73,7 +74,11 @@ def _stack_trampoline(base: bytes) -> bytes:
     code += bytes.fromhex('488b05') + rel(len(code) + 7, 0)        # mov rax, [count]
     code += bytes.fromhex('4c8b1d') + rel(len(code) + 7, 8)        # mov r11, [pointer]
     code += bytes.fromhex('4885c0' '7409' '48ffc8' '41ff34c3' 'ebf2')   # push [r11+8*rax], rax..1
-    code += call
+    # Stack setup uses rax and r11 as scratch. Recover the block pointer saved below the
+    # pushed arguments, then load the requested entry rax without disturbing GP arguments.
+    code += bytes.fromhex('31c0')                                  # retain the default entry flags
+    code += bytes.fromhex('4c8b1d') + rel(len(code) + 7, 16)         # mov r11, [stack bytes]
+    code += bytes.fromhex('4e8b1c1c498b433841ffd2')                  # block=[rsp+r11]; rax=block[7]; call r10
     code += bytes.fromhex('480325') + rel(len(code) + 7, 16)       # add rsp, [bytes]
     suffix = base[at + len(call):]
     restore_block = bytes.fromhex('4c8b1c24')
@@ -502,7 +507,7 @@ class Run:
 
     def run(self, target: int) -> dict:
         args = self.case.get('args', {})
-        unknown = set(args) - set(ARG_REGS) - {'xmm0', 'xmm1'}
+        unknown = set(args) - set(ARG_REGS) - {'rax', 'xmm0', 'xmm1'}
         if unknown:
             raise BadInput(f'unknown argument registers {sorted(unknown)}')
         observed = self.case.get('observe_registers', [])
@@ -518,6 +523,7 @@ class Run:
         self.block[0] = target
         for i, reg in enumerate(ARG_REGS):
             self.block[1 + i] = self.value(args.get(reg, 0))
+        self.block[7] = self.value(args.get('rax', 0))
         for reg, off in (('xmm0', 72), ('xmm1', 88)):
             raw = bytes.fromhex(args.get(reg, '')).ljust(16, b'\0')[:16]
             ctypes.memmove(ctypes.addressof(self.block) + off, raw, 16)

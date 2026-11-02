@@ -133,6 +133,11 @@ def boot_image():
     # A real dereference through the computed address must still be checked.
     code[0xc50:0xc58] = bytes.fromhex('488d4708 0fb600 c3')
     code[0xc60:0xc68] = bytes.fromhex('8d047509000000 c3')         # lea eax, [rsi*2+9], no base
+    # Allocate after the existing image edits, which resize some earlier slices.
+    # These independent synthetic functions preserve RAX, replace AL, and add stack words.
+    code[0xd00:0xd01] = bytes.fromhex('c3')
+    code[0xd10:0xd13] = bytes.fromhex('b0a5c3')
+    code[0xd20:0xd2b] = bytes.fromhex('48034424084803442410c3')
     return ps4elf.build(
         segments=[(0, bytes(code), 0x1000, 5), (0x1000, DATA, 0x20, 6)],
         symbols=[(nid('testImport') + '#A#A', ps4elf.STT_FUNC, None)],
@@ -203,6 +208,47 @@ class Harness(unittest.TestCase):
             return self.side_case(path, address=address)
         finally:
             self.trace_instructions = False
+
+    def test_entry_rax_seed_preserves_full_width_and_partial_byte_results(self):
+        for seed in (0, 1, 0x123456789abcde00, 0xffffffffffffffff):
+            for address, expected in (('0x00400d00', seed),
+                                      ('0x00400d10', (seed & ~0xff) | 0xa5)):
+                with self.subTest(seed=hex(seed), address=address):
+                    case = {'schema': 1, 'address': address, 'id': 'entry-rax',
+                            'returns': 'i64', 'args': {'rax': hex(seed)},
+                            'buffers': {}, 'memory': [], 'imports': [], 'stubs': []}
+                    Path(self.case).write_text(json.dumps(case))
+                    result = self.side_case(self.case, address=address)
+                    self.assertEqual(result['ret']['rax'], hex(expected))
+                    self.assertTrue(all(value == 'kept' for value in result['preserved'].values()))
+
+    def test_entry_rax_seed_survives_odd_and_even_stack_argument_counts(self):
+        seed = 0x1234567800000001
+        for stack in ([7], [7, 11], [7, 11, 19]):
+            with self.subTest(stack=stack):
+                case = {'schema': 1, 'address': '0x00400d20', 'id': 'rax-stack',
+                        'returns': 'i64', 'args': {'rax': hex(seed)}, 'stack': stack,
+                        'buffers': {}, 'memory': [], 'imports': [], 'stubs': []}
+                Path(self.case).write_text(json.dumps(case))
+                result = self.side_case(self.case, address=case['address'])
+                self.assertEqual(result['ret']['rax'], hex(seed + sum(stack[:2])))
+                self.assertTrue(all(value == 'kept' for value in result['preserved'].values()))
+
+    def test_omitted_entry_rax_stays_zero_across_batched_cases(self):
+        directory = Path(self.d) / 'rax-batch'
+        directory.mkdir()
+        for index, args in enumerate(({'rax': '0x123456789abcdef0'}, {})):
+            case = {'schema': 1, 'address': '0x00400d00', 'id': str(index),
+                    'returns': 'i64', 'args': args, 'buffers': {}, 'memory': [],
+                    'imports': [], 'stubs': []}
+            (directory / (str(index) + '.json')).write_text(json.dumps(case))
+        cmd = [sys.executable, os.path.join(TOOLS, 'harness.py'), '--elf', self.boot,
+               '--cases', str(directory), '--address', '0x00400d00']
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        cases = json.loads(result.stdout)
+        self.assertEqual(cases['0']['ret']['rax'], '0x123456789abcdef0')
+        self.assertEqual(cases['1']['ret']['rax'], '0x0')
 
     def test_instruction_trace_records_unaligned_read_and_same_value_write(self):
         case = {'schema': 1, 'address': '0x00400950', 'id': 'read-write', 'returns': 'void',

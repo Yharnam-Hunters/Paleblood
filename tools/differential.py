@@ -82,7 +82,7 @@ def validate_abi(abi: dict | None) -> list[str]:
         blockers.append("ABI argument and return descriptions are malformed")
     else:
         seen = set()
-        registers = {"rdi", "rsi", "rdx", "rcx", "r8", "r9", "xmm0", "xmm1"}
+        registers = {"rdi", "rsi", "rdx", "rcx", "r8", "r9", "rax", "xmm0", "xmm1"}
         for index, argument in enumerate(abi["arguments"]):
             if not isinstance(argument, dict):
                 blockers.append(f"ABI argument {index} is not an object")
