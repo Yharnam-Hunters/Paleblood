@@ -119,6 +119,9 @@ cmake -S . -B build && cmake --build build -j && ctest --test-dir build --output
 tools/install_hooks.sh
 ```
 
+A standalone [macOS Metal platform unit](docs/macos-metal.md) can also be built and tested
+on a Mac with a unified-memory GPU. It does not run the game yet.
+
 [docs/ONBOARDING.md](docs/ONBOARDING.md) goes from your own dump to your first pull request:
 preparing the dump (`tools/prepare_dump.sh`), Ghidra with the GhidraOrbis loader
 ([docs/GHIDRA.md](docs/GHIDRA.md)), the verification harness and a first verified function. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains the pieces.
