@@ -156,6 +156,11 @@ render_frame_update_02377bd0,edge,,12,12,0,0,dd4fcc5a0d365609,2026-10-31
 render_frame_update_02377bd0,edge,30,12,12,0,0,dd4fcc5a0d365609,2026-10-31
 render_frame_update_02377bd0,edge,60,12,12,0,0,dd4fcc5a0d365609,2026-10-31
 render_frame_update_02377bd0,edge,uncapped,12,12,0,0,dd4fcc5a0d365609,2026-10-31
+render_record_apply_parameter_tuple,edge,,79,79,0,0,07604a829b6ccf36,2026-11-02
+render_record_tuple_alternate_classification,edge,,20,20,0,0,c3a9a383955e9e76,2026-11-02
+render_record_tuple_classification_group,edge,,20,20,0,0,317b9e3cf63cc18e,2026-11-02
+render_record_tuple_parameter_supported,edge,,47,47,0,0,545898c80547de5a,2026-11-02
+render_record_tuple_transform_classification,edge,,180,180,0,0,d511e0966b1fc8a5,2026-11-02
 render_swap_chain_present,recorded,,209,209,0,0,cecf62710c015474,2026-10-07
 render_swap_chain_present,recorded,30,209,209,0,0,cecf62710c015474,2026-10-07
 render_swap_chain_present,recorded,60,209,209,0,0,cecf62710c015474,2026-10-07
