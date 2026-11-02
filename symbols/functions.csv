@@ -12,6 +12,10 @@ address,size,name,system,status,notes
 0x0143e490,174,frame_timing_task_flush_queue_0143e490,frame_timing,verified,"task manager queue flush: lock, run, destroy and free every queued object, empty the list, unlock"
 0x0143f9f0,18,frame_timing_task_set_frame_value_0143f9f0,frame_timing,verified,task manager: copies the float at +0x8 of the frame information to the global 0x058b7e08
 0x014400a0,180,frame_timing_task_workers_step_014400a0,frame_timing,verified,"task manager workers: three rounds over the worker queues +0x58, +0x68, +0x60"
+0x014721d0,31,render_set_present_last_record_indices,render,edge-verified,Pack two 11-bit indices; preserve old masked bits as full RAX. Static source only; uncompiled/unvalidated.
+0x014769e0,93,render_emit_present_last_record_packet,render,edge-verified,Emit 3 DWORDs with capacity callback and opaque failure RAX; full cursor return. Static source only; uncompiled/unvalidated.
+0x01485070,16,render_set_present_last_record_mode_6,render,edge-verified,Replace mode bit6 from low input bit; return old masked DWORD zeroextended. Static source only; uncompiled/unvalidated.
+0x01485080,16,render_set_present_last_record_mode_5,render,edge-verified,Replace mode bit5 from low input bit; return old masked DWORD zeroextended. Static source only; uncompiled/unvalidated.
 0x016efd00,368,event_emk_add,event,verified,SprjEmkSystem: find or add an event entry in two keyed lists; first advance with the 1/30 s step (1/60 s in the 60 FPS patches)
 0x017cfcc0,177,event_flag_write,event,edge-verified,finds an exact event-flag group in a tree and sets or clears one bit
 0x01972900,426,input_pad_step_01972900,input,verified,"FD4PadManager map: marks two entries, advances an owner by the frame-time step (patched to 1/15 or 1/240 s; the advance branch is idle in the clinic)"
@@ -53,3 +57,4 @@ address,size,name,system,status,notes
 0x024512a0,78,frame_timing_task_frame_024512a0,frame_timing,verified,"task manager frame entry from the frame step: FD4TaskManager singleton, then 0x01388c60"
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
 0x025b2fb0,768,render_swap_chain_present,render,verified,"GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0)"
+0x02ad2c30,120,render_reset_present_preparation_dirty,render,edge-verified,Emit dirty scalar/byte then reload caches; preserve DWORD/BYTE clears and partial AX result. Static source only; uncompiled/unvalidated.
