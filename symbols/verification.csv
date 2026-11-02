@@ -148,6 +148,7 @@ physics_instance_construct_01c0c2b0,edge,,21,21,0,0,ca3412adb293c909,2026-10-07
 physics_instance_construct_01c0c2b0,edge,30,21,21,0,0,ca3412adb293c909,2026-10-07
 physics_instance_construct_01c0c2b0,edge,60,21,21,0,0,ca3412adb293c909,2026-10-07
 physics_instance_construct_01c0c2b0,edge,uncapped,21,21,0,0,ca3412adb293c909,2026-10-07
+render_calculate_second_auxiliary,edge,,77,77,0,0,506940bc68bfa03c,2026-11-02
 render_frame_update_02377bd0,recorded,,208,208,0,0,dd4fcc5a0d365609,2026-10-31
 render_frame_update_02377bd0,recorded,30,208,208,0,0,dd4fcc5a0d365609,2026-10-31
 render_frame_update_02377bd0,recorded,60,208,208,0,0,dd4fcc5a0d365609,2026-10-31
