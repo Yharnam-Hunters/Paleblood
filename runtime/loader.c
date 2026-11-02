@@ -402,21 +402,32 @@ int rt_elf_map(const rt_elf *e, void *base, rt_elf_bind_fn bind, void *user, cha
     return 0;
 }
 
-size_t rt_elf_thread_pointer_to_gs(const rt_elf *e, void *base)
+int rt_elf_thread_pointer_to_gs_offset(const rt_elf *e, void *base, uint32_t offset, size_t *changed)
 {
+    if (offset > INT32_MAX || !e || !base || !changed) return -1;
     static const unsigned char fs_load[9] = {0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0};
     unsigned char *image = base;
-    size_t changed = 0;
+    size_t count = 0;
     for (size_t i = 0; i < e->load_count; i++) {
         if (!(e->loads[i].flags & 1)) continue;
         unsigned char *p = image + e->loads[i].vaddr, *end = p + e->load_filesz[i];
-        while (p + sizeof fs_load <= end) {
+        while ((size_t)(end - p) >= sizeof fs_load) {
             unsigned char *hit = memmem(p, (size_t)(end - p), fs_load, sizeof fs_load);
             if (!hit) break;
             hit[0] = 0x65;
-            changed++;
+            for (unsigned byte = 0; byte < 4; byte++)
+                hit[5 + byte] = (unsigned char)(offset >> (8 * byte));
+            count++;
             p = hit + sizeof fs_load;
         }
     }
+    *changed = count;
+    return 0;
+}
+
+size_t rt_elf_thread_pointer_to_gs(const rt_elf *e, void *base)
+{
+    size_t changed = 0;
+    (void)rt_elf_thread_pointer_to_gs_offset(e, base, 0, &changed);
     return changed;
 }

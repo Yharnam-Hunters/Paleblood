@@ -78,10 +78,19 @@ void rt_elf_set_tls_module_id(rt_elf *elf, uint64_t id);
    a message in `error`. */
 int rt_elf_map(const rt_elf *elf, void *base, rt_elf_bind_fn bind, void *user, char *error, size_t error_size);
 
-/* The runtime's thread-pointer model: the executable reads its thread pointer with the exact
-   instruction `mov rax, fs:[0]`; on Linux the host's C library owns FS, so in executable segments
-   each such instruction is changed to read GS (one prefix byte), and the runtime points GS at the
-   guest thread's control block. Returns the number of instructions changed. */
+/* Rewrite each exact 9-byte `mov rax, fs:[0]` pattern to the same-length
+   `mov rax, gs:[offset]`, encoding offset as a little-endian 32-bit displacement.
+   Only file-backed bytes of executable PT_LOAD segments are scanned. This is a byte-pattern
+   scan, not instruction-boundary decoding: embedded matching bytes can also be rewritten.
+   elf must be an open valid image; base must hold its complete, exclusively writable mapped
+   image. changed must point to writable size_t storage disjoint from that image.
+   Returns 0 and stores the match count (including zero), or -1 for a NULL argument or offset
+   greater than INT32_MAX, leaving the image and any valid changed output untouched on rejection.
+   No GS base, pthread key, executable-memory permissions or platform TLS state is changed. */
+int rt_elf_thread_pointer_to_gs_offset(const rt_elf *elf, void *base, uint32_t offset, size_t *changed);
+
+/* Zero-offset compatibility wrapper. On Linux the runtime points GS at the guest TCB;
+   this retains the existing `mov rax, fs:[0]` -> `mov rax, gs:[0]` bytes and match count. */
 size_t rt_elf_thread_pointer_to_gs(const rt_elf *elf, void *base);
 
 #ifdef __cplusplus
