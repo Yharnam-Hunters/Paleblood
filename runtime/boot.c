@@ -26,6 +26,7 @@
    from a public NID database (--nids, default $BB_NID_DB), else the NID is shown. */
 #define _GNU_SOURCE
 #include "runtime/loader.h"
+#include "runtime/memory.h"
 #include "runtime/nid.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
@@ -495,8 +496,7 @@ int main(int argc, char **argv)
     for (size_t k = 0; k < object_count; k++) {
         object *o = &objects[k];
         void *want = o->image;
-        o->image = mmap(want, o->size, PROT_READ | PROT_WRITE | PROT_EXEC,
-                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+        o->image = rt_map_anonymous_at(want, o->size, PROT_READ | PROT_WRITE | PROT_EXEC);
         o->tramp = mmap(NULL, (o->imports + 1) * TRAMPOLINE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC,
                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         o->data = mmap(NULL, (o->imports + 1) * 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
