@@ -65,5 +65,5 @@ address,size,name,system,status,notes
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
 0x025b2fb0,768,render_swap_chain_present,render,verified,"GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0)"
 0x02a8c420,108,input_initialize_mouse_for_initial_user,input,original,"Initializes or reinitializes mouse input for the initial user, closing a previous connection if necessary."
-0x0132c590,49,engine_release_owner_storage,engine,edge-verified,Release nonnull opaque storage through owner allocator before eight-byte clear; null path leaves fields untouched; inferred void with zero known code callers; synthetic returning callback wire only
-0x0132c6c0,81,engine_resize_owner_storage,engine,edge-verified,Release old opaque storage before clearing it; save low32 size; reload mutable allocator/vtable before aligned allocation and publish full pointer; synthetic returning callback wire only
+0x0132c590,49,engine_release_owner_storage,engine,edge-verified,Free nonnull owner storage through its allocator before clearing the field; wider role unknown; caller 0x02713870
+0x0132c6c0,81,engine_resize_owner_storage,engine,edge-verified,Free old owner storage before clearing; reload allocator after callback and allocate requested low32 byte count aligned to 16; caller 0x02713870
