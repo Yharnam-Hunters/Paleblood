@@ -8,6 +8,7 @@ One page per game system: summary, key functions, structs and globals, patch poi
 - [Audio](audio.md)
 - [Camera](camera.md)
 - [Character](character.md)
+- [Engine](engine.md)
 - [Event](event.md)
 - [Frame timing](frame_timing.md)
 - [Input](input.md)
@@ -33,6 +34,7 @@ Counts are cumulative: verified functions are included in edge-verified and repl
 | audio | 0 | 0 | 0 | 0 | 0 |
 | camera | 0 | 0 | 0 | 0 | 0 |
 | character | 1 | 1 | 1 | 1 | 979 |
+| engine | 1 | 1 | 1 | 0 | 20 |
 | event | 2 | 2 | 2 | 1 | 545 |
 | frame_timing | 42 | 41 | 41 | 12 | 14,263 |
 | input | 1 | 1 | 1 | 1 | 426 |
