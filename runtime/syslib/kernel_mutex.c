@@ -395,5 +395,5 @@ RT_SYSLIB("libScePosix", pthread_mutexattr_settype, attr_settype);
    addresses and sizes: lock 0x314c0/595 bytes, unlock 0x325c0/483 bytes (ELF SHA-256
    b3e13917da667d01a353ccf49025d6b1308a32cf86f3f351f96b3a13cd5c7c2f).
    Reuse the POSIX provider; the scePthread names convert errors to SCE codes. */
-RT_SYSLIB("libkernel", pthread_mutex_lock, mutex_lock);
+RT_SYSLIB("libkernel", pthread_mutex_lock, posix_mutex_lock);
 RT_SYSLIB("libkernel", pthread_mutex_unlock, mutex_unlock);
