@@ -201,6 +201,9 @@ def boot_stop(rt: dict) -> str:
         caller = stop.get('caller')
         by = f", called by {caller}" if caller and caller != 'eboot' else ''
         return f"`{stop['symbol'] or stop['nid']}` ({stop['library']}{by})"
+    hook = rt.get('stopped_by_hook')
+    if hook:
+        return f"`{hook['name']}` (a stop hook in {hook['module']}, called from `{hook['returns_to']}`)"
     if rt.get('fault'):
         return f"{rt['outcome']} at `{rt['fault']['at']}`"
     return rt['outcome']
