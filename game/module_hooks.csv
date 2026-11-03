@@ -1,0 +1,3 @@
+module,offset,size,action,name
+libc,0x00081a80,128,return,thread_count_probe
+libc,0x0005fac0,7,stop,std::thread::hardware_concurrency
