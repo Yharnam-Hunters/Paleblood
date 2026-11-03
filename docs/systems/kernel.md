@@ -122,6 +122,10 @@ infer that it is implemented from its registry entry.
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
 | `0x0111a8a0` | 26 | `kernel_thread_self` | edge-verified | Copy the complete opaque current-thread handle to the output and return zero |
+| `0x0111ad10` | 103 | `kernel_semaphore_create` | edge-verified | Create the fixed empty FIFO semaphore; preserve all six API arguments and full opaque handle; publish only after low32 kernel success; errors map to 0x21 |
+| `0x0111ad80` | 23 | `kernel_semaphore_destroy` | edge-verified | Forward the full opaque handle including null to kernel deletion; preserve kernel writes and translate any nonzero low32 result to 0x21 |
+| `0x0111ada0` | 30 | `kernel_semaphore_wait` | edge-verified | Wait for one unit using the full opaque handle including null and a null timeout pointer; preserve kernel writes; nonzero low32 results map to 0x21 |
+| `0x0111adc0` | 28 | `kernel_semaphore_signal` | edge-verified | Signal one unit using the full opaque handle including null; preserve kernel writes and translate every nonzero low32 result to 0x21 |
 | `0x02483e80` | 204 | `kernel_condition_wait` | verified | Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path |
 
 ## Structs and globals

@@ -176,3 +176,14 @@ The invalid-owner route instead reads `0x0575a908`, initialized by this patch to
 their float operand order, rather than keep the stock time step because one isolated edit
 looks invalid. Retain the exact XML revision and replay all its writes before reasoning about
 option coverage; other revisions may differ.
+
+
+## Unknown FMOD thread names do not initialize the affinity output
+
+The thread-name affinity lookup (`0x0111a8c0`) returns zero even when no name matches, leaving
+its output untouched. Its thread-creation caller (`0x0111a9f0`) passes an uninitialized stack
+slot to that lookup and later passes the slot's contents to `scePthreadAttrSetaffinity`.
+The caller at `0x01118420` accepts a name argument; it does not establish that every name is
+one the lookup recognizes. The creation wrapper remains original until this path's contract
+is established. Adding a default affinity mask would invent behavior; testing only recognized
+names would leave this path unresolved.
