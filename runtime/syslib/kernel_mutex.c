@@ -7,8 +7,10 @@
    initializers (NULL: a default mutex, 1: an adaptive one), set up on first use, and a destroyed
    mutex holds 2. Types: 1 error-checking (the default), 2 recursive, 3 normal, 4 adaptive.
    Protocols: 0 none, 1 priority inheritance, 2 priority protection. Error numbers are FreeBSD's,
-   and an SCE error code is 0x80020000 plus that number. Each mutex is a host mutex of the same
-   type.
+   and an SCE error code is 0x80020000 plus that number. A recursive mutex is a recursive host
+   mutex; every other type is an error-checking host mutex, because libthr answers EPERM to a
+   caller that does not own the mutex, for every type (mutex_unlock_common, _mutex_owned), and the
+   host checks the owner only for the error-checking and recursive types.
 
    Condition variables (SCE names only) live here too, because a wait releases and retakes the
    host mutex. A cond variable holds a pointer to an object the library allocates, or the static
@@ -71,10 +73,7 @@ static int mutex_create(guest_mutex **out, int type, int protocol)
     if (!m) return BSD_ENOMEM;
     pthread_mutexattr_t a;
     pthread_mutexattr_init(&a);
-    pthread_mutexattr_settype(&a, type == TYPE_RECURSIVE    ? PTHREAD_MUTEX_RECURSIVE
-                                  : type == TYPE_ERRORCHECK ? PTHREAD_MUTEX_ERRORCHECK
-                                  : type == TYPE_ADAPTIVE   ? PTHREAD_MUTEX_ADAPTIVE_NP
-                                                            : PTHREAD_MUTEX_NORMAL);
+    pthread_mutexattr_settype(&a, type == TYPE_RECURSIVE ? PTHREAD_MUTEX_RECURSIVE : PTHREAD_MUTEX_ERRORCHECK);
     if (protocol == 1) pthread_mutexattr_setprotocol(&a, PTHREAD_PRIO_INHERIT);
     else if (protocol == 2) pthread_mutexattr_setprotocol(&a, PTHREAD_PRIO_PROTECT);
     const int r = pthread_mutex_init(&m->host, &a);
@@ -131,11 +130,17 @@ static int mutex_get(guest_mutex **mutex, guest_mutex **out)
     return 0;
 }
 
-static int mutex_lock(guest_mutex **mutex)
+/* Locking again a mutex the caller holds: libthr answers EDEADLK for the error-checking and adaptive
+   types, as the host does, and waits forever for the normal type (mutex_self_lock), which is not
+   useful to reproduce. */
+static int mutex_lock(const char *caller, guest_mutex **mutex)
 {
     guest_mutex *m;
     const int r = mutex_get(mutex, &m);
-    return r ? r : note_locked(m, pthread_mutex_lock(&m->host));
+    if (r) return r;
+    const int host = pthread_mutex_lock(&m->host);
+    if (host == EDEADLK && m->type == TYPE_NORMAL) rt_fatal(caller, "a normal mutex locked again by its owner waits forever");
+    return note_locked(m, host);
 }
 
 static int mutex_trylock(guest_mutex **mutex)
@@ -281,9 +286,9 @@ static int cond_broadcast(guest_cond **cond)
 }
 
 /* Waits with the mutex, until `deadline` on the monotonic clock when there is one. libthr answers
-   EPERM when the caller does not own the mutex, for every type; the host checks that for the
-   error-checking (default) type only. For a recursive mutex libthr saves how many levels the caller
-   holds, releases the mutex completely for the wait and takes every level back afterwards
+   EPERM when the caller does not own the mutex, for every type; the error-checking host mutex
+   behind every non-recursive type checks that. For a recursive mutex libthr saves how many levels
+   the caller holds, releases the mutex completely for the wait and takes every level back afterwards
    (_mutex_cv_unlock and _mutex_cv_lock, thr_mutex.c); the host's wait releases one level only, so
    the runtime releases the others itself around it. */
 static int cond_wait(guest_cond **cond, guest_mutex **mutex, const struct timespec *deadline)
@@ -327,7 +332,7 @@ static struct timespec deadline_after(uint32_t microseconds)
 /* libkernel: SCE error codes. scePthreadMutexInit's third argument is a name, used for debugging. */
 static int sce_mutex_init(guest_mutex **m, guest_mutexattr **a, const char *name) { (void)name; return sce(mutex_init(m, a)); }
 static int sce_mutex_destroy(guest_mutex **m) { return sce(mutex_destroy(m)); }
-static int sce_mutex_lock(guest_mutex **m) { return sce(mutex_lock(m)); }
+static int sce_mutex_lock(guest_mutex **m) { return sce(mutex_lock("scePthreadMutexLock", m)); }
 static int sce_mutex_trylock(guest_mutex **m) { return sce(mutex_trylock(m)); }
 static int sce_mutex_unlock(guest_mutex **m) { return sce(mutex_unlock(m)); }
 static int sce_attr_init(guest_mutexattr **a) { return sce(attr_init(a)); }
@@ -375,9 +380,10 @@ RT_SYSLIB("libScePosix", pthread_cond_wait, posix_cond_wait);
 
 /* libScePosix: errno values */
 static int posix_mutex_init(guest_mutex **m, guest_mutexattr **a) { return mutex_init(m, a); }
+static int posix_mutex_lock(guest_mutex **m) { return mutex_lock("pthread_mutex_lock", m); }
 RT_SYSLIB("libScePosix", pthread_mutex_init, posix_mutex_init);
 RT_SYSLIB("libScePosix", pthread_mutex_destroy, mutex_destroy);
-RT_SYSLIB("libScePosix", pthread_mutex_lock, mutex_lock);
+RT_SYSLIB("libScePosix", pthread_mutex_lock, posix_mutex_lock);
 RT_SYSLIB("libScePosix", pthread_mutex_trylock, mutex_trylock);
 RT_SYSLIB("libScePosix", pthread_mutex_unlock, mutex_unlock);
 RT_SYSLIB("libScePosix", pthread_mutexattr_init, attr_init);
