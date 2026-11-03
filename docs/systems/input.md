@@ -49,6 +49,7 @@ Functions already found, still unnamed (open to claim):
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
 | `0x01972900` | 426 | `input_pad_step_01972900` | verified | FD4PadManager map: marks two entries, advances an owner by the frame-time step (patched to 1/15 or 1/240 s; the advance branch is idle in the clinic) |
+| `0x02a8c420` | 108 | `input_initialize_mouse_for_initial_user` | original | Initializes or reinitializes mouse input for the initial user, closing a previous connection if necessary. |
 
 ## Structs and globals
 
