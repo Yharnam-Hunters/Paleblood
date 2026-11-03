@@ -3,7 +3,7 @@
 // retains the stored yaw; unordered components are passed to the original atan2 import.
 #include "follow_camera.h"
 
-extern "C" float bb_camera_follow_yaw(const camera::FollowCamera *camera)
+extern "C" float bb_camera_follow_yaw(const camera::FollowCameraAnglesView *camera)
 {
     const engine::Vec4 forward = camera->transform.forward;
     const float x = forward.x();

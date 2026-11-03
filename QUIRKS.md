@@ -117,9 +117,10 @@ SelfUtil build produced the ELF.
   squares to a packed multiply. GCC preserved the order in the tested build. The dedicated
   `engine::horizontal_length` helper constrains the four scalar instructions and uses distinct
   read/write registers. Distinct-NaN-payload fixtures check the argument passed to `atan2f`,
-  but the tested QEMU VM did not distinguish a deliberately swapped horizontal-add variant.
-  Keep that survivor as an explicit coverage limitation; optimized assembly independently
-  confirms the intended instruction order in both compiler builds.
+  and independent native x86 review rejects a swapped horizontal-add variant (31/32 cases).
+  The earlier QEMU VM did not distinguish that mutant: its survival is a limitation of that
+  VM run, rather than a gap in these fixtures. Check the optimized instruction order in both
+  compiler builds as well as running the cases.
 
 ## Imports and system calls
 
