@@ -177,6 +177,34 @@ static void cond_init_with_attribute(void)
     cond_init_entry(&cond, &attr, "cond");
 }
 
+/* Mutex ownership. libthr answers EPERM to a caller that does not own the mutex, for every type, so
+   a second host thread unlocks and waits while the main thread holds it; it needs no guest thread,
+   only the mutex and cond objects the SCE calls made. */
+static finit owner_init;
+static f1 owner_lock, owner_posix_lock, owner_trylock, owner_unlock, owner_ainit;
+static f2i owner_settype;
+static f_cond_wait owner_cond_wait;
+static void *owner_mutex, *owner_cond;
+static int owner_other_trylock, owner_other_unlock, owner_other_wait;
+static void *owner_other_thread(void *unused)
+{
+    (void)unused;
+    owner_other_trylock = owner_trylock(&owner_mutex);
+    owner_other_unlock = owner_unlock(&owner_mutex);
+    owner_other_wait = owner_cond_wait(&owner_cond, &owner_mutex);
+    return NULL;
+}
+/* A normal mutex locked again by its owner: libthr waits forever, so the runtime stops by name.
+   Each child makes its own mutex: one copied from the parent would name the parent's thread. */
+static void lock_normal_twice(f1 relock)
+{
+    void *attr = NULL, *mutex = NULL;
+    if (owner_ainit(&attr) || owner_settype(&attr, 3) || owner_init(&mutex, &attr, NULL)) return;
+    if (owner_lock(&mutex) == 0) relock(&mutex);
+}
+static void lock_normal_twice_sce(void) { lock_normal_twice(owner_lock); }
+static void lock_normal_twice_posix(void) { lock_normal_twice(owner_posix_lock); }
+
 static int died_in_fatal(void (*call)(void))
 {
     const pid_t child = fork();
@@ -706,6 +734,52 @@ int main(void)
     CHECK(unlock(&r) == 0 && unlock(&r) == 0 && unlock(&r) == 0);
     CHECK(destroy(&r) == 0);
     CHECK(adestroy(&a) == 0 && a == NULL);
+
+    /* Every non-recursive type (1 error-checking, 3 normal, 4 adaptive): unlocking or waiting
+       without owning the mutex is EPERM, whether it is free or another thread holds it, and the
+       owner's trylock is EBUSY (libthr mutex_unlock_common, _mutex_owned, mutex_self_trylock). */
+    owner_init = init;
+    owner_lock = lock;
+    owner_posix_lock = plock;
+    owner_trylock = trylock;
+    owner_unlock = unlock;
+    owner_ainit = ainit;
+    owner_settype = settype;
+    owner_cond_wait = (f_cond_wait)fn("libkernel", "scePthreadCondWait");
+    const finit owner_cond_init = (finit)fn("libkernel", "scePthreadCondInit");
+    const f1 owner_cond_destroy = (f1)fn("libkernel", "scePthreadCondDestroy");
+    if (failures) return 1;
+    alarm(60); /* a mutex that never comes free kills the test with SIGALRM instead of hanging it */
+    CHECK(owner_cond_init(&owner_cond, NULL, NULL) == 0);
+    const int owner_types[] = {1, 3, 4};
+    for (int i = 0; i < 3; i++) {
+        void *owner_attr = NULL;
+        CHECK(ainit(&owner_attr) == 0 && settype(&owner_attr, owner_types[i]) == 0);
+        CHECK(init(&owner_mutex, &owner_attr, NULL) == 0 && adestroy(&owner_attr) == 0);
+        CHECK(unlock(&owner_mutex) == (int)0x80020001);                          /* nobody holds it */
+        CHECK(owner_cond_wait(&owner_cond, &owner_mutex) == (int)0x80020001);
+        CHECK(lock(&owner_mutex) == 0);
+        pthread_t owner_other;
+        if (pthread_create(&owner_other, NULL, owner_other_thread, NULL)) { perror("pthread_create"); return 1; }
+        pthread_join(owner_other, NULL);
+        CHECK(owner_other_trylock == (int)0x80020010);                           /* held by main: EBUSY */
+        CHECK(owner_other_unlock == (int)0x80020001 && owner_other_wait == (int)0x80020001);
+        CHECK(trylock(&owner_mutex) == (int)0x80020010);                         /* the owner again: EBUSY */
+        CHECK(unlock(&owner_mutex) == 0);                                        /* still held by main */
+        CHECK(unlock(&owner_mutex) == (int)0x80020001);
+        CHECK(destroy(&owner_mutex) == 0);
+    }
+    CHECK(owner_cond_destroy(&owner_cond) == 0);
+
+    /* The owner locking again: EDEADLK for the adaptive type, as for the default (libthr
+       mutex_self_lock), also through its static initializer (1); the normal type stops by name. */
+    void *owner_adaptive = (void *)1;
+    CHECK(lock(&owner_adaptive) == 0 && owner_adaptive != (void *)1);
+    CHECK(lock(&owner_adaptive) == (int)0x8002000b && plock(&owner_adaptive) == 11);
+    CHECK(unlock(&owner_adaptive) == 0 && destroy(&owner_adaptive) == 0);
+    CHECK(died_in_fatal(lock_normal_twice_sce));
+    CHECK(died_in_fatal(lock_normal_twice_posix));
+    alarm(0);
 
     /* Condition variables (SCE names): SCE codes for FreeBSD libthr's errors, and a timed wait
        that takes microseconds from now (the guest's call site and OpenOrbis agree on that). */

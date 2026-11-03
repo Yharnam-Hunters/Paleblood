@@ -7,6 +7,7 @@ ai_hk_frame_update_0222bc10,edge,,33,33,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,edge,30,33,33,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,edge,60,33,33,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,edge,uncapped,33,33,0,0,f6e94c85e455f408,2026-10-07
+audio_fmod_thread_affinity_lookup,edge,,21,21,0,0,8abaccecd8e6ac90,2026-11-03
 character_frame_update_01cbdb20,recorded,,457,457,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,recorded,30,457,457,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,recorded,60,457,457,0,0,b243fddb1ca6589a,2026-10-07
@@ -15,6 +16,8 @@ character_frame_update_01cbdb20,edge,,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,edge,30,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,edge,60,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,edge,uncapped,39,39,0,0,b243fddb1ca6589a,2026-10-07
+engine_compare_signed_prefix,edge,,24,24,0,0,8a6a903a0ad00ffa,2026-11-03
+engine_compare_signed_strings,edge,,18,18,0,0,74f4fd8ab8a917df,2026-11-03
 engine_write_stderr,edge,,28,28,0,0,f997862b08044f6d,2026-10-31
 event_emk_add,recorded,,150,150,0,0,937b4dca128ba863,2026-10-07
 event_emk_add,recorded,60,150,150,0,0,937b4dca128ba863,2026-10-07
@@ -139,6 +142,14 @@ input_pad_step_01972900,edge,60,13,13,0,0,33cd4f4b94e06d58,2026-10-07
 input_pad_step_01972900,edge,uncapped,13,13,0,0,33cd4f4b94e06d58,2026-10-07
 kernel_condition_wait,recorded,,527,527,0,0,3c1f1aa3690e430e,2026-10-07
 kernel_condition_wait,edge,,12,12,0,0,3c1f1aa3690e430e,2026-10-07
+kernel_mutex_create,edge,,26,26,0,0,d1c4e643de20cba8,2026-11-03
+kernel_mutex_destroy,edge,,17,17,0,0,2916d74498255d53,2026-11-03
+kernel_mutex_lock,edge,,20,20,0,0,a424c87376084e89,2026-11-03
+kernel_mutex_unlock,edge,,20,20,0,0,202db4e3da7f3970,2026-11-03
+kernel_semaphore_create,edge,,22,22,0,0,6eb580cbe2062e91,2026-11-03
+kernel_semaphore_destroy,edge,,22,22,0,0,2c49f7b010f80cfb,2026-11-03
+kernel_semaphore_signal,edge,,22,22,0,0,9cc58f3ea5f03052,2026-11-03
+kernel_semaphore_wait,edge,,22,22,0,0,ce742838186d2510,2026-11-03
 kernel_thread_self,edge,,7,7,0,0,75626151a8bb5eab,2026-10-31
 physics_instance_construct_01c0c2b0,recorded,,119,119,0,0,ca3412adb293c909,2026-10-07
 physics_instance_construct_01c0c2b0,recorded,30,119,119,0,0,ca3412adb293c909,2026-10-07
