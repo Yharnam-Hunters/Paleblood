@@ -86,7 +86,7 @@ def main():
     destination.mkdir(parents=True, exist_ok=True)
     for fixture in CASES:
         (destination / (fixture['id'] + '.json')).write_text(json.dumps(fixture, indent=1) + '\n')
-    print(f'{len(CASES)} authored release wire cases written to {destination}')
+    print(f'{len(CASES)} synthetic release inputs written to {destination}')
     return 0
 if __name__ == '__main__':
     raise SystemExit(main())
