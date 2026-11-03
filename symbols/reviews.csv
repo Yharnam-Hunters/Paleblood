@@ -52,3 +52,4 @@ address,name,date,reviewer,verdict,notes
 0x017cfcc0,event_flag_write,2026-10-31,independent session,approved,"refactor onto game/event/flag_store.h, behaviour unchanged; group size 11 case added; 15 edge cases"
 0x0111a8a0,kernel_thread_self,2026-10-31,independent session,approved,"64-bit store of the scePthreadSelf result, return 0 (i32); 7 edge cases re-run on current main; four mutants caught"
 0x0111a740,engine_write_stderr,2026-10-31,independent session,approved,"_Stderr read once, fputs result ignored, return 0 (i32); 28 edge cases re-run on current main; five mutants caught"
+0x0111a7f0,frame_timing_get_monotonic_ms,2026-11-03,Codex (author; approval pending),changes requested,Shared monotonic header refactor changes the source hash; rerun genuine recorded cases and obtain independent approval for this source before promotion. Historical approval applies to the old source only.
