@@ -4,6 +4,7 @@ address,replacement,system,returns
 0x0111a7f0,bb_frame_timing_get_monotonic_ms,frame_timing,i32
 0x0111a880,bb_frame_timing_sleep_ms,frame_timing,i32
 0x0111a8a0,bb_kernel_thread_self,kernel,i32
+0x0111a8c0,bb_audio_fmod_thread_affinity_lookup,audio,i32
 0x0111ad10,bb_kernel_semaphore_create,kernel,i32
 0x0111ad80,bb_kernel_semaphore_destroy,kernel,i32
 0x0111ada0,bb_kernel_semaphore_wait,kernel,i32
