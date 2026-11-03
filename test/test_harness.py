@@ -924,6 +924,28 @@ class Harness(unittest.TestCase):
         self.assertEqual(result['calls'][0]['argu32'], ['0x7'])
         self.assertEqual(result['calls'][0]['argu8'], ['0x7'])
 
+    def test_import_can_return_a_declared_buffer_pointer(self):
+        case = {'schema': 1, 'address': '0x00400c80', 'id': 'import-buffer-return',
+                'returns': 'i64', 'args': {},
+                'buffers': {'payload': {'size': 16, 'bytes': 'a5' * 16}},
+                'memory': [], 'stubs': [],
+                'imports': [{'name': 'testImport', 'argc': 0, 'ret': 'buf:payload+0x3'}]}
+        Path(self.case).write_text(json.dumps(case))
+        result = self.side_case(self.case, address=case['address'])
+        self.assertEqual(result['ret'], {'rax': 'buf:payload+0x3'})
+        self.assertEqual(result.get('errors', []), [])
+        self.assertEqual(result['writes'], [])
+
+    def test_zero_shape_physics_fixture_references_only_declared_buffers(self):
+        import runpy
+        fixtures = runpy.run_path(os.path.join(ROOT, 'game', 'physics',
+                                              'instance_construct_cases.py'))['CASES']
+        case = next(item for item in fixtures if item['id'] == 'no_shapes')
+        for script in case['stubs']:
+            for write in script.get('writes', []):
+                if 'pointer' in write:
+                    self.assertIn(write['pointer'].split('+', 1)[0], case['buffers'])
+
     def test_scripted_callbacks_capture_seventh_pointer_with_float_and_writes(self):
         for kind in ('imports', 'stubs'):
             with self.subTest(kind=kind):

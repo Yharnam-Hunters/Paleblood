@@ -126,6 +126,8 @@ reused run ID and case number cannot silently replace an existing recording.
   upper padding of narrower integers require separate ABI evidence. SSE selectors `argf32`
   remain independent (`0` or `1`); a float does not consume a GP slot. Invalid selectors
   reject the fixture before execution; callback access errors make the result fail.
+  A `BadInput` raised while an import or stub callback runs is recorded as a case
+  failure, rather than being discarded by the native callback bridge.
 - `stack`: stack arguments, in order (the 7th integer argument first), as numbers, `buf:` or
   `guest:` values; the harness pushes them before the call and pops them after.
 - `gs`: the guest thread pointer (`buf:NAME+off`), for code that uses thread-local storage. As

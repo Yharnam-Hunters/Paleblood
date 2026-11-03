@@ -486,7 +486,7 @@ class Run:
             pack = lambda v: struct.pack('<qq', int(v) // 1_000_000, int(v) % 1_000_000)
             self.check_memory(args[int(series['arg'])], 16, write=True, source="import_series")
             ctypes.memmove(args[int(series['arg'])], pack(series['values'][i]), 16)
-            ret = hexint(entry.get('ret', 0)) & 0xffffffffffffffff
+            ret = self.value(entry.get('ret', 0)) & 0xffffffffffffffff
             n = self.native.get(index)
             rest = series['values'][i + 1:]
             if n and rest:
@@ -506,7 +506,7 @@ class Run:
             address = args[int(w['arg'])] + int(w.get('offset', 0))
             self.check_memory(address, len(data), write=True, source="import_write")
             ctypes.memmove(address, data, len(data))
-        return hexint(entry.get('ret', 0)) & 0xffffffffffffffff
+        return self.value(entry.get('ret', 0)) & 0xffffffffffffffff
 
     def dispatch_stub(self, address: int, args: tuple, save: int = 0) -> int:
         queue = self.stub_scripts.get(address)
