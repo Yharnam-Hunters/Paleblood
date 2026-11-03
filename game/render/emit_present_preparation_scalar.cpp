@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Emit the captured scalar as unchanged bits. On the native slow path it is
 // spilled before the callback and reloaded after admission; no float math occurs.
-#include "present_preparation_packets.h"
+#include "present_dirty_preparation_packets.h"
 #include <bit>
 
 extern "C" uint64_t bb_render_emit_present_preparation_scalar(

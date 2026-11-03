@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Emit only the input's captured low byte as a DWORD payload. Capacity failure
 // returns the full callback result; successful admission refreshes cursor alone.
-#include "present_preparation_packets.h"
+#include "present_dirty_preparation_packets.h"
 
 extern "C" uint64_t bb_render_emit_present_preparation_byte(
     render::GpuCommandState *commands, uint32_t value)
