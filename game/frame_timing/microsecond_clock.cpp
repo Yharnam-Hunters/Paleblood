@@ -2,29 +2,11 @@
 // The monotonic microsecond clock shares its first-call seconds with the millisecond clock.
 // The output and elapsed-seconds arithmetic wrap at 32 bits, including the truncated
 // nanosecond input. A failed clock read leaves the output and shared clock state untouched.
-#include <cstddef>
-#include <cstdint>
-
-#include "runtime/original.h"
+#include "monotonic_clock.h"
 
 namespace {
 
-struct Timespec {
-    int64_t seconds;
-    int64_t nanoseconds;
-};
-
-struct ClockState {
-    uint8_t unknown_0x00[0x10];
-    int32_t base_seconds;
-};
-static_assert(offsetof(ClockState, base_seconds) == 0x10);
-
-RT_ORIGINAL(0x02fbfe58, kernel_clock_gettime, int(int clock_id, Timespec *time));
-RT_GLOBAL(0x056d6ae8, clock_state_instance, ClockState *);
-
-constexpr int clock_monotonic = 4;
-constexpr int clock_error = 0x21;
+using namespace frame_timing::monotonic;
 constexpr uint32_t us_per_second = 1000000;
 constexpr uint32_t ns_per_us = 1000;
 
