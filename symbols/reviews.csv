@@ -57,3 +57,5 @@ address,name,date,reviewer,verdict,notes
 0x0111ada0,kernel_semaphore_wait,2026-11-03,independent session,approved,"matches the disassembly on every path (handle stored only on success, nonzero low 32 bits map to 0x21); 22 edge cases re-run on current main; five mutants caught"
 0x0111adc0,kernel_semaphore_signal,2026-11-03,independent session,approved,"matches the disassembly on every path (handle stored only on success, nonzero low 32 bits map to 0x21); 22 edge cases re-run on current main; five mutants caught"
 +0x0111a8c0,audio_fmod_thread_affinity_lookup,2026-11-03,independent session,approved,"matches the disassembly on every path; edge cases re-run on current main; four mutants caught"
++0x011c4970,engine_compare_signed_strings,2026-11-03,independent session,approved,"matches the disassembly on every path; edge cases re-run on current main; five of six mutants caught (the sixth is equivalent)"
++0x011c4990,engine_compare_signed_prefix,2026-11-03,independent session,approved,"matches the disassembly on every path; edge cases re-run on current main; five of six mutants caught (the sixth is equivalent)"
