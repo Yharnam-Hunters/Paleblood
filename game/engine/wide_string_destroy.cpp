@@ -3,11 +3,9 @@
 // The ownership byte is not consulted or reset by this destructor.
 #include "wide_string.h"
 
-extern "C" void bb_engine_destroy_wide_string_02a44140(engine::WideString *value)
+extern "C" void bb_engine_wide_string_destroy(engine::WideString *value)
 {
-    if (value->capacity >= engine::wide_string_inline_capacity) {
-        value->allocator->free(value->heap);
-    }
+    engine::wide_string_release(value);
     // These stores follow the callback, including when it changes the object itself.
     value->capacity = engine::wide_string_inline_capacity - 1;
     value->size = 0;

@@ -15,10 +15,8 @@ extern "C" void bb_engine_initialize_static_wide_string_0217ffb0()
         string::default_allocator.get() = allocator;
     }
 
-    string::HeapInfoPrefix info;
-    // Keep the observed eight-byte output prefix without changing the shared allocator view.
-    const auto query_info = reinterpret_cast<string::HeapInfoCall>(allocator->vtable->info);
-    query_info(&info, allocator, 0);
+    engine::AllocatorInfo info;
+    allocator->vtable->info(&info, allocator, 0);
     if ((info.flags & engine::allocator_info_valid) == 0) {
         engine::fatal_error(nullptr, string::invalid_heap_line, string::invalid_heap_message.address());
     }
