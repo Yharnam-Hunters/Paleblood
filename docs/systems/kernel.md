@@ -19,6 +19,14 @@ mutexes and condition variables. Each wrapper checks the result of the call it m
 unexpected result goes to the engine's fatal error function (`0x024b55b0`), which takes a file,
 a line and a message.
 
+### The current thread
+
+`kernel_thread_self` (`0x0111a8a0`) stores the calling thread's handle from `scePthreadSelf`
+through its pointer argument and returns 0. It is reached only through a function pointer. By
+[@evill33t](https://github.com/evill33t) in #105, merged in
+[#203](https://github.com/Yharnam-Hunters/Paleblood/pull/203): its 7 constructed edge cases pass
+against the original on current `main`, and an independent review approved it.
+
 ### How a condition wait works
 
 `kernel_condition_wait` (`0x02483e80`) waits on a condition variable. It has two paths:
