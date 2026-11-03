@@ -30,7 +30,8 @@ def words(root: str) -> list[tuple[str, re.Pattern]]:
                     out.append((w, re.compile(re.escape(w), re.I)))
     for rel, col, label in (('symbols/functions.csv', 'name', 'function name'),
                             ('symbols/functions.csv', 'address', 'address'),
-                            ('game/hooks.csv', 'address', 'address')):
+                            ('game/hooks.csv', 'address', 'address'),
+                            ('game/module_hooks.csv', 'offset', 'module offset')):
         p = os.path.join(root, rel)
         if not os.path.isfile(p):
             continue
