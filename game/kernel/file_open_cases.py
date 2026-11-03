@@ -8,6 +8,7 @@ import sys
 ADDRESS = '0x0111a620'
 OPEN = '0x02fbf3f8'
 FSTAT = '0x02fbfe48'
+# Only to execute the original ELF's compiler canary; the replacement has no guard check.
 GUARD_SLOT = '0x057e3be0'
 MASK64 = (1 << 64) - 1
 STATUS_BYTES = 120
