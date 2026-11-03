@@ -59,3 +59,7 @@ address,name,date,reviewer,verdict,notes
 +0x0111a8c0,audio_fmod_thread_affinity_lookup,2026-11-03,independent session,approved,"matches the disassembly on every path; edge cases re-run on current main; four mutants caught"
 +0x011c4970,engine_compare_signed_strings,2026-11-03,independent session,approved,"matches the disassembly on every path; edge cases re-run on current main; five of six mutants caught (the sixth is equivalent)"
 +0x011c4990,engine_compare_signed_prefix,2026-11-03,independent session,approved,"matches the disassembly on every path; edge cases re-run on current main; five of six mutants caught (the sixth is equivalent)"
++0x0111abb0,kernel_mutex_create,2026-11-03,independent session,approved,"matches the disassembly on every path; edge cases re-run on current main; ten mutants caught"
++0x0111ac80,kernel_mutex_destroy,2026-11-03,independent session,approved,"matches the disassembly on every path; edge cases re-run on current main; ten mutants caught"
++0x0111acd0,kernel_mutex_lock,2026-11-03,independent session,approved,"matches the disassembly on every path; edge cases re-run on current main; ten mutants caught"
++0x0111acf0,kernel_mutex_unlock,2026-11-03,independent session,approved,"matches the disassembly on every path; edge cases re-run on current main; ten mutants caught"

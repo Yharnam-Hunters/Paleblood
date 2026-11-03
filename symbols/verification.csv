@@ -142,6 +142,10 @@ input_pad_step_01972900,edge,60,13,13,0,0,33cd4f4b94e06d58,2026-10-07
 input_pad_step_01972900,edge,uncapped,13,13,0,0,33cd4f4b94e06d58,2026-10-07
 kernel_condition_wait,recorded,,527,527,0,0,3c1f1aa3690e430e,2026-10-07
 kernel_condition_wait,edge,,12,12,0,0,3c1f1aa3690e430e,2026-10-07
+kernel_mutex_create,edge,,26,26,0,0,d1c4e643de20cba8,2026-11-03
+kernel_mutex_destroy,edge,,17,17,0,0,2916d74498255d53,2026-11-03
+kernel_mutex_lock,edge,,20,20,0,0,a424c87376084e89,2026-11-03
+kernel_mutex_unlock,edge,,20,20,0,0,202db4e3da7f3970,2026-11-03
 kernel_semaphore_create,edge,,22,22,0,0,6eb580cbe2062e91,2026-11-03
 kernel_semaphore_destroy,edge,,22,22,0,0,2c49f7b010f80cfb,2026-11-03
 kernel_semaphore_signal,edge,,22,22,0,0,9cc58f3ea5f03052,2026-11-03
