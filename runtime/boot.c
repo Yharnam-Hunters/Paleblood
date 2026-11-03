@@ -512,8 +512,7 @@ static int install_module_hooks(char *error, size_t size)
             const uint64_t start = (o->size + PAGE_SIZE_HOST - 1) / PAGE_SIZE_HOST * PAGE_SIZE_HOST;
             void *want = o->image + start;
             o->stubs = start + PAGE_SIZE_HOST <= MODULE_STRIDE
-                           ? mmap(want, PAGE_SIZE_HOST, PROT_READ | PROT_WRITE | PROT_EXEC,
-                                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0)
+                           ? rt_map_anonymous_at(want, PAGE_SIZE_HOST, PROT_READ | PROT_WRITE | PROT_EXEC)
                            : MAP_FAILED;
             if (o->stubs != want) {
                 o->stubs = NULL;
