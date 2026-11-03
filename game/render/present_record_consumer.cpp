@@ -6,10 +6,11 @@
 #include <cstring>
 #include <limits>
 
-#include "present_record_consumer.h"
+#include "present_record_calls.h"
 
 namespace {
 using namespace render;
+    using namespace render::record_calls;
 constexpr uint32_t record_range_dirty = 2;
 constexpr uint32_t all_record_dirty = 7;
 constexpr uint8_t preparation_dirty = 0xf;
@@ -84,6 +85,7 @@ extern "C" void bb_render_present_record_consume(render::PresentRecordContext *c
                                                   uint32_t force_commands)
 {
     using namespace render;
+    using namespace render::record_calls;
     const uint8_t classification = record_classification_byte(record);
     const uint8_t secondary = record_secondary_byte(record);
     // The first classification is compared to exactly one, including noncanonical bytes.
