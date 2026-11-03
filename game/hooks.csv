@@ -4,7 +4,17 @@ address,replacement,system,returns
 0x0111a7f0,bb_frame_timing_get_monotonic_ms,frame_timing,i32
 0x0111a880,bb_frame_timing_sleep_ms,frame_timing,i32
 0x0111a8a0,bb_kernel_thread_self,kernel,i32
-0x011c49c0,bb_engine_compare_ascii_ignoring_case,engine,i32
+0x0111a8c0,bb_audio_fmod_thread_affinity_lookup,audio,i32
+0x0111abb0,bb_kernel_mutex_create,kernel,i32
+0x0111ac80,bb_kernel_mutex_destroy,kernel,i32
+0x0111acd0,bb_kernel_mutex_lock,kernel,i32
+0x0111acf0,bb_kernel_mutex_unlock,kernel,i32
+0x0111ad10,bb_kernel_semaphore_create,kernel,i32
+0x0111ad80,bb_kernel_semaphore_destroy,kernel,i32
+0x0111ada0,bb_kernel_semaphore_wait,kernel,i32
+0x0111adc0,bb_kernel_semaphore_signal,kernel,i32
+0x011c4970,bb_engine_compare_signed_strings,engine,i32
+0x011c4990,bb_engine_compare_signed_prefix,engine,i32
 0x01388c60,bb_frame_timing_task_run_all_01388c60,frame_timing,void
 0x01388c70,bb_frame_timing_task_run_01388c70,frame_timing,void
 0x0138a370,bb_frame_timing_task_dispatch_0138a370,frame_timing,void
@@ -53,3 +63,4 @@ address,replacement,system,returns
 0x024512a0,bb_frame_timing_task_frame_024512a0,frame_timing,void
 0x02483e80,bb_kernel_condition_wait,kernel,i32
 0x025b2fb0,bb_render_swap_chain_present,render,void
+0x011c49c0,bb_engine_compare_ascii_ignoring_case,engine,i32
