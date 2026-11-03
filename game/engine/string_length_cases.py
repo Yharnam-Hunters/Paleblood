@@ -15,6 +15,10 @@ ABI = {
     'arguments': [
         {'register': 'rdi', 'type': 'readable byte sequence through the first NUL',
          'direction': 'input'},
+    ] + [
+        {'register': register, 'type': 'uint64_t ignored GP seed; not a source formal',
+         'direction': 'input'}
+        for register in IGNORED_REGISTERS
     ],
     'source_formal_slots': ['rdi'],
     'input_regions': ['data'],
