@@ -15,8 +15,8 @@ character_frame_update_01cbdb20,edge,,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,edge,30,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,edge,60,39,39,0,0,b243fddb1ca6589a,2026-10-07
 character_frame_update_01cbdb20,edge,uncapped,39,39,0,0,b243fddb1ca6589a,2026-10-07
-engine_map_ascii_lower_inplace,edge,,30,30,0,0,f98d355113b8df78,2026-11-02
-engine_map_ascii_upper_inplace,edge,,30,30,0,0,61ca74a31a746213,2026-11-02
+engine_ascii_to_lower_in_place,edge,,30,30,0,0,f98d355113b8df78,2026-11-02
+engine_ascii_to_upper_in_place,edge,,30,30,0,0,61ca74a31a746213,2026-11-02
 engine_write_stderr,edge,,28,28,0,0,f997862b08044f6d,2026-10-31
 event_emk_add,recorded,,150,150,0,0,937b4dca128ba863,2026-10-07
 event_emk_add,recorded,60,150,150,0,0,937b4dca128ba863,2026-10-07

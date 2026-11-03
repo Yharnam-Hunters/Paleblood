@@ -4,8 +4,8 @@ address,replacement,system,returns
 0x0111a7f0,bb_frame_timing_get_monotonic_ms,frame_timing,i32
 0x0111a880,bb_frame_timing_sleep_ms,frame_timing,i32
 0x0111a8a0,bb_kernel_thread_self,kernel,i32
-0x011c4910,bb_engine_map_ascii_upper_inplace,engine,i64
-0x011c4940,bb_engine_map_ascii_lower_inplace,engine,i64
+0x011c4910,bb_engine_ascii_to_upper_in_place,engine,i64
+0x011c4940,bb_engine_ascii_to_lower_in_place,engine,i64
 0x01388c60,bb_frame_timing_task_run_all_01388c60,frame_timing,void
 0x01388c70,bb_frame_timing_task_run_01388c70,frame_timing,void
 0x0138a370,bb_frame_timing_task_dispatch_0138a370,frame_timing,void
