@@ -2,6 +2,7 @@
 /* pbboot: runs a PS4 executable's entry on Paleblood's runtime, as far as the runtime goes.
 
      pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--app0 DIR] [--nids NID_DB.xml]
+            [--module-hook MODULE:OFFSET:SIZE:ACTION:NAME]...
             [--status OUT.json] [--timeout SECONDS] [--trace]
      pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]
             (list every import: importer, library, symbol, kind, provider, provider offset, size)
@@ -16,6 +17,17 @@
    system module id and library name: when the guest asks the system module library to load it,
    the runtime reports it loaded without mapping it (runtime/syslib/kernel_sysmodule.c), and the
    run reports which of them were loaded.
+
+   A function inside a mapped module can be replaced before any guest code runs (--module-hook,
+   from game data): MODULE is a --module's file name (the executable itself cannot be hooked),
+   OFFSET and SIZE the function's place and length in its image (C notation), NAME its name, which
+   may hold colons. The range must lie in one executable segment and not overlap another hook's.
+   ACTION "return" makes the function return at once and write nothing (registers included);
+   "stop" ends the run there and reports NAME and the caller, as an unimplemented import does, on
+   any guest thread. The function's first five bytes become a relative jump to a stub in a page
+   past the module's image, inside its slot, so any function of five bytes or more can be
+   replaced. The offsets are only as good as the module they were taken from: game data names
+   them for the hash-pinned build.
 
    Every import call is counted, so the run also reports the boot milestones reached: the first
    call to each milestone's system functions (threads, files, input, audio, video out, GPU
@@ -51,6 +63,10 @@
 #define MAX_OBJECTS 16
 #define STACK_SIZE (16u << 20)
 #define TRAMPOLINE_SIZE 48
+#define MAX_MODULE_HOOKS 16
+#define MODULE_HOOK_STUB_SIZE 32
+#define JUMP_REL32_SIZE 5
+#define PAGE_SIZE_HOST 4096
 
 static const struct {
     const char *name;
@@ -80,13 +96,27 @@ typedef struct {
     int *provider_object;    /* MODULE: which object */
     size_t *provider_export; /* MODULE: which export */
     unsigned char *called;   /* per import: called at least once */
+    unsigned char *stubs;    /* module hooks' stubs: one page past the image, or NULL */
+    size_t stubs_used;
 } object;
 
 static object objects[MAX_OBJECTS];
 static size_t object_count;
 
-enum outcome { RUNNING, UNIMPLEMENTED, FAULT, TIMEOUT, EXITED, RETURNED };
-static const char *const outcome_names[] = {"running", "unimplemented", "fault", "timeout", "exited", "returned"};
+enum module_hook_action { HOOK_RETURN, HOOK_STOP };
+
+typedef struct {
+    const char *module, *name;
+    uint64_t offset, size;
+    enum module_hook_action action;
+} module_hook;
+
+static module_hook module_hooks[MAX_MODULE_HOOKS];
+static size_t module_hook_count;
+
+enum outcome { RUNNING, UNIMPLEMENTED, FAULT, TIMEOUT, EXITED, RETURNED, STOPPED };
+static const char *const outcome_names[] = {"running", "unimplemented", "fault", "timeout", "exited", "returned",
+                                            "stopped"};
 
 static sigjmp_buf back_to_host;
 static volatile enum outcome outcome = RUNNING;
@@ -95,6 +125,7 @@ static volatile enum outcome outcome = RUNNING;
 static pthread_t main_thread;
 static atomic_int stopped = 0;
 static volatile uint32_t stopped_at;            /* object << 20 | import index of the unimplemented call */
+static volatile uint32_t stopped_hook;          /* index of the "stop" module hook reached */
 static volatile uint64_t stopped_from;          /* the guest's return address of that call */
 static volatile uint64_t fault_rip, fault_address;
 static volatile int fault_signal;
@@ -124,6 +155,17 @@ static __attribute__((noinline)) void unimplemented(uint32_t which)
     stopped_from = (uint64_t)(uintptr_t)__builtin_return_address(0);
     stopped_at = which;
     outcome = UNIMPLEMENTED;
+    unwind();
+}
+
+/* Entered from a "stop" module hook's stub (edi = hook index). The replaced function's first
+   instruction jumped to the stub, so the return address is that function's caller. Never returns. */
+static __attribute__((noinline)) void module_hook_stop(uint32_t which)
+{
+    if (!claim_stop()) for (;;) pause();
+    stopped_from = (uint64_t)(uintptr_t)__builtin_return_address(0);
+    stopped_hook = which;
+    outcome = STOPPED;
     unwind();
 }
 
@@ -392,8 +434,124 @@ static int add_stub_module(const char *arg)
     return 0;
 }
 
+static int parse_u64(const char *text, uint64_t *out)
+{
+    char *end;
+    errno = 0;
+    if (*text < '0' || *text > '9') return -1;          /* digits only: no sign, no space */
+    const unsigned long long v = strtoull(text, &end, 0);
+    if (errno || *end) return -1;
+    *out = v;
+    return 0;
+}
+
+/* --module-hook MODULE:OFFSET:SIZE:ACTION:NAME. NAME is the rest of the argument, so it may hold
+   colons (a C++ name). Returns 0 when it was added, -2 when the table is full, else -1. */
+static int add_module_hook(const char *arg)
+{
+    if (module_hook_count == MAX_MODULE_HOOKS) return -2;
+    char *copy = strdup(arg), *field[4], *p = copy;
+    if (!copy) return -1;
+    for (int i = 0; i < 4; i++) {
+        char *colon = strchr(p, ':');
+        if (!colon) return free(copy), -1;
+        *colon = 0;
+        field[i] = p;
+        p = colon + 1;
+    }
+    module_hook h = {.module = field[0], .name = p};
+    if (!*h.module || !*h.name || parse_u64(field[1], &h.offset) || parse_u64(field[2], &h.size))
+        return free(copy), -1;
+    if (!strcmp(field[3], "return")) h.action = HOOK_RETURN;
+    else if (!strcmp(field[3], "stop")) h.action = HOOK_STOP;
+    else return free(copy), -1;
+    module_hooks[module_hook_count++] = h;
+    return 0;
+}
+
+/* Writes each module hook into its mapped module, before any guest code runs: a stub in a page
+   past the module's image (inside its slot, so a rel32 reaches it), and a jump to the stub over
+   the function's first five bytes. Returns 0, or -1 with the reason in error. */
+static int install_module_hooks(char *error, size_t size)
+{
+    for (size_t n = 0; n < module_hook_count; n++) {
+        const module_hook *h = &module_hooks[n];
+        object *o = NULL;
+        for (size_t k = 1; k < object_count && !o; k++)
+            if (!strcmp(objects[k].label, h->module)) o = &objects[k];
+        if (!o) {
+            snprintf(error, size, "--module-hook %s: no module %s is mapped", h->name, h->module);
+            return -1;
+        }
+        if (h->size < JUMP_REL32_SIZE || h->offset > o->size || h->size > o->size - h->offset) {
+            snprintf(error, size, "--module-hook %s: %s+0x%llx, %llu bytes: no room for a %d-byte jump in the image",
+                     h->name, h->module, (unsigned long long)h->offset, (unsigned long long)h->size,
+                     JUMP_REL32_SIZE);
+            return -1;
+        }
+        int executable = 0;
+        const rt_elf_load *loads = rt_elf_loads(o->elf);
+        for (size_t s = 0; s < rt_elf_load_count(o->elf) && !executable; s++)
+            executable = (loads[s].flags & 1) && h->offset >= loads[s].vaddr &&
+                         h->offset + h->size <= loads[s].vaddr + loads[s].memsz;
+        if (!executable) {
+            snprintf(error, size, "--module-hook %s: %s+0x%llx, %llu bytes: not inside one executable segment",
+                     h->name, h->module, (unsigned long long)h->offset, (unsigned long long)h->size);
+            return -1;
+        }
+        for (size_t m = 0; m < n; m++) {
+            const module_hook *e = &module_hooks[m];
+            if (!strcmp(e->module, h->module) && h->offset < e->offset + e->size && e->offset < h->offset + h->size) {
+                snprintf(error, size, "--module-hook %s: overlaps --module-hook %s in %s", h->name, e->name,
+                         h->module);
+                return -1;
+            }
+        }
+        if (!o->stubs) {
+            const uint64_t start = (o->size + PAGE_SIZE_HOST - 1) / PAGE_SIZE_HOST * PAGE_SIZE_HOST;
+            void *want = o->image + start;
+            o->stubs = start + PAGE_SIZE_HOST <= MODULE_STRIDE
+                           ? mmap(want, PAGE_SIZE_HOST, PROT_READ | PROT_WRITE | PROT_EXEC,
+                                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0)
+                           : MAP_FAILED;
+            if (o->stubs != want) {
+                o->stubs = NULL;
+                snprintf(error, size, "--module-hook %s: no room for stubs past %s", h->name, h->module);
+                return -1;
+            }
+        }
+        if ((o->stubs_used + 1) * MODULE_HOOK_STUB_SIZE > PAGE_SIZE_HOST) {
+            snprintf(error, size, "--module-hook %s: too many hooks in %s", h->name, h->module);
+            return -1;
+        }
+        unsigned char *stub = o->stubs + o->stubs_used++ * MODULE_HOOK_STUB_SIZE, *p = stub;
+        if (h->action == HOOK_RETURN) {
+            *p++ = 0xc3;                                                   /* ret */
+        } else {
+            const uint32_t which = (uint32_t)n;
+            const uint64_t target = (uint64_t)(uintptr_t)module_hook_stop;
+            *p++ = 0xbf, memcpy(p, &which, 4), p += 4;                    /* mov edi, which */
+            *p++ = 0x49, *p++ = 0xbb, memcpy(p, &target, 8), p += 8;      /* movabs r11, target */
+            *p++ = 0x41, *p++ = 0xff, *p++ = 0xe3;                        /* jmp r11 */
+        }
+        unsigned char *entry = o->image + h->offset;
+        const int64_t distance = (int64_t)((intptr_t)stub - (intptr_t)(entry + JUMP_REL32_SIZE));
+        if (distance < INT32_MIN || distance > INT32_MAX) {
+            snprintf(error, size, "--module-hook %s: its stub is out of a relative jump's reach", h->name);
+            return -1;
+        }
+        const int32_t rel = (int32_t)distance;
+        entry[0] = 0xe9;                                                   /* jmp rel32 */
+        memcpy(entry + 1, &rel, 4);
+        __builtin___clear_cache((char *)entry, (char *)entry + JUMP_REL32_SIZE);
+        __builtin___clear_cache((char *)stub, (char *)p);
+    }
+    return 0;
+}
+
 static const char *usage =
     "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--app0 DIR] [--nids NID_DB.xml]\n"
+    "              [--module-hook MODULE:OFFSET:SIZE:ACTION:NAME]...\n"
     "              [--status OUT.json] [--timeout S] [--trace]\n"
     "       pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]\n";
 
@@ -424,6 +582,19 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--app-param") && i + 1 < argc) {
             if (add_app_param(argv[++i])) {
                 fprintf(stderr, "pbboot: --app-param %s: want a new ID=VALUE, ID=unread or boot=unread\n", argv[i]);
+                return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "--module-hook") && i + 1 < argc) {
+            const int added = add_module_hook(argv[++i]);
+            if (added == -2) {
+                fprintf(stderr, "pbboot: --module-hook %s: more than %d module hooks\n", argv[i], MAX_MODULE_HOOKS);
+                return 2;
+            }
+            if (added) {
+                fprintf(stderr,
+                        "pbboot: --module-hook %s: want MODULE:OFFSET:SIZE:ACTION:NAME, ACTION return or stop\n",
+                        argv[i]);
                 return 2;
             }
         }
@@ -513,6 +684,10 @@ int main(int argc, char **argv)
             return 3;
         }
         rt_elf_thread_pointer_to_gs(o->elf, o->image);
+    }
+    if (install_module_hooks(error, sizeof error)) {
+        fprintf(stderr, "pbboot: %s\n", error);
+        return 3;
     }
     uint64_t proc_param_size;
     const uint64_t proc_param = rt_elf_proc_param(objects[0].elf, &proc_param_size);
@@ -613,7 +788,8 @@ int main(int argc, char **argv)
     }
     char at[128] = "", from[128] = "";
     if (outcome == FAULT || outcome == TIMEOUT) where(fault_rip, at, sizeof at);
-    if (outcome == UNIMPLEMENTED) where(stopped_from, from, sizeof from);
+    if (outcome == UNIMPLEMENTED || outcome == STOPPED) where(stopped_from, from, sizeof from);
+    const module_hook *stop_hook = outcome == STOPPED ? &module_hooks[stopped_hook] : NULL;
 
     printf("pbboot: %s: %s", phase, outcome_names[outcome]);
     if (outcome == UNIMPLEMENTED)
@@ -622,6 +798,9 @@ int main(int argc, char **argv)
     if (outcome == FAULT) printf(": signal %d at %s, address 0x%llx", fault_signal, at, (unsigned long long)fault_address);
     if (outcome == TIMEOUT) printf(" after %d s, at %s", timeout, at);
     if (outcome == EXITED) printf(" with code %d", exit_code);
+    if (stop_hook)
+        printf(": %s+0x%llx %s is replaced by a stop, called from %s", stop_hook->module,
+               (unsigned long long)stop_hook->offset, stop_hook->name, from);
     printf("\npbboot: milestone %s; executable imports %zu: %zu from bundled modules, %zu implemented by the runtime, "
            "%zu unresolved diagnostics, %zu unbound; imports called %zu\n",
            reached >= 0 ? milestones[reached].name : "loaded", objects[0].imports, from_modules, from_runtime,
@@ -686,6 +865,28 @@ int main(int argc, char **argv)
             json_string(f, stop_name ? stop_name : "");
             fprintf(f, ", \"nid\": ");
             json_string(f, stop_nid);
+            fprintf(f, ", \"returns_to\": ");
+            json_string(f, from);
+            fprintf(f, "}");
+        } else {
+            fprintf(f, "null");
+        }
+        fprintf(f, ",\n  \"module_hooks\": [");
+        for (size_t n = 0; n < module_hook_count; n++) {
+            const module_hook *h = &module_hooks[n];
+            fprintf(f, "%s{\"module\": ", n ? ", " : "");
+            json_string(f, h->module);
+            fprintf(f, ", \"offset\": \"0x%llx\", \"action\": \"%s\", \"name\": ", (unsigned long long)h->offset,
+                    h->action == HOOK_STOP ? "stop" : "return");
+            json_string(f, h->name);
+            fprintf(f, "}");
+        }
+        fprintf(f, "],\n  \"stopped_by_hook\": ");
+        if (stop_hook) {
+            fprintf(f, "{\"module\": ");
+            json_string(f, stop_hook->module);
+            fprintf(f, ", \"offset\": \"0x%llx\", \"name\": ", (unsigned long long)stop_hook->offset);
+            json_string(f, stop_hook->name);
             fprintf(f, ", \"returns_to\": ");
             json_string(f, from);
             fprintf(f, "}");
