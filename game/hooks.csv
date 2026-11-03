@@ -15,6 +15,7 @@ address,replacement,system,returns
 0x0111adc0,bb_kernel_semaphore_signal,kernel,i32
 0x011c4970,bb_engine_compare_signed_strings,engine,i32
 0x011c4990,bb_engine_compare_signed_prefix,engine,i32
+0x011c49c0,bb_engine_compare_ascii_ignoring_case,engine,i32
 0x01314320,bb_engine_entry_manager_resolve,engine,i64
 0x01388c60,bb_frame_timing_task_run_all_01388c60,frame_timing,void
 0x01388c70,bb_frame_timing_task_run_01388c70,frame_timing,void
@@ -64,4 +65,3 @@ address,replacement,system,returns
 0x024512a0,bb_frame_timing_task_frame_024512a0,frame_timing,void
 0x02483e80,bb_kernel_condition_wait,kernel,i32
 0x025b2fb0,bb_render_swap_chain_present,render,void
-0x011c49c0,bb_engine_compare_ascii_ignoring_case,engine,i32
