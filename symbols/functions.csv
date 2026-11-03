@@ -65,4 +65,4 @@ address,size,name,system,status,notes
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
 0x025b2fb0,768,render_swap_chain_present,render,verified,"GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0)"
 0x02a8c420,108,input_initialize_mouse_for_initial_user,input,original,"Initializes or reinitializes mouse input for the initial user, closing a previous connection if necessary."
-0x011c49c0,56,engine_compare_ascii_ignoring_case,engine,edge-verified,Fold ASCII A-Z on both loaded bytes before left-NUL test; subtract signed bytes and zero-extend the low32 result. Read-only bounded aliases; original API unknown
+0x011c49c0,56,engine_compare_ascii_ignoring_case,engine,edge-verified,Case-insensitive string comparison folds ASCII uppercase bytes then returns signed-byte difference as int32; bounded aliases covered
