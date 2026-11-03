@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """The authored strlen inputs must be accepted by the real fixture frontend."""
 from pathlib import Path
+import json
 import subprocess
 import sys
 import tempfile
@@ -19,7 +20,9 @@ class StringLengthCases(unittest.TestCase):
                 [sys.executable, str(ROOT / 'game/engine/string_length_cases.py'),
                  str(destination)], check=True, capture_output=True, text=True,
             )
-            rows, abi = differential.load_fixtures(destination, '0x011c47f0')
+            fixture_path = next(p for p in destination.glob('*.json') if p.name != 'abi.json')
+            address = json.loads(fixture_path.read_text())['address']
+            rows, abi = differential.load_fixtures(destination, address)
             self.assertTrue(rows)
             self.assertEqual(abi['source_formal_slots'], ['rdi'])
 
