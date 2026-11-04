@@ -69,3 +69,4 @@ address,name,date,reviewer,verdict,notes
 +0x0183fb20,camera_follow_yaw,2026-11-03,independent session,approved,"every point is addressed (header cut to what the getters use, QUIRKS reworded, plain negation, f32 returns); 32/32 and 30/30; planted mistakes caught"
 +0x011c4910,engine_ascii_to_upper_in_place,2026-11-03,independent session,approved,"every review point is addressed; 30/30 each; planted mistakes caught"
 +0x011c4940,engine_ascii_to_lower_in_place,2026-11-03,independent session,approved,"every review point is addressed; 30/30 each; planted mistakes caught"
++0x011c49c0,engine_compare_ascii_ignoring_case,2026-11-03,independent session,approved,"every review point is addressed (int32_t return, honest name, template removed); 49/49; planted mistakes caught"
