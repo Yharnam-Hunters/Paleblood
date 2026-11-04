@@ -18,8 +18,7 @@ static_assert(sizeof(RecordMappingSource::mapping_word_10) == 4);
 static_assert(alignof(RecordMappingSource) == 1);
 static_assert(sizeof(RecordMappingSource) == 0x14);
 
-// The complete original consumes these three low 32-bit values only and returns a
-// zero-extended packed DWORD. Entry RAX/RCX and extra ambient inputs are unused.
+// Pack three 32-bit fields into a mapping DWORD, returned zero-extended.
 RT_ORIGINAL(0x01471310, pack_record_mapping_word,
             uint64_t(uint32_t first, uint32_t second, uint32_t mode));
 }  // namespace render
