@@ -1878,6 +1878,35 @@ int main(void)
         CHECK((uint32_t)validate(0, NULL, NULL, NULL, NULL) == 0x80d13fffu);
         CHECK(words[0] == 0xc0001000 && words[3] == 0x33333333 && size == sizeof words && buffer == words);
     }
+    /* sceGnmDispatchInitDefaultHardwareState, sceGnmDrawInitDefaultHardwareState200: write nothing
+       (no GPU to set up) and say so. */
+    typedef uint32_t (*f_init_state)(uint32_t *, uint64_t);
+    static const char *const init_state_names[] = {"sceGnmDispatchInitDefaultHardwareState",
+                                                   "sceGnmDrawInitDefaultHardwareState200"};
+    for (int n = 0; n < 2; n++) {
+        const f_init_state init_state = (f_init_state)fn("libSceGnmDriver", init_state_names[n]);
+        CHECK(init_state != NULL);
+        if (!init_state) continue;
+        uint32_t packets[256];
+        for (int i = 0; i < 256; i++) packets[i] = 0xa5a5a5a5u;
+        CHECK(init_state(packets, 256) == 0);
+        CHECK(packets[0] == 0xa5a5a5a5u && packets[255] == 0xa5a5a5a5u);
+    }
+    /* sceGnmSetCsShader: the reserved 25 dwords become one PM4 NOP packet; answers 0. */
+    typedef int32_t (*f_set_cs)(uint32_t *, uint32_t, const void *);
+    const f_set_cs set_cs = (f_set_cs)fn("libSceGnmDriver", "sceGnmSetCsShader");
+    CHECK(set_cs != NULL);
+    if (set_cs) {
+        uint32_t packet[26];
+        for (int i = 0; i < 26; i++) packet[i] = 0xa5a5a5a5u;
+        CHECK(set_cs(packet, 25, (const void *)packet) == 0);
+        CHECK(packet[0] == (0xc0001000u | (23u << 16)) && packet[1] == 0 && packet[24] == 0);
+        CHECK(packet[25] == 0xa5a5a5a5u);
+    }
+    /* sceGnmIsUserPaEnabled: off. */
+    typedef int32_t (*f_user_pa)(void);
+    const f_user_pa user_pa = (f_user_pa)fn("libSceGnmDriver", "sceGnmIsUserPaEnabled");
+    CHECK(user_pa != NULL && user_pa() == 0);
     /* sceGnmMapComputeQueue: ids from 1 (the engine treats 0 as failure); a pipe and queue once. */
     cq_fn = (f_cq_t)fn("libSceGnmDriver", "sceGnmMapComputeQueue");
     if (cq_fn) {
