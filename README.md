@@ -58,8 +58,8 @@ Two tracks get there, side by side:
 - **Runtime** (`runtime/`): our own loader (done; the verification harness maps the executable
   with it), then, in order, generic input capture, kernel, threads and memory, files, input,
   audio, video out, and GNM and shaders, the largest part. Graphics are rebuilt at the engine's
-  own level, by replacing the game's graphics layer with our Vulkan code, not by emulating the
-  PS4's GPU. Written clean-room: public documentation and our own reverse engineering only.
+  own level, by replacing the game's graphics layer with our own graphics code (Vulkan on Linux,
+  Metal on macOS), not by emulating the PS4's GPU. Written clean-room: public documentation and our own reverse engineering only.
 
 Paleblood's own runtime does not yet run the full game. The current native run path still uses an
 external scaffold through the documented host interface; keep it until the project-owned runtime
@@ -110,7 +110,10 @@ edit (`tools/patch_overlap.py`), relocated-pointer lookup for functions reached 
 
 ## Getting started
 
-You need Linux and a dump of your own copy of the game from your own PS4 (see Legal below).
+You need Linux or macOS, and a dump of your own copy of the game from your own PS4 (see Legal
+below). Linux is the primary platform and the one CI tests; macOS support is in progress (graphics
+on Metal, the game's x86-64 code run through Rosetta on Apple Silicon), and macOS-only code must
+never break the Linux build.
 
 ```
 git clone https://github.com/Yharnam-Hunters/Paleblood.git
