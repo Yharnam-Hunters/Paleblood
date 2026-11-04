@@ -1,26 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Transform selected classifications after scaling metadata by their original
-// group. Multiplication and the following shift wrap at 32 bits before comparison.
+// Transform classifications after scaling metadata by their original group.
+// Multiplication and the left shift wrap at 32 bits before the threshold tests.
 #include "record_tuple.h"
 
 namespace {
-constexpr uint32_t tuple_code_3 = 3;
-constexpr uint32_t tuple_code_4 = 4;
-constexpr uint32_t tuple_code_7 = 7;
-constexpr uint32_t tuple_code_8 = 8;
-constexpr uint32_t tuple_code_5 = 5;
-constexpr uint32_t tuple_code_9 = 9;
-constexpr uint32_t tuple_code_6 = 6;
-constexpr uint32_t tuple_code_10 = 10;
-constexpr uint32_t tuple_code_12 = 12;
-constexpr uint32_t tuple_code_13 = 13;
-constexpr uint32_t tuple_code_14 = 14;
-constexpr uint32_t tuple_code_11 = 11;
-constexpr uint32_t tuple_code_15 = 15;
+// Rows cover classifications 3 through 15. Only admitted classifications reach
+// these tables; the upper threshold changes the results for classifications 8/14.
+constexpr uint32_t below_upper_threshold[render::record_tuple_group_entries] = {
+    3, 4, 5, 6, 4, 7, 5, 6, 11, 12, 12, 13, 11,
+};
+constexpr uint32_t at_or_above_upper_threshold[render::record_tuple_group_entries] = {
+    3, 4, 5, 6, 4, 4, 5, 6, 11, 12, 12, 12, 11,
+};
 }  // namespace
 
-
-extern "C" uint32_t bb_render_record_tuple_transform_classification(uint32_t classification, uint32_t metadata)
+extern "C" uint32_t bb_render_record_tuple_transform_classification(uint32_t classification,
+                                                                    uint32_t metadata)
 {
     constexpr uint32_t admitted_classifications = 0x1cf1;
     constexpr uint32_t scale_shift = 6;
@@ -31,15 +26,7 @@ extern "C" uint32_t bb_render_record_tuple_transform_classification(uint32_t cla
         return classification;
     const uint32_t scaled = (metadata * render::record_tuple_groups.get()[index]) << scale_shift;
     if (scaled < transformation_threshold) return classification;
-    switch (classification) {
-    case tuple_code_3: return tuple_code_3;
-    case tuple_code_7: return tuple_code_4;
-    case tuple_code_8: return scaled < upper_threshold ? tuple_code_7 : tuple_code_4;
-    case tuple_code_9: return tuple_code_5;
-    case tuple_code_10: return tuple_code_6;
-    case tuple_code_13: return tuple_code_12;
-    case tuple_code_14: return scaled < upper_threshold ? tuple_code_13 : tuple_code_12;
-    case tuple_code_15: return tuple_code_11;
-    default: return classification;
-    }
+    const auto &transformed = scaled < upper_threshold
+        ? below_upper_threshold : at_or_above_upper_threshold;
+    return transformed[index];
 }

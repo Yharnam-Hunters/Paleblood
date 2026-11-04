@@ -10,7 +10,7 @@ extern "C" uint64_t bb_render_record_tuple_parameter_supported(uint32_t paramete
     }
 
     constexpr uint32_t result_low_byte_mask = 0xffu;
-    const uint32_t r = parameter & (parameter - 1u);
-    const uint32_t result = (r & ~result_low_byte_mask) | static_cast<uint32_t>(r == 0);
+    const uint32_t without_lowest_set_bit = parameter & (parameter - 1u);
+    const uint32_t result = (without_lowest_set_bit & ~result_low_byte_mask) | static_cast<uint32_t>(without_lowest_set_bit == 0);
     return static_cast<uint64_t>(result);
 }

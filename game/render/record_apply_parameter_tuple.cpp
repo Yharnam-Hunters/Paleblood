@@ -6,18 +6,11 @@
 #include "record_tuple.h"
 
 namespace {
-constexpr uint32_t tuple_code_4 = 4;
-constexpr uint32_t tuple_code_2 = 2;
-constexpr uint32_t tuple_code_9 = 9;
-constexpr uint32_t tuple_code_10 = 10;
-constexpr uint32_t tuple_code_11 = 11;
-constexpr uint32_t tuple_code_5 = 5;
-constexpr uint32_t tuple_code_12 = 12;
-constexpr uint32_t tuple_code_6 = 6;
-constexpr uint32_t tuple_code_8 = 8;
-constexpr uint32_t tuple_code_3 = 3;
+enum TupleSelection : uint32_t {
+    direct_candidates, first_table_candidates, parameter_candidates,
+    rejected_candidates, second_table_candidates,
+};
 }  // namespace
-
 
 extern "C" uint32_t bb_render_record_apply_parameter_tuple(uint32_t *output, uint32_t classification,
                                                            uint32_t first, uint32_t mapping,
@@ -28,7 +21,7 @@ extern "C" uint32_t bb_render_record_apply_parameter_tuple(uint32_t *output, uin
     constexpr uint32_t maximum_parameter = 8;
     constexpr uint32_t remapped_metadata = 96, replacement_metadata = 32, large_metadata = 128;
     constexpr uint32_t adjusted_classification = 2;
-    constexpr uint32_t force_second_one_flag = 0x40, force_second_two_flags = 6;
+    constexpr uint32_t force_first_table_flag = 0x40, force_parameter_candidate_flags = 6;
     constexpr uint32_t special_class_first = 11, special_class_second = 12;
     constexpr uint32_t first_table_class = 4, second_table_class = 7;
     constexpr uint32_t first_table_default = 13, second_table_default = 19;
@@ -49,48 +42,49 @@ extern "C" uint32_t bb_render_record_apply_parameter_tuple(uint32_t *output, uin
     const uint32_t transformed = render::record_tuple_transform_classification(classification, metadata);
     const uint32_t transformed_group = render::record_tuple_classification_group(transformed);
     if (!render::record_tuple_classification_is_special(transformed)) {
-        if (transformed_group > 1) second = tuple_code_4;
-        if (metadata == large_metadata || (first & force_second_one_flag) != 0) second = 1;
-        if (transformed == special_class_first || transformed == special_class_second) second = 1;
-        if ((first & force_second_two_flags) != 0) second = tuple_code_2;
+        if (transformed_group > 1) second = second_table_candidates;
+        if (metadata == large_metadata || (first & force_first_table_flag) != 0) second = first_table_candidates;
+        if (transformed == special_class_first || transformed == special_class_second) second = first_table_candidates;
+        if ((first & force_parameter_candidate_flags) != 0) second = parameter_candidates;
     }
 
+    constexpr uint32_t direct_candidate_count = 7;
+    constexpr uint32_t direct_candidate_by_class[direct_candidate_count] = {
+        no_candidate, no_candidate, 9, no_candidate, 10, 11, 12,
+    };
+    constexpr uint32_t maximum_parameter_candidate = 2;
+    constexpr uint32_t parameter_candidate_count = maximum_parameter + 1;
+    constexpr uint32_t candidate_by_parameter[parameter_candidate_count] = {
+        no_candidate, 0, 1, no_candidate, 1, no_candidate,
+        no_candidate, no_candidate, maximum_parameter_candidate,
+    };
     uint32_t candidate = no_candidate;
     switch (second) {
-    case 0:
-        switch (transformed) {
-        case tuple_code_2: candidate = tuple_code_9; break;
-        case tuple_code_4: candidate = tuple_code_10; break;
-        case tuple_code_5: candidate = tuple_code_11; break;
-        case tuple_code_6: candidate = tuple_code_12; break;
-        default: break;
-        }
+    case direct_candidates:
+        // Index by transformed classification; other classifications have no direct candidate.
+        if (transformed < direct_candidate_count) candidate = direct_candidate_by_class[transformed];
         break;
-    case 1: {
+    case first_table_candidates: {
         candidate = first_table_default;
         const uint32_t index = transformed - first_table_class;
         if (index < render::record_tuple_candidate_entries)
             candidate = render::record_tuple_first_candidates.get()[index];
         break;
     }
-    case tuple_code_2:
+    case parameter_candidates:
         if (render::record_tuple_alternate_classification(transformed) != 0) {
             candidate = alternate_candidate;
         } else if (render::record_tuple_classification_supported(transformed)) {
-            switch (parameter) {
-            case 1: candidate = 0; break;
-            case tuple_code_2: case tuple_code_4: candidate = 1; break;
-            case tuple_code_8: candidate = tuple_code_2; break;
-            default: return unsupported_tuple;
-            }
+            candidate = candidate_by_parameter[parameter];
+            if (candidate == no_candidate) return unsupported_tuple;
         } else {
-            // The native call occurs even when parameter differs from one.
+            // The fallback candidate requires a unit parameter and the classification flag.
             const uint8_t flag = render::record_tuple_classification_fallback_flag(transformed);
             if (parameter == 1 && (flag & 1) != 0) candidate = fallback_candidate;
         }
         break;
-    case tuple_code_3: return unsupported_tuple;
-    case tuple_code_4: {
+    case rejected_candidates: return unsupported_tuple;
+    case second_table_candidates: {
         candidate = second_table_default;
         const uint32_t index = transformed - second_table_class;
         if (index < render::record_tuple_candidate_entries)
