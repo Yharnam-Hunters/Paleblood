@@ -180,9 +180,9 @@ def case(cid, special=(1, 0), bodies=((1, 0, (0x10, 0x20, -0x30, 0x40), 7), (1, 
     c.stub('thread', 2, ret='buf:shapeobj')
     c.buf('shapeobj', 0x50)
     c.stub('0x00ac46a0', 4, argmem=[{'arg': 3, 'size': 16}],
-           writes=[{'arg': 3, 'offset': 0, 'pointer': 'shapes0'} if realloc != 'take' else
+           writes=[{'arg': 3, 'offset': 0, 'pointer': 'shapes0'} if realloc != 'take' and shapes else
                    {'arg': 3, 'offset': 0, 'bytes': '00' * 8},
-                   {'arg': 3, 'offset': 8, 'bytes': h('<iI', shapes, 0x80000000 if realloc == 'take' else max(shapes, 1))}])
+                   {'arg': 3, 'offset': 8, 'bytes': h('<iI', shapes, 0x80000000 if realloc == 'take' or not shapes else max(shapes, 1))}])
     c.stub('thread', 2, ret='buf:controller')
     c.buf('controller', 0xe0)
     c.stub('0x00ae3fc0', 3, argmem=[{'arg': 3, 'size': 48}])
