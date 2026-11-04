@@ -27,6 +27,14 @@ through its pointer argument and returns 0. It is reached only through a functio
 [#203](https://github.com/Yharnam-Hunters/Paleblood/pull/203): its 7 constructed edge cases pass
 against the original on current `main`, and an independent review approved it.
 
+### Reading files
+
+Four small wrappers handle the engine's file access ([#283](https://github.com/Yharnam-Hunters/Paleblood/pull/283), by [@evill33t](https://github.com/evill33t)):
+`kernel_file_open` (`0x0111a620`) opens a file read-only and reports its size (from the system's
+file-status record) and its descriptor; `kernel_file_close`, `kernel_file_read_count` and
+`kernel_file_seek_absolute` (`0x0111a6b0`, `0x0111a6e0`, `0x0111a720`) close, read and seek. Each
+was checked on constructed edge cases against the original and approved by an independent review.
+
 ### FMOD's semaphores and recursive mutexes
 
 FMOD (the sound engine; see [Audio](audio.md)) wraps the kernel's semaphores and mutexes in small
@@ -141,6 +149,10 @@ infer that it is implemented from its registry entry.
 
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
+| `0x0111a620` | 129 | `kernel_file_open` | edge-verified | Open read-only and query FreeBSD amd64 stat; publish low32 file size before int64 descriptor; compiler stack guard omitted |
+| `0x0111a6b0` | 23 | `kernel_file_close` | edge-verified | Forward the full opaque descriptor; translate nonzero low32 close status to 19; synthetic wire edge cases only |
+| `0x0111a6e0` | 60 | `kernel_file_read_count` | edge-verified | Publish uint32 transferred bytes after kernel buffer writes; full64 received count controls errors and short reads |
+| `0x0111a720` | 22 | `kernel_file_seek_absolute` | edge-verified | Forward the full opaque descriptor and zero-extended unsigned32 absolute offset; full64 seek result sign maps to 0 or 19; synthetic wire edge cases only |
 | `0x0111a8a0` | 26 | `kernel_thread_self` | edge-verified | Copy the complete opaque current-thread handle to the output and return zero |
 | `0x0111abb0` | 207 | `kernel_mutex_create` | edge-verified | Create a recursive mutex in static or allocated storage; low-byte ownership flag; publish storage only after all kernel stages succeed; no error cleanup |
 | `0x0111ac80` | 78 | `kernel_mutex_destroy` | edge-verified | Destroy the mutex and release storage only after kernel success with a zero low-byte static flag; errors map to 0x21; ignore release result |
