@@ -17,6 +17,7 @@ address,replacement,system,returns
 0x0111ad80,bb_kernel_semaphore_destroy,kernel,i32
 0x0111ada0,bb_kernel_semaphore_wait,kernel,i32
 0x0111adc0,bb_kernel_semaphore_signal,kernel,i32
+0x011c47f0,bb_engine_string_length,engine,i64
 0x011c4910,bb_engine_ascii_to_upper_in_place,engine,i64
 0x011c4940,bb_engine_ascii_to_lower_in_place,engine,i64
 0x011c4970,bb_engine_compare_signed_strings,engine,i32
