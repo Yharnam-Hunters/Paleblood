@@ -3,7 +3,7 @@
 *Paleblood is a decompilation of Bloodborne with its own runtime: the game's code rewritten as readable C++, one verified function at a time.*
 
 <!-- status:start -->
-The game doesn't run on Paleblood yet: 20 of 157757 functions are verified (0.01%). On [our own runtime](runtime/) the executable's boot gets as far as `scePthreadAttrGetaffinity` (libkernel, called by libc.elf), with 252 of 686 system imports implemented.
+The game doesn't run on Paleblood yet: 21 of 157757 functions are verified (0.01%). On [our own runtime](runtime/) the executable's boot gets as far as `scePthreadAttrGetaffinity` (libkernel, called by libc.elf), with 252 of 686 system imports implemented.
 <!-- status:end -->
 
 **[Start here](https://github.com/Yharnam-Hunters/Paleblood/issues/31)** ·
@@ -15,9 +15,9 @@ The game doesn't run on Paleblood yet: 20 of 157757 functions are verified (0.01
 | | Functions | Bytes |
 |---|---:|---:|
 | Target (Ghidra export) | 157757 | 42487347 |
-| Replaced | 66 (0.04%) | 25295 (0.06%) |
-| Edge-verified | 66 (0.04%) | 25295 (0.06%) |
-| Verified | 20 (0.01%) | 13879 (0.03%) |
+| Replaced | 86 (0.05%) | 28249 (0.07%) |
+| Edge-verified | 86 (0.05%) | 28249 (0.07%) |
+| Verified | 21 (0.01%) | 14010 (0.03%) |
 
 Each row includes the next: verified functions are also edge-verified and replaced.
 
