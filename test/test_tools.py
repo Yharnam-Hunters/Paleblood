@@ -434,8 +434,6 @@ class Loader(unittest.TestCase):
         sys.path.insert(0, os.path.join(ROOT, 'test'))
 
     def test_maps_relocates_and_binds(self):
-        sys.path.insert(0, os.path.join(ROOT, 'tools'))
-        sys.path.insert(0, os.path.join(ROOT, 'test'))
         import ctypes
         import harness
         import ps4elf
@@ -599,7 +597,6 @@ class Loader(unittest.TestCase):
         with self.assertRaisesRegex(harness.BadInput, 'no PT_LOAD'):
             with self.opened_image(only_relro):
                 pass
-
 
 
 class Boot(unittest.TestCase):
