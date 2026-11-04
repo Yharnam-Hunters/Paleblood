@@ -228,7 +228,8 @@ __asm__(".text\n"
 
 /* A created thread's host side: the guest's thread pointer in GS, the boot's timeout and
    worker-stop signals left to the main thread, the thread registered for scePthreadSelf, then the
-   guest's entry on its own stack. A return from the entry ends the thread (POSIX). */
+   guest's entry on its own stack. A return from the entry ends the thread (POSIX), after its key
+   destructors (runtime/syslib/kernel_key.c). */
 static void *thread_start(void *raw)
 {
     guest_thread *t = raw;
@@ -244,6 +245,7 @@ static void *thread_start(void *raw)
     enum { STACK_TOP_RESERVE = 64, STACK_ALIGN = 16 };
     const uintptr_t top = ((uintptr_t)t->stack + t->stack_size - STACK_TOP_RESERVE) & ~(uintptr_t)(STACK_ALIGN - 1);
     rt_thread_call(t->entry, t->argument, (void *)top);
+    rt_thread_keys_exit((void *)top);
     return NULL;
 }
 

@@ -79,6 +79,10 @@ void rt_thread_register_main(void *stack, uint64_t stack_size);
    does a null or empty variable, for which thread creation would use the system's defaults. */
 int rt_thread_attr_detach_state(void *const *attr, const char *caller);
 
+/* Runs the calling guest thread's key destructors as it ends, on its guest stack
+   (runtime/syslib/kernel_key.c, scePthreadKeyCreate). */
+void rt_thread_keys_exit(void *stack_top);
+
 /* Stops the process with a message naming the system function: behaviour the runtime does not
    know is never guessed. */
 _Noreturn void rt_fatal(const char *function, const char *message);
