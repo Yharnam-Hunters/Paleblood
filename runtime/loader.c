@@ -14,6 +14,7 @@
 #define PT_TLS 7
 #define PT_SCE_DYNLIBDATA 0x61000000u
 #define PT_SCE_PROCPARAM 0x61000001u
+#define PT_SCE_RELRO 0x61000010u
 #define DT_NULL 0
 #define DT_SCE_EXPORT_LIB 0x61000013
 #define DT_SCE_IMPORT_LIB 0x61000015
@@ -138,7 +139,7 @@ rt_elf *rt_elf_open(const char *path, char *error, size_t error_size)
         goto out;
     }
     phdr dynamic = {0}, dynlib = {0};
-    int have_dynamic = 0, have_dynlib = 0;
+    int have_load = 0, have_dynamic = 0, have_dynlib = 0;
     e->loads = calloc(phnum, sizeof *e->loads);
     e->load_offsets = calloc(phnum, sizeof *e->load_offsets);
     e->load_filesz = calloc(phnum, sizeof *e->load_filesz);
@@ -146,11 +147,31 @@ rt_elf *rt_elf_open(const char *path, char *error, size_t error_size)
     for (uint16_t i = 0; i < phnum; i++) {
         const unsigned char *p = d + phoff + (uint64_t)phentsize * i;
         phdr h = {u32(p), u32(p + 4), u64(p + 8), u64(p + 16), u64(p + 24), u64(p + 32), u64(p + 40), u64(p + 48)};
-        if (h.type == PT_LOAD) {
+        if (h.type == PT_LOAD || h.type == PT_SCE_RELRO) {
             if (!in_file(e, h.offset, h.filesz) || h.filesz > h.memsz) {
-                fail(error, error_size, "%s: segment %u outside the file", path, i);
+                fail(error, error_size, "%s: segment %u outside the file or larger than memory", path, i);
                 goto out;
             }
+            if (h.memsz > UINT64_MAX - h.vaddr) {
+                fail(error, error_size, "%s: segment %u image range overflows", path, i);
+                goto out;
+            }
+            /* SCE RELRO is an additional allocated segment, not a GNU RELRO overlay.
+               Refuse ambiguous overlap involving this newly supported segment kind;
+               existing PT_LOAD-only copy order is unchanged. Earlier admitted ends
+               have already passed the overflow check above. */
+            for (uint16_t j = 0; j < i && h.memsz; j++) {
+                const unsigned char *previous = d + phoff + (uint64_t)phentsize * j;
+                const uint32_t previous_type = u32(previous);
+                if (previous_type != PT_LOAD && previous_type != PT_SCE_RELRO) continue;
+                if (h.type != PT_SCE_RELRO && previous_type != PT_SCE_RELRO) continue;
+                const uint64_t start = u64(previous + 16), length = u64(previous + 40);
+                if (length && h.vaddr < start + length && start < h.vaddr + h.memsz) {
+                    fail(error, error_size, "%s: segment %u overlaps an SCE RELRO image range", path, i);
+                    goto out;
+                }
+            }
+            if (h.type == PT_LOAD) have_load = 1;
             e->loads[e->load_count] = (rt_elf_load){h.vaddr, h.memsz, h.flags};
             e->load_offsets[e->load_count] = h.offset;
             e->load_filesz[e->load_count] = h.filesz;
@@ -169,7 +190,7 @@ rt_elf *rt_elf_open(const char *path, char *error, size_t error_size)
             have_dynlib = 1;
         }
     }
-    if (!e->load_count || !have_dynamic || !have_dynlib || !in_file(e, dynamic.offset, dynamic.filesz) ||
+    if (!have_load || !have_dynamic || !have_dynlib || !in_file(e, dynamic.offset, dynamic.filesz) ||
         !in_file(e, dynlib.offset, dynlib.filesz)) {
         fail(error, error_size, "%s: no PT_LOAD, PT_DYNAMIC or PT_SCE_DYNLIBDATA", path);
         goto out;

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* System call group: kernel, threads and memory. Mutexes and mutex attributes, for both the SCE
-   names (libkernel: 0 or an SCE error code) and the POSIX names (libScePosix: 0 or an errno).
+   names (libkernel: 0 or an SCE error code) and the POSIX names (libScePosix and libkernel:
+   0 or an errno).
 
    Facts used: the PS4's thread library is FreeBSD's libthr. A mutex or attribute variable holds a
    pointer to an object the library allocates; a mutex variable may also hold one of the static
@@ -389,3 +390,10 @@ RT_SYSLIB("libScePosix", pthread_mutex_unlock, mutex_unlock);
 RT_SYSLIB("libScePosix", pthread_mutexattr_init, attr_init);
 RT_SYSLIB("libScePosix", pthread_mutexattr_destroy, attr_destroy);
 RT_SYSLIB("libScePosix", pthread_mutexattr_settype, attr_settype);
+
+/* The supplied libkernel exports these POSIX entries in both namespaces at identical
+   addresses and sizes: lock 0x314c0/595 bytes, unlock 0x325c0/483 bytes (ELF SHA-256
+   b3e13917da667d01a353ccf49025d6b1308a32cf86f3f351f96b3a13cd5c7c2f).
+   Reuse the POSIX provider; the scePthread names convert errors to SCE codes. */
+RT_SYSLIB("libkernel", pthread_mutex_lock, posix_mutex_lock);
+RT_SYSLIB("libkernel", pthread_mutex_unlock, mutex_unlock);
