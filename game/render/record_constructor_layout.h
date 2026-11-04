@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Byte-backed constructor fields shared by construction and masked setters.
 // Area/multiplier fields retain their other packed flags; auxiliary addresses
-// store the low32 bits of addresses measured in256-byte units.
+// store the low 32 bits of addresses measured in 256-byte units.
 #pragma once
 #include <cstddef>
 #include <cstdint>
