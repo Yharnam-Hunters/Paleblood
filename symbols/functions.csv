@@ -34,12 +34,12 @@ address,size,name,system,status,notes
 0x0143e490,174,frame_timing_task_flush_queue_0143e490,frame_timing,verified,"task manager queue flush: lock, run, destroy and free every queued object, empty the list, unlock"
 0x0143f9f0,18,frame_timing_task_set_frame_value_0143f9f0,frame_timing,verified,task manager: copies the float at +0x8 of the frame information to the global 0x058b7e08
 0x014400a0,180,frame_timing_task_workers_step_014400a0,frame_timing,verified,"task manager workers: three rounds over the worker queues +0x58, +0x68, +0x60"
-0x014721d0,31,render_set_present_last_record_indices,render,edge-verified,Pack two 11-bit indices; preserve old masked bits as full RAX Synthetic edges pass; no recordings.
-0x014769e0,93,render_emit_present_last_record_packet,render,edge-verified,Emit 3 DWORDs with capacity callback and opaque failure RAX; full cursor return Synthetic edges pass; no recordings.
+0x014721d0,31,render_set_present_last_record_indices,render,edge-verified,Replace two packed indices while preserving the remaining bits. Return the old preserved bits.
+0x014769e0,93,render_emit_present_last_record_packet,render,edge-verified,Write DB_RENDER_CONTROL for the last-record path. Publish and return the captured cursor plus twelve bytes; return the full callback result on rejection.
 0x01477b30,172,render_command_emit_counter_operation,render,edge-verified,Seven-word counter packet; callback low byte gates writes; label range selects masked encoding Synthetic edges pass; no recordings.
 0x014784a0,82,render_command_prepare_submission,render,edge-verified,Reserve 64 command words; callback low byte gates two marker stores and cursor advance Synthetic edges pass; no recordings.
-0x01485070,16,render_set_present_last_record_mode_6,render,edge-verified,Replace mode bit6 from low input bit; return old masked DWORD zeroextended Synthetic edges pass; no recordings.
-0x01485080,16,render_set_present_last_record_mode_5,render,edge-verified,Replace mode bit5 from low input bit; return old masked DWORD zeroextended Synthetic edges pass; no recordings.
+0x01485070,16,render_set_present_last_record_depth_compress_disable,render,edge-verified,Replace DEPTH_COMPRESS_DISABLE in the saved DB_RENDER_CONTROL word using the input low bit. Return the old bits with that flag cleared.
+0x01485080,16,render_set_present_last_record_stencil_compress_disable,render,edge-verified,Replace STENCIL_COMPRESS_DISABLE in the saved DB_RENDER_CONTROL word using the input low bit. Return the old bits with that flag cleared.
 0x016efd00,368,event_emk_add,event,verified,SprjEmkSystem: find or add an event entry in two keyed lists; first advance with the 1/30 s step (1/60 s in the 60 FPS patches)
 0x017cfcc0,177,event_flag_write,event,edge-verified,finds an exact event-flag group in a tree and sets or clears one bit
 0x0183fad0,79,camera_follow_pitch,camera,edge-verified,Pitch from the forward basis; preserve scalar square underflow and zero fallback; call atan2 and XOR the returned sign bits
@@ -88,6 +88,6 @@ address,size,name,system,status,notes
 0x02a44140,59,engine_wide_string_destroy,engine,edge-verified,WideString destructor; unsigned capacity >=8 frees even null; ignores owns; callback before capacity and size reset and two-byte terminator
 0x02a8c420,108,input_initialize_mouse_for_initial_user,input,original,"Initializes or reinitializes mouse input for the initial user, closing a previous connection if necessary."
 0x02ab5a70,1235,render_present_record_consume,render,edge-verified,"Track resource range or emit record commands; preserve cached tokens, index wrap and final state resets. Static reconstruction Synthetic GCC/Clang edges pass; no recordings."
-0x02ad2c30,120,render_reset_present_preparation_dirty,render,edge-verified,Emit dirty scalar/byte then reload caches; preserve DWORD/BYTE clears and partial AX result Synthetic edges pass; no recordings.
+0x02ad2c30,120,render_reset_present_preparation_dirty,render,edge-verified,"Emit changed depth and stencil clear values, then cache their post-call values. Preserve the second writer's upper return bits while replacing its low word."
 0x02ad5dd0,27,render_swap_chain_present_mode,render,edge-verified,"Validates low DWORD mode; retains object, loads full source pointer at +0x33d0, forwards mode to lower submit Synthetic GCC/Clang edges pass; no recordings."
 0x02ad6e50,499,render_swap_chain_submit,render,edge-verified,"Owned-thread flip polling, source binding and submission; every exit reloads the global guard pointer. Native GPU helper effects remain original Synthetic GCC/Clang edges pass; no recordings."

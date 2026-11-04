@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Emit the two dirty fields and cache their post-call values. The no-word route
-// returns zero-extended flags; the word route retains the lower original's upper
-// 48 RAX bits and replaces only AX. The known last-record caller ignores it.
+// Update dirty depth and stencil clear state for the last-record path. Cache each
+// field after its writer returns. The result keeps the second writer's upper bits
+// and replaces its low word with the current stencil value.
 #include "present_preparation_dirty.h"
 
 namespace {
@@ -19,9 +19,9 @@ extern "C" uint64_t bb_render_reset_present_preparation_dirty(
     uint32_t flags = state->dirty_188.get();
     uint64_t result = flags;
     if ((uint8_t(flags) & scalar_dirty) != 0) {
-        preparation_dirty_calls::emit_scalar(&context->commands, state->scalar_f8.get());
-        // The call may change either source or flags. Native code rereads both,
-        // publishes the scalar cache first, then clears its bit with a DWORD update.
+        render_emit_present_preparation_scalar(&context->commands, state->scalar_f8.get());
+        // The writer can change the source or flags. Cache the new value before
+        // clearing its dirty bit, while preserving every other changed flag.
         state->cached_scalar_140.set(state->scalar_f8.get());
         flags = state->dirty_188.get() & clear_scalar_dirty;
         state->dirty_188.set(flags);
@@ -30,7 +30,7 @@ extern "C" uint64_t bb_render_reset_present_preparation_dirty(
     if ((uint8_t(flags) & word_dirty) != 0) {
         // Input is one BYTE, but the post-call cache/AX reload is a full WORD.
         const uint32_t byte_value = state->word_fc.bytes[0];
-        result = preparation_dirty_calls::emit_byte(&context->commands, byte_value);
+        result = render_emit_present_preparation_byte(&context->commands, byte_value);
         const uint16_t word = state->word_fc.get();
         result = (result & upper_return_bits) | uint64_t(word);
         state->cached_word_144.set(word);

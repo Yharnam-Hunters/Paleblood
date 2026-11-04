@@ -189,8 +189,6 @@ render_present_record_consume,edge,,24,24,0,0,bcfb8129127c7c3e,2026-11-03
 render_read_present_pool_counter,edge,,18,18,0,0,1ef235dcff31de42,2026-11-03
 render_reset_present_preparation_dirty,edge,,12,12,0,0,f557006c5f14c24f,2026-11-03
 render_set_present_last_record_indices,edge,,28,28,0,0,f3d8e28f721641a3,2026-11-03
-render_set_present_last_record_mode_5,edge,,28,28,0,0,c28ebeec2aa6f077,2026-11-03
-render_set_present_last_record_mode_6,edge,,28,28,0,0,641d6fa19face50a,2026-11-03
 render_swap_chain_present,recorded,,209,209,0,0,cecf62710c015474,2026-10-07
 render_swap_chain_present,recorded,30,209,209,0,0,cecf62710c015474,2026-10-07
 render_swap_chain_present,recorded,60,209,209,0,0,cecf62710c015474,2026-10-07

@@ -35,7 +35,6 @@ def packet_case(cid,value,label,available,result,redirect):
     c=basic(cid,returns='i64',size=64)
     c['buffers']['packet']={'size':512,'bytes':'6b'*512}
     c['buffers']['other']={'size':512,'bytes':'7c'*512}
-    c['args'].update({})
     c['args']['rsi']=hex(value)
     c['memory']=[{'addr':'buf:self+8','pointer':f'packet+{available*4}'},
                  {'addr':'buf:self+16','pointer':'packet'},

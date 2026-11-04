@@ -1,39 +1,32 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// The initial capacity check uses only the low DWORD after a full wrapped
-// difference. Successful callback admission refreshes cursor alone, without retry.
+// Write the selected DB_RENDER_CONTROL bits for the last-record path after capacity admission;
+// publish the captured cursor.
+// Capacity admission truncates the wrapped DWORD distance; callback success reloads the cursor
+// without retrying.
 #include "present_last_record_packet.h"
 
 namespace {
-constexpr uint32_t command_word_shift = 2;
 constexpr uint32_t packet_words = 3;
-constexpr uint32_t last_insufficient_word = packet_words - 1;
-constexpr uint32_t packet_header = 0xc0016900;
-constexpr uint32_t packet_value_mask = 0xfff;
+constexpr uint32_t set_context_reg_one_value_header = 0xc0016900;
+constexpr uint32_t db_render_control_value_mask = 0xfff;
 constexpr uintptr_t packet_bytes = sizeof(render::LastRecordPacket);
 }
 
-extern "C" uint64_t bb_render_emit_present_last_record_packet(render::GpuCommandState *commands,
+extern "C" uint64_t bb_render_emit_present_last_record_packet(render::PacketBuffer *commands,
                                                               uint32_t value)
 {
-    auto *buffer = reinterpret_cast<render::LastRecordPacketBuffer *>(commands);
-    const uintptr_t limit = buffer->limit.get();
-    uintptr_t cursor = buffer->cursor.get();
-    const uint64_t remaining_words = (limit - cursor) >> command_word_shift;
-    if (static_cast<uint32_t>(remaining_words) <= last_insufficient_word) {
-        const uintptr_t argument = buffer->capacity_argument.get();
-        const auto capacity = buffer->capacity.get();
-        const uint64_t result = capacity(commands, packet_words, argument);
-        if (static_cast<uint8_t>(result) == 0) return result;
-        cursor = buffer->cursor.get();
-    }
+    uintptr_t cursor;
+    uint64_t rejected_result;
+    if (!render::reserve_words_with_result(commands, packet_words, cursor, rejected_result))
+        return rejected_result;
 
-    const uint32_t packet_value = value & packet_value_mask;
+    const uint32_t packet_value = value & db_render_control_value_mask;
     auto *packet = reinterpret_cast<render::LastRecordPacket *>(cursor);
     // Keep these separate and ordered: command storage can alias buffer fields.
-    packet->header.set(packet_header);
-    packet->zero_word.set(0);
+    packet->header.set(set_context_reg_one_value_header);
+    packet->register_index.set(0);
     packet->value.set(packet_value);
     const uintptr_t next_cursor = cursor + packet_bytes;
-    buffer->cursor.set(next_cursor);
+    render::set_packet_cursor(commands, next_cursor);
     return next_cursor;
 }
