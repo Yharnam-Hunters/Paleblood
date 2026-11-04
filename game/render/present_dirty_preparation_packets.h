@@ -23,6 +23,4 @@ constexpr uint32_t depth_clear_index = 0xb;
 constexpr uint32_t stencil_clear_index = 0xa;
 }
 
-// The callback may modify the buffer. Success writes three ordered DWORDs;
-// failure preserves the callback result and side effects. The scalar value is captured.
 }  // namespace render
