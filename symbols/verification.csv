@@ -27,6 +27,7 @@ engine_entry_manager_resolve,edge,,25,25,0,0,390da978e6436eea,2026-11-03
 engine_initialize_static_wide_string_0217ffb0,edge,,30,30,0,0,ccdadef0d4bd7152,2026-11-03
 engine_release_owner_storage,edge,,28,28,0,0,e693d2086e8654b0,2026-11-03
 engine_resize_owner_storage,edge,,37,37,0,0,2a08395ca4550ad9,2026-11-03
+engine_string_length,edge,,30,30,0,0,dbb33699bb2cc030,2026-11-03
 engine_wide_string_destroy,edge,,28,28,0,0,82e3fd837894b106,2026-11-03
 engine_write_stderr,edge,,28,28,0,0,f997862b08044f6d,2026-10-31
 event_emk_add,recorded,,150,150,0,0,937b4dca128ba863,2026-10-07
