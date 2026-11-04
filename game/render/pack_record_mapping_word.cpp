@@ -3,12 +3,8 @@
 #include <cstdint>
 
 namespace {
-constexpr uint32_t mapping_family_2 = 2;
-constexpr uint32_t mapping_family_3 = 3;
-}  // namespace
+enum MappingFamily : uint32_t { family_a, family_b, family_c, family_d };
 
-
-namespace {
 struct MappingComponents {
     uint32_t bits_12_14;
     uint32_t bits_15_17;
@@ -62,13 +58,13 @@ extern "C" uint64_t bb_render_pack_record_mapping_word(
     const uint64_t membership_bit = uint64_t{1} << (first & membership_index_mask);
     uint32_t family = family_count;
     if ((family_a_members & membership_bit) != 0) {
-        family = 0;
+        family = family_a;
     } else if ((family_b_members & membership_bit) != 0) {
-        family = 1;
+        family = family_b;
     } else if ((family_c_members & membership_bit) != 0) {
-        family = mapping_family_2;
+        family = family_c;
     } else if ((family_d_members & membership_bit) != 0) {
-        family = mapping_family_3;
+        family = family_d;
     }
 
     // All other full uint32 modes use the same components; no mode truncation.
