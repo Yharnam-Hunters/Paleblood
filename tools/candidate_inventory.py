@@ -37,8 +37,10 @@ def provenance_blockers(cases: list[dict], name: str, executable_sha: str | None
 
 
 def current_tools(root: Path) -> dict:
-    paths = ('tools/harness.py', 'tools/instruction_trace.py', 'tools/verify.py', 'runtime/loader.c', 'tools/differential.py')
-    names = ('harness_sha256', 'instruction_trace_sha256', 'verify_sha256', 'loader_sha256', 'engine_sha256')
+    paths = ('tools/harness.py', 'tools/instruction_trace.py', 'tools/verify.py', 'runtime/loader.c',
+             'tools/differential.py', 'tools/call_arguments.py')
+    names = ('harness_sha256', 'instruction_trace_sha256', 'verify_sha256', 'loader_sha256',
+             'engine_sha256', 'call_arguments_sha256')
     return {name: catalog.sha256(root / path) for name, path in zip(names, paths)}
 
 
