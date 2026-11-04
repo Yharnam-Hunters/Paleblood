@@ -61,7 +61,7 @@ eboot,libSceGnmDriver,sceGnmAddEqEvent,function,
 eboot,libSceGnmDriver,sceGnmAreSubmitsAllowed,function,
 eboot,libSceGnmDriver,sceGnmDebugHardwareStatus,function,
 eboot,libSceGnmDriver,sceGnmDeleteEqEvent,function,
-eboot,libSceGnmDriver,sceGnmDingDong,function,
+eboot,libSceGnmDriver,sceGnmDingDong,function,runtime
 eboot,libSceGnmDriver,sceGnmDisableMipStatsReport,function,
 eboot,libSceGnmDriver,sceGnmDispatchInitDefaultHardwareState,function,runtime
 eboot,libSceGnmDriver,sceGnmDrawInitDefaultHardwareState200,function,runtime
@@ -128,7 +128,7 @@ eboot,libSceHttp,sceHttpSetNonblock,function,runtime
 eboot,libSceHttp,sceHttpSetRequestContentLength,function,
 eboot,libSceHttp,sceHttpTerm,function,
 eboot,libSceHttp,sceHttpUnsetEpoll,function,
-eboot,libSceHttp,sceHttpWaitRequest,function,
+eboot,libSceHttp,sceHttpWaitRequest,function,runtime
 eboot,libSceHttp,sceHttpsDisableOption,function,
 eboot,libSceHttp,sceHttpsEnableOption,function,
 eboot,libSceImeDialog,sceImeDialogAbort,function,
