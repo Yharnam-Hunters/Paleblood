@@ -65,6 +65,9 @@ arguments. The first of the engine's own packet writers are mapped, all by [@evi
 - **Present records.** `render_present_record_consume` (`0x02ab5a70`) turns a pending present
   record into commands: it classifies the record, clamps its range, copies its payload and
   writes the final fields ([#286](https://github.com/Yharnam-Hunters/Paleblood/pull/286)).
+- **A record test.** `render_record_auxiliary_predicate` (`0x02abb4f0`) answers yes or no for a
+  record's selector: always yes for two selector values, a flag bit for the next two, no otherwise
+  ([#293](https://github.com/Yharnam-Hunters/Paleblood/pull/293), from #266).
 - **Presenting a swap-chain image.** `render_swap_chain_present_mode` (`0x02ad5dd0`) waits until
   the display has flipped far enough and picks the flip mode, and `render_swap_chain_submit`
   (`0x02ad6e50`) submits the frame, advances the frame counter and checks its owner again
@@ -90,6 +93,7 @@ frames. #279, #286 and #287 were brought up to date with `main` from #209, #259 
 | `0x0247eb80` | 16 | `render_read_present_pool_counter` | edge-verified | full-QWORD locked read/writeback retry, XOR before each attempt; caller adds one. Real AMD64 write cycles retained; non-AMD64 bridge unresolved Synthetic edges pass; no recordings. |
 | `0x025b2fb0` | 768 | `render_swap_chain_present` | verified | GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0) |
 | `0x02ab5a70` | 1235 | `render_present_record_consume` | edge-verified | Track resource range or emit record commands; preserve cached tokens, index wrap and final state resets. Static reconstruction Synthetic GCC/Clang edges pass; no recordings. |
+| `0x02abb4f0` | 31 | `render_record_auxiliary_predicate` | edge-verified | Return the auxiliary-processing predicate: selectors 0x13/0x14 enable it, 0x15/0x16 use flag bit 6, and all other selectors disable it. |
 | `0x02ad5dd0` | 27 | `render_swap_chain_present_mode` | edge-verified | Validates low DWORD mode; retains object, loads full source pointer at +0x33d0, forwards mode to lower submit Synthetic GCC/Clang edges pass; no recordings. |
 | `0x02ad6e50` | 499 | `render_swap_chain_submit` | edge-verified | Owned-thread flip polling, source binding and submission; every exit reloads the global guard pointer. Native GPU helper effects remain original Synthetic GCC/Clang edges pass; no recordings. |
 

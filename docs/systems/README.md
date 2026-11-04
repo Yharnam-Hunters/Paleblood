@@ -22,8 +22,8 @@ One page per game system: summary, key functions, structs and globals, patch poi
 | | Functions (of target) | Bytes (of target) |
 |---|---:|---:|
 | Target (Ghidra export) | 157,757 | 42,487,347 |
-| Replaced | 85 (0.05%) | 28,118 (0.07%) |
-| Edge-verified (includes verified) | 85 (0.05%) | 28,118 (0.07%) |
+| Replaced | 87 (0.06%) | 28,280 (0.07%) |
+| Edge-verified (includes verified) | 87 (0.06%) | 28,280 (0.07%) |
 | Verified | 21 (0.01%) | 14,010 (0.03%) |
 
 Counts are cumulative: verified functions are included in edge-verified and replaced totals.
@@ -36,9 +36,9 @@ Counts are cumulative: verified functions are included in edge-verified and repl
 | character | 1 | 1 | 1 | 1 | 979 |
 | engine | 12 | 12 | 12 | 0 | 717 |
 | event | 2 | 2 | 2 | 1 | 545 |
-| frame_timing | 42 | 41 | 41 | 12 | 14,263 |
+| frame_timing | 43 | 42 | 42 | 12 | 14,394 |
 | input | 2 | 1 | 1 | 1 | 426 |
 | kernel | 14 | 14 | 14 | 1 | 993 |
 | loading | 0 | 0 | 0 | 0 | 0 |
 | physics | 1 | 1 | 1 | 1 | 3,222 |
-| render | 9 | 9 | 9 | 3 | 3,868 |
+| render | 10 | 10 | 10 | 3 | 3,899 |
