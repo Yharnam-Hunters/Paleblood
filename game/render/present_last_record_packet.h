@@ -16,6 +16,4 @@ static_assert(offsetof(LastRecordPacket, register_index) == 0x04);
 static_assert(offsetof(LastRecordPacket, value) == 0x08);
 static_assert(sizeof(LastRecordPacket) == 0x0c);
 
-// Success writes three ordered DWORDs and publishes the captured cursor plus
-// twelve bytes. Failure preserves the callback result and side effects.
 }  // namespace render

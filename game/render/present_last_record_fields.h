@@ -3,7 +3,7 @@
 // meaning is intentionally limited to the bits established by the leaf bodies.
 #pragma once
 
-#include "command_reservation.h"
+#include "byte_field.h"
 
 namespace render {
 struct LastRecordIndexFields {
