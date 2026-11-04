@@ -176,15 +176,15 @@ static int kernel_sched_yield(void)
     return 0;
 }
 
-/* scePthreadYield asks for the same yield, but its PS4-visible signature is not established:
-   FreeBSD's pthread_yield(3) returns nothing, Linux's returns an int, and no PS4-specific public
-   source or guest call site we can cite says which one the guest sees. Returning would leave the
-   value a caller might read undefined, so the call stops by name. It is registered with
-   RT_SYSLIB_UNRESOLVED: a boot that reaches it names the call, and coverage leaves the import
-   unchecked, since a diagnostic is not an implementation. */
-static void thread_yield(void)
+/* scePthreadYield asks for the same yield. Its PS4-visible signature is not published: FreeBSD's
+   pthread_yield(3) returns nothing, Linux's returns an int (0). Answering 0 is right under either:
+   a caller of a function that returns nothing never reads the result, and 0 is the int version's
+   success. The game's own calls agree: every one of its 26 direct call sites (in 0x01c56290,
+   0x01c58670, 0x0148ca00, 0x02569c30 and others, and the four through its wrapper at 0x0247f970)
+   overwrites or ignores the result register right after the call. */
+static int thread_yield(void)
 {
-    rt_fatal("scePthreadYield", "the PS4 return behaviour is not established by public evidence");
+    return kernel_sched_yield();
 }
 
 /* Allocates an attribute object and stores it in the variable; ENOMEM when it cannot (POSIX
@@ -377,7 +377,7 @@ int rt_thread_attr_detach_state(void *const *attr, const char *caller)
 RT_SYSLIB("libkernel", scePthreadSelf, thread_self);
 RT_SYSLIB("libkernel", scePthreadEqual, thread_equal);
 RT_SYSLIB("libkernel", sched_yield, kernel_sched_yield);
-RT_SYSLIB_UNRESOLVED("libkernel", scePthreadYield, thread_yield);
+RT_SYSLIB("libkernel", scePthreadYield, thread_yield);
 RT_SYSLIB("libkernel", scePthreadAttrInit, sce_attr_init);
 RT_SYSLIB("libkernel", scePthreadAttrDestroy, sce_attr_destroy);
 RT_SYSLIB("libkernel", scePthreadAttrGet, attr_get);
