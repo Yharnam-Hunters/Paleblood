@@ -5,7 +5,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
-#include "command_reservation.h"
+#include "byte_field.h"
 
 namespace render {
 struct RecordConstructorPair {
