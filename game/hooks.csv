@@ -64,5 +64,6 @@ address,replacement,system,returns
 0x02434520,bb_frame_timing_flipper_init,frame_timing,void
 0x02434770,bb_frame_timing_pace_frame,frame_timing,void
 0x024512a0,bb_frame_timing_task_frame_024512a0,frame_timing,void
+0x0247eb80,bb_render_read_present_pool_counter,render,i64
 0x02483e80,bb_kernel_condition_wait,kernel,i32
 0x025b2fb0,bb_render_swap_chain_present,render,void

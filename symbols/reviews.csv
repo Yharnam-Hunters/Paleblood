@@ -64,3 +64,4 @@ address,name,date,reviewer,verdict,notes
 +0x0111acd0,kernel_mutex_lock,2026-11-03,independent session,approved,"matches the disassembly on every path; edge cases re-run on current main; ten mutants caught"
 +0x0111acf0,kernel_mutex_unlock,2026-11-03,independent session,approved,"matches the disassembly on every path; edge cases re-run on current main; ten mutants caught"
 +0x01314320,engine_entry_manager_resolve,2026-11-03,independent session,approved,"matches the disassembly on every path; edge cases re-run on current main; five mutants caught; header comments name the callers"
++0x0247eb80,render_read_present_pool_counter,2026-11-03,independent session,approved,"the lock cmpxchg loop matches exactly; the cases pass; three planted mistakes were caught"
