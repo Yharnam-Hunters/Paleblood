@@ -136,12 +136,12 @@ functions.
 </details>
 
 <details>
-<summary>scePthreadYield is not implemented</summary>
+<summary>scePthreadYield answers zero</summary>
 
-The similarly named `scePthreadYield` remains registered as an unresolved, fail-loud
-diagnostic. FreeBSD's `pthread_yield` returns `void`, Linux's analogue returns `int`, and no
-PS4 declaration or inspected guest call site settles the guest-visible signature. Do not
-infer that it is implemented from its registry entry.
+The similarly named `scePthreadYield` yields the same way and answers zero (Paleblood #308).
+Its PS4 signature is unpublished: FreeBSD's `pthread_yield` returns `void`, Linux's analogue
+returns `int`. Zero is right under either, and all 26 direct call sites in the executable
+ignore the result.
 
 </details>
 
