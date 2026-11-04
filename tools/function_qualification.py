@@ -559,6 +559,7 @@ def qualification_tool_identity(root: Path) -> dict:
             "catalog_tool_sha256": catalog.sha256(Path(catalog.__file__)),
             "objdump_version": decoder_version,
             "harness_sha256": catalog.sha256(root / "tools/harness.py"),
+            "call_arguments_sha256": catalog.sha256(root / "tools/call_arguments.py"),
             "loader_source_sha256": catalog.sha256(root / "runtime/loader.c")}
 
 

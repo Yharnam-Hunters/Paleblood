@@ -112,6 +112,16 @@ SelfUtil build produced the ELF.
 - Float comparisons that look odd (`ucomiss` plus parity checks) encode NaN
   handling that the replacement has to keep.
 
+- A scalar SSE intrinsic is not by itself an operand-order constraint. In the follow-camera
+  pitch getter, optimized Clang swapped the horizontal add operands and widened two scalar
+  squares to a packed multiply. GCC preserved the order in the tested build. The dedicated
+  `engine::horizontal_length` helper constrains the four scalar instructions and uses distinct
+  read/write registers. Distinct-NaN-payload fixtures check the argument passed to `atan2f`,
+  and independent native x86 review catches a swapped horizontal-add variant.
+  The earlier QEMU VM did not distinguish that mutant: its survival is a limitation of that
+  VM run, rather than a gap in these fixtures. Check the optimized instruction order in both
+  compiler builds as well as running the cases.
+
 ## Imports and system calls
 
 - Library calls are linked by NID (a hash of the symbol name), not by name.
