@@ -86,6 +86,7 @@ frame_timing_get_monotonic_ms,option-recorded,60,91,91,0,0,3a73b48ae6f6d5e8,2026
 frame_timing_get_monotonic_ms,option-recorded,uncapped,91,91,0,0,3a73b48ae6f6d5e8,2026-10-07
 frame_timing_get_monotonic_ms,option-recorded,wait-sleep,91,91,0,0,3a73b48ae6f6d5e8,2026-10-07
 frame_timing_get_monotonic_ms,option-recorded,wait-spin,91,91,0,0,3a73b48ae6f6d5e8,2026-10-07
+frame_timing_get_monotonic_us,edge,,20,20,0,0,4e1059aed1298996,2026-11-04
 frame_timing_holygrail_until_idle_0200f970,edge,,59,59,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_holygrail_until_idle_0200f970,edge,60,59,59,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_holygrail_until_idle_020118f0,edge,,59,59,0,0,cd53367af0bda73a,2026-10-31
@@ -187,6 +188,7 @@ render_frame_update_02377bd0,edge,60,12,12,0,0,dd4fcc5a0d365609,2026-10-31
 render_frame_update_02377bd0,edge,uncapped,12,12,0,0,dd4fcc5a0d365609,2026-10-31
 render_present_record_consume,edge,,24,24,0,0,bcfb8129127c7c3e,2026-11-03
 render_read_present_pool_counter,edge,,18,18,0,0,1ef235dcff31de42,2026-11-03
+render_record_auxiliary_predicate,edge,,64,64,0,0,ddfae0976d12bebd,2026-11-04
 render_swap_chain_present,recorded,,209,209,0,0,cecf62710c015474,2026-10-07
 render_swap_chain_present,recorded,30,209,209,0,0,cecf62710c015474,2026-10-07
 render_swap_chain_present,recorded,60,209,209,0,0,cecf62710c015474,2026-10-07

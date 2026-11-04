@@ -63,7 +63,9 @@ losing the current run capability. The project-owned runtime roadmap is:
    `tools/verify.py`, imports scripted from their results and writes; thread-local storage is next.
 3. **Kernel, threads and memory**, then 4. **files**, 5. **input**, 6. **audio**, 7. **video out**.
 8. **GNM and shaders**, the largest part: graphics are rebuilt at the engine level, by replacing
-   the game's own graphics layer (GX) with our Vulkan code, rather than emulating the PS4's GPU.
+   the game's own graphics layer (GX) with our own graphics code, rather than emulating the PS4's
+   GPU: Vulkan on Linux and Metal on macOS. Linux is the primary platform and the one CI tests;
+   macOS support (Rosetta on Apple Silicon) is in progress, and its code must not affect Linux.
 
 How far the executable boots on the runtime is measured by the boot harness (`runtime/boot.c`,
 `tools/boot.py`) and shown in the README; the work is split into claimable issues per system

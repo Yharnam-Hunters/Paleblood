@@ -36,8 +36,13 @@ const rt_syslib_entry *rt_syslib_end(void);
 
 #define RT_SYSLIB_CAT2(a, b) a##b
 #define RT_SYSLIB_CAT(a, b) RT_SYSLIB_CAT2(a, b)
+#if defined(__APPLE__) && defined(__MACH__)
+#define RT_SYSLIB_SECTION "__DATA,rt_syslib"
+#else
+#define RT_SYSLIB_SECTION "rt_syslib"
+#endif
 #define RT_SYSLIB_REGISTER(entry, library, symbol, fn, capability)                                        \
-    __attribute__((used, section("rt_syslib"), aligned(sizeof(void *)))) static const rt_syslib_entry     \
+    __attribute__((used, section(RT_SYSLIB_SECTION), aligned(sizeof(void *)))) static const rt_syslib_entry \
         entry = {library, #symbol, (void *)(fn), capability}
 /* RT_SYSLIB("libkernel", sceKernelUsleep, my_usleep); at file scope. Use only when the runtime
    provides the imported behavior. tools/runtime_issues.py counts these as implemented. */
