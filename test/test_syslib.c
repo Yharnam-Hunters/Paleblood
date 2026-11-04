@@ -1865,6 +1865,19 @@ int main(void)
         const uint64_t base = tf_base();
         CHECK(base && base < (1ull << 40) && base % 0x10000 == 0 && tf_base() == base);
     }
+    /* sceGnmValidateCommandBuffers: "validation is not available" (0x80d13fff, the one value the
+       executable's probe at 0x02abb8e0 tests for), whatever it is given; the buffers stay untouched. */
+    typedef int32_t (*f_validate)(uint32_t, void **, uint32_t *, void **, uint32_t *);
+    const f_validate validate = (f_validate)fn("libSceGnmDriver", "sceGnmValidateCommandBuffers");
+    CHECK(validate != NULL);
+    if (validate) {
+        uint32_t words[4] = {0xc0001000, 0x11111111, 0x22222222, 0x33333333};
+        void *buffer = words;
+        uint32_t size = sizeof words;
+        CHECK((uint32_t)validate(1, &buffer, &size, NULL, NULL) == 0x80d13fffu);
+        CHECK((uint32_t)validate(0, NULL, NULL, NULL, NULL) == 0x80d13fffu);
+        CHECK(words[0] == 0xc0001000 && words[3] == 0x33333333 && size == sizeof words && buffer == words);
+    }
     /* sceGnmMapComputeQueue: ids from 1 (the engine treats 0 as failure); a pipe and queue once. */
     cq_fn = (f_cq_t)fn("libSceGnmDriver", "sceGnmMapComputeQueue");
     if (cq_fn) {
