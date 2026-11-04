@@ -74,3 +74,8 @@ add_executable(test_compiled_sdk test/test_compiled_sdk.c
 target_include_directories(test_compiled_sdk PRIVATE runtime/include)
 add_test(NAME compiled_sdk COMMAND test_compiled_sdk)
 set_tests_properties(compiled_sdk PROPERTIES TIMEOUT 10)
+
+add_executable(test_videoout_transform test/test_videoout_transform.c
+    runtime/syslib/video_out_transform_initialize.c runtime/syslib/video_out_transform_pack.c)
+target_include_directories(test_videoout_transform PRIVATE runtime/include)
+add_test(NAME videoout_transform COMMAND test_videoout_transform)
