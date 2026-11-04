@@ -5,6 +5,7 @@
 #include "runtime/syslib.h"
 
 #include <arpa/inet.h>
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -186,6 +187,12 @@ typedef struct {
     int32_t context;
 } http_epoll;
 
+enum { MAX_HTTP_EPOLLS = 64 };
+
+static pthread_mutex_t http_epolls_lock = PTHREAD_MUTEX_INITIALIZER;
+static http_epoll *http_epolls[MAX_HTTP_EPOLLS];
+static int http_epoll_count;
+
 static int32_t http_create_epoll(int32_t context, http_epoll **handle)
 {
     static const char fn[] = "sceHttpCreateEpoll";
@@ -195,10 +202,44 @@ static int32_t http_create_epoll(int32_t context, http_epoll **handle)
     http_epoll *const epoll = calloc(1, sizeof *epoll);
     if (!epoll) rt_fatal(fn, "the host has no memory for the handle");
     epoll->context = context;
+    pthread_mutex_lock(&http_epolls_lock);
+    if (http_epoll_count == MAX_HTTP_EPOLLS) rt_fatal(fn, "more handles than the runtime records");
+    http_epolls[http_epoll_count++] = epoll;
+    pthread_mutex_unlock(&http_epolls_lock);
     *handle = epoll;
     return 0;
 }
 RT_SYSLIB("libSceHttp", sceHttpCreateEpoll, http_create_epoll);
+
+static int is_http_epoll(const http_epoll *handle)
+{
+    int found = 0;
+    pthread_mutex_lock(&http_epolls_lock);
+    for (int i = 0; i < http_epoll_count && !found; i++) found = http_epolls[i] == handle;
+    pthread_mutex_unlock(&http_epolls_lock);
+    return found;
+}
+
+/* sceHttpWaitRequest(void *handle, events, int32_t max events, int64_t timeout): OpenOrbis' Http.h
+   names it without a signature, so the shape comes from the executable's HTTP worker (0x013d10d0,
+   called from 0x023e4d70 and 0x0227df20). For each of its connections it passes the handle from
+   sceHttpCreateEpoll, a buffer of 128 events of 24 bytes, 128 and a timeout of 0, so it only polls.
+   It reads events only when the result is above 0, and otherwise moves on. The runtime is offline
+   and no request is ever sent (every sending call stops by name), so no request can have an event:
+   it answers 0 events. A handle sceHttpCreateEpoll did not hand out, no event buffer, and a timeout
+   other than the observed 0 (whether waiting blocks, and its unit, are not established) stop by
+   name. */
+enum { HTTP_WAIT_TIMEOUT_OBSERVED = 0 };
+
+static int32_t http_wait_request(const http_epoll *handle, void *events, int32_t max_events, int64_t timeout)
+{
+    static const char fn[] = "sceHttpWaitRequest";
+    if (!is_http_epoll(handle)) rt_fatal(fn, "a handle sceHttpCreateEpoll did not hand out: the error value is not established");
+    if (!events || max_events < 1) rt_fatal(fn, "no room for events: the error value is not established");
+    if (timeout != HTTP_WAIT_TIMEOUT_OBSERVED) rt_fatal(fn, "a timeout other than the observed 0 is not established");
+    return 0; /* offline: no request was sent, so none has an event */
+}
+RT_SYSLIB("libSceHttp", sceHttpWaitRequest, http_wait_request);
 
 /* sceHttpAddRequestHeader(int32_t id, const char *name, const char *value, int32_t mode), as the
    OpenOrbis homebrew SDK's Http.h declares it. The executable's only call (0x013d1ed5) adds a
