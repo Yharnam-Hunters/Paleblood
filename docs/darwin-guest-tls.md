@@ -20,8 +20,8 @@ accounting; public reads are allowed while the owned key lives. This is not a si
 
 ## Candidate layout and qualification
 
-`get_candidate` checks 64-bit pointer/key widths and the inspected desktop key range256..767,
-then checks key*8 fits a positive signed32 displacement. It reports candidate metadata, not a
+`get_candidate` checks 64-bit pointer/key widths and the inspected desktop key range 256..767,
+then checks key*8 fits a positive signed 32-bit displacement. It reports candidate metadata, not a
 private-layout guarantee. Create may own a key outside that profile; metadata then fails
 UNREPRESENTABLE and the still-owned unbound key can be destroyed normally.
 
@@ -41,11 +41,29 @@ establish public/direct agreement on every participating thread. Never assume a 
 select an apparently unused reserved slot. The candidate offset is intended for the separately
 qualified equal-size loader rewrite; this unit does not validate or perform that rewrite.
 
-## Standalone owned tests
+## Root build and owned tests
+
+The normal root configuration compiles `guest_tls_owned` and registers both owned tests on
+macOS when the selected architecture is exactly x86-64:
+
+```sh
+cmake -S . -B build-darwin -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64
+cmake --build build-darwin --target guest_tls_owned test_guest_tls_darwin test_guest_tls_failures --parallel 2
+ctest --test-dir build-darwin -R '^darwin_guest_tls_' --output-on-failure
+```
+
+The `macos-guest-tls` CI workflow runs these root-build tests on an Intel macOS runner. This
+qualifies that runner's process and OS only. ARM64 and universal root configurations omit the
+GS-slot unit; they do not compile x86-64-only code as another architecture. The Linux root
+build is unchanged. Building these selected targets does not prove the full guest runtime
+builds or boots on macOS.
+
+The isolated project uses the same library and test definitions and remains available while
+other root runtime targets are being ported:
 
 Use Apple Clang, a macOS SDK and an x86-64 process environment. Apple Silicon requires working
 x86-64 translation. The isolated project rejects non-Darwin, ARM64 and universal builds; it
-never changes the root Linux CMake build. From the repository root:
+does not change the root configuration. From the repository root:
 
 ```sh
 cmake -S test/darwin_guest_tls -B build-darwin-guest-tls \
@@ -60,7 +78,7 @@ The project builds the static unit and two C11 executables with Release settings
 than becoming a skipped/pass result.
 
 The real test synchronizes main plus one worker under the same live owned key. Each holds two
-successive distinct fullwidth object pointers, then NULL. API/public reads must equal the
+successive distinct 64-bit object pointers, then NULL. API/public reads must equal the
 candidate GS read. The owned code is a 9-byte MOV plus a 1-byte RET, 10 bytes total. It checks
 GS:0/pthread_self, ordinary errno, a host _Thread_local canary, sentinel contents and flags
 around MOV+RET. Readers finish before BUSY destruction checks; clear/join precede deletion and
