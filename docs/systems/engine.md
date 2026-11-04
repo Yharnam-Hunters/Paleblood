@@ -7,7 +7,7 @@ The engine's shared plumbing that every system leans on: its fatal error report,
 **At a glance**
 
 - **Scope:** Engine-wide helpers in Paleblood's `game/engine/`: the fatal error report and singleton check, reference counting, and replaced engine utility functions.
-- **Verified:** `engine_write_stderr`, two string comparisons and a handle-table lookup are edge-verified against constructed cases.
+- **Verified:** `engine_write_stderr`, the string helpers, wide-string set-up, owner storage and a handle-table lookup are edge-verified against constructed cases.
 - **Open:** Who calls the stderr writer during play, and with what text.
 
 ## Summary
@@ -49,6 +49,25 @@ Two byte-string comparisons compare signed bytes and return the difference at th
 `engine_compare_signed_prefix` (`0x011c4990`) stops after a length, still comparing the first byte
 when the length is zero or negative. All their callers are in FMOD's code (see [Audio](audio.md)).
 
+### More string helpers
+
+Since 4 November the engine's small C-string helpers are mapped too, by [@evill33t](https://github.com/evill33t):
+`engine_string_length` (`0x011c47f0`, a `strlen` whose result is cut to 32 bits,
+[#288](https://github.com/Yharnam-Hunters/Paleblood/pull/288)), `engine_ascii_to_upper_in_place` and `engine_ascii_to_lower_in_place`
+(`0x011c4910`, `0x011c4940`: change letters in place and return the string, [#281](https://github.com/Yharnam-Hunters/Paleblood/pull/281)), and
+`engine_compare_ascii_ignoring_case` (`0x011c49c0`, compares two strings ignoring letter case,
+[#282](https://github.com/Yharnam-Hunters/Paleblood/pull/282)).
+
+### Wide strings and owned storage
+
+- `engine_wide_string_destroy` (`0x02a44140`) releases a wide (16-bit character) string, and
+  `engine_initialize_static_wide_string_0217ffb0` sets up one static wide string the first time it
+  is needed, guarded so it happens once ([#284](https://github.com/Yharnam-Hunters/Paleblood/pull/284)).
+- `engine_release_owner_storage` and `engine_resize_owner_storage` (`0x0132c590`, `0x0132c6c0`)
+  free an object's storage block through its allocator, or replace it with a new 16-byte-aligned
+  block of the requested size ([#285](https://github.com/Yharnam-Hunters/Paleblood/pull/285)). What kind of object owns the block is not known yet;
+  its only known caller is `0x02713870`.
+
 ### Looking up a table entry by handle
 
 `engine_entry_manager_resolve` (`0x01314320`) turns a handle into an entry: it checks that the
@@ -72,6 +91,14 @@ on current `main`, and an independent review approved it.
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
 | `0x0111a740` | 20 | `engine_write_stderr` | edge-verified | Forward the string and imported _Stderr object address to fputs; ignore its return and return zero; synthetic wire edge cases only |
+| `0x011c47f0` | 29 | `engine_string_length` | edge-verified | Engine strlen; scan to the first NUL and return the low 32 length bits zero-extended into RAX; other incoming GP registers are ignored |
+| `0x011c4910` | 44 | `engine_ascii_to_upper_in_place` | edge-verified | Convert ASCII a-z to A-Z in place through NUL; retain all other bytes and return original pointer; caller 0x01127ca0 |
+| `0x011c4940` | 44 | `engine_ascii_to_lower_in_place` | edge-verified | Convert ASCII A-Z to a-z in place through NUL; retain all other bytes and return original pointer; caller 0x01127ca0 |
 | `0x011c4970` | 29 | `engine_compare_signed_strings` | edge-verified | Compare zero-terminated strings by signed bytes and return their first differing byte subtraction |
 | `0x011c4990` | 47 | `engine_compare_signed_prefix` | edge-verified | Compare signed bytes up to a signed 32-bit bound; always compare the first byte even for zero or negative lengths |
+| `0x011c49c0` | 56 | `engine_compare_ascii_ignoring_case` | edge-verified | Case-insensitive string comparison folds ASCII uppercase bytes then returns signed-byte difference as int32; bounded aliases covered |
 | `0x01314320` | 54 | `engine_entry_manager_resolve` | edge-verified | Resolve an enabled low32 handle index with unsigned bounds; reject full-width handle and entry sentinels; return opaque table pointers unchanged |
+| `0x0132c590` | 49 | `engine_release_owner_storage` | edge-verified | Free nonnull owner storage through its allocator before clearing the field; wider role unknown; caller 0x02713870 |
+| `0x0132c6c0` | 81 | `engine_resize_owner_storage` | edge-verified | Free old owner storage before clearing; reload allocator after callback and allocate requested low32 byte count aligned to 16; caller 0x02713870 |
+| `0x0217ffb0` | 205 | `engine_initialize_static_wide_string_0217ffb0` | edge-verified | Guarded static empty wide string; byte-only entry test; captured allocator; exact partial stores; destructor registration before full guard publication |
+| `0x02a44140` | 59 | `engine_wide_string_destroy` | edge-verified | WideString destructor; unsigned capacity >=8 frees even null; ignores owns; callback before capacity and size reset and two-byte terminator |
