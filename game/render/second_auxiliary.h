@@ -2,7 +2,7 @@
 // Nullable auxiliary-size and dimension outputs used by record construction.
 #pragma once
 
-#include "command_reservation.h"
+#include "byte_field.h"
 #include "record_tuple.h"
 
 extern "C" uint64_t bb_render_calculate_second_auxiliary(
