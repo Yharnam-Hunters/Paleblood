@@ -23,6 +23,23 @@ ABI = {
 
 
 class Differential(unittest.TestCase):
+    def test_ambient_rax_requires_an_explicit_abi_register_declaration(self):
+        abi = {**ABI, 'arguments': [*ABI['arguments'],
+                {'register': 'rax', 'type': 'uint64_t', 'direction': 'input'}]}
+        self.assertEqual(differential.validate_abi(abi), [])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'case.json'
+            case = {**self.case(), 'abi': abi, 'args': {'rdi': '0x2', 'rax': '0xfedcba9876543210'}}
+            path.write_text(json.dumps(case))
+            rows, _ = differential.load_fixtures(Path(tmp), '0x400000')
+            self.assertEqual(rows[0][1]['args']['rax'], '0xfedcba9876543210')
+            path.write_text(json.dumps({**case, 'abi': ABI}))
+            with self.assertRaisesRegex(differential.DifferentialError, 'lack ABI declarations'):
+                differential.load_fixtures(Path(tmp), '0x400000')
+            path.write_text(json.dumps({**case, 'args': {'rdi': '0x2'}}))
+            with self.assertRaisesRegex(differential.DifferentialError, 'omits declared ABI arguments'):
+                differential.load_fixtures(Path(tmp), '0x400000')
+
     def case(self):
         return {"schema": 1, "address": "0x00400000", "id": "case", "abi": ABI,
                 "args": {"rdi": "0x2"}, "buffers": {}, "memory": [],

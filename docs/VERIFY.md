@@ -83,6 +83,11 @@ Run IDs are filename-safe; case files are created exclusively with owner-only pe
 reused run ID and case number cannot silently replace an existing recording.
 
 - `args`: `rdi`..`r9`. A number, `buf:NAME[+off]`, or `guest:0xADDRESS` (a PS4 address).
+  `rax` may additionally seed an observed machine-register input, for example when the
+  original changes only `AL` and preserves the incoming upper bytes. It must be declared
+  in the fixture ABI when one is supplied; it is not an extra SysV C argument. Omitted
+  `rax` remains zero. Stack-argument setup preserves this seed, including when padding an
+  odd argument count. Use this only when the original's register contract is established.
 - `buffers`: sandbox memory, laid out in name order; `bytes` is hex, zero-padded to `size`.
 - `memory`: written before the call, at an image address or at `buf:NAME+off`: `bytes`,
   `pointer` (`NAME[+off]` within a buffer) or `guest` (the host address of a PS4 address, for example a
