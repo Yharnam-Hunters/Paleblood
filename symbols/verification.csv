@@ -7,6 +7,8 @@ ai_hk_frame_update_0222bc10,edge,,33,33,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,edge,30,33,33,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,edge,60,33,33,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,edge,uncapped,33,33,0,0,f6e94c85e455f408,2026-10-07
+audio_fmod_output_defaults,edge,,43,43,0,0,e01c66245bc0ebbc,2026-11-03
+audio_fmod_output_driver_count,edge,,18,18,0,0,9ac316ccda703831,2026-11-03
 audio_fmod_thread_affinity_lookup,edge,,21,21,0,0,8abaccecd8e6ac90,2026-11-03
 camera_follow_pitch,edge,,32,32,0,0,b597553f9e6c9fc4,2026-11-03
 camera_follow_yaw,edge,,30,30,0,0,8724717f0deed29b,2026-11-03
