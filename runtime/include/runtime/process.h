@@ -83,6 +83,10 @@ int rt_thread_attr_detach_state(void *const *attr, const char *caller);
    know is never guessed. */
 _Noreturn void rt_fatal(const char *function, const char *message);
 
+/* Called by rt_fatal before the process stops, when set: the boot harness records the stop as the
+   run's outcome and never returns. If it does return, the process stops as usual. */
+extern void (*rt_fatal_observer)(const char *function, const char *message);
+
 #ifdef __cplusplus
 }
 #endif

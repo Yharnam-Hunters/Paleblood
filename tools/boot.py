@@ -55,7 +55,7 @@ HISTORY_FIELDS = ('date', 'milestone', 'milestone_index', 'imports_total', 'impo
                   'fault_address')
 KEPT = ('phase', 'outcome', 'milestone', 'milestone_index', 'milestones', 'imports_total', 'imports_implemented',
         'imports_bundled', 'imports_unresolved', 'imports_remaining', 'imports_called', 'modules',
-        'stub_modules', 'module_hooks', 'first_unimplemented', 'stopped_by_hook', 'fault')
+        'stub_modules', 'module_hooks', 'first_unimplemented', 'stopped_by_hook', 'runtime_stop', 'fault')
 MODULE_HOOK_ACTIONS = ('return', 'stop')
 IMPORT_FIELDS = ('importer', 'library', 'symbol', 'kind', 'provider')
 MODULE_FIELDS = ('module', 'offset', 'size', 'symbol', 'status')
@@ -203,6 +203,9 @@ def stops_at(b: dict) -> str:
     h = b.get('stopped_by_hook')
     if h:
         return f"{h['module']}:{h['name']} (stop hook)"
+    r = b.get('runtime_stop')
+    if r:
+        return f"runtime:{r['function']} ({r['reason']})"
     if b.get('fault'):
         return f"{b['outcome']} at {b['fault']['at']}"
     return b['outcome']
