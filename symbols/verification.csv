@@ -189,9 +189,9 @@ render_present_record_consume,edge,,24,24,0,0,bcfb8129127c7c3e,2026-11-03
 render_read_present_pool_counter,edge,,18,18,0,0,1ef235dcff31de42,2026-11-03
 render_record_auxiliary_predicate,edge,,64,64,0,0,ddfae0976d12bebd,2026-11-04
 render_record_encoding_category,edge,,48,48,0,0,8f03f505a6bdfb07,2026-11-04
-render_record_encoding_components,edge,,108,108,0,0,50abae7739ffebbf,2026-11-04
-render_record_encoding_metadata,edge,,256,256,0,0,9280dad5b783b8a6,2026-11-04
-render_record_set_encoding,edge,,84,84,0,0,76f7b01028ecc530,2026-11-04
+render_record_encoding_components,edge,,148,148,0,0,b50f3397c0119c7e,2026-11-04
+render_record_encoding_metadata,edge,,256,256,0,0,39b8a33ac9b2c1c0,2026-11-04
+render_record_set_encoding,edge,,84,84,0,0,eb5c282513d25880,2026-11-04
 render_swap_chain_present,recorded,,209,209,0,0,cecf62710c015474,2026-10-07
 render_swap_chain_present,recorded,30,209,209,0,0,cecf62710c015474,2026-10-07
 render_swap_chain_present,recorded,60,209,209,0,0,cecf62710c015474,2026-10-07
