@@ -4,6 +4,7 @@
 
 Usage: reset_present_preparation_dirty_cases.py OUT_DIR. Generate captures outside the repository.
 """
+from copy import deepcopy
 import json
 from pathlib import Path
 import struct
@@ -66,6 +67,15 @@ def cases():
             ]
         c['stubs'].append(byte_stub)
         yield c
+        if cid == 'both_helpers_change_fields_flags':
+            # The byte helper overwrites flags. Observe its entry state first,
+            # so that write cannot hide an earlier missed caller reload.
+            observed = deepcopy(c)
+            observed['id'] = 'both_helpers_observe_reloaded_flags'
+            observed['stubs'][-1]['argmem'] = [
+                {'arg': 0, 'offset': 0x188 - 0x10, 'size': 4},
+            ]
+            yield observed
 
 
 def main():
