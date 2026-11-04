@@ -11,9 +11,11 @@
    maps it and hands it back to the GPU calls. */
 #include "runtime/process.h"
 #include "runtime/syslib.h"
+#include "runtime/video_out.h"
 
 #include <pthread.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #define TESSELLATION_FACTOR_RING_BASE 0xfe00000000ull
@@ -96,6 +98,46 @@ static int32_t set_cs_shader(uint32_t *command_buffer, uint32_t dwords, const vo
 
 RT_SYSLIB("libSceGnmDriver", sceGnmSetCsShader, set_cs_shader);
 
+/* The other command-buffer writers the engine calls, each through one thin wrapper that reserves a
+   fixed or computed number of dwords at its cursor, passes the cursor and that count first, and
+   advances the cursor by the count (when the call answers 0, or always). OpenOrbis' GnmDriver.h
+   only names them; the shapes come from the wrappers:
+     shader stages (the shader's registers): SetEsShader 0x01475560 (20 dwords), SetGsShader
+       0x014759d0 (29), SetHsShader 0x014755d0 (30), SetLsShader 0x014757d0 (23), SetPsShader
+       0x014753c0 (40), SetVsShader 0x01475480 (29), and UpdateGsShader 0x01475a30, UpdateHsShader
+       0x01475640, UpdatePsShader 0x01475420, UpdateVsShader 0x014754f0 with the same counts;
+     debug markers, for GPU debugging tools (counts from the label's length): InsertPushMarker
+       0x01477fe0, InsertPopMarker 0x014780e0 (6), InsertSetMarker 0x01477470 and 0x0148ae10,
+       InsertPushColorMarker 0x01478060 and 0x0148b720, InsertSetColorMarker 0x014774f0 and
+       0x0148ae90;
+     InsertWaitFlipDone 0x01478440 (7): makes the GPU wait until the display no longer shows a
+       buffer before drawing into it.
+   Paleblood has no GPU to hold shader registers, no GPU debugger to read markers, and no GPU that
+   could draw into a buffer early, so each fills its reserved space with one PM4 NOP packet and
+   answers 0, as sceGnmSetCsShader does: the command buffer stays well-formed and nothing in it
+   acts. The arguments after the count are not used. */
+static int32_t write_nothing_for_the_gpu(uint32_t *command_buffer, uint32_t dwords)
+{
+    fill_with_nop("a GNM command-buffer writer", command_buffer, dwords);
+    return 0;
+}
+RT_SYSLIB("libSceGnmDriver", sceGnmSetEsShader, write_nothing_for_the_gpu);
+RT_SYSLIB("libSceGnmDriver", sceGnmSetGsShader, write_nothing_for_the_gpu);
+RT_SYSLIB("libSceGnmDriver", sceGnmSetHsShader, write_nothing_for_the_gpu);
+RT_SYSLIB("libSceGnmDriver", sceGnmSetLsShader, write_nothing_for_the_gpu);
+RT_SYSLIB("libSceGnmDriver", sceGnmSetPsShader, write_nothing_for_the_gpu);
+RT_SYSLIB("libSceGnmDriver", sceGnmSetVsShader, write_nothing_for_the_gpu);
+RT_SYSLIB("libSceGnmDriver", sceGnmUpdateGsShader, write_nothing_for_the_gpu);
+RT_SYSLIB("libSceGnmDriver", sceGnmUpdateHsShader, write_nothing_for_the_gpu);
+RT_SYSLIB("libSceGnmDriver", sceGnmUpdatePsShader, write_nothing_for_the_gpu);
+RT_SYSLIB("libSceGnmDriver", sceGnmUpdateVsShader, write_nothing_for_the_gpu);
+RT_SYSLIB("libSceGnmDriver", sceGnmInsertPushMarker, write_nothing_for_the_gpu);
+RT_SYSLIB("libSceGnmDriver", sceGnmInsertPopMarker, write_nothing_for_the_gpu);
+RT_SYSLIB("libSceGnmDriver", sceGnmInsertSetMarker, write_nothing_for_the_gpu);
+RT_SYSLIB("libSceGnmDriver", sceGnmInsertPushColorMarker, write_nothing_for_the_gpu);
+RT_SYSLIB("libSceGnmDriver", sceGnmInsertSetColorMarker, write_nothing_for_the_gpu);
+RT_SYSLIB("libSceGnmDriver", sceGnmInsertWaitFlipDone, write_nothing_for_the_gpu);
+
 /* sceGnmIsUserPaEnabled(): whether the GPU's user performance-analysis mode is on. The engine wraps
    it as "on when nonzero" (0x01489c40) and asks from many draw-command builders (0x01474b50 and
    others), which then add the extra packets that mode needs. Paleblood has no such GPU mode, so the
@@ -175,9 +217,25 @@ RT_SYSLIB("libSceGnmDriver", sceGnmMapComputeQueue, map_compute_queue);
 
 #define PM4_NOP 0x10u
 #define PM4_DISPATCH_DIRECT 0x15u
+#define PM4_WAIT_REG_MEM 0x3cu
 #define PM4_INDIRECT_BUFFER 0x3fu
+#define PM4_EVENT_WRITE 0x46u
+#define PM4_EVENT_WRITE_EOP 0x47u
 #define PM4_RELEASE_MEM 0x49u
+#define PM4_ACQUIRE_MEM 0x58u
 #define PM4_SET_SH_REG 0x76u
+#define PM4_DRAW_INDEX_AUTO 0x2du
+#define PM4_NUM_INSTANCES 0x2fu
+#define PM4_SET_CONTEXT_REG 0x69u
+#define PM4_SET_UCONFIG_REG 0x79u
+
+#define EVENT_WRITE_WITHOUT_MEMORY_DWORDS 2
+#define EVENT_WRITE_EOP_DWORDS 6
+#define EVENT_WRITE_EOP_DATA_SHIFT 29
+
+#define WAIT_REG_MEM_DWORDS 7
+#define WAIT_FUNCTION_MASK 7u
+#define WAIT_ON_MEMORY 0x10u
 
 #define INDIRECT_BUFFER_DWORDS 4
 #define INDIRECT_BUFFER_ADDRESS_HIGH_MASK 0xffffu
@@ -201,24 +259,69 @@ typedef struct {
     uint32_t data_low, data_high;
 } release_mem_packet;
 
+/* A "work done" write: the packet's own 32- or 64-bit value to a memory address (the address's
+   high bits are the low 16 of address_high). Other kinds of value (a GPU clock, for one) stop. */
+static void write_completion(const char *fn, uint32_t data_size, uint32_t address_low, uint32_t address_high,
+                             uint32_t data_low, uint32_t data_high)
+{
+    if (data_size == RELEASE_MEM_DATA_NONE) return;
+    void *address = (void *)(uintptr_t)(address_low | (uint64_t)(address_high & RELEASE_MEM_ADDRESS_HIGH_MASK) << 32);
+    if (!address) rt_fatal(fn, "a completion write without an address");
+    if (data_size == RELEASE_MEM_DATA_32_BITS)
+        __atomic_store_n((uint32_t *)address, data_low, __ATOMIC_RELEASE);
+    else if (data_size == RELEASE_MEM_DATA_64_BITS)
+        __atomic_store_n((uint64_t *)address, data_low | (uint64_t)data_high << 32, __ATOMIC_RELEASE);
+    else
+        rt_fatal(fn, "a completion writing a value other than the packet's own data");
+}
+
 static void release_memory(const char *fn, const release_mem_packet *packet)
 {
     const uint32_t destination = (packet->data_control >> RELEASE_MEM_DESTINATION_SHIFT) & RELEASE_MEM_DESTINATION_MASK;
-    const uint32_t data_size = packet->data_control >> RELEASE_MEM_DATA_SHIFT;
     if (destination != RELEASE_MEM_TO_MEMORY) rt_fatal(fn, "a RELEASE_MEM to a destination other than memory");
-    if (data_size == RELEASE_MEM_DATA_NONE) return;
-    void *address = (void *)(uintptr_t)(packet->address_low |
-                                        (uint64_t)(packet->address_high & RELEASE_MEM_ADDRESS_HIGH_MASK) << 32);
-    if (!address) rt_fatal(fn, "a RELEASE_MEM without an address");
-    if (data_size == RELEASE_MEM_DATA_32_BITS)
-        __atomic_store_n((uint32_t *)address, packet->data_low, __ATOMIC_RELEASE);
-    else if (data_size == RELEASE_MEM_DATA_64_BITS)
-        __atomic_store_n((uint64_t *)address, packet->data_low | (uint64_t)packet->data_high << 32, __ATOMIC_RELEASE);
-    else
-        rt_fatal(fn, "a RELEASE_MEM writing a value other than the packet's own data");
+    write_completion(fn, packet->data_control >> RELEASE_MEM_DATA_SHIFT, packet->address_low, packet->address_high,
+                     packet->data_low, packet->data_high);
 }
 
-static void complete_packets(const char *fn, const uint32_t *packets, uint32_t dwords, int depth);
+/* WAIT_REG_MEM makes the GPU wait until a value in memory compares as asked with a reference
+   (under a mask). Completing work at once leaves no later moment for the CPU to satisfy it, so the
+   stand-in checks that it already holds; one that does not, or one on a register, stops by name. */
+typedef struct {
+    uint32_t control; /* compare function in bits 0-2, memory (not a register) in bit 4 */
+    uint32_t address_low, address_high;
+    uint32_t reference, mask, poll_interval;
+} wait_reg_mem_packet;
+
+static void check_wait(const char *fn, const wait_reg_mem_packet *packet)
+{
+    if (!(packet->control & WAIT_ON_MEMORY)) rt_fatal(fn, "a GPU wait on a register: the stand-in has none");
+    const volatile uint32_t *address = (const volatile uint32_t *)(uintptr_t)(packet->address_low |
+                                       (uint64_t)(packet->address_high & RELEASE_MEM_ADDRESS_HIGH_MASK) << 32);
+    if (!address) rt_fatal(fn, "a GPU wait without an address");
+    const uint32_t value = __atomic_load_n(address, __ATOMIC_ACQUIRE) & packet->mask, reference = packet->reference;
+    int holds;
+    switch (packet->control & WAIT_FUNCTION_MASK) {
+    case 0: holds = 1; break;
+    case 1: holds = value < reference; break;
+    case 2: holds = value <= reference; break;
+    case 3: holds = value == reference; break;
+    case 4: holds = value != reference; break;
+    case 5: holds = value >= reference; break;
+    case 6: holds = value > reference; break;
+    default: rt_fatal(fn, "a GPU wait with a compare function the format does not define");
+    }
+    if (!holds) rt_fatal(fn, "a GPU wait on memory that does not yet hold what it waits for");
+}
+
+/* Stops naming the packet's opcode: the next packet kind to understand. */
+static _Noreturn void unknown_packet(const char *fn, uint32_t opcode, uint32_t length)
+{
+    static char message[96];
+    snprintf(message, sizeof message, "a PM4 packet the stand-in does not know (opcode 0x%02x, %u dwords)", opcode, length);
+    rt_fatal(fn, message);
+}
+
+static void complete_packets(const char *fn, const uint32_t *packets, uint32_t dwords, int depth, int is_ring);
 
 static void follow_indirect_buffer(const char *fn, const uint32_t *packet, int depth)
 {
@@ -227,12 +330,12 @@ static void follow_indirect_buffer(const char *fn, const uint32_t *packet, int d
                              (uint64_t)(packet[2] & INDIRECT_BUFFER_ADDRESS_HIGH_MASK) << 32);
     const uint32_t dwords = packet[3] & INDIRECT_BUFFER_SIZE_MASK;
     if (!buffer && dwords) rt_fatal(fn, "an INDIRECT_BUFFER without an address");
-    complete_packets(fn, buffer, dwords, depth + 1);
+    complete_packets(fn, buffer, dwords, depth + 1, 0);
 }
 
-/* Acts on each packet in turn. Inside the ring (depth 0) the engine writes only INDIRECT_BUFFER
-   packets; inside a command buffer it writes the kinds listed above. */
-static void complete_packets(const char *fn, const uint32_t *packets, uint32_t dwords, int depth)
+/* Acts on each packet in turn. A compute ring holds only INDIRECT_BUFFER packets; a command buffer
+   holds the kinds listed above and at sceGnmSubmitCommandBuffers. */
+static void complete_packets(const char *fn, const uint32_t *packets, uint32_t dwords, int depth, int is_ring)
 {
     for (uint32_t at = 0; at < dwords;) {
         const uint32_t header = packets[at];
@@ -243,14 +346,24 @@ static void complete_packets(const char *fn, const uint32_t *packets, uint32_t d
         const uint32_t *packet = packets + at;
         if (opcode == PM4_INDIRECT_BUFFER && length == INDIRECT_BUFFER_DWORDS) {
             follow_indirect_buffer(fn, packet, depth);
-        } else if (depth == 0) {
+        } else if (is_ring) {
             rt_fatal(fn, "a compute ring packet other than INDIRECT_BUFFER");
         } else if (opcode == PM4_RELEASE_MEM && length == RELEASE_MEM_DWORDS) {
             release_mem_packet release;
             memcpy(&release, packet + 1, sizeof release);
             release_memory(fn, &release);
-        } else if (opcode != PM4_NOP && opcode != PM4_SET_SH_REG && opcode != PM4_DISPATCH_DIRECT) {
-            rt_fatal(fn, "a compute packet the stand-in does not know");
+        } else if (opcode == PM4_EVENT_WRITE_EOP && length == EVENT_WRITE_EOP_DWORDS) {
+            write_completion(fn, packet[3] >> EVENT_WRITE_EOP_DATA_SHIFT, packet[2], packet[3], packet[4], packet[5]);
+        } else if (opcode == PM4_WAIT_REG_MEM && length == WAIT_REG_MEM_DWORDS) {
+            wait_reg_mem_packet wait;
+            memcpy(&wait, packet + 1, sizeof wait);
+            check_wait(fn, &wait);
+        } else if (opcode == PM4_EVENT_WRITE && length != EVENT_WRITE_WITHOUT_MEMORY_DWORDS) {
+            unknown_packet(fn, opcode, length); /* an event that also writes memory */
+        } else if (opcode != PM4_NOP && opcode != PM4_SET_SH_REG && opcode != PM4_DISPATCH_DIRECT &&
+                   opcode != PM4_ACQUIRE_MEM && opcode != PM4_EVENT_WRITE && opcode != PM4_SET_CONTEXT_REG &&
+                   opcode != PM4_SET_UCONFIG_REG && opcode != PM4_NUM_INSTANCES && opcode != PM4_DRAW_INDEX_AUTO) {
+            unknown_packet(fn, opcode, length);
         }
         at += length;
     }
@@ -268,13 +381,73 @@ static void ding_dong(uint32_t queue_id, uint32_t write_offset)
     if (write_offset > queue->ring_dwords) rt_fatal(fn, "a write offset past the end of the ring");
     const uint32_t *ring = queue->ring;
     if (write_offset < *done) { /* the engine filled the ring's end and wrapped to its start */
-        complete_packets(fn, ring + *done, queue->ring_dwords - *done, 0);
+        complete_packets(fn, ring + *done, queue->ring_dwords - *done, 0, 1);
         *done = 0;
     }
-    complete_packets(fn, ring + *done, write_offset - *done, 0);
+    complete_packets(fn, ring + *done, write_offset - *done, 0, 1);
     *done = write_offset;
     __atomic_store_n(queue->read_pointer, write_offset, __ATOMIC_RELEASE);
     pthread_mutex_unlock(&queues_lock);
 }
 
 RT_SYSLIB("libSceGnmDriver", sceGnmDingDong, ding_dong);
+
+/* sceGnmSubmitCommandBuffers(count, draw command buffers, their sizes in bytes, constant command
+   buffers, their sizes): hands command buffers to the GPU's graphics queue. OpenOrbis' GnmDriver.h
+   only names it; the shape comes from the engine's submit (0x02ab0b00, one of eleven callers),
+   which passes one or two draw command buffers, their byte sizes rounded down to whole dwords, and
+   no constant buffers, and ignores the answer.
+
+   TEMPORARY STAND-IN, as for sceGnmDingDong above: the work is completed at once on the calling
+   thread. The first boot to reach it (4 November 2026) found, besides the compute kinds, these
+   (AMD's public PM4 format):
+     EVENT_WRITE_EOP              performed: the end-of-work value goes to its memory address;
+     WAIT_REG_MEM                 checked: the memory must already hold what the GPU waits for;
+     ACQUIRE_MEM, EVENT_WRITE     skipped: cache control and pipeline events, with no GPU caches
+                                  (an EVENT_WRITE that also writes memory stops);
+     SET_CONTEXT_REG, SET_UCONFIG_REG, NUM_INSTANCES, DRAW_INDEX_AUTO
+                                  skipped: draw state and draws (the first frame's).
+   Nothing is drawn. Constant command buffers, and any other packet, stop by name. */
+#define MAX_SUBMITTED_BUFFERS 64
+
+static int32_t submit_command_buffers(uint32_t count, void **draw_buffers, const uint32_t *draw_bytes,
+                                      void **constant_buffers, const uint32_t *constant_bytes)
+{
+    static const char fn[] = "sceGnmSubmitCommandBuffers";
+    if (!count || count > MAX_SUBMITTED_BUFFERS || !draw_buffers || !draw_bytes)
+        rt_fatal(fn, "no command buffers, or more than the stand-in takes: the answer is not established");
+    if (constant_buffers || constant_bytes) rt_fatal(fn, "constant command buffers: the stand-in does not run them");
+    for (uint32_t k = 0; k < count; k++) {
+        if (!draw_buffers[k] && draw_bytes[k]) rt_fatal(fn, "a command buffer without an address");
+        complete_packets(fn, draw_buffers[k], draw_bytes[k] / sizeof(uint32_t), 0, 0);
+    }
+    return 0;
+}
+
+RT_SYSLIB("libSceGnmDriver", sceGnmSubmitCommandBuffers, submit_command_buffers);
+
+/* sceGnmSubmitAndFlipCommandBuffers(count, draw command buffers, sizes, constant command buffers,
+   sizes, video out handle, buffer index, flip mode, flip argument): submits a frame's last command
+   buffers and shows one of the display's buffers once they are done. OpenOrbis' GnmDriver.h only
+   names it; the shape comes from the engine's frame end (0x02ab0e30 and 0x02ab0ce0), which passes
+   one or two draw command buffers, no constant buffers, and the port, buffer, mode and argument of
+   its frame (the flip loop calling at 0x02ad6ee9), then calls sceGnmSubmitDone. The stand-in completes the buffers at once,
+   as sceGnmSubmitCommandBuffers does, then flips as sceVideoOutSubmitFlip does. */
+static int32_t submit_and_flip(uint32_t count, void **draw_buffers, const uint32_t *draw_bytes, void **constant_buffers,
+                               const uint32_t *constant_bytes, int32_t video_out_handle, int32_t buffer, int32_t mode,
+                               int64_t argument)
+{
+    submit_command_buffers(count, draw_buffers, draw_bytes, constant_buffers, constant_bytes);
+    return rt_video_out_flip("sceGnmSubmitAndFlipCommandBuffers", video_out_handle, buffer, mode, argument);
+}
+
+/* sceGnmSubmitDone(void): tells the system the frame's submissions are finished, after each
+   submit-and-flip (0x02ab0e30, 0x02ab0ce0), which ignore the answer. The stand-in has already
+   finished all submitted work, so there is nothing left to do; it answers 0. */
+static int32_t submit_done(void)
+{
+    return 0;
+}
+
+RT_SYSLIB("libSceGnmDriver", sceGnmSubmitAndFlipCommandBuffers, submit_and_flip);
+RT_SYSLIB("libSceGnmDriver", sceGnmSubmitDone, submit_done);

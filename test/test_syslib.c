@@ -650,6 +650,12 @@ typedef int32_t (*f_kstat)(const char *, void *);
 static f_kstat kstat_fn;
 static void kstat_outside(void) { unsigned char st[120]; kstat_fn("/download0/x", st); }
 static void kstat_dotdot(void) { unsigned char st[120]; kstat_fn("/app0/../etc/passwd", st); }
+/* Whether an address fits a GPU base-address field: below 2^40, so (address >> 8) fits 32 bits. */
+static int gpu_addressable(const void *address)
+{
+    const uint64_t shifted = (uint64_t)(uintptr_t)address >> 8;
+    return address && shifted == (uint32_t)shifted;
+}
 static void kstat_prefix_only(void) { unsigned char st[120]; kstat_fn("/app0x/file", st); }
 static void kstat_data_dotdot(void) { unsigned char st[120]; kstat_fn("/data/../etc/passwd", st); }
 typedef int32_t (*f_kopen)(const char *, int32_t, uint32_t);
@@ -683,7 +689,7 @@ static void put_indirect_buffer(uint32_t *at, const uint32_t *buffer, uint32_t d
 }
 static void dd_unknown_packet(void)
 {
-    static uint32_t buffer[2] = {0xc0002d00u, 0}; /* opcode 0x2d, not one the engine was seen to write */
+    static uint32_t buffer[2] = {0xc0002400u, 0}; /* opcode 0x24, not one the engine was seen to write */
     put_indirect_buffer(dd_ring + 4, buffer, 2); /* the parent's ring has completed up to slot 4 */
     ding_dong_fn((uint32_t)dd_queue, 8);
 }
@@ -718,8 +724,32 @@ static f_vo_flip vo_flip_fn;
 static f_vo_status vo_status_fn;
 static f_vo_open vo_open_fn;
 static int32_t vo_handle;
-static void vo_status_before_flip(void) { unsigned char st[64]; vo_status_fn(vo_handle, st); }
-static void vo_flip_vsync(void) { vo_flip_fn(vo_handle, 0, 1, 0); }
+static f_create tc_create_posix;
+static void *posix_thread_entry(void *argument) { return argument; }
+static void posix_create_without_attr(void)
+{
+    void *thread = NULL;
+    tc_create_posix(&thread, NULL, posix_thread_entry, NULL, "worker");
+}
+static void vo_flip_other_mode(void) { vo_flip_fn(vo_handle, 0, 3, 0); }
+typedef int32_t (*f_gnm_submit)(uint32_t, void **, uint32_t *, void **, uint32_t *);
+static f_gnm_submit gnm_submit_fn;
+static void gnm_submit_one(uint32_t *packets, uint32_t dwords)
+{
+    void *buffers[1] = {packets};
+    uint32_t bytes[1] = {dwords * 4};
+    gnm_submit_fn(1, buffers, bytes, NULL, NULL);
+}
+static void gnm_submit_unknown(void) { static uint32_t p[2] = {0xc0002400u, 0}; gnm_submit_one(p, 2); } /* opcode 0x24 */
+static uint32_t gnm_wait_label;
+static void gnm_submit_unmet_wait(void)
+{
+    /* WAIT_REG_MEM, memory, "equal", reference 5, while the label holds 0 */
+    const uint64_t at = (uint64_t)(uintptr_t)&gnm_wait_label;
+    uint32_t p[7] = {0xc0053c00u, 0x13, (uint32_t)at, (uint32_t)(at >> 32), 5, 0xffffffffu, 10};
+    gnm_wait_label = 0;
+    gnm_submit_one(p, 7);
+}
 static void vo_flip_bad_buffer(void) { vo_flip_fn(vo_handle, 9, 2, 0); }
 static void vo_open_other(void) { vo_open_fn(0xff, 0, 0, NULL); }
 
@@ -1290,6 +1320,9 @@ int main(void)
         void *a = NULL, *b = NULL;
         CHECK(dm_map(&a, DM_LENGTH, DM_RW, 0, first, DM_ALIGN) == 0 && a && (uintptr_t)a % DM_ALIGN == 0);
         CHECK(dm_map(&b, DM_LENGTH, DM_RW, 0, first, DM_ALIGN) == 0 && b && b != a);
+        /* Maps the system places are GPU-addressable: below 2^40, so the GPU's 32-bit base fields
+           (the address shifted right by 8) hold them whole. */
+        CHECK(gpu_addressable(a) && gpu_addressable(b));
         if (a && b) {
             /* Two maps of one range are the same memory, as physical memory is. */
             ((volatile unsigned char *)a)[DM_LENGTH - 1] = 0x5a;
@@ -1509,6 +1542,11 @@ int main(void)
     /* scePthreadCreate: the guest runs on a new host thread, on its own stack, with GS pointing at
        a fresh TLS block, registered for scePthreadSelf. */
     tc_create = (f_create)fn("libkernel", "scePthreadCreate");
+    /* pthread_create_name_np is the same creation under its POSIX name: registered, and the same
+       stop for a missing attribute. */
+    tc_create_posix = (f_create)fn("libScePosix", "pthread_create_name_np");
+    CHECK(tc_create_posix != NULL && is_implemented("libScePosix", "pthread_create_name_np"));
+    if (tc_create_posix) CHECK(died_in_fatal(posix_create_without_attr));
     tc_affinity = (f_setaffinity)fn("libkernel", "scePthreadSetaffinity");
     tc_self = (f_self)fn("libkernel", "scePthreadSelf");
     tc_sigmask = (f_sigmask)fn("libkernel", "_sigprocmask");
@@ -1579,6 +1617,7 @@ int main(void)
         CHECK(died_in_fatal(tc_create_no_stack));
         CHECK(died_in_fatal(tc_create_no_detach));
         CHECK(died_in_fatal(tc_affinity_empty));
+        CHECK(tc_affinity(NULL, 0x30) == (int)0x80020003u); /* no thread: ESRCH, as libthr */
     }
 
     /* libSceUserService: one user, logged in from the start; a second initialize answers
@@ -1635,6 +1674,7 @@ int main(void)
         void *a = NULL, *b = NULL;
         CHECK(flex_map(&a, 0x8000, 3, 0) == 0 && a);
         CHECK(flex_map(&b, 0x4000, 0x33, 0) == 0 && b && b != a);
+        CHECK(gpu_addressable(a) && gpu_addressable(b) && (uintptr_t)a % 0x4000 == 0);
         if (a) {
             volatile unsigned char *m = a;
             CHECK(m[0] == 0 && m[0x7fff] == 0);
@@ -1982,6 +2022,33 @@ int main(void)
         CHECK(packet[0] == (0xc0001000u | (23u << 16)) && packet[1] == 0 && packet[24] == 0);
         CHECK(packet[25] == 0xa5a5a5a5u);
     }
+    /* sceKernelReadTsc: the CPU's time-stamp counter, which moves forward. */
+    typedef uint64_t (*f_tsc)(void);
+    const f_tsc read_tsc = (f_tsc)fn("libkernel", "sceKernelReadTsc");
+    CHECK(read_tsc != NULL);
+    if (read_tsc) {
+        const uint64_t first = read_tsc();
+        struct timespec pause = {0, 1000000};
+        nanosleep(&pause, NULL);
+        CHECK(read_tsc() > first);
+    }
+    /* The other command-buffer writers: each fills exactly the reserved dwords with one NOP packet
+       (header with the count minus two, zero payload), answers 0 and writes nothing past them. */
+    static const char *const writers[] = {
+        "sceGnmSetEsShader", "sceGnmSetGsShader", "sceGnmSetHsShader", "sceGnmSetLsShader", "sceGnmSetPsShader",
+        "sceGnmSetVsShader", "sceGnmUpdateGsShader", "sceGnmUpdateHsShader", "sceGnmUpdatePsShader",
+        "sceGnmUpdateVsShader", "sceGnmInsertPushMarker", "sceGnmInsertPopMarker", "sceGnmInsertSetMarker",
+        "sceGnmInsertPushColorMarker", "sceGnmInsertSetColorMarker", "sceGnmInsertWaitFlipDone"};
+    typedef int32_t (*f_writer)(uint32_t *, uint32_t, const void *, uint64_t);
+    for (size_t n = 0; n < sizeof writers / sizeof writers[0]; n++) {
+        const f_writer writer = (f_writer)fn("libSceGnmDriver", writers[n]);
+        CHECK(writer != NULL);
+        if (!writer) continue;
+        uint32_t packet[8];
+        for (int i = 0; i < 8; i++) packet[i] = 0xa5a5a5a5u;
+        CHECK(writer(packet, 7, "label", 0) == 0);
+        CHECK(packet[0] == (0xc0001000u | (5u << 16)) && packet[1] == 0 && packet[6] == 0 && packet[7] == 0xa5a5a5a5u);
+    }
     /* sceGnmIsUserPaEnabled: off. */
     typedef int32_t (*f_user_pa)(void);
     const f_user_pa user_pa = (f_user_pa)fn("libSceGnmDriver", "sceGnmIsUserPaEnabled");
@@ -2087,7 +2154,11 @@ int main(void)
         static uint32_t frame_a[16], frame_b[16];
         void *const buffers[2] = {frame_a, frame_b};
         CHECK(vo_register(vo_handle, 0, buffers, 2, attr) == 0);
-        CHECK(died_in_fatal(vo_status_before_flip));
+        {   /* before the first flip: success, and all zero (no flips yet) */
+            unsigned char before[64], zero[64] = {0};
+            memset(before, 0xee, sizeof before);
+            CHECK(vo_status_fn(vo_handle, before) == 0 && !memcmp(before, zero, sizeof zero));
+        }
         CHECK(vo_flip_fn(vo_handle, 1, 2, 77) == 0);
         unsigned char ev[32]; int32_t n = 0; int64_t data;
         CHECK(eq_wait_fn(flips, ev, 1, &n, NULL) == 0 && n == 1 && (memcpy(&data, ev + 16, 8), data == 77));
@@ -2095,7 +2166,59 @@ int main(void)
         CHECK(vo_status_fn(vo_handle, st) == 0);
         memcpy(&count, st, 8); memcpy(&arg, st + 0x18, 8); memcpy(&current, st + 0x38, 4);
         CHECK(count == 1 && arg == 77 && current == 1);
-        CHECK(died_in_fatal(vo_flip_vsync));
+        /* A vsync flip completes at the next 60 Hz tick: within one period. */
+        struct timespec before, after;
+        clock_gettime(CLOCK_MONOTONIC, &before);
+        CHECK(vo_flip_fn(vo_handle, 0, 1, 78) == 0);
+        clock_gettime(CLOCK_MONOTONIC, &after);
+        const int64_t waited_ns = (after.tv_sec - before.tv_sec) * 1000000000 + (after.tv_nsec - before.tv_nsec);
+        CHECK(waited_ns <= 1000000000 / 60 + 2000000);
+        CHECK(eq_wait_fn(flips, ev, 1, &n, NULL) == 0 && n == 1 && (memcpy(&data, ev + 16, 8), data == 78));
+        /* A second vsync flip right after waits for the following tick: about one period later. */
+        CHECK(vo_flip_fn(vo_handle, 1, 1, 80) == 0);
+        clock_gettime(CLOCK_MONOTONIC, &before);
+        CHECK(eq_wait_fn(flips, ev, 1, &n, NULL) == 0); /* pending flip events of one port merge: take each */
+        CHECK(vo_flip_fn(vo_handle, 0, 1, 81) == 0);
+        clock_gettime(CLOCK_MONOTONIC, &after);
+        const int64_t apart_ns = (after.tv_sec - before.tv_sec) * 1000000000 + (after.tv_nsec - before.tv_nsec);
+        CHECK(apart_ns >= 1000000000 / 60 - 2000000);
+        CHECK(eq_wait_fn(flips, ev, 1, &n, NULL) == 0);
+        CHECK(died_in_fatal(vo_flip_other_mode));
+
+        /* sceGnmSubmitCommandBuffers and sceGnmSubmitAndFlipCommandBuffers complete the work at once:
+           draw state and draws are skipped, a met wait passes, the end-of-work value is written; the
+           frame's flip follows. An unknown packet and an unmet wait stop by name. */
+        gnm_submit_fn = (f_gnm_submit)fn("libSceGnmDriver", "sceGnmSubmitCommandBuffers");
+        typedef int32_t (*f_gnm_flip)(uint32_t, void **, uint32_t *, void **, uint32_t *, int32_t, int32_t, int32_t, int64_t);
+        const f_gnm_flip gnm_flip = (f_gnm_flip)fn("libSceGnmDriver", "sceGnmSubmitAndFlipCommandBuffers");
+        typedef int32_t (*f_gnm_done)(void);
+        const f_gnm_done gnm_done = (f_gnm_done)fn("libSceGnmDriver", "sceGnmSubmitDone");
+        CHECK(gnm_submit_fn && gnm_flip && gnm_done);
+        if (gnm_submit_fn && gnm_flip && gnm_done) {
+            static volatile uint64_t end_of_frame;
+            static uint32_t wait_target = 7;
+            const uint64_t eop = (uint64_t)(uintptr_t)&end_of_frame, wt = (uint64_t)(uintptr_t)&wait_target;
+            uint32_t frame[] = {
+                0xc0053c00u, 0x15, (uint32_t)wt, (uint32_t)(wt >> 32), 7, 0xffffffffu, 10, /* wait: >= 7, holds */
+                0xc0016900u, 0x1, 0x2,                                                    /* SET_CONTEXT_REG */
+                0xc0017900u, 0x3, 0x4,                                                    /* SET_UCONFIG_REG */
+                0xc0002f00u, 0x1,                                                         /* NUM_INSTANCES */
+                0xc0012d00u, 0x3, 0x2,                                                    /* DRAW_INDEX_AUTO */
+                0xc0004600u, 0x0,                                                         /* EVENT_WRITE */
+                0xc0044700u, 0x528, (uint32_t)eop, (uint32_t)(eop >> 32) | 0x40000000u, 0x9, 0x1, /* EOP 64-bit */
+            };
+            void *buffers[1] = {frame};
+            uint32_t bytes[1] = {sizeof frame};
+            end_of_frame = 0;
+            CHECK(gnm_submit_fn(1, buffers, bytes, NULL, NULL) == 0 && end_of_frame == 0x100000009ull);
+            end_of_frame = 0;
+            CHECK(gnm_flip(1, buffers, bytes, NULL, NULL, vo_handle, 1, 2, 79) == 0 && end_of_frame == 0x100000009ull);
+            CHECK(gnm_done() == 0);
+            CHECK(eq_wait_fn(flips, ev, 1, &n, NULL) == 0 && n == 1 && (memcpy(&data, ev + 16, 8), data == 79));
+            CHECK(vo_status_fn(vo_handle, st) == 0 && (memcpy(&arg, st + 0x18, 8), arg == 79));
+            CHECK(died_in_fatal(gnm_submit_unknown));
+            CHECK(died_in_fatal(gnm_submit_unmet_wait));
+        }
         CHECK(died_in_fatal(vo_flip_bad_buffer));
         CHECK(died_in_fatal(vo_open_other));
     }
