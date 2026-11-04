@@ -5,6 +5,7 @@ address,replacement,system,returns
 0x0111a6e0,bb_kernel_file_read_count,kernel,i32
 0x0111a720,bb_kernel_file_seek_absolute,kernel,i32
 0x0111a740,bb_engine_write_stderr,engine,i32
+0x0111a760,bb_frame_timing_get_monotonic_us,frame_timing,i32
 0x0111a7f0,bb_frame_timing_get_monotonic_ms,frame_timing,i32
 0x0111a880,bb_frame_timing_sleep_ms,frame_timing,i32
 0x0111a8a0,bb_kernel_thread_self,kernel,i32
@@ -89,5 +90,6 @@ address,replacement,system,returns
 0x025b2fb0,bb_render_swap_chain_present,render,void
 0x02a44140,bb_engine_wide_string_destroy,engine,void
 0x02ab5a70,bb_render_present_record_consume,render,void
+0x02abb4f0,bb_render_record_auxiliary_predicate,render,i8
 0x02ad5dd0,bb_render_swap_chain_present_mode,render,i32
 0x02ad6e50,bb_render_swap_chain_submit,render,i32
