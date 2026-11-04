@@ -1,10 +1,14 @@
 # macOS Metal platform unit
 
-On macOS, CMake defaults to `PB_METAL_ONLY=ON`. This builds `pbmetal`, a native static library
-with a C API and an Objective-C++ implementation linked to Apple's Metal and Foundation
-frameworks. This path does not build `pbboot`, `pbloader`, `bbrt`, `bbgame` or the Linux tests.
-Turning `PB_METAL_ONLY` off on macOS fails with an explicit unsupported-runtime diagnostic.
-The full guest boot/runtime path currently requires Linux x86-64.
+On macOS, the normal root CMake configuration adds `pbmetal` alongside the runtime, game and
+test targets. It is a native static library with a C API and an Objective-C++ implementation
+linked to Apple's Metal and Foundation frameworks. `PB_METAL_ONLY` defaults to `OFF`; set it
+to `ON` explicitly to build the Metal unit without the other targets. An existing build cache
+that selected `ON` retains that setting until changed.
+
+The normal macOS configuration retains the guest runtime targets, but their host portability
+is still in progress. Compiling or testing this Metal unit does not establish a working full
+runtime build or guest boot on macOS.
 
 The Metal unit creates a device, command queue and RGBA8Unorm offscreen texture, submits a
 render-pass clear/store, then reads pixels after command-buffer completion. This first
@@ -32,16 +36,19 @@ ctest --test-dir build-metal -R '^metal_offscreen$' --output-on-failure
 The test has a 30-second CTest timeout. It fails if device creation is unavailable or any check
 fails; an unavailable GPU is not reported as a passing or skipped smoke. It checks four actual
 clear/store submissions, all RGBA channels, readback padding/canaries and API lifecycle/error
-contracts. It reports the architecture selected by the compiler; an x86-64 or universal build
+contracts. Both packed and padded multirow reads are checked. Packed rows are read directly
+into caller memory; padded rows use staging to preserve padding. Invalid inputs and rejected
+context states leave the destination untouched; a Metal exception can partially update a
+packed destination and makes the context unusable. It reports the architecture selected by
+the compiler; an x86-64 or universal build
 is not evidence that the guest runtime works through Rosetta. Device loss, hardware timeout
 and allocation exhaustion are not deliberately induced.
 
-On non-Apple builds, `PB_METAL_ONLY` defaults to `OFF` and the existing Linux build/tests are
-unchanged. Explicitly requesting either Metal option on a non-macOS platform fails rather
+The `macos-metal` CI workflow configures the normal root build and compiles the library and
+smoke executable for ARM64 and x86-64. It does not run a GPU test on a hosted runner. The
+real-device test remains an explicit local check, and its result must be reported separately.
+
+On non-Apple builds the existing Linux build/tests are unchanged. Explicitly requesting
+either Metal option on a non-macOS platform fails rather
 than silently creating unsupported targets. The existing Linux verification suite is preserved
 for the normal GCC and Clang builds.
-
-This native Metal library does not bridge ARM64 and x86-64 guest execution in one process.
-Own-runtime Darwin services, the engine's real render/resource contracts, shader support and
-a whole-code recompilation or separately established guest-execution strategy remain needed
-for gameplay. `MTKView`/`CAMetalLayer` presentation is a future unit, not part of this clear test.

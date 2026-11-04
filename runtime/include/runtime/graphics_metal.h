@@ -20,14 +20,14 @@ typedef enum {
 } rt_metal_status;
 
 /* Small native platform boundary: device, queue and one RGBA8Unorm offscreen texture. Current
-   CPU-readable storage requires a unified-memory Metal device. Dimensions1..4096 are this
+   CPU-readable storage requires a unified-memory Metal device. Dimensions 1..4096 are this
    primitive's own allocation bound, not a claim about device limits. *out must initially be NULL;
    failures leave it unchanged. Optional error buffers receive a bounded nul-terminated message.
    An error buffer must be disjoint from the context/handle, destination and color memory. */
 rt_metal_status rt_metal_offscreen_create(uint32_t width, uint32_t height, rt_metal_offscreen **out,
                                          char *error, size_t error_size);
 
-/* Submit an actual render-pass clear/store and wait for completion, bounded by1..30000ms.
+/* Submit an actual render-pass clear/store and wait for completion, bounded by 1..30000 ms.
    Timeout/device failure poisons the context: destroy it; no readback or reuse is then allowed.
    Operations on one context must be serialized by its owner. This does not present a window. */
 rt_metal_status rt_metal_offscreen_clear(rt_metal_offscreen *context, const uint8_t rgba[4],
@@ -35,7 +35,8 @@ rt_metal_status rt_metal_offscreen_clear(rt_metal_offscreen *context, const uint
 
 /* Read only after a successful clear. Copy width*4 bytes per row, preserving all destination
    row padding. capacity need only cover the final pixel, not trailing padding. Invalid arguments
-   and backend/state errors leave destination unchanged. Valid caller memory is required. */
+   and rejected context states leave destination unchanged. A Metal readback exception poisons
+   the context and may partially write a packed destination. Valid caller memory is required. */
 rt_metal_status rt_metal_offscreen_read(rt_metal_offscreen *context, void *destination,
                                        size_t stride, size_t capacity, char *error, size_t error_size);
 

@@ -1,0 +1,52 @@
+name: macos-metal
+
+on:
+  push:
+    branches-ignore: ['gh-readonly-queue/**']
+    paths:
+      - '.github/workflows/macos-metal.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/Metal.cmake'
+      - 'runtime/graphics_metal.mm'
+      - 'runtime/include/runtime/graphics_metal.h'
+      - 'test/test_metal_offscreen.mm'
+  pull_request:
+    paths:
+      - '.github/workflows/macos-metal.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/Metal.cmake'
+      - 'runtime/graphics_metal.mm'
+      - 'runtime/include/runtime/graphics_metal.h'
+      - 'test/test_metal_offscreen.mm'
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    name: Metal compile (${{ matrix.arch }})
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x86_64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure normal root build with Metal smoke compilation
+        run: >-
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }}
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -DPB_ENABLE_METAL_SMOKE_TEST=ON
+      - name: Check that normal runtime and game targets remain available
+        run: |
+          cmake --build build --target help > targets.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          names = set(re.findall(r'[A-Za-z_][A-Za-z0-9_]*', Path('targets.txt').read_text()))
+          assert {'pbmetal', 'pbboot', 'pbloader', 'bbrt', 'bbgame'} <= names
+          PY
+      - name: Compile Metal library and real-device test
+        run: cmake --build build --target pbmetal test_metal_offscreen --parallel 2
+      # Hosted compilation does not qualify a real Metal device or GPU execution.

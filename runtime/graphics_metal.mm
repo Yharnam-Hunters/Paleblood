@@ -127,17 +127,22 @@ rt_metal_status rt_metal_offscreen_read(rt_metal_offscreen *context, void *desti
         return result(RT_METAL_GPU_FAILED, error, error_size, "failed context has no readable result");
     if (!context->readable)
         return result(RT_METAL_NOT_READY, error, error_size, "clear must complete before readback");
+    // Packed rows can go straight to caller memory. Stage padded rows so only
+    // their pixel bytes are copied and the caller's padding stays untouched.
+    void *readback = stride == row ? destination : context->pixels.get();
     @try {
         @autoreleasepool {
-            [context->texture getBytes:context->pixels.get() bytesPerRow:row
+            [context->texture getBytes:readback bytesPerRow:row
                             fromRegion:MTLRegionMake2D(0, 0, context->width, context->height) mipmapLevel:0];
         }
     } @catch (NSException *exception) {
         context->failed = true;
         return result(RT_METAL_GPU_FAILED, error, error_size, exception.reason.UTF8String);
     }
-    for (size_t y = 0; y < context->height; y++)
-        std::memcpy(static_cast<uint8_t *>(destination) + y * stride, context->pixels.get() + y * row, row);
+    if (stride != row) {
+        for (size_t y = 0; y < context->height; y++)
+            std::memcpy(static_cast<uint8_t *>(destination) + y * stride, context->pixels.get() + y * row, row);
+    }
     return result(RT_METAL_OK, error, error_size, "");
 }
 

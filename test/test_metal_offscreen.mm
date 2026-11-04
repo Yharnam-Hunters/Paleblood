@@ -76,6 +76,23 @@ int main(void)
                 for (size_t x = 0; x < guard; x++) padding &= output[x] == 0xa5 && output[output.size() - 1 - x] == 0xa5;
                 check(pixels, "every RGBA byte equals the requested non-sRGB clear value");
                 check(padding, "row padding, final padding and surrounding canaries unchanged");
+                std::vector<uint8_t> packed(guard + row * height + guard, 0xa5);
+                const auto packed_poison = packed;
+                check(rt_metal_offscreen_read(context, packed.data() + guard, row, row * height - 1,
+                                               error, sizeof error) == RT_METAL_INVALID_ARGUMENT && packed == packed_poison,
+                      "short packed capacity leaves all bytes untouched");
+                const rt_metal_status packed_read = rt_metal_offscreen_read(
+                    context, packed.data() + guard, row, row * height, error, sizeof error);
+                check(packed_read == RT_METAL_OK, "packed multirow texture reads directly to caller storage");
+                bool packed_pixels = true, packed_guards = true;
+                for (size_t pixel = 0; pixel < width * height; ++pixel) {
+                    packed_pixels &= std::memcmp(packed.data() + guard + pixel * 4, color.data(), 4) == 0;
+                    pixels_checked++;
+                }
+                for (size_t x = 0; x < guard; ++x)
+                    packed_guards &= packed[x] == 0xa5 && packed[packed.size() - 1 - x] == 0xa5;
+                check(packed_pixels, "all packed RGBA pixels match the completed clear");
+                check(packed_guards, "packed exact-capacity read preserves surrounding canaries");
             }
             rt_metal_offscreen_destroy(&context);
             check(!context, "destroy clears owned handle");

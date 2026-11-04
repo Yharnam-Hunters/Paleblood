@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
-# Included only by the macOS PB_METAL_ONLY branch. No guest/runtime targets are added here.
+# Add Metal to macOS builds; PB_METAL_ONLY controls the caller's other targets.
 set(CMAKE_OBJCXX_STANDARD 20)
 set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
 set(CMAKE_OBJCXX_EXTENSIONS OFF)
