@@ -59,7 +59,26 @@ def nid(name):
     return base64.b64encode(digest).decode().rstrip('=').replace('/', '-')
 
 
-def boot_image():
+def stacked_callback_calls(start, targets):
+    """Authored SysV calls at changing stack depths, with a pointer and scalar overflow arg.
+
+    RDI is a fixture buffer retained in R12. Each call has a new seventh pointer, eighth
+    integer and XMM0 bit pattern. Only RDI/ESI and those explicit overflow/float inputs are
+    observed; the other caller-saved argument registers are deliberately unspecified here.
+    """
+    code = bytearray(bytes.fromhex('4154 4989fc'))  # push r12; mov r12,rdi
+    float_bits = (0x3f800000, 0xc0200000, 0x7fc12345)
+    for i, target in enumerate(targets):
+        code += bytes.fromhex('4883ec10 498d4424') + bytes([8 + 12 * i])
+        code += bytes.fromhex('48890424 48c7442408') + struct.pack('<I', 0x1111 * (i + 1))
+        code += bytes.fromhex('4c89e7 be') + struct.pack('<I', 0x11 + i)
+        code += b'\xb8' + struct.pack('<I', float_bits[i]) + bytes.fromhex('660f6ec0')
+        code += b'\xe8' + struct.pack('<i', target - (start + len(code) + 5))
+    code += bytes.fromhex('4883c4') + bytes([16 * len(targets)]) + bytes.fromhex('415c c3')
+    return bytes(code)
+
+
+def boot_image(stacked_imports=False):
     """The synthetic executable: code (with the stack-argument function at 0x800) and a data page
     whose first word is the import's slot and whose word at +0x10 points at +0x8."""
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -132,12 +151,39 @@ def boot_image():
     code[0xc40:0xc45] = bytes.fromhex('8d447707 c3')                 # lea eax, [rdi+rsi*2+7]
     # A real dereference through the computed address must still be checked.
     code[0xc50:0xc58] = bytes.fromhex('488d4708 0fb600 c3')
+    # Reserve entries after resizing writes, before the independent callback fixtures.
+    # These synthetic functions preserve RAX, replace AL, and add stack words.
+    code[0xbb0:0xbb1] = bytes.fromhex('c3')
+    code[0xbc0:0xbc3] = bytes.fromhex('b0a5c3')
+    code[0xbd0:0xbdb] = bytes.fromhex('48034424084803442410c3')
     code[0xc60:0xc68] = bytes.fromhex('8d047509000000 c3')         # lea eax, [rsi*2+9], no base
+    # Tail calls preserve the fixture's six GP registers, overflow slots and XMM0 exactly.
+    # A second import is enabled only for the new cases; existing images keep their layout.
+    code[0xc80:0xc86] = bytes.fromhex('ff25') + struct.pack('<i', 0x1000 - 0xc86)
+    code[0xca0:0xca5] = b'\xe9' + struct.pack('<i', 0xef0 - 0xca5)
+    code[0xe10:0xe16] = bytes.fromhex('ff25') + struct.pack('<i', 0x1020 - 0xe16)
+    # Three calls reach the same callback at distinct entry RSPs, then another variant
+    # alternates between adjacent wrapper slots to catch overlapping native save areas.
+    for start, targets, limit in (
+            (0xcc0, (0xb70,) * 3, 0xd60),
+            (0xd60, (0xef0,) * 3, 0xe10),
+            (0xe20, (0xb70, 0xe10, 0xb70), 0xef0),
+            (0xf20, (0xef0, 0xf00, 0xef0), 0x1000)):
+        calls = stacked_callback_calls(start, targets)
+        assert start + len(calls) <= limit
+        code[start:start + len(calls)] = calls
+    code[0xef0] = code[0xf00] = 0xc3  # authored custom-stub entries; each has 16 bytes of room
+    data = DATA + (bytes(8) if stacked_imports else b'')
+    symbols = [(nid('testImport') + '#A#A', ps4elf.STT_FUNC, None)]
+    jump_slots = [(0x1000, ps4elf.R_X86_64_JUMP_SLOT, 1, 0)]
+    if stacked_imports:
+        symbols.append((nid('secondImport') + '#A#A', ps4elf.STT_FUNC, None))
+        jump_slots.append((0x1020, ps4elf.R_X86_64_JUMP_SLOT, 2, 0))
     return ps4elf.build(
-        segments=[(0, bytes(code), 0x1000, 5), (0x1000, DATA, 0x20, 6)],
-        symbols=[(nid('testImport') + '#A#A', ps4elf.STT_FUNC, None)],
+        segments=[(0, bytes(code), 0x1000, 5), (0x1000, data, len(data), 6)],
+        symbols=symbols,
         relocations=[(0x1010, ps4elf.R_X86_64_RELATIVE, 0, 0x1008)],
-        jump_slots=[(0x1000, ps4elf.R_X86_64_JUMP_SLOT, 1, 0)])
+        jump_slots=jump_slots)
 
 
 CASE = {
@@ -203,6 +249,47 @@ class Harness(unittest.TestCase):
             return self.side_case(path, address=address)
         finally:
             self.trace_instructions = False
+
+    def test_entry_rax_seed_preserves_full_width_and_partial_byte_results(self):
+        for seed in (0, 1, 0x123456789abcde00, 0xffffffffffffffff):
+            for address, expected in (('0x00400bb0', seed),
+                                      ('0x00400bc0', (seed & ~0xff) | 0xa5)):
+                with self.subTest(seed=hex(seed), address=address):
+                    case = {'schema': 1, 'address': address, 'id': 'entry-rax',
+                            'returns': 'i64', 'args': {'rax': hex(seed)},
+                            'buffers': {}, 'memory': [], 'imports': [], 'stubs': []}
+                    Path(self.case).write_text(json.dumps(case))
+                    result = self.side_case(self.case, address=address)
+                    self.assertEqual(result['ret']['rax'], hex(expected))
+                    self.assertTrue(all(value == 'kept' for value in result['preserved'].values()))
+
+    def test_entry_rax_seed_survives_odd_and_even_stack_argument_counts(self):
+        seed = 0x1234567800000001
+        for stack in ([7], [7, 11], [7, 11, 19]):
+            with self.subTest(stack=stack):
+                case = {'schema': 1, 'address': '0x00400bd0', 'id': 'rax-stack',
+                        'returns': 'i64', 'args': {'rax': hex(seed)}, 'stack': stack,
+                        'buffers': {}, 'memory': [], 'imports': [], 'stubs': []}
+                Path(self.case).write_text(json.dumps(case))
+                result = self.side_case(self.case, address=case['address'])
+                self.assertEqual(result['ret']['rax'], hex(seed + sum(stack[:2])))
+                self.assertTrue(all(value == 'kept' for value in result['preserved'].values()))
+
+    def test_omitted_entry_rax_stays_zero_across_batched_cases(self):
+        directory = Path(self.d) / 'rax-batch'
+        directory.mkdir()
+        for index, args in enumerate(({'rax': '0x123456789abcdef0'}, {})):
+            case = {'schema': 1, 'address': '0x00400bb0', 'id': str(index),
+                    'returns': 'i64', 'args': args, 'buffers': {}, 'memory': [],
+                    'imports': [], 'stubs': []}
+            (directory / (str(index) + '.json')).write_text(json.dumps(case))
+        cmd = [sys.executable, os.path.join(TOOLS, 'harness.py'), '--elf', self.boot,
+               '--cases', str(directory), '--address', '0x00400bb0']
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        cases = json.loads(result.stdout)
+        self.assertEqual(cases['0']['ret']['rax'], '0x123456789abcdef0')
+        self.assertEqual(cases['1']['ret']['rax'], '0x0')
 
     def test_instruction_trace_records_unaligned_read_and_same_value_write(self):
         case = {'schema': 1, 'address': '0x00400950', 'id': 'read-write', 'returns': 'void',
@@ -814,6 +901,269 @@ class Harness(unittest.TestCase):
         self.assertEqual(r['ret'], {'rax': '0x5'})
         self.assertEqual(r['calls'], [{'call': '0x00400000', 'args': []}])
         self.assertEqual(r['writes'], [])
+
+    def _stacked_script_case(self, kind, entries, address=None, stack=(), args=None):
+        """Use authored callbacks and writable canary storage, never game executable bytes."""
+        Path(self.boot).write_bytes(boot_image(stacked_imports=True))
+        fixture = {
+            'schema': 1, 'address': address or ('0x00400c80' if kind == 'imports' else '0x00400ca0'),
+            'id': 'stacked-script', 'returns': 'i64',
+            'args': dict(zip(('rdi', 'rsi', 'rdx', 'rcx', 'r8', 'r9'),
+                             (hex(i) for i in range(1, 7)))),
+            'stack': list(stack),
+            'buffers': {'out': {'size': 48, 'bytes': 'a5' * 48}},
+            'imports': [], 'stubs': [],
+        }
+        fixture['args'].update(args or {})
+        key, value = ('name', 'testImport') if kind == 'imports' else ('address', '0x00400ef0')
+        fixture[kind] = [{key: value, **entry} for entry in entries]
+        return fixture
+
+    def _run_stacked_script_case(self, fixture):
+        Path(self.case).write_text(json.dumps(fixture))
+        result = self.side_case(self.case, address=fixture['address'])
+        self.assertNotIn('errors', result, result)
+        self.assertNotIn('fault', result, result)
+        self.assertTrue(all(value == 'kept' for value in result['preserved'].values()), result)
+        return result
+
+    def test_width_limited_callback_inputs_ignore_padding_but_detect_low_word_changes(self):
+        results = []
+        for high, low in ((0xaaaaaaaa, 0x12345678), (0x55555555, 0x12345678),
+                          (0x55555555, 0x12345679)):
+            case = {'schema': 1, 'address': '0x00400800', 'id': 'u32-padding',
+                    'returns': 'i64', 'args': {'rdi': 0xfedcba9889abcdef},
+                    'stack': [(high << 32) | low], 'buffers': {}, 'imports': [],
+                    'stubs': [{'address': '0x00400800', 'argc': 0, 'ret': 0,
+                               'argu32': [0, 6]}]}
+            Path(self.case).write_text(json.dumps(case))
+            result = self.side_case(self.case, address=case['address'])
+            self.assertEqual(result['calls'][0]['args'], [])
+            self.assertEqual(result['calls'][0]['argu32'], ['0x89abcdef', hex(low)])
+            results.append({'schema': 1, 'address': case['address'], 'cases': [result]})
+        self.assertEqual(verify.compare(results[0], results[1])['failed'], 0)
+        self.assertEqual(verify.compare(results[0], results[2])['failed'], 1)
+
+    def test_byte_callback_inputs_ignore_padding_but_detect_low_byte_changes(self):
+        results = []
+        for high, low in ((0xaaaaaaaaaaaaaa, 0x78), (0x55555555555555, 0x78),
+                          (0x55555555555555, 0x79)):
+            case = {'schema': 1, 'address': '0x00400800', 'id': 'byte-padding',
+                    'returns': 'i64', 'args': {'rdi': 0xfedcba9889abcdef},
+                    'stack': [0, 0, 0, (high << 8) | low], 'buffers': {}, 'imports': [],
+                    'stubs': [{'address': '0x00400800', 'argc': 0, 'ret': 0,
+                               'argu8': [0, 9]}]}
+            Path(self.case).write_text(json.dumps(case))
+            result = self.side_case(self.case, address=case['address'])
+            self.assertEqual(result['calls'][0]['args'], [])
+            self.assertEqual(result['calls'][0]['argu8'], ['0xef', hex(low)])
+            results.append({'schema': 1, 'address': case['address'], 'cases': [result]})
+        self.assertEqual(verify.compare(results[0], results[1])['failed'], 0)
+        self.assertEqual(verify.compare(results[0], results[2])['failed'], 1)
+
+    def test_import_width_limited_inputs_use_the_same_recording_contract(self):
+        case = json.loads(json.dumps(CASE))
+        case['imports'][0].update({'argc': 0, 'argu32': [0], 'argu8': [0]})
+        Path(self.case).write_text(json.dumps(case))
+        result = self.side()
+        self.assertEqual(result['calls'][0]['args'], [])
+        self.assertEqual(result['calls'][0]['argu32'], ['0x7'])
+        self.assertEqual(result['calls'][0]['argu8'], ['0x7'])
+
+    def test_import_can_return_a_declared_buffer_pointer(self):
+        case = {'schema': 1, 'address': '0x00400c80', 'id': 'import-buffer-return',
+                'returns': 'i64', 'args': {},
+                'buffers': {'payload': {'size': 16, 'bytes': 'a5' * 16}},
+                'memory': [], 'stubs': [],
+                'imports': [{'name': 'testImport', 'argc': 0, 'ret': 'buf:payload+0x3'}]}
+        Path(self.case).write_text(json.dumps(case))
+        result = self.side_case(self.case, address=case['address'])
+        self.assertEqual(result['ret'], {'rax': 'buf:payload+0x3'})
+        self.assertEqual(result.get('errors', []), [])
+        self.assertEqual(result['writes'], [])
+
+    def test_zero_shape_physics_fixture_references_only_declared_buffers(self):
+        import runpy
+        fixtures = runpy.run_path(os.path.join(ROOT, 'game', 'physics',
+                                              'instance_construct_cases.py'))['CASES']
+        case = next(item for item in fixtures if item['id'] == 'no_shapes')
+        for script in case['stubs']:
+            for write in script.get('writes', []):
+                if 'pointer' in write:
+                    self.assertIn(write['pointer'].split('+', 1)[0], case['buffers'])
+
+    def test_scripted_callbacks_capture_seventh_pointer_with_float_and_writes(self):
+        for kind in ('imports', 'stubs'):
+            with self.subTest(kind=kind):
+                fixture = self._stacked_script_case(kind, [{
+                    'argc': 7, 'argf32': [0], 'argmem': [{'arg': 6, 'size': 4}],
+                    'writes': [{'arg': 6, 'bytes': 'deadbeef'}], 'ret': '0x91',
+                }], stack=['buf:out+0x8'], args={'xmm0': '4523c17f'})
+                result = self._run_stacked_script_case(fixture)
+                key, value = ('import', 'testImport') if kind == 'imports' else ('call', '0x00400ef0')
+                self.assertEqual(result['calls'], [{
+                    key: value, 'args': [hex(i) for i in range(1, 7)] + ['buf:out+0x8'],
+                    'argf32': ['4523c17f'], 'argmem': ['a5' * 4],
+                }])
+                self.assertEqual(result['ret'], {'rax': '0x91'})
+                self.assertEqual(result['writes'], [{'addr': 'buf:out+0x8', 'bytes': 'deadbeef'}])
+                accesses = [(event['access'], event['address'], event['size'])
+                            for event in result['access_trace'] if event['region'] == 'buf:out+0x0']
+                self.assertEqual(accesses, [('read', 'buf:out+0x8', 4), ('write', 'buf:out+0x8', 4)])
+
+    def test_scripted_callbacks_capture_all_sixteen_gp_argument_slots(self):
+        overflow = [hex(0x7000000000000000 + i) for i in range(10)]
+        for kind in ('imports', 'stubs'):
+            with self.subTest(kind=kind):
+                fixture = self._stacked_script_case(kind, [{'argc': 16, 'ret': '0x91'}],
+                                                    stack=overflow)
+                result = self._run_stacked_script_case(fixture)
+                self.assertEqual(result['calls'][0]['args'],
+                                 [hex(i) for i in range(1, 7)] + overflow)
+                self.assertEqual(result['ret'], {'rax': '0x91'})
+                self.assertEqual(result['writes'], [])
+
+    def test_scripted_callbacks_infer_high_stack_slots_from_each_reference_kind(self):
+        overflow = [hex(0x7000000000000000 + i) for i in range(9)] + ['buf:out+0x8']
+        for kind in ('imports', 'stubs'):
+            for reference in ('argi', 'argmem', 'writes'):
+                with self.subTest(kind=kind, reference=reference):
+                    operation = {'argc': 0, 'ret': '0x91'}
+                    if reference == 'argi':
+                        operation['argi'] = [15, 7, 0]
+                    elif reference == 'argmem':
+                        operation['argmem'] = [{'arg': 15, 'size': 4}]
+                    else:
+                        operation['writes'] = [{'arg': 15, 'bytes': 'deadbeef'}]
+                    fixture = self._stacked_script_case(kind, [operation], stack=overflow)
+                    result = self._run_stacked_script_case(fixture)
+                    record, = result['calls']
+                    self.assertEqual(record['args'], ['buf:out+0x8', overflow[1], '0x1']
+                                     if reference == 'argi' else [])
+                    if reference == 'argmem':
+                        self.assertEqual(record['argmem'], ['a5' * 4])
+                    self.assertEqual(result['writes'], [{'addr': 'buf:out+0x8', 'bytes': 'deadbeef'}]
+                                     if reference == 'writes' else [])
+
+    def _assert_repeated_stacked_callbacks(self, kind, adjacent=False):
+        """Exercise fresh RSP/XMM saves on every call, including the next native wrapper slot."""
+        key = 'name' if kind == 'imports' else 'address'
+        first, second = ('testImport', 'secondImport') if kind == 'imports' else ('0x00400ef0', '0x00400f00')
+        targets = (first, second, first) if adjacent else (first,) * 3
+        payloads = ('11223344', '55667788', '99aabbcc')
+        operations = [{
+            key: target, 'argc': 8, 'argi': [0, 1, 6, 7], 'argf32': [0],
+            'argmem': [{'arg': 6, 'size': 4}], 'writes': [{'arg': 6, 'bytes': payloads[i]}],
+            'ret': hex(0x91 + i),
+        } for i, target in enumerate(targets)]
+        addresses = {'imports': '0x00400e20' if adjacent else '0x00400cc0',
+                     'stubs': '0x00400f20' if adjacent else '0x00400d60'}
+        fixture = self._stacked_script_case(kind, operations, address=addresses[kind],
+                                            args={'rdi': 'buf:out'})
+        result = self._run_stacked_script_case(fixture)
+        record_key = 'import' if kind == 'imports' else 'call'
+        floats = ('0000803f', '000020c0', '4523c17f')
+        self.assertEqual(result['calls'], [{
+            record_key: target,
+            'args': ['buf:out+0x0', hex(0x11 + i), f'buf:out+0x{8 + 12 * i:x}', hex(0x1111 * (i + 1))],
+            'argf32': [floats[i]], 'argmem': ['a5' * 4],
+        } for i, target in enumerate(targets)])
+        self.assertEqual(result['writes'], [{'addr': f'buf:out+0x{8 + 12 * i:x}', 'bytes': payload}
+                                            for i, payload in enumerate(payloads)])
+        self.assertEqual(result['ret'], {'rax': '0x93'})
+
+    def test_scripted_callbacks_refresh_stack_and_float_on_every_repeat(self):
+        for kind in ('imports', 'stubs'):
+            with self.subTest(kind=kind):
+                self._assert_repeated_stacked_callbacks(kind)
+
+    def test_scripted_callbacks_keep_adjacent_native_save_slots_separate(self):
+        for kind in ('imports', 'stubs'):
+            with self.subTest(kind=kind):
+                self._assert_repeated_stacked_callbacks(kind, adjacent=True)
+
+    def test_import_series_fallback_refreshes_stacked_pointer_and_float(self):
+        fixture = self._stacked_script_case('imports', [
+            {'argc': 1, 'ret': 0, 'series': {'arg': 0, 'format': 'timeval_us',
+                                            'values': [1_000_001, 2_000_002]}},
+            {'argc': 0, 'argi': [6, 7], 'argf32': [0], 'argmem': [{'arg': 6, 'size': 4}],
+             'writes': [{'arg': 6, 'bytes': 'deadbeef'}], 'ret': '0x93'},
+        ], address='0x00400cc0', args={'rdi': 'buf:out'})
+        result = self._run_stacked_script_case(fixture)
+        self.assertEqual(result['calls'][-1], {
+            'import': 'testImport', 'args': ['buf:out+0x20', '0x3333'],
+            'argf32': ['4523c17f'], 'argmem': ['a5' * 4],
+        })
+        # A legacy series may still be compressed; either representation must account for
+        # exactly two calls before the stack-aware entry and refresh its wrapper on fallback.
+        self.assertEqual(sum(record.get('count', 1) for record in result['calls'][:-1]), 2)
+        self.assertTrue(all(record['import'] == 'testImport' for record in result['calls']))
+        self.assertIn({'addr': 'buf:out+0x20', 'bytes': 'deadbeef'}, result['writes'])
+        self.assertEqual(result['ret'], {'rax': '0x93'})
+
+    def test_stack_aware_import_series_observes_each_overflow_pointer(self):
+        fixture = self._stacked_script_case('imports', [
+            {'argc': 8, 'argi': [6, 7], 'argf32': [0], 'ret': 0,
+             'series': {'arg': 6, 'format': 'timeval_us', 'values': [1_000_001, 2_000_002]}},
+            {'argc': 8, 'argi': [6, 7], 'argf32': [0], 'ret': '0x93'},
+        ], address='0x00400cc0', args={'rdi': 'buf:out'})
+        result = self._run_stacked_script_case(fixture)
+        self.assertEqual(result['calls'], [{
+            'import': 'testImport', 'args': [f'buf:out+0x{8 + 12 * i:x}', hex(0x1111 * (i + 1))],
+            'argf32': [float_bits],
+        } for i, float_bits in enumerate(('0000803f', '000020c0', '4523c17f'))])
+        writes = [(event['address'], event['size']) for event in result['access_trace']
+                  if event['source'] == 'import_series' and event['access'] == 'write']
+        self.assertEqual(writes, [('buf:out+0x8', 16), ('buf:out+0x14', 16)])
+
+    def test_six_register_callbacks_do_not_read_unrequested_stack_slots(self):
+        for kind in ('imports', 'stubs'):
+            with self.subTest(kind=kind):
+                fixture = self._stacked_script_case(kind, [{'argc': 6, 'ret': '0x91'}])
+                result = self._run_stacked_script_case(fixture)
+                self.assertEqual(result['calls'][0]['args'], [hex(i) for i in range(1, 7)])
+                self.assertEqual(result['access_trace'], [])
+
+    def test_scripted_callbacks_reject_invalid_argument_counts_and_indices_before_execution(self):
+        malformed = (
+            ('argc', -1), ('argc', 17), ('argc', True), ('argc', 7.5), ('argc', '7'),
+            ('argi', [-1]), ('argi', [16]), ('argi', [False]), ('argi', [7.0]),
+            ('argmem', [{'arg': -1, 'size': 1}]), ('argmem', [{'arg': 16, 'size': 1}]),
+            ('argmem', [{'arg': '6', 'size': 1}]),
+            ('writes', [{'arg': -1, 'bytes': '00'}]), ('writes', [{'arg': 16, 'bytes': '00'}]),
+            ('writes', [{'arg': True, 'bytes': '00'}]),
+            ('argf32', [-1]), ('argf32', [2]), ('argf32', [False]),
+        )
+        for kind in ('imports', 'stubs'):
+            for field, value in malformed:
+                with self.subTest(kind=kind, field=field, value=value):
+                    # This authored function never calls a script. Rejection must happen in
+                    # preflight, rather than letting malformed but unconsumed entries escape.
+                    fixture = self._stacked_script_case(kind, [{field: value, 'ret': 0}],
+                                                        address='0x00400900')
+                    Path(self.case).write_text(json.dumps(fixture))
+                    result = subprocess.run([
+                        sys.executable, os.path.join(TOOLS, 'harness.py'), '--elf', self.boot,
+                        '--case', self.case, '--address', fixture['address'],
+                    ], capture_output=True, text=True, timeout=30)
+                    self.assertEqual(result.returncode, 3, result.stderr or result.stdout)
+                    self.assertIn(field, result.stderr)
+                    self.assertNotIn('Exception ignored on calling ctypes callback', result.stderr)
+
+    def test_stacked_pointer_scripts_keep_declared_buffer_bounds(self):
+        for kind in ('imports', 'stubs'):
+            for operation in ('argmem', 'writes'):
+                with self.subTest(kind=kind, operation=operation):
+                    entry = {'argc': 7, 'ret': 0, operation: [
+                        {'arg': 6, 'size': 1} if operation == 'argmem' else {'arg': 6, 'bytes': '00'},
+                    ]}
+                    fixture = self._stacked_script_case(kind, [entry], stack=['buf:out+0x30'])
+                    Path(self.case).write_text(json.dumps(fixture))
+                    result = self.side_case(self.case, address=fixture['address'])
+                    self.assertTrue(result.get('errors'), result)
+                    self.assertTrue(any('outside declared' in error for error in result['errors']), result)
+                    self.assertEqual(result['writes'], [])
+                    self.assertEqual(result['redzone_writes'], [])
 
     def test_series_entry_writes_one_value_per_call(self):
         # The function reads the first 8 bytes the import writes: the timeval's seconds.
