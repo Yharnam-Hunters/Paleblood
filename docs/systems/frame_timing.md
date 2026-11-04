@@ -64,7 +64,8 @@ Two other clock functions are easy to mistake for part of the limiter:
   frame-rate patches overwrite it and its neighbours with their own code (a code cave), so it is
   not replaced.
 - The millisecond clock `frame_timing_get_monotonic_ms` (`0x0111a7f0`), its microsecond twin
-  `0x0111a760` and the sleep wrapper `0x0111a880` (now replaced, see below) are not on the limiter's path. They look like
+  `0x0111a760` (replaced too, edge-verified, by [@evill33t](https://github.com/evill33t) in
+  [#103](https://github.com/Yharnam-Hunters/Paleblood/pull/103)) and the sleep wrapper `0x0111a880` (now replaced, see below) are not on the limiter's path. They look like
   the timing layer of a separate subsystem.
 
 <details>
@@ -204,6 +205,7 @@ piece of the game's own per-frame work, the next layer to map.
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
 | `0x004632d0` | 67 | `frame_timing_get_time_us` | original | dead in the stock game: only unwind entries refer to it; the community frame-rate patches overwrite it as a code cave (gettimeofday in microseconds) |
+| `0x0111a760` | 131 | `frame_timing_get_monotonic_us` | edge-verified | Microseconds since the shared monotonic clock base; unsigned 32-bit seconds and nanoseconds truncate and wrap; clock failures preserve output and state |
 | `0x0111a7f0` | 131 | `frame_timing_get_monotonic_ms` | verified | Milliseconds since its first call from CLOCK_MONOTONIC; keeps the first seconds in the clock state object |
 | `0x0111a880` | 19 | `frame_timing_sleep_ms` | edge-verified | Convert milliseconds to microseconds with uint32 wrapping; always call the kernel and discard its result |
 | `0x01388c60` | 16 | `frame_timing_task_run_all_01388c60` | verified | task manager: run the tasks of every group (0x01388c70 with -1) |
