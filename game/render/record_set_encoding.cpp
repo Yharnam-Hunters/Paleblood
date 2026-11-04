@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Update the encoding fields of a record. The constructor checks both extractors
-// before calling this function. As in the original, other callers must supply an
-// accepted encoding: rejected initial extractions leave local results indeterminate.
+// Update encoding fields after the constructor has checked both extractors. Other
+// callers must also provide an accepted encoding: the original leaves rejected
+// extraction results indeterminate. Zero initialization avoids undefined C++ reads.
 #include "record_encoding.h"
 
 extern "C" void bb_render_record_set_encoding(render::RecordEncodingPrefix *record, uint32_t encoding)
@@ -20,11 +20,11 @@ extern "C" void bb_render_record_set_encoding(render::RecordEncodingPrefix *reco
     constexpr uint32_t grouped_flag = 0x8000, special_flag = 0x10000;
     constexpr uint32_t inverted_group_flag = 0x40000;
 
-    uint32_t category;
+    uint32_t category = 0;
     render::extract_record_encoding_category(&encoding, &category);
     const bool grouped = category <= category_group_max && ((category_group_mask >> category) & 1) != 0;
     const bool special = (category & category_pair_mask) == special_category_pair;
-    uint32_t component;
+    uint32_t component = 0;
     render::extract_record_encoding_components(&encoding, &component);
 
     const uint32_t mode = encoding & encoding_byte_mask;

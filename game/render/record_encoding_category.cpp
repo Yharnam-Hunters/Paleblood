@@ -5,13 +5,16 @@
 #include <cstring>
 
 namespace {
-constexpr uint32_t category_code_4 = 4;
-constexpr uint32_t category_code_5 = 5;
-constexpr uint32_t category_code_7 = 7;
-constexpr uint32_t category_code_6 = 6;
-constexpr uint32_t category_code_9 = 9;
+constexpr uint32_t category_nibble_count = 16;
+constexpr uint32_t invalid_category = 0xffffffff;
+// Index by the packed category nibble. Nibble 9 maps to category 6;
+// all unsupported nibbles reject without publishing an output.
+constexpr uint32_t category_by_nibble[category_nibble_count] = {
+    0, 1, invalid_category, invalid_category, 4, 5, invalid_category, 7,
+    invalid_category, 6, invalid_category, invalid_category,
+    invalid_category, invalid_category, invalid_category, invalid_category,
+};
 }  // namespace
-
 
 extern "C" uint8_t bb_render_record_encoding_category(const uint32_t *encoding, uint32_t *output)
 {
@@ -19,16 +22,8 @@ extern "C" uint8_t bb_render_record_encoding_category(const uint32_t *encoding, 
     constexpr uint32_t category_mask = 0xf;
     uint32_t packed;
     std::memcpy(&packed, encoding, sizeof(packed));
-    uint32_t category;
-    switch ((packed >> category_shift) & category_mask) {
-    case 0: category = 0; break;
-    case 1: category = 1; break;
-    case category_code_4: category = category_code_4; break;
-    case category_code_5: category = category_code_5; break;
-    case category_code_7: category = category_code_7; break;
-    case category_code_9: category = category_code_6; break;
-    default: return 0;
-    }
+    const uint32_t category = category_by_nibble[(packed >> category_shift) & category_mask];
+    if (category == invalid_category) return 0;
     if (output != nullptr) std::memcpy(output, &category, sizeof(category));
     return 1;
 }

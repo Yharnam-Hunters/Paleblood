@@ -7,11 +7,6 @@
 
 #include "record_encoding.h"
 
-namespace {
-constexpr uint32_t component_count_4 = 4;
-}  // namespace
-
-
 extern "C" uint8_t bb_render_record_encoding_components(const uint32_t *encoding, uint32_t *output)
 {
     constexpr uint32_t encoding_mask = 0xff;
@@ -29,7 +24,8 @@ extern "C" uint8_t bb_render_record_encoding_components(const uint32_t *encoding
     const uint32_t index = packed & encoding_mask;
     const bool has_table_entry = index < render::record_encoding_metadata_entries;
     const uint32_t rule = has_table_entry ? render::record_encoding_component_rules.get()[index] : 0;
-    std::array<bool, component_count_4> matches;
+    constexpr uint32_t arrangement_count = 4;
+    std::array<bool, arrangement_count> matches;
     if (rule == single_rule) {
         matches = {a == first_code, b == first_code, c == first_code, d == first_code};
     } else if (rule == pair_rule) {
