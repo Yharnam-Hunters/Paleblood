@@ -74,3 +74,9 @@ add_executable(test_compiled_sdk test/test_compiled_sdk.c
 target_include_directories(test_compiled_sdk PRIVATE runtime/include)
 add_test(NAME compiled_sdk COMMAND test_compiled_sdk)
 set_tests_properties(compiled_sdk PROPERTIES TIMEOUT 10)
+
+# Matching-key output cleanup, with a scripted lower-helper contract.
+add_executable(test_video_out_output_key test/test_video_out_output_key.c
+               runtime/syslib/video_out_output_key.c)
+target_include_directories(test_video_out_output_key PRIVATE runtime/include)
+add_test(NAME video_out_output_key COMMAND test_video_out_output_key)
