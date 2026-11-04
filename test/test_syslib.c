@@ -597,6 +597,11 @@ typedef int32_t (*f_http_epoll)(int32_t, void **);
 static f_http_epoll http_epoll_fn;
 static void http_epoll_unknown(void) { void *h = NULL; http_epoll_fn(999, &h); }
 static void http_epoll_no_slot(void) { http_epoll_fn(http_test_context, NULL); }
+typedef int32_t (*f_http_wait)(void *, void *, int32_t, int64_t);
+static f_http_wait http_wait_fn;
+static void *http_wait_handle;
+static void http_wait_unknown(void) { static unsigned char events[24]; int marker; http_wait_fn(&marker, events, 1, 0); }
+static void http_wait_timeout(void) { static unsigned char events[24]; http_wait_fn(http_wait_handle, events, 1, 1000); }
 typedef int32_t (*f_http_header)(int32_t, const char *, const char *, int32_t);
 static f_http_header http_header_fn;
 static void http_header_unknown(void) { http_header_fn(999, "Accept", "*/*", 0); }
@@ -1700,6 +1705,17 @@ int main(void)
                     CHECK(http_epoll_fn(http, &h2) == 0 && h2 && h2 != h1);
                     CHECK(died_in_fatal(http_epoll_unknown));
                     CHECK(died_in_fatal(http_epoll_no_slot));
+                    /* sceHttpWaitRequest: offline, a poll of a handle the runtime made finds no events. */
+                    http_wait_fn = (f_http_wait)fn("libSceHttp", "sceHttpWaitRequest");
+                    CHECK(http_wait_fn != NULL);
+                    if (http_wait_fn) {
+                        static unsigned char events[128][24];
+                        memset(events, 0xa5, sizeof events);
+                        http_wait_handle = h1;
+                        CHECK(http_wait_fn(h1, events, 128, 0) == 0 && events[0][0] == 0xa5);
+                        CHECK(died_in_fatal(http_wait_unknown));
+                        CHECK(died_in_fatal(http_wait_timeout));
+                    }
                 }
                 http_header_fn = (f_http_header)fn("libSceHttp", "sceHttpAddRequestHeader");
                 if (http_header_fn) {
