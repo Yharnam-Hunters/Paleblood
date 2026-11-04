@@ -24,6 +24,30 @@ static uint64_t tessellation_factor_ring_base(void)
 
 RT_SYSLIB("libSceGnmDriver", sceGnmGetTheTessellationFactorRingBufferBaseAddress, tessellation_factor_ring_base);
 
+/* sceGnmValidateCommandBuffers(count, buffers, sizes, constant buffers, constant sizes): asks the GPU
+   driver's debug validation layer to check command buffers. Paleblood has no such layer: the GPU is
+   not emulated, and the command buffers are not what it draws from. The executable's start-up probe
+   (0x02abb8e0, called from the graphics set-up at 0x0256b0f0) validates a tiny 16-byte buffer and
+   treats exactly one result, 0x80d13fff, as "validation is not available"; the set-up then keeps
+   the engine's validation option off (it stores the probe's answer AND its configuration flag). The
+   runtime gives that answer for every call, which is true of Paleblood and is the value the game's
+   own code names; no buffer is read or written. That a retail console answers the same is an
+   inference (the probe exists so retail builds run without validation), not an observation. */
+#define GNM_VALIDATION_NOT_AVAILABLE 0x80d13fff
+
+static int32_t validate_command_buffers(uint32_t count, void **buffers, uint32_t *sizes,
+                                        void **constant_buffers, uint32_t *constant_sizes)
+{
+    (void)count;
+    (void)buffers;
+    (void)sizes;
+    (void)constant_buffers;
+    (void)constant_sizes;
+    return (int32_t)GNM_VALIDATION_NOT_AVAILABLE;
+}
+
+RT_SYSLIB("libSceGnmDriver", sceGnmValidateCommandBuffers, validate_command_buffers);
+
 /* sceGnmMapComputeQueue(pipe, queue, ring, ring size in dwords, read pointer): OpenOrbis' GnmDriver.h
    only names it, so the shape comes from the engine's wrapper (0x01489a80, called from its compute
    queue setup at 0x0148c7b0). The wrapper passes the pipe and queue from the queue object, the ring
