@@ -67,6 +67,7 @@ address,replacement,system,returns
 0x020128f0,bb_frame_timing_until_idle_020128f0,frame_timing,i32
 0x02012a60,bb_frame_timing_request_7_02012a60,frame_timing,i32
 0x02012bf0,bb_frame_timing_until_idle_02012bf0,frame_timing,i32
+0x0217ffb0,bb_engine_initialize_static_wide_string_0217ffb0,engine,void
 0x0222bc10,bb_ai_hk_frame_update_0222bc10,ai,void
 0x02377bd0,bb_render_frame_update_02377bd0,render,void
 0x02418d20,bb_frame_timing_frame_step,frame_timing,i8
@@ -76,3 +77,4 @@ address,replacement,system,returns
 0x0247eb80,bb_render_read_present_pool_counter,render,i64
 0x02483e80,bb_kernel_condition_wait,kernel,i32
 0x025b2fb0,bb_render_swap_chain_present,render,void
+0x02a44140,bb_engine_wide_string_destroy,engine,void
