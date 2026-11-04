@@ -8,13 +8,15 @@ R_X86_64_64, R_X86_64_GLOB_DAT, R_X86_64_JUMP_SLOT, R_X86_64_RELATIVE = 1, 6, 7,
 STT_OBJECT, STT_FUNC = 1, 2
 
 
+PT_SCE_RELRO = 0x61000010
 DT_SCE_EXPORT_LIB, DT_SCE_IMPORT_LIB = 0x61000013, 0x61000015
 
 
-def build(segments, symbols, relocations, jump_slots=(), entry=0, libraries=()):
+def build(segments, symbols, relocations, jump_slots=(), entry=0, libraries=(), relro_segments=()):
     """segments: (vaddr, bytes, memsz, flags); symbols: (name, type, defined_value or None);
     relocations / jump_slots: (target, type, symbol index (1-based, 0 for none), addend);
-    libraries: (DT_SCE_IMPORT_LIB or DT_SCE_EXPORT_LIB, name, id)."""
+    libraries: (DT_SCE_IMPORT_LIB or DT_SCE_EXPORT_LIB, name, id).
+    relro_segments: separate SCE RELRO allocations, using the same tuple as segments."""
     strtab = b'\0'
     library_tags = []
     for tag, name, ident in libraries:
@@ -37,11 +39,12 @@ def build(segments, symbols, relocations, jump_slots=(), entry=0, libraries=()):
             (0x6100002f, o_rela), (0x61000031, len(rela)), (0x61000029, o_jmp), (0x6100002d, len(jmprel)),
             *library_tags, (0, 0)]
     dynamic = b''.join(struct.pack('<qQ', t, v) for t, v in tags)
-    nph = len(segments) + 2
+    image_segments = [(1, *s) for s in segments] + [(PT_SCE_RELRO, *s) for s in relro_segments]
+    nph = len(image_segments) + 2
     offset = (64 + 56 * nph + 0xfff) // 0x1000 * 0x1000
     body, phdrs = b'', []
-    for vaddr, data, memsz, flags in segments:
-        phdrs.append((1, flags, offset + len(body), vaddr, len(data), memsz))
+    for segment_type, vaddr, data, memsz, flags in image_segments:
+        phdrs.append((segment_type, flags, offset + len(body), vaddr, len(data), memsz))
         body += data
         body = body.ljust((len(body) + 15) // 16 * 16, b'\0')
     phdrs.append((2, 6, offset + len(body), 0, len(dynamic), len(dynamic)))
