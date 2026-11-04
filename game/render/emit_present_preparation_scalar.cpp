@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Write the captured scalar bits to DB_DEPTH_CLEAR after capacity admission; callback changes do
-// not replace the captured value. Dirty-state updater 0x02ad2c30 calls this writer.
+// not replace the captured value.
+// Dirty-state callers 0x02ad2c30 and 0x02ad2790 use this writer.
 #include "present_dirty_preparation_packets.h"
 #include <bit>
 

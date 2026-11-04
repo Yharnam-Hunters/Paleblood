@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Write the captured low-byte value to DB_STENCIL_CLEAR after capacity admission.
-// Dirty-state updater 0x02ad2c30 calls this writer.
+// Dirty-state callers 0x02ad2c30 and 0x02ad2790 use this writer.
 #include "present_dirty_preparation_packets.h"
 
 extern "C" uint64_t bb_render_emit_present_preparation_byte(
