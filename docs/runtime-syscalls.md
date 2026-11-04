@@ -15,6 +15,11 @@ The eight hash-verified target images (`eboot.elf` and the seven modules, `tools
 
 The decompiled frame limiter calls `gettimeofday` with a null timezone argument. A separate [verified clock helper](../game/frame_timing/monotonic_clock.cpp) calls `sceKernelClockGettime` with clock ID `4`, named `CLOCK_MONOTONIC` in that code. This confirms one monotonic clock request in the game; it does not establish every ID passed through the imported `clock_gettime` wrapper, or that no other ID is used in unexamined code.
 
+The [`sceKernelGetCompiledSdkVersion` contract](own-runtime-compiled-sdk.md) describes the
+observed libkernel getter, the runtime's provider of mapped executable process-parameter
+metadata, and the dedicated synthetic registry tests. It also distinguishes that metadata
+provider from the unresolved console kernel syscall behavior.
+
 ## Interfaces and known behavior
 
 | Function | Arguments and representation | Publicly documented result and errors | Evidence and open questions for PS4 |
