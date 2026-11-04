@@ -684,7 +684,7 @@ eboot,libkernel,scePthreadRwlockWrlock,function,runtime
 eboot,libkernel,scePthreadSelf,function,runtime
 eboot,libkernel,scePthreadSetaffinity,function,runtime
 eboot,libkernel,scePthreadSetprio,function,runtime
-eboot,libkernel,scePthreadYield,function,runtime-unresolved
+eboot,libkernel,scePthreadYield,function,runtime
 libSceFios2.elf,?,module_start,function,
 libSceFios2.elf,?,module_stop,function,
 libSceFios2.elf,libSceDiscMap,ioKMruft1ek#A#B,function,
@@ -840,7 +840,7 @@ libc.elf,libkernel,scePthreadMutexattrSettype,function,runtime
 libc.elf,libkernel,scePthreadOnce,function,
 libc.elf,libkernel,scePthreadSelf,function,runtime
 libc.elf,libkernel,scePthreadSetspecific,function,
-libc.elf,libkernel,scePthreadYield,function,runtime-unresolved
+libc.elf,libkernel,scePthreadYield,function,runtime
 libc.elf,libkernel,sched_yield,function,runtime
 libc.elf,libkernel,sigfillset,function,
 libc.elf,libkernel,signal,function,

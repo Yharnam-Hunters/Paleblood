@@ -1,12 +1,16 @@
 {
-  "fault": null,
+  "fault": {
+    "address": "0x6566910010",
+    "at": "eboot+0x217a380",
+    "signal": 11
+  },
   "first_unimplemented": null,
   "imports_bundled": 219,
-  "imports_called": 135,
-  "imports_implemented": 127,
-  "imports_remaining": 340,
+  "imports_called": 143,
+  "imports_implemented": 128,
+  "imports_remaining": 339,
   "imports_total": 686,
-  "imports_unresolved": 4,
+  "imports_unresolved": 3,
   "milestone": "video out",
   "milestone_index": 6,
   "milestones": [
@@ -38,7 +42,7 @@
     {
       "exports": 2140,
       "imports": 79,
-      "imports_remaining": 42,
+      "imports_remaining": 41,
       "name": "libc.elf"
     },
     {
@@ -48,12 +52,9 @@
       "name": "libSceFios2.elf"
     }
   ],
-  "outcome": "runtime stop",
+  "outcome": "fault",
   "phase": "eboot",
-  "runtime_stop": {
-    "function": "sceKernelOpen",
-    "reason": "a path outside /app0: other mounts are not implemented"
-  },
+  "runtime_stop": null,
   "stopped_by_hook": null,
   "stub_modules": [
     {

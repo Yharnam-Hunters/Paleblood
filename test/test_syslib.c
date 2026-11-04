@@ -651,6 +651,15 @@ static f_kstat kstat_fn;
 static void kstat_outside(void) { unsigned char st[120]; kstat_fn("/download0/x", st); }
 static void kstat_dotdot(void) { unsigned char st[120]; kstat_fn("/app0/../etc/passwd", st); }
 static void kstat_prefix_only(void) { unsigned char st[120]; kstat_fn("/app0x/file", st); }
+static void kstat_data_dotdot(void) { unsigned char st[120]; kstat_fn("/data/../etc/passwd", st); }
+typedef int32_t (*f_kopen)(const char *, int32_t, uint32_t);
+static f_kopen kopen_fn;
+static void data_open_odd_flag(void) { kopen_fn("/data/cache.bin", 0x10002, 0777); } /* O_RDWR and an unknown bit */
+static void data_open_no_folder(void)
+{
+    rt_process.data_dir = NULL;
+    kopen_fn("/data/cache.bin", 0x602, 0777);
+}
 
 /* GNM compute queues. */
 typedef int32_t (*f_cq_t)(uint32_t, uint32_t, void *, uint32_t, volatile uint32_t *);
@@ -1034,11 +1043,11 @@ int main(void)
     CHECK(yield() == 0 && yield() == 0);
     CHECK(is_implemented("libkernel", "sched_yield"));
 
-    /* scePthreadYield's PS4 signature (no result, or an int) is not established, so the entry stops
-       by name and is registered without counting as implemented. */
-    void (*pthread_yield_entry)(void) = (void (*)(void))fn("libkernel", "scePthreadYield");
-    CHECK(died_in_fatal(pthread_yield_entry));
-    CHECK(!is_implemented("libkernel", "scePthreadYield"));
+    /* scePthreadYield yields the same way and answers 0, which is right whether the PS4 version
+       returns nothing or an int. */
+    const f_check pthread_yield = (f_check)fn("libkernel", "scePthreadYield");
+    CHECK(pthread_yield && pthread_yield() == 0 && pthread_yield() == 0);
+    CHECK(is_implemented("libkernel", "scePthreadYield"));
 
     /* The PS4 host is little-endian AMD64; the network representation is big-endian. */
     CHECK(htonl(UINT32_C(0x12345678)) == UINT32_C(0x78563412));
@@ -1889,6 +1898,38 @@ int main(void)
                 CHECK(kopen("/app0/new.bin", 0x201, 0644) == (int32_t)0x8002001eu); /* O_CREAT */
                 CHECK(kopen("/app0/missing.bin", 1, 0) == (int32_t)0x80020002u);   /* lookup first */
                 CHECK(access(file, F_OK) == 0); /* nothing was written or created */
+
+                /* /data: the writable scratch mount. The engine's cache open (O_RDWR | O_CREAT |
+                   O_TRUNC, mode 0777) creates an empty file there; it shows write permission. */
+                static char data_buf[512];
+                snprintf(data_buf, sizeof data_buf, "%s/pb-data-XXXXXX", tmp ? tmp : "/tmp");
+                char *data = mkdtemp(data_buf);
+                CHECK(data != NULL);
+                if (data) {
+                    rt_process.data_dir = data;
+                    char cache[600];
+                    snprintf(cache, sizeof cache, "%s/cache.bin", data);
+                    int32_t cfd = kopen("/data/cache.bin", 0x602, 0777);
+                    CHECK(cfd >= 3 && access(cache, F_OK) == 0);
+                    memset(st, 0, sizeof st);
+                    CHECK(kfstat(cfd, st) == 0 && (memcpy(&mode, st + 8, 2), (mode & 0200) != 0));
+                    CHECK(kread(cfd, buf, 4) == 0 && kclose(cfd) == 0);
+                    FILE *c = fopen(cache, "w");
+                    if (c) { fwrite("abc", 1, 3, c); fclose(c); }
+                    cfd = kopen("/data/cache.bin", 0, 0); /* read-only sees what is there */
+                    CHECK(cfd >= 3 && kread(cfd, buf, 4) == 3 && !memcmp(buf, "abc", 3) && kclose(cfd) == 0);
+                    CHECK(kstat_fn("/data/cache.bin", st) == 0 && (memcpy(&size, st + 0x48, 8), size == 3));
+                    cfd = kopen("/data/cache.bin", 0x602, 0777); /* truncate starts it over */
+                    CHECK(cfd >= 3 && kread(cfd, buf, 4) == 0 && kclose(cfd) == 0);
+                    CHECK(kopen("/data/missing.bin", 0, 0) == (int32_t)0x80020002u);
+                    kopen_fn = kopen;
+                    CHECK(died_in_fatal(kstat_data_dotdot));
+                    CHECK(died_in_fatal(data_open_odd_flag));
+                    CHECK(died_in_fatal(data_open_no_folder));
+                    unlink(cache);
+                    rmdir(data);
+                    rt_process.data_dir = NULL;
+                }
             }
             unlink(file);
             rmdir(app0);
