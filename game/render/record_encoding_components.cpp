@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Select the first matching component arrangement from four packed three-bit
 // codes. The encoding byte chooses single, pair, triple, or four-code rules.
-// Rejected arrangements leave the optional output untouched. Only AL is Boolean.
+// Return a Boolean indicating whether an arrangement matches. Rejection leaves
+// the optional output untouched; a match publishes its first arrangement index.
 #include <array>
 #include <cstring>
 

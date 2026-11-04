@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Authored synthetic wire inputs. No expected values or game recordings.
-
-Retained complete original analysis establishes input locations and memory extents.
-Cases vary numeric admissions, masking boundaries and caller-owned canaries.
-Snapshot comparisons do not prove race/fault behavior or restored temporary writes.
-"""
+"""Exercise component arrangements, single-code rejection and aliased outputs."""
 import json
 from pathlib import Path
 import struct
@@ -121,6 +116,39 @@ INPUTS = [{'args': ['p33', 'p33'], 'words': [(33, 16433153)], 'returns': 'i8'},
  {'args': ['p33', 'p128'], 'words': [(33, 16773179)], 'returns': 'i8'},
  {'args': ['p33', 'p128'], 'words': [(33, 16773375)], 'returns': 'i8'}]
 
+# Each tuple lists exactly the comparisons required by one ordered arrangement.
+# Inputs 1/3/6 select the single/pair/triple rules; 255 selects the four-code fallback.
+# The remaining lanes use 0, which matches none of the required codes 4 through 7.
+ARRANGEMENT_RULES = (
+    ('single', 1, (((0, 4),), ((1, 4),), ((2, 4),), ((3, 4),))),
+    ('pair', 3, (((0, 4), (1, 5)), ((0, 4), (3, 5)),
+                 ((1, 4), (0, 5)), ((3, 4), (0, 5)))),
+    ('triple', 6, (((0, 4), (1, 5), (2, 6)), ((0, 4), (1, 5), (3, 6)),
+                   ((2, 4), (1, 5), (0, 6)), ((3, 4), (1, 5), (0, 6)))),
+    ('quad', 255, (((0, 4), (1, 5), (2, 6), (3, 7)),
+                   ((2, 4), (1, 5), (0, 6), (3, 7)),
+                   ((3, 4), (2, 5), (1, 6), (0, 7)),
+                   ((3, 4), (0, 5), (1, 6), (2, 7)))),
+)
+
+
+def isolated_mismatch_inputs():
+    for family, encoding, arrangements in ARRANGEMENT_RULES:
+        for arrangement, required in enumerate(arrangements):
+            for wrong_lane, _ in required:
+                lanes = [0, 0, 0, 0]
+                for lane, code in required:
+                    lanes[lane] = code
+                lanes[wrong_lane] = 0
+                packed = encoding
+                for lane, code in enumerate(lanes):
+                    packed |= code << (12 + lane * 3)
+                yield {'id': f'{family}_arrangement_{arrangement}_wrong_{"abcd"[wrong_lane]}',
+                       'args': ['p33', 'p128'], 'words': [(33, packed)]}
+
+
+INPUTS.extend(isolated_mismatch_inputs())
+
 def fixtures():
     registers = ['rdi','rsi','rdx','rcx','r8','r9']
     for index, inputs in enumerate(INPUTS):
@@ -132,7 +160,7 @@ def fixtures():
         values=[wire(v) for v in inputs['args']]
         args={register:(values[i] if i<len(values) else '0x0') for i,register in enumerate(registers)}
         args.update({k:wire(v) for k,v in inputs.get('incoming',{}).items()})
-        case={'schema':1,'address':ADDRESS,'id':'edge_'+format(index,'04d'),'returns':inputs.get('returns',RETURN),'args':args,'stack':values[6:],'buffers':{'arena':{'size':len(arena),'bytes':arena.hex()}},'memory':([{'addr':'0x057e3be0','pointer':'arena+0x1c0'}] if inputs.get('guard') else []),'imports':[],'stubs':([{'address':'0x02abb4a0','argc':1,'ret':'0x0'}] if inputs.get('report_stub') else [])}
+        case={'schema':1,'address':ADDRESS,'id':inputs.get('id','edge_'+format(index,'04d')),'returns':inputs.get('returns',RETURN),'args':args,'stack':values[6:],'buffers':{'arena':{'size':len(arena),'bytes':arena.hex()}},'memory':([{'addr':'0x057e3be0','pointer':'arena+0x1c0'}] if inputs.get('guard') else []),'imports':[],'stubs':([{'address':'0x02abb4a0','argc':1,'ret':'0x0'}] if inputs.get('report_stub') else [])}
         yield case
 
 def main():

@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Authored synthetic wire inputs. No expected values or game recordings.
-
-Retained complete original analysis establishes input locations and memory extents.
-Cases vary numeric admissions, masking boundaries and caller-owned canaries.
-Snapshot comparisons do not prove race/fault behavior or restored temporary writes.
-"""
+"""Exercise category-nibble decoding, rejected nibbles and optional outputs."""
 import json
 from pathlib import Path
 import struct

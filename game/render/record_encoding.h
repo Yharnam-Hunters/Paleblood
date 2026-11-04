@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// The record encoding's first byte selects a bounded original metadata table.
-// The numeric entries remain opaque until the geometry consumers are reconstructed.
+// The first encoding byte selects bounded scalar tables used by metadata and
+// component-arrangement decoding. Numeric entries retain their original meanings.
 #pragma once
 
 #include <cstddef>
@@ -23,7 +23,7 @@ RT_ORIGINAL(0x014717a0, extract_record_encoding_components,
             uint8_t(const uint32_t *encoding, uint32_t *output));
 
 constexpr uint32_t record_encoding_metadata_entries = 59;
-using RecordEncodingMetadataTable = uint32_t[record_encoding_metadata_entries];
-RT_GLOBAL(0x04b2bdd0, record_encoding_metadata, RecordEncodingMetadataTable);
-RT_GLOBAL(0x04b2bcd0, record_encoding_component_rules, RecordEncodingMetadataTable);
+using RecordEncodingTable = uint32_t[record_encoding_metadata_entries];
+RT_GLOBAL(0x04b2bdd0, record_encoding_metadata, RecordEncodingTable);
+RT_GLOBAL(0x04b2bcd0, record_encoding_component_rules, RecordEncodingTable);
 }  // namespace render
