@@ -14,6 +14,7 @@
 
 #include <pthread.h>
 #include <stdint.h>
+#include <string.h>
 
 #define TESSELLATION_FACTOR_RING_BASE 0xfe00000000ull
 
@@ -146,3 +147,134 @@ static int32_t map_compute_queue(uint32_t pipe, uint32_t queue, void *ring, uint
 }
 
 RT_SYSLIB("libSceGnmDriver", sceGnmMapComputeQueue, map_compute_queue);
+
+/* sceGnmDingDong(queue id, write offset in dwords): tells the GPU that the ring of a compute queue
+   holds new work up to the write offset. OpenOrbis' GnmDriver.h only names it; the shape comes from
+   the engine's compute submit (0x0148c830), which copies one 4-dword INDIRECT_BUFFER packet per
+   command buffer into the ring (the packet writer at 0x0148b330), wraps to the ring's start when
+   the end is full, then rings the doorbell with the queue id from sceGnmMapComputeQueue and the new
+   write offset. Before writing, it checks the free space against the read pointer the GPU advances.
+
+   TEMPORARY STAND-IN (maintainer decision, 4 November 2026): Paleblood has no GPU, and the engine's
+   own renderer is to replace this layer (issue #39). Until then the doorbell completes the work at
+   once, on the calling thread: it follows each indirect buffer and acts only on the packets whose
+   effect the CPU can see. A boot on 4 November found four kinds in the engine's compute buffers
+   (packet types from AMD's public PM4 packet format):
+     NOP and SET_SH_REG      skipped: padding and shader registers, with no GPU to hold them;
+     DISPATCH_DIRECT         skipped: compute shaders do not run, so their output is never written;
+     RELEASE_MEM             performed: the "work done" value goes to its memory address, which is
+                             what the CPU waits on.
+   Then the read pointer moves to the write offset, so the ring never fills. Any other packet, or a
+   completion this stand-in does not perform, stops by name. */
+#define PM4_TYPE_SHIFT 30
+#define PM4_TYPE3 3u
+#define PM4_OPCODE_SHIFT 8
+#define PM4_OPCODE_MASK 0xffu
+#define PM4_COUNT_MASK 0x3fffu
+#define PM4_HEADER_AND_COUNT_BIAS 2 /* the count field is the payload length minus one */
+
+#define PM4_NOP 0x10u
+#define PM4_DISPATCH_DIRECT 0x15u
+#define PM4_INDIRECT_BUFFER 0x3fu
+#define PM4_RELEASE_MEM 0x49u
+#define PM4_SET_SH_REG 0x76u
+
+#define INDIRECT_BUFFER_DWORDS 4
+#define INDIRECT_BUFFER_ADDRESS_HIGH_MASK 0xffffu
+#define INDIRECT_BUFFER_SIZE_MASK 0xfffffu
+#define MAX_INDIRECT_BUFFER_DEPTH 4
+
+#define RELEASE_MEM_DWORDS 7
+#define RELEASE_MEM_DESTINATION_SHIFT 16
+#define RELEASE_MEM_DESTINATION_MASK 3u
+#define RELEASE_MEM_TO_MEMORY 0u
+#define RELEASE_MEM_DATA_SHIFT 29
+#define RELEASE_MEM_DATA_NONE 0u
+#define RELEASE_MEM_DATA_32_BITS 1u
+#define RELEASE_MEM_DATA_64_BITS 2u
+#define RELEASE_MEM_ADDRESS_HIGH_MASK 0xffffu
+
+typedef struct {
+    uint32_t event_control;
+    uint32_t data_control; /* destination in bits 16-17, data size in bits 29-31 */
+    uint32_t address_low, address_high;
+    uint32_t data_low, data_high;
+} release_mem_packet;
+
+static void release_memory(const char *fn, const release_mem_packet *packet)
+{
+    const uint32_t destination = (packet->data_control >> RELEASE_MEM_DESTINATION_SHIFT) & RELEASE_MEM_DESTINATION_MASK;
+    const uint32_t data_size = packet->data_control >> RELEASE_MEM_DATA_SHIFT;
+    if (destination != RELEASE_MEM_TO_MEMORY) rt_fatal(fn, "a RELEASE_MEM to a destination other than memory");
+    if (data_size == RELEASE_MEM_DATA_NONE) return;
+    void *address = (void *)(uintptr_t)(packet->address_low |
+                                        (uint64_t)(packet->address_high & RELEASE_MEM_ADDRESS_HIGH_MASK) << 32);
+    if (!address) rt_fatal(fn, "a RELEASE_MEM without an address");
+    if (data_size == RELEASE_MEM_DATA_32_BITS)
+        __atomic_store_n((uint32_t *)address, packet->data_low, __ATOMIC_RELEASE);
+    else if (data_size == RELEASE_MEM_DATA_64_BITS)
+        __atomic_store_n((uint64_t *)address, packet->data_low | (uint64_t)packet->data_high << 32, __ATOMIC_RELEASE);
+    else
+        rt_fatal(fn, "a RELEASE_MEM writing a value other than the packet's own data");
+}
+
+static void complete_packets(const char *fn, const uint32_t *packets, uint32_t dwords, int depth);
+
+static void follow_indirect_buffer(const char *fn, const uint32_t *packet, int depth)
+{
+    if (depth == MAX_INDIRECT_BUFFER_DEPTH) rt_fatal(fn, "indirect buffers nested deeper than the stand-in follows");
+    const uint32_t *buffer = (const uint32_t *)(uintptr_t)(packet[1] |
+                             (uint64_t)(packet[2] & INDIRECT_BUFFER_ADDRESS_HIGH_MASK) << 32);
+    const uint32_t dwords = packet[3] & INDIRECT_BUFFER_SIZE_MASK;
+    if (!buffer && dwords) rt_fatal(fn, "an INDIRECT_BUFFER without an address");
+    complete_packets(fn, buffer, dwords, depth + 1);
+}
+
+/* Acts on each packet in turn. Inside the ring (depth 0) the engine writes only INDIRECT_BUFFER
+   packets; inside a command buffer it writes the kinds listed above. */
+static void complete_packets(const char *fn, const uint32_t *packets, uint32_t dwords, int depth)
+{
+    for (uint32_t at = 0; at < dwords;) {
+        const uint32_t header = packets[at];
+        if (header >> PM4_TYPE_SHIFT != PM4_TYPE3) rt_fatal(fn, "a packet other than PM4 type 3");
+        const uint32_t opcode = (header >> PM4_OPCODE_SHIFT) & PM4_OPCODE_MASK;
+        const uint32_t length = ((header >> PM4_COUNT_SHIFT) & PM4_COUNT_MASK) + PM4_HEADER_AND_COUNT_BIAS;
+        if (length > dwords - at) rt_fatal(fn, "a packet running past the end of its buffer");
+        const uint32_t *packet = packets + at;
+        if (opcode == PM4_INDIRECT_BUFFER && length == INDIRECT_BUFFER_DWORDS) {
+            follow_indirect_buffer(fn, packet, depth);
+        } else if (depth == 0) {
+            rt_fatal(fn, "a compute ring packet other than INDIRECT_BUFFER");
+        } else if (opcode == PM4_RELEASE_MEM && length == RELEASE_MEM_DWORDS) {
+            release_mem_packet release;
+            memcpy(&release, packet + 1, sizeof release);
+            release_memory(fn, &release);
+        } else if (opcode != PM4_NOP && opcode != PM4_SET_SH_REG && opcode != PM4_DISPATCH_DIRECT) {
+            rt_fatal(fn, "a compute packet the stand-in does not know");
+        }
+        at += length;
+    }
+}
+
+static uint32_t completed_offset[MAX_COMPUTE_QUEUES]; /* where each ring's unread work starts, in dwords */
+
+static void ding_dong(uint32_t queue_id, uint32_t write_offset)
+{
+    static const char fn[] = "sceGnmDingDong";
+    pthread_mutex_lock(&queues_lock);
+    if (queue_id == 0 || queue_id > (uint32_t)queue_count) rt_fatal(fn, "a queue id sceGnmMapComputeQueue did not answer");
+    const compute_queue *queue = &queues[queue_id - 1];
+    uint32_t *const done = &completed_offset[queue_id - 1];
+    if (write_offset > queue->ring_dwords) rt_fatal(fn, "a write offset past the end of the ring");
+    const uint32_t *ring = queue->ring;
+    if (write_offset < *done) { /* the engine filled the ring's end and wrapped to its start */
+        complete_packets(fn, ring + *done, queue->ring_dwords - *done, 0);
+        *done = 0;
+    }
+    complete_packets(fn, ring + *done, write_offset - *done, 0);
+    *done = write_offset;
+    __atomic_store_n(queue->read_pointer, write_offset, __ATOMIC_RELEASE);
+    pthread_mutex_unlock(&queues_lock);
+}
+
+RT_SYSLIB("libSceGnmDriver", sceGnmDingDong, ding_dong);

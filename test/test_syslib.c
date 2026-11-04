@@ -653,6 +653,28 @@ static f_cq_t cq_fn;
 static void cq_twice(void) { static uint32_t r[16]; static volatile uint32_t p; cq_fn(0, 0, r, 16, &p); }
 static void cq_no_ring(void) { static volatile uint32_t p; cq_fn(1, 0, NULL, 16, &p); }
 
+/* sceGnmDingDong test fixtures: a 4-dword INDIRECT_BUFFER ring packet, as the engine's writer at
+   0x0148b330 builds it, pointing at a command buffer. */
+typedef void (*f_ding_dong)(uint32_t, uint32_t);
+static f_ding_dong ding_dong_fn;
+static int32_t dd_queue;
+static uint32_t *dd_ring;
+static void put_indirect_buffer(uint32_t *at, const uint32_t *buffer, uint32_t dwords)
+{
+    const uint64_t address = (uint64_t)(uintptr_t)buffer;
+    at[0] = 0xc0023f02u;
+    at[1] = (uint32_t)address;
+    at[2] = (uint32_t)(address >> 32) & 0xffffu;
+    at[3] = dwords | 0x1800000u;
+}
+static void dd_unknown_packet(void)
+{
+    static uint32_t buffer[2] = {0xc0002d00u, 0}; /* opcode 0x2d, not one the engine was seen to write */
+    put_indirect_buffer(dd_ring + 4, buffer, 2); /* the parent's ring has completed up to slot 4 */
+    ding_dong_fn((uint32_t)dd_queue, 8);
+}
+static void dd_bad_queue(void) { ding_dong_fn(999, 4); }
+
 /* Kernel event queues: a wait blocks until a runtime event source triggers a registration. */
 typedef int32_t (*f_eq_create)(rt_equeue **, const char *);
 typedef int32_t (*f_eq_delete)(rt_equeue *);
@@ -1916,6 +1938,45 @@ int main(void)
         CHECK(qa > 0 && qb > 0 && qa != qb);
         CHECK(died_in_fatal(cq_twice));
         CHECK(died_in_fatal(cq_no_ring));
+        /* sceGnmDingDong: completes the work at once. Shader state and dispatches are skipped, the
+           RELEASE_MEM "done" value reaches its label, and the read pointer reaches the write offset,
+           also when the ring wraps. */
+        ding_dong_fn = (f_ding_dong)fn("libSceGnmDriver", "sceGnmDingDong");
+        CHECK(ding_dong_fn != NULL);
+        if (ding_dong_fn) {
+            static volatile uint32_t label;
+            static volatile uint64_t wide_label;
+            const uint64_t label_at = (uint64_t)(uintptr_t)&label, wide_at = (uint64_t)(uintptr_t)&wide_label;
+            enum { JOB_DWORDS = 19, JOB_LABEL_VALUE = 15 };
+            static uint32_t job[JOB_DWORDS];
+            const uint32_t job_packets[JOB_DWORDS] = {
+                0xc0001000u, 0,                                    /* NOP */
+                0xc0017600u, 0x242, 0x1234,                        /* SET_SH_REG */
+                0xc0031500u, 1, 1, 1, 1,                           /* DISPATCH_DIRECT */
+                0xc0054900u, 0x0003862fu, 0x20000000u,             /* RELEASE_MEM, 32-bit data to memory */
+                (uint32_t)label_at, (uint32_t)(label_at >> 32), 7, 0,
+                0xc0001000u, 0};                                   /* NOP */
+            memcpy(job, job_packets, sizeof job);
+            static uint32_t wide_job[7];
+            const uint32_t wide_packets[7] = {0xc0054900u, 0x0003862fu, 0x40000000u, /* 64-bit data */
+                (uint32_t)wide_at, (uint32_t)(wide_at >> 32), 0x89abcdefu, 0x01234567u};
+            memcpy(wide_job, wide_packets, sizeof wide_job);
+            dd_queue = qa; dd_ring = ring_a;
+            put_indirect_buffer(ring_a, job, JOB_DWORDS);
+            put_indirect_buffer(ring_a + 4, job, 0); /* an empty command buffer */
+            ding_dong_fn((uint32_t)qa, 8);
+            CHECK(label == 7 && read_a == 8);
+            /* Fill the rest of the ring, then wrap to its start, as the engine's submit does: every
+               slot from 8 to the end completes, and so does the first slot after the wrap. */
+            for (uint32_t slot = 8; slot < 0x3fc; slot += 4) put_indirect_buffer(ring_a + slot, job, 0);
+            put_indirect_buffer(ring_a + 0x3fc, wide_job, 7);
+            job[JOB_LABEL_VALUE] = 9;
+            put_indirect_buffer(ring_a, job, JOB_DWORDS);
+            ding_dong_fn((uint32_t)qa, 4);
+            CHECK(wide_label == 0x0123456789abcdefull && label == 9 && read_a == 4);
+            CHECK(died_in_fatal(dd_unknown_packet));
+            CHECK(died_in_fatal(dd_bad_queue));
+        }
     }
 
     /* sceKernelCreateEqueue / WaitEqueue / DeleteEqueue. */
