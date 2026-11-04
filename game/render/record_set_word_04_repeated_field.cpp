@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Duplicate the supplied low11 bits into two fields; no component conversion.
+// Duplicate the supplied low 11 bits into two fields; no component conversion.
 #include "record_fields.h"
 
 extern "C" uint32_t bb_render_record_set_word_04_repeated_field(render::RecordConstructorPrefix *record,

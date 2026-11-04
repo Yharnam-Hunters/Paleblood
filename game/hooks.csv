@@ -39,8 +39,8 @@ address,replacement,system,returns
 0x014866e0,bb_render_record_set_word_04_repeated_field,render,i32
 0x01486710,bb_render_record_set_word_08_low22,render,i32
 0x01486760,bb_render_record_set_word_14_second_low5_field,render,i32
-0x014867c0,bb_render_record_set_word_10_byte_at_bit13,render,i32
-0x014867e0,bb_render_record_set_word_10_byte_at_bit14,render,i32
+0x014867c0,bb_render_record_set_first_auxiliary_flag,render,i32
+0x014867e0,bb_render_record_set_second_auxiliary_flag,render,i32
 0x01486800,bb_render_record_set_word_28_low22,render,i32
 0x016efd00,bb_event_emk_add,event,void
 0x017cfcc0,bb_event_flag_write,event,void

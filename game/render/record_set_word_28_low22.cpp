@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Replace this word's low22 bits; the native return is its preserved old bits.
+// Replace this word's low 22 bits; the native return is its preserved old bits.
 #include "record_fields.h"
 
 extern "C" uint32_t bb_render_record_set_word_28_low22(render::RecordConstructorPrefix *record, uint32_t value)

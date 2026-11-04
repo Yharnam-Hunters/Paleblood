@@ -189,8 +189,8 @@ render_read_present_pool_counter,edge,,18,18,0,0,1ef235dcff31de42,2026-11-03
 render_record_set_word_04_repeated_field,edge,,30,30,0,0,0e16906e6b69cf0d,2026-11-03
 render_record_set_word_08_low22,edge,,30,30,0,0,4d8c022bef9d439f,2026-11-03
 render_record_set_word_0c_fields,edge,,30,30,0,0,6e24aab1942a8a51,2026-11-03
-render_record_set_word_10_byte_at_bit13,edge,,30,30,0,0,1370624e311d13b4,2026-11-03
-render_record_set_word_10_byte_at_bit14,edge,,30,30,0,0,1df5943f70dd8457,2026-11-03
+render_record_set_first_auxiliary_flag,edge,,30,30,0,0,1370624e311d13b4,2026-11-03
+render_record_set_second_auxiliary_flag,edge,,30,30,0,0,1df5943f70dd8457,2026-11-03
 render_record_set_word_14_second_low5_field,edge,,30,30,0,0,5b4f01b9fa02186c,2026-11-03
 render_record_set_word_28_low22,edge,,30,30,0,0,55e52da010fa6cb6,2026-11-03
 render_swap_chain_present,recorded,,209,209,0,0,cecf62710c015474,2026-10-07
