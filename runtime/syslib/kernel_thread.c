@@ -22,7 +22,7 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
-enum { BSD_ENOMEM = 12, BSD_EINVAL = 22 };
+enum { BSD_ESRCH = 3, BSD_ENOMEM = 12, BSD_EINVAL = 22 };
 #define SCE_KERNEL_ERROR(e) ((int)(0x80020000u + (unsigned)(e)))
 
 /* PTHREAD_CREATE_JOINABLE and PTHREAD_CREATE_DETACHED in FreeBSD's <pthread.h>. The OpenOrbis
@@ -252,11 +252,15 @@ static void *thread_start(void *raw)
    with its own guest stack and TLS block. What the runtime does not know stops by name: a missing
    attribute or stack size (the PS4 defaults), a stack address the guest supplies, and the error
    values. The scheduling policy is recorded but the host schedules the thread: priorities are not
-   modelled. */
-static int create_thread(guest_thread **thread, guest_attr **attr, void *(*entry)(void *), void *argument,
-                         const char *name)
+   modelled.
+
+   pthread_create_name_np (libScePosix) takes the same arguments and is the same creation. The
+   executable's only call is its thread helper (0x00838840, four callers), which builds a POSIX
+   attribute with a detach state and, when it has one, a stack size, and treats any result other
+   than 0 as an error. Its stops name the POSIX function. */
+static int create_named_thread(const char *fn, guest_thread **thread, guest_attr **attr, void *(*entry)(void *),
+                               void *argument, const char *name)
 {
-    static const char fn[] = "scePthreadCreate";
     if (!thread || !entry) rt_fatal(fn, "no thread variable or entry: the error value is not established");
     const guest_attr *a = attr ? *attr : NULL;
     if (!a) rt_fatal(fn, "no attribute object: the PS4 default stack size is not established");
@@ -285,13 +289,29 @@ static int create_thread(guest_thread **thread, guest_attr **attr, void *(*entry
     return 0;
 }
 
+static int create_thread(guest_thread **thread, guest_attr **attr, void *(*entry)(void *), void *argument,
+                         const char *name)
+{
+    return create_named_thread("scePthreadCreate", thread, attr, entry, argument, name);
+}
+
+static int posix_create_name_np(guest_thread **thread, guest_attr **attr, void *(*entry)(void *), void *argument,
+                                const char *name)
+{
+    return create_named_thread("pthread_create_name_np", thread, attr, entry, argument, name);
+}
+
 /* The CPU set a thread may run on. The executable sets it once, right after creating the thread,
    within 0x3f; the runtime records it and leaves scheduling to the host (which CPUs the host has
-   says nothing about the PS4's). An empty mask's answer is not established and stops by name. */
+   says nothing about the PS4's). An empty mask's answer is not established and stops by name.
+
+   No thread answers ESRCH, as libthr does for a thread it cannot find (_thr_find_thread). The job
+   system's set-up (0x01bfa260) sets a mask on each of its twelve worker slots, empty ones (a null
+   handle) included, and discards every answer. */
 static int set_affinity(guest_thread *thread, uint64_t mask)
 {
     static const char fn[] = "scePthreadSetaffinity";
-    if (!thread) rt_fatal(fn, "no thread: the error value is not established");
+    if (!thread) return SCE_KERNEL_ERROR(BSD_ESRCH);
     if (!mask) rt_fatal(fn, "an empty CPU mask: the answer is not established");
     thread->affinity = mask;
     return 0;
@@ -385,6 +405,7 @@ RT_SYSLIB("libkernel", scePthreadAttrSetdetachstate, sce_attr_set_detach_state);
 RT_SYSLIB("libkernel", scePthreadAttrSetstacksize, sce_attr_set_stack_size);
 RT_SYSLIB("libkernel", scePthreadAttrSetschedpolicy, sce_attr_set_sched_policy);
 RT_SYSLIB("libkernel", scePthreadCreate, create_thread);
+RT_SYSLIB("libScePosix", pthread_create_name_np, posix_create_name_np);
 RT_SYSLIB("libkernel", scePthreadSetaffinity, set_affinity);
 
 /* libScePosix: the same calls under their POSIX names, returning the errno values themselves.

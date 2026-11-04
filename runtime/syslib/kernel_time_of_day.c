@@ -19,6 +19,7 @@
 
 #include <stdint.h>
 #include <time.h>
+#include <x86intrin.h>
 
 typedef struct {
     int64_t seconds;
@@ -121,6 +122,18 @@ static uint64_t get_process_time(void)
     return (uint64_t)(elapsed_ns / NANOSECONDS_PER_MICROSECOND);
 }
 
+/* uint64_t sceKernelReadTsc(void), as the OpenOrbis homebrew SDK's libkernel.h declares it: the
+   CPU's time-stamp counter. The executable's two calls (0x025b99bf in 0x025b9980, 0x025b9850 in
+   0x025b9760) belong to its job scheduler's work stealing: it adds the counter to a worker's
+   number and takes the remainder by the worker count to choose which worker to try first, so it
+   only needs a count that changes. The guest's code runs natively on an x86-64 host, so the
+   runtime reads the same counter with the host's rdtsc. */
+static uint64_t read_tsc(void)
+{
+    return __rdtsc();
+}
+
+RT_SYSLIB("libkernel", sceKernelReadTsc, read_tsc);
 RT_SYSLIB("libScePosix", gettimeofday, posix_gettimeofday);
 RT_SYSLIB("libkernel", gettimeofday, posix_gettimeofday);
 RT_SYSLIB("libkernel", sceKernelGettimeofday, sce_gettimeofday);
