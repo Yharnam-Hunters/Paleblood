@@ -34,3 +34,9 @@ execution point remain visible even when import totals and the blocking symbol s
 Clean room: written from public documentation (NID databases, psdevwiki), our own
 reverse engineering and observed behaviour. No code copied from, or modelled line by line on,
 another emulator or runtime.
+
+Image allocations use `rt_map_anonymous_at`: Linux retains `MAP_FIXED_NOREPLACE`; other POSIX
+hosts can request an address as a hint and release a result at another address. This never
+replaces an existing mapping. The portable allocation primitive alone does not make `pbboot`
+build or execute guests on macOS; its thread state, signals and other boot dependencies still
+need platform support.

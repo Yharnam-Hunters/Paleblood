@@ -5,8 +5,8 @@
 /* Loading a PS4 executable (ELF with SCE dynamic linking) into host memory: Paleblood's own
    loader, written from the published format. It reads the program headers and the string,
    symbol and relocation tables that PT_DYNAMIC's DT_SCE_* entries point into (inside
-   PT_SCE_DYNLIBDATA), copies the loadable segments into memory the caller reserved, zero-fills
-   the rest, and applies every relocation: addresses inside the executable become host addresses,
+   PT_SCE_DYNLIBDATA), copies PT_LOAD and PT_SCE_RELRO allocated segments into memory the caller
+   reserved, zero-fills the rest, and applies every relocation: addresses inside the executable become host addresses,
    and each imported function or object is bound to whatever address the caller's callback gives
    for it (an implementation, a stub, a data page).
 
@@ -22,6 +22,9 @@ extern "C" {
 
 typedef struct rt_elf rt_elf;
 
+/* Allocated image ranges, in program-header order: PT_LOAD and the separate SCE RELRO
+   segment (0x61000010). Original flags are metadata; the loader never applies host protections.
+   SCE RELRO overlap with another allocated range is unsupported and rejected at open. */
 typedef struct {
     uint64_t vaddr;   /* offset from the image start (the executable is linked at 0) */
     uint64_t memsz;
@@ -73,8 +76,10 @@ int rt_elf_export_kind(const rt_elf *elf, size_t index);
    rt_elf_map. */
 void rt_elf_set_tls_module_id(rt_elf *elf, uint64_t id);
 
-/* Copies the image into `base` (rt_elf_image_size bytes, writable, reserved by the caller),
-   zero-fills, and applies the relocations, binding imports through `bind`. Returns 0, or -1 with
+/* Copies all admitted image ranges into `base` (rt_elf_image_size bytes, writable,
+   reserved by the caller),
+   zero-fills, and applies the relocations, binding imports through `bind`. Segment flags do not
+   change this writable-buffer contract or apply permissions. Returns 0, or -1 with
    a message in `error`. */
 int rt_elf_map(const rt_elf *elf, void *base, rt_elf_bind_fn bind, void *user, char *error, size_t error_size);
 
