@@ -63,7 +63,7 @@ arguments. The first of the engine's own packet writers are mapped, all by [@evi
 - **The pool counter.** `render_read_present_pool_counter` (`0x0247eb80`) reads a 64-bit counter
   atomically, with a locked compare-and-exchange loop ([#279](https://github.com/Yharnam-Hunters/Paleblood/pull/279)).
 - **Present records.** `render_present_record_consume` (`0x02ab5a70`) turns a pending present
-  record into commands: it classifies the record, clamps its range, copies 44 bytes of it and
+  record into commands: it classifies the record, clamps its range, copies its payload and
   writes the final fields ([#286](https://github.com/Yharnam-Hunters/Paleblood/pull/286)).
 - **Presenting a swap-chain image.** `render_swap_chain_present_mode` (`0x02ad5dd0`) waits until
   the display has flipped far enough and picks the flip mode, and `render_swap_chain_submit`
