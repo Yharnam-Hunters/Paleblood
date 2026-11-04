@@ -23,6 +23,8 @@ address,replacement,system,returns
 0x0143e490,bb_frame_timing_task_flush_queue_0143e490,frame_timing,void
 0x0143f9f0,bb_frame_timing_task_set_frame_value_0143f9f0,frame_timing,void
 0x014400a0,bb_frame_timing_task_workers_step_014400a0,frame_timing,void
+0x01477b30,bb_render_command_emit_counter_operation,render,void
+0x014784a0,bb_render_command_prepare_submission,render,void
 0x016efd00,bb_event_emk_add,event,void
 0x017cfcc0,bb_event_flag_write,event,void
 0x01972900,bb_input_pad_step_01972900,input,void
