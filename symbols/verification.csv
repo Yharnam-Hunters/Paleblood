@@ -240,10 +240,10 @@ render_yebis_get_recursive_sample_parameters,edge,,23,23,0,0,6e6f0aa41d5607ce,20
 render_yebis_get_recursive_sample_parameters,edge,30,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,60,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,uncapped,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
-render_configure_screen_scissor,edge,,13,13,0,0,d128770eb881cc47,2026-11-04
-render_set_guard_band_discard_adjust,edge,,11,11,0,0,0f28b5369068434e,2026-11-04
-render_set_screen_offset,edge,,11,11,0,0,808109586f181aa7,2026-11-04
-render_set_guard_band_clip_adjust,edge,,11,11,0,0,0dbedc022920edc3,2026-11-04
-render_configure_viewport,edge,,11,11,0,0,70a7a829bbdda31d,2026-11-04
-render_emit_pa_cl_vte_cntl,edge,,14,14,0,0,d22cb72b1a6dd5cb,2026-11-04
-render_set_pa_cl_vte_cntl,edge,,40,40,0,0,59d05270886aea8e,2026-11-04
+render_configure_screen_scissor,edge,,13,13,0,0,26090706b37974bd,2026-11-05
+render_set_guard_band_discard_adjust,edge,,13,13,0,0,d796d1a200c99651,2026-11-05
+render_set_screen_offset,edge,,13,13,0,0,cb63cd7b024ef86f,2026-11-05
+render_set_guard_band_clip_adjust,edge,,13,13,0,0,2d272dbad04ea940,2026-11-05
+render_configure_viewport,edge,,11,11,0,0,9b6f3b3ea5963562,2026-11-05
+render_emit_pa_cl_vte_cntl,edge,,14,14,0,0,5611618bfd5135ba,2026-11-05
+render_set_pa_cl_vte_cntl,edge,,45,45,0,0,70ef1c91ed183e42,2026-11-05
