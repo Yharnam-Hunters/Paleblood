@@ -71,7 +71,7 @@ static int to_metal(const uint32_t *spirv, size_t words, const char *name)
     int ok = system(command) == 0;
     int compiled = -1;
     if (ok && installed("xcrun -sdk macosx metal --version")) {
-        snprintf(command, sizeof command, "xcrun -sdk macosx metal -std=metal2.3 -c %s -o %s", metal, air);
+        snprintf(command, sizeof command, "xcrun -sdk macosx metal -std=macos-metal2.3 -c %s -o %s", metal, air);
         compiled = system(command) == 0;
         ok = compiled;
     }
