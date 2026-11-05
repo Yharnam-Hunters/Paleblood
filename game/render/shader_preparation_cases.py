@@ -60,6 +60,7 @@ def cases():
 
 
 def main():
+    """Write synthetic shader-preparation cases to the requested directory."""
     if len(sys.argv)!=2:
         print(__doc__,file=sys.stderr);return 2
     out=Path(sys.argv[1]);out.mkdir(parents=True,exist_ok=True)
