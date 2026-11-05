@@ -3,7 +3,7 @@
 
      pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--app0 DIR] [--data DIR] [--display none|headless|window] [--display-capture DIR] [--nids NID_DB.xml]
             [--module-hook MODULE:OFFSET:SIZE:ACTION:NAME]...
-            [--status OUT.json] [--timeout SECONDS] [--trace]
+            [--status OUT.json] [--timeout SECONDS] [--trace] [--game-lib LIBRARY]
      pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]
             (list every import: importer, library, symbol, kind, provider, provider offset, size)
 
@@ -40,11 +40,13 @@
 #include "runtime/display.h"
 #include "runtime/loader.h"
 #include "runtime/memory.h"
+#include "runtime/host_hooks.h"
 #include "runtime/nid.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
 #include <asm/prctl.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <pthread.h>
 #include <setjmp.h>
@@ -581,17 +583,18 @@ static int display_mode_named(const char *name, rt_display_mode *mode)
 static const char *usage =
     "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--app0 DIR] [--data DIR] [--display none|headless|window] [--display-capture DIR] [--nids NID_DB.xml]\n"
     "              [--module-hook MODULE:OFFSET:SIZE:ACTION:NAME]...\n"
-    "              [--status OUT.json] [--timeout S] [--trace]\n"
+    "              [--status OUT.json] [--timeout S] [--trace] [--game-lib LIBRARY]\n"
     "       pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]\n";
 
 int main(int argc, char **argv)
 {
-    const char *nid_path = getenv("BB_NID_DB"), *status_path = NULL, *display_capture = NULL;
+    const char *nid_path = getenv("BB_NID_DB"), *status_path = NULL, *display_capture = NULL, *game_library_path = NULL;
     int timeout = 30, trace = 0, list = 0;
     rt_display_mode display_mode = RT_DISPLAY_NONE;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--nids") && i + 1 < argc) nid_path = argv[++i];
         else if (!strcmp(argv[i], "--status") && i + 1 < argc) status_path = argv[++i];
+        else if (!strcmp(argv[i], "--game-lib") && i + 1 < argc && !game_library_path) game_library_path = argv[++i];
         else if (!strcmp(argv[i], "--timeout") && i + 1 < argc) timeout = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--module") && i + 1 < argc && object_count && object_count < MAX_OBJECTS)
             objects[object_count++].path = argv[++i];
@@ -763,6 +766,30 @@ int main(int argc, char **argv)
         return 3;
     }
 
+    rt_thread_register_main(stack, STACK_SIZE);
+    if (game_library_path) {
+        /* Retain this library until process exit: installed jumps and optional probes refer to
+           its code for the whole guest lifetime. Import listing returned before this point. */
+        void *game_library = dlopen(game_library_path, RTLD_NOW | RTLD_LOCAL);
+        if (!game_library) {
+            fprintf(stderr, "pbboot: cannot load game library %s: %s\n", game_library_path, dlerror());
+            return 3;
+        }
+        dlerror();
+        int (*initialize)(const rt_host *) = (int (*)(const rt_host *))dlsym(game_library, "bbgame_init");
+        const char *load_error = dlerror();
+        if (load_error || !initialize) {
+            fprintf(stderr, "pbboot: game library %s has no bbgame_init: %s\n", game_library_path,
+                    load_error ? load_error : "null entry");
+            return 3;
+        }
+        rt_host host = {.version = RT_HOST_API_VERSION, .image = objects[0].image, .image_size = objects[0].size};
+        if (rt_host_hooks_initialize(&host) || initialize(&host)) {
+            fprintf(stderr, "pbboot: game library %s initialization failed; guest not entered\n", game_library_path);
+            return 3;
+        }
+    }
+
     static unsigned char alt[1 << 16];
     stack_t ss = {.ss_sp = alt, .ss_size = sizeof alt};
     sigaltstack(&ss, NULL);
@@ -775,7 +802,6 @@ int main(int argc, char **argv)
     for (size_t i = 0; i < sizeof signals / sizeof signals[0]; i++) sigaction(signals[i], &sa, NULL);
 
     unsigned char *stack_top = stack + STACK_SIZE - 64;
-    rt_thread_register_main(stack, STACK_SIZE);
     /* Modules first, in the order given: entry(argument size 0, no arguments, no start override)
        runs the module's constructors and then its start function. */
     const char *phase = "eboot";
