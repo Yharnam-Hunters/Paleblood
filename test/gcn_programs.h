@@ -266,4 +266,122 @@ static const uint32_t vertex_pos1[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* Per lane i, from in record i (x, y, z, w; 16 bytes): out record i (64 bytes) holds
+   v_mul_i32_i24 x, y; v_mul_u32_u24 x, y; v_mad_i32_i24 x, y, z; v_bfe_u32 and v_bfe_i32 of x at
+   offset y, width z; v_bfm_b32 y, z; x + y + carry (carry in: w != 0) and its carry out; x - y -
+   borrow (borrow in: w != 0) and its borrow out; v_mad_u32_u24 x, y, z. */
+static const uint32_t integer_batch[] = {
+    0x34020084, /* v_lshlrev_b32_e32 v1, 4, v0 */
+    0xe0381000, 0x80000201, /* buffer_load_dwordx4 v[2:5], v1, s[0:3], 0 offen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x120c0702, /* v_mul_i32_i24_e32 v6, v2, v3 */
+    0xd2160007, 0x00020702, /* v_mul_u32_u24_e64 v7, v2, v3 */
+    0xd2840008, 0x04120702, /* v_mad_i32_i24 v8, v2, v3, v4 */
+    0xd2900009, 0x04120702, /* v_bfe_u32 v9, v2, v3, v4 */
+    0xd292000a, 0x04120702, /* v_bfe_i32 v10, v2, v3, v4 */
+    0x3c160903, /* v_bfm_b32_e32 v11, v3, v4 */
+    0x7d8a0a80, /* v_cmp_ne_u32_e32 vcc, 0, v5 */
+    0x50180702, /* v_addc_u32_e32 v12, vcc, v2, v3, vcc */
+    0xd200000d, 0x01a90280, /* v_cndmask_b32_e64 v13, 0, 1, vcc */
+    0xd18a0008, 0x00020a80, /* v_cmp_ne_u32_e64 s[8:9], 0, v5 */
+    0xd2520a0e, 0x00220702, /* v_subb_u32_e64 v14, s[10:11], v2, v3, s[8:9] */
+    0xd200000f, 0x00290280, /* v_cndmask_b32_e64 v15, 0, 1, s[10:11] */
+    0xd2860010, 0x04120702, /* v_mad_u32_u24 v16, v2, v3, v4 */
+    0x34220086, /* v_lshlrev_b32_e32 v17, 6, v0 */
+    0xe0701000, 0x80010611, /* buffer_store_dword v6, v17, s[4:7], 0 offen */
+    0xe0701004, 0x80010711, /* buffer_store_dword v7, v17, s[4:7], 0 offen offset:4 */
+    0xe0701008, 0x80010811, /* buffer_store_dword v8, v17, s[4:7], 0 offen offset:8 */
+    0xe070100c, 0x80010911, /* buffer_store_dword v9, v17, s[4:7], 0 offen offset:12 */
+    0xe0701010, 0x80010a11, /* buffer_store_dword v10, v17, s[4:7], 0 offen offset:16 */
+    0xe0701014, 0x80010b11, /* buffer_store_dword v11, v17, s[4:7], 0 offen offset:20 */
+    0xe0701018, 0x80010c11, /* buffer_store_dword v12, v17, s[4:7], 0 offen offset:24 */
+    0xe070101c, 0x80010d11, /* buffer_store_dword v13, v17, s[4:7], 0 offen offset:28 */
+    0xe0701020, 0x80010e11, /* buffer_store_dword v14, v17, s[4:7], 0 offen offset:32 */
+    0xe0701024, 0x80010f11, /* buffer_store_dword v15, v17, s[4:7], 0 offen offset:36 */
+    0xe0701028, 0x80011011, /* buffer_store_dword v16, v17, s[4:7], 0 offen offset:40 */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Scalar compares with constants, min and max, and bit-field extracts; every lane stores the
+   same sixteen words (out[0..15]): see test_gcn_compute.c for each. */
+static const uint32_t scalar_batch[] = {
+    0xbe8803ff, 0x0000ffff, /* s_mov_b32 s8, 0xffff */
+    0xbe8903c1, /* s_mov_b32 s9, -1 */
+    0xbe8a03ff, 0x12345678, /* s_mov_b32 s10, 0x12345678 */
+    0xbe8b03ff, 0x0000f000, /* s_mov_b32 s11, 0xf000 */
+    0xb488ffff, /* s_cmpk_eq_u32 s8, 0xffff */
+    0x85148081, /* s_cselect_b32 s20, 1, 0 */
+    0xb189ffff, /* s_cmpk_eq_i32 s9, 0xffff */
+    0x85158081, /* s_cselect_b32 s21, 1, 0 */
+    0xb3888000, /* s_cmpk_lt_i32 s8, 0x8000 */
+    0x85168081, /* s_cselect_b32 s22, 1, 0 */
+    0xb5888000, /* s_cmpk_gt_u32 s8, 0x8000 */
+    0x85178081, /* s_cselect_b32 s23, 1, 0 */
+    0x83180809, /* s_min_i32 s24, s9, s8 */
+    0x85198081, /* s_cselect_b32 s25, 1, 0 */
+    0x849a0809, /* s_max_u32 s26, s9, s8 */
+    0x851b8081, /* s_cselect_b32 s27, 1, 0 */
+    0x841c0809, /* s_max_i32 s28, s9, s8 */
+    0x851d8081, /* s_cselect_b32 s29, 1, 0 */
+    0x939eff0a, 0x00080008, /* s_bfe_u32 s30, s10, 0x80008 */
+    0x851f8081, /* s_cselect_b32 s31, 1, 0 */
+    0x9420ff0b, 0x0004000c, /* s_bfe_i32 s32, s11, 0x4000c */
+    0x85218081, /* s_cselect_b32 s33, 1, 0 */
+    0x93a2880a, /* s_bfe_u32 s34, s10, 8 */
+    0x85238081, /* s_cselect_b32 s35, 1, 0 */
+    0x7e020214, /* v_mov_b32_e32 v1, s20 */
+    0x7e040215, /* v_mov_b32_e32 v2, s21 */
+    0x7e060216, /* v_mov_b32_e32 v3, s22 */
+    0x7e080217, /* v_mov_b32_e32 v4, s23 */
+    0x7e0a0218, /* v_mov_b32_e32 v5, s24 */
+    0x7e0c0219, /* v_mov_b32_e32 v6, s25 */
+    0x7e0e021a, /* v_mov_b32_e32 v7, s26 */
+    0x7e10021b, /* v_mov_b32_e32 v8, s27 */
+    0x7e12021c, /* v_mov_b32_e32 v9, s28 */
+    0x7e14021d, /* v_mov_b32_e32 v10, s29 */
+    0x7e16021e, /* v_mov_b32_e32 v11, s30 */
+    0x7e18021f, /* v_mov_b32_e32 v12, s31 */
+    0x7e1a0220, /* v_mov_b32_e32 v13, s32 */
+    0x7e1c0221, /* v_mov_b32_e32 v14, s33 */
+    0x7e1e0222, /* v_mov_b32_e32 v15, s34 */
+    0x7e200223, /* v_mov_b32_e32 v16, s35 */
+    0xe0700000, 0x80010100, /* buffer_store_dword v1, off, s[4:7], 0 */
+    0xe0700004, 0x80010200, /* buffer_store_dword v2, off, s[4:7], 0 offset:4 */
+    0xe0700008, 0x80010300, /* buffer_store_dword v3, off, s[4:7], 0 offset:8 */
+    0xe070000c, 0x80010400, /* buffer_store_dword v4, off, s[4:7], 0 offset:12 */
+    0xe0700010, 0x80010500, /* buffer_store_dword v5, off, s[4:7], 0 offset:16 */
+    0xe0700014, 0x80010600, /* buffer_store_dword v6, off, s[4:7], 0 offset:20 */
+    0xe0700018, 0x80010700, /* buffer_store_dword v7, off, s[4:7], 0 offset:24 */
+    0xe070001c, 0x80010800, /* buffer_store_dword v8, off, s[4:7], 0 offset:28 */
+    0xe0700020, 0x80010900, /* buffer_store_dword v9, off, s[4:7], 0 offset:32 */
+    0xe0700024, 0x80010a00, /* buffer_store_dword v10, off, s[4:7], 0 offset:36 */
+    0xe0700028, 0x80010b00, /* buffer_store_dword v11, off, s[4:7], 0 offset:40 */
+    0xe070002c, 0x80010c00, /* buffer_store_dword v12, off, s[4:7], 0 offset:44 */
+    0xe0700030, 0x80010d00, /* buffer_store_dword v13, off, s[4:7], 0 offset:48 */
+    0xe0700034, 0x80010e00, /* buffer_store_dword v14, off, s[4:7], 0 offset:52 */
+    0xe0700038, 0x80010f00, /* buffer_store_dword v15, off, s[4:7], 0 offset:56 */
+    0xe070003c, 0x80011000, /* buffer_store_dword v16, off, s[4:7], 0 offset:60 */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Per lane i, from in[i] (x): out record i (32 bytes) holds v_sin_f32, v_cos_f32, v_exp_f32,
+   v_log_f32 and v_rsq_clamp_f32 of x. */
+static const uint32_t transcendentals[] = {
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0xe0301000, 0x80000201, /* buffer_load_dword v2, v1, s[0:3], 0 offen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x7e066b02, /* v_sin_f32_e32 v3, v2 */
+    0x7e086d02, /* v_cos_f32_e32 v4, v2 */
+    0x7e0a4b02, /* v_exp_f32_e32 v5, v2 */
+    0x7e0c4f02, /* v_log_f32_e32 v6, v2 */
+    0x7e0e5902, /* v_rsq_clamp_f32_e32 v7, v2 */
+    0x34100085, /* v_lshlrev_b32_e32 v8, 5, v0 */
+    0xe0701000, 0x80010308, /* buffer_store_dword v3, v8, s[4:7], 0 offen */
+    0xe0701004, 0x80010408, /* buffer_store_dword v4, v8, s[4:7], 0 offen offset:4 */
+    0xe0701008, 0x80010508, /* buffer_store_dword v5, v8, s[4:7], 0 offen offset:8 */
+    0xe070100c, 0x80010608, /* buffer_store_dword v6, v8, s[4:7], 0 offen offset:12 */
+    0xe0701010, 0x80010708, /* buffer_store_dword v7, v8, s[4:7], 0 offen offset:16 */
+    0xbf810000, /* s_endpgm */
+};
+
 #endif
