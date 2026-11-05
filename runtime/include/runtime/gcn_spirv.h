@@ -38,10 +38,14 @@ int gcn_translate_compute(const uint32_t *code, size_t dwords, const gcn_compute
 
 /* A vertex shader (GCN's hardware VS stage). Its only input is the vertex index; the shader's
    input settings say which VGPR the hardware puts it in. Exports: pos0 becomes the position,
-   param n the output at location n. */
+   param n the output at location n. The position exports after pos0 carry what
+   output_control (the shader's PA_CL_VS_OUT_CNTL) enables, in this order: the misc vector, then
+   clip/cull-distance vectors 0 and 1 (distances 0-3 and 4-7). Clip distances become SPIR-V's
+   ClipDistance; the misc vector and cull distances stop translation. */
 typedef struct {
     unsigned user_sgprs;
     unsigned vertex_index_vgpr;
+    uint32_t output_control;
 } gcn_vertex_layout;
 
 int gcn_translate_vertex(const uint32_t *code, size_t dwords, const gcn_vertex_layout *layout,
