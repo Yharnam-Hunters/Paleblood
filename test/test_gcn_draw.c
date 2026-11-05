@@ -24,9 +24,11 @@ enum { SIZE = 16, PIXEL_FLOATS = 4, IMAGE_BYTES = SIZE * SIZE * PIXEL_FLOATS * s
 _Static_assert((int)IMAGE_BYTES <= (int)BUFFER_BYTES, "the image fits a test buffer");
 static const float CLEAR = 9.0f, TOLERANCE = 2e-3f; /* halves keep 11 significant bits */
 
+static uint32_t output_control; /* the vertex layout's PA_CL_VS_OUT_CNTL, for the next draw */
+
 static VkShaderModule shader(gpu *g, const uint32_t *code, size_t dwords, int pixel, const char *name)
 {
-    const gcn_vertex_layout vertex = {8, 0};
+    const gcn_vertex_layout vertex = {8, 0, output_control};
     const gcn_pixel_layout fragment = {8, 0};
     uint32_t *spirv = NULL;
     size_t words = 0;
@@ -236,6 +238,21 @@ int main(void)
             if (x < SIZE / 2) CHECK(p[0] == CLEAR && p[1] == CLEAR && p[2] == CLEAR && p[3] == CLEAR); /* red below 0.5 */
             else CHECK(drawn(p, x, y));
         }
+
+    /* Clip distances 0 and 1 are the position's x and y (output control: both in the first
+       distance vector), so only the bottom-right quarter is drawn; the rest keeps the clear value. */
+    enum { CLIP_DISTANCES_0_1 = 0x400003 };
+    output_control = CLIP_DISTANCES_0_1;
+    memset(readback.mapped, 0, BUFFER_BYTES);
+    CHECK(draw(&g, &t, PROGRAM_OF(vertex_clip), PROGRAM_OF(pixel_color), user, &readback, "vertex_clip") == 0);
+    dump(pixels, "vertex_clip");
+    for (int y = 0; y < SIZE; y++)
+        for (int x = 0; x < SIZE; x++) {
+            const float *p = pixels + (y * SIZE + x) * PIXEL_FLOATS;
+            if (x < SIZE / 2 || y < SIZE / 2) CHECK(p[0] == CLEAR && p[1] == CLEAR && p[2] == CLEAR && p[3] == CLEAR);
+            else CHECK(drawn(p, x, y));
+        }
+    output_control = 0;
 
     if (failures) fprintf(stderr, "%d failure(s)\n", failures);
     vkDeviceWaitIdle(g.device);

@@ -49,6 +49,7 @@ typedef struct {
     unsigned user_sgprs;
     int workgroup_id_x_sgpr;
     unsigned vertex_index_vgpr, barycentric_vgpr;
+    uint32_t output_control;         /* a vertex shader's PA_CL_VS_OUT_CNTL */
 } stage_layout;
 
 enum { POSITION_TARGET = 12, PARAMETER_TARGET_FIRST = 32, PARAMETER_COUNT = 32, COLOR_TARGET_COUNT = 8, MAX_INTERFACE = 80 };
@@ -64,6 +65,7 @@ typedef struct {
     uint32_t push_constants, local_invocation_id, workgroup_id;
     /* stage inputs and outputs, made on first use, and every one the entry point lists */
     uint32_t position, parameter[PARAMETER_COUNT], color[COLOR_TARGET_COUNT], attribute[PARAMETER_COUNT];
+    uint32_t clip_distance;          /* the ClipDistance array, made on first use */
     uint32_t interface[MAX_INTERFACE];
     unsigned interface_count;
     /* v_interp_p1 results waiting for their p2: attribute * 4 + channel + 1 per VGPR, or 0 */
@@ -1003,6 +1005,61 @@ static uint32_t vec4_component(translator *t, uint32_t storage, uint32_t variabl
     return value(t, SPV_OP_ACCESS_CHAIN, spirv_type_pointer(&t->m, storage, t_float(t)), 2, variable, konst(t, component));
 }
 
+/* PA_CL_VS_OUT_CNTL fields (AMD's GFX7 field header, gca/gfx_7_2_sh_mask.h): CLIP_DIST_ENA_0-7
+   in bits 0-7, CULL_DIST_ENA_0-7 in bits 8-15, VS_OUT_MISC_VEC_ENA 21, VS_OUT_CCDIST0_VEC_ENA 22,
+   VS_OUT_CCDIST1_VEC_ENA 23. */
+enum { CLIP_DISTANCE_ENABLES = 0xff, CULL_DISTANCE_SHIFT = 8, MISC_VECTOR_BIT = 21, DISTANCE_VECTOR_0_BIT = 22,
+       DISTANCES_PER_VECTOR = 4, MAX_DISTANCES = 8 };
+
+/* What a vertex shader's position export after pos0 carries: the index of its clip/cull-distance
+   vector (0 or 1), or -1 (after failing) for the misc vector or an export nothing enables. */
+static int distance_vector(translator *t, unsigned target)
+{
+    const uint32_t control = t->layout->output_control;
+    unsigned next = POSITION_TARGET + 1;
+    if (control >> MISC_VECTOR_BIT & 1) {
+        if (target == next) {
+            fail(t, "exp pos%u: the misc vector (point size, edge flag, render target and viewport index) is not translated yet",
+                 target - POSITION_TARGET);
+            return -1;
+        }
+        next++;
+    }
+    for (int vector = 0; vector < 2; vector++) {
+        if (!(control >> (DISTANCE_VECTOR_0_BIT + vector) & 1)) continue;
+        if (target == next) return vector;
+        next++;
+    }
+    fail(t, "exp to target %u is not translated yet (output control %#x enables nothing there)", target, control);
+    return -1;
+}
+
+/* Writes the enabled components of a clip/cull-distance vector: component c is distance
+   4 * vector + c, a clip distance when CLIP_DIST_ENA has it (a cull distance stops translation). */
+static void export_distances(translator *t, int vector, unsigned enabled, const uint32_t components[4])
+{
+    const uint32_t control = t->layout->output_control, clip = control & CLIP_DISTANCE_ENABLES;
+    unsigned count = 0;
+    while (count < MAX_DISTANCES && clip >> count) count++;
+    for (unsigned c = 0; c < 4; c++) {
+        const unsigned distance = (unsigned)vector * DISTANCES_PER_VECTOR + c;
+        if (!(enabled >> c & 1)) continue;
+        if (control >> (CULL_DISTANCE_SHIFT + distance) & 1) {
+            fail(t, "exp: cull distance %u is not translated yet", distance);
+            return;
+        }
+        if (!(clip >> distance & 1)) continue; /* not enabled: the hardware ignores it */
+        if (!t->clip_distance) {
+            const uint32_t array = spirv_global(&t->m, SPV_OP_TYPE_ARRAY, (const uint32_t[]){t_float(t), konst(t, count)}, 2);
+            t->clip_distance = interface_variable(t, SPV_STORAGE_OUTPUT, array, SPV_DECORATION_BUILT_IN, SPV_BUILT_IN_CLIP_DISTANCE);
+        }
+        const uint32_t merge = begin_if(t, exec_bit(t));
+        store(t, t->out, value(t, SPV_OP_ACCESS_CHAIN, spirv_type_pointer(&t->m, SPV_STORAGE_OUTPUT, t_float(t)), 2,
+                               t->clip_distance, konst(t, distance)), components[c]);
+        end_if(t, merge);
+    }
+}
+
 /* The vec4 an export target writes: 0 (after failing) for one not translated in this stage. */
 static uint32_t export_variable(translator *t, unsigned target)
 {
@@ -1015,7 +1072,6 @@ static uint32_t export_variable(translator *t, unsigned target)
         number = target, slot = &t->color[number];
     }
     if (!slot) {
-        /* pos1-3 and the depth target's meanings depend on GPU settings not read here */
         fail(t, "exp to target %u is not translated yet", target);
         return 0;
     }
@@ -1030,8 +1086,11 @@ static uint32_t export_variable(translator *t, unsigned target)
 static void export_instruction(translator *t, const uint32_t *w)
 {
     const unsigned enabled = w[0] & 0xf, target = (w[0] >> 4) & 0x3f, compressed = (w[0] >> 10) & 1, valid_mask = (w[0] >> 12) & 1;
-    const uint32_t variable = export_variable(t, target);
-    if (!variable) return;
+    const int extra_position = t->layout->stage == STAGE_VERTEX && target > POSITION_TARGET && target <= POSITION_TARGET + 3;
+    const int vector = extra_position ? distance_vector(t, target) : -1;
+    if (extra_position && vector < 0) return;
+    const uint32_t variable = extra_position ? 0 : export_variable(t, target);
+    if (!extra_position && !variable) return;
     if (valid_mask && t->layout->stage == STAGE_PIXEL) {
         const uint32_t inactive = value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, exec_bit(t));
         const uint32_t discard = spirv_new_id(&t->m), merge = spirv_new_id(&t->m);
@@ -1050,6 +1109,10 @@ static void export_instruction(translator *t, const uint32_t *w)
         } else {
             components[c] = as_float(t, load(t, t_uint(t), vgpr(t, (w[1] >> (8 * c)) & 0xff)));
         }
+    }
+    if (extra_position) {
+        export_distances(t, vector, enabled, components);
+        return;
     }
     const uint32_t merge = begin_if(t, exec_bit(t));
     for (unsigned c = 0; c < 4; c++)
@@ -1381,6 +1444,8 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
     spirv_emit(m, fn, SPV_OP_BRANCH, &header, 1);
     spirv_append(m, fn, &t->blocks);
     spirv_emit(m, fn, SPV_OP_FUNCTION_END, NULL, 0);
+    if (t->clip_distance)
+        spirv_emit(m, &m->sections[SPIRV_CAPABILITIES], SPV_OP_CAPABILITY, (const uint32_t[]){SPV_CAPABILITY_CLIP_DISTANCE}, 1);
     static const uint32_t models[] = {[STAGE_COMPUTE] = SPV_EXECUTION_MODEL_GL_COMPUTE, [STAGE_VERTEX] = SPV_EXECUTION_MODEL_VERTEX,
                                       [STAGE_PIXEL] = SPV_EXECUTION_MODEL_FRAGMENT};
     spirv_emit_with_string(m, &m->sections[SPIRV_ENTRY_POINTS], SPV_OP_ENTRY_POINT,
@@ -1418,7 +1483,7 @@ int gcn_translate_vertex(const uint32_t *code, size_t dwords, const gcn_vertex_l
                          uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size)
 {
     const stage_layout s = {.stage = STAGE_VERTEX, .user_sgprs = layout->user_sgprs, .workgroup_id_x_sgpr = -1,
-                            .vertex_index_vgpr = layout->vertex_index_vgpr};
+                            .vertex_index_vgpr = layout->vertex_index_vgpr, .output_control = layout->output_control};
     return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
 }
 

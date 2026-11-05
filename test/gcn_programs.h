@@ -384,4 +384,17 @@ static const uint32_t transcendentals[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* As vertex_position_color, plus pos1 = (x, y): with output control 0x400003 (clip distances 0
+   and 1 in the first distance vector) clip distance 0 is the position's x and 1 its y, so x < 0
+   and y < 0 are clipped. */
+static const uint32_t vertex_clip[] = {
+    0xebf32000, 0x80000100, /* tbuffer_load_format_xyzw v[1:4], v0, s[0:3], 0 format:[BUF_DATA_FORMAT_32_32_32_32,BUF_NUM_FORMAT_FLOAT] idxen */
+    0xebf32000, 0x80010500, /* tbuffer_load_format_xyzw v[5:8], v0, s[4:7], 0 format:[BUF_DATA_FORMAT_32_32_32_32,BUF_NUM_FORMAT_FLOAT] idxen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf800020f, 0x08070605, /* exp param0, v5, v6, v7, v8 */
+    0xf80000cf, 0x04030201, /* exp pos0, v1, v2, v3, v4 */
+    0xf80008d3, 0x00000201, /* exp pos1, v1, v2, off, off done */
+    0xbf810000, /* s_endpgm */
+};
+
 #endif
