@@ -4,6 +4,7 @@
 #include "record_descriptor_offsets.h"
 #include "record_geometry_classification_calls.h"
 #include "record_geometry_status.h"
+#include "record_tuple.h"
 namespace render {
 RT_ORIGINAL(0x01471770, record_encoding_byte_flags, uint32_t(const uint32_t *encoding));
 RT_ORIGINAL(0x01489940, record_descriptor_count_exponent, uint32_t(const RecordDescriptorPrefix *record));
