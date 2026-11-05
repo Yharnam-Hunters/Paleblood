@@ -397,4 +397,17 @@ static const uint32_t vertex_clip[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* A pixel shader that colours every pixel from its own user data, s0-s3 (red, green, blue,
+   alpha), packed as halves. */
+static const uint32_t pixel_user_color[] = {
+    0x7e040200, /* v_mov_b32_e32 v2, s0 */
+    0x7e060201, /* v_mov_b32_e32 v3, s1 */
+    0x7e080202, /* v_mov_b32_e32 v4, s2 */
+    0x7e0a0203, /* v_mov_b32_e32 v5, s3 */
+    0x5e0c0702, /* v_cvt_pkrtz_f16_f32_e32 v6, v2, v3 */
+    0x5e0e0b04, /* v_cvt_pkrtz_f16_f32_e32 v7, v4, v5 */
+    0xf8001c0f, 0x00000706, /* exp mrt0, v6, v6, v7, v7 done compr vm */
+    0xbf810000, /* s_endpgm */
+};
+
 #endif
