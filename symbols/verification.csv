@@ -240,5 +240,5 @@ render_yebis_get_recursive_sample_parameters,edge,,23,23,0,0,6e6f0aa41d5607ce,20
 render_yebis_get_recursive_sample_parameters,edge,30,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,60,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,uncapped,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
-render_finish_present_commands,edge,,8,8,0,0,268d0b84b8bb3f9d,2026-11-04
-render_finish_present_context,edge,,2,2,0,0,e1d83f34ecd6b32a,2026-11-04
+render_finish_present_commands,edge,,12,12,0,0,fb384338f79a5298,2026-11-05
+render_finish_present_context,edge,,2,2,0,0,639531387ad092ee,2026-11-05
