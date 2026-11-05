@@ -240,4 +240,4 @@ render_yebis_get_recursive_sample_parameters,edge,,23,23,0,0,6e6f0aa41d5607ce,20
 render_yebis_get_recursive_sample_parameters,edge,30,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,60,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,uncapped,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
-render_allocate_shader_upload,edge,,40,40,0,0,22f03ec3d10e6874,2026-11-04
+render_allocate_shader_upload,edge,,40,40,0,0,48df8d1e68143c6f,2026-11-05
