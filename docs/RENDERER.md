@@ -92,9 +92,11 @@ Instead:
          per VGPR (made by `v_cvt_pkrtz_f16_f32`, which rounds toward zero exactly as defined,
          subnormals and overflow included). With the valid-mask bit, a pixel whose lane is not in
          EXEC is discarded.
-       - **Not exported yet:** `pos1`-`pos3` and the depth target, whose meanings depend on GPU
-         settings (clip distances, point size and the like) the renderer will read with the engine
-         hooks.
+       - **`pos1`-`pos3`** carry what the shader's `PA_CL_VS_OUT_CNTL` enables, in the order it
+         defines: the misc vector, then clip/cull-distance vectors 0 and 1. The vertex layout
+         takes that register value (`output_control`). Clip distances become SPIR-V's
+         `ClipDistance`; the misc vector (point size and the like) and cull distances stop
+         translation by name, as does the depth target.
        - **Inputs:** a vertex shader gets the vertex index in the VGPR its layout names. A pixel
          shader's `v_interp_p1`/`p2` pair reads attribute n at location n, interpolated by the GPU
          with perspective at the pixel centre; the layout names the VGPRs that hold those
@@ -158,9 +160,76 @@ Instead:
      replay of the packets. The binders' register blocks also give what the translator's layouts
      need: where each shader's code starts, its input VGPRs, and the vertex-output control that
      says what `pos1` carries.
-   - **Next:** name the draws and setters in `symbols/functions.csv` from their disassembly, find
-     the render-target, viewport and clear paths, and follow the auto-index draw wrapper's
-     callers up to the title screen's 2D passes.
+   - **The key entry points** (from their disassembly; several are decompiled in open PRs):
+     - **`setRenderTarget`, `0x014738b0`:** (command buffer, slot, render target). It writes 11
+       context registers from `CB_COLOR0_BASE + 15 × slot` (base address, pitch, slice, view,
+       format info, attributes and the compression metadata), straight from the render target's
+       first 11 words. A null or invalid target writes `CB_COLORn_INFO = 0` instead, which
+       switches the slot off.
+     - **The depth render target, `0x014739b0`:** `DB_Z_INFO` and the related depth, stencil
+       and HTILE registers, or both INFO registers cleared.
+     - **`setViewport`, `0x014765e0`:** (command buffer, index, zmin, zmax, scale[3],
+       offset[3]). It writes `PA_SC_VPORT_ZMIN/ZMAX` (`0xb4 + 2 × index`), then the six
+       scale and offset floats from `PA_CL_VPORT_XSCALE` (`0x10f + 6 × index`).
+     - **Draws:** the auto-index draw `0x014741b0` (command buffer, index count) and the
+       other writers listed above.
+     - **User data:** `0x01476420` (command buffer, stage, slot, value) writes one SGPR of a
+       stage's user data: `SET_SH_REG` at a per-stage base register from a table at `0x04cd15c0`,
+       plus the slot. The table's order gives the library's stage numbers: 0 compute, 1 pixel,
+       2 vertex, 3 geometry, 4 export, 5 hull, 6 local (`COMPUTE_USER_DATA_0`, then
+       `SPI_SHADER_USER_DATA_PS_0`, `_VS_0`, `_GS_0`, `_ES_0`, `_HS_0`, `_LS_0`). The writers
+       of 2, 4 and 8 words (`0x01476390`, `0x014761a0`/`0x014762f0`, `0x01476240`) carry
+       pointers and buffer and texture descriptors the same way.
+     - **Multisample positions:** `0x014772c0` and `0x014773b0` write the 16 sample-location
+       registers from `0x2fe`, plus `PA_SC_CENTROID_PRIORITY`.
+     - **Clears** are ordinary draws with a clearing pixel shader on this GPU, so they need no
+       path of their own. The depth and stencil clear values are context registers
+       (`DB_DEPTH_CLEAR`, `DB_STENCIL_CLEAR`; already replaced, #321-#327).
+   - **The shader register blocks**, found in the header of each shader file in the game's
+     archive (`.vpo` vertex, `.ppo` pixel). Each word was identified by values worked out from
+     the shader's own code (local counts, no game data in the repository):
+     - **Vertex (7 words from header offset `0x3c`):** `SPI_SHADER_PGM_LO_VS`, `PGM_HI_VS`,
+       `PGM_RSRC1_VS`, `PGM_RSRC2_VS`, `SPI_VS_OUT_CONFIG`, `SPI_SHADER_POS_FORMAT`,
+       `PA_CL_VS_OUT_CNTL`.
+       - The position format's non-zero fields match the exported positions in all 7,564
+         vertex shaders that export one.
+       - The export count matches the exported parameters in all but 5.
+       - `RSRC1`'s register count covers every exported register.
+       - In the file, the program address words hold placeholders (a small number, then
+         `0xffffffff`); the loaded shader's address replaces them.
+     - **What `pos1` carries:** in every shader that exports it (3,496), `PA_CL_VS_OUT_CNTL` is
+       `0x400003`: clip distances 0 and 1 in the first clip/cull-distance vector. The extra
+       position exports follow the order the register defines (the misc vector, then distance
+       vectors 0 and 1), so `pos1` here is two clip distances.
+     - **Pixel (12 words from `0x3c`):** `SPI_SHADER_PGM_LO_PS`, `PGM_HI_PS`, `PGM_RSRC1_PS`,
+       `PGM_RSRC2_PS`, `SPI_SHADER_Z_FORMAT`, `SPI_SHADER_COL_FORMAT`, `SPI_PS_INPUT_ENA`,
+       `SPI_PS_INPUT_ADDR`, `SPI_PS_IN_CONTROL`, `SPI_BARYC_CNTL`, `DB_SHADER_CONTROL`,
+       `CB_SHADER_MASK`.
+       - The colour format and shader mask match the exported targets in all 2,796 pixel
+         shaders that export colour.
+       - `NUM_INTERP` matches the attributes the code reads in 2,628 of them.
+       - Every one enables the perspective-centre barycentrics first, so they arrive in `v0`
+         and `v1`.
+       - The inputs: 1,678 use only those barycentrics; 1,111 add the front-face flag; nine
+         also read the pixel position.
+     - **Still to confirm at run time:** that the game passes these same blocks to
+       `sceGnmSetVsShader` and `sceGnmSetPsShader`, with the code's address filled in.
+   - **How the hooks attach:** the library's functions are being decompiled like the rest of the
+     game, as replacements verified to write exactly the original packets. The renderer leaves
+     those packets alone, so verification still holds. Each of these replacements also makes one
+     observer call into the runtime: the render target's registers, the viewport, a shader's
+     register block, the user data, and the draw. The runtime's renderer keeps that state and,
+     at each draw, makes a Vulkan or Metal draw with the translated shaders, into images that
+     stand for the game's render targets. The packets themselves still go nowhere, as they do
+     now. Without the renderer the observer calls do nothing, so a boot without graphics behaves
+     as before.
+   - **Next:**
+     1. The runtime side: a renderer state built from those observer calls (registers in AMD's
+        layout), and a draw that runs, tested with synthetic calls, as the translator was.
+     2. The observer calls in the replacements, once the library's decompiled functions are
+        merged.
+     3. Then follow the auto-index draw wrapper's callers (`0x015fbb50`) up to the title
+        screen's 2D passes.
 4. **Textures and 3D.** The game's texture formats and tiling (from public format documentation),
    meshes, materials and post-processing.
 
