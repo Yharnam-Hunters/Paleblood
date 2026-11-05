@@ -2,7 +2,7 @@
 // Write the prefix of the reserved submission marker, then consume the entire reservation.
 // The present delegate calls this before snapshotting its buffer. Only the first two words
 // are initialized here; the other reserved words retain their existing contents.
-#include "command_packets.h"
+#include "command_reservation.h"
 
 namespace {
 constexpr uint32_t submission_marker_words = 64;
@@ -19,14 +19,10 @@ static_assert(sizeof(SubmissionMarkerPrefix) == 0x8);
 
 extern "C" void bb_render_command_prepare_submission(render::PacketBuffer *buffer)
 {
-    if (render::packet_available_words(buffer) < submission_marker_words) {
-        const uint8_t granted = buffer->space_callback(buffer, submission_marker_words,
-                                                       buffer->callback_argument);
-        if (granted == 0) return;
-    }
-    const uintptr_t cursor = buffer->cursor;
+    uintptr_t cursor;
+    if (!render::reserve_words(buffer, submission_marker_words, cursor)) return;
     auto *marker = reinterpret_cast<SubmissionMarkerPrefix *>(cursor);
     marker->header = submission_marker_header;
     marker->value = submission_marker_value;
-    buffer->cursor = cursor + submission_marker_words * render::packet_word_bytes;
+    render::set_packet_cursor(buffer, cursor + submission_marker_words * render::packet_word_bytes);
 }
