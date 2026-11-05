@@ -64,7 +64,7 @@ def cases():
     for source in ("first", "second"):
         for flag in (4, 16):
             c = basic(f"output_{source}_plus_one_flag_{flag}", returns="void", size=128)
-            c["buffers"]["first"] = {"size": 64, "bytes": "01020214036504ff" + "55" * 56}
+            c["buffers"]["first"] = {"size": 64, "bytes": bytes((1, flag, 2, flag, 3, flag, 4, flag)).hex() + "55" * 56}
             c["buffers"]["second"] = {
                 "size": 64,
                 "bytes": bytes((1, flag, 2, flag, 3, flag, 4, flag)).hex() + "66" * 56,
