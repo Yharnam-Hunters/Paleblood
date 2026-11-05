@@ -112,6 +112,7 @@ address,replacement,system,returns
 0x025b2fb0,bb_render_swap_chain_present,render,void
 0x02a44140,bb_engine_wide_string_destroy,engine,void
 0x02ab5a70,bb_render_present_record_consume,render,void
+0x02ab9850,bb_render_flush_shader_preparation,render,void
 0x02abb4f0,bb_render_record_auxiliary_predicate,render,i8
 0x02ad2c30,bb_render_reset_present_preparation_dirty,render,i64
 0x02ad5dd0,bb_render_swap_chain_present_mode,render,i32
