@@ -26,7 +26,7 @@ static int failures;
 
 #define PROGRAM(code) code, sizeof code / sizeof code[0]
 
-static const gcn_compute_layout layout = {{64, 1, 1}, 8, -1};
+static const gcn_compute_layout layout = {.local_size = {64, 1, 1}, .user_sgprs = 8, .workgroup_id_x_sgpr = -1};
 
 /* Runs spirv-val on the module: 1 valid, 0 invalid, -1 when spirv-val is not installed. */
 static int validate(const uint32_t *spirv, size_t words, const char *name)
@@ -82,11 +82,11 @@ static int to_metal(const uint32_t *spirv, size_t words, const char *name)
 
 typedef enum { COMPUTE, VERTEX, PIXEL } stage;
 
-static const gcn_vertex_layout vertex_layout = {8, 0, 0};
+static const gcn_vertex_layout vertex_layout = {.user_sgprs = 8};
 /* PA_CL_VS_OUT_CNTL values: clip distances 0 and 1 in the first distance vector (the game's
    shaders all use this one); the same with the misc vector first; a cull distance instead. */
 enum { CLIP_DISTANCES_0_1 = 0x400003, MISC_VECTOR_FIRST = 0x600003, CULL_DISTANCE_0 = 0x400100 };
-static const gcn_pixel_layout pixel_layout = {8, 0};
+static const gcn_pixel_layout pixel_layout = {.user_sgprs = 8, .push_constant_offset = 64};
 
 static uint32_t output_control; /* the vertex layout's, for the next translation */
 
@@ -152,6 +152,19 @@ int main(void)
     translates_as(VERTEX, PROGRAM(vertex_position_color), "vertex_position_color");
     translates_as(PIXEL, PROGRAM(pixel_color), "pixel_color");
     translates_as(PIXEL, PROGRAM(pixel_discard_left), "pixel_discard_left");
+    translates_as(PIXEL, PROGRAM(pixel_user_color), "pixel_user_color");
+
+    /* user data that would not fit the guaranteed push constants, or not on a word boundary */
+    {
+        uint32_t *spirv = NULL;
+        size_t words = 0;
+        char error[256] = "";
+        const gcn_pixel_layout past = {.user_sgprs = 8, .push_constant_offset = 68};
+        const gcn_pixel_layout unaligned = {.user_sgprs = 8, .push_constant_offset = 2};
+        CHECK(gcn_translate_pixel(PROGRAM(pixel_user_color), &past, &spirv, &words, error, sizeof error) == -1 &&
+              strstr(error, "push-constant byte 68"));
+        CHECK(gcn_translate_pixel(PROGRAM(pixel_user_color), &unaligned, &spirv, &words, error, sizeof error) == -1);
+    }
     refused_as(PIXEL, PROGRAM(pixel_p2_alone), "no v_interp_p1");
     refused_as(PIXEL, PROGRAM(pixel_other_barycentrics), "barycentrics in v2");
     refused_as(VERTEX, PROGRAM(vertex_pos1), "target 13");
