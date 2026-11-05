@@ -63,6 +63,11 @@ int main(void)
     translates(PROGRAM(scale_add), "scale_add");
     translates(PROGRAM(integer_and_select), "integer_and_select");
     translates(PROGRAM(constants_and_modifiers), "constants_and_modifiers");
+    translates(PROGRAM(divergent_if), "divergent_if");
+    translates(PROGRAM(uniform_loop), "uniform_loop");
+    translates(PROGRAM(vector_loop), "vector_loop");
+    translates(PROGRAM(compare_exec), "compare_exec");
+    translates(PROGRAM(masked_store), "masked_store");
 
     uint32_t *spirv = NULL;
     size_t words = 0;
