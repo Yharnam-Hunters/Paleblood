@@ -46,6 +46,7 @@ address,replacement,system,returns
 0x01473590,bb_render_emit_present_preparation_scalar,render,i64
 0x014735f0,bb_render_emit_present_preparation_byte,render,i64
 0x014769e0,bb_render_emit_present_last_record_packet,render,i64
+0x01477150,bb_render_configure_record_option,render,void
 0x01477b30,bb_render_command_emit_counter_operation,render,void
 0x014784a0,bb_render_command_prepare_submission,render,void
 0x01485070,bb_render_set_present_last_record_depth_compress_disable,render,i64
@@ -59,6 +60,7 @@ address,replacement,system,returns
 0x014867e0,bb_render_record_set_second_auxiliary_flag,render,i32
 0x01486800,bb_render_record_set_word_28_low22,render,i32
 0x01486cf0,bb_render_read_record_mapping_word,render,i64
+0x01496f60,bb_render_configure_viewport_and_guard_band,render,void
 0x0149c850,bb_render_record_apply_parameter_tuple,render,i32
 0x0149e570,bb_render_calculate_second_auxiliary,render,i64
 0x0149e900,bb_render_record_tuple_parameter_supported,render,i64
