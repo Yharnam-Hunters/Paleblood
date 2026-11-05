@@ -359,8 +359,16 @@ The signatures match the OpenOrbis homebrew SDK's `libkernel.h`, as supporting e
 - **Allocation.** It takes the lowest start at or above the search start that fits before the
   search end.
 - **GPU access.** The executable maps with protection 3 and `0x33`, CPU and GPU read/write
-  (`0x10` and `0x20` in the public SDK list). The runtime has no GPU yet, so the host mapping
-  takes the CPU bits.
+  (`0x10` and `0x20` in the public SDK list). The host mapping takes the CPU bits.
+- **Where a map goes.** Without an address hint, the system chooses:
+  - **A GPU-visible map** goes at a fixed base (`0x2000000000`) plus its offset in the pool. Every
+    such address is then a fixed distance from the same byte of the pool, which is how the
+    renderer's GPU will reach guest memory: it gets the whole pool as one buffer
+    (`runtime/gpu_memory.h`, `docs/RENDERER.md`).
+  - **Other maps** go anywhere free in the map window above that region.
+  - **A second GPU-visible map of a range** would need the same place, so it stops by name. A
+    boot doesn't make one: every range it maps, it maps once.
+  - **With a hint,** a map goes where the hint says (below).
 - **What stops by name.** Every case whose PS4 answer is not established stops with the function's
   name:
   - lengths, starts or alignments that are not multiples of 16 KiB (the granularity the
