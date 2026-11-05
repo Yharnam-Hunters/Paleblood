@@ -92,9 +92,11 @@ Instead:
          per VGPR (made by `v_cvt_pkrtz_f16_f32`, which rounds toward zero exactly as defined,
          subnormals and overflow included). With the valid-mask bit, a pixel whose lane is not in
          EXEC is discarded.
-       - **Not exported yet:** `pos1`-`pos3` and the depth target, whose meanings depend on GPU
-         settings (clip distances, point size and the like) the renderer will read with the engine
-         hooks.
+       - **`pos1`-`pos3`** carry what the shader's `PA_CL_VS_OUT_CNTL` enables, in the order it
+         defines: the misc vector, then clip/cull-distance vectors 0 and 1. The vertex layout
+         takes that register value (`output_control`). Clip distances become SPIR-V's
+         `ClipDistance`; the misc vector (point size and the like) and cull distances stop
+         translation by name, as does the depth target.
        - **Inputs:** a vertex shader gets the vertex index in the VGPR its layout names. A pixel
          shader's `v_interp_p1`/`p2` pair reads attribute n at location n, interpolated by the GPU
          with perspective at the pixel centre; the layout names the VGPRs that hold those
