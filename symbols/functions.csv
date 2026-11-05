@@ -115,6 +115,11 @@ address,size,name,system,status,notes
 0x02a8c420,108,input_initialize_mouse_for_initial_user,input,original,"Initializes or reinitializes mouse input for the initial user, closing a previous connection if necessary."
 0x02ab5a70,1235,render_present_record_consume,render,edge-verified,"Track resource range or emit record commands; preserve cached tokens, index wrap and final state resets. Static reconstruction Synthetic GCC/Clang edges pass; no recordings."
 0x02abb4f0,31,render_record_auxiliary_predicate,render,edge-verified,"Return the auxiliary-processing predicate: selectors 0x13/0x14 enable it, 0x15/0x16 use flag bit 6, and all other selectors disable it."
+0x02abba10,22,render_reset_present_context_state_b518,render,edge-verified,Reset the two 64-bit fields and return the full sentinel word.
+0x02acd190,601,render_reset_present_context_shader_state,render,edge-verified,"Clear the conditional command flag, then preserve the sentinel stores around each distinct state-fill call."
 0x02ad2c30,120,render_reset_present_preparation_dirty,render,edge-verified,"Emit changed depth and stencil clear values, then cache their post-call values. Preserve the second writer's upper return bits while replacing its low word."
+0x02ad2d20,517,render_reset_present_context_preparation,render,edge-verified,Reset both nine-entry banks and surrounding state; interleave the first eight entries before loading the live scalar.
+0x02ad3070,351,render_prepare_present_context_scratch,render,edge-verified,Prepare changed live-bank records before finishing; retain eligible pointers across refresh calls and reload the bank each iteration.
+0x02ad3300,76,render_reset_present_context_state_b528,render,edge-verified,Reset the embedded state without changing padding; load the scalar after the two initial stores.
 0x02ad5dd0,27,render_swap_chain_present_mode,render,edge-verified,"Validates low DWORD mode; retains object, loads full source pointer at +0x33d0, forwards mode to lower submit Synthetic GCC/Clang edges pass; no recordings."
 0x02ad6e50,499,render_swap_chain_submit,render,edge-verified,"Owned-thread flip polling, source binding and submission; every exit reloads the global guard pointer. Native GPU helper effects remain original Synthetic GCC/Clang edges pass; no recordings."
