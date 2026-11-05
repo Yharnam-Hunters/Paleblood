@@ -81,7 +81,10 @@ def base_cases():
                 {"address": "0x02ad3c80", "argc": 3, "ret": 0},
             ]
             if stage == "needs_capacity":
-                c["memory"][2] = {"addr": "buf:self+8", "pointer": "payload+8"}
+                for preset in c["memory"]:
+                    if preset["addr"] == "buf:self+8":
+                        preset["pointer"] = "payload+8"
+                        break
                 c["stubs"].append({"address": "0x014712b0", "argc": 3, "ret": 0})
             else:
                 c["stubs"].append({"address": "0x02ab0b00", "argc": 4, "ret": 0, "argmem": [{"arg": 2, "size": 64}]})
