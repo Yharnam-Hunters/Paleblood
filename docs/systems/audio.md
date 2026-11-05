@@ -7,7 +7,7 @@ The audio system covers sound playback, mixing and music. The game uses the FMOD
 **At a glance**
 
 - **Scope:** Sound playback, mixing, music.
-- **Verified:** `audio_fmod_thread_affinity_lookup` (`0x0111a8c0`) is edge-verified against constructed cases.
+- **Verified:** Three FMOD functions are edge-verified against constructed cases: the thread affinity lookup (`0x0111a8c0`) and two output callbacks (`0x0111b060`, `0x0111b0b0`).
 - **Open:** Playback, mixing and music themselves.
 
 ## Summary
@@ -33,11 +33,33 @@ semaphore wrappers) are FMOD's too; they are described on the [Engine](engine.md
 
 </details>
 
+### FMOD's output device
+
+FMOD learns about the PS4's audio output through a table of callbacks the game installs (at
+`0x0111aed0`). Two of them are mapped and replaced:
+
+- `audio_fmod_output_driver_count` (`0x0111b060`) reports one output driver.
+- `audio_fmod_output_defaults` (`0x0111b0b0`) fills in the output's defaults, each only when FMOD
+  asked for it: a setting word, then what looks like a 48 kHz sample rate and FMOD's 5.1 speaker
+  mode. Those two meanings are hypotheses from the values, not yet confirmed from FMOD's use of
+  them.
+
+<details>
+<summary>How the callbacks were verified</summary>
+
+By [@evill33t](https://github.com/evill33t) in [#114](https://github.com/Yharnam-Hunters/Paleblood/pull/114): both match the original on
+constructed edge cases (every combination of present and missing outputs), and an independent
+review approved it. They are edge-verified, not yet verified against recorded game runs.
+
+</details>
+
 ## Key functions
 
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
 | `0x0111a8c0` | 290 | `audio_fmod_thread_affinity_lookup` | edge-verified | FMOD thread-name affinity masks; eight 64-bit slots; nonblocking uses a 23-byte prefix; unknown names leave output untouched |
+| `0x0111b060` | 14 | `audio_fmod_output_driver_count` | edge-verified | FMOD Orbis AudioOut descriptor callback installed by 0x0111aed0; optional output receives one driver; return zero |
+| `0x0111b0b0` | 37 | `audio_fmod_output_defaults` | edge-verified | FMOD output descriptor callback writes 132 then 48000 then 6 to optional outputs; sample-rate and speaker-mode meanings remain hypotheses |
 
 ## Structs and globals
 
