@@ -120,6 +120,29 @@ def cases():
         yield c
 
 
+    # Keep NaN classes and payloads independent: the first bound sees the scale
+    # before it is quieted, while the second bound has already quieted it.
+    # Exercise one axis at a time so a wrong minimum order has a named witness.
+    for axis in ("x", "y"):
+        for label, scale_bits, center_bits in (
+            ("signaling_scale_quiet_center", 0x7FBFFFFF, 0x7FC00001),
+            ("quiet_scale_signaling_center", 0x7FC00001, 0x7FBFFFFF),
+        ):
+            c = next(cases())
+            c["id"] = "viewport_" + axis + "_" + label
+            c["args"].update(xmm0=word(0), xmm1=word(0x3F800000))
+            scales = [0x3F800000, 0x3F800000, 0x3F800000]
+            centers = [0x40800000, 0x40800000, 0x40800000]
+            index = 0 if axis == "x" else 1
+            scales[index] = scale_bits
+            centers[index] = center_bits
+            c["stubs"][0]["writes"] = [
+                {"arg": 2, "bytes": "".join(word(bits) for bits in scales), "size": 12},
+                {"arg": 3, "bytes": "".join(word(bits) for bits in centers), "size": 12},
+            ]
+            yield c
+
+
 def main():
     if len(sys.argv) != 2:
         print(__doc__, file=sys.stderr)
