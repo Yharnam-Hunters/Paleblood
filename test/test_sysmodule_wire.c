@@ -78,7 +78,7 @@ int main(void)
         rt_process.stub_modules[0].loaded = (int)loaded;
         for (size_t i = 0; i != 3; ++i)
             for (size_t k = 0; k != sizeof wide_ids / sizeof *wide_ids; ++k)
-                unchanged_fatal(queries[i], names[i], wide_ids[k], "full-width module ID");
+                unchanged_fatal(queries[i], names[i], wide_ids[k], "a module ID wider than 16 bits");
     }
     for (size_t i = 0; i != 3; ++i)
         unchanged_fatal(queries[i], names[i], UNKNOWN_ID, "not a stub module");
