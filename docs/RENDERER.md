@@ -78,6 +78,13 @@ Instead:
        only that is translated. Any other format, or an access with more components than its
        format has (whose missing components get default values), stops with the format's
        numbers. The descriptor's destination swizzle is not applied yet.
+     - **More arithmetic:** 24-bit multiplies (`v_mul`/`v_mad` `i32_i24`, `u32_u24`), bit fields
+       (`v_bfe`, `s_bfe`, `v_bfm`), add and subtract with carry (`v_addc_u32`, `v_subb_u32`,
+       `v_subbrev_u32`), scalar compares with a 16-bit constant (`s_cmpk_*`: zero-extended for
+       u32, sign-extended for i32), scalar min and max, sine and cosine (whose operand counts
+       whole turns), base-2 `v_exp_f32` and `v_log_f32`, and `v_rsq_clamp_f32` (the largest float
+       instead of infinity). Cases GLSL leaves undefined (the log of zero or of a negative number,
+       the reciprocal square root of a negative number) are spelled out as IEEE defines them.
      - **Vertex and pixel shaders** (`gcn_translate_vertex`, `gcn_translate_pixel`):
        - **Exports (`exp`):** a vertex shader's `pos0` becomes the position and `param` n the
          output at location n; a pixel shader's `mrt` n becomes colour output n. Only the enabled
@@ -97,7 +104,12 @@ Instead:
        - **Matching the stages:** parameter n of the vertex shader feeds attribute n of the pixel
          shader. The console maps them through GPU settings; the engine hooks will set that up.
      - **Not yet:** anything else stops with the instruction's name. Texture sampling and calls
-       (`s_swappc`, used for fetch shaders) come next.
+       (`s_swappc`, used for fetch shaders) come next. Three groups need designs of their own:
+       - **geometry shaders**, which pass vertices on with `s_sendmsg` (about 1,700 of the
+         game's shaders);
+       - the GPU's on-chip shared memory (`ds_*`);
+       - reads across lanes (`v_readlane`, `v_writelane`, `ds_swizzle`), whose results depend
+         on GCN's 64-lane wave where Vulkan and Metal GPUs often run 32 lanes.
      - **Tests:** `test/test_gcn_spirv.c` checks every module with `spirv-val` for Vulkan 1.2.
        `test/test_gcn_compute.c` runs programs on a Vulkan device and compares every output word
        with values worked out by hand from the manual. `test/test_gcn_draw.c` draws a triangle
