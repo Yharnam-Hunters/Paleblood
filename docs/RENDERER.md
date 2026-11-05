@@ -227,12 +227,29 @@ Instead:
      viewports, shader register blocks, user data and draws per command buffer.
    - **The draw executor** (being built): it runs a submitted buffer's recorded calls on the GPU.
      1. **Guest memory on the GPU.** Shaders reach memory through guest addresses: buffer
-        descriptors and pointers in their user data. The runtime keeps the game's GPU-visible
-        memory in one host memory pool. Shared with Vulkan as one buffer (by its host address,
-        or with Metal as one `MTLBuffer` over the same pages), every guest address `A` is at
-        `A + d` on the GPU, for one distance `d` fixed for the run. The translator adds `d` to
-        every address a shader forms (`address_offset` in its layouts), baked in as a constant,
-        since shaders are translated at run time once `d` is known.
+        descriptors and pointers in their user data. The game's GPU-visible memory is direct
+        memory, a range of the runtime's pool (one host memory file).
+        - **Placement (done):** the runtime places each GPU-visible map that has no address hint
+          at a fixed base plus its pool offset (`runtime/gpu_memory.h`, #348).
+        - **One buffer:** the renderer maps the whole pool a second time and gives it to the GPU
+          as one buffer (Vulkan: `VK_EXT_external_memory_host` on that mapping; Metal: an
+          `MTLBuffer` over the same pages, `newBufferWithBytesNoCopy`). So every such guest
+          address `A` is at `A + d` on the GPU, for one distance `d` fixed for the run.
+        - **In the translator (done):** it adds `d` to every address a shader forms
+          (`address_offset` in its layouts, #346), baked in as a constant, since shaders are
+          translated at run time once `d` is known.
+        - **What a boot actually maps** (a local count, not committed):
+          - fifteen direct maps, each of its range once, five of them GPU-visible (about 3.3 GiB);
+          - six flexible maps, all CPU-only;
+          - one map with an address hint: the tessellation-factor ring, at the address the
+            runtime gives for it. The ring is read by the GPU's fixed-function hardware, not by
+            shaders, so it can stay where the game asks.
+        - **The cost, measured on an RTX 3070 (scratch test, not committed):** importing a
+          memory-file mapping works, with a 4 KiB alignment and a GPU address. But the driver
+          pins all of it, so the whole 5 GiB pool is held in RAM while the renderer runs. A boot
+          without the renderer (`--display none`) doesn't import it. If the cost matters, a
+          sparse buffer can keep the one distance while binding only the GPU-visible ranges, as
+          they're mapped.
      2. **Push constants per stage.** The vertex and pixel shaders of a draw each get their own
         user data. The vertex shader's is at byte 0 of the push constants and the pixel
         shader's at byte 64 (`push_constant_offset`), 128 bytes in all, the size every Vulkan
