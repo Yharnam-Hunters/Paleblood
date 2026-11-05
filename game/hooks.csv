@@ -45,6 +45,7 @@ address,replacement,system,returns
 0x014721d0,bb_render_set_present_last_record_indices,render,i64
 0x01473590,bb_render_emit_present_preparation_scalar,render,i64
 0x014735f0,bb_render_emit_present_preparation_byte,render,i64
+0x01473840,bb_render_present_slot_emit,render,void
 0x014769e0,bb_render_emit_present_last_record_packet,render,i64
 0x01477b30,bb_render_command_emit_counter_operation,render,void
 0x014784a0,bb_render_command_prepare_submission,render,void
@@ -109,10 +110,14 @@ address,replacement,system,returns
 0x024512a0,bb_frame_timing_task_frame_024512a0,frame_timing,void
 0x0247eb80,bb_render_read_present_pool_counter,render,i64
 0x02483e80,bb_kernel_condition_wait,kernel,i32
+0x02564ed0,bb_render_present_encoding_units,render,i64
+0x02565130,bb_render_present_record_bit_width,render,i32
 0x025b2fb0,bb_render_swap_chain_present,render,void
 0x02a44140,bb_engine_wide_string_destroy,engine,void
 0x02ab5a70,bb_render_present_record_consume,render,void
 0x02abb4f0,bb_render_record_auxiliary_predicate,render,i8
+0x02ad1eb0,bb_render_present_source_prepare,render,void
+0x02ad1f80,bb_render_present_source_flush_state,render,void
 0x02ad2c30,bb_render_reset_present_preparation_dirty,render,i64
 0x02ad5dd0,bb_render_swap_chain_present_mode,render,i32
 0x02ad6e50,bb_render_swap_chain_submit,render,i32
