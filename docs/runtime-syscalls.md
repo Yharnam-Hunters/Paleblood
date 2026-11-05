@@ -376,9 +376,6 @@ passing the allocation or containment check. An allocation must fit wholly
 inside its end-exclusive search range; a map must fit inside one live allocation.
 Misaligned address hints still stop by the API name before mapping.
 
-The runtime keeps its existing sparse pool, accepted memory types, CPU/GPU
-protection bits, address window, mapping records and named unsupported cases.
-No alternate pool, capacity setting or new guest error value is introduced.
 `test_direct_memory_bounds` exercises the registered calls with exact boundaries,
 overlong and wrapping ranges, a misaligned hint and a valid writable map. These
 are host validation limits, without a claim about native error codes.
