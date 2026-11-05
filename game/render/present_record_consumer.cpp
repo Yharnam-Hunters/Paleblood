@@ -49,7 +49,7 @@ void configure_record_registers(PresentRecordContext *context, PresentRecordView
                                 RecordRegisterState &a, RecordRegisterState &b, RecordRegisterState &c)
 {
     auto *commands = &context->commands;
-    begin_record_commands(commands, record_command_mode);
+    emit_event_write(commands, record_command_mode);
     const uint32_t first = record_first_parameter(record);
     const uint32_t second = record_second_parameter(record);
     configure_record_parameters(commands, 0, 0, first, second, record_scalar_parameter.get(), 0.0f);
@@ -65,7 +65,7 @@ void configure_record_registers(PresentRecordContext *context, PresentRecordView
     context->register_b568 = a.word;
     const uint64_t token_a = record_cache_token_a.get();
     context->token_b6e8 = token_a;
-    emit_record_mask(commands, record_mask);
+    set_cb_target_mask(commands, record_mask);
     context->mask_b560 = record_mask;
     context->token_b6e8 = token_a;
     emit_record_register_c(commands, c.word);
@@ -102,12 +102,12 @@ extern "C" void bb_render_present_record_consume(render::PresentRecordContext *c
     RecordRegisterState a, b, c;
     configure_record_registers(context, record, a, b, c);
     select_record_preparation(preparation, commands, 0);
-    emit_record_state_mode(commands, source_state_mode, state_mode_value);
+    set_cb_color_control(commands, source_state_mode, state_mode_value);
     configure_record_shader(shader, commands, shared_present_descriptor.address(), 0);
     for (uint32_t slot = 1; slot < prepared_slot_count; ++slot)
         bind_prepared_record(preparation, commands, slot, nullptr);
-    emit_record_pipeline_mode(commands, record_pipeline_mode);
-    emit_record_enable(commands, 1);
+    set_vgt_primitive_type(commands, record_pipeline_mode);
+    emit_num_instances(commands, 1);
     configure_record_shader_secondary(shader, commands, shared_present_descriptor.address(), 0);
 
     // Copy only the observed 44-byte prefix; the last four bytes of local padding remain
@@ -118,7 +118,7 @@ extern "C" void bb_render_present_record_consume(render::PresentRecordContext *c
     for (uint32_t remaining = count; remaining != 0; --remaining, ++index) {
         set_present_record_range(&copy, index, index);
         bind_prepared_record(preparation, commands, 0, &copy);
-        emit_present_record_step(commands, record_step_mode);
+        emit_draw_index_auto(commands, record_step_mode);
     }
     finish_record_shader(shader, commands);
     // Native ORB changes only the low byte of this DWORD field.
@@ -127,7 +127,7 @@ extern "C" void bb_render_present_record_consume(render::PresentRecordContext *c
     context->sentinel_b548 = std::numeric_limits<uint64_t>::max();
     context->flags_b550 |= restored_preparation_flag;
     context->sentinel_b540 = std::numeric_limits<uint32_t>::max();
-    emit_record_state_mode(commands, restored_state_mode, state_mode_value);
+    set_cb_color_control(commands, restored_state_mode, state_mode_value);
     for (uint32_t slot = 0; slot < prepared_slot_count; ++slot)
         clear_prepared_record(preparation, commands, slot);
     finish_record_preparation(preparation, commands);
