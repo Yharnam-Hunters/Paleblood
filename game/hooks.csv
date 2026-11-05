@@ -43,6 +43,7 @@ address,replacement,system,returns
 0x014784a0,bb_render_command_prepare_submission,render,void
 0x01486cf0,bb_render_read_record_mapping_word,render,i64
 0x0149c850,bb_render_record_apply_parameter_tuple,render,i32
+0x0149e570,bb_render_calculate_second_auxiliary,render,i64
 0x0149e900,bb_render_record_tuple_parameter_supported,render,i64
 0x0149e960,bb_render_record_tuple_transform_classification,render,i32
 0x0149ea20,bb_render_record_tuple_classification_group,render,i32

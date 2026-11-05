@@ -44,6 +44,7 @@ address,size,name,system,status,notes
 0x014784a0,82,render_command_prepare_submission,render,edge-verified,Reserve 64 command words; callback low byte gates two marker stores and cursor advance Synthetic edges pass; no recordings.
 0x01486cf0,38,render_read_record_mapping_word,render,edge-verified,Read one unaligned mapping DWORD and delegate three extracted fields to the original encoder. Full return is zero-extended.
 0x0149c850,672,render_record_apply_parameter_tuple,render,edge-verified,Select one output code from normalization tuple; ordered overrides and rejection preserve output.
+0x0149e570,279,render_calculate_second_auxiliary,render,edge-verified,Calculate the second auxiliary layout through two ordered unit admissions and wrapped alignment. Publish its four optional size and alignment outputs in 8/4/4/4-byte order.
 0x0149e900,16,render_record_tuple_parameter_supported,render,edge-verified,Nonzero power-of-two test with Boolean AL interface.
 0x0149e960,129,render_record_tuple_transform_classification,render,edge-verified,Transform admitted classifications after wrapping 32-bit scaling and unsigned thresholds.
 0x0149ea20,28,render_record_tuple_classification_group,render,edge-verified,Bounded classification-to-group lookup with fallback one and original shared table.
