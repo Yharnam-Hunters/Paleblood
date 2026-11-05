@@ -158,9 +158,40 @@ Instead:
      replay of the packets. The binders' register blocks also give what the translator's layouts
      need: where each shader's code starts, its input VGPRs, and the vertex-output control that
      says what `pos1` carries.
-   - **Next:** name the draws and setters in `symbols/functions.csv` from their disassembly, find
-     the render-target, viewport and clear paths, and follow the auto-index draw wrapper's
-     callers up to the title screen's 2D passes.
+   - **The key entry points** (from their disassembly; several are decompiled in open PRs):
+     - **`setRenderTarget`, `0x014738b0`:** (command buffer, slot, render target). It writes 11
+       context registers from `CB_COLOR0_BASE + 15 × slot` (base address, pitch, slice, view,
+       format info, attributes and the compression metadata), straight from the render target's
+       first 11 words. A null or invalid target writes `CB_COLORn_INFO = 0` instead, which
+       switches the slot off.
+     - **The depth render target, `0x014739b0`:** `DB_Z_INFO` and the related depth, stencil
+       and HTILE registers, or both INFO registers cleared.
+     - **`setViewport`, `0x014765e0`:** (command buffer, index, zmin, zmax, scale[3],
+       offset[3]). It writes `PA_SC_VPORT_ZMIN/ZMAX` (`0xb4 + 2 × index`), then the six
+       scale and offset floats from `PA_CL_VPORT_XSCALE` (`0x10f + 6 × index`).
+     - **Draws:** the auto-index draw `0x014741b0` (command buffer, index count) and the
+       other writers listed above.
+     - **Multisample positions:** `0x014772c0` and `0x014773b0` write the 16 sample-location
+       registers from `0x2fe`, plus `PA_SC_CENTROID_PRIORITY`.
+     - **Clears** are ordinary draws with a clearing pixel shader on this GPU, so they need no
+       path of their own. The depth and stencil clear values are context registers
+       (`DB_DEPTH_CLEAR`, `DB_STENCIL_CLEAR`; already replaced, #321-#327).
+   - **How the hooks attach:** the library's functions are being decompiled like the rest of the
+     game, as replacements verified to write exactly the original packets. The renderer leaves
+     those packets alone, so verification still holds. Each of these replacements also makes one
+     observer call into the runtime: the render target's registers, the viewport, a shader's
+     register block, the user data, and the draw. The runtime's renderer keeps that state and,
+     at each draw, makes a Vulkan or Metal draw with the translated shaders, into images that
+     stand for the game's render targets. The packets themselves still go nowhere, as they do
+     now. Without the renderer the observer calls do nothing, so a boot without graphics behaves
+     as before.
+   - **Next:**
+     1. The runtime side: a renderer state built from those observer calls (registers in AMD's
+        layout), and a draw that runs, tested with synthetic calls, as the translator was.
+     2. The observer calls in the replacements, once the library's decompiled functions are
+        merged.
+     3. Then follow the auto-index draw wrapper's callers (`0x015fbb50`) up to the title
+        screen's 2D passes.
 4. **Textures and 3D.** The game's texture formats and tiling (from public format documentation),
    meshes, materials and post-processing.
 
