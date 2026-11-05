@@ -10,3 +10,4 @@ date,milestone,milestone_index,imports_total,imports_bundled,imports_implemented
 2026-11-04,video out,6,686,219,127,340,runtime:sceKernelOpen (a path outside /app0: other mounts are not implemented),runtime stop,eboot,,,,
 2026-11-04,video out,6,686,219,128,339,fault at eboot+0x217a380,fault,eboot,,eboot+0x217a380,11,0x6566910010
 2026-11-04,first flip,8,686,219,149,318,eboot->libScePlayGo:scePlayGoInitialize,unimplemented,eboot,eboot+0x1fdd67f,,,
+2026-11-05,first flip,8,686,219,150,317,eboot->libScePlayGo:scePlayGoInitialize,unimplemented,eboot,eboot+0x1fdd67f,,,
