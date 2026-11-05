@@ -27,3 +27,8 @@ target_link_options(bbgame PRIVATE -Wl,--no-undefined)
 # -fno-fast-math also overrides one that comes in through CXXFLAGS. tools/check_float_flags.py
 # checks the flags every game source is built with (ctest, so CI).
 target_compile_options(bbgame PRIVATE -ffp-contract=off -fno-fast-math)
+
+# The camera fixture generator and verifier contracts are checked beside their game-owned inputs.
+add_test(NAME camera_update_cases
+         COMMAND ${Python3_EXECUTABLE}
+                 "${CMAKE_CURRENT_SOURCE_DIR}/camera/tests/test_update_cases.py")
