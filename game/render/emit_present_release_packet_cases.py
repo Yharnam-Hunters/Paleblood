@@ -57,6 +57,17 @@ def cases():
         yield packet_case(label, values[-1], label, available, result, redirect)
 
     c = packet_case("stack_mode_bit_two_is_masked", 1, "direct", 80, 0, False)
+    # Stack-mode bit 2 and flags bit 4 both contribute to control bit 27.
+    # Leave the independent flag clear so it cannot hide a widened mode mask.
+    c["args"]["rdx"] = 1
+    c["stack"][1] = 4
+    yield c
+    c = packet_case("stack_mode_retains_low_bits", 1, "direct", 80, 0, False)
+    c["args"]["rdx"] = 1
+    c["stack"][1] = 6
+    yield c
+    c = packet_case("stack_mode_overlaps_control_flag", 1, "direct", 80, 0, False)
+    # With the flag set, the same widened-mask mistake is deliberately hidden.
     c["stack"][1] = 4
     yield c
     c = packet_case("packet_overwrites_live_cursor", 1, "direct", 80, 0, False)
