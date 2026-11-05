@@ -223,13 +223,31 @@ Instead:
      stand for the game's render targets. The packets themselves still go nowhere, as they do
      now. Without the renderer the observer calls do nothing, so a boot without graphics behaves
      as before.
-   - **Next:**
-     1. The runtime side: a renderer state built from those observer calls (registers in AMD's
-        layout), and a draw that runs, tested with synthetic calls, as the translator was.
-     2. The observer calls in the replacements, once the library's decompiled functions are
-        merged.
-     3. Then follow the auto-index draw wrapper's callers (`0x015fbb50`) up to the title
-        screen's 2D passes.
+   - **Done on the runtime side:** the call record (`runtime/render_calls.h`): render targets,
+     viewports, shader register blocks, user data and draws per command buffer.
+   - **The draw executor** (being built): it runs a submitted buffer's recorded calls on the GPU.
+     1. **Guest memory on the GPU.** Shaders reach memory through guest addresses: buffer
+        descriptors and pointers in their user data. The runtime keeps the game's GPU-visible
+        memory in one host memory pool. Shared with Vulkan as one buffer (by its host address,
+        or with Metal as one `MTLBuffer` over the same pages), every guest address `A` is at
+        `A + d` on the GPU, for one distance `d` fixed for the run. The translator adds `d` to
+        every address a shader forms (`address_offset` in its layouts), baked in as a constant,
+        since shaders are translated at run time once `d` is known.
+     2. **Push constants per stage.** The vertex and pixel shaders of a draw each get their own
+        user data. The vertex shader's is at byte 0 of the push constants and the pixel
+        shader's at byte 64 (`push_constant_offset`), 128 bytes in all, the size every Vulkan
+        device guarantees.
+     3. **Running a buffer.** At `sceGnmSubmitCommandBuffers`, the executor takes each buffer's
+        calls (`rt_render_submitted`) and keeps the current state: render targets, viewport,
+        shaders, user data. At each draw it translates the two shaders from their code
+        addresses (layouts from their register blocks; translations cached by code and layout),
+        makes or reuses a pipeline, and draws into images that stand for the render targets,
+        found by their addresses.
+     4. **Showing a frame.** At a flip, video out presents the image whose address is the flipped
+        buffer's, in place of today's black frame.
+     5. **The observer calls** in the library's replacements, once those are merged; then
+        follow the auto-index draw wrapper's callers (`0x015fbb50`) up to the title screen's
+        2D passes.
 4. **Textures and 3D.** The game's texture formats and tiling (from public format documentation),
    meshes, materials and post-processing.
 
