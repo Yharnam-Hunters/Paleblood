@@ -137,3 +137,16 @@ add_executable(test_direct_memory_bounds test/test_direct_memory_bounds.c
 target_include_directories(test_direct_memory_bounds PRIVATE runtime/include)
 add_test(NAME direct_memory_bounds COMMAND test_direct_memory_bounds)
 set_tests_properties(direct_memory_bounds PROPERTIES TIMEOUT 20)
+# Owned per-thread module blocks and the actual TLS registry entry.
+find_package(Threads REQUIRED)
+add_executable(test_module_tls test/test_module_tls.c runtime/syslib/kernel_tls.c
+               runtime/syslib/table.c)
+target_include_directories(test_module_tls PRIVATE runtime/include)
+target_link_libraries(test_module_tls PRIVATE Threads::Threads)
+add_test(NAME module_tls COMMAND test_module_tls)
+set_tests_properties(module_tls PROPERTIES TIMEOUT 10)
+
+add_test(NAME module_tls_boot
+         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_module_tls_boot.py -v)
+set_tests_properties(module_tls_boot PROPERTIES TIMEOUT 30
+    ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>")
