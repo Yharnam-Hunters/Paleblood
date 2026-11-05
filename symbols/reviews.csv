@@ -107,3 +107,7 @@ address,name,date,reviewer,verdict,notes
 +0x01485070,render_set_present_last_record_depth_compress_disable,2026-11-03,independent session,approved,"faithful on every path, and every earlier survivor is caught"
 +0x01485080,render_set_present_last_record_stencil_compress_disable,2026-11-03,independent session,approved,"faithful on every path, and every earlier survivor is caught"
 +0x02ad2c30,render_reset_present_preparation_dirty,2026-11-03,independent session,approved,"faithful on every path, and every earlier survivor is caught"
++0x01471730,render_record_encoding_metadata,2026-11-03,independent session,approved,"all 40 arrangement comparisons are now pinned by the cases"
++0x014717a0,render_record_encoding_components,2026-11-03,independent session,approved,"all 40 arrangement comparisons are now pinned by the cases"
++0x014719a0,render_record_encoding_category,2026-11-03,independent session,approved,"all 40 arrangement comparisons are now pinned by the cases"
++0x01486540,render_record_set_encoding,2026-11-03,independent session,approved,"all 40 arrangement comparisons are now pinned by the cases"
