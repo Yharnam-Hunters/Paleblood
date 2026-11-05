@@ -5,6 +5,7 @@
 #include "command_reservation.h"
 
 #include "present_command_configuration.h"
+#include "runtime/original.h"
 
 namespace render {
 
