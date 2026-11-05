@@ -92,3 +92,4 @@ address,name,date,reviewer,verdict,notes
 +0x0149e960,render_record_tuple_transform_classification,2026-11-03,independent session,approved,"all five functions are faithful on every path and the earlier mutants are caught"
 +0x0149ea20,render_record_tuple_classification_group,2026-11-03,independent session,approved,"all five functions are faithful on every path and the earlier mutants are caught"
 +0x0149ea70,render_record_tuple_alternate_classification,2026-11-03,independent session,approved,"all five functions are faithful on every path and the earlier mutants are caught"
++0x0149e570,render_calculate_second_auxiliary,2026-11-03,independent session,approved,"faithful (loop, 64-bit product, store order) and the trampoline is gone"
