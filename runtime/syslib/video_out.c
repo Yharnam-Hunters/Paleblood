@@ -139,7 +139,10 @@ static int32_t register_buffers(int32_t handle, int32_t start, void *const *addr
     p->buffer_count = count;
     p->attribute = *attribute;
     pthread_mutex_unlock(&ports_lock);
-    rt_display_attach(handle, attribute->width, attribute->height, count); /* host frames for the renderer */
+    uint32_t width, height;
+    memcpy(&width, attribute->width, sizeof width);
+    memcpy(&height, attribute->height, sizeof height);
+    rt_display_attach(handle, width, height, count); /* host frames for the renderer */
     return 0; /* the set's index: this is the first */
 }
 
