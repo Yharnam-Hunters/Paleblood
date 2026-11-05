@@ -229,6 +229,8 @@ static int64_t elapsed_us(const struct timespec *start)
 
 static int (*posix_usleep_entry)(uint32_t);
 static void usleep_one_second(void) { posix_usleep_entry(1000000); }
+static unsigned int (*posix_sleep_entry)(unsigned int);
+static void sleep_above_int_max(void) { posix_sleep_entry(0x80000000u); } /* INT_MAX + 1 */
 
 /* The paths whose PS4 answer is not established. The ids are file-scope so a child can unregister
    one the parent registered before forking. */
@@ -1331,6 +1333,15 @@ int main(void)
     CHECK(kernel_usleep(0) == 0 && posix_usleep_entry(0) == 0);
     CHECK(died_in_fatal(usleep_one_second));
     CHECK(is_implemented("libkernel", "sceKernelUsleep") && is_implemented("libScePosix", "usleep"));
+
+    /* sleep sleeps at least the seconds asked and returns 0, the unslept seconds. Above INT_MAX
+       FreeBSD's libc returns a remainder without a signal and POSIX does not: it stops by name. */
+    posix_sleep_entry = (unsigned int (*)(unsigned int))fn("libScePosix", "sleep");
+    CHECK(posix_sleep_entry(0) == 0);
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    CHECK(posix_sleep_entry(1) == 0 && elapsed_us(&start) >= 1000000);
+    CHECK(died_in_fatal(sleep_above_int_max));
+    CHECK(is_implemented("libScePosix", "sleep"));
 
     /* __stack_chk_fail never returns: the program ends. That stop is the whole contract, so the
        entry counts as implemented, unlike the fail-loud diagnostics above. */

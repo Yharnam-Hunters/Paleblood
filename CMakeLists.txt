@@ -131,6 +131,13 @@ target_include_directories(test_compiled_sdk PRIVATE runtime/include)
 add_test(NAME compiled_sdk COMMAND test_compiled_sdk)
 set_tests_properties(compiled_sdk PROPERTIES TIMEOUT 10)
 
+# Exercise the registered direct-memory calls, including rejected ranges before host mapping.
+add_executable(test_direct_memory_bounds test/test_direct_memory_bounds.c
+               runtime/syslib/kernel_memory.c runtime/syslib/table.c runtime/process.c)
+target_include_directories(test_direct_memory_bounds PRIVATE runtime/include)
+add_test(NAME direct_memory_bounds COMMAND test_direct_memory_bounds)
+set_tests_properties(direct_memory_bounds PROPERTIES TIMEOUT 20)
+
 # Full-width module arguments and proven early invalid-ID statuses.
 add_executable(test_sysmodule_wire test/test_sysmodule_wire.c
                runtime/syslib/table.c runtime/syslib/kernel_sysmodule.c)
