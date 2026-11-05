@@ -110,6 +110,7 @@ address,size,name,system,status,notes
 0x024512a0,78,frame_timing_task_frame_024512a0,frame_timing,verified,"task manager frame entry from the frame step: FD4TaskManager singleton, then 0x01388c60"
 0x0247eb80,16,render_read_present_pool_counter,render,edge-verified,"full-QWORD locked read/writeback retry, XOR before each attempt; caller adds one. Real AMD64 write cycles retained; non-AMD64 bridge unresolved Synthetic edges pass; no recordings."
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
+0x02571d60,1324,render_prepare_swap_chain_resource_info,render,edge-verified,Allocate resource storage and publish its descriptor before copying initial data. Re-read entry counts after processing/copy callbacks; copy failures preserve partial output.
 0x025b2fb0,768,render_swap_chain_present,render,verified,"GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0)"
 0x02a44140,59,engine_wide_string_destroy,engine,edge-verified,WideString destructor; unsigned capacity >=8 frees even null; ignores owns; callback before capacity and size reset and two-byte terminator
 0x02a8c420,108,input_initialize_mouse_for_initial_user,input,original,"Initializes or reinitializes mouse input for the initial user, closing a previous connection if necessary."
