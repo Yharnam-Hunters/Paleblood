@@ -20,9 +20,12 @@ address,replacement,system,returns
 0x0111adc0,bb_kernel_semaphore_signal,kernel,i32
 0x0111b060,bb_audio_fmod_output_driver_count,audio,i64
 0x0111b0b0,bb_audio_fmod_output_defaults,audio,i64
+0x011c4510,bb_engine_store_word_product,engine,i64
 0x011c47f0,bb_engine_string_length,engine,i64
 0x011c4810,bb_audio_fmod_string_copy,audio,i64
 0x011c4840,bb_audio_fmod_string_copy_counted,audio,i64
+0x011c4870,bb_engine_string_append,engine,i64
+0x011c48b0,bb_engine_string_append_counted,engine,i64
 0x011c4910,bb_engine_ascii_to_upper_in_place,engine,i64
 0x011c4940,bb_engine_ascii_to_lower_in_place,engine,i64
 0x011c4970,bb_engine_compare_signed_strings,engine,i32
@@ -116,6 +119,7 @@ address,replacement,system,returns
 0x02ab7a20,bb_render_choose_record_constructor_selector,render,i32
 0x02ab7ab0,bb_render_combine_record_parameters,render,i32
 0x02ab7e40,bb_render_reduce_record_parameter,render,i32
+0x02ab9850,bb_render_flush_shader_preparation,render,void
 0x02abb4f0,bb_render_record_auxiliary_predicate,render,i8
 0x02ad2c30,bb_render_reset_present_preparation_dirty,render,i64
 0x02ad5dd0,bb_render_swap_chain_present_mode,render,i32
