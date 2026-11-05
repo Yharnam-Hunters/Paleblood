@@ -31,6 +31,7 @@ engine_entry_manager_resolve,edge,,25,25,0,0,390da978e6436eea,2026-11-03
 engine_initialize_static_wide_string_0217ffb0,edge,,30,30,0,0,ccdadef0d4bd7152,2026-11-03
 engine_release_owner_storage,edge,,28,28,0,0,e693d2086e8654b0,2026-11-03
 engine_resize_owner_storage,edge,,37,37,0,0,2a08395ca4550ad9,2026-11-03
+engine_store_word_product,edge,,32,32,0,0,ecb3d664ff30b9e2,2026-11-05
 engine_string_length,edge,,30,30,0,0,dbb33699bb2cc030,2026-11-03
 engine_wide_string_destroy,edge,,28,28,0,0,82e3fd837894b106,2026-11-03
 engine_write_stderr,edge,,28,28,0,0,f997862b08044f6d,2026-10-31
@@ -185,6 +186,7 @@ render_command_prepare_submission,edge,,11,11,0,0,9822deb01ff1c2ff,2026-11-05
 render_emit_present_last_record_packet,edge,,18,18,0,0,b2f347007c600225,2026-11-04
 render_emit_present_preparation_byte,edge,,18,18,0,0,75c0bbcc534880fd,2026-11-04
 render_emit_present_preparation_scalar,edge,,20,20,0,0,538d1acc0671ae23,2026-11-04
+render_flush_shader_preparation,edge,,70,70,0,0,2267c2e35c1f4729,2026-11-05
 render_frame_update_02377bd0,recorded,,208,208,0,0,dd4fcc5a0d365609,2026-10-31
 render_frame_update_02377bd0,recorded,30,208,208,0,0,dd4fcc5a0d365609,2026-10-31
 render_frame_update_02377bd0,recorded,60,208,208,0,0,dd4fcc5a0d365609,2026-10-31
@@ -236,4 +238,3 @@ render_yebis_get_recursive_sample_parameters,edge,,23,23,0,0,6e6f0aa41d5607ce,20
 render_yebis_get_recursive_sample_parameters,edge,30,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,60,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,uncapped,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
-render_flush_shader_preparation,edge,,70,70,0,0,2267c2e35c1f4729,2026-11-05

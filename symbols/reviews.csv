@@ -111,3 +111,4 @@ address,name,date,reviewer,verdict,notes
 +0x014717a0,render_record_encoding_components,2026-11-03,independent session,approved,"all 40 arrangement comparisons are now pinned by the cases"
 +0x014719a0,render_record_encoding_category,2026-11-03,independent session,approved,"all 40 arrangement comparisons are now pinned by the cases"
 +0x01486540,render_record_set_encoding,2026-11-03,independent session,approved,"all 40 arrangement comparisons are now pinned by the cases"
++0x011c4510,engine_store_word_product,2026-11-03,independent session,approved,"every earlier point is addressed, it matches the disassembly (32/32 cases) and the mutants are caught. Optional: `volatile` in store_word_product.cpp isn't needed, since the two stores don't overlap"
