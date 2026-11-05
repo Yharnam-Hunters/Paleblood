@@ -23,6 +23,8 @@ address,replacement,system,returns
 0x011c47f0,bb_engine_string_length,engine,i64
 0x011c4810,bb_audio_fmod_string_copy,audio,i64
 0x011c4840,bb_audio_fmod_string_copy_counted,audio,i64
+0x011c4870,bb_engine_string_append,engine,i64
+0x011c48b0,bb_engine_string_append_counted,engine,i64
 0x011c4910,bb_engine_ascii_to_upper_in_place,engine,i64
 0x011c4940,bb_engine_ascii_to_lower_in_place,engine,i64
 0x011c4970,bb_engine_compare_signed_strings,engine,i32
