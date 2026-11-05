@@ -1,6 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* The GCN (GFX7) to SPIR-V translator, first part: straight-line compute shaders
-   (runtime/gcn_spirv.h).
+/* The GCN (GFX7) to SPIR-V translator: compute, vertex and pixel shaders (runtime/gcn_spirv.h).
 
    Instruction semantics follow AMD's Sea Islands instruction set manual; operand fields:
      VOP2  src0[8:0] vsrc1[16:9] vdst[24:17]        VOP1  src0[8:0] vdst[24:17]
@@ -13,6 +12,10 @@
            srsrc[20:16] tfe[23] soffset[31:24]
      MTBUF as MUBUF, but bits 18:16 are the opcode and the format is in the instruction: dfmt[22:19]
            (data format) nfmt[25:23] (number format)
+     EXP   en[3:0] target[9:4] compr[10] done[11] vm[12], and vsrc0-3 in the second word's bytes;
+           targets 0-7 are the colour outputs mrt0-7, 12-15 the positions pos0-3, 32-63 the
+           parameters param0-31 (the numbers LLVM's GFX7 assembler gives these names)
+     VINTRP vsrc[7:0] attrchan[9:8] attr[15:10] vdst[25:18]
    Source operands: 0-103 SGPRs, 106 VCC, 124 M0, 128-192 the integers 0-64, 193-208 the
    integers -1 to -16, 240-247 the floats 0.5, -0.5, 1, -1, 2, -2, 4, -4, 255 a literal, 256-511
    VGPRs. A buffer descriptor's first two words hold the base address (bits 31:0, then 47:32 in the
@@ -37,14 +40,34 @@ static const uint32_t inline_float_bits[] = {0x3f000000, 0xbf000000, 0x3f800000,
                                              0x40000000, 0xc0000000, 0x40800000, 0xc0800000};
 enum { BYTES_PER_DWORD = 4, VSHARP_BASE_HIGH_MASK = 0xffff, VSHARP_STRIDE_SHIFT = 16, VSHARP_STRIDE_MASK = 0x3fff };
 
+typedef enum { STAGE_COMPUTE, STAGE_VERTEX, STAGE_PIXEL } shader_stage;
+
+/* What the public layouts say, for any stage. */
+typedef struct {
+    shader_stage stage;
+    uint32_t local_size[3];
+    unsigned user_sgprs;
+    int workgroup_id_x_sgpr;
+    unsigned vertex_index_vgpr, barycentric_vgpr;
+} stage_layout;
+
+enum { POSITION_TARGET = 12, PARAMETER_TARGET_FIRST = 32, PARAMETER_COUNT = 32, COLOR_TARGET_COUNT = 8, MAX_INTERFACE = 80 };
+
 typedef struct {
     spirv_module m;
+    const stage_layout *layout;
     spirv_words variables, setup, prologue, blocks; /* the entry function's parts */
     spirv_words *out;                               /* where instructions go now */
     uint32_t exec, scc, pc;                         /* EXEC's lane bit, SCC, the next block's index */
     uint32_t glsl;                      /* the GLSL.std.450 import */
     uint32_t vgpr[VGPR_COUNT], sgpr[SGPR_COUNT], lane_bit[SGPR_COUNT]; /* variables, made on first use */
     uint32_t push_constants, local_invocation_id, workgroup_id;
+    /* stage inputs and outputs, made on first use, and every one the entry point lists */
+    uint32_t position, parameter[PARAMETER_COUNT], color[COLOR_TARGET_COUNT], attribute[PARAMETER_COUNT];
+    uint32_t interface[MAX_INTERFACE];
+    unsigned interface_count;
+    /* v_interp_p1 results waiting for their p2: attribute * 4 + channel + 1 per VGPR, or 0 */
+    uint32_t interpolation_pending[VGPR_COUNT];
     char *error;
     size_t error_size;
     int failed;
@@ -337,6 +360,46 @@ static uint16_t comparison(const char *name, int *is_float, int *writes_exec)
     return 0;
 }
 
+/* A float's bits as an IEEE half's, rounded toward zero (the 16 low bits of the result):
+   too-large finite values give the largest finite half, values too small even for a subnormal
+   half give zero, and infinity stays infinity. A NaN stays a NaN with its top payload bits; GCN's
+   exact NaN result is not established here. */
+static uint32_t half_toward_zero(translator *t, uint32_t x)
+{
+    enum {
+        F32_EXPONENT_SPECIAL = 255, F32_FIRST_HALF_NORMAL = 113, F32_LAST_HALF_NORMAL = 142,
+        F32_FIRST_HALF_SUBNORMAL = 103, F32_TO_F16_BIAS = 112, MANTISSA_DROP = 13,
+        HALF_INFINITY = 0x7c00, HALF_QUIET = 0x200, HALF_LARGEST = 0x7bff, F32_IMPLICIT_ONE = 0x800000,
+    };
+    const uint32_t sign = value(t, SPV_OP_BITWISE_AND, t_uint(t), 2,
+                                value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, x, konst(t, 16)), konst(t, 0x8000));
+    const uint32_t exponent = value(t, SPV_OP_BITWISE_AND, t_uint(t), 2,
+                                    value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, x, konst(t, 23)), konst(t, 0xff));
+    const uint32_t mantissa = value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, x, konst(t, 0x7fffff));
+    const uint32_t kept = value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, mantissa, konst(t, MANTISSA_DROP));
+#define OR(a, b) value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, (a), (b))
+#define AT_LEAST(e) value(t, SPV_OP_U_GREATER_THAN_EQUAL, t_bool(t), 2, exponent, konst(t, (e)))
+    /* subnormal half: (1.mantissa) shifted right by 126 - exponent (14 to 23 in this range) */
+    const uint32_t shift = value(t, SPV_OP_BITWISE_AND, t_uint(t), 2,
+                                 value(t, SPV_OP_I_SUB, t_uint(t), 2, konst(t, 126), exponent), konst(t, 31));
+    const uint32_t subnormal = OR(sign, value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2,
+                                              OR(mantissa, konst(t, F32_IMPLICIT_ONE)), shift));
+    const uint32_t normal = OR(sign, OR(value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2,
+                                              value(t, SPV_OP_I_SUB, t_uint(t), 2, exponent, konst(t, F32_TO_F16_BIAS)),
+                                              konst(t, 10)), kept));
+    const uint32_t is_nan = value(t, SPV_OP_I_NOT_EQUAL, t_bool(t), 2, mantissa, konst(t, 0));
+    const uint32_t special = OR(sign, value(t, SPV_OP_SELECT, t_uint(t), 3, is_nan, OR(konst(t, HALF_INFINITY | HALF_QUIET), kept),
+                                            konst(t, HALF_INFINITY)));
+    uint32_t r = sign;
+    r = value(t, SPV_OP_SELECT, t_uint(t), 3, AT_LEAST(F32_FIRST_HALF_SUBNORMAL), subnormal, r);
+    r = value(t, SPV_OP_SELECT, t_uint(t), 3, AT_LEAST(F32_FIRST_HALF_NORMAL), normal, r);
+    r = value(t, SPV_OP_SELECT, t_uint(t), 3, AT_LEAST(F32_LAST_HALF_NORMAL + 1), OR(sign, konst(t, HALF_LARGEST)), r);
+    r = value(t, SPV_OP_SELECT, t_uint(t), 3, AT_LEAST(F32_EXPONENT_SPECIAL), special, r);
+#undef OR
+#undef AT_LEAST
+    return r;
+}
+
 static void vector_instruction(translator *t, const uint32_t *w, const gcn_instruction *ins)
 {
     const vector_operands o = vector_fields(w, ins);
@@ -427,6 +490,13 @@ static void vector_instruction(translator *t, const uint32_t *w, const gcn_instr
         write_float(t, &o, f, ins);
     } else if (!strcmp(name, "v_cvt_u32_f32") || !strcmp(name, "v_cvt_i32_f32")) {
         write_vgpr(t, o.dst, float_to_integer(t, float_source(t, &o, 0, ins), !strcmp(name, "v_cvt_i32_f32")));
+    } else if (!strcmp(name, "v_cvt_pkrtz_f16_f32")) {
+        /* Two floats as halves rounded toward zero: src0 in the low 16 bits, src1 in the high. */
+        if (o.clamp || o.omod) fail(t, "%s: clamp and output modifiers are not supported", name);
+        const uint32_t low = half_toward_zero(t, as_bits(t, float_source(t, &o, 0, ins)));
+        const uint32_t high = half_toward_zero(t, as_bits(t, float_source(t, &o, 1, ins)));
+        write_vgpr(t, o.dst, value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, low,
+                                   value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, high, konst(t, 16))));
     } else if (!strcmp(name, "v_rcp_f32")) {
         write_float(t, &o, value(t, SPV_OP_F_DIV, t_float(t), 2, konst_float(t, 1.0f), float_source(t, &o, 0, ins)), ins);
     } else if (!strcmp(name, "v_sqrt_f32") || !strcmp(name, "v_rsq_f32") || !strcmp(name, "v_floor_f32") ||
@@ -764,6 +834,114 @@ static void buffer_memory(translator *t, const uint32_t *w, const gcn_instructio
     end_if(t, merge);
 }
 
+/* ---- vertex and pixel inputs and outputs ---- */
+
+static uint32_t t_vec4(translator *t) { return spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_float(t), 4}, 2); }
+
+/* A stage input or output, decorated as a built-in or a location, listed on the entry point. */
+static uint32_t interface_variable(translator *t, uint32_t storage, uint32_t type, uint32_t decoration, uint32_t number)
+{
+    spirv_module *m = &t->m;
+    const uint32_t id = spirv_new_id(m);
+    spirv_emit(m, &m->sections[SPIRV_GLOBALS], SPV_OP_VARIABLE, (const uint32_t[]){spirv_type_pointer(m, storage, type), id, storage}, 3);
+    spirv_emit(m, &m->sections[SPIRV_DECORATIONS], SPV_OP_DECORATE, (const uint32_t[]){id, decoration, number}, 3);
+    if (t->interface_count == MAX_INTERFACE) fail(t, "more stage inputs and outputs than the translator takes");
+    else t->interface[t->interface_count++] = id;
+    return id;
+}
+
+static uint32_t vec4_component(translator *t, uint32_t storage, uint32_t variable, unsigned component)
+{
+    return value(t, SPV_OP_ACCESS_CHAIN, spirv_type_pointer(&t->m, storage, t_float(t)), 2, variable, konst(t, component));
+}
+
+/* The vec4 an export target writes: 0 (after failing) for one not translated in this stage. */
+static uint32_t export_variable(translator *t, unsigned target)
+{
+    uint32_t *slot = NULL, decoration = SPV_DECORATION_LOCATION, number = 0;
+    if (t->layout->stage == STAGE_VERTEX && target == POSITION_TARGET) {
+        slot = &t->position, decoration = SPV_DECORATION_BUILT_IN, number = SPV_BUILT_IN_POSITION;
+    } else if (t->layout->stage == STAGE_VERTEX && target >= PARAMETER_TARGET_FIRST && target < PARAMETER_TARGET_FIRST + PARAMETER_COUNT) {
+        number = target - PARAMETER_TARGET_FIRST, slot = &t->parameter[number];
+    } else if (t->layout->stage == STAGE_PIXEL && target < COLOR_TARGET_COUNT) {
+        number = target, slot = &t->color[number];
+    }
+    if (!slot) {
+        /* pos1-3 and the depth target's meanings depend on GPU settings not read here */
+        fail(t, "exp to target %u is not translated yet", target);
+        return 0;
+    }
+    if (!*slot) *slot = interface_variable(t, SPV_STORAGE_OUTPUT, t_vec4(t), decoration, number);
+    return *slot;
+}
+
+/* exp: writes the enabled components of a position, parameter or colour. Compressed (compr)
+   exports carry two halves per VGPR: vsrc0 holds x (low 16 bits) and y, vsrc1 z and w. With vm
+   (valid mask) in a pixel shader, lanes not in EXEC are pixels the shader discards. Only active
+   lanes export. */
+static void export_instruction(translator *t, const uint32_t *w)
+{
+    const unsigned enabled = w[0] & 0xf, target = (w[0] >> 4) & 0x3f, compressed = (w[0] >> 10) & 1, valid_mask = (w[0] >> 12) & 1;
+    const uint32_t variable = export_variable(t, target);
+    if (!variable) return;
+    if (valid_mask && t->layout->stage == STAGE_PIXEL) {
+        const uint32_t inactive = value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, exec_bit(t));
+        const uint32_t discard = spirv_new_id(&t->m), merge = spirv_new_id(&t->m);
+        spirv_emit(&t->m, t->out, SPV_OP_SELECTION_MERGE, (const uint32_t[]){merge, SPV_SELECTION_CONTROL_NONE}, 2);
+        spirv_emit(&t->m, t->out, SPV_OP_BRANCH_CONDITIONAL, (const uint32_t[]){inactive, discard, merge}, 3);
+        spirv_emit(&t->m, t->out, SPV_OP_LABEL, &discard, 1);
+        spirv_emit(&t->m, t->out, SPV_OP_KILL, NULL, 0);
+        spirv_emit(&t->m, t->out, SPV_OP_LABEL, &merge, 1);
+    }
+    uint32_t components[4];
+    for (unsigned c = 0; c < 4; c++) {
+        if (compressed) {
+            const uint32_t vec2 = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_float(t), 2}, 2);
+            const uint32_t pair = glsl(t, vec2, SPV_GLSL_UNPACK_HALF_2X16, load(t, t_uint(t), vgpr(t, (w[1] >> (8 * (c / 2))) & 0xff)), 0, 0, 1);
+            components[c] = value(t, SPV_OP_COMPOSITE_EXTRACT, t_float(t), 2, pair, c % 2);
+        } else {
+            components[c] = as_float(t, load(t, t_uint(t), vgpr(t, (w[1] >> (8 * c)) & 0xff)));
+        }
+    }
+    const uint32_t merge = begin_if(t, exec_bit(t));
+    for (unsigned c = 0; c < 4; c++)
+        if (enabled >> c & 1) store(t, t->out, vec4_component(t, SPV_STORAGE_OUTPUT, variable, c), components[c]);
+    end_if(t, merge);
+}
+
+/* v_interp_p1/p2: GCN interpolates an attribute in two halves, from its per-vertex values: p1
+   gives P0 + i * P10 and p2 adds j * P20 (i and j the barycentrics). Here the GPU interpolates the
+   input itself, so p1 already writes the finished value and p2, which must follow it into the same
+   VGPR for the same channel (as compilers emit the pair), writes it again. */
+static void interpolation_instruction(translator *t, const uint32_t *w, const gcn_instruction *ins)
+{
+    const char *name = ins->name;
+    const unsigned vsrc = w[0] & 0xff, channel = (w[0] >> 8) & 3, attribute = (w[0] >> 10) & 0x3f, vdst = (w[0] >> 18) & 0xff;
+    const int first = !strcmp(name, "v_interp_p1_f32"), second = !strcmp(name, "v_interp_p2_f32");
+    if (t->layout->stage != STAGE_PIXEL || (!first && !second)) {
+        fail(t, "%s is not translated yet%s", name, t->layout->stage != STAGE_PIXEL ? " outside pixel shaders" : "");
+        return;
+    }
+    if (vsrc != t->layout->barycentric_vgpr + (second ? 1u : 0u)) {
+        fail(t, "%s: barycentrics in v%u, not the perspective centre's (another interpolation mode)", name, vsrc);
+        return;
+    }
+    if (attribute >= PARAMETER_COUNT) {
+        fail(t, "%s: attribute %u", name, attribute);
+        return;
+    }
+    const uint32_t key = attribute * 4 + channel + 1;
+    if (second && t->interpolation_pending[vdst] != key) {
+        fail(t, "%s v%u: no v_interp_p1 into it for attr%u.%c", name, vdst, attribute, "xyzw"[channel]);
+        return;
+    }
+    t->interpolation_pending[vdst] = first ? key : 0;
+    if (!t->attribute[attribute])
+        t->attribute[attribute] = interface_variable(t, SPV_STORAGE_INPUT, t_vec4(t), SPV_DECORATION_LOCATION, attribute);
+    const uint32_t interpolated = load(t, t_float(t), vec4_component(t, SPV_STORAGE_INPUT, t->attribute[attribute], channel));
+    write_vgpr(t, vdst, as_bits(t, interpolated));
+}
+
 /* ---- the module ---- */
 
 static uint32_t input_vector(translator *t, uint32_t built_in)
@@ -793,7 +971,7 @@ static uint32_t user_data_block(translator *t)
 
 /* The starting registers: user data in the first SGPRs, the workgroup index, and v0-v2 the lane's
    position in the workgroup. */
-static void starting_registers(translator *t, const gcn_compute_layout *layout)
+static void starting_registers(translator *t, const stage_layout *layout)
 {
     for (unsigned i = 0; i < layout->user_sgprs; i++) {
         /* member 0 of the block (the array), then element i */
@@ -801,6 +979,12 @@ static void starting_registers(translator *t, const gcn_compute_layout *layout)
                                        t->push_constants, konst(t, 0), konst(t, i));
         store(t, t->out, sgpr(t, i), load(t, t_uint(t), pointer));
     }
+    if (layout->stage == STAGE_VERTEX) {
+        const uint32_t index = interface_variable(t, SPV_STORAGE_INPUT, t_int(t), SPV_DECORATION_BUILT_IN, SPV_BUILT_IN_VERTEX_INDEX);
+        store(t, t->out, vgpr(t, layout->vertex_index_vgpr), value(t, SPV_OP_BITCAST, t_uint(t), 1, load(t, t_int(t), index)));
+        return;
+    }
+    if (layout->stage == STAGE_PIXEL) return; /* the barycentric VGPRs are read only by v_interp, by number */
     const uint32_t uvec3 = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_uint(t), 3}, 2);
     if (layout->workgroup_id_x_sgpr >= 0) {
         const uint32_t group = load(t, uvec3, t->workgroup_id);
@@ -856,6 +1040,8 @@ static void translate_instruction(translator *t, const uint32_t *code, const dec
     case GCN_SOP1: case GCN_SOP2: case GCN_SOPK: case GCN_SOPC: case GCN_SOPP: scalar_instruction(t, w, ins); break;
     case GCN_SMRD: scalar_memory(t, w, ins); break;
     case GCN_MUBUF: case GCN_MTBUF: buffer_memory(t, w, ins); break;
+    case GCN_EXP: export_instruction(t, w); break;
+    case GCN_VINTRP: interpolation_instruction(t, w, ins); break;
     default: fail(t, "%s (%s) is not translated yet", ins->name, gcn_encoding_name(ins->encoding));
     }
 }
@@ -907,8 +1093,8 @@ static long decode_program(translator *t, const uint32_t *code, size_t program, 
     return count;
 }
 
-int gcn_translate_compute(const uint32_t *code, size_t dwords, const gcn_compute_layout *layout,
-                          uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size)
+static int translate(const uint32_t *code, size_t dwords, const stage_layout *layout,
+                     uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size)
 {
     translator *t = calloc(1, sizeof *t);
     decoded *instructions = calloc(MAX_INSTRUCTIONS, sizeof *instructions);
@@ -919,11 +1105,12 @@ int gcn_translate_compute(const uint32_t *code, size_t dwords, const gcn_compute
         free(t), free(instructions), free(starts), free(block_of);
         return -1;
     }
-    t->error = error, t->error_size = error_size;
+    t->error = error, t->error_size = error_size, t->layout = layout;
     if (error_size) error[0] = 0;
     spirv_init(&t->m);
     spirv_module *m = &t->m;
     if (layout->user_sgprs > GCN_USER_SGPR_MAX) fail(t, "more user SGPRs than the push constants hold");
+    if (layout->vertex_index_vgpr >= VGPR_COUNT || layout->barycentric_vgpr + 1 >= VGPR_COUNT) fail(t, "an input VGPR past v255");
 
     static const uint32_t capabilities[] = {SPV_CAPABILITY_SHADER, SPV_CAPABILITY_INT64, SPV_CAPABILITY_PHYSICAL_STORAGE_BUFFER,
                                             SPV_CAPABILITY_GROUP_NON_UNIFORM, SPV_CAPABILITY_GROUP_NON_UNIFORM_VOTE};
@@ -934,8 +1121,13 @@ int gcn_translate_compute(const uint32_t *code, size_t dwords, const gcn_compute
     spirv_emit(m, &m->sections[SPIRV_MEMORY_MODEL], SPV_OP_MEMORY_MODEL,
                (const uint32_t[]){SPV_ADDRESSING_PHYSICAL_STORAGE_BUFFER64, SPV_MEMORY_MODEL_GLSL450}, 2);
     t->push_constants = user_data_block(t);
-    t->local_invocation_id = input_vector(t, SPV_BUILT_IN_LOCAL_INVOCATION_ID);
-    t->workgroup_id = input_vector(t, SPV_BUILT_IN_WORKGROUP_ID);
+    t->interface[t->interface_count++] = t->push_constants;
+    if (layout->stage == STAGE_COMPUTE) {
+        t->local_invocation_id = input_vector(t, SPV_BUILT_IN_LOCAL_INVOCATION_ID);
+        t->workgroup_id = input_vector(t, SPV_BUILT_IN_WORKGROUP_ID);
+        t->interface[t->interface_count++] = t->local_invocation_id;
+        t->interface[t->interface_count++] = t->workgroup_id;
+    }
 
     /* Every lane starts active, SCC clear, at block 0. */
     t->exec = function_variable(t, t_bool(t), spirv_constant_bool(m, 1));
@@ -1041,12 +1233,17 @@ int gcn_translate_compute(const uint32_t *code, size_t dwords, const gcn_compute
     spirv_emit(m, fn, SPV_OP_BRANCH, &header, 1);
     spirv_append(m, fn, &t->blocks);
     spirv_emit(m, fn, SPV_OP_FUNCTION_END, NULL, 0);
-    const uint32_t interface[] = {t->push_constants, t->local_invocation_id, t->workgroup_id};
+    static const uint32_t models[] = {[STAGE_COMPUTE] = SPV_EXECUTION_MODEL_GL_COMPUTE, [STAGE_VERTEX] = SPV_EXECUTION_MODEL_VERTEX,
+                                      [STAGE_PIXEL] = SPV_EXECUTION_MODEL_FRAGMENT};
     spirv_emit_with_string(m, &m->sections[SPIRV_ENTRY_POINTS], SPV_OP_ENTRY_POINT,
-                           (const uint32_t[]){SPV_EXECUTION_MODEL_GL_COMPUTE, main_id}, 2, "main", interface, 3);
-    spirv_emit(m, &m->sections[SPIRV_EXECUTION_MODES], SPV_OP_EXECUTION_MODE,
-               (const uint32_t[]){main_id, SPV_EXECUTION_MODE_LOCAL_SIZE, layout->local_size[0], layout->local_size[1],
-                                  layout->local_size[2]}, 5);
+                           (const uint32_t[]){models[layout->stage], main_id}, 2, "main", t->interface, t->interface_count);
+    if (layout->stage == STAGE_COMPUTE)
+        spirv_emit(m, &m->sections[SPIRV_EXECUTION_MODES], SPV_OP_EXECUTION_MODE,
+                   (const uint32_t[]){main_id, SPV_EXECUTION_MODE_LOCAL_SIZE, layout->local_size[0], layout->local_size[1],
+                                      layout->local_size[2]}, 5);
+    else if (layout->stage == STAGE_PIXEL)
+        spirv_emit(m, &m->sections[SPIRV_EXECUTION_MODES], SPV_OP_EXECUTION_MODE,
+                   (const uint32_t[]){main_id, SPV_EXECUTION_MODE_ORIGIN_UPPER_LEFT}, 2);
 
     int result = -1;
     if (!t->failed) {
@@ -1059,4 +1256,28 @@ int gcn_translate_compute(const uint32_t *code, size_t dwords, const gcn_compute
     spirv_free(m);
     free(t);
     return result;
+}
+
+int gcn_translate_compute(const uint32_t *code, size_t dwords, const gcn_compute_layout *layout,
+                          uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size)
+{
+    const stage_layout s = {.stage = STAGE_COMPUTE, .local_size = {layout->local_size[0], layout->local_size[1], layout->local_size[2]},
+                            .user_sgprs = layout->user_sgprs, .workgroup_id_x_sgpr = layout->workgroup_id_x_sgpr};
+    return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
+}
+
+int gcn_translate_vertex(const uint32_t *code, size_t dwords, const gcn_vertex_layout *layout,
+                         uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size)
+{
+    const stage_layout s = {.stage = STAGE_VERTEX, .user_sgprs = layout->user_sgprs, .workgroup_id_x_sgpr = -1,
+                            .vertex_index_vgpr = layout->vertex_index_vgpr};
+    return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
+}
+
+int gcn_translate_pixel(const uint32_t *code, size_t dwords, const gcn_pixel_layout *layout,
+                        uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size)
+{
+    const stage_layout s = {.stage = STAGE_PIXEL, .user_sgprs = layout->user_sgprs, .workgroup_id_x_sgpr = -1,
+                            .barycentric_vgpr = layout->barycentric_vgpr};
+    return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
 }

@@ -78,12 +78,30 @@ Instead:
        only that is translated. Any other format, or an access with more components than its
        format has (whose missing components get default values), stops with the format's
        numbers. The descriptor's destination swizzle is not applied yet.
-     - **Not yet:** anything else stops with the instruction's name. Pixel and vertex shader
-       inputs and outputs, texture sampling, and calls (`s_swappc`, used for fetch shaders) come
-       next.
+     - **Vertex and pixel shaders** (`gcn_translate_vertex`, `gcn_translate_pixel`):
+       - **Exports (`exp`):** a vertex shader's `pos0` becomes the position and `param` n the
+         output at location n; a pixel shader's `mrt` n becomes colour output n. Only the enabled
+         components are written, and only by active lanes. A compressed export carries two halves
+         per VGPR (made by `v_cvt_pkrtz_f16_f32`, which rounds toward zero exactly as defined,
+         subnormals and overflow included). With the valid-mask bit, a pixel whose lane is not in
+         EXEC is discarded.
+       - **Not exported yet:** `pos1`-`pos3` and the depth target, whose meanings depend on GPU
+         settings (clip distances, point size and the like) the renderer will read with the engine
+         hooks.
+       - **Inputs:** a vertex shader gets the vertex index in the VGPR its layout names. A pixel
+         shader's `v_interp_p1`/`p2` pair reads attribute n at location n, interpolated by the GPU
+         with perspective at the pixel centre; the layout names the VGPRs that hold those
+         barycentrics. GCN computes the pair in two halves, so here `p1` already writes the finished
+         value and `p2` must follow it into the same VGPR. Other interpolation modes,
+         `v_interp_mov` and other pixel inputs stop translation.
+       - **Matching the stages:** parameter n of the vertex shader feeds attribute n of the pixel
+         shader. The console maps them through GPU settings; the engine hooks will set that up.
+     - **Not yet:** anything else stops with the instruction's name. Texture sampling and calls
+       (`s_swappc`, used for fetch shaders) come next.
      - **Tests:** `test/test_gcn_spirv.c` checks every module with `spirv-val` for Vulkan 1.2.
        `test/test_gcn_compute.c` runs programs on a Vulkan device and compares every output word
-       with values worked out by hand from the manual.
+       with values worked out by hand from the manual. `test/test_gcn_draw.c` draws a triangle
+       with a translated vertex and pixel shader and checks every pixel.
    - **macOS:** the same SPIR-V becomes Metal's shader language through SPIRV-Cross, the Khronos
      project's converter. Its buffer pointers become Metal device pointers and its subgroup votes
      `simd_any`, so one translator serves both platforms. Metal 2.3 or later (macOS 11) is needed.
