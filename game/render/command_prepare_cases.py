@@ -90,6 +90,7 @@ def reservation_edge_cases():
     yield c
 
 def main():
+    """Write synthetic submission-marker cases to the requested directory."""
     if len(sys.argv)!=2:
         print(__doc__,file=sys.stderr);return 2
     out=Path(sys.argv[1]);out.mkdir(parents=True,exist_ok=True)
