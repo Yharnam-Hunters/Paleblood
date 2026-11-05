@@ -77,13 +77,35 @@ arguments. The first of the engine's own packet writers are mapped, all by [@evi
   the display has flipped far enough and picks the flip mode, and `render_swap_chain_submit`
   (`0x02ad6e50`) submits the frame, advances the frame counter and checks its owner again
   ([#287](https://github.com/Yharnam-Hunters/Paleblood/pull/287)). They use the public layouts of the video-out flip status and kernel events.
+- **Depth and stencil clears.** `render_emit_present_preparation_scalar` (`0x01473590`) and
+  `render_emit_present_preparation_byte` (`0x014735f0`) write the depth and stencil clear values
+  (AMD's `DB_DEPTH_CLEAR` and `DB_STENCIL_CLEAR` registers) [#325](https://github.com/Yharnam-Hunters/Paleblood/pull/325), from #210.
+- **The last record's depth settings.** `render_emit_present_last_record_packet` (`0x014769e0`)
+  writes `DB_RENDER_CONTROL`. Two setters turn its depth and stencil compression off or on
+  (`0x01485070`, `0x01485080`), one replaces two packed indices (`0x014721d0`), and
+  `render_reset_present_preparation_dirty` (`0x02ad2c30`) writes only the clear values that changed
+  and remembers them [#326](https://github.com/Yharnam-Hunters/Paleblood/pull/326), from #211.
+- **Resource records.** A record describes a GPU resource's layout. The reviews tie its fields to
+  AMD's public tiling and format fields, though the full meaning is still open. The mapped parts:
+  - **mapping:** `render_pack_record_mapping_word` (`0x01471310`) packs its mapping word and
+    `render_read_record_mapping_word` (`0x01486cf0`) reads one back [#321](https://github.com/Yharnam-Hunters/Paleblood/pull/321), from #212;
+  - **encoding:** three lookups decode the encoding byte's metadata, component arrangement and
+    category (`0x01471730`, `0x014717a0`, `0x014719a0`), and `render_record_set_encoding`
+    (`0x01486540`) stores it [#327](https://github.com/Yharnam-Hunters/Paleblood/pull/327), from #261;
+  - **parameters:** `render_record_apply_parameter_tuple` (`0x0149c850`) picks a record parameter
+    from a normalisation table, with its classification helpers (`0x0149e900`–`0x0149ea70`) [#322](https://github.com/Yharnam-Hunters/Paleblood/pull/322), from #223;
+  - **sizes:** `render_calculate_second_auxiliary` (`0x0149e570`) works out the size and alignment
+    of a second auxiliary area [#323](https://github.com/Yharnam-Hunters/Paleblood/pull/323), from #228;
+  - **fields:** seven setters (`0x01486520`–`0x01486800`) replace one field each, keeping the
+    rest of the word [#324](https://github.com/Yharnam-Hunters/Paleblood/pull/324), from #236.
 
 <details>
 <summary>How these were verified</summary>
 
 Each was checked against the original instructions on constructed edge cases by an independent
 review, which also caught deliberately broken variants; none was checked on recorded game
-frames. #279, #286 and #287 were brought up to date with `main` from #209, #259 and #267.
+frames. #279, #286 and #287 were brought up to date with `main` from #209, #259 and #267, and
+#321 to #327 from #212, #223, #228, #236, #210, #211 and #261.
 
 </details>
 
@@ -92,13 +114,39 @@ frames. #279, #286 and #287 were brought up to date with `main` from #209, #259 
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
 | `0x00fbc3e0` | 670 | `render_yebis_get_recursive_sample_parameters` | verified | YEBIS GPUTexUtil_GetRecursiveSampleParameters: blur pass count, last-pass samples and scale; the FPS patches drop its first assertion |
+| `0x01471310` | 544 | `render_pack_record_mapping_word` | edge-verified | Pack numeric mapping fields with priority masks and full-width mode handling; return a zero-extended DWORD. |
+| `0x01471730` | 21 | `render_record_encoding_metadata` | edge-verified | Bounded first-byte metadata lookup; preserve original table entries and zero fallback. |
+| `0x014717a0` | 505 | `render_record_encoding_components` | edge-verified | Select ordered packed component arrangement; optional output only on success and Boolean AL contract. |
+| `0x014719a0` | 117 | `render_record_encoding_category` | edge-verified | Decode accepted category nibbles; optional DWORD output untouched on rejection. |
+| `0x014721d0` | 31 | `render_set_present_last_record_indices` | edge-verified | Replace two packed indices while preserving the remaining bits. Return the old preserved bits. |
+| `0x01473590` | 95 | `render_emit_present_preparation_scalar` | edge-verified | Write the captured float bits to DB_DEPTH_CLEAR. Admission tests the callback low byte; rejection returns its full 64-bit result. |
+| `0x014735f0` | 89 | `render_emit_present_preparation_byte` | edge-verified | Write the captured input low byte to DB_STENCIL_CLEAR. Admission tests the callback low byte; rejection returns its full 64-bit result. |
+| `0x014769e0` | 93 | `render_emit_present_last_record_packet` | edge-verified | Write DB_RENDER_CONTROL for the last-record path. Publish and return the captured cursor plus twelve bytes; return the full callback result on rejection. |
 | `0x01477b30` | 172 | `render_command_emit_counter_operation` | edge-verified | Seven-word counter packet; callback low byte gates writes; label range selects masked encoding Synthetic edges pass; no recordings. |
 | `0x014784a0` | 82 | `render_command_prepare_submission` | edge-verified | Reserve 64 command words; callback low byte gates two marker stores and cursor advance Synthetic edges pass; no recordings. |
+| `0x01485070` | 16 | `render_set_present_last_record_depth_compress_disable` | edge-verified | Replace DEPTH_COMPRESS_DISABLE in the saved DB_RENDER_CONTROL word using the input low bit. Return the old bits with that flag cleared. |
+| `0x01485080` | 16 | `render_set_present_last_record_stencil_compress_disable` | edge-verified | Replace STENCIL_COMPRESS_DISABLE in the saved DB_RENDER_CONTROL word using the input low bit. Return the old bits with that flag cleared. |
+| `0x01486520` | 31 | `render_record_set_word_0c_fields` | edge-verified | Store two masked fields; return masked old word. No constructor add/subtract. |
+| `0x01486540` | 305 | `render_record_set_encoding` | edge-verified | Pack accepted encoding into record DWORD10 preserving other bits; invalid input has undefined native extractor locals. |
+| `0x014866e0` | 33 | `render_record_set_word_04_repeated_field` | edge-verified | Duplicate supplied low 11 bits; return preserved old word. |
+| `0x01486710` | 20 | `render_record_set_word_08_low22` | edge-verified | Replace this word's low 22 bits and return the preserved old upper bits. |
+| `0x01486760` | 20 | `render_record_set_word_14_second_low5_field` | edge-verified | Replace the second five-bit field and return the preserved old word bits. |
+| `0x014867c0` | 21 | `render_record_set_first_auxiliary_flag` | edge-verified | Clear only bit 13 then OR full input byte shifted13; return preserved old word. |
+| `0x014867e0` | 21 | `render_record_set_second_auxiliary_flag` | edge-verified | Clear only bit 14 then OR full input byte shifted14; return preserved old word. |
+| `0x01486800` | 20 | `render_record_set_word_28_low22` | edge-verified | Replace this word's low 22 bits and return the preserved old upper bits. |
+| `0x01486cf0` | 38 | `render_read_record_mapping_word` | edge-verified | Read one unaligned mapping DWORD and delegate three extracted fields to the original encoder. Full return is zero-extended. |
+| `0x0149c850` | 672 | `render_record_apply_parameter_tuple` | edge-verified | Select one output code from normalization tuple; ordered overrides and rejection preserve output. |
+| `0x0149e570` | 279 | `render_calculate_second_auxiliary` | edge-verified | Calculate the second auxiliary layout through two ordered unit admissions and wrapped alignment. Publish its four optional size and alignment outputs in 8/4/4/4-byte order. |
+| `0x0149e900` | 16 | `render_record_tuple_parameter_supported` | edge-verified | Nonzero power-of-two test with Boolean AL interface. |
+| `0x0149e960` | 129 | `render_record_tuple_transform_classification` | edge-verified | Transform admitted classifications after wrapping 32-bit scaling and unsigned thresholds. |
+| `0x0149ea20` | 28 | `render_record_tuple_classification_group` | edge-verified | Bounded classification-to-group lookup with fallback one and original shared table. |
+| `0x0149ea70` | 25 | `render_record_tuple_alternate_classification` | edge-verified | Recognize bounded alternate-classification subset with zero fallback. |
 | `0x02377bd0` | 399 | `render_frame_update_02377bd0` | verified | per-frame: ages a list of ref-counted objects, updates RendMan-side child, steps another child by 1/30 s (Uncap: measured frame time) |
 | `0x0247eb80` | 16 | `render_read_present_pool_counter` | edge-verified | full-QWORD locked read/writeback retry, XOR before each attempt; caller adds one. Real AMD64 write cycles retained; non-AMD64 bridge unresolved Synthetic edges pass; no recordings. |
 | `0x025b2fb0` | 768 | `render_swap_chain_present` | verified | GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0) |
 | `0x02ab5a70` | 1235 | `render_present_record_consume` | edge-verified | Track resource range or emit record commands; preserve cached tokens, index wrap and final state resets. Static reconstruction Synthetic GCC/Clang edges pass; no recordings. |
 | `0x02abb4f0` | 31 | `render_record_auxiliary_predicate` | edge-verified | Return the auxiliary-processing predicate: selectors 0x13/0x14 enable it, 0x15/0x16 use flag bit 6, and all other selectors disable it. |
+| `0x02ad2c30` | 120 | `render_reset_present_preparation_dirty` | edge-verified | Emit changed depth and stencil clear values, then cache their post-call values. Preserve the second writer's upper return bits while replacing its low word. |
 | `0x02ad5dd0` | 27 | `render_swap_chain_present_mode` | edge-verified | Validates low DWORD mode; retains object, loads full source pointer at +0x33d0, forwards mode to lower submit Synthetic GCC/Clang edges pass; no recordings. |
 | `0x02ad6e50` | 499 | `render_swap_chain_submit` | edge-verified | Owned-thread flip polling, source binding and submission; every exit reloads the global guard pointer. Native GPU helper effects remain original Synthetic GCC/Clang edges pass; no recordings. |
 
