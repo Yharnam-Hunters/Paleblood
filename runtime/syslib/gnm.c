@@ -2,6 +2,10 @@
 /* System call group: GNM (GPU commands), libSceGnmDriver. Graphics are rebuilt at the engine level
    (issue #39), so these calls answer what the engine expects back; the GPU is not emulated.
 
+   Engine addresses below are the instructions that call each import (for a wrapper, the call
+   inside it), not function entries: the decompilation tracks those functions in
+   symbols/functions.csv, which runtime code must not name (tools/check_agnostic.py).
+
    sceGnmGetTheTessellationFactorRingBufferBaseAddress: the OpenOrbis homebrew SDK's GnmDriver.h
    only names it. The executable's only call (0x02ad3fb4) takes a 64-bit address and maps 128 KiB
    of direct memory there (sceKernelMapDirectMemory with that address as a hint, protection 0x33,
@@ -30,7 +34,7 @@ RT_SYSLIB("libSceGnmDriver", sceGnmGetTheTessellationFactorRingBufferBaseAddress
 /* sceGnmValidateCommandBuffers(count, buffers, sizes, constant buffers, constant sizes): asks the GPU
    driver's debug validation layer to check command buffers. Paleblood has no such layer: the GPU is
    not emulated, and the command buffers are not what it draws from. The executable's start-up probe
-   (0x02abb8e0, called from the graphics set-up at 0x0256b0f0) validates a tiny 16-byte buffer and
+   (calling at 0x02abb94b, from the graphics set-up) validates a tiny 16-byte buffer and
    treats exactly one result, 0x80d13fff, as "validation is not available"; the set-up then keeps
    the engine's validation option off (it stores the probe's answer AND its configuration flag). The
    runtime gives that answer for every call, which is true of Paleblood and is the value the game's
@@ -53,8 +57,8 @@ RT_SYSLIB("libSceGnmDriver", sceGnmValidateCommandBuffers, validate_command_buff
 
 /* sceGnmDispatchInitDefaultHardwareState and sceGnmDrawInitDefaultHardwareState200(command buffer,
    dwords available): write the packets that put the GPU's compute or graphics state in its default,
-   and return how many dwords they wrote. The engine's wrappers (0x01489c50, five callers including
-   the graphics set-up at 0x02ab1130; 0x01472870, seven callers) reserve 256 dwords, pass the cursor
+   and return how many dwords they wrote. The engine's wrappers (0x01489c94, five callers including
+   the graphics set-up; 0x014728b4, seven callers) reserve 256 dwords, pass the cursor
    and the room left, and advance their cursor by the count; nothing checks the count or reads the
    packets back: only the GPU does. Paleblood has no GPU to set up (graphics are rebuilt at the engine
    level, issue #39, and the renderer sets its own state), so these write nothing and answer 0
@@ -87,7 +91,7 @@ static void fill_with_nop(const char *function, uint32_t *command_buffer, uint32
 }
 
 /* sceGnmSetCsShader(command buffer, dwords, shader): binds a compute shader. The engine's wrapper
-   (0x0148a870, four callers including the set-up at 0x02ab4230) reserves 25 dwords, passes 25 and
+   (0x0148a8b0, four callers including a set-up) reserves 25 dwords, passes 25 and
    advances by 25 dwords only when the answer is 0; nothing else reads the answer. */
 static int32_t set_cs_shader(uint32_t *command_buffer, uint32_t dwords, const void *shader)
 {
@@ -102,15 +106,15 @@ RT_SYSLIB("libSceGnmDriver", sceGnmSetCsShader, set_cs_shader);
    fixed or computed number of dwords at its cursor, passes the cursor and that count first, and
    advances the cursor by the count (when the call answers 0, or always). OpenOrbis' GnmDriver.h
    only names them; the shapes come from the wrappers:
-     shader stages (the shader's registers): SetEsShader 0x01475560 (20 dwords), SetGsShader
-       0x014759d0 (29), SetHsShader 0x014755d0 (30), SetLsShader 0x014757d0 (23), SetPsShader
-       0x014753c0 (40), SetVsShader 0x01475480 (29), and UpdateGsShader 0x01475a30, UpdateHsShader
-       0x01475640, UpdatePsShader 0x01475420, UpdateVsShader 0x014754f0 with the same counts;
+     shader stages (the shader's registers): SetEsShader 0x014755a9 (20 dwords), SetGsShader
+       0x01475a10 (29), SetHsShader 0x01475619 (30), SetLsShader 0x01475819 (23), SetPsShader
+       0x01475400 (40), SetVsShader 0x014754c9 (29), and UpdateGsShader 0x01475a70, UpdateHsShader
+       0x01475689, UpdatePsShader 0x01475460, UpdateVsShader 0x01475539 with the same counts;
      debug markers, for GPU debugging tools (counts from the label's length): InsertPushMarker
-       0x01477fe0, InsertPopMarker 0x014780e0 (6), InsertSetMarker 0x01477470 and 0x0148ae10,
-       InsertPushColorMarker 0x01478060 and 0x0148b720, InsertSetColorMarker 0x014774f0 and
-       0x0148ae90;
-     InsertWaitFlipDone 0x01478440 (7): makes the GPU wait until the display no longer shows a
+       0x01478038, InsertPopMarker 0x01478119 (6), InsertSetMarker 0x014774c8 and 0x0148ae68,
+       InsertPushColorMarker 0x014780bf and 0x0148b77f, InsertSetColorMarker 0x0147754f and
+       0x0148aeef;
+     InsertWaitFlipDone 0x01478489 (7): makes the GPU wait until the display no longer shows a
        buffer before drawing into it.
    Paleblood has no GPU to hold shader registers, no GPU debugger to read markers, and no GPU that
    could draw into a buffer early, so each fills its reserved space with one PM4 NOP packet and
@@ -139,8 +143,7 @@ RT_SYSLIB("libSceGnmDriver", sceGnmInsertSetColorMarker, write_nothing_for_the_g
 RT_SYSLIB("libSceGnmDriver", sceGnmInsertWaitFlipDone, write_nothing_for_the_gpu);
 
 /* sceGnmIsUserPaEnabled(): whether the GPU's user performance-analysis mode is on. The engine wraps
-   it as "on when nonzero" (0x01489c40) and asks from many draw-command builders (0x01474b50 and
-   others), which then add the extra packets that mode needs. Paleblood has no such GPU mode, so the
+   it as "on when nonzero" (0x01489c44) and asks from many draw-command builders, which then add the extra packets that mode needs. Paleblood has no such GPU mode, so the
    answer is 0, off; that a retail console also answers off is an inference (it is a development
    feature), not an observation. */
 static int32_t is_user_pa_enabled(void)
@@ -151,8 +154,8 @@ static int32_t is_user_pa_enabled(void)
 RT_SYSLIB("libSceGnmDriver", sceGnmIsUserPaEnabled, is_user_pa_enabled);
 
 /* sceGnmMapComputeQueue(pipe, queue, ring, ring size in dwords, read pointer): OpenOrbis' GnmDriver.h
-   only names it, so the shape comes from the engine's wrapper (0x01489a80, called from its compute
-   queue setup at 0x0148c7b0). The wrapper passes the pipe and queue from the queue object, the ring
+   only names it, so the shape comes from the engine's wrapper (0x01489aa4, called from its compute
+   queue setup). The wrapper passes the pipe and queue from the queue object, the ring
    buffer, its size in dwords and the address of the GPU's read pointer; a negative result is
    failure, and otherwise the wrapper keeps the result as the queue's id and sets the read pointer
    to 0. The setup then reports success only when that id is not 0. The runtime does not run the
@@ -192,8 +195,8 @@ RT_SYSLIB("libSceGnmDriver", sceGnmMapComputeQueue, map_compute_queue);
 
 /* sceGnmDingDong(queue id, write offset in dwords): tells the GPU that the ring of a compute queue
    holds new work up to the write offset. OpenOrbis' GnmDriver.h only names it; the shape comes from
-   the engine's compute submit (0x0148c830), which copies one 4-dword INDIRECT_BUFFER packet per
-   command buffer into the ring (the packet writer at 0x0148b330), wraps to the ring's start when
+   the engine's compute submit (0x0148c987), which copies one 4-dword INDIRECT_BUFFER packet per
+   command buffer into the ring (its packet writer), wraps to the ring's start when
    the end is full, then rings the doorbell with the queue id from sceGnmMapComputeQueue and the new
    write offset. Before writing, it checks the free space against the read pointer the GPU advances.
 
@@ -394,7 +397,7 @@ RT_SYSLIB("libSceGnmDriver", sceGnmDingDong, ding_dong);
 
 /* sceGnmSubmitCommandBuffers(count, draw command buffers, their sizes in bytes, constant command
    buffers, their sizes): hands command buffers to the GPU's graphics queue. OpenOrbis' GnmDriver.h
-   only names it; the shape comes from the engine's submit (0x02ab0b00, one of eleven callers),
+   only names it; the shape comes from the engine's submit (0x02ab0c23, one of eleven callers),
    which passes one or two draw command buffers, their byte sizes rounded down to whole dwords, and
    no constant buffers, and ignores the answer.
 
@@ -429,7 +432,7 @@ RT_SYSLIB("libSceGnmDriver", sceGnmSubmitCommandBuffers, submit_command_buffers)
 /* sceGnmSubmitAndFlipCommandBuffers(count, draw command buffers, sizes, constant command buffers,
    sizes, video out handle, buffer index, flip mode, flip argument): submits a frame's last command
    buffers and shows one of the display's buffers once they are done. OpenOrbis' GnmDriver.h only
-   names it; the shape comes from the engine's frame end (0x02ab0e30 and 0x02ab0ce0), which passes
+   names it; the shape comes from the engine's frame end (0x02ab0ee2 and 0x02ab0dff), which passes
    one or two draw command buffers, no constant buffers, and the port, buffer, mode and argument of
    its frame (the flip loop calling at 0x02ad6ee9), then calls sceGnmSubmitDone. The stand-in completes the buffers at once,
    as sceGnmSubmitCommandBuffers does, then flips as sceVideoOutSubmitFlip does. */
@@ -442,7 +445,7 @@ static int32_t submit_and_flip(uint32_t count, void **draw_buffers, const uint32
 }
 
 /* sceGnmSubmitDone(void): tells the system the frame's submissions are finished, after each
-   submit-and-flip (0x02ab0e30, 0x02ab0ce0), which ignore the answer. The stand-in has already
+   submit-and-flip (0x02ab0ee2, 0x02ab0dff), which ignore the answer. The stand-in has already
    finished all submitted work, so there is nothing left to do; it answers 0. */
 static int32_t submit_done(void)
 {
