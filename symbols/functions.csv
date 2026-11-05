@@ -40,6 +40,7 @@ address,size,name,system,status,notes
 0x0143f9f0,18,frame_timing_task_set_frame_value_0143f9f0,frame_timing,verified,task manager: copies the float at +0x8 of the frame information to the global 0x058b7e08
 0x014400a0,180,frame_timing_task_workers_step_014400a0,frame_timing,verified,"task manager workers: three rounds over the worker queues +0x58, +0x68, +0x60"
 0x01471310,544,render_pack_record_mapping_word,render,edge-verified,Pack numeric mapping fields with priority masks and full-width mode handling; return a zero-extended DWORD.
+0x01471600,190,render_record_constructor_pack_pair,render,edge-verified,Pack a full DWORD selector pair into an encoding; the first selector controls flag handling.
 0x01471730,21,render_record_encoding_metadata,render,edge-verified,Bounded first-byte metadata lookup; preserve original table entries and zero fallback.
 0x014717a0,505,render_record_encoding_components,render,edge-verified,Select ordered packed component arrangement; optional output only on success and Boolean AL contract.
 0x014719a0,117,render_record_encoding_category,render,edge-verified,Decode accepted category nibbles; optional DWORD output untouched on rejection.
@@ -51,6 +52,7 @@ address,size,name,system,status,notes
 0x014784a0,82,render_command_prepare_submission,render,edge-verified,Reserve 64 command words; callback low byte gates two marker stores and cursor advance Synthetic edges pass; no recordings.
 0x01485070,16,render_set_present_last_record_depth_compress_disable,render,edge-verified,Replace DEPTH_COMPRESS_DISABLE in the saved DB_RENDER_CONTROL word using the input low bit. Return the old bits with that flag cleared.
 0x01485080,16,render_set_present_last_record_stencil_compress_disable,render,edge-verified,Replace STENCIL_COMPRESS_DISABLE in the saved DB_RENDER_CONTROL word using the input low bit. Return the old bits with that flag cleared.
+0x01485f90,1410,render_record_constructor,render,edge-verified,Clear the 44-byte record prefix and publish partial record and auxiliary outputs; return the packed 64-bit result.
 0x01486520,31,render_record_set_word_0c_fields,render,edge-verified,Store two masked fields; return masked old word. No constructor add/subtract.
 0x01486540,305,render_record_set_encoding,render,edge-verified,Pack accepted encoding into record DWORD10 preserving other bits; invalid input has undefined native extractor locals.
 0x014866e0,33,render_record_set_word_04_repeated_field,render,edge-verified,Duplicate supplied low 11 bits; return preserved old word.
@@ -61,6 +63,8 @@ address,size,name,system,status,notes
 0x01486800,20,render_record_set_word_28_low22,render,edge-verified,Replace this word's low 22 bits and return the preserved old upper bits.
 0x01486cf0,38,render_read_record_mapping_word,render,edge-verified,Read one unaligned mapping DWORD and delegate three extracted fields to the original encoder. Full return is zero-extended.
 0x0149c850,672,render_record_apply_parameter_tuple,render,edge-verified,Select one output code from normalization tuple; ordered overrides and rejection preserve output.
+0x0149e2d0,295,render_record_constructor_optional_first,render,edge-verified,"Align paired components; retain the pre-increment product and 55-bit quantity, then publish optional outputs in order."
+0x0149e400,358,render_record_constructor_optional_second,render,edge-verified,Calculate geometry and publish zeroed or partial auxiliary outputs even when a helper reports an error.
 0x0149e570,279,render_calculate_second_auxiliary,render,edge-verified,Calculate the second auxiliary layout through two ordered unit admissions and wrapped alignment. Publish its four optional size and alignment outputs in 8/4/4/4-byte order.
 0x0149e900,16,render_record_tuple_parameter_supported,render,edge-verified,Nonzero power-of-two test with Boolean AL interface.
 0x0149e960,129,render_record_tuple_transform_classification,render,edge-verified,Transform admitted classifications after wrapping 32-bit scaling and unsigned thresholds.
