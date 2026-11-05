@@ -87,7 +87,7 @@ extern "C" void bb_render_present_last_record_consume(
     RecordShaderState *const shader = &context->shader_state;
     RecordPreparationState *const preparation = &context->preparation;
     last_record_calls::reset_preparation(preparation, context);
-    begin_record_commands(commands, command_begin_mode);
+    emit_event_write(commands, command_begin_mode);
 
     const uint32_t parameters = record->parameters_30.get();
     const uint32_t first_parameter = parameters & parameter_half_mask;
@@ -111,15 +111,16 @@ extern "C" void bb_render_present_last_record_consume(
     for (uint32_t slot = 0; slot < preparation_slot_count; ++slot) {
         bind_prepared_record(preparation, commands, slot, nullptr);
     }
-    emit_record_state_mode(commands, 0, state_mode_value);
+    set_cb_color_control(commands, 0, state_mode_value);
     last_record_calls::initialize_mode(&mode);
     last_record_calls::set_first_mode(&mode, 1);
     last_record_calls::set_second_mode(&mode, 1);
     last_record_calls::emit_mode(commands, mode.word);
 
-    configure_record_shader(shader, commands, shared_present_descriptor.address(), 0);
-    emit_record_pipeline_mode(commands, pipeline_mode);
-    emit_record_enable(commands, 1);
+    configure_record_shader(reinterpret_cast<ShaderPrimaryStateView *>(shader), packet_commands,
+                            reinterpret_cast<const ShaderPrimaryDescriptorView *>(shared_present_descriptor.address()), nullptr);
+    set_vgt_primitive_type(commands, pipeline_mode);
+    emit_num_instances(commands, 1);
     configure_record_shader_secondary(shader, commands, shared_present_descriptor.address(), 0);
 
     copy_last_record(copy, record);
@@ -128,7 +129,7 @@ extern "C" void bb_render_present_last_record_consume(
     while (remaining != 0) {
         last_record_calls::set_record_index(&copy, index, index);
         select_preparation(preparation, commands, &copy);
-        emit_present_record_step(commands, record_step_mode);
+        emit_draw_index_auto(commands, record_step_mode);
         ++index;
         --remaining;
     }
@@ -140,7 +141,7 @@ extern "C" void bb_render_present_last_record_consume(
     context->sentinel_b548.set(unset_address);
     context->flags_b550.set(context->flags_b550.get() | range_marker);
     context->sentinel_b540.set(unset_word);
-    emit_record_state_mode(commands, 1, state_mode_value);
+    set_cb_color_control(commands, 1, state_mode_value);
     last_record_calls::initialize_mode(&restore_mode);
     last_record_calls::emit_mode(commands, restore_mode.word);
 
