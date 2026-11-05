@@ -50,6 +50,8 @@ typedef struct {
     int workgroup_id_x_sgpr;
     unsigned vertex_index_vgpr, barycentric_vgpr;
     uint32_t output_control;         /* a vertex shader's PA_CL_VS_OUT_CNTL */
+    uint32_t push_constant_offset;   /* runtime/gcn_spirv.h */
+    uint64_t address_offset;
 } stage_layout;
 
 enum { POSITION_TARGET = 12, PARAMETER_TARGET_FIRST = 32, PARAMETER_COUNT = 32, COLOR_TARGET_COUNT = 8, MAX_INTERFACE = 80 };
@@ -855,7 +857,12 @@ static uint32_t address_in(translator *t, unsigned first_sgpr)
                                      konst(t, VSHARP_BASE_HIGH_MASK));
     const uint32_t thirty_two = spirv_global(&t->m, SPV_OP_CONSTANT, (const uint32_t[]){t_ulong(t), 32, 0}, 3);
     const uint32_t high = value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_ulong(t), 2, widen(t, high_bits), thirty_two);
-    return value(t, SPV_OP_BITWISE_OR, t_ulong(t), 2, low, high);
+    const uint32_t guest = value(t, SPV_OP_BITWISE_OR, t_ulong(t), 2, low, high);
+    const uint64_t offset = t->layout->address_offset;
+    if (!offset) return guest;
+    const uint32_t gpu_distance = spirv_global(&t->m, SPV_OP_CONSTANT,
+                                               (const uint32_t[]){t_ulong(t), (uint32_t)offset, (uint32_t)(offset >> 32)}, 3);
+    return value(t, SPV_OP_I_ADD, t_ulong(t), 2, guest, gpu_distance);
 }
 
 static uint32_t dword_pointer(translator *t, uint32_t base, uint32_t byte_offset, uint32_t index)
@@ -1173,7 +1180,8 @@ static uint32_t user_data_block(translator *t)
     const uint32_t block = spirv_global(m, SPV_OP_TYPE_STRUCT, (const uint32_t[]){array}, 1);
     spirv_emit(m, &m->sections[SPIRV_DECORATIONS], SPV_OP_DECORATE, (const uint32_t[]){array, SPV_DECORATION_ARRAY_STRIDE, BYTES_PER_DWORD}, 3);
     spirv_emit(m, &m->sections[SPIRV_DECORATIONS], SPV_OP_DECORATE, (const uint32_t[]){block, SPV_DECORATION_BLOCK}, 2);
-    spirv_emit(m, &m->sections[SPIRV_DECORATIONS], SPV_OP_MEMBER_DECORATE, (const uint32_t[]){block, 0, SPV_DECORATION_OFFSET, 0}, 4);
+    spirv_emit(m, &m->sections[SPIRV_DECORATIONS], SPV_OP_MEMBER_DECORATE,
+               (const uint32_t[]){block, 0, SPV_DECORATION_OFFSET, t->layout->push_constant_offset}, 4);
     const uint32_t id = spirv_new_id(m);
     spirv_emit(m, &m->sections[SPIRV_GLOBALS], SPV_OP_VARIABLE,
                (const uint32_t[]){spirv_type_pointer(m, SPV_STORAGE_PUSH_CONSTANT, block), id, SPV_STORAGE_PUSH_CONSTANT}, 3);
@@ -1322,6 +1330,10 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
     spirv_module *m = &t->m;
     if (layout->user_sgprs > GCN_USER_SGPR_MAX) fail(t, "more user SGPRs than the push constants hold");
     if (layout->vertex_index_vgpr >= VGPR_COUNT || layout->barycentric_vgpr + 1 >= VGPR_COUNT) fail(t, "an input VGPR past v255");
+    if (layout->push_constant_offset % BYTES_PER_DWORD ||
+        layout->push_constant_offset + GCN_USER_SGPR_MAX * BYTES_PER_DWORD > GCN_PUSH_CONSTANT_LIMIT)
+        fail(t, "user data at push-constant byte %u: not a whole word within %d bytes", layout->push_constant_offset,
+             GCN_PUSH_CONSTANT_LIMIT);
 
     static const uint32_t capabilities[] = {SPV_CAPABILITY_SHADER, SPV_CAPABILITY_INT64, SPV_CAPABILITY_PHYSICAL_STORAGE_BUFFER,
                                             SPV_CAPABILITY_GROUP_NON_UNIFORM, SPV_CAPABILITY_GROUP_NON_UNIFORM_VOTE};
@@ -1475,7 +1487,8 @@ int gcn_translate_compute(const uint32_t *code, size_t dwords, const gcn_compute
                           uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size)
 {
     const stage_layout s = {.stage = STAGE_COMPUTE, .local_size = {layout->local_size[0], layout->local_size[1], layout->local_size[2]},
-                            .user_sgprs = layout->user_sgprs, .workgroup_id_x_sgpr = layout->workgroup_id_x_sgpr};
+                            .user_sgprs = layout->user_sgprs, .workgroup_id_x_sgpr = layout->workgroup_id_x_sgpr,
+                            .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset};
     return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
 }
 
@@ -1483,7 +1496,8 @@ int gcn_translate_vertex(const uint32_t *code, size_t dwords, const gcn_vertex_l
                          uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size)
 {
     const stage_layout s = {.stage = STAGE_VERTEX, .user_sgprs = layout->user_sgprs, .workgroup_id_x_sgpr = -1,
-                            .vertex_index_vgpr = layout->vertex_index_vgpr, .output_control = layout->output_control};
+                            .vertex_index_vgpr = layout->vertex_index_vgpr, .output_control = layout->output_control,
+                            .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset};
     return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
 }
 
@@ -1491,6 +1505,7 @@ int gcn_translate_pixel(const uint32_t *code, size_t dwords, const gcn_pixel_lay
                         uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size)
 {
     const stage_layout s = {.stage = STAGE_PIXEL, .user_sgprs = layout->user_sgprs, .workgroup_id_x_sgpr = -1,
-                            .barycentric_vgpr = layout->barycentric_vgpr};
+                            .barycentric_vgpr = layout->barycentric_vgpr,
+                            .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset};
     return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
 }
