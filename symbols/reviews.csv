@@ -87,3 +87,8 @@ address,name,date,reviewer,verdict,notes
 +0x011c4840,audio_fmod_string_copy_counted,2026-11-03,independent session,approved,"faithful on every path, 40/40 and 54/54, and every mutant is caught"
 +0x01471310,render_pack_record_mapping_word,2026-11-03,independent session,approved,"the family by mode table matches the disassembly exactly and every earlier issue is fixed"
 +0x01486cf0,render_read_record_mapping_word,2026-11-03,independent session,approved,"the family by mode table matches the disassembly exactly and every earlier issue is fixed"
++0x0149c850,render_record_apply_parameter_tuple,2026-11-03,independent session,approved,"all five functions are faithful on every path and the earlier mutants are caught"
++0x0149e900,render_record_tuple_parameter_supported,2026-11-03,independent session,approved,"all five functions are faithful on every path and the earlier mutants are caught"
++0x0149e960,render_record_tuple_transform_classification,2026-11-03,independent session,approved,"all five functions are faithful on every path and the earlier mutants are caught"
++0x0149ea20,render_record_tuple_classification_group,2026-11-03,independent session,approved,"all five functions are faithful on every path and the earlier mutants are caught"
++0x0149ea70,render_record_tuple_alternate_classification,2026-11-03,independent session,approved,"all five functions are faithful on every path and the earlier mutants are caught"
