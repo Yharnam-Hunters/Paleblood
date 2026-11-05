@@ -21,6 +21,7 @@ address,size,name,system,status,notes
 0x0111adc0,28,kernel_semaphore_signal,kernel,edge-verified,Signal one unit using the full opaque handle including null; preserve kernel writes and translate every nonzero low32 result to 0x21
 0x0111b060,14,audio_fmod_output_driver_count,audio,edge-verified,FMOD Orbis AudioOut descriptor callback installed by 0x0111aed0; optional output receives one driver; return zero
 0x0111b0b0,37,audio_fmod_output_defaults,audio,edge-verified,FMOD output descriptor callback writes 132 then 48000 then 6 to optional outputs; sample-rate and speaker-mode meanings remain hypotheses
+0x011c4510,15,engine_store_word_product,engine,edge-verified,Store low 32-bit input at owner+0x18 and modulo-32-bit product times four at owner+0x1c; valid unaligned byte view and full zero return; field meanings unknown
 0x011c47f0,29,engine_string_length,engine,edge-verified,Engine strlen; scan to the first NUL and return the low 32 length bits zero-extended into RAX; other incoming GP registers are ignored
 0x011c4810,34,audio_fmod_string_copy,audio,edge-verified,NUL-terminated string copy used by FMOD callers; includes terminator and returns destination; finite aliases covered
 0x011c4840,38,audio_fmod_string_copy_counted,audio,edge-verified,FMOD bounded string copy uses low32 count; stops at NUL or count without padding; zero count accesses neither pointer
