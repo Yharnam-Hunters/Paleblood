@@ -60,6 +60,7 @@ address,replacement,system,returns
 0x01486800,bb_render_record_set_word_28_low22,render,i32
 0x01486cf0,bb_render_read_record_mapping_word,render,i64
 0x0149c850,bb_render_record_apply_parameter_tuple,render,i32
+0x0149cb30,bb_render_record_apply_mapping,render,i32
 0x0149e570,bb_render_calculate_second_auxiliary,render,i64
 0x0149e900,bb_render_record_tuple_parameter_supported,render,i64
 0x0149e960,bb_render_record_tuple_transform_classification,render,i32
@@ -112,6 +113,7 @@ address,replacement,system,returns
 0x025b2fb0,bb_render_swap_chain_present,render,void
 0x02a44140,bb_engine_wide_string_destroy,engine,void
 0x02ab5a70,bb_render_present_record_consume,render,void
+0x02abaf10,bb_render_record_derive_parameter,render,i32
 0x02abb4f0,bb_render_record_auxiliary_predicate,render,i8
 0x02ad2c30,bb_render_reset_present_preparation_dirty,render,i64
 0x02ad5dd0,bb_render_swap_chain_present_mode,render,i32
