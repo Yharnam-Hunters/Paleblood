@@ -5,7 +5,7 @@
 // overlap it.
 #include "present_preparation_packets.h"
 
-extern "C" void bb_render_emit_prepared_record_packet(render::PacketBuffer *commands,
+extern "C" void bb_render_set_render_target(render::PacketBuffer *commands,
                                                     uint32_t slot, const void *descriptor)
 {
     using namespace render;

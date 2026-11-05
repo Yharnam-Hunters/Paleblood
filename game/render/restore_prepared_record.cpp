@@ -11,5 +11,5 @@ extern "C" void bb_render_restore_prepared_record_from_bank(render::RecordPrepar
     const uint32_t flags = state->bank_flags.get();
     const uint32_t bank = (flags >> preparation_record_bank_bit) & 1;
     const uintptr_t candidate = preparation_record_source(state, bank, slot);
-    emit_prepared_record_packet(commands, slot, preparation_payload(candidate));
+    render_set_render_target(commands, slot, preparation_payload(candidate));
 }

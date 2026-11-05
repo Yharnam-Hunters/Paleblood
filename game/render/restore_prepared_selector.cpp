@@ -11,5 +11,5 @@ extern "C" void bb_render_restore_prepared_selector_from_bank(render::RecordPrep
     const uint32_t flags = state->bank_flags.get();
     const uint32_t bank = (flags >> preparation_selector_bank_bit) & 1;
     const uintptr_t candidate = state->banks[bank].selector.get();
-    emit_prepared_selector_packet(commands, preparation_payload(candidate));
+    render_set_depth_render_target(commands, preparation_payload(candidate));
 }

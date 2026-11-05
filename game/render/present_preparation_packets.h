@@ -16,9 +16,9 @@ struct PacketBuffer;
 struct PresentRecordView;
 struct RecordPreparationState;
 
-RT_ORIGINAL(0x014738b0, emit_prepared_record_packet,
+RT_ORIGINAL(0x014738b0, render_set_render_target,
             void(PacketBuffer *, uint32_t slot, const void *descriptor));
-RT_ORIGINAL(0x014739b0, emit_prepared_selector_packet,
+RT_ORIGINAL(0x014739b0, render_set_depth_render_target,
             void(PacketBuffer *, const void *descriptor));
 
 // Narrow views retain the exact validity and NOP-payload reads without

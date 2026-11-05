@@ -13,7 +13,7 @@ bool has_selector_payload(const void *descriptor)
 }
 }  // namespace
 
-extern "C" void bb_render_emit_prepared_selector_packet(render::PacketBuffer *commands,
+extern "C" void bb_render_set_depth_render_target(render::PacketBuffer *commands,
                                                       const void *descriptor)
 {
     using namespace render;
