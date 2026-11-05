@@ -27,7 +27,7 @@ address,size,name,system,status,notes
 0x011c4840,38,audio_fmod_string_copy_counted,audio,edge-verified,FMOD bounded string copy uses low32 count; stops at NUL or count without padding; zero count accesses neither pointer
 0x011c4870,51,engine_string_append,engine,edge-verified,NUL-terminated string append returns original destination; includes prefixes beyond four bytes and finite aliases
 0x011c48b0,60,engine_string_append_counted,engine,edge-verified,Bounded string append uses low32 count; zero count touches neither pointer; appends NUL after count bytes when needed
-0x011c48f0,18,engine_ascii_to_lower,engine,edge-verified,"ASCII lowercase of the low input byte; sign extend the byte to 32 bits, then zero extend EAX to the upper 32 bits of RAX are zero"
+0x011c48f0,18,engine_ascii_to_lower,engine,edge-verified,"ASCII lowercase of the low input byte; sign-extend the result byte to 32 bits; the upper 32 bits of RAX are zero"
 0x011c4910,44,engine_ascii_to_upper_in_place,engine,edge-verified,Convert ASCII a-z to A-Z in place through NUL; retain all other bytes and return original pointer; caller 0x01127ca0
 0x011c4940,44,engine_ascii_to_lower_in_place,engine,edge-verified,Convert ASCII A-Z to a-z in place through NUL; retain all other bytes and return original pointer; caller 0x01127ca0
 0x011c4970,29,engine_compare_signed_strings,engine,edge-verified,Compare zero-terminated strings by signed bytes and return their first differing byte subtraction

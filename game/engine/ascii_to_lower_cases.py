@@ -78,6 +78,7 @@ CASES.extend(
 
 
 def main():
+    """Write the synthetic byte and register cases to the requested directory."""
     if len(sys.argv) != 2:
         print(f"usage: {Path(__file__).name} OUT_DIR", file=sys.stderr)
         return 2
