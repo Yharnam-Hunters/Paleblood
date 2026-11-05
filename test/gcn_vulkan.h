@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* What the shader translator's GPU tests share (test_gcn_compute.c, test_gcn_draw.c): a Vulkan 1.2
-   device with buffer device addresses and a queue for graphics and compute, host-visible buffers
+   device with buffer device addresses, 64-bit integers and clip distances, and a queue for graphics and compute, host-visible buffers
    reached by device address, and the buffer descriptors the translated shaders read them
    through. */
 #ifndef TEST_GCN_VULKAN_H
@@ -48,7 +48,7 @@ static int open_gpu(gpu *g)
     VkPhysicalDeviceVulkan12Features features12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     VkPhysicalDeviceFeatures2 features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &features12};
     vkGetPhysicalDeviceFeatures2(g->physical, &features);
-    if (!features12.bufferDeviceAddress || !features.features.shaderInt64) return -1;
+    if (!features12.bufferDeviceAddress || !features.features.shaderInt64 || !features.features.shaderClipDistance) return -1;
     VkQueueFamilyProperties families[16];
     uint32_t family_count = 16;
     vkGetPhysicalDeviceQueueFamilyProperties(g->physical, &family_count, families);
@@ -63,7 +63,7 @@ static int open_gpu(gpu *g)
     VkPhysicalDeviceVulkan12Features enable12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
                                                  .bufferDeviceAddress = VK_TRUE};
     const VkPhysicalDeviceFeatures2 enable = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &enable12,
-                                              .features = {.shaderInt64 = VK_TRUE}};
+                                              .features = {.shaderInt64 = VK_TRUE, .shaderClipDistance = VK_TRUE}};
     const VkDeviceCreateInfo device = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &enable,
                                        .queueCreateInfoCount = 1, .pQueueCreateInfos = &queue};
     if (vkCreateDevice(g->physical, &device, NULL, &g->device) != VK_SUCCESS) return -1;
