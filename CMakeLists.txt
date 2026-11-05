@@ -95,6 +95,13 @@ add_executable(pbgcn runtime/renderer/pbgcn.c)
 target_link_libraries(pbgcn PRIVATE pbgcn_decode)
 # The shader translator (GCN to SPIR-V) and its tests: test_gcn_spirv checks modules with spirv-val
 # when it is installed; test_gcn_compute and test_gcn_draw run them on a Vulkan device when there is one.
+# The renderer's record of the GPU library's calls (docs/RENDERER.md, phase 3).
+add_library(pbrender_calls STATIC runtime/renderer/render_calls.c)
+target_include_directories(pbrender_calls PUBLIC runtime/include)
+target_link_libraries(pbrender_calls PUBLIC pthread)
+add_executable(test_render_calls test/test_render_calls.c)
+target_link_libraries(test_render_calls PRIVATE pbrender_calls)
+add_test(NAME render_calls COMMAND test_render_calls)
 add_library(pbgcn_spirv STATIC runtime/renderer/spirv.c runtime/renderer/gcn_spirv.c)
 target_include_directories(pbgcn_spirv PUBLIC runtime/include)
 target_link_libraries(pbgcn_spirv PUBLIC pbgcn_decode)
