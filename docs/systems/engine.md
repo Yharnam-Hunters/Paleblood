@@ -91,7 +91,10 @@ on current `main`, and an independent review approved it.
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
 | `0x0111a740` | 20 | `engine_write_stderr` | edge-verified | Forward the string and imported _Stderr object address to fputs; ignore its return and return zero; synthetic wire edge cases only |
+| `0x011c4510` | 15 | `engine_store_word_product` | edge-verified | Store low 32-bit input at owner+0x18 and modulo-32-bit product times four at owner+0x1c; valid unaligned byte view and full zero return; field meanings unknown |
 | `0x011c47f0` | 29 | `engine_string_length` | edge-verified | Engine strlen; scan to the first NUL and return the low 32 length bits zero-extended into RAX; other incoming GP registers are ignored |
+| `0x011c4870` | 51 | `engine_string_append` | edge-verified | NUL-terminated string append returns original destination; includes prefixes beyond four bytes and finite aliases |
+| `0x011c48b0` | 60 | `engine_string_append_counted` | edge-verified | Bounded string append uses low32 count; zero count touches neither pointer; appends NUL after count bytes when needed |
 | `0x011c4910` | 44 | `engine_ascii_to_upper_in_place` | edge-verified | Convert ASCII a-z to A-Z in place through NUL; retain all other bytes and return original pointer; caller 0x01127ca0 |
 | `0x011c4940` | 44 | `engine_ascii_to_lower_in_place` | edge-verified | Convert ASCII A-Z to a-z in place through NUL; retain all other bytes and return original pointer; caller 0x01127ca0 |
 | `0x011c4970` | 29 | `engine_compare_signed_strings` | edge-verified | Compare zero-terminated strings by signed bytes and return their first differing byte subtraction |
