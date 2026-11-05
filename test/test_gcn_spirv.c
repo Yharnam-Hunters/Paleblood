@@ -82,12 +82,19 @@ static int to_metal(const uint32_t *spirv, size_t words, const char *name)
 
 typedef enum { COMPUTE, VERTEX, PIXEL } stage;
 
-static const gcn_vertex_layout vertex_layout = {8, 0};
+static const gcn_vertex_layout vertex_layout = {8, 0, 0};
+/* PA_CL_VS_OUT_CNTL values: clip distances 0 and 1 in the first distance vector (the game's
+   shaders all use this one); the same with the misc vector first; a cull distance instead. */
+enum { CLIP_DISTANCES_0_1 = 0x400003, MISC_VECTOR_FIRST = 0x600003, CULL_DISTANCE_0 = 0x400100 };
 static const gcn_pixel_layout pixel_layout = {8, 0};
+
+static uint32_t output_control; /* the vertex layout's, for the next translation */
 
 static int translate(stage s, const uint32_t *code, size_t dwords, uint32_t **spirv, size_t *words, char *error, size_t error_size)
 {
-    if (s == VERTEX) return gcn_translate_vertex(code, dwords, &vertex_layout, spirv, words, error, error_size);
+    gcn_vertex_layout vertex = vertex_layout;
+    vertex.output_control = output_control;
+    if (s == VERTEX) return gcn_translate_vertex(code, dwords, &vertex, spirv, words, error, error_size);
     if (s == PIXEL) return gcn_translate_pixel(code, dwords, &pixel_layout, spirv, words, error, error_size);
     return gcn_translate_compute(code, dwords, &layout, spirv, words, error, error_size);
 }
@@ -148,6 +155,13 @@ int main(void)
     refused_as(PIXEL, PROGRAM(pixel_p2_alone), "no v_interp_p1");
     refused_as(PIXEL, PROGRAM(pixel_other_barycentrics), "barycentrics in v2");
     refused_as(VERTEX, PROGRAM(vertex_pos1), "target 13");
+    output_control = CLIP_DISTANCES_0_1;
+    translates_as(VERTEX, PROGRAM(vertex_clip), "vertex_clip");
+    output_control = MISC_VECTOR_FIRST;
+    refused_as(VERTEX, PROGRAM(vertex_clip), "misc vector");
+    output_control = CULL_DISTANCE_0;
+    refused_as(VERTEX, PROGRAM(vertex_clip), "cull distance 0");
+    output_control = 0;
     refused_as(COMPUTE, PROGRAM(pixel_color), "outside pixel shaders");
     refused_as(PIXEL, PROGRAM(vertex_position_color), "target 32");
 
