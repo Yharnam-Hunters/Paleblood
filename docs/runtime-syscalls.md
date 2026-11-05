@@ -1051,6 +1051,13 @@ and no caller reads them.
 - other open arguments;
 - errors.
 
+The buffer-attribute setter and buffer registration share the 40-byte
+`rt_video_out_buffer_attribute` layout. The setter copies all six input DWORDs
+without interpreting them and clears the 16 reserved bytes; unaligned output is
+supported. The public API is void. The independently examined native leaf also
+leaves the zero-extended pitch in RAX, which this implementation preserves for
+callers that observe it. A null output stops by the API name before any store.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
