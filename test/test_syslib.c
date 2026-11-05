@@ -233,6 +233,42 @@ static void usleep_one_second(void) { posix_usleep_entry(1000000); }
 static unsigned int (*posix_sleep_entry)(unsigned int);
 static void sleep_above_int_max(void) { posix_sleep_entry(0x80000000u); } /* INT_MAX + 1 */
 
+/* The guest's struct timespec: two 64-bit fields, seconds and nanoseconds (FreeBSD amd64). */
+typedef struct {
+    int64_t seconds;
+    int64_t nanoseconds;
+} nanosleep_timespec;
+static int (*nanosleep_entry)(const nanosleep_timespec *, nanosleep_timespec *);
+static void nanosleep_ask(int64_t seconds, int64_t nanoseconds)
+{
+    nanosleep_timespec request = {seconds, nanoseconds};
+    nanosleep_entry(&request, NULL);
+}
+static void nanosleep_no_request(void) { nanosleep_entry(NULL, NULL); }
+static void nanosleep_negative_nanoseconds(void) { nanosleep_ask(0, -1); }
+static void nanosleep_one_billion_nanoseconds(void) { nanosleep_ask(0, 1000000000); }
+static void nanosleep_negative_seconds(void) { nanosleep_ask(-1, 0); }
+/* The host answers each of these requests with EINVAL too, which also stops the process, so the
+   child checks which stop it reached (the observer pattern of test_direct_memory_bounds.c). */
+static const char *nanosleep_expected_reason;
+static void nanosleep_observe_stop(const char *function, const char *reason)
+{
+    _exit(!strcmp(function, "nanosleep") && strstr(reason, nanosleep_expected_reason) ? 0 : 1);
+}
+static int nanosleep_stops_with(void (*call)(void), const char *reason)
+{
+    const pid_t child = fork();
+    if (child == 0) {
+        nanosleep_expected_reason = reason;
+        rt_fatal_observer = nanosleep_observe_stop;
+        call();
+        _exit(2); /* the call returned, so it did not stop */
+    }
+    int status = 0;
+    if (waitpid(child, &status, 0) < 0) return 0;
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
 /* The paths whose PS4 answer is not established. The ids are file-scope so a child can unregister
    one the parent registered before forking. */
 static int netctl_id_a, netctl_id_b;
@@ -1342,6 +1378,27 @@ int main(void)
     CHECK(posix_sleep_entry(1) == 0 && elapsed_us(&start) >= 1000000);
     CHECK(died_in_fatal(sleep_above_int_max));
     CHECK(is_implemented("libScePosix", "sleep"));
+
+    /* nanosleep sleeps at least the time asked and returns 0. The guest gets no signal, so the
+       remaining-time variable is never written, and the request may be that same variable. The
+       largest valid nanosecond count, 999999999, sleeps. Its errno cases and negative seconds stop
+       by name. */
+    nanosleep_entry = (int (*)(const nanosleep_timespec *, nanosleep_timespec *))fn("libkernel", "nanosleep");
+    nanosleep_timespec nanosleep_asked = {0, 0}, nanosleep_left = {7, 7};
+    CHECK(nanosleep_entry(&nanosleep_asked, &nanosleep_left) == 0);
+    nanosleep_asked = (nanosleep_timespec){0, 999999999};
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    CHECK(nanosleep_entry(&nanosleep_asked, &nanosleep_left) == 0 && elapsed_us(&start) >= 999999);
+    CHECK(nanosleep_left.seconds == 7 && nanosleep_left.nanoseconds == 7);
+    nanosleep_asked = (nanosleep_timespec){1, 50000000};
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    CHECK(nanosleep_entry(&nanosleep_asked, &nanosleep_asked) == 0 && elapsed_us(&start) >= 1050000);
+    CHECK(nanosleep_asked.seconds == 1 && nanosleep_asked.nanoseconds == 50000000);
+    CHECK(nanosleep_stops_with(nanosleep_no_request, "no requested time"));
+    CHECK(nanosleep_stops_with(nanosleep_negative_nanoseconds, "nanoseconds outside"));
+    CHECK(nanosleep_stops_with(nanosleep_one_billion_nanoseconds, "nanoseconds outside"));
+    CHECK(nanosleep_stops_with(nanosleep_negative_seconds, "negative seconds"));
+    CHECK(is_implemented("libkernel", "nanosleep"));
 
     /* __stack_chk_fail never returns: the program ends. That stop is the whole contract, so the
        entry counts as implemented, unlike the fail-loud diagnostics above. */
