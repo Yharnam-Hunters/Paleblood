@@ -10,6 +10,7 @@ mechanism lives here and the knowledge lives in `game/` as data.
 | Boot harness | `boot.c` (`pbboot`) | runs the executable's entry on the runtime; stops at the first unimplemented import and names it |
 | System libraries | `syslib/*.c`, `include/runtime/syslib.h` | implementations by library and symbol (`RT_SYSLIB`), one file per system call group |
 | NIDs | `nid.c`, `include/runtime/nid.h` | symbol name to NID |
+| CPU topology | `cpu.c`, `include/runtime/cpu.h` | own main-thread guest-bit map over actual allowed host CPUs; dynamic Linux query; explicit configuration and limits in [CPU policy](../docs/own-runtime-cpu-topology.md) |
 | Hooks and captures | `hooks.c`, `capture.c`, `include/runtime/recorder.hpp`, `probe.c`, `plugin.c` | hook registry and opt-in case writer; production hook dispatch does not yet observe calls or connect the Recorder to replacements; serialized cases carry function/run provenance and stable buffer ordering |
 | Tracing capture | `trace.c`, `trace_entry.S`, `capture_trace.cpp`, `capture_hooks.c`, `capture_entry.S`, `include/runtime/trace.h`, `include/runtime/capture_trace.h`, `include/runtime/capture_hooks.h` | with `BB_CAPTURE_TRACE=1`, sampled hooked calls run the original single-stepped (Capstone) from a relocated entry, and every byte it read before writing becomes a schema-1 case; imports it calls are scripted (`BB_ELF`, `BB_CAPTURE_IMPORTS`); fail-closed; thread-local storage not yet (docs/capture-architecture.md). Without Capstone, `trace_none.c` |
 

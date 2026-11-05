@@ -64,6 +64,7 @@ typedef struct {
     int sched_policy;
     int has_sched_priority;
     int32_t sched_priority;
+    int has_affinity;
     uint64_t affinity;      /* the CPU mask scePthreadAttrSetaffinity recorded, 0: none */
 } guest_attr;
 
@@ -115,6 +116,8 @@ static guest_thread *thread_object_new(const char *caller)
 }
 
 static _Thread_local guest_thread *current;
+static rt_cpu_topology main_topology;
+static guest_thread *registered_main;
 
 /* Thread priorities. A PS4 executable may declare its main thread's settings in its process
    parameters (sceUserMainThreadPriority and the like, which homebrew titles define); without them
@@ -138,13 +141,28 @@ static int32_t main_thread_priority(void)
     return SCE_KERNEL_PRIO_FIFO_DEFAULT;
 }
 
+rt_cpu_status rt_thread_register_main_cpu(void *stack, uint64_t stack_size, rt_cpu_query query,
+                                         void *context, const char *mapping)
+{
+    if (registered_main) return RT_CPU_BAD_CONFIGURATION;
+    rt_cpu_topology topology;
+    const rt_cpu_status status = rt_cpu_topology_init(&topology, query, context, mapping);
+    if (status != RT_CPU_OK) return status;
+    guest_thread *const thread = current ? current : thread_object_new("the main thread");
+    thread->stack = stack;
+    thread->stack_size = stack_size;
+    thread->priority = main_thread_priority();
+    main_topology = topology;
+    registered_main = thread;
+    current = thread;
+    return RT_CPU_OK;
+}
+
 void rt_thread_register_main(void *stack, uint64_t stack_size)
 {
-    guest_thread *const t = current ? current : thread_object_new("the main thread");
-    t->stack = stack;
-    t->stack_size = stack_size;
-    t->priority = main_thread_priority();
-    current = t;
+    const rt_cpu_status status = rt_thread_register_main_cpu(stack, stack_size, rt_cpu_query_native,
+                                                            NULL, getenv("BB_RUNTIME_CPU_MAP"));
+    if (status != RT_CPU_OK) rt_fatal("main-thread CPU topology", rt_cpu_status_message(status));
 }
 
 /* The calling thread's own variable value, under either name; it has no error return (POSIX
@@ -328,7 +346,25 @@ static int sce_attr_destroy(guest_attr **attr) { return sce(attr_destroy(attr));
 static int attr_get(guest_thread *thread, guest_attr **attr)
 {
     if (!thread || !attr || !*attr) return SCE_KERNEL_ERROR(BSD_EINVAL);
-    **attr = (guest_attr){.has_stack = 1, .stack = thread->stack, .stack_size = thread->stack_size};
+    uint64_t affinity = thread->affinity;
+    int has_affinity = affinity != 0;
+    if (thread == registered_main && current == registered_main) {
+        const rt_cpu_status status = rt_cpu_topology_read(&main_topology, &affinity);
+        if (status != RT_CPU_OK) rt_fatal("scePthreadAttrGet", rt_cpu_status_message(status));
+        has_affinity = 1;
+    }
+    **attr = (guest_attr){.has_stack = 1, .stack = thread->stack, .stack_size = thread->stack_size,
+                         .has_affinity = has_affinity, .affinity = affinity};
+    return 0;
+}
+
+/* Capture the attribute's full eight-byte mask before a possibly aliased store.
+   Fresh unrestricted attributes use the declared low-64-bit slot policy. */
+static int attr_get_affinity(guest_attr **attr, void *output)
+{
+    if (!attr || !*attr) return SCE_KERNEL_ERROR(BSD_EINVAL);
+    const uint64_t mask = (*attr)->has_affinity ? (*attr)->affinity : UINT64_MAX;
+    memcpy(output, &mask, sizeof mask);
     return 0;
 }
 
@@ -510,7 +546,10 @@ static int sce_attr_set_affinity(guest_attr **attr, uint64_t mask)
 {
     if (!attr || !*attr) return SCE_KERNEL_ERROR(BSD_EINVAL);
     if (!mask) rt_fatal("scePthreadAttrSetaffinity", "an empty CPU mask: the answer is not established");
+    (*attr)->has_affinity = 1;
     (*attr)->affinity = mask;
     return 0;
 }
 RT_SYSLIB("libkernel", scePthreadAttrSetaffinity, sce_attr_set_affinity);
+
+RT_SYSLIB("libkernel", scePthreadAttrGetaffinity, attr_get_affinity);

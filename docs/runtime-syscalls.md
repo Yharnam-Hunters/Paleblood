@@ -107,11 +107,20 @@ describes retrieving a stored attribute mask, success/error returns and invalid 
 its API includes a size argument absent at this target call. Its errors and CPU-set layout
 cannot simply be assigned to the SCE interface.
 
-**Still required before implementation:** independently establish the main thread's actual
-mask, how a fresh attribute differs from one filled by `scePthreadAttrGet`, the exact output
-write extent, success/error results, and invalid/null attribute or output handling. Host CPU
-availability and a guessed console core count establish none of these. No specific affinity
-implementation is added or registered by this investigation; the import remains unbound.
+**Additional static evidence from a supplied libkernel image:** the exact binary identity and
+observed getter contract are recorded in [own-runtime CPU topology](own-runtime-cpu-topology.md).
+The SCE getter writes only eight bytes on success and translates BSD status to the SCE low32
+error. Null/empty attributes return EINVAL; output nullness and alignment are unchecked. Fresh
+attributes carry an unrestricted sentinel, while `scePthreadAttrGet` obtains the running
+thread's mask through a kernel affinity query. The actual kernel CPU-set size and main mask
+remain unmeasured, and supplied-image firmware compatibility has not been established.
+
+Paleblood now provides this getter for its calling registered main thread using an explicit
+own-runtime CPU topology mapped to real host allowed CPUs. This is a documented port design,
+not a guessed console mask. It preserves the fresh/snapshot distinction and exact eight-byte
+publication. More than64 allowed CPUs, invalid maps, unsupported thread queries and unrecognized
+backend failures stop by name. Guest creation/set-affinity support remains unimplemented; future
+interfaces must share the same bit mapping. See the topology page for defaults and limits.
 
 A useful target measurement would record the console/firmware and executable identities, the
 results of attribute initialization and copying from `scePthreadSelf`, the getter's return bits,
