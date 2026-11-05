@@ -115,6 +115,35 @@ static void shader_blocks(void)
     rt_render_forget();
 }
 
+static void user_data(void)
+{
+    enum { BUFFER = 0x500000000ull };
+    const uint32_t descriptor[4] = {0x11111111, 0x22222222, 0x33333333, 0x44444444}, one = 0x55;
+    const uint32_t eight[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    char error[160] = "";
+    size_t count = 0;
+    rt_render_forget();
+    CHECK(rt_render_record_user_data(BUFFER, 0x10, RT_STAGE_VERTEX, 0, descriptor, 4, error, sizeof error) == 0);
+    CHECK(rt_render_record_user_data(BUFFER, 0x20, RT_STAGE_PIXEL, 15, &one, 1, error, sizeof error) == 0);
+    CHECK(rt_render_record_user_data(BUFFER, 0x30, RT_STAGE_LOCAL, 8, eight, 8, error, sizeof error) == 0);
+    const rt_render_call *calls = rt_render_submitted(BUFFER, 0x100, &count);
+    CHECK(count == 3);
+    if (count == 3) {
+        CHECK(calls[0].kind == RT_CALL_USER_DATA && calls[0].u.user_data.stage == RT_STAGE_VERTEX && calls[0].u.user_data.slot == 0 &&
+              calls[0].u.user_data.count == 4 && calls[0].u.user_data.words[3] == 0x44444444);
+        CHECK(calls[1].u.user_data.stage == RT_STAGE_PIXEL && calls[1].u.user_data.slot == 15 && calls[1].u.user_data.words[0] == 0x55);
+        CHECK(calls[2].u.user_data.count == 8 && calls[2].u.user_data.words[7] == 8);
+    }
+    /* refused: an unknown stage, no words, too many words, slots past the sixteenth */
+    CHECK(rt_render_record_user_data(BUFFER, 0x40, RT_SHADER_STAGES, 0, &one, 1, error, sizeof error) == -1);
+    CHECK(rt_render_record_user_data(BUFFER, 0x40, RT_STAGE_VERTEX, 0, &one, 0, error, sizeof error) == -1);
+    CHECK(rt_render_record_user_data(BUFFER, 0x40, RT_STAGE_VERTEX, 0, eight, 9, error, sizeof error) == -1);
+    CHECK(rt_render_record_user_data(BUFFER, 0x40, RT_STAGE_VERTEX, 9, eight, 8, error, sizeof error) == -1 && strstr(error, "slots 9-16"));
+    rt_render_submitted(BUFFER, 0x100, &count);
+    CHECK(count == 3);
+    rt_render_forget();
+}
+
 static void recording(void)
 {
     enum { BUFFER = 0x200000000ull, OTHER = 0x200100000ull };
@@ -168,6 +197,7 @@ int main(void)
 {
     decoding();
     shader_blocks();
+    user_data();
     recording();
     if (failures) fprintf(stderr, "%d failure(s)\n", failures);
     return failures != 0;

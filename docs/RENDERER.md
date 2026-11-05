@@ -173,6 +173,13 @@ Instead:
        scale and offset floats from `PA_CL_VPORT_XSCALE` (`0x10f + 6 × index`).
      - **Draws:** the auto-index draw `0x014741b0` (command buffer, index count) and the
        other writers listed above.
+     - **User data:** `0x01476420` (command buffer, stage, slot, value) writes one SGPR of a
+       stage's user data: `SET_SH_REG` at a per-stage base register from a table at `0x04cd15c0`,
+       plus the slot. The table's order gives the library's stage numbers: 0 compute, 1 pixel,
+       2 vertex, 3 geometry, 4 export, 5 hull, 6 local (`COMPUTE_USER_DATA_0`, then
+       `SPI_SHADER_USER_DATA_PS_0`, `_VS_0`, `_GS_0`, `_ES_0`, `_HS_0`, `_LS_0`). The writers
+       of 2, 4 and 8 words (`0x01476390`, `0x014761a0`/`0x014762f0`, `0x01476240`) carry
+       pointers and buffer and texture descriptors the same way.
      - **Multisample positions:** `0x014772c0` and `0x014773b0` write the 16 sample-location
        registers from `0x2fe`, plus `PA_SC_CENTROID_PRIORITY`.
      - **Clears** are ordinary draws with a clearing pixel shader on this GPU, so they need no

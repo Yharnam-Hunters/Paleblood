@@ -207,6 +207,20 @@ int rt_render_record_pixel_shader(uint64_t buffer, uint32_t offset, const uint32
     return record(buffer, &call, error, error_size);
 }
 
+int rt_render_record_user_data(uint64_t buffer, uint32_t offset, rt_shader_stage stage, unsigned slot, const uint32_t *words,
+                               unsigned count, char *error, size_t error_size)
+{
+    if ((unsigned)stage >= RT_SHADER_STAGES || count == 0 || count > RT_USER_DATA_MAX_WORDS || slot + count > RT_USER_DATA_SLOTS) {
+        snprintf(error, error_size, "user data: stage %u, slots %u-%u (stages 0-%d, slots 0-%d, 1-%d words)", (unsigned)stage, slot,
+                 slot + count - 1, RT_SHADER_STAGES - 1, RT_USER_DATA_SLOTS - 1, RT_USER_DATA_MAX_WORDS);
+        return -1;
+    }
+    rt_render_call call = {.kind = RT_CALL_USER_DATA, .offset = offset};
+    call.u.user_data.stage = stage, call.u.user_data.slot = slot, call.u.user_data.count = count;
+    memcpy(call.u.user_data.words, words, count * sizeof *words);
+    return record(buffer, &call, error, error_size);
+}
+
 const rt_render_call *rt_render_submitted(uint64_t buffer, uint32_t size, size_t *count)
 {
     pthread_mutex_lock(&lists_lock);
