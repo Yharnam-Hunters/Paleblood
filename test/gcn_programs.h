@@ -1,10 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* Synthetic GCN (GFX7) compute programs for the shader translator's tests. Each encoding was
+/* Synthetic GCN (GFX7) compute, vertex and pixel programs for the shader translator's tests. Each encoding was
    produced by LLVM's AMDGPU assembler (llvm-mc -triple=amdgcn -mcpu=bonaire --show-encoding) from
    the instruction in its comment. No game code is used.
 
    User data, as the tests pass it: s[0:3] the input buffer's descriptor (or a constant buffer's),
-   s[4:7] the output buffer's. v0 is the lane's index. */
+   s[4:7] the output buffer's. In compute programs v0 is the lane's index; in vertex programs the
+   vertex index; in pixel programs v0 and v1 are the barycentrics. */
 #ifndef TEST_GCN_PROGRAMS_H
 #define TEST_GCN_PROGRAMS_H
 
@@ -182,6 +183,86 @@ static const uint32_t typed_unorm[] = {
 };
 static const uint32_t typed_too_many_components[] = {
     0xeba12000, 0x80000100, /* tbuffer_load_format_xy v[1:2], v0, s[0:3], 0 format:[BUF_DATA_FORMAT_32,BUF_NUM_FORMAT_FLOAT] idxen */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Per lane i, from in[2i] and in[2i + 1] (a, b): out[i] = the halves of a (low) and b, rounded
+   toward zero; out[64 + i] = the same with -a. */
+static const uint32_t pack_halves[] = {
+    0x34020083, /* v_lshlrev_b32_e32 v1, 3, v0 */
+    0xe0341000, 0x80000201, /* buffer_load_dwordx2 v[2:3], v1, s[0:3], 0 offen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x5e080702, /* v_cvt_pkrtz_f16_f32_e32 v4, v2, v3 */
+    0xd25e0006, 0x20020702, /* v_cvt_pkrtz_f16_f32_e64 v6, -v2, v3 */
+    0x340a0082, /* v_lshlrev_b32_e32 v5, 2, v0 */
+    0xe0701000, 0x80010405, /* buffer_store_dword v4, v5, s[4:7], 0 offen */
+    0xe0701100, 0x80010605, /* buffer_store_dword v6, v5, s[4:7], 0 offen offset:256 */
+    0xbf810000, /* s_endpgm */
+};
+
+/* A vertex shader: vertex i's position and colour from 16-byte records (s[0:3] positions, s[4:7]
+   colours, by index); the colour goes out as parameter 0. */
+static const uint32_t vertex_position_color[] = {
+    0xebf32000, 0x80000100, /* tbuffer_load_format_xyzw v[1:4], v0, s[0:3], 0 format:[BUF_DATA_FORMAT_32_32_32_32,BUF_NUM_FORMAT_FLOAT] idxen */
+    0xebf32000, 0x80010500, /* tbuffer_load_format_xyzw v[5:8], v0, s[4:7], 0 format:[BUF_DATA_FORMAT_32_32_32_32,BUF_NUM_FORMAT_FLOAT] idxen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf800020f, 0x08070605, /* exp param0, v5, v6, v7, v8 */
+    0xf80008cf, 0x04030201, /* exp pos0, v1, v2, v3, v4 done */
+    0xbf810000, /* s_endpgm */
+};
+
+/* A pixel shader: attribute 0 interpolated (barycentrics in v0 and v1), packed as halves and
+   written to colour target 0. */
+static const uint32_t pixel_color[] = {
+    0xbefc0300, /* s_mov_b32 m0, s0 */
+    0xc8080000, /* v_interp_p1_f32 v2, v0, attr0.x */
+    0xc8090001, /* v_interp_p2_f32 v2, v1, attr0.x */
+    0xc80c0100, /* v_interp_p1_f32 v3, v0, attr0.y */
+    0xc80d0101, /* v_interp_p2_f32 v3, v1, attr0.y */
+    0xc8100200, /* v_interp_p1_f32 v4, v0, attr0.z */
+    0xc8110201, /* v_interp_p2_f32 v4, v1, attr0.z */
+    0xc8140300, /* v_interp_p1_f32 v5, v0, attr0.w */
+    0xc8150301, /* v_interp_p2_f32 v5, v1, attr0.w */
+    0x5e0c0702, /* v_cvt_pkrtz_f16_f32_e32 v6, v2, v3 */
+    0x5e0e0b04, /* v_cvt_pkrtz_f16_f32_e32 v7, v4, v5 */
+    0xf8001c0f, 0x00000706, /* exp mrt0, v6, v6, v7, v7 done compr vm */
+    0xbf810000, /* s_endpgm */
+};
+
+/* As pixel_color, but pixels whose red is below 0.5 are discarded (v_cmpx clears their EXEC bit
+   and the export's valid mask drops them). */
+static const uint32_t pixel_discard_left[] = {
+    0xbefc0300, /* s_mov_b32 m0, s0 */
+    0xc8080000, /* v_interp_p1_f32 v2, v0, attr0.x */
+    0xc8090001, /* v_interp_p2_f32 v2, v1, attr0.x */
+    0xc80c0100, /* v_interp_p1_f32 v3, v0, attr0.y */
+    0xc80d0101, /* v_interp_p2_f32 v3, v1, attr0.y */
+    0xc8100200, /* v_interp_p1_f32 v4, v0, attr0.z */
+    0xc8110201, /* v_interp_p2_f32 v4, v1, attr0.z */
+    0xc8140300, /* v_interp_p1_f32 v5, v0, attr0.w */
+    0xc8150301, /* v_interp_p2_f32 v5, v1, attr0.w */
+    0x7c2604f0, /* v_cmpx_le_f32_e32 vcc, 0.5, v2 */
+    0x5e0c0702, /* v_cvt_pkrtz_f16_f32_e32 v6, v2, v3 */
+    0x5e0e0b04, /* v_cvt_pkrtz_f16_f32_e32 v7, v4, v5 */
+    0xf8001c0f, 0x00000706, /* exp mrt0, v6, v6, v7, v7 done compr vm */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Refused: a v_interp_p2 with no p1 before it. */
+static const uint32_t pixel_p2_alone[] = {
+    0xc8090001, /* v_interp_p2_f32 v2, v1, attr0.x */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Refused: barycentrics from v2 (not the layout's perspective-centre pair). */
+static const uint32_t pixel_other_barycentrics[] = {
+    0xc80c0002, /* v_interp_p1_f32 v3, v2, attr0.x */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Refused: pos1, whose meaning depends on GPU settings. */
+static const uint32_t vertex_pos1[] = {
+    0xf80008df, 0x04030201, /* exp pos1, v1, v2, v3, v4 done */
     0xbf810000, /* s_endpgm */
 };
 
