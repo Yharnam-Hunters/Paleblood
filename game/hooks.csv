@@ -59,6 +59,7 @@ address,replacement,system,returns
 0x014867e0,bb_render_record_set_second_auxiliary_flag,render,i32
 0x01486800,bb_render_record_set_word_28_low22,render,i32
 0x01486cf0,bb_render_read_record_mapping_word,render,i64
+0x01488d90,bb_render_convert_constructor_record,render,void
 0x0149c850,bb_render_record_apply_parameter_tuple,render,i32
 0x0149e570,bb_render_calculate_second_auxiliary,render,i64
 0x0149e900,bb_render_record_tuple_parameter_supported,render,i64
