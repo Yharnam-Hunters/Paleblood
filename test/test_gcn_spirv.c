@@ -2,7 +2,11 @@
 /* The shader translator (runtime/renderer/gcn_spirv.c) without a GPU: each test program becomes a
    SPIR-V module with the right header, which spirv-val (when installed) accepts for Vulkan 1.2;
    an instruction not handled yet stops translation and is named. test_gcn_compute runs the
-   modules on a GPU. */
+   modules on a GPU.
+
+   For macOS, each module is also turned into Metal Shading Language 2.3 with SPIRV-Cross (when
+   installed), and that is compiled with Apple's Metal compiler where there is one (xcrun metal, on
+   macOS). With PB_REQUIRE_METAL set (the macOS CI job) a missing tool is a failure, not a skip. */
 #include "runtime/gcn_spirv.h"
 
 #include "gcn_programs.h"
@@ -42,12 +46,59 @@ static int validate(const uint32_t *spirv, size_t words, const char *name)
     return ok;
 }
 
-static void translates(const uint32_t *code, size_t dwords, const char *name)
+static int installed(const char *command)
+{
+    char check[256];
+    snprintf(check, sizeof check, "%s > /dev/null 2>&1", command);
+    return system(check) == 0;
+}
+
+/* The module as Metal: converted by SPIRV-Cross, then compiled by Apple's compiler when present.
+   1 converted (and compiled), 0 failed, -1 a tool is missing. */
+static int to_metal(const uint32_t *spirv, size_t words, const char *name)
+{
+    if (!installed("spirv-cross --help")) return -1;
+    char spv[512], metal[520], air[520], command[1700];
+    const char *tmp = getenv("TMPDIR");
+    snprintf(spv, sizeof spv, "%s/pb-gcn-msl-%s.spv", tmp ? tmp : "/tmp", name);
+    snprintf(metal, sizeof metal, "%s.metal", spv);
+    snprintf(air, sizeof air, "%s.air", spv);
+    FILE *f = fopen(spv, "wb");
+    if (!f) return 0;
+    fwrite(spirv, sizeof *spirv, words, f);
+    fclose(f);
+    snprintf(command, sizeof command, "spirv-cross --msl --msl-version 20300 %s --output %s", spv, metal);
+    int ok = system(command) == 0;
+    int compiled = -1;
+    if (ok && installed("xcrun -sdk macosx metal --version")) {
+        snprintf(command, sizeof command, "xcrun -sdk macosx metal -std=macos-metal2.3 -c %s -o %s", metal, air);
+        compiled = system(command) == 0;
+        ok = compiled;
+    }
+    remove(spv), remove(metal), remove(air);
+    if (ok && compiled < 0 && getenv("PB_REQUIRE_METAL")) return -1; /* converted, but no compiler */
+    return ok;
+}
+
+typedef enum { COMPUTE, VERTEX, PIXEL } stage;
+
+static const gcn_vertex_layout vertex_layout = {8, 0};
+static const gcn_pixel_layout pixel_layout = {8, 0};
+
+static int translate(stage s, const uint32_t *code, size_t dwords, uint32_t **spirv, size_t *words, char *error, size_t error_size)
+{
+    if (s == VERTEX) return gcn_translate_vertex(code, dwords, &vertex_layout, spirv, words, error, error_size);
+    if (s == PIXEL) return gcn_translate_pixel(code, dwords, &pixel_layout, spirv, words, error, error_size);
+    return gcn_translate_compute(code, dwords, &layout, spirv, words, error, error_size);
+}
+
+/* The program translates, as the stage given, to a module spirv-val and SPIRV-Cross accept. */
+static void translates_as(stage s, const uint32_t *code, size_t dwords, const char *name)
 {
     uint32_t *spirv = NULL;
     size_t words = 0;
     char error[256];
-    const int result = gcn_translate_compute(code, dwords, &layout, &spirv, &words, error, sizeof error);
+    const int result = translate(s, code, dwords, &spirv, &words, error, sizeof error);
     if (result) fprintf(stderr, "  %s: %s\n", name, error);
     CHECK(result == 0 && spirv && words > 5);
     if (!spirv) return;
@@ -55,7 +106,25 @@ static void translates(const uint32_t *code, size_t dwords, const char *name)
     const int valid = validate(spirv, words, name);
     if (valid < 0) fprintf(stderr, "  %s: spirv-val not installed; validation skipped\n", name);
     else CHECK(valid == 1);
+    const int metal = to_metal(spirv, words, name);
+    if (metal < 0 && getenv("PB_REQUIRE_METAL")) CHECK(!"SPIRV-Cross and the Metal compiler are required here");
+    else if (metal < 0) fprintf(stderr, "  %s: SPIRV-Cross not installed; Metal conversion skipped\n", name);
+    else CHECK(metal == 1);
     free(spirv);
+}
+
+static void translates(const uint32_t *code, size_t dwords, const char *name) { translates_as(COMPUTE, code, dwords, name); }
+
+/* The program is refused, as the stage given, with an error containing the text. */
+static void refused_as(stage s, const uint32_t *code, size_t dwords, const char *text)
+{
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    char error[256] = "";
+    CHECK(translate(s, code, dwords, &spirv, &words, error, sizeof error) == -1);
+    CHECK(spirv == NULL);
+    if (!strstr(error, text)) fprintf(stderr, "  expected \"%s\" in: %s\n", text, error);
+    CHECK(strstr(error, text) != NULL);
 }
 
 int main(void)
@@ -68,12 +137,27 @@ int main(void)
     translates(PROGRAM(vector_loop), "vector_loop");
     translates(PROGRAM(compare_exec), "compare_exec");
     translates(PROGRAM(masked_store), "masked_store");
+    translates(PROGRAM(typed_buffers), "typed_buffers");
+    translates(PROGRAM(pack_halves), "pack_halves");
+    translates_as(VERTEX, PROGRAM(vertex_position_color), "vertex_position_color");
+    translates_as(PIXEL, PROGRAM(pixel_color), "pixel_color");
+    translates_as(PIXEL, PROGRAM(pixel_discard_left), "pixel_discard_left");
+    refused_as(PIXEL, PROGRAM(pixel_p2_alone), "no v_interp_p1");
+    refused_as(PIXEL, PROGRAM(pixel_other_barycentrics), "barycentrics in v2");
+    refused_as(VERTEX, PROGRAM(vertex_pos1), "target 13");
+    refused_as(COMPUTE, PROGRAM(pixel_color), "outside pixel shaders");
+    refused_as(PIXEL, PROGRAM(vertex_position_color), "target 32");
 
     uint32_t *spirv = NULL;
     size_t words = 0;
     char error[256] = "";
     CHECK(gcn_translate_compute(PROGRAM(unsupported), &layout, &spirv, &words, error, sizeof error) == -1);
     CHECK(spirv == NULL && strstr(error, "v_interp_p1_f32") != NULL);
+
+    CHECK(gcn_translate_compute(PROGRAM(typed_unorm), &layout, &spirv, &words, error, sizeof error) == -1);
+    CHECK(spirv == NULL && strstr(error, "dfmt 10 nfmt 0") != NULL);
+    CHECK(gcn_translate_compute(PROGRAM(typed_too_many_components), &layout, &spirv, &words, error, sizeof error) == -1);
+    CHECK(spirv == NULL && strstr(error, "dfmt 4 nfmt 7") != NULL);
 
     const uint32_t no_end[] = {0x7e020302}; /* v_mov_b32 v1, v2, and no s_endpgm */
     CHECK(gcn_translate_compute(no_end, 1, &layout, &spirv, &words, error, sizeof error) == -1);
