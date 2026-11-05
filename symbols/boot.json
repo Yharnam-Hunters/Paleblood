@@ -2,19 +2,19 @@
   "fault": null,
   "first_unimplemented": {
     "caller": "eboot",
-    "library": "libSceGnmDriver",
-    "nid": "iCO804ZgzdA",
-    "returns_to": "eboot+0x26bb950",
-    "symbol": "sceGnmValidateCommandBuffers"
+    "library": "libScePlayGo",
+    "nid": "ts6GlZOKRrE",
+    "returns_to": "eboot+0x1fdd67f",
+    "symbol": "scePlayGoInitialize"
   },
   "imports_bundled": 219,
-  "imports_called": 121,
-  "imports_implemented": 120,
-  "imports_remaining": 347,
+  "imports_called": 170,
+  "imports_implemented": 149,
+  "imports_remaining": 318,
   "imports_total": 686,
-  "imports_unresolved": 4,
-  "milestone": "audio",
-  "milestone_index": 5,
+  "imports_unresolved": 3,
+  "milestone": "first flip",
+  "milestone_index": 8,
   "milestones": [
     "loaded",
     "entry",
@@ -44,7 +44,7 @@
     {
       "exports": 2140,
       "imports": 79,
-      "imports_remaining": 42,
+      "imports_remaining": 41,
       "name": "libc.elf"
     },
     {
@@ -56,6 +56,7 @@
   ],
   "outcome": "unimplemented",
   "phase": "eboot",
+  "runtime_stop": null,
   "stopped_by_hook": null,
   "stub_modules": [
     {
@@ -87,6 +88,81 @@
       "id": "0x00b4",
       "loaded": true,
       "name": "libSceAppContent"
+    },
+    {
+      "id": "0x00ad",
+      "loaded": true,
+      "name": "libSceNpTrophy"
+    },
+    {
+      "id": "0x0019",
+      "loaded": false,
+      "name": "libSceNpUtility"
+    },
+    {
+      "id": "0x001a",
+      "loaded": false,
+      "name": "libSceVoice"
+    },
+    {
+      "id": "0x001c",
+      "loaded": false,
+      "name": "libSceNpMatching2"
+    },
+    {
+      "id": "0x001e",
+      "loaded": false,
+      "name": "libSceNpScoreRanking"
+    },
+    {
+      "id": "0x0083",
+      "loaded": true,
+      "name": "libScePlayGo"
+    },
+    {
+      "id": "0x0096",
+      "loaded": false,
+      "name": "libSceImeDialog"
+    },
+    {
+      "id": "0x009d",
+      "loaded": false,
+      "name": "libSceNpAuth"
+    },
+    {
+      "id": "0x00a0",
+      "loaded": false,
+      "name": "libSceSaveDataDialog"
+    },
+    {
+      "id": "0x00a4",
+      "loaded": false,
+      "name": "libSceMsgDialog"
+    },
+    {
+      "id": "0x00a5",
+      "loaded": false,
+      "name": "libSceAvPlayer"
+    },
+    {
+      "id": "0x00a8",
+      "loaded": false,
+      "name": "libSceNpCommerce"
+    },
+    {
+      "id": "0x00a9",
+      "loaded": false,
+      "name": "libSceMouse"
+    },
+    {
+      "id": "0x00b2",
+      "loaded": false,
+      "name": "libSceNpProfileDialog"
+    },
+    {
+      "id": "0x00b5",
+      "loaded": false,
+      "name": "libSceNpSignaling"
     }
   ]
 }

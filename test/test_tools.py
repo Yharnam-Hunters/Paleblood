@@ -723,9 +723,13 @@ class Boot(unittest.TestCase):
         self.assertIn('stub modules loaded: libSceTestStub (1 of 2)', p.stdout)
 
     def test_loading_a_module_that_is_not_a_stub_stops_by_name(self):
-        p, _ = self.run_sysmodule_load(0x7f03, ['0x7f01:libSceTestStub'])
-        self.assertEqual(p.returncode, -signal.SIGABRT)
+        p, s = self.run_sysmodule_load(0x7f03, ['0x7f01:libSceTestStub'])
         self.assertIn('sceSysmoduleLoadModule: module 0x7f03: not a stub module', p.stderr)
+        # The boot harness records the stop as the run's outcome, with the function and the reason.
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual((s['outcome'], s['first_unimplemented'], s['fault']), ('runtime stop', None, None))
+        self.assertEqual(s['runtime_stop']['function'], 'sceSysmoduleLoadModule')
+        self.assertTrue(s['runtime_stop']['reason'].startswith('module 0x7f03: not a stub module'))
 
     def test_bad_stub_module_arguments_are_refused(self):
         exe = os.path.join(ROOT, 'no-such.elf')
@@ -1066,6 +1070,27 @@ class Boot(unittest.TestCase):
             shutil.rmtree(d)
         import progress                                                  # the README's "Boot stops at"
         self.assertEqual(progress.boot_stop(status), '`ns::h` (a stop hook in m.elf, called from `m.elf+0xe`)')
+
+    def test_a_runtime_stop_is_recorded_as_where_the_boot_stops(self):
+        import boot
+        import progress
+        stop = {'function': 'sceKernelOpen', 'reason': 'a path outside /app0'}
+        status = {'outcome': 'runtime stop', 'phase': 'eboot', 'milestone': 'files', 'milestone_index': 3,
+                  'first_unimplemented': None, 'stopped_by_hook': None, 'runtime_stop': stop, 'fault': None}
+        d = tempfile.mkdtemp()
+        try:
+            os.makedirs(os.path.join(d, 'symbols'))
+            boot.record(status, d, '2026-11-04')
+            with open(os.path.join(d, 'symbols', 'boot.json')) as fh:
+                self.assertEqual(json.load(fh)['runtime_stop'], stop)
+            with open(os.path.join(d, 'symbols', 'boot_history.csv'), newline='') as fh:
+                row = list(csv.DictReader(fh))[-1]
+            self.assertEqual((row['stops_at'], row['outcome']),
+                             ('runtime:sceKernelOpen (a path outside /app0)', 'runtime stop'))
+        finally:
+            shutil.rmtree(d)
+        self.assertEqual(progress.boot_stop(status),
+                         '`sceKernelOpen`, which stops by name (a path outside /app0)')
 
     def test_c_nid_matches_python(self):
         import ctypes

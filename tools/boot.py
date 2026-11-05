@@ -13,7 +13,8 @@ The title's application parameters come from game/app_params.csv: a row with sou
 its value from your own copy's parameter file (--param-sfo, default $BB_PARAM_SFO, then
 $BB_DATA_ROOT/merged/sce_sys/param.sfo), a row with source "unread" is passed as such. --app0
 (default $BB_APP0, then $BB_DATA_ROOT/merged) is your copy's application directory, which the
-runtime serves read-only as /app0.
+runtime serves read-only as /app0. Each run also gets a new empty folder, served writable as /data
+(the game's scratch mount), and removed with the run.
 
 Each row of game/module_hooks.csv replaces a function inside a mapped module before any guest code
 runs: action "return" makes it return at once, "stop" ends the run there by name.
@@ -55,7 +56,7 @@ HISTORY_FIELDS = ('date', 'milestone', 'milestone_index', 'imports_total', 'impo
                   'fault_address')
 KEPT = ('phase', 'outcome', 'milestone', 'milestone_index', 'milestones', 'imports_total', 'imports_implemented',
         'imports_bundled', 'imports_unresolved', 'imports_remaining', 'imports_called', 'modules',
-        'stub_modules', 'module_hooks', 'first_unimplemented', 'stopped_by_hook', 'fault')
+        'stub_modules', 'module_hooks', 'first_unimplemented', 'stopped_by_hook', 'runtime_stop', 'fault')
 MODULE_HOOK_ACTIONS = ('return', 'stop')
 IMPORT_FIELDS = ('importer', 'library', 'symbol', 'kind', 'provider')
 MODULE_FIELDS = ('module', 'offset', 'size', 'symbol', 'status')
@@ -203,6 +204,9 @@ def stops_at(b: dict) -> str:
     h = b.get('stopped_by_hook')
     if h:
         return f"{h['module']}:{h['name']} (stop hook)"
+    r = b.get('runtime_stop')
+    if r:
+        return f"runtime:{r['function']} ({r['reason']})"
     if b.get('fault'):
         return f"{b['outcome']} at {b['fault']['at']}"
     return b['outcome']
@@ -314,7 +318,11 @@ def main() -> int:
     names = ['--nids', nids] if nids else []
     with tempfile.TemporaryDirectory() as d:
         out = os.path.join(d, 'status.json')
-        cmd = [pbboot, *objects, *stubs, *hooks, '--status', out, '--timeout', str(a.timeout), *names]
+        # /data, the title's writable scratch mount: a new empty folder for each run, so every boot
+        # starts alike and nothing the game writes outlives the run.
+        data = os.path.join(d, 'data')
+        os.mkdir(data)
+        cmd = [pbboot, *objects, *stubs, *hooks, '--data', data, '--status', out, '--timeout', str(a.timeout), *names]
         if a.trace:
             cmd.append('--trace')
         # The guest runs in this process's child; a hard limit covers a runaway harness.

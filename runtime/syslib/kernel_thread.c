@@ -22,7 +22,7 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
-enum { BSD_ENOMEM = 12, BSD_EINVAL = 22 };
+enum { BSD_ESRCH = 3, BSD_ENOMEM = 12, BSD_EINVAL = 22 };
 #define SCE_KERNEL_ERROR(e) ((int)(0x80020000u + (unsigned)(e)))
 
 /* PTHREAD_CREATE_JOINABLE and PTHREAD_CREATE_DETACHED in FreeBSD's <pthread.h>. The OpenOrbis
@@ -176,15 +176,15 @@ static int kernel_sched_yield(void)
     return 0;
 }
 
-/* scePthreadYield asks for the same yield, but its PS4-visible signature is not established:
-   FreeBSD's pthread_yield(3) returns nothing, Linux's returns an int, and no PS4-specific public
-   source or guest call site we can cite says which one the guest sees. Returning would leave the
-   value a caller might read undefined, so the call stops by name. It is registered with
-   RT_SYSLIB_UNRESOLVED: a boot that reaches it names the call, and coverage leaves the import
-   unchecked, since a diagnostic is not an implementation. */
-static void thread_yield(void)
+/* scePthreadYield asks for the same yield. Its PS4-visible signature is not published: FreeBSD's
+   pthread_yield(3) returns nothing, Linux's returns an int (0). Answering 0 is right under either:
+   a caller of a function that returns nothing never reads the result, and 0 is the int version's
+   success. The game's own calls agree: every one of its 26 direct call sites (in 0x01c56290,
+   0x01c58670, 0x0148ca00, 0x02569c30 and others, and the four through its wrapper at 0x0247f970)
+   overwrites or ignores the result register right after the call. */
+static int thread_yield(void)
 {
-    rt_fatal("scePthreadYield", "the PS4 return behaviour is not established by public evidence");
+    return kernel_sched_yield();
 }
 
 /* Allocates an attribute object and stores it in the variable; ENOMEM when it cannot (POSIX
@@ -254,11 +254,15 @@ static void *thread_start(void *raw)
    with its own guest stack and TLS block. What the runtime does not know stops by name: a missing
    attribute or stack size (the PS4 defaults), a stack address the guest supplies, and the error
    values. The scheduling policy is recorded but the host schedules the thread: priorities are not
-   modelled. */
-static int create_thread(guest_thread **thread, guest_attr **attr, void *(*entry)(void *), void *argument,
-                         const char *name)
+   modelled.
+
+   pthread_create_name_np (libScePosix) takes the same arguments and is the same creation. The
+   executable's only call is its thread helper (0x00838840, four callers), which builds a POSIX
+   attribute with a detach state and, when it has one, a stack size, and treats any result other
+   than 0 as an error. Its stops name the POSIX function. */
+static int create_named_thread(const char *fn, guest_thread **thread, guest_attr **attr, void *(*entry)(void *),
+                               void *argument, const char *name)
 {
-    static const char fn[] = "scePthreadCreate";
     if (!thread || !entry) rt_fatal(fn, "no thread variable or entry: the error value is not established");
     const guest_attr *a = attr ? *attr : NULL;
     if (!a) rt_fatal(fn, "no attribute object: the PS4 default stack size is not established");
@@ -287,13 +291,29 @@ static int create_thread(guest_thread **thread, guest_attr **attr, void *(*entry
     return 0;
 }
 
+static int create_thread(guest_thread **thread, guest_attr **attr, void *(*entry)(void *), void *argument,
+                         const char *name)
+{
+    return create_named_thread("scePthreadCreate", thread, attr, entry, argument, name);
+}
+
+static int posix_create_name_np(guest_thread **thread, guest_attr **attr, void *(*entry)(void *), void *argument,
+                                const char *name)
+{
+    return create_named_thread("pthread_create_name_np", thread, attr, entry, argument, name);
+}
+
 /* The CPU set a thread may run on. The executable sets it once, right after creating the thread,
    within 0x3f; the runtime records it and leaves scheduling to the host (which CPUs the host has
-   says nothing about the PS4's). An empty mask's answer is not established and stops by name. */
+   says nothing about the PS4's). An empty mask's answer is not established and stops by name.
+
+   No thread answers ESRCH, as libthr does for a thread it cannot find (_thr_find_thread). The job
+   system's set-up (0x01bfa260) sets a mask on each of its twelve worker slots, empty ones (a null
+   handle) included, and discards every answer. */
 static int set_affinity(guest_thread *thread, uint64_t mask)
 {
     static const char fn[] = "scePthreadSetaffinity";
-    if (!thread) rt_fatal(fn, "no thread: the error value is not established");
+    if (!thread) return SCE_KERNEL_ERROR(BSD_ESRCH);
     if (!mask) rt_fatal(fn, "an empty CPU mask: the answer is not established");
     thread->affinity = mask;
     return 0;
@@ -379,7 +399,7 @@ int rt_thread_attr_detach_state(void *const *attr, const char *caller)
 RT_SYSLIB("libkernel", scePthreadSelf, thread_self);
 RT_SYSLIB("libkernel", scePthreadEqual, thread_equal);
 RT_SYSLIB("libkernel", sched_yield, kernel_sched_yield);
-RT_SYSLIB_UNRESOLVED("libkernel", scePthreadYield, thread_yield);
+RT_SYSLIB("libkernel", scePthreadYield, thread_yield);
 RT_SYSLIB("libkernel", scePthreadAttrInit, sce_attr_init);
 RT_SYSLIB("libkernel", scePthreadAttrDestroy, sce_attr_destroy);
 RT_SYSLIB("libkernel", scePthreadAttrGet, attr_get);
@@ -387,6 +407,7 @@ RT_SYSLIB("libkernel", scePthreadAttrSetdetachstate, sce_attr_set_detach_state);
 RT_SYSLIB("libkernel", scePthreadAttrSetstacksize, sce_attr_set_stack_size);
 RT_SYSLIB("libkernel", scePthreadAttrSetschedpolicy, sce_attr_set_sched_policy);
 RT_SYSLIB("libkernel", scePthreadCreate, create_thread);
+RT_SYSLIB("libScePosix", pthread_create_name_np, posix_create_name_np);
 RT_SYSLIB("libkernel", scePthreadSetaffinity, set_affinity);
 
 /* libScePosix: the same calls under their POSIX names, returning the errno values themselves.

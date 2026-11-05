@@ -57,6 +57,7 @@ typedef struct {
     rt_system_param system_params[RT_MAX_SYSTEM_PARAMS];
     uint32_t system_param_count;
     const char *app0_dir;    /* --app0: the host directory that holds the title's /app0 (read-only) */
+    const char *data_dir;    /* --data: the host directory the runtime serves as the writable /data */
     /* The executable's thread-local storage template (its PT_TLS segment): every guest thread's
        block is a copy of it, placed just below the thread pointer (x86-64 variant II). */
     const void *tls_image;
@@ -86,6 +87,10 @@ void rt_thread_keys_exit(void *stack_top);
 /* Stops the process with a message naming the system function: behaviour the runtime does not
    know is never guessed. */
 _Noreturn void rt_fatal(const char *function, const char *message);
+
+/* Called by rt_fatal before the process stops, when set: the boot harness records the stop as the
+   run's outcome and never returns. If it does return, the process stops as usual. */
+extern void (*rt_fatal_observer)(const char *function, const char *message);
 
 #ifdef __cplusplus
 }

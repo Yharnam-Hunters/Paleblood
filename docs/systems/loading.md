@@ -59,8 +59,9 @@ imported names and providers are in `symbols/imports.csv`.
 - File-facing `libc` imports include `fopen`, `fread`, `fseek`, `ftell`, `rewind`, `fwrite`,
   and `fclose`.
 - `libScePlayGo`: `scePlayGoInitialize`, `scePlayGoOpen`, `scePlayGoGetChunkId`,
-  `scePlayGoGetLocus`, and `scePlayGoSetInstallSpeed`. No module or runtime provider is
-  recorded for these imports in the current source.
+  `scePlayGoGetLocus`, and `scePlayGoSetInstallSpeed`. The runtime stands in for the
+  `libScePlayGo` system module, so loading it succeeds (Paleblood #310); each of these
+  functions stops by name until it is implemented.
 
 </details>
 

@@ -117,6 +117,7 @@ def runtime(root: str) -> dict | None:
             'imports_pct': pct(covered, b['imports_total']),
             'milestone': b['milestone'], 'milestone_index': b['milestone_index'],
             'milestones': len(b['milestones']) - 1, 'first_unimplemented': b.get('first_unimplemented'),
+            'stopped_by_hook': b.get('stopped_by_hook'), 'runtime_stop': b.get('runtime_stop'),
             'fault': b.get('fault'), 'outcome': b['outcome']}
 
 
@@ -204,6 +205,9 @@ def boot_stop(rt: dict) -> str:
     hook = rt.get('stopped_by_hook')
     if hook:
         return f"`{hook['name']}` (a stop hook in {hook['module']}, called from `{hook['returns_to']}`)"
+    stop = rt.get('runtime_stop')
+    if stop:
+        return f"`{stop['function']}`, which stops by name ({stop['reason']})"
     if rt.get('fault'):
         return f"{rt['outcome']} at `{rt['fault']['at']}`"
     return rt['outcome']

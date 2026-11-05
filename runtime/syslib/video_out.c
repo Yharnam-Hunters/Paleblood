@@ -12,20 +12,26 @@
    flip status until the flip argument reaches the frame it submitted.
 
    The runtime has no display yet: it keeps each port's buffers and status, and an hsync flip
-   completes at once: the current buffer and flip argument change, the flip count grows and the
-   port's flip events are triggered. A vsync flip, other flip modes or rates, a flip status before
-   the first flip (its initial argument is not established), other open arguments, and errors stop
-   by name. The flip event's ident is 0 and its data the flip argument: the PS4's values are not
-   established and no caller reads them. */
+   completes at once, a vsync flip at the next 60 Hz tick of the host's monotonic clock: the
+   current buffer and flip argument change, the flip count grows and the port's flip events are
+   triggered. A flip status before the first flip is all zero (no flips, nothing pending, buffer
+   0). The PS4's initial flip argument is not established, but the only caller (its flip loop,
+   calling at 0x02ad6ee9) reads it only once it has submitted as many frames as it has buffers,
+   which takes a flip first; before that it only checks that the call succeeds. Other flip modes
+   or rates, other open arguments, and errors stop by name. The flip event's ident is 0 and its data
+   the flip argument: the PS4's values are not established and no caller reads them. */
 #include "runtime/equeue.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
+#include "runtime/video_out.h"
 
 #include <pthread.h>
 #include <stdint.h>
 #include <string.h>
+#include <time.h>
 
-enum { FLIP_MODE_HSYNC = 2, MAX_PORTS = 4, MAX_BUFFERS = 16, MAX_FLIP_QUEUES = 4 };
+enum { FLIP_MODE_VSYNC = 1, FLIP_MODE_HSYNC = 2, MAX_PORTS = 4, MAX_BUFFERS = 16, MAX_FLIP_QUEUES = 4 };
+enum { VBLANKS_PER_SECOND = 60 };
 enum { FLIP_RATE_60HZ = 0, FLIP_RATE_30HZ = 1, FLIP_RATE_20HZ = 2 };
 
 typedef struct {
@@ -136,10 +142,25 @@ static int32_t register_buffers(int32_t handle, int32_t start, void *const *addr
     return 0; /* the set's index: this is the first */
 }
 
-static int32_t submit_flip(int32_t handle, int32_t buffer, int32_t mode, int64_t argument)
+/* A vsync flip takes effect at the display's next vertical blank. The runtime has no display, so
+   its vertical blanks are the 60 Hz ticks of the host's monotonic clock (flip rate 0, the only one
+   it accepts): the flip waits on the calling thread for the next tick, then completes. */
+static void wait_for_vblank(void)
 {
-    static const char fn[] = "sceVideoOutSubmitFlip";
-    if (mode != FLIP_MODE_HSYNC) rt_fatal(fn, "a flip mode other than the observed hsync (2): pacing to vblank is not implemented");
+    const int64_t period_ns = 1000000000 / VBLANKS_PER_SECOND;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    const int64_t now_ns = (int64_t)now.tv_sec * 1000000000 + now.tv_nsec;
+    const int64_t next_ns = (now_ns / period_ns + 1) * period_ns;
+    const struct timespec at = {(time_t)(next_ns / 1000000000), (long)(next_ns % 1000000000)};
+    while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &at, NULL) != 0) {
+    }
+}
+
+int32_t rt_video_out_flip(const char *fn, int32_t handle, int32_t buffer, int32_t mode, int64_t argument)
+{
+    if (mode != FLIP_MODE_HSYNC && mode != FLIP_MODE_VSYNC) rt_fatal(fn, "a flip mode other than vsync (1) or hsync (2)");
+    if (mode == FLIP_MODE_VSYNC) wait_for_vblank();
     pthread_mutex_lock(&ports_lock);
     video_port *const p = port_of(fn, handle);
     if (buffer < 0 || buffer >= p->buffer_count) rt_fatal(fn, "a buffer index outside the registered set");
@@ -160,10 +181,14 @@ static int32_t get_flip_status(int32_t handle, flip_status *out)
     if (!out) rt_fatal(fn, "no status to fill: the error value is not established");
     pthread_mutex_lock(&ports_lock);
     video_port *const p = port_of(fn, handle);
-    if (!p->status.count) rt_fatal(fn, "a status before the first flip: the initial flip argument is not established");
-    *out = p->status;
+    *out = p->status; /* before the first flip: all zero, no flips yet (see the note above) */
     pthread_mutex_unlock(&ports_lock);
     return 0;
+}
+
+static int32_t submit_flip(int32_t handle, int32_t buffer, int32_t mode, int64_t argument)
+{
+    return rt_video_out_flip("sceVideoOutSubmitFlip", handle, buffer, mode, argument);
 }
 
 RT_SYSLIB("libSceVideoOut", sceVideoOutOpen, video_out_open);

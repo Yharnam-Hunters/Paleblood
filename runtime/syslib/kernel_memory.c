@@ -30,6 +30,7 @@
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
+#include <errno.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <sys/mman.h>
@@ -77,6 +78,42 @@ static int pool(const char *caller)
 static size_t get_direct_memory_size(void) { return (size_t)RT_DIRECT_MEMORY_SIZE; }
 
 static uint64_t align_up(uint64_t value, uint64_t alignment) { return (value + alignment - 1) & ~(alignment - 1); }
+
+/* Where a map goes when the title lets the system pick the address. The GPU reaches memory through
+   40-bit addresses: AMD's public register formats keep a buffer's base as a 32-bit field holding
+   the address shifted right by 8, and the engine stores addresses of memory it mapped that way (a
+   render target's buffers, 0x01472830 read by 0x0257a210). A host address above 2^40, where Linux
+   puts maps of its own choosing, loses its top bits there, so the runtime places every map it
+   picks an address for inside this window below 2^40, clear of the executable and modules (from
+   0x800000000), the thread objects (0xf000000000) and the tessellation ring (0xfe00000000). The
+   window is the runtime's choice, not the PS4's layout. Addresses are handed out upward and not
+   reused; running out of the window stops by name. */
+#define MAP_WINDOW_START 0x2000000000ull
+#define MAP_WINDOW_END 0xe000000000ull
+
+static pthread_mutex_t window_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t window_next = MAP_WINDOW_START;
+
+/* An aligned address in the window with length bytes free after it, for a map the caller makes
+   with MAP_FIXED_NOREPLACE. A host mapping already there is stepped over. */
+static void *window_place(const char *caller, uint64_t length, uint64_t alignment, int host_protection, int map_flags,
+                          int fd, off_t offset)
+{
+    pthread_mutex_lock(&window_lock);
+    for (;;) {
+        const uint64_t at = align_up(window_next, alignment);
+        if (at >= MAP_WINDOW_END || MAP_WINDOW_END - at < length) rt_fatal(caller, "the runtime's map window is full");
+        void *const got = mmap((void *)(uintptr_t)at, length, host_protection, map_flags | MAP_FIXED_NOREPLACE, fd, offset);
+        if (got == (void *)(uintptr_t)at) {
+            window_next = at + length;
+            pthread_mutex_unlock(&window_lock);
+            return got;
+        }
+        if (got != MAP_FAILED) munmap(got, length); /* a host that ignored the placement */
+        else if (errno != EEXIST) rt_fatal(caller, "the host cannot map the memory");
+        window_next = at + alignment; /* in use: try the next aligned address */
+    }
+}
 
 /* The lowest aligned start at or above `from` where `length` bytes fit below `limit` without
    touching an allocated range (ranges are kept ascending); *found says whether there is one. */
@@ -202,15 +239,7 @@ static int32_t map_direct_memory(void **address, uint64_t length, int32_t protec
         void *const got = mmap(aligned, length, host_protection, MAP_SHARED | MAP_FIXED_NOREPLACE, pool(name), (off_t)start);
         if (got != aligned) rt_fatal(name, "an address hint in use: where the system then maps is not established");
     } else {
-        /* Reserve enough to place an aligned address, then put the range's pages there. */
-        const uint64_t reserve = length + alignment;
-        unsigned char *base = mmap(NULL, reserve, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-        if (base == MAP_FAILED) rt_fatal(name, "the host has no address space for the map");
-        aligned = (unsigned char *)(((uintptr_t)base + alignment - 1) & ~(uintptr_t)(alignment - 1));
-        if (mmap(aligned, length, host_protection, MAP_SHARED | MAP_FIXED, pool(name), (off_t)start) == MAP_FAILED)
-            rt_fatal(name, "the host cannot map the range");
-        if (aligned > base) munmap(base, (size_t)(aligned - base));
-        if (aligned + length < base + reserve) munmap(aligned + length, (size_t)(base + reserve - (aligned + length)));
+        aligned = window_place(name, length, alignment, host_protection, MAP_SHARED, pool(name), (off_t)start);
     }
     ranges[range].maps++;
     const int32_t memory_type = ranges[range].memory_type;
@@ -240,7 +269,7 @@ static int32_t release_direct_memory(int64_t start, uint64_t length)
    The executable's only call (0x02481dbe) presets the address to 0, rounds the length up to 16 KiB,
    passes protection 3 or 0x33 and flags 0, and on success requires a non-null address.
 
-   The runtime maps fresh zeroed host memory at an address it picks, with the CPU bits of the
+   The runtime maps fresh zeroed host memory at an address it picks in its map window, with the CPU bits of the
    protection (GPU access is accepted, as for direct memory). The PS4 limits a title's flexible
    memory to a budget; the budget is not established here and is not enforced. What else is not
    established stops by name: an address hint, map flags, other protection bits, a length that is
@@ -256,8 +285,8 @@ static int32_t map_flexible_memory(void **address, uint64_t length, int32_t prot
     if (!length || !is_page_multiple(length))
         rt_fatal(name, "a length that is not whole 16 KiB pages: the answer is not established");
     const int host_protection = (protection & PROT_CPU_READ ? PROT_READ : 0) | (protection & PROT_CPU_WRITE ? PROT_WRITE : 0);
-    void *const mapped = mmap(NULL, length, host_protection, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-    if (mapped == MAP_FAILED) rt_fatal(name, "the host cannot map the memory");
+    void *const mapped = window_place(name, length, DIRECT_PAGE, host_protection,
+                                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     note_mapping(name, (guest_mapping){(uintptr_t)mapped, length, protection, 0, 0, 0});
     *address = mapped;
     return 0;

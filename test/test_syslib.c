@@ -651,6 +651,11 @@ typedef int32_t (*f_http_epoll)(int32_t, void **);
 static f_http_epoll http_epoll_fn;
 static void http_epoll_unknown(void) { void *h = NULL; http_epoll_fn(999, &h); }
 static void http_epoll_no_slot(void) { http_epoll_fn(http_test_context, NULL); }
+typedef int32_t (*f_http_wait)(void *, void *, int32_t, int64_t);
+static f_http_wait http_wait_fn;
+static void *http_wait_handle;
+static void http_wait_unknown(void) { static unsigned char events[24]; int marker; http_wait_fn(&marker, events, 1, 0); }
+static void http_wait_timeout(void) { static unsigned char events[24]; http_wait_fn(http_wait_handle, events, 1, 1000); }
 typedef int32_t (*f_http_header)(int32_t, const char *, const char *, int32_t);
 static f_http_header http_header_fn;
 static void http_header_unknown(void) { http_header_fn(999, "Accept", "*/*", 0); }
@@ -699,13 +704,50 @@ typedef int32_t (*f_kstat)(const char *, void *);
 static f_kstat kstat_fn;
 static void kstat_outside(void) { unsigned char st[120]; kstat_fn("/download0/x", st); }
 static void kstat_dotdot(void) { unsigned char st[120]; kstat_fn("/app0/../etc/passwd", st); }
+/* Whether an address fits a GPU base-address field: below 2^40, so (address >> 8) fits 32 bits. */
+static int gpu_addressable(const void *address)
+{
+    const uint64_t shifted = (uint64_t)(uintptr_t)address >> 8;
+    return address && shifted == (uint32_t)shifted;
+}
 static void kstat_prefix_only(void) { unsigned char st[120]; kstat_fn("/app0x/file", st); }
+static void kstat_data_dotdot(void) { unsigned char st[120]; kstat_fn("/data/../etc/passwd", st); }
+typedef int32_t (*f_kopen)(const char *, int32_t, uint32_t);
+static f_kopen kopen_fn;
+static void data_open_odd_flag(void) { kopen_fn("/data/cache.bin", 0x10002, 0777); } /* O_RDWR and an unknown bit */
+static void data_open_no_folder(void)
+{
+    rt_process.data_dir = NULL;
+    kopen_fn("/data/cache.bin", 0x602, 0777);
+}
 
 /* GNM compute queues. */
 typedef int32_t (*f_cq_t)(uint32_t, uint32_t, void *, uint32_t, volatile uint32_t *);
 static f_cq_t cq_fn;
 static void cq_twice(void) { static uint32_t r[16]; static volatile uint32_t p; cq_fn(0, 0, r, 16, &p); }
 static void cq_no_ring(void) { static volatile uint32_t p; cq_fn(1, 0, NULL, 16, &p); }
+
+/* sceGnmDingDong test fixtures: a 4-dword INDIRECT_BUFFER ring packet, as the engine's writer at
+   0x0148b330 builds it, pointing at a command buffer. */
+typedef void (*f_ding_dong)(uint32_t, uint32_t);
+static f_ding_dong ding_dong_fn;
+static int32_t dd_queue;
+static uint32_t *dd_ring;
+static void put_indirect_buffer(uint32_t *at, const uint32_t *buffer, uint32_t dwords)
+{
+    const uint64_t address = (uint64_t)(uintptr_t)buffer;
+    at[0] = 0xc0023f02u;
+    at[1] = (uint32_t)address;
+    at[2] = (uint32_t)(address >> 32) & 0xffffu;
+    at[3] = dwords | 0x1800000u;
+}
+static void dd_unknown_packet(void)
+{
+    static uint32_t buffer[2] = {0xc0002400u, 0}; /* opcode 0x24, not one the engine was seen to write */
+    put_indirect_buffer(dd_ring + 4, buffer, 2); /* the parent's ring has completed up to slot 4 */
+    ding_dong_fn((uint32_t)dd_queue, 8);
+}
+static void dd_bad_queue(void) { ding_dong_fn(999, 4); }
 
 /* Kernel event queues: a wait blocks until a runtime event source triggers a registration. */
 typedef int32_t (*f_eq_create)(rt_equeue **, const char *);
@@ -736,8 +778,32 @@ static f_vo_flip vo_flip_fn;
 static f_vo_status vo_status_fn;
 static f_vo_open vo_open_fn;
 static int32_t vo_handle;
-static void vo_status_before_flip(void) { unsigned char st[64]; vo_status_fn(vo_handle, st); }
-static void vo_flip_vsync(void) { vo_flip_fn(vo_handle, 0, 1, 0); }
+static f_create tc_create_posix;
+static void *posix_thread_entry(void *argument) { return argument; }
+static void posix_create_without_attr(void)
+{
+    void *thread = NULL;
+    tc_create_posix(&thread, NULL, posix_thread_entry, NULL, "worker");
+}
+static void vo_flip_other_mode(void) { vo_flip_fn(vo_handle, 0, 3, 0); }
+typedef int32_t (*f_gnm_submit)(uint32_t, void **, uint32_t *, void **, uint32_t *);
+static f_gnm_submit gnm_submit_fn;
+static void gnm_submit_one(uint32_t *packets, uint32_t dwords)
+{
+    void *buffers[1] = {packets};
+    uint32_t bytes[1] = {dwords * 4};
+    gnm_submit_fn(1, buffers, bytes, NULL, NULL);
+}
+static void gnm_submit_unknown(void) { static uint32_t p[2] = {0xc0002400u, 0}; gnm_submit_one(p, 2); } /* opcode 0x24 */
+static uint32_t gnm_wait_label;
+static void gnm_submit_unmet_wait(void)
+{
+    /* WAIT_REG_MEM, memory, "equal", reference 5, while the label holds 0 */
+    const uint64_t at = (uint64_t)(uintptr_t)&gnm_wait_label;
+    uint32_t p[7] = {0xc0053c00u, 0x13, (uint32_t)at, (uint32_t)(at >> 32), 5, 0xffffffffu, 10};
+    gnm_wait_label = 0;
+    gnm_submit_one(p, 7);
+}
 static void vo_flip_bad_buffer(void) { vo_flip_fn(vo_handle, 9, 2, 0); }
 static void vo_open_other(void) { vo_open_fn(0xff, 0, 0, NULL); }
 
@@ -1061,11 +1127,11 @@ int main(void)
     CHECK(yield() == 0 && yield() == 0);
     CHECK(is_implemented("libkernel", "sched_yield"));
 
-    /* scePthreadYield's PS4 signature (no result, or an int) is not established, so the entry stops
-       by name and is registered without counting as implemented. */
-    void (*pthread_yield_entry)(void) = (void (*)(void))fn("libkernel", "scePthreadYield");
-    CHECK(died_in_fatal(pthread_yield_entry));
-    CHECK(!is_implemented("libkernel", "scePthreadYield"));
+    /* scePthreadYield yields the same way and answers 0, which is right whether the PS4 version
+       returns nothing or an int. */
+    const f_check pthread_yield = (f_check)fn("libkernel", "scePthreadYield");
+    CHECK(pthread_yield && pthread_yield() == 0 && pthread_yield() == 0);
+    CHECK(is_implemented("libkernel", "scePthreadYield"));
 
     /* The PS4 host is little-endian AMD64; the network representation is big-endian. */
     CHECK(htonl(UINT32_C(0x12345678)) == UINT32_C(0x78563412));
@@ -1308,6 +1374,9 @@ int main(void)
         void *a = NULL, *b = NULL;
         CHECK(dm_map(&a, DM_LENGTH, DM_RW, 0, first, DM_ALIGN) == 0 && a && (uintptr_t)a % DM_ALIGN == 0);
         CHECK(dm_map(&b, DM_LENGTH, DM_RW, 0, first, DM_ALIGN) == 0 && b && b != a);
+        /* Maps the system places are GPU-addressable: below 2^40, so the GPU's 32-bit base fields
+           (the address shifted right by 8) hold them whole. */
+        CHECK(gpu_addressable(a) && gpu_addressable(b));
         if (a && b) {
             /* Two maps of one range are the same memory, as physical memory is. */
             ((volatile unsigned char *)a)[DM_LENGTH - 1] = 0x5a;
@@ -1527,6 +1596,11 @@ int main(void)
     /* scePthreadCreate: the guest runs on a new host thread, on its own stack, with GS pointing at
        a fresh TLS block, registered for scePthreadSelf. */
     tc_create = (f_create)fn("libkernel", "scePthreadCreate");
+    /* pthread_create_name_np is the same creation under its POSIX name: registered, and the same
+       stop for a missing attribute. */
+    tc_create_posix = (f_create)fn("libScePosix", "pthread_create_name_np");
+    CHECK(tc_create_posix != NULL && is_implemented("libScePosix", "pthread_create_name_np"));
+    if (tc_create_posix) CHECK(died_in_fatal(posix_create_without_attr));
     tc_affinity = (f_setaffinity)fn("libkernel", "scePthreadSetaffinity");
     tc_self = (f_self)fn("libkernel", "scePthreadSelf");
     tc_sigmask = (f_sigmask)fn("libkernel", "_sigprocmask");
@@ -1597,6 +1671,7 @@ int main(void)
         CHECK(died_in_fatal(tc_create_no_stack));
         CHECK(died_in_fatal(tc_create_no_detach));
         CHECK(died_in_fatal(tc_affinity_empty));
+        CHECK(tc_affinity(NULL, 0x30) == (int)0x80020003u); /* no thread: ESRCH, as libthr */
     }
 
     /* scePthreadKey*: keys are slot + 1, values belong to each thread, a deleted key reads NULL
@@ -1693,6 +1768,7 @@ int main(void)
         void *a = NULL, *b = NULL;
         CHECK(flex_map(&a, 0x8000, 3, 0) == 0 && a);
         CHECK(flex_map(&b, 0x4000, 0x33, 0) == 0 && b && b != a);
+        CHECK(gpu_addressable(a) && gpu_addressable(b) && (uintptr_t)a % 0x4000 == 0);
         if (a) {
             volatile unsigned char *m = a;
             CHECK(m[0] == 0 && m[0x7fff] == 0);
@@ -1772,6 +1848,17 @@ int main(void)
                     CHECK(http_epoll_fn(http, &h2) == 0 && h2 && h2 != h1);
                     CHECK(died_in_fatal(http_epoll_unknown));
                     CHECK(died_in_fatal(http_epoll_no_slot));
+                    /* sceHttpWaitRequest: offline, a poll of a handle the runtime made finds no events. */
+                    http_wait_fn = (f_http_wait)fn("libSceHttp", "sceHttpWaitRequest");
+                    CHECK(http_wait_fn != NULL);
+                    if (http_wait_fn) {
+                        static unsigned char events[128][24];
+                        memset(events, 0xa5, sizeof events);
+                        http_wait_handle = h1;
+                        CHECK(http_wait_fn(h1, events, 128, 0) == 0 && events[0][0] == 0xa5);
+                        CHECK(died_in_fatal(http_wait_unknown));
+                        CHECK(died_in_fatal(http_wait_timeout));
+                    }
                 }
                 http_header_fn = (f_http_header)fn("libSceHttp", "sceHttpAddRequestHeader");
                 if (http_header_fn) {
@@ -1817,6 +1904,21 @@ int main(void)
         const uint64_t t2 = process_time();
         CHECK(t1 < 600ull * 1000000 && t2 >= t1 + 15000 && t2 < t1 + 5000000); /* 20 ms later, in µs */
     }
+
+    /* time (libSceLibcInternal): the wall clock's whole seconds, returned and stored through a
+       non-null pointer, as FreeBSD's time() reads CLOCK_SECOND. */
+    int64_t (*libc_time)(int64_t *) = (int64_t (*)(int64_t *))fn("libSceLibcInternal", "time");
+    if (libc_time) {
+        struct timespec before, after;
+        int64_t stored = -1;
+        clock_gettime(CLOCK_REALTIME, &before);
+        const int64_t returned = libc_time(&stored);
+        const int64_t unstored = libc_time(NULL);
+        clock_gettime(CLOCK_REALTIME, &after);
+        CHECK(returned == stored && returned >= before.tv_sec && returned <= after.tv_sec);
+        CHECK(unstored >= returned && unstored <= after.tv_sec);
+    }
+    CHECK(is_implemented("libSceLibcInternal", "time"));
 
     /* sceAjmInitialize / sceAjmModuleRegister. */
     ajm_init_fn = (f_ajm_init)fn("libSceAjm", "sceAjmInitialize");
@@ -1945,6 +2047,38 @@ int main(void)
                 CHECK(kopen("/app0/new.bin", 0x201, 0644) == (int32_t)0x8002001eu); /* O_CREAT */
                 CHECK(kopen("/app0/missing.bin", 1, 0) == (int32_t)0x80020002u);   /* lookup first */
                 CHECK(access(file, F_OK) == 0); /* nothing was written or created */
+
+                /* /data: the writable scratch mount. The engine's cache open (O_RDWR | O_CREAT |
+                   O_TRUNC, mode 0777) creates an empty file there; it shows write permission. */
+                static char data_buf[512];
+                snprintf(data_buf, sizeof data_buf, "%s/pb-data-XXXXXX", tmp ? tmp : "/tmp");
+                char *data = mkdtemp(data_buf);
+                CHECK(data != NULL);
+                if (data) {
+                    rt_process.data_dir = data;
+                    char cache[600];
+                    snprintf(cache, sizeof cache, "%s/cache.bin", data);
+                    int32_t cfd = kopen("/data/cache.bin", 0x602, 0777);
+                    CHECK(cfd >= 3 && access(cache, F_OK) == 0);
+                    memset(st, 0, sizeof st);
+                    CHECK(kfstat(cfd, st) == 0 && (memcpy(&mode, st + 8, 2), (mode & 0200) != 0));
+                    CHECK(kread(cfd, buf, 4) == 0 && kclose(cfd) == 0);
+                    FILE *c = fopen(cache, "w");
+                    if (c) { fwrite("abc", 1, 3, c); fclose(c); }
+                    cfd = kopen("/data/cache.bin", 0, 0); /* read-only sees what is there */
+                    CHECK(cfd >= 3 && kread(cfd, buf, 4) == 3 && !memcmp(buf, "abc", 3) && kclose(cfd) == 0);
+                    CHECK(kstat_fn("/data/cache.bin", st) == 0 && (memcpy(&size, st + 0x48, 8), size == 3));
+                    cfd = kopen("/data/cache.bin", 0x602, 0777); /* truncate starts it over */
+                    CHECK(cfd >= 3 && kread(cfd, buf, 4) == 0 && kclose(cfd) == 0);
+                    CHECK(kopen("/data/missing.bin", 0, 0) == (int32_t)0x80020002u);
+                    kopen_fn = kopen;
+                    CHECK(died_in_fatal(kstat_data_dotdot));
+                    CHECK(died_in_fatal(data_open_odd_flag));
+                    CHECK(died_in_fatal(data_open_no_folder));
+                    unlink(cache);
+                    rmdir(data);
+                    rt_process.data_dir = NULL;
+                }
             }
             unlink(file);
             rmdir(app0);
@@ -1959,6 +2093,75 @@ int main(void)
         const uint64_t base = tf_base();
         CHECK(base && base < (1ull << 40) && base % 0x10000 == 0 && tf_base() == base);
     }
+    /* sceGnmValidateCommandBuffers: "validation is not available" (0x80d13fff, the one value the
+       executable's probe at 0x02abb8e0 tests for), whatever it is given; the buffers stay untouched. */
+    typedef int32_t (*f_validate)(uint32_t, void **, uint32_t *, void **, uint32_t *);
+    const f_validate validate = (f_validate)fn("libSceGnmDriver", "sceGnmValidateCommandBuffers");
+    CHECK(validate != NULL);
+    if (validate) {
+        uint32_t words[4] = {0xc0001000, 0x11111111, 0x22222222, 0x33333333};
+        void *buffer = words;
+        uint32_t size = sizeof words;
+        CHECK((uint32_t)validate(1, &buffer, &size, NULL, NULL) == 0x80d13fffu);
+        CHECK((uint32_t)validate(0, NULL, NULL, NULL, NULL) == 0x80d13fffu);
+        CHECK(words[0] == 0xc0001000 && words[3] == 0x33333333 && size == sizeof words && buffer == words);
+    }
+    /* sceGnmDispatchInitDefaultHardwareState, sceGnmDrawInitDefaultHardwareState200: write nothing
+       (no GPU to set up) and say so. */
+    typedef uint32_t (*f_init_state)(uint32_t *, uint64_t);
+    static const char *const init_state_names[] = {"sceGnmDispatchInitDefaultHardwareState",
+                                                   "sceGnmDrawInitDefaultHardwareState200"};
+    for (int n = 0; n < 2; n++) {
+        const f_init_state init_state = (f_init_state)fn("libSceGnmDriver", init_state_names[n]);
+        CHECK(init_state != NULL);
+        if (!init_state) continue;
+        uint32_t packets[256];
+        for (int i = 0; i < 256; i++) packets[i] = 0xa5a5a5a5u;
+        CHECK(init_state(packets, 256) == 0);
+        CHECK(packets[0] == 0xa5a5a5a5u && packets[255] == 0xa5a5a5a5u);
+    }
+    /* sceGnmSetCsShader: the reserved 25 dwords become one PM4 NOP packet; answers 0. */
+    typedef int32_t (*f_set_cs)(uint32_t *, uint32_t, const void *);
+    const f_set_cs set_cs = (f_set_cs)fn("libSceGnmDriver", "sceGnmSetCsShader");
+    CHECK(set_cs != NULL);
+    if (set_cs) {
+        uint32_t packet[26];
+        for (int i = 0; i < 26; i++) packet[i] = 0xa5a5a5a5u;
+        CHECK(set_cs(packet, 25, (const void *)packet) == 0);
+        CHECK(packet[0] == (0xc0001000u | (23u << 16)) && packet[1] == 0 && packet[24] == 0);
+        CHECK(packet[25] == 0xa5a5a5a5u);
+    }
+    /* sceKernelReadTsc: the CPU's time-stamp counter, which moves forward. */
+    typedef uint64_t (*f_tsc)(void);
+    const f_tsc read_tsc = (f_tsc)fn("libkernel", "sceKernelReadTsc");
+    CHECK(read_tsc != NULL);
+    if (read_tsc) {
+        const uint64_t first = read_tsc();
+        struct timespec pause = {0, 1000000};
+        nanosleep(&pause, NULL);
+        CHECK(read_tsc() > first);
+    }
+    /* The other command-buffer writers: each fills exactly the reserved dwords with one NOP packet
+       (header with the count minus two, zero payload), answers 0 and writes nothing past them. */
+    static const char *const writers[] = {
+        "sceGnmSetEsShader", "sceGnmSetGsShader", "sceGnmSetHsShader", "sceGnmSetLsShader", "sceGnmSetPsShader",
+        "sceGnmSetVsShader", "sceGnmUpdateGsShader", "sceGnmUpdateHsShader", "sceGnmUpdatePsShader",
+        "sceGnmUpdateVsShader", "sceGnmInsertPushMarker", "sceGnmInsertPopMarker", "sceGnmInsertSetMarker",
+        "sceGnmInsertPushColorMarker", "sceGnmInsertSetColorMarker", "sceGnmInsertWaitFlipDone"};
+    typedef int32_t (*f_writer)(uint32_t *, uint32_t, const void *, uint64_t);
+    for (size_t n = 0; n < sizeof writers / sizeof writers[0]; n++) {
+        const f_writer writer = (f_writer)fn("libSceGnmDriver", writers[n]);
+        CHECK(writer != NULL);
+        if (!writer) continue;
+        uint32_t packet[8];
+        for (int i = 0; i < 8; i++) packet[i] = 0xa5a5a5a5u;
+        CHECK(writer(packet, 7, "label", 0) == 0);
+        CHECK(packet[0] == (0xc0001000u | (5u << 16)) && packet[1] == 0 && packet[6] == 0 && packet[7] == 0xa5a5a5a5u);
+    }
+    /* sceGnmIsUserPaEnabled: off. */
+    typedef int32_t (*f_user_pa)(void);
+    const f_user_pa user_pa = (f_user_pa)fn("libSceGnmDriver", "sceGnmIsUserPaEnabled");
+    CHECK(user_pa != NULL && user_pa() == 0);
     /* sceGnmMapComputeQueue: ids from 1 (the engine treats 0 as failure); a pipe and queue once. */
     cq_fn = (f_cq_t)fn("libSceGnmDriver", "sceGnmMapComputeQueue");
     if (cq_fn) {
@@ -1968,6 +2171,45 @@ int main(void)
         CHECK(qa > 0 && qb > 0 && qa != qb);
         CHECK(died_in_fatal(cq_twice));
         CHECK(died_in_fatal(cq_no_ring));
+        /* sceGnmDingDong: completes the work at once. Shader state and dispatches are skipped, the
+           RELEASE_MEM "done" value reaches its label, and the read pointer reaches the write offset,
+           also when the ring wraps. */
+        ding_dong_fn = (f_ding_dong)fn("libSceGnmDriver", "sceGnmDingDong");
+        CHECK(ding_dong_fn != NULL);
+        if (ding_dong_fn) {
+            static volatile uint32_t label;
+            static volatile uint64_t wide_label;
+            const uint64_t label_at = (uint64_t)(uintptr_t)&label, wide_at = (uint64_t)(uintptr_t)&wide_label;
+            enum { JOB_DWORDS = 19, JOB_LABEL_VALUE = 15 };
+            static uint32_t job[JOB_DWORDS];
+            const uint32_t job_packets[JOB_DWORDS] = {
+                0xc0001000u, 0,                                    /* NOP */
+                0xc0017600u, 0x242, 0x1234,                        /* SET_SH_REG */
+                0xc0031500u, 1, 1, 1, 1,                           /* DISPATCH_DIRECT */
+                0xc0054900u, 0x0003862fu, 0x20000000u,             /* RELEASE_MEM, 32-bit data to memory */
+                (uint32_t)label_at, (uint32_t)(label_at >> 32), 7, 0,
+                0xc0001000u, 0};                                   /* NOP */
+            memcpy(job, job_packets, sizeof job);
+            static uint32_t wide_job[7];
+            const uint32_t wide_packets[7] = {0xc0054900u, 0x0003862fu, 0x40000000u, /* 64-bit data */
+                (uint32_t)wide_at, (uint32_t)(wide_at >> 32), 0x89abcdefu, 0x01234567u};
+            memcpy(wide_job, wide_packets, sizeof wide_job);
+            dd_queue = qa; dd_ring = ring_a;
+            put_indirect_buffer(ring_a, job, JOB_DWORDS);
+            put_indirect_buffer(ring_a + 4, job, 0); /* an empty command buffer */
+            ding_dong_fn((uint32_t)qa, 8);
+            CHECK(label == 7 && read_a == 8);
+            /* Fill the rest of the ring, then wrap to its start, as the engine's submit does: every
+               slot from 8 to the end completes, and so does the first slot after the wrap. */
+            for (uint32_t slot = 8; slot < 0x3fc; slot += 4) put_indirect_buffer(ring_a + slot, job, 0);
+            put_indirect_buffer(ring_a + 0x3fc, wide_job, 7);
+            job[JOB_LABEL_VALUE] = 9;
+            put_indirect_buffer(ring_a, job, JOB_DWORDS);
+            ding_dong_fn((uint32_t)qa, 4);
+            CHECK(wide_label == 0x0123456789abcdefull && label == 9 && read_a == 4);
+            CHECK(died_in_fatal(dd_unknown_packet));
+            CHECK(died_in_fatal(dd_bad_queue));
+        }
     }
 
     /* sceKernelCreateEqueue / WaitEqueue / DeleteEqueue. */
@@ -2021,7 +2263,11 @@ int main(void)
         static uint32_t frame_a[16], frame_b[16];
         void *const buffers[2] = {frame_a, frame_b};
         CHECK(vo_register(vo_handle, 0, buffers, 2, attr) == 0);
-        CHECK(died_in_fatal(vo_status_before_flip));
+        {   /* before the first flip: success, and all zero (no flips yet) */
+            unsigned char before[64], zero[64] = {0};
+            memset(before, 0xee, sizeof before);
+            CHECK(vo_status_fn(vo_handle, before) == 0 && !memcmp(before, zero, sizeof zero));
+        }
         CHECK(vo_flip_fn(vo_handle, 1, 2, 77) == 0);
         unsigned char ev[32]; int32_t n = 0; int64_t data;
         CHECK(eq_wait_fn(flips, ev, 1, &n, NULL) == 0 && n == 1 && (memcpy(&data, ev + 16, 8), data == 77));
@@ -2029,7 +2275,59 @@ int main(void)
         CHECK(vo_status_fn(vo_handle, st) == 0);
         memcpy(&count, st, 8); memcpy(&arg, st + 0x18, 8); memcpy(&current, st + 0x38, 4);
         CHECK(count == 1 && arg == 77 && current == 1);
-        CHECK(died_in_fatal(vo_flip_vsync));
+        /* A vsync flip completes at the next 60 Hz tick: within one period. */
+        struct timespec before, after;
+        clock_gettime(CLOCK_MONOTONIC, &before);
+        CHECK(vo_flip_fn(vo_handle, 0, 1, 78) == 0);
+        clock_gettime(CLOCK_MONOTONIC, &after);
+        const int64_t waited_ns = (after.tv_sec - before.tv_sec) * 1000000000 + (after.tv_nsec - before.tv_nsec);
+        CHECK(waited_ns <= 1000000000 / 60 + 2000000);
+        CHECK(eq_wait_fn(flips, ev, 1, &n, NULL) == 0 && n == 1 && (memcpy(&data, ev + 16, 8), data == 78));
+        /* A second vsync flip right after waits for the following tick: about one period later. */
+        CHECK(vo_flip_fn(vo_handle, 1, 1, 80) == 0);
+        clock_gettime(CLOCK_MONOTONIC, &before);
+        CHECK(eq_wait_fn(flips, ev, 1, &n, NULL) == 0); /* pending flip events of one port merge: take each */
+        CHECK(vo_flip_fn(vo_handle, 0, 1, 81) == 0);
+        clock_gettime(CLOCK_MONOTONIC, &after);
+        const int64_t apart_ns = (after.tv_sec - before.tv_sec) * 1000000000 + (after.tv_nsec - before.tv_nsec);
+        CHECK(apart_ns >= 1000000000 / 60 - 2000000);
+        CHECK(eq_wait_fn(flips, ev, 1, &n, NULL) == 0);
+        CHECK(died_in_fatal(vo_flip_other_mode));
+
+        /* sceGnmSubmitCommandBuffers and sceGnmSubmitAndFlipCommandBuffers complete the work at once:
+           draw state and draws are skipped, a met wait passes, the end-of-work value is written; the
+           frame's flip follows. An unknown packet and an unmet wait stop by name. */
+        gnm_submit_fn = (f_gnm_submit)fn("libSceGnmDriver", "sceGnmSubmitCommandBuffers");
+        typedef int32_t (*f_gnm_flip)(uint32_t, void **, uint32_t *, void **, uint32_t *, int32_t, int32_t, int32_t, int64_t);
+        const f_gnm_flip gnm_flip = (f_gnm_flip)fn("libSceGnmDriver", "sceGnmSubmitAndFlipCommandBuffers");
+        typedef int32_t (*f_gnm_done)(void);
+        const f_gnm_done gnm_done = (f_gnm_done)fn("libSceGnmDriver", "sceGnmSubmitDone");
+        CHECK(gnm_submit_fn && gnm_flip && gnm_done);
+        if (gnm_submit_fn && gnm_flip && gnm_done) {
+            static volatile uint64_t end_of_frame;
+            static uint32_t wait_target = 7;
+            const uint64_t eop = (uint64_t)(uintptr_t)&end_of_frame, wt = (uint64_t)(uintptr_t)&wait_target;
+            uint32_t frame[] = {
+                0xc0053c00u, 0x15, (uint32_t)wt, (uint32_t)(wt >> 32), 7, 0xffffffffu, 10, /* wait: >= 7, holds */
+                0xc0016900u, 0x1, 0x2,                                                    /* SET_CONTEXT_REG */
+                0xc0017900u, 0x3, 0x4,                                                    /* SET_UCONFIG_REG */
+                0xc0002f00u, 0x1,                                                         /* NUM_INSTANCES */
+                0xc0012d00u, 0x3, 0x2,                                                    /* DRAW_INDEX_AUTO */
+                0xc0004600u, 0x0,                                                         /* EVENT_WRITE */
+                0xc0044700u, 0x528, (uint32_t)eop, (uint32_t)(eop >> 32) | 0x40000000u, 0x9, 0x1, /* EOP 64-bit */
+            };
+            void *buffers[1] = {frame};
+            uint32_t bytes[1] = {sizeof frame};
+            end_of_frame = 0;
+            CHECK(gnm_submit_fn(1, buffers, bytes, NULL, NULL) == 0 && end_of_frame == 0x100000009ull);
+            end_of_frame = 0;
+            CHECK(gnm_flip(1, buffers, bytes, NULL, NULL, vo_handle, 1, 2, 79) == 0 && end_of_frame == 0x100000009ull);
+            CHECK(gnm_done() == 0);
+            CHECK(eq_wait_fn(flips, ev, 1, &n, NULL) == 0 && n == 1 && (memcpy(&data, ev + 16, 8), data == 79));
+            CHECK(vo_status_fn(vo_handle, st) == 0 && (memcpy(&arg, st + 0x18, 8), arg == 79));
+            CHECK(died_in_fatal(gnm_submit_unknown));
+            CHECK(died_in_fatal(gnm_submit_unmet_wait));
+        }
         CHECK(died_in_fatal(vo_flip_bad_buffer));
         CHECK(died_in_fatal(vo_open_other));
     }

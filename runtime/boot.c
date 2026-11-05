@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* pbboot: runs a PS4 executable's entry on Paleblood's runtime, as far as the runtime goes.
 
-     pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--app0 DIR] [--nids NID_DB.xml]
+     pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--app0 DIR] [--data DIR] [--nids NID_DB.xml]
             [--module-hook MODULE:OFFSET:SIZE:ACTION:NAME]...
             [--status OUT.json] [--timeout SECONDS] [--trace]
      pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]
@@ -115,9 +115,9 @@ typedef struct {
 static module_hook module_hooks[MAX_MODULE_HOOKS];
 static size_t module_hook_count;
 
-enum outcome { RUNNING, UNIMPLEMENTED, FAULT, TIMEOUT, EXITED, RETURNED, STOPPED };
+enum outcome { RUNNING, UNIMPLEMENTED, FAULT, TIMEOUT, EXITED, RETURNED, STOPPED, RUNTIME_STOP };
 static const char *const outcome_names[] = {"running", "unimplemented", "fault", "timeout", "exited", "returned",
-                                            "stopped"};
+                                            "stopped", "runtime stop"};
 
 static sigjmp_buf back_to_host;
 static volatile enum outcome outcome = RUNNING;
@@ -131,6 +131,8 @@ static volatile uint64_t stopped_from;          /* the guest's return address of
 static volatile uint64_t fault_rip, fault_address;
 static volatile int fault_signal;
 static volatile int exit_code;
+/* An implemented system function that stopped the run (rt_fatal): its name and the reason. */
+static char runtime_stop_function[128], runtime_stop_reason[256];
 
 /* Claims the run's one stop; false when another thread stopped first. */
 static int claim_stop(void)
@@ -167,6 +169,17 @@ static __attribute__((noinline)) void module_hook_stop(uint32_t which)
     stopped_from = (uint64_t)(uintptr_t)__builtin_return_address(0);
     stopped_hook = which;
     outcome = STOPPED;
+    unwind();
+}
+
+/* rt_fatal's observer: an implemented system function met behaviour the runtime does not know.
+   Recorded like an unimplemented import, so the boot record names where and why it stopped. */
+static void runtime_stopped(const char *function, const char *message)
+{
+    if (!claim_stop()) for (;;) pause();
+    snprintf(runtime_stop_function, sizeof runtime_stop_function, "%s", function ? function : "");
+    snprintf(runtime_stop_reason, sizeof runtime_stop_reason, "%s", message ? message : "");
+    outcome = RUNTIME_STOP;
     unwind();
 }
 
@@ -550,7 +563,7 @@ static int install_module_hooks(char *error, size_t size)
 }
 
 static const char *usage =
-    "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--app0 DIR] [--nids NID_DB.xml]\n"
+    "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--app0 DIR] [--data DIR] [--nids NID_DB.xml]\n"
     "              [--module-hook MODULE:OFFSET:SIZE:ACTION:NAME]...\n"
     "              [--status OUT.json] [--timeout S] [--trace]\n"
     "       pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]\n";
@@ -573,6 +586,8 @@ int main(int argc, char **argv)
         }
         else if (!strcmp(argv[i], "--app0") && i + 1 < argc)
             rt_process.app0_dir = argv[++i];
+        else if (!strcmp(argv[i], "--data") && i + 1 < argc)
+            rt_process.data_dir = argv[++i];
         else if (!strcmp(argv[i], "--system-param") && i + 1 < argc) {
             if (add_system_param(argv[++i])) {
                 fprintf(stderr, "pbboot: --system-param %s: want a new ID=VALUE\n", argv[i]);
@@ -725,6 +740,7 @@ int main(int argc, char **argv)
     sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_NODEFER;
     static const int signals[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGTRAP, SIGALRM, SIGUSR1};
     main_thread = pthread_self();
+    rt_fatal_observer = runtime_stopped;
     for (size_t i = 0; i < sizeof signals / sizeof signals[0]; i++) sigaction(signals[i], &sa, NULL);
 
     unsigned char *stack_top = stack + STACK_SIZE - 64;
@@ -797,6 +813,7 @@ int main(int argc, char **argv)
     if (outcome == FAULT) printf(": signal %d at %s, address 0x%llx", fault_signal, at, (unsigned long long)fault_address);
     if (outcome == TIMEOUT) printf(" after %d s, at %s", timeout, at);
     if (outcome == EXITED) printf(" with code %d", exit_code);
+    if (outcome == RUNTIME_STOP) printf(": %s: %s", runtime_stop_function, runtime_stop_reason);
     if (stop_hook)
         printf(": %s+0x%llx %s is replaced by a stop, called from %s", stop_hook->module,
                (unsigned long long)stop_hook->offset, stop_hook->name, from);
@@ -888,6 +905,16 @@ int main(int argc, char **argv)
             json_string(f, stop_hook->name);
             fprintf(f, ", \"returns_to\": ");
             json_string(f, from);
+            fprintf(f, "}");
+        } else {
+            fprintf(f, "null");
+        }
+        fprintf(f, ",\n  \"runtime_stop\": ");
+        if (outcome == RUNTIME_STOP) {
+            fprintf(f, "{\"function\": ");
+            json_string(f, runtime_stop_function);
+            fprintf(f, ", \"reason\": ");
+            json_string(f, runtime_stop_reason);
             fprintf(f, "}");
         } else {
             fprintf(f, "null");
