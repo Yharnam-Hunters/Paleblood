@@ -10,6 +10,11 @@ on:
       - 'runtime/graphics_metal.mm'
       - 'runtime/include/runtime/graphics_metal.h'
       - 'test/test_metal_offscreen.mm'
+      - 'runtime/renderer/**'
+      - 'runtime/include/runtime/gcn*.h'
+      - 'runtime/include/runtime/spirv.h'
+      - 'test/test_gcn_spirv.c'
+      - 'test/gcn_programs.h'
   pull_request:
     paths:
       - '.github/workflows/macos-metal.yml'
@@ -18,6 +23,11 @@ on:
       - 'runtime/graphics_metal.mm'
       - 'runtime/include/runtime/graphics_metal.h'
       - 'test/test_metal_offscreen.mm'
+      - 'runtime/renderer/**'
+      - 'runtime/include/runtime/gcn*.h'
+      - 'runtime/include/runtime/spirv.h'
+      - 'test/test_gcn_spirv.c'
+      - 'test/gcn_programs.h'
   merge_group:
 
 permissions:
@@ -50,3 +60,24 @@ jobs:
       - name: Compile Metal library and real-device test
         run: cmake --build build --target pbmetal test_metal_offscreen --parallel 2
       # Hosted compilation does not qualify a real Metal device or GPU execution.
+
+  shaders:
+    # The shader translator's output on macOS: every test program is translated to SPIR-V,
+    # converted to Metal Shading Language 2.3 by SPIRV-Cross and compiled by Apple's Metal compiler
+    # (docs/RENDERER.md). Compilation only: hosted runners do not qualify GPU execution.
+    name: Translated shaders compile as Metal
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SPIRV-Cross and SPIRV-Tools
+        run: brew install spirv-cross spirv-tools
+      - name: Make sure the Metal compiler is present
+        run: xcrun -sdk macosx metal --version || xcodebuild -downloadComponent MetalToolchain
+      - name: Build the shader translator test
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
+          cmake --build build --target test_gcn_spirv --parallel 2
+      - name: Translate, convert to Metal and compile every test program
+        env:
+          PB_REQUIRE_METAL: '1'
+        run: ./build/test_gcn_spirv

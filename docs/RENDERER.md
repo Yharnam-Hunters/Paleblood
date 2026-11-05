@@ -79,8 +79,11 @@ Instead:
        `test/test_gcn_compute.c` runs programs on a Vulkan device and compares every output word
        with values worked out by hand from the manual.
    - **macOS:** the same SPIR-V becomes Metal's shader language through SPIRV-Cross, the Khronos
-     project's converter. Its buffer pointers become Metal device pointers, so one translator
-     serves both platforms. Generated modules keep to features SPIRV-Cross maps to Metal.
+     project's converter. Its buffer pointers become Metal device pointers and its subgroup votes
+     `simd_any`, so one translator serves both platforms. Metal 2.3 or later (macOS 11) is needed.
+     - `test_gcn_spirv` converts every translated test program with SPIRV-Cross when it is
+       installed.
+     - The `macos-metal` CI workflow also compiles each result with Apple's Metal compiler.
 3. **Engine draw hooks.** Map the draw layer: the shader-binding helpers at
    `0x01475400`–`0x01475a70` and their callers, the render-target, clear, viewport, blend and draw
    entry points. Then route them to the renderer. The first target is the title screen's 2D
