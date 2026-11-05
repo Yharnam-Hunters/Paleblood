@@ -3,6 +3,7 @@
 // Keep them separate from shared object views and inline short source forms.
 #pragma once
 
+#include "command_packets.h"
 #include "present_record_consumer.h"
 
 namespace render::record_calls {
