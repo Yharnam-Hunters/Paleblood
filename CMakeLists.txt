@@ -126,3 +126,10 @@ add_executable(test_compiled_sdk test/test_compiled_sdk.c
 target_include_directories(test_compiled_sdk PRIVATE runtime/include)
 add_test(NAME compiled_sdk COMMAND test_compiled_sdk)
 set_tests_properties(compiled_sdk PROPERTIES TIMEOUT 10)
+
+# Full-width module arguments and proven early invalid-ID statuses.
+add_executable(test_sysmodule_wire test/test_sysmodule_wire.c
+               runtime/syslib/table.c runtime/syslib/kernel_sysmodule.c)
+target_include_directories(test_sysmodule_wire PRIVATE runtime/include)
+add_test(NAME sysmodule_wire COMMAND test_sysmodule_wire)
+set_tests_properties(sysmodule_wire PROPERTIES TIMEOUT 10)
