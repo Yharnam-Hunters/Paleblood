@@ -120,6 +120,7 @@ static uint32_t glsl(translator *t, uint32_t type, uint32_t instruction, uint32_
 
 static uint32_t as_float(translator *t, uint32_t bits) { return value(t, SPV_OP_BITCAST, t_float(t), 1, bits); }
 static uint32_t as_bits(translator *t, uint32_t f) { return value(t, SPV_OP_BITCAST, t_uint(t), 1, f); }
+static uint32_t widen(translator *t, uint32_t bits) { return value(t, SPV_OP_U_CONVERT, t_ulong(t), 1, bits); }
 
 static void store(translator *t, spirv_words *to, uint32_t pointer, uint32_t v)
 {
@@ -400,6 +401,80 @@ static uint32_t half_toward_zero(translator *t, uint32_t x)
     return r;
 }
 
+/* A bit field: width bits of data from bit offset (0-31) up, zero- or sign-extended. A width of 0
+   gives 0; 32 or more takes everything from the offset up. The signed form shifts arithmetically,
+   so a field that runs past bit 31 is filled with the sign. */
+static uint32_t bit_field(translator *t, uint32_t data, uint32_t offset, uint32_t width, int is_signed)
+{
+    const uint32_t zero = konst(t, 0), thirty_two = konst(t, 32);
+    const uint32_t shifted = value(t, is_signed ? SPV_OP_SHIFT_RIGHT_ARITHMETIC : SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, data, offset);
+    const uint32_t whole = value(t, SPV_OP_U_GREATER_THAN_EQUAL, t_bool(t), 2, width, thirty_two);
+    const uint32_t low_bits = value(t, SPV_OP_I_SUB, t_uint(t), 2,
+                                    value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, konst(t, 1), shift_amount(t, width)), konst(t, 1));
+    const uint32_t field = value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, shifted,
+                                 value(t, SPV_OP_SELECT, t_uint(t), 3, whole, konst(t, 0xffffffffu), low_bits));
+    uint32_t r = field;
+    if (is_signed) { /* move the field's top bit to bit 31 and back */
+        const uint32_t up = shift_amount(t, value(t, SPV_OP_I_SUB, t_uint(t), 2, thirty_two, width));
+        const uint32_t extended = value(t, SPV_OP_SHIFT_RIGHT_ARITHMETIC, t_uint(t), 2,
+                                        value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, field, up), up);
+        r = value(t, SPV_OP_SELECT, t_uint(t), 3, whole, shifted, extended);
+    }
+    return value(t, SPV_OP_SELECT, t_uint(t), 3, value(t, SPV_OP_I_EQUAL, t_bool(t), 2, width, zero), zero, r);
+}
+
+/* The low 24 bits of a word as an integer: sign-extended (i24) or not (u24). */
+static uint32_t low_24(translator *t, uint32_t bits, int is_signed)
+{
+    if (!is_signed) return value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, bits, konst(t, 0xffffff));
+    return value(t, SPV_OP_SHIFT_RIGHT_ARITHMETIC, t_uint(t), 2,
+                 value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, bits, konst(t, 8)), konst(t, 8));
+}
+
+/* The largest finite float with x's sign. */
+static uint32_t signed_largest(translator *t, uint32_t x)
+{
+    const uint32_t sign = value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, as_bits(t, x), konst(t, 0x80000000u));
+    return as_float(t, value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, sign, konst(t, 0x7f7fffffu)));
+}
+
+static uint32_t is_nan(translator *t, uint32_t f) { return value(t, SPV_OP_F_UNORD_NOT_EQUAL, t_bool(t), 2, f, f); }
+
+/* The transcendental instructions, with the cases GLSL leaves undefined spelled out as IEEE
+   defines them: log2 of a zero is -infinity, of a negative number NaN; the reciprocal square root
+   of a negative number or NaN is NaN. v_rsq_clamp_f32 gives the largest finite float, with the
+   operand's sign, for a zero (instead of infinity), and 0 for +infinity. GCN's exact NaN bits are
+   not established here; this gives the default quiet NaN. */
+static uint32_t transcendental(translator *t, const char *name, uint32_t x)
+{
+    const uint32_t zero = konst_float(t, 0.0f), nan = as_float(t, konst(t, 0x7fc00000u));
+    const uint32_t is_zero = value(t, SPV_OP_F_ORD_EQUAL, t_bool(t), 2, x, zero);
+    const uint32_t negative_or_nan = value(t, SPV_OP_LOGICAL_OR, t_bool(t), 2, is_nan(t, x),
+                                           value(t, SPV_OP_F_ORD_LESS_THAN, t_bool(t), 2, x, zero));
+    if (!strcmp(name, "v_sin_f32") || !strcmp(name, "v_cos_f32")) { /* the operand counts whole turns */
+        const uint32_t radians = value(t, SPV_OP_F_MUL, t_float(t), 2, x, konst_float(t, 6.28318530717958647692f));
+        return glsl(t, t_float(t), !strcmp(name, "v_sin_f32") ? SPV_GLSL_SIN : SPV_GLSL_COS, radians, 0, 0, 1);
+    }
+    if (!strcmp(name, "v_exp_f32")) return glsl(t, t_float(t), SPV_GLSL_EXP2, x, 0, 0, 1);
+    if (!strcmp(name, "v_log_f32")) {
+        const uint32_t minus_infinity = as_float(t, konst(t, 0xff800000u));
+        const uint32_t r = value(t, SPV_OP_SELECT, t_float(t), 3, negative_or_nan, nan, glsl(t, t_float(t), SPV_GLSL_LOG2, x, 0, 0, 1));
+        return value(t, SPV_OP_SELECT, t_float(t), 3, is_zero, minus_infinity, r);
+    }
+    /* v_rsq_clamp_f32 */
+    const uint32_t infinity = as_float(t, konst(t, 0x7f800000u));
+    uint32_t r = glsl(t, t_float(t), SPV_GLSL_INVERSE_SQRT, x, 0, 0, 1);
+    r = value(t, SPV_OP_SELECT, t_float(t), 3, value(t, SPV_OP_F_ORD_EQUAL, t_bool(t), 2, x, infinity), zero, r);
+    r = value(t, SPV_OP_SELECT, t_float(t), 3, negative_or_nan, nan, r);
+    return value(t, SPV_OP_SELECT, t_float(t), 3, is_zero, signed_largest(t, x), r);
+}
+
+static int is_transcendental(const char *name)
+{
+    return !strcmp(name, "v_sin_f32") || !strcmp(name, "v_cos_f32") || !strcmp(name, "v_exp_f32") || !strcmp(name, "v_log_f32") ||
+           !strcmp(name, "v_rsq_clamp_f32");
+}
+
 static void vector_instruction(translator *t, const uint32_t *w, const gcn_instruction *ins)
 {
     const vector_operands o = vector_fields(w, ins);
@@ -464,6 +539,53 @@ static void vector_instruction(translator *t, const uint32_t *w, const gcn_instr
         const uint32_t carry = add ? value(t, SPV_OP_U_LESS_THAN, t_bool(t), 2, r, a) : value(t, SPV_OP_U_LESS_THAN, t_bool(t), 2, a, b);
         write_vgpr(t, o.dst, r);
         write_vector_lane_bit(t, vop3 ? o.sdst : SGPR_VCC, carry);
+    } else if (!strcmp(name, "v_addc_u32") || !strcmp(name, "v_subb_u32") || !strcmp(name, "v_subbrev_u32")) {
+        /* With a carry (borrow) in from VCC, or VOP3's src2 pair, and out to VCC or VOP3's sdst. */
+        uint32_t a = source(t, o.src[0], ins), b = source(t, o.src[1], ins);
+        if (!strcmp(name, "v_subbrev_u32")) {
+            const uint32_t swap = a;
+            a = b, b = swap;
+        }
+        const unsigned carry_in = vop3 ? o.src[2] : SGPR_VCC;
+        if (carry_in >= SGPR_COUNT) {
+            fail(t, "%s: a carry-in that is not an SGPR pair", name);
+            return;
+        }
+        const uint32_t in = value(t, SPV_OP_SELECT, t_uint(t), 3, load(t, t_bool(t), mask_variable(t, carry_in)), konst(t, 1), konst(t, 0));
+        const int add = !strcmp(name, "v_addc_u32");
+        const uint32_t wide_b = value(t, SPV_OP_I_ADD, t_ulong(t), 2, widen(t, b), widen(t, in));
+        uint32_t r, out;
+        if (add) {
+            const uint32_t sum = value(t, SPV_OP_I_ADD, t_ulong(t), 2, widen(t, a), wide_b);
+            r = value(t, SPV_OP_U_CONVERT, t_uint(t), 1, sum);
+            out = value(t, SPV_OP_U_GREATER_THAN, t_bool(t), 2, sum, widen(t, konst(t, 0xffffffffu)));
+        } else {
+            r = value(t, SPV_OP_I_SUB, t_uint(t), 2, value(t, SPV_OP_I_SUB, t_uint(t), 2, a, b), in);
+            out = value(t, SPV_OP_U_GREATER_THAN, t_bool(t), 2, wide_b, widen(t, a));
+        }
+        write_vgpr(t, o.dst, r);
+        write_vector_lane_bit(t, vop3 ? o.sdst : SGPR_VCC, out);
+    } else if (!strcmp(name, "v_mul_i32_i24") || !strcmp(name, "v_mul_u32_u24") || !strcmp(name, "v_mad_i32_i24") ||
+               !strcmp(name, "v_mad_u32_u24")) {
+        /* The low 32 bits of the 24-bit operands' product (plus src2 for mad). */
+        const int is_signed = strstr(name, "_i24") != NULL, mad = !strncmp(name, "v_mad", 5);
+        if (o.abs || o.neg || o.clamp || o.omod) fail(t, "%s: modifiers on an integer operation", name);
+        uint32_t r = value(t, SPV_OP_I_MUL, t_uint(t), 2, low_24(t, source(t, o.src[0], ins), is_signed),
+                           low_24(t, source(t, o.src[1], ins), is_signed));
+        if (mad) r = value(t, SPV_OP_I_ADD, t_uint(t), 2, r, source(t, o.src[2], ins));
+        write_vgpr(t, o.dst, r);
+    } else if (!strcmp(name, "v_bfe_u32") || !strcmp(name, "v_bfe_i32")) {
+        /* src1[4:0] the offset, src2[4:0] the width */
+        write_vgpr(t, o.dst, bit_field(t, source(t, o.src[0], ins), shift_amount(t, source(t, o.src[1], ins)),
+                                       shift_amount(t, source(t, o.src[2], ins)), !strcmp(name, "v_bfe_i32")));
+    } else if (!strcmp(name, "v_bfm_b32")) {
+        /* ((1 << src0[4:0]) - 1) << src1[4:0] */
+        const uint32_t ones = value(t, SPV_OP_I_SUB, t_uint(t), 2,
+                                    value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, konst(t, 1), shift_amount(t, source(t, o.src[0], ins))),
+                                    konst(t, 1));
+        write_vgpr(t, o.dst, value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, ones, shift_amount(t, source(t, o.src[1], ins))));
+    } else if (is_transcendental(name)) {
+        write_float(t, &o, transcendental(t, name, float_source(t, &o, 0, ins)), ins);
     } else if (!strcmp(name, "v_cndmask_b32")) {
         /* vcc (or VOP3's src2 pair) ? src1 : src0 */
         const unsigned mask = vop3 ? o.src[2] : SGPR_VCC;
@@ -640,6 +762,34 @@ static void scalar_instruction(translator *t, const uint32_t *w, const gcn_instr
         write_sgpr(t, sdst, r, ins);
     } else if ((compare = scalar_comparison(name))) {
         set_scc(t, value(t, compare, t_bool(t), 2, source(t, ssrc0, ins), source(t, ssrc1, ins)));
+    } else if (ins->encoding == GCN_SOPK && !strncmp(name, "s_cmpk_", strlen("s_cmpk_"))) {
+        /* SCC = sdst's register compared with the 16-bit constant: zero-extended for the _u32
+           forms, sign-extended for _i32 (the ranges LLVM's GFX7 assembler accepts). */
+        char plain[24];
+        snprintf(plain, sizeof plain, "s_cmp_%s", name + strlen("s_cmpk_"));
+        const uint16_t k_compare = scalar_comparison(plain);
+        const uint32_t k = strstr(name, "_i32") ? (uint32_t)(int32_t)(int16_t)(w[0] & 0xffff) : (w[0] & 0xffff);
+        if (!k_compare || sdst >= SGPR_VCC) fail(t, "%s is not translated yet", name);
+        else set_scc(t, value(t, k_compare, t_bool(t), 2, load(t, t_uint(t), sgpr(t, sdst)), konst(t, k)));
+    } else if (ins->encoding == GCN_SOP2 && (!strcmp(name, "s_min_i32") || !strcmp(name, "s_min_u32") ||
+                                             !strcmp(name, "s_max_i32") || !strcmp(name, "s_max_u32"))) {
+        /* D = (S0 < S1 for min, S0 > S1 for max) ? S0 : S1, and SCC is that comparison: equal
+           operands give S1 and SCC 0, as the manual's formula reads. */
+        const int is_signed = strstr(name, "_i32") != NULL, is_min = !strncmp(name, "s_min", 5);
+        const uint32_t a = source(t, ssrc0, ins), b = source(t, ssrc1, ins);
+        const uint16_t op = is_min ? (is_signed ? SPV_OP_S_LESS_THAN : SPV_OP_U_LESS_THAN)
+                                   : (is_signed ? SPV_OP_S_GREATER_THAN : SPV_OP_U_GREATER_THAN);
+        const uint32_t first = value(t, op, t_bool(t), 2, a, b);
+        write_sgpr(t, sdst, value(t, SPV_OP_SELECT, t_uint(t), 3, first, a, b), ins);
+        set_scc(t, first);
+    } else if (ins->encoding == GCN_SOP2 && (!strcmp(name, "s_bfe_u32") || !strcmp(name, "s_bfe_i32"))) {
+        /* S1[4:0] the offset, S1[22:16] the width; SCC = result is not zero */
+        const uint32_t control = source(t, ssrc1, ins);
+        const uint32_t width = value(t, SPV_OP_BITWISE_AND, t_uint(t), 2,
+                                     value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, control, konst(t, 16)), konst(t, 0x7f));
+        const uint32_t r = bit_field(t, source(t, ssrc0, ins), shift_amount(t, control), width, !strcmp(name, "s_bfe_i32"));
+        write_sgpr(t, sdst, r, ins);
+        set_scc(t, value(t, SPV_OP_I_NOT_EQUAL, t_bool(t), 2, r, konst(t, 0)));
     } else if (!strcmp(name, "s_cselect_b32")) {
         write_sgpr(t, sdst, value(t, SPV_OP_SELECT, t_uint(t), 3, load(t, t_bool(t), t->scc), source(t, ssrc0, ins),
                                   source(t, ssrc1, ins)), ins);
@@ -694,8 +844,6 @@ static uint32_t dwords_named(const char *name)
     const char *x = strstr(name, "dwordx");
     return x ? (uint32_t)atoi(x + strlen("dwordx")) : 1;
 }
-
-static uint32_t widen(translator *t, uint32_t bits) { return value(t, SPV_OP_U_CONVERT, t_ulong(t), 1, bits); }
 
 /* The 48-bit address in two SGPRs: low word, then the high bits' low 16. */
 static uint32_t address_in(translator *t, unsigned first_sgpr)
