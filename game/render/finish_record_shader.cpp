@@ -36,11 +36,10 @@ void finish_dirty_pass(render::ShaderCleanupContext *commands, bool counted, boo
 }
 }
 
-extern "C" void bb_render_finish_record_shader(render::RecordShaderState *shader,
+extern "C" void bb_render_finish_record_shader(render::ShaderCleanupState *state,
                                                 render::PacketBuffer *commands)
 {
     using namespace render;
-    auto *state = reinterpret_cast<ShaderCleanupState *>(shader);
     auto *context = reinterpret_cast<ShaderCleanupContext *>(commands);
     const uint32_t dirty = state->dirty_flags.get();
     const bool counted = (dirty & counted_event_mask) != 0;
