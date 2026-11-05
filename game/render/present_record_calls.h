@@ -3,8 +3,13 @@
 // Keep them separate from shared object views and inline short source forms.
 #pragma once
 
+#include "command_packets.h"
 #include "present_record_consumer.h"
 
+namespace render {
+struct ShaderPrimaryStateView;
+struct ShaderPrimaryDescriptorView;
+}
 namespace render::record_calls {
 RT_ORIGINAL(0x01486d60, record_classification_byte, uint8_t(PresentRecordView *));
 RT_ORIGINAL(0x01486d50, record_secondary_byte, uint8_t(PresentRecordView *));
@@ -28,14 +33,15 @@ RT_ORIGINAL(0x014853f0, set_record_register_enabled, void(RecordRegisterState *,
 RT_ORIGINAL(0x01473090, emit_record_register_a,
             void(RecordCommandBuffer *, uint32_t slot, uint32_t value));
 RT_ORIGINAL(0x01472fd0, set_cb_target_mask, void(RecordCommandBuffer *, uint32_t mask));
-RT_ORIGINAL(0x014733a0, emit_record_register_c, void(RecordCommandBuffer *, uint32_t value));
-RT_ORIGINAL(0x01473400, emit_record_register_b, void(RecordCommandBuffer *, uint32_t value));
-RT_ORIGINAL(0x02ad1e20, select_record_preparation,
-            void(RecordPreparationState *, RecordCommandBuffer *, uint32_t slot));
+RT_ORIGINAL(0x014733a0, set_db_depth_control, void(PacketBuffer *, uint32_t value));
+RT_ORIGINAL(0x01473400, set_db_stencil_control, void(PacketBuffer *, uint32_t value));
+RT_ORIGINAL(0x02ad1e20, select_preparation,
+            void(RecordPreparationState *, RecordCommandBuffer *, const void *record));
 RT_ORIGINAL(0x01473320, set_cb_color_control,
             void(RecordCommandBuffer *, uint32_t mode, uint32_t value));
 RT_ORIGINAL(0x02ace1e0, configure_record_shader,
-            void(RecordShaderState *, RecordCommandBuffer *, SharedPresentDescriptor *, SharedPresentDescriptor *optional_descriptor));
+            void(ShaderPrimaryStateView *, PacketBuffer *, const ShaderPrimaryDescriptorView *,
+                 const ShaderPrimaryDescriptorView *optional_descriptor));
 RT_ORIGINAL(0x02ad1e10, bind_prepared_record,
             void(RecordPreparationState *, RecordCommandBuffer *, uint32_t slot, PresentRecordView *));
 RT_ORIGINAL(0x01473fe0, set_vgt_primitive_type, void(RecordCommandBuffer *, uint32_t mode));
@@ -46,8 +52,8 @@ RT_ORIGINAL(0x01486520, set_present_record_range,
             void(PresentRecordView *, uintptr_t first, uint32_t last));
 RT_ORIGINAL(0x014741b0, emit_draw_index_auto, void(RecordCommandBuffer *, uint32_t mode));
 RT_ORIGINAL(0x02acfc20, finish_record_shader, void(RecordShaderState *, RecordCommandBuffer *));
-RT_ORIGINAL(0x02ad1e30, clear_prepared_record,
+RT_ORIGINAL(0x02ad1e30, restore_prepared_record_from_bank,
             void(RecordPreparationState *, RecordCommandBuffer *, uint32_t slot));
-RT_ORIGINAL(0x02ad1e70, finish_record_preparation, void(RecordPreparationState *, RecordCommandBuffer *));
+RT_ORIGINAL(0x02ad1e70, restore_prepared_selector_from_bank, void(RecordPreparationState *, RecordCommandBuffer *));
 
 }  // namespace render::record_calls

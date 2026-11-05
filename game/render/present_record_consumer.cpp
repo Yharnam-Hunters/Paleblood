@@ -68,11 +68,11 @@ void configure_record_registers(PresentRecordContext *context, PresentRecordView
     set_cb_target_mask(commands, record_mask);
     context->mask_b560 = record_mask;
     context->token_b6e8 = token_a;
-    emit_record_register_c(commands, c.word);
+    set_db_depth_control(reinterpret_cast<PacketBuffer *>(commands), c.word);
     context->register_b5a0 = c.word;
     const uint64_t token_b = record_cache_token_b.get();
     context->token_b6f0 = token_b;
-    emit_record_register_b(commands, b.word);
+    set_db_stencil_control(reinterpret_cast<PacketBuffer *>(commands), b.word);
     context->register_b5a4 = b.word;
     context->token_b6f0 = token_b;
 }
@@ -101,9 +101,12 @@ extern "C" void bb_render_present_record_consume(render::PresentRecordContext *c
     auto *preparation = &context->preparation;
     RecordRegisterState a, b, c;
     configure_record_registers(context, record, a, b, c);
-    select_record_preparation(preparation, commands, 0);
+    select_preparation(preparation, commands, 0);
     set_cb_color_control(commands, source_state_mode, state_mode_value);
-    configure_record_shader(shader, commands, shared_present_descriptor.address(), 0);
+    // The context embeds shader state and commands; the primary pass reads its descriptor view.
+    configure_record_shader(reinterpret_cast<ShaderPrimaryStateView *>(shader),
+                            reinterpret_cast<PacketBuffer *>(commands),
+                            reinterpret_cast<const ShaderPrimaryDescriptorView *>(shared_present_descriptor.address()), nullptr);
     for (uint32_t slot = 1; slot < prepared_slot_count; ++slot)
         bind_prepared_record(preparation, commands, slot, nullptr);
     set_vgt_primitive_type(commands, record_pipeline_mode);
@@ -129,8 +132,8 @@ extern "C" void bb_render_present_record_consume(render::PresentRecordContext *c
     context->sentinel_b540 = std::numeric_limits<uint32_t>::max();
     set_cb_color_control(commands, restored_state_mode, state_mode_value);
     for (uint32_t slot = 0; slot < prepared_slot_count; ++slot)
-        clear_prepared_record(preparation, commands, slot);
-    finish_record_preparation(preparation, commands);
+        restore_prepared_record_from_bank(preparation, commands, slot);
+    restore_prepared_selector_from_bank(preparation, commands);
     context->mode_b520 = record_pipeline_mode;
     context->pending_b518 = 0;
     context->sentinel_b524 = std::numeric_limits<uint32_t>::max();
