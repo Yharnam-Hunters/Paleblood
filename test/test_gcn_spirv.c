@@ -110,12 +110,18 @@ int main(void)
     translates(PROGRAM(vector_loop), "vector_loop");
     translates(PROGRAM(compare_exec), "compare_exec");
     translates(PROGRAM(masked_store), "masked_store");
+    translates(PROGRAM(typed_buffers), "typed_buffers");
 
     uint32_t *spirv = NULL;
     size_t words = 0;
     char error[256] = "";
     CHECK(gcn_translate_compute(PROGRAM(unsupported), &layout, &spirv, &words, error, sizeof error) == -1);
     CHECK(spirv == NULL && strstr(error, "v_interp_p1_f32") != NULL);
+
+    CHECK(gcn_translate_compute(PROGRAM(typed_unorm), &layout, &spirv, &words, error, sizeof error) == -1);
+    CHECK(spirv == NULL && strstr(error, "dfmt 10 nfmt 0") != NULL);
+    CHECK(gcn_translate_compute(PROGRAM(typed_too_many_components), &layout, &spirv, &words, error, sizeof error) == -1);
+    CHECK(spirv == NULL && strstr(error, "dfmt 4 nfmt 7") != NULL);
 
     const uint32_t no_end[] = {0x7e020302}; /* v_mov_b32 v1, v2, and no s_endpgm */
     CHECK(gcn_translate_compute(no_end, 1, &layout, &spirv, &words, error, sizeof error) == -1);

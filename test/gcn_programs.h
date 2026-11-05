@@ -158,4 +158,31 @@ static const uint32_t masked_store[] = {
     0xbf810000, /*  8: s_endpgm */
 };
 
+/* Typed loads and stores of 32-bit float data, indexed by lane (idxen, the descriptors' strides:
+   16 bytes in, 48 out). Per lane i, from in record i (x, y, z, w): out record i holds x, y, z, w,
+   then y, then z, w, then x, y, z. */
+static const uint32_t typed_buffers[] = {
+    0xebf32000, 0x80000100, /* tbuffer_load_format_xyzw v[1:4], v0, s[0:3], 0 format:[BUF_DATA_FORMAT_32_32_32_32,BUF_NUM_FORMAT_FLOAT] idxen */
+    0xeba02004, 0x80000500, /* tbuffer_load_format_x v5, v0, s[0:3], 0 format:[BUF_DATA_FORMAT_32,BUF_NUM_FORMAT_FLOAT] idxen offset:4 */
+    0xebd92008, 0x80000600, /* tbuffer_load_format_xy v[6:7], v0, s[0:3], 0 format:[BUF_DATA_FORMAT_32_32,BUF_NUM_FORMAT_FLOAT] idxen offset:8 */
+    0xebea2000, 0x80000800, /* tbuffer_load_format_xyz v[8:10], v0, s[0:3], 0 format:[BUF_DATA_FORMAT_32_32_32,BUF_NUM_FORMAT_FLOAT] idxen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xebf72000, 0x80010100, /* tbuffer_store_format_xyzw v[1:4], v0, s[4:7], 0 format:[BUF_DATA_FORMAT_32_32_32_32,BUF_NUM_FORMAT_FLOAT] idxen */
+    0xeba42010, 0x80010500, /* tbuffer_store_format_x v5, v0, s[4:7], 0 format:[BUF_DATA_FORMAT_32,BUF_NUM_FORMAT_FLOAT] idxen offset:16 */
+    0xebdd2014, 0x80010600, /* tbuffer_store_format_xy v[6:7], v0, s[4:7], 0 format:[BUF_DATA_FORMAT_32_32,BUF_NUM_FORMAT_FLOAT] idxen offset:20 */
+    0xebee201c, 0x80010800, /* tbuffer_store_format_xyz v[8:10], v0, s[4:7], 0 format:[BUF_DATA_FORMAT_32_32_32,BUF_NUM_FORMAT_FLOAT] idxen offset:28 */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Typed loads the translator refuses: a converted format (8_8_8_8 unorm), and more components
+   than the format has. */
+static const uint32_t typed_unorm[] = {
+    0xe8532000, 0x80000100, /* tbuffer_load_format_xyzw v[1:4], v0, s[0:3], 0 format:[BUF_DATA_FORMAT_8_8_8_8] idxen */
+    0xbf810000, /* s_endpgm */
+};
+static const uint32_t typed_too_many_components[] = {
+    0xeba12000, 0x80000100, /* tbuffer_load_format_xy v[1:2], v0, s[0:3], 0 format:[BUF_DATA_FORMAT_32,BUF_NUM_FORMAT_FLOAT] idxen */
+    0xbf810000, /* s_endpgm */
+};
+
 #endif

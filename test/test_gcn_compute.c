@@ -243,6 +243,21 @@ int main(void)
     CHECK(run(&g, masked_store, sizeof masked_store / sizeof masked_store[0], user) == 0);
     for (int i = 0; i < LANES; i++) CHECK(out_words[i] == (i < 20 ? 0x55u : 0xaaaaaaaau));
 
+    /* Typed buffers, indexed by lane: records of 16 bytes in, 48 out. */
+    enum { IN_STRIDE = 16, OUT_STRIDE = 48, OUT_RECORD_WORDS = OUT_STRIDE / 4 };
+    uint32_t typed_user[USER_DATA_WORDS];
+    memcpy(typed_user, user, sizeof typed_user);
+    typed_user[1] |= IN_STRIDE << 16, typed_user[5] |= OUT_STRIDE << 16;
+    for (int i = 0; i < LANES * 4; i++) in_words[i] = 0x1000u + (uint32_t)i;
+    memset(out.mapped, 0, BUFFER_BYTES);
+    CHECK(run(&g, typed_buffers, sizeof typed_buffers / sizeof typed_buffers[0], typed_user) == 0);
+    for (int i = 0; i < LANES; i++) {
+        const uint32_t *record = in_words + i * 4, *lane = out_words + i * OUT_RECORD_WORDS;
+        const uint32_t expected[] = {record[0], record[1], record[2], record[3], record[1], record[2], record[3],
+                                     record[0], record[1], record[2]};
+        for (int k = 0; k < 10; k++) CHECK(lane[k] == expected[k]);
+    }
+
     if (failures) fprintf(stderr, "%d failure(s)\n", failures);
     vkDeviceWaitIdle(g.device);
     return failures != 0;

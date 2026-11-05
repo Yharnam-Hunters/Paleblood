@@ -11,6 +11,8 @@
      SOPK  simm16[15:0] sdst[22:16]                SMRD  offset[7:0] imm[8] sbase[14:9] sdst[21:15]
      MUBUF offset[11:0] offen[12] idxen[13] addr64[15] lds[16], and vaddr[7:0] vdata[15:8]
            srsrc[20:16] tfe[23] soffset[31:24]
+     MTBUF as MUBUF, but bits 18:16 are the opcode and the format is in the instruction: dfmt[22:19]
+           (data format) nfmt[25:23] (number format)
    Source operands: 0-103 SGPRs, 106 VCC, 124 M0, 128-192 the integers 0-64, 193-208 the
    integers -1 to -16, 240-247 the floats 0.5, -0.5, 1, -1, 2, -2, 4, -4, 255 a literal, 256-511
    VGPRs. A buffer descriptor's first two words hold the base address (bits 31:0, then 47:32 in the
@@ -675,16 +677,65 @@ static void scalar_memory(translator *t, const uint32_t *w, const gcn_instructio
     for (uint32_t i = 0; i < dwords_named(name); i++) write_sgpr(t, sdst + i, load_dword(t, dword_pointer(t, base, byte_offset, i)), ins);
 }
 
+/* Typed buffer formats (MTBUF dfmt and nfmt; the numbers are those LLVM's GFX7 assembler gives
+   the formats' names). Only 32-bit float data is translated: its components are whole dwords,
+   moved as they are, with no conversion. The game's typed loads and stores all use it. */
+enum { DFMT_32 = 4, DFMT_32_32 = 11, DFMT_32_32_32 = 13, DFMT_32_32_32_32 = 14, NFMT_FLOAT = 7 };
+
+static uint32_t float_format_components(unsigned dfmt)
+{
+    switch (dfmt) {
+    case DFMT_32: return 1;
+    case DFMT_32_32: return 2;
+    case DFMT_32_32_32: return 3;
+    case DFMT_32_32_32_32: return 4;
+    default: return 0;
+    }
+}
+
+/* The components a typed access names: "_x" 1, "_xy" 2, "_xyz" 3, "_xyzw" 4. */
+static uint32_t components_named(const char *name)
+{
+    const char *suffix = strrchr(name, '_');
+    return suffix ? (uint32_t)strlen(suffix + 1) : 0;
+}
+
+/* The dwords a buffer access moves, or 0 (after failing) for one not translated. */
+static uint32_t buffer_access_dwords(translator *t, const uint32_t *w, const gcn_instruction *ins, int *load_op)
+{
+    const char *name = ins->name;
+    if (ins->encoding == GCN_MUBUF) {
+        *load_op = !strncmp(name, "buffer_load_dword", strlen("buffer_load_dword"));
+        if (*load_op || !strncmp(name, "buffer_store_dword", strlen("buffer_store_dword"))) return dwords_named(name);
+        fail(t, "%s (%s) is not translated yet", name, gcn_encoding_name(ins->encoding));
+        return 0;
+    }
+    *load_op = !strncmp(name, "tbuffer_load_format_", strlen("tbuffer_load_format_"));
+    if (!*load_op && strncmp(name, "tbuffer_store_format_", strlen("tbuffer_store_format_"))) {
+        fail(t, "%s (%s) is not translated yet", name, gcn_encoding_name(ins->encoding));
+        return 0;
+    }
+    const unsigned dfmt = (w[0] >> 19) & 0xf, nfmt = (w[0] >> 23) & 0x7;
+    const uint32_t components = components_named(name), available = nfmt == NFMT_FLOAT ? float_format_components(dfmt) : 0;
+    /* An access with more components than the format has fills the rest with defaults, which are
+       not established here. */
+    if (!available || components > available) {
+        fail(t, "%s: format dfmt %u nfmt %u is not translated yet", name, dfmt, nfmt);
+        return 0;
+    }
+    return components;
+}
+
+/* MUBUF buffer_load/store_dword* and MTBUF tbuffer_load/store_format_* on 32-bit float data. */
 static void buffer_memory(translator *t, const uint32_t *w, const gcn_instruction *ins)
 {
     const char *name = ins->name;
-    const int load_op = !strncmp(name, "buffer_load_dword", strlen("buffer_load_dword"));
-    const int store_op = !strncmp(name, "buffer_store_dword", strlen("buffer_store_dword"));
-    if (!load_op && !store_op) {
-        fail(t, "%s (%s) is not translated yet", name, gcn_encoding_name(ins->encoding));
-        return;
-    }
-    const unsigned offen = (w[0] >> 12) & 1, idxen = (w[0] >> 13) & 1, addr64 = (w[0] >> 15) & 1, lds = (w[0] >> 16) & 1;
+    int load_op = 0;
+    const uint32_t dwords = buffer_access_dwords(t, w, ins, &load_op);
+    if (!dwords) return;
+    /* MUBUF's lds bit is part of MTBUF's opcode. */
+    const unsigned lds = ins->encoding == GCN_MUBUF ? (w[0] >> 16) & 1 : 0;
+    const unsigned offen = (w[0] >> 12) & 1, idxen = (w[0] >> 13) & 1, addr64 = (w[0] >> 15) & 1;
     const unsigned vaddr = w[1] & 0xff, vdata = (w[1] >> 8) & 0xff, srsrc = ((w[1] >> 16) & 0x1f) * 4;
     const unsigned tfe = (w[1] >> 23) & 1, soffset = w[1] >> 24;
     if (addr64 || lds || tfe) {
@@ -705,7 +756,7 @@ static void buffer_memory(translator *t, const uint32_t *w, const gcn_instructio
     }
     const uint32_t base = address_in(t, srsrc);
     const uint32_t merge = begin_if(t, exec_bit(t)); /* only active lanes touch memory */
-    for (uint32_t i = 0; i < dwords_named(name); i++) {
+    for (uint32_t i = 0; i < dwords; i++) {
         const uint32_t pointer = dword_pointer(t, base, offset, i);
         if (load_op) write_vgpr(t, vdata + i, load_dword(t, pointer));
         else store_dword(t, pointer, load(t, t_uint(t), vgpr(t, vdata + i)));
@@ -804,7 +855,7 @@ static void translate_instruction(translator *t, const uint32_t *code, const dec
     case GCN_VOP1: case GCN_VOP2: case GCN_VOPC: case GCN_VOP3: vector_instruction(t, w, ins); break;
     case GCN_SOP1: case GCN_SOP2: case GCN_SOPK: case GCN_SOPC: case GCN_SOPP: scalar_instruction(t, w, ins); break;
     case GCN_SMRD: scalar_memory(t, w, ins); break;
-    case GCN_MUBUF: buffer_memory(t, w, ins); break;
+    case GCN_MUBUF: case GCN_MTBUF: buffer_memory(t, w, ins); break;
     default: fail(t, "%s (%s) is not translated yet", ins->name, gcn_encoding_name(ins->encoding));
     }
 }
