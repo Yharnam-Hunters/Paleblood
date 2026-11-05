@@ -176,6 +176,35 @@ Instead:
      - **Clears** are ordinary draws with a clearing pixel shader on this GPU, so they need no
        path of their own. The depth and stencil clear values are context registers
        (`DB_DEPTH_CLEAR`, `DB_STENCIL_CLEAR`; already replaced, #321-#327).
+   - **The shader register blocks**, found in the header of each shader file in the game's
+     archive (`.vpo` vertex, `.ppo` pixel). Each word was identified by values worked out from
+     the shader's own code (local counts, no game data in the repository):
+     - **Vertex (7 words from header offset `0x3c`):** `SPI_SHADER_PGM_LO_VS`, `PGM_HI_VS`,
+       `PGM_RSRC1_VS`, `PGM_RSRC2_VS`, `SPI_VS_OUT_CONFIG`, `SPI_SHADER_POS_FORMAT`,
+       `PA_CL_VS_OUT_CNTL`.
+       - The position format's non-zero fields match the exported positions in all 7,564
+         vertex shaders that export one.
+       - The export count matches the exported parameters in all but 5.
+       - `RSRC1`'s register count covers every exported register.
+       - In the file, the program address words hold placeholders (a small number, then
+         `0xffffffff`); the loaded shader's address replaces them.
+     - **What `pos1` carries:** in every shader that exports it (3,496), `PA_CL_VS_OUT_CNTL` is
+       `0x400003`: clip distances 0 and 1 in the first clip/cull-distance vector. The extra
+       position exports follow the order the register defines (the misc vector, then distance
+       vectors 0 and 1), so `pos1` here is two clip distances.
+     - **Pixel (12 words from `0x3c`):** `SPI_SHADER_PGM_LO_PS`, `PGM_HI_PS`, `PGM_RSRC1_PS`,
+       `PGM_RSRC2_PS`, `SPI_SHADER_Z_FORMAT`, `SPI_SHADER_COL_FORMAT`, `SPI_PS_INPUT_ENA`,
+       `SPI_PS_INPUT_ADDR`, `SPI_PS_IN_CONTROL`, `SPI_BARYC_CNTL`, `DB_SHADER_CONTROL`,
+       `CB_SHADER_MASK`.
+       - The colour format and shader mask match the exported targets in all 2,796 pixel
+         shaders that export colour.
+       - `NUM_INTERP` matches the attributes the code reads in 2,628 of them.
+       - Every one enables the perspective-centre barycentrics first, so they arrive in `v0`
+         and `v1`.
+       - The inputs: 1,678 use only those barycentrics; 1,111 add the front-face flag; nine
+         also read the pixel position.
+     - **Still to confirm at run time:** that the game passes these same blocks to
+       `sceGnmSetVsShader` and `sceGnmSetPsShader`, with the code's address filled in.
    - **How the hooks attach:** the library's functions are being decompiled like the rest of the
      game, as replacements verified to write exactly the original packets. The renderer leaves
      those packets alone, so verification still holds. Each of these replacements also makes one
