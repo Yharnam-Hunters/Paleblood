@@ -196,6 +196,13 @@ render_read_present_pool_counter,edge,,18,18,0,0,1ef235dcff31de42,2026-11-03
 render_read_record_mapping_word,edge,,224,224,0,0,68ea5b3aae2f9be4,2026-11-04
 render_record_apply_parameter_tuple,edge,,1050,1050,0,0,5cc7672932429aef,2026-11-04
 render_record_auxiliary_predicate,edge,,64,64,0,0,ddfae0976d12bebd,2026-11-04
+render_record_set_first_auxiliary_flag,edge,,30,30,0,0,b0021f531a97afae,2026-11-04
+render_record_set_second_auxiliary_flag,edge,,30,30,0,0,dd95c587154dadcb,2026-11-04
+render_record_set_word_04_repeated_field,edge,,30,30,0,0,a2b59917091d1cc7,2026-11-04
+render_record_set_word_08_low22,edge,,30,30,0,0,42fdf5c543a65f83,2026-11-04
+render_record_set_word_0c_fields,edge,,30,30,0,0,4c3fa39ee7b3d7cf,2026-11-04
+render_record_set_word_14_second_low5_field,edge,,30,30,0,0,d6cec91975ffe1e5,2026-11-04
+render_record_set_word_28_low22,edge,,30,30,0,0,7a5ca56128e2b46e,2026-11-04
 render_record_tuple_alternate_classification,edge,,28,28,0,0,c3a9a383955e9e76,2026-11-04
 render_record_tuple_classification_group,edge,,20,20,0,0,317b9e3cf63cc18e,2026-11-04
 render_record_tuple_parameter_supported,edge,,47,47,0,0,9c55807eed261c9c,2026-11-04

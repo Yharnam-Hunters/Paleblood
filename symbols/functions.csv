@@ -42,6 +42,13 @@ address,size,name,system,status,notes
 0x01471310,544,render_pack_record_mapping_word,render,edge-verified,Pack numeric mapping fields with priority masks and full-width mode handling; return a zero-extended DWORD.
 0x01477b30,172,render_command_emit_counter_operation,render,edge-verified,Seven-word counter packet; callback low byte gates writes; label range selects masked encoding Synthetic edges pass; no recordings.
 0x014784a0,82,render_command_prepare_submission,render,edge-verified,Reserve 64 command words; callback low byte gates two marker stores and cursor advance Synthetic edges pass; no recordings.
+0x01486520,31,render_record_set_word_0c_fields,render,edge-verified,Store two masked fields; return masked old word. No constructor add/subtract.
+0x014866e0,33,render_record_set_word_04_repeated_field,render,edge-verified,Duplicate supplied low 11 bits; return preserved old word.
+0x01486710,20,render_record_set_word_08_low22,render,edge-verified,Replace this word's low 22 bits and return the preserved old upper bits.
+0x01486760,20,render_record_set_word_14_second_low5_field,render,edge-verified,Replace the second five-bit field and return the preserved old word bits.
+0x014867c0,21,render_record_set_first_auxiliary_flag,render,edge-verified,Clear only bit 13 then OR full input byte shifted13; return preserved old word.
+0x014867e0,21,render_record_set_second_auxiliary_flag,render,edge-verified,Clear only bit 14 then OR full input byte shifted14; return preserved old word.
+0x01486800,20,render_record_set_word_28_low22,render,edge-verified,Replace this word's low 22 bits and return the preserved old upper bits.
 0x01486cf0,38,render_read_record_mapping_word,render,edge-verified,Read one unaligned mapping DWORD and delegate three extracted fields to the original encoder. Full return is zero-extended.
 0x0149c850,672,render_record_apply_parameter_tuple,render,edge-verified,Select one output code from normalization tuple; ordered overrides and rejection preserve output.
 0x0149e570,279,render_calculate_second_auxiliary,render,edge-verified,Calculate the second auxiliary layout through two ordered unit admissions and wrapped alignment. Publish its four optional size and alignment outputs in 8/4/4/4-byte order.
