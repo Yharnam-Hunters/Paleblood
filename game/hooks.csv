@@ -67,6 +67,7 @@ address,replacement,system,returns
 0x0149ea70,bb_render_record_tuple_alternate_classification,render,i32
 0x016efd00,bb_event_emk_add,event,void
 0x017cfcc0,bb_event_flag_write,event,void
+0x0183ac60,bb_camera_update_follow,camera,void
 0x0183fad0,bb_camera_follow_pitch,camera,f32
 0x0183fb20,bb_camera_follow_yaw,camera,f32
 0x01972900,bb_input_pad_step_01972900,input,void
