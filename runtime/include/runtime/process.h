@@ -95,7 +95,12 @@ void rt_thread_keys_exit(void *stack_top);
 
 /* Stops the process with a message naming the system function: behaviour the runtime does not
    know is never guessed. */
-_Noreturn void rt_fatal(const char *function, const char *message);
+#ifdef __cplusplus
+[[noreturn]]
+#else
+_Noreturn
+#endif
+void rt_fatal(const char *function, const char *message);
 
 /* Called by rt_fatal before the process stops, when set: the boot harness records the stop as the
    run's outcome and never returns. If it does return, the process stops as usual. */
