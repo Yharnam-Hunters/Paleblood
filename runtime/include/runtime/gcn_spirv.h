@@ -3,9 +3,10 @@
 #define RUNTIME_GCN_SPIRV_H
 
 /* The shader translator (runtime/renderer/gcn_spirv.c): GCN (GFX7) code to SPIR-V, for the
-   renderer (docs/RENDERER.md). This first part translates compute shaders made of straight-line
-   code: vector and scalar arithmetic, compares and selects, and buffer and constant loads and
-   stores. Anything else stops translation with the instruction's name in the error.
+   renderer (docs/RENDERER.md): compute, vertex and pixel shaders, with branches and loops. It
+   covers vector and scalar arithmetic, compares and selects, buffer and constant loads and
+   stores, and the vertex and pixel stages' inputs and outputs. Anything else stops translation
+   with the instruction's name in the error.
 
    How GCN maps onto SPIR-V: one invocation per lane. Registers are function variables holding
    32-bit words (floats are their bits). A compare or carry result, which GCN writes as one bit per
@@ -34,6 +35,28 @@ typedef struct {
    with v0 = i (x), v1 = y and v2 = z. */
 int gcn_translate_compute(const uint32_t *code, size_t dwords, const gcn_compute_layout *layout,
                           uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size);
+
+/* A vertex shader (GCN's hardware VS stage). Its only input is the vertex index; the shader's
+   input settings say which VGPR the hardware puts it in. Exports: pos0 becomes the position,
+   param n the output at location n. */
+typedef struct {
+    unsigned user_sgprs;
+    unsigned vertex_index_vgpr;
+} gcn_vertex_layout;
+
+int gcn_translate_vertex(const uint32_t *code, size_t dwords, const gcn_vertex_layout *layout,
+                         uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size);
+
+/* A pixel shader. Its only inputs are the perspective-correct barycentrics at the pixel's centre
+   (i, then j in the next VGPR), which v_interp reads; attribute n is the input at location n,
+   interpolated by the GPU. Exports: mrt n becomes the output at location n. */
+typedef struct {
+    unsigned user_sgprs;
+    unsigned barycentric_vgpr;
+} gcn_pixel_layout;
+
+int gcn_translate_pixel(const uint32_t *code, size_t dwords, const gcn_pixel_layout *layout,
+                        uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size);
 
 #ifdef __cplusplus
 }
