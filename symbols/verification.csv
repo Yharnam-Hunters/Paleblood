@@ -240,7 +240,7 @@ render_yebis_get_recursive_sample_parameters,edge,,23,23,0,0,6e6f0aa41d5607ce,20
 render_yebis_get_recursive_sample_parameters,edge,30,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,60,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,uncapped,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
-render_managed_present_capacity,edge,,7,7,0,0,355545379382f933,2026-11-04
-render_process_present_finish_item,edge,,8,8,0,0,2fbdd9af86c7e780,2026-11-04
-render_release_present_finish_node,edge,,6,6,0,0,3460c7400667276e,2026-11-04
-render_submit_present_finish_snapshot,edge,,9,9,0,0,8e149d994a6db1b5,2026-11-04
+render_managed_present_capacity,edge,,10,10,0,0,ae3245c57a5bcddb,2026-11-05
+render_process_present_finish_item,edge,,8,8,0,0,2fbdd9af86c7e780,2026-11-05
+render_release_present_finish_node,edge,,7,7,0,0,eff2f4f6d8a09585,2026-11-05
+render_submit_present_finish_snapshot,edge,,12,12,0,0,319f26a9ba354122,2026-11-05
