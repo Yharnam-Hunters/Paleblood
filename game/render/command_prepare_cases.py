@@ -8,12 +8,13 @@ import json
 from pathlib import Path
 import struct
 import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools'))
+from harness import PAGE, SANDBOX  # noqa: E402
+
 MASK64=(1<<64)-1
-# Literal integer limits in the large-span cases are bound to the verifier's
-# fixed buffer mapping. The native controller checks this layout before use.
-FIXTURE_SANDBOX = 0x900000000
-FIXTURE_PAGE_BYTES = 4096
-FIXTURE_PACKET_ADDRESS = FIXTURE_SANDBOX + 2 * FIXTURE_PAGE_BYTES
+
+# The packet follows the prefix buffer and its guard page in the harness mapping.
+FIXTURE_PACKET_ADDRESS = SANDBOX + 2 * PAGE
 
 def word(value): return struct.pack('<I',value&0xffffffff).hex()
 def qword(value): return struct.pack('<Q',value&MASK64).hex()
