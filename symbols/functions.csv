@@ -40,6 +40,8 @@ address,size,name,system,status,notes
 0x0143f9f0,18,frame_timing_task_set_frame_value_0143f9f0,frame_timing,verified,task manager: copies the float at +0x8 of the frame information to the global 0x058b7e08
 0x014400a0,180,frame_timing_task_workers_step_014400a0,frame_timing,verified,"task manager workers: three rounds over the worker queues +0x58, +0x68, +0x60"
 0x01471310,544,render_pack_record_mapping_word,render,edge-verified,Pack numeric mapping fields with priority masks and full-width mode handling; return a zero-extended DWORD.
+0x01473590,95,render_emit_present_preparation_scalar,render,edge-verified,Write the captured float bits to DB_DEPTH_CLEAR. Admission tests the callback low byte; rejection returns its full 64-bit result.
+0x014735f0,89,render_emit_present_preparation_byte,render,edge-verified,Write the captured input low byte to DB_STENCIL_CLEAR. Admission tests the callback low byte; rejection returns its full 64-bit result.
 0x01477b30,172,render_command_emit_counter_operation,render,edge-verified,Seven-word counter packet; callback low byte gates writes; label range selects masked encoding Synthetic edges pass; no recordings.
 0x014784a0,82,render_command_prepare_submission,render,edge-verified,Reserve 64 command words; callback low byte gates two marker stores and cursor advance Synthetic edges pass; no recordings.
 0x01486520,31,render_record_set_word_0c_fields,render,edge-verified,Store two masked fields; return masked old word. No constructor add/subtract.

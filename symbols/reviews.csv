@@ -100,3 +100,5 @@ address,name,date,reviewer,verdict,notes
 +0x014867c0,render_record_set_first_auxiliary_flag,2026-11-03,independent session,approved,"all seven setters match the disassembly and every mutant is caught"
 +0x014867e0,render_record_set_second_auxiliary_flag,2026-11-03,independent session,approved,"all seven setters match the disassembly and every mutant is caught"
 +0x01486800,render_record_set_word_28_low22,2026-11-03,independent session,approved,"all seven setters match the disassembly and every mutant is caught"
++0x01473590,render_emit_present_preparation_scalar,2026-11-03,independent session,approved,"faithful including the full RAX return on rejection, with the overlap and truncation cases caught"
++0x014735f0,render_emit_present_preparation_byte,2026-11-03,independent session,approved,"faithful including the full RAX return on rejection, with the overlap and truncation cases caught"
