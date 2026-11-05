@@ -5,6 +5,11 @@
 
 #include "present_record_consumer.h"
 
+namespace render {
+struct PacketBuffer;
+struct ShaderPrimaryStateView;
+struct ShaderPrimaryDescriptorView;
+}
 namespace render::record_calls {
 RT_ORIGINAL(0x01486d60, record_classification_byte, uint8_t(PresentRecordView *));
 RT_ORIGINAL(0x01486d50, record_secondary_byte, uint8_t(PresentRecordView *));
@@ -35,7 +40,8 @@ RT_ORIGINAL(0x02ad1e20, select_record_preparation,
 RT_ORIGINAL(0x01473320, emit_record_state_mode,
             void(RecordCommandBuffer *, uint32_t mode, uint32_t value));
 RT_ORIGINAL(0x02ace1e0, configure_record_shader,
-            void(RecordShaderState *, RecordCommandBuffer *, SharedPresentDescriptor *, SharedPresentDescriptor *optional_descriptor));
+            void(ShaderPrimaryStateView *, PacketBuffer *, const ShaderPrimaryDescriptorView *,
+                 const ShaderPrimaryDescriptorView *optional_descriptor));
 RT_ORIGINAL(0x02ad1e10, bind_prepared_record,
             void(RecordPreparationState *, RecordCommandBuffer *, uint32_t slot, PresentRecordView *));
 RT_ORIGINAL(0x01473fe0, emit_record_pipeline_mode, void(RecordCommandBuffer *, uint32_t mode));

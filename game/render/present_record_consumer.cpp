@@ -103,7 +103,10 @@ extern "C" void bb_render_present_record_consume(render::PresentRecordContext *c
     configure_record_registers(context, record, a, b, c);
     select_record_preparation(preparation, commands, 0);
     emit_record_state_mode(commands, source_state_mode, state_mode_value);
-    configure_record_shader(shader, commands, shared_present_descriptor.address(), 0);
+    // The context embeds shader state and commands; the primary pass reads its descriptor view.
+    configure_record_shader(reinterpret_cast<ShaderPrimaryStateView *>(shader),
+                            reinterpret_cast<PacketBuffer *>(commands),
+                            reinterpret_cast<const ShaderPrimaryDescriptorView *>(shared_present_descriptor.address()), nullptr);
     for (uint32_t slot = 1; slot < prepared_slot_count; ++slot)
         bind_prepared_record(preparation, commands, slot, nullptr);
     emit_record_pipeline_mode(commands, record_pipeline_mode);
