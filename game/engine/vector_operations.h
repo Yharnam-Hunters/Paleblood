@@ -8,6 +8,9 @@
 #include <array>
 #include <cstdint>
 
+// Make the existing hidden friend available to qualified vector-operation calls.
+namespace engine { bool all_equal(Vec4, Vec4); }
+
 namespace engine::vector_operations {
 using engine::add;
 using engine::multiply;
