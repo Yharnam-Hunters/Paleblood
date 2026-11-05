@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Process two ordered descriptor banks for the presentation shader. Empty work
-// skips the final clears; nonempty work consumes the whole native work word.
+// skips the final clears; nonempty work consumes the whole work word.
 // Allocation failure still forwards or publishes NULL, rather than returning a status.
 // The caller ignores the return; the replacement preserves its memory and helper calls.
 #include <bit>
@@ -64,7 +64,7 @@ ShaderUploadArena *upload_arena(PacketBuffer *commands)
 
 uint8_t *allocate_upload(PacketBuffer *commands, uint64_t bytes)
 {
-    // The native helper receives a private command-pointer slot, not the caller's variable.
+    // The helper receives a private command-pointer slot, not the caller's variable.
     PacketBuffer *private_commands = commands;
     return allocate_shader_upload(upload_arena(commands), &private_commands, bytes);
 }
@@ -77,7 +77,7 @@ uint8_t *cached_upload(ShaderSecondaryState *state, PacketBuffer *commands)
         state->cached_upload_b360.set(address);
         if (address != nullptr) {
             shader_copy_bytes(address, state->snapshot_b2a0, sizeof(state->snapshot_b2a0));
-            // A copy/alias can affect the cache field; the native code reloads it here.
+            // A copy/alias can affect the cache field; the code reloads it here.
             address = state->cached_upload_b360.get();
         }
     }
@@ -219,7 +219,7 @@ void process_bank(ShaderSecondaryState *state, PacketBuffer *commands,
         work -= uint64_t(1) << bit;
     } while (work != 0);
 
-    // Reload masks after every native call, then clear the whole work word even
+    // Reload masks after every call, then clear the whole work word even
     // when the initial descriptor count excluded some of its bits.
     bank.pending->clear_removed(*bank.resources);
     const uint64_t removed = bank.other_resources->get();
