@@ -18,10 +18,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+static uint64_t address_offset; /* the layout's, for the next run */
+
 /* Translates code and runs it over one workgroup of LANES lanes with the given user data. */
 static int run(gpu *g, const uint32_t *code, size_t dwords, const uint32_t *user_data)
 {
-    const gcn_compute_layout layout = {{LANES, 1, 1}, 8, -1};
+    const gcn_compute_layout layout = {.local_size = {LANES, 1, 1}, .user_sgprs = 8, .workgroup_id_x_sgpr = -1,
+                                       .address_offset = address_offset};
     uint32_t *spirv = NULL;
     size_t words = 0;
     char error[256];
@@ -122,6 +125,22 @@ int main(void)
         CHECK(lane[2] == bits(floorf(v)));
         CHECK(lane[3] == 0xdeadbeefu);
     }
+
+    /* Guest addresses: the descriptors name addresses 1 MiB below the real buffers, as a guest
+       would, and the layout's address offset brings every access back to the same bytes. */
+    enum { GUEST_DISTANCE = 0x100000 };
+    uint32_t guest_user[USER_DATA_WORDS];
+    memcpy(guest_user, user, sizeof guest_user);
+    for (int d = 0; d < 2; d++) {
+        const uint64_t guest = (((uint64_t)guest_user[4 * d + 1] & 0xffff) << 32 | guest_user[4 * d]) - GUEST_DISTANCE;
+        guest_user[4 * d] = (uint32_t)guest, guest_user[4 * d + 1] = (uint32_t)(guest >> 32) & 0xffff;
+    }
+    for (int i = 0; i < LANES; i++) in_floats[i] = (float)i * 0.5f;
+    memset(out.mapped, 0, BUFFER_BYTES);
+    address_offset = GUEST_DISTANCE;
+    CHECK(run(&g, scale_add, sizeof scale_add / sizeof scale_add[0], guest_user) == 0);
+    address_offset = 0;
+    for (int i = 0; i < LANES; i++) CHECK(out_words[i] == bits((float)i * 0.5f * 2.5f + 1.0f));
 
     /* Branches and EXEC. */
     memset(out.mapped, 0, BUFFER_BYTES);

@@ -3,6 +3,7 @@
    RT_SYSLIB registry, by library and symbol. */
 #include "runtime/display.h"
 #include "runtime/equeue.h"
+#include "runtime/gpu_memory.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
@@ -347,6 +348,7 @@ static void vq_flags(void) { unsigned char info[0x48]; vq_fn(dm_in_use, 1, info,
 static void vq_size(void) { unsigned char info[0x48]; vq_fn(dm_in_use, 0, info, 0x40); }
 static void dm_map_hint_misaligned(void) { void *a = (void *)0xfd00004000; dm_map(&a, DM_PAGE, DM_RW, 0, dm_mapped, DM_ALIGN); }
 static void dm_map_exec(void) { void *a = NULL; dm_map(&a, DM_PAGE, DM_RW | 0x4, 0, dm_unmapped, DM_PAGE); }
+static void dm_map_gpu_twice(void) { void *a = NULL; dm_map(&a, DM_PAGE, DM_RW | 0x30, 0, dm_unmapped, DM_PAGE); }
 static void dm_map_unallocated(void) { void *a = NULL; dm_map(&a, DM_PAGE, DM_RW, 0, 1ll << 32, DM_PAGE); }
 static void dm_map_past_range(void) { void *a = NULL; dm_map(&a, 2 * DM_PAGE, DM_RW, 0, dm_unmapped, DM_PAGE); }
 static void dm_release_mapped(void) { dm_release(dm_mapped, DM_LENGTH); }
@@ -1490,10 +1492,27 @@ int main(void)
             CHECK(died_in_fatal(vq_size));
         }
         CHECK(died_in_fatal(dm_map_exec));
-        /* GPU access (0x10 read, 0x20 write) is accepted; the CPU bits make the host mapping. */
+        /* GPU access (0x10 read, 0x20 write) is accepted; the CPU bits make the host mapping. A
+           GPU-visible map the system places goes at the GPU memory base plus its pool offset
+           (runtime/gpu_memory.h), and is the same memory as the range's other maps. */
         void *gpu = NULL;
         CHECK(dm_map(&gpu, DM_PAGE, DM_RW | 0x30, 0, dm_unmapped, DM_PAGE) == 0 && gpu);
+        CHECK((uintptr_t)gpu == rt_gpu_memory_base() + (uint64_t)dm_unmapped);
         if (gpu) ((volatile unsigned char *)gpu)[0] = 1;
+        if (gpu && hinted == (void *)0xfd00000000) {
+            void *deep_again = (void *)0xfd00100000; /* the CPU map of the same range, above */
+            CHECK(((volatile unsigned char *)deep_again)[0] == 1);
+        }
+        CHECK(died_in_fatal(dm_map_gpu_twice));
+        /* The pool's file, for the renderer's own mapping of the whole pool. */
+        int pool_file = -1;
+        uint64_t pool_size = 0;
+        CHECK(rt_gpu_memory_pool(&pool_file, &pool_size) == 0 && pool_file >= 0 && pool_size == pool);
+        /* A GPU-visible map with an address hint keeps the hint, as a CPU one does. */
+        int64_t hinted_gpu_range = -1;
+        CHECK(dm_allocate(0, (int64_t)pool, DM_PAGE, DM_PAGE, 0, &hinted_gpu_range) == 0);
+        void *hinted_gpu = (void *)0xfd00200000;
+        CHECK(dm_map(&hinted_gpu, DM_PAGE, DM_RW | 0x30, 0, hinted_gpu_range, DM_PAGE) == 0 && hinted_gpu == (void *)0xfd00200000);
         CHECK(died_in_fatal(dm_map_unallocated));
         CHECK(died_in_fatal(dm_map_past_range));
         CHECK(died_in_fatal(dm_release_mapped));
