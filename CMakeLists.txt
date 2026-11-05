@@ -61,6 +61,14 @@ add_executable(test_syslib test/test_syslib.c runtime/process.c ${PB_TEST_SYSLIB
                runtime/display/display.c runtime/display/display_window_none.c)
 target_include_directories(test_syslib PRIVATE runtime/include)
 add_test(NAME syslib COMMAND test_syslib)
+# The renderer's GCN shader decoder (docs/RENDERER.md), its test, and pbgcn for the shader census.
+add_library(pbgcn_decode STATIC runtime/renderer/gcn_decode.c)
+target_include_directories(pbgcn_decode PUBLIC runtime/include)
+add_executable(test_gcn test/test_gcn.c)
+target_link_libraries(test_gcn PRIVATE pbgcn_decode)
+add_test(NAME gcn COMMAND test_gcn)
+add_executable(pbgcn runtime/renderer/pbgcn.c)
+target_link_libraries(pbgcn PRIVATE pbgcn_decode)
 
 add_test(NAME tools COMMAND ${Python3_EXECUTABLE} -m unittest discover -s ${PROJECT_SOURCE_DIR}/test -p "test_*.py" -v)
 set_tests_properties(tools PROPERTIES ENVIRONMENT "BB_LOADER=$<TARGET_FILE:pbloader>;BB_PBBOOT=$<TARGET_FILE:pbboot>")
