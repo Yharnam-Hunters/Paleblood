@@ -577,13 +577,60 @@ static void kc_endless(void)
     struct timespec pause = {2, 0};
     nanosleep(&pause, NULL); /* the thread's end stops the process before this returns */
 }
-static void kc_too_many(void)
+/* Runs call in a forked child and answers whether the child ended by _exit(0): no stop by name. */
+static int kc_exits_cleanly(void (*call)(void))
 {
-    for (int i = 0; i < 200; i++) {
-        int32_t key;
-        kc_create(&key, NULL);
+    const pid_t child = fork();
+    if (child == 0) {
+        call();
+        _exit(0);
+    }
+    int status = 0;
+    if (waitpid(child, &status, 0) < 0) return 0;
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+/* The limits are pinned from both sides: exactly the documented count works, one more stops.
+   Each case runs in a forked child, which first deletes every key the parent left so the child's
+   table is empty, whatever keys the earlier tests still hold. */
+static void kc_fill_128(void)
+{
+    for (int32_t k = 1; k <= 128; k++) kc_delete(k);
+    for (int i = 0; i < 128; i++) {
+        int32_t key = 0;
+        if (kc_create(&key, NULL) != 0 || key < 1 || key > 128) _exit(1);
     }
 }
+static void kc_too_many(void)
+{
+    kc_fill_128();
+    int32_t key;
+    kc_create(&key, NULL); /* the 129th live key stops by name */
+}
+/* A destructor that sets its value again kc_resets times needs kc_resets + 1 rounds. */
+static int32_t kc_rounds_key;
+static int kc_resets;
+static atomic_int kc_rounds_calls;
+static void kc_rounds_destructor(void *value)
+{
+    if (atomic_fetch_add(&kc_rounds_calls, 1) < kc_resets) kc_set(kc_rounds_key, value);
+}
+static void *kc_rounds_entry(void *argument)
+{
+    kc_set(kc_rounds_key, argument);
+    return NULL;
+}
+static void kc_rounds(void)
+{
+    void *t = NULL, *a = tc_attr(1, 1, 1);
+    if (kc_create(&kc_rounds_key, kc_rounds_destructor) != 0) _exit(1);
+    if (tc_create(&t, &a, kc_rounds_entry, &kc_marker, "rounds") != 0) _exit(1);
+    for (int i = 0; i < 100000 && atomic_load(&kc_rounds_calls) < kc_resets + 1; i++) sched_yield();
+    struct timespec settle = {0, 100 * 1000 * 1000};
+    nanosleep(&settle, NULL); /* room for the stop, or a wrong extra call, after the last one */
+    if (atomic_load(&kc_rounds_calls) != kc_resets + 1) _exit(1);
+}
+static void kc_four_rounds(void) { kc_resets = 3; kc_rounds(); }
+static void kc_five_rounds(void) { kc_resets = 4; kc_rounds(); }
 static void tc_affinity_empty(void) { tc_affinity(tc_seen_self, 0); }
 
 /* The user service's start-up calls. */
@@ -1708,7 +1755,10 @@ int main(void)
         CHECK(atomic_load(&kc_deleted_calls) == 0);
         CHECK(kc_get(kc_key) == &main_value);
         CHECK(died_in_fatal(kc_endless));
-        CHECK(died_in_fatal(kc_too_many));
+        CHECK(kc_exits_cleanly(kc_fill_128)); /* the 128th live key is created */
+        CHECK(died_in_fatal(kc_too_many));    /* only the 129th stops */
+        CHECK(kc_exits_cleanly(kc_four_rounds)); /* exactly 4 destructor calls, the thread ends cleanly */
+        CHECK(died_in_fatal(kc_five_rounds));    /* a value still set after the 4th round stops */
         CHECK(kc_delete(kc_key) == 0 && kc_delete(reused) == 0);
     }
     CHECK(is_implemented("libkernel", "scePthreadKeyCreate") && is_implemented("libkernel", "scePthreadKeyDelete") &&

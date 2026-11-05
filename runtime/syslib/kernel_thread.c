@@ -210,9 +210,8 @@ static int attr_destroy(guest_attr **attr)
     return 0;
 }
 
-/* Calls entry(argument) on the guest stack, with the System V convention the guest uses, and returns
-   its result: rt_thread_call(entry, argument, stack_top). */
-void *rt_thread_call(void *(*entry)(void *), void *argument, void *stack_top);
+/* rt_thread_call(entry, argument, stack_top), declared in runtime/process.h: calls entry(argument) on
+   the guest stack, with the System V convention the guest uses, and returns its result. */
 __asm__(".text\n"
         ".globl rt_thread_call\n"
         "rt_thread_call:\n"

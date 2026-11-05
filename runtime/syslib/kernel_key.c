@@ -52,9 +52,6 @@ static pthread_mutex_t slots_lock = PTHREAD_MUTEX_INITIALIZER;
 /* Each guest thread runs on its own host thread, so a host thread-local array holds its values. */
 static _Thread_local key_value values[KEY_SLOTS];
 
-/* Calls entry(argument) on the guest stack (runtime/syslib/kernel_thread.c). */
-void *rt_thread_call(void *(*entry)(void *), void *argument, void *stack_top);
-
 /* The slot a key names, or -1 when it names none (libthr: key - 1, compared as unsigned). */
 static int slot_of(int32_t key)
 {
@@ -139,7 +136,8 @@ void rt_thread_keys_exit(void *stack_top)
         }
     }
     if (values_left())
-        rt_fatal("scePthreadKeyCreate", "values left after 4 destructor rounds at a thread's end: the PS4's number of rounds is not established");
+        rt_fatal("thread exit (key destructors)",
+                 "values left after 4 destructor rounds: the PS4's number of rounds is not established");
 }
 
 RT_SYSLIB("libkernel", scePthreadKeyCreate, key_create);
