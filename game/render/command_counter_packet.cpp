@@ -4,7 +4,7 @@
 // exactly here. The GPU meanings of the operation selectors remain outside this wrapper.
 #include <cstring>
 
-#include "command_packets.h"
+#include "command_reservation.h"
 
 namespace {
 constexpr uint32_t counter_packet_words = 7;
@@ -38,11 +38,8 @@ extern "C" void bb_render_command_emit_counter_operation(render::PacketBuffer *b
                                                           uintptr_t label, uint32_t mask,
                                                           uint32_t operation, uint32_t reference)
 {
-    if (render::packet_available_words(buffer) < counter_packet_words) {
-        const uint8_t granted = buffer->space_callback(buffer, counter_packet_words,
-                                                       buffer->callback_argument);
-        if (granted == 0) return;
-    }
+    uintptr_t cursor;
+    if (!render::reserve_words(buffer, counter_packet_words, cursor)) return;
 
     const bool wide_label = label > short_label_mask;
     const uint32_t control = (operation & counter_operation_mask) |
@@ -54,6 +51,7 @@ extern "C" void bb_render_command_emit_counter_operation(render::PacketBuffer *b
                                         reference, mask, counter_packet_tail};
     // Copy bytes so command storage may alias the cursor field. Its final increment uses
     // the stored value after the packet write, as the original ADDQ does.
-    std::memcpy(reinterpret_cast<void *>(buffer->cursor), &packet, sizeof(packet));
-    buffer->cursor += counter_packet_words * render::packet_word_bytes;
+    std::memcpy(reinterpret_cast<void *>(cursor), &packet, sizeof(packet));
+    render::set_packet_cursor(buffer, render::packet_cursor(buffer) +
+                              counter_packet_words * render::packet_word_bytes);
 }
