@@ -236,3 +236,7 @@ render_yebis_get_recursive_sample_parameters,edge,,23,23,0,0,6e6f0aa41d5607ce,20
 render_yebis_get_recursive_sample_parameters,edge,30,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,60,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,uncapped,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
+render_build_present_source_record,edge,,82,82,0,0,7e89691bbb785253,2026-11-04
+render_choose_record_constructor_selector,edge,,140,140,0,0,874cdca528836239,2026-11-04
+render_combine_record_parameters,edge,,144,144,0,0,b08b7971840782ea,2026-11-04
+render_reduce_record_parameter,edge,,20,20,0,0,02e00a98106fca2f,2026-11-04
