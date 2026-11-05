@@ -11,108 +11,12 @@
 #include "runtime/gcn_spirv.h"
 
 #include "gcn_programs.h"
+#include "gcn_vulkan.h"
 
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <vulkan/vulkan.h>
-
-enum { LANES = 64, SKIPPED = 77, BUFFER_BYTES = 4096, USER_DATA_WORDS = 16 };
-
-static int failures;
-#define CHECK(cond)                                                                                \
-    do {                                                                                           \
-        if (!(cond)) {                                                                             \
-            fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #cond);                             \
-            failures++;                                                                            \
-        }                                                                                          \
-    } while (0)
-
-typedef struct {
-    VkInstance instance;
-    VkPhysicalDevice physical;
-    VkDevice device;
-    VkQueue queue;
-    uint32_t family;
-    VkCommandPool pool;
-} gpu;
-
-typedef struct {
-    VkBuffer buffer;
-    VkDeviceMemory memory;
-    void *mapped;
-    VkDeviceAddress address;
-} gpu_buffer;
-
-static int open_gpu(gpu *g)
-{
-    const VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .apiVersion = VK_API_VERSION_1_2};
-    const VkInstanceCreateInfo instance = {.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app};
-    if (vkCreateInstance(&instance, NULL, &g->instance) != VK_SUCCESS) return -1;
-    uint32_t count = 1;
-    if (vkEnumeratePhysicalDevices(g->instance, &count, &g->physical) < 0 || count == 0) return -1;
-    VkPhysicalDeviceVulkan12Features features12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
-    VkPhysicalDeviceFeatures2 features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &features12};
-    vkGetPhysicalDeviceFeatures2(g->physical, &features);
-    if (!features12.bufferDeviceAddress || !features.features.shaderInt64) return -1;
-    VkQueueFamilyProperties families[16];
-    uint32_t family_count = 16;
-    vkGetPhysicalDeviceQueueFamilyProperties(g->physical, &family_count, families);
-    g->family = UINT32_MAX;
-    for (uint32_t f = 0; f < family_count && g->family == UINT32_MAX; f++)
-        if (families[f].queueFlags & VK_QUEUE_COMPUTE_BIT) g->family = f;
-    if (g->family == UINT32_MAX) return -1;
-    const float priority = 1.0f;
-    const VkDeviceQueueCreateInfo queue = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g->family,
-                                           .queueCount = 1, .pQueuePriorities = &priority};
-    VkPhysicalDeviceVulkan12Features enable12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-                                                 .bufferDeviceAddress = VK_TRUE};
-    const VkPhysicalDeviceFeatures2 enable = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &enable12,
-                                              .features = {.shaderInt64 = VK_TRUE}};
-    const VkDeviceCreateInfo device = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &enable,
-                                       .queueCreateInfoCount = 1, .pQueueCreateInfos = &queue};
-    if (vkCreateDevice(g->physical, &device, NULL, &g->device) != VK_SUCCESS) return -1;
-    vkGetDeviceQueue(g->device, g->family, 0, &g->queue);
-    const VkCommandPoolCreateInfo pool = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, .queueFamilyIndex = g->family};
-    return vkCreateCommandPool(g->device, &pool, NULL, &g->pool) == VK_SUCCESS ? 0 : -1;
-}
-
-static int make_buffer(gpu *g, gpu_buffer *b)
-{
-    const VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = BUFFER_BYTES,
-                                     .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT};
-    if (vkCreateBuffer(g->device, &info, NULL, &b->buffer) != VK_SUCCESS) return -1;
-    VkMemoryRequirements need;
-    vkGetBufferMemoryRequirements(g->device, b->buffer, &need);
-    VkPhysicalDeviceMemoryProperties memory;
-    vkGetPhysicalDeviceMemoryProperties(g->physical, &memory);
-    const VkMemoryPropertyFlags wanted = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    uint32_t type = UINT32_MAX;
-    for (uint32_t i = 0; i < memory.memoryTypeCount && type == UINT32_MAX; i++)
-        if ((need.memoryTypeBits & (1u << i)) && (memory.memoryTypes[i].propertyFlags & wanted) == wanted) type = i;
-    if (type == UINT32_MAX) return -1;
-    const VkMemoryAllocateFlagsInfo flags = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
-                                             .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
-    const VkMemoryAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &flags,
-                                           .allocationSize = need.size, .memoryTypeIndex = type};
-    if (vkAllocateMemory(g->device, &allocate, NULL, &b->memory) != VK_SUCCESS) return -1;
-    if (vkBindBufferMemory(g->device, b->buffer, b->memory, 0) != VK_SUCCESS) return -1;
-    if (vkMapMemory(g->device, b->memory, 0, BUFFER_BYTES, 0, &b->mapped) != VK_SUCCESS) return -1;
-    memset(b->mapped, 0, BUFFER_BYTES);
-    const VkBufferDeviceAddressInfo address = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = b->buffer};
-    b->address = vkGetBufferDeviceAddress(g->device, &address);
-    return 0;
-}
-
-/* A buffer descriptor: base address (low word, then bits 47:32), no stride, BUFFER_BYTES records. */
-static void descriptor(uint32_t *words, const gpu_buffer *b)
-{
-    words[0] = (uint32_t)b->address;
-    words[1] = (uint32_t)(b->address >> 32) & 0xffff;
-    words[2] = BUFFER_BYTES;
-    words[3] = 0;
-}
 
 /* Translates code and runs it over one workgroup of LANES lanes with the given user data. */
 static int run(gpu *g, const uint32_t *code, size_t dwords, const uint32_t *user_data)
@@ -242,6 +146,55 @@ int main(void)
     memset(out.mapped, 0xaa, BUFFER_BYTES);
     CHECK(run(&g, masked_store, sizeof masked_store / sizeof masked_store[0], user) == 0);
     for (int i = 0; i < LANES; i++) CHECK(out_words[i] == (i < 20 ? 0x55u : 0xaaaaaaaau));
+
+    /* Typed buffers, indexed by lane: records of 16 bytes in, 48 out. */
+    enum { IN_STRIDE = 16, OUT_STRIDE = 48, OUT_RECORD_WORDS = OUT_STRIDE / 4 };
+    uint32_t typed_user[USER_DATA_WORDS];
+    memcpy(typed_user, user, sizeof typed_user);
+    typed_user[1] |= IN_STRIDE << 16, typed_user[5] |= OUT_STRIDE << 16;
+    for (int i = 0; i < LANES * 4; i++) in_words[i] = 0x1000u + (uint32_t)i;
+    memset(out.mapped, 0, BUFFER_BYTES);
+    CHECK(run(&g, typed_buffers, sizeof typed_buffers / sizeof typed_buffers[0], typed_user) == 0);
+    for (int i = 0; i < LANES; i++) {
+        const uint32_t *record = in_words + i * 4, *lane = out_words + i * OUT_RECORD_WORDS;
+        const uint32_t expected[] = {record[0], record[1], record[2], record[3], record[1], record[2], record[3],
+                                     record[0], record[1], record[2]};
+        for (int k = 0; k < 10; k++) CHECK(lane[k] == expected[k]);
+    }
+
+    /* Halves rounded toward zero; each expected half worked out by hand from the IEEE formats. */
+    static const struct {
+        uint32_t f32;
+        uint16_t f16, negated;
+    } halves[] = {
+        {0x3f800000, 0x3c00, 0xbc00}, /* 1 */
+        {0xc0000000, 0xc000, 0x4000}, /* -2 */
+        {0x3eaaaaab, 0x3555, 0xb555}, /* 1/3, truncated */
+        {0x3f801fff, 0x3c00, 0xbc00}, /* just below 1 + 2^-10: toward zero, not to nearest (0x3c01) */
+        {0x477fe000, 0x7bff, 0xfbff}, /* 65504, the largest half */
+        {0x477ff000, 0x7bff, 0xfbff}, /* 65520: to nearest would be infinity */
+        {0x4788b800, 0x7bff, 0xfbff}, /* 70000, just past the halves' range: the largest half */
+        {0x49742400, 0x7bff, 0xfbff}, /* 1e6: too large, the largest half */
+        {0x7f800000, 0x7c00, 0xfc00}, /* infinity */
+        {0x38800000, 0x0400, 0x8400}, /* 2^-14, the smallest normal half */
+        {0x38400000, 0x0300, 0x8300}, /* 1.5 * 2^-15, a subnormal half */
+        {0x33800000, 0x0001, 0x8001}, /* 2^-24, the smallest subnormal */
+        {0x33000000, 0x0000, 0x8000}, /* 2^-25: below every half, a signed zero */
+        {0x00000000, 0x0000, 0x8000}, /* 0 */
+        {0x80000000, 0x8000, 0x0000}, /* -0 */
+    };
+    enum { HALF_CASES = sizeof halves / sizeof halves[0] };
+    memset(out.mapped, 0, BUFFER_BYTES);
+    for (int i = 0; i < LANES; i++) {
+        in_words[2 * i] = halves[i % HALF_CASES].f32;
+        in_words[2 * i + 1] = halves[(i + 1) % HALF_CASES].f32;
+    }
+    CHECK(run(&g, pack_halves, sizeof pack_halves / sizeof pack_halves[0], user) == 0);
+    for (int i = 0; i < LANES; i++) {
+        const uint32_t high = halves[(i + 1) % HALF_CASES].f16;
+        CHECK(out_words[i] == (high << 16 | halves[i % HALF_CASES].f16));
+        CHECK(out_words[LANES + i] == (high << 16 | halves[i % HALF_CASES].negated));
+    }
 
     if (failures) fprintf(stderr, "%d failure(s)\n", failures);
     vkDeviceWaitIdle(g.device);

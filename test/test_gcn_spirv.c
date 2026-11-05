@@ -80,12 +80,25 @@ static int to_metal(const uint32_t *spirv, size_t words, const char *name)
     return ok;
 }
 
-static void translates(const uint32_t *code, size_t dwords, const char *name)
+typedef enum { COMPUTE, VERTEX, PIXEL } stage;
+
+static const gcn_vertex_layout vertex_layout = {8, 0};
+static const gcn_pixel_layout pixel_layout = {8, 0};
+
+static int translate(stage s, const uint32_t *code, size_t dwords, uint32_t **spirv, size_t *words, char *error, size_t error_size)
+{
+    if (s == VERTEX) return gcn_translate_vertex(code, dwords, &vertex_layout, spirv, words, error, error_size);
+    if (s == PIXEL) return gcn_translate_pixel(code, dwords, &pixel_layout, spirv, words, error, error_size);
+    return gcn_translate_compute(code, dwords, &layout, spirv, words, error, error_size);
+}
+
+/* The program translates, as the stage given, to a module spirv-val and SPIRV-Cross accept. */
+static void translates_as(stage s, const uint32_t *code, size_t dwords, const char *name)
 {
     uint32_t *spirv = NULL;
     size_t words = 0;
     char error[256];
-    const int result = gcn_translate_compute(code, dwords, &layout, &spirv, &words, error, sizeof error);
+    const int result = translate(s, code, dwords, &spirv, &words, error, sizeof error);
     if (result) fprintf(stderr, "  %s: %s\n", name, error);
     CHECK(result == 0 && spirv && words > 5);
     if (!spirv) return;
@@ -100,6 +113,20 @@ static void translates(const uint32_t *code, size_t dwords, const char *name)
     free(spirv);
 }
 
+static void translates(const uint32_t *code, size_t dwords, const char *name) { translates_as(COMPUTE, code, dwords, name); }
+
+/* The program is refused, as the stage given, with an error containing the text. */
+static void refused_as(stage s, const uint32_t *code, size_t dwords, const char *text)
+{
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    char error[256] = "";
+    CHECK(translate(s, code, dwords, &spirv, &words, error, sizeof error) == -1);
+    CHECK(spirv == NULL);
+    if (!strstr(error, text)) fprintf(stderr, "  expected \"%s\" in: %s\n", text, error);
+    CHECK(strstr(error, text) != NULL);
+}
+
 int main(void)
 {
     translates(PROGRAM(scale_add), "scale_add");
@@ -110,12 +137,27 @@ int main(void)
     translates(PROGRAM(vector_loop), "vector_loop");
     translates(PROGRAM(compare_exec), "compare_exec");
     translates(PROGRAM(masked_store), "masked_store");
+    translates(PROGRAM(typed_buffers), "typed_buffers");
+    translates(PROGRAM(pack_halves), "pack_halves");
+    translates_as(VERTEX, PROGRAM(vertex_position_color), "vertex_position_color");
+    translates_as(PIXEL, PROGRAM(pixel_color), "pixel_color");
+    translates_as(PIXEL, PROGRAM(pixel_discard_left), "pixel_discard_left");
+    refused_as(PIXEL, PROGRAM(pixel_p2_alone), "no v_interp_p1");
+    refused_as(PIXEL, PROGRAM(pixel_other_barycentrics), "barycentrics in v2");
+    refused_as(VERTEX, PROGRAM(vertex_pos1), "target 13");
+    refused_as(COMPUTE, PROGRAM(pixel_color), "outside pixel shaders");
+    refused_as(PIXEL, PROGRAM(vertex_position_color), "target 32");
 
     uint32_t *spirv = NULL;
     size_t words = 0;
     char error[256] = "";
     CHECK(gcn_translate_compute(PROGRAM(unsupported), &layout, &spirv, &words, error, sizeof error) == -1);
     CHECK(spirv == NULL && strstr(error, "v_interp_p1_f32") != NULL);
+
+    CHECK(gcn_translate_compute(PROGRAM(typed_unorm), &layout, &spirv, &words, error, sizeof error) == -1);
+    CHECK(spirv == NULL && strstr(error, "dfmt 10 nfmt 0") != NULL);
+    CHECK(gcn_translate_compute(PROGRAM(typed_too_many_components), &layout, &spirv, &words, error, sizeof error) == -1);
+    CHECK(spirv == NULL && strstr(error, "dfmt 4 nfmt 7") != NULL);
 
     const uint32_t no_end[] = {0x7e020302}; /* v_mov_b32 v1, v2, and no s_endpgm */
     CHECK(gcn_translate_compute(no_end, 1, &layout, &spirv, &words, error, sizeof error) == -1);
