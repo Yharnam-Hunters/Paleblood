@@ -14,15 +14,15 @@ extern "C" void bb_render_configure_viewport_and_guard_band(render::PacketBuffer
     RecordConfigurationScratch scratch;
     const float delta_x = engine::signed32_to_float(record_configuration_signed_word(end_x - x));
     const float initial_half = record_configuration_half.get();
-    scratch.scale.first = engine::multiply(delta_x, initial_half);
+    scratch.scale.first.set(engine::multiply(delta_x, initial_half));
     const float delta_y = engine::signed32_to_float(record_configuration_signed_word(end_y - y));
-    scratch.scale.second = engine::multiply(delta_y, record_configuration_negative_half.get());
-    scratch.scale.third = scalar_a;
-    scratch.translation.first = engine::add(engine::u64_to_float(x), scratch.scale.first);
+    scratch.scale.second.set(engine::multiply(delta_y, record_configuration_negative_half.get()));
+    scratch.scale.third.set(scalar_a);
+    scratch.translation.first.set(engine::add(engine::u64_to_float(x), scratch.scale.first.get()));
     const float origin_y = engine::u64_to_float(y);
     const float positive_half_y = engine::multiply(delta_y, initial_half);
-    scratch.translation.second = engine::add(origin_y, positive_half_y);
-    scratch.translation.third = scalar_b;
+    scratch.translation.second.set(engine::add(origin_y, positive_half_y));
+    scratch.translation.third.set(scalar_b);
 
     configure_viewport(commands, 0, &scratch.scale, &scratch.translation, end_y,
                                0.0f, record_configuration_one.get());
@@ -34,12 +34,12 @@ extern "C" void bb_render_configure_viewport_and_guard_band(render::PacketBuffer
     constexpr int32_t upper_bound = 512;
     constexpr int32_t largest_value = upper_bound - 1;
     const float sixteenth = record_configuration_sixteenth.get();
-    const float product_x = engine::multiply(sixteenth, scratch.translation.first);
+    const float product_x = engine::multiply(sixteenth, scratch.translation.first.get());
     const float half = record_configuration_half.get();
     const float rounded_x = engine::round_down(engine::add(product_x, half));
     int32_t clipped_x = engine::truncate(rounded_x);
     if (clipped_x >= upper_bound) clipped_x = largest_value;
-    const float product_y = engine::multiply(sixteenth, scratch.translation.second);
+    const float product_y = engine::multiply(sixteenth, scratch.translation.second.get());
     const float rounded_y = engine::round_down(engine::add(product_y, half));
     int32_t clipped_y = engine::truncate(rounded_y);
     if (clipped_y >= upper_bound) clipped_y = largest_value;
@@ -47,11 +47,11 @@ extern "C" void bb_render_configure_viewport_and_guard_band(render::PacketBuffer
                                    static_cast<uint32_t>(clipped_y));
 
     const uint32_t magnitude_mask = record_configuration_magnitude_mask.get();
-    const float scale_x = scratch.scale.first;
-    const float scale_y = scratch.scale.second;
+    const float scale_x = scratch.scale.first.get();
+    const float scale_y = scratch.scale.second.get();
     const float magnitude_x = mask_record_configuration_float(scale_x, magnitude_mask);
-    const float center_x = scratch.translation.first;
-    const float center_y = scratch.translation.second;
+    const float center_x = scratch.translation.first.get();
+    const float center_y = scratch.translation.second.get();
     float lower_x = engine::subtract(center_x, magnitude_x);
     constexpr uint32_t integer_shift = 4;
     const uint32_t shifted_x_word = static_cast<uint32_t>(clipped_x) << integer_shift;

@@ -4,9 +4,9 @@
 #include "present_register_packets.h"
 namespace render {
 struct RecordConfigurationFloat3 {
-    float first;
-    float second;
-    float third;
+    Field<float> first;
+    Field<float> second;
+    Field<float> third;
 };
 static_assert(offsetof(RecordConfigurationFloat3, first) == 0x00);
 static_assert(offsetof(RecordConfigurationFloat3, second) == 0x04);
