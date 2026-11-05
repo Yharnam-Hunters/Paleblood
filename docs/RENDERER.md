@@ -51,7 +51,26 @@ Instead:
        across about four million.
      - A few shader entries start earlier than their information block's length says, and a few
        hold no program. Reading the archive's own entry table will settle both.
-   - **Next:** SPIR-V output for the census's instructions, the most frequent first, then MSL.
+   - **Translator** (begun): `runtime/renderer/gcn_spirv.c` (`runtime/gcn_spirv.h`), with a small
+     SPIR-V module builder (`runtime/renderer/spirv.c`).
+     - **How GCN maps onto SPIR-V:**
+       - one invocation per lane;
+       - registers are 32-bit words, and float operations reinterpret their bits;
+       - a compare or carry result kept as the lane's own bit;
+       - memory reached through the base addresses in buffer descriptors, as SPIR-V
+         physical-storage-buffer pointers.
+     - **Translated so far:** straight-line compute shaders. That covers float and integer
+       arithmetic (including GCN's legacy multiply, where zero times anything is zero),
+       conversions that saturate as GCN's do, compares and selects, integer carries, scalar
+       arithmetic, and buffer and constant loads and stores.
+     - **Not yet:** anything else stops with the instruction's name. Branches and the EXEC mask,
+       pixel and vertex shader inputs and outputs, and texture sampling come next.
+     - **Tests:** `test/test_gcn_spirv.c` checks every module with `spirv-val` for Vulkan 1.2.
+       `test/test_gcn_compute.c` runs programs on a Vulkan device and compares every output word
+       with values worked out by hand from the manual.
+   - **macOS:** the same SPIR-V becomes Metal's shader language through SPIRV-Cross, the Khronos
+     project's converter. Its buffer pointers become Metal device pointers, so one translator
+     serves both platforms. Generated modules keep to features SPIRV-Cross maps to Metal.
 3. **Engine draw hooks.** Map the draw layer: the shader-binding helpers at
    `0x01475400`–`0x01475a70` and their callers, the render-target, clear, viewport, blend and draw
    entry points. Then route them to the renderer. The first target is the title screen's 2D
