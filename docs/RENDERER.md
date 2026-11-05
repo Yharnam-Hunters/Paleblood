@@ -72,6 +72,12 @@ Instead:
        arithmetic (including GCN's legacy multiply, where zero times anything is zero),
        conversions that saturate as GCN's do, compares and selects, integer carries, scalar
        arithmetic, and buffer and constant loads and stores.
+     - **Typed buffer loads and stores** (`tbuffer_load_format_*`, `tbuffer_store_format_*`):
+       the format is in the instruction. The game uses only 32-bit float data (one to four
+       components, as many as the access names), which moves whole dwords with no conversion, so
+       only that is translated. Any other format, or an access with more components than its
+       format has (whose missing components get default values), stops with the format's
+       numbers. The descriptor's destination swizzle is not applied yet.
      - **Not yet:** anything else stops with the instruction's name. Pixel and vertex shader
        inputs and outputs, texture sampling, and calls (`s_swappc`, used for fetch shaders) come
        next.
