@@ -124,6 +124,43 @@ Instead:
    `0x01475400`–`0x01475a70` and their callers, the render-target, clear, viewport, blend and draw
    entry points. Then route them to the renderer. The first target is the title screen's 2D
    passes: clears, textured quads and text.
+   - **Map, first pass** (begun): `tools/pm4_writers.py` lists the functions whose code holds GPU
+     command-packet headers, and names each register a packet sets. It uses AMD's GFX7 register
+     header from the Linux kernel (`gca/gfx_7_2_d.h`, MIT licensed); the opcodes are those of
+     the kernel's `cikd.h`. On the game's executable:
+     - **One block holds the GPU library.** 231 of the 232 packet-writing functions lie in
+       `0x01472000`–`0x0148ffff`, Sony's GPU helper library compiled into the game. The engine
+       writes no packets of its own (one function elsewhere holds a header), so everything the
+       game asks of the GPU passes through that library's functions.
+     - **Draws:** `DRAW_INDEX_2` at `0x014740a0` and `0x01474360`, `DRAW_INDEX_AUTO` at
+       `0x014741b0` and `0x01474250`, `DRAW_INDEX_OFFSET_2` at `0x01474420`, `INDEX_TYPE` at
+       `0x01475270`, `NUM_INSTANCES` at `0x014728d0` and `0x01475370`.
+       - `0x014741b0` takes (command buffer, index count). It writes `DRAW_INDEX_AUTO` with
+         draw initiator 2 (auto index), then possibly an `EVENT_WRITE`.
+       - **The command buffer object:** its end at `+0x08`, the write cursor at `+0x10`, a
+         callback that makes room (with its argument) at `+0x18`/`+0x20`, and flags at `+0x28`
+         (bit 0 the packets' predicate bit).
+     - **State setters:** about 60 one-register setters, each writing one context register, such
+       as `DB_DEPTH_CONTROL`, `CB_COLOR_CONTROL`, `CB_TARGET_MASK`, `CB_BLEND_RED` (blend
+       colour), the window and generic scissors, `PA_SU_SC_MODE_CNTL` (culling and fill),
+       `PA_CL_CLIP_CNTL`, `PA_CL_VTE_CNTL` and `DB_STENCIL_CONTROL`, plus the shader stages'
+       binders above. Render targets and viewports are written with counts the code computes, so
+       the header search does not find them yet.
+     - **Callers:** the draws are called from a few engine wrappers at `0x015fbb50`-
+       `0x015fbcc0` and from `0x0073e640`-`0x0073e6b0`, `0x025696c0`-`0x02569900`,
+       `0x025d5f80` and `0x02ab55a0`-`0x02ab6cb0`. `0x015fbb50` (auto-index draws) alone has
+       seven callers in `0x015e7db0`-`0x015eb850`.
+   - **What it means for the hooks:** the GPU state (render targets, blending, depth, scissors)
+     exists only as packets those setters write; the engine keeps no copy to read. So the hooks
+     sit on the library's setters and draws: each setter records its value for the renderer
+     instead of writing a packet, and each draw makes a Vulkan or Metal draw with the recorded
+     state and the translated shaders. That is the library's own interface, call by call, not a
+     replay of the packets. The binders' register blocks also give what the translator's layouts
+     need: where each shader's code starts, its input VGPRs, and the vertex-output control that
+     says what `pos1` carries.
+   - **Next:** name the draws and setters in `symbols/functions.csv` from their disassembly, find
+     the render-target, viewport and clear paths, and follow the auto-index draw wrapper's
+     callers up to the title screen's 2D passes.
 4. **Textures and 3D.** The game's texture formats and tiling (from public format documentation),
    meshes, materials and post-processing.
 
