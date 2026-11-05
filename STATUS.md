@@ -15,8 +15,8 @@ Each row includes the next: verified functions are also edge-verified and replac
 
 | Runtime | |
 |---|---|
-| System imports implemented | 368 of 686 (53.64%): 219 by the game's own modules, 149 by the runtime |
-| Other imports | 3 registered fail-loud diagnostics, 315 unbound |
+| System imports implemented | 369 of 686 (53.79%): 219 by the game's own modules, 150 by the runtime |
+| Other imports | 3 registered fail-loud diagnostics, 314 unbound |
 | Furthest boot milestone | first flip (8 of 8) |
 | Boot stops at | `scePlayGoInitialize` (libScePlayGo) |
 

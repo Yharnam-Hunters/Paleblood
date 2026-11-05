@@ -341,7 +341,7 @@ eboot,libScePosix,pthread_mutexattr_settype,function,runtime
 eboot,libScePosix,pthread_self,function,runtime
 eboot,libScePosix,rename,function,
 eboot,libScePosix,rmdir,function,
-eboot,libScePosix,sleep,function,
+eboot,libScePosix,sleep,function,runtime
 eboot,libScePosix,stat,function,
 eboot,libScePosix,usleep,function,runtime
 eboot,libSceRtc,sceRtcConvertLocalTimeToUtc,function,
@@ -702,7 +702,7 @@ libSceFios2.elf,libSceLibcInternal,memcpy,function,runtime
 libSceFios2.elf,libSceLibcInternal,memset,function,runtime
 libSceFios2.elf,libSceLibcInternal,mktime,function,
 libSceFios2.elf,libSceLibcInternal,printf,function,
-libSceFios2.elf,libSceLibcInternal,time,function,
+libSceFios2.elf,libSceLibcInternal,time,function,runtime
 libSceFios2.elf,libSceLibcInternal,vprintf,function,
 libSceFios2.elf,libSceLibcInternal,vsnprintf,function,
 libSceFios2.elf,libSceSysmodule,sceSysmoduleLoadModule,function,runtime
@@ -825,10 +825,10 @@ libc.elf,libkernel,scePthreadCreate,function,runtime
 libc.elf,libkernel,scePthreadDetach,function,
 libc.elf,libkernel,scePthreadEqual,function,runtime
 libc.elf,libkernel,scePthreadExit,function,
-libc.elf,libkernel,scePthreadGetspecific,function,
+libc.elf,libkernel,scePthreadGetspecific,function,runtime
 libc.elf,libkernel,scePthreadJoin,function,
-libc.elf,libkernel,scePthreadKeyCreate,function,
-libc.elf,libkernel,scePthreadKeyDelete,function,
+libc.elf,libkernel,scePthreadKeyCreate,function,runtime
+libc.elf,libkernel,scePthreadKeyDelete,function,runtime
 libc.elf,libkernel,scePthreadMutexDestroy,function,runtime
 libc.elf,libkernel,scePthreadMutexInit,function,runtime
 libc.elf,libkernel,scePthreadMutexLock,function,runtime
@@ -839,7 +839,7 @@ libc.elf,libkernel,scePthreadMutexattrInit,function,runtime
 libc.elf,libkernel,scePthreadMutexattrSettype,function,runtime
 libc.elf,libkernel,scePthreadOnce,function,
 libc.elf,libkernel,scePthreadSelf,function,runtime
-libc.elf,libkernel,scePthreadSetspecific,function,
+libc.elf,libkernel,scePthreadSetspecific,function,runtime
 libc.elf,libkernel,scePthreadYield,function,runtime
 libc.elf,libkernel,sched_yield,function,runtime
 libc.elf,libkernel,sigfillset,function,
