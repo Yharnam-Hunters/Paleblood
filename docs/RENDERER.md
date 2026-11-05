@@ -59,12 +59,22 @@ Instead:
        - a compare or carry result kept as the lane's own bit;
        - memory reached through the base addresses in buffer descriptors, as SPIR-V
          physical-storage-buffer pointers.
-     - **Translated so far:** straight-line compute shaders. That covers float and integer
+     - **Control flow:** the program is split into basic blocks, run as cases of a switch inside
+       a loop (a structured form that SPIR-V accepts for any branch pattern).
+       - EXEC is each lane's own "active" bit. Only active lanes write registers or touch memory,
+         and compares write 0 for inactive lanes, as on GCN.
+       - SCC follows each scalar instruction's definition in the manual. The 64-bit mask
+         operations (`s_and_saveexec` and the like) work on the lane bits.
+       - "Is any lane set" tests (EXECZ, VCCZ, a mask result's SCC) use a Vulkan subgroup vote.
+         That is exact when the subgroup is GCN's 64-lane wave; with smaller subgroups (32 on
+         NVIDIA) each one decides for itself.
+     - **Translated so far:** compute shaders with branches and loops. That covers float and integer
        arithmetic (including GCN's legacy multiply, where zero times anything is zero),
        conversions that saturate as GCN's do, compares and selects, integer carries, scalar
        arithmetic, and buffer and constant loads and stores.
-     - **Not yet:** anything else stops with the instruction's name. Branches and the EXEC mask,
-       pixel and vertex shader inputs and outputs, and texture sampling come next.
+     - **Not yet:** anything else stops with the instruction's name. Pixel and vertex shader
+       inputs and outputs, texture sampling, and calls (`s_swappc`, used for fetch shaders) come
+       next.
      - **Tests:** `test/test_gcn_spirv.c` checks every module with `spirv-val` for Vulkan 1.2.
        `test/test_gcn_compute.c` runs programs on a Vulkan device and compares every output word
        with values worked out by hand from the manual.

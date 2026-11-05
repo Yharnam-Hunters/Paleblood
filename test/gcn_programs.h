@@ -72,4 +72,90 @@ static const uint32_t unsupported[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* Branches and EXEC. Offsets are dwords from the instruction after the branch, numbered in the
+   comments. Per lane i: i < 20 ? 2 * i : 7 (s_and_saveexec narrows EXEC, s_cbranch_execz skips
+   when no lane is left, EXEC is restored). */
+static const uint32_t divergent_if[] = {
+    0x7d880094, /*  0: v_cmp_gt_u32_e32 vcc, 20, v0 */
+    0x7e020287, /*  1: v_mov_b32_e32 v1, 7 */
+    0xbe88246a, /*  2: s_and_saveexec_b64 s[8:9], vcc */
+    0xbf880001, /*  3: s_cbranch_execz 1 */
+    0x34020081, /*  4: v_lshlrev_b32_e32 v1, 1, v0 */
+    0xbefe0408, /*  5: s_mov_b64 exec, s[8:9] */
+    0x34040082, /*  6: v_lshlrev_b32_e32 v2, 2, v0 */
+    0xe0701000, 0x80010102, /*  7: buffer_store_dword v1, v2, s[4:7], 0 offen */
+    0xbf810000, /*  9: s_endpgm */
+};
+
+/* A scalar loop: s9 = 0 + 1 + ... + 9 = 45 in every lane (SCC from s_cmp, a backward branch). */
+static const uint32_t uniform_loop[] = {
+    0xbe880380, /*  0: s_mov_b32 s8, 0 */
+    0xbe890380, /*  1: s_mov_b32 s9, 0 */
+    0x80090809, /*  2: s_add_u32 s9, s9, s8 */
+    0x80088108, /*  3: s_add_u32 s8, s8, 1 */
+    0xbf0a8a08, /*  4: s_cmp_lt_u32 s8, 10 */
+    0xbf85fffc, /*  5: s_cbranch_scc1 -4 */
+    0x7e020209, /*  6: v_mov_b32_e32 v1, s9 */
+    0x34040082, /*  7: v_lshlrev_b32_e32 v2, 2, v0 */
+    0xe0701000, 0x80010102, /*  8: buffer_store_dword v1, v2, s[4:7], 0 offen */
+    0xbf810000, /* 10: s_endpgm */
+};
+
+/* Each lane loops (i & 3) times adding 10: EXEC narrows every iteration until s_cbranch_execz
+   leaves; result 10 * (i & 3). */
+static const uint32_t vector_loop[] = {
+    0x36020083, /*  0: v_and_b32_e32 v1, 3, v0 */
+    0x7e040280, /*  1: v_mov_b32_e32 v2, 0 */
+    0x7e060280, /*  2: v_mov_b32_e32 v3, 0 */
+    0xbe8a047e, /*  3: s_mov_b64 s[10:11], exec */
+    0x7d820302, /*  4: v_cmp_lt_u32_e32 vcc, v2, v1 */
+    0x87fe6a7e, /*  5: s_and_b64 exec, exec, vcc */
+    0xbf880003, /*  6: s_cbranch_execz 3 */
+    0x4a06068a, /*  7: v_add_i32_e32 v3, vcc, 10, v3 */
+    0x4a040481, /*  8: v_add_i32_e32 v2, vcc, 1, v2 */
+    0xbf82fffa, /*  9: s_branch -6 */
+    0xbefe040a, /* 10: s_mov_b64 exec, s[10:11] */
+    0x34080082, /* 11: v_lshlrev_b32_e32 v4, 2, v0 */
+    0xe0701000, 0x80010304, /* 12: buffer_store_dword v3, v4, s[4:7], 0 offen */
+    0xbf810000, /* 14: s_endpgm */
+};
+
+/* v_cmpx (EXEC from a compare), s_cselect on SCC, and s_cbranch_vccnz taken (a lane in every
+   group of 32 has (i & 31) == 0) and not taken (no lane has i == 64). Two dwords per lane i:
+   (i < 8 ? 1 : 0) + 64, then 5. */
+static const uint32_t compare_exec[] = {
+    0x7e020280, /*  0: v_mov_b32_e32 v1, 0 */
+    0xbe8a047e, /*  1: s_mov_b64 s[10:11], exec */
+    0x7da80088, /*  2: v_cmpx_gt_u32_e32 vcc, 8, v0 */
+    0x7e020281, /*  3: v_mov_b32_e32 v1, 1 */
+    0xbefe040a, /*  4: s_mov_b64 exec, s[10:11] */
+    0xbf068080, /*  5: s_cmp_eq_u32 0, 0 */
+    0x8508a0c0, /*  6: s_cselect_b32 s8, 64, 32 */
+    0x4a020208, /*  7: v_add_i32_e32 v1, vcc, s8, v1 */
+    0x360a009f, /*  8: v_and_b32_e32 v5, 31, v0 */
+    0x7d840a80, /*  9: v_cmp_eq_u32_e32 vcc, 0, v5 */
+    0xbf870002, /* 10: s_cbranch_vccnz 2 */
+    0x7e0202ff, 0x000003e7, /* 11: v_mov_b32_e32 v1, 0x3e7 */
+    0x7e0c0280, /* 13: v_mov_b32_e32 v6, 0 */
+    0x7d8400c0, /* 14: v_cmp_eq_u32_e32 vcc, 64, v0 */
+    0xbf870001, /* 15: s_cbranch_vccnz 1 */
+    0x7e0c0285, /* 16: v_mov_b32_e32 v6, 5 */
+    0x34040083, /* 17: v_lshlrev_b32_e32 v2, 3, v0 */
+    0xe0701000, 0x80010102, /* 18: buffer_store_dword v1, v2, s[4:7], 0 offen */
+    0xe0701004, 0x80010602, /* 20: buffer_store_dword v6, v2, s[4:7], 0 offen offset:4 */
+    0xbf810000, /* 22: s_endpgm */
+};
+
+/* A store while only some lanes are active: lanes i < 20 write 0x55, the others leave memory as
+   it was. */
+static const uint32_t masked_store[] = {
+    0x34040082, /*  0: v_lshlrev_b32_e32 v2, 2, v0 */
+    0x7e0202ff, 0x00000055, /*  1: v_mov_b32_e32 v1, 0x55 */
+    0x7d880094, /*  3: v_cmp_gt_u32_e32 vcc, 20, v0 */
+    0xbe88246a, /*  4: s_and_saveexec_b64 s[8:9], vcc */
+    0xe0701000, 0x80010102, /*  5: buffer_store_dword v1, v2, s[4:7], 0 offen */
+    0xbefe0408, /*  7: s_mov_b64 exec, s[8:9] */
+    0xbf810000, /*  8: s_endpgm */
+};
+
 #endif

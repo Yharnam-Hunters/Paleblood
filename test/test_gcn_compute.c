@@ -219,6 +219,30 @@ int main(void)
         CHECK(lane[3] == 0xdeadbeefu);
     }
 
+    /* Branches and EXEC. */
+    memset(out.mapped, 0, BUFFER_BYTES);
+    CHECK(run(&g, divergent_if, sizeof divergent_if / sizeof divergent_if[0], user) == 0);
+    for (int i = 0; i < LANES; i++) CHECK(out_words[i] == (i < 20 ? 2u * (uint32_t)i : 7u));
+
+    memset(out.mapped, 0, BUFFER_BYTES);
+    CHECK(run(&g, uniform_loop, sizeof uniform_loop / sizeof uniform_loop[0], user) == 0);
+    for (int i = 0; i < LANES; i++) CHECK(out_words[i] == 45u);
+
+    memset(out.mapped, 0, BUFFER_BYTES);
+    CHECK(run(&g, vector_loop, sizeof vector_loop / sizeof vector_loop[0], user) == 0);
+    for (int i = 0; i < LANES; i++) CHECK(out_words[i] == 10u * ((uint32_t)i & 3));
+
+    memset(out.mapped, 0, BUFFER_BYTES);
+    CHECK(run(&g, compare_exec, sizeof compare_exec / sizeof compare_exec[0], user) == 0);
+    for (int i = 0; i < LANES; i++) {
+        CHECK(out_words[2 * i] == (i < 8 ? 1u : 0u) + 64u);
+        CHECK(out_words[2 * i + 1] == 5u);
+    }
+
+    memset(out.mapped, 0xaa, BUFFER_BYTES);
+    CHECK(run(&g, masked_store, sizeof masked_store / sizeof masked_store[0], user) == 0);
+    for (int i = 0; i < LANES; i++) CHECK(out_words[i] == (i < 20 ? 0x55u : 0xaaaaaaaau));
+
     if (failures) fprintf(stderr, "%d failure(s)\n", failures);
     vkDeviceWaitIdle(g.device);
     return failures != 0;
