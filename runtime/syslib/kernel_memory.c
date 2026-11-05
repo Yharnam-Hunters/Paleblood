@@ -123,10 +123,10 @@ static uint64_t first_fit(uint64_t from, uint64_t limit, uint64_t length, uint64
     for (int i = 0; i < range_count; i++) {
         const uint64_t range_end = ranges[i].start + ranges[i].length;
         if (range_end <= candidate) continue;             /* wholly below the candidate */
-        if (candidate + length <= ranges[i].start) break; /* the gap before this range is enough */
+        if (candidate <= ranges[i].start && length <= ranges[i].start - candidate) break; /* the gap before this range is enough */
         candidate = align_up(range_end, alignment);       /* overlaps: try just past it */
     }
-    *found = candidate + length <= limit;
+    *found = candidate <= limit && length <= limit - candidate;
     return candidate;
 }
 
@@ -167,7 +167,8 @@ static int32_t allocate_direct_memory(int64_t search_start, int64_t search_end, 
 static int range_holding(uint64_t start, uint64_t length)
 {
     for (int i = 0; i < range_count; i++)
-        if (start >= ranges[i].start && start + length <= ranges[i].start + ranges[i].length) return i;
+        if (start >= ranges[i].start && start - ranges[i].start < ranges[i].length
+            && length <= ranges[i].length - (start - ranges[i].start)) return i;
     return -1;
 }
 
