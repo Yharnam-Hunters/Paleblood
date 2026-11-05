@@ -464,6 +464,43 @@ static void *pc_waiter(void *unused)
     return NULL;
 }
 static void pc_init_with_attribute(void) { void *c = NULL, *attr = &c; pc_init(&c, &attr); }
+/* pthread_cond_timedwait: an absolute time on the wall clock, a timespec of two 64-bit fields. */
+typedef struct {
+    int64_t seconds, nanoseconds;
+} pc_timespec;
+static int (*pc_timedwait)(void **, void **, const pc_timespec *);
+static pc_timespec pc_wall_in_ms(int64_t ms)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    int64_t ns = (int64_t)now.tv_sec * 1000000000 + now.tv_nsec + ms * 1000000;
+    return (pc_timespec){ns / 1000000000, ns % 1000000000};
+}
+static int pc_wall_reached(pc_timespec at)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    return now.tv_sec > at.seconds || (now.tv_sec == at.seconds && now.tv_nsec >= at.nanoseconds);
+}
+static int pc_timed_go, pc_timed_result = -1, pc_other_result = -1;
+static void *pc_timed_waiter(void *unused) /* the latest time there is: only the signal ends it */
+{
+    (void)unused;
+    const pc_timespec later = {INT64_MAX, 999999999};
+    pc_lock(&pc_mutex);
+    int r = 0;
+    while (!pc_timed_go && !r) r = pc_timedwait(&pc_cond, &pc_mutex, &later);
+    pc_timed_result = r;
+    pc_unlock(&pc_mutex);
+    return NULL;
+}
+static void *pc_other_waiter(void *unused) /* the mutex belongs to the main thread */
+{
+    (void)unused;
+    const pc_timespec later = pc_wall_in_ms(10000);
+    pc_other_result = pc_timedwait(&pc_cond, &pc_mutex, &later);
+    return NULL;
+}
 
 /* Thread attribute setters: stack size and scheduling policy. */
 typedef int (*f_attr_u64)(void **, uint64_t);
@@ -1618,7 +1655,7 @@ int main(void)
     }
     CHECK(is_implemented("libSceAppContent", "sceAppContentInitialize") &&
           is_implemented("libSceAppContent", "sceAppContentAppParamGetInt"));
-    /* libScePosix pthread_cond_*: errno values; pthread_cond_timedwait stays unbound. */
+    /* libScePosix pthread_cond_*: errno values. */
     pc_init = (f_pc_init)fn("libScePosix", "pthread_cond_init");
     const f_pc_one pc_destroy = (f_pc_one)fn("libScePosix", "pthread_cond_destroy");
     pc_signal = (f_pc_one)fn("libScePosix", "pthread_cond_signal");
@@ -1646,10 +1683,55 @@ int main(void)
         pthread_join(t, NULL);
         CHECK(pc_woken == 1);
         CHECK(died_in_fatal(pc_init_with_attribute));
+
+        /* pthread_cond_timedwait on the same objects: ETIMEDOUT (60) once the wall clock reaches
+           the time, with the mutex taken back (its owner can unlock it); EINVAL (22) before the
+           wait for no time, negative seconds or nanoseconds outside [0, 1000000000), the mutex
+           still held; 999999999 nanoseconds and second 0 are valid times; EPERM (1) for a thread
+           that does not own the mutex; 0 when signalled in time. */
+        pc_timedwait = (int (*)(void **, void **, const pc_timespec *))fn("libScePosix", "pthread_cond_timedwait");
+        CHECK(pc_timedwait != NULL);
+        if (pc_timedwait) {
+            CHECK(pc_lock(&pc_mutex) == 0);
+            struct timespec pc_start;
+            clock_gettime(CLOCK_MONOTONIC, &pc_start);
+            const pc_timespec pc_past = pc_wall_in_ms(-1000);
+            CHECK(pc_timedwait(&pc_cond, &pc_mutex, &pc_past) == 60);
+            CHECK(pc_unlock(&pc_mutex) == 0 && pc_lock(&pc_mutex) == 0);
+            const pc_timespec pc_epoch = {0, 0}, pc_last_nanosecond = {pc_past.seconds, 999999999};
+            CHECK(pc_timedwait(&pc_cond, &pc_mutex, &pc_epoch) == 60);
+            CHECK(pc_timedwait(&pc_cond, &pc_mutex, &pc_last_nanosecond) == 60);
+            CHECK(elapsed_us(&pc_start) < 1500000); /* a passed time does not wait (generous bound) */
+            clock_gettime(CLOCK_MONOTONIC, &pc_start);
+            const pc_timespec pc_soon = pc_wall_in_ms(50);
+            CHECK(pc_timedwait(&pc_cond, &pc_mutex, &pc_soon) == 60);
+            CHECK(pc_wall_reached(pc_soon) && elapsed_us(&pc_start) >= 40000);
+            const pc_timespec pc_negative_ns = {pc_soon.seconds, -1}, pc_billion_ns = {pc_soon.seconds, 1000000000},
+                              pc_negative_s = {-1, 0};
+            CHECK(pc_timedwait(&pc_cond, &pc_mutex, NULL) == 22);
+            CHECK(pc_timedwait(&pc_cond, &pc_mutex, &pc_negative_ns) == 22);
+            CHECK(pc_timedwait(&pc_cond, &pc_mutex, &pc_billion_ns) == 22);
+            CHECK(pc_timedwait(&pc_cond, &pc_mutex, &pc_negative_s) == 22);
+            pthread_t pc_other;
+            pthread_create(&pc_other, NULL, pc_other_waiter, NULL);
+            pthread_join(pc_other, NULL);
+            CHECK(pc_other_result == 1);
+            CHECK(pc_unlock(&pc_mutex) == 0);
+            pthread_t pc_timed;
+            pthread_create(&pc_timed, NULL, pc_timed_waiter, NULL);
+            for (int i = 0; i < 200; i++) sched_yield();
+            CHECK(pc_lock(&pc_mutex) == 0);
+            pc_timed_go = 1;
+            CHECK(pc_signal(&pc_cond) == 0);
+            CHECK(pc_unlock(&pc_mutex) == 0);
+            pthread_join(pc_timed, NULL);
+            CHECK(pc_timed_result == 0);
+            CHECK(pc_destroy(&pc_cond) == 0); /* no wait left counted */
+        }
     }
     CHECK(is_implemented("libScePosix", "pthread_cond_init") && is_implemented("libScePosix", "pthread_cond_wait") &&
           is_implemented("libScePosix", "pthread_cond_signal") && is_implemented("libScePosix", "pthread_cond_broadcast") &&
-          is_implemented("libScePosix", "pthread_cond_destroy") && !is_implemented("libScePosix", "pthread_cond_timedwait"));
+          is_implemented("libScePosix", "pthread_cond_destroy") && is_implemented("libScePosix", "pthread_cond_timedwait"));
 
     /* scePthreadAttrSetstacksize / Setschedpolicy and pthread_attr_setstacksize, on attributes
        made by scePthreadAttrInit. */
