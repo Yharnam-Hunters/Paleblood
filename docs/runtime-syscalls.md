@@ -367,6 +367,22 @@ Measured with a local boot that let the libc affinity probe return (not committe
 calls the executable's heap setup succeeds and the boot reaches `entry`. It stops next at
 `scePthreadRwlockInit`.
 
+### Range arithmetic
+
+The existing `sceKernelAllocateDirectMemory` and `sceKernelMapDirectMemory`
+implementations validate lengths by subtraction after checking the starting
+address. This prevents a full-width length from wrapping an end address and
+passing the allocation or containment check. An allocation must fit wholly
+inside its end-exclusive search range; a map must fit inside one live allocation.
+Misaligned address hints still stop by the API name before mapping.
+
+The runtime keeps its existing sparse pool, accepted memory types, CPU/GPU
+protection bits, address window, mapping records and named unsupported cases.
+No alternate pool, capacity setting or new guest error value is introduced.
+`test_direct_memory_bounds` exercises the registered calls with exact boundaries,
+overlong and wrapping ranges, a misaligned hint and a valid writable map. These
+are host validation limits, without a claim about native error codes.
+
 ## Kernel semaphores (`libkernel`, issue #34)
 
 `eboot` imports `sceKernelCreateSema`, `sceKernelDeleteSema`, `sceKernelWaitSema`,
