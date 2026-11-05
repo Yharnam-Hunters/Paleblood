@@ -43,6 +43,7 @@ address,size,name,system,status,notes
 0x01471730,21,render_record_encoding_metadata,render,edge-verified,Bounded first-byte metadata lookup; preserve original table entries and zero fallback.
 0x014717a0,505,render_record_encoding_components,render,edge-verified,Select ordered packed component arrangement; optional output only on success and Boolean AL contract.
 0x014719a0,117,render_record_encoding_category,render,edge-verified,Decode accepted category nibbles; optional DWORD output untouched on rejection.
+0x01471a40,73,render_read_record_descriptor_component,render,edge-verified,Read one encoding DWORD and extract one of four 3-bit components; invalid selectors return 2 without reading input.
 0x014721d0,31,render_set_present_last_record_indices,render,edge-verified,Replace two packed indices while preserving the remaining bits. Return the old preserved bits.
 0x01473590,95,render_emit_present_preparation_scalar,render,edge-verified,Write the captured float bits to DB_DEPTH_CLEAR. Admission tests the callback low byte; rejection returns its full 64-bit result.
 0x014735f0,89,render_emit_present_preparation_byte,render,edge-verified,Write the captured input low byte to DB_STENCIL_CLEAR. Admission tests the callback low byte; rejection returns its full 64-bit result.
@@ -60,12 +61,17 @@ address,size,name,system,status,notes
 0x014867e0,21,render_record_set_second_auxiliary_flag,render,edge-verified,Clear only bit 14 then OR full input byte shifted14; return preserved old word.
 0x01486800,20,render_record_set_word_28_low22,render,edge-verified,Replace this word's low 22 bits and return the preserved old upper bits.
 0x01486cf0,38,render_read_record_mapping_word,render,edge-verified,Read one unaligned mapping DWORD and delegate three extracted fields to the original encoder. Full return is zero-extended.
+0x01487ee0,1090,render_initialize_pair_record_descriptor,render,edge-verified,"Clear 32 bytes; admit counts after float rounding, test flag bytes independently, and return packed requirements."
+0x01488370,17,render_record_descriptor_set_high_field,render,edge-verified,Set the descriptor top nibble and return the preserved old low 28 bits.
+0x01488590,969,render_initialize_triple_record_descriptor,render,edge-verified,"Clear 32 bytes in order, delegate flags, retain partial writes and return packed requirements."
+0x0149c4e0,114,render_initialize_record_geometry_flags,render,edge-verified,Clear the output before selecting one of 12 cases; only a flag byte equal to 1 takes the alternate path.
 0x0149c850,672,render_record_apply_parameter_tuple,render,edge-verified,Select one output code from normalization tuple; ordered overrides and rejection preserve output.
 0x0149e570,279,render_calculate_second_auxiliary,render,edge-verified,Calculate the second auxiliary layout through two ordered unit admissions and wrapped alignment. Publish its four optional size and alignment outputs in 8/4/4/4-byte order.
 0x0149e900,16,render_record_tuple_parameter_supported,render,edge-verified,Nonzero power-of-two test with Boolean AL interface.
 0x0149e960,129,render_record_tuple_transform_classification,render,edge-verified,Transform admitted classifications after wrapping 32-bit scaling and unsigned thresholds.
 0x0149ea20,28,render_record_tuple_classification_group,render,edge-verified,Bounded classification-to-group lookup with fallback one and original shared table.
 0x0149ea70,25,render_record_tuple_alternate_classification,render,edge-verified,Recognize bounded alternate-classification subset with zero fallback.
+0x014a27c0,627,render_get_record_descriptor_size,render,edge-verified,Initialize mandatory outputs after the decoder call; accumulate live values and retain partial outputs on error.
 0x016efd00,368,event_emk_add,event,verified,SprjEmkSystem: find or add an event entry in two keyed lists; first advance with the 1/30 s step (1/60 s in the 60 FPS patches)
 0x017cfcc0,177,event_flag_write,event,edge-verified,finds an exact event-flag group in a tree and sets or clears one bit
 0x0183fad0,79,camera_follow_pitch,camera,edge-verified,Pitch from the forward basis; preserve scalar square underflow and zero fallback; call atan2 and XOR the returned sign bits
