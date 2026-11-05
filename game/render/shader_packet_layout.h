@@ -9,7 +9,7 @@
 #include <cstdint>
 #include <cstring>
 
-#include "present_record_consumer.h"
+#include "runtime/original.h"
 
 namespace render {
 
@@ -48,8 +48,8 @@ struct ShaderDescriptorPacket {
     Field<uint32_t> descriptor_control;
     Field<uint32_t> header;
     Field<uint32_t> register_index;
-    static constexpr auto payload_extent_0 = 4;
-    Field<uint64_t> payload[payload_extent_0];
+    static constexpr auto payload_word_count = 4;
+    Field<uint64_t> payload[payload_word_count];
 };
 static_assert(offsetof(ShaderDescriptorPacket, preamble) == 0x00);
 static_assert(offsetof(ShaderDescriptorPacket, descriptor_control) == 0x04);
