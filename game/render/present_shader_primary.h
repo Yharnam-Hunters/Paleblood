@@ -114,25 +114,6 @@ static_assert(offsetof(ShaderPrimaryStateView, optional_pair_a0d0) == 0xa0d0);
 static_assert(sizeof(ShaderPrimaryStateView) == 0xa0e0);
 static_assert(alignof(ShaderPrimaryStateView) == 1);
 
-struct ShaderLinkInputPair {
-    uint8_t key;
-    uint8_t value;
-    uint16_t word() const
-    {
-        uint16_t result;
-        std::memcpy(&result, this, sizeof(result));
-        return result;
-    }
-};
-static_assert(sizeof(ShaderLinkInputPair) == 2);
-static_assert(offsetof(ShaderLinkInputPair, value) == 1);
-struct ShaderLinkCommandHeader {
-    Field<uint32_t> header;
-    Field<uint32_t> register_index;
-};
-static_assert(sizeof(ShaderLinkCommandHeader) == 8);
-static_assert(offsetof(ShaderLinkCommandHeader, register_index) == 4);
-
 RT_ORIGINAL(0x01475480, set_vs_shader,
             void(PacketBuffer *, const void *, uint32_t));
 RT_ORIGINAL(0x014753c0, set_ps_shader,
@@ -142,9 +123,4 @@ RT_ORIGINAL(0x014873a0, build_shader_link_words,
 RT_ORIGINAL(0x01475000, emit_shader_link_words,
             void(PacketBuffer *, const void *, uint32_t));
 
-// Opaque native writers: only these argument profiles and low 32-bit return gates are known.
-RT_ORIGINAL(0x02fc04d8, sceGnmSetVsShader,
-            uint32_t(void *, uint32_t, const void *, uint32_t));
-RT_ORIGINAL(0x02fc04b8, sceGnmSetPsShader,
-            uint32_t(void *, uint32_t, const void *));
 }  // namespace render
