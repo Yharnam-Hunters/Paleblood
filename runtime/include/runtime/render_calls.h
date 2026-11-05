@@ -23,7 +23,14 @@ extern "C" {
 #endif
 
 enum { RT_COLOR_TARGETS = 8, RT_COLOR_TARGET_WORDS = 11, RT_VIEWPORTS = 16, RT_VERTEX_SHADER_WORDS = 7,
-       RT_PIXEL_SHADER_WORDS = 12 };
+       RT_PIXEL_SHADER_WORDS = 12, RT_USER_DATA_SLOTS = 16, RT_USER_DATA_MAX_WORDS = 8 };
+
+/* Shader stages as the GPU library numbers them: the order of its table of user-data registers
+   (COMPUTE_USER_DATA_0, then SPI_SHADER_USER_DATA_PS_0, _VS_0, _GS_0, _ES_0, _HS_0, _LS_0). */
+typedef enum {
+    RT_STAGE_COMPUTE, RT_STAGE_PIXEL, RT_STAGE_VERTEX, RT_STAGE_GEOMETRY, RT_STAGE_EXPORT, RT_STAGE_HULL, RT_STAGE_LOCAL,
+    RT_SHADER_STAGES
+} rt_shader_stage;
 
 /* A colour render target, from its CB_COLORn_* registers: BASE, PITCH, SLICE, VIEW, INFO, ATTRIB,
    a reserved word, CMASK, CMASK_SLICE, FMASK, FMASK_SLICE. */
@@ -75,6 +82,7 @@ void rt_pixel_shader_decode(const uint32_t words[RT_PIXEL_SHADER_WORDS], rt_pixe
 
 typedef enum {
     RT_CALL_COLOR_TARGET, RT_CALL_VIEWPORT, RT_CALL_DRAW_AUTO, RT_CALL_VERTEX_SHADER, RT_CALL_PIXEL_SHADER,
+    RT_CALL_USER_DATA,
 } rt_render_call_kind;
 
 typedef struct {
@@ -95,6 +103,11 @@ typedef struct {
         } draw_auto;
         rt_vertex_shader vertex_shader;
         rt_pixel_shader pixel_shader;
+        struct {
+            rt_shader_stage stage;
+            unsigned slot, count;    /* the first user SGPR written, and how many */
+            uint32_t words[RT_USER_DATA_MAX_WORDS];
+        } user_data;
     } u;
 } rt_render_call;
 
@@ -108,6 +121,10 @@ int rt_render_record_viewport(uint64_t buffer, uint32_t offset, unsigned index, 
 int rt_render_record_draw_auto(uint64_t buffer, uint32_t offset, uint32_t index_count, char *error, size_t error_size);
 int rt_render_record_vertex_shader(uint64_t buffer, uint32_t offset, const uint32_t words[RT_VERTEX_SHADER_WORDS],
                                    char *error, size_t error_size);
+/* User data: count words (1 to 8: a value, a pointer, a buffer or texture descriptor) into a
+   stage's user SGPRs from slot on. */
+int rt_render_record_user_data(uint64_t buffer, uint32_t offset, rt_shader_stage stage, unsigned slot, const uint32_t *words,
+                               unsigned count, char *error, size_t error_size);
 int rt_render_record_pixel_shader(uint64_t buffer, uint32_t offset, const uint32_t words[RT_PIXEL_SHADER_WORDS],
                                   char *error, size_t error_size);
 
