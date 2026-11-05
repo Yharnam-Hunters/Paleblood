@@ -48,11 +48,10 @@ def cases():
     for available, result in ((0, 0), (4 - 1, 0x100), (0, 1), (4, 0)):
         yield shader_case(f"capacity_{available}_ret_{result:x}", 2, 0x89ABCDEF01234567, available, result)
 
-
     c = basic("packet_overwrites_cursor", returns="void", size=512)
     c["buffers"]["descriptor"] = {"size": 64}
     c["args"].update({"rsi": 1, "rdx": 16, "rcx": "buf:descriptor"})
-    c["memory"] = [{"addr": "buf:self+8", "pointer": "self+512"}, {"addr": "buf:self+16", "pointer": "self"}]
+    c["memory"] = [{"addr": "buf:self+8", "pointer": "self+512"}, {"addr": "buf:self+16", "pointer": "self+8"}]
     yield c
 
 
@@ -72,7 +71,6 @@ def shader_case(cid, stage, value, available, result):
     if available < 4:
         c["stubs"] = [{"address": "0x014712b0", "argc": 3, "ret": hex(result)}]
     return c
-
 
 
 def main():
