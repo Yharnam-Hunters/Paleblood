@@ -290,6 +290,9 @@ def main() -> int:
     ap.add_argument('--system-param', action='append', default=[], metavar='ID=VALUE',
                     help='a console system setting, e.g. 1=18 for English (United Kingdom)')
     ap.add_argument('--no-record', action='store_true', help='run and print only')
+    ap.add_argument('--display', choices=('none', 'headless', 'window'), default='none',
+                    help='show the frames: none (default), headless, or a window (needs Vulkan and SDL3)')
+    ap.add_argument('--display-capture', default=None, metavar='DIR', help='write each presented frame to DIR as PPM')
     a = ap.parse_args()
     elf = a.elf or default_elf()
     pbboot = os.environ.get('BB_PBBOOT') or os.path.join(ROOT, 'build', 'runtime', 'pbboot')
@@ -322,7 +325,10 @@ def main() -> int:
         # starts alike and nothing the game writes outlives the run.
         data = os.path.join(d, 'data')
         os.mkdir(data)
-        cmd = [pbboot, *objects, *stubs, *hooks, '--data', data, '--status', out, '--timeout', str(a.timeout), *names]
+        cmd = [pbboot, *objects, *stubs, *hooks, '--data', data, '--status', out, '--timeout', str(a.timeout), *names,
+               '--display', a.display]
+        if a.display_capture:
+            cmd += ['--display-capture', a.display_capture]
         if a.trace:
             cmd.append('--trace')
         # The guest runs in this process's child; a hard limit covers a runaway harness.

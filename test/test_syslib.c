@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* The runtime's system library implementations, called the way the guest calls them: through the
    RT_SYSLIB registry, by library and symbol. */
+#include "runtime/display.h"
 #include "runtime/equeue.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
@@ -2143,6 +2144,14 @@ int main(void)
     vo_status_fn = (f_vo_status)fn("libSceVideoOut", "sceVideoOutGetFlipStatus");
     const f_eq_create vo_eq_create = (f_eq_create)fn("libkernel", "sceKernelCreateEqueue");
     if (vo_open_fn && vo_rate && vo_event && vo_attr && vo_register && vo_flip_fn && vo_status_fn && vo_eq_create && eq_wait_fn) {
+        /* The display runs headless and captures each presented frame. */
+        static char capture_buf[512];
+        const char *tmp_dir = getenv("TMPDIR");
+        snprintf(capture_buf, sizeof capture_buf, "%s/pb-display-XXXXXX", tmp_dir ? tmp_dir : "/tmp");
+        char *capture = mkdtemp(capture_buf);
+        CHECK(capture != NULL && rt_display_configure(RT_DISPLAY_HEADLESS, capture) == 0);
+        CHECK(rt_display_configure(RT_DISPLAY_WINDOW, NULL) == -1); /* the tests build without a window */
+        CHECK(rt_display_configure(RT_DISPLAY_HEADLESS, capture) == 0);
         vo_handle = vo_open_fn(0, 0, 0, NULL);
         CHECK(vo_handle > 0 && vo_rate(vo_handle, 0) == 0);
         rt_equeue *flips = NULL;
@@ -2154,6 +2163,11 @@ int main(void)
         static uint32_t frame_a[16], frame_b[16];
         void *const buffers[2] = {frame_a, frame_b};
         CHECK(vo_register(vo_handle, 0, buffers, 2, attr) == 0);
+        /* Each registered buffer has a black host frame of the attribute's size. */
+        uint32_t *const host_a = rt_display_frame(vo_handle, 0), *const host_b = rt_display_frame(vo_handle, 1);
+        CHECK(host_a && host_b && host_a != host_b && host_b[0] == 0 && host_b[1920 * 1080 - 1] == 0);
+        CHECK(rt_display_frame(vo_handle, 2) == NULL && rt_display_presented(vo_handle) == 0);
+        if (host_b) host_b[1920 + 1] = 0x00336699u; /* pixel (1, 1): red 0x33, green 0x66, blue 0x99 */
         {   /* before the first flip: success, and all zero (no flips yet) */
             unsigned char before[64], zero[64] = {0};
             memset(before, 0xee, sizeof before);
@@ -2166,6 +2180,27 @@ int main(void)
         CHECK(vo_status_fn(vo_handle, st) == 0);
         memcpy(&count, st, 8); memcpy(&arg, st + 0x18, 8); memcpy(&current, st + 0x38, 4);
         CHECK(count == 1 && arg == 77 && current == 1);
+        /* The flip presented buffer 1: counted, and captured as frame 0 with the pixel in place. */
+        CHECK(rt_display_presented(vo_handle) == 1);
+        if (capture) {
+            char frame_path[600];
+            snprintf(frame_path, sizeof frame_path, "%s/frame-000000.ppm", capture);
+            FILE *ppm = fopen(frame_path, "rb");
+            CHECK(ppm != NULL);
+            if (ppm) {
+                char magic[3] = {0};
+                unsigned w = 0, h = 0, max = 0;
+                CHECK(fscanf(ppm, "%2s %u %u %u", magic, &w, &h, &max) == 4 && !strcmp(magic, "P6"));
+                CHECK(w == 1920 && h == 1080 && max == 255);
+                fgetc(ppm); /* the single whitespace before the pixels */
+                unsigned char rgb[3];
+                CHECK(fseek(ppm, (long)(1920 + 1) * 3, SEEK_CUR) == 0 && fread(rgb, 1, 3, ppm) == 3);
+                CHECK(rgb[0] == 0x33 && rgb[1] == 0x66 && rgb[2] == 0x99);
+                fclose(ppm);
+            }
+            remove(frame_path);
+        }
+        rt_display_configure(RT_DISPLAY_HEADLESS, NULL); /* stop capturing: writing a frame would skew the timing */
         /* A vsync flip completes at the next 60 Hz tick: within one period. */
         struct timespec before, after;
         clock_gettime(CLOCK_MONOTONIC, &before);
@@ -2221,6 +2256,15 @@ int main(void)
         }
         CHECK(died_in_fatal(vo_flip_bad_buffer));
         CHECK(died_in_fatal(vo_open_other));
+        if (capture) { /* every later flip was captured too */
+            for (uint64_t k = 0; k < rt_display_presented(vo_handle); k++) {
+                char frame_path[600];
+                snprintf(frame_path, sizeof frame_path, "%s/frame-%06llu.ppm", capture, (unsigned long long)k);
+                remove(frame_path);
+            }
+            CHECK(rmdir(capture) == 0);
+        }
+        rt_display_configure(RT_DISPLAY_NONE, NULL);
     }
 
     if (!failures) puts("syslib: ok");
