@@ -85,3 +85,5 @@ address,name,date,reviewer,verdict,notes
 +0x02abb4f0,render_record_auxiliary_predicate,2026-11-03,independent session,approved,"the earlier point is fully addressed (plain uint8_t predicate, no asm, no #221 dependency); 64/64; planted mistakes caught"
 +0x011c4810,audio_fmod_string_copy,2026-11-03,independent session,approved,"faithful on every path, 40/40 and 54/54, and every mutant is caught"
 +0x011c4840,audio_fmod_string_copy_counted,2026-11-03,independent session,approved,"faithful on every path, 40/40 and 54/54, and every mutant is caught"
++0x01471310,render_pack_record_mapping_word,2026-11-03,independent session,approved,"the family by mode table matches the disassembly exactly and every earlier issue is fixed"
++0x01486cf0,render_read_record_mapping_word,2026-11-03,independent session,approved,"the family by mode table matches the disassembly exactly and every earlier issue is fixed"
