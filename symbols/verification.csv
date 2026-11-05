@@ -32,6 +32,8 @@ engine_initialize_static_wide_string_0217ffb0,edge,,30,30,0,0,ccdadef0d4bd7152,2
 engine_release_owner_storage,edge,,28,28,0,0,e693d2086e8654b0,2026-11-03
 engine_resize_owner_storage,edge,,37,37,0,0,2a08395ca4550ad9,2026-11-03
 engine_store_word_product,edge,,32,32,0,0,ecb3d664ff30b9e2,2026-11-05
+engine_string_append,edge,,32,32,0,0,f9bbc2ec8f450f14,2026-11-05
+engine_string_append_counted,edge,,48,48,0,0,f7f96f0ac221364a,2026-11-05
 engine_string_length,edge,,30,30,0,0,dbb33699bb2cc030,2026-11-03
 engine_wide_string_destroy,edge,,28,28,0,0,82e3fd837894b106,2026-11-03
 engine_write_stderr,edge,,28,28,0,0,f997862b08044f6d,2026-10-31
