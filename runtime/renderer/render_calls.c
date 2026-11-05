@@ -8,6 +8,13 @@
      CB_COLORn_INFO    FORMAT[6:2], NUMBER_TYPE[10:8], COMP_SWAP[12:11], FAST_CLEAR[13],
                        COMPRESSION[14]
      CB_COLORn_ATTRIB  TILE_MODE_INDEX[4:0], NUM_SAMPLES[14:12] (log2)
+     SPI_SHADER_PGM_LO_xS MEM_BASE[31:0], SPI_SHADER_PGM_HI_xS MEM_BASE[7:0]: address bits 39:8
+                       and 47:40
+     SPI_SHADER_PGM_RSRC1_xS VGPRS[5:0] = VGPRs / 4 - 1, SGPRS[9:6] = SGPRs / 8 - 1;
+                       for VS also VGPR_COMP_CNT[25:24]
+     SPI_SHADER_PGM_RSRC2_xS USER_SGPR[5:1]
+     SPI_VS_OUT_CONFIG VS_EXPORT_COUNT[5:1] = parameter vectors - 1
+     SPI_PS_IN_CONTROL NUM_INTERP[5:0]
    and ColorFormat from its enum header (gca/gfx_7_2_enum.h). */
 #include "runtime/render_calls.h"
 
@@ -53,6 +60,53 @@ int rt_color_target_decode(const uint32_t words[RT_COLOR_TARGET_WORDS], rt_color
     target->tile_mode_index = field(words[WORD_ATTRIB], 0, 5);
     target->samples = 1u << field(words[WORD_ATTRIB], 12, 3);
     return 1;
+}
+
+/* ---- shader register blocks ---- */
+
+enum { PROGRAM_LOW, PROGRAM_HIGH, RESOURCES_1, RESOURCES_2 };
+enum { VS_OUT_CONFIG = 4, VS_POS_FORMAT, VS_OUT_CNTL };
+enum { PS_Z_FORMAT = 4, PS_COL_FORMAT, PS_INPUT_ENA, PS_INPUT_ADDR, PS_IN_CONTROL, PS_BARYC_CNTL, PS_DB_SHADER_CONTROL,
+       PS_CB_SHADER_MASK };
+enum { PROGRAM_UNIT_SHIFT = 8, VGPR_UNIT = 4, SGPR_UNIT = 8 };
+
+static uint64_t program_address(const uint32_t *words)
+{
+    return ((uint64_t)field(words[PROGRAM_HIGH], 0, 8) << 32 | words[PROGRAM_LOW]) << PROGRAM_UNIT_SHIFT;
+}
+
+void rt_vertex_shader_decode(const uint32_t words[RT_VERTEX_SHADER_WORDS], rt_vertex_shader *shader)
+{
+    const uint32_t resources = words[RESOURCES_1];
+    *shader = (rt_vertex_shader){
+        .code = program_address(words),
+        .vgprs = (field(resources, 0, 6) + 1) * VGPR_UNIT,
+        .sgprs = (field(resources, 6, 4) + 1) * SGPR_UNIT,
+        .vgpr_inputs = field(resources, 24, 2),
+        .user_sgprs = field(words[RESOURCES_2], 1, 5),
+        .parameter_count = field(words[VS_OUT_CONFIG], 1, 5) + 1,
+        .position_format = words[VS_POS_FORMAT],
+        .output_control = words[VS_OUT_CNTL],
+    };
+}
+
+void rt_pixel_shader_decode(const uint32_t words[RT_PIXEL_SHADER_WORDS], rt_pixel_shader *shader)
+{
+    const uint32_t resources = words[RESOURCES_1];
+    *shader = (rt_pixel_shader){
+        .code = program_address(words),
+        .vgprs = (field(resources, 0, 6) + 1) * VGPR_UNIT,
+        .sgprs = (field(resources, 6, 4) + 1) * SGPR_UNIT,
+        .user_sgprs = field(words[RESOURCES_2], 1, 5),
+        .depth_format = words[PS_Z_FORMAT],
+        .color_formats = words[PS_COL_FORMAT],
+        .input_enable = words[PS_INPUT_ENA],
+        .input_address = words[PS_INPUT_ADDR],
+        .interpolated = field(words[PS_IN_CONTROL], 0, 6),
+        .barycentric_control = words[PS_BARYC_CNTL],
+        .depth_control = words[PS_DB_SHADER_CONTROL],
+        .color_mask = words[PS_CB_SHADER_MASK],
+    };
 }
 
 /* ---- the record ---- */
@@ -134,6 +188,22 @@ int rt_render_record_viewport(uint64_t buffer, uint32_t offset, unsigned index, 
 int rt_render_record_draw_auto(uint64_t buffer, uint32_t offset, uint32_t index_count, char *error, size_t error_size)
 {
     const rt_render_call call = {.kind = RT_CALL_DRAW_AUTO, .offset = offset, .u.draw_auto.index_count = index_count};
+    return record(buffer, &call, error, error_size);
+}
+
+int rt_render_record_vertex_shader(uint64_t buffer, uint32_t offset, const uint32_t words[RT_VERTEX_SHADER_WORDS],
+                                   char *error, size_t error_size)
+{
+    rt_render_call call = {.kind = RT_CALL_VERTEX_SHADER, .offset = offset};
+    rt_vertex_shader_decode(words, &call.u.vertex_shader);
+    return record(buffer, &call, error, error_size);
+}
+
+int rt_render_record_pixel_shader(uint64_t buffer, uint32_t offset, const uint32_t words[RT_PIXEL_SHADER_WORDS],
+                                  char *error, size_t error_size)
+{
+    rt_render_call call = {.kind = RT_CALL_PIXEL_SHADER, .offset = offset};
+    rt_pixel_shader_decode(words, &call.u.pixel_shader);
     return record(buffer, &call, error, error_size);
 }
 
