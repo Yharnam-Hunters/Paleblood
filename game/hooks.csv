@@ -116,3 +116,4 @@ address,replacement,system,returns
 0x02ad2c30,bb_render_reset_present_preparation_dirty,render,i64
 0x02ad5dd0,bb_render_swap_chain_present_mode,render,i32
 0x02ad6e50,bb_render_swap_chain_submit,render,i32
+0x02fa6af0,bb_render_prepare_resource_descriptor,render,i64
