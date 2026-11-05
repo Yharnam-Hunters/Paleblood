@@ -2,7 +2,7 @@
 // Emit dirty, non-null presentation slots from the selected bank. Skipped entries retain
 // the cached count and flags. A processed entry refreshes both after the command helper and
 // copies the then-current pending value into its cache, even if the helper changed it.
-#include "present_source_state.h"
+#include "present_source_flush_state.h"
 
 namespace {
 constexpr uint32_t bank_mask = 1;

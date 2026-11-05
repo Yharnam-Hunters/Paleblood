@@ -6,7 +6,7 @@
 #include <cstring>
 
 #include "command_reservation.h"
-#include "present_slot_packet.h"
+#include "present_slot_emit.h"
 
 namespace {
 constexpr uint32_t packet_words = 4;

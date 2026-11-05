@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Bounded encoding lookup used by presentation slot packing. Preserve the complete QWORD
 // result; the known state-flush caller later consumes only its low 32 shifted bits.
-#include "present_source_state.h"
+#include "present_source_flush_state.h"
 
 namespace {
 constexpr uint32_t encoding_entry_count = 99;

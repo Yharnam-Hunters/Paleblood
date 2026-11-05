@@ -19,16 +19,16 @@ struct PresentSourcePayloadView {
     uint16_t record_parameter_30;
     uint8_t record_count_32;
     uint8_t record_selector_33;
-    uint16_t parameter_34;
-    uint16_t parameter_36;
+    uint8_t unknown_0x34[4];
 };
 static_assert(offsetof(PresentSourcePayloadView, count_input_2c) == 0x2c);
 static_assert(offsetof(PresentSourcePayloadView, count_input_2e) == 0x2e);
 static_assert(offsetof(PresentSourcePayloadView, record_parameter_30) == 0x30);
 static_assert(offsetof(PresentSourcePayloadView, record_count_32) == 0x32);
 static_assert(offsetof(PresentSourcePayloadView, record_selector_33) == 0x33);
-static_assert(offsetof(PresentSourcePayloadView, parameter_34) == 0x34);
-static_assert(offsetof(PresentSourcePayloadView, parameter_36) == 0x36);
+static_assert(offsetof(PresentSourcePayloadView, unknown_0x34) == 0x34);
+static_assert(sizeof(PresentSourcePayloadView) == 0x38);
+static_assert(alignof(PresentSourcePayloadView) == 2);
 
 struct PresentSourceView {
     uint8_t unknown_0x00[0x18];
