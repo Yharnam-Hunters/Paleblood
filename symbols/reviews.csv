@@ -102,3 +102,8 @@ address,name,date,reviewer,verdict,notes
 +0x01486800,render_record_set_word_28_low22,2026-11-03,independent session,approved,"all seven setters match the disassembly and every mutant is caught"
 +0x01473590,render_emit_present_preparation_scalar,2026-11-03,independent session,approved,"faithful including the full RAX return on rejection, with the overlap and truncation cases caught"
 +0x014735f0,render_emit_present_preparation_byte,2026-11-03,independent session,approved,"faithful including the full RAX return on rejection, with the overlap and truncation cases caught"
++0x014721d0,render_set_present_last_record_indices,2026-11-03,independent session,approved,"faithful on every path, and every earlier survivor is caught"
++0x014769e0,render_emit_present_last_record_packet,2026-11-03,independent session,approved,"faithful on every path, and every earlier survivor is caught"
++0x01485070,render_set_present_last_record_depth_compress_disable,2026-11-03,independent session,approved,"faithful on every path, and every earlier survivor is caught"
++0x01485080,render_set_present_last_record_stencil_compress_disable,2026-11-03,independent session,approved,"faithful on every path, and every earlier survivor is caught"
++0x02ad2c30,render_reset_present_preparation_dirty,2026-11-03,independent session,approved,"faithful on every path, and every earlier survivor is caught"
