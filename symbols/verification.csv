@@ -199,6 +199,10 @@ render_read_present_pool_counter,edge,,18,18,0,0,1ef235dcff31de42,2026-11-03
 render_read_record_mapping_word,edge,,224,224,0,0,68ea5b3aae2f9be4,2026-11-04
 render_record_apply_parameter_tuple,edge,,1050,1050,0,0,5cc7672932429aef,2026-11-04
 render_record_auxiliary_predicate,edge,,64,64,0,0,ddfae0976d12bebd,2026-11-04
+render_record_encoding_category,edge,,48,48,0,0,8f03f505a6bdfb07,2026-11-04
+render_record_encoding_components,edge,,148,148,0,0,b50f3397c0119c7e,2026-11-04
+render_record_encoding_metadata,edge,,256,256,0,0,39b8a33ac9b2c1c0,2026-11-04
+render_record_set_encoding,edge,,84,84,0,0,eb5c282513d25880,2026-11-04
 render_record_set_first_auxiliary_flag,edge,,30,30,0,0,b0021f531a97afae,2026-11-04
 render_record_set_second_auxiliary_flag,edge,,30,30,0,0,dd95c587154dadcb,2026-11-04
 render_record_set_word_04_repeated_field,edge,,30,30,0,0,a2b59917091d1cc7,2026-11-04
