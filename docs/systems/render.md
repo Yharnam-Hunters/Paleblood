@@ -49,6 +49,11 @@ It carries the middleware's own assertions.
 
 Scope still to map: draw submission, GNM command buffers, shaders, post-processing.
 
+The game's shaders ship as compiled AMD GPU code in its shader bundles. A census tool in the code
+repository decodes the shaders in your own copy and counts the instructions they use, for
+Paleblood's shader translator (Paleblood #316). It prints counts only; no shader code leaves your
+machine.
+
 ### Writing GPU commands and presenting
 
 The engine builds the GPU's command buffers itself (see Runtime syscalls),
