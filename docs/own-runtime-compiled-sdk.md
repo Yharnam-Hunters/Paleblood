@@ -16,14 +16,11 @@ NID `WB66evu8bsU` to ELF `0x1a920`, 126 bytes. Its local contract is:
   caller's output, and returns zero. It accepts every SDK bit pattern and every
   nonzero version. It captures the value before writing an aliased output.
 
-REA evidence `ev_cb3c43b891a92015044b910ad0af67a5d8067884a88826e8ed03273ce8c67c20`
-binds the getter's complete body. Its 24-byte direct helper at ELF `0x1d70`
-issues syscall `0x256` and forwards its actual result/carry handling (evidence
-`ev_63f00a2669409c3363877b09c6ff88f3a41ee3b977f338268d3a3d6622b73d22`).
-The helper contains no output stores. Its kernel handler, returned storage and
-second output slot's meaning were not recovered or executed. The getter does
-not read that second slot. Decompiler text that retains the syscall number as
-its result is not a valid substitute for the assembly.
+The getter requests the metadata through a 24-byte direct helper at ELF `0x1d70`.
+That helper issues syscall `0x256`, returns its actual result with carry handling,
+and contains no output stores. Its kernel handler, returned storage and second
+output slot's meaning were not recovered or executed. The getter does not read
+that second slot.
 
 The source library SHA-256 is
 `b3e13917da667d01a353ccf49025d6b1308a32cf86f3f351f96b3a13cd5c7c2f`.
