@@ -38,6 +38,7 @@ address,replacement,system,returns
 0x0143e490,bb_frame_timing_task_flush_queue_0143e490,frame_timing,void
 0x0143f9f0,bb_frame_timing_task_set_frame_value_0143f9f0,frame_timing,void
 0x014400a0,bb_frame_timing_task_workers_step_014400a0,frame_timing,void
+0x01471270,bb_render_command_buffer_init,render,void
 0x01471310,bb_render_pack_record_mapping_word,render,i64
 0x01471730,bb_render_record_encoding_metadata,render,i32
 0x014717a0,bb_render_record_encoding_components,render,i8
@@ -111,6 +112,9 @@ address,replacement,system,returns
 0x02483e80,bb_kernel_condition_wait,kernel,i32
 0x025b2fb0,bb_render_swap_chain_present,render,void
 0x02a44140,bb_engine_wide_string_destroy,engine,void
+0x02aafb30,bb_render_command_submit_present,render,i32
+0x02ab0ce0,bb_render_command_submit_batch,render,void
+0x02ab0e30,bb_render_command_submit_snapshot,render,void
 0x02ab5a70,bb_render_present_record_consume,render,void
 0x02abb4f0,bb_render_record_auxiliary_predicate,render,i8
 0x02ad2c30,bb_render_reset_present_preparation_dirty,render,i64
