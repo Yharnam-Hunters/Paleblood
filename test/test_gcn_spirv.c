@@ -2,7 +2,11 @@
 /* The shader translator (runtime/renderer/gcn_spirv.c) without a GPU: each test program becomes a
    SPIR-V module with the right header, which spirv-val (when installed) accepts for Vulkan 1.2;
    an instruction not handled yet stops translation and is named. test_gcn_compute runs the
-   modules on a GPU. */
+   modules on a GPU.
+
+   For macOS, each module is also turned into Metal Shading Language 2.3 with SPIRV-Cross (when
+   installed), and that is compiled with Apple's Metal compiler where there is one (xcrun metal, on
+   macOS). With PB_REQUIRE_METAL set (the macOS CI job) a missing tool is a failure, not a skip. */
 #include "runtime/gcn_spirv.h"
 
 #include "gcn_programs.h"
@@ -42,6 +46,40 @@ static int validate(const uint32_t *spirv, size_t words, const char *name)
     return ok;
 }
 
+static int installed(const char *command)
+{
+    char check[256];
+    snprintf(check, sizeof check, "%s > /dev/null 2>&1", command);
+    return system(check) == 0;
+}
+
+/* The module as Metal: converted by SPIRV-Cross, then compiled by Apple's compiler when present.
+   1 converted (and compiled), 0 failed, -1 a tool is missing. */
+static int to_metal(const uint32_t *spirv, size_t words, const char *name)
+{
+    if (!installed("spirv-cross --help")) return -1;
+    char spv[512], metal[520], air[520], command[1700];
+    const char *tmp = getenv("TMPDIR");
+    snprintf(spv, sizeof spv, "%s/pb-gcn-msl-%s.spv", tmp ? tmp : "/tmp", name);
+    snprintf(metal, sizeof metal, "%s.metal", spv);
+    snprintf(air, sizeof air, "%s.air", spv);
+    FILE *f = fopen(spv, "wb");
+    if (!f) return 0;
+    fwrite(spirv, sizeof *spirv, words, f);
+    fclose(f);
+    snprintf(command, sizeof command, "spirv-cross --msl --msl-version 20300 %s --output %s", spv, metal);
+    int ok = system(command) == 0;
+    int compiled = -1;
+    if (ok && installed("xcrun -sdk macosx metal --version")) {
+        snprintf(command, sizeof command, "xcrun -sdk macosx metal -std=metal2.3 -c %s -o %s", metal, air);
+        compiled = system(command) == 0;
+        ok = compiled;
+    }
+    remove(spv), remove(metal), remove(air);
+    if (ok && compiled < 0 && getenv("PB_REQUIRE_METAL")) return -1; /* converted, but no compiler */
+    return ok;
+}
+
 static void translates(const uint32_t *code, size_t dwords, const char *name)
 {
     uint32_t *spirv = NULL;
@@ -55,6 +93,10 @@ static void translates(const uint32_t *code, size_t dwords, const char *name)
     const int valid = validate(spirv, words, name);
     if (valid < 0) fprintf(stderr, "  %s: spirv-val not installed; validation skipped\n", name);
     else CHECK(valid == 1);
+    const int metal = to_metal(spirv, words, name);
+    if (metal < 0 && getenv("PB_REQUIRE_METAL")) CHECK(!"SPIRV-Cross and the Metal compiler are required here");
+    else if (metal < 0) fprintf(stderr, "  %s: SPIRV-Cross not installed; Metal conversion skipped\n", name);
+    else CHECK(metal == 1);
     free(spirv);
 }
 
