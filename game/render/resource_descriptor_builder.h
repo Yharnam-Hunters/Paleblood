@@ -93,9 +93,9 @@ RT_ORIGINAL(0x025711d0, normalize,
 // The first native call enters with RAX=0x40, so every returned bit above
 // AL is zero; the later call reads only AL. Consume a byte here so compiler
 // scratch-register contents cannot enter the saved 32-bit predicate word.
-RT_ORIGINAL(0x02abb4f0, select_auxiliary, uint8_t(uint32_t, uint32_t));
+RT_ORIGINAL(0x02abb4f0, record_auxiliary_predicate, uint8_t(uint32_t, uint32_t));
 RT_ORIGINAL(0x02ab7a20, choose_constructor_parameter, uint32_t(uint32_t, uint32_t));
-RT_ORIGINAL(0x02ab7ab0, combine_parameters, uint32_t(uint32_t, uint32_t, uint32_t));
+RT_ORIGINAL(0x02ab7ab0, combine_record_parameters, uint32_t(uint32_t, uint32_t, uint32_t));
 RT_ORIGINAL(0x01485f90, construct_record,
             uint64_t(ResourceDescriptorGeometry *, uint32_t, uint32_t, uint32_t, uint32_t,
                      uint32_t, uint32_t, uint32_t, ResourceDescriptorPair *, ResourceDescriptorPair *));
@@ -104,11 +104,11 @@ RT_ORIGINAL(0x01488d90, convert_constructor_record,
 RT_ORIGINAL(0x01487ee0, initialize_pair_descriptor,
             uint64_t(ResourceDescriptorStorage *, uint32_t, uint32_t, uint32_t, uint32_t,
                      uint32_t, uint32_t, uint32_t, uint32_t));
-RT_ORIGINAL(0x014a1e80, initialize_level,
+RT_ORIGINAL(0x014a1e80, initialize_record_level_descriptor,
             uint32_t(ResourceDescriptorLevel *, ResourceDescriptorStorage *, uint32_t, uint32_t));
-RT_ORIGINAL(0x0149ce10, calculate_geometry,
+RT_ORIGINAL(0x0149ce10, calculate_record_geometry,
             uint32_t(ResourceDescriptorGeometry *, ResourceDescriptorLevel *));
-RT_ORIGINAL(0x0149e2d0, calculate_first_auxiliary,
+RT_ORIGINAL(0x0149e2d0, record_constructor_optional_first,
             uint32_t(Field<uint64_t> *, Field<uint32_t> *,
                      Field<uint32_t> *, Field<uint32_t> *,
                      uint64_t, uint64_t, uint32_t, uint32_t));
@@ -117,7 +117,7 @@ RT_ORIGINAL(0x0149e570, calculate_second_auxiliary,
             uint32_t(Field<uint64_t> *, Field<uint32_t> *,
                      Field<uint32_t> *, Field<uint32_t> *,
                      uint64_t, uint64_t, uint32_t, uint32_t));
-RT_ORIGINAL(0x02abb4a0, note_failure, uintptr_t(uint32_t));
+RT_ORIGINAL(0x02abb4a0, report_record_normalization_error, uintptr_t(uint32_t));
 }  // namespace resource_descriptor_calls
 }  // namespace render
 

@@ -69,12 +69,12 @@ QuantityChoice read_quantity(const render::ResourceDescriptorNormalized &record)
     const uint32_t quantity = record.quantity.get();
     return choose_quantity(secondary, option, quantity);
 }
-uint32_t combine_parameters(render::ResourceDescriptorNormalized &record,
+uint32_t combine_record_parameters(render::ResourceDescriptorNormalized &record,
                             const QuantityChoice &choice)
 {
     const uint32_t first = record.first_parameter.get();
     const uint32_t second = record.second_parameter.get();
-    return render::resource_descriptor_calls::combine_parameters(first, second,
+    return render::resource_descriptor_calls::combine_record_parameters(first, second,
                                                                  choice.special_parameter);
 }
 // Each call rereads these fields after the preceding original helper. Callers
@@ -120,10 +120,10 @@ AuxiliaryAccumulation accumulate_levels(render::ResourceDescriptorScratch &frame
     do {
         // Each level uses the current normalized quantity; helper writes can change it.
         const uint32_t multiplier = frame.normalized.quantity.get();
-        uint32_t status = render::resource_descriptor_calls::initialize_level(
+        uint32_t status = render::resource_descriptor_calls::initialize_record_level_descriptor(
             level_descriptor, descriptor, level, 0);
         if (status == 0)
-            status = render::resource_descriptor_calls::calculate_geometry(&frame.geometry,
+            status = render::resource_descriptor_calls::calculate_record_geometry(&frame.geometry,
                                                                            level_descriptor);
         if (status == 0) {
             const uint64_t first_pair = frame.geometry.first_pair.get();
@@ -135,13 +135,13 @@ AuxiliaryAccumulation accumulate_levels(render::ResourceDescriptorScratch &frame
                     &frame.optional_total, &frame.optional_unit, &frame.optional_first,
                     &frame.optional_second, first_pair, second, third, 0);
             } else {
-                status = render::resource_descriptor_calls::calculate_first_auxiliary(
+                status = render::resource_descriptor_calls::record_constructor_optional_first(
                     &frame.optional_total, &frame.optional_unit, &frame.optional_first,
                     &frame.optional_second, first_pair, second, third, 0);
             }
         }
         if (status != 0) {
-            render::resource_descriptor_calls::note_failure(status);
+            render::resource_descriptor_calls::report_record_normalization_error(status);
             return {0, 0, mapped_auxiliary_failure};
         }
         // Both helpers publish a QWORD here; this caller consumes only its
@@ -193,7 +193,7 @@ extern "C" uint64_t bb_render_prepare_resource_descriptor(
     uint32_t predicate_word = 0;
     if ((flags & auxiliary_descriptor_flag) != 0) {
         const uint32_t selector = record.selector.get();
-        second_descriptor_enabled = resource_descriptor_calls::select_auxiliary(flags, selector);
+        second_descriptor_enabled = resource_descriptor_calls::record_auxiliary_predicate(flags, selector);
         predicate_word = no_special_parameter
                          ? (record.secondary_flags.get() >> secondary_byte_shift) & secondary_byte_mask
                          : 1;
@@ -215,7 +215,7 @@ extern "C" uint64_t bb_render_prepare_resource_descriptor(
             record.first_parameter.get(), 1);
         const uint32_t combine_first = record.first_parameter.get();
         const uint32_t combine_second = record.second_parameter.get();
-        const uint32_t combined = resource_descriptor_calls::combine_parameters(
+        const uint32_t combined = resource_descriptor_calls::combine_record_parameters(
             combine_first, combine_second, 1);
         const uint32_t first = record.first.get();
         const uint32_t second = record.second.get();
@@ -232,7 +232,7 @@ extern "C" uint64_t bb_render_prepare_resource_descriptor(
                                                                conversion_flags);
     } else {
         const QuantityChoice primary_quantity = read_quantity(record);
-        const uint32_t combined = combine_parameters(record, primary_quantity);
+        const uint32_t combined = combine_record_parameters(record, primary_quantity);
         primary_result = initialize_descriptor(frame, descriptor, primary_quantity, combined, false);
 
         if (second_descriptor_enabled != 0) {
@@ -241,11 +241,11 @@ extern "C" uint64_t bb_render_prepare_resource_descriptor(
             second_descriptor_alignment = 0;
             const uint32_t quantity = record.quantity.get();
             const QuantityChoice choice = choose_quantity(current_secondary, option, quantity);
-            const uint32_t second_combined = combine_parameters(record, choice);
+            const uint32_t second_combined = combine_record_parameters(record, choice);
             const uint32_t selector = record.selector.get();
             const uint32_t current_flags = record.flags.get();
             uint64_t second_result = 0;
-            if (uint8_t(resource_descriptor_calls::select_auxiliary(current_flags, selector)) != 0) {
+            if (uint8_t(resource_descriptor_calls::record_auxiliary_predicate(current_flags, selector)) != 0) {
                 second_result = initialize_descriptor(frame, descriptor, choice, second_combined, true);
                 second_descriptor_alignment = second_result >> word_bits;
             }
@@ -259,7 +259,7 @@ extern "C" uint64_t bb_render_prepare_resource_descriptor(
             const uint32_t level_limit = prepare_loop_limit(frame);
             std::memset(&frame.first_temporary, 0, sizeof(frame.first_temporary));
             const QuantityChoice choice = read_quantity(record);
-            const uint32_t auxiliary_combined = combine_parameters(record, choice);
+            const uint32_t auxiliary_combined = combine_record_parameters(record, choice);
             initialize_descriptor(frame, &frame.first_temporary, choice, auxiliary_combined, false);
             const AuxiliaryAccumulation accumulation = accumulate_levels(
                 frame, &frame.first_temporary, &frame.first_level, false, level_limit);
@@ -271,7 +271,7 @@ extern "C" uint64_t bb_render_prepare_resource_descriptor(
             const uint32_t level_limit = prepare_loop_limit(frame);
             std::memset(&frame.second_temporary, 0, sizeof(frame.second_temporary));
             const QuantityChoice choice = read_quantity(record);
-            const uint32_t auxiliary_combined = combine_parameters(record, choice);
+            const uint32_t auxiliary_combined = combine_record_parameters(record, choice);
             initialize_descriptor(frame, &frame.second_temporary, choice, auxiliary_combined, false);
             const AuxiliaryAccumulation accumulation = accumulate_levels(
                 frame, &frame.second_temporary, &frame.second_level, true, level_limit);
