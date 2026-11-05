@@ -49,6 +49,13 @@ def cases():
         yield shader_case(f"capacity_{available}_ret_{result:x}", 2, 0x89ABCDEF01234567, available, result)
 
 
+    c = basic("packet_overwrites_cursor", returns="void", size=512)
+    c["buffers"]["descriptor"] = {"size": 64}
+    c["args"].update({"rsi": 1, "rdx": 16, "rcx": "buf:descriptor"})
+    c["memory"] = [{"addr": "buf:self+8", "pointer": "self+512"}, {"addr": "buf:self+16", "pointer": "self"}]
+    yield c
+
+
 def shader_case(cid, stage, value, available, result):
     c = basic(cid, returns="void", size=64)
     c["buffers"].update(
@@ -66,11 +73,6 @@ def shader_case(cid, stage, value, available, result):
         c["stubs"] = [{"address": "0x014712b0", "argc": 3, "ret": hex(result)}]
     return c
 
-    c = basic("packet_overwrites_cursor", returns="void", size=512)
-    c["buffers"]["descriptor"] = {"size": 64}
-    c["args"].update({"rsi": 1, "rdx": 16, "rcx": "buf:descriptor"})
-    c["memory"] = [{"addr": "buf:self+8", "pointer": "self+512"}, {"addr": "buf:self+16", "pointer": "self"}]
-    yield c
 
 
 def main():
