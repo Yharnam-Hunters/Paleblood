@@ -63,6 +63,58 @@ static void decoding(void)
     CHECK(rt_color_target_decode(words, &t, error, sizeof error) == -1 && strstr(error, "rows"));
 }
 
+/* Register blocks worked out by hand from the field layout: code at 0x12_3456_7800 (MEM_BASE
+   0x12345678 in LO, 0 in HI), 24 VGPRs, 16 SGPRs, VGPR_COMP_CNT 3, 4 user SGPRs, 3 parameter
+   vectors, position 0 and 1 exported, clip distances 0 and 1 in pos1. */
+static void shader_blocks(void)
+{
+    const uint32_t vertex[RT_VERTEX_SHADER_WORDS] = {
+        0x12345678, 0x00000000,
+        (24 / 4 - 1) | (16 / 8 - 1) << 6 | 3u << 24,  /* RSRC1 */
+        4 << 1,                                       /* RSRC2: USER_SGPR 4 */
+        (3 - 1) << 1,                                 /* SPI_VS_OUT_CONFIG */
+        0x44,                                         /* SPI_SHADER_POS_FORMAT */
+        0x400003,                                     /* PA_CL_VS_OUT_CNTL */
+    };
+    rt_vertex_shader v;
+    rt_vertex_shader_decode(vertex, &v);
+    CHECK(v.code == 0x1234567800ull && v.vgprs == 24 && v.sgprs == 16 && v.vgpr_inputs == 3);
+    CHECK(v.user_sgprs == 4 && v.parameter_count == 3 && v.position_format == 0x44 && v.output_control == 0x400003);
+
+    /* PGM_HI keeps only MEM_BASE's 8 bits: 0xffffffff (the shader files' placeholder) gives 0xff */
+    const uint32_t high[RT_VERTEX_SHADER_WORDS] = {0x12345678, 0xffffffff};
+    rt_vertex_shader_decode(high, &v);
+    CHECK(v.code == 0xff1234567800ull);
+
+    const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {
+        0x00abcdef, 0x01,
+        (8 / 4 - 1) | (24 / 8 - 1) << 6,              /* RSRC1: 8 VGPRs, 24 SGPRs */
+        2 << 1,                                       /* RSRC2: USER_SGPR 2 */
+        0, 0x4,                                       /* Z_FORMAT, COL_FORMAT */
+        0x1002, 0x1002,                               /* INPUT_ENA, INPUT_ADDR: perspective centre, front face */
+        32 | 1 << 6,                                  /* IN_CONTROL: NUM_INTERP 32 (all six bits), PARAM_GEN */
+        0, 0x10, 0xf,                                 /* BARYC_CNTL, DB_SHADER_CONTROL, CB_SHADER_MASK */
+    };
+    rt_pixel_shader p;
+    rt_pixel_shader_decode(pixel, &p);
+    CHECK(p.code == 0x100abcdef00ull && p.vgprs == 8 && p.sgprs == 24 && p.user_sgprs == 2);
+    CHECK(p.color_formats == 4 && p.input_enable == 0x1002 && p.input_address == 0x1002 && p.interpolated == 32);
+    CHECK(p.depth_control == 0x10 && p.color_mask == 0xf && p.depth_format == 0 && p.barycentric_control == 0);
+
+    char error[128] = "";
+    size_t count = 0;
+    rt_render_forget();
+    CHECK(rt_render_record_vertex_shader(0x400000000ull, 0x20, vertex, error, sizeof error) == 0);
+    CHECK(rt_render_record_pixel_shader(0x400000000ull, 0x60, pixel, error, sizeof error) == 0);
+    const rt_render_call *calls = rt_render_submitted(0x400000000ull, 0x100, &count);
+    CHECK(count == 2);
+    if (count == 2) {
+        CHECK(calls[0].kind == RT_CALL_VERTEX_SHADER && calls[0].u.vertex_shader.output_control == 0x400003);
+        CHECK(calls[1].kind == RT_CALL_PIXEL_SHADER && calls[1].u.pixel_shader.interpolated == 32);
+    }
+    rt_render_forget();
+}
+
 static void recording(void)
 {
     enum { BUFFER = 0x200000000ull, OTHER = 0x200100000ull };
@@ -115,6 +167,7 @@ static void recording(void)
 int main(void)
 {
     decoding();
+    shader_blocks();
     recording();
     if (failures) fprintf(stderr, "%d failure(s)\n", failures);
     return failures != 0;
