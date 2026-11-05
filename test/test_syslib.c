@@ -530,6 +530,107 @@ static void attr_schedparam_out_of_range(void) { void *a = tc_attr(1, 1, 0); con
 static void tc_create_no_attr(void) { void *t; tc_create(&t, NULL, tc_entry, NULL, "t"); }
 static void tc_create_no_stack(void) { void *t, *a = tc_attr(0, 1, 0); tc_create(&t, &a, tc_entry, NULL, "t"); }
 static void tc_create_no_detach(void) { void *t, *a = tc_attr(1, 0, 0); tc_create(&t, &a, tc_entry, NULL, "t"); }
+/* Thread-specific data keys: each thread's own values, destructors when a created thread ends. */
+typedef int (*f_key_create)(int32_t *, void (*)(void *));
+typedef int (*f_key)(int32_t);
+typedef void *(*f_key_get)(int32_t);
+typedef int (*f_key_set)(int32_t, const void *);
+static f_key_create kc_create;
+static f_key kc_delete;
+static f_key_get kc_get;
+static f_key_set kc_set;
+static int32_t kc_key, kc_plain_key, kc_deleted_key, kc_endless_key;
+static int kc_marker;
+static void *kc_seen_before, *kc_seen_in_destructor, *kc_destroyed[4];
+static atomic_int kc_calls, kc_deleted_calls, kc_done;
+/* Sets the value once more on its first call, so a second round calls it again. */
+static void kc_destructor(void *value)
+{
+    const int n = atomic_load(&kc_calls);
+    if (n < 4) kc_destroyed[n] = value;
+    kc_seen_in_destructor = kc_get(kc_key);
+    if (n == 0) kc_set(kc_key, value);
+    atomic_store(&kc_calls, n + 1);
+    if (n == 1) atomic_store(&kc_done, 1);
+}
+static void kc_deleted_destructor(void *value) { (void)value; atomic_fetch_add(&kc_deleted_calls, 1); }
+static void *kc_entry(void *argument)
+{
+    kc_seen_before = kc_get(kc_key);
+    kc_set(kc_key, argument);
+    kc_set(kc_plain_key, argument);    /* no destructor: only cleared */
+    kc_set(kc_deleted_key, argument);
+    kc_delete(kc_deleted_key);         /* deleted while set: its destructor is not called */
+    return NULL;
+}
+static void kc_endless_destructor(void *value) { kc_set(kc_endless_key, value); }
+static void *kc_endless_entry(void *argument)
+{
+    kc_set(kc_endless_key, argument);
+    return NULL;
+}
+static void kc_endless(void)
+{
+    void *t = NULL, *a = tc_attr(1, 1, 1);
+    if (kc_create(&kc_endless_key, kc_endless_destructor) != 0) return;
+    tc_create(&t, &a, kc_endless_entry, &kc_marker, "endless");
+    struct timespec pause = {2, 0};
+    nanosleep(&pause, NULL); /* the thread's end stops the process before this returns */
+}
+/* Runs call in a forked child and answers whether the child ended by _exit(0): no stop by name. */
+static int kc_exits_cleanly(void (*call)(void))
+{
+    const pid_t child = fork();
+    if (child == 0) {
+        call();
+        _exit(0);
+    }
+    int status = 0;
+    if (waitpid(child, &status, 0) < 0) return 0;
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+/* The limits are pinned from both sides: exactly the documented count works, one more stops.
+   Each case runs in a forked child, which first deletes every key the parent left so the child's
+   table is empty, whatever keys the earlier tests still hold. */
+static void kc_fill_128(void)
+{
+    for (int32_t k = 1; k <= 128; k++) kc_delete(k);
+    for (int i = 0; i < 128; i++) {
+        int32_t key = 0;
+        if (kc_create(&key, NULL) != 0 || key < 1 || key > 128) _exit(1);
+    }
+}
+static void kc_too_many(void)
+{
+    kc_fill_128();
+    int32_t key;
+    kc_create(&key, NULL); /* the 129th live key stops by name */
+}
+/* A destructor that sets its value again kc_resets times needs kc_resets + 1 rounds. */
+static int32_t kc_rounds_key;
+static int kc_resets;
+static atomic_int kc_rounds_calls;
+static void kc_rounds_destructor(void *value)
+{
+    if (atomic_fetch_add(&kc_rounds_calls, 1) < kc_resets) kc_set(kc_rounds_key, value);
+}
+static void *kc_rounds_entry(void *argument)
+{
+    kc_set(kc_rounds_key, argument);
+    return NULL;
+}
+static void kc_rounds(void)
+{
+    void *t = NULL, *a = tc_attr(1, 1, 1);
+    if (kc_create(&kc_rounds_key, kc_rounds_destructor) != 0) _exit(1);
+    if (tc_create(&t, &a, kc_rounds_entry, &kc_marker, "rounds") != 0) _exit(1);
+    for (int i = 0; i < 100000 && atomic_load(&kc_rounds_calls) < kc_resets + 1; i++) sched_yield();
+    struct timespec settle = {0, 100 * 1000 * 1000};
+    nanosleep(&settle, NULL); /* room for the stop, or a wrong extra call, after the last one */
+    if (atomic_load(&kc_rounds_calls) != kc_resets + 1) _exit(1);
+}
+static void kc_four_rounds(void) { kc_resets = 3; kc_rounds(); }
+static void kc_five_rounds(void) { kc_resets = 4; kc_rounds(); }
 static void tc_affinity_empty(void) { tc_affinity(tc_seen_self, 0); }
 
 /* The user service's start-up calls. */
@@ -1619,6 +1720,49 @@ int main(void)
         CHECK(died_in_fatal(tc_affinity_empty));
         CHECK(tc_affinity(NULL, 0x30) == (int)0x80020003u); /* no thread: ESRCH, as libthr */
     }
+
+    /* scePthreadKey*: keys are slot + 1, values belong to each thread, a deleted key reads NULL
+       and its slot's next key does not see old values; at a created thread's end each value is
+       cleared and its live key's destructor called, in rounds (FreeBSD libthr thr_spec.c). */
+    kc_create = (f_key_create)fn("libkernel", "scePthreadKeyCreate");
+    kc_delete = (f_key)fn("libkernel", "scePthreadKeyDelete");
+    kc_get = (f_key_get)fn("libkernel", "scePthreadGetspecific");
+    kc_set = (f_key_set)fn("libkernel", "scePthreadSetspecific");
+    if (kc_create && kc_delete && kc_get && kc_set && tc_create) {
+        int main_value = 0;
+        int32_t gone = 0, reused = 0;
+        CHECK(kc_create(&kc_key, kc_destructor) == 0 && kc_key >= 1);
+        CHECK(kc_create(&gone, NULL) == 0 && gone >= 1 && gone != kc_key);
+        CHECK(kc_get(gone) == NULL); /* never set by this thread */
+        CHECK(kc_set(gone, &main_value) == 0 && kc_get(gone) == &main_value);
+        CHECK(kc_delete(gone) == 0 && kc_get(gone) == NULL);
+        CHECK(kc_delete(gone) == (int)0x80020016 && kc_set(gone, &main_value) == (int)0x80020016);
+        CHECK(kc_create(&reused, NULL) == 0 && reused == gone && kc_get(reused) == NULL);
+        CHECK(kc_delete(0) == (int)0x80020016 && kc_set(0, &main_value) == (int)0x80020016 && kc_get(0) == NULL);
+        CHECK(kc_delete(1000) == (int)0x80020016 && kc_get(1000) == NULL);
+        CHECK(kc_create(NULL, NULL) == (int)0x80020016);
+        kc_plain_key = reused;
+        CHECK(kc_create(&kc_deleted_key, kc_deleted_destructor) == 0);
+        CHECK(kc_set(kc_key, &main_value) == 0);
+        void *worker = NULL, *attr = tc_attr(1, 1, 1);
+        CHECK(tc_create(&worker, &attr, kc_entry, &kc_marker, "keys") == 0);
+        for (int i = 0; i < 100000 && !atomic_load(&kc_done); i++) sched_yield();
+        struct timespec settle = {0, 50 * 1000 * 1000};
+        nanosleep(&settle, NULL); /* room for a wrong third call */
+        CHECK(kc_seen_before == NULL); /* the main thread's value is not the worker's */
+        CHECK(atomic_load(&kc_calls) == 2 && kc_destroyed[0] == &kc_marker && kc_destroyed[1] == &kc_marker);
+        CHECK(kc_seen_in_destructor == NULL); /* cleared before the destructor runs */
+        CHECK(atomic_load(&kc_deleted_calls) == 0);
+        CHECK(kc_get(kc_key) == &main_value);
+        CHECK(died_in_fatal(kc_endless));
+        CHECK(kc_exits_cleanly(kc_fill_128)); /* the 128th live key is created */
+        CHECK(died_in_fatal(kc_too_many));    /* only the 129th stops */
+        CHECK(kc_exits_cleanly(kc_four_rounds)); /* exactly 4 destructor calls, the thread ends cleanly */
+        CHECK(died_in_fatal(kc_five_rounds));    /* a value still set after the 4th round stops */
+        CHECK(kc_delete(kc_key) == 0 && kc_delete(reused) == 0);
+    }
+    CHECK(is_implemented("libkernel", "scePthreadKeyCreate") && is_implemented("libkernel", "scePthreadKeyDelete") &&
+          is_implemented("libkernel", "scePthreadGetspecific") && is_implemented("libkernel", "scePthreadSetspecific"));
 
     /* libSceUserService: one user, logged in from the start; a second initialize answers
        0x80960003, as the executable's second site expects. */
