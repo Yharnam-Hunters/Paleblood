@@ -94,7 +94,7 @@ add_test(NAME gcn COMMAND test_gcn)
 add_executable(pbgcn runtime/renderer/pbgcn.c)
 target_link_libraries(pbgcn PRIVATE pbgcn_decode)
 # The shader translator (GCN to SPIR-V) and its tests: test_gcn_spirv checks modules with spirv-val
-# when it is installed; test_gcn_compute runs them on a Vulkan device when there is one.
+# when it is installed; test_gcn_compute and test_gcn_draw run them on a Vulkan device when there is one.
 add_library(pbgcn_spirv STATIC runtime/renderer/spirv.c runtime/renderer/gcn_spirv.c)
 target_include_directories(pbgcn_spirv PUBLIC runtime/include)
 target_link_libraries(pbgcn_spirv PUBLIC pbgcn_decode)
@@ -110,6 +110,10 @@ if(PB_TEST_VULKAN_FOUND)
     target_link_libraries(test_gcn_compute PRIVATE pbgcn_spirv PkgConfig::PB_TEST_VULKAN m)
     add_test(NAME gcn_compute COMMAND test_gcn_compute)
     set_tests_properties(gcn_compute PROPERTIES SKIP_RETURN_CODE 77)
+    add_executable(test_gcn_draw test/test_gcn_draw.c)
+    target_link_libraries(test_gcn_draw PRIVATE pbgcn_spirv PkgConfig::PB_TEST_VULKAN m)
+    add_test(NAME gcn_draw COMMAND test_gcn_draw)
+    set_tests_properties(gcn_draw PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 add_test(NAME tools COMMAND ${Python3_EXECUTABLE} -m unittest discover -s ${PROJECT_SOURCE_DIR}/test -p "test_*.py" -v)
