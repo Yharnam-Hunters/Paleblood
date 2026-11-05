@@ -196,6 +196,103 @@ int main(void)
         CHECK(out_words[LANES + i] == (high << 16 | halves[i % HALF_CASES].negated));
     }
 
+    /* 24-bit multiplies, bit fields and carries: per case (x, y, z, w), the expected words in
+       integer_batch's order, worked out by hand from the definitions (and checked with plain
+       integer arithmetic). */
+    static const struct {
+        uint32_t in[4], out[11];
+    } integer_cases[] = {
+        {{0x00000003, 0x00000005, 0x00000007, 0x00000000},
+         {0x0000000f, 0x0000000f, 0x00000016, 0x00000000, 0x00000000, 0x00000f80, 0x00000008, 0x00000000, 0xfffffffe, 0x00000001, 0x00000016}},
+        {{0x00ffffff, 0x00000002, 0x00000010, 0x00000001}, /* x is -1 as i24 */
+         {0xfffffffe, 0x01fffffe, 0x0000000e, 0x0000ffff, 0xffffffff, 0x00030000, 0x01000002, 0x00000000, 0x00fffffc, 0x00000000, 0x0200000e}},
+        {{0xff000005, 0x00800000, 0xffffffff, 0x00000000}, /* bits above 23 ignored; y is -2^23 as i24 */
+         {0xfd800000, 0x02800000, 0xfd7fffff, 0x7f000005, 0xff000005, 0x00000000, 0xff800005, 0x00000000, 0xfe800005, 0x00000000, 0x027fffff}},
+        {{0xffffffff, 0x00000001, 0x00000000, 0x00000001}, /* carry out; width 0 */
+         {0xffffffff, 0x00ffffff, 0xffffffff, 0x00000000, 0x00000000, 0x00000001, 0x00000001, 0x00000001, 0xfffffffd, 0x00000000, 0x00ffffff}},
+        {{0x80000000, 0x00000018, 0x00000008, 0x00000000}, /* a field ending at bit 31 */
+         {0x00000000, 0x00000000, 0x00000008, 0x00000080, 0xffffff80, 0xffffff00, 0x80000018, 0x00000000, 0x7fffffe8, 0x00000000, 0x00000008}},
+        {{0x00000000, 0x00000000, 0x00000000, 0x00000001}, /* borrow out */
+         {0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000001, 0x00000000, 0xffffffff, 0x00000001, 0x00000000}},
+        {{0x12345678, 0x00000004, 0x0000000c, 0x00000000},
+         {0x00d159e0, 0x00d159e0, 0x00d159ec, 0x00000567, 0x00000567, 0x0000f000, 0x1234567c, 0x00000000, 0x12345674, 0x00000000, 0x00d159ec}},
+        {{0x00000005, 0x00000004, 0x00000003, 0x00000001}, /* 5 - 4 - 1 = 0: no borrow out */
+         {0x00000014, 0x00000014, 0x00000017, 0x00000000, 0x00000000, 0x00000078, 0x0000000a, 0x00000000, 0x00000000, 0x00000000, 0x00000017}},
+        {{0x00800001, 0x00ffffff, 0x00000021, 0x00000001}, /* offset and width use bits 4:0 */
+         {0x007fffff, 0x007fffff, 0x00800020, 0x00000000, 0x00000000, 0xfffffffe, 0x01800001, 0x00000000, 0xff800001, 0x00000001, 0x00800020}},
+    };
+    enum { INTEGER_CASES = sizeof integer_cases / sizeof integer_cases[0], INTEGER_RECORD_WORDS = 16 };
+    memset(out.mapped, 0, BUFFER_BYTES);
+    for (int i = 0; i < LANES; i++) memcpy(in_words + 4 * i, integer_cases[i % INTEGER_CASES].in, 4 * sizeof(uint32_t));
+    CHECK(run(&g, integer_batch, sizeof integer_batch / sizeof integer_batch[0], user) == 0);
+    for (int i = 0; i < LANES; i++)
+        for (int k = 0; k < 11; k++) {
+            const uint32_t got = out_words[i * INTEGER_RECORD_WORDS + k], want = integer_cases[i % INTEGER_CASES].out[k];
+            if (got != want) fprintf(stderr, "integer_batch lane %d word %d: 0x%08x, expected 0x%08x\n", i, k, got, want);
+            CHECK(got == want);
+        }
+
+    /* Scalar compares with 16-bit constants (zero-extended for u32, sign-extended for i32), min
+       and max with SCC, and bit-field extracts; s8 = 0xffff, s9 = -1, s10 = 0x12345678,
+       s11 = 0xf000. */
+    static const uint32_t scalar_expected[16] = {
+        1,                   /* s_cmpk_eq_u32 s8, 0xffff */
+        1,                   /* s_cmpk_eq_i32 s9, 0xffff (-1) */
+        0,                   /* s_cmpk_lt_i32 s8, 0x8000: 65535 < -32768 */
+        1,                   /* s_cmpk_gt_u32 s8, 0x8000: 65535 > 32768 */
+        0xffffffff, 1,       /* s_min_i32 s9, s8: -1, S0 chosen */
+        0xffffffff, 1,       /* s_max_u32 s9, s8 */
+        0x0000ffff, 0,       /* s_max_i32 s9, s8: 65535, S1 chosen */
+        0x00000056, 1,       /* s_bfe_u32 s10, offset 8 width 8 */
+        0xffffffff, 1,       /* s_bfe_i32 s11, offset 12 width 4: 0xf sign-extended */
+        0x00000000, 0,       /* s_bfe_u32 s10, width 0 */
+    };
+    memset(out.mapped, 0, BUFFER_BYTES);
+    CHECK(run(&g, scalar_batch, sizeof scalar_batch / sizeof scalar_batch[0], user) == 0);
+    for (int k = 0; k < 16; k++) {
+        if (out_words[k] != scalar_expected[k]) fprintf(stderr, "scalar_batch word %d: 0x%08x, expected 0x%08x\n", k, out_words[k], scalar_expected[k]);
+        CHECK(out_words[k] == scalar_expected[k]);
+    }
+
+    /* Transcendentals. sin and cos take whole turns; exp and log are base 2. Exact results are
+       compared bit for bit; the rest within the GPU's precision. */
+    enum { ANY = 0x7fc00001u }; /* not checked */
+    static const struct {
+        uint32_t x, sin_turns, cos_turns, exp2, log2, rsq_clamp;
+    } float_cases[] = {
+        {0x3e800000, 0x3f800000, 0x00000000, 0x3f9837f0, 0xc0000000, 0x40000000}, /* 0.25: sin 1, cos 0, 2^0.25, -2, 2 */
+        {0xbe000000, 0xbf3504f3, 0x3f3504f3, 0x3f6ac0c7, 0x7fc00000, 0x7fc00000}, /* -0.125: -sqrt(1/2), sqrt(1/2), 2^-0.125, NaN, NaN */
+        {0x3e000000, 0x3f3504f3, 0x3f3504f3, 0x3f8b95c2, 0xc0400000, 0x403504f3}, /* 0.125: sqrt(1/2) twice, 2^0.125, -3, sqrt(8) */
+        {0x40800000, ANY, ANY, 0x41800000, 0x40000000, 0x3f000000},               /* 4: 16, 2, 0.5 */
+        {0x00000000, 0x00000000, 0x3f800000, 0x3f800000, 0xff800000, 0x7f7fffff}, /* 0: log -inf, rsq the largest float */
+        {0x80000000, 0x80000000, 0x3f800000, 0x3f800000, 0xff800000, 0xff7fffff}, /* -0: log -inf, rsq minus the largest */
+        {0x7f800000, ANY, ANY, 0x7f800000, ANY, 0x00000000},                      /* infinity: 2^inf, rsq 0 */
+        {0xbf800000, ANY, ANY, 0x3f000000, 0x7fc00000, 0x7fc00000},               /* -1: 0.5, log NaN, rsq NaN */
+        {0x40000000, ANY, ANY, 0x40800000, 0x3f800000, 0x3f3504f3},               /* 2: 4, 1, sqrt(1/2) */
+    };
+    enum { FLOAT_CASES = sizeof float_cases / sizeof float_cases[0], FLOAT_RECORD_WORDS = 8 };
+    memset(out.mapped, 0, BUFFER_BYTES);
+    for (int i = 0; i < LANES; i++) in_words[i] = float_cases[i % FLOAT_CASES].x;
+    CHECK(run(&g, transcendentals, sizeof transcendentals / sizeof transcendentals[0], user) == 0);
+    for (int i = 0; i < LANES; i++) {
+        const uint32_t *lane = out_words + i * FLOAT_RECORD_WORDS;
+        const uint32_t want[5] = {float_cases[i % FLOAT_CASES].sin_turns, float_cases[i % FLOAT_CASES].cos_turns,
+                                  float_cases[i % FLOAT_CASES].exp2, float_cases[i % FLOAT_CASES].log2,
+                                  float_cases[i % FLOAT_CASES].rsq_clamp};
+        for (int k = 0; k < 5; k++) {
+            if (want[k] == ANY) continue;
+            float got_f, want_f;
+            memcpy(&got_f, &lane[k], sizeof got_f), memcpy(&want_f, &want[k], sizeof want_f);
+            const int exact_case = isinf(want_f) || isnan(want_f) || want[k] == 0x7f7fffffu || want[k] == 0xff7fffffu;
+            const int nan_case = isnan(want_f);
+            const int ok = nan_case ? isnan(got_f)
+                         : exact_case ? lane[k] == want[k]
+                                      : fabsf(got_f - want_f) <= 1e-3f * fmaxf(1.0f, fabsf(want_f));
+            if (!ok) fprintf(stderr, "transcendentals lane %d op %d: 0x%08x, expected 0x%08x\n", i, k, lane[k], want[k]);
+            CHECK(ok);
+        }
+    }
+
     if (failures) fprintf(stderr, "%d failure(s)\n", failures);
     vkDeviceWaitIdle(g.device);
     return failures != 0;
