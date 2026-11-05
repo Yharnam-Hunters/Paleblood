@@ -5,6 +5,7 @@
 #include "runtime/syslib.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
@@ -65,14 +66,19 @@ static void *libc_memset(void *dest, int c, size_t n)
 }
 RT_SYSLIB("libSceLibcInternal", memset, libc_memset);
 
-/* Sleeps the calling thread for at least the given number of microseconds. A guest thread runs on
-   a host thread, so the host thread sleeps. A host signal that interrupts the sleep is not a guest
-   event (the runtime delivers no signals to the guest), so the sleep resumes with the time left. */
-static void sleep_microseconds(const char *caller, uint32_t microseconds)
+/* Sleeps the calling thread for at least the given time. A guest thread runs on a host thread, so
+   the host thread sleeps. A host signal that interrupts the sleep is not a guest event (the runtime
+   delivers no signals to the guest), so the sleep resumes with the time left. */
+static void sleep_for(const char *caller, struct timespec left)
 {
-    struct timespec left = {.tv_sec = microseconds / 1000000, .tv_nsec = (long)(microseconds % 1000000) * 1000};
     while (nanosleep(&left, &left) != 0)
         if (errno != EINTR) rt_fatal(caller, "the host could not sleep");
+}
+
+static void sleep_microseconds(const char *caller, uint32_t microseconds)
+{
+    sleep_for(caller, (struct timespec){.tv_sec = microseconds / 1000000,
+                                        .tv_nsec = (long)(microseconds % 1000000) * 1000});
 }
 
 /* sceKernelUsleep, imported by eboot and libSceFios2.elf from libkernel. The guest's own verified
@@ -97,6 +103,22 @@ static int posix_usleep(uint32_t microseconds)
     return 0;
 }
 RT_SYSLIB("libScePosix", usleep, posix_usleep);
+
+/* sleep, imported by eboot from libScePosix: suspends the thread for the given seconds and returns
+   the unslept seconds, so 0 once the time has elapsed (POSIX sleep; FreeBSD sleep(3) has the same
+   unsigned int(unsigned int) shape). Only a signal returns early, and the guest gets none. Above
+   INT_MAX FreeBSD's libc sleeps INT_MAX seconds and returns the rest without a signal, which POSIX
+   does not provide for, and no PS4-specific source says which answer the guest gets: that range
+   stops by name. */
+static unsigned int posix_sleep(unsigned int seconds)
+{
+    if (seconds > INT_MAX)
+        rt_fatal("sleep",
+                 "the PS4 answer above INT_MAX seconds (the full sleep, or FreeBSD's remainder) is not established");
+    sleep_for("sleep", (struct timespec){.tv_sec = seconds});
+    return 0;
+}
+RT_SYSLIB("libScePosix", sleep, posix_sleep);
 
 /* __stack_chk_fail, imported by eboot, libSceFios2.elf and libc.elf from libkernel. Code built with
    the stack protector calls it when a function's saved canary no longer matches the guard, that is,
