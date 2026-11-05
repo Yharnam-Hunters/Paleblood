@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* pbboot: runs a PS4 executable's entry on Paleblood's runtime, as far as the runtime goes.
 
-     pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--app0 DIR] [--data DIR] [--nids NID_DB.xml]
+     pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--app0 DIR] [--data DIR] [--display none|headless|window] [--display-capture DIR] [--nids NID_DB.xml]
             [--module-hook MODULE:OFFSET:SIZE:ACTION:NAME]...
             [--status OUT.json] [--timeout SECONDS] [--trace]
      pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]
@@ -37,6 +37,7 @@
    Names: an import is "NID#library#module"; library names come from the object, symbol names
    from a public NID database (--nids, default $BB_NID_DB), else the NID is shown. */
 #define _GNU_SOURCE
+#include "runtime/display.h"
 #include "runtime/loader.h"
 #include "runtime/memory.h"
 #include "runtime/nid.h"
@@ -562,16 +563,32 @@ static int install_module_hooks(char *error, size_t size)
     return 0;
 }
 
+/* --display MODE: 0 and the mode, or -1 for a name that is not one. */
+static int display_mode_named(const char *name, rt_display_mode *mode)
+{
+    static const struct {
+        const char *name;
+        rt_display_mode mode;
+    } modes[] = {{"none", RT_DISPLAY_NONE}, {"headless", RT_DISPLAY_HEADLESS}, {"window", RT_DISPLAY_WINDOW}};
+    for (size_t i = 0; i < sizeof modes / sizeof modes[0]; i++)
+        if (!strcmp(name, modes[i].name)) {
+            *mode = modes[i].mode;
+            return 0;
+        }
+    return -1;
+}
+
 static const char *usage =
-    "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--app0 DIR] [--data DIR] [--nids NID_DB.xml]\n"
+    "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--app0 DIR] [--data DIR] [--display none|headless|window] [--display-capture DIR] [--nids NID_DB.xml]\n"
     "              [--module-hook MODULE:OFFSET:SIZE:ACTION:NAME]...\n"
     "              [--status OUT.json] [--timeout S] [--trace]\n"
     "       pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]\n";
 
 int main(int argc, char **argv)
 {
-    const char *nid_path = getenv("BB_NID_DB"), *status_path = NULL;
+    const char *nid_path = getenv("BB_NID_DB"), *status_path = NULL, *display_capture = NULL;
     int timeout = 30, trace = 0, list = 0;
+    rt_display_mode display_mode = RT_DISPLAY_NONE;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--nids") && i + 1 < argc) nid_path = argv[++i];
         else if (!strcmp(argv[i], "--status") && i + 1 < argc) status_path = argv[++i];
@@ -588,6 +605,15 @@ int main(int argc, char **argv)
             rt_process.app0_dir = argv[++i];
         else if (!strcmp(argv[i], "--data") && i + 1 < argc)
             rt_process.data_dir = argv[++i];
+        else if (!strcmp(argv[i], "--display") && i + 1 < argc) {
+            const char *mode = argv[++i];
+            if (display_mode_named(mode, &display_mode)) {
+                fprintf(stderr, "pbboot: --display %s: want none, headless or window\n", mode);
+                return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "--display-capture") && i + 1 < argc)
+            display_capture = argv[++i];
         else if (!strcmp(argv[i], "--system-param") && i + 1 < argc) {
             if (add_system_param(argv[++i])) {
                 fprintf(stderr, "pbboot: --system-param %s: want a new ID=VALUE\n", argv[i]);
@@ -623,6 +649,11 @@ int main(int argc, char **argv)
     }
     if (!object_count) {
         fputs(usage, stderr);
+        return 2;
+    }
+    if (display_capture && display_mode == RT_DISPLAY_NONE) display_mode = RT_DISPLAY_HEADLESS;
+    if (rt_display_configure(display_mode, display_capture)) {
+        fprintf(stderr, "pbboot: --display window: this build has no window (it needs Vulkan and SDL3)\n");
         return 2;
     }
     char error[512];

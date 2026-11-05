@@ -64,7 +64,7 @@ losing the current run capability. The project-owned runtime roadmap is:
 3. **Kernel, threads and memory**, then 4. **files**, 5. **input**, 6. **audio**, 7. **video out**.
 8. **GNM and shaders**, the largest part: graphics are rebuilt at the engine level, by replacing
    the game's own graphics layer (GX) with our own graphics code, rather than emulating the PS4's
-   GPU: Vulkan on Linux and Metal on macOS. Linux is the primary platform and the one CI tests;
+   GPU: Vulkan on Linux and Metal on macOS ([the renderer plan](RENDERER.md)). Linux is the primary platform and the one CI tests;
    macOS support (Rosetta on Apple Silicon) is in progress, and its code must not affect Linux.
 
 How far the executable boots on the runtime is measured by the boot harness (`runtime/boot.c`,
