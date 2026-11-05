@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Write MSAA_ENABLE and VPORT_SCISSOR_ENABLE in PA_SC_MODE_CNTL_0.
-#include "present_command_configuration.h"
+#include "present_register_packets.h"
 
-extern "C" void bb_render_configure_record_option(render::PacketBuffer *commands,
+extern "C" void bb_render_set_pa_sc_mode_cntl_0(render::PacketBuffer *commands,
                                                    uint32_t msaa_enable, uint32_t viewport_scissor_enable)
 {
     constexpr uint32_t scan_mode_control_index = 0x292;

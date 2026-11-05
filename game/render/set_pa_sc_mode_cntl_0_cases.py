@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Synthetic edge cases; helper effects are scripted and are not game recordings.
 
-Usage: configure_record_option_cases.py OUT_DIR. Generate captures outside the repository.
+Usage: set_pa_sc_mode_cntl_0_cases.py OUT_DIR. Generate captures outside the repository.
 """
 import json
 from pathlib import Path

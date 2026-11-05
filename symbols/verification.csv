@@ -236,5 +236,5 @@ render_yebis_get_recursive_sample_parameters,edge,,23,23,0,0,6e6f0aa41d5607ce,20
 render_yebis_get_recursive_sample_parameters,edge,30,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,60,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,uncapped,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
-render_configure_record_option,edge,,12,12,0,0,08c403f4aa3c0041,2026-11-04
+render_set_pa_sc_mode_cntl_0,edge,,12,12,0,0,08c403f4aa3c0041,2026-11-04
 render_configure_viewport_and_guard_band,edge,,10,10,0,0,eaec3ac51f0bee41,2026-11-04
