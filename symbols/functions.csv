@@ -113,8 +113,12 @@ address,size,name,system,status,notes
 0x025b2fb0,768,render_swap_chain_present,render,verified,"GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0)"
 0x02a44140,59,engine_wide_string_destroy,engine,edge-verified,WideString destructor; unsigned capacity >=8 frees even null; ignores owns; callback before capacity and size reset and two-byte terminator
 0x02a8c420,108,input_initialize_mouse_for_initial_user,input,original,"Initializes or reinitializes mouse input for the initial user, closing a previous connection if necessary."
+0x02aaa5a0,124,render_release_present_finish_node,render,edge-verified,"Release the finish node through the manager helper, retaining its head-match decision and reloading commands across retries."
+0x02aaf030,508,render_managed_present_capacity,render,edge-verified,"Acquire managed command space, preserve partial block publication and copy the saved command snapshot in reverse order."
+0x02ab0b00,326,render_submit_present_finish_snapshot,render,edge-verified,Emit required counter waits and submit nonempty command regions in order; construct an empty second region when optional commands are absent.
 0x02ab5a70,1235,render_present_record_consume,render,edge-verified,"Track resource range or emit record commands; preserve cached tokens, index wrap and final state resets. Static reconstruction Synthetic GCC/Clang edges pass; no recordings."
 0x02abb4f0,31,render_record_auxiliary_predicate,render,edge-verified,"Return the auxiliary-processing predicate: selectors 0x13/0x14 enable it, 0x15/0x16 use flag bit 6, and all other selectors disable it."
 0x02ad2c30,120,render_reset_present_preparation_dirty,render,edge-verified,"Emit changed depth and stencil clear values, then cache their post-call values. Preserve the second writer's upper return bits while replacing its low word."
+0x02ad3c80,42,render_process_present_finish_item,render,edge-verified,"Mark the final trailer word as processed and forward the packet helper's result, with wrapping count and address arithmetic."
 0x02ad5dd0,27,render_swap_chain_present_mode,render,edge-verified,"Validates low DWORD mode; retains object, loads full source pointer at +0x33d0, forwards mode to lower submit Synthetic GCC/Clang edges pass; no recordings."
 0x02ad6e50,499,render_swap_chain_submit,render,edge-verified,"Owned-thread flip polling, source binding and submission; every exit reloads the global guard pointer. Native GPU helper effects remain original Synthetic GCC/Clang edges pass; no recordings."
