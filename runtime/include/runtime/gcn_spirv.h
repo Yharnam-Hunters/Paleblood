@@ -21,12 +21,25 @@
 extern "C" {
 #endif
 
-enum { GCN_USER_SGPR_MAX = 16 };
+enum { GCN_USER_SGPR_MAX = 16, GCN_PUSH_CONSTANT_LIMIT = 128 };
+
+/* Every layout below also says where the shader finds its data:
+     push_constant_offset  the byte offset of its user data (GCN_USER_SGPR_MAX words) in the push
+                           constants, so that the stages of one draw keep theirs apart (a vertex
+                           shader's at 0, a pixel shader's at 64); a multiple of 4, with the user
+                           data within GCN_PUSH_CONSTANT_LIMIT bytes, the size every Vulkan device
+                           guarantees;
+     address_offset        what is added to every guest address the shader forms (a buffer
+                           descriptor's base, an SGPR pair) to reach the same bytes on the GPU: the
+                           guest memory is one GPU buffer, at a fixed distance from the guest's view
+                           of it. 0 when the two coincide, as in the tests' own buffers. */
 
 typedef struct {
     uint32_t local_size[3];  /* the workgroup's size */
     unsigned user_sgprs;     /* s0 .. s(user_sgprs - 1) start as the user data (push constants) */
     int workgroup_id_x_sgpr; /* the SGPR that starts as the workgroup's x index, or -1 */
+    uint32_t push_constant_offset;
+    uint64_t address_offset;
 } gcn_compute_layout;
 
 /* Translates the compute program at code (dwords long, through its s_endpgm). On success 0, and
@@ -46,6 +59,8 @@ typedef struct {
     unsigned user_sgprs;
     unsigned vertex_index_vgpr;
     uint32_t output_control;
+    uint32_t push_constant_offset;
+    uint64_t address_offset;
 } gcn_vertex_layout;
 
 int gcn_translate_vertex(const uint32_t *code, size_t dwords, const gcn_vertex_layout *layout,
@@ -57,6 +72,8 @@ int gcn_translate_vertex(const uint32_t *code, size_t dwords, const gcn_vertex_l
 typedef struct {
     unsigned user_sgprs;
     unsigned barycentric_vgpr;
+    uint32_t push_constant_offset;
+    uint64_t address_offset;
 } gcn_pixel_layout;
 
 int gcn_translate_pixel(const uint32_t *code, size_t dwords, const gcn_pixel_layout *layout,

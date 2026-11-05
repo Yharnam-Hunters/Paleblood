@@ -22,11 +22,16 @@
 
    The pool is a host memory file, created on first use: an allocation is a range of it, a map is a
    host mapping of that range, so two maps of one range see the same bytes, as physical memory
-   does. Its size is this runtime's choice (RT_DIRECT_MEMORY_SIZE), not a measured PS4 value. Every
+   does. Where a map goes is the system's choice when the title gives no address hint: a GPU-visible
+   one (protection with GPU bits) goes at GPU_MEMORY_BASE + its offset in the pool, so that the
+   renderer's GPU reaches every such address at one fixed distance (runtime/gpu_memory.h); the
+   others go anywhere free in the map window, which starts past that region. A second GPU-visible
+   map of a range, which would need the same place, stops by name. Its size is this runtime's choice (RT_DIRECT_MEMORY_SIZE), not a measured PS4 value. Every
    case whose PS4 answer is not established stops by the function's name instead of guessing: map
    flags, an address hint in use or off the alignment, protection beyond CPU and GPU read/write, a range that does not fit, releasing
    part of an allocation or a mapped one, and the error values. */
 #define _GNU_SOURCE
+#include "runtime/gpu_memory.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
@@ -90,9 +95,23 @@ static uint64_t align_up(uint64_t value, uint64_t alignment) { return (value + a
    reused; running out of the window stops by name. */
 #define MAP_WINDOW_START 0x2000000000ull
 #define MAP_WINDOW_END 0xe000000000ull
+/* The window's first RT_DIRECT_MEMORY_SIZE bytes hold GPU-visible direct maps at their pool
+   offsets; everything else the system places goes after them. */
+#define GPU_MEMORY_BASE MAP_WINDOW_START
 
 static pthread_mutex_t window_lock = PTHREAD_MUTEX_INITIALIZER;
-static uint64_t window_next = MAP_WINDOW_START;
+static uint64_t window_next = GPU_MEMORY_BASE + RT_DIRECT_MEMORY_SIZE;
+
+uint64_t rt_gpu_memory_base(void) { return GPU_MEMORY_BASE; }
+
+int rt_gpu_memory_pool(int *fd, uint64_t *size)
+{
+    pthread_mutex_lock(&pool_lock);
+    const int created = pool_fd >= 0;
+    if (created) *fd = pool_fd, *size = RT_DIRECT_MEMORY_SIZE;
+    pthread_mutex_unlock(&pool_lock);
+    return created ? 0 : -1;
+}
 
 /* An aligned address in the window with length bytes free after it, for a map the caller makes
    with MAP_FIXED_NOREPLACE. A host mapping already there is stepped over. */
@@ -239,6 +258,15 @@ static int32_t map_direct_memory(void **address, uint64_t length, int32_t protec
         if ((uintptr_t)aligned & (alignment - 1)) rt_fatal(name, "an address hint off the alignment: the answer is not established");
         void *const got = mmap(aligned, length, host_protection, MAP_SHARED | MAP_FIXED_NOREPLACE, pool(name), (off_t)start);
         if (got != aligned) rt_fatal(name, "an address hint in use: where the system then maps is not established");
+    } else if (protection & (PROT_GPU_READ | PROT_GPU_WRITE)) {
+        /* At its offset in the pool, where the GPU reaches it (runtime/gpu_memory.h). The base is
+           aligned far beyond any map alignment, so the address is aligned when the offset is. */
+        aligned = (unsigned char *)(uintptr_t)(GPU_MEMORY_BASE + (uint64_t)start);
+        if ((uint64_t)start & (alignment - 1))
+            rt_fatal(name, "a GPU-visible map whose pool offset is off its alignment: where it goes is not established");
+        void *const got = mmap(aligned, length, host_protection, MAP_SHARED | MAP_FIXED_NOREPLACE, pool(name), (off_t)start);
+        if (got != aligned)
+            rt_fatal(name, "a second GPU-visible map of a pool range: the runtime keeps one, at the range's GPU address");
     } else {
         aligned = window_place(name, length, alignment, host_protection, MAP_SHARED, pool(name), (off_t)start);
     }

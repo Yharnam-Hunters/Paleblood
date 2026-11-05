@@ -25,11 +25,15 @@ _Static_assert((int)IMAGE_BYTES <= (int)BUFFER_BYTES, "the image fits a test buf
 static const float CLEAR = 9.0f, TOLERANCE = 2e-3f; /* halves keep 11 significant bits */
 
 static uint32_t output_control; /* the vertex layout's PA_CL_VS_OUT_CNTL, for the next draw */
+static uint64_t address_offset;  /* the vertex layout's, for the next draw */
+/* Each stage's user data in the push constants: the vertex shader's at 0, the pixel shader's at 64. */
+enum { VERTEX_USER_DATA = 0, PIXEL_USER_DATA = USER_DATA_WORDS * 4, USER_DATA_BYTES = USER_DATA_WORDS * 4 };
 
 static VkShaderModule shader(gpu *g, const uint32_t *code, size_t dwords, int pixel, const char *name)
 {
-    const gcn_vertex_layout vertex = {8, 0, output_control};
-    const gcn_pixel_layout fragment = {8, 0};
+    const gcn_vertex_layout vertex = {.user_sgprs = 8, .output_control = output_control, .push_constant_offset = VERTEX_USER_DATA,
+                                      .address_offset = address_offset};
+    const gcn_pixel_layout fragment = {.user_sgprs = 8, .push_constant_offset = PIXEL_USER_DATA};
     uint32_t *spirv = NULL;
     size_t words = 0;
     char error[256];
@@ -131,14 +135,16 @@ static VkPipeline make_pipeline(gpu *g, const target *t, VkPipelineLayout layout
 
 /* Draws the triangle with the two programs; the pixels land in readback. */
 static int draw(gpu *g, const target *t, const uint32_t *vs, size_t vs_dwords, const uint32_t *ps, size_t ps_dwords,
-                const uint32_t *user_data, gpu_buffer *readback, const char *name)
+                const uint32_t *user_data, const uint32_t *pixel_user_data, gpu_buffer *readback, const char *name)
 {
+    static const uint32_t no_data[USER_DATA_WORDS];
+    if (!pixel_user_data) pixel_user_data = no_data;
     const VkShaderModule vertex = shader(g, vs, vs_dwords, 0, name), pixel = shader(g, ps, ps_dwords, 1, name);
     if (!vertex || !pixel) return -1;
-    const VkShaderStageFlags stages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    const VkPushConstantRange range = {stages, 0, USER_DATA_WORDS * sizeof(uint32_t)};
+    const VkPushConstantRange ranges[] = {{VK_SHADER_STAGE_VERTEX_BIT, VERTEX_USER_DATA, USER_DATA_BYTES},
+                                          {VK_SHADER_STAGE_FRAGMENT_BIT, PIXEL_USER_DATA, USER_DATA_BYTES}};
     const VkPipelineLayoutCreateInfo layout_info = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-                                                    .pushConstantRangeCount = 1, .pPushConstantRanges = &range};
+                                                    .pushConstantRangeCount = 2, .pPushConstantRanges = ranges};
     VkPipelineLayout layout;
     if (vkCreatePipelineLayout(g->device, &layout_info, NULL, &layout) != VK_SUCCESS) return -1;
     const VkPipeline pipeline = make_pipeline(g, t, layout, vertex, pixel);
@@ -155,7 +161,8 @@ static int draw(gpu *g, const target *t, const uint32_t *vs, size_t vs_dwords, c
                                         .clearValueCount = 1, .pClearValues = &clear};
     vkCmdBeginRenderPass(commands, &pass, VK_SUBPASS_CONTENTS_INLINE);
     vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-    vkCmdPushConstants(commands, layout, stages, 0, USER_DATA_WORDS * sizeof(uint32_t), user_data);
+    vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_VERTEX_BIT, VERTEX_USER_DATA, USER_DATA_BYTES, user_data);
+    vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_FRAGMENT_BIT, PIXEL_USER_DATA, USER_DATA_BYTES, pixel_user_data);
     vkCmdDraw(commands, 3, 1, 0, 0);
     vkCmdEndRenderPass(commands);
     const VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {SIZE, SIZE, 1}};
@@ -224,13 +231,13 @@ int main(void)
     user[1] |= RECORD_STRIDE << 16, user[5] |= RECORD_STRIDE << 16;
     const float *pixels = readback.mapped;
 
-    CHECK(draw(&g, &t, PROGRAM_OF(vertex_position_color), PROGRAM_OF(pixel_color), user, &readback, "pixel_color") == 0);
+    CHECK(draw(&g, &t, PROGRAM_OF(vertex_position_color), PROGRAM_OF(pixel_color), user, NULL, &readback, "pixel_color") == 0);
     dump(pixels, "pixel_color");
     for (int y = 0; y < SIZE; y++)
         for (int x = 0; x < SIZE; x++) CHECK(drawn(pixels + (y * SIZE + x) * PIXEL_FLOATS, x, y));
 
     memset(readback.mapped, 0, BUFFER_BYTES);
-    CHECK(draw(&g, &t, PROGRAM_OF(vertex_position_color), PROGRAM_OF(pixel_discard_left), user, &readback, "pixel_discard_left") == 0);
+    CHECK(draw(&g, &t, PROGRAM_OF(vertex_position_color), PROGRAM_OF(pixel_discard_left), user, NULL, &readback, "pixel_discard_left") == 0);
     dump(pixels, "pixel_discard_left");
     for (int y = 0; y < SIZE; y++)
         for (int x = 0; x < SIZE; x++) {
@@ -244,7 +251,7 @@ int main(void)
     enum { CLIP_DISTANCES_0_1 = 0x400003 };
     output_control = CLIP_DISTANCES_0_1;
     memset(readback.mapped, 0, BUFFER_BYTES);
-    CHECK(draw(&g, &t, PROGRAM_OF(vertex_clip), PROGRAM_OF(pixel_color), user, &readback, "vertex_clip") == 0);
+    CHECK(draw(&g, &t, PROGRAM_OF(vertex_clip), PROGRAM_OF(pixel_color), user, NULL, &readback, "vertex_clip") == 0);
     dump(pixels, "vertex_clip");
     for (int y = 0; y < SIZE; y++)
         for (int x = 0; x < SIZE; x++) {
@@ -253,6 +260,26 @@ int main(void)
             else CHECK(drawn(p, x, y));
         }
     output_control = 0;
+
+    /* The pixel shader's own user data (at push-constant byte 64) colours every pixel, while the
+       vertex shader reads its corners through guest addresses 1 MiB below the real buffers. */
+    enum { GUEST_DISTANCE = 0x100000 };
+    uint32_t guest_user[USER_DATA_WORDS];
+    memcpy(guest_user, user, sizeof guest_user);
+    for (int d = 0; d < 2; d++) {
+        const uint64_t guest = (((uint64_t)guest_user[4 * d + 1] & 0xffff) << 32 | guest_user[4 * d]) - GUEST_DISTANCE;
+        guest_user[4 * d] = (uint32_t)guest, guest_user[4 * d + 1] = (guest_user[4 * d + 1] & ~0xffffu) | ((uint32_t)(guest >> 32) & 0xffff);
+    }
+    const float color[4] = {0.25f, 0.5f, 0.75f, 1.0f}; /* exact as halves */
+    uint32_t pixel_user[USER_DATA_WORDS] = {0};
+    memcpy(pixel_user, color, sizeof color);
+    address_offset = GUEST_DISTANCE;
+    memset(readback.mapped, 0, BUFFER_BYTES);
+    CHECK(draw(&g, &t, PROGRAM_OF(vertex_position_color), PROGRAM_OF(pixel_user_color), guest_user, pixel_user, &readback,
+               "pixel_user_color") == 0);
+    address_offset = 0;
+    for (int i = 0; i < SIZE * SIZE; i++)
+        CHECK(memcmp(pixels + i * PIXEL_FLOATS, color, sizeof color) == 0);
 
     if (failures) fprintf(stderr, "%d failure(s)\n", failures);
     vkDeviceWaitIdle(g.device);
