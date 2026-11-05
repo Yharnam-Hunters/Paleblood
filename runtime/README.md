@@ -21,8 +21,20 @@ v1 interface before `bbgame_init`; the callback then writes a 14-byte x86-64 ind
 jump at the image-relative function entry. This form preserves every guest argument register.
 The host must keep the mapped image writable and executable until hook installation finishes.
 The callback bounds-checks the complete function extent and rejects short functions and null
-targets. It is an additive host component; the existing scaffold still owns full game loading and
-execution.
+targets. The own boot harness can load a same-architecture host library with
+`pbboot EBOOT.elf --game-lib /path/to/libbbgame.so`. The path follows the host
+loader's `dlopen` rules; an absolute path is recommended, but is not required. After mapping all objects and
+registering the main thread, it initializes this callback and calls the library's `bbgame_init`
+before the first module or executable entry. A missing library/entry or initialization failure
+stops before guest execution; a failed initializer may already have changed hook bytes, so that
+image must not be entered. The library stays loaded until process exit. The current Linux image
+is writable/executable during installation; a future memory backend must preserve this ordering
+while introducing its own protection transitions.
+
+Omitting the flag preserves plugin-free diagnostic boot. `--imports` lists bindings without
+loading the game library, even when both flags are provided. This bridge connects completed
+replacements to the own runtime; remaining boot services and graphics still determine how far
+the guest reaches.
 
 Roadmap, in order: loader (done) → kernel, threads and memory → files → input → audio → video
 out → GNM and shaders (the largest). `tools/boot.py` runs the boot harness and records how far
