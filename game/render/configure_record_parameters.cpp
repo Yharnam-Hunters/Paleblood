@@ -28,7 +28,7 @@ extern "C" void bb_render_configure_viewport_and_guard_band(render::PacketBuffer
                                0.0f, record_configuration_one.get());
     initialize_pa_cl_vte_cntl(&scratch.register_state);
     set_pa_cl_vte_cntl(&scratch.register_state, 0);
-    emit_pa_cl_vte_cntl(commands, scratch.register_state.word);
+    emit_pa_cl_vte_cntl(commands, scratch.register_state.word.get());
     configure_screen_scissor(commands, x, y, end_x, end_y);
 
     constexpr int32_t upper_bound = 512;

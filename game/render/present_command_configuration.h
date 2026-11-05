@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Scalar triplets and register storage shared by presentation parameter writers.
 #pragma once
-#include "present_register_packets.h"
+#include "byte_field.h"
 namespace render {
 struct RecordConfigurationFloat3 {
     Field<float> first;
@@ -14,7 +14,7 @@ static_assert(offsetof(RecordConfigurationFloat3, third) == 0x08);
 static_assert(sizeof(RecordConfigurationFloat3) == 0x0c);
 
 struct RecordConfigurationRegister {
-    uint32_t word;
+    Field<uint32_t> word;
     uint8_t unknown_0x04[0x04];
 };
 static_assert(offsetof(RecordConfigurationRegister, word) == 0x00);
