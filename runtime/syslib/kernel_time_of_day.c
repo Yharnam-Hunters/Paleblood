@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* System call group: kernel, threads and memory. The time of day, clock_gettime and the process
-   time (libkernel, libScePosix).
+/* System call group: kernel, threads and memory. The time of day, clock_gettime, the process time
+   and time() (libkernel, libScePosix, libSceLibcInternal).
 
    Facts used:
    - gettimeofday(struct timeval *, struct timezone *) is POSIX; the PS4's system is FreeBSD, whose
@@ -102,6 +102,20 @@ static int32_t sce_clock_gettime(int32_t id, guest_timespec *tp)
     return error ? (int32_t)(0x80020000u + (unsigned)error) : 0;
 }
 
+/* time_t time(time_t *tloc), imported by libSceFios2.elf from libSceLibcInternal: ISO C 7.27.2.4
+   returns the calendar time and also stores it through tloc when tloc is not null, and POSIX makes
+   it the seconds since the Epoch. FreeBSD's time() (lib/libc/gen/time.c, time(3): since FreeBSD 9)
+   returns the seconds of clock_gettime(CLOCK_SECOND), as the bundled libc's time() above does;
+   time_t is 64-bit on amd64. The runtime answers it from the same clock. FreeBSD returns -1 only
+   when clock_gettime fails, which CLOCK_SECOND with a timespec of its own does not. */
+static int64_t libc_time(int64_t *tloc)
+{
+    guest_timespec ts;
+    read_clock(BSD_CLOCK_SECOND, &ts);
+    if (tloc) *tloc = ts.seconds;
+    return ts.seconds;
+}
+
 /* uint64_t sceKernelGetProcessTime(void), as the OpenOrbis homebrew SDK's libkernel.h declares it:
    the time since the process started. Its unit is microseconds: the executable turns it into
    seconds by dividing by 1,000,000 (0x00e4fb6e, the compiler's multiply by 0x431bde83 and shift by
@@ -140,3 +154,4 @@ RT_SYSLIB("libkernel", sceKernelGettimeofday, sce_gettimeofday);
 RT_SYSLIB("libkernel", clock_gettime, posix_clock_gettime);
 RT_SYSLIB("libkernel", sceKernelClockGettime, sce_clock_gettime);
 RT_SYSLIB("libkernel", sceKernelGetProcessTime, get_process_time);
+RT_SYSLIB("libSceLibcInternal", time, libc_time);

@@ -1811,6 +1811,21 @@ int main(void)
         CHECK(t1 < 600ull * 1000000 && t2 >= t1 + 15000 && t2 < t1 + 5000000); /* 20 ms later, in µs */
     }
 
+    /* time (libSceLibcInternal): the wall clock's whole seconds, returned and stored through a
+       non-null pointer, as FreeBSD's time() reads CLOCK_SECOND. */
+    int64_t (*libc_time)(int64_t *) = (int64_t (*)(int64_t *))fn("libSceLibcInternal", "time");
+    if (libc_time) {
+        struct timespec before, after;
+        int64_t stored = -1;
+        clock_gettime(CLOCK_REALTIME, &before);
+        const int64_t returned = libc_time(&stored);
+        const int64_t unstored = libc_time(NULL);
+        clock_gettime(CLOCK_REALTIME, &after);
+        CHECK(returned == stored && returned >= before.tv_sec && returned <= after.tv_sec);
+        CHECK(unstored >= returned && unstored <= after.tv_sec);
+    }
+    CHECK(is_implemented("libSceLibcInternal", "time"));
+
     /* sceAjmInitialize / sceAjmModuleRegister. */
     ajm_init_fn = (f_ajm_init)fn("libSceAjm", "sceAjmInitialize");
     ajm_register_fn = (f_ajm_register)fn("libSceAjm", "sceAjmModuleRegister");
