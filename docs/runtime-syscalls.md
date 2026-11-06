@@ -995,6 +995,36 @@ belongs to other calls, which stop by name until they are implemented.
 
 **What stops by name:** an HTTP context the runtime did not hand out, and a missing slot.
 
+## Network, SSL and HTTP teardown (`sceHttpTerm`, `sceSslTerm`, `sceNetPoolDestroy`, issue #41)
+
+The executable's HTTP manager tears down what it set up, each call only for an id it got, and
+none reads an answer:
+- its connection object (`0x013d1d90`, `0x013d1e10`) calls `sceHttpAbortWaitRequest(handle)`,
+  `sceHttpDestroyEpoll(HTTP context, handle)` and `sceHttpDeleteTemplate(template)`;
+- the manager (`0x013d20d0`, `0x013d2120`, `0x013d2170`) calls `sceHttpTerm(HTTP context)`,
+  `sceSslTerm(SSL context)` and `sceNetPoolDestroy(pool)`.
+
+OpenOrbis' `Http.h` and `Net.h` give the `int32_t` id arguments of `sceHttpTerm`,
+`sceHttpDeleteTemplate` and `sceNetPoolDestroy`; the others' come from these calls. The answers
+are facts from shadPS4's `libSceHttp` (`http.cpp`, `http_error.h`):
+
+| Call | Runtime |
+|---|---|
+| `sceHttpTerm(context)`, `sceHttpDeleteTemplate(template)` | 0, ending the id; `0x80431100` (invalid id) for one that is not live (never handed out, or already ended) |
+| `sceHttpDestroyEpoll(context, handle)` | 0, freeing the handle; `0x80431100` for a context or handle that is not live, `0x804311fe` (invalid value) for no handle |
+| `sceHttpAbortWaitRequest(handle)` | 0; `0x804311fe` for no handle, `0x80431100` for one that is not live. Every later `sceHttpWaitRequest` on the handle answers `0x80431080` (aborted). Offline no wait blocks, so there is no waiter to wake. |
+| `sceSslTerm(context)`, `sceNetPoolDestroy(pool)` | 0, ending the id |
+
+Ids are never reused. Using an ended pool or SSL context in `sceHttpInit`, an ended HTTP context
+in `sceHttpCreateTemplate` or `sceHttpCreateEpoll`, and an ended template in the template calls,
+stop by name as an unknown id does (`sceHttpsEnableOption` and `sceHttpsDisableOption` answer
+`0x80431100`, as before).
+
+**What stops by name:** ending an SSL context or pool that is not live (no source gives the
+answer). shadPS4 answers `0x80431001` (before init) for the HTTP calls before any `sceHttpInit`;
+the runtime does not model that state and answers `0x80431100` there, which the executable never
+reaches.
+
 ## HTTPS options (`sceHttpsEnableOption`, `sceHttpsDisableOption`)
 
 `sceHttpsEnableOption(id, flags)` and `sceHttpsDisableOption(id, flags)` set and clear HTTPS
