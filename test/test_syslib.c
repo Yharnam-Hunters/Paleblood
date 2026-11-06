@@ -1074,6 +1074,28 @@ static void *ep_waiter(void *arg)
     return NULL;
 }
 
+/* scePthreadExit: a guest thread ends from deep in its calls, its key destructors still run. */
+typedef void (*f_thread_exit)(void *);
+static f_thread_exit te_exit;
+static int32_t te_key;
+static atomic_int te_after_exit, te_destructor_calls;
+static void *te_destroyed;
+static void te_destructor(void *value) { te_destroyed = value; atomic_fetch_add(&te_destructor_calls, 1); }
+static void __attribute__((noinline)) te_deep(int depth, void *value)
+{
+    if (depth) te_deep(depth - 1, value);
+    else te_exit(value);
+    atomic_store(&te_after_exit, 1); /* never reached */
+}
+static void *te_entry(void *argument)
+{
+    kc_set(te_key, argument);
+    te_deep(2, argument);
+    atomic_store(&te_after_exit, 1); /* never reached */
+    return NULL;
+}
+static void te_exit_main(void) { te_exit(NULL); }
+
 int main(void)
 {
     /* Unresolved entries are still callable diagnostics, but are not reported as implemented. */
@@ -3060,6 +3082,19 @@ int main(void)
             CHECK(d1.tv_sec - d0.tv_sec < 1);
             CHECK(ep_destroy(id) == (int32_t)0x80410109u && ep_wait(id, events, 4, 0) == (int32_t)0x80410109u);
         }
+    }
+
+    te_exit = (f_thread_exit)fn("libkernel", "scePthreadExit");
+    CHECK(te_exit != NULL);
+    if (te_exit && tc_create && kc_create && kc_set) {
+        static int value;
+        CHECK(kc_create(&te_key, te_destructor) == 0);
+        void *thread = NULL, *attr = tc_attr(1, 1, 1); /* detached */
+        CHECK(tc_create(&thread, &attr, te_entry, &value, "exits") == 0);
+        for (int i = 0; i < 200000 && !atomic_load(&te_destructor_calls); i++) sched_yield();
+        CHECK(atomic_load(&te_destructor_calls) == 1 && te_destroyed == &value);
+        CHECK(!atomic_load(&te_after_exit));
+        CHECK(died_in_fatal(te_exit_main));
     }
 
     pg_init = (f_pg_init)fn("libScePlayGo", "scePlayGoInitialize");
