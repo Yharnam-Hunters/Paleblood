@@ -104,6 +104,14 @@ Instead:
        (`rt_image_descriptor_decode`, the Sea Islands manual's T# layout as shadPS4's `resource.h`
        has it) and binds a storage image (set 0, binding i) whose shape the translation uses. Stores
        must cover every component the format has; data components past them are dropped.
+     - **Tiled layouts** (`runtime/tiling.h`): where each texel of an image lies in guest memory, for
+       reading images the CPU or a shader's buffer stores wrote. AMD's address library (addrlib, in
+       Mesa) gives the formulas; the PS4's tile-mode and macro-tile-mode values are those shadPS4's
+       `tiling.cpp` lists (8 pipes, P8_32x32_16x16, a 256-byte pipe interleave, no bank swizzle on the
+       base PS4). Done: linear (tiling indices 8, 31), 1D thin (9, 13) and 2D thin (10, 14), one
+       sample, 1 to 16 bytes per element; others are refused by name. `test/test_tiling.c` checks
+       offsets worked out by hand, mutated layouts that must miss them, shadPS4's table of macro-tile
+       sizes, and that every layout is a permutation of the image's bytes.
      - **Descriptor base addresses are 40 bits** (word 1's bits 0-7; the Sea Islands manual's Table
        8.5 as shadPS4's `resource.h` lays it out). The game sets word 1's bits 8-15, which the
        translator used to take as address bits, sending the GPU outside guest memory.
