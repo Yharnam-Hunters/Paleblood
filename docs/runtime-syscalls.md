@@ -743,6 +743,31 @@ The runtime's choices: the L2 and R2 bits are set while their trigger is off zer
 0..127 and wrap, down fingers listed first; a held vibration is sent to SDL again every 30
 seconds, as SDL's rumble lasts at most about 65.
 
+**Scripted input (`pbboot --input-script SPEC`, `tools/boot.py --no-record --input-script SPEC`).**
+For unattended boots, a timed script plays the controller through the same backend interface
+(`runtime/input/input_script.c`); it works with any `--display` mode and cannot be combined with
+`--input host`. SPEC is the script, or `@FILE` to read it from a file. Events are separated by
+commas, semicolons or new lines, and `#` starts a comment. Each event is `WHEN:CONTROLS[*HOLD]`:
+
+- `WHEN` is seconds since the process started (`45`, `45.5s`) or frames presented by video out's
+  first port (`700f`). Frames follow the game's own progress, so they suit a slow boot; seconds
+  need no display.
+- `CONTROLS` are names joined by `+`: `cross circle square triangle up down left right l1 r1 l2 r2
+  l3 r3 options touch`, and the stick directions `lstick-up lstick-down lstick-left lstick-right`
+  and `rstick-up` ... `rstick-right` at full deflection. A scripted trigger is fully pressed.
+- The controls are held from `WHEN` for `HOLD`, on the same clock (default 0.25 s or 4 frames),
+  then released; overlapping events combine.
+
+pbboot writes `pbboot: input script: event N starts (S s, frame F)` when the title first reads
+the pad during an event, so a run's log shows when each press landed. For example:
+
+```
+python3 tools/boot.py --no-record --display headless --input-script "45:down,47:cross"
+```
+
+A malformed event, an unknown control, a hold on the other clock, more than 256 events or a script
+file over 64 KiB is refused before the boot, naming the event.
+
 Fields the executable does not read are left zero. **Not modelled:** motion. The accelerometer
 and gyroscope are not forwarded, because the units and axes the system reports them in are not
 established here (shadPS4 scales SDL's m/s² by 0.098 without a source); acceleration and angular
