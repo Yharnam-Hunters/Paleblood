@@ -69,11 +69,11 @@ def decomp_body(replaced=None, verify=None):
 class VerifyResults(unittest.TestCase):
     def test_a_run_directory_or_its_summary_file(self):
         import tempfile
-        summary = {'function': 'render_set_cb_target_mask', 'cases': 14, 'passed': 14, 'failed': 0, 'failures': []}
+        summary = {'function': 'example_function', 'cases': 14, 'passed': 14, 'failed': 0, 'failures': []}
         with tempfile.TemporaryDirectory() as out:
             with open(os.path.join(out, 'summary.json'), 'w') as f:
                 json.dump(summary, f)
-            expected = [{'function': 'render_set_cb_target_mask', 'cases': 14, 'passed': 14, 'failed': 0}]
+            expected = [{'function': 'example_function', 'cases': 14, 'passed': 14, 'failed': 0}]
             self.assertEqual(session_report.verify_results([out]), expected)
             self.assertEqual(session_report.verify_results([os.path.join(out, 'summary.json')]), expected)
 
