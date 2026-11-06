@@ -13,7 +13,6 @@
 
 #include <asm/prctl.h>
 #include <pthread.h>
-#include <setjmp.h>
 #include <sched.h>
 #include <signal.h>
 #include <stdint.h>
@@ -53,8 +52,9 @@ typedef struct {
     pthread_t host;
     uint32_t signal_mask[4]; /* the guest's blocked signals, a FreeBSD sigset_t (_sigprocmask) */
     int32_t priority;        /* scePthreadGetprio / scePthreadSetprio */
-    /* scePthreadExit: where the thread's host side resumes, and the value the thread ends with. */
-    jmp_buf exit_point;
+    /* scePthreadExit: where the thread's host side resumes (a __builtin_setjmp buffer, five words),
+       and the value the thread ends with. */
+    void *exit_point[5];
     int exit_point_set;
     int exiting;             /* key destructors are running: a further exit is refused */
     void *exit_value;
@@ -251,8 +251,12 @@ __asm__(".text\n"
 /* A created thread's host side: the guest's thread pointer in GS, the boot's timeout and
    worker-stop signals left to the main thread, the thread registered for scePthreadSelf, then the
    guest's entry on its own stack. A return from the entry ends the thread (POSIX), after its key
-   destructors (runtime/syslib/kernel_key.c); so does scePthreadExit, which comes back here by
-   longjmp rather than unwinding the guest's frames, which were not built for the host's unwinder. */
+   destructors (runtime/syslib/kernel_key.c); so does scePthreadExit, which comes back here by a
+   jump rather than unwinding the guest's frames, which were not built for the host's unwinder. The
+   jump is the compiler's __builtin_setjmp/__builtin_longjmp, not the C library's longjmp: a
+   hardened C library (_FORTIFY_SOURCE, on by default in some distributions' compilers) checks
+   that longjmp goes to an older frame of the same stack and aborts the process when it comes from
+   the guest's stack, which is a separate mapping. */
 static void *thread_start(void *raw)
 {
     guest_thread *t = raw;
@@ -268,7 +272,7 @@ static void *thread_start(void *raw)
     enum { STACK_TOP_RESERVE = 64, STACK_ALIGN = 16 };
     const uintptr_t top = ((uintptr_t)t->stack + t->stack_size - STACK_TOP_RESERVE) & ~(uintptr_t)(STACK_ALIGN - 1);
     t->exit_point_set = 1;
-    if (!setjmp(t->exit_point)) t->exit_value = rt_thread_call(t->entry, t->argument, (void *)top);
+    if (!__builtin_setjmp(t->exit_point)) t->exit_value = rt_thread_call(t->entry, t->argument, (void *)top);
     t->exiting = 1;
     rt_thread_keys_exit((void *)top);
     return t->exit_value;
@@ -286,7 +290,7 @@ static _Noreturn void thread_exit(void *value)
     if (!t || !t->exit_point_set) rt_fatal(fn, "an exit from the main thread is not modelled");
     if (t->exiting) rt_fatal(fn, "an exit from inside a key destructor");
     t->exit_value = value;
-    longjmp(t->exit_point, 1);
+    __builtin_longjmp(t->exit_point, 1);
 }
 RT_SYSLIB("libkernel", scePthreadExit, thread_exit);
 
