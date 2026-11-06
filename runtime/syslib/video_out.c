@@ -22,6 +22,7 @@
    the flip argument: the PS4's values are not established and no caller reads them. */
 #include "runtime/equeue.h"
 #include "runtime/process.h"
+#include "runtime/renderer.h"
 #include "runtime/display.h"
 #include "runtime/syslib.h"
 #include "runtime/video_out.h"
@@ -171,11 +172,19 @@ int32_t rt_video_out_flip(const char *fn, int32_t handle, int32_t buffer, int32_
     p->status.count++;
     p->status.flip_argument = argument;
     p->status.current_buffer = buffer;
+    const uint64_t address = (uint64_t)(uintptr_t)p->buffers[buffer];
+    uint32_t width, height;
+    memcpy(&width, p->attribute.width, sizeof width);
+    memcpy(&height, p->attribute.height, sizeof height);
     rt_equeue *queues[MAX_FLIP_QUEUES];
     const int n = p->queue_count;
     memcpy(queues, p->queues, sizeof queues);
     pthread_mutex_unlock(&ports_lock);
-    rt_display_present(handle, buffer); /* shown before the game hears the flip is done */
+    /* what the renderer drew into that buffer, if anything, then shown before the game hears the
+       flip is done */
+    uint32_t *const frame = rt_display_frame(handle, buffer);
+    if (frame) rt_renderer_frame(address, frame, width, height);
+    rt_display_present(handle, buffer);
     for (int i = 0; i < n; i++) rt_equeue_trigger(queues[i], RT_EVFILT_DISPLAY, 0, argument);
     return 0;
 }
