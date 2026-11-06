@@ -12,6 +12,7 @@
 #include "record_builder_selectors.h"
 #include "record_field_calls.h"
 #include "record_builder_descriptor_calls.h"
+#include "record_descriptor_constructors_calls.h"
 
 namespace render {
 struct PresentBuilderPayloadPrefix {
@@ -72,11 +73,4 @@ RT_ORIGINAL(0x01485f90, record_constructor,
             uint64_t(RecordConstructorPrefix *, uint32_t first, uint32_t second, uint32_t multiplier,
                      uint32_t encoding, uint32_t classification, uint32_t first_selector,
                      uint32_t second_selector, uint64_t *first_auxiliary, uint64_t *second_auxiliary));
-RT_ORIGINAL(0x01487ee0, initialize_pair_record_descriptor,
-            uint64_t(RecordDescriptorPrefix *, uint32_t first, uint32_t second, uint32_t third,
-                     uint32_t count, uint32_t encoding, uint32_t classification,
-                     uint32_t level, uint8_t flag));
-RT_ORIGINAL(0x01488590, initialize_triple_record_descriptor,
-            uint64_t(RecordDescriptorPrefix *, uint32_t first, uint32_t second, uint32_t third,
-                     uint32_t count, uint32_t encoding, uint32_t classification));
 }  // namespace render
