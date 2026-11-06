@@ -1,12 +1,18 @@
 {
   "fault": null,
-  "first_unimplemented": null,
+  "first_unimplemented": {
+    "caller": "eboot",
+    "library": "libSceNet",
+    "nid": "SF47kB2MNTo",
+    "returns_to": "eboot+0x2715762",
+    "symbol": "sceNetEpollCreate"
+  },
   "imports_bundled": 219,
-  "imports_called": 179,
-  "imports_implemented": 164,
-  "imports_remaining": 303,
+  "imports_called": 218,
+  "imports_implemented": 182,
+  "imports_remaining": 285,
   "imports_total": 686,
-  "imports_unresolved": 3,
+  "imports_unresolved": 2,
   "milestone": "first flip",
   "milestone_index": 8,
   "milestones": [
@@ -38,22 +44,19 @@
     {
       "exports": 2140,
       "imports": 79,
-      "imports_remaining": 35,
+      "imports_remaining": 34,
       "name": "libc.elf"
     },
     {
       "exports": 165,
       "imports": 83,
-      "imports_remaining": 32,
+      "imports_remaining": 31,
       "name": "libSceFios2.elf"
     }
   ],
-  "outcome": "runtime stop",
+  "outcome": "unimplemented",
   "phase": "eboot",
-  "runtime_stop": {
-    "function": "sceGnmSubmitCommandBuffers",
-    "reason": "constant command buffers: the stand-in does not run them"
-  },
+  "runtime_stop": null,
   "stopped_by_hook": null,
   "stub_modules": [
     {
@@ -93,7 +96,7 @@
     },
     {
       "id": "0x0019",
-      "loaded": false,
+      "loaded": true,
       "name": "libSceNpUtility"
     },
     {
@@ -103,7 +106,7 @@
     },
     {
       "id": "0x001c",
-      "loaded": false,
+      "loaded": true,
       "name": "libSceNpMatching2"
     },
     {
@@ -123,7 +126,7 @@
     },
     {
       "id": "0x009d",
-      "loaded": false,
+      "loaded": true,
       "name": "libSceNpAuth"
     },
     {
@@ -153,12 +156,12 @@
     },
     {
       "id": "0x00b2",
-      "loaded": false,
+      "loaded": true,
       "name": "libSceNpProfileDialog"
     },
     {
       "id": "0x00b5",
-      "loaded": false,
+      "loaded": true,
       "name": "libSceNpSignaling"
     }
   ]
