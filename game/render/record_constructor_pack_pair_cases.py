@@ -79,6 +79,8 @@ INPUTS = [
 ]
 
 
+INPUTS.append({"args": [0x104, 0], "words": []})
+
 def fixtures():
     """Yield inputs without calculating the expected replacement outputs."""
     registers = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]

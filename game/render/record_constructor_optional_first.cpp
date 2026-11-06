@@ -24,7 +24,6 @@ extern "C" uint32_t bb_render_record_constructor_optional_first(uint64_t *total,
     const uint32_t second_alignment = flag != 0 ? compact_alignment : default_second_alignment;
     if (render::record_tuple_parameter_supported(first_alignment) == 0) return invalid_calculation;
     if (render::record_tuple_parameter_supported(second_alignment) == 0) return invalid_calculation;
-    const uint32_t multiplier = count;
 
     const uint32_t aligned_first = (first_value + first_alignment - 1) & (0u - first_alignment);
     uint32_t next_second = (second_value + second_alignment - 1) & (0u - second_alignment);
@@ -36,7 +35,7 @@ extern "C" uint32_t bb_render_record_constructor_optional_first(uint64_t *total,
 
     if (total != nullptr) {
         const uint64_t quantity = (product >> product_shift) & quantity_mask;
-        const uint64_t value = uint64_t(multiplier) * quantity;
+        const uint64_t value = uint64_t(count) * quantity;
         std::memcpy(total, &value, sizeof(value));
     }
     if (unit != nullptr) std::memcpy(unit, &published_unit, sizeof(published_unit));

@@ -116,6 +116,32 @@ INPUTS.extend(
 )
 
 
+# Keep the helper's geometry publication controlled while the original category
+# and encoding-metadata decoders decide whether the auxiliary output is allowed.
+for case_id, encoding, tile_mode in (
+    ("first_auxiliary_thick_tile_mode", 0x00FAC001, 19),
+    ("first_auxiliary_128_bit_encoding", 0x00FAC00E, 0),
+):
+    geometry = bytearray(0x38)
+    struct.pack_into("<III", geometry, 0, 64, 64, 1)
+    struct.pack_into("<Q", geometry, 0x10, 1)
+    struct.pack_into("<I", geometry, 0x1C, 0x800)
+    struct.pack_into("<I", geometry, 0x30, tile_mode)
+    INPUTS.append({
+        "id": case_id,
+        "args": ["p32", 64, 64, 1, encoding, 4, 1, 0, "p96", 0],
+        "words": [],
+        "stubs": [
+            {"address": "0x0149ce10", "argc": 2, "ret": 0,
+             "writes": [{"arg": 0, "bytes": geometry.hex()}]},
+            # Removing an admission must expose this otherwise skipped call.
+            {"address": "0x0149e2d0", "argc": 4, "ret": 0,
+             "writes": [{"arg": 0, "bytes": struct.pack("<Q", 256).hex()},
+                        {"arg": 1, "bytes": struct.pack("<I", 0x800).hex()}]},
+        ],
+    })
+
+
 def fixtures():
     """Yield inputs without calculating the expected replacement outputs."""
     registers = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
