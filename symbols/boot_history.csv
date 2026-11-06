@@ -16,3 +16,4 @@ date,milestone,milestone_index,imports_total,imports_bundled,imports_implemented
 2026-11-06,first flip,8,686,219,164,303,runtime:sceGnmSubmitCommandBuffers (constant command buffers: the stand-in does not run them),runtime stop,eboot,,,,
 2026-11-06,first flip,8,686,219,182,285,eboot->libSceNet:sceNetEpollCreate,unimplemented,eboot,eboot+0x2715762,,,
 2026-11-06,first flip,8,686,219,218,249,timeout at host+0x7f801cb7bcc0,timeout,eboot,,host+0x7f801cb7bcc0,0,0x0
+2026-11-06,first flip,8,686,219,234,233,timeout at host+0x7f3965b2dcc0,timeout,eboot,,host+0x7f3965b2dcc0,0,0x0
