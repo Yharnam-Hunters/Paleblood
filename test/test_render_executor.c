@@ -399,6 +399,32 @@ static void depth_and_strips(rt_executor *x)
     memcpy(colors, saved_colors, sizeof saved_colors);
 }
 
+/* A vertex shader calling a fetch shader (vertex_calling_fetch, fetch_position_color): its user data
+   holds the fetch shader's address and a pointer to a table of the two vertex buffers' descriptors
+   (32_32_32_32 float, DST_SEL x, y, z, w); the triangle draws the reference image. */
+static void fetch_shader(rt_executor *x)
+{
+    enum { FETCH_BUFFER = 0xc0f50000, VS_CODE = 0x3600, FS_CODE = 0x3700, TABLE = 0x11000, FETCH_TARGET = 0xc00000 };
+    char error[200] = "";
+    memcpy((void *)(uintptr_t)at(VS_CODE), vertex_calling_fetch, sizeof vertex_calling_fetch);
+    memcpy((void *)(uintptr_t)at(FS_CODE), fetch_position_color, sizeof fetch_position_color);
+    uint32_t *table = (uint32_t *)(uintptr_t)at(TABLE);
+    const uint32_t float_xyzw = 4 | 5 << 3 | 6 << 6 | 7 << 9 | 7u << 12 | 14u << 15; /* DST_SEL, NUM_FORMAT float, DATA_FORMAT 32_32_32_32 */
+    descriptor(table, at(CORNERS), RECORD_STRIDE), table[3] = float_xyzw;
+    descriptor(table + 4, at(COLORS), RECORD_STRIDE), table[7] = float_xyzw;
+    rt_render_forget();
+    uint32_t offset = record_setup(FETCH_BUFFER, at(FETCH_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const uint64_t code = at(VS_CODE);
+    const uint32_t vertex[RT_VERTEX_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 4 << 1, 0, 0x4, 0};
+    CHECK(rt_render_record_vertex_shader(FETCH_BUFFER, offset, vertex, error, sizeof error) == 0);
+    const uint32_t user[4] = {(uint32_t)at(FS_CODE), (uint32_t)(at(FS_CODE) >> 32), (uint32_t)at(TABLE), (uint32_t)(at(TABLE) >> 32)};
+    CHECK(rt_render_record_user_data(FETCH_BUFFER, offset + 0x10, RT_STAGE_VERTEX, 0, user, 4, error, sizeof error) == 0);
+    const int drawn = rt_executor_run(x, FETCH_BUFFER, record_triangle_draw(FETCH_BUFFER, offset + 0x20), error, sizeof error);
+    if (drawn) fprintf(stderr, "fetch shader: %s\n", error);
+    CHECK(drawn == 0);
+    check_triangle(x, at(FETCH_TARGET));
+}
+
 int main(void)
 {
     const int fd = map_guest_memory();
@@ -663,6 +689,7 @@ int main(void)
 
     sampled_images(x);
     sampled_lookup(x);
+    fetch_shader(x);
 
     rt_executor_close(x);
     rt_render_forget();

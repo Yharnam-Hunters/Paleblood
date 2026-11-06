@@ -139,7 +139,23 @@ typedef struct {
     uint32_t push_constant_offset;
     uint64_t address_offset;
     uint64_t error_address;   /* the run-time stop word (GCN_RUNTIME_STOP_*), or 0: run-time cases stop translation */
+    /* the fetch shader the program calls (gcn_call_sgpr), read from the user data's address by the
+       caller, and the program's own guest address (for the return address the call saves); NULL when
+       it makes no call */
+    const uint32_t *callee;
+    size_t callee_dwords;
+    uint64_t code_address;
 } gcn_vertex_layout;
+
+/* Calls. A vertex shader may start by calling a fetch shader, which loads its vertex inputs:
+   s_swappc_b64 to the address in a pair of SGPRs, saving the return address in another pair; the fetch
+   shader ends with s_setpc_b64 back to it. The translator inlines the callee in place of the call:
+   exactly what the call runs when the callee is straight-line code ending with that return, which it
+   checks (no branch, no image instruction, no write of the return pair). The target pair must be the
+   user data's, untouched before the call (no branch before it either), and there may be one call.
+   Returns 1 and the target pair's first SGPR in *sgpr when the program makes such a call, 0 when it
+   makes none, -1 with the reason otherwise. */
+int gcn_call_sgpr(const uint32_t *code, size_t dwords, unsigned *sgpr, char *error, size_t error_size);
 
 int gcn_translate_vertex(const uint32_t *code, size_t dwords, const gcn_vertex_layout *layout,
                          uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size);

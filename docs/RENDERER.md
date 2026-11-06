@@ -171,8 +171,15 @@ Instead:
          `v_interp_mov` and other pixel inputs stop translation.
        - **Matching the stages:** parameter n of the vertex shader feeds attribute n of the pixel
          shader. The console maps them through GPU settings; the engine hooks will set that up.
-     - **Not yet:** anything else stops with the instruction's name. Texture sampling and calls
-       (`s_swappc`, used for fetch shaders) come next. Three groups need designs of their own:
+     - **Calls to fetch shaders** (`s_swappc_b64`): the game's vertex shaders call a fetch shader at
+       the address in a user-data SGPR pair, which loads the vertex inputs and returns with
+       `s_setpc_b64`. The executor reads that address at draw time (`gcn_call_sgpr` names the pair:
+       user data untouched before the call, one call) and the translator inlines the callee in place
+       of the call, the return pair taking the return address. That is exactly what the call runs
+       when the callee is straight-line code ending in that return, which it checks; a callee with a
+       branch, an image instruction or a write to the return pair stops by name. Descriptor analyses
+       take a call as writing every SGPR.
+     - **Not yet:** anything else stops with the instruction's name. Three groups need designs of their own:
        - **geometry shaders**, which pass vertices on with `s_sendmsg` (about 1,700 of the
          game's shaders);
        - the GPU's on-chip shared memory (`ds_*`);

@@ -305,6 +305,28 @@ static const uint32_t vertex_position_color[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* As vertex_position_color, through a fetch shader as the game's vertex shaders do: the program calls
+   the code at the address in s[0:1] (s_swappc_b64, the return address into s[0:1]), which loads the two
+   buffer descriptors from the table at the pointer in s[2:3] and the vertex's position and colour by
+   index (buffer_load_format_xyzw: the descriptors' formats), then returns (s_setpc_b64). */
+static const uint32_t vertex_calling_fetch[] = {
+    0xbe802100, /* s_swappc_b64 s[0:1], s[0:1] */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf800020f, 0x08070605, /* exp param0, v5, v6, v7, v8 */
+    0xf80008cf, 0x04030201, /* exp pos0, v1, v2, v3, v4 done */
+    0xbf810000, /* s_endpgm */
+};
+
+static const uint32_t fetch_position_color[] = {
+    0xc0820300, /* s_load_dwordx4 s[4:7], s[2:3], 0x0 */
+    0xc0840304, /* s_load_dwordx4 s[8:11], s[2:3], 0x4 */
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+    0xe00c2000, 0x80010100, /* buffer_load_format_xyzw v[1:4], v0, s[4:7], 0 idxen */
+    0xe00c2000, 0x80020500, /* buffer_load_format_xyzw v[5:8], v0, s[8:11], 0 idxen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xbe802000, /* s_setpc_b64 s[0:1] */
+};
+
 /* A pixel shader: attribute 0 interpolated (barycentrics in v0 and v1), packed as halves and
    written to colour target 0. */
 static const uint32_t pixel_color[] = {
