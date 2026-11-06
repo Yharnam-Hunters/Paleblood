@@ -69,6 +69,7 @@ address,replacement,system,returns
 0x01489940,bb_render_record_descriptor_count_exponent,render,i32
 0x01489960,bb_render_record_descriptor_encoding,render,i32
 0x0149c850,bb_render_record_apply_parameter_tuple,render,i32
+0x0149cb30,bb_render_record_apply_mapping,render,i32
 0x0149cc60,bb_render_convert_record_descriptor_classification,render,i32
 0x0149e570,bb_render_calculate_second_auxiliary,render,i64
 0x0149e900,bb_render_record_tuple_parameter_supported,render,i64
@@ -126,6 +127,7 @@ address,replacement,system,returns
 0x02ab5a70,bb_render_present_record_consume,render,void
 0x02ab6810,bb_render_present_last_record_consume,render,void
 0x02ab9850,bb_render_flush_shader_preparation,render,void
+0x02abaf10,bb_render_record_derive_parameter,render,i32
 0x02abb4f0,bb_render_record_auxiliary_predicate,render,i8
 0x02ad2c30,bb_render_reset_present_preparation_dirty,render,i64
 0x02ad5dd0,bb_render_swap_chain_present_mode,render,i32
