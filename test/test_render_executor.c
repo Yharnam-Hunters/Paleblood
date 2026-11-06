@@ -177,6 +177,70 @@ int main(void)
         CHECK(rt_executor_run(x, COMPUTE, 0x40, error, sizeof error) == -1 && strstr(error, "y or z index"));
     }
 
+    /* Storage images through the record: a fill pass writes a 64 x 1 RGBA32F image (its first use, so
+       the executor makes it), a copy pass copies it to a second, and a third reads the second back into
+       guest memory; each texel arrives as written. Reading an image the GPU never wrote stops by name. */
+    {
+        enum { IMAGES = 0xc0e30000, FILL_CODE = 0x4000, COPY_CODE = 0x4400, READ_CODE = 0x4800, IMAGE_A = 0x500000, IMAGE_B = 0x510000,
+               BACK = 0x22000, LANES = 64 };
+        memcpy((void *)(uintptr_t)at(FILL_CODE), image_fill, sizeof image_fill);
+        memcpy((void *)(uintptr_t)at(COPY_CODE), image_copy, sizeof image_copy);
+        memcpy((void *)(uintptr_t)at(READ_CODE), image_to_buffer, sizeof image_to_buffer);
+        float *back = (float *)(uintptr_t)at(BACK);
+        for (unsigned i = 0; i < LANES * 4; i++) back[i] = -1;
+        uint32_t image_a[8], image_b[8], user[16] = {0};
+        const uint32_t one[3] = {1, 1, 1};
+        const uint64_t codes[3] = {at(FILL_CODE), at(COPY_CODE), at(READ_CODE)};
+        /* three times: 2D images, then (as the game's) 3-layer 1D arrays seen through their first layer,
+           where the same coordinates (x, 0) are (x, slice 0), then through layer 1 alone (BASE_ARRAY 1),
+           where slice 0 counts from the view's first layer */
+        for (int shape = 0; shape < 3; shape++) {
+        image_descriptor(image_a, at(IMAGE_A + 0x20000 * (unsigned)shape), 14, 7, LANES, 1);
+        image_descriptor(image_b, at(IMAGE_B + 0x20000 * (unsigned)shape), 14, 7, LANES, 1);
+        if (shape >= 1)
+            for (int k = 0; k < 2; k++) {
+                uint32_t *d = k ? image_b : image_a;
+                const uint32_t layer = shape == 2 ? 1 : 0;
+                image_descriptor(d, at((k ? IMAGE_B : IMAGE_A) + 0x20000), 14, 7, LANES, 1);
+                d[3] = (d[3] & 0x0fffffffu) | 12u << 28;   /* TYPE 1D array */
+                d[4] |= 2;                                   /* DEPTH: 3 layers */
+                d[5] = layer | layer << 13;                  /* BASE_ARRAY, LAST_ARRAY */
+            }
+        for (unsigned i = 0; i < LANES * 4; i++) back[i] = -1;
+        rt_render_forget();
+        uint32_t offset = 0x10;
+        for (int pass = 0; pass < 3; pass++) {
+            const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(codes[pass] >> 8), (uint32_t)(codes[pass] >> 40), 0x3, 16 << 1, LANES, 1, 1};
+            CHECK(rt_render_record_compute_shader_at(IMAGES + offset, shader) == 0);
+            memset(user, 0, sizeof user);
+            if (pass == 0) memcpy(user + 8, image_a, sizeof image_a);
+            if (pass == 1) memcpy(user, image_a, sizeof image_a), memcpy(user + 8, image_b, sizeof image_b);
+            if (pass == 2) descriptor(user, at(BACK), 16), memcpy(user + 8, image_b, sizeof image_b);
+            CHECK(rt_render_record_user_data(IMAGES, offset + 0x10, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+            CHECK(rt_render_record_user_data(IMAGES, offset + 0x20, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
+            CHECK(rt_render_record_dispatch(IMAGES, offset + 0x30, one, error, sizeof error) == 0);
+            offset += 0x40;
+        }
+        const int ran = rt_executor_run(x, IMAGES, offset, error, sizeof error);
+        if (ran) fprintf(stderr, "images: %s\n", error);
+        CHECK(ran == 0);
+        int right = 1;
+        for (unsigned i = 0; i < LANES; i++)
+            right &= back[i * 4] == (float)i && back[i * 4 + 1] == 1.0f && back[i * 4 + 2] == 2.0f && back[i * 4 + 3] == 0.5f;
+        CHECK(right);
+        }
+
+        rt_render_forget();
+        image_descriptor(image_b, at(IMAGE_B + 0x8000), 14, 7, LANES, 1); /* never written */
+        const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(codes[2] >> 8), (uint32_t)(codes[2] >> 40), 0x3, 16 << 1, LANES, 1, 1};
+        CHECK(rt_render_record_compute_shader_at(IMAGES + 0x10, shader) == 0);
+        descriptor(user, at(BACK), 16), memcpy(user + 8, image_b, sizeof image_b);
+        CHECK(rt_render_record_user_data(IMAGES, 0x20, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+        CHECK(rt_render_record_user_data(IMAGES, 0x30, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
+        CHECK(rt_render_record_dispatch(IMAGES, 0x40, one, error, sizeof error) == 0);
+        CHECK(rt_executor_run(x, IMAGES, 0x50, error, sizeof error) == -1 && strstr(error, "read before the GPU wrote it"));
+    }
+
     rt_executor_close(x);
     rt_render_forget();
     munmap((void *)(uintptr_t)GUEST_BASE, GUEST_SIZE);

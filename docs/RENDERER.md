@@ -85,6 +85,14 @@ Instead:
        sint, float; identity swizzle) move as they are, and a four-component store to 8_8_8_8 unorm
        undoes the descriptor's swizzle (shadPS4's rule: the inverse of a load's) and packs as GLSL's
        `packUnorm4x8` (the PS4's rounding of ties is not established). Anything else is a run-time stop.
+     - **Format loads with a swizzle:** a load of whole 32-bit components reads the format's
+       components (the ones it lacks read 0), then each result takes what its DST_SEL names: 0, 1
+       (1.0 for float data) or a memory component, as shadPS4 reads them.
+     - **Images (MIMG `image_load`, `image_store`):** a shader names an image by the SGPRs holding
+       its 8-word descriptor. `gcn_image_resources` lists them; the caller reads each descriptor
+       (`rt_image_descriptor_decode`, the Sea Islands manual's T# layout as shadPS4's `resource.h`
+       has it) and binds a storage image (set 0, binding i) whose shape the translation uses. Stores
+       must cover every component the format has; data components past them are dropped.
      - **Descriptor base addresses are 40 bits** (word 1's bits 0-7; the Sea Islands manual's Table
        8.5 as shadPS4's `resource.h` lays it out). The game sets word 1's bits 8-15, which the
        translator used to take as address bits, sending the GPU outside guest memory.
@@ -334,8 +342,16 @@ Instead:
         translates the shader for its workgroup size and runs the dispatch, its writes in the guest
         memory before the next call. A workgroup's y or z index and its size information stop by
         name. The two dispatch writers with a fifth argument (`0x01474d10`, `0x0148a410`) are not
-        observed yet. On the game, the frame's first compute pass (16,320 workgroups
-        of 8_8_8_8 stores) now runs, and the second stops at `image_store`: images come next.
+        observed yet. Compute shaders' **images** are executor-owned Vulkan images
+        found by their descriptor's address and shape: an image the GPU writes stays there and is
+        never tiled back into guest memory; a new image whose first use writes it starts cleared,
+        and one first read before any GPU write stops by name (loading guest texels, detiled, comes
+        with sampling). Formats: 32 (float, uint, sint), 32_32 and 32_32_32_32 float, 8_8_8_8
+        unorm; 1D and 2D images and their arrays, one level, a view of any of an array's layers
+        (slices count from `BASE_ARRAY`, as shadPS4 and Mesa's radeonsi have it), DST_SEL in place.
+        On the game, all of the boot's compute passes now run (two clears and a buffer-to-image
+        copy into a 3-layer 1D array), and the next stop is a draw whose pixel shader reads the
+        pixel position.
         Still to report: indexed draws; then follow the auto-index draw wrapper's callers
         (`0x015fbb50`) up to the title screen's 2D passes.
 4. **Textures and 3D.** The game's texture formats and tiling (from public format documentation),

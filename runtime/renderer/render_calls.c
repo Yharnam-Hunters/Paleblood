@@ -92,6 +92,34 @@ void rt_compute_shader_decode(const uint32_t words[RT_COMPUTE_SHADER_WORDS], rt_
     };
 }
 
+void rt_image_descriptor_decode(const uint32_t words[RT_IMAGE_DESCRIPTOR_WORDS], rt_image_descriptor *image)
+{
+    enum { ADDRESS_UNIT_SHIFT = 8 };
+    *image = (rt_image_descriptor){
+        .address = ((uint64_t)field(words[1], 0, 6) << 32 | words[0]) << ADDRESS_UNIT_SHIFT,
+        .data_format = field(words[1], 20, 6),
+        .num_format = field(words[1], 26, 4),
+        .width = field(words[2], 0, 14) + 1,
+        .height = field(words[2], 14, 14) + 1,
+        .swizzle = field(words[3], 0, 12),
+        .base_level = field(words[3], 12, 4),
+        .last_level = field(words[3], 16, 4),
+        .tiling_index = field(words[3], 20, 5),
+        .pow2_pad = field(words[3], 25, 1),
+        .type = field(words[3], 28, 4),
+        .depth = field(words[4], 0, 13) + 1,
+        .pitch = field(words[4], 13, 14) + 1,
+        .base_array = field(words[5], 0, 13),
+        .last_array = field(words[5], 13, 13),
+    };
+    image->layers = 1;
+    if (image->type == RT_IMAGE_1D_ARRAY || image->type == RT_IMAGE_2D_ARRAY) {
+        image->layers = image->depth;
+        if (image->pow2_pad)
+            while (image->layers & (image->layers - 1)) image->layers += image->layers & -image->layers;
+    }
+}
+
 void rt_vertex_shader_decode(const uint32_t words[RT_VERTEX_SHADER_WORDS], rt_vertex_shader *shader)
 {
     const uint32_t resources = words[RESOURCES_1];

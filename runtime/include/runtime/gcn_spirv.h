@@ -46,6 +46,29 @@ enum {
     GCN_RUNTIME_STOP_BUFFER_FORMAT = 1,
 };
 
+/* Images (MIMG). A shader names an image by the SGPRs holding its 8-word descriptor (T#), which the
+   GPU reads as it runs. The translator turns each into a storage image the caller binds: descriptor
+   set 0, binding i for images[i], whose shape the caller reads from the descriptor before
+   translating (gcn_image_resources lists which SGPRs a program uses). A MIMG instruction whose
+   descriptor SGPRs are not one of the bindings stops translation. */
+typedef enum { GCN_IMAGE_1D, GCN_IMAGE_2D, GCN_IMAGE_3D } gcn_image_dim;
+typedef enum { GCN_IMAGE_FLOAT, GCN_IMAGE_UINT, GCN_IMAGE_SINT } gcn_image_sample_type;
+typedef struct {
+    unsigned sgpr;                    /* the descriptor's first SGPR (a multiple of 4) */
+    gcn_image_dim dim;
+    int arrayed;
+    gcn_image_sample_type type;      /* how its texels read and write: floats (unorm, float, ...) or integers */
+    unsigned components;             /* the format's components, 1 to 4 */
+} gcn_image_binding;
+
+enum { GCN_MAX_IMAGES = 8, GCN_IMAGE_READ = 1, GCN_IMAGE_WRITE = 2 };
+
+/* The images a program uses: the first SGPR of each distinct descriptor its MIMG instructions name,
+   into sgprs (up to max), with how each is used (GCN_IMAGE_READ | GCN_IMAGE_WRITE) into access.
+   0 and *count, or -1 with the reason (more images than max, code that does not decode). */
+int gcn_image_resources(const uint32_t *code, size_t dwords, unsigned *sgprs, unsigned *access, unsigned max, unsigned *count,
+                        char *error, size_t error_size);
+
 typedef struct {
     uint32_t local_size[3];  /* the workgroup's size */
     unsigned user_sgprs;     /* s0 .. s(user_sgprs - 1) start as the user data (push constants) */
@@ -53,6 +76,8 @@ typedef struct {
     uint32_t push_constant_offset;
     uint64_t address_offset;
     uint64_t error_address;   /* the run-time stop word (GCN_RUNTIME_STOP_*), or 0: run-time cases stop translation */
+    const gcn_image_binding *images;
+    unsigned image_count;
 } gcn_compute_layout;
 
 /* Translates the compute program at code (dwords long, through its s_endpgm). On success 0, and

@@ -91,6 +91,24 @@ typedef struct {
 } rt_compute_shader;
 
 void rt_compute_shader_decode(const uint32_t words[RT_COMPUTE_SHADER_WORDS], rt_compute_shader *shader);
+
+/* An image resource descriptor (T#, 8 words), as the Sea Islands manual's Table 8.10 defines it and
+   shadPS4's video_core/amdgpu/resource.h lays it out: word 0 and word 1's bits 0-5 the base address
+   >> 8, word 1 DATA_FORMAT bits 20-25 and NUM_FORMAT 26-29; word 2 WIDTH - 1 bits 0-13, HEIGHT - 1
+   14-27; word 3 DST_SEL 0-11, BASE_LEVEL 12-15, LAST_LEVEL 16-19, TILING_INDEX 20-24, POW2_PAD 25,
+   TYPE 28-31; word 4 DEPTH - 1 bits 0-12, PITCH - 1 13-26; word 5 BASE_ARRAY 0-12, LAST_ARRAY 13-25.
+   Types: 8 1D, 9 2D, 10 3D, 11 cube, 12 1D array, 13 2D array, 14 2D MSAA, 15 2D MSAA array. For an
+   array, DEPTH is its layer count (rounded up to a power of two with POW2_PAD). */
+enum { RT_IMAGE_DESCRIPTOR_WORDS = 8 };
+enum { RT_IMAGE_1D = 8, RT_IMAGE_2D = 9, RT_IMAGE_3D = 10, RT_IMAGE_CUBE = 11, RT_IMAGE_1D_ARRAY = 12, RT_IMAGE_2D_ARRAY = 13 };
+typedef struct {
+    uint64_t address;
+    uint32_t data_format, num_format, width, height, depth, pitch, swizzle;
+    uint32_t base_level, last_level, tiling_index, pow2_pad, type, base_array, last_array;
+    uint32_t layers;                 /* an array's layers (DEPTH, padded), 1 otherwise */
+} rt_image_descriptor;
+
+void rt_image_descriptor_decode(const uint32_t words[RT_IMAGE_DESCRIPTOR_WORDS], rt_image_descriptor *image);
 void rt_vertex_shader_decode(const uint32_t words[RT_VERTEX_SHADER_WORDS], rt_vertex_shader *shader);
 void rt_pixel_shader_decode(const uint32_t words[RT_PIXEL_SHADER_WORDS], rt_pixel_shader *shader);
 
