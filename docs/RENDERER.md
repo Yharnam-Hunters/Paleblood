@@ -224,7 +224,13 @@ Instead:
      now. Without the renderer the observer calls do nothing, so a boot without graphics behaves
      as before.
    - **Done on the runtime side:** the call record (`runtime/render_calls.h`): render targets,
-     viewports, shader register blocks, user data and draws per command buffer.
+     viewports, shader register blocks, user data and draws per command buffer, plus any context or
+     user config register the library sets (`rt_render_record_register`: blend, depth and stencil
+     control, colour control, the target mask, the primitive type) and the instance count. The
+     executor understands those registers and, at each draw, stops by name on what it does not
+     draw yet: blending, depth or stencil testing, primitives other than triangle lists, colour
+     modes other than a normal copy, partial write masks, more than one instance, and any register
+     it does not interpret. A draw with target 0 masked off writes nothing and is skipped.
    - **The draw executor** (being built): it runs a submitted buffer's recorded calls on the GPU.
      1. **Guest memory on the GPU.** Shaders reach memory through guest addresses: buffer
         descriptors and pointers in their user data. The game's GPU-visible memory is direct

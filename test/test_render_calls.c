@@ -193,9 +193,34 @@ static void recording(void)
     CHECK(count == 0);
 }
 
+/* Registers the library sets (blend, depth, the primitive type, ...) and the instance count. */
+static void registers_and_instances(void)
+{
+    enum { BUFFER = 0x200000000ull };
+    char error[160];
+    size_t count = 0;
+    rt_render_forget();
+    CHECK(rt_render_record_register(BUFFER, 0x10, 0xa1e0, 0x20010001u, error, sizeof error) == 0); /* CB_BLEND0_CONTROL */
+    CHECK(rt_render_record_register(BUFFER, 0x20, 0xc242, 4, error, sizeof error) == 0);           /* VGT_PRIMITIVE_TYPE */
+    CHECK(rt_render_record_instances(BUFFER, 0x30, 2, error, sizeof error) == 0);
+    CHECK(rt_render_record_register(BUFFER, 0x40, 0x2c0c, 1, error, sizeof error) == -1 && strstr(error, "0x2c0c"));
+    CHECK(rt_render_record_register(BUFFER, 0x40, 0x9fff, 1, error, sizeof error) == -1);
+    CHECK(rt_render_record_register(BUFFER, 0x40, 0xa400, 1, error, sizeof error) == -1);
+    CHECK(rt_render_record_instances(BUFFER, 0x40, 0, error, sizeof error) == -1);
+    const rt_render_call *calls = rt_render_submitted(BUFFER, 0x100, &count);
+    CHECK(count == 3);
+    if (count == 3) {
+        CHECK(calls[0].kind == RT_CALL_REGISTER && calls[0].u.reg.address == 0xa1e0 && calls[0].u.reg.value == 0x20010001u);
+        CHECK(calls[1].kind == RT_CALL_REGISTER && calls[1].u.reg.address == 0xc242 && calls[1].u.reg.value == 4);
+        CHECK(calls[2].kind == RT_CALL_INSTANCES && calls[2].u.instances.count == 2);
+    }
+    rt_render_forget();
+}
+
 int main(void)
 {
     decoding();
+    registers_and_instances();
     shader_blocks();
     user_data();
     recording();
