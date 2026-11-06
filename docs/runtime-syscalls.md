@@ -262,7 +262,7 @@ fatal that names the question and the evidence that would close it.
 | `sceNetCtlRegisterCallback(void *callback, void *arg, int *cid)` | A callback pointer, an argument pointer and an out-parameter `int *cid`, returning `int`. The guest's own call at `0x010b8352` passes a function in the image, `this`, and `lea -0x78(%rbp)`, a slot it never writes, then reads that slot back at `0x010b8428` into its object at `+0x130`. | Vita-era registration is keyed by a callback id the caller receives back (`func, arg, int *cid`); the guest's sites show the same shape on PS4. The two public Vita-era sources disagree about the callback's return type, so the pointer stays opaque and no signature is modelled for it - the guest's callback at `0x010b45e0` does show it being dispatched as (state, arg). | Implemented: each registration gets a fresh id written through the caller's pointer, numbered from 1 so an id can never look like an unwritten slot, and nothing is ever dispatched while offline. Open: the error values for a null callback or a null id slot, the table's capacity, and whether re-registering the same callback replaces or adds (we add, being keyed by id). |
 | `sceNetCtlUnregisterCallback(int cid)` | One `int`: the id a previous register call handed back. The guest passes the field it stored from that out-parameter (`0x010b8f8d`). | The Vita-era form takes the callback id `int cid`, which the sites match. | Implemented for an id we handed out: remove it and succeed. Fatal for an id we never handed out, or one already removed - no public source gives the PS4 answer and the guest's own paths never reach it. |
 | `sceNetCtlGetInfo(int module, void *info)` | Claimed as an `int` module id and a structure pointer, by the Vita-era `sceNetCtlInetGetInfo(int code, SceNetCtlInfo *info)`. | The Vita-era union's members and its size are another operating system's; nothing public describes the PS4 structure. | Not implemented: fatal before touching the buffer. The guest narrows the question - every site in the executable passes module id 14 (`0x00dfd2b1`, `0x020413ee`), each with a buffer in the second argument that it prints as a string on the success path, and no other id appears anywhere. Open: what id 14 means on PS4, its offline answer, and the structure's size and layout. The fatal names the id, so a boot run reports which ones the guest asks for. |
-| `sceNetCtlGetNatInfo(void *nat_info)` | Claimed as one structure pointer, by the Vita-era `sceNetCtlGetNatInfo(SceNetCtlNatInfo *natinfo)`. | The Vita-era structure starts with a `size` field the caller fills in; the PS4 layout is not public. | Not implemented: fatal before writing. The guest's sites bound it - each writes 16 at offset 0 before the call (`0x01889417`) and reads back only offset 8 afterwards (`0x01889436`). Open: the PS4 meaning of the value at offset 8, the NAT type values, and what a system with no connection reports. The reported size is named in the fatal, so a caller reporting something other than 16 is itself evidence that the layout is not what the sites suggest. |
+| `sceNetCtlGetNatInfo(void *nat_info)` | `{ size, STUN status, NAT type, mapped address }`, four 32-bit fields, 16 bytes; "not connected" is `0x80412108` (PS4Recomp's `libSceNetCtl`, used as facts). | The guest writes 16 at offset 0 (`0x01889417`), reads back only offset 8, the NAT type, and only on 0 (`0x01889436`); on any other answer it takes NAT type 1 itself (`0x0188942d`). | Offline: answers "not connected" and writes nothing, so the guest's own fallback applies. A size other than 16 and a missing structure stop by name. |
 
 `0` is the success value, the convention public SCE-family documentation states for these calls (the
 `@return 0 on success` lines in `psp2/error.h` of vita-headers). libSceNetCtl's own error codes have
@@ -720,6 +720,17 @@ person running it chose:
 
 **What stops by name:** a setting nobody gave a value, and a missing variable.
 
+## The PSN title id (`sceNpSetNpTitleId`)
+
+`sceNpSetNpTitleId(const title id *, const title secret *)` registers the title's PSN title id
+(12 characters and a terminator, in a 16-byte block) and its 128-byte title secret, which the
+system would use to talk to PSN. A missing argument answers `0x80550003` (invalid argument). The
+facts come from shadPS4's `libSceNpManager` (`np_types.h`, `np_error.h`); the other ports answer
+0 too. The executable's call (`0x010ba192`) treats only a negative answer as failure.
+
+Offline nothing talks to PSN, so the runtime keeps the title id (`rt_np_title_id`, for later
+PSN-side calls such as trophies) and nothing of the secret.
+
 ## Content restriction (`sceNpSetContentRestriction`, issue #41)
 
 The executable's only call, at `0x023b704f`, passes a parameter block it built on its stack (an
@@ -824,6 +835,22 @@ allocates one per call and answers 0. What the title later does with it (waiting
 belongs to other calls, which stop by name until they are implemented.
 
 **What stops by name:** an HTTP context the runtime did not hand out, and a missing slot.
+
+## HTTPS options (`sceHttpsEnableOption`, `sceHttpsDisableOption`)
+
+`sceHttpsEnableOption(id, flags)` and `sceHttpsDisableOption(id, flags)` set and clear HTTPS
+flags on a template. The facts come from shadPS4's and PS4Recomp's `libSceHttp`, which agree:
+- **The flags:** `0x01` verify the server, `0x02` verify the client, `0x04` check the common name,
+  `0x08` and `0x10` check the not-after and not-before dates, `0x20` check for a known CA, `0x40`
+  reuse sessions, `0x80` send SNI, and `0x2000`.
+- **A new template's flags:** server verification, the common-name and known-CA checks, and SNI
+  (`0xa5`).
+- **Errors:** other bits answer `0x804311fe` (invalid value); an id that is no template answers
+  `0x80431100` (invalid id).
+
+The executable's one wrapper (`0x013d1e90`) enables or disables `0x01` on its template, and its
+caller (`0x0227dade`) does not read the answer. Offline no request is sent, so each template
+keeps its flags for when one is (`rt_http_template_ssl_flags`).
 
 ## HTTP request headers (`sceHttpAddRequestHeader`, issue #41)
 

@@ -18,15 +18,15 @@ class RuntimeIssueStatusTests(unittest.TestCase):
             ('libSceNetCtl', 'sceNetCtlCheckCallback'),
             ('libSceNetCtl', 'sceNetCtlRegisterCallback'),
             ('libSceNetCtl', 'sceNetCtlUnregisterCallback'),
+            ('libSceNetCtl', 'sceNetCtlGetNatInfo'),
         }.issubset(entries))
         self.assertNotIn(('libSceNetCtl', 'sceNetCtlGetInfo'), entries)
-        self.assertNotIn(('libSceNetCtl', 'sceNetCtlGetNatInfo'), entries)
 
         rows = runtime_issues.read_imports(runtime_issues.ROOT)
         body = runtime_issues.issue(runtime_issues.GROUPS[-1], rows, entries)['body']
-        self.assertIn('### libSceNetCtl (4 of 6)', body)
+        self.assertIn('### libSceNetCtl (5 of 6)', body)
         self.assertIn('- [ ] `sceNetCtlGetInfo`', body)
-        self.assertIn('- [ ] `sceNetCtlGetNatInfo`', body)
+        self.assertIn('- [x] `sceNetCtlGetNatInfo`', body)
 
     def test_runtime_unresolved_provider_does_not_count_as_implemented(self):
         with tempfile.TemporaryDirectory() as root:
