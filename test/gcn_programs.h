@@ -366,6 +366,31 @@ static const uint32_t pixel_two_images[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* A colour lookup, as the game's fullscreen passes do: the texel under the pixel from the user data's
+   image in s[4:11], then each of red, green and blue through layer 0, 1 and 2 of a 1D array whose
+   descriptor is loaded from the pointer in s[2:3] over s[0:7], sampled with the sampler in s[12:15];
+   alpha as loaded. */
+static const uint32_t pixel_lookup[] = {
+    0x7e081102, /* v_cvt_i32_f32_e32 v4, v2 */
+    0x7e0a1103, /* v_cvt_i32_f32_e32 v5, v3 */
+    0x7e0c0280, /* v_mov_b32_e32 v6, 0 */
+    0xf0040f00, 0x00010004, /* image_load_mip v[0:3], v[4:6], s[4:11] dmask:0xf */
+    0xc0c00300, /* s_load_dwordx8 s[0:7], s[2:3], 0x0 */
+    0xbf8c0070, /* s_waitcnt vmcnt(0) lgkmcnt(0) */
+    0x7e080300, /* v_mov_b32_e32 v4, v0 */
+    0x7e0a0280, /* v_mov_b32_e32 v5, 0 */
+    0xf0804100, 0x00600004, /* image_sample v0, v[4:5], s[0:7], s[12:15] dmask:0x1 da */
+    0x7e080301, /* v_mov_b32_e32 v4, v1 */
+    0x7e0a02f2, /* v_mov_b32_e32 v5, 1.0 */
+    0xf0804100, 0x00600104, /* image_sample v1, v[4:5], s[0:7], s[12:15] dmask:0x1 da */
+    0x7e080302, /* v_mov_b32_e32 v4, v2 */
+    0x7e0a02f4, /* v_mov_b32_e32 v5, 2.0 */
+    0xf0804100, 0x00600204, /* image_sample v2, v[4:5], s[0:7], s[12:15] dmask:0x1 da */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf800180f, 0x03020100, /* exp mrt0, v0, v1, v2, v3 done vm */
+    0xbf810000, /* s_endpgm */
+};
+
 /* As pixel_color, but pixels whose red is below 0.5 are discarded (v_cmpx clears their EXEC bit
    and the export's valid mask drops them). */
 static const uint32_t pixel_discard_left[] = {

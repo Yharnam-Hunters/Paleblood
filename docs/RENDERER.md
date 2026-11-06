@@ -108,6 +108,16 @@ Instead:
        `SAMPLED_IMAGE`, `OpImageFetch` at the level given), so the view applies the descriptor's
        DST_SEL. A texel outside the image or a level past its last is a run-time stop
        (`GCN_RUNTIME_STOP_IMAGE_RANGE`): what the GPU returns there is not established.
+     - **`image_sample`** with the sampler (S#) its SSAMP SGPRs name, found like image descriptors and
+       bound after the images (set 0, `VK_DESCRIPTOR_TYPE_SAMPLER`): sampled at level 0
+       (`OpImageSampleExplicitLod`). GCN picks the level from the coordinates' derivatives; level 0
+       is what it picks too when the image has one level and the sampler's minifying and magnifying
+       filters agree, which the executor requires. The executor makes a Vulkan sampler from the S#
+       (the Sea Islands manual's layout, as shadPS4's `resource.h` names its fields): wrap, mirror
+       and clamp to the last texel; point or bilinear filtering. Anisotropy, depth compares,
+       unnormalized coordinates, border and mirror-once modes and the truncation options stop by
+       name, as does bilinear sampling of a format the device cannot filter. Filtering precision is
+       the host GPU's.
      - **Descriptors from memory:** each MIMG instruction's descriptor is found from the code before
        it (`gcn_resource_origin`): the user data's when nothing writes its SGPRs first, or loaded
        from memory when the last write is a whole `s_load_dwordx8` at an immediate offset from a
