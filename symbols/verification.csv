@@ -268,8 +268,8 @@ render_yebis_get_recursive_sample_parameters,edge,,23,23,0,0,6e6f0aa41d5607ce,20
 render_yebis_get_recursive_sample_parameters,edge,30,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,60,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,uncapped,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
-render_set_render_target,edge,,18,18,0,0,b02c71705ac61a51,2026-11-05
-render_set_depth_render_target,edge,,20,20,0,0,52fd0f9a9908ba18,2026-11-05
-render_finish_record_shader,edge,,45,45,0,0,c897f2c52a383c62,2026-11-05
-render_restore_prepared_record_from_bank,edge,,12,12,0,0,7b16aad1a2a6add5,2026-11-05
-render_restore_prepared_selector_from_bank,edge,,12,12,0,0,591698e303abd543,2026-11-05
+render_set_render_target,edge,,18,18,0,0,767bad537e9f5dc6,2026-11-06
+render_set_depth_render_target,edge,,20,20,0,0,d84914db9d7cb244,2026-11-06
+render_finish_record_shader,edge,,45,45,0,0,8d22d57d5f6385dd,2026-11-06
+render_restore_prepared_record_from_bank,edge,,12,12,0,0,50131a2364a384a1,2026-11-06
+render_restore_prepared_selector_from_bank,edge,,12,12,0,0,74228ba5ceb673a5,2026-11-06
