@@ -82,7 +82,8 @@ set_tests_properties(capture_poc_replay PROPERTIES
 file(GLOB PB_TEST_SYSLIB CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/runtime/syslib/*.c)
 # The syslib tests use the display's headless mode only, so they build without its window.
 add_executable(test_syslib test/test_syslib.c runtime/process.c ${PB_TEST_SYSLIB}
-               runtime/display/display.c runtime/display/display_window_none.c runtime/renderer/renderer_none.c)
+               runtime/display/display.c runtime/display/display_window_none.c runtime/renderer/renderer_none.c
+               runtime/audio/audio_host_none.c)
 target_include_directories(test_syslib PRIVATE runtime/include)
 add_test(NAME syslib COMMAND test_syslib)
 # The renderer's GCN shader decoder (docs/RENDERER.md), its test, and pbgcn for the shader census.

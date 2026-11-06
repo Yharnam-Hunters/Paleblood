@@ -1055,6 +1055,21 @@ plays sound.
 
 **What stops by name:** an unknown handle, and a missing state.
 
+**Sound on the host (`pbboot --audio host`, `tools/boot.py --audio host`).** With this option,
+each port plays through SDL3 on the default playback device (`runtime/audio_host.h`,
+`runtime/audio/audio_host_sdl.c`). Without it, or in a build without SDL3, nothing is played and
+ports keep time on their own as before. Boots are silent by default.
+
+- **Each block:** each channel is scaled by its volume (32768 is 0 dB, the level the title sets;
+  until it sets one the port plays at 0 dB, the runtime's choice) and queued on the port's stream.
+- **Pacing:** the call returns once no more than four blocks wait to be played, so the title's
+  audio thread runs at the device's pace.
+- **Channel order:** the title's 8-channel float format (format 5) is passed in SDL's 7.1 order,
+  as shadPS4's SDL backend does; the STD layouts, which are remapped, are not used by the title.
+- **Port state:** a port playing on the host reports output 1 (`CONNECTED_PRIMARY`, shadPS4's
+  `audioout.h`).
+- **Observed:** with ATRAC9 decoding, a boot plays the game's own sound after about 17 seconds.
+
 ## Attribute priority and CPU mask (`scePthreadAttrSetschedparam`, `scePthreadAttrSetaffinity`, issue #34)
 
 `scePthreadAttrSetschedparam(attr, const struct sched_param *param)` sets the priority
