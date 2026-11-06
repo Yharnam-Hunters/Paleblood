@@ -141,11 +141,13 @@ static void refused_as(stage s, const uint32_t *code, size_t dwords, const char 
    one found by gcn_image_resources; without a binding for one, translation stops naming it. */
 static void image_programs(void)
 {
-    unsigned sgprs[GCN_MAX_IMAGES], access[GCN_MAX_IMAGES], count = 0;
-    char error[256] = "";
-    CHECK(gcn_image_resources(PROGRAM(image_copy), sgprs, access, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
-    CHECK(count == 2 && sgprs[0] == 0 && access[0] == GCN_IMAGE_READ && sgprs[1] == 8 && access[1] == GCN_IMAGE_WRITE);
-    const gcn_image_binding images[] = {{0, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 0}, {8, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 0}};
+    gcn_image_resource found[GCN_MAX_IMAGES];
+    unsigned count = 0;
+    char error[300] = "";
+    CHECK(gcn_image_resources(PROGRAM(image_copy), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
+    CHECK(count == 2 && !found[0].origin.from_memory && found[0].origin.sgpr == 0 && found[0].access == GCN_IMAGE_READ &&
+          !found[1].origin.from_memory && found[1].origin.sgpr == 8 && found[1].access == GCN_IMAGE_WRITE);
+    const gcn_image_binding images[] = {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 0}, {{0, 8, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 0}};
     gcn_compute_layout with_images = layout;
     with_images.user_sgprs = 16, with_images.images = images, with_images.image_count = 2;
     uint32_t *spirv = NULL;
@@ -162,21 +164,50 @@ static void image_programs(void)
     CHECK(gcn_translate_compute(PROGRAM(image_copy), &with_images, &spirv, &words, error, sizeof error) == -1 &&
           strstr(error, "s[8:15] is not bound"));
 
-    /* A descriptor the program writes itself (a load from memory, a scalar move into it, a compare's
-       64-bit result) is refused by name: its value is not the user data's. */
+    /* Where each MIMG's descriptor comes from. A whole s_load_dwordx8 from a user-data pointer: from
+       memory, at the load's offset. Two uses of s[4:11], before and after such a load over it: two
+       images, the user data's and the loaded one. A scalar move into it, a compare's 64-bit result,
+       or a branch before the use: refused by name. */
     static const uint32_t loaded[] = {0xc0c00904, 0xf0000f00, 0x00000401, 0xbf810000};   /* s_load_dwordx8 s[0:7], s[8:9], 4 */
     static const uint32_t moved[] = {0xbe8c0380, 0xf0000f00, 0x00020401, 0xbf810000};    /* s_mov_b32 s12, 0 */
     static const uint32_t compared[] = {0xd184000e, 0x00020300, 0xf0000f00, 0x00020401, 0xbf810000}; /* v_cmp_eq_u32_e64 s[14:15] */
-    CHECK(gcn_image_resources(PROGRAM(loaded), sgprs, access, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
-          strstr(error, "s[0:7] is written by the program (s_load_dwordx8"));
-    CHECK(gcn_image_resources(PROGRAM(moved), sgprs, access, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
+    static const uint32_t pointer_written[] = {0xbe880380, 0xc0c00904, 0xf0000f00, 0x00000401, 0xbf810000}; /* s_mov_b32 s8, 0 first */
+    static uint32_t branch_first[64];
+    branch_first[0] = 0xbf840000;                                                      /* s_cbranch_scc0 to the next instruction */
+    memcpy(branch_first + 1, pixel_two_images, sizeof pixel_two_images);
+    CHECK(gcn_image_resources(PROGRAM(loaded), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
+    CHECK(count == 1 && found[0].origin.from_memory && found[0].origin.sgpr == 0 && found[0].origin.pointer_sgpr == 8 &&
+          found[0].origin.offset == 16);
+    CHECK(gcn_image_resources(PROGRAM(pixel_two_images), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
+    CHECK(count == 2 && !found[0].origin.from_memory && found[0].origin.sgpr == 4 && found[1].origin.from_memory &&
+          found[1].origin.pointer_sgpr == 2 && found[1].origin.offset == 16);
+    CHECK(gcn_image_resources(PROGRAM(moved), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
           strstr(error, "s[8:15] is written by the program (s_mov_b32"));
-    CHECK(gcn_image_resources(PROGRAM(compared), sgprs, access, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
+    CHECK(gcn_image_resources(PROGRAM(compared), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
           strstr(error, "v_cmp_eq_u32"));
+    CHECK(gcn_image_resources(PROGRAM(pointer_written), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
+          strstr(error, "loaded through s[8:9], which the program writes"));
+    CHECK(gcn_image_resources(branch_first, 1 + sizeof pixel_two_images / 4, found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
+          strstr(error, "s_cbranch_scc0"));
+    /* the two-image program translates with both bound, and stops naming the loaded one without it */
+    const gcn_image_binding two[] = {{{0, 4, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1}, {{1, 4, 2, 16}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1}};
+    gcn_pixel_layout both_images = pixel_layout;
+    both_images.user_sgprs = 12, both_images.images = two, both_images.image_count = 2, both_images.error_address = 0x1000;
+    const int two_translated = gcn_translate_pixel(PROGRAM(pixel_two_images), &both_images, &spirv, &words, error, sizeof error);
+    if (two_translated) fprintf(stderr, "pixel_two_images: %s\n", error);
+    CHECK(two_translated == 0);
+    if (spirv) {
+        CHECK(validate(spirv, words, "pixel_two_images") != 0);
+        free(spirv);
+        spirv = NULL;
+    }
+    both_images.image_count = 1;
+    CHECK(gcn_translate_pixel(PROGRAM(pixel_two_images), &both_images, &spirv, &words, error, sizeof error) == -1 &&
+          strstr(error, "(loaded from memory) is not bound"));
 
     /* A pixel shader's image_load_mip from a sampled image (its range checked at run time, so only
        with a stop word); a storage binding refuses image_load_mip. */
-    const gcn_image_binding texture[] = {{0, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1}};
+    const gcn_image_binding texture[] = {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1}};
     gcn_pixel_layout pixel = pixel_layout;
     pixel.images = texture, pixel.image_count = 1, pixel.error_address = 0x1000;
     const int fetched = gcn_translate_pixel(PROGRAM(pixel_image_texel), &pixel, &spirv, &words, error, sizeof error);
@@ -191,7 +222,7 @@ static void image_programs(void)
     pixel.error_address = 0;
     CHECK(gcn_translate_pixel(PROGRAM(pixel_image_texel), &pixel, &spirv, &words, error, sizeof error) == -1 &&
           strstr(error, "run-time stop word"));
-    const gcn_image_binding storage[] = {{0, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 0}};
+    const gcn_image_binding storage[] = {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 0}};
     pixel.images = storage, pixel.error_address = 0x1000;
     CHECK(gcn_translate_pixel(PROGRAM(pixel_image_texel), &pixel, &spirv, &words, error, sizeof error) == -1 &&
           strstr(error, "image_load_mip"));

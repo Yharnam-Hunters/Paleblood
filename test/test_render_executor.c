@@ -136,6 +136,39 @@ static void sampled_images(rt_executor *x)
     CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
     CHECK(differing_pixels(x, at(TEXEL_TARGET)) == 0);
 
+    /* A descriptor the shader loads from memory (pixel_two_images): a zero image from the user data,
+       then the reference image's descriptor read from the guest memory at the user data's pointer + 16
+       when the draw runs; the sum is the reference image. Pointing the table at the zero image too
+       gives black. */
+    {
+        enum { TABLE = 0x830000, ZERO = 0x840000, TWO_BUFFER = 0xc0f10000, TWO_CODE = 0x2e00 };
+        memset(guest + ZERO, 0, WIDTH * HEIGHT * 4);
+        uint32_t user[12] = {0}, *table = (uint32_t *)(uintptr_t)at(TABLE);
+        user[2] = (uint32_t)at(TABLE), user[3] = (uint32_t)(at(TABLE) >> 32);
+        image_descriptor(user + 4, at(ZERO), 10, 0, WIDTH, HEIGHT);
+        user[7] |= LINEAR_ALIGNED << 20;
+        image_descriptor(table + 4, at(LINEAR), 10, 0, WIDTH, HEIGHT);
+        table[7] |= LINEAR_ALIGNED << 20;
+        memcpy((void *)(uintptr_t)at(TWO_CODE), pixel_two_images, sizeof pixel_two_images);
+        for (int pass = 0; pass < 2; pass++) {
+            rt_render_forget();
+            uint32_t offset = record_setup(TWO_BUFFER, at(TEXEL_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+            const uint64_t code = at(TWO_CODE);
+            const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 12 << 1, 0, 0x4, 0x302, 0x302,
+                                                           0, 0, 0, 0xf};
+            CHECK(rt_render_record_pixel_shader(TWO_BUFFER, offset, pixel, error, sizeof error) == 0);
+            CHECK(rt_render_record_user_data(TWO_BUFFER, offset + 0x10, RT_STAGE_PIXEL, 0, user, 8, error, sizeof error) == 0);
+            CHECK(rt_render_record_user_data(TWO_BUFFER, offset + 0x20, RT_STAGE_PIXEL, 8, user + 8, 4, error, sizeof error) == 0);
+            drawn = rt_executor_run(x, TWO_BUFFER, record_triangle_draw(TWO_BUFFER, offset + 0x30), error, sizeof error);
+            if (drawn) fprintf(stderr, "descriptor from memory: %s\n", error);
+            CHECK(drawn == 0);
+            if (pass == 0) CHECK(differing_pixels(x, at(TEXEL_TARGET)) == 0);
+            else CHECK(differing_pixels(x, at(TEXEL_TARGET)) == SIZE * SIZE);
+            image_descriptor(table + 4, at(ZERO), 10, 0, WIDTH, HEIGHT);
+            table[7] |= LINEAR_ALIGNED << 20;
+        }
+    }
+
     image_descriptor(image, at(SMALL), 10, 0, 8, 8);
     image[3] |= LINEAR_ALIGNED << 20;
     CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == -1 && strstr(error, "outside the image"));
