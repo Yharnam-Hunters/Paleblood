@@ -488,7 +488,7 @@ installed.
   given to `tools/boot.py --addcont LABEL` (repeatable), each installed, under service label 0.
   None are listed by default.
 - **Bloodborne's expansion:** The Old Hunters is `SPEXPANSIONDLC03`. Its data ships with patch 1.09
-  (bbport's notes), so the entitlement is all it needs.
+  (another Bloodborne port's notes), so the entitlement is all it needs.
 
 ## Ending a thread (`scePthreadExit`)
 
@@ -734,7 +734,7 @@ person running it chose:
 
 The runtime is offline: the one user is signed out of PSN for the whole run, and nothing about
 that ever changes. The facts come from shadPS4's `libSceNpManager` and `libSceNpMatching2`
-(`np_manager.h`, `np_types2.h`, `np_error.h`), checked against bbport and bbhost. The code is the
+(`np_manager.h`, `np_types2.h`, `np_error.h`), checked against two other Bloodborne ports. The code is the
 runtime's own.
 
 | Call | Runtime |
@@ -822,7 +822,7 @@ flexible memory to a budget. The budget is not established and the runtime does 
 
 ## The network errno and epoll sets (`sceNetErrnoLoc`, `sceNetEpoll*`)
 
-Facts from the shadPS4 `libSceNet` that bbport vendors (`net.cpp`, `guest_net.cpp`,
+Facts from shadPS4's `libSceNet` (`net.cpp`, `guest_net.cpp`,
 `net_error.h`, `net_types.h`) and from bbhost. The implementation is the runtime's own.
 
 - **Errors:** a failing call answers `0x80410100` plus a FreeBSD error number, and sets the
@@ -1185,7 +1185,7 @@ them in. A mounted save appears to the title as `/savedataN` (N the lowest free 
 the same file calls as `/app0` and `/data`, read-only or writable as mounted.
 
 **Sources.** shadPS4's `libSceSaveData` (`savedata.cpp`, `savedata.h`, `savedata_error.h`,
-`save_instance.cpp`, `save_memory.cpp`), checked against bbport, bbhost and the OpenOrbis
+`save_instance.cpp`, `save_memory.cpp`), checked against two other Bloodborne ports and the OpenOrbis
 headers. Where they disagree, shadPS4's answer is taken. The code is the runtime's own.
 
 **The title's SDK version decides some answers.** The executable says SDK `0x02000071`
