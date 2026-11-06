@@ -1044,6 +1044,31 @@ static VkImageView image_view(rt_executor *x, image_entry *e, uint32_t first, ui
     return made;
 }
 
+/* A descriptor's words as the shader sees them (runtime/gcn_spirv.h, gcn_resource_origin): from the
+   user data, or from the guest memory at the user data's pointer (48 bits, as s_load takes it) plus the
+   offset, read as the draw or dispatch runs. 0, or -1 with the reason. */
+static int descriptor_words(rt_executor *x, const gcn_resource_origin *origin, const uint32_t *user, uint32_t user_sgprs, uint32_t *words,
+                            unsigned count, char *error, size_t error_size)
+{
+    if (!origin->from_memory) {
+        if (origin->sgpr + count > user_sgprs)
+            return failed(error, error_size, "a descriptor (s[%u:%u]) not in the user data: not done yet", origin->sgpr, origin->sgpr + count - 1);
+        memcpy(words, &user[origin->sgpr], count * sizeof *words);
+        return 0;
+    }
+    if (origin->pointer_sgpr + 2 > user_sgprs)
+        return failed(error, error_size, "a descriptor loaded through s[%u:%u], which is not in the user data", origin->pointer_sgpr,
+                      origin->pointer_sgpr + 1);
+    enum { POINTER_HIGH_MASK = 0xffff };
+    const uint64_t pointer = (uint64_t)(user[origin->pointer_sgpr + 1] & POINTER_HIGH_MASK) << 32 | user[origin->pointer_sgpr];
+    const uint64_t address = pointer + origin->offset, bytes = count * sizeof *words;
+    if (address % 4 || address < x->guest_base || address - x->guest_base > x->size || bytes > x->size - (address - x->guest_base))
+        return failed(error, error_size, "a descriptor at %#llx (s[%u:%u] + %u) outside the GPU-visible memory", (unsigned long long)address,
+                      origin->pointer_sgpr, origin->pointer_sgpr + 1, origin->offset);
+    memcpy(words, (const uint8_t *)x->view + (address - x->guest_base), bytes);
+    return 0;
+}
+
 /* The images a shader uses, from the descriptors in its user data: their bindings (for translation)
    and views of kept images. A compute shader's are storage images; a pixel shader's are sampled
    images, which it only reads. 0, or -1 with the reason. */
@@ -1053,20 +1078,20 @@ static int stage_images(rt_executor *x, uint64_t code, const uint32_t *user, uin
     const char *stage = pixel ? "pixel" : "compute";
     if (code < x->guest_base || code >= x->guest_base + x->size || code % 4)
         return failed(error, error_size, "%s shader code at %#llx is outside the GPU-visible memory", stage, (unsigned long long)code);
-    unsigned sgprs[GCN_MAX_IMAGES], access[GCN_MAX_IMAGES];
-    char reason[200];
-    if (gcn_image_resources((const uint32_t *)(uintptr_t)code, (size_t)((x->guest_base + x->size - code) / 4), sgprs, access,
-                            GCN_MAX_IMAGES, count, reason, sizeof reason))
+    gcn_image_resource resources[GCN_MAX_IMAGES];
+    char reason[300];
+    if (gcn_image_resources((const uint32_t *)(uintptr_t)code, (size_t)((x->guest_base + x->size - code) / 4), resources, GCN_MAX_IMAGES,
+                            count, reason, sizeof reason))
         return failed(error, error_size, "%s shader at %#llx: %s", stage, (unsigned long long)code, reason);
     if (*count && !pixel && !x->storage_images)
         return failed(error, error_size, "the Vulkan device cannot read and write images without a declared format");
     for (unsigned i = 0; i < *count; i++) {
-        if (pixel && (access[i] & GCN_IMAGE_WRITE)) return failed(error, error_size, "a pixel shader that writes an image: not drawn yet");
-        if (sgprs[i] + RT_IMAGE_DESCRIPTOR_WORDS > user_sgprs)
-            return failed(error, error_size, "an image whose descriptor (s[%u:%u]) is not in the user data: not done yet", sgprs[i],
-                          sgprs[i] + 7);
+        const gcn_resource_origin *origin = &resources[i].origin;
+        if (pixel && (resources[i].access & GCN_IMAGE_WRITE)) return failed(error, error_size, "a pixel shader that writes an image: not drawn yet");
+        uint32_t words[RT_IMAGE_DESCRIPTOR_WORDS];
+        if (descriptor_words(x, origin, user, user_sgprs, words, RT_IMAGE_DESCRIPTOR_WORDS, error, error_size)) return -1;
         rt_image_descriptor d;
-        rt_image_descriptor_decode(&user[sgprs[i]], &d);
+        rt_image_descriptor_decode(words, &d);
         if (d.type != RT_IMAGE_1D && d.type != RT_IMAGE_2D && d.type != RT_IMAGE_1D_ARRAY && d.type != RT_IMAGE_2D_ARRAY)
             return failed(error, error_size, "an image of type %u: only 1D and 2D images and their arrays are done yet", d.type);
         if (d.base_level || d.last_level) return failed(error, error_size, "an image with mip levels: not done yet");
@@ -1083,9 +1108,9 @@ static int stage_images(rt_executor *x, uint64_t code, const uint32_t *user, uin
             if (!ok) return failed(error, error_size, "an image with swizzle %#x and %u components: not done yet", d.swizzle, f.components);
         }
         const int one_d = one_dimensional(d.type);
-        bindings[i] = (gcn_image_binding){sgprs[i], one_d ? GCN_IMAGE_1D : GCN_IMAGE_2D,
+        bindings[i] = (gcn_image_binding){*origin, one_d ? GCN_IMAGE_1D : GCN_IMAGE_2D,
                                           d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY, f.type, f.components, pixel};
-        image_entry *e = image_for(x, &d, &f, access[i], error, error_size);
+        image_entry *e = image_for(x, &d, &f, resources[i].access, error, error_size);
         const uint32_t first = d.layers > 1 ? d.base_array : 0, layers = d.layers > 1 ? d.last_array - d.base_array + 1 : 1;
         if (!e || !(views[i] = image_view(x, e, first, layers, pixel ? d.swizzle : (uint32_t)DST_SEL_IDENTITY, error, error_size))) return -1;
     }

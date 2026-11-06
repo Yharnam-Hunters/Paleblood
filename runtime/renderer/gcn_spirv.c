@@ -75,6 +75,7 @@ typedef struct {
     uint32_t position, parameter[PARAMETER_COUNT], color[COLOR_TARGET_COUNT], attribute[PARAMETER_COUNT];
     uint32_t clip_distance;          /* the ClipDistance array, made on first use */
     uint32_t image[GCN_MAX_IMAGES];  /* each image binding's variable, made on first use */
+    size_t program_dwords;           /* the program's length, for finding where its descriptors come from */
     int uses_1d_images, uses_sampled_1d_images, queries_images, reads_images, writes_images, uses_quads;
     /* outside compute shaders, a lane has no known place in the wave, so a scalar write of VCC's halves
        leaves each lane's VCC bit unknown until a vector write sets it; this bool variable (made when the
@@ -1497,6 +1498,139 @@ static long branch_condition(translator *t, const char *name)
     return when_zero ? value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, any) : any;
 }
 
+/* ---- where descriptors come from ---- */
+
+/* The width in dwords of a scalar result whose type is the first in the name ("s_bcnt1_i32_b64" makes
+   32 bits from 64; "s_mov_b64" 64). */
+static unsigned result_dwords(const char *name)
+{
+    for (const char *p = strchr(name, '_'); p; p = strchr(p + 1, '_'))
+        if (strchr("biuf", p[1]) && p[2] >= '0' && p[2] <= '9') return !strncmp(p + 2, "64", 2) ? 2 : 1;
+    return 1;
+}
+
+/* The SGPRs an instruction writes (from the Sea Islands manual's encodings): the first in *first, how
+   many returned. SOP1, SOP2 and SOPK write SDST (bits 16-22) but for compares, s_setreg and branches;
+   SMRD loads write SDST (bits 15-21); VOP3 compares write their 64-bit result to VDST, the VOP3b
+   carries (v_add_i32 and the like) to SDST (bits 8-14), and v_readlane and v_readfirstlane write an
+   SGPR. VCC, EXEC and the like (106 on) are left out: no descriptor lives there. */
+static unsigned sgprs_written(const uint32_t *w, const gcn_instruction *ins, unsigned *first)
+{
+    const char *name = ins->name;
+    unsigned n = 0;
+    switch (ins->encoding) {
+    case GCN_SOP1: case GCN_SOP2: case GCN_SOPK:
+        if (!strncmp(name, "s_cmpk", 6) || !strncmp(name, "s_setreg", 8) || !strcmp(name, "s_setpc_b64") || !strncmp(name, "s_cbranch", 9) ||
+            !strcmp(name, "s_rfe_b64"))
+            return 0;
+        *first = (w[0] >> 16) & 0x7f, n = result_dwords(name);
+        break;
+    case GCN_SMRD:
+        if (strncmp(name, "s_load", 6) && strncmp(name, "s_buffer_load", 13) && strcmp(name, "s_memtime")) return 0;
+        *first = (w[0] >> 15) & 0x7f, n = strcmp(name, "s_memtime") ? (unsigned)dwords_named(name) : 2;
+        break;
+    case GCN_VOP1:
+        if (strcmp(name, "v_readfirstlane_b32")) return 0;
+        *first = (w[0] >> 17) & 0xff, n = 1;
+        break;
+    case GCN_VOP3: {
+        static const char *const carries[] = {"v_add_i32", "v_sub_i32", "v_subrev_i32", "v_addc_u32", "v_subb_u32", "v_subbrev_u32",
+                                              "v_div_scale_f32", "v_div_scale_f64"};
+        if (!strncmp(name, "v_cmp", 5)) *first = w[0] & 0xff, n = 2;
+        else if (!strcmp(name, "v_readlane_b32") || !strcmp(name, "v_readfirstlane_b32")) *first = w[0] & 0xff, n = 1;
+        else
+            for (size_t i = 0; i < sizeof carries / sizeof *carries; i++)
+                if (!strcmp(name, carries[i])) *first = (w[0] >> 8) & 0x7f, n = 2;
+        break;
+    }
+    default: return 0;
+    }
+    return n && *first < SGPR_VCC ? n : 0;
+}
+
+/* Whether an instruction may branch, and where to when known: SOPP's s_branch and s_cbranch_* go to
+   the next instruction plus SIMM16 dwords; anything else that branches (s_setpc, s_swappc, the fork
+   and join instructions) has no target known here (*target = -1). */
+static int branches(const uint32_t *w, const gcn_instruction *ins, size_t at, long *target)
+{
+    const char *name = ins->name;
+    if (ins->encoding == GCN_SOPP && (!strcmp(name, "s_branch") || !strncmp(name, "s_cbranch", 9))) {
+        *target = (long)at + 1 + (int16_t)(w[0] & 0xffff);
+        return 1;
+    }
+    *target = -1;
+    return strstr(name, "branch") || strstr(name, "setpc") || strstr(name, "swappc");
+}
+
+/* Where the descriptor that the instruction at dword `at` reads from s[first : first + width - 1]
+   comes from (runtime/gcn_spirv.h): the user data when no instruction writes those SGPRs before it
+   runs, or memory when the last write is an s_load of exactly those SGPRs, at an immediate offset
+   from a pointer pair no instruction before it writes. Writes before `at` are only followed when the
+   code up to it runs straight through. 0, or -1 with the reason. */
+static int descriptor_origin(const uint32_t *code, size_t program, size_t at, unsigned first, unsigned width, gcn_resource_origin *origin,
+                             char *error, size_t error_size)
+{
+    *origin = (gcn_resource_origin){.sgpr = first};
+    long writer = -1;
+    int written = 0;
+    for (size_t p = 0; p < program;) {
+        gcn_instruction ins;
+        if (gcn_decode(code + p, program - p, &ins) || !ins.name) break;
+        unsigned dst = 0;
+        const unsigned n = sgprs_written(code + p, &ins, &dst);
+        if (n && dst < first + width && first < dst + n) {
+            written = 1;
+            if (p < at) writer = (long)p;
+        }
+        p += ins.dwords;
+    }
+    if (!written) return 0;
+    for (size_t p = 0; p < program;) {
+        gcn_instruction ins;
+        if (gcn_decode(code + p, program - p, &ins) || !ins.name) break;
+        long target;
+        if (branches(code + p, &ins, p, &target) && (p < at || target < 0 || (size_t)target <= at)) {
+            snprintf(error, error_size, "the descriptor in s[%u:%u] is written by the program, and a branch (%s at dword %zu) comes "
+                     "before its use at dword %zu: not done yet", first, first + width - 1, ins.name, p, at);
+            return -1;
+        }
+        p += ins.dwords;
+    }
+    if (writer < 0) return 0;
+    const uint32_t *w = code + writer;
+    gcn_instruction ins;
+    gcn_decode(w, program - (size_t)writer, &ins);
+    unsigned dst = 0;
+    const unsigned n = sgprs_written(w, &ins, &dst);
+    const int immediate = (w[0] >> 8) & 1;
+    if (ins.encoding != GCN_SMRD || strncmp(ins.name, "s_load_dword", 12) || dst != first || n != width || !immediate) {
+        snprintf(error, error_size, "the descriptor in s[%u:%u] is written by the program (%s at dword %ld), not loaded whole from a "
+                 "user-data pointer: not done yet", first, first + width - 1, ins.name, writer);
+        return -1;
+    }
+    const unsigned pointer = ((w[0] >> 9) & 0x3f) * 2;
+    for (size_t p = 0; p < (size_t)writer;) {
+        gcn_instruction before;
+        gcn_decode(code + p, program - p, &before);
+        unsigned d = 0;
+        const unsigned m = sgprs_written(code + p, &before, &d);
+        if (m && d < pointer + 2 && pointer < d + m) {
+            snprintf(error, error_size, "the descriptor in s[%u:%u] is loaded through s[%u:%u], which the program writes (%s at dword %zu): "
+                     "not done yet", first, first + width - 1, pointer, pointer + 1, before.name, p);
+            return -1;
+        }
+        p += before.dwords;
+    }
+    *origin = (gcn_resource_origin){.from_memory = 1, .sgpr = first, .pointer_sgpr = pointer, .offset = (w[0] & 0xff) * BYTES_PER_DWORD};
+    return 0;
+}
+
+static int same_origin(const gcn_resource_origin *a, const gcn_resource_origin *b)
+{
+    if (a->from_memory != b->from_memory) return 0;
+    return a->from_memory ? a->pointer_sgpr == b->pointer_sgpr && a->offset == b->offset : a->sgpr == b->sgpr;
+}
+
 /* ---- images ---- */
 
 /* MIMG fields (the Sea Islands ISA manual): word 0 DMASK bits 8-11, UNORM 12, GLC 13, DA 14, R128 15,
@@ -1591,8 +1725,9 @@ static void sampled_load(translator *t, const gcn_image_binding *b, uint32_t var
    all): a partial store would keep the others, which a storage image write cannot. Data components
    past the format's are dropped, as the format has nowhere to keep them. Only active lanes touch
    the image. */
-static void image_memory(translator *t, const uint32_t *w, const gcn_instruction *ins)
+static void image_memory(translator *t, const uint32_t *code, size_t at, const gcn_instruction *ins)
 {
+    const uint32_t *w = code + at;
     const char *name = ins->name;
     const unsigned op = (w[0] >> 18) & 0x7f, dmask = (w[0] >> 8) & 0xf, r128 = (w[0] >> 15) & 1, tfe = (w[0] >> 16) & 1,
                    lwe = (w[0] >> 17) & 1;
@@ -1605,10 +1740,17 @@ static void image_memory(translator *t, const uint32_t *w, const gcn_instruction
         return;
     }
     const unsigned sgpr_base = mimg_resource_sgpr(w), vaddr = w[1] & 0xff, vdata = (w[1] >> 8) & 0xff;
+    gcn_resource_origin origin;
+    char reason[256];
+    if (descriptor_origin(code, t->program_dwords, at, sgpr_base, RESOURCE_DWORDS, &origin, reason, sizeof reason)) {
+        fail(t, "%s: %s", name, reason);
+        return;
+    }
     unsigned binding = 0;
-    while (binding < t->layout->image_count && t->layout->images[binding].sgpr != sgpr_base) binding++;
+    while (binding < t->layout->image_count && !same_origin(&t->layout->images[binding].origin, &origin)) binding++;
     if (binding == t->layout->image_count) {
-        fail(t, "%s: the image whose descriptor is in s[%u:%u] is not bound", name, sgpr_base, sgpr_base + 7);
+        fail(t, "%s: the image whose descriptor is in s[%u:%u]%s is not bound", name, sgpr_base, sgpr_base + 7,
+             origin.from_memory ? " (loaded from memory)" : "");
         return;
     }
     const gcn_image_binding *b = &t->layout->images[binding];
@@ -1670,56 +1812,8 @@ static void image_memory(translator *t, const uint32_t *w, const gcn_instruction
     end_if(t, merge);
 }
 
-/* The width in dwords of a scalar result whose type is the first in the name ("s_bcnt1_i32_b64" makes
-   32 bits from 64; "s_mov_b64" 64). */
-static unsigned result_dwords(const char *name)
-{
-    for (const char *p = strchr(name, '_'); p; p = strchr(p + 1, '_'))
-        if (strchr("biuf", p[1]) && p[2] >= '0' && p[2] <= '9') return !strncmp(p + 2, "64", 2) ? 2 : 1;
-    return 1;
-}
-
-/* The SGPRs an instruction writes (from the Sea Islands manual's encodings): the first in *first, how
-   many returned. SOP1, SOP2 and SOPK write SDST (bits 16-22) but for compares, s_setreg and branches;
-   SMRD loads write SDST (bits 15-21); VOP3 compares write their 64-bit result to VDST, the VOP3b
-   carries (v_add_i32 and the like) to SDST (bits 8-14), and v_readlane and v_readfirstlane write an
-   SGPR. VCC, EXEC and the like (106 on) are left out: no descriptor lives there. */
-static unsigned sgprs_written(const uint32_t *w, const gcn_instruction *ins, unsigned *first)
-{
-    const char *name = ins->name;
-    unsigned n = 0;
-    switch (ins->encoding) {
-    case GCN_SOP1: case GCN_SOP2: case GCN_SOPK:
-        if (!strncmp(name, "s_cmpk", 6) || !strncmp(name, "s_setreg", 8) || !strcmp(name, "s_setpc_b64") || !strncmp(name, "s_cbranch", 9) ||
-            !strcmp(name, "s_rfe_b64"))
-            return 0;
-        *first = (w[0] >> 16) & 0x7f, n = result_dwords(name);
-        break;
-    case GCN_SMRD:
-        if (strncmp(name, "s_load", 6) && strncmp(name, "s_buffer_load", 13) && strcmp(name, "s_memtime")) return 0;
-        *first = (w[0] >> 15) & 0x7f, n = strcmp(name, "s_memtime") ? (unsigned)dwords_named(name) : 2;
-        break;
-    case GCN_VOP1:
-        if (strcmp(name, "v_readfirstlane_b32")) return 0;
-        *first = (w[0] >> 17) & 0xff, n = 1;
-        break;
-    case GCN_VOP3: {
-        static const char *const carries[] = {"v_add_i32", "v_sub_i32", "v_subrev_i32", "v_addc_u32", "v_subb_u32", "v_subbrev_u32",
-                                              "v_div_scale_f32", "v_div_scale_f64"};
-        if (!strncmp(name, "v_cmp", 5)) *first = w[0] & 0xff, n = 2;
-        else if (!strcmp(name, "v_readlane_b32") || !strcmp(name, "v_readfirstlane_b32")) *first = w[0] & 0xff, n = 1;
-        else
-            for (size_t i = 0; i < sizeof carries / sizeof *carries; i++)
-                if (!strcmp(name, carries[i])) *first = (w[0] >> 8) & 0x7f, n = 2;
-        break;
-    }
-    default: return 0;
-    }
-    return n && *first < SGPR_VCC ? n : 0;
-}
-
-int gcn_image_resources(const uint32_t *code, size_t dwords, unsigned *sgprs, unsigned *access, unsigned max, unsigned *count,
-                        char *error, size_t error_size)
+int gcn_image_resources(const uint32_t *code, size_t dwords, gcn_image_resource *resources, unsigned max, unsigned *count, char *error,
+                        size_t error_size)
 {
     *count = 0;
     const long program = gcn_program_dwords(code, dwords);
@@ -1734,33 +1828,22 @@ int gcn_image_resources(const uint32_t *code, size_t dwords, unsigned *sgprs, un
             return -1;
         }
         if (ins.encoding == GCN_MIMG) {
-            const unsigned sgpr = mimg_resource_sgpr(code + at), op = (code[at] >> 18) & 0x7f;
-            const unsigned use = op == MIMG_OP_STORE ? GCN_IMAGE_WRITE : GCN_IMAGE_READ;
+            const unsigned op = (code[at] >> 18) & 0x7f;
+            gcn_resource_origin origin;
+            if (descriptor_origin(code, (size_t)program, at, mimg_resource_sgpr(code + at), RESOURCE_DWORDS, &origin, error, error_size))
+                return -1;
             unsigned i = 0;
-            while (i < *count && sgprs[i] != sgpr) i++;
+            while (i < *count && !same_origin(&resources[i].origin, &origin)) i++;
             if (i == *count) {
                 if (*count == max) {
                     snprintf(error, error_size, "more than %u images", max);
                     return -1;
                 }
-                sgprs[i] = sgpr, access[i] = 0, (*count)++;
+                resources[i] = (gcn_image_resource){origin, 0};
+                (*count)++;
             }
-            access[i] |= use;
+            resources[i].access |= op == MIMG_OP_STORE ? GCN_IMAGE_WRITE : GCN_IMAGE_READ;
         }
-        at += ins.dwords;
-    }
-    /* a descriptor the program itself writes is not the user data's */
-    for (size_t at = 0; at < (size_t)program;) {
-        gcn_instruction ins;
-        gcn_decode(code + at, (size_t)program - at, &ins);
-        unsigned first = 0;
-        const unsigned n = sgprs_written(code + at, &ins, &first);
-        for (unsigned i = 0; i < *count && n; i++)
-            if (first < sgprs[i] + RESOURCE_DWORDS && sgprs[i] < first + n) {
-                snprintf(error, error_size, "the image descriptor in s[%u:%u] is written by the program (%s at dword %zu): not done yet",
-                         sgprs[i], sgprs[i] + RESOURCE_DWORDS - 1, ins.name, at);
-                return -1;
-            }
         at += ins.dwords;
     }
     return 0;
@@ -1777,7 +1860,7 @@ static void translate_instruction(translator *t, const uint32_t *code, const dec
     case GCN_MUBUF: case GCN_MTBUF: buffer_memory(t, w, ins); break;
     case GCN_EXP: export_instruction(t, w); break;
     case GCN_VINTRP: interpolation_instruction(t, w, ins); break;
-    case GCN_MIMG: image_memory(t, w, ins); break;
+    case GCN_MIMG: image_memory(t, code, d->at, ins); break;
     default: fail(t, "%s (%s) is not translated yet", ins->name, gcn_encoding_name(ins->encoding));
     }
 }
@@ -1881,6 +1964,7 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
     long count = -1;
     if (program < 0) fail(t, "the code has no complete program");
     else count = decode_program(t, code, (size_t)program, instructions, starts);
+    if (program >= 0) t->program_dwords = (size_t)program;
     /* outside compute shaders, a scalar write of VCC's halves (SOP1, SOP2, SOPK: SDST in bits 16-22) makes
        VCC's lane bits trackable as unknown, which needs the run-time stop word */
     for (long i = 0; i < count && layout->stage != STAGE_COMPUTE && !t->vcc_unknown && layout->error_address; i++) {

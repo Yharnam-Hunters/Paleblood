@@ -346,6 +346,26 @@ static const uint32_t pixel_image_texel[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* As the game's fullscreen passes do: image_load_mip from the user data's image in s[4:11], then an
+   s_load_dwordx8 over the same SGPRs of a descriptor 16 bytes past the pointer in s[2:3], and
+   image_load_mip from that one; the pixel's colour is the two texels' sum. */
+static const uint32_t pixel_two_images[] = {
+    0x7e081102, /* v_cvt_i32_f32_e32 v4, v2 */
+    0x7e0a1103, /* v_cvt_i32_f32_e32 v5, v3 */
+    0x7e0c0280, /* v_mov_b32_e32 v6, 0 */
+    0xf0040f00, 0x00010804, /* image_load_mip v[8:11], v[4:6], s[4:11] dmask:0xf */
+    0xc0c20304, /* s_load_dwordx8 s[4:11], s[2:3], 0x4 */
+    0xbf8c0070, /* s_waitcnt vmcnt(0) lgkmcnt(0) */
+    0xf0040f00, 0x00010c04, /* image_load_mip v[12:15], v[4:6], s[4:11] dmask:0xf */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x06101908, /* v_add_f32_e32 v8, v8, v12 */
+    0x06121b09, /* v_add_f32_e32 v9, v9, v13 */
+    0x06141d0a, /* v_add_f32_e32 v10, v10, v14 */
+    0x06161f0b, /* v_add_f32_e32 v11, v11, v15 */
+    0xf800180f, 0x0b0a0908, /* exp mrt0, v8, v9, v10, v11 done vm */
+    0xbf810000, /* s_endpgm */
+};
+
 /* As pixel_color, but pixels whose red is below 0.5 are discarded (v_cmpx clears their EXEC bit
    and the export's valid mask drops them). */
 static const uint32_t pixel_discard_left[] = {

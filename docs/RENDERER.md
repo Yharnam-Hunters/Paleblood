@@ -107,9 +107,16 @@ Instead:
      - **Pixel shaders read images** (`image_load`, `image_load_mip`) as sampled images (Vulkan's
        `SAMPLED_IMAGE`, `OpImageFetch` at the level given), so the view applies the descriptor's
        DST_SEL. A texel outside the image or a level past its last is a run-time stop
-       (`GCN_RUNTIME_STOP_IMAGE_RANGE`): what the GPU returns there is not established. A descriptor
-       the program writes itself (an `s_load`, a scalar move, a compare's result) is refused by name,
-       since its value is not the user data's.
+       (`GCN_RUNTIME_STOP_IMAGE_RANGE`): what the GPU returns there is not established.
+     - **Descriptors from memory:** each MIMG instruction's descriptor is found from the code before
+       it (`gcn_resource_origin`): the user data's when nothing writes its SGPRs first, or loaded
+       from memory when the last write is a whole `s_load_dwordx8` at an immediate offset from a
+       user-data pointer pair that nothing writes. The executor reads such a descriptor from guest
+       memory when the draw runs. The same SGPRs can name different images at different
+       instructions: the game's fullscreen pass reads the user data's image, then loads another
+       descriptor over it. Followed only through code that runs straight to the instruction (no
+       branch before it, none back to it); any other write (a scalar move, a compare's result, a
+       written pointer) stops by name.
      - **Tiled layouts** (`runtime/tiling.h`): where each texel of an image lies in guest memory, for
        reading images the CPU or a shader's buffer stores wrote. AMD's address library (addrlib, in
        Mesa) gives the formulas; the PS4's tile-mode and macro-tile-mode values are those shadPS4's
