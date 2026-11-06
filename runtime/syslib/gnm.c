@@ -93,11 +93,15 @@ static void fill_with_nop(const char *function, uint32_t *command_buffer, uint32
 
 /* sceGnmSetCsShader(command buffer, dwords, shader): binds a compute shader. The engine's wrapper
    (0x0148a8b0, four callers including a set-up) reserves 25 dwords, passes 25 and
-   advances by 25 dwords only when the answer is 0; nothing else reads the answer. */
-static int32_t set_cs_shader(uint32_t *command_buffer, uint32_t dwords, const void *shader)
+   advances by 25 dwords only when the answer is 0; nothing else reads the answer. The shader is its
+   register block (7 words: COMPUTE_PGM_LO, PGM_HI, PGM_RSRC1, PGM_RSRC2, NUM_THREAD_X, _Y, _Z, as
+   shadPS4's gnmdriver.cpp writes them), handed to the renderer like the vertex and pixel shaders'. */
+static int32_t set_cs_shader(uint32_t *command_buffer, uint32_t dwords, const uint32_t *registers)
 {
-    (void)shader;
-    fill_with_nop("sceGnmSetCsShader", command_buffer, dwords);
+    static const char fn[] = "sceGnmSetCsShader";
+    if (!registers) rt_fatal(fn, "no compute shader registers: the answer is not established");
+    fill_with_nop(fn, command_buffer, dwords);
+    rt_renderer_bind_shader(fn, RT_RENDERER_COMPUTE_SHADER, command_buffer, registers);
     return 0;
 }
 

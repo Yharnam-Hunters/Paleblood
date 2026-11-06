@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Entry of an observed call (runtime/observe_hooks.c). The hook's thunk loads its observed_hook into
    r11 and jumps here, with rsp still the caller's and the return address at [rsp]. The argument
-   registers (and rax, xmm0-7, which a call may also pass) are kept, rt_observe_dispatch gets the
+   registers (and rax, xmm0-7, which a call may also pass) are kept, rt_observe_hook_dispatch gets the
    hook and the six integer arguments, then the registers are put back and the call goes on into the
    original's relocated entry, the hook's first field. Frame: 0 rdi rsi rdx rcx r8 r9, 48 rax,
    56 hook, 64 xmm0..xmm7. */
@@ -30,7 +30,7 @@ rt_observe_entry:
     movdqu %xmm7, 176(%rsp)
     mov %r11, %rdi
     mov %rsp, %rsi
-    call rt_observe_dispatch
+    call rt_observe_hook_dispatch
     movdqu 64(%rsp), %xmm0
     movdqu 80(%rsp), %xmm1
     movdqu 96(%rsp), %xmm2

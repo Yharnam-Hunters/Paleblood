@@ -52,7 +52,7 @@ target_include_directories(pbboot PRIVATE include)
 if(NOT APPLE)
     foreach(symbol rt_fatal rt_render_record_color_target rt_render_record_viewport rt_render_record_draw_auto
                    rt_render_record_vertex_shader rt_render_record_pixel_shader rt_render_record_user_data
-                   rt_render_record_register rt_render_record_instances)
+                   rt_render_record_register rt_render_record_instances rt_render_record_dispatch)
         target_link_options(pbboot PRIVATE "LINKER:--export-dynamic-symbol=${symbol}")
     endforeach()
 endif()

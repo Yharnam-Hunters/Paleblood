@@ -25,10 +25,10 @@ typedef struct {
 static observed_hook observed[MAX_OBSERVE_HOOKS];
 
 void rt_observe_entry(void);
-void rt_observe_dispatch(const observed_hook *hook, const uint64_t *frame);
+void rt_observe_hook_dispatch(const observed_hook *hook, const uint64_t *frame);
 
 /* The frame rt_observe_entry saved: rdi, rsi, rdx, rcx, r8, r9 first. */
-void rt_observe_dispatch(const observed_hook *hook, const uint64_t *frame)
+void rt_observe_hook_dispatch(const observed_hook *hook, const uint64_t *frame)
 {
     hook->observe(frame);
 }

@@ -75,6 +75,23 @@ static uint64_t program_address(const uint32_t *words)
     return ((uint64_t)field(words[PROGRAM_HIGH], 0, 8) << 32 | words[PROGRAM_LOW]) << PROGRAM_UNIT_SHIFT;
 }
 
+enum { CS_NUM_THREAD_X = 4 };
+
+void rt_compute_shader_decode(const uint32_t words[RT_COMPUTE_SHADER_WORDS], rt_compute_shader *shader)
+{
+    const uint32_t resources = words[RESOURCES_1], resources2 = words[RESOURCES_2];
+    *shader = (rt_compute_shader){
+        .code = program_address(words),
+        .vgprs = (field(resources, 0, 6) + 1) * VGPR_UNIT,
+        .sgprs = (field(resources, 6, 4) + 1) * SGPR_UNIT,
+        .user_sgprs = field(resources2, 1, 5),
+        .workgroup_id_enables = field(resources2, 7, 3),
+        .workgroup_size_enabled = (int)field(resources2, 10, 1),
+        .thread_id_components = field(resources2, 11, 2),
+        .threads = {words[CS_NUM_THREAD_X], words[CS_NUM_THREAD_X + 1], words[CS_NUM_THREAD_X + 2]},
+    };
+}
+
 void rt_vertex_shader_decode(const uint32_t words[RT_VERTEX_SHADER_WORDS], rt_vertex_shader *shader)
 {
     const uint32_t resources = words[RESOURCES_1];
@@ -266,6 +283,24 @@ int rt_render_record_vertex_shader_at(uint64_t address, const uint32_t words[RT_
     rt_render_call call = {.kind = RT_CALL_VERTEX_SHADER};
     rt_vertex_shader_decode(words, &call.u.vertex_shader);
     return place(address, &call);
+}
+
+int rt_render_record_compute_shader_at(uint64_t address, const uint32_t words[RT_COMPUTE_SHADER_WORDS])
+{
+    rt_render_call call = {.kind = RT_CALL_COMPUTE_SHADER};
+    rt_compute_shader_decode(words, &call.u.compute_shader);
+    return place(address, &call);
+}
+
+int rt_render_record_dispatch(uint64_t buffer, uint32_t offset, const uint32_t groups[3], char *error, size_t error_size)
+{
+    if (!groups[0] || !groups[1] || !groups[2]) {
+        snprintf(error, error_size, "a dispatch of %u x %u x %u workgroups: none to run", groups[0], groups[1], groups[2]);
+        return -1;
+    }
+    rt_render_call call = {.kind = RT_CALL_DISPATCH, .offset = offset};
+    memcpy(call.u.dispatch.groups, groups, sizeof call.u.dispatch.groups);
+    return record(buffer, &call, error, error_size);
 }
 
 int rt_render_record_pixel_shader_at(uint64_t address, const uint32_t words[RT_PIXEL_SHADER_WORDS])

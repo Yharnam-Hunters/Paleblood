@@ -24,7 +24,7 @@
 #include <sys/mman.h>
 #include <vulkan/vulkan.h>
 
-enum { MAX_SHADERS = 256, MAX_PIPELINES = 256, MAX_TARGETS = 64, MAX_RECT_STAGES = 16 };
+enum { MAX_SHADERS = 256, MAX_PIPELINES = 256, MAX_TARGETS = 64, MAX_RECT_STAGES = 16, MAX_COMPUTE_PIPELINES = 256 };
 enum { USER_DATA_BYTES = GCN_USER_SGPR_MAX * 4, VERTEX_USER_DATA = 0, PIXEL_USER_DATA = USER_DATA_BYTES };
 enum { COLOR_8_8_8_8 = 0xa, NUMBER_UNORM = 0, NUMBER_SRGB = 6, SWAP_STD = 0, SWAP_ALT = 1 };
 enum { PERSP_CENTER_ENA = 0x2 };
@@ -54,6 +54,15 @@ typedef struct {
     VkPipeline pipeline;
 } pipeline_entry;
 
+/* A compute shader translated for one workgroup size and starting-register layout, and its pipeline. */
+typedef struct {
+    uint64_t code;
+    uint32_t threads[3], user_sgprs;
+    int workgroup_id_x_sgpr;
+    VkShaderModule module;
+    VkPipeline pipeline;
+} compute_entry;
+
 /* A rect-list geometry stage (runtime/rect_list.h), for one vertex-shader output shape. */
 typedef struct {
     unsigned parameters, clip_distances;
@@ -67,7 +76,7 @@ struct rt_executor {
     VkQueue queue;
     uint32_t family;
     VkCommandPool pool;
-    VkPipelineLayout layout;
+    VkPipelineLayout layout, compute_layout;
     /* the guest memory: our own mapping of the pool, imported */
     void *view;
     uint64_t size, guest_base, address_offset;
@@ -82,6 +91,8 @@ struct rt_executor {
     int geometry_shaders;            /* the device draws geometry stages (rect lists need one) */
     rect_stage rect_stages[MAX_RECT_STAGES];
     size_t rect_stage_count;
+    compute_entry computes[MAX_COMPUTE_PIPELINES];
+    size_t compute_count;
 };
 
 /* The state a command buffer builds up, call by call. */
@@ -95,6 +106,9 @@ typedef struct {
     rt_pixel_shader pixel;
     int vertex_set, pixel_set;
     uint32_t user[STAGES][GCN_USER_SGPR_MAX];
+    rt_compute_shader compute;
+    int compute_set;
+    uint32_t compute_user[GCN_USER_SGPR_MAX];
     /* Registers the library set (AMD's layout, gfx_7_2_sh_mask.h), with whether each was set; an
        unset one is the state the drawing below assumes. */
     uint32_t blend0_control, depth_control, color_control, target_mask, primitive_type, instances;
@@ -210,6 +224,12 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
     const VkPipelineLayoutCreateInfo layout = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .pushConstantRangeCount = 2,
                                                .pPushConstantRanges = ranges};
     if (vkCreatePipelineLayout(x->device, &layout, NULL, &x->layout) != VK_SUCCESS) return failed(error, error_size, "no pipeline layout");
+    /* a compute shader's user data at the start of its push constants */
+    const VkPushConstantRange compute_range = {VK_SHADER_STAGE_COMPUTE_BIT, 0, USER_DATA_BYTES};
+    const VkPipelineLayoutCreateInfo compute_layout = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                                       .pushConstantRangeCount = 1, .pPushConstantRanges = &compute_range};
+    if (vkCreatePipelineLayout(x->device, &compute_layout, NULL, &x->compute_layout) != VK_SUCCESS)
+        return failed(error, error_size, "no compute pipeline layout");
     return 0;
 }
 
@@ -577,6 +597,83 @@ static int draw(rt_executor *x, const draw_state *s, uint32_t index_count, char 
     return finish_commands(x, commands) ? failed(error, error_size, "the GPU did not finish a draw") : 0;
 }
 
+/* The pipeline for a compute shader as dispatched now: translated once per workgroup size and
+   register layout. VK_NULL_HANDLE after failing. */
+static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *c, int workgroup_id_x_sgpr, char *error, size_t error_size)
+{
+    for (size_t i = 0; i < x->compute_count; i++) {
+        const compute_entry *e = &x->computes[i];
+        if (e->code == c->code && !memcmp(e->threads, c->threads, sizeof e->threads) && e->user_sgprs == c->user_sgprs &&
+            e->workgroup_id_x_sgpr == workgroup_id_x_sgpr)
+            return e->pipeline;
+    }
+    if (x->compute_count == MAX_COMPUTE_PIPELINES) {
+        failed(error, error_size, "more compute pipelines than the executor keeps");
+        return VK_NULL_HANDLE;
+    }
+    if (c->code < x->guest_base || c->code >= x->guest_base + x->size || c->code % 4) {
+        failed(error, error_size, "compute shader code at %#llx is outside the GPU-visible memory", (unsigned long long)c->code);
+        return VK_NULL_HANDLE;
+    }
+    const gcn_compute_layout layout = {.local_size = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
+                                       .workgroup_id_x_sgpr = workgroup_id_x_sgpr, .push_constant_offset = 0,
+                                       .address_offset = x->address_offset};
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    char reason[256];
+    if (gcn_translate_compute((const uint32_t *)(uintptr_t)c->code, (size_t)((x->guest_base + x->size - c->code) / 4), &layout, &spirv,
+                              &words, reason, sizeof reason)) {
+        failed(error, error_size, "compute shader at %#llx: %s", (unsigned long long)c->code, reason);
+        return VK_NULL_HANDLE;
+    }
+    const VkShaderModuleCreateInfo module_info = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = words * 4, .pCode = spirv};
+    VkShaderModule module = VK_NULL_HANDLE;
+    const VkResult made = vkCreateShaderModule(x->device, &module_info, NULL, &module);
+    free(spirv);
+    if (made != VK_SUCCESS) {
+        failed(error, error_size, "the device refused a translated compute shader");
+        return VK_NULL_HANDLE;
+    }
+    const VkComputePipelineCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = module,
+                  .pName = "main"},
+        .layout = x->compute_layout};
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    if (vkCreateComputePipelines(x->device, VK_NULL_HANDLE, 1, &info, NULL, &pipeline) != VK_SUCCESS) {
+        vkDestroyShaderModule(x->device, module, NULL);
+        failed(error, error_size, "the device refused a compute pipeline");
+        return VK_NULL_HANDLE;
+    }
+    x->computes[x->compute_count++] = (compute_entry){c->code, {c->threads[0], c->threads[1], c->threads[2]}, c->user_sgprs,
+                                                      workgroup_id_x_sgpr, module, pipeline};
+    return pipeline;
+}
+
+/* Runs a dispatch of the current compute shader; its writes reach the guest memory before this returns. */
+static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3], char *error, size_t error_size)
+{
+    if (!s->compute_set) return failed(error, error_size, "a dispatch without a compute shader");
+    const rt_compute_shader *c = &s->compute;
+    if (!c->threads[0] || !c->threads[1] || !c->threads[2])
+        return failed(error, error_size, "a compute shader with a workgroup of %u x %u x %u threads", c->threads[0], c->threads[1], c->threads[2]);
+    if (c->workgroup_id_enables & ~1u)
+        return failed(error, error_size, "a compute shader that takes its workgroup's y or z index: not run yet");
+    if (c->workgroup_size_enabled) return failed(error, error_size, "a compute shader that takes its workgroup's size information: not run yet");
+    const int workgroup_id_x_sgpr = (c->workgroup_id_enables & 1u) ? (int)c->user_sgprs : -1;
+    const VkPipeline pipeline = compute_pipeline_for(x, c, workgroup_id_x_sgpr, error, error_size);
+    if (!pipeline) return -1;
+    VkCommandBuffer commands = begin_commands(x);
+    if (!commands) return failed(error, error_size, "no command buffer");
+    vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    vkCmdPushConstants(commands, x->compute_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, USER_DATA_BYTES, s->compute_user);
+    vkCmdDispatch(commands, groups[0], groups[1], groups[2]);
+    const VkMemoryBarrier to_host = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                                     .dstAccessMask = VK_ACCESS_HOST_READ_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &to_host, 0, NULL, 0, NULL);
+    return finish_commands(x, commands) ? failed(error, error_size, "the GPU did not finish a dispatch") : 0;
+}
+
 int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t size, char *error, size_t error_size)
 {
     size_t count = 0;
@@ -606,7 +703,17 @@ int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t size, char *error,
         case RT_CALL_PIXEL_SHADER:
             s.pixel = c->u.pixel_shader, s.pixel_set = 1;
             break;
+        case RT_CALL_COMPUTE_SHADER:
+            s.compute = c->u.compute_shader, s.compute_set = 1;
+            break;
+        case RT_CALL_DISPATCH:
+            if (dispatch(x, &s, c->u.dispatch.groups, error, error_size)) return -1;
+            break;
         case RT_CALL_USER_DATA: {
+            if (c->u.user_data.stage == RT_STAGE_COMPUTE) {
+                memcpy(&s.compute_user[c->u.user_data.slot], c->u.user_data.words, c->u.user_data.count * sizeof(uint32_t));
+                break;
+            }
             const int stage = c->u.user_data.stage == RT_STAGE_VERTEX ? STAGE_VERTEX : c->u.user_data.stage == RT_STAGE_PIXEL ? STAGE_PIXEL : -1;
             if (stage < 0) return failed(error, error_size, "user data for stage %u: only vertex and pixel shaders are drawn yet",
                                          (unsigned)c->u.user_data.stage);
@@ -695,6 +802,10 @@ void rt_executor_close(rt_executor *x)
         for (size_t i = 0; i < x->pipeline_count; i++) vkDestroyPipeline(x->device, x->pipelines[i].pipeline, NULL);
         for (size_t i = 0; i < x->shader_count; i++) vkDestroyShaderModule(x->device, x->shaders[i].module, NULL);
         for (size_t i = 0; i < x->rect_stage_count; i++) vkDestroyShaderModule(x->device, x->rect_stages[i].module, NULL);
+        for (size_t i = 0; i < x->compute_count; i++) {
+            vkDestroyPipeline(x->device, x->computes[i].pipeline, NULL);
+            vkDestroyShaderModule(x->device, x->computes[i].module, NULL);
+        }
         for (size_t i = 0; i < x->target_count; i++) {
             const target_entry *t = &x->targets[i];
             vkDestroyFramebuffer(x->device, t->framebuffer, NULL);
@@ -706,6 +817,7 @@ void rt_executor_close(rt_executor *x)
         if (x->buffer) vkDestroyBuffer(x->device, x->buffer, NULL);
         if (x->memory) vkFreeMemory(x->device, x->memory, NULL);
         if (x->layout) vkDestroyPipelineLayout(x->device, x->layout, NULL);
+        if (x->compute_layout) vkDestroyPipelineLayout(x->device, x->compute_layout, NULL);
         if (x->pool) vkDestroyCommandPool(x->device, x->pool, NULL);
         vkDestroyDevice(x->device, NULL);
     }
