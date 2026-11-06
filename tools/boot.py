@@ -297,9 +297,14 @@ def main() -> int:
     ap.add_argument('--display', choices=('none', 'headless', 'window'), default='none',
                     help='show the frames: none (default), headless, or a window (needs Vulkan and SDL3)')
     ap.add_argument('--display-capture', default=None, metavar='DIR', help='write each presented frame to DIR as PPM')
+    ap.add_argument('--game-lib', default=None, metavar='LIBRARY',
+                    help="run the decompilation's replacements (the built game library, build/game/libbbgame.so) "
+                         'in place of the originals; not for recorded boots')
     ap.add_argument('--audio', choices=('none', 'host'), default='none',
                     help='play the game\'s sound on this computer (host; needs SDL3) or not at all (none, default)')
     a = ap.parse_args()
+    if a.game_lib and not a.no_record:
+        ap.error('--game-lib runs replacements in place of the originals: such a boot is not recorded (add --no-record)')
     elf = a.elf or default_elf()
     pbboot = os.environ.get('BB_PBBOOT') or os.path.join(ROOT, 'build', 'runtime', 'pbboot')
     for path, what in ((elf, 'executable (your own dump\'s eboot.elf)'), (pbboot, 'boot harness: build the repository')):
@@ -343,6 +348,8 @@ def main() -> int:
             cmd += ['--display-capture', a.display_capture]
         if a.trace:
             cmd.append('--trace')
+        if a.game_lib:
+            cmd += ['--game-lib', a.game_lib]
         # The guest runs in this process's child; a hard limit covers a runaway harness.
         p = subprocess.run(cmd, timeout=a.timeout + 60)
         if p.returncode != 0 or not os.path.isfile(out):

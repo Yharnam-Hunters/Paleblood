@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Write masked CB_BLENDn_CONTROL for the selected color-buffer bank.
 #include "present_register_packets.h"
+#include "render_observe.h"
 
 extern "C" void bb_render_set_cb_blend_control(render::PacketBuffer *commands,
                                                   uint32_t color_buffer_index, uint32_t value)
@@ -10,5 +11,6 @@ extern "C" void bb_render_set_cb_blend_control(render::PacketBuffer *commands,
     constexpr uint32_t required_words = 3;
     uintptr_t cursor;
     if (!render::reserve_words(commands, required_words, cursor)) return;
+    render::observe_context_register(commands, cursor, color_buffer_index + blend_control_base_index, value & value_mask);
     render::write_present_register_packet(commands, cursor, color_buffer_index + blend_control_base_index, value & value_mask);
 }

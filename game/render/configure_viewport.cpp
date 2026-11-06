@@ -4,6 +4,9 @@
 // publications.
 #include "present_parameter_transforms.h"
 #include "present_parameter_pairs.h"
+#include "render_observe.h"
+
+#include <bit>
 
 extern "C" void bb_render_configure_viewport(render::PacketBuffer *commands,
                                                       uint32_t viewport_index,
@@ -30,6 +33,12 @@ extern "C" void bb_render_configure_viewport(render::PacketBuffer *commands,
     const uint32_t y_offset = parameter_float_bits(offset->second.get());
     const uint32_t z_scale = parameter_float_bits(scale->third.get());
     const uint32_t z_offset = parameter_float_bits(offset->third.get());
+    const float observed_scale[3] = {std::bit_cast<float>(x_scale), std::bit_cast<float>(y_scale),
+                                     std::bit_cast<float>(z_scale)};
+    const float observed_offset_values[3] = {std::bit_cast<float>(x_offset), std::bit_cast<float>(y_offset),
+                                             std::bit_cast<float>(z_offset)};
+    rt_observe_viewport(observed_buffer(commands), observed_offset(commands, cursor), viewport_index, minimum_depth,
+                        maximum_depth, observed_scale, observed_offset_values);
     auto *pair = reinterpret_cast<RecordParameterPairPacket *>(cursor);
     pair->header.set(set_context_reg_two_values_header);
     pair->index.set(viewport_index * viewport_z_range_stride + viewport_zmin_base_index);
