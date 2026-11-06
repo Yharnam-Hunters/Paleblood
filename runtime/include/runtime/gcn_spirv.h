@@ -117,7 +117,13 @@ typedef struct {
     uint64_t error_address;   /* the run-time stop word (GCN_RUNTIME_STOP_*), or 0: run-time cases stop translation */
     const gcn_image_binding *images;
     unsigned image_count;
+    uint32_t *user_data_read; /* when not NULL, set on success to the user SGPRs read before written (User data read, below) */
 } gcn_compute_layout;
+
+/* User data read: a translation can report which of the user SGPRs (s0 to s(user_sgprs - 1)) the program
+   reads before it writes them, taking the instructions in program order (a read in one branch after a
+   write in another counts as written). The caller can then refuse to run it on user data no call has
+   set. */
 
 /* Translates the compute program at code (dwords long, through its s_endpgm). On success 0, and
    *spirv holds a SPIR-V module the caller frees; otherwise -1 and error says why. The push
@@ -145,6 +151,7 @@ typedef struct {
     const uint32_t *callee;
     size_t callee_dwords;
     uint64_t code_address;
+    uint32_t *user_data_read; /* when not NULL, set on success to the user SGPRs read before written (User data read, below) */
 } gcn_vertex_layout;
 
 /* Calls. A vertex shader may start by calling a fetch shader, which loads its vertex inputs:
@@ -177,6 +184,7 @@ typedef struct {
     unsigned image_count;
     const gcn_resource_origin *samplers;
     unsigned sampler_count;
+    uint32_t *user_data_read; /* when not NULL, set on success to the user SGPRs read before written (User data read, below) */
 } gcn_pixel_layout;
 
 int gcn_translate_pixel(const uint32_t *code, size_t dwords, const gcn_pixel_layout *layout,
