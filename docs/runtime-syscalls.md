@@ -826,7 +826,7 @@ person running it chose:
 
 The runtime is offline: the one user is signed out of PSN for the whole run, and nothing about
 that ever changes. The facts come from shadPS4's `libSceNpManager` and `libSceNpMatching2`
-(`np_manager.h`, `np_types2.h`, `np_error.h`), checked against two other Bloodborne ports. The code is the
+(`np_manager.h`, `np_manager.cpp`, `np_types.h`, `np_types2.h`, `np_common.cpp`, `np_error.h`), checked against two other Bloodborne ports and PS4Recomp's `libSceNp` (`ps4_np.c`), which answer the same for a signed-out user. The code is the
 runtime's own.
 
 | Call | Runtime |
@@ -836,6 +836,15 @@ runtime's own.
 | `sceNpRegisterGamePresenceCallback(callback, data)` | keeps it (replacing any earlier one) and answers nothing; the caller (`0x010b8386`) reads no result |
 | `sceNpGetState(user, uint32_t *state)` | 1, signed out (0 is not signed up, 2 signed in); a missing variable answers `0x80550003`, and a user the runtime did not hand out stops by name |
 | `sceNpCheckCallback()` | 0, running nothing: offline nothing changes |
+| `sceNpGetNpId(user, NP id *)`, `sceNpGetOnlineId(user, online id *)` | `0x80550006` (signed out), writing nothing: a signed-out user has no PSN identity. A missing variable answers `0x80550003`; the invalid user (-1, whose answer depends on the system software version) and a user the runtime did not hand out stop by name. The callers (`0x010bd072`, `0x010c0860`, `0x010b4666`, `0x010b4e5d`, `0x010b8931`) take their offline path. |
+| `sceNpGetGamePresenceStatus(const online id *, int32_t *status)` | 0 with status 0 (offline; 1 is online) for every player; a missing argument answers `0x80550003` |
+| `sceNpRegisterPlusEventCallback(callback, data)`, `sceNpUnregisterPlusEventCallback()` | the state callback's rules (`0x80550003`, `0x80550008`, `0x80550009`); kept and never called, since offline no PlayStation Plus event happens |
+| `sceNpNotifyPlusFeature(const parameter *)` | 0: offline there is no one to tell. The callers (`0x01d38ac9`, `0x02275873`, `0x022769e6`) pass the 0x38-byte block of `sceNpCheckPlus` and read no result; a missing block stops by name. |
+| `sceNpCreateAsyncRequest(const parameter *)` | a request id from `0x20000001`, at most 32 in use (`0x80550013`), a deleted one's slot reused. The block is 0x18 bytes `{size, CPU affinity mask, thread priority}`: no block `0x80550003`, another size `0x80550011`. The caller (`0x02274f54`) passes 0x18, `0x3f`, 700. |
+| `sceNpCheckNpAvailability(id, const online id *, reserved)`, `sceNpCheckPlus(id, const parameter *, result *)`, `sceNpGetParentalControlInfo(id, const online id *, int8_t *age, info *)` | the check completes at once: the call answers 0 and the request's result is `0x80550006` (signed out); nothing is written. A request id of 0 or a missing argument `0x80550003`, an id that is no request `0x80550014`, an aborted request `0x80550012`, a second check on one request `0x80550003`. `sceNpCheckPlus`'s 0x38-byte block `{size, user, padding, features, 32 reserved}`: another size `0x80550011`; features outside 1–3, a non-zero reserved byte or the invalid user `0x80550003`; another user stops by name. A third argument to the availability check other than the observed 0 stops by name. |
+| `sceNpPollAsync(id, int32_t *result)` | 0 with the result once the check ran (always at once offline); no variable `0x80550003`, an id that is no request `0x80550014`, a request that ran no check `0x80550015`. The caller (`0x022767b5`) reads 0 as done, 1 as still running. A request aborted before its check stops by name. |
+| `sceNpAbortRequest(id)`, `sceNpDeleteRequest(id)` | 0, or `0x80550014` for an id that is no request. Abort marks an unchecked request aborted and leaves a checked one alone; delete frees the id. |
+| `sceNpCmpOnlineId(a, b)`, `sceNpCmpNpId(a, b)` (`libSceNpCommon`) | 0 for the same identity, `0x80550609` (no match) otherwise, `0x80550003` for a missing one. Online ids compare their 16 characters as `strncmp` does; NP ids then compare their 8 option and 8 reserved bytes. Callers `0x010a28d1` and `0x010b4676`. |
 | `sceNpMatching2Initialize(const parameter *)` | the 0x30-byte block carries its own size at `0x20`, and 0x30 or the older 0x28 is accepted. Anything else, or no block, answers `0x80550C0A`; a second initialize answers `0x80550C02`. The caller (`0x010ba2d0`) treats a negative answer as failure. |
 | `sceNpMatching2Terminate()` | 0, or `0x80550C03` before initialize |
 
