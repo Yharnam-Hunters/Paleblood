@@ -103,6 +103,10 @@ void *rt_thread_call(void *(*entry)(void *), void *argument, void *stack_top);
    (runtime/syslib/kernel_key.c, scePthreadKeyCreate). */
 void rt_thread_keys_exit(void *stack_top);
 
+/* Microseconds since the process started, as sceKernelGetProcessTime answers
+   (runtime/syslib/kernel_time_of_day.c). */
+uint64_t rt_process_time(void);
+
 /* Stops the process with a message naming the system function: behaviour the runtime does not
    know is never guessed. */
 #ifdef __cplusplus

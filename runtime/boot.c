@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* pbboot: runs a PS4 executable's entry on Paleblood's runtime, as far as the runtime goes.
 
-     pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--addcont LABEL]... [--app0 DIR] [--data DIR] [--savedata DIR] [--display none|headless|window] [--audio none|host] [--display-capture DIR] [--nids NID_DB.xml]
+     pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--addcont LABEL]... [--app0 DIR] [--data DIR] [--savedata DIR] [--display none|headless|window] [--audio none|host] [--input none|host] [--display-capture DIR] [--nids NID_DB.xml]
             [--module-hook MODULE:OFFSET:SIZE:ACTION:NAME]...
             [--status OUT.json] [--timeout SECONDS] [--trace] [--game-lib LIBRARY]
      pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]
@@ -45,6 +45,7 @@
 #include "runtime/nid.h"
 #include "runtime/process.h"
 #include "runtime/audio_host.h"
+#include "runtime/input_host.h"
 #include "runtime/renderer.h"
 #include "runtime/syslib.h"
 
@@ -631,7 +632,7 @@ static int display_mode_named(const char *name, rt_display_mode *mode)
 }
 
 static const char *usage =
-    "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--addcont LABEL]... [--app0 DIR] [--data DIR] [--savedata DIR] [--display none|headless|window] [--audio none|host] [--display-capture DIR] [--nids NID_DB.xml]\n"
+    "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--addcont LABEL]... [--app0 DIR] [--data DIR] [--savedata DIR] [--display none|headless|window] [--audio none|host] [--input none|host] [--display-capture DIR] [--nids NID_DB.xml]\n"
     "              [--module-hook MODULE:OFFSET:SIZE:ACTION:NAME]...\n"
     "              [--status OUT.json] [--timeout S] [--trace] [--game-lib LIBRARY]\n"
     "       pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]\n";
@@ -680,6 +681,17 @@ int main(int argc, char **argv)
                 return 2;
             }
         }
+        else if (!strcmp(argv[i], "--input") && i + 1 < argc) {
+            const char *input = argv[++i];
+            if (strcmp(input, "none") && strcmp(input, "host")) {
+                fprintf(stderr, "pbboot: --input %s: want none or host\n", input);
+                return 2;
+            }
+            if (rt_input_host_configure(!strcmp(input, "host"))) {
+                fprintf(stderr, "pbboot: --input host: this build has no host input (SDL3 was not found)\n");
+                return 2;
+            }
+        }
         else if (!strcmp(argv[i], "--system-param") && i + 1 < argc) {
             if (add_system_param(argv[++i])) {
                 fprintf(stderr, "pbboot: --system-param %s: want a new ID=VALUE\n", argv[i]);
@@ -724,6 +736,11 @@ int main(int argc, char **argv)
     }
     if (!object_count) {
         fputs(usage, stderr);
+        return 2;
+    }
+    if (rt_input_host_enabled() && display_mode != RT_DISPLAY_WINDOW) {
+        /* The window's event loop is what reads the controller and the keyboard. */
+        fputs("pbboot: --input host needs --display window\n", stderr);
         return 2;
     }
     if (display_capture && display_mode == RT_DISPLAY_NONE) display_mode = RT_DISPLAY_HEADLESS;
