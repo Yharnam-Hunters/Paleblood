@@ -89,7 +89,9 @@ set_tests_properties(capture_poc_replay PROPERTIES
 # System library implementations, compiled in directly so the linker keeps every RT_SYSLIB entry
 file(GLOB PB_TEST_SYSLIB CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/runtime/syslib/*.c)
 # The syslib tests use the display's headless mode only, so they build without its window.
-add_executable(test_syslib test/test_syslib.c runtime/process.c ${PB_TEST_SYSLIB}
+# Each library's tests in their own file (test/syslib_test.h).
+file(GLOB PB_TEST_SYSLIB_TESTS CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/test/syslib/*.c)
+add_executable(test_syslib test/test_syslib.c ${PB_TEST_SYSLIB_TESTS} runtime/process.c ${PB_TEST_SYSLIB}
                runtime/display/display.c runtime/display/display_window_none.c runtime/renderer/renderer_none.c)
 target_include_directories(test_syslib PRIVATE runtime/include)
 target_link_libraries(test_syslib PRIVATE atrac9)
