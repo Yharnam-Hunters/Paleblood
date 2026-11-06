@@ -304,6 +304,127 @@ static void blending(rt_executor *x)
     CHECK(blended_misses(x, at(SEPARATE), colour_halved_alpha_kept) == 0);
 }
 
+/* Runs the triangle's state with these registers and a draw of `count` vertices (record_setup's). */
+static int run_counted(rt_executor *x, uint64_t buffer, uint64_t target, const uint32_t (*registers)[2], int n, uint32_t count, char *error,
+                       size_t error_size)
+{
+    rt_render_forget();
+    uint32_t offset = record_setup(buffer, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    for (int i = 0; i < n; i++, offset += 0x10) CHECK(rt_render_record_register(buffer, offset, registers[i][0], registers[i][1], error, error_size) == 0);
+    CHECK(rt_render_record_draw_auto(buffer, offset, count, error, error_size) == 0);
+    return rt_executor_run(x, buffer, offset + 0x10, error, error_size);
+}
+
+/* Depth and stencil without a depth buffer, and triangle strips:
+   - with the depth target switched off (DB_Z_INFO and DB_STENCIL_INFO 0, as the library's setter
+     writes for no target), depth and stencil tests draw as if off; Z_WRITE_ENABLE alone writes nothing
+     and draws too;
+   - a test with no depth target set at all stops by name;
+   - colour writes off (CB_COLOR_CONTROL mode CB_DISABLE) draw nothing;
+   - four corners as a triangle strip (VGT_PRIMITIVE_TYPE 6) cover the target with the reference image;
+     drawn as a list (mutant) they leave half of it empty. */
+static void depth_and_strips(rt_executor *x)
+{
+    uint32_t bgra[4];
+    enum { DEPTH_BUFFER = 0xc0f40000, NO_BUFFER = 0xa00000, WRITE_ONLY = 0xa40000, OFF = 0xa80000, STRIP = 0xac0000, LIST = 0xb00000 };
+    char error[200] = "";
+    const uint32_t no_target[][2] = {{0xa010, 0}, {0xa011, 0}, {0xa200, 0x2 | 0x1 | 0x4 | 0x7u << 4 | 0x7u << 8}};
+    int drawn = run_counted(x, DEPTH_BUFFER, at(NO_BUFFER), no_target, 3, 3, error, sizeof error);
+    if (drawn) fprintf(stderr, "no depth buffer: %s\n", error);
+    CHECK(drawn == 0);
+    check_triangle(x, at(NO_BUFFER));
+    const uint32_t write_only[][2] = {{0xa200, 0x4}};
+    CHECK(run_counted(x, DEPTH_BUFFER, at(WRITE_ONLY), write_only, 1, 3, error, sizeof error) == 0);
+    check_triangle(x, at(WRITE_ONLY));
+    /* A 16 x 16 depth target (Z_32_FLOAT with 8-bit stencil; DB_DEPTH_SIZE in eighths, less one):
+       - the game's stencil pass (target mask 0, stencil always, replace on pass, DB_STENCILREFMASK 0xff0000)
+         writes only the depth target: drawn, no colour target made;
+       - the triangle with the depth test always passing and depth writes, into the colour target too,
+         draws the reference image;
+       - a test that reads the buffer (stencil EQUAL, depth LESS), another stencil operation, depth bounds,
+         DB_RENDER_CONTROL's clears, or a missing DB_STENCILREFMASK stop by name. */
+    enum { DEPTH = 0xb40000, DEPTH_COLOUR = 0xb80000, STENCIL_ONLY = 0xbc0000 };
+    const uint32_t depth_size = (SIZE / 8 - 1) | (SIZE / 8 - 1) << 11, z = (uint32_t)(at(DEPTH) >> 8), st = (uint32_t)(at(DEPTH + 0x2000) >> 8);
+#define DEPTH_TARGET {0xa010, 0xa0000003}, {0xa011, 0x20000001}, {0xa012, z}, {0xa013, st}, {0xa014, z}, {0xa015, st}, {0xa016, depth_size}, \
+                     {0xa017, 0}, {0xa002, 0}
+    const uint32_t stencil_pass[][2] = {DEPTH_TARGET, {0xa08e, 0}, {0xa10c, 0xff0000}, {0xa10b, 0x30030}, {0xa200, 0x700771}};
+    drawn = run_counted(x, DEPTH_BUFFER, at(STENCIL_ONLY), stencil_pass, 13, 3, error, sizeof error);
+    if (drawn) fprintf(stderr, "stencil pass: %s\n", error);
+    CHECK(drawn == 0);
+    CHECK(rt_executor_read_target(x, at(STENCIL_ONLY), bgra, 2, 2, error, sizeof error) == -1 && strstr(error, "no draw"));
+    const uint32_t depth_always[][2] = {DEPTH_TARGET, {0xa200, 0x2 | 0x4 | 0x7u << 4}};
+    drawn = run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), depth_always, 10, 3, error, sizeof error);
+    if (drawn) fprintf(stderr, "depth always: %s\n", error);
+    CHECK(drawn == 0);
+    check_triangle(x, at(DEPTH_COLOUR));
+    const uint32_t stencil_equal[][2] = {DEPTH_TARGET, {0xa10c, 0xff0000}, {0xa10b, 0x30030}, {0xa200, 0x1 | 0x2u << 8}};
+    CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), stencil_equal, 12, 3, error, sizeof error) == -1 && strstr(error, "reading the stencil"));
+    const uint32_t depth_less[][2] = {DEPTH_TARGET, {0xa200, 0x2 | 0x1u << 4}};
+    CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), depth_less, 10, 3, error, sizeof error) == -1 && strstr(error, "reading the depth"));
+    const uint32_t incremented[][2] = {DEPTH_TARGET, {0xa10c, 0xff0000}, {0xa10b, 0x50}, {0xa200, 0x1 | 0x7u << 8}};
+    CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), incremented, 12, 3, error, sizeof error) == -1 && strstr(error, "stencil operation 5"));
+    const uint32_t bounds[][2] = {DEPTH_TARGET, {0xa200, 0x8}};
+    CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), bounds, 10, 3, error, sizeof error) == -1 && strstr(error, "depth bounds"));
+    const uint32_t clearing[][2] = {DEPTH_TARGET, {0xa000, 0x1}, {0xa200, 0x2 | 0x4 | 0x7u << 4}};
+    CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), clearing, 11, 3, error, sizeof error) == -1 && strstr(error, "DB_RENDER_CONTROL"));
+    const uint32_t no_reference[][2] = {DEPTH_TARGET, {0xa10b, 0x30030}, {0xa200, 0x1 | 0x7u << 8}};
+    CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), no_reference, 11, 3, error, sizeof error) == -1 && strstr(error, "DB_STENCILREFMASK"));
+#undef DEPTH_TARGET
+    const uint32_t unknown_target[][2] = {{0xa200, 0x1}};
+    CHECK(run_counted(x, DEPTH_BUFFER, at(NO_BUFFER), unknown_target, 1, 3, error, sizeof error) == -1 &&
+          strstr(error, "no depth target set"));
+    const uint32_t colour_off[][2] = {{0xa202, 0x0u << 4 | 0xccu << 16}};
+    CHECK(run_counted(x, DEPTH_BUFFER, at(OFF), colour_off, 1, 3, error, sizeof error) == 0);
+    CHECK(rt_executor_read_target(x, at(OFF), bgra, 2, 2, error, sizeof error) == -1 && strstr(error, "no draw"));
+
+    float *corners = (float *)(uintptr_t)at(CORNERS), *colors = (float *)(uintptr_t)at(COLORS);
+    float saved_corners[12], saved_colors[12];
+    memcpy(saved_corners, corners, sizeof saved_corners);
+    memcpy(saved_colors, colors, sizeof saved_colors);
+    static const float strip_corners[4][4] = {{-1, -1, 0, 1}, {1, -1, 0, 1}, {-1, 1, 0, 1}, {1, 1, 0, 1}};
+    static const float strip_colors[4][4] = {{0, 0, 0.25f, 1}, {1, 0, 0.25f, 1}, {0, 1, 0.25f, 1}, {1, 1, 0.25f, 1}};
+    memcpy(corners, strip_corners, sizeof strip_corners);
+    memcpy(colors, strip_colors, sizeof strip_colors);
+    const uint32_t strip[][2] = {{0xc242, 6}};
+    drawn = run_counted(x, DEPTH_BUFFER, at(STRIP), strip, 1, 4, error, sizeof error);
+    if (drawn) fprintf(stderr, "strip: %s\n", error);
+    CHECK(drawn == 0);
+    check_triangle(x, at(STRIP));
+    const uint32_t list[][2] = {{0xc242, 4}};
+    CHECK(run_counted(x, DEPTH_BUFFER, at(LIST), list, 1, 3, error, sizeof error) == 0);
+    uint32_t pixels[SIZE * SIZE];
+    CHECK(rt_executor_read_target(x, at(LIST), pixels, SIZE, SIZE, error, sizeof error) == 0);
+    CHECK(pixels[SIZE * SIZE - 1] == 0); /* the bottom-right corner is the strip's second triangle */
+    memcpy(corners, saved_corners, sizeof saved_corners);
+    memcpy(colors, saved_colors, sizeof saved_colors);
+}
+
+/* A vertex shader calling a fetch shader (vertex_calling_fetch, fetch_position_color): its user data
+   holds the fetch shader's address and a pointer to a table of the two vertex buffers' descriptors
+   (32_32_32_32 float, DST_SEL x, y, z, w); the triangle draws the reference image. */
+static void fetch_shader(rt_executor *x)
+{
+    enum { FETCH_BUFFER = 0xc0f50000, VS_CODE = 0x3600, FS_CODE = 0x3700, TABLE = 0x11000, FETCH_TARGET = 0xc00000 };
+    char error[200] = "";
+    memcpy((void *)(uintptr_t)at(VS_CODE), vertex_calling_fetch, sizeof vertex_calling_fetch);
+    memcpy((void *)(uintptr_t)at(FS_CODE), fetch_position_color, sizeof fetch_position_color);
+    uint32_t *table = (uint32_t *)(uintptr_t)at(TABLE);
+    const uint32_t float_xyzw = 4 | 5 << 3 | 6 << 6 | 7 << 9 | 7u << 12 | 14u << 15; /* DST_SEL, NUM_FORMAT float, DATA_FORMAT 32_32_32_32 */
+    descriptor(table, at(CORNERS), RECORD_STRIDE), table[3] = float_xyzw;
+    descriptor(table + 4, at(COLORS), RECORD_STRIDE), table[7] = float_xyzw;
+    rt_render_forget();
+    uint32_t offset = record_setup(FETCH_BUFFER, at(FETCH_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const uint64_t code = at(VS_CODE);
+    const uint32_t vertex[RT_VERTEX_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 4 << 1, 0, 0x4, 0};
+    CHECK(rt_render_record_vertex_shader(FETCH_BUFFER, offset, vertex, error, sizeof error) == 0);
+    const uint32_t user[4] = {(uint32_t)at(FS_CODE), (uint32_t)(at(FS_CODE) >> 32), (uint32_t)at(TABLE), (uint32_t)(at(TABLE) >> 32)};
+    CHECK(rt_render_record_user_data(FETCH_BUFFER, offset + 0x10, RT_STAGE_VERTEX, 0, user, 4, error, sizeof error) == 0);
+    const int drawn = rt_executor_run(x, FETCH_BUFFER, record_triangle_draw(FETCH_BUFFER, offset + 0x20), error, sizeof error);
+    if (drawn) fprintf(stderr, "fetch shader: %s\n", error);
+    CHECK(drawn == 0);
+    check_triangle(x, at(FETCH_TARGET));
+}
+
 int main(void)
 {
     const int fd = map_guest_memory();
@@ -353,8 +474,9 @@ int main(void)
     blending(x);
     const uint32_t depth[][2] = {{0xa200, 0x2}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), depth, 1, 0, error, sizeof error) == -1 && strstr(error, "depth or stencil"));
-    const uint32_t strips[][2] = {{0xc242, 5}};
-    CHECK(run_with_registers(x, FOURTH, at(TARGET), strips, 1, 0, error, sizeof error) == -1 && strstr(error, "primitive type 5"));
+    const uint32_t line_strips[][2] = {{0xc242, 5}};
+    CHECK(run_with_registers(x, FOURTH, at(TARGET), line_strips, 1, 0, error, sizeof error) == -1 && strstr(error, "primitive type 5"));
+    depth_and_strips(x);
     const uint32_t partial[][2] = {{0xa08e, 0x7}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), partial, 1, 0, error, sizeof error) == -1 && strstr(error, "write mask"));
     const uint32_t resolve[][2] = {{0xa202, 0x3u << 4 | 0xccu << 16}};
@@ -567,6 +689,7 @@ int main(void)
 
     sampled_images(x);
     sampled_lookup(x);
+    fetch_shader(x);
 
     rt_executor_close(x);
     rt_render_forget();

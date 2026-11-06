@@ -21,6 +21,16 @@
    for x x y x z workgroups with initiator 1 (COMPUTE_SHADER_EN), then an event or a NOP. Their two
    relatives 0x01474d10 and 0x0148a410 take a fifth argument that sets the initiator's low two bits;
    what those select is not established, so they are not observed yet.
+   The depth render target's setter 0x014739b0 (command buffer, target) writes context registers from the
+   target's words when the target is not NULL and has a depth or a stencil buffer (word 2,
+   DB_Z_READ_BASE, or word 3, DB_STENCIL_READ_BASE, not 0: the two checks it calls, 0x01472770 and
+   0x01472790, return those words): words 0-7 to DB_Z_INFO onward (0xa010-0xa017), word 11 to
+   DB_DEPTH_INFO (0xa00f), word 8 to DB_DEPTH_VIEW (0xa002), word 9 to DB_HTILE_DATA_BASE (0xa005),
+   word 10 to DB_HTILE_SURFACE (0xa2af); otherwise DB_Z_INFO and DB_STENCIL_INFO = 0 (no depth target).
+   The observer reports the same registers.
+   The stencil reference setters write DB_STENCILREFMASK (0xa10c) and DB_STENCILREFMASK_BF (0xa10d) in one
+   packet: 0x01473190 (command buffer, value) writes the value to both, 0x014731f0 (command buffer,
+   front, back) one to each.
    The command buffer starts with its begin and holds its cursor at +0x10 (game/render/command_packets.h). */
 #include "runtime/observe_hooks.h"
 #include "runtime/render_observer.h"
@@ -73,8 +83,54 @@ static void render_target(const uint64_t args[RT_OBSERVED_ARGUMENTS])
     rt_observe_color_target(buffer, (uint32_t)(cursor - buffer), (uint32_t)args[ARGUMENT_TARGET_SLOT], target && target[0] ? target : NULL);
 }
 
+/* setDepthRenderTarget's registers (gfx_7_2_d.h numbers) */
+enum { DB_DEPTH_VIEW = 0xa002, DB_HTILE_DATA_BASE = 0xa005, DB_DEPTH_INFO = 0xa00f, DB_Z_INFO = 0xa010, DB_STENCIL_INFO = 0xa011,
+       DB_HTILE_SURFACE = 0xa2af };
+enum { TARGET_Z_READ_BASE = 2, TARGET_STENCIL_READ_BASE = 3, TARGET_REGISTER_RUN = 8, TARGET_DEPTH_VIEW = 8, TARGET_HTILE_DATA_BASE = 9,
+       TARGET_HTILE_SURFACE = 10, TARGET_DEPTH_INFO = 11, ARGUMENT_DEPTH_TARGET = 1 };
+
+static void depth_target(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    const uint64_t buffer = *(const uint64_t *)(uintptr_t)(args[ARGUMENT_COMMAND_BUFFER] + COMMAND_BUFFER_BEGIN);
+    const uint32_t offset = (uint32_t)(*(const uint64_t *)(uintptr_t)(args[ARGUMENT_COMMAND_BUFFER] + COMMAND_BUFFER_CURSOR) - buffer);
+    const uint32_t *target = (const uint32_t *)(uintptr_t)args[ARGUMENT_DEPTH_TARGET];
+    if (!target || (!target[TARGET_Z_READ_BASE] && !target[TARGET_STENCIL_READ_BASE])) {
+        rt_observe_register(buffer, offset, DB_Z_INFO, 0);
+        rt_observe_register(buffer, offset, DB_STENCIL_INFO, 0);
+        return;
+    }
+    for (unsigned i = 0; i < TARGET_REGISTER_RUN; i++) rt_observe_register(buffer, offset, DB_Z_INFO + i, target[i]);
+    rt_observe_register(buffer, offset, DB_DEPTH_INFO, target[TARGET_DEPTH_INFO]);
+    rt_observe_register(buffer, offset, DB_DEPTH_VIEW, target[TARGET_DEPTH_VIEW]);
+    rt_observe_register(buffer, offset, DB_HTILE_DATA_BASE, target[TARGET_HTILE_DATA_BASE]);
+    rt_observe_register(buffer, offset, DB_HTILE_SURFACE, target[TARGET_HTILE_SURFACE]);
+}
+
+enum { DB_STENCILREFMASK = 0xa10c, DB_STENCILREFMASK_BF = 0xa10d, ARGUMENT_FRONT = 1, ARGUMENT_BACK = 2 };
+
+static void stencil_references(const uint64_t args[RT_OBSERVED_ARGUMENTS], uint32_t front, uint32_t back)
+{
+    const uint64_t buffer = *(const uint64_t *)(uintptr_t)(args[ARGUMENT_COMMAND_BUFFER] + COMMAND_BUFFER_BEGIN);
+    const uint32_t offset = (uint32_t)(*(const uint64_t *)(uintptr_t)(args[ARGUMENT_COMMAND_BUFFER] + COMMAND_BUFFER_CURSOR) - buffer);
+    rt_observe_register(buffer, offset, DB_STENCILREFMASK, front);
+    rt_observe_register(buffer, offset, DB_STENCILREFMASK_BF, back);
+}
+
+static void stencil_reference_both(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    stencil_references(args, (uint32_t)args[ARGUMENT_FRONT], (uint32_t)args[ARGUMENT_FRONT]);
+}
+
+static void stencil_reference_each(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    stencil_references(args, (uint32_t)args[ARGUMENT_FRONT], (uint32_t)args[ARGUMENT_BACK]);
+}
+
 const rt_observe_hook game_observe_hooks[] = {
+    {0x01473190, 87, "render_set_stencil_reference", stencil_reference_both},
+    {0x014731f0, 99, "render_set_stencil_reference_separate", stencil_reference_each},
     {0x014738b0, 246, "render_set_render_target", render_target},
+    {0x014739b0, 344, "render_set_depth_render_target", depth_target},
     {0x01474c50, 177, "render_dispatch", dispatch},
     {0x014761a0, 156, "render_set_user_data_4_words_marker_4", four_words},
     {0x01476240, 172, "render_set_user_data_8_words", eight_words},
