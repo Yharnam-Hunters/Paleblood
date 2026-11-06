@@ -16,10 +16,13 @@ typedef struct {
     size_t interface_count;
 } builder;
 
+enum { MAX_OPERANDS = RT_RECT_LIST_MAX_CLIP_DISTANCES }; /* the widest: a clip-distance array built from its floats */
+
 /* An instruction with a result: its new id. */
 static uint32_t op(builder *b, uint16_t opcode, uint32_t type, const uint32_t *operands, size_t count)
 {
-    uint32_t words[8];
+    uint32_t words[2 + MAX_OPERANDS];
+    if (count > MAX_OPERANDS) abort(); /* a builder bug: every caller passes at most MAX_OPERANDS */
     const uint32_t id = spirv_new_id(&b->m);
     words[0] = type, words[1] = id;
     memcpy(words + 2, operands, count * sizeof *operands);
