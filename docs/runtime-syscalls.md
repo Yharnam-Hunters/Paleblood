@@ -476,6 +476,19 @@ value variable.
 A local boot with the affinity probe and the rwlocks let through (not committed) loads the module,
 passes these calls, and stops next at `pthread_cond_init` (`libScePosix`).
 
+## Ending a thread (`scePthreadExit`)
+
+`scePthreadExit(void *value)` ends the calling thread with `value`, as a return from its entry
+would: the value kept for a join, then the thread's key destructors, then the end (FreeBSD libthr's
+`_pthread_exit`, and shadPS4's `posix_pthread_exit`).
+
+The runtime does not unwind the guest's frames, which were not built for the host's unwinder.
+Instead the thread's host side marks where it starts the guest's entry (`setjmp`), and an exit
+returns there (`longjmp`). It then ends exactly as a return does.
+
+Stops by name: an exit from inside a key destructor (libthr refuses it too), and an exit from the
+main thread, which the runtime runs the boot on.
+
 ## Thread attributes: stack size and scheduling policy (issue #34)
 
 The executable's thread wrapper (`0x02a3b324`–`0x02a3b46e`) sets up each thread like this:
