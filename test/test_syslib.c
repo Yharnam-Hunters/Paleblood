@@ -2845,7 +2845,7 @@ int main(void)
         CHECK(rtc_weekday(1, 1, 1) == 1);       /* Monday, the proleptic Gregorian calendar's first day */
         CHECK(rtc_weekday(1970, 1, 1) == 4);    /* Thursday */
         CHECK(rtc_weekday(2000, 2, 29) == 2);   /* Tuesday */
-        CHECK(rtc_weekday(2015, 3, 24) == 2);   /* Tuesday: Bloodborne's North American release */
+        CHECK(rtc_weekday(2015, 3, 24) == 2);   /* Tuesday */
         CHECK(rtc_weekday(2026, 11, 6) == 5);   /* Friday */
         CHECK(rtc_weekday(2026, 11, 8) == 0);   /* Sunday */
         CHECK(rtc_weekday(9999, 12, 31) == 5);  /* Friday */
