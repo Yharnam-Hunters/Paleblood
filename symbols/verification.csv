@@ -217,8 +217,8 @@ render_frame_update_02377bd0,edge,60,12,12,0,0,dd4fcc5a0d365609,2026-10-31
 render_frame_update_02377bd0,edge,uncapped,12,12,0,0,dd4fcc5a0d365609,2026-10-31
 render_initialize_record_level_descriptor,edge,,51,51,0,0,a36426b67c294984,2026-11-05
 render_pack_record_mapping_word,edge,,497,497,0,0,9bf1f50e8f52effa,2026-11-04
-render_present_last_record_consume,edge,,56,56,0,0,60466b47dd5d1338,2026-11-06
-render_present_record_consume,edge,,24,24,0,0,87e729a932832b64,2026-11-06
+render_present_last_record_consume,edge,,56,56,0,0,96c1b92f3a40911f,2026-11-06
+render_present_record_consume,edge,,24,24,0,0,2bd2d7a830cd6972,2026-11-06
 render_read_present_pool_counter,edge,,18,18,0,0,1ef235dcff31de42,2026-11-03
 render_read_record_mapping_word,edge,,224,224,0,0,68ea5b3aae2f9be4,2026-11-04
 render_record_apply_mapping,edge,,400,400,0,0,6de6826ea92e835a,2026-11-05
@@ -280,6 +280,8 @@ render_yebis_get_recursive_sample_parameters,edge,,23,23,0,0,6e6f0aa41d5607ce,20
 render_yebis_get_recursive_sample_parameters,edge,30,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,60,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,uncapped,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
-render_set_render_target,edge,,18,18,0,0,767bad537e9f5dc6,2026-11-06
-render_set_depth_render_target,edge,,20,20,0,0,d84914db9d7cb244,2026-11-06
-render_finish_record_shader,edge,,45,45,0,0,8d22d57d5f6385dd,2026-11-06
+render_set_render_target,edge,,19,19,0,0,4c86d2996985fc27,2026-11-06
+render_set_depth_render_target,edge,,21,21,0,0,d39aaebf4cfa0f17,2026-11-06
+render_finish_record_shader,edge,,46,46,0,0,073880f2c3fe7a48,2026-11-06
+render_restore_color_target_from_bank,edge,,12,12,0,0,649b23425dd0ccb1,2026-11-06
+render_restore_depth_target_from_bank,edge,,12,12,0,0,8668e2d117190cf8,2026-11-06
