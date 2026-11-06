@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Write consecutive SPI_PS_INPUT_CNTL entries, copying backward when the source overlaps the packet
-// output.
+// Write consecutive SPI_PS_INPUT_CNTL entries from last word to first.
+// This order preserves the original reads when the source overlaps the output.
 // Keep the unmasked count shift, including zero and oversized input counts.
 #include "shader_link.h"
 
@@ -27,6 +27,6 @@ extern "C" void bb_render_emit_shader_link_words(render::PacketBuffer *commands,
             payload[i].set(value);
         }
     }
-    // Unlike the descriptor writers, this uses the captured destination, not a live ADD.
+    // Packet stores may overwrite the cursor member; publication uses its saved base.
     set_packet_cursor(commands, cursor + uint64_t(requested) * packet_word_bytes);
 }
