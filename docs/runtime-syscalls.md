@@ -530,6 +530,24 @@ leave the timeout and that signal to the main thread.
 A local boot with the affinity probe and the rwlocks let through (not committed) reaches the
 `threads` milestone and stops next at `sceUserServiceInitialize`.
 
+## PlayGo (`libScePlayGo`)
+
+PlayGo lets a title start before all of its package is installed: the title asks which chunks of
+the package are present. On this runtime the whole title is always present, so every chunk is
+reported installed (`runtime/syslib/playgo.c`).
+
+| Call | Shape (from the executable's own calls) | Runtime |
+|---|---|---|
+| `scePlayGoInitialize(params)` | a 16-byte block: a 2 MiB work buffer the title allocated, its size, 0 (calls at `0x023dd67a`, `0x023de849`); neither reads the result | checks the buffer and answers 0 |
+| `scePlayGoOpen(int32_t *handle, params)` | params is NULL (`0x023deae4`); 0 counts as opened | writes handle 1, the runtime's choice (the title only passes it back) |
+| `scePlayGoGetChunkId(handle, uint16_t ids[], capacity, uint32_t *count)` | capacity 100 (`0x023deb0f`); the result is not read | the package's chunks, 0 to `chunk_count - 1`, from `chunk_count` in the copy's `sce_sys/playgo-manifest.xml` (3 for this title; `playgo-chunk.dat` agrees) |
+| `scePlayGoGetLocus(handle, const uint16_t ids[], count, int8_t loci[])` | one byte per chunk (`0x023de8d6`, `0x023deb30`); non-zero counts as failure; the title treats 0 as not there, 2 as still arriving and polls again, any other value as ready | 3 for every chunk, a ready value (the title can't tell the ready values apart) |
+| `scePlayGoSetInstallSpeed` | never called directly | stops by name |
+
+No public source declares these calls: the OpenOrbis toolchain has no PlayGo header. Stops by
+name: Open with parameters, an unknown handle, a chunk list longer than the space given, an unknown
+chunk ID, a missing manifest, and every error value.
+
 ## The user service's start-up calls (`libSceUserService`, issue #36)
 
 `eboot` imports `sceUserServiceInitialize`, `sceUserServiceTerminate`,
