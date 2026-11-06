@@ -1786,7 +1786,11 @@ static int stage_images(rt_executor *x, uint64_t code, const uint32_t *user, uin
         rt_image_descriptor d;
         rt_image_descriptor_decode(words, &d);
         if (d.type != RT_IMAGE_1D && d.type != RT_IMAGE_2D && d.type != RT_IMAGE_1D_ARRAY && d.type != RT_IMAGE_2D_ARRAY)
-            return failed(error, error_size, "an image of type %u: only 1D and 2D images and their arrays are done yet", d.type);
+            return failed(error, error_size,
+                          "the %s shader at %#llx reads an image of type %u (descriptor %08x %08x %08x %08x %08x %08x %08x %08x): "
+                          "only 1D and 2D images and their arrays are done yet",
+                          stage, (unsigned long long)code, d.type, words[0], words[1], words[2], words[3], words[4], words[5], words[6],
+                          words[7]);
         if (d.base_level || d.last_level) return failed(error, error_size, "an image with mip levels: not done yet");
         if (d.layers > 1 && (d.base_array > d.last_array || d.last_array >= d.layers))
             return failed(error, error_size, "a view of an image array from layer %u to %u of %u", d.base_array, d.last_array, d.layers);
