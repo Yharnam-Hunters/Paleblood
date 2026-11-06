@@ -14,6 +14,7 @@
 
 #include "runtime/gcn.h"
 #include "runtime/gcn_spirv.h"
+#include "runtime/rect_list.h"
 #include "runtime/render_calls.h"
 
 #include <stdarg.h>
@@ -23,7 +24,7 @@
 #include <sys/mman.h>
 #include <vulkan/vulkan.h>
 
-enum { MAX_SHADERS = 256, MAX_PIPELINES = 256, MAX_TARGETS = 64 };
+enum { MAX_SHADERS = 256, MAX_PIPELINES = 256, MAX_TARGETS = 64, MAX_RECT_STAGES = 16 };
 enum { USER_DATA_BYTES = GCN_USER_SGPR_MAX * 4, VERTEX_USER_DATA = 0, PIXEL_USER_DATA = USER_DATA_BYTES };
 enum { COLOR_8_8_8_8 = 0xa, NUMBER_UNORM = 0, NUMBER_SRGB = 6, SWAP_STD = 0, SWAP_ALT = 1 };
 enum { PERSP_CENTER_ENA = 0x2 };
@@ -48,10 +49,16 @@ typedef struct {
 } target_entry;
 
 typedef struct {
-    VkShaderModule vertex, pixel;
+    VkShaderModule vertex, geometry, pixel; /* geometry: the rect-list stage, or none */
     VkRenderPass pass;
     VkPipeline pipeline;
 } pipeline_entry;
+
+/* A rect-list geometry stage (runtime/rect_list.h), for one vertex-shader output shape. */
+typedef struct {
+    unsigned parameters, clip_distances;
+    VkShaderModule module;
+} rect_stage;
 
 struct rt_executor {
     VkInstance instance;
@@ -72,6 +79,9 @@ struct rt_executor {
     size_t pipeline_count;
     target_entry targets[MAX_TARGETS];
     size_t target_count;
+    int geometry_shaders;            /* the device draws geometry stages (rect lists need one) */
+    rect_stage rect_stages[MAX_RECT_STAGES];
+    size_t rect_stage_count;
 };
 
 /* The state a command buffer builds up, call by call. */
@@ -98,7 +108,7 @@ enum { CB_TARGET_MASK = 0xa08e, DB_STENCIL_CONTROL = 0xa10b, CB_BLEND0_CONTROL =
        CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242 };
 enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 0x1, Z_ENABLE = 0x2, Z_WRITE_ENABLE = 0x4,
        COLOR_MODE_MASK = 0x70, COLOR_MODE_SHIFT = 4, CB_NORMAL = 1, ROP3_MASK = 0xff0000, ROP3_SHIFT = 16, ROP3_COPY = 0xcc,
-       TARGET0_MASK = 0xf, DI_PT_TRILIST = 4 };
+       TARGET0_MASK = 0xf, DI_PT_TRILIST = 4, DI_PT_RECTLIST = 17 };
 
 /* Keeps a register the library set; 0, or -1 for one the executor does not understand yet. */
 static int set_register(draw_state *s, uint32_t address, uint32_t value)
@@ -119,8 +129,8 @@ static int set_register(draw_state *s, uint32_t address, uint32_t value)
    0 to draw, -1 with the reason otherwise. */
 static int check_state(const draw_state *s, char *error, size_t error_size)
 {
-    if (s->primitive_set && s->primitive_type != DI_PT_TRILIST)
-        return failed(error, error_size, "primitive type %u: only triangle lists are drawn yet", s->primitive_type);
+    if (s->primitive_set && s->primitive_type != DI_PT_TRILIST && s->primitive_type != DI_PT_RECTLIST)
+        return failed(error, error_size, "primitive type %u: only triangle and rect lists are drawn yet", s->primitive_type);
     if (s->blend0_set && (s->blend0_control & BLEND_ENABLE)) return failed(error, error_size, "blending is not drawn yet");
     if (s->depth_set && (s->depth_control & (STENCIL_ENABLE | Z_ENABLE | Z_WRITE_ENABLE)))
         return failed(error, error_size, "depth or stencil testing (DB_DEPTH_CONTROL %#x) is not drawn yet", s->depth_control);
@@ -181,8 +191,10 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
                                            .queueCount = 1, .pQueuePriorities = &priority};
     VkPhysicalDeviceVulkan12Features enable12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
                                                  .bufferDeviceAddress = VK_TRUE};
+    x->geometry_shaders = features.features.geometryShader == VK_TRUE;
     const VkPhysicalDeviceFeatures2 enable = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &enable12,
-                                              .features = {.shaderInt64 = VK_TRUE, .shaderClipDistance = VK_TRUE}};
+                                              .features = {.shaderInt64 = VK_TRUE, .shaderClipDistance = VK_TRUE,
+                                                           .geometryShader = features.features.geometryShader}};
     const char *extensions[] = {VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME};
     const VkDeviceCreateInfo device = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &enable, .queueCreateInfoCount = 1,
                                        .pQueueCreateInfos = &queue, .enabledExtensionCount = 1, .ppEnabledExtensionNames = extensions};
@@ -432,12 +444,12 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
     return module;
 }
 
-static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderModule pixel, VkRenderPass pass, char *error,
-                               size_t error_size)
+static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderModule geometry, VkShaderModule pixel, VkRenderPass pass,
+                               char *error, size_t error_size)
 {
     for (size_t i = 0; i < x->pipeline_count; i++) {
         const pipeline_entry *p = &x->pipelines[i];
-        if (p->vertex == vertex && p->pixel == pixel && p->pass == pass) return p->pipeline;
+        if (p->vertex == vertex && p->geometry == geometry && p->pixel == pixel && p->pass == pass) return p->pipeline;
     }
     if (x->pipeline_count == MAX_PIPELINES) {
         failed(error, error_size, "more pipelines than the executor keeps");
@@ -446,6 +458,7 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
     const VkPipelineShaderStageCreateInfo stages[] = {
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vertex, .pName = "main"},
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = pixel, .pName = "main"},
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_GEOMETRY_BIT, .module = geometry, .pName = "main"},
     };
     const VkPipelineVertexInputStateCreateInfo input = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     const VkPipelineInputAssemblyStateCreateInfo assembly = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
@@ -464,7 +477,7 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
     const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     const VkPipelineDynamicStateCreateInfo dynamic = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
                                                       .dynamicStateCount = 2, .pDynamicStates = dynamic_states};
-    const VkGraphicsPipelineCreateInfo info = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = 2,
+    const VkGraphicsPipelineCreateInfo info = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = geometry ? 3 : 2,
                                                .pStages = stages, .pVertexInputState = &input, .pInputAssemblyState = &assembly,
                                                .pViewportState = &viewport, .pRasterizationState = &raster,
                                                .pMultisampleState = &samples, .pColorBlendState = &blend, .pDynamicState = &dynamic,
@@ -474,8 +487,51 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
         failed(error, error_size, "the device refused a pipeline");
         return VK_NULL_HANDLE;
     }
-    x->pipelines[x->pipeline_count++] = (pipeline_entry){vertex, pixel, pass, pipeline};
+    x->pipelines[x->pipeline_count++] = (pipeline_entry){vertex, geometry, pixel, pass, pipeline};
     return pipeline;
+}
+
+/* PA_CL_VS_OUT_CNTL: CLIP_DIST_ENA_0-7 in bits 0-7; the two distance vectors' enables in bits 22-23
+   (AMD's gfx_7_2_sh_mask.h). The ClipDistance entries the translated vertex shader declares: as many
+   as the highest enabled clip distance, when it exports a distance vector. */
+static unsigned clip_distance_count(uint32_t output_control)
+{
+    if (!(output_control >> 22 & 3)) return 0;
+    unsigned count = 0;
+    for (uint32_t enabled = output_control & 0xff; enabled; enabled >>= 1) count++;
+    return count;
+}
+
+/* The rect-list geometry stage for a vertex shader's outputs; VK_NULL_HANDLE after failing. */
+static VkShaderModule rect_stage_for(rt_executor *x, const rt_vertex_shader *vertex, char *error, size_t error_size)
+{
+    if (!x->geometry_shaders) {
+        failed(error, error_size, "a rect list: the Vulkan device has no geometry shaders, which drawing one needs here");
+        return VK_NULL_HANDLE;
+    }
+    const unsigned parameters = vertex->parameter_count, clip_distances = clip_distance_count(vertex->output_control);
+    for (size_t i = 0; i < x->rect_stage_count; i++)
+        if (x->rect_stages[i].parameters == parameters && x->rect_stages[i].clip_distances == clip_distances) return x->rect_stages[i].module;
+    if (x->rect_stage_count == MAX_RECT_STAGES) {
+        failed(error, error_size, "more rect-list stages than the executor keeps");
+        return VK_NULL_HANDLE;
+    }
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    if (rt_rect_list_geometry(parameters, clip_distances, &spirv, &words)) {
+        failed(error, error_size, "a rect list with %u parameters and %u clip distances: no geometry stage for it", parameters, clip_distances);
+        return VK_NULL_HANDLE;
+    }
+    const VkShaderModuleCreateInfo info = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = words * 4, .pCode = spirv};
+    VkShaderModule module = VK_NULL_HANDLE;
+    const VkResult made = vkCreateShaderModule(x->device, &info, NULL, &module);
+    free(spirv);
+    if (made != VK_SUCCESS) {
+        failed(error, error_size, "the device refused the rect-list stage");
+        return VK_NULL_HANDLE;
+    }
+    x->rect_stages[x->rect_stage_count++] = (rect_stage){parameters, clip_distances, module};
+    return module;
 }
 
 /* ---- running a buffer ---- */
@@ -495,7 +551,11 @@ static int draw(rt_executor *x, const draw_state *s, uint32_t index_count, char 
     const VkShaderModule vertex = shader_for(x, STAGE_VERTEX, s->vertex.code, s->vertex.user_sgprs, s->vertex.output_control, error, error_size);
     const VkShaderModule pixel = vertex ? shader_for(x, STAGE_PIXEL, s->pixel.code, s->pixel.user_sgprs, 0, error, error_size) : VK_NULL_HANDLE;
     if (!pixel) return -1;
-    const VkPipeline pipeline = pipeline_for(x, vertex, pixel, t->pass, error, error_size);
+    const int rect_list = s->primitive_set && s->primitive_type == DI_PT_RECTLIST;
+    if (rect_list && index_count % 3) return failed(error, error_size, "a rect list of %u vertices, not whole rects of three", index_count);
+    const VkShaderModule geometry = rect_list ? rect_stage_for(x, &s->vertex, error, error_size) : VK_NULL_HANDLE;
+    if (rect_list && !geometry) return -1;
+    const VkPipeline pipeline = pipeline_for(x, vertex, geometry, pixel, t->pass, error, error_size);
     if (!pipeline) return -1;
 
     VkCommandBuffer commands = begin_commands(x);
@@ -634,6 +694,7 @@ void rt_executor_close(rt_executor *x)
         vkDeviceWaitIdle(x->device);
         for (size_t i = 0; i < x->pipeline_count; i++) vkDestroyPipeline(x->device, x->pipelines[i].pipeline, NULL);
         for (size_t i = 0; i < x->shader_count; i++) vkDestroyShaderModule(x->device, x->shaders[i].module, NULL);
+        for (size_t i = 0; i < x->rect_stage_count; i++) vkDestroyShaderModule(x->device, x->rect_stages[i].module, NULL);
         for (size_t i = 0; i < x->target_count; i++) {
             const target_entry *t = &x->targets[i];
             vkDestroyFramebuffer(x->device, t->framebuffer, NULL);

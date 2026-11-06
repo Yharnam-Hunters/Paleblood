@@ -101,6 +101,38 @@ int main(void)
     CHECK(run_with_registers(x, FOURTH, at(TARGET), normal, 0, 2, error, sizeof error) == -1 && strstr(error, "2 instances"));
     CHECK(rt_executor_read_target(x, at(0x300000), bgra, 2, 2, error, sizeof error) == -1 && strstr(error, "no draw"));
     CHECK(rt_executor_read_target(x, at(TARGET), bgra, SIZE + 1, 1, error, sizeof error) == -1);
+
+    /* A rect list (primitive type 17): three corners of the whole target, the right angle first,
+       then last; the geometry stage adds the fourth corner, and its colour (2, 2) as the other two
+       minus the corner's, so the target holds the same image as the large triangle. Then a count
+       that is not whole rects stops by name. */
+    {
+        enum { RECT_TARGET = 0x600000 };
+        float *corners = (float *)(uintptr_t)at(CORNERS), *colors = (float *)(uintptr_t)at(COLORS);
+        float saved_corners[12], saved_colors[12];
+        memcpy(saved_corners, corners, sizeof saved_corners);
+        memcpy(saved_colors, colors, sizeof saved_colors);
+        static const float rect_corners[2][3][4] = {{{-1, -1, 0, 1}, {1, -1, 0, 1}, {-1, 1, 0, 1}},
+                                                     {{1, -1, 0, 1}, {-1, 1, 0, 1}, {-1, -1, 0, 1}}};
+        static const float rect_colors[2][3][4] = {{{0, 0, 0.25f, 1}, {1, 0, 0.25f, 1}, {0, 1, 0.25f, 1}},
+                                                    {{1, 0, 0.25f, 1}, {0, 1, 0.25f, 1}, {0, 0, 0.25f, 1}}};
+        const uint32_t rect_list[][2] = {{0xc242, 17}};
+        for (int order = 0; order < 2; order++) {
+            memcpy(corners, rect_corners[order], sizeof rect_corners[order]);
+            memcpy(colors, rect_colors[order], sizeof rect_colors[order]);
+            const int drawn = run_with_registers(x, FOURTH, at(RECT_TARGET), rect_list, 1, 0, error, sizeof error);
+            if (drawn) fprintf(stderr, "rect list: %s\n", error);
+            CHECK(drawn == 0);
+            check_triangle(x, at(RECT_TARGET));
+        }
+        rt_render_forget();
+        uint32_t offset = record_setup(FOURTH, at(RECT_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        CHECK(rt_render_record_register(FOURTH, offset, 0xc242, 17, error, sizeof error) == 0);
+        CHECK(rt_render_record_draw_auto(FOURTH, offset + 0x10, 4, error, sizeof error) == 0);
+        CHECK(rt_executor_run(x, FOURTH, offset + 0x20, error, sizeof error) == -1 && strstr(error, "whole rects"));
+        memcpy(corners, saved_corners, sizeof saved_corners);
+        memcpy(colors, saved_colors, sizeof saved_colors);
+    }
     /* No pixel shader (a depth-only pass, placed as the runtime's sceGnmSetPsShader places it): a
        draw with it stops by name. */
     rt_render_forget();
