@@ -71,6 +71,7 @@ typedef struct {
     VkShaderModule vertex, geometry, pixel; /* geometry: the rect-list stage, or none */
     VkRenderPass pass;
     VkPipelineLayout layout;
+    uint32_t blend_control;          /* CB_BLEND0_CONTROL */
     VkPipeline pipeline;
 } pipeline_entry;
 
@@ -178,12 +179,14 @@ typedef struct {
        unset one is the state the drawing below assumes. */
     uint32_t blend0_control, depth_control, color_control, target_mask, primitive_type, instances;
     int blend0_set, depth_set, color_control_set, target_mask_set, primitive_set, instances_set;
+    float blend_constants[4];        /* CB_BLEND_RED, GREEN, BLUE, ALPHA */
 } draw_state;
 
 static int failed(char *error, size_t error_size, const char *format, ...) __attribute__((format(printf, 3, 4)));
 
 /* Registers the executor understands (gfx_7_2_d.h); others stop by name until it does. */
-enum { CB_TARGET_MASK = 0xa08e, DB_STENCIL_CONTROL = 0xa10b, CB_BLEND0_CONTROL = 0xa1e0, DB_DEPTH_CONTROL = 0xa200,
+enum { CB_TARGET_MASK = 0xa08e, CB_BLEND_RED = 0xa105, CB_BLEND_ALPHA = 0xa108, DB_STENCIL_CONTROL = 0xa10b, CB_BLEND0_CONTROL = 0xa1e0,
+       CB_BLEND7_CONTROL = 0xa1e7, DB_DEPTH_CONTROL = 0xa200,
        CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242 };
 enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 0x1, Z_ENABLE = 0x2, Z_WRITE_ENABLE = 0x4,
        COLOR_MODE_MASK = 0x70, COLOR_MODE_SHIFT = 4, CB_NORMAL = 1, ROP3_MASK = 0xff0000, ROP3_SHIFT = 16, ROP3_COPY = 0xcc,
@@ -199,8 +202,55 @@ static int set_register(draw_state *s, uint32_t address, uint32_t value)
     case CB_TARGET_MASK: s->target_mask = value, s->target_mask_set = 1; return 0;
     case VGT_PRIMITIVE_TYPE: s->primitive_type = value, s->primitive_set = 1; return 0;
     case DB_STENCIL_CONTROL: return 0; /* used only while stencil testing is on, which stops below */
-    default: return -1;
+    default:
+        /* targets 1-7 blend only into their own slots, which stop the draw when they are enabled */
+        if (address > CB_BLEND0_CONTROL && address <= CB_BLEND7_CONTROL) return 0;
+        if (address >= CB_BLEND_RED && address <= CB_BLEND_ALPHA) {
+            memcpy(&s->blend_constants[address - CB_BLEND_RED], &value, sizeof value);
+            return 0;
+        }
+        return -1;
     }
+}
+
+/* Target 0's blending, from CB_BLEND0_CONTROL (AMD's gfx_7_2_sh_mask.h): COLOR_SRCBLEND bits 0-4,
+   COLOR_COMB_FCN 5-7, COLOR_DESTBLEND 8-12, ALPHA_SRCBLEND 16-20, ALPHA_COMB_FCN 21-23,
+   ALPHA_DESTBLEND 24-28, SEPARATE_ALPHA_BLEND 29, ENABLE 30. The factors and functions are AMD's
+   BlendOp and CombFunc numbers (Mesa's sid.h V_028780_BLEND_* and COMB_*; shadPS4's regs_color.h
+   lists the same): factors 0 zero, 1 one, 2-3 source colour and its inverse, 4-5 source alpha, 6-7
+   destination alpha, 8-9 destination colour, 10 source alpha saturated, 13-14 constant colour, 19-20
+   constant alpha (15-18 are the second source's, for dual-source blending); functions 0 source plus
+   destination, 1 source minus destination, 2 min, 3 max, 4 destination minus source. Without
+   SEPARATE_ALPHA_BLEND alpha blends with the colour's factors and function. 0, or -1 with the reason
+   (dual-source factors, reserved numbers). */
+static int blend_state(uint32_t control, VkPipelineColorBlendAttachmentState *out, char *error, size_t error_size)
+{
+    enum { FACTORS = 21, FUNCTIONS = 5, SEPARATE_ALPHA = 1u << 29 };
+    static const int factors[FACTORS] = {
+        VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_SRC_COLOR, VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR,
+        VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_FACTOR_DST_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA,
+        VK_BLEND_FACTOR_DST_COLOR, VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR, VK_BLEND_FACTOR_SRC_ALPHA_SATURATE, -1, -1,
+        VK_BLEND_FACTOR_CONSTANT_COLOR, VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR, -1, -1, -1, -1, VK_BLEND_FACTOR_CONSTANT_ALPHA,
+        VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA};
+    static const VkBlendOp functions[FUNCTIONS] = {VK_BLEND_OP_ADD, VK_BLEND_OP_SUBTRACT, VK_BLEND_OP_MIN, VK_BLEND_OP_MAX,
+                                                   VK_BLEND_OP_REVERSE_SUBTRACT};
+    *out = (VkPipelineColorBlendAttachmentState){.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                                                   VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT};
+    if (!(control & BLEND_ENABLE)) return 0;
+    const uint32_t alpha = control & SEPARATE_ALPHA ? control >> 16 : control;
+    const uint32_t numbers[4] = {control & 0x1f, control >> 8 & 0x1f, alpha & 0x1f, alpha >> 8 & 0x1f};
+    const uint32_t function[2] = {control >> 5 & 7, alpha >> 5 & 7};
+    for (unsigned i = 0; i < 4; i++)
+        if (numbers[i] >= FACTORS || factors[numbers[i]] < 0)
+            return failed(error, error_size, "blend factor %u (CB_BLEND0_CONTROL %#x): not drawn yet", numbers[i], control);
+    for (unsigned i = 0; i < 2; i++)
+        if (function[i] >= FUNCTIONS)
+            return failed(error, error_size, "blend function %u (CB_BLEND0_CONTROL %#x): not drawn yet", function[i], control);
+    out->blendEnable = VK_TRUE;
+    out->srcColorBlendFactor = (VkBlendFactor)factors[numbers[0]], out->dstColorBlendFactor = (VkBlendFactor)factors[numbers[1]];
+    out->srcAlphaBlendFactor = (VkBlendFactor)factors[numbers[2]], out->dstAlphaBlendFactor = (VkBlendFactor)factors[numbers[3]];
+    out->colorBlendOp = functions[function[0]], out->alphaBlendOp = functions[function[1]];
+    return 0;
 }
 
 /* Whether the registers describe what the draw below does: opaque triangles into target 0, no
@@ -210,7 +260,8 @@ static int check_state(const draw_state *s, char *error, size_t error_size)
 {
     if (s->primitive_set && s->primitive_type != DI_PT_TRILIST && s->primitive_type != DI_PT_RECTLIST)
         return failed(error, error_size, "primitive type %u: only triangle and rect lists are drawn yet", s->primitive_type);
-    if (s->blend0_set && (s->blend0_control & BLEND_ENABLE)) return failed(error, error_size, "blending is not drawn yet");
+    VkPipelineColorBlendAttachmentState blend;
+    if (s->blend0_set && blend_state(s->blend0_control, &blend, error, error_size)) return -1;
     if (s->depth_set && (s->depth_control & (STENCIL_ENABLE | Z_ENABLE | Z_WRITE_ENABLE)))
         return failed(error, error_size, "depth or stencil testing (DB_DEPTH_CONTROL %#x) is not drawn yet", s->depth_control);
     if (s->color_control_set) {
@@ -615,11 +666,13 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
 }
 
 static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderModule geometry, VkShaderModule pixel, VkRenderPass pass,
-                               VkPipelineLayout layout, char *error, size_t error_size)
+                               VkPipelineLayout layout, uint32_t blend_control, char *error, size_t error_size)
 {
     for (size_t i = 0; i < x->pipeline_count; i++) {
         const pipeline_entry *p = &x->pipelines[i];
-        if (p->vertex == vertex && p->geometry == geometry && p->pixel == pixel && p->pass == pass && p->layout == layout) return p->pipeline;
+        if (p->vertex == vertex && p->geometry == geometry && p->pixel == pixel && p->pass == pass && p->layout == layout &&
+            p->blend_control == blend_control)
+            return p->pipeline;
     }
     if (x->pipeline_count == MAX_PIPELINES) {
         failed(error, error_size, "more pipelines than the executor keeps");
@@ -640,13 +693,13 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
                                                            .lineWidth = 1.0f};
     const VkPipelineMultisampleStateCreateInfo samples = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
                                                           .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
-    const VkPipelineColorBlendAttachmentState write = {.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                                                                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT};
+    VkPipelineColorBlendAttachmentState write;
+    if (blend_state(blend_control, &write, error, error_size)) return VK_NULL_HANDLE;
     const VkPipelineColorBlendStateCreateInfo blend = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                                                        .attachmentCount = 1, .pAttachments = &write};
-    const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_BLEND_CONSTANTS};
     const VkPipelineDynamicStateCreateInfo dynamic = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-                                                      .dynamicStateCount = 2, .pDynamicStates = dynamic_states};
+                                                      .dynamicStateCount = 3, .pDynamicStates = dynamic_states};
     const VkGraphicsPipelineCreateInfo info = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = geometry ? 3 : 2,
                                                .pStages = stages, .pVertexInputState = &input, .pInputAssemblyState = &assembly,
                                                .pViewportState = &viewport, .pRasterizationState = &raster,
@@ -657,7 +710,7 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
         failed(error, error_size, "the device refused a pipeline");
         return VK_NULL_HANDLE;
     }
-    x->pipelines[x->pipeline_count++] = (pipeline_entry){vertex, geometry, pixel, pass, layout, pipeline};
+    x->pipelines[x->pipeline_count++] = (pipeline_entry){vertex, geometry, pixel, pass, layout, blend_control, pipeline};
     return pipeline;
 }
 
@@ -804,7 +857,8 @@ static int draw(rt_executor *x, const draw_state *s, uint32_t index_count, char 
     const int has_set = image_count || sampler_count;
     if (has_set && pixel_layout_for(x, image_count, sampler_count, error, error_size)) return -1;
     const VkPipelineLayout layout = has_set ? x->pixel_layouts[image_count][sampler_count] : x->layout;
-    const VkPipeline pipeline = pipeline_for(x, vertex, geometry, pixel, t->pass, layout, error, error_size);
+    const VkPipeline pipeline = pipeline_for(x, vertex, geometry, pixel, t->pass, layout, s->blend0_set ? s->blend0_control : 0, error,
+                                             error_size);
     if (!pipeline) return -1;
     const VkDescriptorSet set = has_set ? image_set(x, x->pixel_set_layouts[image_count][sampler_count], VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
                                                     views, image_count, samplers, sampler_count)
@@ -828,6 +882,7 @@ static int draw(rt_executor *x, const draw_state *s, uint32_t index_count, char 
     const VkRect2D scissor = {{0, 0}, {t->width, t->height}};
     vkCmdSetViewport(commands, 0, 1, &viewport);
     vkCmdSetScissor(commands, 0, 1, &scissor);
+    vkCmdSetBlendConstants(commands, s->blend_constants);
     if (set) vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set, 0, NULL);
     vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_VERTEX_BIT, VERTEX_USER_DATA, USER_DATA_BYTES, s->user[STAGE_VERTEX]);
     vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_FRAGMENT_BIT, PIXEL_USER_DATA, USER_DATA_BYTES, s->user[STAGE_PIXEL]);

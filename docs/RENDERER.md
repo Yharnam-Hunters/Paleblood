@@ -299,9 +299,14 @@ Instead:
      user config register the library sets (`rt_render_record_register`: blend, depth and stencil
      control, colour control, the target mask, the primitive type) and the instance count. The
      executor understands those registers and, at each draw, stops by name on what it does not
-     draw yet: blending, depth or stencil testing, primitives other than triangle lists, colour
-     modes other than a normal copy, partial write masks, more than one instance, and any register
-     it does not interpret. A draw with target 0 masked off writes nothing and is skipped.
+     draw yet: depth or stencil testing, primitives other than triangle lists, colour modes other
+     than a normal copy, partial write masks, more than one instance, and any register it does not
+     interpret. A draw with target 0 masked off writes nothing and is skipped.
+     - **Blending** (`CB_BLEND0_CONTROL`, with `CB_BLEND_RED`-`ALPHA` as Vulkan's blend constants):
+       AMD's factor and function numbers (Mesa's `sid.h`, shadPS4's `regs_color.h`) map one to one
+       onto Vulkan's; without `SEPARATE_ALPHA_BLEND` alpha uses the colour's. Dual-source factors
+       stop by name. Targets 1-7's blend controls are kept out of the draw while their slots are
+       off (an enabled slot beyond 0 stops the draw anyway).
    - **The draw executor** (being built): it runs a submitted buffer's recorded calls on the GPU.
      1. **Guest memory on the GPU.** Shaders reach memory through guest addresses: buffer
         descriptors and pointers in their user data. The game's GPU-visible memory is direct
@@ -341,7 +346,7 @@ Instead:
           whose x matches one neighbour's and y the other's, and the fourth corner is the other two
           minus it, for the position and every output (shadPS4's rule, facts only). A device
           without geometry shaders stops by name at a rect list; Metal will need another route.
-        - **Not yet:** blending and depth (their setters aren't recorded yet), other formats, more
+        - **Not yet:** depth (its target is not recorded yet), other formats, more
           render targets and other pixel inputs. These stop with the reason.
         - **The image's memory order:** an image's pixels only leave the GPU through
           `rt_executor_read_target`, which gives the display's BGRA either way. So nothing yet shows
