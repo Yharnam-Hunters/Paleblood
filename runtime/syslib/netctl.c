@@ -45,8 +45,10 @@
 #include "runtime/syslib.h"
 
 #include <pthread.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* The state an offline runtime reports.
 
@@ -185,25 +187,25 @@ static int netctl_get_info(int module, void *info)
 }
 RT_SYSLIB_UNRESOLVED("libSceNetCtl", sceNetCtlGetInfo, netctl_get_info);
 
-/* Reports the NAT type of the connection.
+/* Reports the NAT type of the connection; offline there is none.
 
-   The guest's own sites bound the structure: each writes a size of 16 at offset 0 before the call
-   (0x01889417) and reads back only offset 8 afterwards (0x01889436), which matches the Vita-era
-   SceNetCtlNatInfo opening with a caller-set size. Not established is the PS4 meaning of the
-   value at offset 8 and what a system with no connection reports there, so the call stops before
-   writing through it. The reported size is named in the message: a caller saying something other
-   than 16 is
-   itself evidence that the layout is not what the sites suggest. */
-static int netctl_get_nat_info(void *nat_info)
+   The structure is { size, STUN status, NAT type, mapped address }, four 32-bit fields, 16 bytes,
+   and "not connected" is 0x80412108 (the PS4Recomp project's libSceNetCtl, used as facts). The
+   guest's own sites agree: each writes a size of 16 at offset 0 before the call (0x01889417) and
+   reads back only offset 8, the NAT type, and only when the answer is 0 (0x01889436); on any
+   other answer it takes NAT type 1 itself (0x0188942d). So the offline answer is "not connected",
+   with nothing written, and the guest's own fallback applies. A size other than 16 and a missing
+   structure stop by name: the answers for those are not established. */
+#define NETCTL_ERROR_NOT_CONNECTED ((int)0x80412108u)
+enum { NAT_INFO_BYTES = 16 };
+
+static int netctl_get_nat_info(const void *nat_info)
 {
-    char question[160];
-    /* rt_fatal: the PS4 answer for a null structure pointer (its error codes are not public), and
-       reading the size below needs the pointer to exist first. */
-    if (!nat_info) rt_fatal("sceNetCtlGetNatInfo", "the PS4 answer for a null structure pointer is not established");
-    /* Read only: the size at offset 0 is the one field the guest's own sites establish. */
-    snprintf(question, sizeof question,
-             "the PS4 meaning of the value at offset 8 and the offline NAT type are not established (caller reports %d bytes)",
-             *(const int *)nat_info);
-    rt_fatal("sceNetCtlGetNatInfo", question);
+    static const char fn[] = "sceNetCtlGetNatInfo";
+    if (!nat_info) rt_fatal(fn, "the PS4 answer for a null structure pointer is not established");
+    uint32_t size;
+    memcpy(&size, nat_info, sizeof size);
+    if (size != NAT_INFO_BYTES) rt_fatal(fn, "a structure size other than 16: the answer is not established");
+    return NETCTL_ERROR_NOT_CONNECTED;
 }
-RT_SYSLIB_UNRESOLVED("libSceNetCtl", sceNetCtlGetNatInfo, netctl_get_nat_info);
+RT_SYSLIB("libSceNetCtl", sceNetCtlGetNatInfo, netctl_get_nat_info);
