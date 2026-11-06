@@ -307,10 +307,10 @@ eboot,libScePad,scePadResetOrientation,function,
 eboot,libScePad,scePadSetAngularVelocityDeadbandState,function,
 eboot,libScePad,scePadSetTiltCorrectionState,function,
 eboot,libScePad,scePadSetVibration,function,
-eboot,libScePlayGo,scePlayGoGetChunkId,function,
-eboot,libScePlayGo,scePlayGoGetLocus,function,
-eboot,libScePlayGo,scePlayGoInitialize,function,
-eboot,libScePlayGo,scePlayGoOpen,function,
+eboot,libScePlayGo,scePlayGoGetChunkId,function,runtime
+eboot,libScePlayGo,scePlayGoGetLocus,function,runtime
+eboot,libScePlayGo,scePlayGoInitialize,function,runtime
+eboot,libScePlayGo,scePlayGoOpen,function,runtime
 eboot,libScePlayGo,scePlayGoSetInstallSpeed,function,
 eboot,libScePosix,getpagesize,function,runtime-unresolved
 eboot,libScePosix,gettimeofday,function,runtime
