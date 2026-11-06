@@ -4,6 +4,7 @@
 // Keep the repeated short-circuit validity tests and delayed source reads when descriptors or
 // cursor storage overlap output.
 #include "present_preparation_packets.h"
+#include "depth_target_observation.h"
 
 namespace {
 bool has_depth_target(const void *descriptor)
@@ -30,6 +31,7 @@ extern "C" void bb_render_set_depth_render_target(render::PacketBuffer *commands
     const uint32_t required = has_depth_target(descriptor) ? depth_target_words : clear_words;
     uintptr_t cursor;
     if (!reserve_words(commands, required, cursor)) return;
+    const auto observation = observe_packet(commands, cursor);
 
     if (has_depth_target(descriptor)) {
         const auto *source = static_cast<const DepthTargetDescriptorView *>(descriptor);
@@ -64,6 +66,7 @@ extern "C" void bb_render_set_depth_render_target(render::PacketBuffer *commands
         trailing->nop_header.set(nop_one_word_header);
         trailing->nop_payload.set(source->nop_payload.get());
         set_packet_cursor(commands, trailing_cursor + sizeof(DepthTargetPacket));
+        record_depth_target_block(observation, packet, trailing);
     } else {
         auto *packet = reinterpret_cast<ClearDepthTargetPacket *>(cursor);
         packet->z_info.header.set(preparation_packet::set_context_reg_one_value_header);
@@ -73,5 +76,6 @@ extern "C" void bb_render_set_depth_render_target(render::PacketBuffer *commands
         packet->stencil_info.register_index.set(db_stencil_info_index);
         packet->stencil_info.payload.set(0);
         set_packet_cursor(commands, cursor + sizeof(ClearDepthTargetPacket));
+        record_depth_target_clear(observation, packet);
     }
 }
