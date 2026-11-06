@@ -224,6 +224,52 @@ static const uint32_t store_format_packed[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* Per lane i, texel (i, 0) of the image in s[0:7] copied to the image in s[8:15]: image_load then
+   image_store, all four components. */
+static const uint32_t image_copy[] = {
+    0x7e020300, /* v_mov_b32_e32 v1, v0 */
+    0x7e040280, /* v_mov_b32_e32 v2, 0 */
+    0xf0000f00, 0x00000401, /* image_load v[4:7], v[1:2], s[0:7] dmask:0xf */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf0200f00, 0x00020401, /* image_store v[4:7], v[1:2], s[8:15] dmask:0xf */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Per lane i, texel (i, 0) of the image in s[8:15] set to (float(i), 1.0, 2.0, 0.5). */
+static const uint32_t image_fill[] = {
+    0x7e080d00, /* v_cvt_f32_u32_e32 v4, v0 */
+    0x7e0a02f2, /* v_mov_b32_e32 v5, 1.0 */
+    0x7e0c02f4, /* v_mov_b32_e32 v6, 2.0 */
+    0x7e0e02f0, /* v_mov_b32_e32 v7, 0.5 */
+    0x7e020300, /* v_mov_b32_e32 v1, v0 */
+    0x7e040280, /* v_mov_b32_e32 v2, 0 */
+    0xf0200f00, 0x00020401, /* image_store v[4:7], v[1:2], s[8:15] dmask:0xf */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Per lane i, texel (i, 0) of the image in s[8:15] stored as four dwords at i * 16 bytes of the
+   buffer in s[0:3]. */
+static const uint32_t image_to_buffer[] = {
+    0x7e020300, /* v_mov_b32_e32 v1, v0 */
+    0x7e040280, /* v_mov_b32_e32 v2, 0 */
+    0xf0000f00, 0x00020401, /* image_load v[4:7], v[1:2], s[8:15] dmask:0xf */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x34060084, /* v_lshlrev_b32_e32 v3, 4, v0 */
+    0xe0781000, 0x80000403, /* buffer_store_dwordx4 v[4:7], v3, s[0:3], 0 offen */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Per lane i, a format load of record i (4 bytes each) from the buffer in s[0:3], whose format and
+   swizzle are its descriptor's, stored as four dwords at i * 16 bytes of the buffer in s[4:7]. */
+static const uint32_t load_format_xyzw[] = {
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0xe00c1000, 0x80000401, /* buffer_load_format_xyzw v[4:7], v1, s[0:3], 0 offen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x34060084, /* v_lshlrev_b32_e32 v3, 4, v0 */
+    0xe0781000, 0x80010403, /* buffer_store_dwordx4 v[4:7], v3, s[4:7], 0 offen */
+    0xbf810000, /* s_endpgm */
+};
+
 /* Scalar writes of VCC's halves: VCC_LO = 0x0000ffff, VCC_HI = 1, then per lane i (in a 64-lane
    workgroup) out[i] = VCC bit ? 1.0 : 0, so lanes 0-15 and 32 write 1.0. */
 static const uint32_t vcc_halves[] = {
