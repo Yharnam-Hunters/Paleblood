@@ -324,7 +324,7 @@ eboot,libScePosix,pthread_cond_broadcast,function,runtime
 eboot,libScePosix,pthread_cond_destroy,function,runtime
 eboot,libScePosix,pthread_cond_init,function,runtime
 eboot,libScePosix,pthread_cond_signal,function,runtime
-eboot,libScePosix,pthread_cond_timedwait,function,
+eboot,libScePosix,pthread_cond_timedwait,function,runtime
 eboot,libScePosix,pthread_cond_wait,function,runtime
 eboot,libScePosix,pthread_create,function,
 eboot,libScePosix,pthread_create_name_np,function,runtime
@@ -609,7 +609,7 @@ eboot,libc,wprintf,function,libc.elf
 eboot,libkernel,__error,function,
 eboot,libkernel,__stack_chk_fail,function,runtime
 eboot,libkernel,__stack_chk_guard,data,
-eboot,libkernel,__tls_get_addr,function,
+eboot,libkernel,__tls_get_addr,function,runtime
 eboot,libkernel,sceKernelAllocateDirectMemory,function,runtime
 eboot,libkernel,sceKernelBatchMap,function,
 eboot,libkernel,sceKernelClockGettime,function,runtime
@@ -710,7 +710,7 @@ libSceFios2.elf,libSceSysmodule,sceSysmoduleUnloadModule,function,runtime
 libSceFios2.elf,libkernel,__error,function,
 libSceFios2.elf,libkernel,__stack_chk_fail,function,runtime
 libSceFios2.elf,libkernel,__stack_chk_guard,data,
-libSceFios2.elf,libkernel,__tls_get_addr,function,
+libSceFios2.elf,libkernel,__tls_get_addr,function,runtime
 libSceFios2.elf,libkernel,sceKernelClockGettime,function,runtime
 libSceFios2.elf,libkernel,sceKernelClose,function,runtime
 libSceFios2.elf,libkernel,sceKernelFstat,function,runtime
@@ -783,7 +783,7 @@ libc.elf,libkernel,__progname,data,
 libc.elf,libkernel,__pthread_cxa_finalize,function,
 libc.elf,libkernel,__stack_chk_fail,function,runtime
 libc.elf,libkernel,__stack_chk_guard,data,
-libc.elf,libkernel,__tls_get_addr,function,
+libc.elf,libkernel,__tls_get_addr,function,runtime
 libc.elf,libkernel,_exit,function,
 libc.elf,libkernel,_is_signal_return,function,
 libc.elf,libkernel,_read,function,
@@ -799,7 +799,7 @@ libc.elf,libkernel,gettimeofday,function,runtime
 libc.elf,libkernel,mmap,function,
 libc.elf,libkernel,msync,function,
 libc.elf,libkernel,munmap,function,
-libc.elf,libkernel,nanosleep,function,
+libc.elf,libkernel,nanosleep,function,runtime
 libc.elf,libkernel,sceKernelDebugRaiseException,function,
 libc.elf,libkernel,sceKernelDebugRaiseExceptionOnReleaseMode,function,
 libc.elf,libkernel,sceKernelGetModuleInfoFromAddr,function,
