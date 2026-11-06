@@ -1084,6 +1084,52 @@ callers that observe it. A null output stops by the API name before any store.
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
 
+## Module TLS (`__tls_get_addr`)
+
+Boot assigns TLS module IDs in mapped-object order, beginning at one, and prepares
+all nonempty templates before module entry. The executable reuses its static TLS
+block: the base is the thread pointer minus its rounded allocation size. Other
+blocks copy the relocated initialization bytes, zero-fill the rest and respect
+alignment. Lookup allocates nothing. Each context belongs to its host thread;
+unbinding and rebinding retain values, and destruction preserves borrowed storage.
+`scePthreadCreate` installs static executable TLS but no module context, so module
+lookups on those threads stop as `__tls_get_addr`.
+
+### Evidence and limits
+
+The libkernel library SHA-256 is
+`b3e13917da667d01a353ccf49025d6b1308a32cf86f3f351f96b3a13cd5c7c2f`.
+Its `__tls_get_addr` export, NID `vNe1w4diLCs`, begins at ELF address `0x289c0`.
+The body reads a two-word 64-bit module/offset index, consults TCB/DTV and linker
+state, masks a slot to 48 bits and adds the full offset without a bounds check.
+Invalid states can diagnose and execute `INT 0x44`. Generation updates, lazy
+allocation, alternate modes and linker helpers remain unsupported. Adjacent helpers
+at `0x2a9a0` and `0x2aca0` do not establish a general allocation-residue rule.
+The title libc template has virtual-address residue 8, while LibcInternal has zero;
+this implementation aligns the block base to the template's declared alignment.
+
+Paleblood accepts full-width IDs and offsets through the template's logical size,
+including a one-past pointer. Unknown IDs, larger offsets and absent contexts stop
+by name. These bounds are runtime support limits, not native error behavior.
+There is no native DTV layout, lazy loading or unloading. The initialization model
+follows the [TLS ABI](https://www.akkadia.org/drepper/tls.pdf) and
+[Oracle linker documentation](https://docs.oracle.com/cd/E19120-01/open.solaris/819-0690/chapter8-70/index.html).
+No other PS4 runtime implementation was used.
+
+### Validation
+
+The loader rejects duplicate headers, initialized size beyond logical size,
+out-of-file bytes, inconsistent segment aliases, invalid alignment and templates
+outside the mapped image. Zero alignment becomes one; TBSS need not be readable.
+Boot checks allocation arithmetic and allocates aligned storage.
+`test_module_tls` checks the registry, initialization, owned 256- and 4096-byte
+alignment, zero-fill, stable
+writes, borrowed storage, separate threads, full-width requests and named stops.
+`test_module_tls_boot.py` runs synthetic AMD64 fixtures through boot, checking
+static/dynamic main-block aliasing, rounded sizes, module-ID relocations, relocated
+pointers, constructor persistence and rejected IDs. Loader tests cover malformed
+metadata.
+
 ## References
 
 - [POSIX `clock_gettime`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/clock_gettime.html) and [clock definitions](https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/time.h.html)
