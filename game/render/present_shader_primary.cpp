@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Populate sparse primary/optional bindings before forwarding the original command writers.
-#include "command_flags.h"
 #include "present_shader_primary.h"
 
 namespace render {
@@ -71,28 +70,26 @@ extern "C" void bb_render_configure_record_shader(render::ShaderPrimaryStateView
                                                    const render::ShaderPrimaryDescriptorView *optional_descriptor)
 {
     using namespace render;
-    auto &view = *state;
-    const auto &primary = *primary_descriptor;
-    if (view.primary.flag_04.get() != 0) {
+    if (state->primary.flag_04.get() != 0) {
         packet_flag_byte(commands) &= static_cast<uint8_t>(~shader_packet_flag_mask);
-        view.primary.flag_04.set(0);
+        state->primary.flag_04.set(0);
     }
-    copy_sparse_shader_slots(view.primary, primary);
-    update_shader_special_pair(view.primary, primary, view.primary_pair_9bd0);
-    set_vs_shader(commands, primary_shader_command_address(primary.program_100.get()), 0);
+    copy_sparse_shader_slots(state->primary, *primary_descriptor);
+    update_shader_special_pair(state->primary, *primary_descriptor, state->primary_pair_9bd0);
+    set_vs_shader(commands, primary_shader_command_address(primary_descriptor->program_100.get()), 0);
     if (optional_descriptor == nullptr) {
         set_ps_shader(commands, nullptr);
     } else {
         const auto &optional = *optional_descriptor;
-        copy_sparse_shader_slots(view.optional, optional);
-        update_shader_special_pair(view.optional, optional, view.optional_pair_a0d0);
+        copy_sparse_shader_slots(state->optional, optional);
+        update_shader_special_pair(state->optional, optional, state->optional_pair_a0d0);
         set_ps_shader(commands, primary_shader_command_address(optional.program_100.get()));
         const auto *optional_program = reinterpret_cast<const ShaderPrimaryProgramView *>(
             optional.program_100.get());
         const uint32_t count = optional_program->count_38;
         if (count != 0) {
             const auto *primary_program = reinterpret_cast<const ShaderPrimaryProgramView *>(
-                primary.program_100.get());
+                primary_descriptor->program_100.get());
             const uint32_t first_count = primary_program->count_25;
             const uint32_t first_index = primary_program->index_03;
             const uint32_t second_index = primary_program->index_24;
@@ -109,7 +106,7 @@ extern "C" void bb_render_configure_record_shader(render::ShaderPrimaryStateView
             emit_shader_link_words(commands, words, count);
         }
     }
-    view.primary.invalid_38.set(primary_shader_invalid);
-    view.optional.invalid_38.set(primary_shader_invalid);
-    view.invalid_25a8.set(primary_shader_invalid);
+    state->primary.invalid_38.set(primary_shader_invalid);
+    state->optional.invalid_38.set(primary_shader_invalid);
+    state->invalid_25a8.set(primary_shader_invalid);
 }

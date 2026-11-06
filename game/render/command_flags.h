@@ -13,12 +13,4 @@ inline uint32_t packet_flags(const PacketBuffer *commands)
 {
     return reinterpret_cast<const CommandPacketFlags *>(commands)->flags.get();
 }
-inline void set_packet_flags(PacketBuffer *commands, uint32_t value)
-{
-    reinterpret_cast<CommandPacketFlags *>(commands)->flags.set(value);
-}
-inline uint8_t &packet_flag_byte(PacketBuffer *commands)
-{
-    return reinterpret_cast<CommandPacketFlags *>(commands)->flags.bytes[0];
-}
 }  // namespace render

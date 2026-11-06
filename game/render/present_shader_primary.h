@@ -3,7 +3,8 @@
 // select cached bindings before the VS/PS packet writers and PS link-word emission.
 #pragma once
 
-#include "command_reservation.h"
+#include "command_flags.h"
+#include "shader_link.h"
 
 #include <bit>
 #include <cstddef>
@@ -25,7 +26,13 @@ constexpr std::size_t primary_shader_mask_flag_byte = 3;
 constexpr uint8_t primary_shader_special_mask = 0x80;
 constexpr uint64_t primary_shader_dirty_bit = 0x80000000;
 constexpr uint64_t primary_shader_invalid = UINT64_MAX;
-constexpr std::size_t shader_link_word_capacity = 32;
+
+// The optional shader program supplies at most shader_link_word_capacity link words.
+// Larger counts overrun the original local buffer; callers must satisfy this bound.
+inline uint8_t &packet_flag_byte(PacketBuffer *commands)
+{
+    return reinterpret_cast<CommandPacketFlags *>(commands)->flags.bytes[0];
+}
 
 struct ShaderPrimaryPair {
     Field<uint64_t> low;
@@ -45,7 +52,7 @@ struct ShaderPrimaryDescriptorView {
     ShaderPrimaryIndexMap maps[primary_shader_bank_count];
     Field<uintptr_t> table_d8;  // QWORD binding table indexed by the three sparse maps.
     uint8_t unknown_0xe0[0x10];
-    ShaderPrimaryPair pair_f0;
+    ShaderPrimaryPair pair_f0;  // Pair published into the selected stage cache when both descriptor gates admit.
     Field<uintptr_t> program_100;  // Shader program; its +8 member is passed to GNM.
 };
 static_assert(offsetof(ShaderPrimaryDescriptorView, maps) == 0x18);
@@ -57,14 +64,14 @@ static_assert(sizeof(ShaderPrimaryDescriptorView) == 0x108);
 // The one-byte source anchors describe addresses, not capacities of trailing arrays.
 struct ShaderPrimaryProgramView {
     uint8_t unknown_0x00[0x3];
-    uint8_t index_03;
+    uint8_t index_03;  // Starting link-pair index, used by both primary and optional programs.
     uint8_t unknown_0x04[0x4];
     uint8_t command_08;
     uint8_t unknown_0x09[0x1b];
-    uint8_t index_24;
-    uint8_t count_25;
+    uint8_t index_24;  // Additional primary-program link-pair offset.
+    uint8_t count_25;  // Number of primary link pairs searched for each optional key.
     uint8_t unknown_0x26[0x2];
-    uint8_t source_28;
+    uint8_t source_28;  // Beginning of the primary link-pair storage; its extent is supplied by count_25.
     uint8_t unknown_0x29[0xf];
     uint8_t count_38;  // PS link-word count.
     uint8_t unknown_0x39[0x3];
@@ -80,10 +87,10 @@ static_assert(offsetof(ShaderPrimaryProgramView, source_3c) == 0x3c);
 
 struct ShaderPrimaryStageView {
     uint8_t unknown_0x00[0x4];
-    Field<uint32_t> flag_04;
+    Field<uint32_t> flag_04;  // Requests clearing the command-buffer shader flag before updating bindings.
     uint8_t unknown_0x08[0x20];
-    ShaderPrimaryPair dirty_28;
-    Field<uint64_t> invalid_38;
+    ShaderPrimaryPair dirty_28;  // Dirty masks; the high lane is invalidated and the low lane tracks the special slot.
+    Field<uint64_t> invalid_38;  // Cache sentinel reset to all ones after both shader passes.
     uint8_t unknown_0x40[0x20];
     Field<uint64_t> masks[primary_shader_bank_count];
     ShaderPrimarySlotBank banks[primary_shader_bank_count];
@@ -101,7 +108,7 @@ struct ShaderPrimaryStateView {
     uint8_t unknown_0x0678[0x1288];
     ShaderPrimaryStageView optional;
     uint8_t unknown_0x1f78[0x630];
-    Field<uint64_t> invalid_25a8;
+    Field<uint64_t> invalid_25a8;  // Shared shader-cache sentinel reset after both shader passes.
     uint8_t unknown_0x25b0[0x7620];
     ShaderPrimaryPair primary_pair_9bd0;
     uint8_t unknown_0x9be0[0x4f0];

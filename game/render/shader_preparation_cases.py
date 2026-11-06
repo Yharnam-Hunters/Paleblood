@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Exercise shader event selection, range ordering, invalid starts and flag masking.
+"""Exercise shader events, range ordering, flag masking and nonzero-mode resets.
 
-Usage: shader_preparation_cases.py OUT_DIR.
+Usage: shader_preparation_cases.py OUT_DIR. The directory may already exist.
+Modes 4, 5 and 6 emit no barrier or range, but still clear both ranges, flags and mode.
 """
 import json
 from pathlib import Path
@@ -19,7 +20,7 @@ def basic(cid, size=64):
 ADDRESS='0x02ab9850'
 
 def cases():
-    for mode in (0,1,2,3,7,8):
+    for mode in (0,1,2,3,4,5,6,7,8):
         for event in (0,1,3,5,7,15,16):
             c=basic(f'mode_{mode}_event_{event}')
             c['buffers']['context']={'size':64};c['args']['rsi']='buf:context'
@@ -59,6 +60,7 @@ def cases():
 
 
 def main():
+    """Write synthetic shader-preparation cases to the requested directory."""
     if len(sys.argv)!=2:
         print(__doc__,file=sys.stderr);return 2
     out=Path(sys.argv[1]);out.mkdir(parents=True,exist_ok=True)

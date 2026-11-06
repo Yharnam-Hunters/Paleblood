@@ -13,8 +13,8 @@
 
 namespace render {
 
-// Byte fields permit unaligned and overlapping native views, including command output
-// that overlaps the cursor or source descriptors. Unknown storage has no inferred type.
+// Byte fields permit unaligned accesses and command output that overlaps the cursor
+// or source descriptor.
 
 constexpr uint32_t shader_packet_word_bytes = 4;
 constexpr uint32_t shader_packet_flag_mask = 2;
@@ -24,7 +24,7 @@ RT_GLOBAL(0x04cd15c0, shader_stage_register_bases, const uint16_t);
 
 inline uint32_t shader_stage_base(uint32_t stage)
 {
-    // There is no native stage admission check. Preserve the indexed original data read.
+    // The caller supplies the stage index; preserve the table read without adding a range check.
     const uintptr_t address = reinterpret_cast<uintptr_t>(shader_stage_register_bases.address()) +
                               uint64_t(stage) * sizeof(uint16_t);
     uint16_t value;
@@ -58,8 +58,8 @@ static_assert(offsetof(ShaderDescriptorPacket, register_index) == 0x0c);
 static_assert(offsetof(ShaderDescriptorPacket, payload) == 0x10);
 
 struct ShaderDescriptorWords {
-    static constexpr auto words_extent_0 = 4;
-    Field<uint64_t> words[words_extent_0];
+    static constexpr auto word_count = 4;
+    Field<uint64_t> words[word_count];
 };
 
 inline void shader_write_descriptor_header(PacketBuffer *commands, uintptr_t cursor,

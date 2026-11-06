@@ -5,6 +5,7 @@
 Usage: present_shader_primary_cases.py OUT_DIR. Generate captures outside the repository.
 """
 import json
+from copy import deepcopy
 from pathlib import Path
 import struct
 import sys
@@ -113,13 +114,24 @@ def cases():
             yield c
 
     # Keep the mask flag set while clearing its independent index gate in both descriptors.
-    from copy import deepcopy
-
     special = deepcopy(c)
     special["id"] = "special_mask_flag_with_zero_index"
     for descriptor in ("descriptor", "optional_descriptor"):
         special["memory"].append({"addr": f"buf:{descriptor}+210", "bytes": "00"})
     yield special
+
+
+    maximum = deepcopy(c)
+    maximum["id"] = "maximum_link_word_count"
+    maximum["memory"].append({"addr": "buf:optional_program+56", "bytes": "20"})
+    for stub in maximum["stubs"]:
+        if stub["address"] == "0x014873a0":
+            stub["writes"] = [{"arg": 0, "bytes": b"".join(
+                struct.pack("<I", 0x10203040 + i * 0x01010101) for i in range(32)
+            ).hex(), "size": 128}]
+        elif stub["address"] == "0x01475000":
+            stub["argmem"] = [{"arg": 1, "size": 128}]
+    yield maximum
 
 
 def main():

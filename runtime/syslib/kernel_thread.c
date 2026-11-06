@@ -71,14 +71,31 @@ static int sce(int bsd) { return bsd ? SCE_KERNEL_ERROR(bsd) : 0; }
 
 /* The executable's TLS template copied into a fresh block, the thread pointer just above it
    (x86-64 variant II), the pointer's first word pointing to itself. */
+enum { TLS_CONTROL_BLOCK_BYTES = 4096, TLS_MINIMUM_ALIGNMENT = 16 };
+
+static uint64_t tls_block_alignment(void)
+{
+    return rt_process.tls_align > TLS_MINIMUM_ALIGNMENT
+           ? rt_process.tls_align : TLS_MINIMUM_ALIGNMENT;
+}
+
+uint64_t rt_tls_block_size(void)
+{
+    const uint64_t align = tls_block_alignment();
+    if (align > SIZE_MAX || rt_process.tls_memsz > SIZE_MAX - (align - 1)) return UINT64_MAX;
+    const uint64_t size = (rt_process.tls_memsz + align - 1) / align * align;
+    return size > SIZE_MAX - TLS_CONTROL_BLOCK_BYTES ? UINT64_MAX : size;
+}
+
 void *rt_tls_block_create(void)
 {
-    const uint64_t align = rt_process.tls_align > 16 ? rt_process.tls_align : 16;
-    const uint64_t size = (rt_process.tls_memsz + align - 1) / align * align;
-    enum { CONTROL_BLOCK = 4096 };
-    unsigned char *block = aligned_alloc(align, size + CONTROL_BLOCK);
-    if (!block) return NULL;
-    memset(block, 0, size + CONTROL_BLOCK);
+    const uint64_t align = tls_block_alignment();
+    const uint64_t size = rt_tls_block_size();
+    if (size == UINT64_MAX) return NULL;
+    void *allocation = NULL;
+    if (posix_memalign(&allocation, (size_t)align, (size_t)size + TLS_CONTROL_BLOCK_BYTES)) return NULL;
+    unsigned char *block = allocation;
+    memset(block, 0, size + TLS_CONTROL_BLOCK_BYTES);
     unsigned char *tp = block + size;
     if (rt_process.tls_filesz) memcpy(tp - size, rt_process.tls_image, rt_process.tls_filesz);
     *(uint64_t *)tp = (uint64_t)(uintptr_t)tp;
