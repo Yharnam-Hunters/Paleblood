@@ -40,6 +40,14 @@ if(APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     endif()
 endif()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+# LibAtrac9 (third_party/libatrac9, MIT, vendored unmodified): the audio job manager's ATRAC9
+# decoder. Its warnings are off: it is code we do not maintain.
+file(GLOB PB_ATRAC9_SOURCES CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/third_party/libatrac9/src/*.c)
+add_library(atrac9 STATIC ${PB_ATRAC9_SOURCES})
+target_include_directories(atrac9 PUBLIC ${PROJECT_SOURCE_DIR}/third_party/libatrac9/src)
+target_compile_options(atrac9 PRIVATE -w)
+set_target_properties(atrac9 PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_link_libraries(atrac9 PUBLIC m)
 add_subdirectory(runtime)
 add_subdirectory(game)
 
@@ -82,8 +90,10 @@ set_tests_properties(capture_poc_replay PROPERTIES
 file(GLOB PB_TEST_SYSLIB CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/runtime/syslib/*.c)
 # The syslib tests use the display's headless mode only, so they build without its window.
 add_executable(test_syslib test/test_syslib.c runtime/process.c ${PB_TEST_SYSLIB}
-               runtime/display/display.c runtime/display/display_window_none.c runtime/renderer/renderer_none.c)
+               runtime/display/display.c runtime/display/display_window_none.c runtime/renderer/renderer_none.c
+               runtime/audio/audio_host_none.c)
 target_include_directories(test_syslib PRIVATE runtime/include)
+target_link_libraries(test_syslib PRIVATE atrac9)
 add_test(NAME syslib COMMAND test_syslib)
 # The renderer's GCN shader decoder (docs/RENDERER.md), its test, and pbgcn for the shader census.
 add_library(pbgcn_decode STATIC runtime/renderer/gcn_decode.c)

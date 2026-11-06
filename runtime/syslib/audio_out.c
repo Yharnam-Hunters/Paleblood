@@ -17,6 +17,7 @@
    The runtime records each open port and hands out handles from 1; sound output belongs to the
    output calls, which stop by name until they are implemented. What is not established stops by
    name: any open other than the observed ones, and running out of handles. */
+#include "runtime/audio_host.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
@@ -46,6 +47,8 @@ typedef struct {
     int32_t volume[MAX_CHANNELS];
     pthread_mutex_t lock;
     struct timespec played; /* when the buffer handed over last finishes playing (monotonic) */
+    void *host;             /* the host stream, with --audio host */
+    int volume_set;         /* until the title sets volumes, the port plays at 0 dB */
 } audio_port;
 
 static atomic_int initialized;
@@ -69,7 +72,12 @@ static int32_t audio_out_open(int32_t user, int32_t port_type, int32_t index, ui
         rt_fatal(fn, "a length, rate or format other than the observed 256 float samples at 48000 Hz, 2 or 8 channels");
     const int handle = atomic_fetch_add(&ports_opened, 1) + 1; /* handles from 1 */
     if (handle > MAX_PORTS) rt_fatal(fn, "more ports than the runtime hands out handles for");
-    ports[handle] = (audio_port){length, rate, format, format == FORMAT_FLOAT_8CH ? 8 : 2, {0}, PTHREAD_MUTEX_INITIALIZER, {0, 0}};
+    ports[handle] = (audio_port){length, rate, format, format == FORMAT_FLOAT_8CH ? 8 : 2, {0}, PTHREAD_MUTEX_INITIALIZER, {0, 0}, NULL, 0};
+    if (rt_audio_host_enabled()) {
+        char error[160];
+        ports[handle].host = rt_audio_host_open(ports[handle].channels, rate, error, sizeof error);
+        if (!ports[handle].host) rt_fatal(fn, error);
+    }
     return handle;
 }
 
@@ -92,6 +100,7 @@ static int32_t audio_out_set_volume(int32_t handle, int32_t flag, const int32_t 
             rt_fatal(fn, "a volume outside 0..32768: the answer is not established");
         port->volume[channel] = volume[channel];
     }
+    port->volume_set = 1;
     return 0;
 }
 
@@ -102,8 +111,34 @@ static int32_t audio_out_set_volume(int32_t handle, int32_t flag, const int32_t 
    block. The runtime plays nothing yet: each port takes one block per length / rate seconds (256
    samples at 48000 Hz: 5.33 ms), and a call waits until the block before it would have finished
    playing, then answers 0 (the caller only checks the sign). A port that falls behind starts again
-   from now. A missing block and a handle the runtime did not hand out stop by name. */
-enum { NANOSECONDS_PER_SECOND = 1000000000 };
+   from now. A missing block and a handle the runtime did not hand out stop by name.
+
+   With --audio host (runtime/audio_host.h) the block is played on the host instead: each channel
+   scaled by its volume (32768 is 0 dB, the level the title sets; until it sets one the port plays at
+   0 dB, the runtime's choice), queued on the port's host stream, and the call returns once no more
+   than a few blocks wait to be played, so the title's audio thread runs at the device's pace. */
+enum { NANOSECONDS_PER_SECOND = 1000000000, VOLUME_UNITY = 32768, HOST_BLOCKS_AHEAD = 4, HOST_WAIT_LIMIT_MS = 2000 };
+
+static void play_on_host(const char *fn, audio_port *port, const float *samples)
+{
+    static float scaled[OBSERVED_LENGTH * MAX_CHANNELS]; /* not on the title's thread stack; one port at a time */
+    static pthread_mutex_t scaled_lock = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&scaled_lock);
+    for (uint32_t frame = 0; frame < port->length; frame++) {
+        for (uint32_t channel = 0; channel < port->channels; channel++) {
+            const float gain = port->volume_set ? (float)port->volume[channel] / VOLUME_UNITY : 1.0f;
+            scaled[frame * port->channels + channel] = samples[frame * port->channels + channel] * gain;
+        }
+    }
+    const int written = rt_audio_host_write(port->host, scaled, port->length);
+    pthread_mutex_unlock(&scaled_lock);
+    if (written) rt_fatal(fn, "the host refused the sound");
+    const struct timespec millisecond = {0, NANOSECONDS_PER_SECOND / 1000};
+    for (int waited = 0; rt_audio_host_queued_frames(port->host) > HOST_BLOCKS_AHEAD * port->length; waited++) {
+        if (waited == HOST_WAIT_LIMIT_MS) rt_fatal(fn, "the host audio device stopped playing");
+        nanosleep(&millisecond, NULL);
+    }
+}
 
 static int64_t nanoseconds(const struct timespec *t) { return (int64_t)t->tv_sec * NANOSECONDS_PER_SECOND + t->tv_nsec; }
 
@@ -114,6 +149,12 @@ static int32_t audio_out_output(int32_t handle, const void *samples)
         rt_fatal(fn, "a handle the runtime did not hand out: the error value is not established");
     if (!samples) rt_fatal(fn, "no samples: what the system does then is not established");
     audio_port *const port = &ports[handle];
+    if (port->host) {
+        pthread_mutex_lock(&port->lock);
+        play_on_host(fn, port, samples);
+        pthread_mutex_unlock(&port->lock);
+        return 0;
+    }
     const int64_t block = (int64_t)port->length * NANOSECONDS_PER_SECOND / port->rate;
     pthread_mutex_lock(&port->lock);
     struct timespec now;
@@ -133,10 +174,10 @@ static int32_t audio_out_output(int32_t handle, const void *samples)
    its _types/audio_out.h gives the state's layout (32 bytes): a 16-bit output, an 8-bit channel
    count, a volume and a 64-bit flag. The executable's only call (0x0111bb41) asks about its second
    port and reads only output, testing it for 0. The runtime plays nothing on the host, so no port
-   is output anywhere: it answers output 0 (this must change when the runtime plays sound) and 0 in
-   the fields whose encoding is not established. An unknown handle and a missing state stop by
+   is output anywhere: it answers output 0, and with --audio host 1 (CONNECTED_PRIMARY, shadPS4's
+   audioout.h) for a port playing on the host; 0 in the fields whose encoding is not established. An unknown handle and a missing state stop by
    name. */
-enum { PORT_STATE_SIZE = 32 };
+enum { PORT_STATE_SIZE = 32, OUTPUT_CONNECTED_PRIMARY = 0x1 };
 
 static int32_t audio_out_get_port_state(int32_t handle, void *state)
 {
@@ -144,7 +185,9 @@ static int32_t audio_out_get_port_state(int32_t handle, void *state)
     if (handle < 1 || handle > atomic_load(&ports_opened))
         rt_fatal(fn, "a handle the runtime did not hand out: the error value is not established");
     if (!state) rt_fatal(fn, "no state: the error value is not established");
-    memset(state, 0, PORT_STATE_SIZE); /* output 0: not heard anywhere */
+    memset(state, 0, PORT_STATE_SIZE);
+    const uint16_t output = ports[handle].host ? OUTPUT_CONNECTED_PRIMARY : 0; /* heard on the host, or nowhere */
+    memcpy(state, &output, sizeof output);
     return 0;
 }
 
