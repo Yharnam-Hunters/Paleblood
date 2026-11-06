@@ -687,6 +687,17 @@ person running it chose:
 
 **What stops by name:** a setting nobody gave a value, and a missing variable.
 
+## The PSN title id (`sceNpSetNpTitleId`)
+
+`sceNpSetNpTitleId(const title id *, const title secret *)` registers the title's PSN title id
+(12 characters and a terminator, in a 16-byte block) and its 128-byte title secret, which the
+system would use to talk to PSN. A missing argument answers `0x80550003` (invalid argument). The
+facts come from shadPS4's `libSceNpManager` (`np_types.h`, `np_error.h`); the other ports answer
+0 too. The executable's call (`0x010ba192`) treats only a negative answer as failure.
+
+Offline nothing talks to PSN, so the runtime keeps the title id (`rt_np_title_id`, for later
+PSN-side calls such as trophies) and nothing of the secret.
+
 ## Content restriction (`sceNpSetContentRestriction`, issue #41)
 
 The executable's only call, at `0x023b704f`, passes a parameter block it built on its stack (an

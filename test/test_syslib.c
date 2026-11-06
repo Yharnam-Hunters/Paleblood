@@ -5,6 +5,7 @@
 #include "runtime/equeue.h"
 #include "runtime/gpu_memory.h"
 #include "runtime/http.h"
+#include "runtime/np.h"
 #include "runtime/pad.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
@@ -2921,6 +2922,26 @@ int main(void)
         CHECK(died_in_fatal(rtc_tick_leap_2100));
         CHECK(died_in_fatal(rtc_tick_microsecond));
         CHECK(died_in_fatal(rtc_tick_no_variable));
+    }
+
+    {   /* sceNpSetNpTitleId: the title id is kept; a missing argument is invalid */
+        typedef int32_t (*f_np_title)(const void *, const void *);
+        const f_np_title set_title = (f_np_title)fn("libSceNpManager", "sceNpSetNpTitleId");
+        CHECK(set_title != NULL);
+        if (set_title) {
+            char kept[RT_NP_TITLE_ID_BYTES];
+            rt_np_title_id(kept);
+            CHECK(kept[0] == 0);
+            unsigned char id[16], secret[128];
+            memset(id, 0x7a, sizeof id);
+            memcpy(id, "ABCD12345_00", 12);
+            id[12] = 0;
+            memset(secret, 0x5c, sizeof secret);
+            CHECK(set_title(id, secret) == 0);
+            rt_np_title_id(kept);
+            CHECK(strcmp(kept, "ABCD12345_00") == 0);
+            CHECK(set_title(NULL, secret) == (int32_t)0x80550003u && set_title(id, NULL) == (int32_t)0x80550003u);
+        }
     }
 
     pg_init = (f_pg_init)fn("libScePlayGo", "scePlayGoInitialize");
