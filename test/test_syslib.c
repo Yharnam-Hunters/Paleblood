@@ -793,7 +793,6 @@ static void flex_partial_page(void) { void *a = NULL; flex_map(&a, 0x1000, 3, 0)
 typedef int32_t (*f_qmp_fn)(const void *, void **, void **, int32_t *);
 static f_qmp_fn qmp_fn;
 static void qmp_unmapped(void) { int32_t p; static char not_mapped; qmp_fn(&not_mapped, NULL, NULL, &p); }
-static void qmp_with_end(void) { int32_t p; void *end; static char x; qmp_fn(&x, NULL, &end, &p); }
 static void flex_exec(void) { void *a = NULL; flex_map(&a, 0x4000, 7, 0); }
 
 /* libSceNet start-up: initialize once, a repeat answers 0x80410110; pools are ids. */
@@ -1795,6 +1794,11 @@ int main(void)
         CHECK(died_in_fatal(dm_allocate_unknown_type));
         CHECK(died_in_fatal(dm_allocate_no_variable));
         CHECK(died_in_fatal(dm_map_with_flags));
+        /* No overwrite (0x80) with no address: nothing to overwrite, so the map is made as usual, and it
+           is the same memory as the range's other maps (the alias a title makes of its own memory). */
+        void *alias = NULL;
+        CHECK(dm_map(&alias, DM_PAGE, DM_RW, 0x80, first, DM_PAGE) == 0 && alias && alias != a);
+        if (alias && a) CHECK(((volatile unsigned char *)alias)[0] == 0xa5);
         /* A free, aligned address hint is where the map goes; one in use or off the alignment stops. */
         void *hinted = (void *)0xfd00000000;
         CHECK(dm_map(&hinted, DM_PAGE, DM_RW, 0, first, DM_PAGE) == 0 && hinted == (void *)0xfd00000000);
@@ -2361,7 +2365,10 @@ int main(void)
             }
             qmp_fn = qmp;
             CHECK(died_in_fatal(qmp_unmapped));
-            CHECK(died_in_fatal(qmp_with_end));
+            /* the mapping's start, and its end one past the last byte (shadPS4, PS4Recomp) */
+            void *start = NULL, *end = NULL;
+            CHECK(qmp((char *)a + 0x10, &start, &end, &prot) == 0 && prot == 3);
+            CHECK(start == a && end == (char *)a + 0x8000);
         }
     }
 

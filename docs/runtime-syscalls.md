@@ -366,7 +366,10 @@ The signatures match the OpenOrbis homebrew SDK's `libkernel.h`, as supporting e
   - lengths, starts or alignments that are not multiples of 16 KiB (the granularity the
     executable's calls use);
   - memory types other than 0, 3 and 10;
-  - map flags, and an address hint without flags;
+  - map flags other than no-overwrite (`0x80`, shadPS4's kernel `memory.h`). No-overwrite keeps a
+    map off memory already mapped, and the runtime never replaces a mapping, so it changes nothing.
+    The movie code (`0x02d032b9`) passes it with no address, to map part of its own direct memory a
+    second time;
   - protection other than CPU and GPU read and write;
   - a range that does not fit or was not allocated;
   - releasing part of a range or a mapped one;
@@ -1326,12 +1329,15 @@ holds an address.
 
 **What the executable does.** Its helpers (`0x02abad98`, `0x02abadf8`) pass no start or end. They
 test the protection's CPU read bit (1) and GPU read bit (`0x10`), on memory the game mapped itself.
+Another (`0x02d031df`, reached once the movie player runs) passes a start and an end and reads only
+the protection.
 
 **What the runtime does.** It records every direct and flexible mapping with the protection the
-guest asked for, GPU bits included, and answers that.
+guest asked for, GPU bits included, and answers that. A start gets the mapping's start, and an end
+the address one past its last byte (exclusive), as shadPS4's `MemoryManager::QueryProtection` and
+PS4Recomp's `ps4_direct_mem.c` both answer.
 
 **What stops by name:**
-- a start or end (whether end is inclusive is not established);
 - an address outside those mappings (other memory is not tracked yet);
 - a missing variable.
 
