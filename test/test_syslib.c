@@ -3473,7 +3473,7 @@ int main(void)
         CHECK(kc_create(&te_key, te_destructor) == 0);
         void *thread = NULL, *attr = tc_attr(1, 1, 1); /* detached */
         CHECK(tc_create(&thread, &attr, te_entry, &value, "exits") == 0);
-        for (int i = 0; i < 200000 && !atomic_load(&te_destructor_calls); i++) sched_yield();
+        for (int ms = 0; ms < 5000 && !atomic_load(&te_destructor_calls); ms++) usleep(1000); /* up to 5 s on a slow machine */
         CHECK(atomic_load(&te_destructor_calls) == 1 && te_destroyed == &value);
         CHECK(!atomic_load(&te_after_exit));
         CHECK(died_in_fatal(te_exit_main));
