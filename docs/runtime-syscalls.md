@@ -569,7 +569,7 @@ reported installed (`runtime/syslib/playgo.c`).
 | `scePlayGoOpen(int32_t *handle, params)` | params is NULL (`0x023deae4`); 0 counts as opened | writes handle 1, the runtime's choice (the title only passes it back) |
 | `scePlayGoGetChunkId(handle, uint16_t ids[], capacity, uint32_t *count)` | capacity 100 (`0x023deb0f`); the result is not read | the package's chunks, 0 to `chunk_count - 1`, from `chunk_count` in the copy's `sce_sys/playgo-manifest.xml` (3 for this title; `playgo-chunk.dat` agrees) |
 | `scePlayGoGetLocus(handle, const uint16_t ids[], count, int8_t loci[])` | one byte per chunk (`0x023de8d6`, `0x023deb30`); non-zero counts as failure; the title treats 0 as not there, 2 as still arriving and polls again, any other value as ready | 3 for every chunk, a ready value (the title can't tell the ready values apart) |
-| `scePlayGoSetInstallSpeed` | never called directly | stops by name |
+| `scePlayGoSetInstallSpeed(handle, speed)` | called through a function pointer (`0x023dd891`) with 1 (trickle) or 2 (full); 0 is suspended | records it (everything is installed); an unknown handle `0x80B20009`, before initialize `0x80B20005`, another speed `0x80B20004` (shadPS4's `libScePlayGo`) |
 
 No public source declares these calls: the OpenOrbis toolchain has no PlayGo header. Stops by
 name: Open with parameters, an unknown handle, a chunk list longer than the space given, an unknown
@@ -741,6 +741,28 @@ facts come from shadPS4's `libSceNpManager` (`np_types.h`, `np_error.h`); the ot
 
 Offline nothing talks to PSN, so the runtime keeps the title id (`rt_np_title_id`, for later
 PSN-side calls such as trophies) and nothing of the secret.
+
+## Trophies, offline (`libSceNpTrophy`)
+
+The executable creates a trophy context for the initial user (service label 0, options 0) and a
+handle at `0x02420524`, registers the context, and later unlocks trophies by id and reads the game
+and trophy info. The facts (sizes, limits, error values) come from shadPS4's `libSceNpTrophy`
+(`np_trophy.h`, `np_trophy.cpp`, `np_error.h`), checked against the other ports and PS4Recomp; the
+code is the runtime's own (`runtime/syslib/np_trophy.c`).
+
+| Call | Runtime answer |
+|---|---|
+| `sceNpTrophyCreateContext(int32_t *context, user, label, options)` | contexts from 1, one per (user, label), at most 8; a second for the same pair `0x80551613`, the ninth `0x80551623`; options other than 0 or no variable `0x80551604` |
+| `sceNpTrophyCreateHandle(int32_t *handle)` | handles from 1, at most 4 (`0x80551624`) |
+| `sceNpTrophyRegisterContext(context, handle, options)` | an unknown context `0x80551609`, an unknown handle `0x80551608`, a second registration `0x80551610` |
+| `sceNpTrophyUnlockTrophy(context, handle, id, int32_t *platinum)` | ids 0 to 127 (others `0x8055160A`); records the unlock with its time; a repeat `0x8055160C`; `*platinum` is always -1; an unregistered context `0x8055160F` |
+| `sceNpTrophyGetGameInfo`, `sceNpTrophyGetTrophyInfo` | the recorded unlocks: the unlocked count, and per trophy whether and when it was unlocked; names empty, grades 0; each structure must carry its own size, else `0x80551604` |
+
+The trophy definitions (names, grades, which count toward the platinum) live in the title's
+`sce_sys/trophy/trophy00.trp`, encrypted with a key the runtime does not hold, so it has none of
+them and never awards a platinum. Unlocks are kept per user in
+`<savedata>/<user>/sce_trophy/unlocked`, one `id tick` line each, and survive across runs when
+`--savedata` names a folder.
 
 ## Content restriction (`sceNpSetContentRestriction`, issue #41)
 
