@@ -6,10 +6,11 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "command_packets.h"
 #include "runtime/original.h"
 
 namespace render {
-struct RecordCommandBuffer { uint8_t unknown_0x00; };
+using RecordCommandBuffer = PacketBuffer;
 struct RecordShaderState { uint8_t unknown_0x00; };
 struct RecordPreparationState { uint8_t unknown_0x00; };
 struct SharedPresentDescriptor;
@@ -37,8 +38,8 @@ static_assert(offsetof(PresentRecordPayload, flags_25) == 0x25);
 
 struct PresentRecordContext {
     uint8_t unknown_0x0000[0x10];
-    RecordCommandBuffer commands;
-    uint8_t unknown_0x0011[0x3f];
+    PacketBuffer commands;
+    uint8_t unknown_0x0038[0x18];
     RecordShaderState shader_state;
     uint8_t unknown_0x0051[0xb427];
     uint8_t flags_b478;

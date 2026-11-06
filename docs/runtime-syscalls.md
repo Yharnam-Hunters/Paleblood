@@ -488,7 +488,7 @@ installed.
   given to `tools/boot.py --addcont LABEL` (repeatable), each installed, under service label 0.
   None are listed by default.
 - **Bloodborne's expansion:** The Old Hunters is `SPEXPANSIONDLC03`. Its data ships with patch 1.09
-  (bbport's notes), so the entitlement is all it needs.
+  (another Bloodborne port's notes), so the entitlement is all it needs.
 
 ## Ending a thread (`scePthreadExit`)
 
@@ -734,7 +734,7 @@ person running it chose:
 
 The runtime is offline: the one user is signed out of PSN for the whole run, and nothing about
 that ever changes. The facts come from shadPS4's `libSceNpManager` and `libSceNpMatching2`
-(`np_manager.h`, `np_types2.h`, `np_error.h`), checked against bbport and bbhost. The code is the
+(`np_manager.h`, `np_types2.h`, `np_error.h`), checked against two other Bloodborne ports. The code is the
 runtime's own.
 
 | Call | Runtime |
@@ -822,7 +822,7 @@ flexible memory to a budget. The budget is not established and the runtime does 
 
 ## The network errno and epoll sets (`sceNetErrnoLoc`, `sceNetEpoll*`)
 
-Facts from the shadPS4 `libSceNet` that bbport vendors (`net.cpp`, `guest_net.cpp`,
+Facts from shadPS4's `libSceNet` (`net.cpp`, `guest_net.cpp`,
 `net_error.h`, `net_types.h`) and from bbhost. The implementation is the runtime's own.
 
 - **Errors:** a failing call answers `0x80410100` plus a FreeBSD error number, and sets the
@@ -1185,7 +1185,7 @@ them in. A mounted save appears to the title as `/savedataN` (N the lowest free 
 the same file calls as `/app0` and `/data`, read-only or writable as mounted.
 
 **Sources.** shadPS4's `libSceSaveData` (`savedata.cpp`, `savedata.h`, `savedata_error.h`,
-`save_instance.cpp`, `save_memory.cpp`), checked against bbport, bbhost and the OpenOrbis
+`save_instance.cpp`, `save_memory.cpp`), checked against two other Bloodborne ports and the OpenOrbis
 headers. Where they disagree, shadPS4's answer is taken. The code is the runtime's own.
 
 **The title's SDK version decides some answers.** The executable says SDK `0x02000071`
@@ -1340,6 +1340,22 @@ past the mapping.
 - a size other than 0x48;
 - an address outside those mappings (other memory is not tracked yet);
 - a missing structure.
+
+## GNM: binding vertex and pixel shaders (`sceGnmSetVsShader`, `sceGnmSetPsShader`, issue #39)
+
+`sceGnmSetVsShader` and `sceGnmUpdateVsShader` take (command buffer, dwords, registers, modifier);
+`sceGnmSetPsShader` and `sceGnmUpdatePsShader` take (command buffer, dwords, registers). The
+argument order is shadPS4's `libSceGnmDriver` (`gnmdriver.cpp`). A boot shows the registers argument
+holding the shader's register block (7 words for a vertex shader, 12 for a pixel shader; see
+Paleblood's `docs/RENDERER.md`).
+
+| Detail | Answer |
+|---|---|
+| The reserved space | one PM4 NOP packet, as for the other command-buffer writers |
+| The shader | handed to the renderer, placed at the command-buffer address (runtime/renderer.h); nothing without the display |
+| The vertex shader's modifier | replaces `PGM_RSRC1`'s SGPR count (bits 6-9) and input VGPR count (bits 24-25): (`PGM_RSRC1 & 0xfcfffc3f`) OR the modifier, as shadPS4 applies it. The game's vertex shaders pass one (they call a fetch shader). A modifier with any other bit stops by name |
+| A null pixel shader block | no pixel shader (a depth-only pass): recorded as such, and a draw with it stops in the renderer |
+| No vertex shader registers | stops by name |
 
 ## GNM: compute queues (`sceGnmMapComputeQueue`, issue #39)
 

@@ -115,11 +115,24 @@ typedef struct {
     uint64_t buffer;
     rt_render_call *calls;
     size_t count, capacity;
+    int submitted;                   /* submitted since its last call: the next call starts it over */
 } call_list;
 
 static pthread_mutex_t lists_lock = PTHREAD_MUTEX_INITIALIZER;
 static call_list *lists;
 static size_t list_count;
+
+/* Calls placed by guest address (rt_render_record_*_at), waiting for the submission whose buffer
+   holds that address. A buffer that is never submitted leaves its calls here; past the limit the
+   oldest are dropped. */
+typedef struct {
+    uint64_t address;
+    rt_render_call call;
+} placed_call;
+
+enum { MAX_PLACED_CALLS = 4096 };
+static placed_call placed[MAX_PLACED_CALLS];
+static size_t placed_count;
 
 static call_list *list_for(uint64_t buffer)
 {
@@ -133,19 +146,25 @@ static call_list *list_for(uint64_t buffer)
 }
 
 /* Appends a call to its buffer's list; a smaller offset than the last call's starts the list over. */
+static int has_room(call_list *list)
+{
+    if (list->count == list->capacity) {
+        const size_t capacity = list->capacity ? list->capacity * 2 : 64;
+        rt_render_call *grown = realloc(list->calls, capacity * sizeof *grown);
+        if (grown) list->calls = grown, list->capacity = capacity;
+    }
+    return list->count < list->capacity;
+}
+
 static int record(uint64_t buffer, const rt_render_call *call, char *error, size_t error_size)
 {
     pthread_mutex_lock(&lists_lock);
     call_list *list = list_for(buffer);
     int result = -1;
     if (list) {
-        if (list->count && call->offset < list->calls[list->count - 1].offset) list->count = 0;
-        if (list->count == list->capacity) {
-            const size_t capacity = list->capacity ? list->capacity * 2 : 64;
-            rt_render_call *grown = realloc(list->calls, capacity * sizeof *grown);
-            if (grown) list->calls = grown, list->capacity = capacity;
-        }
-        if (list->count < list->capacity) {
+        if (list->submitted || (list->count && call->offset < list->calls[list->count - 1].offset)) list->count = 0;
+        list->submitted = 0;
+        if (has_room(list)) {
             list->calls[list->count++] = *call;
             result = 0;
         }
@@ -230,6 +249,62 @@ int rt_render_record_pixel_shader(uint64_t buffer, uint32_t offset, const uint32
     return record(buffer, &call, error, error_size);
 }
 
+static int place(uint64_t address, const rt_render_call *call)
+{
+    pthread_mutex_lock(&lists_lock);
+    if (placed_count == MAX_PLACED_CALLS) { /* drop the oldest: a buffer that was never submitted */
+        memmove(placed, placed + 1, (MAX_PLACED_CALLS - 1) * sizeof *placed);
+        placed_count--;
+    }
+    placed[placed_count++] = (placed_call){.address = address, .call = *call};
+    pthread_mutex_unlock(&lists_lock);
+    return 0;
+}
+
+int rt_render_record_vertex_shader_at(uint64_t address, const uint32_t words[RT_VERTEX_SHADER_WORDS])
+{
+    rt_render_call call = {.kind = RT_CALL_VERTEX_SHADER};
+    rt_vertex_shader_decode(words, &call.u.vertex_shader);
+    return place(address, &call);
+}
+
+int rt_render_record_pixel_shader_at(uint64_t address, const uint32_t words[RT_PIXEL_SHADER_WORDS])
+{
+    rt_render_call call = {.kind = RT_CALL_PIXEL_SHADER};
+    rt_pixel_shader_decode(words, &call.u.pixel_shader);
+    return place(address, &call);
+}
+
+/* Moves the placed calls inside [buffer, buffer + size) into the buffer's list, each at its offset
+   in order among the calls already there. Called with lists_lock held. */
+static void take_placed(uint64_t buffer, uint32_t size)
+{
+    call_list *list = NULL;
+    size_t kept = 0;
+    for (size_t i = 0; i < placed_count; i++) {
+        const placed_call *p = &placed[i];
+        if (p->address < buffer || p->address - buffer >= size) {
+            placed[kept++] = *p;
+            continue;
+        }
+        if (!list) {
+            list = list_for(buffer);
+            if (!list) { placed[kept++] = *p; continue; }
+            if (list->submitted) list->count = 0; /* a new use of the buffer */
+            list->submitted = 0;
+        }
+        if (!has_room(list)) { placed[kept++] = *p; continue; }
+        rt_render_call call = p->call;
+        call.offset = (uint32_t)(p->address - buffer);
+        size_t at = list->count;
+        while (at && list->calls[at - 1].offset > call.offset) at--;
+        memmove(list->calls + at + 1, list->calls + at, (list->count - at) * sizeof *list->calls);
+        list->calls[at] = call;
+        list->count++;
+    }
+    placed_count = kept;
+}
+
 int rt_render_record_user_data(uint64_t buffer, uint32_t offset, rt_shader_stage stage, unsigned slot, const uint32_t *words,
                                unsigned count, char *error, size_t error_size)
 {
@@ -247,11 +322,13 @@ int rt_render_record_user_data(uint64_t buffer, uint32_t offset, rt_shader_stage
 const rt_render_call *rt_render_submitted(uint64_t buffer, uint32_t size, size_t *count)
 {
     pthread_mutex_lock(&lists_lock);
+    take_placed(buffer, size);
     const rt_render_call *calls = NULL;
     *count = 0;
     for (size_t i = 0; i < list_count; i++) {
         if (lists[i].buffer != buffer) continue;
         calls = lists[i].calls;
+        lists[i].submitted = 1;
         while (*count < lists[i].count && lists[i].calls[*count].offset < size) (*count)++;
     }
     pthread_mutex_unlock(&lists_lock);
@@ -264,5 +341,6 @@ void rt_render_forget(void)
     for (size_t i = 0; i < list_count; i++) free(lists[i].calls);
     free(lists);
     lists = NULL, list_count = 0;
+    placed_count = 0;
     pthread_mutex_unlock(&lists_lock);
 }
