@@ -255,6 +255,55 @@ static void sampled_lookup(rt_executor *x)
     }
 }
 
+/* Every pixel of a 16 x 16 target is the triangle's colour (red, green, 0.25, 1) put through f: the
+   number of pixels that differ. */
+static int blended_misses(rt_executor *x, uint64_t target, void (*f)(float rgba[4]))
+{
+    uint32_t bgra[SIZE * SIZE];
+    char error[160] = "";
+    if (rt_executor_read_target(x, target, bgra, SIZE, SIZE, error, sizeof error)) return SIZE * SIZE;
+    int misses = 0;
+    for (int y = 0; y < SIZE; y++)
+        for (int px = 0; px < SIZE; px++) {
+            float c[4] = {((float)px + 0.5f) / SIZE, ((float)y + 0.5f) / SIZE, 0.25f, 1};
+            f(c);
+            const uint32_t p = bgra[y * SIZE + px];
+            misses += !(near(p >> 16 & 0xff, c[0]) && near(p >> 8 & 0xff, c[1]) && near(p & 0xff, c[2]) && near(p >> 24, c[3]));
+        }
+    return misses;
+}
+
+static void doubled(float c[4]) { for (int i = 0; i < 4; i++) c[i] = fminf(2 * c[i], 1); }
+static void halved(float c[4]) { for (int i = 0; i < 4; i++) c[i] *= 0.5f; }
+static void colour_halved_alpha_kept(float c[4]) { for (int i = 0; i < 3; i++) c[i] *= 0.5f; }
+
+/* Blending (CB_BLEND0_CONTROL; Mesa's sid.h numbers): the triangle drawn over itself with ONE + ONE
+   doubles it (saturated); over a new (zero) target with CONSTANT_COLOR and ONE, and the constant
+   (0.5, 0.5, 0.5, 0.5) in CB_BLEND_RED-ALPHA, halves it; with SEPARATE_ALPHA_BLEND and alpha's own
+   ONE, ZERO, alpha stays 1 while colour halves. */
+static void blending(rt_executor *x)
+{
+    enum { BLEND_BUFFER = 0xc0f30000, DOUBLE = 0x900000, HALF = 0x940000, SEPARATE = 0x980000, ONE = 1, CONSTANT_COLOR = 13, ZERO = 0 };
+    char error[200] = "";
+    const uint32_t enable = 1u << 30, separate = 1u << 29;
+    const uint32_t half = 0x3f000000;  /* 0.5f */
+    /* target 1's blending (CB_BLEND1_CONTROL) changes nothing while its slot is off */
+    const uint32_t plain[][2] = {{0xa1e0, 0}, {0xa1e1, enable | ONE | ONE << 8}};
+    CHECK(run_with_registers(x, BLEND_BUFFER, at(DOUBLE), plain, 2, 0, error, sizeof error) == 0);
+    const uint32_t add[][2] = {{0xa1e0, enable | ONE | ONE << 8}};
+    const int doubled_run = run_with_registers(x, BLEND_BUFFER, at(DOUBLE), add, 1, 0, error, sizeof error);
+    if (doubled_run) fprintf(stderr, "blend: %s\n", error);
+    CHECK(doubled_run == 0);
+    CHECK(blended_misses(x, at(DOUBLE), doubled) == 0);
+    const uint32_t constant[][2] = {{0xa105, half}, {0xa106, half}, {0xa107, half}, {0xa108, half}, {0xa1e0, enable | CONSTANT_COLOR | ONE << 8}};
+    CHECK(run_with_registers(x, BLEND_BUFFER, at(HALF), constant, 5, 0, error, sizeof error) == 0);
+    CHECK(blended_misses(x, at(HALF), halved) == 0);
+    const uint32_t alpha_apart[][2] = {{0xa105, half}, {0xa106, half}, {0xa107, half}, {0xa108, half},
+                                       {0xa1e0, enable | separate | CONSTANT_COLOR | ONE << 8 | ONE << 16 | ZERO << 24}};
+    CHECK(run_with_registers(x, BLEND_BUFFER, at(SEPARATE), alpha_apart, 5, 0, error, sizeof error) == 0);
+    CHECK(blended_misses(x, at(SEPARATE), colour_halved_alpha_kept) == 0);
+}
+
 int main(void)
 {
     const int fd = map_guest_memory();
@@ -299,8 +348,9 @@ int main(void)
     CHECK(run_with_registers(x, FOURTH, at(TARGET) + 0x400000, masked, 1, 0, error, sizeof error) == 0);
     uint32_t bgra[4];
     CHECK(rt_executor_read_target(x, at(TARGET) + 0x400000, bgra, 2, 2, error, sizeof error) == -1 && strstr(error, "no draw"));
-    const uint32_t blended[][2] = {{0xa1e0, 0x40000000}};
-    CHECK(run_with_registers(x, FOURTH, at(TARGET), blended, 1, 0, error, sizeof error) == -1 && strstr(error, "blending"));
+    const uint32_t dual_source[][2] = {{0xa1e0, 0x40000000u | 15}};
+    CHECK(run_with_registers(x, FOURTH, at(TARGET), dual_source, 1, 0, error, sizeof error) == -1 && strstr(error, "blend factor 15"));
+    blending(x);
     const uint32_t depth[][2] = {{0xa200, 0x2}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), depth, 1, 0, error, sizeof error) == -1 && strstr(error, "depth or stencil"));
     const uint32_t strips[][2] = {{0xc242, 5}};
@@ -309,8 +359,8 @@ int main(void)
     CHECK(run_with_registers(x, FOURTH, at(TARGET), partial, 1, 0, error, sizeof error) == -1 && strstr(error, "write mask"));
     const uint32_t resolve[][2] = {{0xa202, 0x3u << 4 | 0xccu << 16}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), resolve, 1, 0, error, sizeof error) == -1 && strstr(error, "colour mode 3"));
-    const uint32_t unknown[][2] = {{0xa1e1, 0}};
-    CHECK(run_with_registers(x, FOURTH, at(TARGET), unknown, 1, 0, error, sizeof error) == -1 && strstr(error, "0xa1e1"));
+    const uint32_t unknown[][2] = {{0xa1e8, 0}};
+    CHECK(run_with_registers(x, FOURTH, at(TARGET), unknown, 1, 0, error, sizeof error) == -1 && strstr(error, "0xa1e8"));
     CHECK(run_with_registers(x, FOURTH, at(TARGET), normal, 0, 2, error, sizeof error) == -1 && strstr(error, "2 instances"));
     CHECK(rt_executor_read_target(x, at(0x300000), bgra, 2, 2, error, sizeof error) == -1 && strstr(error, "no draw"));
     CHECK(rt_executor_read_target(x, at(TARGET), bgra, SIZE + 1, 1, error, sizeof error) == -1);
