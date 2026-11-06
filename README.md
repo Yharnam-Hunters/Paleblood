@@ -11,6 +11,11 @@ The game doesn't run on Paleblood yet: 21 of 157757 functions are verified (0.01
 [Discussions](https://github.com/Yharnam-Hunters/Paleblood/discussions) ·
 [Contributing](CONTRIBUTING.md)
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/status-dark.svg">
+  <img alt="Paleblood status: system imports by library, imports working at each recorded boot, the boot milestone and the decompilation" src="docs/assets/status-light.svg" width="100%">
+</picture>
+
 <!-- progress:start -->
 | | Functions | Bytes |
 |---|---:|---:|
