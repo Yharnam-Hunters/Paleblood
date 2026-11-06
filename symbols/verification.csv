@@ -187,8 +187,12 @@ render_calculate_record_descriptor_level_offset,edge,,30,30,0,0,a5d954dded06630e
 render_calculate_second_auxiliary,edge,,78,78,0,0,deb55a42a7809e02,2026-11-04
 render_clear_swap_chain_cached_record,edge,,4,4,0,0,a60ba829b4ee3339,2026-11-05
 render_clear_swap_chain_curve,edge,,4,4,0,0,5a71df9af3b63595,2026-11-05
+render_command_buffer_init,edge,,36,36,0,0,14a30740452f4f8b,2026-11-05
 render_command_emit_counter_operation,edge,,16,16,0,0,c0e3c539e38745c7,2026-11-05
 render_command_prepare_submission,edge,,11,11,0,0,9822deb01ff1c2ff,2026-11-05
+render_command_submit_batch,edge,,13,13,0,0,2ee9854251c50c40,2026-11-05
+render_command_submit_present,edge,,9,9,0,0,b8ee9152c0569673,2026-11-05
+render_command_submit_snapshot,edge,,18,18,0,0,f2ce864340b8ea47,2026-11-05
 render_compose_record_encoding_fields,edge,,30,30,0,0,c6bfe3dc4c1e12ad,2026-11-05
 render_convert_record_descriptor_classification,edge,,236,236,0,0,a130fb1ef6469c41,2026-11-05
 render_emit_present_last_record_packet,edge,,18,18,0,0,b2f347007c600225,2026-11-04
