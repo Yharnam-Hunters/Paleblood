@@ -10,13 +10,13 @@ constexpr uint32_t item_packet_selector = 4;
 }  // namespace
 
 extern "C" uintptr_t bb_render_process_present_finish_item(
-    render::FinishItemProcessor *processor, render::GpuCommandState *commands,
+    render::FinishItemProcessor *processor, render::PacketBuffer *commands,
     uintptr_t item)
 {
     const uint64_t count = processor->count.get();
     const uintptr_t address = item + count * finish_item_word_bytes - finish_item_word_bytes;
     auto *trailer = reinterpret_cast<render::FinishItemTrailer *>(address);
     trailer->word.set(processed_item_word);
-    return render::emit_processed_present_finish_item(
-        commands, item_packet_selector, trailer, 0, 0, commands);
+    return render::emit_present_release_delegate(
+        commands, item_packet_selector, address, 0, 0);
 }

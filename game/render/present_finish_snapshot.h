@@ -13,6 +13,6 @@ namespace render {
 namespace finish_snapshot_calls {
 RT_ORIGINAL(0x01489a10, sceGnmSubmitCommandBuffers,
             void(uint32_t count, const uint64_t *begins,
-                 const uint32_t *sizes, uint32_t, uint32_t));
+                 const uint32_t *sizes, const uint64_t *ccb_begins, const uint32_t *ccb_sizes));
 }  // namespace finish_snapshot_calls
 }  // namespace render

@@ -90,6 +90,7 @@ def base_cases():
 
 
 def cases():
+    """Exercise cached pool sizes, block links, and callback-mutated management state."""
     yield from base_cases()
     for stage in ("new_head", "append_tail", "zero_slot"):
         c = next(c for c in base_cases() if c["id"] == "allocation_failure_1_retry_0")
@@ -154,7 +155,28 @@ def cases():
     yield c
 
 
+    case = next(case for case in base_cases() if case["id"] == "allocation_failure_0_retry_1")
+    case["id"] = "slot_count_captured_before_pop_changes_it"
+    first_pop = next(stub for stub in case["stubs"] if stub["address"] == "0x02ad3b80")
+    first_pop["writes"] = [{"arg": 0, "offset": 8, "bytes": qword(8), "size": 8}]
+    yield case
+
+    case = next(case for case in base_cases() if case["id"] == "allocation_failure_1_retry_0")
+    case["id"] = "link_index_above_one_byte"
+    case["buffers"]["block"] = {"size": 4096, "bytes": "a5" * 4096}
+    case["memory"].extend([
+        {"addr": "buf:self+0xb4d8", "bytes": qword(0)},
+        {"addr": "buf:self+0xb4e0", "bytes": qword(0)},
+        {"addr": "buf:self+0xb4e8", "bytes": word(300)},
+    ])
+    case["stubs"][-1]["ret"] = "buf:block"
+    case["stubs"].append({"address": "0x02ab0b00", "argc": 4, "ret": 0,
+                          "argmem": [{"arg": 2, "size": 64}]})
+    yield case
+
+
 def main():
+    """Write deterministic synthetic cases to the requested directory."""
     if len(sys.argv) != 2:
         print(__doc__, file=sys.stderr)
         return 2

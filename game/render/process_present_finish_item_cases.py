@@ -47,7 +47,7 @@ def cases():
             c["buffers"].update({"commands": {"size": 64}, "item": {"size": 128, "bytes": "a5" * 128}})
             c["args"].update({"rsi": "buf:commands", "rdx": "buf:item+8"})
             c["memory"] = [{"addr": "buf:self+8", "bytes": qword(count)}]
-            c["stubs"] = [{"address": "0x02abb6d0", "argc": 6, "ret": hex(result)}]
+            c["stubs"] = [{"address": "0x02abb6d0", "argc": 5, "argi": [0, 2, 3], "argu32": [1, 4], "ret": hex(result)}]
             yield c
 
 

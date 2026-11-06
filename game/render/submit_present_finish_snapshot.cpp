@@ -13,7 +13,7 @@ extern "C" void bb_render_submit_present_finish_snapshot(
     const CommandBufferSnapshot *first;
     const CommandBufferSnapshot *second;
     if (optional_commands != nullptr) {
-        prepare_counter_wait(state->owner.get()->counters.get(),
+        prepare_counter_wait(state->owner->counters,
                              &optional_commands->buffer.commands);
         first = &optional_commands->buffer;
         second = snapshot;
@@ -27,6 +27,6 @@ extern "C" void bb_render_submit_present_finish_snapshot(
     const auto regions = collect_command_regions(*first, *second);
     if (regions.count != 0) {
         finish_snapshot_calls::sceGnmSubmitCommandBuffers(
-            regions.count, regions.addresses, regions.sizes, 0, 0);
+            regions.count, regions.addresses, regions.sizes, nullptr, nullptr);
     }
 }
