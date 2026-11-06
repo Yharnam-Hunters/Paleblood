@@ -143,6 +143,14 @@ class ChangedFileClassification(unittest.TestCase):
         self.assertEqual(runtime_pr.classify_paths(['runtime/syslib/time.c', 'tools/new_tool.py'])[
             'classification'], 'decompilation/mixed')
 
+    def test_syslib_tests_in_their_own_files_are_runtime(self):
+        paths = ['runtime/syslib/pad.c', 'test/syslib/pad_input.c', 'test/syslib_test.h']
+        self.assertEqual(runtime_pr.classify_paths(paths)['classification'], 'runtime-only')
+        for path in ('test/syslib/helper.py', 'test/syslib/deep/x.c', 'test/other/x.c'):
+            with self.subTest(path=path):
+                self.assertEqual(runtime_pr.classify_paths(['runtime/syslib/pad.c', path])['classification'],
+                                 'decompilation/mixed')
+
     def test_unsafe_and_empty_path_sets_fail_closed(self):
         self.assertEqual(runtime_pr.classify_paths(['runtime/../game/x.cpp'])['classification'],
                          'decompilation/mixed')

@@ -52,19 +52,32 @@ enum {
 };
 
 /* Images (MIMG). A shader names an image by the SGPRs holding its 8-word descriptor (T#), which the
-   GPU reads as it runs. The translator turns each into a storage image the caller binds: descriptor
-   set 0, binding i for images[i], whose shape the caller reads from the descriptor before
-   translating (gcn_image_resources lists which SGPRs a program uses). A MIMG instruction whose
-   descriptor SGPRs are not one of the bindings stops translation.
+   GPU reads as it runs. The translator turns each into an image the caller binds: descriptor set 0,
+   binding i for images[i], whose shape the caller reads from the descriptor before translating
+   (gcn_image_resources lists the descriptors a program uses and where each comes from).
 
-   A sampled binding is read through a sampled image (Vulkan's SAMPLED_IMAGE descriptor) instead:
-   its texel format and DST_SEL are the bound view's, and image_load and image_load_mip fetch from
-   it (the level counted from the view's first). Storage images are for compute shaders, which
-   write them. */
+   A descriptor comes from the user data (the SGPRs hold it from the start), or from memory: the
+   program loads it with an s_load_dwordx8 at an immediate offset from a pointer in two user-data
+   SGPRs, which the caller reads at draw time. One SGPR range can hold different descriptors at
+   different MIMG instructions (the game's pixel shaders read a user-data image, then load another
+   descriptor over it); each MIMG's own is found from the code before it, when that code runs straight
+   through (no branch before the instruction, and none back to it). A descriptor written any other way
+   stops by name, as does a MIMG instruction whose descriptor is not one of the bindings.
+
+   A sampled binding is read through a sampled image (Vulkan's SAMPLED_IMAGE descriptor): its texel
+   format and DST_SEL are the bound view's, and image_load and image_load_mip fetch from it (the level
+   counted from the view's first). Storage images are for compute shaders, which write them. */
+typedef struct {
+    int from_memory;                  /* 0: in the user data from sgpr; 1: loaded from memory */
+    unsigned sgpr;                    /* the descriptor's first SGPR where the MIMG instruction reads it */
+    unsigned pointer_sgpr;            /* from memory: the user-data SGPR pair holding the pointer (48 bits) */
+    uint32_t offset;                  /* from memory: the descriptor's byte offset from the pointer */
+} gcn_resource_origin;
+
 typedef enum { GCN_IMAGE_1D, GCN_IMAGE_2D, GCN_IMAGE_3D } gcn_image_dim;
 typedef enum { GCN_IMAGE_FLOAT, GCN_IMAGE_UINT, GCN_IMAGE_SINT } gcn_image_sample_type;
 typedef struct {
-    unsigned sgpr;                    /* the descriptor's first SGPR (a multiple of 4) */
+    gcn_resource_origin origin;
     gcn_image_dim dim;
     int arrayed;
     gcn_image_sample_type type;      /* how its texels read and write: floats (unorm, float, ...) or integers */
@@ -74,11 +87,26 @@ typedef struct {
 
 enum { GCN_MAX_IMAGES = 8, GCN_IMAGE_READ = 1, GCN_IMAGE_WRITE = 2 };
 
-/* The images a program uses: the first SGPR of each distinct descriptor its MIMG instructions name,
-   into sgprs (up to max), with how each is used (GCN_IMAGE_READ | GCN_IMAGE_WRITE) into access.
-   0 and *count, or -1 with the reason (more images than max, code that does not decode). */
-int gcn_image_resources(const uint32_t *code, size_t dwords, unsigned *sgprs, unsigned *access, unsigned max, unsigned *count,
-                        char *error, size_t error_size);
+typedef struct {
+    gcn_resource_origin origin;
+    unsigned access;                 /* GCN_IMAGE_READ | GCN_IMAGE_WRITE */
+} gcn_image_resource;
+
+/* Samplers (S#, 4 words), which image_sample names by its SSAMP SGPRs, are found the same way (an
+   s_load_dwordx4 for one from memory). The caller binds sampler j at set 0, binding image_count + j,
+   and makes it from the descriptor. */
+enum { GCN_MAX_SAMPLERS = 8 };
+
+/* The distinct sampler descriptors a program's image_sample instructions use, by origin. 0 and
+   *count, or -1 with the reason. */
+int gcn_sampler_resources(const uint32_t *code, size_t dwords, gcn_resource_origin *samplers, unsigned max, unsigned *count, char *error,
+                          size_t error_size);
+
+/* The distinct image descriptors a program's MIMG instructions use, by origin, into resources (up to
+   max). 0 and *count, or -1 with the reason (more images than max, code that does not decode, a
+   descriptor whose origin is not one of the two above). */
+int gcn_image_resources(const uint32_t *code, size_t dwords, gcn_image_resource *resources, unsigned max, unsigned *count, char *error,
+                        size_t error_size);
 
 typedef struct {
     uint32_t local_size[3];  /* the workgroup's size */
@@ -131,6 +159,8 @@ typedef struct {
     uint64_t error_address;   /* the run-time stop word (GCN_RUNTIME_STOP_*), or 0: run-time cases stop translation */
     const gcn_image_binding *images;
     unsigned image_count;
+    const gcn_resource_origin *samplers;
+    unsigned sampler_count;
 } gcn_pixel_layout;
 
 int gcn_translate_pixel(const uint32_t *code, size_t dwords, const gcn_pixel_layout *layout,
