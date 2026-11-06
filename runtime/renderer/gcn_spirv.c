@@ -60,6 +60,9 @@ typedef struct {
     unsigned image_count;
     const gcn_resource_origin *samplers;
     unsigned sampler_count;
+    const uint32_t *callee;          /* a vertex shader's fetch shader, inlined at its call */
+    size_t callee_dwords;
+    uint64_t code_address;
 } stage_layout;
 
 enum { POSITION_TARGET = 12, PARAMETER_TARGET_FIRST = 32, PARAMETER_COUNT = 32, COLOR_TARGET_COUNT = 8, MAX_INTERFACE = 80 };
@@ -1523,6 +1526,8 @@ static unsigned sgprs_written(const uint32_t *w, const gcn_instruction *ins, uns
     unsigned n = 0;
     switch (ins->encoding) {
     case GCN_SOP1: case GCN_SOP2: case GCN_SOPK:
+        /* a call runs code the analyses here do not see: take it as writing every SGPR */
+        if (!strcmp(name, "s_swappc_b64")) return *first = 0, SGPR_VCC;
         if (!strncmp(name, "s_cmpk", 6) || !strncmp(name, "s_setreg", 8) || !strcmp(name, "s_setpc_b64") || !strncmp(name, "s_cbranch", 9) ||
             !strcmp(name, "s_rfe_b64"))
             return 0;
@@ -1976,13 +1981,100 @@ int gcn_sampler_resources(const uint32_t *code, size_t dwords, gcn_resource_orig
     return 0;
 }
 
+int gcn_call_sgpr(const uint32_t *code, size_t dwords, unsigned *sgpr, char *error, size_t error_size)
+{
+    const long program = gcn_program_dwords(code, dwords);
+    if (program < 0) {
+        snprintf(error, error_size, "no program end found");
+        return -1;
+    }
+    int calls = 0;
+    for (size_t at = 0; at < (size_t)program;) {
+        gcn_instruction ins;
+        if (gcn_decode(code + at, (size_t)program - at, &ins) || !ins.name) {
+            snprintf(error, error_size, "dword %zu: an instruction the decoder cannot name", at);
+            return -1;
+        }
+        if (!strcmp(ins.name, "s_swappc_b64")) {
+            if (calls++) {
+                snprintf(error, error_size, "more than one call (s_swappc_b64 at dword %zu)", at);
+                return -1;
+            }
+            *sgpr = code[at] & 0xff;
+            /* the target pair holds the user data's value: nothing before the call writes it or branches */
+            for (size_t p = 0; p < at;) {
+                gcn_instruction before;
+                gcn_decode(code + p, (size_t)program - p, &before);
+                unsigned first = 0;
+                const unsigned n = sgprs_written(code + p, &before, &first);
+                long target;
+                if ((n && first < *sgpr + 2 && *sgpr < first + n) || branches(code + p, &before, p, &target)) {
+                    snprintf(error, error_size, "a call through s[%u:%u] after %s at dword %zu: not done yet", *sgpr, *sgpr + 1, before.name, p);
+                    return -1;
+                }
+                p += before.dwords;
+            }
+        }
+        at += ins.dwords;
+    }
+    return calls;
+}
+
+static void translate_instruction(translator *t, const uint32_t *code, const decoded *d);
+
+/* s_swappc_b64 sdst, ssrc: the callee (the layout's, the code at the address the user data's ssrc pair
+   holds, which gcn_call_sgpr checked) runs in place, after sdst takes the return address; its closing
+   s_setpc_b64 to sdst returns here. */
+static void inline_call(translator *t, const uint32_t *w, size_t at)
+{
+    const unsigned return_sgpr = (w[0] >> 16) & 0x7f, target_sgpr = w[0] & 0xff;
+    const stage_layout *l = t->layout;
+    if (!l->callee || !l->code_address) {
+        fail(t, "s_swappc_b64: a call with no callee given");
+        return;
+    }
+    if (target_sgpr >= l->user_sgprs || return_sgpr + 1 >= SGPR_VCC) {
+        fail(t, "s_swappc_b64 s[%u:%u], s[%u:%u]: not done yet", return_sgpr, return_sgpr + 1, target_sgpr, target_sgpr + 1);
+        return;
+    }
+    const uint64_t return_address = l->code_address + (at + 1) * BYTES_PER_DWORD;
+    store(t, t->out, sgpr(t, return_sgpr), konst(t, (uint32_t)return_address));
+    store(t, t->out, sgpr(t, return_sgpr + 1), konst(t, (uint32_t)(return_address >> 32)));
+    for (size_t p = 0; p < l->callee_dwords && !t->failed;) {
+        decoded d = {.at = p};
+        if (gcn_decode(l->callee + p, l->callee_dwords - p, &d.ins) || !d.ins.name) {
+            fail(t, "the callee's dword %zu: an instruction the decoder cannot name", p);
+            return;
+        }
+        if (!strcmp(d.ins.name, "s_setpc_b64")) {
+            if ((l->callee[p] & 0xff) != return_sgpr) fail(t, "the callee returns through s[%u:%u], not the call's return pair", l->callee[p] & 0xff,
+                                                           (l->callee[p] & 0xff) + 1);
+            return;
+        }
+        long target;
+        unsigned first = 0;
+        const unsigned n = sgprs_written(l->callee + p, &d.ins, &first);
+        if (branches(l->callee + p, &d.ins, p, &target) || !strcmp(d.ins.name, "s_endpgm") || d.ins.encoding == GCN_MIMG ||
+            (n && first < return_sgpr + 2 && return_sgpr < first + n)) {
+            fail(t, "the callee's %s at dword %zu: only straight-line callees without images that keep the return pair are done", d.ins.name, p);
+            return;
+        }
+        translate_instruction(t, l->callee, &d);
+        p += d.ins.dwords;
+    }
+    fail(t, "the callee has no s_setpc_b64 return");
+}
+
 static void translate_instruction(translator *t, const uint32_t *code, const decoded *d)
 {
     const gcn_instruction *ins = &d->ins;
     const uint32_t *w = code + d->at;
     switch (ins->encoding) {
     case GCN_VOP1: case GCN_VOP2: case GCN_VOPC: case GCN_VOP3: vector_instruction(t, w, ins); break;
-    case GCN_SOP1: case GCN_SOP2: case GCN_SOPK: case GCN_SOPC: case GCN_SOPP: scalar_instruction(t, w, ins); break;
+    case GCN_SOP1: case GCN_SOP2: case GCN_SOPK: case GCN_SOPC: case GCN_SOPP:
+        if (!strcmp(ins->name, "s_swappc_b64")) inline_call(t, w, d->at);
+        else scalar_instruction(t, w, ins);
+        break;
     case GCN_SMRD: scalar_memory(t, w, ins); break;
     case GCN_MUBUF: case GCN_MTBUF: buffer_memory(t, w, ins); break;
     case GCN_EXP: export_instruction(t, w); break;
@@ -2246,6 +2338,7 @@ int gcn_translate_vertex(const uint32_t *code, size_t dwords, const gcn_vertex_l
 {
     const stage_layout s = {.stage = STAGE_VERTEX, .user_sgprs = layout->user_sgprs, .workgroup_id_x_sgpr = -1,
                             .vertex_index_vgpr = layout->vertex_index_vgpr, .output_control = layout->output_control,
+                            .callee = layout->callee, .callee_dwords = layout->callee_dwords, .code_address = layout->code_address,
                             .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address};
     return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
 }
