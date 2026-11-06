@@ -23,8 +23,8 @@ extern "C" void bb_render_record_normalize_mode4(render::NormalizedRecordMode4 *
     }
     if (supplied == nullptr) {
         const uint32_t derived = derive_record_parameter(kind, output->input.selector,
-                                                         output->input.parameter_14,
-                                                         output->input.parameter_18, output->input.mode);
+                                                         output->input.compatibility_kind,
+                                                         output->input.resource_flags, output->input.secondary_flags);
         const uint32_t status = apply_record_mapping(&output->supplied, derived, output->mapping, 1);
         if (status != 0) {
             report_record_normalization_error(status);
@@ -38,7 +38,7 @@ extern "C" void bb_render_record_normalize_mode4(render::NormalizedRecordMode4 *
         if (output->status != 0) return;
         selector = output->input.selector;
     }
-    if (record_auxiliary_predicate(output->input.parameter_18, selector) != 0) {
+    if (record_auxiliary_predicate(output->input.resource_flags, selector) != 0) {
         output->status = translate_record_tertiary(&output->tertiary, output->input.selector);
         if (output->status != 0) return;
     }

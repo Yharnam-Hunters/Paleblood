@@ -26,17 +26,17 @@ extern "C" void bb_render_record_normalize_mode3(render::NormalizedRecordMode3 *
     }
     if (supplied == nullptr) {
         const uint32_t derived = derive_record_parameter(kind, output->input.selector,
-                                                         output->input.parameter_1c,
-                                                         output->input.parameter_20, output->input.mode);
+                                                         output->input.compatibility_kind,
+                                                         output->input.resource_flags, output->input.secondary_flags);
         const uint32_t mapping = output->mapping;
         uint32_t parameter;
-        if ((static_cast<uint8_t>(output->input.parameter_20) & combined_parameter_mask) != 0) {
-            const uint32_t flag = (output->input.mode & combined_parameter_flag) >> combined_parameter_flag_shift;
-            const uint32_t combined = combine_record_parameters(output->input.parameter_14,
-                                                                output->input.flags, flag);
+        if ((static_cast<uint8_t>(output->input.resource_flags) & combined_parameter_mask) != 0) {
+            const uint32_t flag = (output->input.secondary_flags & combined_parameter_flag) >> combined_parameter_flag_shift;
+            const uint32_t combined = combine_record_parameters(output->input.layout,
+                                                                output->input.layout_parameter, flag);
             parameter = reduce_record_parameter(combined);
         } else {
-            parameter = output->input.parameter_14;
+            parameter = output->input.layout;
         }
         const uint32_t status = apply_record_mapping(&output->supplied, derived, mapping, parameter);
         if (status != 0) {
@@ -51,7 +51,7 @@ extern "C" void bb_render_record_normalize_mode3(render::NormalizedRecordMode3 *
         if (output->status != 0) return;
         selector = output->input.selector;
     }
-    if (record_auxiliary_predicate(output->input.parameter_20, selector) != 0) {
+    if (record_auxiliary_predicate(output->input.resource_flags, selector) != 0) {
         output->status = translate_record_tertiary(&output->tertiary, output->input.selector);
         if (output->status != 0) return;
     }

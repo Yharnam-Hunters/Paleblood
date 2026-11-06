@@ -1042,7 +1042,35 @@ INPUTS.extend(
 )
 
 
-def fixtures():
+
+def distinct_parameter_input(label, resource_flags, secondary_flags):
+    """Observe each lower helper operand using distinct resource field values."""
+    values = [17, 34, 51, 3, 22, 52, 82, 119, 1192960, 11259375]
+    values[6] = resource_flags
+    values[8] = secondary_flags
+    return {
+        "id": label,
+        "args": ["p32", "p128", 0, 0],
+        "words": [(128 + 4 * index, value) for index, value in enumerate(values)],
+        "stubs": [
+            {"address": "0x02abaf10", "argc": 5, "argi": [], "argu32": list(range(5)), "ret": 0x12345678},
+            {
+                "address": "0x0149cb30",
+                "argc": 4,
+                "argi": [0],
+                "argu32": [1, 2, 3],
+                "ret": 0,
+                "writes": [{"arg": 0, "bytes": "44332211"}],
+            },
+            {"address": "0x02ab7ab0", "argc": 3, "argi": [], "argu32": [0, 1, 2], "ret": 0x13579bdf},
+            {"address": "0x02ab7e40", "argc": 1, "argi": [], "argu32": [0], "ret": 0x2468ace0},
+            {"address": "0x02abb4f0", "argc": 2, "argi": [], "argu32": [0, 1], "ret": 0},
+        ],
+    }
+
+INPUTS.append(distinct_parameter_input("distinct_derive_operands", 0x52, 0x123400))
+
+def cases():
     """Yield inputs without calculating the expected replacement outputs."""
     registers = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
     for index, inputs in enumerate(INPUTS):
@@ -1050,16 +1078,17 @@ def fixtures():
         for offset, value in inputs.get("words", []):
             struct.pack_into("<I", arena, offset, value & 0xFFFFFFFF)
 
-        def wire(value):
+        def argument_value(value):
+            """Format an integer argument or its synthetic arena-relative address."""
             return (
                 "buf:arena+0x" + format(int(value[1:]), "x")
                 if isinstance(value, str) and value.startswith("p")
                 else hex(value)
             )
 
-        values = [wire(v) for v in inputs["args"]]
+        values = [argument_value(v) for v in inputs["args"]]
         args = {register: (values[i] if i < len(values) else "0x0") for i, register in enumerate(registers)}
-        args.update({k: wire(v) for k, v in inputs.get("incoming", {}).items()})
+        args.update({k: argument_value(v) for k, v in inputs.get("incoming", {}).items()})
         case = {
             "schema": 1,
             "address": ADDRESS,
@@ -1081,10 +1110,10 @@ def main():
     """Write deterministic synthetic cases to the requested directory."""
     destination = Path(sys.argv[1])
     destination.mkdir(parents=True, exist_ok=True)
-    cases = list(fixtures())
-    for case in cases:
+    generated = list(cases())
+    for case in generated:
         (destination / (case["id"] + ".json")).write_text(json.dumps(case, indent=1) + "\n")
-    print(str(len(cases)) + " synthetic cases written")
+    print(str(len(generated)) + " synthetic cases written")
 
 
 if __name__ == "__main__":
