@@ -2,7 +2,9 @@ name: macos-guest-tls
 
 on:
   push:
-    branches-ignore: ['gh-readonly-queue/**']
+    # main only: a pull request's branch is checked by its pull_request run and the merge queue's
+    # temporary branch by its merge_group run, so a push to either would test the same commit again.
+    branches: [main]
     paths:
       - '.github/workflows/macos-guest-tls.yml'
       - 'CMakeLists.txt'
