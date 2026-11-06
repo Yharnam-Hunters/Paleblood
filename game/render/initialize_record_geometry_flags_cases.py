@@ -80,6 +80,10 @@ INPUTS = [
 ]
 
 
+# The whole parameter word must equal1; a matching low byte is insufficient.
+INPUTS.extend({"args": ["p33", selector, 0x101], "words": []} for selector in range(7, 13))
+
+
 def fixtures():
     """Yield inputs without calculating the expected replacement outputs."""
     registers = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]

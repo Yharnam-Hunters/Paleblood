@@ -103,6 +103,6 @@ extern "C" uint64_t bb_render_initialize_pair_record_descriptor(
     uint64_t total;
     uint32_t unit;
     if (get_record_descriptor_size(&total, &unit, output) != 0) return 0;
-    const uint32_t low = total >> packed_high_shift ? 0 : static_cast<uint32_t>(total);
+    const uint32_t low = (total >> packed_high_shift) != 0 ? 0 : static_cast<uint32_t>(total);
     return (uint64_t(unit) << packed_high_shift) | low;
 }
