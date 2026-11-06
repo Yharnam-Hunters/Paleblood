@@ -50,6 +50,13 @@ class StatusCard(unittest.TestCase):
         self.assertEqual(status_card.gained_in_week(history[:2]), 50)  # nothing a week older: the first
         self.assertEqual(status_card.gained_in_week([]), 0)
 
+    def test_a_timeout_is_reported_as_still_running_not_by_address(self):
+        rt = {'first_unimplemented': None, 'stopped_by_hook': None, 'runtime_stop': None,
+              'fault': {'address': '0x0', 'at': 'host+0x7f801cb7bcc0', 'signal': 0}, 'outcome': 'timeout'}
+        stop = progress.boot_stop(rt)
+        self.assertIn('still running', stop)
+        self.assertNotIn('host+', stop)
+
     def test_squarify_tiles_the_whole_area_in_proportion(self):
         sizes = [202, 79, 50, 35, 32, 6, 1]
         rects = status_card.squarify(sizes, 10, 20, 600, 400)
