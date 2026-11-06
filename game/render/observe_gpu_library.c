@@ -31,6 +31,11 @@
    The stencil reference setters write DB_STENCILREFMASK (0xa10c) and DB_STENCILREFMASK_BF (0xa10d) in one
    packet: 0x01473190 (command buffer, value) writes the value to both, 0x014731f0 (command buffer,
    front, back) one to each.
+   Indexed draws: 0x014752c0 (command buffer, address) writes INDEX_BASE with the address's bits 1-31
+   and 32-39 (an even 40-bit address); 0x01475320 (command buffer, count) INDEX_BUFFER_SIZE;
+   0x01475270 (command buffer, type) INDEX_TYPE with the type as it is; 0x01474420 (command buffer,
+   first, count) DRAW_INDEX_OFFSET_2 with MAX_SIZE = count, INDEX_OFFSET = first, INDEX_COUNT = count and
+   initiator 0, then an event or a NOP.
    The command buffer starts with its begin and holds its cursor at +0x10 (game/render/command_packets.h). */
 #include "runtime/observe_hooks.h"
 #include "runtime/render_observer.h"
@@ -126,12 +131,50 @@ static void stencil_reference_each(const uint64_t args[RT_OBSERVED_ARGUMENTS])
     stencil_references(args, (uint32_t)args[ARGUMENT_FRONT], (uint32_t)args[ARGUMENT_BACK]);
 }
 
+enum { ARGUMENT_INDEX_VALUE = 1, ARGUMENT_INDEX_COUNT = 2 };
+static const uint64_t index_base_mask = 0xfffffffffeull; /* bits 1-39 */
+
+static uint64_t observed_buffer(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    return *(const uint64_t *)(uintptr_t)(args[ARGUMENT_COMMAND_BUFFER] + COMMAND_BUFFER_BEGIN);
+}
+
+static uint32_t observed_offset(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    return (uint32_t)(*(const uint64_t *)(uintptr_t)(args[ARGUMENT_COMMAND_BUFFER] + COMMAND_BUFFER_CURSOR) - observed_buffer(args));
+}
+
+static void index_base(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    rt_observe_index_base(observed_buffer(args), observed_offset(args), args[ARGUMENT_INDEX_VALUE] & index_base_mask);
+}
+
+static void index_size(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    rt_observe_index_size(observed_buffer(args), observed_offset(args), (uint32_t)args[ARGUMENT_INDEX_VALUE]);
+}
+
+static void index_type(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    rt_observe_index_type(observed_buffer(args), observed_offset(args), (uint32_t)args[ARGUMENT_INDEX_VALUE]);
+}
+
+static void draw_index_offset(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    rt_observe_draw_index_offset(observed_buffer(args), observed_offset(args), (uint32_t)args[ARGUMENT_INDEX_VALUE],
+                                 (uint32_t)args[ARGUMENT_INDEX_COUNT]);
+}
+
 const rt_observe_hook game_observe_hooks[] = {
     {0x01473190, 87, "render_set_stencil_reference", stencil_reference_both},
     {0x014731f0, 99, "render_set_stencil_reference_separate", stencil_reference_each},
     {0x014738b0, 246, "render_set_render_target", render_target},
     {0x014739b0, 344, "render_set_depth_render_target", depth_target},
+    {0x01474420, 176, "render_draw_index_offset", draw_index_offset},
     {0x01474c50, 177, "render_dispatch", dispatch},
+    {0x01475270, 76, "render_set_index_type", index_type},
+    {0x014752c0, 92, "render_set_index_base", index_base},
+    {0x01475320, 76, "render_set_index_buffer_size", index_size},
     {0x014761a0, 156, "render_set_user_data_4_words_marker_4", four_words},
     {0x01476240, 172, "render_set_user_data_8_words", eight_words},
     {0x014762f0, 156, "render_set_user_data_4_words_marker_6", four_words},

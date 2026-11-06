@@ -358,6 +358,13 @@ Instead:
           the calls set across runs too. The game's command buffers continue into new blocks as they
           fill (a buffer that sets a compute shader at its end, the next one dispatching it).
           `rt_executor_reset` forgets it, for tests' independent cases.
+        - **Indexed draws:** `INDEX_BASE` (`0x014752c0`), `INDEX_BUFFER_SIZE` (`0x01475320`),
+          `INDEX_TYPE` (`0x01475270`) and `DRAW_INDEX_OFFSET_2` (`0x01474420`) are observed and
+          recorded; the draw binds the guest memory buffer as Vulkan's index buffer from the base plus
+          the first index, 16- or 32-bit indices (VGT_INDEX_TYPE; swaps stop by name). The packet's
+          `MAX_SIZE`, which the library sets to the count, is taken as counting from `INDEX_OFFSET`, as
+          shadPS4 reads it and the game's draws need (they start past it): inferred, not documented.
+          The game's logo pass draws this way, blended, into the image its fullscreen pass then reads.
         - **Depth targets:** the depth target's setter (`0x014739b0`, observed)
           reports the registers it writes (`DB_Z_INFO` to `DB_DEPTH_SLICE`, `DB_DEPTH_VIEW`, ...), the
           stencil reference setters (`0x01473190`, `0x014731f0`) `DB_STENCILREFMASK` and `_BF`, and the

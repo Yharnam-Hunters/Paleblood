@@ -278,6 +278,30 @@ int rt_render_record_instances(uint64_t buffer, uint32_t offset, uint32_t count,
     return record(buffer, &call, error, error_size);
 }
 
+int rt_render_record_index_base(uint64_t buffer, uint32_t offset, uint64_t address, char *error, size_t error_size)
+{
+    const rt_render_call call = {.kind = RT_CALL_INDEX_BASE, .offset = offset, .u.index_base.address = address};
+    return record(buffer, &call, error, error_size);
+}
+
+int rt_render_record_index_size(uint64_t buffer, uint32_t offset, uint32_t count, char *error, size_t error_size)
+{
+    const rt_render_call call = {.kind = RT_CALL_INDEX_SIZE, .offset = offset, .u.index_size.count = count};
+    return record(buffer, &call, error, error_size);
+}
+
+int rt_render_record_index_type(uint64_t buffer, uint32_t offset, uint32_t type, char *error, size_t error_size)
+{
+    const rt_render_call call = {.kind = RT_CALL_INDEX_TYPE, .offset = offset, .u.index_type.type = type};
+    return record(buffer, &call, error, error_size);
+}
+
+int rt_render_record_draw_index_offset(uint64_t buffer, uint32_t offset, uint32_t first, uint32_t count, char *error, size_t error_size)
+{
+    const rt_render_call call = {.kind = RT_CALL_DRAW_INDEX_OFFSET, .offset = offset, .u.draw_index = {first, count}};
+    return record(buffer, &call, error, error_size);
+}
+
 int rt_render_record_vertex_shader(uint64_t buffer, uint32_t offset, const uint32_t words[RT_VERTEX_SHADER_WORDS],
                                    char *error, size_t error_size)
 {

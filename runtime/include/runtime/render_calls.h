@@ -115,6 +115,7 @@ void rt_pixel_shader_decode(const uint32_t words[RT_PIXEL_SHADER_WORDS], rt_pixe
 typedef enum {
     RT_CALL_COLOR_TARGET, RT_CALL_VIEWPORT, RT_CALL_DRAW_AUTO, RT_CALL_VERTEX_SHADER, RT_CALL_PIXEL_SHADER,
     RT_CALL_USER_DATA, RT_CALL_REGISTER, RT_CALL_INSTANCES, RT_CALL_COMPUTE_SHADER, RT_CALL_DISPATCH,
+    RT_CALL_INDEX_BASE, RT_CALL_INDEX_SIZE, RT_CALL_INDEX_TYPE, RT_CALL_DRAW_INDEX_OFFSET,
 } rt_render_call_kind;
 
 /* Register ranges a register call may set, as AMD numbers them (dword addresses, gfx_7_2_d.h):
@@ -157,6 +158,18 @@ typedef struct {
         struct {
             uint32_t groups[3];      /* DISPATCH_DIRECT: workgroups in x, y and z */
         } dispatch;
+        struct {
+            uint64_t address;        /* INDEX_BASE: the index buffer's address (40 bits, even) */
+        } index_base;
+        struct {
+            uint32_t count;          /* INDEX_BUFFER_SIZE: the index buffer's size in indices */
+        } index_size;
+        struct {
+            uint32_t type;           /* INDEX_TYPE: VGT_INDEX_TYPE's value (0 16-bit indices, 1 32-bit) */
+        } index_type;
+        struct {
+            uint32_t first, count;   /* DRAW_INDEX_OFFSET_2: count indices from the first, in the index buffer */
+        } draw_index;
     } u;
 } rt_render_call;
 
@@ -182,6 +195,13 @@ int rt_render_record_register(uint64_t buffer, uint32_t offset, uint32_t address
                               size_t error_size);
 /* A compute dispatch of groups[0] x groups[1] x groups[2] workgroups (DISPATCH_DIRECT); each at least 1. */
 int rt_render_record_dispatch(uint64_t buffer, uint32_t offset, const uint32_t groups[3], char *error, size_t error_size);
+/* The index buffer later indexed draws read: its address (INDEX_BASE), its size in indices
+   (INDEX_BUFFER_SIZE) and the index type (INDEX_TYPE). */
+int rt_render_record_index_base(uint64_t buffer, uint32_t offset, uint64_t address, char *error, size_t error_size);
+int rt_render_record_index_size(uint64_t buffer, uint32_t offset, uint32_t count, char *error, size_t error_size);
+int rt_render_record_index_type(uint64_t buffer, uint32_t offset, uint32_t type, char *error, size_t error_size);
+/* An indexed draw of count indices from the first (DRAW_INDEX_OFFSET_2). */
+int rt_render_record_draw_index_offset(uint64_t buffer, uint32_t offset, uint32_t first, uint32_t count, char *error, size_t error_size);
 /* The instance count later draws use (the NUM_INSTANCES packet); at least 1. */
 int rt_render_record_instances(uint64_t buffer, uint32_t offset, uint32_t count, char *error, size_t error_size);
 

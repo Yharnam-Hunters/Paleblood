@@ -452,6 +452,52 @@ static void state_across_buffers(rt_executor *x)
     CHECK(rt_executor_run(x, SECOND, 0x30, error, sizeof error) == -1 && strstr(error, "no viewport"));
 }
 
+/* Runs the triangle's state, then an indexed draw (DRAW_INDEX_OFFSET_2) of three indices from `first`,
+   with the index base and type given (type ~0u: none set) and, when size is not 0, INDEX_BUFFER_SIZE. */
+static int run_indexed(rt_executor *x, uint64_t target, uint64_t indices, uint32_t type, uint32_t size, uint32_t first, char *error,
+                       size_t error_size)
+{
+    enum { INDEXED_BUFFER = 0xc0f80000 };
+    rt_render_forget(), rt_executor_reset(x);
+    uint32_t offset = record_setup(INDEXED_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    CHECK(rt_render_record_index_base(INDEXED_BUFFER, offset, indices, error, error_size) == 0);
+    if (type != ~0u) CHECK(rt_render_record_index_type(INDEXED_BUFFER, offset + 0x10, type, error, error_size) == 0);
+    if (size) CHECK(rt_render_record_index_size(INDEXED_BUFFER, offset + 0x20, size, error, error_size) == 0);
+    CHECK(rt_render_record_draw_index_offset(INDEXED_BUFFER, offset + 0x30, first, 3, error, error_size) == 0);
+    return rt_executor_run(x, INDEXED_BUFFER, offset + 0x40, error, error_size);
+}
+
+/* Indexed draws: the triangle's corners through 16-bit indices (9, 9, 9, 0, 1, 2) from index 3, and
+   through 32-bit ones (2, 0, 1 wound the other way round still covers it), draw the reference image;
+   from index 0 (mutant) they draw nothing. No index type, a swapped index type, and indices past
+   INDEX_BUFFER_SIZE stop by name. */
+static void indexed_draws(rt_executor *x)
+{
+    enum { INDICES_16 = 0x12000, INDICES_32 = 0x12100, INDEXED_16 = 0xc80000, INDEXED_32 = 0xcc0000, FROM_ZERO = 0xd00000 };
+    char error[200] = "";
+    static const uint16_t sixteen[6] = {9, 9, 9, 0, 1, 2};
+    static const uint32_t thirty_two[4] = {7, 2, 0, 1};
+    memcpy((void *)(uintptr_t)at(INDICES_16), sixteen, sizeof sixteen);
+    memcpy((void *)(uintptr_t)at(INDICES_32), thirty_two, sizeof thirty_two);
+    int drawn = run_indexed(x, at(INDEXED_16), at(INDICES_16), 0, 0, 3, error, sizeof error);
+    if (drawn) fprintf(stderr, "indexed 16: %s\n", error);
+    CHECK(drawn == 0);
+    check_triangle(x, at(INDEXED_16));
+    drawn = run_indexed(x, at(INDEXED_32), at(INDICES_32), 1, 4, 1, error, sizeof error);
+    if (drawn) fprintf(stderr, "indexed 32: %s\n", error);
+    CHECK(drawn == 0);
+    check_triangle(x, at(INDEXED_32));
+    CHECK(run_indexed(x, at(FROM_ZERO), at(INDICES_16), 0, 0, 0, error, sizeof error) == 0);
+    uint32_t pixels[SIZE * SIZE];
+    CHECK(rt_executor_read_target(x, at(FROM_ZERO), pixels, SIZE, SIZE, error, sizeof error) == 0);
+    int empty = 1;
+    for (int i = 0; i < SIZE * SIZE; i++) empty &= pixels[i] == 0;
+    CHECK(empty); /* indices 9, 9, 9: a point, no triangle */
+    CHECK(run_indexed(x, at(INDEXED_16), at(INDICES_16), ~0u, 0, 3, error, sizeof error) == -1 && strstr(error, "no index base and type"));
+    CHECK(run_indexed(x, at(INDEXED_16), at(INDICES_16), 0x4, 0, 3, error, sizeof error) == -1 && strstr(error, "index type 0x4"));
+    CHECK(run_indexed(x, at(INDEXED_16), at(INDICES_16), 0, 5, 3, error, sizeof error) == -1 && strstr(error, "past the 5-index buffer"));
+}
+
 int main(void)
 {
     const int fd = map_guest_memory();
@@ -718,6 +764,7 @@ int main(void)
     sampled_lookup(x);
     fetch_shader(x);
     state_across_buffers(x);
+    indexed_draws(x);
 
     rt_executor_close(x);
     rt_render_forget();

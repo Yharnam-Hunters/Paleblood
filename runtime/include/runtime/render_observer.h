@@ -36,6 +36,10 @@ void rt_observe_user_data(uint64_t buffer, uint32_t offset, rt_shader_stage stag
 void rt_observe_register(uint64_t buffer, uint32_t offset, uint32_t address, uint32_t value);
 void rt_observe_instances(uint64_t buffer, uint32_t offset, uint32_t count);
 void rt_observe_dispatch(uint64_t buffer, uint32_t offset, const uint32_t groups[3]);
+void rt_observe_index_base(uint64_t buffer, uint32_t offset, uint64_t address);
+void rt_observe_index_size(uint64_t buffer, uint32_t offset, uint32_t count);
+void rt_observe_index_type(uint64_t buffer, uint32_t offset, uint32_t type);
+void rt_observe_draw_index_offset(uint64_t buffer, uint32_t offset, uint32_t first, uint32_t count);
 
 #ifdef __cplusplus
 }

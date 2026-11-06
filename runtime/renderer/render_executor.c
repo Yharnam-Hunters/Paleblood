@@ -163,6 +163,10 @@ typedef struct {
     uint32_t blend0_control, depth_control, color_control, target_mask, primitive_type, instances;
     int blend0_set, depth_set, color_control_set, target_mask_set, primitive_set, instances_set;
     float blend_constants[4];        /* CB_BLEND_RED, GREEN, BLUE, ALPHA */
+    /* the index buffer: INDEX_BASE, INDEX_BUFFER_SIZE (indices), INDEX_TYPE */
+    uint64_t index_base;
+    uint32_t index_size, index_type;
+    int index_base_set, index_size_set, index_type_set;
     /* the depth target's registers, as setting it (or switching it off: DB_Z_INFO and DB_STENCIL_INFO 0)
        writes them: DB_Z_INFO to DB_DEPTH_SLICE, and DB_DEPTH_VIEW */
     uint32_t depth_target[DEPTH_TARGET_REGISTERS], depth_view;
@@ -527,7 +531,8 @@ static int import_memory(rt_executor *x, const rt_executor_memory *memory, char 
     const VkExternalMemoryBufferCreateInfo external = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
                                                        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
     const VkBufferCreateInfo buffer = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &external, .size = memory->size,
-                                       .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT};
+                                       .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                                                VK_BUFFER_USAGE_INDEX_BUFFER_BIT};
     if (vkCreateBuffer(x->device, &buffer, NULL, &x->buffer) != VK_SUCCESS) return failed(error, error_size, "no buffer for the guest memory");
     VkMemoryRequirements need;
     vkGetBufferMemoryRequirements(x->device, x->buffer, &need);
@@ -1148,7 +1153,14 @@ static int vertex_callee(rt_executor *x, const draw_state *s, uint64_t *callee, 
 
 /* A draw as check_state planned it: into target 0 when colour says so, and the depth target when the plan
    tests it. */
-static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int colour, uint32_t index_count, char *error, size_t error_size)
+/* An indexed draw's indices: where they start in the guest memory buffer, and their type. */
+typedef struct {
+    VkDeviceSize offset;
+    VkIndexType type;
+} index_range;
+
+static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int colour, uint32_t index_count, const index_range *indices,
+                char *error, size_t error_size)
 {
     if (s->other_targets) return failed(error, error_size, "a draw with render targets beyond slot 0 is not drawn yet");
     if (!s->viewport_set) return failed(error, error_size, "a draw with no viewport");
@@ -1246,7 +1258,12 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int
     if (set) vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set, 0, NULL);
     vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_VERTEX_BIT, VERTEX_USER_DATA, USER_DATA_BYTES, s->user[STAGE_VERTEX]);
     vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_FRAGMENT_BIT, PIXEL_USER_DATA, USER_DATA_BYTES, s->user[STAGE_PIXEL]);
-    vkCmdDraw(commands, index_count, 1, 0, 0);
+    if (indices) {
+        vkCmdBindIndexBuffer(commands, x->buffer, indices->offset, indices->type);
+        vkCmdDrawIndexed(commands, index_count, 1, 0, 0, 0);
+    } else {
+        vkCmdDraw(commands, index_count, 1, 0, 0);
+    }
     vkCmdEndRenderPass(commands);
     if (finish_commands(x, commands)) return failed(error, error_size, "the GPU did not finish a draw");
     return check_stop_word(x, error, error_size);
@@ -1704,6 +1721,32 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     return check_stop_word(x, error, error_size);
 }
 
+/* The indices an indexed draw reads: count from the first, in the index buffer INDEX_BASE names, of
+   the type INDEX_TYPE sets (VGT_INDEX_TYPE, gfx_7_2_sh_mask.h: INDEX_TYPE bits 0-1, 0 16-bit, 1
+   32-bit; SWAP_MODE bits 2-3, a byte swap on fetch). DRAW_INDEX_OFFSET_2's own MAX_SIZE, which the GPU
+   library sets to the count, is taken as counting from INDEX_OFFSET: the game's draws start past it
+   (the first at index 136 of 60), which under a count from INDEX_BASE would fetch no index at all;
+   shadPS4 reads it the same way (it draws min(INDEX_COUNT, MAX_SIZE) indices from INDEX_OFFSET); this
+   is inferred from the game's use, not from a public description. When INDEX_BUFFER_SIZE was set,
+   the indices must lie within it. 0, or -1 with the reason (no base or type, other types or swaps,
+   indices past the buffer or outside the GPU-visible memory: what the GPU fetches there is not
+   established here). */
+static int index_range_for(rt_executor *x, const draw_state *s, uint32_t first, uint32_t count, index_range *out, char *error,
+                           size_t error_size)
+{
+    enum { INDEX_16 = 0, INDEX_32 = 1 };
+    if (!s->index_base_set || !s->index_type_set) return failed(error, error_size, "an indexed draw with no index base and type set");
+    if (s->index_type != INDEX_16 && s->index_type != INDEX_32)
+        return failed(error, error_size, "index type %#x: only 16- and 32-bit indices without a swap are drawn yet", s->index_type);
+    if (s->index_size_set && (uint64_t)first + count > s->index_size)
+        return failed(error, error_size, "an indexed draw of indices %u to %u, past the %u-index buffer", first, first + count, s->index_size);
+    const uint64_t bytes = s->index_type == INDEX_16 ? 2 : 4, start = s->index_base + first * bytes;
+    if (s->index_base < x->guest_base || start + count * bytes > x->guest_base + x->size || start % bytes)
+        return failed(error, error_size, "an index buffer at %#llx outside the GPU-visible memory", (unsigned long long)s->index_base);
+    *out = (index_range){start - x->guest_base, s->index_type == INDEX_16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32};
+    return 0;
+}
+
 void rt_executor_reset(rt_executor *x) { memset(&x->state, 0, sizeof x->state); }
 
 int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t size, char *error, size_t error_size)
@@ -1764,7 +1807,20 @@ int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t size, char *error,
             int colour = 0;
             const int checked = check_state(s, &plan, &colour, error, error_size);
             if (checked < 0) return -1;
-            if (checked == 0 && draw(x, s, &plan, colour, c->u.draw_auto.index_count, error, error_size)) return -1;
+            if (checked == 0 && draw(x, s, &plan, colour, c->u.draw_auto.index_count, NULL, error, error_size)) return -1;
+            break;
+        }
+        case RT_CALL_INDEX_BASE: s->index_base = c->u.index_base.address, s->index_base_set = 1; break;
+        case RT_CALL_INDEX_SIZE: s->index_size = c->u.index_size.count, s->index_size_set = 1; break;
+        case RT_CALL_INDEX_TYPE: s->index_type = c->u.index_type.type, s->index_type_set = 1; break;
+        case RT_CALL_DRAW_INDEX_OFFSET: {
+            index_range indices;
+            if (index_range_for(x, s, c->u.draw_index.first, c->u.draw_index.count, &indices, error, error_size)) return -1;
+            depth_plan plan;
+            int colour = 0;
+            const int checked = check_state(s, &plan, &colour, error, error_size);
+            if (checked < 0) return -1;
+            if (checked == 0 && draw(x, s, &plan, colour, c->u.draw_index.count, &indices, error, error_size)) return -1;
             break;
         }
         }
