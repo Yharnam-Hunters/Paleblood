@@ -234,6 +234,10 @@ RT_SYSLIB("libSceGnmDriver", sceGnmMapComputeQueue, map_compute_queue);
 #define PM4_SET_UCONFIG_REG 0x79u
 #define PM4_DMA_DATA 0x50u
 #define PM4_INDEX_TYPE 0x2au
+#define PM4_INDEX_BASE 0x26u
+#define PM4_INDEX_BUFFER_SIZE 0x13u
+#define PM4_DRAW_INDEX_2 0x27u
+#define PM4_DRAW_INDEX_OFFSET_2 0x35u
 
 /* DMA_DATA (AMD's public cikd.h): control; source address (or data); destination address;
    command, with the byte count in bits 0-20. */
@@ -396,7 +400,8 @@ static void complete_packets(const char *fn, const uint32_t *packets, uint32_t d
         } else if (opcode != PM4_NOP && opcode != PM4_SET_SH_REG && opcode != PM4_DISPATCH_DIRECT &&
                    opcode != PM4_ACQUIRE_MEM && opcode != PM4_EVENT_WRITE && opcode != PM4_SET_CONTEXT_REG &&
                    opcode != PM4_SET_UCONFIG_REG && opcode != PM4_NUM_INSTANCES && opcode != PM4_DRAW_INDEX_AUTO &&
-                   opcode != PM4_INDEX_TYPE) {
+                   opcode != PM4_INDEX_TYPE && opcode != PM4_INDEX_BASE && opcode != PM4_INDEX_BUFFER_SIZE &&
+                   opcode != PM4_DRAW_INDEX_2 && opcode != PM4_DRAW_INDEX_OFFSET_2) {
             unknown_packet(fn, opcode, length);
         }
         at += length;
@@ -443,8 +448,10 @@ RT_SYSLIB("libSceGnmDriver", sceGnmDingDong, ding_dong);
                                   (an EVENT_WRITE that also writes memory stops);
      SET_CONTEXT_REG, SET_UCONFIG_REG, NUM_INSTANCES, DRAW_INDEX_AUTO
                                   skipped: draw state and draws (the first frame's);
-     INDEX_TYPE                   skipped: draw state, the size of an index (found 6 November
-                                  2026);
+     INDEX_TYPE, INDEX_BASE, INDEX_BUFFER_SIZE, DRAW_INDEX_2, DRAW_INDEX_OFFSET_2
+                                  skipped: an indexed draw's state (index size, buffer address and
+                                  length) and the draw itself (found 6 November 2026); like the
+                                  other draws they only read memory;
      DMA_DATA to CP_DMA_READ_TAGS skipped: memory read into the command processor's read tags,
                                   the destination not incremented (found 6 November 2026, a
                                   100-byte read). It changes no memory and no state a shader

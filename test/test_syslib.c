@@ -3065,6 +3065,17 @@ int main(void)
             CHECK(gnm_submit_one_result(dma, 7) == 0 && dma_source[0] == 1 && dma_source[2] == 3);
             CHECK(died_in_fatal(gnm_submit_dma_fill));
             CHECK(died_in_fatal(gnm_submit_dma_other_register));
+            /* an indexed draw: index type, base and buffer size, then DRAW_INDEX_2; only memory reads */
+            static uint16_t indices[3] = {0, 1, 2};
+            const uint64_t index_at = (uint64_t)(uintptr_t)indices;
+            uint32_t indexed[] = {
+                0xc0002a00u, 0x0,                                                   /* INDEX_TYPE 16-bit */
+                0xc0012600u, (uint32_t)index_at, (uint32_t)(index_at >> 32),        /* INDEX_BASE */
+                0xc0001300u, 3,                                                     /* INDEX_BUFFER_SIZE */
+                0xc0032700u, 3, (uint32_t)index_at, 3, 0,                           /* DRAW_INDEX_2 */
+                0xc0033500u, 3, 0, 3, 0,                                            /* DRAW_INDEX_OFFSET_2 */
+            };
+            CHECK(gnm_submit_one_result(indexed, sizeof indexed / 4) == 0 && indices[2] == 2);
             CHECK(died_in_fatal(gnm_submit_constant_without_sizes));
             CHECK(died_in_fatal(gnm_submit_unmet_wait));
         }
