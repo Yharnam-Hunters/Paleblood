@@ -792,6 +792,22 @@ belongs to other calls, which stop by name until they are implemented.
 
 **What stops by name:** an HTTP context the runtime did not hand out, and a missing slot.
 
+## HTTPS options (`sceHttpsEnableOption`, `sceHttpsDisableOption`)
+
+`sceHttpsEnableOption(id, flags)` and `sceHttpsDisableOption(id, flags)` set and clear HTTPS
+flags on a template. The facts come from shadPS4's and PS4Recomp's `libSceHttp`, which agree:
+- **The flags:** `0x01` verify the server, `0x02` verify the client, `0x04` check the common name,
+  `0x08` and `0x10` check the not-after and not-before dates, `0x20` check for a known CA, `0x40`
+  reuse sessions, `0x80` send SNI, and `0x2000`.
+- **A new template's flags:** server verification, the common-name and known-CA checks, and SNI
+  (`0xa5`).
+- **Errors:** other bits answer `0x804311fe` (invalid value); an id that is no template answers
+  `0x80431100` (invalid id).
+
+The executable's one wrapper (`0x013d1e90`) enables or disables `0x01` on its template, and its
+caller (`0x0227dade`) does not read the answer. Offline no request is sent, so each template
+keeps its flags for when one is (`rt_http_template_ssl_flags`).
+
 ## HTTP request headers (`sceHttpAddRequestHeader`, issue #41)
 
 `sceHttpAddRequestHeader(id, name, value, mode)`, as the OpenOrbis homebrew SDK's `Http.h`

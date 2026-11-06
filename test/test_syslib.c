@@ -4,6 +4,7 @@
 #include "runtime/display.h"
 #include "runtime/equeue.h"
 #include "runtime/gpu_memory.h"
+#include "runtime/http.h"
 #include "runtime/pad.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
@@ -2255,6 +2256,22 @@ int main(void)
                     CHECK(http_nonblock_fn(t1, 1) == 0 && http_nonblock_fn(t1, 0) == 0);
                     CHECK(died_in_fatal(http_nonblock_unknown));
                     CHECK(died_in_fatal(http_nonblock_value));
+                }
+                /* HTTPS flags on a template: the default, enabling and disabling, and the errors. */
+                typedef int32_t (*f_https_option)(int32_t, uint32_t);
+                const f_https_option enable = (f_https_option)fn("libSceHttp", "sceHttpsEnableOption");
+                const f_https_option disable = (f_https_option)fn("libSceHttp", "sceHttpsDisableOption");
+                CHECK(enable && disable);
+                if (enable && disable) {
+                    CHECK(rt_http_template_ssl_flags(t1) == 0xa5); /* server verify, CN and known-CA checks, SNI */
+                    CHECK(disable(t1, 1) == 0 && rt_http_template_ssl_flags(t1) == 0xa4);
+                    CHECK(enable(t1, 1) == 0 && rt_http_template_ssl_flags(t1) == 0xa5);
+                    CHECK(enable(t1, 0x2000 | 0x40) == 0 && rt_http_template_ssl_flags(t1) == 0x20e5);
+                    CHECK(disable(t1, 0x2000 | 0x40 | 0x80) == 0 && rt_http_template_ssl_flags(t1) == 0x25);
+                    CHECK(enable(t1, 0x100) == (int32_t)0x804311feu && rt_http_template_ssl_flags(t1) == 0x25);
+                    CHECK(disable(t1, 0x4000) == (int32_t)0x804311feu);
+                    CHECK(enable(999, 1) == (int32_t)0x80431100u && disable(0, 1) == (int32_t)0x80431100u);
+                    CHECK(rt_http_template_ssl_flags(999) == 0);
                 }
                 http_epoll_fn = (f_http_epoll)fn("libSceHttp", "sceHttpCreateEpoll");
                 if (http_epoll_fn) {
