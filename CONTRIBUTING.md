@@ -180,7 +180,7 @@ A function goes to `main` only when it is **verified and readable**:
 
 Investigation notes and logs go in the pull request, not in the repository. Game screenshots and
 clips do not belong in the Paleblood code repository, issues, pull requests, or Discussions (see
-Rules for the one exception).
+Rules for what is allowed).
 
 ## Your own copy (decompilation work)
 
@@ -203,11 +203,10 @@ firmware, keys or decryption tools.
 - **No game screenshots, clips or extracted images in the Paleblood code repository**, its issues,
   pull requests or Discussions. The hook and CI refuse image and video files (by extension and by
   contents). The only images allowed here are under `docs/assets/` and listed in
-  `docs/assets/ALLOWLIST` with the command that produced them: recordings of our own tools'
-  output, and, as the one exception, a single downscaled milestone frame drawn by Paleblood's own
-  renderer that the maintainer has media-reviewed (rights holder, extent, attribution, rationale),
-  such as the README's title screen. Contributors do not add game frames; propose one in an issue
-  instead. This repository rule does not
+  `docs/assets/ALLOWLIST` with the command that produced them, and they are our own work:
+  recordings of our tools' output, and frames drawn by Paleblood's own renderer, at full
+  resolution, added by the maintainer with attribution (such as the README's title screen).
+  Contributors do not add game frames themselves; propose one in an issue instead. This repository rule does not
   decide whether a contextual image may appear on the public documentation site: each proposed
   site asset requires its own documented source, rights basis, editorial purpose and maintainer
   review under that site's media policy. Attribution or educational intent alone does not grant

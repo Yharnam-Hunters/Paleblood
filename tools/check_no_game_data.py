@@ -6,11 +6,10 @@ usage: check_no_game_data.py (--staged | --tracked) [--root DIR]
   --staged   check the git index (pre-commit)
   --tracked  check every tracked file in the working tree (CI)
 
-No extracted game images, clips or contributor screenshots: image and video files (by extension
-or by their contents) are refused unless they are under docs/assets/ and listed in
-docs/assets/ALLOWLIST with the tool that produced them (our tools' output, such as a terminal
-recording of tools/verify.py, or a downscaled milestone frame drawn by Paleblood's renderer after
-a maintainer's media review). The allowlist itself may list nothing outside docs/assets/.
+No extracted game images or assets: image and video files (by extension or by their contents)
+are refused unless they are under docs/assets/ and listed in docs/assets/ALLOWLIST with the tool
+that produced them (our own work: our tools' output, such as a terminal recording of
+tools/verify.py, or a frame drawn by Paleblood's renderer, added by the maintainer). The allowlist itself may list nothing outside docs/assets/.
 """
 from __future__ import annotations
 

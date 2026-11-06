@@ -12,9 +12,9 @@ The game doesn't run on Paleblood yet: 21 of 157757 functions are verified (0.01
 [Contributing](CONTRIBUTING.md)
 
 <p align="center">
-  <img alt="Bloodborne's title screen, drawn by Paleblood's own runtime and renderer on Linux and Vulkan" src="docs/assets/title-screen.jpg" width="800">
+  <img alt="Bloodborne's title screen, drawn by Paleblood's own runtime and renderer on Linux and Vulkan" src="docs/assets/title-screen.png" width="100%">
 </p>
-<p align="center"><sub>The game's own title screen, drawn on Linux by Paleblood's runtime and renderer from the maintainer's own copy (6 November 2026). Bloodborne © Sony Interactive Entertainment / FromSoftware; one downscaled frame shown as a technical milestone.</sub></p>
+<p align="center"><sub>The game's own title screen, drawn on Linux by Paleblood's runtime and renderer from the maintainer's own copy (6 November 2026), at full resolution. Bloodborne © Sony Interactive Entertainment / FromSoftware; shown as a technical milestone.</sub></p>
 
 ## What this is
 
@@ -199,10 +199,9 @@ a85c286a110f406682dafc97819318eedc9aa1591b79465f1ef9c1929655de8c  libSceSmart.el
   (CUSA03173, EU) with the 1.09 update, dumped from your own PS4. The project does not provide
   or point to game files, pkgs, firmware, keys or decryption tools, and requests for or links to
   them are removed ([CONTRIBUTING.md](CONTRIBUTING.md), "Your own copy").
-- **Images.** No extracted game images, clips or contributor screenshots. The only images here are
-  recordings of our own tools and, after a maintainer's media review, a single downscaled frame of
-  a milestone drawn by Paleblood's own renderer, with attribution (the title screen above). The
-  checks refuse anything else.
+- **Images.** No extracted game images or assets. The images here are our own work: recordings of
+  our tools, and frames drawn by Paleblood's own renderer, at full resolution, added by the
+  maintainer with attribution (such as the title screen above). The checks refuse anything else.
 - **Not affiliated.** This is a fan project. It is not affiliated with, endorsed by or sponsored
   by Sony Interactive Entertainment or FromSoftware. Bloodborne and related names are trademarks
   of their respective owners; the title-screen frame is theirs, shown for technical commentary.
