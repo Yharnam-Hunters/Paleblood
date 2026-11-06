@@ -4,6 +4,8 @@
 #include "runtime/display.h"
 #include "runtime/equeue.h"
 #include "runtime/gpu_memory.h"
+#include "runtime/http.h"
+#include "runtime/np.h"
 #include "runtime/pad.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
@@ -285,7 +287,8 @@ static void unregister_unknown_id(void) { netctl_unregister(0x7fff); }
 static void info_of_module_one(void) { netctl_info(1, netctl_shared); }
 /* A size-prefixed buffer of the shape the guest's own sites build (16 at offset 0), on the child's
    stack: the fatal must not write through it, and netctl_shared stays the untouched witness. */
-static void nat_info_with_size(void) { int nat[4] = {16, 0, 0, 0}; netctl_nat(nat); }
+static void nat_info_other_size(void) { int nat[4] = {12, 0, 0, 0}; netctl_nat(nat); }
+static void nat_info_null(void) { netctl_nat(NULL); }
 
 /* libSceSysmodule: a stub module (one the title ships but the runtime does not map) loads as done.
    The ids here are made up; the real ones come from the game's data through runtime/boot.c. */
@@ -1414,7 +1417,7 @@ int main(void)
     CHECK(is_implemented("libSceNetCtl", "sceNetCtlRegisterCallback"));
     CHECK(is_implemented("libSceNetCtl", "sceNetCtlUnregisterCallback"));
     CHECK(!is_implemented("libSceNetCtl", "sceNetCtlGetInfo"));
-    CHECK(!is_implemented("libSceNetCtl", "sceNetCtlGetNatInfo"));
+    CHECK(is_implemented("libSceNetCtl", "sceNetCtlGetNatInfo"));
     if (failures) return 1;
     netctl_shared = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (netctl_shared == MAP_FAILED) { perror("mmap"); return 1; }
@@ -1477,7 +1480,12 @@ int main(void)
     CHECK(died_in_fatal(register_null_callback));      /* no answer for a null callback */
     CHECK(died_in_fatal(register_null_id));            /* no answer for a null id slot */
     CHECK(died_in_fatal(info_of_module_one));
-    CHECK(died_in_fatal(nat_info_with_size));
+    {   /* offline: "not connected", nothing written; the guest then takes its own NAT type */
+        int nat[4] = {16, -7, -7, -7};
+        CHECK(netctl_nat(nat) == (int)0x80412108u && nat[0] == 16 && nat[1] == -7 && nat[2] == -7 && nat[3] == -7);
+    }
+    CHECK(died_in_fatal(nat_info_other_size));
+    CHECK(died_in_fatal(nat_info_null));
     CHECK(memcmp(netctl_shared, poisoned, sizeof poisoned) == 0);
 
     /* The store survived all of that, because every fatal above was in a child. */
@@ -2250,6 +2258,22 @@ int main(void)
                     CHECK(died_in_fatal(http_nonblock_unknown));
                     CHECK(died_in_fatal(http_nonblock_value));
                 }
+                /* HTTPS flags on a template: the default, enabling and disabling, and the errors. */
+                typedef int32_t (*f_https_option)(int32_t, uint32_t);
+                const f_https_option enable = (f_https_option)fn("libSceHttp", "sceHttpsEnableOption");
+                const f_https_option disable = (f_https_option)fn("libSceHttp", "sceHttpsDisableOption");
+                CHECK(enable && disable);
+                if (enable && disable) {
+                    CHECK(rt_http_template_ssl_flags(t1) == 0xa5); /* server verify, CN and known-CA checks, SNI */
+                    CHECK(disable(t1, 1) == 0 && rt_http_template_ssl_flags(t1) == 0xa4);
+                    CHECK(enable(t1, 1) == 0 && rt_http_template_ssl_flags(t1) == 0xa5);
+                    CHECK(enable(t1, 0x2000 | 0x40) == 0 && rt_http_template_ssl_flags(t1) == 0x20e5);
+                    CHECK(disable(t1, 0x2000 | 0x40 | 0x80) == 0 && rt_http_template_ssl_flags(t1) == 0x25);
+                    CHECK(enable(t1, 0x100) == (int32_t)0x804311feu && rt_http_template_ssl_flags(t1) == 0x25);
+                    CHECK(disable(t1, 0x4000) == (int32_t)0x804311feu);
+                    CHECK(enable(999, 1) == (int32_t)0x80431100u && disable(0, 1) == (int32_t)0x80431100u);
+                    CHECK(rt_http_template_ssl_flags(999) == 0);
+                }
                 http_epoll_fn = (f_http_epoll)fn("libSceHttp", "sceHttpCreateEpoll");
                 if (http_epoll_fn) {
                     void *h1 = NULL, *h2 = NULL;
@@ -2898,6 +2922,26 @@ int main(void)
         CHECK(died_in_fatal(rtc_tick_leap_2100));
         CHECK(died_in_fatal(rtc_tick_microsecond));
         CHECK(died_in_fatal(rtc_tick_no_variable));
+    }
+
+    {   /* sceNpSetNpTitleId: the title id is kept; a missing argument is invalid */
+        typedef int32_t (*f_np_title)(const void *, const void *);
+        const f_np_title set_title = (f_np_title)fn("libSceNpManager", "sceNpSetNpTitleId");
+        CHECK(set_title != NULL);
+        if (set_title) {
+            char kept[RT_NP_TITLE_ID_BYTES];
+            rt_np_title_id(kept);
+            CHECK(kept[0] == 0);
+            unsigned char id[16], secret[128];
+            memset(id, 0x7a, sizeof id);
+            memcpy(id, "ABCD12345_00", 12);
+            id[12] = 0;
+            memset(secret, 0x5c, sizeof secret);
+            CHECK(set_title(id, secret) == 0);
+            rt_np_title_id(kept);
+            CHECK(strcmp(kept, "ABCD12345_00") == 0);
+            CHECK(set_title(NULL, secret) == (int32_t)0x80550003u && set_title(id, NULL) == (int32_t)0x80550003u);
+        }
     }
 
     pg_init = (f_pg_init)fn("libScePlayGo", "scePlayGoInitialize");
