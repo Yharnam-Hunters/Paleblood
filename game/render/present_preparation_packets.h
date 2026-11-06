@@ -8,13 +8,10 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 
 #include "runtime/original.h"
 
 namespace render {
-struct RecordPreparationState;
-
 RT_ORIGINAL(0x014738b0, render_set_render_target,
             void(PacketBuffer *, uint32_t slot, const void *descriptor));
 RT_ORIGINAL(0x014739b0, render_set_depth_render_target,
@@ -44,15 +41,12 @@ static_assert(offsetof(DepthTargetValidityView, z_read_base) == 0x08);
 static_assert(offsetof(DepthTargetValidityView, stencil_read_base) == 0x0c);
 static_assert(sizeof(DepthTargetValidityView) == 0x10);
 
-// Read the full depth/stencil validity word, including noncanonical values.
-// Byte-backed storage permits the original unaligned read.
+// Keep the independent full-word checks for the stencil and depth read bases.
 inline uint32_t depth_target_stencil_read_base(const void *descriptor)
 {
     return static_cast<const DepthTargetValidityView *>(descriptor)->stencil_read_base.get();
 }
 
-// Read the full depth/stencil validity word, including noncanonical values.
-// Byte-backed storage permits the original unaligned read.
 inline uint32_t depth_target_z_read_base(const void *descriptor)
 {
     return static_cast<const DepthTargetValidityView *>(descriptor)->z_read_base.get();

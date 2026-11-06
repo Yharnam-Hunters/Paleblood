@@ -88,6 +88,13 @@ def cases():
         c["buffers"]["self"] = {"size": 8192, "bytes": "a5" * 8192}
         yield c
 
+    # The source depth-view word aliases its destination packet header. It must
+    # be loaded before that header is stored, while later descriptor reads stay live.
+    c = packet_case("depth_view_source_overlaps_packet_header", 3, "direct", 80, 0, False)
+    c["args"]["rsi"] = "buf:packet+20"
+    c["buffers"]["packet"]["bytes"] = bytes((index * 37 + 11) & 0xFF for index in range(512)).hex()
+    yield c
+
 
 def packet_case(cid, value, label, available, result, redirect):
     c = basic(cid, returns="void", size=64)

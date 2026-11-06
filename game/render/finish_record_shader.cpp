@@ -46,7 +46,7 @@ extern "C" void bb_render_finish_record_shader(render::ShaderCleanupState *state
     if ((dirty & first_dirty_pass) != 0) finish_dirty_pass(context, counted, broad);
     if ((dirty & second_dirty_pass) != 0) finish_dirty_pass(context, counted, broad);
     state->dirty_flags.set(0);
-    // Read only after clearing dirty flags and all command writes, since these views alias.
+    // Read after the command writes, since the state may alias the preparation mode.
     const uint32_t mode = state->command_mode.get();
     if (mode != unchanged_mode) select_shader_command_mode(commands, mode);
 }

@@ -3,9 +3,10 @@
 // slot uses unsigned address arithmetic rather than imposing a bounds check.
 #pragma once
 
+#include <cstring>
+
 #include "byte_field.h"
 
-#include "secondary_calls.h"
 #include "present_preparation_packets.h"
 
 namespace render {

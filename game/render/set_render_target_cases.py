@@ -86,6 +86,13 @@ def cases():
                 c["buffers"]["descriptor"]["bytes"] = "00" * 64
             yield c
 
+    # Distinct source words expose a late base/pitch read after the overlapping
+    # slice/view store; a uniform packet fill would make those values equal.
+    c = packet_case("color_base_source_overlaps_slice_view_output", 3, "direct", 80, 0, False)
+    c["args"]["rdx"] = "buf:packet+16"
+    c["buffers"]["packet"]["bytes"] = bytes((index * 17 + 3) & 0xFF for index in range(512)).hex()
+    yield c
+
 
 def packet_case(cid, value, label, available, result, redirect):
     c = basic(cid, returns="void", size=64)

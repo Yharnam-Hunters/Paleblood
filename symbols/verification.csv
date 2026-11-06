@@ -271,5 +271,3 @@ render_yebis_get_recursive_sample_parameters,edge,uncapped,23,23,0,0,6e6f0aa41d5
 render_set_render_target,edge,,18,18,0,0,767bad537e9f5dc6,2026-11-06
 render_set_depth_render_target,edge,,20,20,0,0,d84914db9d7cb244,2026-11-06
 render_finish_record_shader,edge,,45,45,0,0,8d22d57d5f6385dd,2026-11-06
-render_restore_prepared_record_from_bank,edge,,12,12,0,0,50131a2364a384a1,2026-11-06
-render_restore_prepared_selector_from_bank,edge,,12,12,0,0,74228ba5ceb673a5,2026-11-06

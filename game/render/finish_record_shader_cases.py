@@ -61,6 +61,18 @@ def cases():
                 c["memory"] = [memory(0xB368, dirty), memory(0, 0xFFFFFFFF)]
                 yield c
 
+    # The state's command mode aliases the command context's preparation mode.
+    # The first pass sets its active bit before the mode-selection call reads it.
+    c = basic("command_mode_aliases_preparation_mode", returns="void", size=0xB380)
+    c["buffers"]["context"] = {"size": 0x17000, "bytes": "a5" * 0x17000}
+    c["args"].update({"rdi": "buf:context+0xb488", "rsi": "buf:context"})
+    c["memory"] = [
+        {"addr": f"buf:context+{0xB488 + 0xB368}", "bytes": word(0x80)},
+        {"addr": "buf:context+0xb488", "bytes": word(0x200)},
+    ]
+    c["stubs"] = [{"address": "0x01476030", "argc": 2, "ret": 0}]
+    yield c
+
 
 def main():
     if len(sys.argv) != 2:

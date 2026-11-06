@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Synthetic depth-target restore cases; helper effects are not game recordings.
+"""Synthetic color-target restore cases; helper effects are not game recordings.
 
-Usage: restore_prepared_selector_cases.py OUT_DIR. Generate captures outside the repository.
+Usage: restore_color_target_from_bank_cases.py OUT_DIR. Generate captures outside the repository.
 """
 import json
 from pathlib import Path
 import struct
 import sys
 
-ADDRESS = "0x02ad1e70"
+ADDRESS = "0x02ad1e30"
 MASK64 = (1 << 64) - 1
 
 
@@ -46,8 +46,8 @@ def cases():
             entry = basic(case_id)
             entry["buffers"].update({"context": {"size": 64}, "record": {"size": 128}})
             entry["args"].update({"rsi": "buf:context", "rdx": 2})
-            bank = (flags >> 1) & 1
-            offset = 0x60 + bank * 0x48 + 0x40
+            bank = (flags >> 0) & 1
+            offset = 0x60 + bank * 0x48 + 16
             entry["memory"] = [memory(0x188, flags)]
             candidate = {"addr": f"buf:self+{offset}"}
             if isinstance(choice, str):
@@ -55,7 +55,7 @@ def cases():
             else:
                 candidate["bytes"] = qword(choice)
             entry["memory"].append(candidate)
-            entry["stubs"] = [{"address": "0x014739b0", "argc": 2, "ret": 0}]
+            entry["stubs"] = [{"address": "0x014738b0", "argc": 3, "ret": 0}]
             yield entry
 
 

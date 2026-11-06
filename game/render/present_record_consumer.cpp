@@ -10,7 +10,7 @@
 
 namespace {
 using namespace render;
-    using namespace render::record_calls;
+using namespace render::record_calls;
 constexpr uint32_t record_range_dirty = 2;
 constexpr uint32_t all_record_dirty = 7;
 constexpr uint8_t preparation_dirty = 0xf;
@@ -68,11 +68,11 @@ void configure_record_registers(PresentRecordContext *context, PresentRecordView
     set_cb_target_mask(commands, record_mask);
     context->mask_b560 = record_mask;
     context->token_b6e8 = token_a;
-    set_db_depth_control(reinterpret_cast<PacketBuffer *>(commands), c.word);
+    set_db_depth_control(commands, c.word);
     context->register_b5a0 = c.word;
     const uint64_t token_b = record_cache_token_b.get();
     context->token_b6f0 = token_b;
-    set_db_stencil_control(reinterpret_cast<PacketBuffer *>(commands), b.word);
+    set_db_stencil_control(commands, b.word);
     context->register_b5a4 = b.word;
     context->token_b6f0 = token_b;
 }
@@ -105,13 +105,14 @@ extern "C" void bb_render_present_record_consume(render::PresentRecordContext *c
     set_cb_color_control(commands, source_state_mode, state_mode_value);
     // The context embeds shader state and commands; the primary pass reads its descriptor view.
     configure_record_shader(reinterpret_cast<ShaderPrimaryStateView *>(shader),
-                            reinterpret_cast<PacketBuffer *>(commands),
+                            commands,
                             reinterpret_cast<const ShaderPrimaryDescriptorView *>(shared_present_descriptor.address()), nullptr);
     for (uint32_t slot = 1; slot < prepared_slot_count; ++slot)
         bind_prepared_record(preparation, commands, slot, nullptr);
     set_vgt_primitive_type(commands, record_pipeline_mode);
     emit_num_instances(commands, 1);
-    configure_record_shader_secondary(shader, commands, shared_present_descriptor.address(), 0);
+    configure_record_shader_secondary(reinterpret_cast<ShaderSecondaryState *>(shader), commands,
+        reinterpret_cast<const ShaderSecondaryDescriptorView *>(shared_present_descriptor.address()), nullptr);
 
     // Copy only the observed 44-byte prefix; the last four bytes of local padding remain
     // uninitialized. Reuse that same mutable record across every requested index.
@@ -131,9 +132,10 @@ extern "C" void bb_render_present_record_consume(render::PresentRecordContext *c
     context->flags_b550 |= restored_preparation_flag;
     context->sentinel_b540 = std::numeric_limits<uint32_t>::max();
     set_cb_color_control(commands, restored_state_mode, state_mode_value);
+    auto *targets = reinterpret_cast<TargetRestoreState *>(preparation);
     for (uint32_t slot = 0; slot < prepared_slot_count; ++slot)
-        restore_prepared_record_from_bank(preparation, commands, slot);
-    restore_prepared_selector_from_bank(preparation, commands);
+        restore_color_target_from_bank(targets, commands, slot);
+    restore_depth_target_from_bank(targets, commands);
     context->mode_b520 = record_pipeline_mode;
     context->pending_b518 = 0;
     context->sentinel_b524 = std::numeric_limits<uint32_t>::max();
