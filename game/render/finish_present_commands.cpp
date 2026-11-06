@@ -27,7 +27,7 @@ void drain_nodes(CommandFinishStateView *state, FinishDrainNode *node,
 {
     while (node != nullptr) {
         FinishDrainNode *next = node->next.get();
-        void *manager = state->node_manager.get();
+        void *manager = state->node_manager;
         release_present_finish_node(manager, &frame.command_argument, node);
         node = next;
     }
@@ -35,21 +35,21 @@ void drain_nodes(CommandFinishStateView *state, FinishDrainNode *node,
 
 void process_blocks(CommandFinishStateView *state, CommandFinishStateView *commands)
 {
-    uintptr_t block = state->block_head.get();
+    uintptr_t block = state->block_head;
     if (block == 0) return;
-    const uint32_t link_index = state->block_link_index.get();
+    const uint32_t link_index = state->block_link_index;
     do {
         uint64_t item_index = 0;
         for (;;) {
             // The link is reread on every condition; callbacks can replace it and
             // the count of the last block. Neither value is cached for this loop.
             const uintptr_t link = block_word(block, link_index);
-            const uint64_t count = link != 0 ? link_index : state->last_block_count.get();
+            const uint64_t count = link != 0 ? link_index : state->last_block_count;
             if (item_index >= count) break;
-            void *processor = state->item_processor.get();
+            void *processor = state->item_processor;
             const uintptr_t item = block_word(block, item_index);
             process_present_finish_item(processor, commands, item);
-            state->last_reset_cursor.set(packet_cursor(&state->buffer.commands));
+            state->last_reset_cursor = packet_cursor(&state->buffer.commands);
             ++item_index;
         }
         block = block_word(block, link_index);
@@ -65,16 +65,16 @@ void release_one_block(FinishBlockOwner *owner, uintptr_t block)
 
 void release_blocks(CommandFinishStateView *state)
 {
-    FinishBlockOwner *owner = state->block_owner.get();
+    FinishBlockOwner *owner = state->block_owner;
     if (owner == nullptr) return;
-    const uint32_t link_index = state->block_link_index.get();
-    uintptr_t block = state->block_head.get();
+    const uint32_t link_index = state->block_link_index;
+    uintptr_t block = state->block_head;
     if (block == 0) return;
     uintptr_t next = block_word(block, link_index);
     release_one_block(owner, block);
     block = next;
     while (block != 0) {
-        owner = state->block_owner.get();
+        owner = state->block_owner;
         next = block_word(block, link_index);
         release_one_block(owner, block);
         block = next;
@@ -84,10 +84,10 @@ void release_blocks(CommandFinishStateView *state)
 void finish_snapshot(CommandFinishStateView *state, CommandFinishStateView *commands,
                      PresentCommandFinishFrame &frame)
 {
-    const uint8_t flags = state->submission_flags.get();
+    const uint8_t flags = state->submission_flags;
     frame.snapshot.unknown_0x28 = 0;
-    FinishSubmissionOwner *owner = state->owner.get();
-    CounterWaitState *counters = owner->counters.get();
+    CommandSubmissionOwner *owner = state->owner;
+    CounterWaitState *counters = owner->counters;
     uint32_t producer;
     uint32_t actual;
     std::memcpy(&producer, counters->producer_count.get(), sizeof(producer));
@@ -117,7 +117,7 @@ void finish_snapshot(CommandFinishStateView *state, CommandFinishStateView *comm
     submit_present_finish_snapshot(commands, optional, &frame.snapshot, flags);
     const uintptr_t cursor = packet_cursor(&state->buffer.commands);
     set_packet_begin(&state->buffer.commands, cursor);
-    state->last_reset_cursor.set(cursor);
+    state->last_reset_cursor = cursor;
 }
 }  // namespace
 
@@ -126,15 +126,15 @@ extern "C" void bb_render_finish_present_commands(render::CommandFinishStateView
     using namespace render;
     PresentCommandFinishFrame frame;
     CommandFinishStateView *state = commands;
-    state->last_reset_cursor.set(packet_cursor(&state->buffer.commands));
-    if (state->block_head.get() == 0) return;
+    state->last_reset_cursor = packet_cursor(&state->buffer.commands);
+    if (state->block_head == 0) return;
     const uintptr_t callback_bits = reinterpret_cast<uintptr_t>(
         packet_callback<PacketSpaceCallback>(&state->buffer.commands));
     const uintptr_t expected_callback = present_finish_expected_callback.get();
     if (callback_bits != expected_callback) return;
 
     frame.command_argument = commands;
-    uint32_t remaining = state->bucket_mask.get();
+    uint32_t remaining = state->bucket_mask;
     if (remaining != 0) {
         do {
             const uint32_t index = std::countr_zero(remaining);
@@ -147,16 +147,16 @@ extern "C" void bb_render_finish_present_commands(render::CommandFinishStateView
             bucket_slot(state, frame.saved_bucket_index.get())->head.set(nullptr);
             remaining -= bit;
         } while (remaining != 0);
-        state->bucket_mask.set(0);
+        state->bucket_mask = 0;
     }
-    FinishDrainNode *single = state->single_head.get();
+    FinishDrainNode *single = state->single_head;
     drain_nodes(state, single, frame);
-    state->single_head.set(nullptr);
+    state->single_head = nullptr;
     prepare_present_finish_section(&state->shader_section, commands);
     process_blocks(state, commands);
     release_blocks(state);
-    state->last_block_count.set(0);
-    state->block_tail.set(0);
-    state->block_head.set(0);
+    state->last_block_count = 0;
+    state->block_tail = 0;
+    state->block_head = 0;
     finish_snapshot(state, commands, frame);
 }

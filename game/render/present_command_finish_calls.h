@@ -34,7 +34,7 @@ static_assert(sizeof(PresentCommandFinishFrame) == 0x50);
 RT_ORIGINAL(0x02aaa5a0, release_present_finish_node,
             uintptr_t(void *manager, CommandFinishStateView **command_argument, FinishDrainNode *node));
 RT_ORIGINAL(0x02acd3f0, prepare_present_finish_section,
-            void(FinishCommandSection *, CommandFinishStateView *));
+            void(CommandSubmissionShaderState *, CommandFinishStateView *));
 RT_ORIGINAL(0x02ad3c80, process_present_finish_item,
             uintptr_t(void *processor, CommandFinishStateView *, uintptr_t item));
 RT_GLOBAL(0x057e43c8, present_finish_expected_callback, const uintptr_t);
