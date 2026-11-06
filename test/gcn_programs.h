@@ -200,6 +200,14 @@ static const uint32_t pack_halves[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* Per lane i, a one-component format store of i at i * 4 bytes (buffer_store_format_x, the
+   descriptor's format). */
+static const uint32_t store_format_x[] = {
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0xe0101000, 0x80010001, /* buffer_store_format_x v0, v1, s[4:7], 0 offen */
+    0xbf810000, /* s_endpgm */
+};
+
 /* Per lane i, a format store of (i, 1.0, 2.0, 0.5) at i * 16 bytes: buffer_store_format_xyzw, whose
    format is the descriptor's (s[4:7]). */
 static const uint32_t store_format_xyzw[] = {

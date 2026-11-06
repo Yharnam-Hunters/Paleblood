@@ -218,6 +218,19 @@ int main(void)
         for (int i = 0; i < LANES * 4; i++) untouched &= out_words[i] == 0;
         CHECK(untouched);
         CHECK(*stop == (GCN_RUNTIME_STOP_BUFFER_FORMAT << GCN_RUNTIME_STOP_KIND_SHIFT | 5u << 8 | 0u << 4 | 0x80u | 4u));
+        /* a one-component store to 32 uint with DST_SEL x, 0, 0, 1 (as the game's): the format's one
+           component is in place, so the dword is stored; with DST_SEL y first it stops */
+        *stop = 0;
+        memset(out.mapped, 0, BUFFER_BYTES);
+        format_user[7] = (4 | 0 << 3 | 0 << 6 | 1 << 9) | 4u << 12 | 4u << 15;
+        CHECK(run(&g, store_format_x, sizeof store_format_x / sizeof store_format_x[0], format_user) == 0);
+        int one = *stop == 0;
+        for (uint32_t i = 0; i < LANES; i++) one &= out_words[i] == i;
+        CHECK(one);
+        memset(out.mapped, 0, BUFFER_BYTES);
+        format_user[7] = (5 | 4 << 3) | 4u << 12 | 4u << 15;
+        CHECK(run(&g, store_format_x, sizeof store_format_x / sizeof store_format_x[0], format_user) == 0);
+        CHECK(*stop == (GCN_RUNTIME_STOP_BUFFER_FORMAT << GCN_RUNTIME_STOP_KIND_SHIFT | 4u << 8 | 4u << 4 | 0x80u | 8u | 1u) && out_words[1] == 0);
         /* a four-component load from a one-component 32-bit float format, DST_SEL x, 0, 0, 1 (as the
            game's): (the value, 0, 0, 1.0) */
         *stop = 0;
