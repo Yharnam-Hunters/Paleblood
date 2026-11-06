@@ -41,8 +41,10 @@
 #include "runtime/loader.h"
 #include "runtime/memory.h"
 #include "runtime/host_hooks.h"
+#include "runtime/module_tls.h"
 #include "runtime/nid.h"
 #include "runtime/process.h"
+#include "runtime/renderer.h"
 #include "runtime/syslib.h"
 
 #include <asm/prctl.h>
@@ -394,6 +396,53 @@ static void where(uint64_t address, char *out, size_t size)
     snprintf(out, size, "host+0x%llx", (unsigned long long)address);
 }
 
+/* Eager per-thread TLS is ready before the guest's timeout/recovery scope begins.
+   Main storage already backs its static thread-pointer model and remains borrowed. */
+static rt_module_tls *module_tls_context;
+static void module_tls_cleanup(void)
+{
+    if (!module_tls_context) return;
+    rt_module_tls_status status = rt_module_tls_unbind(module_tls_context);
+    if (status == RT_MODULE_TLS_OK) status = rt_module_tls_destroy(module_tls_context);
+    if (status != RT_MODULE_TLS_OK)
+        rt_fatal("module TLS shutdown", rt_module_tls_status_message(status));
+    module_tls_context = NULL;
+}
+static int prepare_module_tls(void *main_storage, uint64_t main_size, char *error, size_t error_size)
+{
+    rt_module_tls_spec specs[MAX_OBJECTS];
+    size_t count = 0;
+    for (size_t k = 0; k < object_count; k++) {
+        const object *o = &objects[k];
+        const rt_elf_tls *tls = rt_elf_tls_segment(o->elf);
+        if (!tls->memsz) continue;
+        if (tls->vaddr > o->size || tls->filesz > o->size - tls->vaddr) {
+            snprintf(error, error_size, "%s: TLS template outside mapped image", o->label);
+            return -1;
+        }
+        specs[count++] = (rt_module_tls_spec){k + 1,
+            tls->filesz ? o->image + tls->vaddr : NULL, tls->filesz, tls->memsz, tls->align};
+    }
+    rt_module_tls *prepared = NULL;
+    rt_module_tls_status status = rt_module_tls_create(specs, count, &prepared);
+    if (status == RT_MODULE_TLS_OK && rt_elf_tls_segment(objects[0].elf)->memsz)
+        status = rt_module_tls_borrow(prepared, 1, main_storage, main_size);
+    if (status == RT_MODULE_TLS_OK) status = rt_module_tls_bind(prepared);
+    if (status != RT_MODULE_TLS_OK) {
+        if (prepared) (void)rt_module_tls_destroy(prepared);
+        snprintf(error, error_size, "%s", rt_module_tls_status_message(status));
+        return -1;
+    }
+    if (atexit(module_tls_cleanup)) {
+        (void)rt_module_tls_unbind(prepared);
+        (void)rt_module_tls_destroy(prepared);
+        snprintf(error, error_size, "cannot register module TLS cleanup");
+        return -1;
+    }
+    module_tls_context = prepared;
+    return 0;
+}
+
 /* --app-param ID=VALUE, ID=unread or boot=unread (game/app_params.csv, through tools/boot.py).
    Returns 0 when it was added. */
 static int add_app_param(const char *arg)
@@ -655,6 +704,7 @@ int main(int argc, char **argv)
         return 2;
     }
     if (display_capture && display_mode == RT_DISPLAY_NONE) display_mode = RT_DISPLAY_HEADLESS;
+    rt_renderer_configure(display_mode != RT_DISPLAY_NONE);
     if (rt_display_configure(display_mode, display_capture)) {
         fprintf(stderr, "pbboot: --display window: this build has no window (it needs Vulkan and SDL3)\n");
         return 2;
@@ -756,6 +806,11 @@ int main(int argc, char **argv)
     rt_process.tls_filesz = tls->filesz;
     rt_process.tls_memsz = tls->memsz;
     rt_process.tls_align = tls->align;
+    const uint64_t tls_size = rt_tls_block_size();
+    if (tls_size == UINT64_MAX) {
+        fputs("pbboot: main TLS allocation size overflows\n", stderr);
+        return 3;
+    }
     unsigned char *tp = rt_tls_block_create();
     if (!tp) {
         fprintf(stderr, "pbboot: no memory for the thread-local storage block\n");
@@ -800,6 +855,11 @@ int main(int argc, char **argv)
     main_thread = pthread_self();
     rt_fatal_observer = runtime_stopped;
     for (size_t i = 0; i < sizeof signals / sizeof signals[0]; i++) sigaction(signals[i], &sa, NULL);
+
+    if (prepare_module_tls(tp - tls_size, tls_size, error, sizeof error)) {
+        fprintf(stderr, "pbboot: module TLS: %s\n", error);
+        return 3;
+    }
 
     unsigned char *stack_top = stack + STACK_SIZE - 64;
     /* Modules first, in the order given: entry(argument size 0, no arguments, no start override)
@@ -987,6 +1047,7 @@ int main(int argc, char **argv)
         fprintf(f, "\n}\n");
         fclose(f);
     }
+    module_tls_cleanup();
     free(db);
     free(db_text);
     return 0;
