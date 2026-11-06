@@ -5,6 +5,7 @@
 
 #include <cstdint>
 
+#include "record_parameter_calls.h"
 #include "runtime/original.h"
 
 namespace render {
@@ -15,10 +16,6 @@ RT_GLOBAL(0x04c6ff14, record_builder_scale_values, RecordBuilderSelectorValues);
 
 RT_ORIGINAL(0x02ab7a20, choose_record_constructor_selector,
             uint32_t(uint32_t selector, uint32_t flag));
-
-RT_ORIGINAL(0x02ab7ab0, combine_record_parameters,
-            uint32_t(uint32_t first, uint32_t second, uint32_t flag));
-RT_ORIGINAL(0x02ab7e40, reduce_record_parameter, uint32_t(uint32_t value));
 
 // The ignored error-report hook is a one-byte RET and remains unhooked.
 // The builder supplies its own failure status after calling this no-op.

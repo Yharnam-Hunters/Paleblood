@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Input and result layouts for the three presentation-record normalization modes.
+// Resource fields copied into each presentation-record normalization mode.
 // Trailing input words and result padding retain their original initialized state.
 #pragma once
 
@@ -8,20 +8,20 @@
 
 namespace render {
 struct RecordMode2Input {
-    uint32_t component_00;
-    uint32_t count_04;
-    uint32_t parameter_08;
+    uint32_t width;
+    uint32_t level_count;
+    uint32_t entries_per_level;
     uint32_t selector;
-    uint32_t parameter_10;
-    uint32_t parameter_14;
-    uint32_t parameter_18;
-    uint32_t flags;
+    uint32_t compatibility_kind;
+    uint32_t resource_flags;
+    uint32_t selection;
+    uint32_t secondary_flags;
     uint32_t extra_20;
 };
 static_assert(offsetof(RecordMode2Input, selector) == 0xc);
-static_assert(offsetof(RecordMode2Input, parameter_10) == 0x10);
-static_assert(offsetof(RecordMode2Input, parameter_14) == 0x14);
-static_assert(offsetof(RecordMode2Input, flags) == 0x1c);
+static_assert(offsetof(RecordMode2Input, compatibility_kind) == 0x10);
+static_assert(offsetof(RecordMode2Input, resource_flags) == 0x14);
+static_assert(offsetof(RecordMode2Input, secondary_flags) == 0x1c);
 static_assert(sizeof(RecordMode2Input) == 0x24);
 
 struct NormalizedRecordMode2 {
@@ -44,21 +44,21 @@ static_assert(offsetof(NormalizedRecordMode2, status) == 0x38);
 static_assert(sizeof(NormalizedRecordMode2) == 0x3c);
 
 struct RecordMode4Input {
-    uint32_t component_00;
-    uint32_t component_04;
-    uint32_t component_08;
-    uint32_t count_0c;
+    uint32_t width;
+    uint32_t height;
+    uint32_t entries_per_level;
+    uint32_t level_count;
     uint32_t selector;
-    uint32_t parameter_14;
-    uint32_t parameter_18;
-    uint32_t parameter_1c;
-    uint32_t flags;
+    uint32_t compatibility_kind;
+    uint32_t resource_flags;
+    uint32_t selection;
+    uint32_t secondary_flags;
     uint32_t extra_24;
 };
 static_assert(offsetof(RecordMode4Input, selector) == 0x10);
-static_assert(offsetof(RecordMode4Input, parameter_14) == 0x14);
-static_assert(offsetof(RecordMode4Input, parameter_18) == 0x18);
-static_assert(offsetof(RecordMode4Input, flags) == 0x20);
+static_assert(offsetof(RecordMode4Input, compatibility_kind) == 0x14);
+static_assert(offsetof(RecordMode4Input, resource_flags) == 0x18);
+static_assert(offsetof(RecordMode4Input, secondary_flags) == 0x20);
 static_assert(sizeof(RecordMode4Input) == 0x28);
 struct NormalizedRecordMode4 {
     RecordMode4Input input;
@@ -80,25 +80,25 @@ static_assert(offsetof(NormalizedRecordMode4, status) == 0x3c);
 static_assert(sizeof(NormalizedRecordMode4) == 0x40);
 
 struct RecordMode3Input {
-    uint32_t component_00;
-    uint32_t component_04;
-    uint32_t count_08;
-    uint32_t parameter_0c;
+    uint32_t width;
+    uint32_t height;
+    uint32_t level_count;
+    uint32_t entries_per_level;
     uint32_t selector;
-    uint32_t parameter_14;
-    uint32_t parameter_18;
-    uint32_t parameter_1c;
-    uint32_t parameter_20;
-    uint32_t parameter_24;
-    uint32_t flags;
+    uint32_t layout;
+    uint32_t layout_parameter;
+    uint32_t compatibility_kind;
+    uint32_t resource_flags;
+    uint32_t selection;
+    uint32_t secondary_flags;
     uint32_t extra_2c;
 };
 static_assert(offsetof(RecordMode3Input, selector) == 0x10);
-static_assert(offsetof(RecordMode3Input, parameter_14) == 0x14);
-static_assert(offsetof(RecordMode3Input, parameter_18) == 0x18);
-static_assert(offsetof(RecordMode3Input, parameter_1c) == 0x1c);
-static_assert(offsetof(RecordMode3Input, parameter_20) == 0x20);
-static_assert(offsetof(RecordMode3Input, flags) == 0x28);
+static_assert(offsetof(RecordMode3Input, layout) == 0x14);
+static_assert(offsetof(RecordMode3Input, layout_parameter) == 0x18);
+static_assert(offsetof(RecordMode3Input, compatibility_kind) == 0x1c);
+static_assert(offsetof(RecordMode3Input, resource_flags) == 0x20);
+static_assert(offsetof(RecordMode3Input, secondary_flags) == 0x28);
 static_assert(sizeof(RecordMode3Input) == 0x30);
 struct NormalizedRecordMode3 {
     RecordMode3Input input;

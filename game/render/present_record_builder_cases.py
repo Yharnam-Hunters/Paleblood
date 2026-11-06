@@ -335,7 +335,7 @@ def call(address, argc, ret=0, writes=(), u32=(), u8=()):
     if u8:
         r["argu8"] = list(u8)
     # Compare pointers at full width; selectors occupy DWORD stack slots.
-    if address == "0x01487ee0":
+    if address in {"0x01487ee0", "0x01488590"}:
         r["argi"] = [0]
     elif address == "0x01485f90":
         r["argi"] = [0, 8, 9]
@@ -529,6 +529,7 @@ def controlled_inputs():
 
 
 def cases():
+    """Yield builder inputs and observe lower-call arguments at their logical widths."""
     registers = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
     for index, inputs in enumerate(chain(INPUTS, controlled_inputs())):
         arena = bytearray((0x35 + 29 * i) & 255 for i in range(512))
@@ -563,6 +564,7 @@ def cases():
 
 
 def main():
+    """Write the deterministic synthetic cases to the requested directory."""
     if len(sys.argv) != 2:
         print(__doc__, file=sys.stderr)
         return 2

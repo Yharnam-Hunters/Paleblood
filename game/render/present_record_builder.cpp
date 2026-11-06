@@ -235,62 +235,62 @@ extern "C" uint32_t bb_render_build_present_source_record(
     case mode_two: {
         // The extra trailing DWORD stays indeterminate, as in the native input scratch.
         RecordMode2Input input;
-        input.component_00 = read_half(&payload->width);
-        input.count_04 = payload->level_count;
-        input.parameter_08 = read_half(&payload->entries_per_level);
+        input.width = read_half(&payload->width);
+        input.level_count = payload->level_count;
+        input.entries_per_level = read_half(&payload->entries_per_level);
         input.selector = selector;
-        input.parameter_10 = prefix->compatibility_kind;
-        input.parameter_14 = prefix->resource_flags;
-        input.parameter_18 = prefix->selection;
-        input.flags = prefix->secondary_flags.get();
+        input.compatibility_kind = prefix->compatibility_kind;
+        input.resource_flags = prefix->resource_flags;
+        input.selection = prefix->selection;
+        input.secondary_flags = prefix->secondary_flags.get();
         NormalizedRecordMode2 normalized;
         record_normalize_mode2(&normalized, &input, supplied, 0);
         if (normalized.status != 0) return normalized.status;
-        if ((normalized.input.parameter_14 & required_parameter_bit) == 0) return normalization_failed;
-        parameters = {mode_two, normalized.input.component_00, 1, normalized.input.parameter_08,
-            normalized.input.count_04, normalized.mapping, normalized.supplied, 1, 0, normalized.input.flags, 0};
+        if ((normalized.input.resource_flags & required_parameter_bit) == 0) return normalization_failed;
+        parameters = {mode_two, normalized.input.width, 1, normalized.input.entries_per_level,
+            normalized.input.level_count, normalized.mapping, normalized.supplied, 1, 0, normalized.input.secondary_flags, 0};
         break;
     }
     case mode_three: {
         RecordMode3Input input;
-        input.component_00 = read_half(&payload->width);
-        input.component_04 = read_half(&payload->height);
-        input.count_08 = payload->level_count;
-        input.parameter_0c = read_half(&payload->entries_per_level);
+        input.width = read_half(&payload->width);
+        input.height = read_half(&payload->height);
+        input.level_count = payload->level_count;
+        input.entries_per_level = read_half(&payload->entries_per_level);
         input.selector = selector;
-        input.parameter_14 = read_half(&payload->layout);
-        input.parameter_18 = read_half(&payload->layout_parameter);
-        input.parameter_1c = prefix->compatibility_kind;
-        input.parameter_20 = prefix->resource_flags;
-        input.parameter_24 = prefix->selection;
-        input.flags = prefix->secondary_flags.get();
+        input.layout = read_half(&payload->layout);
+        input.layout_parameter = read_half(&payload->layout_parameter);
+        input.compatibility_kind = prefix->compatibility_kind;
+        input.resource_flags = prefix->resource_flags;
+        input.selection = prefix->selection;
+        input.secondary_flags = prefix->secondary_flags.get();
         NormalizedRecordMode3 normalized;
         record_normalize_mode3(&normalized, &input, supplied, 0);
         if (normalized.status != 0) return normalized.status;
-        if ((normalized.input.parameter_20 & required_parameter_bit) == 0) return normalization_failed;
-        parameters = {mode_three, normalized.input.component_00, normalized.input.component_04,
-            normalized.input.parameter_0c, normalized.input.count_08, normalized.mapping, normalized.supplied,
-            normalized.input.parameter_14, normalized.input.parameter_18, normalized.input.flags, normalized.mode};
+        if ((normalized.input.resource_flags & required_parameter_bit) == 0) return normalization_failed;
+        parameters = {mode_three, normalized.input.width, normalized.input.height,
+            normalized.input.entries_per_level, normalized.input.level_count, normalized.mapping, normalized.supplied,
+            normalized.input.layout, normalized.input.layout_parameter, normalized.input.secondary_flags, normalized.mode};
         break;
     }
     case mode_four: {
         RecordMode4Input input;
-        input.component_00 = read_half(&payload->width);
-        input.component_04 = read_half(&payload->height);
-        input.component_08 = read_half(&payload->entries_per_level);
-        input.count_0c = payload->level_count;
+        input.width = read_half(&payload->width);
+        input.height = read_half(&payload->height);
+        input.entries_per_level = read_half(&payload->entries_per_level);
+        input.level_count = payload->level_count;
         input.selector = selector;
-        input.parameter_14 = prefix->compatibility_kind;
-        input.parameter_18 = prefix->resource_flags;
-        input.parameter_1c = prefix->selection;
-        input.flags = prefix->secondary_flags.get();
+        input.compatibility_kind = prefix->compatibility_kind;
+        input.resource_flags = prefix->resource_flags;
+        input.selection = prefix->selection;
+        input.secondary_flags = prefix->secondary_flags.get();
         NormalizedRecordMode4 normalized;
         record_normalize_mode4(&normalized, &input, supplied, 0);
         if (normalized.status != 0) return normalized.status;
-        if ((normalized.input.parameter_18 & required_parameter_bit) == 0) return normalization_failed;
-        parameters = {mode_four, normalized.input.component_00, normalized.input.component_04,
-            normalized.input.component_08, normalized.input.count_0c, normalized.mapping, normalized.supplied,
-            1, 0, normalized.input.flags, 0};
+        if ((normalized.input.resource_flags & required_parameter_bit) == 0) return normalization_failed;
+        parameters = {mode_four, normalized.input.width, normalized.input.height,
+            normalized.input.entries_per_level, normalized.input.level_count, normalized.mapping, normalized.supplied,
+            1, 0, normalized.input.secondary_flags, 0};
         break;
     }
     default:

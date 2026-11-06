@@ -5,7 +5,9 @@
 
 #include <cstdint>
 
-#include "record_descriptor.h"
+#include "record_descriptor_accessors.h"
+#include "record_geometry_call.h"
+#include "record_geometry_rounding.h"
 
 namespace render {
 RT_ORIGINAL(0x014a1e80, initialize_record_level_descriptor,

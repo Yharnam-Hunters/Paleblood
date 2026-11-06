@@ -35,6 +35,4 @@ static_assert(offsetof(RecordDescriptorPrefix, pair_08) == 0x08);
 static_assert(offsetof(RecordDescriptorPrefix, pair_10) == 0x10);
 static_assert(offsetof(RecordDescriptorPrefix, pair_18) == 0x18);
 
-RT_ORIGINAL(0x01488370, record_descriptor_set_high_field,
-            uint32_t(RecordDescriptorPrefix *descriptor, uint32_t value));
 }  // namespace render
