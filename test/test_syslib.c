@@ -285,7 +285,8 @@ static void unregister_unknown_id(void) { netctl_unregister(0x7fff); }
 static void info_of_module_one(void) { netctl_info(1, netctl_shared); }
 /* A size-prefixed buffer of the shape the guest's own sites build (16 at offset 0), on the child's
    stack: the fatal must not write through it, and netctl_shared stays the untouched witness. */
-static void nat_info_with_size(void) { int nat[4] = {16, 0, 0, 0}; netctl_nat(nat); }
+static void nat_info_other_size(void) { int nat[4] = {12, 0, 0, 0}; netctl_nat(nat); }
+static void nat_info_null(void) { netctl_nat(NULL); }
 
 /* libSceSysmodule: a stub module (one the title ships but the runtime does not map) loads as done.
    The ids here are made up; the real ones come from the game's data through runtime/boot.c. */
@@ -1414,7 +1415,7 @@ int main(void)
     CHECK(is_implemented("libSceNetCtl", "sceNetCtlRegisterCallback"));
     CHECK(is_implemented("libSceNetCtl", "sceNetCtlUnregisterCallback"));
     CHECK(!is_implemented("libSceNetCtl", "sceNetCtlGetInfo"));
-    CHECK(!is_implemented("libSceNetCtl", "sceNetCtlGetNatInfo"));
+    CHECK(is_implemented("libSceNetCtl", "sceNetCtlGetNatInfo"));
     if (failures) return 1;
     netctl_shared = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (netctl_shared == MAP_FAILED) { perror("mmap"); return 1; }
@@ -1477,7 +1478,12 @@ int main(void)
     CHECK(died_in_fatal(register_null_callback));      /* no answer for a null callback */
     CHECK(died_in_fatal(register_null_id));            /* no answer for a null id slot */
     CHECK(died_in_fatal(info_of_module_one));
-    CHECK(died_in_fatal(nat_info_with_size));
+    {   /* offline: "not connected", nothing written; the guest then takes its own NAT type */
+        int nat[4] = {16, -7, -7, -7};
+        CHECK(netctl_nat(nat) == (int)0x80412108u && nat[0] == 16 && nat[1] == -7 && nat[2] == -7 && nat[3] == -7);
+    }
+    CHECK(died_in_fatal(nat_info_other_size));
+    CHECK(died_in_fatal(nat_info_null));
     CHECK(memcmp(netctl_shared, poisoned, sizeof poisoned) == 0);
 
     /* The store survived all of that, because every fatal above was in a child. */
