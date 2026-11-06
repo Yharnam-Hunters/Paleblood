@@ -1052,6 +1052,50 @@ static void pg_chunks_short(void) { uint16_t ids[2]; uint32_t n; pg_chunks(pg_ha
 static void pg_chunks_bad_handle(void) { uint16_t ids[100]; uint32_t n; pg_chunks(pg_handle + 1, ids, 100, &n); }
 static void pg_locus_unknown(void) { const uint16_t ids[1] = {3}; int8_t loci[1]; pg_locus(pg_handle, ids, 1, loci); }
 
+/* PSN offline: matchmaking start-up and the PSN manager's sign-in state. */
+typedef int32_t (*f_np_state)(int32_t, uint32_t *);
+static f_np_state np_state;
+static void np_state_other_user(void) { uint32_t st; np_state(7, &st); }
+
+/* libSceNet epoll sets, offline: waits end only by timeout, abort or destroy. */
+typedef int32_t (*f_ep_create)(const char *, int32_t);
+typedef int32_t (*f_ep_wait)(int32_t, void *, int32_t, int32_t);
+typedef int32_t (*f_ep_id_flags)(int32_t, int32_t);
+typedef int32_t (*f_ep_id)(int32_t);
+typedef int32_t *(*f_net_errno)(void);
+static f_ep_wait ep_wait;
+static f_net_errno net_errno_fn;
+static int32_t ep_waiter_id, ep_waiter_result, ep_waiter_errno;
+static void *ep_waiter(void *arg)
+{
+    unsigned char events[24 * 4];
+    ep_waiter_result = ep_wait(ep_waiter_id, events, 4, (int32_t)(intptr_t)arg);
+    ep_waiter_errno = *net_errno_fn();
+    return NULL;
+}
+
+/* scePthreadExit: a guest thread ends from deep in its calls, its key destructors still run. */
+typedef void (*f_thread_exit)(void *);
+static f_thread_exit te_exit;
+static int32_t te_key;
+static atomic_int te_after_exit, te_destructor_calls;
+static void *te_destroyed;
+static void te_destructor(void *value) { te_destroyed = value; atomic_fetch_add(&te_destructor_calls, 1); }
+static void __attribute__((noinline)) te_deep(int depth, void *value)
+{
+    if (depth) te_deep(depth - 1, value);
+    else te_exit(value);
+    atomic_store(&te_after_exit, 1); /* never reached */
+}
+static void *te_entry(void *argument)
+{
+    kc_set(te_key, argument);
+    te_deep(2, argument);
+    atomic_store(&te_after_exit, 1); /* never reached */
+    return NULL;
+}
+static void te_exit_main(void) { te_exit(NULL); }
+
 int main(void)
 {
     /* Unresolved entries are still callable diagnostics, but are not reported as implemented. */
@@ -2942,6 +2986,115 @@ int main(void)
             CHECK(strcmp(kept, "ABCD12345_00") == 0);
             CHECK(set_title(NULL, secret) == (int32_t)0x80550003u && set_title(id, NULL) == (int32_t)0x80550003u);
         }
+    }
+
+    {   /* libSceNpMatching2: initialize and terminate, with the block's own size at 0x20 */
+        typedef int32_t (*f_m2_init)(const void *);
+        typedef int32_t (*f_m2_none)(void);
+        const f_m2_init m2_init = (f_m2_init)fn("libSceNpMatching2", "sceNpMatching2Initialize");
+        const f_m2_none m2_term = (f_m2_none)fn("libSceNpMatching2", "sceNpMatching2Terminate");
+        CHECK(m2_init && m2_term);
+        if (m2_init && m2_term) {
+            uint64_t block[6] = {0x20000, 0, 0, 0x4000, 0x30, 0};
+            CHECK(m2_term() == (int32_t)0x80550C03u);           /* not initialized */
+            CHECK(m2_init(NULL) == (int32_t)0x80550C0Au);
+            block[4] = 0x20;
+            CHECK(m2_init(block) == (int32_t)0x80550C0Au);      /* a size other than 0x28 or 0x30 */
+            block[4] = 0x30;
+            CHECK(m2_init(block) == 0 && m2_init(block) == (int32_t)0x80550C02u);
+            CHECK(m2_term() == 0 && m2_term() == (int32_t)0x80550C03u);
+            block[4] = 0x28;
+            CHECK(m2_init(block) == 0 && m2_term() == 0);        /* the older block size */
+        }
+    }
+    {   /* libSceNpManager: callbacks kept but never called, the user signed out, nothing to deliver */
+        typedef int32_t (*f_np_register)(void *, void *);
+        typedef int32_t (*f_np_none)(void);
+        typedef void (*f_np_presence)(void *, void *);
+        const f_np_register reg = (f_np_register)fn("libSceNpManager", "sceNpRegisterStateCallback");
+        const f_np_none unreg = (f_np_none)fn("libSceNpManager", "sceNpUnregisterStateCallback");
+        const f_np_presence presence = (f_np_presence)fn("libSceNpManager", "sceNpRegisterGamePresenceCallback");
+        const f_np_none check = (f_np_none)fn("libSceNpManager", "sceNpCheckCallback");
+        np_state = (f_np_state)fn("libSceNpManager", "sceNpGetState");
+        CHECK(reg && unreg && presence && check && np_state);
+        if (reg && unreg && presence && check && np_state) {
+            static int user_data;
+            void *const callback = (void *)np_state_other_user; /* any address: it is never called */
+            CHECK(reg(NULL, &user_data) == (int32_t)0x80550003u);
+            CHECK(reg(callback, &user_data) == 0 && reg(callback, &user_data) == (int32_t)0x80550008u);
+            presence(callback, &user_data);
+            CHECK(check() == 0);
+            CHECK(unreg() == 0 && unreg() == (int32_t)0x80550009u);
+            CHECK(reg(callback, NULL) == 0 && unreg() == 0);     /* registered again after an unregister */
+            uint32_t st = 77;
+            CHECK(np_state(1, &st) == 0 && st == 1);             /* signed out */
+            CHECK(np_state(1, NULL) == (int32_t)0x80550003u);
+            CHECK(died_in_fatal(np_state_other_user));
+        }
+    }
+
+    {
+        const f_ep_create ep_create = (f_ep_create)fn("libSceNet", "sceNetEpollCreate");
+        const f_ep_id_flags ep_abort = (f_ep_id_flags)fn("libSceNet", "sceNetEpollAbort");
+        const f_ep_id ep_destroy = (f_ep_id)fn("libSceNet", "sceNetEpollDestroy");
+        ep_wait = (f_ep_wait)fn("libSceNet", "sceNetEpollWait");
+        net_errno_fn = (f_net_errno)fn("libSceNet", "sceNetErrnoLoc");
+        CHECK(ep_create && ep_abort && ep_destroy && ep_wait && net_errno_fn);
+        if (ep_create && ep_abort && ep_destroy && ep_wait && net_errno_fn) {
+            int32_t *const err = net_errno_fn();
+            CHECK(ep_create("x", 1) == (int32_t)0x80410116u && *err == 22);             /* EINVAL */
+            CHECK(ep_create("a-name-of-thirty-two-characters!", 0) == (int32_t)0x8041013fu && *err == 63);
+            const int32_t id = ep_create("a-name-of-thirty-one-character", 0);
+            CHECK(id >= 1 && ep_create(NULL, 0) != id);
+            unsigned char events[24 * 4];
+            CHECK(ep_wait(id + 40, events, 4, 0) == (int32_t)0x80410109u && *err == 9); /* EBADF */
+            CHECK(ep_wait(id, NULL, 4, 0) == (int32_t)0x80410116u);
+            CHECK(ep_wait(id, events, 0, 0) == (int32_t)0x80410116u);
+            struct timespec t0, t1;
+            clock_gettime(CLOCK_MONOTONIC, &t0);
+            CHECK(ep_wait(id, events, 4, 20000) == 0);                                  /* times out, no events */
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            CHECK((t1.tv_sec - t0.tv_sec) * 1000000000 + (t1.tv_nsec - t0.tv_nsec) >= 20000000);
+            CHECK(ep_abort(id, 0) == (int32_t)0x8041010fu && *err == 15);              /* ENOTBLK: none waiting */
+            CHECK(ep_abort(id, 2) == (int32_t)0x80410116u);
+            CHECK(ep_abort(id, 1) == 0 && ep_wait(id, events, 4, -1) == (int32_t)0x80410104u && *err == 4);
+            CHECK(ep_wait(id, events, 4, 0) == 0);                                      /* the preserved abort is used up */
+            /* a waiter for ever, interrupted by an abort from this thread */
+            pthread_t waiter;
+            ep_waiter_id = id;
+            CHECK(pthread_create(&waiter, NULL, ep_waiter, (void *)(intptr_t)-1) == 0);
+            int aborted = -1;
+            for (int tries = 0; tries < 2000 && aborted != 0; tries++) {
+                aborted = ep_abort(id, 0); /* ENOTBLK until the waiter is waiting */
+                if (aborted != 0) usleep(1000);
+            }
+            CHECK(aborted == 0 && pthread_join(waiter, NULL) == 0);
+            CHECK(ep_waiter_result == (int32_t)0x80410104u && ep_waiter_errno == 4);
+            /* and one ended by a destroy: EINTR if it was waiting, EBADF if the destroy came first;
+               either way it returns long before its 5-second timeout */
+            CHECK(pthread_create(&waiter, NULL, ep_waiter, (void *)(intptr_t)5000000) == 0);
+            usleep(20000);
+            struct timespec d0, d1;
+            clock_gettime(CLOCK_MONOTONIC, &d0);
+            CHECK(ep_destroy(id) == 0 && pthread_join(waiter, NULL) == 0);
+            clock_gettime(CLOCK_MONOTONIC, &d1);
+            CHECK(ep_waiter_result == (int32_t)0x80410104u || ep_waiter_result == (int32_t)0x80410109u);
+            CHECK(d1.tv_sec - d0.tv_sec < 1);
+            CHECK(ep_destroy(id) == (int32_t)0x80410109u && ep_wait(id, events, 4, 0) == (int32_t)0x80410109u);
+        }
+    }
+
+    te_exit = (f_thread_exit)fn("libkernel", "scePthreadExit");
+    CHECK(te_exit != NULL);
+    if (te_exit && tc_create && kc_create && kc_set) {
+        static int value;
+        CHECK(kc_create(&te_key, te_destructor) == 0);
+        void *thread = NULL, *attr = tc_attr(1, 1, 1); /* detached */
+        CHECK(tc_create(&thread, &attr, te_entry, &value, "exits") == 0);
+        for (int i = 0; i < 200000 && !atomic_load(&te_destructor_calls); i++) sched_yield();
+        CHECK(atomic_load(&te_destructor_calls) == 1 && te_destroyed == &value);
+        CHECK(!atomic_load(&te_after_exit));
+        CHECK(died_in_fatal(te_exit_main));
     }
 
     pg_init = (f_pg_init)fn("libScePlayGo", "scePlayGoInitialize");
