@@ -2,15 +2,15 @@
   "fault": null,
   "first_unimplemented": {
     "caller": "eboot",
-    "library": "libScePlayGo",
-    "nid": "ts6GlZOKRrE",
-    "returns_to": "eboot+0x1fdd67f",
-    "symbol": "scePlayGoInitialize"
+    "library": "libSceUserService",
+    "nid": "1xxcMiGu2fo",
+    "returns_to": "eboot+0x2161cdc",
+    "symbol": "sceUserServiceGetUserName"
   },
   "imports_bundled": 219,
-  "imports_called": 170,
-  "imports_implemented": 152,
-  "imports_remaining": 315,
+  "imports_called": 173,
+  "imports_implemented": 156,
+  "imports_remaining": 311,
   "imports_total": 686,
   "imports_unresolved": 3,
   "milestone": "first flip",
