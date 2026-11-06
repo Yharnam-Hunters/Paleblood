@@ -1867,6 +1867,10 @@ int main(void)
         rt_process.app_boot_param_unread = 1;
         char init[32] = {0}, boot[40];
         memset(boot, 0x5a, sizeof boot);
+        typedef int32_t (*f_ac_addcont)(uint32_t, void *, uint32_t, uint32_t *);
+        const f_ac_addcont ac_addcont = (f_ac_addcont)fn("libSceAppContent", "sceAppContentGetAddcontInfoList");
+        uint32_t hits = 77;
+        CHECK(ac_addcont && ac_addcont(0, NULL, 0, &hits) == (int32_t)0x80D90001u); /* before initialize */
         CHECK(ac_init(init, boot) == 0);
         CHECK(boot[0] == 0x5a && boot[sizeof boot - 1] == 0x5a); /* not written */
         int32_t value = -7;
@@ -1876,6 +1880,22 @@ int main(void)
         CHECK(died_in_fatal(ac_undeclared_param));
         CHECK(died_in_fatal(ac_param_no_variable));
         CHECK(died_in_fatal(ac_init_boot_param_not_declared));
+        /* add-ons: the labels the person owns, each installed, under service label 0 */
+        if (ac_addcont) {
+            CHECK(ac_addcont(0, NULL, 0, &hits) == 0 && hits == 0);              /* none by default */
+            memcpy(rt_process.addconts[0], "SPEXPANSIONDLC03", 17);
+            memcpy(rt_process.addconts[1], "SECONDADDON", 12);
+            rt_process.addcont_count = 2;
+            CHECK(ac_addcont(0, NULL, 0, &hits) == 0 && hits == 2);
+            CHECK(ac_addcont(1, NULL, 0, &hits) == 0 && hits == 0);
+            CHECK(ac_addcont(8, NULL, 0, &hits) == (int32_t)0x80D90002u && ac_addcont(0, NULL, 0, NULL) == (int32_t)0x80D90002u);
+            struct { char label[17], padding[3]; uint32_t status; } list[3];
+            memset(list, 0x5a, sizeof list);
+            CHECK(ac_addcont(0, list, 1, &hits) == 0 && hits == 1);             /* only the space given */
+            CHECK(!strcmp(list[0].label, "SPEXPANSIONDLC03") && list[0].status == 4 && list[1].status == 0x5a5a5a5au);
+            CHECK(ac_addcont(0, list, 3, &hits) == 0 && hits == 2 && !strcmp(list[1].label, "SECONDADDON"));
+            rt_process.addcont_count = 0;
+        }
         rt_process.app_param_count = 0;
         rt_process.app_boot_param_unread = 0;
     }

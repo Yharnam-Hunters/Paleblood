@@ -476,6 +476,20 @@ value variable.
 A local boot with the affinity probe and the rwlocks let through (not committed) loads the module,
 passes these calls, and stops next at `pthread_cond_init` (`libScePosix`).
 
+**Add-ons (`sceAppContentGetAddcontInfoList`).** It is called as
+`sceAppContentGetAddcontInfoList(service label, list, capacity, &hits)` and lists the title's
+add-ons (DLC). Each entry is `{entitlement label[17], padding[3], status}`, and status 4 means
+installed.
+- **Answers:** without a list it gives only the count. A service label above 7, or neither a list
+  nor a count, answers `0x80D90002`, and a call before initialize `0x80D90001`. The facts come
+  from shadPS4's `libSceAppContent`.
+- **The title's call:** it asks for the count first (`0x023b67cf`).
+- **What the runtime lists:** an add-on is what the person running the runtime owns, the labels
+  given to `tools/boot.py --addcont LABEL` (repeatable), each installed, under service label 0.
+  None are listed by default.
+- **Bloodborne's expansion:** The Old Hunters is `SPEXPANSIONDLC03`. Its data ships with patch 1.09
+  (bbport's notes), so the entitlement is all it needs.
+
 ## Ending a thread (`scePthreadExit`)
 
 `scePthreadExit(void *value)` ends the calling thread with `value`, as a return from its entry
