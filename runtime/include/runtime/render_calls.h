@@ -150,7 +150,7 @@ typedef struct {
             uint32_t header, max_size, index_offset, index_count, initiator;
         } draw_indexed_offset;        /* DRAW_INDEX_OFFSET_2: uses separately recorded INDEX_BASE */
         uint32_t index_type;         /* raw INDEX_TYPE word */
-        uint64_t index_base;         /* emitted INDEX_BASE address, aligned and limited to 40 bits */
+        uint64_t index_base;         /* raw emitted INDEX_BASE words, low word first */
         uint32_t index_buffer_size;  /* raw INDEX_BUFFER_SIZE word */
     } u;
 } rt_render_call;
