@@ -200,6 +200,30 @@ static const uint32_t pack_halves[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* Per lane i, a format store of (i, 1.0, 2.0, 0.5) at i * 16 bytes: buffer_store_format_xyzw, whose
+   format is the descriptor's (s[4:7]). */
+static const uint32_t store_format_xyzw[] = {
+    0x34020084, /* v_lshlrev_b32_e32 v1, 4, v0 */
+    0x7e080300, /* v_mov_b32_e32 v4, v0 */
+    0x7e0a02f2, /* v_mov_b32_e32 v5, 1.0 */
+    0x7e0c02f4, /* v_mov_b32_e32 v6, 2.0 */
+    0x7e0e02f0, /* v_mov_b32_e32 v7, 0.5 */
+    0xe01c1000, 0x80010401, /* buffer_store_format_xyzw v[4:7], v1, s[4:7], 0 offen */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Per lane, a format store of (0, -1.0, 1.0, 2.0) at lane * 16 bytes (buffer_store_format_xyzw,
+   the descriptor's format): as 8_8_8_8 unorm those clamp to 0, 0, 255, 255. */
+static const uint32_t store_format_packed[] = {
+    0x34020084, /* v_lshlrev_b32_e32 v1, 4, v0 */
+    0x7e080280, /* v_mov_b32_e32 v4, 0 */
+    0x7e0a02f3, /* v_mov_b32_e32 v5, -1.0 */
+    0x7e0c02f2, /* v_mov_b32_e32 v6, 1.0 */
+    0x7e0e02f4, /* v_mov_b32_e32 v7, 2.0 */
+    0xe01c1000, 0x80010401, /* buffer_store_format_xyzw v[4:7], v1, s[4:7], 0 offen */
+    0xbf810000, /* s_endpgm */
+};
+
 /* Scalar writes of VCC's halves: VCC_LO = 0x0000ffff, VCC_HI = 1, then per lane i (in a 64-lane
    workgroup) out[i] = VCC bit ? 1.0 : 0, so lanes 0-15 and 32 write 1.0. */
 static const uint32_t vcc_halves[] = {

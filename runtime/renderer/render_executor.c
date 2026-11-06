@@ -93,6 +93,11 @@ struct rt_executor {
     size_t rect_stage_count;
     compute_entry computes[MAX_COMPUTE_PIPELINES];
     size_t compute_count;
+    /* the run-time stop word translated shaders write (runtime/gcn_spirv.h) */
+    VkBuffer stop_buffer;
+    VkDeviceMemory stop_memory;
+    volatile uint32_t *stop_word;
+    uint64_t stop_address;
 };
 
 /* The state a command buffer builds up, call by call. */
@@ -272,11 +277,48 @@ static int import_memory(rt_executor *x, const rt_executor_memory *memory, char 
     return 0;
 }
 
+/* The run-time stop word: host-visible, with a GPU address the translated shaders store to. */
+static int open_stop_word(rt_executor *x, char *error, size_t error_size)
+{
+    const VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = sizeof(uint32_t),
+                                     .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT};
+    if (vkCreateBuffer(x->device, &info, NULL, &x->stop_buffer) != VK_SUCCESS) return failed(error, error_size, "no buffer for the stop word");
+    VkMemoryRequirements need;
+    vkGetBufferMemoryRequirements(x->device, x->stop_buffer, &need);
+    const VkMemoryAllocateFlagsInfo flags = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO, .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
+    const VkMemoryAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &flags, .allocationSize = need.size,
+                                           .memoryTypeIndex = memory_type(x, need.memoryTypeBits,
+                                                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)};
+    void *mapped = NULL;
+    if (allocate.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(x->device, &allocate, NULL, &x->stop_memory) != VK_SUCCESS ||
+        vkBindBufferMemory(x->device, x->stop_buffer, x->stop_memory, 0) != VK_SUCCESS ||
+        vkMapMemory(x->device, x->stop_memory, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS)
+        return failed(error, error_size, "no memory for the stop word");
+    x->stop_word = mapped;
+    *x->stop_word = 0;
+    const VkBufferDeviceAddressInfo address = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = x->stop_buffer};
+    x->stop_address = vkGetBufferDeviceAddress(x->device, &address);
+    return 0;
+}
+
+/* After work has finished: 0, or -1 with the reason when a shader wrote a run-time stop code. */
+static int check_stop_word(rt_executor *x, char *error, size_t error_size)
+{
+    const uint32_t code = *x->stop_word;
+    if (!code) return 0;
+    *x->stop_word = 0;
+    if (code >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_BUFFER_FORMAT)
+        return failed(error, error_size, "a %u-component buffer %s with format DATA_FORMAT %u, NUM_FORMAT %u%s at run time: only whole "
+                      "32-bit uint, sint or float components, and four-component 8_8_8_8 unorm stores, are done yet", code & 0x7,
+                      code & 0x80 ? "store" : "load", code >> 8 & 0xf, code >> 4 & 0x7, code & 8 ? " and a swizzle" : "");
+    return failed(error, error_size, "a shader stopped at run time with code %#x", code);
+}
+
 int rt_executor_open(const rt_executor_memory *memory, rt_executor **executor, char *error, size_t error_size)
 {
     rt_executor *x = calloc(1, sizeof *x);
     if (!x) return failed(error, error_size, "no memory");
-    if (open_device(x, error, error_size) || import_memory(x, memory, error, error_size)) {
+    if (open_device(x, error, error_size) || import_memory(x, memory, error, error_size) || open_stop_word(x, error, error_size)) {
         rt_executor_close(x);
         return -1;
     }
@@ -441,11 +483,12 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
     int result;
     if (stage == STAGE_VERTEX) {
         const gcn_vertex_layout layout = {.user_sgprs = user_sgprs, .output_control = output_control,
-                                          .push_constant_offset = VERTEX_USER_DATA, .address_offset = x->address_offset};
+                                          .push_constant_offset = VERTEX_USER_DATA, .address_offset = x->address_offset,
+                                          .error_address = x->stop_address};
         result = gcn_translate_vertex(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
     } else {
         const gcn_pixel_layout layout = {.user_sgprs = user_sgprs, .push_constant_offset = PIXEL_USER_DATA,
-                                         .address_offset = x->address_offset};
+                                         .address_offset = x->address_offset, .error_address = x->stop_address};
         result = gcn_translate_pixel(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
     }
     if (result) {
@@ -594,7 +637,8 @@ static int draw(rt_executor *x, const draw_state *s, uint32_t index_count, char 
     vkCmdPushConstants(commands, x->layout, VK_SHADER_STAGE_FRAGMENT_BIT, PIXEL_USER_DATA, USER_DATA_BYTES, s->user[STAGE_PIXEL]);
     vkCmdDraw(commands, index_count, 1, 0, 0);
     vkCmdEndRenderPass(commands);
-    return finish_commands(x, commands) ? failed(error, error_size, "the GPU did not finish a draw") : 0;
+    if (finish_commands(x, commands)) return failed(error, error_size, "the GPU did not finish a draw");
+    return check_stop_word(x, error, error_size);
 }
 
 /* The pipeline for a compute shader as dispatched now: translated once per workgroup size and
@@ -617,7 +661,7 @@ static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *
     }
     const gcn_compute_layout layout = {.local_size = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
                                        .workgroup_id_x_sgpr = workgroup_id_x_sgpr, .push_constant_offset = 0,
-                                       .address_offset = x->address_offset};
+                                       .address_offset = x->address_offset, .error_address = x->stop_address};
     uint32_t *spirv = NULL;
     size_t words = 0;
     char reason[256];
@@ -671,7 +715,8 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     const VkMemoryBarrier to_host = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
                                      .dstAccessMask = VK_ACCESS_HOST_READ_BIT};
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &to_host, 0, NULL, 0, NULL);
-    return finish_commands(x, commands) ? failed(error, error_size, "the GPU did not finish a dispatch") : 0;
+    if (finish_commands(x, commands)) return failed(error, error_size, "the GPU did not finish a dispatch");
+    return check_stop_word(x, error, error_size);
 }
 
 int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t size, char *error, size_t error_size)
@@ -818,6 +863,8 @@ void rt_executor_close(rt_executor *x)
         if (x->memory) vkFreeMemory(x->device, x->memory, NULL);
         if (x->layout) vkDestroyPipelineLayout(x->device, x->layout, NULL);
         if (x->compute_layout) vkDestroyPipelineLayout(x->device, x->compute_layout, NULL);
+        if (x->stop_buffer) vkDestroyBuffer(x->device, x->stop_buffer, NULL);
+        if (x->stop_memory) vkFreeMemory(x->device, x->stop_memory, NULL);
         if (x->pool) vkDestroyCommandPool(x->device, x->pool, NULL);
         vkDestroyDevice(x->device, NULL);
     }

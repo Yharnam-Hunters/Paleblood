@@ -34,12 +34,25 @@ enum { GCN_USER_SGPR_MAX = 16, GCN_PUSH_CONSTANT_LIMIT = 128 };
                            guest memory is one GPU buffer, at a fixed distance from the guest's view
                            of it. 0 when the two coincide, as in the tests' own buffers. */
 
+/* The run-time stop channel. Some of what a shader does is only known when it runs: a buffer
+   access's data format comes from its descriptor. A shader meeting such a case it cannot do exactly
+   writes a code to the 32-bit word at error_address (a GPU address, in the same space as the
+   translated shader's buffer pointers) and skips the access; the caller checks the word after the
+   work and stops by name. The code's kind is in bits 24-31, its details below. */
+enum {
+    GCN_RUNTIME_STOP_KIND_SHIFT = 24,
+    /* buffer_load/store_format_*: details DATA_FORMAT << 8 | NUM_FORMAT << 4 | the access's components;
+       bit 3 set when the descriptor's DST_SEL is not x, y, z, w, bit 7 for a store */
+    GCN_RUNTIME_STOP_BUFFER_FORMAT = 1,
+};
+
 typedef struct {
     uint32_t local_size[3];  /* the workgroup's size */
     unsigned user_sgprs;     /* s0 .. s(user_sgprs - 1) start as the user data (push constants) */
     int workgroup_id_x_sgpr; /* the SGPR that starts as the workgroup's x index, or -1 */
     uint32_t push_constant_offset;
     uint64_t address_offset;
+    uint64_t error_address;   /* the run-time stop word (GCN_RUNTIME_STOP_*), or 0: run-time cases stop translation */
 } gcn_compute_layout;
 
 /* Translates the compute program at code (dwords long, through its s_endpgm). On success 0, and
@@ -61,6 +74,7 @@ typedef struct {
     uint32_t output_control;
     uint32_t push_constant_offset;
     uint64_t address_offset;
+    uint64_t error_address;   /* the run-time stop word (GCN_RUNTIME_STOP_*), or 0: run-time cases stop translation */
 } gcn_vertex_layout;
 
 int gcn_translate_vertex(const uint32_t *code, size_t dwords, const gcn_vertex_layout *layout,
@@ -74,6 +88,7 @@ typedef struct {
     unsigned barycentric_vgpr;
     uint32_t push_constant_offset;
     uint64_t address_offset;
+    uint64_t error_address;   /* the run-time stop word (GCN_RUNTIME_STOP_*), or 0: run-time cases stop translation */
 } gcn_pixel_layout;
 
 int gcn_translate_pixel(const uint32_t *code, size_t dwords, const gcn_pixel_layout *layout,
