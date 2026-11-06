@@ -366,7 +366,10 @@ The signatures match the OpenOrbis homebrew SDK's `libkernel.h`, as supporting e
   - lengths, starts or alignments that are not multiples of 16 KiB (the granularity the
     executable's calls use);
   - memory types other than 0, 3 and 10;
-  - map flags, and an address hint without flags;
+  - map flags other than no-overwrite (`0x80`, shadPS4's kernel `memory.h`). No-overwrite keeps a
+    map off memory already mapped, and the runtime never replaces a mapping, so it changes nothing.
+    The movie code (`0x02d032b9`) passes it with no address, to map part of its own direct memory a
+    second time;
   - protection other than CPU and GPU read and write;
   - a range that does not fit or was not allocated;
   - releasing part of a range or a mapped one;
