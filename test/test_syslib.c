@@ -3023,6 +3023,9 @@ int main(void)
             CHECK(reg(NULL, &user_data) == (int32_t)0x80550003u);
             CHECK(reg(callback, &user_data) == 0 && reg(callback, &user_data) == (int32_t)0x80550008u);
             presence(callback, &user_data);
+            void *kept_data = NULL;
+            CHECK(rt_np_callback(RT_NP_PRESENCE_CALLBACK, &kept_data) == callback && kept_data == &user_data);
+            CHECK(rt_np_callback(RT_NP_STATE_CALLBACK, &kept_data) == callback && kept_data == &user_data);
             CHECK(check() == 0);
             CHECK(unreg() == 0 && unreg() == (int32_t)0x80550009u);
             CHECK(reg(callback, NULL) == 0 && unreg() == 0);     /* registered again after an unregister */
