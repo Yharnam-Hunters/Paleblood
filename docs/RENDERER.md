@@ -346,7 +346,23 @@ Instead:
           whose x matches one neighbour's and y the other's, and the fourth corner is the other two
           minus it, for the position and every output (shadPS4's rule, facts only). A device
           without geometry shaders stops by name at a rect list; Metal will need another route.
-        - **Not yet:** depth (its target is not recorded yet), other formats, more
+        - **Depth targets:** the depth target's setter (`0x014739b0`, observed)
+          reports the registers it writes (`DB_Z_INFO` to `DB_DEPTH_SLICE`, `DB_DEPTH_VIEW`, ...), the
+          stencil reference setters (`0x01473190`, `0x014731f0`) `DB_STENCILREFMASK` and `_BF`, and the
+          replacements writing `DB_RENDER_CONTROL`, `DB_DEPTH_CLEAR` and `DB_STENCIL_CLEAR` report
+          theirs. A draw that tests depth or stencil with a buffer bound gets an executor-owned depth
+          image (Z_16 or Z_32_FLOAT, with or without 8-bit stencil, found by its write addresses and
+          sized from `DB_DEPTH_SIZE`) and Vulkan depth and stencil state; with none bound (format 0,
+          as switching the target off writes) the test has nothing to work on and the draw goes on
+          as if it were off (shadPS4 takes it the same way). Compare functions are AMD's CompareFrag
+          order, which is Vulkan's. Done: tests that do not read the buffer (always, never) and
+          writes (depth writes; stencil keep, zero, replace with the test value). Reading the buffer,
+          other stencil operations, depth bounds and `DB_RENDER_CONTROL`'s clears stop by name, so
+          the depth image's starting contents (and the HTILE metadata the game may clear it with)
+          are never seen. A draw that writes only the depth target (target mask 0, or
+          `CB_COLOR_CONTROL`'s mode `CB_DISABLE`) draws without a colour target; one that writes
+          nothing is skipped. Triangle strips (`VGT_PRIMITIVE_TYPE` 6) are drawn too.
+        - **Not yet:** other formats, more
           render targets and other pixel inputs. These stop with the reason.
         - **The image's memory order:** an image's pixels only leave the GPU through
           `rt_executor_read_target`, which gives the display's BGRA either way. So nothing yet shows
