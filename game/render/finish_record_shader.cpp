@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Complete two ordered dirty passes using cached control bits and live command fields.
-// The caller uses the state updates and discards the return register after the
-// optional mode change, so this interface exposes no numeric status.
+// Finalize the record consumer's two dirty passes, then clear its dirty flags.
+// Use cached event-control bits while retaining live command fields and the delayed mode read.
 #include "secondary_calls.h"
 #include "finish_record_shader.h"
 

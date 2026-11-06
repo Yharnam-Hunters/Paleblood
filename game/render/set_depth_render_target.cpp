@@ -6,19 +6,19 @@
 #include "present_preparation_packets.h"
 
 namespace {
-bool has_selector_payload(const void *descriptor)
+bool has_depth_target(const void *descriptor)
 {
-    return descriptor && (render::prepared_selector_first_word(descriptor) != 0 ||
-                          render::prepared_selector_second_word(descriptor) != 0);
+    return descriptor && (render::depth_target_z_read_base(descriptor) != 0 ||
+                          render::depth_target_stencil_read_base(descriptor) != 0);
 }
 }  // namespace
 
 extern "C" void bb_render_set_depth_render_target(render::PacketBuffer *commands,
-                                                      const void *descriptor)
+                                                  const void *descriptor)
 {
     using namespace render;
     constexpr uint32_t clear_words = 6;
-    constexpr uint32_t selector_words = 24;
+    constexpr uint32_t depth_target_words = 24;
     constexpr uint32_t set_context_reg_eight_values_header = 0xc0086900;
     constexpr uint32_t db_z_info_index = 0x10;
     constexpr uint32_t db_stencil_info_index = 0x11;
@@ -27,15 +27,13 @@ extern "C" void bb_render_set_depth_render_target(render::PacketBuffer *commands
     constexpr uint32_t db_htile_data_base_index = 5;
     constexpr uint32_t db_htile_surface_index = 0x2af;
 
-    const uint32_t required = has_selector_payload(descriptor) ? selector_words : clear_words;
-    uintptr_t admitted_cursor;
-    if (!reserve_words(commands, required, admitted_cursor)) return;
+    const uint32_t required = has_depth_target(descriptor) ? depth_target_words : clear_words;
+    uintptr_t cursor;
+    if (!reserve_words(commands, required, cursor)) return;
 
-    auto *command = commands;
-    if (has_selector_payload(descriptor)) {
-        const uintptr_t cursor = packet_cursor(command);
-        const auto *source = static_cast<const PreparationSelectorSource *>(descriptor);
-        auto *packet = reinterpret_cast<PreparedSelectorPacket *>(cursor);
+    if (has_depth_target(descriptor)) {
+        const auto *source = static_cast<const DepthTargetDescriptorView *>(descriptor);
+        auto *packet = reinterpret_cast<DepthTargetPacket *>(cursor);
         packet->header.set(set_context_reg_eight_values_header);
         packet->index.set(db_z_info_index);
         packet->depth_size_and_slice.set(source->depth_size_and_slice.get());
@@ -45,37 +43,35 @@ extern "C" void bb_render_set_depth_render_target(render::PacketBuffer *commands
         packet->z_and_stencil_read_base.set(z_and_stencil_read_base);
         packet->z_and_stencil_info.set(z_and_stencil_info);
 
-        const uintptr_t trailing_cursor = packet_cursor(command);
-        auto *trailing = reinterpret_cast<PreparedSelectorPacket *>(trailing_cursor);
+        const uintptr_t trailing_cursor = packet_cursor(commands);
+        auto *trailing = reinterpret_cast<DepthTargetPacket *>(trailing_cursor);
         const uint32_t depth_info = source->depth_info.get();
-        trailing->depth_info.header.set(set_context_reg_one_value_header);
-        trailing->depth_info.index.set(db_depth_info_index);
-        trailing->depth_info.value.set(depth_info);
+        trailing->depth_info.header.set(preparation_packet::set_context_reg_one_value_header);
+        trailing->depth_info.register_index.set(db_depth_info_index);
+        trailing->depth_info.payload.set(depth_info);
         const uint32_t depth_view = source->depth_view.get();
-        trailing->depth_view.header.set(set_context_reg_one_value_header);
-        trailing->depth_view.index.set(db_depth_view_index);
-        trailing->depth_view.value.set(depth_view);
+        trailing->depth_view.header.set(preparation_packet::set_context_reg_one_value_header);
+        trailing->depth_view.register_index.set(db_depth_view_index);
+        trailing->depth_view.payload.set(depth_view);
         const uint32_t htile_data_base = source->htile_data_base.get();
-        trailing->htile_data_base.header.set(set_context_reg_one_value_header);
-        trailing->htile_data_base.index.set(db_htile_data_base_index);
-        trailing->htile_data_base.value.set(htile_data_base);
+        trailing->htile_data_base.header.set(preparation_packet::set_context_reg_one_value_header);
+        trailing->htile_data_base.register_index.set(db_htile_data_base_index);
+        trailing->htile_data_base.payload.set(htile_data_base);
         const uint32_t htile_surface = source->htile_surface.get();
-        trailing->htile_surface.header.set(set_context_reg_one_value_header);
-        trailing->htile_surface.index.set(db_htile_surface_index);
-        trailing->htile_surface.value.set(htile_surface);
+        trailing->htile_surface.header.set(preparation_packet::set_context_reg_one_value_header);
+        trailing->htile_surface.register_index.set(db_htile_surface_index);
+        trailing->htile_surface.payload.set(htile_surface);
         trailing->nop_header.set(nop_one_word_header);
         trailing->nop_payload.set(source->nop_payload.get());
-        set_packet_cursor(command, trailing_cursor + sizeof(PreparedSelectorPacket));
+        set_packet_cursor(commands, trailing_cursor + sizeof(DepthTargetPacket));
     } else {
-        const uintptr_t cursor = packet_cursor(command);
-        auto *packet = reinterpret_cast<PreparedSelectorClearPacket *>(cursor);
-        packet->first.header.set(set_context_reg_one_value_header);
-        packet->first.index.set(db_z_info_index);
-        packet->first.value.set(0);
-        packet->second.header.set(set_context_reg_one_value_header);
-        packet->second.index.set(db_stencil_info_index);
-        packet->second.value.set(0);
-        set_packet_cursor(command, cursor + sizeof(PreparedSelectorClearPacket));
+        auto *packet = reinterpret_cast<ClearDepthTargetPacket *>(cursor);
+        packet->z_info.header.set(preparation_packet::set_context_reg_one_value_header);
+        packet->z_info.register_index.set(db_z_info_index);
+        packet->z_info.payload.set(0);
+        packet->stencil_info.header.set(preparation_packet::set_context_reg_one_value_header);
+        packet->stencil_info.register_index.set(db_stencil_info_index);
+        packet->stencil_info.payload.set(0);
+        set_packet_cursor(commands, cursor + sizeof(ClearDepthTargetPacket));
     }
-    // The preparation consumer ignores the writer result.
 }

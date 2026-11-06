@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Restore sources are selected independently by flag bits 0 and 1. The slot helper's
-// index is an unbounded uint32; its native address arithmetic is retained explicitly.
+// Restore color and depth targets from independently selected banks. The color-target
+// slot uses unsigned address arithmetic rather than imposing a bounds check.
 #pragma once
 
 #include "byte_field.h"
@@ -9,45 +9,42 @@
 #include "present_preparation_packets.h"
 
 namespace render {
-static_assert(sizeof(uintptr_t) == 8);
-
-struct PreparationRestoreBank {
-    static constexpr auto records_extent_0 = 8;
-    Field<uintptr_t> records[records_extent_0];
-    Field<uintptr_t> selector;
+struct TargetRestoreBank {
+    static constexpr auto color_target_count = 8;
+    Field<uintptr_t> color_targets[color_target_count];
+    Field<uintptr_t> depth_target;
 };
-static_assert(offsetof(PreparationRestoreBank, records) == 0x00);
-static_assert(offsetof(PreparationRestoreBank, selector) == 0x40);
-static_assert(sizeof(PreparationRestoreBank) == 0x48);
+static_assert(offsetof(TargetRestoreBank, color_targets) == 0x00);
+static_assert(offsetof(TargetRestoreBank, depth_target) == 0x40);
+static_assert(sizeof(TargetRestoreBank) == 0x48);
 
-struct PreparationRestoreState {
+struct TargetRestoreState {
     uint8_t unknown_0x0000[0x60];
-    static constexpr auto banks_extent_0 = 2;
-    PreparationRestoreBank banks[banks_extent_0];
+    static constexpr auto bank_count = 2;
+    TargetRestoreBank banks[bank_count];
     uint8_t unknown_0x00f0[0x98];
     Field<uint32_t> bank_flags;
 };
-static_assert(offsetof(PreparationRestoreState, banks) == 0x60);
-static_assert(offsetof(PreparationRestoreState, bank_flags) == 0x188);
-static_assert(sizeof(PreparationRestoreState) == 0x18c);
+static_assert(offsetof(TargetRestoreState, banks) == 0x60);
+static_assert(offsetof(TargetRestoreState, bank_flags) == 0x188);
+static_assert(sizeof(TargetRestoreState) == 0x18c);
 
-constexpr uint32_t preparation_record_bank_bit = 0;
-constexpr uint32_t preparation_selector_bank_bit = 1;
-constexpr uintptr_t preparation_payload_prefix = 16;
+constexpr uint32_t color_target_bank_bit = 0;
+constexpr uint32_t depth_target_bank_bit = 1;
+constexpr uintptr_t target_descriptor_prefix = 16;
 
-inline const void *preparation_payload(uintptr_t candidate)
+inline const void *target_descriptor_payload(uintptr_t candidate)
 {
-    // This is the native unsigned(candidate+1)>1 admission, including wraparound
-    // in the accepted candidate+16 calculation. Other high-bit values remain admitted.
+    // Zero and all-ones candidates mean no target. Other candidates advance past the
+    // descriptor prefix using wrapping unsigned arithmetic.
     return candidate == 0 || candidate == UINTPTR_MAX ? nullptr :
-        reinterpret_cast<const void *>(candidate + preparation_payload_prefix);
+        reinterpret_cast<const void *>(candidate + target_descriptor_prefix);
 }
 
-inline uintptr_t preparation_record_source(PreparationRestoreState *state,
-                                           uint32_t bank, uint32_t slot)
+inline uintptr_t color_target_source(TargetRestoreState *state, uint32_t bank, uint32_t slot)
 {
     const uintptr_t origin = reinterpret_cast<uintptr_t>(state) +
-        offsetof(PreparationRestoreState, banks) + uint64_t(bank) * sizeof(PreparationRestoreBank) +
+        offsetof(TargetRestoreState, banks) + uint64_t(bank) * sizeof(TargetRestoreBank) +
         uint64_t(slot) * sizeof(Field<uintptr_t>);
     uintptr_t value;
     std::memcpy(&value, reinterpret_cast<const void *>(origin), sizeof(value));

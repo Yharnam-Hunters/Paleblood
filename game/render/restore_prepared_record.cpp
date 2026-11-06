@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Restore one selected record binding without changing the preparation cache itself.
-// The observed consumer ignores the delegated native return, so this boundary is void.
+// Restore one color target from the bank selected by flag bit 0.
+// Keep the preparation cache unchanged while delegating the register writes.
 #include "present_preparation_restore.h"
 
 extern "C" void bb_render_restore_prepared_record_from_bank(render::RecordPreparationState *preparation,
-                                                render::PacketBuffer *commands, uint32_t slot)
+                                                            render::PacketBuffer *commands, uint32_t slot)
 {
     using namespace render;
-    auto *state = reinterpret_cast<PreparationRestoreState *>(preparation);
+    auto *state = reinterpret_cast<TargetRestoreState *>(preparation);
     const uint32_t flags = state->bank_flags.get();
-    const uint32_t bank = (flags >> preparation_record_bank_bit) & 1;
-    const uintptr_t candidate = preparation_record_source(state, bank, slot);
-    render_set_render_target(commands, slot, preparation_payload(candidate));
+    const uint32_t bank = (flags >> color_target_bank_bit) & 1;
+    const uintptr_t candidate = color_target_source(state, bank, slot);
+    render_set_render_target(commands, slot, target_descriptor_payload(candidate));
 }

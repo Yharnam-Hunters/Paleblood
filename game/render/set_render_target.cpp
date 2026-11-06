@@ -6,26 +6,24 @@
 #include "present_preparation_packets.h"
 
 extern "C" void bb_render_set_render_target(render::PacketBuffer *commands,
-                                                    uint32_t slot, const void *descriptor)
+                                            uint32_t slot, const void *descriptor)
 {
     using namespace render;
     constexpr uint32_t clear_words = 3;
-    constexpr uint32_t record_words = 15;
+    constexpr uint32_t color_target_words = 15;
     constexpr uint32_t color_buffer_register_stride = 15;
     constexpr uint32_t color_buffer_base_index = 0x318;
     constexpr uint32_t color_buffer_info_index = 0x31c;
     constexpr uint32_t set_context_reg_eleven_values_header = 0xc00b6900;
 
-    const uint32_t required = descriptor && prepared_record_payload_word(descriptor) != 0
-                                  ? record_words : clear_words;
-    uintptr_t admitted_cursor;
-    if (!reserve_words(commands, required, admitted_cursor)) return;
+    const uint32_t required = descriptor && color_target_base(descriptor) != 0
+                                  ? color_target_words : clear_words;
+    uintptr_t cursor;
+    if (!reserve_words(commands, required, cursor)) return;
 
-    auto *command = commands;
-    if (descriptor && prepared_record_payload_word(descriptor) != 0) {
-        const uintptr_t cursor = packet_cursor(command);
-        const auto *source = static_cast<const PreparationRecordSource *>(descriptor);
-        auto *packet = reinterpret_cast<PreparedRecordPacket *>(cursor);
+    if (descriptor && color_target_base(descriptor) != 0) {
+        const auto *source = static_cast<const ColorTargetDescriptorView *>(descriptor);
+        auto *packet = reinterpret_cast<ColorTargetPacket *>(cursor);
         packet->header.set(set_context_reg_eleven_values_header);
         packet->index.set(slot * color_buffer_register_stride + color_buffer_base_index);
         packet->fmask_slice.set(source->fmask_slice.get());
@@ -37,19 +35,17 @@ extern "C" void bb_render_set_render_target(render::PacketBuffer *commands,
         packet->slice_and_view.set(slice_and_view);
         packet->base_and_pitch.set(base_and_pitch);
 
-        const uintptr_t trailing_cursor = packet_cursor(command);
-        auto *trailing = reinterpret_cast<PreparedRecordPacket *>(trailing_cursor);
+        const uintptr_t trailing_cursor = packet_cursor(commands);
+        auto *trailing = reinterpret_cast<ColorTargetPacket *>(trailing_cursor);
         trailing->nop_header.set(nop_one_word_header);
-        const auto *nop_source = static_cast<const PreparationRecordNopSource *>(descriptor);
-        trailing->nop_payload.set(nop_source->word.get());
-        set_packet_cursor(command, trailing_cursor + sizeof(PreparedRecordPacket));
+        const auto *nop_source = static_cast<const ColorTargetNopView *>(descriptor);
+        trailing->nop_payload.set(nop_source->payload.get());
+        set_packet_cursor(commands, trailing_cursor + sizeof(ColorTargetPacket));
     } else {
-        const uintptr_t cursor = packet_cursor(command);
-        auto *packet = reinterpret_cast<PreparationWordPacket *>(cursor);
-        packet->header.set(set_context_reg_one_value_header);
-        packet->index.set(slot * color_buffer_register_stride + color_buffer_info_index);
-        packet->value.set(0);
-        set_packet_cursor(command, cursor + sizeof(PreparationWordPacket));
+        auto *packet = reinterpret_cast<PreparationCommandPacket *>(cursor);
+        packet->header.set(preparation_packet::set_context_reg_one_value_header);
+        packet->register_index.set(slot * color_buffer_register_stride + color_buffer_info_index);
+        packet->payload.set(0);
+        set_packet_cursor(commands, cursor + sizeof(PreparationCommandPacket));
     }
-    // The preparation consumer ignores the writer result.
 }

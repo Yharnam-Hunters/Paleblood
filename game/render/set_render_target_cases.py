@@ -68,7 +68,8 @@ def cases():
     c["buffers"]["self"]["bytes"] = "a5" * 512
     c["memory"][0] = {"addr": "buf:self+8", "pointer": "self+512"}
     c["memory"][1] = {"addr": "buf:self+16", "pointer": "self"}
-    # Header/index at0/4, descriptor base_and_pitch at8 and slice_and_view at16.
+    # The header and register index occupy the first two words. The color target
+    # register pairs overwrite the command object's limit and cursor words.
     # The second QWORD source becomes a valid replacement trailing cursor.
     c["memory"].append({"addr": "buf:descriptor+8", "pointer": "packet+128"})
     yield c
