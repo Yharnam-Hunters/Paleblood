@@ -697,6 +697,22 @@ The executable calls it twice:
 So the first call succeeds and a repeat answers `0x80b80002`, the "already initialized" code. No
 dialog is shown: each dialog library's own calls do that, and none is provided yet.
 
+## The splash screen and system status (`sceSystemServiceHideSplashScreen`, `sceSystemServiceGetStatus`)
+
+- **`sceSystemServiceHideSplashScreen()`:** the title tells the system it may take down the boot
+  splash, because its own screens follow. It answers 0, and the runtime keeps the fact
+  (`rt_splash_hidden`), a sign of how far a boot got. The executable calls it through a function
+  pointer (`0x01d5d995`) and reads no result.
+- **`sceSystemServiceGetStatus(status)`:** polled for system events. The status is
+  `{int32_t pending events, then one byte each: system UI overlaid, in background execution, CPU
+  mode 7 normal, live streaming, out of the VR play area}`, and a missing pointer answers
+  `0x80A10003`. The runtime has no system UI and no system events, so the answer is: no events,
+  nothing overlaid, in the foreground, CPU mode normal, not streaming, not in VR. Only these 9
+  bytes are written.
+
+Facts from shadPS4's `libSceSystemService` (`systemservice.cpp`, `systemservice.h`,
+`systemservice_error.h`).
+
 ## System settings (`sceSystemServiceParamGetInt`, issue #40)
 
 `sceSystemServiceParamGetInt(id, int32_t *value)` reads a console system setting. The setting
