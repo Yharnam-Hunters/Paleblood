@@ -269,6 +269,12 @@ Instead:
         - **What runs today:** COLOR_8_8_8_8 render targets in slot 0 (UNORM or sRGB, either
           component order), viewport 0, vertex and pixel shaders with their user data, and
           auto-index draws as triangle lists.
+        - **Rect lists** (primitive type 17, which the game's fullscreen passes use): Vulkan has no
+          such primitive, so each rect's three vertices go through a generated geometry stage
+          (`runtime/rect_list.h`) that adds the fourth corner. The right-angle vertex is the one
+          whose x matches one neighbour's and y the other's, and the fourth corner is the other two
+          minus it, for the position and every output (shadPS4's rule, facts only). A device
+          without geometry shaders stops by name at a rect list; Metal will need another route.
         - **Not yet:** blending and depth (their setters aren't recorded yet), other formats, more
           render targets and other pixel inputs. These stop with the reason.
         - **The image's memory order:** an image's pixels only leave the GPU through
