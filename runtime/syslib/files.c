@@ -21,7 +21,13 @@
    size, block count and size, link count and times; the permission bits without write (the mount
    is read-only); device and inode numbers as the host's (they only identify the file); the birth
    time as the modification time (the host's stat has none); owner, group, flags and generation 0. A missing file or directory component answers ENOENT or
-   ENOTDIR (the same numbers on FreeBSD and Linux); any other host error stops by name. */
+   ENOTDIR (the same numbers on FreeBSD and Linux); any other host error stops by name.
+
+   stat(path, struct stat *), imported by eboot from libScePosix: the same lookup and answer as
+   sceKernelStat, the POSIX way: 0, or -1 with the thread's errno (__error) set to ENOENT or
+   ENOTDIR. The executable's one call (0x00465431) reads the access and modification times and the
+   size on 0, and treats any other answer as no file; it does not read errno. */
+#include "runtime/guest_errno.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
@@ -90,15 +96,34 @@ static mount host_path(const char *caller, const char *guest, char *out, size_t 
 
 static guest_timespec timespec_of(struct timespec t) { return (guest_timespec){t.tv_sec, t.tv_nsec}; }
 
-/* ENOENT and ENOTDIR as SCE codes (the same numbers on FreeBSD and Linux); other host errors stop. */
-static int32_t lookup_error(const char *caller)
+/* The FreeBSD number of a lookup error, ENOENT or ENOTDIR (the same numbers on FreeBSD and Linux);
+   other host errors stop. */
+static int lookup_errno(const char *caller)
 {
-    if (errno == ENOENT) return SCE_KERNEL_ERROR(BSD_ENOENT);
-    if (errno == ENOTDIR) return SCE_KERNEL_ERROR(BSD_ENOTDIR);
+    if (errno == ENOENT) return BSD_ENOENT;
+    if (errno == ENOTDIR) return BSD_ENOTDIR;
     rt_fatal(caller, "a host error without an established answer");
 }
 
+/* The same, as an SCE code. */
+static int32_t lookup_error(const char *caller) { return SCE_KERNEL_ERROR(lookup_errno(caller)); }
+
 static void fill_stat(guest_stat *out, const struct stat *host, mount on);
+
+static int posix_stat(const char *path, guest_stat *out)
+{
+    static const char fn[] = "stat";
+    char host[4096];
+    const mount on = host_path(fn, path, host, sizeof host);
+    if (!out) rt_fatal(fn, "no structure for the answer: the error is not established");
+    struct stat st;
+    if (stat(host, &st)) {
+        *rt_guest_errno() = lookup_errno(fn);
+        return -1;
+    }
+    fill_stat(out, &st, on);
+    return 0;
+}
 
 static int32_t kernel_stat(const char *path, guest_stat *out)
 {
@@ -269,6 +294,7 @@ static int32_t kernel_fstat(int32_t fd, guest_stat *out)
 }
 
 RT_SYSLIB("libkernel", sceKernelStat, kernel_stat);
+RT_SYSLIB("libScePosix", stat, posix_stat);
 RT_SYSLIB("libkernel", sceKernelOpen, kernel_open);
 RT_SYSLIB("libkernel", sceKernelClose, kernel_close);
 RT_SYSLIB("libkernel", sceKernelRead, kernel_read);

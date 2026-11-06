@@ -60,6 +60,14 @@ def cases():
         yield packet_case(f"masked_upper_{value:08x}", value, "direct", 80, 0, False)
 
 
+    # The packet overwrites the cursor member before its saved base is published.
+    for offset in (12, 16):
+        c = packet_case(f"captured_cursor_overlap_{offset}", 0x12345678, "direct", 80, 0, False)
+        c["buffers"]["self"] = {"size": 512, "bytes": "a5" * 512}
+        c["memory"][0] = {"addr": "buf:self+8", "pointer": "self+512"}
+        c["memory"][1] = {"addr": "buf:self+16", "pointer": f"self+{offset}"}
+        yield c
+
 def packet_case(cid, value, label, available, result, redirect):
     c = basic(cid, returns="void", size=64)
     c["buffers"]["packet"] = {"size": 512, "bytes": "6b" * 512}

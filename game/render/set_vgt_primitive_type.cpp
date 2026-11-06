@@ -3,7 +3,7 @@
 #include "present_command_controls.h"
 
 extern "C" void bb_render_set_vgt_primitive_type(render::PacketBuffer *commands,
-                                                     uint32_t primitive_type)
+                                                   uint32_t primitive_type)
 {
     constexpr uint32_t required_words = 3;
     constexpr uint32_t set_uconfig_reg_one_value_header = 0xc0017900;
