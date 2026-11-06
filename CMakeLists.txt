@@ -58,6 +58,12 @@ add_executable(test_plugin test/test_plugin.c runtime/plugin.c runtime/hooks.c)
 target_include_directories(test_plugin PRIVATE runtime/include)
 target_link_libraries(test_plugin bbrt)
 add_test(NAME plugin COMMAND test_plugin)
+# The game library's observer calls reach the record the host exports (runtime/render_observer.h).
+add_executable(test_render_observer test/test_render_observer.c runtime/render_observer.c)
+target_include_directories(test_render_observer PRIVATE runtime/include)
+target_link_libraries(test_render_observer ${CMAKE_DL_LIBS} pthread)
+set_target_properties(test_render_observer PROPERTIES ENABLE_EXPORTS ON)
+add_test(NAME render_observer COMMAND test_render_observer)
 
 add_executable(test_host_hooks test/test_host_hooks.c runtime/host_hooks.c)
 target_include_directories(test_host_hooks PRIVATE runtime/include)
