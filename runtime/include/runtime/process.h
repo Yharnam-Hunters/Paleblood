@@ -91,6 +91,10 @@ void rt_thread_register_main(void *stack, uint64_t stack_size);
    does a null or empty variable, for which thread creation would use the system's defaults. */
 int rt_thread_attr_detach_state(void *const *attr, const char *caller);
 
+/* The calling guest thread's priority, as scePthreadGetprio answers it (256 highest to 767 lowest);
+   stops by name under caller when no guest thread runs on this host thread. */
+int32_t rt_thread_current_priority(const char *caller);
+
 /* Calls entry(argument) on the guest stack whose top is stack_top, with the System V convention the
    guest uses, and returns its result (runtime/syslib/kernel_thread.c). */
 void *rt_thread_call(void *(*entry)(void *), void *argument, void *stack_top);

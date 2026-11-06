@@ -180,6 +180,8 @@ static guest_thread *self_for(const char *caller)
 }
 
 static guest_thread *thread_self(void) { return self_for("scePthreadSelf"); }
+
+int32_t rt_thread_current_priority(const char *caller) { return self_for(caller)->priority; }
 static guest_thread *posix_thread_self(void) { return self_for("pthread_self"); }
 
 /* Two thread variables name the same thread when they hold the same object pointer. Non-zero when
