@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* The runtime's system library implementations, called the way the guest calls them: through the
    RT_SYSLIB registry, by library and symbol. */
+#include "runtime/audio_host.h"
 #include "runtime/display.h"
 #include "runtime/equeue.h"
 #include "runtime/gpu_memory.h"
@@ -2476,6 +2477,8 @@ int main(void)
             unsigned char state[32];
             memset(state, 0xee, sizeof state);
             CHECK(ao_state(h1, state) == 0 && state[0] == 0 && state[1] == 0 && state[31] == 0);
+            /* host sound: this build has none, so it cannot be switched on, and no port is heard */
+            CHECK(rt_audio_host_configure(1) == -1 && !rt_audio_host_enabled() && rt_audio_host_configure(0) == 0);
         }
     }
 

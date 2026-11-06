@@ -295,6 +295,8 @@ def main() -> int:
     ap.add_argument('--display', choices=('none', 'headless', 'window'), default='none',
                     help='show the frames: none (default), headless, or a window (needs Vulkan and SDL3)')
     ap.add_argument('--display-capture', default=None, metavar='DIR', help='write each presented frame to DIR as PPM')
+    ap.add_argument('--audio', choices=('none', 'host'), default='none',
+                    help='play the game\'s sound on this computer (host; needs SDL3) or not at all (none, default)')
     a = ap.parse_args()
     elf = a.elf or default_elf()
     pbboot = os.environ.get('BB_PBBOOT') or os.path.join(ROOT, 'build', 'runtime', 'pbboot')
@@ -330,7 +332,7 @@ def main() -> int:
         data = os.path.join(d, 'data')
         os.mkdir(data)
         cmd = [pbboot, *objects, *stubs, *hooks, '--data', data, '--status', out, '--timeout', str(a.timeout), *names,
-               '--display', a.display]
+               '--display', a.display, '--audio', a.audio]
         if a.display_capture:
             cmd += ['--display-capture', a.display_capture]
         if a.trace:
