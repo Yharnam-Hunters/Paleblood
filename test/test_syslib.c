@@ -1795,6 +1795,11 @@ int main(void)
         CHECK(died_in_fatal(dm_allocate_unknown_type));
         CHECK(died_in_fatal(dm_allocate_no_variable));
         CHECK(died_in_fatal(dm_map_with_flags));
+        /* No overwrite (0x80) with no address: nothing to overwrite, so the map is made as usual, and it
+           is the same memory as the range's other maps (the alias a title makes of its own memory). */
+        void *alias = NULL;
+        CHECK(dm_map(&alias, DM_PAGE, DM_RW, 0x80, first, DM_PAGE) == 0 && alias && alias != a);
+        if (alias && a) CHECK(((volatile unsigned char *)alias)[0] == 0xa5);
         /* A free, aligned address hint is where the map goes; one in use or off the alignment stops. */
         void *hinted = (void *)0xfd00000000;
         CHECK(dm_map(&hinted, DM_PAGE, DM_RW, 0, first, DM_PAGE) == 0 && hinted == (void *)0xfd00000000);

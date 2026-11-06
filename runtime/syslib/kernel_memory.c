@@ -51,6 +51,7 @@
 #define DIRECT_PAGE 0x4000ull
 
 enum { PROT_CPU_READ = 0x1, PROT_CPU_WRITE = 0x2, PROT_GPU_READ = 0x10, PROT_GPU_WRITE = 0x20 };
+enum { MAP_NO_OVERWRITE = 0x80 }; /* sceKernelMapDirectMemory flags (shadPS4 kernel memory.h) */
 enum { MEMORY_TYPE_WB_ONION = 0x0, MEMORY_TYPE_WC_GARLIC = 0x3, MEMORY_TYPE_WB_GARLIC = 0xa };
 enum { MAX_RANGES = 1024 };
 
@@ -236,7 +237,9 @@ static int32_t map_direct_memory(void **address, uint64_t length, int32_t protec
 {
     static const char name[] = "sceKernelMapDirectMemory";
     if (!address) rt_fatal(name, "no variable for the address: the error value is not established");
-    if (flags) rt_fatal(name, "map flags (a fixed address and the others) are not established");
+    /* No overwrite (0x80, shadPS4's kernel memory.h) keeps a map off memory already mapped; the runtime
+       never replaces a mapping (hints are placed with MAP_FIXED_NOREPLACE), so it changes nothing. */
+    if (flags & ~MAP_NO_OVERWRITE) rt_fatal(name, "map flags other than no-overwrite (a fixed address and the others) are not established");
     /* The runtime has no GPU yet: GPU access is accepted and the host mapping takes the CPU bits. */
     if (!protection || (protection & ~(PROT_CPU_READ | PROT_CPU_WRITE | PROT_GPU_READ | PROT_GPU_WRITE)))
         rt_fatal(name, "protection other than CPU and GPU read and write is not established");
