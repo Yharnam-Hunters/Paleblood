@@ -687,6 +687,23 @@ person running it chose:
 
 **What stops by name:** a setting nobody gave a value, and a missing variable.
 
+## PSN offline: sign-in state, callbacks and matchmaking start-up
+
+The runtime is offline: the one user is signed out of PSN for the whole run, and nothing about
+that ever changes. The facts come from shadPS4's `libSceNpManager` and `libSceNpMatching2`
+(`np_manager.h`, `np_types2.h`, `np_error.h`), checked against bbport and bbhost. The code is the
+runtime's own.
+
+| Call | Runtime |
+|---|---|
+| `sceNpRegisterStateCallback(callback, data)` | keeps it and never calls it: callbacks run only from `sceNpCheckCallback` when the sign-in state changes. A second registration answers `0x80550008`, no callback `0x80550003`. |
+| `sceNpUnregisterStateCallback()` | 0, or `0x80550009` with none registered |
+| `sceNpRegisterGamePresenceCallback(callback, data)` | keeps it (replacing any earlier one) and answers nothing; the caller (`0x010b8386`) reads no result |
+| `sceNpGetState(user, uint32_t *state)` | 1, signed out (0 is not signed up, 2 signed in); a missing variable answers `0x80550003`, and a user the runtime did not hand out stops by name |
+| `sceNpCheckCallback()` | 0, running nothing: offline nothing changes |
+| `sceNpMatching2Initialize(const parameter *)` | the 0x30-byte block carries its own size at `0x20`, and 0x30 or the older 0x28 is accepted. Anything else, or no block, answers `0x80550C0A`; a second initialize answers `0x80550C02`. The caller (`0x010ba2d0`) treats a negative answer as failure. |
+| `sceNpMatching2Terminate()` | 0, or `0x80550C03` before initialize |
+
 ## The PSN title id (`sceNpSetNpTitleId`)
 
 `sceNpSetNpTitleId(const title id *, const title secret *)` registers the title's PSN title id

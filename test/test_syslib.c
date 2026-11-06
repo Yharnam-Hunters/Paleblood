@@ -1052,6 +1052,11 @@ static void pg_chunks_short(void) { uint16_t ids[2]; uint32_t n; pg_chunks(pg_ha
 static void pg_chunks_bad_handle(void) { uint16_t ids[100]; uint32_t n; pg_chunks(pg_handle + 1, ids, 100, &n); }
 static void pg_locus_unknown(void) { const uint16_t ids[1] = {3}; int8_t loci[1]; pg_locus(pg_handle, ids, 1, loci); }
 
+/* PSN offline: matchmaking start-up and the PSN manager's sign-in state. */
+typedef int32_t (*f_np_state)(int32_t, uint32_t *);
+static f_np_state np_state;
+static void np_state_other_user(void) { uint32_t st; np_state(7, &st); }
+
 int main(void)
 {
     /* Unresolved entries are still callable diagnostics, but are not reported as implemented. */
@@ -2941,6 +2946,51 @@ int main(void)
             rt_np_title_id(kept);
             CHECK(strcmp(kept, "ABCD12345_00") == 0);
             CHECK(set_title(NULL, secret) == (int32_t)0x80550003u && set_title(id, NULL) == (int32_t)0x80550003u);
+        }
+    }
+
+    {   /* libSceNpMatching2: initialize and terminate, with the block's own size at 0x20 */
+        typedef int32_t (*f_m2_init)(const void *);
+        typedef int32_t (*f_m2_none)(void);
+        const f_m2_init m2_init = (f_m2_init)fn("libSceNpMatching2", "sceNpMatching2Initialize");
+        const f_m2_none m2_term = (f_m2_none)fn("libSceNpMatching2", "sceNpMatching2Terminate");
+        CHECK(m2_init && m2_term);
+        if (m2_init && m2_term) {
+            uint64_t block[6] = {0x20000, 0, 0, 0x4000, 0x30, 0};
+            CHECK(m2_term() == (int32_t)0x80550C03u);           /* not initialized */
+            CHECK(m2_init(NULL) == (int32_t)0x80550C0Au);
+            block[4] = 0x20;
+            CHECK(m2_init(block) == (int32_t)0x80550C0Au);      /* a size other than 0x28 or 0x30 */
+            block[4] = 0x30;
+            CHECK(m2_init(block) == 0 && m2_init(block) == (int32_t)0x80550C02u);
+            CHECK(m2_term() == 0 && m2_term() == (int32_t)0x80550C03u);
+            block[4] = 0x28;
+            CHECK(m2_init(block) == 0 && m2_term() == 0);        /* the older block size */
+        }
+    }
+    {   /* libSceNpManager: callbacks kept but never called, the user signed out, nothing to deliver */
+        typedef int32_t (*f_np_register)(void *, void *);
+        typedef int32_t (*f_np_none)(void);
+        typedef void (*f_np_presence)(void *, void *);
+        const f_np_register reg = (f_np_register)fn("libSceNpManager", "sceNpRegisterStateCallback");
+        const f_np_none unreg = (f_np_none)fn("libSceNpManager", "sceNpUnregisterStateCallback");
+        const f_np_presence presence = (f_np_presence)fn("libSceNpManager", "sceNpRegisterGamePresenceCallback");
+        const f_np_none check = (f_np_none)fn("libSceNpManager", "sceNpCheckCallback");
+        np_state = (f_np_state)fn("libSceNpManager", "sceNpGetState");
+        CHECK(reg && unreg && presence && check && np_state);
+        if (reg && unreg && presence && check && np_state) {
+            static int user_data;
+            void *const callback = (void *)np_state_other_user; /* any address: it is never called */
+            CHECK(reg(NULL, &user_data) == (int32_t)0x80550003u);
+            CHECK(reg(callback, &user_data) == 0 && reg(callback, &user_data) == (int32_t)0x80550008u);
+            presence(callback, &user_data);
+            CHECK(check() == 0);
+            CHECK(unreg() == 0 && unreg() == (int32_t)0x80550009u);
+            CHECK(reg(callback, NULL) == 0 && unreg() == 0);     /* registered again after an unregister */
+            uint32_t st = 77;
+            CHECK(np_state(1, &st) == 0 && st == 1);             /* signed out */
+            CHECK(np_state(1, NULL) == (int32_t)0x80550003u);
+            CHECK(died_in_fatal(np_state_other_user));
         }
     }
 
