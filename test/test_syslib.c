@@ -413,7 +413,7 @@ static f_sema_create sema_create;
 static f_sema_one sema_delete;
 static f_sema_wait sema_wait;
 static f_sema_count sema_signal, sema_poll;
-static void *sema_shared, *sema_prio;
+static void *sema_shared;
 static int sema_order[2], sema_served;
 static pthread_mutex_t sema_order_lock = PTHREAD_MUTEX_INITIALIZER;
 enum { SEMA_FIFO = 1, SEMA_PRIO = 2 };
@@ -436,7 +436,6 @@ static int sema_served_now(void)
     pthread_mutex_unlock(&sema_order_lock);
     return n;
 }
-static void *sema_prio_waiter(void *unused) { (void)unused; sema_wait(sema_prio, 1, NULL); return NULL; }
 /* The runtime's semaphore object, mirrored (runtime/syslib/kernel_sema.c) so a test can see how
    many waiters are inside the wait before it signals; keep the two in step. */
 typedef struct {
@@ -444,7 +443,8 @@ typedef struct {
     pthread_cond_t changed;
     int32_t count, max;
     uint32_t attr;
-    uint64_t next_ticket, serving;
+    uint64_t next_ticket;
+    void *queue;
     int waiters;
 } sema_mirror;
 static int sema_waiters(void *s)
@@ -464,13 +464,6 @@ static void sema_wait_with_timeout(void) { uint32_t t = 1000; sema_wait(sema_sha
 static void sema_wait_null(void) { sema_wait(NULL, 1, NULL); }
 static void sema_signal_past_max(void) { sema_signal(sema_shared, 0x10000); }
 static void sema_poll_empty(void) { sema_poll(sema_shared, 1); }
-static void sema_second_prio_waiter(void)
-{
-    pthread_t first;
-    pthread_create(&first, NULL, sema_prio_waiter, NULL);
-    while (sema_waiters(sema_prio) < 1) sched_yield();
-    sema_wait(sema_prio, 1, NULL);
-}
 
 /* The time of day: a timeval of two 64-bit fields, seconds and microseconds. */
 typedef struct {
@@ -1890,7 +1883,6 @@ int main(void)
             pthread_join(b, NULL);
             CHECK(sema_served == 2 && sema_order[1] == 2);
         }
-        CHECK(sema_create(&sema_prio, "prio", SEMA_PRIO, 0, 1, NULL) == 0);
         /* The answers that are not established stop by name. */
         CHECK(died_in_fatal(sema_create_no_variable));
         CHECK(died_in_fatal(sema_create_bad_attr));
@@ -1900,7 +1892,6 @@ int main(void)
         CHECK(died_in_fatal(sema_wait_null));
         CHECK(died_in_fatal(sema_signal_past_max));
         CHECK(died_in_fatal(sema_poll_empty));
-        CHECK(died_in_fatal(sema_second_prio_waiter));
         CHECK(sema_delete(sema_shared) == 0);
     }
     CHECK(is_implemented("libkernel", "sceKernelCreateSema") && is_implemented("libkernel", "sceKernelDeleteSema") &&

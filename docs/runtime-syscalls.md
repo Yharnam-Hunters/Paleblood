@@ -410,8 +410,15 @@ The signatures, and attr 1 = FIFO and 2 = priority wake order, match the OpenOrb
 headers (supporting evidence only).
 
 **What the runtime does.** A semaphore is a runtime object behind the handle. Wait blocks until the
-units are there, and waiters are served in the order they arrived. Signal adds units and wakes the
-waiters.
+units are there. Waiters are served in the order they arrived, or with attr 2 by thread priority:
+- the best priority goes first, which is the smallest number (OpenOrbis `_types/user.h`: `0x100`
+  highest, `0x2FF` lowest);
+- equal priorities are served in arrival order;
+- each waiter is placed by the priority its thread has when it starts to wait. The runtime records
+  each guest thread's priority (`scePthreadSetprio`, inherited at creation).
+
+shadPS4's semaphore (`threads/semaphore.cpp`) orders its wait list the same way. Signal adds units
+and wakes the waiters.
 
 **What stops by name.** Every case whose PS4 answer is not established stops with the function's
 name:
@@ -422,7 +429,6 @@ name:
 - signalling past the maximum;
 - a poll that cannot be satisfied now;
 - deleting a semaphore with waiters;
-- a second waiter under priority order (guest thread priorities are not modelled);
 - a wait for more than one unit behind another waiter (whether it may be passed is not
   established);
 - the error values.
