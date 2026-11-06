@@ -36,15 +36,15 @@ void rt_observe_user_data(uint64_t buffer, uint32_t offset, rt_shader_stage stag
 void rt_observe_register(uint64_t buffer, uint32_t offset, uint32_t address, uint32_t value);
 void rt_observe_instances(uint64_t buffer, uint32_t offset, uint32_t count);
 void rt_observe_dispatch(uint64_t buffer, uint32_t offset, const uint32_t groups[3]);
-
-/* Final emitted index state and draw packet fields; no guest index memory is read here. */
-void rt_observe_index_type(uint64_t buffer, uint32_t offset, uint32_t value);
 void rt_observe_index_base(uint64_t buffer, uint32_t offset, uint64_t address);
-void rt_observe_index_buffer_size(uint64_t buffer, uint32_t offset, uint32_t value);
+void rt_observe_index_size(uint64_t buffer, uint32_t offset, uint32_t count);
+void rt_observe_index_type(uint64_t buffer, uint32_t offset, uint32_t type);
+void rt_observe_draw_index_offset(uint64_t buffer, uint32_t offset, uint32_t first, uint32_t count);
+/* Final packet fields from replacement writers, after their last cursor publication. */
+void rt_observe_draw_index_offset_packet(uint64_t buffer, uint32_t offset, uint32_t header, uint32_t max_size,
+                                         uint32_t first, uint32_t count, uint32_t initiator);
 void rt_observe_draw_indexed(uint64_t buffer, uint32_t offset, uint32_t header, uint32_t max_size,
                               uint64_t address, uint32_t count, uint32_t initiator);
-void rt_observe_draw_indexed_offset(uint64_t buffer, uint32_t offset, uint32_t header, uint32_t max_size,
-                                     uint32_t index_offset, uint32_t count, uint32_t initiator);
 
 #ifdef __cplusplus
 }

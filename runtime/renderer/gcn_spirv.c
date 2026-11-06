@@ -87,6 +87,7 @@ typedef struct {
        leaves each lane's VCC bit unknown until a vector write sets it; this bool variable (made when the
        program has such a write) says so, and reading VCC as a lane mask while it holds is a run-time stop */
     uint32_t vcc_unknown;
+    uint32_t unorm8;                 /* the 8-bit unorm table (unorm8_value), made on first use */
     uint32_t interface[MAX_INTERFACE];
     unsigned interface_count;
     /* v_interp_p1 results waiting for their p2: attribute * 4 + channel + 1 per VGPR, or 0 */
@@ -1086,6 +1087,34 @@ static uint32_t equals(translator *t, uint32_t a, uint32_t b) { return value(t, 
 static uint32_t both(translator *t, uint32_t a, uint32_t b) { return value(t, SPV_OP_LOGICAL_AND, t_bool(t), 2, a, b); }
 static uint32_t either(translator *t, uint32_t a, uint32_t b) { return value(t, SPV_OP_LOGICAL_OR, t_bool(t), 2, a, b); }
 
+/* An 8-bit unsigned normalized value as a float's bits: v / 255, correctly rounded (the format's
+   meaning in AMD's ISA manual: an unsigned normalized number is the integer over 2^n - 1). Read from a
+   256-entry table of the bits worked out here in IEEE single precision, since a shader's division
+   need not be correctly rounded (Vulkan allows 2.5 ULP). */
+static uint32_t unorm8_value(translator *t, uint32_t byte)
+{
+    enum { VALUES = 256 };
+    spirv_module *m = &t->m;
+    const uint32_t array = spirv_global(m, SPV_OP_TYPE_ARRAY, (const uint32_t[]){t_uint(t), konst(t, VALUES)}, 2);
+    if (!t->unorm8) {
+        uint32_t words[2 + VALUES] = {array, spirv_new_id(m)};
+        for (uint32_t v = 0; v < VALUES; v++) {
+            const float f = (float)v / 255.0f;
+            uint32_t bits;
+            memcpy(&bits, &f, sizeof bits);
+            words[2 + v] = konst(t, bits);
+        }
+        spirv_emit(m, &m->sections[SPIRV_GLOBALS], SPV_OP_CONSTANT_COMPOSITE, words, 2 + VALUES);
+        t->unorm8 = spirv_new_id(m);
+        spirv_emit(m, &m->sections[SPIRV_GLOBALS], SPV_OP_VARIABLE,
+                   (const uint32_t[]){spirv_type_pointer(m, SPV_STORAGE_PRIVATE, array), t->unorm8, SPV_STORAGE_PRIVATE, words[1]}, 4);
+        if (t->interface_count == MAX_INTERFACE) fail(t, "more stage inputs, outputs and images than the translator takes");
+        else t->interface[t->interface_count++] = t->unorm8;
+    }
+    const uint32_t element = value(t, SPV_OP_ACCESS_CHAIN, spirv_type_pointer(m, SPV_STORAGE_PRIVATE, t_uint(t)), 2, t->unorm8, byte);
+    return load(t, t_uint(t), element);
+}
+
 /* buffer_load/store_format_*: the data format is the descriptor's, so the shader decides as it runs.
    Done exactly:
    - stores of whole 32-bit components (DATA_FORMAT 32 to 32_32_32_32; uint, sint or float), at least
@@ -1097,6 +1126,8 @@ static uint32_t either(translator *t, uint32_t a, uint32_t b) { return value(t, 
      lacks read 0), then each result component takes what its DST_SEL names: 0 (selector 0), 1
      (selector 1; 1.0 for float data), or memory component DST_SEL - 4, as shadPS4's
      lower_buffer_format_to_raw.cpp reads them; selectors 2 and 3 are reserved and stop;
+   - loads from 8_8_8_8 unorm: the dword's four bytes (x first) as v / 255 (unorm8_value), then each
+     result component takes what its DST_SEL names, as for 32-bit loads;
    - a four-component store to 8_8_8_8 unorm whose DST_SEL is a permutation of x, y, z, w: the store
      undoes the swizzle (memory component DST_SEL[i] - 4 takes data component i, the inverse of a
      load's mapping, as shadPS4's lower_buffer_format_to_raw.cpp does), then packs as GLSL's
@@ -1149,8 +1180,12 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
                                              equals(t, seen, konst(t, 0xf)))
                                       : spirv_constant_bool(&t->m, 0);
 
+    const uint32_t packed_load = load_op ? both(t, both(t, equals(t, data_format, konst(t, DATA_FORMAT_8_8_8_8)),
+                                                       equals(t, num_format, konst(t, NUM_FORMAT_UNORM))),
+                                              selectors_valid)
+                                         : spirv_constant_bool(&t->m, 0);
     /* neither: the stop code, from any active lane */
-    const uint32_t done = either(t, raw, packed_store);
+    const uint32_t done = either(t, either(t, raw, packed_store), packed_load);
     const uint32_t stop = begin_if(t, both(t, exec_bit(t), value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, done)));
     uint32_t code = value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, data_format, konst(t, 8)),
                           value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, num_format, konst(t, 4)));
@@ -1183,7 +1218,22 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
         for (uint32_t i = 0; i < components; i++) store_dword(t, dword_pointer(t, base, offset, i), load(t, t_uint(t), vgpr(t, vdata + i)));
     }
     end_if(t, raw_merge);
-    if (load_op || components != 4) return;
+    if (load_op) {
+        const uint32_t packed_merge = begin_if(t, both(t, exec_bit(t), packed_load));
+        const uint32_t dword = load_dword(t, dword_pointer(t, base, offset, 0));
+        uint32_t memory[4];
+        for (uint32_t m = 0; m < 4; m++) memory[m] = unorm8_value(t, descriptor_field(t, dword, 8 * m, 0xff));
+        for (uint32_t c = 0; c < components; c++) {
+            const uint32_t sel = descriptor_field(t, word, 3 * c, 0x7);
+            uint32_t result = value(t, SPV_OP_SELECT, t_uint(t), 3, equals(t, sel, konst(t, 1)), konst(t, 0x3f800000u), konst(t, 0));
+            for (uint32_t m = 0; m < 4; m++)
+                result = value(t, SPV_OP_SELECT, t_uint(t), 3, equals(t, sel, konst(t, DST_SEL_X + m)), memory[m], result);
+            write_vgpr(t, vdata + c, result);
+        }
+        end_if(t, packed_merge);
+        return;
+    }
+    if (components != 4) return;
 
     const uint32_t packed_merge = begin_if(t, both(t, exec_bit(t), packed_store));
     uint32_t data[4], memory[4];

@@ -156,10 +156,51 @@ uint64_t rt_tiling_offset(const rt_tiling *t, uint32_t x, uint32_t y, uint32_t s
 
 uint64_t rt_tiling_size(const rt_tiling *t, uint32_t slices) { return slices * t->slice_bytes; }
 
+/* Copies between the tiled image and linear rows, a micro tile at a time: within one, a texel's place is
+   the micro tile's first texel's plus its element offset (micro_index x element size), the part past
+   the 256-byte pipe interleave moving up to the channel rows of a 2D layout. That holds because a micro
+   tile starts on a 256-byte boundary of its channel (2D: its offset there is a whole number of micro
+   tiles of 256 bytes or more, or of ones that divide 256 and so never cross it) and keeps one pipe and
+   bank throughout (they depend on coordinate bits 3 and up). test/test_tiling.c checks it against
+   rt_tiling_offset for every mode and element size. */
+static void copy_texels(const rt_tiling *t, uint8_t *tiled, uint8_t *linear, uint32_t width, uint32_t height, uint32_t slices, int to_tiled)
+{
+    const size_t element = t->element_bytes, row = (size_t)width * element;
+    if (t->kind == RT_TILING_LINEAR) {
+        for (uint32_t s = 0; s < slices; s++)
+            for (uint32_t y = 0; y < height; y++, linear += row) {
+                uint8_t *at = tiled + rt_tiling_offset(t, 0, y, s);
+                if (to_tiled) memcpy(at, linear, row);
+                else memcpy(linear, at, row);
+            }
+        return;
+    }
+    const unsigned channel_shift = t->kind == RT_TILING_2D ? PIPE_INTERLEAVE_BITS + log2_of(t->pipes) + log2_of(t->banks) : PIPE_INTERLEAVE_BITS;
+    uint64_t spread[MICRO_TEXELS];
+    for (uint32_t j = 0; j < MICRO; j++)
+        for (uint32_t i = 0; i < MICRO; i++) {
+            const uint64_t m = micro_index(t, i, j) * element;
+            spread[j * MICRO + i] = t->kind == RT_TILING_2D ? (m & (PIPE_INTERLEAVE - 1)) + ((m >> PIPE_INTERLEAVE_BITS) << channel_shift) : m;
+        }
+    for (uint32_t s = 0; s < slices; s++, linear += row * height)
+        for (uint32_t ty = 0; ty < height; ty += MICRO)
+            for (uint32_t tx = 0; tx < width; tx += MICRO) {
+                uint8_t *const tile = tiled + rt_tiling_offset(t, tx, ty, s);
+                for (uint32_t j = 0; j < MICRO && ty + j < height; j++)
+                    for (uint32_t i = 0; i < MICRO && tx + i < width; i++) {
+                        uint8_t *at = tile + spread[j * MICRO + i], *texel = linear + (ty + j) * row + (tx + i) * element;
+                        if (to_tiled) memcpy(at, texel, element);
+                        else memcpy(texel, at, element);
+                    }
+            }
+}
+
 void rt_tiling_detile(const rt_tiling *t, const uint8_t *tiled, uint8_t *linear, uint32_t width, uint32_t height, uint32_t slices)
 {
-    const size_t element = t->element_bytes;
-    for (uint32_t s = 0; s < slices; s++)
-        for (uint32_t y = 0; y < height; y++)
-            for (uint32_t x = 0; x < width; x++, linear += element) memcpy(linear, tiled + rt_tiling_offset(t, x, y, s), element);
+    copy_texels(t, (uint8_t *)(uintptr_t)tiled, linear, width, height, slices, 0);
+}
+
+void rt_tiling_tile(const rt_tiling *t, const uint8_t *linear, uint8_t *tiled, uint32_t width, uint32_t height, uint32_t slices)
+{
+    copy_texels(t, tiled, (uint8_t *)(uintptr_t)linear, width, height, slices, 1);
 }

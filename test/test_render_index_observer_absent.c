@@ -7,9 +7,9 @@ int main(void)
     if (rt_render_observer_available()) return 1;
     rt_observe_index_type(0, 0, 0xffffffffu);
     rt_observe_index_base(0, 0, 0xffffffffffffffffull);
-    rt_observe_index_buffer_size(0, 0, 0xffffffffu);
+    rt_observe_index_size(0, 0, 0xffffffffu);
     rt_observe_draw_indexed(0, 0, 0xffffffffu, 0xffffffffu, 0xffffffffffffffffull, 0xffffffffu, 0xffffffffu);
-    rt_observe_draw_indexed_offset(0, 0, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu);
+    rt_observe_draw_index_offset_packet(0, 0, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu, 0xffffffffu);
     puts("index observer: absent host provider is optional");
     return 0;
 }

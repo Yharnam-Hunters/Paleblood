@@ -21,11 +21,12 @@ static struct {
     __typeof__(rt_render_record_register) *reg;
     __typeof__(rt_render_record_instances) *instances;
     __typeof__(rt_render_record_dispatch) *dispatch;
-    __typeof__(rt_render_record_index_type) *index_type;
     __typeof__(rt_render_record_index_base) *index_base;
-    __typeof__(rt_render_record_index_buffer_size) *index_buffer_size;
+    __typeof__(rt_render_record_index_size) *index_size;
+    __typeof__(rt_render_record_index_type) *index_type;
+    __typeof__(rt_render_record_draw_index_offset) *draw_index_offset;
+    __typeof__(rt_render_record_draw_index_offset_packet) *draw_index_offset_packet;
     __typeof__(rt_render_record_draw_indexed) *draw_indexed;
-    __typeof__(rt_render_record_draw_indexed_offset) *draw_indexed_offset;
     fatal_fn fatal;
 } record;
 
@@ -47,11 +48,12 @@ static void look_up(void)
     record.reg = (__typeof__(record.reg))host_function("rt_render_record_register");
     record.instances = (__typeof__(record.instances))host_function("rt_render_record_instances");
     record.dispatch = (__typeof__(record.dispatch))host_function("rt_render_record_dispatch");
-    record.index_type = (__typeof__(record.index_type))host_function("rt_render_record_index_type");
     record.index_base = (__typeof__(record.index_base))host_function("rt_render_record_index_base");
-    record.index_buffer_size = (__typeof__(record.index_buffer_size))host_function("rt_render_record_index_buffer_size");
+    record.index_size = (__typeof__(record.index_size))host_function("rt_render_record_index_size");
+    record.index_type = (__typeof__(record.index_type))host_function("rt_render_record_index_type");
+    record.draw_index_offset = (__typeof__(record.draw_index_offset))host_function("rt_render_record_draw_index_offset");
+    record.draw_index_offset_packet = (__typeof__(record.draw_index_offset_packet))host_function("rt_render_record_draw_index_offset_packet");
     record.draw_indexed = (__typeof__(record.draw_indexed))host_function("rt_render_record_draw_indexed");
-    record.draw_indexed_offset = (__typeof__(record.draw_indexed_offset))host_function("rt_render_record_draw_indexed_offset");
     record.fatal = (fatal_fn)host_function("rt_fatal");
 }
 
@@ -75,14 +77,6 @@ static void refused(const char *call, const char *reason)
         if (!record.name) return;                                                                  \
         char error[256] = "";                                                                      \
         if (record.name(__VA_ARGS__, error, sizeof error)) refused(call, error);                   \
-    } while (0)
-
-/* A completely absent renderer is optional. A present renderer must supply the new index API. */
-#define FORWARD_INDEX(name, call, ...)                                                              \
-    do {                                                                                           \
-        pthread_once(&looked_up, look_up);                                                          \
-        if (!record.name && record.draw_auto) refused(call, "host renderer is missing its index recorder"); \
-        FORWARD(name, call, __VA_ARGS__);                                                           \
     } while (0)
 
 void rt_observe_color_target(uint64_t buffer, uint32_t offset, unsigned slot, const uint32_t words[RT_COLOR_TARGET_WORDS])
@@ -132,29 +126,45 @@ void rt_observe_dispatch(uint64_t buffer, uint32_t offset, const uint32_t groups
     FORWARD(dispatch, "render observer: dispatch", buffer, offset, groups);
 }
 
-void rt_observe_index_type(uint64_t buffer, uint32_t offset, uint32_t value)
-{
-    FORWARD_INDEX(index_type, "render observer: index type", buffer, offset, value);
-}
-
 void rt_observe_index_base(uint64_t buffer, uint32_t offset, uint64_t address)
 {
-    FORWARD_INDEX(index_base, "render observer: index base", buffer, offset, address);
+    FORWARD(index_base, "render observer: index base", buffer, offset, address);
 }
 
-void rt_observe_index_buffer_size(uint64_t buffer, uint32_t offset, uint32_t value)
+void rt_observe_index_size(uint64_t buffer, uint32_t offset, uint32_t count)
 {
-    FORWARD_INDEX(index_buffer_size, "render observer: index buffer size", buffer, offset, value);
+    FORWARD(index_size, "render observer: index buffer size", buffer, offset, count);
+}
+
+void rt_observe_index_type(uint64_t buffer, uint32_t offset, uint32_t type)
+{
+    FORWARD(index_type, "render observer: index type", buffer, offset, type);
+}
+
+void rt_observe_draw_index_offset(uint64_t buffer, uint32_t offset, uint32_t first, uint32_t count)
+{
+    FORWARD(draw_index_offset, "render observer: indexed draw", buffer, offset, first, count);
+}
+
+/* An absent host is optional. A present legacy host cannot represent a raw packet: refusing
+   its missing export keeps header/predicate and alias-sensitive payloads from being lost. */
+#define FORWARD_PACKET(name, call, ...)                                                            \
+    do {                                                                                           \
+        pthread_once(&looked_up, look_up);                                                          \
+        if (!record.name && record.draw_auto) refused(call, "host renderer is missing its raw index recorder"); \
+        FORWARD(name, call, __VA_ARGS__);                                                           \
+    } while (0)
+
+void rt_observe_draw_index_offset_packet(uint64_t buffer, uint32_t offset, uint32_t header, uint32_t max_size,
+                                         uint32_t first, uint32_t count, uint32_t initiator)
+{
+    FORWARD_PACKET(draw_index_offset_packet, "render observer: indexed offset packet", buffer, offset,
+                   header, max_size, first, count, initiator);
 }
 
 void rt_observe_draw_indexed(uint64_t buffer, uint32_t offset, uint32_t header, uint32_t max_size,
                               uint64_t address, uint32_t count, uint32_t initiator)
 {
-    FORWARD_INDEX(draw_indexed, "render observer: indexed draw", buffer, offset, header, max_size, address, count, initiator);
-}
-
-void rt_observe_draw_indexed_offset(uint64_t buffer, uint32_t offset, uint32_t header, uint32_t max_size,
-                                     uint32_t index_offset, uint32_t count, uint32_t initiator)
-{
-    FORWARD_INDEX(draw_indexed_offset, "render observer: indexed offset draw", buffer, offset, header, max_size, index_offset, count, initiator);
+    FORWARD_PACKET(draw_indexed, "render observer: indexed packet", buffer, offset,
+                   header, max_size, address, count, initiator);
 }

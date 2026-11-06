@@ -92,7 +92,8 @@ Instead:
        baked into every translation (`error_address`); a shader meeting a case it cannot do exactly
        writes a code there and skips the access, and the executor checks the word after each
        dispatch and draw and stops by name (`GCN_RUNTIME_STOP_*`).
-     - **Format buffer accesses** (`buffer_load/store_format_*`): whole 32-bit components (uint,
+     - **Format buffer accesses** (`buffer_load/store_format_*`): loads from 8_8_8_8 unorm (each byte
+       v / 255, correctly rounded); whole 32-bit components (uint,
        sint, float; the format's components in place, as a store only uses their selectors) move as they are, and a four-component store to 8_8_8_8 unorm
        undoes the descriptor's swizzle (shadPS4's rule: the inverse of a load's) and packs as GLSL's
        `packUnorm4x8` (the PS4's rounding of ties is not established). Anything else is a run-time stop.
@@ -358,6 +359,30 @@ Instead:
           the calls set across runs too. The game's command buffers continue into new blocks as they
           fill (a buffer that sets a compute shader at its end, the next one dispatching it).
           `rt_executor_reset` forgets it, for tests' independent cases.
+        - **Render targets keep their memory:** a render target's guest memory stays its contents,
+          laid out by its tile mode (`runtime/tiling.h`): its image is loaded from the memory before a
+          draw when the memory may have changed since (at each buffer, as the CPU runs between
+          submissions, and after each dispatch, whose stores may reach it), and written back once drawn
+          into, before anything reads the memory (a dispatch, a draw's images, the end of the buffer).
+          So a pass can read what an earlier one drew as an image, and draws build on what a compute
+          clear stored. The game's logo pass draws, blended, into the image its compute clear filled,
+          which the fullscreen pass then reads. Detiling and tiling go a micro tile at a time (checked
+          against the per-texel offsets for every mode and element size).
+        - **The logo pass's inputs:** its vertex shaders' user data come through a further writer,
+          `0x014764a0` (command buffer, stage, slot, words, count; after the NOP marker `0x6875000d`),
+          now observed; their fetch shaders load vertex colours from 8_8_8_8 unorm buffers, each byte as
+          v / 255 correctly rounded (a table worked out in single precision, since a shader's division
+          need not be exact), with the descriptor's DST_SEL; its textures are block-compressed (BC7),
+          loaded in 4 x 4 blocks (pitch, width and height counted in blocks, as shadPS4 counts them) as
+          Vulkan's BC formats: BC1 (with its one-bit alpha), BC2, BC3, BC7 unorm and sRGB, BC4 and BC5
+          unorm and snorm; BC6 stops by name.
+        - **Indexed draws:** `INDEX_BASE` (`0x014752c0`), `INDEX_BUFFER_SIZE` (`0x01475320`),
+          `INDEX_TYPE` (`0x01475270`) and `DRAW_INDEX_OFFSET_2` (`0x01474420`) are observed and
+          recorded; the draw binds the guest memory buffer as Vulkan's index buffer from the base plus
+          the first index, 16- or 32-bit indices (VGT_INDEX_TYPE; swaps stop by name). The packet's
+          `MAX_SIZE`, which the library sets to the count, is taken as counting from `INDEX_OFFSET`, as
+          shadPS4 reads it and the game's draws need (they start past it): inferred, not documented.
+          The game's logo pass draws this way, blended, into the image its fullscreen pass then reads.
         - **Depth targets:** the depth target's setter (`0x014739b0`, observed)
           reports the registers it writes (`DB_Z_INFO` to `DB_DEPTH_SLICE`, `DB_DEPTH_VIEW`, ...), the
           stencil reference setters (`0x01473190`, `0x014731f0`) `DB_STENCILREFMASK` and `_BF`, and the
@@ -440,21 +465,27 @@ Runtime page and Gallery show where it stands.
 
 ### Index state and indexed draw observers
 
-The canonical observer bridge also carries raw `INDEX_TYPE`, `INDEX_BASE`, `INDEX_BUFFER_SIZE`,
-`DRAW_INDEX_2` and `DRAW_INDEX_OFFSET_2` events. New event kinds follow the existing compute and
-dispatch kinds, preserving their numeric identities. The state and draw recorders use the same
-buffer/offset ordering and submission lifetime as other records.
+The canonical record keeps `INDEX_BASE`, `INDEX_BUFFER_SIZE`, `INDEX_TYPE` and
+`DRAW_INDEX_OFFSET_2` at event IDs 10, 11, 12 and 13. Their existing observer and recorder
+signatures remain available. `DRAW_INDEX_2`, which carries an address rather than an
+`INDEX_BASE`-relative offset, is a separate event at 14. Index state remains the raw emitted
+words; the recorder does not normalize addresses or read guest index memory.
 
-Index type and size remain raw DWORDs. The base is the value emitted by its producer. Addressed
-and base-relative draws are distinct events: each preserves the final header, MAX_SIZE,
-INDEX_COUNT and DRAW_INITIATOR, plus the full emitted address or index offset. The recorder does
-not normalize addresses, infer an index width or read guest index memory. The executor decides
-which combinations it supports; the Vulkan executor currently rejects indexed draw events by
-name while retaining separately supplied index state.
+An offset-draw event keeps its original `first` and `count` fields. The legacy logical call
+has `has_packet_fields = 0`, with its new fields zero; it retains the executor's existing
+`INDEX_BUFFER_SIZE` bound. Replacement writers use `rt_observe_draw_index_offset_packet` to
+set `has_packet_fields = 1` and preserve the final header, `MAX_SIZE` and `DRAW_INITIATOR`
+alongside `first` and `count`. A raw header of zero is still a raw packet, never a legacy
+sentinel. Raw packets use their own `MAX_SIZE` independently of the saved size; counts beyond
+it require DMA zero filling, which these executors do not implement. Unsupported headers,
+predication and initiators fail explicitly. Vulkan executes the supported offset draws and
+continues to reject addressed `DRAW_INDEX_2` by name.
 
-These observer functions use the existing one-time host lookup and refusal path. A host without
-record exports remains optional. The game library resolves its observer entry points locally
-through `bbrt`; no weak renderer-enabled query or second loader is needed. New writers must save
-their buffer/offset after successful reservation and read final output only after packet and
-cursor publication. Existing observe hooks already skip functions present in the replacement
-registry, so replacement observers must not also install original-entry observers.
+These observers use the existing one-time host lookup and refusal path. A host without
+record exports remains optional. A present host that lacks a raw packet recorder is refused;
+the bridge cannot substitute the lossy legacy first/count call. Writers save their buffer and
+offset after successful reservation and read final output only after packet and cursor
+publication. The inherited original-entry hooks still observe their logical input arguments;
+those observations do not establish callback or alias-sensitive packet values. Hooks skip
+functions present in the replacement registry, so replacements record their own calls exactly
+once instead of installing another original-entry hook.
