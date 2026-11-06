@@ -343,3 +343,25 @@ Instead:
 
 Each phase lands in small PRs with tests. A boot is recorded after each runtime change. The wiki's
 Runtime page and Gallery show where it stands.
+
+
+### Index state and indexed draw observers
+
+The canonical observer bridge also carries raw `INDEX_TYPE`, `INDEX_BASE`, `INDEX_BUFFER_SIZE`,
+`DRAW_INDEX_2` and `DRAW_INDEX_OFFSET_2` events. New event kinds follow the existing compute and
+dispatch kinds, preserving their numeric identities. The state and draw recorders use the same
+buffer/offset ordering and submission lifetime as other records.
+
+Index type and size remain raw DWORDs. The base is the value emitted by its producer. Addressed
+and base-relative draws are distinct events: each preserves the final header, MAX_SIZE,
+INDEX_COUNT and DRAW_INITIATOR, plus the full emitted address or index offset. The recorder does
+not normalize addresses, infer an index width or read guest index memory. The executor decides
+which combinations it supports; the Vulkan executor currently rejects indexed draw events by
+name while retaining separately supplied index state.
+
+These observer functions use the existing one-time host lookup and refusal path. A host without
+record exports remains optional. The game library resolves its observer entry points locally
+through `bbrt`; no weak renderer-enabled query or second loader is needed. New writers must save
+their buffer/offset after successful reservation and read final output only after packet and
+cursor publication. Existing observe hooks already skip functions present in the replacement
+registry, so replacement observers must not also install original-entry observers.

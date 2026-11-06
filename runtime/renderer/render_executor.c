@@ -118,6 +118,9 @@ typedef struct {
        unset one is the state the drawing below assumes. */
     uint32_t blend0_control, depth_control, color_control, target_mask, primitive_type, instances;
     int blend0_set, depth_set, color_control_set, target_mask_set, primitive_set, instances_set;
+    uint32_t index_type, index_buffer_size;
+    uint64_t index_base;
+    int index_type_set, index_base_set, index_buffer_size_set;
 } draw_state;
 
 static int failed(char *error, size_t error_size, const char *format, ...) __attribute__((format(printf, 3, 4)));
@@ -772,6 +775,18 @@ int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t size, char *error,
         case RT_CALL_INSTANCES:
             s.instances = c->u.instances.count, s.instances_set = 1;
             break;
+        case RT_CALL_INDEX_TYPE:
+            s.index_type = c->u.index_type, s.index_type_set = 1;
+            break;
+        case RT_CALL_INDEX_BASE:
+            s.index_base = c->u.index_base, s.index_base_set = 1;
+            break;
+        case RT_CALL_INDEX_BUFFER_SIZE:
+            s.index_buffer_size = c->u.index_buffer_size, s.index_buffer_size_set = 1;
+            break;
+        case RT_CALL_DRAW_INDEXED:
+        case RT_CALL_DRAW_INDEXED_OFFSET:
+            return failed(error, error_size, "indexed draw packets are not implemented by the Vulkan executor");
         case RT_CALL_DRAW_AUTO: {
             const int checked = check_state(&s, error, error_size);
             if (checked < 0) return -1;

@@ -97,6 +97,8 @@ void rt_pixel_shader_decode(const uint32_t words[RT_PIXEL_SHADER_WORDS], rt_pixe
 typedef enum {
     RT_CALL_COLOR_TARGET, RT_CALL_VIEWPORT, RT_CALL_DRAW_AUTO, RT_CALL_VERTEX_SHADER, RT_CALL_PIXEL_SHADER,
     RT_CALL_USER_DATA, RT_CALL_REGISTER, RT_CALL_INSTANCES, RT_CALL_COMPUTE_SHADER, RT_CALL_DISPATCH,
+    RT_CALL_INDEX_TYPE, RT_CALL_INDEX_BASE, RT_CALL_INDEX_BUFFER_SIZE,
+    RT_CALL_DRAW_INDEXED, RT_CALL_DRAW_INDEXED_OFFSET,
 } rt_render_call_kind;
 
 /* Register ranges a register call may set, as AMD numbers them (dword addresses, gfx_7_2_d.h):
@@ -139,6 +141,17 @@ typedef struct {
         struct {
             uint32_t groups[3];      /* DISPATCH_DIRECT: workgroups in x, y and z */
         } dispatch;
+        struct {
+            uint32_t header, max_size;
+            uint64_t address;
+            uint32_t index_count, initiator;
+        } draw_indexed;               /* DRAW_INDEX_2: all emitted payload fields */
+        struct {
+            uint32_t header, max_size, index_offset, index_count, initiator;
+        } draw_indexed_offset;        /* DRAW_INDEX_OFFSET_2: uses separately recorded INDEX_BASE */
+        uint32_t index_type;         /* raw INDEX_TYPE word */
+        uint64_t index_base;         /* emitted INDEX_BASE address, aligned and limited to 40 bits */
+        uint32_t index_buffer_size;  /* raw INDEX_BUFFER_SIZE word */
     } u;
 } rt_render_call;
 
@@ -166,6 +179,21 @@ int rt_render_record_register(uint64_t buffer, uint32_t offset, uint32_t address
 int rt_render_record_dispatch(uint64_t buffer, uint32_t offset, const uint32_t groups[3], char *error, size_t error_size);
 /* The instance count later draws use (the NUM_INSTANCES packet); at least 1. */
 int rt_render_record_instances(uint64_t buffer, uint32_t offset, uint32_t count, char *error, size_t error_size);
+
+/* Index state for later indexed draws. Values are those emitted by the library;
+   recording them neither reads index memory nor interprets an index type. */
+int rt_render_record_index_type(uint64_t buffer, uint32_t offset, uint32_t value, char *error, size_t error_size);
+int rt_render_record_index_base(uint64_t buffer, uint32_t offset, uint64_t address, char *error, size_t error_size);
+int rt_render_record_index_buffer_size(uint64_t buffer, uint32_t offset, uint32_t value, char *error, size_t error_size);
+
+/* Indexed draw payloads, copied after packet publication. Address and offset are distinct:
+   DRAW_INDEX_2 carries a full emitted address; DRAW_INDEX_OFFSET_2 refers to INDEX_BASE.
+   These recorders preserve raw fields, including MAX_SIZE and DRAW_INITIATOR, without reading
+   guest index memory or inferring an index size. */
+int rt_render_record_draw_indexed(uint64_t buffer, uint32_t offset, uint32_t header, uint32_t max_size, uint64_t address,
+                                   uint32_t index_count, uint32_t initiator, char *error, size_t error_size);
+int rt_render_record_draw_indexed_offset(uint64_t buffer, uint32_t offset, uint32_t header, uint32_t max_size, uint32_t index_offset,
+                                          uint32_t index_count, uint32_t initiator, char *error, size_t error_size);
 
 /* A shader bound by a system call that only knows where in a command buffer it writes (the runtime's
    sceGnmSetVsShader and sceGnmSetPsShader, runtime/renderer.h): the call is placed at that guest
