@@ -102,6 +102,51 @@ int main(void)
     CHECK(rt_executor_read_target(x, at(0x300000), bgra, 2, 2, error, sizeof error) == -1 && strstr(error, "no draw"));
     CHECK(rt_executor_read_target(x, at(TARGET), bgra, SIZE + 1, 1, error, sizeof error) == -1);
 
+    /* A vertex shader that writes VCC's halves as scalars (as the game's do, before vector writes set
+       VCC): drawn as before; one that then reads VCC as a lane mask stops by name at run time. */
+    {
+        enum { VCC_CODE = 0x2c00, VCC_TARGET = 0x780000 };
+        static uint32_t dead_write[64], read_after[64];
+        const size_t n = sizeof vertex_position_color / sizeof *vertex_position_color;
+        dead_write[0] = 0xbeeb0380;                           /* s_mov_b32 vcc_hi, 0 */
+        memcpy(dead_write + 1, vertex_position_color, sizeof vertex_position_color);
+        read_after[0] = 0xbeeb0380;
+        read_after[1] = 0x00121280;                           /* v_cndmask_b32_e32 v9, 0, v9, vcc */
+        memcpy(read_after + 2, vertex_position_color, sizeof vertex_position_color);
+        for (int variant = 0; variant < 2; variant++) {
+            const uint64_t code = at(VCC_CODE + 0x200 * (unsigned)variant);
+            memcpy((void *)(uintptr_t)code, variant ? read_after : dead_write, (n + 1 + (unsigned)variant) * sizeof(uint32_t));
+            rt_render_forget();
+            uint32_t offset = record_setup(FOURTH, at(VCC_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+            const uint32_t vertex[RT_VERTEX_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 8 << 1, 0, 0x4, 0};
+            CHECK(rt_render_record_vertex_shader(FOURTH, offset, vertex, error, sizeof error) == 0);
+            const int drawn = rt_executor_run(x, FOURTH, record_triangle_draw(FOURTH, offset + 0x10), error, sizeof error);
+            if (variant == 0) {
+                if (drawn) fprintf(stderr, "vcc dead write: %s\n", error);
+                CHECK(drawn == 0);
+                check_triangle(x, at(VCC_TARGET));
+            } else {
+                CHECK(drawn == -1 && strstr(error, "read VCC as a lane mask"));
+            }
+        }
+    }
+
+    /* A pixel shader reading the pixel's position (SPI_PS_INPUT 0x302: barycentrics, then x and y in
+       v2 and v3): its colour (x / 16, y / 16) at pixel centres is the triangle's image. */
+    {
+        enum { POSITION_CODE = 0x2800, POSITION_TARGET = 0x700000 };
+        memcpy((void *)(uintptr_t)at(POSITION_CODE), pixel_position_color, sizeof pixel_position_color);
+        rt_render_forget();
+        uint32_t offset = record_setup(FOURTH, at(POSITION_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        const uint64_t code = at(POSITION_CODE);
+        const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 0, 0, 0x4, 0x302, 0x302, 0, 0, 0, 0xf};
+        CHECK(rt_render_record_pixel_shader(FOURTH, offset, pixel, error, sizeof error) == 0);
+        const int drawn = rt_executor_run(x, FOURTH, record_triangle_draw(FOURTH, offset + 0x10), error, sizeof error);
+        if (drawn) fprintf(stderr, "position: %s\n", error);
+        CHECK(drawn == 0);
+        check_triangle(x, at(POSITION_TARGET));
+    }
+
     /* A rect list (primitive type 17): three corners of the whole target, the right angle first,
        then last; the geometry stage adds the fourth corner, and its colour (2, 2) as the other two
        minus the corner's, so the target holds the same image as the large triangle. Then a count
@@ -175,6 +220,70 @@ int main(void)
         CHECK(rt_render_record_compute_shader_at(COMPUTE + 0x10, shader) == 0);
         CHECK(rt_render_record_dispatch(COMPUTE, 0x30, one, error, sizeof error) == 0);
         CHECK(rt_executor_run(x, COMPUTE, 0x40, error, sizeof error) == -1 && strstr(error, "y or z index"));
+    }
+
+    /* Storage images through the record: a fill pass writes a 64 x 1 RGBA32F image (its first use, so
+       the executor makes it), a copy pass copies it to a second, and a third reads the second back into
+       guest memory; each texel arrives as written. Reading an image the GPU never wrote stops by name. */
+    {
+        enum { IMAGES = 0xc0e30000, FILL_CODE = 0x4000, COPY_CODE = 0x4400, READ_CODE = 0x4800, IMAGE_A = 0x500000, IMAGE_B = 0x510000,
+               BACK = 0x22000, LANES = 64 };
+        memcpy((void *)(uintptr_t)at(FILL_CODE), image_fill, sizeof image_fill);
+        memcpy((void *)(uintptr_t)at(COPY_CODE), image_copy, sizeof image_copy);
+        memcpy((void *)(uintptr_t)at(READ_CODE), image_to_buffer, sizeof image_to_buffer);
+        float *back = (float *)(uintptr_t)at(BACK);
+        for (unsigned i = 0; i < LANES * 4; i++) back[i] = -1;
+        uint32_t image_a[8], image_b[8], user[16] = {0};
+        const uint32_t one[3] = {1, 1, 1};
+        const uint64_t codes[3] = {at(FILL_CODE), at(COPY_CODE), at(READ_CODE)};
+        /* three times: 2D images, then (as the game's) 3-layer 1D arrays seen through their first layer,
+           where the same coordinates (x, 0) are (x, slice 0), then through layer 1 alone (BASE_ARRAY 1),
+           where slice 0 counts from the view's first layer */
+        for (int shape = 0; shape < 3; shape++) {
+        image_descriptor(image_a, at(IMAGE_A + 0x20000 * (unsigned)shape), 14, 7, LANES, 1);
+        image_descriptor(image_b, at(IMAGE_B + 0x20000 * (unsigned)shape), 14, 7, LANES, 1);
+        if (shape >= 1)
+            for (int k = 0; k < 2; k++) {
+                uint32_t *d = k ? image_b : image_a;
+                const uint32_t layer = shape == 2 ? 1 : 0;
+                image_descriptor(d, at((k ? IMAGE_B : IMAGE_A) + 0x20000), 14, 7, LANES, 1);
+                d[3] = (d[3] & 0x0fffffffu) | 12u << 28;   /* TYPE 1D array */
+                d[4] |= 2;                                   /* DEPTH: 3 layers */
+                d[5] = layer | layer << 13;                  /* BASE_ARRAY, LAST_ARRAY */
+            }
+        for (unsigned i = 0; i < LANES * 4; i++) back[i] = -1;
+        rt_render_forget();
+        uint32_t offset = 0x10;
+        for (int pass = 0; pass < 3; pass++) {
+            const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(codes[pass] >> 8), (uint32_t)(codes[pass] >> 40), 0x3, 16 << 1, LANES, 1, 1};
+            CHECK(rt_render_record_compute_shader_at(IMAGES + offset, shader) == 0);
+            memset(user, 0, sizeof user);
+            if (pass == 0) memcpy(user + 8, image_a, sizeof image_a);
+            if (pass == 1) memcpy(user, image_a, sizeof image_a), memcpy(user + 8, image_b, sizeof image_b);
+            if (pass == 2) descriptor(user, at(BACK), 16), memcpy(user + 8, image_b, sizeof image_b);
+            CHECK(rt_render_record_user_data(IMAGES, offset + 0x10, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+            CHECK(rt_render_record_user_data(IMAGES, offset + 0x20, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
+            CHECK(rt_render_record_dispatch(IMAGES, offset + 0x30, one, error, sizeof error) == 0);
+            offset += 0x40;
+        }
+        const int ran = rt_executor_run(x, IMAGES, offset, error, sizeof error);
+        if (ran) fprintf(stderr, "images: %s\n", error);
+        CHECK(ran == 0);
+        int right = 1;
+        for (unsigned i = 0; i < LANES; i++)
+            right &= back[i * 4] == (float)i && back[i * 4 + 1] == 1.0f && back[i * 4 + 2] == 2.0f && back[i * 4 + 3] == 0.5f;
+        CHECK(right);
+        }
+
+        rt_render_forget();
+        image_descriptor(image_b, at(IMAGE_B + 0x8000), 14, 7, LANES, 1); /* never written */
+        const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(codes[2] >> 8), (uint32_t)(codes[2] >> 40), 0x3, 16 << 1, LANES, 1, 1};
+        CHECK(rt_render_record_compute_shader_at(IMAGES + 0x10, shader) == 0);
+        descriptor(user, at(BACK), 16), memcpy(user + 8, image_b, sizeof image_b);
+        CHECK(rt_render_record_user_data(IMAGES, 0x20, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+        CHECK(rt_render_record_user_data(IMAGES, 0x30, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
+        CHECK(rt_render_record_dispatch(IMAGES, 0x40, one, error, sizeof error) == 0);
+        CHECK(rt_executor_run(x, IMAGES, 0x50, error, sizeof error) == -1 && strstr(error, "read before the GPU wrote it"));
     }
 
     rt_executor_close(x);
