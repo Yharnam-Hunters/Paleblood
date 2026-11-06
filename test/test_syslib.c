@@ -793,7 +793,6 @@ static void flex_partial_page(void) { void *a = NULL; flex_map(&a, 0x1000, 3, 0)
 typedef int32_t (*f_qmp_fn)(const void *, void **, void **, int32_t *);
 static f_qmp_fn qmp_fn;
 static void qmp_unmapped(void) { int32_t p; static char not_mapped; qmp_fn(&not_mapped, NULL, NULL, &p); }
-static void qmp_with_end(void) { int32_t p; void *end; static char x; qmp_fn(&x, NULL, &end, &p); }
 static void flex_exec(void) { void *a = NULL; flex_map(&a, 0x4000, 7, 0); }
 
 /* libSceNet start-up: initialize once, a repeat answers 0x80410110; pools are ids. */
@@ -2361,7 +2360,10 @@ int main(void)
             }
             qmp_fn = qmp;
             CHECK(died_in_fatal(qmp_unmapped));
-            CHECK(died_in_fatal(qmp_with_end));
+            /* the mapping's start, and its end one past the last byte (shadPS4, PS4Recomp) */
+            void *start = NULL, *end = NULL;
+            CHECK(qmp((char *)a + 0x10, &start, &end, &prot) == 0 && prot == 3);
+            CHECK(start == a && end == (char *)a + 0x8000);
         }
     }
 

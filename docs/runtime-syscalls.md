@@ -1098,11 +1098,18 @@ headers give:
   with eight channels. The boot opens eight channels.
 - A second open (`0x0111b6fc`) passes port type 1 with the same settings, and does not check the
   result. The PS4 name of type 1 is not public; the sibling Vita SDK calls it BGM.
+- The movie player's sound gets a port of its own (`0x02c225ae`, `0x02c22842`): 1024 samples at
+  48000 Hz. Its format comes from the movie's channel count: 0, 1 or 2 (16-bit mono, stereo, eight
+  channels) for 48 kHz sound, and 3, 4 or 5 (float) otherwise. The SDK's `_types/audio_out.h`
+  names 0, 1, 3 and 4; shadPS4's `audioout.h` adds 2 and 5 as the eight-channel forms. The
+  6-channel movies open format 2. With `--audio host`, 16-bit blocks are scaled to -1..1 for the
+  host stream.
 
 **What the runtime does.** It records each open port and hands out handles from 1. Sound output
 belongs to the output calls, which stop by name until they are implemented.
 
-**What stops by name:** any open other than the observed ones, and running out of handles.
+**What stops by name:** any open other than the observed ones (256 float samples in formats 4
+and 5, or 1024 samples in formats 0 to 5, at 48000 Hz), and running out of handles.
 
 `int32_t sceAudioOutSetVolume(handle, flag, int32_t *volume)`, as the SDK declares it, comes next.
 The executable's only call (`0x0111b6d6`) passes its new port, flag `0xff` and eight volumes of
@@ -1319,12 +1326,15 @@ holds an address.
 
 **What the executable does.** Its helpers (`0x02abad98`, `0x02abadf8`) pass no start or end. They
 test the protection's CPU read bit (1) and GPU read bit (`0x10`), on memory the game mapped itself.
+Another (`0x02d031df`, reached once the movie player runs) passes a start and an end and reads only
+the protection.
 
 **What the runtime does.** It records every direct and flexible mapping with the protection the
-guest asked for, GPU bits included, and answers that.
+guest asked for, GPU bits included, and answers that. A start gets the mapping's start, and an end
+the address one past its last byte (exclusive), as shadPS4's `MemoryManager::QueryProtection` and
+PS4Recomp's `ps4_direct_mem.c` both answer.
 
 **What stops by name:**
-- a start or end (whether end is inclusive is not established);
 - an address outside those mappings (other memory is not tracked yet);
 - a missing variable.
 
