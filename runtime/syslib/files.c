@@ -155,6 +155,11 @@ static mount host_path(const char *caller, const char *guest, char *out, size_t 
     return on;
 }
 
+int rt_host_path(const char *caller, const char *guest, char *out, size_t size)
+{
+    return host_path(caller, guest, out, size) == MOUNT_READ_ONLY;
+}
+
 static guest_timespec timespec_of(struct timespec t) { return (guest_timespec){t.tv_sec, t.tv_nsec}; }
 
 /* The FreeBSD number of a lookup error, ENOENT or ENOTDIR (the same numbers on FreeBSD and Linux);
