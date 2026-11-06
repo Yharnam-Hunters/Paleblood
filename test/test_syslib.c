@@ -959,6 +959,21 @@ static void gnm_submit_one(uint32_t *packets, uint32_t dwords)
     uint32_t bytes[1] = {dwords * 4};
     gnm_submit_fn(1, buffers, bytes, NULL, NULL);
 }
+static uint32_t gnm_constant_packets[2] = {0xc0002400u, 0};
+static void gnm_submit_with_constant(void)
+{
+    static uint32_t draw[2] = {0xc0001000u, 0}; /* NOP */
+    void *buffers[1] = {draw}, *constants[1] = {gnm_constant_packets};
+    uint32_t bytes[1] = {8}, constant_bytes[1] = {8};
+    gnm_submit_fn(1, buffers, bytes, constants, constant_bytes);
+}
+static void gnm_submit_constant_without_sizes(void)
+{
+    static uint32_t draw[2] = {0xc0001000u, 0};
+    void *buffers[1] = {draw}, *constants[1] = {NULL};
+    uint32_t bytes[1] = {8};
+    gnm_submit_fn(1, buffers, bytes, constants, NULL);
+}
 static void gnm_submit_unknown(void) { static uint32_t p[2] = {0xc0002400u, 0}; gnm_submit_one(p, 2); } /* opcode 0x24 */
 static uint32_t gnm_wait_label;
 static void gnm_submit_unmet_wait(void)
@@ -2727,6 +2742,12 @@ int main(void)
             CHECK(eq_wait_fn(flips, ev, 1, &n, NULL) == 0 && n == 1 && (memcpy(&data, ev + 16, 8), data == 79));
             CHECK(vo_status_fn(vo_handle, st) == 0 && (memcpy(&arg, st + 0x18, 8), arg == 79));
             CHECK(died_in_fatal(gnm_submit_unknown));
+            /* the constant arrays present with empty entries, as 0x0149bf3a passes them: no constant buffer */
+            void *no_constants[1] = {NULL};
+            uint32_t no_constant_bytes[1] = {0};
+            CHECK(gnm_submit_fn(1, buffers, bytes, no_constants, no_constant_bytes) == 0);
+            CHECK(died_in_fatal(gnm_submit_with_constant));
+            CHECK(died_in_fatal(gnm_submit_constant_without_sizes));
             CHECK(died_in_fatal(gnm_submit_unmet_wait));
         }
         CHECK(died_in_fatal(vo_flip_bad_buffer));

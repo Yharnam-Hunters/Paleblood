@@ -400,7 +400,9 @@ RT_SYSLIB("libSceGnmDriver", sceGnmDingDong, ding_dong);
    buffers, their sizes): hands command buffers to the GPU's graphics queue. OpenOrbis' GnmDriver.h
    only names it; the shape comes from the engine's submit (0x02ab0c23, one of eleven callers),
    which passes one or two draw command buffers, their byte sizes rounded down to whole dwords, and
-   no constant buffers, and ignores the answer.
+   no constant buffers, and ignores the answer. Another caller, 0x0149bf3a (through the GPU
+   library's wrapper at 0x01489a10), passes the constant arrays always, with an entry filled only
+   when that draw buffer has one: an entry of no address and 0 bytes is no constant buffer.
 
    TEMPORARY STAND-IN, as for sceGnmDingDong above: the work is completed at once on the calling
    thread. The first boot to reach it (4 November 2026) found, besides the compute kinds, these
@@ -412,8 +414,8 @@ RT_SYSLIB("libSceGnmDriver", sceGnmDingDong, ding_dong);
      SET_CONTEXT_REG, SET_UCONFIG_REG, NUM_INSTANCES, DRAW_INDEX_AUTO
                                   skipped: draw state and draws (the first frame's).
    The packets themselves draw nothing. Each buffer then goes to the renderer (runtime/renderer.h),
-   which runs the drawing calls recorded for it when the display is on. Constant command buffers,
-   and any other packet, stop by name. */
+   which runs the drawing calls recorded for it when the display is on. A constant command buffer
+   that holds anything, and any other packet, stops by name. */
 #define MAX_SUBMITTED_BUFFERS 64
 
 static int32_t submit_command_buffers(uint32_t count, void **draw_buffers, const uint32_t *draw_bytes,
@@ -422,7 +424,11 @@ static int32_t submit_command_buffers(uint32_t count, void **draw_buffers, const
     static const char fn[] = "sceGnmSubmitCommandBuffers";
     if (!count || count > MAX_SUBMITTED_BUFFERS || !draw_buffers || !draw_bytes)
         rt_fatal(fn, "no command buffers, or more than the stand-in takes: the answer is not established");
-    if (constant_buffers || constant_bytes) rt_fatal(fn, "constant command buffers: the stand-in does not run them");
+    if (!constant_buffers != !constant_bytes) rt_fatal(fn, "constant command buffers without their sizes, or sizes without buffers");
+    for (uint32_t k = 0; k < count; k++) {
+        if (constant_buffers && (constant_buffers[k] || constant_bytes[k]))
+            rt_fatal(fn, "a constant command buffer: the stand-in does not run them");
+    }
     for (uint32_t k = 0; k < count; k++) {
         if (!draw_buffers[k] && draw_bytes[k]) rt_fatal(fn, "a command buffer without an address");
         complete_packets(fn, draw_buffers[k], draw_bytes[k] / sizeof(uint32_t), 0, 0);
