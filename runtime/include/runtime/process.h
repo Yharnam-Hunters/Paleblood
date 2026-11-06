@@ -66,6 +66,7 @@ typedef struct {
     uint32_t addcont_count;
     const char *app0_dir;    /* --app0: the host directory that holds the title's /app0 (read-only) */
     const char *data_dir;    /* --data: the host directory the runtime serves as the writable /data */
+    const char *savedata_dir; /* --savedata: the host directory that holds the title's save data */
     /* The executable's thread-local storage template (its PT_TLS segment): every guest thread's
        block is a copy of it, placed just below the thread pointer (x86-64 variant II). */
     const void *tls_image;
