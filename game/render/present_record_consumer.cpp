@@ -132,9 +132,10 @@ extern "C" void bb_render_present_record_consume(render::PresentRecordContext *c
     context->flags_b550 |= restored_preparation_flag;
     context->sentinel_b540 = std::numeric_limits<uint32_t>::max();
     set_cb_color_control(commands, restored_state_mode, state_mode_value);
+    auto *targets = reinterpret_cast<TargetRestoreState *>(preparation);
     for (uint32_t slot = 0; slot < prepared_slot_count; ++slot)
-        restore_prepared_record_from_bank(preparation, commands, slot);
-    restore_prepared_selector_from_bank(preparation, commands);
+        restore_color_target_from_bank(targets, commands, slot);
+    restore_depth_target_from_bank(targets, commands);
     context->mode_b520 = record_pipeline_mode;
     context->pending_b518 = 0;
     context->sentinel_b524 = std::numeric_limits<uint32_t>::max();

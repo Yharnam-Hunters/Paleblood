@@ -61,6 +61,8 @@ address,replacement,system,returns
 0x01473650,bb_render_set_screen_offset,render,void
 0x014736d0,bb_render_set_guard_band_clip_adjust,render,void
 0x01473750,bb_render_set_guard_band_discard_adjust,render,void
+0x014738b0,bb_render_set_render_target,render,void
+0x014739b0,bb_render_set_depth_render_target,render,void
 0x01473fe0,bb_render_set_vgt_primitive_type,render,void
 0x014741b0,bb_render_emit_draw_index_auto,render,void
 0x01475370,bb_render_emit_num_instances,render,void
@@ -156,6 +158,9 @@ address,replacement,system,returns
 0x02ab9850,bb_render_flush_shader_preparation,render,void
 0x02abaf10,bb_render_record_derive_parameter,render,i32
 0x02abb4f0,bb_render_record_auxiliary_predicate,render,i8
+0x02acfc20,bb_render_finish_record_shader,render,void
+0x02ad1e30,bb_render_restore_color_target_from_bank,render,void
+0x02ad1e70,bb_render_restore_depth_target_from_bank,render,void
 0x02ad2c30,bb_render_reset_present_preparation_dirty,render,i64
 0x02ad5dd0,bb_render_swap_chain_present_mode,render,i32
 0x02ad5e90,bb_render_setup_swap_chain,render,i64
