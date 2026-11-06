@@ -23,9 +23,10 @@
    So the tick is the runtime's own convention, the same in every call: microseconds since
    0001-01-01 00:00:00 in the proleptic Gregorian calendar, 1000000 per second. The local time is
    the host's, in the time zone of the person running the runtime, as the console gives the one
-   its owner set. sceRtcGetDayOfWeek(year, month, day), the next call the boot reaches
-   (0x024ee2a9, its answer packed into 3 bits), stays unbound: which day is 0 is not established
-   for the PS4 (the PSP SDK documents Monday). A date and time out of range, a missing argument and every error value stop by
+   its owner set. sceRtcGetDayOfWeek(year, month, day) (0x024ee2a9, its answer packed into 3 bits)
+   answers 0 for Sunday to 6 for Saturday: the PS4Recomp project's libSceRtc module numbers the
+   days so, and notes that a real PS4's ticks count from year 1, as these do (facts only; the PSP
+   SDK documents 0 as Monday, an older library). A date and time out of range, a missing argument and every error value stop by
    name. */
 #include "runtime/process.h"
 #include "runtime/syslib.h"
@@ -121,7 +122,18 @@ static int32_t set_tick(rtc_date_time *time, const uint64_t *tick)
 
 static int32_t get_tick_resolution(void) { return TICKS_PER_SECOND; }
 
+enum { MONDAY = 1, DAYS_PER_WEEK = 7 };
+
+/* 0 Sunday to 6 Saturday. 0001-01-01 was a Monday in the proleptic Gregorian calendar. */
+static int32_t get_day_of_week(int32_t year, int32_t month, int32_t day)
+{
+    if (year < 1 || year > MAX_YEAR || month < 1 || month > 12 || day < 1 || day > days_in_month(year, month))
+        rt_fatal("sceRtcGetDayOfWeek", "a date out of range: the answer is not established");
+    return (int32_t)((days_since_year_one(year, month, day) + MONDAY) % DAYS_PER_WEEK);
+}
+
 RT_SYSLIB("libSceRtc", sceRtcGetCurrentClockLocalTime, get_current_clock_local_time);
 RT_SYSLIB("libSceRtc", sceRtcGetTick, get_tick);
 RT_SYSLIB("libSceRtc", sceRtcSetTick, set_tick);
 RT_SYSLIB("libSceRtc", sceRtcGetTickResolution, get_tick_resolution);
+RT_SYSLIB("libSceRtc", sceRtcGetDayOfWeek, get_day_of_week);
