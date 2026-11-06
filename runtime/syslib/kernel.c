@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* System call group: kernel, threads and memory (libkernel, libScePosix, libSceSysmodule,
    libSceLibcInternal). */
+#include "runtime/guest_errno.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
@@ -27,6 +28,14 @@ static void kernel_rtld_set_application_heap_api(void **heap_api)
     rt_process.heap_api = heap_api;
 }
 RT_SYSLIB("libkernel", _sceKernelRtldSetApplicationHeapAPI, kernel_rtld_set_application_heap_api);
+
+/* __error(void): the address of the calling thread's errno, FreeBSD's int *__error(void) behind
+   its errno macro. Imported by eboot, libc and libSceFios2. Each guest thread runs on its own host
+   thread, so a thread-local int is that thread's errno. It starts at 0; the runtime's POSIX-style
+   calls set it to a FreeBSD error number when they fail. */
+static _Thread_local int guest_errno;
+int *rt_guest_errno(void) { return &guest_errno; }
+RT_SYSLIB("libkernel", __error, rt_guest_errno);
 
 /* getpagesize, imported by eboot from libScePosix and by libc.elf from libkernel
    (symbols/imports.csv, two rows naming one call): the loader binds an import by library and NID
