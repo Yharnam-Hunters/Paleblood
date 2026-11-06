@@ -212,7 +212,44 @@ static void detiling(void)
     for (uint32_t y = 0; y < height; y++)
         for (uint32_t x = 0; x < width; x++) ok &= linear[y * width + x] == (y << 16 | x);
     CHECK(ok);
+    /* tiling it back gives the same tiled bytes, padding untouched */
+    uint32_t *again = calloc(rt_tiling_size(&t, 1) / 4, 4);
+    if (again) {
+        rt_tiling_tile(&t, (const uint8_t *)linear, (uint8_t *)again, width, height, 1);
+        CHECK(!memcmp(again, tiled, rt_tiling_size(&t, 1)));
+        free(again);
+    }
     free(tiled), free(linear);
+}
+
+/* Detiling a micro tile at a time (rt_tiling_detile) puts every texel where rt_tiling_offset says,
+   for every mode and element size, on an image whose width and height are not whole micro tiles. */
+static void fast_copies(void)
+{
+    static const unsigned modes[] = {8, 9, 10, 13, 14, 31};
+    for (size_t m = 0; m < COUNT(modes); m++)
+        for (unsigned b = 0; b < 5; b++) {
+            const unsigned bytes = 1u << b;
+            const rt_tiling t = layout(modes[m], bytes, 256, 130);
+            const uint32_t width = 250, height = 130, slices = 2;
+            const uint64_t size = rt_tiling_size(&t, slices);
+            uint8_t *tiled = malloc(size), *linear = malloc((size_t)width * height * slices * bytes);
+            if (!tiled || !linear) {
+                free(tiled), free(linear);
+                failures++;
+                continue;
+            }
+            for (uint64_t i = 0; i < size; i++) tiled[i] = (uint8_t)(i * 2654435761u >> 13);
+            rt_tiling_detile(&t, tiled, linear, width, height, slices);
+            int ok = 1;
+            for (uint32_t s = 0; s < slices; s++)
+                for (uint32_t y = 0; y < height; y++)
+                    for (uint32_t x = 0; x < width; x++)
+                        ok &= !memcmp(linear + (((size_t)s * height + y) * width + x) * bytes, tiled + rt_tiling_offset(&t, x, y, s), bytes);
+            if (!ok) fprintf(stderr, "tiling %u, %u bytes: fast detile differs\n", modes[m], bytes);
+            CHECK(ok);
+            free(tiled), free(linear);
+        }
 }
 
 static void refusals(void)
@@ -232,6 +269,7 @@ int main(void)
     macro_tiles();
     permutations();
     detiling();
+    fast_copies();
     refusals();
     if (failures) {
         fprintf(stderr, "%d failure(s)\n", failures);
