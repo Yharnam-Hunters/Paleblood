@@ -28,6 +28,7 @@
    ENOTDIR. The executable's one call (0x00465431) reads the access and modification times and the
    size on 0, and treats any other answer as no file; it does not read errno. */
 #include "runtime/guest_errno.h"
+#include "runtime/mounts.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
@@ -45,7 +46,52 @@ enum { BSD_ENOENT = 2, BSD_EBADF = 9, BSD_ENOTDIR = 20, BSD_EINVAL = 22, BSD_ERO
 #define APP0 "/app0"
 #define DATA "/data"
 
-typedef enum { MOUNT_APP0, MOUNT_DATA } mount;
+typedef enum { MOUNT_READ_ONLY, MOUNT_WRITABLE } mount; /* /app0 is read-only, /data writable */
+
+/* Mounts made at run time (runtime/mounts.h): /savedata0 and the like. */
+typedef struct {
+    char point[RT_MOUNT_POINT_BYTES];
+    char host_dir[4096];
+    int read_only;
+} run_time_mount;
+
+static pthread_mutex_t mounts_lock = PTHREAD_MUTEX_INITIALIZER;
+static run_time_mount mounts[RT_MAX_MOUNTS]; /* an entry with an empty point is free */
+
+int rt_mount_add(const char *mount_point, const char *host_dir, int read_only)
+{
+    if (!mount_point || mount_point[0] != '/' || strlen(mount_point) >= RT_MOUNT_POINT_BYTES || !host_dir ||
+        strlen(host_dir) >= sizeof mounts[0].host_dir)
+        return -1;
+    pthread_mutex_lock(&mounts_lock);
+    run_time_mount *free_entry = NULL;
+    int taken = 0;
+    for (int i = 0; i < RT_MAX_MOUNTS; i++) {
+        if (!strcmp(mounts[i].point, mount_point)) taken = 1;
+        if (!mounts[i].point[0] && !free_entry) free_entry = &mounts[i];
+    }
+    if (!taken && free_entry) {
+        strcpy(free_entry->host_dir, host_dir);
+        free_entry->read_only = read_only;
+        strcpy(free_entry->point, mount_point);
+    }
+    pthread_mutex_unlock(&mounts_lock);
+    return taken || !free_entry ? -1 : 0;
+}
+
+int rt_mount_remove(const char *mount_point)
+{
+    int found = 0;
+    pthread_mutex_lock(&mounts_lock);
+    for (int i = 0; i < RT_MAX_MOUNTS && mount_point && !found; i++) {
+        if (mounts[i].point[0] && !strcmp(mounts[i].point, mount_point)) {
+            mounts[i].point[0] = 0;
+            found = 1;
+        }
+    }
+    pthread_mutex_unlock(&mounts_lock);
+    return found ? 0 : -1;
+}
 
 typedef struct {
     int64_t seconds, nanoseconds;
@@ -76,15 +122,30 @@ static mount host_path(const char *caller, const char *guest, char *out, size_t 
 {
     if (!guest) rt_fatal(caller, "no path: the error value is not established");
     mount on;
-    const char *mount_point, *host_dir;
+    char mount_point[RT_MOUNT_POINT_BYTES] = "", host_dir[4096] = "";
     if (under(guest, APP0)) {
-        on = MOUNT_APP0, mount_point = APP0, host_dir = rt_process.app0_dir;
-        if (!host_dir) rt_fatal(caller, "no /app0 directory given (tools/boot.py --app0)");
+        if (!rt_process.app0_dir) rt_fatal(caller, "no /app0 directory given (tools/boot.py --app0)");
+        on = MOUNT_READ_ONLY;
+        snprintf(mount_point, sizeof mount_point, "%s", APP0);
+        snprintf(host_dir, sizeof host_dir, "%s", rt_process.app0_dir);
     } else if (under(guest, DATA)) {
-        on = MOUNT_DATA, mount_point = DATA, host_dir = rt_process.data_dir;
-        if (!host_dir) rt_fatal(caller, "no /data directory given (tools/boot.py --data)");
+        if (!rt_process.data_dir) rt_fatal(caller, "no /data directory given (tools/boot.py --data)");
+        on = MOUNT_WRITABLE;
+        snprintf(mount_point, sizeof mount_point, "%s", DATA);
+        snprintf(host_dir, sizeof host_dir, "%s", rt_process.data_dir);
     } else {
-        rt_fatal(caller, "a path outside /app0 and /data: other mounts are not implemented");
+        int read_only = 0;
+        pthread_mutex_lock(&mounts_lock); /* copied out, so an unmount cannot change them under us */
+        for (int i = 0; i < RT_MAX_MOUNTS && !mount_point[0]; i++) {
+            if (mounts[i].point[0] && under(guest, mounts[i].point)) {
+                strcpy(mount_point, mounts[i].point);
+                strcpy(host_dir, mounts[i].host_dir);
+                read_only = mounts[i].read_only;
+            }
+        }
+        pthread_mutex_unlock(&mounts_lock);
+        if (!mount_point[0]) rt_fatal(caller, "a path outside /app0, /data and the mounted save data: other mounts are not implemented");
+        on = read_only ? MOUNT_READ_ONLY : MOUNT_WRITABLE;
     }
     const size_t prefix = strlen(mount_point);
     for (const char *p = guest + prefix; (p = strstr(p, "/..")); p += 3)
@@ -143,7 +204,7 @@ enum { READ_AND_EXECUTE_BITS = 0555, PERMISSION_BITS = 0777 };
 static void fill_stat(guest_stat *out, const struct stat *host, mount on)
 {
     const struct stat st = *host;
-    const mode_t permissions = on == MOUNT_APP0 ? READ_AND_EXECUTE_BITS : PERMISSION_BITS;
+    const mode_t permissions = on == MOUNT_READ_ONLY ? READ_AND_EXECUTE_BITS : PERMISSION_BITS;
     *out = (guest_stat){
         .dev = (uint32_t)st.st_dev,
         .ino = (uint32_t)st.st_ino,
@@ -206,7 +267,7 @@ static int32_t kernel_open(const char *path, int32_t flags, uint32_t mode)
     char host[4096];
     const mount on = host_path(fn, path, host, sizeof host);
     int h;
-    if (on == MOUNT_DATA) {
+    if (on == MOUNT_WRITABLE) {
         h = open(host, data_open_flags(fn, flags) | O_CLOEXEC, (mode_t)(mode & PERMISSION_BITS));
     } else {
         if ((flags & BSD_O_ACCMODE) || (flags & (BSD_O_APPEND | BSD_O_CREAT | BSD_O_TRUNC))) {

@@ -1049,6 +1049,47 @@ the CPU mask its caller chose. As for `scePthreadSetaffinity`, the runtime recor
 created thread takes it) and the host schedules. An empty mask stops by name, and a variable
 holding no attribute is `EINVAL`.
 
+## Save data (`libSceSaveData`)
+
+The title's saves live in the host folder given to `pbboot --savedata`. `tools/boot.py` gives
+each run a new empty one, so boots start alike, unless `--savedata DIR` names a folder to keep
+them in. A mounted save appears to the title as `/savedataN` (N the lowest free of 16), through
+the same file calls as `/app0` and `/data`, read-only or writable as mounted.
+
+**Sources.** shadPS4's `libSceSaveData` (`savedata.cpp`, `savedata.h`, `savedata_error.h`,
+`save_instance.cpp`, `save_memory.cpp`), checked against bbport, bbhost and the OpenOrbis
+headers. Where they disagree, shadPS4's answer is taken. The code is the runtime's own.
+
+**The title's SDK version decides some answers.** The executable says SDK `0x02000071`
+(firmware 2.00), which the runtime reads through `rt_compiled_sdk_version`:
+- "not initialized" is `0x80960002` (it is `0x809F000B` before 2.00 and `0x809F0001` from 2.50);
+- a directory search reports the total hits, the number set and the params (from 1.70);
+- a mount writes back only the mount point (before 4.50), and mode `0x20` (create or open)
+  does not create;
+- terminating with saves mounted unmounts them (before 4.00).
+
+**On the host.** `<savedata>/<user id>/<directory name>/` holds the title's files, with
+`sce_sys/param.bin` (the 1328-byte param) and `sce_sys/icon0.png`; a save exists when its
+`sce_sys` does. The memory-backed save is `<savedata>/<user id>/sce_sdmemory/memory.dat`. These
+are the runtime's own files, not a console's `param.sfo`.
+
+| Call | Runtime |
+|---|---|
+| `sceSaveDataInitialize(params)` | 0; the parameter block (a priority, `0x2bc` from the caller at `0x02c3c50e`) is ignored, as the library does |
+| `sceSaveDataTerminate()` | 0, unmounting any save still mounted; "not initialized" before initialize |
+| `sceSaveDataMount(request, result)` | the 80-byte original request. Modes: 1 read-only, 2 read-write, 4 create, 8 destruct-off, `0x10` copy the package's icon. Answers: not there and no create `0x809F0008`; create when it exists `0x809F0007`; already mounted `0x809F0003`; 16 mounted `0x809F000C`; user below 0 `0x809F0011`; a bad name (empty, unterminated, `/`, `\`, leading `.`) `0x809F0000` |
+| `sceSaveDataUmount(mount point)` | 0, or `0x809F0008` for a mount point not mounted |
+| `sceSaveDataSetParam(mount point, type, data, size)` | types 0 (whole param), 1 title, 2 subtitle, 3 detail, 4 user param, written to `param.bin` with the time; type 5 or more `0x809F0000`; not mounted `0x809F0004` |
+| `sceSaveDataSaveIcon(mount point, icon)` | writes the icon (the smaller of buffer and data size); read-only mount `0x809F000D` |
+| `sceSaveDataDirNameSearch(condition, result)` | the user's saves (folders with `sce_sys/param.bin`, not `sce_*`), matched by an SQL-LIKE pattern without regard to case (`%`, `_`), sorted by name, user param or time (blocks are alike here), ascending or descending; a key above 5 or an order above 1 `0x809F0000` |
+| `sceSaveDataSetupSaveDataMemory(user, size, param)` | creates or grows `memory.dat` to the size (never shrinks it); size 0 `0x809F0000` |
+| `sceSaveDataGet/SetSaveDataMemory(user, buffer, size, offset)` | reads or writes at the offset; before setup `0x809F0012`; no buffer or a negative offset `0x809F0000` |
+
+**Stops by name** (not modelled): another title's saves (a title id), the free-space check and its
+required-blocks answer, the backup copy and its "corrupted" marker, sort key 4, and a memory read
+or write past the size set up. `sceSaveDataDelete` and the save data dialog stay unbound until the
+boot reaches them.
+
 ## The title's files: `/app0`, `sceKernelStat`, opening and reading (issue #35)
 
 The title reads its own data under `/app0`, the console's read-only mount of its package. The

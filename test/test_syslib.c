@@ -1074,6 +1074,32 @@ static void *ep_waiter(void *arg)
     return NULL;
 }
 
+/* libSceSaveData against a temporary save folder. */
+typedef struct { int32_t user; uint32_t pad; const char *title, *dir; const void *fp; uint64_t blocks; uint32_t mode; uint8_t r[36]; } sd_mount_req;
+typedef struct { char point[16]; uint64_t required; uint32_t unused, status; uint8_t r[32]; } sd_mount_res;
+typedef struct { char title[128], subtitle[128], detail[1024]; uint32_t user_param, pad; int64_t mtime; uint8_t r[32]; } sd_param;
+typedef struct { int32_t user; uint32_t pad; const char *title, *dir; uint32_t key, order; uint8_t r[32]; } sd_cond;
+typedef struct { uint32_t hits, pad; char (*names)[32]; uint32_t capacity, set; sd_param *params; void *infos; uint8_t r[16]; } sd_result;
+typedef int32_t (*f_sd_mount)(const sd_mount_req *, sd_mount_res *);
+typedef int32_t (*f_sd_point)(const char *);
+typedef int32_t (*f_sd_set_param)(const char *, uint32_t, const void *, size_t);
+typedef int32_t (*f_sd_search)(const sd_cond *, sd_result *);
+typedef int32_t (*f_sd_setup)(int32_t, uint64_t, const sd_param *);
+typedef int32_t (*f_sd_memory)(int32_t, void *, uint64_t, int64_t);
+static f_sd_mount sd_mount;
+static f_sd_memory sd_get;
+static void sd_mount_other_title(void) { sd_mount_req q = {.user = 1, .title = "CUSA00000", .dir = "X", .mode = 4}; sd_mount_res r; sd_mount(&q, &r); }
+static void sd_mount_other_user(void) { sd_mount_req q = {.user = 9, .dir = "X", .mode = 4}; sd_mount_res r; sd_mount(&q, &r); }
+static void sd_get_past_end(void) { char b[8]; sd_get(1, b, 8, 4093); }
+static int32_t sd_mount_dir(const char *dir, uint32_t mode, char point[16])
+{
+    sd_mount_req q = {.user = 1, .dir = dir, .blocks = 96, .mode = mode};
+    sd_mount_res r;
+    memset(&r, 0, sizeof r);
+    const int32_t e = sd_mount(&q, &r);
+    if (point) memcpy(point, r.point, 16);
+    return e;
+}
 int main(void)
 {
     /* Unresolved entries are still callable diagnostics, but are not reported as implemented. */
@@ -3060,6 +3086,112 @@ int main(void)
             CHECK(d1.tv_sec - d0.tv_sec < 1);
             CHECK(ep_destroy(id) == (int32_t)0x80410109u && ep_wait(id, events, 4, 0) == (int32_t)0x80410109u);
         }
+        typedef int32_t (*f_sd_none)(void);
+        typedef int32_t (*f_sd_init)(const void *);
+        const f_sd_init sd_init = (f_sd_init)fn("libSceSaveData", "sceSaveDataInitialize");
+        const f_sd_none sd_term = (f_sd_none)fn("libSceSaveData", "sceSaveDataTerminate");
+        const f_sd_point sd_umount = (f_sd_point)fn("libSceSaveData", "sceSaveDataUmount");
+        const f_sd_set_param sd_set_param = (f_sd_set_param)fn("libSceSaveData", "sceSaveDataSetParam");
+        const f_sd_search sd_search = (f_sd_search)fn("libSceSaveData", "sceSaveDataDirNameSearch");
+        const f_sd_setup sd_setup = (f_sd_setup)fn("libSceSaveData", "sceSaveDataSetupSaveDataMemory");
+        const f_sd_memory sd_set = (f_sd_memory)fn("libSceSaveData", "sceSaveDataSetSaveDataMemory");
+        sd_mount = (f_sd_mount)fn("libSceSaveData", "sceSaveDataMount");
+        sd_get = (f_sd_memory)fn("libSceSaveData", "sceSaveDataGetSaveDataMemory");
+        CHECK(sd_init && sd_term && sd_umount && sd_set_param && sd_search && sd_setup && sd_set && sd_mount && sd_get);
+        static char saves[512];
+        const char *tmp = getenv("TMPDIR");
+        snprintf(saves, sizeof saves, "%s/pb-saves-XXXXXX", tmp ? tmp : "/tmp");
+        CHECK(mkdtemp(saves) != NULL);
+        rt_process.savedata_dir = saves;
+        if (sd_init && sd_term && sd_umount && sd_set_param && sd_search && sd_setup && sd_set && sd_mount && sd_get) {
+            /* before initialize: the title's SDK decides the code (the test binary has none: before 2.00) */
+            char point[16];
+            CHECK(sd_mount_dir("SAVE0", 4, point) == (int32_t)0x809F000Bu);
+            /* from here on, a title built against SDK 2.00, as the process parameters say */
+            static uint64_t fake_image[8];
+            const uint32_t prefix[4] = {32, 0, 0x4942524fu, 1};            /* size 32, magic "ORBI", version 1 */
+            const uint32_t sdk_2_00 = 0x02000071u;
+            memcpy(fake_image, prefix, sizeof prefix);
+            memcpy((char *)fake_image + 16, &sdk_2_00, sizeof sdk_2_00);
+            void *saved_image = rt_process.image, *saved_param = rt_process.proc_param;
+            const uint64_t saved_size = rt_process.image_size;
+            rt_process.image = fake_image, rt_process.image_size = sizeof fake_image, rt_process.proc_param = fake_image;
+            CHECK(sd_mount_dir("SAVE0", 4, point) == (int32_t)0x80960002u); /* SDK 2.00 to 2.49 */
+            CHECK(sd_init(NULL) == 0);
+            CHECK(sd_mount_dir("SAVE0", 2, point) == (int32_t)0x809F0008u);       /* not there, no create */
+            CHECK(sd_mount_dir("", 4, point) == (int32_t)0x809F0000u);
+            CHECK(sd_mount_dir("../up", 4, point) == (int32_t)0x809F0000u);
+            CHECK(sd_mount_dir("a/b", 4, point) == (int32_t)0x809F0000u);
+            sd_mount_req negative = {.user = -1, .dir = "SAVE0", .mode = 4};
+            sd_mount_res unused;
+            CHECK(sd_mount(&negative, &unused) == (int32_t)0x809F0011u);
+            CHECK(sd_mount_dir("SAVE0", 4 | 2, point) == 0 && !strcmp(point, "/savedata0"));
+            CHECK(sd_mount_dir("SAVE0", 2, NULL) == (int32_t)0x809F0003u);        /* already mounted */
+            /* the title's own file through the mount, landing in the save folder */
+            typedef int32_t (*f_sd_close)(int32_t);
+            const f_kopen open_fn = (f_kopen)fn("libkernel", "sceKernelOpen");
+            const f_sd_close close_fn = (f_sd_close)fn("libkernel", "sceKernelClose");
+            if (open_fn && close_fn) {
+                const int32_t fd = open_fn("/savedata0/userdata0010", 0x0001 | 0x0200, 0666); /* write, create */
+                CHECK(fd >= 0 && close_fn(fd) == 0);
+                char host[700];
+                snprintf(host, sizeof host, "%s/1/SAVE0/userdata0010", saves);
+                struct stat created;
+                CHECK(stat(host, &created) == 0 && S_ISREG(created.st_mode));
+            }
+            /* params: a title and a user param, kept in sce_sys/param.bin */
+            CHECK(sd_set_param("/savedata0", 1, "The Old Hunters", 16) == 0);
+            const uint32_t user_param = 7;
+            CHECK(sd_set_param("/savedata0", 4, &user_param, 4) == 0);
+            CHECK(sd_set_param("/savedata0", 5, &user_param, 4) == (int32_t)0x809F0000u);
+            CHECK(sd_set_param("/savedata9", 1, "x", 2) == (int32_t)0x809F0004u);
+            CHECK(sd_umount("/savedata0") == 0 && sd_umount("/savedata0") == (int32_t)0x809F0008u);
+            CHECK(sd_mount_dir("SAVE0", 4, NULL) == (int32_t)0x809F0007u);        /* create, but it exists */
+            /* a second save, read-only mount, and the 16-slot limit */
+            CHECK(sd_mount_dir("SAVE1", 4, point) == 0 && sd_umount(point) == 0);
+            CHECK(sd_mount_dir("SAVE1", 1, point) == 0 && !strcmp(point, "/savedata0"));
+            if (open_fn) CHECK(open_fn("/savedata0/new", 0x0001 | 0x0200, 0666) == (int32_t)0x8002001eu); /* EROFS */
+            CHECK(sd_umount(point) == 0);
+            char name[16];
+            for (int k = 0; k < 16; k++) {
+                snprintf(name, sizeof name, "SLOT%d", k);
+                CHECK(sd_mount_dir(name, 4, NULL) == 0);
+            }
+            CHECK(sd_mount_dir("SLOT16", 4, NULL) == (int32_t)0x809F000Cu);
+            CHECK(sd_term() == 0);                                                /* unmounts them (before SDK 4.00) */
+            CHECK(sd_init(NULL) == 0 && sd_mount_dir("SLOT0", 2, point) == 0 && sd_umount(point) == 0);
+            /* search: by name pattern, sorted, with params */
+            char names[4][32];
+            sd_param params[4];
+            sd_cond cond = {.user = 1, .dir = "SAVE%", .key = 0, .order = 1};
+            sd_result res = {.names = names, .capacity = 4, .params = params};
+            CHECK(sd_search(&cond, &res) == 0 && res.hits == 2 && res.set == 2);
+            CHECK(!strcmp(names[0], "SAVE1") && !strcmp(names[1], "SAVE0"));    /* descending */
+            CHECK(!strcmp(params[1].title, "The Old Hunters") && params[1].user_param == 7);
+            cond.dir = "save_";                                                   /* case-insensitive, one character */
+            res.capacity = 1;
+            CHECK(sd_search(&cond, &res) == 0 && res.hits == 2 && res.set == 1);
+            cond.dir = NULL;
+            res.capacity = 4;
+            CHECK(sd_search(&cond, &res) == 0 && res.hits == 18);
+            cond.key = 6;
+            CHECK(sd_search(&cond, &res) == (int32_t)0x809F0000u);
+            /* the memory-backed save */
+            char data[16] = "", back[16] = "";
+            CHECK(sd_get(1, data, 4, 0) == (int32_t)0x809F0012u);                /* not set up */
+            CHECK(sd_setup(1, 0, NULL) == (int32_t)0x809F0000u);
+            CHECK(sd_setup(1, 4096, NULL) == 0);
+            memcpy(data, "blood echoes", 13);
+            CHECK(sd_set(1, data, 13, 100) == 0 && sd_get(1, back, 13, 100) == 0 && !strcmp(back, "blood echoes"));
+            CHECK(sd_get(1, back, 4, 0) == 0 && !back[0] && !back[3]);           /* untouched bytes are zero */
+            CHECK(sd_get(1, NULL, 4, 0) == (int32_t)0x809F0000u && sd_get(1, back, 4, -1) == (int32_t)0x809F0000u);
+            CHECK(died_in_fatal(sd_get_past_end));
+            CHECK(died_in_fatal(sd_mount_other_title));
+            CHECK(died_in_fatal(sd_mount_other_user));
+            CHECK(sd_term() == 0);
+            rt_process.image = saved_image, rt_process.image_size = saved_size, rt_process.proc_param = saved_param;
+        }
+        rt_process.savedata_dir = NULL;
     }
 
     pg_init = (f_pg_init)fn("libScePlayGo", "scePlayGoInitialize");
