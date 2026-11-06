@@ -45,8 +45,8 @@ RT_ORIGINAL(0x02ab9850, flush_shader_preparation,
 RT_ORIGINAL(0x02acd190, finish_context_shader,
             void(ContextShaderResetState *, PresentContextFinishView *));
 RT_ORIGINAL(0x02aaf700, finish_present_commands, void(CommandFinishStateView *));
-RT_ORIGINAL(0x02abba10, finish_context_state_b518, void(ContextPairResetState *));
-RT_ORIGINAL(0x02ad3300, finish_context_state_b528, void(ContextScalarResetState *));
+RT_ORIGINAL(0x02abba10, finish_context_pair_state, void(ContextPairResetState *));
+RT_ORIGINAL(0x02ad3300, finish_context_scalar_state, void(ContextScalarResetState *));
 RT_ORIGINAL(0x02ad2d20, finish_context_preparation, void(ContextPreparationReset *));
 }  // namespace context_finish_calls
 }  // namespace render

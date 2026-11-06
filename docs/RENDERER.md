@@ -254,14 +254,30 @@ Instead:
         user data. The vertex shader's is at byte 0 of the push constants and the pixel
         shader's at byte 64 (`push_constant_offset`), 128 bytes in all, the size every Vulkan
         device guarantees.
-     3. **Running a buffer.** At `sceGnmSubmitCommandBuffers`, the executor takes each buffer's
+     3. **Running a buffer** (begun: `runtime/render_executor.h`).
+        - **What runs today:** COLOR_8_8_8_8 render targets in slot 0 (UNORM or sRGB, either
+          component order), viewport 0, vertex and pixel shaders with their user data, and
+          auto-index draws as triangle lists.
+        - **Not yet:** blending and depth (their setters aren't recorded yet), other formats, more
+          render targets and other pixel inputs. These stop with the reason.
+        - **The image's memory order:** an image's pixels only leave the GPU through
+          `rt_executor_read_target`, which gives the display's BGRA either way. So nothing yet shows
+          whether a SWAP_ALT target is kept blue-first, as the console stores it. That matters once
+          images go back into guest memory. At `sceGnmSubmitCommandBuffers`, the executor takes each buffer's
         calls (`rt_render_submitted`) and keeps the current state: render targets, viewport,
         shaders, user data. At each draw it translates the two shaders from their code
         addresses (layouts from their register blocks; translations cached by code and layout),
         makes or reuses a pipeline, and draws into images that stand for the render targets,
         found by their addresses.
-     4. **Showing a frame.** At a flip, video out presents the image whose address is the flipped
-        buffer's, in place of today's black frame.
+     4. **Wired into the runtime** (`runtime/renderer.h`): with the display on
+        (`pbboot --display headless|window`, in a build with Vulkan), each buffer
+        `sceGnmSubmitCommandBuffers` or `sceGnmSubmitAndFlipCommandBuffers` submits has its recorded
+        calls run, and at a flip video out shows what was drawn into the flipped buffer's address,
+        in place of the black frame. The executor opens at the first buffer that has recorded calls:
+        giving the GPU the 5 GiB pool takes about 2.4 s (measured on an RTX 3070), long enough to
+        change which thread reaches its first unimplemented call first if it happened at every
+        boot. Until the library's replacements record calls, boots are unchanged in every display
+        mode.
      5. **The observer calls** in the library's replacements, once those are merged; then
         follow the auto-index draw wrapper's callers (`0x015fbb50`) up to the title screen's
         2D passes.

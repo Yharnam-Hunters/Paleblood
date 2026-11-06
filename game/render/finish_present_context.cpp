@@ -14,7 +14,7 @@ extern "C" void bb_render_finish_present_context(render::PresentContextFinishVie
     // and preparation fields; it is a view of the same context storage.
     auto *commands = reinterpret_cast<CommandFinishStateView *>(&context->commands);
     finish_present_commands(commands);
-    finish_context_state_b518(&context->pair_state);
-    finish_context_state_b528(&context->scalar_state);
+    finish_context_pair_state(&context->pair_state);
+    finish_context_scalar_state(&context->scalar_state);
     finish_context_preparation(&context->preparation);
 }

@@ -139,6 +139,8 @@ rt_elf *rt_elf_open(const char *path, char *error, size_t error_size)
         goto out;
     }
     phdr dynamic = {0}, dynlib = {0};
+    uint64_t tls_offset = 0;
+    int have_tls = 0;
     int have_load = 0, have_dynamic = 0, have_dynlib = 0;
     e->loads = calloc(phnum, sizeof *e->loads);
     e->load_offsets = calloc(phnum, sizeof *e->load_offsets);
@@ -181,6 +183,13 @@ rt_elf *rt_elf_open(const char *path, char *error, size_t error_size)
             e->proc_param = h.vaddr;
             e->proc_param_size = h.memsz;
         } else if (h.type == PT_TLS) {
+            if (have_tls || h.filesz > h.memsz || (h.filesz && !in_file(e, h.offset, h.filesz))
+                || (h.align && (h.align & (h.align - 1)))) {
+                fail(error, error_size, "%s: invalid TLS template", path);
+                goto out;
+            }
+            have_tls = 1;
+            tls_offset = h.offset;
             e->tls = (rt_elf_tls){h.vaddr, h.filesz, h.memsz, h.align ? h.align : 1};
         } else if (h.type == PT_DYNAMIC) {
             dynamic = h;
@@ -194,6 +203,31 @@ rt_elf *rt_elf_open(const char *path, char *error, size_t error_size)
         !in_file(e, dynlib.offset, dynlib.filesz)) {
         fail(error, error_size, "%s: no PT_LOAD, PT_DYNAMIC or PT_SCE_DYNLIBDATA", path);
         goto out;
+    }
+
+    /* PT_TLS describes an initialization image, not a second copy into the loaded
+       image. Its file-backed bytes must match one admitted segment's file mapping. */
+    if (e->tls.filesz) {
+        int mapped = 0;
+        for (size_t i = 0; i < e->load_count; i++) {
+            if (e->tls.vaddr < e->loads[i].vaddr) continue;
+            const uint64_t offset = e->tls.vaddr - e->loads[i].vaddr;
+            if (offset <= e->load_filesz[i] && e->tls.filesz <= e->load_filesz[i] - offset
+                && tls_offset == e->load_offsets[i] + offset) mapped = 1;
+        }
+        if (!mapped) {
+            fail(error, error_size, "%s: TLS template is not backed by the mapped file bytes", path);
+            goto out;
+        }
+        /* Do not capture a different overlapping segment's bytes as this template. */
+        for (size_t i = 0; i < e->load_count; i++) {
+            const uint64_t start = e->loads[i].vaddr > e->tls.vaddr ? e->loads[i].vaddr : e->tls.vaddr;
+            if (start < e->loads[i].vaddr + e->load_filesz[i] && start < e->tls.vaddr + e->tls.filesz
+                && e->load_offsets[i] + start - e->loads[i].vaddr != tls_offset + start - e->tls.vaddr) {
+                fail(error, error_size, "%s: TLS template has conflicting mapped file bytes", path);
+                goto out;
+            }
+        }
     }
 
     uint64_t tag_value[8] = {0};
