@@ -330,6 +330,40 @@ static struct timespec deadline_after(uint32_t microseconds)
     return t;
 }
 
+/* FreeBSD amd64 struct timespec: two 64-bit fields, seconds and nanoseconds. */
+typedef struct {
+    int64_t seconds;
+    int64_t nanoseconds;
+} guest_timespec;
+
+/* pthread_cond_timedwait's absolute time is on the cond's clock, CLOCK_REALTIME by default (POSIX,
+   libthr cond_init), and no imported call sets another (no pthread_condattr_* import; an attribute
+   object stops cond_init). The host cond waits on the monotonic clock, so this is the monotonic
+   deadline that falls when the wall clock reaches `abstime`: now, if it already has. The wall clock
+   is read first, so the deadline is never early. A change of the wall clock during the wait is not
+   followed. */
+static struct timespec deadline_at_wall_clock(const guest_timespec *abstime)
+{
+    struct timespec wall, t;
+    clock_gettime(CLOCK_REALTIME, &wall);
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    int64_t seconds = abstime->seconds - wall.tv_sec;
+    int64_t nanoseconds = abstime->nanoseconds - wall.tv_nsec;
+    if (nanoseconds < 0) {
+        seconds--;
+        nanoseconds += 1000000000;
+    }
+    if (seconds < 0) return t;
+    if (seconds > INT64_MAX - 1 - t.tv_sec) seconds = INT64_MAX - 1 - t.tv_sec; /* out of reach anyway */
+    t.tv_sec += seconds;
+    t.tv_nsec += nanoseconds;
+    if (t.tv_nsec >= 1000000000) {
+        t.tv_sec++;
+        t.tv_nsec -= 1000000000;
+    }
+    return t;
+}
+
 /* libkernel: SCE error codes. scePthreadMutexInit's third argument is a name, used for debugging. */
 static int sce_mutex_init(guest_mutex **m, guest_mutexattr **a, const char *name) { (void)name; return sce(mutex_init(m, a)); }
 static int sce_mutex_destroy(guest_mutex **m) { return sce(mutex_destroy(m)); }
@@ -368,16 +402,25 @@ RT_SYSLIB("libkernel", scePthreadCondBroadcast, sce_cond_broadcast);
 RT_SYSLIB("libkernel", scePthreadCondWait, sce_cond_wait);
 RT_SYSLIB("libkernel", scePthreadCondTimedwait, sce_cond_timedwait);
 
-/* libScePosix: the same calls with errno values. pthread_cond_timedwait is left out: its absolute
-   timespec and the clock it is measured on are not established from evidence yet, so a call stays
-   unbound and stops the boot by name. */
+/* libScePosix: the same calls with errno values. pthread_cond_timedwait takes an absolute time on
+   the wall clock. libthr answers EINVAL, before touching the mutex, for no time, negative seconds
+   and nanoseconds outside [0, 1000000000) (POSIX names the nanoseconds case and leaves the other
+   two undefined); a time already passed is ETIMEDOUT with the mutex taken back. */
 static int posix_cond_init(guest_cond **c, void **a) { return cond_init("pthread_cond_init", c, a); }
 static int posix_cond_wait(guest_cond **c, guest_mutex **m) { return cond_wait(c, m, NULL); }
+static int posix_cond_timedwait(guest_cond **c, guest_mutex **m, const guest_timespec *abstime)
+{
+    if (!abstime || abstime->seconds < 0 || abstime->nanoseconds < 0 || abstime->nanoseconds >= 1000000000)
+        return BSD_EINVAL;
+    const struct timespec deadline = deadline_at_wall_clock(abstime);
+    return cond_wait(c, m, &deadline);
+}
 RT_SYSLIB("libScePosix", pthread_cond_init, posix_cond_init);
 RT_SYSLIB("libScePosix", pthread_cond_destroy, cond_destroy);
 RT_SYSLIB("libScePosix", pthread_cond_signal, cond_signal);
 RT_SYSLIB("libScePosix", pthread_cond_broadcast, cond_broadcast);
 RT_SYSLIB("libScePosix", pthread_cond_wait, posix_cond_wait);
+RT_SYSLIB("libScePosix", pthread_cond_timedwait, posix_cond_timedwait);
 
 /* libScePosix: errno values */
 static int posix_mutex_init(guest_mutex **m, guest_mutexattr **a) { return mutex_init(m, a); }
