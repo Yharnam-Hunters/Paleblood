@@ -922,6 +922,39 @@ static void data_open_no_folder(void)
     rt_process.data_dir = NULL;
     kopen_fn("/data/cache.bin", 0x602, 0777);
 }
+/* sceKernelWrite and sceKernelPwrite on a /data file. The stops are checked by reason in a child:
+   the host would answer some of these requests with an error, which stops the process too and
+   would hide a missing guard. */
+typedef int64_t (*f_kwrite)(int32_t, const void *, uint64_t);
+typedef int64_t (*f_kpwrite)(int32_t, const void *, uint64_t, int64_t);
+static f_kwrite kwrite_fn;
+static f_kpwrite kpwrite_fn;
+static int32_t write_fd, write_append_fd, write_read_only_fd;
+static void write_too_many(void) { kwrite_fn(write_fd, "x", 0x80000000u); } /* INT_MAX + 1 */
+static void write_too_many_read_only(void) { kwrite_fn(write_read_only_fd, "x", 0x80000000u); }
+static void pwrite_too_many(void) { kpwrite_fn(write_fd, "x", 0x80000000u, 0); }
+static void write_no_buffer(void) { kwrite_fn(write_fd, NULL, 1); }
+static void pwrite_no_buffer(void) { kpwrite_fn(write_fd, NULL, 1, 0); }
+static void pwrite_append(void) { kpwrite_fn(write_append_fd, "x", 1, 0); }
+static const char *write_expected_function, *write_expected_reason;
+static void write_observe_stop(const char *function, const char *reason)
+{
+    _exit(!strcmp(function, write_expected_function) && strstr(reason, write_expected_reason) ? 0 : 1);
+}
+static int write_stops_with(void (*call)(void), const char *function, const char *reason)
+{
+    const pid_t child = fork();
+    if (child == 0) {
+        write_expected_function = function;
+        write_expected_reason = reason;
+        rt_fatal_observer = write_observe_stop;
+        call();
+        _exit(2); /* the call returned, so it did not stop */
+    }
+    int status = 0;
+    if (waitpid(child, &status, 0) < 0) return 0;
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
 
 /* GNM compute queues. */
 typedef int32_t (*f_cq_t)(uint32_t, uint32_t, void *, uint32_t, volatile uint32_t *);
@@ -2767,6 +2800,62 @@ int main(void)
                     cfd = kopen("/data/cache.bin", 0x602, 0777); /* truncate starts it over */
                     CHECK(cfd >= 3 && kread(cfd, buf, 4) == 0 && kclose(cfd) == 0);
                     CHECK(kopen("/data/missing.bin", 0, 0) == (int32_t)0x80020002u);
+
+                    /* Writing: sceKernelWrite and sceKernelPwrite. Guest open flags: O_WRONLY 1,
+                       O_RDWR 2, O_APPEND 0x8, O_CREAT 0x200, O_TRUNC 0x400. */
+                    kwrite_fn = (f_kwrite)fn("libkernel", "sceKernelWrite");
+                    kpwrite_fn = (f_kpwrite)fn("libkernel", "sceKernelPwrite");
+                    CHECK(kwrite_fn && kpwrite_fn);
+                    CHECK(is_implemented("libkernel", "sceKernelWrite") && is_implemented("libkernel", "sceKernelPwrite"));
+                    if (kwrite_fn && kpwrite_fn) {
+                        char written[600];
+                        snprintf(written, sizeof written, "%s/written.bin", data);
+                        write_fd = kopen("/data/written.bin", 0x602, 0644);
+                        CHECK(write_fd >= 3);
+                        CHECK(kwrite_fn(write_fd, "hello", 5) == 5);
+                        CHECK(kwrite_fn(write_fd, NULL, 0) == 0 && kwrite_fn(write_fd, "x", 0) == 0); /* zero bytes */
+                        CHECK(kpwrite_fn(write_fd, "J", 1, 0) == 1);
+                        CHECK(klseek(write_fd, 0, 1) == 5); /* the pwrite left the position after "hello" */
+                        CHECK(kwrite_fn(write_fd, "!", 1) == 1);
+                        CHECK(kpread(write_fd, buf, 16, 0) == 6 && !memcmp(buf, "Jello!", 6));
+                        CHECK(kpwrite_fn(write_fd, "z", 1, 8) == 1); /* past the end: a hole of zero bytes */
+                        CHECK(kpread(write_fd, buf, 16, 0) == 9 && !memcmp(buf, "Jello!\0\0z", 9));
+                        CHECK(kpwrite_fn(write_fd, "q", 1, -1) == (int32_t)0x80020016u); /* EINVAL */
+                        CHECK(kpwrite_fn(write_fd, NULL, 0, 0) == 0);
+                        CHECK(kfstat(write_fd, st) == 0 && (memcpy(&size, st + 0x48, 8), size == 9));
+                        /* EBADF: descriptors that are not open for writing. */
+                        const int32_t rfd = kopen("/data/written.bin", 0, 0);
+                        CHECK(rfd >= 3 && kwrite_fn(rfd, "w", 1) == (int32_t)0x80020009u);
+                        CHECK(kpwrite_fn(rfd, "w", 1, 0) == (int32_t)0x80020009u);
+                        CHECK(kpwrite_fn(rfd, "w", 1, -1) == (int32_t)0x80020009u); /* the descriptor before the offset */
+                        /* Exactly INT_MAX bytes passes the size check (which comes first), so the
+                           descriptor answers; the buffer is never read. */
+                        CHECK(kwrite_fn(rfd, "w", 0x7fffffff) == (int32_t)0x80020009u);
+                        CHECK(kpwrite_fn(rfd, "w", 0x7fffffff, 0) == (int32_t)0x80020009u);
+                        write_read_only_fd = rfd; /* one byte more stops before the descriptor answers */
+                        CHECK(write_stops_with(write_too_many_read_only, "sceKernelWrite", "more than INT_MAX"));
+                        CHECK(kclose(rfd) == 0 && kwrite_fn(rfd, "w", 1) == (int32_t)0x80020009u); /* closed */
+                        const int32_t afd = kopen("/app0/data.bin", 0, 0);
+                        CHECK(afd >= 3 && kwrite_fn(afd, "w", 1) == (int32_t)0x80020009u);
+                        CHECK(kpwrite_fn(afd, "w", 1, 0) == (int32_t)0x80020009u && kclose(afd) == 0);
+                        CHECK(kwrite_fn(1, "w", 1) == (int32_t)0x80020009u && kpwrite_fn(2, "w", 1, 0) == (int32_t)0x80020009u);
+                        FILE *a = fopen(file, "rb");
+                        char app0_bytes[16] = {0};
+                        CHECK(a && fread(app0_bytes, 1, sizeof app0_bytes, a) == 10 && !memcmp(app0_bytes, "0123456789", 10));
+                        if (a) fclose(a);
+                        CHECK(kpread(write_fd, buf, 16, 0) == 9 && !memcmp(buf, "Jello!\0\0z", 9)); /* still unchanged */
+                        /* O_WRONLY | O_APPEND: each write goes to the end. */
+                        write_append_fd = kopen("/data/written.bin", 0x9, 0);
+                        CHECK(write_append_fd >= 3 && kwrite_fn(write_append_fd, "+", 1) == 1);
+                        CHECK(kpread(write_fd, buf, 16, 0) == 10 && !memcmp(buf, "Jello!\0\0z+", 10));
+                        CHECK(write_stops_with(write_too_many, "sceKernelWrite", "more than INT_MAX"));
+                        CHECK(write_stops_with(pwrite_too_many, "sceKernelPwrite", "more than INT_MAX"));
+                        CHECK(write_stops_with(write_no_buffer, "sceKernelWrite", "no buffer"));
+                        CHECK(write_stops_with(pwrite_no_buffer, "sceKernelPwrite", "no buffer"));
+                        CHECK(write_stops_with(pwrite_append, "sceKernelPwrite", "O_APPEND"));
+                        CHECK(kclose(write_append_fd) == 0 && kclose(write_fd) == 0);
+                        unlink(written);
+                    }
                     kopen_fn = kopen;
                     CHECK(died_in_fatal(kstat_data_dotdot));
                     CHECK(died_in_fatal(data_open_odd_flag));
