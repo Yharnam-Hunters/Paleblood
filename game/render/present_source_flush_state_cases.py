@@ -79,6 +79,26 @@ def cases():
         yield c
 
 
+    for bank in (0, 1):
+        case = basic(f"bank_{bank}_slot_eight_dirty_bit_is_ignored", returns="void", size=512)
+        case["buffers"]["self"]["bytes"] = "00" * 512
+        case["buffers"].update({"context": {"size": 64}, "slot": {"size": 64}})
+        case["args"].update({"rsi": "buf:context", "rdx": 0})
+        case["memory"] = [
+            {"addr": "buf:self+326", "bytes": "09"},
+            memory(0x188, bank | 0x1000),
+            {"addr": f"buf:self+{0x60 + bank * 0x48 + 8 * 8}", "pointer": "slot"},
+            {"addr": "buf:slot+60", "bytes": word(5)},
+        ]
+        # The full-width dirty-mask mutant can complete both calls. The original
+        # byte mask skips slot eight, so its empty trace is independently observable.
+        case["stubs"] = [
+            {"address": "0x02564ed0", "argc": 1, "ret": 8},
+            {"address": "0x01473840", "argc": 3, "ret": 0, "argmem": [{"arg": 2, "size": 8}]},
+        ]
+        yield case
+
+
 def emit_mutation_case(cid, bank, count, new_count=None, new_value=None, new_flags=None):
     command_offset = 0x10
     pending_values_offset = 0x100
