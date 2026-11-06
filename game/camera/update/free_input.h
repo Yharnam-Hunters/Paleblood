@@ -332,8 +332,8 @@ RotationDispatch prepare_free_input(FollowCamera &state, const RotationDispatch 
                                     const ControlPreparation &control,
                                     const SubjectCompensationState &previous)
 {
-    // Entry precondition: free_input atcab9 (incoming AL0 has already been consumed).
-    // Retain all original retained snapshots across the optional atan2 callbacks.
+    // The earlier front-lock decision selected free input. Preserve its snapshots
+    // across the optional atan2 callbacks.
     const uint8_t captured_lock = dispatch.captured_lock;
     const Vec4 input = control.control_input;
     const Vec4 saved_time = previous.saved_time_register;

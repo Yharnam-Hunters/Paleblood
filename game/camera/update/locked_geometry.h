@@ -45,9 +45,10 @@ RT_GLOBAL(0x04cf25a0, pair_pi_bits, const Vec4);
 RT_GLOBAL(0x04cf25b0, pair_two_pi, const Vec4);
 RT_GLOBAL(0x04d25e74, two_pi, const float);
 RT_GLOBAL(0x04d25e78, half_pi, const float);
-RT_GLOBAL(0x04d25e7c, ratio_root_bias, const float); // bits3f800001; deliberately above1
+RT_GLOBAL(0x04d25e7c, ratio_root_bias, const float); // Just above 1; bits 0x3f800001.
 
-// First reduction's ADD is signed_pi + angle; later scalar wraps use angle + signed_pi.
+// This first reduction adds signed pi before the angle; later wraps reverse the
+// operands. Keep that distinction when either operand is NaN.
 float reduce_shift(float angle, float period)
 {
     const float biased = arithmetic::add(locked_math::signed_pi(angle), angle);
@@ -116,8 +117,8 @@ Vec4 refined_distance(Vec4 difference)
     return root::refined_length(length_squared, root::FirstProductOrder::reciprocal_then_length);
 }
 
-// The original conversion is signed64 followed by low32 extraction and CVTDQ2PS.
-// This deliberately differs from scalar32 wrapping for NaN/large quotients.
+// Convert through a signed 64-bit integer, then convert its low 32 bits to float.
+// NaNs and large quotients differ from a direct signed 32-bit conversion.
 float wrapped_movement_squared(float pitch_movement, float yaw_movement, float period)
 {
     const Vec4 movement = locked_math::lanes(pitch_movement, yaw_movement, 0.0f, 0.0f);
@@ -261,7 +262,8 @@ AngularPreparation prepare_locked_geometry(FollowCamera &state, const TargetPrep
             pitch = wrap_angle(arithmetic::add(pivot_pitch, scalar::multiply(chase_rate, adjusted_pitch)),
                                period);
             state.angles.pitch = pitch;
-            // Original c4e6 is adjusted_yaw FIRST, chase_rate SECOND (pitch is opposite).
+            // Yaw multiplies adjusted angle by chase rate; pitch reverses the operands.
+            // Preserve that distinction for NaN payloads.
             yaw = wrap_angle(arithmetic::add(pivot_yaw, scalar::multiply(adjusted_yaw, chase_rate)), period);
             state.angles.yaw = yaw;
         }

@@ -12,8 +12,8 @@ namespace packed = camera::update::math;
 namespace root = camera::update::root;
 using update::subject::SubjectCompensationState;
 
-// Narrow role-based views of the subject's control-input graph; both selected input
-// addresses are 16-aligned for the original VMOVDQA. Null preferred falls back once.
+// Subject input vectors are 16-byte aligned. A null preferred owner selects the
+// fallback owner; the chosen owner must exist.
 struct ControlInputOwner
 {
     uint8_t unknown_0x00[0x40];
@@ -47,7 +47,7 @@ struct ControlPreparation
 void update_fulcrum_distance(FollowCamera &state, const SubjectCompensationState &previous)
 {
     const float rate = state.fulcrum_distance_rate;
-    // Original JBE skips unordered and both signed zeros as well as negative rates.
+    // Only an ordered positive rate updates the distance.
     if (scalar::unordered_or_less_equal(rate, 0.0f)) return;
 
     const Vec4 difference = packed::subtract(previous.camera_position, previous.cast_origin);
@@ -63,7 +63,7 @@ void update_fulcrum_distance(FollowCamera &state, const SubjectCompensationState
     const float scaled_distance = scalar::multiply(distance.x(), rate);
     state.fulcrum_distance = scaled_distance;
     const float minimum_distance = minimum_fulcrum_distance.get();
-    // JBE preserves unordered scaled results. A generic maximum can mask those NaNs.
+    // Keep a NaN scaled distance; a generic maximum could replace its payload.
     if (!scalar::unordered_or_less_equal(minimum_distance, scaled_distance))
     {
         state.fulcrum_distance = minimum_distance;
@@ -80,7 +80,7 @@ Vec4 select_control_input(FollowCamera &state, Subject *subject)
     const SubjectControlContext *context = prefix->context;
     const ControlInputOwner *owner = context->preferred;
     if (owner == nullptr) owner = context->fallback;
-    // Subject, context and the final owner are unchecked, as in the nonnull original path.
+    // Enabling subject input requires the subject, context and selected owner to exist.
     return owner->input;
 }
 
@@ -93,7 +93,7 @@ void begin_translation_release_wait(FollowCamera &state)
 
 void update_translation_release(FollowCamera &state, float delta)
 {
-    // Hand control ends only when both control axes are ordered zeros.
+    // The first frame without hand input starts the wait; later frames count it down.
     const uint8_t was_hand_control = state.hand_control;
     state.hand_control = uint8_t{0};
     if (was_hand_control != 0)

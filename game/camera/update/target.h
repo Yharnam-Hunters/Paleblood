@@ -3,7 +3,7 @@
 #pragma once
 #include "math.h"
 // Chase subject position, establish offset targets (including optional FOV-height adjustment),
-// copy target/camera distance and move the fulcrum/candidate. No whole-update entry or hook.
+// copy the target distance and move the fulcrum and candidate camera position.
 #include "control.h"
 #include "subject_transform.h"
 
@@ -22,7 +22,7 @@ RT_ORIGINAL(0x02fbe648, tangent_float, float(float));
 
 struct TargetPreparation
 {
-    uint8_t reset_requested; // original BL, captured before optional tangent callback
+    uint8_t reset_requested; // Captured before the optional tangent callback.
     Vec4 subject_position;
     Vec4 fulcrum;
     Vec4 candidate_position;
@@ -46,8 +46,8 @@ Vec4 camera_to_cast_length(const SubjectCompensationState &previous)
 TargetPreparation prepare_target_translation(FollowCamera &state, const SubjectCompensationState &previous,
                                              const FreshSubjectTransformState &fresh)
 {
-    // Retain this byte across tangent_float: the next angular-mode branch uses captured BL,
-    // even when the callback changes the corresponding guest flag after this read.
+    // Angular mode selection uses this captured reset request even if tangent_float
+    // changes the camera flag.
     const uint8_t reset = state.reset_requested;
     const Matrix4 frame = fresh.fresh_transform;
     Vec4 subject_position = frame.position;
@@ -82,14 +82,14 @@ TargetPreparation prepare_target_translation(FollowCamera &state, const SubjectC
         // frame.axis_y, partial_target, z_offset and origin_offset.Y. Do not reload them.
         const float fov_height = scalar::multiply(distance.x(), tangent);
         const float old_height = origin_offset.y();
-        // Original JBE skips ordered <= and unordered; only ordered > adjusts the target.
+        // Raise the target only when the FOV height is ordered above its current offset.
         if (!scalar::unordered_or_less_equal(fov_height, old_height))
         {
             const float difference = scalar::subtract(fov_height, old_height);
             const float halfway = scalar::multiply(difference, half_fov.get());
             const float height = target_math::add(old_height, halfway);
             const Vec4 adjusted_y = packed::multiply(frame.axis_y, target_math::broadcast(height));
-            // This ADD's order differs from the initial target's y_offset + partial_target.
+            // Keep this operand order, which differs from the initial target for NaNs.
             const Vec4 adjusted_xy = packed::add(partial_target, adjusted_y);
             state.target = packed::add(z_offset, adjusted_xy);
         }

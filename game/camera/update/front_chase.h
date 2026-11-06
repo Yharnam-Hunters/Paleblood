@@ -27,14 +27,14 @@ static_assert(offsetof(FollowCamera, front_lock_remaining) == 0x264);
 static_assert(offsetof(FollowCamera, front_lock_angles) == 0x26c);
 static_assert(offsetof(FollowCamera, update_target_pitch_at_front_lock) == 0x275);
 
-RT_GLOBAL(0x04d25e58, completion_tolerance, const float); // exact bits3c8efa35
+RT_GLOBAL(0x04d25e58, completion_tolerance, const float); // Exact bits: 0x3c8efa35.
 
 AngularPreparation chase_front_lock(FollowCamera &state, const AngularPreparation &dispatch,
                                     const ControlPreparation &control,
                                     const SubjectCompensationState &previous)
 {
-    // Entry precondition: dispatch.continuation==front_chase. Retain original AL exactly:
-    // a new request forced1; free geometry captured the guest byte, including80/ff.
+    // Front chase retains the earlier activation decision. New requests use 1;
+    // existing locks preserve any nonzero byte, including 0x80 and 0xff.
     uint8_t active = dispatch.front_active;
     const float old_remaining = state.front_lock_remaining;
     float remaining = scalar::subtract(old_remaining, previous.saved_time_register.x());
@@ -74,7 +74,7 @@ AngularPreparation chase_front_lock(FollowCamera &state, const AngularPreparatio
         state.target_pitch = pitch;
     }
 
-    // Compare against the pre-chase goal snapshots. NaN/equality takes JBE and keeps active.
+    // Compare against the captured goals. Equality or a NaN error keeps the lock active.
     const float pitch_error = wrap_angle(scalar::subtract(pitch, goal_pitch), period);
     const float absolute_pitch_error = locked_math::absolute(pitch_error);
     const float tolerance = completion_tolerance.get();

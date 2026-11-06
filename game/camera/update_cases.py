@@ -341,7 +341,8 @@ class Write:
     data: bytes = b""
     pointer: str | None = None
 
-    def wire(self) -> dict:
+    def as_fixture_write(self) -> dict:
+        """Describe one scripted callback write."""
         item = {"arg": self.arg}
         if self.offset:
             item["offset"] = self.offset
@@ -359,7 +360,8 @@ class Sphere:
     writes: tuple[Write, ...] = ()
     world_capture: str = ""
 
-    def wire(self) -> dict:
+    def as_fixture_stub(self) -> dict:
+        """Describe a sphere query and its permitted observations and writes."""
         captures = [{"arg": 2, "size": 16}, {"arg": 3, "size": 16}]
         if self.world_capture == "wall":
             captures.append({"arg": 0, "size": 1})
@@ -374,9 +376,15 @@ class Sphere:
                 captures.append({"arg": 0, "offset": CAMERA_FIELDS[name][0], "size": width})
         elif self.world_capture:
             raise ValueError("unknown world capture contract")
-        result = {"address": hex(SPHERE), "argc": 7, "argf32": [0], "argmem": captures, "ret": hex(self.ret)}
+        result = {
+            "address": hex(SPHERE),
+            "argc": 7,
+            "argf32": [0],
+            "argmem": captures,
+            "ret": hex(self.ret),
+        }
         if self.writes:
-            result["writes"] = [write.wire() for write in self.writes]
+            result["writes"] = [write.as_fixture_write() for write in self.writes]
         return result
 
 
@@ -1426,9 +1434,9 @@ def debug_scripts(profile: Profile) -> list:
         # Explicit first-entry mutations retain the renderer-alias inputs.
         # All remaining entries are inert guards; counts/gates remain hypotheses.
         if index == 0 and profile.render_mode == "reselected_alias":
-            virtual["writes"] = [Write(0, 0x40, pointer="render_state_b").wire()]
+            virtual["writes"] = [Write(0, 0x40, pointer="render_state_b").as_fixture_write()]
         if index == 0 and profile.render_mode == "axes_select_slot_1":
-            axes["writes"] = [Write(0, 0x20, raw32(1)).wire()]
+            axes["writes"] = [Write(0, 0x20, raw32(1)).as_fixture_write()]
         scripts.extend((virtual, axes))
     return scripts
 
@@ -1458,8 +1466,8 @@ def make_case(profile: Profile) -> dict:
     # Never read optional sphere outputs before the callback. A miss writes none.
     scripts = [{"address": hex(DIAGNOSTIC), "argc": 4, "ret": 0}]
     scripts += trig_scripts() + debug_scripts(profile)
-    scripts += [sphere.wire() for sphere in spheres]
-    scripts += [Sphere().wire() for _ in range(3)]
+    scripts += [sphere.as_fixture_stub() for sphere in spheres]
+    scripts += [Sphere().as_fixture_stub() for _ in range(3)]
     return {
         "schema": 1,
         "address": ADDRESS,
@@ -1476,7 +1484,9 @@ def make_case(profile: Profile) -> dict:
         "gs": "buf:tls",
         "imports": [],
         "stubs": scripts,
-        "fixture_scope": "Synthetic full camera input; policy and all path/count sensitivity require original comparison",
+        "fixture_scope": (
+            "Synthetic full camera input; policy and all path/count sensitivity require original comparison"
+        ),
     }
 
 
@@ -1851,10 +1861,31 @@ def validate_contract(case: dict) -> None:
                 raise ValueError("callback write violates its formal object contract")
 
 
+def release_nan_profiles() -> tuple[Profile, ...]:
+    """Reach each release wait and rate gate without reset, lock or hand input."""
+    base = next(profile for profile in STOCK_PROFILES if profile.id == "stock_wall1_both_miss")
+    definitions = (
+        ("translation_release_nan_wait", {"translation_control_wait_remaining": Bits(0x7FC34567)}),
+        (
+            "translation_release_nan_rate",
+            {"translation_control_wait_remaining": -1.0, "translation_control_end_rate": Bits(0xFFC45678)},
+        ),
+        ("rotation_release_nan_wait", {"rotation_control_wait_remaining": Bits(0x7FC56789)}),
+        (
+            "rotation_release_nan_rate",
+            {"rotation_control_wait_remaining": -1.0, "rotation_control_rate": Bits(0xFFC6789A)},
+        ),
+    )
+    return tuple(
+        replace(base, id=name, category="control_release_nan", camera={**base.camera, **fields})
+        for name, fields in definitions
+    )
+
+
 def build_cases() -> list[dict]:
-    profiles = (*STOCK_PROFILES, *fps_profiles())
-    if len(profiles) != 64 or len({profile.id for profile in profiles}) != 64:
-        raise ValueError("the edge suite has exactly 64 distinct named profiles")
+    profiles = (*STOCK_PROFILES, *fps_profiles(), *release_nan_profiles())
+    if len(profiles) != 68 or len({profile.id for profile in profiles}) != 68:
+        raise ValueError("the edge suite has exactly 68 distinct named profiles")
     cases = [make_case(profile) for profile in profiles]
     for case in cases:
         validate_contract(case)
@@ -1865,6 +1896,7 @@ CASES = build_cases()
 
 
 def main(argv: list[str]) -> int:
+    """Write the deterministic synthetic fixtures to the selected directory."""
     if len(argv) != 2:
         raise SystemExit("usage: update_cases.py OUTPUT_DIRECTORY")
     output = Path(argv[1])

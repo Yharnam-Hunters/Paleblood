@@ -47,7 +47,7 @@ TranslationCompensationPreparation compensate_translation(FollowCamera &state,
     Vec4 cast_origin;
     float scale;
     const float maximum_distance = state.fulcrum_lateral_move_max_distance;
-    // JBE bypasses the update for negative, zero and unordered maximum-distance inputs.
+    // A nonpositive or NaN maximum distance leaves lateral compensation unchanged.
     if (math::ordered_greater(maximum_distance, 0.0f))
     {
         const Vec4 subject_movement =
@@ -57,7 +57,8 @@ TranslationCompensationPreparation compensate_translation(FollowCamera &state,
         const float projected_movement = math::absolute(math::add(x, z));
         const float ratio = math::divide(projected_movement, maximum_distance);
         float rate = state.fulcrum_lateral_move_min_rate;
-        // JA retains min-rate only for ordered min-rate > ratio. Unordered takes MINSS.
+        // A ratio ordered below the minimum keeps that rate. Otherwise cap the ratio,
+        // retaining a NaN ratio rather than replacing its payload.
         if (!math::ordered_greater(rate, ratio))
         {
             rate = math::minimum(state.fulcrum_lateral_move_max_rate, ratio);
@@ -70,7 +71,7 @@ TranslationCompensationPreparation compensate_translation(FollowCamera &state,
         const float distance = math::multiply(retained_rate, camera_length.x());
         state.fulcrum_distance = distance;
         const bool below_floor = math::ordered_greater(distance_floor.get(), distance);
-        // Original captures this second one before the possible immediate 0.5 store.
+        // Capture the fallback scale before clamping the stored fulcrum distance.
         scale = scalar_one.get();
         if (below_floor) state.fulcrum_distance = std::bit_cast<float>(minimum_fulcrum_distance_bits);
     }

@@ -3,7 +3,7 @@
 #pragma once
 #include "escape_yaw_storage.h"
 #include "math.h"
-// Shared direction expressions below retain the independently proved angle-frame tree.
+// Build the wall-escape queries from the camera orientation computed earlier.
 #include "query_calls.h"
 #include "math_calls.h"
 
@@ -27,7 +27,7 @@ RT_GLOBAL(0x04d25e8c, short_distance_replacement, const float);
 
 struct FulcrumFrame
 {
-    Vec4 fulcrum; // rebuilt full fulcrum, already published to guest e0
+    Vec4 fulcrum; // Rebuilt origin already stored in the camera state.
 };
 
 Vec4 pitch_coefficients(FollowCamera &state)
@@ -366,7 +366,7 @@ void finish_escape_rotation(FollowCamera &state, bool advanced_from_hit, Vec4 ti
 {
     if (state.escape_wall_mode == 0)
     {
-        // Original clears opaque bytes290..293 together with the yaw at294.
+        // Disabling wall escape clears yaw and the preceding four opaque bytes together.
         camera::update::math::clear_qword(escape_yaw_storage(state));
         return;
     }

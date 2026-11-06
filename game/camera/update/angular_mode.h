@@ -2,7 +2,7 @@
 // Follow-camera angular mode stage, included only by update.cpp.
 #pragma once
 #include "math.h"
-// explicitly dispatch locked geometry atbd42, front chase atc736, or rotation release atc949.
+// Select target-locked geometry, chase a front lock, or release rotation control.
 #include "target.h"
 
 namespace camera::update::angular_mode
@@ -28,16 +28,16 @@ RT_GLOBAL(0x04cf2520, pitch_sign_bits, const Vec4);
 
 enum class AngularContinuation : uint8_t
 {
-    locked_geometry,  // original0x0183bd42: lock target geometry/polynomial work starts next
-    front_chase,      // original0x0183c736: decrement front remaining and chase its angles next
-    rotation_release, // original0x0183c949: bypass front chase, continue rotation release/input
+    locked_geometry,  // Compute the orientation toward the lock target.
+    front_chase,      // Chase the front-lock angles while its timer runs.
+    rotation_release, // Continue rotation release without a front chase.
 };
 
 struct AngularPreparation
 {
     AngularContinuation continuation;
-    // Original AL at front-chase/release entries. For locked_geometry there is no live
-    // active flag yet; its zero retained value is not consumed on that discriminated path.
+    // Preserve the front-lock flag across later callbacks. Locked geometry does not
+    // use this flag, so that continuation carries zero.
     uint8_t front_active;
 };
 
@@ -122,7 +122,7 @@ uint8_t prepare_free_angles(FollowCamera &state, Vec4 fulcrum)
 AngularPreparation prepare_angular_mode(FollowCamera &state, const TargetPreparation &target,
                                         const FreshSubjectTransformState &fresh)
 {
-    // This is original BL captured before the preceding tangent callback, not a guest reread.
+    // Use the reset request captured before the tangent callback, which may change it.
     if (target.reset_requested != 0)
     {
         apply_reset_angles(state, fresh.fresh_transform.forward);

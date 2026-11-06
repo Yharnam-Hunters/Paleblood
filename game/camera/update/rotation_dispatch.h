@@ -2,8 +2,8 @@
 // Follow-camera rotation dispatch stage, included only by update.cpp.
 #pragma once
 #include "math.h"
-// Exits to free-input preparation atcab9 or angle-frame construction atcf2e.
-// Rotation release, complete locked adjustment, and the reached target-pitch tail only.
+// Release rotation control, apply lock adjustment, then select free input or
+// angle-frame construction.
 #include "front_chase.h"
 
 namespace camera::update::rotation_dispatch
@@ -33,8 +33,8 @@ static_assert(offsetof(FollowCamera, lock_adjustment_chase_rate) == 0x288);
 
 enum class RotationContinuation : uint8_t
 {
-    free_input,  // original0x0183cab9: its hand-input/geometry/high-speed stage starts next
-    angle_frame, // original0x0183cf2e: the original begins pitch sine/cosine construction
+    free_input,  // Apply hand input and high-speed rotation.
+    angle_frame, // Construct the camera orientation from its angles.
 };
 
 struct RotationDispatch
@@ -56,10 +56,10 @@ inline void release_rotation_control(FollowCamera &state, float delta_time)
     const float difference = scalar::subtract(old_wait, delta_time);
     const float remaining = rotation_math::maximum(0.0f, difference);
     state.rotation_control_wait_remaining = remaining;
-    // Original JB skips positive AND unordered; ordered0>=remaining continues.
+    // Only an expired, ordered wait releases the rate; a NaN wait is retained.
     if (front_math::ordered_at_least(0.0f, remaining))
     {
-        // Original DIV reads release time before the current rate load.
+        // Read the release duration before the rate being reduced.
         const float release_time = state.rotation_control_end_release_time;
         const float step = scalar::divide(delta_time, release_time);
         const float old_rate = state.rotation_control_rate;
@@ -113,7 +113,7 @@ inline void finish_rotation_input(FollowCamera &state, uint8_t captured_lock)
     const float difference = scalar::subtract(current_pitch, target_pitch);
     const float period = update::locked_geometry::two_pi.get();
     const float delta = wrap_angle(difference, period);
-    // This field is read after the first wrap; original keeps target_pitch across it.
+    // Read the chase rate after wrapping while retaining the captured target pitch.
     const float rate =
         camera::update::frame_policy::complement_gain(state.target_pitch_chase_rate);
     const float movement = scalar::multiply(delta, rate);
@@ -132,7 +132,7 @@ RotationDispatch prepare_rotation_input(FollowCamera &state, const AngularPrepar
     {
         if (captured_lock == 0)
         {
-            // Original cab1 consumes the carried AL; do not reload guest263 to choose this.
+            // Use the earlier front-lock decision even if a callback changed the field.
             if (angular.front_active == 0) return {RotationContinuation::free_input, captured_lock};
         }
         else if (state.adjust_lock_camera != 0 && angular.front_active == 0)
