@@ -218,11 +218,32 @@ int main(void)
         for (int i = 0; i < LANES * 4; i++) untouched &= out_words[i] == 0;
         CHECK(untouched);
         CHECK(*stop == (GCN_RUNTIME_STOP_BUFFER_FORMAT << GCN_RUNTIME_STOP_KIND_SHIFT | 5u << 8 | 0u << 4 | 0x80u | 4u));
+        /* a four-component load from a one-component 32-bit float format, DST_SEL x, 0, 0, 1 (as the
+           game's): (the value, 0, 0, 1.0) */
+        *stop = 0;
+        memset(out.mapped, 0, BUFFER_BYTES);
+        memcpy(format_user, user, sizeof format_user);
+        format_user[3] = (4 | 0 << 3 | 0 << 6 | 1 << 9) | 7u << 12 | 4u << 15;
+        CHECK(run(&g, load_format_xyzw, sizeof load_format_xyzw / sizeof load_format_xyzw[0], format_user) == 0);
+        int loaded = *stop == 0;
+        for (int i = 0; i < LANES; i++) {
+            const uint32_t *lane = out_words + i * 4;
+            loaded &= lane[0] == in_words[i] && lane[1] == 0 && lane[2] == 0 && lane[3] == 0x3f800000u;
+        }
+        CHECK(loaded);
+        /* a reserved selector (2) stops */
+        format_user[3] = (4 | 2 << 3) | 7u << 12 | 4u << 15;
+        CHECK(run(&g, load_format_xyzw, sizeof load_format_xyzw / sizeof load_format_xyzw[0], format_user) == 0 && *stop != 0);
         *stop = 0;
         error_address = 0;
         /* without a stop word, the access stops translation */
         CHECK(run(&g, store_format_xyzw, sizeof store_format_xyzw / sizeof store_format_xyzw[0], format_user) == -1);
     }
+
+    /* whole quad mode: every lane of a quad with an active lane is active again */
+    memset(out.mapped, 0, BUFFER_BYTES);
+    CHECK(run(&g, whole_quad, sizeof whole_quad / sizeof whole_quad[0], user) == 0);
+    for (int i = 0; i < LANES; i++) CHECK(out_words[i] == 1u);
 
     /* VCC's halves written as scalars: each lane's VCC bit is its bit of the half it is in. */
     memset(out.mapped, 0, BUFFER_BYTES);

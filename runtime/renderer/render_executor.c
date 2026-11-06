@@ -8,8 +8,11 @@
    - A viewport transforms a normalized x as x * XSCALE + XOFFSET (likewise y and z), so it covers
      XOFFSET - XSCALE to XOFFSET + XSCALE; a negative YSCALE flips it, which a Vulkan viewport of
      negative height does too. z maps 0 to ZOFFSET and 1 to ZOFFSET + ZSCALE.
-   - A pixel shader's input VGPRs follow SPI_PS_INPUT_ADDR's enabled inputs in bit order; the
-     perspective-centre barycentrics (bit 1) come after the perspective-sample ones (bit 0). */
+   - A pixel shader's input VGPRs follow SPI_PS_INPUT_ADDR's enabled inputs in bit order, each taking
+     as many VGPRs as it has values: 2 for each barycentric pair (bits 0-2, 4-6), 3 for the pull model
+     (bit 3), 1 for each of the rest (line stipple 7, position x, y, z, w 8-11, front face 12,
+     ancillary 13, sample coverage 14, fixed-point position 15), as AMD's register documentation and
+     LLVM's AMDGPU backend (SIRegisterInfo's PS input layout) have it. */
 #include "runtime/render_executor.h"
 
 #include "runtime/gcn.h"
@@ -24,16 +27,27 @@
 #include <sys/mman.h>
 #include <vulkan/vulkan.h>
 
-enum { MAX_SHADERS = 256, MAX_PIPELINES = 256, MAX_TARGETS = 64, MAX_RECT_STAGES = 16, MAX_COMPUTE_PIPELINES = 256 };
+enum { MAX_SHADERS = 256, MAX_PIPELINES = 256, MAX_TARGETS = 64, MAX_RECT_STAGES = 16, MAX_COMPUTE_PIPELINES = 256, MAX_IMAGES = 64,
+       MAX_VIEWS = 16 };
 enum { USER_DATA_BYTES = GCN_USER_SGPR_MAX * 4, VERTEX_USER_DATA = 0, PIXEL_USER_DATA = USER_DATA_BYTES };
 enum { COLOR_8_8_8_8 = 0xa, NUMBER_UNORM = 0, NUMBER_SRGB = 6, SWAP_STD = 0, SWAP_ALT = 1 };
-enum { PERSP_CENTER_ENA = 0x2 };
+enum { PERSP_CENTER_ENA = 0x2, POS_X_FLOAT_ENA = 0x100, POS_Y_FLOAT_ENA = 0x200 };
+
+/* The VGPR where the pixel input at `bit` of SPI_PS_INPUT_ADDR starts: after every enabled input below it. */
+static unsigned pixel_input_vgpr(uint32_t input_address, unsigned bit)
+{
+    static const unsigned sizes[16] = {2, 2, 2, 3, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+    unsigned vgpr = 0;
+    for (unsigned b = 0; b < bit; b++)
+        if (input_address >> b & 1) vgpr += sizes[b];
+    return vgpr;
+}
 enum { STAGE_VERTEX, STAGE_PIXEL, STAGES };
 
 typedef struct {
     uint64_t code;
     int stage;
-    uint32_t user_sgprs, output_control;
+    uint32_t user_sgprs, settings;   /* PA_CL_VS_OUT_CNTL or SPI_PS_INPUT_ADDR */
     VkShaderModule module;
 } shader_entry;
 
@@ -59,9 +73,27 @@ typedef struct {
     uint64_t code;
     uint32_t threads[3], user_sgprs;
     int workgroup_id_x_sgpr;
+    gcn_image_binding images[GCN_MAX_IMAGES];
+    unsigned image_count;
     VkShaderModule module;
     VkPipeline pipeline;
 } compute_entry;
+
+/* An image the executor keeps for a guest image (runtime/render_calls.h, rt_image_descriptor), found by
+   its address and shape. The GPU's writes stay in it: an image the guest's shaders produce is never
+   read back from guest memory or tiled again. */
+typedef struct {
+    uint64_t address;
+    VkFormat format;
+    uint32_t width, height, layers, type;
+    VkImage image;
+    VkDeviceMemory memory;
+    struct {
+        uint32_t first, count;       /* layers first to first + count - 1 */
+        VkImageView view;
+    } views[MAX_VIEWS];              /* made on first use */
+    unsigned view_count;
+} image_entry;
 
 /* A rect-list geometry stage (runtime/rect_list.h), for one vertex-shader output shape. */
 typedef struct {
@@ -77,6 +109,11 @@ struct rt_executor {
     uint32_t family;
     VkCommandPool pool;
     VkPipelineLayout layout, compute_layout;
+    /* compute shaders with n storage images: their descriptor set layout and pipeline layout (n >= 1) */
+    VkDescriptorSetLayout image_set_layouts[GCN_MAX_IMAGES + 1];
+    VkPipelineLayout image_layouts[GCN_MAX_IMAGES + 1];
+    VkDescriptorPool descriptor_pool;
+    int storage_images;              /* the device reads and writes storage images without a declared format */
     /* the guest memory: our own mapping of the pool, imported */
     void *view;
     uint64_t size, guest_base, address_offset;
@@ -93,6 +130,8 @@ struct rt_executor {
     size_t rect_stage_count;
     compute_entry computes[MAX_COMPUTE_PIPELINES];
     size_t compute_count;
+    image_entry images[MAX_IMAGES];
+    size_t image_count;
     /* the run-time stop word translated shaders write (runtime/gcn_spirv.h) */
     VkBuffer stop_buffer;
     VkDeviceMemory stop_memory;
@@ -211,9 +250,12 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
     VkPhysicalDeviceVulkan12Features enable12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
                                                  .bufferDeviceAddress = VK_TRUE};
     x->geometry_shaders = features.features.geometryShader == VK_TRUE;
+    x->storage_images = features.features.shaderStorageImageReadWithoutFormat && features.features.shaderStorageImageWriteWithoutFormat;
     const VkPhysicalDeviceFeatures2 enable = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &enable12,
                                               .features = {.shaderInt64 = VK_TRUE, .shaderClipDistance = VK_TRUE,
-                                                           .geometryShader = features.features.geometryShader}};
+                                                           .geometryShader = features.features.geometryShader,
+                                                           .shaderStorageImageReadWithoutFormat = (VkBool32)x->storage_images,
+                                                           .shaderStorageImageWriteWithoutFormat = (VkBool32)x->storage_images}};
     const char *extensions[] = {VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME};
     const VkDeviceCreateInfo device = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &enable, .queueCreateInfoCount = 1,
                                        .pQueueCreateInfos = &queue, .enabledExtensionCount = 1, .ppEnabledExtensionNames = extensions};
@@ -235,6 +277,26 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
                                                        .pushConstantRangeCount = 1, .pPushConstantRanges = &compute_range};
     if (vkCreatePipelineLayout(x->device, &compute_layout, NULL, &x->compute_layout) != VK_SUCCESS)
         return failed(error, error_size, "no compute pipeline layout");
+    /* compute shaders with storage images: set 0, bindings 0 to n - 1 */
+    for (unsigned n = 1; n <= GCN_MAX_IMAGES; n++) {
+        VkDescriptorSetLayoutBinding bindings[GCN_MAX_IMAGES];
+        for (unsigned b = 0; b < n; b++)
+            bindings[b] = (VkDescriptorSetLayoutBinding){b, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL};
+        const VkDescriptorSetLayoutCreateInfo set = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = n,
+                                                     .pBindings = bindings};
+        if (vkCreateDescriptorSetLayout(x->device, &set, NULL, &x->image_set_layouts[n]) != VK_SUCCESS)
+            return failed(error, error_size, "no descriptor set layout");
+        const VkPipelineLayoutCreateInfo with_images = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
+                                                        .pSetLayouts = &x->image_set_layouts[n], .pushConstantRangeCount = 1,
+                                                        .pPushConstantRanges = &compute_range};
+        if (vkCreatePipelineLayout(x->device, &with_images, NULL, &x->image_layouts[n]) != VK_SUCCESS)
+            return failed(error, error_size, "no compute pipeline layout with images");
+    }
+    const VkDescriptorPoolSize pool_size = {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, GCN_MAX_IMAGES};
+    const VkDescriptorPoolCreateInfo descriptor_pool = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1,
+                                                        .poolSizeCount = 1, .pPoolSizes = &pool_size};
+    if (vkCreateDescriptorPool(x->device, &descriptor_pool, NULL, &x->descriptor_pool) != VK_SUCCESS)
+        return failed(error, error_size, "no descriptor pool");
     return 0;
 }
 
@@ -311,6 +373,9 @@ static int check_stop_word(rt_executor *x, char *error, size_t error_size)
         return failed(error, error_size, "a %u-component buffer %s with format DATA_FORMAT %u, NUM_FORMAT %u%s at run time: only whole "
                       "32-bit uint, sint or float components, and four-component 8_8_8_8 unorm stores, are done yet", code & 0x7,
                       code & 0x80 ? "store" : "load", code >> 8 & 0xf, code >> 4 & 0x7, code & 8 ? " and a swizzle" : "");
+    if (code >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_VCC_UNKNOWN)
+        return failed(error, error_size, "a vertex or pixel shader read VCC as a lane mask after a scalar write of its halves: not done "
+                      "yet (a lane has no known place in the wave there)");
     return failed(error, error_size, "a shader stopped at run time with code %#x", code);
 }
 
@@ -459,12 +524,13 @@ fail:
 /* ---- shaders and pipelines ---- */
 
 /* The code's length is found by the translator; it may read up to the end of the guest memory. */
-static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint32_t user_sgprs, uint32_t output_control, char *error,
+/* settings: a vertex shader's PA_CL_VS_OUT_CNTL, a pixel shader's SPI_PS_INPUT_ADDR (part of the cache key). */
+static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint32_t user_sgprs, uint32_t settings, char *error,
                                  size_t error_size)
 {
     for (size_t i = 0; i < x->shader_count; i++) {
         const shader_entry *s = &x->shaders[i];
-        if (s->code == code && s->stage == stage && s->user_sgprs == user_sgprs && s->output_control == output_control) return s->module;
+        if (s->code == code && s->stage == stage && s->user_sgprs == user_sgprs && s->settings == settings) return s->module;
     }
     if (code < x->guest_base || code >= x->guest_base + x->size || code % 4) {
         failed(error, error_size, "%s shader code at %#llx is outside the GPU-visible memory", stage == STAGE_VERTEX ? "vertex" : "pixel",
@@ -482,12 +548,16 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
     char reason[256];
     int result;
     if (stage == STAGE_VERTEX) {
-        const gcn_vertex_layout layout = {.user_sgprs = user_sgprs, .output_control = output_control,
+        const gcn_vertex_layout layout = {.user_sgprs = user_sgprs, .output_control = settings,
                                           .push_constant_offset = VERTEX_USER_DATA, .address_offset = x->address_offset,
                                           .error_address = x->stop_address};
         result = gcn_translate_vertex(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
     } else {
-        const gcn_pixel_layout layout = {.user_sgprs = user_sgprs, .push_constant_offset = PIXEL_USER_DATA,
+        const uint32_t inputs = settings; /* a pixel shader's SPI_PS_INPUT_ADDR */
+        const gcn_pixel_layout layout = {.user_sgprs = user_sgprs, .barycentric_vgpr = pixel_input_vgpr(inputs, 1),
+                                         .position_enable = (inputs & POS_X_FLOAT_ENA ? GCN_PIXEL_POSITION_X : 0u) |
+                                                            (inputs & POS_Y_FLOAT_ENA ? GCN_PIXEL_POSITION_Y : 0u),
+                                         .position_vgpr = pixel_input_vgpr(inputs, 8), .push_constant_offset = PIXEL_USER_DATA,
                                          .address_offset = x->address_offset, .error_address = x->stop_address};
         result = gcn_translate_pixel(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
     }
@@ -503,7 +573,7 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
         failed(error, error_size, "the device refused a translated shader");
         return VK_NULL_HANDLE;
     }
-    x->shaders[x->shader_count++] = (shader_entry){code, stage, user_sgprs, output_control, module};
+    x->shaders[x->shader_count++] = (shader_entry){code, stage, user_sgprs, settings, module};
     return module;
 }
 
@@ -606,13 +676,14 @@ static int draw(rt_executor *x, const draw_state *s, uint32_t index_count, char 
     if (!s->viewport_set) return failed(error, error_size, "a draw with no viewport");
     if (!s->vertex_set || !s->pixel_set) return failed(error, error_size, "a draw without a vertex and a pixel shader");
     if (!s->pixel.code) return failed(error, error_size, "a draw with no pixel shader (a depth-only pass): not drawn yet");
-    if (s->pixel.input_enable != PERSP_CENTER_ENA || s->pixel.input_address != PERSP_CENTER_ENA)
-        return failed(error, error_size, "pixel-shader inputs %#x (address %#x): only the perspective-centre barycentrics are drawn yet",
-                      s->pixel.input_enable, s->pixel.input_address);
+    const uint32_t drawn_inputs = PERSP_CENTER_ENA | POS_X_FLOAT_ENA | POS_Y_FLOAT_ENA;
+    if (s->pixel.input_enable != s->pixel.input_address || !(s->pixel.input_enable & PERSP_CENTER_ENA) || (s->pixel.input_enable & ~drawn_inputs))
+        return failed(error, error_size, "pixel-shader inputs %#x (address %#x): only the perspective-centre barycentrics and the "
+                      "position's x and y are drawn yet", s->pixel.input_enable, s->pixel.input_address);
     const target_entry *t = target_for(x, &s->color, error, error_size);
     if (!t) return -1;
     const VkShaderModule vertex = shader_for(x, STAGE_VERTEX, s->vertex.code, s->vertex.user_sgprs, s->vertex.output_control, error, error_size);
-    const VkShaderModule pixel = vertex ? shader_for(x, STAGE_PIXEL, s->pixel.code, s->pixel.user_sgprs, 0, error, error_size) : VK_NULL_HANDLE;
+    const VkShaderModule pixel = vertex ? shader_for(x, STAGE_PIXEL, s->pixel.code, s->pixel.user_sgprs, s->pixel.input_address, error, error_size) : VK_NULL_HANDLE;
     if (!pixel) return -1;
     const int rect_list = s->primitive_set && s->primitive_type == DI_PT_RECTLIST;
     if (rect_list && index_count % 3) return failed(error, error_size, "a rect list of %u vertices, not whole rects of three", index_count);
@@ -643,12 +714,14 @@ static int draw(rt_executor *x, const draw_state *s, uint32_t index_count, char 
 
 /* The pipeline for a compute shader as dispatched now: translated once per workgroup size and
    register layout. VK_NULL_HANDLE after failing. */
-static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *c, int workgroup_id_x_sgpr, char *error, size_t error_size)
+static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *c, int workgroup_id_x_sgpr, const gcn_image_binding *images,
+                                       unsigned image_count, char *error, size_t error_size)
 {
     for (size_t i = 0; i < x->compute_count; i++) {
         const compute_entry *e = &x->computes[i];
         if (e->code == c->code && !memcmp(e->threads, c->threads, sizeof e->threads) && e->user_sgprs == c->user_sgprs &&
-            e->workgroup_id_x_sgpr == workgroup_id_x_sgpr)
+            e->workgroup_id_x_sgpr == workgroup_id_x_sgpr && e->image_count == image_count &&
+            !memcmp(e->images, images, image_count * sizeof *images))
             return e->pipeline;
     }
     if (x->compute_count == MAX_COMPUTE_PIPELINES) {
@@ -661,7 +734,8 @@ static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *
     }
     const gcn_compute_layout layout = {.local_size = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
                                        .workgroup_id_x_sgpr = workgroup_id_x_sgpr, .push_constant_offset = 0,
-                                       .address_offset = x->address_offset, .error_address = x->stop_address};
+                                       .address_offset = x->address_offset, .error_address = x->stop_address,
+                                       .images = images, .image_count = image_count};
     uint32_t *spirv = NULL;
     size_t words = 0;
     char reason[256];
@@ -682,16 +756,176 @@ static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *
         .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
         .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = module,
                   .pName = "main"},
-        .layout = x->compute_layout};
+        .layout = image_count ? x->image_layouts[image_count] : x->compute_layout};
     VkPipeline pipeline = VK_NULL_HANDLE;
     if (vkCreateComputePipelines(x->device, VK_NULL_HANDLE, 1, &info, NULL, &pipeline) != VK_SUCCESS) {
         vkDestroyShaderModule(x->device, module, NULL);
         failed(error, error_size, "the device refused a compute pipeline");
         return VK_NULL_HANDLE;
     }
-    x->computes[x->compute_count++] = (compute_entry){c->code, {c->threads[0], c->threads[1], c->threads[2]}, c->user_sgprs,
-                                                      workgroup_id_x_sgpr, module, pipeline};
+    compute_entry *e = &x->computes[x->compute_count++];
+    *e = (compute_entry){.code = c->code, .threads = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
+                         .workgroup_id_x_sgpr = workgroup_id_x_sgpr, .image_count = image_count, .module = module, .pipeline = pipeline};
+    memcpy(e->images, images, image_count * sizeof *images);
     return pipeline;
+}
+
+/* ---- images ---- */
+
+/* The Vulkan format and texel type of a descriptor's format; 0, or -1 with the reason. DATA_FORMAT and
+   NUM_FORMAT are AMD's (GFX7): data formats 4 32, 10 8_8_8_8, 11 32_32, 14 32_32_32_32; number formats
+   0 unorm, 4 uint, 5 sint, 7 float. */
+static int image_format(const rt_image_descriptor *d, VkFormat *format, gcn_image_sample_type *type, unsigned *components, char *error,
+                        size_t error_size)
+{
+    static const struct {
+        uint32_t data_format, num_format;
+        VkFormat format;
+        gcn_image_sample_type type;
+        unsigned components;
+    } formats[] = {
+        {4, 7, VK_FORMAT_R32_SFLOAT, GCN_IMAGE_FLOAT, 1}, {4, 4, VK_FORMAT_R32_UINT, GCN_IMAGE_UINT, 1},
+        {4, 5, VK_FORMAT_R32_SINT, GCN_IMAGE_SINT, 1}, {11, 7, VK_FORMAT_R32G32_SFLOAT, GCN_IMAGE_FLOAT, 2},
+        {14, 7, VK_FORMAT_R32G32B32A32_SFLOAT, GCN_IMAGE_FLOAT, 4}, {10, 0, VK_FORMAT_R8G8B8A8_UNORM, GCN_IMAGE_FLOAT, 4},
+    };
+    for (size_t i = 0; i < sizeof formats / sizeof *formats; i++)
+        if (formats[i].data_format == d->data_format && formats[i].num_format == d->num_format) {
+            *format = formats[i].format, *type = formats[i].type, *components = formats[i].components;
+            return 0;
+        }
+    return failed(error, error_size, "an image of DATA_FORMAT %u, NUM_FORMAT %u: not done yet", d->data_format, d->num_format);
+}
+
+/* The image the executor keeps for a descriptor, made on first use: cleared when its first use writes
+   it; a first use that reads it would need the guest memory's texels (detiled), which are not loaded
+   yet, so that stops by name. VK_NULL_HANDLE after failing. */
+static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, VkFormat format, unsigned access, char *error,
+                                    size_t error_size)
+{
+    for (size_t i = 0; i < x->image_count; i++) {
+        image_entry *e = &x->images[i];
+        if (e->address == d->address && e->format == format && e->width == d->width && e->height == d->height && e->layers == d->layers &&
+            e->type == d->type)
+            return e;
+    }
+    if (access & GCN_IMAGE_READ) {
+        failed(error, error_size, "an image at %#llx (tiling index %u) read before the GPU wrote it: loading its texels from guest memory "
+               "is not done yet", (unsigned long long)d->address, d->tiling_index);
+        return NULL;
+    }
+    if (x->image_count == MAX_IMAGES) {
+        failed(error, error_size, "more images than the executor keeps");
+        return NULL;
+    }
+    const int one_d = d->type == RT_IMAGE_1D || d->type == RT_IMAGE_1D_ARRAY;
+    const VkImageCreateInfo info = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = one_d ? VK_IMAGE_TYPE_1D : VK_IMAGE_TYPE_2D,
+                                    .format = format, .extent = {d->width, one_d ? 1 : d->height, 1}, .mipLevels = 1,
+                                    .arrayLayers = d->layers, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                    .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                             VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                    .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+    image_entry *e = &x->images[x->image_count];
+    *e = (image_entry){.address = d->address, .format = format, .width = d->width, .height = d->height, .layers = d->layers, .type = d->type};
+    if (vkCreateImage(x->device, &info, NULL, &e->image) != VK_SUCCESS) {
+        failed(error, error_size, "the device refused a %ux%u image", d->width, d->height);
+        return NULL;
+    }
+    VkMemoryRequirements need;
+    vkGetImageMemoryRequirements(x->device, e->image, &need);
+    const VkMemoryAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = need.size,
+                                           .memoryTypeIndex = memory_type(x, need.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)};
+    VkCommandBuffer commands = VK_NULL_HANDLE;
+    if (allocate.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(x->device, &allocate, NULL, &e->memory) != VK_SUCCESS ||
+        vkBindImageMemory(x->device, e->image, e->memory, 0) != VK_SUCCESS) {
+        vkDestroyImage(x->device, e->image, NULL);
+        failed(error, error_size, "no memory for a %ux%u image", d->width, d->height);
+        return NULL;
+    }
+    if (!(commands = begin_commands(x))) {
+        vkFreeMemory(x->device, e->memory, NULL);
+        vkDestroyImage(x->device, e->image, NULL);
+        failed(error, error_size, "no command buffer to clear a new image");
+        return NULL;
+    }
+    /* kept in the general layout, cleared */
+    image_barrier(commands, e->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    const VkClearColorValue zero = {{0}};
+    const VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, d->layers};
+    vkCmdClearColorImage(commands, e->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &all);
+    if (finish_commands(x, commands)) {
+        failed(error, error_size, "the GPU did not clear a new image");
+        return NULL;
+    }
+    x->image_count++;
+    return e;
+}
+
+/* A view of an image's layers first to first + count - 1, as its descriptor's type has it (an array
+   stays an array). A shader's slice coordinate counts from the view's first layer: the descriptor's
+   BASE_ARRAY is where the hardware starts (shadPS4 views images from base_array, and Mesa's radeonsi
+   makes a texture view's first layer with BASE_ARRAY). */
+static VkImageView image_view(rt_executor *x, image_entry *e, uint32_t first, uint32_t count, char *error, size_t error_size)
+{
+    for (unsigned i = 0; i < e->view_count; i++)
+        if (e->views[i].first == first && e->views[i].count == count) return e->views[i].view;
+    if (e->view_count == MAX_VIEWS) {
+        failed(error, error_size, "more views of one image than the executor keeps");
+        return VK_NULL_HANDLE;
+    }
+    const VkImageViewType view_type = e->type == RT_IMAGE_1D ? VK_IMAGE_VIEW_TYPE_1D : e->type == RT_IMAGE_1D_ARRAY ? VK_IMAGE_VIEW_TYPE_1D_ARRAY
+                                    : e->type == RT_IMAGE_2D ? VK_IMAGE_VIEW_TYPE_2D : VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+    const VkImageViewCreateInfo view = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = e->image, .viewType = view_type,
+                                        .format = e->format, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, first, count}};
+    VkImageView made = VK_NULL_HANDLE;
+    if (vkCreateImageView(x->device, &view, NULL, &made) != VK_SUCCESS) {
+        failed(error, error_size, "no view of a %ux%u image", e->width, e->height);
+        return VK_NULL_HANDLE;
+    }
+    e->views[e->view_count].first = first, e->views[e->view_count].count = count, e->views[e->view_count].view = made;
+    e->view_count++;
+    return made;
+}
+
+/* The storage images a compute shader uses, from the descriptors in its user data: their bindings
+   (for translation) and kept images. 0, or -1 with the reason. */
+static int compute_images(rt_executor *x, const draw_state *s, gcn_image_binding *bindings, VkImageView *views, unsigned *count,
+                          char *error, size_t error_size)
+{
+    const rt_compute_shader *c = &s->compute;
+    unsigned sgprs[GCN_MAX_IMAGES], access[GCN_MAX_IMAGES];
+    char reason[200];
+    if (gcn_image_resources((const uint32_t *)(uintptr_t)c->code, (size_t)((x->guest_base + x->size - c->code) / 4), sgprs, access,
+                            GCN_MAX_IMAGES, count, reason, sizeof reason))
+        return failed(error, error_size, "compute shader at %#llx: %s", (unsigned long long)c->code, reason);
+    if (*count && !x->storage_images) return failed(error, error_size, "the Vulkan device cannot read and write images without a declared format");
+    for (unsigned i = 0; i < *count; i++) {
+        if (sgprs[i] + RT_IMAGE_DESCRIPTOR_WORDS > c->user_sgprs)
+            return failed(error, error_size, "an image whose descriptor (s[%u:%u]) is not in the user data: not done yet", sgprs[i],
+                          sgprs[i] + 7);
+        rt_image_descriptor d;
+        rt_image_descriptor_decode(&s->compute_user[sgprs[i]], &d);
+        if (d.type != RT_IMAGE_1D && d.type != RT_IMAGE_2D && d.type != RT_IMAGE_1D_ARRAY && d.type != RT_IMAGE_2D_ARRAY)
+            return failed(error, error_size, "an image of type %u: only 1D and 2D images and their arrays are done yet", d.type);
+        if (d.base_level || d.last_level) return failed(error, error_size, "an image with mip levels: not done yet");
+        if (d.layers > 1 && (d.base_array > d.last_array || d.last_array >= d.layers))
+            return failed(error, error_size, "a view of an image array from layer %u to %u of %u", d.base_array, d.last_array, d.layers);
+        VkFormat format;
+        gcn_image_sample_type type;
+        unsigned components;
+        if (image_format(&d, &format, &type, &components, error, error_size)) return -1;
+        /* the descriptor's DST_SEL must keep each of the format's components in place */
+        for (unsigned k = 0; k < components; k++)
+            if ((d.swizzle >> (3 * k) & 7) != 4 + k)
+                return failed(error, error_size, "an image with swizzle %#x: only x, y, z, w in place are done yet", d.swizzle);
+        const int one_d = d.type == RT_IMAGE_1D || d.type == RT_IMAGE_1D_ARRAY;
+        bindings[i] = (gcn_image_binding){sgprs[i], one_d ? GCN_IMAGE_1D : GCN_IMAGE_2D,
+                                          d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY, type, components};
+        image_entry *e = image_for(x, &d, format, access[i], error, error_size);
+        const uint32_t first = d.layers > 1 ? d.base_array : 0, count = d.layers > 1 ? d.last_array - d.base_array + 1 : 1;
+        if (!e || !(views[i] = image_view(x, e, first, count, error, error_size))) return -1;
+    }
+    return 0;
 }
 
 /* Runs a dispatch of the current compute shader; its writes reach the guest memory before this returns. */
@@ -705,12 +939,37 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
         return failed(error, error_size, "a compute shader that takes its workgroup's y or z index: not run yet");
     if (c->workgroup_size_enabled) return failed(error, error_size, "a compute shader that takes its workgroup's size information: not run yet");
     const int workgroup_id_x_sgpr = (c->workgroup_id_enables & 1u) ? (int)c->user_sgprs : -1;
-    const VkPipeline pipeline = compute_pipeline_for(x, c, workgroup_id_x_sgpr, error, error_size);
+    gcn_image_binding bindings[GCN_MAX_IMAGES];
+    VkImageView views[GCN_MAX_IMAGES];
+    unsigned image_count = 0;
+    if (compute_images(x, s, bindings, views, &image_count, error, error_size)) return -1;
+    const VkPipeline pipeline = compute_pipeline_for(x, c, workgroup_id_x_sgpr, bindings, image_count, error, error_size);
     if (!pipeline) return -1;
+    const VkPipelineLayout layout = image_count ? x->image_layouts[image_count] : x->compute_layout;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    if (image_count) {
+        vkResetDescriptorPool(x->device, x->descriptor_pool, 0);
+        const VkDescriptorSetAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = x->descriptor_pool,
+                                                      .descriptorSetCount = 1, .pSetLayouts = &x->image_set_layouts[image_count]};
+        if (vkAllocateDescriptorSets(x->device, &allocate, &set) != VK_SUCCESS) return failed(error, error_size, "no descriptor set");
+        VkDescriptorImageInfo infos[GCN_MAX_IMAGES];
+        VkWriteDescriptorSet writes[GCN_MAX_IMAGES];
+        for (unsigned i = 0; i < image_count; i++) {
+            infos[i] = (VkDescriptorImageInfo){VK_NULL_HANDLE, views[i], VK_IMAGE_LAYOUT_GENERAL};
+            writes[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = i,
+                                               .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &infos[i]};
+        }
+        vkUpdateDescriptorSets(x->device, image_count, writes, 0, NULL);
+    }
     VkCommandBuffer commands = begin_commands(x);
     if (!commands) return failed(error, error_size, "no command buffer");
+    /* what earlier work wrote (images, guest memory) is visible to this dispatch */
+    const VkMemoryBarrier earlier = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+                                     .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &earlier, 0, NULL, 0, NULL);
     vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-    vkCmdPushConstants(commands, x->compute_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, USER_DATA_BYTES, s->compute_user);
+    if (set) vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0, NULL);
+    vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, USER_DATA_BYTES, s->compute_user);
     vkCmdDispatch(commands, groups[0], groups[1], groups[2]);
     const VkMemoryBarrier to_host = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
                                      .dstAccessMask = VK_ACCESS_HOST_READ_BIT};
@@ -863,6 +1122,16 @@ void rt_executor_close(rt_executor *x)
         if (x->memory) vkFreeMemory(x->device, x->memory, NULL);
         if (x->layout) vkDestroyPipelineLayout(x->device, x->layout, NULL);
         if (x->compute_layout) vkDestroyPipelineLayout(x->device, x->compute_layout, NULL);
+        for (unsigned n = 1; n <= GCN_MAX_IMAGES; n++) {
+            if (x->image_layouts[n]) vkDestroyPipelineLayout(x->device, x->image_layouts[n], NULL);
+            if (x->image_set_layouts[n]) vkDestroyDescriptorSetLayout(x->device, x->image_set_layouts[n], NULL);
+        }
+        if (x->descriptor_pool) vkDestroyDescriptorPool(x->device, x->descriptor_pool, NULL);
+        for (size_t i = 0; i < x->image_count; i++) {
+            for (unsigned v = 0; v < x->images[i].view_count; v++) vkDestroyImageView(x->device, x->images[i].views[v].view, NULL);
+            vkDestroyImage(x->device, x->images[i].image, NULL);
+            vkFreeMemory(x->device, x->images[i].memory, NULL);
+        }
         if (x->stop_buffer) vkDestroyBuffer(x->device, x->stop_buffer, NULL);
         if (x->stop_memory) vkFreeMemory(x->device, x->stop_memory, NULL);
         if (x->pool) vkDestroyCommandPool(x->device, x->pool, NULL);

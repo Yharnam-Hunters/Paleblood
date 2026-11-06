@@ -137,6 +137,32 @@ static void refused_as(stage s, const uint32_t *code, size_t dwords, const char 
 
 /* The rect-list geometry stage (runtime/rect_list.h) for some parameter and clip-distance counts:
    modules spirv-val accepts; out-of-range counts are refused. */
+/* Images: the copy program translates with its two descriptors bound, the read one and the written
+   one found by gcn_image_resources; without a binding for one, translation stops naming it. */
+static void image_programs(void)
+{
+    unsigned sgprs[GCN_MAX_IMAGES], access[GCN_MAX_IMAGES], count = 0;
+    char error[256] = "";
+    CHECK(gcn_image_resources(PROGRAM(image_copy), sgprs, access, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
+    CHECK(count == 2 && sgprs[0] == 0 && access[0] == GCN_IMAGE_READ && sgprs[1] == 8 && access[1] == GCN_IMAGE_WRITE);
+    const gcn_image_binding images[] = {{0, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4}, {8, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4}};
+    gcn_compute_layout with_images = layout;
+    with_images.user_sgprs = 16, with_images.images = images, with_images.image_count = 2;
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    const int translated = gcn_translate_compute(PROGRAM(image_copy), &with_images, &spirv, &words, error, sizeof error);
+    if (translated) fprintf(stderr, "image_copy: %s\n", error);
+    CHECK(translated == 0);
+    if (spirv) {
+        CHECK(validate(spirv, words, "image_copy") != 0);
+        free(spirv);
+        spirv = NULL;
+    }
+    with_images.image_count = 1;
+    CHECK(gcn_translate_compute(PROGRAM(image_copy), &with_images, &spirv, &words, error, sizeof error) == -1 &&
+          strstr(error, "s[8:15] is not bound"));
+}
+
 static void rect_list_stages(void)
 {
     static const unsigned counts[][2] = {{0, 0}, {1, 0}, {4, 2}, {RT_RECT_LIST_MAX_PARAMETERS, RT_RECT_LIST_MAX_CLIP_DISTANCES}};
@@ -161,6 +187,7 @@ static void rect_list_stages(void)
 int main(void)
 {
     rect_list_stages();
+    image_programs();
     translates(PROGRAM(scale_add), "scale_add");
     translates(PROGRAM(integer_and_select), "integer_and_select");
     translates(PROGRAM(constants_and_modifiers), "constants_and_modifiers");
@@ -174,6 +201,7 @@ int main(void)
     translates(PROGRAM(integer_batch), "integer_batch");
     translates(PROGRAM(scalar_batch), "scalar_batch");
     translates(PROGRAM(vcc_halves), "vcc_halves");
+    translates(PROGRAM(whole_quad), "whole_quad");
     translates(PROGRAM(transcendentals), "transcendentals");
     translates_as(VERTEX, PROGRAM(vertex_position_color), "vertex_position_color");
     translates_as(PIXEL, PROGRAM(pixel_color), "pixel_color");
