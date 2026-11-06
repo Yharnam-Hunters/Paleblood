@@ -8,6 +8,7 @@
    installed), and that is compiled with Apple's Metal compiler where there is one (xcrun metal, on
    macOS). With PB_REQUIRE_METAL set (the macOS CI job) a missing tool is a failure, not a skip. */
 #include "runtime/gcn_spirv.h"
+#include "runtime/rect_list.h"
 
 #include "gcn_programs.h"
 
@@ -134,8 +135,32 @@ static void refused_as(stage s, const uint32_t *code, size_t dwords, const char 
     CHECK(strstr(error, text) != NULL);
 }
 
+/* The rect-list geometry stage (runtime/rect_list.h) for some parameter and clip-distance counts:
+   modules spirv-val accepts; out-of-range counts are refused. */
+static void rect_list_stages(void)
+{
+    static const unsigned counts[][2] = {{0, 0}, {1, 0}, {4, 2}, {RT_RECT_LIST_MAX_PARAMETERS, RT_RECT_LIST_MAX_CLIP_DISTANCES}};
+    for (size_t i = 0; i < sizeof counts / sizeof *counts; i++) {
+        uint32_t *spirv = NULL;
+        size_t words = 0;
+        char name[64];
+        snprintf(name, sizeof name, "rect_list_%u_%u", counts[i][0], counts[i][1]);
+        CHECK(rt_rect_list_geometry(counts[i][0], counts[i][1], &spirv, &words) == 0 && spirv && spirv[0] == 0x07230203);
+        if (!spirv) continue;
+        const int valid = validate(spirv, words, name);
+        if (valid < 0) fprintf(stderr, "  %s: spirv-val not installed; validation skipped\n", name);
+        CHECK(valid != 0);
+        free(spirv);
+    }
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    CHECK(rt_rect_list_geometry(RT_RECT_LIST_MAX_PARAMETERS + 1, 0, &spirv, &words) == -1);
+    CHECK(rt_rect_list_geometry(0, RT_RECT_LIST_MAX_CLIP_DISTANCES + 1, &spirv, &words) == -1);
+}
+
 int main(void)
 {
+    rect_list_stages();
     translates(PROGRAM(scale_add), "scale_add");
     translates(PROGRAM(integer_and_select), "integer_and_select");
     translates(PROGRAM(constants_and_modifiers), "constants_and_modifiers");
@@ -148,6 +173,7 @@ int main(void)
     translates(PROGRAM(pack_halves), "pack_halves");
     translates(PROGRAM(integer_batch), "integer_batch");
     translates(PROGRAM(scalar_batch), "scalar_batch");
+    translates(PROGRAM(vcc_halves), "vcc_halves");
     translates(PROGRAM(transcendentals), "transcendentals");
     translates_as(VERTEX, PROGRAM(vertex_position_color), "vertex_position_color");
     translates_as(PIXEL, PROGRAM(pixel_color), "pixel_color");

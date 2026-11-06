@@ -14,9 +14,16 @@
    second open (0x0111b6fc) passes port type 1 with the same settings and does not check the
    result; the PS4 name of type 1 is not public (the sibling Vita SDK calls it BGM).
 
+   The movie player's sound has a port of its own (opened at 0x02c225ae and 0x02c22842): 1024
+   samples at 48000 Hz, its format chosen from the movie's channel count: 0, 1 or 2 (16-bit mono,
+   stereo, eight channels) for 48 kHz sound, 3, 4 or 5 (float) otherwise. Those numbers are the
+   SDK's (_types/audio_out.h names 0, 1, 3 and 4; shadPS4's audioout.h adds 2 and 5 as the
+   eight-channel forms).
+
    The runtime records each open port and hands out handles from 1; sound output belongs to the
    output calls, which stop by name until they are implemented. What is not established stops by
-   name: any open other than the observed ones, and running out of handles. */
+   name: any open other than the observed ones (256 float samples in formats 4 and 5, or 1024 samples
+   in formats 0 to 5, at 48000 Hz), and running out of handles. */
 #include "runtime/audio_host.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
@@ -33,9 +40,11 @@ enum {
     USER_SYSTEM = 0xff,
     PORT_TYPE_MAIN = 0,
     PORT_TYPE_SECOND_SEEN = 1,
+    FORMAT_S16_8CH = 2,
     FORMAT_FLOAT_STEREO = 4,
     FORMAT_FLOAT_8CH = 5,
     OBSERVED_LENGTH = 256,
+    MOVIE_LENGTH = 1024,
     OBSERVED_RATE = 48000,
     MAX_PORTS = 8,
 };
@@ -68,11 +77,15 @@ static int32_t audio_out_open(int32_t user, int32_t port_type, int32_t index, ui
     if (!atomic_load(&initialized)) return SCE_AUDIO_OUT_ERROR_NOT_INIT;
     if (user != USER_SYSTEM || (port_type != PORT_TYPE_MAIN && port_type != PORT_TYPE_SECOND_SEEN) || index != 0)
         rt_fatal(fn, "a user, port type or index other than the observed system user's port types 0 and 1, index 0");
-    if (length != OBSERVED_LENGTH || rate != OBSERVED_RATE || (format != FORMAT_FLOAT_STEREO && format != FORMAT_FLOAT_8CH))
-        rt_fatal(fn, "a length, rate or format other than the observed 256 float samples at 48000 Hz, 2 or 8 channels");
+    const int main_port = length == OBSERVED_LENGTH && (format == FORMAT_FLOAT_STEREO || format == FORMAT_FLOAT_8CH);
+    const int movie_port = length == MOVIE_LENGTH && format <= FORMAT_FLOAT_8CH;
+    if (rate != OBSERVED_RATE || (!main_port && !movie_port))
+        rt_fatal(fn, "a length, rate or format other than the observed: 256 float samples (2 or 8 channels), or 1024 samples "
+                     "in formats 0 to 5, at 48000 Hz");
     const int handle = atomic_fetch_add(&ports_opened, 1) + 1; /* handles from 1 */
     if (handle > MAX_PORTS) rt_fatal(fn, "more ports than the runtime hands out handles for");
-    ports[handle] = (audio_port){length, rate, format, format == FORMAT_FLOAT_8CH ? 8 : 2, {0}, PTHREAD_MUTEX_INITIALIZER, {0, 0}, NULL, 0};
+    static const uint32_t channels_of[] = {1, 2, 8, 1, 2, 8}; /* by format: mono, stereo, eight channels */
+    ports[handle] = (audio_port){length, rate, format, channels_of[format], {0}, PTHREAD_MUTEX_INITIALIZER, {0, 0}, NULL, 0};
     if (rt_audio_host_enabled()) {
         char error[160];
         ports[handle].host = rt_audio_host_open(ports[handle].channels, rate, error, sizeof error);
@@ -119,15 +132,23 @@ static int32_t audio_out_set_volume(int32_t handle, int32_t flag, const int32_t 
    than a few blocks wait to be played, so the title's audio thread runs at the device's pace. */
 enum { NANOSECONDS_PER_SECOND = 1000000000, VOLUME_UNITY = 32768, HOST_BLOCKS_AHEAD = 4, HOST_WAIT_LIMIT_MS = 2000 };
 
-static void play_on_host(const char *fn, audio_port *port, const float *samples)
+/* One sample of a block as a float: 16-bit formats (0 to 2) scaled to -1..1, float formats as given. */
+static float sample_at(const audio_port *port, const void *samples, uint32_t index)
 {
-    static float scaled[OBSERVED_LENGTH * MAX_CHANNELS]; /* not on the title's thread stack; one port at a time */
+    if (port->format <= FORMAT_S16_8CH) return (float)((const int16_t *)samples)[index] / 32768.0f;
+    return ((const float *)samples)[index];
+}
+
+static void play_on_host(const char *fn, audio_port *port, const void *samples)
+{
+    static float scaled[MOVIE_LENGTH * MAX_CHANNELS]; /* not on the title's thread stack; one port at a time */
     static pthread_mutex_t scaled_lock = PTHREAD_MUTEX_INITIALIZER;
     pthread_mutex_lock(&scaled_lock);
     for (uint32_t frame = 0; frame < port->length; frame++) {
         for (uint32_t channel = 0; channel < port->channels; channel++) {
             const float gain = port->volume_set ? (float)port->volume[channel] / VOLUME_UNITY : 1.0f;
-            scaled[frame * port->channels + channel] = samples[frame * port->channels + channel] * gain;
+            const uint32_t index = frame * port->channels + channel;
+            scaled[index] = sample_at(port, samples, index) * gain;
         }
     }
     const int written = rt_audio_host_write(port->host, scaled, port->length);

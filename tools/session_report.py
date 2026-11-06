@@ -52,8 +52,11 @@ def function_changes(before: dict, after: dict) -> dict:
 
 
 def verify_results(paths: list) -> list:
+    """Each path is a verify.py run summary, or the --out directory of a run, which holds one."""
     out = []
     for p in paths:
+        if os.path.isdir(p):
+            p = os.path.join(p, 'summary.json')
         with open(p) as f:
             d = json.load(f)
         out.append({'function': d.get('function', os.path.basename(p)), 'cases': d.get('cases', 0),

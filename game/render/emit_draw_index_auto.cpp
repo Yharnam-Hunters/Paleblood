@@ -6,6 +6,7 @@
 #include "command_flags.h"
 #include "present_command_controls.h"
 #include "record_step_user_pa_enabled.h"
+#include "render_observe.h"
 
 extern "C" void bb_render_emit_draw_index_auto(render::PacketBuffer *commands,
                                                    uint32_t vertex_count)
@@ -20,6 +21,7 @@ extern "C" void bb_render_emit_draw_index_auto(render::PacketBuffer *commands,
     constexpr uint32_t nop_one_word_header = 0xc0001000;
     uintptr_t cursor;
     if (!render::reserve_words(commands, required_words, cursor)) return;
+    rt_observe_draw_auto(render::observed_buffer(commands), render::observed_offset(commands, cursor), vertex_count);
     const uint32_t flags = packet_flags(commands);
     auto *packet = reinterpret_cast<render::RecordControlTriple *>(cursor);
     packet->header.set(draw_index_auto_header | (flags & packet_predicate_bit));

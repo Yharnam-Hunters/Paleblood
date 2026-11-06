@@ -23,7 +23,7 @@ extern "C" {
 #endif
 
 enum { RT_COLOR_TARGETS = 8, RT_COLOR_TARGET_WORDS = 11, RT_VIEWPORTS = 16, RT_VERTEX_SHADER_WORDS = 7,
-       RT_PIXEL_SHADER_WORDS = 12, RT_USER_DATA_SLOTS = 16, RT_USER_DATA_MAX_WORDS = 8 };
+       RT_PIXEL_SHADER_WORDS = 12, RT_COMPUTE_SHADER_WORDS = 7, RT_USER_DATA_SLOTS = 16, RT_USER_DATA_MAX_WORDS = 8 };
 
 /* Shader stages as the GPU library numbers them: the order of its table of user-data registers
    (COMPUTE_USER_DATA_0, then SPI_SHADER_USER_DATA_PS_0, _VS_0, _GS_0, _ES_0, _HS_0, _LS_0). */
@@ -77,12 +77,26 @@ typedef struct {
     uint32_t barycentric_control, depth_control, color_mask;
 } rt_pixel_shader;
 
+/* A compute shader's register block, as sceGnmSetCsShader takes it (shadPS4's gnmdriver.cpp):
+   COMPUTE_PGM_LO, COMPUTE_PGM_HI, COMPUTE_PGM_RSRC1, COMPUTE_PGM_RSRC2, COMPUTE_NUM_THREAD_X, _Y, _Z.
+   RSRC2's fields (AMD's gfx_7_2_sh_mask.h): USER_SGPR bits 1-5, TGID_X_EN 7, TGID_Y_EN 8, TGID_Z_EN 9,
+   TG_SIZE_EN 10, TIDIG_COMP_CNT 11-12. */
+typedef struct {
+    uint64_t code;
+    uint32_t vgprs, sgprs, user_sgprs;
+    uint32_t workgroup_id_enables;   /* TGID_X/Y/Z_EN as bits 0-2: SGPRs after the user data, in order */
+    int workgroup_size_enabled;      /* TG_SIZE_EN: an SGPR with the workgroup's size information */
+    uint32_t thread_id_components;   /* TIDIG_COMP_CNT: thread ids in v0 only (0), v0-v1 (1) or v0-v2 (2) */
+    uint32_t threads[3];             /* COMPUTE_NUM_THREAD_X/Y/Z: the workgroup's size */
+} rt_compute_shader;
+
+void rt_compute_shader_decode(const uint32_t words[RT_COMPUTE_SHADER_WORDS], rt_compute_shader *shader);
 void rt_vertex_shader_decode(const uint32_t words[RT_VERTEX_SHADER_WORDS], rt_vertex_shader *shader);
 void rt_pixel_shader_decode(const uint32_t words[RT_PIXEL_SHADER_WORDS], rt_pixel_shader *shader);
 
 typedef enum {
     RT_CALL_COLOR_TARGET, RT_CALL_VIEWPORT, RT_CALL_DRAW_AUTO, RT_CALL_VERTEX_SHADER, RT_CALL_PIXEL_SHADER,
-    RT_CALL_USER_DATA, RT_CALL_REGISTER, RT_CALL_INSTANCES,
+    RT_CALL_USER_DATA, RT_CALL_REGISTER, RT_CALL_INSTANCES, RT_CALL_COMPUTE_SHADER, RT_CALL_DISPATCH,
 } rt_render_call_kind;
 
 /* Register ranges a register call may set, as AMD numbers them (dword addresses, gfx_7_2_d.h):
@@ -121,6 +135,10 @@ typedef struct {
         struct {
             uint32_t count;          /* NUM_INSTANCES: instances each later draw makes */
         } instances;
+        rt_compute_shader compute_shader;
+        struct {
+            uint32_t groups[3];      /* DISPATCH_DIRECT: workgroups in x, y and z */
+        } dispatch;
     } u;
 } rt_render_call;
 
@@ -144,6 +162,8 @@ int rt_render_record_pixel_shader(uint64_t buffer, uint32_t offset, const uint32
    control, the target mask, the primitive type, ...): the renderer interprets the ones it knows. */
 int rt_render_record_register(uint64_t buffer, uint32_t offset, uint32_t address, uint32_t value, char *error,
                               size_t error_size);
+/* A compute dispatch of groups[0] x groups[1] x groups[2] workgroups (DISPATCH_DIRECT); each at least 1. */
+int rt_render_record_dispatch(uint64_t buffer, uint32_t offset, const uint32_t groups[3], char *error, size_t error_size);
 /* The instance count later draws use (the NUM_INSTANCES packet); at least 1. */
 int rt_render_record_instances(uint64_t buffer, uint32_t offset, uint32_t count, char *error, size_t error_size);
 
@@ -151,6 +171,7 @@ int rt_render_record_instances(uint64_t buffer, uint32_t offset, uint32_t count,
    sceGnmSetVsShader and sceGnmSetPsShader, runtime/renderer.h): the call is placed at that guest
    address and joins the list of the buffer whose submission holds the address, at its offset. */
 int rt_render_record_vertex_shader_at(uint64_t address, const uint32_t words[RT_VERTEX_SHADER_WORDS]);
+int rt_render_record_compute_shader_at(uint64_t address, const uint32_t words[RT_COMPUTE_SHADER_WORDS]);
 int rt_render_record_pixel_shader_at(uint64_t address, const uint32_t words[RT_PIXEL_SHADER_WORDS]);
 
 /* At submission of size bytes of the buffer: its calls made before that point, in order (with the

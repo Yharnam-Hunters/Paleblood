@@ -24,13 +24,14 @@ void rt_renderer_configure(int enabled);
 /* A command buffer the title submitted: its address and size in bytes. */
 void rt_renderer_submit(const char *function, const void *buffer, uint32_t bytes);
 
-/* A vertex or pixel shader the title bound (sceGnmSetVsShader, sceGnmSetPsShader and their Update
-   forms): its register block, 7 words for a vertex shader and 12 for a pixel shader
+/* A vertex, pixel or compute shader the title bound (sceGnmSetVsShader, sceGnmSetPsShader and their
+   Update forms, sceGnmSetCsShader): its register block, 7 words for a vertex or compute shader and 12
+   for a pixel shader
    (runtime/render_calls.h), written into the command buffer at guest address at. The renderer
    takes it into the drawing calls of the buffer submitted with that address. No pixel shader (words
    NULL, a depth-only pass) is recorded as a pixel shader at code address 0, and a draw with it stops
    in the executor. */
-typedef enum { RT_RENDERER_VERTEX_SHADER, RT_RENDERER_PIXEL_SHADER } rt_renderer_shader;
+typedef enum { RT_RENDERER_VERTEX_SHADER, RT_RENDERER_PIXEL_SHADER, RT_RENDERER_COMPUTE_SHADER } rt_renderer_shader;
 void rt_renderer_bind_shader(const char *function, rt_renderer_shader kind, const void *at, const uint32_t *words);
 
 /* What has been drawn into the frame buffer at a guest address, as width x height BGRA pixels into

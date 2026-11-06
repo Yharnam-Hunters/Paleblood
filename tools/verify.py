@@ -35,6 +35,7 @@ import sys
 import verification
 
 SCHEMA = 1
+SUMMARY_FILE = 'summary.json'  # what run writes beside the results: the compare summary
 RETURN_REGS = ('rax', 'rdx', 'xmm0', 'xmm1')
 CALLEE_SAVED = ('rbx', 'rbp', 'rsp', 'r12', 'r13', 'r14', 'r15')
 MAX_REPORTED = 8
@@ -332,6 +333,9 @@ def run(name: str, captures: str, boot: str | None, lib: str | None, out: str | 
         row = verification.record(ROOT, name, record, option, names, failing)
         summary['recorded'] = {k: row[k] for k in ('cases', 'option', 'failed', 'quarantined', 'source')}
     print(json.dumps(summary, indent=2, sort_keys=True))
+    # beside the two sides' results, for tools/session_report.py --verify OUT
+    with open(os.path.join(out, SUMMARY_FILE), 'w') as f:
+        json.dump(summary, f, indent=1, sort_keys=True)
     if record:
         # quarantined cases (listed with their reason) do not fail a recorded run
         return 1 if int(row['failed']) else 0

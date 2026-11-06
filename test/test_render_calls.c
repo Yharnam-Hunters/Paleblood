@@ -259,6 +259,34 @@ static void placed_calls(void)
     CHECK(count == 0);
 }
 
+/* A compute shader's register block and a dispatch. */
+static void compute_calls(void)
+{
+    enum { BUFFER = 0x700000000ull };
+    const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {
+        0x12345678, 0x00000000,
+        (32 / 4 - 1) | (16 / 8 - 1) << 6,                    /* RSRC1: 32 VGPRs, 16 SGPRs */
+        12 << 1 | 1u << 7 | 1u << 10 | 2u << 11,             /* RSRC2: 12 user SGPRs, TGID_X, TG_SIZE, ids in v0-v2 */
+        64, 2, 1,
+    };
+    rt_compute_shader c;
+    rt_compute_shader_decode(shader, &c);
+    CHECK(c.code == 0x1234567800ull && c.vgprs == 32 && c.sgprs == 16 && c.user_sgprs == 12);
+    CHECK(c.workgroup_id_enables == 1 && c.workgroup_size_enabled && c.thread_id_components == 2);
+    CHECK(c.threads[0] == 64 && c.threads[1] == 2 && c.threads[2] == 1);
+    char error[128] = "";
+    size_t count = 0;
+    rt_render_forget();
+    CHECK(rt_render_record_compute_shader_at(BUFFER + 0x10, shader) == 0);
+    const uint32_t groups[3] = {4, 2, 1}, none[3] = {4, 0, 1};
+    CHECK(rt_render_record_dispatch(BUFFER, 0x20, groups, error, sizeof error) == 0);
+    CHECK(rt_render_record_dispatch(BUFFER, 0x30, none, error, sizeof error) == -1 && strstr(error, "none to run"));
+    const rt_render_call *calls = rt_render_submitted(BUFFER, 0x100, &count);
+    CHECK(count == 2 && calls[0].kind == RT_CALL_COMPUTE_SHADER && calls[0].offset == 0x10 && calls[1].kind == RT_CALL_DISPATCH &&
+          calls[1].u.dispatch.groups[0] == 4 && calls[1].u.dispatch.groups[1] == 2);
+    rt_render_forget();
+}
+
 int main(void)
 {
     decoding();
@@ -267,6 +295,7 @@ int main(void)
     user_data();
     recording();
     placed_calls();
+    compute_calls();
     if (failures) fprintf(stderr, "%d failure(s)\n", failures);
     return failures != 0;
 }

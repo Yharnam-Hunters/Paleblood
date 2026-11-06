@@ -39,4 +39,8 @@ SYSLIB_TEST(gnm_shaders)
     CHECK(update_ps(space, 40, pixel) == 0);
     CHECK(set_ps(space, 40, NULL) == 0);  /* no pixel shader: without the renderer, nothing to stop */
     CHECK(died_in_fatal(set_vs_with_modifier));
+    typedef int32_t (*f_set_cs)(uint32_t *, uint32_t, const uint32_t *);
+    const f_set_cs set_cs = (f_set_cs)fn("libSceGnmDriver", "sceGnmSetCsShader");
+    const uint32_t compute[7] = {0x20d1c3c0, 0, 0x000c0042, 0x10, 64, 1, 1};
+    CHECK(set_cs && set_cs(space, 25, compute) == 0 && space[0] == (0xc0001000u | 23u << 16) && space[24] == 0);
 }
