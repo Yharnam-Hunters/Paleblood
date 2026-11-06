@@ -947,24 +947,58 @@ It also seeds a random generator with it (`0x00835dba`).
 
 **What the runtime does.** It measures from its own start, on the host's monotonic clock.
 
-## Audio job manager start-up (`sceAjmInitialize`, `sceAjmModuleRegister`, issue #37)
+## Audio job manager (`libSceAjm`, issue #37)
 
-The audio job manager (libSceAjm) decodes compressed audio in batches of jobs. The OpenOrbis
-homebrew SDK's `Ajm.h` names these two calls without signatures, so their shapes come from the
-executable's only calls:
-- **`0x01118a65`:** runs while its context variable still holds -1, and passes 0 and the
-  variable's address. A nonzero result is failure.
-- **`0x01118a81`:** then passes that context, 1 and 0, and again treats nonzero as failure.
+AJM decodes compressed audio in batches of jobs that the title builds in a buffer and hands over.
+The facts come from shadPS4's `libSceAjm`, checked against bbhost (a Bloodborne host, whose
+observations of the title's FMOD are noted) and PS4Recomp. The ATRAC9 configuration word's layout
+and tables are LibAtrac9's (MIT). The code is the runtime's own.
 
-**What the runtime does.** It hands out a context id and records the registered module. Decoding
-belongs to the batch and instance calls, which stop by name until they are implemented.
+**Contexts, codecs and instances.**
+- **Contexts:** `sceAjmInitialize(0, &context)` and `sceAjmFinalize(context)`.
+- **Codecs:** `sceAjmModuleRegister(context, codec, 0)` and `sceAjmModuleUnregister`, with 0 MP3,
+  1 ATRAC9 and 2 AAC.
+- **Instances:** `sceAjmInstanceCreate(context, codec, flags, &instance)` gives an id that is the
+  slot index with the codec at bit 14. Its flags hold a revision (bits 0–2, not 0), the channels
+  (3–6), the sample format (7–9, 0 for 16-bit) and gapless looping (bit 10).
+- **The title's instances:** it creates ATRAC9 instances with flags `0x409` to `0x441`: revision
+  1, 1 to 8 channels, 16-bit, gapless looping (`0x01118d9a`).
 
-**What stops by name:**
-- a nonzero first argument to initialize;
-- a module other than the observed 1 (which codec it names is not public);
-- a nonzero third argument;
-- a context the runtime did not hand out;
-- registering a module twice.
+**Jobs and batches.**
+- **Building jobs:** `sceAjmBatchJobControlBufferRa` and `sceAjmBatchJobRunBufferRa` write a job
+  into the batch and return the next free position.
+- **A job** is a sequence of chunks, each with a 32-bit header: an identifier in bits 0–6 and a
+  20-bit payload. The chunks are the job itself (payload the instance), an optional return
+  address, input and output buffers (`{header, size, pointer}`) and the flags.
+- **Fixed sizes:** a control job is 0x30 bytes (0x40 with a return address) and a run job 0x40
+  (0x50). The title's FMOD lays jobs out at those strides.
+- **Starting and waiting:** `sceAjmBatchStartBuffer` runs the batch (a size that is not a multiple
+  of 8 is malformed, `0x80930011`). `sceAjmBatchWait` waits with a timeout in ms;
+  `sceAjmBatchCancel` and `sceAjmBatchErrorDump` round it out.
+
+**Job flags:**
+- run: bit 11 get codec info, bit 12 multiple frames;
+- control: bit 13 reset, bit 14 initialize, bit 15 resample;
+- sideband: bit 45 gapless, bit 46 format, bit 47 stream.
+
+A job's output control buffer starts with its result, then the stream result, format, gapless
+state, frame count and codec info, as its flags ask. The ATRAC9 codec info is `{superframe bytes,
+frames per superframe, bytes left in the superframe, samples per frame}`.
+
+**What the runtime does.**
+- **When jobs run:** when the batch is started, on the calling thread (bbhost does the same for
+  this title). A wait finds the batch finished and frees its id; a cancel of a batch that has
+  run does nothing.
+- **Control jobs** are modelled: initialize with the 4-byte ATRAC9 configuration word, reset, and
+  gapless. So is the codec info, derived from the configuration word: `0xFE`, a sample rate index,
+  a channel configuration, a 0 bit, the frame bytes minus one, and a superframe index, read
+  most-significant bit first.
+- **Errors:** context `0x80930002`, instance `0x80930003`, batch `0x80930004`, parameter
+  `0x80930005`, no batch id left `0x80930006`, no instance left `0x80930007`, already registered
+  `0x80930009`, not registered `0x8093000A`, revision 0 `0x8093000B`.
+
+**Stops by name:** decoding itself (a run job with input; not provided yet), codecs other than
+ATRAC9, sample formats other than 16-bit, resampling, format inputs and the statistics instance.
 
 ## Audio output (`sceAudioOutInit`, `sceAudioOutOpen`, `sceAudioOutSetVolume`, `sceAudioOutOutput`, issue #37)
 
