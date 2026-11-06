@@ -6,10 +6,11 @@ usage: check_no_game_data.py (--staged | --tracked) [--root DIR]
   --staged   check the git index (pre-commit)
   --tracked  check every tracked file in the working tree (CI)
 
-No screenshots, clips or images of the game, ever: image and video files (by extension or by
-their contents) are refused unless they are under docs/assets/ and listed in
-docs/assets/ALLOWLIST with the tool that produced them (tool output only, such as a terminal
-recording of tools/verify.py). The allowlist itself may list nothing outside docs/assets/.
+No extracted game images, clips or contributor screenshots: image and video files (by extension
+or by their contents) are refused unless they are under docs/assets/ and listed in
+docs/assets/ALLOWLIST with the tool that produced them (our tools' output, such as a terminal
+recording of tools/verify.py, or a downscaled milestone frame drawn by Paleblood's renderer after
+a maintainer's media review). The allowlist itself may list nothing outside docs/assets/.
 """
 from __future__ import annotations
 
@@ -105,7 +106,7 @@ def scan(path: str, data: bytes, hashes: set[str], allowed: set[str] = frozenset
     ext = os.path.splitext(path)[1].lower()
     media = is_media(path, data)
     if media and path not in allowed:
-        out.append(f'{path}: {media}: no screenshots, clips or images of the game; only tool output under '
+        out.append(f'{path}: {media}: no game screenshots, clips or images; only reviewed files under '
                    f'{ASSETS_DIR}, listed in {ALLOWLIST}')
     if ext in BAD_EXT:
         out.append(f'{path}: extension {ext} is never committed')
