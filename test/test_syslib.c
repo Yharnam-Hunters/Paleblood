@@ -953,12 +953,13 @@ static void posix_create_without_attr(void)
 static void vo_flip_other_mode(void) { vo_flip_fn(vo_handle, 0, 3, 0); }
 typedef int32_t (*f_gnm_submit)(uint32_t, void **, uint32_t *, void **, uint32_t *);
 static f_gnm_submit gnm_submit_fn;
-static void gnm_submit_one(uint32_t *packets, uint32_t dwords)
+static int32_t gnm_submit_one_result(uint32_t *packets, uint32_t dwords)
 {
     void *buffers[1] = {packets};
     uint32_t bytes[1] = {dwords * 4};
-    gnm_submit_fn(1, buffers, bytes, NULL, NULL);
+    return gnm_submit_fn(1, buffers, bytes, NULL, NULL);
 }
+static void gnm_submit_one(uint32_t *packets, uint32_t dwords) { gnm_submit_one_result(packets, dwords); }
 static uint32_t gnm_constant_packets[2] = {0xc0002400u, 0};
 static void gnm_submit_with_constant(void)
 {
@@ -973,6 +974,21 @@ static void gnm_submit_constant_without_sizes(void)
     void *buffers[1] = {draw}, *constants[1] = {NULL};
     uint32_t bytes[1] = {8};
     gnm_submit_fn(1, buffers, bytes, constants, NULL);
+}
+static void gnm_submit_dma_fill(void)
+{
+    /* DMA_DATA filling memory with a value (source select 2): the stand-in does not fill */
+    static uint32_t target[4];
+    const uint64_t at = (uint64_t)(uintptr_t)target;
+    uint32_t p[7] = {0xc0055000u, 0x40000000u, 0x12345678u, 0, (uint32_t)at, (uint32_t)(at >> 32), 16};
+    gnm_submit_one(p, 7);
+}
+static void gnm_submit_dma_other_register(void)
+{
+    static uint32_t source[25];
+    const uint64_t from = (uint64_t)(uintptr_t)source;
+    uint32_t p[7] = {0xc0055000u, 0x60000000u, (uint32_t)from, (uint32_t)(from >> 32), 0x30230u, 0, 0x28200064u};
+    gnm_submit_one(p, 7);
 }
 static void gnm_submit_unknown(void) { static uint32_t p[2] = {0xc0002400u, 0}; gnm_submit_one(p, 2); } /* opcode 0x24 */
 static uint32_t gnm_wait_label;
@@ -2747,6 +2763,13 @@ int main(void)
             uint32_t no_constant_bytes[1] = {0};
             CHECK(gnm_submit_fn(1, buffers, bytes, no_constants, no_constant_bytes) == 0);
             CHECK(died_in_fatal(gnm_submit_with_constant));
+            /* DMA_DATA from memory into CP_DMA_READ_TAGS, as the title sends it: only a cache read */
+            static uint32_t dma_source[25] = {1, 2, 3};
+            const uint64_t dma_from = (uint64_t)(uintptr_t)dma_source;
+            uint32_t dma[7] = {0xc0055000u, 0x60000000u, (uint32_t)dma_from, (uint32_t)(dma_from >> 32), 0x3022cu, 0, 0x28200064u};
+            CHECK(gnm_submit_one_result(dma, 7) == 0 && dma_source[0] == 1 && dma_source[2] == 3);
+            CHECK(died_in_fatal(gnm_submit_dma_fill));
+            CHECK(died_in_fatal(gnm_submit_dma_other_register));
             CHECK(died_in_fatal(gnm_submit_constant_without_sizes));
             CHECK(died_in_fatal(gnm_submit_unmet_wait));
         }

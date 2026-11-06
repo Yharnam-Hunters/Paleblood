@@ -232,6 +232,20 @@ RT_SYSLIB("libSceGnmDriver", sceGnmMapComputeQueue, map_compute_queue);
 #define PM4_NUM_INSTANCES 0x2fu
 #define PM4_SET_CONTEXT_REG 0x69u
 #define PM4_SET_UCONFIG_REG 0x79u
+#define PM4_DMA_DATA 0x50u
+#define PM4_INDEX_TYPE 0x2au
+
+/* DMA_DATA (AMD's public cikd.h): control; source address (or data); destination address;
+   command, with the byte count in bits 0-20. */
+#define DMA_DATA_DWORDS 7
+#define DMA_DATA_SOURCE_SELECT(control) ((control) >> 29 & 3u)  /* 0 memory, 1 GDS, 2 data, 3 memory through L2 */
+#define DMA_DATA_DESTINATION_SELECT(control) ((control) >> 20 & 3u) /* 0 by the command's DAS, 1 GDS, 3 memory through L2 */
+#define DMA_DATA_SWAPS(command) ((command) >> 22 & 0xfu)       /* source and destination byte swaps */
+#define DMA_DATA_SOURCE_IS_REGISTER (1u << 26)                 /* SAS */
+#define DMA_DATA_DESTINATION_IS_REGISTER (1u << 27)            /* DAS */
+#define DMA_DATA_SOURCE_FIXED (1u << 28)                       /* SAIC: the source is not incremented */
+#define DMA_DATA_DESTINATION_FIXED (1u << 29)                  /* DAIC: the destination is not incremented */
+#define CP_DMA_READ_TAGS_BYTE_ADDRESS (0xc08bu * 4)             /* mmCP_DMA_READ_TAGS, gfx_7_2_d.h */
 
 #define EVENT_WRITE_WITHOUT_MEMORY_DWORDS 2
 #define EVENT_WRITE_EOP_DWORDS 6
@@ -317,6 +331,19 @@ static void check_wait(const char *fn, const wait_reg_mem_packet *packet)
     if (!holds) rt_fatal(fn, "a GPU wait on memory that does not yet hold what it waits for");
 }
 
+/* The one DMA_DATA form the stand-in knows: a read from memory into CP_DMA_READ_TAGS, which only
+   brings the source into the GPU's cache. Any other form stops by name. */
+static void check_dma_data(const char *fn, const uint32_t *packet)
+{
+    const uint32_t control = packet[1], destination_low = packet[4], destination_high = packet[5], command = packet[6];
+    const uint32_t source = DMA_DATA_SOURCE_SELECT(control);
+    const int read_tags = (source == 0 || source == 3) && DMA_DATA_DESTINATION_SELECT(control) == 0 &&
+                          (command & DMA_DATA_DESTINATION_IS_REGISTER) && (command & DMA_DATA_DESTINATION_FIXED) &&
+                          !(command & (DMA_DATA_SOURCE_IS_REGISTER | DMA_DATA_SOURCE_FIXED)) && !DMA_DATA_SWAPS(command) &&
+                          destination_low == CP_DMA_READ_TAGS_BYTE_ADDRESS && destination_high == 0;
+    if (!read_tags) rt_fatal(fn, "a DMA_DATA other than a read into CP_DMA_READ_TAGS: the stand-in does not copy or fill");
+}
+
 /* Stops naming the packet's opcode: the next packet kind to understand. */
 static _Noreturn void unknown_packet(const char *fn, uint32_t opcode, uint32_t length)
 {
@@ -362,11 +389,14 @@ static void complete_packets(const char *fn, const uint32_t *packets, uint32_t d
             wait_reg_mem_packet wait;
             memcpy(&wait, packet + 1, sizeof wait);
             check_wait(fn, &wait);
+        } else if (opcode == PM4_DMA_DATA && length == DMA_DATA_DWORDS) {
+            check_dma_data(fn, packet);
         } else if (opcode == PM4_EVENT_WRITE && length != EVENT_WRITE_WITHOUT_MEMORY_DWORDS) {
             unknown_packet(fn, opcode, length); /* an event that also writes memory */
         } else if (opcode != PM4_NOP && opcode != PM4_SET_SH_REG && opcode != PM4_DISPATCH_DIRECT &&
                    opcode != PM4_ACQUIRE_MEM && opcode != PM4_EVENT_WRITE && opcode != PM4_SET_CONTEXT_REG &&
-                   opcode != PM4_SET_UCONFIG_REG && opcode != PM4_NUM_INSTANCES && opcode != PM4_DRAW_INDEX_AUTO) {
+                   opcode != PM4_SET_UCONFIG_REG && opcode != PM4_NUM_INSTANCES && opcode != PM4_DRAW_INDEX_AUTO &&
+                   opcode != PM4_INDEX_TYPE) {
             unknown_packet(fn, opcode, length);
         }
         at += length;
@@ -412,7 +442,14 @@ RT_SYSLIB("libSceGnmDriver", sceGnmDingDong, ding_dong);
      ACQUIRE_MEM, EVENT_WRITE     skipped: cache control and pipeline events, with no GPU caches
                                   (an EVENT_WRITE that also writes memory stops);
      SET_CONTEXT_REG, SET_UCONFIG_REG, NUM_INSTANCES, DRAW_INDEX_AUTO
-                                  skipped: draw state and draws (the first frame's).
+                                  skipped: draw state and draws (the first frame's);
+     INDEX_TYPE                   skipped: draw state, the size of an index (found 6 November
+                                  2026);
+     DMA_DATA to CP_DMA_READ_TAGS skipped: memory read into the command processor's read tags,
+                                  the destination not incremented (found 6 November 2026, a
+                                  100-byte read). It changes no memory and no state a shader
+                                  sees, so it only brings the source into the GPU's cache, and the
+                                  stand-in has none. Any other DMA_DATA stops.
    The packets themselves draw nothing. Each buffer then goes to the renderer (runtime/renderer.h),
    which runs the drawing calls recorded for it when the display is on. A constant command buffer
    that holds anything, and any other packet, stops by name. */
