@@ -837,16 +837,26 @@ static void clock_unknown(void) { int64_t ts[2]; clock_gettime_fn(1, ts); }
 static void clock_no_timespec(void) { clock_gettime_fn(0, NULL); }
 typedef uint64_t (*f_u64)(void);
 
-/* libSceAjm start-up: a context id, then the observed module 1 registered once. */
+/* libSceAjm: contexts, ATRAC9 instances, and batches of jobs run when started. */
 typedef int32_t (*f_ajm_init)(int64_t, uint32_t *);
 typedef int32_t (*f_ajm_register)(uint32_t, uint32_t, uint64_t);
-static f_ajm_init ajm_init_fn;
-static f_ajm_register ajm_register_fn;
-static uint32_t ajm_test_context;
-static void ajm_init_reserved(void) { uint32_t c; ajm_init_fn(1, &c); }
-static void ajm_register_unknown_context(void) { ajm_register_fn(99, 1, 0); }
-static void ajm_register_other_module(void) { ajm_register_fn(ajm_test_context, 2, 0); }
-static void ajm_register_twice(void) { ajm_register_fn(ajm_test_context, 1, 0); }
+typedef int32_t (*f_ajm_create)(uint32_t, uint32_t, uint64_t, uint32_t *);
+typedef int32_t (*f_ajm_two)(uint32_t, uint32_t);
+typedef void *(*f_ajm_control)(void *, uint32_t, uint64_t, void *, uint64_t, void *, uint64_t, void *);
+typedef void *(*f_ajm_run)(void *, uint32_t, uint64_t, void *, uint64_t, void *, uint64_t, void *, uint64_t, void *);
+typedef int32_t (*f_ajm_start)(uint32_t, const void *, uint32_t, int32_t, void *, uint32_t *);
+typedef int32_t (*f_ajm_wait)(uint32_t, uint32_t, uint32_t, void *);
+static f_ajm_run ajm_run_fn;
+static f_ajm_start ajm_start_fn;
+static uint32_t ajm_test_context, ajm_test_instance;
+static void ajm_decode(void)
+{
+    static uint8_t batch[0x60], input[64], pcm[4096], sideband[64];
+    uint32_t id;
+    const uint8_t *end = ajm_run_fn(batch, ajm_test_instance, 0x800000001001ull, input, sizeof input, pcm, sizeof pcm,
+                                    sideband, sizeof sideband, NULL);
+    ajm_start_fn(ajm_test_context, batch, (uint32_t)(end - batch), 0, NULL, &id);
+}
 
 /* libSceAudioOut start-up: initialize once, then open the observed main port. */
 typedef int32_t (*f_ao_init)(void);
@@ -2397,18 +2407,61 @@ int main(void)
     }
     CHECK(is_implemented("libSceLibcInternal", "time"));
 
-    /* sceAjmInitialize / sceAjmModuleRegister. */
-    ajm_init_fn = (f_ajm_init)fn("libSceAjm", "sceAjmInitialize");
-    ajm_register_fn = (f_ajm_register)fn("libSceAjm", "sceAjmModuleRegister");
-    if (ajm_init_fn && ajm_register_fn) {
-        uint32_t context = 0xffffffffu;
-        CHECK(ajm_init_fn(0, &context) == 0 && context != 0xffffffffu && context != 0);
-        ajm_test_context = context;
-        CHECK(died_in_fatal(ajm_init_reserved));
-        CHECK(died_in_fatal(ajm_register_unknown_context));
-        CHECK(died_in_fatal(ajm_register_other_module));
-        CHECK(ajm_register_fn(context, 1, 0) == 0);
-        CHECK(died_in_fatal(ajm_register_twice));
+    /* libSceAjm */
+    {
+        const f_ajm_init init = (f_ajm_init)fn("libSceAjm", "sceAjmInitialize");
+        const f_ajm_register reg = (f_ajm_register)fn("libSceAjm", "sceAjmModuleRegister");
+        const f_ajm_create create = (f_ajm_create)fn("libSceAjm", "sceAjmInstanceCreate");
+        const f_ajm_two destroy = (f_ajm_two)fn("libSceAjm", "sceAjmInstanceDestroy");
+        const f_ajm_two cancel = (f_ajm_two)fn("libSceAjm", "sceAjmBatchCancel");
+        const f_ajm_control control = (f_ajm_control)fn("libSceAjm", "sceAjmBatchJobControlBufferRa");
+        const f_ajm_wait wait = (f_ajm_wait)fn("libSceAjm", "sceAjmBatchWait");
+        typedef int32_t (*f_ajm_one)(uint32_t);
+        const f_ajm_one finalize = (f_ajm_one)fn("libSceAjm", "sceAjmFinalize");
+        ajm_run_fn = (f_ajm_run)fn("libSceAjm", "sceAjmBatchJobRunBufferRa");
+        ajm_start_fn = (f_ajm_start)fn("libSceAjm", "sceAjmBatchStartBuffer");
+        CHECK(init && reg && create && destroy && cancel && control && wait && finalize && ajm_run_fn && ajm_start_fn);
+        if (init && reg && create && destroy && cancel && control && wait && finalize && ajm_run_fn && ajm_start_fn) {
+            uint32_t context = 0;
+            CHECK(init(1, &context) == (int32_t)0x80930005u && init(0, NULL) == (int32_t)0x80930005u);
+            CHECK(init(0, &context) == 0 && context);
+            ajm_test_context = context;
+            CHECK(reg(99, 1, 0) == (int32_t)0x80930002u && reg(context, 23, 0) == (int32_t)0x80930005u);
+            CHECK(reg(context, 1, 0) == 0 && reg(context, 1, 0) == (int32_t)0x80930009u);
+            uint32_t instance = 0;
+            CHECK(create(context, 1, 0x410, &instance) == (int32_t)0x8093000Bu);  /* revision 0 */
+            CHECK(create(context, 0, 0x411, &instance) == (int32_t)0x8093000Au);  /* MP3 not registered */
+            CHECK(create(context, 1, 0x411, &instance) == 0 && instance >> 14 == 1 && (instance & 0x3fff) >= 1);
+            ajm_test_instance = instance;
+            /* job sizes the title's FMOD relies on: control 0x30 (0x40 with a return address), run 0x40 (0x50) */
+            static uint8_t batch[0x100];
+            static uint8_t init_params[8] = {0xFE, 0x72, 0x1F, 0xF0}; /* 48 kHz, stereo, 256-byte frames, 4 per superframe */
+            static uint8_t control_out[32], run_out[64];
+            uint8_t *at = control(batch, instance, 0x6001, init_params, sizeof init_params, control_out, sizeof control_out, NULL);
+            CHECK(at - batch == 0x30);
+            uint8_t *with_ra = control(batch + 0x80, instance, 0x6001, init_params, 8, control_out, 32, (void *)0x1234);
+            CHECK(with_ra - (batch + 0x80) == 0x40);
+            uint8_t *run_end = ajm_run_fn(at, instance, 0x801, NULL, 0, NULL, 0, run_out, sizeof run_out, (void *)0x1234);
+            CHECK(run_end - at == 0x50);
+            uint32_t batch_id = 0;
+            CHECK(ajm_start_fn(context, batch, 4, 0, NULL, &batch_id) == (int32_t)0x80930011u);
+            memset(control_out, 0xee, sizeof control_out);
+            memset(run_out, 0xee, sizeof run_out);
+            CHECK(ajm_start_fn(context, batch, (uint32_t)(run_end - batch), 0, NULL, &batch_id) == 0 && batch_id >= 1);
+            int32_t result[2];
+            memcpy(result, control_out, 8);
+            CHECK(result[0] == 0 && result[1] == 0);
+            uint32_t info[6];
+            memcpy(info, run_out, sizeof info);
+            CHECK(info[0] == 0 && info[1] == 0);                                  /* the run's result */
+            CHECK(info[2] == 1024 && info[3] == 4 && info[4] == 1024 && info[5] == 256); /* the ATRAC9 codec info */
+            CHECK(cancel(context, batch_id) == 0);                                /* already run: nothing to cancel */
+            CHECK(wait(context, batch_id, 0xffffffffu, NULL) == 0 && wait(context, batch_id, 0, NULL) == (int32_t)0x80930004u);
+            CHECK(cancel(context, batch_id) == (int32_t)0x80930004u);
+            CHECK(died_in_fatal(ajm_decode));                                    /* decoding is not provided yet */
+            CHECK(destroy(context, instance) == 0 && destroy(context, instance) == (int32_t)0x80930003u);
+            CHECK(finalize(context) == 0 && finalize(context) == (int32_t)0x80930002u);
+        }
     }
 
     /* sceAudioOutInit / sceAudioOutOpen. */
