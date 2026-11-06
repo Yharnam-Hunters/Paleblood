@@ -425,6 +425,57 @@ static void fetch_shader(rt_executor *x)
     check_triangle(x, at(FETCH_TARGET));
 }
 
+/* Within one buffer, a draw reading a render target's memory as an image sees an earlier draw into it:
+   the triangle drawn into a linear target, then (same buffer) each pixel of another target the texel
+   under it from that memory, gives the reference image. The target is written back for that read,
+   not after every draw. */
+static void target_read_in_buffer(rt_executor *x)
+{
+    enum { READ_BUFFER = 0xc0f70000, DRAWN = 0xe40000, COPIED = 0xe80000, LINEAR_ALIGNED = 8 };
+    char error[200] = "";
+    memset((void *)(uintptr_t)at(DRAWN), 0, SIZE * SIZE * 4);
+    memcpy((void *)(uintptr_t)at(0x2a00), pixel_image_texel, sizeof pixel_image_texel);
+    rt_render_forget(), rt_executor_reset(x);
+    uint32_t offset = record_triangle_draw(READ_BUFFER, record_setup(READ_BUFFER, at(DRAWN), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER));
+    uint32_t words[RT_COLOR_TARGET_WORDS];
+    color_target(words, at(COPIED), COLOR_8_8_8_8, SWAP_STD);
+    CHECK(rt_render_record_color_target(READ_BUFFER, offset, 0, words, error, sizeof error) == 0);
+    const uint64_t code = at(0x2a00);
+    const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 8 << 1, 0, 0x4, 0x302, 0x302, 0, 0, 0, 0xf};
+    CHECK(rt_render_record_pixel_shader(READ_BUFFER, offset + 0x10, pixel, error, sizeof error) == 0);
+    uint32_t image[8];
+    image_descriptor(image, at(DRAWN), 10, 0, SIZE, SIZE);
+    image[3] |= LINEAR_ALIGNED << 20;
+    CHECK(rt_render_record_user_data(READ_BUFFER, offset + 0x20, RT_STAGE_PIXEL, 0, image, 8, error, sizeof error) == 0);
+    const int drawn = rt_executor_run(x, READ_BUFFER, record_triangle_draw(READ_BUFFER, offset + 0x30), error, sizeof error);
+    if (drawn) fprintf(stderr, "target read in its buffer: %s\n", error);
+    CHECK(drawn == 0);
+    CHECK(differing_pixels(x, at(COPIED)) == 0);
+}
+
+/* User data a shader uses that no call has set stops the draw by name, rather than running on zeros: a
+   pixel shader whose image descriptor is in s[0:7], with only slots 0-3 set, and after a reset none. */
+static void unset_user_data(rt_executor *x)
+{
+    enum { UNSET_BUFFER = 0xc0f60000, UNSET_TARGET = 0xc20000 };
+    char error[200] = "";
+    memcpy((void *)(uintptr_t)at(0x2a00), pixel_image_texel, sizeof pixel_image_texel);
+    rt_render_forget(), rt_executor_reset(x);
+    uint32_t offset = record_setup(UNSET_BUFFER, at(UNSET_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const uint64_t code = at(0x2a00);
+    const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 8 << 1, 0, 0x4, 0x302, 0x302, 0, 0, 0, 0xf};
+    CHECK(rt_render_record_pixel_shader(UNSET_BUFFER, offset, pixel, error, sizeof error) == 0);
+    const uint32_t half[4] = {0};
+    CHECK(rt_render_record_user_data(UNSET_BUFFER, offset + 0x10, RT_STAGE_PIXEL, 0, half, 4, error, sizeof error) == 0);
+    CHECK(rt_executor_run(x, UNSET_BUFFER, record_triangle_draw(UNSET_BUFFER, offset + 0x20), error, sizeof error) == -1 &&
+          strstr(error, "a descriptor in s[0:7], user data no call has set"));
+    rt_render_forget(), rt_executor_reset(x);
+    offset = record_setup(UNSET_BUFFER, at(UNSET_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    CHECK(rt_render_record_pixel_shader(UNSET_BUFFER, offset, pixel, error, sizeof error) == 0);
+    CHECK(rt_executor_run(x, UNSET_BUFFER, record_triangle_draw(UNSET_BUFFER, offset + 0x10), error, sizeof error) == -1 &&
+          strstr(error, "a descriptor in s[0:7], user data no call has set (slots set: 0)"));
+}
+
 /* The GPU's state carries over from one submitted buffer to the next: the triangle's state recorded in
    one buffer, its draw alone in the next, draws the reference image; a slot beyond 0 switched on in one
    buffer and off again in the next no longer stops the draw. rt_executor_reset forgets it all. */
@@ -836,6 +887,8 @@ int main(void)
     sampled_images(x);
     sampled_lookup(x);
     fetch_shader(x);
+    unset_user_data(x);
+    target_read_in_buffer(x);
     state_across_buffers(x);
     indexed_draws(x);
     target_memory(x);
