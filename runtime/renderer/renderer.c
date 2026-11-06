@@ -40,6 +40,16 @@ void rt_renderer_submit(const char *function, const void *buffer, uint32_t bytes
     pthread_mutex_unlock(&renderer_lock);
 }
 
+void rt_renderer_bind_shader(const char *function, rt_renderer_shader kind, const void *at, const uint32_t *words)
+{
+    if (!enabled) return; /* nothing would take the call: boots without graphics record nothing */
+    (void)function;
+    const uint64_t address = (uint64_t)(uintptr_t)at;
+    static const uint32_t no_pixel_shader[RT_PIXEL_SHADER_WORDS]; /* code address 0: a draw with it stops */
+    if (kind == RT_RENDERER_VERTEX_SHADER) rt_render_record_vertex_shader_at(address, words);
+    else rt_render_record_pixel_shader_at(address, words ? words : no_pixel_shader);
+}
+
 int rt_renderer_frame(uint64_t address, uint32_t *frame, uint32_t width, uint32_t height)
 {
     pthread_mutex_lock(&renderer_lock);

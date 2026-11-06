@@ -126,16 +126,53 @@ static int32_t write_nothing_for_the_gpu(uint32_t *command_buffer, uint32_t dwor
     fill_with_nop("a GNM command-buffer writer", command_buffer, dwords);
     return 0;
 }
+/* The vertex and pixel shader calls also hand the renderer the shader they bind (runtime/renderer.h),
+   placed where they write in the command buffer:
+     sceGnmSetVsShader / sceGnmUpdateVsShader(command buffer, dwords, registers, modifier);
+     sceGnmSetPsShader / sceGnmUpdatePsShader(command buffer, dwords, registers).
+   The argument order is shadPS4's libSceGnmDriver (gnmdriver.cpp), and a boot shows the registers
+   argument holding the 7 and 12 words of runtime/render_calls.h (the code address, resources, export
+   and input settings, matching the shaders' own code). A null pixel shader block means no pixel
+   shader. The vertex shader's modifier (set when it calls a fetch shader, which the game's do)
+   replaces two fields of its PGM_RSRC1, the SGPR count (bits 6-9) and the input VGPR count
+   (bits 24-25): PGM_RSRC1 & 0xfcfffc3f | modifier, as shadPS4 applies it; a modifier with any other
+   bit set is refused there, and stops here by name. */
+#define VS_MODIFIER_FIELDS 0x030003c0u /* PGM_RSRC1's SGPRS and VGPR_COMP_CNT */
+static int32_t set_vs_shader(uint32_t *command_buffer, uint32_t dwords, const uint32_t *registers, uint32_t modifier,
+                             const char *function)
+{
+    if (!registers) rt_fatal(function, "no vertex shader registers: the answer is not established");
+    if (modifier & ~VS_MODIFIER_FIELDS) rt_fatal(function, "a shader modifier with bits outside PGM_RSRC1's SGPRS and VGPR_COMP_CNT");
+    uint32_t modified[7];
+    memcpy(modified, registers, sizeof modified);
+    if (modifier) modified[2] = (modified[2] & ~VS_MODIFIER_FIELDS) | modifier;
+    fill_with_nop(function, command_buffer, dwords);
+    rt_renderer_bind_shader(function, RT_RENDERER_VERTEX_SHADER, command_buffer, modified);
+    return 0;
+}
+
+static int32_t set_ps_shader(uint32_t *command_buffer, uint32_t dwords, const uint32_t *registers, const char *function)
+{
+    fill_with_nop(function, command_buffer, dwords);
+    rt_renderer_bind_shader(function, RT_RENDERER_PIXEL_SHADER, command_buffer, registers);
+    return 0;
+}
+
+static int32_t gnm_set_vs_shader(uint32_t *b, uint32_t n, const uint32_t *r, uint32_t m) { return set_vs_shader(b, n, r, m, "sceGnmSetVsShader"); }
+static int32_t gnm_update_vs_shader(uint32_t *b, uint32_t n, const uint32_t *r, uint32_t m) { return set_vs_shader(b, n, r, m, "sceGnmUpdateVsShader"); }
+static int32_t gnm_set_ps_shader(uint32_t *b, uint32_t n, const uint32_t *r) { return set_ps_shader(b, n, r, "sceGnmSetPsShader"); }
+static int32_t gnm_update_ps_shader(uint32_t *b, uint32_t n, const uint32_t *r) { return set_ps_shader(b, n, r, "sceGnmUpdatePsShader"); }
+
+RT_SYSLIB("libSceGnmDriver", sceGnmSetVsShader, gnm_set_vs_shader);
+RT_SYSLIB("libSceGnmDriver", sceGnmUpdateVsShader, gnm_update_vs_shader);
+RT_SYSLIB("libSceGnmDriver", sceGnmSetPsShader, gnm_set_ps_shader);
+RT_SYSLIB("libSceGnmDriver", sceGnmUpdatePsShader, gnm_update_ps_shader);
 RT_SYSLIB("libSceGnmDriver", sceGnmSetEsShader, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmSetGsShader, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmSetHsShader, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmSetLsShader, write_nothing_for_the_gpu);
-RT_SYSLIB("libSceGnmDriver", sceGnmSetPsShader, write_nothing_for_the_gpu);
-RT_SYSLIB("libSceGnmDriver", sceGnmSetVsShader, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmUpdateGsShader, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmUpdateHsShader, write_nothing_for_the_gpu);
-RT_SYSLIB("libSceGnmDriver", sceGnmUpdatePsShader, write_nothing_for_the_gpu);
-RT_SYSLIB("libSceGnmDriver", sceGnmUpdateVsShader, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmInsertPushMarker, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmInsertPopMarker, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmInsertSetMarker, write_nothing_for_the_gpu);

@@ -486,6 +486,7 @@ static int draw(rt_executor *x, const draw_state *s, uint32_t index_count, char 
     if (s->other_targets) return failed(error, error_size, "a draw with render targets beyond slot 0 is not drawn yet");
     if (!s->viewport_set) return failed(error, error_size, "a draw with no viewport");
     if (!s->vertex_set || !s->pixel_set) return failed(error, error_size, "a draw without a vertex and a pixel shader");
+    if (!s->pixel.code) return failed(error, error_size, "a draw with no pixel shader (a depth-only pass): not drawn yet");
     if (s->pixel.input_enable != PERSP_CENTER_ENA || s->pixel.input_address != PERSP_CENTER_ENA)
         return failed(error, error_size, "pixel-shader inputs %#x (address %#x): only the perspective-centre barycentrics are drawn yet",
                       s->pixel.input_enable, s->pixel.input_address);

@@ -217,6 +217,48 @@ static void registers_and_instances(void)
     rt_render_forget();
 }
 
+/* Shaders the runtime's own GNM calls bind are placed by guest address and join, at submission, the
+   buffer that holds them, in order among its other calls; a submitted buffer starts over at its next
+   use. */
+static void placed_calls(void)
+{
+    enum { BUFFER = 0x500000000ull };
+    const uint32_t vertex[RT_VERTEX_SHADER_WORDS] = {0x11111111};
+    const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {0x22222222};
+    char error[128] = "";
+    size_t count = 0;
+    rt_render_forget();
+    CHECK(rt_render_record_draw_auto(BUFFER, 0x80, 3, error, sizeof error) == 0);
+    CHECK(rt_render_record_vertex_shader_at(BUFFER + 0x40, vertex) == 0);
+    CHECK(rt_render_record_pixel_shader_at(BUFFER + 0x60, pixel) == 0);
+    CHECK(rt_render_record_pixel_shader_at(BUFFER + 0x200, pixel) == 0);  /* past this submission */
+    CHECK(rt_render_record_vertex_shader_at(0x600000000ull, vertex) == 0); /* another buffer's */
+    const rt_render_call *calls = rt_render_submitted(BUFFER, 0x100, &count);
+    CHECK(count == 3);
+    if (count == 3) {
+        CHECK(calls[0].kind == RT_CALL_VERTEX_SHADER && calls[0].offset == 0x40 && calls[0].u.vertex_shader.code == 0x1111111100ull);
+        CHECK(calls[1].kind == RT_CALL_PIXEL_SHADER && calls[1].offset == 0x60 && calls[1].u.pixel_shader.code == 0x2222222200ull);
+        CHECK(calls[2].kind == RT_CALL_DRAW_AUTO && calls[2].offset == 0x80);
+    }
+    rt_render_submitted(BUFFER, 0x100, &count);  /* submitted again: the same calls, none twice */
+    CHECK(count == 3);
+    calls = rt_render_submitted(0x600000000ull, 0x10, &count);
+    CHECK(count == 1 && calls[0].kind == RT_CALL_VERTEX_SHADER && calls[0].offset == 0);
+
+    /* the next use of BUFFER: a placed call alone starts it over, without the old draw */
+    CHECK(rt_render_record_vertex_shader_at(BUFFER + 0x90, vertex) == 0);
+    calls = rt_render_submitted(BUFFER, 0x100, &count);
+    CHECK(count == 1 && calls[0].kind == RT_CALL_VERTEX_SHADER && calls[0].offset == 0x90);
+    /* and a recorded call after a submission starts it over too, even at a larger offset */
+    CHECK(rt_render_record_draw_auto(BUFFER, 0xa0, 6, error, sizeof error) == 0);
+    calls = rt_render_submitted(BUFFER, 0x400, &count);  /* the call placed at 0x200 joins now */
+    CHECK(count == 2 && calls[0].kind == RT_CALL_DRAW_AUTO && calls[1].kind == RT_CALL_PIXEL_SHADER &&
+          calls[1].offset == 0x200);
+    rt_render_forget();
+    rt_render_submitted(0x600000000ull, 0x10, &count);
+    CHECK(count == 0);
+}
+
 int main(void)
 {
     decoding();
@@ -224,6 +266,7 @@ int main(void)
     shader_blocks();
     user_data();
     recording();
+    placed_calls();
     if (failures) fprintf(stderr, "%d failure(s)\n", failures);
     return failures != 0;
 }

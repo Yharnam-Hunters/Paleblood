@@ -147,8 +147,16 @@ int rt_render_record_register(uint64_t buffer, uint32_t offset, uint32_t address
 /* The instance count later draws use (the NUM_INSTANCES packet); at least 1. */
 int rt_render_record_instances(uint64_t buffer, uint32_t offset, uint32_t count, char *error, size_t error_size);
 
-/* At submission of size bytes of the buffer: its calls made before that point, in order, and their
-   count in *count. The array stays valid until the next call records into that buffer. */
+/* A shader bound by a system call that only knows where in a command buffer it writes (the runtime's
+   sceGnmSetVsShader and sceGnmSetPsShader, runtime/renderer.h): the call is placed at that guest
+   address and joins the list of the buffer whose submission holds the address, at its offset. */
+int rt_render_record_vertex_shader_at(uint64_t address, const uint32_t words[RT_VERTEX_SHADER_WORDS]);
+int rt_render_record_pixel_shader_at(uint64_t address, const uint32_t words[RT_PIXEL_SHADER_WORDS]);
+
+/* At submission of size bytes of the buffer: its calls made before that point, in order (with the
+   placed calls the buffer holds), and their count in *count. Submitting marks the buffer used: its
+   next call starts its list over, as the title then refills it from the start. The array stays
+   valid until the next call records into that buffer. */
 const rt_render_call *rt_render_submitted(uint64_t buffer, uint32_t size, size_t *count);
 
 /* Forgets every buffer's calls (between tests, and when a run starts). */

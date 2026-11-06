@@ -101,6 +101,14 @@ int main(void)
     CHECK(run_with_registers(x, FOURTH, at(TARGET), normal, 0, 2, error, sizeof error) == -1 && strstr(error, "2 instances"));
     CHECK(rt_executor_read_target(x, at(0x300000), bgra, 2, 2, error, sizeof error) == -1 && strstr(error, "no draw"));
     CHECK(rt_executor_read_target(x, at(TARGET), bgra, SIZE + 1, 1, error, sizeof error) == -1);
+    /* No pixel shader (a depth-only pass, placed as the runtime's sceGnmSetPsShader places it): a
+       draw with it stops by name. */
+    rt_render_forget();
+    uint32_t offset = record_setup(FOURTH, at(TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    static const uint32_t no_pixel_shader[RT_PIXEL_SHADER_WORDS];
+    CHECK(rt_render_record_pixel_shader_at(FOURTH + offset, no_pixel_shader) == 0);
+    CHECK(rt_executor_run(x, FOURTH, record_triangle_draw(FOURTH, offset + 0x10), error, sizeof error) == -1 &&
+          strstr(error, "no pixel shader"));
 
     rt_executor_close(x);
     rt_render_forget();
