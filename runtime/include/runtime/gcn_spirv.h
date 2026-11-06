@@ -47,13 +47,20 @@ enum {
     /* a vertex or pixel shader read VCC as a lane mask after a scalar write of its halves left each
        lane's bit unknown (a lane has no known place in the wave there) */
     GCN_RUNTIME_STOP_VCC_UNKNOWN = 2,
+    /* image_load/image_load_mip of a texel outside the image, or of a level past its last */
+    GCN_RUNTIME_STOP_IMAGE_RANGE = 3,
 };
 
 /* Images (MIMG). A shader names an image by the SGPRs holding its 8-word descriptor (T#), which the
    GPU reads as it runs. The translator turns each into a storage image the caller binds: descriptor
    set 0, binding i for images[i], whose shape the caller reads from the descriptor before
    translating (gcn_image_resources lists which SGPRs a program uses). A MIMG instruction whose
-   descriptor SGPRs are not one of the bindings stops translation. */
+   descriptor SGPRs are not one of the bindings stops translation.
+
+   A sampled binding is read through a sampled image (Vulkan's SAMPLED_IMAGE descriptor) instead:
+   its texel format and DST_SEL are the bound view's, and image_load and image_load_mip fetch from
+   it (the level counted from the view's first). Storage images are for compute shaders, which
+   write them. */
 typedef enum { GCN_IMAGE_1D, GCN_IMAGE_2D, GCN_IMAGE_3D } gcn_image_dim;
 typedef enum { GCN_IMAGE_FLOAT, GCN_IMAGE_UINT, GCN_IMAGE_SINT } gcn_image_sample_type;
 typedef struct {
@@ -62,6 +69,7 @@ typedef struct {
     int arrayed;
     gcn_image_sample_type type;      /* how its texels read and write: floats (unorm, float, ...) or integers */
     unsigned components;             /* the format's components, 1 to 4 */
+    int sampled;                     /* a sampled image (reads only), not a storage image */
 } gcn_image_binding;
 
 enum { GCN_MAX_IMAGES = 8, GCN_IMAGE_READ = 1, GCN_IMAGE_WRITE = 2 };
@@ -121,6 +129,8 @@ typedef struct {
     uint32_t push_constant_offset;
     uint64_t address_offset;
     uint64_t error_address;   /* the run-time stop word (GCN_RUNTIME_STOP_*), or 0: run-time cases stop translation */
+    const gcn_image_binding *images;
+    unsigned image_count;
 } gcn_pixel_layout;
 
 int gcn_translate_pixel(const uint32_t *code, size_t dwords, const gcn_pixel_layout *layout,

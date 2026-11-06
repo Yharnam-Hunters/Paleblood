@@ -13,6 +13,7 @@
 #include "runtime/render_executor.h"
 
 #include "render_fixture.h"
+#include "runtime/tiling.h"
 
 #include <stdlib.h>
 
@@ -40,6 +41,106 @@ static int run_with_registers(rt_executor *x, uint64_t buffer, uint64_t target, 
         offset += 0x10;
     }
     return rt_executor_run(x, buffer, record_triangle_draw(buffer, offset), error, error_size);
+}
+
+/* The reference image's texel (x, y) as 8_8_8_8 unorm bytes, red first: what check_triangle_pixels
+   expects at pixel (x, y). */
+static uint32_t reference_texel(uint32_t px, uint32_t y)
+{
+    const uint32_t red = (uint32_t)lroundf(((float)px + 0.5f) / SIZE * 255), green = (uint32_t)lroundf(((float)y + 0.5f) / SIZE * 255);
+    return red | green << 8 | 64u << 16 | 0xffu << 24;
+}
+
+/* Draws pixel_image_texel (each pixel the texel under it) into target with the image descriptor in the
+   pixel shader's user data; the run's result. */
+static int draw_texels(rt_executor *x, uint64_t target, const uint32_t image[8], char *error, size_t error_size)
+{
+    enum { TEXEL_BUFFER = 0xc0f00000, TEXEL_CODE = 0x2a00 };
+    memcpy((void *)(uintptr_t)at(TEXEL_CODE), pixel_image_texel, sizeof pixel_image_texel);
+    rt_render_forget();
+    uint32_t offset = record_setup(TEXEL_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const uint64_t code = at(TEXEL_CODE);
+    const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 8 << 1, 0, 0x4, 0x302, 0x302, 0, 0, 0, 0xf};
+    CHECK(rt_render_record_pixel_shader(TEXEL_BUFFER, offset, pixel, error, error_size) == 0);
+    CHECK(rt_render_record_user_data(TEXEL_BUFFER, offset + 0x10, RT_STAGE_PIXEL, 0, image, 8, error, error_size) == 0);
+    return rt_executor_run(x, TEXEL_BUFFER, record_triangle_draw(TEXEL_BUFFER, offset + 0x20), error, error_size);
+}
+
+/* The pixels of target that differ from the reference image (all of them on a failed read). */
+static int differing_pixels(rt_executor *x, uint64_t target)
+{
+    uint32_t bgra[SIZE * SIZE];
+    char error[160] = "";
+    if (rt_executor_read_target(x, target, bgra, SIZE, SIZE, error, sizeof error)) return SIZE * SIZE;
+    int differ = 0;
+    for (int y = 0; y < SIZE; y++)
+        for (int px = 0; px < SIZE; px++) {
+            const uint32_t p = bgra[y * SIZE + px];
+            differ += !(near(p >> 16 & 0xff, ((float)px + 0.5f) / SIZE) && near(p >> 8 & 0xff, ((float)y + 0.5f) / SIZE) &&
+                        near(p & 0xff, 0.25f) && (p >> 24) == 0xff);
+        }
+    return differ;
+}
+
+/* Pixel shaders reading images the CPU wrote into guest memory (image_load_mip from a sampled image):
+   a 128 x 64 8_8_8_8 image tiled as Thin2DThin (index 14), its texels placed with runtime/tiling.h,
+   draws the reference image; the same bytes described as Display2DThin (index 10) do not. A linear one
+   (index 8), DST_SEL z, y, x, w over blue-first bytes, and the guest changing its texels between
+   draws all read what the guest memory holds. A target larger than the image reads outside it and
+   stops by name. */
+static void sampled_images(rt_executor *x)
+{
+    enum { TILED = 0x800000, LINEAR = 0x810000, SMALL = 0x820000, TEXEL_TARGET = 0x880000, WIDTH = 128, HEIGHT = 64,
+           THIN_2D = 14, DISPLAY_2D = 10, LINEAR_ALIGNED = 8 };
+    char error[256] = "";
+    rt_tiling tiled;
+    CHECK(rt_tiling_layout(THIN_2D, 4, WIDTH, HEIGHT, &tiled, error, sizeof error) == 0);
+    uint8_t *guest = (uint8_t *)(uintptr_t)at(0);
+    for (uint32_t y = 0; y < HEIGHT; y++)
+        for (uint32_t px = 0; px < WIDTH; px++) {
+            const uint32_t texel = reference_texel(px % SIZE, y % SIZE);
+            memcpy(guest + TILED + rt_tiling_offset(&tiled, px, y, 0), &texel, 4);
+            memcpy(guest + LINEAR + (y * WIDTH + px) * 4, &texel, 4);
+        }
+    uint32_t image[8];
+    image_descriptor(image, at(TILED), 10, 0, WIDTH, HEIGHT);
+    image[3] |= THIN_2D << 20;
+    int drawn = draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error);
+    if (drawn) fprintf(stderr, "sampled image: %s\n", error);
+    CHECK(drawn == 0);
+    check_triangle(x, at(TEXEL_TARGET));
+
+    image[3] = (image[3] & ~(0x1fu << 20)) | DISPLAY_2D << 20;    /* mutant: the wrong micro-tile order */
+    CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
+    CHECK(differing_pixels(x, at(TEXEL_TARGET)) > 0);
+
+    image_descriptor(image, at(LINEAR), 10, 0, WIDTH, HEIGHT);
+    image[3] |= LINEAR_ALIGNED << 20;
+    CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
+    CHECK(differing_pixels(x, at(TEXEL_TARGET)) == 0);
+
+    /* blue-first bytes, read through DST_SEL z, y, x, w */
+    for (uint32_t i = 0; i < WIDTH * HEIGHT; i++) {
+        uint32_t *t = (uint32_t *)(guest + LINEAR) + i;
+        *t = (*t & 0xff00ff00u) | (*t & 0xffu) << 16 | (*t >> 16 & 0xffu);
+    }
+    image[3] = (image[3] & ~0xfffu) | (6 | 5 << 3 | 4 << 6 | 7 << 9);
+    CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
+    CHECK(differing_pixels(x, at(TEXEL_TARGET)) == 0);
+    image[3] = (image[3] & ~0xfffu) | (4 | 5 << 3 | 6 << 6 | 7 << 9); /* mutant: in place */
+    CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
+    CHECK(differing_pixels(x, at(TEXEL_TARGET)) > 0);
+
+    /* the guest rewrites the texels: the next draw reads the new ones */
+    for (uint32_t i = 0; i < WIDTH * HEIGHT; i++) ((uint32_t *)(guest + LINEAR))[i] = reference_texel(i % WIDTH % SIZE, i / WIDTH % SIZE);
+    CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
+    CHECK(differing_pixels(x, at(TEXEL_TARGET)) == 0);
+
+    image_descriptor(image, at(SMALL), 10, 0, 8, 8);
+    image[3] |= LINEAR_ALIGNED << 20;
+    CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == -1 && strstr(error, "outside the image"));
+    image[3] = (image[3] & ~(0x1fu << 20)) | 2u << 20;
+    CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == -1 && strstr(error, "tiling index 2"));
 }
 
 int main(void)
@@ -275,16 +376,34 @@ int main(void)
         CHECK(right);
         }
 
-        rt_render_forget();
-        image_descriptor(image_b, at(IMAGE_B + 0x8000), 14, 7, LANES, 1); /* never written */
-        const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(codes[2] >> 8), (uint32_t)(codes[2] >> 40), 0x3, 16 << 1, LANES, 1, 1};
-        CHECK(rt_render_record_compute_shader_at(IMAGES + 0x10, shader) == 0);
-        descriptor(user, at(BACK), 16), memcpy(user + 8, image_b, sizeof image_b);
-        CHECK(rt_render_record_user_data(IMAGES, 0x20, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
-        CHECK(rt_render_record_user_data(IMAGES, 0x30, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
-        CHECK(rt_render_record_dispatch(IMAGES, 0x40, one, error, sizeof error) == 0);
-        CHECK(rt_executor_run(x, IMAGES, 0x50, error, sizeof error) == -1 && strstr(error, "read before the GPU wrote it"));
+        /* An image no shader wrote holds the guest memory's texels: linear (tiling index 8) RGBA32F
+           texels the CPU wrote read back as written; a layout not done yet (index 0) stops by name. */
+        float *guest_texels = (float *)(uintptr_t)at(IMAGE_B + 0x8000);
+        for (unsigned i = 0; i < LANES * 4; i++) guest_texels[i] = (float)i * 0.25f, back[i] = -1;
+        for (int tiling = 0; tiling < 2; tiling++) {
+            rt_render_forget();
+            image_descriptor(image_b, at(IMAGE_B + 0x8000), 14, 7, LANES, 1);
+            image_b[3] |= (tiling ? 8u : 0u) << 20;
+            const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(codes[2] >> 8), (uint32_t)(codes[2] >> 40), 0x3, 16 << 1, LANES, 1, 1};
+            CHECK(rt_render_record_compute_shader_at(IMAGES + 0x10, shader) == 0);
+            descriptor(user, at(BACK), 16), memcpy(user + 8, image_b, sizeof image_b);
+            CHECK(rt_render_record_user_data(IMAGES, 0x20, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+            CHECK(rt_render_record_user_data(IMAGES, 0x30, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
+            CHECK(rt_render_record_dispatch(IMAGES, 0x40, one, error, sizeof error) == 0);
+            const int loaded = rt_executor_run(x, IMAGES, 0x50, error, sizeof error);
+            if (!tiling) {
+                CHECK(loaded == -1 && strstr(error, "tiling index 0"));
+                continue;
+            }
+            if (loaded) fprintf(stderr, "guest texels: %s\n", error);
+            CHECK(loaded == 0);
+            int same = 1;
+            for (unsigned i = 0; i < LANES * 4; i++) same &= back[i] == (float)i * 0.25f;
+            CHECK(same);
+        }
     }
+
+    sampled_images(x);
 
     rt_executor_close(x);
     rt_render_forget();

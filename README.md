@@ -3,7 +3,7 @@
 *Paleblood is a decompilation of Bloodborne with its own runtime: the game's code rewritten as readable C++, one verified function at a time.*
 
 <!-- status:start -->
-The game doesn't run on Paleblood yet: 21 of 157757 functions are verified (0.01%). On [our own runtime](runtime/) the executable's boot gets as far as the run's time limit, still running (no call stopped it), with 437 of 686 system imports implemented.
+The game doesn't run on Paleblood yet: 21 of 157757 functions are verified (0.01%). On [our own runtime](runtime/) the executable's boot gets as far as the run's time limit, still running (no call stopped it), with 453 of 686 system imports implemented.
 <!-- status:end -->
 
 **[Start here](https://github.com/Yharnam-Hunters/Paleblood/issues/31)** ·
@@ -28,8 +28,8 @@ Each row includes the next: verified functions are also edge-verified and replac
 
 | Runtime | |
 |---|---|
-| System imports implemented | 437 of 686 (63.70%): 219 by the game's own modules, 218 by the runtime |
-| Other imports | 2 registered fail-loud diagnostics, 247 unbound |
+| System imports implemented | 453 of 686 (66.03%): 219 by the game's own modules, 234 by the runtime |
+| Other imports | 2 registered fail-loud diagnostics, 231 unbound |
 | Furthest boot milestone | first flip (8 of 8) |
 | Boot stops at | the run's time limit, still running (no call stopped it) |
 
