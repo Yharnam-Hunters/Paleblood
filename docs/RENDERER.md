@@ -76,6 +76,17 @@ Instead:
        that half of the wave their bits of the value. VCC is kept as each lane's bit, and a compute
        lane's place in its wave is its flat index in the workgroup mod 64 (x fastest), so this is
        exact in compute shaders; other stages stop by name, as does reading VCC as a scalar.
+     - **VCC outside compute shaders:** a lane has no known place in the wave there, so a scalar
+       write of VCC's halves leaves each lane's VCC bit unknown until a vector write sets it; reading
+       VCC as a lane mask while unknown is a run-time stop. The game's vertex shaders write `vcc_hi`
+       before vector adds overwrite VCC, so they translate.
+     - **Whole quad mode** (`s_wqm_b64`): a lane's bit is set when any lane of its quad has it,
+       with Vulkan's quad swaps (the same 2x2 pixel quads in a pixel shader, consecutive lanes in
+       compute); SCC is "any lane set". Every invocation, helpers included, starts with EXEC set.
+     - **Pixel position inputs** (`SPI_PS_INPUT` bits 8 and 9): x and y at the pixel's centre from
+       `FragCoord`. The executor places each pixel input in bit order of `SPI_PS_INPUT_ADDR` with
+       AMD's sizes (2 VGPRs per barycentric pair, 3 for the pull model, 1 for the rest), as AMD's
+       register documentation and LLVM's AMDGPU backend have it.
      - **Run-time stops:** some of what a shader does is known only when it runs (a buffer access's
        data format is its descriptor's). The executor owns a 32-bit stop word whose GPU address is
        baked into every translation (`error_address`); a shader meeting a case it cannot do exactly

@@ -8,8 +8,11 @@
    - A viewport transforms a normalized x as x * XSCALE + XOFFSET (likewise y and z), so it covers
      XOFFSET - XSCALE to XOFFSET + XSCALE; a negative YSCALE flips it, which a Vulkan viewport of
      negative height does too. z maps 0 to ZOFFSET and 1 to ZOFFSET + ZSCALE.
-   - A pixel shader's input VGPRs follow SPI_PS_INPUT_ADDR's enabled inputs in bit order; the
-     perspective-centre barycentrics (bit 1) come after the perspective-sample ones (bit 0). */
+   - A pixel shader's input VGPRs follow SPI_PS_INPUT_ADDR's enabled inputs in bit order, each taking
+     as many VGPRs as it has values: 2 for each barycentric pair (bits 0-2, 4-6), 3 for the pull model
+     (bit 3), 1 for each of the rest (line stipple 7, position x, y, z, w 8-11, front face 12,
+     ancillary 13, sample coverage 14, fixed-point position 15), as AMD's register documentation and
+     LLVM's AMDGPU backend (SIRegisterInfo's PS input layout) have it. */
 #include "runtime/render_executor.h"
 
 #include "runtime/gcn.h"
@@ -28,13 +31,23 @@ enum { MAX_SHADERS = 256, MAX_PIPELINES = 256, MAX_TARGETS = 64, MAX_RECT_STAGES
        MAX_VIEWS = 16 };
 enum { USER_DATA_BYTES = GCN_USER_SGPR_MAX * 4, VERTEX_USER_DATA = 0, PIXEL_USER_DATA = USER_DATA_BYTES };
 enum { COLOR_8_8_8_8 = 0xa, NUMBER_UNORM = 0, NUMBER_SRGB = 6, SWAP_STD = 0, SWAP_ALT = 1 };
-enum { PERSP_CENTER_ENA = 0x2 };
+enum { PERSP_CENTER_ENA = 0x2, POS_X_FLOAT_ENA = 0x100, POS_Y_FLOAT_ENA = 0x200 };
+
+/* The VGPR where the pixel input at `bit` of SPI_PS_INPUT_ADDR starts: after every enabled input below it. */
+static unsigned pixel_input_vgpr(uint32_t input_address, unsigned bit)
+{
+    static const unsigned sizes[16] = {2, 2, 2, 3, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+    unsigned vgpr = 0;
+    for (unsigned b = 0; b < bit; b++)
+        if (input_address >> b & 1) vgpr += sizes[b];
+    return vgpr;
+}
 enum { STAGE_VERTEX, STAGE_PIXEL, STAGES };
 
 typedef struct {
     uint64_t code;
     int stage;
-    uint32_t user_sgprs, output_control;
+    uint32_t user_sgprs, settings;   /* PA_CL_VS_OUT_CNTL or SPI_PS_INPUT_ADDR */
     VkShaderModule module;
 } shader_entry;
 
@@ -360,6 +373,9 @@ static int check_stop_word(rt_executor *x, char *error, size_t error_size)
         return failed(error, error_size, "a %u-component buffer %s with format DATA_FORMAT %u, NUM_FORMAT %u%s at run time: only whole "
                       "32-bit uint, sint or float components, and four-component 8_8_8_8 unorm stores, are done yet", code & 0x7,
                       code & 0x80 ? "store" : "load", code >> 8 & 0xf, code >> 4 & 0x7, code & 8 ? " and a swizzle" : "");
+    if (code >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_VCC_UNKNOWN)
+        return failed(error, error_size, "a vertex or pixel shader read VCC as a lane mask after a scalar write of its halves: not done "
+                      "yet (a lane has no known place in the wave there)");
     return failed(error, error_size, "a shader stopped at run time with code %#x", code);
 }
 
@@ -508,12 +524,13 @@ fail:
 /* ---- shaders and pipelines ---- */
 
 /* The code's length is found by the translator; it may read up to the end of the guest memory. */
-static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint32_t user_sgprs, uint32_t output_control, char *error,
+/* settings: a vertex shader's PA_CL_VS_OUT_CNTL, a pixel shader's SPI_PS_INPUT_ADDR (part of the cache key). */
+static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint32_t user_sgprs, uint32_t settings, char *error,
                                  size_t error_size)
 {
     for (size_t i = 0; i < x->shader_count; i++) {
         const shader_entry *s = &x->shaders[i];
-        if (s->code == code && s->stage == stage && s->user_sgprs == user_sgprs && s->output_control == output_control) return s->module;
+        if (s->code == code && s->stage == stage && s->user_sgprs == user_sgprs && s->settings == settings) return s->module;
     }
     if (code < x->guest_base || code >= x->guest_base + x->size || code % 4) {
         failed(error, error_size, "%s shader code at %#llx is outside the GPU-visible memory", stage == STAGE_VERTEX ? "vertex" : "pixel",
@@ -531,12 +548,16 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
     char reason[256];
     int result;
     if (stage == STAGE_VERTEX) {
-        const gcn_vertex_layout layout = {.user_sgprs = user_sgprs, .output_control = output_control,
+        const gcn_vertex_layout layout = {.user_sgprs = user_sgprs, .output_control = settings,
                                           .push_constant_offset = VERTEX_USER_DATA, .address_offset = x->address_offset,
                                           .error_address = x->stop_address};
         result = gcn_translate_vertex(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
     } else {
-        const gcn_pixel_layout layout = {.user_sgprs = user_sgprs, .push_constant_offset = PIXEL_USER_DATA,
+        const uint32_t inputs = settings; /* a pixel shader's SPI_PS_INPUT_ADDR */
+        const gcn_pixel_layout layout = {.user_sgprs = user_sgprs, .barycentric_vgpr = pixel_input_vgpr(inputs, 1),
+                                         .position_enable = (inputs & POS_X_FLOAT_ENA ? GCN_PIXEL_POSITION_X : 0u) |
+                                                            (inputs & POS_Y_FLOAT_ENA ? GCN_PIXEL_POSITION_Y : 0u),
+                                         .position_vgpr = pixel_input_vgpr(inputs, 8), .push_constant_offset = PIXEL_USER_DATA,
                                          .address_offset = x->address_offset, .error_address = x->stop_address};
         result = gcn_translate_pixel(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
     }
@@ -552,7 +573,7 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
         failed(error, error_size, "the device refused a translated shader");
         return VK_NULL_HANDLE;
     }
-    x->shaders[x->shader_count++] = (shader_entry){code, stage, user_sgprs, output_control, module};
+    x->shaders[x->shader_count++] = (shader_entry){code, stage, user_sgprs, settings, module};
     return module;
 }
 
@@ -655,13 +676,14 @@ static int draw(rt_executor *x, const draw_state *s, uint32_t index_count, char 
     if (!s->viewport_set) return failed(error, error_size, "a draw with no viewport");
     if (!s->vertex_set || !s->pixel_set) return failed(error, error_size, "a draw without a vertex and a pixel shader");
     if (!s->pixel.code) return failed(error, error_size, "a draw with no pixel shader (a depth-only pass): not drawn yet");
-    if (s->pixel.input_enable != PERSP_CENTER_ENA || s->pixel.input_address != PERSP_CENTER_ENA)
-        return failed(error, error_size, "pixel-shader inputs %#x (address %#x): only the perspective-centre barycentrics are drawn yet",
-                      s->pixel.input_enable, s->pixel.input_address);
+    const uint32_t drawn_inputs = PERSP_CENTER_ENA | POS_X_FLOAT_ENA | POS_Y_FLOAT_ENA;
+    if (s->pixel.input_enable != s->pixel.input_address || !(s->pixel.input_enable & PERSP_CENTER_ENA) || (s->pixel.input_enable & ~drawn_inputs))
+        return failed(error, error_size, "pixel-shader inputs %#x (address %#x): only the perspective-centre barycentrics and the "
+                      "position's x and y are drawn yet", s->pixel.input_enable, s->pixel.input_address);
     const target_entry *t = target_for(x, &s->color, error, error_size);
     if (!t) return -1;
     const VkShaderModule vertex = shader_for(x, STAGE_VERTEX, s->vertex.code, s->vertex.user_sgprs, s->vertex.output_control, error, error_size);
-    const VkShaderModule pixel = vertex ? shader_for(x, STAGE_PIXEL, s->pixel.code, s->pixel.user_sgprs, 0, error, error_size) : VK_NULL_HANDLE;
+    const VkShaderModule pixel = vertex ? shader_for(x, STAGE_PIXEL, s->pixel.code, s->pixel.user_sgprs, s->pixel.input_address, error, error_size) : VK_NULL_HANDLE;
     if (!pixel) return -1;
     const int rect_list = s->primitive_set && s->primitive_type == DI_PT_RECTLIST;
     if (rect_list && index_count % 3) return failed(error, error_size, "a rect list of %u vertices, not whole rects of three", index_count);

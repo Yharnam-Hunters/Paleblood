@@ -240,6 +240,11 @@ int main(void)
         CHECK(run(&g, store_format_xyzw, sizeof store_format_xyzw / sizeof store_format_xyzw[0], format_user) == -1);
     }
 
+    /* whole quad mode: every lane of a quad with an active lane is active again */
+    memset(out.mapped, 0, BUFFER_BYTES);
+    CHECK(run(&g, whole_quad, sizeof whole_quad / sizeof whole_quad[0], user) == 0);
+    for (int i = 0; i < LANES; i++) CHECK(out_words[i] == 1u);
+
     /* VCC's halves written as scalars: each lane's VCC bit is its bit of the half it is in. */
     memset(out.mapped, 0, BUFFER_BYTES);
     CHECK(run(&g, vcc_halves, sizeof vcc_halves / sizeof vcc_halves[0], user) == 0);
