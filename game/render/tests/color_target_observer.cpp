@@ -282,10 +282,11 @@ void clear_publication_alias()
 }
 void expect_abort(void (*action)())
 {
+    constexpr int redirection_failed = 2;
     ++scenarios; const pid_t child = fork(); CHECK(child >= 0);
     if (child == 0) {
         const rlimit no_core{0, 0}; setrlimit(RLIMIT_CORE, &no_core);
-        if (!std::freopen("/dev/null", "w", stderr)) std::_Exit(2);
+        if (!std::freopen("/dev/null", "w", stderr)) std::_Exit(redirection_failed);
         action();
         std::_Exit(0);
     }
