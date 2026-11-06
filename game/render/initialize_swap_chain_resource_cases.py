@@ -26,7 +26,7 @@ def base_case(stage):
         "schema": 1,
         "address": ADDRESS,
         "id": stage,
-        "returns": "i64",
+        "returns": "i32",
         "args": {"rdi": "buf:self", "rsi": "buf:output", "rdx": "buf:parameters", "rcx": 0, "r8": 0, "r9": 0},
         "stack": ["0x123456789abcdef0"],
         "buffers": {
@@ -174,6 +174,7 @@ def cases():
     for flags in (0x90, 0x0C, 0x100):
         yield resource_case(f"rejected_flags_{flags:x}", flags=flags)
     yield resource_case("secondary_above_word", secondary=0x10000)
+    yield resource_case("secondary_pair_8100_admitted", flags=0x40, secondary=0x8100)
 
 
 def main():

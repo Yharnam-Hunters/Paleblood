@@ -14,10 +14,10 @@ constexpr uint32_t unsupported_status = 8;
 constexpr uint32_t allocation_failed_status = 9;
 constexpr uint32_t primary_rejected_bits = 0x17;
 constexpr uint32_t secondary_rejected_bits = 0x38;
-constexpr uint32_t allows_secondary_200_flag = 0x20;
-constexpr uint32_t allows_secondary_100_flag = 0x40;
-constexpr uint32_t secondary_requires_40 = 0x100;
-constexpr uint32_t secondary_requires_20 = 0x200;
+constexpr uint32_t allow_first_auxiliary_flag = 0x20;
+constexpr uint32_t allow_second_auxiliary_flag = 0x40;
+constexpr uint32_t request_second_auxiliary_flag = 0x100;
+constexpr uint32_t request_first_auxiliary_flag = 0x200;
 constexpr uint32_t secondary_pair_mask = 0x8100;
 constexpr uint32_t secondary_pair_rejected = 0x8000;
 constexpr uint32_t high_nibble_mask = 0xf0;
@@ -48,11 +48,11 @@ uint32_t leading_zero_count(uint32_t value)
 
 }  // namespace
 
-extern "C" uint64_t bb_render_initialize_swap_chain_resource(
+extern "C" uint32_t bb_render_initialize_swap_chain_resource(
     render::SwapResourceServices *services, render::SwapResourceOutput *output,
     render::SwapResourceParameters *parameters, render::SwapResourceInitialEntry *initial,
     render::SwapResourceOwner *allocator_override, render::SwapResourceOwner *owner_override,
-    uint64_t argument)
+    render::ResourceInfoOptions *options)
 {
     using namespace render;
     SwapResourceInfo info;
@@ -81,11 +81,11 @@ extern "C" uint64_t bb_render_initialize_swap_chain_resource(
     }
     if ((secondary_flags & count_requirement_bit) != 0 &&
         parameters->entries_per_level.get() < minimum_count) return unsupported_status;
-    if ((flags & allows_secondary_100_flag) == 0 && (secondary_flags & secondary_requires_40) != 0)
+    if ((flags & allow_second_auxiliary_flag) == 0 && (secondary_flags & request_second_auxiliary_flag) != 0)
         return unsupported_status;
     if ((secondary_flags & secondary_pair_mask) == secondary_pair_rejected)
         return unsupported_status;
-    if ((flags & allows_secondary_200_flag) == 0 && (secondary_flags & secondary_requires_20) != 0)
+    if ((flags & allow_first_auxiliary_flag) == 0 && (secondary_flags & request_first_auxiliary_flag) != 0)
         return unsupported_status;
     if (parameters->count_mode.get() >= multi_count_kind && parameters->level_count.get() != 1)
         return unsupported_status;
@@ -93,9 +93,9 @@ extern "C" uint64_t bb_render_initialize_swap_chain_resource(
     // Load both defaults before checking compatibility; capability tests short-circuit.
     SwapResourceOwner *default_allocator = services->default_allocator.get();
     SwapResourceOwner *default_owner = services->default_owner.get();
-    bool capability = services->capability_00.get() != 0 &&
-                      services->capability_08.get() != 0 &&
-                      services->capability_20.get() != 0;
+    bool capability = services->first_capability.get() != 0 &&
+                      services->second_capability.get() != 0 &&
+                      services->third_capability.get() != 0;
     if (flags > capability_flag_maximum ||
         parameters->selection.get() > capability_selection_maximum ||
         secondary_flags > capability_secondary_maximum) capability = false;
@@ -149,7 +149,7 @@ extern "C" uint64_t bb_render_initialize_swap_chain_resource(
 
     const uint32_t status = swap_resource_calls::prepare_resource_info(
         &info, services, parameters, initial, allocator, owner,
-        argument);
+        options);
     if (status != 0) return status;
 
     SwapResourceOwnerVtable *allocator_vtable = allocator->vtable.get();
@@ -158,13 +158,13 @@ extern "C" uint64_t bb_render_initialize_swap_chain_resource(
     if (object != nullptr) {
         object->vtable.set(reinterpret_cast<uintptr_t>(swap_resource_calls::initial_vtable.address()));
         object->allocator.set(allocator);
-        object->state_10.set(object_initial_state);
+        object->state.set(object_initial_state);
         object->vtable.set(reinterpret_cast<uintptr_t>(swap_resource_calls::final_vtable.address()));
-        object->info.value_30.set(info.value_30.get());
-        object->info.value_28.set(info.value_28.get());
-        object->info.value_20.set(info.value_20.get());
-        object->info.value_18.set(info.value_18.get());
-        object->info.value_10.set(info.value_10.get());
+        object->info.levels_and_layout.set(info.levels_and_layout.get());
+        object->info.classification_and_dimensions.set(info.classification_and_dimensions.get());
+        object->info.kind_and_secondary_flags.set(info.kind_and_secondary_flags.get());
+        object->info.capacity_and_alignment.set(info.capacity_and_alignment.get());
+        object->info.mode_and_required_bytes.set(info.mode_and_required_bytes.get());
         SwapResourceOwner *info_owner = info.owner.get();
         const uintptr_t info_resource = info.resource.get();
         object->info.resource.set(info_resource);
