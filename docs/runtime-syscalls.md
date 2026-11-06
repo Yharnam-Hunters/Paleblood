@@ -476,6 +476,19 @@ value variable.
 A local boot with the affinity probe and the rwlocks let through (not committed) loads the module,
 passes these calls, and stops next at `pthread_cond_init` (`libScePosix`).
 
+## Ending a thread (`scePthreadExit`)
+
+`scePthreadExit(void *value)` ends the calling thread with `value`, as a return from its entry
+would: the value kept for a join, then the thread's key destructors, then the end (FreeBSD libthr's
+`_pthread_exit`, and shadPS4's `posix_pthread_exit`).
+
+The runtime does not unwind the guest's frames, which were not built for the host's unwinder.
+Instead the thread's host side marks where it starts the guest's entry (`setjmp`), and an exit
+returns there (`longjmp`). It then ends exactly as a return does.
+
+Stops by name: an exit from inside a key destructor (libthr refuses it too), and an exit from the
+main thread, which the runtime runs the boot on.
+
 ## Thread attributes: stack size and scheduling policy (issue #34)
 
 The executable's thread wrapper (`0x02a3b324`–`0x02a3b46e`) sets up each thread like this:
@@ -687,6 +700,23 @@ person running it chose:
 
 **What stops by name:** a setting nobody gave a value, and a missing variable.
 
+## PSN offline: sign-in state, callbacks and matchmaking start-up
+
+The runtime is offline: the one user is signed out of PSN for the whole run, and nothing about
+that ever changes. The facts come from shadPS4's `libSceNpManager` and `libSceNpMatching2`
+(`np_manager.h`, `np_types2.h`, `np_error.h`), checked against bbport and bbhost. The code is the
+runtime's own.
+
+| Call | Runtime |
+|---|---|
+| `sceNpRegisterStateCallback(callback, data)` | keeps it and never calls it: callbacks run only from `sceNpCheckCallback` when the sign-in state changes. A second registration answers `0x80550008`, no callback `0x80550003`. |
+| `sceNpUnregisterStateCallback()` | 0, or `0x80550009` with none registered |
+| `sceNpRegisterGamePresenceCallback(callback, data)` | keeps it (replacing any earlier one) and answers nothing; the caller (`0x010b8386`) reads no result |
+| `sceNpGetState(user, uint32_t *state)` | 1, signed out (0 is not signed up, 2 signed in); a missing variable answers `0x80550003`, and a user the runtime did not hand out stops by name |
+| `sceNpCheckCallback()` | 0, running nothing: offline nothing changes |
+| `sceNpMatching2Initialize(const parameter *)` | the 0x30-byte block carries its own size at `0x20`, and 0x30 or the older 0x28 is accepted. Anything else, or no block, answers `0x80550C0A`; a second initialize answers `0x80550C02`. The caller (`0x010ba2d0`) treats a negative answer as failure. |
+| `sceNpMatching2Terminate()` | 0, or `0x80550C03` before initialize |
+
 ## The PSN title id (`sceNpSetNpTitleId`)
 
 `sceNpSetNpTitleId(const title id *, const title secret *)` registers the title's PSN title id
@@ -737,6 +767,24 @@ flexible memory to a budget. The budget is not established and the runtime does 
 - other protection bits;
 - a length that is not whole 16 KiB pages;
 - a missing variable.
+
+## The network errno and epoll sets (`sceNetErrnoLoc`, `sceNetEpoll*`)
+
+Facts from the shadPS4 `libSceNet` that bbport vendors (`net.cpp`, `guest_net.cpp`,
+`net_error.h`, `net_types.h`) and from bbhost. The implementation is the runtime's own.
+
+- **Errors:** a failing call answers `0x80410100` plus a FreeBSD error number, and sets the
+  calling thread's network errno, whose address `sceNetErrnoLoc()` gives. That errno is separate
+  from the C library's.
+- **Offline:** an epoll set exists, but no socket ever becomes ready on it, so a wait ends only by
+  its timeout, an abort or a destroy.
+
+| Call | Runtime |
+|---|---|
+| `sceNetEpollCreate(name, flags)` | a new id from 1; flags other than 0 are `EINVAL` (`0x80410116`), a name over 31 characters `ENAMETOOLONG` (`0x8041013f`). The caller (`0x02b1575d`) keeps the id and reads the network errno on failure. |
+| `sceNetEpollWait(id, events, max, timeout µs)` | 0 events after the timeout (negative waits for ever); `EINTR` (`0x80410104`) if an abort or destroy cuts it short; unknown id `EBADF`, no events or `max < 1` `EINVAL` |
+| `sceNetEpollAbort(id, flags)` | interrupts the waiters; with none, `ENOTBLK` (`0x8041010f`), or with flag 1 the abort is kept and the next wait fails with `EINTR` at once; other flags `EINVAL` |
+| `sceNetEpollDestroy(id)` | closes the set, interrupting its waiters; unknown id `EBADF` |
 
 ## Network library start-up (`sceNetInit`, `sceNetTerm`, `sceNetPoolCreate`, issue #41)
 

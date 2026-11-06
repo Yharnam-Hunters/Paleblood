@@ -3,8 +3,9 @@ name: ci
 
 on:
   push:
-    # The merge queue's temporary branches are checked by their merge_group run.
-    branches-ignore: ['gh-readonly-queue/**']
+    # main only: a pull request's branch is checked by its pull_request run and the merge queue's
+    # temporary branch by its merge_group run, so a push to either would test the same commit again.
+    branches: [main]
   pull_request:
   merge_group:
 
