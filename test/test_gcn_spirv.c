@@ -313,11 +313,29 @@ static void rect_list_stages(void)
     CHECK(rt_rect_list_geometry(0, RT_RECT_LIST_MAX_CLIP_DISTANCES + 1, &spirv, &words) == -1);
 }
 
+/* The user data a program reads before writing it, in program order: s_mov_b32 s5, s2; s_mov_b32 s2, 0;
+   s_mov_b32 s6, s2 reads s2 (only its first read is the user data's), and writes s5 and s6; the
+   starting registers' setup counts as neither. */
+static void user_data_read(void)
+{
+    static const uint32_t program[] = {0xbe850302, 0xbe820380, 0xbe860302, 0xbf810000};
+    gcn_compute_layout reporting = layout;
+    uint32_t read = ~0u;
+    reporting.user_data_read = &read;
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    char error[256] = "";
+    CHECK(gcn_translate_compute(program, sizeof program / sizeof *program, &reporting, &spirv, &words, error, sizeof error) == 0);
+    free(spirv);
+    CHECK(read == 1u << 2);
+}
+
 int main(void)
 {
     rect_list_stages();
     image_programs();
     calls();
+    user_data_read();
     translates(PROGRAM(scale_add), "scale_add");
     translates(PROGRAM(integer_and_select), "integer_and_select");
     translates(PROGRAM(constants_and_modifiers), "constants_and_modifiers");

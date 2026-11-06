@@ -63,6 +63,7 @@ typedef struct {
     const uint32_t *callee;          /* a vertex shader's fetch shader, inlined at its call */
     size_t callee_dwords;
     uint64_t code_address;
+    uint32_t *user_data_read;        /* runtime/gcn_spirv.h, "User data read" */
 } stage_layout;
 
 enum { POSITION_TARGET = 12, PARAMETER_TARGET_FIRST = 32, PARAMETER_COUNT = 32, COLOR_TARGET_COUNT = 8, MAX_INTERFACE = 80 };
@@ -75,6 +76,11 @@ typedef struct {
     uint32_t exec, scc, pc;                         /* EXEC's lane bit, SCC, the next block's index */
     uint32_t glsl;                      /* the GLSL.std.450 import */
     uint32_t vgpr[VGPR_COUNT], sgpr[SGPR_COUNT], lane_bit[SGPR_COUNT]; /* variables, made on first use */
+    /* the user SGPRs read before the program writes them, in program order (a bit each); writing is set
+       while sgpr() is asked for a variable to store to, and sgpr_written once the program has */
+    uint32_t user_read;
+    int writing;
+    unsigned char sgpr_written[SGPR_COUNT];
     uint32_t push_constants, local_invocation_id, workgroup_id;
     /* stage inputs and outputs, made on first use, and every one the entry point lists */
     uint32_t position, parameter[PARAMETER_COUNT], color[COLOR_TARGET_COUNT], attribute[PARAMETER_COUNT];
@@ -171,6 +177,7 @@ static uint32_t vgpr(translator *t, unsigned n)
 
 static uint32_t sgpr(translator *t, unsigned n)
 {
+    if (!t->writing && n < t->layout->user_sgprs && !t->sgpr_written[n]) t->user_read |= 1u << n;
     if (!t->sgpr[n]) t->sgpr[n] = function_variable(t, t_uint(t), konst(t, 0));
     return t->sgpr[n];
 }
@@ -256,7 +263,9 @@ static void write_sgpr(translator *t, unsigned n, uint32_t bits, const gcn_instr
         fail(t, "%s: writing special register %u is not supported yet", ins->name, n);
         return;
     }
+    t->sgpr_written[n] = 1, t->writing = 1;
     store(t, t->out, sgpr(t, n), bits);
+    t->writing = 0;
 }
 
 /* A mask register's lane bit: EXEC's own variable, or an SGPR pair's (VCC is s106). */
@@ -1491,6 +1500,7 @@ static uint32_t user_data_block(translator *t)
    position in the workgroup. */
 static void starting_registers(translator *t, const stage_layout *layout)
 {
+    t->writing = 1; /* the hardware's starting values, not the program's reads or writes */
     for (unsigned i = 0; i < layout->user_sgprs; i++) {
         /* member 0 of the block (the array), then element i */
         const uint32_t pointer = value(t, SPV_OP_ACCESS_CHAIN, spirv_type_pointer(&t->m, SPV_STORAGE_PUSH_CONSTANT, t_uint(t)), 3,
@@ -1500,10 +1510,12 @@ static void starting_registers(translator *t, const stage_layout *layout)
     if (layout->stage == STAGE_VERTEX) {
         const uint32_t index = interface_variable(t, SPV_STORAGE_INPUT, t_int(t), SPV_DECORATION_BUILT_IN, SPV_BUILT_IN_VERTEX_INDEX);
         store(t, t->out, vgpr(t, layout->vertex_index_vgpr), value(t, SPV_OP_BITCAST, t_uint(t), 1, load(t, t_int(t), index)));
+        t->writing = 0;
         return;
     }
     if (layout->stage == STAGE_PIXEL) {
         /* the barycentric VGPRs are read only by v_interp, by number; the position is FragCoord's x and y */
+        t->writing = 0;
         if (!layout->position_enable) return;
         const uint32_t frag_coord = interface_variable(t, SPV_STORAGE_INPUT, t_vec4(t), SPV_DECORATION_BUILT_IN, SPV_BUILT_IN_FRAG_COORD);
         unsigned next = layout->position_vgpr;
@@ -1520,6 +1532,7 @@ static void starting_registers(translator *t, const stage_layout *layout)
         store(t, t->out, sgpr(t, (unsigned)layout->workgroup_id_x_sgpr),
               value(t, SPV_OP_COMPOSITE_EXTRACT, t_uint(t), 2, group, 0));
     }
+    t->writing = 0;
     const uint32_t lane = load(t, uvec3, t->local_invocation_id);
     for (unsigned axis = 0; axis < 3; axis++)
         store(t, t->out, vgpr(t, axis), value(t, SPV_OP_COMPOSITE_EXTRACT, t_uint(t), 2, lane, axis));
@@ -2094,8 +2107,10 @@ static void inline_call(translator *t, const uint32_t *w, size_t at)
         return;
     }
     const uint64_t return_address = l->code_address + (at + 1) * BYTES_PER_DWORD;
+    t->sgpr_written[return_sgpr] = t->sgpr_written[return_sgpr + 1] = 1, t->writing = 1;
     store(t, t->out, sgpr(t, return_sgpr), konst(t, (uint32_t)return_address));
     store(t, t->out, sgpr(t, return_sgpr + 1), konst(t, (uint32_t)(return_address >> 32)));
+    t->writing = 0;
     for (size_t p = 0; p < l->callee_dwords && !t->failed;) {
         decoded d = {.at = p};
         if (gcn_decode(l->callee + p, l->callee_dwords - p, &d.ins) || !d.ins.name) {
@@ -2370,6 +2385,7 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
     if (!t->failed) {
         *spirv = spirv_finish(m, spirv_word_count);
         if (*spirv) result = 0;
+        if (layout->user_data_read) *layout->user_data_read = t->user_read;
         else fail(t, "no memory");
     }
     free(labels), free(instructions), free(starts), free(block_of);
@@ -2385,7 +2401,8 @@ int gcn_translate_compute(const uint32_t *code, size_t dwords, const gcn_compute
     const stage_layout s = {.stage = STAGE_COMPUTE, .local_size = {layout->local_size[0], layout->local_size[1], layout->local_size[2]},
                             .user_sgprs = layout->user_sgprs, .workgroup_id_x_sgpr = layout->workgroup_id_x_sgpr,
                             .images = layout->images, .image_count = layout->image_count,
-                            .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address};
+                            .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address,
+                            .user_data_read = layout->user_data_read};
     return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
 }
 
@@ -2395,7 +2412,8 @@ int gcn_translate_vertex(const uint32_t *code, size_t dwords, const gcn_vertex_l
     const stage_layout s = {.stage = STAGE_VERTEX, .user_sgprs = layout->user_sgprs, .workgroup_id_x_sgpr = -1,
                             .vertex_index_vgpr = layout->vertex_index_vgpr, .output_control = layout->output_control,
                             .callee = layout->callee, .callee_dwords = layout->callee_dwords, .code_address = layout->code_address,
-                            .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address};
+                            .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address,
+                            .user_data_read = layout->user_data_read};
     return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
 }
 
@@ -2406,6 +2424,7 @@ int gcn_translate_pixel(const uint32_t *code, size_t dwords, const gcn_pixel_lay
                             .barycentric_vgpr = layout->barycentric_vgpr, .position_enable = layout->position_enable,
                             .position_vgpr = layout->position_vgpr, .images = layout->images, .image_count = layout->image_count,
                             .samplers = layout->samplers, .sampler_count = layout->sampler_count,
-                            .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address};
+                            .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address,
+                            .user_data_read = layout->user_data_read};
     return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
 }
