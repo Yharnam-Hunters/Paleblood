@@ -498,6 +498,40 @@ static void indexed_draws(rt_executor *x)
     CHECK(run_indexed(x, at(INDEXED_16), at(INDICES_16), 0, 5, 3, error, sizeof error) == -1 && strstr(error, "past the 5-index buffer"));
 }
 
+/* A render target's memory stays its contents: after a buffer draws the triangle into a linear target,
+   the guest memory under it holds the reference image (red first, as SWAP_STD stores it); a pixel shader
+   reading that memory as an image draws the reference image into another target; and when the CPU
+   rewrites the memory, the next buffer's draw keeping what is there (blend ZERO + ONE) shows the CPU's
+   texels, not the old image. */
+static void target_memory(rt_executor *x)
+{
+    enum { SOURCE = 0xd40000, COPY = 0xd80000 };
+    char error[200] = "";
+    const uint32_t plain[][2] = {{0xa1e0, 0}};
+    CHECK(run_with_registers(x, 0xc0f90000, at(SOURCE), plain, 1, 0, error, sizeof error) == 0);
+    const uint32_t *memory = (const uint32_t *)(uintptr_t)at(SOURCE);
+    int same = 1;
+    for (uint32_t y = 0; y < SIZE; y++)
+        for (uint32_t px = 0; px < SIZE; px++) {
+            const uint32_t p = memory[y * SIZE + px], want = reference_texel(px, y);
+            for (int k = 0; k < 4; k++) same &= abs((int)(p >> (8 * k) & 0xff) - (int)(want >> (8 * k) & 0xff)) <= 2;
+        }
+    CHECK(same);
+    uint32_t image[8];
+    image_descriptor(image, at(SOURCE), 10, 0, SIZE, SIZE);
+    image[3] |= 8u << 20; /* linear aligned, as the target */
+    const int read = draw_texels(x, at(COPY), image, error, sizeof error);
+    if (read) fprintf(stderr, "target as image: %s\n", error);
+    CHECK(read == 0);
+    CHECK(differing_pixels(x, at(COPY)) == 0);
+    for (int i = 0; i < SIZE * SIZE; i++) ((uint32_t *)(uintptr_t)at(SOURCE))[i] = 0xff402010u; /* the CPU's texels */
+    const uint32_t keep[][2] = {{0xa1e0, 1u << 30 | 0u | 1u << 8}}; /* blend ZERO + ONE: what is there stays */
+    CHECK(run_with_registers(x, 0xc0f90000, at(SOURCE), keep, 1, 0, error, sizeof error) == 0);
+    uint32_t bgra[4];
+    CHECK(rt_executor_read_target(x, at(SOURCE), bgra, 2, 2, error, sizeof error) == 0);
+    CHECK(bgra[0] == 0xff102040u); /* the display's blue-first order of red 0x10, green 0x20, blue 0x40 */
+}
+
 int main(void)
 {
     const int fd = map_guest_memory();
@@ -765,6 +799,7 @@ int main(void)
     fetch_shader(x);
     state_across_buffers(x);
     indexed_draws(x);
+    target_memory(x);
 
     rt_executor_close(x);
     rt_render_forget();

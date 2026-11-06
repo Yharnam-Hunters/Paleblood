@@ -358,6 +358,15 @@ Instead:
           the calls set across runs too. The game's command buffers continue into new blocks as they
           fill (a buffer that sets a compute shader at its end, the next one dispatching it).
           `rt_executor_reset` forgets it, for tests' independent cases.
+        - **Render targets keep their memory:** a render target's guest memory stays its contents,
+          laid out by its tile mode (`runtime/tiling.h`): its image is loaded from the memory before a
+          draw when the memory may have changed since (at each buffer, as the CPU runs between
+          submissions, and after each dispatch, whose stores may reach it), and written back once drawn
+          into, before anything reads the memory (a dispatch, a draw's images, the end of the buffer).
+          So a pass can read what an earlier one drew as an image, and draws build on what a compute
+          clear stored. The game's logo pass draws, blended, into the image its compute clear filled,
+          which the fullscreen pass then reads. Detiling and tiling go a micro tile at a time (checked
+          against the per-texel offsets for every mode and element size).
         - **Indexed draws:** `INDEX_BASE` (`0x014752c0`), `INDEX_BUFFER_SIZE` (`0x01475320`),
           `INDEX_TYPE` (`0x01475270`) and `DRAW_INDEX_OFFSET_2` (`0x01474420`) are observed and
           recorded; the draw binds the guest memory buffer as Vulkan's index buffer from the base plus

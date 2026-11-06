@@ -41,6 +41,7 @@ static void color_target(uint32_t words[RT_COLOR_TARGET_WORDS], uint64_t address
     words[1] = SIZE / 8 - 1;
     words[2] = SIZE * SIZE / 64 - 1;
     words[4] = format << 2 | swap << 11; /* number type UNORM */
+    words[5] = 8;                        /* ATTRIB.TILE_MODE_INDEX: linear aligned (the executor keeps the memory current) */
 }
 
 /* A buffer descriptor: base address (48 bits), the stride in the second word's bits 29:16, and the size. */

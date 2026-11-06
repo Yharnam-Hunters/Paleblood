@@ -50,6 +50,10 @@ uint64_t rt_tiling_size(const rt_tiling *layout, uint32_t slices);
    slice. */
 void rt_tiling_detile(const rt_tiling *layout, const uint8_t *tiled, uint8_t *linear, uint32_t width, uint32_t height, uint32_t slices);
 
+/* The other way: texels from `linear` (rows of width texels, slice after slice) to their places in the
+   tiled image at `tiled`; the layout's padding is left as it is. */
+void rt_tiling_tile(const rt_tiling *layout, const uint8_t *linear, uint8_t *tiled, uint32_t width, uint32_t height, uint32_t slices);
+
 #ifdef __cplusplus
 }
 #endif

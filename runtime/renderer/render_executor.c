@@ -57,15 +57,20 @@ typedef struct {
     VkShaderModule module;
 } shader_entry;
 
+/* The image standing for a render target. The guest memory under it stays the target's contents
+   (runtime/tiling.h, its tile mode): the image is loaded from it before a draw when the memory may have
+   changed since (memory_epoch), and written back once drawn into, before anything else reads the memory. */
 typedef struct {
     uint64_t address;
-    uint32_t width, height;
+    uint32_t width, height, tile_index;
     VkFormat format;
     VkImage image;
     VkDeviceMemory memory;
     VkImageView view;
     VkRenderPass pass;
     VkFramebuffer framebuffer;
+    uint64_t loaded_epoch;           /* the memory epoch the image was last loaded at */
+    int drawn;                       /* drawn into since it was last written back */
 } target_entry;
 
 /* What a draw does with the depth target: its test and writes, as Vulkan state. No padding: it is
@@ -227,6 +232,9 @@ struct rt_executor {
     VkDeviceMemory stop_memory;
     volatile uint32_t *stop_word;
     uint64_t stop_address;
+    /* moves on whenever the guest memory may have changed outside the render targets: at each buffer
+       (the CPU runs between submissions) and after each dispatch (shaders store to memory) */
+    uint64_t memory_epoch;
     /* the GPU's state as the calls run so far set it: registers, user data and shaders carry over from
        one submitted buffer to the next, as on the console's GPU */
     draw_state state;
@@ -670,7 +678,8 @@ static target_entry *target_for(rt_executor *x, const rt_color_target *color, ch
     if (format == VK_FORMAT_UNDEFINED) return NULL;
     target_entry *t = find_target(x, color->address);
     if (t) {
-        if (t->width == color->pitch && t->height == color->height && t->format == format) return t;
+        if (t->width == color->pitch && t->height == color->height && t->format == format && t->tile_index == color->tile_mode_index)
+            return t;
         failed(error, error_size, "render target %#llx changed size or format: reallocating it is not done yet",
                (unsigned long long)color->address);
         return NULL;
@@ -679,8 +688,14 @@ static target_entry *target_for(rt_executor *x, const rt_color_target *color, ch
         failed(error, error_size, "more render targets than the executor keeps");
         return NULL;
     }
+    for (size_t i = 0; i < x->image_count; i++)
+        if (x->images[i].address == color->address && x->images[i].gpu_written) {
+            failed(error, error_size, "a render target at %#llx that a shader wrote as an image: not drawn yet", (unsigned long long)color->address);
+            return NULL;
+        }
     t = &x->targets[x->target_count];
-    *t = (target_entry){.address = color->address, .width = color->pitch, .height = color->height, .format = format};
+    *t = (target_entry){.loaded_epoch = UINT64_MAX, .address = color->address, .width = color->pitch, .height = color->height, .tile_index = color->tile_mode_index,
+                        .format = format};
     const VkImageCreateInfo image = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = format,
                                      .extent = {t->width, t->height, 1}, .mipLevels = 1, .arrayLayers = 1,
                                      .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
@@ -736,6 +751,84 @@ fail:
     if (t->image) vkDestroyImage(x->device, t->image, NULL);
     if (t->memory) vkFreeMemory(x->device, t->memory, NULL);
     return NULL;
+}
+
+/* Moves a render target's texels between its image and the guest memory under it, laid out as its tile
+   mode has them (runtime/tiling.h): to the memory (after draws), or from it (before draws, when it may
+   have changed). 0, or -1 with the reason (a layout not done yet, memory outside the GPU-visible range). */
+static int transfer_target(rt_executor *x, target_entry *t, int to_memory, char *error, size_t error_size)
+{
+    enum { TEXEL_BYTES = 4 };
+    rt_tiling layout;
+    char reason[160];
+    if (rt_tiling_layout(t->tile_index, TEXEL_BYTES, t->width, t->height, &layout, reason, sizeof reason))
+        return failed(error, error_size, "render target %#llx: %s", (unsigned long long)t->address, reason);
+    const uint64_t span = rt_tiling_size(&layout, 1);
+    if (t->address < x->guest_base || t->address - x->guest_base > x->size || span > x->size - (t->address - x->guest_base))
+        return failed(error, error_size, "render target %#llx is outside the GPU-visible memory", (unsigned long long)t->address);
+    uint8_t *guest = (uint8_t *)x->view + (t->address - x->guest_base);
+    const VkDeviceSize bytes = (VkDeviceSize)t->width * t->height * TEXEL_BYTES;
+    const VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = bytes,
+                                     .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+    VkBuffer staging = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    void *mapped = NULL;
+    int result = -1;
+    if (vkCreateBuffer(x->device, &info, NULL, &staging) != VK_SUCCESS) return failed(error, error_size, "no staging buffer");
+    VkMemoryRequirements need;
+    vkGetBufferMemoryRequirements(x->device, staging, &need);
+    const VkMemoryAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = need.size,
+                                           .memoryTypeIndex = memory_type(x, need.memoryTypeBits,
+                                                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)};
+    VkCommandBuffer commands = VK_NULL_HANDLE;
+    if (allocate.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(x->device, &allocate, NULL, &memory) != VK_SUCCESS ||
+        vkBindBufferMemory(x->device, staging, memory, 0) != VK_SUCCESS || vkMapMemory(x->device, memory, 0, bytes, 0, &mapped) != VK_SUCCESS) {
+        failed(error, error_size, "no staging memory for render target %#llx", (unsigned long long)t->address);
+        goto done;
+    }
+    if (!to_memory) rt_tiling_detile(&layout, guest, mapped, t->width, t->height, 1);
+    if (!(commands = begin_commands(x))) {
+        failed(error, error_size, "no command buffer");
+        goto done;
+    }
+    const VkImageLayout transfer = to_memory ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    const VkAccessFlags transfer_access = to_memory ? VK_ACCESS_TRANSFER_READ_BIT : VK_ACCESS_TRANSFER_WRITE_BIT;
+    image_barrier(commands, t->image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, transfer,
+                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT, transfer_access,
+                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    const VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {t->width, t->height, 1}};
+    if (to_memory) vkCmdCopyImageToBuffer(commands, t->image, transfer, staging, 1, &copy);
+    else vkCmdCopyBufferToImage(commands, staging, t->image, transfer, 1, &copy);
+    image_barrier(commands, t->image, transfer, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, transfer_access,
+                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+    const VkMemoryBarrier to_host = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                     .dstAccessMask = VK_ACCESS_HOST_READ_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &to_host, 0, NULL, 0, NULL);
+    if (finish_commands(x, commands)) {
+        failed(error, error_size, "the GPU did not copy render target %#llx", (unsigned long long)t->address);
+        goto done;
+    }
+    if (to_memory) rt_tiling_tile(&layout, mapped, guest, t->width, t->height, 1);
+    result = 0;
+done:
+    if (mapped) vkUnmapMemory(x->device, memory);
+    if (staging) vkDestroyBuffer(x->device, staging, NULL);
+    if (memory) vkFreeMemory(x->device, memory, NULL);
+    return result;
+}
+
+/* Writes every render target drawn into since back to the guest memory, so what reads the memory next
+   (a shader's buffer loads or images, the CPU after the buffer) sees the draws. 0, or -1. */
+static int write_back_targets(rt_executor *x, char *error, size_t error_size)
+{
+    for (size_t i = 0; i < x->target_count; i++) {
+        target_entry *t = &x->targets[i];
+        if (!t->drawn) continue;
+        if (transfer_target(x, t, 1, error, error_size)) return -1;
+        t->drawn = 0;
+    }
+    return 0;
 }
 
 /* ---- depth targets ---- */
@@ -1170,6 +1263,7 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int
     if (s->pixel.input_enable != s->pixel.input_address || !(s->pixel.input_enable & PERSP_CENTER_ENA) || (s->pixel.input_enable & ~drawn_inputs))
         return failed(error, error_size, "pixel-shader inputs %#x (address %#x): only the perspective-centre barycentrics and the "
                       "position's x and y are drawn yet", s->pixel.input_enable, s->pixel.input_address);
+    if (write_back_targets(x, error, error_size)) return -1; /* the images it reads see earlier draws */
     gcn_image_binding bindings[GCN_MAX_IMAGES];
     VkImageView views[GCN_MAX_IMAGES];
     unsigned image_count = 0;
@@ -1191,8 +1285,12 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int
         if (!(properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT))
             return failed(error, error_size, "bilinear sampling of Vulkan format %d, which this device cannot filter", (int)view_formats[i]);
     }
-    const target_entry *t = colour ? target_for(x, &s->color, error, error_size) : NULL;
+    target_entry *t = colour ? target_for(x, &s->color, error, error_size) : NULL;
     if (colour && !t) return -1;
+    if (t && t->loaded_epoch != x->memory_epoch) { /* the memory may have changed since the image last held it */
+        if (transfer_target(x, t, 0, error, error_size)) return -1;
+        t->loaded_epoch = x->memory_epoch;
+    }
     const int uses_depth = plan->depth_test || plan->stencil_test;
     const depth_entry *z = uses_depth ? depth_for(x, s, error, error_size) : NULL;
     if (uses_depth && !z) return -1;
@@ -1266,6 +1364,7 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int
     }
     vkCmdEndRenderPass(commands);
     if (finish_commands(x, commands)) return failed(error, error_size, "the GPU did not finish a draw");
+    if (t) t->drawn = 1;
     return check_stop_word(x, error, error_size);
 }
 
@@ -1425,8 +1524,9 @@ done:
 static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, const texel_format *f, unsigned access, char *error,
                               size_t error_size)
 {
-    if (find_target(x, d->address)) {
-        failed(error, error_size, "an image at %#llx that is also a render target: not done yet", (unsigned long long)d->address);
+    /* a render target's memory is kept current (write_back_targets), so reading it as an image reads that */
+    if ((access & GCN_IMAGE_WRITE) && find_target(x, d->address)) {
+        failed(error, error_size, "a shader writing an image at %#llx that is also a render target: not done yet", (unsigned long long)d->address);
         return NULL;
     }
     for (size_t i = 0; i < x->depth_count; i++)
@@ -1692,6 +1792,7 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     if (c->workgroup_id_enables & ~1u)
         return failed(error, error_size, "a compute shader that takes its workgroup's y or z index: not run yet");
     if (c->workgroup_size_enabled) return failed(error, error_size, "a compute shader that takes its workgroup's size information: not run yet");
+    if (write_back_targets(x, error, error_size)) return -1; /* it may read what draws wrote */
     const int workgroup_id_x_sgpr = (c->workgroup_id_enables & 1u) ? (int)c->user_sgprs : -1;
     gcn_image_binding bindings[GCN_MAX_IMAGES];
     VkImageView views[GCN_MAX_IMAGES];
@@ -1718,6 +1819,7 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
                                      .dstAccessMask = VK_ACCESS_HOST_READ_BIT};
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &to_host, 0, NULL, 0, NULL);
     if (finish_commands(x, commands)) return failed(error, error_size, "the GPU did not finish a dispatch");
+    x->memory_epoch++; /* its stores may have changed any memory, render targets' included */
     return check_stop_word(x, error, error_size);
 }
 
@@ -1754,6 +1856,7 @@ int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t size, char *error,
     size_t count = 0;
     const rt_render_call *calls = rt_render_submitted(buffer, size, &count);
     draw_state *s = &x->state; /* the GPU's state carries over from buffer to buffer */
+    x->memory_epoch++;          /* the CPU may have written memory since the last buffer */
     for (size_t i = 0; i < count; i++) {
         const rt_render_call *c = &calls[i];
         switch (c->kind) {
@@ -1825,7 +1928,7 @@ int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t size, char *error,
         }
         }
     }
-    return 0;
+    return write_back_targets(x, error, error_size); /* the CPU may read what the buffer drew */
 }
 
 /* ---- reading a target ---- */
