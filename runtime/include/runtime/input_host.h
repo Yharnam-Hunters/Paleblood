@@ -15,6 +15,7 @@
 #define RUNTIME_INPUT_HOST_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /* The button bits of the state's `buttons` word (the OpenOrbis homebrew SDK's _types/pad.h,
@@ -157,5 +158,53 @@ int rt_input_host_enabled(void);
    (display_vulkan.c): reads the gamepad and the keyboard into the backend's sample, and applies the
    title's vibration to the gamepad's rumble. Nothing when host input is off. */
 void rt_input_host_pump(void);
+
+/* Scripted input (pbboot --input-script SPEC, runtime/input/input_script.c), for unattended boots:
+   timed presses instead of a person at the controller. SPEC is the script itself, or @FILE to read
+   it from a file. Events are separated by commas, semicolons or new lines; `#` starts a comment
+   that runs to the end of the line. An event is
+
+     WHEN:CONTROLS[*HOLD]
+
+   WHEN is a time on one of two clocks: seconds since the process started (`45`, `45.5s`), or the
+   number of frames video out's first port (handle 1) has presented (`700f`). Frames follow the
+   title's own progress, so they suit a slow boot best; seconds need no display. CONTROLS are names
+   joined by `+`: cross circle square triangle up down left right l1 r1 l2 r2 l3 r3 options touch
+   (the touch pad click), and stick directions lstick-up lstick-down lstick-left lstick-right and
+   rstick-up ... (full deflection). The controls are held from WHEN for HOLD, on the same clock
+   (default 0.25 s or 4 frames), then released; events that overlap combine. For example, down at 45 s,
+   then cross at 47 s:
+
+     pbboot ... --display headless --input-script "45:down,47:cross"
+*/
+enum {
+    RT_INPUT_SCRIPT_MAX_EVENTS = 256,
+    RT_INPUT_SCRIPT_DEFAULT_HOLD_FRAMES = 4,
+};
+#define RT_INPUT_SCRIPT_DEFAULT_HOLD_SECONDS 0.25
+
+typedef enum { RT_SCRIPT_SECONDS, RT_SCRIPT_FRAMES } rt_script_clock;
+
+typedef struct {
+    rt_script_clock clock;
+    double start, hold;     /* on the event's clock */
+    uint32_t buttons;       /* RT_PAD_BUTTON_* */
+    uint8_t stick_set;      /* bit RT_KEY_STICK_* - 1 for each stick byte the event sets */
+    uint8_t stick[4];       /* left x, left y, right x, right y, where stick_set says */
+} rt_input_script_event;
+
+typedef struct {
+    int count;
+    rt_input_script_event events[RT_INPUT_SCRIPT_MAX_EVENTS];
+} rt_input_script;
+
+/* Parses a script's text (not @FILE). 0, or -1 with a message in error naming the event. */
+int rt_input_script_parse(const char *text, rt_input_script *script, char *error, size_t error_size);
+/* The sample at a moment, given on both clocks: the pad at rest plus every event that is active. */
+void rt_input_script_sample(const rt_input_script *script, double seconds, uint64_t frames, rt_pad_sample *sample);
+/* pbboot's --input-script: parses SPEC (reading @FILE) and installs a backend that plays it on the
+   process time and video out's presented frames, writing a line to stderr when each event starts.
+   0, or -1 with a message in error. */
+int rt_input_script_configure(const char *spec, char *error, size_t error_size);
 
 #endif
