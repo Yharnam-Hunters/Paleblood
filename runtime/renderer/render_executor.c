@@ -85,7 +85,56 @@ typedef struct {
     rt_pixel_shader pixel;
     int vertex_set, pixel_set;
     uint32_t user[STAGES][GCN_USER_SGPR_MAX];
+    /* Registers the library set (AMD's layout, gfx_7_2_sh_mask.h), with whether each was set; an
+       unset one is the state the drawing below assumes. */
+    uint32_t blend0_control, depth_control, color_control, target_mask, primitive_type, instances;
+    int blend0_set, depth_set, color_control_set, target_mask_set, primitive_set, instances_set;
 } draw_state;
+
+static int failed(char *error, size_t error_size, const char *format, ...) __attribute__((format(printf, 3, 4)));
+
+/* Registers the executor understands (gfx_7_2_d.h); others stop by name until it does. */
+enum { CB_TARGET_MASK = 0xa08e, DB_STENCIL_CONTROL = 0xa10b, CB_BLEND0_CONTROL = 0xa1e0, DB_DEPTH_CONTROL = 0xa200,
+       CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242 };
+enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 0x1, Z_ENABLE = 0x2, Z_WRITE_ENABLE = 0x4,
+       COLOR_MODE_MASK = 0x70, COLOR_MODE_SHIFT = 4, CB_NORMAL = 1, ROP3_MASK = 0xff0000, ROP3_SHIFT = 16, ROP3_COPY = 0xcc,
+       TARGET0_MASK = 0xf, DI_PT_TRILIST = 4 };
+
+/* Keeps a register the library set; 0, or -1 for one the executor does not understand yet. */
+static int set_register(draw_state *s, uint32_t address, uint32_t value)
+{
+    switch (address) {
+    case CB_BLEND0_CONTROL: s->blend0_control = value, s->blend0_set = 1; return 0;
+    case DB_DEPTH_CONTROL: s->depth_control = value, s->depth_set = 1; return 0;
+    case CB_COLOR_CONTROL: s->color_control = value, s->color_control_set = 1; return 0;
+    case CB_TARGET_MASK: s->target_mask = value, s->target_mask_set = 1; return 0;
+    case VGT_PRIMITIVE_TYPE: s->primitive_type = value, s->primitive_set = 1; return 0;
+    case DB_STENCIL_CONTROL: return 0; /* used only while stencil testing is on, which stops below */
+    default: return -1;
+    }
+}
+
+/* Whether the registers describe what the draw below does: opaque triangles into target 0, no
+   depth or stencil test, one instance. 1 when nothing at all would be written (target 0 masked off),
+   0 to draw, -1 with the reason otherwise. */
+static int check_state(const draw_state *s, char *error, size_t error_size)
+{
+    if (s->primitive_set && s->primitive_type != DI_PT_TRILIST)
+        return failed(error, error_size, "primitive type %u: only triangle lists are drawn yet", s->primitive_type);
+    if (s->blend0_set && (s->blend0_control & BLEND_ENABLE)) return failed(error, error_size, "blending is not drawn yet");
+    if (s->depth_set && (s->depth_control & (STENCIL_ENABLE | Z_ENABLE | Z_WRITE_ENABLE)))
+        return failed(error, error_size, "depth or stencil testing (DB_DEPTH_CONTROL %#x) is not drawn yet", s->depth_control);
+    if (s->color_control_set) {
+        const uint32_t mode = (s->color_control & COLOR_MODE_MASK) >> COLOR_MODE_SHIFT, rop = (s->color_control & ROP3_MASK) >> ROP3_SHIFT;
+        if (mode != CB_NORMAL || rop != ROP3_COPY)
+            return failed(error, error_size, "colour mode %u, raster operation %#x: only normal copies are drawn yet", mode, rop);
+    }
+    if (s->instances_set && s->instances != 1) return failed(error, error_size, "%u instances: only one is drawn yet", s->instances);
+    if (s->target_mask_set && !(s->target_mask & TARGET0_MASK)) return 1;
+    if (s->target_mask_set && (s->target_mask & TARGET0_MASK) != TARGET0_MASK)
+        return failed(error, error_size, "colour write mask %#x: only all four channels are drawn yet", s->target_mask & TARGET0_MASK);
+    return 0;
+}
 
 static int failed(char *error, size_t error_size, const char *format, ...)
 {
@@ -503,9 +552,19 @@ int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t size, char *error,
             memcpy(&s.user[stage][c->u.user_data.slot], c->u.user_data.words, c->u.user_data.count * sizeof(uint32_t));
             break;
         }
-        case RT_CALL_DRAW_AUTO:
-            if (draw(x, &s, c->u.draw_auto.index_count, error, error_size)) return -1;
+        case RT_CALL_REGISTER:
+            if (set_register(&s, c->u.reg.address, c->u.reg.value))
+                return failed(error, error_size, "register %#x: the executor does not interpret it yet", c->u.reg.address);
             break;
+        case RT_CALL_INSTANCES:
+            s.instances = c->u.instances.count, s.instances_set = 1;
+            break;
+        case RT_CALL_DRAW_AUTO: {
+            const int checked = check_state(&s, error, error_size);
+            if (checked < 0) return -1;
+            if (checked == 0 && draw(x, &s, c->u.draw_auto.index_count, error, error_size)) return -1;
+            break;
+        }
         }
     }
     return 0;

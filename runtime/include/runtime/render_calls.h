@@ -82,8 +82,14 @@ void rt_pixel_shader_decode(const uint32_t words[RT_PIXEL_SHADER_WORDS], rt_pixe
 
 typedef enum {
     RT_CALL_COLOR_TARGET, RT_CALL_VIEWPORT, RT_CALL_DRAW_AUTO, RT_CALL_VERTEX_SHADER, RT_CALL_PIXEL_SHADER,
-    RT_CALL_USER_DATA,
+    RT_CALL_USER_DATA, RT_CALL_REGISTER, RT_CALL_INSTANCES,
 } rt_render_call_kind;
+
+/* Register ranges a register call may set, as AMD numbers them (dword addresses, gfx_7_2_d.h):
+   the context registers (blend, depth, stencil, colour control, target mask, ...) and the user
+   config registers (VGT_PRIMITIVE_TYPE, ...). */
+enum { RT_CONTEXT_REGISTERS_FIRST = 0xa000, RT_CONTEXT_REGISTERS_LAST = 0xa3ff,
+       RT_UCONFIG_REGISTERS_FIRST = 0xc000, RT_UCONFIG_REGISTERS_LAST = 0xffff };
 
 typedef struct {
     rt_render_call_kind kind;
@@ -108,6 +114,13 @@ typedef struct {
             unsigned slot, count;    /* the first user SGPR written, and how many */
             uint32_t words[RT_USER_DATA_MAX_WORDS];
         } user_data;
+        struct {
+            uint32_t address;        /* AMD's dword register address, e.g. 0xa1e0 CB_BLEND0_CONTROL */
+            uint32_t value;
+        } reg;
+        struct {
+            uint32_t count;          /* NUM_INSTANCES: instances each later draw makes */
+        } instances;
     } u;
 } rt_render_call;
 
@@ -127,6 +140,12 @@ int rt_render_record_user_data(uint64_t buffer, uint32_t offset, rt_shader_stage
                                unsigned count, char *error, size_t error_size);
 int rt_render_record_pixel_shader(uint64_t buffer, uint32_t offset, const uint32_t words[RT_PIXEL_SHADER_WORDS],
                                   char *error, size_t error_size);
+/* One register the library set, in the context or user config range (blend, depth and stencil
+   control, the target mask, the primitive type, ...): the renderer interprets the ones it knows. */
+int rt_render_record_register(uint64_t buffer, uint32_t offset, uint32_t address, uint32_t value, char *error,
+                              size_t error_size);
+/* The instance count later draws use (the NUM_INSTANCES packet); at least 1. */
+int rt_render_record_instances(uint64_t buffer, uint32_t offset, uint32_t count, char *error, size_t error_size);
 
 /* At submission of size bytes of the buffer: its calls made before that point, in order, and their
    count in *count. The array stays valid until the next call records into that buffer. */

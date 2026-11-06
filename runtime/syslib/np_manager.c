@@ -113,6 +113,15 @@ static void register_game_presence_callback(void *callback, void *user_data)
 }
 RT_SYSLIB("libSceNpManager", sceNpRegisterGamePresenceCallback, register_game_presence_callback);
 
+void *rt_np_callback(rt_np_callback_kind kind, void **user_data)
+{
+    pthread_mutex_lock(&np_lock);
+    void *const callback = kind == RT_NP_STATE_CALLBACK ? state_callback : presence_callback;
+    if (user_data) *user_data = kind == RT_NP_STATE_CALLBACK ? state_callback_data : presence_callback_data;
+    pthread_mutex_unlock(&np_lock);
+    return callback;
+}
+
 enum { NP_STATE_SIGNED_OUT = 1 };
 
 static int32_t get_state(int32_t user, uint32_t *state)

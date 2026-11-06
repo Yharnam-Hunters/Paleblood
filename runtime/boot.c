@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* pbboot: runs a PS4 executable's entry on Paleblood's runtime, as far as the runtime goes.
 
-     pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--app0 DIR] [--data DIR] [--display none|headless|window] [--display-capture DIR] [--nids NID_DB.xml]
+     pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--addcont LABEL]... [--app0 DIR] [--data DIR] [--savedata DIR] [--display none|headless|window] [--audio none|host] [--display-capture DIR] [--nids NID_DB.xml]
             [--module-hook MODULE:OFFSET:SIZE:ACTION:NAME]...
             [--status OUT.json] [--timeout SECONDS] [--trace] [--game-lib LIBRARY]
      pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]
@@ -44,6 +44,7 @@
 #include "runtime/module_tls.h"
 #include "runtime/nid.h"
 #include "runtime/process.h"
+#include "runtime/audio_host.h"
 #include "runtime/renderer.h"
 #include "runtime/syslib.h"
 
@@ -630,7 +631,7 @@ static int display_mode_named(const char *name, rt_display_mode *mode)
 }
 
 static const char *usage =
-    "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--app0 DIR] [--data DIR] [--display none|headless|window] [--display-capture DIR] [--nids NID_DB.xml]\n"
+    "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--addcont LABEL]... [--app0 DIR] [--data DIR] [--savedata DIR] [--display none|headless|window] [--audio none|host] [--display-capture DIR] [--nids NID_DB.xml]\n"
     "              [--module-hook MODULE:OFFSET:SIZE:ACTION:NAME]...\n"
     "              [--status OUT.json] [--timeout S] [--trace] [--game-lib LIBRARY]\n"
     "       pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]\n";
@@ -657,6 +658,8 @@ int main(int argc, char **argv)
             rt_process.app0_dir = argv[++i];
         else if (!strcmp(argv[i], "--data") && i + 1 < argc)
             rt_process.data_dir = argv[++i];
+        else if (!strcmp(argv[i], "--savedata") && i + 1 < argc)
+            rt_process.savedata_dir = argv[++i];
         else if (!strcmp(argv[i], "--display") && i + 1 < argc) {
             const char *mode = argv[++i];
             if (display_mode_named(mode, &display_mode)) {
@@ -666,11 +669,31 @@ int main(int argc, char **argv)
         }
         else if (!strcmp(argv[i], "--display-capture") && i + 1 < argc)
             display_capture = argv[++i];
+        else if (!strcmp(argv[i], "--audio") && i + 1 < argc) {
+            const char *audio = argv[++i];
+            if (strcmp(audio, "none") && strcmp(audio, "host")) {
+                fprintf(stderr, "pbboot: --audio %s: want none or host\n", audio);
+                return 2;
+            }
+            if (rt_audio_host_configure(!strcmp(audio, "host"))) {
+                fprintf(stderr, "pbboot: --audio host: this build has no host sound (SDL3 was not found)\n");
+                return 2;
+            }
+        }
         else if (!strcmp(argv[i], "--system-param") && i + 1 < argc) {
             if (add_system_param(argv[++i])) {
                 fprintf(stderr, "pbboot: --system-param %s: want a new ID=VALUE\n", argv[i]);
                 return 2;
             }
+        }
+        else if (!strcmp(argv[i], "--addcont") && i + 1 < argc) {
+            const char *label = argv[++i];
+            if (rt_process.addcont_count == RT_MAX_ADDCONTS || !label[0] || strlen(label) >= RT_ADDCONT_LABEL_BYTES) {
+                fprintf(stderr, "pbboot: --addcont %s: want an entitlement label of 1 to 16 characters (at most %d)\n", label,
+                        RT_MAX_ADDCONTS);
+                return 2;
+            }
+            memcpy(rt_process.addconts[rt_process.addcont_count++], label, strlen(label) + 1);
         }
         else if (!strcmp(argv[i], "--app-param") && i + 1 < argc) {
             if (add_app_param(argv[++i])) {

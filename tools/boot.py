@@ -287,12 +287,18 @@ def main() -> int:
     ap.add_argument('--trace', action='store_true')
     ap.add_argument('--param-sfo', default=None, help="your own copy's sce_sys/param.sfo")
     ap.add_argument('--app0', default=None, help="your own copy's application directory (served read-only as /app0)")
+    ap.add_argument('--savedata', default=None, metavar='DIR',
+                    help='keep the game\'s save data in DIR (default: a new empty folder for each run)')
     ap.add_argument('--system-param', action='append', default=[], metavar='ID=VALUE',
                     help='a console system setting, e.g. 1=18 for English (United Kingdom)')
+    ap.add_argument('--addcont', action='append', default=[], metavar='LABEL',
+                    help="an add-on you own, by its entitlement label (e.g. the game's expansion); default: none")
     ap.add_argument('--no-record', action='store_true', help='run and print only')
     ap.add_argument('--display', choices=('none', 'headless', 'window'), default='none',
                     help='show the frames: none (default), headless, or a window (needs Vulkan and SDL3)')
     ap.add_argument('--display-capture', default=None, metavar='DIR', help='write each presented frame to DIR as PPM')
+    ap.add_argument('--audio', choices=('none', 'host'), default='none',
+                    help='play the game\'s sound on this computer (host; needs SDL3) or not at all (none, default)')
     a = ap.parse_args()
     elf = a.elf or default_elf()
     pbboot = os.environ.get('BB_PBBOOT') or os.path.join(ROOT, 'build', 'runtime', 'pbboot')
@@ -312,6 +318,8 @@ def main() -> int:
         stubs = stub_module_args(ROOT)
         stubs += app_param_args(ROOT, a.param_sfo or default_param_sfo())
         stubs += system_param_args(a.system_param)
+        for label in a.addcont:
+            stubs += ['--addcont', label]
         stubs += ['--app0', a.app0 or default_app0()]
         hooks = module_hook_args(ROOT)
     except (ValueError, OSError) as e:
@@ -325,8 +333,12 @@ def main() -> int:
         # starts alike and nothing the game writes outlives the run.
         data = os.path.join(d, 'data')
         os.mkdir(data)
-        cmd = [pbboot, *objects, *stubs, *hooks, '--data', data, '--status', out, '--timeout', str(a.timeout), *names,
-               '--display', a.display]
+        # Save data, the same way unless --savedata names a folder to keep saves in across runs.
+        savedata = a.savedata or os.path.join(d, 'savedata')
+        os.makedirs(savedata, exist_ok=True)
+        cmd = [pbboot, *objects, *stubs, *hooks, '--data', data, '--savedata', savedata, '--status', out,
+               '--timeout', str(a.timeout), *names,
+               '--display', a.display, '--audio', a.audio]
         if a.display_capture:
             cmd += ['--display-capture', a.display_capture]
         if a.trace:

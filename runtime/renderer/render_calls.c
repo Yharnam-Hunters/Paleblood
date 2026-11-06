@@ -191,6 +191,29 @@ int rt_render_record_draw_auto(uint64_t buffer, uint32_t offset, uint32_t index_
     return record(buffer, &call, error, error_size);
 }
 
+int rt_render_record_register(uint64_t buffer, uint32_t offset, uint32_t address, uint32_t value, char *error,
+                              size_t error_size)
+{
+    const int context = address >= RT_CONTEXT_REGISTERS_FIRST && address <= RT_CONTEXT_REGISTERS_LAST;
+    const int uconfig = address >= RT_UCONFIG_REGISTERS_FIRST && address <= RT_UCONFIG_REGISTERS_LAST;
+    if (!context && !uconfig) {
+        snprintf(error, error_size, "register 0x%x is outside the context and user config ranges", (unsigned)address);
+        return -1;
+    }
+    const rt_render_call call = {.kind = RT_CALL_REGISTER, .offset = offset, .u.reg = {address, value}};
+    return record(buffer, &call, error, error_size);
+}
+
+int rt_render_record_instances(uint64_t buffer, uint32_t offset, uint32_t count, char *error, size_t error_size)
+{
+    if (!count) {
+        snprintf(error, error_size, "an instance count of 0");
+        return -1;
+    }
+    const rt_render_call call = {.kind = RT_CALL_INSTANCES, .offset = offset, .u.instances.count = count};
+    return record(buffer, &call, error, error_size);
+}
+
 int rt_render_record_vertex_shader(uint64_t buffer, uint32_t offset, const uint32_t words[RT_VERTEX_SHADER_WORDS],
                                    char *error, size_t error_size)
 {
