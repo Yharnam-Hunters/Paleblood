@@ -137,4 +137,5 @@ address,replacement,system,returns
 0x02abb4f0,bb_render_record_auxiliary_predicate,render,i8
 0x02ad2c30,bb_render_reset_present_preparation_dirty,render,i64
 0x02ad5dd0,bb_render_swap_chain_present_mode,render,i32
+0x02ad5e90,bb_render_setup_swap_chain,render,i64
 0x02ad6e50,bb_render_swap_chain_submit,render,i32
