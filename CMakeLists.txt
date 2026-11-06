@@ -104,7 +104,7 @@ file(GLOB PB_TEST_SYSLIB CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/runtime/syslib/
 file(GLOB PB_TEST_SYSLIB_TESTS CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/test/syslib/*.c)
 add_executable(test_syslib test/test_syslib.c ${PB_TEST_SYSLIB_TESTS} runtime/process.c ${PB_TEST_SYSLIB}
                runtime/display/display.c runtime/display/display_window_none.c runtime/renderer/renderer_none.c
-               runtime/audio/audio_host_none.c runtime/input/input.c runtime/input/input_host_none.c ${PB_MEDIA_SOURCES})
+               runtime/audio/audio_host_none.c runtime/input/input.c runtime/input/input_script.c runtime/input/input_host_none.c ${PB_MEDIA_SOURCES})
 target_include_directories(test_syslib PRIVATE runtime/include)
 target_link_libraries(test_syslib PRIVATE atrac9)
 if(PB_FFMPEG_FOUND)
