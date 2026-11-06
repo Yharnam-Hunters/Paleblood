@@ -723,6 +723,17 @@ static f_us_none us_terminate;
 static f_us_ids us_initial_user, us_login_list;
 static void us_terminate_uninitialized(void) { us_terminate(); }
 static void us_initial_user_uninitialized(void) { int32_t u; us_initial_user(&u); }
+typedef int32_t (*f_us_name)(int32_t, char *, size_t);
+static f_us_name us_name;
+static int32_t us_user;
+static void us_name_uninitialized(void) { char n[17]; us_name(1, n, sizeof n); }
+static void us_name_other_user(void) { char n[17]; us_name(us_user + 1, n, sizeof n); }
+static void us_name_short(void) { char n[6]; us_name(us_user, n, sizeof n); }
+static void us_name_no_buffer(void) { us_name(us_user, NULL, 17); }
+typedef int32_t (*f_us_event)(int32_t *);
+static f_us_event us_event;
+static void us_event_uninitialized(void) { int32_t e[2]; us_event(e); }
+static void us_event_no_variable(void) { us_event(NULL); }
 
 /* System settings: answered from rt_process.system_params. */
 typedef int32_t (*f_sys_param)(int32_t, int32_t *);
@@ -1962,8 +1973,13 @@ int main(void)
     us_terminate = (f_us_none)fn("libSceUserService", "sceUserServiceTerminate");
     us_initial_user = (f_us_ids)fn("libSceUserService", "sceUserServiceGetInitialUser");
     us_login_list = (f_us_ids)fn("libSceUserService", "sceUserServiceGetLoginUserIdList");
-    if (us_init && us_terminate && us_initial_user && us_login_list) {
+    us_name = (f_us_name)fn("libSceUserService", "sceUserServiceGetUserName");
+    us_event = (f_us_event)fn("libSceUserService", "sceUserServiceGetEvent");
+    CHECK(us_name != NULL && us_event != NULL);
+    if (us_init && us_terminate && us_initial_user && us_login_list && us_name && us_event) {
         CHECK(died_in_fatal(us_terminate_uninitialized));
+        CHECK(died_in_fatal(us_event_uninitialized));
+        CHECK(died_in_fatal(us_name_uninitialized));
         CHECK(died_in_fatal(us_initial_user_uninitialized));
         const uint32_t params[4] = {0x2bc, 0, 0, 0};
         CHECK(us_init(params) == 0);
@@ -1971,6 +1987,18 @@ int main(void)
         int32_t user = -7, list[4] = {-7, -7, -7, -7};
         CHECK(us_initial_user(&user) == 0 && user != -1 && user != 0xff && user != -7);
         CHECK(us_login_list(list) == 0 && list[0] == user && list[1] == -1 && list[2] == -1 && list[3] == -1);
+        us_user = user;
+        char name[17];
+        memset(name, 0x7f, sizeof name);
+        CHECK(us_name(user, name, sizeof name) == 0 && strcmp(name, "Hunter") == 0 && name[7] == 0x7f);
+        char exact[7];
+        CHECK(us_name(user, exact, sizeof exact) == 0 && strcmp(exact, "Hunter") == 0); /* the name and its end */
+        CHECK(died_in_fatal(us_name_other_user));
+        CHECK(died_in_fatal(us_name_short));
+        CHECK(died_in_fatal(us_name_no_buffer));
+        int32_t event[2] = {-7, -7};
+        CHECK(us_event(event) == (int32_t)0x80960007u && event[0] == -7 && event[1] == -7); /* no event, nothing written */
+        CHECK(died_in_fatal(us_event_no_variable));
         CHECK(us_terminate() == 0);
         CHECK(us_init(params) == 0);    /* initialized again after a terminate */
         CHECK(us_terminate() == 0);

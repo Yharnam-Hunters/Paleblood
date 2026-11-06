@@ -570,9 +570,19 @@ The executable initializes the service twice:
 
 **What stops by name:** a call before initialize, a missing argument, and the other error values.
 
-`sceUserServiceGetUserName` and `sceUserServiceGetEvent` stay unbound until the boot reaches them.
-A local boot (affinity probe and rwlocks let through, not committed) stops next at
-`sceCommonDialogInitialize`.
+**The user's name** (`sceUserServiceGetUserName(int32_t, char *, const size_t)`, in OpenOrbis
+`UserService.h`; a name is at most 16 characters). The executable asks with 17 bytes
+(`0x02561cd7`) or a size it computed (`0x0111bdfe`), and goes on only on 0. The name is the
+runtime's choice, `Hunter`, written with its terminating zero. A user the runtime did not hand
+out, or a buffer too small for the name, stops by name.
+
+**Login and logout events** (`sceUserServiceGetEvent(OrbisUserServiceEvent *)`, the event being
+a type, 0 login or 1 logout, and a user id; "no event" is `0x80960007`, OpenOrbis `errors.h`). No
+user logs in or out during a run, so every call answers `0x80960007` and writes nothing. The
+executable's one caller (`0x025628e4`) is a polling thread: after any non-zero answer it sleeps
+33 ms (`sceKernelUsleep(0x80e8)`) and asks again, and it handles a login or logout only when one
+comes. It never waits for the first user's login to be reported; whether the PS4 reports that
+login is not public.
 
 ## The common dialog's initialize (`libSceCommonDialog`, issue #40)
 
