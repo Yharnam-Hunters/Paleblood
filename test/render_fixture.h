@@ -53,7 +53,8 @@ static void descriptor(uint32_t *words, uint64_t address, uint32_t stride)
 }
 
 /* Records one draw's calls on a command buffer; returns the bytes "written". */
-static uint32_t record_draw(uint64_t buffer, uint64_t target, uint32_t format, uint32_t swap, uint32_t pixel_inputs)
+/* Records a triangle's state (target, viewport, shaders, user data) and returns the next offset. */
+static uint32_t record_setup(uint64_t buffer, uint64_t target, uint32_t format, uint32_t swap, uint32_t pixel_inputs)
 {
     char error[160];
     uint32_t offset = 0x10;
@@ -72,8 +73,20 @@ static uint32_t record_draw(uint64_t buffer, uint64_t target, uint32_t format, u
     descriptor(user, at(CORNERS), RECORD_STRIDE);
     descriptor(user + 4, at(COLORS), RECORD_STRIDE);
     CHECK(rt_render_record_user_data(buffer, offset += 0x10, RT_STAGE_VERTEX, 0, user, 8, error, sizeof error) == 0);
-    CHECK(rt_render_record_draw_auto(buffer, offset += 0x10, 3, error, sizeof error) == 0);
     return offset + 0x10;
+}
+
+/* Records the triangle's draw at offset; returns the buffer's size. */
+static uint32_t record_triangle_draw(uint64_t buffer, uint32_t offset)
+{
+    char error[160];
+    CHECK(rt_render_record_draw_auto(buffer, offset, 3, error, sizeof error) == 0);
+    return offset + 0x10;
+}
+
+static uint32_t record_draw(uint64_t buffer, uint64_t target, uint32_t format, uint32_t swap, uint32_t pixel_inputs)
+{
+    return record_triangle_draw(buffer, record_setup(buffer, target, format, swap, pixel_inputs));
 }
 
 static int near(uint32_t channel, float expected) { return fabsf((float)channel - expected * 255.0f) <= 2.0f; }
