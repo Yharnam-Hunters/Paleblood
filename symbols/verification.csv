@@ -183,9 +183,12 @@ physics_instance_construct_01c0c2b0,edge,,21,21,0,0,ca3412adb293c909,2026-10-07
 physics_instance_construct_01c0c2b0,edge,30,21,21,0,0,ca3412adb293c909,2026-10-07
 physics_instance_construct_01c0c2b0,edge,60,21,21,0,0,ca3412adb293c909,2026-10-07
 physics_instance_construct_01c0c2b0,edge,uncapped,21,21,0,0,ca3412adb293c909,2026-10-07
+render_calculate_record_descriptor_level_offset,edge,,30,30,0,0,a5d954dded06630e,2026-11-05
 render_calculate_second_auxiliary,edge,,78,78,0,0,deb55a42a7809e02,2026-11-04
 render_command_emit_counter_operation,edge,,16,16,0,0,c0e3c539e38745c7,2026-11-05
 render_command_prepare_submission,edge,,11,11,0,0,9822deb01ff1c2ff,2026-11-05
+render_compose_record_encoding_fields,edge,,30,30,0,0,c6bfe3dc4c1e12ad,2026-11-05
+render_convert_record_descriptor_classification,edge,,236,236,0,0,a130fb1ef6469c41,2026-11-05
 render_emit_present_last_record_packet,edge,,18,18,0,0,b2f347007c600225,2026-11-04
 render_emit_present_preparation_byte,edge,,18,18,0,0,75c0bbcc534880fd,2026-11-04
 render_emit_present_preparation_scalar,edge,,20,20,0,0,538d1acc0671ae23,2026-11-04
@@ -198,6 +201,7 @@ render_frame_update_02377bd0,edge,,12,12,0,0,dd4fcc5a0d365609,2026-10-31
 render_frame_update_02377bd0,edge,30,12,12,0,0,dd4fcc5a0d365609,2026-10-31
 render_frame_update_02377bd0,edge,60,12,12,0,0,dd4fcc5a0d365609,2026-10-31
 render_frame_update_02377bd0,edge,uncapped,12,12,0,0,dd4fcc5a0d365609,2026-10-31
+render_initialize_record_level_descriptor,edge,,51,51,0,0,a36426b67c294984,2026-11-05
 render_pack_record_mapping_word,edge,,497,497,0,0,9bf1f50e8f52effa,2026-11-04
 render_present_last_record_consume,edge,,56,56,0,0,f410947d55da6601,2026-11-05
 render_present_record_consume,edge,,24,24,0,0,c81d9a8eb4d37272,2026-11-05
@@ -205,6 +209,10 @@ render_read_present_pool_counter,edge,,18,18,0,0,1ef235dcff31de42,2026-11-03
 render_read_record_mapping_word,edge,,224,224,0,0,68ea5b3aae2f9be4,2026-11-04
 render_record_apply_parameter_tuple,edge,,1050,1050,0,0,5cc7672932429aef,2026-11-04
 render_record_auxiliary_predicate,edge,,64,64,0,0,ddfae0976d12bebd,2026-11-04
+render_record_descriptor_count_exponent,edge,,24,24,0,0,632a23284e53140f,2026-11-05
+render_record_descriptor_encoding,edge,,24,24,0,0,e792610b55ba0383,2026-11-05
+render_record_descriptor_level_count,edge,,24,24,0,0,089dab7374921036,2026-11-05
+render_record_encoding_byte_flags,edge,,8,8,0,0,6fe288678cf26d7c,2026-11-05
 render_record_encoding_category,edge,,48,48,0,0,8f03f505a6bdfb07,2026-11-04
 render_record_encoding_components,edge,,148,148,0,0,b50f3397c0119c7e,2026-11-04
 render_record_encoding_metadata,edge,,256,256,0,0,39b8a33ac9b2c1c0,2026-11-04

@@ -43,8 +43,10 @@ address,size,name,system,status,notes
 0x0143e490,174,frame_timing_task_flush_queue_0143e490,frame_timing,verified,"task manager queue flush: lock, run, destroy and free every queued object, empty the list, unlock"
 0x0143f9f0,18,frame_timing_task_set_frame_value_0143f9f0,frame_timing,verified,task manager: copies the float at +0x8 of the frame information to the global 0x058b7e08
 0x014400a0,180,frame_timing_task_workers_step_014400a0,frame_timing,verified,"task manager workers: three rounds over the worker queues +0x58, +0x68, +0x60"
+0x014712d0,51,render_compose_record_encoding_fields,render,edge-verified,Pack one byte and five masked fields into an encoding DWORD; no memory access.
 0x01471310,544,render_pack_record_mapping_word,render,edge-verified,Pack numeric mapping fields with priority masks and full-width mode handling; return a zero-extended DWORD.
 0x01471730,21,render_record_encoding_metadata,render,edge-verified,Bounded first-byte metadata lookup; preserve original table entries and zero fallback.
+0x01471770,27,render_record_encoding_byte_flags,render,edge-verified,"Map encoding byte 4 to 3, byte 2 to 1, and all other byte values to zero."
 0x014717a0,505,render_record_encoding_components,render,edge-verified,Select ordered packed component arrangement; optional output only on success and Boolean AL contract.
 0x014719a0,117,render_record_encoding_category,render,edge-verified,Decode accepted category nibbles; optional DWORD output untouched on rejection.
 0x014721d0,31,render_set_present_last_record_indices,render,edge-verified,Replace two packed indices while preserving the remaining bits. Return the old preserved bits.
@@ -64,12 +66,18 @@ address,size,name,system,status,notes
 0x014867e0,21,render_record_set_second_auxiliary_flag,render,edge-verified,Clear only bit 14 then OR full input byte shifted14; return preserved old word.
 0x01486800,20,render_record_set_word_28_low22,render,edge-verified,Replace this word's low 22 bits and return the preserved old upper bits.
 0x01486cf0,38,render_read_record_mapping_word,render,edge-verified,Read one unaligned mapping DWORD and delegate three extracted fields to the original encoder. Full return is zero-extended.
+0x01489910,24,render_record_descriptor_level_count,render,edge-verified,Read bits 16..19 below the upper descriptor partition; otherwise return zero.
+0x01489940,24,render_record_descriptor_count_exponent,render,edge-verified,Read bits 16..19 in the upper descriptor partition; otherwise return zero.
+0x01489960,68,render_record_descriptor_encoding,render,edge-verified,Read packed words at offsets 0x04 then 0x0c; pass six extracted fields to the encoding packer.
 0x0149c850,672,render_record_apply_parameter_tuple,render,edge-verified,Select one output code from normalization tuple; ordered overrides and rejection preserve output.
+0x0149cc60,350,render_convert_record_descriptor_classification,render,edge-verified,Convert a tile-mode table index for the requested array mode; preserve output on error and bypass already matching modes.
 0x0149e570,279,render_calculate_second_auxiliary,render,edge-verified,Calculate the second auxiliary layout through two ordered unit admissions and wrapped alignment. Publish its four optional size and alignment outputs in 8/4/4/4-byte order.
 0x0149e900,16,render_record_tuple_parameter_supported,render,edge-verified,Nonzero power-of-two test with Boolean AL interface.
 0x0149e960,129,render_record_tuple_transform_classification,render,edge-verified,Transform admitted classifications after wrapping 32-bit scaling and unsigned thresholds.
 0x0149ea20,28,render_record_tuple_classification_group,render,edge-verified,Bounded classification-to-group lookup with fallback one and original shared table.
 0x0149ea70,25,render_record_tuple_alternate_classification,render,edge-verified,Recognize bounded alternate-classification subset with zero fallback.
+0x014a1e80,803,render_initialize_record_level_descriptor,render,edge-verified,"Publish a partial level descriptor in order, reread the source between helper calls, then convert its tile mode."
+0x014a2c40,595,render_calculate_record_descriptor_level_offset,render,edge-verified,Accumulate levels inclusively using partial helper totals even after errors; publish the two QWORD outputs in order.
 0x016efd00,368,event_emk_add,event,verified,SprjEmkSystem: find or add an event entry in two keyed lists; first advance with the 1/30 s step (1/60 s in the 60 FPS patches)
 0x017cfcc0,177,event_flag_write,event,edge-verified,finds an exact event-flag group in a tree and sets or clears one bit
 0x0183fad0,79,camera_follow_pitch,camera,edge-verified,Pitch from the forward basis; preserve scalar square underflow and zero fallback; call atan2 and XOR the returned sign bits
