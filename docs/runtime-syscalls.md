@@ -141,13 +141,16 @@ So `game/module_hooks.csv` replaces two functions before any guest code runs:
 - `hardware_concurrency` (`+0x5fac0`, 7 bytes) with `stop`, so a caller ends the run by name
   instead of reading a count nobody established.
 
-`pbboot --module-hook` writes each as a five-byte relative jump to a stub in the module's slot. A
+`pbboot --module-hook` first compares each function's first bytes, as the mapped and relocated
+module holds them, with the ones the file gives (`first_bytes`), and refuses the run before any
+guest code runs if they differ. It then writes each as a five-byte relative jump to a stub in the module's slot. A
 `return` stub leaves every register as the caller had it. A `stop` is reported like an
 unimplemented import: the status names the hook and its caller in `stopped_by_hook`.
 `scePthreadAttrGetaffinity` stays unbound.
 
 The hook guards calls only. A direct read of `+0xd1c54` that the analysis missed would see 0, not
-a measured count. The offsets fit only the pinned `libc.elf` (`target.sha256`).
+a measured count. The offsets fit only the pinned `libc.elf` (`target.sha256`); another build fails
+the byte check by name instead of being patched.
 
 ## Clock IDs and platform differences
 
