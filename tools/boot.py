@@ -302,7 +302,12 @@ def main() -> int:
                          'in place of the originals; not for recorded boots')
     ap.add_argument('--audio', choices=('none', 'host'), default='none',
                     help='play the game\'s sound on this computer (host; needs SDL3) or not at all (none, default)')
+    ap.add_argument('--input', choices=('none', 'host'), default='none',
+                    help='read the controller from this computer\'s gamepad and keyboard (host; needs SDL3 and '
+                         '--display window) or keep it at rest (none, default)')
     a = ap.parse_args()
+    if a.input == 'host' and a.display != 'window':
+        ap.error('--input host reads the gamepad and keyboard through the window: add --display window')
     if a.game_lib and not a.no_record:
         ap.error('--game-lib runs replacements in place of the originals: such a boot is not recorded (add --no-record)')
     elf = a.elf or default_elf()
@@ -343,7 +348,7 @@ def main() -> int:
         os.makedirs(savedata, exist_ok=True)
         cmd = [pbboot, *objects, *stubs, *hooks, '--data', data, '--savedata', savedata, '--status', out,
                '--timeout', str(a.timeout), *names,
-               '--display', a.display, '--audio', a.audio]
+               '--display', a.display, '--audio', a.audio, '--input', a.input]
         if a.display_capture:
             cmd += ['--display-capture', a.display_capture]
         if a.trace:

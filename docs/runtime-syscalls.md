@@ -657,14 +657,23 @@ by name.
 
 ## The controller (`libScePad`)
 
-The runtime models one standard controller, the one user's, always connected and at rest
-(`runtime/syslib/pad.c`). Real input from a host controller is not provided yet.
+The runtime models one standard controller, the one user's, always connected
+(`runtime/syslib/pad.c`). Its state comes from the input backend (`runtime/input_host.h`,
+`runtime/input/`): by default (`pbboot --input none`, `tools/boot.py --input none`) none is
+installed and the pad is at rest, so CI and recorded boots read the same state as before. With
+`--input host` the host's first gamepad and the window's keyboard drive it, and the title's
+vibration rumbles the gamepad.
 
 **Sources.**
 - **Signatures and layouts:** the OpenOrbis homebrew SDK's `Pad.h`, `_types/pad.h` and
-  `_types/errors.h`. They give the 120-byte `OrbisPadData`, the 28-byte `OrbisPadInformation`, the
-  two-byte vibration block (large motor, then small), port type 0 (standard), and
+  `_types/errors.h`. They give the 120-byte `OrbisPadData` (touch data at `0x34`: a count, seven
+  reserved bytes, then two 8-byte touches of x, y and an id), the 28-byte `OrbisPadInformation`,
+  the two-byte vibration block (large motor, then small), port type 0 (standard), and
   `ALREADY_OPENED` `0x80920004`.
+- **Button bits:** OpenOrbis' `OrbisPadButton`; shadPS4's `OrbisPadButtonDataOffset`
+  (`src/core/libraries/pad/pad.h`) agrees: L3 `0x2`, R3 `0x4`, options `0x8`, up `0x10`, right
+  `0x20`, down `0x40`, left `0x80`, L2 `0x100`, R2 `0x200`, L1 `0x400`, R1 `0x800`, triangle
+  `0x1000`, circle `0x2000`, cross `0x4000`, square `0x8000`, touch pad `0x100000`.
 - **The executable's own calls agree:**
   - before each `scePadReadState` (`0x02a90168`, `0x02a91948`) it clears exactly 120 bytes, and
     afterwards it tests `connected` at offset `0x4c`;
@@ -676,19 +685,68 @@ The runtime models one standard controller, the one user's, always connected and
     opens again;
   - `scePadSetVibration` is called with the title's speeds (`0x02a9c7c1`) or with both 0 to stop
     (`0x02a9c822`), and 0 counts as success.
-- **The DualShock 4's touch pad is 1920 × 942:** `DS4_TOUCHPAD_WIDTH` and `_HEIGHT` in the Linux
-  kernel's `drivers/hid/hid-playstation.c`.
+- **The DualShock 4:** the touch pad is 1920 × 942 (`DS4_TOUCHPAD_WIDTH` and `_HEIGHT` in the
+  Linux kernel's `drivers/hid/hid-playstation.c`); each stick axis is a byte, 0 at the left and
+  at the top; a touch carries a 7-bit id that changes for each new touch; the left motor is the
+  strong one (a force-feedback effect's strong magnitude goes to `motor_left`).
+- **SDL3:** stick axes run -32768 (left, up) to 32767 (right, down) and triggers 0 to 32767
+  (`SDL_GetGamepadAxis`); touch fingers are 0..1 of the pad (`SDL_GetGamepadTouchpadFinger`);
+  scancodes are USB HID keyboard usages (`SDL_scancode.h`); `SDL_RumbleGamepad`'s low-frequency
+  motor is the left one.
+- **The timestamp** is the process time in microseconds when the state is read, as shadPS4 stamps
+  it (`src/input/controller.cpp`); the title does not read it.
 
 | Call | Runtime |
 |---|---|
 | `scePadInit` | 0 |
 | `scePadOpen` | handle 1, the runtime's choice; a second open while it is open answers `0x80920004` |
 | `scePadClose` | 0; the pad can be opened again |
-| `scePadReadState` | no button, sticks `0x80`, triggers 0, no touch or motion, identity orientation, `connected` 1 |
+| `scePadReadState` | the backend's buttons, sticks, triggers and touches, the timestamp, `connected` 1; no motion, identity orientation. At rest without a backend: no button, sticks `0x80`, triggers 0, no touch, timestamp 0 |
 | `scePadGetControllerInformation` | touch pad 1920 × 942; stick deadzones 13 (the runtime's choice); connected; a local pad |
-| `scePadSetVibration` | 0; the speeds are kept (`rt_pad_vibration`), and nothing on the host vibrates yet |
+| `scePadSetVibration` | 0; the speeds are kept (`rt_pad_vibration`) and passed to the backend: with `--input host`, the large motor to SDL's low-frequency rumble, the small one to the high-frequency rumble |
 
-Fields the executable does not read are left zero. **Stops by name:** a second initialize, a call
+**Host input (`pbboot --input host`, `tools/boot.py --input host`).** It needs a build with SDL3
+(the window's) and `--display window`, since the window's event loop reads the devices: SDL's
+events are pumped on the display's thread (`display_vulkan.c`), never from a guest thread, and
+after each pump `rt_input_host_pump` samples the gamepad and keyboard there
+(`runtime/input/input_host_sdl.c`). The state therefore changes once per presented frame. For
+example:
+
+```
+python3 tools/boot.py --display window --audio host --input host
+```
+
+The first connected SDL gamepad is used, and the next one when it is removed. Its buttons map by
+position: south cross, east circle, west square, north triangle, start options, back and the
+touch pad click the touch pad, the shoulders L1 and R1, the stick clicks L3 and R3, the D-pad the
+D-pad. A DualShock 4 or DualSense touch pad reports up to two touches. Stick bytes are the axis'
+top eight bits after the offset; the triggers are scaled to 0..255. The keyboard works with or
+without a gamepad; a key's stick direction overrides the gamepad's stick, both keys of an axis
+cancel out, and buttons combine. The default layout (`rt_default_keys`, `runtime/input/input.c`):
+
+| Keys | Pad |
+|---|---|
+| W A S D | left stick up, left, down, right (full deflection) |
+| arrow keys | right stick |
+| I J K L | D-pad up, left, down, right |
+| Return, Space | cross |
+| Backspace | circle |
+| R | square |
+| F | triangle |
+| Q / E | L1 / R1 |
+| Z / C | L2 / R2, fully pressed |
+| left Shift / Tab | L3 / R3 |
+| Escape | options |
+| T | touch pad click |
+
+The runtime's choices: the L2 and R2 bits are set while their trigger is off zero; touch ids count
+0..127 and wrap, down fingers listed first; a held vibration is sent to SDL again every 30
+seconds, as SDL's rumble lasts at most about 65.
+
+Fields the executable does not read are left zero. **Not modelled:** motion. The accelerometer
+and gyroscope are not forwarded, because the units and axes the system reports them in are not
+established here (shadPS4 scales SDL's m/s² by 0.098 without a source); acceleration and angular
+velocity stay 0 and the orientation the identity. **Stops by name:** a second initialize, a call
 before initialize, another user, port type, index or open parameters, an unknown handle, a
 missing argument, and the other error values. `scePadResetOrientation`,
 `scePadSetAngularVelocityDeadbandState` and `scePadSetTiltCorrectionState` stay unbound until the
