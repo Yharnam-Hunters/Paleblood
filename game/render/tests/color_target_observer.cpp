@@ -285,7 +285,9 @@ void expect_abort(void (*action)())
     ++scenarios; const pid_t child = fork(); CHECK(child >= 0);
     if (child == 0) {
         const rlimit no_core{0, 0}; setrlimit(RLIMIT_CORE, &no_core);
-        std::freopen("/dev/null", "w", stderr); action(); std::_Exit(0);
+        if (!std::freopen("/dev/null", "w", stderr)) std::_Exit(2);
+        action();
+        std::_Exit(0);
     }
     int status; CHECK(waitpid(child, &status, 0) == child);
     CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
