@@ -60,8 +60,10 @@ imported names and providers are in `symbols/imports.csv`.
   and `fclose`.
 - `libScePlayGo`: `scePlayGoInitialize`, `scePlayGoOpen`, `scePlayGoGetChunkId`,
   `scePlayGoGetLocus`, and `scePlayGoSetInstallSpeed`. The runtime stands in for the
-  `libScePlayGo` system module, so loading it succeeds (Paleblood #310); each of these
-  functions stops by name until it is implemented.
+  `libScePlayGo` system module, so loading it succeeds (Paleblood #310). Since Paleblood
+  #370 and #405 it answers that every chunk of the package is installed (the chunk count
+  comes from your copy's `sce_sys/playgo-manifest.xml`) and records the install speed the
+  game sets.
 
 </details>
 

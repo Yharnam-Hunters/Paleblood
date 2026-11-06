@@ -2,7 +2,7 @@
 
 Paleblood is a decompilation of Bloodborne with its own runtime: the game's code rewritten as readable C++, one verified function at a time.
 <!-- status:start -->
-The game doesn't run on Paleblood yet: 21 of 157757 functions are verified (0.01%). On [our own runtime](runtime/) the executable's boot gets as far as `sceNetEpollCreate` (libSceNet), with 401 of 686 system imports implemented.
+The game doesn't run on Paleblood yet: 21 of 157757 functions are verified (0.01%). On [our own runtime](runtime/) the executable's boot gets as far as the run's time limit, still running (no call stopped it), with 437 of 686 system imports implemented.
 <!-- status:end -->
 
 The goal is a complete source port: every function rewritten and proved, running on our own
@@ -70,8 +70,12 @@ implementing it. Claim one function or a tightly related group in issue #34 befo
 maintainers can avoid duplicate work. Use a branch named `runtime/<function>`; for a group, use
 the lead function's name.
 
-Implement the call in `runtime/syslib/<group>.c` and register it with `RT_SYSLIB`. Add or update
-the applicable cases in `test/test_syslib.c`. Unknown target behavior must stay explicit and fail
+Implement the call in `runtime/syslib/<group>.c` and register it with `RT_SYSLIB`. Put its tests
+in their own file, `test/syslib/<group>.c`, as `SYSLIB_TEST(name) { ... }` blocks
+(`test/syslib_test.h`; `test/syslib/np_trophy.c` is an example), so parallel pull requests do not
+edit the same lines; cases that already live in `test/test_syslib.c` may be updated there. To bring a
+branch up to date, merge `origin/main` into it: the push gate checks only commits main does not
+have. Unknown target behavior must stay explicit and fail
 loudly; do not choose guessed return values just to advance `tools/boot.py`.
 
 Runtime code is clean-room: use public API documentation, independent reverse engineering, and
