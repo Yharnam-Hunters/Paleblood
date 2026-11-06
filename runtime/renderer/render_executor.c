@@ -1428,25 +1428,34 @@ static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *
 
 /* ---- images ---- */
 
-/* A descriptor's format: its Vulkan format, texel type, components and bytes per texel. */
+/* A descriptor's format: its Vulkan format, texel type, components and bytes per element: a texel, or
+   for a block-compressed format a block of block x block texels. */
 typedef struct {
     VkFormat format;
     gcn_image_sample_type type;
-    unsigned components, bytes;
+    unsigned components, bytes, block;
 } texel_format;
 
 /* The format of a descriptor; 0, or -1 with the reason. DATA_FORMAT and NUM_FORMAT are AMD's (GFX7):
-   data formats 4 32, 10 8_8_8_8, 11 32_32, 14 32_32_32_32; number formats 0 unorm, 4 uint, 5 sint,
-   7 float. */
+   data formats 4 32, 10 8_8_8_8, 11 32_32, 14 32_32_32_32, and the block-compressed 35 BC1 to 41 BC7
+   (4 x 4 texels in 8 bytes for BC1 and BC4, 16 for the others; shadPS4's pixel_format.h numbers them
+   the same); number formats 0 unorm, 1 snorm, 4 uint, 5 sint, 7 float, 9 sRGB. BC1 keeps its one-bit
+   alpha (Vulkan's RGBA form). BC6 stops by name until its number formats are established. */
 static int image_format(const rt_image_descriptor *d, texel_format *f, char *error, size_t error_size)
 {
     static const struct {
         uint32_t data_format, num_format;
         texel_format f;
     } formats[] = {
-        {4, 7, {VK_FORMAT_R32_SFLOAT, GCN_IMAGE_FLOAT, 1, 4}}, {4, 4, {VK_FORMAT_R32_UINT, GCN_IMAGE_UINT, 1, 4}},
-        {4, 5, {VK_FORMAT_R32_SINT, GCN_IMAGE_SINT, 1, 4}}, {11, 7, {VK_FORMAT_R32G32_SFLOAT, GCN_IMAGE_FLOAT, 2, 8}},
-        {14, 7, {VK_FORMAT_R32G32B32A32_SFLOAT, GCN_IMAGE_FLOAT, 4, 16}}, {10, 0, {VK_FORMAT_R8G8B8A8_UNORM, GCN_IMAGE_FLOAT, 4, 4}},
+        {4, 7, {VK_FORMAT_R32_SFLOAT, GCN_IMAGE_FLOAT, 1, 4, 1}}, {4, 4, {VK_FORMAT_R32_UINT, GCN_IMAGE_UINT, 1, 4, 1}},
+        {4, 5, {VK_FORMAT_R32_SINT, GCN_IMAGE_SINT, 1, 4, 1}}, {11, 7, {VK_FORMAT_R32G32_SFLOAT, GCN_IMAGE_FLOAT, 2, 8, 1}},
+        {14, 7, {VK_FORMAT_R32G32B32A32_SFLOAT, GCN_IMAGE_FLOAT, 4, 16, 1}}, {10, 0, {VK_FORMAT_R8G8B8A8_UNORM, GCN_IMAGE_FLOAT, 4, 4, 1}},
+        {35, 0, {VK_FORMAT_BC1_RGBA_UNORM_BLOCK, GCN_IMAGE_FLOAT, 4, 8, 4}}, {35, 9, {VK_FORMAT_BC1_RGBA_SRGB_BLOCK, GCN_IMAGE_FLOAT, 4, 8, 4}},
+        {36, 0, {VK_FORMAT_BC2_UNORM_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}}, {36, 9, {VK_FORMAT_BC2_SRGB_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}},
+        {37, 0, {VK_FORMAT_BC3_UNORM_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}}, {37, 9, {VK_FORMAT_BC3_SRGB_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}},
+        {38, 0, {VK_FORMAT_BC4_UNORM_BLOCK, GCN_IMAGE_FLOAT, 1, 8, 4}}, {38, 1, {VK_FORMAT_BC4_SNORM_BLOCK, GCN_IMAGE_FLOAT, 1, 8, 4}},
+        {39, 0, {VK_FORMAT_BC5_UNORM_BLOCK, GCN_IMAGE_FLOAT, 2, 16, 4}}, {39, 1, {VK_FORMAT_BC5_SNORM_BLOCK, GCN_IMAGE_FLOAT, 2, 16, 4}},
+        {41, 0, {VK_FORMAT_BC7_UNORM_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}}, {41, 9, {VK_FORMAT_BC7_SRGB_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}},
     };
     for (size_t i = 0; i < sizeof formats / sizeof *formats; i++)
         if (formats[i].data_format == d->data_format && formats[i].num_format == d->num_format) {
@@ -1460,19 +1469,23 @@ static int one_dimensional(uint32_t type) { return type == RT_IMAGE_1D || type =
 
 /* Fills a kept image with the guest memory's texels under its descriptor, detiled (runtime/tiling.h).
    0, or -1 with the reason (a layout not done yet, texels outside the GPU-visible memory). */
-static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor *d, unsigned bytes, char *error, size_t error_size)
+static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor *d, const texel_format *f, char *error, size_t error_size)
 {
-    const uint32_t rows = one_dimensional(d->type) ? 1 : d->height;
+    /* a block-compressed image is laid out in blocks: its pitch, width and height counted in them */
+    const unsigned bytes = f->bytes, block = f->block;
+    const uint32_t rows = one_dimensional(d->type) ? 1 : (d->height + block - 1) / block;
+    const uint32_t columns = (d->width + block - 1) / block, pitch = d->pitch / block;
+    if (d->pitch % block) return failed(error, error_size, "a block-compressed image at %#llx of pitch %u", (unsigned long long)d->address, d->pitch);
     rt_tiling layout;
     char reason[160];
     if (d->pitch < d->width) return failed(error, error_size, "an image at %#llx of width %u and pitch %u", (unsigned long long)d->address,
                                            d->width, d->pitch);
-    if (rt_tiling_layout(d->tiling_index, bytes, d->pitch, rows, &layout, reason, sizeof reason))
+    if (rt_tiling_layout(d->tiling_index, bytes, pitch, rows, &layout, reason, sizeof reason))
         return failed(error, error_size, "loading the image at %#llx: %s", (unsigned long long)d->address, reason);
     const uint64_t span = rt_tiling_size(&layout, e->layers);
     if (d->address < x->guest_base || d->address - x->guest_base > x->size || span > x->size - (d->address - x->guest_base))
         return failed(error, error_size, "the image at %#llx is outside the GPU-visible memory", (unsigned long long)d->address);
-    const VkDeviceSize linear_bytes = (VkDeviceSize)e->width * rows * e->layers * bytes;
+    const VkDeviceSize linear_bytes = (VkDeviceSize)columns * rows * e->layers * bytes;
     const VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = linear_bytes, .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT};
     VkBuffer staging = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
@@ -1491,7 +1504,7 @@ static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor
         failed(error, error_size, "no staging memory for a %ux%u image", e->width, rows);
         goto done;
     }
-    rt_tiling_detile(&layout, (const uint8_t *)x->view + (d->address - x->guest_base), mapped, e->width, rows, e->layers);
+    rt_tiling_detile(&layout, (const uint8_t *)x->view + (d->address - x->guest_base), mapped, columns, rows, e->layers);
     vkUnmapMemory(x->device, memory);
     if (!(commands = begin_commands(x))) {
         failed(error, error_size, "no command buffer to load an image");
@@ -1502,7 +1515,7 @@ static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor
     const VkMemoryBarrier before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT,
                                     .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT};
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before, 0, NULL, 0, NULL);
-    const VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, e->layers}, .imageExtent = {e->width, rows, 1}};
+    const VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, e->layers}, .imageExtent = {e->width, one_dimensional(d->type) ? 1 : e->height, 1}};
     vkCmdCopyBufferToImage(commands, staging, e->image, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
     const VkMemoryBarrier after = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
                                    .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
@@ -1550,8 +1563,8 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
         const VkImageCreateInfo info = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = one_d ? VK_IMAGE_TYPE_1D : VK_IMAGE_TYPE_2D,
                                         .format = f->format, .extent = {d->width, one_d ? 1 : d->height, 1}, .mipLevels = 1,
                                         .arrayLayers = d->layers, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
-                                        .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                                                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                        .usage = (f->block > 1 ? 0 : VK_IMAGE_USAGE_STORAGE_BIT) | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                                         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
         e = &x->images[x->image_count];
         *e = (image_entry){.address = d->address, .format = f->format, .width = d->width, .height = d->height, .layers = d->layers,
@@ -1587,7 +1600,7 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
         }
         x->image_count++;
     }
-    if ((access & GCN_IMAGE_READ) && !e->gpu_written && load_texels(x, e, d, f->bytes, error, error_size)) return NULL;
+    if ((access & GCN_IMAGE_READ) && !e->gpu_written && load_texels(x, e, d, f, error, error_size)) return NULL;
     if (access & GCN_IMAGE_WRITE) e->gpu_written = 1;
     return e;
 }

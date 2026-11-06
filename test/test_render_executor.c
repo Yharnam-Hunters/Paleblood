@@ -532,6 +532,45 @@ static void target_memory(rt_executor *x)
     CHECK(bgra[0] == 0xff102040u); /* the display's blue-first order of red 0x10, green 0x20, blue 0x40 */
 }
 
+/* A block-compressed image (BC1, DATA_FORMAT 35) the CPU wrote, linear (tiling index 8) in 4 x 4 blocks
+   of 8 bytes: each block a solid colour (colour 0, all indices 0), its red from the block's column and
+   green from its row in RGB 5:6:5, blue full. image_load_mip of each pixel shows its block's colour;
+   read as BC4 (mutant) it does not. */
+static void compressed_image(rt_executor *x)
+{
+    enum { BLOCKS = 0xe00000, BLOCK_TARGET = 0xdc0000, BLOCKS_PER_ROW = SIZE / 4, LINEAR_ALIGNED = 8, BC1 = 35, BC4 = 38 };
+    char error[200] = "";
+    uint32_t *blocks = (uint32_t *)(uintptr_t)at(BLOCKS);
+    for (uint32_t by = 0; by < BLOCKS_PER_ROW; by++)
+        for (uint32_t bx = 0; bx < BLOCKS_PER_ROW; bx++) {
+            const uint32_t colour0 = (bx * 8) << 11 | (by * 16) << 5 | 31;
+            blocks[(by * BLOCKS_PER_ROW + bx) * 2] = colour0;     /* colour 1 is 0: colour 0 > colour 1, four-colour mode */
+            blocks[(by * BLOCKS_PER_ROW + bx) * 2 + 1] = 0;       /* every texel index 0 */
+        }
+    uint32_t image[8];
+    image_descriptor(image, at(BLOCKS), BC1, 0, SIZE, SIZE);
+    image[3] |= LINEAR_ALIGNED << 20;
+    const int drawn = draw_texels(x, at(BLOCK_TARGET), image, error, sizeof error);
+    if (drawn) fprintf(stderr, "BC1: %s\n", error);
+    CHECK(drawn == 0);
+    uint32_t bgra[SIZE * SIZE];
+    CHECK(rt_executor_read_target(x, at(BLOCK_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+    int right = 1;
+    for (int y = 0; y < SIZE; y++)
+        for (int px = 0; px < SIZE; px++) {
+            const uint32_t p = bgra[y * SIZE + px];
+            right &= near(p >> 16 & 0xff, (float)(px / 4 * 8) / 31) && near(p >> 8 & 0xff, (float)(y / 4 * 16) / 63) && near(p & 0xff, 1);
+        }
+    CHECK(right);
+    image_descriptor(image, at(BLOCKS), BC4, 0, SIZE, SIZE);
+    image[3] = (image[3] & ~0xfffu) | (4 | 4 << 3 | 4 << 6 | 4 << 9) | LINEAR_ALIGNED << 20;
+    CHECK(draw_texels(x, at(BLOCK_TARGET), image, error, sizeof error) == 0);
+    CHECK(rt_executor_read_target(x, at(BLOCK_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+    int differs = 0;
+    for (int i = 0; i < SIZE * SIZE; i++) differs |= (bgra[i] & 0xff) != 0xff;
+    CHECK(differs);
+}
+
 int main(void)
 {
     const int fd = map_guest_memory();
@@ -800,6 +839,7 @@ int main(void)
     state_across_buffers(x);
     indexed_draws(x);
     target_memory(x);
+    compressed_image(x);
 
     rt_executor_close(x);
     rt_render_forget();

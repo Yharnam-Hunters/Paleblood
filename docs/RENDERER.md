@@ -92,7 +92,8 @@ Instead:
        baked into every translation (`error_address`); a shader meeting a case it cannot do exactly
        writes a code there and skips the access, and the executor checks the word after each
        dispatch and draw and stops by name (`GCN_RUNTIME_STOP_*`).
-     - **Format buffer accesses** (`buffer_load/store_format_*`): whole 32-bit components (uint,
+     - **Format buffer accesses** (`buffer_load/store_format_*`): loads from 8_8_8_8 unorm (each byte
+       v / 255, correctly rounded); whole 32-bit components (uint,
        sint, float; the format's components in place, as a store only uses their selectors) move as they are, and a four-component store to 8_8_8_8 unorm
        undoes the descriptor's swizzle (shadPS4's rule: the inverse of a load's) and packs as GLSL's
        `packUnorm4x8` (the PS4's rounding of ties is not established). Anything else is a run-time stop.
@@ -367,6 +368,14 @@ Instead:
           clear stored. The game's logo pass draws, blended, into the image its compute clear filled,
           which the fullscreen pass then reads. Detiling and tiling go a micro tile at a time (checked
           against the per-texel offsets for every mode and element size).
+        - **The logo pass's inputs:** its vertex shaders' user data come through a further writer,
+          `0x014764a0` (command buffer, stage, slot, words, count; after the NOP marker `0x6875000d`),
+          now observed; their fetch shaders load vertex colours from 8_8_8_8 unorm buffers, each byte as
+          v / 255 correctly rounded (a table worked out in single precision, since a shader's division
+          need not be exact), with the descriptor's DST_SEL; its textures are block-compressed (BC7),
+          loaded in 4 x 4 blocks (pitch, width and height counted in blocks, as shadPS4 counts them) as
+          Vulkan's BC formats: BC1 (with its one-bit alpha), BC2, BC3, BC7 unorm and sRGB, BC4 and BC5
+          unorm and snorm; BC6 stops by name.
         - **Indexed draws:** `INDEX_BASE` (`0x014752c0`), `INDEX_BUFFER_SIZE` (`0x01475320`),
           `INDEX_TYPE` (`0x01475270`) and `DRAW_INDEX_OFFSET_2` (`0x01474420`) are observed and
           recorded; the draw binds the guest memory buffer as Vulkan's index buffer from the base plus

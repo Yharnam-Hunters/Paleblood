@@ -244,6 +244,28 @@ int main(void)
             loaded &= lane[0] == in_words[i] && lane[1] == 0 && lane[2] == 0 && lane[3] == 0x3f800000u;
         }
         CHECK(loaded);
+        /* a four-component load from 8_8_8_8 unorm (the game's vertex colours), DST_SEL z, y, x, w: each
+           byte v as v / 255 correctly rounded (worked out here in single precision), blue first */
+        *stop = 0;
+        memset(out.mapped, 0, BUFFER_BYTES);
+        format_user[3] = (6 | 5 << 3 | 4 << 6 | 7 << 9) | 0u << 12 | 10u << 15;
+        uint32_t saved_in[LANES];
+        memcpy(saved_in, in_words, sizeof saved_in);
+        for (int i = 0; i < LANES; i++) in_words[i] = (uint32_t)i * 0x04030201u + 0xff80c007u; /* bytes 0 to 255 */
+        CHECK(run(&g, load_format_xyzw, sizeof load_format_xyzw / sizeof load_format_xyzw[0], format_user) == 0);
+        int unorm = *stop == 0;
+        for (int i = 0; i < LANES; i++) {
+            const uint32_t *lane = out_words + i * 4;
+            static const int byte_of[4] = {2, 1, 0, 3};
+            for (int c = 0; c < 4; c++) {
+                const float want = (float)(in_words[i] >> (8 * byte_of[c]) & 0xff) / 255.0f;
+                uint32_t bits;
+                memcpy(&bits, &want, sizeof bits);
+                unorm &= lane[c] == bits;
+            }
+        }
+        CHECK(unorm);
+        memcpy(in_words, saved_in, sizeof saved_in);
         /* a reserved selector (2) stops */
         format_user[3] = (4 | 2 << 3) | 7u << 12 | 4u << 15;
         CHECK(run(&g, load_format_xyzw, sizeof load_format_xyzw / sizeof load_format_xyzw[0], format_user) == 0 && *stop != 0);

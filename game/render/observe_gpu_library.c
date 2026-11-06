@@ -14,7 +14,8 @@
      0x01476390  one 64-bit value (a pointer), low first  two words;
      0x014761a0  a pointer to four words, after a two-word NOP marker 0x68750004;
      0x014762f0  the same, after the marker 0x68750006;
-     0x01476240  a pointer to eight words, after the marker 0x68750005.
+     0x01476240  a pointer to eight words, after the marker 0x68750005;
+     0x014764a0  a pointer to words and their count (fifth argument), after the marker 0x6875000d.
    GCN's buffer and sampler descriptors are four words and its image descriptors eight; which the
    markers name is not established here.
    The dispatch writers 0x01474c50 and 0x0148a350 (command buffer, x, y, z) write DISPATCH_DIRECT
@@ -70,6 +71,22 @@ static void two_words(const uint64_t args[RT_OBSERVED_ARGUMENTS])
 static void four_words(const uint64_t args[RT_OBSERVED_ARGUMENTS]) { observe(args, (const uint32_t *)(uintptr_t)args[ARGUMENT_VALUE], FOUR_WORDS); }
 
 static void eight_words(const uint64_t args[RT_OBSERVED_ARGUMENTS]) { observe(args, (const uint32_t *)(uintptr_t)args[ARGUMENT_VALUE], EIGHT_WORDS); }
+
+/* The counted writer: its words go to the record eight at a time, from the slot on (the record takes
+   at most eight per call). */
+enum { ARGUMENT_COUNT = 4 };
+
+static void counted_words(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    const uint32_t *words = (const uint32_t *)(uintptr_t)args[ARGUMENT_VALUE];
+    const uint32_t count = (uint32_t)args[ARGUMENT_COUNT], slot = (uint32_t)args[ARGUMENT_SLOT];
+    for (uint32_t done = 0; done < count; done += EIGHT_WORDS) {
+        const uint32_t n = count - done < EIGHT_WORDS ? count - done : EIGHT_WORDS;
+        const uint64_t buffer = *(const uint64_t *)(uintptr_t)(args[ARGUMENT_COMMAND_BUFFER] + COMMAND_BUFFER_BEGIN);
+        const uint64_t cursor = *(const uint64_t *)(uintptr_t)(args[ARGUMENT_COMMAND_BUFFER] + COMMAND_BUFFER_CURSOR);
+        rt_observe_user_data(buffer, (uint32_t)(cursor - buffer), (rt_shader_stage)(uint32_t)args[ARGUMENT_STAGE], slot + done, words + done, n);
+    }
+}
 
 static void dispatch(const uint64_t args[RT_OBSERVED_ARGUMENTS])
 {
@@ -180,6 +197,7 @@ const rt_observe_hook game_observe_hooks[] = {
     {0x014762f0, 156, "render_set_user_data_4_words_marker_6", four_words},
     {0x01476390, 133, "render_set_user_data_2_words", two_words},
     {0x01476420, 126, "render_set_user_data_1_word", one_word},
+    {0x014764a0, 184, "render_set_user_data_words", counted_words},
     {0x0148a350, 177, "render_dispatch_compute_buffer", dispatch},
 };
 const unsigned game_observe_hook_count = sizeof game_observe_hooks / sizeof *game_observe_hooks;
