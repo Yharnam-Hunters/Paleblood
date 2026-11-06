@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* System call group: networking (libSceNet): byte order, address conversion, and the start-up of
    the network, SSL and HTTP libraries (libSceNet, libSceSsl, libSceHttp). */
+#include "runtime/http.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
@@ -144,6 +145,10 @@ enum { HTTP_VERSION_1_0 = 1, HTTP_VERSION_1_1 = 2, HTTP_PROXY_OBSERVED = 1, MAX_
 
 static atomic_int http_templates_created;
 
+/* Each template's HTTPS flags (see sceHttpsEnableOption below), from its creation. */
+static _Atomic uint32_t http_template_ssl_flags[MAX_HTTP_TEMPLATES + 1];
+static uint32_t http_default_ssl_flags(void);
+
 static int32_t http_create_template(int32_t context, const char *user_agent, int32_t version, int32_t proxy)
 {
     static const char fn[] = "sceHttpCreateTemplate";
@@ -154,9 +159,54 @@ static int32_t http_create_template(int32_t context, const char *user_agent, int
     if (proxy != HTTP_PROXY_OBSERVED) rt_fatal(fn, "a proxy value other than the observed 1: its meaning is not established");
     const int template_id = atomic_fetch_add(&http_templates_created, 1) + 1; /* ids from 1 */
     if (template_id > MAX_HTTP_TEMPLATES) rt_fatal(fn, "more templates than the runtime hands out ids for");
+    atomic_store(&http_template_ssl_flags[template_id], http_default_ssl_flags());
     return template_id;
 }
 RT_SYSLIB("libSceHttp", sceHttpCreateTemplate, http_create_template);
+
+/* sceHttpsEnableOption(int32_t id, uint32_t flags) and sceHttpsDisableOption(int32_t id, uint32_t
+   flags) set and clear HTTPS flags on a template. Facts from shadPS4's libSceHttp (http.h,
+   http_error.h) and PS4Recomp's, which agree on the shape: the flags are 0x01 verify the server,
+   0x02 verify the client, 0x04 check the common name, 0x08 and 0x10 check the not-after and
+   not-before dates, 0x20 check for a known CA, 0x40 reuse sessions, 0x80 send SNI, and 0x2000; a
+   template starts with server verification, the common-name and known-CA checks and SNI; other
+   bits answer 0x804311fe (invalid value) and an id that is no template 0x80431100 (invalid id).
+   The executable's one wrapper (0x013d1e90) enables or disables 0x01 on its template, and its
+   caller (0x0227dade) does not read the answer. Offline no request is sent, so the flags are kept
+   for when one is. */
+#define HTTP_ERROR_INVALID_ID ((int32_t)0x80431100u)
+#define HTTP_ERROR_INVALID_VALUE ((int32_t)0x804311feu)
+enum {
+    HTTPS_SERVER_VERIFY = 0x01,
+    HTTPS_COMMON_NAME_CHECK = 0x04,
+    HTTPS_KNOWN_CA_CHECK = 0x20,
+    HTTPS_SNI = 0x80,
+    HTTPS_PUBLIC_FLAGS = 0x20ff,
+};
+
+static uint32_t http_default_ssl_flags(void)
+{
+    return HTTPS_SERVER_VERIFY | HTTPS_COMMON_NAME_CHECK | HTTPS_KNOWN_CA_CHECK | HTTPS_SNI;
+}
+
+static int32_t https_change_option(int32_t id, uint32_t flags, int enable)
+{
+    if (flags & ~(uint32_t)HTTPS_PUBLIC_FLAGS) return HTTP_ERROR_INVALID_VALUE;
+    if (id < 1 || id > atomic_load(&http_templates_created)) return HTTP_ERROR_INVALID_ID;
+    if (enable) atomic_fetch_or(&http_template_ssl_flags[id], flags);
+    else atomic_fetch_and(&http_template_ssl_flags[id], ~flags);
+    return 0;
+}
+
+static int32_t https_enable_option(int32_t id, uint32_t flags) { return https_change_option(id, flags, 1); }
+static int32_t https_disable_option(int32_t id, uint32_t flags) { return https_change_option(id, flags, 0); }
+RT_SYSLIB("libSceHttp", sceHttpsEnableOption, https_enable_option);
+RT_SYSLIB("libSceHttp", sceHttpsDisableOption, https_disable_option);
+
+uint32_t rt_http_template_ssl_flags(int32_t id)
+{
+    return id >= 1 && id <= MAX_HTTP_TEMPLATES ? atomic_load(&http_template_ssl_flags[id]) : 0;
+}
 
 /* sceHttpSetNonblock(int32_t id, int32_t enable): OpenOrbis' Http.h names it without a signature,
    so the shape comes from the executable's only call (0x013d1d41), which passes the template id it
