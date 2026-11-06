@@ -578,7 +578,7 @@ reported installed (`runtime/syslib/playgo.c`).
 | `scePlayGoOpen(int32_t *handle, params)` | params is NULL (`0x023deae4`); 0 counts as opened | writes handle 1, the runtime's choice (the title only passes it back) |
 | `scePlayGoGetChunkId(handle, uint16_t ids[], capacity, uint32_t *count)` | capacity 100 (`0x023deb0f`); the result is not read | the package's chunks, 0 to `chunk_count - 1`, from `chunk_count` in the copy's `sce_sys/playgo-manifest.xml` (3 for this title; `playgo-chunk.dat` agrees) |
 | `scePlayGoGetLocus(handle, const uint16_t ids[], count, int8_t loci[])` | one byte per chunk (`0x023de8d6`, `0x023deb30`); non-zero counts as failure; the title treats 0 as not there, 2 as still arriving and polls again, any other value as ready | 3 for every chunk, a ready value (the title can't tell the ready values apart) |
-| `scePlayGoSetInstallSpeed(handle, speed)` | called through a function pointer (`0x023dd891`) with 1 (trickle) or 2 (full); 0 is suspended | records it (everything is installed); an unknown handle `0x80B20009`, before initialize `0x80B20005`, another speed `0x80B20004` (shadPS4's `libScePlayGo`) |
+| `scePlayGoSetInstallSpeed(handle, speed)` | called through a function pointer (`0x023dd891`) with 1 (trickle) or 2 (full); 0 is suspended | accepts it (everything is installed, so there is nothing to pace; nothing reads it back); an unknown handle `0x80B20009`, before initialize `0x80B20005`, another speed `0x80B20004` (shadPS4's `libScePlayGo`) |
 
 No public source declares these calls: the OpenOrbis toolchain has no PlayGo header. Stops by
 name: Open with parameters, an unknown handle, a chunk list longer than the space given, an unknown
@@ -742,6 +742,31 @@ cancel out, and buttons combine. The default layout (`rt_default_keys`, `runtime
 The runtime's choices: the L2 and R2 bits are set while their trigger is off zero; touch ids count
 0..127 and wrap, down fingers listed first; a held vibration is sent to SDL again every 30
 seconds, as SDL's rumble lasts at most about 65.
+
+**Scripted input (`pbboot --input-script SPEC`, `tools/boot.py --no-record --input-script SPEC`).**
+For unattended boots, a timed script plays the controller through the same backend interface
+(`runtime/input/input_script.c`); it works with any `--display` mode and cannot be combined with
+`--input host`. SPEC is the script, or `@FILE` to read it from a file. Events are separated by
+commas, semicolons or new lines, and `#` starts a comment. Each event is `WHEN:CONTROLS[*HOLD]`:
+
+- `WHEN` is seconds since the process started (`45`, `45.5s`) or frames presented by video out's
+  first port (`700f`). Frames follow the game's own progress, so they suit a slow boot; seconds
+  need no display.
+- `CONTROLS` are names joined by `+`: `cross circle square triangle up down left right l1 r1 l2 r2
+  l3 r3 options touch`, and the stick directions `lstick-up lstick-down lstick-left lstick-right`
+  and `rstick-up` ... `rstick-right` at full deflection. A scripted trigger is fully pressed.
+- The controls are held from `WHEN` for `HOLD`, on the same clock (default 0.25 s or 4 frames),
+  then released; overlapping events combine.
+
+pbboot writes `pbboot: input script: event N starts (S s, frame F)` when the title first reads
+the pad during an event, so a run's log shows when each press landed. For example:
+
+```
+python3 tools/boot.py --no-record --display headless --input-script "45:down,47:cross"
+```
+
+A malformed event, an unknown control, a hold on the other clock, more than 256 events or a script
+file over 64 KiB is refused before the boot, naming the event.
 
 Fields the executable does not read are left zero. **Not modelled:** motion. The accelerometer
 and gyroscope are not forwarded, because the units and axes the system reports them in are not
@@ -1426,6 +1451,21 @@ flags 0 (`O_RDONLY`) and mode 0555.
   descriptor (the title only passes it back). One the runtime did not hand out is `EBADF`.
 - **Seeking.** A whence other than 0, 1 or 2 (`SEEK_SET`, `SEEK_CUR`, `SEEK_END`, the same on
   FreeBSD and Linux), and a seek before the start, are `EINVAL`.
+
+### Truncating and renaming
+
+`sceKernelFtruncate(fd, length)` is FreeBSD's `ftruncate(2)` under its SCE name (shape from the
+OpenOrbis homebrew SDK's `libkernel.h`). The title reaches it after Play Offline, while it creates
+its save data: its file object cuts its file at its current position (`0x02473290`). The runtime
+passes the length to the host. A negative length, and a descriptor opened without write
+permission, are `EINVAL` (FreeBSD's `truncate(2)`; Linux answers the same); one the runtime did not
+hand out is `EBADF`. Any other host error stops by name.
+
+`sceKernelRename(from, to)` is FreeBSD's `rename(2)` (shape from `libkernel.h`); the title calls it
+(`0x02474a85`) while it creates its save data. The runtime renames the host file, replacing an
+existing `to` as `rename(2)` does. Paths on two different mounts are `EXDEV` (`rename(2)`: "on
+different logical devices"); on the read-only `/app0` `EROFS`, after the lookup; a missing file or
+directory component `ENOENT` or `ENOTDIR`. Any other host error stops by name.
 
 ## Memory protection queries (`sceKernelQueryMemoryProtection`, issue #34)
 

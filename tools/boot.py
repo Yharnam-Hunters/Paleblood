@@ -305,7 +305,15 @@ def main() -> int:
     ap.add_argument('--input', choices=('none', 'host'), default='none',
                     help='read the controller from this computer\'s gamepad and keyboard (host; needs SDL3 and '
                          '--display window) or keep it at rest (none, default)')
+    ap.add_argument('--input-script', default=None, metavar='SPEC',
+                    help='play the controller from a timed script instead (SPEC, or @FILE), e.g. "45:down,47:cross" '
+                         '(seconds; 700f for presented frames); the format is in runtime/include/runtime/input_host.h. '
+                         'Not for recorded boots')
     a = ap.parse_args()
+    if a.input_script and a.input == 'host':
+        ap.error('--input-script plays the controller: leave out --input host')
+    if a.input_script and not a.no_record:
+        ap.error('--input-script presses buttons: such a boot is not recorded (add --no-record)')
     if a.input == 'host' and a.display != 'window':
         ap.error('--input host reads the gamepad and keyboard through the window: add --display window')
     if a.game_lib and not a.no_record:
@@ -351,6 +359,9 @@ def main() -> int:
                '--display', a.display, '--audio', a.audio, '--input', a.input]
         if a.display_capture:
             cmd += ['--display-capture', a.display_capture]
+        if a.input_script:
+            spec = a.input_script
+            cmd += ['--input-script', '@' + os.path.abspath(spec[1:]) if spec.startswith('@') else spec]
         if a.trace:
             cmd.append('--trace')
         if a.game_lib:
