@@ -1010,6 +1010,23 @@ static void gnm_submit_unmet_wait(void)
 static void vo_flip_bad_buffer(void) { vo_flip_fn(vo_handle, 9, 2, 0); }
 static void vo_open_other(void) { vo_open_fn(0xff, 0, 0, NULL); }
 
+/* libSceRtc: the host's local time, and ticks in microseconds since 0001-01-01. */
+typedef struct { uint16_t year, month, day, hour, minute, second; uint32_t microsecond; } rtc_time;
+typedef int32_t (*f_rtc_now)(rtc_time *);
+typedef int32_t (*f_rtc_tick)(const rtc_time *, uint64_t *);
+typedef int32_t (*f_rtc_resolution)(void);
+static f_rtc_now rtc_now;
+static f_rtc_tick rtc_tick;
+static void rtc_now_nothing(void) { rtc_now(NULL); }
+static void rtc_tick_february_30(void) { const rtc_time t = {2026, 2, 30, 0, 0, 0, 0}; uint64_t k; rtc_tick(&t, &k); }
+static void rtc_tick_leap_2100(void) { const rtc_time t = {2100, 2, 29, 0, 0, 0, 0}; uint64_t k; rtc_tick(&t, &k); }
+static void rtc_tick_microsecond(void) { const rtc_time t = {2026, 1, 1, 0, 0, 0, 1000000}; uint64_t k; rtc_tick(&t, &k); }
+typedef int32_t (*f_rtc_set)(rtc_time *, const uint64_t *);
+static f_rtc_set rtc_set;
+static void rtc_set_year_10000(void) { rtc_time t; const uint64_t k = 315537897600000000ull; rtc_set(&t, &k); } /* 10000-01-01 */
+static void rtc_set_no_tick(void) { rtc_time t; rtc_set(&t, NULL); }
+static void rtc_tick_no_variable(void) { const rtc_time t = {2026, 1, 1, 0, 0, 0, 0}; rtc_tick(&t, NULL); }
+
 /* PlayGo (libScePlayGo): the title's own calls, against a package manifest of three chunks. */
 typedef int32_t (*f_pg_init)(const void *);
 typedef int32_t (*f_pg_open)(int32_t *, const void *);
@@ -2811,6 +2828,56 @@ int main(void)
             CHECK(rmdir(capture) == 0);
         }
         rt_display_configure(RT_DISPLAY_NONE, NULL);
+    }
+
+    rtc_now = (f_rtc_now)fn("libSceRtc", "sceRtcGetCurrentClockLocalTime");
+    rtc_tick = (f_rtc_tick)fn("libSceRtc", "sceRtcGetTick");
+    const f_rtc_resolution rtc_resolution = (f_rtc_resolution)fn("libSceRtc", "sceRtcGetTickResolution");
+    rtc_set = (f_rtc_set)fn("libSceRtc", "sceRtcSetTick");
+    CHECK(rtc_now && rtc_tick && rtc_resolution && rtc_set);
+    if (rtc_now && rtc_tick && rtc_resolution && rtc_set) {
+        CHECK(rtc_resolution() == 1000000);
+        uint64_t tick = 7;
+        const rtc_time year_one = {1, 1, 1, 0, 0, 0, 0};
+        CHECK(rtc_tick(&year_one, &tick) == 0 && tick == 0);
+        const rtc_time unix_epoch = {1970, 1, 1, 0, 0, 0, 0};
+        CHECK(rtc_tick(&unix_epoch, &tick) == 0 && tick == 62135596800000000ull); /* 719162 days */
+        const rtc_time leap_day = {2024, 2, 29, 23, 59, 59, 999999};
+        CHECK(rtc_tick(&leap_day, &tick) == 0 && tick == (62135596800ull + 1709251199ull) * 1000000ull + 999999ull);
+        const rtc_time y2000_leap = {2000, 2, 29, 12, 0, 0, 0};
+        CHECK(rtc_tick(&y2000_leap, &tick) == 0 && tick == (62135596800ull + 951825600ull) * 1000000ull);
+        /* the local time, compared with the host's own */
+        rtc_time now;
+        memset(&now, 0xee, sizeof now);
+        const time_t before = time(NULL);
+        CHECK(rtc_now(&now) == 0);
+        struct tm local;
+        localtime_r(&before, &local);
+        CHECK(now.year == local.tm_year + 1900 && now.month >= 1 && now.month <= 12 && now.day >= 1 && now.day <= 31);
+        CHECK(now.hour <= 23 && now.minute <= 59 && now.second <= 59 && now.microsecond < 1000000);
+        CHECK(rtc_tick(&now, &tick) == 0);
+        /* sceRtcSetTick reverses sceRtcGetTick, for dates across leap years and centuries */
+        const rtc_time samples[] = {
+            {1, 1, 1, 0, 0, 0, 0}, {1600, 12, 31, 23, 59, 59, 999999}, {1601, 1, 1, 0, 0, 0, 0},
+            {1900, 2, 28, 12, 0, 0, 5}, {1900, 3, 1, 0, 0, 0, 0}, {2000, 2, 29, 1, 2, 3, 4},
+            {2024, 12, 31, 23, 59, 59, 1}, {9999, 12, 31, 23, 59, 59, 999999}, now,
+        };
+        for (size_t s = 0; s < sizeof samples / sizeof *samples; s++) {
+            uint64_t k = 0;
+            rtc_time back;
+            memset(&back, 0xee, sizeof back);
+            CHECK(rtc_tick(&samples[s], &k) == 0 && rtc_set(&back, &k) == 0 && memcmp(&back, &samples[s], sizeof back) == 0);
+        }
+        const uint64_t epoch_tick = 62135596800000000ull;
+        rtc_time epoch;
+        CHECK(rtc_set(&epoch, &epoch_tick) == 0 && epoch.year == 1970 && epoch.month == 1 && epoch.day == 1 && epoch.hour == 0);
+        CHECK(died_in_fatal(rtc_set_year_10000));
+        CHECK(died_in_fatal(rtc_set_no_tick));
+        CHECK(died_in_fatal(rtc_now_nothing));
+        CHECK(died_in_fatal(rtc_tick_february_30));
+        CHECK(died_in_fatal(rtc_tick_leap_2100));
+        CHECK(died_in_fatal(rtc_tick_microsecond));
+        CHECK(died_in_fatal(rtc_tick_no_variable));
     }
 
     pg_init = (f_pg_init)fn("libScePlayGo", "scePlayGoInitialize");
