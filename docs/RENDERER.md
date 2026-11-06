@@ -93,7 +93,7 @@ Instead:
        writes a code there and skips the access, and the executor checks the word after each
        dispatch and draw and stops by name (`GCN_RUNTIME_STOP_*`).
      - **Format buffer accesses** (`buffer_load/store_format_*`): whole 32-bit components (uint,
-       sint, float; identity swizzle) move as they are, and a four-component store to 8_8_8_8 unorm
+       sint, float; the format's components in place, as a store only uses their selectors) move as they are, and a four-component store to 8_8_8_8 unorm
        undoes the descriptor's swizzle (shadPS4's rule: the inverse of a load's) and packs as GLSL's
        `packUnorm4x8` (the PS4's rounding of ties is not established). Anything else is a run-time stop.
      - **Format loads with a swizzle:** a load of whole 32-bit components reads the format's
