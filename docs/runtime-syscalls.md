@@ -1410,6 +1410,21 @@ flags 0 (`O_RDONLY`) and mode 0555.
 - **Seeking.** A whence other than 0, 1 or 2 (`SEEK_SET`, `SEEK_CUR`, `SEEK_END`, the same on
   FreeBSD and Linux), and a seek before the start, are `EINVAL`.
 
+### Truncating and renaming
+
+`sceKernelFtruncate(fd, length)` is FreeBSD's `ftruncate(2)` under its SCE name (shape from the
+OpenOrbis homebrew SDK's `libkernel.h`). The title reaches it after Play Offline, while it creates
+its save data: its file object cuts its file at its current position (`0x02473290`). The runtime
+passes the length to the host. A negative length, and a descriptor opened without write
+permission, are `EINVAL` (FreeBSD's `truncate(2)`; Linux answers the same); one the runtime did not
+hand out is `EBADF`. Any other host error stops by name.
+
+`sceKernelRename(from, to)` is FreeBSD's `rename(2)` (shape from `libkernel.h`); the title calls it
+(`0x02474a85`) while it creates its save data. The runtime renames the host file, replacing an
+existing `to` as `rename(2)` does. Paths on two different mounts are `EXDEV` (`rename(2)`: "on
+different logical devices"); on the read-only `/app0` `EROFS`, after the lookup; a missing file or
+directory component `ENOENT` or `ENOTDIR`. Any other host error stops by name.
+
 ## Memory protection queries (`sceKernelQueryMemoryProtection`, issue #34)
 
 `sceKernelQueryMemoryProtection(void *address, void **start, void **end, int32_t *protection)`, as
