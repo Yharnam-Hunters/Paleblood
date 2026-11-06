@@ -66,6 +66,18 @@ def decomp_body(replaced=None, verify=None):
     return session_report.render(report)
 
 
+class VerifyResults(unittest.TestCase):
+    def test_a_run_directory_or_its_summary_file(self):
+        import tempfile
+        summary = {'function': 'example_function', 'cases': 14, 'passed': 14, 'failed': 0, 'failures': []}
+        with tempfile.TemporaryDirectory() as out:
+            with open(os.path.join(out, 'summary.json'), 'w') as f:
+                json.dump(summary, f)
+            expected = [{'function': 'example_function', 'cases': 14, 'passed': 14, 'failed': 0}]
+            self.assertEqual(session_report.verify_results([out]), expected)
+            self.assertEqual(session_report.verify_results([os.path.join(out, 'summary.json')]), expected)
+
+
 class ChangedFileClassification(unittest.TestCase):
     def test_scaffold_host_contract_test_uses_runtime_path(self):
         paths = ['CMakeLists.txt', 'test/test_plugin.c']

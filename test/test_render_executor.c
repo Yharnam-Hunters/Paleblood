@@ -101,6 +101,38 @@ int main(void)
     CHECK(run_with_registers(x, FOURTH, at(TARGET), normal, 0, 2, error, sizeof error) == -1 && strstr(error, "2 instances"));
     CHECK(rt_executor_read_target(x, at(0x300000), bgra, 2, 2, error, sizeof error) == -1 && strstr(error, "no draw"));
     CHECK(rt_executor_read_target(x, at(TARGET), bgra, SIZE + 1, 1, error, sizeof error) == -1);
+
+    /* A rect list (primitive type 17): three corners of the whole target, the right angle first,
+       then last; the geometry stage adds the fourth corner, and its colour (2, 2) as the other two
+       minus the corner's, so the target holds the same image as the large triangle. Then a count
+       that is not whole rects stops by name. */
+    {
+        enum { RECT_TARGET = 0x600000 };
+        float *corners = (float *)(uintptr_t)at(CORNERS), *colors = (float *)(uintptr_t)at(COLORS);
+        float saved_corners[12], saved_colors[12];
+        memcpy(saved_corners, corners, sizeof saved_corners);
+        memcpy(saved_colors, colors, sizeof saved_colors);
+        static const float rect_corners[2][3][4] = {{{-1, -1, 0, 1}, {1, -1, 0, 1}, {-1, 1, 0, 1}},
+                                                     {{1, -1, 0, 1}, {-1, 1, 0, 1}, {-1, -1, 0, 1}}};
+        static const float rect_colors[2][3][4] = {{{0, 0, 0.25f, 1}, {1, 0, 0.25f, 1}, {0, 1, 0.25f, 1}},
+                                                    {{1, 0, 0.25f, 1}, {0, 1, 0.25f, 1}, {0, 0, 0.25f, 1}}};
+        const uint32_t rect_list[][2] = {{0xc242, 17}};
+        for (int order = 0; order < 2; order++) {
+            memcpy(corners, rect_corners[order], sizeof rect_corners[order]);
+            memcpy(colors, rect_colors[order], sizeof rect_colors[order]);
+            const int drawn = run_with_registers(x, FOURTH, at(RECT_TARGET), rect_list, 1, 0, error, sizeof error);
+            if (drawn) fprintf(stderr, "rect list: %s\n", error);
+            CHECK(drawn == 0);
+            check_triangle(x, at(RECT_TARGET));
+        }
+        rt_render_forget();
+        uint32_t offset = record_setup(FOURTH, at(RECT_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        CHECK(rt_render_record_register(FOURTH, offset, 0xc242, 17, error, sizeof error) == 0);
+        CHECK(rt_render_record_draw_auto(FOURTH, offset + 0x10, 4, error, sizeof error) == 0);
+        CHECK(rt_executor_run(x, FOURTH, offset + 0x20, error, sizeof error) == -1 && strstr(error, "whole rects"));
+        memcpy(corners, saved_corners, sizeof saved_corners);
+        memcpy(colors, saved_colors, sizeof saved_colors);
+    }
     /* No pixel shader (a depth-only pass, placed as the runtime's sceGnmSetPsShader places it): a
        draw with it stops by name. */
     rt_render_forget();
@@ -109,6 +141,41 @@ int main(void)
     CHECK(rt_render_record_pixel_shader_at(FOURTH + offset, no_pixel_shader) == 0);
     CHECK(rt_executor_run(x, FOURTH, record_triangle_draw(FOURTH, offset + 0x10), error, sizeof error) == -1 &&
           strstr(error, "no pixel shader"));
+
+    /* A compute dispatch (scale_add: out[i] = in[i] * 2.5 + 1, one workgroup of 64) through the record:
+       the shader placed as sceGnmSetCsShader places it, its user data the two buffer descriptors;
+       the results are in the guest memory when the run returns. Then a dispatch with no compute
+       shader, and one whose shader takes its workgroup's y index, stop by name. */
+    {
+        enum { COMPUTE = 0xc0e20000, COMPUTE_CODE = 0x3000, INPUT = 0x20000, OUTPUT = 0x21000, LANES = 64 };
+        memcpy((void *)(uintptr_t)at(COMPUTE_CODE), scale_add, sizeof scale_add);
+        float *input = (float *)(uintptr_t)at(INPUT), *output = (float *)(uintptr_t)at(OUTPUT);
+        for (unsigned i = 0; i < LANES; i++) input[i] = (float)i, output[i] = -1;
+        const uint64_t code = at(COMPUTE_CODE);
+        uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0, 8 << 1, LANES, 1, 1};
+        rt_render_forget();
+        CHECK(rt_render_record_compute_shader_at(COMPUTE + 0x10, shader) == 0);
+        uint32_t user[8];
+        descriptor(user, at(INPUT), 4);
+        descriptor(user + 4, at(OUTPUT), 4);
+        CHECK(rt_render_record_user_data(COMPUTE, 0x20, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+        const uint32_t one[3] = {1, 1, 1};
+        CHECK(rt_render_record_dispatch(COMPUTE, 0x30, one, error, sizeof error) == 0);
+        const int ran = rt_executor_run(x, COMPUTE, 0x40, error, sizeof error);
+        if (ran) fprintf(stderr, "dispatch: %s\n", error);
+        CHECK(ran == 0);
+        int right = 1;
+        for (unsigned i = 0; i < LANES; i++) right &= output[i] == (float)i * 2.5f + 1.0f;
+        CHECK(right);
+
+        rt_render_forget();
+        CHECK(rt_render_record_dispatch(COMPUTE, 0x30, one, error, sizeof error) == 0);
+        CHECK(rt_executor_run(x, COMPUTE, 0x40, error, sizeof error) == -1 && strstr(error, "without a compute shader"));
+        shader[3] |= 1u << 8; /* TGID_Y_EN */
+        CHECK(rt_render_record_compute_shader_at(COMPUTE + 0x10, shader) == 0);
+        CHECK(rt_render_record_dispatch(COMPUTE, 0x30, one, error, sizeof error) == 0);
+        CHECK(rt_executor_run(x, COMPUTE, 0x40, error, sizeof error) == -1 && strstr(error, "y or z index"));
+    }
 
     rt_executor_close(x);
     rt_render_forget();

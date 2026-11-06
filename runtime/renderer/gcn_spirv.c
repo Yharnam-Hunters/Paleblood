@@ -38,7 +38,11 @@ enum {
 };
 static const uint32_t inline_float_bits[] = {0x3f000000, 0xbf000000, 0x3f800000, 0xbf800000,
                                              0x40000000, 0xc0000000, 0x40800000, 0xc0800000};
-enum { BYTES_PER_DWORD = 4, VSHARP_BASE_HIGH_MASK = 0xffff, VSHARP_STRIDE_SHIFT = 16, VSHARP_STRIDE_MASK = 0x3fff };
+/* A buffer descriptor's base address is 40 bits: word 0, then word 1's bits 0-7; bits 8-15 are not
+   part of it (the Sea Islands manual's Table 8.5, as shadPS4's video_core/amdgpu/resource.h lays it
+   out). A plain address in an SGPR pair (s_load) uses the pair's low 48 bits. */
+enum { BYTES_PER_DWORD = 4, VSHARP_BASE_HIGH_MASK = 0xff, POINTER_HIGH_MASK = 0xffff, VSHARP_STRIDE_SHIFT = 16,
+       VSHARP_STRIDE_MASK = 0x3fff };
 
 typedef enum { STAGE_COMPUTE, STAGE_VERTEX, STAGE_PIXEL } shader_stage;
 
@@ -51,7 +55,7 @@ typedef struct {
     unsigned vertex_index_vgpr, barycentric_vgpr;
     uint32_t output_control;         /* a vertex shader's PA_CL_VS_OUT_CNTL */
     uint32_t push_constant_offset;   /* runtime/gcn_spirv.h */
-    uint64_t address_offset;
+    uint64_t address_offset, error_address;
 } stage_layout;
 
 enum { POSITION_TARGET = 12, PARAMETER_TARGET_FIRST = 32, PARAMETER_COUNT = 32, COLOR_TARGET_COUNT = 8, MAX_INTERFACE = 80 };
@@ -187,8 +191,49 @@ static void write_vgpr(translator *t, unsigned n, uint32_t bits)
     store(t, t->out, vgpr(t, n), value(t, SPV_OP_SELECT, t_uint(t), 3, exec_bit(t), bits, old));
 }
 
+/* A compute lane's place in its 64-lane wave: GCN fills waves with consecutive invocations in the
+   workgroup's flat order (x fastest), so it is that flat index mod 64. */
+enum { WAVE_LANES = 64, WAVE_HALF_LANES = 32, SGPR_VCC_HI = SGPR_VCC + 1 };
+
+static uint32_t wave_lane(translator *t)
+{
+    const uint32_t uvec3 = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_uint(t), 3}, 2);
+    const uint32_t id = load(t, uvec3, t->local_invocation_id);
+    const uint32_t *size = t->layout->local_size;
+    uint32_t flat = value(t, SPV_OP_COMPOSITE_EXTRACT, t_uint(t), 2, id, 2);
+    for (int axis = 1; axis >= 0; axis--) {
+        flat = value(t, SPV_OP_I_MUL, t_uint(t), 2, flat, konst(t, size[axis]));
+        flat = value(t, SPV_OP_I_ADD, t_uint(t), 2, flat, value(t, SPV_OP_COMPOSITE_EXTRACT, t_uint(t), 2, id, (uint32_t)axis));
+    }
+    return value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, flat, konst(t, WAVE_LANES - 1));
+}
+
+/* A scalar write of VCC_LO (s106) or VCC_HI (s107): the 32 lanes of that half of the wave take their
+   bits of the value as their VCC bit; the other half keeps its own. VCC is kept as each lane's bit,
+   which only compute lanes can place in the wave, so other stages stop here. */
+static void write_vcc_half(translator *t, unsigned n, uint32_t bits, const gcn_instruction *ins)
+{
+    if (t->layout->stage != STAGE_COMPUTE) {
+        fail(t, "%s: writing VCC's halves outside a compute shader is not supported yet", ins->name);
+        return;
+    }
+    const uint32_t lane = wave_lane(t), half = n - SGPR_VCC;
+    const uint32_t in_half = value(t, SPV_OP_I_EQUAL, t_bool(t), 2,
+                                   value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, lane, konst(t, 5)), konst(t, half));
+    const uint32_t shifted = value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, bits,
+                                   value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, lane, konst(t, WAVE_HALF_LANES - 1)));
+    const uint32_t bit = value(t, SPV_OP_I_NOT_EQUAL, t_bool(t), 2, value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, shifted, konst(t, 1)),
+                               konst(t, 0));
+    const uint32_t old = load(t, t_bool(t), lane_bit(t, SGPR_VCC));
+    store(t, t->out, lane_bit(t, SGPR_VCC), value(t, SPV_OP_SELECT, t_bool(t), 3, in_half, bit, old));
+}
+
 static void write_sgpr(translator *t, unsigned n, uint32_t bits, const gcn_instruction *ins)
 {
+    if (n == SGPR_VCC || n == SGPR_VCC_HI) {
+        write_vcc_half(t, n, bits, ins);
+        return;
+    }
     if (n >= SGPR_VCC && n != SGPR_M0) {
         fail(t, "%s: writing special register %u is not supported yet", ins->name, n);
         return;
@@ -849,12 +894,13 @@ static uint32_t dwords_named(const char *name)
     return x ? (uint32_t)atoi(x + strlen("dwordx")) : 1;
 }
 
-/* The 48-bit address in two SGPRs: low word, then the high bits' low 16. */
-static uint32_t address_in(translator *t, unsigned first_sgpr)
+/* The address in two SGPRs: the low word, then the second word's bits under high_mask (a
+   descriptor's VSHARP_BASE_HIGH_MASK, a plain pointer's POINTER_HIGH_MASK). */
+static uint32_t address_in(translator *t, unsigned first_sgpr, uint32_t high_mask)
 {
     const uint32_t low = widen(t, load(t, t_uint(t), sgpr(t, first_sgpr)));
     const uint32_t high_bits = value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, load(t, t_uint(t), sgpr(t, first_sgpr + 1)),
-                                     konst(t, VSHARP_BASE_HIGH_MASK));
+                                     konst(t, high_mask));
     const uint32_t thirty_two = spirv_global(&t->m, SPV_OP_CONSTANT, (const uint32_t[]){t_ulong(t), 32, 0}, 3);
     const uint32_t high = value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_ulong(t), 2, widen(t, high_bits), thirty_two);
     const uint32_t guest = value(t, SPV_OP_BITWISE_OR, t_ulong(t), 2, low, high);
@@ -900,7 +946,8 @@ static void scalar_memory(translator *t, const uint32_t *w, const gcn_instructio
     }
     /* An immediate offset counts dwords; an SGPR offset holds bytes. */
     const uint32_t byte_offset = immediate ? konst(t, offset_field * BYTES_PER_DWORD) : load(t, t_uint(t), sgpr(t, offset_field));
-    const uint32_t base = address_in(t, base_sgpr); /* s_load: an SGPR pair; s_buffer_load: a descriptor */
+    const int descriptor = !strncmp(name, "s_buffer_load", strlen("s_buffer_load"));
+    const uint32_t base = address_in(t, base_sgpr, descriptor ? VSHARP_BASE_HIGH_MASK : POINTER_HIGH_MASK);
     for (uint32_t i = 0; i < dwords_named(name); i++) write_sgpr(t, sdst + i, load_dword(t, dword_pointer(t, base, byte_offset, i)), ins);
 }
 
@@ -934,6 +981,15 @@ static uint32_t buffer_access_dwords(translator *t, const uint32_t *w, const gcn
     if (ins->encoding == GCN_MUBUF) {
         *load_op = !strncmp(name, "buffer_load_dword", strlen("buffer_load_dword"));
         if (*load_op || !strncmp(name, "buffer_store_dword", strlen("buffer_store_dword"))) return dwords_named(name);
+        const int format_load = !strncmp(name, "buffer_load_format_", strlen("buffer_load_format_"));
+        if (format_load || !strncmp(name, "buffer_store_format_", strlen("buffer_store_format_"))) {
+            if (!t->layout->error_address) {
+                fail(t, "%s: its data format is the descriptor's, known only at run time, and there is no run-time stop word", name);
+                return 0;
+            }
+            *load_op = format_load;
+            return components_named(name);
+        }
         fail(t, "%s (%s) is not translated yet", name, gcn_encoding_name(ins->encoding));
         return 0;
     }
@@ -951,6 +1007,104 @@ static uint32_t buffer_access_dwords(translator *t, const uint32_t *w, const gcn
         return 0;
     }
     return components;
+}
+
+/* Buffer resource descriptor word 3 (AMD's Sea Islands ISA manual, "Buffer Resource Descriptor"):
+   DST_SEL_X/Y/Z/W in bits 0-11 (3 bits each; 4-7 select x, y, z, w), NUM_FORMAT 12-14, DATA_FORMAT 15-18. */
+enum { VSHARP_FORMAT_WORD = 3, DST_SEL_BITS = 12, DST_SEL_IDENTITY = 4 | 5 << 3 | 6 << 6 | 7 << 9, NUM_FORMAT_SHIFT = 12,
+       DATA_FORMAT_SHIFT = 15, NUM_FORMAT_UINT = 4, NUM_FORMAT_SINT = 5 };
+
+static uint32_t t_vec4(translator *t) { return spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_float(t), 4}, 2); }
+
+enum { DATA_FORMAT_8_8_8_8 = 10, NUM_FORMAT_UNORM = 0, DST_SEL_X = 4 };
+
+static uint32_t descriptor_field(translator *t, uint32_t word, unsigned shift, uint32_t mask)
+{
+    return value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, word, konst(t, shift)), konst(t, mask));
+}
+
+static uint32_t equals(translator *t, uint32_t a, uint32_t b) { return value(t, SPV_OP_I_EQUAL, t_bool(t), 2, a, b); }
+static uint32_t both(translator *t, uint32_t a, uint32_t b) { return value(t, SPV_OP_LOGICAL_AND, t_bool(t), 2, a, b); }
+static uint32_t either(translator *t, uint32_t a, uint32_t b) { return value(t, SPV_OP_LOGICAL_OR, t_bool(t), 2, a, b); }
+
+/* buffer_load/store_format_*: the data format is the descriptor's, so the shader decides as it runs.
+   Done exactly:
+   - whole 32-bit components (DATA_FORMAT 32 to 32_32_32_32; uint, sint or float), at least as many as
+     the access names, identity swizzle: the dwords move as they are;
+   - a four-component store to 8_8_8_8 unorm whose DST_SEL is a permutation of x, y, z, w: the store
+     undoes the swizzle (memory component DST_SEL[i] - 4 takes data component i, the inverse of a
+     load's mapping, as shadPS4's lower_buffer_format_to_raw.cpp does), then packs as GLSL's
+     packUnorm4x8 (clamp to [0, 1], times 255, rounded to nearest; the PS4's rule for ties is not
+     established).
+   Anything else writes a run-time stop code (runtime/gcn_spirv.h) and touches no memory. */
+static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t components, int load_op, uint32_t base, uint32_t offset,
+                                     unsigned vdata)
+{
+    const uint32_t word = load(t, t_uint(t), sgpr(t, srsrc + VSHARP_FORMAT_WORD));
+    const uint32_t data_format = descriptor_field(t, word, DATA_FORMAT_SHIFT, 0xf);
+    const uint32_t num_format = descriptor_field(t, word, NUM_FORMAT_SHIFT, 0x7);
+    const uint32_t swizzle = descriptor_field(t, word, 0, (1u << DST_SEL_BITS) - 1);
+    uint32_t available = konst(t, 0); /* whole 32-bit components in the format */
+    for (unsigned dfmt = 0; dfmt < 16; dfmt++) {
+        const uint32_t n = float_format_components(dfmt);
+        if (n) available = value(t, SPV_OP_SELECT, t_uint(t), 3, equals(t, data_format, konst(t, dfmt)), konst(t, n), available);
+    }
+    const uint32_t whole = either(t, either(t, equals(t, num_format, konst(t, NUM_FORMAT_UINT)), equals(t, num_format, konst(t, NUM_FORMAT_SINT))),
+                                  equals(t, num_format, konst(t, NFMT_FLOAT)));
+    const uint32_t identity = equals(t, swizzle, konst(t, DST_SEL_IDENTITY));
+    const uint32_t raw = both(t, both(t, value(t, SPV_OP_U_GREATER_THAN_EQUAL, t_bool(t), 2, available, konst(t, components)), whole), identity);
+
+    /* 8_8_8_8 unorm stores: the four selects, and whether they are a permutation of x, y, z, w */
+    uint32_t select[4], seen = konst(t, 0);
+    for (unsigned c = 0; c < 4; c++) {
+        select[c] = descriptor_field(t, word, 3 * c, 0x7);
+        const uint32_t in_range = value(t, SPV_OP_U_GREATER_THAN_EQUAL, t_bool(t), 2, select[c], konst(t, DST_SEL_X));
+        const uint32_t bit = value(t, SPV_OP_SELECT, t_uint(t), 3, in_range,
+                                   value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, konst(t, 1),
+                                         value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, select[c], konst(t, 3))),
+                                   konst(t, 0x10));
+        seen = value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, seen, bit);
+    }
+    const uint32_t packed_store = !load_op && components == 4
+                                      ? both(t, both(t, equals(t, data_format, konst(t, DATA_FORMAT_8_8_8_8)),
+                                                     equals(t, num_format, konst(t, NUM_FORMAT_UNORM))),
+                                             equals(t, seen, konst(t, 0xf)))
+                                      : spirv_constant_bool(&t->m, 0);
+
+    /* neither: the stop code, from any active lane */
+    const uint32_t done = either(t, raw, packed_store);
+    const uint32_t stop = begin_if(t, both(t, exec_bit(t), value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, done)));
+    uint32_t code = value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, data_format, konst(t, 8)),
+                          value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, num_format, konst(t, 4)));
+    code = value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, code,
+                 konst(t, (uint32_t)GCN_RUNTIME_STOP_BUFFER_FORMAT << GCN_RUNTIME_STOP_KIND_SHIFT | components | (load_op ? 0 : 0x80)));
+    code = value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, code, value(t, SPV_OP_SELECT, t_uint(t), 3, identity, konst(t, 0), konst(t, 8)));
+    const uint64_t stop_word = t->layout->error_address;
+    const uint32_t stop_address = spirv_global(&t->m, SPV_OP_CONSTANT, (const uint32_t[]){t_ulong(t), (uint32_t)stop_word, (uint32_t)(stop_word >> 32)}, 3);
+    store_dword(t, value(t, SPV_OP_CONVERT_U_TO_PTR, spirv_type_pointer(&t->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, t_uint(t)), 1, stop_address), code);
+    end_if(t, stop);
+
+    const uint32_t raw_merge = begin_if(t, both(t, exec_bit(t), raw));
+    for (uint32_t i = 0; i < components; i++) {
+        const uint32_t pointer = dword_pointer(t, base, offset, i);
+        if (load_op) write_vgpr(t, vdata + i, load_dword(t, pointer));
+        else store_dword(t, pointer, load(t, t_uint(t), vgpr(t, vdata + i)));
+    }
+    end_if(t, raw_merge);
+    if (load_op || components != 4) return;
+
+    const uint32_t packed_merge = begin_if(t, both(t, exec_bit(t), packed_store));
+    uint32_t data[4], memory[4];
+    for (unsigned c = 0; c < 4; c++) data[c] = value(t, SPV_OP_BITCAST, t_float(t), 1, load(t, t_uint(t), vgpr(t, vdata + c)));
+    for (unsigned m = 0; m < 4; m++) {
+        memory[m] = spirv_global(&t->m, SPV_OP_CONSTANT, (const uint32_t[]){t_float(t), 0}, 2);
+        for (unsigned c = 0; c < 4; c++)
+            memory[m] = value(t, SPV_OP_SELECT, t_float(t), 3, equals(t, select[c], konst(t, DST_SEL_X + m)), data[c], memory[m]);
+    }
+    enum { SPV_OP_COMPOSITE_CONSTRUCT = 80 };
+    const uint32_t vec = value(t, SPV_OP_COMPOSITE_CONSTRUCT, t_vec4(t), 4, memory[0], memory[1], memory[2], memory[3]);
+    store_dword(t, dword_pointer(t, base, offset, 0), glsl(t, t_uint(t), SPV_GLSL_PACK_UNORM_4X8, vec, 0, 0, 1));
+    end_if(t, packed_merge);
 }
 
 /* MUBUF buffer_load/store_dword* and MTBUF tbuffer_load/store_format_* on 32-bit float data. */
@@ -981,8 +1135,12 @@ static void buffer_memory(translator *t, const uint32_t *w, const gcn_instructio
         offset = value(t, SPV_OP_I_ADD, t_uint(t), 2, offset,
                        value(t, SPV_OP_I_MUL, t_uint(t), 2, load(t, t_uint(t), vgpr(t, vaddr)), stride));
     }
-    const uint32_t base = address_in(t, srsrc);
-    const uint32_t merge = begin_if(t, exec_bit(t)); /* only active lanes touch memory */
+    const uint32_t base = address_in(t, srsrc, VSHARP_BASE_HIGH_MASK);
+    if (ins->encoding == GCN_MUBUF && strstr(name, "_format_")) {
+        descriptor_format_access(t, srsrc, dwords, load_op, base, offset, vdata);
+        return;
+    }
+    const uint32_t merge = begin_if(t, exec_bit(t));
     for (uint32_t i = 0; i < dwords; i++) {
         const uint32_t pointer = dword_pointer(t, base, offset, i);
         if (load_op) write_vgpr(t, vdata + i, load_dword(t, pointer));
@@ -993,7 +1151,6 @@ static void buffer_memory(translator *t, const uint32_t *w, const gcn_instructio
 
 /* ---- vertex and pixel inputs and outputs ---- */
 
-static uint32_t t_vec4(translator *t) { return spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_float(t), 4}, 2); }
 
 /* A stage input or output, decorated as a built-in or a location, listed on the entry point. */
 static uint32_t interface_variable(translator *t, uint32_t storage, uint32_t type, uint32_t decoration, uint32_t number)
@@ -1488,7 +1645,7 @@ int gcn_translate_compute(const uint32_t *code, size_t dwords, const gcn_compute
 {
     const stage_layout s = {.stage = STAGE_COMPUTE, .local_size = {layout->local_size[0], layout->local_size[1], layout->local_size[2]},
                             .user_sgprs = layout->user_sgprs, .workgroup_id_x_sgpr = layout->workgroup_id_x_sgpr,
-                            .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset};
+                            .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address};
     return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
 }
 
@@ -1497,7 +1654,7 @@ int gcn_translate_vertex(const uint32_t *code, size_t dwords, const gcn_vertex_l
 {
     const stage_layout s = {.stage = STAGE_VERTEX, .user_sgprs = layout->user_sgprs, .workgroup_id_x_sgpr = -1,
                             .vertex_index_vgpr = layout->vertex_index_vgpr, .output_control = layout->output_control,
-                            .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset};
+                            .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address};
     return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
 }
 
@@ -1506,6 +1663,6 @@ int gcn_translate_pixel(const uint32_t *code, size_t dwords, const gcn_pixel_lay
 {
     const stage_layout s = {.stage = STAGE_PIXEL, .user_sgprs = layout->user_sgprs, .workgroup_id_x_sgpr = -1,
                             .barycentric_vgpr = layout->barycentric_vgpr,
-                            .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset};
+                            .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address};
     return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
 }

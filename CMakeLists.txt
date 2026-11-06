@@ -58,6 +58,17 @@ add_executable(test_plugin test/test_plugin.c runtime/plugin.c runtime/hooks.c)
 target_include_directories(test_plugin PRIVATE runtime/include)
 target_link_libraries(test_plugin bbrt)
 add_test(NAME plugin COMMAND test_plugin)
+# The game library's observer calls reach the record the host exports (runtime/render_observer.h).
+add_executable(test_render_observer test/test_render_observer.c runtime/render_observer.c)
+target_include_directories(test_render_observer PRIVATE runtime/include)
+target_link_libraries(test_render_observer ${CMAKE_DL_LIBS} pthread)
+set_target_properties(test_render_observer PROPERTIES ENABLE_EXPORTS ON)
+add_test(NAME render_observer COMMAND test_render_observer)
+# Observe hooks: the observer sees the arguments and the original still runs (runtime/observe_hooks.h).
+add_executable(test_observe_hooks test/test_observe_hooks.c)
+target_link_libraries(test_observe_hooks bbrt)
+set_target_properties(test_observe_hooks PROPERTIES ENABLE_EXPORTS ON)
+add_test(NAME observe_hooks COMMAND test_observe_hooks)
 
 add_executable(test_host_hooks test/test_host_hooks.c runtime/host_hooks.c)
 target_include_directories(test_host_hooks PRIVATE runtime/include)
@@ -93,9 +104,14 @@ file(GLOB PB_TEST_SYSLIB CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/runtime/syslib/
 file(GLOB PB_TEST_SYSLIB_TESTS CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/test/syslib/*.c)
 add_executable(test_syslib test/test_syslib.c ${PB_TEST_SYSLIB_TESTS} runtime/process.c ${PB_TEST_SYSLIB}
                runtime/display/display.c runtime/display/display_window_none.c runtime/renderer/renderer_none.c
-               runtime/audio/audio_host_none.c)
+               runtime/audio/audio_host_none.c ${PB_MEDIA_SOURCES})
 target_include_directories(test_syslib PRIVATE runtime/include)
 target_link_libraries(test_syslib PRIVATE atrac9)
+if(PB_FFMPEG_FOUND)
+    # The movie player's tests encode a short movie of their own with the same libraries.
+    target_link_libraries(test_syslib PRIVATE PkgConfig::PB_FFMPEG)
+    target_compile_definitions(test_syslib PRIVATE PB_TEST_MEDIA=1)
+endif()
 add_test(NAME syslib COMMAND test_syslib)
 # The renderer's GCN shader decoder (docs/RENDERER.md), its test, and pbgcn for the shader census.
 add_library(pbgcn_decode STATIC runtime/renderer/gcn_decode.c)
@@ -114,7 +130,7 @@ target_link_libraries(pbrender_calls PUBLIC pthread)
 add_executable(test_render_calls test/test_render_calls.c)
 target_link_libraries(test_render_calls PRIVATE pbrender_calls)
 add_test(NAME render_calls COMMAND test_render_calls)
-add_library(pbgcn_spirv STATIC runtime/renderer/spirv.c runtime/renderer/gcn_spirv.c)
+add_library(pbgcn_spirv STATIC runtime/renderer/spirv.c runtime/renderer/gcn_spirv.c runtime/renderer/rect_list.c)
 target_include_directories(pbgcn_spirv PUBLIC runtime/include)
 target_link_libraries(pbgcn_spirv PUBLIC pbgcn_decode)
 add_executable(test_gcn_spirv test/test_gcn_spirv.c)

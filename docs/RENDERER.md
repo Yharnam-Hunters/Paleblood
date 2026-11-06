@@ -72,6 +72,22 @@ Instead:
        arithmetic (including GCN's legacy multiply, where zero times anything is zero),
        conversions that saturate as GCN's do, compares and selects, integer carries, scalar
        arithmetic, and buffer and constant loads and stores.
+     - **VCC's halves:** a scalar write of `VCC_LO` or `VCC_HI` (s106, s107) gives the 32 lanes of
+       that half of the wave their bits of the value. VCC is kept as each lane's bit, and a compute
+       lane's place in its wave is its flat index in the workgroup mod 64 (x fastest), so this is
+       exact in compute shaders; other stages stop by name, as does reading VCC as a scalar.
+     - **Run-time stops:** some of what a shader does is known only when it runs (a buffer access's
+       data format is its descriptor's). The executor owns a 32-bit stop word whose GPU address is
+       baked into every translation (`error_address`); a shader meeting a case it cannot do exactly
+       writes a code there and skips the access, and the executor checks the word after each
+       dispatch and draw and stops by name (`GCN_RUNTIME_STOP_*`).
+     - **Format buffer accesses** (`buffer_load/store_format_*`): whole 32-bit components (uint,
+       sint, float; identity swizzle) move as they are, and a four-component store to 8_8_8_8 unorm
+       undoes the descriptor's swizzle (shadPS4's rule: the inverse of a load's) and packs as GLSL's
+       `packUnorm4x8` (the PS4's rounding of ties is not established). Anything else is a run-time stop.
+     - **Descriptor base addresses are 40 bits** (word 1's bits 0-7; the Sea Islands manual's Table
+       8.5 as shadPS4's `resource.h` lays it out). The game sets word 1's bits 8-15, which the
+       translator used to take as address bits, sending the GPU outside guest memory.
      - **Typed buffer loads and stores** (`tbuffer_load_format_*`, `tbuffer_store_format_*`):
        the format is in the instruction. The game uses only 32-bit float data (one to four
        components, as many as the access names), which moves whole dwords with no conversion, so
@@ -269,6 +285,12 @@ Instead:
         - **What runs today:** COLOR_8_8_8_8 render targets in slot 0 (UNORM or sRGB, either
           component order), viewport 0, vertex and pixel shaders with their user data, and
           auto-index draws as triangle lists.
+        - **Rect lists** (primitive type 17, which the game's fullscreen passes use): Vulkan has no
+          such primitive, so each rect's three vertices go through a generated geometry stage
+          (`runtime/rect_list.h`) that adds the fourth corner. The right-angle vertex is the one
+          whose x matches one neighbour's and y the other's, and the fourth corner is the other two
+          minus it, for the position and every output (shadPS4's rule, facts only). A device
+          without geometry shaders stops by name at a rect list; Metal will need another route.
         - **Not yet:** blending and depth (their setters aren't recorded yet), other formats, more
           render targets and other pixel inputs. These stop with the reason.
         - **The image's memory order:** an image's pixels only leave the GPU through
@@ -289,9 +311,33 @@ Instead:
         change which thread reaches its first unimplemented call first if it happened at every
         boot. Until the library's replacements record calls, boots are unchanged in every display
         mode.
-     5. **The observer calls** in the library's replacements, once those are merged; then
-        follow the auto-index draw wrapper's callers (`0x015fbb50`) up to the title screen's
-        2D passes.
+     5. **The observer calls** in the library's replacements (begun). Replacements call
+        `runtime/render_observer.h`, which finds the record in the boot harness (`pbboot` exports it)
+        and does nothing under a host without it, so the replacements' verification is unchanged.
+        The register setters (blend, colour control, target mask, depth and stencil control, the
+        primitive type), the instance count, the viewport and the auto-index draw report now.
+        `tools/boot.py --game-lib build/game/libbbgame.so --no-record` runs a boot with the
+        replacements, and with the display on the game's first draw reaches the executor: a
+        fullscreen pass drawn as a rect list (primitive type 17), which stops by name until the
+        executor draws rect lists. **Observe hooks** (`runtime/observe_hooks.h`) report what has no replacement yet:
+        the hook calls an observer with the call's arguments, then the original runs from its
+        first instructions relocated next to the image, so every packet is still the original's.
+        A replacement, when one lands, takes the address and its observe hook is dropped. They
+        cover `setRenderTarget` (`0x014738b0`) and the five user-data writers (`0x01476420`
+        one word, `0x01476390` two, `0x014761a0` and `0x014762f0` four, `0x01476240` eight),
+        whose arguments come from their disassembly (`game/render/observe_gpu_library.c`). With
+        them the game's frame reaches its compute passes' user data, which stops by name until the
+        executor runs compute. **Compute** runs too: `sceGnmSetCsShader` hands the renderer
+        its 7-word register block (`COMPUTE_PGM_LO/HI`, `RSRC1/2`, `NUM_THREAD_X/Y/Z`, the order
+        shadPS4's `gnmdriver.cpp` writes them), placed like the other shaders; the dispatch writers
+        `0x01474c50` and `0x0148a350` (command buffer, x, y, z) are observed; and the executor
+        translates the shader for its workgroup size and runs the dispatch, its writes in the guest
+        memory before the next call. A workgroup's y or z index and its size information stop by
+        name. The two dispatch writers with a fifth argument (`0x01474d10`, `0x0148a410`) are not
+        observed yet. On the game, the frame's first compute pass (16,320 workgroups
+        of 8_8_8_8 stores) now runs, and the second stops at `image_store`: images come next.
+        Still to report: indexed draws; then follow the auto-index draw wrapper's callers
+        (`0x015fbb50`) up to the title screen's 2D passes.
 4. **Textures and 3D.** The game's texture formats and tiling (from public format documentation),
    meshes, materials and post-processing.
 
