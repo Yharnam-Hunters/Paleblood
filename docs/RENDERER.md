@@ -212,8 +212,13 @@ Instead:
          and `v1`.
        - The inputs: 1,678 use only those barycentrics; 1,111 add the front-face flag; nine
          also read the pixel position.
-     - **Still to confirm at run time:** that the game passes these same blocks to
-       `sceGnmSetVsShader` and `sceGnmSetPsShader`, with the code's address filled in.
+     - **Confirmed at run time** (6 November 2026): the game passes these same blocks to
+       `sceGnmSetVsShader` and `sceGnmSetPsShader`, with the code's address filled in. Those
+       calls are the runtime's own, so they hand the renderer the shader directly: placed at the
+       command-buffer address they write to, it joins the calls of the buffer submitted with that
+       address (`rt_render_record_*_shader_at`). The game's vertex shaders pass a fetch-shader
+       modifier, which replaces `PGM_RSRC1`'s SGPR and input-VGPR counts. A null pixel shader
+       (a depth-only pass) is recorded too, and a draw with it stops by name.
    - **How the hooks attach:** the library's functions are being decompiled like the rest of the
      game, as replacements verified to write exactly the original packets. The renderer leaves
      those packets alone, so verification still holds. Each of these replacements also makes one

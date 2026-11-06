@@ -1341,6 +1341,22 @@ past the mapping.
 - an address outside those mappings (other memory is not tracked yet);
 - a missing structure.
 
+## GNM: binding vertex and pixel shaders (`sceGnmSetVsShader`, `sceGnmSetPsShader`, issue #39)
+
+`sceGnmSetVsShader` and `sceGnmUpdateVsShader` take (command buffer, dwords, registers, modifier);
+`sceGnmSetPsShader` and `sceGnmUpdatePsShader` take (command buffer, dwords, registers). The
+argument order is shadPS4's `libSceGnmDriver` (`gnmdriver.cpp`). A boot shows the registers argument
+holding the shader's register block (7 words for a vertex shader, 12 for a pixel shader; see
+Paleblood's `docs/RENDERER.md`).
+
+| Detail | Answer |
+|---|---|
+| The reserved space | one PM4 NOP packet, as for the other command-buffer writers |
+| The shader | handed to the renderer, placed at the command-buffer address (runtime/renderer.h); nothing without the display |
+| The vertex shader's modifier | replaces `PGM_RSRC1`'s SGPR count (bits 6-9) and input VGPR count (bits 24-25): (`PGM_RSRC1 & 0xfcfffc3f`) OR the modifier, as shadPS4 applies it. The game's vertex shaders pass one (they call a fetch shader). A modifier with any other bit stops by name |
+| A null pixel shader block | no pixel shader (a depth-only pass): recorded as such, and a draw with it stops in the renderer |
+| No vertex shader registers | stops by name |
+
 ## GNM: compute queues (`sceGnmMapComputeQueue`, issue #39)
 
 OpenOrbis' `GnmDriver.h` only names this call, so its shape comes from the engine's wrapper
