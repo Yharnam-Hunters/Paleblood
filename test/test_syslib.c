@@ -936,6 +936,24 @@ static void gnm_submit_unmet_wait(void)
 static void vo_flip_bad_buffer(void) { vo_flip_fn(vo_handle, 9, 2, 0); }
 static void vo_open_other(void) { vo_open_fn(0xff, 0, 0, NULL); }
 
+/* PlayGo (libScePlayGo): the title's own calls, against a package manifest of three chunks. */
+typedef int32_t (*f_pg_init)(const void *);
+typedef int32_t (*f_pg_open)(int32_t *, const void *);
+typedef int32_t (*f_pg_chunks)(int32_t, uint16_t *, uint32_t, uint32_t *);
+typedef int32_t (*f_pg_locus)(int32_t, const uint16_t *, uint32_t, int8_t *);
+static f_pg_init pg_init;
+static f_pg_open pg_open;
+static f_pg_chunks pg_chunks;
+static f_pg_locus pg_locus;
+static int32_t pg_handle;
+static void pg_open_first(void) { int32_t h; pg_open(&h, NULL); }
+static void pg_init_nothing(void) { pg_init(NULL); }
+static void pg_open_with_params(void) { int32_t h; const int params = 1; pg_open(&h, &params); }
+static void pg_chunks_no_manifest(void) { uint16_t ids[100]; uint32_t n; pg_chunks(pg_handle, ids, 100, &n); }
+static void pg_chunks_short(void) { uint16_t ids[2]; uint32_t n; pg_chunks(pg_handle, ids, 2, &n); }
+static void pg_chunks_bad_handle(void) { uint16_t ids[100]; uint32_t n; pg_chunks(pg_handle + 1, ids, 100, &n); }
+static void pg_locus_unknown(void) { const uint16_t ids[1] = {3}; int8_t loci[1]; pg_locus(pg_handle, ids, 1, loci); }
+
 int main(void)
 {
     /* Unresolved entries are still callable diagnostics, but are not reported as implemented. */
@@ -2614,6 +2632,52 @@ int main(void)
             CHECK(rmdir(capture) == 0);
         }
         rt_display_configure(RT_DISPLAY_NONE, NULL);
+    }
+
+    pg_init = (f_pg_init)fn("libScePlayGo", "scePlayGoInitialize");
+    pg_open = (f_pg_open)fn("libScePlayGo", "scePlayGoOpen");
+    pg_chunks = (f_pg_chunks)fn("libScePlayGo", "scePlayGoGetChunkId");
+    pg_locus = (f_pg_locus)fn("libScePlayGo", "scePlayGoGetLocus");
+    CHECK(pg_init && pg_open && pg_chunks && pg_locus);
+    if (pg_init && pg_open && pg_chunks && pg_locus) {
+        CHECK(died_in_fatal(pg_open_first)); /* before scePlayGoInitialize */
+        static unsigned char work[0x200000];
+        const struct { void *buffer; uint32_t size, reserved; } params = {work, sizeof work, 0};
+        CHECK(pg_init(&params) == 0);
+        CHECK(died_in_fatal(pg_init_nothing));
+        CHECK(pg_open(&pg_handle, NULL) == 0 && pg_handle == 1);
+        CHECK(died_in_fatal(pg_open_with_params));
+        static char app0[512];
+        const char *tmp = getenv("TMPDIR");
+        snprintf(app0, sizeof app0, "%s/pb-playgo-XXXXXX", tmp ? tmp : "/tmp");
+        CHECK(mkdtemp(app0) != NULL);
+        rt_process.app0_dir = app0;
+        CHECK(died_in_fatal(pg_chunks_no_manifest)); /* no sce_sys/playgo-manifest.xml yet */
+        char path[600];
+        snprintf(path, sizeof path, "%s/sce_sys", app0);
+        CHECK(mkdir(path, 0755) == 0);
+        snprintf(path, sizeof path, "%s/sce_sys/playgo-manifest.xml", app0);
+        FILE *manifest = fopen(path, "w");
+        if (manifest) {
+            fputs("<psproject fmt=\"playgo-manifest\"><volume><chunk_info chunk_count=\"3\" scenario_count=\"1\"/></volume></psproject>",
+                  manifest);
+            fclose(manifest);
+        }
+        uint16_t ids[100];
+        uint32_t count = 0;
+        memset(ids, 0xee, sizeof ids);
+        CHECK(pg_chunks(pg_handle, ids, 100, &count) == 0 && count == 3 && ids[0] == 0 && ids[1] == 1 && ids[2] == 2 &&
+              ids[3] == 0xeeee);
+        int8_t loci[3] = {0, 0, 0};
+        CHECK(pg_locus(pg_handle, ids, 3, loci) == 0 && loci[0] == 3 && loci[1] == 3 && loci[2] == 3);
+        CHECK(died_in_fatal(pg_chunks_short));
+        CHECK(died_in_fatal(pg_chunks_bad_handle));
+        CHECK(died_in_fatal(pg_locus_unknown));
+        remove(path);
+        snprintf(path, sizeof path, "%s/sce_sys", app0);
+        rmdir(path);
+        rmdir(app0);
+        rt_process.app0_dir = NULL;
     }
 
     if (!failures) puts("syslib: ok");
