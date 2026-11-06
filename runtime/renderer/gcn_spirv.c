@@ -58,6 +58,8 @@ typedef struct {
     uint64_t address_offset, error_address;
     const gcn_image_binding *images;
     unsigned image_count;
+    const gcn_resource_origin *samplers;
+    unsigned sampler_count;
 } stage_layout;
 
 enum { POSITION_TARGET = 12, PARAMETER_TARGET_FIRST = 32, PARAMETER_COUNT = 32, COLOR_TARGET_COUNT = 8, MAX_INTERFACE = 80 };
@@ -75,6 +77,7 @@ typedef struct {
     uint32_t position, parameter[PARAMETER_COUNT], color[COLOR_TARGET_COUNT], attribute[PARAMETER_COUNT];
     uint32_t clip_distance;          /* the ClipDistance array, made on first use */
     uint32_t image[GCN_MAX_IMAGES];  /* each image binding's variable, made on first use */
+    uint32_t sampler[GCN_MAX_SAMPLERS]; /* each sampler binding's variable, made on first use */
     size_t program_dwords;           /* the program's length, for finding where its descriptors come from */
     int uses_1d_images, uses_sampled_1d_images, queries_images, reads_images, writes_images, uses_quads;
     /* outside compute shaders, a lane has no known place in the wave, so a scalar write of VCC's halves
@@ -1636,9 +1639,11 @@ static int same_origin(const gcn_resource_origin *a, const gcn_resource_origin *
 /* MIMG fields (the Sea Islands ISA manual): word 0 DMASK bits 8-11, UNORM 12, GLC 13, DA 14, R128 15,
    TFE 16, LWE 17, OP 18-24, SLC 25; word 1 VADDR bits 0-7, VDATA 8-15, SRSRC 16-20 (4 SGPRs each),
    SSAMP 21-25. */
-enum { MIMG_OP_LOAD = 0x00, MIMG_OP_LOAD_MIP = 0x01, MIMG_OP_STORE = 0x08, MIMG_SRSRC_UNIT = 4, RESOURCE_DWORDS = 8 };
+enum { MIMG_OP_LOAD = 0x00, MIMG_OP_LOAD_MIP = 0x01, MIMG_OP_STORE = 0x08, MIMG_OP_SAMPLE = 0x20, MIMG_SRSRC_UNIT = 4, RESOURCE_DWORDS = 8,
+       SAMPLER_DWORDS = 4 };
 
 static unsigned mimg_resource_sgpr(const uint32_t *w) { return ((w[1] >> 16) & 0x1f) * MIMG_SRSRC_UNIT; }
+static unsigned mimg_sampler_sgpr(const uint32_t *w) { return ((w[1] >> 21) & 0x1f) * MIMG_SRSRC_UNIT; }
 
 /* The type a binding's texels read and write as. */
 static uint32_t texel_component_type(translator *t, const gcn_image_binding *b)
@@ -1719,6 +1724,89 @@ static void sampled_load(translator *t, const gcn_image_binding *b, uint32_t var
     end_if(t, merge);
 }
 
+/* The sampler binding's variable (set 0, binding image_count + j), made on first use. */
+static uint32_t sampler_variable(translator *t, unsigned j)
+{
+    if (t->sampler[j]) return t->sampler[j];
+    spirv_module *m = &t->m;
+    const uint32_t type = spirv_global(m, SPV_OP_TYPE_SAMPLER, NULL, 0), id = spirv_new_id(m);
+    spirv_emit(m, &m->sections[SPIRV_GLOBALS], SPV_OP_VARIABLE,
+               (const uint32_t[]){spirv_type_pointer(m, SPV_STORAGE_UNIFORM_CONSTANT, type), id, SPV_STORAGE_UNIFORM_CONSTANT}, 3);
+    spirv_emit(m, &m->sections[SPIRV_DECORATIONS], SPV_OP_DECORATE, (const uint32_t[]){id, SPV_DECORATION_DESCRIPTOR_SET, 0}, 3);
+    spirv_emit(m, &m->sections[SPIRV_DECORATIONS], SPV_OP_DECORATE,
+               (const uint32_t[]){id, SPV_DECORATION_BINDING, t->layout->image_count + j}, 3);
+    if (t->interface_count == MAX_INTERFACE) fail(t, "more stage inputs, outputs and images than the translator takes");
+    else t->interface[t->interface_count++] = id;
+    t->sampler[j] = id;
+    return id;
+}
+
+/* image_sample: float coordinates from VADDR on (x, then y for 2D, then the slice for an array, which
+   DA marks), sampled at level 0 with the sampler its SSAMP SGPRs name. GCN picks the level from the
+   coordinates' derivatives; level 0 is the same texels when the image has one level and the sampler's
+   minifying and magnifying filters agree, which the caller checks (and the derivatives would need
+   uniform control flow, which the translated program's dispatch loop does not have). Only active
+   lanes write their VGPRs. */
+static void image_sample(translator *t, const uint32_t *code, size_t at, const gcn_instruction *ins, unsigned binding, uint32_t texel_type,
+                         unsigned dmask, unsigned vaddr, unsigned vdata)
+{
+    enum { SPV_OP_COMPOSITE_CONSTRUCT = 80 };
+    const uint32_t *w = code + at;
+    const gcn_image_binding *b = &t->layout->images[binding];
+    const unsigned unnormalized = (w[0] >> 12) & 1, array = (w[0] >> 14) & 1;
+    if (!b->sampled) {
+        fail(t, "%s: a storage image", ins->name);
+        return;
+    }
+    if (unnormalized) {
+        fail(t, "%s: unnormalized coordinates (UNORM) are not translated yet", ins->name);
+        return;
+    }
+    if (array != (unsigned)b->arrayed) {
+        fail(t, "%s: DA %u with a%s image", ins->name, array, b->arrayed ? "n array" : " non-array");
+        return;
+    }
+    gcn_resource_origin origin;
+    char reason[256];
+    if (descriptor_origin(code, t->program_dwords, at, mimg_sampler_sgpr(w), SAMPLER_DWORDS, &origin, reason, sizeof reason)) {
+        fail(t, "%s: the sampler: %s", ins->name, reason);
+        return;
+    }
+    unsigned j = 0;
+    while (j < t->layout->sampler_count && !same_origin(&t->layout->samplers[j], &origin)) j++;
+    if (j == t->layout->sampler_count) {
+        fail(t, "%s: the sampler in s[%u:%u] is not bound", ins->name, origin.sgpr, origin.sgpr + 3);
+        return;
+    }
+    const unsigned coordinates = (b->dim == GCN_IMAGE_1D ? 1 : b->dim == GCN_IMAGE_2D ? 2 : 3) + (b->arrayed ? 1 : 0);
+    uint32_t c[4];
+    for (unsigned i = 0; i < coordinates; i++) c[i] = as_float(t, load(t, t_uint(t), vgpr(t, vaddr + i)));
+    uint32_t coordinate = c[0];
+    if (coordinates > 1) {
+        const uint32_t vec = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_float(t), coordinates}, 2);
+        uint32_t words[2 + 4] = {vec, spirv_new_id(&t->m)};
+        memcpy(words + 2, c, coordinates * sizeof *c);
+        spirv_emit(&t->m, t->out, SPV_OP_COMPOSITE_CONSTRUCT, words, 2 + coordinates);
+        coordinate = words[1];
+    }
+    const uint32_t image_variable_id = image_variable(t, binding), sampler_id = sampler_variable(t, j);
+    const uint32_t merge = begin_if(t, exec_bit(t));
+    const uint32_t type = image_type(t, b);
+    const uint32_t sampled_type = spirv_global(&t->m, SPV_OP_TYPE_SAMPLED_IMAGE, &type, 1);
+    const uint32_t combined = value(t, SPV_OP_SAMPLED_IMAGE, sampled_type, 2, load(t, type, image_variable_id),
+                                    load(t, spirv_global(&t->m, SPV_OP_TYPE_SAMPLER, NULL, 0), sampler_id));
+    const uint32_t texel = value(t, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, texel_type, 4, combined, coordinate, SPV_IMAGE_OPERANDS_LOD,
+                                 konst_float(t, 0.0f));
+    const uint32_t sampled = texel_component_type(t, b);
+    unsigned next = vdata;
+    for (unsigned i = 0; i < 4; i++) {
+        if (!(dmask >> i & 1)) continue;
+        const uint32_t component = value(t, SPV_OP_COMPOSITE_EXTRACT, sampled, 2, texel, i);
+        write_vgpr(t, next++, b->type == GCN_IMAGE_UINT ? component : value(t, SPV_OP_BITCAST, t_uint(t), 1, component));
+    }
+    end_if(t, merge);
+}
+
 /* image_load and image_store: integer texel coordinates from VADDR on (x, then y for 2D and 3D, z for
    3D, then the slice for an array), the texel's components from or to VDATA on, one VGPR per DMASK
    bit in component order. A store must write every component the format has (DMASK covering them
@@ -1731,7 +1819,7 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
     const char *name = ins->name;
     const unsigned op = (w[0] >> 18) & 0x7f, dmask = (w[0] >> 8) & 0xf, r128 = (w[0] >> 15) & 1, tfe = (w[0] >> 16) & 1,
                    lwe = (w[0] >> 17) & 1;
-    if (op != MIMG_OP_LOAD && op != MIMG_OP_LOAD_MIP && op != MIMG_OP_STORE) {
+    if (op != MIMG_OP_LOAD && op != MIMG_OP_LOAD_MIP && op != MIMG_OP_STORE && op != MIMG_OP_SAMPLE) {
         fail(t, "%s (MIMG) is not translated yet", name);
         return;
     }
@@ -1754,6 +1842,11 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
         return;
     }
     const gcn_image_binding *b = &t->layout->images[binding];
+    if (op == MIMG_OP_SAMPLE) {
+        const uint32_t texel_type = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){texel_component_type(t, b), 4}, 2);
+        image_sample(t, code, at, ins, binding, texel_type, dmask, vaddr, vdata);
+        return;
+    }
     if (b->sampled && op == MIMG_OP_STORE) {
         fail(t, "%s: a store to a sampled image", name);
         return;
@@ -1843,6 +1936,40 @@ int gcn_image_resources(const uint32_t *code, size_t dwords, gcn_image_resource 
                 (*count)++;
             }
             resources[i].access |= op == MIMG_OP_STORE ? GCN_IMAGE_WRITE : GCN_IMAGE_READ;
+        }
+        at += ins.dwords;
+    }
+    return 0;
+}
+
+int gcn_sampler_resources(const uint32_t *code, size_t dwords, gcn_resource_origin *samplers, unsigned max, unsigned *count, char *error,
+                          size_t error_size)
+{
+    *count = 0;
+    const long program = gcn_program_dwords(code, dwords);
+    if (program < 0) {
+        snprintf(error, error_size, "no program end found");
+        return -1;
+    }
+    for (size_t at = 0; at < (size_t)program;) {
+        gcn_instruction ins;
+        if (gcn_decode(code + at, (size_t)program - at, &ins) || !ins.name) {
+            snprintf(error, error_size, "dword %zu: an instruction the decoder cannot name", at);
+            return -1;
+        }
+        if (ins.encoding == GCN_MIMG && ((code[at] >> 18) & 0x7f) == MIMG_OP_SAMPLE) {
+            gcn_resource_origin origin;
+            if (descriptor_origin(code, (size_t)program, at, mimg_sampler_sgpr(code + at), SAMPLER_DWORDS, &origin, error, error_size))
+                return -1;
+            unsigned i = 0;
+            while (i < *count && !same_origin(&samplers[i], &origin)) i++;
+            if (i == *count) {
+                if (*count == max) {
+                    snprintf(error, error_size, "more than %u samplers", max);
+                    return -1;
+                }
+                samplers[(*count)++] = origin;
+            }
         }
         at += ins.dwords;
     }
@@ -2129,6 +2256,7 @@ int gcn_translate_pixel(const uint32_t *code, size_t dwords, const gcn_pixel_lay
     const stage_layout s = {.stage = STAGE_PIXEL, .user_sgprs = layout->user_sgprs, .workgroup_id_x_sgpr = -1,
                             .barycentric_vgpr = layout->barycentric_vgpr, .position_enable = layout->position_enable,
                             .position_vgpr = layout->position_vgpr, .images = layout->images, .image_count = layout->image_count,
+                            .samplers = layout->samplers, .sampler_count = layout->sampler_count,
                             .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address};
     return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
 }

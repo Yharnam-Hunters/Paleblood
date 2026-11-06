@@ -205,6 +205,33 @@ static void image_programs(void)
     CHECK(gcn_translate_pixel(PROGRAM(pixel_two_images), &both_images, &spirv, &words, error, sizeof error) == -1 &&
           strstr(error, "(loaded from memory) is not bound"));
 
+    /* image_sample: the lookup program's sampler is found in the user data (s[12:15]) and its 1D array
+       loaded from memory; it translates and validates with both images and the sampler bound, and
+       stops naming the sampler without it. */
+    gcn_resource_origin samplers[GCN_MAX_SAMPLERS];
+    CHECK(gcn_sampler_resources(PROGRAM(pixel_lookup), samplers, GCN_MAX_SAMPLERS, &count, error, sizeof error) == 0);
+    CHECK(count == 1 && !samplers[0].from_memory && samplers[0].sgpr == 12);
+    const gcn_image_binding lookup_images[] = {{{0, 4, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1},
+                                               {{1, 0, 2, 0}, GCN_IMAGE_1D, 1, GCN_IMAGE_FLOAT, 1, 1}};
+    gcn_pixel_layout lookup = pixel_layout;
+    lookup.user_sgprs = 16, lookup.images = lookup_images, lookup.image_count = 2, lookup.samplers = samplers, lookup.sampler_count = 1;
+    lookup.error_address = 0x1000;
+    const int sampled = gcn_translate_pixel(PROGRAM(pixel_lookup), &lookup, &spirv, &words, error, sizeof error);
+    if (sampled) fprintf(stderr, "pixel_lookup: %s\n", error);
+    CHECK(sampled == 0);
+    if (spirv) {
+        CHECK(validate(spirv, words, "pixel_lookup") != 0);
+        CHECK(to_metal(spirv, words, "pixel_lookup") != 0);
+        free(spirv);
+        spirv = NULL;
+    }
+    lookup.sampler_count = 0;
+    CHECK(gcn_translate_pixel(PROGRAM(pixel_lookup), &lookup, &spirv, &words, error, sizeof error) == -1 &&
+          strstr(error, "sampler in s[12:15] is not bound"));
+    const gcn_image_binding flat[] = {{{0, 4, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1}, {{1, 0, 2, 0}, GCN_IMAGE_1D, 0, GCN_IMAGE_FLOAT, 1, 1}};
+    lookup.images = flat, lookup.sampler_count = 1;
+    CHECK(gcn_translate_pixel(PROGRAM(pixel_lookup), &lookup, &spirv, &words, error, sizeof error) == -1 && strstr(error, "DA 1"));
+
     /* A pixel shader's image_load_mip from a sampled image (its range checked at run time, so only
        with a stop word); a storage binding refuses image_load_mip. */
     const gcn_image_binding texture[] = {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1}};

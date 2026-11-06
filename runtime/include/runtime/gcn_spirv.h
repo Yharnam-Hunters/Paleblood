@@ -92,6 +92,16 @@ typedef struct {
     unsigned access;                 /* GCN_IMAGE_READ | GCN_IMAGE_WRITE */
 } gcn_image_resource;
 
+/* Samplers (S#, 4 words), which image_sample names by its SSAMP SGPRs, are found the same way (an
+   s_load_dwordx4 for one from memory). The caller binds sampler j at set 0, binding image_count + j,
+   and makes it from the descriptor. */
+enum { GCN_MAX_SAMPLERS = 8 };
+
+/* The distinct sampler descriptors a program's image_sample instructions use, by origin. 0 and
+   *count, or -1 with the reason. */
+int gcn_sampler_resources(const uint32_t *code, size_t dwords, gcn_resource_origin *samplers, unsigned max, unsigned *count, char *error,
+                          size_t error_size);
+
 /* The distinct image descriptors a program's MIMG instructions use, by origin, into resources (up to
    max). 0 and *count, or -1 with the reason (more images than max, code that does not decode, a
    descriptor whose origin is not one of the two above). */
@@ -149,6 +159,8 @@ typedef struct {
     uint64_t error_address;   /* the run-time stop word (GCN_RUNTIME_STOP_*), or 0: run-time cases stop translation */
     const gcn_image_binding *images;
     unsigned image_count;
+    const gcn_resource_origin *samplers;
+    unsigned sampler_count;
 } gcn_pixel_layout;
 
 int gcn_translate_pixel(const uint32_t *code, size_t dwords, const gcn_pixel_layout *layout,
