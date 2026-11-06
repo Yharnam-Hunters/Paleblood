@@ -3,7 +3,7 @@
    of jobs that the title builds in a buffer and hands over.
 
    Facts, from shadPS4's libSceAjm (ajm.h, ajm.cpp, ajm_batch.cpp, ajm_context.cpp, ajm_instance.cpp,
-   ajm_at9.*, ajm_error.h, ajm_result.h), checked against bbhost (a Bloodborne host, whose
+   ajm_at9.*, ajm_error.h, ajm_result.h), checked against bbhost (a host for one title, whose
    observations of the title's FMOD are noted) and PS4Recomp; implemented here independently. The
    ATRAC9 configuration word's layout and tables are LibAtrac9's (MIT).
    - Contexts: sceAjmInitialize(0, &context), sceAjmFinalize(context). Codecs registered per
