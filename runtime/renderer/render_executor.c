@@ -53,6 +53,7 @@ typedef struct {
     unsigned image_count;
     gcn_resource_origin samplers[GCN_MAX_SAMPLERS];
     unsigned sampler_count;
+    uint64_t callee;                 /* a vertex shader's fetch shader (its address), or 0 */
     VkShaderModule module;
 } shader_entry;
 
@@ -895,11 +896,11 @@ static pass_entry *pass_for(rt_executor *x, const target_entry *color, const dep
 /* settings: a vertex shader's PA_CL_VS_OUT_CNTL, a pixel shader's SPI_PS_INPUT_ADDR (part of the cache key). */
 static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint32_t user_sgprs, uint32_t settings,
                                  const gcn_image_binding *images, unsigned image_count, const gcn_resource_origin *samplers,
-                                 unsigned sampler_count, char *error, size_t error_size)
+                                 unsigned sampler_count, uint64_t callee, char *error, size_t error_size)
 {
     for (size_t i = 0; i < x->shader_count; i++) {
         const shader_entry *s = &x->shaders[i];
-        if (s->code == code && s->stage == stage && s->user_sgprs == user_sgprs && s->settings == settings &&
+        if (s->code == code && s->stage == stage && s->user_sgprs == user_sgprs && s->settings == settings && s->callee == callee &&
             s->image_count == image_count && !memcmp(s->images, images, image_count * sizeof *images) &&
             s->sampler_count == sampler_count && !memcmp(s->samplers, samplers, sampler_count * sizeof *samplers))
             return s->module;
@@ -922,7 +923,9 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
     if (stage == STAGE_VERTEX) {
         const gcn_vertex_layout layout = {.user_sgprs = user_sgprs, .output_control = settings,
                                           .push_constant_offset = VERTEX_USER_DATA, .address_offset = x->address_offset,
-                                          .error_address = x->stop_address};
+                                          .error_address = x->stop_address, .callee = callee ? (const uint32_t *)(uintptr_t)callee : NULL,
+                                          .callee_dwords = callee ? (size_t)((x->guest_base + x->size - callee) / 4) : 0,
+                                          .code_address = code};
         result = gcn_translate_vertex(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
     } else {
         const uint32_t inputs = settings; /* a pixel shader's SPI_PS_INPUT_ADDR */
@@ -949,7 +952,7 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
     }
     shader_entry *e = &x->shaders[x->shader_count++];
     *e = (shader_entry){.code = code, .stage = stage, .user_sgprs = user_sgprs, .settings = settings, .image_count = image_count,
-                        .sampler_count = sampler_count, .module = module};
+                        .sampler_count = sampler_count, .callee = callee, .module = module};
     memcpy(e->images, images, image_count * sizeof *images);
     memcpy(e->samplers, samplers, sampler_count * sizeof *samplers);
     return module;
@@ -1115,6 +1118,30 @@ static int pixel_layout_for(rt_executor *x, unsigned n, unsigned m, char *error,
     return 0;
 }
 
+/* The fetch shader the vertex shader calls (runtime/gcn_spirv.h, gcn_call_sgpr): the address in its
+   user data's target pair (48 bits), which must lie in the GPU-visible memory; 0 when it makes no call.
+   0, or -1 with the reason. */
+static int vertex_callee(rt_executor *x, const draw_state *s, uint64_t *callee, char *error, size_t error_size)
+{
+    const uint64_t code = s->vertex.code;
+    if (code < x->guest_base || code >= x->guest_base + x->size || code % 4)
+        return failed(error, error_size, "vertex shader code at %#llx is outside the GPU-visible memory", (unsigned long long)code);
+    unsigned pair = 0;
+    char reason[200];
+    const int calls = gcn_call_sgpr((const uint32_t *)(uintptr_t)code, (size_t)((x->guest_base + x->size - code) / 4), &pair, reason, sizeof reason);
+    if (calls < 0) return failed(error, error_size, "vertex shader at %#llx: %s", (unsigned long long)code, reason);
+    *callee = 0;
+    if (!calls) return 0;
+    if (pair + 2 > s->vertex.user_sgprs)
+        return failed(error, error_size, "vertex shader at %#llx calls through s[%u:%u], not in its user data", (unsigned long long)code, pair, pair + 1);
+    enum { POINTER_HIGH_MASK = 0xffff };
+    const uint64_t target = (uint64_t)(s->user[STAGE_VERTEX][pair + 1] & POINTER_HIGH_MASK) << 32 | s->user[STAGE_VERTEX][pair];
+    if (target < x->guest_base || target >= x->guest_base + x->size || target % 4)
+        return failed(error, error_size, "a fetch shader at %#llx, outside the GPU-visible memory", (unsigned long long)target);
+    *callee = target;
+    return 0;
+}
+
 /* A draw as check_state planned it: into target 0 when colour says so, and the depth target when the plan
    tests it. */
 static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int colour, uint32_t index_count, char *error, size_t error_size)
@@ -1161,10 +1188,12 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int
         render_pass = p->pass, framebuffer = p->framebuffer;
     }
     const uint32_t width = t ? t->width : z->width, height = t ? t->height : z->height;
+    uint64_t callee = 0;
+    if (vertex_callee(x, s, &callee, error, error_size)) return -1;
     const VkShaderModule vertex = shader_for(x, STAGE_VERTEX, s->vertex.code, s->vertex.user_sgprs, s->vertex.output_control, NULL, 0,
-                                             NULL, 0, error, error_size);
+                                             NULL, 0, callee, error, error_size);
     const VkShaderModule pixel = vertex ? shader_for(x, STAGE_PIXEL, s->pixel.code, s->pixel.user_sgprs, s->pixel.input_address, bindings,
-                                                     image_count, sampler_origins, sampler_count, error, error_size)
+                                                     image_count, sampler_origins, sampler_count, 0, error, error_size)
                                         : VK_NULL_HANDLE;
     if (!pixel) return -1;
     const int rect_list = s->primitive_set && s->primitive_type == DI_PT_RECTLIST;
