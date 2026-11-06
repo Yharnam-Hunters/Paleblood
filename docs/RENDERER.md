@@ -92,7 +92,8 @@ Instead:
        baked into every translation (`error_address`); a shader meeting a case it cannot do exactly
        writes a code there and skips the access, and the executor checks the word after each
        dispatch and draw and stops by name (`GCN_RUNTIME_STOP_*`).
-     - **Format buffer accesses** (`buffer_load/store_format_*`): whole 32-bit components (uint,
+     - **Format buffer accesses** (`buffer_load/store_format_*`): loads from 8_8_8_8 unorm (each byte
+       v / 255, correctly rounded); whole 32-bit components (uint,
        sint, float; the format's components in place, as a store only uses their selectors) move as they are, and a four-component store to 8_8_8_8 unorm
        undoes the descriptor's swizzle (shadPS4's rule: the inverse of a load's) and packs as GLSL's
        `packUnorm4x8` (the PS4's rounding of ties is not established). Anything else is a run-time stop.
@@ -358,6 +359,30 @@ Instead:
           the calls set across runs too. The game's command buffers continue into new blocks as they
           fill (a buffer that sets a compute shader at its end, the next one dispatching it).
           `rt_executor_reset` forgets it, for tests' independent cases.
+        - **Render targets keep their memory:** a render target's guest memory stays its contents,
+          laid out by its tile mode (`runtime/tiling.h`): its image is loaded from the memory before a
+          draw when the memory may have changed since (at each buffer, as the CPU runs between
+          submissions, and after each dispatch, whose stores may reach it), and written back once drawn
+          into, before anything reads the memory (a dispatch, a draw's images, the end of the buffer).
+          So a pass can read what an earlier one drew as an image, and draws build on what a compute
+          clear stored. The game's logo pass draws, blended, into the image its compute clear filled,
+          which the fullscreen pass then reads. Detiling and tiling go a micro tile at a time (checked
+          against the per-texel offsets for every mode and element size).
+        - **The logo pass's inputs:** its vertex shaders' user data come through a further writer,
+          `0x014764a0` (command buffer, stage, slot, words, count; after the NOP marker `0x6875000d`),
+          now observed; their fetch shaders load vertex colours from 8_8_8_8 unorm buffers, each byte as
+          v / 255 correctly rounded (a table worked out in single precision, since a shader's division
+          need not be exact), with the descriptor's DST_SEL; its textures are block-compressed (BC7),
+          loaded in 4 x 4 blocks (pitch, width and height counted in blocks, as shadPS4 counts them) as
+          Vulkan's BC formats: BC1 (with its one-bit alpha), BC2, BC3, BC7 unorm and sRGB, BC4 and BC5
+          unorm and snorm; BC6 stops by name.
+        - **Indexed draws:** `INDEX_BASE` (`0x014752c0`), `INDEX_BUFFER_SIZE` (`0x01475320`),
+          `INDEX_TYPE` (`0x01475270`) and `DRAW_INDEX_OFFSET_2` (`0x01474420`) are observed and
+          recorded; the draw binds the guest memory buffer as Vulkan's index buffer from the base plus
+          the first index, 16- or 32-bit indices (VGT_INDEX_TYPE; swaps stop by name). The packet's
+          `MAX_SIZE`, which the library sets to the count, is taken as counting from `INDEX_OFFSET`, as
+          shadPS4 reads it and the game's draws need (they start past it): inferred, not documented.
+          The game's logo pass draws this way, blended, into the image its fullscreen pass then reads.
         - **Depth targets:** the depth target's setter (`0x014739b0`, observed)
           reports the registers it writes (`DB_Z_INFO` to `DB_DEPTH_SLICE`, `DB_DEPTH_VIEW`, ...), the
           stencil reference setters (`0x01473190`, `0x014731f0`) `DB_STENCILREFMASK` and `_BF`, and the
