@@ -72,6 +72,22 @@ Instead:
        arithmetic (including GCN's legacy multiply, where zero times anything is zero),
        conversions that saturate as GCN's do, compares and selects, integer carries, scalar
        arithmetic, and buffer and constant loads and stores.
+     - **VCC's halves:** a scalar write of `VCC_LO` or `VCC_HI` (s106, s107) gives the 32 lanes of
+       that half of the wave their bits of the value. VCC is kept as each lane's bit, and a compute
+       lane's place in its wave is its flat index in the workgroup mod 64 (x fastest), so this is
+       exact in compute shaders; other stages stop by name, as does reading VCC as a scalar.
+     - **Run-time stops:** some of what a shader does is known only when it runs (a buffer access's
+       data format is its descriptor's). The executor owns a 32-bit stop word whose GPU address is
+       baked into every translation (`error_address`); a shader meeting a case it cannot do exactly
+       writes a code there and skips the access, and the executor checks the word after each
+       dispatch and draw and stops by name (`GCN_RUNTIME_STOP_*`).
+     - **Format buffer accesses** (`buffer_load/store_format_*`): whole 32-bit components (uint,
+       sint, float; identity swizzle) move as they are, and a four-component store to 8_8_8_8 unorm
+       undoes the descriptor's swizzle (shadPS4's rule: the inverse of a load's) and packs as GLSL's
+       `packUnorm4x8` (the PS4's rounding of ties is not established). Anything else is a run-time stop.
+     - **Descriptor base addresses are 40 bits** (word 1's bits 0-7; the Sea Islands manual's Table
+       8.5 as shadPS4's `resource.h` lays it out). The game sets word 1's bits 8-15, which the
+       translator used to take as address bits, sending the GPU outside guest memory.
      - **Typed buffer loads and stores** (`tbuffer_load_format_*`, `tbuffer_store_format_*`):
        the format is in the instruction. The game uses only 32-bit float data (one to four
        components, as many as the access names), which moves whole dwords with no conversion, so
@@ -318,8 +334,8 @@ Instead:
         translates the shader for its workgroup size and runs the dispatch, its writes in the guest
         memory before the next call. A workgroup's y or z index and its size information stop by
         name. The two dispatch writers with a fifth argument (`0x01474d10`, `0x0148a410`) are not
-        observed yet. On the game, the frame's first compute shader now stops at
-        `buffer_store_format_xyzw`, whose data format comes from the buffer descriptor at run time.
+        observed yet. On the game, the frame's first compute pass (16,320 workgroups
+        of 8_8_8_8 stores) now runs, and the second stops at `image_store`: images come next.
         Still to report: indexed draws; then follow the auto-index draw wrapper's callers
         (`0x015fbb50`) up to the title screen's 2D passes.
 4. **Textures and 3D.** The game's texture formats and tiling (from public format documentation),
