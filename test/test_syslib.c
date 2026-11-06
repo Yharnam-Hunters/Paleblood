@@ -1025,6 +1025,10 @@ typedef int32_t (*f_rtc_set)(rtc_time *, const uint64_t *);
 static f_rtc_set rtc_set;
 static void rtc_set_year_10000(void) { rtc_time t; const uint64_t k = 315537897600000000ull; rtc_set(&t, &k); } /* 10000-01-01 */
 static void rtc_set_no_tick(void) { rtc_time t; rtc_set(&t, NULL); }
+typedef int32_t (*f_rtc_weekday)(int32_t, int32_t, int32_t);
+static f_rtc_weekday rtc_weekday;
+static void rtc_weekday_february_29_2023(void) { rtc_weekday(2023, 2, 29); }
+static void rtc_weekday_month_13(void) { rtc_weekday(2026, 13, 1); }
 static void rtc_tick_no_variable(void) { const rtc_time t = {2026, 1, 1, 0, 0, 0, 0}; rtc_tick(&t, NULL); }
 
 /* PlayGo (libScePlayGo): the title's own calls, against a package manifest of three chunks. */
@@ -2834,8 +2838,24 @@ int main(void)
     rtc_tick = (f_rtc_tick)fn("libSceRtc", "sceRtcGetTick");
     const f_rtc_resolution rtc_resolution = (f_rtc_resolution)fn("libSceRtc", "sceRtcGetTickResolution");
     rtc_set = (f_rtc_set)fn("libSceRtc", "sceRtcSetTick");
-    CHECK(rtc_now && rtc_tick && rtc_resolution && rtc_set);
-    if (rtc_now && rtc_tick && rtc_resolution && rtc_set) {
+    rtc_weekday = (f_rtc_weekday)fn("libSceRtc", "sceRtcGetDayOfWeek");
+    CHECK(rtc_now && rtc_tick && rtc_resolution && rtc_set && rtc_weekday);
+    if (rtc_now && rtc_tick && rtc_resolution && rtc_set && rtc_weekday) {
+        /* 0 Sunday to 6 Saturday, against dates whose weekday is known */
+        CHECK(rtc_weekday(1, 1, 1) == 1);       /* Monday, the proleptic Gregorian calendar's first day */
+        CHECK(rtc_weekday(1970, 1, 1) == 4);    /* Thursday */
+        CHECK(rtc_weekday(2000, 2, 29) == 2);   /* Tuesday */
+        CHECK(rtc_weekday(2015, 3, 24) == 2);   /* Tuesday */
+        CHECK(rtc_weekday(2026, 11, 6) == 5);   /* Friday */
+        CHECK(rtc_weekday(2026, 11, 8) == 0);   /* Sunday */
+        CHECK(rtc_weekday(9999, 12, 31) == 5);  /* Friday */
+        for (int d = 1; d <= 31; d++) {         /* against the host's calendar, a whole month */
+            struct tm day = {.tm_year = 2024 - 1900, .tm_mon = 0, .tm_mday = d, .tm_hour = 12};
+            timegm(&day);
+            CHECK(rtc_weekday(2024, 1, d) == day.tm_wday);
+        }
+        CHECK(died_in_fatal(rtc_weekday_february_29_2023));
+        CHECK(died_in_fatal(rtc_weekday_month_13));
         CHECK(rtc_resolution() == 1000000);
         uint64_t tick = 7;
         const rtc_time year_one = {1, 1, 1, 0, 0, 0, 0};

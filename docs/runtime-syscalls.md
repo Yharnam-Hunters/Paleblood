@@ -613,9 +613,11 @@ The runtime gives the host's local time, and keeps ticks as its own convention
 - **Stops by name:** a date out of range (including February 30 and February 29 of a non-leap
   century), a tick past the year 9999, a missing argument, and every error value.
 
-**Not established:** `sceRtcGetDayOfWeek(year, month, day)`, the next call the boot reaches
-(`0x024ee2a9`, its answer packed into 3 bits). Which day is 0 is not known for the PS4 (the PSP
-SDK documents Monday), so it stays unbound.
+**Day of the week:** `sceRtcGetDayOfWeek(year, month, day)` (`0x024ee2a9`, its answer packed
+into 3 bits) answers 0 for Sunday to 6 for Saturday. The PS4Recomp project's `libSceRtc` numbers
+the days so, and notes that a real PS4's ticks count from year 1, as these do; both are used as
+facts only. (The PSP SDK documents 0 as Monday, for an older library.) A date out of range stops
+by name.
 
 ## The controller (`libScePad`)
 
