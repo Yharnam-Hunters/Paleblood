@@ -287,6 +287,8 @@ def main() -> int:
     ap.add_argument('--trace', action='store_true')
     ap.add_argument('--param-sfo', default=None, help="your own copy's sce_sys/param.sfo")
     ap.add_argument('--app0', default=None, help="your own copy's application directory (served read-only as /app0)")
+    ap.add_argument('--savedata', default=None, metavar='DIR',
+                    help='keep the game\'s save data in DIR (default: a new empty folder for each run)')
     ap.add_argument('--system-param', action='append', default=[], metavar='ID=VALUE',
                     help='a console system setting, e.g. 1=18 for English (United Kingdom)')
     ap.add_argument('--no-record', action='store_true', help='run and print only')
@@ -325,7 +327,11 @@ def main() -> int:
         # starts alike and nothing the game writes outlives the run.
         data = os.path.join(d, 'data')
         os.mkdir(data)
-        cmd = [pbboot, *objects, *stubs, *hooks, '--data', data, '--status', out, '--timeout', str(a.timeout), *names,
+        # Save data, the same way unless --savedata names a folder to keep saves in across runs.
+        savedata = a.savedata or os.path.join(d, 'savedata')
+        os.makedirs(savedata, exist_ok=True)
+        cmd = [pbboot, *objects, *stubs, *hooks, '--data', data, '--savedata', savedata, '--status', out,
+               '--timeout', str(a.timeout), *names,
                '--display', a.display]
         if a.display_capture:
             cmd += ['--display-capture', a.display_capture]
