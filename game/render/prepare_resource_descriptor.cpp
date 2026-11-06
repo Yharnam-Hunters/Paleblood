@@ -92,7 +92,7 @@ uint64_t initialize_descriptor(render::ResourceDescriptorScratch &frame,
     if (!alternate_parameter) first_derived = record.first_derived.get();
     const uint32_t second_derived = record.second_derived.get();
 
-    return render::resource_descriptor_calls::initialize_pair_descriptor(
+    return render::initialize_pair_record_descriptor(
         destination, first, second, choice.value, count, first_derived,
         second_derived, combined, choice.reduced);
 }

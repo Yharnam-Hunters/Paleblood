@@ -6,6 +6,7 @@
 #include "byte_field.h"
 #include "record_descriptor_offsets.h"
 #include "record_constructor_helpers.h"
+#include "record_descriptor_constructors_calls.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -90,9 +91,6 @@ RT_ORIGINAL(0x01485f90, construct_record,
                      uint32_t, uint32_t, uint32_t, ResourceDescriptorPair *, ResourceDescriptorPair *));
 RT_ORIGINAL(0x01488d90, convert_constructor_record,
             void(ResourceDescriptorStorage *, ResourceDescriptorGeometry *, uint32_t));
-RT_ORIGINAL(0x01487ee0, initialize_pair_descriptor,
-            uint64_t(ResourceDescriptorStorage *, uint32_t, uint32_t, uint32_t, uint32_t,
-                     uint32_t, uint32_t, uint32_t, uint32_t));
 // Auxiliary helpers publish the total and alignment used in the final fold.
 RT_ORIGINAL(0x0149e570, calculate_second_auxiliary,
             uint64_t(Field<uint64_t> *, Field<uint32_t> *,
