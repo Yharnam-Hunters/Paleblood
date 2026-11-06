@@ -2,7 +2,6 @@
 // Process two ordered descriptor banks for the presentation shader. Empty work
 // skips the final clears; nonempty work consumes the whole work word.
 // Allocation failure still forwards or publishes NULL, rather than returning a status.
-// The caller ignores the return; the replacement preserves its memory and helper calls.
 #include <bit>
 #include <cstring>
 
@@ -73,10 +72,10 @@ uint8_t *cached_upload(ShaderSecondaryState *state, PacketBuffer *commands)
 {
     uint8_t *address = state->cached_upload_b360.get();
     if (address == nullptr) {
-        address = allocate_upload(commands, sizeof(state->snapshot_b2a0));
+        address = allocate_upload(commands, sizeof(state->upload_snapshot));
         state->cached_upload_b360.set(address);
         if (address != nullptr) {
-            shader_copy_bytes(address, state->snapshot_b2a0, sizeof(state->snapshot_b2a0));
+            shader_copy_bytes(address, state->upload_snapshot, sizeof(state->upload_snapshot));
             // A copy/alias can affect the cache field; the code reloads it here.
             address = state->cached_upload_b360.get();
         }
@@ -230,23 +229,23 @@ void process_bank(ShaderSecondaryState *state, PacketBuffer *commands,
 }  // namespace
 
 extern "C" void bb_render_configure_record_shader_secondary(
-    render::RecordShaderState *shader, render::PacketBuffer *commands,
-    render::SharedPresentDescriptor *descriptor, render::SharedPresentDescriptor *optional_descriptor)
+    render::ShaderSecondaryState *state, render::PacketBuffer *commands,
+    const render::ShaderSecondaryDescriptorView *descriptor,
+    const render::ShaderSecondaryDescriptorView *optional_descriptor)
 {
     using namespace render;
-    auto *state = reinterpret_cast<ShaderSecondaryState *>(shader);
     auto *command_view = reinterpret_cast<ShaderSecondaryCommandView *>(commands);
     if (state->command_mode_00.get() != 0) select_shader_command_mode(commands, 0);
     flush_shader_preparation(&command_view->preparation_b468, commands);
     const SecondaryBank first{first_stage, &state->work_30, &state->resources_60, &state->resources_70,
         &state->pending_18, &state->pending_28, &state->records_a_28e0, &state->records_b_88e0,
         &state->records_c_94e0, &state->records_d_9ae0, &state->values_a8a0};
-    process_bank(state, commands, reinterpret_cast<const ShaderSecondaryDescriptorView *>(descriptor), first);
+    process_bank(state, commands, descriptor, first);
     if (optional_descriptor != nullptr) {
         const SecondaryBank second{second_stage, &state->work_1930, &state->resources_1960, &state->resources_1970,
             &state->pending_1918, &state->pending_1928, &state->records_a_68e0, &state->records_b_90e0,
             &state->records_c_98e0, &state->records_d_9fe0, &state->values_a6a0};
         process_bank(state, commands,
-            reinterpret_cast<const ShaderSecondaryDescriptorView *>(optional_descriptor), second);
+            optional_descriptor, second);
     }
 }

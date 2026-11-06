@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Byte-backed views for the secondary shader binding pass. Record bases are
-// address origins, not invented array bounds; byte indices may cross the
-// intervening unknown storage. Both banks share the upload cache at the tail.
+// Two banks of secondary shader bindings share one scalar-upload cache. Record
+// indices use the original byte strides and may cross the padding between banks.
 #pragma once
 #include "shader_preparation_state.h"
 
@@ -22,8 +21,8 @@ struct ShaderSecondaryMaskPair {
     void clear_removed(const ShaderSecondaryMaskPair &removed)
     {
         // Read both removal masks before the pending masks, since those views can overlap.
-        static constexpr auto mask_extent_0 = 2;
-        uint64_t mask[mask_extent_0], pending[mask_extent_0];
+        static constexpr auto mask_word_count = 2;
+        uint64_t mask[mask_word_count], pending[mask_word_count];
         std::memcpy(mask, &removed, sizeof(mask));
         std::memcpy(pending, this, sizeof(pending));
         pending[0] &= ~mask[0];
@@ -130,8 +129,8 @@ struct ShaderSecondaryState {
     uint8_t unknown_0xa6a4[0x1fc];
     ShaderSecondaryScalarArray values_a8a0;
     uint8_t unknown_0xa8a4[0x9fc];
-    static constexpr auto snapshot_b2a0_extent_0 = 0xc0;
-    uint8_t snapshot_b2a0[snapshot_b2a0_extent_0];
+    static constexpr auto upload_snapshot_bytes = 0xc0;
+    uint8_t upload_snapshot[upload_snapshot_bytes];
     Field<uint8_t *> cached_upload_b360;
 };
 static_assert(sizeof(uintptr_t) == 8);
@@ -157,7 +156,7 @@ static_assert(offsetof(ShaderSecondaryState, records_d_9ae0) == 0x9ae0);
 static_assert(offsetof(ShaderSecondaryState, records_d_9fe0) == 0x9fe0);
 static_assert(offsetof(ShaderSecondaryState, values_a6a0) == 0xa6a0);
 static_assert(offsetof(ShaderSecondaryState, values_a8a0) == 0xa8a0);
-static_assert(offsetof(ShaderSecondaryState, snapshot_b2a0) == 0xb2a0);
+static_assert(offsetof(ShaderSecondaryState, upload_snapshot) == 0xb2a0);
 static_assert(offsetof(ShaderSecondaryState, cached_upload_b360) == 0xb360);
 static_assert(sizeof(ShaderSecondaryState) == 0xb368);
 }  // namespace render

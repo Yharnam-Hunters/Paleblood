@@ -201,6 +201,15 @@ def cases():
                 yield c
 
 
+    for bank in (0, 1):
+        case = binding_case(f"zero_byte_scalar_upload_bank_{bank}", 26, bank)
+        case["buffers"]["entries"]["bytes"] = b"".join(
+            struct.pack("<I", 26 | (16 << 8) | (2 << 16)) for _ in range(64)
+        ).hex()
+        # Keep a non-null allocation and the observing memcpy stub even at zero bytes.
+        yield case
+
+
 def main():
     """Write deterministic synthetic cases to the requested directory."""
     if len(sys.argv) != 2:
