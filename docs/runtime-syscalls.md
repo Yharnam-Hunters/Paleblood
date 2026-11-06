@@ -33,9 +33,10 @@ provider from the unresolved console kernel syscall behavior.
 | `memcpy(dest, src, n)`, `memset(dest, c, n)` (libSceLibcInternal) | `void *memcpy(void *, const void *, size_t)` and `void *memset(void *, int, size_t)`, the ISO C declarations. | ISO C 7.24.2.1 and 7.24.6.1: `memcpy` copies `n` bytes from `src` to `dest`; `memset` writes `c` converted to `unsigned char` into the first `n` bytes; both return `dest`. Overlapping `memcpy` regions and null pointers are undefined behaviour. | Imported by `libSceFios2.elf` from `libSceLibcInternal` (`symbols/imports.csv`). Implemented with the host's own functions, since the standard fixes the whole result and no target-specific value is involved (`runtime/syslib/kernel.c`). Not modelled: what the PS4 C library does for the undefined cases; no public source or call site establishes it. |
 | `sceKernelUsleep(microseconds)` (libkernel), `usleep(microseconds)` (libScePosix) | One unsigned 32-bit count of microseconds, returning `int`. For `sceKernelUsleep` the guest fixes the shape: the verified call sites in `game/frame_timing/frame_limiter.cpp` and `game/render/swap_chain_present.cpp` declare it as `int(uint32_t microseconds)`, and their cases expect `0`. FreeBSD's `useconds_t` is 32-bit unsigned. | FreeBSD `usleep(3)`: suspends the thread for the given microseconds, `0` on success, `-1` with `EINTR` if a signal interrupts it. SUSv2 also let `usleep` fail with `EINVAL` from 1,000,000 on; FreeBSD and POSIX.1-2008 (which removed `usleep`) have no such limit. | `sceKernelUsleep` is imported by `eboot` and `libSceFios2.elf`, `usleep` by `eboot`. Implemented: the host thread sleeps at least the requested time and the call returns `0`; a host signal is not a guest event, so the sleep resumes with the time left (`runtime/syslib/kernel.c`). Open: `usleep` with 1,000,000 or more, which stops by name because no PS4-specific source says whether the guest sleeps or gets `EINVAL`; and the SCE error, if any, for `sceKernelUsleep`, which the guest's sites never check. |
 | `sleep(seconds)` (libScePosix) | One unsigned count of seconds, returning `unsigned int`: `unsigned sleep(unsigned seconds)` in POSIX and FreeBSD's `sleep(3)`. No call site in the repository fixes the shape further. | POSIX: suspends the thread until the seconds have elapsed or a caught signal arrives; returns `0` when the time has elapsed, otherwise the unslept seconds; no errors are defined. FreeBSD's libc (`lib/libc/gen/sleep.c`) is a `nanosleep` that rounds the unslept remainder up to whole seconds; above `INT_MAX` it sleeps `INT_MAX` seconds and returns `seconds - INT_MAX` without any signal. | Imported by `eboot`. Implemented: the host thread sleeps at least the requested seconds and the call returns `0`; a host signal is not a guest event, so the sleep resumes with the time left, as for `usleep` (`runtime/syslib/kernel.c`). Open: more than `INT_MAX` seconds, which stops by name because POSIX has no early return without a signal and no PS4-specific source says whether the guest gets the full sleep or FreeBSD's remainder. |
+| `nanosleep(rqtp, rmtp)` (libkernel) | `int nanosleep(const struct timespec *rqtp, struct timespec *rmtp)` in POSIX and FreeBSD's `nanosleep(2)`, with FreeBSD amd64's `struct timespec` (two 64-bit fields, seconds and nanoseconds), the layout the `clock_gettime` entry uses. No call site in the repository fixes the shape further. | POSIX: suspends the thread until the requested time has elapsed and returns `0`; a caught signal returns `-1` with `EINTR` and writes the time left through a non-null `rmtp`; nanoseconds outside `[0, 1,000,000,000)` are `-1` with `EINVAL`; `rqtp` and `rmtp` may point to the same object. A negative second count is not defined. FreeBSD's `kern_time.c` (same in stable/9 and main): the `EINVAL` check first, then a zero or negative time returns `0` at once without sleeping; `nanosleep(2)` adds `EFAULT` for a pointer it cannot use. | Imported by `libc.elf`. Implemented: the host thread sleeps at least the requested time and the call returns `0`; a host signal is not a guest event, so the sleep resumes with the time left and `rmtp` is never written, as for `usleep` and `sleep`; the request is copied first, so `rqtp` and `rmtp` may be the same (`runtime/syslib/kernel.c`). Stops by name: the errno cases (no `rqtp`, nanoseconds out of range), since errno is not modelled, as for `clock_gettime`. Open: a negative second count, which stops by name because POSIX does not define it, FreeBSD returns `0` at once and the host answers `EINVAL`, and no PS4-specific source says which answer the guest gets. |
 | `scePthreadRwlockInit(rwlock, attr, name)`, `scePthreadRwlockDestroy(rwlock)`, `scePthreadRwlockRdlock(rwlock)`, `scePthreadRwlockWrlock(rwlock)`, `scePthreadRwlockTryrdlock(rwlock)`, `scePthreadRwlockTrywrlock(rwlock)`, `scePthreadRwlockUnlock(rwlock)` (libkernel) | A pointer to the guest's rwlock variable (`Init` also an attribute pointer and a name, as `scePthreadMutexInit`); each returns `int32_t`. No call site in this repository shows these shapes; they come from the public [OpenOrbis `libkernel.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/libkernel.h) declarations, supporting evidence for the shapes only, and match FreeBSD's `pthread_rwlock_*`. | POSIX `pthread_rwlock_*`, as FreeBSD libthr (`thr_rwlock.c`) and the kernel's umtx read-write lock (`kern_umtx.c`) implement it: a static initializer (`NULL`) set up on first use and a destroyed rwlock holding `1` (`thr_private.h`); `EINVAL` for a destroyed rwlock; `EBUSY` from the try forms when the lock is not available; destroying does not check whether the lock is held, and leaves an unused initializer in place; unlocking is `EPERM` when another thread holds the write lock or when nobody holds the lock, and readers are counted, not named; a thread that locks again while holding the write lock is not given an error, it waits forever (no owner check in `do_rw_wrlock` or `do_rw_rdlock`). The SCE name returns `0x80020000` plus the error number. | Imported by `eboot` and `libSceFios2.elf` (`Tryrdlock` by `libSceFios2.elf` only; `symbols/imports.csv`). Implemented on a host rwlock that also records the writer and the reader count, which the host does not expose, for the unlock answers (`runtime/syslib/kernel_rwlock.c`). A missing variable answers `EINVAL`, as the mutex calls do; unlocking a never-used initializer is `EPERM`, as for the mutex. Stops by name: `Rdlock` or `Wrlock` while the caller holds the write lock (the system would wait forever, the host answers `EDEADLK`; neither is useful to return), and an attribute object passed to `Init` (no imported call creates one, so its contents are not established; an empty attribute variable means the defaults, as in libthr). Not part of this entry: `scePthreadRwlockTimedrdlock` and `Timedwrlock` (imported by `eboot`; only OpenOrbis gives their microsecond timeout, no call site does) and the `libScePosix` names. |
 | `__stack_chk_fail(void)` (libkernel) | No arguments, no result: `void __stack_chk_fail(void)`, and it never returns (LSB; FreeBSD libc declares it `__dead2`). Compiler-generated code calls it, not application code. | LSB Core: the function that called it is aborted with a message that a stack overflow was detected, and the program then exits. FreeBSD libc logs "stack overflow detected; terminated" and ends the process with `SIGABRT`. | Imported by `eboot`, `libSceFios2.elf` and `libc.elf` from `libkernel` (`symbols/imports.csv`). Implemented as a stop by name (`rt_fatal`, which aborts): ending the program is the whole guest-visible contract, so the entry counts as implemented (`runtime/syslib/kernel.c`). Not covered: the PS4's own message or crash report, which the guest cannot observe after it ends; and `__stack_chk_guard`, a separate data import whose PS4 value is not established (an unbound data import gets a zeroed page, `runtime/boot.c`). |
-| `scePthreadCondInit(cond, attr, name)`, `scePthreadCondDestroy(cond)`, `scePthreadCondSignal(cond)`, `scePthreadCondBroadcast(cond)`, `scePthreadCondWait(cond, mutex)`, `scePthreadCondTimedwait(cond, mutex, microseconds)` (libkernel) | Pointers to the guest's cond and mutex variables; each returns `int32_t`. The guest fixes the wait shapes: the verified `game/kernel/condition_wait.cpp` declares `Wait` as `int32_t(void *cond, void *mutex)` and `Timedwait` as `int32_t(void *cond, void *mutex, uint32_t timeout_us)`, a relative timeout in microseconds, not POSIX's absolute `timespec`. The public [OpenOrbis `libkernel.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/libkernel.h) declares all six with these shapes (`Init` with an attribute pointer and a name, as `scePthreadMutexInit`); it is supporting evidence for the shapes only. | POSIX `pthread_cond_*`, as FreeBSD libthr implements it (`thr_cond.c`): a static initializer (`NULL`) set up on first use; a destroyed cond holds `1` (`thr_private.h`); `EINVAL` for a destroyed cond; `EBUSY` to destroy one with waiters; destroying an unused initializer succeeds and leaves it in place; `EPERM` when the waiter does not own the mutex, for every mutex type, `EINVAL` when the mutex is destroyed (`_mutex_owned`, `thr_mutex.c`); `ETIMEDOUT` when a timed wait expires; a recursive mutex is released completely for the wait and its count restored after (`_mutex_cv_unlock`, `_mutex_cv_lock`). The SCE name returns `0x80020000` plus the error number. | `scePthreadCondWait` and `Timedwait` are imported by `eboot`, `libSceFios2.elf` and `libc.elf`, the other four by `libSceFios2.elf` and `libc.elf` (`symbols/imports.csv`). The guest's call site checks exactly `0x80020001` (EPERM), `0x80020016` (EINVAL) and `0x8002003c` (ETIMEDOUT). Implemented on a host cond on the monotonic clock (`runtime/syslib/kernel_mutex.c`): the timed wait times out once the given microseconds have passed since the call (`0`: at once). A missing cond or mutex variable answers `EINVAL`, as the mutex calls do. Stops by name: an attribute object passed to `Init` (no imported call creates one, so its contents are not established; an empty attribute variable means the defaults, as in libthr). A wait with a recursive mutex releases every level the caller holds and takes them back after, as libthr does: the runtime tracks each recursive mutex's owner and depth, and releases the extra levels itself around the host wait. A wait with a mutex the caller does not own is `EPERM` for every type, as in libthr (see [Mutex ownership](#mutex-ownership-scepthreadmutexunlock-issue-132)). Open: a woken waiter counts until it has taken the mutex back, so a destroy right after a broadcast can answer `EBUSY` while libthr's succeeds; no known call site destroys a cond that way. The `libScePosix` names `pthread_cond_init`, `_destroy`, `_signal`, `_broadcast` and `_wait` (imported by `eboot`) are the same calls with errno values: the executable's call at `0x0247e6d7` passes `(&cond, NULL)` and its caller compares the result with bare error numbers (12, 16, 34, 35). `pthread_cond_timedwait` is not part of this entry: it takes an absolute `timespec` whose PS4 layout and clock are not established, so it stays unbound and stops by name. |
+| `scePthreadCondInit(cond, attr, name)`, `scePthreadCondDestroy(cond)`, `scePthreadCondSignal(cond)`, `scePthreadCondBroadcast(cond)`, `scePthreadCondWait(cond, mutex)`, `scePthreadCondTimedwait(cond, mutex, microseconds)` (libkernel) | Pointers to the guest's cond and mutex variables; each returns `int32_t`. The guest fixes the wait shapes: the verified `game/kernel/condition_wait.cpp` declares `Wait` as `int32_t(void *cond, void *mutex)` and `Timedwait` as `int32_t(void *cond, void *mutex, uint32_t timeout_us)`, a relative timeout in microseconds, not POSIX's absolute `timespec`. The public [OpenOrbis `libkernel.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/libkernel.h) declares all six with these shapes (`Init` with an attribute pointer and a name, as `scePthreadMutexInit`); it is supporting evidence for the shapes only. | POSIX `pthread_cond_*`, as FreeBSD libthr implements it (`thr_cond.c`): a static initializer (`NULL`) set up on first use; a destroyed cond holds `1` (`thr_private.h`); `EINVAL` for a destroyed cond; `EBUSY` to destroy one with waiters; destroying an unused initializer succeeds and leaves it in place; `EPERM` when the waiter does not own the mutex, for every mutex type, `EINVAL` when the mutex is destroyed (`_mutex_owned`, `thr_mutex.c`); `ETIMEDOUT` when a timed wait expires; a recursive mutex is released completely for the wait and its count restored after (`_mutex_cv_unlock`, `_mutex_cv_lock`). The SCE name returns `0x80020000` plus the error number. | `scePthreadCondWait` and `Timedwait` are imported by `eboot`, `libSceFios2.elf` and `libc.elf`, the other four by `libSceFios2.elf` and `libc.elf` (`symbols/imports.csv`). The guest's call site checks exactly `0x80020001` (EPERM), `0x80020016` (EINVAL) and `0x8002003c` (ETIMEDOUT). Implemented on a host cond on the monotonic clock (`runtime/syslib/kernel_mutex.c`): the timed wait times out once the given microseconds have passed since the call (`0`: at once). A missing cond or mutex variable answers `EINVAL`, as the mutex calls do. Stops by name: an attribute object passed to `Init` (no imported call creates one, so its contents are not established; an empty attribute variable means the defaults, as in libthr). A wait with a recursive mutex releases every level the caller holds and takes them back after, as libthr does: the runtime tracks each recursive mutex's owner and depth, and releases the extra levels itself around the host wait. A wait with a mutex the caller does not own is `EPERM` for every type, as in libthr (see [Mutex ownership](#mutex-ownership-scepthreadmutexunlock-issue-132)). Open: a woken waiter counts until it has taken the mutex back, so a destroy right after a broadcast can answer `EBUSY` while libthr's succeeds; no known call site destroys a cond that way. The `libScePosix` names `pthread_cond_init`, `_destroy`, `_signal`, `_broadcast` and `_wait` (imported by `eboot`) are the same calls with errno values: the executable's call at `0x0247e6d7` passes `(&cond, NULL)` and its caller compares the result with bare error numbers (12, 16, 34, 35). `pthread_cond_timedwait(cond, mutex, abstime)` (imported by `eboot`; no call site in the repository) takes an absolute time in FreeBSD amd64's `struct timespec`, the two 64-bit fields of the `clock_gettime` entry, measured on the cond's clock: `CLOCK_REALTIME` unless an attribute set another (POSIX `pthread_cond_timedwait`; libthr's `cond_init` for no attribute). No imported call can set another: nothing imports `pthread_condattr_*`, and an attribute object stops `Init` by name. libthr's `pthread_cond_timedwait` answers `EINVAL` before touching the mutex for no time, negative seconds and nanoseconds outside `[0, 1,000,000,000)`; POSIX names only the nanoseconds case and leaves the other two undefined, and the runtime answers all three as libthr does. Implemented: the wait ends at the monotonic deadline where the wall clock reaches the time, the wall clock read first so it is never early; a time already passed is `ETIMEDOUT` with the mutex taken back. Open: a change of the wall clock during the wait is not followed, which POSIX's `CLOCK_REALTIME` wait would do. |
 | `scePthreadKeyCreate(key, destructor)`, `scePthreadKeyDelete(key)`, `scePthreadGetspecific(key)`, `scePthreadSetspecific(key, value)` (libkernel) | A key is a `pthread_key_t`, an `int` on FreeBSD (`sys/_pthreadtypes.h`); `Create` takes a pointer to the guest's key variable and a destructor (`void (*)(void *)`, may be null), `Getspecific` returns `void *`, the others `int32_t`. These shapes come from the public [OpenOrbis `libkernel.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/libkernel.h), supporting evidence for the shapes only, and match FreeBSD's `pthread_key_create`, `pthread_key_delete`, `pthread_getspecific` and `pthread_setspecific`. | POSIX thread-specific data, as FreeBSD libthr implements it ([`thr_spec.c`](https://github.com/freebsd/freebsd-src/blob/main/lib/libthr/thread/thr_spec.c), the same in stable/9): a key is its slot's index plus 1, and `Create` takes the first free slot; `Delete` of a key that is out of range or free is `EINVAL` and calls no destructor; `Setspecific` of such a key is `EINVAL`, `Getspecific` answers `NULL`, as it does for a key the thread has not set since the key was created (each slot counts its creations). When a thread ends, each non-null value is cleared and, if its key is still the one it was set under, the destructor is called with it, in rounds while values remain (`_thread_cleanupspecific`). The SCE name returns `0x80020000` plus the error number. | Imported by `libc.elf` from `libkernel` (`symbols/imports.csv`). Implemented with the runtime's own key table and a host thread-local value array per guest thread (`runtime/syslib/kernel_key.c`); a thread created by `scePthreadCreate` runs its destructors on its guest stack when its entry returns (`runtime/syslib/kernel_thread.c`). A missing key variable for `Create` (unchecked in libthr) answers `EINVAL`, as the mutex calls do. Not established: the PS4's number of keys and of destructor rounds. POSIX guarantees at least 128 keys (`_POSIX_THREAD_KEYS_MAX`) and 4 rounds (`_POSIX_THREAD_DESTRUCTOR_ITERATIONS`), FreeBSD gives 256 and 4 (`<pthread.h>`); the runtime gives what POSIX guarantees and stops by name past it: a 129th live key, and a thread whose destructors still leave values after the 4th round. The main thread's values get no destructors, since it never ends through a thread exit here. |
 
 | `sceSysmoduleLoadModule(id)`, `sceSysmoduleIsLoaded(id)`, `sceSysmoduleUnloadModule(id)` | One system module id, a `uint16_t`; each returns `int32_t`, by the public [OpenOrbis `Sysmodule.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/Sysmodule.h) declarations `int32_t f(enum OrbisSysModule moduleId)`, the enum being `uint16_t` ([`_types/sysmodule.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/_types/sysmodule.h)). | OpenOrbis documents each as "0 = Success/Valid or Negatives values are error codes"; no public source gives the error values. | Implemented for the modules `game/modules.csv` lists with action `stub`: a load marks the module loaded and succeeds without mapping anything, a query of a loaded one answers 0, an unload clears the mark. Everything else stops by name: a module that is not a stub (the runtime cannot load system modules yet), a second load of a loaded stub (whether the system counts loads is not public), and a query or unload of a stub that is not loaded (the "not loaded" error value is not public). See "Module loading at run time" below. |
@@ -384,9 +385,6 @@ passing the allocation or containment check. An allocation must fit wholly
 inside its end-exclusive search range; a map must fit inside one live allocation.
 Misaligned address hints still stop by the API name before mapping.
 
-The runtime keeps its existing sparse pool, accepted memory types, CPU/GPU
-protection bits, address window, mapping records and named unsupported cases.
-No alternate pool, capacity setting or new guest error value is introduced.
 `test_direct_memory_bounds` exercises the registered calls with exact boundaries,
 overlong and wrapping ranges, a misaligned hint and a valid writable map. These
 are host validation limits, without a claim about native error codes.
@@ -532,6 +530,24 @@ leave the timeout and that signal to the main thread.
 A local boot with the affinity probe and the rwlocks let through (not committed) reaches the
 `threads` milestone and stops next at `sceUserServiceInitialize`.
 
+## PlayGo (`libScePlayGo`)
+
+PlayGo lets a title start before all of its package is installed: the title asks which chunks of
+the package are present. On this runtime the whole title is always present, so every chunk is
+reported installed (`runtime/syslib/playgo.c`).
+
+| Call | Shape (from the executable's own calls) | Runtime |
+|---|---|---|
+| `scePlayGoInitialize(params)` | a 16-byte block: a 2 MiB work buffer the title allocated, its size, 0 (calls at `0x023dd67a`, `0x023de849`); neither reads the result | checks the buffer and answers 0 |
+| `scePlayGoOpen(int32_t *handle, params)` | params is NULL (`0x023deae4`); 0 counts as opened | writes handle 1, the runtime's choice (the title only passes it back) |
+| `scePlayGoGetChunkId(handle, uint16_t ids[], capacity, uint32_t *count)` | capacity 100 (`0x023deb0f`); the result is not read | the package's chunks, 0 to `chunk_count - 1`, from `chunk_count` in the copy's `sce_sys/playgo-manifest.xml` (3 for this title; `playgo-chunk.dat` agrees) |
+| `scePlayGoGetLocus(handle, const uint16_t ids[], count, int8_t loci[])` | one byte per chunk (`0x023de8d6`, `0x023deb30`); non-zero counts as failure; the title treats 0 as not there, 2 as still arriving and polls again, any other value as ready | 3 for every chunk, a ready value (the title can't tell the ready values apart) |
+| `scePlayGoSetInstallSpeed` | never called directly | stops by name |
+
+No public source declares these calls: the OpenOrbis toolchain has no PlayGo header. Stops by
+name: Open with parameters, an unknown handle, a chunk list longer than the space given, an unknown
+chunk ID, a missing manifest, and every error value.
+
 ## The user service's start-up calls (`libSceUserService`, issue #36)
 
 `eboot` imports `sceUserServiceInitialize`, `sceUserServiceTerminate`,
@@ -554,9 +570,93 @@ The executable initializes the service twice:
 
 **What stops by name:** a call before initialize, a missing argument, and the other error values.
 
-`sceUserServiceGetUserName` and `sceUserServiceGetEvent` stay unbound until the boot reaches them.
-A local boot (affinity probe and rwlocks let through, not committed) stops next at
-`sceCommonDialogInitialize`.
+**The user's name** (`sceUserServiceGetUserName(int32_t, char *, const size_t)`, in OpenOrbis
+`UserService.h`; a name is at most 16 characters). The executable asks with 17 bytes
+(`0x02561cd7`) or a size it computed (`0x0111bdfe`), and goes on only on 0. The name is the
+runtime's choice, `Hunter`, written with its terminating zero. A user the runtime did not hand
+out, or a buffer too small for the name, stops by name.
+
+**Login and logout events** (`sceUserServiceGetEvent(OrbisUserServiceEvent *)`, the event being
+a type, 0 login or 1 logout, and a user id; "no event" is `0x80960007`, OpenOrbis `errors.h`). No
+user logs in or out during a run, so every call answers `0x80960007` and writes nothing. The
+executable's one caller (`0x025628e4`) is a polling thread: after any non-zero answer it sleeps
+33 ms (`sceKernelUsleep(0x80e8)`) and asks again, and it handles a login or logout only when one
+comes. It never waits for the first user's login to be reported; whether the PS4 reports that
+login is not public.
+
+## The real-time clock (`libSceRtc`)
+
+The runtime gives the host's local time, and keeps ticks as its own convention
+(`runtime/syslib/rtc.c`).
+
+**Sources.**
+- **Signatures:** OpenOrbis `Rtc.h` gives `sceRtcGetCurrentClockLocalTime(date and time *)`,
+  `sceRtcGetTick(const date and time *, uint64_t *)` and `sceRtcSetTick(date and time *, const
+  uint64_t *)`. It names `sceRtcGetTickResolution` without a signature; the executable's one call
+  (`0x010b70ea`) takes no argument and uses the `int32_t` answer as ticks per second, a negative
+  one being a failure.
+- **The date and time** is six 16-bit fields (year, month, day, hour, minute, second), then a
+  32-bit microsecond at offset 12, 16 bytes in all. Rtc.h gives the microsecond 16 bits, which
+  cannot hold 999999. The Vita homebrew SDK's `SceDateTime`, of the same library family, gives it
+  32 bits in a 16-byte structure, and the executable copies the whole structure as 16 bytes.
+- **Ticks:** the executable compares ticks, takes their differences and asks for the resolution.
+  It holds no constant relating them to another epoch (neither the span from 0001 to 1970 in
+  microseconds or seconds, nor its negation). About 60 sites ask for the local time; those reached
+  pass it straight to `sceRtcGetTick`.
+
+**What the runtime does.**
+- **The local time** is the host's, in the time zone of the person running the runtime, as the
+  console gives the one its owner set. A leap second shows as `:59`.
+- **A tick** is the runtime's own convention, the same in every call: microseconds since
+  0001-01-01 00:00:00 (proleptic Gregorian), 1000000 per second. `sceRtcSetTick` reverses
+  `sceRtcGetTick` exactly.
+- **Stops by name:** a date out of range (including February 30 and February 29 of a non-leap
+  century), a tick past the year 9999, a missing argument, and every error value.
+
+**Day of the week:** `sceRtcGetDayOfWeek(year, month, day)` (`0x024ee2a9`, its answer packed
+into 3 bits) answers 0 for Sunday to 6 for Saturday. The PS4Recomp project's `libSceRtc` numbers
+the days so, and notes that a real PS4's ticks count from year 1, as these do; both are used as
+facts only. (The PSP SDK documents 0 as Monday, for an older library.) A date out of range stops
+by name.
+
+## The controller (`libScePad`)
+
+The runtime models one standard controller, the one user's, always connected and at rest
+(`runtime/syslib/pad.c`). Real input from a host controller is not provided yet.
+
+**Sources.**
+- **Signatures and layouts:** the OpenOrbis homebrew SDK's `Pad.h`, `_types/pad.h` and
+  `_types/errors.h`. They give the 120-byte `OrbisPadData`, the 28-byte `OrbisPadInformation`, the
+  two-byte vibration block (large motor, then small), port type 0 (standard), and
+  `ALREADY_OPENED` `0x80920004`.
+- **The executable's own calls agree:**
+  - before each `scePadReadState` (`0x02a90168`, `0x02a91948`) it clears exactly 120 bytes, and
+    afterwards it tests `connected` at offset `0x4c`;
+  - `scePadGetControllerInformation` gets a cleared 28-byte block. The title reads the touch
+    resolution, dividing a non-zero touch point by it, and the stick deadzones: a stick within
+    `0x80` ± the deadzone counts as centred;
+  - `scePadInit` is called once (`0x02fa6182`), and the result is not read;
+  - `scePadOpen(initial user, 0, 0, NULL)` keeps any handle ≥ 0, and the title closes before it
+    opens again;
+  - `scePadSetVibration` is called with the title's speeds (`0x02a9c7c1`) or with both 0 to stop
+    (`0x02a9c822`), and 0 counts as success.
+- **The DualShock 4's touch pad is 1920 × 942:** `DS4_TOUCHPAD_WIDTH` and `_HEIGHT` in the Linux
+  kernel's `drivers/hid/hid-playstation.c`.
+
+| Call | Runtime |
+|---|---|
+| `scePadInit` | 0 |
+| `scePadOpen` | handle 1, the runtime's choice; a second open while it is open answers `0x80920004` |
+| `scePadClose` | 0; the pad can be opened again |
+| `scePadReadState` | no button, sticks `0x80`, triggers 0, no touch or motion, identity orientation, `connected` 1 |
+| `scePadGetControllerInformation` | touch pad 1920 × 942; stick deadzones 13 (the runtime's choice); connected; a local pad |
+| `scePadSetVibration` | 0; the speeds are kept (`rt_pad_vibration`), and nothing on the host vibrates yet |
+
+Fields the executable does not read are left zero. **Stops by name:** a second initialize, a call
+before initialize, another user, port type, index or open parameters, an unknown handle, a
+missing argument, and the other error values. `scePadResetOrientation`,
+`scePadSetAngularVelocityDeadbandState` and `scePadSetTiltCorrectionState` stay unbound until the
+boot reaches them.
 
 ## The common dialog's initialize (`libSceCommonDialog`, issue #40)
 
@@ -917,6 +1017,15 @@ runtime serves `/app0` from your own copy and never writes to it:
 **Errors.** A missing file answers `ENOENT`, and a missing directory component `ENOTDIR` (the same
 numbers on FreeBSD and Linux). Any other host error stops by name.
 
+**POSIX `stat` and `errno`.** `eboot` also imports POSIX `stat` from `libScePosix`. The runtime
+gives it the same lookup and answer, the POSIX way: 0, or -1 with the calling thread's `errno`
+set to `ENOENT` (2) or `ENOTDIR` (20). The executable's one call (`0x00465431`) reads the access
+and modification times and the size on 0, and treats any other answer as no file.
+
+`errno` is libkernel's `__error()`, FreeBSD's `int *__error(void)` behind the `errno` macro. It
+is imported by `eboot`, `libc` and `libSceFios2`. Each guest thread runs on its own host thread,
+so a thread-local `int` is that thread's `errno`; it starts at 0, and success leaves it alone.
+
 ### Opening and reading
 
 `sceKernelOpen`, `sceKernelRead`, `sceKernelPread`, `sceKernelLseek`, `sceKernelFstat` and
@@ -1076,9 +1185,62 @@ and no caller reads them.
 - other open arguments;
 - errors.
 
+The buffer-attribute setter and buffer registration share the 40-byte
+`rt_video_out_buffer_attribute` layout. The setter copies all six input DWORDs
+without interpreting them and clears the 16 reserved bytes; unaligned output is
+supported. The public API is void. The independently examined native leaf also
+leaves the zero-extended pitch in RAX, which this implementation preserves for
+callers that observe it. A null output stops by the API name before any store.
+
 ## Implementation rule
 
 Implement the established contract and test the `RT_SYSLIB` entry through its library and symbol name. Keep target-specific values separate from host values. When an argument, ID, return value, or error case is unknown, fail loudly with the call name and leave the question open; never choose a value to make `tools/boot.py` advance.
+
+## Module TLS (`__tls_get_addr`)
+
+Boot assigns TLS module IDs in mapped-object order, beginning at one, and prepares
+all nonempty templates before module entry. The executable reuses its static TLS
+block: the base is the thread pointer minus its rounded allocation size. Other
+blocks copy the relocated initialization bytes, zero-fill the rest and respect
+alignment. Lookup allocates nothing. Each context belongs to its host thread;
+unbinding and rebinding retain values, and destruction preserves borrowed storage.
+`scePthreadCreate` installs static executable TLS but no module context, so module
+lookups on those threads stop as `__tls_get_addr`.
+
+### Evidence and limits
+
+The libkernel library SHA-256 is
+`b3e13917da667d01a353ccf49025d6b1308a32cf86f3f351f96b3a13cd5c7c2f`.
+Its `__tls_get_addr` export, NID `vNe1w4diLCs`, begins at ELF address `0x289c0`.
+The body reads a two-word 64-bit module/offset index, consults TCB/DTV and linker
+state, masks a slot to 48 bits and adds the full offset without a bounds check.
+Invalid states can diagnose and execute `INT 0x44`. Generation updates, lazy
+allocation, alternate modes and linker helpers remain unsupported. Adjacent helpers
+at `0x2a9a0` and `0x2aca0` do not establish a general allocation-residue rule.
+The title libc template has virtual-address residue 8, while LibcInternal has zero;
+this implementation aligns the block base to the template's declared alignment.
+
+Paleblood accepts full-width IDs and offsets through the template's logical size,
+including a one-past pointer. Unknown IDs, larger offsets and absent contexts stop
+by name. These bounds are runtime support limits, not native error behavior.
+There is no native DTV layout, lazy loading or unloading. The initialization model
+follows the [TLS ABI](https://www.akkadia.org/drepper/tls.pdf) and
+[Oracle linker documentation](https://docs.oracle.com/cd/E19120-01/open.solaris/819-0690/chapter8-70/index.html).
+No other PS4 runtime implementation was used.
+
+### Validation
+
+The loader rejects duplicate headers, initialized size beyond logical size,
+out-of-file bytes, inconsistent segment aliases, invalid alignment and templates
+outside the mapped image. Zero alignment becomes one; TBSS need not be readable.
+Boot checks allocation arithmetic and allocates aligned storage.
+`test_module_tls` checks the registry, initialization, owned 256- and 4096-byte
+alignment, zero-fill, stable
+writes, borrowed storage, separate threads, full-width requests and named stops.
+`test_module_tls_boot.py` runs synthetic AMD64 fixtures through boot, checking
+static/dynamic main-block aliasing, rounded sizes, module-ID relocations, relocated
+pointers, constructor persistence and rejected IDs. Loader tests cover malformed
+metadata.
 
 ## References
 
@@ -1096,9 +1258,10 @@ Implement the established contract and test the `RT_SYSLIB` entry through its li
 - [ISO C (N1570 draft) 7.24.2.1 `memcpy` and 7.24.6.1 `memset`](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf)
 - [FreeBSD `usleep(3)`](https://man.freebsd.org/cgi/man.cgi?query=usleep&sektion=3) and [SUSv2 `usleep`](https://pubs.opengroup.org/onlinepubs/7908799/xsh/usleep.html)
 - [POSIX `sleep`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/sleep.html), [FreeBSD `sleep(3)`](https://man.freebsd.org/cgi/man.cgi?query=sleep&sektion=3) and FreeBSD libc [`sleep.c`](https://cgit.freebsd.org/src/tree/lib/libc/gen/sleep.c) (the `INT_MAX` split and the rounded-up remainder)
+- [POSIX `nanosleep`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/nanosleep.html), [FreeBSD `nanosleep(2)`](https://man.freebsd.org/cgi/man.cgi?query=nanosleep&sektion=2) and FreeBSD [`kern_time.c`](https://cgit.freebsd.org/src/tree/sys/kern/kern_time.c) (`kern_nanosleep` in stable/9, `kern_clock_nanosleep` in main: the `EINVAL` check, the zero or negative time, when `rmtp` is written)
 - [POSIX `pthread_rwlock_rdlock`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_rwlock_rdlock.html), [`pthread_rwlock_wrlock`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_rwlock_trywrlock.html), [`pthread_rwlock_unlock`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_rwlock_unlock.html), [`pthread_rwlock_destroy`/`init`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_rwlock_destroy.html); FreeBSD libthr [`thr_rwlock.c`](https://github.com/freebsd/freebsd-src/blob/main/lib/libthr/thread/thr_rwlock.c) and [`thr_private.h`](https://github.com/freebsd/freebsd-src/blob/main/lib/libthr/thread/thr_private.h) (`THR_RWLOCK_DESTROYED`); FreeBSD kernel [`kern_umtx.c`](https://github.com/freebsd/freebsd-src/blob/main/sys/kern/kern_umtx.c) (`do_rw_rdlock`, `do_rw_wrlock`, `do_rw_unlock`)
 - [LSB Core `__stack_chk_fail`](https://refspecs.linuxfoundation.org/LSB_5.0.0/LSB-Core-generic/LSB-Core-generic/libc---stack-chk-fail-1.html) and [FreeBSD libc `libc_stack_protector.c`](https://github.com/freebsd/freebsd-src/blob/main/lib/libc/secure/libc_stack_protector.c) (`__stack_chk_fail`, `__fail`)
-- [POSIX `pthread_cond_wait`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_cond_wait.html), [`pthread_cond_signal`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_cond_signal.html), [`pthread_cond_destroy`/`pthread_cond_init`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_cond_destroy.html); FreeBSD libthr [`thr_cond.c`](https://github.com/freebsd/freebsd-src/blob/main/lib/libthr/thread/thr_cond.c), [`thr_mutex.c`](https://github.com/freebsd/freebsd-src/blob/main/lib/libthr/thread/thr_mutex.c) (`_mutex_owned`, `_mutex_cv_unlock`, `mutex_unlock_common`, `mutex_self_lock`, `mutex_self_trylock`) and [`thr_private.h`](https://github.com/freebsd/freebsd-src/blob/main/lib/libthr/thread/thr_private.h) (`THR_COND_DESTROYED`)
+- [POSIX `pthread_cond_wait`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_cond_wait.html), [`pthread_cond_signal`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_cond_signal.html), [`pthread_cond_destroy`/`pthread_cond_init`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_cond_destroy.html); FreeBSD libthr [`thr_cond.c`](https://github.com/freebsd/freebsd-src/blob/main/lib/libthr/thread/thr_cond.c), [`thr_mutex.c`](https://github.com/freebsd/freebsd-src/blob/main/lib/libthr/thread/thr_mutex.c) (`_mutex_owned`, `_mutex_cv_unlock`, `mutex_unlock_common`, `mutex_self_lock`, `mutex_self_trylock`) and [`thr_private.h`](https://github.com/freebsd/freebsd-src/blob/main/lib/libthr/thread/thr_private.h) (`THR_COND_DESTROYED`); for `pthread_cond_timedwait`, [POSIX `pthread_cond_timedwait`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_cond_timedwait.html) (the `CLOCK_REALTIME` default, `ETIMEDOUT`, `EINVAL`), [`pthread_condattr_getclock`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_condattr_getclock.html), libthr `thr_cond.c` (`_pthread_cond_timedwait` in stable/9 and main, `cond_init`) and [`thr_init.c`](https://github.com/freebsd/freebsd-src/blob/main/lib/libthr/thread/thr_init.c) (`_pthread_condattr_default`)
 - [vitasdk/vita-headers `psp2/net/netctl.h`](https://github.com/vitasdk/vita-headers/blob/master/include/psp2/net/netctl.h) - PS Vita, a different operating system: shape of the `SceNetCtl` declarations, never a PS4 value
 - [PSP2SDK `psp2/net/netctl.h` file reference](https://psp2sdk.github.io/netctl_8h.html) and [vitasdk `SceNetCtl` user group](https://docs.vitasdk.org/group__SceNetCtlUser.html) - the same declarations, with no prose describing any return value in this group
 - [vitasdk/vita-headers `psp2/error.h`](https://github.com/vitasdk/vita-headers/blob/master/include/psp2/error.h) - `0 on success` as the documented SCE-family return convention

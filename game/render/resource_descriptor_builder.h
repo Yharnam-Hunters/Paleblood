@@ -4,6 +4,8 @@
 #pragma once
 
 #include "byte_field.h"
+#include "record_descriptor_offsets.h"
+#include "record_constructor_helpers.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -13,12 +15,10 @@
 
 namespace render {
 constexpr size_t resource_descriptor_parameter_bytes = 0x30;
-constexpr size_t resource_descriptor_storage_bytes = 0x20;
-constexpr size_t resource_descriptor_level_bytes = 0x30;
 struct ResourceDescriptorParameters { uint8_t bytes[resource_descriptor_parameter_bytes]; };
 struct ResourceDescriptorOptional { Field<uint32_t> value; };
-struct ResourceDescriptorStorage { uint8_t bytes[resource_descriptor_storage_bytes]; };
-struct ResourceDescriptorLevel { uint8_t bytes[resource_descriptor_level_bytes]; };
+using ResourceDescriptorStorage = RecordDescriptorPrefix;
+using ResourceDescriptorLevel = RecordGeometryDescriptor;
 struct ResourceDescriptorRequirements { Field<uint64_t> packed; };
 struct ResourceDescriptorPair {
     Field<uint32_t> quantity;
@@ -45,14 +45,7 @@ struct ResourceDescriptorNormalized {
     uint8_t unknown_41[3];
     Field<uint32_t> status;
 };
-struct ResourceDescriptorGeometry {
-    Field<uint64_t> first_pair;
-    Field<uint32_t> third;
-    uint8_t unknown_0c[0x14];
-    Field<uint64_t> constructor_tail_pair;
-    Field<uint32_t> constructor_tail_word;
-    uint8_t unknown_2c[0xc];
-};
+using ResourceDescriptorGeometry = RecordGeometryResult;
 // Outputs whose addresses are passed to descriptor and auxiliary helpers.
 struct ResourceDescriptorScratch {
     ResourceDescriptorPair constructor_pair;
@@ -68,7 +61,6 @@ struct ResourceDescriptorScratch {
     ResourceDescriptorStorage second_temporary;
     ResourceDescriptorStorage first_temporary;
 };
-static_assert(sizeof(uintptr_t) == 8);
 static_assert(sizeof(ResourceDescriptorParameters) == 0x30);
 static_assert(sizeof(ResourceDescriptorRequirements) == 8);
 static_assert(sizeof(ResourceDescriptorPair) == 8);
@@ -81,8 +73,6 @@ static_assert(offsetof(ResourceDescriptorNormalized, second_derived) == 0x34);
 static_assert(offsetof(ResourceDescriptorNormalized, option_byte) == 0x40);
 static_assert(offsetof(ResourceDescriptorNormalized, status) == 0x44);
 static_assert(sizeof(ResourceDescriptorNormalized) == 0x48);
-static_assert(offsetof(ResourceDescriptorGeometry, constructor_tail_pair) == 0x20);
-static_assert(offsetof(ResourceDescriptorGeometry, constructor_tail_word) == 0x28);
 static_assert(sizeof(ResourceDescriptorGeometry) == 0x38);
 
 namespace resource_descriptor_calls {
@@ -90,9 +80,8 @@ namespace resource_descriptor_calls {
 RT_ORIGINAL(0x025711d0, normalize,
             void(ResourceDescriptorNormalized *, const ResourceDescriptorParameters *,
                  const ResourceDescriptorOptional *, uint32_t, uintptr_t, uintptr_t));
-// The first native call enters with RAX=0x40, so every returned bit above
-// AL is zero; the later call reads only AL. Consume a byte here so compiler
-// scratch-register contents cannot enter the saved 32-bit predicate word.
+// This predicate returns one flag byte. Keep that width so unrelated upper
+// return bits cannot become part of the saved predicate value.
 RT_ORIGINAL(0x02abb4f0, record_auxiliary_predicate, uint8_t(uint32_t, uint32_t));
 RT_ORIGINAL(0x02ab7a20, choose_constructor_parameter, uint32_t(uint32_t, uint32_t));
 RT_ORIGINAL(0x02ab7ab0, combine_record_parameters, uint32_t(uint32_t, uint32_t, uint32_t));
@@ -104,19 +93,11 @@ RT_ORIGINAL(0x01488d90, convert_constructor_record,
 RT_ORIGINAL(0x01487ee0, initialize_pair_descriptor,
             uint64_t(ResourceDescriptorStorage *, uint32_t, uint32_t, uint32_t, uint32_t,
                      uint32_t, uint32_t, uint32_t, uint32_t));
-RT_ORIGINAL(0x014a1e80, initialize_record_level_descriptor,
-            uint32_t(ResourceDescriptorLevel *, ResourceDescriptorStorage *, uint32_t, uint32_t));
-RT_ORIGINAL(0x0149ce10, calculate_record_geometry,
-            uint32_t(ResourceDescriptorGeometry *, ResourceDescriptorLevel *));
-RT_ORIGINAL(0x0149e2d0, record_constructor_optional_first,
-            uint32_t(Field<uint64_t> *, Field<uint32_t> *,
-                     Field<uint32_t> *, Field<uint32_t> *,
-                     uint64_t, uint64_t, uint32_t, uint32_t));
 // Auxiliary helpers publish the total and alignment used in the final fold.
 RT_ORIGINAL(0x0149e570, calculate_second_auxiliary,
-            uint32_t(Field<uint64_t> *, Field<uint32_t> *,
+            uint64_t(Field<uint64_t> *, Field<uint32_t> *,
                      Field<uint32_t> *, Field<uint32_t> *,
-                     uint64_t, uint64_t, uint32_t, uint32_t));
+                     uint64_t, uint64_t, uint32_t, uint8_t));
 RT_ORIGINAL(0x02abb4a0, report_record_normalization_error, uintptr_t(uint32_t));
 }  // namespace resource_descriptor_calls
 }  // namespace render

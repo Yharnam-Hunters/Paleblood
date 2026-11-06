@@ -120,24 +120,27 @@ AuxiliaryAccumulation accumulate_levels(render::ResourceDescriptorScratch &frame
     do {
         // Each level uses the current normalized quantity; helper writes can change it.
         const uint32_t multiplier = frame.normalized.quantity.get();
-        uint32_t status = render::resource_descriptor_calls::initialize_record_level_descriptor(
+        uint32_t status = render::initialize_record_level_descriptor(
             level_descriptor, descriptor, level, 0);
         if (status == 0)
-            status = render::resource_descriptor_calls::calculate_record_geometry(&frame.geometry,
+            status = render::calculate_record_geometry(&frame.geometry,
                                                                            level_descriptor);
         if (status == 0) {
-            const uint64_t first_pair = frame.geometry.first_pair.get();
+            const uint64_t first_pair = render::Field<uint64_t>::read(frame.geometry.first_00.bytes);
             const uint64_t second = first_pair >> word_bits;
-            const uint32_t third = frame.geometry.third.get();
+            const uint32_t third = frame.geometry.third_08.get();
 
             if (second_auxiliary) {
                 status = render::resource_descriptor_calls::calculate_second_auxiliary(
                     &frame.optional_total, &frame.optional_unit, &frame.optional_first,
                     &frame.optional_second, first_pair, second, third, 0);
             } else {
-                status = render::resource_descriptor_calls::record_constructor_optional_first(
-                    &frame.optional_total, &frame.optional_unit, &frame.optional_first,
-                    &frame.optional_second, first_pair, second, third, 0);
+                status = render::record_constructor_optional_first(
+                    reinterpret_cast<uint64_t *>(frame.optional_total.bytes),
+                    reinterpret_cast<uint32_t *>(frame.optional_unit.bytes),
+                    reinterpret_cast<uint32_t *>(frame.optional_first.bytes),
+                    reinterpret_cast<uint32_t *>(frame.optional_second.bytes),
+                    static_cast<uint32_t>(first_pair), static_cast<uint32_t>(second), third, 0);
             }
         }
         if (status != 0) {
@@ -175,18 +178,16 @@ extern "C" uint64_t bb_render_prepare_resource_descriptor(
 
     const uint32_t flags = record.flags.get();
     const uint32_t secondary = record.secondary_flags.get();
-    bool no_special_parameter = (secondary & special_parameter_flag) == 0;
+    const bool no_special_parameter = (secondary & special_parameter_flag) == 0;
     uint8_t first_auxiliary_enabled = 0;
     bool special_constructor = false;
     if ((flags & auxiliary_group_flag) != 0) {
         if (!no_special_parameter) {
             special_constructor = record.first_parameter.get() > 1;
             first_auxiliary_enabled = 1;
-            no_special_parameter = false;
         } else {
             first_auxiliary_enabled = uint8_t((secondary & first_auxiliary_flag) >>
                                                first_auxiliary_shift);
-            no_special_parameter = true;
         }
     }
     uint8_t second_descriptor_enabled = 0;
@@ -209,8 +210,8 @@ extern "C" uint64_t bb_render_prepare_resource_descriptor(
     uint32_t second_auxiliary_alignment = 0;
     if (special_constructor) {
         std::memset(&frame.geometry, 0, constructor_prefix_bytes);
-        frame.geometry.constructor_tail_word.set(0);
-        frame.geometry.constructor_tail_pair.set(0);
+        frame.geometry.third_alignment_28.set(0);
+        Field<uint64_t>::write(frame.geometry.first_alignment_20.bytes, 0);
         const uint32_t first_parameter = resource_descriptor_calls::choose_constructor_parameter(
             record.first_parameter.get(), 1);
         const uint32_t combine_first = record.first_parameter.get();
@@ -227,8 +228,7 @@ extern "C" uint64_t bb_render_prepare_resource_descriptor(
             &frame.geometry, first, second, quantity, first_derived, second_derived,
             first_parameter, combined, &frame.first_auxiliary_pair, &frame.constructor_pair);
         const uint32_t conversion_flags = (record.secondary_flags.get() & reduced_quantity_flag) >> 2;
-        ResourceDescriptorStorage *destination = descriptor;
-        resource_descriptor_calls::convert_constructor_record(destination, &frame.geometry,
+        resource_descriptor_calls::convert_constructor_record(descriptor, &frame.geometry,
                                                                conversion_flags);
     } else {
         const QuantityChoice primary_quantity = read_quantity(record);
@@ -245,7 +245,7 @@ extern "C" uint64_t bb_render_prepare_resource_descriptor(
             const uint32_t selector = record.selector.get();
             const uint32_t current_flags = record.flags.get();
             uint64_t second_result = 0;
-            if (uint8_t(resource_descriptor_calls::record_auxiliary_predicate(current_flags, selector)) != 0) {
+            if (resource_descriptor_calls::record_auxiliary_predicate(current_flags, selector) != 0) {
                 second_result = initialize_descriptor(frame, descriptor, choice, second_combined, true);
                 second_descriptor_alignment = second_result >> word_bits;
             }
@@ -267,7 +267,7 @@ extern "C" uint64_t bb_render_prepare_resource_descriptor(
             frame.first_auxiliary_pair.set_packed(pack_requirements(accumulation.quantity,
                                                                    accumulation.alignment));
         }
-        if (uint8_t(predicate_word) != 0) {
+        if (predicate_word != 0) {
             const uint32_t level_limit = prepare_loop_limit(frame);
             std::memset(&frame.second_temporary, 0, sizeof(frame.second_temporary));
             const QuantityChoice choice = read_quantity(record);
@@ -291,8 +291,7 @@ extern "C" uint64_t bb_render_prepare_resource_descriptor(
     uint32_t total = uint32_t(primary_result);
     uint32_t alignment = uint32_t(primary_result >> word_bits);
     if (secondary_alignment > alignment) alignment = secondary_alignment;
-    ResourceDescriptorRequirements *output = requirements;
-    output->packed.set(pack_requirements(total, alignment));
+    requirements->packed.set(pack_requirements(total, alignment));
 
     // Publish the four requirement folds in order. Each later fold reads the
     // corresponding auxiliary pair only after the previous output publication.
@@ -303,7 +302,7 @@ extern "C" uint64_t bb_render_prepare_resource_descriptor(
     }
     if (alignment > next_alignment) next_alignment = alignment;
     alignment = next_alignment;
-    output->packed.set(pack_requirements(total, alignment));
+    requirements->packed.set(pack_requirements(total, alignment));
 
     next_alignment = frame.constructor_pair.alignment.get();
     if (next_alignment != 0) {
@@ -312,11 +311,11 @@ extern "C" uint64_t bb_render_prepare_resource_descriptor(
     }
     if (alignment > next_alignment) next_alignment = alignment;
     alignment = next_alignment;
-    output->packed.set(pack_requirements(total, alignment));
+    requirements->packed.set(pack_requirements(total, alignment));
 
     if (second_auxiliary_alignment != 0)
         total = align_quantity(total, second_auxiliary_alignment) + second_auxiliary_total;
     if (alignment > second_auxiliary_alignment) second_auxiliary_alignment = alignment;
-    output->packed.set(pack_requirements(total, second_auxiliary_alignment));
+    requirements->packed.set(pack_requirements(total, second_auxiliary_alignment));
     return uint64_t(0);
 }
