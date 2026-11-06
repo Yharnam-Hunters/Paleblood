@@ -32,7 +32,7 @@ static void check_triangle(rt_executor *x, uint64_t target)
 static int run_with_registers(rt_executor *x, uint64_t buffer, uint64_t target, const uint32_t (*registers)[2], int count,
                               uint32_t instances, char *error, size_t error_size)
 {
-    rt_render_forget();
+    rt_render_forget(), rt_executor_reset(x);
     uint32_t offset = record_setup(buffer, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
     for (int i = 0; i < count; i++, offset += 0x10)
         CHECK(rt_render_record_register(buffer, offset, registers[i][0], registers[i][1], error, error_size) == 0);
@@ -57,7 +57,7 @@ static int draw_texels(rt_executor *x, uint64_t target, const uint32_t image[8],
 {
     enum { TEXEL_BUFFER = 0xc0f00000, TEXEL_CODE = 0x2a00 };
     memcpy((void *)(uintptr_t)at(TEXEL_CODE), pixel_image_texel, sizeof pixel_image_texel);
-    rt_render_forget();
+    rt_render_forget(), rt_executor_reset(x);
     uint32_t offset = record_setup(TEXEL_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
     const uint64_t code = at(TEXEL_CODE);
     const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 8 << 1, 0, 0x4, 0x302, 0x302, 0, 0, 0, 0xf};
@@ -151,7 +151,7 @@ static void sampled_images(rt_executor *x)
         table[7] |= LINEAR_ALIGNED << 20;
         memcpy((void *)(uintptr_t)at(TWO_CODE), pixel_two_images, sizeof pixel_two_images);
         for (int pass = 0; pass < 2; pass++) {
-            rt_render_forget();
+            rt_render_forget(), rt_executor_reset(x);
             uint32_t offset = record_setup(TWO_BUFFER, at(TEXEL_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
             const uint64_t code = at(TWO_CODE);
             const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 12 << 1, 0, 0x4, 0x302, 0x302,
@@ -232,7 +232,7 @@ static void sampled_lookup(rt_executor *x)
         image_descriptor(user + 4, at(IMAGE), 10, 0, WIDTH, HEIGHT);
         user[7] |= LINEAR_ALIGNED << 20;
         memcpy(user + 12, samplers[k], 4 * sizeof *user);
-        rt_render_forget();
+        rt_render_forget(), rt_executor_reset(x);
         uint32_t offset = record_setup(LOOKUP_BUFFER, at(LOOKUP_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
         const uint64_t code = at(LOOKUP_CODE);
         const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 16 << 1, 0, 0x4, 0x302, 0x302,
@@ -308,7 +308,7 @@ static void blending(rt_executor *x)
 static int run_counted(rt_executor *x, uint64_t buffer, uint64_t target, const uint32_t (*registers)[2], int n, uint32_t count, char *error,
                        size_t error_size)
 {
-    rt_render_forget();
+    rt_render_forget(), rt_executor_reset(x);
     uint32_t offset = record_setup(buffer, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
     for (int i = 0; i < n; i++, offset += 0x10) CHECK(rt_render_record_register(buffer, offset, registers[i][0], registers[i][1], error, error_size) == 0);
     CHECK(rt_render_record_draw_auto(buffer, offset, count, error, error_size) == 0);
@@ -412,7 +412,7 @@ static void fetch_shader(rt_executor *x)
     const uint32_t float_xyzw = 4 | 5 << 3 | 6 << 6 | 7 << 9 | 7u << 12 | 14u << 15; /* DST_SEL, NUM_FORMAT float, DATA_FORMAT 32_32_32_32 */
     descriptor(table, at(CORNERS), RECORD_STRIDE), table[3] = float_xyzw;
     descriptor(table + 4, at(COLORS), RECORD_STRIDE), table[7] = float_xyzw;
-    rt_render_forget();
+    rt_render_forget(), rt_executor_reset(x);
     uint32_t offset = record_setup(FETCH_BUFFER, at(FETCH_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
     const uint64_t code = at(VS_CODE);
     const uint32_t vertex[RT_VERTEX_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 4 << 1, 0, 0x4, 0};
@@ -423,6 +423,33 @@ static void fetch_shader(rt_executor *x)
     if (drawn) fprintf(stderr, "fetch shader: %s\n", error);
     CHECK(drawn == 0);
     check_triangle(x, at(FETCH_TARGET));
+}
+
+/* The GPU's state carries over from one submitted buffer to the next: the triangle's state recorded in
+   one buffer, its draw alone in the next, draws the reference image; a slot beyond 0 switched on in one
+   buffer and off again in the next no longer stops the draw. rt_executor_reset forgets it all. */
+static void state_across_buffers(rt_executor *x)
+{
+    enum { FIRST = 0xc0f60000, SECOND = 0xc0f70000, ACROSS = 0xc40000 };
+    char error[200] = "";
+    rt_render_forget(), rt_executor_reset(x);
+    const uint32_t first_size = record_setup(FIRST, at(ACROSS), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    uint32_t target_words[RT_COLOR_TARGET_WORDS];
+    color_target(target_words, at(ACROSS) + 0x40000, COLOR_8_8_8_8, SWAP_STD);
+    CHECK(rt_render_record_color_target(FIRST, first_size, 1, target_words, error, sizeof error) == 0);
+    CHECK(rt_executor_run(x, FIRST, first_size + 0x10, error, sizeof error) == 0);
+    CHECK(rt_render_record_color_target(SECOND, 0x10, 1, NULL, error, sizeof error) == 0);
+    const uint32_t second_size = record_triangle_draw(SECOND, 0x20);
+    const int drawn = rt_executor_run(x, SECOND, second_size, error, sizeof error);
+    if (drawn) fprintf(stderr, "across buffers: %s\n", error);
+    CHECK(drawn == 0);
+    check_triangle(x, at(ACROSS));
+    rt_executor_reset(x);
+    rt_render_forget();
+    color_target(target_words, at(ACROSS), COLOR_8_8_8_8, SWAP_STD);
+    CHECK(rt_render_record_color_target(SECOND, 0x10, 0, target_words, error, sizeof error) == 0);
+    CHECK(rt_render_record_draw_auto(SECOND, 0x20, 3, error, sizeof error) == 0);
+    CHECK(rt_executor_run(x, SECOND, 0x30, error, sizeof error) == -1 && strstr(error, "no viewport"));
 }
 
 int main(void)
@@ -442,7 +469,7 @@ int main(void)
     enum { BUFFER = 0xc0de0000, SECOND = 0xc0df0000, THIRD = 0xc0e00000 };
 
     /* A triangle into an R8G8B8A8 target (SWAP_STD), through guest addresses and the pool's GPU buffer. */
-    rt_render_forget();
+    rt_render_forget(), rt_executor_reset(x);
     uint32_t size = record_draw(BUFFER, at(TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
     const int ran = rt_executor_run(x, BUFFER, size, error, sizeof error);
     if (ran) fprintf(stderr, "run: %s\n", error);
@@ -501,7 +528,7 @@ int main(void)
         for (int variant = 0; variant < 2; variant++) {
             const uint64_t code = at(VCC_CODE + 0x200 * (unsigned)variant);
             memcpy((void *)(uintptr_t)code, variant ? read_after : dead_write, (n + 1 + (unsigned)variant) * sizeof(uint32_t));
-            rt_render_forget();
+            rt_render_forget(), rt_executor_reset(x);
             uint32_t offset = record_setup(FOURTH, at(VCC_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
             const uint32_t vertex[RT_VERTEX_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 8 << 1, 0, 0x4, 0};
             CHECK(rt_render_record_vertex_shader(FOURTH, offset, vertex, error, sizeof error) == 0);
@@ -521,7 +548,7 @@ int main(void)
     {
         enum { POSITION_CODE = 0x2800, POSITION_TARGET = 0x700000 };
         memcpy((void *)(uintptr_t)at(POSITION_CODE), pixel_position_color, sizeof pixel_position_color);
-        rt_render_forget();
+        rt_render_forget(), rt_executor_reset(x);
         uint32_t offset = record_setup(FOURTH, at(POSITION_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
         const uint64_t code = at(POSITION_CODE);
         const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 0, 0, 0x4, 0x302, 0x302, 0, 0, 0, 0xf};
@@ -555,7 +582,7 @@ int main(void)
             CHECK(drawn == 0);
             check_triangle(x, at(RECT_TARGET));
         }
-        rt_render_forget();
+        rt_render_forget(), rt_executor_reset(x);
         uint32_t offset = record_setup(FOURTH, at(RECT_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
         CHECK(rt_render_record_register(FOURTH, offset, 0xc242, 17, error, sizeof error) == 0);
         CHECK(rt_render_record_draw_auto(FOURTH, offset + 0x10, 4, error, sizeof error) == 0);
@@ -565,7 +592,7 @@ int main(void)
     }
     /* No pixel shader (a depth-only pass, placed as the runtime's sceGnmSetPsShader places it): a
        draw with it stops by name. */
-    rt_render_forget();
+    rt_render_forget(), rt_executor_reset(x);
     uint32_t offset = record_setup(FOURTH, at(TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
     static const uint32_t no_pixel_shader[RT_PIXEL_SHADER_WORDS];
     CHECK(rt_render_record_pixel_shader_at(FOURTH + offset, no_pixel_shader) == 0);
@@ -583,7 +610,7 @@ int main(void)
         for (unsigned i = 0; i < LANES; i++) input[i] = (float)i, output[i] = -1;
         const uint64_t code = at(COMPUTE_CODE);
         uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0, 8 << 1, LANES, 1, 1};
-        rt_render_forget();
+        rt_render_forget(), rt_executor_reset(x);
         CHECK(rt_render_record_compute_shader_at(COMPUTE + 0x10, shader) == 0);
         uint32_t user[8];
         descriptor(user, at(INPUT), 4);
@@ -598,7 +625,7 @@ int main(void)
         for (unsigned i = 0; i < LANES; i++) right &= output[i] == (float)i * 2.5f + 1.0f;
         CHECK(right);
 
-        rt_render_forget();
+        rt_render_forget(), rt_executor_reset(x);
         CHECK(rt_render_record_dispatch(COMPUTE, 0x30, one, error, sizeof error) == 0);
         CHECK(rt_executor_run(x, COMPUTE, 0x40, error, sizeof error) == -1 && strstr(error, "without a compute shader"));
         shader[3] |= 1u << 8; /* TGID_Y_EN */
@@ -637,7 +664,7 @@ int main(void)
                 d[5] = layer | layer << 13;                  /* BASE_ARRAY, LAST_ARRAY */
             }
         for (unsigned i = 0; i < LANES * 4; i++) back[i] = -1;
-        rt_render_forget();
+        rt_render_forget(), rt_executor_reset(x);
         uint32_t offset = 0x10;
         for (int pass = 0; pass < 3; pass++) {
             const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(codes[pass] >> 8), (uint32_t)(codes[pass] >> 40), 0x3, 16 << 1, LANES, 1, 1};
@@ -665,7 +692,7 @@ int main(void)
         float *guest_texels = (float *)(uintptr_t)at(IMAGE_B + 0x8000);
         for (unsigned i = 0; i < LANES * 4; i++) guest_texels[i] = (float)i * 0.25f, back[i] = -1;
         for (int tiling = 0; tiling < 2; tiling++) {
-            rt_render_forget();
+            rt_render_forget(), rt_executor_reset(x);
             image_descriptor(image_b, at(IMAGE_B + 0x8000), 14, 7, LANES, 1);
             image_b[3] |= (tiling ? 8u : 0u) << 20;
             const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(codes[2] >> 8), (uint32_t)(codes[2] >> 40), 0x3, 16 << 1, LANES, 1, 1};
@@ -690,6 +717,7 @@ int main(void)
     sampled_images(x);
     sampled_lookup(x);
     fetch_shader(x);
+    state_across_buffers(x);
 
     rt_executor_close(x);
     rt_render_forget();

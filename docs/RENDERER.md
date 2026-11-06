@@ -353,6 +353,11 @@ Instead:
           whose x matches one neighbour's and y the other's, and the fourth corner is the other two
           minus it, for the position and every output (shadPS4's rule, facts only). A device
           without geometry shaders stops by name at a rect list; Metal will need another route.
+        - **State across buffers:** the GPU keeps its registers, user data and shaders from one
+          submitted buffer to the next (no submission resets them), so the executor keeps the state
+          the calls set across runs too. The game's command buffers continue into new blocks as they
+          fill (a buffer that sets a compute shader at its end, the next one dispatching it).
+          `rt_executor_reset` forgets it, for tests' independent cases.
         - **Depth targets:** the depth target's setter (`0x014739b0`, observed)
           reports the registers it writes (`DB_Z_INFO` to `DB_DEPTH_SLICE`, `DB_DEPTH_VIEW`, ...), the
           stencil reference setters (`0x01473190`, `0x014731f0`) `DB_STENCILREFMASK` and `_BF`, and the
