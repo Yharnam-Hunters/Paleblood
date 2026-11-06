@@ -526,6 +526,21 @@ INPUTS = [
 ]
 
 
+# A zero low field does not imply that the packed middle field is also empty.
+for case_id, selector, height in (
+    ("middle_only_selector_nonzero", 1, 2),
+    ("middle_only_selector_zero_height_present", 0, 2),
+    ("middle_only_selector_zero_height_absent", 0, 1),
+):
+    INPUTS.append({
+        "id": case_id,
+        "args": ["p32", "p128", 2],
+        "words": [(128, 0x12345678), (132, 7), (140, 0x2000),
+                  (144, 2115332), (148, selector << 15), (152, 1 | (height << 16))],
+        "returns": "void",
+    })
+
+
 def fixtures():
     """Yield inputs without calculating the expected replacement outputs."""
     registers = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]

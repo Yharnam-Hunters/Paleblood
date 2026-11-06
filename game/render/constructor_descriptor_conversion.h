@@ -4,6 +4,7 @@
 #pragma once
 
 #include "byte_field.h"
+#include "record_descriptor_helpers.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -59,8 +60,8 @@ static_assert(sizeof(ConstructorDescriptorOutput) == 0x20);
 static_assert(alignof(ConstructorDescriptorOutput) == 1);
 
 namespace constructor_conversion_calls {
-// These short native entries remain unhooked. Each inline form performs only
-// its observed read; repeated calls in the consumer must remain separate.
+// Read each field when its conversion step needs it. Earlier output stores
+// can overlap the source of a later read.
 inline uint32_t source_for_word00(const ConstructorRecordSource *source)
 {
     return source->word00.get();
@@ -100,17 +101,12 @@ inline uint32_t source_type_selector(const ConstructorRecordSource *source)
     constexpr uint32_t field_mask = 3;
     return (source->word14.get() >> field_shift) & field_mask;
 }
-// The mapping getter reads exactly one DWORD at +0x10, then tail-calls the
-// register-only encoder. Its full result is a zero-extended packed DWORD;
-// this consumer captures the low 32-bit value after the original call.
+// Re-encode the source mapping for the destination descriptor. Keep this call
+// after the earlier writes because input and output can overlap.
 RT_ORIGINAL(0x01486cf0, source_mapping_word, uint64_t(const ConstructorRecordSource *));
-// Read one selected component DWORD through the original helper. Keep the
-// original call and shared local address; no lower implementation is copied.
-RT_ORIGINAL(0x01471a40, read_record_descriptor_component, uint32_t(const uint32_t *, uint32_t));
 }  // namespace constructor_conversion_calls
 }  // namespace render
 
-// Fill the packed descriptor. The caller consumes publications only; the
-// compiler's stack-canary value is not a logical return value.
+// Fill the packed descriptor through ordered writes to caller-owned output.
 extern "C" void bb_render_convert_constructor_record(
     render::ConstructorDescriptorOutput *, const render::ConstructorRecordSource *, uint32_t);

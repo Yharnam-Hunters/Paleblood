@@ -4,6 +4,7 @@
 #include "runtime/display.h"
 #include "runtime/equeue.h"
 #include "runtime/gpu_memory.h"
+#include "runtime/pad.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
@@ -207,6 +208,10 @@ static void lock_normal_twice(f1 relock)
 static void lock_normal_twice_sce(void) { lock_normal_twice(owner_lock); }
 static void lock_normal_twice_posix(void) { lock_normal_twice(owner_posix_lock); }
 
+typedef uint64_t (*attribute_wire)(void *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+static attribute_wire attribute;
+static void video_attribute_null(void) { attribute(NULL, 0, 0, 0, 0, 0, 0); }
+
 static int died_in_fatal(void (*call)(void))
 {
     const pid_t child = fork();
@@ -232,6 +237,42 @@ static int (*posix_usleep_entry)(uint32_t);
 static void usleep_one_second(void) { posix_usleep_entry(1000000); }
 static unsigned int (*posix_sleep_entry)(unsigned int);
 static void sleep_above_int_max(void) { posix_sleep_entry(0x80000000u); } /* INT_MAX + 1 */
+
+/* The guest's struct timespec: two 64-bit fields, seconds and nanoseconds (FreeBSD amd64). */
+typedef struct {
+    int64_t seconds;
+    int64_t nanoseconds;
+} nanosleep_timespec;
+static int (*nanosleep_entry)(const nanosleep_timespec *, nanosleep_timespec *);
+static void nanosleep_ask(int64_t seconds, int64_t nanoseconds)
+{
+    nanosleep_timespec request = {seconds, nanoseconds};
+    nanosleep_entry(&request, NULL);
+}
+static void nanosleep_no_request(void) { nanosleep_entry(NULL, NULL); }
+static void nanosleep_negative_nanoseconds(void) { nanosleep_ask(0, -1); }
+static void nanosleep_one_billion_nanoseconds(void) { nanosleep_ask(0, 1000000000); }
+static void nanosleep_negative_seconds(void) { nanosleep_ask(-1, 0); }
+/* The host answers each of these requests with EINVAL too, which also stops the process, so the
+   child checks which stop it reached (the observer pattern of test_direct_memory_bounds.c). */
+static const char *nanosleep_expected_reason;
+static void nanosleep_observe_stop(const char *function, const char *reason)
+{
+    _exit(!strcmp(function, "nanosleep") && strstr(reason, nanosleep_expected_reason) ? 0 : 1);
+}
+static int nanosleep_stops_with(void (*call)(void), const char *reason)
+{
+    const pid_t child = fork();
+    if (child == 0) {
+        nanosleep_expected_reason = reason;
+        rt_fatal_observer = nanosleep_observe_stop;
+        call();
+        _exit(2); /* the call returned, so it did not stop */
+    }
+    int status = 0;
+    if (waitpid(child, &status, 0) < 0) return 0;
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
 
 /* The paths whose PS4 answer is not established. The ids are file-scope so a child can unregister
    one the parent registered before forking. */
@@ -464,6 +505,43 @@ static void *pc_waiter(void *unused)
     return NULL;
 }
 static void pc_init_with_attribute(void) { void *c = NULL, *attr = &c; pc_init(&c, &attr); }
+/* pthread_cond_timedwait: an absolute time on the wall clock, a timespec of two 64-bit fields. */
+typedef struct {
+    int64_t seconds, nanoseconds;
+} pc_timespec;
+static int (*pc_timedwait)(void **, void **, const pc_timespec *);
+static pc_timespec pc_wall_in_ms(int64_t ms)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    int64_t ns = (int64_t)now.tv_sec * 1000000000 + now.tv_nsec + ms * 1000000;
+    return (pc_timespec){ns / 1000000000, ns % 1000000000};
+}
+static int pc_wall_reached(pc_timespec at)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    return now.tv_sec > at.seconds || (now.tv_sec == at.seconds && now.tv_nsec >= at.nanoseconds);
+}
+static int pc_timed_go, pc_timed_result = -1, pc_other_result = -1;
+static void *pc_timed_waiter(void *unused) /* the latest time there is: only the signal ends it */
+{
+    (void)unused;
+    const pc_timespec later = {INT64_MAX, 999999999};
+    pc_lock(&pc_mutex);
+    int r = 0;
+    while (!pc_timed_go && !r) r = pc_timedwait(&pc_cond, &pc_mutex, &later);
+    pc_timed_result = r;
+    pc_unlock(&pc_mutex);
+    return NULL;
+}
+static void *pc_other_waiter(void *unused) /* the mutex belongs to the main thread */
+{
+    (void)unused;
+    const pc_timespec later = pc_wall_in_ms(10000);
+    pc_other_result = pc_timedwait(&pc_cond, &pc_mutex, &later);
+    return NULL;
+}
 
 /* Thread attribute setters: stack size and scheduling policy. */
 typedef int (*f_attr_u64)(void **, uint64_t);
@@ -646,6 +724,41 @@ static f_us_none us_terminate;
 static f_us_ids us_initial_user, us_login_list;
 static void us_terminate_uninitialized(void) { us_terminate(); }
 static void us_initial_user_uninitialized(void) { int32_t u; us_initial_user(&u); }
+typedef int32_t (*f_us_name)(int32_t, char *, size_t);
+static f_us_name us_name;
+static int32_t us_user;
+static void us_name_uninitialized(void) { char n[17]; us_name(1, n, sizeof n); }
+static void us_name_other_user(void) { char n[17]; us_name(us_user + 1, n, sizeof n); }
+static void us_name_short(void) { char n[6]; us_name(us_user, n, sizeof n); }
+static void us_name_no_buffer(void) { us_name(us_user, NULL, 17); }
+typedef int32_t (*f_us_event)(int32_t *);
+static f_us_event us_event;
+static void us_event_uninitialized(void) { int32_t e[2]; us_event(e); }
+static void us_event_no_variable(void) { us_event(NULL); }
+
+/* libScePad: one standard controller, the one user's, connected and at rest. */
+typedef int32_t (*f_pad_none)(void);
+typedef int32_t (*f_pad_open)(int32_t, int32_t, int32_t, const void *);
+typedef int32_t (*f_pad_handle)(int32_t);
+typedef int32_t (*f_pad_block)(int32_t, void *);
+static f_pad_none pad_init;
+static f_pad_open pad_open;
+static f_pad_handle pad_close;
+static f_pad_block pad_read, pad_info;
+static int32_t pad_handle;
+static void pad_open_before_init(void) { pad_open(1, 0, 0, NULL); }
+static void pad_init_again(void) { pad_init(); }
+static void pad_open_other_user(void) { pad_open(2, 0, 0, NULL); }
+static void pad_open_special(void) { pad_open(1, 2, 0, NULL); }
+static void pad_open_index(void) { pad_open(1, 0, 1, NULL); }
+static void pad_read_bad_handle(void) { unsigned char d[120]; pad_read(pad_handle + 1, d); }
+static void pad_read_no_block(void) { pad_read(pad_handle, NULL); }
+static void pad_info_no_block(void) { pad_info(pad_handle, NULL); }
+static void pad_read_closed(void) { unsigned char d[120]; pad_read(pad_handle, d); }
+typedef int32_t (*f_pad_vibrate)(int32_t, const uint8_t *);
+static f_pad_vibrate pad_vibrate;
+static void pad_vibrate_missing(void) { pad_vibrate(pad_handle, NULL); }
+static void pad_vibrate_closed(void) { const uint8_t s[2] = {1, 2}; pad_vibrate(pad_handle, s); }
 
 /* System settings: answered from rt_process.system_params. */
 typedef int32_t (*f_sys_param)(int32_t, int32_t *);
@@ -756,6 +869,13 @@ typedef int32_t (*f_kstat)(const char *, void *);
 static f_kstat kstat_fn;
 static void kstat_outside(void) { unsigned char st[120]; kstat_fn("/download0/x", st); }
 static void kstat_dotdot(void) { unsigned char st[120]; kstat_fn("/app0/../etc/passwd", st); }
+typedef int (*f_pstat)(const char *, void *);
+typedef int *(*f_errno)(void);
+static f_pstat pstat_fn;
+static void pstat_outside(void) { unsigned char st[120]; pstat_fn("/download0/x", st); }
+static void pstat_no_buffer(void) { pstat_fn("/app0/data.bin", NULL); }
+static int *other_thread_errno;
+static void *errno_of_thread(void *arg) { other_thread_errno = ((f_errno)arg)(); return NULL; }
 /* Whether an address fits a GPU base-address field: below 2^40, so (address >> 8) fits 32 bits. */
 static int gpu_addressable(const void *address)
 {
@@ -840,11 +960,42 @@ static void posix_create_without_attr(void)
 static void vo_flip_other_mode(void) { vo_flip_fn(vo_handle, 0, 3, 0); }
 typedef int32_t (*f_gnm_submit)(uint32_t, void **, uint32_t *, void **, uint32_t *);
 static f_gnm_submit gnm_submit_fn;
-static void gnm_submit_one(uint32_t *packets, uint32_t dwords)
+static int32_t gnm_submit_one_result(uint32_t *packets, uint32_t dwords)
 {
     void *buffers[1] = {packets};
     uint32_t bytes[1] = {dwords * 4};
-    gnm_submit_fn(1, buffers, bytes, NULL, NULL);
+    return gnm_submit_fn(1, buffers, bytes, NULL, NULL);
+}
+static void gnm_submit_one(uint32_t *packets, uint32_t dwords) { gnm_submit_one_result(packets, dwords); }
+static uint32_t gnm_constant_packets[2] = {0xc0002400u, 0};
+static void gnm_submit_with_constant(void)
+{
+    static uint32_t draw[2] = {0xc0001000u, 0}; /* NOP */
+    void *buffers[1] = {draw}, *constants[1] = {gnm_constant_packets};
+    uint32_t bytes[1] = {8}, constant_bytes[1] = {8};
+    gnm_submit_fn(1, buffers, bytes, constants, constant_bytes);
+}
+static void gnm_submit_constant_without_sizes(void)
+{
+    static uint32_t draw[2] = {0xc0001000u, 0};
+    void *buffers[1] = {draw}, *constants[1] = {NULL};
+    uint32_t bytes[1] = {8};
+    gnm_submit_fn(1, buffers, bytes, constants, NULL);
+}
+static void gnm_submit_dma_fill(void)
+{
+    /* DMA_DATA filling memory with a value (source select 2): the stand-in does not fill */
+    static uint32_t target[4];
+    const uint64_t at = (uint64_t)(uintptr_t)target;
+    uint32_t p[7] = {0xc0055000u, 0x40000000u, 0x12345678u, 0, (uint32_t)at, (uint32_t)(at >> 32), 16};
+    gnm_submit_one(p, 7);
+}
+static void gnm_submit_dma_other_register(void)
+{
+    static uint32_t source[25];
+    const uint64_t from = (uint64_t)(uintptr_t)source;
+    uint32_t p[7] = {0xc0055000u, 0x60000000u, (uint32_t)from, (uint32_t)(from >> 32), 0x30230u, 0, 0x28200064u};
+    gnm_submit_one(p, 7);
 }
 static void gnm_submit_unknown(void) { static uint32_t p[2] = {0xc0002400u, 0}; gnm_submit_one(p, 2); } /* opcode 0x24 */
 static uint32_t gnm_wait_label;
@@ -858,6 +1009,45 @@ static void gnm_submit_unmet_wait(void)
 }
 static void vo_flip_bad_buffer(void) { vo_flip_fn(vo_handle, 9, 2, 0); }
 static void vo_open_other(void) { vo_open_fn(0xff, 0, 0, NULL); }
+
+/* libSceRtc: the host's local time, and ticks in microseconds since 0001-01-01. */
+typedef struct { uint16_t year, month, day, hour, minute, second; uint32_t microsecond; } rtc_time;
+typedef int32_t (*f_rtc_now)(rtc_time *);
+typedef int32_t (*f_rtc_tick)(const rtc_time *, uint64_t *);
+typedef int32_t (*f_rtc_resolution)(void);
+static f_rtc_now rtc_now;
+static f_rtc_tick rtc_tick;
+static void rtc_now_nothing(void) { rtc_now(NULL); }
+static void rtc_tick_february_30(void) { const rtc_time t = {2026, 2, 30, 0, 0, 0, 0}; uint64_t k; rtc_tick(&t, &k); }
+static void rtc_tick_leap_2100(void) { const rtc_time t = {2100, 2, 29, 0, 0, 0, 0}; uint64_t k; rtc_tick(&t, &k); }
+static void rtc_tick_microsecond(void) { const rtc_time t = {2026, 1, 1, 0, 0, 0, 1000000}; uint64_t k; rtc_tick(&t, &k); }
+typedef int32_t (*f_rtc_set)(rtc_time *, const uint64_t *);
+static f_rtc_set rtc_set;
+static void rtc_set_year_10000(void) { rtc_time t; const uint64_t k = 315537897600000000ull; rtc_set(&t, &k); } /* 10000-01-01 */
+static void rtc_set_no_tick(void) { rtc_time t; rtc_set(&t, NULL); }
+typedef int32_t (*f_rtc_weekday)(int32_t, int32_t, int32_t);
+static f_rtc_weekday rtc_weekday;
+static void rtc_weekday_february_29_2023(void) { rtc_weekday(2023, 2, 29); }
+static void rtc_weekday_month_13(void) { rtc_weekday(2026, 13, 1); }
+static void rtc_tick_no_variable(void) { const rtc_time t = {2026, 1, 1, 0, 0, 0, 0}; rtc_tick(&t, NULL); }
+
+/* PlayGo (libScePlayGo): the title's own calls, against a package manifest of three chunks. */
+typedef int32_t (*f_pg_init)(const void *);
+typedef int32_t (*f_pg_open)(int32_t *, const void *);
+typedef int32_t (*f_pg_chunks)(int32_t, uint16_t *, uint32_t, uint32_t *);
+typedef int32_t (*f_pg_locus)(int32_t, const uint16_t *, uint32_t, int8_t *);
+static f_pg_init pg_init;
+static f_pg_open pg_open;
+static f_pg_chunks pg_chunks;
+static f_pg_locus pg_locus;
+static int32_t pg_handle;
+static void pg_open_first(void) { int32_t h; pg_open(&h, NULL); }
+static void pg_init_nothing(void) { pg_init(NULL); }
+static void pg_open_with_params(void) { int32_t h; const int params = 1; pg_open(&h, &params); }
+static void pg_chunks_no_manifest(void) { uint16_t ids[100]; uint32_t n; pg_chunks(pg_handle, ids, 100, &n); }
+static void pg_chunks_short(void) { uint16_t ids[2]; uint32_t n; pg_chunks(pg_handle, ids, 2, &n); }
+static void pg_chunks_bad_handle(void) { uint16_t ids[100]; uint32_t n; pg_chunks(pg_handle + 1, ids, 100, &n); }
+static void pg_locus_unknown(void) { const uint16_t ids[1] = {3}; int8_t loci[1]; pg_locus(pg_handle, ids, 1, loci); }
 
 int main(void)
 {
@@ -1343,6 +1533,27 @@ int main(void)
     CHECK(died_in_fatal(sleep_above_int_max));
     CHECK(is_implemented("libScePosix", "sleep"));
 
+    /* nanosleep sleeps at least the time asked and returns 0. The guest gets no signal, so the
+       remaining-time variable is never written, and the request may be that same variable. The
+       largest valid nanosecond count, 999999999, sleeps. Its errno cases and negative seconds stop
+       by name. */
+    nanosleep_entry = (int (*)(const nanosleep_timespec *, nanosleep_timespec *))fn("libkernel", "nanosleep");
+    nanosleep_timespec nanosleep_asked = {0, 0}, nanosleep_left = {7, 7};
+    CHECK(nanosleep_entry(&nanosleep_asked, &nanosleep_left) == 0);
+    nanosleep_asked = (nanosleep_timespec){0, 999999999};
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    CHECK(nanosleep_entry(&nanosleep_asked, &nanosleep_left) == 0 && elapsed_us(&start) >= 999999);
+    CHECK(nanosleep_left.seconds == 7 && nanosleep_left.nanoseconds == 7);
+    nanosleep_asked = (nanosleep_timespec){1, 50000000};
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    CHECK(nanosleep_entry(&nanosleep_asked, &nanosleep_asked) == 0 && elapsed_us(&start) >= 1050000);
+    CHECK(nanosleep_asked.seconds == 1 && nanosleep_asked.nanoseconds == 50000000);
+    CHECK(nanosleep_stops_with(nanosleep_no_request, "no requested time"));
+    CHECK(nanosleep_stops_with(nanosleep_negative_nanoseconds, "nanoseconds outside"));
+    CHECK(nanosleep_stops_with(nanosleep_one_billion_nanoseconds, "nanoseconds outside"));
+    CHECK(nanosleep_stops_with(nanosleep_negative_seconds, "negative seconds"));
+    CHECK(is_implemented("libkernel", "nanosleep"));
+
     /* __stack_chk_fail never returns: the program ends. That stop is the whole contract, so the
        entry counts as implemented, unlike the fail-loud diagnostics above. */
     void (*stack_chk_fail)(void) = (void (*)(void))fn("libkernel", "__stack_chk_fail");
@@ -1618,7 +1829,7 @@ int main(void)
     }
     CHECK(is_implemented("libSceAppContent", "sceAppContentInitialize") &&
           is_implemented("libSceAppContent", "sceAppContentAppParamGetInt"));
-    /* libScePosix pthread_cond_*: errno values; pthread_cond_timedwait stays unbound. */
+    /* libScePosix pthread_cond_*: errno values. */
     pc_init = (f_pc_init)fn("libScePosix", "pthread_cond_init");
     const f_pc_one pc_destroy = (f_pc_one)fn("libScePosix", "pthread_cond_destroy");
     pc_signal = (f_pc_one)fn("libScePosix", "pthread_cond_signal");
@@ -1646,10 +1857,55 @@ int main(void)
         pthread_join(t, NULL);
         CHECK(pc_woken == 1);
         CHECK(died_in_fatal(pc_init_with_attribute));
+
+        /* pthread_cond_timedwait on the same objects: ETIMEDOUT (60) once the wall clock reaches
+           the time, with the mutex taken back (its owner can unlock it); EINVAL (22) before the
+           wait for no time, negative seconds or nanoseconds outside [0, 1000000000), the mutex
+           still held; 999999999 nanoseconds and second 0 are valid times; EPERM (1) for a thread
+           that does not own the mutex; 0 when signalled in time. */
+        pc_timedwait = (int (*)(void **, void **, const pc_timespec *))fn("libScePosix", "pthread_cond_timedwait");
+        CHECK(pc_timedwait != NULL);
+        if (pc_timedwait) {
+            CHECK(pc_lock(&pc_mutex) == 0);
+            struct timespec pc_start;
+            clock_gettime(CLOCK_MONOTONIC, &pc_start);
+            const pc_timespec pc_past = pc_wall_in_ms(-1000);
+            CHECK(pc_timedwait(&pc_cond, &pc_mutex, &pc_past) == 60);
+            CHECK(pc_unlock(&pc_mutex) == 0 && pc_lock(&pc_mutex) == 0);
+            const pc_timespec pc_epoch = {0, 0}, pc_last_nanosecond = {pc_past.seconds, 999999999};
+            CHECK(pc_timedwait(&pc_cond, &pc_mutex, &pc_epoch) == 60);
+            CHECK(pc_timedwait(&pc_cond, &pc_mutex, &pc_last_nanosecond) == 60);
+            CHECK(elapsed_us(&pc_start) < 1500000); /* a passed time does not wait (generous bound) */
+            clock_gettime(CLOCK_MONOTONIC, &pc_start);
+            const pc_timespec pc_soon = pc_wall_in_ms(50);
+            CHECK(pc_timedwait(&pc_cond, &pc_mutex, &pc_soon) == 60);
+            CHECK(pc_wall_reached(pc_soon) && elapsed_us(&pc_start) >= 40000);
+            const pc_timespec pc_negative_ns = {pc_soon.seconds, -1}, pc_billion_ns = {pc_soon.seconds, 1000000000},
+                              pc_negative_s = {-1, 0};
+            CHECK(pc_timedwait(&pc_cond, &pc_mutex, NULL) == 22);
+            CHECK(pc_timedwait(&pc_cond, &pc_mutex, &pc_negative_ns) == 22);
+            CHECK(pc_timedwait(&pc_cond, &pc_mutex, &pc_billion_ns) == 22);
+            CHECK(pc_timedwait(&pc_cond, &pc_mutex, &pc_negative_s) == 22);
+            pthread_t pc_other;
+            pthread_create(&pc_other, NULL, pc_other_waiter, NULL);
+            pthread_join(pc_other, NULL);
+            CHECK(pc_other_result == 1);
+            CHECK(pc_unlock(&pc_mutex) == 0);
+            pthread_t pc_timed;
+            pthread_create(&pc_timed, NULL, pc_timed_waiter, NULL);
+            for (int i = 0; i < 200; i++) sched_yield();
+            CHECK(pc_lock(&pc_mutex) == 0);
+            pc_timed_go = 1;
+            CHECK(pc_signal(&pc_cond) == 0);
+            CHECK(pc_unlock(&pc_mutex) == 0);
+            pthread_join(pc_timed, NULL);
+            CHECK(pc_timed_result == 0);
+            CHECK(pc_destroy(&pc_cond) == 0); /* no wait left counted */
+        }
     }
     CHECK(is_implemented("libScePosix", "pthread_cond_init") && is_implemented("libScePosix", "pthread_cond_wait") &&
           is_implemented("libScePosix", "pthread_cond_signal") && is_implemented("libScePosix", "pthread_cond_broadcast") &&
-          is_implemented("libScePosix", "pthread_cond_destroy") && !is_implemented("libScePosix", "pthread_cond_timedwait"));
+          is_implemented("libScePosix", "pthread_cond_destroy") && is_implemented("libScePosix", "pthread_cond_timedwait"));
 
     /* scePthreadAttrSetstacksize / Setschedpolicy and pthread_attr_setstacksize, on attributes
        made by scePthreadAttrInit. */
@@ -1801,8 +2057,13 @@ int main(void)
     us_terminate = (f_us_none)fn("libSceUserService", "sceUserServiceTerminate");
     us_initial_user = (f_us_ids)fn("libSceUserService", "sceUserServiceGetInitialUser");
     us_login_list = (f_us_ids)fn("libSceUserService", "sceUserServiceGetLoginUserIdList");
-    if (us_init && us_terminate && us_initial_user && us_login_list) {
+    us_name = (f_us_name)fn("libSceUserService", "sceUserServiceGetUserName");
+    us_event = (f_us_event)fn("libSceUserService", "sceUserServiceGetEvent");
+    CHECK(us_name != NULL && us_event != NULL);
+    if (us_init && us_terminate && us_initial_user && us_login_list && us_name && us_event) {
         CHECK(died_in_fatal(us_terminate_uninitialized));
+        CHECK(died_in_fatal(us_event_uninitialized));
+        CHECK(died_in_fatal(us_name_uninitialized));
         CHECK(died_in_fatal(us_initial_user_uninitialized));
         const uint32_t params[4] = {0x2bc, 0, 0, 0};
         CHECK(us_init(params) == 0);
@@ -1810,9 +2071,76 @@ int main(void)
         int32_t user = -7, list[4] = {-7, -7, -7, -7};
         CHECK(us_initial_user(&user) == 0 && user != -1 && user != 0xff && user != -7);
         CHECK(us_login_list(list) == 0 && list[0] == user && list[1] == -1 && list[2] == -1 && list[3] == -1);
+        us_user = user;
+        char name[17];
+        memset(name, 0x7f, sizeof name);
+        CHECK(us_name(user, name, sizeof name) == 0 && strcmp(name, "Hunter") == 0 && name[7] == 0x7f);
+        char exact[7];
+        CHECK(us_name(user, exact, sizeof exact) == 0 && strcmp(exact, "Hunter") == 0); /* the name and its end */
+        CHECK(died_in_fatal(us_name_other_user));
+        CHECK(died_in_fatal(us_name_short));
+        CHECK(died_in_fatal(us_name_no_buffer));
+        int32_t event[2] = {-7, -7};
+        CHECK(us_event(event) == (int32_t)0x80960007u && event[0] == -7 && event[1] == -7); /* no event, nothing written */
+        CHECK(died_in_fatal(us_event_no_variable));
         CHECK(us_terminate() == 0);
         CHECK(us_init(params) == 0);    /* initialized again after a terminate */
         CHECK(us_terminate() == 0);
+    }
+
+    pad_init = (f_pad_none)fn("libScePad", "scePadInit");
+    pad_open = (f_pad_open)fn("libScePad", "scePadOpen");
+    pad_close = (f_pad_handle)fn("libScePad", "scePadClose");
+    pad_read = (f_pad_block)fn("libScePad", "scePadReadState");
+    pad_info = (f_pad_block)fn("libScePad", "scePadGetControllerInformation");
+    pad_vibrate = (f_pad_vibrate)fn("libScePad", "scePadSetVibration");
+    CHECK(pad_init && pad_open && pad_close && pad_read && pad_info && pad_vibrate);
+    if (pad_init && pad_open && pad_close && pad_read && pad_info && pad_vibrate) {
+        CHECK(died_in_fatal(pad_open_before_init));
+        CHECK(pad_init() == 0);
+        CHECK(died_in_fatal(pad_init_again));
+        CHECK(died_in_fatal(pad_open_other_user));
+        CHECK(died_in_fatal(pad_open_special));
+        CHECK(died_in_fatal(pad_open_index));
+        pad_handle = pad_open(1, 0, 0, NULL);
+        CHECK(pad_handle >= 0);
+        CHECK(pad_open(1, 0, 0, NULL) == (int32_t)0x80920004u); /* already opened */
+        unsigned char state[128];
+        memset(state, 0xee, sizeof state);
+        CHECK(pad_read(pad_handle, state) == 0);
+        uint32_t buttons;
+        float w, ax;
+        memcpy(&buttons, state, 4);
+        memcpy(&w, state + 24, 4);
+        memcpy(&ax, state + 28, 4);
+        CHECK(buttons == 0 && state[4] == 0x80 && state[5] == 0x80 && state[6] == 0x80 && state[7] == 0x80);
+        CHECK(state[8] == 0 && state[9] == 0 && w == 1.0f && ax == 0.0f);
+        CHECK(state[0x4c] == 1 && state[119] == 0 && state[120] == 0xee); /* connected; nothing past 120 bytes */
+        unsigned char info[32];
+        memset(info, 0xee, sizeof info);
+        CHECK(pad_info(pad_handle, info) == 0);
+        uint16_t width, height;
+        int32_t connected, device_class;
+        memcpy(&width, info + 4, 2);
+        memcpy(&height, info + 6, 2);
+        memcpy(&connected, info + 12, 4);
+        memcpy(&device_class, info + 16, 4);
+        CHECK(width == 1920 && height == 942 && info[8] > 0 && info[8] < 0x80 && info[9] == info[8]);
+        CHECK(info[10] == 0 && connected == 1 && device_class == 0 && info[27] == 0 && info[28] == 0xee);
+        CHECK(died_in_fatal(pad_read_bad_handle));
+        CHECK(died_in_fatal(pad_read_no_block));
+        CHECK(died_in_fatal(pad_info_no_block));
+        CHECK(rt_pad_vibration() == 0);
+        const uint8_t speeds[2] = {0xc0, 0x40};
+        CHECK(pad_vibrate(pad_handle, speeds) == 0 && rt_pad_vibration() == 0x40c0);
+        const uint8_t stop[2] = {0, 0};
+        CHECK(pad_vibrate(pad_handle, stop) == 0 && rt_pad_vibration() == 0);
+        CHECK(died_in_fatal(pad_vibrate_missing));
+        CHECK(pad_close(pad_handle) == 0);
+        CHECK(died_in_fatal(pad_read_closed));
+        CHECK(died_in_fatal(pad_vibrate_closed));
+        CHECK(pad_open(1, 0, 0, NULL) == pad_handle); /* opened again after a close */
+        CHECK(pad_close(pad_handle) == 0);
     }
 
     /* libSceCommonDialog: the first initialize succeeds, a repeat answers 0x80b80002 as the
@@ -2090,6 +2418,26 @@ int main(void)
             CHECK(kstat_fn("/app0/data.bin/inside", st) == (int32_t)0x80020014u);
             CHECK(died_in_fatal(kstat_outside));
             CHECK(died_in_fatal(kstat_dotdot));
+            /* POSIX stat: the same answer, 0 or -1 with the thread's errno (__error) set. */
+            pstat_fn = (f_pstat)fn("libScePosix", "stat");
+            const f_errno error_fn = (f_errno)fn("libkernel", "__error");
+            CHECK(pstat_fn && error_fn);
+            if (pstat_fn && error_fn) {
+                int *const err = error_fn();
+                CHECK(err != NULL && err == error_fn()); /* the same int for one thread */
+                pthread_t other;
+                CHECK(pthread_create(&other, NULL, errno_of_thread, (void *)error_fn) == 0 && pthread_join(other, NULL) == 0);
+                CHECK(other_thread_errno && other_thread_errno != err); /* another thread has its own */
+                memset(st, 0xee, sizeof st);
+                *err = 77;
+                CHECK(pstat_fn("/app0/data.bin", st) == 0 && *err == 77); /* success leaves errno alone */
+                memcpy(&mode, st + 8, 2); memcpy(&size, st + 0x48, 8);
+                CHECK((mode & 0170000) == 0100000 && (mode & 0777) == 0444 && size == 10);
+                CHECK(pstat_fn("/app0/missing.bin", st) == -1 && *err == 2);           /* ENOENT */
+                CHECK(pstat_fn("/app0/data.bin/inside", st) == -1 && *err == 20);      /* ENOTDIR */
+                CHECK(died_in_fatal(pstat_outside));
+                CHECK(died_in_fatal(pstat_no_buffer));
+            }
             CHECK(died_in_fatal(kstat_prefix_only));
             /* Open, read, seek, pread, fstat and close the same file, read-only. */
             typedef int32_t (*f_open)(const char *, int32_t, uint32_t);
@@ -2323,6 +2671,23 @@ int main(void)
         CHECK(eq_delete(eq_test_queue) == 0);
     }
 
+    /* The attribute leaf accepts raw DWORDs, supports unaligned caller storage, and
+       clears only its sixteen reserved bytes. The public void API ignores RAX;
+       the recovered native leaf leaves zero-extended pitch there. */
+    attribute = (attribute_wire)fn("libSceVideoOut", "sceVideoOutSetBufferAttribute");
+    CHECK(attribute);
+    if (attribute) {
+        CHECK(died_in_fatal(video_attribute_null));
+        const uint32_t fields[] = {UINT32_MAX, 0x80000001u, 0x12345678u, 0, 1, 0xfedcba98u};
+        unsigned char bytes[48];
+        memset(bytes, 0xa5, sizeof bytes);
+        CHECK(attribute(bytes + 3, fields[0], fields[1], fields[2], fields[3], fields[4], fields[5]) == fields[5]);
+        CHECK(!memcmp(bytes + 3, fields, sizeof fields));
+        for (size_t i = 0; i < 16; ++i) CHECK(bytes[3 + sizeof fields + i] == 0);
+        for (size_t i = 0; i < 3; ++i) CHECK(bytes[i] == 0xa5);
+        for (size_t i = 43; i < sizeof bytes; ++i) CHECK(bytes[i] == 0xa5);
+    }
+
     /* libSceVideoOut: the executable's frame cycle. */
     vo_open_fn = (f_vo_open)fn("libSceVideoOut", "sceVideoOutOpen");
     const f_vo_rate vo_rate = (f_vo_rate)fn("libSceVideoOut", "sceVideoOutSetFlipRate");
@@ -2441,6 +2806,19 @@ int main(void)
             CHECK(eq_wait_fn(flips, ev, 1, &n, NULL) == 0 && n == 1 && (memcpy(&data, ev + 16, 8), data == 79));
             CHECK(vo_status_fn(vo_handle, st) == 0 && (memcpy(&arg, st + 0x18, 8), arg == 79));
             CHECK(died_in_fatal(gnm_submit_unknown));
+            /* the constant arrays present with empty entries, as 0x0149bf3a passes them: no constant buffer */
+            void *no_constants[1] = {NULL};
+            uint32_t no_constant_bytes[1] = {0};
+            CHECK(gnm_submit_fn(1, buffers, bytes, no_constants, no_constant_bytes) == 0);
+            CHECK(died_in_fatal(gnm_submit_with_constant));
+            /* DMA_DATA from memory into CP_DMA_READ_TAGS, as the title sends it: only a cache read */
+            static uint32_t dma_source[25] = {1, 2, 3};
+            const uint64_t dma_from = (uint64_t)(uintptr_t)dma_source;
+            uint32_t dma[7] = {0xc0055000u, 0x60000000u, (uint32_t)dma_from, (uint32_t)(dma_from >> 32), 0x3022cu, 0, 0x28200064u};
+            CHECK(gnm_submit_one_result(dma, 7) == 0 && dma_source[0] == 1 && dma_source[2] == 3);
+            CHECK(died_in_fatal(gnm_submit_dma_fill));
+            CHECK(died_in_fatal(gnm_submit_dma_other_register));
+            CHECK(died_in_fatal(gnm_submit_constant_without_sizes));
             CHECK(died_in_fatal(gnm_submit_unmet_wait));
         }
         CHECK(died_in_fatal(vo_flip_bad_buffer));
@@ -2454,6 +2832,118 @@ int main(void)
             CHECK(rmdir(capture) == 0);
         }
         rt_display_configure(RT_DISPLAY_NONE, NULL);
+    }
+
+    rtc_now = (f_rtc_now)fn("libSceRtc", "sceRtcGetCurrentClockLocalTime");
+    rtc_tick = (f_rtc_tick)fn("libSceRtc", "sceRtcGetTick");
+    const f_rtc_resolution rtc_resolution = (f_rtc_resolution)fn("libSceRtc", "sceRtcGetTickResolution");
+    rtc_set = (f_rtc_set)fn("libSceRtc", "sceRtcSetTick");
+    rtc_weekday = (f_rtc_weekday)fn("libSceRtc", "sceRtcGetDayOfWeek");
+    CHECK(rtc_now && rtc_tick && rtc_resolution && rtc_set && rtc_weekday);
+    if (rtc_now && rtc_tick && rtc_resolution && rtc_set && rtc_weekday) {
+        /* 0 Sunday to 6 Saturday, against dates whose weekday is known */
+        CHECK(rtc_weekday(1, 1, 1) == 1);       /* Monday, the proleptic Gregorian calendar's first day */
+        CHECK(rtc_weekday(1970, 1, 1) == 4);    /* Thursday */
+        CHECK(rtc_weekday(2000, 2, 29) == 2);   /* Tuesday */
+        CHECK(rtc_weekday(2015, 3, 24) == 2);   /* Tuesday */
+        CHECK(rtc_weekday(2026, 11, 6) == 5);   /* Friday */
+        CHECK(rtc_weekday(2026, 11, 8) == 0);   /* Sunday */
+        CHECK(rtc_weekday(9999, 12, 31) == 5);  /* Friday */
+        for (int d = 1; d <= 31; d++) {         /* against the host's calendar, a whole month */
+            struct tm day = {.tm_year = 2024 - 1900, .tm_mon = 0, .tm_mday = d, .tm_hour = 12};
+            timegm(&day);
+            CHECK(rtc_weekday(2024, 1, d) == day.tm_wday);
+        }
+        CHECK(died_in_fatal(rtc_weekday_february_29_2023));
+        CHECK(died_in_fatal(rtc_weekday_month_13));
+        CHECK(rtc_resolution() == 1000000);
+        uint64_t tick = 7;
+        const rtc_time year_one = {1, 1, 1, 0, 0, 0, 0};
+        CHECK(rtc_tick(&year_one, &tick) == 0 && tick == 0);
+        const rtc_time unix_epoch = {1970, 1, 1, 0, 0, 0, 0};
+        CHECK(rtc_tick(&unix_epoch, &tick) == 0 && tick == 62135596800000000ull); /* 719162 days */
+        const rtc_time leap_day = {2024, 2, 29, 23, 59, 59, 999999};
+        CHECK(rtc_tick(&leap_day, &tick) == 0 && tick == (62135596800ull + 1709251199ull) * 1000000ull + 999999ull);
+        const rtc_time y2000_leap = {2000, 2, 29, 12, 0, 0, 0};
+        CHECK(rtc_tick(&y2000_leap, &tick) == 0 && tick == (62135596800ull + 951825600ull) * 1000000ull);
+        /* the local time, compared with the host's own */
+        rtc_time now;
+        memset(&now, 0xee, sizeof now);
+        const time_t before = time(NULL);
+        CHECK(rtc_now(&now) == 0);
+        struct tm local;
+        localtime_r(&before, &local);
+        CHECK(now.year == local.tm_year + 1900 && now.month >= 1 && now.month <= 12 && now.day >= 1 && now.day <= 31);
+        CHECK(now.hour <= 23 && now.minute <= 59 && now.second <= 59 && now.microsecond < 1000000);
+        CHECK(rtc_tick(&now, &tick) == 0);
+        /* sceRtcSetTick reverses sceRtcGetTick, for dates across leap years and centuries */
+        const rtc_time samples[] = {
+            {1, 1, 1, 0, 0, 0, 0}, {1600, 12, 31, 23, 59, 59, 999999}, {1601, 1, 1, 0, 0, 0, 0},
+            {1900, 2, 28, 12, 0, 0, 5}, {1900, 3, 1, 0, 0, 0, 0}, {2000, 2, 29, 1, 2, 3, 4},
+            {2024, 12, 31, 23, 59, 59, 1}, {9999, 12, 31, 23, 59, 59, 999999}, now,
+        };
+        for (size_t s = 0; s < sizeof samples / sizeof *samples; s++) {
+            uint64_t k = 0;
+            rtc_time back;
+            memset(&back, 0xee, sizeof back);
+            CHECK(rtc_tick(&samples[s], &k) == 0 && rtc_set(&back, &k) == 0 && memcmp(&back, &samples[s], sizeof back) == 0);
+        }
+        const uint64_t epoch_tick = 62135596800000000ull;
+        rtc_time epoch;
+        CHECK(rtc_set(&epoch, &epoch_tick) == 0 && epoch.year == 1970 && epoch.month == 1 && epoch.day == 1 && epoch.hour == 0);
+        CHECK(died_in_fatal(rtc_set_year_10000));
+        CHECK(died_in_fatal(rtc_set_no_tick));
+        CHECK(died_in_fatal(rtc_now_nothing));
+        CHECK(died_in_fatal(rtc_tick_february_30));
+        CHECK(died_in_fatal(rtc_tick_leap_2100));
+        CHECK(died_in_fatal(rtc_tick_microsecond));
+        CHECK(died_in_fatal(rtc_tick_no_variable));
+    }
+
+    pg_init = (f_pg_init)fn("libScePlayGo", "scePlayGoInitialize");
+    pg_open = (f_pg_open)fn("libScePlayGo", "scePlayGoOpen");
+    pg_chunks = (f_pg_chunks)fn("libScePlayGo", "scePlayGoGetChunkId");
+    pg_locus = (f_pg_locus)fn("libScePlayGo", "scePlayGoGetLocus");
+    CHECK(pg_init && pg_open && pg_chunks && pg_locus);
+    if (pg_init && pg_open && pg_chunks && pg_locus) {
+        CHECK(died_in_fatal(pg_open_first)); /* before scePlayGoInitialize */
+        static unsigned char work[0x200000];
+        const struct { void *buffer; uint32_t size, reserved; } params = {work, sizeof work, 0};
+        CHECK(pg_init(&params) == 0);
+        CHECK(died_in_fatal(pg_init_nothing));
+        CHECK(pg_open(&pg_handle, NULL) == 0 && pg_handle == 1);
+        CHECK(died_in_fatal(pg_open_with_params));
+        static char app0[512];
+        const char *tmp = getenv("TMPDIR");
+        snprintf(app0, sizeof app0, "%s/pb-playgo-XXXXXX", tmp ? tmp : "/tmp");
+        CHECK(mkdtemp(app0) != NULL);
+        rt_process.app0_dir = app0;
+        CHECK(died_in_fatal(pg_chunks_no_manifest)); /* no sce_sys/playgo-manifest.xml yet */
+        char path[600];
+        snprintf(path, sizeof path, "%s/sce_sys", app0);
+        CHECK(mkdir(path, 0755) == 0);
+        snprintf(path, sizeof path, "%s/sce_sys/playgo-manifest.xml", app0);
+        FILE *manifest = fopen(path, "w");
+        if (manifest) {
+            fputs("<psproject fmt=\"playgo-manifest\"><volume><chunk_info chunk_count=\"3\" scenario_count=\"1\"/></volume></psproject>",
+                  manifest);
+            fclose(manifest);
+        }
+        uint16_t ids[100];
+        uint32_t count = 0;
+        memset(ids, 0xee, sizeof ids);
+        CHECK(pg_chunks(pg_handle, ids, 100, &count) == 0 && count == 3 && ids[0] == 0 && ids[1] == 1 && ids[2] == 2 &&
+              ids[3] == 0xeeee);
+        int8_t loci[3] = {0, 0, 0};
+        CHECK(pg_locus(pg_handle, ids, 3, loci) == 0 && loci[0] == 3 && loci[1] == 3 && loci[2] == 3);
+        CHECK(died_in_fatal(pg_chunks_short));
+        CHECK(died_in_fatal(pg_chunks_bad_handle));
+        CHECK(died_in_fatal(pg_locus_unknown));
+        remove(path);
+        snprintf(path, sizeof path, "%s/sce_sys", app0);
+        rmdir(path);
+        rmdir(app0);
+        rt_process.app0_dir = NULL;
     }
 
     if (!failures) puts("syslib: ok");

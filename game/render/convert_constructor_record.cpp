@@ -3,7 +3,6 @@
 // Input/output overlap can change later reads; no source snapshot is taken.
 #include "constructor_descriptor_conversion.h"
 
-
 namespace {
 constexpr uint32_t initial_word0c = 0x04000000;
 constexpr uint8_t word04_byte_keep = 0xc0;
@@ -13,7 +12,7 @@ constexpr uint32_t word08_keep_outer = 0xf0003fff;
 constexpr uint32_t word08_middle_mask = 0x0fffc000;
 constexpr uint32_t word08_middle_shift = 14;
 constexpr uint32_t high_nibble_keep = 0x0fffffff;
-constexpr uint32_t word0c_type_initial = 0x90000000;
+
 constexpr uint32_t word10_keep_outer = 0xf8001fff;
 constexpr uint32_t word10_high_mask = 0x07ff0000;
 constexpr uint32_t word10_high_shift = 16;
@@ -88,7 +87,7 @@ extern "C" void bb_render_convert_constructor_record(
     const uint32_t adjusted_high08 = ((high08 << word08_middle_shift) + word08_middle_mask) &
                                       word08_middle_mask;
     output->words_08_0c.low.set(previous08_outer | adjusted_high08);
-    replace_high_nibble(output->words_08_0c.high, word0c_type_initial);
+    replace_high_nibble(output->words_08_0c.high, word0c_type_first_empty);
 
     const uint32_t high10 = constructor_conversion_calls::source_for_word10_high(source);
     const uint32_t previous10_outer = output->words_10_14.low.get() & word10_keep_outer;
@@ -109,19 +108,19 @@ extern "C" void bb_render_convert_constructor_record(
     // receive the same local storage, not four copied mapping words.
     const uint32_t previous0c_high = output->words_08_0c.high.get() & word0c_keep_high20;
     const auto *mapping_address = reinterpret_cast<const uint32_t *>(mapping_word.bytes);
-    const uint32_t first_component = constructor_conversion_calls::read_record_descriptor_component(
+    const uint32_t first_component = read_record_descriptor_component(
         mapping_address, 0);
     const uint32_t first_group = previous0c_high | (first_component & component_mask);
-    const uint32_t second_component = constructor_conversion_calls::read_record_descriptor_component(
+    const uint32_t second_component = read_record_descriptor_component(
         mapping_address, 1);
     const uint32_t second_group = first_group |
                                   ((second_component << second_component_shift) &
                                    (component_mask << second_component_shift));
-    const uint32_t third_component = constructor_conversion_calls::read_record_descriptor_component(
+    const uint32_t third_component = read_record_descriptor_component(
         mapping_address, 2);
     const uint32_t third_group = second_group |
                                  ((third_component & component_mask) << third_component_shift);
-    const uint32_t fourth_component = constructor_conversion_calls::read_record_descriptor_component(
+    const uint32_t fourth_component = read_record_descriptor_component(
         mapping_address, 3);
     output->words_08_0c.high.set(third_group |
         ((fourth_component & component_mask) << fourth_component_shift));
@@ -163,7 +162,7 @@ extern "C" void bb_render_convert_constructor_record(
         } else {
             const uint32_t current14 = output->words_10_14.high.get();
             const uint32_t first_field = current14 & low13_mask;
-            // Keep the first field value across the independent read of the image dimension.
+            // A populated middle field still prevents the empty type when the low field is zero.
             const uint32_t word08_middle = output->words_08_0c.low.get() & word08_middle_mask;
             if (word08_middle != 0) {
                 high_nibble = word0c_type_first_present;
@@ -178,13 +177,12 @@ extern "C" void bb_render_convert_constructor_record(
         replace_high_nibble(output->words_08_0c.high, high_nibble);
     }
 
-    // Native calls this again after the preceding publications, even if the
-    // earlier call was skipped. The two-bit parameter and its nibble use are fresh.
+    // Fetch the selector after descriptor updates, including when type selection
+    // did not need it. Overlapping output can change this later value.
     const uint32_t final_parameter = constructor_conversion_calls::source_type_selector(source);
     if (final_parameter != 0) {
         const uint32_t previous = output->words_08_0c.high.get() & word0c_keep_without_nibble;
         output->words_08_0c.high.set(previous |
             ((final_parameter & final_nibble_mask) << final_nibble_shift));
     }
-
 }
