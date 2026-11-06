@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* System call group: files and saves. The title's files (libkernel): finding, opening and reading
-   them.
+/* System call group: files and saves. The title's files (libkernel): finding, opening, reading and
+   writing them.
 
    The title reads its own data under /app0, the console's read-only mount of its package. The
    runtime serves /app0 from the person's own copy (rt_process.app0_dir, --app0 from tools/boot.py)
@@ -331,6 +331,63 @@ static int64_t kernel_pread(int32_t fd, void *buffer, uint64_t size, int64_t off
     return read_result(fn, pread(h, buffer, size, offset));
 }
 
+/* Writes. sceKernelWrite(fd, buf, n) and sceKernelPwrite(fd, buf, n, offset): FreeBSD's write(2)
+   and pwrite(2) under their SCE names (shapes from the same libkernel.h), returning the byte count
+   or 0x80020000 plus the error number. FreeBSD answers EBADF for a descriptor that is not open for
+   writing: here one the runtime did not hand out, and one opened read-only (every /app0 file, and a
+   /data file opened with O_RDONLY). A negative pwrite offset is EINVAL, as for pread. A pwrite
+   leaves the file position where it was.
+
+   The checks come in FreeBSD's order (stable/9 sys_generic.c): the size, then the descriptor, then
+   the offset. What stops by name: more than INT_MAX bytes (FreeBSD answers EINVAL above
+   IOSIZE_MAX, which is INT_MAX while the debug.iosize_max_clamp sysctl is set, its default, and
+   SSIZE_MAX otherwise; the PS4's setting is not known); no buffer for a non-zero count, as for
+   read; a pwrite on a descriptor opened with O_APPEND (POSIX writes at the offset, while FreeBSD,
+   per the BUGS section of its write(2), and Linux append); and any host write error. */
+enum { MAX_WRITE = INT32_MAX };
+
+/* The host descriptor behind a guest one that is open for writing, or -1 (EBADF). Its host status
+   flags go to *flags. */
+static int writable_host_of(const char *caller, int32_t fd, int *flags)
+{
+    const int h = host_of(fd);
+    if (h < 0) return -1;
+    *flags = fcntl(h, F_GETFL);
+    if (*flags < 0) rt_fatal(caller, "a host error without an established answer");
+    return (*flags & O_ACCMODE) == O_RDONLY ? -1 : h;
+}
+
+/* A write's result: the byte count. Host write errors on a plain file are not established. */
+static int64_t write_result(const char *caller, ssize_t n)
+{
+    if (n < 0) rt_fatal(caller, "a host write error without an established answer");
+    return n;
+}
+
+static int64_t kernel_write(int32_t fd, const void *buffer, uint64_t size)
+{
+    static const char fn[] = "sceKernelWrite";
+    if (size > MAX_WRITE) rt_fatal(fn, "more than INT_MAX bytes: the PS4's answer is not established");
+    int flags;
+    const int h = writable_host_of(fn, fd, &flags);
+    if (h < 0) return SCE_KERNEL_ERROR(BSD_EBADF);
+    if (!buffer && size) rt_fatal(fn, "no buffer: the error value is not established");
+    return write_result(fn, write(h, buffer, size));
+}
+
+static int64_t kernel_pwrite(int32_t fd, const void *buffer, uint64_t size, int64_t offset)
+{
+    static const char fn[] = "sceKernelPwrite";
+    if (size > MAX_WRITE) rt_fatal(fn, "more than INT_MAX bytes: the PS4's answer is not established");
+    int flags;
+    const int h = writable_host_of(fn, fd, &flags);
+    if (h < 0) return SCE_KERNEL_ERROR(BSD_EBADF);
+    if (offset < 0) return SCE_KERNEL_ERROR(BSD_EINVAL);
+    if (!buffer && size) rt_fatal(fn, "no buffer: the error value is not established");
+    if (flags & O_APPEND) rt_fatal(fn, "an O_APPEND descriptor: POSIX writes at the offset, FreeBSD and Linux append");
+    return write_result(fn, pwrite(h, buffer, size, offset));
+}
+
 static int64_t kernel_lseek(int32_t fd, int64_t offset, int32_t whence)
 {
     const int h = host_of(fd);
@@ -365,5 +422,7 @@ RT_SYSLIB("libkernel", sceKernelOpen, kernel_open);
 RT_SYSLIB("libkernel", sceKernelClose, kernel_close);
 RT_SYSLIB("libkernel", sceKernelRead, kernel_read);
 RT_SYSLIB("libkernel", sceKernelPread, kernel_pread);
+RT_SYSLIB("libkernel", sceKernelWrite, kernel_write);
+RT_SYSLIB("libkernel", sceKernelPwrite, kernel_pwrite);
 RT_SYSLIB("libkernel", sceKernelLseek, kernel_lseek);
 RT_SYSLIB("libkernel", sceKernelFstat, kernel_fstat);
