@@ -50,6 +50,7 @@ address,replacement,system,returns
 0x014717a0,bb_render_record_encoding_components,render,i8
 0x014719a0,bb_render_record_encoding_category,render,i8
 0x014721d0,bb_render_set_present_last_record_indices,render,i64
+0x01472870,bb_render_emit_present_context_section,render,i64
 0x01473590,bb_render_emit_present_preparation_scalar,render,i64
 0x014735f0,bb_render_emit_present_preparation_byte,render,i64
 0x01473650,bb_render_set_screen_offset,render,void
