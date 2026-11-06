@@ -131,7 +131,7 @@ extern "C" uint32_t bb_render_prepare_swap_chain_resource_info(
             uint32_t current_count = parameters->entries_per_level.get();
             const uint32_t step = levels + 1;
             uint32_t outer = 0;
-            for (;;) {
+            do {
                 uint32_t flattened = outer;
                 uint32_t inner = 0;
                 if (current_count != 0) {
@@ -145,9 +145,7 @@ extern "C" uint32_t bb_render_prepare_swap_chain_resource_info(
                     } while (inner < current_count);
                 }
                 ++outer;
-                const bool repeat = outer != level_count;
-                if (!repeat) break;
-            }
+            } while (outer < level_count);
         }
         resource_info_calls::finish_processing_first(processor);
         resource_info_calls::finish_processing_second(processor);

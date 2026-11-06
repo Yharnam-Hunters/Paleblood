@@ -82,7 +82,7 @@ set_tests_properties(capture_poc_replay PROPERTIES
 file(GLOB PB_TEST_SYSLIB CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/runtime/syslib/*.c)
 # The syslib tests use the display's headless mode only, so they build without its window.
 add_executable(test_syslib test/test_syslib.c runtime/process.c ${PB_TEST_SYSLIB}
-               runtime/display/display.c runtime/display/display_window_none.c)
+               runtime/display/display.c runtime/display/display_window_none.c runtime/renderer/renderer_none.c)
 target_include_directories(test_syslib PRIVATE runtime/include)
 add_test(NAME syslib COMMAND test_syslib)
 # The renderer's GCN shader decoder (docs/RENDERER.md), its test, and pbgcn for the shader census.
@@ -117,6 +117,19 @@ if(PB_TEST_VULKAN_FOUND)
     target_link_libraries(test_gcn_compute PRIVATE pbgcn_spirv PkgConfig::PB_TEST_VULKAN m)
     add_test(NAME gcn_compute COMMAND test_gcn_compute)
     set_tests_properties(gcn_compute PROPERTIES SKIP_RETURN_CODE 77)
+    # The draw executor (docs/RENDERER.md, phase 3) runs recorded calls on a Vulkan GPU.
+    add_library(pbrender_executor STATIC runtime/renderer/render_executor.c)
+    target_include_directories(pbrender_executor PUBLIC runtime/include)
+    target_link_libraries(pbrender_executor PUBLIC pbrender_calls pbgcn_spirv PkgConfig::PB_TEST_VULKAN)
+    add_executable(test_render_executor test/test_render_executor.c)
+    target_link_libraries(test_render_executor PRIVATE pbrender_executor m)
+    add_test(NAME render_executor COMMAND test_render_executor)
+    set_tests_properties(render_executor PROPERTIES SKIP_RETURN_CODE 77)
+    add_executable(test_renderer test/test_renderer.c runtime/renderer/renderer.c)
+    target_include_directories(test_renderer PRIVATE runtime/include)
+    target_link_libraries(test_renderer PRIVATE pbrender_executor m)
+    add_test(NAME renderer COMMAND test_renderer)
+    set_tests_properties(renderer PROPERTIES SKIP_RETURN_CODE 77)
     add_executable(test_gcn_draw test/test_gcn_draw.c)
     target_link_libraries(test_gcn_draw PRIVATE pbgcn_spirv PkgConfig::PB_TEST_VULKAN m)
     add_test(NAME gcn_draw COMMAND test_gcn_draw)
@@ -144,3 +157,16 @@ add_executable(test_direct_memory_bounds test/test_direct_memory_bounds.c
 target_include_directories(test_direct_memory_bounds PRIVATE runtime/include)
 add_test(NAME direct_memory_bounds COMMAND test_direct_memory_bounds)
 set_tests_properties(direct_memory_bounds PROPERTIES TIMEOUT 20)
+# Owned per-thread module blocks and the actual TLS registry entry.
+find_package(Threads REQUIRED)
+add_executable(test_module_tls test/test_module_tls.c runtime/syslib/kernel_tls.c
+               runtime/syslib/table.c)
+target_include_directories(test_module_tls PRIVATE runtime/include)
+target_link_libraries(test_module_tls PRIVATE Threads::Threads)
+add_test(NAME module_tls COMMAND test_module_tls)
+set_tests_properties(module_tls PROPERTIES TIMEOUT 10)
+
+add_test(NAME module_tls_boot
+         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_module_tls_boot.py -v)
+set_tests_properties(module_tls_boot PROPERTIES TIMEOUT 30
+    ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>")

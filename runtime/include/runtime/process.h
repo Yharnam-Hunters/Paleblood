@@ -69,6 +69,8 @@ extern rt_process_info rt_process;
 /* A new thread-local storage block from the executable's template, returning its thread pointer
    (whose first word points to itself); NULL when the host has no memory for it. */
 void *rt_tls_block_create(void);
+/* Rounded template size below the thread pointer; UINT64_MAX if allocation would overflow. */
+uint64_t rt_tls_block_size(void);
 
 /* Registers the calling host thread as the guest's main thread, running on the given stack. */
 void rt_thread_register_main(void *stack, uint64_t stack_size);
@@ -90,7 +92,12 @@ void rt_thread_keys_exit(void *stack_top);
 
 /* Stops the process with a message naming the system function: behaviour the runtime does not
    know is never guessed. */
-_Noreturn void rt_fatal(const char *function, const char *message);
+#ifdef __cplusplus
+[[noreturn]]
+#else
+_Noreturn
+#endif
+void rt_fatal(const char *function, const char *message);
 
 /* Called by rt_fatal before the process stops, when set: the boot harness records the stop as the
    run's outcome and never returns. If it does return, the process stops as usual. */

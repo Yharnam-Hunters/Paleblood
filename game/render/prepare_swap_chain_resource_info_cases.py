@@ -125,6 +125,32 @@ def cases():
             c["stubs"] = c["stubs"][:1]
         yield c
 
+    # Distinct objects expose allocator selection, forwarding and release identity.
+    for choose_first in (False, True):
+        for failure in (False, True):
+            c = initial_data_case("copy_failure", 1, 0) if failure else next(
+                entry for entry in initial_cases() if entry["id"] == "publish"
+            )
+            c["id"] = f"distinct_owners_first{int(choose_first)}_copy_failure{int(failure)}"
+            c["buffers"].update({"owner_a": {"size": 16}, "owner_b": {"size": 16}})
+            c["args"].update({"r8": "buf:owner_a", "r9": "buf:owner_b"})
+            c["memory"].extend([
+                {"addr": "buf:owner_a", "pointer": "vtable"},
+                {"addr": "buf:owner_b", "pointer": "vtable"},
+                {"addr": "buf:parameters+40", "bytes": word(0x4000 if choose_first else 0)},
+            ])
+            yield c
+
+    # Allocation padding or an explicit capacity must not enlarge the span copy.
+    for padded in (False, True):
+        c = initial_data_case("span", 1, 0)
+        c["id"] = "span_required_bytes_with_padding" if padded else "span_required_bytes_with_capacity"
+        if padded:
+            c["memory"].append({"addr": "buf:parameters+32", "bytes": word(0x80)})
+        else:
+            c["memory"].append({"addr": "buf:options", "bytes": "01010100" + word(96) + word(8)})
+        yield c
+
     yield from additional_cases()
 
 
