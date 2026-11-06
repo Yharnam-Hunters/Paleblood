@@ -75,8 +75,11 @@ the applicable cases in `test/test_syslib.c`. Unknown target behavior must stay 
 loudly; do not choose guessed return values just to advance `tools/boot.py`.
 
 Runtime code is clean-room: use public API documentation, independent reverse engineering, and
-observed behavior as facts. Do not copy, adapt, or model implementation code from another PS4
-runtime or emulator. Keep one call or a
+observed behavior as facts. Independent reverse engineering includes the system libraries of your
+own console's firmware (for example libkernel or libSceVideoOut): name each one by its SHA-256 in
+the runtime report, take facts from it (shapes, checks, values, order), and write your own code.
+Never copy its code, and never attach or link the files. Do not copy, adapt, or model
+implementation code from another PS4 runtime or emulator. Keep one call or a
 tightly related group in each PR. Runtime-only PRs need no proprietary game dump, captures, or
 function-level `verify.py` results. CI compiles with GCC and Clang, runs the RT_SYSLIB test and
 the rest of CTest, and retains the repository's policy checks. It also builds and tests your PR
