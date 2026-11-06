@@ -207,6 +207,10 @@ static void lock_normal_twice(f1 relock)
 static void lock_normal_twice_sce(void) { lock_normal_twice(owner_lock); }
 static void lock_normal_twice_posix(void) { lock_normal_twice(owner_posix_lock); }
 
+typedef uint64_t (*attribute_wire)(void *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+static attribute_wire attribute;
+static void video_attribute_null(void) { attribute(NULL, 0, 0, 0, 0, 0, 0); }
+
 static int died_in_fatal(void (*call)(void))
 {
     const pid_t child = fork();
@@ -2321,6 +2325,23 @@ int main(void)
         CHECK(died_in_fatal(eq_wait_timeout));
         CHECK(died_in_fatal(eq_wait_no_count));
         CHECK(eq_delete(eq_test_queue) == 0);
+    }
+
+    /* The attribute leaf accepts raw DWORDs, supports unaligned caller storage, and
+       clears only its sixteen reserved bytes. The public void API ignores RAX;
+       the recovered native leaf leaves zero-extended pitch there. */
+    attribute = (attribute_wire)fn("libSceVideoOut", "sceVideoOutSetBufferAttribute");
+    CHECK(attribute);
+    if (attribute) {
+        CHECK(died_in_fatal(video_attribute_null));
+        const uint32_t fields[] = {UINT32_MAX, 0x80000001u, 0x12345678u, 0, 1, 0xfedcba98u};
+        unsigned char bytes[48];
+        memset(bytes, 0xa5, sizeof bytes);
+        CHECK(attribute(bytes + 3, fields[0], fields[1], fields[2], fields[3], fields[4], fields[5]) == fields[5]);
+        CHECK(!memcmp(bytes + 3, fields, sizeof fields));
+        for (size_t i = 0; i < 16; ++i) CHECK(bytes[3 + sizeof fields + i] == 0);
+        for (size_t i = 0; i < 3; ++i) CHECK(bytes[i] == 0xa5);
+        for (size_t i = 43; i < sizeof bytes; ++i) CHECK(bytes[i] == 0xa5);
     }
 
     /* libSceVideoOut: the executable's frame cycle. */

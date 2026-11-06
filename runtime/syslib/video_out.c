@@ -36,13 +36,6 @@ enum { VBLANKS_PER_SECOND = 60 };
 enum { FLIP_RATE_60HZ = 0, FLIP_RATE_30HZ = 1, FLIP_RATE_20HZ = 2 };
 
 typedef struct {
-    int32_t format, tiling, aspect;
-    uint32_t width, height, pitch;
-    uint64_t reserved[2];
-} buffer_attribute;
-_Static_assert(sizeof(buffer_attribute) == 40, "OrbisVideoOutBufferAttribute is 40 bytes");
-
-typedef struct {
     uint64_t count, process_time, system_time;
     int64_t flip_argument;
     uint64_t reserved[2];
@@ -56,7 +49,7 @@ typedef struct {
     int32_t flip_rate;
     void *buffers[MAX_BUFFERS];
     int buffer_count;
-    buffer_attribute attribute;
+    rt_video_out_buffer_attribute attribute;
     rt_equeue *queues[MAX_FLIP_QUEUES];
     int queue_count;
     flip_status status;
@@ -116,16 +109,22 @@ static int32_t add_flip_event(rt_equeue *queue, int32_t handle, void *udata)
     return 0;
 }
 
-/* Fills the attribute; the SDK declares it with no result. */
-static void set_buffer_attribute(buffer_attribute *a, uint32_t format, uint32_t tiling, uint32_t aspect,
-                                 uint32_t width, uint32_t height, uint32_t pitch)
+/* The public API has no result. The libSceVideoOut implementation also leaves
+   zero-extended pitch in RAX. Values are copied without format validation. */
+static uint64_t set_buffer_attribute(void *output, uint32_t format, uint32_t tiling, uint32_t aspect,
+                                     uint32_t width, uint32_t height, uint32_t pitch)
 {
-    if (!a) rt_fatal("sceVideoOutSetBufferAttribute", "no attribute to fill");
-    *a = (buffer_attribute){(int32_t)format, (int32_t)tiling, (int32_t)aspect, width, height, pitch, {0, 0}};
+    if (!output) rt_fatal("sceVideoOutSetBufferAttribute", "no attribute to fill: the error value is not established");
+    const uint32_t captured_pitch = pitch;
+    rt_video_out_buffer_attribute *attribute = output;
+    memset(attribute->reserved, 0, sizeof attribute->reserved);
+    const uint32_t fields[] = {format, tiling, aspect, width, height, captured_pitch};
+    memcpy(attribute, fields, sizeof fields);
+    return captured_pitch;
 }
 
 static int32_t register_buffers(int32_t handle, int32_t start, void *const *addresses, int32_t count,
-                                const buffer_attribute *attribute)
+                                const rt_video_out_buffer_attribute *attribute)
 {
     static const char fn[] = "sceVideoOutRegisterBuffers";
     if (!addresses || !attribute || count < 1) rt_fatal(fn, "no buffers or attribute: the error value is not established");
@@ -140,7 +139,10 @@ static int32_t register_buffers(int32_t handle, int32_t start, void *const *addr
     p->buffer_count = count;
     p->attribute = *attribute;
     pthread_mutex_unlock(&ports_lock);
-    rt_display_attach(handle, attribute->width, attribute->height, count); /* host frames for the renderer */
+    uint32_t width, height;
+    memcpy(&width, attribute->width, sizeof width);
+    memcpy(&height, attribute->height, sizeof height);
+    rt_display_attach(handle, width, height, count); /* host frames for the renderer */
     return 0; /* the set's index: this is the first */
 }
 
