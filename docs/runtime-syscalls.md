@@ -1319,12 +1319,15 @@ holds an address.
 
 **What the executable does.** Its helpers (`0x02abad98`, `0x02abadf8`) pass no start or end. They
 test the protection's CPU read bit (1) and GPU read bit (`0x10`), on memory the game mapped itself.
+Another (`0x02d031df`, reached once the movie player runs) passes a start and an end and reads only
+the protection.
 
 **What the runtime does.** It records every direct and flexible mapping with the protection the
-guest asked for, GPU bits included, and answers that.
+guest asked for, GPU bits included, and answers that. A start gets the mapping's start, and an end
+the address one past its last byte (exclusive), as shadPS4's `MemoryManager::QueryProtection` and
+PS4Recomp's `ps4_direct_mem.c` both answer.
 
 **What stops by name:**
-- a start or end (whether end is inclusive is not established);
 - an address outside those mappings (other memory is not tracked yet);
 - a missing variable.
 
