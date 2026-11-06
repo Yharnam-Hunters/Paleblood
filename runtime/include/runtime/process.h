@@ -34,6 +34,12 @@ typedef struct {
 
 #define RT_MAX_APP_PARAMS 16
 
+/* An add-on (DLC) the person running the runtime owns, by its 16-character entitlement label
+   (tools/boot.py --addcont LABEL; runtime/boot.c --addcont). sceAppContentGetAddcontInfoList
+   lists these as installed (runtime/syslib/app_content.c). */
+#define RT_MAX_ADDCONTS 16
+#define RT_ADDCONT_LABEL_BYTES 17
+
 /* A console system setting (the language, ...), as the person running the runtime chooses it
    (tools/boot.py passes each to runtime/boot.c as --system-param ID=VALUE).
    sceSystemServiceParamGetInt answers from these (runtime/syslib/system_service.c). */
@@ -56,6 +62,8 @@ typedef struct {
     int app_boot_param_unread; /* --app-param boot=unread: the title never reads the boot parameter */
     rt_system_param system_params[RT_MAX_SYSTEM_PARAMS];
     uint32_t system_param_count;
+    char addconts[RT_MAX_ADDCONTS][RT_ADDCONT_LABEL_BYTES];
+    uint32_t addcont_count;
     const char *app0_dir;    /* --app0: the host directory that holds the title's /app0 (read-only) */
     const char *data_dir;    /* --data: the host directory the runtime serves as the writable /data */
     /* The executable's thread-local storage template (its PT_TLS segment): every guest thread's

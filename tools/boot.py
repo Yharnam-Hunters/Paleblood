@@ -289,6 +289,8 @@ def main() -> int:
     ap.add_argument('--app0', default=None, help="your own copy's application directory (served read-only as /app0)")
     ap.add_argument('--system-param', action='append', default=[], metavar='ID=VALUE',
                     help='a console system setting, e.g. 1=18 for English (United Kingdom)')
+    ap.add_argument('--addcont', action='append', default=[], metavar='LABEL',
+                    help="an add-on you own, by its entitlement label (e.g. the game's expansion); default: none")
     ap.add_argument('--no-record', action='store_true', help='run and print only')
     ap.add_argument('--display', choices=('none', 'headless', 'window'), default='none',
                     help='show the frames: none (default), headless, or a window (needs Vulkan and SDL3)')
@@ -312,6 +314,8 @@ def main() -> int:
         stubs = stub_module_args(ROOT)
         stubs += app_param_args(ROOT, a.param_sfo or default_param_sfo())
         stubs += system_param_args(a.system_param)
+        for label in a.addcont:
+            stubs += ['--addcont', label]
         stubs += ['--app0', a.app0 or default_app0()]
         hooks = module_hook_args(ROOT)
     except (ValueError, OSError) as e:
