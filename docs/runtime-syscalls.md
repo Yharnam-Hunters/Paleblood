@@ -982,6 +982,15 @@ runtime serves `/app0` from your own copy and never writes to it:
 **Errors.** A missing file answers `ENOENT`, and a missing directory component `ENOTDIR` (the same
 numbers on FreeBSD and Linux). Any other host error stops by name.
 
+**POSIX `stat` and `errno`.** `eboot` also imports POSIX `stat` from `libScePosix`. The runtime
+gives it the same lookup and answer, the POSIX way: 0, or -1 with the calling thread's `errno`
+set to `ENOENT` (2) or `ENOTDIR` (20). The executable's one call (`0x00465431`) reads the access
+and modification times and the size on 0, and treats any other answer as no file.
+
+`errno` is libkernel's `__error()`, FreeBSD's `int *__error(void)` behind the `errno` macro. It
+is imported by `eboot`, `libc` and `libSceFios2`. Each guest thread runs on its own host thread,
+so a thread-local `int` is that thread's `errno`; it starts at 0, and success leaves it alone.
+
 ### Opening and reading
 
 `sceKernelOpen`, `sceKernelRead`, `sceKernelPread`, `sceKernelLseek`, `sceKernelFstat` and

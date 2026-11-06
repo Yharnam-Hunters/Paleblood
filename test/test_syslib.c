@@ -869,6 +869,13 @@ typedef int32_t (*f_kstat)(const char *, void *);
 static f_kstat kstat_fn;
 static void kstat_outside(void) { unsigned char st[120]; kstat_fn("/download0/x", st); }
 static void kstat_dotdot(void) { unsigned char st[120]; kstat_fn("/app0/../etc/passwd", st); }
+typedef int (*f_pstat)(const char *, void *);
+typedef int *(*f_errno)(void);
+static f_pstat pstat_fn;
+static void pstat_outside(void) { unsigned char st[120]; pstat_fn("/download0/x", st); }
+static void pstat_no_buffer(void) { pstat_fn("/app0/data.bin", NULL); }
+static int *other_thread_errno;
+static void *errno_of_thread(void *arg) { other_thread_errno = ((f_errno)arg)(); return NULL; }
 /* Whether an address fits a GPU base-address field: below 2^40, so (address >> 8) fits 32 bits. */
 static int gpu_addressable(const void *address)
 {
@@ -2374,6 +2381,26 @@ int main(void)
             CHECK(kstat_fn("/app0/data.bin/inside", st) == (int32_t)0x80020014u);
             CHECK(died_in_fatal(kstat_outside));
             CHECK(died_in_fatal(kstat_dotdot));
+            /* POSIX stat: the same answer, 0 or -1 with the thread's errno (__error) set. */
+            pstat_fn = (f_pstat)fn("libScePosix", "stat");
+            const f_errno error_fn = (f_errno)fn("libkernel", "__error");
+            CHECK(pstat_fn && error_fn);
+            if (pstat_fn && error_fn) {
+                int *const err = error_fn();
+                CHECK(err != NULL && err == error_fn()); /* the same int for one thread */
+                pthread_t other;
+                CHECK(pthread_create(&other, NULL, errno_of_thread, (void *)error_fn) == 0 && pthread_join(other, NULL) == 0);
+                CHECK(other_thread_errno && other_thread_errno != err); /* another thread has its own */
+                memset(st, 0xee, sizeof st);
+                *err = 77;
+                CHECK(pstat_fn("/app0/data.bin", st) == 0 && *err == 77); /* success leaves errno alone */
+                memcpy(&mode, st + 8, 2); memcpy(&size, st + 0x48, 8);
+                CHECK((mode & 0170000) == 0100000 && (mode & 0777) == 0444 && size == 10);
+                CHECK(pstat_fn("/app0/missing.bin", st) == -1 && *err == 2);           /* ENOENT */
+                CHECK(pstat_fn("/app0/data.bin/inside", st) == -1 && *err == 20);      /* ENOTDIR */
+                CHECK(died_in_fatal(pstat_outside));
+                CHECK(died_in_fatal(pstat_no_buffer));
+            }
             CHECK(died_in_fatal(kstat_prefix_only));
             /* Open, read, seek, pread, fstat and close the same file, read-only. */
             typedef int32_t (*f_open)(const char *, int32_t, uint32_t);
