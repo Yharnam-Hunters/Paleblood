@@ -1156,6 +1156,43 @@ ports keep time on their own as before. Boots are silent by default.
   `audioout.h`).
 - **Observed:** with ATRAC9 decoding, a boot plays the game's own sound after about 17 seconds.
 
+## The movie player (`libSceAvPlayer`)
+
+The title plays its movies (`/app0/.../movie/*.mp4`: H.264 video, AAC sound in several languages)
+through the console's movie player. One wrapper in the executable makes every call
+(`0x02cfdf33` to `0x02d004a9`):
+
+1. `sceAvPlayerInit` gets a 0x78-byte block with the title's memory callbacks and an event callback.
+   The block has no file callbacks, auto start is 0 and the default language is none.
+2. `sceAvPlayerPostInit` gets decoder settings (video decoder type 3).
+3. `sceAvPlayerAddSource` gets the movie's path and `sceAvPlayerSetLooping` a flag.
+4. After the ready event the title counts the streams and reads each one's info. It enables one
+   video stream and the audio stream its language setting picks, then calls `sceAvPlayerStart`.
+5. Each frame, a picture comes from `sceAvPlayerGetVideoDataEx` and sound from
+   `sceAvPlayerGetAudioData` on the title's audio thread.
+
+The layouts, event numbers and error values are from shadPS4's `libSceAvPlayer` (`avplayer.h`,
+`avplayer_error.h`, `avplayer_state.cpp`, `avplayer_source.cpp`), checked against the OpenOrbis
+`AvPlayer.h`. The code is the runtime's own (`runtime/syslib/avplayer.c`). Decoding uses FFmpeg on
+the host (`runtime/media/`, `runtime/media_host.h`), when the runtime is built with it.
+
+| Call | What the title passes and reads | Runtime answer |
+|---|---|---|
+| `sceAvPlayerInit(const InitData *)` | memory callbacks {allocate, deallocate, allocate texture, deallocate texture}, an event callback, no file callbacks | a handle; file callbacks, auto start, a missing allocator or event callback stop by name |
+| `sceAvPlayerPostInit(handle, data)` | decoder types and parameters | 0 (they change how the console decodes, not the result) |
+| `sceAvPlayerAddSource(handle, path)` | the movie under `/app0` | opens and probes it, sends event 2 (ready), 0; a movie the runtime cannot open stops by name |
+| `sceAvPlayerStreamCount`, `sceAvPlayerGetStreamInfo` | the type (0 video, 1 audio), an audio stream's channels and rate | the movie's video and audio streams, durations in ms |
+| `sceAvPlayerEnableStream(handle, index)` | one video stream and one audio stream | 0 |
+| `sceAvPlayerStart` | | event 3 (playing); the movie's clock starts |
+| `sceAvPlayerGetVideoDataEx(handle, FrameInfoEx *)` | the picture's address, width, height and four crops; it lays the planes out from the width | true once the clock reaches the next picture. The picture is NV12 in a buffer from the title's texture allocator (alignment 0x100), with pitch = width rounded up to 64 and height rounded up to 16, cropped back to the picture |
+| `sceAvPlayerGetAudioData(handle, FrameInfo *)` | address, size in bytes, channels, rate | true with up to 1024 interleaved 16-bit sample frames, handed out up to 0.1 s ahead of the clock |
+| `sceAvPlayerIsActive`, `sceAvPlayerCurrentTime` | | true until a movie that does not loop has handed out its last frame, then event 1 (stopped) once; the clock in ms, standing still while paused |
+| `sceAvPlayerPause`, `sceAvPlayerResume`, `sceAvPlayerStop`, `sceAvPlayerClose` | | events 4, 3 and 1; Close frees the buffers through the title's callbacks |
+
+The runtime decodes a few frames ahead on a host thread of its own, so FFmpeg never runs on a guest
+thread's small stack. The guest calls only copy finished frames into the title's buffers. A looping
+movie starts again with its clock carried on. Without FFmpeg, opening a movie stops by name.
+
 ## Attribute priority and CPU mask (`scePthreadAttrSetschedparam`, `scePthreadAttrSetaffinity`, issue #34)
 
 `scePthreadAttrSetschedparam(attr, const struct sched_param *param)` sets the priority

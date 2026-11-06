@@ -104,9 +104,14 @@ file(GLOB PB_TEST_SYSLIB CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/runtime/syslib/
 file(GLOB PB_TEST_SYSLIB_TESTS CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/test/syslib/*.c)
 add_executable(test_syslib test/test_syslib.c ${PB_TEST_SYSLIB_TESTS} runtime/process.c ${PB_TEST_SYSLIB}
                runtime/display/display.c runtime/display/display_window_none.c runtime/renderer/renderer_none.c
-               runtime/audio/audio_host_none.c)
+               runtime/audio/audio_host_none.c ${PB_MEDIA_SOURCES})
 target_include_directories(test_syslib PRIVATE runtime/include)
 target_link_libraries(test_syslib PRIVATE atrac9)
+if(PB_FFMPEG_FOUND)
+    # The movie player's tests encode a short movie of their own with the same libraries.
+    target_link_libraries(test_syslib PRIVATE PkgConfig::PB_FFMPEG)
+    target_compile_definitions(test_syslib PRIVATE PB_TEST_MEDIA=1)
+endif()
 add_test(NAME syslib COMMAND test_syslib)
 # The renderer's GCN shader decoder (docs/RENDERER.md), its test, and pbgcn for the shader census.
 add_library(pbgcn_decode STATIC runtime/renderer/gcn_decode.c)
