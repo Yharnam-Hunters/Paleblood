@@ -4,6 +4,7 @@
 #include "runtime/display.h"
 #include "runtime/equeue.h"
 #include "runtime/gpu_memory.h"
+#include "runtime/pad.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
@@ -734,6 +735,30 @@ typedef int32_t (*f_us_event)(int32_t *);
 static f_us_event us_event;
 static void us_event_uninitialized(void) { int32_t e[2]; us_event(e); }
 static void us_event_no_variable(void) { us_event(NULL); }
+
+/* libScePad: one standard controller, the one user's, connected and at rest. */
+typedef int32_t (*f_pad_none)(void);
+typedef int32_t (*f_pad_open)(int32_t, int32_t, int32_t, const void *);
+typedef int32_t (*f_pad_handle)(int32_t);
+typedef int32_t (*f_pad_block)(int32_t, void *);
+static f_pad_none pad_init;
+static f_pad_open pad_open;
+static f_pad_handle pad_close;
+static f_pad_block pad_read, pad_info;
+static int32_t pad_handle;
+static void pad_open_before_init(void) { pad_open(1, 0, 0, NULL); }
+static void pad_init_again(void) { pad_init(); }
+static void pad_open_other_user(void) { pad_open(2, 0, 0, NULL); }
+static void pad_open_special(void) { pad_open(1, 2, 0, NULL); }
+static void pad_open_index(void) { pad_open(1, 0, 1, NULL); }
+static void pad_read_bad_handle(void) { unsigned char d[120]; pad_read(pad_handle + 1, d); }
+static void pad_read_no_block(void) { pad_read(pad_handle, NULL); }
+static void pad_info_no_block(void) { pad_info(pad_handle, NULL); }
+static void pad_read_closed(void) { unsigned char d[120]; pad_read(pad_handle, d); }
+typedef int32_t (*f_pad_vibrate)(int32_t, const uint8_t *);
+static f_pad_vibrate pad_vibrate;
+static void pad_vibrate_missing(void) { pad_vibrate(pad_handle, NULL); }
+static void pad_vibrate_closed(void) { const uint8_t s[2] = {1, 2}; pad_vibrate(pad_handle, s); }
 
 /* System settings: answered from rt_process.system_params. */
 typedef int32_t (*f_sys_param)(int32_t, int32_t *);
@@ -2002,6 +2027,61 @@ int main(void)
         CHECK(us_terminate() == 0);
         CHECK(us_init(params) == 0);    /* initialized again after a terminate */
         CHECK(us_terminate() == 0);
+    }
+
+    pad_init = (f_pad_none)fn("libScePad", "scePadInit");
+    pad_open = (f_pad_open)fn("libScePad", "scePadOpen");
+    pad_close = (f_pad_handle)fn("libScePad", "scePadClose");
+    pad_read = (f_pad_block)fn("libScePad", "scePadReadState");
+    pad_info = (f_pad_block)fn("libScePad", "scePadGetControllerInformation");
+    pad_vibrate = (f_pad_vibrate)fn("libScePad", "scePadSetVibration");
+    CHECK(pad_init && pad_open && pad_close && pad_read && pad_info && pad_vibrate);
+    if (pad_init && pad_open && pad_close && pad_read && pad_info && pad_vibrate) {
+        CHECK(died_in_fatal(pad_open_before_init));
+        CHECK(pad_init() == 0);
+        CHECK(died_in_fatal(pad_init_again));
+        CHECK(died_in_fatal(pad_open_other_user));
+        CHECK(died_in_fatal(pad_open_special));
+        CHECK(died_in_fatal(pad_open_index));
+        pad_handle = pad_open(1, 0, 0, NULL);
+        CHECK(pad_handle >= 0);
+        CHECK(pad_open(1, 0, 0, NULL) == (int32_t)0x80920004u); /* already opened */
+        unsigned char state[128];
+        memset(state, 0xee, sizeof state);
+        CHECK(pad_read(pad_handle, state) == 0);
+        uint32_t buttons;
+        float w, ax;
+        memcpy(&buttons, state, 4);
+        memcpy(&w, state + 24, 4);
+        memcpy(&ax, state + 28, 4);
+        CHECK(buttons == 0 && state[4] == 0x80 && state[5] == 0x80 && state[6] == 0x80 && state[7] == 0x80);
+        CHECK(state[8] == 0 && state[9] == 0 && w == 1.0f && ax == 0.0f);
+        CHECK(state[0x4c] == 1 && state[119] == 0 && state[120] == 0xee); /* connected; nothing past 120 bytes */
+        unsigned char info[32];
+        memset(info, 0xee, sizeof info);
+        CHECK(pad_info(pad_handle, info) == 0);
+        uint16_t width, height;
+        int32_t connected, device_class;
+        memcpy(&width, info + 4, 2);
+        memcpy(&height, info + 6, 2);
+        memcpy(&connected, info + 12, 4);
+        memcpy(&device_class, info + 16, 4);
+        CHECK(width == 1920 && height == 942 && info[8] > 0 && info[8] < 0x80 && info[9] == info[8]);
+        CHECK(info[10] == 0 && connected == 1 && device_class == 0 && info[27] == 0 && info[28] == 0xee);
+        CHECK(died_in_fatal(pad_read_bad_handle));
+        CHECK(died_in_fatal(pad_read_no_block));
+        CHECK(died_in_fatal(pad_info_no_block));
+        CHECK(rt_pad_vibration() == 0);
+        const uint8_t speeds[2] = {0xc0, 0x40};
+        CHECK(pad_vibrate(pad_handle, speeds) == 0 && rt_pad_vibration() == 0x40c0);
+        const uint8_t stop[2] = {0, 0};
+        CHECK(pad_vibrate(pad_handle, stop) == 0 && rt_pad_vibration() == 0);
+        CHECK(died_in_fatal(pad_vibrate_missing));
+        CHECK(pad_close(pad_handle) == 0);
+        CHECK(died_in_fatal(pad_read_closed));
+        CHECK(died_in_fatal(pad_vibrate_closed));
+        CHECK(pad_open(1, 0, 0, NULL) == pad_handle); /* opened again after a close */
+        CHECK(pad_close(pad_handle) == 0);
     }
 
     /* libSceCommonDialog: the first initialize succeeds, a repeat answers 0x80b80002 as the

@@ -28,6 +28,7 @@
    and the other error values. */
 #include "runtime/process.h"
 #include "runtime/syslib.h"
+#include "runtime/user.h"
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -36,8 +37,6 @@
 #define SCE_USER_SERVICE_ERROR_ALREADY_INITIALIZED ((int32_t)0x80960003u)
 #define SCE_USER_SERVICE_ERROR_NO_EVENT ((int32_t)0x80960007u)
 enum { USER_ID_INVALID = -1, LOGIN_USER_SLOTS = 4 };
-/* The one user's id: any value but -1 (invalid) and 0xFF (the system). */
-enum { RT_USER_ID = 1 };
 #define RT_USER_NAME "Hunter" /* at most 16 characters */
 
 static atomic_int initialized;

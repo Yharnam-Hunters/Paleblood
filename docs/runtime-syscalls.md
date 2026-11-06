@@ -584,6 +584,45 @@ executable's one caller (`0x025628e4`) is a polling thread: after any non-zero a
 comes. It never waits for the first user's login to be reported; whether the PS4 reports that
 login is not public.
 
+## The controller (`libScePad`)
+
+The runtime models one standard controller, the one user's, always connected and at rest
+(`runtime/syslib/pad.c`). Real input from a host controller is not provided yet.
+
+**Sources.**
+- **Signatures and layouts:** the OpenOrbis homebrew SDK's `Pad.h`, `_types/pad.h` and
+  `_types/errors.h`. They give the 120-byte `OrbisPadData`, the 28-byte `OrbisPadInformation`, the
+  two-byte vibration block (large motor, then small), port type 0 (standard), and
+  `ALREADY_OPENED` `0x80920004`.
+- **The executable's own calls agree:**
+  - before each `scePadReadState` (`0x02a90168`, `0x02a91948`) it clears exactly 120 bytes, and
+    afterwards it tests `connected` at offset `0x4c`;
+  - `scePadGetControllerInformation` gets a cleared 28-byte block. The title reads the touch
+    resolution, dividing a non-zero touch point by it, and the stick deadzones: a stick within
+    `0x80` ± the deadzone counts as centred;
+  - `scePadInit` is called once (`0x02fa6182`), and the result is not read;
+  - `scePadOpen(initial user, 0, 0, NULL)` keeps any handle ≥ 0, and the title closes before it
+    opens again;
+  - `scePadSetVibration` is called with the title's speeds (`0x02a9c7c1`) or with both 0 to stop
+    (`0x02a9c822`), and 0 counts as success.
+- **The DualShock 4's touch pad is 1920 × 942:** `DS4_TOUCHPAD_WIDTH` and `_HEIGHT` in the Linux
+  kernel's `drivers/hid/hid-playstation.c`.
+
+| Call | Runtime |
+|---|---|
+| `scePadInit` | 0 |
+| `scePadOpen` | handle 1, the runtime's choice; a second open while it is open answers `0x80920004` |
+| `scePadClose` | 0; the pad can be opened again |
+| `scePadReadState` | no button, sticks `0x80`, triggers 0, no touch or motion, identity orientation, `connected` 1 |
+| `scePadGetControllerInformation` | touch pad 1920 × 942; stick deadzones 13 (the runtime's choice); connected; a local pad |
+| `scePadSetVibration` | 0; the speeds are kept (`rt_pad_vibration`), and nothing on the host vibrates yet |
+
+Fields the executable does not read are left zero. **Stops by name:** a second initialize, a call
+before initialize, another user, port type, index or open parameters, an unknown handle, a
+missing argument, and the other error values. `scePadResetOrientation`,
+`scePadSetAngularVelocityDeadbandState` and `scePadSetTiltCorrectionState` stay unbound until the
+boot reaches them.
+
 ## The common dialog's initialize (`libSceCommonDialog`, issue #40)
 
 `sceCommonDialogInitialize` is the only call `eboot` imports from `libSceCommonDialog`. It takes
