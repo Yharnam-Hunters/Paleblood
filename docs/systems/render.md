@@ -123,11 +123,20 @@ frames. #279, #286 and #287 were brought up to date with `main` from #209, #259 
 | `0x014719a0` | 117 | `render_record_encoding_category` | edge-verified | Decode accepted category nibbles; optional DWORD output untouched on rejection. |
 | `0x014721d0` | 31 | `render_set_present_last_record_indices` | edge-verified | Replace two packed indices while preserving the remaining bits. Return the old preserved bits. |
 | `0x01472870` | 90 | `render_emit_present_context_section` | edge-verified | Keep the low-DWORD capacity decision separate from the full remaining-word count sent to the original import. Its effects may change the live cursor. |
+| `0x01472fd0` | 86 | `render_set_cb_target_mask` | edge-verified | Write the complete CB_TARGET_MASK value, preserving all supplied component-enable bits. |
+| `0x01473090` | 109 | `render_set_cb_blend_control` | edge-verified | Write masked CB_BLENDn_CONTROL for the selected color-buffer bank. |
+| `0x01473320` | 117 | `render_set_cb_color_control` | edge-verified | Write CB_COLOR_CONTROL.MODE and ROP3 from their masked input fields. |
+| `0x014733a0` | 93 | `render_set_db_depth_control` | edge-verified | Write the observed mask of DB_DEPTH_CONTROL depth/stencil test and write-control fields. |
+| `0x01473400` | 93 | `render_set_db_stencil_control` | edge-verified | Write the low 24 bits of DB_STENCIL_CONTROL, including front- and back-face stencil operations. |
 | `0x01473590` | 95 | `render_emit_present_preparation_scalar` | edge-verified | Write the captured float bits to DB_DEPTH_CLEAR. Admission tests the callback low byte; rejection returns its full 64-bit result. |
 | `0x014735f0` | 89 | `render_emit_present_preparation_byte` | edge-verified | Write the captured input low byte to DB_STENCIL_CLEAR. Admission tests the callback low byte; rejection returns its full 64-bit result. |
 | `0x01473650` | 116 | `render_set_screen_offset` | edge-verified | Write the observed masked X/Y fields of PA_SU_HARDWARE_SCREEN_OFFSET. |
 | `0x014736d0` | 124 | `render_set_guard_band_clip_adjust` | edge-verified | Write vertical then horizontal guard-band clip adjustments as unchanged float bit patterns. Capture both float representations before the capacity callback and publish from the captured cursor. |
 | `0x01473750` | 124 | `render_set_guard_band_discard_adjust` | edge-verified | Write vertical then horizontal guard-band discard adjustments as unchanged float bit patterns. Capture both float representations before the capacity callback and publish from the captured cursor. |
+| `0x01473fe0` | 90 | `render_set_vgt_primitive_type` | edge-verified | Write the low six primitive-type bits to VGT_PRIMITIVE_TYPE. |
+| `0x014741b0` | 156 | `render_emit_draw_index_auto` | edge-verified | Emit DRAW_INDEX_AUTO and a query-selected THREAD_TRACE_MARKER event or NOP. Reload flags and cursor after overlapping packet stores before selecting and publishing the trailing packet. |
+| `0x01475370` | 76 | `render_emit_num_instances` | edge-verified | Emit NUM_INSTANCES with the complete supplied instance count. |
+| `0x01475da0` | 101 | `render_emit_event_write` | edge-verified | Emit EVENT_WRITE with a masked event type and the original table-selected event index. |
 | `0x014765e0` | 238 | `render_configure_viewport` | edge-verified | Write viewport ZMIN/ZMAX, then X/Y/Z scale and offset values for the selected viewport. Capture all six borrowed source words before output; retain the live and captured cursor publications. |
 | `0x01476790` | 135 | `render_configure_screen_scissor` | edge-verified | Write PA_SC_SCREEN_SCISSOR_TL/BR using the low 16 bits of each supplied coordinate. Packet stores may overlap the cursor; its final increment reads the stored value after those writes. |
 | `0x01476980` | 93 | `render_emit_pa_cl_vte_cntl` | edge-verified | Write PA_CL_VTE_CNTL viewport-transform enable/format bits after capacity admission. |
@@ -137,6 +146,8 @@ frames. #279, #286 and #287 were brought up to date with `main` from #209, #259 
 | `0x01485070` | 16 | `render_set_present_last_record_depth_compress_disable` | edge-verified | Replace DEPTH_COMPRESS_DISABLE in the saved DB_RENDER_CONTROL word using the input low bit. Return the old bits with that flag cleared. |
 | `0x01485080` | 16 | `render_set_present_last_record_stencil_compress_disable` | edge-verified | Replace STENCIL_COMPRESS_DISABLE in the saved DB_RENDER_CONTROL word using the input low bit. Return the old bits with that flag cleared. |
 | `0x01485220` | 81 | `render_set_pa_cl_vte_cntl` | edge-verified | Expand the toggled input byte into overlapping register fields. The original result is the shifted byte, independent of the preserved old bits or the final stored word. |
+| `0x01485390` | 24 | `render_set_record_register_range` | edge-verified | Pack one bit from the first input and three from the last, preserving all other bits. |
+| `0x014853f0` | 16 | `render_set_record_register_enabled` | edge-verified | Preserve the original byte-wide input: doubling it can contribute bits beyond bit one. |
 | `0x01486520` | 31 | `render_record_set_word_0c_fields` | edge-verified | Store two masked fields; return masked old word. No constructor add/subtract. |
 | `0x01486540` | 305 | `render_record_set_encoding` | edge-verified | Pack accepted encoding into record DWORD10 preserving other bits; invalid input has undefined native extractor locals. |
 | `0x014866e0` | 33 | `render_record_set_word_04_repeated_field` | edge-verified | Duplicate supplied low 11 bits; return preserved old word. |
@@ -149,6 +160,7 @@ frames. #279, #286 and #287 were brought up to date with `main` from #209, #259 
 | `0x01489910` | 24 | `render_record_descriptor_level_count` | edge-verified | Read bits 16..19 below the upper descriptor partition; otherwise return zero. |
 | `0x01489940` | 24 | `render_record_descriptor_count_exponent` | edge-verified | Read bits 16..19 in the upper descriptor partition; otherwise return zero. |
 | `0x01489960` | 68 | `render_record_descriptor_encoding` | edge-verified | Read packed words at offsets 0x04 then 0x0c; pass six extracted fields to the encoding packer. |
+| `0x01489c40` | 16 | `render_record_step_user_pa_enabled` | edge-verified | Query the actual import once; no cached global, fallback or service value is invented. |
 | `0x0149c850` | 672 | `render_record_apply_parameter_tuple` | edge-verified | Select one output code from normalization tuple; ordered overrides and rejection preserve output. |
 | `0x0149cb30` | 204 | `render_record_apply_mapping` | edge-verified | Map derived normalization code to original layout-helper tuple; unsupported code preserves output. |
 | `0x0149cc60` | 350 | `render_convert_record_descriptor_classification` | edge-verified | Convert a tile-mode table index for the requested array mode; preserve output on error and bypass already matching modes. |
