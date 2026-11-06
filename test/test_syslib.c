@@ -9,6 +9,7 @@
 #include "runtime/pad.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
+#include "runtime/system_service.h"
 
 #include <pthread.h>
 #include <sched.h>
@@ -2204,6 +2205,18 @@ int main(void)
     }
 
     /* libSceSystemService: the language the person running the runtime chose. */
+    {   /* the boot splash: hidden when the title says so */
+        typedef int32_t (*f_hide)(void);
+        const f_hide hide = (f_hide)fn("libSceSystemService", "sceSystemServiceHideSplashScreen");
+        CHECK(hide && !rt_splash_hidden() && hide() == 0 && rt_splash_hidden() && hide() == 0);
+        typedef int32_t (*f_status)(void *);
+        const f_status status_fn = (f_status)fn("libSceSystemService", "sceSystemServiceGetStatus");
+        uint8_t status[16];
+        memset(status, 0x5a, sizeof status);
+        CHECK(status_fn && status_fn(status) == 0 && !status[0] && !status[3] && !status[4] && !status[5] && status[6] == 1);
+        CHECK(!status[7] && !status[8] && status[9] == 0x5a);                      /* nothing past 9 bytes */
+        CHECK(status_fn(NULL) == (int32_t)0x80A10003u);
+    }
     sys_param = (f_sys_param)fn("libSceSystemService", "sceSystemServiceParamGetInt");
     if (sys_param) {
         rt_process.system_params[0] = (rt_system_param){1, 18};
