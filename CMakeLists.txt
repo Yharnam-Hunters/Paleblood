@@ -154,7 +154,7 @@ if(PB_TEST_VULKAN_FOUND)
     # The draw executor (docs/RENDERER.md, phase 3) runs recorded calls on a Vulkan GPU.
     add_library(pbrender_executor STATIC runtime/renderer/render_executor.c)
     target_include_directories(pbrender_executor PUBLIC runtime/include)
-    target_link_libraries(pbrender_executor PUBLIC pbrender_calls pbgcn_spirv PkgConfig::PB_TEST_VULKAN)
+    target_link_libraries(pbrender_executor PUBLIC pbrender_calls pbgcn_spirv pbtiling PkgConfig::PB_TEST_VULKAN)
     add_executable(test_render_executor test/test_render_executor.c)
     target_link_libraries(test_render_executor PRIVATE pbrender_executor m)
     add_test(NAME render_executor COMMAND test_render_executor)

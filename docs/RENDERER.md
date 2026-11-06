@@ -104,6 +104,12 @@ Instead:
        (`rt_image_descriptor_decode`, the Sea Islands manual's T# layout as shadPS4's `resource.h`
        has it) and binds a storage image (set 0, binding i) whose shape the translation uses. Stores
        must cover every component the format has; data components past them are dropped.
+     - **Pixel shaders read images** (`image_load`, `image_load_mip`) as sampled images (Vulkan's
+       `SAMPLED_IMAGE`, `OpImageFetch` at the level given), so the view applies the descriptor's
+       DST_SEL. A texel outside the image or a level past its last is a run-time stop
+       (`GCN_RUNTIME_STOP_IMAGE_RANGE`): what the GPU returns there is not established. A descriptor
+       the program writes itself (an `s_load`, a scalar move, a compare's result) is refused by name,
+       since its value is not the user data's.
      - **Tiled layouts** (`runtime/tiling.h`): where each texel of an image lies in guest memory, for
        reading images the CPU or a shader's buffer stores wrote. AMD's address library (addrlib, in
        Mesa) gives the formulas; the PS4's tile-mode and macro-tile-mode values are those shadPS4's
@@ -363,9 +369,11 @@ Instead:
         name. The two dispatch writers with a fifth argument (`0x01474d10`, `0x0148a410`) are not
         observed yet. Compute shaders' **images** are executor-owned Vulkan images
         found by their descriptor's address and shape: an image the GPU writes stays there and is
-        never tiled back into guest memory; a new image whose first use writes it starts cleared,
-        and one first read before any GPU write stops by name (loading guest texels, detiled, comes
-        with sampling). Formats: 32 (float, uint, sint), 32_32 and 32_32_32_32 float, 8_8_8_8
+        never tiled back into guest memory; a new image whose first use writes it starts cleared.
+        An image no shader has written holds the guest memory's texels, detiled with
+        `runtime/tiling.h` and loaded again at each use that reads it (the CPU or a buffer store may
+        have changed them); one that is also a render target stops by name. Pixel shaders' images
+        are found the same way and bound as sampled images. Formats: 32 (float, uint, sint), 32_32 and 32_32_32_32 float, 8_8_8_8
         unorm; 1D and 2D images and their arrays, one level, a view of any of an array's layers
         (slices count from `BASE_ARRAY`, as shadPS4 and Mesa's radeonsi have it), DST_SEL in place.
         On the game, all of the boot's compute passes now run (two clears and a buffer-to-image

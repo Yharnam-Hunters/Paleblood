@@ -334,6 +334,18 @@ static const uint32_t pixel_position_color[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* A pixel shader (SPI_PS_INPUT 0x302: position x and y in v2 and v3) that colours each pixel with
+   the image texel under it: image_load_mip at (int(x), int(y)), level 0, of the image in s[0:7]. */
+static const uint32_t pixel_image_texel[] = {
+    0x7e081102, /* v_cvt_i32_f32_e32 v4, v2 */
+    0x7e0a1103, /* v_cvt_i32_f32_e32 v5, v3 */
+    0x7e0c0280, /* v_mov_b32_e32 v6, 0 */
+    0xf0040f00, 0x00000804, /* image_load_mip v[8:11], v[4:6], s[0:7] dmask:0xf */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf800180f, 0x0b0a0908, /* exp mrt0, v8, v9, v10, v11 done vm */
+    0xbf810000, /* s_endpgm */
+};
+
 /* As pixel_color, but pixels whose red is below 0.5 are discarded (v_cmpx clears their EXEC bit
    and the export's valid mask drops them). */
 static const uint32_t pixel_discard_left[] = {
