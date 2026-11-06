@@ -107,9 +107,26 @@ Instead:
      - **Pixel shaders read images** (`image_load`, `image_load_mip`) as sampled images (Vulkan's
        `SAMPLED_IMAGE`, `OpImageFetch` at the level given), so the view applies the descriptor's
        DST_SEL. A texel outside the image or a level past its last is a run-time stop
-       (`GCN_RUNTIME_STOP_IMAGE_RANGE`): what the GPU returns there is not established. A descriptor
-       the program writes itself (an `s_load`, a scalar move, a compare's result) is refused by name,
-       since its value is not the user data's.
+       (`GCN_RUNTIME_STOP_IMAGE_RANGE`): what the GPU returns there is not established.
+     - **`image_sample`** with the sampler (S#) its SSAMP SGPRs name, found like image descriptors and
+       bound after the images (set 0, `VK_DESCRIPTOR_TYPE_SAMPLER`): sampled at level 0
+       (`OpImageSampleExplicitLod`). GCN picks the level from the coordinates' derivatives; level 0
+       is what it picks too when the image has one level and the sampler's minifying and magnifying
+       filters agree, which the executor requires. The executor makes a Vulkan sampler from the S#
+       (the Sea Islands manual's layout, as shadPS4's `resource.h` names its fields): wrap, mirror
+       and clamp to the last texel; point or bilinear filtering. Anisotropy, depth compares,
+       unnormalized coordinates, border and mirror-once modes and the truncation options stop by
+       name, as does bilinear sampling of a format the device cannot filter. Filtering precision is
+       the host GPU's.
+     - **Descriptors from memory:** each MIMG instruction's descriptor is found from the code before
+       it (`gcn_resource_origin`): the user data's when nothing writes its SGPRs first, or loaded
+       from memory when the last write is a whole `s_load_dwordx8` at an immediate offset from a
+       user-data pointer pair that nothing writes. The executor reads such a descriptor from guest
+       memory when the draw runs. The same SGPRs can name different images at different
+       instructions: the game's fullscreen pass reads the user data's image, then loads another
+       descriptor over it. Followed only through code that runs straight to the instruction (no
+       branch before it, none back to it); any other write (a scalar move, a compare's result, a
+       written pointer) stops by name.
      - **Tiled layouts** (`runtime/tiling.h`): where each texel of an image lies in guest memory, for
        reading images the CPU or a shader's buffer stores wrote. AMD's address library (addrlib, in
        Mesa) gives the formulas; the PS4's tile-mode and macro-tile-mode values are those shadPS4's
@@ -282,9 +299,14 @@ Instead:
      user config register the library sets (`rt_render_record_register`: blend, depth and stencil
      control, colour control, the target mask, the primitive type) and the instance count. The
      executor understands those registers and, at each draw, stops by name on what it does not
-     draw yet: blending, depth or stencil testing, primitives other than triangle lists, colour
-     modes other than a normal copy, partial write masks, more than one instance, and any register
-     it does not interpret. A draw with target 0 masked off writes nothing and is skipped.
+     draw yet: depth or stencil testing, primitives other than triangle lists, colour modes other
+     than a normal copy, partial write masks, more than one instance, and any register it does not
+     interpret. A draw with target 0 masked off writes nothing and is skipped.
+     - **Blending** (`CB_BLEND0_CONTROL`, with `CB_BLEND_RED`-`ALPHA` as Vulkan's blend constants):
+       AMD's factor and function numbers (Mesa's `sid.h`, shadPS4's `regs_color.h`) map one to one
+       onto Vulkan's; without `SEPARATE_ALPHA_BLEND` alpha uses the colour's. Dual-source factors
+       stop by name. Targets 1-7's blend controls are kept out of the draw while their slots are
+       off (an enabled slot beyond 0 stops the draw anyway).
    - **The draw executor** (being built): it runs a submitted buffer's recorded calls on the GPU.
      1. **Guest memory on the GPU.** Shaders reach memory through guest addresses: buffer
         descriptors and pointers in their user data. The game's GPU-visible memory is direct
@@ -324,7 +346,7 @@ Instead:
           whose x matches one neighbour's and y the other's, and the fourth corner is the other two
           minus it, for the position and every output (shadPS4's rule, facts only). A device
           without geometry shaders stops by name at a rect list; Metal will need another route.
-        - **Not yet:** blending and depth (their setters aren't recorded yet), other formats, more
+        - **Not yet:** depth (its target is not recorded yet), other formats, more
           render targets and other pixel inputs. These stop with the reason.
         - **The image's memory order:** an image's pixels only leave the GPU through
           `rt_executor_read_target`, which gives the display's BGRA either way. So nothing yet shows

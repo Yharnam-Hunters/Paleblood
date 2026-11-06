@@ -27,16 +27,19 @@ target_include_directories(pbloader PUBLIC include)
 # implementations are compiled in directly, so the linker keeps every RT_SYSLIB entry.
 file(GLOB PB_SYSLIB CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/syslib/*.c)
 # The host display (runtime/display/): a window when Vulkan and SDL3 are found, otherwise headless
-# only (docs/RENDERER.md). CI builds without a window.
+# only (docs/RENDERER.md). CI builds without a window. Host sound and host controller input
+# (runtime/audio/, runtime/input/) come with the window's SDL3, or are off.
 if(PkgConfig_FOUND)
     pkg_check_modules(PB_SDL3 QUIET IMPORTED_TARGET sdl3)
     pkg_check_modules(PB_VULKAN QUIET IMPORTED_TARGET vulkan)
 endif()
 if(PB_SDL3_FOUND AND PB_VULKAN_FOUND)
-    set(PB_DISPLAY_SOURCES display/display.c display/display_vulkan.c renderer/renderer.c audio/audio_host_sdl.c)
+    set(PB_DISPLAY_SOURCES display/display.c display/display_vulkan.c renderer/renderer.c audio/audio_host_sdl.c
+        input/input_host_sdl.c)
     message(STATUS "display window: on (Vulkan ${PB_VULKAN_VERSION}, SDL ${PB_SDL3_VERSION})")
 else()
-    set(PB_DISPLAY_SOURCES display/display.c display/display_window_none.c renderer/renderer_none.c audio/audio_host_none.c)
+    set(PB_DISPLAY_SOURCES display/display.c display/display_window_none.c renderer/renderer_none.c audio/audio_host_none.c
+        input/input_host_none.c)
     message(STATUS "display window: off (Vulkan or SDL3 not found)")
 endif()
 list(TRANSFORM PB_DISPLAY_SOURCES PREPEND ${CMAKE_CURRENT_SOURCE_DIR}/)
@@ -55,7 +58,7 @@ else()
 endif()
 set(PB_MEDIA_SOURCES ${PB_MEDIA_SOURCES} PARENT_SCOPE)
 set(PB_FFMPEG_FOUND ${PB_FFMPEG_FOUND} PARENT_SCOPE)
-add_executable(pbboot boot.c loader.c memory.c nid.c process.c host_hooks.c ${PB_SYSLIB} ${PB_DISPLAY_SOURCES} ${PB_MEDIA_SOURCES})
+add_executable(pbboot boot.c loader.c memory.c nid.c process.c host_hooks.c input/input.c ${PB_SYSLIB} ${PB_DISPLAY_SOURCES} ${PB_MEDIA_SOURCES})
 if(PB_FFMPEG_FOUND)
     target_link_libraries(pbboot PRIVATE PkgConfig::PB_FFMPEG)
 endif()
