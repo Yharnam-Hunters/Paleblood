@@ -289,9 +289,17 @@ Instead:
         change which thread reaches its first unimplemented call first if it happened at every
         boot. Until the library's replacements record calls, boots are unchanged in every display
         mode.
-     5. **The observer calls** in the library's replacements, once those are merged; then
-        follow the auto-index draw wrapper's callers (`0x015fbb50`) up to the title screen's
-        2D passes.
+     5. **The observer calls** in the library's replacements (begun). Replacements call
+        `runtime/render_observer.h`, which finds the record in the boot harness (`pbboot` exports it)
+        and does nothing under a host without it, so the replacements' verification is unchanged.
+        The register setters (blend, colour control, target mask, depth and stencil control, the
+        primitive type), the instance count, the viewport and the auto-index draw report now.
+        `tools/boot.py --game-lib build/game/libbbgame.so --no-record` runs a boot with the
+        replacements, and with the display on the game's first draw reaches the executor: a
+        fullscreen pass drawn as a rect list (primitive type 17), which stops by name until the
+        executor draws rect lists. Still to report: render targets, user data, indexed draws and
+        compute dispatches; then follow the auto-index draw wrapper's callers (`0x015fbb50`) up
+        to the title screen's 2D passes.
 4. **Textures and 3D.** The game's texture formats and tiling (from public format documentation),
    meshes, materials and post-processing.
 

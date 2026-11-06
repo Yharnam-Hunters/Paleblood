@@ -13,9 +13,10 @@ else()
     set(PB_TRACE_SOURCES trace_none.c)
     message(STATUS "capture tracing: off (Capstone not found)")
 endif()
-add_library(bbrt STATIC hooks.c plugin.c host_hooks.c capture.c capture_trace.cpp capture_hooks.c capture_entry.S probe.c loader.c nid.c
+add_library(bbrt STATIC hooks.c plugin.c host_hooks.c capture.c capture_trace.cpp capture_hooks.c capture_entry.S probe.c loader.c nid.c render_observer.c
             ${PB_TRACE_SOURCES})
 target_include_directories(bbrt PUBLIC include)
+target_link_libraries(bbrt PUBLIC ${CMAKE_DL_LIBS} pthread)
 if(CAPSTONE_FOUND)
     target_link_libraries(bbrt PUBLIC PkgConfig::CAPSTONE pthread)
 endif()
@@ -45,4 +46,14 @@ if(PB_SDL3_FOUND AND PB_VULKAN_FOUND)
     target_link_libraries(pbboot PRIVATE PkgConfig::PB_SDL3 PkgConfig::PB_VULKAN pbrender_executor)
 endif()
 target_include_directories(pbboot PRIVATE include)
+# The game library's replacements reach the renderer's record through the symbols pbboot exports
+# (runtime/render_observer.h): only those, so the library's own copies of shared runtime code
+# (loader.c, nid.c) keep binding to themselves. macOS executables export their symbols already.
+if(NOT APPLE)
+    foreach(symbol rt_fatal rt_render_record_color_target rt_render_record_viewport rt_render_record_draw_auto
+                   rt_render_record_vertex_shader rt_render_record_pixel_shader rt_render_record_user_data
+                   rt_render_record_register rt_render_record_instances)
+        target_link_options(pbboot PRIVATE "LINKER:--export-dynamic-symbol=${symbol}")
+    endforeach()
+endif()
 target_link_libraries(pbboot PRIVATE ${CMAKE_DL_LIBS} atrac9)
