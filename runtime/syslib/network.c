@@ -10,6 +10,8 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
+#include <time.h>
 
 enum { SCE_AF_INET = 2 };
 
@@ -310,3 +312,129 @@ static int32_t http_add_request_header(int32_t id, const char *name, const char 
     return 0;
 }
 RT_SYSLIB("libSceHttp", sceHttpAddRequestHeader, http_add_request_header);
+
+/* The network library's own errno and its epoll sets. Facts from the shadPS4 libSceNet that bbport
+   vendors (net.cpp, net_error.h, net_types.h) and from bbhost, implemented here independently:
+   - A failing call answers 0x80410100 plus a FreeBSD error number (0x80410116 for EINVAL,
+     0x80410109 for EBADF, 0x8041013f for ENAMETOOLONG) and sets the calling thread's network
+     errno, whose address sceNetErrnoLoc(void) gives; it is separate from the C library's errno.
+   - sceNetEpollCreate(const char *name, int32_t flags) answers a new epoll id (positive); flags
+     other than 0 are EINVAL, and a name longer than 31 characters ENAMETOOLONG.
+   - sceNetEpollWait(id, events, int32_t max events, int32_t timeout in microseconds) waits until
+     a socket on the set is ready or the timeout passes (a negative timeout waits for ever) and
+     answers how many events it wrote; an unknown id is EBADF, no events or a count below 1 EINVAL.
+     A wait cut short by an abort or a destroy fails with EINTR.
+   - sceNetEpollAbort(id, int32_t flags) interrupts the set's waiters; with none waiting it answers
+     ENOTBLK, unless flag 1 keeps the abort for the next wait, which then fails with EINTR at once.
+     Other flags are EINVAL.
+   - sceNetEpollDestroy(id) closes the set, interrupting its waiters.
+   The executable's call (0x02b1575d) passes a name and 0, keeps the id and, on a negative answer,
+   reads the network errno. Offline an epoll set exists, but no socket ever becomes ready on it, so
+   a wait ends only by its timeout, an abort or a destroy. */
+enum { BSD_EINTR = 4, BSD_EBADF = 9, BSD_ENOTBLK = 15, BSD_EINVAL = 22, BSD_ENAMETOOLONG = 63 };
+enum { EPOLL_ABORT_PRESERVE = 1 };
+enum { NET_DEBUG_NAME_MAX = 31, MAX_NET_EPOLLS = 64 };
+#define SCE_NET_ERROR(e) ((int32_t)(0x80410100u + (unsigned)(e)))
+
+static _Thread_local int32_t net_errno;
+static int32_t *net_errno_loc(void) { return &net_errno; }
+RT_SYSLIB("libSceNet", sceNetErrnoLoc, net_errno_loc);
+
+static int32_t net_fail(int error)
+{
+    net_errno = error;
+    return SCE_NET_ERROR(error);
+}
+
+typedef struct {
+    uint8_t open;
+    uint8_t abort_pending;  /* a preserved abort, for the next wait */
+    uint32_t waiters;
+    uint64_t interruptions; /* counts aborts and destroys; a waiter that sees it change was interrupted */
+} net_epoll;
+
+static pthread_mutex_t net_epoll_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t net_epoll_wake = PTHREAD_COND_INITIALIZER;
+static net_epoll net_epolls[MAX_NET_EPOLLS + 1]; /* indexed by id; 0 is never an id */
+
+static net_epoll *net_epoll_of(int32_t id) /* with net_epoll_lock held */
+{
+    return id >= 1 && id <= MAX_NET_EPOLLS && net_epolls[id].open ? &net_epolls[id] : NULL;
+}
+
+static int32_t net_epoll_create(const char *name, int32_t flags)
+{
+    if (flags != 0) return net_fail(BSD_EINVAL);
+    if (name && strnlen(name, NET_DEBUG_NAME_MAX + 1) > NET_DEBUG_NAME_MAX) return net_fail(BSD_ENAMETOOLONG);
+    pthread_mutex_lock(&net_epoll_lock);
+    int32_t id = 1;
+    while (id <= MAX_NET_EPOLLS && net_epolls[id].open) id++;
+    if (id > MAX_NET_EPOLLS) rt_fatal("sceNetEpollCreate", "more epoll sets than the runtime keeps open: the answer is not established");
+    net_epolls[id] = (net_epoll){.open = 1, .interruptions = net_epolls[id].interruptions};
+    pthread_mutex_unlock(&net_epoll_lock);
+    return id;
+}
+RT_SYSLIB("libSceNet", sceNetEpollCreate, net_epoll_create);
+
+static int32_t net_epoll_wait(int32_t id, void *events, int32_t max_events, int32_t timeout_us)
+{
+    pthread_mutex_lock(&net_epoll_lock);
+    net_epoll *set = net_epoll_of(id);
+    int error = !set ? BSD_EBADF : (!events || max_events < 1) ? BSD_EINVAL : 0;
+    if (!error && set->abort_pending) {
+        set->abort_pending = 0;
+        error = BSD_EINTR;
+    }
+    if (error) {
+        pthread_mutex_unlock(&net_epoll_lock);
+        return net_fail(error);
+    }
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline); /* the clock pthread_cond_timedwait measures by */
+    const int64_t nanoseconds = deadline.tv_nsec + (int64_t)timeout_us * 1000;
+    deadline.tv_sec += nanoseconds / 1000000000;
+    deadline.tv_nsec = nanoseconds % 1000000000;
+    const uint64_t seen = set->interruptions;
+    set->waiters++;
+    int timed_out = 0;
+    while (set->interruptions == seen && !timed_out) /* offline no socket becomes ready */
+        timed_out = timeout_us < 0 ? pthread_cond_wait(&net_epoll_wake, &net_epoll_lock) != 0
+                                   : pthread_cond_timedwait(&net_epoll_wake, &net_epoll_lock, &deadline) != 0;
+    set->waiters--;
+    const int interrupted = set->interruptions != seen;
+    pthread_mutex_unlock(&net_epoll_lock);
+    return interrupted ? net_fail(BSD_EINTR) : 0;
+}
+RT_SYSLIB("libSceNet", sceNetEpollWait, net_epoll_wait);
+
+static int32_t net_epoll_abort(int32_t id, int32_t flags)
+{
+    pthread_mutex_lock(&net_epoll_lock);
+    net_epoll *set = net_epoll_of(id);
+    int error = !set ? BSD_EBADF : (flags & ~EPOLL_ABORT_PRESERVE) ? BSD_EINVAL : 0;
+    if (!error && set->waiters) {
+        set->interruptions++;
+        pthread_cond_broadcast(&net_epoll_wake);
+    } else if (!error && (flags & EPOLL_ABORT_PRESERVE)) {
+        set->abort_pending = 1;
+    } else if (!error) {
+        error = BSD_ENOTBLK;
+    }
+    pthread_mutex_unlock(&net_epoll_lock);
+    return error ? net_fail(error) : 0;
+}
+RT_SYSLIB("libSceNet", sceNetEpollAbort, net_epoll_abort);
+
+static int32_t net_epoll_destroy(int32_t id)
+{
+    pthread_mutex_lock(&net_epoll_lock);
+    net_epoll *set = net_epoll_of(id);
+    if (set) {
+        set->open = 0;
+        set->interruptions++; /* any waiter still on it returns EINTR */
+        pthread_cond_broadcast(&net_epoll_wake);
+    }
+    pthread_mutex_unlock(&net_epoll_lock);
+    return set ? 0 : net_fail(BSD_EBADF);
+}
+RT_SYSLIB("libSceNet", sceNetEpollDestroy, net_epoll_destroy);

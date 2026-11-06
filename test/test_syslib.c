@@ -1057,6 +1057,23 @@ typedef int32_t (*f_np_state)(int32_t, uint32_t *);
 static f_np_state np_state;
 static void np_state_other_user(void) { uint32_t st; np_state(7, &st); }
 
+/* libSceNet epoll sets, offline: waits end only by timeout, abort or destroy. */
+typedef int32_t (*f_ep_create)(const char *, int32_t);
+typedef int32_t (*f_ep_wait)(int32_t, void *, int32_t, int32_t);
+typedef int32_t (*f_ep_id_flags)(int32_t, int32_t);
+typedef int32_t (*f_ep_id)(int32_t);
+typedef int32_t *(*f_net_errno)(void);
+static f_ep_wait ep_wait;
+static f_net_errno net_errno_fn;
+static int32_t ep_waiter_id, ep_waiter_result, ep_waiter_errno;
+static void *ep_waiter(void *arg)
+{
+    unsigned char events[24 * 4];
+    ep_waiter_result = ep_wait(ep_waiter_id, events, 4, (int32_t)(intptr_t)arg);
+    ep_waiter_errno = *net_errno_fn();
+    return NULL;
+}
+
 int main(void)
 {
     /* Unresolved entries are still callable diagnostics, but are not reported as implemented. */
@@ -2991,6 +3008,57 @@ int main(void)
             CHECK(np_state(1, &st) == 0 && st == 1);             /* signed out */
             CHECK(np_state(1, NULL) == (int32_t)0x80550003u);
             CHECK(died_in_fatal(np_state_other_user));
+        }
+    }
+
+    {
+        const f_ep_create ep_create = (f_ep_create)fn("libSceNet", "sceNetEpollCreate");
+        const f_ep_id_flags ep_abort = (f_ep_id_flags)fn("libSceNet", "sceNetEpollAbort");
+        const f_ep_id ep_destroy = (f_ep_id)fn("libSceNet", "sceNetEpollDestroy");
+        ep_wait = (f_ep_wait)fn("libSceNet", "sceNetEpollWait");
+        net_errno_fn = (f_net_errno)fn("libSceNet", "sceNetErrnoLoc");
+        CHECK(ep_create && ep_abort && ep_destroy && ep_wait && net_errno_fn);
+        if (ep_create && ep_abort && ep_destroy && ep_wait && net_errno_fn) {
+            int32_t *const err = net_errno_fn();
+            CHECK(ep_create("x", 1) == (int32_t)0x80410116u && *err == 22);             /* EINVAL */
+            CHECK(ep_create("a-name-of-thirty-two-characters!", 0) == (int32_t)0x8041013fu && *err == 63);
+            const int32_t id = ep_create("a-name-of-thirty-one-character", 0);
+            CHECK(id >= 1 && ep_create(NULL, 0) != id);
+            unsigned char events[24 * 4];
+            CHECK(ep_wait(id + 40, events, 4, 0) == (int32_t)0x80410109u && *err == 9); /* EBADF */
+            CHECK(ep_wait(id, NULL, 4, 0) == (int32_t)0x80410116u);
+            CHECK(ep_wait(id, events, 0, 0) == (int32_t)0x80410116u);
+            struct timespec t0, t1;
+            clock_gettime(CLOCK_MONOTONIC, &t0);
+            CHECK(ep_wait(id, events, 4, 20000) == 0);                                  /* times out, no events */
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            CHECK((t1.tv_sec - t0.tv_sec) * 1000000000 + (t1.tv_nsec - t0.tv_nsec) >= 20000000);
+            CHECK(ep_abort(id, 0) == (int32_t)0x8041010fu && *err == 15);              /* ENOTBLK: none waiting */
+            CHECK(ep_abort(id, 2) == (int32_t)0x80410116u);
+            CHECK(ep_abort(id, 1) == 0 && ep_wait(id, events, 4, -1) == (int32_t)0x80410104u && *err == 4);
+            CHECK(ep_wait(id, events, 4, 0) == 0);                                      /* the preserved abort is used up */
+            /* a waiter for ever, interrupted by an abort from this thread */
+            pthread_t waiter;
+            ep_waiter_id = id;
+            CHECK(pthread_create(&waiter, NULL, ep_waiter, (void *)(intptr_t)-1) == 0);
+            int aborted = -1;
+            for (int tries = 0; tries < 2000 && aborted != 0; tries++) {
+                aborted = ep_abort(id, 0); /* ENOTBLK until the waiter is waiting */
+                if (aborted != 0) usleep(1000);
+            }
+            CHECK(aborted == 0 && pthread_join(waiter, NULL) == 0);
+            CHECK(ep_waiter_result == (int32_t)0x80410104u && ep_waiter_errno == 4);
+            /* and one ended by a destroy: EINTR if it was waiting, EBADF if the destroy came first;
+               either way it returns long before its 5-second timeout */
+            CHECK(pthread_create(&waiter, NULL, ep_waiter, (void *)(intptr_t)5000000) == 0);
+            usleep(20000);
+            struct timespec d0, d1;
+            clock_gettime(CLOCK_MONOTONIC, &d0);
+            CHECK(ep_destroy(id) == 0 && pthread_join(waiter, NULL) == 0);
+            clock_gettime(CLOCK_MONOTONIC, &d1);
+            CHECK(ep_waiter_result == (int32_t)0x80410104u || ep_waiter_result == (int32_t)0x80410109u);
+            CHECK(d1.tv_sec - d0.tv_sec < 1);
+            CHECK(ep_destroy(id) == (int32_t)0x80410109u && ep_wait(id, events, 4, 0) == (int32_t)0x80410109u);
         }
     }
 

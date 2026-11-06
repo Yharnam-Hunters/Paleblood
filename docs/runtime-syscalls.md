@@ -755,6 +755,24 @@ flexible memory to a budget. The budget is not established and the runtime does 
 - a length that is not whole 16 KiB pages;
 - a missing variable.
 
+## The network errno and epoll sets (`sceNetErrnoLoc`, `sceNetEpoll*`)
+
+Facts from the shadPS4 `libSceNet` that bbport vendors (`net.cpp`, `guest_net.cpp`,
+`net_error.h`, `net_types.h`) and from bbhost. The implementation is the runtime's own.
+
+- **Errors:** a failing call answers `0x80410100` plus a FreeBSD error number, and sets the
+  calling thread's network errno, whose address `sceNetErrnoLoc()` gives. That errno is separate
+  from the C library's.
+- **Offline:** an epoll set exists, but no socket ever becomes ready on it, so a wait ends only by
+  its timeout, an abort or a destroy.
+
+| Call | Runtime |
+|---|---|
+| `sceNetEpollCreate(name, flags)` | a new id from 1; flags other than 0 are `EINVAL` (`0x80410116`), a name over 31 characters `ENAMETOOLONG` (`0x8041013f`). The caller (`0x02b1575d`) keeps the id and reads the network errno on failure. |
+| `sceNetEpollWait(id, events, max, timeout µs)` | 0 events after the timeout (negative waits for ever); `EINTR` (`0x80410104`) if an abort or destroy cuts it short; unknown id `EBADF`, no events or `max < 1` `EINVAL` |
+| `sceNetEpollAbort(id, flags)` | interrupts the waiters; with none, `ENOTBLK` (`0x8041010f`), or with flag 1 the abort is kept and the next wait fails with `EINTR` at once; other flags `EINVAL` |
+| `sceNetEpollDestroy(id)` | closes the set, interrupting its waiters; unknown id `EBADF` |
+
 ## Network library start-up (`sceNetInit`, `sceNetTerm`, `sceNetPoolCreate`, issue #41)
 
 The names and argument shapes come from the OpenOrbis homebrew SDK's `Net.h`, which declares
