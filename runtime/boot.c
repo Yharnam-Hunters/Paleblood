@@ -44,6 +44,7 @@
 #include "runtime/module_tls.h"
 #include "runtime/nid.h"
 #include "runtime/process.h"
+#include "runtime/renderer.h"
 #include "runtime/syslib.h"
 
 #include <asm/prctl.h>
@@ -703,6 +704,7 @@ int main(int argc, char **argv)
         return 2;
     }
     if (display_capture && display_mode == RT_DISPLAY_NONE) display_mode = RT_DISPLAY_HEADLESS;
+    rt_renderer_configure(display_mode != RT_DISPLAY_NONE);
     if (rt_display_configure(display_mode, display_capture)) {
         fprintf(stderr, "pbboot: --display window: this build has no window (it needs Vulkan and SDL3)\n");
         return 2;

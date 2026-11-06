@@ -82,7 +82,7 @@ set_tests_properties(capture_poc_replay PROPERTIES
 file(GLOB PB_TEST_SYSLIB CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/runtime/syslib/*.c)
 # The syslib tests use the display's headless mode only, so they build without its window.
 add_executable(test_syslib test/test_syslib.c runtime/process.c ${PB_TEST_SYSLIB}
-               runtime/display/display.c runtime/display/display_window_none.c)
+               runtime/display/display.c runtime/display/display_window_none.c runtime/renderer/renderer_none.c)
 target_include_directories(test_syslib PRIVATE runtime/include)
 add_test(NAME syslib COMMAND test_syslib)
 # The renderer's GCN shader decoder (docs/RENDERER.md), its test, and pbgcn for the shader census.
@@ -125,6 +125,11 @@ if(PB_TEST_VULKAN_FOUND)
     target_link_libraries(test_render_executor PRIVATE pbrender_executor m)
     add_test(NAME render_executor COMMAND test_render_executor)
     set_tests_properties(render_executor PROPERTIES SKIP_RETURN_CODE 77)
+    add_executable(test_renderer test/test_renderer.c runtime/renderer/renderer.c)
+    target_include_directories(test_renderer PRIVATE runtime/include)
+    target_link_libraries(test_renderer PRIVATE pbrender_executor m)
+    add_test(NAME renderer COMMAND test_renderer)
+    set_tests_properties(renderer PROPERTIES SKIP_RETURN_CODE 77)
     add_executable(test_gcn_draw test/test_gcn_draw.c)
     target_link_libraries(test_gcn_draw PRIVATE pbgcn_spirv PkgConfig::PB_TEST_VULKAN m)
     add_test(NAME gcn_draw COMMAND test_gcn_draw)

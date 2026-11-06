@@ -14,6 +14,7 @@
    modules and thread objects. It is the runtime's choice, not the PS4's value: the engine only
    maps it and hands it back to the GPU calls. */
 #include "runtime/process.h"
+#include "runtime/renderer.h"
 #include "runtime/syslib.h"
 #include "runtime/video_out.h"
 
@@ -410,7 +411,9 @@ RT_SYSLIB("libSceGnmDriver", sceGnmDingDong, ding_dong);
                                   (an EVENT_WRITE that also writes memory stops);
      SET_CONTEXT_REG, SET_UCONFIG_REG, NUM_INSTANCES, DRAW_INDEX_AUTO
                                   skipped: draw state and draws (the first frame's).
-   Nothing is drawn. Constant command buffers, and any other packet, stop by name. */
+   The packets themselves draw nothing. Each buffer then goes to the renderer (runtime/renderer.h),
+   which runs the drawing calls recorded for it when the display is on. Constant command buffers,
+   and any other packet, stop by name. */
 #define MAX_SUBMITTED_BUFFERS 64
 
 static int32_t submit_command_buffers(uint32_t count, void **draw_buffers, const uint32_t *draw_bytes,
@@ -423,6 +426,7 @@ static int32_t submit_command_buffers(uint32_t count, void **draw_buffers, const
     for (uint32_t k = 0; k < count; k++) {
         if (!draw_buffers[k] && draw_bytes[k]) rt_fatal(fn, "a command buffer without an address");
         complete_packets(fn, draw_buffers[k], draw_bytes[k] / sizeof(uint32_t), 0, 0);
+        rt_renderer_submit(fn, draw_buffers[k], draw_bytes[k]); /* its recorded drawing calls, when the renderer is on */
     }
     return 0;
 }

@@ -269,8 +269,15 @@ Instead:
         addresses (layouts from their register blocks; translations cached by code and layout),
         makes or reuses a pipeline, and draws into images that stand for the render targets,
         found by their addresses.
-     4. **Showing a frame.** At a flip, video out presents the image whose address is the flipped
-        buffer's, in place of today's black frame.
+     4. **Wired into the runtime** (`runtime/renderer.h`): with the display on
+        (`pbboot --display headless|window`, in a build with Vulkan), each buffer
+        `sceGnmSubmitCommandBuffers` or `sceGnmSubmitAndFlipCommandBuffers` submits has its recorded
+        calls run, and at a flip video out shows what was drawn into the flipped buffer's address,
+        in place of the black frame. The executor opens at the first buffer that has recorded calls:
+        giving the GPU the 5 GiB pool takes about 2.4 s (measured on an RTX 3070), long enough to
+        change which thread reaches its first unimplemented call first if it happened at every
+        boot. Until the library's replacements record calls, boots are unchanged in every display
+        mode.
      5. **The observer calls** in the library's replacements, once those are merged; then
         follow the auto-index draw wrapper's callers (`0x015fbb50`) up to the title screen's
         2D passes.
