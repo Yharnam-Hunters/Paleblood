@@ -1089,7 +1089,10 @@ static uint32_t either(translator *t, uint32_t a, uint32_t b) { return value(t, 
 /* buffer_load/store_format_*: the data format is the descriptor's, so the shader decides as it runs.
    Done exactly:
    - stores of whole 32-bit components (DATA_FORMAT 32 to 32_32_32_32; uint, sint or float), at least
-     as many as the access names, identity swizzle: the dwords move as they are;
+     as many as the access names, with DST_SEL keeping each of the format's components in place: the
+     dwords move as they are (a store's memory component DST_SEL[i] - 4 takes data component i, for
+     the format's components only, as shadPS4's lower_buffer_format_to_raw.cpp has it, so the
+     selectors past them change nothing);
    - loads of whole 32-bit components with any swizzle: the format's components are read (the ones it
      lacks read 0), then each result component takes what its DST_SEL names: 0 (selector 0), 1
      (selector 1; 1.0 for float data), or memory component DST_SEL - 4, as shadPS4's
@@ -1106,7 +1109,6 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
     const uint32_t word = load(t, t_uint(t), sgpr(t, srsrc + VSHARP_FORMAT_WORD));
     const uint32_t data_format = descriptor_field(t, word, DATA_FORMAT_SHIFT, 0xf);
     const uint32_t num_format = descriptor_field(t, word, NUM_FORMAT_SHIFT, 0x7);
-    const uint32_t swizzle = descriptor_field(t, word, 0, (1u << DST_SEL_BITS) - 1);
     uint32_t available = konst(t, 0); /* whole 32-bit components in the format */
     for (unsigned dfmt = 0; dfmt < 16; dfmt++) {
         const uint32_t n = float_format_components(dfmt);
@@ -1114,7 +1116,11 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
     }
     const uint32_t whole = either(t, either(t, equals(t, num_format, konst(t, NUM_FORMAT_UINT)), equals(t, num_format, konst(t, NUM_FORMAT_SINT))),
                                   equals(t, num_format, konst(t, NFMT_FLOAT)));
-    const uint32_t identity = equals(t, swizzle, konst(t, DST_SEL_IDENTITY));
+    /* the format's components each in place (selectors past the format's components are not used) */
+    uint32_t identity = spirv_constant_bool(&t->m, 1);
+    for (unsigned c = 0; c < 4; c++)
+        identity = both(t, identity, either(t, value(t, SPV_OP_U_LESS_THAN_EQUAL, t_bool(t), 2, available, konst(t, c)),
+                                            equals(t, descriptor_field(t, word, 3 * c, 0x7), konst(t, DST_SEL_X + c))));
     /* each named component's selector: 0, 1 or 4 to 7 (2 and 3 are reserved) */
     uint32_t selectors_valid = spirv_constant_bool(&t->m, 1);
     for (unsigned c = 0; c < components; c++) {
