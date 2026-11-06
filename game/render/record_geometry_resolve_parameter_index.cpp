@@ -5,6 +5,7 @@
 
 #include "record_geometry_helpers.h"
 #include "record_tuple.h"
+#include "tile_modes.h"
 
 extern "C" uint32_t bb_render_record_geometry_resolve_parameter_index(uint32_t *output, uint32_t word,
                                                                        uint32_t metadata, uint32_t count)
@@ -13,7 +14,6 @@ extern "C" uint32_t bb_render_record_geometry_resolve_parameter_index(uint32_t *
     constexpr uint32_t metadata_limit = 128;
     constexpr uint32_t scale_shift = 6, reduction_shift = 3;
     constexpr uint32_t dword_shift_mask = 31, qword_shift_mask = 63;
-    constexpr uint32_t special_category = 2;
     constexpr uint32_t special_capacity = 64, minimum_capacity = 256, maximum_capacity = 1024;
     constexpr uint32_t minimum_scaled = 64, maximum_scaled = 4096;
     constexpr uint32_t alternate_index_offset = 8;
@@ -46,7 +46,7 @@ extern "C" uint32_t bb_render_record_geometry_resolve_parameter_index(uint32_t *
     scaled >>= reduction_shift;
     const uint32_t shifted = scaled << (second_exponent & dword_shift_mask);
     uint32_t capacity;
-    if (category == special_category) {
+    if (category == render::micro_tile_mode::depth) {
         const uint64_t wide_capacity = uint64_t(special_capacity) << (first_exponent & qword_shift_mask);
         capacity = static_cast<uint32_t>(wide_capacity);
     } else {

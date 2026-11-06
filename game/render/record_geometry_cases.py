@@ -4,7 +4,6 @@
 
 No expected values or game recordings.
 
-Retained complete original analysis establishes input locations and memory extents.
 Cases vary numeric admissions, masking boundaries and untouched caller-owned padding.
 Snapshot comparisons do not prove race/fault behavior or restored temporary writes.
 """
@@ -1549,11 +1548,11 @@ INPUTS = [
 ]
 
 
-def descriptor_fixture(cid, *, word, metadata, count=1, first=65, second=33, third=1, level=0, flags=0, range_value=0):
+def descriptor_fixture(cid, *, word, metadata, encoding=0, count=1, first=65, second=33, third=1, level=0, flags=0, range_value=0):
     arena = bytearray((0x35 + 29 * index) & 255 for index in range(512))
     descriptor = [
         word,
-        0,
+        encoding,
         first,
         second,
         third,
@@ -1581,6 +1580,7 @@ def descriptor_fixture(cid, *, word, metadata, count=1, first=65, second=33, thi
 
 
 def fixtures():
+    """Yield synthetic inputs without calculating expected outputs."""
     registers = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
     for index, inputs in enumerate(INPUTS):
         arena = bytearray((0x35 + 29 * i) & 255 for i in range(512))
@@ -1676,8 +1676,22 @@ def fixtures():
         second=4096,
     )
 
+    # Derive both metadata and the compression range from a nonzero encoding.
+    # The second byte deliberately disagrees with the first byte's range class.
+    for word in (13, 19):
+        for encoding in (0x00002301, 0x0000230E, 0x00000E23, 0x00000E29):
+            in_range = 0x23 <= (encoding & 0xFF) <= 0x29
+            yield descriptor_fixture(
+                f"encoding_04_{encoding:08x}_word{word}",
+                word=word,
+                metadata=1,
+                encoding=encoding,
+                range_value=0 if in_range else 1,
+            )
+
 
 def main():
+    """Write deterministic synthetic cases to the requested directory."""
     destination = Path(sys.argv[1])
     destination.mkdir(parents=True, exist_ok=True)
     cases = list(fixtures())

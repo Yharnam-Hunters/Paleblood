@@ -4,7 +4,6 @@
 
 No expected values or game recordings.
 
-Retained complete original analysis establishes input locations and memory extents.
 Cases vary numeric admissions, masking boundaries and caller-owned canaries.
 Snapshot comparisons do not prove race/fault behavior or restored temporary writes.
 """
@@ -122,6 +121,7 @@ INPUTS = [
 
 
 def fixtures():
+    """Yield synthetic inputs without calculating expected outputs."""
     registers = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
     for index, inputs in enumerate(INPUTS):
         arena = bytearray((0x35 + 29 * i) & 255 for i in range(512))
@@ -154,6 +154,7 @@ def fixtures():
 
 
 def main():
+    """Write deterministic synthetic cases to the requested directory."""
     destination = Path(sys.argv[1])
     destination.mkdir(parents=True, exist_ok=True)
     cases = list(fixtures())

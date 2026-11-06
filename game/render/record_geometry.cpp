@@ -229,11 +229,11 @@ uint32_t prepare_complex_geometry(RecordGeometryResult *output, GeometryState &s
             third_scale = round_masked(third_scale, third_ratio);
         }
         second_scale = round_masked(second_scale, ratio);
-        // The shipped read-only tile/parameter tables keep this product at most
-        // 1024 for every admitted metadata/count/range combination. The original
-        // nevertheless retains the reduction path, including its ratio checks,
-        // exact <= boundary and metadata < 64 exception; those inner arms cannot
-        // be reached with these tables. Keep them for faithful table-driven logic.
+        // Admitted parameter-table entries have first_field == 0. For second_field
+        // 1/2/3, their resolver choices cap scale at 256/128/64; second_field 0
+        // allows at most 1024. Rounding second_scale to the 256-unit ratio cannot
+        // make their product exceed 1024. The reduction therefore stays unreachable
+        // with the shipped read-only tables, but remains part of the table-driven logic.
         if (first_product * second_scale > maximum_product) {
             bool excessive = true;
             uint32_t chosen_first = first_scale;
