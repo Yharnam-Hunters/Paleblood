@@ -311,8 +311,17 @@ Instead:
         one word, `0x01476390` two, `0x014761a0` and `0x014762f0` four, `0x01476240` eight),
         whose arguments come from their disassembly (`game/render/observe_gpu_library.c`). With
         them the game's frame reaches its compute passes' user data, which stops by name until the
-        executor runs compute. Still to report: indexed draws and compute dispatches; then follow
-        the auto-index draw wrapper's callers (`0x015fbb50`) up to the title screen's 2D passes.
+        executor runs compute. **Compute** runs too: `sceGnmSetCsShader` hands the renderer
+        its 7-word register block (`COMPUTE_PGM_LO/HI`, `RSRC1/2`, `NUM_THREAD_X/Y/Z`, the order
+        shadPS4's `gnmdriver.cpp` writes them), placed like the other shaders; the dispatch writers
+        `0x01474c50` and `0x0148a350` (command buffer, x, y, z) are observed; and the executor
+        translates the shader for its workgroup size and runs the dispatch, its writes in the guest
+        memory before the next call. A workgroup's y or z index and its size information stop by
+        name. The two dispatch writers with a fifth argument (`0x01474d10`, `0x0148a410`) are not
+        observed yet. On the game, the frame's first compute shader now stops at
+        `buffer_store_format_xyzw`, whose data format comes from the buffer descriptor at run time.
+        Still to report: indexed draws; then follow the auto-index draw wrapper's callers
+        (`0x015fbb50`) up to the title screen's 2D passes.
 4. **Textures and 3D.** The game's texture formats and tiling (from public format documentation),
    meshes, materials and post-processing.
 

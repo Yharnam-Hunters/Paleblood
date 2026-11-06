@@ -187,8 +187,49 @@ static void write_vgpr(translator *t, unsigned n, uint32_t bits)
     store(t, t->out, vgpr(t, n), value(t, SPV_OP_SELECT, t_uint(t), 3, exec_bit(t), bits, old));
 }
 
+/* A compute lane's place in its 64-lane wave: GCN fills waves with consecutive invocations in the
+   workgroup's flat order (x fastest), so it is that flat index mod 64. */
+enum { WAVE_LANES = 64, WAVE_HALF_LANES = 32, SGPR_VCC_HI = SGPR_VCC + 1 };
+
+static uint32_t wave_lane(translator *t)
+{
+    const uint32_t uvec3 = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_uint(t), 3}, 2);
+    const uint32_t id = load(t, uvec3, t->local_invocation_id);
+    const uint32_t *size = t->layout->local_size;
+    uint32_t flat = value(t, SPV_OP_COMPOSITE_EXTRACT, t_uint(t), 2, id, 2);
+    for (int axis = 1; axis >= 0; axis--) {
+        flat = value(t, SPV_OP_I_MUL, t_uint(t), 2, flat, konst(t, size[axis]));
+        flat = value(t, SPV_OP_I_ADD, t_uint(t), 2, flat, value(t, SPV_OP_COMPOSITE_EXTRACT, t_uint(t), 2, id, (uint32_t)axis));
+    }
+    return value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, flat, konst(t, WAVE_LANES - 1));
+}
+
+/* A scalar write of VCC_LO (s106) or VCC_HI (s107): the 32 lanes of that half of the wave take their
+   bits of the value as their VCC bit; the other half keeps its own. VCC is kept as each lane's bit,
+   which only compute lanes can place in the wave, so other stages stop here. */
+static void write_vcc_half(translator *t, unsigned n, uint32_t bits, const gcn_instruction *ins)
+{
+    if (t->layout->stage != STAGE_COMPUTE) {
+        fail(t, "%s: writing VCC's halves outside a compute shader is not supported yet", ins->name);
+        return;
+    }
+    const uint32_t lane = wave_lane(t), half = n - SGPR_VCC;
+    const uint32_t in_half = value(t, SPV_OP_I_EQUAL, t_bool(t), 2,
+                                   value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, lane, konst(t, 5)), konst(t, half));
+    const uint32_t shifted = value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, bits,
+                                   value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, lane, konst(t, WAVE_HALF_LANES - 1)));
+    const uint32_t bit = value(t, SPV_OP_I_NOT_EQUAL, t_bool(t), 2, value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, shifted, konst(t, 1)),
+                               konst(t, 0));
+    const uint32_t old = load(t, t_bool(t), lane_bit(t, SGPR_VCC));
+    store(t, t->out, lane_bit(t, SGPR_VCC), value(t, SPV_OP_SELECT, t_bool(t), 3, in_half, bit, old));
+}
+
 static void write_sgpr(translator *t, unsigned n, uint32_t bits, const gcn_instruction *ins)
 {
+    if (n == SGPR_VCC || n == SGPR_VCC_HI) {
+        write_vcc_half(t, n, bits, ins);
+        return;
+    }
     if (n >= SGPR_VCC && n != SGPR_M0) {
         fail(t, "%s: writing special register %u is not supported yet", ins->name, n);
         return;

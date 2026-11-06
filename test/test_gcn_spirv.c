@@ -173,6 +173,7 @@ int main(void)
     translates(PROGRAM(pack_halves), "pack_halves");
     translates(PROGRAM(integer_batch), "integer_batch");
     translates(PROGRAM(scalar_batch), "scalar_batch");
+    translates(PROGRAM(vcc_halves), "vcc_halves");
     translates(PROGRAM(transcendentals), "transcendentals");
     translates_as(VERTEX, PROGRAM(vertex_position_color), "vertex_position_color");
     translates_as(PIXEL, PROGRAM(pixel_color), "pixel_color");

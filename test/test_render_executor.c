@@ -142,6 +142,41 @@ int main(void)
     CHECK(rt_executor_run(x, FOURTH, record_triangle_draw(FOURTH, offset + 0x10), error, sizeof error) == -1 &&
           strstr(error, "no pixel shader"));
 
+    /* A compute dispatch (scale_add: out[i] = in[i] * 2.5 + 1, one workgroup of 64) through the record:
+       the shader placed as sceGnmSetCsShader places it, its user data the two buffer descriptors;
+       the results are in the guest memory when the run returns. Then a dispatch with no compute
+       shader, and one whose shader takes its workgroup's y index, stop by name. */
+    {
+        enum { COMPUTE = 0xc0e20000, COMPUTE_CODE = 0x3000, INPUT = 0x20000, OUTPUT = 0x21000, LANES = 64 };
+        memcpy((void *)(uintptr_t)at(COMPUTE_CODE), scale_add, sizeof scale_add);
+        float *input = (float *)(uintptr_t)at(INPUT), *output = (float *)(uintptr_t)at(OUTPUT);
+        for (unsigned i = 0; i < LANES; i++) input[i] = (float)i, output[i] = -1;
+        const uint64_t code = at(COMPUTE_CODE);
+        uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0, 8 << 1, LANES, 1, 1};
+        rt_render_forget();
+        CHECK(rt_render_record_compute_shader_at(COMPUTE + 0x10, shader) == 0);
+        uint32_t user[8];
+        descriptor(user, at(INPUT), 4);
+        descriptor(user + 4, at(OUTPUT), 4);
+        CHECK(rt_render_record_user_data(COMPUTE, 0x20, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+        const uint32_t one[3] = {1, 1, 1};
+        CHECK(rt_render_record_dispatch(COMPUTE, 0x30, one, error, sizeof error) == 0);
+        const int ran = rt_executor_run(x, COMPUTE, 0x40, error, sizeof error);
+        if (ran) fprintf(stderr, "dispatch: %s\n", error);
+        CHECK(ran == 0);
+        int right = 1;
+        for (unsigned i = 0; i < LANES; i++) right &= output[i] == (float)i * 2.5f + 1.0f;
+        CHECK(right);
+
+        rt_render_forget();
+        CHECK(rt_render_record_dispatch(COMPUTE, 0x30, one, error, sizeof error) == 0);
+        CHECK(rt_executor_run(x, COMPUTE, 0x40, error, sizeof error) == -1 && strstr(error, "without a compute shader"));
+        shader[3] |= 1u << 8; /* TGID_Y_EN */
+        CHECK(rt_render_record_compute_shader_at(COMPUTE + 0x10, shader) == 0);
+        CHECK(rt_render_record_dispatch(COMPUTE, 0x30, one, error, sizeof error) == 0);
+        CHECK(rt_executor_run(x, COMPUTE, 0x40, error, sizeof error) == -1 && strstr(error, "y or z index"));
+    }
+
     rt_executor_close(x);
     rt_render_forget();
     munmap((void *)(uintptr_t)GUEST_BASE, GUEST_SIZE);

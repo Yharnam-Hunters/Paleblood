@@ -200,6 +200,18 @@ static const uint32_t pack_halves[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* Scalar writes of VCC's halves: VCC_LO = 0x0000ffff, VCC_HI = 1, then per lane i (in a 64-lane
+   workgroup) out[i] = VCC bit ? 1.0 : 0, so lanes 0-15 and 32 write 1.0. */
+static const uint32_t vcc_halves[] = {
+    0xbeea03ff, 0x0000ffff, /* s_mov_b32 vcc_lo, 0xffff */
+    0xbeeb0381, /* s_mov_b32 vcc_hi, 1 */
+    0x7e0602f2, /* v_mov_b32_e32 v3, 1.0 */
+    0x00040680, /* v_cndmask_b32_e32 v2, 0, v3, vcc */
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0xe0701000, 0x80010201, /* buffer_store_dword v2, v1, s[4:7], 0 offen */
+    0xbf810000, /* s_endpgm */
+};
+
 /* A vertex shader: vertex i's position and colour from 16-byte records (s[0:3] positions, s[4:7]
    colours, by index); the colour goes out as parameter 0. */
 static const uint32_t vertex_position_color[] = {

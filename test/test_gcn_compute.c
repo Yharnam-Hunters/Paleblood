@@ -166,6 +166,11 @@ int main(void)
     CHECK(run(&g, masked_store, sizeof masked_store / sizeof masked_store[0], user) == 0);
     for (int i = 0; i < LANES; i++) CHECK(out_words[i] == (i < 20 ? 0x55u : 0xaaaaaaaau));
 
+    /* VCC's halves written as scalars: each lane's VCC bit is its bit of the half it is in. */
+    memset(out.mapped, 0, BUFFER_BYTES);
+    CHECK(run(&g, vcc_halves, sizeof vcc_halves / sizeof vcc_halves[0], user) == 0);
+    for (int i = 0; i < LANES; i++) CHECK(out_words[i] == ((i < 16 || i == 32) ? 0x3f800000u : 0u));
+
     /* Typed buffers, indexed by lane: records of 16 bytes in, 48 out. */
     enum { IN_STRIDE = 16, OUT_STRIDE = 48, OUT_RECORD_WORDS = OUT_STRIDE / 4 };
     uint32_t typed_user[USER_DATA_WORDS];

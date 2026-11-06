@@ -20,6 +20,7 @@ static struct {
     __typeof__(rt_render_record_user_data) *user_data;
     __typeof__(rt_render_record_register) *reg;
     __typeof__(rt_render_record_instances) *instances;
+    __typeof__(rt_render_record_dispatch) *dispatch;
     fatal_fn fatal;
 } record;
 
@@ -40,6 +41,7 @@ static void look_up(void)
     record.user_data = (__typeof__(record.user_data))host_function("rt_render_record_user_data");
     record.reg = (__typeof__(record.reg))host_function("rt_render_record_register");
     record.instances = (__typeof__(record.instances))host_function("rt_render_record_instances");
+    record.dispatch = (__typeof__(record.dispatch))host_function("rt_render_record_dispatch");
     record.fatal = (fatal_fn)host_function("rt_fatal");
 }
 
@@ -105,4 +107,9 @@ void rt_observe_register(uint64_t buffer, uint32_t offset, uint32_t address, uin
 void rt_observe_instances(uint64_t buffer, uint32_t offset, uint32_t count)
 {
     FORWARD(instances, "render observer: instances", buffer, offset, count);
+}
+
+void rt_observe_dispatch(uint64_t buffer, uint32_t offset, const uint32_t groups[3])
+{
+    FORWARD(dispatch, "render observer: dispatch", buffer, offset, groups);
 }
