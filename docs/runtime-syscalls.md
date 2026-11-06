@@ -1010,8 +1010,22 @@ frames per superframe, bytes left in the superframe, samples per frame}`.
   `0x80930005`, no batch id left `0x80930006`, no instance left `0x80930007`, already registered
   `0x80930009`, not registered `0x8093000A`, revision 0 `0x8093000B`.
 
-**Stops by name:** decoding itself (a run job with input; not provided yet), codecs other than
-ATRAC9, sample formats other than 16-bit, resampling, format inputs and the statistics instance.
+**Decoding.** ATRAC9 is decoded with LibAtrac9 (MIT, vendored unmodified in
+`third_party/libatrac9`), behind a small decoder interface (`runtime/ajm.h`). The decode loop
+answers as shadPS4's does:
+- **Before each frame:** too little output room answers "not enough room" (`0x10`), and less input
+  than the rest of the superframe "partial input" (`0x8`).
+- **Each frame:** it drops the gapless skip and stops at the gapless total. A superframe's padding
+  is skipped, and when the gapless window ends mid-superframe the rest of it is decoded and dropped.
+- **Looping and repeats:** an instance with gapless looping starts the window again. A job repeats
+  frames only with "multiple frames".
+- **Errors:** a decoder error is fatal, with its code as the internal result.
+
+The tests use a stand-in decoder, because no ATRAC9 data may be in the repository, plus the real
+one on junk input.
+
+**Stops by name:** codecs other than ATRAC9, sample formats other than 16-bit, resampling, format
+inputs and outputs, and the statistics instance.
 
 ## Audio output (`sceAudioOutInit`, `sceAudioOutOpen`, `sceAudioOutSetVolume`, `sceAudioOutOutput`, issue #37)
 

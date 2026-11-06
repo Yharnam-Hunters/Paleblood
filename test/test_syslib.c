@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* The runtime's system library implementations, called the way the guest calls them: through the
    RT_SYSLIB registry, by library and symbol. */
+#include "runtime/ajm.h"
 #include "runtime/display.h"
 #include "runtime/equeue.h"
 #include "runtime/gpu_memory.h"
@@ -849,13 +850,29 @@ typedef int32_t (*f_ajm_wait)(uint32_t, uint32_t, uint32_t, void *);
 static f_ajm_run ajm_run_fn;
 static f_ajm_start ajm_start_fn;
 static uint32_t ajm_test_context, ajm_test_instance;
-static void ajm_decode(void)
+/* A stand-in ATRAC9 decoder for the tests (no ATRAC9 data may be in the repository): each frame
+   reads ajm_fake_frame_bytes and writes 256 stereo samples numbered from ajm_fake_next. */
+static int ajm_fake_frame_bytes = 256, ajm_fake_fail;
+static int16_t ajm_fake_next;
+static int ajm_fake_handle;
+static void *ajm_fake_open(const uint8_t config[4], uint32_t *channels) { *channels = 2; return config[0] == 0xFE ? &ajm_fake_handle : NULL; }
+static int ajm_fake_decode(void *d, const uint8_t *in, int16_t *pcm, int *used)
 {
-    static uint8_t batch[0x60], input[64], pcm[4096], sideband[64];
+    (void)d, (void)in;
+    if (ajm_fake_fail) return -5;
+    for (int k = 0; k < 256 * 2; k++) pcm[k] = ajm_fake_next++;
+    *used = ajm_fake_frame_bytes;
+    return 0;
+}
+static void ajm_fake_release(void *d) { (void)d; }
+/* Runs one job on ajm_test_instance: a run job with input and output, or a control job. */
+static int32_t ajm_job(uint64_t flags, const void *in, uint32_t in_size, void *out, uint32_t out_size, void *sideband, uint32_t sideband_size)
+{
+    static uint8_t batch[0x60];
     uint32_t id;
-    const uint8_t *end = ajm_run_fn(batch, ajm_test_instance, 0x800000001001ull, input, sizeof input, pcm, sizeof pcm,
-                                    sideband, sizeof sideband, NULL);
-    ajm_start_fn(ajm_test_context, batch, (uint32_t)(end - batch), 0, NULL, &id);
+    const uint8_t *end = ajm_run_fn(batch, ajm_test_instance, flags, (void *)in, in_size, out, out_size, sideband, sideband_size, NULL);
+    const int32_t started = ajm_start_fn(ajm_test_context, batch, (uint32_t)(end - batch), 0, NULL, &id);
+    return started ? started : ((int32_t (*)(uint32_t, uint32_t, uint32_t, void *))fn("libSceAjm", "sceAjmBatchWait"))(ajm_test_context, id, 0, NULL);
 }
 
 /* libSceAudioOut start-up: initialize once, then open the observed main port. */
@@ -2458,7 +2475,60 @@ int main(void)
             CHECK(cancel(context, batch_id) == 0);                                /* already run: nothing to cancel */
             CHECK(wait(context, batch_id, 0xffffffffu, NULL) == 0 && wait(context, batch_id, 0, NULL) == (int32_t)0x80930004u);
             CHECK(cancel(context, batch_id) == (int32_t)0x80930004u);
-            CHECK(died_in_fatal(ajm_decode));                                    /* decoding is not provided yet */
+            /* decoding, with the stand-in decoder: frames, room, partial input, superframe padding, gapless */
+            static const rt_ajm_decoder fake = {ajm_fake_open, ajm_fake_decode, ajm_fake_release};
+            rt_ajm_set_decoder(&fake);
+            static uint8_t at9[4096];
+            static int16_t pcm[256 * 2 * 8];
+            struct { int32_t result, internal; int32_t consumed, written; uint64_t total; uint32_t frames, reserved; } side;
+            const uint64_t stream_frames = 0x800000001000ull;                     /* Stream + MultipleFrames */
+            CHECK(control(batch, instance, 0x6001, init_params, 8, control_out, 32, NULL) != NULL);
+            uint32_t init_id;
+            const uint8_t *init_end = control(batch, instance, 0x6001, init_params, 8, control_out, 32, NULL);
+            CHECK(ajm_start_fn(context, batch, (uint32_t)(init_end - batch), 0, NULL, &init_id) == 0 && wait(context, init_id, 0, NULL) == 0);
+            ajm_fake_next = 0;
+            memset(&side, 0, sizeof side);
+            CHECK(ajm_job(stream_frames, at9, 1024, pcm, sizeof pcm, &side, sizeof side) == 0);
+            CHECK(side.result == 0 && side.consumed == 1024 && side.written == 4 * 1024 && side.total == 1024 && side.frames == 4);
+            CHECK(pcm[0] == 0 && pcm[511] == 511 && pcm[2047] == 2047);         /* frames in order, interleaved */
+            memset(&side, 0, sizeof side);                                         /* room for one frame and a half */
+            CHECK(ajm_job(stream_frames, at9, 1024, pcm, 1536, &side, sizeof side) == 0);
+            CHECK(side.result == 0x10 && side.frames == 1 && side.consumed == 256 && side.written == 1024);
+            memset(&side, 0, sizeof side);                                         /* less than the rest of the superframe */
+            CHECK(ajm_job(stream_frames, at9, 512, pcm, sizeof pcm, &side, sizeof side) == 0);
+            CHECK(side.result == 0x8 && side.frames == 0 && side.consumed == 0);
+            memset(&side, 0, sizeof side);                                         /* the rest: three frames */
+            CHECK(ajm_job(stream_frames, at9, 768, pcm, sizeof pcm, &side, sizeof side) == 0 && side.frames == 3 && side.total == 2048u); /* since the reset */
+            ajm_fake_frame_bytes = 200;                                            /* frames shorter than a quarter: padding */
+            memset(&side, 0, sizeof side);
+            CHECK(ajm_job(stream_frames, at9, 1024, pcm, sizeof pcm, &side, sizeof side) == 0 && side.consumed == 1024 && side.frames == 4);
+            ajm_fake_frame_bytes = 256;
+            /* gapless: skip 100, keep 300 samples; the rest of the superframe is decoded and dropped */
+            struct { uint32_t total; uint16_t skip, skipped; } gap = {300, 100, 0};
+            uint32_t gap_id;
+            const uint8_t *gap_end = control(batch, instance, 0x200000002001ull, &gap, sizeof gap, control_out, 32, NULL);
+            CHECK(ajm_start_fn(context, batch, (uint32_t)(gap_end - batch), 0, NULL, &gap_id) == 0 && wait(context, gap_id, 0, NULL) == 0);
+            struct { int32_t result, internal; int32_t consumed, written; uint64_t total; uint32_t gap_total; uint16_t gap_skip, gap_skipped; uint32_t frames, r; } gside;
+            memset(&gside, 0, sizeof gside);
+            ajm_fake_next = 0;
+            CHECK(ajm_job(stream_frames | (1ull << 45), at9, 1024, pcm, sizeof pcm, &gside, sizeof gside) == 0);
+            CHECK(gside.result == 0 && gside.written == 300 * 4 && gside.total == 300u && gside.consumed == 1024 && gside.frames == 2);
+            CHECK(pcm[0] == 200 && gside.gap_total == 0 && gside.gap_skip == 0);   /* 100 stereo samples skipped */
+            /* a decoder error is fatal, with the decoder's code */
+            ajm_fake_fail = 1;
+            memset(&side, 0, sizeof side);
+            CHECK(ajm_job(stream_frames, at9, 1024, pcm, sizeof pcm, &side, sizeof side) == 0);
+            CHECK((uint32_t)side.result == 0xC0000000u && side.internal == -5);
+            ajm_fake_fail = 0;
+            rt_ajm_set_decoder(NULL);
+            /* the real decoder: junk input is a codec error */
+            static uint8_t junk[1024];
+            for (int k = 0; k < 1024; k++) junk[k] = (uint8_t)(k * 37 + 11);
+            const uint8_t *real_end = control(batch, instance, 0x6001, init_params, 8, control_out, 32, NULL);
+            CHECK(ajm_start_fn(context, batch, (uint32_t)(real_end - batch), 0, NULL, &init_id) == 0 && wait(context, init_id, 0, NULL) == 0);
+            memset(&side, 0, sizeof side);
+            CHECK(ajm_job(stream_frames, junk, sizeof junk, pcm, sizeof pcm, &side, sizeof side) == 0);
+            CHECK(((uint32_t)side.result & 0xC0000000u) == 0xC0000000u && side.internal != 0);
             CHECK(destroy(context, instance) == 0 && destroy(context, instance) == (int32_t)0x80930003u);
             CHECK(finalize(context) == 0 && finalize(context) == (int32_t)0x80930002u);
         }

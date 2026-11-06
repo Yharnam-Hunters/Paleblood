@@ -34,12 +34,20 @@
      0x80930017 cancelled.
 
    The runtime runs a batch's jobs when it is started, on the calling thread (bbhost does the same
-   for this title), so a wait finds it finished. Control jobs are modelled (initialize with the
-   ATRAC9 configuration word, reset, gapless), and so is the codec info, all derived from the
-   configuration. Decoding audio is not provided yet: a run job with input stops by name. Other
-   codecs, resampling, the format input and the statistics instance stop by name too. */
+   for this title), so a wait finds it finished. ATRAC9 is decoded with LibAtrac9 (MIT,
+   third_party/libatrac9) behind a small interface (runtime/ajm.h), as shadPS4 runs its decode
+   loop: before each frame, too little output room answers "not enough room" and less input than
+   the rest of the superframe "partial input"; each frame drops the gapless skip and stops at the
+   gapless total, a superframe's padding is skipped, the rest of a superframe is decoded and
+   dropped when the gapless window ends mid-way, and an instance with gapless looping starts the
+   window again; a job repeats frames only with "multiple frames"; a decoder error is fatal with
+   its code. Other codecs, sample formats other than 16-bit, resampling, format inputs and outputs
+   and the statistics instance stop by name. */
 #include "runtime/process.h"
+#include "runtime/ajm.h"
 #include "runtime/syslib.h"
+
+#include "libatrac9.h"
 
 #include <pthread.h>
 #include <stdint.h>
@@ -86,11 +94,15 @@ typedef struct {
     int used;
     uint32_t codec;
     uint64_t flags;
-    int configured;               /* an initialize gave it a configuration word */
+    int configured;               /* an initialize gave it a valid configuration word */
     uint8_t config[4];
-    atrac9_codec_info info;
-    sideband_gapless gapless;
-    uint64_t total_samples;       /* decoded since the last reset */
+    void *decoder;                /* the decoder's handle, from the initialize */
+    const struct rt_ajm_decoder *opened_by; /* the decoder that made it, which releases it */
+    uint32_t channels;
+    atrac9_codec_info info;       /* next_frame_bytes: what is left of the current superframe */
+    uint32_t frames_into_superframe;
+    sideband_gapless gapless_initial, gapless; /* as last set, and what is left of it */
+    uint64_t total_samples;       /* written since the last reset */
 } ajm_instance;
 
 typedef struct {
@@ -104,6 +116,36 @@ static pthread_mutex_t ajm_lock = PTHREAD_MUTEX_INITIALIZER;
 static ajm_context contexts[MAX_CONTEXTS + 1]; /* by id; 0 is never an id */
 
 static ajm_context *context_of(uint32_t id) { return id >= 1 && id <= MAX_CONTEXTS && contexts[id].used ? &contexts[id] : NULL; }
+
+/* The ATRAC9 decoder: LibAtrac9, or the tests' stand-in (rt_ajm_set_decoder). */
+static void *libatrac9_open(const uint8_t config[4], uint32_t *channels)
+{
+    void *handle = Atrac9GetHandle();
+    Atrac9CodecInfo codec;
+    if (handle && !Atrac9InitDecoder(handle, (unsigned char *)config) && !Atrac9GetCodecInfo(handle, &codec)) {
+        *channels = (uint32_t)codec.channels;
+        return handle;
+    }
+    if (handle) Atrac9ReleaseHandle(handle);
+    return NULL;
+}
+
+static int libatrac9_decode(void *handle, const uint8_t *in, int16_t *pcm, int *used)
+{
+    return Atrac9Decode(handle, in, pcm, used);
+}
+
+static const rt_ajm_decoder libatrac9 = {libatrac9_open, libatrac9_decode, Atrac9ReleaseHandle};
+static const rt_ajm_decoder *decoder = &libatrac9;
+
+void rt_ajm_set_decoder(const rt_ajm_decoder *replacement) { decoder = replacement ? replacement : &libatrac9; }
+
+static void release_decoder(ajm_instance *instance)
+{
+    if (instance->decoder) instance->opened_by->release(instance->decoder);
+    instance->decoder = NULL;
+    instance->configured = 0;
+}
 
 static int32_t ajm_initialize(int64_t reserved, uint32_t *context)
 {
@@ -123,6 +165,7 @@ static int32_t ajm_finalize(uint32_t context)
 {
     pthread_mutex_lock(&ajm_lock);
     ajm_context *c = context_of(context);
+    for (int i = 1; c && i <= MAX_INSTANCES; i++) release_decoder(&c->instances[i]);
     if (c) c->used = 0;
     pthread_mutex_unlock(&ajm_lock);
     return c ? 0 : AJM_ERROR_INVALID_CONTEXT;
@@ -184,7 +227,7 @@ static int32_t ajm_instance_destroy(uint32_t context, uint32_t instance)
     ajm_context *c = context_of(context);
     ajm_instance *i = instance_of(c, instance);
     const int32_t result = !c ? AJM_ERROR_INVALID_CONTEXT : !i ? AJM_ERROR_INVALID_INSTANCE : 0;
-    if (i) i->used = 0;
+    if (i) release_decoder(i), i->used = 0;
     pthread_mutex_unlock(&ajm_lock);
     return result;
 }
@@ -243,9 +286,8 @@ typedef struct {
     uint64_t flags;
     const uint8_t *input_control, *input_run;
     uint64_t input_control_bytes, input_run_bytes;
-    uint8_t *output_control;
-    uint64_t output_control_bytes;
-    int has_output_run;
+    uint8_t *output_control, *output_run;
+    uint64_t output_control_bytes, output_run_bytes;
 } job;
 
 /* The ATRAC9 configuration word (LibAtrac9's ReadConfigData), read most significant bit first:
@@ -288,7 +330,10 @@ static void parse_job(const char *fn, const uint8_t *at, uint32_t bytes, job *ou
             if (out->input_run) rt_fatal(fn, "a job with more than one input buffer: not provided");
             out->input_run = (const uint8_t *)(uintptr_t)pointer, out->input_run_bytes = size;
             break;
-        case CHUNK_OUTPUT_RUN: out->has_output_run = 1; break;
+        case CHUNK_OUTPUT_RUN:
+            if (out->output_run) rt_fatal(fn, "a job with more than one output buffer: not provided");
+            out->output_run = (uint8_t *)(uintptr_t)pointer, out->output_run_bytes = size;
+            break;
         case CHUNK_OUTPUT_CONTROL: out->output_control = (uint8_t *)(uintptr_t)pointer, out->output_control_bytes = size; break;
         case CHUNK_RETURN_ADDRESS: break;
         default: rt_fatal(fn, "a job chunk the runtime does not know");
@@ -303,46 +348,164 @@ static void put_sideband(uint8_t **at, const uint8_t *end, const void *data, siz
     if (*at && (size_t)(end - *at) >= size) memcpy(*at, data, size), *at += size;
 }
 
+enum { RESULT_NOT_INITIALIZED = 0x1, RESULT_INVALID_DATA = 0x2, RESULT_INVALID_PARAMETER = 0x4, RESULT_PARTIAL_INPUT = 0x8,
+       RESULT_NOT_ENOUGH_ROOM = 0x10, RESULT_CODEC_ERROR = 0x40000000, RESULT_FATAL = (int32_t)0x80000000u };
+enum { INSTANCE_GAPLESS_LOOP = 1 << 10, MAX_FRAME_PCM = 256 * 8 };
+
+static int gapless_ended(const ajm_instance *i) { return i->gapless_initial.total_samples && !i->gapless.total_samples; }
+
+static void gapless_restart(ajm_instance *i)
+{
+    i->gapless = (sideband_gapless){.total_samples = i->gapless_initial.total_samples, .skip_samples = i->gapless_initial.skip_samples};
+}
+
+/* Starts decoding from the stored configuration word: a fresh decoder, a whole superframe ahead. */
+static int start_decoder(ajm_instance *i)
+{
+    release_decoder(i);
+    if (read_atrac9_config(i->config, &i->info)) return -1;
+    i->decoder = decoder->open(i->config, &i->channels);
+    i->opened_by = decoder;
+    if (!i->decoder) return -1;
+    i->frames_into_superframe = 0;
+    i->configured = 1;
+    return 0;
+}
+
+/* The bytes of PCM the next frame writes, after the samples still to skip and within the window. */
+static uint32_t next_frame_pcm_bytes(const ajm_instance *i)
+{
+    const uint32_t skip = i->gapless.skip_samples < i->info.frame_samples ? i->gapless.skip_samples : i->info.frame_samples;
+    uint32_t samples = i->info.frame_samples - skip;
+    if (i->gapless_initial.total_samples && i->gapless.total_samples < samples) samples = i->gapless.total_samples;
+    return samples * i->channels * (uint32_t)sizeof(int16_t);
+}
+
+/* A new gapless window, as shadPS4 applies one: each value changes only by what is not yet used. */
+static void set_gapless(ajm_instance *i, const sideband_gapless *in, int32_t *result)
+{
+    const uint32_t processed = i->gapless_initial.total_samples - i->gapless.total_samples;
+    if (in->total_samples || !in->skip_samples) {
+        if (in->total_samples >= processed) {
+            i->gapless.total_samples -= i->gapless_initial.total_samples - in->total_samples;
+            i->gapless_initial.total_samples = in->total_samples;
+        } else {
+            *result |= RESULT_INVALID_PARAMETER;
+        }
+    }
+    const uint32_t skipped = i->gapless_initial.skip_samples - i->gapless.skip_samples;
+    if (in->skip_samples || !in->total_samples) {
+        if (in->skip_samples >= skipped) {
+            i->gapless.skip_samples = (uint16_t)(i->gapless.skip_samples - (i->gapless_initial.skip_samples - in->skip_samples));
+            i->gapless_initial.skip_samples = in->skip_samples;
+        } else {
+            *result |= RESULT_INVALID_PARAMETER;
+        }
+    }
+}
+
+/* Decodes one frame from *in into *out, trimming to the gapless window; the samples written per
+   channel, or -1 on a decoder error (then the result carries it, and its code). */
+static int decode_frame(ajm_instance *i, const uint8_t **in, uint8_t **out, uint64_t *out_room, sideband_result *result)
+{
+    static int16_t pcm[MAX_FRAME_PCM]; /* not on the title's thread stack; ajm_lock is held */
+    int used = 0;
+    const int status = i->opened_by->decode(i->decoder, *in, pcm, &used);
+    if (status) {
+        result->result |= RESULT_CODEC_ERROR | RESULT_FATAL;
+        result->internal_result = status;
+        return -1;
+    }
+    *in += used;
+    i->info.next_frame_bytes -= (uint32_t)used;
+    const uint32_t frame = i->info.frame_samples;
+    const uint32_t skip = i->gapless.skip_samples < frame ? i->gapless.skip_samples : frame;
+    i->gapless.skip_samples = (uint16_t)(i->gapless.skip_samples - skip);
+    uint32_t samples = frame - skip;
+    if (i->gapless_initial.total_samples && samples > i->gapless.total_samples) samples = i->gapless.total_samples;
+    const uint64_t room_samples = *out_room / (i->channels * sizeof(int16_t));
+    if (samples > room_samples) samples = (uint32_t)room_samples;
+    const size_t bytes = (size_t)samples * i->channels * sizeof(int16_t);
+    memcpy(*out, pcm + (size_t)skip * i->channels, bytes);
+    *out += bytes, *out_room -= bytes;
+    i->gapless.skipped_samples = (uint16_t)(i->gapless.skipped_samples + (frame - samples));
+    if (i->gapless_initial.total_samples) i->gapless.total_samples -= samples;
+    if (++i->frames_into_superframe == i->info.frames_in_superframe) {
+        *in += i->info.next_frame_bytes; /* the superframe's padding */
+        i->info.next_frame_bytes = i->info.superframe_bytes, i->frames_into_superframe = 0;
+    } else if (gapless_ended(i)) {
+        while (i->frames_into_superframe++ < i->info.frames_in_superframe) { /* decode the rest of the superframe, unused */
+            if (i->opened_by->decode(i->decoder, *in, pcm, &used)) break;
+            *in += used;
+            i->info.next_frame_bytes -= (uint32_t)used;
+        }
+        *in += i->info.next_frame_bytes;
+        i->info.next_frame_bytes = i->info.superframe_bytes, i->frames_into_superframe = 0;
+    }
+    return (int)samples;
+}
+
 static void run_job(const char *fn, ajm_context *c, const job *j)
 {
     ajm_instance *instance = instance_of(c, j->instance);
     sideband_result result = {0};
-    if (!instance) result.result = (int32_t)0x80000004u; /* fatal, invalid parameter: no such instance */
+    if (!instance) result.result = RESULT_FATAL | RESULT_INVALID_PARAMETER; /* no such instance */
     const uint8_t *in = j->input_control, *in_end = in ? in + j->input_control_bytes : NULL;
+    uint32_t frames = 0;
+    uint64_t consumed = 0, written = 0;
     if (instance) {
         if (j->flags & (FLAG_RESAMPLE | FLAG_FORMAT) && in) rt_fatal(fn, "resampling and format inputs are not provided");
         if (j->flags & FLAG_RESET) {
             instance->total_samples = 0;
-            instance->gapless = (sideband_gapless){0};
-            instance->info.next_frame_bytes = instance->info.superframe_bytes;
+            gapless_restart(instance);
+            if (instance->configured && start_decoder(instance)) result.result |= RESULT_INVALID_DATA;
         }
         if ((j->flags & FLAG_GAPLESS) && in && in_end - in >= (long)sizeof(sideband_gapless)) {
             sideband_gapless gapless;
             memcpy(&gapless, in, sizeof gapless);
             in += sizeof gapless;
-            instance->gapless.total_samples = gapless.total_samples, instance->gapless.skip_samples = gapless.skip_samples;
+            set_gapless(instance, &gapless, &result.result);
         }
         if (j->flags & FLAG_INITIALIZE) {
             if (!in || in_end - in < 8) rt_fatal(fn, "an initialize without its 8-byte parameters");
             memcpy(instance->config, in, 4);
-            instance->configured = read_atrac9_config(instance->config, &instance->info) == 0;
-            if (!instance->configured) result.result |= 0x2; /* invalid data */
+            if (start_decoder(instance)) result.result |= RESULT_INVALID_DATA;
             instance->total_samples = 0;
         }
-        if (j->input_run && j->input_run_bytes) rt_fatal(fn, "decoding ATRAC9 audio is not provided yet");
-        if ((j->flags & FLAG_GET_CODEC_INFO) && !instance->configured) result.result |= 0x1; /* not initialized */
+        const uint8_t *data = j->input_run, *data_end = data ? data + j->input_run_bytes : NULL;
+        uint8_t *pcm_out = j->output_run;
+        uint64_t room = j->output_run_bytes;
+        while (data && data < data_end) {
+            if (!instance->configured) { result.result |= RESULT_NOT_INITIALIZED; break; }
+            if ((instance->flags & INSTANCE_GAPLESS_LOOP) && gapless_ended(instance)) {
+                gapless_restart(instance);
+                instance->total_samples = 0;
+            }
+            if (!gapless_ended(instance) && room < next_frame_pcm_bytes(instance)) result.result |= RESULT_NOT_ENOUGH_ROOM;
+            if ((uint64_t)(data_end - data) < instance->info.next_frame_bytes) result.result |= RESULT_PARTIAL_INPUT;
+            if (result.result) break;
+            const int samples = decode_frame(instance, &data, &pcm_out, &room, &result);
+            if (samples < 0) break;
+            instance->total_samples += (uint32_t)samples;
+            frames++;
+            if (!(j->flags & FLAG_MULTIPLE_FRAMES)) break;
+        }
+        if (data) consumed = (uint64_t)(data - j->input_run);
+        written = j->output_run_bytes - room;
+        if ((j->flags & FLAG_GET_CODEC_INFO) && !instance->configured) result.result |= RESULT_NOT_INITIALIZED;
     }
     uint8_t *out = j->output_control, *end = out ? out + j->output_control_bytes : NULL;
     put_sideband(&out, end, &result, sizeof result);
     if (!instance) return;
     if (j->flags & FLAG_STREAM) {
-        const sideband_stream stream = {.total_samples = instance->total_samples};
+        const sideband_stream stream = {(int32_t)consumed, (int32_t)written, instance->total_samples};
         put_sideband(&out, end, &stream, sizeof stream);
     }
+    if (j->flags & FLAG_FORMAT) rt_fatal(fn, "a format output is not provided");
     if (j->flags & FLAG_GAPLESS) put_sideband(&out, end, &instance->gapless, sizeof instance->gapless);
     if (j->flags & FLAG_MULTIPLE_FRAMES) {
-        const uint32_t frames[2] = {0, 0};
-        put_sideband(&out, end, frames, sizeof frames);
+        const uint32_t frame_count[2] = {frames, 0};
+        put_sideband(&out, end, frame_count, sizeof frame_count);
     }
     if ((j->flags & FLAG_GET_CODEC_INFO) && instance->configured) put_sideband(&out, end, &instance->info, sizeof instance->info);
 }
