@@ -177,10 +177,9 @@ their float operand order, rather than keep the stock time step because one isol
 looks invalid. Retain the exact XML revision and replay all its writes before reasoning about
 option coverage; other revisions may differ. The file at that commit has SHA-256
 `cb85bec1aa772b1092327b231bcf81e42b8670d73a0a7032cf061e6da9d29e00`: check yours before
-`tools/patch_overlap.py` or `tools/verify.py --patch`. The `patches/Bloodborne.xml` in bbport
-checkouts is bbport's own patch set, not this file, and lacks some of its lines (for example
-the `60 FPS++` write at `0x0183E2B2`), so a check against it can fail where the community
-patches don't, or miss an edit they make.
+`tools/patch_overlap.py` or `tools/verify.py --patch`. Any other patch file can differ (it may
+lack lines such as the `60 FPS++` write at `0x0183E2B2`), so a check against it can fail where
+the community patches don't, or miss an edit they make.
 
 
 ## Unknown FMOD thread names do not initialize the affinity output
