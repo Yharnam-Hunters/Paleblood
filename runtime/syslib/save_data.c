@@ -43,6 +43,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -146,18 +147,29 @@ static int32_t not_initialized(void)
     return sdk < SDK_2_00 ? (int32_t)0x809F000Bu : sdk < SDK_2_50 ? (int32_t)0x80960002u : (int32_t)0x809F0001u;
 }
 
+/* Builds a host path; one that does not fit the buffer stops by name instead of being cut short. */
+static void path_printf(const char *caller, char *out, size_t size, const char *format, ...)
+    __attribute__((format(printf, 4, 5)));
+static void path_printf(const char *caller, char *out, size_t size, const char *format, ...)
+{
+    va_list arguments;
+    va_start(arguments, format);
+    const int n = vsnprintf(out, size, format, arguments);
+    va_end(arguments);
+    if (n < 0 || (size_t)n >= size) rt_fatal(caller, "a path longer than the runtime's buffer");
+}
+
 /* <savedata dir>/<user>, with an optional leaf; stops when the runtime was given no directory. */
 static void user_path(const char *caller, const char *leaf, char *out, size_t size)
 {
     if (!rt_process.savedata_dir) rt_fatal(caller, "no save data directory given (tools/boot.py --savedata)");
-    if ((size_t)snprintf(out, size, "%s/%d%s%s", rt_process.savedata_dir, (int)RT_USER_ID, leaf ? "/" : "", leaf ? leaf : "") >= size)
-        rt_fatal(caller, "a path longer than the runtime's buffer");
+    path_printf(caller, out, size, "%s/%d%s%s", rt_process.savedata_dir, (int)RT_USER_ID, leaf ? "/" : "", leaf ? leaf : "");
 }
 
 static int make_directories(const char *path) /* mkdir -p */
 {
     char partial[4096];
-    snprintf(partial, sizeof partial, "%s", path);
+    path_printf("save data", partial, sizeof partial, "%s", path);
     for (char *p = partial + 1; *p; p++) {
         if (*p != '/') continue;
         *p = 0;
@@ -170,7 +182,7 @@ static int make_directories(const char *path) /* mkdir -p */
 static int write_file(const char *path, const void *data, size_t size)
 {
     char temporary[4200];
-    snprintf(temporary, sizeof temporary, "%s.new", path);
+    path_printf("save data", temporary, sizeof temporary, "%s.new", path);
     FILE *f = fopen(temporary, "wb");
     if (!f) return -1;
     const int ok = fwrite(data, 1, size, f) == size;
@@ -195,7 +207,7 @@ static int path_exists(const char *path)
 static int read_param(const char *save_dir, save_param *out)
 {
     char path[4300];
-    snprintf(path, sizeof path, "%s/sce_sys/param.bin", save_dir);
+    path_printf("save data", path, sizeof path, "%s/sce_sys/param.bin", save_dir);
     FILE *f = fopen(path, "rb");
     if (!f) return -1;
     const int ok = fread(out, 1, sizeof *out, f) == sizeof *out;
@@ -206,9 +218,9 @@ static int read_param(const char *save_dir, save_param *out)
 static int write_param(const char *save_dir, const save_param *param)
 {
     char path[4300];
-    snprintf(path, sizeof path, "%s/sce_sys", save_dir);
+    path_printf("save data", path, sizeof path, "%s/sce_sys", save_dir);
     if (make_directories(path)) return -1;
-    snprintf(path, sizeof path, "%s/sce_sys/param.bin", save_dir);
+    path_printf("save data", path, sizeof path, "%s/sce_sys/param.bin", save_dir);
     return write_file(path, param, sizeof *param);
 }
 
@@ -273,7 +285,7 @@ static int32_t mount_save(const mount_request *request, mount_result *result)
     if (error) goto done;
     char save_dir[4096], sce_sys[4200];
     user_path(fn, request->dir_name, save_dir, sizeof save_dir);
-    snprintf(sce_sys, sizeof sce_sys, "%s/sce_sys", save_dir);
+    path_printf(fn, sce_sys, sizeof sce_sys, "%s/sce_sys", save_dir);
     const int exists = path_exists(sce_sys);
     if (!exists && !create && !create_or_open) error = SAVE_ERROR_NOT_FOUND;
     else if (exists && create) error = SAVE_ERROR_EXISTS;
@@ -283,8 +295,8 @@ static int32_t mount_save(const mount_request *request, mount_result *result)
         if (make_directories(save_dir) || write_param(save_dir, &fresh)) rt_fatal(fn, "the host could not create the save directory");
         char from[4200], to[4300];
         if ((request->mode & MODE_COPY_ICON) && rt_process.app0_dir) {
-            snprintf(from, sizeof from, "%s/sce_sys/save_data.png", rt_process.app0_dir);
-            snprintf(to, sizeof to, "%s/icon0.png", sce_sys);
+            path_printf(fn, from, sizeof from, "%s/sce_sys/save_data.png", rt_process.app0_dir);
+            path_printf(fn, to, sizeof to, "%s/icon0.png", sce_sys);
             FILE *in = fopen(from, "rb");
             if (in) {
                 char buffer[65536];
@@ -300,8 +312,8 @@ static int32_t mount_save(const mount_request *request, mount_result *result)
     snprintf(point, sizeof point, "/savedata%d", free_slot);
     if (rt_mount_add(point, save_dir, read_only)) rt_fatal(fn, "the runtime's mount table refused the save");
     mounts[free_slot] = (save_mount){.used = 1, .read_only = read_only};
-    snprintf(mounts[free_slot].dir_name, sizeof mounts[free_slot].dir_name, "%s", request->dir_name);
-    snprintf(mounts[free_slot].host_dir, sizeof mounts[free_slot].host_dir, "%s", save_dir);
+    path_printf(fn, mounts[free_slot].dir_name, sizeof mounts[free_slot].dir_name, "%s", request->dir_name);
+    path_printf(fn, mounts[free_slot].host_dir, sizeof mounts[free_slot].host_dir, "%s", save_dir);
     memcpy(result->mount_point, point, MOUNT_POINT_BYTES); /* before SDK 4.50 nothing else is written */
 done:
     pthread_mutex_unlock(&save_lock);
@@ -371,7 +383,7 @@ static int32_t save_icon_file(const char *mount_point, const save_icon *icon)
     if (!error && mounts[slot].read_only) error = SAVE_ERROR_BAD_MOUNTED;
     if (!error) {
         char path[4300];
-        snprintf(path, sizeof path, "%s/sce_sys/icon0.png", mounts[slot].host_dir);
+        path_printf(fn, path, sizeof path, "%s/sce_sys/icon0.png", mounts[slot].host_dir);
         const uint64_t n = icon->buffer_size < icon->data_size ? icon->buffer_size : icon->data_size;
         if (write_file(path, icon->buffer, (size_t)n)) rt_fatal(fn, "the host could not write the icon");
     }
@@ -427,11 +439,11 @@ static int32_t dir_name_search(const search_condition *condition, search_result 
         if (!valid_dir_name(e->d_name) || strlen(e->d_name) >= DIR_NAME_BYTES || !strncmp(e->d_name, "sce_", 4)) continue;
         if (condition->dir_name && condition->dir_name[0] && !like(condition->dir_name, e->d_name)) continue;
         char save_dir[4400];
-        snprintf(save_dir, sizeof save_dir, "%s/%s", user_dir, e->d_name);
+        path_printf(fn, save_dir, sizeof save_dir, "%s/%s", user_dir, e->d_name);
         found_save entry = {0};
         if (read_param(save_dir, &entry.param)) continue; /* no sce_sys/param.bin: not a save */
         if (total == MAX_FOUND) rt_fatal(fn, "more saves than the runtime lists");
-        snprintf(entry.name, sizeof entry.name, "%s", e->d_name);
+        path_printf(fn, entry.name, sizeof entry.name, "%s", e->d_name);
         found[total++] = entry;
     }
     if (dir) closedir(dir);
@@ -459,7 +471,7 @@ done:
 static void memory_path(const char *caller, const char *leaf, char *out, size_t size)
 {
     char relative[64];
-    snprintf(relative, sizeof relative, "sce_sdmemory%s%s", leaf ? "/" : "", leaf ? leaf : "");
+    path_printf(caller, relative, sizeof relative, "sce_sdmemory%s%s", leaf ? "/" : "", leaf ? leaf : "");
     user_path(caller, relative, out, size);
 }
 
