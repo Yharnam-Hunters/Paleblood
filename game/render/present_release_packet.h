@@ -27,4 +27,7 @@ RT_ORIGINAL(0x014778f0, emit_present_release_packet,
             uintptr_t(PacketBuffer *, uint32_t selector, uint32_t flags,
                       uint64_t address, uint32_t mode, uint64_t data,
                       uint32_t stack_selector, uint32_t stack_mode));
+RT_ORIGINAL(0x02abb6d0, emit_present_release_delegate,
+            uintptr_t(PacketBuffer *, uint32_t selector, uint64_t address,
+                      uint64_t data, uint32_t stack_selector));
 }  // namespace render

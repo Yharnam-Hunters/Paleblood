@@ -28,6 +28,11 @@ static_assert(offsetof(PresentBufferPool, counter) == 0x20);
 static_assert(sizeof(PresentBufferPool) == 0x28);
 static_assert(sizeof(uintptr_t) == sizeof(uint64_t));
 
+RT_ORIGINAL(0x02ad3d40, capture_present_buffer_pool_record,
+            uint64_t(const PresentBufferPool *, uint64_t begin));
+RT_ORIGINAL(0x02ad3b80, pop_present_buffer_pool,
+            uint32_t(PresentBufferPool *, void *acquired_buffer));
+
 namespace present_pool_calls {
 // Advance the pool counter through its original helper. The marker's shared
 // compare/exchange operation preserves the executable's marker contract.

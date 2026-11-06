@@ -2,7 +2,7 @@
 
 Paleblood is a decompilation of Bloodborne with its own runtime: the game's code rewritten as readable C++, one verified function at a time.
 <!-- status:start -->
-The game doesn't run on Paleblood yet: 21 of 157757 functions are verified (0.01%). On [our own runtime](runtime/) the executable's boot gets as far as `scePlayGoInitialize` (libScePlayGo), with 369 of 686 system imports implemented.
+The game doesn't run on Paleblood yet: 21 of 157757 functions are verified (0.01%). On [our own runtime](runtime/) the executable's boot gets as far as `sceGnmSubmitCommandBuffers`, which stops by name (constant command buffers: the stand-in does not run them), with 383 of 686 system imports implemented.
 <!-- status:end -->
 
 The goal is a complete source port: every function rewritten and proved, running on our own
@@ -75,8 +75,11 @@ the applicable cases in `test/test_syslib.c`. Unknown target behavior must stay 
 loudly; do not choose guessed return values just to advance `tools/boot.py`.
 
 Runtime code is clean-room: use public API documentation, independent reverse engineering, and
-observed behavior as facts. Do not copy, adapt, or model implementation code from another PS4
-runtime or emulator. Keep one call or a
+observed behavior as facts. Independent reverse engineering includes the system libraries of your
+own console's firmware (for example libkernel or libSceVideoOut): name each one by its SHA-256 in
+the runtime report, take facts from it (shapes, checks, values, order), and write your own code.
+Never copy its code, and never attach or link the files. Do not copy, adapt, or model
+implementation code from another PS4 runtime or emulator. Keep one call or a
 tightly related group in each PR. Runtime-only PRs need no proprietary game dump, captures, or
 function-level `verify.py` results. CI compiles with GCC and Clang, runs the RT_SYSLIB test and
 the rest of CTest, and retains the repository's policy checks. It also builds and tests your PR

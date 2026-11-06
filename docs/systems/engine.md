@@ -95,6 +95,7 @@ on current `main`, and an independent review approved it.
 | `0x011c47f0` | 29 | `engine_string_length` | edge-verified | Engine strlen; scan to the first NUL and return the low 32 length bits zero-extended into RAX; other incoming GP registers are ignored |
 | `0x011c4870` | 51 | `engine_string_append` | edge-verified | NUL-terminated string append returns original destination; includes prefixes beyond four bytes and finite aliases |
 | `0x011c48b0` | 60 | `engine_string_append_counted` | edge-verified | Bounded string append uses low32 count; zero count touches neither pointer; appends NUL after count bytes when needed |
+| `0x011c48f0` | 18 | `engine_ascii_to_lower` | edge-verified | ASCII lowercase of the low input byte; sign-extend the result byte to 32 bits; the upper 32 bits of RAX are zero |
 | `0x011c4910` | 44 | `engine_ascii_to_upper_in_place` | edge-verified | Convert ASCII a-z to A-Z in place through NUL; retain all other bytes and return original pointer; caller 0x01127ca0 |
 | `0x011c4940` | 44 | `engine_ascii_to_lower_in_place` | edge-verified | Convert ASCII A-Z to a-z in place through NUL; retain all other bytes and return original pointer; caller 0x01127ca0 |
 | `0x011c4970` | 29 | `engine_compare_signed_strings` | edge-verified | Compare zero-terminated strings by signed bytes and return their first differing byte subtraction |

@@ -12,11 +12,12 @@ PT_SCE_RELRO = 0x61000010
 DT_SCE_EXPORT_LIB, DT_SCE_IMPORT_LIB = 0x61000013, 0x61000015
 
 
-def build(segments, symbols, relocations, jump_slots=(), entry=0, libraries=(), relro_segments=()):
+def build(segments, symbols, relocations, jump_slots=(), entry=0, libraries=(), relro_segments=(), tls=None):
     """segments: (vaddr, bytes, memsz, flags); symbols: (name, type, defined_value or None);
     relocations / jump_slots: (target, type, symbol index (1-based, 0 for none), addend);
     libraries: (DT_SCE_IMPORT_LIB or DT_SCE_EXPORT_LIB, name, id).
-    relro_segments: separate SCE RELRO allocations, using the same tuple as segments."""
+    relro_segments: separate SCE RELRO allocations, using the same tuple as segments.
+    tls: optional (vaddr, filesz, memsz, alignment), aliasing a segment's file bytes."""
     strtab = b'\0'
     library_tags = []
     for tag, name, ident in libraries:
@@ -40,19 +41,25 @@ def build(segments, symbols, relocations, jump_slots=(), entry=0, libraries=(), 
             *library_tags, (0, 0)]
     dynamic = b''.join(struct.pack('<qQ', t, v) for t, v in tags)
     image_segments = [(1, *s) for s in segments] + [(PT_SCE_RELRO, *s) for s in relro_segments]
-    nph = len(image_segments) + 2
+    nph = len(image_segments) + 2 + (tls is not None)
     offset = (64 + 56 * nph + 0xfff) // 0x1000 * 0x1000
     body, phdrs = b'', []
     for segment_type, vaddr, data, memsz, flags in image_segments:
-        phdrs.append((segment_type, flags, offset + len(body), vaddr, len(data), memsz))
+        phdrs.append((segment_type, flags, offset + len(body), vaddr, len(data), memsz, 0x10))
         body += data
         body = body.ljust((len(body) + 15) // 16 * 16, b'\0')
-    phdrs.append((2, 6, offset + len(body), 0, len(dynamic), len(dynamic)))
+    if tls is not None:
+        # Initialization bytes alias their existing allocated-file mapping.
+        vaddr, filesz, memsz, alignment = tls
+        source = next(off + vaddr - va for kind, flags, off, va, fs, ms, al in phdrs
+                      if va <= vaddr and vaddr - va <= fs and filesz <= fs - (vaddr - va))
+        phdrs.append((7, 4, source, vaddr, filesz, memsz, alignment))
+    phdrs.append((2, 6, offset + len(body), 0, len(dynamic), len(dynamic), 0x10))
     body += dynamic
-    phdrs.append((0x61000000, 4, offset + len(body), 0, len(dynlib), 0))
+    phdrs.append((0x61000000, 4, offset + len(body), 0, len(dynlib), 0, 0x10))
     body += dynlib
     header = b'\x7fELF' + bytes([2, 1, 1, 9]) + bytes(8)
     header += struct.pack('<HHIQQQIHHHHHH', 0xfe10, 62, 1, entry, 64, 0, 0, 64, 56, nph, 64, 0, 0)
     # type, flags, offset, vaddr, paddr, filesz, memsz, align
-    ph = b''.join(struct.pack('<IIQQQQQQ', t, fl, off, va, va, fs, ms, 0x10) for t, fl, off, va, fs, ms in phdrs)
+    ph = b''.join(struct.pack('<IIQQQQQQ', t, fl, off, va, va, fs, ms, al) for t, fl, off, va, fs, ms, al in phdrs)
     return (header + ph).ljust(offset, b'\0') + body

@@ -41,6 +41,7 @@ ADDRESS = "0x02ad3b80"
 
 
 def cases():
+    """Observe acquisition and sticky processed-marker status across the pool scan."""
     for count in (0, 1, 3):
         for marker in (0, 1, 2):
             for counter in (0, 0xFFFFFFFFFFFFFFFF):
@@ -69,6 +70,7 @@ def cases():
     # counter return -1 starts the scan at block zero.
     for name, markers, results in (
         ("released_then_failed_claim_one", (2, 0), (1,)),
+        ("processed_then_busy_markers", (2, 1), ()),
         ("released_then_failed_claim_two", (2, 0), (2,)),
         ("failed_claim_two_without_released_marker", (0, 1), (2,)),
         ("failed_claim_one_without_released_marker", (0, 1), (1,)),
@@ -103,6 +105,7 @@ def cases():
 
 
 def main():
+    """Write deterministic synthetic cases to the requested directory."""
     if len(sys.argv) != 2:
         print(__doc__, file=sys.stderr)
         return 2
