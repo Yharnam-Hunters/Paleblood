@@ -1113,6 +1113,16 @@ static f_sd_memory sd_get;
 static void sd_mount_other_title(void) { sd_mount_req q = {.user = 1, .title = "CUSA00000", .dir = "X", .mode = 4}; sd_mount_res r; sd_mount(&q, &r); }
 static void sd_mount_other_user(void) { sd_mount_req q = {.user = 9, .dir = "X", .mode = 4}; sd_mount_res r; sd_mount(&q, &r); }
 static void sd_get_past_end(void) { char b[8]; sd_get(1, b, 8, 4093); }
+static int32_t sd_mount_dir(const char *dir, uint32_t mode, char point[16]);
+static int32_t sd_small_stack_result = -1;
+static void *sd_small_stack_mount(void *unused)
+{
+    (void)unused;
+    char point[16];
+    sd_small_stack_result = sd_mount_dir("SMALLSTACK", 4 | 2, point);
+    if (!sd_small_stack_result) sd_small_stack_result = ((f_sd_point)fn("libSceSaveData", "sceSaveDataUmount"))(point);
+    return NULL;
+}
 static int32_t sd_mount_dir(const char *dir, uint32_t mode, char point[16])
 {
     sd_mount_req q = {.user = 1, .dir = dir, .blocks = 96, .mode = mode};
@@ -3149,6 +3159,14 @@ int main(void)
             CHECK(sd_mount(&negative, &unused) == (int32_t)0x809F0011u);
             CHECK(sd_mount_dir("SAVE0", 4 | 2, point) == 0 && !strcmp(point, "/savedata0"));
             CHECK(sd_mount_dir("SAVE0", 2, NULL) == (int32_t)0x809F0003u);        /* already mounted */
+            {   /* a title thread's stack can be small: a mount must fit in 64 KiB */
+                pthread_attr_t small;
+                pthread_t thread;
+                CHECK(pthread_attr_init(&small) == 0 && pthread_attr_setstacksize(&small, 64 * 1024) == 0);
+                CHECK(pthread_create(&thread, &small, sd_small_stack_mount, NULL) == 0 && pthread_join(thread, NULL) == 0);
+                CHECK(sd_small_stack_result == 0);
+                pthread_attr_destroy(&small);
+            }
             /* the title's own file through the mount, landing in the save folder */
             typedef int32_t (*f_sd_close)(int32_t);
             const f_kopen open_fn = (f_kopen)fn("libkernel", "sceKernelOpen");
@@ -3195,7 +3213,7 @@ int main(void)
             CHECK(sd_search(&cond, &res) == 0 && res.hits == 2 && res.set == 1);
             cond.dir = NULL;
             res.capacity = 4;
-            CHECK(sd_search(&cond, &res) == 0 && res.hits == 18);
+            CHECK(sd_search(&cond, &res) == 0 && res.hits == 19);          /* with SMALLSTACK */
             cond.key = 6;
             CHECK(sd_search(&cond, &res) == (int32_t)0x809F0000u);
             /* the memory-backed save */

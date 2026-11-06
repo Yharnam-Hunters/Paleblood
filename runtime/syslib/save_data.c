@@ -136,6 +136,8 @@ typedef struct {
     char host_dir[4096];
 } save_mount;
 
+/* The title's threads call these on their own stacks, which can be small: path and copy buffers
+   are static, used only while save_lock is held, never on the stack. */
 static pthread_mutex_t save_lock = PTHREAD_MUTEX_INITIALIZER;
 static int initialized;
 static save_mount mounts[MAX_MOUNTS];
@@ -168,7 +170,7 @@ static void user_path(const char *caller, const char *leaf, char *out, size_t si
 
 static int make_directories(const char *path) /* mkdir -p */
 {
-    char partial[4096];
+    static char partial[4096];
     path_printf("save data", partial, sizeof partial, "%s", path);
     for (char *p = partial + 1; *p; p++) {
         if (*p != '/') continue;
@@ -181,7 +183,7 @@ static int make_directories(const char *path) /* mkdir -p */
 
 static int write_file(const char *path, const void *data, size_t size)
 {
-    char temporary[4200];
+    static char temporary[4200];
     path_printf("save data", temporary, sizeof temporary, "%s.new", path);
     FILE *f = fopen(temporary, "wb");
     if (!f) return -1;
@@ -206,7 +208,7 @@ static int path_exists(const char *path)
 
 static int read_param(const char *save_dir, save_param *out)
 {
-    char path[4300];
+    static char path[4300];
     path_printf("save data", path, sizeof path, "%s/sce_sys/param.bin", save_dir);
     FILE *f = fopen(path, "rb");
     if (!f) return -1;
@@ -217,7 +219,7 @@ static int read_param(const char *save_dir, save_param *out)
 
 static int write_param(const char *save_dir, const save_param *param)
 {
-    char path[4300];
+    static char path[4300];
     path_printf("save data", path, sizeof path, "%s/sce_sys", save_dir);
     if (make_directories(path)) return -1;
     path_printf("save data", path, sizeof path, "%s/sce_sys/param.bin", save_dir);
@@ -283,7 +285,7 @@ static int32_t mount_save(const mount_request *request, mount_result *result)
     }
     if (!error && free_slot < 0) error = SAVE_ERROR_MOUNT_FULL;
     if (error) goto done;
-    char save_dir[4096], sce_sys[4200];
+    static char save_dir[4096], sce_sys[4200];
     user_path(fn, request->dir_name, save_dir, sizeof save_dir);
     path_printf(fn, sce_sys, sizeof sce_sys, "%s/sce_sys", save_dir);
     const int exists = path_exists(sce_sys);
@@ -293,13 +295,13 @@ static int32_t mount_save(const mount_request *request, mount_result *result)
     if (!exists) {
         save_param fresh = {.mtime = (int64_t)time(NULL)};
         if (make_directories(save_dir) || write_param(save_dir, &fresh)) rt_fatal(fn, "the host could not create the save directory");
-        char from[4200], to[4300];
+        static char from[4200], to[4300];
         if ((request->mode & MODE_COPY_ICON) && rt_process.app0_dir) {
             path_printf(fn, from, sizeof from, "%s/sce_sys/save_data.png", rt_process.app0_dir);
             path_printf(fn, to, sizeof to, "%s/icon0.png", sce_sys);
             FILE *in = fopen(from, "rb");
             if (in) {
-                char buffer[65536];
+                static char buffer[65536];
                 FILE *out = fopen(to, "wb");
                 for (size_t n; out && (n = fread(buffer, 1, sizeof buffer, in)) > 0;) fwrite(buffer, 1, n, out);
                 if (out) fclose(out);
@@ -382,7 +384,7 @@ static int32_t save_icon_file(const char *mount_point, const save_icon *icon)
     if (!error && slot < 0) error = SAVE_ERROR_NOT_MOUNTED;
     if (!error && mounts[slot].read_only) error = SAVE_ERROR_BAD_MOUNTED;
     if (!error) {
-        char path[4300];
+        static char path[4300];
         path_printf(fn, path, sizeof path, "%s/sce_sys/icon0.png", mounts[slot].host_dir);
         const uint64_t n = icon->buffer_size < icon->data_size ? icon->buffer_size : icon->data_size;
         if (write_file(path, icon->buffer, (size_t)n)) rt_fatal(fn, "the host could not write the icon");
@@ -432,13 +434,13 @@ static int32_t dir_name_search(const search_condition *condition, search_result 
     if (rt_compiled_sdk_version() >= SDK_2_50 && result->infos) rt_fatal(fn, "block counts (SDK 2.50 and later) are not modelled");
     static found_save found[MAX_FOUND];
     uint32_t total = 0;
-    char user_dir[4096];
+    static char user_dir[4096];
     user_path(fn, NULL, user_dir, sizeof user_dir);
     DIR *dir = opendir(user_dir);
     for (struct dirent *e; dir && (e = readdir(dir));) {
         if (!valid_dir_name(e->d_name) || strlen(e->d_name) >= DIR_NAME_BYTES || !strncmp(e->d_name, "sce_", 4)) continue;
         if (condition->dir_name && condition->dir_name[0] && !like(condition->dir_name, e->d_name)) continue;
-        char save_dir[4400];
+        static char save_dir[4400];
         path_printf(fn, save_dir, sizeof save_dir, "%s/%s", user_dir, e->d_name);
         found_save entry = {0};
         if (read_param(save_dir, &entry.param)) continue; /* no sce_sys/param.bin: not a save */
@@ -482,7 +484,7 @@ static int32_t setup_memory(int32_t user, uint64_t size, const save_param *param
     int32_t error = !initialized ? not_initialized() : !size ? SAVE_ERROR_PARAMETER : 0;
     if (!error) error = check_user(fn, user);
     if (!error) {
-        char dir[4096], file[4200];
+        static char dir[4096], file[4200];
         memory_path(fn, NULL, dir, sizeof dir);
         memory_path(fn, "memory.dat", file, sizeof file);
         if (make_directories(dir)) rt_fatal(fn, "the host could not create the memory save's directory");
@@ -510,7 +512,7 @@ static int32_t memory_io(const char *caller, int32_t user, void *buffer, uint64_
     if (error) goto done;
     if ((uint64_t)offset > memory_size || size > memory_size - (uint64_t)offset)
         rt_fatal(caller, "a read or write past the size set up: the answer is not established");
-    char file[4200];
+    static char file[4200];
     memory_path(caller, "memory.dat", file, sizeof file);
     const int h = open(file, writing ? O_WRONLY | O_CLOEXEC : O_RDONLY | O_CLOEXEC);
     if (h < 0) rt_fatal(caller, "the host could not open the memory save");
