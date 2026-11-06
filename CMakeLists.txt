@@ -64,6 +64,11 @@ target_include_directories(test_render_observer PRIVATE runtime/include)
 target_link_libraries(test_render_observer ${CMAKE_DL_LIBS} pthread)
 set_target_properties(test_render_observer PROPERTIES ENABLE_EXPORTS ON)
 add_test(NAME render_observer COMMAND test_render_observer)
+# Observe hooks: the observer sees the arguments and the original still runs (runtime/observe_hooks.h).
+add_executable(test_observe_hooks test/test_observe_hooks.c)
+target_link_libraries(test_observe_hooks bbrt)
+set_target_properties(test_observe_hooks PROPERTIES ENABLE_EXPORTS ON)
+add_test(NAME observe_hooks COMMAND test_observe_hooks)
 
 add_executable(test_host_hooks test/test_host_hooks.c runtime/host_hooks.c)
 target_include_directories(test_host_hooks PRIVATE runtime/include)

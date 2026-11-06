@@ -292,9 +292,16 @@ Instead:
         `tools/boot.py --game-lib build/game/libbbgame.so --no-record` runs a boot with the
         replacements, and with the display on the game's first draw reaches the executor: a
         fullscreen pass drawn as a rect list (primitive type 17), which stops by name until the
-        executor draws rect lists. Still to report: render targets, user data, indexed draws and
-        compute dispatches; then follow the auto-index draw wrapper's callers (`0x015fbb50`) up
-        to the title screen's 2D passes.
+        executor draws rect lists. **Observe hooks** (`runtime/observe_hooks.h`) report what has no replacement yet:
+        the hook calls an observer with the call's arguments, then the original runs from its
+        first instructions relocated next to the image, so every packet is still the original's.
+        A replacement, when one lands, takes the address and its observe hook is dropped. They
+        cover `setRenderTarget` (`0x014738b0`) and the five user-data writers (`0x01476420`
+        one word, `0x01476390` two, `0x014761a0` and `0x014762f0` four, `0x01476240` eight),
+        whose arguments come from their disassembly (`game/render/observe_gpu_library.c`). With
+        them the game's frame reaches its compute passes' user data, which stops by name until the
+        executor runs compute. Still to report: indexed draws and compute dispatches; then follow
+        the auto-index draw wrapper's callers (`0x015fbb50`) up to the title screen's 2D passes.
 4. **Textures and 3D.** The game's texture formats and tiling (from public format documentation),
    meshes, materials and post-processing.
 

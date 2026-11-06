@@ -13,7 +13,7 @@ else()
     set(PB_TRACE_SOURCES trace_none.c)
     message(STATUS "capture tracing: off (Capstone not found)")
 endif()
-add_library(bbrt STATIC hooks.c plugin.c host_hooks.c capture.c capture_trace.cpp capture_hooks.c capture_entry.S probe.c loader.c nid.c render_observer.c
+add_library(bbrt STATIC hooks.c plugin.c host_hooks.c capture.c capture_trace.cpp capture_hooks.c capture_entry.S probe.c loader.c nid.c render_observer.c observe_hooks.c observe_entry.S
             ${PB_TRACE_SOURCES})
 target_include_directories(bbrt PUBLIC include)
 target_link_libraries(bbrt PUBLIC ${CMAKE_DL_LIBS} pthread)

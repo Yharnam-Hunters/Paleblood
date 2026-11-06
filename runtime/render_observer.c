@@ -43,6 +43,12 @@ static void look_up(void)
     record.fatal = (fatal_fn)host_function("rt_fatal");
 }
 
+int rt_render_observer_available(void)
+{
+    pthread_once(&looked_up, look_up);
+    return record.draw_auto != NULL;
+}
+
 /* The record refused a call: the replacement handed it something it does not take. */
 static void refused(const char *call, const char *reason)
 {

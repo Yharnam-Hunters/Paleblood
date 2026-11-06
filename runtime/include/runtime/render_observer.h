@@ -21,6 +21,9 @@
 extern "C" {
 #endif
 
+/* Whether the host has the renderer's record: 1 when observer calls reach it. */
+int rt_render_observer_available(void);
+
 void rt_observe_color_target(uint64_t buffer, uint32_t offset, unsigned slot,
                              const uint32_t words[RT_COLOR_TARGET_WORDS] /* NULL: slot off */);
 void rt_observe_viewport(uint64_t buffer, uint32_t offset, unsigned index, float zmin, float zmax, const float scale[3],
