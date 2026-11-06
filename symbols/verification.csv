@@ -185,6 +185,8 @@ physics_instance_construct_01c0c2b0,edge,60,21,21,0,0,ca3412adb293c909,2026-10-0
 physics_instance_construct_01c0c2b0,edge,uncapped,21,21,0,0,ca3412adb293c909,2026-10-07
 render_calculate_record_descriptor_level_offset,edge,,30,30,0,0,a5d954dded06630e,2026-11-05
 render_calculate_second_auxiliary,edge,,78,78,0,0,deb55a42a7809e02,2026-11-04
+render_clear_swap_chain_cached_record,edge,,4,4,0,0,a60ba829b4ee3339,2026-11-05
+render_clear_swap_chain_curve,edge,,4,4,0,0,5a71df9af3b63595,2026-11-05
 render_command_emit_counter_operation,edge,,16,16,0,0,c0e3c539e38745c7,2026-11-05
 render_command_prepare_submission,edge,,11,11,0,0,9822deb01ff1c2ff,2026-11-05
 render_compose_record_encoding_fields,edge,,30,30,0,0,c6bfe3dc4c1e12ad,2026-11-05
