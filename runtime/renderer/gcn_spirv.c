@@ -1124,6 +1124,62 @@ static uint32_t unorm8_value(translator *t, uint32_t byte)
     return load(t, t_uint(t), element);
 }
 
+/* The 8- and 16-bit formats a load reads byte by byte (AMD's BUF_DATA_FORMAT numbering, as shadPS4's
+   DataFormat has it): each component's bytes and the format's component count. */
+static const struct {
+    uint32_t data_format, bytes, count;
+} small_formats[] = {{1, 1, 1}, {2, 2, 1}, {3, 1, 2}, {5, 2, 2}, {10, 1, 4}, {12, 2, 4}};
+
+enum { MAX_SMALL_FORMAT_DWORDS = 3 }; /* 8 bytes from an address 2 past a dword boundary */
+
+/* A small format's components (memory[0..3], the missing ones 0) at the byte address base + offset:
+   the dwords that hold them are loaded aligned, and each component's bytes taken out of them. uint
+   components are zero-extended, sint ones sign-extended, 8-bit unorm ones v / 255 as a float's bits. */
+static void small_components(translator *t, uint32_t base, uint32_t offset, uint32_t component_bytes, uint32_t count,
+                             uint32_t num_format, uint32_t memory[4])
+{
+    const uint32_t address = value(t, SPV_OP_I_ADD, t_ulong(t), 2, base, widen(t, offset));
+    const uint32_t misalign = value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, value(t, SPV_OP_U_CONVERT, t_uint(t), 1, address), konst(t, 3));
+    const uint32_t aligned = value(t, SPV_OP_I_SUB, t_ulong(t), 2, address, widen(t, misalign));
+    const uint32_t end = value(t, SPV_OP_I_ADD, t_uint(t), 2, misalign, value(t, SPV_OP_I_MUL, t_uint(t), 2, component_bytes, count));
+    uint32_t dword[MAX_SMALL_FORMAT_DWORDS];
+    for (uint32_t d = 0; d < MAX_SMALL_FORMAT_DWORDS; d++) {
+        /* only the dwords the format's bytes reach are read */
+        const uint32_t slot = function_variable(t, t_uint(t), konst(t, 0));
+        const uint32_t needed = begin_if(t, value(t, SPV_OP_U_GREATER_THAN, t_bool(t), 2, end, konst(t, d * BYTES_PER_DWORD)));
+        store(t, t->out, slot, load_dword(t, dword_pointer(t, aligned, konst(t, 0), d)));
+        end_if(t, needed);
+        dword[d] = load(t, t_uint(t), slot);
+    }
+    const uint32_t two_bytes = equals(t, component_bytes, konst(t, 2));
+    const uint32_t extend_shift = value(t, SPV_OP_SELECT, t_uint(t), 3, two_bytes, konst(t, 16), konst(t, 24));
+    for (uint32_t m = 0; m < 4; m++) {
+        uint32_t raw = konst(t, 0);
+        for (uint32_t b = 0; b < 2; b++) {
+            const uint32_t at = value(t, SPV_OP_I_ADD, t_uint(t), 2, misalign,
+                                      value(t, SPV_OP_I_ADD, t_uint(t), 2,
+                                            value(t, SPV_OP_I_MUL, t_uint(t), 2, component_bytes, konst(t, m)), konst(t, b)));
+            const uint32_t index = value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, at, konst(t, 2));
+            uint32_t holder = dword[MAX_SMALL_FORMAT_DWORDS - 1];
+            for (uint32_t d = MAX_SMALL_FORMAT_DWORDS - 1; d-- > 0;)
+                holder = value(t, SPV_OP_SELECT, t_uint(t), 3, equals(t, index, konst(t, d)), dword[d], holder);
+            const uint32_t shift = value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2,
+                                         value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, at, konst(t, 3)), konst(t, 3));
+            uint32_t byte = value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, holder, shift),
+                                  konst(t, 0xff));
+            if (b) byte = value(t, SPV_OP_SELECT, t_uint(t), 3, two_bytes, value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, byte, konst(t, 8)),
+                                konst(t, 0));
+            raw = value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, raw, byte);
+        }
+        const uint32_t sign_extended = value(t, SPV_OP_SHIFT_RIGHT_ARITHMETIC, t_uint(t), 2,
+                                             value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, raw, extend_shift), extend_shift);
+        uint32_t v = value(t, SPV_OP_SELECT, t_uint(t), 3, equals(t, num_format, konst(t, NUM_FORMAT_SINT)), sign_extended, raw);
+        v = value(t, SPV_OP_SELECT, t_uint(t), 3, equals(t, num_format, konst(t, NUM_FORMAT_UNORM)),
+                  unorm8_value(t, value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, raw, konst(t, 0xff))), v);
+        memory[m] = value(t, SPV_OP_SELECT, t_uint(t), 3, value(t, SPV_OP_U_LESS_THAN, t_bool(t), 2, konst(t, m), count), v, konst(t, 0));
+    }
+}
+
 /* buffer_load/store_format_*: the data format is the descriptor's, so the shader decides as it runs.
    Done exactly:
    - stores of whole 32-bit components (DATA_FORMAT 32 to 32_32_32_32; uint, sint or float), at least
@@ -1135,8 +1191,12 @@ static uint32_t unorm8_value(translator *t, uint32_t byte)
      lacks read 0), then each result component takes what its DST_SEL names: 0 (selector 0), 1
      (selector 1; 1.0 for float data), or memory component DST_SEL - 4, as shadPS4's
      lower_buffer_format_to_raw.cpp reads them; selectors 2 and 3 are reserved and stop;
-   - loads from 8_8_8_8 unorm: the dword's four bytes (x first) as v / 255 (unorm8_value), then each
-     result component takes what its DST_SEL names, as for 32-bit loads;
+   - loads of 8- and 16-bit components (DATA_FORMAT 8, 16, 8_8, 16_16, 8_8_8_8, 16_16_16_16) as uint
+     (zero-extended), sint (sign-extended), and for 8-bit components unorm (v / 255, unorm8_value):
+     memory is read byte by byte from the access' address, aligned or not, components x first and
+     each little-endian (the formats' layout in AMD's ISA manual, as shadPS4's
+     lower_buffer_format_to_raw.cpp unpacks them); the format's missing components read 0, then each
+     result component takes what its DST_SEL names, as for 32-bit loads (1 is 1.0 for unorm data);
    - a four-component store to 8_8_8_8 unorm whose DST_SEL is a permutation of x, y, z, w: the store
      undoes the swizzle (memory component DST_SEL[i] - 4 takes data component i, the inverse of a
      load's mapping, as shadPS4's lower_buffer_format_to_raw.cpp does), then packs as GLSL's
@@ -1189,8 +1249,17 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
                                              equals(t, seen, konst(t, 0xf)))
                                       : spirv_constant_bool(&t->m, 0);
 
-    const uint32_t packed_load = load_op ? both(t, both(t, equals(t, data_format, konst(t, DATA_FORMAT_8_8_8_8)),
-                                                       equals(t, num_format, konst(t, NUM_FORMAT_UNORM))),
+    /* 8- and 16-bit loads: each component's bytes and the format's component count */
+    uint32_t component_bytes = konst(t, 0), small_count = konst(t, 0);
+    for (size_t f = 0; f < sizeof small_formats / sizeof small_formats[0]; f++) {
+        const uint32_t is = equals(t, data_format, konst(t, small_formats[f].data_format));
+        component_bytes = value(t, SPV_OP_SELECT, t_uint(t), 3, is, konst(t, small_formats[f].bytes), component_bytes);
+        small_count = value(t, SPV_OP_SELECT, t_uint(t), 3, is, konst(t, small_formats[f].count), small_count);
+    }
+    const uint32_t integer = either(t, equals(t, num_format, konst(t, NUM_FORMAT_UINT)), equals(t, num_format, konst(t, NUM_FORMAT_SINT)));
+    const uint32_t unorm8 = both(t, equals(t, num_format, konst(t, NUM_FORMAT_UNORM)), equals(t, component_bytes, konst(t, 1)));
+    const uint32_t packed_load = load_op ? both(t, both(t, value(t, SPV_OP_U_GREATER_THAN, t_bool(t), 2, small_count, konst(t, 0)),
+                                                       either(t, integer, unorm8)),
                                               selectors_valid)
                                          : spirv_constant_bool(&t->m, 0);
     /* neither: the stop code, from any active lane */
@@ -1229,12 +1298,12 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
     end_if(t, raw_merge);
     if (load_op) {
         const uint32_t packed_merge = begin_if(t, both(t, exec_bit(t), packed_load));
-        const uint32_t dword = load_dword(t, dword_pointer(t, base, offset, 0));
         uint32_t memory[4];
-        for (uint32_t m = 0; m < 4; m++) memory[m] = unorm8_value(t, descriptor_field(t, dword, 8 * m, 0xff));
+        small_components(t, base, offset, component_bytes, small_count, num_format, memory);
+        const uint32_t one = value(t, SPV_OP_SELECT, t_uint(t), 3, unorm8, konst(t, 0x3f800000u), konst(t, 1));
         for (uint32_t c = 0; c < components; c++) {
             const uint32_t sel = descriptor_field(t, word, 3 * c, 0x7);
-            uint32_t result = value(t, SPV_OP_SELECT, t_uint(t), 3, equals(t, sel, konst(t, 1)), konst(t, 0x3f800000u), konst(t, 0));
+            uint32_t result = value(t, SPV_OP_SELECT, t_uint(t), 3, equals(t, sel, konst(t, 1)), one, konst(t, 0));
             for (uint32_t m = 0; m < 4; m++)
                 result = value(t, SPV_OP_SELECT, t_uint(t), 3, equals(t, sel, konst(t, DST_SEL_X + m)), memory[m], result);
             write_vgpr(t, vdata + c, result);

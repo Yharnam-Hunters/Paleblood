@@ -667,15 +667,13 @@ static int open_stop_word(rt_executor *x, char *error, size_t error_size)
     return 0;
 }
 
-/* After work has finished: 0, or -1 with the reason when a shader wrote a run-time stop code. */
-static int check_stop_word(rt_executor *x, char *error, size_t error_size)
+/* The reason a run-time stop code (runtime/gcn_spirv.h) gives. Returns -1. */
+static int stop_reason(uint32_t code, char *error, size_t error_size)
 {
-    const uint32_t code = *x->stop_word;
-    if (!code) return 0;
-    *x->stop_word = 0;
     if (code >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_BUFFER_FORMAT)
         return failed(error, error_size, "a %u-component buffer %s with format DATA_FORMAT %u, NUM_FORMAT %u%s at run time: only whole "
-                      "32-bit uint, sint or float components, and four-component 8_8_8_8 unorm stores, are done yet", code & 0x7,
+                      "32-bit uint, sint or float components, 8- and 16-bit uint and sint and 8-bit unorm loads, and "
+                      "four-component 8_8_8_8 unorm stores, are done yet", code & 0x7,
                       code & 0x80 ? "store" : "load", code >> 8 & 0xf, code >> 4 & 0x7, code & 8 ? " and a swizzle" : "");
     if (code >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_VCC_UNKNOWN)
         return failed(error, error_size, "a vertex or pixel shader read VCC as a lane mask after a scalar write of its halves: not done "
@@ -684,6 +682,18 @@ static int check_stop_word(rt_executor *x, char *error, size_t error_size)
         return failed(error, error_size, "a pixel shader loaded an image texel outside the image or past its last level: not done yet "
                       "(what the GPU returns there is not established)");
     return failed(error, error_size, "a shader stopped at run time with code %#x", code);
+}
+
+/* After work has finished: 0, or -1 with the reason when a shader wrote a run-time stop code; the
+   reason names the work's shaders (what: "the compute shader at 0x..." and the like). */
+static int check_stop_word(rt_executor *x, const char *what, char *error, size_t error_size)
+{
+    const uint32_t code = *x->stop_word;
+    if (!code) return 0;
+    *x->stop_word = 0;
+    char reason[512];
+    stop_reason(code, reason, sizeof reason);
+    return failed(error, error_size, "%s: %s", what, reason);
 }
 
 int rt_executor_open(const rt_executor_memory *memory, rt_executor **executor, char *error, size_t error_size)
@@ -1451,7 +1461,10 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int
     vkCmdEndRenderPass(commands);
     if (finish_commands(x, commands)) return failed(error, error_size, "the GPU did not finish a draw");
     if (t) t->drawn = 1, t->staging_current = 0;
-    return check_stop_word(x, error, error_size);
+    char what[96];
+    snprintf(what, sizeof what, "the draw with vertex shader %#llx and pixel shader %#llx", (unsigned long long)s->vertex.code,
+             (unsigned long long)s->pixel.code);
+    return check_stop_word(x, what, error, error_size);
 }
 
 /* The pipeline for a compute shader as dispatched now: translated once per workgroup size and
@@ -1916,7 +1929,9 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &to_host, 0, NULL, 0, NULL);
     if (finish_commands(x, commands)) return failed(error, error_size, "the GPU did not finish a dispatch");
     x->memory_epoch++; /* its stores may have changed any memory, render targets' included */
-    return check_stop_word(x, error, error_size);
+    char what[64];
+    snprintf(what, sizeof what, "the compute shader at %#llx", (unsigned long long)c->code);
+    return check_stop_word(x, what, error, error_size);
 }
 
 /* The indices an indexed draw reads: count from the first, in the index buffer INDEX_BASE names, of
