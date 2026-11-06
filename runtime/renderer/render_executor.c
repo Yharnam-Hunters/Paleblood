@@ -29,7 +29,7 @@
 #include <vulkan/vulkan.h>
 
 enum { MAX_SHADERS = 256, MAX_PIPELINES = 256, MAX_TARGETS = 64, MAX_RECT_STAGES = 16, MAX_COMPUTE_PIPELINES = 256, MAX_IMAGES = 64,
-       MAX_VIEWS = 16, MAX_SAMPLERS = 64 };
+       MAX_VIEWS = 16, MAX_SAMPLERS = 64, MAX_PASSES = 64 };
 enum { USER_DATA_BYTES = GCN_USER_SGPR_MAX * 4, VERTEX_USER_DATA = 0, PIXEL_USER_DATA = USER_DATA_BYTES };
 enum { COLOR_8_8_8_8 = 0xa, NUMBER_UNORM = 0, NUMBER_SRGB = 6, SWAP_STD = 0, SWAP_ALT = 1 };
 enum { PERSP_CENTER_ENA = 0x2, POS_X_FLOAT_ENA = 0x100, POS_Y_FLOAT_ENA = 0x200 };
@@ -53,6 +53,7 @@ typedef struct {
     unsigned image_count;
     gcn_resource_origin samplers[GCN_MAX_SAMPLERS];
     unsigned sampler_count;
+    uint64_t callee;                 /* a vertex shader's fetch shader (its address), or 0 */
     VkShaderModule module;
 } shader_entry;
 
@@ -67,11 +68,38 @@ typedef struct {
     VkFramebuffer framebuffer;
 } target_entry;
 
+/* What a draw does with the depth target: its test and writes, as Vulkan state. No padding: it is
+   compared whole as part of a pipeline's key. */
+typedef struct {
+    uint32_t depth_test, depth_write, depth_compare;   /* VkCompareOp */
+    uint32_t stencil_test, stencil_ops[2][4];           /* front, back: fail, pass, depth fail (VkStencilOp), compare (VkCompareOp) */
+} depth_plan;
+
+/* The image standing for a depth target, found by its depth and stencil buffers' addresses: written
+   only by draws (never read yet), so it starts cleared. */
+typedef struct {
+    uint64_t z_address, stencil_address;
+    uint32_t width, height;
+    VkFormat format;
+    VkImage image;
+    VkDeviceMemory memory;
+    VkImageView view;
+} depth_entry;
+
+/* A render pass and framebuffer for a colour target, a depth target or both (an index, or -1). */
+typedef struct {
+    int color, depth;
+    VkRenderPass pass;
+    VkFramebuffer framebuffer;
+} pass_entry;
+
 typedef struct {
     VkShaderModule vertex, geometry, pixel; /* geometry: the rect-list stage, or none */
     VkRenderPass pass;
     VkPipelineLayout layout;
     uint32_t blend_control;          /* CB_BLEND0_CONTROL */
+    int strip;                       /* triangle strips, not lists */
+    depth_plan depth;
     VkPipeline pipeline;
 } pipeline_entry;
 
@@ -147,6 +175,10 @@ struct rt_executor {
     size_t pipeline_count;
     target_entry targets[MAX_TARGETS];
     size_t target_count;
+    depth_entry depths[MAX_TARGETS];
+    size_t depth_count;
+    pass_entry passes[MAX_PASSES];
+    size_t pass_count;
     int geometry_shaders;            /* the device draws geometry stages (rect lists need one) */
     rect_stage rect_stages[MAX_RECT_STAGES];
     size_t rect_stage_count;
@@ -160,6 +192,10 @@ struct rt_executor {
     volatile uint32_t *stop_word;
     uint64_t stop_address;
 };
+
+/* A depth target's registers from DB_Z_INFO (0xa010) to DB_DEPTH_SLICE (0xa017), in order. */
+enum { Z_INFO, STENCIL_INFO, Z_READ_BASE, STENCIL_READ_BASE, Z_WRITE_BASE, STENCIL_WRITE_BASE, DEPTH_SIZE, DEPTH_SLICE,
+       DEPTH_TARGET_REGISTERS };
 
 /* The state a command buffer builds up, call by call. */
 typedef struct {
@@ -183,17 +219,27 @@ typedef struct {
     uint64_t index_base;
     int index_type_set, index_base_set, index_buffer_size_set;
     float blend_constants[4];        /* CB_BLEND_RED, GREEN, BLUE, ALPHA */
+    /* the depth target's registers, as setting it (or switching it off: DB_Z_INFO and DB_STENCIL_INFO 0)
+       writes them: DB_Z_INFO to DB_DEPTH_SLICE, and DB_DEPTH_VIEW */
+    uint32_t depth_target[DEPTH_TARGET_REGISTERS], depth_view;
+    int z_info_set, stencil_info_set;
+    /* stencil and depth-block state: DB_STENCIL_CONTROL, DB_STENCILREFMASK and _BF, DB_RENDER_CONTROL */
+    uint32_t stencil_control, stencil_reference[2], render_control;
+    int stencil_control_set, stencil_reference_set[2], render_control_set;
 } draw_state;
 
 static int failed(char *error, size_t error_size, const char *format, ...) __attribute__((format(printf, 3, 4)));
 
 /* Registers the executor understands (gfx_7_2_d.h); others stop by name until it does. */
-enum { CB_TARGET_MASK = 0xa08e, CB_BLEND_RED = 0xa105, CB_BLEND_ALPHA = 0xa108, DB_STENCIL_CONTROL = 0xa10b, CB_BLEND0_CONTROL = 0xa1e0,
+enum { DB_RENDER_CONTROL = 0xa000, DB_DEPTH_VIEW = 0xa002, DB_HTILE_DATA_BASE = 0xa005, DB_STENCIL_CLEAR = 0xa00a, DB_DEPTH_CLEAR = 0xa00b,
+       DB_DEPTH_INFO = 0xa00f, DB_Z_INFO = 0xa010, DB_STENCIL_INFO = 0xa011, DB_DEPTH_SLICE = 0xa017, DB_STENCILREFMASK = 0xa10c,
+       DB_STENCILREFMASK_BF = 0xa10d, DB_HTILE_SURFACE = 0xa2af, CB_TARGET_MASK = 0xa08e, CB_BLEND_RED = 0xa105, CB_BLEND_ALPHA = 0xa108, DB_STENCIL_CONTROL = 0xa10b, CB_BLEND0_CONTROL = 0xa1e0,
        CB_BLEND7_CONTROL = 0xa1e7, DB_DEPTH_CONTROL = 0xa200,
        CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242 };
 enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 0x1, Z_ENABLE = 0x2, Z_WRITE_ENABLE = 0x4,
        COLOR_MODE_MASK = 0x70, COLOR_MODE_SHIFT = 4, CB_NORMAL = 1, ROP3_MASK = 0xff0000, ROP3_SHIFT = 16, ROP3_COPY = 0xcc,
-       TARGET0_MASK = 0xf, DI_PT_TRILIST = 4, DI_PT_RECTLIST = 17 };
+       TARGET0_MASK = 0xf, DI_PT_TRILIST = 4, DI_PT_TRISTRIP = 6, DI_PT_RECTLIST = 17, CB_DISABLE = 0, DEPTH_BOUNDS_ENABLE = 0x8,
+       Z_FORMAT_MASK = 0x3, STENCIL_FORMAT_MASK = 0x1 };
 
 /* Keeps a register the library set; 0, or -1 for one the executor does not understand yet. */
 static int set_register(draw_state *s, uint32_t address, uint32_t value)
@@ -204,8 +250,22 @@ static int set_register(draw_state *s, uint32_t address, uint32_t value)
     case CB_COLOR_CONTROL: s->color_control = value, s->color_control_set = 1; return 0;
     case CB_TARGET_MASK: s->target_mask = value, s->target_mask_set = 1; return 0;
     case VGT_PRIMITIVE_TYPE: s->primitive_type = value, s->primitive_set = 1; return 0;
-    case DB_STENCIL_CONTROL: return 0; /* used only while stencil testing is on, which stops below */
+    case DB_STENCIL_CONTROL: s->stencil_control = value, s->stencil_control_set = 1; return 0;
+    case DB_STENCILREFMASK: case DB_STENCILREFMASK_BF:
+        s->stencil_reference[address - DB_STENCILREFMASK] = value, s->stencil_reference_set[address - DB_STENCILREFMASK] = 1;
+        return 0;
+    case DB_RENDER_CONTROL: s->render_control = value, s->render_control_set = 1; return 0;
+    case DB_DEPTH_VIEW: s->depth_view = value; return 0;
+    /* compression metadata (HTILE) and clear values: the executor keeps its own depth images, and clears
+       through DB_RENDER_CONTROL stop below */
+    case DB_HTILE_DATA_BASE: case DB_DEPTH_INFO: case DB_HTILE_SURFACE: case DB_DEPTH_CLEAR: case DB_STENCIL_CLEAR: return 0;
     default:
+        if (address >= DB_Z_INFO && address <= DB_DEPTH_SLICE) {
+            s->depth_target[address - DB_Z_INFO] = value;
+            if (address == DB_Z_INFO) s->z_info_set = 1;
+            if (address == DB_STENCIL_INFO) s->stencil_info_set = 1;
+            return 0;
+        }
         /* targets 1-7 blend only into their own slots, which stop the draw when they are enabled */
         if (address > CB_BLEND0_CONTROL && address <= CB_BLEND7_CONTROL) return 0;
         if (address >= CB_BLEND_RED && address <= CB_BLEND_ALPHA) {
@@ -256,26 +316,96 @@ static int blend_state(uint32_t control, VkPipelineColorBlendAttachmentState *ou
     return 0;
 }
 
-/* Whether the registers describe what the draw below does: opaque triangles into target 0, no
-   depth or stencil test, one instance. 1 when nothing at all would be written (target 0 masked off),
-   0 to draw, -1 with the reason otherwise. */
-static int check_state(const draw_state *s, char *error, size_t error_size)
+/* Depth and stencil, from DB_DEPTH_CONTROL (gfx_7_2_sh_mask.h: STENCIL_ENABLE bit 0, Z_ENABLE 1,
+   Z_WRITE_ENABLE 2, DEPTH_BOUNDS_ENABLE 3, ZFUNC 4-6, BACKFACE_ENABLE 7, STENCILFUNC 8-10,
+   STENCILFUNC_BF 20-22), DB_STENCIL_CONTROL (STENCILFAIL, STENCILZPASS, STENCILZFAIL in bits 0-3, 4-7,
+   8-11, the back face's in 12-23) and DB_STENCILREFMASK (STENCILTESTVAL 0-7, STENCILMASK 8-15,
+   STENCILWRITEMASK 16-23, STENCILOPVAL 24-31; _BF for the back face).
+   - A test works on the depth target's buffer; with none bound (DB_Z_INFO's or DB_STENCIL_INFO's FORMAT
+     0, which switching the target off writes) it has nothing to read or write and the draw goes on as
+     if it were off, as shadPS4 also takes it (its depth test needs a valid depth buffer).
+     Z_WRITE_ENABLE without Z_ENABLE writes nothing, as in Vulkan.
+   - Compare functions are AMD's CompareFrag (Mesa's sid.h V_028800_FRAG_*): never, less, equal, less or
+     equal, greater, not equal, greater or equal, always, the order of Vulkan's VkCompareOp.
+   - Done: tests that do not read the buffer (always or never) and writes: stencil operations keep,
+     zero and replace with the test value (Mesa's V_02842C_STENCIL_KEEP 0, ZERO 1, REPLACE_TEST 3).
+     Reading the buffer (other compare functions), other operations, depth bounds and DB_RENDER_CONTROL's
+     clears and copies stop by name; so does a test while no depth target was ever set in the buffer.
+   0, or -1 with the reason. */
+static int plan_depth(const draw_state *s, depth_plan *plan, char *error, size_t error_size)
 {
-    if (s->primitive_set && s->primitive_type != DI_PT_TRILIST && s->primitive_type != DI_PT_RECTLIST)
-        return failed(error, error_size, "primitive type %u: only triangle and rect lists are drawn yet", s->primitive_type);
+    enum { COMPARE_NEVER = 0, COMPARE_ALWAYS = 7, STENCIL_KEEP = 0, STENCIL_ZERO = 1, STENCIL_REPLACE_TEST = 3, BACKFACE_ENABLE = 0x80 };
+    memset(plan, 0, sizeof *plan);
+    const uint32_t control = s->depth_set ? s->depth_control : 0;
+    if (!(control & (Z_ENABLE | STENCIL_ENABLE | DEPTH_BOUNDS_ENABLE))) return 0;
+    if (!s->z_info_set || !s->stencil_info_set)
+        return failed(error, error_size, "depth or stencil testing (DB_DEPTH_CONTROL %#x) with no depth target set in the buffer", control);
+    const int depth_buffer = (s->depth_target[Z_INFO] & Z_FORMAT_MASK) != 0;
+    const int stencil_buffer = (s->depth_target[STENCIL_INFO] & STENCIL_FORMAT_MASK) != 0;
+    if ((control & DEPTH_BOUNDS_ENABLE) && depth_buffer) return failed(error, error_size, "a depth bounds test: not drawn yet");
+    if ((depth_buffer || stencil_buffer) && s->render_control_set && s->render_control)
+        return failed(error, error_size, "DB_RENDER_CONTROL %#x (depth or stencil clears and copies): not drawn yet", s->render_control);
+    if ((control & Z_ENABLE) && depth_buffer) {
+        const uint32_t compare = control >> 4 & 7;
+        if (compare != COMPARE_ALWAYS && compare != COMPARE_NEVER)
+            return failed(error, error_size, "a depth test reading the depth buffer (ZFUNC %u): not drawn yet", compare);
+        plan->depth_test = 1, plan->depth_compare = compare, plan->depth_write = (control & Z_WRITE_ENABLE) != 0;
+    }
+    if ((control & STENCIL_ENABLE) && stencil_buffer) {
+        if (!s->stencil_control_set) return failed(error, error_size, "a stencil test with no DB_STENCIL_CONTROL set in the buffer");
+        for (unsigned face = 0; face < 2; face++) {
+            const unsigned source = face && (control & BACKFACE_ENABLE) ? 1 : 0; /* without BACKFACE_ENABLE both faces use the front's */
+            if (!s->stencil_reference_set[source])
+                return failed(error, error_size, "a stencil test with no %s set in the buffer", source ? "DB_STENCILREFMASK_BF" : "DB_STENCILREFMASK");
+            const uint32_t compare = control >> (source ? 20 : 8) & 7, ops = s->stencil_control >> (source ? 12 : 0) & 0xfff;
+            if (compare != COMPARE_ALWAYS && compare != COMPARE_NEVER)
+                return failed(error, error_size, "a stencil test reading the stencil buffer (function %u): not drawn yet", compare);
+            for (unsigned k = 0; k < 3; k++) {
+                const uint32_t op = ops >> (4 * k) & 0xf;
+                if (op != STENCIL_KEEP && op != STENCIL_ZERO && op != STENCIL_REPLACE_TEST)
+                    return failed(error, error_size, "stencil operation %u (DB_STENCIL_CONTROL %#x): not drawn yet", op, s->stencil_control);
+                plan->stencil_ops[face][k] = op == STENCIL_KEEP ? VK_STENCIL_OP_KEEP : op == STENCIL_ZERO ? VK_STENCIL_OP_ZERO : VK_STENCIL_OP_REPLACE;
+            }
+            plan->stencil_ops[face][3] = compare;
+        }
+        plan->stencil_test = 1;
+    }
+    return 0;
+}
+
+/* Whether a planned draw writes the depth target: depth writes, or a stencil operation other than keep. */
+static int plan_writes(const depth_plan *plan)
+{
+    if (plan->depth_test && plan->depth_write) return 1;
+    for (unsigned face = 0; plan->stencil_test && face < 2; face++)
+        for (unsigned k = 0; k < 3; k++)
+            if (plan->stencil_ops[face][k] != VK_STENCIL_OP_KEEP) return 1;
+    return 0;
+}
+
+/* Whether the registers describe what the draw below does: opaque or blended triangles into target 0,
+   depth and stencil as plan_depth allows, one instance. Its plan in *plan, and in *colour whether it
+   writes target 0 (not masked off, colour writes on: CB_COLOR_CONTROL's mode not CB_DISABLE). 1 when
+   nothing at all would be written, 0 to draw, -1 with the reason otherwise. */
+static int check_state(const draw_state *s, depth_plan *plan, int *colour, char *error, size_t error_size)
+{
+    if (s->primitive_set && s->primitive_type != DI_PT_TRILIST && s->primitive_type != DI_PT_TRISTRIP && s->primitive_type != DI_PT_RECTLIST)
+        return failed(error, error_size, "primitive type %u: only triangle lists and strips and rect lists are drawn yet", s->primitive_type);
     VkPipelineColorBlendAttachmentState blend;
     if (s->blend0_set && blend_state(s->blend0_control, &blend, error, error_size)) return -1;
-    if (s->depth_set && (s->depth_control & (STENCIL_ENABLE | Z_ENABLE | Z_WRITE_ENABLE)))
-        return failed(error, error_size, "depth or stencil testing (DB_DEPTH_CONTROL %#x) is not drawn yet", s->depth_control);
+    if (plan_depth(s, plan, error, error_size)) return -1;
+    if (s->instances_set && s->instances != 1) return failed(error, error_size, "%u instances: only one is drawn yet", s->instances);
+    *colour = s->color_enabled;
     if (s->color_control_set) {
         const uint32_t mode = (s->color_control & COLOR_MODE_MASK) >> COLOR_MODE_SHIFT, rop = (s->color_control & ROP3_MASK) >> ROP3_SHIFT;
-        if (mode != CB_NORMAL || rop != ROP3_COPY)
+        if (mode == CB_DISABLE) *colour = 0;
+        else if (mode != CB_NORMAL || rop != ROP3_COPY)
             return failed(error, error_size, "colour mode %u, raster operation %#x: only normal copies are drawn yet", mode, rop);
     }
-    if (s->instances_set && s->instances != 1) return failed(error, error_size, "%u instances: only one is drawn yet", s->instances);
-    if (s->target_mask_set && !(s->target_mask & TARGET0_MASK)) return 1;
-    if (s->target_mask_set && (s->target_mask & TARGET0_MASK) != TARGET0_MASK)
+    if (s->target_mask_set && !(s->target_mask & TARGET0_MASK)) *colour = 0;
+    if (*colour && s->target_mask_set && (s->target_mask & TARGET0_MASK) != TARGET0_MASK)
         return failed(error, error_size, "colour write mask %#x: only all four channels are drawn yet", s->target_mask & TARGET0_MASK);
+    if (!*colour && !plan_writes(plan)) return 1;
     return 0;
 }
 
@@ -602,17 +732,178 @@ fail:
     return NULL;
 }
 
+/* ---- depth targets ---- */
+
+/* A depth target's Vulkan format, from DB_Z_INFO's FORMAT (gfx_7_2_enum.h ZFormat: 0 invalid, 1 Z_16,
+   3 Z_32_FLOAT) and DB_STENCIL_INFO's (StencilFormat: 0 invalid, 1 8 bits), when the device keeps it
+   as a depth-stencil attachment. VK_FORMAT_UNDEFINED after failing. */
+static VkFormat depth_format(rt_executor *x, uint32_t z_info, uint32_t stencil_info, char *error, size_t error_size)
+{
+    enum { Z_16 = 1, Z_32_FLOAT = 3 };
+    const uint32_t z = z_info & Z_FORMAT_MASK, stencil = stencil_info & STENCIL_FORMAT_MASK;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    if (z == Z_16) format = stencil ? VK_FORMAT_D16_UNORM_S8_UINT : VK_FORMAT_D16_UNORM;
+    else if (z == Z_32_FLOAT) format = stencil ? VK_FORMAT_D32_SFLOAT_S8_UINT : VK_FORMAT_D32_SFLOAT;
+    else if (!z && stencil) format = VK_FORMAT_S8_UINT;
+    if (format == VK_FORMAT_UNDEFINED) {
+        failed(error, error_size, "a depth target of Z format %u, stencil format %u: not drawn yet", z, stencil);
+        return VK_FORMAT_UNDEFINED;
+    }
+    VkFormatProperties properties;
+    vkGetPhysicalDeviceFormatProperties(x->physical, format, &properties);
+    if (!(properties.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) {
+        failed(error, error_size, "a depth target of Z format %u, stencil format %u, which this device cannot keep (Vulkan format %d)", z,
+               stencil, (int)format);
+        return VK_FORMAT_UNDEFINED;
+    }
+    return format;
+}
+
+/* The image standing for the buffer's depth target: made on first use, kept by its buffers' write
+   addresses (DB_Z_WRITE_BASE, DB_STENCIL_WRITE_BASE, 256-byte units), its size from DB_DEPTH_SIZE
+   (PITCH_TILE_MAX bits 0-10, HEIGHT_TILE_MAX 11-21: eighths of the size, minus one). Only draws write it
+   and no draw reads it yet (plan_depth), so what it starts as is never seen; it is cleared. NULL after
+   failing. */
+static depth_entry *depth_for(rt_executor *x, const draw_state *s, char *error, size_t error_size)
+{
+    enum { SLICE_START_MASK = 0x7ff, SLICE_MAX_SHIFT = 13, SLICE_MAX_MASK = 0x7ff, TILE = 8 };
+    const uint32_t *r = s->depth_target;
+    if ((s->depth_view & SLICE_START_MASK) || (s->depth_view >> SLICE_MAX_SHIFT & SLICE_MAX_MASK)) {
+        failed(error, error_size, "a depth target view of slices other than 0 (DB_DEPTH_VIEW %#x): not drawn yet", s->depth_view);
+        return NULL;
+    }
+    const VkFormat format = depth_format(x, r[Z_INFO], r[STENCIL_INFO], error, error_size);
+    if (format == VK_FORMAT_UNDEFINED) return NULL;
+    const uint64_t z_address = (uint64_t)r[Z_WRITE_BASE] << 8, stencil_address = (uint64_t)r[STENCIL_WRITE_BASE] << 8;
+    const uint32_t width = ((r[DEPTH_SIZE] & 0x7ff) + 1) * TILE, height = ((r[DEPTH_SIZE] >> 11 & 0x7ff) + 1) * TILE;
+    for (size_t i = 0; i < x->depth_count; i++) {
+        depth_entry *d = &x->depths[i];
+        if (d->z_address != z_address || d->stencil_address != stencil_address) continue;
+        if (d->width == width && d->height == height && d->format == format) return d;
+        failed(error, error_size, "depth target %#llx changed size or format: not drawn yet", (unsigned long long)z_address);
+        return NULL;
+    }
+    if (x->depth_count == MAX_TARGETS) {
+        failed(error, error_size, "more depth targets than the executor keeps");
+        return NULL;
+    }
+    depth_entry *d = &x->depths[x->depth_count];
+    *d = (depth_entry){.z_address = z_address, .stencil_address = stencil_address, .width = width, .height = height, .format = format};
+    const VkImageAspectFlags aspects = (format == VK_FORMAT_S8_UINT ? 0 : VK_IMAGE_ASPECT_DEPTH_BIT) |
+                                       (format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_D32_SFLOAT ? 0 : VK_IMAGE_ASPECT_STENCIL_BIT);
+    const VkImageCreateInfo image = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = format,
+                                     .extent = {width, height, 1}, .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                     .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                     .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+    VkCommandBuffer commands = VK_NULL_HANDLE;
+    if (vkCreateImage(x->device, &image, NULL, &d->image) != VK_SUCCESS) goto fail;
+    VkMemoryRequirements need;
+    vkGetImageMemoryRequirements(x->device, d->image, &need);
+    const VkMemoryAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = need.size,
+                                           .memoryTypeIndex = memory_type(x, need.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)};
+    if (allocate.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(x->device, &allocate, NULL, &d->memory) != VK_SUCCESS ||
+        vkBindImageMemory(x->device, d->image, d->memory, 0) != VK_SUCCESS)
+        goto fail;
+    const VkImageViewCreateInfo view = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = d->image, .viewType = VK_IMAGE_VIEW_TYPE_2D,
+                                        .format = format, .subresourceRange = {aspects, 0, 1, 0, 1}};
+    if (vkCreateImageView(x->device, &view, NULL, &d->view) != VK_SUCCESS || !(commands = begin_commands(x))) goto fail;
+    const VkImageMemoryBarrier to_clear = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                           .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                           .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                           .image = d->image, .subresourceRange = {aspects, 0, 1, 0, 1}};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &to_clear);
+    const VkClearDepthStencilValue zero = {0.0f, 0};
+    const VkImageSubresourceRange whole = {aspects, 0, 1, 0, 1};
+    vkCmdClearDepthStencilImage(commands, d->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1, &whole);
+    VkImageMemoryBarrier to_attachment = to_clear;
+    to_attachment.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, to_attachment.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    to_attachment.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    to_attachment.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0, 0, NULL, 0, NULL, 1,
+                         &to_attachment);
+    if (finish_commands(x, commands)) goto fail;
+    x->depth_count++;
+    return d;
+fail:
+    failed(error, error_size, "the device cannot make a %ux%u depth target", width, height);
+    if (d->view) vkDestroyImageView(x->device, d->view, NULL);
+    if (d->image) vkDestroyImage(x->device, d->image, NULL);
+    if (d->memory) vkFreeMemory(x->device, d->memory, NULL);
+    return NULL;
+}
+
+/* The render pass and framebuffer for a colour target, a depth target or both (NULL for none): both
+   load what is there and keep it, as draws add to it. NULL after failing. */
+static pass_entry *pass_for(rt_executor *x, const target_entry *color, const depth_entry *depth, char *error, size_t error_size)
+{
+    const int c = color ? (int)(color - x->targets) : -1, z = depth ? (int)(depth - x->depths) : -1;
+    for (size_t i = 0; i < x->pass_count; i++)
+        if (x->passes[i].color == c && x->passes[i].depth == z) return &x->passes[i];
+    if (x->pass_count == MAX_PASSES) {
+        failed(error, error_size, "more render passes than the executor keeps");
+        return NULL;
+    }
+    if (color && depth && (color->width != depth->width || color->height != depth->height)) {
+        failed(error, error_size, "a %ux%u colour target with a %ux%u depth target: not drawn yet", color->width, color->height, depth->width,
+               depth->height);
+        return NULL;
+    }
+    VkAttachmentDescription attachments[2];
+    VkImageView views[2];
+    unsigned count = 0;
+    const VkAttachmentReference color_reference = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkAttachmentReference depth_reference = {0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+    if (color) {
+        attachments[count] = (VkAttachmentDescription){.format = color->format, .samples = VK_SAMPLE_COUNT_1_BIT, .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+                                                       .storeOp = VK_ATTACHMENT_STORE_OP_STORE, .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                                       .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                                                       .initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                                       .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        views[count++] = color->view;
+    }
+    if (depth) {
+        depth_reference.attachment = count;
+        attachments[count] = (VkAttachmentDescription){.format = depth->format, .samples = VK_SAMPLE_COUNT_1_BIT, .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+                                                       .storeOp = VK_ATTACHMENT_STORE_OP_STORE, .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+                                                       .stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE,
+                                                       .initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                                                       .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+        views[count++] = depth->view;
+    }
+    const VkSubpassDescription subpass = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = color ? 1u : 0u,
+                                          .pColorAttachments = color ? &color_reference : NULL,
+                                          .pDepthStencilAttachment = depth ? &depth_reference : NULL};
+    pass_entry *p = &x->passes[x->pass_count];
+    *p = (pass_entry){.color = c, .depth = z};
+    const VkRenderPassCreateInfo pass = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = count, .pAttachments = attachments,
+                                         .subpassCount = 1, .pSubpasses = &subpass};
+    const uint32_t width = color ? color->width : depth->width, height = color ? color->height : depth->height;
+    if (vkCreateRenderPass(x->device, &pass, NULL, &p->pass) != VK_SUCCESS) {
+        failed(error, error_size, "the device refused a render pass");
+        return NULL;
+    }
+    const VkFramebufferCreateInfo framebuffer = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = p->pass, .attachmentCount = count,
+                                                 .pAttachments = views, .width = width, .height = height, .layers = 1};
+    if (vkCreateFramebuffer(x->device, &framebuffer, NULL, &p->framebuffer) != VK_SUCCESS) {
+        vkDestroyRenderPass(x->device, p->pass, NULL);
+        failed(error, error_size, "the device refused a framebuffer");
+        return NULL;
+    }
+    x->pass_count++;
+    return p;
+}
+
 /* ---- shaders and pipelines ---- */
 
 /* The code's length is found by the translator; it may read up to the end of the guest memory. */
 /* settings: a vertex shader's PA_CL_VS_OUT_CNTL, a pixel shader's SPI_PS_INPUT_ADDR (part of the cache key). */
 static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint32_t user_sgprs, uint32_t settings,
                                  const gcn_image_binding *images, unsigned image_count, const gcn_resource_origin *samplers,
-                                 unsigned sampler_count, char *error, size_t error_size)
+                                 unsigned sampler_count, uint64_t callee, char *error, size_t error_size)
 {
     for (size_t i = 0; i < x->shader_count; i++) {
         const shader_entry *s = &x->shaders[i];
-        if (s->code == code && s->stage == stage && s->user_sgprs == user_sgprs && s->settings == settings &&
+        if (s->code == code && s->stage == stage && s->user_sgprs == user_sgprs && s->settings == settings && s->callee == callee &&
             s->image_count == image_count && !memcmp(s->images, images, image_count * sizeof *images) &&
             s->sampler_count == sampler_count && !memcmp(s->samplers, samplers, sampler_count * sizeof *samplers))
             return s->module;
@@ -635,7 +926,9 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
     if (stage == STAGE_VERTEX) {
         const gcn_vertex_layout layout = {.user_sgprs = user_sgprs, .output_control = settings,
                                           .push_constant_offset = VERTEX_USER_DATA, .address_offset = x->address_offset,
-                                          .error_address = x->stop_address};
+                                          .error_address = x->stop_address, .callee = callee ? (const uint32_t *)(uintptr_t)callee : NULL,
+                                          .callee_dwords = callee ? (size_t)((x->guest_base + x->size - callee) / 4) : 0,
+                                          .code_address = code};
         result = gcn_translate_vertex(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
     } else {
         const uint32_t inputs = settings; /* a pixel shader's SPI_PS_INPUT_ADDR */
@@ -662,19 +955,20 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
     }
     shader_entry *e = &x->shaders[x->shader_count++];
     *e = (shader_entry){.code = code, .stage = stage, .user_sgprs = user_sgprs, .settings = settings, .image_count = image_count,
-                        .sampler_count = sampler_count, .module = module};
+                        .sampler_count = sampler_count, .callee = callee, .module = module};
     memcpy(e->images, images, image_count * sizeof *images);
     memcpy(e->samplers, samplers, sampler_count * sizeof *samplers);
     return module;
 }
 
 static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderModule geometry, VkShaderModule pixel, VkRenderPass pass,
-                               VkPipelineLayout layout, uint32_t blend_control, char *error, size_t error_size)
+                               VkPipelineLayout layout, uint32_t blend_control, int strip, const depth_plan *depth, int colour,
+                               int has_depth, char *error, size_t error_size)
 {
     for (size_t i = 0; i < x->pipeline_count; i++) {
         const pipeline_entry *p = &x->pipelines[i];
         if (p->vertex == vertex && p->geometry == geometry && p->pixel == pixel && p->pass == pass && p->layout == layout &&
-            p->blend_control == blend_control)
+            p->blend_control == blend_control && p->strip == strip && !memcmp(&p->depth, depth, sizeof *depth))
             return p->pipeline;
     }
     if (x->pipeline_count == MAX_PIPELINES) {
@@ -688,7 +982,8 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
     };
     const VkPipelineVertexInputStateCreateInfo input = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     const VkPipelineInputAssemblyStateCreateInfo assembly = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-                                                             .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+                                                             .topology = strip ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP
+                                                                               : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
     const VkPipelineViewportStateCreateInfo viewport = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
                                                         .viewportCount = 1, .scissorCount = 1};
     const VkPipelineRasterizationStateCreateInfo raster = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
@@ -698,22 +993,35 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
                                                           .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
     VkPipelineColorBlendAttachmentState write;
     if (blend_state(blend_control, &write, error, error_size)) return VK_NULL_HANDLE;
+    /* stencil reference and masks are dynamic: the draw sets them from DB_STENCILREFMASK */
+    VkStencilOpState faces[2];
+    for (unsigned f = 0; f < 2; f++)
+        faces[f] = (VkStencilOpState){.failOp = (VkStencilOp)depth->stencil_ops[f][0], .passOp = (VkStencilOp)depth->stencil_ops[f][1],
+                                      .depthFailOp = (VkStencilOp)depth->stencil_ops[f][2], .compareOp = (VkCompareOp)depth->stencil_ops[f][3]};
+    const VkPipelineDepthStencilStateCreateInfo depth_stencil = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO, .depthTestEnable = depth->depth_test != 0,
+        .depthWriteEnable = depth->depth_write != 0, .depthCompareOp = (VkCompareOp)depth->depth_compare,
+        .stencilTestEnable = depth->stencil_test != 0, .front = faces[0], .back = faces[1]};
     const VkPipelineColorBlendStateCreateInfo blend = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-                                                       .attachmentCount = 1, .pAttachments = &write};
-    const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_BLEND_CONSTANTS};
+                                                       .attachmentCount = colour ? 1u : 0u, .pAttachments = &write};
+    const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
+                                             VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK,
+                                             VK_DYNAMIC_STATE_STENCIL_REFERENCE};
     const VkPipelineDynamicStateCreateInfo dynamic = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-                                                      .dynamicStateCount = 3, .pDynamicStates = dynamic_states};
+                                                      .dynamicStateCount = 6, .pDynamicStates = dynamic_states};
     const VkGraphicsPipelineCreateInfo info = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = geometry ? 3 : 2,
                                                .pStages = stages, .pVertexInputState = &input, .pInputAssemblyState = &assembly,
                                                .pViewportState = &viewport, .pRasterizationState = &raster,
                                                .pMultisampleState = &samples, .pColorBlendState = &blend, .pDynamicState = &dynamic,
-                                               .layout = layout, .renderPass = pass};
+                                               .pDepthStencilState = has_depth ? &depth_stencil : NULL, .layout = layout, .renderPass = pass};
     VkPipeline pipeline = VK_NULL_HANDLE;
     if (vkCreateGraphicsPipelines(x->device, VK_NULL_HANDLE, 1, &info, NULL, &pipeline) != VK_SUCCESS) {
         failed(error, error_size, "the device refused a pipeline");
         return VK_NULL_HANDLE;
     }
-    x->pipelines[x->pipeline_count++] = (pipeline_entry){vertex, geometry, pixel, pass, layout, blend_control, pipeline};
+    x->pipelines[x->pipeline_count++] =
+        (pipeline_entry){.vertex = vertex, .geometry = geometry, .pixel = pixel, .pass = pass, .layout = layout, .blend_control = blend_control,
+                         .strip = strip, .depth = *depth, .pipeline = pipeline};
     return pipeline;
 }
 
@@ -813,9 +1121,34 @@ static int pixel_layout_for(rt_executor *x, unsigned n, unsigned m, char *error,
     return 0;
 }
 
-static int draw(rt_executor *x, const draw_state *s, uint32_t index_count, char *error, size_t error_size)
+/* The fetch shader the vertex shader calls (runtime/gcn_spirv.h, gcn_call_sgpr): the address in its
+   user data's target pair (48 bits), which must lie in the GPU-visible memory; 0 when it makes no call.
+   0, or -1 with the reason. */
+static int vertex_callee(rt_executor *x, const draw_state *s, uint64_t *callee, char *error, size_t error_size)
 {
-    if (!s->color_enabled) return failed(error, error_size, "a draw with no render target in slot 0");
+    const uint64_t code = s->vertex.code;
+    if (code < x->guest_base || code >= x->guest_base + x->size || code % 4)
+        return failed(error, error_size, "vertex shader code at %#llx is outside the GPU-visible memory", (unsigned long long)code);
+    unsigned pair = 0;
+    char reason[200];
+    const int calls = gcn_call_sgpr((const uint32_t *)(uintptr_t)code, (size_t)((x->guest_base + x->size - code) / 4), &pair, reason, sizeof reason);
+    if (calls < 0) return failed(error, error_size, "vertex shader at %#llx: %s", (unsigned long long)code, reason);
+    *callee = 0;
+    if (!calls) return 0;
+    if (pair + 2 > s->vertex.user_sgprs)
+        return failed(error, error_size, "vertex shader at %#llx calls through s[%u:%u], not in its user data", (unsigned long long)code, pair, pair + 1);
+    enum { POINTER_HIGH_MASK = 0xffff };
+    const uint64_t target = (uint64_t)(s->user[STAGE_VERTEX][pair + 1] & POINTER_HIGH_MASK) << 32 | s->user[STAGE_VERTEX][pair];
+    if (target < x->guest_base || target >= x->guest_base + x->size || target % 4)
+        return failed(error, error_size, "a fetch shader at %#llx, outside the GPU-visible memory", (unsigned long long)target);
+    *callee = target;
+    return 0;
+}
+
+/* A draw as check_state planned it: into target 0 when colour says so, and the depth target when the plan
+   tests it. */
+static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int colour, uint32_t index_count, char *error, size_t error_size)
+{
     if (s->other_targets) return failed(error, error_size, "a draw with render targets beyond slot 0 is not drawn yet");
     if (!s->viewport_set) return failed(error, error_size, "a draw with no viewport");
     if (!s->vertex_set || !s->pixel_set) return failed(error, error_size, "a draw without a vertex and a pixel shader");
@@ -845,12 +1178,25 @@ static int draw(rt_executor *x, const draw_state *s, uint32_t index_count, char 
         if (!(properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT))
             return failed(error, error_size, "bilinear sampling of Vulkan format %d, which this device cannot filter", (int)view_formats[i]);
     }
-    const target_entry *t = target_for(x, &s->color, error, error_size);
-    if (!t) return -1;
+    const target_entry *t = colour ? target_for(x, &s->color, error, error_size) : NULL;
+    if (colour && !t) return -1;
+    const int uses_depth = plan->depth_test || plan->stencil_test;
+    const depth_entry *z = uses_depth ? depth_for(x, s, error, error_size) : NULL;
+    if (uses_depth && !z) return -1;
+    VkRenderPass render_pass = t ? t->pass : VK_NULL_HANDLE;
+    VkFramebuffer framebuffer = t ? t->framebuffer : VK_NULL_HANDLE;
+    if (z) {
+        const pass_entry *p = pass_for(x, t, z, error, error_size);
+        if (!p) return -1;
+        render_pass = p->pass, framebuffer = p->framebuffer;
+    }
+    const uint32_t width = t ? t->width : z->width, height = t ? t->height : z->height;
+    uint64_t callee = 0;
+    if (vertex_callee(x, s, &callee, error, error_size)) return -1;
     const VkShaderModule vertex = shader_for(x, STAGE_VERTEX, s->vertex.code, s->vertex.user_sgprs, s->vertex.output_control, NULL, 0,
-                                             NULL, 0, error, error_size);
+                                             NULL, 0, callee, error, error_size);
     const VkShaderModule pixel = vertex ? shader_for(x, STAGE_PIXEL, s->pixel.code, s->pixel.user_sgprs, s->pixel.input_address, bindings,
-                                                     image_count, sampler_origins, sampler_count, error, error_size)
+                                                     image_count, sampler_origins, sampler_count, 0, error, error_size)
                                         : VK_NULL_HANDLE;
     if (!pixel) return -1;
     const int rect_list = s->primitive_set && s->primitive_type == DI_PT_RECTLIST;
@@ -860,8 +1206,9 @@ static int draw(rt_executor *x, const draw_state *s, uint32_t index_count, char 
     const int has_set = image_count || sampler_count;
     if (has_set && pixel_layout_for(x, image_count, sampler_count, error, error_size)) return -1;
     const VkPipelineLayout layout = has_set ? x->pixel_layouts[image_count][sampler_count] : x->layout;
-    const VkPipeline pipeline = pipeline_for(x, vertex, geometry, pixel, t->pass, layout, s->blend0_set ? s->blend0_control : 0, error,
-                                             error_size);
+    const int strip = s->primitive_set && s->primitive_type == DI_PT_TRISTRIP;
+    const VkPipeline pipeline = pipeline_for(x, vertex, geometry, pixel, render_pass, layout, s->blend0_set ? s->blend0_control : 0, strip,
+                                             plan, t != NULL, z != NULL, error, error_size);
     if (!pipeline) return -1;
     const VkDescriptorSet set = has_set ? image_set(x, x->pixel_set_layouts[image_count][sampler_count], VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
                                                     views, image_count, samplers, sampler_count)
@@ -875,17 +1222,26 @@ static int draw(rt_executor *x, const draw_state *s, uint32_t index_count, char 
                                      .dstAccessMask = VK_ACCESS_SHADER_READ_BIT};
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                          0, 1, &earlier, 0, NULL, 0, NULL);
-    const VkRenderPassBeginInfo pass = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = t->pass,
-                                        .framebuffer = t->framebuffer, .renderArea = {{0, 0}, {t->width, t->height}}};
+    const VkRenderPassBeginInfo pass = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = render_pass,
+                                        .framebuffer = framebuffer, .renderArea = {{0, 0}, {width, height}}};
     vkCmdBeginRenderPass(commands, &pass, VK_SUBPASS_CONTENTS_INLINE);
     vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     const float sx = s->viewport_scale[0], sy = s->viewport_scale[1], sz = s->viewport_scale[2];
     const float tx = s->viewport_translate[0], ty = s->viewport_translate[1], tz = s->viewport_translate[2];
     const VkViewport viewport = {.x = tx - sx, .y = ty - sy, .width = 2 * sx, .height = 2 * sy, .minDepth = tz, .maxDepth = tz + sz};
-    const VkRect2D scissor = {{0, 0}, {t->width, t->height}};
+    const VkRect2D scissor = {{0, 0}, {width, height}};
     vkCmdSetViewport(commands, 0, 1, &viewport);
     vkCmdSetScissor(commands, 0, 1, &scissor);
     vkCmdSetBlendConstants(commands, s->blend_constants);
+    /* DB_STENCILREFMASK: STENCILTESTVAL bits 0-7, STENCILMASK 8-15, STENCILWRITEMASK 16-23; the back
+       face's from _BF with BACKFACE_ENABLE (plan_depth checked they were set) */
+    for (unsigned face = 0; face < 2; face++) {
+        const uint32_t r = s->stencil_reference[face && (s->depth_control & 0x80) ? 1 : 0];
+        const VkStencilFaceFlags which = face ? VK_STENCIL_FACE_BACK_BIT : VK_STENCIL_FACE_FRONT_BIT;
+        vkCmdSetStencilReference(commands, which, r & 0xff);
+        vkCmdSetStencilCompareMask(commands, which, r >> 8 & 0xff);
+        vkCmdSetStencilWriteMask(commands, which, r >> 16 & 0xff);
+    }
     if (set) vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set, 0, NULL);
     vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_VERTEX_BIT, VERTEX_USER_DATA, USER_DATA_BYTES, s->user[STAGE_VERTEX]);
     vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_FRAGMENT_BIT, PIXEL_USER_DATA, USER_DATA_BYTES, s->user[STAGE_PIXEL]);
@@ -1055,6 +1411,11 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
         failed(error, error_size, "an image at %#llx that is also a render target: not done yet", (unsigned long long)d->address);
         return NULL;
     }
+    for (size_t i = 0; i < x->depth_count; i++)
+        if (x->depths[i].z_address == d->address || x->depths[i].stencil_address == d->address) {
+            failed(error, error_size, "an image at %#llx that is also a depth target: not done yet", (unsigned long long)d->address);
+            return NULL;
+        }
     image_entry *e = NULL;
     for (size_t i = 0; i < x->image_count && !e; i++) {
         image_entry *k = &x->images[i];
@@ -1408,9 +1769,11 @@ int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t size, char *error,
         case RT_CALL_DRAW_INDEXED_OFFSET:
             return failed(error, error_size, "indexed draw packets are not implemented by the Vulkan executor");
         case RT_CALL_DRAW_AUTO: {
-            const int checked = check_state(&s, error, error_size);
+            depth_plan plan;
+            int colour = 0;
+            const int checked = check_state(&s, &plan, &colour, error, error_size);
             if (checked < 0) return -1;
-            if (checked == 0 && draw(x, &s, c->u.draw_auto.index_count, error, error_size)) return -1;
+            if (checked == 0 && draw(x, &s, &plan, colour, c->u.draw_auto.index_count, error, error_size)) return -1;
             break;
         }
         }
@@ -1485,6 +1848,15 @@ void rt_executor_close(rt_executor *x)
         for (size_t i = 0; i < x->compute_count; i++) {
             vkDestroyPipeline(x->device, x->computes[i].pipeline, NULL);
             vkDestroyShaderModule(x->device, x->computes[i].module, NULL);
+        }
+        for (size_t i = 0; i < x->pass_count; i++) {
+            vkDestroyFramebuffer(x->device, x->passes[i].framebuffer, NULL);
+            vkDestroyRenderPass(x->device, x->passes[i].pass, NULL);
+        }
+        for (size_t i = 0; i < x->depth_count; i++) {
+            vkDestroyImageView(x->device, x->depths[i].view, NULL);
+            vkDestroyImage(x->device, x->depths[i].image, NULL);
+            vkFreeMemory(x->device, x->depths[i].memory, NULL);
         }
         for (size_t i = 0; i < x->target_count; i++) {
             const target_entry *t = &x->targets[i];

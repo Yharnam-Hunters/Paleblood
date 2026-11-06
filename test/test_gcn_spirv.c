@@ -255,6 +255,43 @@ static void image_programs(void)
           strstr(error, "image_load_mip"));
 }
 
+/* Calls: gcn_call_sgpr finds the fetch-shader call's target pair; the program translates with the
+   callee inlined and validates; a callee that branches or returns through another pair, and a call
+   through a pair written first, stop by name. */
+static void calls(void)
+{
+    unsigned pair = 99;
+    char error[300] = "";
+    CHECK(gcn_call_sgpr(PROGRAM(vertex_calling_fetch), &pair, error, sizeof error) == 1 && pair == 0);
+    CHECK(gcn_call_sgpr(PROGRAM(vertex_position_color), &pair, error, sizeof error) == 0);
+    static const uint32_t written_first[] = {0xbe800380, 0xbe802100, 0xbf810000}; /* s_mov_b32 s0, 0 first */
+    CHECK(gcn_call_sgpr(PROGRAM(written_first), &pair, error, sizeof error) == -1 && strstr(error, "after s_mov_b32"));
+    gcn_vertex_layout layout = vertex_layout;
+    layout.callee = fetch_position_color, layout.callee_dwords = sizeof fetch_position_color / 4, layout.code_address = 0x1000;
+    layout.error_address = 0x2000;
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    const int translated = gcn_translate_vertex(PROGRAM(vertex_calling_fetch), &layout, &spirv, &words, error, sizeof error);
+    if (translated) fprintf(stderr, "vertex_calling_fetch: %s\n", error);
+    CHECK(translated == 0);
+    if (spirv) {
+        CHECK(validate(spirv, words, "vertex_calling_fetch") != 0);
+        free(spirv);
+        spirv = NULL;
+    }
+    static uint32_t branching[16], other_return[16];
+    memcpy(branching, fetch_position_color, sizeof fetch_position_color);
+    branching[2] = 0xbf840000;                            /* s_cbranch_scc0 for the s_waitcnt */
+    memcpy(other_return, fetch_position_color, sizeof fetch_position_color);
+    other_return[sizeof fetch_position_color / 4 - 1] = 0xbe802002; /* s_setpc_b64 s[2:3] */
+    layout.callee = branching;
+    CHECK(gcn_translate_vertex(PROGRAM(vertex_calling_fetch), &layout, &spirv, &words, error, sizeof error) == -1 && strstr(error, "s_cbranch_scc0"));
+    layout.callee = other_return;
+    CHECK(gcn_translate_vertex(PROGRAM(vertex_calling_fetch), &layout, &spirv, &words, error, sizeof error) == -1 && strstr(error, "returns through s[2:3]"));
+    layout.callee = NULL;
+    CHECK(gcn_translate_vertex(PROGRAM(vertex_calling_fetch), &layout, &spirv, &words, error, sizeof error) == -1 && strstr(error, "no callee"));
+}
+
 static void rect_list_stages(void)
 {
     static const unsigned counts[][2] = {{0, 0}, {1, 0}, {4, 2}, {RT_RECT_LIST_MAX_PARAMETERS, RT_RECT_LIST_MAX_CLIP_DISTANCES}};
@@ -280,6 +317,7 @@ int main(void)
 {
     rect_list_stages();
     image_programs();
+    calls();
     translates(PROGRAM(scale_add), "scale_add");
     translates(PROGRAM(integer_and_select), "integer_and_select");
     translates(PROGRAM(constants_and_modifiers), "constants_and_modifiers");
