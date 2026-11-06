@@ -140,6 +140,38 @@ typedef struct {
     VkShaderModule module;
 } rect_stage;
 
+/* A depth target's registers from DB_Z_INFO (0xa010) to DB_DEPTH_SLICE (0xa017), in order. */
+enum { Z_INFO, STENCIL_INFO, Z_READ_BASE, STENCIL_READ_BASE, Z_WRITE_BASE, STENCIL_WRITE_BASE, DEPTH_SIZE, DEPTH_SLICE,
+       DEPTH_TARGET_REGISTERS };
+
+/* The state a command buffer builds up, call by call. */
+typedef struct {
+    rt_color_target color;
+    int color_enabled;
+    uint32_t other_targets;          /* the slots other than 0 enabled, a bit each */
+    float viewport_scale[3], viewport_translate[3];
+    int viewport_set;
+    rt_vertex_shader vertex;
+    rt_pixel_shader pixel;
+    int vertex_set, pixel_set;
+    uint32_t user[STAGES][GCN_USER_SGPR_MAX];
+    rt_compute_shader compute;
+    int compute_set;
+    uint32_t compute_user[GCN_USER_SGPR_MAX];
+    /* Registers the library set (AMD's layout, gfx_7_2_sh_mask.h), with whether each was set; an
+       unset one is the state the drawing below assumes. */
+    uint32_t blend0_control, depth_control, color_control, target_mask, primitive_type, instances;
+    int blend0_set, depth_set, color_control_set, target_mask_set, primitive_set, instances_set;
+    float blend_constants[4];        /* CB_BLEND_RED, GREEN, BLUE, ALPHA */
+    /* the depth target's registers, as setting it (or switching it off: DB_Z_INFO and DB_STENCIL_INFO 0)
+       writes them: DB_Z_INFO to DB_DEPTH_SLICE, and DB_DEPTH_VIEW */
+    uint32_t depth_target[DEPTH_TARGET_REGISTERS], depth_view;
+    int z_info_set, stencil_info_set;
+    /* stencil and depth-block state: DB_STENCIL_CONTROL, DB_STENCILREFMASK and _BF, DB_RENDER_CONTROL */
+    uint32_t stencil_control, stencil_reference[2], render_control;
+    int stencil_control_set, stencil_reference_set[2], render_control_set;
+} draw_state;
+
 struct rt_executor {
     VkInstance instance;
     VkPhysicalDevice physical;
@@ -191,39 +223,11 @@ struct rt_executor {
     VkDeviceMemory stop_memory;
     volatile uint32_t *stop_word;
     uint64_t stop_address;
+    /* the GPU's state as the calls run so far set it: registers, user data and shaders carry over from
+       one submitted buffer to the next, as on the console's GPU */
+    draw_state state;
 };
 
-/* A depth target's registers from DB_Z_INFO (0xa010) to DB_DEPTH_SLICE (0xa017), in order. */
-enum { Z_INFO, STENCIL_INFO, Z_READ_BASE, STENCIL_READ_BASE, Z_WRITE_BASE, STENCIL_WRITE_BASE, DEPTH_SIZE, DEPTH_SLICE,
-       DEPTH_TARGET_REGISTERS };
-
-/* The state a command buffer builds up, call by call. */
-typedef struct {
-    rt_color_target color;
-    int color_enabled;
-    int other_targets;               /* a slot other than 0 enabled */
-    float viewport_scale[3], viewport_translate[3];
-    int viewport_set;
-    rt_vertex_shader vertex;
-    rt_pixel_shader pixel;
-    int vertex_set, pixel_set;
-    uint32_t user[STAGES][GCN_USER_SGPR_MAX];
-    rt_compute_shader compute;
-    int compute_set;
-    uint32_t compute_user[GCN_USER_SGPR_MAX];
-    /* Registers the library set (AMD's layout, gfx_7_2_sh_mask.h), with whether each was set; an
-       unset one is the state the drawing below assumes. */
-    uint32_t blend0_control, depth_control, color_control, target_mask, primitive_type, instances;
-    int blend0_set, depth_set, color_control_set, target_mask_set, primitive_set, instances_set;
-    float blend_constants[4];        /* CB_BLEND_RED, GREEN, BLUE, ALPHA */
-    /* the depth target's registers, as setting it (or switching it off: DB_Z_INFO and DB_STENCIL_INFO 0)
-       writes them: DB_Z_INFO to DB_DEPTH_SLICE, and DB_DEPTH_VIEW */
-    uint32_t depth_target[DEPTH_TARGET_REGISTERS], depth_view;
-    int z_info_set, stencil_info_set;
-    /* stencil and depth-block state: DB_STENCIL_CONTROL, DB_STENCILREFMASK and _BF, DB_RENDER_CONTROL */
-    uint32_t stencil_control, stencil_reference[2], render_control;
-    int stencil_control_set, stencil_reference_set[2], render_control_set;
-} draw_state;
 
 static int failed(char *error, size_t error_size, const char *format, ...) __attribute__((format(printf, 3, 4)));
 
@@ -1700,65 +1704,67 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     return check_stop_word(x, error, error_size);
 }
 
+void rt_executor_reset(rt_executor *x) { memset(&x->state, 0, sizeof x->state); }
+
 int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t size, char *error, size_t error_size)
 {
     size_t count = 0;
     const rt_render_call *calls = rt_render_submitted(buffer, size, &count);
-    draw_state s;
-    memset(&s, 0, sizeof s);
+    draw_state *s = &x->state; /* the GPU's state carries over from buffer to buffer */
     for (size_t i = 0; i < count; i++) {
         const rt_render_call *c = &calls[i];
         switch (c->kind) {
         case RT_CALL_COLOR_TARGET:
             if (c->u.color_target.slot == 0) {
-                s.color = c->u.color_target.target;
-                s.color_enabled = c->u.color_target.enabled;
-            } else if (c->u.color_target.enabled) {
-                s.other_targets = 1;
+                s->color = c->u.color_target.target;
+                s->color_enabled = c->u.color_target.enabled;
+            } else {
+                const uint32_t slot_bit = 1u << c->u.color_target.slot;
+                s->other_targets = c->u.color_target.enabled ? s->other_targets | slot_bit : s->other_targets & ~slot_bit;
             }
             break;
         case RT_CALL_VIEWPORT:
             if (c->u.viewport.index != 0) return failed(error, error_size, "viewport %u: only viewport 0 is drawn yet", c->u.viewport.index);
-            memcpy(s.viewport_scale, c->u.viewport.scale, sizeof s.viewport_scale);
-            memcpy(s.viewport_translate, c->u.viewport.translate, sizeof s.viewport_translate);
-            s.viewport_set = 1;
+            memcpy(s->viewport_scale, c->u.viewport.scale, sizeof s->viewport_scale);
+            memcpy(s->viewport_translate, c->u.viewport.translate, sizeof s->viewport_translate);
+            s->viewport_set = 1;
             break;
         case RT_CALL_VERTEX_SHADER:
-            s.vertex = c->u.vertex_shader, s.vertex_set = 1;
+            s->vertex = c->u.vertex_shader, s->vertex_set = 1;
             break;
         case RT_CALL_PIXEL_SHADER:
-            s.pixel = c->u.pixel_shader, s.pixel_set = 1;
+            s->pixel = c->u.pixel_shader, s->pixel_set = 1;
             break;
         case RT_CALL_COMPUTE_SHADER:
-            s.compute = c->u.compute_shader, s.compute_set = 1;
+            s->compute = c->u.compute_shader, s->compute_set = 1;
             break;
         case RT_CALL_DISPATCH:
-            if (dispatch(x, &s, c->u.dispatch.groups, error, error_size)) return -1;
+            if (dispatch(x, s, c->u.dispatch.groups, error, error_size)) return -1;
             break;
         case RT_CALL_USER_DATA: {
             if (c->u.user_data.stage == RT_STAGE_COMPUTE) {
-                memcpy(&s.compute_user[c->u.user_data.slot], c->u.user_data.words, c->u.user_data.count * sizeof(uint32_t));
+                memcpy(&s->compute_user[c->u.user_data.slot], c->u.user_data.words, c->u.user_data.count * sizeof(uint32_t));
                 break;
             }
             const int stage = c->u.user_data.stage == RT_STAGE_VERTEX ? STAGE_VERTEX : c->u.user_data.stage == RT_STAGE_PIXEL ? STAGE_PIXEL : -1;
             if (stage < 0) return failed(error, error_size, "user data for stage %u: only vertex and pixel shaders are drawn yet",
                                          (unsigned)c->u.user_data.stage);
-            memcpy(&s.user[stage][c->u.user_data.slot], c->u.user_data.words, c->u.user_data.count * sizeof(uint32_t));
+            memcpy(&s->user[stage][c->u.user_data.slot], c->u.user_data.words, c->u.user_data.count * sizeof(uint32_t));
             break;
         }
         case RT_CALL_REGISTER:
-            if (set_register(&s, c->u.reg.address, c->u.reg.value))
+            if (set_register(s, c->u.reg.address, c->u.reg.value))
                 return failed(error, error_size, "register %#x: the executor does not interpret it yet", c->u.reg.address);
             break;
         case RT_CALL_INSTANCES:
-            s.instances = c->u.instances.count, s.instances_set = 1;
+            s->instances = c->u.instances.count, s->instances_set = 1;
             break;
         case RT_CALL_DRAW_AUTO: {
             depth_plan plan;
             int colour = 0;
-            const int checked = check_state(&s, &plan, &colour, error, error_size);
+            const int checked = check_state(s, &plan, &colour, error, error_size);
             if (checked < 0) return -1;
-            if (checked == 0 && draw(x, &s, &plan, colour, c->u.draw_auto.index_count, error, error_size)) return -1;
+            if (checked == 0 && draw(x, s, &plan, colour, c->u.draw_auto.index_count, error, error_size)) return -1;
             break;
         }
         }
