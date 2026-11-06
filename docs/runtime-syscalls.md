@@ -584,6 +584,39 @@ executable's one caller (`0x025628e4`) is a polling thread: after any non-zero a
 comes. It never waits for the first user's login to be reported; whether the PS4 reports that
 login is not public.
 
+## The real-time clock (`libSceRtc`)
+
+The runtime gives the host's local time, and keeps ticks as its own convention
+(`runtime/syslib/rtc.c`).
+
+**Sources.**
+- **Signatures:** OpenOrbis `Rtc.h` gives `sceRtcGetCurrentClockLocalTime(date and time *)`,
+  `sceRtcGetTick(const date and time *, uint64_t *)` and `sceRtcSetTick(date and time *, const
+  uint64_t *)`. It names `sceRtcGetTickResolution` without a signature; the executable's one call
+  (`0x010b70ea`) takes no argument and uses the `int32_t` answer as ticks per second, a negative
+  one being a failure.
+- **The date and time** is six 16-bit fields (year, month, day, hour, minute, second), then a
+  32-bit microsecond at offset 12, 16 bytes in all. Rtc.h gives the microsecond 16 bits, which
+  cannot hold 999999. The Vita homebrew SDK's `SceDateTime`, of the same library family, gives it
+  32 bits in a 16-byte structure, and the executable copies the whole structure as 16 bytes.
+- **Ticks:** the executable compares ticks, takes their differences and asks for the resolution.
+  It holds no constant relating them to another epoch (neither the span from 0001 to 1970 in
+  microseconds or seconds, nor its negation). About 60 sites ask for the local time; those reached
+  pass it straight to `sceRtcGetTick`.
+
+**What the runtime does.**
+- **The local time** is the host's, in the time zone of the person running the runtime, as the
+  console gives the one its owner set. A leap second shows as `:59`.
+- **A tick** is the runtime's own convention, the same in every call: microseconds since
+  0001-01-01 00:00:00 (proleptic Gregorian), 1000000 per second. `sceRtcSetTick` reverses
+  `sceRtcGetTick` exactly.
+- **Stops by name:** a date out of range (including February 30 and February 29 of a non-leap
+  century), a tick past the year 9999, a missing argument, and every error value.
+
+**Not established:** `sceRtcGetDayOfWeek(year, month, day)`, the next call the boot reaches
+(`0x024ee2a9`, its answer packed into 3 bits). Which day is 0 is not known for the PS4 (the PSP
+SDK documents Monday), so it stays unbound.
+
 ## The controller (`libScePad`)
 
 The runtime models one standard controller, the one user's, always connected and at rest
