@@ -36,6 +36,11 @@ class StatusCard(unittest.TestCase):
             with open(os.path.join(ROOT, name)) as f:
                 self.assertEqual(f.read(), svg, f'{name} is stale: run tools/progress.py --update-readme')
 
+    def test_no_card_without_a_recorded_boot(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as empty:
+            self.assertEqual(status_card.render_all(empty), {})
+
     def test_week_counts_back_from_the_newest_boot_not_the_clock(self):
         day = datetime.date(2026, 11, 1)
         history = [{'date': day, 'working': 100}, {'date': day + datetime.timedelta(days=3), 'working': 150},

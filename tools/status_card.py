@@ -296,8 +296,13 @@ def render(root: str, theme: str) -> str:
     return '\n'.join(p) + '\n'
 
 
+INPUTS = ('symbols/imports.csv', 'symbols/boot_history.csv', 'symbols/boot.json')
+
+
 def render_all(root: str) -> dict[str, str]:
-    """Relative path -> SVG text, for both themes."""
+    """Relative path -> SVG text, for both themes; nothing for a tree without a recorded boot."""
+    if not all(os.path.isfile(os.path.join(root, name)) for name in INPUTS):
+        return {}
     return {path: render(root, theme) for theme, path in OUT_FILES.items()}
 
 
