@@ -270,6 +270,18 @@ static const uint32_t load_format_xyzw[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* Whole quad mode: v_cmpx leaves lane i active when i % 4 == 1, s_wqm_b64 then activates every lane of
+   each quad with an active lane, so all 64 store 1. */
+static const uint32_t whole_quad[] = {
+    0x36020083, /* v_and_b32_e32 v1, 3, v0 */
+    0x7da40281, /* v_cmpx_eq_u32_e32 vcc, 1, v1 */
+    0xbefe0a7e, /* s_wqm_b64 exec, exec */
+    0x7e040281, /* v_mov_b32_e32 v2, 1 */
+    0x34060082, /* v_lshlrev_b32_e32 v3, 2, v0 */
+    0xe0701000, 0x80010203, /* buffer_store_dword v2, v3, s[4:7], 0 offen */
+    0xbf810000, /* s_endpgm */
+};
+
 /* Scalar writes of VCC's halves: VCC_LO = 0x0000ffff, VCC_HI = 1, then per lane i (in a 64-lane
    workgroup) out[i] = VCC bit ? 1.0 : 0, so lanes 0-15 and 32 write 1.0. */
 static const uint32_t vcc_halves[] = {
@@ -308,6 +320,17 @@ static const uint32_t pixel_color[] = {
     0x5e0c0702, /* v_cvt_pkrtz_f16_f32_e32 v6, v2, v3 */
     0x5e0e0b04, /* v_cvt_pkrtz_f16_f32_e32 v7, v4, v5 */
     0xf8001c0f, 0x00000706, /* exp mrt0, v6, v6, v7, v7 done compr vm */
+    0xbf810000, /* s_endpgm */
+};
+
+/* A pixel shader whose colour comes from the pixel's position (x in v2, y in v3 after the barycentrics,
+   SPI_PS_INPUT 0x302): (x / 16, y / 16, 0.25, 1), the same image as pixel_color on the test triangle. */
+static const uint32_t pixel_position_color[] = {
+    0x100804ff, 0x3d800000, /* v_mul_f32_e32 v4, 0.0625, v2 */
+    0x100a06ff, 0x3d800000, /* v_mul_f32_e32 v5, 0.0625, v3 */
+    0x7e0c02ff, 0x3e800000, /* v_mov_b32_e32 v6, 0.25 */
+    0x7e0e02f2, /* v_mov_b32_e32 v7, 1.0 */
+    0xf800180f, 0x07060504, /* exp mrt0, v4, v5, v6, v7 done vm */
     0xbf810000, /* s_endpgm */
 };
 

@@ -102,6 +102,51 @@ int main(void)
     CHECK(rt_executor_read_target(x, at(0x300000), bgra, 2, 2, error, sizeof error) == -1 && strstr(error, "no draw"));
     CHECK(rt_executor_read_target(x, at(TARGET), bgra, SIZE + 1, 1, error, sizeof error) == -1);
 
+    /* A vertex shader that writes VCC's halves as scalars (as the game's do, before vector writes set
+       VCC): drawn as before; one that then reads VCC as a lane mask stops by name at run time. */
+    {
+        enum { VCC_CODE = 0x2c00, VCC_TARGET = 0x780000 };
+        static uint32_t dead_write[64], read_after[64];
+        const size_t n = sizeof vertex_position_color / sizeof *vertex_position_color;
+        dead_write[0] = 0xbeeb0380;                           /* s_mov_b32 vcc_hi, 0 */
+        memcpy(dead_write + 1, vertex_position_color, sizeof vertex_position_color);
+        read_after[0] = 0xbeeb0380;
+        read_after[1] = 0x00121280;                           /* v_cndmask_b32_e32 v9, 0, v9, vcc */
+        memcpy(read_after + 2, vertex_position_color, sizeof vertex_position_color);
+        for (int variant = 0; variant < 2; variant++) {
+            const uint64_t code = at(VCC_CODE + 0x200 * (unsigned)variant);
+            memcpy((void *)(uintptr_t)code, variant ? read_after : dead_write, (n + 1 + (unsigned)variant) * sizeof(uint32_t));
+            rt_render_forget();
+            uint32_t offset = record_setup(FOURTH, at(VCC_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+            const uint32_t vertex[RT_VERTEX_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 8 << 1, 0, 0x4, 0};
+            CHECK(rt_render_record_vertex_shader(FOURTH, offset, vertex, error, sizeof error) == 0);
+            const int drawn = rt_executor_run(x, FOURTH, record_triangle_draw(FOURTH, offset + 0x10), error, sizeof error);
+            if (variant == 0) {
+                if (drawn) fprintf(stderr, "vcc dead write: %s\n", error);
+                CHECK(drawn == 0);
+                check_triangle(x, at(VCC_TARGET));
+            } else {
+                CHECK(drawn == -1 && strstr(error, "read VCC as a lane mask"));
+            }
+        }
+    }
+
+    /* A pixel shader reading the pixel's position (SPI_PS_INPUT 0x302: barycentrics, then x and y in
+       v2 and v3): its colour (x / 16, y / 16) at pixel centres is the triangle's image. */
+    {
+        enum { POSITION_CODE = 0x2800, POSITION_TARGET = 0x700000 };
+        memcpy((void *)(uintptr_t)at(POSITION_CODE), pixel_position_color, sizeof pixel_position_color);
+        rt_render_forget();
+        uint32_t offset = record_setup(FOURTH, at(POSITION_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        const uint64_t code = at(POSITION_CODE);
+        const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 0, 0, 0x4, 0x302, 0x302, 0, 0, 0, 0xf};
+        CHECK(rt_render_record_pixel_shader(FOURTH, offset, pixel, error, sizeof error) == 0);
+        const int drawn = rt_executor_run(x, FOURTH, record_triangle_draw(FOURTH, offset + 0x10), error, sizeof error);
+        if (drawn) fprintf(stderr, "position: %s\n", error);
+        CHECK(drawn == 0);
+        check_triangle(x, at(POSITION_TARGET));
+    }
+
     /* A rect list (primitive type 17): three corners of the whole target, the right angle first,
        then last; the geometry stage adds the fourth corner, and its colour (2, 2) as the other two
        minus the corner's, so the target holds the same image as the large triangle. Then a count

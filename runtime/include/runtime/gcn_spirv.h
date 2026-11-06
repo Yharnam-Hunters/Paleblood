@@ -44,6 +44,9 @@ enum {
     /* buffer_load/store_format_*: details DATA_FORMAT << 8 | NUM_FORMAT << 4 | the access's components;
        bit 3 set when the descriptor's DST_SEL is not x, y, z, w, bit 7 for a store */
     GCN_RUNTIME_STOP_BUFFER_FORMAT = 1,
+    /* a vertex or pixel shader read VCC as a lane mask after a scalar write of its halves left each
+       lane's bit unknown (a lane has no known place in the wave there) */
+    GCN_RUNTIME_STOP_VCC_UNKNOWN = 2,
 };
 
 /* Images (MIMG). A shader names an image by the SGPRs holding its 8-word descriptor (T#), which the
@@ -105,12 +108,16 @@ typedef struct {
 int gcn_translate_vertex(const uint32_t *code, size_t dwords, const gcn_vertex_layout *layout,
                          uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size);
 
-/* A pixel shader. Its only inputs are the perspective-correct barycentrics at the pixel's centre
-   (i, then j in the next VGPR), which v_interp reads; attribute n is the input at location n,
-   interpolated by the GPU. Exports: mrt n becomes the output at location n. */
+/* A pixel shader. Its inputs are the perspective-correct barycentrics at the pixel's centre (i, then j
+   in the next VGPR), which v_interp reads (attribute n is the input at location n, interpolated by the
+   GPU), and, when position_enable says so, the pixel's window position: x (bit 0) and y (bit 1) as
+   floats at the pixel's centre, from position_vgpr on (y in the next VGPR when both). Exports: mrt n
+   becomes the output at location n. */
+enum { GCN_PIXEL_POSITION_X = 1, GCN_PIXEL_POSITION_Y = 2 };
 typedef struct {
     unsigned user_sgprs;
     unsigned barycentric_vgpr;
+    unsigned position_enable, position_vgpr;
     uint32_t push_constant_offset;
     uint64_t address_offset;
     uint64_t error_address;   /* the run-time stop word (GCN_RUNTIME_STOP_*), or 0: run-time cases stop translation */

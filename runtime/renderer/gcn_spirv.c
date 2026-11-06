@@ -52,7 +52,7 @@ typedef struct {
     uint32_t local_size[3];
     unsigned user_sgprs;
     int workgroup_id_x_sgpr;
-    unsigned vertex_index_vgpr, barycentric_vgpr;
+    unsigned vertex_index_vgpr, barycentric_vgpr, position_enable, position_vgpr;
     uint32_t output_control;         /* a vertex shader's PA_CL_VS_OUT_CNTL */
     uint32_t push_constant_offset;   /* runtime/gcn_spirv.h */
     uint64_t address_offset, error_address;
@@ -75,7 +75,11 @@ typedef struct {
     uint32_t position, parameter[PARAMETER_COUNT], color[COLOR_TARGET_COUNT], attribute[PARAMETER_COUNT];
     uint32_t clip_distance;          /* the ClipDistance array, made on first use */
     uint32_t image[GCN_MAX_IMAGES];  /* each image binding's variable, made on first use */
-    int uses_1d_images, reads_images, writes_images;
+    int uses_1d_images, reads_images, writes_images, uses_quads;
+    /* outside compute shaders, a lane has no known place in the wave, so a scalar write of VCC's halves
+       leaves each lane's VCC bit unknown until a vector write sets it; this bool variable (made when the
+       program has such a write) says so, and reading VCC as a lane mask while it holds is a run-time stop */
+    uint32_t vcc_unknown;
     uint32_t interface[MAX_INTERFACE];
     unsigned interface_count;
     /* v_interp_p1 results waiting for their p2: attribute * 4 + channel + 1 per VGPR, or 0 */
@@ -214,11 +218,13 @@ static uint32_t wave_lane(translator *t)
 
 /* A scalar write of VCC_LO (s106) or VCC_HI (s107): the 32 lanes of that half of the wave take their
    bits of the value as their VCC bit; the other half keeps its own. VCC is kept as each lane's bit,
-   which only compute lanes can place in the wave, so other stages stop here. */
+   which only compute lanes can place in the wave; elsewhere the write leaves VCC's bit unknown
+   (t->vcc_unknown). */
 static void write_vcc_half(translator *t, unsigned n, uint32_t bits, const gcn_instruction *ins)
 {
     if (t->layout->stage != STAGE_COMPUTE) {
-        fail(t, "%s: writing VCC's halves outside a compute shader is not supported yet", ins->name);
+        if (!t->vcc_unknown) fail(t, "%s: writing VCC's halves outside a compute shader needs the run-time stop word", ins->name);
+        else store(t, t->out, t->vcc_unknown, spirv_constant_bool(&t->m, 1));
         return;
     }
     const uint32_t lane = wave_lane(t), half = n - SGPR_VCC;
@@ -248,10 +254,33 @@ static void write_sgpr(translator *t, unsigned n, uint32_t bits, const gcn_instr
 /* A mask register's lane bit: EXEC's own variable, or an SGPR pair's (VCC is s106). */
 static uint32_t mask_variable(translator *t, unsigned n) { return n == SGPR_EXEC ? t->exec : lane_bit(t, n); }
 
+static void runtime_stop(translator *t, uint32_t code);
+static uint32_t begin_if(translator *t, uint32_t condition);
+static void end_if(translator *t, uint32_t merge);
+
+/* A mask register's lane bit, read: VCC's while it is unknown (t->vcc_unknown) is a run-time stop. */
+static uint32_t read_mask(translator *t, unsigned n)
+{
+    if (n == SGPR_VCC && t->vcc_unknown) {
+        const uint32_t unknown = value(t, SPV_OP_LOGICAL_AND, t_bool(t), 2, exec_bit(t), load(t, t_bool(t), t->vcc_unknown));
+        const uint32_t merge = begin_if(t, unknown);
+        runtime_stop(t, konst(t, (uint32_t)GCN_RUNTIME_STOP_VCC_UNKNOWN << GCN_RUNTIME_STOP_KIND_SHIFT));
+        end_if(t, merge);
+    }
+    return load(t, t_bool(t), mask_variable(t, n));
+}
+
+/* A write of a mask register's lane bit: VCC's is known again. */
+static void store_mask(translator *t, unsigned n, uint32_t b)
+{
+    store(t, t->out, mask_variable(t, n), b);
+    if (n == SGPR_VCC && t->vcc_unknown) store(t, t->out, t->vcc_unknown, spirv_constant_bool(&t->m, 0));
+}
+
 /* The lane bit a vector compare or carry writes: inactive lanes get 0, as on GCN. */
 static void write_vector_lane_bit(translator *t, unsigned n, uint32_t b)
 {
-    store(t, t->out, mask_variable(t, n), value(t, SPV_OP_LOGICAL_AND, t_bool(t), 2, exec_bit(t), b));
+    store_mask(t, n, value(t, SPV_OP_LOGICAL_AND, t_bool(t), 2, exec_bit(t), b));
 }
 
 /* if (condition) { ... } around code only some lanes run: begin returns the merge label. */
@@ -604,7 +633,7 @@ static void vector_instruction(translator *t, const uint32_t *w, const gcn_instr
             fail(t, "%s: a carry-in that is not an SGPR pair", name);
             return;
         }
-        const uint32_t in = value(t, SPV_OP_SELECT, t_uint(t), 3, load(t, t_bool(t), mask_variable(t, carry_in)), konst(t, 1), konst(t, 0));
+        const uint32_t in = value(t, SPV_OP_SELECT, t_uint(t), 3, read_mask(t, carry_in), konst(t, 1), konst(t, 0));
         const int add = !strcmp(name, "v_addc_u32");
         const uint32_t wide_b = value(t, SPV_OP_I_ADD, t_ulong(t), 2, widen(t, b), widen(t, in));
         uint32_t r, out;
@@ -643,7 +672,7 @@ static void vector_instruction(translator *t, const uint32_t *w, const gcn_instr
         /* vcc (or VOP3's src2 pair) ? src1 : src0 */
         const unsigned mask = vop3 ? o.src[2] : SGPR_VCC;
         if (mask >= SGPR_COUNT) fail(t, "%s: a select mask that is not an SGPR pair", name);
-        const uint32_t chosen = value(t, SPV_OP_SELECT, t_uint(t), 3, load(t, t_bool(t), mask_variable(t, mask % SGPR_COUNT)),
+        const uint32_t chosen = value(t, SPV_OP_SELECT, t_uint(t), 3, read_mask(t, mask % SGPR_COUNT),
                                       source(t, o.src[1], ins), source(t, o.src[0], ins));
         write_vgpr(t, o.dst, chosen);
     } else if ((compare = comparison(name, &is_float, &writes_exec))) {
@@ -723,8 +752,7 @@ static uint32_t signed_overflow(translator *t, uint32_t a, uint32_t b, uint32_t 
 /* A 64-bit mask operand as this lane's bit: an SGPR pair, VCC or EXEC, or the constants 0 and -1. */
 static uint32_t mask_source(translator *t, unsigned field, const gcn_instruction *ins)
 {
-    if ((field < SGPR_VCC && field % 2 == 0) || field == SGPR_VCC || field == SGPR_EXEC)
-        return load(t, t_bool(t), mask_variable(t, field));
+    if ((field < SGPR_VCC && field % 2 == 0) || field == SGPR_VCC || field == SGPR_EXEC) return read_mask(t, field);
     if (field == OPERAND_INT_ZERO) return spirv_constant_bool(&t->m, 0);
     if (field == OPERAND_INT_LAST_POSITIVE + 1) return spirv_constant_bool(&t->m, 1); /* -1: all lanes */
     fail(t, "%s: mask operand %u is not supported yet", ins->name, field);
@@ -734,7 +762,7 @@ static uint32_t mask_source(translator *t, unsigned field, const gcn_instruction
 static void write_mask(translator *t, unsigned field, uint32_t b, const gcn_instruction *ins)
 {
     if ((field < SGPR_VCC && field % 2 == 0) || field == SGPR_VCC || field == SGPR_EXEC)
-        store(t, t->out, mask_variable(t, field), b);
+        store_mask(t, field, b);
     else
         fail(t, "%s: writing a mask to register %u is not supported yet", ins->name, field);
 }
@@ -857,6 +885,18 @@ static void scalar_instruction(translator *t, const uint32_t *w, const gcn_instr
         const uint32_t r = mask_operation(t, op, mask_source(t, ssrc0, ins), old_exec);
         write_mask(t, sdst, old_exec, ins);
         store(t, t->out, t->exec, r);
+        set_scc(t, any_lane(t, r));
+    } else if (!strcmp(name, "s_wqm_b64")) {
+        /* whole quad mode: a lane's bit is set when any lane of its quad (four lanes: a 2x2 pixel block in
+           a pixel shader) has it; SCC is "any lane set". Vulkan's quad operations work on the same
+           quads, so the bit is OR-ed across them with three quad swaps. */
+        const uint32_t b = mask_source(t, ssrc0, ins);
+        uint32_t r = b;
+        for (uint32_t direction = 0; direction < 3; direction++) /* horizontal, vertical, diagonal */
+            r = value(t, SPV_OP_LOGICAL_OR, t_bool(t), 2, r,
+                      value(t, SPV_OP_GROUP_NON_UNIFORM_QUAD_SWAP, t_bool(t), 3, konst(t, SPV_SCOPE_SUBGROUP), b, konst(t, direction)));
+        t->uses_quads = 1;
+        write_mask(t, sdst, r, ins);
         set_scc(t, any_lane(t, r));
     } else if (!strcmp(name, "s_not_b64")) {
         const uint32_t r = value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, mask_source(t, ssrc0, ins));
@@ -1022,6 +1062,14 @@ static uint32_t t_vec4(translator *t) { return spirv_global(&t->m, SPV_OP_TYPE_V
 
 enum { DATA_FORMAT_8_8_8_8 = 10, NUM_FORMAT_UNORM = 0, DST_SEL_X = 4 };
 
+/* Writes a run-time stop code to the stop word (runtime/gcn_spirv.h). */
+static void runtime_stop(translator *t, uint32_t code)
+{
+    const uint64_t stop_word = t->layout->error_address;
+    const uint32_t address = spirv_global(&t->m, SPV_OP_CONSTANT, (const uint32_t[]){t_ulong(t), (uint32_t)stop_word, (uint32_t)(stop_word >> 32)}, 3);
+    store_dword(t, value(t, SPV_OP_CONVERT_U_TO_PTR, spirv_type_pointer(&t->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, t_uint(t)), 1, address), code);
+}
+
 static uint32_t descriptor_field(translator *t, uint32_t word, unsigned shift, uint32_t mask)
 {
     return value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, word, konst(t, shift)), konst(t, mask));
@@ -1096,9 +1144,7 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
     code = value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, code,
                  konst(t, (uint32_t)GCN_RUNTIME_STOP_BUFFER_FORMAT << GCN_RUNTIME_STOP_KIND_SHIFT | components | (load_op ? 0 : 0x80)));
     code = value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, code, value(t, SPV_OP_SELECT, t_uint(t), 3, identity, konst(t, 0), konst(t, 8)));
-    const uint64_t stop_word = t->layout->error_address;
-    const uint32_t stop_address = spirv_global(&t->m, SPV_OP_CONSTANT, (const uint32_t[]){t_ulong(t), (uint32_t)stop_word, (uint32_t)(stop_word >> 32)}, 3);
-    store_dword(t, value(t, SPV_OP_CONVERT_U_TO_PTR, spirv_type_pointer(&t->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, t_uint(t)), 1, stop_address), code);
+    runtime_stop(t, code);
     end_if(t, stop);
 
     const uint32_t raw_merge = begin_if(t, both(t, exec_bit(t), raw));
@@ -1393,7 +1439,18 @@ static void starting_registers(translator *t, const stage_layout *layout)
         store(t, t->out, vgpr(t, layout->vertex_index_vgpr), value(t, SPV_OP_BITCAST, t_uint(t), 1, load(t, t_int(t), index)));
         return;
     }
-    if (layout->stage == STAGE_PIXEL) return; /* the barycentric VGPRs are read only by v_interp, by number */
+    if (layout->stage == STAGE_PIXEL) {
+        /* the barycentric VGPRs are read only by v_interp, by number; the position is FragCoord's x and y */
+        if (!layout->position_enable) return;
+        const uint32_t frag_coord = interface_variable(t, SPV_STORAGE_INPUT, t_vec4(t), SPV_DECORATION_BUILT_IN, SPV_BUILT_IN_FRAG_COORD);
+        unsigned next = layout->position_vgpr;
+        for (unsigned axis = 0; axis < 2; axis++) {
+            if (!(layout->position_enable >> axis & 1)) continue;
+            const uint32_t component = load(t, t_float(t), vec4_component(t, SPV_STORAGE_INPUT, frag_coord, axis));
+            store(t, t->out, vgpr(t, next++), value(t, SPV_OP_BITCAST, t_uint(t), 1, component));
+        }
+        return;
+    }
     const uint32_t uvec3 = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_uint(t), 3}, 2);
     if (layout->workgroup_id_x_sgpr >= 0) {
         const uint32_t group = load(t, uvec3, t->workgroup_id);
@@ -1435,7 +1492,7 @@ static long branch_condition(translator *t, const char *name)
     const int vcc = !strcmp(name, "s_cbranch_vccz") || !strcmp(name, "s_cbranch_vccnz");
     const int exec = !strcmp(name, "s_cbranch_execz") || !strcmp(name, "s_cbranch_execnz");
     if (!vcc && !exec) return -1;
-    const uint32_t any = any_lane(t, load(t, t_bool(t), vcc ? lane_bit(t, SGPR_VCC) : t->exec));
+    const uint32_t any = any_lane(t, vcc ? read_mask(t, SGPR_VCC) : load(t, t_bool(t), t->exec));
     const int when_zero = name[strlen(name) - 1] == 'z' && name[strlen(name) - 2] != 'n';
     return when_zero ? value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, any) : any;
 }
@@ -1670,7 +1727,8 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
     spirv_init(&t->m);
     spirv_module *m = &t->m;
     if (layout->user_sgprs > GCN_USER_SGPR_MAX) fail(t, "more user SGPRs than the push constants hold");
-    if (layout->vertex_index_vgpr >= VGPR_COUNT || layout->barycentric_vgpr + 1 >= VGPR_COUNT) fail(t, "an input VGPR past v255");
+    if (layout->vertex_index_vgpr >= VGPR_COUNT || layout->barycentric_vgpr + 1 >= VGPR_COUNT || layout->position_vgpr + 1 >= VGPR_COUNT)
+        fail(t, "an input VGPR past v255");
     if (layout->push_constant_offset % BYTES_PER_DWORD ||
         layout->push_constant_offset + GCN_USER_SGPR_MAX * BYTES_PER_DWORD > GCN_PUSH_CONSTANT_LIMIT)
         fail(t, "user data at push-constant byte %u: not a whole word within %d bytes", layout->push_constant_offset,
@@ -1704,6 +1762,14 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
     long count = -1;
     if (program < 0) fail(t, "the code has no complete program");
     else count = decode_program(t, code, (size_t)program, instructions, starts);
+    /* outside compute shaders, a scalar write of VCC's halves (SOP1, SOP2, SOPK: SDST in bits 16-22) makes
+       VCC's lane bits trackable as unknown, which needs the run-time stop word */
+    for (long i = 0; i < count && layout->stage != STAGE_COMPUTE && !t->vcc_unknown && layout->error_address; i++) {
+        const gcn_encoding e = instructions[i].ins.encoding;
+        const unsigned sdst = (code[instructions[i].at] >> 16) & 0x7f;
+        if ((e == GCN_SOP1 || e == GCN_SOP2 || e == GCN_SOPK) && (sdst == SGPR_VCC || sdst == SGPR_VCC + 1))
+            t->vcc_unknown = function_variable(t, t_bool(t), spirv_constant_bool(&t->m, 0));
+    }
 
     uint32_t block_count = 0;
     for (long i = 0; i < count; i++)
@@ -1799,6 +1865,8 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
     spirv_emit(m, fn, SPV_OP_FUNCTION_END, NULL, 0);
     if (t->clip_distance)
         spirv_emit(m, &m->sections[SPIRV_CAPABILITIES], SPV_OP_CAPABILITY, (const uint32_t[]){SPV_CAPABILITY_CLIP_DISTANCE}, 1);
+    if (t->uses_quads)
+        spirv_emit(m, &m->sections[SPIRV_CAPABILITIES], SPV_OP_CAPABILITY, (const uint32_t[]){SPV_CAPABILITY_GROUP_NON_UNIFORM_QUAD}, 1);
     if (t->uses_1d_images) spirv_emit(m, &m->sections[SPIRV_CAPABILITIES], SPV_OP_CAPABILITY, (const uint32_t[]){SPV_CAPABILITY_IMAGE_1D}, 1);
     if (t->reads_images)
         spirv_emit(m, &m->sections[SPIRV_CAPABILITIES], SPV_OP_CAPABILITY, (const uint32_t[]){SPV_CAPABILITY_STORAGE_IMAGE_READ_WITHOUT_FORMAT}, 1);
@@ -1852,7 +1920,8 @@ int gcn_translate_pixel(const uint32_t *code, size_t dwords, const gcn_pixel_lay
                         uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size)
 {
     const stage_layout s = {.stage = STAGE_PIXEL, .user_sgprs = layout->user_sgprs, .workgroup_id_x_sgpr = -1,
-                            .barycentric_vgpr = layout->barycentric_vgpr,
+                            .barycentric_vgpr = layout->barycentric_vgpr, .position_enable = layout->position_enable,
+                            .position_vgpr = layout->position_vgpr,
                             .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address};
     return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
 }
