@@ -1,6 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* The runtime's system library implementations, called the way the guest calls them: through the
    RT_SYSLIB registry, by library and symbol. */
+#include "syslib_test.h"
+
+#include "runtime/ajm.h"
+#include "runtime/audio_host.h"
 #include "runtime/display.h"
 #include "runtime/equeue.h"
 #include "runtime/gpu_memory.h"
@@ -9,6 +13,7 @@
 #include "runtime/pad.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
+#include "runtime/system_service.h"
 
 #include <pthread.h>
 #include <sched.h>
@@ -27,16 +32,20 @@
 static int unresolved_test_entry(void) { return -1; }
 RT_SYSLIB_UNRESOLVED("test", testUnresolvedEntry, unresolved_test_entry);
 
-static int failures;
-#define CHECK(cond)                                                                                \
-    do {                                                                                           \
-        if (!(cond)) {                                                                             \
-            fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #cond);                             \
-            failures++;                                                                            \
-        }                                                                                          \
-    } while (0)
+int failures;
 
-static void *fn(const char *library, const char *symbol)
+/* The tests in test/syslib/, each in its own file (SYSLIB_TEST), run after main's own. */
+static syslib_test *registered_tests;
+
+void syslib_test_register(syslib_test *test)
+{
+    syslib_test **at = &registered_tests;
+    while (*at && strcmp((*at)->name, test->name) < 0) at = &(*at)->next;  /* by name: a fixed order */
+    test->next = *at;
+    *at = test;
+}
+
+void *fn(const char *library, const char *symbol)
 {
     for (const rt_syslib_entry *e = rt_syslib_begin(); e && e != rt_syslib_end(); e++)
         if (!strcmp(e->library, library) && !strcmp(e->symbol, symbol)) return e->fn;
@@ -45,7 +54,7 @@ static void *fn(const char *library, const char *symbol)
     return NULL;
 }
 
-static int is_implemented(const char *library, const char *symbol)
+int is_implemented(const char *library, const char *symbol)
 {
     for (const rt_syslib_entry *e = rt_syslib_begin(); e && e != rt_syslib_end(); e++)
         if (!strcmp(e->library, library) && !strcmp(e->symbol, symbol))
@@ -214,7 +223,7 @@ typedef uint64_t (*attribute_wire)(void *, uint32_t, uint32_t, uint32_t, uint32_
 static attribute_wire attribute;
 static void video_attribute_null(void) { attribute(NULL, 0, 0, 0, 0, 0, 0); }
 
-static int died_in_fatal(void (*call)(void))
+int died_in_fatal(void (*call)(void))
 {
     const pid_t child = fork();
     if (child == 0) {
@@ -405,7 +414,7 @@ static f_sema_create sema_create;
 static f_sema_one sema_delete;
 static f_sema_wait sema_wait;
 static f_sema_count sema_signal, sema_poll;
-static void *sema_shared, *sema_prio;
+static void *sema_shared;
 static int sema_order[2], sema_served;
 static pthread_mutex_t sema_order_lock = PTHREAD_MUTEX_INITIALIZER;
 enum { SEMA_FIFO = 1, SEMA_PRIO = 2 };
@@ -428,7 +437,6 @@ static int sema_served_now(void)
     pthread_mutex_unlock(&sema_order_lock);
     return n;
 }
-static void *sema_prio_waiter(void *unused) { (void)unused; sema_wait(sema_prio, 1, NULL); return NULL; }
 /* The runtime's semaphore object, mirrored (runtime/syslib/kernel_sema.c) so a test can see how
    many waiters are inside the wait before it signals; keep the two in step. */
 typedef struct {
@@ -436,7 +444,8 @@ typedef struct {
     pthread_cond_t changed;
     int32_t count, max;
     uint32_t attr;
-    uint64_t next_ticket, serving;
+    uint64_t next_ticket;
+    void *queue;
     int waiters;
 } sema_mirror;
 static int sema_waiters(void *s)
@@ -456,13 +465,6 @@ static void sema_wait_with_timeout(void) { uint32_t t = 1000; sema_wait(sema_sha
 static void sema_wait_null(void) { sema_wait(NULL, 1, NULL); }
 static void sema_signal_past_max(void) { sema_signal(sema_shared, 0x10000); }
 static void sema_poll_empty(void) { sema_poll(sema_shared, 1); }
-static void sema_second_prio_waiter(void)
-{
-    pthread_t first;
-    pthread_create(&first, NULL, sema_prio_waiter, NULL);
-    while (sema_waiters(sema_prio) < 1) sched_yield();
-    sema_wait(sema_prio, 1, NULL);
-}
 
 /* The time of day: a timeval of two 64-bit fields, seconds and microseconds. */
 typedef struct {
@@ -785,7 +787,6 @@ static void flex_partial_page(void) { void *a = NULL; flex_map(&a, 0x1000, 3, 0)
 typedef int32_t (*f_qmp_fn)(const void *, void **, void **, int32_t *);
 static f_qmp_fn qmp_fn;
 static void qmp_unmapped(void) { int32_t p; static char not_mapped; qmp_fn(&not_mapped, NULL, NULL, &p); }
-static void qmp_with_end(void) { int32_t p; void *end; static char x; qmp_fn(&x, NULL, &end, &p); }
 static void flex_exec(void) { void *a = NULL; flex_map(&a, 0x4000, 7, 0); }
 
 /* libSceNet start-up: initialize once, a repeat answers 0x80410110; pools are ids. */
@@ -838,16 +839,42 @@ static void clock_unknown(void) { int64_t ts[2]; clock_gettime_fn(1, ts); }
 static void clock_no_timespec(void) { clock_gettime_fn(0, NULL); }
 typedef uint64_t (*f_u64)(void);
 
-/* libSceAjm start-up: a context id, then the observed module 1 registered once. */
+/* libSceAjm: contexts, ATRAC9 instances, and batches of jobs run when started. */
 typedef int32_t (*f_ajm_init)(int64_t, uint32_t *);
 typedef int32_t (*f_ajm_register)(uint32_t, uint32_t, uint64_t);
-static f_ajm_init ajm_init_fn;
-static f_ajm_register ajm_register_fn;
-static uint32_t ajm_test_context;
-static void ajm_init_reserved(void) { uint32_t c; ajm_init_fn(1, &c); }
-static void ajm_register_unknown_context(void) { ajm_register_fn(99, 1, 0); }
-static void ajm_register_other_module(void) { ajm_register_fn(ajm_test_context, 2, 0); }
-static void ajm_register_twice(void) { ajm_register_fn(ajm_test_context, 1, 0); }
+typedef int32_t (*f_ajm_create)(uint32_t, uint32_t, uint64_t, uint32_t *);
+typedef int32_t (*f_ajm_two)(uint32_t, uint32_t);
+typedef void *(*f_ajm_control)(void *, uint32_t, uint64_t, void *, uint64_t, void *, uint64_t, void *);
+typedef void *(*f_ajm_run)(void *, uint32_t, uint64_t, void *, uint64_t, void *, uint64_t, void *, uint64_t, void *);
+typedef int32_t (*f_ajm_start)(uint32_t, const void *, uint32_t, int32_t, void *, uint32_t *);
+typedef int32_t (*f_ajm_wait)(uint32_t, uint32_t, uint32_t, void *);
+static f_ajm_run ajm_run_fn;
+static f_ajm_start ajm_start_fn;
+static uint32_t ajm_test_context, ajm_test_instance;
+/* A stand-in ATRAC9 decoder for the tests (no ATRAC9 data may be in the repository): each frame
+   reads ajm_fake_frame_bytes and writes 256 stereo samples numbered from ajm_fake_next. */
+static int ajm_fake_frame_bytes = 256, ajm_fake_fail;
+static int16_t ajm_fake_next;
+static int ajm_fake_handle;
+static void *ajm_fake_open(const uint8_t config[4], uint32_t *channels) { *channels = 2; return config[0] == 0xFE ? &ajm_fake_handle : NULL; }
+static int ajm_fake_decode(void *d, const uint8_t *in, int16_t *pcm, int *used)
+{
+    (void)d, (void)in;
+    if (ajm_fake_fail) return -5;
+    for (int k = 0; k < 256 * 2; k++) pcm[k] = ajm_fake_next++;
+    *used = ajm_fake_frame_bytes;
+    return 0;
+}
+static void ajm_fake_release(void *d) { (void)d; }
+/* Runs one job on ajm_test_instance: a run job with input and output, or a control job. */
+static int32_t ajm_job(uint64_t flags, const void *in, uint32_t in_size, void *out, uint32_t out_size, void *sideband, uint32_t sideband_size)
+{
+    static uint8_t batch[0x60];
+    uint32_t id;
+    const uint8_t *end = ajm_run_fn(batch, ajm_test_instance, flags, (void *)in, in_size, out, out_size, sideband, sideband_size, NULL);
+    const int32_t started = ajm_start_fn(ajm_test_context, batch, (uint32_t)(end - batch), 0, NULL, &id);
+    return started ? started : ((int32_t (*)(uint32_t, uint32_t, uint32_t, void *))fn("libSceAjm", "sceAjmBatchWait"))(ajm_test_context, id, 0, NULL);
+}
 
 /* libSceAudioOut start-up: initialize once, then open the observed main port. */
 typedef int32_t (*f_ao_init)(void);
@@ -1097,6 +1124,42 @@ static void *te_entry(void *argument)
 }
 static void te_exit_main(void) { te_exit(NULL); }
 
+/* libSceSaveData against a temporary save folder. */
+typedef struct { int32_t user; uint32_t pad; const char *title, *dir; const void *fp; uint64_t blocks; uint32_t mode; uint8_t r[36]; } sd_mount_req;
+typedef struct { char point[16]; uint64_t required; uint32_t unused, status; uint8_t r[32]; } sd_mount_res;
+typedef struct { char title[128], subtitle[128], detail[1024]; uint32_t user_param, pad; int64_t mtime; uint8_t r[32]; } sd_param;
+typedef struct { int32_t user; uint32_t pad; const char *title, *dir; uint32_t key, order; uint8_t r[32]; } sd_cond;
+typedef struct { uint32_t hits, pad; char (*names)[32]; uint32_t capacity, set; sd_param *params; void *infos; uint8_t r[16]; } sd_result;
+typedef int32_t (*f_sd_mount)(const sd_mount_req *, sd_mount_res *);
+typedef int32_t (*f_sd_point)(const char *);
+typedef int32_t (*f_sd_set_param)(const char *, uint32_t, const void *, size_t);
+typedef int32_t (*f_sd_search)(const sd_cond *, sd_result *);
+typedef int32_t (*f_sd_setup)(int32_t, uint64_t, const sd_param *);
+typedef int32_t (*f_sd_memory)(int32_t, void *, uint64_t, int64_t);
+static f_sd_mount sd_mount;
+static f_sd_memory sd_get;
+static void sd_mount_other_title(void) { sd_mount_req q = {.user = 1, .title = "CUSA00000", .dir = "X", .mode = 4}; sd_mount_res r; sd_mount(&q, &r); }
+static void sd_mount_other_user(void) { sd_mount_req q = {.user = 9, .dir = "X", .mode = 4}; sd_mount_res r; sd_mount(&q, &r); }
+static void sd_get_past_end(void) { char b[8]; sd_get(1, b, 8, 4093); }
+static int32_t sd_mount_dir(const char *dir, uint32_t mode, char point[16]);
+static int32_t sd_small_stack_result = -1;
+static void *sd_small_stack_mount(void *unused)
+{
+    (void)unused;
+    char point[16];
+    sd_small_stack_result = sd_mount_dir("SMALLSTACK", 4 | 2, point);
+    if (!sd_small_stack_result) sd_small_stack_result = ((f_sd_point)fn("libSceSaveData", "sceSaveDataUmount"))(point);
+    return NULL;
+}
+static int32_t sd_mount_dir(const char *dir, uint32_t mode, char point[16])
+{
+    sd_mount_req q = {.user = 1, .dir = dir, .blocks = 96, .mode = mode};
+    sd_mount_res r;
+    memset(&r, 0, sizeof r);
+    const int32_t e = sd_mount(&q, &r);
+    if (point) memcpy(point, r.point, 16);
+    return e;
+}
 int main(void)
 {
     /* Unresolved entries are still callable diagnostics, but are not reported as implemented. */
@@ -1726,6 +1789,11 @@ int main(void)
         CHECK(died_in_fatal(dm_allocate_unknown_type));
         CHECK(died_in_fatal(dm_allocate_no_variable));
         CHECK(died_in_fatal(dm_map_with_flags));
+        /* No overwrite (0x80) with no address: nothing to overwrite, so the map is made as usual, and it
+           is the same memory as the range's other maps (the alias a title makes of its own memory). */
+        void *alias = NULL;
+        CHECK(dm_map(&alias, DM_PAGE, DM_RW, 0x80, first, DM_PAGE) == 0 && alias && alias != a);
+        if (alias && a) CHECK(((volatile unsigned char *)alias)[0] == 0xa5);
         /* A free, aligned address hint is where the map goes; one in use or off the alignment stops. */
         void *hinted = (void *)0xfd00000000;
         CHECK(dm_map(&hinted, DM_PAGE, DM_RW, 0, first, DM_PAGE) == 0 && hinted == (void *)0xfd00000000);
@@ -1817,7 +1885,6 @@ int main(void)
             pthread_join(b, NULL);
             CHECK(sema_served == 2 && sema_order[1] == 2);
         }
-        CHECK(sema_create(&sema_prio, "prio", SEMA_PRIO, 0, 1, NULL) == 0);
         /* The answers that are not established stop by name. */
         CHECK(died_in_fatal(sema_create_no_variable));
         CHECK(died_in_fatal(sema_create_bad_attr));
@@ -1827,7 +1894,6 @@ int main(void)
         CHECK(died_in_fatal(sema_wait_null));
         CHECK(died_in_fatal(sema_signal_past_max));
         CHECK(died_in_fatal(sema_poll_empty));
-        CHECK(died_in_fatal(sema_second_prio_waiter));
         CHECK(sema_delete(sema_shared) == 0);
     }
     CHECK(is_implemented("libkernel", "sceKernelCreateSema") && is_implemented("libkernel", "sceKernelDeleteSema") &&
@@ -1869,6 +1935,10 @@ int main(void)
         rt_process.app_boot_param_unread = 1;
         char init[32] = {0}, boot[40];
         memset(boot, 0x5a, sizeof boot);
+        typedef int32_t (*f_ac_addcont)(uint32_t, void *, uint32_t, uint32_t *);
+        const f_ac_addcont ac_addcont = (f_ac_addcont)fn("libSceAppContent", "sceAppContentGetAddcontInfoList");
+        uint32_t hits = 77;
+        CHECK(ac_addcont && ac_addcont(0, NULL, 0, &hits) == (int32_t)0x80D90001u); /* before initialize */
         CHECK(ac_init(init, boot) == 0);
         CHECK(boot[0] == 0x5a && boot[sizeof boot - 1] == 0x5a); /* not written */
         int32_t value = -7;
@@ -1878,6 +1948,22 @@ int main(void)
         CHECK(died_in_fatal(ac_undeclared_param));
         CHECK(died_in_fatal(ac_param_no_variable));
         CHECK(died_in_fatal(ac_init_boot_param_not_declared));
+        /* add-ons: the labels the person owns, each installed, under service label 0 */
+        if (ac_addcont) {
+            CHECK(ac_addcont(0, NULL, 0, &hits) == 0 && hits == 0);              /* none by default */
+            memcpy(rt_process.addconts[0], "SPEXPANSIONDLC03", 17);
+            memcpy(rt_process.addconts[1], "SECONDADDON", 12);
+            rt_process.addcont_count = 2;
+            CHECK(ac_addcont(0, NULL, 0, &hits) == 0 && hits == 2);
+            CHECK(ac_addcont(1, NULL, 0, &hits) == 0 && hits == 0);
+            CHECK(ac_addcont(8, NULL, 0, &hits) == (int32_t)0x80D90002u && ac_addcont(0, NULL, 0, NULL) == (int32_t)0x80D90002u);
+            struct { char label[17], padding[3]; uint32_t status; } list[3];
+            memset(list, 0x5a, sizeof list);
+            CHECK(ac_addcont(0, list, 1, &hits) == 0 && hits == 1);             /* only the space given */
+            CHECK(!strcmp(list[0].label, "SPEXPANSIONDLC03") && list[0].status == 4 && list[1].status == 0x5a5a5a5au);
+            CHECK(ac_addcont(0, list, 3, &hits) == 0 && hits == 2 && !strcmp(list[1].label, "SECONDADDON"));
+            rt_process.addcont_count = 0;
+        }
         rt_process.app_param_count = 0;
         rt_process.app_boot_param_unread = 0;
     }
@@ -2206,6 +2292,18 @@ int main(void)
     }
 
     /* libSceSystemService: the language the person running the runtime chose. */
+    {   /* the boot splash: hidden when the title says so */
+        typedef int32_t (*f_hide)(void);
+        const f_hide hide = (f_hide)fn("libSceSystemService", "sceSystemServiceHideSplashScreen");
+        CHECK(hide && !rt_splash_hidden() && hide() == 0 && rt_splash_hidden() && hide() == 0);
+        typedef int32_t (*f_status)(void *);
+        const f_status status_fn = (f_status)fn("libSceSystemService", "sceSystemServiceGetStatus");
+        uint8_t status[16];
+        memset(status, 0x5a, sizeof status);
+        CHECK(status_fn && status_fn(status) == 0 && !status[0] && !status[3] && !status[4] && !status[5] && status[6] == 1);
+        CHECK(!status[7] && !status[8] && status[9] == 0x5a);                      /* nothing past 9 bytes */
+        CHECK(status_fn(NULL) == (int32_t)0x80A10003u);
+    }
     sys_param = (f_sys_param)fn("libSceSystemService", "sceSystemServiceParamGetInt");
     if (sys_param) {
         rt_process.system_params[0] = (rt_system_param){1, 18};
@@ -2260,7 +2358,10 @@ int main(void)
             }
             qmp_fn = qmp;
             CHECK(died_in_fatal(qmp_unmapped));
-            CHECK(died_in_fatal(qmp_with_end));
+            /* the mapping's start, and its end one past the last byte (shadPS4, PS4Recomp) */
+            void *start = NULL, *end = NULL;
+            CHECK(qmp((char *)a + 0x10, &start, &end, &prot) == 0 && prot == 3);
+            CHECK(start == a && end == (char *)a + 0x8000);
         }
     }
 
@@ -2399,18 +2500,114 @@ int main(void)
     }
     CHECK(is_implemented("libSceLibcInternal", "time"));
 
-    /* sceAjmInitialize / sceAjmModuleRegister. */
-    ajm_init_fn = (f_ajm_init)fn("libSceAjm", "sceAjmInitialize");
-    ajm_register_fn = (f_ajm_register)fn("libSceAjm", "sceAjmModuleRegister");
-    if (ajm_init_fn && ajm_register_fn) {
-        uint32_t context = 0xffffffffu;
-        CHECK(ajm_init_fn(0, &context) == 0 && context != 0xffffffffu && context != 0);
-        ajm_test_context = context;
-        CHECK(died_in_fatal(ajm_init_reserved));
-        CHECK(died_in_fatal(ajm_register_unknown_context));
-        CHECK(died_in_fatal(ajm_register_other_module));
-        CHECK(ajm_register_fn(context, 1, 0) == 0);
-        CHECK(died_in_fatal(ajm_register_twice));
+    /* libSceAjm */
+    {
+        const f_ajm_init init = (f_ajm_init)fn("libSceAjm", "sceAjmInitialize");
+        const f_ajm_register reg = (f_ajm_register)fn("libSceAjm", "sceAjmModuleRegister");
+        const f_ajm_create create = (f_ajm_create)fn("libSceAjm", "sceAjmInstanceCreate");
+        const f_ajm_two destroy = (f_ajm_two)fn("libSceAjm", "sceAjmInstanceDestroy");
+        const f_ajm_two cancel = (f_ajm_two)fn("libSceAjm", "sceAjmBatchCancel");
+        const f_ajm_control control = (f_ajm_control)fn("libSceAjm", "sceAjmBatchJobControlBufferRa");
+        const f_ajm_wait wait = (f_ajm_wait)fn("libSceAjm", "sceAjmBatchWait");
+        typedef int32_t (*f_ajm_one)(uint32_t);
+        const f_ajm_one finalize = (f_ajm_one)fn("libSceAjm", "sceAjmFinalize");
+        ajm_run_fn = (f_ajm_run)fn("libSceAjm", "sceAjmBatchJobRunBufferRa");
+        ajm_start_fn = (f_ajm_start)fn("libSceAjm", "sceAjmBatchStartBuffer");
+        CHECK(init && reg && create && destroy && cancel && control && wait && finalize && ajm_run_fn && ajm_start_fn);
+        if (init && reg && create && destroy && cancel && control && wait && finalize && ajm_run_fn && ajm_start_fn) {
+            uint32_t context = 0;
+            CHECK(init(1, &context) == (int32_t)0x80930005u && init(0, NULL) == (int32_t)0x80930005u);
+            CHECK(init(0, &context) == 0 && context);
+            ajm_test_context = context;
+            CHECK(reg(99, 1, 0) == (int32_t)0x80930002u && reg(context, 23, 0) == (int32_t)0x80930005u);
+            CHECK(reg(context, 1, 0) == 0 && reg(context, 1, 0) == (int32_t)0x80930009u);
+            uint32_t instance = 0;
+            CHECK(create(context, 1, 0x410, &instance) == (int32_t)0x8093000Bu);  /* revision 0 */
+            CHECK(create(context, 0, 0x411, &instance) == (int32_t)0x8093000Au);  /* MP3 not registered */
+            CHECK(create(context, 1, 0x411, &instance) == 0 && instance >> 14 == 1 && (instance & 0x3fff) >= 1);
+            ajm_test_instance = instance;
+            /* job sizes the title's FMOD relies on: control 0x30 (0x40 with a return address), run 0x40 (0x50) */
+            static uint8_t batch[0x100];
+            static uint8_t init_params[8] = {0xFE, 0x72, 0x1F, 0xF0}; /* 48 kHz, stereo, 256-byte frames, 4 per superframe */
+            static uint8_t control_out[32], run_out[64];
+            uint8_t *at = control(batch, instance, 0x6001, init_params, sizeof init_params, control_out, sizeof control_out, NULL);
+            CHECK(at - batch == 0x30);
+            uint8_t *with_ra = control(batch + 0x80, instance, 0x6001, init_params, 8, control_out, 32, (void *)0x1234);
+            CHECK(with_ra - (batch + 0x80) == 0x40);
+            uint8_t *run_end = ajm_run_fn(at, instance, 0x801, NULL, 0, NULL, 0, run_out, sizeof run_out, (void *)0x1234);
+            CHECK(run_end - at == 0x50);
+            uint32_t batch_id = 0;
+            CHECK(ajm_start_fn(context, batch, 4, 0, NULL, &batch_id) == (int32_t)0x80930011u);
+            memset(control_out, 0xee, sizeof control_out);
+            memset(run_out, 0xee, sizeof run_out);
+            CHECK(ajm_start_fn(context, batch, (uint32_t)(run_end - batch), 0, NULL, &batch_id) == 0 && batch_id >= 1);
+            int32_t result[2];
+            memcpy(result, control_out, 8);
+            CHECK(result[0] == 0 && result[1] == 0);
+            uint32_t info[6];
+            memcpy(info, run_out, sizeof info);
+            CHECK(info[0] == 0 && info[1] == 0);                                  /* the run's result */
+            CHECK(info[2] == 1024 && info[3] == 4 && info[4] == 1024 && info[5] == 256); /* the ATRAC9 codec info */
+            CHECK(cancel(context, batch_id) == 0);                                /* already run: nothing to cancel */
+            CHECK(wait(context, batch_id, 0xffffffffu, NULL) == 0 && wait(context, batch_id, 0, NULL) == (int32_t)0x80930004u);
+            CHECK(cancel(context, batch_id) == (int32_t)0x80930004u);
+            /* decoding, with the stand-in decoder: frames, room, partial input, superframe padding, gapless */
+            static const rt_ajm_decoder fake = {ajm_fake_open, ajm_fake_decode, ajm_fake_release};
+            rt_ajm_set_decoder(&fake);
+            static uint8_t at9[4096];
+            static int16_t pcm[256 * 2 * 8];
+            struct { int32_t result, internal; int32_t consumed, written; uint64_t total; uint32_t frames, reserved; } side;
+            const uint64_t stream_frames = 0x800000001000ull;                     /* Stream + MultipleFrames */
+            CHECK(control(batch, instance, 0x6001, init_params, 8, control_out, 32, NULL) != NULL);
+            uint32_t init_id;
+            const uint8_t *init_end = control(batch, instance, 0x6001, init_params, 8, control_out, 32, NULL);
+            CHECK(ajm_start_fn(context, batch, (uint32_t)(init_end - batch), 0, NULL, &init_id) == 0 && wait(context, init_id, 0, NULL) == 0);
+            ajm_fake_next = 0;
+            memset(&side, 0, sizeof side);
+            CHECK(ajm_job(stream_frames, at9, 1024, pcm, sizeof pcm, &side, sizeof side) == 0);
+            CHECK(side.result == 0 && side.consumed == 1024 && side.written == 4 * 1024 && side.total == 1024 && side.frames == 4);
+            CHECK(pcm[0] == 0 && pcm[511] == 511 && pcm[2047] == 2047);         /* frames in order, interleaved */
+            memset(&side, 0, sizeof side);                                         /* room for one frame and a half */
+            CHECK(ajm_job(stream_frames, at9, 1024, pcm, 1536, &side, sizeof side) == 0);
+            CHECK(side.result == 0x10 && side.frames == 1 && side.consumed == 256 && side.written == 1024);
+            memset(&side, 0, sizeof side);                                         /* less than the rest of the superframe */
+            CHECK(ajm_job(stream_frames, at9, 512, pcm, sizeof pcm, &side, sizeof side) == 0);
+            CHECK(side.result == 0x8 && side.frames == 0 && side.consumed == 0);
+            memset(&side, 0, sizeof side);                                         /* the rest: three frames */
+            CHECK(ajm_job(stream_frames, at9, 768, pcm, sizeof pcm, &side, sizeof side) == 0 && side.frames == 3 && side.total == 2048u); /* since the reset */
+            ajm_fake_frame_bytes = 200;                                            /* frames shorter than a quarter: padding */
+            memset(&side, 0, sizeof side);
+            CHECK(ajm_job(stream_frames, at9, 1024, pcm, sizeof pcm, &side, sizeof side) == 0 && side.consumed == 1024 && side.frames == 4);
+            ajm_fake_frame_bytes = 256;
+            /* gapless: skip 100, keep 300 samples; the rest of the superframe is decoded and dropped */
+            struct { uint32_t total; uint16_t skip, skipped; } gap = {300, 100, 0};
+            uint32_t gap_id;
+            const uint8_t *gap_end = control(batch, instance, 0x200000002001ull, &gap, sizeof gap, control_out, 32, NULL);
+            CHECK(ajm_start_fn(context, batch, (uint32_t)(gap_end - batch), 0, NULL, &gap_id) == 0 && wait(context, gap_id, 0, NULL) == 0);
+            struct { int32_t result, internal; int32_t consumed, written; uint64_t total; uint32_t gap_total; uint16_t gap_skip, gap_skipped; uint32_t frames, r; } gside;
+            memset(&gside, 0, sizeof gside);
+            ajm_fake_next = 0;
+            CHECK(ajm_job(stream_frames | (1ull << 45), at9, 1024, pcm, sizeof pcm, &gside, sizeof gside) == 0);
+            CHECK(gside.result == 0 && gside.written == 300 * 4 && gside.total == 300u && gside.consumed == 1024 && gside.frames == 2);
+            CHECK(pcm[0] == 200 && gside.gap_total == 0 && gside.gap_skip == 0);   /* 100 stereo samples skipped */
+            /* a decoder error is fatal, with the decoder's code */
+            ajm_fake_fail = 1;
+            memset(&side, 0, sizeof side);
+            CHECK(ajm_job(stream_frames, at9, 1024, pcm, sizeof pcm, &side, sizeof side) == 0);
+            CHECK((uint32_t)side.result == 0xC0000000u && side.internal == -5);
+            ajm_fake_fail = 0;
+            rt_ajm_set_decoder(NULL);
+            /* the real decoder: junk input is a codec error */
+            static uint8_t junk[1024];
+            for (int k = 0; k < 1024; k++) junk[k] = (uint8_t)(k * 37 + 11);
+            const uint8_t *real_end = control(batch, instance, 0x6001, init_params, 8, control_out, 32, NULL);
+            CHECK(ajm_start_fn(context, batch, (uint32_t)(real_end - batch), 0, NULL, &init_id) == 0 && wait(context, init_id, 0, NULL) == 0);
+            memset(&side, 0, sizeof side);
+            CHECK(ajm_job(stream_frames, junk, sizeof junk, pcm, sizeof pcm, &side, sizeof side) == 0);
+            CHECK(((uint32_t)side.result & 0xC0000000u) == 0xC0000000u && side.internal != 0);
+            CHECK(destroy(context, instance) == 0 && destroy(context, instance) == (int32_t)0x80930003u);
+            CHECK(finalize(context) == 0 && finalize(context) == (int32_t)0x80930002u);
+        }
     }
 
     /* sceAudioOutInit / sceAudioOutOpen. */
@@ -2458,6 +2655,8 @@ int main(void)
             unsigned char state[32];
             memset(state, 0xee, sizeof state);
             CHECK(ao_state(h1, state) == 0 && state[0] == 0 && state[1] == 0 && state[31] == 0);
+            /* host sound: this build has none, so it cannot be switched on, and no port is heard */
+            CHECK(rt_audio_host_configure(1) == -1 && !rt_audio_host_enabled() && rt_audio_host_configure(0) == 0);
         }
     }
 
@@ -2888,6 +3087,17 @@ int main(void)
             CHECK(gnm_submit_one_result(dma, 7) == 0 && dma_source[0] == 1 && dma_source[2] == 3);
             CHECK(died_in_fatal(gnm_submit_dma_fill));
             CHECK(died_in_fatal(gnm_submit_dma_other_register));
+            /* an indexed draw: index type, base and buffer size, then DRAW_INDEX_2; only memory reads */
+            static uint16_t indices[3] = {0, 1, 2};
+            const uint64_t index_at = (uint64_t)(uintptr_t)indices;
+            uint32_t indexed[] = {
+                0xc0002a00u, 0x0,                                                   /* INDEX_TYPE 16-bit */
+                0xc0012600u, (uint32_t)index_at, (uint32_t)(index_at >> 32),        /* INDEX_BASE */
+                0xc0001300u, 3,                                                     /* INDEX_BUFFER_SIZE */
+                0xc0032700u, 3, (uint32_t)index_at, 3, 0,                           /* DRAW_INDEX_2 */
+                0xc0033500u, 3, 0, 3, 0,                                            /* DRAW_INDEX_OFFSET_2 */
+            };
+            CHECK(gnm_submit_one_result(indexed, sizeof indexed / 4) == 0 && indices[2] == 2);
             CHECK(died_in_fatal(gnm_submit_constant_without_sizes));
             CHECK(died_in_fatal(gnm_submit_unmet_wait));
         }
@@ -3025,6 +3235,9 @@ int main(void)
             CHECK(reg(NULL, &user_data) == (int32_t)0x80550003u);
             CHECK(reg(callback, &user_data) == 0 && reg(callback, &user_data) == (int32_t)0x80550008u);
             presence(callback, &user_data);
+            void *kept_data = NULL;
+            CHECK(rt_np_callback(RT_NP_PRESENCE_CALLBACK, &kept_data) == callback && kept_data == &user_data);
+            CHECK(rt_np_callback(RT_NP_STATE_CALLBACK, &kept_data) == callback && kept_data == &user_data);
             CHECK(check() == 0);
             CHECK(unreg() == 0 && unreg() == (int32_t)0x80550009u);
             CHECK(reg(callback, NULL) == 0 && unreg() == 0);     /* registered again after an unregister */
@@ -3084,6 +3297,120 @@ int main(void)
             CHECK(d1.tv_sec - d0.tv_sec < 1);
             CHECK(ep_destroy(id) == (int32_t)0x80410109u && ep_wait(id, events, 4, 0) == (int32_t)0x80410109u);
         }
+        typedef int32_t (*f_sd_none)(void);
+        typedef int32_t (*f_sd_init)(const void *);
+        const f_sd_init sd_init = (f_sd_init)fn("libSceSaveData", "sceSaveDataInitialize");
+        const f_sd_none sd_term = (f_sd_none)fn("libSceSaveData", "sceSaveDataTerminate");
+        const f_sd_point sd_umount = (f_sd_point)fn("libSceSaveData", "sceSaveDataUmount");
+        const f_sd_set_param sd_set_param = (f_sd_set_param)fn("libSceSaveData", "sceSaveDataSetParam");
+        const f_sd_search sd_search = (f_sd_search)fn("libSceSaveData", "sceSaveDataDirNameSearch");
+        const f_sd_setup sd_setup = (f_sd_setup)fn("libSceSaveData", "sceSaveDataSetupSaveDataMemory");
+        const f_sd_memory sd_set = (f_sd_memory)fn("libSceSaveData", "sceSaveDataSetSaveDataMemory");
+        sd_mount = (f_sd_mount)fn("libSceSaveData", "sceSaveDataMount");
+        sd_get = (f_sd_memory)fn("libSceSaveData", "sceSaveDataGetSaveDataMemory");
+        CHECK(sd_init && sd_term && sd_umount && sd_set_param && sd_search && sd_setup && sd_set && sd_mount && sd_get);
+        static char saves[512];
+        const char *tmp = getenv("TMPDIR");
+        snprintf(saves, sizeof saves, "%s/pb-saves-XXXXXX", tmp ? tmp : "/tmp");
+        CHECK(mkdtemp(saves) != NULL);
+        rt_process.savedata_dir = saves;
+        if (sd_init && sd_term && sd_umount && sd_set_param && sd_search && sd_setup && sd_set && sd_mount && sd_get) {
+            /* before initialize: the title's SDK decides the code (the test binary has none: before 2.00) */
+            char point[16];
+            CHECK(sd_mount_dir("SAVE0", 4, point) == (int32_t)0x809F000Bu);
+            /* from here on, a title built against SDK 2.00, as the process parameters say */
+            static uint64_t fake_image[8];
+            const uint32_t prefix[4] = {32, 0, 0x4942524fu, 1};            /* size 32, magic "ORBI", version 1 */
+            const uint32_t sdk_2_00 = 0x02000071u;
+            memcpy(fake_image, prefix, sizeof prefix);
+            memcpy((char *)fake_image + 16, &sdk_2_00, sizeof sdk_2_00);
+            void *saved_image = rt_process.image, *saved_param = rt_process.proc_param;
+            const uint64_t saved_size = rt_process.image_size;
+            rt_process.image = fake_image, rt_process.image_size = sizeof fake_image, rt_process.proc_param = fake_image;
+            CHECK(sd_mount_dir("SAVE0", 4, point) == (int32_t)0x80960002u); /* SDK 2.00 to 2.49 */
+            CHECK(sd_init(NULL) == 0);
+            CHECK(sd_mount_dir("SAVE0", 2, point) == (int32_t)0x809F0008u);       /* not there, no create */
+            CHECK(sd_mount_dir("", 4, point) == (int32_t)0x809F0000u);
+            CHECK(sd_mount_dir("../up", 4, point) == (int32_t)0x809F0000u);
+            CHECK(sd_mount_dir("a/b", 4, point) == (int32_t)0x809F0000u);
+            sd_mount_req negative = {.user = -1, .dir = "SAVE0", .mode = 4};
+            sd_mount_res unused;
+            CHECK(sd_mount(&negative, &unused) == (int32_t)0x809F0011u);
+            CHECK(sd_mount_dir("SAVE0", 4 | 2, point) == 0 && !strcmp(point, "/savedata0"));
+            CHECK(sd_mount_dir("SAVE0", 2, NULL) == (int32_t)0x809F0003u);        /* already mounted */
+            {   /* a title thread's stack can be small: a mount must fit in 64 KiB */
+                pthread_attr_t small;
+                pthread_t thread;
+                CHECK(pthread_attr_init(&small) == 0 && pthread_attr_setstacksize(&small, 64 * 1024) == 0);
+                CHECK(pthread_create(&thread, &small, sd_small_stack_mount, NULL) == 0 && pthread_join(thread, NULL) == 0);
+                CHECK(sd_small_stack_result == 0);
+                pthread_attr_destroy(&small);
+            }
+            /* the title's own file through the mount, landing in the save folder */
+            typedef int32_t (*f_sd_close)(int32_t);
+            const f_kopen open_fn = (f_kopen)fn("libkernel", "sceKernelOpen");
+            const f_sd_close close_fn = (f_sd_close)fn("libkernel", "sceKernelClose");
+            if (open_fn && close_fn) {
+                const int32_t fd = open_fn("/savedata0/userdata0010", 0x0001 | 0x0200, 0666); /* write, create */
+                CHECK(fd >= 0 && close_fn(fd) == 0);
+                char host[700];
+                snprintf(host, sizeof host, "%s/1/SAVE0/userdata0010", saves);
+                struct stat created;
+                CHECK(stat(host, &created) == 0 && S_ISREG(created.st_mode));
+            }
+            /* params: a title and a user param, kept in sce_sys/param.bin */
+            CHECK(sd_set_param("/savedata0", 1, "The Old Hunters", 16) == 0);
+            const uint32_t user_param = 7;
+            CHECK(sd_set_param("/savedata0", 4, &user_param, 4) == 0);
+            CHECK(sd_set_param("/savedata0", 5, &user_param, 4) == (int32_t)0x809F0000u);
+            CHECK(sd_set_param("/savedata9", 1, "x", 2) == (int32_t)0x809F0004u);
+            CHECK(sd_umount("/savedata0") == 0 && sd_umount("/savedata0") == (int32_t)0x809F0008u);
+            CHECK(sd_mount_dir("SAVE0", 4, NULL) == (int32_t)0x809F0007u);        /* create, but it exists */
+            /* a second save, read-only mount, and the 16-slot limit */
+            CHECK(sd_mount_dir("SAVE1", 4, point) == 0 && sd_umount(point) == 0);
+            CHECK(sd_mount_dir("SAVE1", 1, point) == 0 && !strcmp(point, "/savedata0"));
+            if (open_fn) CHECK(open_fn("/savedata0/new", 0x0001 | 0x0200, 0666) == (int32_t)0x8002001eu); /* EROFS */
+            CHECK(sd_umount(point) == 0);
+            char name[16];
+            for (int k = 0; k < 16; k++) {
+                snprintf(name, sizeof name, "SLOT%d", k);
+                CHECK(sd_mount_dir(name, 4, NULL) == 0);
+            }
+            CHECK(sd_mount_dir("SLOT16", 4, NULL) == (int32_t)0x809F000Cu);
+            CHECK(sd_term() == 0);                                                /* unmounts them (before SDK 4.00) */
+            CHECK(sd_init(NULL) == 0 && sd_mount_dir("SLOT0", 2, point) == 0 && sd_umount(point) == 0);
+            /* search: by name pattern, sorted, with params */
+            char names[4][32];
+            sd_param params[4];
+            sd_cond cond = {.user = 1, .dir = "SAVE%", .key = 0, .order = 1};
+            sd_result res = {.names = names, .capacity = 4, .params = params};
+            CHECK(sd_search(&cond, &res) == 0 && res.hits == 2 && res.set == 2);
+            CHECK(!strcmp(names[0], "SAVE1") && !strcmp(names[1], "SAVE0"));    /* descending */
+            CHECK(!strcmp(params[1].title, "The Old Hunters") && params[1].user_param == 7);
+            cond.dir = "save_";                                                   /* case-insensitive, one character */
+            res.capacity = 1;
+            CHECK(sd_search(&cond, &res) == 0 && res.hits == 2 && res.set == 1);
+            cond.dir = NULL;
+            res.capacity = 4;
+            CHECK(sd_search(&cond, &res) == 0 && res.hits == 19);          /* with SMALLSTACK */
+            cond.key = 6;
+            CHECK(sd_search(&cond, &res) == (int32_t)0x809F0000u);
+            /* the memory-backed save */
+            char data[16] = "", back[16] = "";
+            CHECK(sd_get(1, data, 4, 0) == (int32_t)0x809F0012u);                /* not set up */
+            CHECK(sd_setup(1, 0, NULL) == (int32_t)0x809F0000u);
+            CHECK(sd_setup(1, 4096, NULL) == 0);
+            memcpy(data, "blood echoes", 13);
+            CHECK(sd_set(1, data, 13, 100) == 0 && sd_get(1, back, 13, 100) == 0 && !strcmp(back, "blood echoes"));
+            CHECK(sd_get(1, back, 4, 0) == 0 && !back[0] && !back[3]);           /* untouched bytes are zero */
+            CHECK(sd_get(1, NULL, 4, 0) == (int32_t)0x809F0000u && sd_get(1, back, 4, -1) == (int32_t)0x809F0000u);
+            CHECK(died_in_fatal(sd_get_past_end));
+            CHECK(died_in_fatal(sd_mount_other_title));
+            CHECK(died_in_fatal(sd_mount_other_user));
+            CHECK(sd_term() == 0);
+            rt_process.image = saved_image, rt_process.image_size = saved_size, rt_process.proc_param = saved_param;
+        }
+        rt_process.savedata_dir = NULL;
     }
 
     te_exit = (f_thread_exit)fn("libkernel", "scePthreadExit");
@@ -3093,7 +3420,7 @@ int main(void)
         CHECK(kc_create(&te_key, te_destructor) == 0);
         void *thread = NULL, *attr = tc_attr(1, 1, 1); /* detached */
         CHECK(tc_create(&thread, &attr, te_entry, &value, "exits") == 0);
-        for (int i = 0; i < 200000 && !atomic_load(&te_destructor_calls); i++) sched_yield();
+        for (int ms = 0; ms < 5000 && !atomic_load(&te_destructor_calls); ms++) usleep(1000); /* up to 5 s on a slow machine */
         CHECK(atomic_load(&te_destructor_calls) == 1 && te_destroyed == &value);
         CHECK(!atomic_load(&te_after_exit));
         CHECK(died_in_fatal(te_exit_main));
@@ -3138,12 +3465,18 @@ int main(void)
         CHECK(died_in_fatal(pg_chunks_short));
         CHECK(died_in_fatal(pg_chunks_bad_handle));
         CHECK(died_in_fatal(pg_locus_unknown));
+        typedef int32_t (*f_pg_speed)(int32_t, int32_t);
+        const f_pg_speed pg_speed = (f_pg_speed)fn("libScePlayGo", "scePlayGoSetInstallSpeed");
+        CHECK(pg_speed && pg_speed(pg_handle, 1) == 0 && pg_speed(pg_handle, 2) == 0 && pg_speed(pg_handle, 0) == 0);
+        CHECK(pg_speed && pg_speed(pg_handle, 3) == (int32_t)0x80B20004u && pg_speed(pg_handle + 1, 2) == (int32_t)0x80B20009u);
         remove(path);
         snprintf(path, sizeof path, "%s/sce_sys", app0);
         rmdir(path);
         rmdir(app0);
         rt_process.app0_dir = NULL;
     }
+
+    for (syslib_test *test = registered_tests; test; test = test->next) test->run();
 
     if (!failures) puts("syslib: ok");
     return failures != 0;

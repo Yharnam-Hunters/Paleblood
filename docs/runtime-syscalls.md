@@ -399,7 +399,10 @@ The signatures match the OpenOrbis homebrew SDK's `libkernel.h`, as supporting e
   - lengths, starts or alignments that are not multiples of 16 KiB (the granularity the
     executable's calls use);
   - memory types other than 0, 3 and 10;
-  - map flags, and an address hint without flags;
+  - map flags other than no-overwrite (`0x80`, shadPS4's kernel `memory.h`). No-overwrite keeps a
+    map off memory already mapped, and the runtime never replaces a mapping, so it changes nothing.
+    The movie code (`0x02d032b9`) passes it with no address, to map part of its own direct memory a
+    second time;
   - protection other than CPU and GPU read and write;
   - a range that does not fit or was not allocated;
   - releasing part of a range or a mapped one;
@@ -440,8 +443,15 @@ The signatures, and attr 1 = FIFO and 2 = priority wake order, match the OpenOrb
 headers (supporting evidence only).
 
 **What the runtime does.** A semaphore is a runtime object behind the handle. Wait blocks until the
-units are there, and waiters are served in the order they arrived. Signal adds units and wakes the
-waiters.
+units are there. Waiters are served in the order they arrived, or with attr 2 by thread priority:
+- the best priority goes first, which is the smallest number (OpenOrbis `_types/user.h`: `0x100`
+  highest, `0x2FF` lowest);
+- equal priorities are served in arrival order;
+- each waiter is placed by the priority its thread has when it starts to wait. The runtime records
+  each guest thread's priority (`scePthreadSetprio`, inherited at creation).
+
+shadPS4's semaphore (`threads/semaphore.cpp`) orders its wait list the same way. Signal adds units
+and wakes the waiters.
 
 **What stops by name.** Every case whose PS4 answer is not established stops with the function's
 name:
@@ -452,7 +462,6 @@ name:
 - signalling past the maximum;
 - a poll that cannot be satisfied now;
 - deleting a semaphore with waiters;
-- a second waiter under priority order (guest thread priorities are not modelled);
 - a wait for more than one unit behind another waiter (whether it may be passed is not
   established);
 - the error values.
@@ -508,6 +517,20 @@ value variable.
 
 A local boot with the affinity probe and the rwlocks let through (not committed) loads the module,
 passes these calls, and stops next at `pthread_cond_init` (`libScePosix`).
+
+**Add-ons (`sceAppContentGetAddcontInfoList`).** It is called as
+`sceAppContentGetAddcontInfoList(service label, list, capacity, &hits)` and lists the title's
+add-ons (DLC). Each entry is `{entitlement label[17], padding[3], status}`, and status 4 means
+installed.
+- **Answers:** without a list it gives only the count. A service label above 7, or neither a list
+  nor a count, answers `0x80D90002`, and a call before initialize `0x80D90001`. The facts come
+  from shadPS4's `libSceAppContent`.
+- **The title's call:** it asks for the count first (`0x023b67cf`).
+- **What the runtime lists:** an add-on is what the person running the runtime owns, the labels
+  given to `tools/boot.py --addcont LABEL` (repeatable), each installed, under service label 0.
+  None are listed by default.
+- **Bloodborne's expansion:** The Old Hunters is `SPEXPANSIONDLC03`. Its data ships with patch 1.09
+  (another Bloodborne port's notes), so the entitlement is all it needs.
 
 ## Ending a thread (`scePthreadExit`)
 
@@ -588,7 +611,7 @@ reported installed (`runtime/syslib/playgo.c`).
 | `scePlayGoOpen(int32_t *handle, params)` | params is NULL (`0x023deae4`); 0 counts as opened | writes handle 1, the runtime's choice (the title only passes it back) |
 | `scePlayGoGetChunkId(handle, uint16_t ids[], capacity, uint32_t *count)` | capacity 100 (`0x023deb0f`); the result is not read | the package's chunks, 0 to `chunk_count - 1`, from `chunk_count` in the copy's `sce_sys/playgo-manifest.xml` (3 for this title; `playgo-chunk.dat` agrees) |
 | `scePlayGoGetLocus(handle, const uint16_t ids[], count, int8_t loci[])` | one byte per chunk (`0x023de8d6`, `0x023deb30`); non-zero counts as failure; the title treats 0 as not there, 2 as still arriving and polls again, any other value as ready | 3 for every chunk, a ready value (the title can't tell the ready values apart) |
-| `scePlayGoSetInstallSpeed` | never called directly | stops by name |
+| `scePlayGoSetInstallSpeed(handle, speed)` | called through a function pointer (`0x023dd891`) with 1 (trickle) or 2 (full); 0 is suspended | accepts it (everything is installed, so there is nothing to pace; nothing reads it back); an unknown handle `0x80B20009`, before initialize `0x80B20005`, another speed `0x80B20004` (shadPS4's `libScePlayGo`) |
 
 No public source declares these calls: the OpenOrbis toolchain has no PlayGo header. Stops by
 name: Open with parameters, an unknown handle, a chunk list longer than the space given, an unknown
@@ -667,14 +690,23 @@ by name.
 
 ## The controller (`libScePad`)
 
-The runtime models one standard controller, the one user's, always connected and at rest
-(`runtime/syslib/pad.c`). Real input from a host controller is not provided yet.
+The runtime models one standard controller, the one user's, always connected
+(`runtime/syslib/pad.c`). Its state comes from the input backend (`runtime/input_host.h`,
+`runtime/input/`): by default (`pbboot --input none`, `tools/boot.py --input none`) none is
+installed and the pad is at rest, so CI and recorded boots read the same state as before. With
+`--input host` the host's first gamepad and the window's keyboard drive it, and the title's
+vibration rumbles the gamepad.
 
 **Sources.**
 - **Signatures and layouts:** the OpenOrbis homebrew SDK's `Pad.h`, `_types/pad.h` and
-  `_types/errors.h`. They give the 120-byte `OrbisPadData`, the 28-byte `OrbisPadInformation`, the
-  two-byte vibration block (large motor, then small), port type 0 (standard), and
+  `_types/errors.h`. They give the 120-byte `OrbisPadData` (touch data at `0x34`: a count, seven
+  reserved bytes, then two 8-byte touches of x, y and an id), the 28-byte `OrbisPadInformation`,
+  the two-byte vibration block (large motor, then small), port type 0 (standard), and
   `ALREADY_OPENED` `0x80920004`.
+- **Button bits:** OpenOrbis' `OrbisPadButton`; shadPS4's `OrbisPadButtonDataOffset`
+  (`src/core/libraries/pad/pad.h`) agrees: L3 `0x2`, R3 `0x4`, options `0x8`, up `0x10`, right
+  `0x20`, down `0x40`, left `0x80`, L2 `0x100`, R2 `0x200`, L1 `0x400`, R1 `0x800`, triangle
+  `0x1000`, circle `0x2000`, cross `0x4000`, square `0x8000`, touch pad `0x100000`.
 - **The executable's own calls agree:**
   - before each `scePadReadState` (`0x02a90168`, `0x02a91948`) it clears exactly 120 bytes, and
     afterwards it tests `connected` at offset `0x4c`;
@@ -686,19 +718,93 @@ The runtime models one standard controller, the one user's, always connected and
     opens again;
   - `scePadSetVibration` is called with the title's speeds (`0x02a9c7c1`) or with both 0 to stop
     (`0x02a9c822`), and 0 counts as success.
-- **The DualShock 4's touch pad is 1920 × 942:** `DS4_TOUCHPAD_WIDTH` and `_HEIGHT` in the Linux
-  kernel's `drivers/hid/hid-playstation.c`.
+- **The DualShock 4:** the touch pad is 1920 × 942 (`DS4_TOUCHPAD_WIDTH` and `_HEIGHT` in the
+  Linux kernel's `drivers/hid/hid-playstation.c`); each stick axis is a byte, 0 at the left and
+  at the top; a touch carries a 7-bit id that changes for each new touch; the left motor is the
+  strong one (a force-feedback effect's strong magnitude goes to `motor_left`).
+- **SDL3:** stick axes run -32768 (left, up) to 32767 (right, down) and triggers 0 to 32767
+  (`SDL_GetGamepadAxis`); touch fingers are 0..1 of the pad (`SDL_GetGamepadTouchpadFinger`);
+  scancodes are USB HID keyboard usages (`SDL_scancode.h`); `SDL_RumbleGamepad`'s low-frequency
+  motor is the left one.
+- **The timestamp** is the process time in microseconds when the state is read, as shadPS4 stamps
+  it (`src/input/controller.cpp`); the title does not read it.
 
 | Call | Runtime |
 |---|---|
 | `scePadInit` | 0 |
 | `scePadOpen` | handle 1, the runtime's choice; a second open while it is open answers `0x80920004` |
 | `scePadClose` | 0; the pad can be opened again |
-| `scePadReadState` | no button, sticks `0x80`, triggers 0, no touch or motion, identity orientation, `connected` 1 |
+| `scePadReadState` | the backend's buttons, sticks, triggers and touches, the timestamp, `connected` 1; no motion, identity orientation. At rest without a backend: no button, sticks `0x80`, triggers 0, no touch, timestamp 0 |
 | `scePadGetControllerInformation` | touch pad 1920 × 942; stick deadzones 13 (the runtime's choice); connected; a local pad |
-| `scePadSetVibration` | 0; the speeds are kept (`rt_pad_vibration`), and nothing on the host vibrates yet |
+| `scePadSetVibration` | 0; the speeds are kept (`rt_pad_vibration`) and passed to the backend: with `--input host`, the large motor to SDL's low-frequency rumble, the small one to the high-frequency rumble |
 
-Fields the executable does not read are left zero. **Stops by name:** a second initialize, a call
+**Host input (`pbboot --input host`, `tools/boot.py --input host`).** It needs a build with SDL3
+(the window's) and `--display window`, since the window's event loop reads the devices: SDL's
+events are pumped on the display's thread (`display_vulkan.c`), never from a guest thread, and
+after each pump `rt_input_host_pump` samples the gamepad and keyboard there
+(`runtime/input/input_host_sdl.c`). The state therefore changes once per presented frame. For
+example:
+
+```
+python3 tools/boot.py --display window --audio host --input host
+```
+
+The first connected SDL gamepad is used, and the next one when it is removed. Its buttons map by
+position: south cross, east circle, west square, north triangle, start options, back and the
+touch pad click the touch pad, the shoulders L1 and R1, the stick clicks L3 and R3, the D-pad the
+D-pad. A DualShock 4 or DualSense touch pad reports up to two touches. Stick bytes are the axis'
+top eight bits after the offset; the triggers are scaled to 0..255. The keyboard works with or
+without a gamepad; a key's stick direction overrides the gamepad's stick, both keys of an axis
+cancel out, and buttons combine. The default layout (`rt_default_keys`, `runtime/input/input.c`):
+
+| Keys | Pad |
+|---|---|
+| W A S D | left stick up, left, down, right (full deflection) |
+| arrow keys | right stick |
+| I J K L | D-pad up, left, down, right |
+| Return, Space | cross |
+| Backspace | circle |
+| R | square |
+| F | triangle |
+| Q / E | L1 / R1 |
+| Z / C | L2 / R2, fully pressed |
+| left Shift / Tab | L3 / R3 |
+| Escape | options |
+| T | touch pad click |
+
+The runtime's choices: the L2 and R2 bits are set while their trigger is off zero; touch ids count
+0..127 and wrap, down fingers listed first; a held vibration is sent to SDL again every 30
+seconds, as SDL's rumble lasts at most about 65.
+
+**Scripted input (`pbboot --input-script SPEC`, `tools/boot.py --no-record --input-script SPEC`).**
+For unattended boots, a timed script plays the controller through the same backend interface
+(`runtime/input/input_script.c`); it works with any `--display` mode and cannot be combined with
+`--input host`. SPEC is the script, or `@FILE` to read it from a file. Events are separated by
+commas, semicolons or new lines, and `#` starts a comment. Each event is `WHEN:CONTROLS[*HOLD]`:
+
+- `WHEN` is seconds since the process started (`45`, `45.5s`) or frames presented by video out's
+  first port (`700f`). Frames follow the game's own progress, so they suit a slow boot; seconds
+  need no display.
+- `CONTROLS` are names joined by `+`: `cross circle square triangle up down left right l1 r1 l2 r2
+  l3 r3 options touch`, and the stick directions `lstick-up lstick-down lstick-left lstick-right`
+  and `rstick-up` ... `rstick-right` at full deflection. A scripted trigger is fully pressed.
+- The controls are held from `WHEN` for `HOLD`, on the same clock (default 0.25 s or 4 frames),
+  then released; overlapping events combine.
+
+pbboot writes `pbboot: input script: event N starts (S s, frame F)` when the title first reads
+the pad during an event, so a run's log shows when each press landed. For example:
+
+```
+python3 tools/boot.py --no-record --display headless --input-script "45:down,47:cross"
+```
+
+A malformed event, an unknown control, a hold on the other clock, more than 256 events or a script
+file over 64 KiB is refused before the boot, naming the event.
+
+Fields the executable does not read are left zero. **Not modelled:** motion. The accelerometer
+and gyroscope are not forwarded, because the units and axes the system reports them in are not
+established here (shadPS4 scales SDL's m/s² by 0.098 without a source); acceleration and angular
+velocity stay 0 and the orientation the identity. **Stops by name:** a second initialize, a call
 before initialize, another user, port type, index or open parameters, an unknown handle, a
 missing argument, and the other error values. `scePadResetOrientation`,
 `scePadSetAngularVelocityDeadbandState` and `scePadSetTiltCorrectionState` stay unbound until the
@@ -715,6 +821,22 @@ The executable calls it twice:
 
 So the first call succeeds and a repeat answers `0x80b80002`, the "already initialized" code. No
 dialog is shown: each dialog library's own calls do that, and none is provided yet.
+
+## The splash screen and system status (`sceSystemServiceHideSplashScreen`, `sceSystemServiceGetStatus`)
+
+- **`sceSystemServiceHideSplashScreen()`:** the title tells the system it may take down the boot
+  splash, because its own screens follow. It answers 0, and the runtime keeps the fact
+  (`rt_splash_hidden`), a sign of how far a boot got. The executable calls it through a function
+  pointer (`0x01d5d995`) and reads no result.
+- **`sceSystemServiceGetStatus(status)`:** polled for system events. The status is
+  `{int32_t pending events, then one byte each: system UI overlaid, in background execution, CPU
+  mode 7 normal, live streaming, out of the VR play area}`, and a missing pointer answers
+  `0x80A10003`. The runtime has no system UI and no system events, so the answer is: no events,
+  nothing overlaid, in the foreground, CPU mode normal, not streaming, not in VR. Only these 9
+  bytes are written.
+
+Facts from shadPS4's `libSceSystemService` (`systemservice.cpp`, `systemservice.h`,
+`systemservice_error.h`).
 
 ## System settings (`sceSystemServiceParamGetInt`, issue #40)
 
@@ -737,7 +859,7 @@ person running it chose:
 
 The runtime is offline: the one user is signed out of PSN for the whole run, and nothing about
 that ever changes. The facts come from shadPS4's `libSceNpManager` and `libSceNpMatching2`
-(`np_manager.h`, `np_types2.h`, `np_error.h`), checked against bbport and bbhost. The code is the
+(`np_manager.h`, `np_manager.cpp`, `np_types.h`, `np_types2.h`, `np_common.cpp`, `np_error.h`), checked against two other Bloodborne ports and PS4Recomp's `libSceNp` (`ps4_np.c`), which answer the same for a signed-out user. The code is the
 runtime's own.
 
 | Call | Runtime |
@@ -747,6 +869,15 @@ runtime's own.
 | `sceNpRegisterGamePresenceCallback(callback, data)` | keeps it (replacing any earlier one) and answers nothing; the caller (`0x010b8386`) reads no result |
 | `sceNpGetState(user, uint32_t *state)` | 1, signed out (0 is not signed up, 2 signed in); a missing variable answers `0x80550003`, and a user the runtime did not hand out stops by name |
 | `sceNpCheckCallback()` | 0, running nothing: offline nothing changes |
+| `sceNpGetNpId(user, NP id *)`, `sceNpGetOnlineId(user, online id *)` | `0x80550006` (signed out), writing nothing: a signed-out user has no PSN identity. A missing variable answers `0x80550003`; the invalid user (-1, whose answer depends on the system software version) and a user the runtime did not hand out stop by name. The callers (`0x010bd072`, `0x010c0860`, `0x010b4666`, `0x010b4e5d`, `0x010b8931`) take their offline path. |
+| `sceNpGetGamePresenceStatus(const online id *, int32_t *status)` | 0 with status 0 (offline; 1 is online) for every player; a missing argument answers `0x80550003` |
+| `sceNpRegisterPlusEventCallback(callback, data)`, `sceNpUnregisterPlusEventCallback()` | the state callback's rules (`0x80550003`, `0x80550008`, `0x80550009`); kept and never called, since offline no PlayStation Plus event happens |
+| `sceNpNotifyPlusFeature(const parameter *)` | 0: offline there is no one to tell. The callers (`0x01d38ac9`, `0x02275873`, `0x022769e6`) pass the 0x38-byte block of `sceNpCheckPlus` and read no result; a missing block stops by name. |
+| `sceNpCreateAsyncRequest(const parameter *)` | a request id from `0x20000001`, at most 32 in use (`0x80550013`), a deleted one's slot reused. The block is 0x18 bytes `{size, CPU affinity mask, thread priority}`: no block `0x80550003`, another size `0x80550011`. The caller (`0x02274f54`) passes 0x18, `0x3f`, 700. |
+| `sceNpCheckNpAvailability(id, const online id *, reserved)`, `sceNpCheckPlus(id, const parameter *, result *)`, `sceNpGetParentalControlInfo(id, const online id *, int8_t *age, info *)` | the check completes at once: the call answers 0 and the request's result is `0x80550006` (signed out); nothing is written. A request id of 0 or a missing argument `0x80550003`, an id that is no request `0x80550014`, an aborted request `0x80550012`, a second check on one request `0x80550003`. `sceNpCheckPlus`'s 0x38-byte block `{size, user, padding, features, 32 reserved}`: another size `0x80550011`; features outside 1–3, a non-zero reserved byte or the invalid user `0x80550003`; another user stops by name. A third argument to the availability check other than the observed 0 stops by name. |
+| `sceNpPollAsync(id, int32_t *result)` | 0 with the result once the check ran (always at once offline); no variable `0x80550003`, an id that is no request `0x80550014`, a request that ran no check `0x80550015`. The caller (`0x022767b5`) reads 0 as done, 1 as still running. A request aborted before its check stops by name. |
+| `sceNpAbortRequest(id)`, `sceNpDeleteRequest(id)` | 0, or `0x80550014` for an id that is no request. Abort marks an unchecked request aborted and leaves a checked one alone; delete frees the id. |
+| `sceNpCmpOnlineId(a, b)`, `sceNpCmpNpId(a, b)` (`libSceNpCommon`) | 0 for the same identity, `0x80550609` (no match) otherwise, `0x80550003` for a missing one. Online ids compare their 16 characters as `strncmp` does; NP ids then compare their 8 option and 8 reserved bytes. Callers `0x010a28d1` and `0x010b4676`. |
 | `sceNpMatching2Initialize(const parameter *)` | the 0x30-byte block carries its own size at `0x20`, and 0x30 or the older 0x28 is accepted. Anything else, or no block, answers `0x80550C0A`; a second initialize answers `0x80550C02`. The caller (`0x010ba2d0`) treats a negative answer as failure. |
 | `sceNpMatching2Terminate()` | 0, or `0x80550C03` before initialize |
 
@@ -760,6 +891,28 @@ facts come from shadPS4's `libSceNpManager` (`np_types.h`, `np_error.h`); the ot
 
 Offline nothing talks to PSN, so the runtime keeps the title id (`rt_np_title_id`, for later
 PSN-side calls such as trophies) and nothing of the secret.
+
+## Trophies, offline (`libSceNpTrophy`)
+
+The executable creates a trophy context for the initial user (service label 0, options 0) and a
+handle at `0x02420524`, registers the context, and later unlocks trophies by id and reads the game
+and trophy info. The facts (sizes, limits, error values) come from shadPS4's `libSceNpTrophy`
+(`np_trophy.h`, `np_trophy.cpp`, `np_error.h`), checked against the other ports and PS4Recomp; the
+code is the runtime's own (`runtime/syslib/np_trophy.c`).
+
+| Call | Runtime answer |
+|---|---|
+| `sceNpTrophyCreateContext(int32_t *context, user, label, options)` | contexts from 1, one per (user, label), at most 8; a second for the same pair `0x80551613`, the ninth `0x80551623`; options other than 0 or no variable `0x80551604` |
+| `sceNpTrophyCreateHandle(int32_t *handle)` | handles from 1, at most 4 (`0x80551624`) |
+| `sceNpTrophyRegisterContext(context, handle, options)` | an unknown context `0x80551609`, an unknown handle `0x80551608`, a second registration `0x80551610` |
+| `sceNpTrophyUnlockTrophy(context, handle, id, int32_t *platinum)` | ids 0 to 127 (others `0x8055160A`); records the unlock with its time; a repeat `0x8055160C`; `*platinum` is always -1; an unregistered context `0x8055160F` |
+| `sceNpTrophyGetGameInfo`, `sceNpTrophyGetTrophyInfo` | the recorded unlocks: the unlocked count, and per trophy whether and when it was unlocked; names empty, grades 0; each structure must carry its own size, else `0x80551604` |
+
+The trophy definitions (names, grades, which count toward the platinum) live in the title's
+`sce_sys/trophy/trophy00.trp`, encrypted with a key the runtime does not hold, so it has none of
+them and never awards a platinum. Unlocks are kept per user in
+`<savedata>/<user>/sce_trophy/unlocked`, one `id tick` line each, and survive across runs when
+`--savedata` names a folder.
 
 ## Content restriction (`sceNpSetContentRestriction`, issue #41)
 
@@ -803,7 +956,7 @@ flexible memory to a budget. The budget is not established and the runtime does 
 
 ## The network errno and epoll sets (`sceNetErrnoLoc`, `sceNetEpoll*`)
 
-Facts from the shadPS4 `libSceNet` that bbport vendors (`net.cpp`, `guest_net.cpp`,
+Facts from shadPS4's `libSceNet` (`net.cpp`, `guest_net.cpp`,
 `net_error.h`, `net_types.h`) and from bbhost. The implementation is the runtime's own.
 
 - **Errors:** a failing call answers `0x80410100` plus a FreeBSD error number, and sets the
@@ -883,6 +1036,36 @@ allocates one per call and answers 0. What the title later does with it (waiting
 belongs to other calls, which stop by name until they are implemented.
 
 **What stops by name:** an HTTP context the runtime did not hand out, and a missing slot.
+
+## Network, SSL and HTTP teardown (`sceHttpTerm`, `sceSslTerm`, `sceNetPoolDestroy`, issue #41)
+
+The executable's HTTP manager tears down what it set up, each call only for an id it got, and
+none reads an answer:
+- its connection object (`0x013d1d90`, `0x013d1e10`) calls `sceHttpAbortWaitRequest(handle)`,
+  `sceHttpDestroyEpoll(HTTP context, handle)` and `sceHttpDeleteTemplate(template)`;
+- the manager (`0x013d20d0`, `0x013d2120`, `0x013d2170`) calls `sceHttpTerm(HTTP context)`,
+  `sceSslTerm(SSL context)` and `sceNetPoolDestroy(pool)`.
+
+OpenOrbis' `Http.h` and `Net.h` give the `int32_t` id arguments of `sceHttpTerm`,
+`sceHttpDeleteTemplate` and `sceNetPoolDestroy`; the others' come from these calls. The answers
+are facts from shadPS4's `libSceHttp` (`http.cpp`, `http_error.h`):
+
+| Call | Runtime |
+|---|---|
+| `sceHttpTerm(context)`, `sceHttpDeleteTemplate(template)` | 0, ending the id; `0x80431100` (invalid id) for one that is not live (never handed out, or already ended) |
+| `sceHttpDestroyEpoll(context, handle)` | 0, freeing the handle; `0x80431100` for a context or handle that is not live, `0x804311fe` (invalid value) for no handle |
+| `sceHttpAbortWaitRequest(handle)` | 0; `0x804311fe` for no handle, `0x80431100` for one that is not live. Every later `sceHttpWaitRequest` on the handle answers `0x80431080` (aborted). Offline no wait blocks, so there is no waiter to wake. |
+| `sceSslTerm(context)`, `sceNetPoolDestroy(pool)` | 0, ending the id |
+
+Ids are never reused. Using an ended pool or SSL context in `sceHttpInit`, an ended HTTP context
+in `sceHttpCreateTemplate` or `sceHttpCreateEpoll`, and an ended template in the template calls,
+stop by name as an unknown id does (`sceHttpsEnableOption` and `sceHttpsDisableOption` answer
+`0x80431100`, as before).
+
+**What stops by name:** ending an SSL context or pool that is not live (no source gives the
+answer). shadPS4 answers `0x80431001` (before init) for the HTTP calls before any `sceHttpInit`;
+the runtime does not model that state and answers `0x80431100` there, which the executable never
+reaches.
 
 ## HTTPS options (`sceHttpsEnableOption`, `sceHttpsDisableOption`)
 
@@ -993,24 +1176,72 @@ It also seeds a random generator with it (`0x00835dba`).
 
 **What the runtime does.** It measures from its own start, on the host's monotonic clock.
 
-## Audio job manager start-up (`sceAjmInitialize`, `sceAjmModuleRegister`, issue #37)
+## Audio job manager (`libSceAjm`, issue #37)
 
-The audio job manager (libSceAjm) decodes compressed audio in batches of jobs. The OpenOrbis
-homebrew SDK's `Ajm.h` names these two calls without signatures, so their shapes come from the
-executable's only calls:
-- **`0x01118a65`:** runs while its context variable still holds -1, and passes 0 and the
-  variable's address. A nonzero result is failure.
-- **`0x01118a81`:** then passes that context, 1 and 0, and again treats nonzero as failure.
+AJM decodes compressed audio in batches of jobs that the title builds in a buffer and hands over.
+The facts come from shadPS4's `libSceAjm`, checked against bbhost (a Bloodborne host, whose
+observations of the title's FMOD are noted) and PS4Recomp. The ATRAC9 configuration word's layout
+and tables are LibAtrac9's (MIT). The code is the runtime's own.
 
-**What the runtime does.** It hands out a context id and records the registered module. Decoding
-belongs to the batch and instance calls, which stop by name until they are implemented.
+**Contexts, codecs and instances.**
+- **Contexts:** `sceAjmInitialize(0, &context)` and `sceAjmFinalize(context)`.
+- **Codecs:** `sceAjmModuleRegister(context, codec, 0)` and `sceAjmModuleUnregister`, with 0 MP3,
+  1 ATRAC9 and 2 AAC.
+- **Instances:** `sceAjmInstanceCreate(context, codec, flags, &instance)` gives an id that is the
+  slot index with the codec at bit 14. Its flags hold a revision (bits 0–2, not 0), the channels
+  (3–6), the sample format (7–9, 0 for 16-bit) and gapless looping (bit 10).
+- **The title's instances:** it creates ATRAC9 instances with flags `0x409` to `0x441`: revision
+  1, 1 to 8 channels, 16-bit, gapless looping (`0x01118d9a`).
 
-**What stops by name:**
-- a nonzero first argument to initialize;
-- a module other than the observed 1 (which codec it names is not public);
-- a nonzero third argument;
-- a context the runtime did not hand out;
-- registering a module twice.
+**Jobs and batches.**
+- **Building jobs:** `sceAjmBatchJobControlBufferRa` and `sceAjmBatchJobRunBufferRa` write a job
+  into the batch and return the next free position.
+- **A job** is a sequence of chunks, each with a 32-bit header: an identifier in bits 0–6 and a
+  20-bit payload. The chunks are the job itself (payload the instance), an optional return
+  address, input and output buffers (`{header, size, pointer}`) and the flags.
+- **Fixed sizes:** a control job is 0x30 bytes (0x40 with a return address) and a run job 0x40
+  (0x50). The title's FMOD lays jobs out at those strides.
+- **Starting and waiting:** `sceAjmBatchStartBuffer` runs the batch (a size that is not a multiple
+  of 8 is malformed, `0x80930011`). `sceAjmBatchWait` waits with a timeout in ms;
+  `sceAjmBatchCancel` and `sceAjmBatchErrorDump` round it out.
+
+**Job flags:**
+- run: bit 11 get codec info, bit 12 multiple frames;
+- control: bit 13 reset, bit 14 initialize, bit 15 resample;
+- sideband: bit 45 gapless, bit 46 format, bit 47 stream.
+
+A job's output control buffer starts with its result, then the stream result, format, gapless
+state, frame count and codec info, as its flags ask. The ATRAC9 codec info is `{superframe bytes,
+frames per superframe, bytes left in the superframe, samples per frame}`.
+
+**What the runtime does.**
+- **When jobs run:** when the batch is started, on the calling thread (bbhost does the same for
+  this title). A wait finds the batch finished and frees its id; a cancel of a batch that has
+  run does nothing.
+- **Control jobs** are modelled: initialize with the 4-byte ATRAC9 configuration word, reset, and
+  gapless. So is the codec info, derived from the configuration word: `0xFE`, a sample rate index,
+  a channel configuration, a 0 bit, the frame bytes minus one, and a superframe index, read
+  most-significant bit first.
+- **Errors:** context `0x80930002`, instance `0x80930003`, batch `0x80930004`, parameter
+  `0x80930005`, no batch id left `0x80930006`, no instance left `0x80930007`, already registered
+  `0x80930009`, not registered `0x8093000A`, revision 0 `0x8093000B`.
+
+**Decoding.** ATRAC9 is decoded with LibAtrac9 (MIT, vendored unmodified in
+`third_party/libatrac9`), behind a small decoder interface (`runtime/ajm.h`). The decode loop
+answers as shadPS4's does:
+- **Before each frame:** too little output room answers "not enough room" (`0x10`), and less input
+  than the rest of the superframe "partial input" (`0x8`).
+- **Each frame:** it drops the gapless skip and stops at the gapless total. A superframe's padding
+  is skipped, and when the gapless window ends mid-superframe the rest of it is decoded and dropped.
+- **Looping and repeats:** an instance with gapless looping starts the window again. A job repeats
+  frames only with "multiple frames".
+- **Errors:** a decoder error is fatal, with its code as the internal result.
+
+The tests use a stand-in decoder, because no ATRAC9 data may be in the repository, plus the real
+one on junk input.
+
+**Stops by name:** codecs other than ATRAC9, sample formats other than 16-bit, resampling, format
+inputs and outputs, and the statistics instance.
 
 ## Audio output (`sceAudioOutInit`, `sceAudioOutOpen`, `sceAudioOutSetVolume`, `sceAudioOutOutput`, issue #37)
 
@@ -1031,11 +1262,18 @@ headers give:
   with eight channels. The boot opens eight channels.
 - A second open (`0x0111b6fc`) passes port type 1 with the same settings, and does not check the
   result. The PS4 name of type 1 is not public; the sibling Vita SDK calls it BGM.
+- The movie player's sound gets a port of its own (`0x02c225ae`, `0x02c22842`): 1024 samples at
+  48000 Hz. Its format comes from the movie's channel count: 0, 1 or 2 (16-bit mono, stereo, eight
+  channels) for 48 kHz sound, and 3, 4 or 5 (float) otherwise. The SDK's `_types/audio_out.h`
+  names 0, 1, 3 and 4; shadPS4's `audioout.h` adds 2 and 5 as the eight-channel forms. The
+  6-channel movies open format 2. With `--audio host`, 16-bit blocks are scaled to -1..1 for the
+  host stream.
 
 **What the runtime does.** It records each open port and hands out handles from 1. Sound output
 belongs to the output calls, which stop by name until they are implemented.
 
-**What stops by name:** any open other than the observed ones, and running out of handles.
+**What stops by name:** any open other than the observed ones (256 float samples in formats 4
+and 5, or 1024 samples in formats 0 to 5, at 48000 Hz), and running out of handles.
 
 `int32_t sceAudioOutSetVolume(handle, flag, int32_t *volume)`, as the SDK declares it, comes next.
 The executable's only call (`0x0111b6d6`) passes its new port, flag `0xff` and eight volumes of
@@ -1074,6 +1312,58 @@ plays sound.
 
 **What stops by name:** an unknown handle, and a missing state.
 
+**Sound on the host (`pbboot --audio host`, `tools/boot.py --audio host`).** With this option,
+each port plays through SDL3 on the default playback device (`runtime/audio_host.h`,
+`runtime/audio/audio_host_sdl.c`). Without it, or in a build without SDL3, nothing is played and
+ports keep time on their own as before. Boots are silent by default.
+
+- **Each block:** each channel is scaled by its volume (32768 is 0 dB, the level the title sets;
+  until it sets one the port plays at 0 dB, the runtime's choice) and queued on the port's stream.
+- **Pacing:** the call returns once no more than four blocks wait to be played, so the title's
+  audio thread runs at the device's pace.
+- **Channel order:** the title's 8-channel float format (format 5) is passed in SDL's 7.1 order,
+  as shadPS4's SDL backend does; the STD layouts, which are remapped, are not used by the title.
+- **Port state:** a port playing on the host reports output 1 (`CONNECTED_PRIMARY`, shadPS4's
+  `audioout.h`).
+- **Observed:** with ATRAC9 decoding, a boot plays the game's own sound after about 17 seconds.
+
+## The movie player (`libSceAvPlayer`)
+
+The title plays its movies (`/app0/.../movie/*.mp4`: H.264 video, AAC sound in several languages)
+through the console's movie player. One wrapper in the executable makes every call
+(`0x02cfdf33` to `0x02d004a9`):
+
+1. `sceAvPlayerInit` gets a 0x78-byte block with the title's memory callbacks and an event callback.
+   The block has no file callbacks, auto start is 0 and the default language is none.
+2. `sceAvPlayerPostInit` gets decoder settings (video decoder type 3).
+3. `sceAvPlayerAddSource` gets the movie's path and `sceAvPlayerSetLooping` a flag.
+4. After the ready event the title counts the streams and reads each one's info. It enables one
+   video stream and the audio stream its language setting picks, then calls `sceAvPlayerStart`.
+5. Each frame, a picture comes from `sceAvPlayerGetVideoDataEx` and sound from
+   `sceAvPlayerGetAudioData` on the title's audio thread.
+
+The layouts, event numbers and error values are from shadPS4's `libSceAvPlayer` (`avplayer.h`,
+`avplayer_error.h`, `avplayer_state.cpp`, `avplayer_source.cpp`), checked against the OpenOrbis
+`AvPlayer.h`. The code is the runtime's own (`runtime/syslib/avplayer.c`). Decoding uses FFmpeg on
+the host (`runtime/media/`, `runtime/media_host.h`), when the runtime is built with it.
+
+| Call | What the title passes and reads | Runtime answer |
+|---|---|---|
+| `sceAvPlayerInit(const InitData *)` | memory callbacks {allocate, deallocate, allocate texture, deallocate texture}, an event callback, no file callbacks | a handle; file callbacks, auto start, a missing allocator or event callback stop by name |
+| `sceAvPlayerPostInit(handle, data)` | decoder types and parameters | 0 (they change how the console decodes, not the result) |
+| `sceAvPlayerAddSource(handle, path)` | the movie under `/app0` | opens and probes it, sends event 2 (ready), 0; a movie the runtime cannot open stops by name |
+| `sceAvPlayerStreamCount`, `sceAvPlayerGetStreamInfo` | the type (0 video, 1 audio), an audio stream's channels and rate | the movie's video and audio streams, durations in ms |
+| `sceAvPlayerEnableStream(handle, index)` | one video stream and one audio stream | 0 |
+| `sceAvPlayerStart` | | event 3 (playing); the movie's clock starts |
+| `sceAvPlayerGetVideoDataEx(handle, FrameInfoEx *)` | the picture's address, width, height and four crops; it lays the planes out from the width | true once the clock reaches the next picture. The picture is NV12 in a buffer from the title's texture allocator (alignment 0x100), with pitch = width rounded up to 64 and height rounded up to 16, cropped back to the picture |
+| `sceAvPlayerGetAudioData(handle, FrameInfo *)` | address, size in bytes, channels, rate | true with up to 1024 interleaved 16-bit sample frames, handed out up to 0.1 s ahead of the clock |
+| `sceAvPlayerIsActive`, `sceAvPlayerCurrentTime` | | true until a movie that does not loop has handed out its last frame, then event 1 (stopped) once; the clock in ms, standing still while paused |
+| `sceAvPlayerPause`, `sceAvPlayerResume`, `sceAvPlayerStop`, `sceAvPlayerClose` | | events 4, 3 and 1; Close frees the buffers through the title's callbacks |
+
+The runtime decodes a few frames ahead on a host thread of its own, so FFmpeg never runs on a guest
+thread's small stack. The guest calls only copy finished frames into the title's buffers. A looping
+movie starts again with its clock carried on. Without FFmpeg, opening a movie stops by name.
+
 ## Attribute priority and CPU mask (`scePthreadAttrSetschedparam`, `scePthreadAttrSetaffinity`, issue #34)
 
 `scePthreadAttrSetschedparam(attr, const struct sched_param *param)` sets the priority
@@ -1094,6 +1384,47 @@ attribute is `EINVAL` (libthr).
 the CPU mask its caller chose. As for `scePthreadSetaffinity`, the runtime records the mask (the
 created thread takes it) and the host schedules. An empty mask stops by name, and a variable
 holding no attribute is `EINVAL`.
+
+## Save data (`libSceSaveData`)
+
+The title's saves live in the host folder given to `pbboot --savedata`. `tools/boot.py` gives
+each run a new empty one, so boots start alike, unless `--savedata DIR` names a folder to keep
+them in. A mounted save appears to the title as `/savedataN` (N the lowest free of 16), through
+the same file calls as `/app0` and `/data`, read-only or writable as mounted.
+
+**Sources.** shadPS4's `libSceSaveData` (`savedata.cpp`, `savedata.h`, `savedata_error.h`,
+`save_instance.cpp`, `save_memory.cpp`), checked against two other Bloodborne ports and the OpenOrbis
+headers. Where they disagree, shadPS4's answer is taken. The code is the runtime's own.
+
+**The title's SDK version decides some answers.** The executable says SDK `0x02000071`
+(firmware 2.00), which the runtime reads through `rt_compiled_sdk_version`:
+- "not initialized" is `0x80960002` (it is `0x809F000B` before 2.00 and `0x809F0001` from 2.50);
+- a directory search reports the total hits, the number set and the params (from 1.70);
+- a mount writes back only the mount point (before 4.50), and mode `0x20` (create or open)
+  does not create;
+- terminating with saves mounted unmounts them (before 4.00).
+
+**On the host.** `<savedata>/<user id>/<directory name>/` holds the title's files, with
+`sce_sys/param.bin` (the 1328-byte param) and `sce_sys/icon0.png`; a save exists when its
+`sce_sys` does. The memory-backed save is `<savedata>/<user id>/sce_sdmemory/memory.dat`. These
+are the runtime's own files, not a console's `param.sfo`.
+
+| Call | Runtime |
+|---|---|
+| `sceSaveDataInitialize(params)` | 0; the parameter block (a priority, `0x2bc` from the caller at `0x02c3c50e`) is ignored, as the library does |
+| `sceSaveDataTerminate()` | 0, unmounting any save still mounted; "not initialized" before initialize |
+| `sceSaveDataMount(request, result)` | the 80-byte original request. Modes: 1 read-only, 2 read-write, 4 create, 8 destruct-off, `0x10` copy the package's icon. Answers: not there and no create `0x809F0008`; create when it exists `0x809F0007`; already mounted `0x809F0003`; 16 mounted `0x809F000C`; user below 0 `0x809F0011`; a bad name (empty, unterminated, `/`, `\`, leading `.`) `0x809F0000` |
+| `sceSaveDataUmount(mount point)` | 0, or `0x809F0008` for a mount point not mounted |
+| `sceSaveDataSetParam(mount point, type, data, size)` | types 0 (whole param), 1 title, 2 subtitle, 3 detail, 4 user param, written to `param.bin` with the time; type 5 or more `0x809F0000`; not mounted `0x809F0004` |
+| `sceSaveDataSaveIcon(mount point, icon)` | writes the icon (the smaller of buffer and data size); read-only mount `0x809F000D` |
+| `sceSaveDataDirNameSearch(condition, result)` | the user's saves (folders with `sce_sys/param.bin`, not `sce_*`), matched by an SQL-LIKE pattern without regard to case (`%`, `_`), sorted by name, user param or time (blocks are alike here), ascending or descending; a key above 5 or an order above 1 `0x809F0000` |
+| `sceSaveDataSetupSaveDataMemory(user, size, param)` | creates or grows `memory.dat` to the size (never shrinks it); size 0 `0x809F0000` |
+| `sceSaveDataGet/SetSaveDataMemory(user, buffer, size, offset)` | reads or writes at the offset; before setup `0x809F0012`; no buffer or a negative offset `0x809F0000` |
+
+**Stops by name** (not modelled): another title's saves (a title id), the free-space check and its
+required-blocks answer, the backup copy and its "corrupted" marker, sort key 4, and a memory read
+or write past the size set up. `sceSaveDataDelete` and the save data dialog stay unbound until the
+boot reaches them.
 
 ## The title's files: `/app0`, `sceKernelStat`, opening and reading (issue #35)
 
@@ -1151,6 +1482,21 @@ flags 0 (`O_RDONLY`) and mode 0555.
 - **Seeking.** A whence other than 0, 1 or 2 (`SEEK_SET`, `SEEK_CUR`, `SEEK_END`, the same on
   FreeBSD and Linux), and a seek before the start, are `EINVAL`.
 
+### Truncating and renaming
+
+`sceKernelFtruncate(fd, length)` is FreeBSD's `ftruncate(2)` under its SCE name (shape from the
+OpenOrbis homebrew SDK's `libkernel.h`). The title reaches it after Play Offline, while it creates
+its save data: its file object cuts its file at its current position (`0x02473290`). The runtime
+passes the length to the host. A negative length, and a descriptor opened without write
+permission, are `EINVAL` (FreeBSD's `truncate(2)`; Linux answers the same); one the runtime did not
+hand out is `EBADF`. Any other host error stops by name.
+
+`sceKernelRename(from, to)` is FreeBSD's `rename(2)` (shape from `libkernel.h`); the title calls it
+(`0x02474a85`) while it creates its save data. The runtime renames the host file, replacing an
+existing `to` as `rename(2)` does. Paths on two different mounts are `EXDEV` (`rename(2)`: "on
+different logical devices"); on the read-only `/app0` `EROFS`, after the lookup; a missing file or
+directory component `ENOENT` or `ENOTDIR`. Any other host error stops by name.
+
 ## Memory protection queries (`sceKernelQueryMemoryProtection`, issue #34)
 
 `sceKernelQueryMemoryProtection(void *address, void **start, void **end, int32_t *protection)`, as
@@ -1159,12 +1505,15 @@ holds an address.
 
 **What the executable does.** Its helpers (`0x02abad98`, `0x02abadf8`) pass no start or end. They
 test the protection's CPU read bit (1) and GPU read bit (`0x10`), on memory the game mapped itself.
+Another (`0x02d031df`, reached once the movie player runs) passes a start and an end and reads only
+the protection.
 
 **What the runtime does.** It records every direct and flexible mapping with the protection the
-guest asked for, GPU bits included, and answers that.
+guest asked for, GPU bits included, and answers that. A start gets the mapping's start, and an end
+the address one past its last byte (exclusive), as shadPS4's `MemoryManager::QueryProtection` and
+PS4Recomp's `ps4_direct_mem.c` both answer.
 
 **What stops by name:**
-- a start or end (whether end is inclusive is not established);
 - an address outside those mappings (other memory is not tracked yet);
 - a missing variable.
 
@@ -1217,6 +1566,22 @@ past the mapping.
 - a size other than 0x48;
 - an address outside those mappings (other memory is not tracked yet);
 - a missing structure.
+
+## GNM: binding vertex and pixel shaders (`sceGnmSetVsShader`, `sceGnmSetPsShader`, issue #39)
+
+`sceGnmSetVsShader` and `sceGnmUpdateVsShader` take (command buffer, dwords, registers, modifier);
+`sceGnmSetPsShader` and `sceGnmUpdatePsShader` take (command buffer, dwords, registers). The
+argument order is shadPS4's `libSceGnmDriver` (`gnmdriver.cpp`). A boot shows the registers argument
+holding the shader's register block (7 words for a vertex shader, 12 for a pixel shader; see
+Paleblood's `docs/RENDERER.md`).
+
+| Detail | Answer |
+|---|---|
+| The reserved space | one PM4 NOP packet, as for the other command-buffer writers |
+| The shader | handed to the renderer, placed at the command-buffer address (runtime/renderer.h); nothing without the display |
+| The vertex shader's modifier | replaces `PGM_RSRC1`'s SGPR count (bits 6-9) and input VGPR count (bits 24-25): (`PGM_RSRC1 & 0xfcfffc3f`) OR the modifier, as shadPS4 applies it. The game's vertex shaders pass one (they call a fetch shader). A modifier with any other bit stops by name |
+| A null pixel shader block | no pixel shader (a depth-only pass): recorded as such, and a draw with it stops in the renderer |
+| No vertex shader registers | stops by name |
 
 ## GNM: compute queues (`sceGnmMapComputeQueue`, issue #39)
 

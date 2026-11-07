@@ -41,6 +41,7 @@ static void color_target(uint32_t words[RT_COLOR_TARGET_WORDS], uint64_t address
     words[1] = SIZE / 8 - 1;
     words[2] = SIZE * SIZE / 64 - 1;
     words[4] = format << 2 | swap << 11; /* number type UNORM */
+    words[5] = 8;                        /* ATTRIB.TILE_MODE_INDEX: linear aligned (the executor keeps the memory current) */
 }
 
 /* A buffer descriptor: base address (48 bits), the stride in the second word's bits 29:16, and the size. */
@@ -52,8 +53,21 @@ static void descriptor(uint32_t *words, uint64_t address, uint32_t stride)
     words[3] = 0;
 }
 
+/* An image descriptor (T#) for a width x height 2D image at address, one level, x, y, z, w in place. */
+static inline void image_descriptor(uint32_t words[8], uint64_t address, uint32_t data_format, uint32_t num_format, uint32_t width,
+                             uint32_t height)
+{
+    memset(words, 0, 8 * sizeof *words);
+    words[0] = (uint32_t)(address >> 8);
+    words[1] = (uint32_t)(address >> 40) | data_format << 20 | num_format << 26;
+    words[2] = (width - 1) | (height - 1) << 14;
+    words[3] = (4 | 5 << 3 | 6 << 6 | 7 << 9) | 9u << 28; /* DST_SEL x, y, z, w; TYPE 2D */
+    words[4] = (width - 1) << 13;                          /* PITCH */
+}
+
 /* Records one draw's calls on a command buffer; returns the bytes "written". */
-static uint32_t record_draw(uint64_t buffer, uint64_t target, uint32_t format, uint32_t swap, uint32_t pixel_inputs)
+/* Records a triangle's state (target, viewport, shaders, user data) and returns the next offset. */
+static uint32_t record_setup(uint64_t buffer, uint64_t target, uint32_t format, uint32_t swap, uint32_t pixel_inputs)
 {
     char error[160];
     uint32_t offset = 0x10;
@@ -72,8 +86,20 @@ static uint32_t record_draw(uint64_t buffer, uint64_t target, uint32_t format, u
     descriptor(user, at(CORNERS), RECORD_STRIDE);
     descriptor(user + 4, at(COLORS), RECORD_STRIDE);
     CHECK(rt_render_record_user_data(buffer, offset += 0x10, RT_STAGE_VERTEX, 0, user, 8, error, sizeof error) == 0);
-    CHECK(rt_render_record_draw_auto(buffer, offset += 0x10, 3, error, sizeof error) == 0);
     return offset + 0x10;
+}
+
+/* Records the triangle's draw at offset; returns the buffer's size. */
+static uint32_t record_triangle_draw(uint64_t buffer, uint32_t offset)
+{
+    char error[160];
+    CHECK(rt_render_record_draw_auto(buffer, offset, 3, error, sizeof error) == 0);
+    return offset + 0x10;
+}
+
+static uint32_t record_draw(uint64_t buffer, uint64_t target, uint32_t format, uint32_t swap, uint32_t pixel_inputs)
+{
+    return record_triangle_draw(buffer, record_setup(buffer, target, format, swap, pixel_inputs));
 }
 
 static int near(uint32_t channel, float expected) { return fabsf((float)channel - expected * 255.0f) <= 2.0f; }
