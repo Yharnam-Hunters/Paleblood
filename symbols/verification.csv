@@ -280,9 +280,9 @@ render_yebis_get_recursive_sample_parameters,edge,,23,23,0,0,6e6f0aa41d5607ce,20
 render_yebis_get_recursive_sample_parameters,edge,30,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,60,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,uncapped,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
-render_get_record_descriptor_size,edge,,12,12,0,0,703e5ecd34b51b6c,2026-11-05
-render_initialize_pair_record_descriptor,edge,,33,33,0,0,286a3d4206aa28df,2026-11-05
-render_initialize_record_geometry_flags,edge,,64,64,0,0,0ef232dc6bf3c570,2026-11-05
-render_initialize_triple_record_descriptor,edge,,97,97,0,0,3df9c124b82781f5,2026-11-05
-render_read_record_descriptor_component,edge,,28,28,0,0,0b5f7a5af7a39f49,2026-11-05
-render_record_descriptor_set_high_field,edge,,60,60,0,0,dcfc03825f5d2406,2026-11-05
+render_get_record_descriptor_size,edge,,12,12,0,0,81442ce48c3e1089,2026-11-07
+render_initialize_pair_record_descriptor,edge,,33,33,0,0,63a1e970d620584f,2026-11-07
+render_initialize_record_geometry_flags,edge,,70,70,0,0,0ef232dc6bf3c570,2026-11-07
+render_initialize_triple_record_descriptor,edge,,97,97,0,0,8993a89e4989c6b5,2026-11-07
+render_read_record_descriptor_component,edge,,28,28,0,0,0b5f7a5af7a39f49,2026-11-07
+render_record_descriptor_set_high_field,edge,,60,60,0,0,dcfc03825f5d2406,2026-11-07
