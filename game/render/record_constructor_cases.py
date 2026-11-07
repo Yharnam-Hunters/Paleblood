@@ -142,6 +142,28 @@ for case_id, encoding, tile_mode in (
     })
 
 
+# Each optional output aliases the exact record word read after its publication.
+for name, first_pointer, second_pointer in (
+    ("first_auxiliary_overlaps_later_quantity", "p64", 0),
+    ("second_auxiliary_overlaps_later_tail", "p96", "p72"),
+):
+    stubs = [
+        {"address": "0x0149e2d0", "argc": 8, "argi": [0, 1, 2, 3],
+         "argu32": [4, 5, 6], "argu8": [7], "ret": 0,
+         "writes": [{"arg": 0, "bytes": struct.pack("<Q", 0x55AA0000).hex(), "size": 8},
+                    {"arg": 1, "bytes": struct.pack("<I", 1024).hex(), "size": 4}]},
+    ]
+    if second_pointer:
+        stubs.append({"address": "0x0149e400", "argc": 9, "argi": [0, 1, 2, 3],
+            "argu32": [4, 5, 6, 7, 8], "ret": 0,
+            "writes": [{"arg": 0, "bytes": struct.pack("<Q", 0xABC00000).hex(), "size": 8},
+                       {"arg": 1, "bytes": struct.pack("<I", 1024).hex(), "size": 4},
+                       {"arg": 2, "bytes": struct.pack("<I", 8).hex(), "size": 4},
+                       {"arg": 3, "bytes": struct.pack("<I", 8).hex(), "size": 4}]})
+    INPUTS.append({"id": name, "args": ["p32", 64, 64, 1, 16433153, 4, 1, 0,
+        first_pointer, second_pointer], "words": [], "guard": True, "stubs": stubs})
+
+
 def fixtures():
     """Yield inputs without calculating the expected replacement outputs."""
     registers = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
