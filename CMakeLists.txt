@@ -204,3 +204,9 @@ add_test(NAME module_tls_boot
          COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_module_tls_boot.py -v)
 set_tests_properties(module_tls_boot PROPERTIES TIMEOUT 30
     ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>")
+
+# Matching-key output cleanup, with a scripted lower-helper contract.
+add_executable(test_video_out_output_key test/test_video_out_output_key.c
+               runtime/syslib/video_out_output_key.c)
+target_include_directories(test_video_out_output_key PRIVATE runtime/include)
+add_test(NAME video_out_output_key COMMAND test_video_out_output_key)
