@@ -20,6 +20,10 @@ extern "C" {
 int rt_capture_hooks_prepare(unsigned char *image, uint64_t image_size, const rt_hook_entry *table, size_t count,
                              const void **targets);
 
+/* A writable block of size bytes within 1.75 GB of the image (relocated RIP-relative operands still
+   reach their data), or NULL. */
+unsigned char *rt_map_near_image(unsigned char *image, uint64_t image_size, size_t size);
+
 #ifdef __cplusplus
 }
 #endif

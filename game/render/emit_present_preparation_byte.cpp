@@ -2,6 +2,7 @@
 // Write the captured low-byte value to DB_STENCIL_CLEAR after capacity admission.
 // Dirty-state callers 0x02ad2c30 and 0x02ad2790 use this writer.
 #include "present_dirty_preparation_packets.h"
+#include "render_observe.h"
 
 extern "C" uint64_t bb_render_emit_present_preparation_byte(
     render::PacketBuffer *commands, uint32_t value)
@@ -13,6 +14,7 @@ extern "C" uint64_t bb_render_emit_present_preparation_byte(
         return rejected_result;
 
     const uint32_t byte_value = static_cast<uint8_t>(value);
+    observe_context_register(commands, cursor, preparation_packet::stencil_clear_index, byte_value);
     auto *packet = reinterpret_cast<PreparationCommandPacket *>(cursor);
     packet->header.set(preparation_packet::set_context_reg_one_value_header);
     packet->register_index.set(preparation_packet::stencil_clear_index);
