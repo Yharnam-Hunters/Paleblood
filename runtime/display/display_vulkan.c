@@ -10,6 +10,7 @@
    window presents without waiting for its own vblank when the device allows it (mailbox, then
    immediate; FIFO otherwise). Closing the window ends the process, as closing a game does. */
 #include "runtime/display_window.h"
+#include "runtime/input_host.h"
 #include "runtime/process.h"
 
 #include <SDL3/SDL.h>
@@ -279,7 +280,9 @@ static void record_copy(VkImage target)
     check(vkEndCommandBuffer(vk.commands), "a command buffer could not end");
 }
 
-/* Window events: closing the window ends the process; a size change rebuilds the swapchain. */
+/* Window events: closing the window ends the process; a size change rebuilds the swapchain. The
+   host's controller and keyboard are read here too, on the thread that pumps SDL's events
+   (runtime/input_host.h). */
 static int handle_events(void)
 {
     int resized = 0;
@@ -288,6 +291,7 @@ static int handle_events(void)
         if (event.type == SDL_EVENT_QUIT || event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) exit(0);
         if (event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) resized = 1;
     }
+    rt_input_host_pump();
     return resized;
 }
 

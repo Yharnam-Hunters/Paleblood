@@ -25,15 +25,22 @@
    - The DualShock 4's touch pad is 1920 by 942 (the Linux kernel's drivers/hid/hid-playstation.c,
      DS4_TOUCHPAD_WIDTH and _HEIGHT).
 
-   The runtime models one standard controller, the one user's, always connected and at rest: no
-   button down, both sticks centred (0x80), triggers released, no touch, no motion, the
-   orientation the identity quaternion. The handle and the stick deadzones are the runtime's
-   choices. A vibration setting is accepted and kept (rt_pad_vibration); nothing on the host
-   vibrates yet. Fields the executable does not read are left zero (the touch density, the information
-   count, the state's timestamp and count). What is not established stops by name: a second
-   initialize, a call before initialize, another user, port type, index or open parameters, an
-   unknown handle, a missing argument, and the other error values. Real input, from a host
-   controller, is not provided yet. */
+   - The state's timestamp is the process time in microseconds when the state is read, as
+     shadPS4 stamps it (src/input/controller.cpp, sceKernelGetProcessTime); the title does not
+     read it.
+
+   The runtime models one standard controller, the one user's, always connected. Its state comes
+   from the installed input backend (runtime/input_host.h): with pbboot --input host, the host's
+   gamepad and keyboard (runtime/input/); without one, the pad at rest: no button down, both
+   sticks centred (0x80), triggers released, no touch, and a timestamp of 0. Motion is not
+   modelled: no acceleration or angular velocity, the orientation the identity quaternion. The
+   handle and the stick deadzones are the runtime's choices. A vibration setting is kept
+   (rt_pad_vibration) and passed to the backend, which rumbles the host gamepad. Fields the
+   executable does not read are left zero (the touch density, the information count, the state's
+   count). What is not established stops by name: a second initialize, a call before initialize,
+   another user, port type, index or open parameters, an unknown handle, a missing argument, and
+   the other error values. */
+#include "runtime/input_host.h"
 #include "runtime/pad.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
@@ -48,10 +55,7 @@
 enum {
     PAD_HANDLE = 1,           /* the runtime's choice: the title only passes it back */
     PORT_TYPE_STANDARD = 0,
-    STICK_CENTRE = 0x80,
     STICK_DEADZONE = 13,      /* the runtime's choice, about a tenth of the stick's travel */
-    TOUCH_WIDTH = 1920,
-    TOUCH_HEIGHT = 942,
 };
 
 typedef struct {
@@ -65,7 +69,11 @@ typedef struct {
     uint8_t touch_fingers;
     uint8_t touch_pad1[3];
     uint32_t touch_pad2;
-    uint8_t touch_points[2][8];
+    struct {
+        uint16_t x, y;
+        uint8_t id;
+        uint8_t reserved[3];
+    } touch_points[RT_PAD_MAX_TOUCHES];
     uint8_t connected;
     uint64_t timestamp;
     uint8_t ext[16];
@@ -74,6 +82,9 @@ typedef struct {
 } pad_data;
 _Static_assert(sizeof(pad_data) == 120, "OrbisPadData is the 120 bytes the title clears");
 _Static_assert(offsetof(pad_data, connected) == 0x4c, "the title tests `connected` at 0x4c");
+_Static_assert(offsetof(pad_data, touch_fingers) == 0x34 && offsetof(pad_data, touch_points) == 0x3c,
+               "OrbisPadTouchData: the count, 7 reserved bytes, then two 8-byte touches");
+_Static_assert(offsetof(pad_data, timestamp) == 0x50, "the timestamp after `connected`, 8-aligned");
 
 typedef struct {
     float touch_density;
@@ -128,10 +139,22 @@ static int32_t read_state(int32_t handle, pad_data *data)
     static const char fn[] = "scePadReadState";
     check_handle(fn, handle);
     if (!data) rt_fatal(fn, "no state block: the error value is not established");
+    rt_pad_sample sample;
+    const int live = rt_input_sample(&sample);
     memset(data, 0, sizeof *data);
-    data->left_x = data->left_y = data->right_x = data->right_y = STICK_CENTRE;
+    data->buttons = sample.buttons;
+    data->left_x = sample.left_x, data->left_y = sample.left_y;
+    data->right_x = sample.right_x, data->right_y = sample.right_y;
+    data->l2 = sample.l2, data->r2 = sample.r2;
     data->orientation[3] = 1.0f; /* the identity quaternion: the pad as it was last reset */
+    data->touch_fingers = sample.touch_count;
+    for (int t = 0; t < sample.touch_count; t++) {
+        data->touch_points[t].x = sample.touches[t].x;
+        data->touch_points[t].y = sample.touches[t].y;
+        data->touch_points[t].id = sample.touches[t].id;
+    }
     data->connected = 1;
+    if (live) data->timestamp = rt_process_time();
     return 0;
 }
 
@@ -141,8 +164,8 @@ static int32_t get_controller_information(int32_t handle, pad_information *info)
     check_handle(fn, handle);
     if (!info) rt_fatal(fn, "no information block: the error value is not established");
     memset(info, 0, sizeof *info);
-    info->touch_width = TOUCH_WIDTH;
-    info->touch_height = TOUCH_HEIGHT;
+    info->touch_width = RT_PAD_TOUCH_WIDTH;
+    info->touch_height = RT_PAD_TOUCH_HEIGHT;
     info->deadzone_left = info->deadzone_right = STICK_DEADZONE;
     info->connected = 1;
     return 0; /* connection type 0, local, and device class 0, a pad: left zero */
@@ -154,6 +177,7 @@ static int32_t set_vibration(int32_t handle, const uint8_t *speeds)
     check_handle(fn, handle);
     if (!speeds) rt_fatal(fn, "no motor speeds: the error value is not established");
     atomic_store(&vibration, (uint16_t)(speeds[0] | speeds[1] << 8));
+    rt_input_vibrate(speeds[0], speeds[1]);
     return 0;
 }
 
