@@ -578,7 +578,7 @@ reported installed (`runtime/syslib/playgo.c`).
 | `scePlayGoOpen(int32_t *handle, params)` | params is NULL (`0x023deae4`); 0 counts as opened | writes handle 1, the runtime's choice (the title only passes it back) |
 | `scePlayGoGetChunkId(handle, uint16_t ids[], capacity, uint32_t *count)` | capacity 100 (`0x023deb0f`); the result is not read | the package's chunks, 0 to `chunk_count - 1`, from `chunk_count` in the copy's `sce_sys/playgo-manifest.xml` (3 for this title; `playgo-chunk.dat` agrees) |
 | `scePlayGoGetLocus(handle, const uint16_t ids[], count, int8_t loci[])` | one byte per chunk (`0x023de8d6`, `0x023deb30`); non-zero counts as failure; the title treats 0 as not there, 2 as still arriving and polls again, any other value as ready | 3 for every chunk, a ready value (the title can't tell the ready values apart) |
-| `scePlayGoSetInstallSpeed(handle, speed)` | called through a function pointer (`0x023dd891`) with 1 (trickle) or 2 (full); 0 is suspended | records it (everything is installed); an unknown handle `0x80B20009`, before initialize `0x80B20005`, another speed `0x80B20004` (shadPS4's `libScePlayGo`) |
+| `scePlayGoSetInstallSpeed(handle, speed)` | called through a function pointer (`0x023dd891`) with 1 (trickle) or 2 (full); 0 is suspended | accepts it (everything is installed, so there is nothing to pace; nothing reads it back); an unknown handle `0x80B20009`, before initialize `0x80B20005`, another speed `0x80B20004` (shadPS4's `libScePlayGo`) |
 
 No public source declares these calls: the OpenOrbis toolchain has no PlayGo header. Stops by
 name: Open with parameters, an unknown handle, a chunk list longer than the space given, an unknown
@@ -743,6 +743,31 @@ The runtime's choices: the L2 and R2 bits are set while their trigger is off zer
 0..127 and wrap, down fingers listed first; a held vibration is sent to SDL again every 30
 seconds, as SDL's rumble lasts at most about 65.
 
+**Scripted input (`pbboot --input-script SPEC`, `tools/boot.py --no-record --input-script SPEC`).**
+For unattended boots, a timed script plays the controller through the same backend interface
+(`runtime/input/input_script.c`); it works with any `--display` mode and cannot be combined with
+`--input host`. SPEC is the script, or `@FILE` to read it from a file. Events are separated by
+commas, semicolons or new lines, and `#` starts a comment. Each event is `WHEN:CONTROLS[*HOLD]`:
+
+- `WHEN` is seconds since the process started (`45`, `45.5s`) or frames presented by video out's
+  first port (`700f`). Frames follow the game's own progress, so they suit a slow boot; seconds
+  need no display.
+- `CONTROLS` are names joined by `+`: `cross circle square triangle up down left right l1 r1 l2 r2
+  l3 r3 options touch`, and the stick directions `lstick-up lstick-down lstick-left lstick-right`
+  and `rstick-up` ... `rstick-right` at full deflection. A scripted trigger is fully pressed.
+- The controls are held from `WHEN` for `HOLD`, on the same clock (default 0.25 s or 4 frames),
+  then released; overlapping events combine.
+
+pbboot writes `pbboot: input script: event N starts (S s, frame F)` when the title first reads
+the pad during an event, so a run's log shows when each press landed. For example:
+
+```
+python3 tools/boot.py --no-record --display headless --input-script "45:down,47:cross"
+```
+
+A malformed event, an unknown control, a hold on the other clock, more than 256 events or a script
+file over 64 KiB is refused before the boot, naming the event.
+
 Fields the executable does not read are left zero. **Not modelled:** motion. The accelerometer
 and gyroscope are not forwarded, because the units and axes the system reports them in are not
 established here (shadPS4 scales SDL's m/s² by 0.098 without a source); acceleration and angular
@@ -801,7 +826,7 @@ person running it chose:
 
 The runtime is offline: the one user is signed out of PSN for the whole run, and nothing about
 that ever changes. The facts come from shadPS4's `libSceNpManager` and `libSceNpMatching2`
-(`np_manager.h`, `np_types2.h`, `np_error.h`), checked against two other Bloodborne ports. The code is the
+(`np_manager.h`, `np_manager.cpp`, `np_types.h`, `np_types2.h`, `np_common.cpp`, `np_error.h`), checked against two other Bloodborne ports and PS4Recomp's `libSceNp` (`ps4_np.c`), which answer the same for a signed-out user. The code is the
 runtime's own.
 
 | Call | Runtime |
@@ -811,6 +836,15 @@ runtime's own.
 | `sceNpRegisterGamePresenceCallback(callback, data)` | keeps it (replacing any earlier one) and answers nothing; the caller (`0x010b8386`) reads no result |
 | `sceNpGetState(user, uint32_t *state)` | 1, signed out (0 is not signed up, 2 signed in); a missing variable answers `0x80550003`, and a user the runtime did not hand out stops by name |
 | `sceNpCheckCallback()` | 0, running nothing: offline nothing changes |
+| `sceNpGetNpId(user, NP id *)`, `sceNpGetOnlineId(user, online id *)` | `0x80550006` (signed out), writing nothing: a signed-out user has no PSN identity. A missing variable answers `0x80550003`; the invalid user (-1, whose answer depends on the system software version) and a user the runtime did not hand out stop by name. The callers (`0x010bd072`, `0x010c0860`, `0x010b4666`, `0x010b4e5d`, `0x010b8931`) take their offline path. |
+| `sceNpGetGamePresenceStatus(const online id *, int32_t *status)` | 0 with status 0 (offline; 1 is online) for every player; a missing argument answers `0x80550003` |
+| `sceNpRegisterPlusEventCallback(callback, data)`, `sceNpUnregisterPlusEventCallback()` | the state callback's rules (`0x80550003`, `0x80550008`, `0x80550009`); kept and never called, since offline no PlayStation Plus event happens |
+| `sceNpNotifyPlusFeature(const parameter *)` | 0: offline there is no one to tell. The callers (`0x01d38ac9`, `0x02275873`, `0x022769e6`) pass the 0x38-byte block of `sceNpCheckPlus` and read no result; a missing block stops by name. |
+| `sceNpCreateAsyncRequest(const parameter *)` | a request id from `0x20000001`, at most 32 in use (`0x80550013`), a deleted one's slot reused. The block is 0x18 bytes `{size, CPU affinity mask, thread priority}`: no block `0x80550003`, another size `0x80550011`. The caller (`0x02274f54`) passes 0x18, `0x3f`, 700. |
+| `sceNpCheckNpAvailability(id, const online id *, reserved)`, `sceNpCheckPlus(id, const parameter *, result *)`, `sceNpGetParentalControlInfo(id, const online id *, int8_t *age, info *)` | the check completes at once: the call answers 0 and the request's result is `0x80550006` (signed out); nothing is written. A request id of 0 or a missing argument `0x80550003`, an id that is no request `0x80550014`, an aborted request `0x80550012`, a second check on one request `0x80550003`. `sceNpCheckPlus`'s 0x38-byte block `{size, user, padding, features, 32 reserved}`: another size `0x80550011`; features outside 1–3, a non-zero reserved byte or the invalid user `0x80550003`; another user stops by name. A third argument to the availability check other than the observed 0 stops by name. |
+| `sceNpPollAsync(id, int32_t *result)` | 0 with the result once the check ran (always at once offline); no variable `0x80550003`, an id that is no request `0x80550014`, a request that ran no check `0x80550015`. The caller (`0x022767b5`) reads 0 as done, 1 as still running. A request aborted before its check stops by name. |
+| `sceNpAbortRequest(id)`, `sceNpDeleteRequest(id)` | 0, or `0x80550014` for an id that is no request. Abort marks an unchecked request aborted and leaves a checked one alone; delete frees the id. |
+| `sceNpCmpOnlineId(a, b)`, `sceNpCmpNpId(a, b)` (`libSceNpCommon`) | 0 for the same identity, `0x80550609` (no match) otherwise, `0x80550003` for a missing one. Online ids compare their 16 characters as `strncmp` does; NP ids then compare their 8 option and 8 reserved bytes. Callers `0x010a28d1` and `0x010b4676`. |
 | `sceNpMatching2Initialize(const parameter *)` | the 0x30-byte block carries its own size at `0x20`, and 0x30 or the older 0x28 is accepted. Anything else, or no block, answers `0x80550C0A`; a second initialize answers `0x80550C02`. The caller (`0x010ba2d0`) treats a negative answer as failure. |
 | `sceNpMatching2Terminate()` | 0, or `0x80550C03` before initialize |
 
@@ -969,6 +1003,36 @@ allocates one per call and answers 0. What the title later does with it (waiting
 belongs to other calls, which stop by name until they are implemented.
 
 **What stops by name:** an HTTP context the runtime did not hand out, and a missing slot.
+
+## Network, SSL and HTTP teardown (`sceHttpTerm`, `sceSslTerm`, `sceNetPoolDestroy`, issue #41)
+
+The executable's HTTP manager tears down what it set up, each call only for an id it got, and
+none reads an answer:
+- its connection object (`0x013d1d90`, `0x013d1e10`) calls `sceHttpAbortWaitRequest(handle)`,
+  `sceHttpDestroyEpoll(HTTP context, handle)` and `sceHttpDeleteTemplate(template)`;
+- the manager (`0x013d20d0`, `0x013d2120`, `0x013d2170`) calls `sceHttpTerm(HTTP context)`,
+  `sceSslTerm(SSL context)` and `sceNetPoolDestroy(pool)`.
+
+OpenOrbis' `Http.h` and `Net.h` give the `int32_t` id arguments of `sceHttpTerm`,
+`sceHttpDeleteTemplate` and `sceNetPoolDestroy`; the others' come from these calls. The answers
+are facts from shadPS4's `libSceHttp` (`http.cpp`, `http_error.h`):
+
+| Call | Runtime |
+|---|---|
+| `sceHttpTerm(context)`, `sceHttpDeleteTemplate(template)` | 0, ending the id; `0x80431100` (invalid id) for one that is not live (never handed out, or already ended) |
+| `sceHttpDestroyEpoll(context, handle)` | 0, freeing the handle; `0x80431100` for a context or handle that is not live, `0x804311fe` (invalid value) for no handle |
+| `sceHttpAbortWaitRequest(handle)` | 0; `0x804311fe` for no handle, `0x80431100` for one that is not live. Every later `sceHttpWaitRequest` on the handle answers `0x80431080` (aborted). Offline no wait blocks, so there is no waiter to wake. |
+| `sceSslTerm(context)`, `sceNetPoolDestroy(pool)` | 0, ending the id |
+
+Ids are never reused. Using an ended pool or SSL context in `sceHttpInit`, an ended HTTP context
+in `sceHttpCreateTemplate` or `sceHttpCreateEpoll`, and an ended template in the template calls,
+stop by name as an unknown id does (`sceHttpsEnableOption` and `sceHttpsDisableOption` answer
+`0x80431100`, as before).
+
+**What stops by name:** ending an SSL context or pool that is not live (no source gives the
+answer). shadPS4 answers `0x80431001` (before init) for the HTTP calls before any `sceHttpInit`;
+the runtime does not model that state and answers `0x80431100` there, which the executable never
+reaches.
 
 ## HTTPS options (`sceHttpsEnableOption`, `sceHttpsDisableOption`)
 
@@ -1384,6 +1448,21 @@ flags 0 (`O_RDONLY`) and mode 0555.
   descriptor (the title only passes it back). One the runtime did not hand out is `EBADF`.
 - **Seeking.** A whence other than 0, 1 or 2 (`SEEK_SET`, `SEEK_CUR`, `SEEK_END`, the same on
   FreeBSD and Linux), and a seek before the start, are `EINVAL`.
+
+### Truncating and renaming
+
+`sceKernelFtruncate(fd, length)` is FreeBSD's `ftruncate(2)` under its SCE name (shape from the
+OpenOrbis homebrew SDK's `libkernel.h`). The title reaches it after Play Offline, while it creates
+its save data: its file object cuts its file at its current position (`0x02473290`). The runtime
+passes the length to the host. A negative length, and a descriptor opened without write
+permission, are `EINVAL` (FreeBSD's `truncate(2)`; Linux answers the same); one the runtime did not
+hand out is `EBADF`. Any other host error stops by name.
+
+`sceKernelRename(from, to)` is FreeBSD's `rename(2)` (shape from `libkernel.h`); the title calls it
+(`0x02474a85`) while it creates its save data. The runtime renames the host file, replacing an
+existing `to` as `rename(2)` does. Paths on two different mounts are `EXDEV` (`rename(2)`: "on
+different logical devices"); on the read-only `/app0` `EROFS`, after the lookup; a missing file or
+directory component `ENOENT` or `ENOTDIR`. Any other host error stops by name.
 
 ## Memory protection queries (`sceKernelQueryMemoryProtection`, issue #34)
 

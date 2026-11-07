@@ -9,6 +9,7 @@
 #include "present_record_builder.h"
 #include "record_builder_fields.h"
 #include "record_constructor_helpers.h"
+#include "record_geometry_call.h"
 
 namespace {
 using namespace render;

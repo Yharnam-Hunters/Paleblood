@@ -344,7 +344,7 @@ def call(address, argc, ret=0, writes=(), u32=(), u8=()):
     return r
 
 
-def normalized_payload(mode, first, second, third, count, flags, first_kind=1, second_kind=0):
+def normalized_payload(mode, first, second, third, count, flags, first_kind=1, second_kind=0, normalized_mode_word=0):
     if mode == 2:
         values = [
             (0, first),
@@ -374,6 +374,8 @@ def normalized_payload(mode, first, second, third, count, flags, first_kind=1, s
             (40, flags),
             (48, 0xFAC001),
             (52, 4),
+            # The low byte is the mode; high-only words exercise adjacent padding.
+            (0x40, normalized_mode_word),
         ]
         size = 0x48
     else:
@@ -402,14 +404,15 @@ def level_descriptor():
     return packed_bytes(0x30, [(0, 4), (8, 64), (12, 64), (16, 3), (20, 1), (40, 64)])
 
 
-def controlled_input(label, mode, first=64, second=32, third=3, count=1, flags=0, index=0, short=False):
+def controlled_input(label, mode, first=64, second=32, third=3, count=1, flags=0, index=0, short=False, normalized_mode_word=0):
     norm_address = {2: "0x025710a0", 3: "0x025711d0", 4: "0x02571340"}[mode]
     scripts = [
         call(
             norm_address,
             4,
             writes=[
-                {"arg": 0, "bytes": normalized_payload(mode, first, second, third, count, flags, 2 if short else 1)}
+                {"arg": 0, "bytes": normalized_payload(mode, first, second, third, count, flags, 2 if short else 1,
+                                            normalized_mode_word=normalized_mode_word)}
             ],
             u32=[3],
         )
@@ -528,10 +531,44 @@ def controlled_inputs():
         yield controlled_input(f"mode_{mode}_explicit_count_override", mode, first=0, second=0, third=0, count=7)
 
 
+def transformed_inputs():
+    """Vary both contributors to the mode-3 transform and observe the pair call."""
+    # Each factor also has a case with the other factor present and this one clear.
+    # Noncanonical mode bytes must remain nonzero; adjacent padding must not count.
+    inputs = [
+        ("mode_three_transform_mode_zero_flags_zero", 0, 0, 3, 0),
+        ("mode_three_transform_mode_zero_flags_four", 0, 4, 3, 0),
+        ("mode_three_transform_mode_one_flags_zero", 1, 0, 3, 0),
+        ("mode_three_transform_mode_one_flags_four_third_three", 1, 4, 3, 0),
+        ("mode_three_transform_mode_two_flags_four", 2, 4, 7, 0),
+        ("mode_three_transform_mode_high_byte_flags_four", 0x80, 4, 7, 0),
+        ("mode_three_transform_mode_ff_flags_four_third_zero", 0xff, 4, 0, 0),
+        ("mode_three_transform_padding_bit_eight", 0x100, 4, 3, 0),
+        ("mode_three_transform_padding_bit_sixteen", 0x10000, 4, 3, 0),
+        ("mode_three_transform_padding_bit_thirty_one", 0x80000000, 4, 3, 0),
+        ("mode_three_transform_neighbor_flag_two", 1, 2, 3, 0),
+        ("mode_three_transform_neighbor_flag_eight", 1, 8, 3, 0),
+        ("mode_three_transform_high_only_flag", 1, 0x10000, 3, 0),
+        ("mode_three_transform_flag_four_plus_two", 1, 6, 3, 0),
+        ("mode_three_transform_flag_four_plus_eight", 1, 12, 3, 0),
+        ("mode_three_transform_flag_four_plus_high", 1, 0x10004, 3, 0),
+        ("mode_three_transform_third_five", 1, 4, 5, 0),
+        ("mode_three_transform_third_six", 1, 4, 6, 0),
+        ("mode_three_transform_third_max_input_half", 1, 4, 0xffff, 0),
+        ("mode_three_transform_offset_index_one", 1, 4, 1, 1),
+        ("mode_three_transform_first_auxiliary", 1, 0x404, 7, 1),
+        ("mode_three_transform_second_auxiliary", 1, 0x204, 7, 1),
+        ("mode_three_transform_padding_plus_high_flag", 0x100, 0x10004, 7, 0),
+    ]
+    for label, mode_word, flags, third, index in inputs:
+        yield controlled_input(label, 3, third=third, flags=flags, index=index,
+                               normalized_mode_word=mode_word)
+
+
 def cases():
     """Yield builder inputs and observe lower-call arguments at their logical widths."""
     registers = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
-    for index, inputs in enumerate(chain(INPUTS, controlled_inputs())):
+    for index, inputs in enumerate(chain(INPUTS, controlled_inputs(), transformed_inputs())):
         arena = bytearray((0x35 + 29 * i) & 255 for i in range(512))
         for offset, value in inputs.get("words", []):
             struct.pack_into("<I", arena, offset, value & 0xFFFFFFFF)

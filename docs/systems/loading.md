@@ -8,7 +8,7 @@ How the game reads its files: the file interfaces the executable imports from th
 
 - **Scope:** File access, Fios file and directory handles, PlayGo chunks, and the archive and mount layers above them.
 - **Verified:** Only the link dependencies in the import table; no loading function is mapped yet.
-- **Open:** Which calls run during a load, and in what order: the current boot stops before the first file milestone.
+- **Open:** Which calls run during a load, and in what order. The boot now reads files from your copy, its scratch folder and its saves, but the game's loading code itself is not mapped.
 
 ## Summary
 
@@ -32,9 +32,22 @@ These rows describe link dependencies, not a trace of calls made during a load. 
 shows what the game *can* call; it does not show which calls run, their arguments, or their
 results.
 
-The latest boot evidence stops at `scePthreadAttrGetaffinity`, before the runtime's first file
-milestone. Asset, archive, map, and load-screen behavior therefore remains unobserved on
-Paleblood's runtime.
+### What a boot on Paleblood's runtime reads
+
+The boot recorded on merged `main` passes the file milestone and runs until its time limit
+([#408](https://github.com/Yharnam-Hunters/Paleblood/pull/408), [#443](https://github.com/Yharnam-Hunters/Paleblood/pull/443)). What the runtime serves, as the
+runtime system-call notes describe:
+
+- **`/app0`**, your own copy of the game, read-only. The first file the game looks for and reads is
+  `sprj_mixer.fev`, its sound mixer description. Its movies are read from there too
+  ([#419](https://github.com/Yharnam-Hunters/Paleblood/pull/419)).
+- **`/data`**, a scratch folder: the engine maps its `temp:` and `title:` drives there and creates a
+  fresh `cache.bin` at start-up.
+- **`/savedataN`**, a mounted save, kept in a host folder you choose ([#402](https://github.com/Yharnam-Hunters/Paleblood/pull/402)).
+- **PlayGo** reports every chunk installed ([#370](https://github.com/Yharnam-Hunters/Paleblood/pull/370)).
+
+This is the runtime's side. The game's own archive, mount and load-screen code above these calls
+has not been mapped, so which assets it loads, and in what order, is not documented here yet.
 
 ## Key functions
 
@@ -62,8 +75,8 @@ imported names and providers are in `symbols/imports.csv`.
   `scePlayGoGetLocus`, and `scePlayGoSetInstallSpeed`. The runtime stands in for the
   `libScePlayGo` system module, so loading it succeeds (Paleblood #310). Since Paleblood
   #370 and #405 it answers that every chunk of the package is installed (the chunk count
-  comes from your copy's `sce_sys/playgo-manifest.xml`) and records the install speed the
-  game sets.
+  comes from your copy's `sce_sys/playgo-manifest.xml`) and accepts the install speed the
+  game sets (everything is installed, so there is nothing to pace).
 
 </details>
 
@@ -82,8 +95,8 @@ address is mapped to a loading function and its effect is checked against the st
 
 ## Open questions
 
-- Which file imports are reached during startup and the order in which they run; the current boot
-  stops before the file milestone.
+- Which file imports are reached during startup and the order in which they run. The boot now gets
+  that far, but no trace of the file calls has been recorded yet.
 - How Fios file and directory handles are opened, used, and closed, including the relationship
   between synchronous calls and `sceFiosOp*` operations.
 - How PlayGo chunk identifiers and install locations affect asset or map streaming.
