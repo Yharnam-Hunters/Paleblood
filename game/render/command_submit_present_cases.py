@@ -94,6 +94,11 @@ def cases():
     ]
     yield c
 
+    case = next(case for case in base_cases() if case["id"] == "capacity_64_same_counter_1")
+    case["id"] = "delegate_changes_live_cursor"
+    case["stubs"][-1]["writes"] = [{"arg": 0, "offset": 16, "pointer": "payload+32", "size": 8}]
+    yield case
+
 
 def main():
     if len(sys.argv) != 2:
