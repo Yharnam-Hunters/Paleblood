@@ -2,13 +2,13 @@
 
 # Render
 
-The render system draws each frame and presents it to the screen. This page covers three mapped pieces: the per-frame render update, the pacing of each present, and one helper from the YEBIS post-processing middleware.
+The render system draws each frame and presents it to the screen. This page covers the per-frame render update, the pacing of each present, one helper from the YEBIS post-processing middleware, and the GPU helper library compiled into the game: its command writers, state setters, swap chain and shader uploads, and how they now report to Paleblood's renderer.
 
 **At a glance**
 
-- **Scope:** `render_frame_update_02377bd0`, `render_swap_chain_present` and `render_yebis_get_recursive_sample_parameters`.
+- **Scope:** `render_frame_update_02377bd0`, `render_swap_chain_present`, `render_yebis_get_recursive_sample_parameters`, and the GPU helper library's command writers, state setters, swap chain and shader uploads.
 - **Verified:** All three: the reference-counted object list, the vblank pacing of the present, and the blur sample counts.
-- **Open:** What the listed objects and the two children are; most of draw submission, shaders and post-processing. The first command-buffer, present-record and swap-chain functions are mapped (edge-verified).
+- **Open:** What the listed objects and the two children are; the engine's own drawing code above the GPU library, materials and post-processing. Many GPU library functions are mapped and edge-verified; they now tell Paleblood's renderer what they set.
 
 ## Summary
 
@@ -47,7 +47,13 @@ post-processing middleware. Its `GPUTexUtil_GetRecursiveSampleParameters` works 
 
 It carries the middleware's own assertions.
 
-Scope still to map: draw submission, GNM command buffers, shaders, post-processing.
+Scope still to map: the engine's draw submission above the GPU library, materials and
+post-processing.
+
+The game's shaders ship as compiled AMD GPU code in its shader bundles. A census tool in the code
+repository decodes the shaders in your own copy and counts the instructions they use, for
+Paleblood's shader translator (Paleblood #316). It prints counts only; no shader code leaves your
+machine.
 
 ### Writing GPU commands and presenting
 
@@ -72,13 +78,119 @@ arguments. The first of the engine's own packet writers are mapped, all by [@evi
   the display has flipped far enough and picks the flip mode, and `render_swap_chain_submit`
   (`0x02ad6e50`) submits the frame, advances the frame counter and checks its owner again
   ([#287](https://github.com/Yharnam-Hunters/Paleblood/pull/287)). They use the public layouts of the video-out flip status and kernel events.
+- **Depth and stencil clears.** `render_emit_present_preparation_scalar` (`0x01473590`) and
+  `render_emit_present_preparation_byte` (`0x014735f0`) write the depth and stencil clear values
+  (AMD's `DB_DEPTH_CLEAR` and `DB_STENCIL_CLEAR` registers) [#325](https://github.com/Yharnam-Hunters/Paleblood/pull/325), from #210.
+- **The last record's depth settings.** `render_emit_present_last_record_packet` (`0x014769e0`)
+  writes `DB_RENDER_CONTROL`. Two setters turn its depth and stencil compression off or on
+  (`0x01485070`, `0x01485080`), one replaces two packed indices (`0x014721d0`), and
+  `render_reset_present_preparation_dirty` (`0x02ad2c30`) writes only the clear values that changed
+  and remembers them [#326](https://github.com/Yharnam-Hunters/Paleblood/pull/326), from #211.
+- **Resource records.** A record describes a GPU resource's layout. The reviews tie its fields to
+  AMD's public tiling and format fields, though the full meaning is still open. The mapped parts:
+  - **mapping:** `render_pack_record_mapping_word` (`0x01471310`) packs its mapping word and
+    `render_read_record_mapping_word` (`0x01486cf0`) reads one back [#321](https://github.com/Yharnam-Hunters/Paleblood/pull/321), from #212;
+  - **encoding:** three lookups decode the encoding byte's metadata, component arrangement and
+    category (`0x01471730`, `0x014717a0`, `0x014719a0`), and `render_record_set_encoding`
+    (`0x01486540`) stores it [#327](https://github.com/Yharnam-Hunters/Paleblood/pull/327), from #261;
+  - **parameters:** `render_record_apply_parameter_tuple` (`0x0149c850`) picks a record parameter
+    from a normalisation table, with its classification helpers (`0x0149e900`–`0x0149ea70`) [#322](https://github.com/Yharnam-Hunters/Paleblood/pull/322), from #223;
+  - **sizes:** `render_calculate_second_auxiliary` (`0x0149e570`) works out the size and alignment
+    of a second auxiliary area [#323](https://github.com/Yharnam-Hunters/Paleblood/pull/323), from #228;
+  - **fields:** seven setters (`0x01486520`–`0x01486800`) replace one field each, keeping the
+    rest of the word [#324](https://github.com/Yharnam-Hunters/Paleblood/pull/324), from #236.
+
+### Setting GPU state and drawing
+
+The GPU helper library keeps no state of its own: each setter writes its value straight into the
+command buffer as a register packet, and the GPU reads it from there. A large group of setters and
+draw writers was mapped and replaced by [@evill33t](https://github.com/evill33t), each verified to
+write exactly the original packets:
+
+- **Blending and colour output** [#411](https://github.com/Yharnam-Hunters/Paleblood/pull/411) (from #233): `render_set_cb_blend_control`
+  (`0x01473090`, one colour buffer's blend equation, `CB_BLENDn_CONTROL`),
+  `render_set_cb_color_control` (`0x01473320`, the colour output mode and raster operation,
+  `CB_COLOR_CONTROL`) and `render_set_cb_target_mask` (`0x01472fd0`, which colour components each
+  target writes, `CB_TARGET_MASK`).
+- **Depth and stencil** [#411](https://github.com/Yharnam-Hunters/Paleblood/pull/411): `render_set_db_depth_control` (`0x014733a0`, the depth and
+  stencil tests and writes) and `render_set_db_stencil_control` (`0x01473400`, the front- and
+  back-face stencil operations).
+- **What is drawn** [#411](https://github.com/Yharnam-Hunters/Paleblood/pull/411): `render_set_vgt_primitive_type` (`0x01473fe0`, triangles,
+  strips, rectangles and so on), `render_emit_num_instances` (`0x01475370`, how many copies a draw
+  makes), `render_emit_draw_index_auto` (`0x014741b0`, a draw of consecutive vertices) and
+  `render_emit_event_write` (`0x01475da0`, a GPU event such as a cache flush), with two record
+  helpers (`0x01485390`, `0x014853f0`) and the one call that asks the system whether the GPU's
+  performance-analysis mode is on (`0x01489c40`).
+- **Where on screen** [#364](https://github.com/Yharnam-Hunters/Paleblood/pull/364) (from #232): `render_configure_viewport` (`0x014765e0`, the
+  viewport's scale, offset and depth range), `render_configure_screen_scissor` (`0x01476790`),
+  `render_set_screen_offset` (`0x01473650`), the guard-band clip and discard adjustments
+  (`0x014736d0`, `0x01473750`) and the viewport-transform controls (`0x01476980`, `0x01485220`).
+- **A present's context section** [#365](https://github.com/Yharnam-Hunters/Paleblood/pull/365) (from #231): `render_emit_present_context_section`
+  (`0x01472870`) reserves room and writes the context registers a present needs.
+
+### Command buffers, swap chain and shader uploads
+
+- **Command buffers** [#360](https://github.com/Yharnam-Hunters/Paleblood/pull/360) (from #256): `render_command_buffer_init` (`0x01471270`) sets up
+  a command buffer's pointers and its "need more room" callback. `render_command_submit_batch`
+  (`0x02ab0ce0`), `render_command_submit_snapshot` (`0x02ab0e30`) and `render_command_submit_present`
+  (`0x02aafb30`) hand finished regions to the system's submit call, with the waits the GPU needs.
+  The room check that every packet writer makes before writing is now shared code [#291](https://github.com/Yharnam-Hunters/Paleblood/pull/291).
+- **The swap chain** [#361](https://github.com/Yharnam-Hunters/Paleblood/pull/361) (from #254): `render_setup_swap_chain` (`0x02ad5e90`) allocates
+  and registers the swap chain's frame buffers with video out and sets up its cached resource data
+  and tone curves; two cleanups release the curve and the cached record (`0x02571c60`,
+  `0x02572290`, [#359](https://github.com/Yharnam-Hunters/Paleblood/pull/359), from #244).
+- **The last present record** [#354](https://github.com/Yharnam-Hunters/Paleblood/pull/354) (from #260): `render_present_last_record_consume`
+  (`0x02ab6810`) consumes the final record of a present, or only updates its tracking when the
+  commands do not fit.
+- **Shaders** [#263](https://github.com/Yharnam-Hunters/Paleblood/pull/263), [#363](https://github.com/Yharnam-Hunters/Paleblood/pull/363) (from #251): `render_flush_shader_preparation`
+  (`0x02ab9850`) flushes a pending barrier before a shader event, and `render_allocate_shader_upload`
+  (`0x02aaddc0`) finds room of at most 64 KiB for a shader's code, reclaiming once if none is free.
+- **Resource descriptors** [#357](https://github.com/Yharnam-Hunters/Paleblood/pull/357) (from #255), [#358](https://github.com/Yharnam-Hunters/Paleblood/pull/358) (from #222): the records that
+  describe a texture's layout, its mip levels and their offsets (`0x014a1e80`, `0x014a2c40`), its
+  encoding (`0x014712d0`, `0x01471770`, `0x01489910`-`0x01489960`) and its tiling
+  (`0x0149cc60`, which converts a tile-mode table index), and how its parameters are derived
+  (`0x02abaf10`, `0x0149cb30`).
+
+### How the renderer learns what the game draws
+
+Paleblood does not replay the finished GPU commands. Instead, the GPU library's replacements, with
+their packets unchanged, also tell Paleblood's renderer what they set, and the renderer draws that
+on your GPU (see Runtime: the renderer):
+
+- **Observer calls in replacements** [#414](https://github.com/Yharnam-Hunters/Paleblood/pull/414): the blend, colour, depth, stencil,
+  primitive-type, instance-count, viewport and draw replacements above each report the same value
+  they write, with the place in the command buffer where they wrote it. Under the verification
+  harness the calls do nothing. The depth and stencil clear values and `DB_RENDER_CONTROL`
+  replacements report too [#435](https://github.com/Yharnam-Hunters/Paleblood/pull/435).
+- **Observed functions without replacements yet** [#416](https://github.com/Yharnam-Hunters/Paleblood/pull/416), [#418](https://github.com/Yharnam-Hunters/Paleblood/pull/418), [#435](https://github.com/Yharnam-Hunters/Paleblood/pull/435),
+  [#441](https://github.com/Yharnam-Hunters/Paleblood/pull/441): where a library function has no replacement, the runtime watches its arguments at
+  its entry and lets the original run. These are `setRenderTarget` (`0x014738b0`), the depth target
+  (`0x014739b0`), the stencil references (`0x01473190`, `0x014731f0`), the shaders' user-data writers
+  (`0x014761a0`-`0x014764a0`), the indexed-draw setters and draw (`0x01475270`-`0x01475320`,
+  `0x01474420`) and two compute dispatch writers (`0x01474c50`, `0x0148a350`).
+
+This needs the game library built from the decompilation (`tools/boot.py --game-lib`). In the
+maintainer's local runs it was enough to draw the studio logos and the title screen [#441](https://github.com/Yharnam-Hunters/Paleblood/pull/441).
+
+<details>
+<summary>How the library functions were verified</summary>
+
+Each replacement above was checked against the original instructions on constructed edge cases,
+which also caught deliberately broken variants; none was checked on recorded game frames. All
+are edge-verified. They are [@evill33t](https://github.com/evill33t)'s work, brought up to date
+with `main` and merged from the PRs named in brackets; #362 adds cases for the shader
+preparation's reset modes (from #350) and #352 derives the packet tests' addresses from the
+harness. The observer calls were added afterwards and leave the packets unchanged.
+
+</details>
 
 <details>
 <summary>How these were verified</summary>
 
 Each was checked against the original instructions on constructed edge cases by an independent
 review, which also caught deliberately broken variants; none was checked on recorded game
-frames. #279, #286 and #287 were brought up to date with `main` from #209, #259 and #267.
+frames. #279, #286 and #287 were brought up to date with `main` from #209, #259 and #267, and
+#321 to #327 from #212, #223, #228, #236, #210, #211 and #261.
 
 </details>
 
@@ -87,14 +199,80 @@ frames. #279, #286 and #287 were brought up to date with `main` from #209, #259 
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
 | `0x00fbc3e0` | 670 | `render_yebis_get_recursive_sample_parameters` | verified | YEBIS GPUTexUtil_GetRecursiveSampleParameters: blur pass count, last-pass samples and scale; the FPS patches drop its first assertion |
-| `0x01477b30` | 172 | `render_command_emit_counter_operation` | edge-verified | Seven-word counter packet; callback low byte gates writes; label range selects masked encoding Synthetic edges pass; no recordings. |
-| `0x014784a0` | 82 | `render_command_prepare_submission` | edge-verified | Reserve 64 command words; callback low byte gates two marker stores and cursor advance Synthetic edges pass; no recordings. |
+| `0x01471270` | 57 | `render_command_buffer_init` | edge-verified | Initialize command pointers and callback, rounding capacity down to complete DWORDs while preserving auxiliary fields. |
+| `0x014712d0` | 51 | `render_compose_record_encoding_fields` | edge-verified | Pack one byte and five masked fields into an encoding DWORD; no memory access. |
+| `0x01471310` | 544 | `render_pack_record_mapping_word` | edge-verified | Pack numeric mapping fields with priority masks and full-width mode handling; return a zero-extended DWORD. |
+| `0x01471730` | 21 | `render_record_encoding_metadata` | edge-verified | Bounded first-byte metadata lookup; preserve original table entries and zero fallback. |
+| `0x01471770` | 27 | `render_record_encoding_byte_flags` | edge-verified | Map encoding byte 4 to 3, byte 2 to 1, and all other byte values to zero. |
+| `0x014717a0` | 505 | `render_record_encoding_components` | edge-verified | Select ordered packed component arrangement; optional output only on success and Boolean AL contract. |
+| `0x014719a0` | 117 | `render_record_encoding_category` | edge-verified | Decode accepted category nibbles; optional DWORD output untouched on rejection. |
+| `0x014721d0` | 31 | `render_set_present_last_record_indices` | edge-verified | Replace two packed indices while preserving the remaining bits. Return the old preserved bits. |
+| `0x01472870` | 90 | `render_emit_present_context_section` | edge-verified | Keep the low-DWORD capacity decision separate from the full remaining-word count sent to the original import. Its effects may change the live cursor. |
+| `0x01472fd0` | 86 | `render_set_cb_target_mask` | edge-verified | Write the complete CB_TARGET_MASK value, preserving all supplied component-enable bits. |
+| `0x01473090` | 109 | `render_set_cb_blend_control` | edge-verified | Write masked CB_BLENDn_CONTROL for the selected color-buffer bank. |
+| `0x01473320` | 117 | `render_set_cb_color_control` | edge-verified | Write CB_COLOR_CONTROL.MODE and ROP3 from their masked input fields. |
+| `0x014733a0` | 93 | `render_set_db_depth_control` | edge-verified | Write the observed mask of DB_DEPTH_CONTROL depth/stencil test and write-control fields. |
+| `0x01473400` | 93 | `render_set_db_stencil_control` | edge-verified | Write the low 24 bits of DB_STENCIL_CONTROL, including front- and back-face stencil operations. |
+| `0x01473590` | 95 | `render_emit_present_preparation_scalar` | edge-verified | Write the captured float bits to DB_DEPTH_CLEAR. Admission tests the callback low byte; rejection returns its full 64-bit result. |
+| `0x014735f0` | 89 | `render_emit_present_preparation_byte` | edge-verified | Write the captured input low byte to DB_STENCIL_CLEAR. Admission tests the callback low byte; rejection returns its full 64-bit result. |
+| `0x01473650` | 116 | `render_set_screen_offset` | edge-verified | Write the observed masked X/Y fields of PA_SU_HARDWARE_SCREEN_OFFSET. |
+| `0x014736d0` | 124 | `render_set_guard_band_clip_adjust` | edge-verified | Write vertical then horizontal guard-band clip adjustments as unchanged float bit patterns. Capture both float representations before the capacity callback and publish from the captured cursor. |
+| `0x01473750` | 124 | `render_set_guard_band_discard_adjust` | edge-verified | Write vertical then horizontal guard-band discard adjustments as unchanged float bit patterns. Capture both float representations before the capacity callback and publish from the captured cursor. |
+| `0x01473fe0` | 90 | `render_set_vgt_primitive_type` | edge-verified | Write the low six primitive-type bits to VGT_PRIMITIVE_TYPE. |
+| `0x014741b0` | 156 | `render_emit_draw_index_auto` | edge-verified | Emit DRAW_INDEX_AUTO and a query-selected THREAD_TRACE_MARKER event or NOP. Reload flags and cursor after overlapping packet stores before selecting and publishing the trailing packet. |
+| `0x01475370` | 76 | `render_emit_num_instances` | edge-verified | Emit NUM_INSTANCES with the complete supplied instance count. |
+| `0x01475da0` | 101 | `render_emit_event_write` | edge-verified | Emit EVENT_WRITE with a masked event type and the original table-selected event index. |
+| `0x014765e0` | 238 | `render_configure_viewport` | edge-verified | Write viewport ZMIN/ZMAX, then X/Y/Z scale and offset values for the selected viewport. Capture all six borrowed source words before output; retain the live and captured cursor publications. |
+| `0x01476790` | 135 | `render_configure_screen_scissor` | edge-verified | Write PA_SC_SCREEN_SCISSOR_TL/BR using the low 16 bits of each supplied coordinate. Packet stores may overlap the cursor; its final increment reads the stored value after those writes. |
+| `0x01476980` | 93 | `render_emit_pa_cl_vte_cntl` | edge-verified | Write PA_CL_VTE_CNTL viewport-transform enable/format bits after capacity admission. |
+| `0x014769e0` | 93 | `render_emit_present_last_record_packet` | edge-verified | Write DB_RENDER_CONTROL for the last-record path. Publish and return the captured cursor plus twelve bytes; return the full callback result on rejection. |
+| `0x01477b30` | 172 | `render_command_emit_counter_operation` | edge-verified | Emit the seven-word counter packet; callback admission uses its low byte, and the label range selects the masked encoding. |
+| `0x014784a0` | 82 | `render_command_prepare_submission` | edge-verified | Reserve 64 command words; callback admission uses its low byte before two marker stores and the cursor advance. |
+| `0x01485070` | 16 | `render_set_present_last_record_depth_compress_disable` | edge-verified | Replace DEPTH_COMPRESS_DISABLE in the saved DB_RENDER_CONTROL word using the input low bit. Return the old bits with that flag cleared. |
+| `0x01485080` | 16 | `render_set_present_last_record_stencil_compress_disable` | edge-verified | Replace STENCIL_COMPRESS_DISABLE in the saved DB_RENDER_CONTROL word using the input low bit. Return the old bits with that flag cleared. |
+| `0x01485220` | 81 | `render_set_pa_cl_vte_cntl` | edge-verified | Expand the toggled input byte into overlapping register fields. The original result is the shifted byte, independent of the preserved old bits or the final stored word. |
+| `0x01485390` | 24 | `render_set_record_register_range` | edge-verified | Pack one bit from the first input and three from the last, preserving all other bits. |
+| `0x014853f0` | 16 | `render_set_record_register_enabled` | edge-verified | Preserve the original byte-wide input: doubling it can contribute bits beyond bit one. |
+| `0x01486520` | 31 | `render_record_set_word_0c_fields` | edge-verified | Store two masked fields; return masked old word. No constructor add/subtract. |
+| `0x01486540` | 305 | `render_record_set_encoding` | edge-verified | Pack accepted encoding into record DWORD10 preserving other bits; invalid input has undefined native extractor locals. |
+| `0x014866e0` | 33 | `render_record_set_word_04_repeated_field` | edge-verified | Duplicate supplied low 11 bits; return preserved old word. |
+| `0x01486710` | 20 | `render_record_set_word_08_low22` | edge-verified | Replace this word's low 22 bits and return the preserved old upper bits. |
+| `0x01486760` | 20 | `render_record_set_word_14_second_low5_field` | edge-verified | Replace the second five-bit field and return the preserved old word bits. |
+| `0x014867c0` | 21 | `render_record_set_first_auxiliary_flag` | edge-verified | Clear only bit 13 then OR full input byte shifted13; return preserved old word. |
+| `0x014867e0` | 21 | `render_record_set_second_auxiliary_flag` | edge-verified | Clear only bit 14 then OR full input byte shifted14; return preserved old word. |
+| `0x01486800` | 20 | `render_record_set_word_28_low22` | edge-verified | Replace this word's low 22 bits and return the preserved old upper bits. |
+| `0x01486cf0` | 38 | `render_read_record_mapping_word` | edge-verified | Read one unaligned mapping DWORD and delegate three extracted fields to the original encoder. Full return is zero-extended. |
+| `0x01489910` | 24 | `render_record_descriptor_level_count` | edge-verified | Read bits 16..19 below the upper descriptor partition; otherwise return zero. |
+| `0x01489940` | 24 | `render_record_descriptor_count_exponent` | edge-verified | Read bits 16..19 in the upper descriptor partition; otherwise return zero. |
+| `0x01489960` | 68 | `render_record_descriptor_encoding` | edge-verified | Read packed words at offsets 0x04 then 0x0c; pass six extracted fields to the encoding packer. |
+| `0x01489c40` | 16 | `render_record_step_user_pa_enabled` | edge-verified | Query the actual import once; no cached global, fallback or service value is invented. |
+| `0x0149c850` | 672 | `render_record_apply_parameter_tuple` | edge-verified | Select one output code from normalization tuple; ordered overrides and rejection preserve output. |
+| `0x0149cb30` | 204 | `render_record_apply_mapping` | edge-verified | Map derived normalization code to original layout-helper tuple; unsupported code preserves output. |
+| `0x0149cc60` | 350 | `render_convert_record_descriptor_classification` | edge-verified | Convert a tile-mode table index for the requested array mode; preserve output on error and bypass already matching modes. |
+| `0x0149e570` | 279 | `render_calculate_second_auxiliary` | edge-verified | Calculate the second auxiliary layout through two ordered unit admissions and wrapped alignment. Publish its four optional size and alignment outputs in 8/4/4/4-byte order. |
+| `0x0149e900` | 16 | `render_record_tuple_parameter_supported` | edge-verified | Nonzero power-of-two test with Boolean AL interface. |
+| `0x0149e960` | 129 | `render_record_tuple_transform_classification` | edge-verified | Transform admitted classifications after wrapping 32-bit scaling and unsigned thresholds. |
+| `0x0149ea20` | 28 | `render_record_tuple_classification_group` | edge-verified | Bounded classification-to-group lookup with fallback one and original shared table. |
+| `0x0149ea70` | 25 | `render_record_tuple_alternate_classification` | edge-verified | Recognize bounded alternate-classification subset with zero fallback. |
+| `0x014a1e80` | 803 | `render_initialize_record_level_descriptor` | edge-verified | Publish a partial level descriptor in order, reread the source between helper calls, then convert its tile mode. |
+| `0x014a2c40` | 595 | `render_calculate_record_descriptor_level_offset` | edge-verified | Accumulate levels inclusively using partial helper totals even after errors; publish the two QWORD outputs in order. |
 | `0x02377bd0` | 399 | `render_frame_update_02377bd0` | verified | per-frame: ages a list of ref-counted objects, updates RendMan-side child, steps another child by 1/30 s (Uncap: measured frame time) |
 | `0x0247eb80` | 16 | `render_read_present_pool_counter` | edge-verified | full-QWORD locked read/writeback retry, XOR before each attempt; caller adds one. Real AMD64 write cycles retained; non-AMD64 bridge unresolved Synthetic edges pass; no recordings. |
+| `0x02571c60` | 47 | `render_clear_swap_chain_curve` | edge-verified | Release the swap-chain curve resource through its owner; clear only the resource after the callback. |
+| `0x02572290` | 47 | `render_clear_swap_chain_cached_record` | edge-verified | Release the swap-chain cached-record resource through its owner; clear only the resource after the callback. |
 | `0x025b2fb0` | 768 | `render_swap_chain_present` | verified | GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0) |
+| `0x02aaddc0` | 393 | `render_allocate_shader_upload` | edge-verified | Allocate one shader-upload slice of at most 64 KiB. If no suitable block exists, acquire once, reclaim, then retry once. Preserve zero-size requests and delegate block policy to the original manager. |
+| `0x02aafb30` | 509 | `render_command_submit_present` | edge-verified | Prepare and delegate a present submission, preserving capacity-failure returns and resetting begin markers to the live cursor. |
+| `0x02ab0ce0` | 326 | `render_command_submit_batch` | edge-verified | Emit counter waits and submit nonempty regions with the packed video/index handle, or delegate the snapshot when no optional context exists. |
+| `0x02ab0e30` | 213 | `render_command_submit_snapshot` | edge-verified | Initialize the auxiliary command buffer and submit nonempty regions using only the video handle. |
 | `0x02ab5a70` | 1235 | `render_present_record_consume` | edge-verified | Track resource range or emit record commands; preserve cached tokens, index wrap and final state resets. Static reconstruction Synthetic GCC/Clang edges pass; no recordings. |
+| `0x02ab6810` | 1173 | `render_present_last_record_consume` | edge-verified | Consume the final record range, or update its tracking bank when commands are not admitted. |
+| `0x02ab9850` | 374 | `render_flush_shader_preparation` | edge-verified | Flush the pending barrier/range before the event. Mode 0 keeps the range fields, and a suppressed state returns without touching either group of fields. |
+| `0x02abaf10` | 78 | `render_record_derive_parameter` | edge-verified | Derive numeric normalization code; flag priority and mode-dependent base. |
 | `0x02abb4f0` | 31 | `render_record_auxiliary_predicate` | edge-verified | Return the auxiliary-processing predicate: selectors 0x13/0x14 enable it, 0x15/0x16 use flag bit 6, and all other selectors disable it. |
+| `0x02ad2c30` | 120 | `render_reset_present_preparation_dirty` | edge-verified | Emit changed depth and stencil clear values, then cache their post-call values. Preserve the second writer's upper return bits while replacing its low word. |
 | `0x02ad5dd0` | 27 | `render_swap_chain_present_mode` | edge-verified | Validates low DWORD mode; retains object, loads full source pointer at +0x33d0, forwards mode to lower submit Synthetic GCC/Clang edges pass; no recordings. |
+| `0x02ad5e90` | 3005 | `render_setup_swap_chain` | edge-verified | Allocate and register swap-chain buffers, initialize cached resource data and tone curves, and retain partial publications on the corresponding failure paths. |
 | `0x02ad6e50` | 499 | `render_swap_chain_submit` | edge-verified | Owned-thread flip polling, source binding and submission; every exit reloads the global guard pointer. Native GPU helper effects remain original Synthetic GCC/Clang edges pass; no recordings. |
 
 ## Structs and globals
@@ -130,4 +308,8 @@ The frame-rate patches are described in [Frame timing](frame_timing.md).
 ## Open questions
 
 - What the reference-counted objects in the per-frame list are, and what the two children are.
-- Draw submission, GNM command buffers, shaders and post-processing have not been studied yet.
+- The engine's own drawing code above the GPU library, its materials and post-processing have not
+  been studied yet.
+- Which GCN descriptor kinds the user-data writers' NOP markers (`0x68750004`, `0x68750005`,
+  `0x68750006`) name.
+- What the fifth argument of the dispatch writers' relatives (`0x01474d10`, `0x0148a410`) selects.

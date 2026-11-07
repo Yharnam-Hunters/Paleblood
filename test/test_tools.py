@@ -434,8 +434,6 @@ class Loader(unittest.TestCase):
         sys.path.insert(0, os.path.join(ROOT, 'test'))
 
     def test_maps_relocates_and_binds(self):
-        sys.path.insert(0, os.path.join(ROOT, 'tools'))
-        sys.path.insert(0, os.path.join(ROOT, 'test'))
         import ctypes
         import harness
         import ps4elf
@@ -600,6 +598,77 @@ class Loader(unittest.TestCase):
             with self.opened_image(only_relro):
                 pass
 
+    def test_tls_template_metadata_and_mapped_initialization(self):
+        import ctypes
+        import ps4elf
+        class Tls(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_uint64) for name in ('vaddr', 'filesz', 'memsz', 'align')]
+        for alignment, expected in ((0, 1), (1, 1), (64, 64)):
+            fixture = ps4elf.build([(0, b'LOADTLS', 0x20, 5)], [], [], tls=(4, 3, 17, alignment))
+            with self.subTest(alignment=alignment), self.opened_image(fixture) as exe:
+                lib = exe['loader']
+                lib.rt_elf_tls_segment.argtypes = [ctypes.c_void_p]
+                lib.rt_elf_tls_segment.restype = ctypes.POINTER(Tls)
+                tls = lib.rt_elf_tls_segment(exe['handle']).contents
+                self.assertEqual((tls.vaddr, tls.filesz, tls.memsz, tls.align), (4, 3, 17, expected))
+                _, mapped = self.mapped_bytes(exe)
+                self.assertEqual(mapped[4:7], b'TLS')
+        # TBSS has no initialization image to dereference, including an empty template.
+        for size in (0, 17):
+            fixture = ps4elf.build([(0, b'LOAD', 0x20, 5)], [], [], tls=(4, 0, size, 16))
+            with self.opened_image(fixture):
+                pass
+
+    def test_tls_template_and_sce_relro_allocation_coexist(self):
+        import ctypes
+        import ps4elf
+        class Tls(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_uint64) for name in ('vaddr', 'filesz', 'memsz', 'align')]
+        fixture = ps4elf.build([(0, b'LOADTLS', 0x20, 5)], [], [],
+                              relro_segments=[(0x80, b'RELRO', 0x10, 4)],
+                              tls=(4, 3, 17, 16))
+        with self.opened_image(fixture) as exe:
+            lib = exe['loader']
+            lib.rt_elf_tls_segment.argtypes = [ctypes.c_void_p]
+            lib.rt_elf_tls_segment.restype = ctypes.POINTER(Tls)
+            tls = lib.rt_elf_tls_segment(exe['handle']).contents
+            self.assertEqual((tls.vaddr, tls.filesz, tls.memsz, tls.align), (4, 3, 17, 16))
+            self.assertEqual(exe['loads'], [(0, 0x20, 5), (0x80, 0x10, 4)])
+            _, mapped = self.mapped_bytes(exe)
+            expected = bytearray(0x90)
+            expected[:7] = b'LOADTLS'
+            expected[0x80:0x85] = b'RELRO'
+            self.assertEqual(mapped, expected)
+
+    def test_tls_malformed_templates_are_rejected_before_mapping(self):
+        import harness
+        import ps4elf
+        fixture = ps4elf.build([(0, b'LOADTLS', 0x20, 5)], [], [], tls=(4, 3, 17, 16))
+        tls_header = 64 + 56
+        changes = [('file larger than memory', 40, 2, 'invalid TLS'),
+                   ('outside file', 8, len(fixture), 'invalid TLS'),
+                   ('bad alignment', 48, 3, 'invalid TLS'),
+                   ('unmapped template', 16, 0x1000, 'not backed'),
+                   ('BSS instead of file bytes', 16, 8, 'not backed'),
+                   ('wrong source bytes', 8, 0, 'not backed'),
+                   ('overflowing virtual range', 16, (1 << 64) - 1, 'not backed')]
+        for name, offset, value, message in changes:
+            bad = bytearray(fixture)
+            struct.pack_into('<Q', bad, tls_header + offset, value)
+            with self.subTest(name=name), self.assertRaisesRegex(harness.BadInput, message):
+                with self.opened_image(bad):
+                    pass
+        duplicate = bytearray(fixture)
+        count = struct.unpack_from('<H', duplicate, 56)[0]
+        duplicate[64 + count * 56:64 + (count + 1) * 56] = fixture[tls_header:tls_header + 56]
+        struct.pack_into('<H', duplicate, 56, count + 1)
+        with self.assertRaisesRegex(harness.BadInput, 'invalid TLS'):
+            with self.opened_image(duplicate):
+                pass
+        overlap = ps4elf.build([(0, b'LOADTLS', 0x20, 5), (4, b'BAD', 3, 6)], [], [], tls=(4, 3, 17, 16))
+        with self.assertRaisesRegex(harness.BadInput, 'conflicting'):
+            with self.opened_image(overlap):
+                pass
 
 
 class Boot(unittest.TestCase):

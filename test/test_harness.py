@@ -156,6 +156,7 @@ def boot_image(stacked_imports=False):
     code[0xbb0:0xbb1] = bytes.fromhex('c3')
     code[0xbc0:0xbc3] = bytes.fromhex('b0a5c3')
     code[0xbd0:0xbdb] = bytes.fromhex('48034424084803442410c3')
+    code[0xbe0:0xbe3] = bytes.fromhex('9c58c3')                    # pushfq; pop rax; ret
     code[0xc60:0xc68] = bytes.fromhex('8d047509000000 c3')         # lea eax, [rsi*2+9], no base
     # Tail calls preserve the fixture's six GP registers, overflow slots and XMM0 exactly.
     # A second import is enabled only for the new cases; existing images keep their layout.
@@ -274,6 +275,22 @@ class Harness(unittest.TestCase):
                 result = self.side_case(self.case, address=case['address'])
                 self.assertEqual(result['ret']['rax'], hex(seed + sum(stack[:2])))
                 self.assertTrue(all(value == 'kept' for value in result['preserved'].values()))
+
+    def test_stack_setup_preserves_defined_entry_status_flags(self):
+        # The loop exits after TEST on a zero count. AF is undefined, so compare only the
+        # defined CF/PF/ZF/SF/OF bits rather than requiring a complete RFLAGS constant.
+        defined_status_mask = 0x8c5
+        zero_status_flags = 0x44
+        for stack in ([], [7], [7, 11], [7, 11, 19]):
+            for seed in (0, 0x1234567800000001, 0xffffffffffffffff):
+                with self.subTest(stack=stack, seed=hex(seed)):
+                    case = {'schema': 1, 'address': '0x00400be0', 'id': 'entry-status-flags',
+                            'returns': 'i64', 'args': {'rax': hex(seed)}, 'stack': stack,
+                            'buffers': {}, 'memory': [], 'imports': [], 'stubs': []}
+                    Path(self.case).write_text(json.dumps(case))
+                    result = self.side_case(self.case, address=case['address'])
+                    self.assertEqual(int(result['ret']['rax'], 0) & defined_status_mask, zero_status_flags)
+                    self.assertTrue(all(value == 'kept' for value in result['preserved'].values()))
 
     def test_omitted_entry_rax_stays_zero_across_batched_cases(self):
         directory = Path(self.d) / 'rax-batch'

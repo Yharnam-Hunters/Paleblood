@@ -5,10 +5,10 @@
 /* Loading a PS4 executable (ELF with SCE dynamic linking) into host memory: Paleblood's own
    loader, written from the published format. It reads the program headers and the string,
    symbol and relocation tables that PT_DYNAMIC's DT_SCE_* entries point into (inside
-   PT_SCE_DYNLIBDATA), copies PT_LOAD and PT_SCE_RELRO allocated segments into memory the caller
-   reserved, zero-fills the rest, and applies every relocation: addresses inside the executable become host addresses,
-   and each imported function or object is bound to whatever address the caller's callback gives
-   for it (an implementation, a stub, a data page).
+   PT_SCE_DYNLIBDATA), copies PT_LOAD and PT_SCE_RELRO allocated segments into memory the
+   caller reserved, zero-fills the rest, and applies every relocation: addresses inside the
+   executable become host addresses, and each imported function or object is bound to whatever
+   address the caller's callback gives for it (an implementation, a stub, a data page).
 
    Used by the verification harness (tools/harness.py, through the shared library
    libpbloader.so) and, as the runtime grows, by the runtime itself. */
@@ -76,16 +76,15 @@ int rt_elf_export_kind(const rt_elf *elf, size_t index);
    rt_elf_map. */
 void rt_elf_set_tls_module_id(rt_elf *elf, uint64_t id);
 
-/* Copies all admitted image ranges into `base` (rt_elf_image_size bytes, writable,
-   reserved by the caller),
-   zero-fills, and applies the relocations, binding imports through `bind`. Segment flags do not
-   change this writable-buffer contract or apply permissions. Returns 0, or -1 with
-   a message in `error`. */
+/* Copies all admitted image ranges into `base` (rt_elf_image_size bytes, writable, reserved by
+   the caller), zero-fills, and applies the relocations, binding imports through `bind`. Segment
+   flags do not change this writable-buffer contract or apply permissions. Returns 0, or -1
+   with a message in `error`. */
 int rt_elf_map(const rt_elf *elf, void *base, rt_elf_bind_fn bind, void *user, char *error, size_t error_size);
 
 /* Rewrite each exact 9-byte `mov rax, fs:[0]` pattern to the same-length
    `mov rax, gs:[offset]`, encoding offset as a little-endian 32-bit displacement.
-   Only file-backed bytes of executable PT_LOAD segments are scanned. This is a byte-pattern
+   Only file-backed bytes of executable allocated segments are scanned. This is a byte-pattern
    scan, not instruction-boundary decoding: embedded matching bytes can also be rewritten.
    elf must be an open valid image; base must hold its complete, exclusively writable mapped
    image. changed must point to writable size_t storage disjoint from that image.
