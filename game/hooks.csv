@@ -156,6 +156,7 @@ address,replacement,system,returns
 0x02ab9850,bb_render_flush_shader_preparation,render,void
 0x02abaf10,bb_render_record_derive_parameter,render,i32
 0x02abb4f0,bb_render_record_auxiliary_predicate,render,i8
+0x02ace5e0,bb_render_configure_record_shader_secondary,render,void
 0x02ad2c30,bb_render_reset_present_preparation_dirty,render,i64
 0x02ad5dd0,bb_render_swap_chain_present_mode,render,i32
 0x02ad5e90,bb_render_setup_swap_chain,render,i64

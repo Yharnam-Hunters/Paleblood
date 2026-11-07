@@ -217,8 +217,9 @@ render_frame_update_02377bd0,edge,60,12,12,0,0,dd4fcc5a0d365609,2026-10-31
 render_frame_update_02377bd0,edge,uncapped,12,12,0,0,dd4fcc5a0d365609,2026-10-31
 render_initialize_record_level_descriptor,edge,,51,51,0,0,a36426b67c294984,2026-11-05
 render_pack_record_mapping_word,edge,,497,497,0,0,9bf1f50e8f52effa,2026-11-04
-render_present_last_record_consume,edge,,56,56,0,0,60466b47dd5d1338,2026-11-06
-render_present_record_consume,edge,,24,24,0,0,87e729a932832b64,2026-11-06
+render_configure_record_shader_secondary,edge,,191,191,0,0,5e297be297985947,2026-11-07
+render_present_last_record_consume,edge,,56,56,0,0,8feb3252c4706117,2026-11-07
+render_present_record_consume,edge,,24,24,0,0,04690706835c471b,2026-11-07
 render_read_present_pool_counter,edge,,18,18,0,0,1ef235dcff31de42,2026-11-03
 render_read_record_mapping_word,edge,,224,224,0,0,68ea5b3aae2f9be4,2026-11-04
 render_record_apply_mapping,edge,,400,400,0,0,6de6826ea92e835a,2026-11-05
