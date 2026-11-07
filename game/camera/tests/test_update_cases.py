@@ -23,7 +23,9 @@ SPEC.loader.exec_module(camera_cases)
 
 
 EXPECTED_CASE_IDS = {
+    'candidate_first_hit_uses_saved_inputs',
     'candidate_miss_reloads_fulcrum',
+    'candidate_second_hit_uses_saved_inputs',
     'chase_front_selector',
     'chase_lock_selector',
     'chase_negative_distance_rate',
@@ -105,7 +107,7 @@ class CameraUpdateCases(unittest.TestCase):
             right = {path.name: path.read_bytes() for path in Path(second).glob("*.json")}
             self.assertEqual(left, right)
             rows, abi = differential.load_fixtures(Path(first), camera_cases.ADDRESS)
-            self.assertEqual(len(rows), 70)
+            self.assertEqual(len(rows), 72)
             self.assertIsNone(abi)
             self.assertNotIn("abi.json", left)
             for _, case in rows:
@@ -129,7 +131,7 @@ class CameraUpdateCases(unittest.TestCase):
                                          "bb_camera_update_follow", "unused.so")
             self.assertEqual(producer.call_count, 2)
             self.assertEqual({side: len(rows) for side, rows in sides.items()},
-                             {"original": 70, "replacement": 70})
+                             {"original": 72, "replacement": 72})
         with tempfile.TemporaryDirectory() as directory:
             case = copy.deepcopy(camera_cases.CASES[0])
             case["address"] = noncanonical
@@ -179,7 +181,61 @@ class CameraUpdateCases(unittest.TestCase):
                         env={} if policy is None else {"BB_TARGET_FPS": policy})
                     self.assertEqual(producer.call_count, 2)
                     self.assertEqual({side: len(rows) for side, rows in sides.items()},
-                        {"original": 70, "replacement": 70})
+                        {"original": 72, "replacement": 72})
+
+    def test_candidate_hit_profiles_open_their_wall_zero_query_stages(self):
+        rows = {case["id"]: case for case in camera_cases.CASES}
+        for name, hit_index, fraction in (
+            ("candidate_first_hit_uses_saved_inputs", 0, 0.25),
+            ("candidate_second_hit_uses_saved_inputs", 1, 0.75),
+        ):
+            with self.subTest(case=name):
+                case = rows[name]
+                self.assertEqual(case["args"]["rdx"], "buf:query")
+                self.assertEqual(case["args"]["rsi"], "buf:subject")
+                wall = next(item for item in case["memory"] if item["addr"] == camera_cases.WALL_SLOT)
+                self.assertEqual(wall["bytes"], "00")
+                raw = bytes.fromhex(case["buffers"]["camera"]["bytes"])
+                for gate in ("reset_requested", "reset_angles_requested", "avoid_territories"):
+                    at = camera_cases.CAMERA_START + camera_cases.CAMERA_FIELDS[gate][0]
+                    self.assertEqual(raw[at], 0)
+                spheres = [script for script in case["stubs"]
+                           if int(script["address"], 0) == camera_cases.SPHERE]
+                self.assertEqual(len(spheres), 6)
+                for index, script in enumerate(spheres):
+                    self.assertEqual(int(script["ret"], 0), int(index == hit_index))
+                    if index != hit_index:
+                        self.assertNotIn("writes", script)
+                writes = spheres[hit_index]["writes"]
+                self.assertEqual([write["arg"] for write in writes], [6, 2, 3])
+                self.assertEqual(struct.unpack("<f", bytes.fromhex(writes[0]["bytes"])), (fraction,))
+                self.assertEqual(struct.unpack("<4f", bytes.fromhex(writes[1]["bytes"])),
+                                 (211.0, -223.0, 227.0, 1.0))
+                self.assertEqual(struct.unpack("<4f", bytes.fromhex(writes[2]["bytes"])),
+                                 (-31.0, 37.0, -41.0, 0.0))
+                camera_cases.validate_contract(case)
+
+    def test_debug_reselection_alias_and_inter_node_slot_change_have_distinct_stages(self):
+        rows = {case["id"]: case for case in camera_cases.CASES}
+        alias = rows["territory_draw_reselect_alias"]
+        initial_slot = next(item for item in alias["memory"] if item["addr"] == "buf:renderer+0x10")
+        self.assertEqual(initial_slot["pointer"], "render_state_a")
+        initial_state = next(item for item in alias["memory"] if item["addr"] == "buf:render_state_a+0x40")
+        self.assertEqual(initial_state["pointer"], "render_state_a")
+        virtuals = [script for script in alias["stubs"]
+                    if int(script["address"], 0) == camera_cases.VIRTUAL]
+        self.assertEqual(virtuals[0]["writes"],
+                         [{"arg": 0, "offset": 0x40, "pointer": "render_state_b"}])
+        inter_node = rows["territory_draw_two_nodes_slot_change"]
+        virtuals = [script for script in inter_node["stubs"]
+                    if int(script["address"], 0) == camera_cases.VIRTUAL]
+        self.assertTrue(all("writes" not in script for script in virtuals))
+        axes = [script for script in inter_node["stubs"]
+                if int(script["address"], 0) == camera_cases.AXES]
+        self.assertEqual(axes[0]["writes"], [{"arg": 0, "offset": 0x20, "bytes": "01000000"}])
+        next_node = next(item for item in inter_node["memory"]
+                         if item["addr"] == "buf:territory_0+0x68")
+        self.assertEqual(next_node["pointer"], "territory_1")
 
     def test_missing_input_region_is_rejected_by_the_buffer_contract(self):
         case = copy.deepcopy(camera_cases.CASES[0])

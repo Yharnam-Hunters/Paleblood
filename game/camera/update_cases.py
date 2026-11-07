@@ -1883,10 +1883,29 @@ def release_nan_profiles() -> tuple[Profile, ...]:
 
 
 def callback_reload_profiles() -> tuple[Profile, ...]:
-    """Change only declared world objects at the two candidate reload sites."""
+    """Challenge candidate snapshots and reloads with the wall-off query gates open."""
     base = next(profile for profile in STOCK_PROFILES if profile.id == "stock_wall0_finite")
     fields = {**base.camera, "reset_requested": 0, "reset_angles_requested": 0}
     return (
+        replace(base, id="candidate_first_hit_uses_saved_inputs", category="callback_reload",
+            camera=fields, spheres=(
+                Sphere(ret=1, writes=(
+                    Write(6, data=f32(0.25)),
+                    Write(2, data=vec4((211.0, -223.0, 227.0, 1.0))),
+                    Write(3, data=vec4((-31.0, 37.0, -41.0, 0.0))),
+                )),
+                Sphere(), Sphere(),
+            )),
+        replace(base, id="candidate_second_hit_uses_saved_inputs", category="callback_reload",
+            camera=fields, spheres=(
+                Sphere(),
+                Sphere(ret=1, writes=(
+                    Write(6, data=f32(0.75)),
+                    Write(2, data=vec4((211.0, -223.0, 227.0, 1.0))),
+                    Write(3, data=vec4((-31.0, 37.0, -41.0, 0.0))),
+                )),
+                Sphere(),
+            )),
         replace(base, id="candidate_miss_reloads_fulcrum", category="callback_reload",
             camera=fields, world="camera", spheres=(
                 Sphere(world_capture="camera", writes=(camera_write("fulcrum", (21.0, 23.0, 29.0, 1.0)),)),
@@ -1902,8 +1921,8 @@ def callback_reload_profiles() -> tuple[Profile, ...]:
 
 def build_cases() -> list[dict]:
     profiles = (*STOCK_PROFILES, *fps_profiles(), *release_nan_profiles(), *callback_reload_profiles())
-    if len(profiles) != 70 or len({profile.id for profile in profiles}) != 70:
-        raise ValueError("the edge suite has exactly 70 distinct named profiles")
+    if len(profiles) != 72 or len({profile.id for profile in profiles}) != 72:
+        raise ValueError("the edge suite has exactly 72 distinct named profiles")
     cases = [make_case(profile) for profile in profiles]
     for case in cases:
         validate_contract(case)
