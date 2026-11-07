@@ -204,3 +204,8 @@ add_test(NAME module_tls_boot
          COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_module_tls_boot.py -v)
 set_tests_properties(module_tls_boot PROPERTIES TIMEOUT 30
     ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>")
+
+add_executable(test_videoout_transform test/test_videoout_transform.c
+    runtime/syslib/video_out_transform_initialize.c runtime/syslib/video_out_transform_pack.c)
+target_include_directories(test_videoout_transform PRIVATE runtime/include)
+add_test(NAME videoout_transform COMMAND test_videoout_transform)
