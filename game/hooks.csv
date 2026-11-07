@@ -63,6 +63,7 @@ address,replacement,system,returns
 0x01473750,bb_render_set_guard_band_discard_adjust,render,void
 0x01473fe0,bb_render_set_vgt_primitive_type,render,void
 0x014741b0,bb_render_emit_draw_index_auto,render,void
+0x01475000,bb_render_emit_shader_link_words,render,void
 0x01475370,bb_render_emit_num_instances,render,void
 0x01475da0,bb_render_emit_event_write,render,void
 0x014765e0,bb_render_configure_viewport,render,void
@@ -85,6 +86,7 @@ address,replacement,system,returns
 0x014867e0,bb_render_record_set_second_auxiliary_flag,render,i32
 0x01486800,bb_render_record_set_word_28_low22,render,i32
 0x01486cf0,bb_render_read_record_mapping_word,render,i64
+0x014873a0,bb_render_build_shader_link_words,render,void
 0x01489910,bb_render_record_descriptor_level_count,render,i32
 0x01489940,bb_render_record_descriptor_count_exponent,render,i32
 0x01489960,bb_render_record_descriptor_encoding,render,i32
