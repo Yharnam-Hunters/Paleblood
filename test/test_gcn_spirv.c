@@ -8,6 +8,7 @@
    installed), and that is compiled with Apple's Metal compiler where there is one (xcrun metal, on
    macOS). With PB_REQUIRE_METAL set (the macOS CI job) a missing tool is a failure, not a skip. */
 #include "runtime/gcn_spirv.h"
+#include "runtime/rect_list.h"
 
 #include "gcn_programs.h"
 
@@ -134,8 +135,207 @@ static void refused_as(stage s, const uint32_t *code, size_t dwords, const char 
     CHECK(strstr(error, text) != NULL);
 }
 
+/* The rect-list geometry stage (runtime/rect_list.h) for some parameter and clip-distance counts:
+   modules spirv-val accepts; out-of-range counts are refused. */
+/* Images: the copy program translates with its two descriptors bound, the read one and the written
+   one found by gcn_image_resources; without a binding for one, translation stops naming it. */
+static void image_programs(void)
+{
+    gcn_image_resource found[GCN_MAX_IMAGES];
+    unsigned count = 0;
+    char error[300] = "";
+    CHECK(gcn_image_resources(PROGRAM(image_copy), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
+    CHECK(count == 2 && !found[0].origin.from_memory && found[0].origin.sgpr == 0 && found[0].access == GCN_IMAGE_READ &&
+          !found[1].origin.from_memory && found[1].origin.sgpr == 8 && found[1].access == GCN_IMAGE_WRITE);
+    const gcn_image_binding images[] = {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 0}, {{0, 8, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 0}};
+    gcn_compute_layout with_images = layout;
+    with_images.user_sgprs = 16, with_images.images = images, with_images.image_count = 2;
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    const int translated = gcn_translate_compute(PROGRAM(image_copy), &with_images, &spirv, &words, error, sizeof error);
+    if (translated) fprintf(stderr, "image_copy: %s\n", error);
+    CHECK(translated == 0);
+    if (spirv) {
+        CHECK(validate(spirv, words, "image_copy") != 0);
+        free(spirv);
+        spirv = NULL;
+    }
+    with_images.image_count = 1;
+    CHECK(gcn_translate_compute(PROGRAM(image_copy), &with_images, &spirv, &words, error, sizeof error) == -1 &&
+          strstr(error, "s[8:15] is not bound"));
+
+    /* Where each MIMG's descriptor comes from. A whole s_load_dwordx8 from a user-data pointer: from
+       memory, at the load's offset. Two uses of s[4:11], before and after such a load over it: two
+       images, the user data's and the loaded one. A scalar move into it, a compare's 64-bit result,
+       or a branch before the use: refused by name. */
+    static const uint32_t loaded[] = {0xc0c00904, 0xf0000f00, 0x00000401, 0xbf810000};   /* s_load_dwordx8 s[0:7], s[8:9], 4 */
+    static const uint32_t moved[] = {0xbe8c0380, 0xf0000f00, 0x00020401, 0xbf810000};    /* s_mov_b32 s12, 0 */
+    static const uint32_t compared[] = {0xd184000e, 0x00020300, 0xf0000f00, 0x00020401, 0xbf810000}; /* v_cmp_eq_u32_e64 s[14:15] */
+    static const uint32_t pointer_written[] = {0xbe880380, 0xc0c00904, 0xf0000f00, 0x00000401, 0xbf810000}; /* s_mov_b32 s8, 0 first */
+    static uint32_t branch_first[64];
+    branch_first[0] = 0xbf840000;                                                      /* s_cbranch_scc0 to the next instruction */
+    memcpy(branch_first + 1, pixel_two_images, sizeof pixel_two_images);
+    CHECK(gcn_image_resources(PROGRAM(loaded), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
+    CHECK(count == 1 && found[0].origin.from_memory && found[0].origin.sgpr == 0 && found[0].origin.pointer_sgpr == 8 &&
+          found[0].origin.offset == 16);
+    CHECK(gcn_image_resources(PROGRAM(pixel_two_images), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
+    CHECK(count == 2 && !found[0].origin.from_memory && found[0].origin.sgpr == 4 && found[1].origin.from_memory &&
+          found[1].origin.pointer_sgpr == 2 && found[1].origin.offset == 16);
+    CHECK(gcn_image_resources(PROGRAM(moved), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
+          strstr(error, "s[8:15] is written by the program (s_mov_b32"));
+    CHECK(gcn_image_resources(PROGRAM(compared), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
+          strstr(error, "v_cmp_eq_u32"));
+    CHECK(gcn_image_resources(PROGRAM(pointer_written), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
+          strstr(error, "loaded through s[8:9], which the program writes"));
+    CHECK(gcn_image_resources(branch_first, 1 + sizeof pixel_two_images / 4, found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
+          strstr(error, "s_cbranch_scc0"));
+    /* the two-image program translates with both bound, and stops naming the loaded one without it */
+    const gcn_image_binding two[] = {{{0, 4, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1}, {{1, 4, 2, 16}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1}};
+    gcn_pixel_layout both_images = pixel_layout;
+    both_images.user_sgprs = 12, both_images.images = two, both_images.image_count = 2, both_images.error_address = 0x1000;
+    const int two_translated = gcn_translate_pixel(PROGRAM(pixel_two_images), &both_images, &spirv, &words, error, sizeof error);
+    if (two_translated) fprintf(stderr, "pixel_two_images: %s\n", error);
+    CHECK(two_translated == 0);
+    if (spirv) {
+        CHECK(validate(spirv, words, "pixel_two_images") != 0);
+        free(spirv);
+        spirv = NULL;
+    }
+    both_images.image_count = 1;
+    CHECK(gcn_translate_pixel(PROGRAM(pixel_two_images), &both_images, &spirv, &words, error, sizeof error) == -1 &&
+          strstr(error, "(loaded from memory) is not bound"));
+
+    /* image_sample: the lookup program's sampler is found in the user data (s[12:15]) and its 1D array
+       loaded from memory; it translates and validates with both images and the sampler bound, and
+       stops naming the sampler without it. */
+    gcn_resource_origin samplers[GCN_MAX_SAMPLERS];
+    CHECK(gcn_sampler_resources(PROGRAM(pixel_lookup), samplers, GCN_MAX_SAMPLERS, &count, error, sizeof error) == 0);
+    CHECK(count == 1 && !samplers[0].from_memory && samplers[0].sgpr == 12);
+    const gcn_image_binding lookup_images[] = {{{0, 4, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1},
+                                               {{1, 0, 2, 0}, GCN_IMAGE_1D, 1, GCN_IMAGE_FLOAT, 1, 1}};
+    gcn_pixel_layout lookup = pixel_layout;
+    lookup.user_sgprs = 16, lookup.images = lookup_images, lookup.image_count = 2, lookup.samplers = samplers, lookup.sampler_count = 1;
+    lookup.error_address = 0x1000;
+    const int sampled = gcn_translate_pixel(PROGRAM(pixel_lookup), &lookup, &spirv, &words, error, sizeof error);
+    if (sampled) fprintf(stderr, "pixel_lookup: %s\n", error);
+    CHECK(sampled == 0);
+    if (spirv) {
+        CHECK(validate(spirv, words, "pixel_lookup") != 0);
+        CHECK(to_metal(spirv, words, "pixel_lookup") != 0);
+        free(spirv);
+        spirv = NULL;
+    }
+    lookup.sampler_count = 0;
+    CHECK(gcn_translate_pixel(PROGRAM(pixel_lookup), &lookup, &spirv, &words, error, sizeof error) == -1 &&
+          strstr(error, "sampler in s[12:15] is not bound"));
+    const gcn_image_binding flat[] = {{{0, 4, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1}, {{1, 0, 2, 0}, GCN_IMAGE_1D, 0, GCN_IMAGE_FLOAT, 1, 1}};
+    lookup.images = flat, lookup.sampler_count = 1;
+    CHECK(gcn_translate_pixel(PROGRAM(pixel_lookup), &lookup, &spirv, &words, error, sizeof error) == -1 && strstr(error, "DA 1"));
+
+    /* A pixel shader's image_load_mip from a sampled image (its range checked at run time, so only
+       with a stop word); a storage binding refuses image_load_mip. */
+    const gcn_image_binding texture[] = {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1}};
+    gcn_pixel_layout pixel = pixel_layout;
+    pixel.images = texture, pixel.image_count = 1, pixel.error_address = 0x1000;
+    const int fetched = gcn_translate_pixel(PROGRAM(pixel_image_texel), &pixel, &spirv, &words, error, sizeof error);
+    if (fetched) fprintf(stderr, "pixel_image_texel: %s\n", error);
+    CHECK(fetched == 0);
+    if (spirv) {
+        CHECK(validate(spirv, words, "pixel_image_texel") != 0);
+        CHECK(to_metal(spirv, words, "pixel_image_texel") != 0);
+        free(spirv);
+        spirv = NULL;
+    }
+    pixel.error_address = 0;
+    CHECK(gcn_translate_pixel(PROGRAM(pixel_image_texel), &pixel, &spirv, &words, error, sizeof error) == -1 &&
+          strstr(error, "run-time stop word"));
+    const gcn_image_binding storage[] = {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 0}};
+    pixel.images = storage, pixel.error_address = 0x1000;
+    CHECK(gcn_translate_pixel(PROGRAM(pixel_image_texel), &pixel, &spirv, &words, error, sizeof error) == -1 &&
+          strstr(error, "image_load_mip"));
+}
+
+/* Calls: gcn_call_sgpr finds the fetch-shader call's target pair; the program translates with the
+   callee inlined and validates; a callee that branches or returns through another pair, and a call
+   through a pair written first, stop by name. */
+static void calls(void)
+{
+    unsigned pair = 99;
+    char error[300] = "";
+    CHECK(gcn_call_sgpr(PROGRAM(vertex_calling_fetch), &pair, error, sizeof error) == 1 && pair == 0);
+    CHECK(gcn_call_sgpr(PROGRAM(vertex_position_color), &pair, error, sizeof error) == 0);
+    static const uint32_t written_first[] = {0xbe800380, 0xbe802100, 0xbf810000}; /* s_mov_b32 s0, 0 first */
+    CHECK(gcn_call_sgpr(PROGRAM(written_first), &pair, error, sizeof error) == -1 && strstr(error, "after s_mov_b32"));
+    gcn_vertex_layout layout = vertex_layout;
+    layout.callee = fetch_position_color, layout.callee_dwords = sizeof fetch_position_color / 4, layout.code_address = 0x1000;
+    layout.error_address = 0x2000;
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    const int translated = gcn_translate_vertex(PROGRAM(vertex_calling_fetch), &layout, &spirv, &words, error, sizeof error);
+    if (translated) fprintf(stderr, "vertex_calling_fetch: %s\n", error);
+    CHECK(translated == 0);
+    if (spirv) {
+        CHECK(validate(spirv, words, "vertex_calling_fetch") != 0);
+        free(spirv);
+        spirv = NULL;
+    }
+    static uint32_t branching[16], other_return[16];
+    memcpy(branching, fetch_position_color, sizeof fetch_position_color);
+    branching[2] = 0xbf840000;                            /* s_cbranch_scc0 for the s_waitcnt */
+    memcpy(other_return, fetch_position_color, sizeof fetch_position_color);
+    other_return[sizeof fetch_position_color / 4 - 1] = 0xbe802002; /* s_setpc_b64 s[2:3] */
+    layout.callee = branching;
+    CHECK(gcn_translate_vertex(PROGRAM(vertex_calling_fetch), &layout, &spirv, &words, error, sizeof error) == -1 && strstr(error, "s_cbranch_scc0"));
+    layout.callee = other_return;
+    CHECK(gcn_translate_vertex(PROGRAM(vertex_calling_fetch), &layout, &spirv, &words, error, sizeof error) == -1 && strstr(error, "returns through s[2:3]"));
+    layout.callee = NULL;
+    CHECK(gcn_translate_vertex(PROGRAM(vertex_calling_fetch), &layout, &spirv, &words, error, sizeof error) == -1 && strstr(error, "no callee"));
+}
+
+static void rect_list_stages(void)
+{
+    static const unsigned counts[][2] = {{0, 0}, {1, 0}, {4, 2}, {RT_RECT_LIST_MAX_PARAMETERS, RT_RECT_LIST_MAX_CLIP_DISTANCES}};
+    for (size_t i = 0; i < sizeof counts / sizeof *counts; i++) {
+        uint32_t *spirv = NULL;
+        size_t words = 0;
+        char name[64];
+        snprintf(name, sizeof name, "rect_list_%u_%u", counts[i][0], counts[i][1]);
+        CHECK(rt_rect_list_geometry(counts[i][0], counts[i][1], &spirv, &words) == 0 && spirv && spirv[0] == 0x07230203);
+        if (!spirv) continue;
+        const int valid = validate(spirv, words, name);
+        if (valid < 0) fprintf(stderr, "  %s: spirv-val not installed; validation skipped\n", name);
+        CHECK(valid != 0);
+        free(spirv);
+    }
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    CHECK(rt_rect_list_geometry(RT_RECT_LIST_MAX_PARAMETERS + 1, 0, &spirv, &words) == -1);
+    CHECK(rt_rect_list_geometry(0, RT_RECT_LIST_MAX_CLIP_DISTANCES + 1, &spirv, &words) == -1);
+}
+
+/* The user data a program reads before writing it, in program order: s_mov_b32 s5, s2; s_mov_b32 s2, 0;
+   s_mov_b32 s6, s2 reads s2 (only its first read is the user data's), and writes s5 and s6; the
+   starting registers' setup counts as neither. */
+static void user_data_read(void)
+{
+    static const uint32_t program[] = {0xbe850302, 0xbe820380, 0xbe860302, 0xbf810000};
+    gcn_compute_layout reporting = layout;
+    uint32_t read = ~0u;
+    reporting.user_data_read = &read;
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    char error[256] = "";
+    CHECK(gcn_translate_compute(program, sizeof program / sizeof *program, &reporting, &spirv, &words, error, sizeof error) == 0);
+    free(spirv);
+    CHECK(read == 1u << 2);
+}
+
 int main(void)
 {
+    rect_list_stages();
+    image_programs();
+    calls();
+    user_data_read();
     translates(PROGRAM(scale_add), "scale_add");
     translates(PROGRAM(integer_and_select), "integer_and_select");
     translates(PROGRAM(constants_and_modifiers), "constants_and_modifiers");
@@ -148,6 +348,8 @@ int main(void)
     translates(PROGRAM(pack_halves), "pack_halves");
     translates(PROGRAM(integer_batch), "integer_batch");
     translates(PROGRAM(scalar_batch), "scalar_batch");
+    translates(PROGRAM(vcc_halves), "vcc_halves");
+    translates(PROGRAM(whole_quad), "whole_quad");
     translates(PROGRAM(transcendentals), "transcendentals");
     translates_as(VERTEX, PROGRAM(vertex_position_color), "vertex_position_color");
     translates_as(PIXEL, PROGRAM(pixel_color), "pixel_color");

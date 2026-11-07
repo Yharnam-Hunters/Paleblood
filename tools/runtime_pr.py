@@ -21,7 +21,7 @@ import session_report
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-RUNTIME_TEST_FILES = {'test/test_syslib.c', 'test/test_plugin.c', 'test/test_host_hooks.c'}
+RUNTIME_TEST_FILES = {'test/test_syslib.c', 'test/syslib_test.h', 'test/test_plugin.c', 'test/test_host_hooks.c'}
 RUNTIME_CODE_SUFFIXES = {'.c', '.cc', '.cpp', '.h', '.hh', '.hpp', '.s', '.S'}
 RUNTIME_DOC_FILES = {
     'docs/runtime.md',
@@ -49,6 +49,9 @@ def is_runtime_code_path(path: str) -> bool:
     if path in RUNTIME_TEST_FILES:
         return True
     p = PurePosixPath(path)
+    # A system library's tests in their own file (test/syslib_test.h): C sources directly in test/syslib/.
+    if len(p.parts) == 3 and p.parts[:2] == ('test', 'syslib') and p.suffix == '.c':
+        return True
     return bool(p.parts) and p.parts[0] == 'runtime' and (
         p.suffix in RUNTIME_CODE_SUFFIXES or p.name in {'CMakeLists.txt', 'Kbuild'}
     )
