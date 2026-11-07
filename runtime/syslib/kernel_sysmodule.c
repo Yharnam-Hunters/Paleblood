@@ -6,7 +6,7 @@
    Declared stubs only change loaded state, without mapping a module. Their would-be
    imports remain unbound and stop by name. Early invalid-ID returns are established;
    duplicate loads, refcounts, delegated errors and non-stub loading remain unknown.
-   See docs/own-runtime-sysmodule-wire.md and docs/runtime-syscalls.md. */
+   See "Module loading at run time" in docs/runtime-syscalls.md. */
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
