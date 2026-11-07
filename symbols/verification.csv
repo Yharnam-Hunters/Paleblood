@@ -280,3 +280,7 @@ render_yebis_get_recursive_sample_parameters,edge,,23,23,0,0,6e6f0aa41d5607ce,20
 render_yebis_get_recursive_sample_parameters,edge,30,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,60,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,uncapped,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
+render_capture_present_buffer_pool_record,edge,,33,33,0,0,9ecd3b9bb6d9b9c4,2026-11-07
+render_emit_present_release_delegate,edge,,8,8,0,0,44c6a754b371f521,2026-11-07
+render_emit_present_release_packet,edge,,14,14,0,0,49b21387b8cdc24b,2026-11-07
+render_pop_present_buffer_pool,edge,,25,25,0,0,36601bdfbc50357a,2026-11-07

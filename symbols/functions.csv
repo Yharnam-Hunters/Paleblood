@@ -70,6 +70,7 @@ address,size,name,system,status,notes
 0x01476790,135,render_configure_screen_scissor,render,edge-verified,Write PA_SC_SCREEN_SCISSOR_TL/BR using the low 16 bits of each supplied coordinate. Packet stores may overlap the cursor; its final increment reads the stored value after those writes.
 0x01476980,93,render_emit_pa_cl_vte_cntl,render,edge-verified,Write PA_CL_VTE_CNTL viewport-transform enable/format bits after capacity admission.
 0x014769e0,93,render_emit_present_last_record_packet,render,edge-verified,Write DB_RENDER_CONTROL for the last-record path. Publish and return the captured cursor plus twelve bytes; return the full callback result on rejection.
+0x014778f0,204,render_emit_present_release_packet,render,edge-verified,"Emit EVENT_WRITE_EOP with by-value selectors, address and data; preserve the complete callback rejection result and final live cursor increment."
 0x01477b30,172,render_command_emit_counter_operation,render,edge-verified,"Emit the seven-word counter packet; callback admission uses its low byte, and the label range selects the masked encoding."
 0x014784a0,82,render_command_prepare_submission,render,edge-verified,Reserve 64 command words; callback admission uses its low byte before two marker stores and the cursor advance.
 0x01485070,16,render_set_present_last_record_depth_compress_disable,render,edge-verified,Replace DEPTH_COMPRESS_DISABLE in the saved DB_RENDER_CONTROL word using the input low bit. Return the old bits with that flag cleared.
@@ -158,7 +159,10 @@ address,size,name,system,status,notes
 0x02ab9850,374,render_flush_shader_preparation,render,edge-verified,"Flush the pending barrier/range before the event. Mode 0 keeps the range fields, and a suppressed state returns without touching either group of fields."
 0x02abaf10,78,render_record_derive_parameter,render,edge-verified,Derive numeric normalization code; flag priority and mode-dependent base.
 0x02abb4f0,31,render_record_auxiliary_predicate,render,edge-verified,"Return the auxiliary-processing predicate: selectors 0x13/0x14 enable it, 0x15/0x16 use flag bit 6, and all other selectors disable it."
+0x02abb6d0,48,render_emit_present_release_delegate,render,edge-verified,Forward address and data to the release writer with fixed flags and mode and a zero final selector.
 0x02ad2c30,120,render_reset_present_preparation_dirty,render,edge-verified,"Emit changed depth and stencil clear values, then cache their post-call values. Preserve the second writer's upper return bits while replacing its low word."
+0x02ad3b80,252,render_pop_present_buffer_pool,render,edge-verified,Scan pool entries using the original counter and compare/exchange calls; publish the counter before successful output.
+0x02ad3d40,35,render_capture_present_buffer_pool_record,render,edge-verified,"Return zero for a zero begin address; otherwise locate the containing pool record using wrapped subtraction, arithmetic shift and unsigned division remainder."
 0x02ad5dd0,27,render_swap_chain_present_mode,render,edge-verified,"Validates low DWORD mode; retains object, loads full source pointer at +0x33d0, forwards mode to lower submit Synthetic GCC/Clang edges pass; no recordings."
 0x02ad5e90,3005,render_setup_swap_chain,render,edge-verified,"Allocate and register swap-chain buffers, initialize cached resource data and tone curves, and retain partial publications on the corresponding failure paths."
 0x02ad6e50,499,render_swap_chain_submit,render,edge-verified,"Owned-thread flip polling, source binding and submission; every exit reloads the global guard pointer. Native GPU helper effects remain original Synthetic GCC/Clang edges pass; no recordings."
