@@ -174,6 +174,11 @@ def cases():
                           "argmem": [{"arg": 2, "size": 64}]})
     yield case
 
+    case = next(case for case in base_cases() if case["id"] == "allocation_failure_0_retry_0")
+    case["id"] = "snapshot_delegate_changes_live_cursor"
+    case["stubs"][-1]["writes"] = [{"arg": 1, "offset": 16, "pointer": "acquired+16", "size": 8}]
+    yield case
+
 
 def main():
     """Write deterministic synthetic cases to the requested directory."""

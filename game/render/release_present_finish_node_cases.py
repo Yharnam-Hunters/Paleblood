@@ -78,6 +78,17 @@ def cases():
     ]
     yield c
 
+    case = basic("command_slot_aliases_exchanged_head", size=256)
+    case["buffers"].update({"commands": {"size": 64}, "node": {"size": 64}})
+    case["args"].update({"rsi": "buf:self+152", "rdx": "buf:node"})
+    case["memory"] = [{"addr": "buf:self+152", "pointer": "commands"}]
+    case["stubs"] = [
+        {"address": "0x0247ebc0", "argc": 3, "ret": "buf:commands",
+         "writes": [{"arg": 0, "pointer": "node", "size": 8}]},
+        {"address": "0x014778f0", "argc": 8, "ret": 0},
+    ]
+    yield case
+
 
 def main():
     if len(sys.argv) != 2:
