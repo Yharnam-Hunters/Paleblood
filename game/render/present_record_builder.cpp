@@ -105,7 +105,7 @@ uint32_t build_short_mode_three(RecordConstructorPrefix *output, const BuilderPa
     const uint64_t packed = record_constructor(output, parameters.first, parameters.second, parameters.third,
         parameters.encoding, parameters.classification, first_selector, second_selector,
         &first_auxiliary, &second_auxiliary);
-    set_present_record_range(output, static_cast<uint32_t>(range_begin),
+    record_calls::set_present_record_range(output, static_cast<uint32_t>(range_begin),
         static_cast<uint32_t>(range_begin) + range_parameter - 1);
     record_store_base_address(output, static_cast<uint32_t>(base >> address_shift));
     const uint32_t first_unit = static_cast<uint32_t>(first_auxiliary >> packed_shift);
@@ -207,7 +207,7 @@ uint32_t build_general(RecordConstructorPrefix *output, const BuilderParameters 
     quotient = engine::divide_u64(quotient, scale).quotient;
     set_present_record_pitch_tile_max(output, (geometry.first_00.get() >> component_shift) - 1);
     set_present_record_slice_tile_max(output, static_cast<uint32_t>(quotient >> area_shift) - 1);
-    set_present_record_range(output, static_cast<uint32_t>(range_begin),
+    record_calls::set_present_record_range(output, static_cast<uint32_t>(range_begin),
         static_cast<uint32_t>(range_begin) + range_parameter - 1);
 
     uint64_t offset = 0;

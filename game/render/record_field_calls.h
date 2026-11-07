@@ -4,10 +4,9 @@
 // the named flag bit, so they deliberately do not normalize the byte to bool.
 #pragma once
 #include "record_constructor_layout.h"
+#include "present_record_range_call.h"
 #include "runtime/original.h"
 namespace render {
-RT_ORIGINAL(0x01486520, set_present_record_range,
-            uint32_t(RecordConstructorPrefix *record, uint32_t first, uint32_t second));
 RT_ORIGINAL(0x014866e0, set_present_record_pitch_tile_max,
             uint32_t(RecordConstructorPrefix *record, uint32_t value));
 RT_ORIGINAL(0x01486710, set_present_record_slice_tile_max,
