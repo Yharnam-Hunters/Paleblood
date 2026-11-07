@@ -62,6 +62,7 @@ address,size,name,system,status,notes
 0x01473650,116,render_set_screen_offset,render,edge-verified,Write the observed masked X/Y fields of PA_SU_HARDWARE_SCREEN_OFFSET.
 0x014736d0,124,render_set_guard_band_clip_adjust,render,edge-verified,Write vertical then horizontal guard-band clip adjustments as unchanged float bit patterns. Capture both float representations before the capacity callback and publish from the captured cursor.
 0x01473750,124,render_set_guard_band_discard_adjust,render,edge-verified,Write vertical then horizontal guard-band discard adjustments as unchanged float bit patterns. Capture both float representations before the capacity callback and publish from the captured cursor.
+0x01473840,104,render_present_slot_emit,render,edge-verified,Write the selected color target's two clear-word registers. Prefix stores precede an aliased input read; the final increment uses the live stored cursor.
 0x01473fe0,90,render_set_vgt_primitive_type,render,edge-verified,Write the low six primitive-type bits to VGT_PRIMITIVE_TYPE.
 0x014741b0,156,render_emit_draw_index_auto,render,edge-verified,Emit DRAW_INDEX_AUTO and a query-selected THREAD_TRACE_MARKER event or NOP. Reload flags and cursor after overlapping packet stores before selecting and publishing the trailing packet.
 0x01475370,76,render_emit_num_instances,render,edge-verified,Emit NUM_INSTANCES with the complete supplied instance count.
@@ -144,6 +145,8 @@ address,size,name,system,status,notes
 0x024512a0,78,frame_timing_task_frame_024512a0,frame_timing,verified,"task manager frame entry from the frame step: FD4TaskManager singleton, then 0x01388c60"
 0x0247eb80,16,render_read_present_pool_counter,render,edge-verified,"full-QWORD locked read/writeback retry, XOR before each attempt; caller adds one. Real AMD64 write cycles retained; non-AMD64 bridge unresolved Synthetic edges pass; no recordings."
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
+0x02564ed0,25,render_present_encoding_units,render,edge-verified,Return the full 64-bit entry for wrapped encoding minus one when its index is below 99; otherwise return zero.
+0x02565130,30,render_present_record_bit_width,render,edge-verified,Return the bit width of the OR of three 32-bit inputs. All-zero input returns zero; the presentation fallback passes one as the third input.
 0x02571c60,47,render_clear_swap_chain_curve,render,edge-verified,Release the swap-chain curve resource through its owner; clear only the resource after the callback.
 0x02572290,47,render_clear_swap_chain_cached_record,render,edge-verified,Release the swap-chain cached-record resource through its owner; clear only the resource after the callback.
 0x025b2fb0,768,render_swap_chain_present,render,verified,"GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0)"
@@ -158,6 +161,8 @@ address,size,name,system,status,notes
 0x02ab9850,374,render_flush_shader_preparation,render,edge-verified,"Flush the pending barrier/range before the event. Mode 0 keeps the range fields, and a suppressed state returns without touching either group of fields."
 0x02abaf10,78,render_record_derive_parameter,render,edge-verified,Derive numeric normalization code; flag priority and mode-dependent base.
 0x02abb4f0,31,render_record_auxiliary_predicate,render,edge-verified,"Return the auxiliary-processing predicate: selectors 0x13/0x14 enable it, 0x15/0x16 use flag bit 6, and all other selectors disable it."
+0x02ad1eb0,194,render_present_source_prepare,render,edge-verified,Flush source state and select an explicit or derived record count. Stop at the first builder error; reload the source parameter before consuming each successful record.
+0x02ad1f80,385,render_present_source_flush_state,render,edge-verified,"Emit dirty non-null slots from the selected bank. Keep count and flags cached on skips; reload the pending value, flags and slot count after each emission."
 0x02ad2c30,120,render_reset_present_preparation_dirty,render,edge-verified,"Emit changed depth and stencil clear values, then cache their post-call values. Preserve the second writer's upper return bits while replacing its low word."
 0x02ad5dd0,27,render_swap_chain_present_mode,render,edge-verified,"Validates low DWORD mode; retains object, loads full source pointer at +0x33d0, forwards mode to lower submit Synthetic GCC/Clang edges pass; no recordings."
 0x02ad5e90,3005,render_setup_swap_chain,render,edge-verified,"Allocate and register swap-chain buffers, initialize cached resource data and tone curves, and retain partial publications on the corresponding failure paths."
