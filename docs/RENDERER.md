@@ -72,6 +72,73 @@ Instead:
        arithmetic (including GCN's legacy multiply, where zero times anything is zero),
        conversions that saturate as GCN's do, compares and selects, integer carries, scalar
        arithmetic, and buffer and constant loads and stores.
+     - **VCC's halves:** a scalar write of `VCC_LO` or `VCC_HI` (s106, s107) gives the 32 lanes of
+       that half of the wave their bits of the value. VCC is kept as each lane's bit, and a compute
+       lane's place in its wave is its flat index in the workgroup mod 64 (x fastest), so this is
+       exact in compute shaders; other stages stop by name, as does reading VCC as a scalar.
+     - **VCC outside compute shaders:** a lane has no known place in the wave there, so a scalar
+       write of VCC's halves leaves each lane's VCC bit unknown until a vector write sets it; reading
+       VCC as a lane mask while unknown is a run-time stop. The game's vertex shaders write `vcc_hi`
+       before vector adds overwrite VCC, so they translate.
+     - **Whole quad mode** (`s_wqm_b64`): a lane's bit is set when any lane of its quad has it,
+       with Vulkan's quad swaps (the same 2x2 pixel quads in a pixel shader, consecutive lanes in
+       compute); SCC is "any lane set". Every invocation, helpers included, starts with EXEC set.
+     - **Pixel position inputs** (`SPI_PS_INPUT` bits 8 and 9): x and y at the pixel's centre from
+       `FragCoord`. The executor places each pixel input in bit order of `SPI_PS_INPUT_ADDR` with
+       AMD's sizes (2 VGPRs per barycentric pair, 3 for the pull model, 1 for the rest), as AMD's
+       register documentation and LLVM's AMDGPU backend have it.
+     - **Run-time stops:** some of what a shader does is known only when it runs (a buffer access's
+       data format is its descriptor's). The executor owns a 32-bit stop word whose GPU address is
+       baked into every translation (`error_address`); a shader meeting a case it cannot do exactly
+       writes a code there and skips the access, and the executor checks the word after each
+       dispatch and draw and stops by name (`GCN_RUNTIME_STOP_*`).
+     - **Format buffer accesses** (`buffer_load/store_format_*`): loads from 8_8_8_8 unorm (each byte
+       v / 255, correctly rounded); whole 32-bit components (uint,
+       sint, float; the format's components in place, as a store only uses their selectors) move as they are, and a four-component store to 8_8_8_8 unorm
+       undoes the descriptor's swizzle (shadPS4's rule: the inverse of a load's) and packs as GLSL's
+       `packUnorm4x8` (the PS4's rounding of ties is not established). Anything else is a run-time stop.
+     - **Format loads with a swizzle:** a load of whole 32-bit components reads the format's
+       components (the ones it lacks read 0), then each result takes what its DST_SEL names: 0, 1
+       (1.0 for float data) or a memory component, as shadPS4 reads them.
+     - **Images (MIMG `image_load`, `image_store`):** a shader names an image by the SGPRs holding
+       its 8-word descriptor. `gcn_image_resources` lists them; the caller reads each descriptor
+       (`rt_image_descriptor_decode`, the Sea Islands manual's T# layout as shadPS4's `resource.h`
+       has it) and binds a storage image (set 0, binding i) whose shape the translation uses. Stores
+       must cover every component the format has; data components past them are dropped.
+     - **Pixel shaders read images** (`image_load`, `image_load_mip`) as sampled images (Vulkan's
+       `SAMPLED_IMAGE`, `OpImageFetch` at the level given), so the view applies the descriptor's
+       DST_SEL. A texel outside the image or a level past its last is a run-time stop
+       (`GCN_RUNTIME_STOP_IMAGE_RANGE`): what the GPU returns there is not established.
+     - **`image_sample`** with the sampler (S#) its SSAMP SGPRs name, found like image descriptors and
+       bound after the images (set 0, `VK_DESCRIPTOR_TYPE_SAMPLER`): sampled at level 0
+       (`OpImageSampleExplicitLod`). GCN picks the level from the coordinates' derivatives; level 0
+       is what it picks too when the image has one level and the sampler's minifying and magnifying
+       filters agree, which the executor requires. The executor makes a Vulkan sampler from the S#
+       (the Sea Islands manual's layout, as shadPS4's `resource.h` names its fields): wrap, mirror
+       and clamp to the last texel; point or bilinear filtering. Anisotropy, depth compares,
+       unnormalized coordinates, border and mirror-once modes and the truncation options stop by
+       name, as does bilinear sampling of a format the device cannot filter. Filtering precision is
+       the host GPU's.
+     - **Descriptors from memory:** each MIMG instruction's descriptor is found from the code before
+       it (`gcn_resource_origin`): the user data's when nothing writes its SGPRs first, or loaded
+       from memory when the last write is a whole `s_load_dwordx8` at an immediate offset from a
+       user-data pointer pair that nothing writes. The executor reads such a descriptor from guest
+       memory when the draw runs. The same SGPRs can name different images at different
+       instructions: the game's fullscreen pass reads the user data's image, then loads another
+       descriptor over it. Followed only through code that runs straight to the instruction (no
+       branch before it, none back to it); any other write (a scalar move, a compare's result, a
+       written pointer) stops by name.
+     - **Tiled layouts** (`runtime/tiling.h`): where each texel of an image lies in guest memory, for
+       reading images the CPU or a shader's buffer stores wrote. AMD's address library (addrlib, in
+       Mesa) gives the formulas; the PS4's tile-mode and macro-tile-mode values are those shadPS4's
+       `tiling.cpp` lists (8 pipes, P8_32x32_16x16, a 256-byte pipe interleave, no bank swizzle on the
+       base PS4). Done: linear (tiling indices 8, 31), 1D thin (9, 13) and 2D thin (10, 14), one
+       sample, 1 to 16 bytes per element; others are refused by name. `test/test_tiling.c` checks
+       offsets worked out by hand, mutated layouts that must miss them, shadPS4's table of macro-tile
+       sizes, and that every layout is a permutation of the image's bytes.
+     - **Descriptor base addresses are 40 bits** (word 1's bits 0-7; the Sea Islands manual's Table
+       8.5 as shadPS4's `resource.h` lays it out). The game sets word 1's bits 8-15, which the
+       translator used to take as address bits, sending the GPU outside guest memory.
      - **Typed buffer loads and stores** (`tbuffer_load_format_*`, `tbuffer_store_format_*`):
        the format is in the instruction. The game uses only 32-bit float data (one to four
        components, as many as the access names), which moves whole dwords with no conversion, so
@@ -105,8 +172,15 @@ Instead:
          `v_interp_mov` and other pixel inputs stop translation.
        - **Matching the stages:** parameter n of the vertex shader feeds attribute n of the pixel
          shader. The console maps them through GPU settings; the engine hooks will set that up.
-     - **Not yet:** anything else stops with the instruction's name. Texture sampling and calls
-       (`s_swappc`, used for fetch shaders) come next. Three groups need designs of their own:
+     - **Calls to fetch shaders** (`s_swappc_b64`): the game's vertex shaders call a fetch shader at
+       the address in a user-data SGPR pair, which loads the vertex inputs and returns with
+       `s_setpc_b64`. The executor reads that address at draw time (`gcn_call_sgpr` names the pair:
+       user data untouched before the call, one call) and the translator inlines the callee in place
+       of the call, the return pair taking the return address. That is exactly what the call runs
+       when the callee is straight-line code ending in that return, which it checks; a callee with a
+       branch, an image instruction or a write to the return pair stops by name. Descriptor analyses
+       take a call as writing every SGPR.
+     - **Not yet:** anything else stops with the instruction's name. Three groups need designs of their own:
        - **geometry shaders**, which pass vertices on with `s_sendmsg` (about 1,700 of the
          game's shaders);
        - the GPU's on-chip shared memory (`ds_*`);
@@ -212,8 +286,13 @@ Instead:
          and `v1`.
        - The inputs: 1,678 use only those barycentrics; 1,111 add the front-face flag; nine
          also read the pixel position.
-     - **Still to confirm at run time:** that the game passes these same blocks to
-       `sceGnmSetVsShader` and `sceGnmSetPsShader`, with the code's address filled in.
+     - **Confirmed at run time** (6 November 2026): the game passes these same blocks to
+       `sceGnmSetVsShader` and `sceGnmSetPsShader`, with the code's address filled in. Those
+       calls are the runtime's own, so they hand the renderer the shader directly: placed at the
+       command-buffer address they write to, it joins the calls of the buffer submitted with that
+       address (`rt_render_record_*_shader_at`). The game's vertex shaders pass a fetch-shader
+       modifier, which replaces `PGM_RSRC1`'s SGPR and input-VGPR counts. A null pixel shader
+       (a depth-only pass) is recorded too, and a draw with it stops by name.
    - **How the hooks attach:** the library's functions are being decompiled like the rest of the
      game, as replacements verified to write exactly the original packets. The renderer leaves
      those packets alone, so verification still holds. Each of these replacements also makes one
@@ -224,7 +303,18 @@ Instead:
      now. Without the renderer the observer calls do nothing, so a boot without graphics behaves
      as before.
    - **Done on the runtime side:** the call record (`runtime/render_calls.h`): render targets,
-     viewports, shader register blocks, user data and draws per command buffer.
+     viewports, shader register blocks, user data and draws per command buffer, plus any context or
+     user config register the library sets (`rt_render_record_register`: blend, depth and stencil
+     control, colour control, the target mask, the primitive type) and the instance count. The
+     executor understands those registers and, at each draw, stops by name on what it does not
+     draw yet: depth or stencil testing, primitives other than triangle lists, colour modes other
+     than a normal copy, partial write masks, more than one instance, and any register it does not
+     interpret. A draw with target 0 masked off writes nothing and is skipped.
+     - **Blending** (`CB_BLEND0_CONTROL`, with `CB_BLEND_RED`-`ALPHA` as Vulkan's blend constants):
+       AMD's factor and function numbers (Mesa's `sid.h`, shadPS4's `regs_color.h`) map one to one
+       onto Vulkan's; without `SEPARATE_ALPHA_BLEND` alpha uses the colour's. Dual-source factors
+       stop by name. Targets 1-7's blend controls are kept out of the draw while their slots are
+       off (an enabled slot beyond 0 stops the draw anyway).
    - **The draw executor** (being built): it runs a submitted buffer's recorded calls on the GPU.
      1. **Guest memory on the GPU.** Shaders reach memory through guest addresses: buffer
         descriptors and pointers in their user data. The game's GPU-visible memory is direct
@@ -258,7 +348,74 @@ Instead:
         - **What runs today:** COLOR_8_8_8_8 render targets in slot 0 (UNORM or sRGB, either
           component order), viewport 0, vertex and pixel shaders with their user data, and
           auto-index draws as triangle lists.
-        - **Not yet:** blending and depth (their setters aren't recorded yet), other formats, more
+        - **Rect lists** (primitive type 17, which the game's fullscreen passes use): Vulkan has no
+          such primitive, so each rect's three vertices go through a generated geometry stage
+          (`runtime/rect_list.h`) that adds the fourth corner. The right-angle vertex is the one
+          whose x matches one neighbour's and y the other's, and the fourth corner is the other two
+          minus it, for the position and every output (shadPS4's rule, facts only). A device
+          without geometry shaders stops by name at a rect list; Metal will need another route.
+        - **State across buffers:** the GPU keeps its registers, user data and shaders from one
+          submitted buffer to the next (no submission resets them), so the executor keeps the state
+          the calls set across runs too. The game's command buffers continue into new blocks as they
+          fill (a buffer that sets a compute shader at its end, the next one dispatching it).
+          `rt_executor_reset` forgets it, for tests' independent cases.
+        - **Render targets keep their memory:** a render target's guest memory stays its contents,
+          laid out by its tile mode (`runtime/tiling.h`): its image is loaded from the memory before a
+          draw when the memory may have changed since (at each buffer, as the CPU runs between
+          submissions, and after each dispatch, whose stores may reach it), and written back once drawn
+          into, before anything reads the memory (a dispatch, a draw's images, the end of the buffer).
+          So a pass can read what an earlier one drew as an image, and draws build on what a compute
+          clear stored. The game's logo pass draws, blended, into the image its compute clear filled,
+          which the fullscreen pass then reads. Detiling and tiling go a micro tile at a time (checked
+          against the per-texel offsets for every mode and element size).
+        - **Moving targets only when needed:** a target is written back before a dispatch, at the end of
+          each buffer, and before a draw reads an image overlapping it, not after every draw: a draw's
+          colour writes reach memory on the console too only when the game flushes the colour caches
+          before reading. A load is skipped when the guest memory still holds exactly what the image and
+          it last agreed on (a copy of those bytes kept per target and per loaded image); a texture
+          the guest has not changed is not loaded again either. Staging buffers are kept per target
+          (host-cached memory where the device has it: the CPU tiles from them and the display reads
+          them), so showing a frame copies from the target's last write-back instead of the GPU. With
+          these the boot's frames went from 66 to about 1,440 in 90 s (RTX 3070), which reaches the
+          title screen.
+        - **Unset user data stops:** the translator reports the user SGPRs a program reads before it
+          writes them (in program order), and the executor tracks the slots the calls have set since
+          the GPU's reset. A shader reading a slot no call has set, or a descriptor or descriptor
+          pointer in such slots, stops by name instead of running on zeros (a null descriptor can
+          lose the device).
+        - **The logo pass's inputs:** its vertex shaders' user data come through a further writer,
+          `0x014764a0` (command buffer, stage, slot, words, count; after the NOP marker `0x6875000d`),
+          now observed; their fetch shaders load vertex colours from 8_8_8_8 unorm buffers, each byte as
+          v / 255 correctly rounded (a table worked out in single precision, since a shader's division
+          need not be exact), with the descriptor's DST_SEL; its textures are block-compressed (BC7),
+          loaded in 4 x 4 blocks (pitch, width and height counted in blocks, as shadPS4 counts them) as
+          Vulkan's BC formats: BC1 (with its one-bit alpha), BC2, BC3, BC7 unorm and sRGB, BC4 and BC5
+          unorm and snorm; BC6 stops by name. The title screen adds an 8-bit unorm image (DATA_FORMAT
+          1, its glyph atlas, linear aligned), loaded as R8.
+        - **Indexed draws:** `INDEX_BASE` (`0x014752c0`), `INDEX_BUFFER_SIZE` (`0x01475320`),
+          `INDEX_TYPE` (`0x01475270`) and `DRAW_INDEX_OFFSET_2` (`0x01474420`) are observed and
+          recorded; the draw binds the guest memory buffer as Vulkan's index buffer from the base plus
+          the first index, 16- or 32-bit indices (VGT_INDEX_TYPE; swaps stop by name). The packet's
+          `MAX_SIZE`, which the library sets to the count, is taken as counting from `INDEX_OFFSET`, as
+          shadPS4 reads it and the game's draws need (they start past it): inferred, not documented.
+          The game's logo pass draws this way, blended, into the image its fullscreen pass then reads.
+        - **Depth targets:** the depth target's setter (`0x014739b0`, observed)
+          reports the registers it writes (`DB_Z_INFO` to `DB_DEPTH_SLICE`, `DB_DEPTH_VIEW`, ...), the
+          stencil reference setters (`0x01473190`, `0x014731f0`) `DB_STENCILREFMASK` and `_BF`, and the
+          replacements writing `DB_RENDER_CONTROL`, `DB_DEPTH_CLEAR` and `DB_STENCIL_CLEAR` report
+          theirs. A draw that tests depth or stencil with a buffer bound gets an executor-owned depth
+          image (Z_16 or Z_32_FLOAT, with or without 8-bit stencil, found by its write addresses and
+          sized from `DB_DEPTH_SIZE`) and Vulkan depth and stencil state; with none bound (format 0,
+          as switching the target off writes) the test has nothing to work on and the draw goes on
+          as if it were off (shadPS4 takes it the same way). Compare functions are AMD's CompareFrag
+          order, which is Vulkan's. Done: tests that do not read the buffer (always, never) and
+          writes (depth writes; stencil keep, zero, replace with the test value). Reading the buffer,
+          other stencil operations, depth bounds and `DB_RENDER_CONTROL`'s clears stop by name, so
+          the depth image's starting contents (and the HTILE metadata the game may clear it with)
+          are never seen. A draw that writes only the depth target (target mask 0, or
+          `CB_COLOR_CONTROL`'s mode `CB_DISABLE`) draws without a colour target; one that writes
+          nothing is skipped. Triangle strips (`VGT_PRIMITIVE_TYPE` 6) are drawn too.
+        - **Not yet:** other formats, more
           render targets and other pixel inputs. These stop with the reason.
         - **The image's memory order:** an image's pixels only leave the GPU through
           `rt_executor_read_target`, which gives the display's BGRA either way. So nothing yet shows
@@ -278,9 +435,43 @@ Instead:
         change which thread reaches its first unimplemented call first if it happened at every
         boot. Until the library's replacements record calls, boots are unchanged in every display
         mode.
-     5. **The observer calls** in the library's replacements, once those are merged; then
-        follow the auto-index draw wrapper's callers (`0x015fbb50`) up to the title screen's
-        2D passes.
+     5. **The observer calls** in the library's replacements (begun). Replacements call
+        `runtime/render_observer.h`, which finds the record in the boot harness (`pbboot` exports it)
+        and does nothing under a host without it, so the replacements' verification is unchanged.
+        The register setters (blend, colour control, target mask, depth and stencil control, the
+        primitive type), the instance count, the viewport and the auto-index draw report now.
+        `tools/boot.py --game-lib build/game/libbbgame.so --no-record` runs a boot with the
+        replacements, and with the display on the game's first draw reaches the executor: a
+        fullscreen pass drawn as a rect list (primitive type 17), which stops by name until the
+        executor draws rect lists. **Observe hooks** (`runtime/observe_hooks.h`) report what has no replacement yet:
+        the hook calls an observer with the call's arguments, then the original runs from its
+        first instructions relocated next to the image, so every packet is still the original's.
+        A replacement, when one lands, takes the address and its observe hook is dropped. They
+        cover `setRenderTarget` (`0x014738b0`) and the five user-data writers (`0x01476420`
+        one word, `0x01476390` two, `0x014761a0` and `0x014762f0` four, `0x01476240` eight),
+        whose arguments come from their disassembly (`game/render/observe_gpu_library.c`). With
+        them the game's frame reaches its compute passes' user data, which stops by name until the
+        executor runs compute. **Compute** runs too: `sceGnmSetCsShader` hands the renderer
+        its 7-word register block (`COMPUTE_PGM_LO/HI`, `RSRC1/2`, `NUM_THREAD_X/Y/Z`, the order
+        shadPS4's `gnmdriver.cpp` writes them), placed like the other shaders; the dispatch writers
+        `0x01474c50` and `0x0148a350` (command buffer, x, y, z) are observed; and the executor
+        translates the shader for its workgroup size and runs the dispatch, its writes in the guest
+        memory before the next call. A workgroup's y or z index and its size information stop by
+        name. The two dispatch writers with a fifth argument (`0x01474d10`, `0x0148a410`) are not
+        observed yet. Compute shaders' **images** are executor-owned Vulkan images
+        found by their descriptor's address and shape: an image the GPU writes stays there and is
+        never tiled back into guest memory; a new image whose first use writes it starts cleared.
+        An image no shader has written holds the guest memory's texels, detiled with
+        `runtime/tiling.h` and loaded again at a use that reads it when the guest memory changed since
+        (the CPU or a buffer store may have changed them); one that is also a render target stops by name. Pixel shaders' images
+        are found the same way and bound as sampled images. Formats: 32 (float, uint, sint), 32_32 and 32_32_32_32 float, 8_8_8_8
+        unorm, 8 unorm; 1D and 2D images and their arrays, one level, a view of any of an array's layers
+        (slices count from `BASE_ARRAY`, as shadPS4 and Mesa's radeonsi have it), DST_SEL in place.
+        On the game, all of the boot's compute passes now run (two clears and a buffer-to-image
+        copy into a 3-layer 1D array), and the next stop is a draw whose pixel shader reads the
+        pixel position.
+        Still to report: indexed draws; then follow the auto-index draw wrapper's callers
+        (`0x015fbb50`) up to the title screen's 2D passes.
 4. **Textures and 3D.** The game's texture formats and tiling (from public format documentation),
    meshes, materials and post-processing.
 

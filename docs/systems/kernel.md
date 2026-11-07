@@ -97,9 +97,12 @@ some thread and timing calls itself. Two rules run through them:
 - The SCE names and the POSIX names of the same call differ in their errors: the POSIX names
   return the FreeBSD error number, where the SCE names return `0x80020000` plus it.
 
-The current boot stop, `scePthreadAttrGetaffinity`, remains unimplemented until the main thread's
-real affinity mask is established. None of these changes has been verified by a new Bloodborne
-boot.
+The former boot stop, `scePthreadAttrGetaffinity`, is no longer reached: since Paleblood #207 the
+bundled C library's probe that called it returns at once. The boots recorded on merged `main` since
+then pass through these thread calls, and since [#408](https://github.com/Yharnam-Hunters/Paleblood/pull/408) no system call stops the boot at
+all. Later thread work includes ending a thread early with `scePthreadExit` ([#389](https://github.com/Yharnam-Hunters/Paleblood/pull/389)) and
+semaphores that wake their waiters by thread priority ([#426](https://github.com/Yharnam-Hunters/Paleblood/pull/426)); the
+runtime system-call notes explain them.
 
 <details>
 <summary>What each runtime change implements (PRs #62, #72, #81, #94, #95, #97)</summary>
