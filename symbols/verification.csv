@@ -280,5 +280,5 @@ render_yebis_get_recursive_sample_parameters,edge,,23,23,0,0,6e6f0aa41d5607ce,20
 render_yebis_get_recursive_sample_parameters,edge,30,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,60,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,uncapped,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
-render_build_shader_link_words,edge,,30,30,0,0,70306c1bce3aac9e,2026-11-05
-render_emit_shader_link_words,edge,,23,23,0,0,23306e6191575d2f,2026-11-05
+render_build_shader_link_words,edge,,30,30,0,0,0179f06c079fc316,2026-11-07
+render_emit_shader_link_words,edge,,23,23,0,0,b26629b2274dd99e,2026-11-07
