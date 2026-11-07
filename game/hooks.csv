@@ -143,6 +143,7 @@ address,replacement,system,returns
 0x024512a0,bb_frame_timing_task_frame_024512a0,frame_timing,void
 0x0247eb80,bb_render_read_present_pool_counter,render,i64
 0x02483e80,bb_kernel_condition_wait,kernel,i32
+0x0256e1d0,bb_render_build_present_source_record,render,i32
 0x02571c60,bb_render_clear_swap_chain_curve,render,void
 0x02572290,bb_render_clear_swap_chain_cached_record,render,void
 0x025b2fb0,bb_render_swap_chain_present,render,void
@@ -153,6 +154,9 @@ address,replacement,system,returns
 0x02ab0e30,bb_render_command_submit_snapshot,render,void
 0x02ab5a70,bb_render_present_record_consume,render,void
 0x02ab6810,bb_render_present_last_record_consume,render,void
+0x02ab7a20,bb_render_choose_record_constructor_selector,render,i32
+0x02ab7ab0,bb_render_combine_record_parameters,render,i32
+0x02ab7e40,bb_render_reduce_record_parameter,render,i32
 0x02ab9850,bb_render_flush_shader_preparation,render,void
 0x02abaf10,bb_render_record_derive_parameter,render,i32
 0x02abb4f0,bb_render_record_auxiliary_predicate,render,i8
