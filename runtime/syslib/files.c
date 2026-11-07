@@ -41,7 +41,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-enum { BSD_ENOENT = 2, BSD_EBADF = 9, BSD_ENOTDIR = 20, BSD_EINVAL = 22, BSD_EROFS = 30 };
+enum { BSD_ENOENT = 2, BSD_EBADF = 9, BSD_EXDEV = 18, BSD_ENOTDIR = 20, BSD_EINVAL = 22, BSD_EROFS = 30 };
 #define SCE_KERNEL_ERROR(e) ((int32_t)(0x80020000u + (unsigned)(e)))
 #define APP0 "/app0"
 #define DATA "/data"
@@ -116,9 +116,10 @@ static int under(const char *guest, const char *mount_point)
     return !strncmp(guest, mount_point, n) && (!guest[n] || guest[n] == '/');
 }
 
-/* The host path for a guest path under /app0 or /data, and which mount it is on; any other path
-   stops by name. */
-static mount host_path(const char *caller, const char *guest, char *out, size_t size)
+/* The host path for a guest path under /app0, /data or a run-time mount, and which mount it is on
+   (its mount point too, when point is not NULL); any other path stops by name. */
+static mount host_path_on(const char *caller, const char *guest, char *out, size_t size,
+                          char point[RT_MOUNT_POINT_BYTES])
 {
     if (!guest) rt_fatal(caller, "no path: the error value is not established");
     mount on;
@@ -152,7 +153,13 @@ static mount host_path(const char *caller, const char *guest, char *out, size_t 
         if (p[3] == '/' || !p[3]) rt_fatal(caller, "a path with a \"..\" component, which could leave its mount");
     if ((size_t)snprintf(out, size, "%s%s", host_dir, guest + prefix) >= size)
         rt_fatal(caller, "a path longer than the runtime's buffer");
+    if (point) memcpy(point, mount_point, RT_MOUNT_POINT_BYTES);
     return on;
+}
+
+static mount host_path(const char *caller, const char *guest, char *out, size_t size)
+{
+    return host_path_on(caller, guest, out, size, NULL);
 }
 
 int rt_host_path(const char *caller, const char *guest, char *out, size_t size)
@@ -391,6 +398,42 @@ static int64_t kernel_pwrite(int32_t fd, const void *buffer, uint64_t size, int6
     return write_result(fn, pwrite(h, buffer, size, offset));
 }
 
+/* sceKernelFtruncate(fd, length): FreeBSD's ftruncate(2) (the OpenOrbis homebrew SDK's libkernel.h
+   declares the shape), 0 or an SCE code. The executable's file object (0x02473290) cuts its file at
+   its current position, while the title creates its save data. FreeBSD's truncate(2) documents EBADF for a descriptor that is not valid, and
+   EINVAL for a negative length or a file opened without write permission (Linux answers EINVAL for
+   both too). Other host errors are not established and stop by name. */
+static int32_t kernel_ftruncate(int32_t fd, int64_t length)
+{
+    const int h = host_of(fd);
+    if (h < 0) return SCE_KERNEL_ERROR(BSD_EBADF);
+    if (length < 0) return SCE_KERNEL_ERROR(BSD_EINVAL);
+    if (!ftruncate(h, (off_t)length)) return 0;
+    if (errno == EINVAL || errno == EBADF) return SCE_KERNEL_ERROR(BSD_EINVAL); /* not open for writing */
+    rt_fatal("sceKernelFtruncate", "a host error without an established answer");
+}
+
+/* sceKernelRename(from, to): FreeBSD's rename(2) under its SCE name (the OpenOrbis homebrew SDK's
+   libkernel.h declares the shape), 0 or an SCE code. The title renames a file while it creates its
+   save data (the call at 0x02474a85). rename(2) replaces an existing `to`; it answers EXDEV when the
+   two are on different file systems (here: different mounts) and EROFS on a read-only one. A missing
+   file or directory component is ENOENT or ENOTDIR. Other host errors stop by name. */
+static int32_t kernel_rename(const char *from, const char *to)
+{
+    static const char fn[] = "sceKernelRename";
+    char host_from[4096], host_to[4096], point_from[RT_MOUNT_POINT_BYTES], point_to[RT_MOUNT_POINT_BYTES];
+    const mount from_on = host_path_on(fn, from, host_from, sizeof host_from, point_from);
+    const mount to_on = host_path_on(fn, to, host_to, sizeof host_to, point_to);
+    if (strcmp(point_from, point_to)) return SCE_KERNEL_ERROR(BSD_EXDEV);
+    if (from_on == MOUNT_READ_ONLY || to_on == MOUNT_READ_ONLY) {
+        struct stat st; /* the lookup first, as for an open */
+        if (stat(host_from, &st)) return lookup_error(fn);
+        return SCE_KERNEL_ERROR(BSD_EROFS);
+    }
+    if (!rename(host_from, host_to)) return 0;
+    return lookup_error(fn);
+}
+
 static int64_t kernel_lseek(int32_t fd, int64_t offset, int32_t whence)
 {
     const int h = host_of(fd);
@@ -427,5 +470,7 @@ RT_SYSLIB("libkernel", sceKernelRead, kernel_read);
 RT_SYSLIB("libkernel", sceKernelPread, kernel_pread);
 RT_SYSLIB("libkernel", sceKernelWrite, kernel_write);
 RT_SYSLIB("libkernel", sceKernelPwrite, kernel_pwrite);
+RT_SYSLIB("libkernel", sceKernelFtruncate, kernel_ftruncate);
+RT_SYSLIB("libkernel", sceKernelRename, kernel_rename);
 RT_SYSLIB("libkernel", sceKernelLseek, kernel_lseek);
 RT_SYSLIB("libkernel", sceKernelFstat, kernel_fstat);

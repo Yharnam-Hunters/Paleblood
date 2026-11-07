@@ -92,7 +92,8 @@ Instead:
        baked into every translation (`error_address`); a shader meeting a case it cannot do exactly
        writes a code there and skips the access, and the executor checks the word after each
        dispatch and draw and stops by name (`GCN_RUNTIME_STOP_*`).
-     - **Format buffer accesses** (`buffer_load/store_format_*`): whole 32-bit components (uint,
+     - **Format buffer accesses** (`buffer_load/store_format_*`): loads from 8_8_8_8 unorm (each byte
+       v / 255, correctly rounded); whole 32-bit components (uint,
        sint, float; the format's components in place, as a store only uses their selectors) move as they are, and a four-component store to 8_8_8_8 unorm
        undoes the descriptor's swizzle (shadPS4's rule: the inverse of a load's) and packs as GLSL's
        `packUnorm4x8` (the PS4's rounding of ties is not established). Anything else is a run-time stop.
@@ -353,6 +354,51 @@ Instead:
           whose x matches one neighbour's and y the other's, and the fourth corner is the other two
           minus it, for the position and every output (shadPS4's rule, facts only). A device
           without geometry shaders stops by name at a rect list; Metal will need another route.
+        - **State across buffers:** the GPU keeps its registers, user data and shaders from one
+          submitted buffer to the next (no submission resets them), so the executor keeps the state
+          the calls set across runs too. The game's command buffers continue into new blocks as they
+          fill (a buffer that sets a compute shader at its end, the next one dispatching it).
+          `rt_executor_reset` forgets it, for tests' independent cases.
+        - **Render targets keep their memory:** a render target's guest memory stays its contents,
+          laid out by its tile mode (`runtime/tiling.h`): its image is loaded from the memory before a
+          draw when the memory may have changed since (at each buffer, as the CPU runs between
+          submissions, and after each dispatch, whose stores may reach it), and written back once drawn
+          into, before anything reads the memory (a dispatch, a draw's images, the end of the buffer).
+          So a pass can read what an earlier one drew as an image, and draws build on what a compute
+          clear stored. The game's logo pass draws, blended, into the image its compute clear filled,
+          which the fullscreen pass then reads. Detiling and tiling go a micro tile at a time (checked
+          against the per-texel offsets for every mode and element size).
+        - **Moving targets only when needed:** a target is written back before a dispatch, at the end of
+          each buffer, and before a draw reads an image overlapping it, not after every draw: a draw's
+          colour writes reach memory on the console too only when the game flushes the colour caches
+          before reading. A load is skipped when the guest memory still holds exactly what the image and
+          it last agreed on (a copy of those bytes kept per target and per loaded image); a texture
+          the guest has not changed is not loaded again either. Staging buffers are kept per target
+          (host-cached memory where the device has it: the CPU tiles from them and the display reads
+          them), so showing a frame copies from the target's last write-back instead of the GPU. With
+          these the boot's frames went from 66 to about 1,440 in 90 s (RTX 3070), which reaches the
+          title screen.
+        - **Unset user data stops:** the translator reports the user SGPRs a program reads before it
+          writes them (in program order), and the executor tracks the slots the calls have set since
+          the GPU's reset. A shader reading a slot no call has set, or a descriptor or descriptor
+          pointer in such slots, stops by name instead of running on zeros (a null descriptor can
+          lose the device).
+        - **The logo pass's inputs:** its vertex shaders' user data come through a further writer,
+          `0x014764a0` (command buffer, stage, slot, words, count; after the NOP marker `0x6875000d`),
+          now observed; their fetch shaders load vertex colours from 8_8_8_8 unorm buffers, each byte as
+          v / 255 correctly rounded (a table worked out in single precision, since a shader's division
+          need not be exact), with the descriptor's DST_SEL; its textures are block-compressed (BC7),
+          loaded in 4 x 4 blocks (pitch, width and height counted in blocks, as shadPS4 counts them) as
+          Vulkan's BC formats: BC1 (with its one-bit alpha), BC2, BC3, BC7 unorm and sRGB, BC4 and BC5
+          unorm and snorm; BC6 stops by name. The title screen adds an 8-bit unorm image (DATA_FORMAT
+          1, its glyph atlas, linear aligned), loaded as R8.
+        - **Indexed draws:** `INDEX_BASE` (`0x014752c0`), `INDEX_BUFFER_SIZE` (`0x01475320`),
+          `INDEX_TYPE` (`0x01475270`) and `DRAW_INDEX_OFFSET_2` (`0x01474420`) are observed and
+          recorded; the draw binds the guest memory buffer as Vulkan's index buffer from the base plus
+          the first index, 16- or 32-bit indices (VGT_INDEX_TYPE; swaps stop by name). The packet's
+          `MAX_SIZE`, which the library sets to the count, is taken as counting from `INDEX_OFFSET`, as
+          shadPS4 reads it and the game's draws need (they start past it): inferred, not documented.
+          The game's logo pass draws this way, blended, into the image its fullscreen pass then reads.
         - **Depth targets:** the depth target's setter (`0x014739b0`, observed)
           reports the registers it writes (`DB_Z_INFO` to `DB_DEPTH_SLICE`, `DB_DEPTH_VIEW`, ...), the
           stencil reference setters (`0x01473190`, `0x014731f0`) `DB_STENCILREFMASK` and `_BF`, and the
@@ -416,10 +462,10 @@ Instead:
         found by their descriptor's address and shape: an image the GPU writes stays there and is
         never tiled back into guest memory; a new image whose first use writes it starts cleared.
         An image no shader has written holds the guest memory's texels, detiled with
-        `runtime/tiling.h` and loaded again at each use that reads it (the CPU or a buffer store may
-        have changed them); one that is also a render target stops by name. Pixel shaders' images
+        `runtime/tiling.h` and loaded again at a use that reads it when the guest memory changed since
+        (the CPU or a buffer store may have changed them); one that is also a render target stops by name. Pixel shaders' images
         are found the same way and bound as sampled images. Formats: 32 (float, uint, sint), 32_32 and 32_32_32_32 float, 8_8_8_8
-        unorm; 1D and 2D images and their arrays, one level, a view of any of an array's layers
+        unorm, 8 unorm; 1D and 2D images and their arrays, one level, a view of any of an array's layers
         (slices count from `BASE_ARRAY`, as shadPS4 and Mesa's radeonsi have it), DST_SEL in place.
         On the game, all of the boot's compute passes now run (two clears and a buffer-to-image
         copy into a 3-layer 1D array), and the next stop is a draw whose pixel shader reads the

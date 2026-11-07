@@ -128,15 +128,12 @@ static int32_t get_locus(int32_t handle, const uint16_t *ids, uint32_t count, in
 #define PLAYGO_ERROR_BAD_HANDLE ((int32_t)0x80B20009u)
 enum { SPEED_SUSPENDED = 0, SPEED_FULL = 2 };
 
-static int32_t install_speed = SPEED_FULL;
-
 static int32_t set_install_speed(int32_t handle, int32_t speed)
 {
     if (!opened || handle != PLAYGO_HANDLE) return PLAYGO_ERROR_BAD_HANDLE;
     if (!initialized) return PLAYGO_ERROR_NOT_INITIALIZED;
     if (speed < SPEED_SUSPENDED || speed > SPEED_FULL) return PLAYGO_ERROR_INVALID_ARGUMENT;
-    install_speed = speed; /* nothing is left to install: only recorded */
-    return 0;
+    return 0; /* accepted: everything is installed, so there is nothing to pace */
 }
 
 RT_SYSLIB("libScePlayGo", scePlayGoInitialize, initialize);
