@@ -1689,6 +1689,19 @@ def fixtures():
                 range_value=0 if in_range else 1,
             )
 
+    # The first output aliases descriptor flags and enables the late rounding pass.
+    case = descriptor_fixture(
+        "late_round_flag_from_overlapping_output",
+        word=13,
+        metadata=8,
+        count=1,
+        first=4097,
+        second=17,
+        third=1,
+    )
+    case["args"]["rdi"] = "buf:arena+164"
+    yield case
+
 
 def main():
     """Write deterministic synthetic cases to the requested directory."""
