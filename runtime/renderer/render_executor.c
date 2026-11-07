@@ -1925,21 +1925,25 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
    library sets to the count, is taken as counting from INDEX_OFFSET: the game's draws start past it
    (the first at index 136 of 60), which under a count from INDEX_BASE would fetch no index at all;
    shadPS4 reads it the same way (it draws min(INDEX_COUNT, MAX_SIZE) indices from INDEX_OFFSET); this
-   is inferred from the game's use, not from a public description. When INDEX_BUFFER_SIZE was set,
-   the indices must lie within it. 0, or -1 with the reason (no base or type, other types or swaps,
+   is inferred from the game's use, not from a public description. Legacy logical calls retain INDEX_BUFFER_SIZE when it was set. Raw packet calls
+   use their own MAX_SIZE, independent of that saved size. 0, or -1 with the reason (no base or type, other types or swaps,
    indices past the buffer or outside the GPU-visible memory: what the GPU fetches there is not
    established here). */
-static int index_range_for(rt_executor *x, const draw_state *s, uint32_t first, uint32_t count, index_range *out, char *error,
+static int index_range_for(rt_executor *x, const draw_state *s, uint32_t first, uint32_t count, int use_size,
+                           index_range *out, char *error,
                            size_t error_size)
 {
     enum { INDEX_16 = 0, INDEX_32 = 1 };
     if (!s->index_base_set || !s->index_type_set) return failed(error, error_size, "an indexed draw with no index base and type set");
     if (s->index_type != INDEX_16 && s->index_type != INDEX_32)
         return failed(error, error_size, "index type %#x: only 16- and 32-bit indices without a swap are drawn yet", s->index_type);
-    if (s->index_size_set && (uint64_t)first + count > s->index_size)
+    if (use_size && s->index_size_set && (uint64_t)first + count > s->index_size)
         return failed(error, error_size, "an indexed draw of indices %u to %u, past the %u-index buffer", first, first + count, s->index_size);
-    const uint64_t bytes = s->index_type == INDEX_16 ? 2 : 4, start = s->index_base + first * bytes;
-    if (s->index_base < x->guest_base || start + count * bytes > x->guest_base + x->size || start % bytes)
+    const uint64_t bytes = s->index_type == INDEX_16 ? 2 : 4, delta = (uint64_t)first * bytes;
+    if (delta > UINT64_MAX - s->index_base)
+        return failed(error, error_size, "index base plus offset overflows");
+    const uint64_t start = s->index_base + delta, length = (uint64_t)count * bytes;
+    if (start < x->guest_base || start - x->guest_base > x->size || length > x->size - (start - x->guest_base) || start % bytes)
         return failed(error, error_size, "an index buffer at %#llx outside the GPU-visible memory", (unsigned long long)s->index_base);
     *out = (index_range){start - x->guest_base, s->index_type == INDEX_16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32};
     return 0;
@@ -2015,9 +2019,24 @@ int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t size, char *error,
         case RT_CALL_INDEX_BASE: s->index_base = c->u.index_base.address, s->index_base_set = 1; break;
         case RT_CALL_INDEX_SIZE: s->index_size = c->u.index_size.count, s->index_size_set = 1; break;
         case RT_CALL_INDEX_TYPE: s->index_type = c->u.index_type.type, s->index_type_set = 1; break;
+        case RT_CALL_DRAW_INDEXED:
+            return failed(error, error_size, "DRAW_INDEX_2 is not implemented by the Vulkan executor");
         case RT_CALL_DRAW_INDEX_OFFSET: {
             index_range indices;
-            if (index_range_for(x, s, c->u.draw_index.first, c->u.draw_index.count, &indices, error, error_size)) return -1;
+            if (c->u.draw_index.has_packet_fields) {
+                if (c->u.draw_index.has_packet_fields != 1)
+                    return failed(error, error_size, "invalid indexed packet field tag");
+                if (c->u.draw_index.header & 1u)
+                    return failed(error, error_size, "predicated indexed draws are not supported");
+                if (c->u.draw_index.header != 0xc0033500u)
+                    return failed(error, error_size, "unsupported indexed offset packet header");
+                if (c->u.draw_index.initiator != 0)
+                    return failed(error, error_size, "unsupported indexed offset draw initiator");
+                if (c->u.draw_index.count > c->u.draw_index.max_size)
+                    return failed(error, error_size, "indexed draw beyond MAX_SIZE requires unsupported DMA zero filling");
+            }
+            if (index_range_for(x, s, c->u.draw_index.first, c->u.draw_index.count,
+                                !c->u.draw_index.has_packet_fields, &indices, error, error_size)) return -1;
             depth_plan plan;
             int colour = 0;
             const int checked = check_state(s, &plan, &colour, error, error_size);

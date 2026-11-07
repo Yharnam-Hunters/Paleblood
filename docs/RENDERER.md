@@ -477,3 +477,31 @@ Instead:
 
 Each phase lands in small PRs with tests. A boot is recorded after each runtime change. The wiki's
 Runtime page and Gallery show where it stands.
+
+
+### Index state and indexed draw observers
+
+The canonical record keeps `INDEX_BASE`, `INDEX_BUFFER_SIZE`, `INDEX_TYPE` and
+`DRAW_INDEX_OFFSET_2` at event IDs 10, 11, 12 and 13. Their existing observer and recorder
+signatures remain available. `DRAW_INDEX_2`, which carries an address rather than an
+`INDEX_BASE`-relative offset, is a separate event at 14. Index state remains the raw emitted
+words; the recorder does not normalize addresses or read guest index memory.
+
+An offset-draw event keeps its original `first` and `count` fields. The legacy logical call
+has `has_packet_fields = 0`, with its new fields zero; it retains the executor's existing
+`INDEX_BUFFER_SIZE` bound. Replacement writers use `rt_observe_draw_index_offset_packet` to
+set `has_packet_fields = 1` and preserve the final header, `MAX_SIZE` and `DRAW_INITIATOR`
+alongside `first` and `count`. A raw header of zero is still a raw packet, never a legacy
+sentinel. Raw packets use their own `MAX_SIZE` independently of the saved size; counts beyond
+it require DMA zero filling, which these executors do not implement. Unsupported headers,
+predication and initiators fail explicitly. Vulkan executes the supported offset draws and
+continues to reject addressed `DRAW_INDEX_2` by name.
+
+These observers use the existing one-time host lookup and refusal path. A host without
+record exports remains optional. A present host that lacks a raw packet recorder is refused;
+the bridge cannot substitute the lossy legacy first/count call. Writers save their buffer and
+offset after successful reservation and read final output only after packet and cursor
+publication. The inherited original-entry hooks still observe their logical input arguments;
+those observations do not establish callback or alias-sensitive packet values. Hooks skip
+functions present in the replacement registry, so replacements record their own calls exactly
+once instead of installing another original-entry hook.
