@@ -19,12 +19,13 @@
 #include <string.h>
 
 static uint64_t address_offset; /* the layout's, for the next run */
+static uint64_t error_address;  /* the run-time stop word's GPU address, or 0 */
 
 /* Translates code and runs it over one workgroup of LANES lanes with the given user data. */
 static int run(gpu *g, const uint32_t *code, size_t dwords, const uint32_t *user_data)
 {
     const gcn_compute_layout layout = {.local_size = {LANES, 1, 1}, .user_sgprs = 8, .workgroup_id_x_sgpr = -1,
-                                       .address_offset = address_offset};
+                                       .address_offset = address_offset, .error_address = error_address};
     uint32_t *spirv = NULL;
     size_t words = 0;
     char error[256];
@@ -100,6 +101,16 @@ int main(void)
     CHECK(run(&g, scale_add, sizeof scale_add / sizeof scale_add[0], user) == 0);
     for (int i = 0; i < LANES; i++) CHECK(out_words[i] == bits((float)i * 0.5f * 2.5f + 1.0f));
 
+    /* A descriptor's base address is 40 bits: word 1's bits 8-15 (set in the game's descriptors) are not part of it. */
+    {
+        uint32_t high_user[USER_DATA_WORDS];
+        memcpy(high_user, user, sizeof high_user);
+        high_user[1] |= 0x3000u, high_user[5] |= 0x3000u;
+        memset(out.mapped, 0, BUFFER_BYTES);
+        CHECK(run(&g, scale_add, sizeof scale_add / sizeof scale_add[0], high_user) == 0);
+        for (int i = 0; i < LANES; i++) CHECK(out_words[i] == bits((float)i * 0.5f * 2.5f + 1.0f));
+    }
+
     memset(out.mapped, 0, BUFFER_BYTES);
     in_floats[LANES] = 0.0f; /* the legacy multiply's zero */
     CHECK(run(&g, integer_and_select, sizeof integer_and_select / sizeof integer_and_select[0], user) == 0);
@@ -165,6 +176,114 @@ int main(void)
     memset(out.mapped, 0xaa, BUFFER_BYTES);
     CHECK(run(&g, masked_store, sizeof masked_store / sizeof masked_store[0], user) == 0);
     for (int i = 0; i < LANES; i++) CHECK(out_words[i] == (i < 20 ? 0x55u : 0xaaaaaaaau));
+
+    /* buffer_store_format_xyzw takes its format from the descriptor as it runs: 32_32_32_32 float
+       moves the four dwords as they are; 8_8_8_8 unorm (DATA_FORMAT 10, NUM_FORMAT 0) is not done yet,
+       so nothing is stored and the stop word holds the format and component count. The stop word is
+       the last dword of the input buffer. */
+    {
+        enum { DST_SEL_XYZW = 4 | 5 << 3 | 6 << 6 | 7 << 9 };
+        uint32_t format_user[USER_DATA_WORDS];
+        memcpy(format_user, user, sizeof format_user);
+        uint32_t *const stop = in_words + BUFFER_BYTES / 4 - 1;
+        error_address = in.address + BUFFER_BYTES - 4;
+        *stop = 0;
+        memset(out.mapped, 0, BUFFER_BYTES);
+        format_user[7] = DST_SEL_XYZW | 7u << 12 | 14u << 15;
+        CHECK(run(&g, store_format_xyzw, sizeof store_format_xyzw / sizeof store_format_xyzw[0], format_user) == 0);
+        int stored = *stop == 0;
+        for (uint32_t i = 0; i < LANES; i++) {
+            const uint32_t *lane = out_words + i * 4;
+            stored &= lane[0] == i && lane[1] == 0x3f800000u && lane[2] == 0x40000000u && lane[3] == 0x3f000000u;
+        }
+        CHECK(stored);
+        /* 8_8_8_8 unorm, DST_SEL z, y, x, w (blue first in memory): the store undoes the swizzle, so the
+           bytes are (1.0, -1.0, 0, 2.0) clamped: 255, 0, 0, 255; with x, y, z, w they would be 0, 0, 255, 255. */
+        enum { DST_SEL_ZYXW = 6 | 5 << 3 | 4 << 6 | 7 << 9 };
+        memset(out.mapped, 0, BUFFER_BYTES);
+        format_user[7] = DST_SEL_ZYXW | 0u << 12 | 10u << 15;
+        CHECK(run(&g, store_format_packed, sizeof store_format_packed / sizeof store_format_packed[0], format_user) == 0);
+        int packed = *stop == 0;
+        for (int i = 0; i < LANES; i++) packed &= out_words[i * 4] == 0xff0000ffu;
+        CHECK(packed);
+        memset(out.mapped, 0, BUFFER_BYTES);
+        format_user[7] = DST_SEL_XYZW | 0u << 12 | 10u << 15;
+        CHECK(run(&g, store_format_packed, sizeof store_format_packed / sizeof store_format_packed[0], format_user) == 0);
+        CHECK(out_words[0] == 0xffff0000u && *stop == 0);
+        /* 16_16 unorm (DATA_FORMAT 5) is not done yet: nothing stored, the stop word holds it */
+        memset(out.mapped, 0, BUFFER_BYTES);
+        format_user[7] = DST_SEL_XYZW | 0u << 12 | 5u << 15;
+        CHECK(run(&g, store_format_xyzw, sizeof store_format_xyzw / sizeof store_format_xyzw[0], format_user) == 0);
+        int untouched = 1;
+        for (int i = 0; i < LANES * 4; i++) untouched &= out_words[i] == 0;
+        CHECK(untouched);
+        CHECK(*stop == (GCN_RUNTIME_STOP_BUFFER_FORMAT << GCN_RUNTIME_STOP_KIND_SHIFT | 5u << 8 | 0u << 4 | 0x80u | 4u));
+        /* a one-component store to 32 uint with DST_SEL x, 0, 0, 1 (as the game's): the format's one
+           component is in place, so the dword is stored; with DST_SEL y first it stops */
+        *stop = 0;
+        memset(out.mapped, 0, BUFFER_BYTES);
+        format_user[7] = (4 | 0 << 3 | 0 << 6 | 1 << 9) | 4u << 12 | 4u << 15;
+        CHECK(run(&g, store_format_x, sizeof store_format_x / sizeof store_format_x[0], format_user) == 0);
+        int one = *stop == 0;
+        for (uint32_t i = 0; i < LANES; i++) one &= out_words[i] == i;
+        CHECK(one);
+        memset(out.mapped, 0, BUFFER_BYTES);
+        format_user[7] = (5 | 4 << 3) | 4u << 12 | 4u << 15;
+        CHECK(run(&g, store_format_x, sizeof store_format_x / sizeof store_format_x[0], format_user) == 0);
+        CHECK(*stop == (GCN_RUNTIME_STOP_BUFFER_FORMAT << GCN_RUNTIME_STOP_KIND_SHIFT | 4u << 8 | 4u << 4 | 0x80u | 8u | 1u) && out_words[1] == 0);
+        /* a four-component load from a one-component 32-bit float format, DST_SEL x, 0, 0, 1 (as the
+           game's): (the value, 0, 0, 1.0) */
+        *stop = 0;
+        memset(out.mapped, 0, BUFFER_BYTES);
+        memcpy(format_user, user, sizeof format_user);
+        format_user[3] = (4 | 0 << 3 | 0 << 6 | 1 << 9) | 7u << 12 | 4u << 15;
+        CHECK(run(&g, load_format_xyzw, sizeof load_format_xyzw / sizeof load_format_xyzw[0], format_user) == 0);
+        int loaded = *stop == 0;
+        for (int i = 0; i < LANES; i++) {
+            const uint32_t *lane = out_words + i * 4;
+            loaded &= lane[0] == in_words[i] && lane[1] == 0 && lane[2] == 0 && lane[3] == 0x3f800000u;
+        }
+        CHECK(loaded);
+        /* a four-component load from 8_8_8_8 unorm (the game's vertex colours), DST_SEL z, y, x, w: each
+           byte v as v / 255 correctly rounded (worked out here in single precision), blue first */
+        *stop = 0;
+        memset(out.mapped, 0, BUFFER_BYTES);
+        format_user[3] = (6 | 5 << 3 | 4 << 6 | 7 << 9) | 0u << 12 | 10u << 15;
+        uint32_t saved_in[LANES];
+        memcpy(saved_in, in_words, sizeof saved_in);
+        for (int i = 0; i < LANES; i++) in_words[i] = (uint32_t)i * 0x04030201u + 0xff80c007u; /* bytes 0 to 255 */
+        CHECK(run(&g, load_format_xyzw, sizeof load_format_xyzw / sizeof load_format_xyzw[0], format_user) == 0);
+        int unorm = *stop == 0;
+        for (int i = 0; i < LANES; i++) {
+            const uint32_t *lane = out_words + i * 4;
+            static const int byte_of[4] = {2, 1, 0, 3};
+            for (int c = 0; c < 4; c++) {
+                const float want = (float)(in_words[i] >> (8 * byte_of[c]) & 0xff) / 255.0f;
+                uint32_t bits;
+                memcpy(&bits, &want, sizeof bits);
+                unorm &= lane[c] == bits;
+            }
+        }
+        CHECK(unorm);
+        memcpy(in_words, saved_in, sizeof saved_in);
+        /* a reserved selector (2) stops */
+        format_user[3] = (4 | 2 << 3) | 7u << 12 | 4u << 15;
+        CHECK(run(&g, load_format_xyzw, sizeof load_format_xyzw / sizeof load_format_xyzw[0], format_user) == 0 && *stop != 0);
+        *stop = 0;
+        error_address = 0;
+        /* without a stop word, the access stops translation */
+        CHECK(run(&g, store_format_xyzw, sizeof store_format_xyzw / sizeof store_format_xyzw[0], format_user) == -1);
+    }
+
+    /* whole quad mode: every lane of a quad with an active lane is active again */
+    memset(out.mapped, 0, BUFFER_BYTES);
+    CHECK(run(&g, whole_quad, sizeof whole_quad / sizeof whole_quad[0], user) == 0);
+    for (int i = 0; i < LANES; i++) CHECK(out_words[i] == 1u);
+
+    /* VCC's halves written as scalars: each lane's VCC bit is its bit of the half it is in. */
+    memset(out.mapped, 0, BUFFER_BYTES);
+    CHECK(run(&g, vcc_halves, sizeof vcc_halves / sizeof vcc_halves[0], user) == 0);
+    for (int i = 0; i < LANES; i++) CHECK(out_words[i] == ((i < 16 || i == 32) ? 0x3f800000u : 0u));
 
     /* Typed buffers, indexed by lane: records of 16 bytes in, 48 out. */
     enum { IN_STRIDE = 16, OUT_STRIDE = 48, OUT_RECORD_WORDS = OUT_STRIDE / 4 };

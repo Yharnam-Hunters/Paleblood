@@ -26,6 +26,10 @@ check() {
 upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || echo origin/main)
 # the commits being pushed: from the hook (BB_PUSH_RANGE), else what the upstream does not have
 if [ -n "${BB_PUSH_RANGE:-}" ]; then read -ra range <<<"$BB_PUSH_RANGE"; else range=("$upstream..HEAD"); fi
+# Commits already on the remote's main were checked when they landed there; a branch that merges
+# main in brings them along, but they are not the pusher's to answer for.
+main_ref="refs/remotes/${BB_PUSH_REMOTE:-origin}/main"
+if git rev-parse -q --verify "$main_ref^{commit}" >/dev/null; then range+=(--not "$main_ref"); fi
 others=$(git log "${range[@]}" --format='%an <%ae>%n%cn <%ce>' | sort -u | grep -vx "$IDENT" || true)
 if [ -z "$others" ]; then echo "ok   authors and committers"; else echo "FAIL authors: $others"; fail=1; fi
 refused=0
