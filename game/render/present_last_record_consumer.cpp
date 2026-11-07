@@ -82,8 +82,7 @@ extern "C" void bb_render_present_last_record_consume(
         return;
     }
 
-    RecordCommandBuffer *const commands = &context->commands;
-    PacketBuffer *const packet_commands = reinterpret_cast<PacketBuffer *>(commands);
+    PacketBuffer *const commands = &context->commands;
     RecordShaderState *const shader = &context->shader_state;
     RecordPreparationState *const preparation = &context->preparation;
     last_record_calls::reset_preparation(preparation, context);
@@ -100,11 +99,11 @@ extern "C" void bb_render_present_last_record_consume(
 
     initialize_record_register_c(&register_c);
     initialize_record_register_b(&register_b);
-    set_db_depth_control(packet_commands, register_c.word);
+    set_db_depth_control(commands, register_c.word);
     context->register_b5a0.set(register_c.word);
     const uint64_t token = record_cache_token_b.get();
     context->token_b6f0.set(token);
-    set_db_stencil_control(packet_commands, register_b.word);
+    set_db_stencil_control(commands, register_b.word);
     context->register_b5a4.set(register_b.word);
     context->token_b6f0.set(token);
 
@@ -117,11 +116,12 @@ extern "C" void bb_render_present_last_record_consume(
     last_record_calls::set_second_mode(&mode, 1);
     last_record_calls::emit_mode(commands, mode.word);
 
-    configure_record_shader(reinterpret_cast<ShaderPrimaryStateView *>(shader), packet_commands,
+    configure_record_shader(reinterpret_cast<ShaderPrimaryStateView *>(shader), commands,
                             reinterpret_cast<const ShaderPrimaryDescriptorView *>(shared_present_descriptor.address()), nullptr);
     set_vgt_primitive_type(commands, pipeline_mode);
     emit_num_instances(commands, 1);
-    configure_record_shader_secondary(shader, commands, shared_present_descriptor.address(), 0);
+    configure_record_shader_secondary(reinterpret_cast<ShaderSecondaryState *>(shader), commands,
+        reinterpret_cast<const ShaderSecondaryDescriptorView *>(shared_present_descriptor.address()), nullptr);
 
     copy_last_record(copy, record);
     uint32_t index = first_index;

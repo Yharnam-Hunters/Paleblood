@@ -6,7 +6,7 @@
 #
 # git gives the pushed refs on stdin ("local_ref local_sha remote_ref remote_sha"); the gate
 # checks exactly the commits each ref adds (BB_PUSH_RANGE: old..new, or new --not --remotes for
-# a ref the remote does not have yet).
+# a ref the remote does not have yet), leaving out what the remote's main already has.
 set -uo pipefail
 root=$(git rev-parse --show-toplevel)
 # git exports GIT_DIR, GIT_INDEX_FILE and similar variables to hooks; the gate runs git in other
@@ -26,7 +26,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
         range="$local_sha --not --remotes=$remote"
     fi
     echo "pre-push: gate for $local_ref -> $remote $remote_ref"
-    BB_PUSH_RANGE="$range" "$root/tools/pre_push.sh" </dev/null || status=1
+    BB_PUSH_RANGE="$range" BB_PUSH_REMOTE="$remote" "$root/tools/pre_push.sh" </dev/null || status=1
 done <<<"$refs"
 [ $status = 0 ] || echo "pre-push: refused; nothing was pushed" >&2
 exit $status

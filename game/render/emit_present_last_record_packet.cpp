@@ -4,6 +4,7 @@
 // Capacity admission truncates the wrapped DWORD distance; callback success reloads the cursor
 // without retrying.
 #include "present_last_record_packet.h"
+#include "render_observe.h"
 
 namespace {
 constexpr uint32_t packet_words = 3;
@@ -21,6 +22,7 @@ extern "C" uint64_t bb_render_emit_present_last_record_packet(render::PacketBuff
         return rejected_result;
 
     const uint32_t packet_value = value & db_render_control_value_mask;
+    render::observe_context_register(commands, cursor, 0, packet_value);
     auto *packet = reinterpret_cast<render::LastRecordPacket *>(cursor);
     // Keep these separate and ordered: command storage can alias buffer fields.
     packet->header.set(set_context_reg_one_value_header);

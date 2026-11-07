@@ -93,11 +93,15 @@ static void fill_with_nop(const char *function, uint32_t *command_buffer, uint32
 
 /* sceGnmSetCsShader(command buffer, dwords, shader): binds a compute shader. The engine's wrapper
    (0x0148a8b0, four callers including a set-up) reserves 25 dwords, passes 25 and
-   advances by 25 dwords only when the answer is 0; nothing else reads the answer. */
-static int32_t set_cs_shader(uint32_t *command_buffer, uint32_t dwords, const void *shader)
+   advances by 25 dwords only when the answer is 0; nothing else reads the answer. The shader is its
+   register block (7 words: COMPUTE_PGM_LO, PGM_HI, PGM_RSRC1, PGM_RSRC2, NUM_THREAD_X, _Y, _Z, as
+   shadPS4's gnmdriver.cpp writes them), handed to the renderer like the vertex and pixel shaders'. */
+static int32_t set_cs_shader(uint32_t *command_buffer, uint32_t dwords, const uint32_t *registers)
 {
-    (void)shader;
-    fill_with_nop("sceGnmSetCsShader", command_buffer, dwords);
+    static const char fn[] = "sceGnmSetCsShader";
+    if (!registers) rt_fatal(fn, "no compute shader registers: the answer is not established");
+    fill_with_nop(fn, command_buffer, dwords);
+    rt_renderer_bind_shader(fn, RT_RENDERER_COMPUTE_SHADER, command_buffer, registers);
     return 0;
 }
 
@@ -126,16 +130,53 @@ static int32_t write_nothing_for_the_gpu(uint32_t *command_buffer, uint32_t dwor
     fill_with_nop("a GNM command-buffer writer", command_buffer, dwords);
     return 0;
 }
+/* The vertex and pixel shader calls also hand the renderer the shader they bind (runtime/renderer.h),
+   placed where they write in the command buffer:
+     sceGnmSetVsShader / sceGnmUpdateVsShader(command buffer, dwords, registers, modifier);
+     sceGnmSetPsShader / sceGnmUpdatePsShader(command buffer, dwords, registers).
+   The argument order is shadPS4's libSceGnmDriver (gnmdriver.cpp), and a boot shows the registers
+   argument holding the 7 and 12 words of runtime/render_calls.h (the code address, resources, export
+   and input settings, matching the shaders' own code). A null pixel shader block means no pixel
+   shader. The vertex shader's modifier (set when it calls a fetch shader, which the game's do)
+   replaces two fields of its PGM_RSRC1, the SGPR count (bits 6-9) and the input VGPR count
+   (bits 24-25): PGM_RSRC1 & 0xfcfffc3f | modifier, as shadPS4 applies it; a modifier with any other
+   bit set is refused there, and stops here by name. */
+#define VS_MODIFIER_FIELDS 0x030003c0u /* PGM_RSRC1's SGPRS and VGPR_COMP_CNT */
+static int32_t set_vs_shader(uint32_t *command_buffer, uint32_t dwords, const uint32_t *registers, uint32_t modifier,
+                             const char *function)
+{
+    if (!registers) rt_fatal(function, "no vertex shader registers: the answer is not established");
+    if (modifier & ~VS_MODIFIER_FIELDS) rt_fatal(function, "a shader modifier with bits outside PGM_RSRC1's SGPRS and VGPR_COMP_CNT");
+    uint32_t modified[7];
+    memcpy(modified, registers, sizeof modified);
+    if (modifier) modified[2] = (modified[2] & ~VS_MODIFIER_FIELDS) | modifier;
+    fill_with_nop(function, command_buffer, dwords);
+    rt_renderer_bind_shader(function, RT_RENDERER_VERTEX_SHADER, command_buffer, modified);
+    return 0;
+}
+
+static int32_t set_ps_shader(uint32_t *command_buffer, uint32_t dwords, const uint32_t *registers, const char *function)
+{
+    fill_with_nop(function, command_buffer, dwords);
+    rt_renderer_bind_shader(function, RT_RENDERER_PIXEL_SHADER, command_buffer, registers);
+    return 0;
+}
+
+static int32_t gnm_set_vs_shader(uint32_t *b, uint32_t n, const uint32_t *r, uint32_t m) { return set_vs_shader(b, n, r, m, "sceGnmSetVsShader"); }
+static int32_t gnm_update_vs_shader(uint32_t *b, uint32_t n, const uint32_t *r, uint32_t m) { return set_vs_shader(b, n, r, m, "sceGnmUpdateVsShader"); }
+static int32_t gnm_set_ps_shader(uint32_t *b, uint32_t n, const uint32_t *r) { return set_ps_shader(b, n, r, "sceGnmSetPsShader"); }
+static int32_t gnm_update_ps_shader(uint32_t *b, uint32_t n, const uint32_t *r) { return set_ps_shader(b, n, r, "sceGnmUpdatePsShader"); }
+
+RT_SYSLIB("libSceGnmDriver", sceGnmSetVsShader, gnm_set_vs_shader);
+RT_SYSLIB("libSceGnmDriver", sceGnmUpdateVsShader, gnm_update_vs_shader);
+RT_SYSLIB("libSceGnmDriver", sceGnmSetPsShader, gnm_set_ps_shader);
+RT_SYSLIB("libSceGnmDriver", sceGnmUpdatePsShader, gnm_update_ps_shader);
 RT_SYSLIB("libSceGnmDriver", sceGnmSetEsShader, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmSetGsShader, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmSetHsShader, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmSetLsShader, write_nothing_for_the_gpu);
-RT_SYSLIB("libSceGnmDriver", sceGnmSetPsShader, write_nothing_for_the_gpu);
-RT_SYSLIB("libSceGnmDriver", sceGnmSetVsShader, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmUpdateGsShader, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmUpdateHsShader, write_nothing_for_the_gpu);
-RT_SYSLIB("libSceGnmDriver", sceGnmUpdatePsShader, write_nothing_for_the_gpu);
-RT_SYSLIB("libSceGnmDriver", sceGnmUpdateVsShader, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmInsertPushMarker, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmInsertPopMarker, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmInsertSetMarker, write_nothing_for_the_gpu);
@@ -234,6 +275,10 @@ RT_SYSLIB("libSceGnmDriver", sceGnmMapComputeQueue, map_compute_queue);
 #define PM4_SET_UCONFIG_REG 0x79u
 #define PM4_DMA_DATA 0x50u
 #define PM4_INDEX_TYPE 0x2au
+#define PM4_INDEX_BASE 0x26u
+#define PM4_INDEX_BUFFER_SIZE 0x13u
+#define PM4_DRAW_INDEX_2 0x27u
+#define PM4_DRAW_INDEX_OFFSET_2 0x35u
 
 /* DMA_DATA (AMD's public cikd.h): control; source address (or data); destination address;
    command, with the byte count in bits 0-20. */
@@ -396,7 +441,8 @@ static void complete_packets(const char *fn, const uint32_t *packets, uint32_t d
         } else if (opcode != PM4_NOP && opcode != PM4_SET_SH_REG && opcode != PM4_DISPATCH_DIRECT &&
                    opcode != PM4_ACQUIRE_MEM && opcode != PM4_EVENT_WRITE && opcode != PM4_SET_CONTEXT_REG &&
                    opcode != PM4_SET_UCONFIG_REG && opcode != PM4_NUM_INSTANCES && opcode != PM4_DRAW_INDEX_AUTO &&
-                   opcode != PM4_INDEX_TYPE) {
+                   opcode != PM4_INDEX_TYPE && opcode != PM4_INDEX_BASE && opcode != PM4_INDEX_BUFFER_SIZE &&
+                   opcode != PM4_DRAW_INDEX_2 && opcode != PM4_DRAW_INDEX_OFFSET_2) {
             unknown_packet(fn, opcode, length);
         }
         at += length;
@@ -443,8 +489,10 @@ RT_SYSLIB("libSceGnmDriver", sceGnmDingDong, ding_dong);
                                   (an EVENT_WRITE that also writes memory stops);
      SET_CONTEXT_REG, SET_UCONFIG_REG, NUM_INSTANCES, DRAW_INDEX_AUTO
                                   skipped: draw state and draws (the first frame's);
-     INDEX_TYPE                   skipped: draw state, the size of an index (found 6 November
-                                  2026);
+     INDEX_TYPE, INDEX_BASE, INDEX_BUFFER_SIZE, DRAW_INDEX_2, DRAW_INDEX_OFFSET_2
+                                  skipped: an indexed draw's state (index size, buffer address and
+                                  length) and the draw itself (found 6 November 2026); like the
+                                  other draws they only read memory;
      DMA_DATA to CP_DMA_READ_TAGS skipped: memory read into the command processor's read tags,
                                   the destination not incremented (found 6 November 2026, a
                                   100-byte read). It changes no memory and no state a shader

@@ -6,12 +6,16 @@
 #include "runtime/guest.h"
 #include "runtime/host.h"
 #include "runtime/hooks.h"
+#include "runtime/observe_hooks.h"
 #include "runtime/probe.h"
 
 unsigned char *rt_image;
 
 extern const rt_hook_entry game_hooks[];
 extern const unsigned game_hook_count;
+/* The game's observe hooks (runtime/observe_hooks.h), when the game library has any. */
+extern const rt_observe_hook game_observe_hooks[] __attribute__((weak));
+extern const unsigned game_observe_hook_count __attribute__((weak));
 
 /* BB_HOOK_SKIP: comma-separated addresses or names of hooks to leave out (bisecting a problem
  * between replaced functions). */
@@ -41,6 +45,11 @@ int bbgame_init(const rt_host *host)
     rt_image = host->image;
     if (rt_hooks_install(game_hooks, game_hook_count))
         return 1;
+    /* Observe hooks relocate the originals' first instructions, so they go in while those are intact. */
+    if (game_observe_hooks && &game_observe_hook_count) {
+        const int observed = rt_observe_hooks_install(host, game_observe_hooks, game_observe_hook_count, game_hooks, game_hook_count);
+        if (observed) fprintf(stderr, "bbgame: %d function(s) observed for the renderer\n", observed);
+    }
     /* With capture on, hooks that can be recorded jump to a recording thunk; the relocated copies
        of their first instructions must be taken now, before the hooks overwrite them. */
     const void **targets = calloc(game_hook_count ? game_hook_count : 1, sizeof *targets);
