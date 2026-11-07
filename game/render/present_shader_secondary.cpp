@@ -75,7 +75,7 @@ uint8_t *cached_upload(ShaderSecondaryState *state, PacketBuffer *commands)
         address = allocate_upload(commands, sizeof(state->upload_snapshot));
         state->cached_upload_b360.set(address);
         if (address != nullptr) {
-            shader_copy_bytes(address, state->upload_snapshot, sizeof(state->upload_snapshot));
+            copy_bytes(address, state->upload_snapshot, sizeof(state->upload_snapshot));
             // A copy/alias can affect the cache field; the code reloads it here.
             address = state->cached_upload_b360.get();
         }
@@ -129,7 +129,7 @@ CopiedSpan copy_selected_span(const SecondaryBank &bank, PacketBuffer *commands,
         else if (source == SpanSource::fourth) input = bank.fourth->address(span.first);
         // Prefix slots below first remain uninitialized. Keep the real memcpy boundary.
         void *destination = reinterpret_cast<void *>(reinterpret_cast<uintptr_t>(address) + offset);
-        shader_copy_bytes(destination, input, bytes);
+        copy_bytes(destination, input, bytes);
     }
     return {true, address};
 }
@@ -193,7 +193,7 @@ void process_entry(ShaderSecondaryState *state, PacketBuffer *commands,
     case SecondaryEntryKind::scalar_upload: {
         const uint64_t bytes = uint64_t(entry >> count_byte_shift) * sizeof(uint32_t);
         uint8_t *address = allocate_upload(commands, bytes);
-        if (address != nullptr) shader_copy_bytes(address, bank.values->address(index), bytes);
+        if (address != nullptr) copy_bytes(address, bank.values->address(index), bytes);
         emit_shader_address(commands, bank.stage, slot, address);
         break;
     }

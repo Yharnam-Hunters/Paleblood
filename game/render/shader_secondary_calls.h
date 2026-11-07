@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Upload, descriptor and preparation calls made by the secondary shader consumer.
 #pragma once
+#include "byte_copy_calls.h"
 #include "secondary_calls.h"
 #include "shader_preparation_state.h"
 namespace render {
@@ -19,5 +20,4 @@ RT_ORIGINAL(0x02aaddc0, allocate_shader_upload,
             uint8_t *(ShaderUploadArena *, PacketBuffer **, uint64_t));
 RT_ORIGINAL(0x02ab9850, flush_shader_preparation,
             void(ShaderPreparationState *, PacketBuffer *));
-RT_ORIGINAL(0x02fbe578, shader_copy_bytes, void *(void *, const void *, uint64_t));
 }  // namespace render
