@@ -154,6 +154,17 @@ def cases():
     yield from additional_cases()
 
 
+    case = initial_data_case("alternate_success", 1, 0)
+    case["id"] = "options_alternate_flag_published_through_output"
+    case["stack"] = ["buf:self+29"]
+    case["memory"] = [entry for entry in case["memory"] if entry["addr"] != "buf:options"]
+    case["memory"].append({"addr": "buf:self+29", "bytes": "00000000"})
+    # kind=3 at output+32 changes only the later alternate-path flag.
+    # Keep an observing normal-path admission stub for the deliberately stale read.
+    case["stubs"].append({"address": "0x02abadd0", "argc": 1, "ret": 0})
+    yield case
+
+
 def initial_data_case(path, count, levels):
     c = next(c for c in initial_cases() if c["id"] == "publish")
     c["id"] = f"{path}_count{count}_levels{levels}"
