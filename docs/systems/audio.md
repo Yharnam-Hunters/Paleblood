@@ -53,6 +53,23 @@ review approved it. They are edge-verified, not yet verified against recorded ga
 
 </details>
 
+### What the system sees
+
+Paleblood's runtime answers the console's audio calls, which shows what the game asks of them
+(see Runtime system calls):
+
+- **Output:** the game opens two output ports of 256 float samples at 48 kHz in eight channels;
+  its callback at `0x0111b600` asks for that format. The 48 kHz agrees with the sample rate
+  hypothesis above.
+- **Decoding:** its sounds are compressed as ATRAC9 and decoded through the console's audio job
+  manager; the game creates its decoders at `0x01118d9a`, with one to eight channels. Since
+  [#398](https://github.com/Yharnam-Hunters/Paleblood/pull/398) the runtime decodes them with LibAtrac9, and with `--audio host` plays them on
+  your computer ([#406](https://github.com/Yharnam-Hunters/Paleblood/pull/406)). In the maintainer's local runs the game's music and sounds start
+  after about 17 seconds (an observation, not a saved record).
+- **Movies** have a sound port of their own, 1024 samples at 48 kHz ([#420](https://github.com/Yharnam-Hunters/Paleblood/pull/420)).
+
+This is the runtime's side; FMOD's own code above these calls is still mostly unmapped.
+
 ## Key functions
 
 | Address | Size | Name | Status | Notes |
@@ -74,4 +91,7 @@ replacement or a mod would change, and the risk.
 
 ## Open questions
 
-- Everything: this system has not been studied yet.
+- FMOD's mixing, music and sound banks: beyond the functions above, this system has not been
+  studied yet.
+- Whether the speaker-mode value in the output defaults is 5.1, given that the game opens
+  eight-channel ports.
