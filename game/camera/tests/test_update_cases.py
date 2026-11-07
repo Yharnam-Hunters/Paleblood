@@ -22,6 +22,80 @@ sys.modules[SPEC.name] = camera_cases
 SPEC.loader.exec_module(camera_cases)
 
 
+EXPECTED_CASE_IDS = {
+    'candidate_miss_reloads_fulcrum',
+    'chase_front_selector',
+    'chase_lock_selector',
+    'chase_negative_distance_rate',
+    'chase_normal_distinct_rates',
+    'chase_repair_both_limits',
+    'chase_reset_bypass',
+    'chase_signed_zero_rates',
+    'chase_unordered_limits',
+    'first_candidate_query_changes_wall_gate',
+    'fps_direct_pitch_negative',
+    'fps_direct_pitch_positive',
+    'fps_gain_denominator_pole',
+    'fps_gain_zero_negative',
+    'fps_interval_negative',
+    'fps_interval_negative_zero',
+    'fps_interval_positive_infinity',
+    'fps_interval_qnan_gain_payloads',
+    'fps_interval_sixty_exact',
+    'fps_interval_sixty_next',
+    'fps_interval_thirty_exact',
+    'fps_interval_zero',
+    'fps_reload_flipper_pointer_slot',
+    'fps_reload_measured_first_query',
+    'fps_reload_measured_second_query',
+    'fps_rounded_distance_difference',
+    'margin_negative_rate',
+    'margin_positive_cap',
+    'margin_unordered_maximum',
+    'margin_unordered_rate',
+    'null_subject_boss',
+    'null_subject_default',
+    'null_subject_override',
+    'null_subject_signed_ids',
+    'rotation_release_nan_rate',
+    'rotation_release_nan_wait',
+    'stock_candidate_and_wing_queries',
+    'stock_fraction_snan',
+    'stock_front_nonboolean',
+    'stock_hand_control',
+    'stock_high_rax_al80',
+    'stock_hits_disjoint_01_80',
+    'stock_hits_shared_80',
+    'stock_lock_nonboolean',
+    'stock_reload_radius',
+    'stock_reload_wall_mode_zero',
+    'stock_reset_nonboolean',
+    'stock_saved_inputs_first',
+    'stock_saved_inputs_second',
+    'stock_time_upper_noise',
+    'stock_wall0_finite',
+    'stock_wall1_both_miss',
+    'territory_disabled_flag_zero',
+    'territory_draw_dirty_fields',
+    'territory_draw_equal_fields',
+    'territory_draw_reselect_alias',
+    'territory_draw_slot_one',
+    'territory_draw_two_nodes_slot_change',
+    'territory_empty_owner',
+    'territory_enabled_far',
+    'territory_extent_unsigned_ff',
+    'territory_extent_zero_equal',
+    'territory_inside_null_world',
+    'territory_inside_query_high_RAX_hit',
+    'territory_inside_query_miss',
+    'territory_other_flag_only',
+    'territory_query_clears_late_draw',
+    'territory_two_node_link',
+    'translation_release_nan_rate',
+    'translation_release_nan_wait',
+}
+
+
 class CameraUpdateCases(unittest.TestCase):
     def test_two_fresh_generations_are_identical_and_shared_loader_accepts_all(self):
         with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
@@ -31,12 +105,12 @@ class CameraUpdateCases(unittest.TestCase):
             right = {path.name: path.read_bytes() for path in Path(second).glob("*.json")}
             self.assertEqual(left, right)
             rows, abi = differential.load_fixtures(Path(first), camera_cases.ADDRESS)
-            self.assertEqual(len(rows), 64)
+            self.assertEqual(len(rows), 70)
             self.assertIsNone(abi)
             self.assertNotIn("abi.json", left)
             for _, case in rows:
                 camera_cases.validate_contract(case)
-            self.assertEqual(len({case["id"] for _, case in rows}), 64)
+            self.assertEqual({case["id"] for _, case in rows}, EXPECTED_CASE_IDS)
 
     def test_official_verifier_accepts_generated_addresses_and_rejects_noncanonical_address(self):
         # Exercise the real official verifier's string address preflight. Mocked producers
@@ -55,7 +129,7 @@ class CameraUpdateCases(unittest.TestCase):
                                          "bb_camera_update_follow", "unused.so")
             self.assertEqual(producer.call_count, 2)
             self.assertEqual({side: len(rows) for side, rows in sides.items()},
-                             {"original": 64, "replacement": 64})
+                             {"original": 70, "replacement": 70})
         with tempfile.TemporaryDirectory() as directory:
             case = copy.deepcopy(camera_cases.CASES[0])
             case["address"] = noncanonical
@@ -65,6 +139,47 @@ class CameraUpdateCases(unittest.TestCase):
                     verify.run_cases("unused.elf", directory, address,
                                      "bb_camera_update_follow", "unused.so")
                 producer.assert_not_called()
+
+    def test_release_nan_profiles_have_distinct_reachable_gate_inputs(self):
+        expected = {
+            "translation_release_nan_wait": ("translation_control_wait_remaining", 0x7FC34567, None),
+            "translation_release_nan_rate": ("translation_control_end_rate", 0xFFC45678,
+                "translation_control_wait_remaining"),
+            "rotation_release_nan_wait": ("rotation_control_wait_remaining", 0x7FC56789, None),
+            "rotation_release_nan_rate": ("rotation_control_rate", 0xFFC6789A,
+                "rotation_control_wait_remaining"),
+        }
+        rows = {case["id"]: case for case in camera_cases.CASES}
+        for name, (field, payload, released_wait) in expected.items():
+            with self.subTest(case=name):
+                case = rows[name]
+                raw = bytes.fromhex(case["buffers"]["camera"]["bytes"])
+                offset = camera_cases.CAMERA_START + camera_cases.CAMERA_FIELDS[field][0]
+                self.assertEqual(struct.unpack_from("<I", raw, offset)[0], payload)
+                if released_wait:
+                    wait = camera_cases.CAMERA_START + camera_cases.CAMERA_FIELDS[released_wait][0]
+                    self.assertEqual(struct.unpack_from("<f", raw, wait)[0], -1.0)
+                for gate in ("reset_requested", "lock_requested", "hand_control"):
+                    at = camera_cases.CAMERA_START + camera_cases.CAMERA_FIELDS[gate][0]
+                    self.assertEqual(raw[at], 0)
+                camera_cases.validate_contract(case)
+
+    def test_all_four_option_environments_pass_shared_frontend_preflight(self):
+        # Producers are mocked: these are schema/option plumbing checks, not
+        # original/replacement execution or patch correctness evidence.
+        with tempfile.TemporaryDirectory() as directory:
+            camera_cases.main(["update_cases.py", directory])
+            replies = {case["id"]: {"id": case["id"]} for case in camera_cases.CASES}
+            completed = subprocess.CompletedProcess([], 0, stdout=json.dumps(replies), stderr="")
+            for policy in (None, "30", "60", "uncapped"):
+                with self.subTest(policy=policy), mock.patch.object(
+                        verify.subprocess, "run", return_value=completed) as producer:
+                    sides = verify.run_cases("unused.elf", directory, camera_cases.ADDRESS,
+                        "bb_camera_update_follow", "unused.so",
+                        env={} if policy is None else {"BB_TARGET_FPS": policy})
+                    self.assertEqual(producer.call_count, 2)
+                    self.assertEqual({side: len(rows) for side, rows in sides.items()},
+                        {"original": 70, "replacement": 70})
 
     def test_missing_input_region_is_rejected_by_the_buffer_contract(self):
         case = copy.deepcopy(camera_cases.CASES[0])
