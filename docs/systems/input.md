@@ -35,6 +35,20 @@ The executable's imports show which input libraries it uses, and which calls fro
 | `libSceUserService` | `sceUserServiceInitialize`, `sceUserServiceGetInitialUser`, `sceUserServiceGetLoginUserIdList`, `sceUserServiceGetUserName`, `sceUserServiceGetEvent`, `sceUserServiceTerminate` | Pads and the mouse are opened for a user, starting with the user who launched the game. |
 | `libSceImeDialog` | `sceImeDialogInit`, `sceImeDialogGetStatus`, `sceImeDialogGetResult`, `sceImeDialogAbort`, `sceImeDialogTerm` | Typed text (the character name, for example) goes through the system keyboard dialog; there is no keyboard library. |
 
+**What the game's pad calls show.** Paleblood's runtime answers these calls ([#373](https://github.com/Yharnam-Hunters/Paleblood/pull/373),
+[#431](https://github.com/Yharnam-Hunters/Paleblood/pull/431); see Runtime system calls), and the
+executable's own calls fix their shapes:
+
+- before each `scePadReadState` (`0x02a90168`, `0x02a91948`) it clears the 120-byte state block,
+  and afterwards it tests the "connected" byte at offset `0x4c`;
+- it reads the touch pad's resolution and the sticks' deadzones from
+  `scePadGetControllerInformation`, and treats a stick within `0x80` ± that deadzone as centred;
+- `scePadInit` is called once (`0x02fa6182`) and its result is not read; vibration is set at
+  `0x02a9c7c1` and stopped at `0x02a9c822`.
+
+With `--input host` the runtime feeds a real gamepad and the keyboard into these calls. That is the
+runtime's side; the game code that reads the state is not decompiled yet.
+
 Functions already found, still unnamed (open to claim):
 
 | Address | Size | Library calls | Likely role |
@@ -81,8 +95,9 @@ change it:
 ## Open questions
 
 - What the two pad map entries keyed by globals are, and what the owner the step advances is.
-- Where `scePadReadState` is called, and what the game keeps of each state (the start of pad polling).
-- Pad mapping, dead zones and input buffering have not been studied yet. Dead zones are not set
-  through the library (only the motion sensor's deadband is), so the sticks' dead zones are the
-  game's own code.
+- What the functions around the two `scePadReadState` calls (`0x02a90168`, `0x02a91948`) keep of
+  each state (the start of pad polling).
+- Pad mapping and input buffering have not been studied yet. The sticks' dead zones are applied by
+  the game's own code, from the deadzone the controller information reports (only the motion
+  sensor's deadband is set through the library).
 - Whether the mouse path is used by anything in the shipped game.
