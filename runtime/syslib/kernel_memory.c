@@ -22,11 +22,16 @@
 
    The pool is a host memory file, created on first use: an allocation is a range of it, a map is a
    host mapping of that range, so two maps of one range see the same bytes, as physical memory
-   does. Its size is this runtime's choice (RT_DIRECT_MEMORY_SIZE), not a measured PS4 value. Every
+   does. Where a map goes is the system's choice when the title gives no address hint: a GPU-visible
+   one (protection with GPU bits) goes at GPU_MEMORY_BASE + its offset in the pool, so that the
+   renderer's GPU reaches every such address at one fixed distance (runtime/gpu_memory.h); the
+   others go anywhere free in the map window, which starts past that region. A second GPU-visible
+   map of a range, which would need the same place, stops by name. Its size is this runtime's choice (RT_DIRECT_MEMORY_SIZE), not a measured PS4 value. Every
    case whose PS4 answer is not established stops by the function's name instead of guessing: map
    flags, an address hint in use or off the alignment, protection beyond CPU and GPU read/write, a range that does not fit, releasing
    part of an allocation or a mapped one, and the error values. */
 #define _GNU_SOURCE
+#include "runtime/gpu_memory.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
@@ -46,6 +51,7 @@
 #define DIRECT_PAGE 0x4000ull
 
 enum { PROT_CPU_READ = 0x1, PROT_CPU_WRITE = 0x2, PROT_GPU_READ = 0x10, PROT_GPU_WRITE = 0x20 };
+enum { MAP_NO_OVERWRITE = 0x80 }; /* sceKernelMapDirectMemory flags (shadPS4 kernel memory.h) */
 enum { MEMORY_TYPE_WB_ONION = 0x0, MEMORY_TYPE_WC_GARLIC = 0x3, MEMORY_TYPE_WB_GARLIC = 0xa };
 enum { MAX_RANGES = 1024 };
 
@@ -90,9 +96,23 @@ static uint64_t align_up(uint64_t value, uint64_t alignment) { return (value + a
    reused; running out of the window stops by name. */
 #define MAP_WINDOW_START 0x2000000000ull
 #define MAP_WINDOW_END 0xe000000000ull
+/* The window's first RT_DIRECT_MEMORY_SIZE bytes hold GPU-visible direct maps at their pool
+   offsets; everything else the system places goes after them. */
+#define GPU_MEMORY_BASE MAP_WINDOW_START
 
 static pthread_mutex_t window_lock = PTHREAD_MUTEX_INITIALIZER;
-static uint64_t window_next = MAP_WINDOW_START;
+static uint64_t window_next = GPU_MEMORY_BASE + RT_DIRECT_MEMORY_SIZE;
+
+uint64_t rt_gpu_memory_base(void) { return GPU_MEMORY_BASE; }
+
+int rt_gpu_memory_pool(int *fd, uint64_t *size)
+{
+    pthread_mutex_lock(&pool_lock);
+    const int created = pool_fd >= 0;
+    if (created) *fd = pool_fd, *size = RT_DIRECT_MEMORY_SIZE;
+    pthread_mutex_unlock(&pool_lock);
+    return created ? 0 : -1;
+}
 
 /* An aligned address in the window with length bytes free after it, for a map the caller makes
    with MAP_FIXED_NOREPLACE. A host mapping already there is stepped over. */
@@ -123,10 +143,10 @@ static uint64_t first_fit(uint64_t from, uint64_t limit, uint64_t length, uint64
     for (int i = 0; i < range_count; i++) {
         const uint64_t range_end = ranges[i].start + ranges[i].length;
         if (range_end <= candidate) continue;             /* wholly below the candidate */
-        if (candidate + length <= ranges[i].start) break; /* the gap before this range is enough */
+        if (candidate <= ranges[i].start && length <= ranges[i].start - candidate) break; /* the gap before this range is enough */
         candidate = align_up(range_end, alignment);       /* overlaps: try just past it */
     }
-    *found = candidate + length <= limit;
+    *found = candidate <= limit && length <= limit - candidate;
     return candidate;
 }
 
@@ -167,7 +187,8 @@ static int32_t allocate_direct_memory(int64_t search_start, int64_t search_end, 
 static int range_holding(uint64_t start, uint64_t length)
 {
     for (int i = 0; i < range_count; i++)
-        if (start >= ranges[i].start && start + length <= ranges[i].start + ranges[i].length) return i;
+        if (start >= ranges[i].start && start - ranges[i].start < ranges[i].length
+            && length <= ranges[i].length - (start - ranges[i].start)) return i;
     return -1;
 }
 
@@ -216,7 +237,9 @@ static int32_t map_direct_memory(void **address, uint64_t length, int32_t protec
 {
     static const char name[] = "sceKernelMapDirectMemory";
     if (!address) rt_fatal(name, "no variable for the address: the error value is not established");
-    if (flags) rt_fatal(name, "map flags (a fixed address and the others) are not established");
+    /* No overwrite (0x80, shadPS4's kernel memory.h) keeps a map off memory already mapped; the runtime
+       never replaces a mapping (hints are placed with MAP_FIXED_NOREPLACE), so it changes nothing. */
+    if (flags & ~MAP_NO_OVERWRITE) rt_fatal(name, "map flags other than no-overwrite (a fixed address and the others) are not established");
     /* The runtime has no GPU yet: GPU access is accepted and the host mapping takes the CPU bits. */
     if (!protection || (protection & ~(PROT_CPU_READ | PROT_CPU_WRITE | PROT_GPU_READ | PROT_GPU_WRITE)))
         rt_fatal(name, "protection other than CPU and GPU read and write is not established");
@@ -238,6 +261,15 @@ static int32_t map_direct_memory(void **address, uint64_t length, int32_t protec
         if ((uintptr_t)aligned & (alignment - 1)) rt_fatal(name, "an address hint off the alignment: the answer is not established");
         void *const got = mmap(aligned, length, host_protection, MAP_SHARED | MAP_FIXED_NOREPLACE, pool(name), (off_t)start);
         if (got != aligned) rt_fatal(name, "an address hint in use: where the system then maps is not established");
+    } else if (protection & (PROT_GPU_READ | PROT_GPU_WRITE)) {
+        /* At its offset in the pool, where the GPU reaches it (runtime/gpu_memory.h). The base is
+           aligned far beyond any map alignment, so the address is aligned when the offset is. */
+        aligned = (unsigned char *)(uintptr_t)(GPU_MEMORY_BASE + (uint64_t)start);
+        if ((uint64_t)start & (alignment - 1))
+            rt_fatal(name, "a GPU-visible map whose pool offset is off its alignment: where it goes is not established");
+        void *const got = mmap(aligned, length, host_protection, MAP_SHARED | MAP_FIXED_NOREPLACE, pool(name), (off_t)start);
+        if (got != aligned)
+            rt_fatal(name, "a second GPU-visible map of a pool range: the runtime keeps one, at the range's GPU address");
     } else {
         aligned = window_place(name, length, alignment, host_protection, MAP_SHARED, pool(name), (off_t)start);
     }
@@ -295,19 +327,23 @@ static int32_t map_flexible_memory(void **address, uint64_t length, int32_t prot
 /* sceKernelQueryMemoryProtection(void *address, void **start, void **end, int32_t *protection), as
    the OpenOrbis homebrew SDK's libkernel.h declares it: the protection of the mapping that holds
    an address. The executable's helpers (0x02abad98, 0x02abadf8) pass no start or end and test the
-   protection's CPU read bit (1) and GPU read bit (0x10) of memory it mapped. The runtime answers
-   the protection asked for when it made the mapping. A start or end (whether end is inclusive is
-   not established), an address outside the mappings it made (other memory is not tracked yet) and
-   a missing variable stop by name. */
+   protection's CPU read bit (1) and GPU read bit (0x10) of memory it mapped; another
+   (0x02d031df, reached once the movie player runs) passes a start and an end and reads only the
+   protection. The runtime answers the protection asked for when it made the mapping, and the
+   mapping's start and its end one past the last byte (exclusive), as shadPS4's
+   MemoryManager::QueryProtection and PS4Recomp's ps4_direct_mem.c both answer. An address outside
+   the mappings it made (other memory is not tracked yet) and a missing protection variable stop by
+   name. */
 static int32_t query_memory_protection(const void *address, void **start, void **end, int32_t *protection)
 {
     static const char name[] = "sceKernelQueryMemoryProtection";
-    if (start || end) rt_fatal(name, "a start or end: whether end is inclusive is not established");
     if (!protection) rt_fatal(name, "no variable for the protection: the error value is not established");
     guest_mapping m;
     if (!mapping_holding((uintptr_t)address, &m))
         rt_fatal(name, "an address outside the runtime's direct and flexible mappings: not tracked yet");
     *protection = m.protection;
+    if (start) *start = (void *)m.start;
+    if (end) *end = (void *)(m.start + m.length); /* exclusive */
     return 0;
 }
 

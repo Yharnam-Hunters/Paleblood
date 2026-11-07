@@ -1,4 +1,8 @@
-# Images allowed in this repository: recordings of our own tools' output only. No screenshots,
-# clips or images of the game, ever (CONTRIBUTING.md, Rules). tools/check_no_game_data.py refuses
-# any image or video file that is not listed here. One per line: path  # the command that made it
-docs/assets/verify.gif  # tools/terminal_gif.py --rows 25 running tools/verify.py run --function frame_timing_pace_frame on the recorded cases, stock and with --patch '...:60 FPS++' --env BB_TARGET_FPS=60
+# Images allowed in this repository: our own work only: recordings of our tools' output, and
+# frames drawn by Paleblood's own renderer at full resolution, added by the maintainer with
+# attribution (CONTRIBUTING.md, Rules). No extracted game images or assets.
+# tools/check_no_game_data.py refuses any image or video file that is not listed here.
+# One per line: path  # the command that made it
+docs/assets/status-light.svg  # tools/progress.py --update-readme (tools/status_card.py): the README status card, drawn from symbols/
+docs/assets/status-dark.svg  # tools/progress.py --update-readme (tools/status_card.py): the README status card, dark theme
+docs/assets/title-screen.png  # pbboot (tools/boot.py --game-lib --display headless --display-capture): the first title-screen frame drawn by Paleblood's renderer, 1920x1080 as rendered; added by the maintainer 2026-11-06

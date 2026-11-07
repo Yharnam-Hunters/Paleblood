@@ -1,0 +1,41 @@
+name: macos-guest-tls
+
+on:
+  push:
+    # main only: a pull request's branch is checked by its pull_request run and the merge queue's
+    # temporary branch by its merge_group run, so a push to either would test the same commit again.
+    branches: [main]
+    paths:
+      - '.github/workflows/macos-guest-tls.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/DarwinGuestTLS.cmake'
+      - 'runtime/guest_tls_darwin.c'
+      - 'runtime/include/runtime/guest_tls.h'
+      - 'test/test_guest_tls_darwin.c'
+      - 'test/test_guest_tls_failures.c'
+  pull_request:
+    paths:
+      - '.github/workflows/macos-guest-tls.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/DarwinGuestTLS.cmake'
+      - 'runtime/guest_tls_darwin.c'
+      - 'runtime/include/runtime/guest_tls.h'
+      - 'test/test_guest_tls_darwin.c'
+      - 'test/test_guest_tls_failures.c'
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  owned-tls:
+    name: Owned guest TLS (Darwin x86-64)
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure normal root build
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64
+      - name: Build owned library and tests from root
+        run: cmake --build build --target guest_tls_owned test_guest_tls_darwin test_guest_tls_failures --parallel 2
+      - name: Qualify owned GS/TSD profile and failure handling
+        run: ctest --test-dir build -R '^darwin_guest_tls_' --output-on-failure --no-tests=error

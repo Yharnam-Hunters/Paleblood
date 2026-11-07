@@ -21,8 +21,20 @@ v1 interface before `bbgame_init`; the callback then writes a 14-byte x86-64 ind
 jump at the image-relative function entry. This form preserves every guest argument register.
 The host must keep the mapped image writable and executable until hook installation finishes.
 The callback bounds-checks the complete function extent and rejects short functions and null
-targets. It is an additive host component; the existing scaffold still owns full game loading and
-execution.
+targets. The own boot harness can load a same-architecture host library with
+`pbboot EBOOT.elf --game-lib /path/to/libbbgame.so`. The path follows the host
+loader's `dlopen` rules; an absolute path is recommended, but is not required. After mapping all objects and
+registering the main thread, it initializes this callback and calls the library's `bbgame_init`
+before the first module or executable entry. A missing library/entry or initialization failure
+stops before guest execution; a failed initializer may already have changed hook bytes, so that
+image must not be entered. The library stays loaded until process exit. The current Linux image
+is writable/executable during installation; a future memory backend must preserve this ordering
+while introducing its own protection transitions.
+
+Omitting the flag preserves plugin-free diagnostic boot. `--imports` lists bindings without
+loading the game library, even when both flags are provided. This bridge connects completed
+replacements to the own runtime; remaining boot services and graphics still determine how far
+the guest reaches.
 
 Roadmap, in order: loader (done) → kernel, threads and memory → files → input → audio → video
 out → GNM and shaders (the largest). `tools/boot.py` runs the boot harness and records how far
@@ -35,8 +47,9 @@ Clean room: written from public documentation (NID databases, psdevwiki), our ow
 reverse engineering and observed behaviour. No code copied from, or modelled line by line on,
 another emulator or runtime.
 
-Image allocations use `rt_map_anonymous_at`: Linux retains `MAP_FIXED_NOREPLACE`; other POSIX
-hosts can request an address as a hint and release a result at another address. This never
-replaces an existing mapping. The portable allocation primitive alone does not make `pbboot`
-build or execute guests on macOS; its thread state, signals and other boot dependencies still
-need platform support.
+Image allocations use `rt_map_anonymous_at`: Linux retains `MAP_FIXED_NOREPLACE`; macOS requests
+the address as a hint, accepts only an exact match, and releases a mapping placed elsewhere.
+Neither path replaces an existing mapping. Linux and macOS are the project's target hosts,
+with [macOS support in progress](../README.md#getting-started). This allocation primitive
+supplies one part of guest execution; host thread state, signals and other boot dependencies
+also need platform support.

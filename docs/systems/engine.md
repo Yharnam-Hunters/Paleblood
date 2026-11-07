@@ -7,7 +7,7 @@ The engine's shared plumbing that every system leans on: its fatal error report,
 **At a glance**
 
 - **Scope:** Engine-wide helpers in Paleblood's `game/engine/`: the fatal error report and singleton check, reference counting, and replaced engine utility functions.
-- **Verified:** `engine_write_stderr`, the string helpers, wide-string set-up, owner storage and a handle-table lookup are edge-verified against constructed cases.
+- **Verified:** `engine_write_stderr`, the string helpers (comparisons, appends, case changes), wide-string set-up, owner storage, a word-and-product store and a handle-table lookup are edge-verified against constructed cases.
 - **Open:** Who calls the stderr writer during play, and with what text.
 
 ## Summary
@@ -58,6 +58,17 @@ Since 4 November the engine's small C-string helpers are mapped too, by [@evill3
 `engine_compare_ascii_ignoring_case` (`0x011c49c0`, compares two strings ignoring letter case,
 [#282](https://github.com/Yharnam-Hunters/Paleblood/pull/282)).
 
+Three more followed on 5 and 6 November, also by [@evill33t](https://github.com/evill33t):
+
+- `engine_string_append` (`0x011c4870`) appends one zero-terminated string to another, a `strcat`
+  that returns the destination ([#337](https://github.com/Yharnam-Hunters/Paleblood/pull/337), from #118);
+- `engine_string_append_counted` (`0x011c48b0`) appends at most a given number of bytes, counting
+  only the low 32 bits of the count, and ends the result with a zero; a count of zero touches
+  neither string ([#337](https://github.com/Yharnam-Hunters/Paleblood/pull/337));
+- `engine_ascii_to_lower` (`0x011c48f0`) lowercases a single character: it changes `A`-`Z` to
+  `a`-`z`, leaves every other byte as it is, and returns the byte as a signed 32-bit value
+  ([#125](https://github.com/Yharnam-Hunters/Paleblood/pull/125)).
+
 ### Wide strings and owned storage
 
 - `engine_wide_string_destroy` (`0x02a44140`) releases a wide (16-bit character) string, and
@@ -67,6 +78,13 @@ Since 4 November the engine's small C-string helpers are mapped too, by [@evill3
   free an object's storage block through its allocator, or replace it with a new 16-byte-aligned
   block of the requested size ([#285](https://github.com/Yharnam-Hunters/Paleblood/pull/285)). What kind of object owns the block is not known yet;
   its only known caller is `0x02713870`.
+
+### Storing a word and a product
+
+`engine_store_word_product` (`0x011c4510`) stores two 32-bit fields of an object: one input as it
+is at offset `0x18`, and the product of two other inputs times four at offset `0x1c`, then
+returns 0 ([#336](https://github.com/Yharnam-Hunters/Paleblood/pull/336), from #115 by [@evill33t](https://github.com/evill33t)). What the two fields mean is not known yet;
+it is called from `0x01111bb0` and through slot 1 of the function table at `0x0500ae48`.
 
 ### Looking up a table entry by handle
 
@@ -82,7 +100,10 @@ By [@evill33t](https://github.com/evill33t): the comparisons in #107, merged in
 [#274](https://github.com/Yharnam-Hunters/Paleblood/pull/274) (18 and 24 cases), and the lookup
 in #110, merged in [#276](https://github.com/Yharnam-Hunters/Paleblood/pull/276) (25 cases).
 Each was brought up to date with `main`, its constructed edge cases pass against the original
-on current `main`, and an independent review approved it.
+on current `main`, and an independent review approved it. The appends ([#337](https://github.com/Yharnam-Hunters/Paleblood/pull/337), 32 and
+48 cases), the word-and-product store ([#336](https://github.com/Yharnam-Hunters/Paleblood/pull/336), 32 cases) and the single-character
+lowercase ([#125](https://github.com/Yharnam-Hunters/Paleblood/pull/125), 291 generated cases) are edge-verified: their constructed
+cases pass against the original. None was checked on recorded game runs.
 
 </details>
 
@@ -91,7 +112,11 @@ on current `main`, and an independent review approved it.
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
 | `0x0111a740` | 20 | `engine_write_stderr` | edge-verified | Forward the string and imported _Stderr object address to fputs; ignore its return and return zero; synthetic wire edge cases only |
+| `0x011c4510` | 15 | `engine_store_word_product` | edge-verified | Store low 32-bit input at owner+0x18 and modulo-32-bit product times four at owner+0x1c; valid unaligned byte view and full zero return; field meanings unknown |
 | `0x011c47f0` | 29 | `engine_string_length` | edge-verified | Engine strlen; scan to the first NUL and return the low 32 length bits zero-extended into RAX; other incoming GP registers are ignored |
+| `0x011c4870` | 51 | `engine_string_append` | edge-verified | NUL-terminated string append returns original destination; includes prefixes beyond four bytes and finite aliases |
+| `0x011c48b0` | 60 | `engine_string_append_counted` | edge-verified | Bounded string append uses low32 count; zero count touches neither pointer; appends NUL after count bytes when needed |
+| `0x011c48f0` | 18 | `engine_ascii_to_lower` | edge-verified | ASCII lowercase of the low input byte; sign-extend the result byte to 32 bits; the upper 32 bits of RAX are zero |
 | `0x011c4910` | 44 | `engine_ascii_to_upper_in_place` | edge-verified | Convert ASCII a-z to A-Z in place through NUL; retain all other bytes and return original pointer; caller 0x01127ca0 |
 | `0x011c4940` | 44 | `engine_ascii_to_lower_in_place` | edge-verified | Convert ASCII A-Z to a-z in place through NUL; retain all other bytes and return original pointer; caller 0x01127ca0 |
 | `0x011c4970` | 29 | `engine_compare_signed_strings` | edge-verified | Compare zero-terminated strings by signed bytes and return their first differing byte subtraction |

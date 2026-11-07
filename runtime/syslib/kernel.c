@@ -1,10 +1,12 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* System call group: kernel, threads and memory (libkernel, libScePosix, libSceSysmodule,
    libSceLibcInternal). */
+#include "runtime/guest_errno.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
@@ -26,6 +28,14 @@ static void kernel_rtld_set_application_heap_api(void **heap_api)
     rt_process.heap_api = heap_api;
 }
 RT_SYSLIB("libkernel", _sceKernelRtldSetApplicationHeapAPI, kernel_rtld_set_application_heap_api);
+
+/* __error(void): the address of the calling thread's errno, FreeBSD's int *__error(void) behind
+   its errno macro. Imported by eboot, libc and libSceFios2. Each guest thread runs on its own host
+   thread, so a thread-local int is that thread's errno. It starts at 0; the runtime's POSIX-style
+   calls set it to a FreeBSD error number when they fail. */
+static _Thread_local int guest_errno;
+int *rt_guest_errno(void) { return &guest_errno; }
+RT_SYSLIB("libkernel", __error, rt_guest_errno);
 
 /* getpagesize, imported by eboot from libScePosix and by libc.elf from libkernel
    (symbols/imports.csv, two rows naming one call): the loader binds an import by library and NID
@@ -65,14 +75,19 @@ static void *libc_memset(void *dest, int c, size_t n)
 }
 RT_SYSLIB("libSceLibcInternal", memset, libc_memset);
 
-/* Sleeps the calling thread for at least the given number of microseconds. A guest thread runs on
-   a host thread, so the host thread sleeps. A host signal that interrupts the sleep is not a guest
-   event (the runtime delivers no signals to the guest), so the sleep resumes with the time left. */
-static void sleep_microseconds(const char *caller, uint32_t microseconds)
+/* Sleeps the calling thread for at least the given time. A guest thread runs on a host thread, so
+   the host thread sleeps. A host signal that interrupts the sleep is not a guest event (the runtime
+   delivers no signals to the guest), so the sleep resumes with the time left. */
+static void sleep_for(const char *caller, struct timespec left)
 {
-    struct timespec left = {.tv_sec = microseconds / 1000000, .tv_nsec = (long)(microseconds % 1000000) * 1000};
     while (nanosleep(&left, &left) != 0)
         if (errno != EINTR) rt_fatal(caller, "the host could not sleep");
+}
+
+static void sleep_microseconds(const char *caller, uint32_t microseconds)
+{
+    sleep_for(caller, (struct timespec){.tv_sec = microseconds / 1000000,
+                                        .tv_nsec = (long)(microseconds % 1000000) * 1000});
 }
 
 /* sceKernelUsleep, imported by eboot and libSceFios2.elf from libkernel. The guest's own verified
@@ -97,6 +112,50 @@ static int posix_usleep(uint32_t microseconds)
     return 0;
 }
 RT_SYSLIB("libScePosix", usleep, posix_usleep);
+
+/* sleep, imported by eboot from libScePosix: suspends the thread for the given seconds and returns
+   the unslept seconds, so 0 once the time has elapsed (POSIX sleep; FreeBSD sleep(3) has the same
+   unsigned int(unsigned int) shape). Only a signal returns early, and the guest gets none. Above
+   INT_MAX FreeBSD's libc sleeps INT_MAX seconds and returns the rest without a signal, which POSIX
+   does not provide for, and no PS4-specific source says which answer the guest gets: that range
+   stops by name. */
+static unsigned int posix_sleep(unsigned int seconds)
+{
+    if (seconds > INT_MAX)
+        rt_fatal("sleep",
+                 "the PS4 answer above INT_MAX seconds (the full sleep, or FreeBSD's remainder) is not established");
+    sleep_for("sleep", (struct timespec){.tv_sec = seconds});
+    return 0;
+}
+RT_SYSLIB("libScePosix", sleep, posix_sleep);
+
+/* FreeBSD amd64 struct timespec: two 64-bit fields, seconds and nanoseconds. */
+typedef struct {
+    int64_t seconds;
+    int64_t nanoseconds;
+} guest_timespec;
+
+/* nanosleep(const struct timespec *rqtp, struct timespec *rmtp), imported by libc.elf from
+   libkernel: POSIX, and FreeBSD nanosleep(2) has the same shape. It suspends the thread for the
+   requested time and returns 0. Only a signal returns early, with the time left in rmtp, and the
+   guest gets none, so rmtp is never written. The request is copied before sleeping, so rqtp and
+   rmtp may name the same object, as POSIX allows. Its errors go through errno, which the runtime
+   does not model, so they stop by name: no request (FreeBSD EFAULT) and nanoseconds outside
+   [0, 1000000000) (POSIX EINVAL). A negative second count is the open case: POSIX does not define
+   it, FreeBSD's kern_time.c returns 0 without sleeping, the host answers EINVAL, and no
+   PS4-specific source says which answer the guest gets. */
+static int kernel_nanosleep(const guest_timespec *rqtp, guest_timespec *rmtp)
+{
+    (void)rmtp;
+    if (!rqtp) rt_fatal("nanosleep", "no requested time: errno is not modelled");
+    if (rqtp->nanoseconds < 0 || rqtp->nanoseconds >= 1000000000)
+        rt_fatal("nanosleep", "nanoseconds outside [0, 1000000000): errno is not modelled");
+    if (rqtp->seconds < 0)
+        rt_fatal("nanosleep", "the PS4 answer for negative seconds (0 at once, or EINVAL) is not established");
+    sleep_for("nanosleep", (struct timespec){.tv_sec = rqtp->seconds, .tv_nsec = rqtp->nanoseconds});
+    return 0;
+}
+RT_SYSLIB("libkernel", nanosleep, kernel_nanosleep);
 
 /* __stack_chk_fail, imported by eboot, libSceFios2.elf and libc.elf from libkernel. Code built with
    the stack protector calls it when a function's saved canary no longer matches the guard, that is,

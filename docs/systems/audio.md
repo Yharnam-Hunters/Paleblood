@@ -7,7 +7,7 @@ The audio system covers sound playback, mixing and music. The game uses the FMOD
 **At a glance**
 
 - **Scope:** Sound playback, mixing, music.
-- **Verified:** `audio_fmod_thread_affinity_lookup` (`0x0111a8c0`) is edge-verified against constructed cases.
+- **Verified:** Three FMOD functions are edge-verified against constructed cases: the thread affinity lookup (`0x0111a8c0`) and two output callbacks (`0x0111b060`, `0x0111b0b0`).
 - **Open:** Playback, mixing and music themselves.
 
 ## Summary
@@ -33,11 +33,52 @@ semaphore wrappers) are FMOD's too; they are described on the [Engine](engine.md
 
 </details>
 
+### FMOD's output device
+
+FMOD learns about the PS4's audio output through a table of callbacks the game installs (at
+`0x0111aed0`). Two of them are mapped and replaced:
+
+- `audio_fmod_output_driver_count` (`0x0111b060`) reports one output driver.
+- `audio_fmod_output_defaults` (`0x0111b0b0`) fills in the output's defaults, each only when FMOD
+  asked for it: a setting word, then what looks like a 48 kHz sample rate and FMOD's 5.1 speaker
+  mode. Those two meanings are hypotheses from the values, not yet confirmed from FMOD's use of
+  them.
+
+<details>
+<summary>How the callbacks were verified</summary>
+
+By [@evill33t](https://github.com/evill33t) in [#114](https://github.com/Yharnam-Hunters/Paleblood/pull/114): both match the original on
+constructed edge cases (every combination of present and missing outputs), and an independent
+review approved it. They are edge-verified, not yet verified against recorded game runs.
+
+</details>
+
+### What the system sees
+
+Paleblood's runtime answers the console's audio calls, which shows what the game asks of them
+(see Runtime system calls):
+
+- **Output:** the game opens two output ports of 256 float samples at 48 kHz in eight channels;
+  its callback at `0x0111b600` asks for that format. The 48 kHz agrees with the sample rate
+  hypothesis above.
+- **Decoding:** its sounds are compressed as ATRAC9 and decoded through the console's audio job
+  manager; the game creates its decoders at `0x01118d9a`, with one to eight channels. Since
+  [#398](https://github.com/Yharnam-Hunters/Paleblood/pull/398) the runtime decodes them with LibAtrac9, and with `--audio host` plays them on
+  your computer ([#406](https://github.com/Yharnam-Hunters/Paleblood/pull/406)). In the maintainer's local runs the game's music and sounds start
+  after about 17 seconds (an observation, not a saved record).
+- **Movies** have a sound port of their own, 1024 samples at 48 kHz ([#420](https://github.com/Yharnam-Hunters/Paleblood/pull/420)).
+
+This is the runtime's side; FMOD's own code above these calls is still mostly unmapped.
+
 ## Key functions
 
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
 | `0x0111a8c0` | 290 | `audio_fmod_thread_affinity_lookup` | edge-verified | FMOD thread-name affinity masks; eight 64-bit slots; nonblocking uses a 23-byte prefix; unknown names leave output untouched |
+| `0x0111b060` | 14 | `audio_fmod_output_driver_count` | edge-verified | FMOD Orbis AudioOut descriptor callback installed by 0x0111aed0; optional output receives one driver; return zero |
+| `0x0111b0b0` | 37 | `audio_fmod_output_defaults` | edge-verified | FMOD output descriptor callback writes 132 then 48000 then 6 to optional outputs; sample-rate and speaker-mode meanings remain hypotheses |
+| `0x011c4810` | 34 | `audio_fmod_string_copy` | edge-verified | NUL-terminated string copy used by FMOD callers; includes terminator and returns destination; finite aliases covered |
+| `0x011c4840` | 38 | `audio_fmod_string_copy_counted` | edge-verified | FMOD bounded string copy uses low32 count; stops at NUL or count without padding; zero count accesses neither pointer |
 
 ## Structs and globals
 
@@ -50,4 +91,7 @@ replacement or a mod would change, and the risk.
 
 ## Open questions
 
-- Everything: this system has not been studied yet.
+- FMOD's mixing, music and sound banks: beyond the functions above, this system has not been
+  studied yet.
+- Whether the speaker-mode value in the output defaults is 5.1, given that the game opens
+  eight-channel ports.

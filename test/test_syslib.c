@@ -1,9 +1,19 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* The runtime's system library implementations, called the way the guest calls them: through the
    RT_SYSLIB registry, by library and symbol. */
+#include "syslib_test.h"
+
+#include "runtime/ajm.h"
+#include "runtime/audio_host.h"
+#include "runtime/display.h"
 #include "runtime/equeue.h"
+#include "runtime/gpu_memory.h"
+#include "runtime/http.h"
+#include "runtime/np.h"
+#include "runtime/pad.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
+#include "runtime/system_service.h"
 
 #include <pthread.h>
 #include <sched.h>
@@ -22,16 +32,20 @@
 static int unresolved_test_entry(void) { return -1; }
 RT_SYSLIB_UNRESOLVED("test", testUnresolvedEntry, unresolved_test_entry);
 
-static int failures;
-#define CHECK(cond)                                                                                \
-    do {                                                                                           \
-        if (!(cond)) {                                                                             \
-            fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #cond);                             \
-            failures++;                                                                            \
-        }                                                                                          \
-    } while (0)
+int failures;
 
-static void *fn(const char *library, const char *symbol)
+/* The tests in test/syslib/, each in its own file (SYSLIB_TEST), run after main's own. */
+static syslib_test *registered_tests;
+
+void syslib_test_register(syslib_test *test)
+{
+    syslib_test **at = &registered_tests;
+    while (*at && strcmp((*at)->name, test->name) < 0) at = &(*at)->next;  /* by name: a fixed order */
+    test->next = *at;
+    *at = test;
+}
+
+void *fn(const char *library, const char *symbol)
 {
     for (const rt_syslib_entry *e = rt_syslib_begin(); e && e != rt_syslib_end(); e++)
         if (!strcmp(e->library, library) && !strcmp(e->symbol, symbol)) return e->fn;
@@ -40,7 +54,7 @@ static void *fn(const char *library, const char *symbol)
     return NULL;
 }
 
-static int is_implemented(const char *library, const char *symbol)
+int is_implemented(const char *library, const char *symbol)
 {
     for (const rt_syslib_entry *e = rt_syslib_begin(); e && e != rt_syslib_end(); e++)
         if (!strcmp(e->library, library) && !strcmp(e->symbol, symbol))
@@ -205,7 +219,11 @@ static void lock_normal_twice(f1 relock)
 static void lock_normal_twice_sce(void) { lock_normal_twice(owner_lock); }
 static void lock_normal_twice_posix(void) { lock_normal_twice(owner_posix_lock); }
 
-static int died_in_fatal(void (*call)(void))
+typedef uint64_t (*attribute_wire)(void *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+static attribute_wire attribute;
+static void video_attribute_null(void) { attribute(NULL, 0, 0, 0, 0, 0, 0); }
+
+int died_in_fatal(void (*call)(void))
 {
     const pid_t child = fork();
     if (child == 0) {
@@ -228,6 +246,44 @@ static int64_t elapsed_us(const struct timespec *start)
 
 static int (*posix_usleep_entry)(uint32_t);
 static void usleep_one_second(void) { posix_usleep_entry(1000000); }
+static unsigned int (*posix_sleep_entry)(unsigned int);
+static void sleep_above_int_max(void) { posix_sleep_entry(0x80000000u); } /* INT_MAX + 1 */
+
+/* The guest's struct timespec: two 64-bit fields, seconds and nanoseconds (FreeBSD amd64). */
+typedef struct {
+    int64_t seconds;
+    int64_t nanoseconds;
+} nanosleep_timespec;
+static int (*nanosleep_entry)(const nanosleep_timespec *, nanosleep_timespec *);
+static void nanosleep_ask(int64_t seconds, int64_t nanoseconds)
+{
+    nanosleep_timespec request = {seconds, nanoseconds};
+    nanosleep_entry(&request, NULL);
+}
+static void nanosleep_no_request(void) { nanosleep_entry(NULL, NULL); }
+static void nanosleep_negative_nanoseconds(void) { nanosleep_ask(0, -1); }
+static void nanosleep_one_billion_nanoseconds(void) { nanosleep_ask(0, 1000000000); }
+static void nanosleep_negative_seconds(void) { nanosleep_ask(-1, 0); }
+/* The host answers each of these requests with EINVAL too, which also stops the process, so the
+   child checks which stop it reached (the observer pattern of test_direct_memory_bounds.c). */
+static const char *nanosleep_expected_reason;
+static void nanosleep_observe_stop(const char *function, const char *reason)
+{
+    _exit(!strcmp(function, "nanosleep") && strstr(reason, nanosleep_expected_reason) ? 0 : 1);
+}
+static int nanosleep_stops_with(void (*call)(void), const char *reason)
+{
+    const pid_t child = fork();
+    if (child == 0) {
+        nanosleep_expected_reason = reason;
+        rt_fatal_observer = nanosleep_observe_stop;
+        call();
+        _exit(2); /* the call returned, so it did not stop */
+    }
+    int status = 0;
+    if (waitpid(child, &status, 0) < 0) return 0;
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
 
 /* The paths whose PS4 answer is not established. The ids are file-scope so a child can unregister
    one the parent registered before forking. */
@@ -240,7 +296,8 @@ static void unregister_unknown_id(void) { netctl_unregister(0x7fff); }
 static void info_of_module_one(void) { netctl_info(1, netctl_shared); }
 /* A size-prefixed buffer of the shape the guest's own sites build (16 at offset 0), on the child's
    stack: the fatal must not write through it, and netctl_shared stays the untouched witness. */
-static void nat_info_with_size(void) { int nat[4] = {16, 0, 0, 0}; netctl_nat(nat); }
+static void nat_info_other_size(void) { int nat[4] = {12, 0, 0, 0}; netctl_nat(nat); }
+static void nat_info_null(void) { netctl_nat(NULL); }
 
 /* libSceSysmodule: a stub module (one the title ships but the runtime does not map) loads as done.
    The ids here are made up; the real ones come from the game's data through runtime/boot.c. */
@@ -340,6 +397,7 @@ static void vq_flags(void) { unsigned char info[0x48]; vq_fn(dm_in_use, 1, info,
 static void vq_size(void) { unsigned char info[0x48]; vq_fn(dm_in_use, 0, info, 0x40); }
 static void dm_map_hint_misaligned(void) { void *a = (void *)0xfd00004000; dm_map(&a, DM_PAGE, DM_RW, 0, dm_mapped, DM_ALIGN); }
 static void dm_map_exec(void) { void *a = NULL; dm_map(&a, DM_PAGE, DM_RW | 0x4, 0, dm_unmapped, DM_PAGE); }
+static void dm_map_gpu_twice(void) { void *a = NULL; dm_map(&a, DM_PAGE, DM_RW | 0x30, 0, dm_unmapped, DM_PAGE); }
 static void dm_map_unallocated(void) { void *a = NULL; dm_map(&a, DM_PAGE, DM_RW, 0, 1ll << 32, DM_PAGE); }
 static void dm_map_past_range(void) { void *a = NULL; dm_map(&a, 2 * DM_PAGE, DM_RW, 0, dm_unmapped, DM_PAGE); }
 static void dm_release_mapped(void) { dm_release(dm_mapped, DM_LENGTH); }
@@ -355,7 +413,7 @@ static f_sema_create sema_create;
 static f_sema_one sema_delete;
 static f_sema_wait sema_wait;
 static f_sema_count sema_signal, sema_poll;
-static void *sema_shared, *sema_prio;
+static void *sema_shared;
 static int sema_order[2], sema_served;
 static pthread_mutex_t sema_order_lock = PTHREAD_MUTEX_INITIALIZER;
 enum { SEMA_FIFO = 1, SEMA_PRIO = 2 };
@@ -378,7 +436,6 @@ static int sema_served_now(void)
     pthread_mutex_unlock(&sema_order_lock);
     return n;
 }
-static void *sema_prio_waiter(void *unused) { (void)unused; sema_wait(sema_prio, 1, NULL); return NULL; }
 /* The runtime's semaphore object, mirrored (runtime/syslib/kernel_sema.c) so a test can see how
    many waiters are inside the wait before it signals; keep the two in step. */
 typedef struct {
@@ -386,7 +443,8 @@ typedef struct {
     pthread_cond_t changed;
     int32_t count, max;
     uint32_t attr;
-    uint64_t next_ticket, serving;
+    uint64_t next_ticket;
+    void *queue;
     int waiters;
 } sema_mirror;
 static int sema_waiters(void *s)
@@ -406,13 +464,6 @@ static void sema_wait_with_timeout(void) { uint32_t t = 1000; sema_wait(sema_sha
 static void sema_wait_null(void) { sema_wait(NULL, 1, NULL); }
 static void sema_signal_past_max(void) { sema_signal(sema_shared, 0x10000); }
 static void sema_poll_empty(void) { sema_poll(sema_shared, 1); }
-static void sema_second_prio_waiter(void)
-{
-    pthread_t first;
-    pthread_create(&first, NULL, sema_prio_waiter, NULL);
-    while (sema_waiters(sema_prio) < 1) sched_yield();
-    sema_wait(sema_prio, 1, NULL);
-}
 
 /* The time of day: a timeval of two 64-bit fields, seconds and microseconds. */
 typedef struct {
@@ -459,6 +510,43 @@ static void *pc_waiter(void *unused)
     return NULL;
 }
 static void pc_init_with_attribute(void) { void *c = NULL, *attr = &c; pc_init(&c, &attr); }
+/* pthread_cond_timedwait: an absolute time on the wall clock, a timespec of two 64-bit fields. */
+typedef struct {
+    int64_t seconds, nanoseconds;
+} pc_timespec;
+static int (*pc_timedwait)(void **, void **, const pc_timespec *);
+static pc_timespec pc_wall_in_ms(int64_t ms)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    int64_t ns = (int64_t)now.tv_sec * 1000000000 + now.tv_nsec + ms * 1000000;
+    return (pc_timespec){ns / 1000000000, ns % 1000000000};
+}
+static int pc_wall_reached(pc_timespec at)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    return now.tv_sec > at.seconds || (now.tv_sec == at.seconds && now.tv_nsec >= at.nanoseconds);
+}
+static int pc_timed_go, pc_timed_result = -1, pc_other_result = -1;
+static void *pc_timed_waiter(void *unused) /* the latest time there is: only the signal ends it */
+{
+    (void)unused;
+    const pc_timespec later = {INT64_MAX, 999999999};
+    pc_lock(&pc_mutex);
+    int r = 0;
+    while (!pc_timed_go && !r) r = pc_timedwait(&pc_cond, &pc_mutex, &later);
+    pc_timed_result = r;
+    pc_unlock(&pc_mutex);
+    return NULL;
+}
+static void *pc_other_waiter(void *unused) /* the mutex belongs to the main thread */
+{
+    (void)unused;
+    const pc_timespec later = pc_wall_in_ms(10000);
+    pc_other_result = pc_timedwait(&pc_cond, &pc_mutex, &later);
+    return NULL;
+}
 
 /* Thread attribute setters: stack size and scheduling policy. */
 typedef int (*f_attr_u64)(void **, uint64_t);
@@ -530,6 +618,107 @@ static void attr_schedparam_out_of_range(void) { void *a = tc_attr(1, 1, 0); con
 static void tc_create_no_attr(void) { void *t; tc_create(&t, NULL, tc_entry, NULL, "t"); }
 static void tc_create_no_stack(void) { void *t, *a = tc_attr(0, 1, 0); tc_create(&t, &a, tc_entry, NULL, "t"); }
 static void tc_create_no_detach(void) { void *t, *a = tc_attr(1, 0, 0); tc_create(&t, &a, tc_entry, NULL, "t"); }
+/* Thread-specific data keys: each thread's own values, destructors when a created thread ends. */
+typedef int (*f_key_create)(int32_t *, void (*)(void *));
+typedef int (*f_key)(int32_t);
+typedef void *(*f_key_get)(int32_t);
+typedef int (*f_key_set)(int32_t, const void *);
+static f_key_create kc_create;
+static f_key kc_delete;
+static f_key_get kc_get;
+static f_key_set kc_set;
+static int32_t kc_key, kc_plain_key, kc_deleted_key, kc_endless_key;
+static int kc_marker;
+static void *kc_seen_before, *kc_seen_in_destructor, *kc_destroyed[4];
+static atomic_int kc_calls, kc_deleted_calls, kc_done;
+/* Sets the value once more on its first call, so a second round calls it again. */
+static void kc_destructor(void *value)
+{
+    const int n = atomic_load(&kc_calls);
+    if (n < 4) kc_destroyed[n] = value;
+    kc_seen_in_destructor = kc_get(kc_key);
+    if (n == 0) kc_set(kc_key, value);
+    atomic_store(&kc_calls, n + 1);
+    if (n == 1) atomic_store(&kc_done, 1);
+}
+static void kc_deleted_destructor(void *value) { (void)value; atomic_fetch_add(&kc_deleted_calls, 1); }
+static void *kc_entry(void *argument)
+{
+    kc_seen_before = kc_get(kc_key);
+    kc_set(kc_key, argument);
+    kc_set(kc_plain_key, argument);    /* no destructor: only cleared */
+    kc_set(kc_deleted_key, argument);
+    kc_delete(kc_deleted_key);         /* deleted while set: its destructor is not called */
+    return NULL;
+}
+static void kc_endless_destructor(void *value) { kc_set(kc_endless_key, value); }
+static void *kc_endless_entry(void *argument)
+{
+    kc_set(kc_endless_key, argument);
+    return NULL;
+}
+static void kc_endless(void)
+{
+    void *t = NULL, *a = tc_attr(1, 1, 1);
+    if (kc_create(&kc_endless_key, kc_endless_destructor) != 0) return;
+    tc_create(&t, &a, kc_endless_entry, &kc_marker, "endless");
+    struct timespec pause = {2, 0};
+    nanosleep(&pause, NULL); /* the thread's end stops the process before this returns */
+}
+/* Runs call in a forked child and answers whether the child ended by _exit(0): no stop by name. */
+static int kc_exits_cleanly(void (*call)(void))
+{
+    const pid_t child = fork();
+    if (child == 0) {
+        call();
+        _exit(0);
+    }
+    int status = 0;
+    if (waitpid(child, &status, 0) < 0) return 0;
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+/* The limits are pinned from both sides: exactly the documented count works, one more stops.
+   Each case runs in a forked child, which first deletes every key the parent left so the child's
+   table is empty, whatever keys the earlier tests still hold. */
+static void kc_fill_128(void)
+{
+    for (int32_t k = 1; k <= 128; k++) kc_delete(k);
+    for (int i = 0; i < 128; i++) {
+        int32_t key = 0;
+        if (kc_create(&key, NULL) != 0 || key < 1 || key > 128) _exit(1);
+    }
+}
+static void kc_too_many(void)
+{
+    kc_fill_128();
+    int32_t key;
+    kc_create(&key, NULL); /* the 129th live key stops by name */
+}
+/* A destructor that sets its value again kc_resets times needs kc_resets + 1 rounds. */
+static int32_t kc_rounds_key;
+static int kc_resets;
+static atomic_int kc_rounds_calls;
+static void kc_rounds_destructor(void *value)
+{
+    if (atomic_fetch_add(&kc_rounds_calls, 1) < kc_resets) kc_set(kc_rounds_key, value);
+}
+static void *kc_rounds_entry(void *argument)
+{
+    kc_set(kc_rounds_key, argument);
+    return NULL;
+}
+static void kc_rounds(void)
+{
+    void *t = NULL, *a = tc_attr(1, 1, 1);
+    if (kc_create(&kc_rounds_key, kc_rounds_destructor) != 0) _exit(1);
+    if (tc_create(&t, &a, kc_rounds_entry, &kc_marker, "rounds") != 0) _exit(1);
+    for (int i = 0; i < 100000 && atomic_load(&kc_rounds_calls) < kc_resets + 1; i++) sched_yield();
+    struct timespec settle = {0, 100 * 1000 * 1000};
+    nanosleep(&settle, NULL); /* room for the stop, or a wrong extra call, after the last one */
+    if (atomic_load(&kc_rounds_calls) != kc_resets + 1) _exit(1);
+}
+static void kc_four_rounds(void) { kc_resets = 3; kc_rounds(); }
+static void kc_five_rounds(void) { kc_resets = 4; kc_rounds(); }
 static void tc_affinity_empty(void) { tc_affinity(tc_seen_self, 0); }
 
 /* The user service's start-up calls. */
@@ -540,6 +729,41 @@ static f_us_none us_terminate;
 static f_us_ids us_initial_user, us_login_list;
 static void us_terminate_uninitialized(void) { us_terminate(); }
 static void us_initial_user_uninitialized(void) { int32_t u; us_initial_user(&u); }
+typedef int32_t (*f_us_name)(int32_t, char *, size_t);
+static f_us_name us_name;
+static int32_t us_user;
+static void us_name_uninitialized(void) { char n[17]; us_name(1, n, sizeof n); }
+static void us_name_other_user(void) { char n[17]; us_name(us_user + 1, n, sizeof n); }
+static void us_name_short(void) { char n[6]; us_name(us_user, n, sizeof n); }
+static void us_name_no_buffer(void) { us_name(us_user, NULL, 17); }
+typedef int32_t (*f_us_event)(int32_t *);
+static f_us_event us_event;
+static void us_event_uninitialized(void) { int32_t e[2]; us_event(e); }
+static void us_event_no_variable(void) { us_event(NULL); }
+
+/* libScePad: one standard controller, the one user's, connected and at rest. */
+typedef int32_t (*f_pad_none)(void);
+typedef int32_t (*f_pad_open)(int32_t, int32_t, int32_t, const void *);
+typedef int32_t (*f_pad_handle)(int32_t);
+typedef int32_t (*f_pad_block)(int32_t, void *);
+static f_pad_none pad_init;
+static f_pad_open pad_open;
+static f_pad_handle pad_close;
+static f_pad_block pad_read, pad_info;
+static int32_t pad_handle;
+static void pad_open_before_init(void) { pad_open(1, 0, 0, NULL); }
+static void pad_init_again(void) { pad_init(); }
+static void pad_open_other_user(void) { pad_open(2, 0, 0, NULL); }
+static void pad_open_special(void) { pad_open(1, 2, 0, NULL); }
+static void pad_open_index(void) { pad_open(1, 0, 1, NULL); }
+static void pad_read_bad_handle(void) { unsigned char d[120]; pad_read(pad_handle + 1, d); }
+static void pad_read_no_block(void) { pad_read(pad_handle, NULL); }
+static void pad_info_no_block(void) { pad_info(pad_handle, NULL); }
+static void pad_read_closed(void) { unsigned char d[120]; pad_read(pad_handle, d); }
+typedef int32_t (*f_pad_vibrate)(int32_t, const uint8_t *);
+static f_pad_vibrate pad_vibrate;
+static void pad_vibrate_missing(void) { pad_vibrate(pad_handle, NULL); }
+static void pad_vibrate_closed(void) { const uint8_t s[2] = {1, 2}; pad_vibrate(pad_handle, s); }
 
 /* System settings: answered from rt_process.system_params. */
 typedef int32_t (*f_sys_param)(int32_t, int32_t *);
@@ -562,7 +786,6 @@ static void flex_partial_page(void) { void *a = NULL; flex_map(&a, 0x1000, 3, 0)
 typedef int32_t (*f_qmp_fn)(const void *, void **, void **, int32_t *);
 static f_qmp_fn qmp_fn;
 static void qmp_unmapped(void) { int32_t p; static char not_mapped; qmp_fn(&not_mapped, NULL, NULL, &p); }
-static void qmp_with_end(void) { int32_t p; void *end; static char x; qmp_fn(&x, NULL, &end, &p); }
 static void flex_exec(void) { void *a = NULL; flex_map(&a, 0x4000, 7, 0); }
 
 /* libSceNet start-up: initialize once, a repeat answers 0x80410110; pools are ids. */
@@ -615,16 +838,42 @@ static void clock_unknown(void) { int64_t ts[2]; clock_gettime_fn(1, ts); }
 static void clock_no_timespec(void) { clock_gettime_fn(0, NULL); }
 typedef uint64_t (*f_u64)(void);
 
-/* libSceAjm start-up: a context id, then the observed module 1 registered once. */
+/* libSceAjm: contexts, ATRAC9 instances, and batches of jobs run when started. */
 typedef int32_t (*f_ajm_init)(int64_t, uint32_t *);
 typedef int32_t (*f_ajm_register)(uint32_t, uint32_t, uint64_t);
-static f_ajm_init ajm_init_fn;
-static f_ajm_register ajm_register_fn;
-static uint32_t ajm_test_context;
-static void ajm_init_reserved(void) { uint32_t c; ajm_init_fn(1, &c); }
-static void ajm_register_unknown_context(void) { ajm_register_fn(99, 1, 0); }
-static void ajm_register_other_module(void) { ajm_register_fn(ajm_test_context, 2, 0); }
-static void ajm_register_twice(void) { ajm_register_fn(ajm_test_context, 1, 0); }
+typedef int32_t (*f_ajm_create)(uint32_t, uint32_t, uint64_t, uint32_t *);
+typedef int32_t (*f_ajm_two)(uint32_t, uint32_t);
+typedef void *(*f_ajm_control)(void *, uint32_t, uint64_t, void *, uint64_t, void *, uint64_t, void *);
+typedef void *(*f_ajm_run)(void *, uint32_t, uint64_t, void *, uint64_t, void *, uint64_t, void *, uint64_t, void *);
+typedef int32_t (*f_ajm_start)(uint32_t, const void *, uint32_t, int32_t, void *, uint32_t *);
+typedef int32_t (*f_ajm_wait)(uint32_t, uint32_t, uint32_t, void *);
+static f_ajm_run ajm_run_fn;
+static f_ajm_start ajm_start_fn;
+static uint32_t ajm_test_context, ajm_test_instance;
+/* A stand-in ATRAC9 decoder for the tests (no ATRAC9 data may be in the repository): each frame
+   reads ajm_fake_frame_bytes and writes 256 stereo samples numbered from ajm_fake_next. */
+static int ajm_fake_frame_bytes = 256, ajm_fake_fail;
+static int16_t ajm_fake_next;
+static int ajm_fake_handle;
+static void *ajm_fake_open(const uint8_t config[4], uint32_t *channels) { *channels = 2; return config[0] == 0xFE ? &ajm_fake_handle : NULL; }
+static int ajm_fake_decode(void *d, const uint8_t *in, int16_t *pcm, int *used)
+{
+    (void)d, (void)in;
+    if (ajm_fake_fail) return -5;
+    for (int k = 0; k < 256 * 2; k++) pcm[k] = ajm_fake_next++;
+    *used = ajm_fake_frame_bytes;
+    return 0;
+}
+static void ajm_fake_release(void *d) { (void)d; }
+/* Runs one job on ajm_test_instance: a run job with input and output, or a control job. */
+static int32_t ajm_job(uint64_t flags, const void *in, uint32_t in_size, void *out, uint32_t out_size, void *sideband, uint32_t sideband_size)
+{
+    static uint8_t batch[0x60];
+    uint32_t id;
+    const uint8_t *end = ajm_run_fn(batch, ajm_test_instance, flags, (void *)in, in_size, out, out_size, sideband, sideband_size, NULL);
+    const int32_t started = ajm_start_fn(ajm_test_context, batch, (uint32_t)(end - batch), 0, NULL, &id);
+    return started ? started : ((int32_t (*)(uint32_t, uint32_t, uint32_t, void *))fn("libSceAjm", "sceAjmBatchWait"))(ajm_test_context, id, 0, NULL);
+}
 
 /* libSceAudioOut start-up: initialize once, then open the observed main port. */
 typedef int32_t (*f_ao_init)(void);
@@ -650,6 +899,13 @@ typedef int32_t (*f_kstat)(const char *, void *);
 static f_kstat kstat_fn;
 static void kstat_outside(void) { unsigned char st[120]; kstat_fn("/download0/x", st); }
 static void kstat_dotdot(void) { unsigned char st[120]; kstat_fn("/app0/../etc/passwd", st); }
+typedef int (*f_pstat)(const char *, void *);
+typedef int *(*f_errno)(void);
+static f_pstat pstat_fn;
+static void pstat_outside(void) { unsigned char st[120]; pstat_fn("/download0/x", st); }
+static void pstat_no_buffer(void) { pstat_fn("/app0/data.bin", NULL); }
+static int *other_thread_errno;
+static void *errno_of_thread(void *arg) { other_thread_errno = ((f_errno)arg)(); return NULL; }
 /* Whether an address fits a GPU base-address field: below 2^40, so (address >> 8) fits 32 bits. */
 static int gpu_addressable(const void *address)
 {
@@ -734,11 +990,42 @@ static void posix_create_without_attr(void)
 static void vo_flip_other_mode(void) { vo_flip_fn(vo_handle, 0, 3, 0); }
 typedef int32_t (*f_gnm_submit)(uint32_t, void **, uint32_t *, void **, uint32_t *);
 static f_gnm_submit gnm_submit_fn;
-static void gnm_submit_one(uint32_t *packets, uint32_t dwords)
+static int32_t gnm_submit_one_result(uint32_t *packets, uint32_t dwords)
 {
     void *buffers[1] = {packets};
     uint32_t bytes[1] = {dwords * 4};
-    gnm_submit_fn(1, buffers, bytes, NULL, NULL);
+    return gnm_submit_fn(1, buffers, bytes, NULL, NULL);
+}
+static void gnm_submit_one(uint32_t *packets, uint32_t dwords) { gnm_submit_one_result(packets, dwords); }
+static uint32_t gnm_constant_packets[2] = {0xc0002400u, 0};
+static void gnm_submit_with_constant(void)
+{
+    static uint32_t draw[2] = {0xc0001000u, 0}; /* NOP */
+    void *buffers[1] = {draw}, *constants[1] = {gnm_constant_packets};
+    uint32_t bytes[1] = {8}, constant_bytes[1] = {8};
+    gnm_submit_fn(1, buffers, bytes, constants, constant_bytes);
+}
+static void gnm_submit_constant_without_sizes(void)
+{
+    static uint32_t draw[2] = {0xc0001000u, 0};
+    void *buffers[1] = {draw}, *constants[1] = {NULL};
+    uint32_t bytes[1] = {8};
+    gnm_submit_fn(1, buffers, bytes, constants, NULL);
+}
+static void gnm_submit_dma_fill(void)
+{
+    /* DMA_DATA filling memory with a value (source select 2): the stand-in does not fill */
+    static uint32_t target[4];
+    const uint64_t at = (uint64_t)(uintptr_t)target;
+    uint32_t p[7] = {0xc0055000u, 0x40000000u, 0x12345678u, 0, (uint32_t)at, (uint32_t)(at >> 32), 16};
+    gnm_submit_one(p, 7);
+}
+static void gnm_submit_dma_other_register(void)
+{
+    static uint32_t source[25];
+    const uint64_t from = (uint64_t)(uintptr_t)source;
+    uint32_t p[7] = {0xc0055000u, 0x60000000u, (uint32_t)from, (uint32_t)(from >> 32), 0x30230u, 0, 0x28200064u};
+    gnm_submit_one(p, 7);
 }
 static void gnm_submit_unknown(void) { static uint32_t p[2] = {0xc0002400u, 0}; gnm_submit_one(p, 2); } /* opcode 0x24 */
 static uint32_t gnm_wait_label;
@@ -753,6 +1040,125 @@ static void gnm_submit_unmet_wait(void)
 static void vo_flip_bad_buffer(void) { vo_flip_fn(vo_handle, 9, 2, 0); }
 static void vo_open_other(void) { vo_open_fn(0xff, 0, 0, NULL); }
 
+/* libSceRtc: the host's local time, and ticks in microseconds since 0001-01-01. */
+typedef struct { uint16_t year, month, day, hour, minute, second; uint32_t microsecond; } rtc_time;
+typedef int32_t (*f_rtc_now)(rtc_time *);
+typedef int32_t (*f_rtc_tick)(const rtc_time *, uint64_t *);
+typedef int32_t (*f_rtc_resolution)(void);
+static f_rtc_now rtc_now;
+static f_rtc_tick rtc_tick;
+static void rtc_now_nothing(void) { rtc_now(NULL); }
+static void rtc_tick_february_30(void) { const rtc_time t = {2026, 2, 30, 0, 0, 0, 0}; uint64_t k; rtc_tick(&t, &k); }
+static void rtc_tick_leap_2100(void) { const rtc_time t = {2100, 2, 29, 0, 0, 0, 0}; uint64_t k; rtc_tick(&t, &k); }
+static void rtc_tick_microsecond(void) { const rtc_time t = {2026, 1, 1, 0, 0, 0, 1000000}; uint64_t k; rtc_tick(&t, &k); }
+typedef int32_t (*f_rtc_set)(rtc_time *, const uint64_t *);
+static f_rtc_set rtc_set;
+static void rtc_set_year_10000(void) { rtc_time t; const uint64_t k = 315537897600000000ull; rtc_set(&t, &k); } /* 10000-01-01 */
+static void rtc_set_no_tick(void) { rtc_time t; rtc_set(&t, NULL); }
+typedef int32_t (*f_rtc_weekday)(int32_t, int32_t, int32_t);
+static f_rtc_weekday rtc_weekday;
+static void rtc_weekday_february_29_2023(void) { rtc_weekday(2023, 2, 29); }
+static void rtc_weekday_month_13(void) { rtc_weekday(2026, 13, 1); }
+static void rtc_tick_no_variable(void) { const rtc_time t = {2026, 1, 1, 0, 0, 0, 0}; rtc_tick(&t, NULL); }
+
+/* PlayGo (libScePlayGo): the title's own calls, against a package manifest of three chunks. */
+typedef int32_t (*f_pg_init)(const void *);
+typedef int32_t (*f_pg_open)(int32_t *, const void *);
+typedef int32_t (*f_pg_chunks)(int32_t, uint16_t *, uint32_t, uint32_t *);
+typedef int32_t (*f_pg_locus)(int32_t, const uint16_t *, uint32_t, int8_t *);
+static f_pg_init pg_init;
+static f_pg_open pg_open;
+static f_pg_chunks pg_chunks;
+static f_pg_locus pg_locus;
+static int32_t pg_handle;
+static void pg_open_first(void) { int32_t h; pg_open(&h, NULL); }
+static void pg_init_nothing(void) { pg_init(NULL); }
+static void pg_open_with_params(void) { int32_t h; const int params = 1; pg_open(&h, &params); }
+static void pg_chunks_no_manifest(void) { uint16_t ids[100]; uint32_t n; pg_chunks(pg_handle, ids, 100, &n); }
+static void pg_chunks_short(void) { uint16_t ids[2]; uint32_t n; pg_chunks(pg_handle, ids, 2, &n); }
+static void pg_chunks_bad_handle(void) { uint16_t ids[100]; uint32_t n; pg_chunks(pg_handle + 1, ids, 100, &n); }
+static void pg_locus_unknown(void) { const uint16_t ids[1] = {3}; int8_t loci[1]; pg_locus(pg_handle, ids, 1, loci); }
+
+/* PSN offline: matchmaking start-up and the PSN manager's sign-in state. */
+typedef int32_t (*f_np_state)(int32_t, uint32_t *);
+static f_np_state np_state;
+static void np_state_other_user(void) { uint32_t st; np_state(7, &st); }
+
+/* libSceNet epoll sets, offline: waits end only by timeout, abort or destroy. */
+typedef int32_t (*f_ep_create)(const char *, int32_t);
+typedef int32_t (*f_ep_wait)(int32_t, void *, int32_t, int32_t);
+typedef int32_t (*f_ep_id_flags)(int32_t, int32_t);
+typedef int32_t (*f_ep_id)(int32_t);
+typedef int32_t *(*f_net_errno)(void);
+static f_ep_wait ep_wait;
+static f_net_errno net_errno_fn;
+static int32_t ep_waiter_id, ep_waiter_result, ep_waiter_errno;
+static void *ep_waiter(void *arg)
+{
+    unsigned char events[24 * 4];
+    ep_waiter_result = ep_wait(ep_waiter_id, events, 4, (int32_t)(intptr_t)arg);
+    ep_waiter_errno = *net_errno_fn();
+    return NULL;
+}
+
+/* scePthreadExit: a guest thread ends from deep in its calls, its key destructors still run. */
+typedef void (*f_thread_exit)(void *);
+static f_thread_exit te_exit;
+static int32_t te_key;
+static atomic_int te_after_exit, te_destructor_calls;
+static void *te_destroyed;
+static void te_destructor(void *value) { te_destroyed = value; atomic_fetch_add(&te_destructor_calls, 1); }
+static void __attribute__((noinline)) te_deep(int depth, void *value)
+{
+    if (depth) te_deep(depth - 1, value);
+    else te_exit(value);
+    atomic_store(&te_after_exit, 1); /* never reached */
+}
+static void *te_entry(void *argument)
+{
+    kc_set(te_key, argument);
+    te_deep(2, argument);
+    atomic_store(&te_after_exit, 1); /* never reached */
+    return NULL;
+}
+static void te_exit_main(void) { te_exit(NULL); }
+
+/* libSceSaveData against a temporary save folder. */
+typedef struct { int32_t user; uint32_t pad; const char *title, *dir; const void *fp; uint64_t blocks; uint32_t mode; uint8_t r[36]; } sd_mount_req;
+typedef struct { char point[16]; uint64_t required; uint32_t unused, status; uint8_t r[32]; } sd_mount_res;
+typedef struct { char title[128], subtitle[128], detail[1024]; uint32_t user_param, pad; int64_t mtime; uint8_t r[32]; } sd_param;
+typedef struct { int32_t user; uint32_t pad; const char *title, *dir; uint32_t key, order; uint8_t r[32]; } sd_cond;
+typedef struct { uint32_t hits, pad; char (*names)[32]; uint32_t capacity, set; sd_param *params; void *infos; uint8_t r[16]; } sd_result;
+typedef int32_t (*f_sd_mount)(const sd_mount_req *, sd_mount_res *);
+typedef int32_t (*f_sd_point)(const char *);
+typedef int32_t (*f_sd_set_param)(const char *, uint32_t, const void *, size_t);
+typedef int32_t (*f_sd_search)(const sd_cond *, sd_result *);
+typedef int32_t (*f_sd_setup)(int32_t, uint64_t, const sd_param *);
+typedef int32_t (*f_sd_memory)(int32_t, void *, uint64_t, int64_t);
+static f_sd_mount sd_mount;
+static f_sd_memory sd_get;
+static void sd_mount_other_title(void) { sd_mount_req q = {.user = 1, .title = "CUSA00000", .dir = "X", .mode = 4}; sd_mount_res r; sd_mount(&q, &r); }
+static void sd_mount_other_user(void) { sd_mount_req q = {.user = 9, .dir = "X", .mode = 4}; sd_mount_res r; sd_mount(&q, &r); }
+static void sd_get_past_end(void) { char b[8]; sd_get(1, b, 8, 4093); }
+static int32_t sd_mount_dir(const char *dir, uint32_t mode, char point[16]);
+static int32_t sd_small_stack_result = -1;
+static void *sd_small_stack_mount(void *unused)
+{
+    (void)unused;
+    char point[16];
+    sd_small_stack_result = sd_mount_dir("SMALLSTACK", 4 | 2, point);
+    if (!sd_small_stack_result) sd_small_stack_result = ((f_sd_point)fn("libSceSaveData", "sceSaveDataUmount"))(point);
+    return NULL;
+}
+static int32_t sd_mount_dir(const char *dir, uint32_t mode, char point[16])
+{
+    sd_mount_req q = {.user = 1, .dir = dir, .blocks = 96, .mode = mode};
+    sd_mount_res r;
+    memset(&r, 0, sizeof r);
+    const int32_t e = sd_mount(&q, &r);
+    if (point) memcpy(point, r.point, 16);
+    return e;
+}
 int main(void)
 {
     /* Unresolved entries are still callable diagnostics, but are not reported as implemented. */
@@ -1118,7 +1524,7 @@ int main(void)
     CHECK(is_implemented("libSceNetCtl", "sceNetCtlRegisterCallback"));
     CHECK(is_implemented("libSceNetCtl", "sceNetCtlUnregisterCallback"));
     CHECK(!is_implemented("libSceNetCtl", "sceNetCtlGetInfo"));
-    CHECK(!is_implemented("libSceNetCtl", "sceNetCtlGetNatInfo"));
+    CHECK(is_implemented("libSceNetCtl", "sceNetCtlGetNatInfo"));
     if (failures) return 1;
     netctl_shared = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (netctl_shared == MAP_FAILED) { perror("mmap"); return 1; }
@@ -1181,7 +1587,12 @@ int main(void)
     CHECK(died_in_fatal(register_null_callback));      /* no answer for a null callback */
     CHECK(died_in_fatal(register_null_id));            /* no answer for a null id slot */
     CHECK(died_in_fatal(info_of_module_one));
-    CHECK(died_in_fatal(nat_info_with_size));
+    {   /* offline: "not connected", nothing written; the guest then takes its own NAT type */
+        int nat[4] = {16, -7, -7, -7};
+        CHECK(netctl_nat(nat) == (int)0x80412108u && nat[0] == 16 && nat[1] == -7 && nat[2] == -7 && nat[3] == -7);
+    }
+    CHECK(died_in_fatal(nat_info_other_size));
+    CHECK(died_in_fatal(nat_info_null));
     CHECK(memcmp(netctl_shared, poisoned, sizeof poisoned) == 0);
 
     /* The store survived all of that, because every fatal above was in a child. */
@@ -1227,6 +1638,36 @@ int main(void)
     CHECK(kernel_usleep(0) == 0 && posix_usleep_entry(0) == 0);
     CHECK(died_in_fatal(usleep_one_second));
     CHECK(is_implemented("libkernel", "sceKernelUsleep") && is_implemented("libScePosix", "usleep"));
+
+    /* sleep sleeps at least the seconds asked and returns 0, the unslept seconds. Above INT_MAX
+       FreeBSD's libc returns a remainder without a signal and POSIX does not: it stops by name. */
+    posix_sleep_entry = (unsigned int (*)(unsigned int))fn("libScePosix", "sleep");
+    CHECK(posix_sleep_entry(0) == 0);
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    CHECK(posix_sleep_entry(1) == 0 && elapsed_us(&start) >= 1000000);
+    CHECK(died_in_fatal(sleep_above_int_max));
+    CHECK(is_implemented("libScePosix", "sleep"));
+
+    /* nanosleep sleeps at least the time asked and returns 0. The guest gets no signal, so the
+       remaining-time variable is never written, and the request may be that same variable. The
+       largest valid nanosecond count, 999999999, sleeps. Its errno cases and negative seconds stop
+       by name. */
+    nanosleep_entry = (int (*)(const nanosleep_timespec *, nanosleep_timespec *))fn("libkernel", "nanosleep");
+    nanosleep_timespec nanosleep_asked = {0, 0}, nanosleep_left = {7, 7};
+    CHECK(nanosleep_entry(&nanosleep_asked, &nanosleep_left) == 0);
+    nanosleep_asked = (nanosleep_timespec){0, 999999999};
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    CHECK(nanosleep_entry(&nanosleep_asked, &nanosleep_left) == 0 && elapsed_us(&start) >= 999999);
+    CHECK(nanosleep_left.seconds == 7 && nanosleep_left.nanoseconds == 7);
+    nanosleep_asked = (nanosleep_timespec){1, 50000000};
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    CHECK(nanosleep_entry(&nanosleep_asked, &nanosleep_asked) == 0 && elapsed_us(&start) >= 1050000);
+    CHECK(nanosleep_asked.seconds == 1 && nanosleep_asked.nanoseconds == 50000000);
+    CHECK(nanosleep_stops_with(nanosleep_no_request, "no requested time"));
+    CHECK(nanosleep_stops_with(nanosleep_negative_nanoseconds, "nanoseconds outside"));
+    CHECK(nanosleep_stops_with(nanosleep_one_billion_nanoseconds, "nanoseconds outside"));
+    CHECK(nanosleep_stops_with(nanosleep_negative_seconds, "negative seconds"));
+    CHECK(is_implemented("libkernel", "nanosleep"));
 
     /* __stack_chk_fail never returns: the program ends. That stop is the whole contract, so the
        entry counts as implemented, unlike the fail-loud diagnostics above. */
@@ -1346,6 +1787,11 @@ int main(void)
         CHECK(died_in_fatal(dm_allocate_unknown_type));
         CHECK(died_in_fatal(dm_allocate_no_variable));
         CHECK(died_in_fatal(dm_map_with_flags));
+        /* No overwrite (0x80) with no address: nothing to overwrite, so the map is made as usual, and it
+           is the same memory as the range's other maps (the alias a title makes of its own memory). */
+        void *alias = NULL;
+        CHECK(dm_map(&alias, DM_PAGE, DM_RW, 0x80, first, DM_PAGE) == 0 && alias && alias != a);
+        if (alias && a) CHECK(((volatile unsigned char *)alias)[0] == 0xa5);
         /* A free, aligned address hint is where the map goes; one in use or off the alignment stops. */
         void *hinted = (void *)0xfd00000000;
         CHECK(dm_map(&hinted, DM_PAGE, DM_RW, 0, first, DM_PAGE) == 0 && hinted == (void *)0xfd00000000);
@@ -1373,10 +1819,27 @@ int main(void)
             CHECK(died_in_fatal(vq_size));
         }
         CHECK(died_in_fatal(dm_map_exec));
-        /* GPU access (0x10 read, 0x20 write) is accepted; the CPU bits make the host mapping. */
+        /* GPU access (0x10 read, 0x20 write) is accepted; the CPU bits make the host mapping. A
+           GPU-visible map the system places goes at the GPU memory base plus its pool offset
+           (runtime/gpu_memory.h), and is the same memory as the range's other maps. */
         void *gpu = NULL;
         CHECK(dm_map(&gpu, DM_PAGE, DM_RW | 0x30, 0, dm_unmapped, DM_PAGE) == 0 && gpu);
+        CHECK((uintptr_t)gpu == rt_gpu_memory_base() + (uint64_t)dm_unmapped);
         if (gpu) ((volatile unsigned char *)gpu)[0] = 1;
+        if (gpu && hinted == (void *)0xfd00000000) {
+            void *deep_again = (void *)0xfd00100000; /* the CPU map of the same range, above */
+            CHECK(((volatile unsigned char *)deep_again)[0] == 1);
+        }
+        CHECK(died_in_fatal(dm_map_gpu_twice));
+        /* The pool's file, for the renderer's own mapping of the whole pool. */
+        int pool_file = -1;
+        uint64_t pool_size = 0;
+        CHECK(rt_gpu_memory_pool(&pool_file, &pool_size) == 0 && pool_file >= 0 && pool_size == pool);
+        /* A GPU-visible map with an address hint keeps the hint, as a CPU one does. */
+        int64_t hinted_gpu_range = -1;
+        CHECK(dm_allocate(0, (int64_t)pool, DM_PAGE, DM_PAGE, 0, &hinted_gpu_range) == 0);
+        void *hinted_gpu = (void *)0xfd00200000;
+        CHECK(dm_map(&hinted_gpu, DM_PAGE, DM_RW | 0x30, 0, hinted_gpu_range, DM_PAGE) == 0 && hinted_gpu == (void *)0xfd00200000);
         CHECK(died_in_fatal(dm_map_unallocated));
         CHECK(died_in_fatal(dm_map_past_range));
         CHECK(died_in_fatal(dm_release_mapped));
@@ -1420,7 +1883,6 @@ int main(void)
             pthread_join(b, NULL);
             CHECK(sema_served == 2 && sema_order[1] == 2);
         }
-        CHECK(sema_create(&sema_prio, "prio", SEMA_PRIO, 0, 1, NULL) == 0);
         /* The answers that are not established stop by name. */
         CHECK(died_in_fatal(sema_create_no_variable));
         CHECK(died_in_fatal(sema_create_bad_attr));
@@ -1430,7 +1892,6 @@ int main(void)
         CHECK(died_in_fatal(sema_wait_null));
         CHECK(died_in_fatal(sema_signal_past_max));
         CHECK(died_in_fatal(sema_poll_empty));
-        CHECK(died_in_fatal(sema_second_prio_waiter));
         CHECK(sema_delete(sema_shared) == 0);
     }
     CHECK(is_implemented("libkernel", "sceKernelCreateSema") && is_implemented("libkernel", "sceKernelDeleteSema") &&
@@ -1472,6 +1933,10 @@ int main(void)
         rt_process.app_boot_param_unread = 1;
         char init[32] = {0}, boot[40];
         memset(boot, 0x5a, sizeof boot);
+        typedef int32_t (*f_ac_addcont)(uint32_t, void *, uint32_t, uint32_t *);
+        const f_ac_addcont ac_addcont = (f_ac_addcont)fn("libSceAppContent", "sceAppContentGetAddcontInfoList");
+        uint32_t hits = 77;
+        CHECK(ac_addcont && ac_addcont(0, NULL, 0, &hits) == (int32_t)0x80D90001u); /* before initialize */
         CHECK(ac_init(init, boot) == 0);
         CHECK(boot[0] == 0x5a && boot[sizeof boot - 1] == 0x5a); /* not written */
         int32_t value = -7;
@@ -1481,12 +1946,28 @@ int main(void)
         CHECK(died_in_fatal(ac_undeclared_param));
         CHECK(died_in_fatal(ac_param_no_variable));
         CHECK(died_in_fatal(ac_init_boot_param_not_declared));
+        /* add-ons: the labels the person owns, each installed, under service label 0 */
+        if (ac_addcont) {
+            CHECK(ac_addcont(0, NULL, 0, &hits) == 0 && hits == 0);              /* none by default */
+            memcpy(rt_process.addconts[0], "SPEXPANSIONDLC03", 17);
+            memcpy(rt_process.addconts[1], "SECONDADDON", 12);
+            rt_process.addcont_count = 2;
+            CHECK(ac_addcont(0, NULL, 0, &hits) == 0 && hits == 2);
+            CHECK(ac_addcont(1, NULL, 0, &hits) == 0 && hits == 0);
+            CHECK(ac_addcont(8, NULL, 0, &hits) == (int32_t)0x80D90002u && ac_addcont(0, NULL, 0, NULL) == (int32_t)0x80D90002u);
+            struct { char label[17], padding[3]; uint32_t status; } list[3];
+            memset(list, 0x5a, sizeof list);
+            CHECK(ac_addcont(0, list, 1, &hits) == 0 && hits == 1);             /* only the space given */
+            CHECK(!strcmp(list[0].label, "SPEXPANSIONDLC03") && list[0].status == 4 && list[1].status == 0x5a5a5a5au);
+            CHECK(ac_addcont(0, list, 3, &hits) == 0 && hits == 2 && !strcmp(list[1].label, "SECONDADDON"));
+            rt_process.addcont_count = 0;
+        }
         rt_process.app_param_count = 0;
         rt_process.app_boot_param_unread = 0;
     }
     CHECK(is_implemented("libSceAppContent", "sceAppContentInitialize") &&
           is_implemented("libSceAppContent", "sceAppContentAppParamGetInt"));
-    /* libScePosix pthread_cond_*: errno values; pthread_cond_timedwait stays unbound. */
+    /* libScePosix pthread_cond_*: errno values. */
     pc_init = (f_pc_init)fn("libScePosix", "pthread_cond_init");
     const f_pc_one pc_destroy = (f_pc_one)fn("libScePosix", "pthread_cond_destroy");
     pc_signal = (f_pc_one)fn("libScePosix", "pthread_cond_signal");
@@ -1514,10 +1995,55 @@ int main(void)
         pthread_join(t, NULL);
         CHECK(pc_woken == 1);
         CHECK(died_in_fatal(pc_init_with_attribute));
+
+        /* pthread_cond_timedwait on the same objects: ETIMEDOUT (60) once the wall clock reaches
+           the time, with the mutex taken back (its owner can unlock it); EINVAL (22) before the
+           wait for no time, negative seconds or nanoseconds outside [0, 1000000000), the mutex
+           still held; 999999999 nanoseconds and second 0 are valid times; EPERM (1) for a thread
+           that does not own the mutex; 0 when signalled in time. */
+        pc_timedwait = (int (*)(void **, void **, const pc_timespec *))fn("libScePosix", "pthread_cond_timedwait");
+        CHECK(pc_timedwait != NULL);
+        if (pc_timedwait) {
+            CHECK(pc_lock(&pc_mutex) == 0);
+            struct timespec pc_start;
+            clock_gettime(CLOCK_MONOTONIC, &pc_start);
+            const pc_timespec pc_past = pc_wall_in_ms(-1000);
+            CHECK(pc_timedwait(&pc_cond, &pc_mutex, &pc_past) == 60);
+            CHECK(pc_unlock(&pc_mutex) == 0 && pc_lock(&pc_mutex) == 0);
+            const pc_timespec pc_epoch = {0, 0}, pc_last_nanosecond = {pc_past.seconds, 999999999};
+            CHECK(pc_timedwait(&pc_cond, &pc_mutex, &pc_epoch) == 60);
+            CHECK(pc_timedwait(&pc_cond, &pc_mutex, &pc_last_nanosecond) == 60);
+            CHECK(elapsed_us(&pc_start) < 1500000); /* a passed time does not wait (generous bound) */
+            clock_gettime(CLOCK_MONOTONIC, &pc_start);
+            const pc_timespec pc_soon = pc_wall_in_ms(50);
+            CHECK(pc_timedwait(&pc_cond, &pc_mutex, &pc_soon) == 60);
+            CHECK(pc_wall_reached(pc_soon) && elapsed_us(&pc_start) >= 40000);
+            const pc_timespec pc_negative_ns = {pc_soon.seconds, -1}, pc_billion_ns = {pc_soon.seconds, 1000000000},
+                              pc_negative_s = {-1, 0};
+            CHECK(pc_timedwait(&pc_cond, &pc_mutex, NULL) == 22);
+            CHECK(pc_timedwait(&pc_cond, &pc_mutex, &pc_negative_ns) == 22);
+            CHECK(pc_timedwait(&pc_cond, &pc_mutex, &pc_billion_ns) == 22);
+            CHECK(pc_timedwait(&pc_cond, &pc_mutex, &pc_negative_s) == 22);
+            pthread_t pc_other;
+            pthread_create(&pc_other, NULL, pc_other_waiter, NULL);
+            pthread_join(pc_other, NULL);
+            CHECK(pc_other_result == 1);
+            CHECK(pc_unlock(&pc_mutex) == 0);
+            pthread_t pc_timed;
+            pthread_create(&pc_timed, NULL, pc_timed_waiter, NULL);
+            for (int i = 0; i < 200; i++) sched_yield();
+            CHECK(pc_lock(&pc_mutex) == 0);
+            pc_timed_go = 1;
+            CHECK(pc_signal(&pc_cond) == 0);
+            CHECK(pc_unlock(&pc_mutex) == 0);
+            pthread_join(pc_timed, NULL);
+            CHECK(pc_timed_result == 0);
+            CHECK(pc_destroy(&pc_cond) == 0); /* no wait left counted */
+        }
     }
     CHECK(is_implemented("libScePosix", "pthread_cond_init") && is_implemented("libScePosix", "pthread_cond_wait") &&
           is_implemented("libScePosix", "pthread_cond_signal") && is_implemented("libScePosix", "pthread_cond_broadcast") &&
-          is_implemented("libScePosix", "pthread_cond_destroy") && !is_implemented("libScePosix", "pthread_cond_timedwait"));
+          is_implemented("libScePosix", "pthread_cond_destroy") && is_implemented("libScePosix", "pthread_cond_timedwait"));
 
     /* scePthreadAttrSetstacksize / Setschedpolicy and pthread_attr_setstacksize, on attributes
        made by scePthreadAttrInit. */
@@ -1620,14 +2146,62 @@ int main(void)
         CHECK(tc_affinity(NULL, 0x30) == (int)0x80020003u); /* no thread: ESRCH, as libthr */
     }
 
+    /* scePthreadKey*: keys are slot + 1, values belong to each thread, a deleted key reads NULL
+       and its slot's next key does not see old values; at a created thread's end each value is
+       cleared and its live key's destructor called, in rounds (FreeBSD libthr thr_spec.c). */
+    kc_create = (f_key_create)fn("libkernel", "scePthreadKeyCreate");
+    kc_delete = (f_key)fn("libkernel", "scePthreadKeyDelete");
+    kc_get = (f_key_get)fn("libkernel", "scePthreadGetspecific");
+    kc_set = (f_key_set)fn("libkernel", "scePthreadSetspecific");
+    if (kc_create && kc_delete && kc_get && kc_set && tc_create) {
+        int main_value = 0;
+        int32_t gone = 0, reused = 0;
+        CHECK(kc_create(&kc_key, kc_destructor) == 0 && kc_key >= 1);
+        CHECK(kc_create(&gone, NULL) == 0 && gone >= 1 && gone != kc_key);
+        CHECK(kc_get(gone) == NULL); /* never set by this thread */
+        CHECK(kc_set(gone, &main_value) == 0 && kc_get(gone) == &main_value);
+        CHECK(kc_delete(gone) == 0 && kc_get(gone) == NULL);
+        CHECK(kc_delete(gone) == (int)0x80020016 && kc_set(gone, &main_value) == (int)0x80020016);
+        CHECK(kc_create(&reused, NULL) == 0 && reused == gone && kc_get(reused) == NULL);
+        CHECK(kc_delete(0) == (int)0x80020016 && kc_set(0, &main_value) == (int)0x80020016 && kc_get(0) == NULL);
+        CHECK(kc_delete(1000) == (int)0x80020016 && kc_get(1000) == NULL);
+        CHECK(kc_create(NULL, NULL) == (int)0x80020016);
+        kc_plain_key = reused;
+        CHECK(kc_create(&kc_deleted_key, kc_deleted_destructor) == 0);
+        CHECK(kc_set(kc_key, &main_value) == 0);
+        void *worker = NULL, *attr = tc_attr(1, 1, 1);
+        CHECK(tc_create(&worker, &attr, kc_entry, &kc_marker, "keys") == 0);
+        for (int i = 0; i < 100000 && !atomic_load(&kc_done); i++) sched_yield();
+        struct timespec settle = {0, 50 * 1000 * 1000};
+        nanosleep(&settle, NULL); /* room for a wrong third call */
+        CHECK(kc_seen_before == NULL); /* the main thread's value is not the worker's */
+        CHECK(atomic_load(&kc_calls) == 2 && kc_destroyed[0] == &kc_marker && kc_destroyed[1] == &kc_marker);
+        CHECK(kc_seen_in_destructor == NULL); /* cleared before the destructor runs */
+        CHECK(atomic_load(&kc_deleted_calls) == 0);
+        CHECK(kc_get(kc_key) == &main_value);
+        CHECK(died_in_fatal(kc_endless));
+        CHECK(kc_exits_cleanly(kc_fill_128)); /* the 128th live key is created */
+        CHECK(died_in_fatal(kc_too_many));    /* only the 129th stops */
+        CHECK(kc_exits_cleanly(kc_four_rounds)); /* exactly 4 destructor calls, the thread ends cleanly */
+        CHECK(died_in_fatal(kc_five_rounds));    /* a value still set after the 4th round stops */
+        CHECK(kc_delete(kc_key) == 0 && kc_delete(reused) == 0);
+    }
+    CHECK(is_implemented("libkernel", "scePthreadKeyCreate") && is_implemented("libkernel", "scePthreadKeyDelete") &&
+          is_implemented("libkernel", "scePthreadGetspecific") && is_implemented("libkernel", "scePthreadSetspecific"));
+
     /* libSceUserService: one user, logged in from the start; a second initialize answers
        0x80960003, as the executable's second site expects. */
     const f_us_init us_init = (f_us_init)fn("libSceUserService", "sceUserServiceInitialize");
     us_terminate = (f_us_none)fn("libSceUserService", "sceUserServiceTerminate");
     us_initial_user = (f_us_ids)fn("libSceUserService", "sceUserServiceGetInitialUser");
     us_login_list = (f_us_ids)fn("libSceUserService", "sceUserServiceGetLoginUserIdList");
-    if (us_init && us_terminate && us_initial_user && us_login_list) {
+    us_name = (f_us_name)fn("libSceUserService", "sceUserServiceGetUserName");
+    us_event = (f_us_event)fn("libSceUserService", "sceUserServiceGetEvent");
+    CHECK(us_name != NULL && us_event != NULL);
+    if (us_init && us_terminate && us_initial_user && us_login_list && us_name && us_event) {
         CHECK(died_in_fatal(us_terminate_uninitialized));
+        CHECK(died_in_fatal(us_event_uninitialized));
+        CHECK(died_in_fatal(us_name_uninitialized));
         CHECK(died_in_fatal(us_initial_user_uninitialized));
         const uint32_t params[4] = {0x2bc, 0, 0, 0};
         CHECK(us_init(params) == 0);
@@ -1635,9 +2209,76 @@ int main(void)
         int32_t user = -7, list[4] = {-7, -7, -7, -7};
         CHECK(us_initial_user(&user) == 0 && user != -1 && user != 0xff && user != -7);
         CHECK(us_login_list(list) == 0 && list[0] == user && list[1] == -1 && list[2] == -1 && list[3] == -1);
+        us_user = user;
+        char name[17];
+        memset(name, 0x7f, sizeof name);
+        CHECK(us_name(user, name, sizeof name) == 0 && strcmp(name, "Hunter") == 0 && name[7] == 0x7f);
+        char exact[7];
+        CHECK(us_name(user, exact, sizeof exact) == 0 && strcmp(exact, "Hunter") == 0); /* the name and its end */
+        CHECK(died_in_fatal(us_name_other_user));
+        CHECK(died_in_fatal(us_name_short));
+        CHECK(died_in_fatal(us_name_no_buffer));
+        int32_t event[2] = {-7, -7};
+        CHECK(us_event(event) == (int32_t)0x80960007u && event[0] == -7 && event[1] == -7); /* no event, nothing written */
+        CHECK(died_in_fatal(us_event_no_variable));
         CHECK(us_terminate() == 0);
         CHECK(us_init(params) == 0);    /* initialized again after a terminate */
         CHECK(us_terminate() == 0);
+    }
+
+    pad_init = (f_pad_none)fn("libScePad", "scePadInit");
+    pad_open = (f_pad_open)fn("libScePad", "scePadOpen");
+    pad_close = (f_pad_handle)fn("libScePad", "scePadClose");
+    pad_read = (f_pad_block)fn("libScePad", "scePadReadState");
+    pad_info = (f_pad_block)fn("libScePad", "scePadGetControllerInformation");
+    pad_vibrate = (f_pad_vibrate)fn("libScePad", "scePadSetVibration");
+    CHECK(pad_init && pad_open && pad_close && pad_read && pad_info && pad_vibrate);
+    if (pad_init && pad_open && pad_close && pad_read && pad_info && pad_vibrate) {
+        CHECK(died_in_fatal(pad_open_before_init));
+        CHECK(pad_init() == 0);
+        CHECK(died_in_fatal(pad_init_again));
+        CHECK(died_in_fatal(pad_open_other_user));
+        CHECK(died_in_fatal(pad_open_special));
+        CHECK(died_in_fatal(pad_open_index));
+        pad_handle = pad_open(1, 0, 0, NULL);
+        CHECK(pad_handle >= 0);
+        CHECK(pad_open(1, 0, 0, NULL) == (int32_t)0x80920004u); /* already opened */
+        unsigned char state[128];
+        memset(state, 0xee, sizeof state);
+        CHECK(pad_read(pad_handle, state) == 0);
+        uint32_t buttons;
+        float w, ax;
+        memcpy(&buttons, state, 4);
+        memcpy(&w, state + 24, 4);
+        memcpy(&ax, state + 28, 4);
+        CHECK(buttons == 0 && state[4] == 0x80 && state[5] == 0x80 && state[6] == 0x80 && state[7] == 0x80);
+        CHECK(state[8] == 0 && state[9] == 0 && w == 1.0f && ax == 0.0f);
+        CHECK(state[0x4c] == 1 && state[119] == 0 && state[120] == 0xee); /* connected; nothing past 120 bytes */
+        unsigned char info[32];
+        memset(info, 0xee, sizeof info);
+        CHECK(pad_info(pad_handle, info) == 0);
+        uint16_t width, height;
+        int32_t connected, device_class;
+        memcpy(&width, info + 4, 2);
+        memcpy(&height, info + 6, 2);
+        memcpy(&connected, info + 12, 4);
+        memcpy(&device_class, info + 16, 4);
+        CHECK(width == 1920 && height == 942 && info[8] > 0 && info[8] < 0x80 && info[9] == info[8]);
+        CHECK(info[10] == 0 && connected == 1 && device_class == 0 && info[27] == 0 && info[28] == 0xee);
+        CHECK(died_in_fatal(pad_read_bad_handle));
+        CHECK(died_in_fatal(pad_read_no_block));
+        CHECK(died_in_fatal(pad_info_no_block));
+        CHECK(rt_pad_vibration() == 0);
+        const uint8_t speeds[2] = {0xc0, 0x40};
+        CHECK(pad_vibrate(pad_handle, speeds) == 0 && rt_pad_vibration() == 0x40c0);
+        const uint8_t stop[2] = {0, 0};
+        CHECK(pad_vibrate(pad_handle, stop) == 0 && rt_pad_vibration() == 0);
+        CHECK(died_in_fatal(pad_vibrate_missing));
+        CHECK(pad_close(pad_handle) == 0);
+        CHECK(died_in_fatal(pad_read_closed));
+        CHECK(died_in_fatal(pad_vibrate_closed));
+        CHECK(pad_open(1, 0, 0, NULL) == pad_handle); /* opened again after a close */
+        CHECK(pad_close(pad_handle) == 0);
     }
 
     /* libSceCommonDialog: the first initialize succeeds, a repeat answers 0x80b80002 as the
@@ -1649,6 +2290,18 @@ int main(void)
     }
 
     /* libSceSystemService: the language the person running the runtime chose. */
+    {   /* the boot splash: hidden when the title says so */
+        typedef int32_t (*f_hide)(void);
+        const f_hide hide = (f_hide)fn("libSceSystemService", "sceSystemServiceHideSplashScreen");
+        CHECK(hide && !rt_splash_hidden() && hide() == 0 && rt_splash_hidden() && hide() == 0);
+        typedef int32_t (*f_status)(void *);
+        const f_status status_fn = (f_status)fn("libSceSystemService", "sceSystemServiceGetStatus");
+        uint8_t status[16];
+        memset(status, 0x5a, sizeof status);
+        CHECK(status_fn && status_fn(status) == 0 && !status[0] && !status[3] && !status[4] && !status[5] && status[6] == 1);
+        CHECK(!status[7] && !status[8] && status[9] == 0x5a);                      /* nothing past 9 bytes */
+        CHECK(status_fn(NULL) == (int32_t)0x80A10003u);
+    }
     sys_param = (f_sys_param)fn("libSceSystemService", "sceSystemServiceParamGetInt");
     if (sys_param) {
         rt_process.system_params[0] = (rt_system_param){1, 18};
@@ -1703,7 +2356,10 @@ int main(void)
             }
             qmp_fn = qmp;
             CHECK(died_in_fatal(qmp_unmapped));
-            CHECK(died_in_fatal(qmp_with_end));
+            /* the mapping's start, and its end one past the last byte (shadPS4, PS4Recomp) */
+            void *start = NULL, *end = NULL;
+            CHECK(qmp((char *)a + 0x10, &start, &end, &prot) == 0 && prot == 3);
+            CHECK(start == a && end == (char *)a + 0x8000);
         }
     }
 
@@ -1746,6 +2402,22 @@ int main(void)
                     CHECK(http_nonblock_fn(t1, 1) == 0 && http_nonblock_fn(t1, 0) == 0);
                     CHECK(died_in_fatal(http_nonblock_unknown));
                     CHECK(died_in_fatal(http_nonblock_value));
+                }
+                /* HTTPS flags on a template: the default, enabling and disabling, and the errors. */
+                typedef int32_t (*f_https_option)(int32_t, uint32_t);
+                const f_https_option enable = (f_https_option)fn("libSceHttp", "sceHttpsEnableOption");
+                const f_https_option disable = (f_https_option)fn("libSceHttp", "sceHttpsDisableOption");
+                CHECK(enable && disable);
+                if (enable && disable) {
+                    CHECK(rt_http_template_ssl_flags(t1) == 0xa5); /* server verify, CN and known-CA checks, SNI */
+                    CHECK(disable(t1, 1) == 0 && rt_http_template_ssl_flags(t1) == 0xa4);
+                    CHECK(enable(t1, 1) == 0 && rt_http_template_ssl_flags(t1) == 0xa5);
+                    CHECK(enable(t1, 0x2000 | 0x40) == 0 && rt_http_template_ssl_flags(t1) == 0x20e5);
+                    CHECK(disable(t1, 0x2000 | 0x40 | 0x80) == 0 && rt_http_template_ssl_flags(t1) == 0x25);
+                    CHECK(enable(t1, 0x100) == (int32_t)0x804311feu && rt_http_template_ssl_flags(t1) == 0x25);
+                    CHECK(disable(t1, 0x4000) == (int32_t)0x804311feu);
+                    CHECK(enable(999, 1) == (int32_t)0x80431100u && disable(0, 1) == (int32_t)0x80431100u);
+                    CHECK(rt_http_template_ssl_flags(999) == 0);
                 }
                 http_epoll_fn = (f_http_epoll)fn("libSceHttp", "sceHttpCreateEpoll");
                 if (http_epoll_fn) {
@@ -1811,18 +2483,129 @@ int main(void)
         CHECK(t1 < 600ull * 1000000 && t2 >= t1 + 15000 && t2 < t1 + 5000000); /* 20 ms later, in µs */
     }
 
-    /* sceAjmInitialize / sceAjmModuleRegister. */
-    ajm_init_fn = (f_ajm_init)fn("libSceAjm", "sceAjmInitialize");
-    ajm_register_fn = (f_ajm_register)fn("libSceAjm", "sceAjmModuleRegister");
-    if (ajm_init_fn && ajm_register_fn) {
-        uint32_t context = 0xffffffffu;
-        CHECK(ajm_init_fn(0, &context) == 0 && context != 0xffffffffu && context != 0);
-        ajm_test_context = context;
-        CHECK(died_in_fatal(ajm_init_reserved));
-        CHECK(died_in_fatal(ajm_register_unknown_context));
-        CHECK(died_in_fatal(ajm_register_other_module));
-        CHECK(ajm_register_fn(context, 1, 0) == 0);
-        CHECK(died_in_fatal(ajm_register_twice));
+    /* time (libSceLibcInternal): the wall clock's whole seconds, returned and stored through a
+       non-null pointer, as FreeBSD's time() reads CLOCK_SECOND. */
+    int64_t (*libc_time)(int64_t *) = (int64_t (*)(int64_t *))fn("libSceLibcInternal", "time");
+    if (libc_time) {
+        struct timespec before, after;
+        int64_t stored = -1;
+        clock_gettime(CLOCK_REALTIME, &before);
+        const int64_t returned = libc_time(&stored);
+        const int64_t unstored = libc_time(NULL);
+        clock_gettime(CLOCK_REALTIME, &after);
+        CHECK(returned == stored && returned >= before.tv_sec && returned <= after.tv_sec);
+        CHECK(unstored >= returned && unstored <= after.tv_sec);
+    }
+    CHECK(is_implemented("libSceLibcInternal", "time"));
+
+    /* libSceAjm */
+    {
+        const f_ajm_init init = (f_ajm_init)fn("libSceAjm", "sceAjmInitialize");
+        const f_ajm_register reg = (f_ajm_register)fn("libSceAjm", "sceAjmModuleRegister");
+        const f_ajm_create create = (f_ajm_create)fn("libSceAjm", "sceAjmInstanceCreate");
+        const f_ajm_two destroy = (f_ajm_two)fn("libSceAjm", "sceAjmInstanceDestroy");
+        const f_ajm_two cancel = (f_ajm_two)fn("libSceAjm", "sceAjmBatchCancel");
+        const f_ajm_control control = (f_ajm_control)fn("libSceAjm", "sceAjmBatchJobControlBufferRa");
+        const f_ajm_wait wait = (f_ajm_wait)fn("libSceAjm", "sceAjmBatchWait");
+        typedef int32_t (*f_ajm_one)(uint32_t);
+        const f_ajm_one finalize = (f_ajm_one)fn("libSceAjm", "sceAjmFinalize");
+        ajm_run_fn = (f_ajm_run)fn("libSceAjm", "sceAjmBatchJobRunBufferRa");
+        ajm_start_fn = (f_ajm_start)fn("libSceAjm", "sceAjmBatchStartBuffer");
+        CHECK(init && reg && create && destroy && cancel && control && wait && finalize && ajm_run_fn && ajm_start_fn);
+        if (init && reg && create && destroy && cancel && control && wait && finalize && ajm_run_fn && ajm_start_fn) {
+            uint32_t context = 0;
+            CHECK(init(1, &context) == (int32_t)0x80930005u && init(0, NULL) == (int32_t)0x80930005u);
+            CHECK(init(0, &context) == 0 && context);
+            ajm_test_context = context;
+            CHECK(reg(99, 1, 0) == (int32_t)0x80930002u && reg(context, 23, 0) == (int32_t)0x80930005u);
+            CHECK(reg(context, 1, 0) == 0 && reg(context, 1, 0) == (int32_t)0x80930009u);
+            uint32_t instance = 0;
+            CHECK(create(context, 1, 0x410, &instance) == (int32_t)0x8093000Bu);  /* revision 0 */
+            CHECK(create(context, 0, 0x411, &instance) == (int32_t)0x8093000Au);  /* MP3 not registered */
+            CHECK(create(context, 1, 0x411, &instance) == 0 && instance >> 14 == 1 && (instance & 0x3fff) >= 1);
+            ajm_test_instance = instance;
+            /* job sizes the title's FMOD relies on: control 0x30 (0x40 with a return address), run 0x40 (0x50) */
+            static uint8_t batch[0x100];
+            static uint8_t init_params[8] = {0xFE, 0x72, 0x1F, 0xF0}; /* 48 kHz, stereo, 256-byte frames, 4 per superframe */
+            static uint8_t control_out[32], run_out[64];
+            uint8_t *at = control(batch, instance, 0x6001, init_params, sizeof init_params, control_out, sizeof control_out, NULL);
+            CHECK(at - batch == 0x30);
+            uint8_t *with_ra = control(batch + 0x80, instance, 0x6001, init_params, 8, control_out, 32, (void *)0x1234);
+            CHECK(with_ra - (batch + 0x80) == 0x40);
+            uint8_t *run_end = ajm_run_fn(at, instance, 0x801, NULL, 0, NULL, 0, run_out, sizeof run_out, (void *)0x1234);
+            CHECK(run_end - at == 0x50);
+            uint32_t batch_id = 0;
+            CHECK(ajm_start_fn(context, batch, 4, 0, NULL, &batch_id) == (int32_t)0x80930011u);
+            memset(control_out, 0xee, sizeof control_out);
+            memset(run_out, 0xee, sizeof run_out);
+            CHECK(ajm_start_fn(context, batch, (uint32_t)(run_end - batch), 0, NULL, &batch_id) == 0 && batch_id >= 1);
+            int32_t result[2];
+            memcpy(result, control_out, 8);
+            CHECK(result[0] == 0 && result[1] == 0);
+            uint32_t info[6];
+            memcpy(info, run_out, sizeof info);
+            CHECK(info[0] == 0 && info[1] == 0);                                  /* the run's result */
+            CHECK(info[2] == 1024 && info[3] == 4 && info[4] == 1024 && info[5] == 256); /* the ATRAC9 codec info */
+            CHECK(cancel(context, batch_id) == 0);                                /* already run: nothing to cancel */
+            CHECK(wait(context, batch_id, 0xffffffffu, NULL) == 0 && wait(context, batch_id, 0, NULL) == (int32_t)0x80930004u);
+            CHECK(cancel(context, batch_id) == (int32_t)0x80930004u);
+            /* decoding, with the stand-in decoder: frames, room, partial input, superframe padding, gapless */
+            static const rt_ajm_decoder fake = {ajm_fake_open, ajm_fake_decode, ajm_fake_release};
+            rt_ajm_set_decoder(&fake);
+            static uint8_t at9[4096];
+            static int16_t pcm[256 * 2 * 8];
+            struct { int32_t result, internal; int32_t consumed, written; uint64_t total; uint32_t frames, reserved; } side;
+            const uint64_t stream_frames = 0x800000001000ull;                     /* Stream + MultipleFrames */
+            CHECK(control(batch, instance, 0x6001, init_params, 8, control_out, 32, NULL) != NULL);
+            uint32_t init_id;
+            const uint8_t *init_end = control(batch, instance, 0x6001, init_params, 8, control_out, 32, NULL);
+            CHECK(ajm_start_fn(context, batch, (uint32_t)(init_end - batch), 0, NULL, &init_id) == 0 && wait(context, init_id, 0, NULL) == 0);
+            ajm_fake_next = 0;
+            memset(&side, 0, sizeof side);
+            CHECK(ajm_job(stream_frames, at9, 1024, pcm, sizeof pcm, &side, sizeof side) == 0);
+            CHECK(side.result == 0 && side.consumed == 1024 && side.written == 4 * 1024 && side.total == 1024 && side.frames == 4);
+            CHECK(pcm[0] == 0 && pcm[511] == 511 && pcm[2047] == 2047);         /* frames in order, interleaved */
+            memset(&side, 0, sizeof side);                                         /* room for one frame and a half */
+            CHECK(ajm_job(stream_frames, at9, 1024, pcm, 1536, &side, sizeof side) == 0);
+            CHECK(side.result == 0x10 && side.frames == 1 && side.consumed == 256 && side.written == 1024);
+            memset(&side, 0, sizeof side);                                         /* less than the rest of the superframe */
+            CHECK(ajm_job(stream_frames, at9, 512, pcm, sizeof pcm, &side, sizeof side) == 0);
+            CHECK(side.result == 0x8 && side.frames == 0 && side.consumed == 0);
+            memset(&side, 0, sizeof side);                                         /* the rest: three frames */
+            CHECK(ajm_job(stream_frames, at9, 768, pcm, sizeof pcm, &side, sizeof side) == 0 && side.frames == 3 && side.total == 2048u); /* since the reset */
+            ajm_fake_frame_bytes = 200;                                            /* frames shorter than a quarter: padding */
+            memset(&side, 0, sizeof side);
+            CHECK(ajm_job(stream_frames, at9, 1024, pcm, sizeof pcm, &side, sizeof side) == 0 && side.consumed == 1024 && side.frames == 4);
+            ajm_fake_frame_bytes = 256;
+            /* gapless: skip 100, keep 300 samples; the rest of the superframe is decoded and dropped */
+            struct { uint32_t total; uint16_t skip, skipped; } gap = {300, 100, 0};
+            uint32_t gap_id;
+            const uint8_t *gap_end = control(batch, instance, 0x200000002001ull, &gap, sizeof gap, control_out, 32, NULL);
+            CHECK(ajm_start_fn(context, batch, (uint32_t)(gap_end - batch), 0, NULL, &gap_id) == 0 && wait(context, gap_id, 0, NULL) == 0);
+            struct { int32_t result, internal; int32_t consumed, written; uint64_t total; uint32_t gap_total; uint16_t gap_skip, gap_skipped; uint32_t frames, r; } gside;
+            memset(&gside, 0, sizeof gside);
+            ajm_fake_next = 0;
+            CHECK(ajm_job(stream_frames | (1ull << 45), at9, 1024, pcm, sizeof pcm, &gside, sizeof gside) == 0);
+            CHECK(gside.result == 0 && gside.written == 300 * 4 && gside.total == 300u && gside.consumed == 1024 && gside.frames == 2);
+            CHECK(pcm[0] == 200 && gside.gap_total == 0 && gside.gap_skip == 0);   /* 100 stereo samples skipped */
+            /* a decoder error is fatal, with the decoder's code */
+            ajm_fake_fail = 1;
+            memset(&side, 0, sizeof side);
+            CHECK(ajm_job(stream_frames, at9, 1024, pcm, sizeof pcm, &side, sizeof side) == 0);
+            CHECK((uint32_t)side.result == 0xC0000000u && side.internal == -5);
+            ajm_fake_fail = 0;
+            rt_ajm_set_decoder(NULL);
+            /* the real decoder: junk input is a codec error */
+            static uint8_t junk[1024];
+            for (int k = 0; k < 1024; k++) junk[k] = (uint8_t)(k * 37 + 11);
+            const uint8_t *real_end = control(batch, instance, 0x6001, init_params, 8, control_out, 32, NULL);
+            CHECK(ajm_start_fn(context, batch, (uint32_t)(real_end - batch), 0, NULL, &init_id) == 0 && wait(context, init_id, 0, NULL) == 0);
+            memset(&side, 0, sizeof side);
+            CHECK(ajm_job(stream_frames, junk, sizeof junk, pcm, sizeof pcm, &side, sizeof side) == 0);
+            CHECK(((uint32_t)side.result & 0xC0000000u) == 0xC0000000u && side.internal != 0);
+            CHECK(destroy(context, instance) == 0 && destroy(context, instance) == (int32_t)0x80930003u);
+            CHECK(finalize(context) == 0 && finalize(context) == (int32_t)0x80930002u);
+        }
     }
 
     /* sceAudioOutInit / sceAudioOutOpen. */
@@ -1870,6 +2653,8 @@ int main(void)
             unsigned char state[32];
             memset(state, 0xee, sizeof state);
             CHECK(ao_state(h1, state) == 0 && state[0] == 0 && state[1] == 0 && state[31] == 0);
+            /* host sound: this build has none, so it cannot be switched on, and no port is heard */
+            CHECK(rt_audio_host_configure(1) == -1 && !rt_audio_host_enabled() && rt_audio_host_configure(0) == 0);
         }
     }
 
@@ -1900,6 +2685,26 @@ int main(void)
             CHECK(kstat_fn("/app0/data.bin/inside", st) == (int32_t)0x80020014u);
             CHECK(died_in_fatal(kstat_outside));
             CHECK(died_in_fatal(kstat_dotdot));
+            /* POSIX stat: the same answer, 0 or -1 with the thread's errno (__error) set. */
+            pstat_fn = (f_pstat)fn("libScePosix", "stat");
+            const f_errno error_fn = (f_errno)fn("libkernel", "__error");
+            CHECK(pstat_fn && error_fn);
+            if (pstat_fn && error_fn) {
+                int *const err = error_fn();
+                CHECK(err != NULL && err == error_fn()); /* the same int for one thread */
+                pthread_t other;
+                CHECK(pthread_create(&other, NULL, errno_of_thread, (void *)error_fn) == 0 && pthread_join(other, NULL) == 0);
+                CHECK(other_thread_errno && other_thread_errno != err); /* another thread has its own */
+                memset(st, 0xee, sizeof st);
+                *err = 77;
+                CHECK(pstat_fn("/app0/data.bin", st) == 0 && *err == 77); /* success leaves errno alone */
+                memcpy(&mode, st + 8, 2); memcpy(&size, st + 0x48, 8);
+                CHECK((mode & 0170000) == 0100000 && (mode & 0777) == 0444 && size == 10);
+                CHECK(pstat_fn("/app0/missing.bin", st) == -1 && *err == 2);           /* ENOENT */
+                CHECK(pstat_fn("/app0/data.bin/inside", st) == -1 && *err == 20);      /* ENOTDIR */
+                CHECK(died_in_fatal(pstat_outside));
+                CHECK(died_in_fatal(pstat_no_buffer));
+            }
             CHECK(died_in_fatal(kstat_prefix_only));
             /* Open, read, seek, pread, fstat and close the same file, read-only. */
             typedef int32_t (*f_open)(const char *, int32_t, uint32_t);
@@ -2133,6 +2938,23 @@ int main(void)
         CHECK(eq_delete(eq_test_queue) == 0);
     }
 
+    /* The attribute leaf accepts raw DWORDs, supports unaligned caller storage, and
+       clears only its sixteen reserved bytes. The public void API ignores RAX;
+       the recovered native leaf leaves zero-extended pitch there. */
+    attribute = (attribute_wire)fn("libSceVideoOut", "sceVideoOutSetBufferAttribute");
+    CHECK(attribute);
+    if (attribute) {
+        CHECK(died_in_fatal(video_attribute_null));
+        const uint32_t fields[] = {UINT32_MAX, 0x80000001u, 0x12345678u, 0, 1, 0xfedcba98u};
+        unsigned char bytes[48];
+        memset(bytes, 0xa5, sizeof bytes);
+        CHECK(attribute(bytes + 3, fields[0], fields[1], fields[2], fields[3], fields[4], fields[5]) == fields[5]);
+        CHECK(!memcmp(bytes + 3, fields, sizeof fields));
+        for (size_t i = 0; i < 16; ++i) CHECK(bytes[3 + sizeof fields + i] == 0);
+        for (size_t i = 0; i < 3; ++i) CHECK(bytes[i] == 0xa5);
+        for (size_t i = 43; i < sizeof bytes; ++i) CHECK(bytes[i] == 0xa5);
+    }
+
     /* libSceVideoOut: the executable's frame cycle. */
     vo_open_fn = (f_vo_open)fn("libSceVideoOut", "sceVideoOutOpen");
     const f_vo_rate vo_rate = (f_vo_rate)fn("libSceVideoOut", "sceVideoOutSetFlipRate");
@@ -2143,6 +2965,14 @@ int main(void)
     vo_status_fn = (f_vo_status)fn("libSceVideoOut", "sceVideoOutGetFlipStatus");
     const f_eq_create vo_eq_create = (f_eq_create)fn("libkernel", "sceKernelCreateEqueue");
     if (vo_open_fn && vo_rate && vo_event && vo_attr && vo_register && vo_flip_fn && vo_status_fn && vo_eq_create && eq_wait_fn) {
+        /* The display runs headless and captures each presented frame. */
+        static char capture_buf[512];
+        const char *tmp_dir = getenv("TMPDIR");
+        snprintf(capture_buf, sizeof capture_buf, "%s/pb-display-XXXXXX", tmp_dir ? tmp_dir : "/tmp");
+        char *capture = mkdtemp(capture_buf);
+        CHECK(capture != NULL && rt_display_configure(RT_DISPLAY_HEADLESS, capture) == 0);
+        CHECK(rt_display_configure(RT_DISPLAY_WINDOW, NULL) == -1); /* the tests build without a window */
+        CHECK(rt_display_configure(RT_DISPLAY_HEADLESS, capture) == 0);
         vo_handle = vo_open_fn(0, 0, 0, NULL);
         CHECK(vo_handle > 0 && vo_rate(vo_handle, 0) == 0);
         rt_equeue *flips = NULL;
@@ -2154,6 +2984,11 @@ int main(void)
         static uint32_t frame_a[16], frame_b[16];
         void *const buffers[2] = {frame_a, frame_b};
         CHECK(vo_register(vo_handle, 0, buffers, 2, attr) == 0);
+        /* Each registered buffer has a black host frame of the attribute's size. */
+        uint32_t *const host_a = rt_display_frame(vo_handle, 0), *const host_b = rt_display_frame(vo_handle, 1);
+        CHECK(host_a && host_b && host_a != host_b && host_b[0] == 0 && host_b[1920 * 1080 - 1] == 0);
+        CHECK(rt_display_frame(vo_handle, 2) == NULL && rt_display_presented(vo_handle) == 0);
+        if (host_b) host_b[1920 + 1] = 0x00336699u; /* pixel (1, 1): red 0x33, green 0x66, blue 0x99 */
         {   /* before the first flip: success, and all zero (no flips yet) */
             unsigned char before[64], zero[64] = {0};
             memset(before, 0xee, sizeof before);
@@ -2166,6 +3001,27 @@ int main(void)
         CHECK(vo_status_fn(vo_handle, st) == 0);
         memcpy(&count, st, 8); memcpy(&arg, st + 0x18, 8); memcpy(&current, st + 0x38, 4);
         CHECK(count == 1 && arg == 77 && current == 1);
+        /* The flip presented buffer 1: counted, and captured as frame 0 with the pixel in place. */
+        CHECK(rt_display_presented(vo_handle) == 1);
+        if (capture) {
+            char frame_path[600];
+            snprintf(frame_path, sizeof frame_path, "%s/frame-000000.ppm", capture);
+            FILE *ppm = fopen(frame_path, "rb");
+            CHECK(ppm != NULL);
+            if (ppm) {
+                char magic[3] = {0};
+                unsigned w = 0, h = 0, max = 0;
+                CHECK(fscanf(ppm, "%2s %u %u %u", magic, &w, &h, &max) == 4 && !strcmp(magic, "P6"));
+                CHECK(w == 1920 && h == 1080 && max == 255);
+                fgetc(ppm); /* the single whitespace before the pixels */
+                unsigned char rgb[3];
+                CHECK(fseek(ppm, (long)(1920 + 1) * 3, SEEK_CUR) == 0 && fread(rgb, 1, 3, ppm) == 3);
+                CHECK(rgb[0] == 0x33 && rgb[1] == 0x66 && rgb[2] == 0x99);
+                fclose(ppm);
+            }
+            remove(frame_path);
+        }
+        rt_display_configure(RT_DISPLAY_HEADLESS, NULL); /* stop capturing: writing a frame would skew the timing */
         /* A vsync flip completes at the next 60 Hz tick: within one period. */
         struct timespec before, after;
         clock_gettime(CLOCK_MONOTONIC, &before);
@@ -2217,11 +3073,408 @@ int main(void)
             CHECK(eq_wait_fn(flips, ev, 1, &n, NULL) == 0 && n == 1 && (memcpy(&data, ev + 16, 8), data == 79));
             CHECK(vo_status_fn(vo_handle, st) == 0 && (memcpy(&arg, st + 0x18, 8), arg == 79));
             CHECK(died_in_fatal(gnm_submit_unknown));
+            /* the constant arrays present with empty entries, as 0x0149bf3a passes them: no constant buffer */
+            void *no_constants[1] = {NULL};
+            uint32_t no_constant_bytes[1] = {0};
+            CHECK(gnm_submit_fn(1, buffers, bytes, no_constants, no_constant_bytes) == 0);
+            CHECK(died_in_fatal(gnm_submit_with_constant));
+            /* DMA_DATA from memory into CP_DMA_READ_TAGS, as the title sends it: only a cache read */
+            static uint32_t dma_source[25] = {1, 2, 3};
+            const uint64_t dma_from = (uint64_t)(uintptr_t)dma_source;
+            uint32_t dma[7] = {0xc0055000u, 0x60000000u, (uint32_t)dma_from, (uint32_t)(dma_from >> 32), 0x3022cu, 0, 0x28200064u};
+            CHECK(gnm_submit_one_result(dma, 7) == 0 && dma_source[0] == 1 && dma_source[2] == 3);
+            CHECK(died_in_fatal(gnm_submit_dma_fill));
+            CHECK(died_in_fatal(gnm_submit_dma_other_register));
+            /* an indexed draw: index type, base and buffer size, then DRAW_INDEX_2; only memory reads */
+            static uint16_t indices[3] = {0, 1, 2};
+            const uint64_t index_at = (uint64_t)(uintptr_t)indices;
+            uint32_t indexed[] = {
+                0xc0002a00u, 0x0,                                                   /* INDEX_TYPE 16-bit */
+                0xc0012600u, (uint32_t)index_at, (uint32_t)(index_at >> 32),        /* INDEX_BASE */
+                0xc0001300u, 3,                                                     /* INDEX_BUFFER_SIZE */
+                0xc0032700u, 3, (uint32_t)index_at, 3, 0,                           /* DRAW_INDEX_2 */
+                0xc0033500u, 3, 0, 3, 0,                                            /* DRAW_INDEX_OFFSET_2 */
+            };
+            CHECK(gnm_submit_one_result(indexed, sizeof indexed / 4) == 0 && indices[2] == 2);
+            CHECK(died_in_fatal(gnm_submit_constant_without_sizes));
             CHECK(died_in_fatal(gnm_submit_unmet_wait));
         }
         CHECK(died_in_fatal(vo_flip_bad_buffer));
         CHECK(died_in_fatal(vo_open_other));
+        if (capture) { /* every later flip was captured too */
+            for (uint64_t k = 0; k < rt_display_presented(vo_handle); k++) {
+                char frame_path[600];
+                snprintf(frame_path, sizeof frame_path, "%s/frame-%06llu.ppm", capture, (unsigned long long)k);
+                remove(frame_path);
+            }
+            CHECK(rmdir(capture) == 0);
+        }
+        rt_display_configure(RT_DISPLAY_NONE, NULL);
     }
+
+    rtc_now = (f_rtc_now)fn("libSceRtc", "sceRtcGetCurrentClockLocalTime");
+    rtc_tick = (f_rtc_tick)fn("libSceRtc", "sceRtcGetTick");
+    const f_rtc_resolution rtc_resolution = (f_rtc_resolution)fn("libSceRtc", "sceRtcGetTickResolution");
+    rtc_set = (f_rtc_set)fn("libSceRtc", "sceRtcSetTick");
+    rtc_weekday = (f_rtc_weekday)fn("libSceRtc", "sceRtcGetDayOfWeek");
+    CHECK(rtc_now && rtc_tick && rtc_resolution && rtc_set && rtc_weekday);
+    if (rtc_now && rtc_tick && rtc_resolution && rtc_set && rtc_weekday) {
+        /* 0 Sunday to 6 Saturday, against dates whose weekday is known */
+        CHECK(rtc_weekday(1, 1, 1) == 1);       /* Monday, the proleptic Gregorian calendar's first day */
+        CHECK(rtc_weekday(1970, 1, 1) == 4);    /* Thursday */
+        CHECK(rtc_weekday(2000, 2, 29) == 2);   /* Tuesday */
+        CHECK(rtc_weekday(2015, 3, 24) == 2);   /* Tuesday */
+        CHECK(rtc_weekday(2026, 11, 6) == 5);   /* Friday */
+        CHECK(rtc_weekday(2026, 11, 8) == 0);   /* Sunday */
+        CHECK(rtc_weekday(9999, 12, 31) == 5);  /* Friday */
+        for (int d = 1; d <= 31; d++) {         /* against the host's calendar, a whole month */
+            struct tm day = {.tm_year = 2024 - 1900, .tm_mon = 0, .tm_mday = d, .tm_hour = 12};
+            timegm(&day);
+            CHECK(rtc_weekday(2024, 1, d) == day.tm_wday);
+        }
+        CHECK(died_in_fatal(rtc_weekday_february_29_2023));
+        CHECK(died_in_fatal(rtc_weekday_month_13));
+        CHECK(rtc_resolution() == 1000000);
+        uint64_t tick = 7;
+        const rtc_time year_one = {1, 1, 1, 0, 0, 0, 0};
+        CHECK(rtc_tick(&year_one, &tick) == 0 && tick == 0);
+        const rtc_time unix_epoch = {1970, 1, 1, 0, 0, 0, 0};
+        CHECK(rtc_tick(&unix_epoch, &tick) == 0 && tick == 62135596800000000ull); /* 719162 days */
+        const rtc_time leap_day = {2024, 2, 29, 23, 59, 59, 999999};
+        CHECK(rtc_tick(&leap_day, &tick) == 0 && tick == (62135596800ull + 1709251199ull) * 1000000ull + 999999ull);
+        const rtc_time y2000_leap = {2000, 2, 29, 12, 0, 0, 0};
+        CHECK(rtc_tick(&y2000_leap, &tick) == 0 && tick == (62135596800ull + 951825600ull) * 1000000ull);
+        /* the local time, compared with the host's own */
+        rtc_time now;
+        memset(&now, 0xee, sizeof now);
+        const time_t before = time(NULL);
+        CHECK(rtc_now(&now) == 0);
+        struct tm local;
+        localtime_r(&before, &local);
+        CHECK(now.year == local.tm_year + 1900 && now.month >= 1 && now.month <= 12 && now.day >= 1 && now.day <= 31);
+        CHECK(now.hour <= 23 && now.minute <= 59 && now.second <= 59 && now.microsecond < 1000000);
+        CHECK(rtc_tick(&now, &tick) == 0);
+        /* sceRtcSetTick reverses sceRtcGetTick, for dates across leap years and centuries */
+        const rtc_time samples[] = {
+            {1, 1, 1, 0, 0, 0, 0}, {1600, 12, 31, 23, 59, 59, 999999}, {1601, 1, 1, 0, 0, 0, 0},
+            {1900, 2, 28, 12, 0, 0, 5}, {1900, 3, 1, 0, 0, 0, 0}, {2000, 2, 29, 1, 2, 3, 4},
+            {2024, 12, 31, 23, 59, 59, 1}, {9999, 12, 31, 23, 59, 59, 999999}, now,
+        };
+        for (size_t s = 0; s < sizeof samples / sizeof *samples; s++) {
+            uint64_t k = 0;
+            rtc_time back;
+            memset(&back, 0xee, sizeof back);
+            CHECK(rtc_tick(&samples[s], &k) == 0 && rtc_set(&back, &k) == 0 && memcmp(&back, &samples[s], sizeof back) == 0);
+        }
+        const uint64_t epoch_tick = 62135596800000000ull;
+        rtc_time epoch;
+        CHECK(rtc_set(&epoch, &epoch_tick) == 0 && epoch.year == 1970 && epoch.month == 1 && epoch.day == 1 && epoch.hour == 0);
+        CHECK(died_in_fatal(rtc_set_year_10000));
+        CHECK(died_in_fatal(rtc_set_no_tick));
+        CHECK(died_in_fatal(rtc_now_nothing));
+        CHECK(died_in_fatal(rtc_tick_february_30));
+        CHECK(died_in_fatal(rtc_tick_leap_2100));
+        CHECK(died_in_fatal(rtc_tick_microsecond));
+        CHECK(died_in_fatal(rtc_tick_no_variable));
+    }
+
+    {   /* sceNpSetNpTitleId: the title id is kept; a missing argument is invalid */
+        typedef int32_t (*f_np_title)(const void *, const void *);
+        const f_np_title set_title = (f_np_title)fn("libSceNpManager", "sceNpSetNpTitleId");
+        CHECK(set_title != NULL);
+        if (set_title) {
+            char kept[RT_NP_TITLE_ID_BYTES];
+            rt_np_title_id(kept);
+            CHECK(kept[0] == 0);
+            unsigned char id[16], secret[128];
+            memset(id, 0x7a, sizeof id);
+            memcpy(id, "ABCD12345_00", 12);
+            id[12] = 0;
+            memset(secret, 0x5c, sizeof secret);
+            CHECK(set_title(id, secret) == 0);
+            rt_np_title_id(kept);
+            CHECK(strcmp(kept, "ABCD12345_00") == 0);
+            CHECK(set_title(NULL, secret) == (int32_t)0x80550003u && set_title(id, NULL) == (int32_t)0x80550003u);
+        }
+    }
+
+    {   /* libSceNpMatching2: initialize and terminate, with the block's own size at 0x20 */
+        typedef int32_t (*f_m2_init)(const void *);
+        typedef int32_t (*f_m2_none)(void);
+        const f_m2_init m2_init = (f_m2_init)fn("libSceNpMatching2", "sceNpMatching2Initialize");
+        const f_m2_none m2_term = (f_m2_none)fn("libSceNpMatching2", "sceNpMatching2Terminate");
+        CHECK(m2_init && m2_term);
+        if (m2_init && m2_term) {
+            uint64_t block[6] = {0x20000, 0, 0, 0x4000, 0x30, 0};
+            CHECK(m2_term() == (int32_t)0x80550C03u);           /* not initialized */
+            CHECK(m2_init(NULL) == (int32_t)0x80550C0Au);
+            block[4] = 0x20;
+            CHECK(m2_init(block) == (int32_t)0x80550C0Au);      /* a size other than 0x28 or 0x30 */
+            block[4] = 0x30;
+            CHECK(m2_init(block) == 0 && m2_init(block) == (int32_t)0x80550C02u);
+            CHECK(m2_term() == 0 && m2_term() == (int32_t)0x80550C03u);
+            block[4] = 0x28;
+            CHECK(m2_init(block) == 0 && m2_term() == 0);        /* the older block size */
+        }
+    }
+    {   /* libSceNpManager: callbacks kept but never called, the user signed out, nothing to deliver */
+        typedef int32_t (*f_np_register)(void *, void *);
+        typedef int32_t (*f_np_none)(void);
+        typedef void (*f_np_presence)(void *, void *);
+        const f_np_register reg = (f_np_register)fn("libSceNpManager", "sceNpRegisterStateCallback");
+        const f_np_none unreg = (f_np_none)fn("libSceNpManager", "sceNpUnregisterStateCallback");
+        const f_np_presence presence = (f_np_presence)fn("libSceNpManager", "sceNpRegisterGamePresenceCallback");
+        const f_np_none check = (f_np_none)fn("libSceNpManager", "sceNpCheckCallback");
+        np_state = (f_np_state)fn("libSceNpManager", "sceNpGetState");
+        CHECK(reg && unreg && presence && check && np_state);
+        if (reg && unreg && presence && check && np_state) {
+            static int user_data;
+            void *const callback = (void *)np_state_other_user; /* any address: it is never called */
+            CHECK(reg(NULL, &user_data) == (int32_t)0x80550003u);
+            CHECK(reg(callback, &user_data) == 0 && reg(callback, &user_data) == (int32_t)0x80550008u);
+            presence(callback, &user_data);
+            void *kept_data = NULL;
+            CHECK(rt_np_callback(RT_NP_PRESENCE_CALLBACK, &kept_data) == callback && kept_data == &user_data);
+            CHECK(rt_np_callback(RT_NP_STATE_CALLBACK, &kept_data) == callback && kept_data == &user_data);
+            CHECK(check() == 0);
+            CHECK(unreg() == 0 && unreg() == (int32_t)0x80550009u);
+            CHECK(reg(callback, NULL) == 0 && unreg() == 0);     /* registered again after an unregister */
+            uint32_t st = 77;
+            CHECK(np_state(1, &st) == 0 && st == 1);             /* signed out */
+            CHECK(np_state(1, NULL) == (int32_t)0x80550003u);
+            CHECK(died_in_fatal(np_state_other_user));
+        }
+    }
+
+    {
+        const f_ep_create ep_create = (f_ep_create)fn("libSceNet", "sceNetEpollCreate");
+        const f_ep_id_flags ep_abort = (f_ep_id_flags)fn("libSceNet", "sceNetEpollAbort");
+        const f_ep_id ep_destroy = (f_ep_id)fn("libSceNet", "sceNetEpollDestroy");
+        ep_wait = (f_ep_wait)fn("libSceNet", "sceNetEpollWait");
+        net_errno_fn = (f_net_errno)fn("libSceNet", "sceNetErrnoLoc");
+        CHECK(ep_create && ep_abort && ep_destroy && ep_wait && net_errno_fn);
+        if (ep_create && ep_abort && ep_destroy && ep_wait && net_errno_fn) {
+            int32_t *const err = net_errno_fn();
+            CHECK(ep_create("x", 1) == (int32_t)0x80410116u && *err == 22);             /* EINVAL */
+            CHECK(ep_create("a-name-of-thirty-two-characters!", 0) == (int32_t)0x8041013fu && *err == 63);
+            const int32_t id = ep_create("a-name-of-thirty-one-character", 0);
+            CHECK(id >= 1 && ep_create(NULL, 0) != id);
+            unsigned char events[24 * 4];
+            CHECK(ep_wait(id + 40, events, 4, 0) == (int32_t)0x80410109u && *err == 9); /* EBADF */
+            CHECK(ep_wait(id, NULL, 4, 0) == (int32_t)0x80410116u);
+            CHECK(ep_wait(id, events, 0, 0) == (int32_t)0x80410116u);
+            struct timespec t0, t1;
+            clock_gettime(CLOCK_MONOTONIC, &t0);
+            CHECK(ep_wait(id, events, 4, 20000) == 0);                                  /* times out, no events */
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            CHECK((t1.tv_sec - t0.tv_sec) * 1000000000 + (t1.tv_nsec - t0.tv_nsec) >= 20000000);
+            CHECK(ep_abort(id, 0) == (int32_t)0x8041010fu && *err == 15);              /* ENOTBLK: none waiting */
+            CHECK(ep_abort(id, 2) == (int32_t)0x80410116u);
+            CHECK(ep_abort(id, 1) == 0 && ep_wait(id, events, 4, -1) == (int32_t)0x80410104u && *err == 4);
+            CHECK(ep_wait(id, events, 4, 0) == 0);                                      /* the preserved abort is used up */
+            /* a waiter for ever, interrupted by an abort from this thread */
+            pthread_t waiter;
+            ep_waiter_id = id;
+            CHECK(pthread_create(&waiter, NULL, ep_waiter, (void *)(intptr_t)-1) == 0);
+            int aborted = -1;
+            for (int tries = 0; tries < 2000 && aborted != 0; tries++) {
+                aborted = ep_abort(id, 0); /* ENOTBLK until the waiter is waiting */
+                if (aborted != 0) usleep(1000);
+            }
+            CHECK(aborted == 0 && pthread_join(waiter, NULL) == 0);
+            CHECK(ep_waiter_result == (int32_t)0x80410104u && ep_waiter_errno == 4);
+            /* and one ended by a destroy: EINTR if it was waiting, EBADF if the destroy came first;
+               either way it returns long before its 5-second timeout */
+            CHECK(pthread_create(&waiter, NULL, ep_waiter, (void *)(intptr_t)5000000) == 0);
+            usleep(20000);
+            struct timespec d0, d1;
+            clock_gettime(CLOCK_MONOTONIC, &d0);
+            CHECK(ep_destroy(id) == 0 && pthread_join(waiter, NULL) == 0);
+            clock_gettime(CLOCK_MONOTONIC, &d1);
+            CHECK(ep_waiter_result == (int32_t)0x80410104u || ep_waiter_result == (int32_t)0x80410109u);
+            CHECK(d1.tv_sec - d0.tv_sec < 1);
+            CHECK(ep_destroy(id) == (int32_t)0x80410109u && ep_wait(id, events, 4, 0) == (int32_t)0x80410109u);
+        }
+        typedef int32_t (*f_sd_none)(void);
+        typedef int32_t (*f_sd_init)(const void *);
+        const f_sd_init sd_init = (f_sd_init)fn("libSceSaveData", "sceSaveDataInitialize");
+        const f_sd_none sd_term = (f_sd_none)fn("libSceSaveData", "sceSaveDataTerminate");
+        const f_sd_point sd_umount = (f_sd_point)fn("libSceSaveData", "sceSaveDataUmount");
+        const f_sd_set_param sd_set_param = (f_sd_set_param)fn("libSceSaveData", "sceSaveDataSetParam");
+        const f_sd_search sd_search = (f_sd_search)fn("libSceSaveData", "sceSaveDataDirNameSearch");
+        const f_sd_setup sd_setup = (f_sd_setup)fn("libSceSaveData", "sceSaveDataSetupSaveDataMemory");
+        const f_sd_memory sd_set = (f_sd_memory)fn("libSceSaveData", "sceSaveDataSetSaveDataMemory");
+        sd_mount = (f_sd_mount)fn("libSceSaveData", "sceSaveDataMount");
+        sd_get = (f_sd_memory)fn("libSceSaveData", "sceSaveDataGetSaveDataMemory");
+        CHECK(sd_init && sd_term && sd_umount && sd_set_param && sd_search && sd_setup && sd_set && sd_mount && sd_get);
+        static char saves[512];
+        const char *tmp = getenv("TMPDIR");
+        snprintf(saves, sizeof saves, "%s/pb-saves-XXXXXX", tmp ? tmp : "/tmp");
+        CHECK(mkdtemp(saves) != NULL);
+        rt_process.savedata_dir = saves;
+        if (sd_init && sd_term && sd_umount && sd_set_param && sd_search && sd_setup && sd_set && sd_mount && sd_get) {
+            /* before initialize: the title's SDK decides the code (the test binary has none: before 2.00) */
+            char point[16];
+            CHECK(sd_mount_dir("SAVE0", 4, point) == (int32_t)0x809F000Bu);
+            /* from here on, a title built against SDK 2.00, as the process parameters say */
+            static uint64_t fake_image[8];
+            const uint32_t prefix[4] = {32, 0, 0x4942524fu, 1};            /* size 32, magic "ORBI", version 1 */
+            const uint32_t sdk_2_00 = 0x02000071u;
+            memcpy(fake_image, prefix, sizeof prefix);
+            memcpy((char *)fake_image + 16, &sdk_2_00, sizeof sdk_2_00);
+            void *saved_image = rt_process.image, *saved_param = rt_process.proc_param;
+            const uint64_t saved_size = rt_process.image_size;
+            rt_process.image = fake_image, rt_process.image_size = sizeof fake_image, rt_process.proc_param = fake_image;
+            CHECK(sd_mount_dir("SAVE0", 4, point) == (int32_t)0x80960002u); /* SDK 2.00 to 2.49 */
+            CHECK(sd_init(NULL) == 0);
+            CHECK(sd_mount_dir("SAVE0", 2, point) == (int32_t)0x809F0008u);       /* not there, no create */
+            CHECK(sd_mount_dir("", 4, point) == (int32_t)0x809F0000u);
+            CHECK(sd_mount_dir("../up", 4, point) == (int32_t)0x809F0000u);
+            CHECK(sd_mount_dir("a/b", 4, point) == (int32_t)0x809F0000u);
+            sd_mount_req negative = {.user = -1, .dir = "SAVE0", .mode = 4};
+            sd_mount_res unused;
+            CHECK(sd_mount(&negative, &unused) == (int32_t)0x809F0011u);
+            CHECK(sd_mount_dir("SAVE0", 4 | 2, point) == 0 && !strcmp(point, "/savedata0"));
+            CHECK(sd_mount_dir("SAVE0", 2, NULL) == (int32_t)0x809F0003u);        /* already mounted */
+            {   /* a title thread's stack can be small: a mount must fit in 64 KiB */
+                pthread_attr_t small;
+                pthread_t thread;
+                CHECK(pthread_attr_init(&small) == 0 && pthread_attr_setstacksize(&small, 64 * 1024) == 0);
+                CHECK(pthread_create(&thread, &small, sd_small_stack_mount, NULL) == 0 && pthread_join(thread, NULL) == 0);
+                CHECK(sd_small_stack_result == 0);
+                pthread_attr_destroy(&small);
+            }
+            /* the title's own file through the mount, landing in the save folder */
+            typedef int32_t (*f_sd_close)(int32_t);
+            const f_kopen open_fn = (f_kopen)fn("libkernel", "sceKernelOpen");
+            const f_sd_close close_fn = (f_sd_close)fn("libkernel", "sceKernelClose");
+            if (open_fn && close_fn) {
+                const int32_t fd = open_fn("/savedata0/userdata0010", 0x0001 | 0x0200, 0666); /* write, create */
+                CHECK(fd >= 0 && close_fn(fd) == 0);
+                char host[700];
+                snprintf(host, sizeof host, "%s/1/SAVE0/userdata0010", saves);
+                struct stat created;
+                CHECK(stat(host, &created) == 0 && S_ISREG(created.st_mode));
+            }
+            /* params: a title and a user param, kept in sce_sys/param.bin */
+            CHECK(sd_set_param("/savedata0", 1, "The Old Hunters", 16) == 0);
+            const uint32_t user_param = 7;
+            CHECK(sd_set_param("/savedata0", 4, &user_param, 4) == 0);
+            CHECK(sd_set_param("/savedata0", 5, &user_param, 4) == (int32_t)0x809F0000u);
+            CHECK(sd_set_param("/savedata9", 1, "x", 2) == (int32_t)0x809F0004u);
+            CHECK(sd_umount("/savedata0") == 0 && sd_umount("/savedata0") == (int32_t)0x809F0008u);
+            CHECK(sd_mount_dir("SAVE0", 4, NULL) == (int32_t)0x809F0007u);        /* create, but it exists */
+            /* a second save, read-only mount, and the 16-slot limit */
+            CHECK(sd_mount_dir("SAVE1", 4, point) == 0 && sd_umount(point) == 0);
+            CHECK(sd_mount_dir("SAVE1", 1, point) == 0 && !strcmp(point, "/savedata0"));
+            if (open_fn) CHECK(open_fn("/savedata0/new", 0x0001 | 0x0200, 0666) == (int32_t)0x8002001eu); /* EROFS */
+            CHECK(sd_umount(point) == 0);
+            char name[16];
+            for (int k = 0; k < 16; k++) {
+                snprintf(name, sizeof name, "SLOT%d", k);
+                CHECK(sd_mount_dir(name, 4, NULL) == 0);
+            }
+            CHECK(sd_mount_dir("SLOT16", 4, NULL) == (int32_t)0x809F000Cu);
+            CHECK(sd_term() == 0);                                                /* unmounts them (before SDK 4.00) */
+            CHECK(sd_init(NULL) == 0 && sd_mount_dir("SLOT0", 2, point) == 0 && sd_umount(point) == 0);
+            /* search: by name pattern, sorted, with params */
+            char names[4][32];
+            sd_param params[4];
+            sd_cond cond = {.user = 1, .dir = "SAVE%", .key = 0, .order = 1};
+            sd_result res = {.names = names, .capacity = 4, .params = params};
+            CHECK(sd_search(&cond, &res) == 0 && res.hits == 2 && res.set == 2);
+            CHECK(!strcmp(names[0], "SAVE1") && !strcmp(names[1], "SAVE0"));    /* descending */
+            CHECK(!strcmp(params[1].title, "The Old Hunters") && params[1].user_param == 7);
+            cond.dir = "save_";                                                   /* case-insensitive, one character */
+            res.capacity = 1;
+            CHECK(sd_search(&cond, &res) == 0 && res.hits == 2 && res.set == 1);
+            cond.dir = NULL;
+            res.capacity = 4;
+            CHECK(sd_search(&cond, &res) == 0 && res.hits == 19);          /* with SMALLSTACK */
+            cond.key = 6;
+            CHECK(sd_search(&cond, &res) == (int32_t)0x809F0000u);
+            /* the memory-backed save */
+            char data[16] = "", back[16] = "";
+            CHECK(sd_get(1, data, 4, 0) == (int32_t)0x809F0012u);                /* not set up */
+            CHECK(sd_setup(1, 0, NULL) == (int32_t)0x809F0000u);
+            CHECK(sd_setup(1, 4096, NULL) == 0);
+            memcpy(data, "blood echoes", 13);
+            CHECK(sd_set(1, data, 13, 100) == 0 && sd_get(1, back, 13, 100) == 0 && !strcmp(back, "blood echoes"));
+            CHECK(sd_get(1, back, 4, 0) == 0 && !back[0] && !back[3]);           /* untouched bytes are zero */
+            CHECK(sd_get(1, NULL, 4, 0) == (int32_t)0x809F0000u && sd_get(1, back, 4, -1) == (int32_t)0x809F0000u);
+            CHECK(died_in_fatal(sd_get_past_end));
+            CHECK(died_in_fatal(sd_mount_other_title));
+            CHECK(died_in_fatal(sd_mount_other_user));
+            CHECK(sd_term() == 0);
+            rt_process.image = saved_image, rt_process.image_size = saved_size, rt_process.proc_param = saved_param;
+        }
+        rt_process.savedata_dir = NULL;
+    }
+
+    te_exit = (f_thread_exit)fn("libkernel", "scePthreadExit");
+    CHECK(te_exit != NULL);
+    if (te_exit && tc_create && kc_create && kc_set) {
+        static int value;
+        CHECK(kc_create(&te_key, te_destructor) == 0);
+        void *thread = NULL, *attr = tc_attr(1, 1, 1); /* detached */
+        CHECK(tc_create(&thread, &attr, te_entry, &value, "exits") == 0);
+        for (int ms = 0; ms < 5000 && !atomic_load(&te_destructor_calls); ms++) usleep(1000); /* up to 5 s on a slow machine */
+        CHECK(atomic_load(&te_destructor_calls) == 1 && te_destroyed == &value);
+        CHECK(!atomic_load(&te_after_exit));
+        CHECK(died_in_fatal(te_exit_main));
+    }
+
+    pg_init = (f_pg_init)fn("libScePlayGo", "scePlayGoInitialize");
+    pg_open = (f_pg_open)fn("libScePlayGo", "scePlayGoOpen");
+    pg_chunks = (f_pg_chunks)fn("libScePlayGo", "scePlayGoGetChunkId");
+    pg_locus = (f_pg_locus)fn("libScePlayGo", "scePlayGoGetLocus");
+    CHECK(pg_init && pg_open && pg_chunks && pg_locus);
+    if (pg_init && pg_open && pg_chunks && pg_locus) {
+        CHECK(died_in_fatal(pg_open_first)); /* before scePlayGoInitialize */
+        static unsigned char work[0x200000];
+        const struct { void *buffer; uint32_t size, reserved; } params = {work, sizeof work, 0};
+        CHECK(pg_init(&params) == 0);
+        CHECK(died_in_fatal(pg_init_nothing));
+        CHECK(pg_open(&pg_handle, NULL) == 0 && pg_handle == 1);
+        CHECK(died_in_fatal(pg_open_with_params));
+        static char app0[512];
+        const char *tmp = getenv("TMPDIR");
+        snprintf(app0, sizeof app0, "%s/pb-playgo-XXXXXX", tmp ? tmp : "/tmp");
+        CHECK(mkdtemp(app0) != NULL);
+        rt_process.app0_dir = app0;
+        CHECK(died_in_fatal(pg_chunks_no_manifest)); /* no sce_sys/playgo-manifest.xml yet */
+        char path[600];
+        snprintf(path, sizeof path, "%s/sce_sys", app0);
+        CHECK(mkdir(path, 0755) == 0);
+        snprintf(path, sizeof path, "%s/sce_sys/playgo-manifest.xml", app0);
+        FILE *manifest = fopen(path, "w");
+        if (manifest) {
+            fputs("<psproject fmt=\"playgo-manifest\"><volume><chunk_info chunk_count=\"3\" scenario_count=\"1\"/></volume></psproject>",
+                  manifest);
+            fclose(manifest);
+        }
+        uint16_t ids[100];
+        uint32_t count = 0;
+        memset(ids, 0xee, sizeof ids);
+        CHECK(pg_chunks(pg_handle, ids, 100, &count) == 0 && count == 3 && ids[0] == 0 && ids[1] == 1 && ids[2] == 2 &&
+              ids[3] == 0xeeee);
+        int8_t loci[3] = {0, 0, 0};
+        CHECK(pg_locus(pg_handle, ids, 3, loci) == 0 && loci[0] == 3 && loci[1] == 3 && loci[2] == 3);
+        CHECK(died_in_fatal(pg_chunks_short));
+        CHECK(died_in_fatal(pg_chunks_bad_handle));
+        CHECK(died_in_fatal(pg_locus_unknown));
+        typedef int32_t (*f_pg_speed)(int32_t, int32_t);
+        const f_pg_speed pg_speed = (f_pg_speed)fn("libScePlayGo", "scePlayGoSetInstallSpeed");
+        CHECK(pg_speed && pg_speed(pg_handle, 1) == 0 && pg_speed(pg_handle, 2) == 0 && pg_speed(pg_handle, 0) == 0);
+        CHECK(pg_speed && pg_speed(pg_handle, 3) == (int32_t)0x80B20004u && pg_speed(pg_handle + 1, 2) == (int32_t)0x80B20009u);
+        remove(path);
+        snprintf(path, sizeof path, "%s/sce_sys", app0);
+        rmdir(path);
+        rmdir(app0);
+        rt_process.app0_dir = NULL;
+    }
+
+    for (syslib_test *test = registered_tests; test; test = test->next) test->run();
 
     if (!failures) puts("syslib: ok");
     return failures != 0;
