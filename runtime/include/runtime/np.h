@@ -9,4 +9,9 @@ enum { RT_NP_TITLE_ID_BYTES = 13 };
    empty until it does. */
 void rt_np_title_id(char out[RT_NP_TITLE_ID_BYTES]);
 
+/* The callbacks the title registered: kept, and never called while the runtime is offline, where
+   nothing changes. A runtime that goes online would call them through sceNpCheckCallback. */
+typedef enum { RT_NP_STATE_CALLBACK, RT_NP_PRESENCE_CALLBACK } rt_np_callback_kind;
+void *rt_np_callback(rt_np_callback_kind kind, void **user_data);
+
 #endif

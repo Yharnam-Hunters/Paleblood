@@ -30,8 +30,8 @@ static_assert(offsetof(LastPresentRecordPayload, flags_25) == 0x25);
 
 struct LastPresentRecordContext {
     uint8_t unknown_0x0000[0x10];
-    RecordCommandBuffer commands;
-    uint8_t unknown_0x0011[0x3f];
+    PacketBuffer commands;
+    uint8_t unknown_0x0038[0x18];
     RecordShaderState shader_state;
     uint8_t unknown_0x0051[0xb427];
     Field<uint8_t> flags_b478;
