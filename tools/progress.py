@@ -209,6 +209,8 @@ def boot_stop(rt: dict) -> str:
     stop = rt.get('runtime_stop')
     if stop:
         return f"`{stop['function']}`, which stops by name ({stop['reason']})"
+    if rt['outcome'] == 'timeout':  # where a running process was when the time ran out says nothing
+        return "the run's time limit, still running (no call stopped it)"
     if rt.get('fault'):
         return f"{rt['outcome']} at `{rt['fault']['at']}`"
     return rt['outcome']

@@ -193,6 +193,32 @@ git push -q gate HEAD:refs/heads/main 2>&1 | tail -1 >/dev/null
 if [ -n "$(git ls-remote gate)" ]; then echo "ok   a passing gate lets the push through"; else echo "FAIL a passing gate blocked the push"; rc=1; fi
 command cp -f "$tmp/pre_push.real" tools/pre_push.sh
 
+# Merging main into a branch: main's commits by others are already published and pass; a
+# commit by someone else that main does not have is still refused. Commits are made with
+# commit-tree (no hooks run), the rest of the gate is stubbed, and only the authors line is read.
+git config bb.maintainerIdent "Test Maintainer <maintainer@example.invalid>"
+command cp tools/end_session.sh "$tmp/end_session.real"
+command cp tools/test_hooks.sh "$tmp/test_hooks.real"
+printf '#!/bin/sh\nexit 0\n' > tools/end_session.sh
+printf '#!/bin/sh\nexit 0\n' > tools/test_hooks.sh
+base=$(git rev-parse HEAD)
+theirs=$(GIT_AUTHOR_NAME=Someone GIT_AUTHOR_EMAIL=someone@example.invalid GIT_COMMITTER_NAME=Someone \
+    GIT_COMMITTER_EMAIL=someone@example.invalid git commit-tree "$base^{tree}" -p "$base" -m "theirs")
+merged=$(GIT_AUTHOR_NAME="Test Maintainer" GIT_AUTHOR_EMAIL=maintainer@example.invalid GIT_COMMITTER_NAME="Test Maintainer" \
+    GIT_COMMITTER_EMAIL=maintainer@example.invalid git commit-tree "$base^{tree}" -p "$base" -p "$theirs" -m "merge main")
+git update-ref refs/remotes/origin/main "$theirs"
+gate=$(BB_PUSH_RANGE="$base..$merged" tools/pre_push.sh 2>&1)   # fails overall: the tree is dirty
+if grep -q '^ok   authors' <<<"$gate"; then
+    echo "ok   main's commits merged into a branch pass the authors check"
+else echo "FAIL main's commits merged into a branch were refused"; rc=1; fi
+git update-ref refs/remotes/origin/main "$base"
+gate=$(BB_PUSH_RANGE="$base..$merged" tools/pre_push.sh 2>&1)
+if grep -q '^FAIL authors' <<<"$gate"; then
+    echo "ok   another author's commit not on main is refused"
+else echo "FAIL another author's commit not on main was accepted"; rc=1; fi
+command cp -f "$tmp/end_session.real" tools/end_session.sh
+command cp -f "$tmp/test_hooks.real" tools/test_hooks.sh
+
 tools/install_hooks.sh >/dev/null
 [ "$(git config --get bb.enforceIdentity || echo unset)" = "unset" ] \
     && echo "ok   install_hooks.sh without --maintainer leaves enforcement off" \

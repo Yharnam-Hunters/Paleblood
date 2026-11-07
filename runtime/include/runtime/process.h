@@ -34,6 +34,12 @@ typedef struct {
 
 #define RT_MAX_APP_PARAMS 16
 
+/* An add-on (DLC) the person running the runtime owns, by its 16-character entitlement label
+   (tools/boot.py --addcont LABEL; runtime/boot.c --addcont). sceAppContentGetAddcontInfoList
+   lists these as installed (runtime/syslib/app_content.c). */
+#define RT_MAX_ADDCONTS 16
+#define RT_ADDCONT_LABEL_BYTES 17
+
 /* A console system setting (the language, ...), as the person running the runtime chooses it
    (tools/boot.py passes each to runtime/boot.c as --system-param ID=VALUE).
    sceSystemServiceParamGetInt answers from these (runtime/syslib/system_service.c). */
@@ -56,8 +62,11 @@ typedef struct {
     int app_boot_param_unread; /* --app-param boot=unread: the title never reads the boot parameter */
     rt_system_param system_params[RT_MAX_SYSTEM_PARAMS];
     uint32_t system_param_count;
+    char addconts[RT_MAX_ADDCONTS][RT_ADDCONT_LABEL_BYTES];
+    uint32_t addcont_count;
     const char *app0_dir;    /* --app0: the host directory that holds the title's /app0 (read-only) */
     const char *data_dir;    /* --data: the host directory the runtime serves as the writable /data */
+    const char *savedata_dir; /* --savedata: the host directory that holds the title's save data */
     /* The executable's thread-local storage template (its PT_TLS segment): every guest thread's
        block is a copy of it, placed just below the thread pointer (x86-64 variant II). */
     const void *tls_image;
@@ -82,6 +91,10 @@ void rt_thread_register_main(void *stack, uint64_t stack_size);
    does a null or empty variable, for which thread creation would use the system's defaults. */
 int rt_thread_attr_detach_state(void *const *attr, const char *caller);
 
+/* The calling guest thread's priority, as scePthreadGetprio answers it (256 highest to 767 lowest);
+   stops by name under caller when no guest thread runs on this host thread. */
+int32_t rt_thread_current_priority(const char *caller);
+
 /* Calls entry(argument) on the guest stack whose top is stack_top, with the System V convention the
    guest uses, and returns its result (runtime/syslib/kernel_thread.c). */
 void *rt_thread_call(void *(*entry)(void *), void *argument, void *stack_top);
@@ -89,6 +102,10 @@ void *rt_thread_call(void *(*entry)(void *), void *argument, void *stack_top);
 /* Runs the calling guest thread's key destructors as it ends, on its guest stack
    (runtime/syslib/kernel_key.c, scePthreadKeyCreate). */
 void rt_thread_keys_exit(void *stack_top);
+
+/* Microseconds since the process started, as sceKernelGetProcessTime answers
+   (runtime/syslib/kernel_time_of_day.c). */
+uint64_t rt_process_time(void);
 
 /* Stops the process with a message naming the system function: behaviour the runtime does not
    know is never guessed. */
