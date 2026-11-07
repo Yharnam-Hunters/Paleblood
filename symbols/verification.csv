@@ -280,8 +280,8 @@ render_yebis_get_recursive_sample_parameters,edge,,23,23,0,0,6e6f0aa41d5607ce,20
 render_yebis_get_recursive_sample_parameters,edge,30,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,60,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,uncapped,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
-render_present_encoding_units,edge,,8,8,0,0,c3332eaa68fece3e,2026-11-05
-render_present_record_bit_width,edge,,8,8,0,0,4cc54944f003e521,2026-11-05
-render_present_slot_emit,edge,,12,12,0,0,1eda8151055d44d2,2026-11-05
-render_present_source_flush_state,edge,,26,26,0,0,92675c00e5f9e693,2026-11-05
-render_present_source_prepare,edge,,12,12,0,0,e91eaf5cf066bb6d,2026-11-05
+render_present_encoding_units,edge,,8,8,0,0,c3332eaa68fece3e,2026-11-07
+render_present_record_bit_width,edge,,10,10,0,0,4cc54944f003e521,2026-11-07
+render_present_slot_emit,edge,,12,12,0,0,1eda8151055d44d2,2026-11-07
+render_present_source_flush_state,edge,,28,28,0,0,92675c00e5f9e693,2026-11-07
+render_present_source_prepare,edge,,12,12,0,0,e91eaf5cf066bb6d,2026-11-07
