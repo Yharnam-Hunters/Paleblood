@@ -1,15 +1,15 @@
 # Immutable logical CPU slots
 
-This independent component is based on upstream 45f6f962dd10b94d4105ae969f60b480aa1cf638.
-It adds a value object and a read-only Darwin count API. It does not change the root build,
-`rt_cpu_query_native`, native host-ID types, boot, guest attributes, scheduling or thread creation.
-The separate startup integration remains a later unit.
+This component stores a logical CPU count and its corresponding slot mask. It also provides a
+read-only Darwin host-count query. The root build compiles the component and its slot tests;
+the runtime and game do not call it yet. The PR stays a draft until a runtime consumer needs
+this interface and the Linux host query is established.
 
 `rt_logical_cpu_slots_init` accepts 1..64 and publishes a named count/reserved/mask value only on
 success. Bits 0..N-1 identify Paleblood logical slots, not host processor IDs or an observed console
-mask. Treat the initialized value as immutable while published; no mutation/reconfiguration API
-is provided. Construct a different value in separate storage when needed. `read` validates the
-count, zero reserved field and complete corresponding mask before exactly 8-byte memcpy output.
+mask. Keep the initialized value immutable while readers can access it; there is no reconfiguration
+API. Construct a different value in separate storage when needed. `read` validates the
+count, zero reserved field and complete corresponding mask before copying exactly 8 bytes to the output.
 Output must be valid/disjoint from the immutable value, and may be unaligned. Initialization
 requires aligned valid value storage. NULL, invalid count or malformed state leaves outputs alone.
 The 64-slot case uses UINT64_MAX, never a shift by 64. No allocation, destruction or live query is
@@ -34,12 +34,12 @@ defines the read-only interface and returned byte count. Mach affinity tags are 
 this unit neither uses them nor promises hard pinning. A count read has no association with an
 already initialized value: any future integration must explicitly freeze its selected topology.
 
-## Isolated owned tests
+## Tests
 
-The ordinary root CMake project is unchanged. The separate test project accepts whole x86-64
-Darwin or Linux. Darwin requires an explicit single architecture, and rejects ARM64/universal.
-The component itself is plain portable C, with a conditional Darwin query; the restricted test
-proposal matches the current owned-runtime execution architecture.
+The root CMake project builds the slot-mask test. The separate test project also exercises the
+Darwin query on x86-64 Darwin, and the unsupported-query path on Linux. Its Darwin configuration
+requires an explicit single architecture and rejects ARM64 or universal builds. The component
+itself is portable C, with the host query conditional on Darwin.
 
 ```sh
 cmake -S test/logical_cpu -B build-logical-cpu -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64
@@ -47,18 +47,15 @@ cmake --build build-logical-cpu --parallel 2
 ctest --test-dir build-logical-cpu --output-on-failure
 ```
 
-Release-active tests cover 1/3/63/64, invalid counts/state, full output canaries and unaligned reads.
+Tests also run with assertions disabled and cover 1/3/63/64, invalid counts/state, full output canaries and unaligned reads.
 Darwin additionally builds a test-only sysctl alias against the exact component: read-only
 arguments, errno preservation, missing errno, malformed sizes/counts, >64, successful reads and
-independence of prior slot values. A separate ordinary owned test calls the real count API once;
+independence of prior slot values. A separate test calls the real count API once;
 unsupported/unrepresentable data fails rather than skipping or guessing. Linux's pure test
 checks explicit unsupported-query behavior. Each CTest has a 10-second process bound; it is not an
 intrinsic host sysctl duration guarantee. No test runs guest bytes, sets affinity, or installs a
 scheduler policy.
 
-The reviewed component passed isolated normal Release builds under Linux GCC 14 and Clang 19
-(one CTest each) and whole-x86-64 macOS AppleClang (three CTests), with zero skips. The real
-Darwin query returned 16 enabled logical CPUs on that validation host. This is a host count
-observation, not a guest affinity measurement. All 236 source files remained unchanged during
-validation. Root-project integration, original-executable startup and gameplay are outside this
-component validation.
+These tests check the component in isolation. They do not establish a console affinity mask,
+install a scheduler policy, or exercise executable startup. Validation results and compiler
+identities belong in the PR report.

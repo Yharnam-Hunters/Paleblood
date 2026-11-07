@@ -1,0 +1,85 @@
+name: macos-metal
+
+on:
+  push:
+    # main only: a pull request's branch is checked by its pull_request run and the merge queue's
+    # temporary branch by its merge_group run, so a push to either would test the same commit again.
+    branches: [main]
+    paths:
+      - '.github/workflows/macos-metal.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/Metal.cmake'
+      - 'runtime/graphics_metal.mm'
+      - 'runtime/include/runtime/graphics_metal.h'
+      - 'test/test_metal_offscreen.mm'
+      - 'runtime/renderer/**'
+      - 'runtime/include/runtime/gcn*.h'
+      - 'runtime/include/runtime/spirv.h'
+      - 'test/test_gcn_spirv.c'
+      - 'test/gcn_programs.h'
+  pull_request:
+    paths:
+      - '.github/workflows/macos-metal.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/Metal.cmake'
+      - 'runtime/graphics_metal.mm'
+      - 'runtime/include/runtime/graphics_metal.h'
+      - 'test/test_metal_offscreen.mm'
+      - 'runtime/renderer/**'
+      - 'runtime/include/runtime/gcn*.h'
+      - 'runtime/include/runtime/spirv.h'
+      - 'test/test_gcn_spirv.c'
+      - 'test/gcn_programs.h'
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    name: Metal compile (${{ matrix.arch }})
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x86_64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure normal root build with Metal smoke compilation
+        run: >-
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }}
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -DPB_ENABLE_METAL_SMOKE_TEST=ON
+      - name: Check that normal runtime and game targets remain available
+        run: |
+          cmake --build build --target help > targets.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          names = set(re.findall(r'[A-Za-z_][A-Za-z0-9_]*', Path('targets.txt').read_text()))
+          assert {'pbmetal', 'pbboot', 'pbloader', 'bbrt', 'bbgame'} <= names
+          PY
+      - name: Compile Metal library and real-device test
+        run: cmake --build build --target pbmetal test_metal_offscreen --parallel 2
+      # Hosted compilation does not qualify a real Metal device or GPU execution.
+
+  shaders:
+    # The shader translator's output on macOS: every test program is translated to SPIR-V,
+    # converted to Metal Shading Language 2.3 by SPIRV-Cross and compiled by Apple's Metal compiler
+    # (docs/RENDERER.md). Compilation only: hosted runners do not qualify GPU execution.
+    name: Translated shaders compile as Metal
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SPIRV-Cross and SPIRV-Tools
+        run: brew install spirv-cross spirv-tools
+      - name: Make sure the Metal compiler is present
+        run: xcrun -sdk macosx metal --version || xcodebuild -downloadComponent MetalToolchain
+      - name: Build the shader translator test
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
+          cmake --build build --target test_gcn_spirv --parallel 2
+      - name: Translate, convert to Metal and compile every test program
+        env:
+          PB_REQUIRE_METAL: '1'
+        run: ./build/test_gcn_spirv

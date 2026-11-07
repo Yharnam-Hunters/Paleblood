@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* pbboot: runs a PS4 executable's entry on Paleblood's runtime, as far as the runtime goes.
 
-     pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--app0 DIR] [--data DIR] [--nids NID_DB.xml]
+     pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--addcont LABEL]... [--app0 DIR] [--data DIR] [--savedata DIR] [--display none|headless|window] [--audio none|host] [--input none|host] [--input-script SPEC|@FILE] [--display-capture DIR] [--nids NID_DB.xml]
             [--module-hook MODULE:OFFSET:SIZE:ACTION:NAME]...
-            [--status OUT.json] [--timeout SECONDS] [--trace]
+            [--status OUT.json] [--timeout SECONDS] [--trace] [--game-lib LIBRARY]
      pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]
             (list every import: importer, library, symbol, kind, provider, provider offset, size)
 
@@ -37,13 +37,20 @@
    Names: an import is "NID#library#module"; library names come from the object, symbol names
    from a public NID database (--nids, default $BB_NID_DB), else the NID is shown. */
 #define _GNU_SOURCE
+#include "runtime/display.h"
 #include "runtime/loader.h"
 #include "runtime/memory.h"
+#include "runtime/host_hooks.h"
+#include "runtime/module_tls.h"
 #include "runtime/nid.h"
 #include "runtime/process.h"
+#include "runtime/audio_host.h"
+#include "runtime/input_host.h"
+#include "runtime/renderer.h"
 #include "runtime/syslib.h"
 
 #include <asm/prctl.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <pthread.h>
 #include <setjmp.h>
@@ -391,6 +398,53 @@ static void where(uint64_t address, char *out, size_t size)
     snprintf(out, size, "host+0x%llx", (unsigned long long)address);
 }
 
+/* Eager per-thread TLS is ready before the guest's timeout/recovery scope begins.
+   Main storage already backs its static thread-pointer model and remains borrowed. */
+static rt_module_tls *module_tls_context;
+static void module_tls_cleanup(void)
+{
+    if (!module_tls_context) return;
+    rt_module_tls_status status = rt_module_tls_unbind(module_tls_context);
+    if (status == RT_MODULE_TLS_OK) status = rt_module_tls_destroy(module_tls_context);
+    if (status != RT_MODULE_TLS_OK)
+        rt_fatal("module TLS shutdown", rt_module_tls_status_message(status));
+    module_tls_context = NULL;
+}
+static int prepare_module_tls(void *main_storage, uint64_t main_size, char *error, size_t error_size)
+{
+    rt_module_tls_spec specs[MAX_OBJECTS];
+    size_t count = 0;
+    for (size_t k = 0; k < object_count; k++) {
+        const object *o = &objects[k];
+        const rt_elf_tls *tls = rt_elf_tls_segment(o->elf);
+        if (!tls->memsz) continue;
+        if (tls->vaddr > o->size || tls->filesz > o->size - tls->vaddr) {
+            snprintf(error, error_size, "%s: TLS template outside mapped image", o->label);
+            return -1;
+        }
+        specs[count++] = (rt_module_tls_spec){k + 1,
+            tls->filesz ? o->image + tls->vaddr : NULL, tls->filesz, tls->memsz, tls->align};
+    }
+    rt_module_tls *prepared = NULL;
+    rt_module_tls_status status = rt_module_tls_create(specs, count, &prepared);
+    if (status == RT_MODULE_TLS_OK && rt_elf_tls_segment(objects[0].elf)->memsz)
+        status = rt_module_tls_borrow(prepared, 1, main_storage, main_size);
+    if (status == RT_MODULE_TLS_OK) status = rt_module_tls_bind(prepared);
+    if (status != RT_MODULE_TLS_OK) {
+        if (prepared) (void)rt_module_tls_destroy(prepared);
+        snprintf(error, error_size, "%s", rt_module_tls_status_message(status));
+        return -1;
+    }
+    if (atexit(module_tls_cleanup)) {
+        (void)rt_module_tls_unbind(prepared);
+        (void)rt_module_tls_destroy(prepared);
+        snprintf(error, error_size, "cannot register module TLS cleanup");
+        return -1;
+    }
+    module_tls_context = prepared;
+    return 0;
+}
+
 /* --app-param ID=VALUE, ID=unread or boot=unread (game/app_params.csv, through tools/boot.py).
    Returns 0 when it was added. */
 static int add_app_param(const char *arg)
@@ -562,19 +616,37 @@ static int install_module_hooks(char *error, size_t size)
     return 0;
 }
 
+/* --display MODE: 0 and the mode, or -1 for a name that is not one. */
+static int display_mode_named(const char *name, rt_display_mode *mode)
+{
+    static const struct {
+        const char *name;
+        rt_display_mode mode;
+    } modes[] = {{"none", RT_DISPLAY_NONE}, {"headless", RT_DISPLAY_HEADLESS}, {"window", RT_DISPLAY_WINDOW}};
+    for (size_t i = 0; i < sizeof modes / sizeof modes[0]; i++)
+        if (!strcmp(name, modes[i].name)) {
+            *mode = modes[i].mode;
+            return 0;
+        }
+    return -1;
+}
+
 static const char *usage =
-    "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--app0 DIR] [--data DIR] [--nids NID_DB.xml]\n"
+    "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--addcont LABEL]... [--app0 DIR] [--data DIR] [--savedata DIR] [--display none|headless|window] [--audio none|host] [--input none|host] [--input-script SPEC|@FILE] [--display-capture DIR] [--nids NID_DB.xml]\n"
     "              [--module-hook MODULE:OFFSET:SIZE:ACTION:NAME]...\n"
-    "              [--status OUT.json] [--timeout S] [--trace]\n"
+    "              [--status OUT.json] [--timeout S] [--trace] [--game-lib LIBRARY]\n"
     "       pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]\n";
 
 int main(int argc, char **argv)
 {
-    const char *nid_path = getenv("BB_NID_DB"), *status_path = NULL;
+    const char *nid_path = getenv("BB_NID_DB"), *status_path = NULL, *display_capture = NULL, *game_library_path = NULL,
+               *input_script = NULL;
     int timeout = 30, trace = 0, list = 0;
+    rt_display_mode display_mode = RT_DISPLAY_NONE;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--nids") && i + 1 < argc) nid_path = argv[++i];
         else if (!strcmp(argv[i], "--status") && i + 1 < argc) status_path = argv[++i];
+        else if (!strcmp(argv[i], "--game-lib") && i + 1 < argc && !game_library_path) game_library_path = argv[++i];
         else if (!strcmp(argv[i], "--timeout") && i + 1 < argc) timeout = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--module") && i + 1 < argc && object_count && object_count < MAX_OBJECTS)
             objects[object_count++].path = argv[++i];
@@ -588,11 +660,54 @@ int main(int argc, char **argv)
             rt_process.app0_dir = argv[++i];
         else if (!strcmp(argv[i], "--data") && i + 1 < argc)
             rt_process.data_dir = argv[++i];
+        else if (!strcmp(argv[i], "--savedata") && i + 1 < argc)
+            rt_process.savedata_dir = argv[++i];
+        else if (!strcmp(argv[i], "--display") && i + 1 < argc) {
+            const char *mode = argv[++i];
+            if (display_mode_named(mode, &display_mode)) {
+                fprintf(stderr, "pbboot: --display %s: want none, headless or window\n", mode);
+                return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "--display-capture") && i + 1 < argc)
+            display_capture = argv[++i];
+        else if (!strcmp(argv[i], "--audio") && i + 1 < argc) {
+            const char *audio = argv[++i];
+            if (strcmp(audio, "none") && strcmp(audio, "host")) {
+                fprintf(stderr, "pbboot: --audio %s: want none or host\n", audio);
+                return 2;
+            }
+            if (rt_audio_host_configure(!strcmp(audio, "host"))) {
+                fprintf(stderr, "pbboot: --audio host: this build has no host sound (SDL3 was not found)\n");
+                return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "--input") && i + 1 < argc) {
+            const char *input = argv[++i];
+            if (strcmp(input, "none") && strcmp(input, "host")) {
+                fprintf(stderr, "pbboot: --input %s: want none or host\n", input);
+                return 2;
+            }
+            if (rt_input_host_configure(!strcmp(input, "host"))) {
+                fprintf(stderr, "pbboot: --input host: this build has no host input (SDL3 was not found)\n");
+                return 2;
+            }
+        }
+        else if (!strcmp(argv[i], "--input-script") && i + 1 < argc && !input_script) input_script = argv[++i];
         else if (!strcmp(argv[i], "--system-param") && i + 1 < argc) {
             if (add_system_param(argv[++i])) {
                 fprintf(stderr, "pbboot: --system-param %s: want a new ID=VALUE\n", argv[i]);
                 return 2;
             }
+        }
+        else if (!strcmp(argv[i], "--addcont") && i + 1 < argc) {
+            const char *label = argv[++i];
+            if (rt_process.addcont_count == RT_MAX_ADDCONTS || !label[0] || strlen(label) >= RT_ADDCONT_LABEL_BYTES) {
+                fprintf(stderr, "pbboot: --addcont %s: want an entitlement label of 1 to 16 characters (at most %d)\n", label,
+                        RT_MAX_ADDCONTS);
+                return 2;
+            }
+            memcpy(rt_process.addconts[rt_process.addcont_count++], label, strlen(label) + 1);
         }
         else if (!strcmp(argv[i], "--app-param") && i + 1 < argc) {
             if (add_app_param(argv[++i])) {
@@ -623,6 +738,29 @@ int main(int argc, char **argv)
     }
     if (!object_count) {
         fputs(usage, stderr);
+        return 2;
+    }
+    if (rt_input_host_enabled() && display_mode != RT_DISPLAY_WINDOW) {
+        /* The window's event loop is what reads the controller and the keyboard. */
+        fputs("pbboot: --input host needs --display window\n", stderr);
+        return 2;
+    }
+    if (input_script) {
+        /* A script plays the controller instead of the host's devices (runtime/input_host.h). */
+        char why[256];
+        if (rt_input_host_enabled()) {
+            fputs("pbboot: --input-script plays the controller: leave out --input host\n", stderr);
+            return 2;
+        }
+        if (rt_input_script_configure(input_script, why, sizeof why)) {
+            fprintf(stderr, "pbboot: --input-script: %s\n", why);
+            return 2;
+        }
+    }
+    if (display_capture && display_mode == RT_DISPLAY_NONE) display_mode = RT_DISPLAY_HEADLESS;
+    rt_renderer_configure(display_mode != RT_DISPLAY_NONE);
+    if (rt_display_configure(display_mode, display_capture)) {
+        fprintf(stderr, "pbboot: --display window: this build has no window (it needs Vulkan and SDL3)\n");
         return 2;
     }
     char error[512];
@@ -722,6 +860,11 @@ int main(int argc, char **argv)
     rt_process.tls_filesz = tls->filesz;
     rt_process.tls_memsz = tls->memsz;
     rt_process.tls_align = tls->align;
+    const uint64_t tls_size = rt_tls_block_size();
+    if (tls_size == UINT64_MAX) {
+        fputs("pbboot: main TLS allocation size overflows\n", stderr);
+        return 3;
+    }
     unsigned char *tp = rt_tls_block_create();
     if (!tp) {
         fprintf(stderr, "pbboot: no memory for the thread-local storage block\n");
@@ -730,6 +873,30 @@ int main(int argc, char **argv)
     if (syscall(SYS_arch_prctl, ARCH_SET_GS, (unsigned long)(uintptr_t)tp)) {
         fprintf(stderr, "pbboot: arch_prctl: %s\n", strerror(errno));
         return 3;
+    }
+
+    rt_thread_register_main(stack, STACK_SIZE);
+    if (game_library_path) {
+        /* Retain this library until process exit: installed jumps and optional probes refer to
+           its code for the whole guest lifetime. Import listing returned before this point. */
+        void *game_library = dlopen(game_library_path, RTLD_NOW | RTLD_LOCAL);
+        if (!game_library) {
+            fprintf(stderr, "pbboot: cannot load game library %s: %s\n", game_library_path, dlerror());
+            return 3;
+        }
+        dlerror();
+        int (*initialize)(const rt_host *) = (int (*)(const rt_host *))dlsym(game_library, "bbgame_init");
+        const char *load_error = dlerror();
+        if (load_error || !initialize) {
+            fprintf(stderr, "pbboot: game library %s has no bbgame_init: %s\n", game_library_path,
+                    load_error ? load_error : "null entry");
+            return 3;
+        }
+        rt_host host = {.version = RT_HOST_API_VERSION, .image = objects[0].image, .image_size = objects[0].size};
+        if (rt_host_hooks_initialize(&host) || initialize(&host)) {
+            fprintf(stderr, "pbboot: game library %s initialization failed; guest not entered\n", game_library_path);
+            return 3;
+        }
     }
 
     static unsigned char alt[1 << 16];
@@ -743,8 +910,12 @@ int main(int argc, char **argv)
     rt_fatal_observer = runtime_stopped;
     for (size_t i = 0; i < sizeof signals / sizeof signals[0]; i++) sigaction(signals[i], &sa, NULL);
 
+    if (prepare_module_tls(tp - tls_size, tls_size, error, sizeof error)) {
+        fprintf(stderr, "pbboot: module TLS: %s\n", error);
+        return 3;
+    }
+
     unsigned char *stack_top = stack + STACK_SIZE - 64;
-    rt_thread_register_main(stack, STACK_SIZE);
     /* Modules first, in the order given: entry(argument size 0, no arguments, no start override)
        runs the module's constructors and then its start function. */
     const char *phase = "eboot";
@@ -930,6 +1101,7 @@ int main(int argc, char **argv)
         fprintf(f, "\n}\n");
         fclose(f);
     }
+    module_tls_cleanup();
     free(db);
     free(db_text);
     return 0;

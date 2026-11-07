@@ -18,8 +18,9 @@ usage: progress.py [--root DIR] [--out FILE] [--update-readme] [--check] [--stat
   --status-line    print the current-status sentence (plain text, for issues and descriptions)
   --update-readme  rewrite the status, progress and target blocks of README.md, the status
                    block of CONTRIBUTING.md (and the progress
-                   block of STATUS.md when it has one)
-  --check          exit 1 if those blocks differ from the generated ones
+                   block of STATUS.md when it has one), and the status card
+                   (docs/assets/status-light.svg, docs/assets/status-dark.svg, by tools/status_card.py)
+  --check          exit 1 if those blocks or the card differ from the generated ones
 """
 from __future__ import annotations
 
@@ -208,6 +209,8 @@ def boot_stop(rt: dict) -> str:
     stop = rt.get('runtime_stop')
     if stop:
         return f"`{stop['function']}`, which stops by name ({stop['reason']})"
+    if rt['outcome'] == 'timeout':  # where a running process was when the time ran out says nothing
+        return "the run's time limit, still running (no call stopped it)"
     if rt.get('fault'):
         return f"{rt['outcome']} at `{rt['fault']['at']}`"
     return rt['outcome']
@@ -293,6 +296,22 @@ def main() -> int:
         if a.update_readme:
             with open(path, 'w') as f:
                 f.write(new)
+            print(f'progress: {name} updated')
+        else:
+            stale.append(name)
+    import status_card  # the card draws on this module, so it is imported only here
+    for name, svg in status_card.render_all(a.root).items():
+        path = os.path.join(a.root, name)
+        cur = None
+        if os.path.isfile(path):
+            with open(path) as f:
+                cur = f.read()
+        if cur == svg:
+            continue
+        if a.update_readme:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, 'w') as f:
+                f.write(svg)
             print(f'progress: {name} updated')
         else:
             stale.append(name)

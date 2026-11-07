@@ -33,16 +33,16 @@ typedef struct {
     int native_error;
 } rt_logical_cpu_result;
 
-/* Build a count1..64 value. Output must be valid aligned writable storage; no read of its old
+/* Build a value for a count from 1 to 64. Output must be valid aligned writable storage; no read of its old
    contents occurs. Failure leaves it unchanged. Do not initialize over an actively published
    value. Source and result storage for read must be disjoint. */
 rt_logical_cpu_result rt_logical_cpu_slots_init(uint64_t count, rt_logical_cpu_slots *out);
-/* Validate count/reserved/mask, then publish exactly8 bytes. Valid output may be unaligned;
+/* Validate count/reserved/mask, then publish exactly 8 bytes. Valid output may be unaligned;
    it must be writable and disjoint from slots. Failure leaves it untouched. */
 rt_logical_cpu_result rt_logical_cpu_slots_read(const rt_logical_cpu_slots *slots, void *mask_out);
 
 /* Darwin-only read of hw.logicalcpu, once per explicit caller request; no cache and no scheduling
-   change. Validate RC0, exactly one int32 result, positive value <=64, then publish a uint32 count.
+   change. Require a zero status, exactly one int32 result, and a positive value <= 64, then publish a uint32 count.
    A positive host count >64 is COUNT_OUT_OF_RANGE, not truncated. Zero/negative/incorrect size is
    MALFORMED_HOST_DATA. A non-Darwin build returns UNSUPPORTED without modifying output. This
    count describes host availability, not the calling thread's allowed CPU set or CPU identities.

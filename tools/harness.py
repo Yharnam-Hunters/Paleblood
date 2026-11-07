@@ -78,7 +78,6 @@ def _stack_trampoline(base: bytes) -> bytes:
     code += bytes.fromhex('4885c0' '7409' '48ffc8' '41ff34c3' 'ebf2')   # push [r11+8*rax], rax..1
     # Stack setup uses rax and r11 as scratch. Recover the block pointer saved below the
     # pushed arguments, then load the requested entry rax without disturbing GP arguments.
-    code += bytes.fromhex('31c0')                                  # retain the default entry flags
     code += bytes.fromhex('4c8b1d') + rel(len(code) + 7, 16)         # mov r11, [stack bytes]
     code += bytes.fromhex('4e8b1c1c498b433841ffd2')                  # block=[rsp+r11]; rax=block[7]; call r10
     code += bytes.fromhex('480325') + rel(len(code) + 7, 16)       # add rsp, [bytes]

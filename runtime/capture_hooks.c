@@ -179,7 +179,7 @@ static size_t find_imports(unsigned char *image, uint64_t image_size, rt_trace_i
 }
 
 /* A block within REACH of the image, so relocated RIP-relative operands still reach their data. */
-static unsigned char *map_near(unsigned char *image, uint64_t image_size, size_t size)
+unsigned char *rt_map_near_image(unsigned char *image, uint64_t image_size, size_t size)
 {
     const uintptr_t lo = (uintptr_t)image, hi = (uintptr_t)image + image_size;
     for (uintptr_t step = 1u << 24; step < REACH; step <<= 1) {
@@ -215,7 +215,7 @@ int rt_capture_hooks_prepare(unsigned char *image, uint64_t image_size, const rt
     if (!capture_requested() || !count || count > MAX_HOOKS) return 0;
 
     code_size = (count * (RT_RELOCATE_MAX + THUNK_SIZE) + 0xfff) & ~(size_t)0xfff;
-    code_block = map_near(image, image_size, code_size);
+    code_block = rt_map_near_image(image, image_size, code_size);
     hooks = calloc(count, sizeof *hooks);
     redirects = calloc(count, sizeof *redirects);
     if (!code_block || !hooks || !redirects) {

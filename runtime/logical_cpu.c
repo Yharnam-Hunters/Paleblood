@@ -16,7 +16,7 @@ static rt_logical_cpu_result result(rt_logical_cpu_status status, int native_err
 
 static uint64_t slot_mask(uint32_t count)
 {
-    /* Only call after validating1..64; never shift a 64-bit integer by64. */
+    /* The count has been checked to be from 1 to 64; shifting by 64 would be undefined. */
     return count == 64 ? UINT64_MAX : (UINT64_C(1) << count) - 1;
 }
 
