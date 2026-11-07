@@ -200,6 +200,108 @@ static const uint32_t pack_halves[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* Per lane i, a one-component format store of i at i * 4 bytes (buffer_store_format_x, the
+   descriptor's format). */
+static const uint32_t store_format_x[] = {
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0xe0101000, 0x80010001, /* buffer_store_format_x v0, v1, s[4:7], 0 offen */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Per lane i, a format store of (i, 1.0, 2.0, 0.5) at i * 16 bytes: buffer_store_format_xyzw, whose
+   format is the descriptor's (s[4:7]). */
+static const uint32_t store_format_xyzw[] = {
+    0x34020084, /* v_lshlrev_b32_e32 v1, 4, v0 */
+    0x7e080300, /* v_mov_b32_e32 v4, v0 */
+    0x7e0a02f2, /* v_mov_b32_e32 v5, 1.0 */
+    0x7e0c02f4, /* v_mov_b32_e32 v6, 2.0 */
+    0x7e0e02f0, /* v_mov_b32_e32 v7, 0.5 */
+    0xe01c1000, 0x80010401, /* buffer_store_format_xyzw v[4:7], v1, s[4:7], 0 offen */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Per lane, a format store of (0, -1.0, 1.0, 2.0) at lane * 16 bytes (buffer_store_format_xyzw,
+   the descriptor's format): as 8_8_8_8 unorm those clamp to 0, 0, 255, 255. */
+static const uint32_t store_format_packed[] = {
+    0x34020084, /* v_lshlrev_b32_e32 v1, 4, v0 */
+    0x7e080280, /* v_mov_b32_e32 v4, 0 */
+    0x7e0a02f3, /* v_mov_b32_e32 v5, -1.0 */
+    0x7e0c02f2, /* v_mov_b32_e32 v6, 1.0 */
+    0x7e0e02f4, /* v_mov_b32_e32 v7, 2.0 */
+    0xe01c1000, 0x80010401, /* buffer_store_format_xyzw v[4:7], v1, s[4:7], 0 offen */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Per lane i, texel (i, 0) of the image in s[0:7] copied to the image in s[8:15]: image_load then
+   image_store, all four components. */
+static const uint32_t image_copy[] = {
+    0x7e020300, /* v_mov_b32_e32 v1, v0 */
+    0x7e040280, /* v_mov_b32_e32 v2, 0 */
+    0xf0000f00, 0x00000401, /* image_load v[4:7], v[1:2], s[0:7] dmask:0xf */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf0200f00, 0x00020401, /* image_store v[4:7], v[1:2], s[8:15] dmask:0xf */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Per lane i, texel (i, 0) of the image in s[8:15] set to (float(i), 1.0, 2.0, 0.5). */
+static const uint32_t image_fill[] = {
+    0x7e080d00, /* v_cvt_f32_u32_e32 v4, v0 */
+    0x7e0a02f2, /* v_mov_b32_e32 v5, 1.0 */
+    0x7e0c02f4, /* v_mov_b32_e32 v6, 2.0 */
+    0x7e0e02f0, /* v_mov_b32_e32 v7, 0.5 */
+    0x7e020300, /* v_mov_b32_e32 v1, v0 */
+    0x7e040280, /* v_mov_b32_e32 v2, 0 */
+    0xf0200f00, 0x00020401, /* image_store v[4:7], v[1:2], s[8:15] dmask:0xf */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Per lane i, texel (i, 0) of the image in s[8:15] stored as four dwords at i * 16 bytes of the
+   buffer in s[0:3]. */
+static const uint32_t image_to_buffer[] = {
+    0x7e020300, /* v_mov_b32_e32 v1, v0 */
+    0x7e040280, /* v_mov_b32_e32 v2, 0 */
+    0xf0000f00, 0x00020401, /* image_load v[4:7], v[1:2], s[8:15] dmask:0xf */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x34060084, /* v_lshlrev_b32_e32 v3, 4, v0 */
+    0xe0781000, 0x80000403, /* buffer_store_dwordx4 v[4:7], v3, s[0:3], 0 offen */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Per lane i, a format load of record i (4 bytes each) from the buffer in s[0:3], whose format and
+   swizzle are its descriptor's, stored as four dwords at i * 16 bytes of the buffer in s[4:7]. */
+static const uint32_t load_format_xyzw[] = {
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0xe00c1000, 0x80000401, /* buffer_load_format_xyzw v[4:7], v1, s[0:3], 0 offen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x34060084, /* v_lshlrev_b32_e32 v3, 4, v0 */
+    0xe0781000, 0x80010403, /* buffer_store_dwordx4 v[4:7], v3, s[4:7], 0 offen */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Whole quad mode: v_cmpx leaves lane i active when i % 4 == 1, s_wqm_b64 then activates every lane of
+   each quad with an active lane, so all 64 store 1. */
+static const uint32_t whole_quad[] = {
+    0x36020083, /* v_and_b32_e32 v1, 3, v0 */
+    0x7da40281, /* v_cmpx_eq_u32_e32 vcc, 1, v1 */
+    0xbefe0a7e, /* s_wqm_b64 exec, exec */
+    0x7e040281, /* v_mov_b32_e32 v2, 1 */
+    0x34060082, /* v_lshlrev_b32_e32 v3, 2, v0 */
+    0xe0701000, 0x80010203, /* buffer_store_dword v2, v3, s[4:7], 0 offen */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Scalar writes of VCC's halves: VCC_LO = 0x0000ffff, VCC_HI = 1, then per lane i (in a 64-lane
+   workgroup) out[i] = VCC bit ? 1.0 : 0, so lanes 0-15 and 32 write 1.0. */
+static const uint32_t vcc_halves[] = {
+    0xbeea03ff, 0x0000ffff, /* s_mov_b32 vcc_lo, 0xffff */
+    0xbeeb0381, /* s_mov_b32 vcc_hi, 1 */
+    0x7e0602f2, /* v_mov_b32_e32 v3, 1.0 */
+    0x00040680, /* v_cndmask_b32_e32 v2, 0, v3, vcc */
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0xe0701000, 0x80010201, /* buffer_store_dword v2, v1, s[4:7], 0 offen */
+    0xbf810000, /* s_endpgm */
+};
+
 /* A vertex shader: vertex i's position and colour from 16-byte records (s[0:3] positions, s[4:7]
    colours, by index); the colour goes out as parameter 0. */
 static const uint32_t vertex_position_color[] = {
@@ -209,6 +311,28 @@ static const uint32_t vertex_position_color[] = {
     0xf800020f, 0x08070605, /* exp param0, v5, v6, v7, v8 */
     0xf80008cf, 0x04030201, /* exp pos0, v1, v2, v3, v4 done */
     0xbf810000, /* s_endpgm */
+};
+
+/* As vertex_position_color, through a fetch shader as the game's vertex shaders do: the program calls
+   the code at the address in s[0:1] (s_swappc_b64, the return address into s[0:1]), which loads the two
+   buffer descriptors from the table at the pointer in s[2:3] and the vertex's position and colour by
+   index (buffer_load_format_xyzw: the descriptors' formats), then returns (s_setpc_b64). */
+static const uint32_t vertex_calling_fetch[] = {
+    0xbe802100, /* s_swappc_b64 s[0:1], s[0:1] */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf800020f, 0x08070605, /* exp param0, v5, v6, v7, v8 */
+    0xf80008cf, 0x04030201, /* exp pos0, v1, v2, v3, v4 done */
+    0xbf810000, /* s_endpgm */
+};
+
+static const uint32_t fetch_position_color[] = {
+    0xc0820300, /* s_load_dwordx4 s[4:7], s[2:3], 0x0 */
+    0xc0840304, /* s_load_dwordx4 s[8:11], s[2:3], 0x4 */
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+    0xe00c2000, 0x80010100, /* buffer_load_format_xyzw v[1:4], v0, s[4:7], 0 idxen */
+    0xe00c2000, 0x80020500, /* buffer_load_format_xyzw v[5:8], v0, s[8:11], 0 idxen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xbe802000, /* s_setpc_b64 s[0:1] */
 };
 
 /* A pixel shader: attribute 0 interpolated (barycentrics in v0 and v1), packed as halves and
@@ -226,6 +350,74 @@ static const uint32_t pixel_color[] = {
     0x5e0c0702, /* v_cvt_pkrtz_f16_f32_e32 v6, v2, v3 */
     0x5e0e0b04, /* v_cvt_pkrtz_f16_f32_e32 v7, v4, v5 */
     0xf8001c0f, 0x00000706, /* exp mrt0, v6, v6, v7, v7 done compr vm */
+    0xbf810000, /* s_endpgm */
+};
+
+/* A pixel shader whose colour comes from the pixel's position (x in v2, y in v3 after the barycentrics,
+   SPI_PS_INPUT 0x302): (x / 16, y / 16, 0.25, 1), the same image as pixel_color on the test triangle. */
+static const uint32_t pixel_position_color[] = {
+    0x100804ff, 0x3d800000, /* v_mul_f32_e32 v4, 0.0625, v2 */
+    0x100a06ff, 0x3d800000, /* v_mul_f32_e32 v5, 0.0625, v3 */
+    0x7e0c02ff, 0x3e800000, /* v_mov_b32_e32 v6, 0.25 */
+    0x7e0e02f2, /* v_mov_b32_e32 v7, 1.0 */
+    0xf800180f, 0x07060504, /* exp mrt0, v4, v5, v6, v7 done vm */
+    0xbf810000, /* s_endpgm */
+};
+
+/* A pixel shader (SPI_PS_INPUT 0x302: position x and y in v2 and v3) that colours each pixel with
+   the image texel under it: image_load_mip at (int(x), int(y)), level 0, of the image in s[0:7]. */
+static const uint32_t pixel_image_texel[] = {
+    0x7e081102, /* v_cvt_i32_f32_e32 v4, v2 */
+    0x7e0a1103, /* v_cvt_i32_f32_e32 v5, v3 */
+    0x7e0c0280, /* v_mov_b32_e32 v6, 0 */
+    0xf0040f00, 0x00000804, /* image_load_mip v[8:11], v[4:6], s[0:7] dmask:0xf */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf800180f, 0x0b0a0908, /* exp mrt0, v8, v9, v10, v11 done vm */
+    0xbf810000, /* s_endpgm */
+};
+
+/* As the game's fullscreen passes do: image_load_mip from the user data's image in s[4:11], then an
+   s_load_dwordx8 over the same SGPRs of a descriptor 16 bytes past the pointer in s[2:3], and
+   image_load_mip from that one; the pixel's colour is the two texels' sum. */
+static const uint32_t pixel_two_images[] = {
+    0x7e081102, /* v_cvt_i32_f32_e32 v4, v2 */
+    0x7e0a1103, /* v_cvt_i32_f32_e32 v5, v3 */
+    0x7e0c0280, /* v_mov_b32_e32 v6, 0 */
+    0xf0040f00, 0x00010804, /* image_load_mip v[8:11], v[4:6], s[4:11] dmask:0xf */
+    0xc0c20304, /* s_load_dwordx8 s[4:11], s[2:3], 0x4 */
+    0xbf8c0070, /* s_waitcnt vmcnt(0) lgkmcnt(0) */
+    0xf0040f00, 0x00010c04, /* image_load_mip v[12:15], v[4:6], s[4:11] dmask:0xf */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x06101908, /* v_add_f32_e32 v8, v8, v12 */
+    0x06121b09, /* v_add_f32_e32 v9, v9, v13 */
+    0x06141d0a, /* v_add_f32_e32 v10, v10, v14 */
+    0x06161f0b, /* v_add_f32_e32 v11, v11, v15 */
+    0xf800180f, 0x0b0a0908, /* exp mrt0, v8, v9, v10, v11 done vm */
+    0xbf810000, /* s_endpgm */
+};
+
+/* A colour lookup, as the game's fullscreen passes do: the texel under the pixel from the user data's
+   image in s[4:11], then each of red, green and blue through layer 0, 1 and 2 of a 1D array whose
+   descriptor is loaded from the pointer in s[2:3] over s[0:7], sampled with the sampler in s[12:15];
+   alpha as loaded. */
+static const uint32_t pixel_lookup[] = {
+    0x7e081102, /* v_cvt_i32_f32_e32 v4, v2 */
+    0x7e0a1103, /* v_cvt_i32_f32_e32 v5, v3 */
+    0x7e0c0280, /* v_mov_b32_e32 v6, 0 */
+    0xf0040f00, 0x00010004, /* image_load_mip v[0:3], v[4:6], s[4:11] dmask:0xf */
+    0xc0c00300, /* s_load_dwordx8 s[0:7], s[2:3], 0x0 */
+    0xbf8c0070, /* s_waitcnt vmcnt(0) lgkmcnt(0) */
+    0x7e080300, /* v_mov_b32_e32 v4, v0 */
+    0x7e0a0280, /* v_mov_b32_e32 v5, 0 */
+    0xf0804100, 0x00600004, /* image_sample v0, v[4:5], s[0:7], s[12:15] dmask:0x1 da */
+    0x7e080301, /* v_mov_b32_e32 v4, v1 */
+    0x7e0a02f2, /* v_mov_b32_e32 v5, 1.0 */
+    0xf0804100, 0x00600104, /* image_sample v1, v[4:5], s[0:7], s[12:15] dmask:0x1 da */
+    0x7e080302, /* v_mov_b32_e32 v4, v2 */
+    0x7e0a02f4, /* v_mov_b32_e32 v5, 2.0 */
+    0xf0804100, 0x00600204, /* image_sample v2, v[4:5], s[0:7], s[12:15] dmask:0x1 da */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf800180f, 0x03020100, /* exp mrt0, v0, v1, v2, v3 done vm */
     0xbf810000, /* s_endpgm */
 };
 
