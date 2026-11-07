@@ -147,6 +147,8 @@ static uint64_t read_tsc(void)
     return __rdtsc();
 }
 
+uint64_t rt_process_time(void) { return get_process_time(); }
+
 RT_SYSLIB("libkernel", sceKernelReadTsc, read_tsc);
 RT_SYSLIB("libScePosix", gettimeofday, posix_gettimeofday);
 RT_SYSLIB("libkernel", gettimeofday, posix_gettimeofday);

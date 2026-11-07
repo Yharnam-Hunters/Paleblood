@@ -41,8 +41,13 @@ typedef struct {
 int rt_executor_open(const rt_executor_memory *memory, rt_executor **executor, char *error, size_t error_size);
 
 /* Runs the calls recorded for a command buffer (its guest address) within its submitted size, in
-   order, and waits for the GPU. Returns 0, or -1 with the reason in error. */
+   order, and waits for the GPU. The state they set (registers, user data, shaders) carries over to
+   the next buffer, as on the console's GPU, whose state no submission resets. Returns 0, or -1 with
+   the reason in error. */
 int rt_executor_run(rt_executor *executor, uint64_t buffer, uint32_t size, char *error, size_t error_size);
+
+/* Forgets the state earlier buffers set, as a GPU fresh from reset has none (tests: independent cases). */
+void rt_executor_reset(rt_executor *executor);
 
 /* The pixels of the image standing for the render target at a guest address, width x height
    from its top left, as 8-bit BGRA (the display's frames). Returns 0, or -1 when no draw has used

@@ -15,12 +15,25 @@
    So the runtime answers only what the game's own data declares (rt_process.app_params, from
    game/app_params.csv through tools/boot.py): a parameter's value from the title's file, or
    "unread" where the evidence shows the title never reads the answer (it is then given success and
-   nothing is written). Anything else stops by name. */
+   nothing is written). Anything else stops by name.
+
+   sceAppContentGetAddcontInfoList(uint32_t service label, info *list, uint32_t capacity, uint32_t
+   *hits) lists the title's add-ons (DLC), each { entitlement label[17], padding[3], uint32_t
+   status }, status 4 for installed; without a list it answers only the count; a service label
+   above 7, or neither a list nor a count, answers 0x80D90002, and a call before initialize
+   0x80D90001 (shadPS4's libSceAppContent, app_content.cpp, app_content.h, app_content_error.h).
+   The executable asks for the count first (0x023b67cf). An add-on is what the person running the
+   runtime owns: the labels given to it (rt_process.addconts, tools/boot.py --addcont), each
+   installed, under service label 0. None by default. An add-on whose data ships with the title's
+   own update needs nothing more than this. */
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
 #include <stdint.h>
+#include <string.h>
 #include <stdio.h>
+
+static int initialized;
 
 static int32_t initialize(void *init_param, void *boot_param)
 {
@@ -29,6 +42,7 @@ static int32_t initialize(void *init_param, void *boot_param)
     if (boot_param && !rt_process.app_boot_param_unread)
         rt_fatal(fn, "what the system writes into the boot parameter is not established, and the "
                      "game's data does not declare it unread");
+    initialized = 1;
     return 0;
 }
 
@@ -48,5 +62,36 @@ static int32_t app_param_get_int(int32_t id, int32_t *value)
     rt_fatal(fn, message);
 }
 
+#define APP_CONTENT_ERROR_NOT_INITIALIZED ((int32_t)0x80D90001u)
+#define APP_CONTENT_ERROR_PARAMETER ((int32_t)0x80D90002u)
+enum { MAX_SERVICE_LABEL = 7, ADDCONT_INSTALLED = 4 };
+
+typedef struct {
+    char label[RT_ADDCONT_LABEL_BYTES];
+    char padding[3];
+    uint32_t status;
+} addcont_info;
+_Static_assert(sizeof(addcont_info) == 24, "an add-on entry is 24 bytes");
+
+static int32_t get_addcont_info_list(uint32_t service_label, addcont_info *list, uint32_t capacity, uint32_t *hits)
+{
+    if (!initialized) return APP_CONTENT_ERROR_NOT_INITIALIZED;
+    if (service_label > MAX_SERVICE_LABEL) return APP_CONTENT_ERROR_PARAMETER;
+    const uint32_t owned = service_label == 0 ? rt_process.addcont_count : 0; /* every add-on is under label 0 */
+    if (!list || !capacity) {
+        if (!hits) return APP_CONTENT_ERROR_PARAMETER;
+        *hits = owned;
+        return 0;
+    }
+    const uint32_t listed = owned < capacity ? owned : capacity;
+    for (uint32_t i = 0; i < listed; i++) {
+        memcpy(list[i].label, rt_process.addconts[i], RT_ADDCONT_LABEL_BYTES);
+        list[i].status = ADDCONT_INSTALLED; /* the padding is left as the title had it */
+    }
+    if (hits) *hits = listed;
+    return 0;
+}
+
 RT_SYSLIB("libSceAppContent", sceAppContentInitialize, initialize);
+RT_SYSLIB("libSceAppContent", sceAppContentGetAddcontInfoList, get_addcont_info_list);
 RT_SYSLIB("libSceAppContent", sceAppContentAppParamGetInt, app_param_get_int);
