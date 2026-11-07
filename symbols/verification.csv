@@ -280,3 +280,12 @@ render_yebis_get_recursive_sample_parameters,edge,,23,23,0,0,6e6f0aa41d5607ce,20
 render_yebis_get_recursive_sample_parameters,edge,30,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,60,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,uncapped,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
+render_record_geometry,edge,,1187,1187,0,0,5149862dcff7b91b,2026-11-07
+render_record_geometry_category,edge,,72,72,0,0,31610ba41cc2e229,2026-11-07
+render_record_geometry_classification,edge,,72,72,0,0,a6d811db7e3593f6,2026-11-07
+render_record_geometry_first_exponent,edge,,72,72,0,0,8a2481de84f4f073,2026-11-07
+render_record_geometry_index_logarithm,edge,,36,36,0,0,8b93d7a4303c9a52,2026-11-07
+render_record_geometry_parameters,edge,,102,102,0,0,4406da6589f17dfe,2026-11-07
+render_record_geometry_resolve_parameter_index,edge,,68,68,0,0,9425ed9f14ed2918,2026-11-07
+render_record_geometry_round_up_power_of_two,edge,,36,36,0,0,4aecbac8f1ed59d0,2026-11-07
+render_record_geometry_second_exponent,edge,,72,72,0,0,378ec993a21873d9,2026-11-07

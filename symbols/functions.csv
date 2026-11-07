@@ -90,14 +90,23 @@ address,size,name,system,status,notes
 0x01489940,24,render_record_descriptor_count_exponent,render,edge-verified,Read bits 16..19 in the upper descriptor partition; otherwise return zero.
 0x01489960,68,render_record_descriptor_encoding,render,edge-verified,Read packed words at offsets 0x04 then 0x0c; pass six extracted fields to the encoding packer.
 0x01489c40,16,render_record_step_user_pa_enabled,render,edge-verified,"Query the actual import once; no cached global, fallback or service value is invented."
+0x0149c660,486,render_record_geometry_resolve_parameter_index,render,edge-verified,Resolve the packed parameter-table index with the original validation order and wrapping scale operations.
 0x0149c850,672,render_record_apply_parameter_tuple,render,edge-verified,Select one output code from normalization tuple; ordered overrides and rejection preserve output.
 0x0149cb30,204,render_record_apply_mapping,render,edge-verified,Map derived normalization code to original layout-helper tuple; unsupported code preserves output.
 0x0149cc60,350,render_convert_record_descriptor_classification,render,edge-verified,Convert a tile-mode table index for the requested array mode; preserve output on error and bypass already matching modes.
+0x0149ce10,5124,render_record_geometry,render,edge-verified,"Calculate record dimensions and alignment, preserving staged output on failure and live reads when descriptor and result overlap."
 0x0149e570,279,render_calculate_second_auxiliary,render,edge-verified,Calculate the second auxiliary layout through two ordered unit admissions and wrapped alignment. Publish its four optional size and alignment outputs in 8/4/4/4-byte order.
+0x0149e8d0,40,render_record_geometry_round_up_power_of_two,render,edge-verified,Round upward in the unsigned 32-bit domain; zero and an overflowing next power wrap to zero.
 0x0149e900,16,render_record_tuple_parameter_supported,render,edge-verified,Nonzero power-of-two test with Boolean AL interface.
+0x0149e920,18,render_record_geometry_index_logarithm,render,edge-verified,"Extract the exponent after converting the positive integer to float, including float rounding near powers of two."
 0x0149e960,129,render_record_tuple_transform_classification,render,edge-verified,Transform admitted classifications after wrapping 32-bit scaling and unsigned thresholds.
 0x0149ea20,28,render_record_tuple_classification_group,render,edge-verified,Bounded classification-to-group lookup with fallback one and original shared table.
 0x0149ea70,25,render_record_tuple_alternate_classification,render,edge-verified,Recognize bounded alternate-classification subset with zero fallback.
+0x0149ea90,40,render_record_geometry_category,render,edge-verified,Read the three-bit category of a bounded record word; rejection leaves output untouched.
+0x0149eac0,40,render_record_geometry_classification,render,edge-verified,Read the four-bit classification of a bounded record word before publishing to possibly aliased output.
+0x0149eb20,40,render_record_geometry_first_exponent,render,edge-verified,Extract the first three-bit exponent used by the record geometry arithmetic.
+0x0149eb50,40,render_record_geometry_second_exponent,render,edge-verified,Extract the second two-bit exponent; reject invalid indices or null output before reading the table.
+0x0149ed30,174,render_record_geometry_parameters,render,edge-verified,"Split one captured parameter word into four optional two-bit outputs, preserving write order when outputs alias."
 0x014a1e80,803,render_initialize_record_level_descriptor,render,edge-verified,"Publish a partial level descriptor in order, reread the source between helper calls, then convert its tile mode."
 0x014a2c40,595,render_calculate_record_descriptor_level_offset,render,edge-verified,Accumulate levels inclusively using partial helper totals even after errors; publish the two QWORD outputs in order.
 0x016efd00,368,event_emk_add,event,verified,SprjEmkSystem: find or add an event entry in two keyed lists; first advance with the 1/30 s step (1/60 s in the 60 FPS patches)
