@@ -191,9 +191,11 @@ render_clear_swap_chain_curve,edge,,4,4,0,0,5a71df9af3b63595,2026-11-05
 render_command_buffer_init,edge,,36,36,0,0,14a30740452f4f8b,2026-11-05
 render_command_emit_counter_operation,edge,,16,16,0,0,c0e3c539e38745c7,2026-11-05
 render_command_prepare_submission,edge,,11,11,0,0,9822deb01ff1c2ff,2026-11-05
-render_command_submit_batch,edge,,13,13,0,0,2ee9854251c50c40,2026-11-05
-render_command_submit_present,edge,,9,9,0,0,b8ee9152c0569673,2026-11-05
-render_command_submit_snapshot,edge,,18,18,0,0,f2ce864340b8ea47,2026-11-05
+render_command_submit_batch,edge,,13,13,0,0,1655c60375838e4a,2026-11-07
+render_command_submit_present,edge,,10,10,0,0,80a52983bdbb6211,2026-11-07
+render_command_submit_snapshot,edge,,18,18,0,0,6fb293f54adcdc2b,2026-11-07
+render_finish_present_commands,edge,,12,12,0,0,3adf6995cef8857d,2026-11-07
+render_finish_present_context,edge,,2,2,0,0,b114815a2dd2f5c2,2026-11-07
 render_compose_record_encoding_fields,edge,,30,30,0,0,c6bfe3dc4c1e12ad,2026-11-05
 render_configure_screen_scissor,edge,,13,13,0,0,26090706b37974bd,2026-11-05
 render_configure_viewport,edge,,11,11,0,0,f15d9c1438c4fd09,2026-11-06

@@ -143,11 +143,13 @@ address,replacement,system,returns
 0x024512a0,bb_frame_timing_task_frame_024512a0,frame_timing,void
 0x0247eb80,bb_render_read_present_pool_counter,render,i64
 0x02483e80,bb_kernel_condition_wait,kernel,i32
+0x02568530,bb_render_finish_present_context,render,void
 0x02571c60,bb_render_clear_swap_chain_curve,render,void
 0x02572290,bb_render_clear_swap_chain_cached_record,render,void
 0x025b2fb0,bb_render_swap_chain_present,render,void
 0x02a44140,bb_engine_wide_string_destroy,engine,void
 0x02aaddc0,bb_render_allocate_shader_upload,render,i64
+0x02aaf700,bb_render_finish_present_commands,render,void
 0x02aafb30,bb_render_command_submit_present,render,i32
 0x02ab0ce0,bb_render_command_submit_batch,render,void
 0x02ab0e30,bb_render_command_submit_snapshot,render,void
