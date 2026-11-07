@@ -3,7 +3,7 @@
 <rect x="16.0" y="14" width="246.0" height="26" rx="4" fill="#3a3a37"/><path d="M136.0 14h122.0a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4h-122.0z" fill="#3987e5"/><text x="22.0" y="31.5" fill="#f0efec" font-size="13" font-weight="normal" text-anchor="start">imports working</text><text x="142.0" y="31.5" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="start">453/686 (66.0%)</text>
 <rect x="270.0" y="14" width="174.4" height="26" rx="4" fill="#3a3a37"/><path d="M310.8 14h129.6a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4h-129.6z" fill="#199e70"/><text x="276.0" y="31.5" fill="#f0efec" font-size="13" font-weight="normal" text-anchor="start">boot</text><text x="316.8" y="31.5" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="start">first flip (8/8)</text>
 <rect x="452.4" y="14" width="244.8" height="26" rx="4" fill="#3a3a37"/><path d="M594.0 14h99.2a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4h-99.2z" fill="#3987e5"/><text x="458.4" y="31.5" fill="#f0efec" font-size="13" font-weight="normal" text-anchor="start">in the last 7 days</text><text x="600.0" y="31.5" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="start">+201 imports</text>
-<rect x="705.2" y="14" width="297.2" height="26" rx="4" fill="#3a3a37"/><path d="M861.2 14h137.2a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4h-137.2z" fill="#199e70"/><text x="711.2" y="31.5" fill="#f0efec" font-size="13" font-weight="normal" text-anchor="start">functions decompiled</text><text x="867.2" y="31.5" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="start">161 (21 verified)</text>
+<rect x="705.2" y="14" width="297.2" height="26" rx="4" fill="#3a3a37"/><path d="M861.2 14h137.2a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4h-137.2z" fill="#199e70"/><text x="711.2" y="31.5" fill="#f0efec" font-size="13" font-weight="normal" text-anchor="start">functions decompiled</text><text x="867.2" y="31.5" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="start">163 (21 verified)</text>
 <text x="16.0" y="70.0" fill="#f0efec" font-size="14" font-weight="bold" text-anchor="start">System imports by library: 453 of 686 working</text>
 <g><title>libc: 202 of 202 working (0 runtime, 202 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="18.0" y="82.0" width="237.7" height="319.5" rx="3" fill="none" stroke="#2c2c2a"/>
@@ -880,11 +880,11 @@
 <text x="630.0" y="434.0" fill="#c3c2b7" font-size="12" font-weight="normal" text-anchor="start">replaced</text>
 <rect x="740" y="424" width="204" height="12" rx="2" fill="#3a3a37"/>
 <rect x="740" y="424" width="4.0" height="12" rx="2" fill="#3987e5"/>
-<text x="984.0" y="434.0" fill="#f0efec" font-size="12" font-weight="normal" text-anchor="end">161</text>
+<text x="984.0" y="434.0" fill="#f0efec" font-size="12" font-weight="normal" text-anchor="end">163</text>
 <text x="630.0" y="464.0" fill="#c3c2b7" font-size="12" font-weight="normal" text-anchor="start">edge-verified</text>
 <rect x="740" y="454" width="204" height="12" rx="2" fill="#3a3a37"/>
 <rect x="740" y="454" width="4.0" height="12" rx="2" fill="#3987e5"/>
-<text x="984.0" y="464.0" fill="#f0efec" font-size="12" font-weight="normal" text-anchor="end">161</text>
+<text x="984.0" y="464.0" fill="#f0efec" font-size="12" font-weight="normal" text-anchor="end">163</text>
 <text x="630.0" y="494.0" fill="#c3c2b7" font-size="12" font-weight="normal" text-anchor="start">verified</text>
 <rect x="740" y="484" width="204" height="12" rx="2" fill="#3a3a37"/>
 <rect x="740" y="484" width="4.0" height="12" rx="2" fill="#3987e5"/>
