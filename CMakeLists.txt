@@ -204,3 +204,11 @@ add_test(NAME module_tls_boot
          COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_module_tls_boot.py -v)
 set_tests_properties(module_tls_boot PROPERTIES TIMEOUT 30
     ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>")
+
+# Host-owned logical slot selection, independent of guest scheduler policy.
+add_library(pb_logical_cpu STATIC runtime/logical_cpu.c)
+target_include_directories(pb_logical_cpu PUBLIC runtime/include)
+add_executable(test_logical_cpu test/test_logical_cpu.c)
+target_link_libraries(test_logical_cpu PRIVATE pb_logical_cpu)
+add_test(NAME logical_cpu_slots COMMAND test_logical_cpu)
+set_tests_properties(logical_cpu_slots PROPERTIES TIMEOUT 10)
