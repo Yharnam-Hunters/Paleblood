@@ -75,6 +75,51 @@ static uint64_t program_address(const uint32_t *words)
     return ((uint64_t)field(words[PROGRAM_HIGH], 0, 8) << 32 | words[PROGRAM_LOW]) << PROGRAM_UNIT_SHIFT;
 }
 
+enum { CS_NUM_THREAD_X = 4 };
+
+void rt_compute_shader_decode(const uint32_t words[RT_COMPUTE_SHADER_WORDS], rt_compute_shader *shader)
+{
+    const uint32_t resources = words[RESOURCES_1], resources2 = words[RESOURCES_2];
+    *shader = (rt_compute_shader){
+        .code = program_address(words),
+        .vgprs = (field(resources, 0, 6) + 1) * VGPR_UNIT,
+        .sgprs = (field(resources, 6, 4) + 1) * SGPR_UNIT,
+        .user_sgprs = field(resources2, 1, 5),
+        .workgroup_id_enables = field(resources2, 7, 3),
+        .workgroup_size_enabled = (int)field(resources2, 10, 1),
+        .thread_id_components = field(resources2, 11, 2),
+        .threads = {words[CS_NUM_THREAD_X], words[CS_NUM_THREAD_X + 1], words[CS_NUM_THREAD_X + 2]},
+    };
+}
+
+void rt_image_descriptor_decode(const uint32_t words[RT_IMAGE_DESCRIPTOR_WORDS], rt_image_descriptor *image)
+{
+    enum { ADDRESS_UNIT_SHIFT = 8 };
+    *image = (rt_image_descriptor){
+        .address = ((uint64_t)field(words[1], 0, 6) << 32 | words[0]) << ADDRESS_UNIT_SHIFT,
+        .data_format = field(words[1], 20, 6),
+        .num_format = field(words[1], 26, 4),
+        .width = field(words[2], 0, 14) + 1,
+        .height = field(words[2], 14, 14) + 1,
+        .swizzle = field(words[3], 0, 12),
+        .base_level = field(words[3], 12, 4),
+        .last_level = field(words[3], 16, 4),
+        .tiling_index = field(words[3], 20, 5),
+        .pow2_pad = field(words[3], 25, 1),
+        .type = field(words[3], 28, 4),
+        .depth = field(words[4], 0, 13) + 1,
+        .pitch = field(words[4], 13, 14) + 1,
+        .base_array = field(words[5], 0, 13),
+        .last_array = field(words[5], 13, 13),
+    };
+    image->layers = 1;
+    if (image->type == RT_IMAGE_1D_ARRAY || image->type == RT_IMAGE_2D_ARRAY) {
+        image->layers = image->depth;
+        if (image->pow2_pad)
+            while (image->layers & (image->layers - 1)) image->layers += image->layers & -image->layers;
+    }
+}
+
 void rt_vertex_shader_decode(const uint32_t words[RT_VERTEX_SHADER_WORDS], rt_vertex_shader *shader)
 {
     const uint32_t resources = words[RESOURCES_1];
@@ -115,11 +160,24 @@ typedef struct {
     uint64_t buffer;
     rt_render_call *calls;
     size_t count, capacity;
+    int submitted;                   /* submitted since its last call: the next call starts it over */
 } call_list;
 
 static pthread_mutex_t lists_lock = PTHREAD_MUTEX_INITIALIZER;
 static call_list *lists;
 static size_t list_count;
+
+/* Calls placed by guest address (rt_render_record_*_at), waiting for the submission whose buffer
+   holds that address. A buffer that is never submitted leaves its calls here; past the limit the
+   oldest are dropped. */
+typedef struct {
+    uint64_t address;
+    rt_render_call call;
+} placed_call;
+
+enum { MAX_PLACED_CALLS = 4096 };
+static placed_call placed[MAX_PLACED_CALLS];
+static size_t placed_count;
 
 static call_list *list_for(uint64_t buffer)
 {
@@ -133,19 +191,25 @@ static call_list *list_for(uint64_t buffer)
 }
 
 /* Appends a call to its buffer's list; a smaller offset than the last call's starts the list over. */
+static int has_room(call_list *list)
+{
+    if (list->count == list->capacity) {
+        const size_t capacity = list->capacity ? list->capacity * 2 : 64;
+        rt_render_call *grown = realloc(list->calls, capacity * sizeof *grown);
+        if (grown) list->calls = grown, list->capacity = capacity;
+    }
+    return list->count < list->capacity;
+}
+
 static int record(uint64_t buffer, const rt_render_call *call, char *error, size_t error_size)
 {
     pthread_mutex_lock(&lists_lock);
     call_list *list = list_for(buffer);
     int result = -1;
     if (list) {
-        if (list->count && call->offset < list->calls[list->count - 1].offset) list->count = 0;
-        if (list->count == list->capacity) {
-            const size_t capacity = list->capacity ? list->capacity * 2 : 64;
-            rt_render_call *grown = realloc(list->calls, capacity * sizeof *grown);
-            if (grown) list->calls = grown, list->capacity = capacity;
-        }
-        if (list->count < list->capacity) {
+        if (list->submitted || (list->count && call->offset < list->calls[list->count - 1].offset)) list->count = 0;
+        list->submitted = 0;
+        if (has_room(list)) {
             list->calls[list->count++] = *call;
             result = 0;
         }
@@ -191,6 +255,53 @@ int rt_render_record_draw_auto(uint64_t buffer, uint32_t offset, uint32_t index_
     return record(buffer, &call, error, error_size);
 }
 
+int rt_render_record_register(uint64_t buffer, uint32_t offset, uint32_t address, uint32_t value, char *error,
+                              size_t error_size)
+{
+    const int context = address >= RT_CONTEXT_REGISTERS_FIRST && address <= RT_CONTEXT_REGISTERS_LAST;
+    const int uconfig = address >= RT_UCONFIG_REGISTERS_FIRST && address <= RT_UCONFIG_REGISTERS_LAST;
+    if (!context && !uconfig) {
+        snprintf(error, error_size, "register 0x%x is outside the context and user config ranges", (unsigned)address);
+        return -1;
+    }
+    const rt_render_call call = {.kind = RT_CALL_REGISTER, .offset = offset, .u.reg = {address, value}};
+    return record(buffer, &call, error, error_size);
+}
+
+int rt_render_record_instances(uint64_t buffer, uint32_t offset, uint32_t count, char *error, size_t error_size)
+{
+    if (!count) {
+        snprintf(error, error_size, "an instance count of 0");
+        return -1;
+    }
+    const rt_render_call call = {.kind = RT_CALL_INSTANCES, .offset = offset, .u.instances.count = count};
+    return record(buffer, &call, error, error_size);
+}
+
+int rt_render_record_index_base(uint64_t buffer, uint32_t offset, uint64_t address, char *error, size_t error_size)
+{
+    const rt_render_call call = {.kind = RT_CALL_INDEX_BASE, .offset = offset, .u.index_base.address = address};
+    return record(buffer, &call, error, error_size);
+}
+
+int rt_render_record_index_size(uint64_t buffer, uint32_t offset, uint32_t count, char *error, size_t error_size)
+{
+    const rt_render_call call = {.kind = RT_CALL_INDEX_SIZE, .offset = offset, .u.index_size.count = count};
+    return record(buffer, &call, error, error_size);
+}
+
+int rt_render_record_index_type(uint64_t buffer, uint32_t offset, uint32_t type, char *error, size_t error_size)
+{
+    const rt_render_call call = {.kind = RT_CALL_INDEX_TYPE, .offset = offset, .u.index_type.type = type};
+    return record(buffer, &call, error, error_size);
+}
+
+int rt_render_record_draw_index_offset(uint64_t buffer, uint32_t offset, uint32_t first, uint32_t count, char *error, size_t error_size)
+{
+    const rt_render_call call = {.kind = RT_CALL_DRAW_INDEX_OFFSET, .offset = offset, .u.draw_index = {first, count}};
+    return record(buffer, &call, error, error_size);
+}
+
 int rt_render_record_vertex_shader(uint64_t buffer, uint32_t offset, const uint32_t words[RT_VERTEX_SHADER_WORDS],
                                    char *error, size_t error_size)
 {
@@ -205,6 +316,80 @@ int rt_render_record_pixel_shader(uint64_t buffer, uint32_t offset, const uint32
     rt_render_call call = {.kind = RT_CALL_PIXEL_SHADER, .offset = offset};
     rt_pixel_shader_decode(words, &call.u.pixel_shader);
     return record(buffer, &call, error, error_size);
+}
+
+static int place(uint64_t address, const rt_render_call *call)
+{
+    pthread_mutex_lock(&lists_lock);
+    if (placed_count == MAX_PLACED_CALLS) { /* drop the oldest: a buffer that was never submitted */
+        memmove(placed, placed + 1, (MAX_PLACED_CALLS - 1) * sizeof *placed);
+        placed_count--;
+    }
+    placed[placed_count++] = (placed_call){.address = address, .call = *call};
+    pthread_mutex_unlock(&lists_lock);
+    return 0;
+}
+
+int rt_render_record_vertex_shader_at(uint64_t address, const uint32_t words[RT_VERTEX_SHADER_WORDS])
+{
+    rt_render_call call = {.kind = RT_CALL_VERTEX_SHADER};
+    rt_vertex_shader_decode(words, &call.u.vertex_shader);
+    return place(address, &call);
+}
+
+int rt_render_record_compute_shader_at(uint64_t address, const uint32_t words[RT_COMPUTE_SHADER_WORDS])
+{
+    rt_render_call call = {.kind = RT_CALL_COMPUTE_SHADER};
+    rt_compute_shader_decode(words, &call.u.compute_shader);
+    return place(address, &call);
+}
+
+int rt_render_record_dispatch(uint64_t buffer, uint32_t offset, const uint32_t groups[3], char *error, size_t error_size)
+{
+    if (!groups[0] || !groups[1] || !groups[2]) {
+        snprintf(error, error_size, "a dispatch of %u x %u x %u workgroups: none to run", groups[0], groups[1], groups[2]);
+        return -1;
+    }
+    rt_render_call call = {.kind = RT_CALL_DISPATCH, .offset = offset};
+    memcpy(call.u.dispatch.groups, groups, sizeof call.u.dispatch.groups);
+    return record(buffer, &call, error, error_size);
+}
+
+int rt_render_record_pixel_shader_at(uint64_t address, const uint32_t words[RT_PIXEL_SHADER_WORDS])
+{
+    rt_render_call call = {.kind = RT_CALL_PIXEL_SHADER};
+    rt_pixel_shader_decode(words, &call.u.pixel_shader);
+    return place(address, &call);
+}
+
+/* Moves the placed calls inside [buffer, buffer + size) into the buffer's list, each at its offset
+   in order among the calls already there. Called with lists_lock held. */
+static void take_placed(uint64_t buffer, uint32_t size)
+{
+    call_list *list = NULL;
+    size_t kept = 0;
+    for (size_t i = 0; i < placed_count; i++) {
+        const placed_call *p = &placed[i];
+        if (p->address < buffer || p->address - buffer >= size) {
+            placed[kept++] = *p;
+            continue;
+        }
+        if (!list) {
+            list = list_for(buffer);
+            if (!list) { placed[kept++] = *p; continue; }
+            if (list->submitted) list->count = 0; /* a new use of the buffer */
+            list->submitted = 0;
+        }
+        if (!has_room(list)) { placed[kept++] = *p; continue; }
+        rt_render_call call = p->call;
+        call.offset = (uint32_t)(p->address - buffer);
+        size_t at = list->count;
+        while (at && list->calls[at - 1].offset > call.offset) at--;
+        memmove(list->calls + at + 1, list->calls + at, (list->count - at) * sizeof *list->calls);
+        list->calls[at] = call;
+        list->count++;
+    }
+    placed_count = kept;
 }
 
 int rt_render_record_user_data(uint64_t buffer, uint32_t offset, rt_shader_stage stage, unsigned slot, const uint32_t *words,
@@ -224,11 +409,13 @@ int rt_render_record_user_data(uint64_t buffer, uint32_t offset, rt_shader_stage
 const rt_render_call *rt_render_submitted(uint64_t buffer, uint32_t size, size_t *count)
 {
     pthread_mutex_lock(&lists_lock);
+    take_placed(buffer, size);
     const rt_render_call *calls = NULL;
     *count = 0;
     for (size_t i = 0; i < list_count; i++) {
         if (lists[i].buffer != buffer) continue;
         calls = lists[i].calls;
+        lists[i].submitted = 1;
         while (*count < lists[i].count && lists[i].calls[*count].offset < size) (*count)++;
     }
     pthread_mutex_unlock(&lists_lock);
@@ -241,5 +428,6 @@ void rt_render_forget(void)
     for (size_t i = 0; i < list_count; i++) free(lists[i].calls);
     free(lists);
     lists = NULL, list_count = 0;
+    placed_count = 0;
     pthread_mutex_unlock(&lists_lock);
 }

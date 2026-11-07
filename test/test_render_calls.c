@@ -193,12 +193,109 @@ static void recording(void)
     CHECK(count == 0);
 }
 
+/* Registers the library sets (blend, depth, the primitive type, ...) and the instance count. */
+static void registers_and_instances(void)
+{
+    enum { BUFFER = 0x200000000ull };
+    char error[160];
+    size_t count = 0;
+    rt_render_forget();
+    CHECK(rt_render_record_register(BUFFER, 0x10, 0xa1e0, 0x20010001u, error, sizeof error) == 0); /* CB_BLEND0_CONTROL */
+    CHECK(rt_render_record_register(BUFFER, 0x20, 0xc242, 4, error, sizeof error) == 0);           /* VGT_PRIMITIVE_TYPE */
+    CHECK(rt_render_record_instances(BUFFER, 0x30, 2, error, sizeof error) == 0);
+    CHECK(rt_render_record_register(BUFFER, 0x40, 0x2c0c, 1, error, sizeof error) == -1 && strstr(error, "0x2c0c"));
+    CHECK(rt_render_record_register(BUFFER, 0x40, 0x9fff, 1, error, sizeof error) == -1);
+    CHECK(rt_render_record_register(BUFFER, 0x40, 0xa400, 1, error, sizeof error) == -1);
+    CHECK(rt_render_record_instances(BUFFER, 0x40, 0, error, sizeof error) == -1);
+    const rt_render_call *calls = rt_render_submitted(BUFFER, 0x100, &count);
+    CHECK(count == 3);
+    if (count == 3) {
+        CHECK(calls[0].kind == RT_CALL_REGISTER && calls[0].u.reg.address == 0xa1e0 && calls[0].u.reg.value == 0x20010001u);
+        CHECK(calls[1].kind == RT_CALL_REGISTER && calls[1].u.reg.address == 0xc242 && calls[1].u.reg.value == 4);
+        CHECK(calls[2].kind == RT_CALL_INSTANCES && calls[2].u.instances.count == 2);
+    }
+    rt_render_forget();
+}
+
+/* Shaders the runtime's own GNM calls bind are placed by guest address and join, at submission, the
+   buffer that holds them, in order among its other calls; a submitted buffer starts over at its next
+   use. */
+static void placed_calls(void)
+{
+    enum { BUFFER = 0x500000000ull };
+    const uint32_t vertex[RT_VERTEX_SHADER_WORDS] = {0x11111111};
+    const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {0x22222222};
+    char error[128] = "";
+    size_t count = 0;
+    rt_render_forget();
+    CHECK(rt_render_record_draw_auto(BUFFER, 0x80, 3, error, sizeof error) == 0);
+    CHECK(rt_render_record_vertex_shader_at(BUFFER + 0x40, vertex) == 0);
+    CHECK(rt_render_record_pixel_shader_at(BUFFER + 0x60, pixel) == 0);
+    CHECK(rt_render_record_pixel_shader_at(BUFFER + 0x200, pixel) == 0);  /* past this submission */
+    CHECK(rt_render_record_vertex_shader_at(0x600000000ull, vertex) == 0); /* another buffer's */
+    const rt_render_call *calls = rt_render_submitted(BUFFER, 0x100, &count);
+    CHECK(count == 3);
+    if (count == 3) {
+        CHECK(calls[0].kind == RT_CALL_VERTEX_SHADER && calls[0].offset == 0x40 && calls[0].u.vertex_shader.code == 0x1111111100ull);
+        CHECK(calls[1].kind == RT_CALL_PIXEL_SHADER && calls[1].offset == 0x60 && calls[1].u.pixel_shader.code == 0x2222222200ull);
+        CHECK(calls[2].kind == RT_CALL_DRAW_AUTO && calls[2].offset == 0x80);
+    }
+    rt_render_submitted(BUFFER, 0x100, &count);  /* submitted again: the same calls, none twice */
+    CHECK(count == 3);
+    calls = rt_render_submitted(0x600000000ull, 0x10, &count);
+    CHECK(count == 1 && calls[0].kind == RT_CALL_VERTEX_SHADER && calls[0].offset == 0);
+
+    /* the next use of BUFFER: a placed call alone starts it over, without the old draw */
+    CHECK(rt_render_record_vertex_shader_at(BUFFER + 0x90, vertex) == 0);
+    calls = rt_render_submitted(BUFFER, 0x100, &count);
+    CHECK(count == 1 && calls[0].kind == RT_CALL_VERTEX_SHADER && calls[0].offset == 0x90);
+    /* and a recorded call after a submission starts it over too, even at a larger offset */
+    CHECK(rt_render_record_draw_auto(BUFFER, 0xa0, 6, error, sizeof error) == 0);
+    calls = rt_render_submitted(BUFFER, 0x400, &count);  /* the call placed at 0x200 joins now */
+    CHECK(count == 2 && calls[0].kind == RT_CALL_DRAW_AUTO && calls[1].kind == RT_CALL_PIXEL_SHADER &&
+          calls[1].offset == 0x200);
+    rt_render_forget();
+    rt_render_submitted(0x600000000ull, 0x10, &count);
+    CHECK(count == 0);
+}
+
+/* A compute shader's register block and a dispatch. */
+static void compute_calls(void)
+{
+    enum { BUFFER = 0x700000000ull };
+    const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {
+        0x12345678, 0x00000000,
+        (32 / 4 - 1) | (16 / 8 - 1) << 6,                    /* RSRC1: 32 VGPRs, 16 SGPRs */
+        12 << 1 | 1u << 7 | 1u << 10 | 2u << 11,             /* RSRC2: 12 user SGPRs, TGID_X, TG_SIZE, ids in v0-v2 */
+        64, 2, 1,
+    };
+    rt_compute_shader c;
+    rt_compute_shader_decode(shader, &c);
+    CHECK(c.code == 0x1234567800ull && c.vgprs == 32 && c.sgprs == 16 && c.user_sgprs == 12);
+    CHECK(c.workgroup_id_enables == 1 && c.workgroup_size_enabled && c.thread_id_components == 2);
+    CHECK(c.threads[0] == 64 && c.threads[1] == 2 && c.threads[2] == 1);
+    char error[128] = "";
+    size_t count = 0;
+    rt_render_forget();
+    CHECK(rt_render_record_compute_shader_at(BUFFER + 0x10, shader) == 0);
+    const uint32_t groups[3] = {4, 2, 1}, none[3] = {4, 0, 1};
+    CHECK(rt_render_record_dispatch(BUFFER, 0x20, groups, error, sizeof error) == 0);
+    CHECK(rt_render_record_dispatch(BUFFER, 0x30, none, error, sizeof error) == -1 && strstr(error, "none to run"));
+    const rt_render_call *calls = rt_render_submitted(BUFFER, 0x100, &count);
+    CHECK(count == 2 && calls[0].kind == RT_CALL_COMPUTE_SHADER && calls[0].offset == 0x10 && calls[1].kind == RT_CALL_DISPATCH &&
+          calls[1].u.dispatch.groups[0] == 4 && calls[1].u.dispatch.groups[1] == 2);
+    rt_render_forget();
+}
+
 int main(void)
 {
     decoding();
+    registers_and_instances();
     shader_blocks();
     user_data();
     recording();
+    placed_calls();
+    compute_calls();
     if (failures) fprintf(stderr, "%d failure(s)\n", failures);
     return failures != 0;
 }
