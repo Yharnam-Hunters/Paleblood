@@ -6,6 +6,7 @@
    executable (runtime/boot.c) before the guest runs. */
 
 #include <stdint.h>
+#include "runtime/cpu.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -83,6 +84,10 @@ uint64_t rt_tls_block_size(void);
 
 /* Registers the calling host thread as the guest's main thread, running on the given stack. */
 void rt_thread_register_main(void *stack, uint64_t stack_size);
+
+/* Injected topology provider for the registered main thread; initialize once before guest execution. */
+rt_cpu_status rt_thread_register_main_cpu(void *stack, uint64_t stack_size, rt_cpu_query query,
+                                         void *context, const char *mapping);
 
 /* The detach state (0 joinable, 1 detached) recorded on a guest thread attribute variable, for the
    system call that creates a thread from it; caller names that call. A state the guest did not set
