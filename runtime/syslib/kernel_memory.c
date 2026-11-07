@@ -51,6 +51,7 @@
 #define DIRECT_PAGE 0x4000ull
 
 enum { PROT_CPU_READ = 0x1, PROT_CPU_WRITE = 0x2, PROT_GPU_READ = 0x10, PROT_GPU_WRITE = 0x20 };
+enum { MAP_NO_OVERWRITE = 0x80 }; /* sceKernelMapDirectMemory flags (shadPS4 kernel memory.h) */
 enum { MEMORY_TYPE_WB_ONION = 0x0, MEMORY_TYPE_WC_GARLIC = 0x3, MEMORY_TYPE_WB_GARLIC = 0xa };
 enum { MAX_RANGES = 1024 };
 
@@ -236,7 +237,9 @@ static int32_t map_direct_memory(void **address, uint64_t length, int32_t protec
 {
     static const char name[] = "sceKernelMapDirectMemory";
     if (!address) rt_fatal(name, "no variable for the address: the error value is not established");
-    if (flags) rt_fatal(name, "map flags (a fixed address and the others) are not established");
+    /* No overwrite (0x80, shadPS4's kernel memory.h) keeps a map off memory already mapped; the runtime
+       never replaces a mapping (hints are placed with MAP_FIXED_NOREPLACE), so it changes nothing. */
+    if (flags & ~MAP_NO_OVERWRITE) rt_fatal(name, "map flags other than no-overwrite (a fixed address and the others) are not established");
     /* The runtime has no GPU yet: GPU access is accepted and the host mapping takes the CPU bits. */
     if (!protection || (protection & ~(PROT_CPU_READ | PROT_CPU_WRITE | PROT_GPU_READ | PROT_GPU_WRITE)))
         rt_fatal(name, "protection other than CPU and GPU read and write is not established");
@@ -324,19 +327,23 @@ static int32_t map_flexible_memory(void **address, uint64_t length, int32_t prot
 /* sceKernelQueryMemoryProtection(void *address, void **start, void **end, int32_t *protection), as
    the OpenOrbis homebrew SDK's libkernel.h declares it: the protection of the mapping that holds
    an address. The executable's helpers (0x02abad98, 0x02abadf8) pass no start or end and test the
-   protection's CPU read bit (1) and GPU read bit (0x10) of memory it mapped. The runtime answers
-   the protection asked for when it made the mapping. A start or end (whether end is inclusive is
-   not established), an address outside the mappings it made (other memory is not tracked yet) and
-   a missing variable stop by name. */
+   protection's CPU read bit (1) and GPU read bit (0x10) of memory it mapped; another
+   (0x02d031df, reached once the movie player runs) passes a start and an end and reads only the
+   protection. The runtime answers the protection asked for when it made the mapping, and the
+   mapping's start and its end one past the last byte (exclusive), as shadPS4's
+   MemoryManager::QueryProtection and PS4Recomp's ps4_direct_mem.c both answer. An address outside
+   the mappings it made (other memory is not tracked yet) and a missing protection variable stop by
+   name. */
 static int32_t query_memory_protection(const void *address, void **start, void **end, int32_t *protection)
 {
     static const char name[] = "sceKernelQueryMemoryProtection";
-    if (start || end) rt_fatal(name, "a start or end: whether end is inclusive is not established");
     if (!protection) rt_fatal(name, "no variable for the protection: the error value is not established");
     guest_mapping m;
     if (!mapping_holding((uintptr_t)address, &m))
         rt_fatal(name, "an address outside the runtime's direct and flexible mappings: not tracked yet");
     *protection = m.protection;
+    if (start) *start = (void *)m.start;
+    if (end) *end = (void *)(m.start + m.length); /* exclusive */
     return 0;
 }
 
