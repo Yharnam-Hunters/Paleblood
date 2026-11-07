@@ -210,6 +210,40 @@ def cases():
         yield case
 
 
+    # Shift scalar destinations one DWORD into an existing record. Each store then
+    # changes the source of the next load; preloading the whole record differs.
+    for bank, index in ((0, 254), (1, 174)):
+        case = binding_case(f"overlapping_scalar_copy_bank_{bank}", 16, bank)
+        case["buffers"]["entries"]["bytes"] = b"".join(
+            struct.pack("<I", 16 | (17 << 8) | (index << 16)) for _ in range(64)
+        ).hex()
+        yield case
+
+    # Command storage may be the state object. A scripted descriptor writer changes
+    # one mask word through that command argument; all other contributors stay fixed.
+    for bank in (0, 1):
+        base = 0x1900 if bank else 0
+        for label, offset, value in (
+            ("resource_low", 0x60, 1),
+            ("resource_high", 0x68, 1),
+            ("pending_low", 0x18, 14),
+            ("pending_high", 0x20, 14),
+            ("other_resource", 0x70, 1),
+            ("other_pending", 0x28, 14),
+        ):
+            case = binding_case(f"final_masks_live_bank_{bank}_{label}", 0, bank)
+            case["buffers"]["self"] = {"size": 0xB500, "bytes": "00" * 0xB500}
+            case["args"]["rsi"] = "buf:self"
+            case["memory"].extend([
+                {"addr": "buf:self+8", "pointer": "self+0xb500"},
+                {"addr": "buf:self+16", "pointer": f"self+{base + offset}"},
+            ])
+            case["stubs"][-1]["writes"] = [
+                {"arg": 0, "offset": base + offset, "bytes": qword(value), "size": 8}
+            ]
+            yield case
+
+
 def main():
     """Write deterministic synthetic cases to the requested directory."""
     if len(sys.argv) != 2:
