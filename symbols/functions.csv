@@ -153,7 +153,7 @@ address,size,name,system,status,notes
 0x02aafb30,509,render_command_submit_present,render,edge-verified,"Prepare and delegate a present submission, preserving capacity-failure returns and resetting begin markers to the live cursor."
 0x02ab0ce0,326,render_command_submit_batch,render,edge-verified,"Emit counter waits and submit nonempty regions with the packed video/index handle, or delegate the snapshot when no optional context exists."
 0x02ab0e30,213,render_command_submit_snapshot,render,edge-verified,Initialize the auxiliary command buffer and submit nonempty regions using only the video handle.
-0x02ab5a70,1235,render_present_record_consume,render,replaced,"Track resource range or emit record commands; preserve cached tokens, index wrap and final state resets. Static reconstruction Synthetic GCC/Clang edges pass; no recordings."
+0x02ab5a70,1235,render_present_record_consume,render,replaced,"Track a resource range or emit record commands; preserve cached tokens, index wrap and final state resets."
 0x02ab6810,1173,render_present_last_record_consume,render,replaced,"Consume the final record range, or update its tracking bank when commands are not admitted."
 0x02ab9850,374,render_flush_shader_preparation,render,edge-verified,"Flush the pending barrier/range before the event. Mode 0 keeps the range fields, and a suppressed state returns without touching either group of fields."
 0x02abaf10,78,render_record_derive_parameter,render,edge-verified,Derive numeric normalization code; flag priority and mode-dependent base.
