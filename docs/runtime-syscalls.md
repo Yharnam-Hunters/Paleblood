@@ -1404,11 +1404,15 @@ writable `/data` mount, which `sceKernelOpen` opens with the requested access mo
 - **The position.** A `pwrite` leaves the file position where it was. A write past the end leaves a
   hole that reads as zero bytes, as the host file system does. A zero count writes nothing and
   answers 0.
+- **The count.** The answer is the host's count, which can be short. Linux writes at most
+  `0x7ffff000` bytes per call, so a request between that and `INT_MAX` comes back short where
+  FreeBSD would write it all.
 
 **What stops by name:**
 - **More than `INT_MAX` bytes.** FreeBSD answers `EINVAL` above `IOSIZE_MAX`. That is `INT_MAX`
-  while the `debug.iosize_max_clamp` sysctl is set (its default), and `SSIZE_MAX` otherwise. The
-  FreeBSD 9.0 `write(2)` page says `INT_MAX`. The PS4's setting is not known.
+  while the `debug.iosize_max_clamp` sysctl is set (its default in FreeBSD 9; current FreeBSD
+  defaults to 0), and `SSIZE_MAX` otherwise. The FreeBSD 9.0 `write(2)` page says `INT_MAX`. The
+  PS4's setting is not known.
 - **No buffer for a non-zero count,** as for reading.
 - **A `pwrite` on a descriptor opened with `O_APPEND`.** POSIX writes at the offset. FreeBSD's
   `write(2)` BUGS section says its `pwrite` appends instead, and Linux does the same. The PS4's

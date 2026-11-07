@@ -336,14 +336,17 @@ static int64_t kernel_pread(int32_t fd, void *buffer, uint64_t size, int64_t off
    or 0x80020000 plus the error number. FreeBSD answers EBADF for a descriptor that is not open for
    writing: here one the runtime did not hand out, and one opened read-only (every /app0 file, and a
    /data file opened with O_RDONLY). A negative pwrite offset is EINVAL, as for pread. A pwrite
-   leaves the file position where it was.
+   leaves the file position where it was. The answer is the host's count, which can be short: Linux
+   writes at most 0x7ffff000 bytes per call, so a request between that and INT_MAX comes back short
+   where FreeBSD would write it all.
 
    The checks come in FreeBSD's order (stable/9 sys_generic.c): the size, then the descriptor, then
    the offset. What stops by name: more than INT_MAX bytes (FreeBSD answers EINVAL above
-   IOSIZE_MAX, which is INT_MAX while the debug.iosize_max_clamp sysctl is set, its default, and
-   SSIZE_MAX otherwise; the PS4's setting is not known); no buffer for a non-zero count, as for
-   read; a pwrite on a descriptor opened with O_APPEND (POSIX writes at the offset, while FreeBSD,
-   per the BUGS section of its write(2), and Linux append); and any host write error. */
+   IOSIZE_MAX, which is INT_MAX while the debug.iosize_max_clamp sysctl is set, its default in
+   FreeBSD 9 (current FreeBSD defaults to 0), and SSIZE_MAX otherwise; the PS4's setting is not
+   known); no buffer for a non-zero count, as for read; a pwrite on a descriptor opened with
+   O_APPEND (POSIX writes at the offset, while FreeBSD, per the BUGS section of its write(2), and
+   Linux append); and any host write error. */
 enum { MAX_WRITE = INT32_MAX };
 
 /* The host descriptor behind a guest one that is open for writing, or -1 (EBADF). Its host status

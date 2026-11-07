@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <stdlib.h>
@@ -933,6 +934,7 @@ static int32_t write_fd, write_append_fd, write_read_only_fd;
 static void write_too_many(void) { kwrite_fn(write_fd, "x", 0x80000000u); } /* INT_MAX + 1 */
 static void write_too_many_read_only(void) { kwrite_fn(write_read_only_fd, "x", 0x80000000u); }
 static void pwrite_too_many(void) { kpwrite_fn(write_fd, "x", 0x80000000u, 0); }
+static void pwrite_too_many_read_only(void) { kpwrite_fn(write_read_only_fd, "x", 0x80000000u, 0); }
 static void write_no_buffer(void) { kwrite_fn(write_fd, NULL, 1); }
 static void pwrite_no_buffer(void) { kpwrite_fn(write_fd, NULL, 1, 0); }
 static void pwrite_append(void) { kpwrite_fn(write_append_fd, "x", 1, 0); }
@@ -950,6 +952,26 @@ static int write_stops_with(void (*call)(void), const char *function, const char
         rt_fatal_observer = write_observe_stop;
         call();
         _exit(2); /* the call returned, so it did not stop */
+    }
+    int status = 0;
+    if (waitpid(child, &status, 0) < 0) return 0;
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+/* The answer is the host's count, not the request: in a child, a 4-byte file size limit
+   (RLIMIT_FSIZE) makes the host write only up to it. SIGXFSZ is ignored, so the host answers with
+   the short count instead of ending the process. */
+static int write_returns_short_count(void)
+{
+    const pid_t child = fork();
+    if (child == 0) {
+        write_expected_function = write_expected_reason = ""; /* any stop is a failure */
+        rt_fatal_observer = write_observe_stop;
+        signal(SIGXFSZ, SIG_IGN);
+        const struct rlimit limit = {4, 4};
+        const int32_t fd = kopen_fn("/data/short.bin", 0x602, 0644);
+        if (fd < 3 || setrlimit(RLIMIT_FSIZE, &limit)) _exit(3);
+        const int ok = kwrite_fn(fd, "0123456789", 10) == 4 && kpwrite_fn(fd, "abcdefgh", 8, 2) == 2;
+        _exit(ok ? 0 : 1);
     }
     int status = 0;
     if (waitpid(child, &status, 0) < 0) return 0;
@@ -2834,6 +2856,7 @@ int main(void)
                         CHECK(kpwrite_fn(rfd, "w", 0x7fffffff, 0) == (int32_t)0x80020009u);
                         write_read_only_fd = rfd; /* one byte more stops before the descriptor answers */
                         CHECK(write_stops_with(write_too_many_read_only, "sceKernelWrite", "more than INT_MAX"));
+                        CHECK(write_stops_with(pwrite_too_many_read_only, "sceKernelPwrite", "more than INT_MAX"));
                         CHECK(kclose(rfd) == 0 && kwrite_fn(rfd, "w", 1) == (int32_t)0x80020009u); /* closed */
                         const int32_t afd = kopen("/app0/data.bin", 0, 0);
                         CHECK(afd >= 3 && kwrite_fn(afd, "w", 1) == (int32_t)0x80020009u);
@@ -2854,6 +2877,10 @@ int main(void)
                         CHECK(write_stops_with(pwrite_no_buffer, "sceKernelPwrite", "no buffer"));
                         CHECK(write_stops_with(pwrite_append, "sceKernelPwrite", "O_APPEND"));
                         CHECK(kclose(write_append_fd) == 0 && kclose(write_fd) == 0);
+                        unlink(written);
+                        kopen_fn = kopen;
+                        CHECK(write_returns_short_count());
+                        snprintf(written, sizeof written, "%s/short.bin", data);
                         unlink(written);
                     }
                     kopen_fn = kopen;
