@@ -2,7 +2,7 @@
 
 Paleblood is a decompilation of Bloodborne with its own runtime: the game's code rewritten as readable C++, one verified function at a time.
 <!-- status:start -->
-The game doesn't run on Paleblood yet: 21 of 157757 functions are verified (0.01%). On [our own runtime](runtime/) the executable's boot gets as far as `scePlayGoInitialize` (libScePlayGo), with 369 of 686 system imports implemented.
+The game doesn't run on Paleblood yet: 21 of 157757 functions are verified (0.01%). On [our own runtime](runtime/) the executable's boot gets as far as the run's time limit, still running (no call stopped it), with 453 of 686 system imports implemented.
 <!-- status:end -->
 
 The goal is a complete source port: every function rewritten and proved, running on our own
@@ -70,13 +70,20 @@ implementing it. Claim one function or a tightly related group in issue #34 befo
 maintainers can avoid duplicate work. Use a branch named `runtime/<function>`; for a group, use
 the lead function's name.
 
-Implement the call in `runtime/syslib/<group>.c` and register it with `RT_SYSLIB`. Add or update
-the applicable cases in `test/test_syslib.c`. Unknown target behavior must stay explicit and fail
+Implement the call in `runtime/syslib/<group>.c` and register it with `RT_SYSLIB`. Put its tests
+in their own file, `test/syslib/<group>.c`, as `SYSLIB_TEST(name) { ... }` blocks
+(`test/syslib_test.h`; `test/syslib/np_trophy.c` is an example), so parallel pull requests do not
+edit the same lines; cases that already live in `test/test_syslib.c` may be updated there. To bring a
+branch up to date, merge `origin/main` into it: the push gate checks only commits main does not
+have. Unknown target behavior must stay explicit and fail
 loudly; do not choose guessed return values just to advance `tools/boot.py`.
 
 Runtime code is clean-room: use public API documentation, independent reverse engineering, and
-observed behavior as facts. Do not copy, adapt, or model implementation code from another PS4
-runtime or emulator. Keep one call or a
+observed behavior as facts. Independent reverse engineering includes the system libraries of your
+own console's firmware (for example libkernel or libSceVideoOut): name each one by its SHA-256 in
+the runtime report, take facts from it (shapes, checks, values, order), and write your own code.
+Never copy its code, and never attach or link the files. Do not copy, adapt, or model
+implementation code from another PS4 runtime or emulator. Keep one call or a
 tightly related group in each PR. Runtime-only PRs need no proprietary game dump, captures, or
 function-level `verify.py` results. CI compiles with GCC and Clang, runs the RT_SYSLIB test and
 the rest of CTest, and retains the repository's policy checks. It also builds and tests your PR
@@ -173,7 +180,7 @@ A function goes to `main` only when it is **verified and readable**:
 
 Investigation notes and logs go in the pull request, not in the repository. Game screenshots and
 clips do not belong in the Paleblood code repository, issues, pull requests, or Discussions (see
-Rules).
+Rules for what is allowed).
 
 ## Your own copy (decompilation work)
 
@@ -195,9 +202,11 @@ firmware, keys or decryption tools.
   do not commit it.
 - **No game screenshots, clips or extracted images in the Paleblood code repository**, its issues,
   pull requests or Discussions. The hook and CI refuse image and video files (by extension and by
-  contents). The only images allowed here are recordings of our own tools' output (such as a
-  terminal running `tools/verify.py`), under `docs/assets/` and listed in `docs/assets/ALLOWLIST`
-  with the command that produced them (`tools/terminal_gif.py`). This repository rule does not
+  contents). The only images allowed here are under `docs/assets/` and listed in
+  `docs/assets/ALLOWLIST` with the command that produced them, and they are our own work:
+  recordings of our tools' output, and frames drawn by Paleblood's own renderer, at full
+  resolution, added by the maintainer with attribution (such as the README's title screen).
+  Contributors do not add game frames themselves; propose one in an issue instead. This repository rule does not
   decide whether a contextual image may appear on the public documentation site: each proposed
   site asset requires its own documented source, rights basis, editorial purpose and maintainer
   review under that site's media policy. Attribution or educational intent alone does not grant

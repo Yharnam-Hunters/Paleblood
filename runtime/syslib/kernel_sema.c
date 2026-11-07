@@ -13,11 +13,16 @@
      option, wait for one unit with no timeout, signal one unit or a count, delete, and compare
      every result with 0.
 
+   - Wake order with attr 2: the waiter with the best thread priority first (the smallest number:
+     the OpenOrbis _types/user.h gives 0x100 as the highest and 0x2FF as the lowest), waiters of
+     equal priority in arrival order, each placed by the priority it has when it starts to wait;
+     shadPS4's semaphore (threads/semaphore.cpp) orders its wait list so.
+
    A semaphore is a counter behind a host mutex and condition variable. Waiters are served in the
-   order they arrived; every case whose PS4 answer is not established stops by the function's name
+   order they arrived, or with attr 2 by their thread priority (runtime/syslib/kernel_thread.c
+   records each guest thread's); every case whose PS4 answer is not established stops by the function's name
    instead of guessing: a timeout, a missing semaphore or option, deleting one with waiters,
-   signalling past the maximum, a poll that cannot be satisfied, a second waiter when the order is
-   by thread priority (guest priorities are not modelled), a wait for more than one unit behind
+   signalling past the maximum, a poll that cannot be satisfied, a wait for more than one unit behind
    another waiter (whether it may be passed is not established), and the error values. */
 #include "runtime/process.h"
 #include "runtime/syslib.h"
@@ -33,7 +38,8 @@ typedef struct {
     pthread_cond_t changed;
     int32_t count, max;
     uint32_t attr;
-    uint64_t next_ticket, serving; /* arrival order of waiters */
+    uint64_t next_ticket;          /* arrival order of waiters */
+    struct sema_waiter *queue;     /* waiting threads, the next to be served first */
     int waiters;
 } guest_sema;
 
@@ -77,6 +83,21 @@ static int32_t delete_sema(guest_sema *sema)
     return 0;
 }
 
+typedef struct sema_waiter {
+    uint64_t ticket;
+    int32_t priority; /* 0 for every waiter of a FIFO semaphore */
+    struct sema_waiter *next;
+} sema_waiter;
+
+/* Places a waiter in the queue: behind every waiter of the same or better priority. */
+static void enqueue(guest_sema *s, sema_waiter *w)
+{
+    sema_waiter **at = &s->queue;
+    while (*at && (*at)->priority <= w->priority) at = &(*at)->next;
+    w->next = *at;
+    *at = w;
+}
+
 static int32_t wait_sema(guest_sema *sema, int32_t need, const uint32_t *timeout)
 {
     static const char fn[] = "sceKernelWaitSema";
@@ -84,17 +105,14 @@ static int32_t wait_sema(guest_sema *sema, int32_t need, const uint32_t *timeout
     if (timeout) rt_fatal(fn, "a timeout: how the remaining time is reported is not established");
     if (need <= 0 || need > s->max) rt_fatal(fn, "a count outside 1..max: the error value is not established");
     pthread_mutex_lock(&s->lock);
-    if (s->count < need) {
-        if (s->waiters && s->attr == SEMA_ATTR_TH_PRIO)
-            rt_fatal(fn, "a second waiter woken by thread priority: guest priorities are not modelled");
-        if (s->waiters && need > 1)
-            rt_fatal(fn, "a wait for more than one unit behind another waiter: whether it may be passed is not established");
-    }
-    const uint64_t ticket = s->next_ticket++;
+    if (s->count < need && s->waiters && need > 1)
+        rt_fatal(fn, "a wait for more than one unit behind another waiter: whether it may be passed is not established");
+    sema_waiter w = {s->next_ticket++, s->attr == SEMA_ATTR_TH_PRIO ? rt_thread_current_priority(fn) : 0, NULL};
+    enqueue(s, &w);
     s->waiters++;
-    while (ticket != s->serving || s->count < need) pthread_cond_wait(&s->changed, &s->lock);
+    while (s->queue != &w || s->count < need) pthread_cond_wait(&s->changed, &s->lock);
     s->count -= need;
-    s->serving++;
+    s->queue = w.next;
     s->waiters--;
     pthread_cond_broadcast(&s->changed);
     pthread_mutex_unlock(&s->lock);

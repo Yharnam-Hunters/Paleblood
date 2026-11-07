@@ -37,3 +37,9 @@ there first: `DISPLAY=:98 vkcube --wsi xcb` (vkcube picks Wayland on its own oth
 Rules for anything added here: a submodule or a vendored copy with its license and headers
 intact, listed here with its version, license and every local patch. Third-party code never
 contains game data. Anything linked into the same process stays GPL-2.0-or-later compatible.
+
+## libatrac9
+
+`third_party/libatrac9` is LibAtrac9 (<https://github.com/Thealexbarney/LibAtrac9>, MIT), an ATRAC9
+audio decoder, vendored unmodified at a pinned commit (its `README.md`). The runtime's audio job
+manager decodes the title's ATRAC9 audio with it.

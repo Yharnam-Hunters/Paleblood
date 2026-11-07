@@ -52,6 +52,12 @@ typedef struct {
     pthread_t host;
     uint32_t signal_mask[4]; /* the guest's blocked signals, a FreeBSD sigset_t (_sigprocmask) */
     int32_t priority;        /* scePthreadGetprio / scePthreadSetprio */
+    /* scePthreadExit: where the thread's host side resumes (a __builtin_setjmp buffer, five words),
+       and the value the thread ends with. */
+    void *exit_point[5];
+    int exit_point_set;
+    int exiting;             /* key destructors are running: a further exit is refused */
+    void *exit_value;
 } guest_thread;
 
 typedef struct {
@@ -72,14 +78,31 @@ static int sce(int bsd) { return bsd ? SCE_KERNEL_ERROR(bsd) : 0; }
 
 /* The executable's TLS template copied into a fresh block, the thread pointer just above it
    (x86-64 variant II), the pointer's first word pointing to itself. */
+enum { TLS_CONTROL_BLOCK_BYTES = 4096, TLS_MINIMUM_ALIGNMENT = 16 };
+
+static uint64_t tls_block_alignment(void)
+{
+    return rt_process.tls_align > TLS_MINIMUM_ALIGNMENT
+           ? rt_process.tls_align : TLS_MINIMUM_ALIGNMENT;
+}
+
+uint64_t rt_tls_block_size(void)
+{
+    const uint64_t align = tls_block_alignment();
+    if (align > SIZE_MAX || rt_process.tls_memsz > SIZE_MAX - (align - 1)) return UINT64_MAX;
+    const uint64_t size = (rt_process.tls_memsz + align - 1) / align * align;
+    return size > SIZE_MAX - TLS_CONTROL_BLOCK_BYTES ? UINT64_MAX : size;
+}
+
 void *rt_tls_block_create(void)
 {
-    const uint64_t align = rt_process.tls_align > 16 ? rt_process.tls_align : 16;
-    const uint64_t size = (rt_process.tls_memsz + align - 1) / align * align;
-    enum { CONTROL_BLOCK = 4096 };
-    unsigned char *block = aligned_alloc(align, size + CONTROL_BLOCK);
-    if (!block) return NULL;
-    memset(block, 0, size + CONTROL_BLOCK);
+    const uint64_t align = tls_block_alignment();
+    const uint64_t size = rt_tls_block_size();
+    if (size == UINT64_MAX) return NULL;
+    void *allocation = NULL;
+    if (posix_memalign(&allocation, (size_t)align, (size_t)size + TLS_CONTROL_BLOCK_BYTES)) return NULL;
+    unsigned char *block = allocation;
+    memset(block, 0, size + TLS_CONTROL_BLOCK_BYTES);
     unsigned char *tp = block + size;
     if (rt_process.tls_filesz) memcpy(tp - size, rt_process.tls_image, rt_process.tls_filesz);
     *(uint64_t *)tp = (uint64_t)(uintptr_t)tp;
@@ -175,6 +198,8 @@ static guest_thread *self_for(const char *caller)
 }
 
 static guest_thread *thread_self(void) { return self_for("scePthreadSelf"); }
+
+int32_t rt_thread_current_priority(const char *caller) { return self_for(caller)->priority; }
 static guest_thread *posix_thread_self(void) { return self_for("pthread_self"); }
 
 /* Two thread variables name the same thread when they hold the same object pointer. Non-zero when
@@ -246,7 +271,12 @@ __asm__(".text\n"
 /* A created thread's host side: the guest's thread pointer in GS, the boot's timeout and
    worker-stop signals left to the main thread, the thread registered for scePthreadSelf, then the
    guest's entry on its own stack. A return from the entry ends the thread (POSIX), after its key
-   destructors (runtime/syslib/kernel_key.c). */
+   destructors (runtime/syslib/kernel_key.c); so does scePthreadExit, which comes back here by a
+   jump rather than unwinding the guest's frames, which were not built for the host's unwinder. The
+   jump is the compiler's __builtin_setjmp/__builtin_longjmp, not the C library's longjmp: a
+   hardened C library (_FORTIFY_SOURCE, on by default in some distributions' compilers) checks
+   that longjmp goes to an older frame of the same stack and aborts the process when it comes from
+   the guest's stack, which is a separate mapping. */
 static void *thread_start(void *raw)
 {
     guest_thread *t = raw;
@@ -261,10 +291,28 @@ static void *thread_start(void *raw)
     /* The System V convention wants the stack 16-byte aligned at the call. */
     enum { STACK_TOP_RESERVE = 64, STACK_ALIGN = 16 };
     const uintptr_t top = ((uintptr_t)t->stack + t->stack_size - STACK_TOP_RESERVE) & ~(uintptr_t)(STACK_ALIGN - 1);
-    rt_thread_call(t->entry, t->argument, (void *)top);
+    t->exit_point_set = 1;
+    if (!__builtin_setjmp(t->exit_point)) t->exit_value = rt_thread_call(t->entry, t->argument, (void *)top);
+    t->exiting = 1;
     rt_thread_keys_exit((void *)top);
-    return NULL;
+    return t->exit_value;
 }
+
+/* scePthreadExit(void *value): ends the calling thread with value, as a return from its entry
+   would: the value kept for a join, then the thread's key destructors, then the end (FreeBSD libthr's
+   _pthread_exit; shadPS4's posix_pthread_exit). An exit from inside a key destructor is refused
+   there, and stops by name here; so does an exit from the main thread, which the runtime runs the
+   boot on. */
+static _Noreturn void thread_exit(void *value)
+{
+    static const char fn[] = "scePthreadExit";
+    guest_thread *t = current;
+    if (!t || !t->exit_point_set) rt_fatal(fn, "an exit from the main thread is not modelled");
+    if (t->exiting) rt_fatal(fn, "an exit from inside a key destructor");
+    t->exit_value = value;
+    __builtin_longjmp(t->exit_point, 1);
+}
+RT_SYSLIB("libkernel", scePthreadExit, thread_exit);
 
 /* scePthreadCreate(thread, attr, entry, argument, name), as the executable's thread wrapper calls
    it: an attribute with a stack size and a detach state, a name. The guest runs on a host thread
