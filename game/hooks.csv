@@ -147,8 +147,11 @@ address,replacement,system,returns
 0x02572290,bb_render_clear_swap_chain_cached_record,render,void
 0x025b2fb0,bb_render_swap_chain_present,render,void
 0x02a44140,bb_engine_wide_string_destroy,engine,void
+0x02aaa5a0,bb_render_release_present_finish_node,render,i64
 0x02aaddc0,bb_render_allocate_shader_upload,render,i64
+0x02aaf030,bb_render_managed_present_capacity,render,i8
 0x02aafb30,bb_render_command_submit_present,render,i32
+0x02ab0b00,bb_render_submit_present_finish_snapshot,render,void
 0x02ab0ce0,bb_render_command_submit_batch,render,void
 0x02ab0e30,bb_render_command_submit_snapshot,render,void
 0x02ab5a70,bb_render_present_record_consume,render,void
@@ -157,6 +160,7 @@ address,replacement,system,returns
 0x02abaf10,bb_render_record_derive_parameter,render,i32
 0x02abb4f0,bb_render_record_auxiliary_predicate,render,i8
 0x02ad2c30,bb_render_reset_present_preparation_dirty,render,i64
+0x02ad3c80,bb_render_process_present_finish_item,render,i64
 0x02ad5dd0,bb_render_swap_chain_present_mode,render,i32
 0x02ad5e90,bb_render_setup_swap_chain,render,i64
 0x02ad6e50,bb_render_swap_chain_submit,render,i32
