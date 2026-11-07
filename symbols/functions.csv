@@ -144,7 +144,7 @@ address,size,name,system,status,notes
 0x024512a0,78,frame_timing_task_frame_024512a0,frame_timing,verified,"task manager frame entry from the frame step: FD4TaskManager singleton, then 0x01388c60"
 0x0247eb80,16,render_read_present_pool_counter,render,edge-verified,"full-QWORD locked read/writeback retry, XOR before each attempt; caller adds one. Real AMD64 write cycles retained; non-AMD64 bridge unresolved Synthetic edges pass; no recordings."
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
-0x0256e1d0,6280,render_build_present_source_record,render,replaced,"Build a mode-specific presentation record, preserving partial output, unsigned division and packed auxiliary requirements. Constructor selectors are 32-bit values even in stack slots."
+0x0256e1d0,6280,render_build_present_source_record,render,edge-verified,"Build a mode-specific presentation record, preserving partial output, unsigned division and packed auxiliary requirements. Constructor selectors are 32-bit values even in stack slots."
 0x02571c60,47,render_clear_swap_chain_curve,render,edge-verified,Release the swap-chain curve resource through its owner; clear only the resource after the callback.
 0x02572290,47,render_clear_swap_chain_cached_record,render,edge-verified,Release the swap-chain cached-record resource through its owner; clear only the resource after the callback.
 0x025b2fb0,768,render_swap_chain_present,render,verified,"GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0)"
@@ -154,8 +154,8 @@ address,size,name,system,status,notes
 0x02aafb30,509,render_command_submit_present,render,edge-verified,"Prepare and delegate a present submission, preserving capacity-failure returns and resetting begin markers to the live cursor."
 0x02ab0ce0,326,render_command_submit_batch,render,edge-verified,"Emit counter waits and submit nonempty regions with the packed video/index handle, or delegate the snapshot when no optional context exists."
 0x02ab0e30,213,render_command_submit_snapshot,render,edge-verified,Initialize the auxiliary command buffer and submit nonempty regions using only the video handle.
-0x02ab5a70,1235,render_present_record_consume,render,replaced,"Track a resource range or emit record commands; preserve cached tokens, index wrap and final state resets."
-0x02ab6810,1173,render_present_last_record_consume,render,replaced,"Consume the final record range, or update its tracking bank when commands are not admitted."
+0x02ab5a70,1235,render_present_record_consume,render,edge-verified,"Track a resource range or emit record commands; preserve cached tokens, index wrap and final state resets."
+0x02ab6810,1173,render_present_last_record_consume,render,edge-verified,"Consume the final record range, or update its tracking bank when commands are not admitted."
 0x02ab7a20,66,render_choose_record_constructor_selector,render,edge-verified,Choose a constructor selector from supported input values; only the low flag byte affects the extended case.
 0x02ab7ab0,124,render_combine_record_parameters,render,edge-verified,"Combine constructor choices, using only the low flag byte and bounding the four-entry original table before access."
 0x02ab7e40,22,render_reduce_record_parameter,render,edge-verified,"Return the original four-entry scale table value, or zero for an out-of-range unsigned index."
