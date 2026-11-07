@@ -204,3 +204,11 @@ add_test(NAME module_tls_boot
          COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_module_tls_boot.py -v)
 set_tests_properties(module_tls_boot PROPERTIES TIMEOUT 30
     ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>")
+
+
+# Full-width module arguments and proven early invalid-ID statuses.
+add_executable(test_sysmodule_ids test/test_sysmodule_ids.c
+               runtime/syslib/table.c runtime/syslib/kernel_sysmodule.c)
+target_include_directories(test_sysmodule_ids PRIVATE runtime/include)
+add_test(NAME sysmodule_ids COMMAND test_sysmodule_ids)
+set_tests_properties(sysmodule_ids PROPERTIES TIMEOUT 10)
