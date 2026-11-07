@@ -9,6 +9,10 @@
 #include "../engine/integer.h"
 #include "record_constructor.h"
 #include "record_constructor_helpers.h"
+#include "record_constructor_additional_calls.h"
+#include "record_encoding.h"
+#include "record_geometry_call.h"
+#include "record_tuple.h"
 #include "record_geometry_category_call.h"
 
 namespace {

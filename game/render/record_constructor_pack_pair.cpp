@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Pack the exact combined selector key. The second selector is not nibble-masked,
 // and the final special flag depends on the original full first selector.
-#include "record_constructor_helpers.h"
+#include <cstdint>
 
 namespace {
 struct SelectorCode { uint32_t key; uint32_t code; };

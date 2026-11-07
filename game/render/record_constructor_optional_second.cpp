@@ -3,7 +3,8 @@
 // geometry calculation publishes its zero/partial scratch fields to the outputs.
 #include <cstring>
 
-#include "record_constructor_helpers.h"
+#include "record_geometry_call.h"
+#include "record_tuple.h"
 
 extern "C" uint32_t bb_render_record_constructor_optional_second(uint64_t *total, uint32_t *unit,
                                                                 uint32_t *first, uint32_t *second,
