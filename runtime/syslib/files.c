@@ -21,7 +21,14 @@
    size, block count and size, link count and times; the permission bits without write (the mount
    is read-only); device and inode numbers as the host's (they only identify the file); the birth
    time as the modification time (the host's stat has none); owner, group, flags and generation 0. A missing file or directory component answers ENOENT or
-   ENOTDIR (the same numbers on FreeBSD and Linux); any other host error stops by name. */
+   ENOTDIR (the same numbers on FreeBSD and Linux); any other host error stops by name.
+
+   stat(path, struct stat *), imported by eboot from libScePosix: the same lookup and answer as
+   sceKernelStat, the POSIX way: 0, or -1 with the thread's errno (__error) set to ENOENT or
+   ENOTDIR. The executable's one call (0x00465431) reads the access and modification times and the
+   size on 0, and treats any other answer as no file; it does not read errno. */
+#include "runtime/guest_errno.h"
+#include "runtime/mounts.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
@@ -34,12 +41,57 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-enum { BSD_ENOENT = 2, BSD_EBADF = 9, BSD_ENOTDIR = 20, BSD_EINVAL = 22, BSD_EROFS = 30 };
+enum { BSD_ENOENT = 2, BSD_EBADF = 9, BSD_EXDEV = 18, BSD_ENOTDIR = 20, BSD_EINVAL = 22, BSD_EROFS = 30 };
 #define SCE_KERNEL_ERROR(e) ((int32_t)(0x80020000u + (unsigned)(e)))
 #define APP0 "/app0"
 #define DATA "/data"
 
-typedef enum { MOUNT_APP0, MOUNT_DATA } mount;
+typedef enum { MOUNT_READ_ONLY, MOUNT_WRITABLE } mount; /* /app0 is read-only, /data writable */
+
+/* Mounts made at run time (runtime/mounts.h): /savedata0 and the like. */
+typedef struct {
+    char point[RT_MOUNT_POINT_BYTES];
+    char host_dir[4096];
+    int read_only;
+} run_time_mount;
+
+static pthread_mutex_t mounts_lock = PTHREAD_MUTEX_INITIALIZER;
+static run_time_mount mounts[RT_MAX_MOUNTS]; /* an entry with an empty point is free */
+
+int rt_mount_add(const char *mount_point, const char *host_dir, int read_only)
+{
+    if (!mount_point || mount_point[0] != '/' || strlen(mount_point) >= RT_MOUNT_POINT_BYTES || !host_dir ||
+        strlen(host_dir) >= sizeof mounts[0].host_dir)
+        return -1;
+    pthread_mutex_lock(&mounts_lock);
+    run_time_mount *free_entry = NULL;
+    int taken = 0;
+    for (int i = 0; i < RT_MAX_MOUNTS; i++) {
+        if (!strcmp(mounts[i].point, mount_point)) taken = 1;
+        if (!mounts[i].point[0] && !free_entry) free_entry = &mounts[i];
+    }
+    if (!taken && free_entry) {
+        strcpy(free_entry->host_dir, host_dir);
+        free_entry->read_only = read_only;
+        strcpy(free_entry->point, mount_point);
+    }
+    pthread_mutex_unlock(&mounts_lock);
+    return taken || !free_entry ? -1 : 0;
+}
+
+int rt_mount_remove(const char *mount_point)
+{
+    int found = 0;
+    pthread_mutex_lock(&mounts_lock);
+    for (int i = 0; i < RT_MAX_MOUNTS && mount_point && !found; i++) {
+        if (mounts[i].point[0] && !strcmp(mounts[i].point, mount_point)) {
+            mounts[i].point[0] = 0;
+            found = 1;
+        }
+    }
+    pthread_mutex_unlock(&mounts_lock);
+    return found ? 0 : -1;
+}
 
 typedef struct {
     int64_t seconds, nanoseconds;
@@ -64,41 +116,87 @@ static int under(const char *guest, const char *mount_point)
     return !strncmp(guest, mount_point, n) && (!guest[n] || guest[n] == '/');
 }
 
-/* The host path for a guest path under /app0 or /data, and which mount it is on; any other path
-   stops by name. */
-static mount host_path(const char *caller, const char *guest, char *out, size_t size)
+/* The host path for a guest path under /app0, /data or a run-time mount, and which mount it is on
+   (its mount point too, when point is not NULL); any other path stops by name. */
+static mount host_path_on(const char *caller, const char *guest, char *out, size_t size,
+                          char point[RT_MOUNT_POINT_BYTES])
 {
     if (!guest) rt_fatal(caller, "no path: the error value is not established");
     mount on;
-    const char *mount_point, *host_dir;
+    char mount_point[RT_MOUNT_POINT_BYTES] = "", host_dir[4096] = "";
     if (under(guest, APP0)) {
-        on = MOUNT_APP0, mount_point = APP0, host_dir = rt_process.app0_dir;
-        if (!host_dir) rt_fatal(caller, "no /app0 directory given (tools/boot.py --app0)");
+        if (!rt_process.app0_dir) rt_fatal(caller, "no /app0 directory given (tools/boot.py --app0)");
+        on = MOUNT_READ_ONLY;
+        snprintf(mount_point, sizeof mount_point, "%s", APP0);
+        snprintf(host_dir, sizeof host_dir, "%s", rt_process.app0_dir);
     } else if (under(guest, DATA)) {
-        on = MOUNT_DATA, mount_point = DATA, host_dir = rt_process.data_dir;
-        if (!host_dir) rt_fatal(caller, "no /data directory given (tools/boot.py --data)");
+        if (!rt_process.data_dir) rt_fatal(caller, "no /data directory given (tools/boot.py --data)");
+        on = MOUNT_WRITABLE;
+        snprintf(mount_point, sizeof mount_point, "%s", DATA);
+        snprintf(host_dir, sizeof host_dir, "%s", rt_process.data_dir);
     } else {
-        rt_fatal(caller, "a path outside /app0 and /data: other mounts are not implemented");
+        int read_only = 0;
+        pthread_mutex_lock(&mounts_lock); /* copied out, so an unmount cannot change them under us */
+        for (int i = 0; i < RT_MAX_MOUNTS && !mount_point[0]; i++) {
+            if (mounts[i].point[0] && under(guest, mounts[i].point)) {
+                strcpy(mount_point, mounts[i].point);
+                strcpy(host_dir, mounts[i].host_dir);
+                read_only = mounts[i].read_only;
+            }
+        }
+        pthread_mutex_unlock(&mounts_lock);
+        if (!mount_point[0]) rt_fatal(caller, "a path outside /app0, /data and the mounted save data: other mounts are not implemented");
+        on = read_only ? MOUNT_READ_ONLY : MOUNT_WRITABLE;
     }
     const size_t prefix = strlen(mount_point);
     for (const char *p = guest + prefix; (p = strstr(p, "/..")); p += 3)
         if (p[3] == '/' || !p[3]) rt_fatal(caller, "a path with a \"..\" component, which could leave its mount");
     if ((size_t)snprintf(out, size, "%s%s", host_dir, guest + prefix) >= size)
         rt_fatal(caller, "a path longer than the runtime's buffer");
+    if (point) memcpy(point, mount_point, RT_MOUNT_POINT_BYTES);
     return on;
+}
+
+static mount host_path(const char *caller, const char *guest, char *out, size_t size)
+{
+    return host_path_on(caller, guest, out, size, NULL);
+}
+
+int rt_host_path(const char *caller, const char *guest, char *out, size_t size)
+{
+    return host_path(caller, guest, out, size) == MOUNT_READ_ONLY;
 }
 
 static guest_timespec timespec_of(struct timespec t) { return (guest_timespec){t.tv_sec, t.tv_nsec}; }
 
-/* ENOENT and ENOTDIR as SCE codes (the same numbers on FreeBSD and Linux); other host errors stop. */
-static int32_t lookup_error(const char *caller)
+/* The FreeBSD number of a lookup error, ENOENT or ENOTDIR (the same numbers on FreeBSD and Linux);
+   other host errors stop. */
+static int lookup_errno(const char *caller)
 {
-    if (errno == ENOENT) return SCE_KERNEL_ERROR(BSD_ENOENT);
-    if (errno == ENOTDIR) return SCE_KERNEL_ERROR(BSD_ENOTDIR);
+    if (errno == ENOENT) return BSD_ENOENT;
+    if (errno == ENOTDIR) return BSD_ENOTDIR;
     rt_fatal(caller, "a host error without an established answer");
 }
 
+/* The same, as an SCE code. */
+static int32_t lookup_error(const char *caller) { return SCE_KERNEL_ERROR(lookup_errno(caller)); }
+
 static void fill_stat(guest_stat *out, const struct stat *host, mount on);
+
+static int posix_stat(const char *path, guest_stat *out)
+{
+    static const char fn[] = "stat";
+    char host[4096];
+    const mount on = host_path(fn, path, host, sizeof host);
+    if (!out) rt_fatal(fn, "no structure for the answer: the error is not established");
+    struct stat st;
+    if (stat(host, &st)) {
+        *rt_guest_errno() = lookup_errno(fn);
+        return -1;
+    }
+    fill_stat(out, &st, on);
+    return 0;
+}
 
 static int32_t kernel_stat(const char *path, guest_stat *out)
 {
@@ -118,7 +216,7 @@ enum { READ_AND_EXECUTE_BITS = 0555, PERMISSION_BITS = 0777 };
 static void fill_stat(guest_stat *out, const struct stat *host, mount on)
 {
     const struct stat st = *host;
-    const mode_t permissions = on == MOUNT_APP0 ? READ_AND_EXECUTE_BITS : PERMISSION_BITS;
+    const mode_t permissions = on == MOUNT_READ_ONLY ? READ_AND_EXECUTE_BITS : PERMISSION_BITS;
     *out = (guest_stat){
         .dev = (uint32_t)st.st_dev,
         .ino = (uint32_t)st.st_ino,
@@ -181,7 +279,7 @@ static int32_t kernel_open(const char *path, int32_t flags, uint32_t mode)
     char host[4096];
     const mount on = host_path(fn, path, host, sizeof host);
     int h;
-    if (on == MOUNT_DATA) {
+    if (on == MOUNT_WRITABLE) {
         h = open(host, data_open_flags(fn, flags) | O_CLOEXEC, (mode_t)(mode & PERMISSION_BITS));
     } else {
         if ((flags & BSD_O_ACCMODE) || (flags & (BSD_O_APPEND | BSD_O_CREAT | BSD_O_TRUNC))) {
@@ -240,6 +338,42 @@ static int64_t kernel_pread(int32_t fd, void *buffer, uint64_t size, int64_t off
     return read_result(fn, pread(h, buffer, size, offset));
 }
 
+/* sceKernelFtruncate(fd, length): FreeBSD's ftruncate(2) (the OpenOrbis homebrew SDK's libkernel.h
+   declares the shape), 0 or an SCE code. The executable's file object (0x02473290) cuts its file at
+   its current position, while the title creates its save data. FreeBSD's truncate(2) documents EBADF for a descriptor that is not valid, and
+   EINVAL for a negative length or a file opened without write permission (Linux answers EINVAL for
+   both too). Other host errors are not established and stop by name. */
+static int32_t kernel_ftruncate(int32_t fd, int64_t length)
+{
+    const int h = host_of(fd);
+    if (h < 0) return SCE_KERNEL_ERROR(BSD_EBADF);
+    if (length < 0) return SCE_KERNEL_ERROR(BSD_EINVAL);
+    if (!ftruncate(h, (off_t)length)) return 0;
+    if (errno == EINVAL || errno == EBADF) return SCE_KERNEL_ERROR(BSD_EINVAL); /* not open for writing */
+    rt_fatal("sceKernelFtruncate", "a host error without an established answer");
+}
+
+/* sceKernelRename(from, to): FreeBSD's rename(2) under its SCE name (the OpenOrbis homebrew SDK's
+   libkernel.h declares the shape), 0 or an SCE code. The title renames a file while it creates its
+   save data (the call at 0x02474a85). rename(2) replaces an existing `to`; it answers EXDEV when the
+   two are on different file systems (here: different mounts) and EROFS on a read-only one. A missing
+   file or directory component is ENOENT or ENOTDIR. Other host errors stop by name. */
+static int32_t kernel_rename(const char *from, const char *to)
+{
+    static const char fn[] = "sceKernelRename";
+    char host_from[4096], host_to[4096], point_from[RT_MOUNT_POINT_BYTES], point_to[RT_MOUNT_POINT_BYTES];
+    const mount from_on = host_path_on(fn, from, host_from, sizeof host_from, point_from);
+    const mount to_on = host_path_on(fn, to, host_to, sizeof host_to, point_to);
+    if (strcmp(point_from, point_to)) return SCE_KERNEL_ERROR(BSD_EXDEV);
+    if (from_on == MOUNT_READ_ONLY || to_on == MOUNT_READ_ONLY) {
+        struct stat st; /* the lookup first, as for an open */
+        if (stat(host_from, &st)) return lookup_error(fn);
+        return SCE_KERNEL_ERROR(BSD_EROFS);
+    }
+    if (!rename(host_from, host_to)) return 0;
+    return lookup_error(fn);
+}
+
 static int64_t kernel_lseek(int32_t fd, int64_t offset, int32_t whence)
 {
     const int h = host_of(fd);
@@ -269,9 +403,12 @@ static int32_t kernel_fstat(int32_t fd, guest_stat *out)
 }
 
 RT_SYSLIB("libkernel", sceKernelStat, kernel_stat);
+RT_SYSLIB("libScePosix", stat, posix_stat);
 RT_SYSLIB("libkernel", sceKernelOpen, kernel_open);
 RT_SYSLIB("libkernel", sceKernelClose, kernel_close);
 RT_SYSLIB("libkernel", sceKernelRead, kernel_read);
 RT_SYSLIB("libkernel", sceKernelPread, kernel_pread);
+RT_SYSLIB("libkernel", sceKernelFtruncate, kernel_ftruncate);
+RT_SYSLIB("libkernel", sceKernelRename, kernel_rename);
 RT_SYSLIB("libkernel", sceKernelLseek, kernel_lseek);
 RT_SYSLIB("libkernel", sceKernelFstat, kernel_fstat);

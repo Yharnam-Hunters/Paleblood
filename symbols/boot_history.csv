@@ -11,3 +11,10 @@ date,milestone,milestone_index,imports_total,imports_bundled,imports_implemented
 2026-11-04,video out,6,686,219,128,339,fault at eboot+0x217a380,fault,eboot,,eboot+0x217a380,11,0x6566910010
 2026-11-04,first flip,8,686,219,149,318,eboot->libScePlayGo:scePlayGoInitialize,unimplemented,eboot,eboot+0x1fdd67f,,,
 2026-11-05,first flip,8,686,219,150,317,eboot->libScePlayGo:scePlayGoInitialize,unimplemented,eboot,eboot+0x1fdd67f,,,
+2026-11-05,first flip,8,686,219,152,315,eboot->libScePlayGo:scePlayGoInitialize,unimplemented,eboot,eboot+0x1fdd67f,,,
+2026-11-06,first flip,8,686,219,156,311,eboot->libSceUserService:sceUserServiceGetUserName,unimplemented,eboot,eboot+0x2161cdc,,,
+2026-11-06,first flip,8,686,219,164,303,runtime:sceGnmSubmitCommandBuffers (constant command buffers: the stand-in does not run them),runtime stop,eboot,,,,
+2026-11-06,first flip,8,686,219,182,285,eboot->libSceNet:sceNetEpollCreate,unimplemented,eboot,eboot+0x2715762,,,
+2026-11-06,first flip,8,686,219,218,249,timeout at host+0x7f801cb7bcc0,timeout,eboot,,host+0x7f801cb7bcc0,0,0x0
+2026-11-06,first flip,8,686,219,234,233,timeout at host+0x7f3965b2dcc0,timeout,eboot,,host+0x7f3965b2dcc0,0,0x0
+2026-11-06,first flip,8,686,219,234,233,timeout at eboot+0x2034b14,timeout,eboot,,eboot+0x2034b14,0,0x0

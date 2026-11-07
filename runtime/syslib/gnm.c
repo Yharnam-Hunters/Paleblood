@@ -14,6 +14,7 @@
    modules and thread objects. It is the runtime's choice, not the PS4's value: the engine only
    maps it and hands it back to the GPU calls. */
 #include "runtime/process.h"
+#include "runtime/renderer.h"
 #include "runtime/syslib.h"
 #include "runtime/video_out.h"
 
@@ -92,11 +93,15 @@ static void fill_with_nop(const char *function, uint32_t *command_buffer, uint32
 
 /* sceGnmSetCsShader(command buffer, dwords, shader): binds a compute shader. The engine's wrapper
    (0x0148a8b0, four callers including a set-up) reserves 25 dwords, passes 25 and
-   advances by 25 dwords only when the answer is 0; nothing else reads the answer. */
-static int32_t set_cs_shader(uint32_t *command_buffer, uint32_t dwords, const void *shader)
+   advances by 25 dwords only when the answer is 0; nothing else reads the answer. The shader is its
+   register block (7 words: COMPUTE_PGM_LO, PGM_HI, PGM_RSRC1, PGM_RSRC2, NUM_THREAD_X, _Y, _Z, as
+   shadPS4's gnmdriver.cpp writes them), handed to the renderer like the vertex and pixel shaders'. */
+static int32_t set_cs_shader(uint32_t *command_buffer, uint32_t dwords, const uint32_t *registers)
 {
-    (void)shader;
-    fill_with_nop("sceGnmSetCsShader", command_buffer, dwords);
+    static const char fn[] = "sceGnmSetCsShader";
+    if (!registers) rt_fatal(fn, "no compute shader registers: the answer is not established");
+    fill_with_nop(fn, command_buffer, dwords);
+    rt_renderer_bind_shader(fn, RT_RENDERER_COMPUTE_SHADER, command_buffer, registers);
     return 0;
 }
 
@@ -125,16 +130,53 @@ static int32_t write_nothing_for_the_gpu(uint32_t *command_buffer, uint32_t dwor
     fill_with_nop("a GNM command-buffer writer", command_buffer, dwords);
     return 0;
 }
+/* The vertex and pixel shader calls also hand the renderer the shader they bind (runtime/renderer.h),
+   placed where they write in the command buffer:
+     sceGnmSetVsShader / sceGnmUpdateVsShader(command buffer, dwords, registers, modifier);
+     sceGnmSetPsShader / sceGnmUpdatePsShader(command buffer, dwords, registers).
+   The argument order is shadPS4's libSceGnmDriver (gnmdriver.cpp), and a boot shows the registers
+   argument holding the 7 and 12 words of runtime/render_calls.h (the code address, resources, export
+   and input settings, matching the shaders' own code). A null pixel shader block means no pixel
+   shader. The vertex shader's modifier (set when it calls a fetch shader, which the game's do)
+   replaces two fields of its PGM_RSRC1, the SGPR count (bits 6-9) and the input VGPR count
+   (bits 24-25): PGM_RSRC1 & 0xfcfffc3f | modifier, as shadPS4 applies it; a modifier with any other
+   bit set is refused there, and stops here by name. */
+#define VS_MODIFIER_FIELDS 0x030003c0u /* PGM_RSRC1's SGPRS and VGPR_COMP_CNT */
+static int32_t set_vs_shader(uint32_t *command_buffer, uint32_t dwords, const uint32_t *registers, uint32_t modifier,
+                             const char *function)
+{
+    if (!registers) rt_fatal(function, "no vertex shader registers: the answer is not established");
+    if (modifier & ~VS_MODIFIER_FIELDS) rt_fatal(function, "a shader modifier with bits outside PGM_RSRC1's SGPRS and VGPR_COMP_CNT");
+    uint32_t modified[7];
+    memcpy(modified, registers, sizeof modified);
+    if (modifier) modified[2] = (modified[2] & ~VS_MODIFIER_FIELDS) | modifier;
+    fill_with_nop(function, command_buffer, dwords);
+    rt_renderer_bind_shader(function, RT_RENDERER_VERTEX_SHADER, command_buffer, modified);
+    return 0;
+}
+
+static int32_t set_ps_shader(uint32_t *command_buffer, uint32_t dwords, const uint32_t *registers, const char *function)
+{
+    fill_with_nop(function, command_buffer, dwords);
+    rt_renderer_bind_shader(function, RT_RENDERER_PIXEL_SHADER, command_buffer, registers);
+    return 0;
+}
+
+static int32_t gnm_set_vs_shader(uint32_t *b, uint32_t n, const uint32_t *r, uint32_t m) { return set_vs_shader(b, n, r, m, "sceGnmSetVsShader"); }
+static int32_t gnm_update_vs_shader(uint32_t *b, uint32_t n, const uint32_t *r, uint32_t m) { return set_vs_shader(b, n, r, m, "sceGnmUpdateVsShader"); }
+static int32_t gnm_set_ps_shader(uint32_t *b, uint32_t n, const uint32_t *r) { return set_ps_shader(b, n, r, "sceGnmSetPsShader"); }
+static int32_t gnm_update_ps_shader(uint32_t *b, uint32_t n, const uint32_t *r) { return set_ps_shader(b, n, r, "sceGnmUpdatePsShader"); }
+
+RT_SYSLIB("libSceGnmDriver", sceGnmSetVsShader, gnm_set_vs_shader);
+RT_SYSLIB("libSceGnmDriver", sceGnmUpdateVsShader, gnm_update_vs_shader);
+RT_SYSLIB("libSceGnmDriver", sceGnmSetPsShader, gnm_set_ps_shader);
+RT_SYSLIB("libSceGnmDriver", sceGnmUpdatePsShader, gnm_update_ps_shader);
 RT_SYSLIB("libSceGnmDriver", sceGnmSetEsShader, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmSetGsShader, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmSetHsShader, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmSetLsShader, write_nothing_for_the_gpu);
-RT_SYSLIB("libSceGnmDriver", sceGnmSetPsShader, write_nothing_for_the_gpu);
-RT_SYSLIB("libSceGnmDriver", sceGnmSetVsShader, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmUpdateGsShader, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmUpdateHsShader, write_nothing_for_the_gpu);
-RT_SYSLIB("libSceGnmDriver", sceGnmUpdatePsShader, write_nothing_for_the_gpu);
-RT_SYSLIB("libSceGnmDriver", sceGnmUpdateVsShader, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmInsertPushMarker, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmInsertPopMarker, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmInsertSetMarker, write_nothing_for_the_gpu);
@@ -231,6 +273,24 @@ RT_SYSLIB("libSceGnmDriver", sceGnmMapComputeQueue, map_compute_queue);
 #define PM4_NUM_INSTANCES 0x2fu
 #define PM4_SET_CONTEXT_REG 0x69u
 #define PM4_SET_UCONFIG_REG 0x79u
+#define PM4_DMA_DATA 0x50u
+#define PM4_INDEX_TYPE 0x2au
+#define PM4_INDEX_BASE 0x26u
+#define PM4_INDEX_BUFFER_SIZE 0x13u
+#define PM4_DRAW_INDEX_2 0x27u
+#define PM4_DRAW_INDEX_OFFSET_2 0x35u
+
+/* DMA_DATA (AMD's public cikd.h): control; source address (or data); destination address;
+   command, with the byte count in bits 0-20. */
+#define DMA_DATA_DWORDS 7
+#define DMA_DATA_SOURCE_SELECT(control) ((control) >> 29 & 3u)  /* 0 memory, 1 GDS, 2 data, 3 memory through L2 */
+#define DMA_DATA_DESTINATION_SELECT(control) ((control) >> 20 & 3u) /* 0 by the command's DAS, 1 GDS, 3 memory through L2 */
+#define DMA_DATA_SWAPS(command) ((command) >> 22 & 0xfu)       /* source and destination byte swaps */
+#define DMA_DATA_SOURCE_IS_REGISTER (1u << 26)                 /* SAS */
+#define DMA_DATA_DESTINATION_IS_REGISTER (1u << 27)            /* DAS */
+#define DMA_DATA_SOURCE_FIXED (1u << 28)                       /* SAIC: the source is not incremented */
+#define DMA_DATA_DESTINATION_FIXED (1u << 29)                  /* DAIC: the destination is not incremented */
+#define CP_DMA_READ_TAGS_BYTE_ADDRESS (0xc08bu * 4)             /* mmCP_DMA_READ_TAGS, gfx_7_2_d.h */
 
 #define EVENT_WRITE_WITHOUT_MEMORY_DWORDS 2
 #define EVENT_WRITE_EOP_DWORDS 6
@@ -316,6 +376,19 @@ static void check_wait(const char *fn, const wait_reg_mem_packet *packet)
     if (!holds) rt_fatal(fn, "a GPU wait on memory that does not yet hold what it waits for");
 }
 
+/* The one DMA_DATA form the stand-in knows: a read from memory into CP_DMA_READ_TAGS, which only
+   brings the source into the GPU's cache. Any other form stops by name. */
+static void check_dma_data(const char *fn, const uint32_t *packet)
+{
+    const uint32_t control = packet[1], destination_low = packet[4], destination_high = packet[5], command = packet[6];
+    const uint32_t source = DMA_DATA_SOURCE_SELECT(control);
+    const int read_tags = (source == 0 || source == 3) && DMA_DATA_DESTINATION_SELECT(control) == 0 &&
+                          (command & DMA_DATA_DESTINATION_IS_REGISTER) && (command & DMA_DATA_DESTINATION_FIXED) &&
+                          !(command & (DMA_DATA_SOURCE_IS_REGISTER | DMA_DATA_SOURCE_FIXED)) && !DMA_DATA_SWAPS(command) &&
+                          destination_low == CP_DMA_READ_TAGS_BYTE_ADDRESS && destination_high == 0;
+    if (!read_tags) rt_fatal(fn, "a DMA_DATA other than a read into CP_DMA_READ_TAGS: the stand-in does not copy or fill");
+}
+
 /* Stops naming the packet's opcode: the next packet kind to understand. */
 static _Noreturn void unknown_packet(const char *fn, uint32_t opcode, uint32_t length)
 {
@@ -361,11 +434,15 @@ static void complete_packets(const char *fn, const uint32_t *packets, uint32_t d
             wait_reg_mem_packet wait;
             memcpy(&wait, packet + 1, sizeof wait);
             check_wait(fn, &wait);
+        } else if (opcode == PM4_DMA_DATA && length == DMA_DATA_DWORDS) {
+            check_dma_data(fn, packet);
         } else if (opcode == PM4_EVENT_WRITE && length != EVENT_WRITE_WITHOUT_MEMORY_DWORDS) {
             unknown_packet(fn, opcode, length); /* an event that also writes memory */
         } else if (opcode != PM4_NOP && opcode != PM4_SET_SH_REG && opcode != PM4_DISPATCH_DIRECT &&
                    opcode != PM4_ACQUIRE_MEM && opcode != PM4_EVENT_WRITE && opcode != PM4_SET_CONTEXT_REG &&
-                   opcode != PM4_SET_UCONFIG_REG && opcode != PM4_NUM_INSTANCES && opcode != PM4_DRAW_INDEX_AUTO) {
+                   opcode != PM4_SET_UCONFIG_REG && opcode != PM4_NUM_INSTANCES && opcode != PM4_DRAW_INDEX_AUTO &&
+                   opcode != PM4_INDEX_TYPE && opcode != PM4_INDEX_BASE && opcode != PM4_INDEX_BUFFER_SIZE &&
+                   opcode != PM4_DRAW_INDEX_2 && opcode != PM4_DRAW_INDEX_OFFSET_2) {
             unknown_packet(fn, opcode, length);
         }
         at += length;
@@ -399,7 +476,9 @@ RT_SYSLIB("libSceGnmDriver", sceGnmDingDong, ding_dong);
    buffers, their sizes): hands command buffers to the GPU's graphics queue. OpenOrbis' GnmDriver.h
    only names it; the shape comes from the engine's submit (0x02ab0c23, one of eleven callers),
    which passes one or two draw command buffers, their byte sizes rounded down to whole dwords, and
-   no constant buffers, and ignores the answer.
+   no constant buffers, and ignores the answer. Another caller, 0x0149bf3a (through the GPU
+   library's wrapper at 0x01489a10), passes the constant arrays always, with an entry filled only
+   when that draw buffer has one: an entry of no address and 0 bytes is no constant buffer.
 
    TEMPORARY STAND-IN, as for sceGnmDingDong above: the work is completed at once on the calling
    thread. The first boot to reach it (4 November 2026) found, besides the compute kinds, these
@@ -409,8 +488,19 @@ RT_SYSLIB("libSceGnmDriver", sceGnmDingDong, ding_dong);
      ACQUIRE_MEM, EVENT_WRITE     skipped: cache control and pipeline events, with no GPU caches
                                   (an EVENT_WRITE that also writes memory stops);
      SET_CONTEXT_REG, SET_UCONFIG_REG, NUM_INSTANCES, DRAW_INDEX_AUTO
-                                  skipped: draw state and draws (the first frame's).
-   Nothing is drawn. Constant command buffers, and any other packet, stop by name. */
+                                  skipped: draw state and draws (the first frame's);
+     INDEX_TYPE, INDEX_BASE, INDEX_BUFFER_SIZE, DRAW_INDEX_2, DRAW_INDEX_OFFSET_2
+                                  skipped: an indexed draw's state (index size, buffer address and
+                                  length) and the draw itself (found 6 November 2026); like the
+                                  other draws they only read memory;
+     DMA_DATA to CP_DMA_READ_TAGS skipped: memory read into the command processor's read tags,
+                                  the destination not incremented (found 6 November 2026, a
+                                  100-byte read). It changes no memory and no state a shader
+                                  sees, so it only brings the source into the GPU's cache, and the
+                                  stand-in has none. Any other DMA_DATA stops.
+   The packets themselves draw nothing. Each buffer then goes to the renderer (runtime/renderer.h),
+   which runs the drawing calls recorded for it when the display is on. A constant command buffer
+   that holds anything, and any other packet, stops by name. */
 #define MAX_SUBMITTED_BUFFERS 64
 
 static int32_t submit_command_buffers(uint32_t count, void **draw_buffers, const uint32_t *draw_bytes,
@@ -419,10 +509,15 @@ static int32_t submit_command_buffers(uint32_t count, void **draw_buffers, const
     static const char fn[] = "sceGnmSubmitCommandBuffers";
     if (!count || count > MAX_SUBMITTED_BUFFERS || !draw_buffers || !draw_bytes)
         rt_fatal(fn, "no command buffers, or more than the stand-in takes: the answer is not established");
-    if (constant_buffers || constant_bytes) rt_fatal(fn, "constant command buffers: the stand-in does not run them");
+    if (!constant_buffers != !constant_bytes) rt_fatal(fn, "constant command buffers without their sizes, or sizes without buffers");
+    for (uint32_t k = 0; k < count; k++) {
+        if (constant_buffers && (constant_buffers[k] || constant_bytes[k]))
+            rt_fatal(fn, "a constant command buffer: the stand-in does not run them");
+    }
     for (uint32_t k = 0; k < count; k++) {
         if (!draw_buffers[k] && draw_bytes[k]) rt_fatal(fn, "a command buffer without an address");
         complete_packets(fn, draw_buffers[k], draw_bytes[k] / sizeof(uint32_t), 0, 0);
+        rt_renderer_submit(fn, draw_buffers[k], draw_bytes[k]); /* its recorded drawing calls, when the renderer is on */
     }
     return 0;
 }

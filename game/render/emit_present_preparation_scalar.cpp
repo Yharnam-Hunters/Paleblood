@@ -3,6 +3,7 @@
 // not replace the captured value.
 // Dirty-state callers 0x02ad2c30 and 0x02ad2790 use this writer.
 #include "present_dirty_preparation_packets.h"
+#include "render_observe.h"
 #include <bit>
 
 extern "C" uint64_t bb_render_emit_present_preparation_scalar(
@@ -15,6 +16,7 @@ extern "C" uint64_t bb_render_emit_present_preparation_scalar(
     if (!reserve_words_with_result(commands, preparation_packet::words, cursor, rejected_result))
         return rejected_result;
 
+    observe_context_register(commands, cursor, preparation_packet::depth_clear_index, scalar_bits);
     auto *packet = reinterpret_cast<PreparationCommandPacket *>(cursor);
     // Packet storage may alias the buffer. Keep all three DWORD writes ordered,
     // then publish the captured cursor plus the packet size without rereading it.

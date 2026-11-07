@@ -40,6 +40,14 @@ if(APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     endif()
 endif()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+# LibAtrac9 (third_party/libatrac9, MIT, vendored unmodified): the audio job manager's ATRAC9
+# decoder. Its warnings are off: it is code we do not maintain.
+file(GLOB PB_ATRAC9_SOURCES CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/third_party/libatrac9/src/*.c)
+add_library(atrac9 STATIC ${PB_ATRAC9_SOURCES})
+target_include_directories(atrac9 PUBLIC ${PROJECT_SOURCE_DIR}/third_party/libatrac9/src)
+target_compile_options(atrac9 PRIVATE -w)
+set_target_properties(atrac9 PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_link_libraries(atrac9 PUBLIC m)
 add_subdirectory(runtime)
 add_subdirectory(game)
 
@@ -50,6 +58,17 @@ add_executable(test_plugin test/test_plugin.c runtime/plugin.c runtime/hooks.c)
 target_include_directories(test_plugin PRIVATE runtime/include)
 target_link_libraries(test_plugin bbrt)
 add_test(NAME plugin COMMAND test_plugin)
+# The game library's observer calls reach the record the host exports (runtime/render_observer.h).
+add_executable(test_render_observer test/test_render_observer.c runtime/render_observer.c)
+target_include_directories(test_render_observer PRIVATE runtime/include)
+target_link_libraries(test_render_observer ${CMAKE_DL_LIBS} pthread)
+set_target_properties(test_render_observer PROPERTIES ENABLE_EXPORTS ON)
+add_test(NAME render_observer COMMAND test_render_observer)
+# Observe hooks: the observer sees the arguments and the original still runs (runtime/observe_hooks.h).
+add_executable(test_observe_hooks test/test_observe_hooks.c)
+target_link_libraries(test_observe_hooks bbrt)
+set_target_properties(test_observe_hooks PROPERTIES ENABLE_EXPORTS ON)
+add_test(NAME observe_hooks COMMAND test_observe_hooks)
 
 add_executable(test_host_hooks test/test_host_hooks.c runtime/host_hooks.c)
 target_include_directories(test_host_hooks PRIVATE runtime/include)
@@ -81,9 +100,18 @@ set_tests_properties(capture_poc_replay PROPERTIES
 # System library implementations, compiled in directly so the linker keeps every RT_SYSLIB entry
 file(GLOB PB_TEST_SYSLIB CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/runtime/syslib/*.c)
 # The syslib tests use the display's headless mode only, so they build without its window.
-add_executable(test_syslib test/test_syslib.c runtime/process.c ${PB_TEST_SYSLIB}
-               runtime/display/display.c runtime/display/display_window_none.c)
+# Each library's tests in their own file (test/syslib_test.h).
+file(GLOB PB_TEST_SYSLIB_TESTS CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/test/syslib/*.c)
+add_executable(test_syslib test/test_syslib.c ${PB_TEST_SYSLIB_TESTS} runtime/process.c ${PB_TEST_SYSLIB}
+               runtime/display/display.c runtime/display/display_window_none.c runtime/renderer/renderer_none.c
+               runtime/audio/audio_host_none.c runtime/input/input.c runtime/input/input_script.c runtime/input/input_host_none.c ${PB_MEDIA_SOURCES})
 target_include_directories(test_syslib PRIVATE runtime/include)
+target_link_libraries(test_syslib PRIVATE atrac9)
+if(PB_FFMPEG_FOUND)
+    # The movie player's tests encode a short movie of their own with the same libraries.
+    target_link_libraries(test_syslib PRIVATE PkgConfig::PB_FFMPEG)
+    target_compile_definitions(test_syslib PRIVATE PB_TEST_MEDIA=1)
+endif()
 add_test(NAME syslib COMMAND test_syslib)
 # The renderer's GCN shader decoder (docs/RENDERER.md), its test, and pbgcn for the shader census.
 add_library(pbgcn_decode STATIC runtime/renderer/gcn_decode.c)
@@ -102,7 +130,13 @@ target_link_libraries(pbrender_calls PUBLIC pthread)
 add_executable(test_render_calls test/test_render_calls.c)
 target_link_libraries(test_render_calls PRIVATE pbrender_calls)
 add_test(NAME render_calls COMMAND test_render_calls)
-add_library(pbgcn_spirv STATIC runtime/renderer/spirv.c runtime/renderer/gcn_spirv.c)
+# The GPU's tiled image layouts, for reading images out of guest memory.
+add_library(pbtiling STATIC runtime/renderer/tiling.c)
+target_include_directories(pbtiling PUBLIC runtime/include)
+add_executable(test_tiling test/test_tiling.c)
+target_link_libraries(test_tiling PRIVATE pbtiling)
+add_test(NAME tiling COMMAND test_tiling)
+add_library(pbgcn_spirv STATIC runtime/renderer/spirv.c runtime/renderer/gcn_spirv.c runtime/renderer/rect_list.c)
 target_include_directories(pbgcn_spirv PUBLIC runtime/include)
 target_link_libraries(pbgcn_spirv PUBLIC pbgcn_decode)
 add_executable(test_gcn_spirv test/test_gcn_spirv.c)
@@ -117,6 +151,19 @@ if(PB_TEST_VULKAN_FOUND)
     target_link_libraries(test_gcn_compute PRIVATE pbgcn_spirv PkgConfig::PB_TEST_VULKAN m)
     add_test(NAME gcn_compute COMMAND test_gcn_compute)
     set_tests_properties(gcn_compute PROPERTIES SKIP_RETURN_CODE 77)
+    # The draw executor (docs/RENDERER.md, phase 3) runs recorded calls on a Vulkan GPU.
+    add_library(pbrender_executor STATIC runtime/renderer/render_executor.c)
+    target_include_directories(pbrender_executor PUBLIC runtime/include)
+    target_link_libraries(pbrender_executor PUBLIC pbrender_calls pbgcn_spirv pbtiling PkgConfig::PB_TEST_VULKAN)
+    add_executable(test_render_executor test/test_render_executor.c)
+    target_link_libraries(test_render_executor PRIVATE pbrender_executor m)
+    add_test(NAME render_executor COMMAND test_render_executor)
+    set_tests_properties(render_executor PROPERTIES SKIP_RETURN_CODE 77)
+    add_executable(test_renderer test/test_renderer.c runtime/renderer/renderer.c)
+    target_include_directories(test_renderer PRIVATE runtime/include)
+    target_link_libraries(test_renderer PRIVATE pbrender_executor m)
+    add_test(NAME renderer COMMAND test_renderer)
+    set_tests_properties(renderer PROPERTIES SKIP_RETURN_CODE 77)
     add_executable(test_gcn_draw test/test_gcn_draw.c)
     target_link_libraries(test_gcn_draw PRIVATE pbgcn_spirv PkgConfig::PB_TEST_VULKAN m)
     add_test(NAME gcn_draw COMMAND test_gcn_draw)
@@ -144,3 +191,16 @@ add_executable(test_direct_memory_bounds test/test_direct_memory_bounds.c
 target_include_directories(test_direct_memory_bounds PRIVATE runtime/include)
 add_test(NAME direct_memory_bounds COMMAND test_direct_memory_bounds)
 set_tests_properties(direct_memory_bounds PROPERTIES TIMEOUT 20)
+# Owned per-thread module blocks and the actual TLS registry entry.
+find_package(Threads REQUIRED)
+add_executable(test_module_tls test/test_module_tls.c runtime/syslib/kernel_tls.c
+               runtime/syslib/table.c)
+target_include_directories(test_module_tls PRIVATE runtime/include)
+target_link_libraries(test_module_tls PRIVATE Threads::Threads)
+add_test(NAME module_tls COMMAND test_module_tls)
+set_tests_properties(module_tls PROPERTIES TIMEOUT 10)
+
+add_test(NAME module_tls_boot
+         COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_module_tls_boot.py -v)
+set_tests_properties(module_tls_boot PROPERTIES TIMEOUT 30
+    ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>")
