@@ -190,6 +190,17 @@ static void runtime_stopped(const char *function, const char *message)
     unwind();
 }
 
+/* rt_exit_observer: the guest ended the process with _exit (runtime/syslib/kernel.c). Recorded as
+   an exit with its status, from whichever guest thread called it, so the boot record is still
+   written. */
+static void guest_exited(int status)
+{
+    if (!claim_stop()) for (;;) pause();
+    exit_code = status;
+    outcome = EXITED;
+    unwind();
+}
+
 static void guest_exit(int code)
 {
     exit_code = code;
@@ -908,6 +919,7 @@ int main(int argc, char **argv)
     static const int signals[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGTRAP, SIGALRM, SIGUSR1};
     main_thread = pthread_self();
     rt_fatal_observer = runtime_stopped;
+    rt_exit_observer = guest_exited;
     for (size_t i = 0; i < sizeof signals / sizeof signals[0]; i++) sigaction(signals[i], &sa, NULL);
 
     if (prepare_module_tls(tp - tls_size, tls_size, error, sizeof error)) {
