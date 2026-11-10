@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Shared synthetic edge cases for devices.cpp, written by pad_set_vibration_cases.py
-(0x02a9c790), mouse_open_cases.py (0x02a8c420 and 0x02a8bf30) and mouse_construct_cases.py
+(0x02a9c790), initialize_mouse_for_initial_user_cases.py (0x02a8c420),
+mouse_b_open_for_initial_user_cases.py (0x02a8bf30) and mouse_construct_cases.py
 (0x02a8c210).
 
 The PS4 library calls are scripted; the vibration parameters are compared byte for byte, so the
