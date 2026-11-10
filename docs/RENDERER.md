@@ -314,6 +314,11 @@ Instead:
          and `v1`.
        - The inputs: 1,678 use only those barycentrics; 1,111 add the front-face flag; nine
          also read the pixel position.
+       - The executor draws all three: the front-face VGPR (`SPI_PS_INPUT_ENA` bit 12) holds 1 or
+         0 with `SPI_BARYC_CNTL`'s `FRONT_FACE_ALL_BITS`, otherwise a float whose sign says it
+         (1.0 front, -1.0 back), as shadPS4 fills it. Which winding faces front comes from
+         `PA_SU_SC_MODE_CNTL`, which is not observed yet: the reset state, counter-clockwise
+         (Vulkan's area rule), is assumed.
      - **Confirmed at run time** (6 November 2026): the game passes these same blocks to
        `sceGnmSetVsShader` and `sceGnmSetPsShader`, with the code's address filled in. Those
        calls are the runtime's own, so they hand the renderer the shader directly: placed at the
