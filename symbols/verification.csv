@@ -301,3 +301,4 @@ render_yebis_get_recursive_sample_parameters,edge,,23,23,0,0,6e6f0aa41d5607ce,20
 render_yebis_get_recursive_sample_parameters,edge,30,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,60,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,uncapped,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
+render_initialize_swap_chain_resource,edge,,52,52,0,0,e636609d2c7f7211,2026-11-07
