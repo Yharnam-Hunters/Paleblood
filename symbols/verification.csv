@@ -156,10 +156,10 @@ frame_timing_until_idle_020128f0,edge,,5,5,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_until_idle_020128f0,edge,60,5,5,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_until_idle_02012bf0,edge,,5,5,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_until_idle_02012bf0,edge,60,5,5,0,0,cd53367af0bda73a,2026-10-31
-input_initialize_mouse_for_initial_user,edge,,11,11,0,0,f01fec556e83d534,2026-11-10
-input_mouse_b_open_for_initial_user,edge,,11,11,0,0,f01fec556e83d534,2026-11-10
-input_mouse_construct,edge,,10,10,0,0,f01fec556e83d534,2026-11-10
-input_pad_set_vibration,edge,,9,9,0,0,f01fec556e83d534,2026-11-10
+input_initialize_mouse_for_initial_user,edge,,11,11,0,0,49e10b4c3d13f225,2026-11-10
+input_mouse_b_open_for_initial_user,edge,,11,11,0,0,49e10b4c3d13f225,2026-11-10
+input_mouse_construct,edge,,10,10,0,0,49e10b4c3d13f225,2026-11-10
+input_pad_set_vibration,edge,,9,9,0,0,49e10b4c3d13f225,2026-11-10
 input_pad_step_01972900,recorded,,202,202,0,0,33cd4f4b94e06d58,2026-10-07
 input_pad_step_01972900,recorded,30,202,202,0,0,33cd4f4b94e06d58,2026-10-07
 input_pad_step_01972900,recorded,60,202,202,0,0,33cd4f4b94e06d58,2026-10-07
