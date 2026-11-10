@@ -157,7 +157,7 @@ static void libc_free(void *pointer) { free(pointer); }
 
 enum { LIBC_FILE_BYTES = 456, LIBC_EOF = -1 };
 static _Alignas(16) uint8_t libc_stdout[LIBC_FILE_BYTES];
-static int32_t need_libc_internal = 1;
+static int32_t need_libc_internal[1] = {1}; /* an array, so its name is its address */
 
 static int32_t libc_fflush(void *stream)
 {
@@ -174,4 +174,4 @@ RT_SYSLIB("libSceLibcInternal", free, libc_free);
 RT_SYSLIB("libSceLibcInternal", fflush, libc_fflush);
 RT_SYSLIB("libSceLibcInternal", __cxa_finalize, libc_cxa_finalize);
 RT_SYSLIB("libSceLibcInternal", _Stdout, libc_stdout);
-RT_SYSLIB("libSceLibcInternal", Need_sceLibcInternal, &need_libc_internal);
+RT_SYSLIB("libSceLibcInternal", Need_sceLibcInternal, need_libc_internal);
