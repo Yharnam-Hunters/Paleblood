@@ -227,6 +227,10 @@ render_read_record_mapping_word,edge,,224,224,0,0,68ea5b3aae2f9be4,2026-11-04
 render_record_apply_mapping,edge,,400,400,0,0,6de6826ea92e835a,2026-11-05
 render_record_apply_parameter_tuple,edge,,1050,1050,0,0,5cc7672932429aef,2026-11-04
 render_record_auxiliary_predicate,edge,,64,64,0,0,ddfae0976d12bebd,2026-11-04
+render_record_constructor,edge,,64,64,0,0,396bf37de5ef4277,2026-11-10
+render_record_constructor_optional_first,edge,,62,62,0,0,3b16979550283ed3,2026-11-10
+render_record_constructor_optional_second,edge,,79,79,0,0,0843eec05fb364bc,2026-11-10
+render_record_constructor_pack_pair,edge,,64,64,0,0,5e511c07c36ca7c5,2026-11-10
 render_record_derive_parameter,edge,,222,222,0,0,c25ef4fb226f3907,2026-11-05
 render_record_descriptor_count_exponent,edge,,24,24,0,0,632a23284e53140f,2026-11-05
 render_record_descriptor_encoding,edge,,24,24,0,0,e792610b55ba0383,2026-11-05
