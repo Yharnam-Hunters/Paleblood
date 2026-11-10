@@ -91,6 +91,7 @@ address,replacement,system,returns
 0x01487ee0,bb_render_initialize_pair_record_descriptor,render,i64
 0x01488370,bb_render_record_descriptor_set_high_field,render,i32
 0x01488590,bb_render_initialize_triple_record_descriptor,render,i64
+0x01488d90,bb_render_convert_constructor_record,render,void
 0x01489910,bb_render_record_descriptor_level_count,render,i32
 0x01489940,bb_render_record_descriptor_count_exponent,render,i32
 0x01489960,bb_render_record_descriptor_encoding,render,i32
