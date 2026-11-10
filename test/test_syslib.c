@@ -1523,7 +1523,7 @@ int main(void)
     CHECK(is_implemented("libSceNetCtl", "sceNetCtlCheckCallback"));
     CHECK(is_implemented("libSceNetCtl", "sceNetCtlRegisterCallback"));
     CHECK(is_implemented("libSceNetCtl", "sceNetCtlUnregisterCallback"));
-    CHECK(!is_implemented("libSceNetCtl", "sceNetCtlGetInfo"));
+    CHECK(is_implemented("libSceNetCtl", "sceNetCtlGetInfo")); /* test/syslib/netctl_info.c */
     CHECK(is_implemented("libSceNetCtl", "sceNetCtlGetNatInfo"));
     if (failures) return 1;
     netctl_shared = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
