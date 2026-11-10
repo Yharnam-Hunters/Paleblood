@@ -145,6 +145,15 @@ Instead:
      - **Descriptor base addresses are 40 bits** (word 1's bits 0-7; the Sea Islands manual's Table
        8.5 as shadPS4's `resource.h` lays it out). The game sets word 1's bits 8-15, which the
        translator used to take as address bits, sending the GPU outside guest memory.
+     - **Buffer range checking**: every MUBUF/MTBUF access is checked against its descriptor's range
+       as the hardware does (CLRX's GCN memory handling notes, gem5's GCN3 model): out of range a
+       load reads 0 and a store writes nothing, dword by dword. Stride 0: NUM_RECORDS (word 2) counts
+       bytes and the offset must be below NUM_RECORDS less the SGPR offset; with a stride and an index,
+       the index must be below NUM_RECORDS and the offset below the stride; a strided access without
+       an index is held to NUM_RECORDS records. Without it a vertex shader indexing a table with an
+       index from its vertex data (the main menu's last draw after New Game) sent the GPU far outside
+       the guest memory, and the NVIDIA driver reset the context (Xid 109, `CTX SWITCH TIMEOUT`); out
+       of range stores could write anywhere in guest memory.
      - **Typed buffer loads and stores** (`tbuffer_load_format_*`, `tbuffer_store_format_*`):
        the format is in the instruction. The game uses only 32-bit float data (one to four
        components, as many as the access names), which moves whole dwords with no conversion, so
