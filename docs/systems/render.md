@@ -99,6 +99,11 @@ arguments. The first of the engine's own packet writers are mapped, all by [@evi
     of a second auxiliary area [#323](https://github.com/Yharnam-Hunters/Paleblood/pull/323), from #228;
   - **fields:** seven setters (`0x01486520`–`0x01486800`) replace one field each, keeping the
     rest of the word [#324](https://github.com/Yharnam-Hunters/Paleblood/pull/324), from #236.
+  - **normalisation:** `render_record_normalize_mode2`, `…mode3` and `…mode4` (`0x025710a0`,
+    `0x025711d0`, `0x02571340`) bring a record's input into one normalised form, copying the words
+    they do not interpret unchanged and keeping each helper's writes and failure codes in order, and
+    `render_record_translate_selector` (`0x02ab7310`) maps a record selector to one output word,
+    answering status 12 for a selector it does not support [#249](https://github.com/Yharnam-Hunters/Paleblood/pull/249) (edge-verified on synthetic cases).
 
 ### Setting GPU state and drawing
 
@@ -258,6 +263,9 @@ frames. #279, #286 and #287 were brought up to date with `main` from #209, #259 
 | `0x014a2c40` | 595 | `render_calculate_record_descriptor_level_offset` | edge-verified | Accumulate levels inclusively using partial helper totals even after errors; publish the two QWORD outputs in order. |
 | `0x02377bd0` | 399 | `render_frame_update_02377bd0` | verified | per-frame: ages a list of ref-counted objects, updates RendMan-side child, steps another child by 1/30 s (Uncap: measured frame time) |
 | `0x0247eb80` | 16 | `render_read_present_pool_counter` | edge-verified | full-QWORD locked read/writeback retry, XOR before each attempt; caller adds one. Real AMD64 write cycles retained; non-AMD64 bridge unresolved Synthetic edges pass; no recordings. |
+| `0x025710a0` | 301 | `render_record_normalize_mode2` | edge-verified | Normalize mode-2 input; preserve ordered 36-byte copy, supplied parameter bypass and helper error/status ordering. |
+| `0x025711d0` | 361 | `render_record_normalize_mode3` | edge-verified | Normalize mode 3 input through an ordered 48-byte copy; cache mapping across conditional parameter helpers and preserve statuses and padding. |
+| `0x02571340` | 303 | `render_record_normalize_mode4` | edge-verified | Normalize mode-4 input; preserve ordered 40-byte copy, optional parameter path and status/reload ordering. |
 | `0x02571c60` | 47 | `render_clear_swap_chain_curve` | edge-verified | Release the swap-chain curve resource through its owner; clear only the resource after the callback. |
 | `0x02572290` | 47 | `render_clear_swap_chain_cached_record` | edge-verified | Release the swap-chain cached-record resource through its owner; clear only the resource after the callback. |
 | `0x025b2fb0` | 768 | `render_swap_chain_present` | verified | GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0) |
@@ -267,6 +275,7 @@ frames. #279, #286 and #287 were brought up to date with `main` from #209, #259 
 | `0x02ab0e30` | 213 | `render_command_submit_snapshot` | edge-verified | Initialize the auxiliary command buffer and submit nonempty regions using only the video handle. |
 | `0x02ab5a70` | 1235 | `render_present_record_consume` | edge-verified | Track resource range or emit record commands; preserve cached tokens, index wrap and final state resets. Static reconstruction Synthetic GCC/Clang edges pass; no recordings. |
 | `0x02ab6810` | 1173 | `render_present_last_record_consume` | edge-verified | Consume the final record range, or update its tracking bank when commands are not admitted. |
+| `0x02ab7310` | 629 | `render_record_translate_selector` | edge-verified | Map supported selectors to one output DWORD; unsupported selectors return status 12 and zero the output. |
 | `0x02ab9850` | 374 | `render_flush_shader_preparation` | edge-verified | Flush the pending barrier/range before the event. Mode 0 keeps the range fields, and a suppressed state returns without touching either group of fields. |
 | `0x02abaf10` | 78 | `render_record_derive_parameter` | edge-verified | Derive numeric normalization code; flag priority and mode-dependent base. |
 | `0x02abb4f0` | 31 | `render_record_auxiliary_predicate` | edge-verified | Return the auxiliary-processing predicate: selectors 0x13/0x14 enable it, 0x15/0x16 use flag bit 6, and all other selectors disable it. |
