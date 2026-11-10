@@ -961,7 +961,51 @@ The executable calls it twice:
 - at `0x02023fbb`, accepting success or exactly `0x80b80002`.
 
 So the first call succeeds and a repeat answers `0x80b80002`, the "already initialized" code. No
-dialog is shown: each dialog library's own calls do that, and none is provided yet.
+dialog is shown: each dialog library's own calls do that (next section).
+
+## The common dialogs, closed at once (`libSceMsgDialog`, `libSceSaveDataDialog`, `libSceNpProfileDialog`, `libSceNpCommerce`, issues #35 and #40)
+
+The executable uses four of the console's common dialogs. It never reads a choice from three of
+them: the message, save data and commerce dialogs do not import `GetResult`. It reads the profile
+dialog's result but does not use it. So the runtime models each dialog as one the user closes at
+once.
+
+**Facts:**
+- **Statuses and the base block.** NONE 0, INITIALIZED 1, RUNNING 2, FINISHED 3, and the
+  parameter block's base: 0x30 bytes, with a magic number `0xC0D1A109` at 0x2c (OpenOrbis
+  `_types/common_dialog.h`). Every call site stores the magic as `0xC0D1A109` plus the low 32 bits
+  of the base's own address.
+- **Errors and states.** `0x80b80003` (not initialized) and `0x80b80004` (already initialized), and
+  the states: Initialize from NONE, Open from INITIALIZED or FINISHED, Terminate back to NONE
+  (shadPS4's `commondialog.h`, `msgdialog.cpp`, `np_commerce.cpp` and `np_profile_dialog.cpp`,
+  facts only).
+
+**The executable's uses:**
+- **Message dialog.** One system message, mode 3 with type 2 (the PSN user-generated content
+  restriction notice, built at `0x020233b3`). Its start-up (`0x02023e95`) accepts 0 or exactly
+  `0x80b80004`. It polls UpdateStatus while RUNNING (`0x02023d6b`) and terminates on FINISHED.
+- **Save data dialog.** Shown when a save mount fails with `0x809f000a` (no space,
+  `0x02c425e7`). It initializes, retrying while the answer is busy (`0x80b80008`), opens a
+  system message (mode 3, size 0x98), polls while RUNNING and terminates.
+- **Profile dialog.** `0x010b85e0` opens a profile (mode 1, size 0x80) for an online id and polls.
+  On FINISHED it reads the result, which it does not use, and then terminates.
+- **Commerce dialog.** `0x02040350` opens the PlayStation Plus offer (mode 5, size 0x80), ignoring
+  Initialize's answer. `0x02040244` polls while RUNNING. Terminate's answer is ignored.
+
+**What the runtime does:**
+- **Opening.** Open checks the block (base size 0x30, the address-based magic, the library's own
+  size field) and starts the dialog.
+- **Closing.** The first UpdateStatus after Open finishes it. Nothing is shown.
+- **Terminating.** A Terminate before any Initialize answers `0x80b80003`, which every caller
+  ignores.
+- **The profile result.** It is result 0, user action 1 (canceled) and the caller's user data
+  (`OrbisNpProfileDialogResult`, 0x30 bytes, in shadPS4's `np_profile_dialog.h`).
+
+**What stops by name:** an Open outside INITIALIZED or FINISHED; a NULL or malformed block; a
+profile result before FINISHED or with no structure.
+
+One dialog at a time (the console's busy answer, `0x80b80008`) is not enforced: each runtime
+dialog finishes on its first status update.
 
 ## The splash screen and system status (`sceSystemServiceHideSplashScreen`, `sceSystemServiceGetStatus`)
 
