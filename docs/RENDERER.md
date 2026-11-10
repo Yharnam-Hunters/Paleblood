@@ -322,6 +322,21 @@ Instead:
        stop by name. Targets 1-7's blend controls are kept out of the draw while their slots are
        off (an enabled slot beyond 0 stops the draw anyway).
    - **The draw executor** (being built): it runs a submitted buffer's recorded calls on the GPU.
+     - **Submission runs beside the title** (`runtime/renderer/renderer.c`): `sceGnmSubmitCommandBuffers`
+       and `sceGnmSubmitAndFlipCommandBuffers` read their packets, take a copy of the buffer's
+       recorded calls (`rt_render_take`) and return at once; the renderer's own thread runs the
+       submissions in order. What the guest can observe of the GPU's progress is a step after a
+       buffer's calls (`rt_gpu_step`): its end-of-work and RELEASE_MEM writes, its WAIT_REG_MEM
+       waits and the submit-and-flip's flip are performed only once the calls before them have run
+       and drawn targets are written back, so the CPU never sees a label before the work, or reads
+       memory the GPU writes before its batch is done. Descriptors and memory the draws read are
+       read when they run, as the PS4's GPU reads them; the title keeps them valid until it sees the
+       work's label. A video-out flip from the CPU, and a frame read for the display, wait for the
+       submissions before them. A stop on the renderer's thread still names the submitting call and
+       the shader. Before this, each submit ran its work on the calling thread: the engine's movie
+       playback draws from the main thread while its render thread submits, and the render
+       thread, held for tens of milliseconds by its own submit, still had the shared graphics
+       context when the main thread drew (found at the opening movie, 10 November 2026).
      1. **Guest memory on the GPU.** Shaders reach memory through guest addresses: buffer
         descriptors and pointers in their user data. The game's GPU-visible memory is direct
         memory, a range of the runtime's pool (one host memory file).

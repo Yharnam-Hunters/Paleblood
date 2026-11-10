@@ -2312,25 +2312,30 @@ static int index_range_for(rt_executor *x, const draw_state *s, uint32_t first, 
 
 void rt_executor_reset(rt_executor *x) { memset(&x->state, 0, sizeof x->state); }
 
-static int run_calls(rt_executor *x, uint64_t buffer, uint32_t size, char *error, size_t error_size);
+static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, char *error, size_t error_size);
 
 int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t size, char *error, size_t error_size)
 {
-    if (run_calls(x, buffer, size, error, error_size)) {
+    size_t count = 0;
+    const rt_render_call *calls = rt_render_submitted(buffer, size, &count);
+    return rt_executor_run_calls(x, calls, count, error, error_size);
+}
+
+int rt_executor_run_calls(rt_executor *x, const rt_render_call *calls, size_t count, char *error, size_t error_size)
+{
+    if (run_calls(x, calls, count, error, error_size)) {
         char later[64];
         batch_finish(x, later, sizeof later); /* the calls before the failing one still run, as they did one by one */
         return -1;
     }
-    /* the CPU may read what the buffer drew: written back, and the batch run, before the submission returns */
+    /* the CPU may read what the buffer drew: written back, and the batch run, before the steps after it (labels, flips) are performed */
     if (write_back_targets(x, error, error_size)) return -1;
     return batch_finish(x, error, error_size);
 }
 
 /* Records the buffer's calls into the batch, in order, keeping the state they set. */
-static int run_calls(rt_executor *x, uint64_t buffer, uint32_t size, char *error, size_t error_size)
+static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, char *error, size_t error_size)
 {
-    size_t count = 0;
-    const rt_render_call *calls = rt_render_submitted(buffer, size, &count);
     draw_state *s = &x->state; /* the GPU's state carries over from buffer to buffer */
     x->memory_epoch++;          /* the CPU may have written memory since the last buffer */
     for (size_t i = 0; i < count; i++) {
