@@ -453,6 +453,63 @@ Misaligned address hints still stop by the API name before mapping.
 overlong and wrapping ranges, a misaligned hint and a valid writable map. These
 are host validation limits, without a claim about native error codes.
 
+## What the title's C library imports (libc.elf and libSceFios2, issue #34)
+
+`libc.elf` is Sony's FreeBSD-derived libc, with HP libunwind for C++ exceptions. These call sites
+are in `libc.elf` unless marked; `libSceFios2` imports from `libSceLibcInternal`.
+
+**Data**
+- **`__progname`** points at `"eboot.bin"` (shadPS4, the deadinside28 port).
+- **`_Stdout`** (`libSceLibcInternal`) is a 456-byte object, the size of `libc.elf`'s own
+  `_Stdout`. `libSceFios2` only passes its address to `fflush`.
+- **`Need_sceLibcInternal`** is an int holding 1. `libSceFios2` stores its address and never reads
+  it.
+
+**No-ops and fixed answers**
+- **`__pthread_cxa_finalize`** does nothing: there is no fork, so there are no atfork handlers.
+- **`_is_signal_return`** answers 0: no guest signals are delivered, so there is no signal
+  trampoline (PS4Recomp agrees).
+- **`signal`** keeps each signal's disposition and answers the previous one, delivering nothing.
+  libc's one call sets SIGKILL to SIG_DFL. A signal outside 1 to 128, or a handler other than
+  SIG_DFL for SIGKILL or SIGSTOP, answers SIG_ERR with EINVAL (FreeBSD's rules).
+- **`__cxa_finalize`** (`libSceFios2`) does nothing: the module registers no handlers.
+
+**Output and files**
+- **`_write`** writes descriptors 1 and 2 (stdio, `+0x27362`) to the host's standard output and
+  error. Other descriptors stop by name.
+- **`fflush`** (`libSceFios2`) flushes the host's standard output for `&_Stdout`, and every host
+  stream for NULL. Other streams stop by name.
+- **`fstat`** is `sceKernelFstat` with -1 and errno (libunwind, `+0x530ae`).
+
+**Clocks and time**
+- **`getrusage(RUSAGE_SELF)`** gives the host's process times in FreeBSD's 144-byte layout. libc's
+  `clock()` (`+0x2ef13`) reads them.
+- **`sceKernelGettimezone`** writes the standard offset in minutes **east** of UTC and the daylight
+  saving minutes, for the host's zone. libc's `localtime` and `mktime` add both to UTC, which fixes
+  the sign; shadPS4 fills them the same way.
+- **`localtime` and `mktime`** (`libSceLibcInternal`) use the same zone. `mktime` normalizes in
+  place, or answers -1 and leaves the structure as it was.
+
+**Memory**
+- **`mmap`.** Anonymous private read-write maps (`+0x52fac` and others) are flexible memory,
+  rounded up to 16 KiB (shadPS4's `posix_mmap`, and a native port family).
+  - EINVAL for a zero length, a descriptor other than -1, or a non-zero offset.
+  - File maps, hints, and other flags or protections stop by name.
+- **`munmap`** is `sceKernelMunmap` with -1 and errno.
+- **`msync`** is libunwind's mapped-memory probe (`+0x541a5`). The runtime asks the host and
+  answers 0, or -1 with ENOMEM. A constant 0 would let libunwind read unmapped memory.
+- **`sceKernelMapNamedFlexibleMemory`** maps like `sceKernelMapFlexibleMemory`. No name answers
+  `0x8002000e`, and 32 or more characters `0x8002003f` (shadPS4).
+- **`sceKernelMlock`** answers 0: host memory needs no locking. NULL, zero length or a wrapping
+  range answer EINVAL.
+- **`malloc` and `free`** (`libSceLibcInternal`) use the host allocator, reached through
+  `libSceFios2`'s default allocator.
+
+**Exceptions**
+- **`sceKernelDebugRaiseException` and the `OnReleaseMode` variant.** A non-zero second argument
+  answers EINVAL. Otherwise the program stops by name with the code: `abort()` raises
+  `0xa002000b`. This is shadPS4's behaviour.
+
 ## Kernel semaphores (`libkernel`, issue #34)
 
 `eboot` imports `sceKernelCreateSema`, `sceKernelDeleteSema`, `sceKernelWaitSema`,

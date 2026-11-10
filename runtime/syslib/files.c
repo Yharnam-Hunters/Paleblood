@@ -583,6 +583,17 @@ static int64_t kernel_getdirentries(int32_t fd, char *buffer, uint64_t size, int
     return (int64_t)used;
 }
 
+/* fstat(fd, struct stat *): the POSIX form of sceKernelFstat, 0 or -1 with errno (shadPS4 registers
+   its posix_fstat the same way; facts only). libc.elf's libunwind calls it (+0x530ae) on a file it
+   opened and reads the size. */
+static int32_t posix_fstat(int32_t fd, guest_stat *out)
+{
+    const int32_t answer = kernel_fstat(fd, out);
+    if (!answer) return 0;
+    *rt_guest_errno() = (int32_t)((uint32_t)answer - 0x80020000u);
+    return -1;
+}
+
 RT_SYSLIB("libkernel", sceKernelStat, kernel_stat);
 RT_SYSLIB("libScePosix", stat, posix_stat);
 RT_SYSLIB("libkernel", sceKernelOpen, kernel_open);
@@ -597,3 +608,4 @@ RT_SYSLIB("libkernel", sceKernelLseek, kernel_lseek);
 RT_SYSLIB("libkernel", sceKernelFstat, kernel_fstat);
 RT_SYSLIB("libkernel", sceKernelFsync, kernel_fsync);
 RT_SYSLIB("libkernel", sceKernelGetdirentries, kernel_getdirentries);
+RT_SYSLIB("libkernel", fstat, posix_fstat);
