@@ -3123,8 +3123,10 @@ int main(void)
         CHECK(vo_status_fn(vo_handle, st) == 0);
         memcpy(&count, st, 8); memcpy(&arg, st + 0x18, 8); memcpy(&current, st + 0x38, 4);
         CHECK(count == 1 && arg == 77 && current == 1);
-        /* The flip presented buffer 1: counted, and captured as frame 0 with the pixel in place. */
+        /* The flip presented buffer 1: counted, and captured as frame 0 with the pixel in place
+           (written by the display's own thread: waited for). */
         CHECK(rt_display_presented(vo_handle) == 1);
+        rt_display_capture_wait();
         if (capture) {
             char frame_path[600];
             snprintf(frame_path, sizeof frame_path, "%s/frame-000000.ppm", capture);
@@ -3142,6 +3144,34 @@ int main(void)
                 fclose(ppm);
             }
             remove(frame_path);
+        }
+        /* Back-to-back flips queue their frames for the display's writer thread (more of them than it
+           has slots): once waited for, each is on disk, in order, with the pixel it had at its flip. */
+        if (capture && host_a) {
+            enum { QUICK_FLIPS = 7 };
+            for (uint32_t k = 0; k < QUICK_FLIPS; k++) {
+                host_a[1920 + 1] = 0x00010203u * (k + 1);
+                CHECK(vo_flip_fn(vo_handle, 0, 2, 100 + k) == 0); /* hsync: no vblank wait */
+            }
+            int32_t got = 0; /* the flip events: one pending event per queue, as a kqueue keeps them */
+            CHECK(eq_wait_fn(flips, ev, 1, &got, NULL) == 0 && got == 1);
+            rt_display_capture_wait();
+            for (uint32_t k = 0; k < QUICK_FLIPS; k++) {
+                char frame_path[600];
+                snprintf(frame_path, sizeof frame_path, "%s/frame-%06u.ppm", capture, k + 1);
+                FILE *ppm = fopen(frame_path, "rb");
+                CHECK(ppm != NULL);
+                if (!ppm) continue;
+                char magic[3] = {0};
+                unsigned w = 0, h = 0, max = 0;
+                unsigned char rgb[3] = {0};
+                CHECK(fscanf(ppm, "%2s %u %u %u", magic, &w, &h, &max) == 4 && w == 1920 && h == 1080);
+                fgetc(ppm);
+                CHECK(fseek(ppm, (long)(1920 + 1) * 3, SEEK_CUR) == 0 && fread(rgb, 1, 3, ppm) == 3);
+                CHECK(rgb[0] == k + 1 && rgb[1] == 2 * (k + 1) && rgb[2] == 3 * (k + 1));
+                fclose(ppm);
+                remove(frame_path);
+            }
         }
         rt_display_configure(RT_DISPLAY_HEADLESS, NULL); /* stop capturing: writing a frame would skew the timing */
         /* A vsync flip completes at the next 60 Hz tick: within one period. */
@@ -3223,6 +3253,7 @@ int main(void)
         }
         CHECK(died_in_fatal(vo_flip_bad_buffer));
         CHECK(died_in_fatal(vo_open_other));
+        rt_display_capture_wait();
         if (capture) { /* every later flip was captured too */
             for (uint64_t k = 0; k < rt_display_presented(vo_handle); k++) {
                 char frame_path[600];

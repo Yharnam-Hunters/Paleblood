@@ -1040,6 +1040,7 @@ int main(int argc, char **argv)
     if (outcome == UNIMPLEMENTED || outcome == STOPPED) where(stopped_from, from, sizeof from);
     const module_hook *stop_hook = outcome == STOPPED ? &module_hooks[stopped_hook] : NULL;
 
+    rt_display_capture_wait(); /* every presented frame is on disk before the run is reported */
     printf("pbboot: %s: %s", phase, outcome_names[outcome]);
     if (outcome == UNIMPLEMENTED)
         printf(": %s calls %s %s (NID %s), returning to %s", stop_caller, stop_library ? stop_library : "?",
