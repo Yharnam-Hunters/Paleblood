@@ -145,7 +145,8 @@ Instead:
        the host GPU's.
      - **Descriptors from memory:** each MIMG instruction's descriptor is found from the code before
        it (`gcn_resource_origin`): the user data's when nothing writes its SGPRs first, or loaded
-       from memory when the last write is a whole `s_load_dwordx8` at an immediate offset from a
+       from memory when the last write is an `s_load_dwordx8` (or a wider load that covers the
+       descriptor's SGPRs, as the game's `s_load_dwordx16` of two image descriptors) at an immediate offset from a
        user-data pointer pair that nothing writes before it. The executor reads such a descriptor from guest
        memory when the draw runs. The same SGPRs can name different images at different
        instructions: the game's fullscreen pass reads the user data's image, then loads another
@@ -410,7 +411,9 @@ Instead:
         device guarantees.
      3. **Running a buffer** (begun: `runtime/render_executor.h`).
         - **What runs today:** COLOR_8_8_8_8 render targets in slots 0-7 (UNORM or sRGB, either
-          component order), viewport 0, vertex and pixel shaders with their user data, and
+          component order; COLOR_10_11_11 and COLOR_16_16_16_16 FLOAT too, written back to their
+          memory as the hardware lays them out, though only 8_8_8_8 ones are read as BGRA), viewport
+          0, vertex and pixel shaders with their user data, and
           auto-index draws as triangle lists.
         - **Rect lists** (primitive type 17, which the game's fullscreen passes use): Vulkan has no
           such primitive, so each rect's three vertices go through a generated geometry stage

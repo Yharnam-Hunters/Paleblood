@@ -1925,7 +1925,7 @@ static int branches(const uint32_t *w, const gcn_instruction *ins, size_t at, lo
 
 /* Where the descriptor that the instruction at dword `at` reads from s[first : first + width - 1]
    comes from (runtime/gcn_spirv.h): the user data when no instruction writes those SGPRs before it
-   runs, or memory when the last write is an s_load of exactly those SGPRs, at an immediate offset
+   runs, or memory when the last write is an s_load covering those SGPRs (exactly, or as part of a wider load), at an immediate offset
    from a pointer pair no instruction before it writes. With branches in the program, the load is
    followed only when every path to the use passes it: no branch lands between it and the use (code
    runs forward between branches, so a path that skipped the load would have to land there), every
@@ -1985,8 +1985,9 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
     unsigned dst = 0;
     const unsigned n = sgprs_written(w, &ins, &dst);
     const int immediate = (w[0] >> 8) & 1;
-    if (ins.encoding != GCN_SMRD || strncmp(ins.name, "s_load_dword", 12) || dst != first || n != width || !immediate) {
-        snprintf(error, error_size, "the descriptor in s[%u:%u] is written by the program (%s at dword %ld), not loaded whole from a "
+    /* the load may bring more SGPRs than the descriptor (an s_load_dwordx16 of two image descriptors) */
+    if (ins.encoding != GCN_SMRD || strncmp(ins.name, "s_load_dword", 12) || dst > first || first + width > dst + n || !immediate) {
+        snprintf(error, error_size, "the descriptor in s[%u:%u] is written by the program (%s at dword %ld), not loaded from a "
                  "user-data pointer: not done yet", first, first + width - 1, ins.name, writer);
         return -1;
     }
@@ -2005,7 +2006,8 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
         }
         p += before.dwords;
     }
-    *origin = (gcn_resource_origin){.from_memory = 1, .sgpr = first, .pointer_sgpr = pointer, .offset = (w[0] & 0xff) * BYTES_PER_DWORD};
+    *origin = (gcn_resource_origin){.from_memory = 1, .sgpr = first, .pointer_sgpr = pointer,
+                                    .offset = ((w[0] & 0xff) + (first - dst)) * BYTES_PER_DWORD};
     return 0;
 }
 
