@@ -394,6 +394,8 @@ Instead:
         shader's at byte 64 (`push_constant_offset`), 128 bytes in all, the size every Vulkan
         device guarantees.
      3. **Running a buffer** (begun: `runtime/render_executor.h`).
+        The optional [Metal draw executor](macos-metal.md#draw-executor) uses the same call record
+        and readback API, with its own explicitly limited profile; the following describes Vulkan.
         - **What runs today:** COLOR_8_8_8_8 render targets in slots 0-7 (UNORM or sRGB, either
           component order), viewport 0, vertex and pixel shaders with their user data, and
           auto-index draws as triangle lists.
@@ -511,8 +513,9 @@ Instead:
         in place of the black frame. The executor opens at the first buffer that has recorded calls:
         giving the GPU the 5 GiB pool takes about 2.4 s (measured on an RTX 3070), long enough to
         change which thread reaches its first unimplemented call first if it happened at every
-        boot. Until the library's replacements record calls, boots are unchanged in every display
-        mode.
+        boot. Recorded draws execute only the supported state; missing targets, unsupported
+        shaders and unimplemented modes stop with a reason. This does not establish a working
+        game frame.
      5. **The observer calls** in the library's replacements (begun). Replacements call
         `runtime/render_observer.h`, which finds the record in the boot harness (`pbboot` exports it)
         and does nothing under a host without it, so the replacements' verification is unchanged.
