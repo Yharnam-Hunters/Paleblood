@@ -1266,6 +1266,21 @@ int main(void)
     depth_and_strips(x);
     multiple_targets(x);
     compute_cleared_target(x);
+    /* a fast-clear eliminate pass (mode 2) over a target without fast clears writes nothing; over one
+       with CB_COLOR_INFO's FAST_CLEAR it stops by name */
+    const uint32_t eliminate[][2] = {{0xa202, 0x2u << 4 | 0xccu << 16}};
+    CHECK(run_with_registers(x, FOURTH, at(TARGET) + 0x480000, eliminate, 1, 0, error, sizeof error) == 0);
+    CHECK(rt_executor_read_target(x, at(TARGET) + 0x480000, bgra, 2, 2, error, sizeof error) == -1 && strstr(error, "no draw"));
+    {
+        rt_render_forget(), rt_executor_reset(x);
+        uint32_t offset = record_setup(FOURTH, at(TARGET) + 0x480000, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        uint32_t words[RT_COLOR_TARGET_WORDS];
+        color_target(words, at(TARGET) + 0x480000, COLOR_8_8_8_8, SWAP_STD);
+        words[4] |= 1u << 13; /* FAST_CLEAR */
+        CHECK(rt_render_record_color_target(FOURTH, offset, 0, words, error, sizeof error) == 0);
+        CHECK(rt_render_record_register(FOURTH, offset + 0x10, 0xa202, 0x2u << 4 | 0xccu << 16, error, sizeof error) == 0);
+        CHECK(rt_executor_run(x, FOURTH, record_triangle_draw(FOURTH, offset + 0x20), error, sizeof error) == -1 && strstr(error, "fast clears"));
+    }
     const uint32_t resolve[][2] = {{0xa202, 0x3u << 4 | 0xccu << 16}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), resolve, 1, 0, error, sizeof error) == -1 && strstr(error, "colour mode 3"));
     const uint32_t unknown[][2] = {{0xa1e8, 0}};
