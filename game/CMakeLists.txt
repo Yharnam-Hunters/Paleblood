@@ -68,4 +68,5 @@ add_test(NAME camera_update_cases
 # The compute command buffer's user-data observers, against stubs of the record.
 add_executable(test_compute_user_data_observer render/tests/compute_user_data_observer.c render/observe_gpu_library.c)
 target_include_directories(test_compute_user_data_observer PRIVATE ${PROJECT_SOURCE_DIR}/runtime/include)
+target_compile_options(test_compute_user_data_observer PRIVATE -ffp-contract=off -fno-fast-math)
 add_test(NAME compute_user_data_observer COMMAND test_compute_user_data_observer)
