@@ -399,6 +399,8 @@ Instead:
         shader's at byte 64 (`push_constant_offset`), 128 bytes in all, the size every Vulkan
         device guarantees.
      3. **Running a buffer** (begun: `runtime/render_executor.h`).
+        The optional [Metal draw executor](macos-metal.md#draw-executor) uses the same call record
+        and readback API, with its own explicitly limited profile; the following describes Vulkan.
         - **What runs today:** COLOR_8_8_8_8 render targets in slots 0-7 (UNORM or sRGB, either
           component order), viewport 0, vertex and pixel shaders with their user data, and
           auto-index draws as triangle lists.
@@ -516,8 +518,9 @@ Instead:
         in place of the black frame. The executor opens at the first buffer that has recorded calls:
         giving the GPU the 5 GiB pool takes about 2.4 s (measured on an RTX 3070), long enough to
         change which thread reaches its first unimplemented call first if it happened at every
-        boot. Until the library's replacements record calls, boots are unchanged in every display
-        mode.
+        boot. Recorded draws execute only the supported state; missing targets, unsupported
+        shaders and unimplemented modes stop with a reason. This does not establish a working
+        game frame.
      5. **The observer calls** in the library's replacements (begun). Replacements call
         `runtime/render_observer.h`, which finds the record in the boot harness (`pbboot` exports it)
         and does nothing under a host without it, so the replacements' verification is unchanged.
@@ -560,3 +563,25 @@ Instead:
 
 Each phase lands in small PRs with tests. A boot is recorded after each runtime change. The wiki's
 Runtime page and Gallery show where it stands.
+
+
+### Indexed draw packet fields
+
+The record keeps index-buffer state (`INDEX_BASE`, `INDEX_BUFFER_SIZE` and
+`INDEX_TYPE`) and distinguishes offset draws (`DRAW_INDEX_OFFSET_2`) from addressed
+draws (`DRAW_INDEX_2`). The recorded base is the byte address made from the two
+INDEX_BASE DWORDs, without masking either word. The executor rejects an unaligned
+address or a range outside GPU-visible memory. The recorder never reads index memory.
+
+An offset draw recorded through the existing first/count API has
+`has_packet_fields = 0` and retains its `INDEX_BUFFER_SIZE` bound. The packet API
+sets that tag to 1 and also records the emitted header, `MAX_SIZE` and
+`DRAW_INITIATOR`. Even a zero header remains a packet call and is rejected as an
+unsupported header. A packet's MAX_SIZE counts from its first index, independently
+of INDEX_BUFFER_SIZE. Counts above MAX_SIZE would require DMA zero filling, which
+the executor does not implement.
+
+Vulkan draws supported offset packets. Predicated packets, other headers and
+nonzero initiators fail with a reason. Addressed DRAW_INDEX_2 calls are recorded
+with their complete payload but are not yet executed by Vulkan. The packet
+observer bridge belongs with the GPU-library replacements that first call it.

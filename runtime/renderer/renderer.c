@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* The renderer behind the runtime's GPU calls (runtime/renderer.h), in builds with Vulkan. */
+/* The renderer behind the runtime's GPU calls (runtime/renderer.h), using the selected executor. */
 #include "runtime/renderer.h"
 
 #include "runtime/gpu_memory.h"

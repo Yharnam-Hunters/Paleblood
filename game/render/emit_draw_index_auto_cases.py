@@ -62,8 +62,8 @@ def cases():
         c["buffers"]["self"]["bytes"] = "a5" * 512
         # Arrange the first DRAW packet's live cursor ADD to land on self.
         c["memory"][1] = {"addr": "buf:self+16", "pointer": "self+0"}
-        # DRAW stores hit offsets0,4,8; cursor16 stays live, then advances12.
-        # Offset16 route is obtained by moving the initial output four bytes.
+        # DRAW stores hit offsets 0, 4 and 8; cursor 16 stays live, then advances 12.
+        # The offset 16 route moves the initial output four bytes.
         if next_offset == 16:
             c["memory"][1]["pointer"] = "self+4"
         c["memory"][0] = {"addr": "buf:self+8", "pointer": "self+512"}
@@ -84,6 +84,16 @@ def cases():
     c["memory"][0] = {"addr": "buf:self+8", "pointer": "self+512"}
     c["memory"][1] = {"addr": "buf:self+16", "pointer": "self+32"}
     c["memory"].append(memory(40, 0))
+    c["stubs"] = [{"address": "0x01489c40", "argc": 0, "ret": 1}]
+    yield c
+
+    # DRAW overlaps the cursor's low DWORD. Its live advance moves the trailing
+    # event into the first owned buffer; both packet destinations remain valid.
+    c = packet_case("draw_live_cursor_routes_to_owned_buffer", 0, "direct", 80, 0, False)
+    c["buffers"]["self"] = {"size": 512, "bytes": "a5" * 512}
+    c["memory"][0] = {"addr": "buf:self+8", "pointer": "self+512"}
+    c["memory"][1] = {"addr": "buf:self+16", "pointer": "self+8"}
+    c["memory"].append({"addr": "buf:self", "pointer": "other"})
     c["stubs"] = [{"address": "0x01489c40", "argc": 0, "ret": 1}]
     yield c
 
@@ -111,6 +121,7 @@ def packet_case(cid, value, label, available, result, redirect):
 
 
 def main():
+    """Write deterministic synthetic cases to the requested directory."""
     if len(sys.argv) != 2:
         print(__doc__, file=sys.stderr)
         return 2
