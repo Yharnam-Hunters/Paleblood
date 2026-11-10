@@ -1,17 +1,15 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* System call group: files and saves. Changing the names in a mount (libkernel, libScePosix):
-   making and removing directories, removing files, truncating a file by name, and the POSIX
-   rename (sceKernelRename is in files.c).
+/* System call group: files and saves. Changing names in a mount: sceKernelTruncate (libkernel)
+   and the POSIX mkdir, rmdir and rename (libScePosix). sceKernelRename and sceKernelFtruncate are in
+   files.c.
 
-   sceKernelMkdir(path, mode), sceKernelRmdir(path), sceKernelUnlink(path) and
-   sceKernelTruncate(path, length) are FreeBSD's mkdir(2), rmdir(2), unlink(2) and truncate(2)
-   under their SCE names, returning 0 or 0x80020000 plus the error number. The OpenOrbis homebrew
-   SDK's libkernel.h declares the shapes; the executable's own wrappers agree (0x02474d2e passes
-   mode 0777 to mkdir, 0x024733a4 a 64-bit length) and turn each 0x8002xxxx answer into an engine
-   error through a table (0x02473530). The libScePosix names mkdir, rmdir and rename are FreeBSD's
-   mkdir(2), rmdir(2) and rename(2) the POSIX way: 0, or -1 with the thread's errno (__error) set to
-   the FreeBSD number. The executable's calls (0x00df0bf4, 0x00e03e68, 0x00e03ddb
-   and others) ignore the answer or only compare it with 0.
+   sceKernelTruncate(path, length) is FreeBSD's truncate(2) under its SCE name, returning 0 or
+   0x80020000 plus the error number. The OpenOrbis homebrew SDK's libkernel.h declares the shape;
+   the executable's own wrapper agrees (0x024733a4 passes a 64-bit length) and turns each
+   0x8002xxxx answer into an engine error through a table (0x02473530). The libScePosix names
+   mkdir, rmdir and rename, imported by eboot, are FreeBSD's mkdir(2), rmdir(2) and rename(2) the
+   POSIX way: 0, or -1 with the thread's errno (__error) set to the FreeBSD number. The executable's
+   calls (0x00df0bf4, 0x00e03e68, 0x00e03ddb and others) ignore the answer or only compare it with 0.
 
    Paths resolve as for opening (runtime/syslib/files.c): /data, the mounted save data, and /app0.
    A host error with a FreeBSD answer becomes that number; the host's numbers are not used, since
@@ -19,8 +17,6 @@
 
    FreeBSD details the runtime follows:
    - rmdir of a mount's own root is EBUSY (rmdir(2): "the mount point for a mounted file system").
-   - unlink of a directory is EPERM (unlink(2): "The named file is a directory"), where Linux says
-     EISDIR, so the runtime checks the type first.
    - rename across mounts is EXDEV, after the source and the target's folder are looked up
      (stable/9 vfs_syscalls.c, kern_renameat). A directory over a non-empty one is ENOTEMPTY, as
      the host says.
@@ -29,8 +25,8 @@
 
    What stops by name: no path; any change under a read-only mount (/app0, save data mounted to
    read; FreeBSD's EROFS comes after lookups whose order for each call the runtime does not model,
-   and the title's callers only change /data and its saves); renaming or unlinking a mount's root;
-   and any host error without a FreeBSD answer above (EACCES, ENOSPC, EIO and the rest).
+   and the title's callers only change /data and its saves); renaming a mount's root; and any host
+   error without a FreeBSD answer above (EACCES, ENOSPC, EIO and the rest).
 
    A new directory gets mode & 0777 less the host's umask; the PS4 process's umask is not
    established, and only a later stat of the directory would show it. */
@@ -48,7 +44,6 @@
 #include <unistd.h>
 
 enum {
-    BSD_EPERM = 1,
     BSD_ENOENT = 2,
     BSD_EBUSY = 16,
     BSD_EEXIST = 17,
@@ -114,17 +109,6 @@ static int remove_directory(const char *caller, const char *path)
     return rmdir(host) ? bsd_errno(caller) : 0;
 }
 
-static int remove_file(const char *caller, const char *path)
-{
-    char host[HOST_PATH_BYTES];
-    writable_host_path(caller, path, host);
-    if (is_mount_root(path)) rt_fatal(caller, "a mount's root: the answer is not established");
-    struct stat st;
-    if (lstat(host, &st)) return bsd_errno(caller);
-    if (S_ISDIR(st.st_mode)) return BSD_EPERM;
-    return unlink(host) ? bsd_errno(caller) : 0;
-}
-
 /* Looks up the folder that would hold host (FreeBSD looks the target up before it compares mounts):
    0, or ENOENT or ENOTDIR. host is restored. */
 static int parent_lookup(const char *caller, char *host)
@@ -176,18 +160,12 @@ static int posix_answer(int error)
     return -1;
 }
 
-static int32_t kernel_mkdir(const char *path, uint32_t mode) { return sce_answer(make_directory("sceKernelMkdir", path, mode)); }
-static int32_t kernel_rmdir(const char *path) { return sce_answer(remove_directory("sceKernelRmdir", path)); }
-static int32_t kernel_unlink(const char *path) { return sce_answer(remove_file("sceKernelUnlink", path)); }
 static int32_t kernel_truncate(const char *path, int64_t length) { return sce_answer(truncate_path("sceKernelTruncate", path, length)); }
 
 static int posix_mkdir(const char *path, uint32_t mode) { return posix_answer(make_directory("mkdir", path, mode)); }
 static int posix_rmdir(const char *path) { return posix_answer(remove_directory("rmdir", path)); }
 static int posix_rename(const char *from, const char *to) { return posix_answer(rename_path("rename", from, to)); }
 
-RT_SYSLIB("libkernel", sceKernelMkdir, kernel_mkdir);
-RT_SYSLIB("libkernel", sceKernelRmdir, kernel_rmdir);
-RT_SYSLIB("libkernel", sceKernelUnlink, kernel_unlink);
 RT_SYSLIB("libkernel", sceKernelTruncate, kernel_truncate);
 RT_SYSLIB("libScePosix", mkdir, posix_mkdir);
 RT_SYSLIB("libScePosix", rmdir, posix_rmdir);
