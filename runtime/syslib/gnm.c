@@ -335,6 +335,7 @@ typedef struct {
     size_t count, capacity;
 } step_list;
 static _Thread_local step_list *collecting;
+static _Thread_local uint32_t packet_offset; /* the top-level packet being read, bytes into its buffer */
 
 static void collect(const char *fn, void (*perform)(const rt_gpu_step *), const uint64_t words[6])
 {
@@ -346,7 +347,7 @@ static void collect(const char *fn, void (*perform)(const rt_gpu_step *), const 
         list->steps = grown, list->capacity = capacity;
     }
     rt_gpu_step *const step = &list->steps[list->count++];
-    step->perform = perform, step->function = fn;
+    step->perform = perform, step->function = fn, step->offset = packet_offset;
     memcpy(step->words, words, sizeof step->words);
 }
 
@@ -500,6 +501,7 @@ static void complete_packets(const char *fn, const uint32_t *packets, uint32_t d
         const uint32_t length = ((header >> PM4_COUNT_SHIFT) & PM4_COUNT_MASK) + PM4_HEADER_AND_COUNT_BIAS;
         if (length > dwords - at) rt_fatal(fn, "a packet running past the end of its buffer");
         const uint32_t *packet = packets + at;
+        if (!depth) packet_offset = at * (uint32_t)sizeof(uint32_t); /* a step inside an indirect buffer comes at its packet */
         if (opcode == PM4_INDIRECT_BUFFER && length == INDIRECT_BUFFER_DWORDS) {
             follow_indirect_buffer(fn, packet, depth, is_ring);
         } else if (is_ring) {
@@ -584,8 +586,8 @@ RT_SYSLIB("libSceGnmDriver", sceGnmDingDong, ding_dong);
                                   sees, so it only brings the source into the GPU's cache, and the
                                   stand-in has none. Any other DMA_DATA stops.
    The packets themselves draw nothing. Each buffer then goes to the renderer (runtime/renderer.h)
-   with its steps; it runs the drawing calls recorded for it when the display is on. A completion in
-   the middle of a buffer comes after the whole buffer's calls: later than on the PS4, never earlier. A constant command buffer
+   with its steps, each at its packet's offset: it runs the drawing calls recorded before a step,
+   then the step, then the calls after it, so a wait holds before the draws after it read memory. A constant command buffer
    that holds anything, and any other packet, stops by name. */
 #define MAX_SUBMITTED_BUFFERS 64
 
@@ -606,6 +608,7 @@ static void collect_flip(const char *fn, step_list *steps, const flip_request *f
     const uint64_t words[6] = {(uint32_t)flip->handle, (uint32_t)flip->buffer, (uint32_t)flip->mode, (uint64_t)flip->argument, 0, 0};
     step_list *const saved = collecting;
     collecting = steps;
+    packet_offset = RT_GPU_STEP_AFTER_ALL; /* after every call of the last buffer */
     collect(fn, flip_step, words);
     collecting = saved;
 }

@@ -47,16 +47,29 @@ static int thread_started, running; /* running: a batch taken off the queue and 
 static pid_t thread_process;        /* a child after fork has no renderer thread: it starts its own */
 static _Thread_local int on_renderer_thread;
 
+/* Runs calls [first, last) of a batch; their targets are written back before it returns. */
+static void run_calls(batch *b, size_t first, size_t last)
+{
+    if (first == last) return;
+    pthread_mutex_lock(&renderer_lock);
+    rt_executor *const x = executor_for(b->function);
+    char error[256];
+    if (x && rt_executor_run_calls(x, b->calls + first, last - first, error, sizeof error)) rt_fatal(b->function, error);
+    pthread_mutex_unlock(&renderer_lock);
+}
+
+/* Each step once the calls before its offset have run, and before the calls after it. */
 static void run_batch(batch *b)
 {
-    if (b->call_count) {
-        pthread_mutex_lock(&renderer_lock);
-        rt_executor *const x = executor_for(b->function);
-        char error[256];
-        if (x && rt_executor_run_calls(x, b->calls, b->call_count, error, sizeof error)) rt_fatal(b->function, error);
-        pthread_mutex_unlock(&renderer_lock);
+    size_t done = 0;
+    for (size_t i = 0; i < b->step_count; i++) {
+        size_t upto = done;
+        while (upto < b->call_count && b->calls[upto].offset < b->steps[i].offset) upto++;
+        run_calls(b, done, upto);
+        done = upto;
+        b->steps[i].perform(&b->steps[i]);
     }
-    for (size_t i = 0; i < b->step_count; i++) b->steps[i].perform(&b->steps[i]); /* only once the calls are done */
+    run_calls(b, done, b->call_count);
 }
 
 static void *renderer_thread(void *unused)

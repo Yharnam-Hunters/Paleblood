@@ -24,18 +24,22 @@ extern "C" {
 /* Turns the renderer on or off, before the guest runs. */
 void rt_renderer_configure(int enabled);
 
-/* What the GPU does after a command buffer's drawing calls, in order: a "work done" write into guest
-   memory, a wait on guest memory, a flip. The submitting library fills one in (perform and its words)
-   and the renderer performs it after the buffer's calls have run, so the guest sees each step only
-   once the work before it is done. */
+/* What the GPU does between a command buffer's drawing calls, in order: a "work done" write into
+   guest memory, a wait on guest memory, a flip. The submitting library fills one in (perform, the
+   byte offset of its packet in the buffer, and its words); the renderer performs it once the calls
+   recorded before that offset have run, and runs the calls after it only once it is done. So the
+   guest sees a label only once the work before it is done, and the work after a wait reads memory
+   only once the wait holds. RT_GPU_STEP_AFTER_ALL is after every call (a flip). */
+enum { RT_GPU_STEP_AFTER_ALL = UINT32_MAX };
 typedef struct rt_gpu_step {
     void (*perform)(const struct rt_gpu_step *step);
     const char *function; /* the submitting call, for stops by name */
+    uint32_t offset;
     uint64_t words[6];
 } rt_gpu_step;
 
 /* A command buffer the title submitted: its address and size in bytes, and the steps the GPU takes
-   after its calls (step_count of them, copied). With the display on (pbboot --display headless|window,
+   among its calls (step_count of them, copied, in offset order). With the display on (pbboot --display headless|window,
    in a build with Vulkan), submissions run in submission order on the renderer's own thread, as the
    PS4's GPU runs them beside the CPU: the call returns at once, having taken a copy of the buffer's
    recorded calls (runtime/render_calls.h) and of the steps. Otherwise the steps are performed at once
