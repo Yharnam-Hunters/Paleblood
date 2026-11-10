@@ -154,9 +154,9 @@ SYSLIB_TEST(thread_join)
     CHECK(create(&t, &a, returns_argument, (void *)0x1234, "returns") == 0);
     CHECK(join(t, &value) == 0 && value == (void *)0x1234);
     CHECK(join(t, &value) == SCE(ESRCH_) && detach(t) == SCE(ESRCH_));
-    int not_a_thread = 0;
+    static uint64_t not_a_thread[64]; /* zeroed memory shaped like nothing the runtime made */
     CHECK(join(NULL, NULL) == SCE(EINVAL_) && join(self(), NULL) == SCE(EDEADLK_));
-    CHECK(join(&not_a_thread, NULL) == SCE(ESRCH_) && detach(&not_a_thread) == SCE(ESRCH_));
+    CHECK(join(not_a_thread, NULL) == SCE(ESRCH_) && detach(not_a_thread) == SCE(ESRCH_));
     CHECK(detach(NULL) == SCE(EINVAL_));
 
     /* Created detached: no join, no second detach; collected when it ends. */
