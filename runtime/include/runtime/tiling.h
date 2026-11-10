@@ -42,6 +42,14 @@ int rt_tiling_layout(unsigned tiling_index, unsigned element_bytes, uint32_t pit
 /* The byte offset from the image's base of texel (x, y) of slice `slice`. */
 uint64_t rt_tiling_offset(const rt_tiling *layout, uint32_t x, uint32_t y, uint32_t slice);
 
+enum { RT_TILING_MICRO = 8, RT_TILING_MICRO_TEXELS = RT_TILING_MICRO * RT_TILING_MICRO };
+
+/* Where each texel of a micro tile (8x8 texels, x fastest) lies from the micro tile's first texel, in
+   bytes: texel (x, y) is at rt_tiling_offset of (x & ~7, y & ~7) plus spread[(y & 7) * 8 + (x & 7)].
+   Every layout here, linear included, keeps that form, so copies can go a micro tile at a time (the
+   renderer's GPU copies take this table). */
+void rt_tiling_micro_spread(const rt_tiling *layout, uint64_t spread[RT_TILING_MICRO_TEXELS]);
+
 /* The bytes from the image's base the layout spans for `slices` slices. */
 uint64_t rt_tiling_size(const rt_tiling *layout, uint32_t slices);
 

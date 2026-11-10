@@ -376,13 +376,9 @@ Instead:
         - **Moving targets only when needed:** a target is written back before a dispatch, at the end of
           each buffer, and before a draw reads an image overlapping it, not after every draw: a draw's
           colour writes reach memory on the console too only when the game flushes the colour caches
-          before reading. A load is skipped when the guest memory still holds exactly what the image and
-          it last agreed on (a copy of those bytes kept per target and per loaded image); a texture
-          the guest has not changed is not loaded again either. Staging buffers are kept per target
-          (host-cached memory where the device has it: the CPU tiles from them and the display reads
-          them), so showing a frame copies from the target's last write-back instead of the GPU. With
-          these the boot's frames went from 66 to about 1,440 in 90 s (RTX 3070), which reaches the
-          title screen.
+          before reading. With these (and, then, copies by the CPU skipped while the guest memory held
+          what the image and it last agreed on) the boot's frames went from 66 to about 1,440 in 90 s
+          (RTX 3070), which reaches the title screen.
         - **One batch per buffer:** a buffer's draws, dispatches and copies are recorded into one Vulkan
           command buffer and submitted once, with barriers between them, instead of each waiting for the
           GPU. The CPU waits only where it reads what the batch produces: a render target written back
@@ -393,6 +389,23 @@ Instead:
           sees everything it drew when the submission returns. On the logo and title screens this alone
           changed no frame count: a profile puts about 75% of the time in the CPU's copies (tiling,
           detiling and comparing render targets), not in waiting.
+        - **Copies on the GPU** (`runtime/tile_copy.h`): a render target's loads and write-backs, and the
+          loads of images whose elements are whole 32-bit words (8_8_8_8, 32-bit formats, the BC
+          blocks), are detiled and tiled by a compute shader that reads and writes the guest memory
+          buffer directly, in the batch: one invocation per element, its place from a table of the
+          layout's offsets that `runtime/tiling.h` works out (each micro tile's first element, and the
+          64 places within a micro tile, `rt_tiling_micro_spread`), so the GPU's placement is the CPU
+          code's by construction. Each group of 64 takes one micro tile with its lanes in memory order,
+          so neighbouring lanes touch neighbouring guest memory (taken in row order instead, the copies
+          cost about twice the GPU time, as host memory is read and written across PCIe). Nothing waits for them: the batch notes the memory each write-back
+          stores to, and the CPU waits only before reading that memory itself. A target is loaded
+          again, and such an image too, whenever the memory may have changed (the memory epoch: a new
+          buffer, a dispatch, a write-back over it), without comparing bytes: reading it on the GPU
+          costs less than comparing it on the CPU. Images of 8- and 16-bit elements (the title's glyph
+          atlas) are still detiled by the CPU, skipped while the memory holds what was last loaded.
+          Showing a frame copies the target's image to a host-visible buffer once per flip.
+          `test_render_executor` checks a 1D-tiled target's texels at `rt_tiling_offset` after a
+          write-back and a CPU write showing at its pixel after a load; a mutated table fails both.
         - **Unset user data stops:** the translator reports the user SGPRs a program reads before it
           writes them (in program order), and the executor tracks the slots the calls have set since
           the GPU's reset. A shader reading a slot no call has set, or a descriptor or descriptor
