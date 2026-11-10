@@ -566,6 +566,50 @@ leave the timeout and that signal to the main thread.
 A local boot with the affinity probe and the rwlocks let through (not committed) reaches the
 `threads` milestone and stops next at `sceUserServiceInitialize`.
 
+## Joining, detaching, explicit scheduling and once (issue #34)
+
+**`scePthreadJoin(thread, void **value)`** and **`scePthreadDetach(thread)`** are FreeBSD libthr's
+`pthread_join` and `pthread_detach` ([`thr_join.c`](https://cgit.freebsd.org/src/tree/lib/libthr/thread/thr_join.c?h=stable/9),
+[`thr_detach.c`](https://cgit.freebsd.org/src/tree/lib/libthr/thread/thr_detach.c?h=stable/9);
+OpenOrbis `libkernel.h` shapes; shadPS4's `JoinThread` and `posix_pthread_detach` agree, facts
+only). The executable's join (`0x02a3b6c5`) tells `ESRCH`, `EDEADLK` and `EINVAL` apart. The other
+callers compare the answer with 0: `libc.elf` `+0x6130` and `+0x6174`, `libSceFios2` `+0x2ebde`,
+and the POSIX `pthread_join` (`libScePosix`) at `0x00838793` and `0x008387f3`.
+
+In libthr's order:
+- **join:** no thread is `EINVAL`; the calling thread itself `EDEADLK`; a thread the runtime does not
+  know, or one already collected, `ESRCH`; a detached thread `EINVAL`; a thread another thread waits
+  to join `ENOTSUP` (45). Otherwise it waits for the end, stores the exit value through a non-null
+  `value`, and collects the thread.
+- **detach:** no thread is `EINVAL`; an unknown or collected thread `ESRCH`; a detached thread, or
+  one a thread waits to join, `EINVAL`. A detached thread is collected when it ends.
+- **Stops by name:** a join or detach of the main thread, on which the runtime runs the boot.
+
+**POSIX names (`libScePosix`).** They return the error number itself:
+- `pthread_create(thread, attr, entry, argument)` is `scePthreadCreate` without a name. The
+  executable's job threads (`0x00466674`, `0x004666df`) pass a detached attribute with a stack size
+  and a priority.
+- `pthread_exit(value)` is `scePthreadExit` (one call, `0x004667e3`).
+- `pthread_attr_setschedparam` is `scePthreadAttrSetschedparam`. The job threads take their
+  priorities from a table of 256, 650, 700, 750 and 767 (`0x02fc5480`), inside the range the SCE
+  name accepts.
+
+**`scePthreadAttrSetinheritsched(attr, inherit)`** chooses between `PTHREAD_INHERIT_SCHED` (4,
+libthr's default: a new thread starts at its creator's priority) and `PTHREAD_EXPLICIT_SCHED` (0:
+it starts at the attribute's priority), FreeBSD `<pthread.h>`'s numbers. `libSceFios2`'s thread
+helper (`+0x2eaa2`) asks for explicit scheduling and then sets the priority. A variable without an
+attribute is `EINVAL`. Stops by name: another value (libthr's `ENOTSUP`, whose SCE value is not
+established, as for the policy), and explicit scheduling without a priority set (the attribute's
+default priority is not established).
+
+**`scePthreadOnce(once, init)`** runs `init` once per once variable (libthr
+[`thr_once.c`](https://cgit.freebsd.org/src/tree/lib/libthr/thread/thr_once.c?h=stable/9)). The
+variable's first `int` is its state: 0 never done (the static initializer), 1 done, 2 in progress,
+3 in progress with waiters. A caller that finds it in progress waits for the end; any other state
+is `EINVAL`. `libc.elf` calls it five times (`+0xad02`, `+0x1b292`, `+0x54ecb` and two tail calls)
+with a static variable and a routine. Nothing cancels a guest thread, so a routine always runs to
+its end.
+
 ## PlayGo (`libScePlayGo`)
 
 PlayGo lets a title start before all of its package is installed: the title asks which chunks of
