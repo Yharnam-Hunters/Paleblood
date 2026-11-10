@@ -113,6 +113,11 @@ enum { MAX_SSL_CONTEXTS = 64, MAX_HTTP_CONTEXTS = 64 };
 static atomic_int ssl_contexts_created;
 static atomic_int http_contexts_created;
 
+/* Which ids have been ended (see Teardown, below): ids are never reused. */
+static atomic_uchar net_pool_ended[MAX_NET_POOLS + 1];
+static atomic_uchar ssl_context_ended[MAX_SSL_CONTEXTS + 1];
+static atomic_uchar http_context_ended[MAX_HTTP_CONTEXTS + 1];
+
 static int32_t ssl_init(uint64_t pool_size)
 {
     static const char fn[] = "sceSslInit";
@@ -126,7 +131,8 @@ RT_SYSLIB("libSceSsl", sceSslInit, ssl_init);
 static int32_t http_init(int32_t pool, int32_t ssl, uint64_t pool_size)
 {
     static const char fn[] = "sceHttpInit";
-    if (pool < 1 || pool > atomic_load(&net_pools_created) || ssl < 1 || ssl > atomic_load(&ssl_contexts_created))
+    if (pool < 1 || pool > atomic_load(&net_pools_created) || atomic_load(&net_pool_ended[pool]) || ssl < 1 ||
+        ssl > atomic_load(&ssl_contexts_created) || atomic_load(&ssl_context_ended[ssl]))
         rt_fatal(fn, "a pool or SSL id the runtime did not hand out: the error value is not established");
     if (!pool_size) rt_fatal(fn, "a size of 0: the error value is not established");
     const int context = atomic_fetch_add(&http_contexts_created, 1) + 1; /* ids from 1 */
@@ -147,6 +153,18 @@ enum { HTTP_VERSION_1_0 = 1, HTTP_VERSION_1_1 = 2, HTTP_PROXY_OBSERVED = 1, MAX_
 
 static atomic_int http_templates_created;
 
+static atomic_uchar http_template_ended[MAX_HTTP_TEMPLATES + 1];
+
+static int is_live_http_context(int32_t context)
+{
+    return context >= 1 && context <= atomic_load(&http_contexts_created) && !atomic_load(&http_context_ended[context]);
+}
+
+static int is_live_http_template(int32_t id)
+{
+    return id >= 1 && id <= atomic_load(&http_templates_created) && !atomic_load(&http_template_ended[id]);
+}
+
 /* Each template's HTTPS flags (see sceHttpsEnableOption below), from its creation. */
 static _Atomic uint32_t http_template_ssl_flags[MAX_HTTP_TEMPLATES + 1];
 static uint32_t http_default_ssl_flags(void);
@@ -154,8 +172,8 @@ static uint32_t http_default_ssl_flags(void);
 static int32_t http_create_template(int32_t context, const char *user_agent, int32_t version, int32_t proxy)
 {
     static const char fn[] = "sceHttpCreateTemplate";
-    if (context < 1 || context > atomic_load(&http_contexts_created))
-        rt_fatal(fn, "an HTTP context the runtime did not hand out: the error value is not established");
+    if (!is_live_http_context(context))
+        rt_fatal(fn, "an HTTP context the runtime did not hand out, or one ended: the error value is not established");
     if (!user_agent) rt_fatal(fn, "no user agent: the error value is not established");
     if (version != HTTP_VERSION_1_0 && version != HTTP_VERSION_1_1) rt_fatal(fn, "an HTTP version that is not established");
     if (proxy != HTTP_PROXY_OBSERVED) rt_fatal(fn, "a proxy value other than the observed 1: its meaning is not established");
@@ -194,7 +212,7 @@ static uint32_t http_default_ssl_flags(void)
 static int32_t https_change_option(int32_t id, uint32_t flags, int enable)
 {
     if (flags & ~(uint32_t)HTTPS_PUBLIC_FLAGS) return HTTP_ERROR_INVALID_VALUE;
-    if (id < 1 || id > atomic_load(&http_templates_created)) return HTTP_ERROR_INVALID_ID;
+    if (!is_live_http_template(id)) return HTTP_ERROR_INVALID_ID;
     if (enable) atomic_fetch_or(&http_template_ssl_flags[id], flags);
     else atomic_fetch_and(&http_template_ssl_flags[id], ~flags);
     return 0;
@@ -220,8 +238,8 @@ static uint8_t http_template_nonblocking[MAX_HTTP_TEMPLATES + 1];
 static int32_t http_set_nonblock(int32_t id, int32_t enable)
 {
     static const char fn[] = "sceHttpSetNonblock";
-    if (id < 1 || id > atomic_load(&http_templates_created))
-        rt_fatal(fn, "an id the runtime did not hand out: the error value is not established");
+    if (!is_live_http_template(id))
+        rt_fatal(fn, "an id the runtime did not hand out, or one deleted: the error value is not established");
     if (enable != 0 && enable != 1) rt_fatal(fn, "a value other than 0 or 1 is not established");
     http_template_nonblocking[id] = (uint8_t)enable;
     return 0;
@@ -237,6 +255,7 @@ RT_SYSLIB("libSceHttp", sceHttpSetNonblock, http_set_nonblock);
    HTTP context the runtime did not hand out and a missing slot stop by name. */
 typedef struct {
     int32_t context;
+    atomic_int aborted; /* sceHttpAbortWaitRequest: every later wait answers aborted */
 } http_epoll;
 
 enum { MAX_HTTP_EPOLLS = 64 };
@@ -248,8 +267,8 @@ static int http_epoll_count;
 static int32_t http_create_epoll(int32_t context, http_epoll **handle)
 {
     static const char fn[] = "sceHttpCreateEpoll";
-    if (context < 1 || context > atomic_load(&http_contexts_created))
-        rt_fatal(fn, "an HTTP context the runtime did not hand out: the error value is not established");
+    if (!is_live_http_context(context))
+        rt_fatal(fn, "an HTTP context the runtime did not hand out, or one ended: the error value is not established");
     if (!handle) rt_fatal(fn, "no slot for the handle: the error value is not established");
     http_epoll *const epoll = calloc(1, sizeof *epoll);
     if (!epoll) rt_fatal(fn, "the host has no memory for the handle");
@@ -263,13 +282,16 @@ static int32_t http_create_epoll(int32_t context, http_epoll **handle)
 }
 RT_SYSLIB("libSceHttp", sceHttpCreateEpoll, http_create_epoll);
 
-static int is_http_epoll(const http_epoll *handle)
+typedef enum { HTTP_EPOLL_UNKNOWN, HTTP_EPOLL_LIVE, HTTP_EPOLL_ABORTED } http_epoll_state;
+
+static http_epoll_state http_epoll_state_of(const http_epoll *handle)
 {
-    int found = 0;
+    http_epoll_state state = HTTP_EPOLL_UNKNOWN;
     pthread_mutex_lock(&http_epolls_lock);
-    for (int i = 0; i < http_epoll_count && !found; i++) found = http_epolls[i] == handle;
+    for (int i = 0; i < http_epoll_count && state == HTTP_EPOLL_UNKNOWN; i++)
+        if (http_epolls[i] == handle) state = atomic_load(&http_epolls[i]->aborted) ? HTTP_EPOLL_ABORTED : HTTP_EPOLL_LIVE;
     pthread_mutex_unlock(&http_epolls_lock);
-    return found;
+    return state;
 }
 
 /* sceHttpWaitRequest(void *handle, events, int32_t max events, int64_t timeout): OpenOrbis' Http.h
@@ -278,17 +300,21 @@ static int is_http_epoll(const http_epoll *handle)
    sceHttpCreateEpoll, a buffer of 128 events of 24 bytes, 128 and a timeout of 0, so it only polls.
    It reads events only when the result is above 0, and otherwise moves on. The runtime is offline
    and no request is ever sent (every sending call stops by name), so no request can have an event:
-   it answers 0 events. A handle sceHttpCreateEpoll did not hand out, no event buffer, and a timeout
+   it answers 0 events, or 0x80431080 (aborted) once sceHttpAbortWaitRequest aborted the handle
+   (shadPS4's http.cpp and http_error.h). A handle sceHttpCreateEpoll did not hand out, no event buffer, and a timeout
    other than the observed 0 (whether waiting blocks, and its unit, are not established) stop by
    name. */
 enum { HTTP_WAIT_TIMEOUT_OBSERVED = 0 };
+#define HTTP_ERROR_ABORTED ((int32_t)0x80431080u)
 
 static int32_t http_wait_request(const http_epoll *handle, void *events, int32_t max_events, int64_t timeout)
 {
     static const char fn[] = "sceHttpWaitRequest";
-    if (!is_http_epoll(handle)) rt_fatal(fn, "a handle sceHttpCreateEpoll did not hand out: the error value is not established");
+    const http_epoll_state state = http_epoll_state_of(handle);
+    if (state == HTTP_EPOLL_UNKNOWN) rt_fatal(fn, "a handle sceHttpCreateEpoll did not hand out: the error value is not established");
     if (!events || max_events < 1) rt_fatal(fn, "no room for events: the error value is not established");
     if (timeout != HTTP_WAIT_TIMEOUT_OBSERVED) rt_fatal(fn, "a timeout other than the observed 0 is not established");
+    if (state == HTTP_EPOLL_ABORTED) return HTTP_ERROR_ABORTED;
     return 0; /* offline: no request was sent, so none has an event */
 }
 RT_SYSLIB("libSceHttp", sceHttpWaitRequest, http_wait_request);
@@ -305,8 +331,8 @@ enum { HTTP_HEADER_MODE_OBSERVED = 0 };
 static int32_t http_add_request_header(int32_t id, const char *name, const char *value, int32_t mode)
 {
     static const char fn[] = "sceHttpAddRequestHeader";
-    if (id < 1 || id > atomic_load(&http_templates_created))
-        rt_fatal(fn, "an id that is not one of the runtime's templates: the error value is not established");
+    if (!is_live_http_template(id))
+        rt_fatal(fn, "an id that is not one of the runtime's live templates: the error value is not established");
     if (!name || !value) rt_fatal(fn, "no header name or value: the error value is not established");
     if (mode != HTTP_HEADER_MODE_OBSERVED) rt_fatal(fn, "a mode other than the observed 0 is not established");
     return 0;
@@ -438,3 +464,90 @@ static int32_t net_epoll_destroy(int32_t id)
     return set ? 0 : net_fail(BSD_EBADF);
 }
 RT_SYSLIB("libSceNet", sceNetEpollDestroy, net_epoll_destroy);
+
+/* Teardown. The executable's HTTP manager tears down what it set up: its connection object
+   (0x013d1d90, 0x013d1e10) calls sceHttpAbortWaitRequest(handle), sceHttpDestroyEpoll(HTTP
+   context, handle) and sceHttpDeleteTemplate(template); the manager itself (0x013d20d0, 0x013d2120,
+   0x013d2170) calls sceHttpTerm(HTTP context), sceSslTerm(SSL context) and sceNetPoolDestroy(pool),
+   each only for an id it got, and none reads an answer. The OpenOrbis homebrew SDK's Http.h
+   declares sceHttpTerm(int32_t) and sceHttpDeleteTemplate(int32_t) returning int32_t, and Net.h
+   sceNetPoolDestroy(int32_t); the others' arguments come from these calls.
+
+   Facts from shadPS4's libSceHttp (http.cpp, http_error.h): sceHttpTerm and sceHttpDeleteTemplate
+   answer 0x80431100 (invalid id) for an id that is not live; sceHttpDestroyEpoll answers 0x80431100
+   for an HTTP context or handle that is not live and 0x804311fe (invalid value) for no handle;
+   sceHttpAbortWaitRequest answers 0x804311fe for no handle and 0x80431100 for one that is not
+   live, wakes the handle's waiters and makes every later wait on it answer 0x80431080 (aborted).
+   Offline no wait ever blocks, so there is no waiter to wake. Before any sceHttpInit shadPS4
+   answers 0x80431001 (before init); the executable ends only ids it got, so the runtime does not
+   model that state and answers 0x80431100 for every id that is not live. The runtime keeps ids from 1, never
+   reuses them, and marks each one ended; a later use of an ended SSL context or pool, an HTTP call
+   on an ended context or template, and ending one twice where shadPS4 gives no answer, stop by
+   name. */
+
+/* Marks id ended, once: 1 when it was live (from 1 to created and not ended before), else 0. */
+static int end_id(atomic_uchar *ended, int32_t id, int created)
+{
+    if (id < 1 || id > created) return 0;
+    unsigned char expected = 0;
+    return atomic_compare_exchange_strong(&ended[id], &expected, 1);
+}
+
+static int32_t net_pool_destroy(int32_t pool)
+{
+    if (!end_id(net_pool_ended, pool, atomic_load(&net_pools_created)))
+        rt_fatal("sceNetPoolDestroy", "a pool that is not live: the error value is not established");
+    return 0;
+}
+RT_SYSLIB("libSceNet", sceNetPoolDestroy, net_pool_destroy);
+
+static int32_t ssl_term(int32_t context)
+{
+    if (!end_id(ssl_context_ended, context, atomic_load(&ssl_contexts_created)))
+        rt_fatal("sceSslTerm", "an SSL context that is not live: the error value is not established");
+    return 0;
+}
+RT_SYSLIB("libSceSsl", sceSslTerm, ssl_term);
+
+static int32_t http_term(int32_t context)
+{
+    return end_id(http_context_ended, context, atomic_load(&http_contexts_created)) ? 0 : HTTP_ERROR_INVALID_ID;
+}
+RT_SYSLIB("libSceHttp", sceHttpTerm, http_term);
+
+static int32_t http_delete_template(int32_t template_id)
+{
+    return end_id(http_template_ended, template_id, atomic_load(&http_templates_created)) ? 0 : HTTP_ERROR_INVALID_ID;
+}
+RT_SYSLIB("libSceHttp", sceHttpDeleteTemplate, http_delete_template);
+
+static int32_t http_destroy_epoll(int32_t context, http_epoll *handle)
+{
+    if (!is_live_http_context(context)) return HTTP_ERROR_INVALID_ID;
+    if (!handle) return HTTP_ERROR_INVALID_VALUE;
+    int found = 0;
+    pthread_mutex_lock(&http_epolls_lock);
+    for (int i = 0; i < http_epoll_count && !found; i++) {
+        if (http_epolls[i] == handle) {
+            http_epolls[i] = http_epolls[--http_epoll_count];
+            found = 1;
+        }
+    }
+    pthread_mutex_unlock(&http_epolls_lock);
+    if (!found) return HTTP_ERROR_INVALID_ID;
+    free(handle);
+    return 0;
+}
+RT_SYSLIB("libSceHttp", sceHttpDestroyEpoll, http_destroy_epoll);
+
+static int32_t http_abort_wait_request(http_epoll *handle)
+{
+    if (!handle) return HTTP_ERROR_INVALID_VALUE;
+    pthread_mutex_lock(&http_epolls_lock); /* held, so a destroy cannot free it under us */
+    int found = 0;
+    for (int i = 0; i < http_epoll_count && !found; i++) found = http_epolls[i] == handle;
+    if (found) atomic_store(&handle->aborted, 1); /* offline no wait blocks, so no waiter to wake */
+    pthread_mutex_unlock(&http_epolls_lock);
+    return found ? 0 : HTTP_ERROR_INVALID_ID;
+}
+RT_SYSLIB("libSceHttp", sceHttpAbortWaitRequest, http_abort_wait_request);
