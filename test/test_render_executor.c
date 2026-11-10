@@ -515,6 +515,25 @@ static void depth_and_strips(rt_executor *x)
     const uint32_t unwritten[][2] = {{0xa010, 0xa0000003}, {0xa011, 0x20000001}, {0xa012, uz}, {0xa013, ust}, {0xa014, uz}, {0xa015, ust},
                                      {0xa016, depth_size}, {0xa017, 0}, {0xa002, 0}, {0xa200, 0x2 | 0x1u << 4}};
     CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), unwritten, 10, 3, error, sizeof error) == -1 && strstr(error, "no draw has written"));
+    /* replace with STENCILOPVAL (operation 4) on pass, the test always: the stencil under the triangle
+       becomes 0x7f though STENCILTESTVAL is 0x01, so EQUAL 0x7f draws the triangle and EQUAL 0x01
+       nothing; with an EQUAL test on 0x01 beside it, it stops by name */
+    {
+        enum { OP_REPLACED = 0x17c0000, OP_MISSED = 0x1800000 };
+        const uint32_t replace_op[][2] = {DEPTH_TARGET, {0xa08e, 0}, {0xa10c, 0x7fffff01}, {0xa10b, 0x40}, {0xa200, 0x1 | 0x7u << 8}};
+        drawn = run_counted(x, DEPTH_BUFFER, at(STENCIL_ONLY), replace_op, 13, 3, error, sizeof error);
+        if (drawn) fprintf(stderr, "stencil replace with STENCILOPVAL: %s\n", error);
+        CHECK(drawn == 0);
+        const uint32_t equal_op_value[][2] = {DEPTH_TARGET, {0xa10c, 0xffff7f}, {0xa10b, 0}, {0xa200, 0x1 | 0x2u << 8}};
+        CHECK(run_counted(x, DEPTH_BUFFER, at(OP_REPLACED), equal_op_value, 12, 3, error, sizeof error) == 0);
+        check_triangle(x, at(OP_REPLACED));
+        const uint32_t equal_test_value[][2] = {DEPTH_TARGET, {0xa10c, 0xffff01}, {0xa10b, 0}, {0xa200, 0x1 | 0x2u << 8}};
+        CHECK(run_counted(x, DEPTH_BUFFER, at(OP_MISSED), equal_test_value, 12, 3, error, sizeof error) == 0);
+        CHECK(nothing_drawn(x, at(OP_MISSED)));
+        const uint32_t conflicting[][2] = {DEPTH_TARGET, {0xa08e, 0}, {0xa10c, 0x7fffff01}, {0xa10b, 0x40}, {0xa200, 0x1 | 0x2u << 8}};
+        CHECK(run_counted(x, DEPTH_BUFFER, at(STENCIL_ONLY), conflicting, 13, 3, error, sizeof error) == -1 &&
+              strstr(error, "replace with STENCILOPVAL 127"));
+    }
     const uint32_t incremented[][2] = {DEPTH_TARGET, {0xa10c, 0xff0000}, {0xa10b, 0x50}, {0xa200, 0x1 | 0x7u << 8}};
     CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), incremented, 12, 3, error, sizeof error) == -1 && strstr(error, "stencil operation 5"));
     const uint32_t bounds[][2] = {DEPTH_TARGET, {0xa200, 0x8}};
