@@ -373,6 +373,43 @@ static void write_float(translator *t, const vector_operands *o, uint32_t f, con
 }
 
 /* GCN's legacy multiply: zero times anything (infinity and NaN included) is zero. */
+/* v_cubeid_f32, v_cubesc_f32, v_cubetc_f32, v_cubema_f32 on a direction (x, y, z): the cube face its
+   largest component picks (z when |z| is at least |x| and |y|, else y when |y| is at least |x|, else
+   x) and, on that face, the face number (+x 0, -x 1, +y 2, -y 3, +z 4, -z 5), the s and t coordinates
+   before division (+x: -z, -y; -x: z, -y; +y: x, z; -y: x, -z; +z: x, -y; -z: -x, -y) or twice the
+   major axis's component, as shadPS4 computes them where the GPU has no cube instructions. Shaders then
+   take s / |ma| + 1.5 and t / |ma| + 1.5 for the face's texel coordinates. */
+static uint32_t cube_instruction(translator *t, const char *name, uint32_t x, uint32_t y, uint32_t z)
+{
+    const uint32_t f = t_float(t), b = t_bool(t), zero = konst_float(t, 0.0f);
+    const uint32_t ax = glsl(t, f, SPV_GLSL_F_ABS, x, 0, 0, 1), ay = glsl(t, f, SPV_GLSL_F_ABS, y, 0, 0, 1),
+                   az = glsl(t, f, SPV_GLSL_F_ABS, z, 0, 0, 1);
+    const uint32_t z_major = value(t, SPV_OP_LOGICAL_AND, b, 2, value(t, SPV_OP_F_ORD_GREATER_THAN_EQUAL, b, 2, az, ax),
+                                   value(t, SPV_OP_F_ORD_GREATER_THAN_EQUAL, b, 2, az, ay));
+    const uint32_t y_major = value(t, SPV_OP_F_ORD_GREATER_THAN_EQUAL, b, 2, ay, ax);
+    const uint32_t x_negative = value(t, SPV_OP_F_ORD_LESS_THAN, b, 2, x, zero), y_negative = value(t, SPV_OP_F_ORD_LESS_THAN, b, 2, y, zero),
+                   z_negative = value(t, SPV_OP_F_ORD_LESS_THAN, b, 2, z, zero);
+    uint32_t on_x, on_y, on_z;
+    if (!strcmp(name, "v_cubeid_f32")) {
+        on_x = value(t, SPV_OP_SELECT, f, 3, x_negative, konst_float(t, 1.0f), konst_float(t, 0.0f));
+        on_y = value(t, SPV_OP_SELECT, f, 3, y_negative, konst_float(t, 3.0f), konst_float(t, 2.0f));
+        on_z = value(t, SPV_OP_SELECT, f, 3, z_negative, konst_float(t, 5.0f), konst_float(t, 4.0f));
+    } else if (!strcmp(name, "v_cubesc_f32")) {
+        const uint32_t minus_x = value(t, SPV_OP_F_NEGATE, f, 1, x), minus_z = value(t, SPV_OP_F_NEGATE, f, 1, z);
+        on_x = value(t, SPV_OP_SELECT, f, 3, x_negative, z, minus_z);
+        on_y = x;
+        on_z = value(t, SPV_OP_SELECT, f, 3, z_negative, minus_x, x);
+    } else if (!strcmp(name, "v_cubetc_f32")) {
+        const uint32_t minus_y = value(t, SPV_OP_F_NEGATE, f, 1, y), minus_z = value(t, SPV_OP_F_NEGATE, f, 1, z);
+        on_x = on_z = minus_y;
+        on_y = value(t, SPV_OP_SELECT, f, 3, y_negative, minus_z, z);
+    } else { /* v_cubema_f32 */
+        const uint32_t two = konst_float(t, 2.0f);
+        on_x = value(t, SPV_OP_F_MUL, f, 2, x, two), on_y = value(t, SPV_OP_F_MUL, f, 2, y, two), on_z = value(t, SPV_OP_F_MUL, f, 2, z, two);
+    }
+    return value(t, SPV_OP_SELECT, f, 3, z_major, on_z, value(t, SPV_OP_SELECT, f, 3, y_major, on_y, on_x));
+}
+
 static uint32_t legacy_multiply(translator *t, uint32_t a, uint32_t b)
 {
     const uint32_t zero = konst_float(t, 0.0f);
@@ -662,6 +699,8 @@ static void vector_instruction(translator *t, const uint32_t *w, const gcn_instr
             r = value(t, SPV_OP_F_ADD, t_float(t), 2, product, c);
         }
         write_float(t, &o, r, ins);
+    } else if (!strncmp(name, "v_cube", 6)) {
+        write_float(t, &o, cube_instruction(t, name, float_source(t, &o, 0, ins), float_source(t, &o, 1, ins), float_source(t, &o, 2, ins)), ins);
     } else if (!strcmp(name, "v_madmk_f32") || !strcmp(name, "v_madak_f32")) {
         /* madmk: src0 * K + vsrc1; madak: src0 * vsrc1 + K, with K the literal. */
         const uint32_t a = float_source(t, &o, 0, ins), b = float_source(t, &o, 1, ins);
@@ -1925,7 +1964,7 @@ static int branches(const uint32_t *w, const gcn_instruction *ins, size_t at, lo
 
 /* Where the descriptor that the instruction at dword `at` reads from s[first : first + width - 1]
    comes from (runtime/gcn_spirv.h): the user data when no instruction writes those SGPRs before it
-   runs, or memory when the last write is an s_load of exactly those SGPRs, at an immediate offset
+   runs, or memory when the last write is an s_load covering those SGPRs (exactly, or as part of a wider load), at an immediate offset
    from a pointer pair no instruction before it writes. With branches in the program, the load is
    followed only when every path to the use passes it: no branch lands between it and the use (code
    runs forward between branches, so a path that skipped the load would have to land there), every
@@ -1985,8 +2024,9 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
     unsigned dst = 0;
     const unsigned n = sgprs_written(w, &ins, &dst);
     const int immediate = (w[0] >> 8) & 1;
-    if (ins.encoding != GCN_SMRD || strncmp(ins.name, "s_load_dword", 12) || dst != first || n != width || !immediate) {
-        snprintf(error, error_size, "the descriptor in s[%u:%u] is written by the program (%s at dword %ld), not loaded whole from a "
+    /* the load may bring more SGPRs than the descriptor (an s_load_dwordx16 of two image descriptors) */
+    if (ins.encoding != GCN_SMRD || strncmp(ins.name, "s_load_dword", 12) || dst > first || first + width > dst + n || !immediate) {
+        snprintf(error, error_size, "the descriptor in s[%u:%u] is written by the program (%s at dword %ld), not loaded from a "
                  "user-data pointer: not done yet", first, first + width - 1, ins.name, writer);
         return -1;
     }
@@ -2005,7 +2045,8 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
         }
         p += before.dwords;
     }
-    *origin = (gcn_resource_origin){.from_memory = 1, .sgpr = first, .pointer_sgpr = pointer, .offset = (w[0] & 0xff) * BYTES_PER_DWORD};
+    *origin = (gcn_resource_origin){.from_memory = 1, .sgpr = first, .pointer_sgpr = pointer,
+                                    .offset = ((w[0] & 0xff) + (first - dst)) * BYTES_PER_DWORD};
     return 0;
 }
 

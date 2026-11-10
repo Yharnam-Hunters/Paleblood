@@ -57,7 +57,7 @@ enum {
    (gcn_image_resources lists the descriptors a program uses and where each comes from).
 
    A descriptor comes from the user data (the SGPRs hold it from the start), or from memory: the
-   program loads it with an s_load_dwordx8 at an immediate offset from a pointer in two user-data
+   program loads it with an s_load_dwordx8 (or a wider s_load covering it) at an immediate offset from a pointer in two user-data
    SGPRs, which the caller reads at draw time. One SGPR range can hold different descriptors at
    different MIMG instructions (the game's pixel shaders read a user-data image, then load another
    descriptor over it); each MIMG's own is found from the code before it, when that code runs straight

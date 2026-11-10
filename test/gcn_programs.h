@@ -63,6 +63,26 @@ static const uint32_t multiply_high[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* Per lane i, the direction (x, y, z) at in[3i .. 3i + 2]: out[i], out[64 + i], out[128 + i] and
+   out[192 + i] = its cube face id, s, t and major axis (v_cubeid/sc/tc/ma_f32). */
+static const uint32_t cube_faces[] = {
+    0x1602008c, /* v_mul_u32_u24_e32 v1, 12, v0 */
+    0xe0301000, 0x80000201, /* buffer_load_dword v2, v1, s[0:3], 0 offen */
+    0xe0301004, 0x80000301, /* buffer_load_dword v3, v1, s[0:3], 0 offen offset:4 */
+    0xe0301008, 0x80000401, /* buffer_load_dword v4, v1, s[0:3], 0 offen offset:8 */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xd2880005, 0x04120702, /* v_cubeid_f32 v5, v2, v3, v4 */
+    0xd28a0006, 0x04120702, /* v_cubesc_f32 v6, v2, v3, v4 */
+    0xd28c0007, 0x04120702, /* v_cubetc_f32 v7, v2, v3, v4 */
+    0xd28e0008, 0x04120702, /* v_cubema_f32 v8, v2, v3, v4 */
+    0x34120082, /* v_lshlrev_b32_e32 v9, 2, v0 */
+    0xe0701000, 0x80010509, /* buffer_store_dword v5, v9, s[4:7], 0 offen */
+    0xe0701100, 0x80010609, /* buffer_store_dword v6, v9, s[4:7], 0 offen offset:256 */
+    0xe0701200, 0x80010709, /* buffer_store_dword v7, v9, s[4:7], 0 offen offset:512 */
+    0xe0701300, 0x80010809, /* buffer_store_dword v8, v9, s[4:7], 0 offen offset:768 */
+    0xbf810000, /* s_endpgm */
+};
+
 /* Per lane i, out[4i .. 4i + 3] = the four dwords s_buffer_load_dwordx4 reads from the buffer in s[0:3]. */
 static const uint32_t scalar_buffer_quad[] = {
     0xc2840100, /* s_buffer_load_dwordx4 s[8:11], s[0:3], 0x0 */

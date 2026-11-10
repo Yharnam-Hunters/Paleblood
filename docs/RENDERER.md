@@ -100,6 +100,10 @@ Instead:
        undoes the descriptor's swizzle (shadPS4's rule: the inverse of a load's) and packs as GLSL's
        `packUnorm4x8` (the PS4's rounding of ties is not established). Anything else is a run-time stop. A four-component store to 16_16_16_16 float packs halves, and one to 10_11_11 float unsigned
        11-, 11- and 10-bit floats (x in the low bits), rounded to nearest even.
+     - **Cube instructions** (`v_cubeid_f32`, `v_cubesc_f32`, `v_cubetc_f32`, `v_cubema_f32`): the
+       face a direction's largest component picks (z, then y, then x on ties), its number, s and t
+       before division and twice the major axis, as shadPS4 computes them without native cube
+       instructions; shaders then take s / |ma| + 1.5 and t / |ma| + 1.5.
      - **Format loads with a swizzle:** a load of whole 32-bit components reads the format's
        components (the ones it lacks read 0), then each result takes what its DST_SEL names: 0, 1
        (1.0 for float data) or a memory component, as shadPS4 reads them.
@@ -150,7 +154,8 @@ Instead:
        the host GPU's.
      - **Descriptors from memory:** each MIMG instruction's descriptor is found from the code before
        it (`gcn_resource_origin`): the user data's when nothing writes its SGPRs first, or loaded
-       from memory when the last write is a whole `s_load_dwordx8` at an immediate offset from a
+       from memory when the last write is an `s_load_dwordx8` (or a wider load that covers the
+       descriptor's SGPRs, as the game's `s_load_dwordx16` of two image descriptors) at an immediate offset from a
        user-data pointer pair that nothing writes before it. The executor reads such a descriptor from guest
        memory when the draw runs. The same SGPRs can name different images at different
        instructions: the game's fullscreen pass reads the user data's image, then loads another
@@ -415,7 +420,9 @@ Instead:
         device guarantees.
      3. **Running a buffer** (begun: `runtime/render_executor.h`).
         - **What runs today:** COLOR_8_8_8_8 render targets in slots 0-7 (UNORM or sRGB, either
-          component order), viewport 0, vertex and pixel shaders with their user data, and
+          component order; COLOR_10_11_11 and COLOR_16_16_16_16 FLOAT too, written back to their
+          memory as the hardware lays them out, though only 8_8_8_8 ones are read as BGRA), viewport
+          0, vertex and pixel shaders with their user data, and
           auto-index draws as triangle lists.
         - **Rect lists** (primitive type 17, which the game's fullscreen passes use): Vulkan has no
           such primitive, so each rect's three vertices go through a generated geometry stage
