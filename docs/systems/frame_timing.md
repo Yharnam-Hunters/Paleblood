@@ -173,6 +173,44 @@ as the original does, so very large delays wrap, and it always reports success.
 
 </details>
 
+### Small clocks, waits and stopwatches
+
+Nine small helpers that read the time or sleep are replaced and edge-verified (Paleblood
+[#514](https://github.com/Yharnam-Hunters/Paleblood/pull/514)). None of them is on the limiter's
+path:
+
+- **Time of day.** `frame_timing_time_of_day_us` (`0x02e61140`) gives the time of day in
+  microseconds; `frame_timing_time_of_day_ticks` (`0x01088550`) divides it by an owner's own tick
+  length; `frame_timing_time_seed_words` (`0x02e61280`) returns four seed words, the time itself
+  and the time plus a counter that steps by two on every call, so two calls in the same
+  microsecond still differ.
+- **Random state.** `frame_timing_thread_random` (`0x02c6d580`) returns the calling thread's
+  random number state (a thread-local variable), seeding it the first time from the low 32 bits
+  of the time in microseconds. About sixty callers fetch it.
+- **Stopwatch.** `frame_timing_stopwatch_start` (`0x01448580`) stores the seconds since the game
+  started, only when the stopwatch reads exactly zero; `frame_timing_stopwatch_stop`
+  (`0x01448620`) adds the time since that start to two running totals. The task frame brackets
+  work with them.
+- **Waiting for a job.** `frame_timing_job_wait` (`0x024bdd40`) polls a background job's state
+  until it is finished, sleeping 1 ms between polls; `frame_timing_job_take_result`
+  (`0x024bd150`) takes a job's result, polling, waiting or taking at once depending on its mode,
+  and counts one more holder of the result under a lock all jobs share.
+- **Sleep.** `frame_timing_posix_sleep_ms` (`0x00466810`) sleeps through the POSIX `usleep` and
+  always reports success.
+
+The community **Performance Patch** turns the stopwatch into a no-op and shortens the job waits'
+poll to 0.1 ms. Those byte edits do nothing while these functions are replaced, and there is no
+option for them yet.
+
+<details>
+<summary>How these were verified</summary>
+
+Each function's edge cases pass against the original (10 to 55 cases each), deliberately
+wrong versions fail, and an independent review approved all nine. They are edge-verified:
+none has been recorded in a game run.
+
+</details>
+
 ### Frame time in game logic
 
 The frame step also passes time into character updates. One verified update accumulates a
@@ -205,6 +243,8 @@ piece of the game's own per-frame work, the next layer to map.
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
 | `0x004632d0` | 67 | `frame_timing_get_time_us` | original | dead in the stock game: only unwind entries refer to it; the community frame-rate patches overwrite it as a code cave (gettimeofday in microseconds) |
+| `0x00466810` | 19 | `frame_timing_posix_sleep_ms` | edge-verified | Sleep milliseconds through POSIX usleep (32-bit multiply wraps); ignore its result and return true |
+| `0x01088550` | 83 | `frame_timing_time_of_day_ticks` | edge-verified | Time of day in microseconds divided (unsigned 64-bit) by the owner's tick length at +0x1d8 |
 | `0x0111a760` | 131 | `frame_timing_get_monotonic_us` | edge-verified | Microseconds since the shared monotonic clock base; unsigned 32-bit seconds and nanoseconds truncate and wrap; clock failures preserve output and state |
 | `0x0111a7f0` | 131 | `frame_timing_get_monotonic_ms` | verified | Milliseconds since its first call from CLOCK_MONOTONIC; keeps the first seconds in the clock state object |
 | `0x0111a880` | 19 | `frame_timing_sleep_ms` | edge-verified | Convert milliseconds to microseconds with uint32 wrapping; always call the kernel and discard its result |
@@ -215,6 +255,8 @@ piece of the game's own per-frame work, the next layer to map.
 | `0x0143e490` | 174 | `frame_timing_task_flush_queue_0143e490` | verified | task manager queue flush: lock, run, destroy and free every queued object, empty the list, unlock |
 | `0x0143f9f0` | 18 | `frame_timing_task_set_frame_value_0143f9f0` | verified | task manager: copies the float at +0x8 of the frame information to the global 0x058b7e08 |
 | `0x014400a0` | 180 | `frame_timing_task_workers_step_014400a0` | verified | task manager workers: three rounds over the worker queues +0x58, +0x68, +0x60 |
+| `0x01448580` | 149 | `frame_timing_stopwatch_start` | edge-verified | Start a stopwatch from exactly zero: seconds since game start (double divide, float store) at +0x38; bump counters 0x44 and 0x4c |
+| `0x01448620` | 168 | `frame_timing_stopwatch_stop` | edge-verified | Stop a positive stopwatch: add seconds since its start to the totals at +0x3c and +0x54; clear the start |
 | `0x01ea47a0` | 611 | `frame_timing_gate_create_handle` | edge-verified | handle creation of the Chalice Dungeon gate state: idle in mode 1, drops the handle, creates one from two filled blocks, FrpgNetMan+0xa68 and a name, adopts it, request 3 |
 | `0x01ea4a10` | 501 | `frame_timing_gate_entry_check` | edge-verified | entry check of the Chalice Dungeon gate state: online gates as 0x01ea5280; keeps the first keyed entry's object as its handle, then request 4 |
 | `0x01ea4cb0` | 1472 | `frame_timing_gate_create_handle_from_levels` | edge-verified | level creation of the Chalice Dungeon gate state: online gates; four highest set levels (event flags 0x184d+i+7*level), a handle object from them, adopted; request 5 |
@@ -247,6 +289,11 @@ piece of the game's own per-frame work, the next layer to map.
 | `0x02434520` | 552 | `frame_timing_flipper_init` | verified | SprjFlipper constructor: reads Game.FlipMode (default 4; pending default 3; clamped to 4); unset in the shipped config |
 | `0x02434770` | 2077 | `frame_timing_pace_frame` | verified | Frame limiter: target interval at +0x18 (1/30 or 1/60 s); spins out the frame (the sleeping wait is compiled in but unused); 32-frame ring; every FPS patch edits it |
 | `0x024512a0` | 78 | `frame_timing_task_frame_024512a0` | verified | task manager frame entry from the frame step: FD4TaskManager singleton, then 0x01388c60 |
+| `0x024bd150` | 216 | `frame_timing_job_take_result` | edge-verified | Job handle result: mode 0 polls (null if not done), 2 takes, others wait 1 ms at a time; bumps the job's holder count under the job lock |
+| `0x024bdd40` | 36 | `frame_timing_job_wait` | edge-verified | Poll a job's state until finished (2), sleeping 1 ms in the kernel between polls |
+| `0x02c6d580` | 149 | `frame_timing_thread_random` | edge-verified | This thread's random state (thread-local); seeds it once from the 32-bit time of day in microseconds |
+| `0x02e61140` | 67 | `frame_timing_time_of_day_us` | edge-verified | Time of day in microseconds (64-bit multiply and add wrap); the gettimeofday result is ignored |
+| `0x02e61280` | 101 | `frame_timing_time_seed_words` | edge-verified | Four seed words in rax:rdx: 32-bit seconds, microseconds, and both offset by a counter that advances by 2 per call |
 
 ## Structs and globals
 
