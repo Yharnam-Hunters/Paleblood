@@ -218,12 +218,17 @@ render_frame_update_02377bd0,edge,,12,12,0,0,dd4fcc5a0d365609,2026-10-31
 render_frame_update_02377bd0,edge,30,12,12,0,0,dd4fcc5a0d365609,2026-10-31
 render_frame_update_02377bd0,edge,60,12,12,0,0,dd4fcc5a0d365609,2026-10-31
 render_frame_update_02377bd0,edge,uncapped,12,12,0,0,dd4fcc5a0d365609,2026-10-31
+render_get_record_descriptor_size,edge,,12,12,0,0,81442ce48c3e1089,2026-11-10
+render_initialize_pair_record_descriptor,edge,,33,33,0,0,63a1e970d620584f,2026-11-10
+render_initialize_record_geometry_flags,edge,,70,70,0,0,0ef232dc6bf3c570,2026-11-10
 render_initialize_record_level_descriptor,edge,,51,51,0,0,a36426b67c294984,2026-11-05
+render_initialize_triple_record_descriptor,edge,,97,97,0,0,8993a89e4989c6b5,2026-11-10
 render_pack_record_mapping_word,edge,,497,497,0,0,9bf1f50e8f52effa,2026-11-04
 render_prepare_resource_descriptor,edge,,40,40,0,0,beb33acb10844a38,2026-11-10
 render_present_last_record_consume,edge,,56,56,0,0,8feb3252c4706117,2026-11-10
 render_present_record_consume,edge,,24,24,0,0,04690706835c471b,2026-11-10
 render_read_present_pool_counter,edge,,18,18,0,0,1ef235dcff31de42,2026-11-03
+render_read_record_descriptor_component,edge,,28,28,0,0,0b5f7a5af7a39f49,2026-11-10
 render_read_record_mapping_word,edge,,224,224,0,0,68ea5b3aae2f9be4,2026-11-04
 render_record_apply_mapping,edge,,400,400,0,0,6de6826ea92e835a,2026-11-05
 render_record_apply_parameter_tuple,edge,,1050,1050,0,0,5cc7672932429aef,2026-11-04
@@ -236,6 +241,7 @@ render_record_derive_parameter,edge,,222,222,0,0,c25ef4fb226f3907,2026-11-05
 render_record_descriptor_count_exponent,edge,,24,24,0,0,632a23284e53140f,2026-11-05
 render_record_descriptor_encoding,edge,,24,24,0,0,e792610b55ba0383,2026-11-05
 render_record_descriptor_level_count,edge,,24,24,0,0,089dab7374921036,2026-11-05
+render_record_descriptor_set_high_field,edge,,60,60,0,0,dcfc03825f5d2406,2026-11-10
 render_record_encoding_byte_flags,edge,,8,8,0,0,6fe288678cf26d7c,2026-11-05
 render_record_encoding_category,edge,,48,48,0,0,8f03f505a6bdfb07,2026-11-04
 render_record_encoding_components,edge,,148,148,0,0,b50f3397c0119c7e,2026-11-04
