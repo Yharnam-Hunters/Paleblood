@@ -205,6 +205,8 @@ address,size,name,system,status,notes
 0x02abaf10,78,render_record_derive_parameter,render,edge-verified,Derive numeric normalization code; flag priority and mode-dependent base.
 0x02abb4f0,31,render_record_auxiliary_predicate,render,edge-verified,"Return the auxiliary-processing predicate: selectors 0x13/0x14 enable it, 0x15/0x16 use flag bit 6, and all other selectors disable it."
 0x02abb6d0,48,render_emit_present_release_delegate,render,edge-verified,Forward address and data to the release writer with fixed flags and mode and a zero final selector.
+0x02abba10,22,render_reset_present_context_state_b518,render,edge-verified,Reset the two 64-bit fields and return the full sentinel word.
+0x02acd190,601,render_reset_present_context_shader_state,render,edge-verified,"Clear the conditional command flag, then preserve the sentinel stores around each distinct state-fill call."
 0x02ace1e0,1016,render_configure_record_shader,render,edge-verified,"Populate sparse primary and optional shader bindings, update special-slot caches, bind VS/PS programs, and emit up to 32 PS link words."
 0x02ace5e0,5473,render_configure_record_shader_secondary,render,edge-verified,"Consume two sparse shader binding banks, emit descriptor and address packets, copy selected upload spans, and update shared upload caches."
 0x02acfc20,207,render_finish_record_shader,render,edge-verified,"Finalize two dirty-state passes using cached event flags, clear the source dirty flags, then read the current command mode and apply a pending mode change."
@@ -213,6 +215,9 @@ address,size,name,system,status,notes
 0x02ad1eb0,194,render_present_source_prepare,render,edge-verified,Flush source state and select an explicit or derived record count. Stop at the first builder error; reload the source parameter before consuming each successful record.
 0x02ad1f80,385,render_present_source_flush_state,render,edge-verified,"Emit dirty non-null slots from the selected bank. Keep count and flags cached on skips; reload the pending value, flags and slot count after each emission."
 0x02ad2c30,120,render_reset_present_preparation_dirty,render,edge-verified,"Emit changed depth and stencil clear values, then cache their post-call values. Preserve the second writer's upper return bits while replacing its low word."
+0x02ad2d20,517,render_reset_present_context_preparation,render,edge-verified,Reset both nine-entry banks and surrounding state; interleave the first eight entries before loading the live scalar.
+0x02ad3070,351,render_prepare_present_context_scratch,render,edge-verified,Prepare changed live-bank records before finishing; retain eligible pointers across refresh calls and reload the bank each iteration.
+0x02ad3300,76,render_reset_present_context_state_b528,render,edge-verified,Reset the embedded state without changing padding; load the scalar after the two initial stores.
 0x02ad3b80,252,render_pop_present_buffer_pool,render,edge-verified,Scan pool entries using the original counter and compare/exchange calls; publish the counter before successful output.
 0x02ad3c80,42,render_process_present_finish_item,render,edge-verified,"Mark the final pool word as processed; pass its address and a fixed selector to the release delegate, forwarding the packet result."
 0x02ad3d40,35,render_capture_present_buffer_pool_record,render,edge-verified,"Return zero for a zero begin address; otherwise locate the containing pool record using wrapped subtraction, arithmetic shift and unsigned division remainder."
@@ -220,8 +225,3 @@ address,size,name,system,status,notes
 0x02ad5e90,3005,render_setup_swap_chain,render,edge-verified,"Allocate and register swap-chain buffers, initialize cached resource data and tone curves, and retain partial publications on the corresponding failure paths."
 0x02ad6e50,499,render_swap_chain_submit,render,edge-verified,"Owned-thread flip polling, source binding and submission; every exit reloads the global guard pointer. Native GPU helper effects remain original Synthetic GCC/Clang edges pass; no recordings."
 0x02fa6af0,2214,render_prepare_resource_descriptor,render,edge-verified,Build the resource descriptor and requirements through ordered original helpers; preserve partial writes on errors and live parameter reads between calls.
-0x02abba10,22,render_reset_present_context_state_b518,render,edge-verified,Reset the two 64-bit fields and return the full sentinel word.
-0x02acd190,601,render_reset_present_context_shader_state,render,edge-verified,"Clear the conditional command flag, then preserve the sentinel stores around each distinct state-fill call."
-0x02ad2d20,517,render_reset_present_context_preparation,render,edge-verified,Reset both nine-entry banks and surrounding state; interleave the first eight entries before loading the live scalar.
-0x02ad3070,351,render_prepare_present_context_scratch,render,edge-verified,Prepare changed live-bank records before finishing; retain eligible pointers across refresh calls and reload the bank each iteration.
-0x02ad3300,76,render_reset_present_context_state_b528,render,edge-verified,Reset the embedded state without changing padding; load the scalar after the two initial stores.
