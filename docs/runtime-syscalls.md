@@ -1747,6 +1747,44 @@ existing `to` as `rename(2)` does. Paths on two different mounts are `EXDEV` (`r
 different logical devices"); on the read-only `/app0` `EROFS`, after the lookup; a missing file or
 directory component `ENOENT` or `ENOTDIR`. Any other host error stops by name.
 
+### Directories and flushing
+
+`sceKernelGetdirentries(fd, buf, nbytes, basep)` is FreeBSD's `getdirentries(2)` and
+`sceKernelFsync(fd)` FreeBSD's `fsync(2)`, under their SCE names (shapes from the OpenOrbis
+homebrew SDK's `libkernel.h`). `eboot` and `libSceFios2` import the first, `libSceFios2` the
+second.
+
+**How the executable lists a directory.** Its directory iterator opens the directory with
+`sceKernelOpen(path, 0x20000, 0555)`, that is `O_DIRECTORY` (`0x024722d0`), and treats a negative
+answer as no listing. Each step (`0x02472480`) takes `st_blksize` from the directory's
+`sceKernelFstat` as `nbytes`, then walks the FreeBSD 9 records: a 32-bit file number, the 16-bit
+record length, the type, the name length and the NUL-terminated name. It skips `.` and `..`, adds
+`/` to a `DT_DIR` (4) name, and, when it stops partway through a buffer, seeks the descriptor back
+to `*basep` so that its next call reads the same records again.
+
+**What the runtime does:**
+- **Opening.** `O_DIRECTORY` alone opens a directory on either mount. A path that is not a
+  directory is `ENOTDIR` (`open(2)`).
+- **Listing.** It lists the host directory in the host's order, as many whole records as fit, each
+  rounded up to 4 bytes (FreeBSD 9's `GENERIC_DIRSIZ`), and answers the byte count, 0 at the end.
+  File numbers are the host's inode numbers (they only identify a file). The type is the host's:
+  FreeBSD and Linux share the `DT_` numbers. Where the host file system leaves it unknown, the
+  runtime asks `fstatat`.
+- **Positions.** `*basep` (when not NULL) is the position before the call, and the position
+  afterwards follows the last record listed. So a seek to `*basep` lists the same records again. A
+  position is a count of entries, the runtime's own number; FreeBSD's is a byte offset. The title
+  only hands it back to `sceKernelLseek`, which on a directory accepts `SEEK_SET` and `SEEK_CUR`;
+  a position before the start is `EINVAL`.
+- **Flushing.** `sceKernelFsync` flushes the host file and answers 0.
+- **Errors.** A descriptor the runtime did not hand out is `EBADF` for both.
+
+**What stops by name:** `O_DIRECTORY` with any other flag; listing a descriptor that is not a
+directory, with no buffer, or into fewer than 512 bytes (a directory block: shadPS4 answers
+`EINVAL`, the PS4's answer is not established); `SEEK_END` on a directory; a host `fsync` error.
+
+An entry added or removed between two calls can move the listing by one entry, as on any file
+system that lists by position.
+
 ## The disc map (`sceDiscMapIsRequestOnHDD`, issue #35)
 
 The disc map tells the file library whether part of a file is already on the hard disk or still

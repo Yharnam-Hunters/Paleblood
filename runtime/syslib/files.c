@@ -32,6 +32,7 @@
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -245,14 +246,21 @@ static void fill_stat(guest_stat *out, const struct stat *host, mount on)
    gets the requested permission bits. Other flag bits stop by name. A descriptor is the
    runtime's own number, from 3 up, standing for a host descriptor (the title only passes it back);
    one the runtime did not hand out is EBADF. A seek whence other than 0, 1 or 2 (SEEK_SET, SEEK_CUR,
-   SEEK_END, the same on FreeBSD and Linux), and one before the start, are EINVAL. */
-enum { BSD_O_ACCMODE = 3, BSD_O_APPEND = 0x8, BSD_O_CREAT = 0x200, BSD_O_TRUNC = 0x400 };
+   SEEK_END, the same on FreeBSD and Linux), and one before the start, are EINVAL.
+
+   O_DIRECTORY (FreeBSD 0x20000) opens a directory for listing, on either mount: the engine's
+   directory iterator (0x024722d0) opens with exactly that flag and mode 0555 and treats a negative
+   answer as no listing. It is accepted alone (read-only, nothing else); a path that is not a
+   directory answers ENOTDIR (open(2)). */
+enum { BSD_O_ACCMODE = 3, BSD_O_APPEND = 0x8, BSD_O_CREAT = 0x200, BSD_O_TRUNC = 0x400, BSD_O_DIRECTORY = 0x20000 };
 enum { BSD_O_RDWR = 2 }; /* O_RDONLY 0, O_WRONLY 1, O_RDWR 2: the same numbers on Linux */
 enum { FIRST_FD = 3, MAX_FILES = 1024 };
 
 static pthread_mutex_t files_lock = PTHREAD_MUTEX_INITIALIZER;
 static int host_fd[MAX_FILES]; /* host descriptor + 1 for each guest descriptor, 0: free */
 static mount descriptor_mount[MAX_FILES];
+static int is_directory[MAX_FILES];        /* the descriptor names a directory */
+static int64_t directory_entry[MAX_FILES]; /* a directory's position: entries listed so far */
 
 /* The host descriptor behind a guest one, or -1. */
 static int host_of(int32_t fd)
@@ -279,7 +287,10 @@ static int32_t kernel_open(const char *path, int32_t flags, uint32_t mode)
     char host[4096];
     const mount on = host_path(fn, path, host, sizeof host);
     int h;
-    if (on == MOUNT_WRITABLE) {
+    if (flags & BSD_O_DIRECTORY) {
+        if (flags != BSD_O_DIRECTORY) rt_fatal(fn, "O_DIRECTORY with other flags is not established");
+        h = open(host, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    } else if (on == MOUNT_WRITABLE) {
         h = open(host, data_open_flags(fn, flags) | O_CLOEXEC, (mode_t)(mode & PERMISSION_BITS));
     } else {
         if ((flags & BSD_O_ACCMODE) || (flags & (BSD_O_APPEND | BSD_O_CREAT | BSD_O_TRUNC))) {
@@ -291,10 +302,15 @@ static int32_t kernel_open(const char *path, int32_t flags, uint32_t mode)
         h = open(host, O_RDONLY | O_CLOEXEC);
     }
     if (h < 0) return lookup_error(fn);
+    struct stat st;
+    if (fstat(h, &st)) rt_fatal(fn, "a host error without an established answer");
     pthread_mutex_lock(&files_lock);
     int32_t fd = FIRST_FD;
     while (fd < MAX_FILES && host_fd[fd]) fd++;
-    if (fd < MAX_FILES) host_fd[fd] = h + 1, descriptor_mount[fd] = on;
+    if (fd < MAX_FILES) {
+        host_fd[fd] = h + 1, descriptor_mount[fd] = on;
+        is_directory[fd] = S_ISDIR(st.st_mode), directory_entry[fd] = 0;
+    }
     pthread_mutex_unlock(&files_lock);
     if (fd == MAX_FILES) rt_fatal(fn, "more open files than the runtime's table holds");
     return fd;
@@ -434,11 +450,34 @@ static int32_t kernel_rename(const char *from, const char *to)
     return lookup_error(fn);
 }
 
+/* A directory's position is the runtime's own: the number of entries sceKernelGetdirentries has
+   listed (below). A seek to a position it handed out (SEEK_SET) or relative to the current one
+   (SEEK_CUR) sets it; one before the start is EINVAL. SEEK_END on a directory stops by name. */
+static int64_t directory_seek(int32_t fd, int64_t offset, int32_t whence)
+{
+    if (whence == SEEK_END) rt_fatal("sceKernelLseek", "SEEK_END on a directory: the PS4's answer is not established");
+    pthread_mutex_lock(&files_lock);
+    const int64_t base = whence == SEEK_CUR ? directory_entry[fd] : 0;
+    const int64_t at = (int64_t)((uint64_t)base + (uint64_t)offset); /* past INT64_MAX wraps negative */
+    if (at >= 0) directory_entry[fd] = at;
+    pthread_mutex_unlock(&files_lock);
+    return at < 0 ? SCE_KERNEL_ERROR(BSD_EINVAL) : at;
+}
+
+static int descriptor_is_directory(int32_t fd)
+{
+    pthread_mutex_lock(&files_lock);
+    const int directory = is_directory[fd];
+    pthread_mutex_unlock(&files_lock);
+    return directory;
+}
+
 static int64_t kernel_lseek(int32_t fd, int64_t offset, int32_t whence)
 {
     const int h = host_of(fd);
     if (h < 0) return SCE_KERNEL_ERROR(BSD_EBADF);
     if (whence != SEEK_SET && whence != SEEK_CUR && whence != SEEK_END) return SCE_KERNEL_ERROR(BSD_EINVAL);
+    if (descriptor_is_directory(fd)) return directory_seek(fd, offset, whence);
     const off_t at = lseek(h, offset, whence);
     if (at < 0) {
         if (errno == EINVAL) return SCE_KERNEL_ERROR(BSD_EINVAL);
@@ -462,6 +501,88 @@ static int32_t kernel_fstat(int32_t fd, guest_stat *out)
     return 0;
 }
 
+/* sceKernelFsync(fd): FreeBSD's fsync(2) under its SCE name (the OpenOrbis homebrew SDK's
+   libkernel.h declares int sceKernelFsync(int)), 0 or an SCE code; imported by libSceFios2. The
+   runtime flushes the host file. A descriptor the runtime did not hand out is EBADF (fsync(2)); any
+   host error (EIO and the like) stops by name. */
+static int32_t kernel_fsync(int32_t fd)
+{
+    const int h = host_of(fd);
+    if (h < 0) return SCE_KERNEL_ERROR(BSD_EBADF);
+    if (fsync(h)) rt_fatal("sceKernelFsync", "a host error without an established answer");
+    return 0;
+}
+
+/* sceKernelGetdirentries(fd, buf, nbytes, basep): FreeBSD's getdirentries(2) under its SCE name
+   (libkernel.h declares the shape), the number of bytes placed in buf, 0 at the end, or an SCE code.
+   The engine's directory iterator (0x02472480) passes the st_blksize of the directory's fstat as
+   nbytes, walks the FreeBSD 9 records (struct dirent: a 32-bit file number, the 16-bit record
+   length, the type, the name length and the NUL-terminated name), skips "." and "..", appends '/'
+   to a DT_DIR name, and, when it stops partway through a buffer, seeks the descriptor back to *basep
+   to read the same records again on its next call.
+
+   The runtime lists the host directory in the host's order, as many whole records as fit, each
+   rounded up to 4 bytes (FreeBSD 9's GENERIC_DIRSIZ). *basep (when not NULL) is the position before
+   the call and the position afterwards follows the last record listed, so a seek to *basep lists the
+   same records again. A position is a count of entries, the runtime's own number where FreeBSD's is
+   a byte offset; the title only hands it back to sceKernelLseek. File numbers are the host's inode
+   numbers (they only identify a file); the type is the host's (the DT_ numbers FreeBSD and Linux
+   share; asked with fstatat where the host file system leaves it unknown). A descriptor the runtime did not hand out is EBADF. What stops by name: a descriptor that
+   is not a directory, no buffer, and fewer than 512 bytes (a directory block; shadPS4 answers
+   EINVAL, the PS4's answer is not established). An entry added or removed between two calls can
+   move the listing by one entry, as on any file system that lists by position. */
+enum { DIRECTORY_BLOCK = 512, DIRENT_HEADER = 8 };
+
+typedef struct {
+    uint32_t fileno;
+    uint16_t reclen;
+    uint8_t type, namlen;
+} guest_dirent_header;
+_Static_assert(sizeof(guest_dirent_header) == DIRENT_HEADER, "FreeBSD 9 struct dirent header is 8 bytes");
+
+/* An entry's DT_ type; a host file system that leaves it unknown is asked with fstatat. */
+static uint8_t entry_type(DIR *dir, const struct dirent *e)
+{
+    if (e->d_type != DT_UNKNOWN) return (uint8_t)e->d_type;
+    struct stat st;
+    if (fstatat(dirfd(dir), e->d_name, &st, AT_SYMLINK_NOFOLLOW)) return DT_UNKNOWN;
+    return (uint8_t)IFTODT(st.st_mode);
+}
+
+static int64_t kernel_getdirentries(int32_t fd, char *buffer, uint64_t size, int64_t *basep)
+{
+    static const char fn[] = "sceKernelGetdirentries";
+    const int h = host_of(fd);
+    if (h < 0) return SCE_KERNEL_ERROR(BSD_EBADF);
+    if (!buffer) rt_fatal(fn, "no buffer: the error value is not established");
+    if (size < DIRECTORY_BLOCK) rt_fatal(fn, "fewer than 512 bytes: the PS4's answer is not established");
+    const int listing = openat(h, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    DIR *dir = listing < 0 ? NULL : fdopendir(listing);
+    if (!dir) rt_fatal(fn, "a descriptor that is not a directory, or a host error: the PS4's answer is not established");
+    pthread_mutex_lock(&files_lock);
+    const int64_t start = directory_entry[fd];
+    pthread_mutex_unlock(&files_lock);
+    int64_t entry = 0;
+    uint64_t used = 0;
+    for (struct dirent *e; (e = readdir(dir)); entry++) {
+        if (entry < start) continue;
+        const size_t name_length = strlen(e->d_name);
+        const uint64_t record = (DIRENT_HEADER + name_length + 1 + 3) & ~(uint64_t)3;
+        if (used + record > size) break;
+        const guest_dirent_header header = {(uint32_t)e->d_ino, (uint16_t)record, entry_type(dir, e), (uint8_t)name_length};
+        memset(buffer + used, 0, record);
+        memcpy(buffer + used, &header, sizeof header);
+        memcpy(buffer + used + DIRENT_HEADER, e->d_name, name_length);
+        used += record;
+    }
+    closedir(dir);
+    pthread_mutex_lock(&files_lock);
+    directory_entry[fd] = entry > start ? entry : start;
+    pthread_mutex_unlock(&files_lock);
+    if (basep) *basep = start;
+    return (int64_t)used;
+}
+
 RT_SYSLIB("libkernel", sceKernelStat, kernel_stat);
 RT_SYSLIB("libScePosix", stat, posix_stat);
 RT_SYSLIB("libkernel", sceKernelOpen, kernel_open);
@@ -474,3 +595,5 @@ RT_SYSLIB("libkernel", sceKernelFtruncate, kernel_ftruncate);
 RT_SYSLIB("libkernel", sceKernelRename, kernel_rename);
 RT_SYSLIB("libkernel", sceKernelLseek, kernel_lseek);
 RT_SYSLIB("libkernel", sceKernelFstat, kernel_fstat);
+RT_SYSLIB("libkernel", sceKernelFsync, kernel_fsync);
+RT_SYSLIB("libkernel", sceKernelGetdirentries, kernel_getdirentries);
