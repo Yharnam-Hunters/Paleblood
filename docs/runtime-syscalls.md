@@ -634,6 +634,13 @@ is `EINVAL`. `libc.elf` calls it five times (`+0xad02`, `+0x1b292`, `+0x54ecb` a
 with a static variable and a routine. Nothing cancels a guest thread, so a routine always runs to
 its end.
 
+**`scePthreadRename(thread, name)`** records a thread's name (OpenOrbis `libkernel.h`; libthr's
+`pthread_set_name_np`, to which shadPS4 binds it, facts only). The executable's job threads rename
+themselves with it (a tail call at `0x00466834`). The runtime keeps the first 31 bytes, as for the
+name `scePthreadCreate` takes, names the host thread with the first 15 (the host's limit; debuggers
+and the host's thread list show it), and answers 0. Stops by name: a thread the runtime does not know
+or has collected, and a missing name.
+
 ## PlayGo (`libScePlayGo`)
 
 PlayGo lets a title start before all of its package is installed: the title asks which chunks of
@@ -1223,6 +1230,13 @@ thread's mask, a new thread starting with its creator's, and does not apply it t
 
 **What stops by name:** an unknown `how`. Its error is reported through the guest's `errno`, which
 the runtime does not model.
+
+**`sigprocmask` and `sigfillset`** (`libc.elf` imports both from libkernel). `sigprocmask` is the
+same call under its POSIX name (FreeBSD's libc `sigprocmask` is the system call itself); its
+thirteen calls include `+0x53f84`, which blocks everything with `SIG_SETMASK` and a set from
+`sigfillset` and keeps the old mask. `sigfillset(set)` puts every signal in the set, each of the four
+words all ones (FreeBSD libc's `sigsetops.c`, POSIX), and answers 0. A missing set stops by name:
+POSIX defines no error for it.
 
 ## Thread priorities (`scePthreadGetprio`, `scePthreadSetprio`, issue #34)
 

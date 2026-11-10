@@ -8,6 +8,7 @@
    attribute records only what has been set or copied into it; reading a value the runtime does not
    know (one the system would supply) is not implemented, so the boot stops there by name instead of
    guessing. */
+#define _GNU_SOURCE /* pthread_setname_np */
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
@@ -517,14 +518,17 @@ RT_SYSLIB("libScePosix", pthread_attr_setstacksize, posix_attr_set_stack_size);
    No signal is delivered to the guest yet, so the runtime keeps each guest thread's mask, a new
    thread starting with its creator's, and does not apply it to the host thread. Its errors are
    reported through the guest's errno, which the runtime does not model, so an unknown how stops
-   by name. */
+   by name.
+
+   sigprocmask, which libc.elf imports from libkernel too (thirteen calls; +0x53f84 blocks
+   everything with SIG_SETMASK and a set from sigfillset, keeping the old mask), is the same call
+   under its POSIX name: FreeBSD's libc sigprocmask is the system call itself. */
 enum { SIG_HOW_BLOCK = 1, SIG_HOW_UNBLOCK = 2, SIG_HOW_SETMASK = 3 };
 #define BSD_SIGKILL_BIT (1u << (9 - 1))
 #define BSD_SIGSTOP_BIT (1u << (17 - 1))
 
-static int signal_proc_mask(int how, const uint32_t *set, uint32_t *old)
+static int change_signal_mask(const char *fn, int how, const uint32_t *set, uint32_t *old)
 {
-    static const char fn[] = "_sigprocmask";
     guest_thread *const self = self_for(fn);
     if (old) memcpy(old, self->signal_mask, sizeof self->signal_mask);
     if (!set) return 0;
@@ -539,7 +543,23 @@ static int signal_proc_mask(int how, const uint32_t *set, uint32_t *old)
     self->signal_mask[0] &= ~(BSD_SIGKILL_BIT | BSD_SIGSTOP_BIT);
     return 0;
 }
+static int signal_proc_mask(int how, const uint32_t *set, uint32_t *old) { return change_signal_mask("_sigprocmask", how, set, old); }
+static int posix_signal_proc_mask(int how, const uint32_t *set, uint32_t *old) { return change_signal_mask("sigprocmask", how, set, old); }
 RT_SYSLIB("libkernel", _sigprocmask, signal_proc_mask);
+RT_SYSLIB("libkernel", sigprocmask, posix_signal_proc_mask);
+
+/* sigfillset(sigset_t *set): every signal in the set, FreeBSD libc's sigsetops.c (each of the four
+   words all ones) and POSIX; it answers 0. libc.elf's one call (+0x53f73) fills a static set for
+   sigprocmask. POSIX defines no error for it and FreeBSD reads no further than the set, so a
+   missing set stops by name. */
+static int signal_fill_set(uint32_t *set)
+{
+    if (!set) rt_fatal("sigfillset", "no set: the answer is not established");
+    for (int i = 0; i < 4; i++) set[i] = ~0u;
+    return 0;
+}
+RT_SYSLIB("libkernel", sigfillset, signal_fill_set);
+
 
 /* scePthreadGetprio(thread, int32_t *priority) and scePthreadSetprio(thread, priority), as the
    OpenOrbis homebrew SDK's libkernel.h declares them. The executable's only reader (0x02a3b59d)
@@ -740,3 +760,28 @@ static int thread_once(int32_t *once, void (*init)(void))
     return 0;
 }
 RT_SYSLIB("libkernel", scePthreadOnce, thread_once);
+
+/* scePthreadRename(thread, name): the thread's name, as OpenOrbis' libkernel.h declares it and
+   libthr's pthread_set_name_np records it (shadPS4 binds the name to the same, facts only). The
+   executable's job threads rename themselves with it (a tail call at 0x00466834). The runtime keeps
+   the first 31 bytes, as for the name scePthreadCreate takes, names the host thread with the first
+   15 (the host's limit; debuggers and the host's thread list show it), and answers 0. A thread the
+   runtime does not know or has collected, and a missing name, stop by name (their answers are not
+   established). */
+static int rename_thread(guest_thread *thread, const char *name)
+{
+    static const char fn[] = "scePthreadRename";
+    if (!thread || !known_thread(thread)) rt_fatal(fn, "a thread the runtime does not know: the answer is not established");
+    if (!name) rt_fatal(fn, "no name: the answer is not established");
+    pthread_mutex_lock(&join_lock);
+    if (collected(thread)) rt_fatal(fn, "a thread that has been collected: the answer is not established");
+    strncpy(thread->name, name, sizeof thread->name - 1);
+    thread->name[sizeof thread->name - 1] = 0;
+    char host_name[16];
+    memcpy(host_name, thread->name, sizeof host_name - 1);
+    host_name[sizeof host_name - 1] = 0;
+    if (!thread->ended) pthread_setname_np(thread == current ? pthread_self() : thread->host, host_name);
+    pthread_mutex_unlock(&join_lock);
+    return 0;
+}
+RT_SYSLIB("libkernel", scePthreadRename, rename_thread);
