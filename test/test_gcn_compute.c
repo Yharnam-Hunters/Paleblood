@@ -187,6 +187,18 @@ int main(void)
         for (int i = 0; i < LANES; i++) CHECK(out_words[i] == bits(1.0f));
     }
 
+    /* v_mul_hi_u32 / v_mul_hi_i32: the high half of the 64-bit product, negative inputs included. */
+    for (int i = 0; i < LANES; i++) in_words[i] = 0x9e3779b9u * (uint32_t)(i + 1);
+    memset(out.mapped, 0, BUFFER_BYTES);
+    CHECK(run(&g, multiply_high, sizeof multiply_high / sizeof multiply_high[0], user) == 0);
+    for (int i = 0; i < LANES; i++) {
+        const uint32_t a = in_words[i];
+        const int64_t signed_square = (int64_t)(int32_t)a * (int32_t)a, signed_by_lane = (int64_t)(int32_t)a * (4 * i);
+        CHECK(out_words[i] == (uint32_t)(((uint64_t)a * a) >> 32));
+        CHECK(out_words[LANES + i] == (uint32_t)((uint64_t)signed_square >> 32));
+        CHECK(out_words[2 * LANES + i] == (uint32_t)((uint64_t)signed_by_lane >> 32));
+    }
+
     /* Branches and EXEC. */
     memset(out.mapped, 0, BUFFER_BYTES);
     CHECK(run(&g, divergent_if, sizeof divergent_if / sizeof divergent_if[0], user) == 0);
