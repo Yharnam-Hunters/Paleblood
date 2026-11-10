@@ -2146,7 +2146,7 @@ static void image_sample(translator *t, const uint32_t *code, size_t at, const g
         fail(t, "%s: unnormalized coordinates (UNORM) are not translated yet", ins->name);
         return;
     }
-    if (array != (unsigned)b->arrayed) {
+    if (array != (unsigned)b->arrayed && !b->cube) { /* a cube's coordinates are (s, t, face) whatever DA says */
         fail(t, "%s: DA %u with a%s image", ins->name, array, b->arrayed ? "n array" : " non-array");
         return;
     }
@@ -2165,6 +2165,15 @@ static void image_sample(translator *t, const uint32_t *code, size_t at, const g
     const unsigned coordinates = (b->dim == GCN_IMAGE_1D ? 1 : b->dim == GCN_IMAGE_2D ? 2 : 3) + (b->arrayed ? 1 : 0);
     uint32_t c[4];
     for (unsigned i = 0; i < coordinates; i++) c[i] = as_float(t, load(t, t_uint(t), vgpr(t, vaddr + i)));
+    if (b->cube) {
+        /* the cube instructions leave s and t in [1, 2] on the face (s / |ma| + 1.5): the face's 2D
+           coordinates are one less; the face number counts 8 per cube of an array, 6 faces each
+           (as shadPS4 samples cubes as 2D arrays) */
+        const uint32_t one = konst_float(t, 1.0f);
+        c[0] = value(t, SPV_OP_F_SUB, t_float(t), 2, c[0], one), c[1] = value(t, SPV_OP_F_SUB, t_float(t), 2, c[1], one);
+        const uint32_t cubes = glsl(t, t_float(t), SPV_GLSL_FLOOR, value(t, SPV_OP_F_MUL, t_float(t), 2, c[2], konst_float(t, 0.125f)), 0, 0, 1);
+        c[2] = glsl(t, t_float(t), SPV_GLSL_FMA, cubes, konst_float(t, -2.0f), c[2], 3);
+    }
     uint32_t coordinate = c[0];
     if (coordinates > 1) {
         const uint32_t vec = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_float(t), coordinates}, 2);

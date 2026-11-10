@@ -126,6 +126,11 @@ Instead:
        slices (AMD's address library for GFX7, as shadPS4's `ComputeImageSize` follows). The levels
        are detiled by the CPU. `image_load` and `image_load_mip` read them exactly, `image_sample`
        at the level its derivatives pick (below). A storage image keeps one level.
+     - **Cube images** (T# TYPE 11) in pixel shaders: a 2D array of six faces per cube (DEPTH counts
+       whole cubes), viewed whole. Sampling takes (s, t, face), whatever DA says: the cube
+       instructions leave s and t in [1, 2], so the face's coordinates are one less, and the face
+       number counts 8 per cube of an array (as shadPS4 samples cubes as 2D arrays). Filtering does
+       not cross faces.
      - **`image_sample_l`** takes its level of detail after the coordinates and samples there
        (Vulkan's explicit `Lod`, which the sampler's LOD bias and clamps still adjust).
      - **`image_sample`** with the sampler (S#) its SSAMP SGPRs name, found like image descriptors and
