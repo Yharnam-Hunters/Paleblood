@@ -1711,14 +1711,21 @@ static int branches(const uint32_t *w, const gcn_instruction *ins, size_t at, lo
 /* Where the descriptor that the instruction at dword `at` reads from s[first : first + width - 1]
    comes from (runtime/gcn_spirv.h): the user data when no instruction writes those SGPRs before it
    runs, or memory when the last write is an s_load of exactly those SGPRs, at an immediate offset
-   from a pointer pair no instruction before it writes. Writes before `at` are only followed when the
-   code up to it runs straight through. 0, or -1 with the reason. */
+   from a pointer pair no instruction before it writes. With branches in the program, the load is
+   followed only when every path to the use passes it: no branch lands between it and the use (code
+   runs forward between branches, so a path that skipped the load would have to land there), every
+   branch's target is known, no branch goes back to the use or before it when an instruction after
+   the use writes those SGPRs, and no instruction at all writes the pointer pair (so a loop that runs
+   the load again loads the same descriptor). Writes before the load do not matter: it replaces them
+   (the game's shaders keep a compare's mask in those SGPRs before loading the descriptor). A
+   branch that skips the load also skips the use, as the game's guarded samples do (an
+   s_cbranch_execz around both). 0, or -1 with the reason. */
 static int descriptor_origin(const uint32_t *code, size_t program, size_t at, unsigned first, unsigned width, gcn_resource_origin *origin,
                              char *error, size_t error_size)
 {
     *origin = (gcn_resource_origin){.sgpr = first};
     long writer = -1;
-    int written = 0;
+    int written = 0, written_after_use = 0;
     for (size_t p = 0; p < program;) {
         gcn_instruction ins;
         if (gcn_decode(code + p, program - p, &ins) || !ins.name) break;
@@ -1727,18 +1734,31 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
         if (n && dst < first + width && first < dst + n) {
             written = 1;
             if (p < at) writer = (long)p;
+            else written_after_use = 1;
         }
         p += ins.dwords;
     }
     if (!written) return 0;
+    int branched = 0, loops_to_load = 0; /* a branch back to the load or before it */
     for (size_t p = 0; p < program;) {
         gcn_instruction ins;
         if (gcn_decode(code + p, program - p, &ins) || !ins.name) break;
         long target;
         if (branches(code + p, &ins, p, &target) && (p < at || target < 0 || (size_t)target <= at)) {
-            snprintf(error, error_size, "the descriptor in s[%u:%u] is written by the program, and a branch (%s at dword %zu) comes "
-                     "before its use at dword %zu: not done yet", first, first + width - 1, ins.name, p, at);
-            return -1;
+            const int back_to_use = (size_t)target <= at && (size_t)target <= p && p >= at;
+            if (target < 0 || writer < 0 || (written_after_use && back_to_use)) {
+                snprintf(error, error_size, "the descriptor in s[%u:%u] is written by the program, and a branch (%s at dword %zu) comes "
+                         "before its use at dword %zu: not done yet", first, first + width - 1, ins.name, p, at);
+                return -1;
+            }
+            if (target > writer && (size_t)target <= at) {
+                snprintf(error, error_size, "the descriptor in s[%u:%u] is loaded at dword %ld, and a branch (%s at dword %zu) lands at "
+                         "dword %ld, between the load and its use at dword %zu: not done yet", first, first + width - 1, writer, ins.name,
+                         p, target, at);
+                return -1;
+            }
+            branched = 1;
+            if (target <= writer && (size_t)target <= p) loops_to_load = 1;
         }
         p += ins.dwords;
     }
@@ -1755,12 +1775,14 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
         return -1;
     }
     const unsigned pointer = ((w[0] >> 9) & 0x3f) * 2;
-    for (size_t p = 0; p < (size_t)writer;) {
+    for (size_t p = 0; p < (branched ? program : (size_t)writer);) {
         gcn_instruction before;
         gcn_decode(code + p, program - p, &before);
         unsigned d = 0;
         const unsigned m = sgprs_written(code + p, &before, &d);
-        if (m && d < pointer + 2 && pointer < d + m) {
+        /* the load may overwrite its own pointer (s[0:7] from s[0:1]) unless a loop runs it again */
+        const int the_load = p == (size_t)writer && !loops_to_load;
+        if (m && d < pointer + 2 && pointer < d + m && !the_load) {
             snprintf(error, error_size, "the descriptor in s[%u:%u] is loaded through s[%u:%u], which the program writes (%s at dword %zu): "
                      "not done yet", first, first + width - 1, pointer, pointer + 1, before.name, p);
             return -1;
