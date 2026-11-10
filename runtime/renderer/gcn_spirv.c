@@ -53,6 +53,8 @@ typedef struct {
     unsigned user_sgprs;
     int workgroup_id_x_sgpr;
     unsigned vertex_index_vgpr, barycentric_vgpr, position_enable, position_vgpr;
+    int front_face, front_face_all_bits;  /* a pixel shader's front-face input (runtime/gcn_spirv.h) */
+    unsigned front_face_vgpr;
     uint32_t output_control;         /* a vertex shader's PA_CL_VS_OUT_CNTL */
     uint32_t push_constant_offset;   /* runtime/gcn_spirv.h */
     uint64_t address_offset, error_address;
@@ -371,6 +373,43 @@ static void write_float(translator *t, const vector_operands *o, uint32_t f, con
 }
 
 /* GCN's legacy multiply: zero times anything (infinity and NaN included) is zero. */
+/* v_cubeid_f32, v_cubesc_f32, v_cubetc_f32, v_cubema_f32 on a direction (x, y, z): the cube face its
+   largest component picks (z when |z| is at least |x| and |y|, else y when |y| is at least |x|, else
+   x) and, on that face, the face number (+x 0, -x 1, +y 2, -y 3, +z 4, -z 5), the s and t coordinates
+   before division (+x: -z, -y; -x: z, -y; +y: x, z; -y: x, -z; +z: x, -y; -z: -x, -y) or twice the
+   major axis's component, as shadPS4 computes them where the GPU has no cube instructions. Shaders then
+   take s / |ma| + 1.5 and t / |ma| + 1.5 for the face's texel coordinates. */
+static uint32_t cube_instruction(translator *t, const char *name, uint32_t x, uint32_t y, uint32_t z)
+{
+    const uint32_t f = t_float(t), b = t_bool(t), zero = konst_float(t, 0.0f);
+    const uint32_t ax = glsl(t, f, SPV_GLSL_F_ABS, x, 0, 0, 1), ay = glsl(t, f, SPV_GLSL_F_ABS, y, 0, 0, 1),
+                   az = glsl(t, f, SPV_GLSL_F_ABS, z, 0, 0, 1);
+    const uint32_t z_major = value(t, SPV_OP_LOGICAL_AND, b, 2, value(t, SPV_OP_F_ORD_GREATER_THAN_EQUAL, b, 2, az, ax),
+                                   value(t, SPV_OP_F_ORD_GREATER_THAN_EQUAL, b, 2, az, ay));
+    const uint32_t y_major = value(t, SPV_OP_F_ORD_GREATER_THAN_EQUAL, b, 2, ay, ax);
+    const uint32_t x_negative = value(t, SPV_OP_F_ORD_LESS_THAN, b, 2, x, zero), y_negative = value(t, SPV_OP_F_ORD_LESS_THAN, b, 2, y, zero),
+                   z_negative = value(t, SPV_OP_F_ORD_LESS_THAN, b, 2, z, zero);
+    uint32_t on_x, on_y, on_z;
+    if (!strcmp(name, "v_cubeid_f32")) {
+        on_x = value(t, SPV_OP_SELECT, f, 3, x_negative, konst_float(t, 1.0f), konst_float(t, 0.0f));
+        on_y = value(t, SPV_OP_SELECT, f, 3, y_negative, konst_float(t, 3.0f), konst_float(t, 2.0f));
+        on_z = value(t, SPV_OP_SELECT, f, 3, z_negative, konst_float(t, 5.0f), konst_float(t, 4.0f));
+    } else if (!strcmp(name, "v_cubesc_f32")) {
+        const uint32_t minus_x = value(t, SPV_OP_F_NEGATE, f, 1, x), minus_z = value(t, SPV_OP_F_NEGATE, f, 1, z);
+        on_x = value(t, SPV_OP_SELECT, f, 3, x_negative, z, minus_z);
+        on_y = x;
+        on_z = value(t, SPV_OP_SELECT, f, 3, z_negative, minus_x, x);
+    } else if (!strcmp(name, "v_cubetc_f32")) {
+        const uint32_t minus_y = value(t, SPV_OP_F_NEGATE, f, 1, y), minus_z = value(t, SPV_OP_F_NEGATE, f, 1, z);
+        on_x = on_z = minus_y;
+        on_y = value(t, SPV_OP_SELECT, f, 3, y_negative, minus_z, z);
+    } else { /* v_cubema_f32 */
+        const uint32_t two = konst_float(t, 2.0f);
+        on_x = value(t, SPV_OP_F_MUL, f, 2, x, two), on_y = value(t, SPV_OP_F_MUL, f, 2, y, two), on_z = value(t, SPV_OP_F_MUL, f, 2, z, two);
+    }
+    return value(t, SPV_OP_SELECT, f, 3, z_major, on_z, value(t, SPV_OP_SELECT, f, 3, y_major, on_y, on_x));
+}
+
 static uint32_t legacy_multiply(translator *t, uint32_t a, uint32_t b)
 {
     const uint32_t zero = konst_float(t, 0.0f);
@@ -500,6 +539,58 @@ static uint32_t half_toward_zero(translator *t, uint32_t x)
     return r;
 }
 
+/* A float's bits as a small float's (in the low bits): 5 exponent bits (bias 15) and mantissa_bits of
+   mantissa (10: a half; 6 and 5: the unsigned 11- and 10-bit floats of 10_11_11), rounded to nearest,
+   ties to even, IEEE 754's default rounding: normal and subnormal results round on the dropped
+   mantissa bits (a carry may step the exponent, up to infinity), larger magnitudes are infinity, NaN
+   stays a quiet NaN. An unsigned format (no sign bit) takes negative numbers as 0. */
+static uint32_t small_float_nearest_even(translator *t, uint32_t x, unsigned mantissa_bits, int unsigned_format)
+{
+    enum { F32_EXPONENT_SPECIAL = 255, F32_FIRST_SMALL_NORMAL = 113, F32_TO_SMALL_BIAS = 112, SMALL_EXPONENT_ALL = 31,
+           F32_MANTISSA_BITS = 23, F32_IMPLICIT_ONE = 0x800000, SUBNORMAL_SHIFT_BASE = 136, ROUNDED_RANGE = 24 };
+    const uint32_t infinity = SMALL_EXPONENT_ALL << mantissa_bits, quiet = 1u << (mantissa_bits - 1);
+#define U(op, a, b) value(t, op, t_uint(t), 2, (a), (b))
+#define AT_LEAST_E(e) value(t, SPV_OP_U_GREATER_THAN_EQUAL, t_bool(t), 2, exponent, konst(t, (e)))
+    const uint32_t negative = value(t, SPV_OP_I_NOT_EQUAL, t_bool(t), 2, U(SPV_OP_SHIFT_RIGHT_LOGICAL, x, konst(t, 31)), konst(t, 0));
+    const uint32_t sign = unsigned_format ? konst(t, 0) : U(SPV_OP_SHIFT_LEFT_LOGICAL, U(SPV_OP_SHIFT_RIGHT_LOGICAL, x, konst(t, 31)),
+                                                             konst(t, mantissa_bits + 5));
+    const uint32_t exponent = U(SPV_OP_BITWISE_AND, U(SPV_OP_SHIFT_RIGHT_LOGICAL, x, konst(t, F32_MANTISSA_BITS)), konst(t, 0xff));
+    const uint32_t mantissa = U(SPV_OP_BITWISE_AND, x, konst(t, 0x7fffff));
+    /* the significand to round, and how many bits it drops: 23 - mantissa_bits for a normal result, more
+       (up to 24) for a subnormal one */
+    const uint32_t normal = AT_LEAST_E(F32_FIRST_SMALL_NORMAL);
+    const uint32_t significand = value(t, SPV_OP_SELECT, t_uint(t), 3, normal, mantissa, U(SPV_OP_BITWISE_OR, mantissa, konst(t, F32_IMPLICIT_ONE)));
+    const uint32_t drop = value(t, SPV_OP_SELECT, t_uint(t), 3, normal, konst(t, F32_MANTISSA_BITS - mantissa_bits),
+                                U(SPV_OP_BITWISE_AND, U(SPV_OP_I_SUB, konst(t, SUBNORMAL_SHIFT_BASE - mantissa_bits), exponent), konst(t, 31)));
+    const uint32_t kept = U(SPV_OP_SHIFT_RIGHT_LOGICAL, significand, drop);
+    const uint32_t remainder = U(SPV_OP_BITWISE_AND, significand, U(SPV_OP_I_SUB, U(SPV_OP_SHIFT_LEFT_LOGICAL, konst(t, 1), drop), konst(t, 1)));
+    const uint32_t half_way = U(SPV_OP_SHIFT_LEFT_LOGICAL, konst(t, 1), U(SPV_OP_I_SUB, drop, konst(t, 1)));
+    const uint32_t round_up = value(t, SPV_OP_LOGICAL_OR, t_bool(t), 2, value(t, SPV_OP_U_GREATER_THAN, t_bool(t), 2, remainder, half_way),
+                                    value(t, SPV_OP_LOGICAL_AND, t_bool(t), 2, value(t, SPV_OP_I_EQUAL, t_bool(t), 2, remainder, half_way),
+                                          value(t, SPV_OP_I_NOT_EQUAL, t_bool(t), 2, U(SPV_OP_BITWISE_AND, kept, konst(t, 1)), konst(t, 0))));
+    const uint32_t biased = value(t, SPV_OP_SELECT, t_uint(t), 3, normal,
+                                  U(SPV_OP_SHIFT_LEFT_LOGICAL, U(SPV_OP_I_SUB, exponent, konst(t, F32_TO_SMALL_BIAS)), konst(t, mantissa_bits)),
+                                  konst(t, 0));
+    uint32_t magnitude = U(SPV_OP_I_ADD, U(SPV_OP_BITWISE_OR, biased, kept), value(t, SPV_OP_SELECT, t_uint(t), 3, round_up, konst(t, 1), konst(t, 0)));
+    magnitude = value(t, SPV_OP_SELECT, t_uint(t), 3, value(t, SPV_OP_U_GREATER_THAN_EQUAL, t_bool(t), 2, magnitude, konst(t, infinity)),
+                      konst(t, infinity), magnitude);
+    magnitude = value(t, SPV_OP_SELECT, t_uint(t), 3, AT_LEAST_E(SUBNORMAL_SHIFT_BASE - mantissa_bits - ROUNDED_RANGE), magnitude, konst(t, 0));
+    magnitude = value(t, SPV_OP_SELECT, t_uint(t), 3, AT_LEAST_E(F32_FIRST_SMALL_NORMAL + SMALL_EXPONENT_ALL), konst(t, infinity), magnitude);
+    if (unsigned_format) magnitude = value(t, SPV_OP_SELECT, t_uint(t), 3, negative, konst(t, 0), magnitude);
+    const uint32_t nan = value(t, SPV_OP_I_NOT_EQUAL, t_bool(t), 2, mantissa, konst(t, 0));
+    const uint32_t special = value(t, SPV_OP_SELECT, t_uint(t), 3, nan,
+                                   U(SPV_OP_BITWISE_OR, konst(t, infinity | quiet),
+                                     U(SPV_OP_SHIFT_RIGHT_LOGICAL, mantissa, konst(t, F32_MANTISSA_BITS - mantissa_bits))),
+                                   value(t, SPV_OP_SELECT, t_uint(t), 3, unsigned_format ? negative : spirv_constant_bool(&t->m, 0),
+                                         konst(t, 0), konst(t, infinity)));
+    magnitude = value(t, SPV_OP_SELECT, t_uint(t), 3, AT_LEAST_E(F32_EXPONENT_SPECIAL), special, magnitude);
+#undef AT_LEAST_E
+#undef U
+    return value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, sign, magnitude);
+}
+
+static uint32_t half_nearest_even(translator *t, uint32_t x) { return small_float_nearest_even(t, x, 10, 0); }
+
 /* A bit field: width bits of data from bit offset (0-31) up, zero- or sign-extended. A width of 0
    gives 0; 32 or more takes everything from the offset up. The signed form shifts arithmetically,
    so a field that runs past bit 31 is filled with the sign. */
@@ -608,6 +699,8 @@ static void vector_instruction(translator *t, const uint32_t *w, const gcn_instr
             r = value(t, SPV_OP_F_ADD, t_float(t), 2, product, c);
         }
         write_float(t, &o, r, ins);
+    } else if (!strncmp(name, "v_cube", 6)) {
+        write_float(t, &o, cube_instruction(t, name, float_source(t, &o, 0, ins), float_source(t, &o, 1, ins), float_source(t, &o, 2, ins)), ins);
     } else if (!strcmp(name, "v_madmk_f32") || !strcmp(name, "v_madak_f32")) {
         /* madmk: src0 * K + vsrc1; madak: src0 * vsrc1 + K, with K the literal. */
         const uint32_t a = float_source(t, &o, 0, ins), b = float_source(t, &o, 1, ins);
@@ -615,6 +708,21 @@ static void vector_instruction(translator *t, const uint32_t *w, const gcn_instr
         const int k_multiplies = !strcmp(name, "v_madmk_f32");
         const uint32_t product = value(t, SPV_OP_F_MUL, t_float(t), 2, a, k_multiplies ? k : b);
         write_float(t, &o, value(t, SPV_OP_F_ADD, t_float(t), 2, product, k_multiplies ? b : k), ins);
+    } else if (!strcmp(name, "v_mul_hi_u32") || !strcmp(name, "v_mul_hi_i32")) {
+        /* The high 32 bits of the 64-bit product (Sea Islands manual). Signed, from the unsigned
+           one: hi_s(a, b) = hi_u(a, b) - (a < 0 ? b : 0) - (b < 0 ? a : 0), modulo 2^32. */
+        if (o.abs || o.neg || o.clamp || o.omod) fail(t, "%s: modifiers on an integer operation", name);
+        const uint32_t a = source(t, o.src[0], ins), b = source(t, o.src[1], ins);
+        const uint32_t thirty_two = spirv_global(&t->m, SPV_OP_CONSTANT, (const uint32_t[]){t_ulong(t), 32, 0}, 3);
+        const uint32_t product = value(t, SPV_OP_I_MUL, t_ulong(t), 2, widen(t, a), widen(t, b));
+        uint32_t high = value(t, SPV_OP_U_CONVERT, t_uint(t), 1, value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_ulong(t), 2, product, thirty_two));
+        if (!strcmp(name, "v_mul_hi_i32")) {
+            const uint32_t a_negative = value(t, SPV_OP_U_GREATER_THAN_EQUAL, t_bool(t), 2, a, konst(t, 0x80000000u));
+            const uint32_t b_negative = value(t, SPV_OP_U_GREATER_THAN_EQUAL, t_bool(t), 2, b, konst(t, 0x80000000u));
+            high = value(t, SPV_OP_I_SUB, t_uint(t), 2, high, value(t, SPV_OP_SELECT, t_uint(t), 3, a_negative, b, konst(t, 0)));
+            high = value(t, SPV_OP_I_SUB, t_uint(t), 2, high, value(t, SPV_OP_SELECT, t_uint(t), 3, b_negative, a, konst(t, 0)));
+        }
+        write_vgpr(t, o.dst, high);
     } else if ((op = FIND(integer_binary, name))) {
         if (o.abs || o.neg || o.clamp || o.omod) fail(t, "%s: modifiers on an integer operation", name);
         uint32_t a = source(t, o.src[0], ins), b = source(t, o.src[1], ins);
@@ -718,7 +826,10 @@ static void vector_instruction(translator *t, const uint32_t *w, const gcn_instr
         const uint32_t high = half_toward_zero(t, as_bits(t, float_source(t, &o, 1, ins)));
         write_vgpr(t, o.dst, value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, low,
                                    value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, high, konst(t, 16))));
-    } else if (!strcmp(name, "v_rcp_f32")) {
+    } else if (!strcmp(name, "v_rcp_f32") || !strcmp(name, "v_rcp_iflag_f32")) {
+        /* v_rcp_iflag_f32 is the same reciprocal; only the exception flags it raises differ (integer
+           divide by zero rather than the float ones: the Sea Islands manual's opcode list; shadPS4
+           translates it as the reciprocal), and shaders read no flags. */
         write_float(t, &o, value(t, SPV_OP_F_DIV, t_float(t), 2, konst_float(t, 1.0f), float_source(t, &o, 0, ins)), ins);
     } else if (!strcmp(name, "v_sqrt_f32") || !strcmp(name, "v_rsq_f32") || !strcmp(name, "v_floor_f32") ||
                !strcmp(name, "v_fract_f32")) {
@@ -992,6 +1103,13 @@ static void store_dword(translator *t, uint32_t pointer, uint32_t v)
     spirv_emit(&t->m, t->out, SPV_OP_STORE, words, 4);
 }
 
+enum { VSHARP_RECORDS_WORD = 2 }; /* a buffer descriptor's NUM_RECORDS */
+
+static uint32_t ulong_constant(translator *t, uint64_t v)
+{
+    return spirv_global(&t->m, SPV_OP_CONSTANT, (const uint32_t[]){t_ulong(t), (uint32_t)v, (uint32_t)(v >> 32)}, 3);
+}
+
 static void scalar_memory(translator *t, const uint32_t *w, const gcn_instruction *ins)
 {
     const char *name = ins->name;
@@ -1009,7 +1127,29 @@ static void scalar_memory(translator *t, const uint32_t *w, const gcn_instructio
     const uint32_t byte_offset = immediate ? konst(t, offset_field * BYTES_PER_DWORD) : load(t, t_uint(t), sgpr(t, offset_field));
     const int descriptor = !strncmp(name, "s_buffer_load", strlen("s_buffer_load"));
     const uint32_t base = address_in(t, base_sgpr, descriptor ? VSHARP_BASE_HIGH_MASK : POINTER_HIGH_MASK);
-    for (uint32_t i = 0; i < dwords_named(name); i++) write_sgpr(t, sdst + i, load_dword(t, dword_pointer(t, base, byte_offset, i)), ins);
+    if (!descriptor) {
+        for (uint32_t i = 0; i < dwords_named(name); i++) write_sgpr(t, sdst + i, load_dword(t, dword_pointer(t, base, byte_offset, i)), ins);
+        return;
+    }
+    /* s_buffer_load is range-checked against its descriptor as vector buffer accesses are: a dword at
+       or past the buffer's size reads 0 (NUM_RECORDS bytes with stride 0, NUM_RECORDS records of the
+       stride otherwise; CLRX's GCN memory handling notes, shadPS4's buffer size rule). The game's LUT
+       pass reads its constants through a descriptor loaded from memory as it runs. */
+    const uint32_t records = widen(t, load(t, t_uint(t), sgpr(t, base_sgpr + VSHARP_RECORDS_WORD)));
+    const uint32_t stride = widen(t, value(t, SPV_OP_BITWISE_AND, t_uint(t), 2,
+                                           value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, load(t, t_uint(t), sgpr(t, base_sgpr + 1)),
+                                                 konst(t, VSHARP_STRIDE_SHIFT)),
+                                           konst(t, VSHARP_STRIDE_MASK)));
+    const uint32_t size = value(t, SPV_OP_SELECT, t_ulong(t), 3, value(t, SPV_OP_I_EQUAL, t_bool(t), 2, stride, ulong_constant(t, 0)), records,
+                                value(t, SPV_OP_I_MUL, t_ulong(t), 2, records, stride));
+    for (uint32_t i = 0; i < dwords_named(name); i++) {
+        const uint32_t end = value(t, SPV_OP_I_ADD, t_ulong(t), 2, widen(t, byte_offset), ulong_constant(t, (uint64_t)(i + 1) * BYTES_PER_DWORD));
+        const uint32_t slot = function_variable(t, t_uint(t), konst(t, 0));
+        const uint32_t in_range = begin_if(t, value(t, SPV_OP_U_LESS_THAN_EQUAL, t_bool(t), 2, end, size));
+        store(t, t->out, slot, load_dword(t, dword_pointer(t, base, byte_offset, i)));
+        end_if(t, in_range);
+        write_sgpr(t, sdst + i, load(t, t_uint(t), slot), ins);
+    }
 }
 
 /* Typed buffer formats (MTBUF dfmt and nfmt; the numbers are those LLVM's GFX7 assembler gives
@@ -1077,7 +1217,7 @@ enum { VSHARP_FORMAT_WORD = 3, DST_SEL_BITS = 12, DST_SEL_IDENTITY = 4 | 5 << 3 
 
 static uint32_t t_vec4(translator *t) { return spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_float(t), 4}, 2); }
 
-enum { DATA_FORMAT_8_8_8_8 = 10, NUM_FORMAT_UNORM = 0, DST_SEL_X = 4 };
+enum { DATA_FORMAT_10_11_11 = 6, DATA_FORMAT_8_8_8_8 = 10, DATA_FORMAT_16_16_16_16 = 12, NUM_FORMAT_UNORM = 0, DST_SEL_X = 4 };
 
 /* Writes a run-time stop code to the stop word (runtime/gcn_spirv.h). */
 static void runtime_stop(translator *t, uint32_t code)
@@ -1132,11 +1272,11 @@ static const struct {
 
 enum { MAX_SMALL_FORMAT_DWORDS = 3 }; /* 8 bytes from an address 2 past a dword boundary */
 
-/* A small format's components (memory[0..3], the missing ones 0) at the byte address base + offset:
-   the dwords that hold them are loaded aligned, and each component's bytes taken out of them. uint
+/* A small format's components (memory[0..3], the missing ones 0) at the byte address base + offset
+   (all 0 when the element is out of range, in_range false): the dwords that hold them are loaded aligned, and each component's bytes taken out of them. uint
    components are zero-extended, sint ones sign-extended, 8-bit unorm ones v / 255 as a float's bits. */
 static void small_components(translator *t, uint32_t base, uint32_t offset, uint32_t component_bytes, uint32_t count,
-                             uint32_t num_format, uint32_t memory[4])
+                             uint32_t num_format, uint32_t in_range, uint32_t memory[4])
 {
     const uint32_t address = value(t, SPV_OP_I_ADD, t_ulong(t), 2, base, widen(t, offset));
     const uint32_t misalign = value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, value(t, SPV_OP_U_CONVERT, t_uint(t), 1, address), konst(t, 3));
@@ -1146,7 +1286,7 @@ static void small_components(translator *t, uint32_t base, uint32_t offset, uint
     for (uint32_t d = 0; d < MAX_SMALL_FORMAT_DWORDS; d++) {
         /* only the dwords the format's bytes reach are read */
         const uint32_t slot = function_variable(t, t_uint(t), konst(t, 0));
-        const uint32_t needed = begin_if(t, value(t, SPV_OP_U_GREATER_THAN, t_bool(t), 2, end, konst(t, d * BYTES_PER_DWORD)));
+        const uint32_t needed = begin_if(t, both(t, in_range, value(t, SPV_OP_U_GREATER_THAN, t_bool(t), 2, end, konst(t, d * BYTES_PER_DWORD))));
         store(t, t->out, slot, load_dword(t, dword_pointer(t, aligned, konst(t, 0), d)));
         end_if(t, needed);
         dword[d] = load(t, t_uint(t), slot);
@@ -1180,6 +1320,61 @@ static void small_components(translator *t, uint32_t base, uint32_t offset, uint
     }
 }
 
+/* Buffer range checking: a buffer access outside its descriptor's range reads 0 and writes nothing,
+   lane by lane, as the hardware does (CLRX's GCN memory handling notes, "Range checking"; gem5's
+   GCN3 model of the same). With the descriptor's stride 0, NUM_RECORDS (word 2) counts bytes and an
+   address is out of range when its offset (instruction offset + VGPR offset) is at or past
+   NUM_RECORDS less the SGPR offset; with a stride and an index (IDXEN), when the index is at or past
+   NUM_RECORDS or the offset at or past the stride. A strided access without an index is held to
+   NUM_RECORDS records of the stride (the buffer's size as shadPS4 sizes it, GetBufferSize). Each
+   dword is checked at its own byte, so a multi-dword access may be partly in range. */
+
+typedef struct {
+    unsigned indexed;     /* IDXEN */
+    uint32_t stride_zero; /* bool */
+    uint32_t stride, records, soffset, index_in_range; /* ulong, ulong, ulong, bool */
+    uint32_t offset;      /* the instruction offset + VGPR offset (uint) */
+} buffer_range;
+
+static buffer_range buffer_range_of(translator *t, unsigned srsrc, unsigned indexed, uint32_t index, uint32_t stride, uint32_t soffset,
+                                    uint32_t offset)
+{
+    const uint32_t records = load(t, t_uint(t), sgpr(t, srsrc + VSHARP_RECORDS_WORD));
+    return (buffer_range){.indexed = indexed, .stride_zero = equals(t, stride, konst(t, 0)), .stride = widen(t, stride),
+                          .records = widen(t, records), .soffset = widen(t, soffset),
+                          .index_in_range = value(t, SPV_OP_U_LESS_THAN, t_bool(t), 2, index, records), .offset = offset};
+}
+
+/* Whether the byte `byte` past the access' offset is in range. */
+static uint32_t buffer_in_range(translator *t, const buffer_range *r, uint32_t byte)
+{
+    const uint32_t at = value(t, SPV_OP_I_ADD, t_ulong(t), 2, widen(t, r->offset), ulong_constant(t, byte));
+    const uint32_t from_start = value(t, SPV_OP_I_ADD, t_ulong(t), 2, at, r->soffset);
+    const uint32_t raw = value(t, SPV_OP_U_LESS_THAN, t_bool(t), 2, from_start, r->records);
+    const uint32_t strided = r->indexed ? both(t, r->index_in_range, value(t, SPV_OP_U_LESS_THAN, t_bool(t), 2, at, r->stride))
+                                        : value(t, SPV_OP_U_LESS_THAN, t_bool(t), 2, from_start,
+                                                value(t, SPV_OP_I_MUL, t_ulong(t), 2, r->records, r->stride));
+    return value(t, SPV_OP_SELECT, t_bool(t), 3, r->stride_zero, raw, strided);
+}
+
+/* A dword load that reads 0 out of range (the load itself is not made then). */
+static uint32_t checked_load_dword(translator *t, const buffer_range *r, uint32_t base, uint32_t offset, uint32_t index)
+{
+    const uint32_t slot = function_variable(t, t_uint(t), konst(t, 0));
+    const uint32_t in_range = begin_if(t, buffer_in_range(t, r, index * BYTES_PER_DWORD));
+    store(t, t->out, slot, load_dword(t, dword_pointer(t, base, offset, index)));
+    end_if(t, in_range);
+    return load(t, t_uint(t), slot);
+}
+
+/* A dword store that writes nothing out of range. */
+static void checked_store_dword(translator *t, const buffer_range *r, uint32_t base, uint32_t offset, uint32_t index, uint32_t v)
+{
+    const uint32_t in_range = begin_if(t, buffer_in_range(t, r, index * BYTES_PER_DWORD));
+    store_dword(t, dword_pointer(t, base, offset, index), v);
+    end_if(t, in_range);
+}
+
 /* buffer_load/store_format_*: the data format is the descriptor's, so the shader decides as it runs.
    Done exactly:
    - stores of whole 32-bit components (DATA_FORMAT 32 to 32_32_32_32; uint, sint or float), at least
@@ -1201,10 +1396,16 @@ static void small_components(translator *t, uint32_t base, uint32_t offset, uint
      undoes the swizzle (memory component DST_SEL[i] - 4 takes data component i, the inverse of a
      load's mapping, as shadPS4's lower_buffer_format_to_raw.cpp does), then packs as GLSL's
      packUnorm4x8 (clamp to [0, 1], times 255, rounded to nearest; the PS4's rule for ties is not
-     established).
+     established);
+   - a four-component store to 16_16_16_16 float with DST_SEL a permutation: the swizzle undone as for
+     8_8_8_8, each component a half rounded to nearest even (IEEE 754's default; shadPS4 packs these
+     with packHalf2x16), two to a dword, x first;
+   - a store to 10_11_11 float with its three components in place: unsigned 11-, 11- and 10-bit floats
+     (x in bits 0-10, y 11-21, z 22-31, as shadPS4's PackUfloat10_11_11 lays them out), rounded to
+     nearest even, negative numbers 0.
    Anything else writes a run-time stop code (runtime/gcn_spirv.h) and touches no memory. */
 static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t components, int load_op, uint32_t base, uint32_t offset,
-                                     unsigned vdata)
+                                     const buffer_range *range, unsigned vdata)
 {
     const uint32_t word = load(t, t_uint(t), sgpr(t, srsrc + VSHARP_FORMAT_WORD));
     const uint32_t data_format = descriptor_field(t, word, DATA_FORMAT_SHIFT, 0xf);
@@ -1262,8 +1463,25 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
                                                        either(t, integer, unorm8)),
                                               selectors_valid)
                                          : spirv_constant_bool(&t->m, 0);
+    /* a four-component store to 16_16_16_16 float whose DST_SEL is a permutation of x, y, z, w: the
+       components as halves, rounded to nearest even (half_nearest_even), two to a dword, x first */
+    const uint32_t half_store = !load_op && components == 4
+                                    ? both(t, both(t, equals(t, data_format, konst(t, DATA_FORMAT_16_16_16_16)),
+                                                   equals(t, num_format, konst(t, NFMT_FLOAT))),
+                                           equals(t, seen, konst(t, 0xf)))
+                                    : spirv_constant_bool(&t->m, 0);
+    /* a store to 10_11_11 float (unsigned floats: x in bits 0-10 and y in 11-21 with 6 mantissa bits,
+       z in 22-31 with 5; shadPS4's PackUfloat10_11_11 lays them out the same) with its three components
+       in place; a fourth data component has nowhere to go */
+    uint32_t in_place3 = spirv_constant_bool(&t->m, 1);
+    for (unsigned c = 0; c < 3; c++) in_place3 = both(t, in_place3, equals(t, select[c], konst(t, DST_SEL_X + c)));
+    const uint32_t float_10_11_11_store = !load_op && components >= 3
+                                              ? both(t, both(t, equals(t, data_format, konst(t, DATA_FORMAT_10_11_11)),
+                                                             equals(t, num_format, konst(t, NFMT_FLOAT))),
+                                                     in_place3)
+                                              : spirv_constant_bool(&t->m, 0);
     /* neither: the stop code, from any active lane */
-    const uint32_t done = either(t, either(t, raw, packed_store), packed_load);
+    const uint32_t done = either(t, either(t, either(t, either(t, raw, packed_store), packed_load), half_store), float_10_11_11_store);
     const uint32_t stop = begin_if(t, both(t, exec_bit(t), value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, done)));
     uint32_t code = value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, data_format, konst(t, 8)),
                           value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, num_format, konst(t, 4)));
@@ -1279,7 +1497,8 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
         uint32_t memory[4];
         for (uint32_t m = 0; m < 4; m++) {
             const uint32_t slot = function_variable(t, t_uint(t), konst(t, 0));
-            const uint32_t present = begin_if(t, value(t, SPV_OP_U_GREATER_THAN, t_bool(t), 2, available, konst(t, m)));
+            const uint32_t present = begin_if(t, both(t, value(t, SPV_OP_U_GREATER_THAN, t_bool(t), 2, available, konst(t, m)),
+                                                      buffer_in_range(t, range, m * BYTES_PER_DWORD)));
             store(t, t->out, slot, load_dword(t, dword_pointer(t, base, offset, m)));
             end_if(t, present);
             memory[m] = load(t, t_uint(t), slot);
@@ -1293,13 +1512,13 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
             write_vgpr(t, vdata + c, result);
         }
     } else {
-        for (uint32_t i = 0; i < components; i++) store_dword(t, dword_pointer(t, base, offset, i), load(t, t_uint(t), vgpr(t, vdata + i)));
+        for (uint32_t i = 0; i < components; i++) checked_store_dword(t, range, base, offset, i, load(t, t_uint(t), vgpr(t, vdata + i)));
     }
     end_if(t, raw_merge);
     if (load_op) {
         const uint32_t packed_merge = begin_if(t, both(t, exec_bit(t), packed_load));
         uint32_t memory[4];
-        small_components(t, base, offset, component_bytes, small_count, num_format, memory);
+        small_components(t, base, offset, component_bytes, small_count, num_format, buffer_in_range(t, range, 0), memory);
         const uint32_t one = value(t, SPV_OP_SELECT, t_uint(t), 3, unorm8, konst(t, 0x3f800000u), konst(t, 1));
         for (uint32_t c = 0; c < components; c++) {
             const uint32_t sel = descriptor_field(t, word, 3 * c, 0x7);
@@ -1311,7 +1530,35 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
         end_if(t, packed_merge);
         return;
     }
+    if (components >= 3) {
+        const uint32_t merge = begin_if(t, both(t, exec_bit(t), float_10_11_11_store));
+        const uint32_t x = small_float_nearest_even(t, load(t, t_uint(t), vgpr(t, vdata)), 6, 1);
+        const uint32_t y = small_float_nearest_even(t, load(t, t_uint(t), vgpr(t, vdata + 1)), 6, 1);
+        const uint32_t z = small_float_nearest_even(t, load(t, t_uint(t), vgpr(t, vdata + 2)), 5, 1);
+        const uint32_t packed = value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, x,
+                                      value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, y, konst(t, 11)),
+                                            value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, z, konst(t, 22))));
+        checked_store_dword(t, range, base, offset, 0, packed);
+        end_if(t, merge);
+    }
     if (components != 4) return;
+
+    {
+        const uint32_t half_merge = begin_if(t, both(t, exec_bit(t), half_store));
+        uint32_t halves[4];
+        for (unsigned m = 0; m < 4; m++) {
+            uint32_t bits = konst(t, 0);
+            for (unsigned c = 0; c < 4; c++)
+                bits = value(t, SPV_OP_SELECT, t_uint(t), 3, equals(t, select[c], konst(t, DST_SEL_X + m)), load(t, t_uint(t), vgpr(t, vdata + c)),
+                             bits);
+            halves[m] = half_nearest_even(t, bits);
+        }
+        for (unsigned d = 0; d < 2; d++)
+            checked_store_dword(t, range, base, offset, d,
+                                value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, halves[2 * d],
+                                      value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, halves[2 * d + 1], konst(t, 16))));
+        end_if(t, half_merge);
+    }
 
     const uint32_t packed_merge = begin_if(t, both(t, exec_bit(t), packed_store));
     uint32_t data[4], memory[4];
@@ -1323,7 +1570,7 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
     }
     enum { SPV_OP_COMPOSITE_CONSTRUCT = 80 };
     const uint32_t vec = value(t, SPV_OP_COMPOSITE_CONSTRUCT, t_vec4(t), 4, memory[0], memory[1], memory[2], memory[3]);
-    store_dword(t, dword_pointer(t, base, offset, 0), glsl(t, t_uint(t), SPV_GLSL_PACK_UNORM_4X8, vec, 0, 0, 1));
+    checked_store_dword(t, range, base, offset, 0, glsl(t, t_uint(t), SPV_GLSL_PACK_UNORM_4X8, vec, 0, 0, 1));
     end_if(t, packed_merge);
 }
 
@@ -1345,26 +1592,26 @@ static void buffer_memory(translator *t, const uint32_t *w, const gcn_instructio
     }
     /* base + soffset + instruction offset + vgpr offset (offen) + index * stride (idxen); with
        both, the index is in vaddr and the offset in vaddr + 1. */
-    uint32_t offset = value(t, SPV_OP_I_ADD, t_uint(t), 2, source(t, soffset, ins), konst(t, w[0] & 0xfff));
-    if (offen) offset = value(t, SPV_OP_I_ADD, t_uint(t), 2, offset, load(t, t_uint(t), vgpr(t, vaddr + idxen)));
-    if (idxen) {
-        const uint32_t stride = value(t, SPV_OP_BITWISE_AND, t_uint(t), 2,
-                                      value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, load(t, t_uint(t), sgpr(t, srsrc + 1)),
-                                            konst(t, VSHARP_STRIDE_SHIFT)),
-                                      konst(t, VSHARP_STRIDE_MASK));
-        offset = value(t, SPV_OP_I_ADD, t_uint(t), 2, offset,
-                       value(t, SPV_OP_I_MUL, t_uint(t), 2, load(t, t_uint(t), vgpr(t, vaddr)), stride));
-    }
+    const uint32_t soffset_value = source(t, soffset, ins);
+    uint32_t access_offset = konst(t, w[0] & 0xfff);
+    if (offen) access_offset = value(t, SPV_OP_I_ADD, t_uint(t), 2, access_offset, load(t, t_uint(t), vgpr(t, vaddr + idxen)));
+    const uint32_t stride = value(t, SPV_OP_BITWISE_AND, t_uint(t), 2,
+                                  value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, load(t, t_uint(t), sgpr(t, srsrc + 1)),
+                                        konst(t, VSHARP_STRIDE_SHIFT)),
+                                  konst(t, VSHARP_STRIDE_MASK));
+    const uint32_t index = idxen ? load(t, t_uint(t), vgpr(t, vaddr)) : konst(t, 0);
+    uint32_t offset = value(t, SPV_OP_I_ADD, t_uint(t), 2, soffset_value, access_offset);
+    if (idxen) offset = value(t, SPV_OP_I_ADD, t_uint(t), 2, offset, value(t, SPV_OP_I_MUL, t_uint(t), 2, index, stride));
+    const buffer_range range = buffer_range_of(t, srsrc, idxen, index, stride, soffset_value, access_offset);
     const uint32_t base = address_in(t, srsrc, VSHARP_BASE_HIGH_MASK);
     if (ins->encoding == GCN_MUBUF && strstr(name, "_format_")) {
-        descriptor_format_access(t, srsrc, dwords, load_op, base, offset, vdata);
+        descriptor_format_access(t, srsrc, dwords, load_op, base, offset, &range, vdata);
         return;
     }
     const uint32_t merge = begin_if(t, exec_bit(t));
     for (uint32_t i = 0; i < dwords; i++) {
-        const uint32_t pointer = dword_pointer(t, base, offset, i);
-        if (load_op) write_vgpr(t, vdata + i, load_dword(t, pointer));
-        else store_dword(t, pointer, load(t, t_uint(t), vgpr(t, vdata + i)));
+        if (load_op) write_vgpr(t, vdata + i, checked_load_dword(t, &range, base, offset, i));
+        else checked_store_dword(t, &range, base, offset, i, load(t, t_uint(t), vgpr(t, vdata + i)));
     }
     end_if(t, merge);
 }
@@ -1585,13 +1832,20 @@ static void starting_registers(translator *t, const stage_layout *layout)
     if (layout->stage == STAGE_PIXEL) {
         /* the barycentric VGPRs are read only by v_interp, by number; the position is FragCoord's x and y */
         t->writing = 0;
-        if (!layout->position_enable) return;
-        const uint32_t frag_coord = interface_variable(t, SPV_STORAGE_INPUT, t_vec4(t), SPV_DECORATION_BUILT_IN, SPV_BUILT_IN_FRAG_COORD);
-        unsigned next = layout->position_vgpr;
-        for (unsigned axis = 0; axis < 2; axis++) {
-            if (!(layout->position_enable >> axis & 1)) continue;
-            const uint32_t component = load(t, t_float(t), vec4_component(t, SPV_STORAGE_INPUT, frag_coord, axis));
-            store(t, t->out, vgpr(t, next++), value(t, SPV_OP_BITCAST, t_uint(t), 1, component));
+        if (layout->position_enable) {
+            const uint32_t frag_coord = interface_variable(t, SPV_STORAGE_INPUT, t_vec4(t), SPV_DECORATION_BUILT_IN, SPV_BUILT_IN_FRAG_COORD);
+            unsigned next = layout->position_vgpr;
+            for (unsigned axis = 0; axis < 2; axis++) {
+                if (!(layout->position_enable >> axis & 1)) continue;
+                const uint32_t component = load(t, t_float(t), vec4_component(t, SPV_STORAGE_INPUT, frag_coord, axis));
+                store(t, t->out, vgpr(t, next++), value(t, SPV_OP_BITCAST, t_uint(t), 1, component));
+            }
+        }
+        if (layout->front_face) {
+            const uint32_t facing = interface_variable(t, SPV_STORAGE_INPUT, t_bool(t), SPV_DECORATION_BUILT_IN, SPV_BUILT_IN_FRONT_FACING);
+            const uint32_t front = layout->front_face_all_bits ? 1u : 0x3f800000u, back = layout->front_face_all_bits ? 0u : 0xbf800000u;
+            store(t, t->out, vgpr(t, layout->front_face_vgpr),
+                  value(t, SPV_OP_SELECT, t_uint(t), 3, load(t, t_bool(t), facing), konst(t, front), konst(t, back)));
         }
         return;
     }
@@ -1710,13 +1964,15 @@ static int branches(const uint32_t *w, const gcn_instruction *ins, size_t at, lo
 
 /* Where the descriptor that the instruction at dword `at` reads from s[first : first + width - 1]
    comes from (runtime/gcn_spirv.h): the user data when no instruction writes those SGPRs before it
-   runs, or memory when the last write is an s_load of exactly those SGPRs, at an immediate offset
+   runs, or memory when the last write is an s_load covering those SGPRs (exactly, or as part of a wider load), at an immediate offset
    from a pointer pair no instruction before it writes. With branches in the program, the load is
    followed only when every path to the use passes it: no branch lands between it and the use (code
    runs forward between branches, so a path that skipped the load would have to land there), every
    branch's target is known, no branch goes back to the use or before it when an instruction after
-   the use writes those SGPRs, and no instruction at all writes the pointer pair (so a loop that runs
-   the load again loads the same descriptor). Writes before the load do not matter: it replaces them
+   the use writes those SGPRs, and no instruction before the load writes the pointer pair, nor any
+   instruction at all when a branch goes back to the load or before it (so a loop that runs the load
+   again loads the same descriptor; without one, code after the load may reuse the pointer's SGPRs, as
+   the game's pixel shaders do once their samples are done). Writes before the load do not matter: it replaces them
    (the game's shaders keep a compare's mask in those SGPRs before loading the descriptor). A
    branch that skips the load also skips the use, as the game's guarded samples do (an
    s_cbranch_execz around both). 0, or -1 with the reason. */
@@ -1739,7 +1995,7 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
         p += ins.dwords;
     }
     if (!written) return 0;
-    int branched = 0, loops_to_load = 0; /* a branch back to the load or before it */
+    int loops_to_load = 0; /* a branch back to the load or before it */
     for (size_t p = 0; p < program;) {
         gcn_instruction ins;
         if (gcn_decode(code + p, program - p, &ins) || !ins.name) break;
@@ -1757,7 +2013,6 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
                          p, target, at);
                 return -1;
             }
-            branched = 1;
             if (target <= writer && (size_t)target <= p) loops_to_load = 1;
         }
         p += ins.dwords;
@@ -1769,13 +2024,14 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
     unsigned dst = 0;
     const unsigned n = sgprs_written(w, &ins, &dst);
     const int immediate = (w[0] >> 8) & 1;
-    if (ins.encoding != GCN_SMRD || strncmp(ins.name, "s_load_dword", 12) || dst != first || n != width || !immediate) {
-        snprintf(error, error_size, "the descriptor in s[%u:%u] is written by the program (%s at dword %ld), not loaded whole from a "
+    /* the load may bring more SGPRs than the descriptor (an s_load_dwordx16 of two image descriptors) */
+    if (ins.encoding != GCN_SMRD || strncmp(ins.name, "s_load_dword", 12) || dst > first || first + width > dst + n || !immediate) {
+        snprintf(error, error_size, "the descriptor in s[%u:%u] is written by the program (%s at dword %ld), not loaded from a "
                  "user-data pointer: not done yet", first, first + width - 1, ins.name, writer);
         return -1;
     }
     const unsigned pointer = ((w[0] >> 9) & 0x3f) * 2;
-    for (size_t p = 0; p < (branched ? program : (size_t)writer);) {
+    for (size_t p = 0; p < (loops_to_load ? program : (size_t)writer);) {
         gcn_instruction before;
         gcn_decode(code + p, program - p, &before);
         unsigned d = 0;
@@ -1789,7 +2045,8 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
         }
         p += before.dwords;
     }
-    *origin = (gcn_resource_origin){.from_memory = 1, .sgpr = first, .pointer_sgpr = pointer, .offset = (w[0] & 0xff) * BYTES_PER_DWORD};
+    *origin = (gcn_resource_origin){.from_memory = 1, .sgpr = first, .pointer_sgpr = pointer,
+                                    .offset = ((w[0] & 0xff) + (first - dst)) * BYTES_PER_DWORD};
     return 0;
 }
 
@@ -1907,11 +2164,12 @@ static uint32_t sampler_variable(translator *t, unsigned j)
 }
 
 /* image_sample: float coordinates from VADDR on (x, then y for 2D, then the slice for an array, which
-   DA marks), sampled at level 0 with the sampler its SSAMP SGPRs name. GCN picks the level from the
-   coordinates' derivatives; level 0 is the same texels when the image has one level and the sampler's
-   minifying and magnifying filters agree, which the caller checks (and the derivatives would need
-   uniform control flow, which the translated program's dispatch loop does not have). Only active
-   lanes write their VGPRs. */
+   DA marks), sampled with the sampler its SSAMP SGPRs name at the level the coordinates' derivatives
+   pick, as GCN does: the derivatives across the pixel's 2x2 quad (x from the quad's first pixel to
+   its second, y from the first to its third; the slice has none), passed as explicit gradients
+   because the translated program's dispatch loop is not uniform control flow for Vulkan's implicit
+   derivatives; the quad's lanes take the same path, so its broadcasts are defined. Only active lanes
+   write their VGPRs. */
 static void image_sample(translator *t, const uint32_t *code, size_t at, const gcn_instruction *ins, unsigned binding, uint32_t texel_type,
                          unsigned dmask, unsigned vaddr, unsigned vdata)
 {
@@ -1954,14 +2212,31 @@ static void image_sample(translator *t, const uint32_t *code, size_t at, const g
         spirv_emit(&t->m, t->out, SPV_OP_COMPOSITE_CONSTRUCT, words, 2 + coordinates);
         coordinate = words[1];
     }
+    /* the gradients, from every lane of the quad (before the active lanes split off) */
+    const unsigned spatial = coordinates - (b->arrayed ? 1 : 0);
+    uint32_t dx[3] = {0}, dy[3] = {0};
+    for (unsigned i = 0; i < spatial; i++) {
+        uint32_t corner[3];
+        for (unsigned q = 0; q < 3; q++)
+            corner[q] = value(t, SPV_OP_GROUP_NON_UNIFORM_QUAD_BROADCAST, t_float(t), 3, konst(t, SPV_SCOPE_SUBGROUP), c[i], konst(t, q));
+        dx[i] = value(t, SPV_OP_F_SUB, t_float(t), 2, corner[1], corner[0]);
+        dy[i] = value(t, SPV_OP_F_SUB, t_float(t), 2, corner[2], corner[0]);
+    }
+    t->uses_quads = 1;
+    uint32_t gradient_x = dx[0], gradient_y = dy[0];
+    if (spatial > 1) {
+        const uint32_t vec = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_float(t), spatial}, 2);
+        gradient_x = value(t, SPV_OP_COMPOSITE_CONSTRUCT, vec, spatial, dx[0], dx[1], dx[2]);
+        gradient_y = value(t, SPV_OP_COMPOSITE_CONSTRUCT, vec, spatial, dy[0], dy[1], dy[2]);
+    }
     const uint32_t image_variable_id = image_variable(t, binding), sampler_id = sampler_variable(t, j);
     const uint32_t merge = begin_if(t, exec_bit(t));
     const uint32_t type = image_type(t, b);
     const uint32_t sampled_type = spirv_global(&t->m, SPV_OP_TYPE_SAMPLED_IMAGE, &type, 1);
     const uint32_t combined = value(t, SPV_OP_SAMPLED_IMAGE, sampled_type, 2, load(t, type, image_variable_id),
                                     load(t, spirv_global(&t->m, SPV_OP_TYPE_SAMPLER, NULL, 0), sampler_id));
-    const uint32_t texel = value(t, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, texel_type, 4, combined, coordinate, SPV_IMAGE_OPERANDS_LOD,
-                                 konst_float(t, 0.0f));
+    const uint32_t texel = value(t, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, texel_type, 5, combined, coordinate, SPV_IMAGE_OPERANDS_GRAD,
+                                 gradient_x, gradient_y);
     const uint32_t sampled = texel_component_type(t, b);
     unsigned next = vdata;
     for (unsigned i = 0; i < 4; i++) {
@@ -2046,8 +2321,26 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
         sampled_load(t, b, variable, coordinate, coordinates, level, texel_type, dmask, vdata);
         return;
     }
-    const uint32_t merge = begin_if(t, exec_bit(t));
+    /* A storage image access outside the image: a store writes nothing, as on the hardware and under
+       Vulkan's robustImageAccess2 (which shadPS4 requires for the same reason); a load stops at run
+       time, as a sampled one does (what it returns is not established; with no stop word it is not
+   checked). Without the check the access
+       is undefined in Vulkan, and the GPU faulted on the LUT pass's stores (0x20d1b00800). */
     const uint32_t image = load(t, image_type(t, b), variable);
+    const uint32_t uvec = coordinates == 1 ? t_uint(t) : spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_uint(t), coordinates}, 2);
+    const uint32_t bvec = coordinates == 1 ? t_bool(t) : spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_bool(t), coordinates}, 2);
+    const uint32_t size = value(t, SPV_OP_IMAGE_QUERY_SIZE, uvec, 1, image);
+    const uint32_t inside = value(t, SPV_OP_U_LESS_THAN, bvec, 2, value(t, SPV_OP_BITCAST, uvec, 1, coordinate), size);
+    const uint32_t in_range = coordinates == 1 ? inside : value(t, SPV_OP_ALL, t_bool(t), 1, inside);
+    t->queries_images = 1;
+    const int load_checked = op != MIMG_OP_STORE && t->layout->error_address; /* stops need the stop word */
+    if (load_checked) {
+        const uint32_t outside = begin_if(t, value(t, SPV_OP_LOGICAL_AND, t_bool(t), 2, exec_bit(t), value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, in_range)));
+        runtime_stop(t, konst(t, (uint32_t)GCN_RUNTIME_STOP_IMAGE_RANGE << GCN_RUNTIME_STOP_KIND_SHIFT));
+        end_if(t, outside);
+    }
+    const uint32_t merge = begin_if(t, op == MIMG_OP_STORE || load_checked ? value(t, SPV_OP_LOGICAL_AND, t_bool(t), 2, exec_bit(t), in_range)
+                                                                         : exec_bit(t));
     if (op == MIMG_OP_STORE) {
         uint32_t texel[4];
         for (unsigned i = 0; i < 4; i++) {
@@ -2100,7 +2393,7 @@ int gcn_image_resources(const uint32_t *code, size_t dwords, gcn_image_resource 
                 resources[i] = (gcn_image_resource){origin, 0};
                 (*count)++;
             }
-            resources[i].access |= op == MIMG_OP_STORE ? GCN_IMAGE_WRITE : GCN_IMAGE_READ;
+            resources[i].access |= op == MIMG_OP_STORE ? GCN_IMAGE_WRITE : op == MIMG_OP_SAMPLE ? GCN_IMAGE_READ | GCN_IMAGE_SAMPLE : GCN_IMAGE_READ;
         }
         at += ins.dwords;
     }
@@ -2310,7 +2603,8 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
     spirv_init(&t->m);
     spirv_module *m = &t->m;
     if (layout->user_sgprs > GCN_USER_SGPR_MAX) fail(t, "more user SGPRs than the push constants hold");
-    if (layout->vertex_index_vgpr >= VGPR_COUNT || layout->barycentric_vgpr + 1 >= VGPR_COUNT || layout->position_vgpr + 1 >= VGPR_COUNT)
+    if (layout->vertex_index_vgpr >= VGPR_COUNT || layout->barycentric_vgpr + 1 >= VGPR_COUNT || layout->position_vgpr + 1 >= VGPR_COUNT ||
+        (layout->front_face && layout->front_face_vgpr >= VGPR_COUNT))
         fail(t, "an input VGPR past v255");
     if (layout->push_constant_offset % BYTES_PER_DWORD ||
         layout->push_constant_offset + GCN_USER_SGPR_MAX * BYTES_PER_DWORD > GCN_PUSH_CONSTANT_LIMIT)
@@ -2513,7 +2807,9 @@ int gcn_translate_pixel(const uint32_t *code, size_t dwords, const gcn_pixel_lay
 {
     const stage_layout s = {.stage = STAGE_PIXEL, .user_sgprs = layout->user_sgprs, .workgroup_id_x_sgpr = -1,
                             .barycentric_vgpr = layout->barycentric_vgpr, .position_enable = layout->position_enable,
-                            .position_vgpr = layout->position_vgpr, .images = layout->images, .image_count = layout->image_count,
+                            .position_vgpr = layout->position_vgpr,
+                            .front_face = layout->front_face, .front_face_all_bits = layout->front_face_all_bits,
+                            .front_face_vgpr = layout->front_face_vgpr, .images = layout->images, .image_count = layout->image_count,
                             .samplers = layout->samplers, .sampler_count = layout->sampler_count,
                             .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address,
                             .user_data_read = layout->user_data_read};

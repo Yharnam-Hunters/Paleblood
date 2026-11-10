@@ -307,7 +307,6 @@ static f_sysmodule sysmodule_load, sysmodule_is_loaded, sysmodule_unload;
 static void load_not_a_stub(void) { sysmodule_load(NOT_A_STUB_ID); }
 static void is_loaded_not_a_stub(void) { sysmodule_is_loaded(NOT_A_STUB_ID); }
 static void unload_not_a_stub(void) { sysmodule_unload(NOT_A_STUB_ID); }
-static void load_stub_again(void) { sysmodule_load(STUB_ID); }
 static void is_loaded_other_stub(void) { sysmodule_is_loaded(OTHER_STUB_ID); }
 static void unload_other_stub(void) { sysmodule_unload(OTHER_STUB_ID); }
 static void unload_wide_stub(void) { sysmodule_unload(UINT32_C(0xabcd0000) | STUB_ID); }
@@ -1626,7 +1625,10 @@ int main(void)
     CHECK(sysmodule_load(STUB_ID) == 0 && rt_process.stub_modules[0].loaded);
     CHECK(!rt_process.stub_modules[1].loaded);        /* only the module asked for */
     CHECK(sysmodule_is_loaded(STUB_ID) == 0);
-    CHECK(died_in_fatal(load_stub_again));
+    /* A second load succeeds and is counted (the dialogs load their module per open). */
+    CHECK(sysmodule_load(STUB_ID) == 0 && rt_process.stub_modules[0].loaded == 2);
+    CHECK(sysmodule_unload(STUB_ID) == 0 && rt_process.stub_modules[0].loaded == 1);
+    CHECK(sysmodule_is_loaded(STUB_ID) == 0);
     CHECK(sysmodule_unload(STUB_ID) == 0 && !rt_process.stub_modules[0].loaded);
     CHECK(sysmodule_load(STUB_ID) == 0 && sysmodule_is_loaded(STUB_ID) == 0);
     /* A full-width request cannot unload the declared stub with matching low bits. */
@@ -1654,16 +1656,12 @@ int main(void)
     CHECK(netctl_unregister(netctl_id_b) == 0);
     CHECK(netctl_check() == 0 && netctl_callbacks_run == 0);
 
-    /* the target page size has no public source, so both entries stop by name */
-    void (*posix_getpagesize)(void) = (void (*)(void))fn("libScePosix", "getpagesize");
-    void (*kernel_getpagesize)(void) = (void (*)(void))fn("libkernel", "getpagesize");
-    CHECK(died_in_fatal(posix_getpagesize));
-    CHECK(died_in_fatal(kernel_getpagesize));
-    /* Registered so a boot that reaches the call names it, but not counted as implemented: the
-       fatal alone does not prove the classification, since an absent entry would also never be
-       reported as implemented. */
-    CHECK(!is_implemented("libScePosix", "getpagesize"));
-    CHECK(!is_implemented("libkernel", "getpagesize"));
+    /* getpagesize answers 16 KiB from both libraries (the maintainer's ruling) */
+    int32_t (*posix_getpagesize)(void) = (int32_t (*)(void))fn("libScePosix", "getpagesize");
+    int32_t (*kernel_getpagesize)(void) = (int32_t (*)(void))fn("libkernel", "getpagesize");
+    CHECK(posix_getpagesize && posix_getpagesize() == 0x4000);
+    CHECK(kernel_getpagesize && kernel_getpagesize() == 0x4000);
+    CHECK(is_implemented("libScePosix", "getpagesize") && is_implemented("libkernel", "getpagesize"));
 
     /* memcpy and memset (libSceLibcInternal): ISO C fixes the bytes written and the returned
        destination. The guard bytes past n prove nothing beyond n is touched. */
@@ -3123,8 +3121,10 @@ int main(void)
         CHECK(vo_status_fn(vo_handle, st) == 0);
         memcpy(&count, st, 8); memcpy(&arg, st + 0x18, 8); memcpy(&current, st + 0x38, 4);
         CHECK(count == 1 && arg == 77 && current == 1);
-        /* The flip presented buffer 1: counted, and captured as frame 0 with the pixel in place. */
+        /* The flip presented buffer 1: counted, and captured as frame 0 with the pixel in place
+           (written by the display's own thread: waited for). */
         CHECK(rt_display_presented(vo_handle) == 1);
+        rt_display_capture_wait();
         if (capture) {
             char frame_path[600];
             snprintf(frame_path, sizeof frame_path, "%s/frame-000000.ppm", capture);
@@ -3142,6 +3142,34 @@ int main(void)
                 fclose(ppm);
             }
             remove(frame_path);
+        }
+        /* Back-to-back flips queue their frames for the display's writer thread (more of them than it
+           has slots): once waited for, each is on disk, in order, with the pixel it had at its flip. */
+        if (capture && host_a) {
+            enum { QUICK_FLIPS = 7 };
+            for (uint32_t k = 0; k < QUICK_FLIPS; k++) {
+                host_a[1920 + 1] = 0x00010203u * (k + 1);
+                CHECK(vo_flip_fn(vo_handle, 0, 2, 100 + k) == 0); /* hsync: no vblank wait */
+            }
+            int32_t got = 0; /* the flip events: one pending event per queue, as a kqueue keeps them */
+            CHECK(eq_wait_fn(flips, ev, 1, &got, NULL) == 0 && got == 1);
+            rt_display_capture_wait();
+            for (uint32_t k = 0; k < QUICK_FLIPS; k++) {
+                char frame_path[600];
+                snprintf(frame_path, sizeof frame_path, "%s/frame-%06u.ppm", capture, k + 1);
+                FILE *ppm = fopen(frame_path, "rb");
+                CHECK(ppm != NULL);
+                if (!ppm) continue;
+                char magic[3] = {0};
+                unsigned w = 0, h = 0, max = 0;
+                unsigned char rgb[3] = {0};
+                CHECK(fscanf(ppm, "%2s %u %u %u", magic, &w, &h, &max) == 4 && w == 1920 && h == 1080);
+                fgetc(ppm);
+                CHECK(fseek(ppm, (long)(1920 + 1) * 3, SEEK_CUR) == 0 && fread(rgb, 1, 3, ppm) == 3);
+                CHECK(rgb[0] == k + 1 && rgb[1] == 2 * (k + 1) && rgb[2] == 3 * (k + 1));
+                fclose(ppm);
+                remove(frame_path);
+            }
         }
         rt_display_configure(RT_DISPLAY_HEADLESS, NULL); /* stop capturing: writing a frame would skew the timing */
         /* A vsync flip completes at the next 60 Hz tick: within one period. */
@@ -3195,6 +3223,21 @@ int main(void)
             CHECK(eq_wait_fn(flips, ev, 1, &n, NULL) == 0 && n == 1 && (memcpy(&data, ev + 16, 8), data == 79));
             CHECK(vo_status_fn(vo_handle, st) == 0 && (memcpy(&arg, st + 0x18, 8), arg == 79));
             CHECK(died_in_fatal(gnm_submit_unknown));
+            /* 70 buffers in one call, as the character creation screen submits them: each one's
+               end-of-work write lands, in order (the last value stays) */
+            {
+                enum { MANY = 70 };
+                static uint32_t many[MANY][6];
+                void *many_buffers[MANY];
+                uint32_t many_bytes[MANY];
+                for (uint32_t k = 0; k < MANY; k++) {
+                    const uint32_t eop_words[6] = {0xc0044700u, 0x528, (uint32_t)eop, (uint32_t)(eop >> 32) | 0x40000000u, k + 1, 0x1};
+                    memcpy(many[k], eop_words, sizeof eop_words);
+                    many_buffers[k] = many[k], many_bytes[k] = sizeof many[k];
+                }
+                end_of_frame = 0;
+                CHECK(gnm_submit_fn(MANY, many_buffers, many_bytes, NULL, NULL) == 0 && end_of_frame == 0x100000000ull + MANY);
+            }
             /* the constant arrays present with empty entries, as 0x0149bf3a passes them: no constant buffer */
             void *no_constants[1] = {NULL};
             uint32_t no_constant_bytes[1] = {0};
@@ -3223,6 +3266,7 @@ int main(void)
         }
         CHECK(died_in_fatal(vo_flip_bad_buffer));
         CHECK(died_in_fatal(vo_open_other));
+        rt_display_capture_wait();
         if (capture) { /* every later flip was captured too */
             for (uint64_t k = 0; k < rt_display_presented(vo_handle); k++) {
                 char frame_path[600];

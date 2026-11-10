@@ -12,12 +12,15 @@ endforeach()
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 set(HOOKS_C ${CMAKE_CURRENT_BINARY_DIR}/hooks_table.c)
+# Function families (docs/FAMILIES.md): their member tables feed the generated hook table too.
+file(GLOB FAMILY_TABLES CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/symbols/families/*.csv)
 add_custom_command(
     OUTPUT ${HOOKS_C}
     COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/gen_hooks.py
             ${CMAKE_CURRENT_SOURCE_DIR}/hooks.csv ${PROJECT_SOURCE_DIR}/symbols/functions.csv ${HOOKS_C}
-    DEPENDS ${PROJECT_SOURCE_DIR}/tools/gen_hooks.py ${CMAKE_CURRENT_SOURCE_DIR}/hooks.csv
-            ${PROJECT_SOURCE_DIR}/symbols/functions.csv)
+    DEPENDS ${PROJECT_SOURCE_DIR}/tools/gen_hooks.py ${PROJECT_SOURCE_DIR}/tools/families.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/hooks.csv ${PROJECT_SOURCE_DIR}/symbols/functions.csv
+            ${PROJECT_SOURCE_DIR}/symbols/families.csv ${FAMILY_TABLES})
 
 add_library(bbgame SHARED ${GAME_SOURCES} ${HOOKS_C})
 target_link_libraries(bbgame PRIVATE bbrt)
@@ -64,3 +67,9 @@ add_test(NAME depth_target_observer_absent COMMAND test_depth_target_observer_ab
 add_test(NAME camera_update_cases
          COMMAND ${Python3_EXECUTABLE}
                  "${CMAKE_CURRENT_SOURCE_DIR}/camera/tests/test_update_cases.py")
+
+# The compute command buffer's user-data observers, against stubs of the record.
+add_executable(test_compute_user_data_observer render/tests/compute_user_data_observer.c render/observe_gpu_library.c)
+target_include_directories(test_compute_user_data_observer PRIVATE ${PROJECT_SOURCE_DIR}/runtime/include)
+target_compile_options(test_compute_user_data_observer PRIVATE -ffp-contract=off -fno-fast-math)
+add_test(NAME compute_user_data_observer COMMAND test_compute_user_data_observer)

@@ -57,7 +57,7 @@ enum {
    (gcn_image_resources lists the descriptors a program uses and where each comes from).
 
    A descriptor comes from the user data (the SGPRs hold it from the start), or from memory: the
-   program loads it with an s_load_dwordx8 at an immediate offset from a pointer in two user-data
+   program loads it with an s_load_dwordx8 (or a wider s_load covering it) at an immediate offset from a pointer in two user-data
    SGPRs, which the caller reads at draw time. One SGPR range can hold different descriptors at
    different MIMG instructions (the game's pixel shaders read a user-data image, then load another
    descriptor over it); each MIMG's own is found from the code before it, when that code runs straight
@@ -85,11 +85,11 @@ typedef struct {
     int sampled;                     /* a sampled image (reads only), not a storage image */
 } gcn_image_binding;
 
-enum { GCN_MAX_IMAGES = 8, GCN_IMAGE_READ = 1, GCN_IMAGE_WRITE = 2 };
+enum { GCN_MAX_IMAGES = 8, GCN_IMAGE_READ = 1, GCN_IMAGE_WRITE = 2, GCN_IMAGE_SAMPLE = 4 /* read through image_sample */ };
 
 typedef struct {
     gcn_resource_origin origin;
-    unsigned access;                 /* GCN_IMAGE_READ | GCN_IMAGE_WRITE */
+    unsigned access;                 /* GCN_IMAGE_READ | GCN_IMAGE_WRITE | GCN_IMAGE_SAMPLE */
 } gcn_image_resource;
 
 /* Samplers (S#, 4 words), which image_sample names by its SSAMP SGPRs, are found the same way (an
@@ -170,13 +170,17 @@ int gcn_translate_vertex(const uint32_t *code, size_t dwords, const gcn_vertex_l
 /* A pixel shader. Its inputs are the perspective-correct barycentrics at the pixel's centre (i, then j
    in the next VGPR), which v_interp reads (attribute n is the input at location n, interpolated by the
    GPU), and, when position_enable says so, the pixel's window position: x (bit 0) and y (bit 1) as
-   floats at the pixel's centre, from position_vgpr on (y in the next VGPR when both). Exports: mrt n
-   becomes the output at location n. */
+   floats at the pixel's centre, from position_vgpr on (y in the next VGPR when both), and, when
+   front_face is set, whether the primitive faces the viewer, in front_face_vgpr: 1 or 0 with
+   front_face_all_bits (SPI_BARYC_CNTL's FRONT_FACE_ALL_BITS), otherwise a float whose sign says it
+   (1.0 front, -1.0 back), as shadPS4 fills that VGPR. Exports: mrt n becomes the output at location n. */
 enum { GCN_PIXEL_POSITION_X = 1, GCN_PIXEL_POSITION_Y = 2 };
 typedef struct {
     unsigned user_sgprs;
     unsigned barycentric_vgpr;
     unsigned position_enable, position_vgpr;
+    int front_face, front_face_all_bits;
+    unsigned front_face_vgpr;
     uint32_t push_constant_offset;
     uint64_t address_offset;
     uint64_t error_address;   /* the run-time stop word (GCN_RUNTIME_STOP_*), or 0: run-time cases stop translation */

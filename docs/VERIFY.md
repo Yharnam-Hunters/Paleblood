@@ -40,6 +40,10 @@ or a hang loses only that case. It runs at low priority (`BB_NICE`, default 10).
 Both sides see the same memory and the same library behavior, so any difference is the
 replacement's.
 
+Function families (many identical tiny functions, [FAMILIES.md](FAMILIES.md)) are verified in
+batches with `verify.py family`: the same comparison per member, scheduled as a few harness
+processes that each map the image once (`harness.py --plan`), plus mutants that must fail.
+
 ## Where inputs come from
 
 Case files hold inputs from your own dump and never go into the repository, an issue or a pull

@@ -188,7 +188,7 @@ set_tests_properties(compiled_sdk PROPERTIES TIMEOUT 10)
 
 # Exercise the registered direct-memory calls, including rejected ranges before host mapping.
 add_executable(test_direct_memory_bounds test/test_direct_memory_bounds.c
-               runtime/syslib/kernel_memory.c runtime/syslib/table.c runtime/process.c)
+               runtime/syslib/kernel_memory.c runtime/syslib/kernel.c runtime/syslib/table.c runtime/process.c)
 target_include_directories(test_direct_memory_bounds PRIVATE runtime/include)
 add_test(NAME direct_memory_bounds COMMAND test_direct_memory_bounds)
 set_tests_properties(direct_memory_bounds PROPERTIES TIMEOUT 20)
@@ -229,3 +229,7 @@ add_executable(test_sysmodule_ids test/test_sysmodule_ids.c
 target_include_directories(test_sysmodule_ids PRIVATE runtime/include)
 add_test(NAME sysmodule_ids COMMAND test_sysmodule_ids)
 set_tests_properties(sysmodule_ids PROPERTIES TIMEOUT 10)
+
+# Deliberately wrong replacements for the function families' mutation tests (tools/verify.py
+# family); a test library, never loaded by the runtime.
+add_library(bbfamily_mutants SHARED test/family_mutants.c)

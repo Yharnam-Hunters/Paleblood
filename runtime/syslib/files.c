@@ -8,7 +8,7 @@
 
    /data is a writable scratch mount. The engine's file system (0x02471a20) maps its temp: and
    title: drives there, and at start-up it creates a fresh cache file, temp:/cache.bin (0x02a6f6b0,
-   opened by 0x02a70890 read-write with create and truncate, mode 0777), carrying on whether or not
+   opened by the loader's kernel file open read-write with create and truncate, mode 0777), carrying on whether or not
    that works. Which folder backs it is the runtime's choice, not the console's: rt_process.data_dir
    (--data; tools/boot.py gives each boot a new empty one, so runs start alike). A path under any
    other mount, and one with a ".." component (which could leave the folder), stops by name.
@@ -32,11 +32,13 @@
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -121,38 +123,37 @@ static int under(const char *guest, const char *mount_point)
 static mount host_path_on(const char *caller, const char *guest, char *out, size_t size,
                           char point[RT_MOUNT_POINT_BYTES])
 {
+    /* no path-sized buffers here or in the callers' frames: a guest thread's stack can be small (the
+       title's save data thread overflowed its own with them) */
     if (!guest) rt_fatal(caller, "no path: the error value is not established");
-    mount on;
-    char mount_point[RT_MOUNT_POINT_BYTES] = "", host_dir[4096] = "";
+    mount on = MOUNT_WRITABLE;
+    char mount_point[RT_MOUNT_POINT_BYTES] = "";
+    int written = -1;
     if (under(guest, APP0)) {
         if (!rt_process.app0_dir) rt_fatal(caller, "no /app0 directory given (tools/boot.py --app0)");
         on = MOUNT_READ_ONLY;
         snprintf(mount_point, sizeof mount_point, "%s", APP0);
-        snprintf(host_dir, sizeof host_dir, "%s", rt_process.app0_dir);
+        written = snprintf(out, size, "%s%s", rt_process.app0_dir, guest + strlen(APP0));
     } else if (under(guest, DATA)) {
         if (!rt_process.data_dir) rt_fatal(caller, "no /data directory given (tools/boot.py --data)");
-        on = MOUNT_WRITABLE;
         snprintf(mount_point, sizeof mount_point, "%s", DATA);
-        snprintf(host_dir, sizeof host_dir, "%s", rt_process.data_dir);
+        written = snprintf(out, size, "%s%s", rt_process.data_dir, guest + strlen(DATA));
     } else {
-        int read_only = 0;
-        pthread_mutex_lock(&mounts_lock); /* copied out, so an unmount cannot change them under us */
+        pthread_mutex_lock(&mounts_lock); /* written out under the lock, so an unmount cannot change it under us */
         for (int i = 0; i < RT_MAX_MOUNTS && !mount_point[0]; i++) {
             if (mounts[i].point[0] && under(guest, mounts[i].point)) {
                 strcpy(mount_point, mounts[i].point);
-                strcpy(host_dir, mounts[i].host_dir);
-                read_only = mounts[i].read_only;
+                written = snprintf(out, size, "%s%s", mounts[i].host_dir, guest + strlen(mounts[i].point));
+                on = mounts[i].read_only ? MOUNT_READ_ONLY : MOUNT_WRITABLE;
             }
         }
         pthread_mutex_unlock(&mounts_lock);
         if (!mount_point[0]) rt_fatal(caller, "a path outside /app0, /data and the mounted save data: other mounts are not implemented");
-        on = read_only ? MOUNT_READ_ONLY : MOUNT_WRITABLE;
     }
     const size_t prefix = strlen(mount_point);
     for (const char *p = guest + prefix; (p = strstr(p, "/..")); p += 3)
         if (p[3] == '/' || !p[3]) rt_fatal(caller, "a path with a \"..\" component, which could leave its mount");
-    if ((size_t)snprintf(out, size, "%s%s", host_dir, guest + prefix) >= size)
-        rt_fatal(caller, "a path longer than the runtime's buffer");
+    if (written < 0 || (size_t)written >= size) rt_fatal(caller, "a path longer than the runtime's buffer");
     if (point) memcpy(point, mount_point, RT_MOUNT_POINT_BYTES);
     return on;
 }
@@ -245,14 +246,21 @@ static void fill_stat(guest_stat *out, const struct stat *host, mount on)
    gets the requested permission bits. Other flag bits stop by name. A descriptor is the
    runtime's own number, from 3 up, standing for a host descriptor (the title only passes it back);
    one the runtime did not hand out is EBADF. A seek whence other than 0, 1 or 2 (SEEK_SET, SEEK_CUR,
-   SEEK_END, the same on FreeBSD and Linux), and one before the start, are EINVAL. */
-enum { BSD_O_ACCMODE = 3, BSD_O_APPEND = 0x8, BSD_O_CREAT = 0x200, BSD_O_TRUNC = 0x400 };
+   SEEK_END, the same on FreeBSD and Linux), and one before the start, are EINVAL.
+
+   O_DIRECTORY (FreeBSD 0x20000) opens a directory for listing, on either mount: the engine's
+   directory iterator (0x024722d0) opens with exactly that flag and mode 0555 and treats a negative
+   answer as no listing. It is accepted alone (read-only, nothing else); a path that is not a
+   directory answers ENOTDIR (open(2)). */
+enum { BSD_O_ACCMODE = 3, BSD_O_APPEND = 0x8, BSD_O_CREAT = 0x200, BSD_O_TRUNC = 0x400, BSD_O_DIRECTORY = 0x20000 };
 enum { BSD_O_RDWR = 2 }; /* O_RDONLY 0, O_WRONLY 1, O_RDWR 2: the same numbers on Linux */
 enum { FIRST_FD = 3, MAX_FILES = 1024 };
 
 static pthread_mutex_t files_lock = PTHREAD_MUTEX_INITIALIZER;
 static int host_fd[MAX_FILES]; /* host descriptor + 1 for each guest descriptor, 0: free */
 static mount descriptor_mount[MAX_FILES];
+static int is_directory[MAX_FILES];        /* the descriptor names a directory */
+static int64_t directory_entry[MAX_FILES]; /* a directory's position: entries listed so far */
 
 /* The host descriptor behind a guest one, or -1. */
 static int host_of(int32_t fd)
@@ -279,7 +287,10 @@ static int32_t kernel_open(const char *path, int32_t flags, uint32_t mode)
     char host[4096];
     const mount on = host_path(fn, path, host, sizeof host);
     int h;
-    if (on == MOUNT_WRITABLE) {
+    if (flags & BSD_O_DIRECTORY) {
+        if (flags != BSD_O_DIRECTORY) rt_fatal(fn, "O_DIRECTORY with other flags is not established");
+        h = open(host, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    } else if (on == MOUNT_WRITABLE) {
         h = open(host, data_open_flags(fn, flags) | O_CLOEXEC, (mode_t)(mode & PERMISSION_BITS));
     } else {
         if ((flags & BSD_O_ACCMODE) || (flags & (BSD_O_APPEND | BSD_O_CREAT | BSD_O_TRUNC))) {
@@ -291,10 +302,15 @@ static int32_t kernel_open(const char *path, int32_t flags, uint32_t mode)
         h = open(host, O_RDONLY | O_CLOEXEC);
     }
     if (h < 0) return lookup_error(fn);
+    struct stat st;
+    if (fstat(h, &st)) rt_fatal(fn, "a host error without an established answer");
     pthread_mutex_lock(&files_lock);
     int32_t fd = FIRST_FD;
     while (fd < MAX_FILES && host_fd[fd]) fd++;
-    if (fd < MAX_FILES) host_fd[fd] = h + 1, descriptor_mount[fd] = on;
+    if (fd < MAX_FILES) {
+        host_fd[fd] = h + 1, descriptor_mount[fd] = on;
+        is_directory[fd] = S_ISDIR(st.st_mode), directory_entry[fd] = 0;
+    }
     pthread_mutex_unlock(&files_lock);
     if (fd == MAX_FILES) rt_fatal(fn, "more open files than the runtime's table holds");
     return fd;
@@ -421,17 +437,46 @@ static int32_t kernel_ftruncate(int32_t fd, int64_t length)
 static int32_t kernel_rename(const char *from, const char *to)
 {
     static const char fn[] = "sceKernelRename";
-    char host_from[4096], host_to[4096], point_from[RT_MOUNT_POINT_BYTES], point_to[RT_MOUNT_POINT_BYTES];
-    const mount from_on = host_path_on(fn, from, host_from, sizeof host_from, point_from);
-    const mount to_on = host_path_on(fn, to, host_to, sizeof host_to, point_to);
-    if (strcmp(point_from, point_to)) return SCE_KERNEL_ERROR(BSD_EXDEV);
-    if (from_on == MOUNT_READ_ONLY || to_on == MOUNT_READ_ONLY) {
+    enum { HOST_PATH_BYTES = 4096 };
+    char point_from[RT_MOUNT_POINT_BYTES], point_to[RT_MOUNT_POINT_BYTES];
+    char *const host_from = malloc(HOST_PATH_BYTES), *const host_to = malloc(HOST_PATH_BYTES); /* not on the guest's stack */
+    if (!host_from || !host_to) rt_fatal(fn, "the host has no memory for two paths");
+    const mount from_on = host_path_on(fn, from, host_from, HOST_PATH_BYTES, point_from);
+    const mount to_on = host_path_on(fn, to, host_to, HOST_PATH_BYTES, point_to);
+    int32_t answer = 0;
+    if (strcmp(point_from, point_to)) {
+        answer = SCE_KERNEL_ERROR(BSD_EXDEV);
+    } else if (from_on == MOUNT_READ_ONLY || to_on == MOUNT_READ_ONLY) {
         struct stat st; /* the lookup first, as for an open */
-        if (stat(host_from, &st)) return lookup_error(fn);
-        return SCE_KERNEL_ERROR(BSD_EROFS);
+        answer = stat(host_from, &st) ? lookup_error(fn) : SCE_KERNEL_ERROR(BSD_EROFS);
+    } else if (rename(host_from, host_to)) {
+        answer = lookup_error(fn);
     }
-    if (!rename(host_from, host_to)) return 0;
-    return lookup_error(fn);
+    free(host_from);
+    free(host_to);
+    return answer;
+}
+
+/* A directory's position is the runtime's own: the number of entries sceKernelGetdirentries has
+   listed (below). A seek to a position it handed out (SEEK_SET) or relative to the current one
+   (SEEK_CUR) sets it; one before the start is EINVAL. SEEK_END on a directory stops by name. */
+static int64_t directory_seek(int32_t fd, int64_t offset, int32_t whence)
+{
+    if (whence == SEEK_END) rt_fatal("sceKernelLseek", "SEEK_END on a directory: the PS4's answer is not established");
+    pthread_mutex_lock(&files_lock);
+    const int64_t base = whence == SEEK_CUR ? directory_entry[fd] : 0;
+    const int64_t at = (int64_t)((uint64_t)base + (uint64_t)offset); /* past INT64_MAX wraps negative */
+    if (at >= 0) directory_entry[fd] = at;
+    pthread_mutex_unlock(&files_lock);
+    return at < 0 ? SCE_KERNEL_ERROR(BSD_EINVAL) : at;
+}
+
+static int descriptor_is_directory(int32_t fd)
+{
+    pthread_mutex_lock(&files_lock);
+    const int directory = is_directory[fd];
+    pthread_mutex_unlock(&files_lock);
+    return directory;
 }
 
 /* Directories and removing files. sceKernelMkdir(path, mode), sceKernelRmdir(path) and
@@ -550,6 +595,7 @@ static int64_t kernel_lseek(int32_t fd, int64_t offset, int32_t whence)
     const int h = host_of(fd);
     if (h < 0) return SCE_KERNEL_ERROR(BSD_EBADF);
     if (whence != SEEK_SET && whence != SEEK_CUR && whence != SEEK_END) return SCE_KERNEL_ERROR(BSD_EINVAL);
+    if (descriptor_is_directory(fd)) return directory_seek(fd, offset, whence);
     const off_t at = lseek(h, offset, whence);
     if (at < 0) {
         if (errno == EINVAL) return SCE_KERNEL_ERROR(BSD_EINVAL);
@@ -573,6 +619,99 @@ static int32_t kernel_fstat(int32_t fd, guest_stat *out)
     return 0;
 }
 
+/* sceKernelFsync(fd): FreeBSD's fsync(2) under its SCE name (the OpenOrbis homebrew SDK's
+   libkernel.h declares int sceKernelFsync(int)), 0 or an SCE code; imported by libSceFios2. The
+   runtime flushes the host file. A descriptor the runtime did not hand out is EBADF (fsync(2)); any
+   host error (EIO and the like) stops by name. */
+static int32_t kernel_fsync(int32_t fd)
+{
+    const int h = host_of(fd);
+    if (h < 0) return SCE_KERNEL_ERROR(BSD_EBADF);
+    if (fsync(h)) rt_fatal("sceKernelFsync", "a host error without an established answer");
+    return 0;
+}
+
+/* sceKernelGetdirentries(fd, buf, nbytes, basep): FreeBSD's getdirentries(2) under its SCE name
+   (libkernel.h declares the shape), the number of bytes placed in buf, 0 at the end, or an SCE code.
+   The engine's directory iterator (0x02472480) passes the st_blksize of the directory's fstat as
+   nbytes, walks the FreeBSD 9 records (struct dirent: a 32-bit file number, the 16-bit record
+   length, the type, the name length and the NUL-terminated name), skips "." and "..", appends '/'
+   to a DT_DIR name, and, when it stops partway through a buffer, seeks the descriptor back to *basep
+   to read the same records again on its next call.
+
+   The runtime lists the host directory in the host's order, as many whole records as fit, each
+   rounded up to 4 bytes (FreeBSD 9's GENERIC_DIRSIZ). *basep (when not NULL) is the position before
+   the call and the position afterwards follows the last record listed, so a seek to *basep lists the
+   same records again. A position is a count of entries, the runtime's own number where FreeBSD's is
+   a byte offset; the title only hands it back to sceKernelLseek. File numbers are the host's inode
+   numbers (they only identify a file); the type is the host's (the DT_ numbers FreeBSD and Linux
+   share; asked with fstatat where the host file system leaves it unknown). A descriptor the runtime did not hand out is EBADF. What stops by name: a descriptor that
+   is not a directory, no buffer, and fewer than 512 bytes (a directory block; shadPS4 answers
+   EINVAL, the PS4's answer is not established). An entry added or removed between two calls can
+   move the listing by one entry, as on any file system that lists by position. */
+enum { DIRECTORY_BLOCK = 512, DIRENT_HEADER = 8 };
+
+typedef struct {
+    uint32_t fileno;
+    uint16_t reclen;
+    uint8_t type, namlen;
+} guest_dirent_header;
+_Static_assert(sizeof(guest_dirent_header) == DIRENT_HEADER, "FreeBSD 9 struct dirent header is 8 bytes");
+
+/* An entry's DT_ type; a host file system that leaves it unknown is asked with fstatat. */
+static uint8_t entry_type(DIR *dir, const struct dirent *e)
+{
+    if (e->d_type != DT_UNKNOWN) return (uint8_t)e->d_type;
+    struct stat st;
+    if (fstatat(dirfd(dir), e->d_name, &st, AT_SYMLINK_NOFOLLOW)) return DT_UNKNOWN;
+    return (uint8_t)IFTODT(st.st_mode);
+}
+
+static int64_t kernel_getdirentries(int32_t fd, char *buffer, uint64_t size, int64_t *basep)
+{
+    static const char fn[] = "sceKernelGetdirentries";
+    const int h = host_of(fd);
+    if (h < 0) return SCE_KERNEL_ERROR(BSD_EBADF);
+    if (!buffer) rt_fatal(fn, "no buffer: the error value is not established");
+    if (size < DIRECTORY_BLOCK) rt_fatal(fn, "fewer than 512 bytes: the PS4's answer is not established");
+    const int listing = openat(h, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    DIR *dir = listing < 0 ? NULL : fdopendir(listing);
+    if (!dir) rt_fatal(fn, "a descriptor that is not a directory, or a host error: the PS4's answer is not established");
+    pthread_mutex_lock(&files_lock);
+    const int64_t start = directory_entry[fd];
+    pthread_mutex_unlock(&files_lock);
+    int64_t entry = 0;
+    uint64_t used = 0;
+    for (struct dirent *e; (e = readdir(dir)); entry++) {
+        if (entry < start) continue;
+        const size_t name_length = strlen(e->d_name);
+        const uint64_t record = (DIRENT_HEADER + name_length + 1 + 3) & ~(uint64_t)3;
+        if (used + record > size) break;
+        const guest_dirent_header header = {(uint32_t)e->d_ino, (uint16_t)record, entry_type(dir, e), (uint8_t)name_length};
+        memset(buffer + used, 0, record);
+        memcpy(buffer + used, &header, sizeof header);
+        memcpy(buffer + used + DIRENT_HEADER, e->d_name, name_length);
+        used += record;
+    }
+    closedir(dir);
+    pthread_mutex_lock(&files_lock);
+    directory_entry[fd] = entry > start ? entry : start;
+    pthread_mutex_unlock(&files_lock);
+    if (basep) *basep = start;
+    return (int64_t)used;
+}
+
+/* fstat(fd, struct stat *): the POSIX form of sceKernelFstat, 0 or -1 with errno (shadPS4 registers
+   its posix_fstat the same way; facts only). libc.elf's libunwind calls it (+0x530ae) on a file it
+   opened and reads the size. */
+static int32_t posix_fstat(int32_t fd, guest_stat *out)
+{
+    const int32_t answer = kernel_fstat(fd, out);
+    if (!answer) return 0;
+    *rt_guest_errno() = (int32_t)((uint32_t)answer - 0x80020000u);
+    return -1;
+}
+
 RT_SYSLIB("libkernel", sceKernelStat, kernel_stat);
 RT_SYSLIB("libScePosix", stat, posix_stat);
 RT_SYSLIB("libkernel", sceKernelOpen, kernel_open);
@@ -588,3 +727,6 @@ RT_SYSLIB("libkernel", sceKernelFstat, kernel_fstat);
 RT_SYSLIB("libkernel", sceKernelMkdir, kernel_mkdir);
 RT_SYSLIB("libkernel", sceKernelRmdir, kernel_rmdir);
 RT_SYSLIB("libkernel", sceKernelUnlink, kernel_unlink);
+RT_SYSLIB("libkernel", sceKernelFsync, kernel_fsync);
+RT_SYSLIB("libkernel", sceKernelGetdirentries, kernel_getdirentries);
+RT_SYSLIB("libkernel", fstat, posix_fstat);

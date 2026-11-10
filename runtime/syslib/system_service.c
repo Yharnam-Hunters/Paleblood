@@ -84,3 +84,19 @@ static int32_t receive_event(void *event)
     return event ? SYSTEM_SERVICE_ERROR_NO_EVENT : SYSTEM_SERVICE_ERROR_PARAMETER;
 }
 RT_SYSLIB("libSceSystemService", sceSystemServiceReceiveEvent, receive_event);
+
+/* sceSystemServiceLaunchWebBrowser(url, param): asks the system to open its web browser at a
+   page (OpenOrbis' SystemService.h names it without a shape; the executable's three calls pass a
+   URL string and NULL). The executable discards the answer at every call: the official site link
+   at 0x02437039 and its debug "BROWSER_TEST" command at 0x01d5eeeb (the same URL), and a URL it
+   builds at 0x02437112. The runtime opens no browser, as if the user closed it at once: it notes
+   the URL on stderr and answers 0 (shadPS4 also answers 0, facts only). No URL stops by name. */
+static int32_t launch_web_browser(const char *url, const void *param)
+{
+    (void)param;
+    if (!url) rt_fatal("sceSystemServiceLaunchWebBrowser", "no URL: the error value is not established");
+    fprintf(stderr, "runtime: sceSystemServiceLaunchWebBrowser: %s (no browser opened)\n", url);
+    return 0;
+}
+
+RT_SYSLIB("libSceSystemService", sceSystemServiceLaunchWebBrowser, launch_web_browser);

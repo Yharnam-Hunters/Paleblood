@@ -33,8 +33,12 @@ enum { MAX_SHADERS = 256, MAX_PIPELINES = 256, MAX_TARGETS = 64, MAX_RECT_STAGES
        MAX_VIEWS = 16, MAX_SAMPLERS = 64, MAX_PASSES = 64, BATCH_SETS = 256, MAX_WRITTEN = 32,
        STOP_SLOTS = MAX_SHADERS + MAX_COMPUTE_PIPELINES };
 enum { USER_DATA_BYTES = GCN_USER_SGPR_MAX * 4, VERTEX_USER_DATA = 0, PIXEL_USER_DATA = USER_DATA_BYTES };
-enum { COLOR_8_8_8_8 = 0xa, NUMBER_UNORM = 0, NUMBER_SRGB = 6, SWAP_STD = 0, SWAP_ALT = 1 };
-enum { PERSP_CENTER_ENA = 0x2, POS_X_FLOAT_ENA = 0x100, POS_Y_FLOAT_ENA = 0x200 };
+enum { COLOR_10_11_11 = 0x6, COLOR_8_8_8_8 = 0xa, COLOR_16_16_16_16 = 0xc, NUMBER_UNORM = 0, NUMBER_SRGB = 6, NUMBER_FLOAT = 7, SWAP_STD = 0,
+       SWAP_ALT = 1 };
+enum { PERSP_CENTER_ENA = 0x2, POS_X_FLOAT_ENA = 0x100, POS_Y_FLOAT_ENA = 0x200, FRONT_FACE_ENA = 0x1000 };
+/* SPI_BARYC_CNTL's FRONT_FACE_ALL_BITS (bit 24), and where a pixel shader's settings (below) carry it: SPI_PS_INPUT_ADDR uses bits 0-15 */
+#define FRONT_FACE_ALL_BITS (1u << 24)
+#define SETTINGS_FRONT_FACE_ALL_BITS (1u << 31)
 
 /* The VGPR where the pixel input at `bit` of SPI_PS_INPUT_ADDR starts: after every enabled input below it. */
 static unsigned pixel_input_vgpr(uint32_t input_address, unsigned bit)
@@ -104,11 +108,10 @@ typedef struct {
     uint64_t address;
     uint32_t width, height, tile_index;
     VkFormat format;
+    uint32_t element_bytes;          /* a texel's bytes in memory: 4, or 8 for 16_16_16_16 */
     VkImage image;
     VkDeviceMemory memory;
     VkImageView view;
-    VkRenderPass pass;
-    VkFramebuffer framebuffer;
     uint64_t loaded_epoch;           /* the memory epoch the image was last loaded at */
     int drawn;                       /* drawn into since it was last written back */
     staging_buffer staging;          /* host-visible: the image's texels, for showing it */
@@ -122,13 +125,15 @@ typedef struct {
     uint32_t depth_test, depth_write, depth_compare;   /* VkCompareOp */
     uint32_t stencil_test, stencil_ops[2][4];           /* front, back: fail, pass, depth fail (VkStencilOp), compare (VkCompareOp) */
     uint32_t reads;                                     /* a test compares with the buffer (not always or never) */
+    uint32_t reference_is_op_value[2];                  /* front, back: the stencil reference is STENCILOPVAL (replace-with-op) */
 } depth_plan;
 
-/* The image standing for a depth target, found by its depth and stencil buffers' addresses: written
-   only by draws, so it starts cleared; drawn says whether a draw has written it since, which a test
-   that reads it needs (its contents in guest memory are never loaded). */
+/* The image standing for a depth target, found by its depth and stencil buffers' addresses and the
+   slice a view names: written only by draws, so it starts cleared; drawn says whether a draw has
+   written it since, which a test that reads it needs (its contents in guest memory are never loaded). */
 typedef struct {
     uint64_t z_address, stencil_address;
+    uint32_t slice;                  /* DB_DEPTH_VIEW's slice: each slice of an array target is an image of its own */
     uint32_t width, height;
     int drawn;
     VkFormat format;
@@ -137,9 +142,10 @@ typedef struct {
     VkImageView view;
 } depth_entry;
 
-/* A render pass and framebuffer for a colour target, a depth target or both (an index, or -1). */
+/* A render pass and framebuffer for the colour targets in slots 0-7 and a depth target (indices, or -1
+   for none). */
 typedef struct {
-    int color, depth;
+    int color[RT_COLOR_TARGETS], depth;
     VkRenderPass pass;
     VkFramebuffer framebuffer;
 } pass_entry;
@@ -148,7 +154,9 @@ typedef struct {
     VkShaderModule vertex, geometry, pixel; /* geometry: the rect-list stage, or none */
     VkRenderPass pass;
     VkPipelineLayout layout;
-    uint32_t blend_control;          /* CB_BLEND0_CONTROL */
+    uint32_t colours;                /* the slots the draw writes, a bit each */
+    uint32_t blend_control[RT_COLOR_TARGETS]; /* CB_BLENDn_CONTROL of each slot written (0 for the others) */
+    uint32_t write_masks;            /* CB_TARGET_MASK, the slots not written cleared */
     int strip;                       /* triangle strips, not lists */
     depth_plan depth;
     VkPipeline pipeline;
@@ -175,6 +183,8 @@ typedef struct {
     uint64_t address;
     VkFormat format;
     uint32_t width, height, layers, type, tiling_index, pitch;
+    uint32_t levels;                 /* mip levels (LAST_LEVEL + 1) */
+    int pow2;                        /* the descriptor's POW2_PAD (where the levels lie) */
     int gpu_written;                 /* a shader has written it: its texels are the image's own */
     memory_snapshot agreed;          /* the guest memory it was last loaded from (loads through the CPU) */
     uint64_t loaded_epoch;           /* the memory epoch it was last loaded at (loads on the GPU) */
@@ -183,6 +193,7 @@ typedef struct {
     VkDeviceMemory memory;
     struct {
         uint32_t first, count;       /* layers first to first + count - 1 */
+        uint32_t first_level, level_count;
         uint32_t swizzle;            /* DST_SEL, for a sampled view (storage views keep x, y, z, w) */
         VkImageView view;
     } views[MAX_VIEWS];              /* made on first use */
@@ -201,9 +212,8 @@ enum { Z_INFO, STENCIL_INFO, Z_READ_BASE, STENCIL_READ_BASE, Z_WRITE_BASE, STENC
 
 /* The state a command buffer builds up, call by call. */
 typedef struct {
-    rt_color_target color;
-    int color_enabled;
-    uint32_t other_targets;          /* the slots other than 0 enabled, a bit each */
+    rt_color_target colors[RT_COLOR_TARGETS];
+    uint32_t color_enabled;          /* the slots with a target set (not switched off), a bit each */
     float viewport_scale[3], viewport_translate[3];
     int viewport_set;
     rt_vertex_shader vertex;
@@ -216,8 +226,9 @@ typedef struct {
     uint32_t user_set[STAGES], compute_user_set; /* the user-data slots the calls have set, a bit each */
     /* Registers the library set (AMD's layout, gfx_7_2_sh_mask.h), with whether each was set; an
        unset one is the state the drawing below assumes. */
-    uint32_t blend0_control, depth_control, color_control, target_mask, primitive_type, instances;
-    int blend0_set, depth_set, color_control_set, target_mask_set, primitive_set, instances_set;
+    uint32_t blend_control[RT_COLOR_TARGETS], blend_set; /* CB_BLENDn_CONTROL, and which were set, a bit each */
+    uint32_t depth_control, color_control, target_mask, primitive_type, instances;
+    int depth_set, color_control_set, target_mask_set, primitive_set, instances_set;
     float blend_constants[4];        /* CB_BLEND_RED, GREEN, BLUE, ALPHA */
     /* the index buffer: INDEX_BASE, INDEX_BUFFER_SIZE (indices), INDEX_TYPE */
     uint64_t index_base;
@@ -320,14 +331,13 @@ enum { DB_RENDER_CONTROL = 0xa000, DB_DEPTH_VIEW = 0xa002, DB_HTILE_DATA_BASE = 
        CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242 };
 enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 0x1, Z_ENABLE = 0x2, Z_WRITE_ENABLE = 0x4,
        COLOR_MODE_MASK = 0x70, COLOR_MODE_SHIFT = 4, CB_NORMAL = 1, ROP3_MASK = 0xff0000, ROP3_SHIFT = 16, ROP3_COPY = 0xcc,
-       TARGET0_MASK = 0xf, DI_PT_TRILIST = 4, DI_PT_TRISTRIP = 6, DI_PT_RECTLIST = 17, CB_DISABLE = 0, DEPTH_BOUNDS_ENABLE = 0x8,
+       CHANNELS_MASK = 0xf, DI_PT_TRILIST = 4, DI_PT_TRISTRIP = 6, DI_PT_RECTLIST = 17, CB_DISABLE = 0, DEPTH_BOUNDS_ENABLE = 0x8,
        Z_FORMAT_MASK = 0x3, STENCIL_FORMAT_MASK = 0x1 };
 
 /* Keeps a register the library set; 0, or -1 for one the executor does not understand yet. */
 static int set_register(draw_state *s, uint32_t address, uint32_t value)
 {
     switch (address) {
-    case CB_BLEND0_CONTROL: s->blend0_control = value, s->blend0_set = 1; return 0;
     case DB_DEPTH_CONTROL: s->depth_control = value, s->depth_set = 1; return 0;
     case CB_COLOR_CONTROL: s->color_control = value, s->color_control_set = 1; return 0;
     case CB_TARGET_MASK: s->target_mask = value, s->target_mask_set = 1; return 0;
@@ -348,8 +358,10 @@ static int set_register(draw_state *s, uint32_t address, uint32_t value)
             if (address == DB_STENCIL_INFO) s->stencil_info_set = 1;
             return 0;
         }
-        /* targets 1-7 blend only into their own slots, which stop the draw when they are enabled */
-        if (address > CB_BLEND0_CONTROL && address <= CB_BLEND7_CONTROL) return 0;
+        if (address >= CB_BLEND0_CONTROL && address <= CB_BLEND7_CONTROL) {
+            s->blend_control[address - CB_BLEND0_CONTROL] = value, s->blend_set |= 1u << (address - CB_BLEND0_CONTROL);
+            return 0;
+        }
         if (address >= CB_BLEND_RED && address <= CB_BLEND_ALPHA) {
             memcpy(&s->blend_constants[address - CB_BLEND_RED], &value, sizeof value);
             return 0;
@@ -358,7 +370,7 @@ static int set_register(draw_state *s, uint32_t address, uint32_t value)
     }
 }
 
-/* Target 0's blending, from CB_BLEND0_CONTROL (AMD's gfx_7_2_sh_mask.h): COLOR_SRCBLEND bits 0-4,
+/* A target's blending, from its CB_BLENDn_CONTROL (AMD's gfx_7_2_sh_mask.h): COLOR_SRCBLEND bits 0-4,
    COLOR_COMB_FCN 5-7, COLOR_DESTBLEND 8-12, ALPHA_SRCBLEND 16-20, ALPHA_COMB_FCN 21-23,
    ALPHA_DESTBLEND 24-28, SEPARATE_ALPHA_BLEND 29, ENABLE 30. The factors and functions are AMD's
    BlendOp and CombFunc numbers (Mesa's sid.h V_028780_BLEND_* and COMB_*; shadPS4's regs_color.h
@@ -387,10 +399,10 @@ static int blend_state(uint32_t control, VkPipelineColorBlendAttachmentState *ou
     const uint32_t function[2] = {control >> 5 & 7, alpha >> 5 & 7};
     for (unsigned i = 0; i < 4; i++)
         if (numbers[i] >= FACTORS || factors[numbers[i]] < 0)
-            return failed(error, error_size, "blend factor %u (CB_BLEND0_CONTROL %#x): not drawn yet", numbers[i], control);
+            return failed(error, error_size, "blend factor %u (CB_BLENDn_CONTROL %#x): not drawn yet", numbers[i], control);
     for (unsigned i = 0; i < 2; i++)
         if (function[i] >= FUNCTIONS)
-            return failed(error, error_size, "blend function %u (CB_BLEND0_CONTROL %#x): not drawn yet", function[i], control);
+            return failed(error, error_size, "blend function %u (CB_BLENDn_CONTROL %#x): not drawn yet", function[i], control);
     out->blendEnable = VK_TRUE;
     out->srcColorBlendFactor = (VkBlendFactor)factors[numbers[0]], out->dstColorBlendFactor = (VkBlendFactor)factors[numbers[1]];
     out->srcAlphaBlendFactor = (VkBlendFactor)factors[numbers[2]], out->dstAlphaBlendFactor = (VkBlendFactor)factors[numbers[3]];
@@ -410,8 +422,11 @@ static int blend_state(uint32_t control, VkPipelineColorBlendAttachmentState *ou
    - Compare functions are AMD's CompareFrag (Mesa's sid.h V_028800_FRAG_*): never, less, equal, less or
      equal, greater, not equal, greater or equal, always, the order of Vulkan's VkCompareOp.
    - Done: every compare function, and writes: stencil operations keep, zero, replace with the test
-     value, invert, and add and subtract (clamped or wrapping) when they step by STENCILOPVAL 1 (Mesa's
-     V_02842C_STENCIL_*). A test that reads the buffer
+     value, replace with STENCILOPVAL, invert, and add and subtract (clamped or wrapping) when they step
+     by STENCILOPVAL 1 (Mesa's V_02842C_STENCIL_*). Vulkan replaces with its one reference value, which
+     the test also compares with: replacing with STENCILOPVAL sets the reference to it, which is exact
+     when the compare does not read the reference (always, never) or STENCILTESTVAL equals it, and no
+     operation of the face replaces with the test value instead; otherwise it stops by name. A test that reads the buffer
      (a compare function other than always or never) is planned with reads set: the draw then needs the
      depth target's image to hold what earlier draws wrote (depth_entry's drawn), since the buffer's
      contents in guest memory are never loaded into it. Other operations, depth bounds and
@@ -420,13 +435,14 @@ static int blend_state(uint32_t control, VkPipelineColorBlendAttachmentState *ou
    0, or -1 with the reason. */
 static int plan_depth(const draw_state *s, depth_plan *plan, char *error, size_t error_size)
 {
-    enum { COMPARE_NEVER = 0, COMPARE_ALWAYS = 7, BACKFACE_ENABLE = 0x80, STENCIL_OPS = 16, OP_VALUE_SHIFT = 24, ONE_STEP = 1 };
+    enum { COMPARE_NEVER = 0, COMPARE_ALWAYS = 7, BACKFACE_ENABLE = 0x80, STENCIL_OPS = 16, OP_VALUE_SHIFT = 24, ONE_STEP = 1,
+           REPLACE_TEST = 3, REPLACE_OP = 4 };
     /* AMD's stencil operations (Mesa's V_02842C_STENCIL_*; shadPS4's StencilFunc agrees) as Vulkan's,
        where one exists: the add and subtract operations step by STENCILOPVAL, so they are Vulkan's
        increment and decrement only when it is 1 (op_steps); -1 is not drawn yet. */
     static const int vulkan_op[STENCIL_OPS] = {
         [0] = VK_STENCIL_OP_KEEP, [1] = VK_STENCIL_OP_ZERO, [2] = -1 /* ones */, [3] = VK_STENCIL_OP_REPLACE,
-        [4] = -1 /* replace with STENCILOPVAL */, [5] = VK_STENCIL_OP_INCREMENT_AND_CLAMP, [6] = VK_STENCIL_OP_DECREMENT_AND_CLAMP,
+        [4] = VK_STENCIL_OP_REPLACE /* with STENCILOPVAL: the reference becomes it (below) */, [5] = VK_STENCIL_OP_INCREMENT_AND_CLAMP, [6] = VK_STENCIL_OP_DECREMENT_AND_CLAMP,
         [7] = VK_STENCIL_OP_INVERT, [8] = VK_STENCIL_OP_INCREMENT_AND_WRAP, [9] = VK_STENCIL_OP_DECREMENT_AND_WRAP,
         [10] = -1, [11] = -1, [12] = -1, [13] = -1, [14] = -1, [15] = -1 /* bitwise with STENCILOPVAL */};
     static const int op_steps[STENCIL_OPS] = {[5] = 1, [6] = 1, [8] = 1, [9] = 1};
@@ -454,6 +470,17 @@ static int plan_depth(const draw_state *s, depth_plan *plan, char *error, size_t
             const uint32_t compare = control >> (source ? 20 : 8) & 7, ops = s->stencil_control >> (source ? 12 : 0) & 0xfff;
             if (compare != COMPARE_ALWAYS && compare != COMPARE_NEVER) plan->reads = 1;
             const uint32_t op_value = s->stencil_reference[source] >> OP_VALUE_SHIFT;
+            const uint32_t test_value = s->stencil_reference[source] & 0xff;
+            int replaces_with_test = 0, replaces_with_op = 0;
+            for (unsigned k = 0; k < 3; k++) {
+                const uint32_t op = ops >> (4 * k) & 0xf;
+                replaces_with_test |= op == REPLACE_TEST, replaces_with_op |= op == REPLACE_OP;
+            }
+            if (replaces_with_op && op_value != test_value &&
+                (replaces_with_test || (compare != COMPARE_ALWAYS && compare != COMPARE_NEVER)))
+                return failed(error, error_size, "a stencil replace with STENCILOPVAL %u beside a test or replace with STENCILTESTVAL %u: "
+                              "not drawn yet", op_value, test_value);
+            plan->reference_is_op_value[face] = (uint32_t)replaces_with_op;
             for (unsigned k = 0; k < 3; k++) {
                 const uint32_t op = ops >> (4 * k) & 0xf;
                 if (vulkan_op[op] < 0)
@@ -480,29 +507,41 @@ static int plan_writes(const depth_plan *plan)
     return 0;
 }
 
-/* Whether the registers describe what the draw below does: opaque or blended triangles into target 0,
-   depth and stencil as plan_depth allows, one instance. Its plan in *plan, and in *colour whether it
-   writes target 0 (not masked off, colour writes on: CB_COLOR_CONTROL's mode not CB_DISABLE). 1 when
-   nothing at all would be written, 0 to draw, -1 with the reason otherwise. */
-static int check_state(const draw_state *s, depth_plan *plan, int *colour, char *error, size_t error_size)
+/* CB_TARGET_MASK: four bits per slot (slot n in bits 4n to 4n+3), the export's x, y, z, w (red,
+   green, blue, alpha), as shadPS4 hands it to Vulkan's colour write mask. Unset: every channel. */
+static uint32_t slot_mask(const draw_state *s, unsigned slot)
+{
+    return s->target_mask_set ? s->target_mask >> (4 * slot) & CHANNELS_MASK : CHANNELS_MASK;
+}
+
+/* Whether the registers describe what the draw below does: opaque or blended triangles into the colour
+   targets of slots 0-7, depth and stencil as plan_depth allows, one instance. Its plan in *plan, and in
+   *colours the slots it writes, a bit each: a target set, not masked off entirely, colour writes on
+   (CB_COLOR_CONTROL's mode not CB_DISABLE). 1 when nothing at all would be written, 0 to draw, -1 with
+   the reason otherwise. */
+static int check_state(const draw_state *s, depth_plan *plan, uint32_t *colours, char *error, size_t error_size)
 {
     if (s->primitive_set && s->primitive_type != DI_PT_TRILIST && s->primitive_type != DI_PT_TRISTRIP && s->primitive_type != DI_PT_RECTLIST)
         return failed(error, error_size, "primitive type %u: only triangle lists and strips and rect lists are drawn yet", s->primitive_type);
-    VkPipelineColorBlendAttachmentState blend;
-    if (s->blend0_set && blend_state(s->blend0_control, &blend, error, error_size)) return -1;
     if (plan_depth(s, plan, error, error_size)) return -1;
     if (s->instances_set && s->instances != 1) return failed(error, error_size, "%u instances: only one is drawn yet", s->instances);
-    *colour = s->color_enabled;
+    *colours = s->color_enabled;
     if (s->color_control_set) {
         const uint32_t mode = (s->color_control & COLOR_MODE_MASK) >> COLOR_MODE_SHIFT, rop = (s->color_control & ROP3_MASK) >> ROP3_SHIFT;
-        if (mode == CB_DISABLE) *colour = 0;
+        if (mode == CB_DISABLE) *colours = 0;
         else if (mode != CB_NORMAL || rop != ROP3_COPY)
             return failed(error, error_size, "colour mode %u, raster operation %#x: only normal copies are drawn yet", mode, rop);
     }
-    if (s->target_mask_set && !(s->target_mask & TARGET0_MASK)) *colour = 0;
-    if (*colour && s->target_mask_set && (s->target_mask & TARGET0_MASK) != TARGET0_MASK)
-        return failed(error, error_size, "colour write mask %#x: only all four channels are drawn yet", s->target_mask & TARGET0_MASK);
-    if (!*colour && !plan_writes(plan)) return 1;
+    for (unsigned slot = 0; slot < RT_COLOR_TARGETS; slot++) {
+        if (!(*colours >> slot & 1)) continue;
+        if (!slot_mask(s, slot)) {
+            *colours &= ~(1u << slot);
+            continue;
+        }
+        VkPipelineColorBlendAttachmentState blend;
+        if ((s->blend_set >> slot & 1) && blend_state(s->blend_control[slot], &blend, error, error_size)) return -1;
+    }
+    if (!*colours && !plan_writes(plan)) return 1;
     return 0;
 }
 
@@ -1030,17 +1069,30 @@ static int record_tile_copy(rt_executor *x, const tile_plan *p, uint64_t address
 
 /* ---- render targets ---- */
 
-static VkFormat target_format(const rt_color_target *target, char *error, size_t error_size)
+/* A colour target's Vulkan format, and its texel's bytes in memory in *element_bytes:
+   - COLOR_8_8_8_8 UNORM or sRGB, in either component order (SWAP_STD R8G8B8A8, SWAP_ALT B8G8R8A8);
+   - COLOR_10_11_11 FLOAT: unsigned floats with x in bits 0-10, y in 11-21 and z in 22-31 (AMD names
+     formats from the top bits down), Vulkan's B10G11R11_UFLOAT_PACK32, as shadPS4 maps it;
+   - COLOR_16_16_16_16 FLOAT: halves, x first, R16G16B16A16_SFLOAT, 8 bytes.
+   Others stop by name (VK_FORMAT_UNDEFINED with the reason). */
+static VkFormat target_format(const rt_color_target *target, uint32_t *element_bytes, char *error, size_t error_size)
 {
-    if (target->format != COLOR_8_8_8_8 || (target->number_type != NUMBER_UNORM && target->number_type != NUMBER_SRGB) ||
-        (target->component_swap != SWAP_STD && target->component_swap != SWAP_ALT)) {
-        failed(error, error_size, "render target format %#x, number type %u, swap %u is not drawn yet", target->format,
-               target->number_type, target->component_swap);
-        return VK_FORMAT_UNDEFINED;
+    const int std = target->component_swap == SWAP_STD, alt = target->component_swap == SWAP_ALT;
+    *element_bytes = 4;
+    if (target->format == COLOR_8_8_8_8 && (target->number_type == NUMBER_UNORM || target->number_type == NUMBER_SRGB) && (std || alt)) {
+        const int srgb = target->number_type == NUMBER_SRGB;
+        if (std) return srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+        return srgb ? VK_FORMAT_B8G8R8A8_SRGB : VK_FORMAT_B8G8R8A8_UNORM;
     }
-    const int srgb = target->number_type == NUMBER_SRGB;
-    if (target->component_swap == SWAP_STD) return srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
-    return srgb ? VK_FORMAT_B8G8R8A8_SRGB : VK_FORMAT_B8G8R8A8_UNORM;
+    /* unsigned 11-, 11- and 10-bit floats, x in the low bits */
+    if (target->format == COLOR_10_11_11 && target->number_type == NUMBER_FLOAT && std) return VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+    if (target->format == COLOR_16_16_16_16 && target->number_type == NUMBER_FLOAT && std) {
+        *element_bytes = 8;
+        return VK_FORMAT_R16G16B16A16_SFLOAT;
+    }
+    failed(error, error_size, "render target format %#x, number type %u, swap %u is not drawn yet", target->format, target->number_type,
+           target->component_swap);
+    return VK_FORMAT_UNDEFINED;
 }
 
 static target_entry *find_target(rt_executor *x, uint64_t address)
@@ -1062,7 +1114,8 @@ static uint64_t target_span(const target_entry *t)
 /* The image standing for a render target: made on first use, cleared to zero, kept by address. */
 static target_entry *target_for(rt_executor *x, const rt_color_target *color, char *error, size_t error_size)
 {
-    const VkFormat format = target_format(color, error, error_size);
+    uint32_t element_bytes;
+    const VkFormat format = target_format(color, &element_bytes, error, error_size);
     if (format == VK_FORMAT_UNDEFINED) return NULL;
     target_entry *t = find_target(x, color->address);
     if (t) {
@@ -1076,14 +1129,9 @@ static target_entry *target_for(rt_executor *x, const rt_color_target *color, ch
         failed(error, error_size, "more render targets than the executor keeps");
         return NULL;
     }
-    for (size_t i = 0; i < x->image_count; i++)
-        if (x->images[i].address == color->address && x->images[i].gpu_written) {
-            failed(error, error_size, "a render target at %#llx that a shader wrote as an image: not drawn yet", (unsigned long long)color->address);
-            return NULL;
-        }
     t = &x->targets[x->target_count];
     *t = (target_entry){.loaded_epoch = UINT64_MAX, .address = color->address, .width = color->pitch, .height = color->height, .tile_index = color->tile_mode_index,
-                        .format = format};
+                        .format = format, .element_bytes = element_bytes};
     const VkImageCreateInfo image = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = format,
                                      .extent = {t->width, t->height, 1}, .mipLevels = 1, .arrayLayers = 1,
                                      .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
@@ -1101,23 +1149,6 @@ static target_entry *target_for(rt_executor *x, const rt_color_target *color, ch
                                         .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = format,
                                         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
     if (vkCreateImageView(x->device, &view, NULL, &t->view) != VK_SUCCESS) goto fail;
-    /* draws add to what is there, so the pass loads the image and keeps it ready for the next draw */
-    const VkAttachmentDescription attachment = {.format = format, .samples = VK_SAMPLE_COUNT_1_BIT,
-                                                .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-                                                .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-                                                .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-                                                .initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                                .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-    const VkAttachmentReference reference = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-    const VkSubpassDescription subpass = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1,
-                                          .pColorAttachments = &reference};
-    const VkRenderPassCreateInfo pass = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 1,
-                                         .pAttachments = &attachment, .subpassCount = 1, .pSubpasses = &subpass};
-    if (vkCreateRenderPass(x->device, &pass, NULL, &t->pass) != VK_SUCCESS) goto fail;
-    const VkFramebufferCreateInfo framebuffer = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = t->pass,
-                                                 .attachmentCount = 1, .pAttachments = &t->view, .width = t->width,
-                                                 .height = t->height, .layers = 1};
-    if (vkCreateFramebuffer(x->device, &framebuffer, NULL, &t->framebuffer) != VK_SUCCESS) goto fail;
     VkCommandBuffer commands = begin_commands(x);
     if (!commands) goto fail;
     image_barrier(commands, t->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -1133,8 +1164,6 @@ static target_entry *target_for(rt_executor *x, const rt_color_target *color, ch
     return t;
 fail:
     failed(error, error_size, "the device cannot make a %ux%u render target", t->width, t->height);
-    if (t->framebuffer) vkDestroyFramebuffer(x->device, t->framebuffer, NULL);
-    if (t->pass) vkDestroyRenderPass(x->device, t->pass, NULL);
     if (t->view) vkDestroyImageView(x->device, t->view, NULL);
     if (t->image) vkDestroyImage(x->device, t->image, NULL);
     if (t->memory) vkFreeMemory(x->device, t->memory, NULL);
@@ -1146,9 +1175,8 @@ fail:
    GPU-visible range). */
 static int target_memory(rt_executor *x, target_entry *t, rt_tiling *layout, uint64_t *span, char *error, size_t error_size)
 {
-    enum { TEXEL_BYTES = 4 };
     char reason[160];
-    if (rt_tiling_layout(t->tile_index, TEXEL_BYTES, t->width, t->height, layout, reason, sizeof reason))
+    if (rt_tiling_layout(t->tile_index, t->element_bytes, t->width, t->height, layout, reason, sizeof reason))
         return failed(error, error_size, "render target %#llx: %s", (unsigned long long)t->address, reason);
     *span = rt_tiling_size(layout, 1);
     if (t->address < x->guest_base || t->address - x->guest_base > x->size || *span > x->size - (t->address - x->guest_base))
@@ -1193,6 +1221,50 @@ static int load_target(rt_executor *x, target_entry *t, char *error, size_t erro
         return -1;
     t->staging_current = 0;
     return 0;
+}
+
+/* Whether two image formats hold the same bytes per texel in the same memory order for a raw copy:
+   the same format, or two 8_8_8_8 ones (sRGB or not, either component order: the images hold the
+   memory's bytes as they lie). */
+static int same_texel_bytes(VkFormat a, VkFormat b)
+{
+    const VkFormat bytes4[] = {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_B8G8R8A8_SRGB};
+    int a4 = 0, b4 = 0;
+    for (unsigned i = 0; i < sizeof bytes4 / sizeof *bytes4; i++) a4 |= a == bytes4[i], b4 |= b == bytes4[i];
+    return a == b || (a4 && b4);
+}
+
+/* A shader may have written a render target's memory as an image since the target was last drawn (a
+   compute clear, as the game clears its G-buffer): the image keeps those texels (image_for), so they
+   are the target's newest contents. They are copied into the target, which is then drawn into and
+   written back like any other; the image loads from the memory again at its next use. 1 when copied,
+   0 when no image holds newer texels, -1 with the reason (an image of another texel size, or smaller). */
+static int take_written_image(rt_executor *x, target_entry *t, char *error, size_t error_size)
+{
+    image_entry *e = NULL;
+    for (size_t i = 0; i < x->image_count && !e; i++)
+        if (x->images[i].address == t->address && x->images[i].gpu_written) e = &x->images[i];
+    if (!e) return 0;
+    if (!same_texel_bytes(e->format, t->format) || e->width < t->width || e->height < t->height || e->type != RT_IMAGE_2D)
+        return failed(error, error_size, "render target %#llx was written by a shader as an image of another format or shape (Vulkan format %d, "
+                      "%ux%u, type %u): not drawn yet", (unsigned long long)t->address, (int)e->format, e->width, e->height, e->type);
+    VkCommandBuffer commands = batch_commands(x);
+    if (!commands) return failed(error, error_size, "no command buffer");
+    const VkMemoryBarrier written = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                                     .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &written, 0, NULL, 0, NULL);
+    image_barrier(commands, t->image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    const VkImageCopy region = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                .extent = {t->width, t->height, 1}};
+    vkCmdCopyImage(commands, e->image, VK_IMAGE_LAYOUT_GENERAL, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    image_barrier(commands, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+    e->gpu_written = 0;
+    t->drawn = 1, t->staging_current = 0, t->loaded_epoch = x->memory_epoch;
+    return 1;
 }
 
 /* Writes every render target drawn into since back to the guest memory, so what reads the memory next
@@ -1266,8 +1338,12 @@ static depth_entry *depth_for(rt_executor *x, const draw_state *s, char *error, 
 {
     enum { SLICE_START_MASK = 0x7ff, SLICE_MAX_SHIFT = 13, SLICE_MAX_MASK = 0x7ff, TILE = 8 };
     const uint32_t *r = s->depth_target;
-    if ((s->depth_view & SLICE_START_MASK) || (s->depth_view >> SLICE_MAX_SHIFT & SLICE_MAX_MASK)) {
-        failed(error, error_size, "a depth target view of slices other than 0 (DB_DEPTH_VIEW %#x): not drawn yet", s->depth_view);
+    /* DB_DEPTH_VIEW: SLICE_START bits 0-10, SLICE_MAX 13-23 (gfx_7_2_sh_mask.h); a draw into one slice of
+       an array target writes only it, so a slice is kept as its own image (nothing loads or reads the
+       slices as one array yet) */
+    const uint32_t slice = s->depth_view & SLICE_START_MASK;
+    if ((s->depth_view >> SLICE_MAX_SHIFT & SLICE_MAX_MASK) != slice) {
+        failed(error, error_size, "a depth target view of more than one slice (DB_DEPTH_VIEW %#x): not drawn yet", s->depth_view);
         return NULL;
     }
     const VkFormat format = depth_format(x, r[Z_INFO], r[STENCIL_INFO], error, error_size);
@@ -1276,7 +1352,7 @@ static depth_entry *depth_for(rt_executor *x, const draw_state *s, char *error, 
     const uint32_t width = ((r[DEPTH_SIZE] & 0x7ff) + 1) * TILE, height = ((r[DEPTH_SIZE] >> 11 & 0x7ff) + 1) * TILE;
     for (size_t i = 0; i < x->depth_count; i++) {
         depth_entry *d = &x->depths[i];
-        if (d->z_address != z_address || d->stencil_address != stencil_address) continue;
+        if (d->z_address != z_address || d->stencil_address != stencil_address || d->slice != slice) continue;
         if (d->width == width && d->height == height && d->format == format) return d;
         failed(error, error_size, "depth target %#llx changed size or format: not drawn yet", (unsigned long long)z_address);
         return NULL;
@@ -1286,7 +1362,8 @@ static depth_entry *depth_for(rt_executor *x, const draw_state *s, char *error, 
         return NULL;
     }
     depth_entry *d = &x->depths[x->depth_count];
-    *d = (depth_entry){.z_address = z_address, .stencil_address = stencil_address, .width = width, .height = height, .format = format};
+    *d = (depth_entry){.z_address = z_address, .stencil_address = stencil_address, .slice = slice, .width = width, .height = height,
+                       .format = format};
     const VkImageAspectFlags aspects = (format == VK_FORMAT_S8_UINT ? 0 : VK_IMAGE_ASPECT_DEPTH_BIT) |
                                        (format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_D32_SFLOAT ? 0 : VK_IMAGE_ASPECT_STENCIL_BIT);
     const VkImageCreateInfo image = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = format,
@@ -1330,36 +1407,56 @@ fail:
     return NULL;
 }
 
-/* The render pass and framebuffer for a colour target, a depth target or both (NULL for none): both
-   load what is there and keep it, as draws add to it. Both address pixels from the same corner, so a
-   depth target larger than the colour target (padded, as the game's 2048x1152 one under 1920x1088)
-   is drawn with the colour target's size; a smaller one stops by name. NULL after failing. */
-static pass_entry *pass_for(rt_executor *x, const target_entry *color, const depth_entry *depth, char *error, size_t error_size)
+/* The render pass and framebuffer for the colour targets of slots 0-7 (NULL for a slot not drawn) and a
+   depth target (or NULL): all load what is there and keep it, as draws add to it. Slot n is colour
+   attachment n, which the pixel shader's mrt n export writes; a slot between two drawn ones is an unused
+   attachment. The colour targets must have one size. They and the depth target address pixels from the
+   same corner, so a depth target larger than them (padded, as the game's 2048x1152 one under 1920x1088)
+   is drawn with their size; a smaller one stops by name. NULL after failing. */
+static pass_entry *pass_for(rt_executor *x, target_entry *const colors[RT_COLOR_TARGETS], const depth_entry *depth, char *error,
+                            size_t error_size)
 {
-    const int c = color ? (int)(color - x->targets) : -1, z = depth ? (int)(depth - x->depths) : -1;
+    int c[RT_COLOR_TARGETS];
+    const target_entry *first = NULL;
+    unsigned slots = 0; /* colour attachments: up to the last slot drawn */
+    for (unsigned i = 0; i < RT_COLOR_TARGETS; i++) {
+        c[i] = colors[i] ? (int)(colors[i] - x->targets) : -1;
+        if (!colors[i]) continue;
+        slots = i + 1;
+        if (!first) first = colors[i];
+        else if (colors[i]->width != first->width || colors[i]->height != first->height) {
+            failed(error, error_size, "colour targets of different sizes (%ux%u and %ux%u) in one draw: not drawn yet", first->width, first->height,
+                   colors[i]->width, colors[i]->height);
+            return NULL;
+        }
+    }
+    const int z = depth ? (int)(depth - x->depths) : -1;
     for (size_t i = 0; i < x->pass_count; i++)
-        if (x->passes[i].color == c && x->passes[i].depth == z) return &x->passes[i];
+        if (!memcmp(x->passes[i].color, c, sizeof c) && x->passes[i].depth == z) return &x->passes[i];
     if (x->pass_count == MAX_PASSES) {
         failed(error, error_size, "more render passes than the executor keeps");
         return NULL;
     }
-    if (color && depth && (color->width > depth->width || color->height > depth->height)) {
-        failed(error, error_size, "a %ux%u colour target with a smaller %ux%u depth target: not drawn yet", color->width, color->height, depth->width,
+    if (first && depth && (first->width > depth->width || first->height > depth->height)) {
+        failed(error, error_size, "a %ux%u colour target with a smaller %ux%u depth target: not drawn yet", first->width, first->height, depth->width,
                depth->height);
         return NULL;
     }
-    VkAttachmentDescription attachments[2];
-    VkImageView views[2];
+    VkAttachmentDescription attachments[RT_COLOR_TARGETS + 1];
+    VkImageView views[RT_COLOR_TARGETS + 1];
+    VkAttachmentReference color_references[RT_COLOR_TARGETS];
     unsigned count = 0;
-    const VkAttachmentReference color_reference = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     VkAttachmentReference depth_reference = {0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
-    if (color) {
-        attachments[count] = (VkAttachmentDescription){.format = color->format, .samples = VK_SAMPLE_COUNT_1_BIT, .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+    for (unsigned i = 0; i < slots; i++) {
+        color_references[i] = (VkAttachmentReference){VK_ATTACHMENT_UNUSED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        if (!colors[i]) continue;
+        color_references[i].attachment = count;
+        attachments[count] = (VkAttachmentDescription){.format = colors[i]->format, .samples = VK_SAMPLE_COUNT_1_BIT, .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
                                                        .storeOp = VK_ATTACHMENT_STORE_OP_STORE, .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
                                                        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
                                                        .initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                                        .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-        views[count++] = color->view;
+        views[count++] = colors[i]->view;
     }
     if (depth) {
         depth_reference.attachment = count;
@@ -1370,14 +1467,15 @@ static pass_entry *pass_for(rt_executor *x, const target_entry *color, const dep
                                                        .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
         views[count++] = depth->view;
     }
-    const VkSubpassDescription subpass = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = color ? 1u : 0u,
-                                          .pColorAttachments = color ? &color_reference : NULL,
+    const VkSubpassDescription subpass = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = slots,
+                                          .pColorAttachments = slots ? color_references : NULL,
                                           .pDepthStencilAttachment = depth ? &depth_reference : NULL};
     pass_entry *p = &x->passes[x->pass_count];
-    *p = (pass_entry){.color = c, .depth = z};
+    *p = (pass_entry){.depth = z};
+    memcpy(p->color, c, sizeof c);
     const VkRenderPassCreateInfo pass = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = count, .pAttachments = attachments,
                                          .subpassCount = 1, .pSubpasses = &subpass};
-    const uint32_t width = color ? color->width : depth->width, height = color ? color->height : depth->height;
+    const uint32_t width = first ? first->width : depth->width, height = first ? first->height : depth->height;
     if (vkCreateRenderPass(x->device, &pass, NULL, &p->pass) != VK_SUCCESS) {
         failed(error, error_size, "the device refused a render pass");
         return NULL;
@@ -1396,7 +1494,8 @@ static pass_entry *pass_for(rt_executor *x, const target_entry *color, const dep
 /* ---- shaders and pipelines ---- */
 
 /* The code's length is found by the translator; it may read up to the end of the guest memory. */
-/* settings: a vertex shader's PA_CL_VS_OUT_CNTL, a pixel shader's SPI_PS_INPUT_ADDR (part of the cache key). */
+/* settings: a vertex shader's PA_CL_VS_OUT_CNTL, a pixel shader's SPI_PS_INPUT_ADDR with SETTINGS_FRONT_FACE_ALL_BITS (part of the
+   cache key). */
 static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint32_t user_sgprs, uint32_t settings,
                                  const gcn_image_binding *images, unsigned image_count, const gcn_resource_origin *samplers,
                                  unsigned sampler_count, uint64_t callee, uint32_t *user_read, char *error, size_t error_size)
@@ -1433,11 +1532,13 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
                                           .code_address = code, .user_data_read = user_read};
         result = gcn_translate_vertex(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
     } else {
-        const uint32_t inputs = settings; /* a pixel shader's SPI_PS_INPUT_ADDR */
+        const uint32_t inputs = settings & ~SETTINGS_FRONT_FACE_ALL_BITS; /* a pixel shader's SPI_PS_INPUT_ADDR */
         const gcn_pixel_layout layout = {.user_sgprs = user_sgprs, .barycentric_vgpr = pixel_input_vgpr(inputs, 1),
                                          .position_enable = (inputs & POS_X_FLOAT_ENA ? GCN_PIXEL_POSITION_X : 0u) |
                                                             (inputs & POS_Y_FLOAT_ENA ? GCN_PIXEL_POSITION_Y : 0u),
-                                         .position_vgpr = pixel_input_vgpr(inputs, 8), .push_constant_offset = PIXEL_USER_DATA,
+                                         .position_vgpr = pixel_input_vgpr(inputs, 8), .front_face = (inputs & FRONT_FACE_ENA) != 0,
+                                         .front_face_all_bits = (settings & SETTINGS_FRONT_FACE_ALL_BITS) != 0,
+                                         .front_face_vgpr = pixel_input_vgpr(inputs, 12), .push_constant_offset = PIXEL_USER_DATA,
                                          .address_offset = x->address_offset, .error_address = stop_slot(x, 0, x->shader_count),
                                          .images = images, .image_count = image_count, .samplers = samplers,
                                          .sampler_count = sampler_count, .user_data_read = user_read};
@@ -1464,24 +1565,32 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
 }
 
 static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderModule geometry, VkShaderModule pixel, VkRenderPass pass,
-                               VkPipelineLayout layout, uint32_t blend_control, int strip, const depth_plan *depth, int colour,
-                               int has_depth, char *error, size_t error_size)
+                               VkPipelineLayout layout, uint32_t colours, const uint32_t blend_control[RT_COLOR_TARGETS], uint32_t write_masks,
+                               int strip, const depth_plan *depth, int has_depth, char *error, size_t error_size)
 {
     for (size_t i = 0; i < x->pipeline_count; i++) {
         const pipeline_entry *p = &x->pipelines[i];
         if (p->vertex == vertex && p->geometry == geometry && p->pixel == pixel && p->pass == pass && p->layout == layout &&
-            p->blend_control == blend_control && p->strip == strip && !memcmp(&p->depth, depth, sizeof *depth))
+            p->colours == colours && !memcmp(p->blend_control, blend_control, sizeof p->blend_control) && p->write_masks == write_masks &&
+            p->strip == strip && !memcmp(&p->depth, depth, sizeof *depth))
             return p->pipeline;
     }
     if (x->pipeline_count == MAX_PIPELINES) {
         failed(error, error_size, "more pipelines than the executor keeps");
         return VK_NULL_HANDLE;
     }
-    const VkPipelineShaderStageCreateInfo stages[] = {
-        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vertex, .pName = "main"},
-        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = pixel, .pName = "main"},
-        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_GEOMETRY_BIT, .module = geometry, .pName = "main"},
-    };
+    /* the vertex stage, then the pixel stage unless the draw has none (a depth-only pass), then the
+       rect-list geometry stage if any */
+    VkPipelineShaderStageCreateInfo stages[3];
+    uint32_t stage_count = 0;
+    stages[stage_count++] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                             .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vertex, .pName = "main"};
+    if (pixel)
+        stages[stage_count++] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                                 .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = pixel, .pName = "main"};
+    if (geometry)
+        stages[stage_count++] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                                 .stage = VK_SHADER_STAGE_GEOMETRY_BIT, .module = geometry, .pName = "main"};
     const VkPipelineVertexInputStateCreateInfo input = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     const VkPipelineInputAssemblyStateCreateInfo assembly = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
                                                              .topology = strip ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP
@@ -1493,8 +1602,17 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
                                                            .lineWidth = 1.0f};
     const VkPipelineMultisampleStateCreateInfo samples = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
                                                           .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
-    VkPipelineColorBlendAttachmentState write;
-    if (blend_state(blend_control, &write, error, error_size)) return VK_NULL_HANDLE;
+    /* one blend attachment per colour attachment, up to the last slot drawn; a slot between drawn ones
+       is an unused attachment and writes nothing */
+    VkPipelineColorBlendAttachmentState writes[RT_COLOR_TARGETS];
+    unsigned slots = 0;
+    for (unsigned i = 0; i < RT_COLOR_TARGETS; i++) {
+        writes[i] = (VkPipelineColorBlendAttachmentState){0};
+        if (!(colours >> i & 1)) continue;
+        if (blend_state(blend_control[i], &writes[i], error, error_size)) return VK_NULL_HANDLE;
+        writes[i].colorWriteMask = write_masks >> (4 * i) & CHANNELS_MASK; /* x, y, z, w: Vulkan's R, G, B, A bits */
+        slots = i + 1;
+    }
     /* stencil reference and masks are dynamic: the draw sets them from DB_STENCILREFMASK */
     VkStencilOpState faces[2];
     for (unsigned f = 0; f < 2; f++)
@@ -1505,13 +1623,13 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
         .depthWriteEnable = depth->depth_write != 0, .depthCompareOp = (VkCompareOp)depth->depth_compare,
         .stencilTestEnable = depth->stencil_test != 0, .front = faces[0], .back = faces[1]};
     const VkPipelineColorBlendStateCreateInfo blend = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-                                                       .attachmentCount = colour ? 1u : 0u, .pAttachments = &write};
+                                                       .attachmentCount = slots, .pAttachments = writes};
     const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
                                              VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK,
                                              VK_DYNAMIC_STATE_STENCIL_REFERENCE};
     const VkPipelineDynamicStateCreateInfo dynamic = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
                                                       .dynamicStateCount = 6, .pDynamicStates = dynamic_states};
-    const VkGraphicsPipelineCreateInfo info = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = geometry ? 3 : 2,
+    const VkGraphicsPipelineCreateInfo info = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = stage_count,
                                                .pStages = stages, .pVertexInputState = &input, .pInputAssemblyState = &assembly,
                                                .pViewportState = &viewport, .pRasterizationState = &raster,
                                                .pMultisampleState = &samples, .pColorBlendState = &blend, .pDynamicState = &dynamic,
@@ -1522,8 +1640,9 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
         return VK_NULL_HANDLE;
     }
     x->pipelines[x->pipeline_count++] =
-        (pipeline_entry){.vertex = vertex, .geometry = geometry, .pixel = pixel, .pass = pass, .layout = layout, .blend_control = blend_control,
-                         .strip = strip, .depth = *depth, .pipeline = pipeline};
+        (pipeline_entry){.vertex = vertex, .geometry = geometry, .pixel = pixel, .pass = pass, .layout = layout, .colours = colours,
+                         .write_masks = write_masks, .strip = strip, .depth = *depth, .pipeline = pipeline};
+    memcpy(x->pipelines[x->pipeline_count - 1].blend_control, blend_control, sizeof x->pipelines[0].blend_control);
     return pipeline;
 }
 
@@ -1648,8 +1767,8 @@ static int vertex_callee(rt_executor *x, const draw_state *s, uint64_t *callee, 
     return 0;
 }
 
-/* A draw as check_state planned it: into target 0 when colour says so, and the depth target when the plan
-   tests it. */
+/* A draw as check_state planned it: into the colour targets of the slots in colours, and the depth target
+   when the plan tests it. */
 /* An indexed draw's indices: where they start in the guest memory buffer, and their type. */
 typedef struct {
     VkDeviceSize offset;
@@ -1667,29 +1786,31 @@ static int check_user_data(const char *stage, uint64_t code, uint32_t read, uint
                   (unsigned long long)code, __builtin_ctz(read & ~set), set);
 }
 
-static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int colour, uint32_t index_count, const index_range *indices,
+static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uint32_t colours, uint32_t index_count, const index_range *indices,
                 char *error, size_t error_size)
 {
-    if (s->other_targets) return failed(error, error_size, "a draw with render targets beyond slot 0 is not drawn yet");
     if (!s->viewport_set) return failed(error, error_size, "a draw with no viewport");
     if (!s->vertex_set || !s->pixel_set) return failed(error, error_size, "a draw without a vertex and a pixel shader");
-    if (!s->pixel.code) return failed(error, error_size, "a draw with no pixel shader (a depth-only pass): not drawn yet");
-    const uint32_t drawn_inputs = PERSP_CENTER_ENA | POS_X_FLOAT_ENA | POS_Y_FLOAT_ENA;
-    if (s->pixel.input_enable != s->pixel.input_address || !(s->pixel.input_enable & PERSP_CENTER_ENA) || (s->pixel.input_enable & ~drawn_inputs))
-        return failed(error, error_size, "pixel-shader inputs %#x (address %#x): only the perspective-centre barycentrics and the "
-                      "position's x and y are drawn yet", s->pixel.input_enable, s->pixel.input_address);
+    /* no pixel shader: a depth-only pass, drawn with no pixel stage; it must write no colour target */
+    const int depth_only = !s->pixel.code;
+    if (depth_only && colours) return failed(error, error_size, "a draw with no pixel shader that writes a colour target");
+    const uint32_t drawn_inputs = PERSP_CENTER_ENA | POS_X_FLOAT_ENA | POS_Y_FLOAT_ENA | FRONT_FACE_ENA;
+    if (!depth_only && (s->pixel.input_enable != s->pixel.input_address || !(s->pixel.input_enable & PERSP_CENTER_ENA) ||
+                        (s->pixel.input_enable & ~drawn_inputs)))
+        return failed(error, error_size, "pixel-shader inputs %#x (address %#x): only the perspective-centre barycentrics, the "
+                      "position's x and y and the front face are drawn yet", s->pixel.input_enable, s->pixel.input_address);
     gcn_image_binding bindings[GCN_MAX_IMAGES];
     VkImageView views[GCN_MAX_IMAGES];
     unsigned image_count = 0;
     VkFormat view_formats[GCN_MAX_IMAGES];
-    if (stage_images(x, s->pixel.code, s->user[STAGE_PIXEL], s->pixel.user_sgprs, s->user_set[STAGE_PIXEL], 1, bindings, views, view_formats, &image_count, error,
+    if (!depth_only && stage_images(x, s->pixel.code, s->user[STAGE_PIXEL], s->pixel.user_sgprs, s->user_set[STAGE_PIXEL], 1, bindings, views, view_formats, &image_count, error,
                      error_size))
         return -1;
     gcn_resource_origin sampler_origins[GCN_MAX_SAMPLERS];
     VkSampler samplers[GCN_MAX_SAMPLERS];
     unsigned sampler_count = 0;
     int linear = 0;
-    if (stage_samplers(x, s->pixel.code, s->user[STAGE_PIXEL], s->pixel.user_sgprs, s->user_set[STAGE_PIXEL], sampler_origins, samplers, &sampler_count, &linear,
+    if (!depth_only && stage_samplers(x, s->pixel.code, s->user[STAGE_PIXEL], s->pixel.user_sgprs, s->user_set[STAGE_PIXEL], sampler_origins, samplers, &sampler_count, &linear,
                        error, error_size))
         return -1;
     /* a bilinear sampler may meet any of the shader's images: each must filter linearly on this device */
@@ -1699,11 +1820,19 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int
         if (!(properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT))
             return failed(error, error_size, "bilinear sampling of Vulkan format %d, which this device cannot filter", (int)view_formats[i]);
     }
-    target_entry *t = colour ? target_for(x, &s->color, error, error_size) : NULL;
-    if (colour && !t) return -1;
-    if (t && t->loaded_epoch != x->memory_epoch) { /* the memory may have changed since the image last held it */
-        if (load_target(x, t, error, error_size)) return -1;
-        t->loaded_epoch = x->memory_epoch;
+    target_entry *targets[RT_COLOR_TARGETS] = {0};
+    uint32_t blend_control[RT_COLOR_TARGETS] = {0}, write_masks = 0;
+    for (unsigned slot = 0; slot < RT_COLOR_TARGETS; slot++) {
+        if (!(colours >> slot & 1)) continue;
+        target_entry *t = targets[slot] = target_for(x, &s->colors[slot], error, error_size);
+        if (!t) return -1;
+        if (take_written_image(x, t, error, error_size) < 0) return -1;
+        if (t->loaded_epoch != x->memory_epoch) { /* the memory may have changed since the image last held it */
+            if (load_target(x, t, error, error_size)) return -1;
+            t->loaded_epoch = x->memory_epoch;
+        }
+        if (s->blend_set >> slot & 1) blend_control[slot] = s->blend_control[slot];
+        write_masks |= slot_mask(s, slot) << (4 * slot);
     }
     const int uses_depth = plan->depth_test || plan->stencil_test;
     depth_entry *z = uses_depth ? depth_for(x, s, error, error_size) : NULL;
@@ -1711,25 +1840,28 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int
     if (z && plan->reads && !z->drawn)
         return failed(error, error_size, "a depth or stencil test reads depth target %#llx, which no draw has written yet: its contents in "
                       "memory are not loaded", (unsigned long long)z->z_address);
-    VkRenderPass render_pass = t ? t->pass : VK_NULL_HANDLE;
-    VkFramebuffer framebuffer = t ? t->framebuffer : VK_NULL_HANDLE;
-    if (z) {
-        const pass_entry *p = pass_for(x, t, z, error, error_size);
-        if (!p) return -1;
-        render_pass = p->pass, framebuffer = p->framebuffer;
-    }
-    const uint32_t width = t ? t->width : z->width, height = t ? t->height : z->height;
+    if (!colours && !z) return 0; /* writes neither a colour nor a depth target: nothing to draw */
+    const pass_entry *p = pass_for(x, targets, z, error, error_size);
+    if (!p) return -1;
+    const VkRenderPass render_pass = p->pass;
+    const VkFramebuffer framebuffer = p->framebuffer;
+    const target_entry *sized = colours ? targets[__builtin_ctz(colours)] : NULL;
+    const uint32_t width = sized ? sized->width : z->width, height = sized ? sized->height : z->height;
     uint64_t callee = 0;
     if (vertex_callee(x, s, &callee, error, error_size)) return -1;
     uint32_t vertex_read = 0, pixel_read = 0;
     const VkShaderModule vertex = shader_for(x, STAGE_VERTEX, s->vertex.code, s->vertex.user_sgprs, s->vertex.output_control, NULL, 0,
                                              NULL, 0, callee, &vertex_read, error, error_size);
-    const VkShaderModule pixel = vertex ? shader_for(x, STAGE_PIXEL, s->pixel.code, s->pixel.user_sgprs, s->pixel.input_address, bindings,
-                                                     image_count, sampler_origins, sampler_count, 0, &pixel_read, error, error_size)
-                                        : VK_NULL_HANDLE;
-    if (!pixel) return -1;
+    if (!vertex) return -1;
+    const VkShaderModule pixel = depth_only ? VK_NULL_HANDLE
+                                            : shader_for(x, STAGE_PIXEL, s->pixel.code, s->pixel.user_sgprs,
+                                                         s->pixel.input_address |
+                                                             (s->pixel.barycentric_control & FRONT_FACE_ALL_BITS ? SETTINGS_FRONT_FACE_ALL_BITS : 0u),
+                                                         bindings,
+                                                         image_count, sampler_origins, sampler_count, 0, &pixel_read, error, error_size);
+    if (!depth_only && !pixel) return -1;
     if (check_user_data("vertex", s->vertex.code, vertex_read, s->user_set[STAGE_VERTEX], error, error_size) ||
-        check_user_data("pixel", s->pixel.code, pixel_read, s->user_set[STAGE_PIXEL], error, error_size))
+        (!depth_only && check_user_data("pixel", s->pixel.code, pixel_read, s->user_set[STAGE_PIXEL], error, error_size)))
         return -1;
     const int rect_list = s->primitive_set && s->primitive_type == DI_PT_RECTLIST;
     if (rect_list && index_count % 3) return failed(error, error_size, "a rect list of %u vertices, not whole rects of three", index_count);
@@ -1739,8 +1871,8 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int
     if (has_set && pixel_layout_for(x, image_count, sampler_count, error, error_size)) return -1;
     const VkPipelineLayout layout = has_set ? x->pixel_layouts[image_count][sampler_count] : x->layout;
     const int strip = s->primitive_set && s->primitive_type == DI_PT_TRISTRIP;
-    const VkPipeline pipeline = pipeline_for(x, vertex, geometry, pixel, render_pass, layout, s->blend0_set ? s->blend0_control : 0, strip,
-                                             plan, t != NULL, z != NULL, error, error_size);
+    const VkPipeline pipeline = pipeline_for(x, vertex, geometry, pixel, render_pass, layout, colours, blend_control, write_masks, strip,
+                                             plan, z != NULL, error, error_size);
     if (!pipeline) return -1;
     VkDescriptorSet set = VK_NULL_HANDLE;
     if (has_set && image_set(x, x->pixel_set_layouts[image_count][sampler_count], VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, views, image_count,
@@ -1771,7 +1903,7 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int
     for (unsigned face = 0; face < 2; face++) {
         const uint32_t r = s->stencil_reference[face && (s->depth_control & 0x80) ? 1 : 0];
         const VkStencilFaceFlags which = face ? VK_STENCIL_FACE_BACK_BIT : VK_STENCIL_FACE_FRONT_BIT;
-        vkCmdSetStencilReference(commands, which, r & 0xff);
+        vkCmdSetStencilReference(commands, which, plan->reference_is_op_value[face] ? r >> 24 : r & 0xff); /* STENCILOPVAL or STENCILTESTVAL */
         vkCmdSetStencilCompareMask(commands, which, r >> 8 & 0xff);
         vkCmdSetStencilWriteMask(commands, which, r >> 16 & 0xff);
     }
@@ -1785,7 +1917,8 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int
         vkCmdDraw(commands, index_count, 1, 0, 0);
     }
     vkCmdEndRenderPass(commands);
-    if (t) t->drawn = 1, t->staging_current = 0;
+    for (unsigned slot = 0; slot < RT_COLOR_TARGETS; slot++)
+        if (targets[slot]) targets[slot]->drawn = 1, targets[slot]->staging_current = 0;
     if (z && plan_writes(plan)) z->drawn = 1;
     return 0; /* the run-time stop words are checked once the batch has run */
 }
@@ -1874,6 +2007,7 @@ static int image_format(const rt_image_descriptor *d, texel_format *f, char *err
         {1, 0, {VK_FORMAT_R8_UNORM, GCN_IMAGE_FLOAT, 1, 1, 1}}, {3, 0, {VK_FORMAT_R8G8_UNORM, GCN_IMAGE_FLOAT, 2, 2, 1}}, {4, 7, {VK_FORMAT_R32_SFLOAT, GCN_IMAGE_FLOAT, 1, 4, 1}}, {4, 4, {VK_FORMAT_R32_UINT, GCN_IMAGE_UINT, 1, 4, 1}},
         {4, 5, {VK_FORMAT_R32_SINT, GCN_IMAGE_SINT, 1, 4, 1}}, {11, 7, {VK_FORMAT_R32G32_SFLOAT, GCN_IMAGE_FLOAT, 2, 8, 1}},
         {14, 7, {VK_FORMAT_R32G32B32A32_SFLOAT, GCN_IMAGE_FLOAT, 4, 16, 1}}, {10, 0, {VK_FORMAT_R8G8B8A8_UNORM, GCN_IMAGE_FLOAT, 4, 4, 1}}, {10, 4, {VK_FORMAT_R8G8B8A8_UINT, GCN_IMAGE_UINT, 4, 4, 1}},
+        {10, 9, {VK_FORMAT_R8G8B8A8_SRGB, GCN_IMAGE_FLOAT, 4, 4, 1}},
         {35, 0, {VK_FORMAT_BC1_RGBA_UNORM_BLOCK, GCN_IMAGE_FLOAT, 4, 8, 4}}, {35, 9, {VK_FORMAT_BC1_RGBA_SRGB_BLOCK, GCN_IMAGE_FLOAT, 4, 8, 4}},
         {36, 0, {VK_FORMAT_BC2_UNORM_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}}, {36, 9, {VK_FORMAT_BC2_SRGB_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}},
         {37, 0, {VK_FORMAT_BC3_UNORM_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}}, {37, 9, {VK_FORMAT_BC3_SRGB_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}},
@@ -1889,14 +2023,19 @@ static int image_format(const rt_image_descriptor *d, texel_format *f, char *err
     return failed(error, error_size, "an image of DATA_FORMAT %u, NUM_FORMAT %u: not done yet", d->data_format, d->num_format);
 }
 
+enum { NUM_FORMAT_SRGB = 9 };
+
 static int one_dimensional(uint32_t type) { return type == RT_IMAGE_1D || type == RT_IMAGE_1D_ARRAY; }
 
 /* Fills a kept image with the guest memory's texels under its descriptor, detiled (runtime/tiling.h): on
    the GPU for elements of whole 32-bit words, again whenever the memory may have changed since
    (memory_epoch); by the CPU for smaller ones, again when the memory differs from what it last loaded.
    0, or -1 with the reason (a layout not done yet, texels outside the GPU-visible memory). */
+static int load_levels(rt_executor *x, image_entry *e, const rt_image_descriptor *d, const texel_format *f, char *error, size_t error_size);
+
 static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor *d, const texel_format *f, char *error, size_t error_size)
 {
+    if (e->levels > 1) return load_levels(x, e, d, f, error, error_size);
     /* a block-compressed image is laid out in blocks: its pitch, width and height counted in them */
     const unsigned bytes = f->bytes, block = f->block;
     const uint32_t rows = one_dimensional(d->type) ? 1 : (d->height + block - 1) / block;
@@ -1965,6 +2104,69 @@ static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor
     return 0;
 }
 
+/* A mip-mapped image's levels from the guest memory (rt_tiling_mip_chain): each level detiled by the CPU
+   into the upload buffer and copied to its level, again when the memory differs from what was loaded
+   last. 0, or -1 with the reason. */
+static int load_levels(rt_executor *x, image_entry *e, const rt_image_descriptor *d, const texel_format *f, char *error, size_t error_size)
+{
+    const unsigned bytes = f->bytes, block = f->block;
+    if (d->pitch % block) return failed(error, error_size, "a block-compressed image at %#llx of pitch %u", (unsigned long long)d->address, d->pitch);
+    if (d->pitch < d->width) return failed(error, error_size, "an image at %#llx of width %u and pitch %u", (unsigned long long)d->address,
+                                           d->width, d->pitch);
+    const int one_d = one_dimensional(d->type);
+    rt_tiling_level levels[RT_TILING_MAX_LEVELS];
+    char reason[160];
+    if (rt_tiling_mip_chain(d->tiling_index, bytes, block, e->pow2, d->pitch, one_d ? 1 : d->height, d->width, one_d ? 1 : d->height,
+                            e->levels, e->layers, levels, reason, sizeof reason))
+        return failed(error, error_size, "loading the mip levels of the image at %#llx: %s", (unsigned long long)d->address, reason);
+    const rt_tiling_level *last = &levels[e->levels - 1];
+    const uint64_t span = last->offset + rt_tiling_size(&last->layout, e->layers);
+    if (d->address < x->guest_base || d->address - x->guest_base > x->size || span > x->size - (d->address - x->guest_base))
+        return failed(error, error_size, "the image at %#llx is outside the GPU-visible memory", (unsigned long long)d->address);
+    for (size_t i = 0; i < x->target_count; i++) {
+        target_entry *t = &x->targets[i];
+        if (t->drawn && t->address < d->address + span && d->address < t->address + target_span(t)) {
+            if (write_back_targets(x, error, error_size)) return -1;
+            break;
+        }
+    }
+    if (e->tiling_index != d->tiling_index || e->pitch != d->pitch) {
+        e->tiling_index = d->tiling_index, e->pitch = d->pitch;
+        memory_take(&e->agreed, NULL, 0);
+    }
+    if (guest_memory_settled(x, d->address, span, error, error_size)) return -1;
+    const uint8_t *guest = (const uint8_t *)x->view + (d->address - x->guest_base);
+    if (memory_unchanged(&e->agreed, guest, span)) return 0;
+    if (x->upload_pending && batch_finish(x, error, error_size)) return -1;
+    VkDeviceSize linear_bytes = 0;
+    for (unsigned m = 0; m < e->levels; m++) linear_bytes += (VkDeviceSize)levels[m].columns * levels[m].rows * e->layers * bytes;
+    if (staging_ready(x, &x->upload, linear_bytes)) return failed(error, error_size, "no staging memory for a %ux%u image", e->width, e->height);
+    VkBufferImageCopy copies[RT_TILING_MAX_LEVELS];
+    VkDeviceSize at = 0;
+    for (unsigned m = 0; m < e->levels; m++) {
+        rt_tiling_detile(&levels[m].layout, guest + levels[m].offset, (uint8_t *)x->upload.mapped + at, levels[m].columns, levels[m].rows,
+                         e->layers);
+        const uint32_t level_width = e->width >> m ? e->width >> m : 1, level_height = one_d ? 1 : (e->height >> m ? e->height >> m : 1);
+        copies[m] = (VkBufferImageCopy){.bufferOffset = at, .bufferRowLength = levels[m].columns * block,
+                                        .bufferImageHeight = levels[m].rows * block,
+                                        .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, m, 0, e->layers},
+                                        .imageExtent = {level_width, level_height, 1}};
+        at += (VkDeviceSize)levels[m].columns * levels[m].rows * e->layers * bytes;
+    }
+    VkCommandBuffer commands = batch_commands(x);
+    if (!commands) return failed(error, error_size, "no command buffer to load an image");
+    const VkMemoryBarrier before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT,
+                                    .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before, 0, NULL, 0, NULL);
+    vkCmdCopyBufferToImage(commands, x->upload.buffer, e->image, VK_IMAGE_LAYOUT_GENERAL, e->levels, copies);
+    const VkMemoryBarrier after = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                   .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &after, 0, NULL, 0, NULL);
+    x->upload_pending = 1;
+    memory_take(&e->agreed, guest, span);
+    return 0;
+}
+
 /* The image the executor keeps for a descriptor, made on first use. A use that reads an image no
    shader has written loads the guest memory's texels first (each time: the guest may have changed
    them); a new image first written is cleared. VK_NULL_HANDLE after failing. */
@@ -1985,7 +2187,7 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
     for (size_t i = 0; i < x->image_count && !e; i++) {
         image_entry *k = &x->images[i];
         if (k->address == d->address && k->format == f->format && k->width == d->width && k->height == d->height && k->layers == d->layers &&
-            k->type == d->type)
+            k->type == d->type && k->levels == d->last_level + 1 && k->pow2 == (int)d->pow2_pad)
             e = k;
     }
     if (!e) {
@@ -1995,14 +2197,16 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
         }
         const int one_d = one_dimensional(d->type);
         const VkImageCreateInfo info = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = one_d ? VK_IMAGE_TYPE_1D : VK_IMAGE_TYPE_2D,
-                                        .format = f->format, .extent = {d->width, one_d ? 1 : d->height, 1}, .mipLevels = 1,
+                                        .format = f->format, .extent = {d->width, one_d ? 1 : d->height, 1}, .mipLevels = d->last_level + 1,
                                         .arrayLayers = d->layers, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
-                                        .usage = (f->block > 1 ? 0 : VK_IMAGE_USAGE_STORAGE_BIT) | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                        .usage = (f->block > 1 || f->format == VK_FORMAT_R8G8B8A8_SRGB ? 0 : VK_IMAGE_USAGE_STORAGE_BIT) |
+                                                 VK_IMAGE_USAGE_SAMPLED_BIT |
                                                  VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                                         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
         e = &x->images[x->image_count];
         *e = (image_entry){.address = d->address, .format = f->format, .width = d->width, .height = d->height, .layers = d->layers,
-                           .type = d->type, .tiling_index = d->tiling_index, .pitch = d->pitch, .loaded_epoch = UINT64_MAX};
+                           .type = d->type, .tiling_index = d->tiling_index, .pitch = d->pitch, .levels = d->last_level + 1,
+                           .pow2 = (int)d->pow2_pad, .loaded_epoch = UINT64_MAX};
         if (vkCreateImage(x->device, &info, NULL, &e->image) != VK_SUCCESS) {
             failed(error, error_size, "the device refused a %ux%u image", d->width, d->height);
             return NULL;
@@ -2023,10 +2227,10 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
         const VkImageMemoryBarrier general = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
                                               .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
                                               .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                                              .image = e->image, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, d->layers}};
+                                              .image = e->image, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, e->levels, 0, d->layers}};
         vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &general);
         const VkClearColorValue zero = {{0}};
-        const VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, d->layers};
+        const VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, e->levels, 0, d->layers};
         vkCmdClearColorImage(commands, e->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &all);
         if (finish_commands(x, commands)) {
             failed(error, error_size, "the GPU did not clear a new image");
@@ -2034,7 +2238,10 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
         }
         x->image_count++;
     }
-    if ((access & GCN_IMAGE_READ) && !e->gpu_written && load_texels(x, e, d, f, error, error_size)) return NULL;
+    /* an image over a render target's memory loads it even to be written: a store may cover only part of
+       it, and the target takes the whole image's texels at its next draw (take_written_image) */
+    const int over_target = find_target(x, d->address) != NULL;
+    if (((access & GCN_IMAGE_READ) || over_target) && !e->gpu_written && load_texels(x, e, d, f, error, error_size)) return NULL;
     if (access & GCN_IMAGE_WRITE) e->gpu_written = 1;
     return e;
 }
@@ -2046,11 +2253,13 @@ enum { DST_SEL_ZERO = 0, DST_SEL_ONE = 1, DST_SEL_X = 4, DST_SEL_IDENTITY = 4 | 
    shader's slice coordinate counts from the view's first layer: the descriptor's BASE_ARRAY is where
    the hardware starts (shadPS4 views images from base_array, and Mesa's radeonsi makes a texture
    view's first layer with BASE_ARRAY). */
-static VkImageView image_view(rt_executor *x, image_entry *e, uint32_t first, uint32_t count, uint32_t swizzle, char *error,
-                              size_t error_size)
+static VkImageView image_view(rt_executor *x, image_entry *e, uint32_t first, uint32_t count, uint32_t first_level, uint32_t level_count,
+                              uint32_t swizzle, char *error, size_t error_size)
 {
     for (unsigned i = 0; i < e->view_count; i++)
-        if (e->views[i].first == first && e->views[i].count == count && e->views[i].swizzle == swizzle) return e->views[i].view;
+        if (e->views[i].first == first && e->views[i].count == count && e->views[i].first_level == first_level &&
+            e->views[i].level_count == level_count && e->views[i].swizzle == swizzle)
+            return e->views[i].view;
     if (e->view_count == MAX_VIEWS) {
         failed(error, error_size, "more views of one image than the executor keeps");
         return VK_NULL_HANDLE;
@@ -2065,13 +2274,14 @@ static VkImageView image_view(rt_executor *x, image_entry *e, uint32_t first, ui
                                     : e->type == RT_IMAGE_2D ? VK_IMAGE_VIEW_TYPE_2D : VK_IMAGE_VIEW_TYPE_2D_ARRAY;
     const VkImageViewCreateInfo view = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = e->image, .viewType = view_type,
                                         .format = e->format, .components = {components[0], components[1], components[2], components[3]},
-                                        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, first, count}};
+                                        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, first_level, level_count, first, count}};
     VkImageView made = VK_NULL_HANDLE;
     if (vkCreateImageView(x->device, &view, NULL, &made) != VK_SUCCESS) {
         failed(error, error_size, "no view of a %ux%u image", e->width, e->height);
         return VK_NULL_HANDLE;
     }
     e->views[e->view_count].first = first, e->views[e->view_count].count = count, e->views[e->view_count].swizzle = swizzle;
+    e->views[e->view_count].first_level = first_level, e->views[e->view_count].level_count = level_count;
     e->views[e->view_count].view = made;
     e->view_count++;
     return made;
@@ -2137,11 +2347,18 @@ static int stage_images(rt_executor *x, uint64_t code, const uint32_t *user, uin
                           "only 1D and 2D images and their arrays are done yet",
                           stage, (unsigned long long)code, d.type, words[0], words[1], words[2], words[3], words[4], words[5], words[6],
                           words[7]);
-        if (d.base_level || d.last_level) return failed(error, error_size, "an image with mip levels: not done yet");
+        /* mip levels: a pixel shader's sampled images (a storage image has one level) */
+        if (d.base_level > d.last_level || d.last_level >= RT_TILING_MAX_LEVELS)
+            return failed(error, error_size, "an image with mip levels %u to %u", d.base_level, d.last_level);
+        if (d.last_level && !pixel) return failed(error, error_size, "a mip-mapped image in a compute shader: not done yet");
         if (d.layers > 1 && (d.base_array > d.last_array || d.last_array >= d.layers))
             return failed(error, error_size, "a view of an image array from layer %u to %u of %u", d.base_array, d.last_array, d.layers);
         texel_format f;
         if (image_format(&d, &f, error, error_size)) return -1;
+        /* Vulkan has no sRGB storage images, and whether a compute shader's image_load decodes sRGB is
+           not established */
+        if (!pixel && d.num_format == NUM_FORMAT_SRGB)
+            return failed(error, error_size, "an sRGB image (DATA_FORMAT %u) in a compute shader: not done yet", d.data_format);
         /* a storage image's DST_SEL must keep each of the format's components in place; a sampled view
            picks them, or 0 or 1, but a component the format lacks is not established */
         for (unsigned k = 0; k < (pixel ? 4 : f.components); k++) {
@@ -2156,7 +2373,9 @@ static int stage_images(rt_executor *x, uint64_t code, const uint32_t *user, uin
         if (formats) formats[i] = f.format;
         image_entry *e = image_for(x, &d, &f, resources[i].access, error, error_size);
         const uint32_t first = d.layers > 1 ? d.base_array : 0, layers = d.layers > 1 ? d.last_array - d.base_array + 1 : 1;
-        if (!e || !(views[i] = image_view(x, e, first, layers, pixel ? d.swizzle : (uint32_t)DST_SEL_IDENTITY, error, error_size))) return -1;
+        if (!e || !(views[i] = image_view(x, e, first, layers, d.base_level, d.last_level - d.base_level + 1,
+                                          pixel ? d.swizzle : (uint32_t)DST_SEL_IDENTITY, error, error_size)))
+            return -1;
     }
     return 0;
 }
@@ -2171,14 +2390,17 @@ static int stage_images(rt_executor *x, uint64_t code, const uint32_t *user, uin
    2-3 anisotropic.
 
    Made: wrap, mirror and clamp to the last texel (Vulkan's repeat, mirrored repeat and clamp to
-   edge), point or bilinear filtering with the minifying and magnifying filters equal (the translator
-   samples level 0; with one level and equal filters that is what the GPU picks too). The anisotropy
+   edge), point or bilinear minifying and magnifying filters (the translator samples at the level the
+   derivatives pick, so Vulkan chooses between them as GCN does), the mip filter (none, point,
+   linear), LOD_BIAS, MIN_LOD and MAX_LOD (shadPS4's resource.h scales them: 8 fraction bits, the bias
+   signed). The anisotropy
    fields (MAX_ANISO_RATIO, ANISO_THRESHOLD, ANISO_BIAS) shape only the anisotropic filters (XY filters
    2 and 3; Mesa's radeonsi switches XY_MAG_FILTER and XY_MIN_FILTER to them exactly when it asks for
    anisotropy), so with point or bilinear filters they change nothing and are accepted. Anything else
    in word 0 (depth compares, unnormalized coordinates, the truncation and degamma options, a filter
-   mode other than blending) stops by name. Words 1 and 3 and the LOD bias and mip and z filters
-   change nothing for a one-level image sampled at level 0. */
+   mode other than blending) stops by name, as do the secondary LOD bias and the LOD rounding options
+   in word 2. Z_FILTER (3D images, which are not done), word 1's PERF_MIP and PERF_Z (sampling
+   performance hints) and word 3 (the border colour, for the border modes that stop) are not used. */
 static VkSampler sampler_for(rt_executor *x, const uint32_t words[4], char *error, size_t error_size)
 {
     for (size_t i = 0; i < x->sampler_count; i++)
@@ -2201,20 +2423,34 @@ static VkSampler sampler_for(rt_executor *x, const uint32_t words[4], char *erro
         modes[axis] = clamp == WRAP ? VK_SAMPLER_ADDRESS_MODE_REPEAT : clamp == MIRROR ? VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT
                                                                      : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     }
-    const uint32_t magnify = words[2] >> 20 & 3, minify = words[2] >> 22 & 3;
-    if (magnify != minify || magnify > BILINEAR) {
-        failed(error, error_size, "a sampler with filters %u (magnifying) and %u (minifying): only equal point or bilinear filters are "
+    const uint32_t magnify = words[2] >> 20 & 3, minify = words[2] >> 22 & 3, mip = words[2] >> 26 & 3;
+    if (magnify > BILINEAR || minify > BILINEAR) {
+        failed(error, error_size, "a sampler with filters %u (magnifying) and %u (minifying): only point and bilinear filters are "
                "done yet", magnify, minify);
+        return VK_NULL_HANDLE;
+    }
+    enum { MIP_NONE = 0, MIP_POINT = 1, MIP_LINEAR = 2, LOD_BIAS_SECONDARY = 0x3fu << 14, MIP_POINT_PRECLAMP = 1u << 28,
+           DISABLE_LSB_CEIL = 1u << 29, LOD_UNITS = 256 };
+    if (mip > MIP_LINEAR || (words[2] & (LOD_BIAS_SECONDARY | MIP_POINT_PRECLAMP | DISABLE_LSB_CEIL))) {
+        failed(error, error_size, "a sampler with word 2 %#x (mip filter %u, the secondary LOD bias or the LOD rounding options): "
+               "not done yet", words[2], mip);
         return VK_NULL_HANDLE;
     }
     if (x->sampler_count == MAX_SAMPLERS) {
         failed(error, error_size, "more samplers than the executor keeps");
         return VK_NULL_HANDLE;
     }
-    const VkFilter filter = magnify == POINT ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
-    const VkSamplerCreateInfo info = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = filter, .minFilter = filter,
-                                      .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST, .addressModeU = modes[0], .addressModeV = modes[1],
-                                      .addressModeW = modes[2], .maxLod = 0.0f};
+    /* LOD_BIAS: signed, 8 fraction bits; MIN_LOD and MAX_LOD: unsigned, 8 fraction bits. No mip filter
+       samples the view's first level: a maximum LOD of 0.25 keeps it, and still lets the minifying
+       filter apply past magnification (Vulkan's suggestion for unmipmapped sampling) */
+    const int32_t bias_field = (int32_t)(words[2] & 0x3fff);
+    const float bias = (float)(bias_field >= 0x2000 ? bias_field - 0x4000 : bias_field) / LOD_UNITS;
+    const float min_lod = (float)(words[1] & 0xfff) / LOD_UNITS, max_lod = (float)(words[1] >> 12 & 0xfff) / LOD_UNITS;
+    const VkSamplerCreateInfo info = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = magnify == POINT ? VK_FILTER_NEAREST : VK_FILTER_LINEAR,
+                                      .minFilter = minify == POINT ? VK_FILTER_NEAREST : VK_FILTER_LINEAR,
+                                      .mipmapMode = mip == MIP_LINEAR ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST,
+                                      .addressModeU = modes[0], .addressModeV = modes[1], .addressModeW = modes[2], .mipLodBias = bias,
+                                      .minLod = mip == MIP_NONE ? 0.0f : min_lod, .maxLod = mip == MIP_NONE ? 0.25f : max_lod};
     VkSampler sampler = VK_NULL_HANDLE;
     if (vkCreateSampler(x->device, &info, NULL, &sampler) != VK_SUCCESS) {
         failed(error, error_size, "the device refused a sampler");
@@ -2342,13 +2578,12 @@ static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, 
         const rt_render_call *c = &calls[i];
         switch (c->kind) {
         case RT_CALL_COLOR_TARGET:
-            if (c->u.color_target.slot == 0) {
-                s->color = c->u.color_target.target;
-                s->color_enabled = c->u.color_target.enabled;
-            } else {
-                const uint32_t slot_bit = 1u << c->u.color_target.slot;
-                s->other_targets = c->u.color_target.enabled ? s->other_targets | slot_bit : s->other_targets & ~slot_bit;
-            }
+        {
+            const unsigned slot = c->u.color_target.slot;
+            if (slot >= RT_COLOR_TARGETS) return failed(error, error_size, "a colour target in slot %u", slot);
+            s->colors[slot] = c->u.color_target.target;
+            s->color_enabled = c->u.color_target.enabled ? s->color_enabled | 1u << slot : s->color_enabled & ~(1u << slot);
+        }
             break;
         case RT_CALL_VIEWPORT:
             if (c->u.viewport.index != 0) return failed(error, error_size, "viewport %u: only viewport 0 is drawn yet", c->u.viewport.index);
@@ -2391,10 +2626,10 @@ static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, 
             break;
         case RT_CALL_DRAW_AUTO: {
             depth_plan plan;
-            int colour = 0;
-            const int checked = check_state(s, &plan, &colour, error, error_size);
+            uint32_t colours = 0;
+            const int checked = check_state(s, &plan, &colours, error, error_size);
             if (checked < 0) return -1;
-            if (checked == 0 && draw(x, s, &plan, colour, c->u.draw_auto.index_count, NULL, error, error_size)) return -1;
+            if (checked == 0 && draw(x, s, &plan, colours, c->u.draw_auto.index_count, NULL, error, error_size)) return -1;
             break;
         }
         case RT_CALL_INDEX_BASE: s->index_base = c->u.index_base.address, s->index_base_set = 1; break;
@@ -2404,10 +2639,10 @@ static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, 
             index_range indices;
             if (index_range_for(x, s, c->u.draw_index.first, c->u.draw_index.count, &indices, error, error_size)) return -1;
             depth_plan plan;
-            int colour = 0;
-            const int checked = check_state(s, &plan, &colour, error, error_size);
+            uint32_t colours = 0;
+            const int checked = check_state(s, &plan, &colours, error, error_size);
             if (checked < 0) return -1;
-            if (checked == 0 && draw(x, s, &plan, colour, c->u.draw_index.count, &indices, error, error_size)) return -1;
+            if (checked == 0 && draw(x, s, &plan, colours, c->u.draw_index.count, &indices, error, error_size)) return -1;
             break;
         }
         }
@@ -2423,6 +2658,8 @@ int rt_executor_read_target(rt_executor *x, uint64_t address, uint32_t *bgra, ui
     target_entry *t = find_target(x, address);
     if (!t) return failed(error, error_size, "no draw has used a render target at %#llx", (unsigned long long)address);
     if (width > t->width || height > t->height) return failed(error, error_size, "%ux%u is past the %ux%u target", width, height, t->width, t->height);
+    if (t->element_bytes != 4 || t->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32)
+        return failed(error, error_size, "render target %#llx is not 8_8_8_8: only those are read as BGRA", (unsigned long long)address);
     if (batch_finish(x, error, error_size)) return -1; /* each run ends with its batch run; this keeps it so */
     /* the staging buffer holds the image's texels after its last transfer, until it is drawn into again */
     if (!t->staging_current) {
@@ -2484,8 +2721,6 @@ void rt_executor_close(rt_executor *x)
         }
         for (size_t i = 0; i < x->target_count; i++) {
             const target_entry *t = &x->targets[i];
-            vkDestroyFramebuffer(x->device, t->framebuffer, NULL);
-            vkDestroyRenderPass(x->device, t->pass, NULL);
             vkDestroyImageView(x->device, t->view, NULL);
             vkDestroyImage(x->device, t->image, NULL);
             vkFreeMemory(x->device, t->memory, NULL);
