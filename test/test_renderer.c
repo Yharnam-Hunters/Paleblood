@@ -10,6 +10,7 @@
 #define _GNU_SOURCE /* memfd_create, MAP_FIXED_NOREPLACE (render_fixture.h) */
 #include "runtime/gpu_memory.h"
 #include "runtime/process.h"
+#include "runtime/render_calls.h"
 #include "runtime/render_executor.h"
 #include "runtime/renderer.h"
 
@@ -91,6 +92,23 @@ int main(void)
     CHECK(rt_renderer_frame(at(TARGET), frame, SIZE, SIZE) == 1);
     check_triangle_pixels(frame);
     CHECK(rt_renderer_frame(at(OTHER_TARGET), frame, SIZE, SIZE) == 0); /* nothing drawn there */
+
+    /* A compute queue's buffer is skipped (sceGnmDingDong): a shader bound in it goes with it, so a
+       graphics buffer submitted later over the same memory (from another start) does not pick it up.
+       Without the skip it would. */
+    {
+        enum { QUEUE_BUFFER = 0xc0e80000, QUEUE_BYTES = 0x100, BIND_OFFSET = 0x40, LATER_START = 0x20 };
+        static const uint32_t compute_words[RT_COMPUTE_SHADER_WORDS];
+        const void *const bind_at = (const void *)(uintptr_t)(QUEUE_BUFFER + BIND_OFFSET);
+        size_t calls = 1;
+        rt_renderer_bind_shader("sceGnmSetCsShader", RT_RENDERER_COMPUTE_SHADER, bind_at, compute_words);
+        rt_renderer_skip("sceGnmDingDong", (const void *)(uintptr_t)QUEUE_BUFFER, QUEUE_BYTES);
+        rt_render_submitted(QUEUE_BUFFER + LATER_START, QUEUE_BYTES, &calls);
+        CHECK(calls == 0);
+        rt_renderer_bind_shader("sceGnmSetCsShader", RT_RENDERER_COMPUTE_SHADER, bind_at, compute_words);
+        rt_render_submitted(QUEUE_BUFFER + LATER_START, QUEUE_BYTES, &calls);
+        CHECK(calls == 1); /* the leak the skip prevents */
+    }
 
     rt_render_forget();
     if (failures) fprintf(stderr, "%d failure(s)\n", failures);
