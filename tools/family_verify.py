@@ -89,6 +89,10 @@ def run_shards(elf: str, entries: list[dict], jobs: int, timeout: int) -> dict:
             out.seek(0)
             err.seek(0)
             if code != 0:
+                for other, _, _ in procs:
+                    if other.poll() is None:
+                        other.kill()
+                        other.wait()
                 raise FamilyError(f'harness exited {code}: {err.read().strip()[-400:]}')
             results.update(json.load(out))
             out.close()

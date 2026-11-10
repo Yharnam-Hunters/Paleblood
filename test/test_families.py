@@ -180,6 +180,18 @@ class Tables(unittest.TestCase):
             f.write('// changed\n')
         self.assertTrue(any('without a current, passing edge result' in e for e in self.errors()))
 
+    def test_duplicate_results_and_source_named_members_are_refused(self):
+        source = fam.source_hash(self.d, {'family': 'returns_zero', 'system': 'leaf'})
+        row = ['leaf_returns_zero_00401000', 'edge', '', '3', '3', '0', '0', source, '2026-11-10']
+        write_csv(os.path.join(self.d, 'symbols', 'families', 'returns_zero.verification.csv'),
+                  ['function', 'cases', 'option', 'total', 'passed', 'failed', 'quarantined', 'source', 'date'],
+                  [row, row])
+        self.assertTrue(any('more than one edge row' in e for e in self.errors()))
+        os.remove(os.path.join(self.d, 'symbols', 'families', 'returns_zero.verification.csv'))
+        with open(os.path.join(self.d, 'game', 'leaf', 'observed.c'), 'w') as f:
+            f.write('/* observed at 0x00401010u */\n')
+        self.assertTrue(any('names 0x00401010' in e for e in self.errors()))
+
     def test_value_must_fit_the_shape(self):
         self.family(['returns_zero', 'leaf', '31 c0 c3', 'i64', '2', '6', 'xor eax, eax; ret'])
         self.members([['0x00401000', '3', '16', '0x1', 'replaced'], ['0x00401010', '3', '16', '', 'replaced']])

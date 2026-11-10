@@ -8,7 +8,7 @@ usage:
       with their byte totals, how many are already replaced, and their libraries
   family_scan.py preview --shape 'b8 {u32} c3' [--elf ELF] [--patches XML]
       members and exclusions a shape would have, by reason
-  family_scan.py write FAMILY [--elf ELF] [--patches XML]
+  family_scan.py write FAMILY --patches XML [--elf ELF]
       write symbols/families/FAMILY.csv from the shape in symbols/families.csv; refused unless
       the member count and bytes equal the row's pre-registered `members` and `bytes`
   family_scan.py check [--elf ELF]
@@ -50,7 +50,7 @@ RELA_SIZE = 24
 # of 66 prefixes, the cs-prefixed long form), and int3.
 PADDING = re.compile(rb'(?:\x66*\x2e?\x0f\x1f\x84\x00\x00\x00\x00\x00|\x66*\x0f\x1f\x44\x00\x00'
                      rb'|\x0f\x1f\x80\x00\x00\x00\x00|\x0f\x1f\x40\x00|\x0f\x1f\x00|\x66*\x90|\xcc)*')
-ADDRESS_LITERAL = re.compile(r'\b0x0*([0-9a-fA-F]{6,8})\b')
+ADDRESS_LITERAL = re.compile(r'\b0x0*([0-9a-fA-F]{6,8})[uUlL]*\b')
 SOURCE_EXT = ('.c', '.cc', '.cpp', '.h', '.hpp')
 
 
@@ -294,6 +294,10 @@ def main() -> int:
         report(rows, reasons, scanner)
         return 0
     if a.cmd == 'write':
+        if not a.patches:
+            print('family_scan: write needs --patches (the pinned community patch XML): members may not '
+                  'overlap a patch line', file=sys.stderr)
+            return 3
         return write(scanner, a.family)
     return check(scanner)
 
