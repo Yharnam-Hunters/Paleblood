@@ -7,6 +7,7 @@
 #include <cstdint>
 
 #include "command_packets.h"
+#include "record_constructor_layout.h"
 #include "runtime/original.h"
 
 namespace render {
@@ -15,13 +16,15 @@ struct RecordShaderState { uint8_t unknown_0x00; };
 struct RecordPreparationState { uint8_t unknown_0x00; };
 struct SharedPresentDescriptor;
 
-struct PresentRecordView {
-    static constexpr auto words_extent_0 = 5;
-    uint64_t words[words_extent_0];
-    uint32_t tail_28;
+// Consumers copy 44 bytes into a 48-byte local while retaining its native alignment.
+struct alignas(8) PresentRecordView {
+    RecordConstructorPrefix fields;
+    uint8_t unknown_0x2c[4];
 };
-static_assert(offsetof(PresentRecordView, tail_28) == 0x28);
+static_assert(offsetof(PresentRecordView, fields) == 0);
+static_assert(offsetof(PresentRecordView, unknown_0x2c) == 0x2c);
 static_assert(sizeof(PresentRecordView) == 0x30);
+static_assert(alignof(PresentRecordView) == 0x8);
 constexpr std::size_t present_record_prefix_bytes = 0x2c;
 
 struct PresentRecordPayload {

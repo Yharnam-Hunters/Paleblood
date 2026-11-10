@@ -14,6 +14,15 @@
 namespace render {
 
 struct CommandSubmissionContext;
+struct FinishBlockOwner;
+struct FinishDrainNode;
+struct PresentBufferPool;
+
+// The finish pass forwards this embedded shader state without inspecting its contents.
+struct CommandSubmissionShaderState {
+    uint8_t unknown_0x0000[0xb368];
+};
+static_assert(sizeof(CommandSubmissionShaderState) == 0xb368);
 constexpr uint32_t command_word_bytes = 4;
 
 
@@ -25,17 +34,43 @@ static_assert(offsetof(CommandSubmissionOwner, counters) == 0xb728);
 
 struct CommandSubmissionContext {
     CommandBufferSnapshot buffer;
-    uint8_t unknown_0x0040[0xb450];
+    CommandSubmissionShaderState shader_section;
+    uint8_t unknown_0xb3a8[0x28];
+    void *node_manager;
+    FinishDrainNode *bucket_origin;
+    uint8_t unknown_0xb3e0[0x78];
+    FinishDrainNode *single_head;
+    uint32_t bucket_mask;
+    uint8_t unknown_0xb464[0x2c];
     CommandSubmissionOwner *owner;
     uint8_t unknown_0xb498[0x20];
     uintptr_t last_reset_cursor;
-    uint8_t unknown_0xb4c0[0x30];
+    uint8_t unknown_0xb4c0[0x8];
+    PresentBufferPool *item_processor;
+    FinishBlockOwner *block_owner;
+    uintptr_t block_head;
+    uint64_t block_tail;
+    uint32_t block_link_index;
+    uint32_t last_block_count;
     uint8_t submission_flags;
 };
 static_assert(offsetof(CommandSubmissionContext, buffer) == 0x0);
 static_assert(offsetof(CommandSubmissionContext, owner) == 0xb490);
 static_assert(offsetof(CommandSubmissionContext, last_reset_cursor) == 0xb4b8);
 static_assert(offsetof(CommandSubmissionContext, submission_flags) == 0xb4f0);
+
+static_assert(offsetof(CommandSubmissionContext, shader_section) == 0x40);
+static_assert(offsetof(CommandSubmissionContext, node_manager) == 0xb3d0);
+static_assert(offsetof(CommandSubmissionContext, bucket_origin) == 0xb3d8);
+static_assert(offsetof(CommandSubmissionContext, single_head) == 0xb458);
+static_assert(offsetof(CommandSubmissionContext, bucket_mask) == 0xb460);
+static_assert(offsetof(CommandSubmissionContext, item_processor) == 0xb4c8);
+static_assert(offsetof(CommandSubmissionContext, block_owner) == 0xb4d0);
+static_assert(offsetof(CommandSubmissionContext, block_head) == 0xb4d8);
+static_assert(offsetof(CommandSubmissionContext, block_tail) == 0xb4e0);
+static_assert(offsetof(CommandSubmissionContext, block_link_index) == 0xb4e8);
+static_assert(offsetof(CommandSubmissionContext, last_block_count) == 0xb4ec);
+static_assert(sizeof(CommandSubmissionContext) == 0xb4f8);
 
 // A trivial aggregate of this size is passed in memory by the guest's AMD64 ABI, after the
 // three register parameters. Padding has no reconstructed value; only named fields are initialized.

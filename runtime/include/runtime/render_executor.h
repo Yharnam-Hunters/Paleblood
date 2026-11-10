@@ -20,6 +20,8 @@
    perspective-centre barycentrics, and blending, depth and primitive types other than triangle
    lists (their setters are not recorded yet, so a draw uses no blending, no depth, triangles). */
 
+#include "runtime/render_calls.h"
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -45,6 +47,8 @@ int rt_executor_open(const rt_executor_memory *memory, rt_executor **executor, c
    the next buffer, as on the console's GPU, whose state no submission resets. Returns 0, or -1 with
    the reason in error. */
 int rt_executor_run(rt_executor *executor, uint64_t buffer, uint32_t size, char *error, size_t error_size);
+/* The same for calls already taken from their buffer (rt_render_submitted): count of them, in order. */
+int rt_executor_run_calls(rt_executor *executor, const rt_render_call *calls, size_t count, char *error, size_t error_size);
 
 /* Forgets the state earlier buffers set, as a GPU fresh from reset has none (tests: independent cases). */
 void rt_executor_reset(rt_executor *executor);
