@@ -143,7 +143,8 @@ Instead:
        the host GPU's.
      - **Descriptors from memory:** each MIMG instruction's descriptor is found from the code before
        it (`gcn_resource_origin`): the user data's when nothing writes its SGPRs first, or loaded
-       from memory when the last write is a whole `s_load_dwordx8` at an immediate offset from a
+       from memory when the last write is an `s_load_dwordx8` (or a wider load that covers the
+       descriptor's SGPRs, as the game's `s_load_dwordx16` of two image descriptors) at an immediate offset from a
        user-data pointer pair that nothing writes before it. The executor reads such a descriptor from guest
        memory when the draw runs. The same SGPRs can name different images at different
        instructions: the game's fullscreen pass reads the user data's image, then loads another
