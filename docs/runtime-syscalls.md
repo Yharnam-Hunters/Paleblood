@@ -926,6 +926,40 @@ modelled, a reset leaves the reported orientation the identity, neither setting 
 reading with no motion, and each call answers 0 (`test/syslib/pad_motion_settings.c`). An
 unknown handle and a setting other than 0 or 1 stop by name.
 
+## The on-screen keyboard, canceled (`libSceImeDialog`, issue #36)
+
+**Facts.** OpenOrbis `ImeDialog.h` and `_types/ime_dialog.h` give:
+- the shapes: `sceImeDialogInit(setting, extended)`, `GetStatus()`, `GetResult(result)` and
+  `Term()`;
+- the statuses: NONE 0, RUNNING 1, STOPPED 2;
+- the result: an end status (OK 0, CANCEL 1, ABORT 2) followed by 12 reserved bytes.
+
+shadPS4's `ime_dialog.cpp` (facts only) gives the states: Init from NONE to RUNNING, Abort from
+RUNNING to finished with ABORT, and Term from finished to NONE.
+
+**The executable's keyboard** (`0x02d03f80`):
+- **Opening.** It fills a setting with a text buffer that holds the initial text, calls Init with
+  no extended setting, and takes 0 as open.
+- **Polling.** Each frame, `0x02d03df0` asks GetStatus. On 2 it reads the result: end status 0
+  takes the buffer's text; 1 and 2 (or a failed GetResult) take none.
+- **Closing.** `0x02d03e70` then calls Term. `0x02d04300` calls Abort while the keyboard is open
+  and takes 0 as closed.
+
+**What the runtime does:**
+- **Cancel.** Init opens the keyboard, and the first GetStatus finds it closed with CANCEL, as if
+  the user backed out at once. The title takes no text, the buffer is left as given, and nothing is
+  shown.
+- **Abort and Term.** Abort of an open keyboard closes it with ABORT, and Term closes the library.
+
+**What stops by name:**
+- Init without a setting, or while a keyboard is open or not yet terminated (shadPS4 answers busy,
+  `0x80bc0001`; this is not confirmed);
+- GetResult before the keyboard closed, or with no structure;
+- Abort when no keyboard is open;
+- Term before the keyboard closed.
+
+An extended setting is ignored.
+
 ## The mouse, not connected (`libSceMouse`, issue #36)
 
 The runtime has no host mouse, so it answers as a console with no mouse plugged in
@@ -1022,6 +1056,17 @@ dialog finishes on its first status update.
 
 Facts from shadPS4's `libSceSystemService` (`systemservice.cpp`, `systemservice.h`,
 `systemservice_error.h`).
+
+## The web browser, not opened (`sceSystemServiceLaunchWebBrowser`, issue #40)
+
+The executable calls it in three places and discards the answer each time. Each call passes a URL
+string and NULL; OpenOrbis `SystemService.h` names the function without a shape. The three places:
+- the official site link at `0x02437039`;
+- a debug `BROWSER_TEST` command at `0x01d5eeeb`, with the same URL;
+- a URL it builds at `0x02437112`.
+
+The runtime opens no browser, as if the user closed it at once. It notes the URL on stderr and
+answers 0 (shadPS4 also answers 0, facts only). No URL stops by name.
 
 ## System events (`sceSystemServiceReceiveEvent`, issue #40)
 
