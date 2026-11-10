@@ -1,0 +1,13 @@
+pattern,library,prefix
+/Dantelion2/dist_ps4/source/(?P<file>.+),engine,Dantelion2/
+/SPRJ/Source/SPRJ/Source/(?P<file>.+),engine,SPRJ/
+/SPRJ/Source/Library/EzMenu/Source/Source/(?P<file>.+),engine,EzMenu/
+/FD4/GameEngine/Source/(?P<file>.+),engine,FD4/
+/GS/Source/GraphicsFramework/Source/(?P<file>.+),engine,GS/
+/hk2014_1_0_r1/Source/(?P<file>.+),havok,
+/2014_1_0_PS4SDK2\.000/Source/(?P<file>.+),havok,
+^(?:\.\./)*(?P<file>Script/.+),havokscript,
+^(?:\.\./)*(?P<file>(?:Ai|Animation|Behavior|Cloth|Common|Geometry|Physics|Physics2012)/.+),havok,
+/fmodexsrc44450/fmod4/(?P<file>.+),fmod,
+/yebis_draft/(?P<file>src/.+),yebis,
+/sdk/target/src/(?P<file>gnmx/.+),sce-gnmx,

@@ -97,6 +97,8 @@ jobs:
           python3 tools/check_readable.py ${base:+--base "$base"}
       - name: README progress matches progress.py
         run: python3 tools/progress.py --check
+      - name: Source-file tags match the function extents (source_files.py)
+        run: python3 tools/source_files.py --check
       - name: Hooks behave
         run: tools/test_hooks.sh
       - name: Contributor tooling (session report, handoff)

@@ -10,23 +10,19 @@ import boot
 
 
 class RuntimeIssueStatusTests(unittest.TestCase):
-    def test_netctl_unresolved_entries_are_registered_but_not_implemented(self):
+    def test_unresolved_entries_are_registered_but_not_implemented(self):
         entries = runtime_issues.read_runtime_entries(runtime_issues.ROOT)
 
-        self.assertTrue({
-            ('libSceNetCtl', 'sceNetCtlGetState'),
-            ('libSceNetCtl', 'sceNetCtlCheckCallback'),
-            ('libSceNetCtl', 'sceNetCtlRegisterCallback'),
-            ('libSceNetCtl', 'sceNetCtlUnregisterCallback'),
-            ('libSceNetCtl', 'sceNetCtlGetNatInfo'),
-        }.issubset(entries))
-        self.assertNotIn(('libSceNetCtl', 'sceNetCtlGetInfo'), entries)
+        # getpagesize is registered with RT_SYSLIB_UNRESOLVED (runtime/syslib/kernel.c).
+        self.assertIn(('libSceNetCtl', 'sceNetCtlGetNatInfo'), entries)
+        self.assertNotIn(('libkernel', 'getpagesize'), entries)
 
         rows = runtime_issues.read_imports(runtime_issues.ROOT)
-        body = runtime_issues.issue(runtime_issues.GROUPS[-1], rows, entries)['body']
-        self.assertIn('### libSceNetCtl (5 of 6)', body)
-        self.assertIn('- [ ] `sceNetCtlGetInfo`', body)
-        self.assertIn('- [x] `sceNetCtlGetNatInfo`', body)
+        kernel = next(group for group in runtime_issues.GROUPS if group[0] == 'kernel')
+        body = runtime_issues.issue(kernel, rows, entries)['body']
+        self.assertIn('- [ ] `getpagesize`', body)
+        network = runtime_issues.issue(runtime_issues.GROUPS[-1], rows, entries)['body']
+        self.assertIn('- [x] `sceNetCtlGetNatInfo`', network)
 
     def test_runtime_unresolved_provider_does_not_count_as_implemented(self):
         with tempfile.TemporaryDirectory() as root:

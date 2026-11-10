@@ -52,6 +52,28 @@ static int net_inet_pton(int family, const char *source, void *destination)
 }
 RT_SYSLIB("libSceNet", sceNetInetPton, net_inet_pton);
 
+/* sceNetInetNtop(family, const void *source, char *destination, uint32_t size): the reverse, as
+   the BSD inet_ntop(3) documents it for AF_INET: the four network-order bytes as dotted-decimal
+   text, the destination answered on success. The executable's one call (0x02f982df) passes family
+   2, a stack address from sceNetHtonl, and a 16-byte buffer (enough for "255.255.255.255" and its
+   terminator), and tests the answer for null. A buffer too small for the text answers null with
+   ENOSPC in errno there; the library's errno (sceNetErrnoLoc) is not modelled, so that case stops by
+   name, as do other families and missing pointers. */
+enum { INET_ADDRSTRLEN_BSD = 16 };
+
+static const char *net_inet_ntop(int family, const void *source, char *destination, uint32_t size)
+{
+    static const char fn[] = "sceNetInetNtop";
+    if (family != SCE_AF_INET) rt_fatal(fn, "only the observed AF_INET family is established");
+    if (!source || !destination) rt_fatal(fn, "null pointer behavior is not established");
+    char text[INET_ADDRSTRLEN_BSD];
+    if (!inet_ntop(AF_INET, source, text, sizeof text)) rt_fatal(fn, "the host could not convert the address");
+    if (strlen(text) >= size) rt_fatal(fn, "a buffer too small for the text: the library's errno is not modelled");
+    memcpy(destination, text, strlen(text) + 1);
+    return destination;
+}
+RT_SYSLIB("libSceNet", sceNetInetNtop, net_inet_ntop);
+
 /* The network library's start-up: sceNetInit(void), sceNetTerm(void) and
    sceNetPoolCreate(const char *name, int32_t size, int32_t flags), the names and argument shapes as
    the OpenOrbis homebrew SDK's Net.h declares them (it declares sceNetTerm as returning nothing,

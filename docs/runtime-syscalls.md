@@ -34,13 +34,16 @@ provider from the unresolved console kernel syscall behavior.
 | `sceKernelUsleep(microseconds)` (libkernel), `usleep(microseconds)` (libScePosix) | One unsigned 32-bit count of microseconds, returning `int`. For `sceKernelUsleep` the guest fixes the shape: the verified call sites in `game/frame_timing/frame_limiter.cpp` and `game/render/swap_chain_present.cpp` declare it as `int(uint32_t microseconds)`, and their cases expect `0`. FreeBSD's `useconds_t` is 32-bit unsigned. | FreeBSD `usleep(3)`: suspends the thread for the given microseconds, `0` on success, `-1` with `EINTR` if a signal interrupts it. SUSv2 also let `usleep` fail with `EINVAL` from 1,000,000 on; FreeBSD and POSIX.1-2008 (which removed `usleep`) have no such limit. | `sceKernelUsleep` is imported by `eboot` and `libSceFios2.elf`, `usleep` by `eboot`. Implemented: the host thread sleeps at least the requested time and the call returns `0`; a host signal is not a guest event, so the sleep resumes with the time left (`runtime/syslib/kernel.c`). Open: `usleep` with 1,000,000 or more, which stops by name because no PS4-specific source says whether the guest sleeps or gets `EINVAL`; and the SCE error, if any, for `sceKernelUsleep`, which the guest's sites never check. |
 | `sleep(seconds)` (libScePosix) | One unsigned count of seconds, returning `unsigned int`: `unsigned sleep(unsigned seconds)` in POSIX and FreeBSD's `sleep(3)`. No call site in the repository fixes the shape further. | POSIX: suspends the thread until the seconds have elapsed or a caught signal arrives; returns `0` when the time has elapsed, otherwise the unslept seconds; no errors are defined. FreeBSD's libc (`lib/libc/gen/sleep.c`) is a `nanosleep` that rounds the unslept remainder up to whole seconds; above `INT_MAX` it sleeps `INT_MAX` seconds and returns `seconds - INT_MAX` without any signal. | Imported by `eboot`. Implemented: the host thread sleeps at least the requested seconds and the call returns `0`; a host signal is not a guest event, so the sleep resumes with the time left, as for `usleep` (`runtime/syslib/kernel.c`). Open: more than `INT_MAX` seconds, which stops by name because POSIX has no early return without a signal and no PS4-specific source says whether the guest gets the full sleep or FreeBSD's remainder. |
 | `nanosleep(rqtp, rmtp)` (libkernel) | `int nanosleep(const struct timespec *rqtp, struct timespec *rmtp)` in POSIX and FreeBSD's `nanosleep(2)`, with FreeBSD amd64's `struct timespec` (two 64-bit fields, seconds and nanoseconds), the layout the `clock_gettime` entry uses. No call site in the repository fixes the shape further. | POSIX: suspends the thread until the requested time has elapsed and returns `0`; a caught signal returns `-1` with `EINTR` and writes the time left through a non-null `rmtp`; nanoseconds outside `[0, 1,000,000,000)` are `-1` with `EINVAL`; `rqtp` and `rmtp` may point to the same object. A negative second count is not defined. FreeBSD's `kern_time.c` (same in stable/9 and main): the `EINVAL` check first, then a zero or negative time returns `0` at once without sleeping; `nanosleep(2)` adds `EFAULT` for a pointer it cannot use. | Imported by `libc.elf`. Implemented: the host thread sleeps at least the requested time and the call returns `0`; a host signal is not a guest event, so the sleep resumes with the time left and `rmtp` is never written, as for `usleep` and `sleep`; the request is copied first, so `rqtp` and `rmtp` may be the same (`runtime/syslib/kernel.c`). Stops by name: the errno cases (no `rqtp`, nanoseconds out of range), since errno is not modelled, as for `clock_gettime`. Open: a negative second count, which stops by name because POSIX does not define it, FreeBSD returns `0` at once and the host answers `EINVAL`, and no PS4-specific source says which answer the guest gets. |
-| `scePthreadRwlockInit(rwlock, attr, name)`, `scePthreadRwlockDestroy(rwlock)`, `scePthreadRwlockRdlock(rwlock)`, `scePthreadRwlockWrlock(rwlock)`, `scePthreadRwlockTryrdlock(rwlock)`, `scePthreadRwlockTrywrlock(rwlock)`, `scePthreadRwlockUnlock(rwlock)` (libkernel) | A pointer to the guest's rwlock variable (`Init` also an attribute pointer and a name, as `scePthreadMutexInit`); each returns `int32_t`. No call site in this repository shows these shapes; they come from the public [OpenOrbis `libkernel.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/libkernel.h) declarations, supporting evidence for the shapes only, and match FreeBSD's `pthread_rwlock_*`. | POSIX `pthread_rwlock_*`, as FreeBSD libthr (`thr_rwlock.c`) and the kernel's umtx read-write lock (`kern_umtx.c`) implement it: a static initializer (`NULL`) set up on first use and a destroyed rwlock holding `1` (`thr_private.h`); `EINVAL` for a destroyed rwlock; `EBUSY` from the try forms when the lock is not available; destroying does not check whether the lock is held, and leaves an unused initializer in place; unlocking is `EPERM` when another thread holds the write lock or when nobody holds the lock, and readers are counted, not named; a thread that locks again while holding the write lock is not given an error, it waits forever (no owner check in `do_rw_wrlock` or `do_rw_rdlock`). The SCE name returns `0x80020000` plus the error number. | Imported by `eboot` and `libSceFios2.elf` (`Tryrdlock` by `libSceFios2.elf` only; `symbols/imports.csv`). Implemented on a host rwlock that also records the writer and the reader count, which the host does not expose, for the unlock answers (`runtime/syslib/kernel_rwlock.c`). A missing variable answers `EINVAL`, as the mutex calls do; unlocking a never-used initializer is `EPERM`, as for the mutex. Stops by name: `Rdlock` or `Wrlock` while the caller holds the write lock (the system would wait forever, the host answers `EDEADLK`; neither is useful to return), and an attribute object passed to `Init` (no imported call creates one, so its contents are not established; an empty attribute variable means the defaults, as in libthr). Not part of this entry: `scePthreadRwlockTimedrdlock` and `Timedwrlock` (imported by `eboot`; only OpenOrbis gives their microsecond timeout, no call site does) and the `libScePosix` names. |
+| `scePthreadRwlockInit(rwlock, attr, name)`, `scePthreadRwlockDestroy(rwlock)`, `scePthreadRwlockRdlock(rwlock)`, `scePthreadRwlockWrlock(rwlock)`, `scePthreadRwlockTryrdlock(rwlock)`, `scePthreadRwlockTrywrlock(rwlock)`, `scePthreadRwlockUnlock(rwlock)` (libkernel) | A pointer to the guest's rwlock variable (`Init` also an attribute pointer and a name, as `scePthreadMutexInit`); each returns `int32_t`. No call site in this repository shows these shapes; they come from the public [OpenOrbis `libkernel.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/libkernel.h) declarations, supporting evidence for the shapes only, and match FreeBSD's `pthread_rwlock_*`. | POSIX `pthread_rwlock_*`, as FreeBSD libthr (`thr_rwlock.c`) and the kernel's umtx read-write lock (`kern_umtx.c`) implement it: a static initializer (`NULL`) set up on first use and a destroyed rwlock holding `1` (`thr_private.h`); `EINVAL` for a destroyed rwlock; `EBUSY` from the try forms when the lock is not available; destroying does not check whether the lock is held, and leaves an unused initializer in place; unlocking is `EPERM` when another thread holds the write lock or when nobody holds the lock, and readers are counted, not named; a thread that locks again while holding the write lock is not given an error, it waits forever (no owner check in `do_rw_wrlock` or `do_rw_rdlock`). The SCE name returns `0x80020000` plus the error number. | Imported by `eboot` and `libSceFios2.elf` (`Tryrdlock` by `libSceFios2.elf` only; `symbols/imports.csv`). Implemented on a host rwlock that also records the writer and the reader count, which the host does not expose, for the unlock answers (`runtime/syslib/kernel_rwlock.c`). A missing variable answers `EINVAL`, as the mutex calls do; unlocking a never-used initializer is `EPERM`, as for the mutex. Stops by name: `Rdlock` or `Wrlock` while the caller holds the write lock (the system would wait forever, the host answers `EDEADLK`; neither is useful to return), and an attribute object passed to `Init` (no imported call creates one, so its contents are not established; an empty attribute variable means the defaults, as in libthr). `scePthreadRwlockTimedrdlock` and `Timedwrlock` are under [Timed locks](#timed-locks-scepthreadmutextimedlock-scepthreadrwlocktimedrdlock-scepthreadrwlocktimedwrlock-issue-34). Not part of this entry: the `libScePosix` names. |
 | `__stack_chk_fail(void)` (libkernel) | No arguments, no result: `void __stack_chk_fail(void)`, and it never returns (LSB; FreeBSD libc declares it `__dead2`). Compiler-generated code calls it, not application code. | LSB Core: the function that called it is aborted with a message that a stack overflow was detected, and the program then exits. FreeBSD libc logs "stack overflow detected; terminated" and ends the process with `SIGABRT`. | Imported by `eboot`, `libSceFios2.elf` and `libc.elf` from `libkernel` (`symbols/imports.csv`). Implemented as a stop by name (`rt_fatal`, which aborts): ending the program is the whole guest-visible contract, so the entry counts as implemented (`runtime/syslib/kernel.c`). Not covered: the PS4's own message or crash report, which the guest cannot observe after it ends; and `__stack_chk_guard`, a separate data import whose PS4 value is not established (an unbound data import gets a zeroed page, `runtime/boot.c`). |
+| `_exit(status)` (libkernel) | One `int`, no result: `void _exit(int status)`, and it never returns (POSIX; FreeBSD's [`_exit(2)`](https://man.freebsd.org/cgi/man.cgi?query=_exit&sektion=2) has the same shape and declares it `__dead2`). No call site in the repository fixes the shape further. | POSIX: the process ends at once; functions registered with `atexit` are not called and open streams are not flushed; the low 8 bits of `status` (`status & 0377`) are available to the waiting parent, and the full value to `waitid` and `SIGCHLD` handlers. FreeBSD `_exit(2)`: the same, the C library's `exit(3)` runs the `atexit` handlers and flushes, then calls `_exit`. | Imported by `libc.elf` from `libkernel` (`symbols/imports.csv`). Implemented: the host's `_exit` with the guest's status, which has the same contract (`runtime/syslib/kernel.c`). Under the boot harness, `rt_exit_observer` records the run's outcome first, as `rt_fatal_observer` does for a stop: `pbboot` reports "exited with code" and the full status, from any guest thread, and still writes the boot record (`runtime/boot.c`). Not covered: what the PS4 shows the player when a game ends this way, which the guest cannot observe after it ends. |
 | `scePthreadCondInit(cond, attr, name)`, `scePthreadCondDestroy(cond)`, `scePthreadCondSignal(cond)`, `scePthreadCondBroadcast(cond)`, `scePthreadCondWait(cond, mutex)`, `scePthreadCondTimedwait(cond, mutex, microseconds)` (libkernel) | Pointers to the guest's cond and mutex variables; each returns `int32_t`. The guest fixes the wait shapes: the verified `game/kernel/condition_wait.cpp` declares `Wait` as `int32_t(void *cond, void *mutex)` and `Timedwait` as `int32_t(void *cond, void *mutex, uint32_t timeout_us)`, a relative timeout in microseconds, not POSIX's absolute `timespec`. The public [OpenOrbis `libkernel.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/libkernel.h) declares all six with these shapes (`Init` with an attribute pointer and a name, as `scePthreadMutexInit`); it is supporting evidence for the shapes only. | POSIX `pthread_cond_*`, as FreeBSD libthr implements it (`thr_cond.c`): a static initializer (`NULL`) set up on first use; a destroyed cond holds `1` (`thr_private.h`); `EINVAL` for a destroyed cond; `EBUSY` to destroy one with waiters; destroying an unused initializer succeeds and leaves it in place; `EPERM` when the waiter does not own the mutex, for every mutex type, `EINVAL` when the mutex is destroyed (`_mutex_owned`, `thr_mutex.c`); `ETIMEDOUT` when a timed wait expires; a recursive mutex is released completely for the wait and its count restored after (`_mutex_cv_unlock`, `_mutex_cv_lock`). The SCE name returns `0x80020000` plus the error number. | `scePthreadCondWait` and `Timedwait` are imported by `eboot`, `libSceFios2.elf` and `libc.elf`, the other four by `libSceFios2.elf` and `libc.elf` (`symbols/imports.csv`). The guest's call site checks exactly `0x80020001` (EPERM), `0x80020016` (EINVAL) and `0x8002003c` (ETIMEDOUT). Implemented on a host cond on the monotonic clock (`runtime/syslib/kernel_mutex.c`): the timed wait times out once the given microseconds have passed since the call (`0`: at once). A missing cond or mutex variable answers `EINVAL`, as the mutex calls do. Stops by name: an attribute object passed to `Init` (no imported call creates one, so its contents are not established; an empty attribute variable means the defaults, as in libthr). A wait with a recursive mutex releases every level the caller holds and takes them back after, as libthr does: the runtime tracks each recursive mutex's owner and depth, and releases the extra levels itself around the host wait. A wait with a mutex the caller does not own is `EPERM` for every type, as in libthr (see [Mutex ownership](#mutex-ownership-scepthreadmutexunlock-issue-132)). Open: a woken waiter counts until it has taken the mutex back, so a destroy right after a broadcast can answer `EBUSY` while libthr's succeeds; no known call site destroys a cond that way. The `libScePosix` names `pthread_cond_init`, `_destroy`, `_signal`, `_broadcast` and `_wait` (imported by `eboot`) are the same calls with errno values: the executable's call at `0x0247e6d7` passes `(&cond, NULL)` and its caller compares the result with bare error numbers (12, 16, 34, 35). `pthread_cond_timedwait(cond, mutex, abstime)` (imported by `eboot`; no call site in the repository) takes an absolute time in FreeBSD amd64's `struct timespec`, the two 64-bit fields of the `clock_gettime` entry, measured on the cond's clock: `CLOCK_REALTIME` unless an attribute set another (POSIX `pthread_cond_timedwait`; libthr's `cond_init` for no attribute). No imported call can set another: nothing imports `pthread_condattr_*`, and an attribute object stops `Init` by name. libthr's `pthread_cond_timedwait` answers `EINVAL` before touching the mutex for no time, negative seconds and nanoseconds outside `[0, 1,000,000,000)`; POSIX names only the nanoseconds case and leaves the other two undefined, and the runtime answers all three as libthr does. Implemented: the wait ends at the monotonic deadline where the wall clock reaches the time, the wall clock read first so it is never early; a time already passed is `ETIMEDOUT` with the mutex taken back. Open: a change of the wall clock during the wait is not followed, which POSIX's `CLOCK_REALTIME` wait would do. |
 | `scePthreadKeyCreate(key, destructor)`, `scePthreadKeyDelete(key)`, `scePthreadGetspecific(key)`, `scePthreadSetspecific(key, value)` (libkernel) | A key is a `pthread_key_t`, an `int` on FreeBSD (`sys/_pthreadtypes.h`); `Create` takes a pointer to the guest's key variable and a destructor (`void (*)(void *)`, may be null), `Getspecific` returns `void *`, the others `int32_t`. These shapes come from the public [OpenOrbis `libkernel.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/libkernel.h), supporting evidence for the shapes only, and match FreeBSD's `pthread_key_create`, `pthread_key_delete`, `pthread_getspecific` and `pthread_setspecific`. | POSIX thread-specific data, as FreeBSD libthr implements it ([`thr_spec.c`](https://github.com/freebsd/freebsd-src/blob/main/lib/libthr/thread/thr_spec.c), the same in stable/9): a key is its slot's index plus 1, and `Create` takes the first free slot; `Delete` of a key that is out of range or free is `EINVAL` and calls no destructor; `Setspecific` of such a key is `EINVAL`, `Getspecific` answers `NULL`, as it does for a key the thread has not set since the key was created (each slot counts its creations). When a thread ends, each non-null value is cleared and, if its key is still the one it was set under, the destructor is called with it, in rounds while values remain (`_thread_cleanupspecific`). The SCE name returns `0x80020000` plus the error number. | Imported by `libc.elf` from `libkernel` (`symbols/imports.csv`). Implemented with the runtime's own key table and a host thread-local value array per guest thread (`runtime/syslib/kernel_key.c`); a thread created by `scePthreadCreate` runs its destructors on its guest stack when its entry returns (`runtime/syslib/kernel_thread.c`). A missing key variable for `Create` (unchecked in libthr) answers `EINVAL`, as the mutex calls do. Not established: the PS4's number of keys and of destructor rounds. POSIX guarantees at least 128 keys (`_POSIX_THREAD_KEYS_MAX`) and 4 rounds (`_POSIX_THREAD_DESTRUCTOR_ITERATIONS`), FreeBSD gives 256 and 4 (`<pthread.h>`); the runtime gives what POSIX guarantees and stops by name past it: a 129th live key, and a thread whose destructors still leave values after the 4th round. The main thread's values get no destructors, since it never ends through a thread exit here. |
 
-| `sceSysmoduleLoadModule(id)`, `sceSysmoduleIsLoaded(id)`, `sceSysmoduleUnloadModule(id)` | One system module id, a `uint16_t`; each returns `int32_t`, by the public [OpenOrbis `Sysmodule.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/Sysmodule.h) declarations `int32_t f(enum OrbisSysModule moduleId)`, the enum being `uint16_t` ([`_types/sysmodule.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/_types/sysmodule.h)). | OpenOrbis documents each as "0 = Success/Valid or Negatives values are error codes"; no public source gives the error values. | Implemented for the modules `game/modules.csv` lists with action `stub`: a load marks the module loaded and succeeds without mapping anything, a query of a loaded one answers 0, an unload clears the mark. Everything else stops by name: a module that is not a stub (the runtime cannot load system modules yet), a second load of a loaded stub (whether the system counts loads is not public), and a query or unload of a stub that is not loaded (the "not loaded" error value is not public). See "Module loading at run time" below. |
+| `sceSysmoduleLoadModule(id)`, `sceSysmoduleIsLoaded(id)`, `sceSysmoduleUnloadModule(id)` | One 32-bit system module ID; each returns `int32_t`. libSceSysmodule uses the complete 32-bit ID; the public OpenOrbis enum is narrower. | Load returns `0x805a1000` when `(id & 0x7fffffff) == 0`; query and unload return that status for ID 0, before locks or state changes. Evidence and library hash: [system-module evidence](#module-loading-at-run-time). Other native errors are not established. | Declared 16-bit stub IDs retain the existing load/query/unload policy; other full-width requests stop by name before lookup, without aliasing a low ID. See "Module loading at run time" below. |
 | `time(tloc)` (libSceLibcInternal) | `time_t time(time_t *tloc)`, the ISO C declaration; `time_t` is a signed 64-bit integer on FreeBSD amd64. | ISO C 7.27.2.4: returns the calendar time, and also stores it in `*tloc` when `tloc` is not null; POSIX and FreeBSD [`time(3)`](https://man.freebsd.org/cgi/man.cgi?query=time&sektion=3) make it the seconds since the Epoch (UTC). FreeBSD's implementation ([`lib/libc/gen/time.c`](https://github.com/freebsd/freebsd-src/blob/main/lib/libc/gen/time.c)) returns the seconds of `clock_gettime(CLOCK_SECOND)` since FreeBSD 9, and `(time_t)-1` only when that call fails. | Imported by `libSceFios2.elf` from `libSceLibcInternal` (`symbols/imports.csv`); the executable's own `time` import is bound to the bundled `libc.elf`, whose `time()` also asks for clock 13 and returns its seconds (see "`clock_gettime` and `sceKernelClockGettime`" below). Implemented from the same clock as `clock_gettime(13)`: the host's wall clock in whole seconds, returned and stored through a non-null `tloc` (`runtime/syslib/kernel_time_of_day.c`). No `-1` path: the runtime's `CLOCK_SECOND` read cannot fail. Not established: no call site in this repository shows how `libSceFios2.elf` uses the result; an invalid non-null `tloc` is undefined behaviour and not modelled. |
+| `gmtime(timer)`, `gmtime_s(timer, result)` (libSceLibcInternal) | `struct tm *gmtime(const time_t *)` and C11 Annex K's `struct tm *gmtime_s(const time_t *restrict, struct tm *restrict)`: `libSceFios2`'s calls (`+0x2cd73`, `+0x2cdf4`, `+0x2e494`) pass a `time_t` on the stack, and the `gmtime_s` callers test the answer for null, so it is the Annex K form, not Microsoft's error-number one. The PS4's `struct tm` is ISO C's nine `int`s, 36 bytes, without FreeBSD's `tm_gmtoff` and `tm_zone`: the same module's time-zone helper (`+0x2cd15`) copies exactly `0x24` bytes into a local `struct tm` that `mktime` normalizes in place, and its next local starts `0x28` bytes later, so a 56-byte FreeBSD `struct tm` would not fit. | ISO C 7.27.3.3 and [N1570](https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf) K.3.8.2.3: the UTC broken-down time; `gmtime` answers a pointer to the library's own object, which a later call may overwrite, `gmtime_s` fills the caller's structure and answers its address. | Imported by `libSceFios2.elf` (`symbols/imports.csv`). Implemented with the host's `gmtime_r`, writing the nine `int`s and nothing more; `gmtime`'s object is one per thread (`runtime/syslib/libc_internal.c`). Stops by name: no time or no result (undefined in ISO C; Annex K's constraint handler is not modelled), and a time whose year does not fit an `int` (FreeBSD sets `errno`, which is not modelled for this library). `localtime` and `mktime` stay unimplemented: they need the console's time zone, which is not established. |
+| `printf(format, ...)`, `vprintf(format, ap)`, `vsnprintf(buffer, size, format, ap)` (libSceLibcInternal) | The ISO C declarations. The module's 62 `printf` calls pass constant formats with `%s` conversions; its 33 `vsnprintf` calls pass formats through from their callers. | ISO C 7.21.6.3, 7.21.6.10 and 7.21.6.12. | Imported by `libSceFios2.elf` (`symbols/imports.csv`). The guest calls with the System V convention the host uses, so its `va_list` is the host's and the host's functions format; `printf` and `vprintf` write to the host's standard output (`runtime/syslib/libc_internal.c`). Each format is checked first, and what the runtime cannot hand to the host unchanged stops by name: `%lc` and `%ls` (the PS4's `wchar_t` is not established), `%n` (the host's fortified `printf` refuses it from writable memory, and no call is known to pass it), any conversion ISO C does not define, no format, and no buffer for a non-zero size. Not implemented: `fflush` (its stream is the `_Stdout` data import, which the runtime does not provide). |
 
 ## Module loading at run time (`libSceSysmodule`)
 
@@ -74,6 +77,39 @@ the OpenOrbis id list), below.
 **Unknown**: the error values (a module not loaded, an id the system does not know), and whether a
 second load of a loaded module is counted, ignored or refused. Each is a named fatal until a console
 measurement or a guest call site settles it.
+
+The runtime validates the complete 32-bit module ID before consulting its configured
+module list. A wider ID such as `0xabcd7f01` does not alias the 16-bit ID `0x7f01`.
+Unsupported IDs stop by API name before looking up or changing a module record.
+
+In `libSceSysmodule` (SHA-256
+`43c456e00b59b2bd1303023cbcb463f50c0647854b4837468f8fc6c290b55c23`),
+these argument checks precede the lock and the delegated module operation:
+
+- `sceSysmoduleLoadModule` returns `0x805a1000` when `(id & 0x7fffffff) == 0`,
+  covering IDs 0 and `0x80000000`.
+- `sceSysmoduleIsLoaded` and `sceSysmoduleUnloadModule` return the same status for
+  ID 0. Their handling of `0x80000000` is delegated and remains unknown.
+
+These early errors leave every configured module record unchanged, including an
+explicitly configured zero-ID record. The original load validator distinguishes
+IDs `0x80`, `0xb0` and `0xb8` from other complete 32-bit IDs before its category
+checks; narrowing the argument would select a different path.
+
+The library functions are at module offsets `0x410` (load), `0x580` (query),
+`0x520` (unload) and `0x480` (load validation). Their complete instruction spans
+and unwind entries establish the boundaries. These observations describe this
+library version; they do not establish behavior on every firmware. The wrappers
+also propagate lock failures and delegated statuses. Load remaps `0x80020064` to
+`0x80020016` after a successful lock. Inner loading, category predicates, reference
+counts and release behavior remain unknown; the runtime stops on requests that
+would need those answers.
+
+The module-ID tests check the early numeric errors, complete-ID diagnostics,
+unchanged module records on rejection, wider IDs against loaded and unloaded
+records, and the configured 16-bit module lifecycle. Synthetic configured IDs
+exercise the runtime's supported behavior; they do not prove acceptance by the
+original library's validator.
 
 ## `scePthreadAttrGetaffinity`: the startup consumer and missing evidence
 
@@ -150,13 +186,16 @@ So `game/module_hooks.csv` replaces two functions before any guest code runs:
 - `hardware_concurrency` (`+0x5fac0`, 7 bytes) with `stop`, so a caller ends the run by name
   instead of reading a count nobody established.
 
-`pbboot --module-hook` writes each as a five-byte relative jump to a stub in the module's slot. A
+`pbboot --module-hook` first compares each function's first bytes, as the mapped and relocated
+module holds them, with the ones the file gives (`first_bytes`), and refuses the run before any
+guest code runs if they differ. It then writes each as a five-byte relative jump to a stub in the module's slot. A
 `return` stub leaves every register as the caller had it. A `stop` is reported like an
 unimplemented import: the status names the hook and its caller in `stopped_by_hook`.
 `scePthreadAttrGetaffinity` stays unbound.
 
 The hook guards calls only. A direct read of `+0xd1c54` that the analysis missed would see 0, not
-a measured count. The offsets fit only the pinned `libc.elf` (`target.sha256`).
+a measured count. The offsets fit only the pinned `libc.elf` (`target.sha256`); another build fails
+the byte check by name instead of being patched.
 
 ## Clock IDs and platform differences
 
@@ -170,11 +209,13 @@ The four `libSceNet` imports `sceNetHtonl`, `sceNetHtons`, `sceNetNtohl`, and `s
 
 This evidence supports only the four integer conversions. It says nothing about `libSceNet` socket, resolver, epoll, offline-state, or error behavior; those imports remain unresolved until their own contracts are established.
 
-## IPv4 text conversion (`sceNetInetPton`, issue #41)
+## IPv4 text conversion (`sceNetInetPton`, `sceNetInetNtop`, issue #41)
 
 The executable imports `sceNetInetPton` from `libSceNet`. Target call-site inspection found four unconditional call instructions (at `0x0085785e`, `0x011c7a7b`, `0x02f984f6`, and `0x02df348d`); each passes address family `2` and supplies the result as an IPv4 address. The consumers use a positive return as success. This establishes Bloodborne's observed call shape, not every address family supported by the PS4 library. The import thunk and pointer-table references are not additional call sites.
 
 For the observed AF_INET path, the runtime uses the documented BSD [`inet_pton(3)` contract](https://man.freebsd.org/cgi/man.cgi?query=inet_pton): parse dotted-decimal IPv4 text into four network-order bytes, return 1 for valid input and 0 for malformed input. This conversion does not open a socket or perform network I/O. Other target address families and null-pointer error behavior remain unresolved, so the runtime emits a named diagnostic for those inputs instead of forwarding host-specific errors.
+
+`sceNetInetNtop(family, source, destination, size)` is the reverse, BSD [`inet_ntop(3)`](https://man.freebsd.org/cgi/man.cgi?query=inet_ntop) for AF_INET: the four network-order bytes as dotted-decimal text, answering the destination. The executable's one call (`0x02f982df`) passes family `2`, an address from `sceNetHtonl` and a 16-byte buffer (enough for `255.255.255.255` and its terminator), and tests the answer for null. A buffer too small for the text answers null with `ENOSPC` in `errno` under BSD; the library's `errno` (`sceNetErrnoLoc`) is not modelled, so that case stops by name, as do other families and missing pointers.
 
 ## `getpagesize`: observed, inferred, unknown
 
@@ -222,11 +263,11 @@ The executable imports exactly six functions from `libSceNetCtl` and neither `sc
 game takes its offline paths. The public declarations of the same API family on PS Vita
 ([`psp2/net/netctl.h`](https://github.com/vitasdk/vita-headers/blob/master/include/psp2/net/netctl.h)
 in vitasdk/vita-headers, and the PSP2SDK header reference) give the shape of the calls: a
-state query through an `int *`, an information query by an `int` module id into a structure pointer,
+state query through an `int *`, an information query by an `int` code into a structure pointer,
 one NAT query through a structure pointer, and a callback check that takes nothing and returns `int`.
 Vita is a different operating system, so those declarations are evidence for the shape only and their
-numbers are never proof of a PS4 value. No value in this group is taken from another runtime's
-behaviour: where no public source reaches, the guest's own call sites decide. They have settled the
+numbers are never proof of a PS4 value. Facts from other runtimes are used only where a row cites
+them (the "not connected" value); elsewhere the guest's own call sites decide. They have settled the
 state numbers (0 is not up, 3 is connected) and the callback keying (an id handed back, not a state),
 and everything they do not reach - error codes, structure layouts, the offline answers - stays a
 fatal that names the question and the evidence that would close it.
@@ -237,7 +278,7 @@ fatal that names the question and the evidence that would close it.
 | `sceNetCtlCheckCallback(void)` | No arguments; returns `int`, by the Vita-era declaration. Runs the callbacks made due by a state change. | No public source describes the return value at all, only the declaration. | Implemented as 0, the one value both candidate contracts give while nothing is due: the runtime never leaves the disconnected state, so no callback runs. Which reading is the PS4's (a success code, or the number of callbacks it ran)? It only matters once a state change is possible. |
 | `sceNetCtlRegisterCallback(void *callback, void *arg, int *cid)` | A callback pointer, an argument pointer and an out-parameter `int *cid`, returning `int`. The guest's own call at `0x010b8352` passes a function in the image, `this`, and `lea -0x78(%rbp)`, a slot it never writes, then reads that slot back at `0x010b8428` into its object at `+0x130`. | Vita-era registration is keyed by a callback id the caller receives back (`func, arg, int *cid`); the guest's sites show the same shape on PS4. The two public Vita-era sources disagree about the callback's return type, so the pointer stays opaque and no signature is modelled for it - the guest's callback at `0x010b45e0` does show it being dispatched as (state, arg). | Implemented: each registration gets a fresh id written through the caller's pointer, numbered from 1 so an id can never look like an unwritten slot, and nothing is ever dispatched while offline. Open: the error values for a null callback or a null id slot, the table's capacity, and whether re-registering the same callback replaces or adds (we add, being keyed by id). |
 | `sceNetCtlUnregisterCallback(int cid)` | One `int`: the id a previous register call handed back. The guest passes the field it stored from that out-parameter (`0x010b8f8d`). | The Vita-era form takes the callback id `int cid`, which the sites match. | Implemented for an id we handed out: remove it and succeed. Fatal for an id we never handed out, or one already removed - no public source gives the PS4 answer and the guest's own paths never reach it. |
-| `sceNetCtlGetInfo(int module, void *info)` | Claimed as an `int` module id and a structure pointer, by the Vita-era `sceNetCtlInetGetInfo(int code, SceNetCtlInfo *info)`. | The Vita-era union's members and its size are another operating system's; nothing public describes the PS4 structure. | Not implemented: fatal before touching the buffer. The guest narrows the question - every site in the executable passes module id 14 (`0x00dfd2b1`, `0x020413ee`), each with a buffer in the second argument that it prints as a string on the success path, and no other id appears anywhere. Open: what id 14 means on PS4, its offline answer, and the structure's size and layout. The fatal names the id, so a boot run reports which ones the guest asks for. |
+| `sceNetCtlGetInfo(int code, void *info)` | Claimed as an `int` code and a structure pointer, by the Vita-era `sceNetCtlInetGetInfo(int code, SceNetCtlInfo *info)`; OpenOrbis `NetCtl.h` and shadPS4's `netctl.h` name code 14 `ORBIS_NET_CTL_INFO_IP_ADDRESS`. | shadPS4's `sceNetCtlGetInfo` answers `0x80412108` (not connected) for every code while the console is not connected, before writing anything. | Offline: code 14, the only code the executable asks for (`0x00dfd2b9`, `0x00dfd445`, each printing the buffer only on a non-negative answer), answers "not connected" and writes nothing. Other codes stop by name (a disconnected console may still describe its device or link; no source settles it), and so does a missing structure (PS4Recomp checks it first, shadPS4 the connection first). |
 | `sceNetCtlGetNatInfo(void *nat_info)` | `{ size, STUN status, NAT type, mapped address }`, four 32-bit fields, 16 bytes; "not connected" is `0x80412108` (PS4Recomp's `libSceNetCtl`, used as facts). | The guest writes 16 at offset 0 (`0x01889417`), reads back only offset 8, the NAT type, and only on 0 (`0x01889436`); on any other answer it takes NAT type 1 itself (`0x0188942d`). | Offline: answers "not connected" and writes nothing, so the guest's own fallback applies. A size other than 16 and a missing structure stop by name. |
 
 `0` is the success value, the convention public SCE-family documentation states for these calls (the
@@ -334,6 +375,26 @@ mutex an error-checking host mutex, and keeps the guest type for its own answers
 The SCE names return `0x80020000` plus the error number, the `libScePosix` names the number
 itself. One difference left: the adaptive type no longer spins before it sleeps, as libthr's and
 glibc's do; that changes timing only, not an answer.
+
+## Timed locks (`scePthreadMutexTimedlock`, `scePthreadRwlockTimedrdlock`, `scePthreadRwlockTimedwrlock`, issue #34)
+
+Each takes the lock variable and the most it may wait, in microseconds from now (OpenOrbis
+`libkernel.h` declares an `OrbisKernelUseconds`; shadPS4 binds the three names to libthr's
+relative-time calls, `pthread_mutex_reltimedlock_np` and `pthread_rwlock_reltimed*lock_np`, facts
+only). The executable's lock wrappers take them for any timeout but -1, which uses the untimed
+call: `0x02484119` (mutex) tells `EDEADLK`, `EINVAL`, `EAGAIN` and `ETIMEDOUT` apart, and
+`0x0247f681` and `0x0247f411` (rwlock) `EDEADLK`, `EINVAL` and `ETIMEDOUT`.
+
+**What the runtime does:**
+- The wait ends with the lock, or with `ETIMEDOUT` once the time has passed, on the monotonic clock
+  (as for `scePthreadCondTimedwait`).
+- **The owner asking again.** With a timeout, libthr's `mutex_self_lock` sleeps the whole time and
+  answers `ETIMEDOUT` for the error-checking, adaptive and normal types; a recursive mutex takes
+  one more level. The kernel's umtx rwlock has no owner check, so a thread holding the write lock
+  that asks again waits out the time too (`do_rw_rdlock`, `do_rw_wrlock`). The host would answer
+  `EDEADLK` at once, so the runtime sleeps the time itself.
+- A destroyed lock or a missing variable is `EINVAL`, and the static initializers are set up on
+  first use, as for the untimed calls.
 
 ## Direct memory (`libkernel`, issue #34)
 
@@ -575,6 +636,57 @@ leave the timeout and that signal to the main thread.
 A local boot with the affinity probe and the rwlocks let through (not committed) reaches the
 `threads` milestone and stops next at `sceUserServiceInitialize`.
 
+## Joining, detaching, explicit scheduling and once (issue #34)
+
+**`scePthreadJoin(thread, void **value)`** and **`scePthreadDetach(thread)`** are FreeBSD libthr's
+`pthread_join` and `pthread_detach` ([`thr_join.c`](https://cgit.freebsd.org/src/tree/lib/libthr/thread/thr_join.c?h=stable/9),
+[`thr_detach.c`](https://cgit.freebsd.org/src/tree/lib/libthr/thread/thr_detach.c?h=stable/9);
+OpenOrbis `libkernel.h` shapes; shadPS4's `JoinThread` and `posix_pthread_detach` agree, facts
+only). The executable's join (`0x02a3b6c5`) tells `ESRCH`, `EDEADLK` and `EINVAL` apart. The other
+callers compare the answer with 0: `libc.elf` `+0x6130` and `+0x6174`, `libSceFios2` `+0x2ebde`,
+and the POSIX `pthread_join` (`libScePosix`) at `0x00838793` and `0x008387f3`.
+
+In libthr's order:
+- **join:** no thread is `EINVAL`; the calling thread itself `EDEADLK`; a thread the runtime does not
+  know, or one already collected, `ESRCH`; a detached thread `EINVAL`; a thread another thread waits
+  to join `ENOTSUP` (45). Otherwise it waits for the end, stores the exit value through a non-null
+  `value`, and collects the thread.
+- **detach:** no thread is `EINVAL`; an unknown or collected thread `ESRCH`; a detached thread, or
+  one a thread waits to join, `EINVAL`. A detached thread is collected when it ends.
+- **Stops by name:** a join or detach of the main thread, on which the runtime runs the boot.
+
+**POSIX names (`libScePosix`).** They return the error number itself:
+- `pthread_create(thread, attr, entry, argument)` is `scePthreadCreate` without a name. The
+  executable's job threads (`0x00466674`, `0x004666df`) pass a detached attribute with a stack size
+  and a priority.
+- `pthread_exit(value)` is `scePthreadExit` (one call, `0x004667e3`).
+- `pthread_attr_setschedparam` is `scePthreadAttrSetschedparam`. The job threads take their
+  priorities from a table of 256, 650, 700, 750 and 767 (`0x02fc5480`), inside the range the SCE
+  name accepts.
+
+**`scePthreadAttrSetinheritsched(attr, inherit)`** chooses between `PTHREAD_INHERIT_SCHED` (4,
+libthr's default: a new thread starts at its creator's priority) and `PTHREAD_EXPLICIT_SCHED` (0:
+it starts at the attribute's priority), FreeBSD `<pthread.h>`'s numbers. `libSceFios2`'s thread
+helper (`+0x2eaa2`) asks for explicit scheduling and then sets the priority. A variable without an
+attribute is `EINVAL`. Stops by name: another value (libthr's `ENOTSUP`, whose SCE value is not
+established, as for the policy), and explicit scheduling without a priority set (the attribute's
+default priority is not established).
+
+**`scePthreadOnce(once, init)`** runs `init` once per once variable (libthr
+[`thr_once.c`](https://cgit.freebsd.org/src/tree/lib/libthr/thread/thr_once.c?h=stable/9)). The
+variable's first `int` is its state: 0 never done (the static initializer), 1 done, 2 in progress,
+3 in progress with waiters. A caller that finds it in progress waits for the end; any other state
+is `EINVAL`. `libc.elf` calls it five times (`+0xad02`, `+0x1b292`, `+0x54ecb` and two tail calls)
+with a static variable and a routine. Nothing cancels a guest thread, so a routine always runs to
+its end.
+
+**`scePthreadRename(thread, name)`** records a thread's name (OpenOrbis `libkernel.h`; libthr's
+`pthread_set_name_np`, to which shadPS4 binds it, facts only). The executable's job threads rename
+themselves with it (a tail call at `0x00466834`). The runtime keeps the first 31 bytes, as for the
+name `scePthreadCreate` takes, names the host thread with the first 15 (the host's limit; debuggers
+and the host's thread list show it), and answers 0. Stops by name: a thread the runtime does not know
+or has collected, and a missing name.
+
 ## PlayGo (`libScePlayGo`)
 
 PlayGo lets a title start before all of its package is installed: the title asks which chunks of
@@ -663,6 +775,34 @@ into 3 bits) answers 0 for Sunday to 6 for Saturday. The PS4Recomp project's `li
 the days so, and notes that a real PS4's ticks count from year 1, as these do; both are used as
 facts only. (The PSP SDK documents 0 as Monday, for an older library.) A date out of range stops
 by name.
+
+### Unix time, time zones, RFC 2822 and the network tick (issue #40)
+
+These five calls relate ticks to Unix time and to UTC (`runtime/syslib/rtc.c`, tests in
+`test/syslib/rtc_time_zones.c`).
+
+- **Ticks and Unix time:** a tick counts microseconds from year 1, so 1970-01-01 00:00:00 UTC is
+  tick 62135596800000000. PS4Recomp's `libSceRtc` and shadPS4's `rtc.cpp` both relate them so
+  (facts only).
+- **`sceRtcSetTime_t(date and time *, time_t)`** (`0x010b70a6`: seconds parsed from text, then
+  `sceRtcGetTick` on the result, going on only on 0) gives the UTC date and time that many seconds
+  after 1970. Both sources say the answer depends on the SDK the title was built with: before SDK
+  3.00 only the low 32 bits count, from 3.00 a negative count is an error. Counts from 0 to
+  `0xffffffff` mean the same either way; others stop by name.
+- **`sceRtcConvertUtcToLocalTime(const tick *, tick *)`** and **`sceRtcConvertLocalTimeToUtc`**
+  (11 and 2 call sites, such as `0x01969648` and `0x019696ae`; each passes a local copy of the
+  tick and treats anything but 0 as no time) use the host's time zone, as the local time above
+  does, with its daylight saving rule at that instant. A local time that the clock skips or shows
+  twice at a daylight saving change stops by name, because the PS4's choice there is not
+  established.
+- **`sceRtcFormatRFC2822LocalTime(char *, const tick *utc)`** (`0x023e5ca9`, with no tick, which
+  means now) writes RFC 2822 section 3.3's date and time in the host's local time, such as `Mon,
+  02 Nov 2026 15:05:09 +0100`: 31 characters and a NUL, the day of the month in two digits as both
+  sources write it.
+- **`sceRtcGetCurrentNetworkTick(tick *)`** (`0x01086f50`, `0x010b70cf`; 0 is success, and the first
+  treats a failure as no time) answers the current UTC tick from the host's clock, as both sources
+  do. The host's wall clock stands for the network clock.
+- **Stops by name:** a missing argument, and a time before year 1 or past the year 9999.
 
 ## The controller (`libScePad`)
 
@@ -782,9 +922,43 @@ and gyroscope are not forwarded, because the units and axes the system reports t
 established here (shadPS4 scales SDL's m/s² by 0.098 without a source); acceleration and angular
 velocity stay 0 and the orientation the identity. **Stops by name:** a second initialize, a call
 before initialize, another user, port type, index or open parameters, an unknown handle, a
-missing argument, and the other error values. `scePadResetOrientation`,
-`scePadSetAngularVelocityDeadbandState` and `scePadSetTiltCorrectionState` stay unbound until the
-boot reaches them.
+missing argument, and the other error values.
+
+**The motion settings (issue #36).** `scePadResetOrientation(handle)` (OpenOrbis `Pad.h`) makes
+the pad's present attitude the reference its orientation is reported from;
+`scePadSetAngularVelocityDeadbandState(handle, bool)` and `scePadSetTiltCorrectionState(handle,
+bool)` (named in `Pad.h` without a signature; shadPS4's `pad.cpp` declares `(int32_t handle,
+bool enable)`, used as a fact) switch the motion sensors' deadband and tilt correction. The
+executable calls each through a small wrapper (`0x02a9082e`, `0x02a90852`, `0x02a90882`) with its
+open handle, and a bool for the two settings, and counts 0 as success. Since motion is not
+modelled, a reset leaves the reported orientation the identity, neither setting changes a
+reading with no motion, and each call answers 0 (`test/syslib/pad_motion_settings.c`). An
+unknown handle and a setting other than 0 or 1 stop by name.
+
+## The mouse, not connected (`libSceMouse`, issue #36)
+
+The runtime has no host mouse, so it answers as a console with no mouse plugged in
+(`runtime/syslib/mouse.c`, tests in `test/syslib/mouse_not_connected.c`).
+
+**Sources.** shadPS4's `libSceMouse` (`mouse.h`, `mouse.cpp`, `mouse_error.h`; facts only) gives
+the shapes: `sceMouseInit(void)`, `sceMouseOpen(user, type, index, param)`, `sceMouseRead(handle,
+data, count)` answering how many records it wrote (1 to 64 asked for), `sceMouseClose(handle)`,
+the 40-byte record `{ uint64_t timestamp, bool connected, uint32_t buttons, int32_t x, y, wheel,
+tilt, 8 reserved }` and `0x80DF0004` for a mouse already open. With no mouse it answers one
+record, not connected, all zero. OpenOrbis `Mouse.h` only names the calls.
+
+**The executable's calls agree.** It loads the library's system module (`0x02a8bce1`), then calls
+Init (six sites, such as `0x02a8bcea`) and counts 0 as success. Two input objects each open the
+mouse with (the initial user, 0, 0, NULL) (`0x02a8bf75`, `0x02a8c465`), keep the answer as their
+handle only when it is above 0, and close a handle above 0 before opening again. Read
+(`0x02a8c07f`, `0x02a8c56f`) asks for one record into the 40 bytes the object clears: below 0 is a
+failure, and a record that is not connected ends the poll.
+
+**What the runtime does.** Init answers 0 every time, as shadPS4 does. Open gives handle 1 (the
+runtime's choice; the title keeps only handles above 0) and `0x80DF0004` while it is open. Read
+writes one all-zero record (not connected) and answers 1. Close frees the handle. **Stops by
+name:** a call before Init, another user, type, index or open parameters, an unknown handle, a
+count outside 1 to 64, and a missing record.
 
 ## The common dialog's initialize (`libSceCommonDialog`, issue #40)
 
@@ -814,6 +988,15 @@ dialog is shown: each dialog library's own calls do that, and none is provided y
 Facts from shadPS4's `libSceSystemService` (`systemservice.cpp`, `systemservice.h`,
 `systemservice_error.h`).
 
+## System events (`sceSystemServiceReceiveEvent`, issue #40)
+
+`sceSystemServiceReceiveEvent(event *)` takes the oldest pending system event. shadPS4's
+`libSceSystemService` answers `0x80A10003` for a missing pointer and `0x80A10004` ("no event",
+`systemservice_error.h`) for an empty queue (facts only). The executable calls it only inside a
+loop bounded by the pending count `sceSystemServiceGetStatus` gave (`0x01b8a433`, `0x02276aa3`),
+and acts on an event only when the call answers 0. The runtime raises no system events, so it
+answers "no event" and writes nothing (`test/syslib/system_service_events.c`).
+
 ## System settings (`sceSystemServiceParamGetInt`, issue #40)
 
 `sceSystemServiceParamGetInt(id, int32_t *value)` reads a console system setting. The setting
@@ -834,8 +1017,9 @@ person running it chose:
 ## PSN offline: sign-in state, callbacks and matchmaking start-up
 
 The runtime is offline: the one user is signed out of PSN for the whole run, and nothing about
-that ever changes. The facts come from shadPS4's `libSceNpManager` and `libSceNpMatching2`
-(`np_manager.h`, `np_manager.cpp`, `np_types.h`, `np_types2.h`, `np_common.cpp`, `np_error.h`), checked against two other Bloodborne ports and PS4Recomp's `libSceNp` (`ps4_np.c`), which answer the same for a signed-out user. The code is the
+that ever changes. The facts come from shadPS4's `libSceNpManager`, `libSceNpMatching2` and `libSceNpAuth`
+(`np_manager.h`, `np_manager.cpp`, `np_types.h`, `np_types2.h`, `np_common.cpp`, `np_error.h`,
+`np_auth/np_auth.cpp`, `np_auth/np_auth.h`), checked against two other Bloodborne ports and PS4Recomp's `libSceNp` (`ps4_np.c`), which answer the same for a signed-out user. The code is the
 runtime's own.
 
 | Call | Runtime |
@@ -853,6 +1037,9 @@ runtime's own.
 | `sceNpCheckNpAvailability(id, const online id *, reserved)`, `sceNpCheckPlus(id, const parameter *, result *)`, `sceNpGetParentalControlInfo(id, const online id *, int8_t *age, info *)` | the check completes at once: the call answers 0 and the request's result is `0x80550006` (signed out); nothing is written. A request id of 0 or a missing argument `0x80550003`, an id that is no request `0x80550014`, an aborted request `0x80550012`, a second check on one request `0x80550003`. `sceNpCheckPlus`'s 0x38-byte block `{size, user, padding, features, 32 reserved}`: another size `0x80550011`; features outside 1–3, a non-zero reserved byte or the invalid user `0x80550003`; another user stops by name. A third argument to the availability check other than the observed 0 stops by name. |
 | `sceNpPollAsync(id, int32_t *result)` | 0 with the result once the check ran (always at once offline); no variable `0x80550003`, an id that is no request `0x80550014`, a request that ran no check `0x80550015`. The caller (`0x022767b5`) reads 0 as done, 1 as still running. A request aborted before its check stops by name. |
 | `sceNpAbortRequest(id)`, `sceNpDeleteRequest(id)` | 0, or `0x80550014` for an id that is no request. Abort marks an unchecked request aborted and leaves a checked one alone; delete frees the id. |
+| `sceNpAuthCreateAsyncRequest(const parameter *)` (`libSceNpAuth`) | a request id from `0x10000001`, at most 16 in use (`0x80550305`), a deleted one's id reused. The block is 0x18 bytes `{size, CPU affinity mask, thread priority}`: no block `0x80550301`, another size `0x80550302`. The caller (`0x02275de5`) passes 0x18, `0x3f`, 700. |
+| `sceNpAuthGetAuthorizationCode(id, const parameter *, code *, int32_t *issuer)` | `0x80550007` (user not found), writing nothing: the library looks up the user the online id belongs to, which cannot succeed signed out (shadPS4's note: a title cannot even obtain an online id then). The 0x20-byte block `{size, online id *, client id *, scope}` (caller `0x02276028`): no block or code variable, or a missing online id, client id or scope `0x80550301`; another size `0x80550302`. The request is not started. PS4Recomp answers `0x80550006` (signed out) here instead; the caller discards this answer either way and learns the outcome by polling. |
+| `sceNpAuthPollAsync(id, int32_t *result)`, `sceNpAuthDeleteRequest(id)` | Poll: no variable or an id of 0 or below `0x80550301`, an id that is no request `0x80550306`, and otherwise `0x80550307` (invalid id): offline no request is ever started, so none has a result. Delete frees the id: 0, `0x80550301` or `0x80550306` as for poll. Callers `0x022752ca` (only an id above 0; a negative answer is its failure state, 1 still running, 0 done) and `0x02276f43`. |
 | `sceNpCmpOnlineId(a, b)`, `sceNpCmpNpId(a, b)` (`libSceNpCommon`) | 0 for the same identity, `0x80550609` (no match) otherwise, `0x80550003` for a missing one. Online ids compare their 16 characters as `strncmp` does; NP ids then compare their 8 option and 8 reserved bytes. Callers `0x010a28d1` and `0x010b4676`. |
 | `sceNpMatching2Initialize(const parameter *)` | the 0x30-byte block carries its own size at `0x20`, and 0x30 or the older 0x28 is accepted. Anything else, or no block, answers `0x80550C0A`; a second initialize answers `0x80550C02`. The caller (`0x010ba2d0`) treats a negative answer as failure. |
 | `sceNpMatching2Terminate()` | 0, or `0x80550C03` before initialize |
@@ -1090,6 +1277,13 @@ thread's mask, a new thread starting with its creator's, and does not apply it t
 **What stops by name:** an unknown `how`. Its error is reported through the guest's `errno`, which
 the runtime does not model.
 
+**`sigprocmask` and `sigfillset`** (`libc.elf` imports both from libkernel). `sigprocmask` is the
+same call under its POSIX name (FreeBSD's libc `sigprocmask` is the system call itself); its
+thirteen calls include `+0x53f84`, which blocks everything with `SIG_SETMASK` and a set from
+`sigfillset` and keeps the old mask. `sigfillset(set)` puts every signal in the set, each of the four
+words all ones (FreeBSD libc's `sigsetops.c`, POSIX), and answers 0. A missing set stops by name:
+POSIX defines no error for it.
+
 ## Thread priorities (`scePthreadGetprio`, `scePthreadSetprio`, issue #34)
 
 `scePthreadGetprio(thread, int32_t *priority)` and `scePthreadSetprio(thread, priority)`, as the
@@ -1245,7 +1439,8 @@ headers give:
   6-channel movies open format 2. With `--audio host`, 16-bit blocks are scaled to -1..1 for the
   host stream.
 
-**What the runtime does.** It records each open port and hands out handles from 1. Sound output
+**What the runtime does.** It records each open port and hands out handles from 1, the lowest one
+free, so a closed port's handle is handed out again (shadPS4 also reuses a closed port's slot). Sound output
 belongs to the output calls, which stop by name until they are implemented.
 
 **What stops by name:** any open other than the observed ones (256 float samples in formats 4
@@ -1274,8 +1469,20 @@ the next block.
 - A call waits until the block before it would have finished playing, then answers 0 (the caller
   only checks the sign).
 - A port that falls behind starts again from now.
+- No block (`samples` NULL) hands nothing over: the call waits until the port has room for the next
+  block and answers 0, without moving the port's timeline on. shadPS4 (`audioout.cpp`) waits for the
+  port's buffer to drain and copies nothing for a null pointer, returning 0 samples; PS4Recomp
+  (`ps4_audioout.c`) waits for room and pushes nothing, returning 0. The movie player's sound thread
+  calls it so when it has no sound to give (found during the opening movie).
 
-**What stops by name:** a missing block, and a handle the runtime did not hand out.
+**What stops by name:** a handle the runtime did not hand out.
+
+`int32_t sceAudioOutClose(handle)`, as the SDK declares it, closes a port. The movie player's sound
+ends with it (`0x02c2276f`): first no block (`sceAudioOutOutput` with NULL, which waits for room), then
+the close, whose negative result it takes as failure. The runtime takes the port back once any output
+call on it has returned, closes its host stream and answers 0, as shadPS4's `audioout.cpp` does; the
+handle is free for the next open. A handle that names no open port stops by name (the error value is
+not established).
 
 `int32_t sceAudioOutGetPortState(handle, void *state)`, as the SDK declares it, reports a port's
 state. Its `_types/audio_out.h` gives the layout (32 bytes): a 16-bit output, an 8-bit channel
@@ -1396,11 +1603,13 @@ are the runtime's own files, not a console's `param.sfo`.
 | `sceSaveDataDirNameSearch(condition, result)` | the user's saves (folders with `sce_sys/param.bin`, not `sce_*`), matched by an SQL-LIKE pattern without regard to case (`%`, `_`), sorted by name, user param or time (blocks are alike here), ascending or descending; a key above 5 or an order above 1 `0x809F0000` |
 | `sceSaveDataSetupSaveDataMemory(user, size, param)` | creates or grows `memory.dat` to the size (never shrinks it); size 0 `0x809F0000` |
 | `sceSaveDataGet/SetSaveDataMemory(user, buffer, size, offset)` | reads or writes at the offset; before setup `0x809F0012`; no buffer or a negative offset `0x809F0000` |
+| `sceSaveDataDelete(request)` | the 64-byte request { user, padding, title id, directory name, unused, reserved }; removes the save's folder and everything in it, 0. Mounted `0x809F0003`; no request, no name or a bad name `0x809F0000`; user below 0 `0x809F0011`. The executable's one caller (`0x02c3e765`) passes no title id and asks again while the answer is `0x809F0014` |
 
 **Stops by name** (not modelled): another title's saves (a title id), the free-space check and its
 required-blocks answer, the backup copy and its "corrupted" marker, sort key 4, and a memory read
-or write past the size set up. `sceSaveDataDelete` and the save data dialog stay unbound until the
-boot reaches them.
+or write past the size set up, a delete of a save that is not there (shadPS4 answers 0 then, which
+is not established for the console), and a host failure to remove a save. The save data dialog
+stays unbound until the boot reaches it.
 
 ## The title's files: `/app0`, `sceKernelStat`, opening and reading (issue #35)
 
@@ -1441,6 +1650,43 @@ and modification times and the size on 0, and treats any other answer as no file
 is imported by `eboot`, `libc` and `libSceFios2`. Each guest thread runs on its own host thread,
 so a thread-local `int` is that thread's `errno`; it starts at 0, and success leaves it alone.
 
+### Truncating by name, and the POSIX mkdir, rmdir and rename
+
+`sceKernelTruncate(path, length)` (imported by `eboot` and `libSceFios2`) is FreeBSD's
+[`truncate(2)`](https://man.freebsd.org/cgi/man.cgi?query=truncate&sektion=2&manpath=FreeBSD+9.0-RELEASE)
+under its SCE name: 0, or `0x80020000` plus the error number. The shape is OpenOrbis
+`libkernel.h`'s; the executable's wrapper (`0x024733a4`) passes a 64-bit length and turns each
+`0x8002xxxx` answer into an engine error through a table (`0x02473530`). `eboot` also imports
+[`mkdir`](https://man.freebsd.org/cgi/man.cgi?query=mkdir&sektion=2&manpath=FreeBSD+9.0-RELEASE),
+[`rmdir`](https://man.freebsd.org/cgi/man.cgi?query=rmdir&sektion=2&manpath=FreeBSD+9.0-RELEASE) and
+[`rename`](https://man.freebsd.org/cgi/man.cgi?query=rename&sektion=2&manpath=FreeBSD+9.0-RELEASE)
+from `libScePosix`: 0, or -1 with `errno` set. The executable's calls (`0x00df0bf4`, `0x00e03e68`,
+`0x00e03ddb` and others) ignore the answer or only compare it with 0. (`sceKernelRename` and
+`sceKernelFtruncate` are under "Opening and reading".)
+
+**What the runtime does:**
+- **Paths** resolve as for opening: `/data`, the mounted save data, and `/app0`.
+- **Errors** are FreeBSD's numbers, never the host's: `ENOENT`, `ENOTDIR`, `EEXIST`, `EISDIR`,
+  `EINVAL` and `ENOTEMPTY` (66 on FreeBSD, 39 on Linux).
+- **`rmdir`** of a mount's own root is `EBUSY` (the man page's "mount point for a mounted file
+  system").
+- **`rename`** across mounts is `EXDEV`, after the source and the target's folder are looked up,
+  in FreeBSD's order (stable/9
+  [`vfs_syscalls.c`](https://cgit.freebsd.org/src/tree/sys/kern/vfs_syscalls.c?h=stable/9),
+  `kern_renameat`). A directory over a non-empty one is `ENOTEMPTY`.
+- **`truncate`** with a negative length is `EINVAL` before the lookup (`kern_truncate`; Linux checks
+  it first too); a directory is `EISDIR`. Growing a file fills with zero bytes.
+- **A new directory's mode** is `mode & 0777` less the host's umask. The PS4 process's umask is
+  not established.
+
+**What stops by name:**
+- no path;
+- any change under a read-only mount (`/app0`, save data mounted to read). FreeBSD answers
+  `EROFS`, but only after lookups whose order the runtime does not model for each call, and the
+  title's callers change only `/data` and its saves;
+- renaming a mount's root;
+- any other host error (`EACCES`, `ENOSPC`, `EIO` and the rest).
+
 ### Opening and reading
 
 `sceKernelOpen`, `sceKernelRead`, `sceKernelPread`, `sceKernelLseek`, `sceKernelFstat` and
@@ -1458,6 +1704,43 @@ flags 0 (`O_RDONLY`) and mode 0555.
 - **Seeking.** A whence other than 0, 1 or 2 (`SEEK_SET`, `SEEK_CUR`, `SEEK_END`, the same on
   FreeBSD and Linux), and a seek before the start, are `EINVAL`.
 
+### Writing
+
+`sceKernelWrite(fd, buf, n)` (imported by `eboot` and `libSceFios2`) and
+`sceKernelPwrite(fd, buf, n, offset)` (imported by `libSceFios2`) are FreeBSD's `write(2)` and
+`pwrite(2)` under their SCE names, with the shapes from the same `libkernel.h`. Each returns the
+number of bytes written, or `0x80020000` plus the error number. Writes reach files under the
+writable `/data` mount, which `sceKernelOpen` opens with the requested access mode.
+
+**What the runtime does:**
+- **Order of checks.** FreeBSD's order (stable/9 `sys_generic.c`, `sys_write`, `sys_pwrite` and
+  `kern_pwritev`): the size, then the descriptor, then the offset.
+- **`EBADF`.** `write(2)` answers it for a descriptor that is not open for writing: one the runtime
+  did not hand out (0 to 2 included, as for reading), and one opened read-only, which is every
+  `/app0` file and a `/data` file opened with `O_RDONLY`.
+- **`EINVAL`.** A negative `pwrite` offset, as for `pread` (`pwrite(2)`: "The offset value was
+  negative").
+- **The position.** A `pwrite` leaves the file position where it was. A write past the end leaves a
+  hole that reads as zero bytes, as the host file system does. A zero count writes nothing and
+  answers 0.
+- **The count.** The answer is the host's count, which can be short. Linux writes at most
+  `0x7ffff000` bytes per call, so a request between that and `INT_MAX` comes back short where
+  FreeBSD would write it all.
+
+**What stops by name:**
+- **More than `INT_MAX` bytes.** FreeBSD answers `EINVAL` above `IOSIZE_MAX`. That is `INT_MAX`
+  while the `debug.iosize_max_clamp` sysctl is set (its default in FreeBSD 9; current FreeBSD
+  defaults to 0), and `SSIZE_MAX` otherwise. The FreeBSD 9.0 `write(2)` page says `INT_MAX`. The
+  PS4's setting is not known.
+- **No buffer for a non-zero count,** as for reading.
+- **A `pwrite` on a descriptor opened with `O_APPEND`.** POSIX writes at the offset. FreeBSD's
+  `write(2)` BUGS section says its `pwrite` appends instead, and Linux does the same. The PS4's
+  answer is not established.
+- **Any host write error** (`ENOSPC`, `EIO`, `EFBIG` and the rest).
+
+What would settle the stops: guest call sites that pass these cases, or results observed on a
+console.
+
 ### Truncating and renaming
 
 `sceKernelFtruncate(fd, length)` is FreeBSD's `ftruncate(2)` under its SCE name (shape from the
@@ -1472,6 +1755,21 @@ hand out is `EBADF`. Any other host error stops by name.
 existing `to` as `rename(2)` does. Paths on two different mounts are `EXDEV` (`rename(2)`: "on
 different logical devices"); on the read-only `/app0` `EROFS`, after the lookup; a missing file or
 directory component `ENOENT` or `ENOTDIR`. Any other host error stops by name.
+
+## The disc map (`sceDiscMapIsRequestOnHDD`, issue #35)
+
+The disc map tells the file library whether part of a file is already on the hard disk or still
+only on the disc (`runtime/syslib/disc_map.c`).
+
+- **Shape:** `sceDiscMapIsRequestOnHDD(const char *path, int64_t offset, int64_t bytes, int32_t
+  *on_hdd)`, as shadPS4's `disc_map.cpp` declares it (a fact only).
+- **The caller:** the bundled file library's one call (`libSceFios2.elf+0x2d71c`) passes a
+  variable preset to 0. On 0 it takes a nonzero variable as on the hard disk; on any other answer
+  it treats the request as not mapped and remembers that the map is unavailable.
+- **The answer:** the runtime serves the title from host files with no disc, so there is no disc
+  bitmap. It answers `0x81100004` ("no bitmap info", numbered in shadPS4's `disc_map_codes.h`),
+  as shadPS4 does, and writes nothing. A missing path or variable stops by name.
+- The library's other import, by hash `ioKMruft1ek`, has no call site and stays unbound.
 
 ## Memory protection queries (`sceKernelQueryMemoryProtection`, issue #34)
 
@@ -1543,6 +1841,41 @@ past the mapping.
 - an address outside those mappings (other memory is not tracked yet);
 - a missing structure.
 
+## Unmapping, protecting and typing memory (`sceKernelMunmap`, `sceKernelMprotect`, `sceKernelGetDirectMemoryType`, issue #34)
+
+The shapes are OpenOrbis `libkernel.h`'s: `sceKernelMunmap(address, length)`,
+`sceKernelMprotect(address, length, protection)` and `sceKernelGetDirectMemoryType(start, &type,
+&range_start, &range_end)`.
+
+**What the executable does:**
+- It frees a direct map with `sceKernelMunmap` and then `sceKernelReleaseDirectMemory`
+  (`0x024826fd`, `0x0248270c`), the order the release needs.
+- `0x02d03214` wraps `sceKernelMprotect` and answers whether the result was 0.
+- `0x02abae74` passes the pool offset `sceKernelVirtualQuery` gave for an address to
+  `sceKernelGetDirectMemoryType` and only tests whether the type is 3 (write-combined garlic).
+
+**What the runtime does:**
+- **Munmap** is FreeBSD's [`munmap(2)`](https://man.freebsd.org/cgi/man.cgi?query=munmap&sektion=2&manpath=FreeBSD+9.0-RELEASE).
+  A zero length is `EINVAL` (FreeBSD's `sys_munmap`; shadPS4's `sceKernelMunmap` answers the
+  same, facts only). It removes one whole mapping the runtime made: the host mapping goes, and a
+  direct map no longer holds its range, which can then be released. A GPU-visible range can be
+  mapped again at its GPU address. The address is not handed out again for other maps.
+- **Mprotect** is FreeBSD's [`mprotect(2)`](https://man.freebsd.org/cgi/man.cgi?query=mprotect&sektion=2&manpath=FreeBSD+9.0-RELEASE):
+  the mapping takes the new protection, the CPU bits on the host and the GPU bits recorded, as for a
+  map. The queries answer the new protection.
+- **GetDirectMemoryType** answers the memory type of the allocated range that holds the pool
+  offset, and that range's start and end (just past it, as for `sceKernelVirtualQuery`).
+
+**What stops by name:**
+- part of a mapping, more than one, or memory the runtime did not map (other memory is not tracked
+  yet);
+- an offset outside every allocated range (shadPS4 answers `ENOENT`; no public source settles it);
+- protection beyond CPU and GPU read and write;
+- a missing variable.
+
+`sceKernelReleaseFlexibleMemory` stays unimplemented: shadPS4 gives the pages back and keeps the
+mapping, and no public source says whether the PS4 does that or unmaps.
+
 ## GNM: binding vertex and pixel shaders (`sceGnmSetVsShader`, `sceGnmSetPsShader`, issue #39)
 
 `sceGnmSetVsShader` and `sceGnmUpdateVsShader` take (command buffer, dwords, registers, modifier);
@@ -1575,6 +1908,14 @@ OpenOrbis' `GnmDriver.h` only names this call, so its shape comes from the engin
 queue for the engine-level graphics layer, and answers ids from 1.
 
 **What stops by name:** mapping the same pipe and queue twice, and a missing ring or read pointer.
+
+**The renderer and compute queues.** `sceGnmDingDong` completes each indirect buffer the ring points
+to (the temporary stand-in in `runtime/syslib/gnm.c`), then hands it to the renderer, which drops its
+recorded calls without running them (`rt_renderer_skip`): compute queues do not run on the renderer
+yet. Dropping them matters because a shader bound in a command buffer is recorded by its address. A
+compute queue's buffer is never submitted to the graphics queue, so before this its bindings stayed
+waiting, and a graphics buffer later built in the same memory picked them up: on the main menu after
+Play Offline, a stale compute shader replaced the one the graphics buffer had just bound.
 
 ## Kernel event queues (`sceKernelCreateEqueue`, `sceKernelWaitEqueue`, `sceKernelDeleteEqueue`, issue #34)
 
@@ -1696,6 +2037,7 @@ metadata.
 - [POSIX `clock_gettime`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/clock_gettime.html) and [clock definitions](https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/time.h.html)
 - [POSIX `getpid`](https://pubs.opengroup.org/onlinepubs/9699919799/functions/getpid.html)
 - [Older POSIX `gettimeofday` specification](https://pubs.opengroup.org/onlinepubs/009604599/functions/gettimeofday.html)
+- [RFC 2822 section 3.3, date and time specification](https://www.rfc-editor.org/rfc/rfc2822#section-3.3); [PS4Recomp `libSceRtc`](https://github.com/wie-project/PS4Recomp/tree/main/pkg/runtime/modules/libSceRtc) and [shadPS4 `rtc.cpp`](https://github.com/shadps4-emu/shadPS4/blob/main/src/core/libraries/rtc/rtc.cpp) (facts only: the year-1 tick epoch, the SDK-dependent `sceRtcSetTime_t`, the two-digit day, the network tick answered from the clock)
 - [FreeBSD `getpagesize(3)`](https://man.freebsd.org/cgi/man.cgi?query=getpagesize&sektion=3&manpath=FreeBSD+13.3-RELEASE)
 - [ELF ABI, program headers and `p_align`](https://refspecs.linuxfoundation.org/elf/gabi4%2B/ch5.pheader.html) (loadable segments must be congruent modulo the page size; `p_align` is the alignment the loader honors)
 - [FreeBSD AMD64 `param.h`](https://github.com/freebsd/freebsd/blob/releng/9.1/sys/amd64/include/param.h) (stock `PAGE_SIZE` 4096) and [Sony's open-source page for the PS4](https://www.playstation.com/en-us/oss/ps4/)
@@ -1708,6 +2050,7 @@ metadata.
 - [FreeBSD `usleep(3)`](https://man.freebsd.org/cgi/man.cgi?query=usleep&sektion=3) and [SUSv2 `usleep`](https://pubs.opengroup.org/onlinepubs/7908799/xsh/usleep.html)
 - [POSIX `sleep`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/sleep.html), [FreeBSD `sleep(3)`](https://man.freebsd.org/cgi/man.cgi?query=sleep&sektion=3) and FreeBSD libc [`sleep.c`](https://cgit.freebsd.org/src/tree/lib/libc/gen/sleep.c) (the `INT_MAX` split and the rounded-up remainder)
 - [POSIX `nanosleep`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/nanosleep.html), [FreeBSD `nanosleep(2)`](https://man.freebsd.org/cgi/man.cgi?query=nanosleep&sektion=2) and FreeBSD [`kern_time.c`](https://cgit.freebsd.org/src/tree/sys/kern/kern_time.c) (`kern_nanosleep` in stable/9, `kern_clock_nanosleep` in main: the `EINVAL` check, the zero or negative time, when `rmtp` is written)
+- [FreeBSD 9.0 `write(2)`](https://man.freebsd.org/cgi/man.cgi?query=write&sektion=2&manpath=FreeBSD+9.0-RELEASE) and [current `write(2)`](https://man.freebsd.org/cgi/man.cgi?query=write&sektion=2) (`write` and `pwrite`: `EBADF`, `EINVAL` for the size and a negative offset, the `O_APPEND` note in BUGS), and FreeBSD stable/9 [`sys_generic.c`](https://cgit.freebsd.org/src/tree/sys/kern/sys_generic.c?h=stable/9) (`sys_write`, `sys_pwrite`, `kern_pwritev`: the order of the checks)
 - [POSIX `pthread_rwlock_rdlock`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_rwlock_rdlock.html), [`pthread_rwlock_wrlock`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_rwlock_trywrlock.html), [`pthread_rwlock_unlock`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_rwlock_unlock.html), [`pthread_rwlock_destroy`/`init`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_rwlock_destroy.html); FreeBSD libthr [`thr_rwlock.c`](https://github.com/freebsd/freebsd-src/blob/main/lib/libthr/thread/thr_rwlock.c) and [`thr_private.h`](https://github.com/freebsd/freebsd-src/blob/main/lib/libthr/thread/thr_private.h) (`THR_RWLOCK_DESTROYED`); FreeBSD kernel [`kern_umtx.c`](https://github.com/freebsd/freebsd-src/blob/main/sys/kern/kern_umtx.c) (`do_rw_rdlock`, `do_rw_wrlock`, `do_rw_unlock`)
 - [LSB Core `__stack_chk_fail`](https://refspecs.linuxfoundation.org/LSB_5.0.0/LSB-Core-generic/LSB-Core-generic/libc---stack-chk-fail-1.html) and [FreeBSD libc `libc_stack_protector.c`](https://github.com/freebsd/freebsd-src/blob/main/lib/libc/secure/libc_stack_protector.c) (`__stack_chk_fail`, `__fail`)
 - [POSIX `pthread_cond_wait`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_cond_wait.html), [`pthread_cond_signal`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_cond_signal.html), [`pthread_cond_destroy`/`pthread_cond_init`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_cond_destroy.html); FreeBSD libthr [`thr_cond.c`](https://github.com/freebsd/freebsd-src/blob/main/lib/libthr/thread/thr_cond.c), [`thr_mutex.c`](https://github.com/freebsd/freebsd-src/blob/main/lib/libthr/thread/thr_mutex.c) (`_mutex_owned`, `_mutex_cv_unlock`, `mutex_unlock_common`, `mutex_self_lock`, `mutex_self_trylock`) and [`thr_private.h`](https://github.com/freebsd/freebsd-src/blob/main/lib/libthr/thread/thr_private.h) (`THR_COND_DESTROYED`); for `pthread_cond_timedwait`, [POSIX `pthread_cond_timedwait`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_cond_timedwait.html) (the `CLOCK_REALTIME` default, `ETIMEDOUT`, `EINVAL`), [`pthread_condattr_getclock`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_condattr_getclock.html), libthr `thr_cond.c` (`_pthread_cond_timedwait` in stable/9 and main, `cond_init`) and [`thr_init.c`](https://github.com/freebsd/freebsd-src/blob/main/lib/libthr/thread/thr_init.c) (`_pthread_condattr_default`)

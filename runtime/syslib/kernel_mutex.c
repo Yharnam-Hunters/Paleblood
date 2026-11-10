@@ -16,6 +16,7 @@
    Condition variables (SCE names only) live here too, because a wait releases and retakes the
    host mutex. A cond variable holds a pointer to an object the library allocates, or the static
    initializer (NULL), set up on first use; a destroyed cond holds 1 (libthr). */
+#define _GNU_SOURCE /* pthread_mutex_clocklock, pthread_rwlock_clock*lock: the monotonic clock */
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
@@ -330,6 +331,28 @@ static struct timespec deadline_after(uint32_t microseconds)
     return t;
 }
 
+/* scePthreadMutexTimedlock(mutex, uint32_t microseconds): a lock that gives up after the given
+   time, relative to now (OpenOrbis' libkernel.h declares an OrbisKernelUseconds; shadPS4 binds the
+   name to libthr's relative-time lock, facts only). The executable's lock wrapper (0x02484119)
+   takes it for any timeout but -1 (which uses scePthreadMutexLock) and tells EDEADLK, EINVAL,
+   EAGAIN and ETIMEDOUT apart. As libthr's mutex_self_lock (thr_mutex.c) does with a timeout, an
+   owner locking its error-checking, adaptive or normal mutex again sleeps the whole time and
+   answers ETIMEDOUT; a recursive mutex takes one more level. Otherwise the wait ends with the lock
+   or ETIMEDOUT. */
+static int mutex_timedlock(guest_mutex **mutex, uint32_t microseconds)
+{
+    guest_mutex *m;
+    const int r = mutex_get(mutex, &m);
+    if (r) return r;
+    const struct timespec deadline = deadline_after(microseconds);
+    const int host = pthread_mutex_clocklock(&m->host, CLOCK_MONOTONIC, &deadline);
+    if (host == EDEADLK) {
+        while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &deadline, NULL) == EINTR) {}
+        return BSD_ETIMEDOUT;
+    }
+    return note_locked(m, host);
+}
+
 /* FreeBSD amd64 struct timespec: two 64-bit fields, seconds and nanoseconds. */
 typedef struct {
     int64_t seconds;
@@ -370,6 +393,7 @@ static int sce_mutex_destroy(guest_mutex **m) { return sce(mutex_destroy(m)); }
 static int sce_mutex_lock(guest_mutex **m) { return sce(mutex_lock("scePthreadMutexLock", m)); }
 static int sce_mutex_trylock(guest_mutex **m) { return sce(mutex_trylock(m)); }
 static int sce_mutex_unlock(guest_mutex **m) { return sce(mutex_unlock(m)); }
+static int sce_mutex_timedlock(guest_mutex **m, uint32_t microseconds) { return sce(mutex_timedlock(m, microseconds)); }
 static int sce_attr_init(guest_mutexattr **a) { return sce(attr_init(a)); }
 static int sce_attr_destroy(guest_mutexattr **a) { return sce(attr_destroy(a)); }
 static int sce_attr_settype(guest_mutexattr **a, int t) { return sce(attr_settype(a, t)); }
@@ -379,6 +403,7 @@ RT_SYSLIB("libkernel", scePthreadMutexDestroy, sce_mutex_destroy);
 RT_SYSLIB("libkernel", scePthreadMutexLock, sce_mutex_lock);
 RT_SYSLIB("libkernel", scePthreadMutexTrylock, sce_mutex_trylock);
 RT_SYSLIB("libkernel", scePthreadMutexUnlock, sce_mutex_unlock);
+RT_SYSLIB("libkernel", scePthreadMutexTimedlock, sce_mutex_timedlock);
 RT_SYSLIB("libkernel", scePthreadMutexattrInit, sce_attr_init);
 RT_SYSLIB("libkernel", scePthreadMutexattrDestroy, sce_attr_destroy);
 RT_SYSLIB("libkernel", scePthreadMutexattrSettype, sce_attr_settype);
