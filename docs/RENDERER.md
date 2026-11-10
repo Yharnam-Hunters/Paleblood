@@ -153,7 +153,9 @@ Instead:
        goes back to the load or before it, nothing at all writes the pointer pair (without one, code
        after the load may reuse the pointer's SGPRs, as the character creation preview's pixel
        shaders do once their samples are done). Writes before the load do not matter (the game's guarded samples keep a
-       compare's mask there, then branch over the load and the use together). Any other write (a scalar
+       compare's mask there, then branch over the load and the use together). The user data's descriptor holds at a use no write comes before, whatever
+       forward branches run (the game's shaders reuse a sampler's SGPRs after their last sample).
+       Any other write (a scalar
        move, a compare's result, a written pointer) stops by name.
      - **Tiled layouts** (`runtime/tiling.h`): where each texel of an image lies in guest memory, for
        reading images the CPU or a shader's buffer stores wrote. AMD's address library (addrlib, in

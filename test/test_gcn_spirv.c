@@ -167,8 +167,8 @@ static void image_programs(void)
 
     /* Where each MIMG's descriptor comes from. A whole s_load_dwordx8 from a user-data pointer: from
        memory, at the load's offset. Two uses of s[4:11], before and after such a load over it: two
-       images, the user data's and the loaded one. A scalar move into it, a compare's 64-bit result,
-       or a branch before a use of the user data's: refused by name. */
+       images, the user data's and the loaded one. A scalar move into it or a compare's 64-bit
+       result: refused by name. */
     static const uint32_t loaded[] = {0xc0c00904, 0xf0000f00, 0x00000401, 0xbf810000};   /* s_load_dwordx8 s[0:7], s[8:9], 4 */
     static const uint32_t moved[] = {0xbe8c0380, 0xf0000f00, 0x00020401, 0xbf810000};    /* s_mov_b32 s12, 0 */
     static const uint32_t compared[] = {0xd184000e, 0x00020300, 0xf0000f00, 0x00020401, 0xbf810000}; /* v_cmp_eq_u32_e64 s[14:15] */
@@ -188,8 +188,9 @@ static void image_programs(void)
           strstr(error, "v_cmp_eq_u32"));
     CHECK(gcn_image_resources(PROGRAM(pointer_written), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
           strstr(error, "loaded through s[8:9], which the program writes"));
-    CHECK(gcn_image_resources(branch_first, 1 + sizeof pixel_two_images / 4, found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
-          strstr(error, "s_cbranch_scc0"));
+    /* a forward branch before both: the same two images (the load over s[4:11] comes after the first use) */
+    CHECK(gcn_image_resources(branch_first, 1 + sizeof pixel_two_images / 4, found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0 &&
+          count == 2 && !found[0].origin.from_memory && found[0].origin.sgpr == 4 && found[1].origin.from_memory);
     /* With branches: a load followed when every path to the use passes it. An s_cbranch_execz over
        both the load and the use (the game's guarded samples): from memory; with a compare's mask
        in those SGPRs before the load, or an earlier load into them, the load before the use still
@@ -202,6 +203,10 @@ static void image_programs(void)
     static const uint32_t loaded_twice[] = {0xbf880004, 0xc0c00904, 0xc0c00908, 0xf0000f00, 0x00000401, 0xbf810000}; /* offsets 16, 32 */
     static const uint32_t masked_first[] = {0xd0020000, 0x00020100, 0xbf880003, 0xc0c00904, 0xf0000f00, 0x00000401, 0xbf810000}; /* v_cmp_lt_f32 s[0:1] */
     static const uint32_t looped[] = {0xc0c00904, 0xf0000f00, 0x00000401, 0xbe800380, 0xbf84fffc, 0xbf810000}; /* s_mov_b32 s0, 0; back to the use */
+    /* the user data's descriptor at a use behind a forward branch, its SGPRs written only after the use:
+       still the user data's; with a branch back to the use after that write, refused */
+    static const uint32_t user_data_later[] = {0xbf880003, 0xf0000f00, 0x00000401, 0xbe800380, 0xbf810000}; /* s_mov_b32 s0, 0 after */
+    static const uint32_t user_data_looped[] = {0xf0000f00, 0x00000401, 0xbe800380, 0xbf84fffc, 0xbf810000};  /* then back to the use */
     static const uint32_t pointer_later[] = {0xbf880004, 0xc0c00904, 0xf0000f00, 0x00000401, 0xbe880380, 0xbf810000}; /* s_mov_b32 s8, 0 after */
     static const uint32_t pointer_looped[] = {0xc0c00904, 0xf0000f00, 0x00000401, 0xbe880380, 0xbf84fffb, 0xbf810000}; /* then back to the load */
     CHECK(gcn_image_resources(PROGRAM(guarded), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
@@ -213,6 +218,10 @@ static void image_programs(void)
     CHECK(gcn_image_resources(PROGRAM(masked_first), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0 &&
           count == 1 && found[0].origin.from_memory && found[0].origin.offset == 16);
     CHECK(gcn_image_resources(PROGRAM(looped), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
+          strstr(error, "s_cbranch_scc0"));
+    CHECK(gcn_image_resources(PROGRAM(user_data_later), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0 && count == 1 &&
+          !found[0].origin.from_memory && found[0].origin.sgpr == 0);
+    CHECK(gcn_image_resources(PROGRAM(user_data_looped), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
           strstr(error, "s_cbranch_scc0"));
     CHECK(gcn_image_resources(PROGRAM(pointer_later), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0 && count == 1 &&
           found[0].origin.from_memory && found[0].origin.pointer_sgpr == 8 && found[0].origin.offset == 16);
