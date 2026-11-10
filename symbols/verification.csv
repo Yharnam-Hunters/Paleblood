@@ -179,6 +179,13 @@ kernel_semaphore_destroy,edge,,22,22,0,0,2c49f7b010f80cfb,2026-11-03
 kernel_semaphore_signal,edge,,22,22,0,0,9cc58f3ea5f03052,2026-11-03
 kernel_semaphore_wait,edge,,22,22,0,0,ce742838186d2510,2026-11-03
 kernel_thread_self,edge,,7,7,0,0,75626151a8bb5eab,2026-10-31
+loading_fios_directory_delete,edge,,11,11,0,0,7ab84c80827c7021,2026-11-10
+loading_fios_open_file,edge,,15,15,0,0,7ab84c80827c7021,2026-11-10
+loading_fios_open_file_read,edge,,14,14,0,0,7ab84c80827c7021,2026-11-10
+loading_kernel_file_open,edge,,72,72,0,0,366f5fb3b55177d3,2026-11-10
+loading_kernel_file_read,edge,,19,19,0,0,366f5fb3b55177d3,2026-11-10
+loading_stdio_close_files,edge,,9,9,0,0,66b528bb054522f0,2026-11-10
+loading_stdio_stream_open,edge,,30,30,0,0,66b528bb054522f0,2026-11-10
 physics_instance_construct_01c0c2b0,recorded,,119,119,0,0,ca3412adb293c909,2026-10-07
 physics_instance_construct_01c0c2b0,recorded,30,119,119,0,0,ca3412adb293c909,2026-10-07
 physics_instance_construct_01c0c2b0,recorded,60,119,119,0,0,ca3412adb293c909,2026-10-07
