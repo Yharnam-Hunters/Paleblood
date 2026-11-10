@@ -297,6 +297,25 @@ int main(void)
             CHECK(run(&g, store_format_loaded, sizeof store_format_loaded / sizeof store_format_loaded[0], format_user) == 0);
             CHECK(out_words[0] == 0xc1007bffu && out_words[1] == 0x3c003c00u && *stop == 0); /* z, y | x, w */
         }
+        /* 10_11_11 float (DATA_FORMAT 6): x and y unsigned 11-bit floats in bits 0-10 and 11-21, z a 10-bit
+           one in 22-31, rounded to nearest even; negative numbers are 0, large ones infinity, NaN quiet;
+           the fourth component is dropped */
+        {
+            static const uint32_t in_bits[3][4] = {
+                {0x3f800000u, 0x3f000000u, 0x40000000u, 0x40e00000u}, /* 1.0, 0.5, 2.0, 7.0 */
+                {0xbf800000u, 0x49742400u, 0x7fc00000u, 0u},          /* -1.0, 1e6, NaN */
+                {0x3f810000u, 0x3f830000u, 0u, 0u},                   /* 1 + 2^-7 (down to even), 1 + 3 x 2^-7 (up to even), 0 */
+            };
+            static const uint32_t packed[3] = {0x801c03c0u, 0xfc3e0000u, 0x001e13c0u};
+            for (int i = 0; i < LANES; i++) memcpy(in_words + 4 * i, in_bits[i % 3], sizeof in_bits[0]);
+            memset(out.mapped, 0, BUFFER_BYTES);
+            format_user[7] = DST_SEL_XYZW | 7u << 12 | 6u << 15;
+            CHECK(run(&g, store_format_loaded, sizeof store_format_loaded / sizeof store_format_loaded[0], format_user) == 0);
+            int stored_small = *stop == 0;
+            for (int i = 0; i < LANES; i++) stored_small &= out_words[i * 4] == packed[i % 3] && out_words[i * 4 + 1] == 0;
+            if (!stored_small) fprintf(stderr, "10_11_11: %08x %08x %08x\n", out_words[0], out_words[4], out_words[8]);
+            CHECK(stored_small);
+        }
         /* 16_16 unorm (DATA_FORMAT 5) is not done yet: nothing stored, the stop word holds it */
         memset(out.mapped, 0, BUFFER_BYTES);
         format_user[7] = DST_SEL_XYZW | 0u << 12 | 5u << 15;
