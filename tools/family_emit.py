@@ -40,6 +40,147 @@ extern "C" uint64_t {symbol}(void)
 }}
 ''',
     },
+    'reads_qword_field': {
+        'header': '''\
+// 64-bit field getters: every member of the reads_qword_field family (symbols/families.csv) is
+// `mov rax, [rdi+K]; ret`, a getter that returns the 64-bit field (often a pointer) K bytes into
+// its object. One replacement per offset K.
+''',
+        'shared': '#include "object_field.h"\n',
+        'per_value': '''\
+constexpr std::size_t offset_{name} = {value};
+static_assert(field_is_at_offset<offset_{name}, uint64_t>);
+extern "C" uint64_t {symbol}(const ObjectWithFieldAt<offset_{name}, uint64_t> *object)
+{{
+    return object->field;
+}}
+''',
+    },
+    'reads_dword_field': {
+        'header': '''\
+// 32-bit field getters: every member of the reads_dword_field family (symbols/families.csv) is
+// `mov eax, [rdi+K]; ret`. The 32-bit load clears the upper half of rax, so each replacement
+// returns the field zero-extended to 64 bits; the family's cases compare all of rax.
+''',
+        'shared': '#include "object_field.h"\n',
+        'per_value': '''\
+constexpr std::size_t offset_{name} = {value};
+static_assert(field_is_at_offset<offset_{name}, uint32_t>);
+extern "C" uint64_t {symbol}(const ObjectWithFieldAt<offset_{name}, uint32_t> *object)
+{{
+    return object->field;
+}}
+''',
+    },
+    'reads_word_field': {
+        'header': '''\
+// 16-bit field getters: every member of the reads_word_field family (symbols/families.csv) is
+// `movzx eax, word [rdi+K]; ret`: the field zero-extended to all of rax.
+''',
+        'shared': '#include "object_field.h"\n',
+        'per_value': '''\
+constexpr std::size_t offset_{name} = {value};
+static_assert(field_is_at_offset<offset_{name}, uint16_t>);
+extern "C" uint64_t {symbol}(const ObjectWithFieldAt<offset_{name}, uint16_t> *object)
+{{
+    return object->field;
+}}
+''',
+    },
+    'reads_byte_field': {
+        'header': '''\
+// 8-bit field getters: every member of the reads_byte_field family (symbols/families.csv) is
+// `movzx eax, byte [rdi+K]; ret`: the field zero-extended to all of rax. (`mov al, [rdi+K]`
+// keeps the caller's upper bytes of rax, so it is not part of this family.)
+''',
+        'shared': '#include "object_field.h"\n',
+        'per_value': '''\
+constexpr std::size_t offset_{name} = {value};
+static_assert(field_is_at_offset<offset_{name}, uint8_t>);
+extern "C" uint64_t {symbol}(const ObjectWithFieldAt<offset_{name}, uint8_t> *object)
+{{
+    return object->field;
+}}
+''',
+    },
+    'field_address': {
+        'header': '''\
+// Member and base addresses: every member of the field_address family (symbols/families.csv) is
+// `lea rax, [rdi+K]; ret`, which returns the address K bytes into its object (a member, or a
+// base-class part of a derived object) without reading memory.
+''',
+        'shared': '#include "object_field.h"\n',
+        'per_value': '''\
+constexpr std::size_t offset_{name} = {value};
+static_assert(field_is_at_offset<offset_{name}, uint8_t>);
+extern "C" uint8_t *{symbol}(ObjectWithFieldAt<offset_{name}, uint8_t> *object)
+{{
+    return &object->field;
+}}
+''',
+    },
+    'writes_qword_field': {
+        'header': '''\
+// 64-bit field setters: every member of the writes_qword_field family (symbols/families.csv) is
+// `mov [rdi+K], rsi; ret`, a setter that stores its second argument in the 64-bit field K bytes
+// into its object and returns nothing (rax is left as it was; the family's cases compare it).
+''',
+        'shared': '#include "object_field.h"\n',
+        'per_value': '''\
+constexpr std::size_t offset_{name} = {value};
+static_assert(field_is_at_offset<offset_{name}, uint64_t>);
+extern "C" void {symbol}(ObjectWithFieldAt<offset_{name}, uint64_t> *object, uint64_t value)
+{{
+    object->field = value;
+}}
+''',
+    },
+    'writes_dword_field': {
+        'header': '''\
+// 32-bit field setters: every member of the writes_dword_field family (symbols/families.csv) is
+// `mov [rdi+K], esi; ret`: the low 32 bits of the second argument go into the field.
+''',
+        'shared': '#include "object_field.h"\n',
+        'per_value': '''\
+constexpr std::size_t offset_{name} = {value};
+static_assert(field_is_at_offset<offset_{name}, uint32_t>);
+extern "C" void {symbol}(ObjectWithFieldAt<offset_{name}, uint32_t> *object, uint32_t value)
+{{
+    object->field = value;
+}}
+''',
+    },
+    'writes_word_field': {
+        'header': '''\
+// 16-bit field setters: every member of the writes_word_field family (symbols/families.csv) is
+// `mov [rdi+K], si; ret`: the low 16 bits of the second argument go into the field.
+''',
+        'shared': '#include "object_field.h"\n',
+        'per_value': '''\
+constexpr std::size_t offset_{name} = {value};
+static_assert(field_is_at_offset<offset_{name}, uint16_t>);
+extern "C" void {symbol}(ObjectWithFieldAt<offset_{name}, uint16_t> *object, uint16_t value)
+{{
+    object->field = value;
+}}
+''',
+    },
+    'writes_byte_field': {
+        'header': '''\
+// 8-bit field setters: every member of the writes_byte_field family (symbols/families.csv) is
+// `mov [rdi+K], sil; ret`: the low byte of the second argument goes into the field (a bool or a
+// small enum).
+''',
+        'shared': '#include "object_field.h"\n',
+        'per_value': '''\
+constexpr std::size_t offset_{name} = {value};
+static_assert(field_is_at_offset<offset_{name}, uint8_t>);
+extern "C" void {symbol}(ObjectWithFieldAt<offset_{name}, uint8_t> *object, uint8_t value)
+{{
+    object->field = value;
+}}
+''',
+    },
 }
 
 

@@ -95,6 +95,20 @@ int rt_equeue_add(rt_equeue *q, int16_t filter, uint64_t ident, void *udata)
     return r;
 }
 
+int rt_equeue_remove(rt_equeue *q, int16_t filter, uint64_t ident)
+{
+    pthread_mutex_lock(&q->lock);
+    int r = -1;
+    for (int i = 0; i < q->count; i++)
+        if (q->regs[i].filter == filter && q->regs[i].ident == ident) {
+            q->regs[i] = q->regs[--q->count];
+            r = 0;
+            break;
+        }
+    pthread_mutex_unlock(&q->lock);
+    return r;
+}
+
 int rt_equeue_trigger(rt_equeue *q, int16_t filter, uint64_t ident, int64_t data)
 {
     pthread_mutex_lock(&q->lock);

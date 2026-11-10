@@ -2,12 +2,12 @@
 
 # Input
 
-The input system handles the controller pads. This page covers the once-a-frame step of FD4PadManager, the manager that keeps a map of pad entries.
+The input system handles the controller pads. This page covers the once-a-frame step of FD4PadManager, the manager that keeps a map of pad entries, and the pad vibration and mouse setup functions.
 
 **At a glance**
 
-- **Scope:** `input_pad_step_01972900`, the per-frame step of the `FD4PadManager` pad map.
-- **Verified:** The step marks two pad entries and, when its owner is ready, advances the owner by a frame-time step.
+- **Scope:** Pad polling, mapping, dead zones, vibration, mouse and input buffering. Mapped so far: the per-frame step of the `FD4PadManager` pad map, pad vibration and the mouse device's setup.
+- **Verified:** The pad step is verified; the vibration setter, the mouse device constructor and its two opens are edge-verified.
 - **Open:** What the two entries and the owner are; where the pad is polled; mapping, dead zones and input buffering.
 
 ## Summary
@@ -31,7 +31,7 @@ The executable's imports show which input libraries it uses, and which calls fro
 | Library | Calls the game imports | What that tells us |
 |---|---|---|
 | `libScePad` | `scePadInit`, `scePadOpen`, `scePadClose`, `scePadReadState`, `scePadGetControllerInformation`, `scePadSetVibration`, `scePadResetOrientation`, `scePadSetAngularVelocityDeadbandState`, `scePadSetTiltCorrectionState` | The game reads the pad's latest state once per poll (`scePadReadState`), not the buffered history (`scePadRead` is not imported). It drives vibration and sets up the motion sensor. |
-| `libSceMouse` | `sceMouseInit`, `sceMouseOpen`, `sceMouseClose`, `sceMouseRead` | A mouse path exists, set up by three small functions around `0x02a8c000`. |
+| `libSceMouse` | `sceMouseInit`, `sceMouseOpen`, `sceMouseClose`, `sceMouseRead` | A mouse path exists, set up by the mouse device functions around `0x02a8c000` (below). |
 | `libSceUserService` | `sceUserServiceInitialize`, `sceUserServiceGetInitialUser`, `sceUserServiceGetLoginUserIdList`, `sceUserServiceGetUserName`, `sceUserServiceGetEvent`, `sceUserServiceTerminate` | Pads and the mouse are opened for a user, starting with the user who launched the game. |
 | `libSceImeDialog` | `sceImeDialogInit`, `sceImeDialogGetStatus`, `sceImeDialogGetResult`, `sceImeDialogAbort`, `sceImeDialogTerm` | Typed text (the character name, for example) goes through the system keyboard dialog; there is no keyboard library. |
 
@@ -49,21 +49,45 @@ executable's own calls fix their shapes:
 With `--input host` the runtime feeds a real gamepad and the keyboard into these calls. That is the
 runtime's side; the game code that reads the state is not decompiled yet.
 
-Functions already found, still unnamed (open to claim):
+### Vibration and the mouse
 
-| Address | Size | Library calls | Likely role |
-|---|---|---|---|
-| `0x02a9c790` | 84 | `scePadSetVibration` | sets a pad's vibration |
-| `0x02a8bf30` | 108 | `sceMouseOpen`, `sceMouseClose`, `sceUserServiceGetInitialUser` | mouse open or reopen |
-| `0x02a8c210` | 164 | `sceMouseInit`, `sceSysmoduleLoadModule`; calls `0x02a8c420`, `0x02a8d2b0` | mouse setup: loads the module, initialises, opens |
-| `0x02a8c420` | 108 | `sceMouseOpen`, `sceMouseClose`, `sceUserServiceGetInitialUser` | mouse open or reopen (a twin of `0x02a8bf30`) |
+Four small device functions are replaced and edge-verified (Paleblood
+[#520](https://github.com/Yharnam-Hunters/Paleblood/pull/520)):
+
+- **Vibration.** `input_pad_set_vibration` (`0x02a9c790`) sets both motors of an open pad with
+  `scePadSetVibration`, and answers false when the pad is not open or the call fails. Its second
+  argument drives the small motor and its third the large one (the order of
+  `ScePadVibrationParam` is large, then small). Its one caller is `0x01395ca5`.
+- **The mouse device.** `input_mouse_construct` (`0x02a8c210`) builds a mouse device on top of the
+  input devices' shared base constructor (`0x02a8d2b0`): it loads the mouse system module (id
+  `0xa9`), initialises the mouse library and opens the mouse through the device's own virtual
+  open. If any step fails, the device keeps handle 0.
+- **Opening for the initial user.** That open, `input_initialize_mouse_for_initial_user`
+  (`0x02a8c420`, named by [@gabee12](https://github.com/gabee12) in
+  [#270](https://github.com/Yharnam-Hunters/Paleblood/pull/270)), asks the user service for the
+  user who started the game, closes the previous connection when its handle is positive, and
+  opens the mouse for that user (type 0, index 0). It is true when the new handle is positive.
+  A second mouse device class has an identical open, `input_mouse_b_open_for_initial_user`
+  (`0x02a8bf30`), with its handle at `+0x128` instead of `+0x168`.
+
+<details>
+<summary>How these were verified</summary>
+
+Each function's edge cases pass against the original (9, 10, 11 and 11 cases), deliberately
+wrong versions fail, and an independent review approved all four. No community patch edits
+them. They are edge-verified: none has been recorded in a game run.
+
+</details>
 
 ## Key functions
 
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
 | `0x01972900` | 426 | `input_pad_step_01972900` | verified | FD4PadManager map: marks two entries, advances an owner by the frame-time step (patched to 1/15 or 1/240 s; the advance branch is idle in the clinic) |
-| `0x02a8c420` | 108 | `input_initialize_mouse_for_initial_user` | original | Initializes or reinitializes mouse input for the initial user, closing a previous connection if necessary. |
+| `0x02a8bf30` | 108 | `input_mouse_b_open_for_initial_user` | edge-verified | Second mouse device class's open: initial user, close a positive handle at +0x128, sceMouseOpen(user, 0, 0, null); true when the new handle is positive |
+| `0x02a8c210` | 164 | `input_mouse_construct` | edge-verified | Mouse device constructor: base ctor with the third argument, vtable 0x056b7d00, clear 0x140..0x177, load sysmodule 0xa9, sceMouseInit, open via slot 32; handle 0 on any failure |
+| `0x02a8c420` | 108 | `input_initialize_mouse_for_initial_user` | edge-verified | Initializes or reinitializes mouse input for the initial user, closing a previous connection if necessary. |
+| `0x02a9c790` | 84 | `input_pad_set_vibration` | edge-verified | scePadSetVibration on the pad's handle (+0x8) if open (+0xc): large motor from the third argument, small from the second; true on success |
 
 ## Structs and globals
 
@@ -100,4 +124,5 @@ change it:
 - Pad mapping and input buffering have not been studied yet. The sticks' dead zones are applied by
   the game's own code, from the deadzone the controller information reports (only the motion
   sensor's deadband is set through the library).
-- Whether the mouse path is used by anything in the shipped game.
+- Whether the mouse path is used by anything in the shipped game: the mouse device's constructor has two callers (`0x02558eb3`, `0x02558fb6`), not yet mapped, and nothing calls either open directly (only their vtable slots point at them).
+- What the shared input device base constructor (`0x02a8d2b0`, six callers) sets up, and which other device classes use it.
