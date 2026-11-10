@@ -22,6 +22,18 @@ static const uint32_t scale_add[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* out[i] = v_rcp_iflag_f32(in[i]), out[64 + i] = v_rcp_f32(in[i]). */
+static const uint32_t reciprocals[] = {
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0xe0301000, 0x80000201, /* buffer_load_dword v2, v1, s[0:3], 0 offen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x7e065702, /* v_rcp_iflag_f32_e32 v3, v2 */
+    0x7e085502, /* v_rcp_f32_e32 v4, v2 */
+    0xe0701000, 0x80010301, /* buffer_store_dword v3, v1, s[4:7], 0 offen */
+    0xe0701100, 0x80010401, /* buffer_store_dword v4, v1, s[4:7], 0 offen offset:256 */
+    0xbf810000, /* s_endpgm */
+};
+
 /* Per lane i, eight dwords at i * 32 bytes: (8 > i ? float(i) : 2.0), 105 + i, the carry out of
    0xffffffff + i, the legacy product 0 * infinity (0; the zero is read from in[64], so no
    compiler can fold the product away), float -4 to signed (-4) and to unsigned (0: saturated). */

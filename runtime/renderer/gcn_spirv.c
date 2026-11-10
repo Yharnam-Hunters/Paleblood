@@ -718,7 +718,10 @@ static void vector_instruction(translator *t, const uint32_t *w, const gcn_instr
         const uint32_t high = half_toward_zero(t, as_bits(t, float_source(t, &o, 1, ins)));
         write_vgpr(t, o.dst, value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, low,
                                    value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, high, konst(t, 16))));
-    } else if (!strcmp(name, "v_rcp_f32")) {
+    } else if (!strcmp(name, "v_rcp_f32") || !strcmp(name, "v_rcp_iflag_f32")) {
+        /* v_rcp_iflag_f32 is the same reciprocal; only the exception flags it raises differ (integer
+           divide by zero rather than the float ones: the Sea Islands manual's opcode list; shadPS4
+           translates it as the reciprocal), and shaders read no flags. */
         write_float(t, &o, value(t, SPV_OP_F_DIV, t_float(t), 2, konst_float(t, 1.0f), float_source(t, &o, 0, ins)), ins);
     } else if (!strcmp(name, "v_sqrt_f32") || !strcmp(name, "v_rsq_f32") || !strcmp(name, "v_floor_f32") ||
                !strcmp(name, "v_fract_f32")) {
