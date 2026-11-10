@@ -1,0 +1,42 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Deliberately wrong replacements for the function families (game/leaf/family_cases.py): every
+   family's cases must fail on these, which shows the cases can tell a wrong body from a right
+   one. Built as libbbfamily_mutants.so for tools/verify.py family; never part of the game
+   library. */
+#include <stdint.h>
+
+/* The harness runs a replacement library's bbgame_init first; these need no setup. */
+int bbgame_init(const void *host)
+{
+    (void)host;
+    return 0;
+}
+
+/* Does nothing: wrong for every family that returns a value (rax keeps its entry value). */
+void bb_mutant_does_nothing(void)
+{
+}
+
+/* Writes through its first argument: wrong for a body that must not touch memory. */
+void bb_mutant_writes_first_argument(uint8_t *first)
+{
+    *first = 0;
+}
+
+/* Returns zero: wrong where rax must keep its entry value or hold another value. */
+uint64_t bb_mutant_returns_zero(void)
+{
+    return 0;
+}
+
+/* Returns one. */
+uint64_t bb_mutant_returns_one(void)
+{
+    return 1;
+}
+
+/* Returns its first argument. */
+uint64_t bb_mutant_returns_first_argument(uint64_t first)
+{
+    return first;
+}
