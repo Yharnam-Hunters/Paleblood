@@ -589,7 +589,6 @@ RT_SYSLIB("libSceGnmDriver", sceGnmDingDong, ding_dong);
    with its steps, each at its packet's offset: it runs the drawing calls recorded before a step,
    then the step, then the calls after it, so a wait holds before the draws after it read memory. A constant command buffer
    that holds anything, and any other packet, stops by name. */
-#define MAX_SUBMITTED_BUFFERS 64
 
 /* A flip after a submission's last buffer: video out shows the buffer once the work is done. */
 typedef struct {
@@ -616,8 +615,9 @@ static void collect_flip(const char *fn, step_list *steps, const flip_request *f
 static int32_t submit(const char *fn, uint32_t count, void **draw_buffers, const uint32_t *draw_bytes, void **constant_buffers,
                       const uint32_t *constant_bytes, const flip_request *flip)
 {
-    if (!count || count > MAX_SUBMITTED_BUFFERS || !draw_buffers || !draw_bytes)
-        rt_fatal(fn, "no command buffers, or more than the stand-in takes: the answer is not established");
+    /* any number of buffers: shadPS4 checks no count, and the character creation screen submits 70
+       in one call; none, or no arrays, has no established answer */
+    if (!count || !draw_buffers || !draw_bytes) rt_fatal(fn, "no command buffers: the answer is not established");
     if (!constant_buffers != !constant_bytes) rt_fatal(fn, "constant command buffers without their sizes, or sizes without buffers");
     for (uint32_t k = 0; k < count; k++) {
         if (constant_buffers && (constant_buffers[k] || constant_bytes[k]))
