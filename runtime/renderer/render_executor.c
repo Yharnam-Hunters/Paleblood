@@ -107,8 +107,6 @@ typedef struct {
     VkImage image;
     VkDeviceMemory memory;
     VkImageView view;
-    VkRenderPass pass;
-    VkFramebuffer framebuffer;
     uint64_t loaded_epoch;           /* the memory epoch the image was last loaded at */
     int drawn;                       /* drawn into since it was last written back */
     staging_buffer staging;          /* host-visible: the image's texels, for showing it */
@@ -139,9 +137,10 @@ typedef struct {
     VkImageView view;
 } depth_entry;
 
-/* A render pass and framebuffer for a colour target, a depth target or both (an index, or -1). */
+/* A render pass and framebuffer for the colour targets in slots 0-7 and a depth target (indices, or -1
+   for none). */
 typedef struct {
-    int color, depth;
+    int color[RT_COLOR_TARGETS], depth;
     VkRenderPass pass;
     VkFramebuffer framebuffer;
 } pass_entry;
@@ -150,7 +149,9 @@ typedef struct {
     VkShaderModule vertex, geometry, pixel; /* geometry: the rect-list stage, or none */
     VkRenderPass pass;
     VkPipelineLayout layout;
-    uint32_t blend_control;          /* CB_BLEND0_CONTROL */
+    uint32_t colours;                /* the slots the draw writes, a bit each */
+    uint32_t blend_control[RT_COLOR_TARGETS]; /* CB_BLENDn_CONTROL of each slot written (0 for the others) */
+    uint32_t write_masks;            /* CB_TARGET_MASK, the slots not written cleared */
     int strip;                       /* triangle strips, not lists */
     depth_plan depth;
     VkPipeline pipeline;
@@ -206,9 +207,8 @@ enum { Z_INFO, STENCIL_INFO, Z_READ_BASE, STENCIL_READ_BASE, Z_WRITE_BASE, STENC
 
 /* The state a command buffer builds up, call by call. */
 typedef struct {
-    rt_color_target color;
-    int color_enabled;
-    uint32_t other_targets;          /* the slots other than 0 enabled, a bit each */
+    rt_color_target colors[RT_COLOR_TARGETS];
+    uint32_t color_enabled;          /* the slots with a target set (not switched off), a bit each */
     float viewport_scale[3], viewport_translate[3];
     int viewport_set;
     rt_vertex_shader vertex;
@@ -221,8 +221,9 @@ typedef struct {
     uint32_t user_set[STAGES], compute_user_set; /* the user-data slots the calls have set, a bit each */
     /* Registers the library set (AMD's layout, gfx_7_2_sh_mask.h), with whether each was set; an
        unset one is the state the drawing below assumes. */
-    uint32_t blend0_control, depth_control, color_control, target_mask, primitive_type, instances;
-    int blend0_set, depth_set, color_control_set, target_mask_set, primitive_set, instances_set;
+    uint32_t blend_control[RT_COLOR_TARGETS], blend_set; /* CB_BLENDn_CONTROL, and which were set, a bit each */
+    uint32_t depth_control, color_control, target_mask, primitive_type, instances;
+    int depth_set, color_control_set, target_mask_set, primitive_set, instances_set;
     float blend_constants[4];        /* CB_BLEND_RED, GREEN, BLUE, ALPHA */
     /* the index buffer: INDEX_BASE, INDEX_BUFFER_SIZE (indices), INDEX_TYPE */
     uint64_t index_base;
@@ -325,14 +326,13 @@ enum { DB_RENDER_CONTROL = 0xa000, DB_DEPTH_VIEW = 0xa002, DB_HTILE_DATA_BASE = 
        CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242 };
 enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 0x1, Z_ENABLE = 0x2, Z_WRITE_ENABLE = 0x4,
        COLOR_MODE_MASK = 0x70, COLOR_MODE_SHIFT = 4, CB_NORMAL = 1, ROP3_MASK = 0xff0000, ROP3_SHIFT = 16, ROP3_COPY = 0xcc,
-       TARGET0_MASK = 0xf, DI_PT_TRILIST = 4, DI_PT_TRISTRIP = 6, DI_PT_RECTLIST = 17, CB_DISABLE = 0, DEPTH_BOUNDS_ENABLE = 0x8,
+       CHANNELS_MASK = 0xf, DI_PT_TRILIST = 4, DI_PT_TRISTRIP = 6, DI_PT_RECTLIST = 17, CB_DISABLE = 0, DEPTH_BOUNDS_ENABLE = 0x8,
        Z_FORMAT_MASK = 0x3, STENCIL_FORMAT_MASK = 0x1 };
 
 /* Keeps a register the library set; 0, or -1 for one the executor does not understand yet. */
 static int set_register(draw_state *s, uint32_t address, uint32_t value)
 {
     switch (address) {
-    case CB_BLEND0_CONTROL: s->blend0_control = value, s->blend0_set = 1; return 0;
     case DB_DEPTH_CONTROL: s->depth_control = value, s->depth_set = 1; return 0;
     case CB_COLOR_CONTROL: s->color_control = value, s->color_control_set = 1; return 0;
     case CB_TARGET_MASK: s->target_mask = value, s->target_mask_set = 1; return 0;
@@ -353,8 +353,10 @@ static int set_register(draw_state *s, uint32_t address, uint32_t value)
             if (address == DB_STENCIL_INFO) s->stencil_info_set = 1;
             return 0;
         }
-        /* targets 1-7 blend only into their own slots, which stop the draw when they are enabled */
-        if (address > CB_BLEND0_CONTROL && address <= CB_BLEND7_CONTROL) return 0;
+        if (address >= CB_BLEND0_CONTROL && address <= CB_BLEND7_CONTROL) {
+            s->blend_control[address - CB_BLEND0_CONTROL] = value, s->blend_set |= 1u << (address - CB_BLEND0_CONTROL);
+            return 0;
+        }
         if (address >= CB_BLEND_RED && address <= CB_BLEND_ALPHA) {
             memcpy(&s->blend_constants[address - CB_BLEND_RED], &value, sizeof value);
             return 0;
@@ -363,7 +365,7 @@ static int set_register(draw_state *s, uint32_t address, uint32_t value)
     }
 }
 
-/* Target 0's blending, from CB_BLEND0_CONTROL (AMD's gfx_7_2_sh_mask.h): COLOR_SRCBLEND bits 0-4,
+/* A target's blending, from its CB_BLENDn_CONTROL (AMD's gfx_7_2_sh_mask.h): COLOR_SRCBLEND bits 0-4,
    COLOR_COMB_FCN 5-7, COLOR_DESTBLEND 8-12, ALPHA_SRCBLEND 16-20, ALPHA_COMB_FCN 21-23,
    ALPHA_DESTBLEND 24-28, SEPARATE_ALPHA_BLEND 29, ENABLE 30. The factors and functions are AMD's
    BlendOp and CombFunc numbers (Mesa's sid.h V_028780_BLEND_* and COMB_*; shadPS4's regs_color.h
@@ -392,10 +394,10 @@ static int blend_state(uint32_t control, VkPipelineColorBlendAttachmentState *ou
     const uint32_t function[2] = {control >> 5 & 7, alpha >> 5 & 7};
     for (unsigned i = 0; i < 4; i++)
         if (numbers[i] >= FACTORS || factors[numbers[i]] < 0)
-            return failed(error, error_size, "blend factor %u (CB_BLEND0_CONTROL %#x): not drawn yet", numbers[i], control);
+            return failed(error, error_size, "blend factor %u (CB_BLENDn_CONTROL %#x): not drawn yet", numbers[i], control);
     for (unsigned i = 0; i < 2; i++)
         if (function[i] >= FUNCTIONS)
-            return failed(error, error_size, "blend function %u (CB_BLEND0_CONTROL %#x): not drawn yet", function[i], control);
+            return failed(error, error_size, "blend function %u (CB_BLENDn_CONTROL %#x): not drawn yet", function[i], control);
     out->blendEnable = VK_TRUE;
     out->srcColorBlendFactor = (VkBlendFactor)factors[numbers[0]], out->dstColorBlendFactor = (VkBlendFactor)factors[numbers[1]];
     out->srcAlphaBlendFactor = (VkBlendFactor)factors[numbers[2]], out->dstAlphaBlendFactor = (VkBlendFactor)factors[numbers[3]];
@@ -500,29 +502,41 @@ static int plan_writes(const depth_plan *plan)
     return 0;
 }
 
-/* Whether the registers describe what the draw below does: opaque or blended triangles into target 0,
-   depth and stencil as plan_depth allows, one instance. Its plan in *plan, and in *colour whether it
-   writes target 0 (not masked off, colour writes on: CB_COLOR_CONTROL's mode not CB_DISABLE). 1 when
-   nothing at all would be written, 0 to draw, -1 with the reason otherwise. */
-static int check_state(const draw_state *s, depth_plan *plan, int *colour, char *error, size_t error_size)
+/* CB_TARGET_MASK: four bits per slot (slot n in bits 4n to 4n+3), the export's x, y, z, w (red,
+   green, blue, alpha), as shadPS4 hands it to Vulkan's colour write mask. Unset: every channel. */
+static uint32_t slot_mask(const draw_state *s, unsigned slot)
+{
+    return s->target_mask_set ? s->target_mask >> (4 * slot) & CHANNELS_MASK : CHANNELS_MASK;
+}
+
+/* Whether the registers describe what the draw below does: opaque or blended triangles into the colour
+   targets of slots 0-7, depth and stencil as plan_depth allows, one instance. Its plan in *plan, and in
+   *colours the slots it writes, a bit each: a target set, not masked off entirely, colour writes on
+   (CB_COLOR_CONTROL's mode not CB_DISABLE). 1 when nothing at all would be written, 0 to draw, -1 with
+   the reason otherwise. */
+static int check_state(const draw_state *s, depth_plan *plan, uint32_t *colours, char *error, size_t error_size)
 {
     if (s->primitive_set && s->primitive_type != DI_PT_TRILIST && s->primitive_type != DI_PT_TRISTRIP && s->primitive_type != DI_PT_RECTLIST)
         return failed(error, error_size, "primitive type %u: only triangle lists and strips and rect lists are drawn yet", s->primitive_type);
-    VkPipelineColorBlendAttachmentState blend;
-    if (s->blend0_set && blend_state(s->blend0_control, &blend, error, error_size)) return -1;
     if (plan_depth(s, plan, error, error_size)) return -1;
     if (s->instances_set && s->instances != 1) return failed(error, error_size, "%u instances: only one is drawn yet", s->instances);
-    *colour = s->color_enabled;
+    *colours = s->color_enabled;
     if (s->color_control_set) {
         const uint32_t mode = (s->color_control & COLOR_MODE_MASK) >> COLOR_MODE_SHIFT, rop = (s->color_control & ROP3_MASK) >> ROP3_SHIFT;
-        if (mode == CB_DISABLE) *colour = 0;
+        if (mode == CB_DISABLE) *colours = 0;
         else if (mode != CB_NORMAL || rop != ROP3_COPY)
             return failed(error, error_size, "colour mode %u, raster operation %#x: only normal copies are drawn yet", mode, rop);
     }
-    if (s->target_mask_set && !(s->target_mask & TARGET0_MASK)) *colour = 0;
-    if (*colour && s->target_mask_set && (s->target_mask & TARGET0_MASK) != TARGET0_MASK)
-        return failed(error, error_size, "colour write mask %#x: only all four channels are drawn yet", s->target_mask & TARGET0_MASK);
-    if (!*colour && !plan_writes(plan)) return 1;
+    for (unsigned slot = 0; slot < RT_COLOR_TARGETS; slot++) {
+        if (!(*colours >> slot & 1)) continue;
+        if (!slot_mask(s, slot)) {
+            *colours &= ~(1u << slot);
+            continue;
+        }
+        VkPipelineColorBlendAttachmentState blend;
+        if ((s->blend_set >> slot & 1) && blend_state(s->blend_control[slot], &blend, error, error_size)) return -1;
+    }
+    if (!*colours && !plan_writes(plan)) return 1;
     return 0;
 }
 
@@ -1121,23 +1135,6 @@ static target_entry *target_for(rt_executor *x, const rt_color_target *color, ch
                                         .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = format,
                                         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
     if (vkCreateImageView(x->device, &view, NULL, &t->view) != VK_SUCCESS) goto fail;
-    /* draws add to what is there, so the pass loads the image and keeps it ready for the next draw */
-    const VkAttachmentDescription attachment = {.format = format, .samples = VK_SAMPLE_COUNT_1_BIT,
-                                                .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-                                                .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-                                                .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-                                                .initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                                .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-    const VkAttachmentReference reference = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-    const VkSubpassDescription subpass = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1,
-                                          .pColorAttachments = &reference};
-    const VkRenderPassCreateInfo pass = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 1,
-                                         .pAttachments = &attachment, .subpassCount = 1, .pSubpasses = &subpass};
-    if (vkCreateRenderPass(x->device, &pass, NULL, &t->pass) != VK_SUCCESS) goto fail;
-    const VkFramebufferCreateInfo framebuffer = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = t->pass,
-                                                 .attachmentCount = 1, .pAttachments = &t->view, .width = t->width,
-                                                 .height = t->height, .layers = 1};
-    if (vkCreateFramebuffer(x->device, &framebuffer, NULL, &t->framebuffer) != VK_SUCCESS) goto fail;
     VkCommandBuffer commands = begin_commands(x);
     if (!commands) goto fail;
     image_barrier(commands, t->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -1153,8 +1150,6 @@ static target_entry *target_for(rt_executor *x, const rt_color_target *color, ch
     return t;
 fail:
     failed(error, error_size, "the device cannot make a %ux%u render target", t->width, t->height);
-    if (t->framebuffer) vkDestroyFramebuffer(x->device, t->framebuffer, NULL);
-    if (t->pass) vkDestroyRenderPass(x->device, t->pass, NULL);
     if (t->view) vkDestroyImageView(x->device, t->view, NULL);
     if (t->image) vkDestroyImage(x->device, t->image, NULL);
     if (t->memory) vkFreeMemory(x->device, t->memory, NULL);
@@ -1355,36 +1350,56 @@ fail:
     return NULL;
 }
 
-/* The render pass and framebuffer for a colour target, a depth target or both (NULL for none): both
-   load what is there and keep it, as draws add to it. Both address pixels from the same corner, so a
-   depth target larger than the colour target (padded, as the game's 2048x1152 one under 1920x1088)
-   is drawn with the colour target's size; a smaller one stops by name. NULL after failing. */
-static pass_entry *pass_for(rt_executor *x, const target_entry *color, const depth_entry *depth, char *error, size_t error_size)
+/* The render pass and framebuffer for the colour targets of slots 0-7 (NULL for a slot not drawn) and a
+   depth target (or NULL): all load what is there and keep it, as draws add to it. Slot n is colour
+   attachment n, which the pixel shader's mrt n export writes; a slot between two drawn ones is an unused
+   attachment. The colour targets must have one size. They and the depth target address pixels from the
+   same corner, so a depth target larger than them (padded, as the game's 2048x1152 one under 1920x1088)
+   is drawn with their size; a smaller one stops by name. NULL after failing. */
+static pass_entry *pass_for(rt_executor *x, target_entry *const colors[RT_COLOR_TARGETS], const depth_entry *depth, char *error,
+                            size_t error_size)
 {
-    const int c = color ? (int)(color - x->targets) : -1, z = depth ? (int)(depth - x->depths) : -1;
+    int c[RT_COLOR_TARGETS];
+    const target_entry *first = NULL;
+    unsigned slots = 0; /* colour attachments: up to the last slot drawn */
+    for (unsigned i = 0; i < RT_COLOR_TARGETS; i++) {
+        c[i] = colors[i] ? (int)(colors[i] - x->targets) : -1;
+        if (!colors[i]) continue;
+        slots = i + 1;
+        if (!first) first = colors[i];
+        else if (colors[i]->width != first->width || colors[i]->height != first->height) {
+            failed(error, error_size, "colour targets of different sizes (%ux%u and %ux%u) in one draw: not drawn yet", first->width, first->height,
+                   colors[i]->width, colors[i]->height);
+            return NULL;
+        }
+    }
+    const int z = depth ? (int)(depth - x->depths) : -1;
     for (size_t i = 0; i < x->pass_count; i++)
-        if (x->passes[i].color == c && x->passes[i].depth == z) return &x->passes[i];
+        if (!memcmp(x->passes[i].color, c, sizeof c) && x->passes[i].depth == z) return &x->passes[i];
     if (x->pass_count == MAX_PASSES) {
         failed(error, error_size, "more render passes than the executor keeps");
         return NULL;
     }
-    if (color && depth && (color->width > depth->width || color->height > depth->height)) {
-        failed(error, error_size, "a %ux%u colour target with a smaller %ux%u depth target: not drawn yet", color->width, color->height, depth->width,
+    if (first && depth && (first->width > depth->width || first->height > depth->height)) {
+        failed(error, error_size, "a %ux%u colour target with a smaller %ux%u depth target: not drawn yet", first->width, first->height, depth->width,
                depth->height);
         return NULL;
     }
-    VkAttachmentDescription attachments[2];
-    VkImageView views[2];
+    VkAttachmentDescription attachments[RT_COLOR_TARGETS + 1];
+    VkImageView views[RT_COLOR_TARGETS + 1];
+    VkAttachmentReference color_references[RT_COLOR_TARGETS];
     unsigned count = 0;
-    const VkAttachmentReference color_reference = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     VkAttachmentReference depth_reference = {0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
-    if (color) {
-        attachments[count] = (VkAttachmentDescription){.format = color->format, .samples = VK_SAMPLE_COUNT_1_BIT, .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+    for (unsigned i = 0; i < slots; i++) {
+        color_references[i] = (VkAttachmentReference){VK_ATTACHMENT_UNUSED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        if (!colors[i]) continue;
+        color_references[i].attachment = count;
+        attachments[count] = (VkAttachmentDescription){.format = colors[i]->format, .samples = VK_SAMPLE_COUNT_1_BIT, .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
                                                        .storeOp = VK_ATTACHMENT_STORE_OP_STORE, .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
                                                        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
                                                        .initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                                        .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-        views[count++] = color->view;
+        views[count++] = colors[i]->view;
     }
     if (depth) {
         depth_reference.attachment = count;
@@ -1395,14 +1410,15 @@ static pass_entry *pass_for(rt_executor *x, const target_entry *color, const dep
                                                        .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
         views[count++] = depth->view;
     }
-    const VkSubpassDescription subpass = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = color ? 1u : 0u,
-                                          .pColorAttachments = color ? &color_reference : NULL,
+    const VkSubpassDescription subpass = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = slots,
+                                          .pColorAttachments = slots ? color_references : NULL,
                                           .pDepthStencilAttachment = depth ? &depth_reference : NULL};
     pass_entry *p = &x->passes[x->pass_count];
-    *p = (pass_entry){.color = c, .depth = z};
+    *p = (pass_entry){.depth = z};
+    memcpy(p->color, c, sizeof c);
     const VkRenderPassCreateInfo pass = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = count, .pAttachments = attachments,
                                          .subpassCount = 1, .pSubpasses = &subpass};
-    const uint32_t width = color ? color->width : depth->width, height = color ? color->height : depth->height;
+    const uint32_t width = first ? first->width : depth->width, height = first ? first->height : depth->height;
     if (vkCreateRenderPass(x->device, &pass, NULL, &p->pass) != VK_SUCCESS) {
         failed(error, error_size, "the device refused a render pass");
         return NULL;
@@ -1489,13 +1505,14 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
 }
 
 static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderModule geometry, VkShaderModule pixel, VkRenderPass pass,
-                               VkPipelineLayout layout, uint32_t blend_control, int strip, const depth_plan *depth, int colour,
-                               int has_depth, char *error, size_t error_size)
+                               VkPipelineLayout layout, uint32_t colours, const uint32_t blend_control[RT_COLOR_TARGETS], uint32_t write_masks,
+                               int strip, const depth_plan *depth, int has_depth, char *error, size_t error_size)
 {
     for (size_t i = 0; i < x->pipeline_count; i++) {
         const pipeline_entry *p = &x->pipelines[i];
         if (p->vertex == vertex && p->geometry == geometry && p->pixel == pixel && p->pass == pass && p->layout == layout &&
-            p->blend_control == blend_control && p->strip == strip && !memcmp(&p->depth, depth, sizeof *depth))
+            p->colours == colours && !memcmp(p->blend_control, blend_control, sizeof p->blend_control) && p->write_masks == write_masks &&
+            p->strip == strip && !memcmp(&p->depth, depth, sizeof *depth))
             return p->pipeline;
     }
     if (x->pipeline_count == MAX_PIPELINES) {
@@ -1525,8 +1542,17 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
                                                            .lineWidth = 1.0f};
     const VkPipelineMultisampleStateCreateInfo samples = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
                                                           .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
-    VkPipelineColorBlendAttachmentState write;
-    if (blend_state(blend_control, &write, error, error_size)) return VK_NULL_HANDLE;
+    /* one blend attachment per colour attachment, up to the last slot drawn; a slot between drawn ones
+       is an unused attachment and writes nothing */
+    VkPipelineColorBlendAttachmentState writes[RT_COLOR_TARGETS];
+    unsigned slots = 0;
+    for (unsigned i = 0; i < RT_COLOR_TARGETS; i++) {
+        writes[i] = (VkPipelineColorBlendAttachmentState){0};
+        if (!(colours >> i & 1)) continue;
+        if (blend_state(blend_control[i], &writes[i], error, error_size)) return VK_NULL_HANDLE;
+        writes[i].colorWriteMask = write_masks >> (4 * i) & CHANNELS_MASK; /* x, y, z, w: Vulkan's R, G, B, A bits */
+        slots = i + 1;
+    }
     /* stencil reference and masks are dynamic: the draw sets them from DB_STENCILREFMASK */
     VkStencilOpState faces[2];
     for (unsigned f = 0; f < 2; f++)
@@ -1537,7 +1563,7 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
         .depthWriteEnable = depth->depth_write != 0, .depthCompareOp = (VkCompareOp)depth->depth_compare,
         .stencilTestEnable = depth->stencil_test != 0, .front = faces[0], .back = faces[1]};
     const VkPipelineColorBlendStateCreateInfo blend = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-                                                       .attachmentCount = colour ? 1u : 0u, .pAttachments = &write};
+                                                       .attachmentCount = slots, .pAttachments = writes};
     const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
                                              VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK,
                                              VK_DYNAMIC_STATE_STENCIL_REFERENCE};
@@ -1554,8 +1580,9 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
         return VK_NULL_HANDLE;
     }
     x->pipelines[x->pipeline_count++] =
-        (pipeline_entry){.vertex = vertex, .geometry = geometry, .pixel = pixel, .pass = pass, .layout = layout, .blend_control = blend_control,
-                         .strip = strip, .depth = *depth, .pipeline = pipeline};
+        (pipeline_entry){.vertex = vertex, .geometry = geometry, .pixel = pixel, .pass = pass, .layout = layout, .colours = colours,
+                         .write_masks = write_masks, .strip = strip, .depth = *depth, .pipeline = pipeline};
+    memcpy(x->pipelines[x->pipeline_count - 1].blend_control, blend_control, sizeof x->pipelines[0].blend_control);
     return pipeline;
 }
 
@@ -1680,8 +1707,8 @@ static int vertex_callee(rt_executor *x, const draw_state *s, uint64_t *callee, 
     return 0;
 }
 
-/* A draw as check_state planned it: into target 0 when colour says so, and the depth target when the plan
-   tests it. */
+/* A draw as check_state planned it: into the colour targets of the slots in colours, and the depth target
+   when the plan tests it. */
 /* An indexed draw's indices: where they start in the guest memory buffer, and their type. */
 typedef struct {
     VkDeviceSize offset;
@@ -1699,15 +1726,14 @@ static int check_user_data(const char *stage, uint64_t code, uint32_t read, uint
                   (unsigned long long)code, __builtin_ctz(read & ~set), set);
 }
 
-static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int colour, uint32_t index_count, const index_range *indices,
+static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uint32_t colours, uint32_t index_count, const index_range *indices,
                 char *error, size_t error_size)
 {
-    if (s->other_targets) return failed(error, error_size, "a draw with render targets beyond slot 0 is not drawn yet");
     if (!s->viewport_set) return failed(error, error_size, "a draw with no viewport");
     if (!s->vertex_set || !s->pixel_set) return failed(error, error_size, "a draw without a vertex and a pixel shader");
     /* no pixel shader: a depth-only pass, drawn with no pixel stage; it must write no colour target */
     const int depth_only = !s->pixel.code;
-    if (depth_only && colour) return failed(error, error_size, "a draw with no pixel shader that writes a colour target");
+    if (depth_only && colours) return failed(error, error_size, "a draw with no pixel shader that writes a colour target");
     const uint32_t drawn_inputs = PERSP_CENTER_ENA | POS_X_FLOAT_ENA | POS_Y_FLOAT_ENA;
     if (!depth_only && (s->pixel.input_enable != s->pixel.input_address || !(s->pixel.input_enable & PERSP_CENTER_ENA) ||
                         (s->pixel.input_enable & ~drawn_inputs)))
@@ -1734,11 +1760,18 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int
         if (!(properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT))
             return failed(error, error_size, "bilinear sampling of Vulkan format %d, which this device cannot filter", (int)view_formats[i]);
     }
-    target_entry *t = colour ? target_for(x, &s->color, error, error_size) : NULL;
-    if (colour && !t) return -1;
-    if (t && t->loaded_epoch != x->memory_epoch) { /* the memory may have changed since the image last held it */
-        if (load_target(x, t, error, error_size)) return -1;
-        t->loaded_epoch = x->memory_epoch;
+    target_entry *targets[RT_COLOR_TARGETS] = {0};
+    uint32_t blend_control[RT_COLOR_TARGETS] = {0}, write_masks = 0;
+    for (unsigned slot = 0; slot < RT_COLOR_TARGETS; slot++) {
+        if (!(colours >> slot & 1)) continue;
+        target_entry *t = targets[slot] = target_for(x, &s->colors[slot], error, error_size);
+        if (!t) return -1;
+        if (t->loaded_epoch != x->memory_epoch) { /* the memory may have changed since the image last held it */
+            if (load_target(x, t, error, error_size)) return -1;
+            t->loaded_epoch = x->memory_epoch;
+        }
+        if (s->blend_set >> slot & 1) blend_control[slot] = s->blend_control[slot];
+        write_masks |= slot_mask(s, slot) << (4 * slot);
     }
     const int uses_depth = plan->depth_test || plan->stencil_test;
     depth_entry *z = uses_depth ? depth_for(x, s, error, error_size) : NULL;
@@ -1746,15 +1779,13 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int
     if (z && plan->reads && !z->drawn)
         return failed(error, error_size, "a depth or stencil test reads depth target %#llx, which no draw has written yet: its contents in "
                       "memory are not loaded", (unsigned long long)z->z_address);
-    if (!t && !z) return 0; /* writes neither a colour nor a depth target: nothing to draw */
-    VkRenderPass render_pass = t ? t->pass : VK_NULL_HANDLE;
-    VkFramebuffer framebuffer = t ? t->framebuffer : VK_NULL_HANDLE;
-    if (z) {
-        const pass_entry *p = pass_for(x, t, z, error, error_size);
-        if (!p) return -1;
-        render_pass = p->pass, framebuffer = p->framebuffer;
-    }
-    const uint32_t width = t ? t->width : z->width, height = t ? t->height : z->height;
+    if (!colours && !z) return 0; /* writes neither a colour nor a depth target: nothing to draw */
+    const pass_entry *p = pass_for(x, targets, z, error, error_size);
+    if (!p) return -1;
+    const VkRenderPass render_pass = p->pass;
+    const VkFramebuffer framebuffer = p->framebuffer;
+    const target_entry *sized = colours ? targets[__builtin_ctz(colours)] : NULL;
+    const uint32_t width = sized ? sized->width : z->width, height = sized ? sized->height : z->height;
     uint64_t callee = 0;
     if (vertex_callee(x, s, &callee, error, error_size)) return -1;
     uint32_t vertex_read = 0, pixel_read = 0;
@@ -1776,8 +1807,8 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int
     if (has_set && pixel_layout_for(x, image_count, sampler_count, error, error_size)) return -1;
     const VkPipelineLayout layout = has_set ? x->pixel_layouts[image_count][sampler_count] : x->layout;
     const int strip = s->primitive_set && s->primitive_type == DI_PT_TRISTRIP;
-    const VkPipeline pipeline = pipeline_for(x, vertex, geometry, pixel, render_pass, layout, s->blend0_set ? s->blend0_control : 0, strip,
-                                             plan, t != NULL, z != NULL, error, error_size);
+    const VkPipeline pipeline = pipeline_for(x, vertex, geometry, pixel, render_pass, layout, colours, blend_control, write_masks, strip,
+                                             plan, z != NULL, error, error_size);
     if (!pipeline) return -1;
     VkDescriptorSet set = VK_NULL_HANDLE;
     if (has_set && image_set(x, x->pixel_set_layouts[image_count][sampler_count], VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, views, image_count,
@@ -1822,7 +1853,8 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int
         vkCmdDraw(commands, index_count, 1, 0, 0);
     }
     vkCmdEndRenderPass(commands);
-    if (t) t->drawn = 1, t->staging_current = 0;
+    for (unsigned slot = 0; slot < RT_COLOR_TARGETS; slot++)
+        if (targets[slot]) targets[slot]->drawn = 1, targets[slot]->staging_current = 0;
     if (z && plan_writes(plan)) z->drawn = 1;
     return 0; /* the run-time stop words are checked once the batch has run */
 }
@@ -2479,13 +2511,12 @@ static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, 
         const rt_render_call *c = &calls[i];
         switch (c->kind) {
         case RT_CALL_COLOR_TARGET:
-            if (c->u.color_target.slot == 0) {
-                s->color = c->u.color_target.target;
-                s->color_enabled = c->u.color_target.enabled;
-            } else {
-                const uint32_t slot_bit = 1u << c->u.color_target.slot;
-                s->other_targets = c->u.color_target.enabled ? s->other_targets | slot_bit : s->other_targets & ~slot_bit;
-            }
+        {
+            const unsigned slot = c->u.color_target.slot;
+            if (slot >= RT_COLOR_TARGETS) return failed(error, error_size, "a colour target in slot %u", slot);
+            s->colors[slot] = c->u.color_target.target;
+            s->color_enabled = c->u.color_target.enabled ? s->color_enabled | 1u << slot : s->color_enabled & ~(1u << slot);
+        }
             break;
         case RT_CALL_VIEWPORT:
             if (c->u.viewport.index != 0) return failed(error, error_size, "viewport %u: only viewport 0 is drawn yet", c->u.viewport.index);
@@ -2528,10 +2559,10 @@ static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, 
             break;
         case RT_CALL_DRAW_AUTO: {
             depth_plan plan;
-            int colour = 0;
-            const int checked = check_state(s, &plan, &colour, error, error_size);
+            uint32_t colours = 0;
+            const int checked = check_state(s, &plan, &colours, error, error_size);
             if (checked < 0) return -1;
-            if (checked == 0 && draw(x, s, &plan, colour, c->u.draw_auto.index_count, NULL, error, error_size)) return -1;
+            if (checked == 0 && draw(x, s, &plan, colours, c->u.draw_auto.index_count, NULL, error, error_size)) return -1;
             break;
         }
         case RT_CALL_INDEX_BASE: s->index_base = c->u.index_base.address, s->index_base_set = 1; break;
@@ -2541,10 +2572,10 @@ static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, 
             index_range indices;
             if (index_range_for(x, s, c->u.draw_index.first, c->u.draw_index.count, &indices, error, error_size)) return -1;
             depth_plan plan;
-            int colour = 0;
-            const int checked = check_state(s, &plan, &colour, error, error_size);
+            uint32_t colours = 0;
+            const int checked = check_state(s, &plan, &colours, error, error_size);
             if (checked < 0) return -1;
-            if (checked == 0 && draw(x, s, &plan, colour, c->u.draw_index.count, &indices, error, error_size)) return -1;
+            if (checked == 0 && draw(x, s, &plan, colours, c->u.draw_index.count, &indices, error, error_size)) return -1;
             break;
         }
         }
@@ -2621,8 +2652,6 @@ void rt_executor_close(rt_executor *x)
         }
         for (size_t i = 0; i < x->target_count; i++) {
             const target_entry *t = &x->targets[i];
-            vkDestroyFramebuffer(x->device, t->framebuffer, NULL);
-            vkDestroyRenderPass(x->device, t->pass, NULL);
             vkDestroyImageView(x->device, t->view, NULL);
             vkDestroyImage(x->device, t->image, NULL);
             vkFreeMemory(x->device, t->memory, NULL);

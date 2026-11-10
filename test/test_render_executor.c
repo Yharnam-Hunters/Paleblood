@@ -477,6 +477,51 @@ static int nothing_drawn(rt_executor *x, uint64_t target)
     return 1;
 }
 
+/* Draws pixel_color_two_targets with colour targets in slots 0 and 2 (none in 1) and CB_TARGET_MASK mask;
+   the run's result. A slot-2 target of another size when odd_size. */
+static int draw_two_targets(rt_executor *x, uint64_t first, uint64_t third, uint32_t mask, int odd_size, char *error, size_t error_size)
+{
+    enum { TWO_BUFFER = 0xc0f80000, TWO_CODE = 0x2e00 };
+    memcpy((void *)(uintptr_t)at(TWO_CODE), pixel_color_two_targets, sizeof pixel_color_two_targets);
+    rt_render_forget(), rt_executor_reset(x);
+    uint32_t offset = record_setup(TWO_BUFFER, first, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const uint64_t code = at(TWO_CODE);
+    const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 0, 0, 0x404,
+                                                   PERSP_CENTER, PERSP_CENTER, 1, 0, 0, 0xf0f};
+    CHECK(rt_render_record_pixel_shader(TWO_BUFFER, offset, pixel, error, error_size) == 0);
+    uint32_t words[RT_COLOR_TARGET_WORDS];
+    color_target(words, third, COLOR_8_8_8_8, SWAP_STD);
+    if (odd_size) words[1] = 2 * SIZE / 8 - 1, words[2] = 4 * SIZE * SIZE / 64 - 1;
+    CHECK(rt_render_record_color_target(TWO_BUFFER, offset + 0x10, 2, words, error, error_size) == 0);
+    CHECK(rt_render_record_register(TWO_BUFFER, offset + 0x20, 0xa08e, mask, error, error_size) == 0);
+    return rt_executor_run(x, TWO_BUFFER, record_triangle_draw(TWO_BUFFER, offset + 0x30), error, error_size);
+}
+
+/* Several colour targets in one draw (MRT): the pixel shader's mrt0 and mrt2 exports land in the
+   targets of slots 0 and 2, with no target in slot 1 between them; CB_TARGET_MASK's nibble per slot
+   masks channels: 0x7 on slot 2 leaves its alpha as it was (0), and slot 0 masked off entirely draws
+   only slot 2. Colour targets of different sizes in one draw stop by name. */
+static void multiple_targets(rt_executor *x)
+{
+    enum { MRT_FIRST = 0x1900000, MRT_THIRD = 0x1940000, MASKED_FIRST = 0x1980000, MASKED_THIRD = 0x19c0000, ODD_THIRD = 0x1a00000 };
+    char error[200] = "";
+    int drawn = draw_two_targets(x, at(MRT_FIRST), at(MRT_THIRD), 0xf0f, 0, error, sizeof error);
+    if (drawn) fprintf(stderr, "two targets: %s\n", error);
+    CHECK(drawn == 0);
+    check_triangle(x, at(MRT_FIRST));
+    check_triangle(x, at(MRT_THIRD));
+    drawn = draw_two_targets(x, at(MASKED_FIRST), at(MASKED_THIRD), 0x700, 0, error, sizeof error);
+    if (drawn) fprintf(stderr, "masked targets: %s\n", error);
+    CHECK(drawn == 0);
+    uint32_t bgra[SIZE * SIZE];
+    CHECK(rt_executor_read_target(x, at(MASKED_FIRST), bgra, SIZE, SIZE, error, sizeof error) == -1 && strstr(error, "no draw"));
+    CHECK(rt_executor_read_target(x, at(MASKED_THIRD), bgra, SIZE, SIZE, error, sizeof error) == 0);
+    for (int i = 0; i < SIZE * SIZE; i++) bgra[i] |= 0xffu << 24; /* alpha was masked: 0, as the memory held */
+    check_triangle_pixels(bgra);
+    CHECK(rt_executor_read_target(x, at(MASKED_THIRD), bgra, SIZE, SIZE, error, sizeof error) == 0 && (bgra[0] >> 24) == 0);
+    CHECK(draw_two_targets(x, at(MRT_FIRST), at(ODD_THIRD), 0xf0f, 1, error, sizeof error) == -1 && strstr(error, "different sizes"));
+}
+
 /* Depth and stencil without a depth buffer, and triangle strips:
    - with the depth target switched off (DB_Z_INFO and DB_STENCIL_INFO 0, as the library's setter
      writes for no target), depth and stencil tests draw as if off; Z_WRITE_ENABLE alone writes nothing
@@ -1009,8 +1054,7 @@ int main(void)
     const uint32_t line_strips[][2] = {{0xc242, 5}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), line_strips, 1, 0, error, sizeof error) == -1 && strstr(error, "primitive type 5"));
     depth_and_strips(x);
-    const uint32_t partial[][2] = {{0xa08e, 0x7}};
-    CHECK(run_with_registers(x, FOURTH, at(TARGET), partial, 1, 0, error, sizeof error) == -1 && strstr(error, "write mask"));
+    multiple_targets(x);
     const uint32_t resolve[][2] = {{0xa202, 0x3u << 4 | 0xccu << 16}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), resolve, 1, 0, error, sizeof error) == -1 && strstr(error, "colour mode 3"));
     const uint32_t unknown[][2] = {{0xa1e8, 0}};
