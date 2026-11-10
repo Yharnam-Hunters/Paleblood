@@ -274,6 +274,16 @@ static const uint32_t store_format_xyzw[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* Per lane, in[4i .. 4i + 3] stored with buffer_store_format_xyzw at lane * 16 bytes (the descriptor's
+   format). */
+static const uint32_t store_format_loaded[] = {
+    0x34020084, /* v_lshlrev_b32_e32 v1, 4, v0 */
+    0xe0381000, 0x80000401, /* buffer_load_dwordx4 v[4:7], v1, s[0:3], 0 offen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xe01c1000, 0x80010401, /* buffer_store_format_xyzw v[4:7], v1, s[4:7], 0 offen */
+    0xbf810000, /* s_endpgm */
+};
+
 /* Per lane, a format store of (0, -1.0, 1.0, 2.0) at lane * 16 bytes (buffer_store_format_xyzw,
    the descriptor's format): as 8_8_8_8 unorm those clamp to 0, 0, 255, 255. */
 static const uint32_t store_format_packed[] = {
