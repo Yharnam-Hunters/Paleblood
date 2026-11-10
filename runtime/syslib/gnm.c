@@ -205,7 +205,15 @@ RT_SYSLIB("libSceGnmDriver", sceGnmIsUserPaEnabled, is_user_pa_enabled);
    to 0. The setup then reports success only when that id is not 0. The runtime does not run the
    GPU, so the ring is never read: it records each queue for the engine-level graphics layer and
    answers ids from 1. Mapping the same pipe and queue twice and a missing ring or read pointer
-   stop by name. */
+   stop by name.
+
+   sceGnmMapComputeQueueWithPriority(pipe, queue, ring, ring size, read pointer, priority): the
+   same, with a priority; the engine's wrapper (0x01489ac0) treats the answer as above. The runtime
+   runs no GPU queues, so the priority changes nothing (shadPS4's gnmdriver.cpp and the deadinside28
+   and droogie bbhost ports also ignore it, facts only). sceGnmUnmapComputeQueue(id): the engine's
+   teardown (0x0148c81c) passes a queue's id and ignores the answer; the runtime forgets the queue,
+   answers 0, and hands its id out again to a later map. An id that names no mapped queue stops by
+   name. */
 enum { MAX_COMPUTE_QUEUES = 64 };
 
 typedef struct {
@@ -225,17 +233,42 @@ static int32_t map_compute_queue(uint32_t pipe, uint32_t queue, void *ring, uint
     static const char fn[] = "sceGnmMapComputeQueue";
     if (!ring || !ring_dwords || !read_pointer) rt_fatal(fn, "no ring, size or read pointer: the error value is not established");
     pthread_mutex_lock(&queues_lock);
-    for (int i = 0; i < queue_count; i++)
-        if (queues[i].pipe == pipe && queues[i].queue == queue)
+    int slot = queue_count; /* the first unmapped slot, else a new one */
+    for (int i = queue_count - 1; i >= 0; i--) {
+        if (queues[i].ring && queues[i].pipe == pipe && queues[i].queue == queue)
             rt_fatal(fn, "a pipe and queue mapped twice: the answer is not established");
-    if (queue_count == MAX_COMPUTE_QUEUES) rt_fatal(fn, "more compute queues than the runtime records");
-    queues[queue_count] = (compute_queue){pipe, queue, ring, ring_dwords, read_pointer};
-    const int32_t id = ++queue_count; /* ids from 1: the engine treats 0 as failure */
+        if (!queues[i].ring) slot = i;
+    }
+    if (slot == MAX_COMPUTE_QUEUES) rt_fatal(fn, "more compute queues than the runtime records");
+    queues[slot] = (compute_queue){pipe, queue, ring, ring_dwords, read_pointer};
+    if (slot == queue_count) queue_count++;
     pthread_mutex_unlock(&queues_lock);
-    return id;
+    return slot + 1; /* ids from 1: the engine treats 0 as failure */
+}
+
+static int32_t map_compute_queue_with_priority(uint32_t pipe, uint32_t queue, void *ring, uint32_t ring_dwords,
+                                               volatile uint32_t *read_pointer, uint32_t priority)
+{
+    (void)priority;
+    return map_compute_queue(pipe, queue, ring, ring_dwords, read_pointer);
+}
+
+static uint32_t completed_offset[MAX_COMPUTE_QUEUES]; /* where each ring's unread work starts, in dwords */
+
+static int32_t unmap_compute_queue(uint32_t queue_id)
+{
+    pthread_mutex_lock(&queues_lock);
+    if (queue_id == 0 || queue_id > (uint32_t)queue_count || !queues[queue_id - 1].ring)
+        rt_fatal("sceGnmUnmapComputeQueue", "a queue id that names no mapped queue");
+    queues[queue_id - 1].ring = NULL; /* free: a later map takes the slot */
+    completed_offset[queue_id - 1] = 0;
+    pthread_mutex_unlock(&queues_lock);
+    return 0;
 }
 
 RT_SYSLIB("libSceGnmDriver", sceGnmMapComputeQueue, map_compute_queue);
+RT_SYSLIB("libSceGnmDriver", sceGnmMapComputeQueueWithPriority, map_compute_queue_with_priority);
+RT_SYSLIB("libSceGnmDriver", sceGnmUnmapComputeQueue, unmap_compute_queue);
 
 /* sceGnmDingDong(queue id, write offset in dwords): tells the GPU that the ring of a compute queue
    holds new work up to the write offset. OpenOrbis' GnmDriver.h only names it; the shape comes from
@@ -531,13 +564,12 @@ static void complete_packets(const char *fn, const uint32_t *packets, uint32_t d
     }
 }
 
-static uint32_t completed_offset[MAX_COMPUTE_QUEUES]; /* where each ring's unread work starts, in dwords */
-
 static void ding_dong(uint32_t queue_id, uint32_t write_offset)
 {
     static const char fn[] = "sceGnmDingDong";
     pthread_mutex_lock(&queues_lock);
-    if (queue_id == 0 || queue_id > (uint32_t)queue_count) rt_fatal(fn, "a queue id sceGnmMapComputeQueue did not answer");
+    if (queue_id == 0 || queue_id > (uint32_t)queue_count || !queues[queue_id - 1].ring)
+        rt_fatal(fn, "a queue id sceGnmMapComputeQueue did not answer");
     const compute_queue *queue = &queues[queue_id - 1];
     uint32_t *const done = &completed_offset[queue_id - 1];
     if (write_offset > queue->ring_dwords) rt_fatal(fn, "a write offset past the end of the ring");
@@ -589,7 +621,6 @@ RT_SYSLIB("libSceGnmDriver", sceGnmDingDong, ding_dong);
    with its steps, each at its packet's offset: it runs the drawing calls recorded before a step,
    then the step, then the calls after it, so a wait holds before the draws after it read memory. A constant command buffer
    that holds anything, and any other packet, stops by name. */
-#define MAX_SUBMITTED_BUFFERS 64
 
 /* A flip after a submission's last buffer: video out shows the buffer once the work is done. */
 typedef struct {
@@ -616,8 +647,9 @@ static void collect_flip(const char *fn, step_list *steps, const flip_request *f
 static int32_t submit(const char *fn, uint32_t count, void **draw_buffers, const uint32_t *draw_bytes, void **constant_buffers,
                       const uint32_t *constant_bytes, const flip_request *flip)
 {
-    if (!count || count > MAX_SUBMITTED_BUFFERS || !draw_buffers || !draw_bytes)
-        rt_fatal(fn, "no command buffers, or more than the stand-in takes: the answer is not established");
+    /* any number of buffers: shadPS4 checks no count, and the character creation screen submits 70
+       in one call; none, or no arrays, has no established answer */
+    if (!count || !draw_buffers || !draw_bytes) rt_fatal(fn, "no command buffers: the answer is not established");
     if (!constant_buffers != !constant_bytes) rt_fatal(fn, "constant command buffers without their sizes, or sizes without buffers");
     for (uint32_t k = 0; k < count; k++) {
         if (constant_buffers && (constant_buffers[k] || constant_bytes[k]))
@@ -671,3 +703,117 @@ static int32_t submit_done(void)
 
 RT_SYSLIB("libSceGnmDriver", sceGnmSubmitAndFlipCommandBuffers, submit_and_flip);
 RT_SYSLIB("libSceGnmDriver", sceGnmSubmitDone, submit_done);
+
+/* Queries and debug calls with no GPU work behind them.
+
+   sceGnmAreSubmitsAllowed(): whether command buffers may be submitted now. The engine's wrapper
+   (0x01489b60) reads it as "allowed when nonzero". The console refuses submissions only while the
+   system holds the GPU (shadPS4's gnmdriver.cpp answers "no submission lock held"; the droogie
+   bbhost port answers 1, facts only); the runtime never holds it, so the answer is 1.
+
+   sceGnmFlushGarlic(): makes the CPU's writes to GPU memory visible to the GPU. The engine calls it
+   before freeing GPU memory and after patching command buffers (0x0073e927, 0x0147861c and others).
+   The runtime's GPU reads the same memory as the CPU, so a memory fence is all it takes (shadPS4 and
+   bbhost do nothing).
+
+   sceGnmGetEqEventType(event): the type of a graphics event an event queue returned, which is the
+   event's data field (shadPS4's gnmdriver.cpp and the deadinside28 port agree, facts only; the
+   engine's wrapper 0x01489a60 keeps its low byte). The event is FreeBSD's struct kevent (OpenOrbis
+   _types/kernel.h): data is the 64-bit field at offset 16. No event stops by name.
+
+   sceGnmSetGsRingSizes(esgs, gsvs): the sizes of the geometry shader rings. shadPS4 (facts only)
+   accepts sizes from 4 MiB to 8 MiB in whole MiB and answers 0x08000000 otherwise; the runtime runs
+   no geometry shader stage, so it checks the same and answers 0.
+
+   The mip statistics report (sceGnmSetupMipStatsReport(buffer, size, intervals, reports, force),
+   sceGnmRequestMipStatsReportAndReset(), sceGnmDisableMipStatsReport()) is a profiling feature.
+   Following shadPS4: setup answers 0x80000001 for no buffer or one not 64-byte aligned (shadPS4
+   also refuses addresses past 40 bits, the console GPU's range; the runtime's memory is the host's,
+   so that part is left out), 0x80000002 for a size under 0x1040 or not 0x40 past a 2 KiB multiple, and otherwise zeroes
+   the buffer, writes 0x40 to its first word and answers 0; the other two answer 0.
+
+   The Razor GPU capture tools exist only on development kits. On a retail console (shadPS4's
+   answers, "not available in retail firmware"): sceRazorIsLoaded and sceGnmDriverCaptureInProgress
+   answer 0, sceGnmDriverTriggerCapture answers 0x80d15001 (Razor not loaded), and the four
+   sceRazorCapture calls answer 0x80d1500f (capture failed). */
+static int32_t are_submits_allowed(void)
+{
+    return 1;
+}
+
+static void flush_garlic(void)
+{
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+}
+
+enum { KEVENT_DATA_OFFSET = 16 };
+
+static int32_t get_eq_event_type(const uint8_t *event)
+{
+    if (!event) rt_fatal("sceGnmGetEqEventType", "no event: the answer is not established");
+    int64_t data;
+    memcpy(&data, event + KEVENT_DATA_OFFSET, sizeof data);
+    return (int32_t)data;
+}
+
+enum { GS_RING_MIN = 0x400000, GS_RING_MAX = 0x800000, GS_RING_ALIGNMENT = 0x100000 };
+#define GS_RING_SIZE_INVALID ((int32_t)0x08000000)
+
+static int gs_ring_size_ok(uint32_t size)
+{
+    return size >= GS_RING_MIN && size <= GS_RING_MAX && !(size & (GS_RING_ALIGNMENT - 1));
+}
+
+static int32_t set_gs_ring_sizes(uint32_t esgs, uint32_t gsvs)
+{
+    return gs_ring_size_ok(esgs) && gs_ring_size_ok(gsvs) ? 0 : GS_RING_SIZE_INVALID;
+}
+
+#define MIP_STATS_BAD_BUFFER ((int32_t)0x80000001u)
+#define MIP_STATS_BAD_SIZE ((int32_t)0x80000002u)
+enum { MIP_STATS_MIN_SIZE = 0x1040, MIP_STATS_SIZE_MASK = 0x7ff, MIP_STATS_SIZE_REMAINDER = 0x40, MIP_STATS_HEADER = 0x40 };
+#define MIP_STATS_ALIGNMENT_MASK 0x3fu /* 64-byte aligned */
+
+static int32_t setup_mip_stats_report(void *buffer, uint32_t size, uint8_t intervals, uint8_t reports, uint32_t force)
+{
+    (void)intervals, (void)reports, (void)force;
+    if (!buffer || ((uintptr_t)buffer & MIP_STATS_ALIGNMENT_MASK)) return MIP_STATS_BAD_BUFFER;
+    if (size < MIP_STATS_MIN_SIZE || (size & MIP_STATS_SIZE_MASK) != MIP_STATS_SIZE_REMAINDER) return MIP_STATS_BAD_SIZE;
+    memset(buffer, 0, size);
+    const uint32_t header = MIP_STATS_HEADER;
+    memcpy(buffer, &header, sizeof header);
+    return 0;
+}
+
+static int32_t answer_zero(void)
+{
+    return 0;
+}
+
+#define CAPTURE_RAZOR_NOT_LOADED ((int32_t)0x80d15001u)
+#define CAPTURE_FAILED_INTERNAL ((int32_t)0x80d1500fu)
+
+static int32_t trigger_capture(void)
+{
+    return CAPTURE_RAZOR_NOT_LOADED;
+}
+
+static int32_t razor_capture(void)
+{
+    return CAPTURE_FAILED_INTERNAL;
+}
+
+RT_SYSLIB("libSceGnmDriver", sceGnmAreSubmitsAllowed, are_submits_allowed);
+RT_SYSLIB("libSceGnmDriver", sceGnmFlushGarlic, flush_garlic);
+RT_SYSLIB("libSceGnmDriver", sceGnmGetEqEventType, get_eq_event_type);
+RT_SYSLIB("libSceGnmDriver", sceGnmSetGsRingSizes, set_gs_ring_sizes);
+RT_SYSLIB("libSceGnmDriver", sceGnmSetupMipStatsReport, setup_mip_stats_report);
+RT_SYSLIB("libSceGnmDriver", sceGnmRequestMipStatsReportAndReset, answer_zero);
+RT_SYSLIB("libSceGnmDriver", sceGnmDisableMipStatsReport, answer_zero);
+RT_SYSLIB("libSceGnmDriver", sceRazorIsLoaded, answer_zero);
+RT_SYSLIB("libSceGnmDriver", sceGnmDriverCaptureInProgress, answer_zero);
+RT_SYSLIB("libSceGnmDriver", sceGnmDriverTriggerCapture, trigger_capture);
+RT_SYSLIB("libSceGnmDriver", sceRazorCaptureImmediate, razor_capture);
+RT_SYSLIB("libSceGnmDriver", sceRazorCaptureSinceLastFlip, razor_capture);
+RT_SYSLIB("libSceGnmDriver", sceRazorCaptureCommandBuffersOnlyImmediate, razor_capture);
+RT_SYSLIB("libSceGnmDriver", sceRazorCaptureCommandBuffersOnlySinceLastFlip, razor_capture);
