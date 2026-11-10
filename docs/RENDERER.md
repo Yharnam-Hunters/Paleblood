@@ -100,6 +100,8 @@ Instead:
        undoes the descriptor's swizzle (shadPS4's rule: the inverse of a load's) and packs as GLSL's
        `packUnorm4x8` (the PS4's rounding of ties is not established). Anything else is a run-time stop. A four-component store to 16_16_16_16 float packs halves, and one to 10_11_11 float unsigned
        11-, 11- and 10-bit floats (x in the low bits), rounded to nearest even.
+     - **VOP3 output modifiers** on float results: OMOD multiplies by 2, 4 or 0.5, then the clamp
+       to [0, 1] applies.
      - **Format loads with a swizzle:** a load of whole 32-bit components reads the format's
        components (the ones it lacks read 0), then each result takes what its DST_SEL names: 0, 1
        (1.0 for float data) or a memory component, as shadPS4 reads them.
