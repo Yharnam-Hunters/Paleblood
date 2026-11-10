@@ -2218,11 +2218,6 @@ static int stage_images(rt_executor *x, uint64_t code, const uint32_t *user, uin
         if (d.base_level > d.last_level || d.last_level >= RT_TILING_MAX_LEVELS)
             return failed(error, error_size, "an image with mip levels %u to %u", d.base_level, d.last_level);
         if (d.last_level && !pixel) return failed(error, error_size, "a mip-mapped image in a compute shader: not done yet");
-        /* image_sample picks its level from the coordinates' derivatives; sampling level 0 is exact only
-           for one level */
-        if (d.last_level > d.base_level && (resources[i].access & GCN_IMAGE_SAMPLE))
-            return failed(error, error_size, "image_sample of a mip-mapped image (levels %u to %u): picking the level is not done yet",
-                          d.base_level, d.last_level);
         if (d.layers > 1 && (d.base_array > d.last_array || d.last_array >= d.layers))
             return failed(error, error_size, "a view of an image array from layer %u to %u of %u", d.base_array, d.last_array, d.layers);
         texel_format f;
@@ -2262,14 +2257,17 @@ static int stage_images(rt_executor *x, uint64_t code, const uint32_t *user, uin
    2-3 anisotropic.
 
    Made: wrap, mirror and clamp to the last texel (Vulkan's repeat, mirrored repeat and clamp to
-   edge), point or bilinear filtering with the minifying and magnifying filters equal (the translator
-   samples level 0; with one level and equal filters that is what the GPU picks too). The anisotropy
+   edge), point or bilinear minifying and magnifying filters (the translator samples at the level the
+   derivatives pick, so Vulkan chooses between them as GCN does), the mip filter (none, point,
+   linear), LOD_BIAS, MIN_LOD and MAX_LOD (shadPS4's resource.h scales them: 8 fraction bits, the bias
+   signed). The anisotropy
    fields (MAX_ANISO_RATIO, ANISO_THRESHOLD, ANISO_BIAS) shape only the anisotropic filters (XY filters
    2 and 3; Mesa's radeonsi switches XY_MAG_FILTER and XY_MIN_FILTER to them exactly when it asks for
    anisotropy), so with point or bilinear filters they change nothing and are accepted. Anything else
    in word 0 (depth compares, unnormalized coordinates, the truncation and degamma options, a filter
-   mode other than blending) stops by name. Words 1 and 3 and the LOD bias and mip and z filters
-   change nothing for a one-level image sampled at level 0. */
+   mode other than blending) stops by name, as do the secondary LOD bias and the LOD rounding options
+   in word 2. Z_FILTER (3D images, which are not done), word 1's PERF_MIP and PERF_Z (sampling
+   performance hints) and word 3 (the border colour, for the border modes that stop) are not used. */
 static VkSampler sampler_for(rt_executor *x, const uint32_t words[4], char *error, size_t error_size)
 {
     for (size_t i = 0; i < x->sampler_count; i++)
@@ -2292,20 +2290,34 @@ static VkSampler sampler_for(rt_executor *x, const uint32_t words[4], char *erro
         modes[axis] = clamp == WRAP ? VK_SAMPLER_ADDRESS_MODE_REPEAT : clamp == MIRROR ? VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT
                                                                      : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     }
-    const uint32_t magnify = words[2] >> 20 & 3, minify = words[2] >> 22 & 3;
-    if (magnify != minify || magnify > BILINEAR) {
-        failed(error, error_size, "a sampler with filters %u (magnifying) and %u (minifying): only equal point or bilinear filters are "
+    const uint32_t magnify = words[2] >> 20 & 3, minify = words[2] >> 22 & 3, mip = words[2] >> 26 & 3;
+    if (magnify > BILINEAR || minify > BILINEAR) {
+        failed(error, error_size, "a sampler with filters %u (magnifying) and %u (minifying): only point and bilinear filters are "
                "done yet", magnify, minify);
+        return VK_NULL_HANDLE;
+    }
+    enum { MIP_NONE = 0, MIP_POINT = 1, MIP_LINEAR = 2, LOD_BIAS_SECONDARY = 0x3fu << 14, MIP_POINT_PRECLAMP = 1u << 28,
+           DISABLE_LSB_CEIL = 1u << 29, LOD_UNITS = 256 };
+    if (mip > MIP_LINEAR || (words[2] & (LOD_BIAS_SECONDARY | MIP_POINT_PRECLAMP | DISABLE_LSB_CEIL))) {
+        failed(error, error_size, "a sampler with word 2 %#x (mip filter %u, the secondary LOD bias or the LOD rounding options): "
+               "not done yet", words[2], mip);
         return VK_NULL_HANDLE;
     }
     if (x->sampler_count == MAX_SAMPLERS) {
         failed(error, error_size, "more samplers than the executor keeps");
         return VK_NULL_HANDLE;
     }
-    const VkFilter filter = magnify == POINT ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
-    const VkSamplerCreateInfo info = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = filter, .minFilter = filter,
-                                      .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST, .addressModeU = modes[0], .addressModeV = modes[1],
-                                      .addressModeW = modes[2], .maxLod = 0.0f};
+    /* LOD_BIAS: signed, 8 fraction bits; MIN_LOD and MAX_LOD: unsigned, 8 fraction bits. No mip filter
+       samples the view's first level: a maximum LOD of 0.25 keeps it, and still lets the minifying
+       filter apply past magnification (Vulkan's suggestion for unmipmapped sampling) */
+    const int32_t bias_field = (int32_t)(words[2] & 0x3fff);
+    const float bias = (float)(bias_field >= 0x2000 ? bias_field - 0x4000 : bias_field) / LOD_UNITS;
+    const float min_lod = (float)(words[1] & 0xfff) / LOD_UNITS, max_lod = (float)(words[1] >> 12 & 0xfff) / LOD_UNITS;
+    const VkSamplerCreateInfo info = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = magnify == POINT ? VK_FILTER_NEAREST : VK_FILTER_LINEAR,
+                                      .minFilter = minify == POINT ? VK_FILTER_NEAREST : VK_FILTER_LINEAR,
+                                      .mipmapMode = mip == MIP_LINEAR ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST,
+                                      .addressModeU = modes[0], .addressModeV = modes[1], .addressModeW = modes[2], .mipLodBias = bias,
+                                      .minLod = mip == MIP_NONE ? 0.0f : min_lod, .maxLod = mip == MIP_NONE ? 0.25f : max_lod};
     VkSampler sampler = VK_NULL_HANDLE;
     if (vkCreateSampler(x->device, &info, NULL, &sampler) != VK_SUCCESS) {
         failed(error, error_size, "the device refused a sampler");
