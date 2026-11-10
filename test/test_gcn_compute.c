@@ -430,6 +430,25 @@ int main(void)
             memcpy(bytes, saved_bytes, sizeof saved_bytes);
             memcpy(format_user, user, sizeof format_user);
         }
+        /* DATA_FORMAT 0 (an invalid, null buffer's): a load reads 0 in every component, a store writes nothing */
+        {
+            memset(out.mapped, 0xaa, BUFFER_BYTES);
+            format_user[3] = (4 | 0 << 3 | 0 << 6 | 1 << 9) | 0u << 12 | 0u << 15;
+            *stop = 0;
+            CHECK(run(&g, load_format_xyzw, sizeof load_format_xyzw / sizeof load_format_xyzw[0], format_user) == 0);
+            int zeros = *stop == 0;
+            for (int i = 0; i < LANES * 4; i++) zeros &= out_words[i] == 0;
+            CHECK(zeros);
+            uint32_t null_store[USER_DATA_WORDS];
+            memcpy(null_store, user, sizeof null_store);
+            null_store[7] = DST_SEL_XYZW | 0u << 12 | 0u << 15;
+            memset(out.mapped, 0xaa, BUFFER_BYTES);
+            CHECK(run(&g, store_format_xyzw, sizeof store_format_xyzw / sizeof store_format_xyzw[0], null_store) == 0);
+            int kept = *stop == 0;
+            for (int i = 0; i < LANES * 4; i++) kept &= out_words[i] == 0xaaaaaaaau;
+            CHECK(kept);
+            memcpy(format_user, user, sizeof format_user);
+        }
         /* a reserved selector (2) stops */
         format_user[3] = (4 | 2 << 3) | 7u << 12 | 4u << 15;
         CHECK(run(&g, load_format_xyzw, sizeof load_format_xyzw / sizeof load_format_xyzw[0], format_user) == 0 && *stop != 0);
