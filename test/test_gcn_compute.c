@@ -273,6 +273,30 @@ int main(void)
         format_user[7] = DST_SEL_XYZW | 0u << 12 | 10u << 15;
         CHECK(run(&g, store_format_packed, sizeof store_format_packed / sizeof store_format_packed[0], format_user) == 0);
         CHECK(out_words[0] == 0xffff0000u && *stop == 0);
+        /* 16_16_16_16 float (DATA_FORMAT 12, NUM_FORMAT 7): each component a half, rounded to nearest even,
+           x in the first dword's low half; DST_SEL z, y, x, w puts z first */
+        {
+            static const uint32_t in_bits[3][4] = {
+                {0x3f800000u, 0xc0200000u, 0x477fe000u, 0x3f801000u}, /* 1.0, -2.5, 65504, 1 + 2^-11 (a tie: down to even) */
+                {0x3f803000u, 0x4788b800u, 0x477ff000u, 0x33800000u}, /* 1 + 3 x 2^-11 (a tie: up to even), 70000, 65520, 2^-24 */
+                {0x33000000u, 0x33400000u, 0x80000000u, 0x7fc00000u}, /* 2^-25 (a tie: to 0), 1.5 x 2^-25, -0.0, NaN */
+            };
+            static const uint32_t halves[3][2] = {{0xc1003c00u, 0x3c007bffu}, {0x7c003c02u, 0x00017c00u}, {0x00010000u, 0x7e008000u}};
+            for (int i = 0; i < LANES; i++) memcpy(in_words + 4 * i, in_bits[i % 3], sizeof in_bits[0]);
+            memset(out.mapped, 0, BUFFER_BYTES);
+            format_user[7] = DST_SEL_XYZW | 7u << 12 | 12u << 15;
+            CHECK(run(&g, store_format_loaded, sizeof store_format_loaded / sizeof store_format_loaded[0], format_user) == 0);
+            int stored_halves = *stop == 0;
+            for (int i = 0; i < LANES; i++)
+                stored_halves &= out_words[i * 4] == halves[i % 3][0] && out_words[i * 4 + 1] == halves[i % 3][1] && out_words[i * 4 + 2] == 0;
+            if (!stored_halves) fprintf(stderr, "halves: %08x %08x | %08x %08x | %08x %08x\n", out_words[0], out_words[1], out_words[4],
+                                        out_words[5], out_words[8], out_words[9]);
+            CHECK(stored_halves);
+            memset(out.mapped, 0, BUFFER_BYTES);
+            format_user[7] = DST_SEL_ZYXW | 7u << 12 | 12u << 15;
+            CHECK(run(&g, store_format_loaded, sizeof store_format_loaded / sizeof store_format_loaded[0], format_user) == 0);
+            CHECK(out_words[0] == 0xc1007bffu && out_words[1] == 0x3c003c00u && *stop == 0); /* z, y | x, w */
+        }
         /* 16_16 unorm (DATA_FORMAT 5) is not done yet: nothing stored, the stop word holds it */
         memset(out.mapped, 0, BUFFER_BYTES);
         format_user[7] = DST_SEL_XYZW | 0u << 12 | 5u << 15;

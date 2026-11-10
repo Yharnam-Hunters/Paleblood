@@ -13,6 +13,7 @@ import re
 import sys
 
 import families as fam
+import family_emit
 import verification
 
 DEFAULT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -251,6 +252,21 @@ def check_families(root: str, export: list[dict], named: set[str], hooked: set[s
         recorded_ok = {r['function'] for r in results if r['cases'] == 'recorded' and r['option'] == ''
                        and r['source'] == current and r['total'].isdigit() and int(r['total']) > 0
                        and r['failed'] == '0'}
+        if shape.field is not None and name not in family_emit.TEMPLATES:
+            errs.append(f'{where}: a parameterized family needs a template in tools/family_emit.py')
+        elif shape.field is not None:
+            try:
+                expected = family_emit.render(root, name)
+            except SystemExit as e:
+                errs.append(f'{where}: {e}')
+            else:
+                path = os.path.join(root, 'game', family['system'], f'{name}.cpp')
+                current = None
+                if os.path.isfile(path):
+                    with open(path) as f:
+                        current = f.read()
+                if current != expected:
+                    errs.append(f"{where}: game/{family['system']}/{name}.cpp differs from tools/family_emit.py's output")
         member_names = set()
         total_bytes = 0
         for m in members:

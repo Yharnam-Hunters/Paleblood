@@ -125,11 +125,12 @@ typedef struct {
     uint32_t reference_is_op_value[2];                  /* front, back: the stencil reference is STENCILOPVAL (replace-with-op) */
 } depth_plan;
 
-/* The image standing for a depth target, found by its depth and stencil buffers' addresses: written
-   only by draws, so it starts cleared; drawn says whether a draw has written it since, which a test
-   that reads it needs (its contents in guest memory are never loaded). */
+/* The image standing for a depth target, found by its depth and stencil buffers' addresses and the
+   slice a view names: written only by draws, so it starts cleared; drawn says whether a draw has
+   written it since, which a test that reads it needs (its contents in guest memory are never loaded). */
 typedef struct {
     uint64_t z_address, stencil_address;
+    uint32_t slice;                  /* DB_DEPTH_VIEW's slice: each slice of an array target is an image of its own */
     uint32_t width, height;
     int drawn;
     VkFormat format;
@@ -1285,8 +1286,12 @@ static depth_entry *depth_for(rt_executor *x, const draw_state *s, char *error, 
 {
     enum { SLICE_START_MASK = 0x7ff, SLICE_MAX_SHIFT = 13, SLICE_MAX_MASK = 0x7ff, TILE = 8 };
     const uint32_t *r = s->depth_target;
-    if ((s->depth_view & SLICE_START_MASK) || (s->depth_view >> SLICE_MAX_SHIFT & SLICE_MAX_MASK)) {
-        failed(error, error_size, "a depth target view of slices other than 0 (DB_DEPTH_VIEW %#x): not drawn yet", s->depth_view);
+    /* DB_DEPTH_VIEW: SLICE_START bits 0-10, SLICE_MAX 13-23 (gfx_7_2_sh_mask.h); a draw into one slice of
+       an array target writes only it, so a slice is kept as its own image (nothing loads or reads the
+       slices as one array yet) */
+    const uint32_t slice = s->depth_view & SLICE_START_MASK;
+    if ((s->depth_view >> SLICE_MAX_SHIFT & SLICE_MAX_MASK) != slice) {
+        failed(error, error_size, "a depth target view of more than one slice (DB_DEPTH_VIEW %#x): not drawn yet", s->depth_view);
         return NULL;
     }
     const VkFormat format = depth_format(x, r[Z_INFO], r[STENCIL_INFO], error, error_size);
@@ -1295,7 +1300,7 @@ static depth_entry *depth_for(rt_executor *x, const draw_state *s, char *error, 
     const uint32_t width = ((r[DEPTH_SIZE] & 0x7ff) + 1) * TILE, height = ((r[DEPTH_SIZE] >> 11 & 0x7ff) + 1) * TILE;
     for (size_t i = 0; i < x->depth_count; i++) {
         depth_entry *d = &x->depths[i];
-        if (d->z_address != z_address || d->stencil_address != stencil_address) continue;
+        if (d->z_address != z_address || d->stencil_address != stencil_address || d->slice != slice) continue;
         if (d->width == width && d->height == height && d->format == format) return d;
         failed(error, error_size, "depth target %#llx changed size or format: not drawn yet", (unsigned long long)z_address);
         return NULL;
@@ -1305,7 +1310,8 @@ static depth_entry *depth_for(rt_executor *x, const draw_state *s, char *error, 
         return NULL;
     }
     depth_entry *d = &x->depths[x->depth_count];
-    *d = (depth_entry){.z_address = z_address, .stencil_address = stencil_address, .width = width, .height = height, .format = format};
+    *d = (depth_entry){.z_address = z_address, .stencil_address = stencil_address, .slice = slice, .width = width, .height = height,
+                       .format = format};
     const VkImageAspectFlags aspects = (format == VK_FORMAT_S8_UINT ? 0 : VK_IMAGE_ASPECT_DEPTH_BIT) |
                                        (format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_D32_SFLOAT ? 0 : VK_IMAGE_ASPECT_STENCIL_BIT);
     const VkImageCreateInfo image = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = format,
@@ -2246,11 +2252,6 @@ static int stage_images(rt_executor *x, uint64_t code, const uint32_t *user, uin
         if (d.base_level > d.last_level || d.last_level >= RT_TILING_MAX_LEVELS)
             return failed(error, error_size, "an image with mip levels %u to %u", d.base_level, d.last_level);
         if (d.last_level && !pixel) return failed(error, error_size, "a mip-mapped image in a compute shader: not done yet");
-        /* image_sample picks its level from the coordinates' derivatives; sampling level 0 is exact only
-           for one level */
-        if (d.last_level > d.base_level && (resources[i].access & GCN_IMAGE_SAMPLE))
-            return failed(error, error_size, "image_sample of a mip-mapped image (levels %u to %u): picking the level is not done yet",
-                          d.base_level, d.last_level);
         if (d.layers > 1 && (d.base_array > d.last_array || d.last_array >= d.layers))
             return failed(error, error_size, "a view of an image array from layer %u to %u of %u", d.base_array, d.last_array, d.layers);
         texel_format f;
@@ -2290,14 +2291,17 @@ static int stage_images(rt_executor *x, uint64_t code, const uint32_t *user, uin
    2-3 anisotropic.
 
    Made: wrap, mirror and clamp to the last texel (Vulkan's repeat, mirrored repeat and clamp to
-   edge), point or bilinear filtering with the minifying and magnifying filters equal (the translator
-   samples level 0; with one level and equal filters that is what the GPU picks too). The anisotropy
+   edge), point or bilinear minifying and magnifying filters (the translator samples at the level the
+   derivatives pick, so Vulkan chooses between them as GCN does), the mip filter (none, point,
+   linear), LOD_BIAS, MIN_LOD and MAX_LOD (shadPS4's resource.h scales them: 8 fraction bits, the bias
+   signed). The anisotropy
    fields (MAX_ANISO_RATIO, ANISO_THRESHOLD, ANISO_BIAS) shape only the anisotropic filters (XY filters
    2 and 3; Mesa's radeonsi switches XY_MAG_FILTER and XY_MIN_FILTER to them exactly when it asks for
    anisotropy), so with point or bilinear filters they change nothing and are accepted. Anything else
    in word 0 (depth compares, unnormalized coordinates, the truncation and degamma options, a filter
-   mode other than blending) stops by name. Words 1 and 3 and the LOD bias and mip and z filters
-   change nothing for a one-level image sampled at level 0. */
+   mode other than blending) stops by name, as do the secondary LOD bias and the LOD rounding options
+   in word 2. Z_FILTER (3D images, which are not done), word 1's PERF_MIP and PERF_Z (sampling
+   performance hints) and word 3 (the border colour, for the border modes that stop) are not used. */
 static VkSampler sampler_for(rt_executor *x, const uint32_t words[4], char *error, size_t error_size)
 {
     for (size_t i = 0; i < x->sampler_count; i++)
@@ -2320,20 +2324,34 @@ static VkSampler sampler_for(rt_executor *x, const uint32_t words[4], char *erro
         modes[axis] = clamp == WRAP ? VK_SAMPLER_ADDRESS_MODE_REPEAT : clamp == MIRROR ? VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT
                                                                      : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     }
-    const uint32_t magnify = words[2] >> 20 & 3, minify = words[2] >> 22 & 3;
-    if (magnify != minify || magnify > BILINEAR) {
-        failed(error, error_size, "a sampler with filters %u (magnifying) and %u (minifying): only equal point or bilinear filters are "
+    const uint32_t magnify = words[2] >> 20 & 3, minify = words[2] >> 22 & 3, mip = words[2] >> 26 & 3;
+    if (magnify > BILINEAR || minify > BILINEAR) {
+        failed(error, error_size, "a sampler with filters %u (magnifying) and %u (minifying): only point and bilinear filters are "
                "done yet", magnify, minify);
+        return VK_NULL_HANDLE;
+    }
+    enum { MIP_NONE = 0, MIP_POINT = 1, MIP_LINEAR = 2, LOD_BIAS_SECONDARY = 0x3fu << 14, MIP_POINT_PRECLAMP = 1u << 28,
+           DISABLE_LSB_CEIL = 1u << 29, LOD_UNITS = 256 };
+    if (mip > MIP_LINEAR || (words[2] & (LOD_BIAS_SECONDARY | MIP_POINT_PRECLAMP | DISABLE_LSB_CEIL))) {
+        failed(error, error_size, "a sampler with word 2 %#x (mip filter %u, the secondary LOD bias or the LOD rounding options): "
+               "not done yet", words[2], mip);
         return VK_NULL_HANDLE;
     }
     if (x->sampler_count == MAX_SAMPLERS) {
         failed(error, error_size, "more samplers than the executor keeps");
         return VK_NULL_HANDLE;
     }
-    const VkFilter filter = magnify == POINT ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
-    const VkSamplerCreateInfo info = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = filter, .minFilter = filter,
-                                      .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST, .addressModeU = modes[0], .addressModeV = modes[1],
-                                      .addressModeW = modes[2], .maxLod = 0.0f};
+    /* LOD_BIAS: signed, 8 fraction bits; MIN_LOD and MAX_LOD: unsigned, 8 fraction bits. No mip filter
+       samples the view's first level: a maximum LOD of 0.25 keeps it, and still lets the minifying
+       filter apply past magnification (Vulkan's suggestion for unmipmapped sampling) */
+    const int32_t bias_field = (int32_t)(words[2] & 0x3fff);
+    const float bias = (float)(bias_field >= 0x2000 ? bias_field - 0x4000 : bias_field) / LOD_UNITS;
+    const float min_lod = (float)(words[1] & 0xfff) / LOD_UNITS, max_lod = (float)(words[1] >> 12 & 0xfff) / LOD_UNITS;
+    const VkSamplerCreateInfo info = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = magnify == POINT ? VK_FILTER_NEAREST : VK_FILTER_LINEAR,
+                                      .minFilter = minify == POINT ? VK_FILTER_NEAREST : VK_FILTER_LINEAR,
+                                      .mipmapMode = mip == MIP_LINEAR ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST,
+                                      .addressModeU = modes[0], .addressModeV = modes[1], .addressModeW = modes[2], .mipLodBias = bias,
+                                      .minLod = mip == MIP_NONE ? 0.0f : min_lod, .maxLod = mip == MIP_NONE ? 0.25f : max_lod};
     VkSampler sampler = VK_NULL_HANDLE;
     if (vkCreateSampler(x->device, &info, NULL, &sampler) != VK_SUCCESS) {
         failed(error, error_size, "the device refused a sampler");

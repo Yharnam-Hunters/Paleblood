@@ -98,7 +98,7 @@ Instead:
        alignment, x first and little-endian; whole 32-bit components (uint,
        sint, float; the format's components in place, as a store only uses their selectors) move as they are, and a four-component store to 8_8_8_8 unorm
        undoes the descriptor's swizzle (shadPS4's rule: the inverse of a load's) and packs as GLSL's
-       `packUnorm4x8` (the PS4's rounding of ties is not established). Anything else is a run-time stop.
+       `packUnorm4x8` (the PS4's rounding of ties is not established). Anything else is a run-time stop. A four-component store to 16_16_16_16 float packs halves, rounded to nearest even.
      - **Format loads with a swizzle:** a load of whole 32-bit components reads the format's
        components (the ones it lacks read 0), then each result takes what its DST_SEL names: 0, 1
        (1.0 for float data) or a memory component, as shadPS4 reads them.
@@ -117,14 +117,17 @@ Instead:
        another, each rounded to a power of two with POW2_PAD; a 2D-tiled image's levels macro tiled
        while they span a macro tile, smaller ones (and every 1D-tiled level) micro tiled with 256-byte
        slices (AMD's address library for GFX7, as shadPS4's `ComputeImageSize` follows). The levels
-       are detiled by the CPU. `image_load` and `image_load_mip` read them exactly;
-       `image_sample` of a mip-mapped image stops by name until the level choice is done. A storage
-       image keeps one level.
+       are detiled by the CPU. `image_load` and `image_load_mip` read them exactly, `image_sample`
+       at the level its derivatives pick (below). A storage image keeps one level.
      - **`image_sample`** with the sampler (S#) its SSAMP SGPRs name, found like image descriptors and
-       bound after the images (set 0, `VK_DESCRIPTOR_TYPE_SAMPLER`): sampled at level 0
-       (`OpImageSampleExplicitLod`). GCN picks the level from the coordinates' derivatives; level 0
-       is what it picks too when the image has one level and the sampler's minifying and magnifying
-       filters agree, which the executor requires. The executor makes a Vulkan sampler from the S#
+       bound after the images (set 0, `VK_DESCRIPTOR_TYPE_SAMPLER`): sampled at the level the
+       coordinates' derivatives pick, as GCN does: the derivatives across the pixel's 2x2 quad (x from
+       the quad's first lane to its second, y to its third, by `OpGroupNonUniformQuadBroadcast`),
+       passed as explicit gradients (`OpImageSampleExplicitLod` with `Grad`), since the translated
+       program's dispatch loop is not uniform control flow for Vulkan's implicit derivatives. The
+       sampler's LOD bias, MIN_LOD and MAX_LOD (8 fraction bits) and mip filter (none: the view's first
+       level, with a maximum LOD of 0.25 so the minifying filter still applies; point; linear) go to
+       the Vulkan sampler, and the minifying and magnifying filters may differ. The executor makes a Vulkan sampler from the S#
        (the Sea Islands manual's layout, as shadPS4's `resource.h` names its fields): wrap, mirror
        and clamp to the last texel; point or bilinear filtering. The anisotropy fields are accepted with point or
        bilinear filters, which they do not affect; anisotropic filters, depth compares,
@@ -481,7 +484,9 @@ Instead:
           it with) are never seen. The buffer's contents in guest memory are never loaded: a depth
           or stencil buffer the CPU or a compute shader writes would not be seen (not found yet). A draw that writes only the depth target (target mask 0, or
           `CB_COLOR_CONTROL`'s mode `CB_DISABLE`) draws without a colour target; one that writes
-          nothing is skipped. Triangle strips (`VGT_PRIMITIVE_TYPE` 6) are drawn too.
+          nothing is skipped. Triangle strips (`VGT_PRIMITIVE_TYPE` 6) are drawn too. A view of one
+          slice of an array depth target (`DB_DEPTH_VIEW` SLICE_START = SLICE_MAX) draws into an image
+          kept for that slice alone; a view of several slices stops by name.
         - **Not yet:** other formats, more
           render targets and other pixel inputs. These stop with the reason.
         - **The image's memory order:** an image's pixels only leave the GPU through
