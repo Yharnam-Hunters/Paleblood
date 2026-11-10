@@ -51,14 +51,65 @@ def function_changes(before: dict, after: dict) -> dict:
     return out
 
 
+def family_rows(text: str) -> dict:
+    """address -> status from a symbols/families/<family>.csv text."""
+    return {r['address']: r['status'] for r in csv.DictReader(io.StringIO(text))} if text.strip() else {}
+
+
+def family_changes(families: dict, before: dict, after: dict) -> list:
+    """Per family whose members changed status on this branch: how many became replaced,
+    edge-verified and verified. FAMILIES: name -> its symbols/families.csv row; BEFORE, AFTER:
+    name -> {address: status}."""
+    out = []
+    for name in sorted(after):
+        old, new = before.get(name, {}), after[name]
+        replaced = sum(1 for a, st in new.items() if st in HOOKED and old.get(a, 'original') == 'original')
+        edge = sum(1 for a, st in new.items() if st == 'edge-verified' and old.get(a, 'original') in ('original', 'replaced'))
+        verified = sum(1 for a, st in new.items() if st == 'verified' and old.get(a) != 'verified')
+        if replaced or edge or verified:
+            row = families.get(name, {})
+            out.append({'family': name, 'shape': row.get('shape', ''), 'members': len(new),
+                        'bytes': int(row.get('bytes', 0) or 0), 'replaced': replaced,
+                        'edge-verified': edge, 'verified': verified})
+    return out
+
+
+def branch_family_changes(base: str, read_head) -> list:
+    """family_changes between the merge base and the tree READ_HEAD(path) reads (None: absent)."""
+    def at_base(path):
+        try:
+            return git('show', f'{base}:{path}')
+        except subprocess.CalledProcessError:
+            return ''
+    head_table = read_head('symbols/families.csv') or ''
+    families = {r['family']: r for r in csv.DictReader(io.StringIO(head_table))} if head_table.strip() else {}
+    before, after = {}, {}
+    for name in families:
+        path = f'symbols/families/{name}.csv'
+        before[name] = family_rows(at_base(path))
+        after[name] = family_rows(read_head(path) or '')
+    return family_changes(families, before, after)
+
+
+HOOKED = ('replaced', 'edge-verified', 'verified')
+
+
 def verify_results(paths: list) -> list:
-    """Each path is a verify.py run summary, or the --out directory of a run, which holds one."""
+    """Each path is a verify.py run summary (or a `verify.py family` summary), or the --out
+    directory of a run, which holds one."""
     out = []
     for p in paths:
         if os.path.isdir(p):
             p = os.path.join(p, 'summary.json')
         with open(p) as f:
             d = json.load(f)
+        if 'family' in d:
+            out.append({'function': d.get('function', f"family:{d['family']}"), 'family': d['family'],
+                        'members': d.get('members', 0), 'cases': d.get('cases', 0),
+                        'passed': d.get('passed', 0), 'failed': d.get('failed', 0),
+                        'mutants': [{k: m.get(k) for k in ('mutant', 'members', 'killed')}
+                                    for m in d.get('mutants', [])]})
+            continue
         out.append({'function': d.get('function', os.path.basename(p)), 'cases': d.get('cases', 0),
                     'passed': d.get('passed', 0), 'failed': d.get('failed', 0)})
     return out
@@ -94,10 +145,22 @@ def render(report: dict) -> str:
         lines.append(f'**{title}** ({len(items)}): ' +
                      (', '.join(f"`{i['name']}` (`{i['address']}`)" for i in items) if items else 'none'))
     lines.append('')
+    if report.get('families'):
+        lines += ['| Family | Shape | Members | Bytes | Newly replaced | Newly edge-verified | Newly verified |',
+                  '|---|---|---:|---:|---:|---:|---:|']
+        lines += [f"| `{c['family']}` | `{c['shape']}` | {c['members']} | {c['bytes']} | {c['replaced']} | "
+                  f"{c['edge-verified']} | {c['verified']} |" for c in report['families']]
+        lines.append('')
     if report['verify']:
         lines += ['| verify.py | Cases | Passed | Failed |', '|---|---:|---:|---:|']
         lines += [f"| `{v['function']}` | {v['cases']} | {v['passed']} | {v['failed']} |" for v in report['verify']]
         lines.append('')
+        for v in report['verify']:
+            for m in v.get('mutants', []):
+                lines.append(f"Mutant `{m['mutant']}` on `{v['family']}`: failed on {m['killed']} of {m['members']} "
+                             f"sampled members.")
+        if any(v.get('mutants') for v in report['verify']):
+            lines.append('')
     else:
         lines += ['verify.py: no results attached.', '']
     if report['captures']:
@@ -145,7 +208,44 @@ def structure_errors(d: dict) -> list:
     return errs
 
 
-def check_body(text: str, required_replacements: list | None = None) -> list:
+def family_evidence_errors(d: dict, required_families: list | None) -> list:
+    """Every family change in the report needs a clean `verify.py family` summary: all cases of
+    all members passing, and every mutant failing on every sampled member."""
+    errs = []
+    changes = d.get('families', [])
+    if not isinstance(changes, list):
+        return ['the session report "families" must be a list']
+    verify = [v for v in d.get('verify', []) if isinstance(v, dict) and v.get('family')]
+    names = set()
+    for c in changes:
+        if not isinstance(c, dict) or not isinstance(c.get('family'), str):
+            errs.append('each "families" entry needs a family name')
+            continue
+        name = c['family']
+        names.add(name)
+        matching = [v for v in verify if v.get('family') == name]
+        if not matching:
+            errs.append(f'no matching verify.py family evidence for family "{name}"')
+            continue
+        good = any(type(v.get('cases')) is int and v['cases'] > 0 and v.get('passed') == v['cases']
+                   and v.get('failed') == 0 and v.get('members') == c.get('members')
+                   and v.get('mutants') and all(isinstance(m, dict) and m.get('members') and
+                                               m.get('killed') == m.get('members') for m in v['mutants'])
+                   for v in matching)
+        if not good:
+            errs.append(f'verify.py family evidence for "{name}" is incomplete: every member must pass, the member '
+                        f'count must match, and every mutant must fail on every sampled member')
+    if required_families is not None:
+        required = {c['family'] for c in required_families}
+        if required - names:
+            errs.append('session report omits changed families: ' + ', '.join(sorted(required - names)))
+        if names - required:
+            errs.append('session report lists families that did not change: ' + ', '.join(sorted(names - required)))
+    return errs
+
+
+def check_body(text: str, required_replacements: list | None = None,
+               required_families: list | None = None) -> list:
     errs = []
     if START not in text or END not in text:
         return ['the pull request has no session report (run tools/session_report.py and paste its output)']
@@ -207,6 +307,7 @@ def check_body(text: str, required_replacements: list | None = None) -> list:
         if not valid:
             errs.append(f'verify.py evidence for replaced function "{name}" is empty or incomplete')
 
+    errs += family_evidence_errors(d, required_families)
     if required_replacements is not None:
         required_names = {item['name'] for item in required_replacements}
         missing = sorted(required_names - replacement_names)
@@ -216,6 +317,14 @@ def check_body(text: str, required_replacements: list | None = None) -> list:
         if extra:
             errs.append('session report lists replacements not changed from original: ' + ', '.join(extra))
     return errs
+
+
+def read_worktree(path: str) -> str | None:
+    full = os.path.join(ROOT, path)
+    if not os.path.isfile(full):
+        return None
+    with open(full) as f:
+        return f.read()
 
 
 def main() -> int:
@@ -238,6 +347,7 @@ def main() -> int:
     report = {'schema': 1, 'base': a.base, 'branch': git('rev-parse', '--abbrev-ref', 'HEAD').strip(),
               'commits': int(git('rev-list', '--count', f'{base}..HEAD').strip() or 0),
               'functions': function_changes(before, after), 'verify': verify_results(a.verify),
+              'families': branch_family_changes(base, read_worktree),
               'captures': capture_counts(a.captures), 'findings': findings, 'questions': questions}
     sys.stdout.write(render(report))
     return 0

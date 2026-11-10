@@ -117,6 +117,15 @@ def changed_replacements(base: str, head: str) -> list[dict]:
     return [replacements[name] for name in sorted(replacements)]
 
 
+def changed_families(base: str, head: str) -> list[dict]:
+    def read_head(path):
+        try:
+            return git('show', f'{head}:{path}')
+        except subprocess.CalledProcessError:
+            return None
+    return session_report.branch_family_changes(base, read_head)
+
+
 def check_runtime_report(text: str) -> list[str]:
     errors = []
     start, end = '<!-- runtime-report:start -->', '<!-- runtime-report:end -->'
@@ -213,14 +222,15 @@ def check_documentation_report(text: str) -> list[str]:
     return errors
 
 
-def check_report(text: str, paths: list[str], required_replacements: list | None = None) -> list[str]:
+def check_report(text: str, paths: list[str], required_replacements: list | None = None,
+                 required_families: list | None = None) -> list[str]:
     """Validate the report selected from changed files, never from labels or body claims."""
     scope = classify_paths(paths)
     if scope['classification'] == 'runtime-only':
         return check_runtime_report(text)
     if scope['classification'] == 'documentation-only':
         return check_documentation_report(text)
-    return session_report.check_body(text, required_replacements)
+    return session_report.check_body(text, required_replacements, required_families)
 
 
 def run_check(argv: list[str], label: str) -> bool:
@@ -257,14 +267,15 @@ def check_pull_request(base: str, head: str, body_path: str) -> int:
         print(f'runtime-pr: cannot read pull request body: {exc}', file=sys.stderr)
         return 2
 
-    required = None
+    required = required_families = None
     if scope['classification'] == 'decompilation/mixed':
         try:
             required = changed_replacements(merge_base, head)
+            required_families = changed_families(merge_base, head)
         except (subprocess.CalledProcessError, KeyError) as exc:
             print(f'runtime-pr: cannot inspect changed function replacements: {exc}', file=sys.stderr)
             return 2
-    errors = check_report(body, paths, required)
+    errors = check_report(body, paths, required, required_families)
     for error in errors:
         print(f'runtime-pr: {error}', file=sys.stderr)
     return 1 if errors else 0

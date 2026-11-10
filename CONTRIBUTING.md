@@ -231,7 +231,9 @@ firmware, keys or decryption tools.
   for example `frame_timing_update_delta`.
 - Replacement: `bb_` plus the name, `extern "C"`, for example `bb_frame_timing_update_delta`.
 - Files: `game/<system>/<topic>.cpp` (C++20; plain C in `.c` is fine too), snake_case.
-- A function must be at least 14 bytes to be hooked (the jump), checked by the validator.
+- A function must be at least 14 bytes to be hooked (the jump), checked by the validator. Tiny
+  functions repeated many times are replaced as function families instead, hooked across their
+  padding ([docs/FAMILIES.md](docs/FAMILIES.md)).
 - Addresses: `0x` and 8 lowercase hex digits, ascending in every CSV. They are PS4
   virtual addresses, **Ghidra image base `0x400000`**: the ELF `p_vaddr` plus `0x400000`, the
   same as the community patch files. Import the eboot with that base. Raw ELF virtual addresses
