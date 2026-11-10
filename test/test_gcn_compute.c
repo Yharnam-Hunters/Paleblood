@@ -162,6 +162,31 @@ int main(void)
         CHECK(out_words[LANES + i] == bits(ldexpf(1.0f, 32 - i)));
     }
 
+    /* Range checking (CLRX's GCN memory handling notes): an access outside the descriptor's range
+       reads 0 and writes nothing. Stride 0: NUM_RECORDS counts bytes, so with 40 dwords to read and
+       32 to write, lanes 40 and up read 0 (out = 1.0) and lanes 32 and up store nothing. */
+    {
+        uint32_t range_user[USER_DATA_WORDS];
+        memcpy(range_user, user, sizeof range_user);
+        range_user[2] = 40 * 4, range_user[6] = 32 * 4;
+        for (int i = 0; i < LANES; i++) in_floats[i] = (float)i * 0.5f;
+        memset(out.mapped, 0xaa, BUFFER_BYTES);
+        CHECK(run(&g, scale_add, sizeof scale_add / sizeof scale_add[0], range_user) == 0);
+        for (int i = 0; i < LANES; i++)
+            CHECK(out_words[i] == (i >= 32 ? 0xaaaaaaaau : bits(i < 40 ? (float)i * 0.5f * 2.5f + 1.0f : 1.0f)));
+        /* A stride (4 bytes) and an index (the lane): NUM_RECORDS counts records, so lanes 20 and up read 0. */
+        range_user[1] |= 4u << 16, range_user[2] = 20, range_user[6] = BUFFER_BYTES;
+        memset(out.mapped, 0, BUFFER_BYTES);
+        CHECK(run(&g, indexed_scale_add, sizeof indexed_scale_add / sizeof indexed_scale_add[0], range_user) == 0);
+        for (int i = 0; i < LANES; i++) CHECK(out_words[i] == bits(i < 20 ? (float)i * 0.5f * 2.5f + 1.0f : 1.0f));
+        /* An offset at the stride is out of range whatever the index: every lane reads 0. */
+        range_user[2] = LANES;
+        memset(out.mapped, 0, BUFFER_BYTES);
+        CHECK(run(&g, indexed_scale_add_past_stride, sizeof indexed_scale_add_past_stride / sizeof indexed_scale_add_past_stride[0],
+                  range_user) == 0);
+        for (int i = 0; i < LANES; i++) CHECK(out_words[i] == bits(1.0f));
+    }
+
     /* Branches and EXEC. */
     memset(out.mapped, 0, BUFFER_BYTES);
     CHECK(run(&g, divergent_if, sizeof divergent_if / sizeof divergent_if[0], user) == 0);
