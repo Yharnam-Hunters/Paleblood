@@ -126,6 +126,8 @@ Instead:
        slices (AMD's address library for GFX7, as shadPS4's `ComputeImageSize` follows). The levels
        are detiled by the CPU. `image_load` and `image_load_mip` read them exactly, `image_sample`
        at the level its derivatives pick (below). A storage image keeps one level.
+     - **`image_sample_l`** takes its level of detail after the coordinates and samples there
+       (Vulkan's explicit `Lod`, which the sampler's LOD bias and clamps still adjust).
      - **`image_sample`** with the sampler (S#) its SSAMP SGPRs name, found like image descriptors and
        bound after the images (set 0, `VK_DESCRIPTOR_TYPE_SAMPLER`): sampled at the level the
        coordinates' derivatives pick, as GCN does: the derivatives across the pixel's 2x2 quad (x from
