@@ -1921,8 +1921,10 @@ static int branches(const uint32_t *w, const gcn_instruction *ins, size_t at, lo
    followed only when every path to the use passes it: no branch lands between it and the use (code
    runs forward between branches, so a path that skipped the load would have to land there), every
    branch's target is known, no branch goes back to the use or before it when an instruction after
-   the use writes those SGPRs, and no instruction at all writes the pointer pair (so a loop that runs
-   the load again loads the same descriptor). Writes before the load do not matter: it replaces them
+   the use writes those SGPRs, and no instruction before the load writes the pointer pair, nor any
+   instruction at all when a branch goes back to the load or before it (so a loop that runs the load
+   again loads the same descriptor; without one, code after the load may reuse the pointer's SGPRs, as
+   the game's pixel shaders do once their samples are done). Writes before the load do not matter: it replaces them
    (the game's shaders keep a compare's mask in those SGPRs before loading the descriptor). A
    branch that skips the load also skips the use, as the game's guarded samples do (an
    s_cbranch_execz around both). 0, or -1 with the reason. */
@@ -1945,7 +1947,7 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
         p += ins.dwords;
     }
     if (!written) return 0;
-    int branched = 0, loops_to_load = 0; /* a branch back to the load or before it */
+    int loops_to_load = 0; /* a branch back to the load or before it */
     for (size_t p = 0; p < program;) {
         gcn_instruction ins;
         if (gcn_decode(code + p, program - p, &ins) || !ins.name) break;
@@ -1963,7 +1965,6 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
                          p, target, at);
                 return -1;
             }
-            branched = 1;
             if (target <= writer && (size_t)target <= p) loops_to_load = 1;
         }
         p += ins.dwords;
@@ -1981,7 +1982,7 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
         return -1;
     }
     const unsigned pointer = ((w[0] >> 9) & 0x3f) * 2;
-    for (size_t p = 0; p < (branched ? program : (size_t)writer);) {
+    for (size_t p = 0; p < (loops_to_load ? program : (size_t)writer);) {
         gcn_instruction before;
         gcn_decode(code + p, program - p, &before);
         unsigned d = 0;
