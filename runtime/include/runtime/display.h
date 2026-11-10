@@ -10,7 +10,8 @@
    Modes, chosen with pbboot --display:
      none      no frames are kept and nothing is shown (the default, so boots are unchanged);
      headless  frames are kept and counted; with --display-capture DIR each presented frame is
-               also written there as frame-NNNNNN.ppm, for tests and for looking at a run;
+               also written there as frame-NNNNNN.ppm (by a writer thread, off the flip), for tests and
+               for looking at a run;
      window    frames are shown in a window, with Vulkan (when the runtime was built with Vulkan
                and SDL3). */
 
@@ -37,6 +38,10 @@ void rt_display_present(int port, int buffer);
 
 /* How many frames a port has presented. */
 uint64_t rt_display_presented(int port);
+
+/* Waits until every captured frame so far is written (frames are written by a thread of the
+   display's own, so a flip never waits on a file). */
+void rt_display_capture_wait(void);
 
 #ifdef __cplusplus
 }
