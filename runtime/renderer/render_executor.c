@@ -122,6 +122,7 @@ typedef struct {
     uint32_t depth_test, depth_write, depth_compare;   /* VkCompareOp */
     uint32_t stencil_test, stencil_ops[2][4];           /* front, back: fail, pass, depth fail (VkStencilOp), compare (VkCompareOp) */
     uint32_t reads;                                     /* a test compares with the buffer (not always or never) */
+    uint32_t reference_is_op_value[2];                  /* front, back: the stencil reference is STENCILOPVAL (replace-with-op) */
 } depth_plan;
 
 /* The image standing for a depth target, found by its depth and stencil buffers' addresses: written
@@ -410,8 +411,11 @@ static int blend_state(uint32_t control, VkPipelineColorBlendAttachmentState *ou
    - Compare functions are AMD's CompareFrag (Mesa's sid.h V_028800_FRAG_*): never, less, equal, less or
      equal, greater, not equal, greater or equal, always, the order of Vulkan's VkCompareOp.
    - Done: every compare function, and writes: stencil operations keep, zero, replace with the test
-     value, invert, and add and subtract (clamped or wrapping) when they step by STENCILOPVAL 1 (Mesa's
-     V_02842C_STENCIL_*). A test that reads the buffer
+     value, replace with STENCILOPVAL, invert, and add and subtract (clamped or wrapping) when they step
+     by STENCILOPVAL 1 (Mesa's V_02842C_STENCIL_*). Vulkan replaces with its one reference value, which
+     the test also compares with: replacing with STENCILOPVAL sets the reference to it, which is exact
+     when the compare does not read the reference (always, never) or STENCILTESTVAL equals it, and no
+     operation of the face replaces with the test value instead; otherwise it stops by name. A test that reads the buffer
      (a compare function other than always or never) is planned with reads set: the draw then needs the
      depth target's image to hold what earlier draws wrote (depth_entry's drawn), since the buffer's
      contents in guest memory are never loaded into it. Other operations, depth bounds and
@@ -420,13 +424,14 @@ static int blend_state(uint32_t control, VkPipelineColorBlendAttachmentState *ou
    0, or -1 with the reason. */
 static int plan_depth(const draw_state *s, depth_plan *plan, char *error, size_t error_size)
 {
-    enum { COMPARE_NEVER = 0, COMPARE_ALWAYS = 7, BACKFACE_ENABLE = 0x80, STENCIL_OPS = 16, OP_VALUE_SHIFT = 24, ONE_STEP = 1 };
+    enum { COMPARE_NEVER = 0, COMPARE_ALWAYS = 7, BACKFACE_ENABLE = 0x80, STENCIL_OPS = 16, OP_VALUE_SHIFT = 24, ONE_STEP = 1,
+           REPLACE_TEST = 3, REPLACE_OP = 4 };
     /* AMD's stencil operations (Mesa's V_02842C_STENCIL_*; shadPS4's StencilFunc agrees) as Vulkan's,
        where one exists: the add and subtract operations step by STENCILOPVAL, so they are Vulkan's
        increment and decrement only when it is 1 (op_steps); -1 is not drawn yet. */
     static const int vulkan_op[STENCIL_OPS] = {
         [0] = VK_STENCIL_OP_KEEP, [1] = VK_STENCIL_OP_ZERO, [2] = -1 /* ones */, [3] = VK_STENCIL_OP_REPLACE,
-        [4] = -1 /* replace with STENCILOPVAL */, [5] = VK_STENCIL_OP_INCREMENT_AND_CLAMP, [6] = VK_STENCIL_OP_DECREMENT_AND_CLAMP,
+        [4] = VK_STENCIL_OP_REPLACE /* with STENCILOPVAL: the reference becomes it (below) */, [5] = VK_STENCIL_OP_INCREMENT_AND_CLAMP, [6] = VK_STENCIL_OP_DECREMENT_AND_CLAMP,
         [7] = VK_STENCIL_OP_INVERT, [8] = VK_STENCIL_OP_INCREMENT_AND_WRAP, [9] = VK_STENCIL_OP_DECREMENT_AND_WRAP,
         [10] = -1, [11] = -1, [12] = -1, [13] = -1, [14] = -1, [15] = -1 /* bitwise with STENCILOPVAL */};
     static const int op_steps[STENCIL_OPS] = {[5] = 1, [6] = 1, [8] = 1, [9] = 1};
@@ -454,6 +459,17 @@ static int plan_depth(const draw_state *s, depth_plan *plan, char *error, size_t
             const uint32_t compare = control >> (source ? 20 : 8) & 7, ops = s->stencil_control >> (source ? 12 : 0) & 0xfff;
             if (compare != COMPARE_ALWAYS && compare != COMPARE_NEVER) plan->reads = 1;
             const uint32_t op_value = s->stencil_reference[source] >> OP_VALUE_SHIFT;
+            const uint32_t test_value = s->stencil_reference[source] & 0xff;
+            int replaces_with_test = 0, replaces_with_op = 0;
+            for (unsigned k = 0; k < 3; k++) {
+                const uint32_t op = ops >> (4 * k) & 0xf;
+                replaces_with_test |= op == REPLACE_TEST, replaces_with_op |= op == REPLACE_OP;
+            }
+            if (replaces_with_op && op_value != test_value &&
+                (replaces_with_test || (compare != COMPARE_ALWAYS && compare != COMPARE_NEVER)))
+                return failed(error, error_size, "a stencil replace with STENCILOPVAL %u beside a test or replace with STENCILTESTVAL %u: "
+                              "not drawn yet", op_value, test_value);
+            plan->reference_is_op_value[face] = (uint32_t)replaces_with_op;
             for (unsigned k = 0; k < 3; k++) {
                 const uint32_t op = ops >> (4 * k) & 0xf;
                 if (vulkan_op[op] < 0)
@@ -1783,7 +1799,7 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int
     for (unsigned face = 0; face < 2; face++) {
         const uint32_t r = s->stencil_reference[face && (s->depth_control & 0x80) ? 1 : 0];
         const VkStencilFaceFlags which = face ? VK_STENCIL_FACE_BACK_BIT : VK_STENCIL_FACE_FRONT_BIT;
-        vkCmdSetStencilReference(commands, which, r & 0xff);
+        vkCmdSetStencilReference(commands, which, plan->reference_is_op_value[face] ? r >> 24 : r & 0xff); /* STENCILOPVAL or STENCILTESTVAL */
         vkCmdSetStencilCompareMask(commands, which, r >> 8 & 0xff);
         vkCmdSetStencilWriteMask(commands, which, r >> 16 & 0xff);
     }
