@@ -600,6 +600,48 @@ static void target_memory(rt_executor *x)
     CHECK(bgra[0] == 0xff102040u); /* the display's blue-first order of red 0x10, green 0x20, blue 0x40 */
 }
 
+/* A tiled render target (Thin1DThin, tiling index 13) moves to and from its memory through the GPU's
+   tile copies: after a buffer draws the triangle, each texel is where rt_tiling_offset says; a texel the
+   CPU then rewrites there shows at its pixel after the next buffer's draw keeps what is there. */
+static void tiled_target_memory(rt_executor *x)
+{
+    enum { TILED_BUFFER = 0xc0fa0000, TILED = 0xec0000, THIN_1D = 13 };
+    char error[200] = "";
+    rt_tiling layout;
+    CHECK(rt_tiling_layout(THIN_1D, 4, SIZE, SIZE, &layout, error, sizeof error) == 0);
+    uint8_t *memory = (uint8_t *)(uintptr_t)at(TILED);
+    memset(memory, 0, rt_tiling_size(&layout, 1));
+    for (int pass = 0; pass < 2; pass++) {
+        rt_render_forget(), rt_executor_reset(x);
+        uint32_t offset = record_setup(TILED_BUFFER, at(TILED), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        uint32_t words[RT_COLOR_TARGET_WORDS];
+        color_target(words, at(TILED), COLOR_8_8_8_8, SWAP_STD);
+        words[5] = THIN_1D;
+        CHECK(rt_render_record_color_target(TILED_BUFFER, offset, 0, words, error, sizeof error) == 0);
+        const uint32_t blend = pass ? 1u << 30 | 0u | 1u << 8 : 0; /* the second pass: ZERO + ONE keeps what is there */
+        CHECK(rt_render_record_register(TILED_BUFFER, offset + 0x10, 0xa1e0, blend, error, sizeof error) == 0);
+        const int ran = rt_executor_run(x, TILED_BUFFER, record_triangle_draw(TILED_BUFFER, offset + 0x20), error, sizeof error);
+        if (ran) fprintf(stderr, "tiled target: %s\n", error);
+        CHECK(ran == 0);
+        if (pass) break;
+        int placed = 1;
+        for (uint32_t y = 0; y < SIZE; y++)
+            for (uint32_t px = 0; px < SIZE; px++) {
+                uint32_t p;
+                memcpy(&p, memory + rt_tiling_offset(&layout, px, y, 0), 4);
+                const uint32_t want = reference_texel(px, y);
+                for (int k = 0; k < 4; k++) placed &= abs((int)(p >> (8 * k) & 0xff) - (int)(want >> (8 * k) & 0xff)) <= 2;
+            }
+        CHECK(placed);
+        const uint32_t cpu = 0xff402010u; /* the CPU's texel at (5, 3) */
+        memcpy(memory + rt_tiling_offset(&layout, 5, 3, 0), &cpu, 4);
+    }
+    uint32_t bgra[SIZE * SIZE];
+    CHECK(rt_executor_read_target(x, at(TILED), bgra, SIZE, SIZE, error, sizeof error) == 0);
+    CHECK(bgra[3 * SIZE + 5] == 0xff102040u);
+    CHECK(differing_pixels(x, at(TILED)) == 1);
+}
+
 /* A block-compressed image (BC1, DATA_FORMAT 35) the CPU wrote, linear (tiling index 8) in 4 x 4 blocks
    of 8 bytes: each block a solid colour (colour 0, all indices 0), its red from the block's column and
    green from its row in RGB 5:6:5, blue full. image_load_mip of each pixel shows its block's colour;
@@ -929,6 +971,7 @@ int main(void)
     state_across_buffers(x);
     indexed_draws(x);
     target_memory(x);
+    tiled_target_memory(x);
     compressed_image(x);
 
     rt_executor_close(x);

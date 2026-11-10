@@ -156,13 +156,29 @@ uint64_t rt_tiling_offset(const rt_tiling *t, uint32_t x, uint32_t y, uint32_t s
 
 uint64_t rt_tiling_size(const rt_tiling *t, uint32_t slices) { return slices * t->slice_bytes; }
 
-/* Copies between the tiled image and linear rows, a micro tile at a time: within one, a texel's place is
-   the micro tile's first texel's plus its element offset (micro_index x element size), the part past
-   the 256-byte pipe interleave moving up to the channel rows of a 2D layout. That holds because a micro
-   tile starts on a 256-byte boundary of its channel (2D: its offset there is a whole number of micro
-   tiles of 256 bytes or more, or of ones that divide 256 and so never cross it) and keeps one pipe and
-   bank throughout (they depend on coordinate bits 3 and up). test/test_tiling.c checks it against
+/* Within a micro tile, a texel's place is the micro tile's first texel's plus its element offset
+   (micro_index x element size), the part past the 256-byte pipe interleave moving up to the channel
+   rows of a 2D layout. That holds because a micro tile starts on a 256-byte boundary of its channel
+   (2D: its offset there is a whole number of micro tiles of 256 bytes or more, or of ones that divide
+   256 and so never cross it) and keeps one pipe and bank throughout (they depend on coordinate bits 3
+   and up). A linear layout's rows are pitch texels apart. test/test_tiling.c checks it against
    rt_tiling_offset for every mode and element size. */
+void rt_tiling_micro_spread(const rt_tiling *t, uint64_t spread[RT_TILING_MICRO_TEXELS])
+{
+    const uint64_t element = t->element_bytes;
+    const unsigned channel_shift = t->kind == RT_TILING_2D ? PIPE_INTERLEAVE_BITS + log2_of(t->pipes) + log2_of(t->banks) : PIPE_INTERLEAVE_BITS;
+    for (uint32_t j = 0; j < MICRO; j++)
+        for (uint32_t i = 0; i < MICRO; i++) {
+            if (t->kind == RT_TILING_LINEAR) {
+                spread[j * MICRO + i] = ((uint64_t)j * t->pitch + i) * element;
+                continue;
+            }
+            const uint64_t m = micro_index(t, i, j) * element;
+            spread[j * MICRO + i] = t->kind == RT_TILING_2D ? (m & (PIPE_INTERLEAVE - 1)) + ((m >> PIPE_INTERLEAVE_BITS) << channel_shift) : m;
+        }
+}
+
+/* Copies between the tiled image and linear rows, a micro tile at a time (rt_tiling_micro_spread). */
 static void copy_texels(const rt_tiling *t, uint8_t *tiled, uint8_t *linear, uint32_t width, uint32_t height, uint32_t slices, int to_tiled)
 {
     const size_t element = t->element_bytes, row = (size_t)width * element;
@@ -175,13 +191,8 @@ static void copy_texels(const rt_tiling *t, uint8_t *tiled, uint8_t *linear, uin
             }
         return;
     }
-    const unsigned channel_shift = t->kind == RT_TILING_2D ? PIPE_INTERLEAVE_BITS + log2_of(t->pipes) + log2_of(t->banks) : PIPE_INTERLEAVE_BITS;
     uint64_t spread[MICRO_TEXELS];
-    for (uint32_t j = 0; j < MICRO; j++)
-        for (uint32_t i = 0; i < MICRO; i++) {
-            const uint64_t m = micro_index(t, i, j) * element;
-            spread[j * MICRO + i] = t->kind == RT_TILING_2D ? (m & (PIPE_INTERLEAVE - 1)) + ((m >> PIPE_INTERLEAVE_BITS) << channel_shift) : m;
-        }
+    rt_tiling_micro_spread(t, spread);
     for (uint32_t s = 0; s < slices; s++, linear += row * height)
         for (uint32_t ty = 0; ty < height; ty += MICRO)
             for (uint32_t tx = 0; tx < width; tx += MICRO) {

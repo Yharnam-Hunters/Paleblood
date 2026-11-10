@@ -252,6 +252,26 @@ static void fast_copies(void)
         }
 }
 
+/* Every texel lies at its micro tile's first texel plus its place in rt_tiling_micro_spread's table,
+   for every mode and element size, two slices (the form the renderer's GPU copies take). */
+static void micro_spreads(void)
+{
+    static const unsigned modes[] = {8, 9, 10, 13, 14, 31};
+    for (size_t m = 0; m < COUNT(modes); m++)
+        for (unsigned b = 0; b < 5; b++) {
+            const rt_tiling t = layout(modes[m], 1u << b, 256, 130);
+            uint64_t spread[RT_TILING_MICRO_TEXELS];
+            rt_tiling_micro_spread(&t, spread);
+            int ok = 1;
+            for (uint32_t s = 0; s < 2; s++)
+                for (uint32_t y = 0; y < 130; y++)
+                    for (uint32_t x = 0; x < 256; x++)
+                        ok &= rt_tiling_offset(&t, x, y, s) == rt_tiling_offset(&t, x & ~7u, y & ~7u, s) + spread[(y & 7) * 8 + (x & 7)];
+            if (!ok) fprintf(stderr, "tiling %u, %u bytes: micro spread differs\n", modes[m], 1u << b);
+            CHECK(ok);
+        }
+}
+
 static void refusals(void)
 {
     rt_tiling t;
@@ -270,6 +290,7 @@ int main(void)
     permutations();
     detiling();
     fast_copies();
+    micro_spreads();
     refusals();
     if (failures) {
         fprintf(stderr, "%d failure(s)\n", failures);

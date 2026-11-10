@@ -9,6 +9,7 @@
    macOS). With PB_REQUIRE_METAL set (the macOS CI job) a missing tool is a failure, not a skip. */
 #include "runtime/gcn_spirv.h"
 #include "runtime/rect_list.h"
+#include "runtime/tile_copy.h"
 
 #include "gcn_programs.h"
 
@@ -313,6 +314,29 @@ static void rect_list_stages(void)
     CHECK(rt_rect_list_geometry(0, RT_RECT_LIST_MAX_CLIP_DISTANCES + 1, &spirv, &words) == -1);
 }
 
+/* The renderer's GPU tile copies (runtime/tile_copy.h), every element size and direction: valid modules;
+   other element sizes are refused. test_render_executor runs them against rt_tiling_offset. */
+static void tile_copy_shaders(void)
+{
+    static const unsigned sizes[] = {1, 2, 4};
+    for (size_t i = 0; i < sizeof sizes / sizeof *sizes; i++)
+        for (int to_tiled = 0; to_tiled < 2; to_tiled++) {
+            uint32_t *spirv = NULL;
+            size_t words = 0;
+            char name[64];
+            snprintf(name, sizeof name, "tile_copy_%u_%s", sizes[i], to_tiled ? "to_tiled" : "from_tiled");
+            CHECK(rt_tile_copy_shader(sizes[i], to_tiled, &spirv, &words) == 0 && spirv && spirv[0] == 0x07230203);
+            if (!spirv) continue;
+            const int valid = validate(spirv, words, name);
+            if (valid < 0) fprintf(stderr, "  %s: spirv-val not installed; validation skipped\n", name);
+            CHECK(valid != 0);
+            free(spirv);
+        }
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    CHECK(rt_tile_copy_shader(3, 0, &spirv, &words) == -1);
+}
+
 /* The user data a program reads before writing it, in program order: s_mov_b32 s5, s2; s_mov_b32 s2, 0;
    s_mov_b32 s6, s2 reads s2 (only its first read is the user data's), and writes s5 and s6; the
    starting registers' setup counts as neither. */
@@ -333,6 +357,7 @@ static void user_data_read(void)
 int main(void)
 {
     rect_list_stages();
+    tile_copy_shaders();
     image_programs();
     calls();
     user_data_read();
