@@ -410,11 +410,13 @@ Instead:
           sized from `DB_DEPTH_SIZE`) and Vulkan depth and stencil state; with none bound (format 0,
           as switching the target off writes) the test has nothing to work on and the draw goes on
           as if it were off (shadPS4 takes it the same way). Compare functions are AMD's CompareFrag
-          order, which is Vulkan's. Done: tests that do not read the buffer (always, never) and
-          writes (depth writes; stencil keep, zero, replace with the test value). Reading the buffer,
-          other stencil operations, depth bounds and `DB_RENDER_CONTROL`'s clears stop by name, so
-          the depth image's starting contents (and the HTILE metadata the game may clear it with)
-          are never seen. A draw that writes only the depth target (target mask 0, or
+          order, which is Vulkan's. Done: every compare function, and writes (depth writes; stencil
+          keep, zero, replace with the test value). A test that reads the buffer compares with what
+          earlier draws wrote into the depth image; one reading a depth image no draw has written yet
+          stops by name, as do other stencil operations, depth bounds and `DB_RENDER_CONTROL`'s
+          clears, so the depth image's starting contents (and the HTILE metadata the game may clear
+          it with) are never seen. The buffer's contents in guest memory are never loaded: a depth
+          or stencil buffer the CPU or a compute shader writes would not be seen (not found yet). A draw that writes only the depth target (target mask 0, or
           `CB_COLOR_CONTROL`'s mode `CB_DISABLE`) draws without a colour target; one that writes
           nothing is skipped. Triangle strips (`VGT_PRIMITIVE_TYPE` 6) are drawn too.
         - **Not yet:** other formats, more
