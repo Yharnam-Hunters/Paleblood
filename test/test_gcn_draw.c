@@ -226,8 +226,9 @@ int main(void)
     memcpy(positions.mapped, corners, sizeof corners);
     memcpy(colors.mapped, corner_colors, sizeof corner_colors);
     uint32_t user[USER_DATA_WORDS] = {0};
-    /* Keep shader inputs in one guest window, independent of the driver's address width. */
-    const uint64_t buffer_offset = positions.address - UINT64_C(0x100000000);
+    /* Anchor at the lower buffer so either allocation order fits the guest window. */
+    const uint64_t lowest_address = positions.address < colors.address ? positions.address : colors.address;
+    const uint64_t buffer_offset = lowest_address - UINT64_C(0x100000000);
     address_offset = buffer_offset;
     if (descriptor(user, &positions, buffer_offset) || descriptor(user + 4, &colors, buffer_offset)) {
         fprintf(stderr, "the shader buffers do not fit one 40-bit guest window\n");
