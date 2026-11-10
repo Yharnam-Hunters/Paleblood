@@ -38,6 +38,7 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -122,38 +123,37 @@ static int under(const char *guest, const char *mount_point)
 static mount host_path_on(const char *caller, const char *guest, char *out, size_t size,
                           char point[RT_MOUNT_POINT_BYTES])
 {
+    /* no path-sized buffers here or in the callers' frames: a guest thread's stack can be small (the
+       title's save data thread overflowed its own with them) */
     if (!guest) rt_fatal(caller, "no path: the error value is not established");
-    mount on;
-    char mount_point[RT_MOUNT_POINT_BYTES] = "", host_dir[4096] = "";
+    mount on = MOUNT_WRITABLE;
+    char mount_point[RT_MOUNT_POINT_BYTES] = "";
+    int written = -1;
     if (under(guest, APP0)) {
         if (!rt_process.app0_dir) rt_fatal(caller, "no /app0 directory given (tools/boot.py --app0)");
         on = MOUNT_READ_ONLY;
         snprintf(mount_point, sizeof mount_point, "%s", APP0);
-        snprintf(host_dir, sizeof host_dir, "%s", rt_process.app0_dir);
+        written = snprintf(out, size, "%s%s", rt_process.app0_dir, guest + strlen(APP0));
     } else if (under(guest, DATA)) {
         if (!rt_process.data_dir) rt_fatal(caller, "no /data directory given (tools/boot.py --data)");
-        on = MOUNT_WRITABLE;
         snprintf(mount_point, sizeof mount_point, "%s", DATA);
-        snprintf(host_dir, sizeof host_dir, "%s", rt_process.data_dir);
+        written = snprintf(out, size, "%s%s", rt_process.data_dir, guest + strlen(DATA));
     } else {
-        int read_only = 0;
-        pthread_mutex_lock(&mounts_lock); /* copied out, so an unmount cannot change them under us */
+        pthread_mutex_lock(&mounts_lock); /* written out under the lock, so an unmount cannot change it under us */
         for (int i = 0; i < RT_MAX_MOUNTS && !mount_point[0]; i++) {
             if (mounts[i].point[0] && under(guest, mounts[i].point)) {
                 strcpy(mount_point, mounts[i].point);
-                strcpy(host_dir, mounts[i].host_dir);
-                read_only = mounts[i].read_only;
+                written = snprintf(out, size, "%s%s", mounts[i].host_dir, guest + strlen(mounts[i].point));
+                on = mounts[i].read_only ? MOUNT_READ_ONLY : MOUNT_WRITABLE;
             }
         }
         pthread_mutex_unlock(&mounts_lock);
         if (!mount_point[0]) rt_fatal(caller, "a path outside /app0, /data and the mounted save data: other mounts are not implemented");
-        on = read_only ? MOUNT_READ_ONLY : MOUNT_WRITABLE;
     }
     const size_t prefix = strlen(mount_point);
     for (const char *p = guest + prefix; (p = strstr(p, "/..")); p += 3)
         if (p[3] == '/' || !p[3]) rt_fatal(caller, "a path with a \"..\" component, which could leave its mount");
-    if ((size_t)snprintf(out, size, "%s%s", host_dir, guest + prefix) >= size)
-        rt_fatal(caller, "a path longer than the runtime's buffer");
+    if (written < 0 || (size_t)written >= size) rt_fatal(caller, "a path longer than the runtime's buffer");
     if (point) memcpy(point, mount_point, RT_MOUNT_POINT_BYTES);
     return on;
 }
@@ -437,17 +437,24 @@ static int32_t kernel_ftruncate(int32_t fd, int64_t length)
 static int32_t kernel_rename(const char *from, const char *to)
 {
     static const char fn[] = "sceKernelRename";
-    char host_from[4096], host_to[4096], point_from[RT_MOUNT_POINT_BYTES], point_to[RT_MOUNT_POINT_BYTES];
-    const mount from_on = host_path_on(fn, from, host_from, sizeof host_from, point_from);
-    const mount to_on = host_path_on(fn, to, host_to, sizeof host_to, point_to);
-    if (strcmp(point_from, point_to)) return SCE_KERNEL_ERROR(BSD_EXDEV);
-    if (from_on == MOUNT_READ_ONLY || to_on == MOUNT_READ_ONLY) {
+    enum { HOST_PATH_BYTES = 4096 };
+    char point_from[RT_MOUNT_POINT_BYTES], point_to[RT_MOUNT_POINT_BYTES];
+    char *const host_from = malloc(HOST_PATH_BYTES), *const host_to = malloc(HOST_PATH_BYTES); /* not on the guest's stack */
+    if (!host_from || !host_to) rt_fatal(fn, "the host has no memory for two paths");
+    const mount from_on = host_path_on(fn, from, host_from, HOST_PATH_BYTES, point_from);
+    const mount to_on = host_path_on(fn, to, host_to, HOST_PATH_BYTES, point_to);
+    int32_t answer = 0;
+    if (strcmp(point_from, point_to)) {
+        answer = SCE_KERNEL_ERROR(BSD_EXDEV);
+    } else if (from_on == MOUNT_READ_ONLY || to_on == MOUNT_READ_ONLY) {
         struct stat st; /* the lookup first, as for an open */
-        if (stat(host_from, &st)) return lookup_error(fn);
-        return SCE_KERNEL_ERROR(BSD_EROFS);
+        answer = stat(host_from, &st) ? lookup_error(fn) : SCE_KERNEL_ERROR(BSD_EROFS);
+    } else if (rename(host_from, host_to)) {
+        answer = lookup_error(fn);
     }
-    if (!rename(host_from, host_to)) return 0;
-    return lookup_error(fn);
+    free(host_from);
+    free(host_to);
+    return answer;
 }
 
 /* A directory's position is the runtime's own: the number of entries sceKernelGetdirentries has
