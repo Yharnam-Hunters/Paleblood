@@ -47,3 +47,10 @@ __attribute__((naked)) void bb_mutant_clobbers_second_argument(void)
 {
     __asm__("xorl %esi, %esi\n\tret");
 }
+
+/* Returns zero correctly but also clears its second argument register: caught only by the
+   argument-register comparison. */
+__attribute__((naked)) void bb_mutant_returns_zero_clobbers_second_argument(void)
+{
+    __asm__("xorl %eax, %eax\n\txorl %esi, %esi\n\tret");
+}

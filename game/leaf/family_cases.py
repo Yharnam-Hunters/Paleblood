@@ -50,14 +50,27 @@ def returns_nothing(address: str, value: int | None) -> list[dict]:
     return untouched_state_cases(address, 'i64') + [base_case(address, 'void_contract', 'void')]
 
 
+def returns_a_value(address: str, value: int | None) -> list[dict]:
+    """A body that writes all of rax and nothing else (returns_zero, returns_constant): rax enters
+    with a seed no u32 constant equals, so a body that leaves rax or writes only part of it fails."""
+    return untouched_state_cases(address, 'i64')
+
+
 CASES = {
     'returns_nothing': returns_nothing,
+    'returns_zero': returns_a_value,
+    'returns_constant': returns_a_value,
 }
 
 # Deliberately wrong replacements (test/family_mutants.c) every member's cases must catch.
 MUTANTS = {
     'returns_nothing': ['bb_mutant_writes_first_argument', 'bb_mutant_returns_zero',
                         'bb_mutant_clobbers_second_argument'],
+    'returns_zero': ['bb_mutant_does_nothing', 'bb_mutant_returns_one', 'bb_mutant_returns_zero_clobbers_second_argument'],
+    # A constant family's mutants include the neighbouring value's replacement (tools/family_verify.py);
+    # returns_one or returns_zero would be correct for the members whose constant is 1 or 0.
+    'returns_constant': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument',
+                         'bb_mutant_clobbers_second_argument'],
 }
 
 
