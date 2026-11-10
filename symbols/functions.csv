@@ -1,6 +1,8 @@
 address,size,name,system,status,notes
 0x004632d0,67,frame_timing_get_time_us,frame_timing,original,dead in the stock game: only unwind entries refer to it; the community frame-rate patches overwrite it as a code cave (gettimeofday in microseconds)
+0x00466810,19,frame_timing_posix_sleep_ms,frame_timing,edge-verified,Sleep milliseconds through POSIX usleep (32-bit multiply wraps); ignore its result and return true
 0x00fbc3e0,670,render_yebis_get_recursive_sample_parameters,render,verified,"YEBIS GPUTexUtil_GetRecursiveSampleParameters: blur pass count, last-pass samples and scale; the FPS patches drop its first assertion"
+0x01088550,83,frame_timing_time_of_day_ticks,frame_timing,edge-verified,Time of day in microseconds divided (unsigned 64-bit) by the owner's tick length at +0x1d8
 0x0111a620,129,kernel_file_open,kernel,edge-verified,Open read-only and query FreeBSD amd64 stat; publish low32 file size before int64 descriptor; compiler stack guard omitted
 0x0111a6b0,23,kernel_file_close,kernel,edge-verified,Forward the full opaque descriptor; translate nonzero low32 close status to 19; synthetic wire edge cases only
 0x0111a6e0,60,kernel_file_read_count,kernel,edge-verified,Publish uint32 transferred bytes after kernel buffer writes; full64 received count controls errors and short reads
@@ -43,6 +45,8 @@ address,size,name,system,status,notes
 0x0143e490,174,frame_timing_task_flush_queue_0143e490,frame_timing,verified,"task manager queue flush: lock, run, destroy and free every queued object, empty the list, unlock"
 0x0143f9f0,18,frame_timing_task_set_frame_value_0143f9f0,frame_timing,verified,task manager: copies the float at +0x8 of the frame information to the global 0x058b7e08
 0x014400a0,180,frame_timing_task_workers_step_014400a0,frame_timing,verified,"task manager workers: three rounds over the worker queues +0x58, +0x68, +0x60"
+0x01448580,149,frame_timing_stopwatch_start,frame_timing,edge-verified,"Start a stopwatch from exactly zero: seconds since game start (double divide, float store) at +0x38; bump counters 0x44 and 0x4c"
+0x01448620,168,frame_timing_stopwatch_stop,frame_timing,edge-verified,Stop a positive stopwatch: add seconds since its start to the totals at +0x3c and +0x54; clear the start
 0x01471270,57,render_command_buffer_init,render,edge-verified,"Initialize command pointers and callback, rounding capacity down to complete DWORDs while preserving auxiliary fields."
 0x014712d0,51,render_compose_record_encoding_fields,render,edge-verified,Pack one byte and five masked fields into an encoding DWORD; no memory access.
 0x01471310,544,render_pack_record_mapping_word,render,edge-verified,Pack numeric mapping fields with priority masks and full-width mode handling; return a zero-extended DWORD.
@@ -173,6 +177,8 @@ address,size,name,system,status,notes
 0x024512a0,78,frame_timing_task_frame_024512a0,frame_timing,verified,"task manager frame entry from the frame step: FD4TaskManager singleton, then 0x01388c60"
 0x0247eb80,16,render_read_present_pool_counter,render,edge-verified,"full-QWORD locked read/writeback retry, XOR before each attempt; caller adds one. Real AMD64 write cycles retained; non-AMD64 bridge unresolved Synthetic edges pass; no recordings."
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
+0x024bd150,216,frame_timing_job_take_result,frame_timing,edge-verified,"Job handle result: mode 0 polls (null if not done), 2 takes, others wait 1 ms at a time; bumps the job's holder count under the job lock"
+0x024bdd40,36,frame_timing_job_wait,frame_timing,edge-verified,"Poll a job's state until finished (2), sleeping 1 ms in the kernel between polls"
 0x02564ed0,25,render_present_encoding_units,render,edge-verified,Return the full 64-bit entry for wrapped encoding minus one when its index is below 99; otherwise return zero.
 0x02565130,30,render_present_record_bit_width,render,edge-verified,Return the bit width of the OR of three 32-bit inputs. All-zero input returns zero; the presentation fallback passes one as the third input.
 0x02565f90,855,render_initialize_swap_chain_resource,render,edge-verified,"Validate resource parameters, choose independent allocator and owner defaults, prepare resource storage and publish its wrapper. Allocation failure clears the output and releases prepared storage."
@@ -222,4 +228,7 @@ address,size,name,system,status,notes
 0x02ad5dd0,27,render_swap_chain_present_mode,render,edge-verified,"Validates low DWORD mode; retains object, loads full source pointer at +0x33d0, forwards mode to lower submit Synthetic GCC/Clang edges pass; no recordings."
 0x02ad5e90,3005,render_setup_swap_chain,render,edge-verified,"Allocate and register swap-chain buffers, initialize cached resource data and tone curves, and retain partial publications on the corresponding failure paths."
 0x02ad6e50,499,render_swap_chain_submit,render,edge-verified,"Owned-thread flip polling, source binding and submission; every exit reloads the global guard pointer. Native GPU helper effects remain original Synthetic GCC/Clang edges pass; no recordings."
+0x02c6d580,149,frame_timing_thread_random,frame_timing,edge-verified,This thread's random state (thread-local); seeds it once from the 32-bit time of day in microseconds
+0x02e61140,67,frame_timing_time_of_day_us,frame_timing,edge-verified,Time of day in microseconds (64-bit multiply and add wrap); the gettimeofday result is ignored
+0x02e61280,101,frame_timing_time_seed_words,frame_timing,edge-verified,"Four seed words in rax:rdx: 32-bit seconds, microseconds, and both offset by a counter that advances by 2 per call"
 0x02fa6af0,2214,render_prepare_resource_descriptor,render,edge-verified,Build the resource descriptor and requirements through ordered original helpers; preserve partial writes on errors and live parameter reads between calls.
