@@ -49,6 +49,7 @@ extern "C" uint64_t {symbol}(void)
         'shared': '#include "object_field.h"\n',
         'per_value': '''\
 constexpr std::size_t offset_{name} = {value};
+static_assert(field_is_at_offset<offset_{name}, uint64_t>);
 extern "C" uint64_t {symbol}(const ObjectWithFieldAt<offset_{name}, uint64_t> *object)
 {{
     return object->field;
@@ -64,6 +65,7 @@ extern "C" uint64_t {symbol}(const ObjectWithFieldAt<offset_{name}, uint64_t> *o
         'shared': '#include "object_field.h"\n',
         'per_value': '''\
 constexpr std::size_t offset_{name} = {value};
+static_assert(field_is_at_offset<offset_{name}, uint32_t>);
 extern "C" uint64_t {symbol}(const ObjectWithFieldAt<offset_{name}, uint32_t> *object)
 {{
     return object->field;
@@ -78,6 +80,7 @@ extern "C" uint64_t {symbol}(const ObjectWithFieldAt<offset_{name}, uint32_t> *o
         'shared': '#include "object_field.h"\n',
         'per_value': '''\
 constexpr std::size_t offset_{name} = {value};
+static_assert(field_is_at_offset<offset_{name}, uint16_t>);
 extern "C" uint64_t {symbol}(const ObjectWithFieldAt<offset_{name}, uint16_t> *object)
 {{
     return object->field;
@@ -93,6 +96,7 @@ extern "C" uint64_t {symbol}(const ObjectWithFieldAt<offset_{name}, uint16_t> *o
         'shared': '#include "object_field.h"\n',
         'per_value': '''\
 constexpr std::size_t offset_{name} = {value};
+static_assert(field_is_at_offset<offset_{name}, uint8_t>);
 extern "C" uint64_t {symbol}(const ObjectWithFieldAt<offset_{name}, uint8_t> *object)
 {{
     return object->field;
@@ -108,6 +112,7 @@ extern "C" uint64_t {symbol}(const ObjectWithFieldAt<offset_{name}, uint8_t> *ob
         'shared': '#include "object_field.h"\n',
         'per_value': '''\
 constexpr std::size_t offset_{name} = {value};
+static_assert(field_is_at_offset<offset_{name}, uint8_t>);
 extern "C" uint8_t *{symbol}(ObjectWithFieldAt<offset_{name}, uint8_t> *object)
 {{
     return &object->field;
