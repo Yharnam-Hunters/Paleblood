@@ -2338,7 +2338,8 @@ static int stage_images(rt_executor *x, uint64_t code, const uint32_t *user, uin
         if (d.base_level > d.last_level || d.last_level >= RT_TILING_MAX_LEVELS)
             return failed(error, error_size, "an image with mip levels %u to %u", d.base_level, d.last_level);
         if (d.last_level && !pixel) return failed(error, error_size, "a mip-mapped image in a compute shader: not done yet");
-        if (d.layers > 1 && (d.base_array > d.last_array || d.last_array >= d.layers))
+        /* a cube is viewed whole: its BASE_ARRAY and LAST_ARRAY are not used (the game's give faces 0 to 35 of one cube) */
+        if (d.layers > 1 && !cube && (d.base_array > d.last_array || d.last_array >= d.layers))
             return failed(error, error_size, "a view of an image array from layer %u to %u of %u", d.base_array, d.last_array, d.layers);
         texel_format f;
         if (image_format(&d, &f, error, error_size)) return -1;

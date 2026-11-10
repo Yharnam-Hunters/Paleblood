@@ -353,6 +353,7 @@ static void sampled_cube(rt_executor *x)
         uint32_t user[13] = {0};
         image_descriptor(user + 4, at(CUBE), 10, 0, EDGE, EDGE);
         user[7] = (user[7] & 0x0fffffffu) | LINEAR_ALIGNED << 20 | (uint32_t)TYPE_CUBE << 28;
+        user[9] = 35u << 13; /* LAST_ARRAY 35, as the game's cube descriptors have it: not used */
         user[0] = 0x2 | 0x2 << 3 | 0x2 << 6; /* the sampler: clamped, point filters */
         memcpy(&user[12], &faces[k], 4);
         rt_render_forget(), rt_executor_reset(x);
