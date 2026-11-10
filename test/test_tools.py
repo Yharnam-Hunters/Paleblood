@@ -286,10 +286,13 @@ class Agnostic(Fixture):
     def test_flags_a_module_hook_offset(self):
         os.makedirs(f'{self.d}/runtime')
         os.makedirs(f'{self.d}/game', exist_ok=True)
-        open(f'{self.d}/game/module_hooks.csv', 'w').write('module,offset,size,action,name\nlibA,0x00012340,8,stop,f\n')
+        open(f'{self.d}/game/module_hooks.csv', 'w').write('module,offset,size,first_bytes,action,name\n'
+                                                        'libA,0x00012340,8,0102030405,stop,f\n')
         open(f'{self.d}/runtime/a.c', 'w').write('int ok;\n')
         self.assertEqual(run('check_agnostic.py', '--root', self.d).returncode, 0)
         open(f'{self.d}/runtime/a.c', 'w').write('long a = 0x00012340;\n')
+        self.assertEqual(run('check_agnostic.py', '--root', self.d).returncode, 1)
+        open(f'{self.d}/runtime/a.c', 'w').write('const char *b = "0102030405";\n')
         self.assertEqual(run('check_agnostic.py', '--root', self.d).returncode, 1)
 
 
@@ -947,14 +950,15 @@ class Boot(unittest.TestCase):
         self.assertEqual((p.returncode, s['outcome'], s['first_unimplemented']['caller']),
                          (0, 'unimplemented', 'm.elf'))
         # returned, not a fault: the stub left eax as the caller had it
-        p, s = self.boot_with_module_hooks(['m.elf:0x40:15:return:g'])
+        p, s = self.boot_with_module_hooks(['m.elf:0x40:15:4883ec08ff15:return:g'])
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual((s['outcome'], s['stopped_by_hook'], s['fault']), ('returned', None, None))
         self.assertEqual(s['module_hooks'], [{'module': 'm.elf', 'offset': '0x40', 'action': 'return', 'name': 'g'}])
 
     def test_module_hook_stop_names_the_function_and_its_caller(self):
         # h is seven bytes: too short for an absolute jump, long enough for the relative one
-        p, s = self.boot_with_module_hooks(['m.elf:0x40:15:return:g', 'm.elf:0x80:7:stop:ns::h'])
+        p, s = self.boot_with_module_hooks(['m.elf:0x40:15:4883ec08ff15:return:g',
+                                            'm.elf:0x80:7:b82a00000090c3:stop:ns::h'])
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual((s['outcome'], s['phase'], s['first_unimplemented']), ('stopped', 'm.elf', None))
         self.assertEqual(s['stopped_by_hook'],
@@ -987,7 +991,7 @@ class Boot(unittest.TestCase):
         # the main thread spins (pause; jmp back): only the guest thread can stop the run
         files = self.guest_thread_files(b'\xf3\x90\xeb\xfc')
         for _ in range(5):
-            p, s = self.run_pbboot(files, ['m.elf'], ['m.elf:0x180:7:stop:ns::h'])
+            p, s = self.run_pbboot(files, ['m.elf'], ['m.elf:0x180:7:b82a00000090c3:stop:ns::h'])
             self.assertEqual(p.returncode, 0, p.stderr)
             self.assertEqual((s['outcome'], s['stopped_by_hook']),
                              ('stopped', {'module': 'm.elf', 'offset': '0x180', 'name': 'ns::h',
@@ -998,7 +1002,7 @@ class Boot(unittest.TestCase):
         # only one, and the report must be whole every time
         files = self.guest_thread_files(b'\x0f\x0b')
         for _ in range(20):
-            p, s = self.run_pbboot(files, ['m.elf'], ['m.elf:0x180:7:stop:ns::h'])
+            p, s = self.run_pbboot(files, ['m.elf'], ['m.elf:0x180:7:b82a00000090c3:stop:ns::h'])
             self.assertEqual(p.returncode, 0, p.stderr)
             self.assertIsNotNone(s, p.stderr)
             self.assertIn(s['outcome'], ('stopped', 'fault'))
@@ -1032,34 +1036,51 @@ class Boot(unittest.TestCase):
         p, s = self.run_pbboot(files, ['a.elf', 'b.elf'], [])
         self.assertEqual((s['outcome'], s['phase'], s['first_unimplemented']['caller']),
                          ('unimplemented', 'a.elf', 'b.elf'))
-        p, s = self.run_pbboot(files, ['a.elf', 'b.elf'], ['b.elf:0x40:15:return:f'])
+        p, s = self.run_pbboot(files, ['a.elf', 'b.elf'], ['b.elf:0x40:15:4883ec08ff15:return:f'])
         self.assertEqual((p.returncode, s['outcome']), (0, 'returned'), p.stderr)
 
     def test_bad_module_hooks_are_refused_before_the_run(self):
-        # malformed: an unknown action, no name, a missing field, a sign, a space, a stray letter, no module
-        for bad in ('m.elf:0x80:7:skip:h', 'm.elf:0x80:7:stop:', 'm.elf:0x80:stop:h', 'm.elf:-1:7:stop:h',
-                    'm.elf:+1:7:stop:h', 'm.elf: 1:7:stop:h', 'm.elf:0x80:7x:stop:h', ':0x80:7:stop:h'):
+        g = 'm.elf:0x40:15:4883ec08ff15:return:g'
+        # malformed: an unknown action, no name, a missing field, a sign, a space, a stray letter, no
+        # module; first bytes missing, odd, not hex, upper case, under five, over the size, over 16
+        for bad in ('m.elf:0x80:7:b82a00000090c3:skip:h', 'm.elf:0x80:7:b82a00000090c3:stop:',
+                    'm.elf:0x80:b82a00000090c3:stop:h', 'm.elf:-1:7:b82a00000090c3:stop:h',
+                    'm.elf:+1:7:b82a00000090c3:stop:h', 'm.elf: 1:7:b82a00000090c3:stop:h',
+                    'm.elf:0x80:7x:b82a00000090c3:stop:h', ':0x80:7:b82a00000090c3:stop:h', 'm.elf:0x80:7:stop:h',
+                    'm.elf:0x80:7::stop:h', 'm.elf:0x80:7:b82a00000090c:stop:h', 'm.elf:0x80:7:zz2a00000090c3:stop:h',
+                    'm.elf:0x80:7:B82A00000090C3:stop:h',
+                    'm.elf:0x80:4:b82a0000:stop:h', 'm.elf:0x80:7:b82a00000090c3c3:stop:h',
+                    'm.elf:0x40:20:' + '00' * 17 + ':return:g'):
             p, s = self.boot_with_module_hooks([bad])
             self.assertEqual((p.returncode, s), (2, None), (bad, p.stderr))
-        p, s = self.boot_with_module_hooks([f'm.elf:{0x100 + 8 * i:#x}:5:return:f{i}' for i in range(17)])
+        p, s = self.boot_with_module_hooks([f'm.elf:{0x100 + 8 * i:#x}:5:0000000000:return:f{i}' for i in range(17)])
         self.assertEqual((p.returncode, s), (2, None))
         self.assertIn('more than 16 module hooks', p.stderr)
-        # no such module; the executable (by file and by its label); under five bytes; data; across the
-        # executable segment's end; past the image; a size that would wrap around
-        for bad in ('x.elf:0x80:7:stop:h', 'e.elf:0x0:5:return:e', 'eboot:0x0:5:return:e', 'm.elf:0x80:4:stop:h',
-                    'm.elf:0x1000:5:return:d', 'm.elf:0xffe:5:stop:h', 'm.elf:0x2011:5:stop:h',
-                    'm.elf:0x40:0xffffffffffffffff:return:g'):
+        # no such module; the executable (by file and by its label); data; across the executable
+        # segment's end; past the image; a size that would wrap around
+        for bad in ('x.elf:0x80:7:b82a00000090c3:stop:h', 'e.elf:0x0:5:c300000000:return:e',
+                    'eboot:0x0:5:c300000000:return:e', 'm.elf:0x1000:5:0000000000:return:d',
+                    'm.elf:0xffe:5:0000000000:stop:h', 'm.elf:0x2011:5:0000000000:stop:h',
+                    'm.elf:0x40:0xffffffffffffffff:4883ec08ff15:return:g'):
             p, s = self.boot_with_module_hooks([bad])
             self.assertEqual((p.returncode, s), (3, None), (bad, p.stderr))
-        # overlapping and duplicate hooks: the second would overwrite the first one's jump
-        for pair in (['m.elf:0x40:15:return:g', 'm.elf:0x42:5:return:g2'],
-                     ['m.elf:0x80:7:stop:h', 'm.elf:0x80:7:return:h']):
+        # other bytes than expected, in the first, a middle or the last one: another build; nothing runs
+        for bad in ('m.elf:0x80:7:b92a00000090c3:stop:h', 'm.elf:0x80:7:b82b00000090c3:stop:h',
+                    'm.elf:0x80:7:b82a00000090c2:stop:h'):
+            p, s = self.boot_with_module_hooks([bad])
+            self.assertEqual((p.returncode, s), (3, None), (bad, p.stderr))
+            self.assertIn(f'm.elf+0x80 holds b82a00000090c3, not the expected {bad.split(":")[3]}', p.stderr)
+        # overlapping and duplicate hooks, by as little as one byte: the second would overwrite the
+        # first one's jump
+        for pair in ([g, 'm.elf:0x42:5:ec08ff15b6:return:g2'], [g, 'm.elf:0x4e:5:c300000000:return:tail'],
+                     ['m.elf:0x80:7:b82a00000090c3:stop:h', 'm.elf:0x80:7:b82a00000090c3:return:h']):
             p, s = self.boot_with_module_hooks(pair)
             self.assertEqual((p.returncode, s), (3, None), (pair, p.stderr))
             self.assertIn('overlaps', p.stderr)
-        # the last five bytes of the executable segment are a place for a jump
-        p, s = self.boot_with_module_hooks(['m.elf:0x40:15:return:g', 'm.elf:0xffb:5:return:edge'])
-        self.assertEqual((p.returncode, s['outcome']), (0, 'returned'), p.stderr)
+        # right after another hook, and the last five bytes of the executable segment: places for a jump
+        for pair in ([g, 'm.elf:0x4f:5:0000000000:return:next'], [g, 'm.elf:0xffb:5:0000000000:return:edge']):
+            p, s = self.boot_with_module_hooks(pair)
+            self.assertEqual((p.returncode, s['outcome']), (0, 'returned'), (pair, p.stderr))
 
     def test_boot_passes_module_hooks(self):
         import boot
@@ -1070,13 +1091,20 @@ class Boot(unittest.TestCase):
                 fh.write('module,action,sysmodule,notes\nlibA,map,,mapped\nlibB,stub,0x0038,stub\n')
             path = os.path.join(d, 'game', 'module_hooks.csv')
             self.assertEqual(boot.module_hook_args(d), [])                 # no file: no hooks
-            header = 'module,offset,size,action,name\n'
+            header = 'module,offset,size,first_bytes,action,name\n'
             with open(path, 'w') as fh:
-                fh.write(header + 'libA,0x00000010,128,return,probe\nlibA,0x20,7,stop,ns::reader\n')
-            self.assertEqual(boot.module_hook_args(d), ['--module-hook', 'libA.elf:0x10:128:return:probe',
-                                                        '--module-hook', 'libA.elf:0x20:7:stop:ns::reader'])
-            # a stub module is not mapped; an unknown action; no name; not a number
-            for bad in ('libB,0x10,8,stop,f', 'libA,0x10,8,skip,f', 'libA,0x10,8,stop,', 'libA,ten,8,stop,f'):
+                fh.write(header + 'libA,0x00000010,128,0102030405,return,probe\n'
+                                  'libA,0x20,7,a1a2a3a4a5a6a7,stop,ns::reader\n')
+            self.assertEqual(boot.module_hook_args(d),
+                             ['--module-hook', 'libA.elf:0x10:128:0102030405:return:probe',
+                              '--module-hook', 'libA.elf:0x20:7:a1a2a3a4a5a6a7:stop:ns::reader'])
+            # a stub module is not mapped; an unknown action; no name; not a number; first bytes
+            # missing, odd, under five, upper case, not hex, over the size, over 16
+            for bad in ('libB,0x10,8,0102030405,stop,f', 'libA,0x10,8,0102030405,skip,f',
+                        'libA,0x10,8,0102030405,stop,', 'libA,ten,8,0102030405,stop,f', 'libA,0x10,8,,stop,f',
+                        'libA,0x10,8,010203040,stop,f', 'libA,0x10,8,01020304,stop,f',
+                        'libA,0x10,8,A1A2A3A4A5,stop,f', 'libA,0x10,8,zz02030405,stop,f',
+                        'libA,0x10,5,010203040506,stop,f', 'libA,0x10,128,' + '00' * 17 + ',stop,f'):
                 with open(path, 'w') as fh:
                     fh.write(header + bad + '\n')
                 with self.assertRaises(ValueError, msg=bad):
@@ -1084,7 +1112,7 @@ class Boot(unittest.TestCase):
         finally:
             shutil.rmtree(d)
         for arg in boot.module_hook_args(ROOT)[1::2]:                     # the game's own file parses
-            self.assertRegex(arg, r'^[^:]+\.elf:0x[0-9a-f]+:\d+:(return|stop):.+$')
+            self.assertRegex(arg, r'^[^:]+\.elf:0x[0-9a-f]+:\d+:(?:[0-9a-f]{2}){5,16}:(return|stop):.+$')
 
     def test_boot_hands_the_module_hooks_to_the_harness(self):
         import boot
