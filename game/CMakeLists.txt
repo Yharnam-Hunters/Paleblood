@@ -27,3 +27,40 @@ target_link_options(bbgame PRIVATE -Wl,--no-undefined)
 # -fno-fast-math also overrides one that comes in through CXXFLAGS. tools/check_float_flags.py
 # checks the flags every game source is built with (ctest, so CI).
 target_compile_options(bbgame PRIVATE -ffp-contract=off -fno-fast-math)
+
+# Test the canonical runtime bridge against real recorders, and with no recorders exported.
+add_executable(test_color_target_observer render/tests/color_target_observer.cpp render/set_render_target.cpp
+    ${PROJECT_SOURCE_DIR}/runtime/render_observer.c)
+target_link_libraries(test_color_target_observer PRIVATE pbrender_calls ${CMAKE_DL_LIBS} pthread)
+target_compile_options(test_color_target_observer PRIVATE -ffp-contract=off -fno-fast-math)
+set_target_properties(test_color_target_observer PROPERTIES ENABLE_EXPORTS ON)
+add_test(NAME color_target_observer COMMAND test_color_target_observer)
+
+add_executable(test_color_target_observer_absent render/tests/color_target_observer.cpp render/set_render_target.cpp
+    ${PROJECT_SOURCE_DIR}/runtime/render_observer.c)
+target_include_directories(test_color_target_observer_absent PRIVATE ${PROJECT_SOURCE_DIR}/runtime/include)
+target_compile_definitions(test_color_target_observer_absent PRIVATE PB_COLOR_OBSERVER_ABSENT=1)
+target_compile_options(test_color_target_observer_absent PRIVATE -ffp-contract=off -fno-fast-math)
+target_link_libraries(test_color_target_observer_absent PRIVATE ${CMAKE_DL_LIBS} pthread)
+add_test(NAME color_target_observer_absent COMMAND test_color_target_observer_absent)
+
+# Depth observation uses separate sources so the proven color closure stays unchanged.
+add_executable(test_depth_target_observer render/tests/depth_target_observer.cpp render/set_depth_render_target.cpp
+    ${PROJECT_SOURCE_DIR}/runtime/render_observer.c)
+target_link_libraries(test_depth_target_observer PRIVATE pbrender_calls ${CMAKE_DL_LIBS} pthread)
+target_compile_options(test_depth_target_observer PRIVATE -ffp-contract=off -fno-fast-math)
+set_target_properties(test_depth_target_observer PROPERTIES ENABLE_EXPORTS ON)
+add_test(NAME depth_target_observer COMMAND test_depth_target_observer)
+
+add_executable(test_depth_target_observer_absent render/tests/depth_target_observer.cpp render/set_depth_render_target.cpp
+    ${PROJECT_SOURCE_DIR}/runtime/render_observer.c)
+target_include_directories(test_depth_target_observer_absent PRIVATE ${PROJECT_SOURCE_DIR}/runtime/include)
+target_compile_definitions(test_depth_target_observer_absent PRIVATE PB_DEPTH_OBSERVER_ABSENT=1)
+target_compile_options(test_depth_target_observer_absent PRIVATE -ffp-contract=off -fno-fast-math)
+target_link_libraries(test_depth_target_observer_absent PRIVATE ${CMAKE_DL_LIBS} pthread)
+add_test(NAME depth_target_observer_absent COMMAND test_depth_target_observer_absent)
+
+# The camera fixture generator and verifier contracts are checked beside their game-owned inputs.
+add_test(NAME camera_update_cases
+         COMMAND ${Python3_EXECUTABLE}
+                 "${CMAKE_CURRENT_SOURCE_DIR}/camera/tests/test_update_cases.py")

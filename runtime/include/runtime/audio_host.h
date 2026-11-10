@@ -23,4 +23,7 @@ int rt_audio_host_write(void *stream, const float *samples, uint32_t frames);
 /* How many frames are queued and not yet played. */
 uint32_t rt_audio_host_queued_frames(void *stream);
 
+/* Closes a stream rt_audio_host_open gave; what it still had queued is dropped. */
+void rt_audio_host_close(void *stream);
+
 #endif
