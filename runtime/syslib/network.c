@@ -2,6 +2,7 @@
 /* System call group: networking (libSceNet): byte order, address conversion, and the start-up of
    the network, SSL and HTTP libraries (libSceNet, libSceSsl, libSceHttp). */
 #include "runtime/http.h"
+#include "runtime/net.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
@@ -137,6 +138,11 @@ static atomic_int http_contexts_created;
 
 /* Which ids have been ended (see Teardown, below): ids are never reused. */
 static atomic_uchar net_pool_ended[MAX_NET_POOLS + 1];
+
+int rt_net_pool_is_live(int32_t pool)
+{
+    return pool >= 1 && pool <= atomic_load(&net_pools_created) && !atomic_load(&net_pool_ended[pool]);
+}
 static atomic_uchar ssl_context_ended[MAX_SSL_CONTEXTS + 1];
 static atomic_uchar http_context_ended[MAX_HTTP_CONTEXTS + 1];
 
@@ -185,6 +191,11 @@ static int is_live_http_context(int32_t context)
 static int is_live_http_template(int32_t id)
 {
     return id >= 1 && id <= atomic_load(&http_templates_created) && !atomic_load(&http_template_ended[id]);
+}
+
+int rt_http_template_is_live(int32_t id)
+{
+    return is_live_http_template(id);
 }
 
 /* Each template's HTTPS flags (see sceHttpsEnableOption below), from its creation. */
@@ -316,6 +327,11 @@ static http_epoll_state http_epoll_state_of(const http_epoll *handle)
     return state;
 }
 
+int rt_http_epoll_is_live(const void *handle)
+{
+    return http_epoll_state_of(handle) != HTTP_EPOLL_UNKNOWN;
+}
+
 /* sceHttpWaitRequest(void *handle, events, int32_t max events, int64_t timeout): OpenOrbis' Http.h
    names it without a signature, so the shape comes from the executable's HTTP worker (0x013d10d0,
    called from 0x023e4d70 and 0x0227df20). For each of its connections it passes the handle from
@@ -394,9 +410,15 @@ static int32_t net_fail(int error)
     return SCE_NET_ERROR(error);
 }
 
+int32_t rt_net_fail(int error)
+{
+    return net_fail(error);
+}
+
 typedef struct {
     uint8_t open;
     uint8_t abort_pending;  /* a preserved abort, for the next wait */
+    uint8_t registered[RT_NET_MAX_SOCKETS + 1]; /* sceNetEpollControl: the sockets added */
     uint32_t waiters;
     uint64_t interruptions; /* counts aborts and destroys; a waiter that sees it change was interrupted */
 } net_epoll;
@@ -486,6 +508,49 @@ static int32_t net_epoll_destroy(int32_t id)
     return set ? 0 : net_fail(BSD_EBADF);
 }
 RT_SYSLIB("libSceNet", sceNetEpollDestroy, net_epoll_destroy);
+
+/* sceNetEpollControl(id, op, socket, event *): adds a socket to an epoll set or removes it (shape
+   from shadPS4's net.cpp; the event is 32-bit events, then 64-bit data at 0x10). The executable
+   adds sockets with events 1 (readable) or 3 (readable and writable) and removes them with a NULL
+   event (0x02b159c0); it reads the network errno on a negative answer, and two callers destroy the
+   set then. Facts from shadPS4 (facts only): an op other than add (1), modify (2) and delete (3),
+   a delete with an event, an add without one and an empty event mask are EINVAL; an unknown set or
+   socket, and deleting a socket the set does not hold, are EBADF; adding one it holds is EEXIST.
+   Offline no socket ever becomes ready, so a registration changes no wait. What stops by name:
+   modify (not used); a writable registration on a datagram socket, which a console would report
+   ready at once. A closed socket leaves every set (rt_net_epoll_forget). */
+enum { EPOLL_ADD = 1, EPOLL_MODIFY = 2, EPOLL_DELETE = 3, EPOLL_OUT = 2, BSD_EEXIST = 17 };
+
+static int32_t net_epoll_control(int32_t id, int32_t op, int32_t socket, const uint32_t *event)
+{
+    static const char fn[] = "sceNetEpollControl";
+    if (op == EPOLL_MODIFY) rt_fatal(fn, "modifying a registration: not established");
+    if (op != EPOLL_ADD && op != EPOLL_DELETE) return net_fail(BSD_EINVAL);
+    if ((op == EPOLL_DELETE) != !event || (event && !*event)) return net_fail(BSD_EINVAL);
+    if (op == EPOLL_ADD && (*event & EPOLL_OUT) && rt_net_socket_is_datagram(socket))
+        rt_fatal(fn, "a writable registration on a datagram socket, which would be ready at once");
+    const int socket_open = rt_net_socket_is_open(socket);
+    pthread_mutex_lock(&net_epoll_lock);
+    net_epoll *set = net_epoll_of(id);
+    int error = !set || !socket_open ? BSD_EBADF : 0;
+    if (!error && op == EPOLL_ADD) {
+        error = set->registered[socket] ? BSD_EEXIST : 0;
+        if (!error) set->registered[socket] = 1;
+    } else if (!error) {
+        error = set->registered[socket] ? 0 : BSD_EBADF;
+        set->registered[socket] = 0;
+    }
+    pthread_mutex_unlock(&net_epoll_lock);
+    return error ? net_fail(error) : 0;
+}
+RT_SYSLIB("libSceNet", sceNetEpollControl, net_epoll_control);
+
+void rt_net_epoll_forget(int32_t socket)
+{
+    pthread_mutex_lock(&net_epoll_lock);
+    for (int id = 1; id <= MAX_NET_EPOLLS; id++) net_epolls[id].registered[socket] = 0;
+    pthread_mutex_unlock(&net_epoll_lock);
+}
 
 /* Teardown. The executable's HTTP manager tears down what it set up: its connection object
    (0x013d1d90, 0x013d1e10) calls sceHttpAbortWaitRequest(handle), sceHttpDestroyEpoll(HTTP
