@@ -48,6 +48,21 @@ static const uint32_t reciprocals[] = {
 static const uint32_t indexed_scale_add[] = INDEXED_SCALE_ADD(0);
 static const uint32_t indexed_scale_add_past_stride[] = INDEXED_SCALE_ADD(4);
 
+/* out[i] = v_mul_hi_u32(in[i], in[i]), out[64 + i] = v_mul_hi_i32(in[i], in[i]),
+   out[128 + i] = v_mul_hi_i32(in[i], 4 * i). */
+static const uint32_t multiply_high[] = {
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0xe0301000, 0x80000201, /* buffer_load_dword v2, v1, s[0:3], 0 offen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xd2d40003, 0x00020502, /* v_mul_hi_u32 v3, v2, v2 */
+    0xd2d80004, 0x00020502, /* v_mul_hi_i32 v4, v2, v2 */
+    0xd2d80005, 0x00020302, /* v_mul_hi_i32 v5, v2, v1 */
+    0xe0701000, 0x80010301, /* buffer_store_dword v3, v1, s[4:7], 0 offen */
+    0xe0701100, 0x80010401, /* buffer_store_dword v4, v1, s[4:7], 0 offen offset:256 */
+    0xe0701200, 0x80010501, /* buffer_store_dword v5, v1, s[4:7], 0 offen offset:512 */
+    0xbf810000, /* s_endpgm */
+};
+
 /* Per lane i, eight dwords at i * 32 bytes: (8 > i ? float(i) : 2.0), 105 + i, the carry out of
    0xffffffff + i, the legacy product 0 * infinity (0; the zero is read from in[64], so no
    compiler can fold the product away), float -4 to signed (-4) and to unsigned (0: saturated). */
