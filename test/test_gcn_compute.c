@@ -153,6 +153,15 @@ int main(void)
     address_offset = 0;
     for (int i = 0; i < LANES; i++) CHECK(out_words[i] == bits((float)i * 0.5f * 2.5f + 1.0f));
 
+    /* v_rcp_iflag_f32 is v_rcp_f32's reciprocal (exact for powers of two). */
+    for (int i = 0; i < LANES; i++) in_floats[i] = ldexpf(1.0f, i - 32);
+    memset(out.mapped, 0, BUFFER_BYTES);
+    CHECK(run(&g, reciprocals, sizeof reciprocals / sizeof reciprocals[0], user) == 0);
+    for (int i = 0; i < LANES; i++) {
+        CHECK(out_words[i] == bits(ldexpf(1.0f, 32 - i)));
+        CHECK(out_words[LANES + i] == bits(ldexpf(1.0f, 32 - i)));
+    }
+
     /* Range checking (CLRX's GCN memory handling notes): an access outside the descriptor's range
        reads 0 and writes nothing. Stride 0: NUM_RECORDS counts bytes, so with 40 dwords to read and
        32 to write, lanes 40 and up read 0 (out = 1.0) and lanes 32 and up store nothing. */
