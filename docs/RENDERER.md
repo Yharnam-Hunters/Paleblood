@@ -555,3 +555,25 @@ Instead:
 
 Each phase lands in small PRs with tests. A boot is recorded after each runtime change. The wiki's
 Runtime page and Gallery show where it stands.
+
+
+### Indexed draw packet fields
+
+The record keeps index-buffer state (`INDEX_BASE`, `INDEX_BUFFER_SIZE` and
+`INDEX_TYPE`) and distinguishes offset draws (`DRAW_INDEX_OFFSET_2`) from addressed
+draws (`DRAW_INDEX_2`). The recorded base is the byte address made from the two
+INDEX_BASE DWORDs, without masking either word. The executor rejects an unaligned
+address or a range outside GPU-visible memory. The recorder never reads index memory.
+
+An offset draw recorded through the existing first/count API has
+`has_packet_fields = 0` and retains its `INDEX_BUFFER_SIZE` bound. The packet API
+sets that tag to 1 and also records the emitted header, `MAX_SIZE` and
+`DRAW_INITIATOR`. Even a zero header remains a packet call and is rejected as an
+unsupported header. A packet's MAX_SIZE counts from its first index, independently
+of INDEX_BUFFER_SIZE. Counts above MAX_SIZE would require DMA zero filling, which
+the executor does not implement.
+
+Vulkan draws supported offset packets. Predicated packets, other headers and
+nonzero initiators fail with a reason. Addressed DRAW_INDEX_2 calls are recorded
+with their complete payload but are not yet executed by Vulkan. The packet
+observer bridge belongs with the GPU-library replacements that first call it.
