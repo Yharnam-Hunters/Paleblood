@@ -411,9 +411,10 @@ Instead:
           as switching the target off writes) the test has nothing to work on and the draw goes on
           as if it were off (shadPS4 takes it the same way). Compare functions are AMD's CompareFrag
           order, which is Vulkan's. Done: every compare function, and writes (depth writes; stencil
-          keep, zero, replace with the test value). A test that reads the buffer compares with what
+          keep, zero, replace with the test value, invert, and add or subtract, clamped or wrapping,
+          when they step by `STENCILOPVAL` 1, which is Vulkan's increment and decrement). A test that reads the buffer compares with what
           earlier draws wrote into the depth image; one reading a depth image no draw has written yet
-          stops by name, as do other stencil operations, depth bounds and `DB_RENDER_CONTROL`'s
+          stops by name, as do other stencil operations and steps, depth bounds and `DB_RENDER_CONTROL`'s
           clears, so the depth image's starting contents (and the HTILE metadata the game may clear
           it with) are never seen. The buffer's contents in guest memory are never loaded: a depth
           or stencil buffer the CPU or a compute shader writes would not be seen (not found yet). A draw that writes only the depth target (target mask 0, or

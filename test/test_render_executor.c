@@ -353,7 +353,8 @@ static void depth_and_strips(rt_executor *x)
        - the triangle with the depth test always passing and depth writes, into the colour target too,
          draws the reference image;
        - tests that read the buffer (depth LESS and LESS_EQUAL, stencil EQUAL) compare with what earlier
-         draws wrote; one reading a depth target no draw wrote, another stencil operation, depth bounds,
+         draws wrote; add-and-wrap steps by 1; one reading a depth target no draw wrote, an add stepping
+         by another STENCILOPVAL, another stencil operation, depth bounds,
          DB_RENDER_CONTROL's clears, or a missing DB_STENCILREFMASK stop by name. */
     enum { DEPTH = 0xb40000, DEPTH_COLOUR = 0xb80000, STENCIL_ONLY = 0xbc0000 };
     const uint32_t depth_size = (SIZE / 8 - 1) | (SIZE / 8 - 1) << 11, z = (uint32_t)(at(DEPTH) >> 8), st = (uint32_t)(at(DEPTH + 0x2000) >> 8);
@@ -392,6 +393,18 @@ static void depth_and_strips(rt_executor *x)
     const uint32_t stencil_other[][2] = {DEPTH_TARGET, {0xa10c, 0xffff01}, {0xa10b, 0}, {0xa200, 0x1 | 0x2u << 8}};
     CHECK(run_counted(x, DEPTH_BUFFER, at(EQUAL_MISS), stencil_other, 12, 3, error, sizeof error) == 0);
     CHECK(nothing_drawn(x, at(EQUAL_MISS)));
+    /* add-and-wrap stepping by STENCILOPVAL 1 (DB_STENCILREFMASK bits 24-31) on pass turns 0x7f into 0x80:
+       EQUAL 0x80 then draws the triangle; a step of 2 stops by name */
+    enum { INCREMENTED = 0x1540000 };
+    const uint32_t step[][2] = {DEPTH_TARGET, {0xa08e, 0}, {0xa10c, 0x01ffff00}, {0xa10b, 0x80}, {0xa200, 0x1 | 0x7u << 8}};
+    drawn = run_counted(x, DEPTH_BUFFER, at(STENCIL_ONLY), step, 13, 3, error, sizeof error);
+    if (drawn) fprintf(stderr, "stencil add and wrap: %s\n", error);
+    CHECK(drawn == 0);
+    const uint32_t equal_next[][2] = {DEPTH_TARGET, {0xa10c, 0xffff80}, {0xa10b, 0}, {0xa200, 0x1 | 0x2u << 8}};
+    CHECK(run_counted(x, DEPTH_BUFFER, at(INCREMENTED), equal_next, 12, 3, error, sizeof error) == 0);
+    check_triangle(x, at(INCREMENTED));
+    const uint32_t step_two[][2] = {DEPTH_TARGET, {0xa08e, 0}, {0xa10c, 0x02ffff00}, {0xa10b, 0x80}, {0xa200, 0x1 | 0x7u << 8}};
+    CHECK(run_counted(x, DEPTH_BUFFER, at(STENCIL_ONLY), step_two, 13, 3, error, sizeof error) == -1 && strstr(error, "STENCILOPVAL 2"));
     /* a test reading a depth target no draw has written stops by name: its memory is never loaded */
     const uint32_t uz = (uint32_t)(at(UNWRITTEN) >> 8), ust = (uint32_t)(at(UNWRITTEN + 0x2000) >> 8);
     const uint32_t unwritten[][2] = {{0xa010, 0xa0000003}, {0xa011, 0x20000001}, {0xa012, uz}, {0xa013, ust}, {0xa014, uz}, {0xa015, ust},
