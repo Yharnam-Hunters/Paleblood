@@ -17,8 +17,8 @@ Function families are many tiny identical functions (an empty method, a getter) 
 
 | Runtime | |
 |---|---|
-| System imports implemented | 453 of 686 (66.03%): 219 by the game's own modules, 234 by the runtime |
-| Other imports | 2 registered fail-loud diagnostics, 231 unbound |
+| System imports implemented | 683 of 686 (99.56%): 219 by the game's own modules, 464 by the runtime |
+| Other imports | 0 registered fail-loud diagnostics, 3 unbound |
 | Furthest boot milestone | first flip (8 of 8) |
 | Boot stops at | the run's time limit, still running (no call stopped it) |
 

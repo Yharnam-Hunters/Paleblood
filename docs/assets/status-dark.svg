@@ -1,10 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="620" viewBox="0 0 1000 620" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-label="Paleblood status: 453 of 686 imports working">
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="620" viewBox="0 0 1000 620" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-label="Paleblood status: 683 of 686 imports working">
 <rect width="1000" height="620" rx="8" fill="#1a1a19"/>
-<rect x="16.0" y="14" width="246.0" height="26" rx="4" fill="#3a3a37"/><path d="M136.0 14h122.0a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4h-122.0z" fill="#3987e5"/><text x="22.0" y="31.5" fill="#f0efec" font-size="13" font-weight="normal" text-anchor="start">imports working</text><text x="142.0" y="31.5" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="start">453/686 (66.0%)</text>
+<rect x="16.0" y="14" width="246.0" height="26" rx="4" fill="#3a3a37"/><path d="M136.0 14h122.0a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4h-122.0z" fill="#3987e5"/><text x="22.0" y="31.5" fill="#f0efec" font-size="13" font-weight="normal" text-anchor="start">imports working</text><text x="142.0" y="31.5" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="start">683/686 (99.6%)</text>
 <rect x="270.0" y="14" width="174.4" height="26" rx="4" fill="#3a3a37"/><path d="M310.8 14h129.6a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4h-129.6z" fill="#199e70"/><text x="276.0" y="31.5" fill="#f0efec" font-size="13" font-weight="normal" text-anchor="start">boot</text><text x="316.8" y="31.5" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="start">first flip (8/8)</text>
-<rect x="452.4" y="14" width="244.8" height="26" rx="4" fill="#3a3a37"/><path d="M594.0 14h99.2a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4h-99.2z" fill="#3987e5"/><text x="458.4" y="31.5" fill="#f0efec" font-size="13" font-weight="normal" text-anchor="start">in the last 7 days</text><text x="600.0" y="31.5" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="start">+201 imports</text>
+<rect x="452.4" y="14" width="244.8" height="26" rx="4" fill="#3a3a37"/><path d="M594.0 14h99.2a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4h-99.2z" fill="#3987e5"/><text x="458.4" y="31.5" fill="#f0efec" font-size="13" font-weight="normal" text-anchor="start">in the last 7 days</text><text x="600.0" y="31.5" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="start">+431 imports</text>
 <rect x="705.2" y="14" width="320.0" height="26" rx="4" fill="#3a3a37"/><path d="M861.2 14h160.0a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4h-160.0z" fill="#199e70"/><text x="711.2" y="31.5" fill="#f0efec" font-size="13" font-weight="normal" text-anchor="start">functions decompiled</text><text x="867.2" y="31.5" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="start">18,258 (21 verified)</text>
-<text x="16.0" y="70.0" fill="#f0efec" font-size="14" font-weight="bold" text-anchor="start">System imports by library: 453 of 686 working</text>
+<text x="16.0" y="70.0" fill="#f0efec" font-size="14" font-weight="bold" text-anchor="start">System imports by library: 683 of 686 working</text>
 <g><title>libc: 202 of 202 working (0 runtime, 202 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="18.0" y="82.0" width="237.7" height="319.5" rx="3" fill="none" stroke="#2c2c2a"/>
 <text x="22.0" y="93.5" fill="#c3c2b7" font-size="10" font-weight="normal" text-anchor="start">libc 202/202</text>
@@ -211,9 +211,9 @@
 <rect x="109.5" y="367.4" width="16.9" height="16.9" rx="0.5" fill="#199e70"/>
 <rect x="127.4" y="367.4" width="16.9" height="16.9" rx="0.5" fill="#199e70"/>
 </g>
-<g><title>libkernel: 58 of 79 working (58 runtime, 0 game modules, 0 stop by name, 21 not yet)</title>
+<g><title>libkernel: 76 of 79 working (76 runtime, 0 game modules, 0 stop by name, 3 not yet)</title>
 <rect x="18.0" y="405.5" width="237.7" height="122.5" rx="3" fill="none" stroke="#2c2c2a"/>
-<text x="22.0" y="417.0" fill="#c3c2b7" font-size="10" font-weight="normal" text-anchor="start">libkernel 58/79</text>
+<text x="22.0" y="417.0" fill="#c3c2b7" font-size="10" font-weight="normal" text-anchor="start">libkernel 76/79</text>
 <rect x="20.0" y="422.5" width="15.5" height="15.5" rx="0.5" fill="#3987e5"/>
 <rect x="36.5" y="422.5" width="15.5" height="15.5" rx="0.5" fill="#3987e5"/>
 <rect x="53.0" y="422.5" width="15.5" height="15.5" rx="0.5" fill="#3987e5"/>
@@ -272,31 +272,31 @@
 <rect x="234.5" y="472.0" width="15.5" height="15.5" rx="0.5" fill="#3987e5"/>
 <rect x="20.0" y="488.5" width="15.5" height="15.5" rx="0.5" fill="#3987e5"/>
 <rect x="36.5" y="488.5" width="15.5" height="15.5" rx="0.5" fill="#3987e5"/>
-<rect x="53.0" y="488.5" width="15.5" height="15.5" rx="0.5" fill="#3a3a37"/>
-<rect x="69.5" y="488.5" width="15.5" height="15.5" rx="0.5" fill="#3a3a37"/>
-<rect x="86.0" y="488.5" width="15.5" height="15.5" rx="0.5" fill="#3a3a37"/>
-<rect x="102.5" y="488.5" width="15.5" height="15.5" rx="0.5" fill="#3a3a37"/>
-<rect x="119.0" y="488.5" width="15.5" height="15.5" rx="0.5" fill="#3a3a37"/>
-<rect x="135.5" y="488.5" width="15.5" height="15.5" rx="0.5" fill="#3a3a37"/>
-<rect x="152.0" y="488.5" width="15.5" height="15.5" rx="0.5" fill="#3a3a37"/>
-<rect x="168.5" y="488.5" width="15.5" height="15.5" rx="0.5" fill="#3a3a37"/>
-<rect x="185.0" y="488.5" width="15.5" height="15.5" rx="0.5" fill="#3a3a37"/>
-<rect x="201.5" y="488.5" width="15.5" height="15.5" rx="0.5" fill="#3a3a37"/>
-<rect x="218.0" y="488.5" width="15.5" height="15.5" rx="0.5" fill="#3a3a37"/>
-<rect x="234.5" y="488.5" width="15.5" height="15.5" rx="0.5" fill="#3a3a37"/>
-<rect x="20.0" y="505.0" width="15.5" height="15.5" rx="0.5" fill="#3a3a37"/>
-<rect x="36.5" y="505.0" width="15.5" height="15.5" rx="0.5" fill="#3a3a37"/>
-<rect x="53.0" y="505.0" width="15.5" height="15.5" rx="0.5" fill="#3a3a37"/>
-<rect x="69.5" y="505.0" width="15.5" height="15.5" rx="0.5" fill="#3a3a37"/>
-<rect x="86.0" y="505.0" width="15.5" height="15.5" rx="0.5" fill="#3a3a37"/>
-<rect x="102.5" y="505.0" width="15.5" height="15.5" rx="0.5" fill="#3a3a37"/>
+<rect x="53.0" y="488.5" width="15.5" height="15.5" rx="0.5" fill="#3987e5"/>
+<rect x="69.5" y="488.5" width="15.5" height="15.5" rx="0.5" fill="#3987e5"/>
+<rect x="86.0" y="488.5" width="15.5" height="15.5" rx="0.5" fill="#3987e5"/>
+<rect x="102.5" y="488.5" width="15.5" height="15.5" rx="0.5" fill="#3987e5"/>
+<rect x="119.0" y="488.5" width="15.5" height="15.5" rx="0.5" fill="#3987e5"/>
+<rect x="135.5" y="488.5" width="15.5" height="15.5" rx="0.5" fill="#3987e5"/>
+<rect x="152.0" y="488.5" width="15.5" height="15.5" rx="0.5" fill="#3987e5"/>
+<rect x="168.5" y="488.5" width="15.5" height="15.5" rx="0.5" fill="#3987e5"/>
+<rect x="185.0" y="488.5" width="15.5" height="15.5" rx="0.5" fill="#3987e5"/>
+<rect x="201.5" y="488.5" width="15.5" height="15.5" rx="0.5" fill="#3987e5"/>
+<rect x="218.0" y="488.5" width="15.5" height="15.5" rx="0.5" fill="#3987e5"/>
+<rect x="234.5" y="488.5" width="15.5" height="15.5" rx="0.5" fill="#3987e5"/>
+<rect x="20.0" y="505.0" width="15.5" height="15.5" rx="0.5" fill="#3987e5"/>
+<rect x="36.5" y="505.0" width="15.5" height="15.5" rx="0.5" fill="#3987e5"/>
+<rect x="53.0" y="505.0" width="15.5" height="15.5" rx="0.5" fill="#3987e5"/>
+<rect x="69.5" y="505.0" width="15.5" height="15.5" rx="0.5" fill="#3987e5"/>
+<rect x="86.0" y="505.0" width="15.5" height="15.5" rx="0.5" fill="#3987e5"/>
+<rect x="102.5" y="505.0" width="15.5" height="15.5" rx="0.5" fill="#3987e5"/>
 <rect x="119.0" y="505.0" width="15.5" height="15.5" rx="0.5" fill="#3a3a37"/>
 <rect x="135.5" y="505.0" width="15.5" height="15.5" rx="0.5" fill="#3a3a37"/>
 <rect x="152.0" y="505.0" width="15.5" height="15.5" rx="0.5" fill="#3a3a37"/>
 </g>
-<g><title>libSceGnmDriver: 27 of 50 working (27 runtime, 0 game modules, 0 stop by name, 23 not yet)</title>
+<g><title>libSceGnmDriver: 50 of 50 working (50 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="259.7" y="82.0" width="144.9" height="126.0" rx="3" fill="none" stroke="#2c2c2a"/>
-<text x="263.7" y="93.5" fill="#c3c2b7" font-size="10" font-weight="normal" text-anchor="start">GnmDriver 27/50</text>
+<text x="263.7" y="93.5" fill="#c3c2b7" font-size="10" font-weight="normal" text-anchor="start">GnmDriver 50/50</text>
 <rect x="261.7" y="99.0" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
 <rect x="277.3" y="99.0" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
 <rect x="292.9" y="99.0" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
@@ -324,33 +324,33 @@
 <rect x="355.3" y="130.2" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
 <rect x="371.0" y="130.2" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
 <rect x="386.6" y="130.2" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
-<rect x="261.7" y="145.8" width="14.6" height="14.6" rx="0.5" fill="#3a3a37"/>
-<rect x="277.3" y="145.8" width="14.6" height="14.6" rx="0.5" fill="#3a3a37"/>
-<rect x="292.9" y="145.8" width="14.6" height="14.6" rx="0.5" fill="#3a3a37"/>
-<rect x="308.5" y="145.8" width="14.6" height="14.6" rx="0.5" fill="#3a3a37"/>
-<rect x="324.1" y="145.8" width="14.6" height="14.6" rx="0.5" fill="#3a3a37"/>
-<rect x="339.7" y="145.8" width="14.6" height="14.6" rx="0.5" fill="#3a3a37"/>
-<rect x="355.3" y="145.8" width="14.6" height="14.6" rx="0.5" fill="#3a3a37"/>
-<rect x="371.0" y="145.8" width="14.6" height="14.6" rx="0.5" fill="#3a3a37"/>
-<rect x="386.6" y="145.8" width="14.6" height="14.6" rx="0.5" fill="#3a3a37"/>
-<rect x="261.7" y="161.4" width="14.6" height="14.6" rx="0.5" fill="#3a3a37"/>
-<rect x="277.3" y="161.4" width="14.6" height="14.6" rx="0.5" fill="#3a3a37"/>
-<rect x="292.9" y="161.4" width="14.6" height="14.6" rx="0.5" fill="#3a3a37"/>
-<rect x="308.5" y="161.4" width="14.6" height="14.6" rx="0.5" fill="#3a3a37"/>
-<rect x="324.1" y="161.4" width="14.6" height="14.6" rx="0.5" fill="#3a3a37"/>
-<rect x="339.7" y="161.4" width="14.6" height="14.6" rx="0.5" fill="#3a3a37"/>
-<rect x="355.3" y="161.4" width="14.6" height="14.6" rx="0.5" fill="#3a3a37"/>
-<rect x="371.0" y="161.4" width="14.6" height="14.6" rx="0.5" fill="#3a3a37"/>
-<rect x="386.6" y="161.4" width="14.6" height="14.6" rx="0.5" fill="#3a3a37"/>
-<rect x="261.7" y="177.1" width="14.6" height="14.6" rx="0.5" fill="#3a3a37"/>
-<rect x="277.3" y="177.1" width="14.6" height="14.6" rx="0.5" fill="#3a3a37"/>
-<rect x="292.9" y="177.1" width="14.6" height="14.6" rx="0.5" fill="#3a3a37"/>
-<rect x="308.5" y="177.1" width="14.6" height="14.6" rx="0.5" fill="#3a3a37"/>
-<rect x="324.1" y="177.1" width="14.6" height="14.6" rx="0.5" fill="#3a3a37"/>
+<rect x="261.7" y="145.8" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
+<rect x="277.3" y="145.8" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
+<rect x="292.9" y="145.8" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
+<rect x="308.5" y="145.8" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
+<rect x="324.1" y="145.8" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
+<rect x="339.7" y="145.8" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
+<rect x="355.3" y="145.8" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
+<rect x="371.0" y="145.8" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
+<rect x="386.6" y="145.8" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
+<rect x="261.7" y="161.4" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
+<rect x="277.3" y="161.4" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
+<rect x="292.9" y="161.4" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
+<rect x="308.5" y="161.4" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
+<rect x="324.1" y="161.4" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
+<rect x="339.7" y="161.4" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
+<rect x="355.3" y="161.4" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
+<rect x="371.0" y="161.4" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
+<rect x="386.6" y="161.4" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
+<rect x="261.7" y="177.1" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
+<rect x="277.3" y="177.1" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
+<rect x="292.9" y="177.1" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
+<rect x="308.5" y="177.1" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
+<rect x="324.1" y="177.1" width="14.6" height="14.6" rx="0.5" fill="#3987e5"/>
 </g>
-<g><title>libSceNet: 13 of 35 working (13 runtime, 0 game modules, 0 stop by name, 22 not yet)</title>
+<g><title>libSceNet: 35 of 35 working (35 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="408.5" y="82.0" width="100.2" height="126.0" rx="3" fill="none" stroke="#2c2c2a"/>
-<text x="412.5" y="93.5" fill="#c3c2b7" font-size="10" font-weight="normal" text-anchor="start">Net 13/35</text>
+<text x="412.5" y="93.5" fill="#c3c2b7" font-size="10" font-weight="normal" text-anchor="start">Net 35/35</text>
 <rect x="410.5" y="99.0" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
 <rect x="426.4" y="99.0" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
 <rect x="442.3" y="99.0" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
@@ -364,32 +364,32 @@
 <rect x="474.1" y="114.9" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
 <rect x="490.0" y="114.9" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
 <rect x="410.5" y="130.8" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
-<rect x="426.4" y="130.8" width="14.9" height="14.9" rx="0.5" fill="#3a3a37"/>
-<rect x="442.3" y="130.8" width="14.9" height="14.9" rx="0.5" fill="#3a3a37"/>
-<rect x="458.2" y="130.8" width="14.9" height="14.9" rx="0.5" fill="#3a3a37"/>
-<rect x="474.1" y="130.8" width="14.9" height="14.9" rx="0.5" fill="#3a3a37"/>
-<rect x="490.0" y="130.8" width="14.9" height="14.9" rx="0.5" fill="#3a3a37"/>
-<rect x="410.5" y="146.7" width="14.9" height="14.9" rx="0.5" fill="#3a3a37"/>
-<rect x="426.4" y="146.7" width="14.9" height="14.9" rx="0.5" fill="#3a3a37"/>
-<rect x="442.3" y="146.7" width="14.9" height="14.9" rx="0.5" fill="#3a3a37"/>
-<rect x="458.2" y="146.7" width="14.9" height="14.9" rx="0.5" fill="#3a3a37"/>
-<rect x="474.1" y="146.7" width="14.9" height="14.9" rx="0.5" fill="#3a3a37"/>
-<rect x="490.0" y="146.7" width="14.9" height="14.9" rx="0.5" fill="#3a3a37"/>
-<rect x="410.5" y="162.6" width="14.9" height="14.9" rx="0.5" fill="#3a3a37"/>
-<rect x="426.4" y="162.6" width="14.9" height="14.9" rx="0.5" fill="#3a3a37"/>
-<rect x="442.3" y="162.6" width="14.9" height="14.9" rx="0.5" fill="#3a3a37"/>
-<rect x="458.2" y="162.6" width="14.9" height="14.9" rx="0.5" fill="#3a3a37"/>
-<rect x="474.1" y="162.6" width="14.9" height="14.9" rx="0.5" fill="#3a3a37"/>
-<rect x="490.0" y="162.6" width="14.9" height="14.9" rx="0.5" fill="#3a3a37"/>
-<rect x="410.5" y="178.5" width="14.9" height="14.9" rx="0.5" fill="#3a3a37"/>
-<rect x="426.4" y="178.5" width="14.9" height="14.9" rx="0.5" fill="#3a3a37"/>
-<rect x="442.3" y="178.5" width="14.9" height="14.9" rx="0.5" fill="#3a3a37"/>
-<rect x="458.2" y="178.5" width="14.9" height="14.9" rx="0.5" fill="#3a3a37"/>
-<rect x="474.1" y="178.5" width="14.9" height="14.9" rx="0.5" fill="#3a3a37"/>
+<rect x="426.4" y="130.8" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
+<rect x="442.3" y="130.8" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
+<rect x="458.2" y="130.8" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
+<rect x="474.1" y="130.8" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
+<rect x="490.0" y="130.8" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
+<rect x="410.5" y="146.7" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
+<rect x="426.4" y="146.7" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
+<rect x="442.3" y="146.7" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
+<rect x="458.2" y="146.7" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
+<rect x="474.1" y="146.7" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
+<rect x="490.0" y="146.7" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
+<rect x="410.5" y="162.6" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
+<rect x="426.4" y="162.6" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
+<rect x="442.3" y="162.6" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
+<rect x="458.2" y="162.6" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
+<rect x="474.1" y="162.6" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
+<rect x="490.0" y="162.6" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
+<rect x="410.5" y="178.5" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
+<rect x="426.4" y="178.5" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
+<rect x="442.3" y="178.5" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
+<rect x="458.2" y="178.5" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
+<rect x="474.1" y="178.5" width="14.9" height="14.9" rx="0.5" fill="#3987e5"/>
 </g>
-<g><title>libScePosix: 24 of 32 working (24 runtime, 0 game modules, 1 stop by name, 7 not yet)</title>
+<g><title>libScePosix: 32 of 32 working (32 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="512.7" y="82.0" width="91.3" height="126.0" rx="3" fill="none" stroke="#2c2c2a"/>
-<text x="516.7" y="93.5" fill="#c3c2b7" font-size="10" font-weight="normal" text-anchor="start">Posix 24/32</text>
+<text x="516.7" y="93.5" fill="#c3c2b7" font-size="10" font-weight="normal" text-anchor="start">Posix 32/32</text>
 <rect x="514.7" y="99.0" width="14.1" height="14.1" rx="0.5" fill="#3987e5"/>
 <rect x="529.8" y="99.0" width="14.1" height="14.1" rx="0.5" fill="#3987e5"/>
 <rect x="544.9" y="99.0" width="14.1" height="14.1" rx="0.5" fill="#3987e5"/>
@@ -414,49 +414,49 @@
 <rect x="529.8" y="159.3" width="14.1" height="14.1" rx="0.5" fill="#3987e5"/>
 <rect x="544.9" y="159.3" width="14.1" height="14.1" rx="0.5" fill="#3987e5"/>
 <rect x="560.0" y="159.3" width="14.1" height="14.1" rx="0.5" fill="#3987e5"/>
-<rect x="575.1" y="159.3" width="14.1" height="14.1" rx="0.5" fill="#c98500"/>
-<rect x="514.7" y="174.4" width="14.1" height="14.1" rx="0.5" fill="#3a3a37"/>
-<rect x="529.8" y="174.4" width="14.1" height="14.1" rx="0.5" fill="#3a3a37"/>
-<rect x="544.9" y="174.4" width="14.1" height="14.1" rx="0.5" fill="#3a3a37"/>
-<rect x="560.0" y="174.4" width="14.1" height="14.1" rx="0.5" fill="#3a3a37"/>
-<rect x="575.1" y="174.4" width="14.1" height="14.1" rx="0.5" fill="#3a3a37"/>
-<rect x="514.7" y="189.5" width="14.1" height="14.1" rx="0.5" fill="#3a3a37"/>
-<rect x="529.8" y="189.5" width="14.1" height="14.1" rx="0.5" fill="#3a3a37"/>
+<rect x="575.1" y="159.3" width="14.1" height="14.1" rx="0.5" fill="#3987e5"/>
+<rect x="514.7" y="174.4" width="14.1" height="14.1" rx="0.5" fill="#3987e5"/>
+<rect x="529.8" y="174.4" width="14.1" height="14.1" rx="0.5" fill="#3987e5"/>
+<rect x="544.9" y="174.4" width="14.1" height="14.1" rx="0.5" fill="#3987e5"/>
+<rect x="560.0" y="174.4" width="14.1" height="14.1" rx="0.5" fill="#3987e5"/>
+<rect x="575.1" y="174.4" width="14.1" height="14.1" rx="0.5" fill="#3987e5"/>
+<rect x="514.7" y="189.5" width="14.1" height="14.1" rx="0.5" fill="#3987e5"/>
+<rect x="529.8" y="189.5" width="14.1" height="14.1" rx="0.5" fill="#3987e5"/>
 </g>
-<g><title>libSceNpMatching2: 2 of 27 working (2 runtime, 0 game modules, 0 stop by name, 25 not yet)</title>
+<g><title>libSceNpMatching2: 27 of 27 working (27 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="259.7" y="212.0" width="81.9" height="117.7" rx="3" fill="none" stroke="#2c2c2a"/>
 <text x="263.7" y="223.5" fill="#c3c2b7" font-size="10" font-weight="normal" text-anchor="start">NpMatching2</text>
 <rect x="261.7" y="229.0" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
 <rect x="277.0" y="229.0" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
-<rect x="292.4" y="229.0" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="307.8" y="229.0" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="323.2" y="229.0" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="261.7" y="244.4" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="277.0" y="244.4" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="292.4" y="244.4" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="307.8" y="244.4" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="323.2" y="244.4" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="261.7" y="259.7" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="277.0" y="259.7" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="292.4" y="259.7" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="307.8" y="259.7" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="323.2" y="259.7" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="261.7" y="275.1" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="277.0" y="275.1" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="292.4" y="275.1" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="307.8" y="275.1" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="323.2" y="275.1" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="261.7" y="290.5" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="277.0" y="290.5" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="292.4" y="290.5" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="307.8" y="290.5" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="323.2" y="290.5" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="261.7" y="305.9" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="277.0" y="305.9" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
+<rect x="292.4" y="229.0" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="307.8" y="229.0" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="323.2" y="229.0" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="261.7" y="244.4" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="277.0" y="244.4" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="292.4" y="244.4" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="307.8" y="244.4" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="323.2" y="244.4" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="261.7" y="259.7" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="277.0" y="259.7" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="292.4" y="259.7" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="307.8" y="259.7" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="323.2" y="259.7" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="261.7" y="275.1" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="277.0" y="275.1" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="292.4" y="275.1" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="307.8" y="275.1" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="323.2" y="275.1" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="261.7" y="290.5" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="277.0" y="290.5" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="292.4" y="290.5" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="307.8" y="290.5" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="323.2" y="290.5" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="261.7" y="305.9" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="277.0" y="305.9" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
 </g>
-<g><title>libSceHttp: 8 of 24 working (8 runtime, 0 game modules, 0 stop by name, 16 not yet)</title>
+<g><title>libSceHttp: 24 of 24 working (24 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="259.7" y="333.7" width="81.9" height="104.2" rx="3" fill="none" stroke="#2c2c2a"/>
-<text x="263.7" y="345.2" fill="#c3c2b7" font-size="10" font-weight="normal" text-anchor="start">Http 8/24</text>
+<text x="263.7" y="345.2" fill="#c3c2b7" font-size="10" font-weight="normal" text-anchor="start">Http 24/24</text>
 <rect x="261.7" y="350.7" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
 <rect x="277.0" y="350.7" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
 <rect x="292.4" y="350.7" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
@@ -465,24 +465,24 @@
 <rect x="261.7" y="366.1" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
 <rect x="277.0" y="366.1" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
 <rect x="292.4" y="366.1" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
-<rect x="307.8" y="366.1" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="323.2" y="366.1" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="261.7" y="381.4" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="277.0" y="381.4" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="292.4" y="381.4" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="307.8" y="381.4" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="323.2" y="381.4" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="261.7" y="396.8" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="277.0" y="396.8" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="292.4" y="396.8" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="307.8" y="396.8" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="323.2" y="396.8" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="261.7" y="412.2" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="277.0" y="412.2" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="292.4" y="412.2" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="307.8" y="412.2" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
+<rect x="307.8" y="366.1" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="323.2" y="366.1" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="261.7" y="381.4" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="277.0" y="381.4" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="292.4" y="381.4" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="307.8" y="381.4" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="323.2" y="381.4" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="261.7" y="396.8" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="277.0" y="396.8" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="292.4" y="396.8" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="307.8" y="396.8" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="323.2" y="396.8" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="261.7" y="412.2" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="277.0" y="412.2" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="292.4" y="412.2" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="307.8" y="412.2" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
 </g>
-<g><title>libSceNpManager: 7 of 20 working (7 runtime, 0 game modules, 0 stop by name, 13 not yet)</title>
+<g><title>libSceNpManager: 20 of 20 working (20 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="259.7" y="441.9" width="81.9" height="86.1" rx="3" fill="none" stroke="#2c2c2a"/>
 <text x="263.7" y="453.4" fill="#c3c2b7" font-size="10" font-weight="normal" text-anchor="start">NpManager</text>
 <rect x="261.7" y="458.9" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
@@ -492,19 +492,19 @@
 <rect x="323.4" y="458.9" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
 <rect x="261.7" y="474.3" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
 <rect x="277.1" y="474.3" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
-<rect x="292.5" y="474.3" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="307.9" y="474.3" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="323.4" y="474.3" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="261.7" y="489.7" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="277.1" y="489.7" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="292.5" y="489.7" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="307.9" y="489.7" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="323.4" y="489.7" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="261.7" y="505.1" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="277.1" y="505.1" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="292.5" y="505.1" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="307.9" y="505.1" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
-<rect x="323.4" y="505.1" width="14.4" height="14.4" rx="0.5" fill="#3a3a37"/>
+<rect x="292.5" y="474.3" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="307.9" y="474.3" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="323.4" y="474.3" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="261.7" y="489.7" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="277.1" y="489.7" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="292.5" y="489.7" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="307.9" y="489.7" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="323.4" y="489.7" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="261.7" y="505.1" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="277.1" y="505.1" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="292.5" y="505.1" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="307.9" y="505.1" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
+<rect x="323.4" y="505.1" width="14.4" height="14.4" rx="0.5" fill="#3987e5"/>
 </g>
 <g><title>libSceFios2: 17 of 17 working (0 runtime, 17 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="345.5" y="212.0" width="85.2" height="69.7" rx="3" fill="none" stroke="#2c2c2a"/>
@@ -527,26 +527,26 @@
 <rect x="387.5" y="255.6" width="12.3" height="12.3" rx="0.5" fill="#199e70"/>
 <rect x="400.8" y="255.6" width="12.3" height="12.3" rx="0.5" fill="#199e70"/>
 </g>
-<g><title>libSceNpWebApi: 0 of 17 working (0 runtime, 0 game modules, 0 stop by name, 17 not yet)</title>
+<g><title>libSceNpWebApi: 17 of 17 working (17 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="434.8" y="212.0" width="85.2" height="69.7" rx="3" fill="none" stroke="#2c2c2a"/>
 <text x="438.8" y="223.5" fill="#c3c2b7" font-size="10" font-weight="normal" text-anchor="start">NpWebApi</text>
-<rect x="436.8" y="229.0" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="450.1" y="229.0" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="463.4" y="229.0" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="476.7" y="229.0" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="490.1" y="229.0" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="503.4" y="229.0" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="436.8" y="242.3" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="450.1" y="242.3" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="463.4" y="242.3" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="476.7" y="242.3" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="490.1" y="242.3" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="503.4" y="242.3" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="436.8" y="255.6" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="450.1" y="255.6" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="463.4" y="255.6" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="476.7" y="255.6" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="490.1" y="255.6" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
+<rect x="436.8" y="229.0" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="450.1" y="229.0" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="463.4" y="229.0" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="476.7" y="229.0" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="490.1" y="229.0" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="503.4" y="229.0" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="436.8" y="242.3" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="450.1" y="242.3" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="463.4" y="242.3" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="476.7" y="242.3" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="490.1" y="242.3" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="503.4" y="242.3" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="436.8" y="255.6" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="450.1" y="255.6" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="463.4" y="255.6" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="476.7" y="255.6" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="490.1" y="255.6" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
 </g>
 <g><title>libSceAvPlayer: 16 of 16 working (16 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="524.0" y="212.0" width="80.0" height="69.7" rx="3" fill="none" stroke="#2c2c2a"/>
@@ -568,23 +568,23 @@
 <rect x="551.1" y="254.0" width="11.5" height="11.5" rx="0.5" fill="#3987e5"/>
 <rect x="563.6" y="254.0" width="11.5" height="11.5" rx="0.5" fill="#3987e5"/>
 </g>
-<g><title>libSceNpScore: 0 of 14 working (0 runtime, 0 game modules, 0 stop by name, 14 not yet)</title>
+<g><title>libSceNpScore: 14 of 14 working (14 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="345.5" y="285.7" width="71.4" height="67.8" rx="3" fill="none" stroke="#2c2c2a"/>
 <text x="349.5" y="297.2" fill="#c3c2b7" font-size="10" font-weight="normal" text-anchor="start">NpScore</text>
-<rect x="347.5" y="302.7" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="360.9" y="302.7" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="374.2" y="302.7" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="387.6" y="302.7" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="400.9" y="302.7" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="347.5" y="316.1" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="360.9" y="316.1" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="374.2" y="316.1" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="387.6" y="316.1" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="400.9" y="316.1" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="347.5" y="329.4" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="360.9" y="329.4" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="374.2" y="329.4" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
-<rect x="387.6" y="329.4" width="12.3" height="12.3" rx="0.5" fill="#3a3a37"/>
+<rect x="347.5" y="302.7" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="360.9" y="302.7" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="374.2" y="302.7" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="387.6" y="302.7" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="400.9" y="302.7" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="347.5" y="316.1" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="360.9" y="316.1" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="374.2" y="316.1" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="387.6" y="316.1" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="400.9" y="316.1" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="347.5" y="329.4" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="360.9" y="329.4" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="374.2" y="329.4" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
+<rect x="387.6" y="329.4" width="12.3" height="12.3" rx="0.5" fill="#3987e5"/>
 </g>
 <g><title>libSceAjm: 12 of 12 working (12 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="345.5" y="357.6" width="71.4" height="57.6" rx="3" fill="none" stroke="#2c2c2a"/>
@@ -602,7 +602,7 @@
 <rect x="347.5" y="400.0" width="11.7" height="11.7" rx="0.5" fill="#3987e5"/>
 <rect x="360.3" y="400.0" width="11.7" height="11.7" rx="0.5" fill="#3987e5"/>
 </g>
-<g><title>libSceSaveData: 10 of 11 working (10 runtime, 0 game modules, 0 stop by name, 1 not yet)</title>
+<g><title>libSceSaveData: 11 of 11 working (11 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="345.5" y="419.1" width="71.4" height="52.4" rx="3" fill="none" stroke="#2c2c2a"/>
 <text x="349.5" y="430.6" fill="#c3c2b7" font-size="10" font-weight="normal" text-anchor="start">SaveData</text>
 <rect x="347.5" y="436.1" width="10.1" height="10.1" rx="0.5" fill="#3987e5"/>
@@ -615,49 +615,49 @@
 <rect x="358.6" y="447.2" width="10.1" height="10.1" rx="0.5" fill="#3987e5"/>
 <rect x="369.7" y="447.2" width="10.1" height="10.1" rx="0.5" fill="#3987e5"/>
 <rect x="380.7" y="447.2" width="10.1" height="10.1" rx="0.5" fill="#3987e5"/>
-<rect x="391.8" y="447.2" width="10.1" height="10.1" rx="0.5" fill="#3a3a37"/>
+<rect x="391.8" y="447.2" width="10.1" height="10.1" rx="0.5" fill="#3987e5"/>
 </g>
-<g><title>libSceVoice: 0 of 11 working (0 runtime, 0 game modules, 0 stop by name, 11 not yet)</title>
+<g><title>libSceVoice: 11 of 11 working (11 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="345.5" y="475.6" width="71.4" height="52.4" rx="3" fill="none" stroke="#2c2c2a"/>
 <text x="349.5" y="487.1" fill="#c3c2b7" font-size="10" font-weight="normal" text-anchor="start">Voice</text>
-<rect x="347.5" y="492.6" width="10.1" height="10.1" rx="0.5" fill="#3a3a37"/>
-<rect x="358.6" y="492.6" width="10.1" height="10.1" rx="0.5" fill="#3a3a37"/>
-<rect x="369.7" y="492.6" width="10.1" height="10.1" rx="0.5" fill="#3a3a37"/>
-<rect x="380.7" y="492.6" width="10.1" height="10.1" rx="0.5" fill="#3a3a37"/>
-<rect x="391.8" y="492.6" width="10.1" height="10.1" rx="0.5" fill="#3a3a37"/>
-<rect x="402.9" y="492.6" width="10.1" height="10.1" rx="0.5" fill="#3a3a37"/>
-<rect x="347.5" y="503.6" width="10.1" height="10.1" rx="0.5" fill="#3a3a37"/>
-<rect x="358.6" y="503.6" width="10.1" height="10.1" rx="0.5" fill="#3a3a37"/>
-<rect x="369.7" y="503.6" width="10.1" height="10.1" rx="0.5" fill="#3a3a37"/>
-<rect x="380.7" y="503.6" width="10.1" height="10.1" rx="0.5" fill="#3a3a37"/>
-<rect x="391.8" y="503.6" width="10.1" height="10.1" rx="0.5" fill="#3a3a37"/>
+<rect x="347.5" y="492.6" width="10.1" height="10.1" rx="0.5" fill="#3987e5"/>
+<rect x="358.6" y="492.6" width="10.1" height="10.1" rx="0.5" fill="#3987e5"/>
+<rect x="369.7" y="492.6" width="10.1" height="10.1" rx="0.5" fill="#3987e5"/>
+<rect x="380.7" y="492.6" width="10.1" height="10.1" rx="0.5" fill="#3987e5"/>
+<rect x="391.8" y="492.6" width="10.1" height="10.1" rx="0.5" fill="#3987e5"/>
+<rect x="402.9" y="492.6" width="10.1" height="10.1" rx="0.5" fill="#3987e5"/>
+<rect x="347.5" y="503.6" width="10.1" height="10.1" rx="0.5" fill="#3987e5"/>
+<rect x="358.6" y="503.6" width="10.1" height="10.1" rx="0.5" fill="#3987e5"/>
+<rect x="369.7" y="503.6" width="10.1" height="10.1" rx="0.5" fill="#3987e5"/>
+<rect x="380.7" y="503.6" width="10.1" height="10.1" rx="0.5" fill="#3987e5"/>
+<rect x="391.8" y="503.6" width="10.1" height="10.1" rx="0.5" fill="#3987e5"/>
 </g>
-<g><title>libSceRtc: 5 of 10 working (5 runtime, 0 game modules, 0 stop by name, 5 not yet)</title>
+<g><title>libSceRtc: 10 of 10 working (10 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="421.0" y="285.7" width="65.3" height="51.9" rx="3" fill="none" stroke="#2c2c2a"/>
-<text x="425.0" y="297.2" fill="#c3c2b7" font-size="10" font-weight="normal" text-anchor="start">Rtc 5/10</text>
+<text x="425.0" y="297.2" fill="#c3c2b7" font-size="10" font-weight="normal" text-anchor="start">Rtc</text>
 <rect x="423.0" y="302.7" width="11.2" height="11.2" rx="0.5" fill="#3987e5"/>
 <rect x="435.2" y="302.7" width="11.2" height="11.2" rx="0.5" fill="#3987e5"/>
 <rect x="447.4" y="302.7" width="11.2" height="11.2" rx="0.5" fill="#3987e5"/>
 <rect x="459.6" y="302.7" width="11.2" height="11.2" rx="0.5" fill="#3987e5"/>
 <rect x="471.8" y="302.7" width="11.2" height="11.2" rx="0.5" fill="#3987e5"/>
-<rect x="423.0" y="314.9" width="11.2" height="11.2" rx="0.5" fill="#3a3a37"/>
-<rect x="435.2" y="314.9" width="11.2" height="11.2" rx="0.5" fill="#3a3a37"/>
-<rect x="447.4" y="314.9" width="11.2" height="11.2" rx="0.5" fill="#3a3a37"/>
-<rect x="459.6" y="314.9" width="11.2" height="11.2" rx="0.5" fill="#3a3a37"/>
-<rect x="471.8" y="314.9" width="11.2" height="11.2" rx="0.5" fill="#3a3a37"/>
+<rect x="423.0" y="314.9" width="11.2" height="11.2" rx="0.5" fill="#3987e5"/>
+<rect x="435.2" y="314.9" width="11.2" height="11.2" rx="0.5" fill="#3987e5"/>
+<rect x="447.4" y="314.9" width="11.2" height="11.2" rx="0.5" fill="#3987e5"/>
+<rect x="459.6" y="314.9" width="11.2" height="11.2" rx="0.5" fill="#3987e5"/>
+<rect x="471.8" y="314.9" width="11.2" height="11.2" rx="0.5" fill="#3987e5"/>
 </g>
-<g><title>libScePad: 6 of 9 working (6 runtime, 0 game modules, 0 stop by name, 3 not yet)</title>
+<g><title>libScePad: 9 of 9 working (9 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="490.2" y="285.7" width="58.3" height="51.9" rx="3" fill="none" stroke="#2c2c2a"/>
-<text x="494.2" y="297.2" fill="#c3c2b7" font-size="10" font-weight="normal" text-anchor="start">Pad 6/9</text>
+<text x="494.2" y="297.2" fill="#c3c2b7" font-size="10" font-weight="normal" text-anchor="start">Pad 9/9</text>
 <rect x="492.2" y="302.7" width="9.8" height="9.8" rx="0.5" fill="#3987e5"/>
 <rect x="503.1" y="302.7" width="9.8" height="9.8" rx="0.5" fill="#3987e5"/>
 <rect x="513.9" y="302.7" width="9.8" height="9.8" rx="0.5" fill="#3987e5"/>
 <rect x="524.8" y="302.7" width="9.8" height="9.8" rx="0.5" fill="#3987e5"/>
 <rect x="535.6" y="302.7" width="9.8" height="9.8" rx="0.5" fill="#3987e5"/>
 <rect x="492.2" y="313.6" width="9.8" height="9.8" rx="0.5" fill="#3987e5"/>
-<rect x="503.1" y="313.6" width="9.8" height="9.8" rx="0.5" fill="#3a3a37"/>
-<rect x="513.9" y="313.6" width="9.8" height="9.8" rx="0.5" fill="#3a3a37"/>
-<rect x="524.8" y="313.6" width="9.8" height="9.8" rx="0.5" fill="#3a3a37"/>
+<rect x="503.1" y="313.6" width="9.8" height="9.8" rx="0.5" fill="#3987e5"/>
+<rect x="513.9" y="313.6" width="9.8" height="9.8" rx="0.5" fill="#3987e5"/>
+<rect x="524.8" y="313.6" width="9.8" height="9.8" rx="0.5" fill="#3987e5"/>
 </g>
 <g><title>libSceVideoOut: 8 of 8 working (8 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="552.6" y="285.7" width="51.4" height="51.9" rx="3" fill="none" stroke="#2c2c2a"/>
@@ -671,45 +671,45 @@
 <rect x="578.0" y="314.4" width="10.7" height="10.7" rx="0.5" fill="#3987e5"/>
 <rect x="589.7" y="314.4" width="10.7" height="10.7" rx="0.5" fill="#3987e5"/>
 </g>
-<g><title>libSceNpSignaling: 0 of 7 working (0 runtime, 0 game modules, 0 stop by name, 7 not yet)</title>
+<g><title>libSceNpSignaling: 7 of 7 working (7 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="421.0" y="341.6" width="46.4" height="49.8" rx="3" fill="none" stroke="#2c2c2a"/>
 <text x="425.0" y="353.1" fill="#c3c2b7" font-size="10" font-weight="normal" text-anchor="start">NpSig</text>
-<rect x="423.0" y="358.6" width="9.4" height="9.4" rx="0.5" fill="#3a3a37"/>
-<rect x="433.4" y="358.6" width="9.4" height="9.4" rx="0.5" fill="#3a3a37"/>
-<rect x="443.8" y="358.6" width="9.4" height="9.4" rx="0.5" fill="#3a3a37"/>
-<rect x="454.2" y="358.6" width="9.4" height="9.4" rx="0.5" fill="#3a3a37"/>
-<rect x="423.0" y="369.0" width="9.4" height="9.4" rx="0.5" fill="#3a3a37"/>
-<rect x="433.4" y="369.0" width="9.4" height="9.4" rx="0.5" fill="#3a3a37"/>
-<rect x="443.8" y="369.0" width="9.4" height="9.4" rx="0.5" fill="#3a3a37"/>
+<rect x="423.0" y="358.6" width="9.4" height="9.4" rx="0.5" fill="#3987e5"/>
+<rect x="433.4" y="358.6" width="9.4" height="9.4" rx="0.5" fill="#3987e5"/>
+<rect x="443.8" y="358.6" width="9.4" height="9.4" rx="0.5" fill="#3987e5"/>
+<rect x="454.2" y="358.6" width="9.4" height="9.4" rx="0.5" fill="#3987e5"/>
+<rect x="423.0" y="369.0" width="9.4" height="9.4" rx="0.5" fill="#3987e5"/>
+<rect x="433.4" y="369.0" width="9.4" height="9.4" rx="0.5" fill="#3987e5"/>
+<rect x="443.8" y="369.0" width="9.4" height="9.4" rx="0.5" fill="#3987e5"/>
 </g>
-<g><title>libSceNpUtility: 0 of 7 working (0 runtime, 0 game modules, 0 stop by name, 7 not yet)</title>
+<g><title>libSceNpUtility: 7 of 7 working (7 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="471.3" y="341.6" width="46.4" height="49.8" rx="3" fill="none" stroke="#2c2c2a"/>
 <text x="475.3" y="353.1" fill="#c3c2b7" font-size="10" font-weight="normal" text-anchor="start">NpUti</text>
-<rect x="473.3" y="358.6" width="9.4" height="9.4" rx="0.5" fill="#3a3a37"/>
-<rect x="483.7" y="358.6" width="9.4" height="9.4" rx="0.5" fill="#3a3a37"/>
-<rect x="494.1" y="358.6" width="9.4" height="9.4" rx="0.5" fill="#3a3a37"/>
-<rect x="504.5" y="358.6" width="9.4" height="9.4" rx="0.5" fill="#3a3a37"/>
-<rect x="473.3" y="369.0" width="9.4" height="9.4" rx="0.5" fill="#3a3a37"/>
-<rect x="483.7" y="369.0" width="9.4" height="9.4" rx="0.5" fill="#3a3a37"/>
-<rect x="494.1" y="369.0" width="9.4" height="9.4" rx="0.5" fill="#3a3a37"/>
+<rect x="473.3" y="358.6" width="9.4" height="9.4" rx="0.5" fill="#3987e5"/>
+<rect x="483.7" y="358.6" width="9.4" height="9.4" rx="0.5" fill="#3987e5"/>
+<rect x="494.1" y="358.6" width="9.4" height="9.4" rx="0.5" fill="#3987e5"/>
+<rect x="504.5" y="358.6" width="9.4" height="9.4" rx="0.5" fill="#3987e5"/>
+<rect x="473.3" y="369.0" width="9.4" height="9.4" rx="0.5" fill="#3987e5"/>
+<rect x="483.7" y="369.0" width="9.4" height="9.4" rx="0.5" fill="#3987e5"/>
+<rect x="494.1" y="369.0" width="9.4" height="9.4" rx="0.5" fill="#3987e5"/>
 </g>
-<g><title>libSceAudioOut: 5 of 6 working (5 runtime, 0 game modules, 0 stop by name, 1 not yet)</title>
+<g><title>libSceAudioOut: 6 of 6 working (6 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="521.7" y="341.6" width="39.2" height="49.8" rx="3" fill="none" stroke="#2c2c2a"/>
 <rect x="523.7" y="343.6" width="14.1" height="14.1" rx="0.5" fill="#3987e5"/>
 <rect x="538.8" y="343.6" width="14.1" height="14.1" rx="0.5" fill="#3987e5"/>
 <rect x="523.7" y="358.7" width="14.1" height="14.1" rx="0.5" fill="#3987e5"/>
 <rect x="538.8" y="358.7" width="14.1" height="14.1" rx="0.5" fill="#3987e5"/>
 <rect x="523.7" y="373.9" width="14.1" height="14.1" rx="0.5" fill="#3987e5"/>
-<rect x="538.8" y="373.9" width="14.1" height="14.1" rx="0.5" fill="#3a3a37"/>
+<rect x="538.8" y="373.9" width="14.1" height="14.1" rx="0.5" fill="#3987e5"/>
 </g>
-<g><title>libSceNetCtl: 5 of 6 working (5 runtime, 0 game modules, 1 stop by name, 0 not yet)</title>
+<g><title>libSceNetCtl: 6 of 6 working (6 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="564.8" y="341.6" width="39.2" height="49.8" rx="3" fill="none" stroke="#2c2c2a"/>
 <rect x="566.8" y="343.6" width="14.1" height="14.1" rx="0.5" fill="#3987e5"/>
 <rect x="582.0" y="343.6" width="14.1" height="14.1" rx="0.5" fill="#3987e5"/>
 <rect x="566.8" y="358.7" width="14.1" height="14.1" rx="0.5" fill="#3987e5"/>
 <rect x="582.0" y="358.7" width="14.1" height="14.1" rx="0.5" fill="#3987e5"/>
 <rect x="566.8" y="373.9" width="14.1" height="14.1" rx="0.5" fill="#3987e5"/>
-<rect x="582.0" y="373.9" width="14.1" height="14.1" rx="0.5" fill="#c98500"/>
+<rect x="582.0" y="373.9" width="14.1" height="14.1" rx="0.5" fill="#3987e5"/>
 </g>
 <g><title>libSceNpTrophy: 6 of 6 working (6 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="421.0" y="395.4" width="44.2" height="44.2" rx="3" fill="none" stroke="#2c2c2a"/>
@@ -731,22 +731,22 @@
 <rect x="435.5" y="473.1" width="11.5" height="11.5" rx="0.5" fill="#3987e5"/>
 <rect x="448.0" y="473.1" width="11.5" height="11.5" rx="0.5" fill="#3987e5"/>
 </g>
-<g><title>libSceImeDialog: 0 of 5 working (0 runtime, 0 game modules, 0 stop by name, 5 not yet)</title>
+<g><title>libSceImeDialog: 5 of 5 working (5 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="421.0" y="491.8" width="44.2" height="36.2" rx="3" fill="none" stroke="#2c2c2a"/>
 <text x="425.0" y="503.3" fill="#c3c2b7" font-size="10" font-weight="normal" text-anchor="start">ImeDi</text>
-<rect x="423.0" y="508.8" width="7.5" height="7.5" rx="0.5" fill="#3a3a37"/>
-<rect x="431.5" y="508.8" width="7.5" height="7.5" rx="0.5" fill="#3a3a37"/>
-<rect x="440.0" y="508.8" width="7.5" height="7.5" rx="0.5" fill="#3a3a37"/>
-<rect x="448.5" y="508.8" width="7.5" height="7.5" rx="0.5" fill="#3a3a37"/>
-<rect x="423.0" y="517.3" width="7.5" height="7.5" rx="0.5" fill="#3a3a37"/>
+<rect x="423.0" y="508.8" width="7.5" height="7.5" rx="0.5" fill="#3987e5"/>
+<rect x="431.5" y="508.8" width="7.5" height="7.5" rx="0.5" fill="#3987e5"/>
+<rect x="440.0" y="508.8" width="7.5" height="7.5" rx="0.5" fill="#3987e5"/>
+<rect x="448.5" y="508.8" width="7.5" height="7.5" rx="0.5" fill="#3987e5"/>
+<rect x="423.0" y="517.3" width="7.5" height="7.5" rx="0.5" fill="#3987e5"/>
 </g>
-<g><title>libSceNpProfileDialog: 0 of 5 working (0 runtime, 0 game modules, 0 stop by name, 5 not yet)</title>
+<g><title>libSceNpProfileDialog: 5 of 5 working (5 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="469.2" y="395.4" width="38.5" height="41.5" rx="3" fill="none" stroke="#2c2c2a"/>
-<rect x="471.2" y="397.4" width="11.3" height="11.3" rx="0.5" fill="#3a3a37"/>
-<rect x="483.5" y="397.4" width="11.3" height="11.3" rx="0.5" fill="#3a3a37"/>
-<rect x="471.2" y="409.8" width="11.3" height="11.3" rx="0.5" fill="#3a3a37"/>
-<rect x="483.5" y="409.8" width="11.3" height="11.3" rx="0.5" fill="#3a3a37"/>
-<rect x="471.2" y="422.1" width="11.3" height="11.3" rx="0.5" fill="#3a3a37"/>
+<rect x="471.2" y="397.4" width="11.3" height="11.3" rx="0.5" fill="#3987e5"/>
+<rect x="483.5" y="397.4" width="11.3" height="11.3" rx="0.5" fill="#3987e5"/>
+<rect x="471.2" y="409.8" width="11.3" height="11.3" rx="0.5" fill="#3987e5"/>
+<rect x="483.5" y="409.8" width="11.3" height="11.3" rx="0.5" fill="#3987e5"/>
+<rect x="471.2" y="422.1" width="11.3" height="11.3" rx="0.5" fill="#3987e5"/>
 </g>
 <g><title>libScePlayGo: 5 of 5 working (5 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="469.2" y="440.9" width="38.5" height="41.5" rx="3" fill="none" stroke="#2c2c2a"/>
@@ -756,48 +756,48 @@
 <rect x="483.5" y="455.3" width="11.3" height="11.3" rx="0.5" fill="#3987e5"/>
 <rect x="471.2" y="467.6" width="11.3" height="11.3" rx="0.5" fill="#3987e5"/>
 </g>
-<g><title>libSceSystemService: 3 of 5 working (3 runtime, 0 game modules, 0 stop by name, 2 not yet)</title>
+<g><title>libSceSystemService: 5 of 5 working (5 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="469.2" y="486.5" width="38.5" height="41.5" rx="3" fill="none" stroke="#2c2c2a"/>
 <rect x="471.2" y="488.5" width="11.3" height="11.3" rx="0.5" fill="#3987e5"/>
 <rect x="483.5" y="488.5" width="11.3" height="11.3" rx="0.5" fill="#3987e5"/>
 <rect x="471.2" y="500.8" width="11.3" height="11.3" rx="0.5" fill="#3987e5"/>
-<rect x="483.5" y="500.8" width="11.3" height="11.3" rx="0.5" fill="#3a3a37"/>
-<rect x="471.2" y="513.2" width="11.3" height="11.3" rx="0.5" fill="#3a3a37"/>
+<rect x="483.5" y="500.8" width="11.3" height="11.3" rx="0.5" fill="#3987e5"/>
+<rect x="471.2" y="513.2" width="11.3" height="11.3" rx="0.5" fill="#3987e5"/>
 </g>
-<g><title>libSceMouse: 0 of 4 working (0 runtime, 0 game modules, 0 stop by name, 4 not yet)</title>
+<g><title>libSceMouse: 4 of 4 working (4 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="511.7" y="395.4" width="44.2" height="28.1" rx="3" fill="none" stroke="#2c2c2a"/>
-<rect x="513.7" y="397.4" width="10.8" height="10.8" rx="0.5" fill="#3a3a37"/>
-<rect x="525.5" y="397.4" width="10.8" height="10.8" rx="0.5" fill="#3a3a37"/>
-<rect x="537.3" y="397.4" width="10.8" height="10.8" rx="0.5" fill="#3a3a37"/>
-<rect x="513.7" y="409.2" width="10.8" height="10.8" rx="0.5" fill="#3a3a37"/>
+<rect x="513.7" y="397.4" width="10.8" height="10.8" rx="0.5" fill="#3987e5"/>
+<rect x="525.5" y="397.4" width="10.8" height="10.8" rx="0.5" fill="#3987e5"/>
+<rect x="537.3" y="397.4" width="10.8" height="10.8" rx="0.5" fill="#3987e5"/>
+<rect x="513.7" y="409.2" width="10.8" height="10.8" rx="0.5" fill="#3987e5"/>
 </g>
-<g><title>libSceMsgDialog: 0 of 4 working (0 runtime, 0 game modules, 0 stop by name, 4 not yet)</title>
+<g><title>libSceMsgDialog: 4 of 4 working (4 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="559.8" y="395.4" width="44.2" height="28.1" rx="3" fill="none" stroke="#2c2c2a"/>
-<rect x="561.8" y="397.4" width="10.8" height="10.8" rx="0.5" fill="#3a3a37"/>
-<rect x="573.6" y="397.4" width="10.8" height="10.8" rx="0.5" fill="#3a3a37"/>
-<rect x="585.5" y="397.4" width="10.8" height="10.8" rx="0.5" fill="#3a3a37"/>
-<rect x="561.8" y="409.2" width="10.8" height="10.8" rx="0.5" fill="#3a3a37"/>
+<rect x="561.8" y="397.4" width="10.8" height="10.8" rx="0.5" fill="#3987e5"/>
+<rect x="573.6" y="397.4" width="10.8" height="10.8" rx="0.5" fill="#3987e5"/>
+<rect x="585.5" y="397.4" width="10.8" height="10.8" rx="0.5" fill="#3987e5"/>
+<rect x="561.8" y="409.2" width="10.8" height="10.8" rx="0.5" fill="#3987e5"/>
 </g>
-<g><title>libSceNpAuth: 0 of 4 working (0 runtime, 0 game modules, 0 stop by name, 4 not yet)</title>
+<g><title>libSceNpAuth: 4 of 4 working (4 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="511.7" y="427.6" width="44.2" height="28.1" rx="3" fill="none" stroke="#2c2c2a"/>
-<rect x="513.7" y="429.6" width="10.8" height="10.8" rx="0.5" fill="#3a3a37"/>
-<rect x="525.5" y="429.6" width="10.8" height="10.8" rx="0.5" fill="#3a3a37"/>
-<rect x="537.3" y="429.6" width="10.8" height="10.8" rx="0.5" fill="#3a3a37"/>
-<rect x="513.7" y="441.4" width="10.8" height="10.8" rx="0.5" fill="#3a3a37"/>
+<rect x="513.7" y="429.6" width="10.8" height="10.8" rx="0.5" fill="#3987e5"/>
+<rect x="525.5" y="429.6" width="10.8" height="10.8" rx="0.5" fill="#3987e5"/>
+<rect x="537.3" y="429.6" width="10.8" height="10.8" rx="0.5" fill="#3987e5"/>
+<rect x="513.7" y="441.4" width="10.8" height="10.8" rx="0.5" fill="#3987e5"/>
 </g>
-<g><title>libSceNpCommerce: 0 of 4 working (0 runtime, 0 game modules, 0 stop by name, 4 not yet)</title>
+<g><title>libSceNpCommerce: 4 of 4 working (4 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="559.8" y="427.6" width="44.2" height="28.1" rx="3" fill="none" stroke="#2c2c2a"/>
-<rect x="561.8" y="429.6" width="10.8" height="10.8" rx="0.5" fill="#3a3a37"/>
-<rect x="573.6" y="429.6" width="10.8" height="10.8" rx="0.5" fill="#3a3a37"/>
-<rect x="585.5" y="429.6" width="10.8" height="10.8" rx="0.5" fill="#3a3a37"/>
-<rect x="561.8" y="441.4" width="10.8" height="10.8" rx="0.5" fill="#3a3a37"/>
+<rect x="561.8" y="429.6" width="10.8" height="10.8" rx="0.5" fill="#3987e5"/>
+<rect x="573.6" y="429.6" width="10.8" height="10.8" rx="0.5" fill="#3987e5"/>
+<rect x="585.5" y="429.6" width="10.8" height="10.8" rx="0.5" fill="#3987e5"/>
+<rect x="561.8" y="441.4" width="10.8" height="10.8" rx="0.5" fill="#3987e5"/>
 </g>
-<g><title>libSceSaveDataDialog: 0 of 4 working (0 runtime, 0 game modules, 0 stop by name, 4 not yet)</title>
+<g><title>libSceSaveDataDialog: 4 of 4 working (4 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="511.7" y="459.7" width="33.5" height="37.3" rx="3" fill="none" stroke="#2c2c2a"/>
-<rect x="513.7" y="461.7" width="13.7" height="13.7" rx="0.5" fill="#3a3a37"/>
-<rect x="528.3" y="461.7" width="13.7" height="13.7" rx="0.5" fill="#3a3a37"/>
-<rect x="513.7" y="476.4" width="13.7" height="13.7" rx="0.5" fill="#3a3a37"/>
-<rect x="528.3" y="476.4" width="13.7" height="13.7" rx="0.5" fill="#3a3a37"/>
+<rect x="513.7" y="461.7" width="13.7" height="13.7" rx="0.5" fill="#3987e5"/>
+<rect x="528.3" y="461.7" width="13.7" height="13.7" rx="0.5" fill="#3987e5"/>
+<rect x="513.7" y="476.4" width="13.7" height="13.7" rx="0.5" fill="#3987e5"/>
+<rect x="528.3" y="476.4" width="13.7" height="13.7" rx="0.5" fill="#3987e5"/>
 </g>
 <g><title>libSceAppContent: 3 of 3 working (3 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="511.7" y="501.0" width="33.5" height="27.0" rx="3" fill="none" stroke="#2c2c2a"/>
@@ -805,11 +805,11 @@
 <rect x="524.9" y="503.0" width="10.3" height="10.3" rx="0.5" fill="#3987e5"/>
 <rect x="513.7" y="514.3" width="10.3" height="10.3" rx="0.5" fill="#3987e5"/>
 </g>
-<g><title>libSceAudioIn: 0 of 3 working (0 runtime, 0 game modules, 0 stop by name, 3 not yet)</title>
+<g><title>libSceAudioIn: 3 of 3 working (3 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="549.1" y="459.7" width="25.4" height="35.4" rx="3" fill="none" stroke="#2c2c2a"/>
-<rect x="551.1" y="461.7" width="9.5" height="9.5" rx="0.5" fill="#3a3a37"/>
-<rect x="561.6" y="461.7" width="9.5" height="9.5" rx="0.5" fill="#3a3a37"/>
-<rect x="551.1" y="472.2" width="9.5" height="9.5" rx="0.5" fill="#3a3a37"/>
+<rect x="551.1" y="461.7" width="9.5" height="9.5" rx="0.5" fill="#3987e5"/>
+<rect x="561.6" y="461.7" width="9.5" height="9.5" rx="0.5" fill="#3987e5"/>
+<rect x="551.1" y="472.2" width="9.5" height="9.5" rx="0.5" fill="#3987e5"/>
 </g>
 <g><title>libSceSysmodule: 3 of 3 working (3 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="578.6" y="459.7" width="25.4" height="35.4" rx="3" fill="none" stroke="#2c2c2a"/>
@@ -817,28 +817,28 @@
 <rect x="591.1" y="461.7" width="9.5" height="9.5" rx="0.5" fill="#3987e5"/>
 <rect x="580.6" y="472.2" width="9.5" height="9.5" rx="0.5" fill="#3987e5"/>
 </g>
-<g><title>libSceNpCommon: 0 of 2 working (0 runtime, 0 game modules, 0 stop by name, 2 not yet)</title>
+<g><title>libSceNpCommon: 2 of 2 working (2 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="549.1" y="499.1" width="19.6" height="28.9" rx="3" fill="none" stroke="#2c2c2a"/>
-<rect x="551.1" y="501.1" width="11.4" height="11.4" rx="0.5" fill="#3a3a37"/>
-<rect x="551.1" y="513.5" width="11.4" height="11.4" rx="0.5" fill="#3a3a37"/>
+<rect x="551.1" y="501.1" width="11.4" height="11.4" rx="0.5" fill="#3987e5"/>
+<rect x="551.1" y="513.5" width="11.4" height="11.4" rx="0.5" fill="#3987e5"/>
 </g>
-<g><title>libSceSsl: 1 of 2 working (1 runtime, 0 game modules, 0 stop by name, 1 not yet)</title>
+<g><title>libSceSsl: 2 of 2 working (2 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="572.7" y="499.1" width="19.6" height="28.9" rx="3" fill="none" stroke="#2c2c2a"/>
 <rect x="574.7" y="501.1" width="11.4" height="11.4" rx="0.5" fill="#3987e5"/>
-<rect x="574.7" y="513.5" width="11.4" height="11.4" rx="0.5" fill="#3a3a37"/>
+<rect x="574.7" y="513.5" width="11.4" height="11.4" rx="0.5" fill="#3987e5"/>
 </g>
 <g><title>libSceCommonDialog: 1 of 1 working (1 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="596.2" y="499.1" width="7.8" height="28.9" rx="3" fill="none" stroke="#2c2c2a"/>
 <rect x="598.2" y="501.1" width="8.7" height="8.7" rx="0.5" fill="#3987e5"/>
 </g>
 <rect x="16" y="542" width="10" height="10" rx="2" fill="#3987e5"/>
-<text x="30.0" y="551.0" fill="#c3c2b7" font-size="11" font-weight="normal" text-anchor="start">implemented by the runtime (234)</text>
+<text x="30.0" y="551.0" fill="#c3c2b7" font-size="11" font-weight="normal" text-anchor="start">implemented by the runtime (464)</text>
 <rect x="236.4" y="542" width="10" height="10" rx="2" fill="#199e70"/>
 <text x="250.4" y="551.0" fill="#c3c2b7" font-size="11" font-weight="normal" text-anchor="start">the game&#x27;s own modules (219)</text>
 <rect x="432.0" y="542" width="10" height="10" rx="2" fill="#c98500"/>
-<text x="446.0" y="551.0" fill="#c3c2b7" font-size="11" font-weight="normal" text-anchor="start">registered, stops by name (2)</text>
+<text x="446.0" y="551.0" fill="#c3c2b7" font-size="11" font-weight="normal" text-anchor="start">registered, stops by name (0)</text>
 <rect x="633.8" y="542" width="10" height="10" rx="2" fill="#3a3a37"/>
-<text x="647.8" y="551.0" fill="#c3c2b7" font-size="11" font-weight="normal" text-anchor="start">not yet (231)</text>
+<text x="647.8" y="551.0" fill="#c3c2b7" font-size="11" font-weight="normal" text-anchor="start">not yet (3)</text>
 <text x="630.0" y="70.0" fill="#f0efec" font-size="14" font-weight="bold" text-anchor="start">Imports working at each recorded boot</text>
 <line x1="660" x2="980" y1="236.0" y2="236.0" stroke="#2c2c2a"/>
 <text x="656.0" y="240.0" fill="#898781" font-size="10" font-weight="normal" text-anchor="end">0</text>
@@ -850,28 +850,29 @@
 <text x="656.0" y="112.3" fill="#898781" font-size="10" font-weight="normal" text-anchor="end">600</text>
 <line x1="660" x2="980" y1="90.0" y2="90.0" stroke="#2c2c2a"/>
 <text x="656.0" y="94.0" fill="#898781" font-size="10" font-weight="normal" text-anchor="end">686</text>
-<polyline points="660.0,185.3 702.7,183.2 702.7,183.6 702.7,183.4 788.0,183.0 788.0,182.4 958.7,163.9 958.7,162.8 958.7,162.4 958.7,162.1 958.7,157.7 969.3,157.5 969.3,157.0 980.0,156.2 980.0,154.5 980.0,150.7 980.0,143.0 980.0,139.6 980.0,139.6" fill="none" stroke="#3987e5" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<polyline points="660.0,185.3 697.6,183.2 697.6,183.6 697.6,183.4 772.9,183.0 772.9,182.4 923.5,163.9 923.5,162.8 923.5,162.4 923.5,162.1 923.5,157.7 932.9,157.5 932.9,157.0 942.4,156.2 942.4,154.5 942.4,150.7 942.4,143.0 942.4,139.6 942.4,139.6 980.0,90.6" fill="none" stroke="#3987e5" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
 <circle cx="660.0" cy="185.3" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-10-07: 238 working, loaded</title></circle>
-<circle cx="702.7" cy="183.2" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-10-11: 248 working, loaded</title></circle>
-<circle cx="702.7" cy="183.6" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-10-11: 246 working, loaded</title></circle>
-<circle cx="702.7" cy="183.4" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-10-11: 247 working, loaded</title></circle>
-<circle cx="788.0" cy="183.0" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-10-19: 249 working, loaded</title></circle>
-<circle cx="788.0" cy="182.4" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-10-19: 252 working, loaded</title></circle>
-<circle cx="958.7" cy="163.9" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-11-04: 339 working, audio</title></circle>
-<circle cx="958.7" cy="162.8" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-11-04: 344 working, video out</title></circle>
-<circle cx="958.7" cy="162.4" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-11-04: 346 working, video out</title></circle>
-<circle cx="958.7" cy="162.1" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-11-04: 347 working, video out</title></circle>
-<circle cx="958.7" cy="157.7" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-11-04: 368 working, first flip</title></circle>
-<circle cx="969.3" cy="157.5" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-11-05: 369 working, first flip</title></circle>
-<circle cx="969.3" cy="157.0" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-11-05: 371 working, first flip</title></circle>
-<circle cx="980.0" cy="156.2" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-11-06: 375 working, first flip</title></circle>
-<circle cx="980.0" cy="154.5" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-11-06: 383 working, first flip</title></circle>
-<circle cx="980.0" cy="150.7" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-11-06: 401 working, first flip</title></circle>
-<circle cx="980.0" cy="143.0" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-11-06: 437 working, first flip</title></circle>
-<circle cx="980.0" cy="139.6" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-11-06: 453 working, first flip</title></circle>
-<circle cx="980.0" cy="139.6" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-11-06: 453 working, first flip</title></circle>
+<circle cx="697.6" cy="183.2" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-10-11: 248 working, loaded</title></circle>
+<circle cx="697.6" cy="183.6" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-10-11: 246 working, loaded</title></circle>
+<circle cx="697.6" cy="183.4" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-10-11: 247 working, loaded</title></circle>
+<circle cx="772.9" cy="183.0" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-10-19: 249 working, loaded</title></circle>
+<circle cx="772.9" cy="182.4" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-10-19: 252 working, loaded</title></circle>
+<circle cx="923.5" cy="163.9" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-11-04: 339 working, audio</title></circle>
+<circle cx="923.5" cy="162.8" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-11-04: 344 working, video out</title></circle>
+<circle cx="923.5" cy="162.4" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-11-04: 346 working, video out</title></circle>
+<circle cx="923.5" cy="162.1" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-11-04: 347 working, video out</title></circle>
+<circle cx="923.5" cy="157.7" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-11-04: 368 working, first flip</title></circle>
+<circle cx="932.9" cy="157.5" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-11-05: 369 working, first flip</title></circle>
+<circle cx="932.9" cy="157.0" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-11-05: 371 working, first flip</title></circle>
+<circle cx="942.4" cy="156.2" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-11-06: 375 working, first flip</title></circle>
+<circle cx="942.4" cy="154.5" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-11-06: 383 working, first flip</title></circle>
+<circle cx="942.4" cy="150.7" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-11-06: 401 working, first flip</title></circle>
+<circle cx="942.4" cy="143.0" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-11-06: 437 working, first flip</title></circle>
+<circle cx="942.4" cy="139.6" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-11-06: 453 working, first flip</title></circle>
+<circle cx="942.4" cy="139.6" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-11-06: 453 working, first flip</title></circle>
+<circle cx="980.0" cy="90.6" r="3" fill="#3987e5" stroke="#1a1a19" stroke-width="1.5"><title>2026-11-10: 683 working, first flip</title></circle>
 <text x="660.0" y="252.0" fill="#898781" font-size="10" font-weight="normal" text-anchor="start">2026-10-07</text>
-<text x="980.0" y="252.0" fill="#898781" font-size="10" font-weight="normal" text-anchor="end">2026-11-06</text>
+<text x="980.0" y="252.0" fill="#898781" font-size="10" font-weight="normal" text-anchor="end">2026-11-10</text>
 <text x="630.0" y="290.0" fill="#f0efec" font-size="14" font-weight="bold" text-anchor="start">Boot</text>
 <text x="630.0" y="312.0" fill="#c3c2b7" font-size="12" font-weight="normal" text-anchor="start">Furthest milestone: first flip</text>
 <text x="630.0" y="334.0" fill="#c3c2b7" font-size="12" font-weight="normal" text-anchor="start">Stops at: the run&#x27;s time limit, still running (no call stopped</text>
