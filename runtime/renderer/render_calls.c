@@ -300,7 +300,7 @@ int rt_render_record_index_type(uint64_t buffer, uint32_t offset, uint32_t type,
 
 int rt_render_record_draw_index_offset(uint64_t buffer, uint32_t offset, uint32_t first, uint32_t count, char *error, size_t error_size)
 {
-    const rt_render_call call = {.kind = RT_CALL_DRAW_INDEX_OFFSET, .offset = offset, .u.draw_index = {first, count}};
+    const rt_render_call call = {.kind = RT_CALL_DRAW_INDEX_OFFSET, .offset = offset, .u.draw_index = {.first = first, .count = count}};
     return record(buffer, &call, error, error_size);
 }
 
@@ -455,4 +455,22 @@ void rt_render_forget(void)
     lists = NULL, list_count = 0;
     placed_count = 0;
     pthread_mutex_unlock(&lists_lock);
+}
+
+int rt_render_record_draw_index_offset_packet(uint64_t buffer, uint32_t offset, uint32_t header, uint32_t max_size,
+                                              uint32_t first, uint32_t count, uint32_t initiator,
+                                              char *error, size_t error_size)
+{
+    const rt_render_call call = {.kind = RT_CALL_DRAW_INDEX_OFFSET, .offset = offset,
+                                .u.draw_index = {.first = first, .count = count, .has_packet_fields = 1,
+                                                 .header = header, .max_size = max_size, .initiator = initiator}};
+    return record(buffer, &call, error, error_size);
+}
+
+int rt_render_record_draw_indexed(uint64_t buffer, uint32_t offset, uint32_t header, uint32_t max_size, uint64_t address,
+                                  uint32_t count, uint32_t initiator, char *error, size_t error_size)
+{
+    const rt_render_call call = {.kind = RT_CALL_DRAW_INDEXED, .offset = offset,
+                                .u.draw_indexed = {header, max_size, address, count, initiator}};
+    return record(buffer, &call, error, error_size);
 }
