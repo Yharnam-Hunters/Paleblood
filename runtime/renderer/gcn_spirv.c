@@ -373,6 +373,43 @@ static void write_float(translator *t, const vector_operands *o, uint32_t f, con
 }
 
 /* GCN's legacy multiply: zero times anything (infinity and NaN included) is zero. */
+/* v_cubeid_f32, v_cubesc_f32, v_cubetc_f32, v_cubema_f32 on a direction (x, y, z): the cube face its
+   largest component picks (z when |z| is at least |x| and |y|, else y when |y| is at least |x|, else
+   x) and, on that face, the face number (+x 0, -x 1, +y 2, -y 3, +z 4, -z 5), the s and t coordinates
+   before division (+x: -z, -y; -x: z, -y; +y: x, z; -y: x, -z; +z: x, -y; -z: -x, -y) or twice the
+   major axis's component, as shadPS4 computes them where the GPU has no cube instructions. Shaders then
+   take s / |ma| + 1.5 and t / |ma| + 1.5 for the face's texel coordinates. */
+static uint32_t cube_instruction(translator *t, const char *name, uint32_t x, uint32_t y, uint32_t z)
+{
+    const uint32_t f = t_float(t), b = t_bool(t), zero = konst_float(t, 0.0f);
+    const uint32_t ax = glsl(t, f, SPV_GLSL_F_ABS, x, 0, 0, 1), ay = glsl(t, f, SPV_GLSL_F_ABS, y, 0, 0, 1),
+                   az = glsl(t, f, SPV_GLSL_F_ABS, z, 0, 0, 1);
+    const uint32_t z_major = value(t, SPV_OP_LOGICAL_AND, b, 2, value(t, SPV_OP_F_ORD_GREATER_THAN_EQUAL, b, 2, az, ax),
+                                   value(t, SPV_OP_F_ORD_GREATER_THAN_EQUAL, b, 2, az, ay));
+    const uint32_t y_major = value(t, SPV_OP_F_ORD_GREATER_THAN_EQUAL, b, 2, ay, ax);
+    const uint32_t x_negative = value(t, SPV_OP_F_ORD_LESS_THAN, b, 2, x, zero), y_negative = value(t, SPV_OP_F_ORD_LESS_THAN, b, 2, y, zero),
+                   z_negative = value(t, SPV_OP_F_ORD_LESS_THAN, b, 2, z, zero);
+    uint32_t on_x, on_y, on_z;
+    if (!strcmp(name, "v_cubeid_f32")) {
+        on_x = value(t, SPV_OP_SELECT, f, 3, x_negative, konst_float(t, 1.0f), konst_float(t, 0.0f));
+        on_y = value(t, SPV_OP_SELECT, f, 3, y_negative, konst_float(t, 3.0f), konst_float(t, 2.0f));
+        on_z = value(t, SPV_OP_SELECT, f, 3, z_negative, konst_float(t, 5.0f), konst_float(t, 4.0f));
+    } else if (!strcmp(name, "v_cubesc_f32")) {
+        const uint32_t minus_x = value(t, SPV_OP_F_NEGATE, f, 1, x), minus_z = value(t, SPV_OP_F_NEGATE, f, 1, z);
+        on_x = value(t, SPV_OP_SELECT, f, 3, x_negative, z, minus_z);
+        on_y = x;
+        on_z = value(t, SPV_OP_SELECT, f, 3, z_negative, minus_x, x);
+    } else if (!strcmp(name, "v_cubetc_f32")) {
+        const uint32_t minus_y = value(t, SPV_OP_F_NEGATE, f, 1, y), minus_z = value(t, SPV_OP_F_NEGATE, f, 1, z);
+        on_x = on_z = minus_y;
+        on_y = value(t, SPV_OP_SELECT, f, 3, y_negative, minus_z, z);
+    } else { /* v_cubema_f32 */
+        const uint32_t two = konst_float(t, 2.0f);
+        on_x = value(t, SPV_OP_F_MUL, f, 2, x, two), on_y = value(t, SPV_OP_F_MUL, f, 2, y, two), on_z = value(t, SPV_OP_F_MUL, f, 2, z, two);
+    }
+    return value(t, SPV_OP_SELECT, f, 3, z_major, on_z, value(t, SPV_OP_SELECT, f, 3, y_major, on_y, on_x));
+}
+
 static uint32_t legacy_multiply(translator *t, uint32_t a, uint32_t b)
 {
     const uint32_t zero = konst_float(t, 0.0f);
@@ -662,6 +699,8 @@ static void vector_instruction(translator *t, const uint32_t *w, const gcn_instr
             r = value(t, SPV_OP_F_ADD, t_float(t), 2, product, c);
         }
         write_float(t, &o, r, ins);
+    } else if (!strncmp(name, "v_cube", 6)) {
+        write_float(t, &o, cube_instruction(t, name, float_source(t, &o, 0, ins), float_source(t, &o, 1, ins), float_source(t, &o, 2, ins)), ins);
     } else if (!strcmp(name, "v_madmk_f32") || !strcmp(name, "v_madak_f32")) {
         /* madmk: src0 * K + vsrc1; madak: src0 * vsrc1 + K, with K the literal. */
         const uint32_t a = float_source(t, &o, 0, ins), b = float_source(t, &o, 1, ins);
@@ -1925,7 +1964,7 @@ static int branches(const uint32_t *w, const gcn_instruction *ins, size_t at, lo
 
 /* Where the descriptor that the instruction at dword `at` reads from s[first : first + width - 1]
    comes from (runtime/gcn_spirv.h): the user data when no instruction writes those SGPRs before it
-   runs, or memory when the last write is an s_load of exactly those SGPRs, at an immediate offset
+   runs, or memory when the last write is an s_load covering those SGPRs (exactly, or as part of a wider load), at an immediate offset
    from a pointer pair no instruction before it writes. With branches in the program, the load is
    followed only when every path to the use passes it: no branch lands between it and the use (code
    runs forward between branches, so a path that skipped the load would have to land there), every
@@ -1988,8 +2027,9 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
     unsigned dst = 0;
     const unsigned n = sgprs_written(w, &ins, &dst);
     const int immediate = (w[0] >> 8) & 1;
-    if (ins.encoding != GCN_SMRD || strncmp(ins.name, "s_load_dword", 12) || dst != first || n != width || !immediate) {
-        snprintf(error, error_size, "the descriptor in s[%u:%u] is written by the program (%s at dword %ld), not loaded whole from a "
+    /* the load may bring more SGPRs than the descriptor (an s_load_dwordx16 of two image descriptors) */
+    if (ins.encoding != GCN_SMRD || strncmp(ins.name, "s_load_dword", 12) || dst > first || first + width > dst + n || !immediate) {
+        snprintf(error, error_size, "the descriptor in s[%u:%u] is written by the program (%s at dword %ld), not loaded from a "
                  "user-data pointer: not done yet", first, first + width - 1, ins.name, writer);
         return -1;
     }
@@ -2008,7 +2048,8 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
         }
         p += before.dwords;
     }
-    *origin = (gcn_resource_origin){.from_memory = 1, .sgpr = first, .pointer_sgpr = pointer, .offset = (w[0] & 0xff) * BYTES_PER_DWORD};
+    *origin = (gcn_resource_origin){.from_memory = 1, .sgpr = first, .pointer_sgpr = pointer,
+                                    .offset = ((w[0] & 0xff) + (first - dst)) * BYTES_PER_DWORD};
     return 0;
 }
 
@@ -2023,7 +2064,7 @@ static int same_origin(const gcn_resource_origin *a, const gcn_resource_origin *
 /* MIMG fields (the Sea Islands ISA manual): word 0 DMASK bits 8-11, UNORM 12, GLC 13, DA 14, R128 15,
    TFE 16, LWE 17, OP 18-24, SLC 25; word 1 VADDR bits 0-7, VDATA 8-15, SRSRC 16-20 (4 SGPRs each),
    SSAMP 21-25. */
-enum { MIMG_OP_LOAD = 0x00, MIMG_OP_LOAD_MIP = 0x01, MIMG_OP_STORE = 0x08, MIMG_OP_SAMPLE = 0x20, MIMG_SRSRC_UNIT = 4, RESOURCE_DWORDS = 8,
+enum { MIMG_OP_LOAD = 0x00, MIMG_OP_LOAD_MIP = 0x01, MIMG_OP_STORE = 0x08, MIMG_OP_SAMPLE = 0x20, MIMG_OP_SAMPLE_L = 0x24, MIMG_SRSRC_UNIT = 4, RESOURCE_DWORDS = 8,
        SAMPLER_DWORDS = 4 };
 
 static unsigned mimg_resource_sgpr(const uint32_t *w) { return ((w[1] >> 16) & 0x1f) * MIMG_SRSRC_UNIT; }
@@ -2125,15 +2166,17 @@ static uint32_t sampler_variable(translator *t, unsigned j)
     return id;
 }
 
-/* image_sample: float coordinates from VADDR on (x, then y for 2D, then the slice for an array, which
-   DA marks), sampled with the sampler its SSAMP SGPRs name at the level the coordinates' derivatives
-   pick, as GCN does: the derivatives across the pixel's 2x2 quad (x from the quad's first pixel to
+/* image_sample and image_sample_l: float coordinates from VADDR on (x, then y for 2D, then the slice
+   for an array, which DA marks), then for image_sample_l the level of detail, sampled with the sampler
+   its SSAMP SGPRs name: image_sample_l at that level (Vulkan's explicit Lod, which the sampler's bias
+   and clamps still adjust as on GCN), image_sample at the level the coordinates' derivatives pick, as
+   GCN does: the derivatives across the pixel's 2x2 quad (x from the quad's first pixel to
    its second, y from the first to its third; the slice has none), passed as explicit gradients
    because the translated program's dispatch loop is not uniform control flow for Vulkan's implicit
    derivatives; the quad's lanes take the same path, so its broadcasts are defined. Only active lanes
    write their VGPRs. */
 static void image_sample(translator *t, const uint32_t *code, size_t at, const gcn_instruction *ins, unsigned binding, uint32_t texel_type,
-                         unsigned dmask, unsigned vaddr, unsigned vdata)
+                         unsigned dmask, unsigned vaddr, unsigned vdata, int explicit_lod)
 {
     enum { SPV_OP_COMPOSITE_CONSTRUCT = 80 };
     const uint32_t *w = code + at;
@@ -2174,19 +2217,20 @@ static void image_sample(translator *t, const uint32_t *code, size_t at, const g
         spirv_emit(&t->m, t->out, SPV_OP_COMPOSITE_CONSTRUCT, words, 2 + coordinates);
         coordinate = words[1];
     }
+    const uint32_t lod = explicit_lod ? as_float(t, load(t, t_uint(t), vgpr(t, vaddr + coordinates))) : 0;
     /* the gradients, from every lane of the quad (before the active lanes split off) */
     const unsigned spatial = coordinates - (b->arrayed ? 1 : 0);
     uint32_t dx[3] = {0}, dy[3] = {0};
-    for (unsigned i = 0; i < spatial; i++) {
+    for (unsigned i = 0; !explicit_lod && i < spatial; i++) {
         uint32_t corner[3];
         for (unsigned q = 0; q < 3; q++)
             corner[q] = value(t, SPV_OP_GROUP_NON_UNIFORM_QUAD_BROADCAST, t_float(t), 3, konst(t, SPV_SCOPE_SUBGROUP), c[i], konst(t, q));
         dx[i] = value(t, SPV_OP_F_SUB, t_float(t), 2, corner[1], corner[0]);
         dy[i] = value(t, SPV_OP_F_SUB, t_float(t), 2, corner[2], corner[0]);
     }
-    t->uses_quads = 1;
+    if (!explicit_lod) t->uses_quads = 1;
     uint32_t gradient_x = dx[0], gradient_y = dy[0];
-    if (spatial > 1) {
+    if (!explicit_lod && spatial > 1) {
         const uint32_t vec = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_float(t), spatial}, 2);
         gradient_x = value(t, SPV_OP_COMPOSITE_CONSTRUCT, vec, spatial, dx[0], dx[1], dx[2]);
         gradient_y = value(t, SPV_OP_COMPOSITE_CONSTRUCT, vec, spatial, dy[0], dy[1], dy[2]);
@@ -2197,8 +2241,9 @@ static void image_sample(translator *t, const uint32_t *code, size_t at, const g
     const uint32_t sampled_type = spirv_global(&t->m, SPV_OP_TYPE_SAMPLED_IMAGE, &type, 1);
     const uint32_t combined = value(t, SPV_OP_SAMPLED_IMAGE, sampled_type, 2, load(t, type, image_variable_id),
                                     load(t, spirv_global(&t->m, SPV_OP_TYPE_SAMPLER, NULL, 0), sampler_id));
-    const uint32_t texel = value(t, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, texel_type, 5, combined, coordinate, SPV_IMAGE_OPERANDS_GRAD,
-                                 gradient_x, gradient_y);
+    const uint32_t texel = explicit_lod ? value(t, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, texel_type, 4, combined, coordinate, SPV_IMAGE_OPERANDS_LOD, lod)
+                                        : value(t, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, texel_type, 5, combined, coordinate, SPV_IMAGE_OPERANDS_GRAD,
+                                                gradient_x, gradient_y);
     const uint32_t sampled = texel_component_type(t, b);
     unsigned next = vdata;
     for (unsigned i = 0; i < 4; i++) {
@@ -2221,7 +2266,8 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
     const char *name = ins->name;
     const unsigned op = (w[0] >> 18) & 0x7f, dmask = (w[0] >> 8) & 0xf, r128 = (w[0] >> 15) & 1, tfe = (w[0] >> 16) & 1,
                    lwe = (w[0] >> 17) & 1;
-    if (op != MIMG_OP_LOAD && op != MIMG_OP_LOAD_MIP && op != MIMG_OP_STORE && op != MIMG_OP_SAMPLE) {
+    const int sample = op == MIMG_OP_SAMPLE || op == MIMG_OP_SAMPLE_L;
+    if (op != MIMG_OP_LOAD && op != MIMG_OP_LOAD_MIP && op != MIMG_OP_STORE && !sample) {
         fail(t, "%s (MIMG) is not translated yet", name);
         return;
     }
@@ -2244,9 +2290,9 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
         return;
     }
     const gcn_image_binding *b = &t->layout->images[binding];
-    if (op == MIMG_OP_SAMPLE) {
+    if (sample) {
         const uint32_t texel_type = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){texel_component_type(t, b), 4}, 2);
-        image_sample(t, code, at, ins, binding, texel_type, dmask, vaddr, vdata);
+        image_sample(t, code, at, ins, binding, texel_type, dmask, vaddr, vdata, op == MIMG_OP_SAMPLE_L);
         return;
     }
     if (b->sampled && op == MIMG_OP_STORE) {
@@ -2355,7 +2401,8 @@ int gcn_image_resources(const uint32_t *code, size_t dwords, gcn_image_resource 
                 resources[i] = (gcn_image_resource){origin, 0};
                 (*count)++;
             }
-            resources[i].access |= op == MIMG_OP_STORE ? GCN_IMAGE_WRITE : op == MIMG_OP_SAMPLE ? GCN_IMAGE_READ | GCN_IMAGE_SAMPLE : GCN_IMAGE_READ;
+            resources[i].access |= op == MIMG_OP_STORE ? GCN_IMAGE_WRITE : op == MIMG_OP_SAMPLE || op == MIMG_OP_SAMPLE_L ? GCN_IMAGE_READ | GCN_IMAGE_SAMPLE
+                                                                                                         : GCN_IMAGE_READ;
         }
         at += ins.dwords;
     }
@@ -2377,7 +2424,8 @@ int gcn_sampler_resources(const uint32_t *code, size_t dwords, gcn_resource_orig
             snprintf(error, error_size, "dword %zu: an instruction the decoder cannot name", at);
             return -1;
         }
-        if (ins.encoding == GCN_MIMG && ((code[at] >> 18) & 0x7f) == MIMG_OP_SAMPLE) {
+        const unsigned mimg_op = (code[at] >> 18) & 0x7f;
+        if (ins.encoding == GCN_MIMG && (mimg_op == MIMG_OP_SAMPLE || mimg_op == MIMG_OP_SAMPLE_L)) {
             gcn_resource_origin origin;
             if (descriptor_origin(code, (size_t)program, at, mimg_sampler_sgpr(code + at), SAMPLER_DWORDS, &origin, error, error_size))
                 return -1;

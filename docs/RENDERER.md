@@ -100,6 +100,10 @@ Instead:
        undoes the descriptor's swizzle (shadPS4's rule: the inverse of a load's) and packs as GLSL's
        `packUnorm4x8` (the PS4's rounding of ties is not established). Anything else is a run-time stop. A four-component store to 16_16_16_16 float packs halves, and one to 10_11_11 float unsigned
        11-, 11- and 10-bit floats (x in the low bits), rounded to nearest even.
+     - **Cube instructions** (`v_cubeid_f32`, `v_cubesc_f32`, `v_cubetc_f32`, `v_cubema_f32`): the
+       face a direction's largest component picks (z, then y, then x on ties), its number, s and t
+       before division and twice the major axis, as shadPS4 computes them without native cube
+       instructions; shaders then take s / |ma| + 1.5 and t / |ma| + 1.5.
      - **Format loads with a swizzle:** a load of whole 32-bit components reads the format's
        components (the ones it lacks read 0), then each result takes what its DST_SEL names: 0, 1
        (1.0 for float data) or a memory component, as shadPS4 reads them.
@@ -126,6 +130,8 @@ Instead:
        slices (AMD's address library for GFX7, as shadPS4's `ComputeImageSize` follows). The levels
        are detiled by the CPU. `image_load` and `image_load_mip` read them exactly, `image_sample`
        at the level its derivatives pick (below). A storage image keeps one level.
+     - **`image_sample_l`** takes its level of detail after the coordinates and samples there
+       (Vulkan's explicit `Lod`, which the sampler's LOD bias and clamps still adjust).
      - **`image_sample`** with the sampler (S#) its SSAMP SGPRs name, found like image descriptors and
        bound after the images (set 0, `VK_DESCRIPTOR_TYPE_SAMPLER`): sampled at the level the
        coordinates' derivatives pick, as GCN does: the derivatives across the pixel's 2x2 quad (x from
@@ -143,7 +149,8 @@ Instead:
        the host GPU's.
      - **Descriptors from memory:** each MIMG instruction's descriptor is found from the code before
        it (`gcn_resource_origin`): the user data's when nothing writes its SGPRs first, or loaded
-       from memory when the last write is a whole `s_load_dwordx8` at an immediate offset from a
+       from memory when the last write is an `s_load_dwordx8` (or a wider load that covers the
+       descriptor's SGPRs, as the game's `s_load_dwordx16` of two image descriptors) at an immediate offset from a
        user-data pointer pair that nothing writes before it. The executor reads such a descriptor from guest
        memory when the draw runs. The same SGPRs can name different images at different
        instructions: the game's fullscreen pass reads the user data's image, then loads another

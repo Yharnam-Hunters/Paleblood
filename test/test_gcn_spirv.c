@@ -170,6 +170,10 @@ static void image_programs(void)
        images, the user data's and the loaded one. A scalar move into it or a compare's 64-bit
        result: refused by name. */
     static const uint32_t loaded[] = {0xc0c00904, 0xf0000f00, 0x00000401, 0xbf810000};   /* s_load_dwordx8 s[0:7], s[8:9], 4 */
+    /* s_load_dwordx16 s[0:15], s[8:9], 4: the descriptor in its second half (s[8:15], MIMG SRSRC 2) is at 16 + 32 bytes */
+    static const uint32_t wider[] = {0xc1000904, 0xf0000f00, 0x00020401, 0xbf810000};
+    /* s_load_dwordx4 s[8:11]: only half the descriptor */
+    static const uint32_t narrower[] = {0xc0840904, 0xf0000f00, 0x00020401, 0xbf810000};
     static const uint32_t moved[] = {0xbe8c0380, 0xf0000f00, 0x00020401, 0xbf810000};    /* s_mov_b32 s12, 0 */
     static const uint32_t compared[] = {0xd184000e, 0x00020300, 0xf0000f00, 0x00020401, 0xbf810000}; /* v_cmp_eq_u32_e64 s[14:15] */
     static const uint32_t pointer_written[] = {0xbe880380, 0xc0c00904, 0xf0000f00, 0x00000401, 0xbf810000}; /* s_mov_b32 s8, 0 first */
@@ -179,6 +183,11 @@ static void image_programs(void)
     CHECK(gcn_image_resources(PROGRAM(loaded), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
     CHECK(count == 1 && found[0].origin.from_memory && found[0].origin.sgpr == 0 && found[0].origin.pointer_sgpr == 8 &&
           found[0].origin.offset == 16);
+    CHECK(gcn_image_resources(PROGRAM(wider), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
+    CHECK(count == 1 && found[0].origin.from_memory && found[0].origin.sgpr == 8 && found[0].origin.pointer_sgpr == 8 &&
+          found[0].origin.offset == 48);
+    CHECK(gcn_image_resources(PROGRAM(narrower), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
+          strstr(error, "not loaded from a user-data pointer"));
     CHECK(gcn_image_resources(PROGRAM(pixel_two_images), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
     CHECK(count == 2 && !found[0].origin.from_memory && found[0].origin.sgpr == 4 && found[1].origin.from_memory &&
           found[1].origin.pointer_sgpr == 2 && found[1].origin.offset == 16);
