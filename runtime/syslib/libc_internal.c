@@ -22,7 +22,8 @@
    functions format; printf and vprintf write to the host's standard output. A format the runtime
    cannot hand to the host unchanged stops by name: a wide character or string (%lc, %ls: the PS4's
    wchar_t is not established), %n (the host's fortified printf refuses it from writable memory,
-   and no call is known to pass it), and any conversion ISO C does not define. */
+   and no call is known to pass it, so it is left off the list below), and any conversion ISO C
+   does not define. */
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
@@ -72,10 +73,9 @@ static void check_format(const char *caller, const char *format)
         p += strspn(p, "hljztL");
         const size_t length_size = (size_t)(p - length);
         const int wide = length_size == 1 && *length == 'l';
-        if (*p == 'n') rt_fatal(caller, "a %n conversion: the host's fortified printf refuses it");
         if ((*p == 'c' || *p == 's') && wide) rt_fatal(caller, "a wide character or string: the PS4's wchar_t is not established");
         if (!*p || !strchr("diouxXeEfFgGaAcsp", *p) || length_size > 2)
-            rt_fatal(caller, "a conversion ISO C does not define");
+            rt_fatal(caller, "a conversion the runtime does not hand to the host: %n, or one ISO C does not define");
         p++;
     }
 }
