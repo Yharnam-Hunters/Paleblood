@@ -49,6 +49,7 @@ extern "C" uint64_t {symbol}(void)
         'shared': '#include "object_field.h"\n',
         'per_value': '''\
 constexpr std::size_t offset_{name} = {value};
+static_assert(field_is_at_offset<offset_{name}, uint64_t>);
 extern "C" uint64_t {symbol}(const ObjectWithFieldAt<offset_{name}, uint64_t> *object)
 {{
     return object->field;
@@ -64,6 +65,7 @@ extern "C" uint64_t {symbol}(const ObjectWithFieldAt<offset_{name}, uint64_t> *o
         'shared': '#include "object_field.h"\n',
         'per_value': '''\
 constexpr std::size_t offset_{name} = {value};
+static_assert(field_is_at_offset<offset_{name}, uint32_t>);
 extern "C" uint64_t {symbol}(const ObjectWithFieldAt<offset_{name}, uint32_t> *object)
 {{
     return object->field;
@@ -78,6 +80,7 @@ extern "C" uint64_t {symbol}(const ObjectWithFieldAt<offset_{name}, uint32_t> *o
         'shared': '#include "object_field.h"\n',
         'per_value': '''\
 constexpr std::size_t offset_{name} = {value};
+static_assert(field_is_at_offset<offset_{name}, uint16_t>);
 extern "C" uint64_t {symbol}(const ObjectWithFieldAt<offset_{name}, uint16_t> *object)
 {{
     return object->field;
@@ -93,6 +96,7 @@ extern "C" uint64_t {symbol}(const ObjectWithFieldAt<offset_{name}, uint16_t> *o
         'shared': '#include "object_field.h"\n',
         'per_value': '''\
 constexpr std::size_t offset_{name} = {value};
+static_assert(field_is_at_offset<offset_{name}, uint8_t>);
 extern "C" uint64_t {symbol}(const ObjectWithFieldAt<offset_{name}, uint8_t> *object)
 {{
     return object->field;
@@ -108,6 +112,7 @@ extern "C" uint64_t {symbol}(const ObjectWithFieldAt<offset_{name}, uint8_t> *ob
         'shared': '#include "object_field.h"\n',
         'per_value': '''\
 constexpr std::size_t offset_{name} = {value};
+static_assert(field_is_at_offset<offset_{name}, uint8_t>);
 extern "C" uint8_t *{symbol}(ObjectWithFieldAt<offset_{name}, uint8_t> *object)
 {{
     return &object->field;
@@ -123,6 +128,7 @@ extern "C" uint8_t *{symbol}(ObjectWithFieldAt<offset_{name}, uint8_t> *object)
         'shared': '#include "object_field.h"\n',
         'per_value': '''\
 constexpr std::size_t offset_{name} = {value};
+static_assert(field_is_at_offset<offset_{name}, uint64_t>);
 extern "C" void {symbol}(ObjectWithFieldAt<offset_{name}, uint64_t> *object, uint64_t value)
 {{
     object->field = value;
@@ -137,6 +143,7 @@ extern "C" void {symbol}(ObjectWithFieldAt<offset_{name}, uint64_t> *object, uin
         'shared': '#include "object_field.h"\n',
         'per_value': '''\
 constexpr std::size_t offset_{name} = {value};
+static_assert(field_is_at_offset<offset_{name}, uint32_t>);
 extern "C" void {symbol}(ObjectWithFieldAt<offset_{name}, uint32_t> *object, uint32_t value)
 {{
     object->field = value;
@@ -151,6 +158,7 @@ extern "C" void {symbol}(ObjectWithFieldAt<offset_{name}, uint32_t> *object, uin
         'shared': '#include "object_field.h"\n',
         'per_value': '''\
 constexpr std::size_t offset_{name} = {value};
+static_assert(field_is_at_offset<offset_{name}, uint16_t>);
 extern "C" void {symbol}(ObjectWithFieldAt<offset_{name}, uint16_t> *object, uint16_t value)
 {{
     object->field = value;
@@ -166,6 +174,7 @@ extern "C" void {symbol}(ObjectWithFieldAt<offset_{name}, uint16_t> *object, uin
         'shared': '#include "object_field.h"\n',
         'per_value': '''\
 constexpr std::size_t offset_{name} = {value};
+static_assert(field_is_at_offset<offset_{name}, uint8_t>);
 extern "C" void {symbol}(ObjectWithFieldAt<offset_{name}, uint8_t> *object, uint8_t value)
 {{
     object->field = value;
@@ -205,7 +214,10 @@ def main() -> int:
     path = os.path.join(a.root, 'game', rows[0]['system'], f'{a.family}.cpp')
     text = render(a.root, a.family)
     if a.check:
-        current = open(path).read() if os.path.isfile(path) else None
+        current = None
+        if os.path.isfile(path):
+            with open(path) as f:
+                current = f.read()
         if current != text:
             print(f'family_emit: {os.path.relpath(path, a.root)} is stale; run tools/family_emit.py {a.family}',
                   file=sys.stderr)

@@ -86,3 +86,30 @@ float bb_mutant_returns_float_one(void)
 {
     return 1.0f;
 }
+
+/* Returns zero correctly but also clears its second argument register: caught only by the
+   argument-register comparison. */
+__attribute__((naked)) void bb_mutant_returns_zero_clobbers_second_argument(void)
+{
+    __asm__("xorl %eax, %eax\n\txorl %esi, %esi\n\tret");
+}
+
+/* Stores its second argument at the start of its object correctly, then clears eax: caught only
+   because a setter must leave rax. */
+__attribute__((naked)) void bb_mutant_writes_first_qword_clears_eax(void)
+{
+    __asm__("movq %rsi, (%rdi)\n\txorl %eax, %eax\n\tret");
+}
+
+/* Zeroes only the low float of xmm0, keeping its other lanes: caught only because all of xmm0
+   must be zero. */
+__attribute__((naked)) void bb_mutant_zeroes_low_float_only(void)
+{
+    __asm__("xorl %eax, %eax\n\tpinsrd $0, %eax, %xmm0\n\tret");
+}
+
+/* Zeroes xmm0 correctly and xmm1 as well: caught only because xmm1 is compared. */
+__attribute__((naked)) void bb_mutant_zeroes_xmm0_and_xmm1(void)
+{
+    __asm__("pxor %xmm0, %xmm0\n\tpxor %xmm1, %xmm1\n\tret");
+}

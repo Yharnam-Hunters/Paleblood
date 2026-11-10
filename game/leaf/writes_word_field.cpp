@@ -6,54 +6,63 @@
 #include "object_field.h"
 
 constexpr std::size_t offset_0x2 = 0x2u;
+static_assert(field_is_at_offset<offset_0x2, uint16_t>);
 extern "C" void bb_leaf_writes_word_field_0x2(ObjectWithFieldAt<offset_0x2, uint16_t> *object, uint16_t value)
 {
     object->field = value;
 }
 
 constexpr std::size_t offset_0x6 = 0x6u;
+static_assert(field_is_at_offset<offset_0x6, uint16_t>);
 extern "C" void bb_leaf_writes_word_field_0x6(ObjectWithFieldAt<offset_0x6, uint16_t> *object, uint16_t value)
 {
     object->field = value;
 }
 
 constexpr std::size_t offset_0x8 = 0x8u;
+static_assert(field_is_at_offset<offset_0x8, uint16_t>);
 extern "C" void bb_leaf_writes_word_field_0x8(ObjectWithFieldAt<offset_0x8, uint16_t> *object, uint16_t value)
 {
     object->field = value;
 }
 
 constexpr std::size_t offset_0x16 = 0x16u;
+static_assert(field_is_at_offset<offset_0x16, uint16_t>);
 extern "C" void bb_leaf_writes_word_field_0x16(ObjectWithFieldAt<offset_0x16, uint16_t> *object, uint16_t value)
 {
     object->field = value;
 }
 
 constexpr std::size_t offset_0x18 = 0x18u;
+static_assert(field_is_at_offset<offset_0x18, uint16_t>);
 extern "C" void bb_leaf_writes_word_field_0x18(ObjectWithFieldAt<offset_0x18, uint16_t> *object, uint16_t value)
 {
     object->field = value;
 }
 
 constexpr std::size_t offset_0x1a = 0x1au;
+static_assert(field_is_at_offset<offset_0x1a, uint16_t>);
 extern "C" void bb_leaf_writes_word_field_0x1a(ObjectWithFieldAt<offset_0x1a, uint16_t> *object, uint16_t value)
 {
     object->field = value;
 }
 
 constexpr std::size_t offset_0x24 = 0x24u;
+static_assert(field_is_at_offset<offset_0x24, uint16_t>);
 extern "C" void bb_leaf_writes_word_field_0x24(ObjectWithFieldAt<offset_0x24, uint16_t> *object, uint16_t value)
 {
     object->field = value;
 }
 
 constexpr std::size_t offset_0x38 = 0x38u;
+static_assert(field_is_at_offset<offset_0x38, uint16_t>);
 extern "C" void bb_leaf_writes_word_field_0x38(ObjectWithFieldAt<offset_0x38, uint16_t> *object, uint16_t value)
 {
     object->field = value;
 }
 
 constexpr std::size_t offset_0x40 = 0x40u;
+static_assert(field_is_at_offset<offset_0x40, uint16_t>);
 extern "C" void bb_leaf_writes_word_field_0x40(ObjectWithFieldAt<offset_0x40, uint16_t> *object, uint16_t value)
 {
     object->field = value;

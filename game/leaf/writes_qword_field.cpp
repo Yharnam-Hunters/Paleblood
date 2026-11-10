@@ -7,96 +7,112 @@
 #include "object_field.h"
 
 constexpr std::size_t offset_0x1 = 0x1u;
+static_assert(field_is_at_offset<offset_0x1, uint64_t>);
 extern "C" void bb_leaf_writes_qword_field_0x1(ObjectWithFieldAt<offset_0x1, uint64_t> *object, uint64_t value)
 {
     object->field = value;
 }
 
 constexpr std::size_t offset_0x8 = 0x8u;
+static_assert(field_is_at_offset<offset_0x8, uint64_t>);
 extern "C" void bb_leaf_writes_qword_field_0x8(ObjectWithFieldAt<offset_0x8, uint64_t> *object, uint64_t value)
 {
     object->field = value;
 }
 
 constexpr std::size_t offset_0x10 = 0x10u;
+static_assert(field_is_at_offset<offset_0x10, uint64_t>);
 extern "C" void bb_leaf_writes_qword_field_0x10(ObjectWithFieldAt<offset_0x10, uint64_t> *object, uint64_t value)
 {
     object->field = value;
 }
 
 constexpr std::size_t offset_0x18 = 0x18u;
+static_assert(field_is_at_offset<offset_0x18, uint64_t>);
 extern "C" void bb_leaf_writes_qword_field_0x18(ObjectWithFieldAt<offset_0x18, uint64_t> *object, uint64_t value)
 {
     object->field = value;
 }
 
 constexpr std::size_t offset_0x20 = 0x20u;
+static_assert(field_is_at_offset<offset_0x20, uint64_t>);
 extern "C" void bb_leaf_writes_qword_field_0x20(ObjectWithFieldAt<offset_0x20, uint64_t> *object, uint64_t value)
 {
     object->field = value;
 }
 
 constexpr std::size_t offset_0x28 = 0x28u;
+static_assert(field_is_at_offset<offset_0x28, uint64_t>);
 extern "C" void bb_leaf_writes_qword_field_0x28(ObjectWithFieldAt<offset_0x28, uint64_t> *object, uint64_t value)
 {
     object->field = value;
 }
 
 constexpr std::size_t offset_0x30 = 0x30u;
+static_assert(field_is_at_offset<offset_0x30, uint64_t>);
 extern "C" void bb_leaf_writes_qword_field_0x30(ObjectWithFieldAt<offset_0x30, uint64_t> *object, uint64_t value)
 {
     object->field = value;
 }
 
 constexpr std::size_t offset_0x38 = 0x38u;
+static_assert(field_is_at_offset<offset_0x38, uint64_t>);
 extern "C" void bb_leaf_writes_qword_field_0x38(ObjectWithFieldAt<offset_0x38, uint64_t> *object, uint64_t value)
 {
     object->field = value;
 }
 
 constexpr std::size_t offset_0x40 = 0x40u;
+static_assert(field_is_at_offset<offset_0x40, uint64_t>);
 extern "C" void bb_leaf_writes_qword_field_0x40(ObjectWithFieldAt<offset_0x40, uint64_t> *object, uint64_t value)
 {
     object->field = value;
 }
 
 constexpr std::size_t offset_0x48 = 0x48u;
+static_assert(field_is_at_offset<offset_0x48, uint64_t>);
 extern "C" void bb_leaf_writes_qword_field_0x48(ObjectWithFieldAt<offset_0x48, uint64_t> *object, uint64_t value)
 {
     object->field = value;
 }
 
 constexpr std::size_t offset_0x50 = 0x50u;
+static_assert(field_is_at_offset<offset_0x50, uint64_t>);
 extern "C" void bb_leaf_writes_qword_field_0x50(ObjectWithFieldAt<offset_0x50, uint64_t> *object, uint64_t value)
 {
     object->field = value;
 }
 
 constexpr std::size_t offset_0x58 = 0x58u;
+static_assert(field_is_at_offset<offset_0x58, uint64_t>);
 extern "C" void bb_leaf_writes_qword_field_0x58(ObjectWithFieldAt<offset_0x58, uint64_t> *object, uint64_t value)
 {
     object->field = value;
 }
 
 constexpr std::size_t offset_0x60 = 0x60u;
+static_assert(field_is_at_offset<offset_0x60, uint64_t>);
 extern "C" void bb_leaf_writes_qword_field_0x60(ObjectWithFieldAt<offset_0x60, uint64_t> *object, uint64_t value)
 {
     object->field = value;
 }
 
 constexpr std::size_t offset_0x68 = 0x68u;
+static_assert(field_is_at_offset<offset_0x68, uint64_t>);
 extern "C" void bb_leaf_writes_qword_field_0x68(ObjectWithFieldAt<offset_0x68, uint64_t> *object, uint64_t value)
 {
     object->field = value;
 }
 
 constexpr std::size_t offset_0x70 = 0x70u;
+static_assert(field_is_at_offset<offset_0x70, uint64_t>);
 extern "C" void bb_leaf_writes_qword_field_0x70(ObjectWithFieldAt<offset_0x70, uint64_t> *object, uint64_t value)
 {
     object->field = value;
 }
 
 constexpr std::size_t offset_0x78 = 0x78u;
+static_assert(field_is_at_offset<offset_0x78, uint64_t>);
 extern "C" void bb_leaf_writes_qword_field_0x78(ObjectWithFieldAt<offset_0x78, uint64_t> *object, uint64_t value)
 {
     object->field = value;

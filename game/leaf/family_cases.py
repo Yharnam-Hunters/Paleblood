@@ -54,8 +54,10 @@ def returns_nothing(address: str, value: int | None) -> list[dict]:
 
 
 def returns_a_value(address: str, value: int | None) -> list[dict]:
-    """A body that writes all of rax and nothing else (returns_zero, returns_constant): rax enters
-    with a seed no u32 constant equals, so a body that leaves rax or writes only part of it fails."""
+    """A body that writes all of rax and nothing else (returns_zero, returns_constant and the
+    argument-returning families): rax enters with a seed no u32 constant equals, so a body that
+    leaves rax or writes only part of it fails; rdi and rsi point at different probe slots (and
+    hold different integers), which tells the first argument from the second."""
     return untouched_state_cases(address, 'i64')
 
 
@@ -141,7 +143,7 @@ CASES = {
 MUTANTS = {
     'returns_nothing': ['bb_mutant_writes_first_argument', 'bb_mutant_returns_zero',
                         'bb_mutant_clobbers_second_argument'],
-    'returns_zero': ['bb_mutant_does_nothing', 'bb_mutant_returns_one', 'bb_mutant_clobbers_second_argument'],
+    'returns_zero': ['bb_mutant_does_nothing', 'bb_mutant_returns_one', 'bb_mutant_returns_zero_clobbers_second_argument'],
     # A constant family's mutants include the neighbouring value's replacement (tools/family_verify.py);
     # returns_one or returns_zero would be correct for the members whose constant is 1 or 0.
     'returns_constant': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument',
@@ -156,16 +158,19 @@ MUTANTS = {
                           'bb_mutant_reads_first_dword'],
     'reads_first_dword': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument',
                           'bb_mutant_reads_first_qword'],
-    # Setters: the neighbouring offset's replacement stores at the wrong place.
+    # Setters: for the four {d8} families the neighbouring offset's replacement stores at the wrong
+    # place; store-then-clear-eax shows a setter must leave rax.
     'writes_qword_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
     'writes_dword_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
     'writes_word_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
     'writes_byte_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
-    'writes_first_qword': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_dword', 'bb_mutant_returns_zero'],
+    'writes_first_qword': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_dword', 'bb_mutant_returns_zero',
+                           'bb_mutant_writes_first_qword_clears_eax'],
     'writes_first_dword': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_qword', 'bb_mutant_returns_zero'],
     'returns_first_argument': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_returns_second_argument'],
     'returns_second_argument': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_returns_first_argument'],
-    'returns_float_zero': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_returns_float_one'],
+    'returns_float_zero': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_returns_float_one',
+                           'bb_mutant_zeroes_low_float_only', 'bb_mutant_zeroes_xmm0_and_xmm1'],
 }
 
 
