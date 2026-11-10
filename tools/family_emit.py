@@ -73,7 +73,10 @@ def main() -> int:
     path = os.path.join(a.root, 'game', rows[0]['system'], f'{a.family}.cpp')
     text = render(a.root, a.family)
     if a.check:
-        current = open(path).read() if os.path.isfile(path) else None
+        current = None
+        if os.path.isfile(path):
+            with open(path) as f:
+                current = f.read()
         if current != text:
             print(f'family_emit: {os.path.relpath(path, a.root)} is stale; run tools/family_emit.py {a.family}',
                   file=sys.stderr)
