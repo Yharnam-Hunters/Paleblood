@@ -145,10 +145,11 @@ extern "C" void bb_render_present_last_record_consume(
     last_record_calls::initialize_mode(&restore_mode);
     last_record_calls::emit_mode(commands, restore_mode.word);
 
+    auto *targets = reinterpret_cast<TargetRestoreState *>(preparation);
     for (uint32_t slot = 0; slot < preparation_slot_count; ++slot) {
-        restore_prepared_record_from_bank(preparation, commands, slot);
+        restore_color_target_from_bank(targets, commands, slot);
     }
-    restore_prepared_selector_from_bank(preparation, commands);
+    restore_depth_target_from_bank(targets, commands);
     context->mode_b520.set(pipeline_mode);
     context->pending_b518.set(0);
     context->sentinel_b524.set(unset_word);
