@@ -169,6 +169,21 @@ static void image_programs(void)
        memory, at the load's offset. Two uses of s[4:11], before and after such a load over it: two
        images, the user data's and the loaded one. A scalar move into it, a compare's 64-bit result,
        or a branch before a use of the user data's: refused by name. */
+    /* sixteen descriptors (s_load_dwordx8 s[0:7], s[8:9], 8k, then image_load each): sixteen images; a
+       seventeenth is more than a program may use */
+    {
+        static uint32_t many[3 * 17 + 1];
+        for (unsigned limit = 16; limit <= 17; limit++) {
+            unsigned n = 0;
+            for (unsigned k = 0; k < limit; k++) many[n++] = 0xc0c00900u | 8 * k, many[n++] = 0xf0000f00, many[n++] = 0x00000401;
+            many[n++] = 0xbf810000;
+            gcn_image_resource sixteen[GCN_MAX_IMAGES];
+            unsigned images = 0;
+            const int listed = gcn_image_resources(many, n, sixteen, GCN_MAX_IMAGES, &images, error, sizeof error);
+            if (limit == 16) CHECK(listed == 0 && images == 16 && sixteen[15].origin.offset == 15 * 32);
+            else CHECK(listed == -1 && strstr(error, "more than 16 images"));
+        }
+    }
     static const uint32_t loaded[] = {0xc0c00904, 0xf0000f00, 0x00000401, 0xbf810000};   /* s_load_dwordx8 s[0:7], s[8:9], 4 */
     /* s_load_dwordx16 s[0:15], s[8:9], 4: the descriptor in its second half (s[8:15], MIMG SRSRC 2) is at 16 + 32 bytes */
     static const uint32_t wider[] = {0xc1000904, 0xf0000f00, 0x00020401, 0xbf810000};
