@@ -321,3 +321,8 @@ render_set_depth_render_target,edge,,21,21,0,0,f0d031881735ea70,2026-11-06
 render_finish_record_shader,edge,,46,46,0,0,073880f2c3fe7a48,2026-11-06
 render_restore_color_target_from_bank,edge,,12,12,0,0,649b23425dd0ccb1,2026-11-06
 render_restore_depth_target_from_bank,edge,,12,12,0,0,8668e2d117190cf8,2026-11-06
+render_present_encoding_units,edge,,8,8,0,0,c3332eaa68fece3e,2026-11-07
+render_present_record_bit_width,edge,,10,10,0,0,4cc54944f003e521,2026-11-07
+render_present_slot_emit,edge,,12,12,0,0,1eda8151055d44d2,2026-11-07
+render_present_source_flush_state,edge,,28,28,0,0,92675c00e5f9e693,2026-11-07
+render_present_source_prepare,edge,,12,12,0,0,e91eaf5cf066bb6d,2026-11-07

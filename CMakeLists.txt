@@ -192,6 +192,22 @@ add_executable(test_direct_memory_bounds test/test_direct_memory_bounds.c
 target_include_directories(test_direct_memory_bounds PRIVATE runtime/include)
 add_test(NAME direct_memory_bounds COMMAND test_direct_memory_bounds)
 set_tests_properties(direct_memory_bounds PROPERTIES TIMEOUT 20)
+
+# The table is immutable in the original image. This unit uses owned values so
+# the last valid entry and a one-past access are independently observable.
+add_executable(test_present_encoding_units game/render/tests/test_present_encoding_units.cpp
+               game/render/present_encoding_units.cpp)
+target_include_directories(test_present_encoding_units PRIVATE runtime/include)
+target_compile_options(test_present_encoding_units PRIVATE
+                       -ffp-contract=off -fno-fast-math)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(test_present_encoding_units PRIVATE
+                           -fsanitize=bounds -fsanitize-undefined-trap-on-error)
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(test_present_encoding_units PRIVATE
+                           -fsanitize=bounds -fsanitize-trap=bounds)
+endif()
+add_test(NAME present_encoding_units COMMAND test_present_encoding_units)
 # Owned per-thread module blocks and the actual TLS registry entry.
 find_package(Threads REQUIRED)
 add_executable(test_module_tls test/test_module_tls.c runtime/syslib/kernel_tls.c
