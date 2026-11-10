@@ -155,8 +155,45 @@ this profile. Image and sampler bindings stay empty in this draw backend;
 `image_load`, `image_load_mip` and `image_sample` return named translation errors, including
 image descriptors loaded from memory. Fetch-shader callees are also unbound in this backend:
 `s_swappc_b64` returns a named translation error. Triangle strips and depth-target registers
-remain outside this profile. Rectangle lists need a geometry expansion path and are rejected; compute shader bindings and dispatch events are also rejected
-explicitly by this draw-only backend.
+remain outside this profile. Rectangle lists need a geometry expansion path and are rejected.
+
+## Buffer compute
+
+The executor also accepts compute bindings, compute user data and ordered dispatches.
+It uses the common GFX7 compute translator and the same SPIRV-Cross/MSL compiler,
+shared memory pool and runtime-stop channel as draws. Compute user data and its
+written-slot mask are independent of vertex and pixel state. A reset forgets those
+values while retaining compiled pipelines. The cache includes the complete program
+bytes, local dimensions, user count and X workgroup-ID layout; changing code at an
+existing address does not reuse its previous pipeline.
+
+This is a lane-local buffer profile. All three thread-ID inputs must be explicitly
+enabled, and local XYZ dimensions must be positive, fit the device/pipeline limits
+and contain at most one logical 64-lane GCN wave. The profile does not assume that
+Metal has a native 64-lane SIMD group. Actual subgroup operations, including
+wave-wide votes and quad swaps, are rejected before MSL compilation. The common
+translator declares vote capabilities even for programs that never use them;
+capability declarations alone do not cause rejection. Lane-local VCC half writes
+retain the logical lane index from the common translator.
+
+The optional X workgroup-ID SGPR follows the declared user SGPRs. Y/Z ID SGPRs,
+packed workgroup-size input, images and samplers remain unsupported. Dispatches
+accept 1..65535 X workgroups and one Y/Z workgroup. Compute copied-call user-data
+records must contain 1..8 words within the modeled slots. Required user data must
+have been explicitly written; zero is a valid written value.
+
+Each compute submission completes before a later dispatch or draw consumes its
+shared buffer writes. Render textures still have separate storage: after any draw
+has completed, compute requires target-to-pool writeback and is refused. Reset does
+not erase this resource-lifetime boundary. These limits do not establish a working
+game boot or character-creation rendering on macOS.
+
+`test_metal_compute` runs owned buffer programs on the actual device. It checks
+partial and 64-invocation groups, multidimensional local IDs, X workgroups, VCC
+halves, stage isolation, partial user writes, cached resets, live code changes,
+metadata/admission guards, runtime-stop recovery, two ordered dispatches and a draw
+reading computed colors. It also checks the target-writeback refusal before and
+after reset. No original game shader or capture is used.
 
 Descriptor-format accesses use the common translator's runtime stop channel: the executor owns
 a shared GPU-addressable stop word, declares its residency for both stages, and checks it after
@@ -184,8 +221,7 @@ formats and swizzles in both stages, packed UNORM8 buffer loads, canonical logic
 bounds and raw-header tagging, pool-end scalar loads with constant selectors, skipped-store
 canaries, format/VCC runtime-stop recovery, pixel-position/whole-quad guards, unbound pixel-image
 and sampling operations, descriptors loaded from memory, unbound fetch calls, strip/depth-target
-guards, required-versus-written user SGPRs with explicit zero and cached-reset checks, unsupported compute/rect
-events, readback bounds and mapping lifetime.
+guards, required-versus-written user SGPRs with explicit zero and cached-reset checks, compute input/profile guards and rectangle-list refusals, readback bounds and mapping lifetime.
 It fails if no suitable GPU exists.
 Hosted CI compiles this code for ARM64 and x86-64; it does not run these GPU checks. A successful
 offscreen test establishes neither window presentation nor execution of a game on macOS.
