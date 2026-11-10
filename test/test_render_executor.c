@@ -477,6 +477,49 @@ static int nothing_drawn(rt_executor *x, uint64_t target)
     return 1;
 }
 
+/* Draws the triangle (its second and third corners swapped when reversed) with pixel_face_float, or
+   pixel_face_bits and SPI_BARYC_CNTL's FRONT_FACE_ALL_BITS when all_bits; the run's result. */
+static int draw_facing(rt_executor *x, uint64_t target, int all_bits, int reversed, char *error, size_t error_size)
+{
+    enum { FACE_BUFFER = 0xc0fc0000, FACE_CODE = 0x3000, FRONT_FACE = 0x1000 };
+    const uint32_t *program = all_bits ? pixel_face_bits : pixel_face_float;
+    memcpy((void *)(uintptr_t)at(FACE_CODE), program, all_bits ? sizeof pixel_face_bits : sizeof pixel_face_float);
+    float (*corners)[4] = (float (*)[4])(uintptr_t)at(CORNERS);
+    float swap[4];
+    if (reversed) memcpy(swap, corners[1], sizeof swap), memcpy(corners[1], corners[2], sizeof swap), memcpy(corners[2], swap, sizeof swap);
+    rt_render_forget(), rt_executor_reset(x);
+    const uint32_t offset = record_setup(FACE_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const uint64_t code = at(FACE_CODE);
+    const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 0, 0, 0,
+                                                   PERSP_CENTER | FRONT_FACE, PERSP_CENTER | FRONT_FACE, 1, all_bits ? 1u << 24 : 0, 0, 0xf};
+    CHECK(rt_render_record_pixel_shader(FACE_BUFFER, offset, pixel, error, error_size) == 0);
+    const int ran = rt_executor_run(x, FACE_BUFFER, record_triangle_draw(FACE_BUFFER, offset + 0x10), error, error_size);
+    if (reversed) memcpy(swap, corners[1], sizeof swap), memcpy(corners[1], corners[2], sizeof swap), memcpy(corners[2], swap, sizeof swap);
+    return ran;
+}
+
+/* The pixel shader's front-face input (SPI_PS_INPUT_ENA bit 12): with PA_SU_SC_MODE_CNTL at its reset
+   state counter-clockwise triangles face front (Vulkan's area rule, in framebuffer coordinates). The
+   test triangle, (0, 0), (32, 0), (0, 32) on the 16 x 16 target with y down, faces back: its face VGPR is
+   -1.0 as a float (red 0) and 0 with FRONT_FACE_ALL_BITS; reversed it faces front: 1.0, and 1. */
+static void front_face(rt_executor *x)
+{
+    enum { FACE_TARGET = 0x1a40000 };
+    char error[200] = "";
+    for (int all_bits = 0; all_bits < 2; all_bits++)
+        for (int reversed = 0; reversed < 2; reversed++) {
+            const int ran = draw_facing(x, at(FACE_TARGET), all_bits, reversed, error, sizeof error);
+            if (ran) fprintf(stderr, "front face: %s\n", error);
+            CHECK(ran == 0);
+            uint32_t bgra[SIZE * SIZE];
+            CHECK(rt_executor_read_target(x, at(FACE_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+            int all = 1;
+            for (int i = 0; i < SIZE * SIZE; i++) all &= bgra[i] == (reversed ? 0xffff4040u : 0xff004040u);
+            if (!all) fprintf(stderr, "front face (all bits %d, reversed %d): %08x\n", all_bits, reversed, bgra[0]);
+            CHECK(all);
+        }
+}
+
 /* Draws pixel_color_two_targets with colour targets in slots 0 and 2 (none in 1) and CB_TARGET_MASK mask;
    the run's result. A slot-2 target of another size when odd_size. */
 static int draw_two_targets(rt_executor *x, uint64_t first, uint64_t third, uint32_t mask, int odd_size, char *error, size_t error_size)
@@ -1034,6 +1077,9 @@ int main(void)
     size = record_draw(THIRD, at(TARGET) + 0x400000, COLOR_8_8, SWAP_STD, PERSP_CENTER);
     CHECK(rt_executor_run(x, THIRD, size, error, sizeof error) == -1 && strstr(error, "not drawn yet"));
     size = record_draw(THIRD, at(TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER | FRONT_FACE);
+    CHECK(rt_executor_run(x, THIRD, size, error, sizeof error) == 0); /* the front face, pixel_color not reading it */
+    front_face(x);
+    size = record_draw(THIRD, at(TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER | 0x10); /* the linear barycentrics */
     CHECK(rt_executor_run(x, THIRD, size, error, sizeof error) == -1 && strstr(error, "pixel-shader inputs"));
     /* The library's registers: the normal state draws as before, a target masked off draws nothing,
        and what is not drawn yet (blending, depth, other primitives, instances) stops by name. */

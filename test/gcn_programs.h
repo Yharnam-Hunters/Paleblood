@@ -427,6 +427,22 @@ static const uint32_t pixel_color[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* Pixel shaders (SPI_PS_INPUT 0x1002: the front face in v2 after the barycentrics) colouring each pixel
+   (face, 0.25, 0.25, 1): the face VGPR as a float, or (pixel_face_bits) converted from an unsigned integer. */
+static const uint32_t pixel_face_float[] = {
+    0x7e0602ff, 0x3e800000, /* v_mov_b32_e32 v3, 0.25 */
+    0x7e0802f2, /* v_mov_b32_e32 v4, 1.0 */
+    0xf800180f, 0x04030302, /* exp mrt0, v2, v3, v3, v4 done vm */
+    0xbf810000, /* s_endpgm */
+};
+static const uint32_t pixel_face_bits[] = {
+    0x7e040d02, /* v_cvt_f32_u32_e32 v2, v2 */
+    0x7e0602ff, 0x3e800000, /* v_mov_b32_e32 v3, 0.25 */
+    0x7e0802f2, /* v_mov_b32_e32 v4, 1.0 */
+    0xf800180f, 0x04030302, /* exp mrt0, v2, v3, v3, v4 done vm */
+    0xbf810000, /* s_endpgm */
+};
+
 /* pixel_color writing its colour to colour targets 0 and 2 (two exports, the second done). */
 static const uint32_t pixel_color_two_targets[] = {
     0xbefc0300, /* s_mov_b32 m0, s0 */

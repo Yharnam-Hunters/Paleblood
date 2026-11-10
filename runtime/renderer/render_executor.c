@@ -34,7 +34,10 @@ enum { MAX_SHADERS = 256, MAX_PIPELINES = 256, MAX_TARGETS = 64, MAX_RECT_STAGES
        STOP_SLOTS = MAX_SHADERS + MAX_COMPUTE_PIPELINES };
 enum { USER_DATA_BYTES = GCN_USER_SGPR_MAX * 4, VERTEX_USER_DATA = 0, PIXEL_USER_DATA = USER_DATA_BYTES };
 enum { COLOR_8_8_8_8 = 0xa, NUMBER_UNORM = 0, NUMBER_SRGB = 6, SWAP_STD = 0, SWAP_ALT = 1 };
-enum { PERSP_CENTER_ENA = 0x2, POS_X_FLOAT_ENA = 0x100, POS_Y_FLOAT_ENA = 0x200 };
+enum { PERSP_CENTER_ENA = 0x2, POS_X_FLOAT_ENA = 0x100, POS_Y_FLOAT_ENA = 0x200, FRONT_FACE_ENA = 0x1000 };
+/* SPI_BARYC_CNTL's FRONT_FACE_ALL_BITS (bit 24), and where a pixel shader's settings (below) carry it: SPI_PS_INPUT_ADDR uses bits 0-15 */
+#define FRONT_FACE_ALL_BITS (1u << 24)
+#define SETTINGS_FRONT_FACE_ALL_BITS (1u << 31)
 
 /* The VGPR where the pixel input at `bit` of SPI_PS_INPUT_ADDR starts: after every enabled input below it. */
 static unsigned pixel_input_vgpr(uint32_t input_address, unsigned bit)
@@ -1437,7 +1440,8 @@ static pass_entry *pass_for(rt_executor *x, target_entry *const colors[RT_COLOR_
 /* ---- shaders and pipelines ---- */
 
 /* The code's length is found by the translator; it may read up to the end of the guest memory. */
-/* settings: a vertex shader's PA_CL_VS_OUT_CNTL, a pixel shader's SPI_PS_INPUT_ADDR (part of the cache key). */
+/* settings: a vertex shader's PA_CL_VS_OUT_CNTL, a pixel shader's SPI_PS_INPUT_ADDR with SETTINGS_FRONT_FACE_ALL_BITS (part of the
+   cache key). */
 static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint32_t user_sgprs, uint32_t settings,
                                  const gcn_image_binding *images, unsigned image_count, const gcn_resource_origin *samplers,
                                  unsigned sampler_count, uint64_t callee, uint32_t *user_read, char *error, size_t error_size)
@@ -1474,11 +1478,13 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
                                           .code_address = code, .user_data_read = user_read};
         result = gcn_translate_vertex(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
     } else {
-        const uint32_t inputs = settings; /* a pixel shader's SPI_PS_INPUT_ADDR */
+        const uint32_t inputs = settings & ~SETTINGS_FRONT_FACE_ALL_BITS; /* a pixel shader's SPI_PS_INPUT_ADDR */
         const gcn_pixel_layout layout = {.user_sgprs = user_sgprs, .barycentric_vgpr = pixel_input_vgpr(inputs, 1),
                                          .position_enable = (inputs & POS_X_FLOAT_ENA ? GCN_PIXEL_POSITION_X : 0u) |
                                                             (inputs & POS_Y_FLOAT_ENA ? GCN_PIXEL_POSITION_Y : 0u),
-                                         .position_vgpr = pixel_input_vgpr(inputs, 8), .push_constant_offset = PIXEL_USER_DATA,
+                                         .position_vgpr = pixel_input_vgpr(inputs, 8), .front_face = (inputs & FRONT_FACE_ENA) != 0,
+                                         .front_face_all_bits = (settings & SETTINGS_FRONT_FACE_ALL_BITS) != 0,
+                                         .front_face_vgpr = pixel_input_vgpr(inputs, 12), .push_constant_offset = PIXEL_USER_DATA,
                                          .address_offset = x->address_offset, .error_address = stop_slot(x, 0, x->shader_count),
                                          .images = images, .image_count = image_count, .samplers = samplers,
                                          .sampler_count = sampler_count, .user_data_read = user_read};
@@ -1734,11 +1740,11 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     /* no pixel shader: a depth-only pass, drawn with no pixel stage; it must write no colour target */
     const int depth_only = !s->pixel.code;
     if (depth_only && colours) return failed(error, error_size, "a draw with no pixel shader that writes a colour target");
-    const uint32_t drawn_inputs = PERSP_CENTER_ENA | POS_X_FLOAT_ENA | POS_Y_FLOAT_ENA;
+    const uint32_t drawn_inputs = PERSP_CENTER_ENA | POS_X_FLOAT_ENA | POS_Y_FLOAT_ENA | FRONT_FACE_ENA;
     if (!depth_only && (s->pixel.input_enable != s->pixel.input_address || !(s->pixel.input_enable & PERSP_CENTER_ENA) ||
                         (s->pixel.input_enable & ~drawn_inputs)))
-        return failed(error, error_size, "pixel-shader inputs %#x (address %#x): only the perspective-centre barycentrics and the "
-                      "position's x and y are drawn yet", s->pixel.input_enable, s->pixel.input_address);
+        return failed(error, error_size, "pixel-shader inputs %#x (address %#x): only the perspective-centre barycentrics, the "
+                      "position's x and y and the front face are drawn yet", s->pixel.input_enable, s->pixel.input_address);
     gcn_image_binding bindings[GCN_MAX_IMAGES];
     VkImageView views[GCN_MAX_IMAGES];
     unsigned image_count = 0;
@@ -1793,7 +1799,10 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
                                              NULL, 0, callee, &vertex_read, error, error_size);
     if (!vertex) return -1;
     const VkShaderModule pixel = depth_only ? VK_NULL_HANDLE
-                                            : shader_for(x, STAGE_PIXEL, s->pixel.code, s->pixel.user_sgprs, s->pixel.input_address, bindings,
+                                            : shader_for(x, STAGE_PIXEL, s->pixel.code, s->pixel.user_sgprs,
+                                                         s->pixel.input_address |
+                                                             (s->pixel.barycentric_control & FRONT_FACE_ALL_BITS ? SETTINGS_FRONT_FACE_ALL_BITS : 0u),
+                                                         bindings,
                                                          image_count, sampler_origins, sampler_count, 0, &pixel_read, error, error_size);
     if (!depth_only && !pixel) return -1;
     if (check_user_data("vertex", s->vertex.code, vertex_read, s->user_set[STAGE_VERTEX], error, error_size) ||
