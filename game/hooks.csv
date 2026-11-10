@@ -191,6 +191,10 @@ address,replacement,system,returns
 0x02572290,bb_render_clear_swap_chain_cached_record,render,void
 0x025b2fb0,bb_render_swap_chain_present,render,void
 0x02a44140,bb_engine_wide_string_destroy,engine,void
+0x02a8bf30,bb_input_mouse_b_open_for_initial_user,input,i8
+0x02a8c210,bb_input_mouse_construct,input,void
+0x02a8c420,bb_input_initialize_mouse_for_initial_user,input,i8
+0x02a9c790,bb_input_pad_set_vibration,input,i8
 0x02aaa5a0,bb_render_release_present_finish_node,render,i64
 0x02aaddc0,bb_render_allocate_shader_upload,render,i64
 0x02aaf030,bb_render_managed_present_capacity,render,i8
