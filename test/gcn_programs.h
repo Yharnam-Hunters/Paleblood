@@ -22,6 +22,18 @@ static const uint32_t scale_add[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* out[i] = v_rcp_iflag_f32(in[i]), out[64 + i] = v_rcp_f32(in[i]). */
+static const uint32_t reciprocals[] = {
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0xe0301000, 0x80000201, /* buffer_load_dword v2, v1, s[0:3], 0 offen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x7e065702, /* v_rcp_iflag_f32_e32 v3, v2 */
+    0x7e085502, /* v_rcp_f32_e32 v4, v2 */
+    0xe0701000, 0x80010301, /* buffer_store_dword v3, v1, s[4:7], 0 offen */
+    0xe0701100, 0x80010401, /* buffer_store_dword v4, v1, s[4:7], 0 offen offset:256 */
+    0xbf810000, /* s_endpgm */
+};
+
 /* out[i] = in[i] * 2.5 + 1 as scale_add, the load indexed by the lane (idxen, the descriptor's
    stride) with instruction offset `offset`: the range check's indexed form. */
 #define INDEXED_SCALE_ADD(offset) {                                                       \
