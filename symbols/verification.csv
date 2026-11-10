@@ -201,6 +201,8 @@ render_managed_present_capacity,edge,,13,13,0,0,26b2def9186546d6,2026-11-07
 render_process_present_finish_item,edge,,8,8,0,0,f8b3458661cd4873,2026-11-07
 render_release_present_finish_node,edge,,8,8,0,0,e60a4dfbe5d613c5,2026-11-07
 render_submit_present_finish_snapshot,edge,,12,12,0,0,62314b61bf581dee,2026-11-07
+render_finish_present_commands,edge,,12,12,0,0,3adf6995cef8857d,2026-11-07
+render_finish_present_context,edge,,2,2,0,0,b114815a2dd2f5c2,2026-11-07
 render_compose_record_encoding_fields,edge,,30,30,0,0,c6bfe3dc4c1e12ad,2026-11-05
 render_configure_screen_scissor,edge,,13,13,0,0,26090706b37974bd,2026-11-05
 render_configure_viewport,edge,,11,11,0,0,f15d9c1438c4fd09,2026-11-06

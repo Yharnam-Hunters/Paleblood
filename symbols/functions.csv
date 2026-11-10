@@ -160,6 +160,7 @@ address,size,name,system,status,notes
 0x0247eb80,16,render_read_present_pool_counter,render,edge-verified,"full-QWORD locked read/writeback retry, XOR before each attempt; caller adds one. Real AMD64 write cycles retained; non-AMD64 bridge unresolved Synthetic edges pass; no recordings."
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
 0x02565f90,855,render_initialize_swap_chain_resource,render,edge-verified,"Validate resource parameters, choose independent allocator and owner defaults, prepare resource storage and publish its wrapper. Allocation failure clears the output and releases prepared storage."
+0x02568530,190,render_finish_present_context,render,edge-verified,Run the presentation context's finishing calls in order with a zeroed snapshot.
 0x0256e1d0,6280,render_build_present_source_record,render,edge-verified,"Build a mode-specific presentation record, preserving partial output, unsigned division and packed auxiliary requirements. Constructor selectors are 32-bit values even in stack slots."
 0x025710a0,301,render_record_normalize_mode2,render,edge-verified,"Normalize mode-2 input; preserve ordered 36-byte copy, supplied parameter bypass and helper error/status ordering."
 0x025711d0,361,render_record_normalize_mode3,render,edge-verified,Normalize mode 3 input through an ordered 48-byte copy; cache mapping across conditional parameter helpers and preserve statuses and padding.
@@ -173,6 +174,7 @@ address,size,name,system,status,notes
 0x02aaa5a0,124,render_release_present_finish_node,render,edge-verified,"Release the finish node through the manager helper, retaining its head-match decision and reloading commands across retries."
 0x02aaddc0,393,render_allocate_shader_upload,render,edge-verified,"Allocate one shader-upload slice of at most 64 KiB. If no suitable block exists, acquire once, reclaim, then retry once. Preserve zero-size requests and delegate block policy to the original manager."
 0x02aaf030,508,render_managed_present_capacity,render,edge-verified,"Acquire managed command space, preserve partial block publication and copy the saved command snapshot in reverse order."
+0x02aaf700,750,render_finish_present_commands,render,edge-verified,"Finish pending command lists with live block and counter reads, then conditionally submit the cursor snapshot."
 0x02aafb30,509,render_command_submit_present,render,edge-verified,"Prepare and delegate a present submission, preserving capacity-failure returns and resetting begin markers to the live cursor."
 0x02ab0b00,326,render_submit_present_finish_snapshot,render,edge-verified,Emit required counter waits and submit nonempty command regions in order; construct an empty second region when optional commands are absent.
 0x02ab0ce0,326,render_command_submit_batch,render,edge-verified,"Emit counter waits and submit nonempty regions with the packed video/index handle, or delegate the snapshot when no optional context exists."

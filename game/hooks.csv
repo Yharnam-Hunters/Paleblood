@@ -159,6 +159,7 @@ address,replacement,system,returns
 0x0247eb80,bb_render_read_present_pool_counter,render,i64
 0x02483e80,bb_kernel_condition_wait,kernel,i32
 0x02565f90,bb_render_initialize_swap_chain_resource,render,i32
+0x02568530,bb_render_finish_present_context,render,void
 0x0256e1d0,bb_render_build_present_source_record,render,i32
 0x025710a0,bb_render_record_normalize_mode2,render,void
 0x025711d0,bb_render_record_normalize_mode3,render,void
@@ -171,6 +172,7 @@ address,replacement,system,returns
 0x02aaa5a0,bb_render_release_present_finish_node,render,i64
 0x02aaddc0,bb_render_allocate_shader_upload,render,i64
 0x02aaf030,bb_render_managed_present_capacity,render,i8
+0x02aaf700,bb_render_finish_present_commands,render,void
 0x02aafb30,bb_render_command_submit_present,render,i32
 0x02ab0b00,bb_render_submit_present_finish_snapshot,render,void
 0x02ab0ce0,bb_render_command_submit_batch,render,void
