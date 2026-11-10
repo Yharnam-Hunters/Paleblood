@@ -328,3 +328,12 @@ render_present_source_flush_state,edge,,28,28,0,0,92675c00e5f9e693,2026-11-07
 render_present_source_prepare,edge,,12,12,0,0,e91eaf5cf066bb6d,2026-11-07
 render_configure_viewport_and_guard_band,edge,,26,26,0,0,67cbc6eee27c8769,2026-11-07
 render_set_pa_sc_mode_cntl_0,edge,,15,15,0,0,2035cc2e432b3498,2026-11-07
+render_record_geometry,edge,,1188,1188,0,0,5149862dcff7b91b,2026-11-07
+render_record_geometry_category,edge,,72,72,0,0,31610ba41cc2e229,2026-11-07
+render_record_geometry_classification,edge,,72,72,0,0,a6d811db7e3593f6,2026-11-07
+render_record_geometry_first_exponent,edge,,72,72,0,0,8a2481de84f4f073,2026-11-07
+render_record_geometry_index_logarithm,edge,,36,36,0,0,8b93d7a4303c9a52,2026-11-07
+render_record_geometry_parameters,edge,,102,102,0,0,4406da6589f17dfe,2026-11-07
+render_record_geometry_resolve_parameter_index,edge,,68,68,0,0,9425ed9f14ed2918,2026-11-07
+render_record_geometry_round_up_power_of_two,edge,,36,36,0,0,4aecbac8f1ed59d0,2026-11-07
+render_record_geometry_second_exponent,edge,,72,72,0,0,378ec993a21873d9,2026-11-07
