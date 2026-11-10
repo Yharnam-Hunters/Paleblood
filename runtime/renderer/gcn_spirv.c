@@ -53,6 +53,8 @@ typedef struct {
     unsigned user_sgprs;
     int workgroup_id_x_sgpr;
     unsigned vertex_index_vgpr, barycentric_vgpr, position_enable, position_vgpr;
+    int front_face, front_face_all_bits;  /* a pixel shader's front-face input (runtime/gcn_spirv.h) */
+    unsigned front_face_vgpr;
     uint32_t output_control;         /* a vertex shader's PA_CL_VS_OUT_CNTL */
     uint32_t push_constant_offset;   /* runtime/gcn_spirv.h */
     uint64_t address_offset, error_address;
@@ -1791,13 +1793,20 @@ static void starting_registers(translator *t, const stage_layout *layout)
     if (layout->stage == STAGE_PIXEL) {
         /* the barycentric VGPRs are read only by v_interp, by number; the position is FragCoord's x and y */
         t->writing = 0;
-        if (!layout->position_enable) return;
-        const uint32_t frag_coord = interface_variable(t, SPV_STORAGE_INPUT, t_vec4(t), SPV_DECORATION_BUILT_IN, SPV_BUILT_IN_FRAG_COORD);
-        unsigned next = layout->position_vgpr;
-        for (unsigned axis = 0; axis < 2; axis++) {
-            if (!(layout->position_enable >> axis & 1)) continue;
-            const uint32_t component = load(t, t_float(t), vec4_component(t, SPV_STORAGE_INPUT, frag_coord, axis));
-            store(t, t->out, vgpr(t, next++), value(t, SPV_OP_BITCAST, t_uint(t), 1, component));
+        if (layout->position_enable) {
+            const uint32_t frag_coord = interface_variable(t, SPV_STORAGE_INPUT, t_vec4(t), SPV_DECORATION_BUILT_IN, SPV_BUILT_IN_FRAG_COORD);
+            unsigned next = layout->position_vgpr;
+            for (unsigned axis = 0; axis < 2; axis++) {
+                if (!(layout->position_enable >> axis & 1)) continue;
+                const uint32_t component = load(t, t_float(t), vec4_component(t, SPV_STORAGE_INPUT, frag_coord, axis));
+                store(t, t->out, vgpr(t, next++), value(t, SPV_OP_BITCAST, t_uint(t), 1, component));
+            }
+        }
+        if (layout->front_face) {
+            const uint32_t facing = interface_variable(t, SPV_STORAGE_INPUT, t_bool(t), SPV_DECORATION_BUILT_IN, SPV_BUILT_IN_FRONT_FACING);
+            const uint32_t front = layout->front_face_all_bits ? 1u : 0x3f800000u, back = layout->front_face_all_bits ? 0u : 0xbf800000u;
+            store(t, t->out, vgpr(t, layout->front_face_vgpr),
+                  value(t, SPV_OP_SELECT, t_uint(t), 3, load(t, t_bool(t), facing), konst(t, front), konst(t, back)));
         }
         return;
     }
@@ -1921,8 +1930,10 @@ static int branches(const uint32_t *w, const gcn_instruction *ins, size_t at, lo
    followed only when every path to the use passes it: no branch lands between it and the use (code
    runs forward between branches, so a path that skipped the load would have to land there), every
    branch's target is known, no branch goes back to the use or before it when an instruction after
-   the use writes those SGPRs, and no instruction at all writes the pointer pair (so a loop that runs
-   the load again loads the same descriptor). Writes before the load do not matter: it replaces them
+   the use writes those SGPRs, and no instruction before the load writes the pointer pair, nor any
+   instruction at all when a branch goes back to the load or before it (so a loop that runs the load
+   again loads the same descriptor; without one, code after the load may reuse the pointer's SGPRs, as
+   the game's pixel shaders do once their samples are done). Writes before the load do not matter: it replaces them
    (the game's shaders keep a compare's mask in those SGPRs before loading the descriptor). A
    branch that skips the load also skips the use, as the game's guarded samples do (an
    s_cbranch_execz around both). 0, or -1 with the reason. */
@@ -1945,7 +1956,7 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
         p += ins.dwords;
     }
     if (!written) return 0;
-    int branched = 0, loops_to_load = 0; /* a branch back to the load or before it */
+    int loops_to_load = 0; /* a branch back to the load or before it */
     for (size_t p = 0; p < program;) {
         gcn_instruction ins;
         if (gcn_decode(code + p, program - p, &ins) || !ins.name) break;
@@ -1963,7 +1974,6 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
                          p, target, at);
                 return -1;
             }
-            branched = 1;
             if (target <= writer && (size_t)target <= p) loops_to_load = 1;
         }
         p += ins.dwords;
@@ -1981,7 +1991,7 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
         return -1;
     }
     const unsigned pointer = ((w[0] >> 9) & 0x3f) * 2;
-    for (size_t p = 0; p < (branched ? program : (size_t)writer);) {
+    for (size_t p = 0; p < (loops_to_load ? program : (size_t)writer);) {
         gcn_instruction before;
         gcn_decode(code + p, program - p, &before);
         unsigned d = 0;
@@ -2552,7 +2562,8 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
     spirv_init(&t->m);
     spirv_module *m = &t->m;
     if (layout->user_sgprs > GCN_USER_SGPR_MAX) fail(t, "more user SGPRs than the push constants hold");
-    if (layout->vertex_index_vgpr >= VGPR_COUNT || layout->barycentric_vgpr + 1 >= VGPR_COUNT || layout->position_vgpr + 1 >= VGPR_COUNT)
+    if (layout->vertex_index_vgpr >= VGPR_COUNT || layout->barycentric_vgpr + 1 >= VGPR_COUNT || layout->position_vgpr + 1 >= VGPR_COUNT ||
+        (layout->front_face && layout->front_face_vgpr >= VGPR_COUNT))
         fail(t, "an input VGPR past v255");
     if (layout->push_constant_offset % BYTES_PER_DWORD ||
         layout->push_constant_offset + GCN_USER_SGPR_MAX * BYTES_PER_DWORD > GCN_PUSH_CONSTANT_LIMIT)
@@ -2755,7 +2766,9 @@ int gcn_translate_pixel(const uint32_t *code, size_t dwords, const gcn_pixel_lay
 {
     const stage_layout s = {.stage = STAGE_PIXEL, .user_sgprs = layout->user_sgprs, .workgroup_id_x_sgpr = -1,
                             .barycentric_vgpr = layout->barycentric_vgpr, .position_enable = layout->position_enable,
-                            .position_vgpr = layout->position_vgpr, .images = layout->images, .image_count = layout->image_count,
+                            .position_vgpr = layout->position_vgpr,
+                            .front_face = layout->front_face, .front_face_all_bits = layout->front_face_all_bits,
+                            .front_face_vgpr = layout->front_face_vgpr, .images = layout->images, .image_count = layout->image_count,
                             .samplers = layout->samplers, .sampler_count = layout->sampler_count,
                             .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address,
                             .user_data_read = layout->user_data_read};

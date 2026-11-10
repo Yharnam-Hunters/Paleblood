@@ -170,13 +170,17 @@ int gcn_translate_vertex(const uint32_t *code, size_t dwords, const gcn_vertex_l
 /* A pixel shader. Its inputs are the perspective-correct barycentrics at the pixel's centre (i, then j
    in the next VGPR), which v_interp reads (attribute n is the input at location n, interpolated by the
    GPU), and, when position_enable says so, the pixel's window position: x (bit 0) and y (bit 1) as
-   floats at the pixel's centre, from position_vgpr on (y in the next VGPR when both). Exports: mrt n
-   becomes the output at location n. */
+   floats at the pixel's centre, from position_vgpr on (y in the next VGPR when both), and, when
+   front_face is set, whether the primitive faces the viewer, in front_face_vgpr: 1 or 0 with
+   front_face_all_bits (SPI_BARYC_CNTL's FRONT_FACE_ALL_BITS), otherwise a float whose sign says it
+   (1.0 front, -1.0 back), as shadPS4 fills that VGPR. Exports: mrt n becomes the output at location n. */
 enum { GCN_PIXEL_POSITION_X = 1, GCN_PIXEL_POSITION_Y = 2 };
 typedef struct {
     unsigned user_sgprs;
     unsigned barycentric_vgpr;
     unsigned position_enable, position_vgpr;
+    int front_face, front_face_all_bits;
+    unsigned front_face_vgpr;
     uint32_t push_constant_offset;
     uint64_t address_offset;
     uint64_t error_address;   /* the run-time stop word (GCN_RUNTIME_STOP_*), or 0: run-time cases stop translation */

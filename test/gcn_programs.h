@@ -319,6 +319,17 @@ static const uint32_t image_fill[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* A clear: every lane of a 16 x 16 group stores (0.25, 0.5, 0.75, 1) at its (x, y), v0 and v1, of the
+   image in s[8:15]. */
+static const uint32_t image_clear_tile[] = {
+    0x7e0802ff, 0x3e800000, /* v_mov_b32_e32 v4, 0.25 */
+    0x7e0a02f0, /* v_mov_b32_e32 v5, 0.5 */
+    0x7e0c02ff, 0x3f400000, /* v_mov_b32_e32 v6, 0.75 */
+    0x7e0e02f2, /* v_mov_b32_e32 v7, 1.0 */
+    0xf0200f00, 0x00020400, /* image_store v[4:7], v[0:1], s[8:15] dmask:0xf */
+    0xbf810000, /* s_endpgm */
+};
+
 /* Per lane i, texel (i, 0) of the image in s[8:15] stored as four dwords at i * 16 bytes of the
    buffer in s[0:3]. */
 static const uint32_t image_to_buffer[] = {
@@ -424,6 +435,40 @@ static const uint32_t pixel_color[] = {
     0x5e0c0702, /* v_cvt_pkrtz_f16_f32_e32 v6, v2, v3 */
     0x5e0e0b04, /* v_cvt_pkrtz_f16_f32_e32 v7, v4, v5 */
     0xf8001c0f, 0x00000706, /* exp mrt0, v6, v6, v7, v7 done compr vm */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Pixel shaders (SPI_PS_INPUT 0x1002: the front face in v2 after the barycentrics) colouring each pixel
+   (face, 0.25, 0.25, 1): the face VGPR as a float, or (pixel_face_bits) converted from an unsigned integer. */
+static const uint32_t pixel_face_float[] = {
+    0x7e0602ff, 0x3e800000, /* v_mov_b32_e32 v3, 0.25 */
+    0x7e0802f2, /* v_mov_b32_e32 v4, 1.0 */
+    0xf800180f, 0x04030302, /* exp mrt0, v2, v3, v3, v4 done vm */
+    0xbf810000, /* s_endpgm */
+};
+static const uint32_t pixel_face_bits[] = {
+    0x7e040d02, /* v_cvt_f32_u32_e32 v2, v2 */
+    0x7e0602ff, 0x3e800000, /* v_mov_b32_e32 v3, 0.25 */
+    0x7e0802f2, /* v_mov_b32_e32 v4, 1.0 */
+    0xf800180f, 0x04030302, /* exp mrt0, v2, v3, v3, v4 done vm */
+    0xbf810000, /* s_endpgm */
+};
+
+/* pixel_color writing its colour to colour targets 0 and 2 (two exports, the second done). */
+static const uint32_t pixel_color_two_targets[] = {
+    0xbefc0300, /* s_mov_b32 m0, s0 */
+    0xc8080000, /* v_interp_p1_f32 v2, v0, attr0.x */
+    0xc8090001, /* v_interp_p2_f32 v2, v1, attr0.x */
+    0xc80c0100, /* v_interp_p1_f32 v3, v0, attr0.y */
+    0xc80d0101, /* v_interp_p2_f32 v3, v1, attr0.y */
+    0xc8100200, /* v_interp_p1_f32 v4, v0, attr0.z */
+    0xc8110201, /* v_interp_p2_f32 v4, v1, attr0.z */
+    0xc8140300, /* v_interp_p1_f32 v5, v0, attr0.w */
+    0xc8150301, /* v_interp_p2_f32 v5, v1, attr0.w */
+    0x5e0c0702, /* v_cvt_pkrtz_f16_f32_e32 v6, v2, v3 */
+    0x5e0e0b04, /* v_cvt_pkrtz_f16_f32_e32 v7, v4, v5 */
+    0xf800140f, 0x00000706, /* exp mrt0, v6, v6, v7, v7 compr vm */
+    0xf8001c2f, 0x00000706, /* exp mrt2, v6, v6, v7, v7 done compr vm */
     0xbf810000, /* s_endpgm */
 };
 

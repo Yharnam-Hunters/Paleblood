@@ -13,6 +13,7 @@
    own; the runtime answers one it reserves for this, below 2^40 and clear of the executable,
    modules and thread objects. It is the runtime's choice, not the PS4's value: the engine only
    maps it and hands it back to the GPU calls. */
+#include "runtime/equeue.h"
 #include "runtime/process.h"
 #include "runtime/renderer.h"
 #include "runtime/syslib.h"
@@ -332,6 +333,9 @@ RT_SYSLIB("libSceGnmDriver", sceGnmUnmapComputeQueue, unmap_compute_queue);
 #define EVENT_WRITE_WITHOUT_MEMORY_DWORDS 2
 #define EVENT_WRITE_EOP_DWORDS 6
 #define EVENT_WRITE_EOP_DATA_SHIFT 29
+#define INTERRUPT_SELECT_SHIFT 24      /* EVENT_WRITE_EOP and RELEASE_MEM: the interrupt the GPU raises */
+#define EOP_INTERRUPT_SELECT_MASK 3u   /* two bits in EVENT_WRITE_EOP */
+#define RELEASE_MEM_INTERRUPT_SELECT_MASK 7u /* three in RELEASE_MEM */
 
 #define WAIT_REG_MEM_DWORDS 7
 #define WAIT_FUNCTION_MASK 7u
@@ -359,6 +363,86 @@ typedef struct {
     uint32_t data_low, data_high;
 } release_mem_packet;
 
+/* Graphics events: sceGnmAddEqEvent(queue, id, user data) and sceGnmDeleteEqEvent(queue, id).
+
+   The GPU raises an interrupt when an end-of-work packet asks for one, and the system turns it into
+   an event on every kernel event queue the title registered for it. Facts from shadPS4's
+   gnmdriver.cpp and liverpool.cpp (facts only): the event's filter is the graphics core (-14), its
+   ident the id the title registered, and its data that id too, which is what sceGnmGetEqEventType
+   reads back; the ids are interrupt numbers, 0x40 for the graphics queue's end of pipe
+   (EVENT_WRITE_EOP) and the compute pipe's number (0 to 6) for a compute queue's RELEASE_MEM.
+   AMD's public PM4 format puts the interrupt select in bits 24 and up of the packet's data control
+   word: 0 none, 1 interrupt only, 2 interrupt once the write is confirmed (and, for RELEASE_MEM, 3,
+   which shadPS4 also takes as an interrupt).
+
+   The runtime raises the events in the GPU's completion step (perform_completion below), which the
+   renderer performs on its own thread once the work before the packet has run (runtime/renderer.h),
+   or at once with the display off: so the event comes after the work, never before it. A packet
+   in a graphics submission raises 0x40; one in a compute queue's buffer raises the queue's pipe.
+   AddEqEvent registers (graphics core, id) on the queue (again: new user data) and answers 0;
+   DeleteEqEvent removes it. No queue answers EBADF (0x80020009), as in shadPS4. The executable
+   imports both, but no instruction or relocated pointer in it reaches its wrappers
+   (0x01489a40, 0x01489a50): the stock game never asks for these events. Deleting an event that is
+   not registered (FreeBSD's kevent answers ENOENT; shadPS4 ignores it) stops by name. */
+#define SCE_KERNEL_ERROR_EBADF ((int32_t)0x80020009u)
+enum { GRAPHICS_END_OF_PIPE_INTERRUPT = 0x40, COMPUTE_PIPES = 7, MAX_GRAPHICS_EVENTS = 32 };
+enum { INTERRUPT_NONE = 0, INTERRUPT_ONLY = 1, INTERRUPT_AFTER_WRITE = 2, INTERRUPT_RELEASE_MEM_OTHER = 3 };
+
+typedef struct {
+    rt_equeue *queue;
+    uint64_t id;
+} graphics_event;
+
+static pthread_mutex_t events_lock = PTHREAD_MUTEX_INITIALIZER;
+static graphics_event graphics_events[MAX_GRAPHICS_EVENTS];
+static int graphics_event_count;
+
+static int32_t add_eq_event(rt_equeue *queue, uint64_t id, void *udata)
+{
+    static const char fn[] = "sceGnmAddEqEvent";
+    if (!queue) return SCE_KERNEL_ERROR_EBADF;
+    pthread_mutex_lock(&events_lock);
+    int i = 0;
+    while (i < graphics_event_count && !(graphics_events[i].queue == queue && graphics_events[i].id == id)) i++;
+    if (i == graphics_event_count) {
+        if (graphics_event_count == MAX_GRAPHICS_EVENTS) rt_fatal(fn, "more graphics events than the runtime records");
+        graphics_events[graphics_event_count++] = (graphics_event){queue, id};
+    }
+    if (rt_equeue_add(queue, RT_EVFILT_GRAPHICS_CORE, id, udata)) rt_fatal(fn, "the queue is full");
+    pthread_mutex_unlock(&events_lock);
+    return 0;
+}
+
+static int32_t delete_eq_event(rt_equeue *queue, uint64_t id)
+{
+    static const char fn[] = "sceGnmDeleteEqEvent";
+    if (!queue) return SCE_KERNEL_ERROR_EBADF;
+    pthread_mutex_lock(&events_lock);
+    int i = 0;
+    while (i < graphics_event_count && !(graphics_events[i].queue == queue && graphics_events[i].id == id)) i++;
+    if (i == graphics_event_count) rt_fatal(fn, "an event that is not registered: the error value is not established");
+    graphics_events[i] = graphics_events[--graphics_event_count];
+    rt_equeue_remove(queue, RT_EVFILT_GRAPHICS_CORE, id);
+    pthread_mutex_unlock(&events_lock);
+    return 0;
+}
+
+RT_SYSLIB("libSceGnmDriver", sceGnmAddEqEvent, add_eq_event);
+RT_SYSLIB("libSceGnmDriver", sceGnmDeleteEqEvent, delete_eq_event);
+
+/* Triggers every registered event for an interrupt, with the id as its data. */
+static void raise_interrupt(uint64_t id)
+{
+    pthread_mutex_lock(&events_lock);
+    for (int i = 0; i < graphics_event_count; i++)
+        if (graphics_events[i].id == id) rt_equeue_trigger(graphics_events[i].queue, RT_EVFILT_GRAPHICS_CORE, id, (int64_t)id);
+    pthread_mutex_unlock(&events_lock);
+}
+
+/* Which interrupt a completion packet raises: the graphics queue's end of pipe, or, while a
+   compute queue's ring is completed (sceGnmDingDong), that queue's pipe. */
+static _Thread_local int32_t completing_pipe = -1;
+
 /* The GPU's steps after a submitted command buffer's work (runtime/renderer.h): while a submission's
    packets are read, its "work done" writes and memory waits are collected here instead of performed,
    and the renderer performs them once the buffer's drawing calls have run. NULL (compute rings, and
@@ -384,31 +468,59 @@ static void collect(const char *fn, void (*perform)(const rt_gpu_step *), const 
     memcpy(step->words, words, sizeof step->words);
 }
 
+/* What a completion packet asks the GPU to raise once its write is done: an interrupt select, and
+   the interrupt's number. Packed into one step word. */
+typedef struct {
+    uint32_t select, number;
+} completion_interrupt;
+
 static void perform_completion(const char *fn, uint32_t data_size, uint32_t address_low, uint32_t address_high, uint32_t data_low,
-                               uint32_t data_high);
+                               uint32_t data_high, completion_interrupt interrupt);
+
+enum { INTERRUPT_NUMBER_SHIFT = 32 };
 
 static void completion_step(const rt_gpu_step *step)
 {
     const uint64_t *w = step->words;
-    perform_completion(step->function, (uint32_t)w[0], (uint32_t)w[1], (uint32_t)w[2], (uint32_t)w[3], (uint32_t)w[4]);
+    const completion_interrupt interrupt = {(uint32_t)w[5], (uint32_t)(w[5] >> INTERRUPT_NUMBER_SHIFT)};
+    perform_completion(step->function, (uint32_t)w[0], (uint32_t)w[1], (uint32_t)w[2], (uint32_t)w[3], (uint32_t)w[4], interrupt);
 }
 
 /* A "work done" write: the packet's own 32- or 64-bit value to a memory address (the address's
    high bits are the low 16 of address_high), after the work before it (collected while a
    submission is read). Other kinds of value (a GPU clock, for one) stop. */
 static void write_completion(const char *fn, uint32_t data_size, uint32_t address_low, uint32_t address_high,
-                             uint32_t data_low, uint32_t data_high)
+                             uint32_t data_low, uint32_t data_high, uint32_t interrupt_select)
 {
+    const completion_interrupt interrupt = {interrupt_select,
+                                            completing_pipe < 0 ? GRAPHICS_END_OF_PIPE_INTERRUPT : (uint32_t)completing_pipe};
     if (collecting) {
-        const uint64_t words[6] = {data_size, address_low, address_high, data_low, data_high, 0};
+        const uint64_t words[6] = {data_size, address_low, address_high, data_low, data_high,
+                                   interrupt.select | (uint64_t)interrupt.number << INTERRUPT_NUMBER_SHIFT};
         collect(fn, completion_step, words);
         return;
     }
-    perform_completion(fn, data_size, address_low, address_high, data_low, data_high);
+    perform_completion(fn, data_size, address_low, address_high, data_low, data_high, interrupt);
 }
 
+static void write_completion_value(const char *fn, uint32_t data_size, uint32_t address_low, uint32_t address_high,
+                                   uint32_t data_low, uint32_t data_high);
+
+/* The write, then the interrupt it asks for (graphics events, above). */
 static void perform_completion(const char *fn, uint32_t data_size, uint32_t address_low, uint32_t address_high, uint32_t data_low,
-                               uint32_t data_high)
+                               uint32_t data_high, completion_interrupt interrupt)
+{
+    write_completion_value(fn, data_size, address_low, address_high, data_low, data_high);
+    if (interrupt.select == INTERRUPT_NONE) return;
+    if (interrupt.select != INTERRUPT_ONLY && interrupt.select != INTERRUPT_AFTER_WRITE && interrupt.select != INTERRUPT_RELEASE_MEM_OTHER)
+        rt_fatal(fn, "an interrupt select the GPU's packet format does not define");
+    if (interrupt.number >= COMPUTE_PIPES && interrupt.number != GRAPHICS_END_OF_PIPE_INTERRUPT)
+        rt_fatal(fn, "an interrupt from a compute pipe above 6: its number is not established");
+    raise_interrupt(interrupt.number);
+}
+
+static void write_completion_value(const char *fn, uint32_t data_size, uint32_t address_low, uint32_t address_high,
+                                   uint32_t data_low, uint32_t data_high)
 {
     if (data_size == RELEASE_MEM_DATA_NONE) return;
     void *address = (void *)(uintptr_t)(address_low | (uint64_t)(address_high & RELEASE_MEM_ADDRESS_HIGH_MASK) << 32);
@@ -426,7 +538,8 @@ static void release_memory(const char *fn, const release_mem_packet *packet)
     const uint32_t destination = (packet->data_control >> RELEASE_MEM_DESTINATION_SHIFT) & RELEASE_MEM_DESTINATION_MASK;
     if (destination != RELEASE_MEM_TO_MEMORY) rt_fatal(fn, "a RELEASE_MEM to a destination other than memory");
     write_completion(fn, packet->data_control >> RELEASE_MEM_DATA_SHIFT, packet->address_low, packet->address_high,
-                     packet->data_low, packet->data_high);
+                     packet->data_low, packet->data_high,
+                     (packet->data_control >> INTERRUPT_SELECT_SHIFT) & RELEASE_MEM_INTERRUPT_SELECT_MASK);
 }
 
 /* WAIT_REG_MEM makes the GPU wait until a value in memory compares as asked with a reference
@@ -544,7 +657,9 @@ static void complete_packets(const char *fn, const uint32_t *packets, uint32_t d
             memcpy(&release, packet + 1, sizeof release);
             release_memory(fn, &release);
         } else if (opcode == PM4_EVENT_WRITE_EOP && length == EVENT_WRITE_EOP_DWORDS) {
-            write_completion(fn, packet[3] >> EVENT_WRITE_EOP_DATA_SHIFT, packet[2], packet[3], packet[4], packet[5]);
+            const uint32_t interrupt_select = (packet[3] >> INTERRUPT_SELECT_SHIFT) & EOP_INTERRUPT_SELECT_MASK;
+            if (interrupt_select == INTERRUPT_RELEASE_MEM_OTHER) rt_fatal(fn, "an EVENT_WRITE_EOP interrupt select of 3, which the packet format does not define");
+            write_completion(fn, packet[3] >> EVENT_WRITE_EOP_DATA_SHIFT, packet[2], packet[3], packet[4], packet[5], interrupt_select);
         } else if (opcode == PM4_WAIT_REG_MEM && length == WAIT_REG_MEM_DWORDS) {
             wait_reg_mem_packet wait;
             memcpy(&wait, packet + 1, sizeof wait);
@@ -574,11 +689,13 @@ static void ding_dong(uint32_t queue_id, uint32_t write_offset)
     uint32_t *const done = &completed_offset[queue_id - 1];
     if (write_offset > queue->ring_dwords) rt_fatal(fn, "a write offset past the end of the ring");
     const uint32_t *ring = queue->ring;
+    completing_pipe = (int32_t)queue->pipe; /* its completions raise the pipe's interrupt */
     if (write_offset < *done) { /* the engine filled the ring's end and wrapped to its start */
         complete_packets(fn, ring + *done, queue->ring_dwords - *done, 0, 1);
         *done = 0;
     }
     complete_packets(fn, ring + *done, write_offset - *done, 0, 1);
+    completing_pipe = -1;
     *done = write_offset;
     __atomic_store_n(queue->read_pointer, write_offset, __ATOMIC_RELEASE);
     pthread_mutex_unlock(&queues_lock);
@@ -701,7 +818,35 @@ static int32_t submit_done(void)
     return 0;
 }
 
+/* sceGnmRequestFlipAndSubmitDone(command buffer, its size in bytes, video out handle, buffer
+   index, flip mode, flip argument): a flip with no drawing work before it, then the frame's
+   submissions are done. The shape is shadPS4's (gnmdriver.cpp, which also has the workload variant;
+   facts only): the system writes its flip request into the command buffer the title gives (at
+   least 0x100 bytes, else 0x80d11001, not enough resources) and submits it. droogie's host takes
+   (handle, buffer, mode, argument) instead; the GNM header shadPS4 follows and its workload variant
+   agree on the six-argument form, so the runtime takes that. The executable imports it, but no
+   instruction or relocated pointer reaches its wrapper (0x01489b70). The runtime writes one NOP
+   packet over the first 0x100 bytes (its flip is a step, not a packet) and submits that buffer
+   with the flip as the step after it, as sceGnmSubmitAndFlipCommandBuffers does. No buffer stops
+   by name. */
+#define GNM_ERROR_SUBMISSION_NOT_ENOUGH_RESOURCES ((int32_t)0x80d11001u)
+enum { FLIP_REQUEST_BYTES = 0x100 };
+
+static int32_t request_flip_and_submit_done(uint32_t *command_buffer, uint32_t bytes, int32_t video_out_handle, int32_t buffer,
+                                            int32_t mode, int64_t argument)
+{
+    static const char fn[] = "sceGnmRequestFlipAndSubmitDone";
+    if (bytes < FLIP_REQUEST_BYTES) return GNM_ERROR_SUBMISSION_NOT_ENOUGH_RESOURCES;
+    if (!command_buffer) rt_fatal(fn, "no command buffer: the error value is not established");
+    fill_with_nop(fn, command_buffer, FLIP_REQUEST_BYTES / sizeof(uint32_t));
+    void *buffers[1] = {command_buffer};
+    const uint32_t sizes[1] = {FLIP_REQUEST_BYTES};
+    const flip_request flip = {video_out_handle, buffer, mode, argument};
+    return submit(fn, 1, buffers, sizes, NULL, NULL, &flip);
+}
+
 RT_SYSLIB("libSceGnmDriver", sceGnmSubmitAndFlipCommandBuffers, submit_and_flip);
+RT_SYSLIB("libSceGnmDriver", sceGnmRequestFlipAndSubmitDone, request_flip_and_submit_done);
 RT_SYSLIB("libSceGnmDriver", sceGnmSubmitDone, submit_done);
 
 /* Queries and debug calls with no GPU work behind them.
@@ -803,6 +948,41 @@ static int32_t razor_capture(void)
     return CAPTURE_FAILED_INTERNAL;
 }
 
+/* Two more queries the executable imports but never reaches (no instruction or relocated pointer
+   reaches their wrappers, 0x01489a70 and 0x01489b40):
+
+   sceGnmGetEqTimeStamp: shadPS4 takes no arguments and answers 0; droogie's host takes (queue, id,
+   uint64_t *) and also answers 0, writing a time through the pointer. They agree on the answer and
+   not on the arguments, so the runtime answers 0 and writes nothing (writing through an argument
+   the call may not have would be worse).
+
+   sceGnmDebugHardwareStatus: a development query. shadPS4 answers 0 with no arguments; droogie's
+   host zeroes 64 bytes through a pointer and answers 0. As above: 0, nothing written.
+
+   sceGnmLogicalCuIndexToPhysicalCuIndex(shader engine, logical CU index) and
+   sceGnmLogicalCuMaskToPhysicalCuMask(shader engine, logical CU mask): the GPU's compute units as
+   the title numbers them, and as the hardware does. The engine's performance counter set-up calls
+   them (0x01482804 and eleven more for the index, 0x014818fa and 0x01481eb4 for the mask), passing
+   the shader engine first and reading back a byte and a 16-bit mask, only when sceGnmIsUserPaEnabled
+   answers on, which it never does. The runtime has no physical units to map to, so the mapping is
+   the identity: the index or mask comes back unchanged (maintainer's ruling of 2026-11-10;
+   shadPS4 answers the mask unchanged too, and droogie's host the first argument). */
+static uint32_t logical_cu_index_to_physical(uint32_t shader_engine, uint32_t logical_index)
+{
+    (void)shader_engine;
+    return logical_index;
+}
+
+static uint32_t logical_cu_mask_to_physical(uint32_t shader_engine, uint32_t logical_mask)
+{
+    (void)shader_engine;
+    return logical_mask;
+}
+
+RT_SYSLIB("libSceGnmDriver", sceGnmGetEqTimeStamp, answer_zero);
+RT_SYSLIB("libSceGnmDriver", sceGnmDebugHardwareStatus, answer_zero);
+RT_SYSLIB("libSceGnmDriver", sceGnmLogicalCuIndexToPhysicalCuIndex, logical_cu_index_to_physical);
+RT_SYSLIB("libSceGnmDriver", sceGnmLogicalCuMaskToPhysicalCuMask, logical_cu_mask_to_physical);
 RT_SYSLIB("libSceGnmDriver", sceGnmAreSubmitsAllowed, are_submits_allowed);
 RT_SYSLIB("libSceGnmDriver", sceGnmFlushGarlic, flush_garlic);
 RT_SYSLIB("libSceGnmDriver", sceGnmGetEqEventType, get_eq_event_type);

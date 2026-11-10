@@ -477,6 +477,144 @@ static int nothing_drawn(rt_executor *x, uint64_t target)
     return 1;
 }
 
+/* Draws the triangle (its second and third corners swapped when reversed) with pixel_face_float, or
+   pixel_face_bits and SPI_BARYC_CNTL's FRONT_FACE_ALL_BITS when all_bits; the run's result. */
+static int draw_facing(rt_executor *x, uint64_t target, int all_bits, int reversed, char *error, size_t error_size)
+{
+    enum { FACE_BUFFER = 0xc0fc0000, FACE_CODE = 0x3000, FRONT_FACE = 0x1000 };
+    const uint32_t *program = all_bits ? pixel_face_bits : pixel_face_float;
+    memcpy((void *)(uintptr_t)at(FACE_CODE), program, all_bits ? sizeof pixel_face_bits : sizeof pixel_face_float);
+    float (*corners)[4] = (float (*)[4])(uintptr_t)at(CORNERS);
+    float swap[4];
+    if (reversed) memcpy(swap, corners[1], sizeof swap), memcpy(corners[1], corners[2], sizeof swap), memcpy(corners[2], swap, sizeof swap);
+    rt_render_forget(), rt_executor_reset(x);
+    const uint32_t offset = record_setup(FACE_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const uint64_t code = at(FACE_CODE);
+    const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 0, 0, 0,
+                                                   PERSP_CENTER | FRONT_FACE, PERSP_CENTER | FRONT_FACE, 1, all_bits ? 1u << 24 : 0, 0, 0xf};
+    CHECK(rt_render_record_pixel_shader(FACE_BUFFER, offset, pixel, error, error_size) == 0);
+    const int ran = rt_executor_run(x, FACE_BUFFER, record_triangle_draw(FACE_BUFFER, offset + 0x10), error, error_size);
+    if (reversed) memcpy(swap, corners[1], sizeof swap), memcpy(corners[1], corners[2], sizeof swap), memcpy(corners[2], swap, sizeof swap);
+    return ran;
+}
+
+/* The pixel shader's front-face input (SPI_PS_INPUT_ENA bit 12): with PA_SU_SC_MODE_CNTL at its reset
+   state counter-clockwise triangles face front (Vulkan's area rule, in framebuffer coordinates). The
+   test triangle, (0, 0), (32, 0), (0, 32) on the 16 x 16 target with y down, faces back: its face VGPR is
+   -1.0 as a float (red 0) and 0 with FRONT_FACE_ALL_BITS; reversed it faces front: 1.0, and 1. */
+static void front_face(rt_executor *x)
+{
+    enum { FACE_TARGET = 0x1a40000 };
+    char error[200] = "";
+    for (int all_bits = 0; all_bits < 2; all_bits++)
+        for (int reversed = 0; reversed < 2; reversed++) {
+            const int ran = draw_facing(x, at(FACE_TARGET), all_bits, reversed, error, sizeof error);
+            if (ran) fprintf(stderr, "front face: %s\n", error);
+            CHECK(ran == 0);
+            uint32_t bgra[SIZE * SIZE];
+            CHECK(rt_executor_read_target(x, at(FACE_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+            int all = 1;
+            for (int i = 0; i < SIZE * SIZE; i++) all &= bgra[i] == (reversed ? 0xffff4040u : 0xff004040u);
+            if (!all) fprintf(stderr, "front face (all bits %d, reversed %d): %08x\n", all_bits, reversed, bgra[0]);
+            CHECK(all);
+        }
+}
+
+/* Draws pixel_color_two_targets with colour targets in slots 0 and 2 (none in 1) and CB_TARGET_MASK mask;
+   the run's result. A slot-2 target of another size when odd_size. */
+static int draw_two_targets(rt_executor *x, uint64_t first, uint64_t third, uint32_t mask, int odd_size, char *error, size_t error_size)
+{
+    enum { TWO_BUFFER = 0xc0f80000, TWO_CODE = 0x2e00 };
+    memcpy((void *)(uintptr_t)at(TWO_CODE), pixel_color_two_targets, sizeof pixel_color_two_targets);
+    rt_render_forget(), rt_executor_reset(x);
+    uint32_t offset = record_setup(TWO_BUFFER, first, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const uint64_t code = at(TWO_CODE);
+    const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 0, 0, 0x404,
+                                                   PERSP_CENTER, PERSP_CENTER, 1, 0, 0, 0xf0f};
+    CHECK(rt_render_record_pixel_shader(TWO_BUFFER, offset, pixel, error, error_size) == 0);
+    uint32_t words[RT_COLOR_TARGET_WORDS];
+    color_target(words, third, COLOR_8_8_8_8, SWAP_STD);
+    if (odd_size) words[1] = 2 * SIZE / 8 - 1, words[2] = 4 * SIZE * SIZE / 64 - 1;
+    CHECK(rt_render_record_color_target(TWO_BUFFER, offset + 0x10, 2, words, error, error_size) == 0);
+    CHECK(rt_render_record_register(TWO_BUFFER, offset + 0x20, 0xa08e, mask, error, error_size) == 0);
+    return rt_executor_run(x, TWO_BUFFER, record_triangle_draw(TWO_BUFFER, offset + 0x30), error, error_size);
+}
+
+/* Several colour targets in one draw (MRT): the pixel shader's mrt0 and mrt2 exports land in the
+   targets of slots 0 and 2, with no target in slot 1 between them; CB_TARGET_MASK's nibble per slot
+   masks channels: 0x7 on slot 2 leaves its alpha as it was (0), and slot 0 masked off entirely draws
+   only slot 2. Colour targets of different sizes in one draw stop by name. */
+static void multiple_targets(rt_executor *x)
+{
+    enum { MRT_FIRST = 0x1900000, MRT_THIRD = 0x1940000, MASKED_FIRST = 0x1980000, MASKED_THIRD = 0x19c0000, ODD_THIRD = 0x1a00000 };
+    char error[200] = "";
+    int drawn = draw_two_targets(x, at(MRT_FIRST), at(MRT_THIRD), 0xf0f, 0, error, sizeof error);
+    if (drawn) fprintf(stderr, "two targets: %s\n", error);
+    CHECK(drawn == 0);
+    check_triangle(x, at(MRT_FIRST));
+    check_triangle(x, at(MRT_THIRD));
+    drawn = draw_two_targets(x, at(MASKED_FIRST), at(MASKED_THIRD), 0x700, 0, error, sizeof error);
+    if (drawn) fprintf(stderr, "masked targets: %s\n", error);
+    CHECK(drawn == 0);
+    uint32_t bgra[SIZE * SIZE];
+    CHECK(rt_executor_read_target(x, at(MASKED_FIRST), bgra, SIZE, SIZE, error, sizeof error) == -1 && strstr(error, "no draw"));
+    CHECK(rt_executor_read_target(x, at(MASKED_THIRD), bgra, SIZE, SIZE, error, sizeof error) == 0);
+    for (int i = 0; i < SIZE * SIZE; i++) bgra[i] |= 0xffu << 24; /* alpha was masked: 0, as the memory held */
+    check_triangle_pixels(bgra);
+    CHECK(rt_executor_read_target(x, at(MASKED_THIRD), bgra, SIZE, SIZE, error, sizeof error) == 0 && (bgra[0] >> 24) == 0);
+    CHECK(draw_two_targets(x, at(MRT_FIRST), at(ODD_THIRD), 0xf0f, 1, error, sizeof error) == -1 && strstr(error, "different sizes"));
+}
+
+/* A render target cleared by a compute shader (as the game clears its G-buffer): a dispatch stores
+   (0.25, 0.5, 0.75, 1) over a 16 x 16 8_8_8_8 image at the target's memory, then (in the next buffer)
+   a draw into the target
+   that keeps what is there (blend ZERO + ONE) leaves the cleared colour, which reaches the memory too;
+   a clear by a 32_32_32_32 float image there stops the draw by name. */
+static void compute_cleared_target(rt_executor *x)
+{
+    enum { CLEAR_BUFFER = 0xc0fd0000, DRAW_BUFFER = 0xc0fe0000, CLEAR_CODE = 0x3200, CLEARED = 0x1a80000, WIDE_CLEARED = 0x1ac0000, LINEAR_ALIGNED = 8 };
+    char error[200] = "";
+    memcpy((void *)(uintptr_t)at(CLEAR_CODE), image_clear_tile, sizeof image_clear_tile);
+    for (int wide = 0; wide < 2; wide++) {
+        const uint64_t target = at(wide ? WIDE_CLEARED : CLEARED);
+        memset((void *)(uintptr_t)target, 0, SIZE * SIZE * 16);
+        rt_render_forget(), rt_executor_reset(x);
+        const uint64_t code = at(CLEAR_CODE);
+        const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x3, 16 << 1, SIZE, SIZE, 1};
+        CHECK(rt_render_record_compute_shader_at(CLEAR_BUFFER + 0x10, shader) == 0);
+        uint32_t user[8];
+        image_descriptor(user, target, wide ? 14 : 10, wide ? 7 : 0, SIZE, SIZE); /* 32_32_32_32 float, or 8_8_8_8 unorm */
+        user[3] |= LINEAR_ALIGNED << 20;
+        CHECK(rt_render_record_user_data(CLEAR_BUFFER, 0x20, RT_STAGE_COMPUTE, 8, user, 8, error, sizeof error) == 0);
+        const uint32_t one[3] = {1, 1, 1};
+        CHECK(rt_render_record_dispatch(CLEAR_BUFFER, 0x30, one, error, sizeof error) == 0);
+        const int cleared_run = rt_executor_run(x, CLEAR_BUFFER, 0x40, error, sizeof error);
+        if (cleared_run) fprintf(stderr, "compute clear: %s\n", error);
+        CHECK(cleared_run == 0);
+        /* the draw in the next buffer: the executor keeps its images and targets between buffers */
+        rt_render_forget();
+        const uint32_t offset = record_setup(DRAW_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        CHECK(rt_render_record_register(DRAW_BUFFER, offset, 0xa1e0, 1u << 30 | 0u | 1u << 8, error, sizeof error) == 0);
+        const int ran = rt_executor_run(x, DRAW_BUFFER, record_triangle_draw(DRAW_BUFFER, offset + 0x10), error, sizeof error);
+        if (wide) {
+            CHECK(ran == -1 && strstr(error, "another format"));
+            continue;
+        }
+        if (ran) fprintf(stderr, "compute-cleared target: %s\n", error);
+        CHECK(ran == 0);
+        uint32_t bgra[SIZE * SIZE];
+        CHECK(rt_executor_read_target(x, target, bgra, SIZE, SIZE, error, sizeof error) == 0);
+        /* blue first for the display: red 0.25, green 0.5, blue 0.75, alpha 1 (the store's rounding of 0.5 to 127 or 128 either way) */
+        int cleared = 1;
+        for (int i = 0; i < SIZE * SIZE; i++)
+            cleared &= near(bgra[i] >> 16 & 0xff, 0.25f) && near(bgra[i] >> 8 & 0xff, 0.5f) && near(bgra[i] & 0xff, 0.75f) && bgra[i] >> 24 == 0xff;
+        if (!cleared) fprintf(stderr, "compute-cleared target: %08x\n", bgra[0]);
+        CHECK(cleared);
+        const uint32_t first = *(const uint32_t *)(uintptr_t)target; /* written back to the memory: red first */
+        CHECK(near(first & 0xff, 0.25f) && near(first >> 8 & 0xff, 0.5f) && near(first >> 16 & 0xff, 0.75f) && first >> 24 == 0xff);
+    }
+}
+
 /* Depth and stencil without a depth buffer, and triangle strips:
    - with the depth target switched off (DB_Z_INFO and DB_STENCIL_INFO 0, as the library's setter
      writes for no target), depth and stencil tests draw as if off; Z_WRITE_ENABLE alone writes nothing
@@ -1052,6 +1190,9 @@ int main(void)
     size = record_draw(THIRD, at(TARGET) + 0x400000, COLOR_8_8, SWAP_STD, PERSP_CENTER);
     CHECK(rt_executor_run(x, THIRD, size, error, sizeof error) == -1 && strstr(error, "not drawn yet"));
     size = record_draw(THIRD, at(TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER | FRONT_FACE);
+    CHECK(rt_executor_run(x, THIRD, size, error, sizeof error) == 0); /* the front face, pixel_color not reading it */
+    front_face(x);
+    size = record_draw(THIRD, at(TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER | 0x10); /* the linear barycentrics */
     CHECK(rt_executor_run(x, THIRD, size, error, sizeof error) == -1 && strstr(error, "pixel-shader inputs"));
     /* The library's registers: the normal state draws as before, a target masked off draws nothing,
        and what is not drawn yet (blending, depth, other primitives, instances) stops by name. */
@@ -1072,8 +1213,8 @@ int main(void)
     const uint32_t line_strips[][2] = {{0xc242, 5}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), line_strips, 1, 0, error, sizeof error) == -1 && strstr(error, "primitive type 5"));
     depth_and_strips(x);
-    const uint32_t partial[][2] = {{0xa08e, 0x7}};
-    CHECK(run_with_registers(x, FOURTH, at(TARGET), partial, 1, 0, error, sizeof error) == -1 && strstr(error, "write mask"));
+    multiple_targets(x);
+    compute_cleared_target(x);
     const uint32_t resolve[][2] = {{0xa202, 0x3u << 4 | 0xccu << 16}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), resolve, 1, 0, error, sizeof error) == -1 && strstr(error, "colour mode 3"));
     const uint32_t unknown[][2] = {{0xa1e8, 0}};

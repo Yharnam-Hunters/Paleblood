@@ -108,6 +108,12 @@ Instead:
        (`rt_image_descriptor_decode`, the Sea Islands manual's T# layout as shadPS4's `resource.h`
        has it) and binds a storage image (set 0, binding i) whose shape the translation uses. Stores
        must cover every component the format has; data components past them are dropped.
+       The executor keeps what shaders store in the image (it is not written back to memory). When
+       a shader stores into a render target's memory (a compute clear, as the game clears its
+       G-buffer), the target's next draw first copies the image's texels into the target (an
+       8_8_8_8 image into an 8_8_8_8 target, otherwise the same format; at least the target's size),
+       and the image loads from memory again at its next use; an image over a target's memory loads
+       it even when only written, so a store that covers part of it keeps the rest.
      - **Pixel shaders read images** (`image_load`, `image_load_mip`) as sampled images (Vulkan's
        `SAMPLED_IMAGE`, `OpImageFetch` at the level given), so the view applies the descriptor's
        DST_SEL. A texel outside the image or a level past its last is a run-time stop
@@ -138,13 +144,15 @@ Instead:
      - **Descriptors from memory:** each MIMG instruction's descriptor is found from the code before
        it (`gcn_resource_origin`): the user data's when nothing writes its SGPRs first, or loaded
        from memory when the last write is a whole `s_load_dwordx8` at an immediate offset from a
-       user-data pointer pair that nothing writes. The executor reads such a descriptor from guest
+       user-data pointer pair that nothing writes before it. The executor reads such a descriptor from guest
        memory when the draw runs. The same SGPRs can name different images at different
        instructions: the game's fullscreen pass reads the user data's image, then loads another
        descriptor over it. With branches in the program a load is followed only when every path to
        the instruction passes it: no branch lands between the load and the use, every branch target
-       is known, no loop goes back to the use after a later write to those SGPRs, and nothing writes
-       the pointer pair. Writes before the load do not matter (the game's guarded samples keep a
+       is known, no loop goes back to the use after a later write to those SGPRs, and, when a branch
+       goes back to the load or before it, nothing at all writes the pointer pair (without one, code
+       after the load may reuse the pointer's SGPRs, as the character creation preview's pixel
+       shaders do once their samples are done). Writes before the load do not matter (the game's guarded samples keep a
        compare's mask there, then branch over the load and the use together). Any other write (a scalar
        move, a compare's result, a written pointer) stops by name.
      - **Tiled layouts** (`runtime/tiling.h`): where each texel of an image lies in guest memory, for
@@ -314,6 +322,11 @@ Instead:
          and `v1`.
        - The inputs: 1,678 use only those barycentrics; 1,111 add the front-face flag; nine
          also read the pixel position.
+       - The executor draws all three: the front-face VGPR (`SPI_PS_INPUT_ENA` bit 12) holds 1 or
+         0 with `SPI_BARYC_CNTL`'s `FRONT_FACE_ALL_BITS`, otherwise a float whose sign says it
+         (1.0 front, -1.0 back), as shadPS4 fills it. Which winding faces front comes from
+         `PA_SU_SC_MODE_CNTL`, which is not observed yet: the reset state, counter-clockwise
+         (Vulkan's area rule), is assumed.
      - **Confirmed at run time** (6 November 2026): the game passes these same blocks to
        `sceGnmSetVsShader` and `sceGnmSetPsShader`, with the code's address filled in. Those
        calls are the runtime's own, so they hand the renderer the shader directly: placed at the
@@ -337,13 +350,18 @@ Instead:
      control, colour control, the target mask, the primitive type) and the instance count. The
      executor understands those registers and, at each draw, stops by name on what it does not
      draw yet: depth or stencil testing, primitives other than triangle lists, colour modes other
-     than a normal copy, partial write masks, more than one instance, and any register it does not
-     interpret. A draw with target 0 masked off writes nothing and is skipped.
+     than a normal copy, more than one instance, and any register it does not interpret. A draw
+     whose targets are all masked off (and that writes no depth) writes nothing and is skipped.
+     - **Several render targets (MRT):** a draw writes the colour targets of every enabled slot
+       0-7 whose `CB_TARGET_MASK` nibble (bits 4n to 4n+3: x, y, z, w, as shadPS4 hands them to
+       Vulkan's colour write mask) is not 0, each with its own `CB_BLENDn_CONTROL`; slot n is
+       colour attachment n, which the pixel shader's `mrt n` export writes, and a slot between
+       two drawn ones is an unused attachment. The targets of one draw must have one size (others
+       stop by name); partial masks write only their channels.
      - **Blending** (`CB_BLEND0_CONTROL`, with `CB_BLEND_RED`-`ALPHA` as Vulkan's blend constants):
        AMD's factor and function numbers (Mesa's `sid.h`, shadPS4's `regs_color.h`) map one to one
        onto Vulkan's; without `SEPARATE_ALPHA_BLEND` alpha uses the colour's. Dual-source factors
-       stop by name. Targets 1-7's blend controls are kept out of the draw while their slots are
-       off (an enabled slot beyond 0 stops the draw anyway).
+       stop by name. Each slot blends with its own `CB_BLENDn_CONTROL`.
    - **The draw executor** (being built): it runs a submitted buffer's recorded calls on the GPU.
      - **Submission runs beside the title** (`runtime/renderer/renderer.c`): `sceGnmSubmitCommandBuffers`
        and `sceGnmSubmitAndFlipCommandBuffers` read their packets, take a copy of the buffer's
@@ -389,9 +407,10 @@ Instead:
         shader's at byte 64 (`push_constant_offset`), 128 bytes in all, the size every Vulkan
         device guarantees.
      3. **Running a buffer** (begun: `runtime/render_executor.h`).
-        - **What runs today:** COLOR_8_8_8_8 render targets in slot 0 (UNORM or sRGB, either
+        - **What runs today:** COLOR_8_8_8_8 render targets in slots 0-7 (UNORM or sRGB, either
           component order; COLOR_10_11_11 and COLOR_16_16_16_16 FLOAT too, written back to their
-          memory as the hardware lays them out, though only 8_8_8_8 ones are read as BGRA), viewport 0, vertex and pixel shaders with their user data, and
+          memory as the hardware lays them out, though only 8_8_8_8 ones are read as BGRA), viewport
+          0, vertex and pixel shaders with their user data, and
           auto-index draws as triangle lists.
         - **Rect lists** (primitive type 17, which the game's fullscreen passes use): Vulkan has no
           such primitive, so each rect's three vertices go through a generated geometry stage
