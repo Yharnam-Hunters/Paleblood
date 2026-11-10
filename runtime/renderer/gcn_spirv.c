@@ -615,6 +615,21 @@ static void vector_instruction(translator *t, const uint32_t *w, const gcn_instr
         const int k_multiplies = !strcmp(name, "v_madmk_f32");
         const uint32_t product = value(t, SPV_OP_F_MUL, t_float(t), 2, a, k_multiplies ? k : b);
         write_float(t, &o, value(t, SPV_OP_F_ADD, t_float(t), 2, product, k_multiplies ? b : k), ins);
+    } else if (!strcmp(name, "v_mul_hi_u32") || !strcmp(name, "v_mul_hi_i32")) {
+        /* The high 32 bits of the 64-bit product (Sea Islands manual). Signed, from the unsigned
+           one: hi_s(a, b) = hi_u(a, b) - (a < 0 ? b : 0) - (b < 0 ? a : 0), modulo 2^32. */
+        if (o.abs || o.neg || o.clamp || o.omod) fail(t, "%s: modifiers on an integer operation", name);
+        const uint32_t a = source(t, o.src[0], ins), b = source(t, o.src[1], ins);
+        const uint32_t thirty_two = spirv_global(&t->m, SPV_OP_CONSTANT, (const uint32_t[]){t_ulong(t), 32, 0}, 3);
+        const uint32_t product = value(t, SPV_OP_I_MUL, t_ulong(t), 2, widen(t, a), widen(t, b));
+        uint32_t high = value(t, SPV_OP_U_CONVERT, t_uint(t), 1, value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_ulong(t), 2, product, thirty_two));
+        if (!strcmp(name, "v_mul_hi_i32")) {
+            const uint32_t a_negative = value(t, SPV_OP_U_GREATER_THAN_EQUAL, t_bool(t), 2, a, konst(t, 0x80000000u));
+            const uint32_t b_negative = value(t, SPV_OP_U_GREATER_THAN_EQUAL, t_bool(t), 2, b, konst(t, 0x80000000u));
+            high = value(t, SPV_OP_I_SUB, t_uint(t), 2, high, value(t, SPV_OP_SELECT, t_uint(t), 3, a_negative, b, konst(t, 0)));
+            high = value(t, SPV_OP_I_SUB, t_uint(t), 2, high, value(t, SPV_OP_SELECT, t_uint(t), 3, b_negative, a, konst(t, 0)));
+        }
+        write_vgpr(t, o.dst, high);
     } else if ((op = FIND(integer_binary, name))) {
         if (o.abs || o.neg || o.clamp || o.omod) fail(t, "%s: modifiers on an integer operation", name);
         uint32_t a = source(t, o.src[0], ins), b = source(t, o.src[1], ins);
