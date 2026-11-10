@@ -1094,6 +1094,59 @@ person running it chose:
 
 **What stops by name:** a setting nobody gave a value, and a missing variable.
 
+## PSN services with no one signed in: matchmaking, web API, leaderboards, signaling, lookup (issue #41)
+
+Every one of these services is gated in the executable on the signed-in user's NpId or online ID,
+which `sceNpGetNpId` and `sceNpGetOnlineId` never give offline:
+- matchmaking setup: `0x010bcf70`;
+- web API client: `0x010b4d90`;
+- signaling and lookup setup: `0x010c0800`.
+
+So nothing beyond `sceNpMatching2Initialize` is reached, with one exception: the leaderboard
+object reaches `sceNpScoreCreateRequest` with title context 0, from the comment checks
+(`0x010d07a8`, `0x010d0a39`) and the jobs (`0x010cdf63`, `0x010cf339`, `0x010d04ed`), and treats an
+answer below 1 as failure.
+
+The codes come from shadPS4's `np_matching2.cpp`, `np_web_api.cpp`, `np_score.cpp`,
+`np_signaling.cpp` and `np_utility.cpp`, with PS4Recomp where noted (facts only). The executable
+itself tests several of them (`0x80550C06`, `0x80552701`/`04`/`05`, `0x8055080B`, `0x80550707`),
+which supports the numbering. Ids start at 1 everywhere.
+
+- **Matching2.**
+  - Before initialize, every call answers `0x80550C03`.
+  - NULL pointers, and a context block other than 0x28 bytes, answer `0x80550C0A`. An unknown
+    context answers `0x80550C0B`.
+  - `ContextStart` answers `0x804101E2`, the resolver timeout. shadPS4 notes this was confirmed on
+    a disconnected console, and PS4Recomp agrees. So no context starts, and `ContextStop` answers
+    `0x80550C08`.
+  - Calls that need a started context stop by name on a known context: the server id, request
+    options, the room, lobby and signaling callbacks, and every room and lobby request. A NULL
+    context callback also stops by name.
+- **Web API.**
+  - Library contexts are ids below `0x8000`. User contexts carry their library in the upper 16 bits.
+  - Error answers: `0x80552902` for a NULL or empty argument; `0x80552903` for a library id of
+    `0x8000` or more; `0x80552904`, `0x80552905` and `0x80552906` for an unknown library, user
+    context or request; `0x8055290B` and `0x8055290C` for an unknown filter or callback.
+  - `SendRequest` answers `0x80552907`, not signed in (PS4Recomp agrees).
+  - The response calls on a known request, which was never sent, stop by name. So does
+    `UtilityParseNpId` on a real argument; NULL arguments answer `0x80550003`.
+- **Leaderboards.**
+  - `CreateNpTitleCtx` answers `0x80550006`, signed out. PS4Recomp and shadPS4's sign-in-checking
+    variant agree; shadPS4's plain variant and one port hand out an id instead.
+  - So no title context or request exists. Every id answers `0x8055070E`, and
+    `SetPlayerCharacterId` first answers `0x80550704` for a negative character id.
+- **Signaling.**
+  - Answers: `0x80552702` for a second initialize; `0x80552701` before initialize; `0x80552715` for
+    NULL pointers; `0x80552705` for an unknown context.
+  - Connections: `ActivateConnection` answers `0x8055270B`, network information not available
+    (PS4Recomp). `DeactivateConnection` answers `0x8055270E`. `GetConnectionStatus` writes inactive
+    (0) and answers 0.
+- **Lookup.**
+  - Answers: `0x8055070C` for a NULL NpId; `0x8055070E` for an unknown title context or request;
+    `0x80550704` for an option block.
+  - `sceNpLookupNpId` starts the lookup. `sceNpLookupPollAsync` then answers 0 with result
+    `0x80550705`, no login (PS4Recomp); before that it answers 1, still running (shadPS4).
+
 ## PSN offline: sign-in state, callbacks and matchmaking start-up
 
 The runtime is offline: the one user is signed out of PSN for the whole run, and nothing about
