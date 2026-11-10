@@ -92,8 +92,10 @@ Instead:
        baked into every translation (`error_address`); a shader meeting a case it cannot do exactly
        writes a code there and skips the access, and the executor checks the word after each
        dispatch and draw and stops by name (`GCN_RUNTIME_STOP_*`).
-     - **Format buffer accesses** (`buffer_load/store_format_*`): loads from 8_8_8_8 unorm (each byte
-       v / 255, correctly rounded); whole 32-bit components (uint,
+     - **Format buffer accesses** (`buffer_load/store_format_*`): loads of 8- and 16-bit components
+       (8, 16, 8_8, 16_16, 8_8_8_8, 16_16_16_16) as uint (zero-extended), sint (sign-extended) and,
+       for 8-bit components, unorm (each byte v / 255, correctly rounded), read byte by byte from any
+       alignment, x first and little-endian; whole 32-bit components (uint,
        sint, float; the format's components in place, as a store only uses their selectors) move as they are, and a four-component store to 8_8_8_8 unorm
        undoes the descriptor's swizzle (shadPS4's rule: the inverse of a load's) and packs as GLSL's
        `packUnorm4x8` (the PS4's rounding of ties is not established). Anything else is a run-time stop.
