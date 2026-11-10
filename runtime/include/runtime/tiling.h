@@ -39,6 +39,22 @@ typedef struct {
 int rt_tiling_layout(unsigned tiling_index, unsigned element_bytes, uint32_t pitch, uint32_t height, rt_tiling *layout, char *error,
                      size_t error_size);
 
+/* A mip-mapped image's levels (runtime/renderer/tiling.c, rt_tiling_mip_chain): each level's own
+   layout, its offset from the image's base and its element counts. */
+enum { RT_TILING_MAX_LEVELS = 16 };
+typedef struct {
+    rt_tiling layout;
+    uint64_t offset;                 /* from the image's base: the levels follow one another */
+    uint32_t columns, rows;          /* the level's elements (texels, or 4x4 blocks) across and down */
+} rt_tiling_level;
+
+/* The levels 0 to levels - 1 of an image with this tiling index whose level 0 is pitch x height texels
+   (the descriptor's PITCH and HEIGHT; `block` 4 for block-compressed elements of 4x4 texels, else 1),
+   with `pow2` its POW2_PAD and `slices` slices per level. 0, or -1 with the reason. */
+int rt_tiling_mip_chain(unsigned tiling_index, unsigned element_bytes, unsigned block, int pow2, uint32_t pitch, uint32_t height,
+                        uint32_t width, uint32_t visible_height, unsigned levels, uint32_t slices, rt_tiling_level *out, char *error,
+                        size_t error_size);
+
 /* The byte offset from the image's base of texel (x, y) of slice `slice`. */
 uint64_t rt_tiling_offset(const rt_tiling *layout, uint32_t x, uint32_t y, uint32_t slice);
 

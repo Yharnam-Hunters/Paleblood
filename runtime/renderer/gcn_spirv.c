@@ -2221,7 +2221,7 @@ int gcn_image_resources(const uint32_t *code, size_t dwords, gcn_image_resource 
                 resources[i] = (gcn_image_resource){origin, 0};
                 (*count)++;
             }
-            resources[i].access |= op == MIMG_OP_STORE ? GCN_IMAGE_WRITE : GCN_IMAGE_READ;
+            resources[i].access |= op == MIMG_OP_STORE ? GCN_IMAGE_WRITE : op == MIMG_OP_SAMPLE ? GCN_IMAGE_READ | GCN_IMAGE_SAMPLE : GCN_IMAGE_READ;
         }
         at += ins.dwords;
     }
