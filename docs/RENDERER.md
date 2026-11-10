@@ -336,13 +336,18 @@ Instead:
      control, colour control, the target mask, the primitive type) and the instance count. The
      executor understands those registers and, at each draw, stops by name on what it does not
      draw yet: depth or stencil testing, primitives other than triangle lists, colour modes other
-     than a normal copy, partial write masks, more than one instance, and any register it does not
-     interpret. A draw with target 0 masked off writes nothing and is skipped.
+     than a normal copy, more than one instance, and any register it does not interpret. A draw
+     whose targets are all masked off (and that writes no depth) writes nothing and is skipped.
+     - **Several render targets (MRT):** a draw writes the colour targets of every enabled slot
+       0-7 whose `CB_TARGET_MASK` nibble (bits 4n to 4n+3: x, y, z, w, as shadPS4 hands them to
+       Vulkan's colour write mask) is not 0, each with its own `CB_BLENDn_CONTROL`; slot n is
+       colour attachment n, which the pixel shader's `mrt n` export writes, and a slot between
+       two drawn ones is an unused attachment. The targets of one draw must have one size (others
+       stop by name); partial masks write only their channels.
      - **Blending** (`CB_BLEND0_CONTROL`, with `CB_BLEND_RED`-`ALPHA` as Vulkan's blend constants):
        AMD's factor and function numbers (Mesa's `sid.h`, shadPS4's `regs_color.h`) map one to one
        onto Vulkan's; without `SEPARATE_ALPHA_BLEND` alpha uses the colour's. Dual-source factors
-       stop by name. Targets 1-7's blend controls are kept out of the draw while their slots are
-       off (an enabled slot beyond 0 stops the draw anyway).
+       stop by name. Each slot blends with its own `CB_BLENDn_CONTROL`.
    - **The draw executor** (being built): it runs a submitted buffer's recorded calls on the GPU.
      - **Submission runs beside the title** (`runtime/renderer/renderer.c`): `sceGnmSubmitCommandBuffers`
        and `sceGnmSubmitAndFlipCommandBuffers` read their packets, take a copy of the buffer's
@@ -388,7 +393,7 @@ Instead:
         shader's at byte 64 (`push_constant_offset`), 128 bytes in all, the size every Vulkan
         device guarantees.
      3. **Running a buffer** (begun: `runtime/render_executor.h`).
-        - **What runs today:** COLOR_8_8_8_8 render targets in slot 0 (UNORM or sRGB, either
+        - **What runs today:** COLOR_8_8_8_8 render targets in slots 0-7 (UNORM or sRGB, either
           component order), viewport 0, vertex and pixel shaders with their user data, and
           auto-index draws as triangle lists.
         - **Rect lists** (primitive type 17, which the game's fullscreen passes use): Vulkan has no

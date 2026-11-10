@@ -427,6 +427,24 @@ static const uint32_t pixel_color[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* pixel_color writing its colour to colour targets 0 and 2 (two exports, the second done). */
+static const uint32_t pixel_color_two_targets[] = {
+    0xbefc0300, /* s_mov_b32 m0, s0 */
+    0xc8080000, /* v_interp_p1_f32 v2, v0, attr0.x */
+    0xc8090001, /* v_interp_p2_f32 v2, v1, attr0.x */
+    0xc80c0100, /* v_interp_p1_f32 v3, v0, attr0.y */
+    0xc80d0101, /* v_interp_p2_f32 v3, v1, attr0.y */
+    0xc8100200, /* v_interp_p1_f32 v4, v0, attr0.z */
+    0xc8110201, /* v_interp_p2_f32 v4, v1, attr0.z */
+    0xc8140300, /* v_interp_p1_f32 v5, v0, attr0.w */
+    0xc8150301, /* v_interp_p2_f32 v5, v1, attr0.w */
+    0x5e0c0702, /* v_cvt_pkrtz_f16_f32_e32 v6, v2, v3 */
+    0x5e0e0b04, /* v_cvt_pkrtz_f16_f32_e32 v7, v4, v5 */
+    0xf800140f, 0x00000706, /* exp mrt0, v6, v6, v7, v7 compr vm */
+    0xf8001c2f, 0x00000706, /* exp mrt2, v6, v6, v7, v7 done compr vm */
+    0xbf810000, /* s_endpgm */
+};
+
 /* A pixel shader whose colour comes from the pixel's position (x in v2, y in v3 after the barycentrics,
    SPI_PS_INPUT 0x302): (x / 16, y / 16, 0.25, 1), the same image as pixel_color on the test triangle. */
 static const uint32_t pixel_position_color[] = {
