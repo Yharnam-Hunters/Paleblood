@@ -226,6 +226,7 @@ render_initialize_record_level_descriptor,edge,,51,51,0,0,a36426b67c294984,2026-
 render_initialize_triple_record_descriptor,edge,,97,97,0,0,8993a89e4989c6b5,2026-11-10
 render_pack_record_mapping_word,edge,,497,497,0,0,9bf1f50e8f52effa,2026-11-04
 render_prepare_resource_descriptor,edge,,40,40,0,0,beb33acb10844a38,2026-11-10
+render_prepare_swap_chain_resource_info,edge,,54,54,0,0,e9f3fc7fb6b59cd1,2026-11-10
 render_present_last_record_consume,edge,,56,56,0,0,8feb3252c4706117,2026-11-10
 render_present_record_consume,edge,,24,24,0,0,04690706835c471b,2026-11-10
 render_read_present_pool_counter,edge,,18,18,0,0,1ef235dcff31de42,2026-11-03
