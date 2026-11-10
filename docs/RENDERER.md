@@ -111,6 +111,15 @@ Instead:
        `SAMPLED_IMAGE`, `OpImageFetch` at the level given), so the view applies the descriptor's
        DST_SEL. A texel outside the image or a level past its last is a run-time stop
        (`GCN_RUNTIME_STOP_IMAGE_RANGE`): what the GPU returns there is not established.
+     - **Mip-mapped images** (a pixel shader's sampled images, BASE_LEVEL to LAST_LEVEL): the
+       executor makes the image with LAST_LEVEL + 1 levels and views BASE_LEVEL on. Each level's
+       texels come from where `rt_tiling_mip_chain` (runtime/tiling.h) puts them: the levels one after
+       another, each rounded to a power of two with POW2_PAD; a 2D-tiled image's levels macro tiled
+       while they span a macro tile, smaller ones (and every 1D-tiled level) micro tiled with 256-byte
+       slices (AMD's address library for GFX7, as shadPS4's `ComputeImageSize` follows). The levels
+       are detiled by the CPU. `image_load` and `image_load_mip` read them exactly;
+       `image_sample` of a mip-mapped image stops by name until the level choice is done. A storage
+       image keeps one level.
      - **`image_sample`** with the sampler (S#) its SSAMP SGPRs name, found like image descriptors and
        bound after the images (set 0, `VK_DESCRIPTOR_TYPE_SAMPLER`): sampled at level 0
        (`OpImageSampleExplicitLod`). GCN picks the level from the coordinates' derivatives; level 0

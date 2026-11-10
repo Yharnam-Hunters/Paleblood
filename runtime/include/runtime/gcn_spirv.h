@@ -85,11 +85,11 @@ typedef struct {
     int sampled;                     /* a sampled image (reads only), not a storage image */
 } gcn_image_binding;
 
-enum { GCN_MAX_IMAGES = 8, GCN_IMAGE_READ = 1, GCN_IMAGE_WRITE = 2 };
+enum { GCN_MAX_IMAGES = 8, GCN_IMAGE_READ = 1, GCN_IMAGE_WRITE = 2, GCN_IMAGE_SAMPLE = 4 /* read through image_sample */ };
 
 typedef struct {
     gcn_resource_origin origin;
-    unsigned access;                 /* GCN_IMAGE_READ | GCN_IMAGE_WRITE */
+    unsigned access;                 /* GCN_IMAGE_READ | GCN_IMAGE_WRITE | GCN_IMAGE_SAMPLE */
 } gcn_image_resource;
 
 /* Samplers (S#, 4 words), which image_sample names by its SSAMP SGPRs, are found the same way (an
