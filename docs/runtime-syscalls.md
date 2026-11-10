@@ -1397,7 +1397,8 @@ headers give:
   6-channel movies open format 2. With `--audio host`, 16-bit blocks are scaled to -1..1 for the
   host stream.
 
-**What the runtime does.** It records each open port and hands out handles from 1. Sound output
+**What the runtime does.** It records each open port and hands out handles from 1, the lowest one
+free, so a closed port's handle is handed out again (shadPS4 also reuses a closed port's slot). Sound output
 belongs to the output calls, which stop by name until they are implemented.
 
 **What stops by name:** any open other than the observed ones (256 float samples in formats 4
@@ -1433,6 +1434,13 @@ the next block.
   calls it so when it has no sound to give (found during the opening movie).
 
 **What stops by name:** a handle the runtime did not hand out.
+
+`int32_t sceAudioOutClose(handle)`, as the SDK declares it, closes a port. The movie player's sound
+ends with it (`0x02c2276f`): first no block (`sceAudioOutOutput` with NULL, which waits for room), then
+the close, whose negative result it takes as failure. The runtime takes the port back once any output
+call on it has returned, closes its host stream and answers 0, as shadPS4's `audioout.cpp` does; the
+handle is free for the next open. A handle that names no open port stops by name (the error value is
+not established).
 
 `int32_t sceAudioOutGetPortState(handle, void *state)`, as the SDK declares it, reports a port's
 state. Its `_types/audio_out.h` gives the layout (32 bytes): a 16-bit output, an 8-bit channel
