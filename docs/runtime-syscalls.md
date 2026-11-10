@@ -213,11 +213,11 @@ The executable imports exactly six functions from `libSceNetCtl` and neither `sc
 game takes its offline paths. The public declarations of the same API family on PS Vita
 ([`psp2/net/netctl.h`](https://github.com/vitasdk/vita-headers/blob/master/include/psp2/net/netctl.h)
 in vitasdk/vita-headers, and the PSP2SDK header reference) give the shape of the calls: a
-state query through an `int *`, an information query by an `int` module id into a structure pointer,
+state query through an `int *`, an information query by an `int` code into a structure pointer,
 one NAT query through a structure pointer, and a callback check that takes nothing and returns `int`.
 Vita is a different operating system, so those declarations are evidence for the shape only and their
-numbers are never proof of a PS4 value. No value in this group is taken from another runtime's
-behaviour: where no public source reaches, the guest's own call sites decide. They have settled the
+numbers are never proof of a PS4 value. Facts from other runtimes are used only where a row cites
+them (the "not connected" value); elsewhere the guest's own call sites decide. They have settled the
 state numbers (0 is not up, 3 is connected) and the callback keying (an id handed back, not a state),
 and everything they do not reach - error codes, structure layouts, the offline answers - stays a
 fatal that names the question and the evidence that would close it.
@@ -228,7 +228,7 @@ fatal that names the question and the evidence that would close it.
 | `sceNetCtlCheckCallback(void)` | No arguments; returns `int`, by the Vita-era declaration. Runs the callbacks made due by a state change. | No public source describes the return value at all, only the declaration. | Implemented as 0, the one value both candidate contracts give while nothing is due: the runtime never leaves the disconnected state, so no callback runs. Which reading is the PS4's (a success code, or the number of callbacks it ran)? It only matters once a state change is possible. |
 | `sceNetCtlRegisterCallback(void *callback, void *arg, int *cid)` | A callback pointer, an argument pointer and an out-parameter `int *cid`, returning `int`. The guest's own call at `0x010b8352` passes a function in the image, `this`, and `lea -0x78(%rbp)`, a slot it never writes, then reads that slot back at `0x010b8428` into its object at `+0x130`. | Vita-era registration is keyed by a callback id the caller receives back (`func, arg, int *cid`); the guest's sites show the same shape on PS4. The two public Vita-era sources disagree about the callback's return type, so the pointer stays opaque and no signature is modelled for it - the guest's callback at `0x010b45e0` does show it being dispatched as (state, arg). | Implemented: each registration gets a fresh id written through the caller's pointer, numbered from 1 so an id can never look like an unwritten slot, and nothing is ever dispatched while offline. Open: the error values for a null callback or a null id slot, the table's capacity, and whether re-registering the same callback replaces or adds (we add, being keyed by id). |
 | `sceNetCtlUnregisterCallback(int cid)` | One `int`: the id a previous register call handed back. The guest passes the field it stored from that out-parameter (`0x010b8f8d`). | The Vita-era form takes the callback id `int cid`, which the sites match. | Implemented for an id we handed out: remove it and succeed. Fatal for an id we never handed out, or one already removed - no public source gives the PS4 answer and the guest's own paths never reach it. |
-| `sceNetCtlGetInfo(int module, void *info)` | Claimed as an `int` module id and a structure pointer, by the Vita-era `sceNetCtlInetGetInfo(int code, SceNetCtlInfo *info)`. | The Vita-era union's members and its size are another operating system's; nothing public describes the PS4 structure. | Not implemented: fatal before touching the buffer. The guest narrows the question - every site in the executable passes module id 14 (`0x00dfd2b1`, `0x020413ee`), each with a buffer in the second argument that it prints as a string on the success path, and no other id appears anywhere. Open: what id 14 means on PS4, its offline answer, and the structure's size and layout. The fatal names the id, so a boot run reports which ones the guest asks for. |
+| `sceNetCtlGetInfo(int code, void *info)` | Claimed as an `int` code and a structure pointer, by the Vita-era `sceNetCtlInetGetInfo(int code, SceNetCtlInfo *info)`; OpenOrbis `NetCtl.h` and shadPS4's `netctl.h` name code 14 `ORBIS_NET_CTL_INFO_IP_ADDRESS`. | shadPS4's `sceNetCtlGetInfo` answers `0x80412108` (not connected) for every code while the console is not connected, before writing anything. | Offline: code 14, the only code the executable asks for (`0x00dfd2b9`, `0x00dfd445`, each printing the buffer only on a non-negative answer), answers "not connected" and writes nothing. Other codes stop by name (a disconnected console may still describe its device or link; no source settles it), and so does a missing structure (PS4Recomp checks it first, shadPS4 the connection first). |
 | `sceNetCtlGetNatInfo(void *nat_info)` | `{ size, STUN status, NAT type, mapped address }`, four 32-bit fields, 16 bytes; "not connected" is `0x80412108` (PS4Recomp's `libSceNetCtl`, used as facts). | The guest writes 16 at offset 0 (`0x01889417`), reads back only offset 8, the NAT type, and only on 0 (`0x01889436`); on any other answer it takes NAT type 1 itself (`0x0188942d`). | Offline: answers "not connected" and writes nothing, so the guest's own fallback applies. A size other than 16 and a missing structure stop by name. |
 
 `0` is the success value, the convention public SCE-family documentation states for these calls (the
@@ -566,6 +566,50 @@ leave the timeout and that signal to the main thread.
 A local boot with the affinity probe and the rwlocks let through (not committed) reaches the
 `threads` milestone and stops next at `sceUserServiceInitialize`.
 
+## Joining, detaching, explicit scheduling and once (issue #34)
+
+**`scePthreadJoin(thread, void **value)`** and **`scePthreadDetach(thread)`** are FreeBSD libthr's
+`pthread_join` and `pthread_detach` ([`thr_join.c`](https://cgit.freebsd.org/src/tree/lib/libthr/thread/thr_join.c?h=stable/9),
+[`thr_detach.c`](https://cgit.freebsd.org/src/tree/lib/libthr/thread/thr_detach.c?h=stable/9);
+OpenOrbis `libkernel.h` shapes; shadPS4's `JoinThread` and `posix_pthread_detach` agree, facts
+only). The executable's join (`0x02a3b6c5`) tells `ESRCH`, `EDEADLK` and `EINVAL` apart. The other
+callers compare the answer with 0: `libc.elf` `+0x6130` and `+0x6174`, `libSceFios2` `+0x2ebde`,
+and the POSIX `pthread_join` (`libScePosix`) at `0x00838793` and `0x008387f3`.
+
+In libthr's order:
+- **join:** no thread is `EINVAL`; the calling thread itself `EDEADLK`; a thread the runtime does not
+  know, or one already collected, `ESRCH`; a detached thread `EINVAL`; a thread another thread waits
+  to join `ENOTSUP` (45). Otherwise it waits for the end, stores the exit value through a non-null
+  `value`, and collects the thread.
+- **detach:** no thread is `EINVAL`; an unknown or collected thread `ESRCH`; a detached thread, or
+  one a thread waits to join, `EINVAL`. A detached thread is collected when it ends.
+- **Stops by name:** a join or detach of the main thread, on which the runtime runs the boot.
+
+**POSIX names (`libScePosix`).** They return the error number itself:
+- `pthread_create(thread, attr, entry, argument)` is `scePthreadCreate` without a name. The
+  executable's job threads (`0x00466674`, `0x004666df`) pass a detached attribute with a stack size
+  and a priority.
+- `pthread_exit(value)` is `scePthreadExit` (one call, `0x004667e3`).
+- `pthread_attr_setschedparam` is `scePthreadAttrSetschedparam`. The job threads take their
+  priorities from a table of 256, 650, 700, 750 and 767 (`0x02fc5480`), inside the range the SCE
+  name accepts.
+
+**`scePthreadAttrSetinheritsched(attr, inherit)`** chooses between `PTHREAD_INHERIT_SCHED` (4,
+libthr's default: a new thread starts at its creator's priority) and `PTHREAD_EXPLICIT_SCHED` (0:
+it starts at the attribute's priority), FreeBSD `<pthread.h>`'s numbers. `libSceFios2`'s thread
+helper (`+0x2eaa2`) asks for explicit scheduling and then sets the priority. A variable without an
+attribute is `EINVAL`. Stops by name: another value (libthr's `ENOTSUP`, whose SCE value is not
+established, as for the policy), and explicit scheduling without a priority set (the attribute's
+default priority is not established).
+
+**`scePthreadOnce(once, init)`** runs `init` once per once variable (libthr
+[`thr_once.c`](https://cgit.freebsd.org/src/tree/lib/libthr/thread/thr_once.c?h=stable/9)). The
+variable's first `int` is its state: 0 never done (the static initializer), 1 done, 2 in progress,
+3 in progress with waiters. A caller that finds it in progress waits for the end; any other state
+is `EINVAL`. `libc.elf` calls it five times (`+0xad02`, `+0x1b292`, `+0x54ecb` and two tail calls)
+with a static variable and a routine. Nothing cancels a guest thread, so a routine always runs to
+its end.
+
 ## PlayGo (`libScePlayGo`)
 
 PlayGo lets a title start before all of its package is installed: the title asks which chunks of
@@ -773,9 +817,43 @@ and gyroscope are not forwarded, because the units and axes the system reports t
 established here (shadPS4 scales SDL's m/s² by 0.098 without a source); acceleration and angular
 velocity stay 0 and the orientation the identity. **Stops by name:** a second initialize, a call
 before initialize, another user, port type, index or open parameters, an unknown handle, a
-missing argument, and the other error values. `scePadResetOrientation`,
-`scePadSetAngularVelocityDeadbandState` and `scePadSetTiltCorrectionState` stay unbound until the
-boot reaches them.
+missing argument, and the other error values.
+
+**The motion settings (issue #36).** `scePadResetOrientation(handle)` (OpenOrbis `Pad.h`) makes
+the pad's present attitude the reference its orientation is reported from;
+`scePadSetAngularVelocityDeadbandState(handle, bool)` and `scePadSetTiltCorrectionState(handle,
+bool)` (named in `Pad.h` without a signature; shadPS4's `pad.cpp` declares `(int32_t handle,
+bool enable)`, used as a fact) switch the motion sensors' deadband and tilt correction. The
+executable calls each through a small wrapper (`0x02a9082e`, `0x02a90852`, `0x02a90882`) with its
+open handle, and a bool for the two settings, and counts 0 as success. Since motion is not
+modelled, a reset leaves the reported orientation the identity, neither setting changes a
+reading with no motion, and each call answers 0 (`test/syslib/pad_motion_settings.c`). An
+unknown handle and a setting other than 0 or 1 stop by name.
+
+## The mouse, not connected (`libSceMouse`, issue #36)
+
+The runtime has no host mouse, so it answers as a console with no mouse plugged in
+(`runtime/syslib/mouse.c`, tests in `test/syslib/mouse_not_connected.c`).
+
+**Sources.** shadPS4's `libSceMouse` (`mouse.h`, `mouse.cpp`, `mouse_error.h`; facts only) gives
+the shapes: `sceMouseInit(void)`, `sceMouseOpen(user, type, index, param)`, `sceMouseRead(handle,
+data, count)` answering how many records it wrote (1 to 64 asked for), `sceMouseClose(handle)`,
+the 40-byte record `{ uint64_t timestamp, bool connected, uint32_t buttons, int32_t x, y, wheel,
+tilt, 8 reserved }` and `0x80DF0004` for a mouse already open. With no mouse it answers one
+record, not connected, all zero. OpenOrbis `Mouse.h` only names the calls.
+
+**The executable's calls agree.** It loads the library's system module (`0x02a8bce1`), then calls
+Init (six sites, such as `0x02a8bcea`) and counts 0 as success. Two input objects each open the
+mouse with (the initial user, 0, 0, NULL) (`0x02a8bf75`, `0x02a8c465`), keep the answer as their
+handle only when it is above 0, and close a handle above 0 before opening again. Read
+(`0x02a8c07f`, `0x02a8c56f`) asks for one record into the 40 bytes the object clears: below 0 is a
+failure, and a record that is not connected ends the poll.
+
+**What the runtime does.** Init answers 0 every time, as shadPS4 does. Open gives handle 1 (the
+runtime's choice; the title keeps only handles above 0) and `0x80DF0004` while it is open. Read
+writes one all-zero record (not connected) and answers 1. Close frees the handle. **Stops by
+name:** a call before Init, another user, type, index or open parameters, an unknown handle, a
+count outside 1 to 64, and a missing record.
 
 ## The common dialog's initialize (`libSceCommonDialog`, issue #40)
 
@@ -825,8 +903,9 @@ person running it chose:
 ## PSN offline: sign-in state, callbacks and matchmaking start-up
 
 The runtime is offline: the one user is signed out of PSN for the whole run, and nothing about
-that ever changes. The facts come from shadPS4's `libSceNpManager` and `libSceNpMatching2`
-(`np_manager.h`, `np_manager.cpp`, `np_types.h`, `np_types2.h`, `np_common.cpp`, `np_error.h`), checked against two other Bloodborne ports and PS4Recomp's `libSceNp` (`ps4_np.c`), which answer the same for a signed-out user. The code is the
+that ever changes. The facts come from shadPS4's `libSceNpManager`, `libSceNpMatching2` and `libSceNpAuth`
+(`np_manager.h`, `np_manager.cpp`, `np_types.h`, `np_types2.h`, `np_common.cpp`, `np_error.h`,
+`np_auth/np_auth.cpp`, `np_auth/np_auth.h`), checked against two other Bloodborne ports and PS4Recomp's `libSceNp` (`ps4_np.c`), which answer the same for a signed-out user. The code is the
 runtime's own.
 
 | Call | Runtime |
@@ -844,6 +923,9 @@ runtime's own.
 | `sceNpCheckNpAvailability(id, const online id *, reserved)`, `sceNpCheckPlus(id, const parameter *, result *)`, `sceNpGetParentalControlInfo(id, const online id *, int8_t *age, info *)` | the check completes at once: the call answers 0 and the request's result is `0x80550006` (signed out); nothing is written. A request id of 0 or a missing argument `0x80550003`, an id that is no request `0x80550014`, an aborted request `0x80550012`, a second check on one request `0x80550003`. `sceNpCheckPlus`'s 0x38-byte block `{size, user, padding, features, 32 reserved}`: another size `0x80550011`; features outside 1–3, a non-zero reserved byte or the invalid user `0x80550003`; another user stops by name. A third argument to the availability check other than the observed 0 stops by name. |
 | `sceNpPollAsync(id, int32_t *result)` | 0 with the result once the check ran (always at once offline); no variable `0x80550003`, an id that is no request `0x80550014`, a request that ran no check `0x80550015`. The caller (`0x022767b5`) reads 0 as done, 1 as still running. A request aborted before its check stops by name. |
 | `sceNpAbortRequest(id)`, `sceNpDeleteRequest(id)` | 0, or `0x80550014` for an id that is no request. Abort marks an unchecked request aborted and leaves a checked one alone; delete frees the id. |
+| `sceNpAuthCreateAsyncRequest(const parameter *)` (`libSceNpAuth`) | a request id from `0x10000001`, at most 16 in use (`0x80550305`), a deleted one's id reused. The block is 0x18 bytes `{size, CPU affinity mask, thread priority}`: no block `0x80550301`, another size `0x80550302`. The caller (`0x02275de5`) passes 0x18, `0x3f`, 700. |
+| `sceNpAuthGetAuthorizationCode(id, const parameter *, code *, int32_t *issuer)` | `0x80550007` (user not found), writing nothing: the library looks up the user the online id belongs to, which cannot succeed signed out (shadPS4's note: a title cannot even obtain an online id then). The 0x20-byte block `{size, online id *, client id *, scope}` (caller `0x02276028`): no block or code variable, or a missing online id, client id or scope `0x80550301`; another size `0x80550302`. The request is not started. PS4Recomp answers `0x80550006` (signed out) here instead; the caller discards this answer either way and learns the outcome by polling. |
+| `sceNpAuthPollAsync(id, int32_t *result)`, `sceNpAuthDeleteRequest(id)` | Poll: no variable or an id of 0 or below `0x80550301`, an id that is no request `0x80550306`, and otherwise `0x80550307` (invalid id): offline no request is ever started, so none has a result. Delete frees the id: 0, `0x80550301` or `0x80550306` as for poll. Callers `0x022752ca` (only an id above 0; a negative answer is its failure state, 1 still running, 0 done) and `0x02276f43`. |
 | `sceNpCmpOnlineId(a, b)`, `sceNpCmpNpId(a, b)` (`libSceNpCommon`) | 0 for the same identity, `0x80550609` (no match) otherwise, `0x80550003` for a missing one. Online ids compare their 16 characters as `strncmp` does; NP ids then compare their 8 option and 8 reserved bytes. Callers `0x010a28d1` and `0x010b4676`. |
 | `sceNpMatching2Initialize(const parameter *)` | the 0x30-byte block carries its own size at `0x20`, and 0x30 or the older 0x28 is accepted. Anything else, or no block, answers `0x80550C0A`; a second initialize answers `0x80550C02`. The caller (`0x010ba2d0`) treats a negative answer as failure. |
 | `sceNpMatching2Terminate()` | 0, or `0x80550C03` before initialize |
@@ -1387,11 +1469,13 @@ are the runtime's own files, not a console's `param.sfo`.
 | `sceSaveDataDirNameSearch(condition, result)` | the user's saves (folders with `sce_sys/param.bin`, not `sce_*`), matched by an SQL-LIKE pattern without regard to case (`%`, `_`), sorted by name, user param or time (blocks are alike here), ascending or descending; a key above 5 or an order above 1 `0x809F0000` |
 | `sceSaveDataSetupSaveDataMemory(user, size, param)` | creates or grows `memory.dat` to the size (never shrinks it); size 0 `0x809F0000` |
 | `sceSaveDataGet/SetSaveDataMemory(user, buffer, size, offset)` | reads or writes at the offset; before setup `0x809F0012`; no buffer or a negative offset `0x809F0000` |
+| `sceSaveDataDelete(request)` | the 64-byte request { user, padding, title id, directory name, unused, reserved }; removes the save's folder and everything in it, 0. Mounted `0x809F0003`; no request, no name or a bad name `0x809F0000`; user below 0 `0x809F0011`. The executable's one caller (`0x02c3e765`) passes no title id and asks again while the answer is `0x809F0014` |
 
 **Stops by name** (not modelled): another title's saves (a title id), the free-space check and its
 required-blocks answer, the backup copy and its "corrupted" marker, sort key 4, and a memory read
-or write past the size set up. `sceSaveDataDelete` and the save data dialog stay unbound until the
-boot reaches them.
+or write past the size set up, a delete of a save that is not there (shadPS4 answers 0 then, which
+is not established for the console), and a host failure to remove a save. The save data dialog
+stays unbound until the boot reaches it.
 
 ## The title's files: `/app0`, `sceKernelStat`, opening and reading (issue #35)
 
@@ -1432,6 +1516,43 @@ and modification times and the size on 0, and treats any other answer as no file
 is imported by `eboot`, `libc` and `libSceFios2`. Each guest thread runs on its own host thread,
 so a thread-local `int` is that thread's `errno`; it starts at 0, and success leaves it alone.
 
+### Truncating by name, and the POSIX mkdir, rmdir and rename
+
+`sceKernelTruncate(path, length)` (imported by `eboot` and `libSceFios2`) is FreeBSD's
+[`truncate(2)`](https://man.freebsd.org/cgi/man.cgi?query=truncate&sektion=2&manpath=FreeBSD+9.0-RELEASE)
+under its SCE name: 0, or `0x80020000` plus the error number. The shape is OpenOrbis
+`libkernel.h`'s; the executable's wrapper (`0x024733a4`) passes a 64-bit length and turns each
+`0x8002xxxx` answer into an engine error through a table (`0x02473530`). `eboot` also imports
+[`mkdir`](https://man.freebsd.org/cgi/man.cgi?query=mkdir&sektion=2&manpath=FreeBSD+9.0-RELEASE),
+[`rmdir`](https://man.freebsd.org/cgi/man.cgi?query=rmdir&sektion=2&manpath=FreeBSD+9.0-RELEASE) and
+[`rename`](https://man.freebsd.org/cgi/man.cgi?query=rename&sektion=2&manpath=FreeBSD+9.0-RELEASE)
+from `libScePosix`: 0, or -1 with `errno` set. The executable's calls (`0x00df0bf4`, `0x00e03e68`,
+`0x00e03ddb` and others) ignore the answer or only compare it with 0. (`sceKernelRename` and
+`sceKernelFtruncate` are under "Opening and reading".)
+
+**What the runtime does:**
+- **Paths** resolve as for opening: `/data`, the mounted save data, and `/app0`.
+- **Errors** are FreeBSD's numbers, never the host's: `ENOENT`, `ENOTDIR`, `EEXIST`, `EISDIR`,
+  `EINVAL` and `ENOTEMPTY` (66 on FreeBSD, 39 on Linux).
+- **`rmdir`** of a mount's own root is `EBUSY` (the man page's "mount point for a mounted file
+  system").
+- **`rename`** across mounts is `EXDEV`, after the source and the target's folder are looked up,
+  in FreeBSD's order (stable/9
+  [`vfs_syscalls.c`](https://cgit.freebsd.org/src/tree/sys/kern/vfs_syscalls.c?h=stable/9),
+  `kern_renameat`). A directory over a non-empty one is `ENOTEMPTY`.
+- **`truncate`** with a negative length is `EINVAL` before the lookup (`kern_truncate`; Linux checks
+  it first too); a directory is `EISDIR`. Growing a file fills with zero bytes.
+- **A new directory's mode** is `mode & 0777` less the host's umask. The PS4 process's umask is
+  not established.
+
+**What stops by name:**
+- no path;
+- any change under a read-only mount (`/app0`, save data mounted to read). FreeBSD answers
+  `EROFS`, but only after lookups whose order the runtime does not model for each call, and the
+  title's callers change only `/data` and its saves;
+- renaming a mount's root;
+- any other host error (`EACCES`, `ENOSPC`, `EIO` and the rest).
+
 ### Opening and reading
 
 `sceKernelOpen`, `sceKernelRead`, `sceKernelPread`, `sceKernelLseek`, `sceKernelFstat` and
@@ -1463,6 +1584,21 @@ hand out is `EBADF`. Any other host error stops by name.
 existing `to` as `rename(2)` does. Paths on two different mounts are `EXDEV` (`rename(2)`: "on
 different logical devices"); on the read-only `/app0` `EROFS`, after the lookup; a missing file or
 directory component `ENOENT` or `ENOTDIR`. Any other host error stops by name.
+
+## The disc map (`sceDiscMapIsRequestOnHDD`, issue #35)
+
+The disc map tells the file library whether part of a file is already on the hard disk or still
+only on the disc (`runtime/syslib/disc_map.c`).
+
+- **Shape:** `sceDiscMapIsRequestOnHDD(const char *path, int64_t offset, int64_t bytes, int32_t
+  *on_hdd)`, as shadPS4's `disc_map.cpp` declares it (a fact only).
+- **The caller:** the bundled file library's one call (`libSceFios2.elf+0x2d71c`) passes a
+  variable preset to 0. On 0 it takes a nonzero variable as on the hard disk; on any other answer
+  it treats the request as not mapped and remembers that the map is unavailable.
+- **The answer:** the runtime serves the title from host files with no disc, so there is no disc
+  bitmap. It answers `0x81100004` ("no bitmap info", numbered in shadPS4's `disc_map_codes.h`),
+  as shadPS4 does, and writes nothing. A missing path or variable stops by name.
+- The library's other import, by hash `ioKMruft1ek`, has no call site and stays unbound.
 
 ## Memory protection queries (`sceKernelQueryMemoryProtection`, issue #34)
 
