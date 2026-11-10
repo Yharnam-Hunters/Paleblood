@@ -29,7 +29,7 @@ HOOK_HEADER = ['address', 'replacement', 'system', 'returns']
 RETURN_CLASSES = {'void': {'void'}, 'i8': {'bool', 'int8_t', 'uint8_t', 'char'},
                   'i32': {'int', 'unsigned', 'int32_t', 'uint32_t'},
                   'i64': {'int64_t', 'uint64_t', 'size_t', 'intptr_t', 'uintptr_t', 'pointer'},
-                  'f32': {'float'}, 'f64': {'double'}}
+                  'i128': {'__int128', 'unsigned __int128'}, 'f32': {'float'}, 'f64': {'double'}}
 MAX_NOTE = 200
 
 

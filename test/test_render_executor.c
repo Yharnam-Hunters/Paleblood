@@ -176,6 +176,24 @@ static void sampled_images(rt_executor *x)
         }
     }
 
+    /* A mip-mapped image (LAST_LEVEL 2, linear): its levels follow level 0 as rt_tiling_mip_chain lays
+       them out, and a draw sampling at level 0 sees level 0's texels; with level 0 changed it does not */
+    {
+        enum { MIPPED = 0x900000 };
+        rt_tiling_level chain[3];
+        CHECK(rt_tiling_mip_chain(LINEAR_ALIGNED, 4, 1, 0, WIDTH, HEIGHT, WIDTH, HEIGHT, 3, 1, chain, error, sizeof error) == 0);
+        for (uint32_t i = 0; i < WIDTH * HEIGHT; i++) ((uint32_t *)(guest + MIPPED))[i] = reference_texel(i % WIDTH % SIZE, i / WIDTH % SIZE);
+        memset(guest + MIPPED + chain[1].offset, 0x55, chain[2].offset - chain[1].offset + WIDTH * HEIGHT); /* other levels: grey */
+        uint32_t mipped[8];
+        image_descriptor(mipped, at(MIPPED), 10, 0, WIDTH, HEIGHT);
+        mipped[3] |= LINEAR_ALIGNED << 20 | 2u << 16; /* LAST_LEVEL 2 */
+        const int mip_drawn = draw_texels(x, at(TEXEL_TARGET), mipped, error, sizeof error);
+        if (mip_drawn) fprintf(stderr, "mip-mapped image: %s\n", error);
+        CHECK(mip_drawn == 0 && differing_pixels(x, at(TEXEL_TARGET)) == 0);
+        memset(guest + MIPPED, 0x55, WIDTH * HEIGHT * 4); /* mutant: level 0 grey too */
+        CHECK(draw_texels(x, at(TEXEL_TARGET), mipped, error, sizeof error) == 0 && differing_pixels(x, at(TEXEL_TARGET)) > 0);
+    }
+
     /* the guest rewrites the texels: the next draw reads the new ones */
     for (uint32_t i = 0; i < WIDTH * HEIGHT; i++) ((uint32_t *)(guest + LINEAR))[i] = reference_texel(i % WIDTH % SIZE, i / WIDTH % SIZE);
     CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
@@ -245,8 +263,9 @@ static void sampled_images(rt_executor *x)
    the CPU's texels): a ramp (i + 0.5) / 4, its inverse 1 - (i + 0.5) / 4, and 0.25. Bilinear filtering
    with clamping to the last texel gives the ramp's own coordinate between texel centres (1/8 to 7/8)
    and the end texels' values outside; so does MAX_ANISO_RATIO 4 with bilinear filters. Mutants: point
-   filtering and wrapping differ; a sampler with unequal filters, a border clamp, anisotropic filters
-   or a depth compare stops by name. */
+   filtering and wrapping differ; with point minification and bilinear magnification the lookup is
+   magnified (a texel spans four pixels), so it is the bilinear one; a border clamp, anisotropic
+   filters or a depth compare stops by name. */
 static int lookup_misses(rt_executor *x, uint64_t target)
 {
     uint32_t bgra[SIZE * SIZE];
@@ -262,6 +281,50 @@ static int lookup_misses(rt_executor *x, uint64_t target)
             misses += !(near(p >> 16 & 0xff, r) && near(p >> 8 & 0xff, g) && near(p & 0xff, 0.25f) && (p >> 24) == 0xff);
         }
     return misses;
+}
+
+/* Sampling picks the level the derivatives give (pixel_minified): a 64x64 image with three levels, red,
+   green and blue, sampled at (x / 16, y / 16) over 16x16 pixels spans 4 texels a pixel, level 2:
+   blue with a point or linear mip filter, red (level 0) with none. */
+static void sampled_levels(rt_executor *x)
+{
+    enum { MIPPED = 0x8d0000, LEVELS_TARGET = 0x8e0000, LEVELS_CODE = 0x3400, LEVELS_BUFFER = 0xc0f30000, EDGE = 64, LEVELS = 3,
+           LINEAR_ALIGNED = 8, MIP_POINT = 1, MIP_LINEAR = 2 };
+    static const uint32_t colours[LEVELS] = {0xff0000ffu, 0xff00ff00u, 0xffff0000u}; /* red, green, blue (bytes R, G, B, A) */
+    char error[256] = "";
+    uint8_t *guest = (uint8_t *)(uintptr_t)at(0);
+    rt_tiling_level chain[LEVELS];
+    CHECK(rt_tiling_mip_chain(LINEAR_ALIGNED, 4, 1, 0, EDGE, EDGE, EDGE, EDGE, LEVELS, 1, chain, error, sizeof error) == 0);
+    for (unsigned m = 0; m < LEVELS; m++) {
+        const uint32_t texels = chain[m].layout.pitch * chain[m].layout.height;
+        for (uint32_t i = 0; i < texels; i++) ((uint32_t *)(guest + MIPPED + chain[m].offset))[i] = colours[m];
+    }
+    memcpy((void *)(uintptr_t)at(LEVELS_CODE), pixel_minified, sizeof pixel_minified);
+    for (unsigned mip = 0; mip <= MIP_LINEAR; mip++) {
+        uint32_t user[16] = {0};
+        image_descriptor(user + 4, at(MIPPED), 10, 0, EDGE, EDGE);
+        user[7] |= LINEAR_ALIGNED << 20 | (LEVELS - 1) << 16;
+        user[12] = 0x2 | 0x2 << 3 | 0x2 << 6, user[13] = 15u * 256 << 12, user[14] = mip << 26; /* clamped, MAX_LOD 15, point filters */
+        rt_render_forget(), rt_executor_reset(x);
+        uint32_t offset = record_setup(LEVELS_BUFFER, at(LEVELS_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        const uint64_t code = at(LEVELS_CODE);
+        const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 16 << 1, 0, 0x4, 0x302, 0x302,
+                                                       0, 0, 0, 0xf};
+        CHECK(rt_render_record_pixel_shader(LEVELS_BUFFER, offset, pixel, error, sizeof error) == 0);
+        CHECK(rt_render_record_user_data(LEVELS_BUFFER, offset + 0x10, RT_STAGE_PIXEL, 0, user, 8, error, sizeof error) == 0);
+        CHECK(rt_render_record_user_data(LEVELS_BUFFER, offset + 0x20, RT_STAGE_PIXEL, 8, user + 8, 8, error, sizeof error) == 0);
+        const int drawn = rt_executor_run(x, LEVELS_BUFFER, record_triangle_draw(LEVELS_BUFFER, offset + 0x30), error, sizeof error);
+        if (drawn) fprintf(stderr, "sampled levels: %s\n", error);
+        CHECK(drawn == 0);
+        uint32_t bgra[SIZE * SIZE];
+        CHECK(rt_executor_read_target(x, at(LEVELS_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+        const uint32_t expected = mip == 0 ? 0xffff0000u : 0xff0000ffu; /* BGRA words: red, or blue */
+        int covered = 0, right = 1;
+        for (int i = 0; i < SIZE * SIZE; i++)
+            if (bgra[i]) covered++, right &= bgra[i] == expected; /* the triangle's pixels */
+        if (!right) fprintf(stderr, "sampled levels, mip filter %u: a pixel %08x\n", mip, bgra[SIZE * SIZE / 2]);
+        CHECK(covered > 0 && right);
+    }
 }
 
 static void sampled_lookup(rt_executor *x)
@@ -319,7 +382,7 @@ static void sampled_lookup(rt_executor *x)
             CHECK(misses == 0);
         }
         if (k == 1 || k == 2) CHECK(lookup_misses(x, at(LOOKUP_TARGET)) > 0);
-        if (k == 3) CHECK(drawn == -1 && strstr(error, "filters 1 (magnifying) and 0"));
+        if (k == 3) CHECK(drawn == 0 && lookup_misses(x, at(LOOKUP_TARGET)) == 0); /* magnified: the bilinear filter */
         if (k == 4) CHECK(drawn == -1 && strstr(error, "clamp mode 6"));
         if (k == 6) CHECK(drawn == -1 && strstr(error, "filters 2 (magnifying)"));
         if (k == 7) CHECK(drawn == -1 && strstr(error, "depth compares"));
@@ -510,11 +573,86 @@ static void depth_and_strips(rt_executor *x)
                                      {0xa016, 0}, {0xa017, 0}, {0xa002, 0}, {0xa200, 0x2 | 0x4 | 0x7u << 4}};
         CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), small, 10, 3, error, sizeof error) == -1 && strstr(error, "smaller"));
     }
+    /* Slices of an array depth target (DB_DEPTH_VIEW SLICE_START = SLICE_MAX): a draw into slice 1
+       writes slice 1 only: LESS on slice 1 then draws nothing, a test reading slice 0 meets a slice no
+       draw wrote; a view of two slices stops by name. */
+    {
+        enum { SLICED = 0x1740000, SLICE_COLOUR = 0x1780000, SLICE_ONE = 1u | 1u << 13, SLICES_ZERO_ONE = 0u | 1u << 13 };
+        const uint32_t sz2 = (uint32_t)(at(SLICED) >> 8), sst2 = (uint32_t)(at(SLICED + 0x2000) >> 8);
+#define SLICED_TARGET(view) {0xa010, 0xa0000003}, {0xa011, 0x20000001}, {0xa012, sz2}, {0xa013, sst2}, {0xa014, sz2}, {0xa015, sst2}, \
+                            {0xa016, depth_size}, {0xa017, 0}, {0xa002, view}
+        const uint32_t write_one[][2] = {SLICED_TARGET(SLICE_ONE), {0xa200, 0x2 | 0x4 | 0x7u << 4}};
+        drawn = run_counted(x, DEPTH_BUFFER, at(SLICE_COLOUR), write_one, 10, 3, error, sizeof error);
+        if (drawn) fprintf(stderr, "depth slice 1: %s\n", error);
+        CHECK(drawn == 0);
+        check_triangle(x, at(SLICE_COLOUR));
+        const uint32_t less_one[][2] = {SLICED_TARGET(SLICE_ONE), {0xa200, 0x2 | 0x1u << 4}};
+        CHECK(run_counted(x, DEPTH_BUFFER, at(SLICE_COLOUR), less_one, 10, 3, error, sizeof error) == 0);
+        const uint32_t less_zero[][2] = {SLICED_TARGET(0), {0xa200, 0x2 | 0x1u << 4}};
+        CHECK(run_counted(x, DEPTH_BUFFER, at(SLICE_COLOUR), less_zero, 10, 3, error, sizeof error) == -1 &&
+              strstr(error, "no draw has written"));
+        const uint32_t two_slices[][2] = {SLICED_TARGET(SLICES_ZERO_ONE), {0xa200, 0x2 | 0x4 | 0x7u << 4}};
+        CHECK(run_counted(x, DEPTH_BUFFER, at(SLICE_COLOUR), two_slices, 10, 3, error, sizeof error) == -1 &&
+              strstr(error, "more than one slice"));
+#undef SLICED_TARGET
+    }
+    /* A depth-only pass (no pixel shader, target mask 0, depth always with writes) into a fresh depth
+       target leaves the triangle's depth: LESS on the same triangle then draws nothing, LESS_EQUAL the
+       triangle. */
+    {
+        enum { DEPTH_ONLY_Z = 0x1640000, ONLY_LESS = 0x1680000, ONLY_LESS_EQUAL = 0x16c0000, NO_TARGET = 0x1700000 };
+        const uint32_t oz = (uint32_t)(at(DEPTH_ONLY_Z) >> 8), ost = (uint32_t)(at(DEPTH_ONLY_Z + 0x2000) >> 8);
+#define DEPTH_ONLY_TARGET {0xa010, 0xa0000003}, {0xa011, 0x20000001}, {0xa012, oz}, {0xa013, ost}, {0xa014, oz}, {0xa015, ost}, \
+                          {0xa016, depth_size}, {0xa017, 0}, {0xa002, 0}
+        const uint32_t prepass[][2] = {DEPTH_ONLY_TARGET, {0xa08e, 0}, {0xa200, 0x2 | 0x4 | 0x7u << 4}};
+        rt_render_forget(), rt_executor_reset(x);
+        uint32_t at_offset = record_setup(DEPTH_BUFFER, at(NO_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        static const uint32_t no_pixel_shader[RT_PIXEL_SHADER_WORDS];
+        CHECK(rt_render_record_pixel_shader_at(DEPTH_BUFFER + at_offset, no_pixel_shader) == 0);
+        at_offset += 0x10;
+        for (int i = 0; i < 11; i++, at_offset += 0x10)
+            CHECK(rt_render_record_register(DEPTH_BUFFER, at_offset, prepass[i][0], prepass[i][1], error, sizeof error) == 0);
+        CHECK(rt_render_record_draw_auto(DEPTH_BUFFER, at_offset, 3, error, sizeof error) == 0);
+        /* the colour draws after it, in the same run: the pixel shader placed again by record_setup's state */
+        const int prepassed = rt_executor_run(x, DEPTH_BUFFER, at_offset + 0x10, error, sizeof error);
+        if (prepassed) fprintf(stderr, "depth-only pass: %s\n", error);
+        CHECK(prepassed == 0);
+        CHECK(rt_executor_read_target(x, at(NO_TARGET), bgra, 2, 2, error, sizeof error) == -1 && strstr(error, "no draw"));
+        const uint32_t only_less[][2] = {DEPTH_ONLY_TARGET, {0xa200, 0x2 | 0x1u << 4}};
+        const uint32_t only_less_equal[][2] = {DEPTH_ONLY_TARGET, {0xa200, 0x2 | 0x3u << 4}};
+        /* run_counted resets the record but not the executor's depth targets: they keep what the pass wrote */
+        CHECK(run_counted(x, DEPTH_BUFFER, at(ONLY_LESS), only_less, 10, 3, error, sizeof error) == 0);
+        CHECK(nothing_drawn(x, at(ONLY_LESS)));
+        drawn = run_counted(x, DEPTH_BUFFER, at(ONLY_LESS_EQUAL), only_less_equal, 10, 3, error, sizeof error);
+        if (drawn) fprintf(stderr, "after the depth-only pass: %s\n", error);
+        CHECK(drawn == 0);
+        check_triangle(x, at(ONLY_LESS_EQUAL));
+#undef DEPTH_ONLY_TARGET
+    }
     /* a test reading a depth target no draw has written stops by name: its memory is never loaded */
     const uint32_t uz = (uint32_t)(at(UNWRITTEN) >> 8), ust = (uint32_t)(at(UNWRITTEN + 0x2000) >> 8);
     const uint32_t unwritten[][2] = {{0xa010, 0xa0000003}, {0xa011, 0x20000001}, {0xa012, uz}, {0xa013, ust}, {0xa014, uz}, {0xa015, ust},
                                      {0xa016, depth_size}, {0xa017, 0}, {0xa002, 0}, {0xa200, 0x2 | 0x1u << 4}};
     CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), unwritten, 10, 3, error, sizeof error) == -1 && strstr(error, "no draw has written"));
+    /* replace with STENCILOPVAL (operation 4) on pass, the test always: the stencil under the triangle
+       becomes 0x7f though STENCILTESTVAL is 0x01, so EQUAL 0x7f draws the triangle and EQUAL 0x01
+       nothing; with an EQUAL test on 0x01 beside it, it stops by name */
+    {
+        enum { OP_REPLACED = 0x17c0000, OP_MISSED = 0x1800000 };
+        const uint32_t replace_op[][2] = {DEPTH_TARGET, {0xa08e, 0}, {0xa10c, 0x7fffff01}, {0xa10b, 0x40}, {0xa200, 0x1 | 0x7u << 8}};
+        drawn = run_counted(x, DEPTH_BUFFER, at(STENCIL_ONLY), replace_op, 13, 3, error, sizeof error);
+        if (drawn) fprintf(stderr, "stencil replace with STENCILOPVAL: %s\n", error);
+        CHECK(drawn == 0);
+        const uint32_t equal_op_value[][2] = {DEPTH_TARGET, {0xa10c, 0xffff7f}, {0xa10b, 0}, {0xa200, 0x1 | 0x2u << 8}};
+        CHECK(run_counted(x, DEPTH_BUFFER, at(OP_REPLACED), equal_op_value, 12, 3, error, sizeof error) == 0);
+        check_triangle(x, at(OP_REPLACED));
+        const uint32_t equal_test_value[][2] = {DEPTH_TARGET, {0xa10c, 0xffff01}, {0xa10b, 0}, {0xa200, 0x1 | 0x2u << 8}};
+        CHECK(run_counted(x, DEPTH_BUFFER, at(OP_MISSED), equal_test_value, 12, 3, error, sizeof error) == 0);
+        CHECK(nothing_drawn(x, at(OP_MISSED)));
+        const uint32_t conflicting[][2] = {DEPTH_TARGET, {0xa08e, 0}, {0xa10c, 0x7fffff01}, {0xa10b, 0x40}, {0xa200, 0x1 | 0x2u << 8}};
+        CHECK(run_counted(x, DEPTH_BUFFER, at(STENCIL_ONLY), conflicting, 13, 3, error, sizeof error) == -1 &&
+              strstr(error, "replace with STENCILOPVAL 127"));
+    }
     const uint32_t incremented[][2] = {DEPTH_TARGET, {0xa10c, 0xff0000}, {0xa10b, 0x50}, {0xa200, 0x1 | 0x7u << 8}};
     CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), incremented, 12, 3, error, sizeof error) == -1 && strstr(error, "stencil operation 5"));
     const uint32_t bounds[][2] = {DEPTH_TARGET, {0xa200, 0x8}};
@@ -963,14 +1101,14 @@ int main(void)
         memcpy(corners, saved_corners, sizeof saved_corners);
         memcpy(colors, saved_colors, sizeof saved_colors);
     }
-    /* No pixel shader (a depth-only pass, placed as the runtime's sceGnmSetPsShader places it): a
-       draw with it stops by name. */
+    /* No pixel shader (placed as the runtime's sceGnmSetPsShader places it) with the colour target
+       written: stops by name (a depth-only pass writes no colour target; depth_and_strips draws one). */
     rt_render_forget(), rt_executor_reset(x);
     uint32_t offset = record_setup(FOURTH, at(TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
     static const uint32_t no_pixel_shader[RT_PIXEL_SHADER_WORDS];
     CHECK(rt_render_record_pixel_shader_at(FOURTH + offset, no_pixel_shader) == 0);
     CHECK(rt_executor_run(x, FOURTH, record_triangle_draw(FOURTH, offset + 0x10), error, sizeof error) == -1 &&
-          strstr(error, "no pixel shader"));
+          strstr(error, "no pixel shader that writes a colour target"));
 
     /* A compute dispatch (scale_add: out[i] = in[i] * 2.5 + 1, one workgroup of 64) through the record:
        the shader placed as sceGnmSetCsShader places it, its user data the two buffer descriptors;
@@ -1162,6 +1300,7 @@ int main(void)
 
     sampled_images(x);
     sampled_lookup(x);
+    sampled_levels(x);
     fetch_shader(x);
     unset_user_data(x);
     target_read_in_buffer(x);
