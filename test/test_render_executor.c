@@ -315,6 +315,17 @@ static int run_counted(rt_executor *x, uint64_t buffer, uint64_t target, const u
     return rt_executor_run(x, buffer, offset + 0x10, error, error_size);
 }
 
+/* Whether a target that was drawn into holds no pixel at all (every fragment failed its test). */
+static int nothing_drawn(rt_executor *x, uint64_t target)
+{
+    uint32_t bgra[SIZE * SIZE];
+    char error[160] = "";
+    if (rt_executor_read_target(x, target, bgra, SIZE, SIZE, error, sizeof error)) return 0;
+    for (int i = 0; i < SIZE * SIZE; i++)
+        if (bgra[i]) return 0;
+    return 1;
+}
+
 /* Depth and stencil without a depth buffer, and triangle strips:
    - with the depth target switched off (DB_Z_INFO and DB_STENCIL_INFO 0, as the library's setter
      writes for no target), depth and stencil tests draw as if off; Z_WRITE_ENABLE alone writes nothing
@@ -341,7 +352,10 @@ static void depth_and_strips(rt_executor *x)
          writes only the depth target: drawn, no colour target made;
        - the triangle with the depth test always passing and depth writes, into the colour target too,
          draws the reference image;
-       - a test that reads the buffer (stencil EQUAL, depth LESS), another stencil operation, depth bounds,
+       - tests that read the buffer (depth LESS and LESS_EQUAL, stencil EQUAL) compare with what earlier
+         draws wrote; add-and-wrap steps by 1; one reading a depth target no draw wrote, an add stepping
+         by another STENCILOPVAL, a depth target smaller than the colour target (a larger one draws),
+         another stencil operation, depth bounds,
          DB_RENDER_CONTROL's clears, or a missing DB_STENCILREFMASK stop by name. */
     enum { DEPTH = 0xb40000, DEPTH_COLOUR = 0xb80000, STENCIL_ONLY = 0xbc0000 };
     const uint32_t depth_size = (SIZE / 8 - 1) | (SIZE / 8 - 1) << 11, z = (uint32_t)(at(DEPTH) >> 8), st = (uint32_t)(at(DEPTH + 0x2000) >> 8);
@@ -357,10 +371,62 @@ static void depth_and_strips(rt_executor *x)
     if (drawn) fprintf(stderr, "depth always: %s\n", error);
     CHECK(drawn == 0);
     check_triangle(x, at(DEPTH_COLOUR));
-    const uint32_t stencil_equal[][2] = {DEPTH_TARGET, {0xa10c, 0xff0000}, {0xa10b, 0x30030}, {0xa200, 0x1 | 0x2u << 8}};
-    CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), stencil_equal, 12, 3, error, sizeof error) == -1 && strstr(error, "reading the stencil"));
+    /* Tests that read the buffer, after draws wrote it: the depth-always draw left the triangle's depth,
+       so LESS on the same triangle passes nowhere and LESS_EQUAL everywhere it covers. A stencil pass
+       writing 0x7f under the triangle (test value 0x7f, masks 0xff, replace on pass; colour masked
+       off), then stencil EQUAL 0x7f draws the triangle; EQUAL 0x01 draws nothing. */
+    enum { LESS = 0x1400000, LESS_EQUAL = 0x1440000, EQUAL_HIT = 0x1480000, EQUAL_MISS = 0x14c0000, UNWRITTEN = 0x1500000 };
     const uint32_t depth_less[][2] = {DEPTH_TARGET, {0xa200, 0x2 | 0x1u << 4}};
-    CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), depth_less, 10, 3, error, sizeof error) == -1 && strstr(error, "reading the depth"));
+    CHECK(run_counted(x, DEPTH_BUFFER, at(LESS), depth_less, 10, 3, error, sizeof error) == 0);
+    CHECK(nothing_drawn(x, at(LESS)));
+    const uint32_t depth_less_equal[][2] = {DEPTH_TARGET, {0xa200, 0x2 | 0x3u << 4}};
+    drawn = run_counted(x, DEPTH_BUFFER, at(LESS_EQUAL), depth_less_equal, 10, 3, error, sizeof error);
+    if (drawn) fprintf(stderr, "depth less or equal: %s\n", error);
+    CHECK(drawn == 0);
+    check_triangle(x, at(LESS_EQUAL));
+    const uint32_t mark[][2] = {DEPTH_TARGET, {0xa08e, 0}, {0xa10c, 0xffff7f}, {0xa10b, 0x30030}, {0xa200, 0x1 | 0x7u << 8}};
+    CHECK(run_counted(x, DEPTH_BUFFER, at(STENCIL_ONLY), mark, 13, 3, error, sizeof error) == 0);
+    const uint32_t stencil_equal[][2] = {DEPTH_TARGET, {0xa10c, 0xffff7f}, {0xa10b, 0}, {0xa200, 0x1 | 0x2u << 8}};
+    drawn = run_counted(x, DEPTH_BUFFER, at(EQUAL_HIT), stencil_equal, 12, 3, error, sizeof error);
+    if (drawn) fprintf(stderr, "stencil equal: %s\n", error);
+    CHECK(drawn == 0);
+    check_triangle(x, at(EQUAL_HIT));
+    const uint32_t stencil_other[][2] = {DEPTH_TARGET, {0xa10c, 0xffff01}, {0xa10b, 0}, {0xa200, 0x1 | 0x2u << 8}};
+    CHECK(run_counted(x, DEPTH_BUFFER, at(EQUAL_MISS), stencil_other, 12, 3, error, sizeof error) == 0);
+    CHECK(nothing_drawn(x, at(EQUAL_MISS)));
+    /* add-and-wrap stepping by STENCILOPVAL 1 (DB_STENCILREFMASK bits 24-31) on pass turns 0x7f into 0x80:
+       EQUAL 0x80 then draws the triangle; a step of 2 stops by name */
+    enum { INCREMENTED = 0x1540000 };
+    const uint32_t step[][2] = {DEPTH_TARGET, {0xa08e, 0}, {0xa10c, 0x01ffff00}, {0xa10b, 0x80}, {0xa200, 0x1 | 0x7u << 8}};
+    drawn = run_counted(x, DEPTH_BUFFER, at(STENCIL_ONLY), step, 13, 3, error, sizeof error);
+    if (drawn) fprintf(stderr, "stencil add and wrap: %s\n", error);
+    CHECK(drawn == 0);
+    const uint32_t equal_next[][2] = {DEPTH_TARGET, {0xa10c, 0xffff80}, {0xa10b, 0}, {0xa200, 0x1 | 0x2u << 8}};
+    CHECK(run_counted(x, DEPTH_BUFFER, at(INCREMENTED), equal_next, 12, 3, error, sizeof error) == 0);
+    check_triangle(x, at(INCREMENTED));
+    const uint32_t step_two[][2] = {DEPTH_TARGET, {0xa08e, 0}, {0xa10c, 0x02ffff00}, {0xa10b, 0x80}, {0xa200, 0x1 | 0x7u << 8}};
+    CHECK(run_counted(x, DEPTH_BUFFER, at(STENCIL_ONLY), step_two, 13, 3, error, sizeof error) == -1 && strstr(error, "STENCILOPVAL 2"));
+    /* a depth target larger than the colour target (24 x 24 under 16 x 16, as the game pads its depth
+       target) draws at the colour target's size; a smaller one (8 x 8) stops by name */
+    enum { PADDED_DEPTH = 0x1580000, PADDED_COLOUR = 0x15c0000, SMALL_DEPTH = 0x1600000 };
+    {
+        const uint32_t pz = (uint32_t)(at(PADDED_DEPTH) >> 8), pst = (uint32_t)(at(PADDED_DEPTH + 0x4000) >> 8);
+        const uint32_t padded[][2] = {{0xa010, 0xa0000003}, {0xa011, 0x20000001}, {0xa012, pz}, {0xa013, pst}, {0xa014, pz}, {0xa015, pst},
+                                      {0xa016, 2u | 2u << 11}, {0xa017, 0}, {0xa002, 0}, {0xa200, 0x2 | 0x4 | 0x7u << 4}};
+        drawn = run_counted(x, DEPTH_BUFFER, at(PADDED_COLOUR), padded, 10, 3, error, sizeof error);
+        if (drawn) fprintf(stderr, "padded depth target: %s\n", error);
+        CHECK(drawn == 0);
+        check_triangle(x, at(PADDED_COLOUR));
+        const uint32_t sz = (uint32_t)(at(SMALL_DEPTH) >> 8), sst = (uint32_t)(at(SMALL_DEPTH + 0x1000) >> 8);
+        const uint32_t small[][2] = {{0xa010, 0xa0000003}, {0xa011, 0x20000001}, {0xa012, sz}, {0xa013, sst}, {0xa014, sz}, {0xa015, sst},
+                                     {0xa016, 0}, {0xa017, 0}, {0xa002, 0}, {0xa200, 0x2 | 0x4 | 0x7u << 4}};
+        CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), small, 10, 3, error, sizeof error) == -1 && strstr(error, "smaller"));
+    }
+    /* a test reading a depth target no draw has written stops by name: its memory is never loaded */
+    const uint32_t uz = (uint32_t)(at(UNWRITTEN) >> 8), ust = (uint32_t)(at(UNWRITTEN + 0x2000) >> 8);
+    const uint32_t unwritten[][2] = {{0xa010, 0xa0000003}, {0xa011, 0x20000001}, {0xa012, uz}, {0xa013, ust}, {0xa014, uz}, {0xa015, ust},
+                                     {0xa016, depth_size}, {0xa017, 0}, {0xa002, 0}, {0xa200, 0x2 | 0x1u << 4}};
+    CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), unwritten, 10, 3, error, sizeof error) == -1 && strstr(error, "no draw has written"));
     const uint32_t incremented[][2] = {DEPTH_TARGET, {0xa10c, 0xff0000}, {0xa10b, 0x50}, {0xa200, 0x1 | 0x7u << 8}};
     CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), incremented, 12, 3, error, sizeof error) == -1 && strstr(error, "stencil operation 5"));
     const uint32_t bounds[][2] = {DEPTH_TARGET, {0xa200, 0x8}};
