@@ -274,6 +274,16 @@ static const uint32_t store_format_xyzw[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* Per lane, in[4i .. 4i + 3] stored with buffer_store_format_xyzw at lane * 16 bytes (the descriptor's
+   format). */
+static const uint32_t store_format_loaded[] = {
+    0x34020084, /* v_lshlrev_b32_e32 v1, 4, v0 */
+    0xe0381000, 0x80000401, /* buffer_load_dwordx4 v[4:7], v1, s[0:3], 0 offen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xe01c1000, 0x80010401, /* buffer_store_format_xyzw v[4:7], v1, s[4:7], 0 offen */
+    0xbf810000, /* s_endpgm */
+};
+
 /* Per lane, a format store of (0, -1.0, 1.0, 2.0) at lane * 16 bytes (buffer_store_format_xyzw,
    the descriptor's format): as 8_8_8_8 unorm those clamp to 0, 0, 255, 255. */
 static const uint32_t store_format_packed[] = {
@@ -482,6 +492,17 @@ static const uint32_t pixel_lookup[] = {
     0xf0804100, 0x00600204, /* image_sample v2, v[4:5], s[0:7], s[12:15] dmask:0x1 da */
     0xbf8c0f70, /* s_waitcnt vmcnt(0) */
     0xf800180f, 0x03020100, /* exp mrt0, v0, v1, v2, v3 done vm */
+    0xbf810000, /* s_endpgm */
+};
+
+/* The image in s[4:11] sampled through the sampler in s[12:15] at (x / 16, y / 16) of the pixel's
+   position: the level its derivatives pick. */
+static const uint32_t pixel_minified[] = {
+    0x100804ff, 0x3d800000, /* v_mul_f32_e32 v4, 0x3d800000 (1/16), v2 */
+    0x100a06ff, 0x3d800000, /* v_mul_f32_e32 v5, 0x3d800000 (1/16), v3 */
+    0xf0800f00, 0x00610604, /* image_sample v[6:9], v[4:5], s[4:11], s[12:15] dmask:0xf */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf800180f, 0x09080706, /* exp mrt0, v6, v7, v8, v9 done vm */
     0xbf810000, /* s_endpgm */
 };
 
