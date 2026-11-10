@@ -148,6 +148,34 @@ static void sampled_images(rt_executor *x)
     CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
     CHECK(differing_pixels(x, at(TEXEL_TARGET)) > 0);
 
+    /* 8_8_8_8 sRGB (NUM_FORMAT 9): each texel draws as its bytes decoded from sRGB to linear (the
+       transfer function of IEC 61966-2-1), alpha as is; read as unorm the same bytes do not */
+    {
+        enum { SRGB = 0x8c0000 };
+        uint32_t *const texels = (uint32_t *)(guest + SRGB);
+        for (uint32_t i = 0; i < WIDTH * HEIGHT; i++) texels[i] = reference_texel(i % WIDTH % SIZE, i / WIDTH % SIZE);
+        uint32_t srgb[8];
+        for (int unorm = 0; unorm < 2; unorm++) {
+            image_descriptor(srgb, at(SRGB), 10, unorm ? 0 : 9, WIDTH, HEIGHT);
+            srgb[3] |= LINEAR_ALIGNED << 20;
+            const int srgb_drawn = draw_texels(x, at(TEXEL_TARGET), srgb, error, sizeof error);
+            if (srgb_drawn) fprintf(stderr, "sRGB image: %s\n", error);
+            uint32_t bgra[SIZE * SIZE];
+            CHECK(srgb_drawn == 0 && rt_executor_read_target(x, at(TEXEL_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+            int decoded = 1;
+            for (int q = 0; q < SIZE * SIZE; q++) {
+                const uint32_t texel = reference_texel(q % SIZE, q / SIZE), p = bgra[q];
+                const uint32_t drawn[3] = {p >> 16 & 0xff, p >> 8 & 0xff, p & 0xff}; /* red, green, blue */
+                for (int c = 0; c < 3; c++) {
+                    const double v = (texel >> (8 * c) & 0xff) / 255.0;
+                    const double linear = v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4);
+                    decoded &= fabs((double)drawn[c] - linear * 255) <= 2.0;
+                }
+            }
+            CHECK(unorm ? !decoded : decoded);
+        }
+    }
+
     /* the guest rewrites the texels: the next draw reads the new ones */
     for (uint32_t i = 0; i < WIDTH * HEIGHT; i++) ((uint32_t *)(guest + LINEAR))[i] = reference_texel(i % WIDTH % SIZE, i / WIDTH % SIZE);
     CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
