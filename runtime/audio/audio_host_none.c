@@ -20,6 +20,8 @@ int rt_audio_host_write(void *stream, const float *samples, uint32_t frames)
     return -1;
 }
 
+void rt_audio_host_close(void *stream) { (void)stream; }
+
 uint32_t rt_audio_host_queued_frames(void *stream)
 {
     (void)stream;

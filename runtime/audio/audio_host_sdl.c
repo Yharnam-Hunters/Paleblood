@@ -44,6 +44,8 @@ int rt_audio_host_write(void *stream, const float *samples, uint32_t frames)
     return SDL_PutAudioStreamData(stream, samples, (int)(frames * (uint32_t)spec.channels * sizeof(float))) ? 0 : -1;
 }
 
+void rt_audio_host_close(void *stream) { SDL_DestroyAudioStream(stream); }
+
 uint32_t rt_audio_host_queued_frames(void *stream)
 {
     SDL_AudioSpec spec;
