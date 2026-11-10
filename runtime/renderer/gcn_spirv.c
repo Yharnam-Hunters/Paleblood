@@ -2126,8 +2126,26 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
         sampled_load(t, b, variable, coordinate, coordinates, level, texel_type, dmask, vdata);
         return;
     }
-    const uint32_t merge = begin_if(t, exec_bit(t));
+    /* A storage image access outside the image: a store writes nothing, as on the hardware and under
+       Vulkan's robustImageAccess2 (which shadPS4 requires for the same reason); a load stops at run
+       time, as a sampled one does (what it returns is not established; with no stop word it is not
+   checked). Without the check the access
+       is undefined in Vulkan, and the GPU faulted on the LUT pass's stores (0x20d1b00800). */
     const uint32_t image = load(t, image_type(t, b), variable);
+    const uint32_t uvec = coordinates == 1 ? t_uint(t) : spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_uint(t), coordinates}, 2);
+    const uint32_t bvec = coordinates == 1 ? t_bool(t) : spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_bool(t), coordinates}, 2);
+    const uint32_t size = value(t, SPV_OP_IMAGE_QUERY_SIZE, uvec, 1, image);
+    const uint32_t inside = value(t, SPV_OP_U_LESS_THAN, bvec, 2, value(t, SPV_OP_BITCAST, uvec, 1, coordinate), size);
+    const uint32_t in_range = coordinates == 1 ? inside : value(t, SPV_OP_ALL, t_bool(t), 1, inside);
+    t->queries_images = 1;
+    const int load_checked = op != MIMG_OP_STORE && t->layout->error_address; /* stops need the stop word */
+    if (load_checked) {
+        const uint32_t outside = begin_if(t, value(t, SPV_OP_LOGICAL_AND, t_bool(t), 2, exec_bit(t), value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, in_range)));
+        runtime_stop(t, konst(t, (uint32_t)GCN_RUNTIME_STOP_IMAGE_RANGE << GCN_RUNTIME_STOP_KIND_SHIFT));
+        end_if(t, outside);
+    }
+    const uint32_t merge = begin_if(t, op == MIMG_OP_STORE || load_checked ? value(t, SPV_OP_LOGICAL_AND, t_bool(t), 2, exec_bit(t), in_range)
+                                                                         : exec_bit(t));
     if (op == MIMG_OP_STORE) {
         uint32_t texel[4];
         for (unsigned i = 0; i < 4; i++) {
