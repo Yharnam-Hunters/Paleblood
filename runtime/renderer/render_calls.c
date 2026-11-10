@@ -396,7 +396,8 @@ static void take_placed(uint64_t buffer, uint32_t size)
 int rt_render_record_user_data(uint64_t buffer, uint32_t offset, rt_shader_stage stage, unsigned slot, const uint32_t *words,
                                unsigned count, char *error, size_t error_size)
 {
-    if ((unsigned)stage >= RT_SHADER_STAGES || count == 0 || count > RT_USER_DATA_MAX_WORDS || slot + count > RT_USER_DATA_SLOTS) {
+    if ((unsigned)stage >= RT_SHADER_STAGES || count == 0 || count > RT_USER_DATA_MAX_WORDS ||
+        slot >= RT_USER_DATA_SLOTS || count > RT_USER_DATA_SLOTS - slot) {
         snprintf(error, error_size, "user data: stage %u, slots %u-%u (stages 0-%d, slots 0-%d, 1-%d words)", (unsigned)stage, slot,
                  slot + count - 1, RT_SHADER_STAGES - 1, RT_USER_DATA_SLOTS - 1, RT_USER_DATA_MAX_WORDS);
         return -1;
