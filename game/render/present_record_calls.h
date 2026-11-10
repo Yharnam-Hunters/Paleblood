@@ -5,8 +5,10 @@
 
 #include "command_packets.h"
 #include "present_record_consumer.h"
+#include "present_record_range_call.h"
 
 namespace render {
+struct TargetRestoreState;
 struct ShaderPrimaryStateView;
 struct ShaderPrimaryDescriptorView;
 struct ShaderSecondaryState;
@@ -51,12 +53,10 @@ RT_ORIGINAL(0x01475370, emit_num_instances, void(PacketBuffer *, uint32_t enable
 RT_ORIGINAL(0x02ace5e0, configure_record_shader_secondary,
             void(ShaderSecondaryState *, PacketBuffer *, const ShaderSecondaryDescriptorView *,
                  const ShaderSecondaryDescriptorView *optional_descriptor));
-RT_ORIGINAL(0x01486520, set_present_record_range,
-            void(PresentRecordView *, uintptr_t first, uint32_t last));
 RT_ORIGINAL(0x014741b0, emit_draw_index_auto, void(PacketBuffer *, uint32_t mode));
 RT_ORIGINAL(0x02acfc20, finish_record_shader, void(RecordShaderState *, PacketBuffer *));
-RT_ORIGINAL(0x02ad1e30, restore_prepared_record_from_bank,
-            void(RecordPreparationState *, PacketBuffer *, uint32_t slot));
-RT_ORIGINAL(0x02ad1e70, restore_prepared_selector_from_bank, void(RecordPreparationState *, PacketBuffer *));
+RT_ORIGINAL(0x02ad1e30, restore_color_target_from_bank,
+            void(TargetRestoreState *, PacketBuffer *, uint32_t slot));
+RT_ORIGINAL(0x02ad1e70, restore_depth_target_from_bank, void(TargetRestoreState *, PacketBuffer *));
 
 }  // namespace render::record_calls
