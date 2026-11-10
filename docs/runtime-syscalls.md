@@ -1645,6 +1645,43 @@ flags 0 (`O_RDONLY`) and mode 0555.
 - **Seeking.** A whence other than 0, 1 or 2 (`SEEK_SET`, `SEEK_CUR`, `SEEK_END`, the same on
   FreeBSD and Linux), and a seek before the start, are `EINVAL`.
 
+### Writing
+
+`sceKernelWrite(fd, buf, n)` (imported by `eboot` and `libSceFios2`) and
+`sceKernelPwrite(fd, buf, n, offset)` (imported by `libSceFios2`) are FreeBSD's `write(2)` and
+`pwrite(2)` under their SCE names, with the shapes from the same `libkernel.h`. Each returns the
+number of bytes written, or `0x80020000` plus the error number. Writes reach files under the
+writable `/data` mount, which `sceKernelOpen` opens with the requested access mode.
+
+**What the runtime does:**
+- **Order of checks.** FreeBSD's order (stable/9 `sys_generic.c`, `sys_write`, `sys_pwrite` and
+  `kern_pwritev`): the size, then the descriptor, then the offset.
+- **`EBADF`.** `write(2)` answers it for a descriptor that is not open for writing: one the runtime
+  did not hand out (0 to 2 included, as for reading), and one opened read-only, which is every
+  `/app0` file and a `/data` file opened with `O_RDONLY`.
+- **`EINVAL`.** A negative `pwrite` offset, as for `pread` (`pwrite(2)`: "The offset value was
+  negative").
+- **The position.** A `pwrite` leaves the file position where it was. A write past the end leaves a
+  hole that reads as zero bytes, as the host file system does. A zero count writes nothing and
+  answers 0.
+- **The count.** The answer is the host's count, which can be short. Linux writes at most
+  `0x7ffff000` bytes per call, so a request between that and `INT_MAX` comes back short where
+  FreeBSD would write it all.
+
+**What stops by name:**
+- **More than `INT_MAX` bytes.** FreeBSD answers `EINVAL` above `IOSIZE_MAX`. That is `INT_MAX`
+  while the `debug.iosize_max_clamp` sysctl is set (its default in FreeBSD 9; current FreeBSD
+  defaults to 0), and `SSIZE_MAX` otherwise. The FreeBSD 9.0 `write(2)` page says `INT_MAX`. The
+  PS4's setting is not known.
+- **No buffer for a non-zero count,** as for reading.
+- **A `pwrite` on a descriptor opened with `O_APPEND`.** POSIX writes at the offset. FreeBSD's
+  `write(2)` BUGS section says its `pwrite` appends instead, and Linux does the same. The PS4's
+  answer is not established.
+- **Any host write error** (`ENOSPC`, `EIO`, `EFBIG` and the rest).
+
+What would settle the stops: guest call sites that pass these cases, or results observed on a
+console.
+
 ### Truncating and renaming
 
 `sceKernelFtruncate(fd, length)` is FreeBSD's `ftruncate(2)` under its SCE name (shape from the
@@ -1946,6 +1983,7 @@ metadata.
 - [FreeBSD `usleep(3)`](https://man.freebsd.org/cgi/man.cgi?query=usleep&sektion=3) and [SUSv2 `usleep`](https://pubs.opengroup.org/onlinepubs/7908799/xsh/usleep.html)
 - [POSIX `sleep`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/sleep.html), [FreeBSD `sleep(3)`](https://man.freebsd.org/cgi/man.cgi?query=sleep&sektion=3) and FreeBSD libc [`sleep.c`](https://cgit.freebsd.org/src/tree/lib/libc/gen/sleep.c) (the `INT_MAX` split and the rounded-up remainder)
 - [POSIX `nanosleep`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/nanosleep.html), [FreeBSD `nanosleep(2)`](https://man.freebsd.org/cgi/man.cgi?query=nanosleep&sektion=2) and FreeBSD [`kern_time.c`](https://cgit.freebsd.org/src/tree/sys/kern/kern_time.c) (`kern_nanosleep` in stable/9, `kern_clock_nanosleep` in main: the `EINVAL` check, the zero or negative time, when `rmtp` is written)
+- [FreeBSD 9.0 `write(2)`](https://man.freebsd.org/cgi/man.cgi?query=write&sektion=2&manpath=FreeBSD+9.0-RELEASE) and [current `write(2)`](https://man.freebsd.org/cgi/man.cgi?query=write&sektion=2) (`write` and `pwrite`: `EBADF`, `EINVAL` for the size and a negative offset, the `O_APPEND` note in BUGS), and FreeBSD stable/9 [`sys_generic.c`](https://cgit.freebsd.org/src/tree/sys/kern/sys_generic.c?h=stable/9) (`sys_write`, `sys_pwrite`, `kern_pwritev`: the order of the checks)
 - [POSIX `pthread_rwlock_rdlock`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_rwlock_rdlock.html), [`pthread_rwlock_wrlock`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_rwlock_trywrlock.html), [`pthread_rwlock_unlock`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_rwlock_unlock.html), [`pthread_rwlock_destroy`/`init`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_rwlock_destroy.html); FreeBSD libthr [`thr_rwlock.c`](https://github.com/freebsd/freebsd-src/blob/main/lib/libthr/thread/thr_rwlock.c) and [`thr_private.h`](https://github.com/freebsd/freebsd-src/blob/main/lib/libthr/thread/thr_private.h) (`THR_RWLOCK_DESTROYED`); FreeBSD kernel [`kern_umtx.c`](https://github.com/freebsd/freebsd-src/blob/main/sys/kern/kern_umtx.c) (`do_rw_rdlock`, `do_rw_wrlock`, `do_rw_unlock`)
 - [LSB Core `__stack_chk_fail`](https://refspecs.linuxfoundation.org/LSB_5.0.0/LSB-Core-generic/LSB-Core-generic/libc---stack-chk-fail-1.html) and [FreeBSD libc `libc_stack_protector.c`](https://github.com/freebsd/freebsd-src/blob/main/lib/libc/secure/libc_stack_protector.c) (`__stack_chk_fail`, `__fail`)
 - [POSIX `pthread_cond_wait`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_cond_wait.html), [`pthread_cond_signal`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_cond_signal.html), [`pthread_cond_destroy`/`pthread_cond_init`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_cond_destroy.html); FreeBSD libthr [`thr_cond.c`](https://github.com/freebsd/freebsd-src/blob/main/lib/libthr/thread/thr_cond.c), [`thr_mutex.c`](https://github.com/freebsd/freebsd-src/blob/main/lib/libthr/thread/thr_mutex.c) (`_mutex_owned`, `_mutex_cv_unlock`, `mutex_unlock_common`, `mutex_self_lock`, `mutex_self_trylock`) and [`thr_private.h`](https://github.com/freebsd/freebsd-src/blob/main/lib/libthr/thread/thr_private.h) (`THR_COND_DESTROYED`); for `pthread_cond_timedwait`, [POSIX `pthread_cond_timedwait`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_cond_timedwait.html) (the `CLOCK_REALTIME` default, `ETIMEDOUT`, `EINVAL`), [`pthread_condattr_getclock`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_condattr_getclock.html), libthr `thr_cond.c` (`_pthread_cond_timedwait` in stable/9 and main, `cond_init`) and [`thr_init.c`](https://github.com/freebsd/freebsd-src/blob/main/lib/libthr/thread/thr_init.c) (`_pthread_condattr_default`)
