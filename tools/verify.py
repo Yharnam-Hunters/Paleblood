@@ -7,6 +7,8 @@ Design: docs/VERIFY.md.
 usage:
   verify.py run --function NAME --captures DIR [--elf EBOOT.elf] [--lib LIB.so] [--out DIR]
                 [--patch FILE:NAME --env KEY=VALUE --option LABEL] [--record CASES]
+  verify.py family --family NAME [--elf EBOOT.elf] [--lib LIB.so] [--mutants LIB.so] [--jobs N]
+                   [--sample N] [--out FILE] [--record]
   verify.py compare ORIGINAL.json REPLACEMENT.json
   verify.py --self-test
 
@@ -18,6 +20,11 @@ $BB_GAME_LIB or build/game/libbbgame.so.
 symbols/verification.csv, with failing cases listed in symbols/quarantine.csv counted as
 quarantined (tools/verification.py); --option LABEL names the option checked (needed with
 --patch or --env when recording).
+
+family: every member of a function family (symbols/families.csv) on its edge cases, in
+batches, plus the family's mutants on a sample (tools/family_verify.py, docs/FAMILIES.md);
+--mutants defaults to build/libbbfamily_mutants.so, --record writes
+symbols/families/NAME.verification.csv and marks passing members edge-verified.
 
 Exit codes: 0 all cases match, 1 mismatch, 3 bad input.
 """
@@ -371,6 +378,32 @@ def self_test() -> int:
     return 0
 
 
+def run_family(a) -> int:
+    import family_verify
+    boot = a.boot or os.environ.get('BB_ELF') or default_elf()
+    lib = a.lib or os.environ.get('BB_GAME_LIB') or os.path.join(ROOT, 'build', 'game', 'libbbgame.so')
+    mutants = a.mutants or os.path.join(ROOT, 'build', 'libbbfamily_mutants.so')
+    try:
+        for what, path in (('executable', boot), ('game library', lib), ('mutant library', mutants)):
+            if not path or not os.path.isfile(path):
+                raise BadInput(f'no {what} at {path}: build the repository or pass it explicitly')
+        if not 1 <= a.jobs <= 64:
+            raise BadInput('--jobs must be between 1 and 64')
+        report = family_verify.verify_family(a.family, boot, os.path.abspath(lib), os.path.abspath(mutants),
+                                             jobs=a.jobs, sample=a.sample, timeout=a.timeout,
+                                             record=a.record, compare=compare)
+    except (BadInput, family_verify.FamilyError, OSError, KeyError, json.JSONDecodeError) as e:
+        print(f'verify: {e}', file=sys.stderr)
+        return 3
+    text = json.dumps(report, indent=2, sort_keys=True)
+    print(text)
+    if a.out:
+        with open(a.out, 'w') as f:
+            f.write(text + '\n')
+    survived = any(m['killed'] != m['members'] for m in report['mutants'])
+    return 1 if report['failed'] or survived else 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--self-test', action='store_true')
@@ -395,6 +428,16 @@ def main() -> int:
     r.add_argument('--record', choices=verification.CASE_SETS,
                    help='write the counts to symbols/verification.csv as this case set')
     r.add_argument('--option', default='', help='the option this run checks, for --record (e.g. 30, uncapped)')
+    fa = sub.add_parser('family')
+    fa.add_argument('--family', required=True)
+    fa.add_argument('--elf', dest='boot')
+    fa.add_argument('--lib')
+    fa.add_argument('--mutants', help='the mutant library (default build/libbbfamily_mutants.so)')
+    fa.add_argument('--jobs', type=int, default=8)
+    fa.add_argument('--sample', type=int, default=64, help='members the mutants run on (about)')
+    fa.add_argument('--timeout', type=int, default=CASE_TIMEOUT)
+    fa.add_argument('--out', help='also write the summary JSON here (for tools/session_report.py --verify)')
+    fa.add_argument('--record', action='store_true')
     a = ap.parse_args()
 
     if a.self_test:
@@ -407,6 +450,8 @@ def main() -> int:
             return 3
         print(json.dumps(out, indent=2, sort_keys=True))
         return 1 if out['failed'] else 0
+    if a.cmd == 'family':
+        return run_family(a)
     if a.cmd == 'run':
         try:
             if a.record and (a.patch or a.env) and not a.option:

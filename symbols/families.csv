@@ -1,0 +1,2 @@
+family,system,shape,returns,members,bytes,notes
+returns_nothing,leaf,c3,void,5040,5040,"empty function: the whole body is ret (empty virtual methods, no-op callbacks); excludes members with unlisted code in their padding"

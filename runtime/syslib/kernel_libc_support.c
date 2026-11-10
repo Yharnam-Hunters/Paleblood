@@ -50,7 +50,7 @@ enum { RUSAGE_SELF_BSD = 0, RUSAGE_LONGS = 14, MINUTES_PER_DST = 60 };
 #define SIG_ERR_GUEST ((uintptr_t)-1)
 
 static const char program_name[] = "eboot.bin";
-static const char *progname = program_name;
+static const char *progname[1] = {program_name}; /* the variable itself: an array, so its name is its address */
 
 static void pthread_cxa_finalize(void *info) { (void)info; }
 
@@ -137,7 +137,7 @@ static int32_t debug_raise_exception_release(uint32_t code, int64_t zero)
     return raise_exception("sceKernelDebugRaiseExceptionOnReleaseMode", code, zero);
 }
 
-RT_SYSLIB("libkernel", __progname, &progname);
+RT_SYSLIB("libkernel", __progname, progname);
 RT_SYSLIB("libkernel", __pthread_cxa_finalize, pthread_cxa_finalize);
 RT_SYSLIB("libkernel", _is_signal_return, is_signal_return);
 RT_SYSLIB("libkernel", _write, libc_write);
