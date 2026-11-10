@@ -979,6 +979,84 @@ static void indexed_draws(rt_executor *x)
     CHECK(run_indexed(x, at(INDEXED_16), at(INDICES_16), 0, 5, 3, error, sizeof error) == -1 && strstr(error, "past the 5-index buffer"));
 }
 
+/* Record a packet draw of the last three indices, including fields that the older
+   first/count API cannot express. Each run starts with independent GPU state. */
+static int run_index_packet(rt_executor *x, uint64_t target, uint64_t indices, uint32_t saved_size,
+                            uint32_t header, uint32_t max_size, uint32_t count, uint32_t initiator,
+                            char *error, size_t error_size)
+{
+    enum { BUFFER = 0xc0fb0000 };
+    rt_render_forget(), rt_executor_reset(x);
+    uint32_t offset = record_setup(BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    CHECK(rt_render_record_index_base(BUFFER, offset, indices, error, error_size) == 0);
+    CHECK(rt_render_record_index_type(BUFFER, offset + 0x10, 0, error, error_size) == 0);
+    if (saved_size) CHECK(rt_render_record_index_size(BUFFER, offset + 0x20, saved_size, error, error_size) == 0);
+    CHECK(rt_render_record_draw_index_offset_packet(BUFFER, offset + 0x30, header, max_size, 3, count,
+                                                     initiator, error, error_size) == 0);
+    return rt_executor_run(x, BUFFER, offset + 0x40, error, error_size);
+}
+
+/* A packet's MAX_SIZE applies independently of INDEX_BUFFER_SIZE. Unsupported
+   packet fields stop before drawing; a valid packet draws the complete triangle. */
+static void indexed_packets(rt_executor *x, int fd)
+{
+    enum { INDICES = 0x12200, TARGET_PACKET = 0xd40000 };
+    const uint32_t offset_header = 0xc0033500u;
+    const uint16_t indices[] = {9, 9, 9, 0, 1, 2};
+    memcpy((void *)(uintptr_t)at(INDICES), indices, sizeof indices);
+    char error[200] = "";
+    CHECK(run_index_packet(x, at(TARGET_PACKET), at(INDICES), 1, offset_header, 3, 3, 0,
+                           error, sizeof error) == 0);
+    check_triangle(x, at(TARGET_PACKET));
+    CHECK(run_index_packet(x, at(TARGET_PACKET), at(INDICES), 0, offset_header, 3, 3, 0,
+                           error, sizeof error) == 0);
+    check_triangle(x, at(TARGET_PACKET));
+
+    const struct { uint32_t header, max_size, count, initiator; const char *reason; } refused[] = {
+        {offset_header | 1, 3, 3, 0, "predicated indexed draws"},
+        {0, 3, 3, 0, "unsupported indexed offset packet header"},
+        {offset_header, 3, 3, 1, "unsupported indexed offset draw initiator"},
+        {offset_header, 2, 3, 0, "beyond MAX_SIZE"},
+    };
+    for (size_t i = 0; i < sizeof refused / sizeof *refused; i++) {
+        error[0] = '\0';
+        CHECK(run_index_packet(x, at(TARGET_PACKET), at(INDICES), 0, refused[i].header,
+                               refused[i].max_size, refused[i].count, refused[i].initiator,
+                               error, sizeof error) == -1 && strstr(error, refused[i].reason));
+    }
+    rt_executor_reset(x);
+    const rt_render_call bad_tag = {.kind = RT_CALL_DRAW_INDEX_OFFSET,
+        .u.draw_index = {.count = 3, .has_packet_fields = 2, .header = offset_header, .max_size = 3}};
+    CHECK(rt_executor_run_calls(x, &bad_tag, 1, error, sizeof error) == -1 &&
+          strstr(error, "invalid indexed packet field tag"));
+    rt_render_forget();
+    CHECK(rt_render_record_draw_indexed(0xc0fc0000, 0, 0xc0042700u, 3, at(INDICES), 3, 0,
+                                         error, sizeof error) == 0);
+    CHECK(rt_executor_run(x, 0xc0fc0000, 0x20, error, sizeof error) == -1 &&
+          strstr(error, "DRAW_INDEX_2 is not implemented"));
+
+    /* A low guest window makes the unchecked sum wrap into valid GPU memory.
+       With no targets enabled it would be accepted if the overflow guard vanished. */
+    const uint64_t low_base = 0x100000000ull;
+    const rt_executor_memory low_memory = {fd, GUEST_SIZE, low_base};
+    rt_executor *low = NULL;
+    const int opened = rt_executor_open(&low_memory, &low, error, sizeof error);
+    if (opened) fprintf(stderr, "low index window: %s\n", error);
+    CHECK(opened == 0);
+    if (low) {
+        const rt_render_call overflow[] = {
+            {.kind = RT_CALL_INDEX_BASE, .u.index_base = {.address = UINT64_MAX - 5}},
+            {.kind = RT_CALL_INDEX_TYPE, .u.index_type = {.type = 0}},
+            {.kind = RT_CALL_DRAW_INDEX_OFFSET, .u.draw_index = {
+                .first = (uint32_t)(low_base / 2 + 3), .count = 3, .has_packet_fields = 1,
+                .header = offset_header, .max_size = 3}},
+        };
+        CHECK(rt_executor_run_calls(low, overflow, sizeof overflow / sizeof *overflow, error, sizeof error) == -1 &&
+              strstr(error, "index base plus offset overflows"));
+        rt_executor_close(low);
+    }
+}
+
 /* A render target's memory stays its contents: after a buffer draws the triangle into a linear target,
    the guest memory under it holds the reference image (red first, as SWAP_STD stores it); a pixel shader
    reading that memory as an image draws the reference image into another target; and when the CPU
@@ -1447,6 +1525,7 @@ int main(void)
     target_read_in_buffer(x);
     state_across_buffers(x);
     indexed_draws(x);
+    indexed_packets(x, fd);
     target_memory(x);
     tiled_target_memory(x);
     compressed_image(x);
