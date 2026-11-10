@@ -33,7 +33,8 @@ enum { MAX_SHADERS = 256, MAX_PIPELINES = 256, MAX_TARGETS = 64, MAX_RECT_STAGES
        MAX_VIEWS = 16, MAX_SAMPLERS = 64, MAX_PASSES = 64, BATCH_SETS = 256, MAX_WRITTEN = 32,
        STOP_SLOTS = MAX_SHADERS + MAX_COMPUTE_PIPELINES };
 enum { USER_DATA_BYTES = GCN_USER_SGPR_MAX * 4, VERTEX_USER_DATA = 0, PIXEL_USER_DATA = USER_DATA_BYTES };
-enum { COLOR_8_8_8_8 = 0xa, NUMBER_UNORM = 0, NUMBER_SRGB = 6, SWAP_STD = 0, SWAP_ALT = 1 };
+enum { COLOR_10_11_11 = 0x6, COLOR_8_8_8_8 = 0xa, COLOR_16_16_16_16 = 0xc, NUMBER_UNORM = 0, NUMBER_SRGB = 6, NUMBER_FLOAT = 7, SWAP_STD = 0,
+       SWAP_ALT = 1 };
 enum { PERSP_CENTER_ENA = 0x2, POS_X_FLOAT_ENA = 0x100, POS_Y_FLOAT_ENA = 0x200 };
 
 /* The VGPR where the pixel input at `bit` of SPI_PS_INPUT_ADDR starts: after every enabled input below it. */
@@ -104,6 +105,7 @@ typedef struct {
     uint64_t address;
     uint32_t width, height, tile_index;
     VkFormat format;
+    uint32_t element_bytes;          /* a texel's bytes in memory: 4, or 8 for 16_16_16_16 */
     VkImage image;
     VkDeviceMemory memory;
     VkImageView view;
@@ -1050,17 +1052,30 @@ static int record_tile_copy(rt_executor *x, const tile_plan *p, uint64_t address
 
 /* ---- render targets ---- */
 
-static VkFormat target_format(const rt_color_target *target, char *error, size_t error_size)
+/* A colour target's Vulkan format, and its texel's bytes in memory in *element_bytes:
+   - COLOR_8_8_8_8 UNORM or sRGB, in either component order (SWAP_STD R8G8B8A8, SWAP_ALT B8G8R8A8);
+   - COLOR_10_11_11 FLOAT: unsigned floats with x in bits 0-10, y in 11-21 and z in 22-31 (AMD names
+     formats from the top bits down), Vulkan's B10G11R11_UFLOAT_PACK32, as shadPS4 maps it;
+   - COLOR_16_16_16_16 FLOAT: halves, x first, R16G16B16A16_SFLOAT, 8 bytes.
+   Others stop by name (VK_FORMAT_UNDEFINED with the reason). */
+static VkFormat target_format(const rt_color_target *target, uint32_t *element_bytes, char *error, size_t error_size)
 {
-    if (target->format != COLOR_8_8_8_8 || (target->number_type != NUMBER_UNORM && target->number_type != NUMBER_SRGB) ||
-        (target->component_swap != SWAP_STD && target->component_swap != SWAP_ALT)) {
-        failed(error, error_size, "render target format %#x, number type %u, swap %u is not drawn yet", target->format,
-               target->number_type, target->component_swap);
-        return VK_FORMAT_UNDEFINED;
+    const int std = target->component_swap == SWAP_STD, alt = target->component_swap == SWAP_ALT;
+    *element_bytes = 4;
+    if (target->format == COLOR_8_8_8_8 && (target->number_type == NUMBER_UNORM || target->number_type == NUMBER_SRGB) && (std || alt)) {
+        const int srgb = target->number_type == NUMBER_SRGB;
+        if (std) return srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+        return srgb ? VK_FORMAT_B8G8R8A8_SRGB : VK_FORMAT_B8G8R8A8_UNORM;
     }
-    const int srgb = target->number_type == NUMBER_SRGB;
-    if (target->component_swap == SWAP_STD) return srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
-    return srgb ? VK_FORMAT_B8G8R8A8_SRGB : VK_FORMAT_B8G8R8A8_UNORM;
+    /* unsigned 11-, 11- and 10-bit floats, x in the low bits */
+    if (target->format == COLOR_10_11_11 && target->number_type == NUMBER_FLOAT && std) return VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+    if (target->format == COLOR_16_16_16_16 && target->number_type == NUMBER_FLOAT && std) {
+        *element_bytes = 8;
+        return VK_FORMAT_R16G16B16A16_SFLOAT;
+    }
+    failed(error, error_size, "render target format %#x, number type %u, swap %u is not drawn yet", target->format, target->number_type,
+           target->component_swap);
+    return VK_FORMAT_UNDEFINED;
 }
 
 static target_entry *find_target(rt_executor *x, uint64_t address)
@@ -1082,7 +1097,8 @@ static uint64_t target_span(const target_entry *t)
 /* The image standing for a render target: made on first use, cleared to zero, kept by address. */
 static target_entry *target_for(rt_executor *x, const rt_color_target *color, char *error, size_t error_size)
 {
-    const VkFormat format = target_format(color, error, error_size);
+    uint32_t element_bytes;
+    const VkFormat format = target_format(color, &element_bytes, error, error_size);
     if (format == VK_FORMAT_UNDEFINED) return NULL;
     target_entry *t = find_target(x, color->address);
     if (t) {
@@ -1103,7 +1119,7 @@ static target_entry *target_for(rt_executor *x, const rt_color_target *color, ch
         }
     t = &x->targets[x->target_count];
     *t = (target_entry){.loaded_epoch = UINT64_MAX, .address = color->address, .width = color->pitch, .height = color->height, .tile_index = color->tile_mode_index,
-                        .format = format};
+                        .format = format, .element_bytes = element_bytes};
     const VkImageCreateInfo image = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = format,
                                      .extent = {t->width, t->height, 1}, .mipLevels = 1, .arrayLayers = 1,
                                      .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
@@ -1166,9 +1182,8 @@ fail:
    GPU-visible range). */
 static int target_memory(rt_executor *x, target_entry *t, rt_tiling *layout, uint64_t *span, char *error, size_t error_size)
 {
-    enum { TEXEL_BYTES = 4 };
     char reason[160];
-    if (rt_tiling_layout(t->tile_index, TEXEL_BYTES, t->width, t->height, layout, reason, sizeof reason))
+    if (rt_tiling_layout(t->tile_index, t->element_bytes, t->width, t->height, layout, reason, sizeof reason))
         return failed(error, error_size, "render target %#llx: %s", (unsigned long long)t->address, reason);
     *span = rt_tiling_size(layout, 1);
     if (t->address < x->guest_base || t->address - x->guest_base > x->size || *span > x->size - (t->address - x->guest_base))
@@ -2560,6 +2575,8 @@ int rt_executor_read_target(rt_executor *x, uint64_t address, uint32_t *bgra, ui
     target_entry *t = find_target(x, address);
     if (!t) return failed(error, error_size, "no draw has used a render target at %#llx", (unsigned long long)address);
     if (width > t->width || height > t->height) return failed(error, error_size, "%ux%u is past the %ux%u target", width, height, t->width, t->height);
+    if (t->element_bytes != 4 || t->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32)
+        return failed(error, error_size, "render target %#llx is not 8_8_8_8: only those are read as BGRA", (unsigned long long)address);
     if (batch_finish(x, error, error_size)) return -1; /* each run ends with its batch run; this keeps it so */
     /* the staging buffer holds the image's texels after its last transfer, until it is drawn into again */
     if (!t->staging_current) {
