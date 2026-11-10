@@ -1055,6 +1055,69 @@ static void tiled_target_memory(rt_executor *x)
     CHECK(differing_pixels(x, at(TILED)) == 1);
 }
 
+/* A half (IEEE binary16) as a float. */
+static float half_value(uint16_t h)
+{
+    const int exponent = h >> 10 & 0x1f, mantissa = h & 0x3ff;
+    const float magnitude = exponent ? ldexpf(1.0f + (float)mantissa / 1024, exponent - 15) : ldexpf((float)mantissa / 1024, -14);
+    return h >> 15 ? -magnitude : magnitude;
+}
+
+/* An unsigned float of `mantissa_bits` mantissa bits and a 5-bit exponent (bias 15), as 10_11_11 holds them. */
+static float small_float_value(uint32_t bits, int mantissa_bits)
+{
+    const int exponent = (int)(bits >> mantissa_bits & 0x1f);
+    const float mantissa = (float)(bits & ((1u << mantissa_bits) - 1)) / (float)(1u << mantissa_bits);
+    return exponent ? ldexpf(1.0f + mantissa, exponent - 15) : ldexpf(mantissa, -14);
+}
+
+/* Float render targets: the triangle drawn into a 16_16_16_16 float target (8-byte texels) and into a
+   10_11_11 float one (Thin1DThin, tiling index 13) is written back to their memory as halves (x first)
+   and as unsigned 11-, 11- and 10-bit floats (x in the low bits): red (x + 0.5) / 16, green
+   (y + 0.5) / 16, blue 0.25 (alpha 1 in the halves). Reading them as BGRA stops by name. */
+static void float_targets(rt_executor *x)
+{
+    enum { FLOAT_BUFFER = 0xc0fb0000, HALVES = 0x1b00000, SMALL_FLOATS = 0x1b80000, THIN_1D = 13, NUMBER_FLOAT = 7 };
+    static const struct { uint32_t address, format, bytes; } cases[] = {{HALVES, 0xc, 8}, {SMALL_FLOATS, 0x6, 4}};
+    char error[200] = "";
+    for (unsigned c = 0; c < 2; c++) {
+        rt_tiling layout;
+        CHECK(rt_tiling_layout(THIN_1D, cases[c].bytes, SIZE, SIZE, &layout, error, sizeof error) == 0);
+        uint8_t *memory = (uint8_t *)(uintptr_t)at(cases[c].address);
+        memset(memory, 0, rt_tiling_size(&layout, 1));
+        rt_render_forget(), rt_executor_reset(x);
+        const uint32_t offset = record_setup(FLOAT_BUFFER, at(cases[c].address), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        uint32_t words[RT_COLOR_TARGET_WORDS];
+        color_target(words, at(cases[c].address), cases[c].format, SWAP_STD);
+        words[4] |= NUMBER_FLOAT << 8, words[5] = THIN_1D;
+        CHECK(rt_render_record_color_target(FLOAT_BUFFER, offset, 0, words, error, sizeof error) == 0);
+        const int ran = rt_executor_run(x, FLOAT_BUFFER, record_triangle_draw(FLOAT_BUFFER, offset + 0x10), error, sizeof error);
+        if (ran) fprintf(stderr, "float target %#x: %s\n", cases[c].format, error);
+        CHECK(ran == 0);
+        int placed = 1;
+        for (uint32_t y = 0; y < SIZE; y++)
+            for (uint32_t px = 0; px < SIZE; px++) {
+                const uint8_t *texel = memory + rt_tiling_offset(&layout, px, y, 0);
+                float got[4] = {0, 0, 0, 1};
+                if (cases[c].bytes == 8) {
+                    uint16_t h[4];
+                    memcpy(h, texel, sizeof h);
+                    for (int k = 0; k < 4; k++) got[k] = half_value(h[k]);
+                } else {
+                    uint32_t p;
+                    memcpy(&p, texel, 4);
+                    got[0] = small_float_value(p & 0x7ff, 6), got[1] = small_float_value(p >> 11 & 0x7ff, 6), got[2] = small_float_value(p >> 22, 5);
+                }
+                const float want[4] = {((float)px + 0.5f) / SIZE, ((float)y + 0.5f) / SIZE, 0.25f, 1};
+                for (int k = 0; k < 4; k++) placed &= fabsf(got[k] - want[k]) <= want[k] / 32 + 1e-3f;
+            }
+        if (!placed) fprintf(stderr, "float target %#x: texels not as drawn\n", cases[c].format);
+        CHECK(placed);
+    }
+    uint32_t bgra[4];
+    CHECK(rt_executor_read_target(x, at(SMALL_FLOATS), bgra, 2, 2, error, sizeof error) == -1 && strstr(error, "not 8_8_8_8"));
+}
+
 /* A block-compressed image (BC1, DATA_FORMAT 35) the CPU wrote, linear (tiling index 8) in 4 x 4 blocks
    of 8 bytes: each block a solid colour (colour 0, all indices 0), its red from the block's column and
    green from its row in RGB 5:6:5, blue full. image_load_mip of each pixel shows its block's colour;
@@ -1449,6 +1512,7 @@ int main(void)
     indexed_draws(x);
     target_memory(x);
     tiled_target_memory(x);
+    float_targets(x);
     compressed_image(x);
 
     rt_executor_close(x);
