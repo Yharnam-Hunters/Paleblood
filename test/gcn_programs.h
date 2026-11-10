@@ -495,6 +495,17 @@ static const uint32_t pixel_lookup[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* The image in s[4:11] sampled through the sampler in s[12:15] at (x / 16, y / 16) of the pixel's
+   position: the level its derivatives pick. */
+static const uint32_t pixel_minified[] = {
+    0x100804ff, 0x3d800000, /* v_mul_f32_e32 v4, 0x3d800000 (1/16), v2 */
+    0x100a06ff, 0x3d800000, /* v_mul_f32_e32 v5, 0x3d800000 (1/16), v3 */
+    0xf0800f00, 0x00610604, /* image_sample v[6:9], v[4:5], s[4:11], s[12:15] dmask:0xf */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf800180f, 0x09080706, /* exp mrt0, v6, v7, v8, v9 done vm */
+    0xbf810000, /* s_endpgm */
+};
+
 /* As pixel_color, but pixels whose red is below 0.5 are discarded (v_cmpx clears their EXEC bit
    and the export's valid mask drops them). */
 static const uint32_t pixel_discard_left[] = {

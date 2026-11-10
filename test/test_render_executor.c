@@ -263,8 +263,9 @@ static void sampled_images(rt_executor *x)
    the CPU's texels): a ramp (i + 0.5) / 4, its inverse 1 - (i + 0.5) / 4, and 0.25. Bilinear filtering
    with clamping to the last texel gives the ramp's own coordinate between texel centres (1/8 to 7/8)
    and the end texels' values outside; so does MAX_ANISO_RATIO 4 with bilinear filters. Mutants: point
-   filtering and wrapping differ; a sampler with unequal filters, a border clamp, anisotropic filters
-   or a depth compare stops by name. */
+   filtering and wrapping differ; with point minification and bilinear magnification the lookup is
+   magnified (a texel spans four pixels), so it is the bilinear one; a border clamp, anisotropic
+   filters or a depth compare stops by name. */
 static int lookup_misses(rt_executor *x, uint64_t target)
 {
     uint32_t bgra[SIZE * SIZE];
@@ -280,6 +281,50 @@ static int lookup_misses(rt_executor *x, uint64_t target)
             misses += !(near(p >> 16 & 0xff, r) && near(p >> 8 & 0xff, g) && near(p & 0xff, 0.25f) && (p >> 24) == 0xff);
         }
     return misses;
+}
+
+/* Sampling picks the level the derivatives give (pixel_minified): a 64x64 image with three levels, red,
+   green and blue, sampled at (x / 16, y / 16) over 16x16 pixels spans 4 texels a pixel, level 2:
+   blue with a point or linear mip filter, red (level 0) with none. */
+static void sampled_levels(rt_executor *x)
+{
+    enum { MIPPED = 0x8d0000, LEVELS_TARGET = 0x8e0000, LEVELS_CODE = 0x3400, LEVELS_BUFFER = 0xc0f30000, EDGE = 64, LEVELS = 3,
+           LINEAR_ALIGNED = 8, MIP_POINT = 1, MIP_LINEAR = 2 };
+    static const uint32_t colours[LEVELS] = {0xff0000ffu, 0xff00ff00u, 0xffff0000u}; /* red, green, blue (bytes R, G, B, A) */
+    char error[256] = "";
+    uint8_t *guest = (uint8_t *)(uintptr_t)at(0);
+    rt_tiling_level chain[LEVELS];
+    CHECK(rt_tiling_mip_chain(LINEAR_ALIGNED, 4, 1, 0, EDGE, EDGE, EDGE, EDGE, LEVELS, 1, chain, error, sizeof error) == 0);
+    for (unsigned m = 0; m < LEVELS; m++) {
+        const uint32_t texels = chain[m].layout.pitch * chain[m].layout.height;
+        for (uint32_t i = 0; i < texels; i++) ((uint32_t *)(guest + MIPPED + chain[m].offset))[i] = colours[m];
+    }
+    memcpy((void *)(uintptr_t)at(LEVELS_CODE), pixel_minified, sizeof pixel_minified);
+    for (unsigned mip = 0; mip <= MIP_LINEAR; mip++) {
+        uint32_t user[16] = {0};
+        image_descriptor(user + 4, at(MIPPED), 10, 0, EDGE, EDGE);
+        user[7] |= LINEAR_ALIGNED << 20 | (LEVELS - 1) << 16;
+        user[12] = 0x2 | 0x2 << 3 | 0x2 << 6, user[13] = 15u * 256 << 12, user[14] = mip << 26; /* clamped, MAX_LOD 15, point filters */
+        rt_render_forget(), rt_executor_reset(x);
+        uint32_t offset = record_setup(LEVELS_BUFFER, at(LEVELS_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        const uint64_t code = at(LEVELS_CODE);
+        const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 16 << 1, 0, 0x4, 0x302, 0x302,
+                                                       0, 0, 0, 0xf};
+        CHECK(rt_render_record_pixel_shader(LEVELS_BUFFER, offset, pixel, error, sizeof error) == 0);
+        CHECK(rt_render_record_user_data(LEVELS_BUFFER, offset + 0x10, RT_STAGE_PIXEL, 0, user, 8, error, sizeof error) == 0);
+        CHECK(rt_render_record_user_data(LEVELS_BUFFER, offset + 0x20, RT_STAGE_PIXEL, 8, user + 8, 8, error, sizeof error) == 0);
+        const int drawn = rt_executor_run(x, LEVELS_BUFFER, record_triangle_draw(LEVELS_BUFFER, offset + 0x30), error, sizeof error);
+        if (drawn) fprintf(stderr, "sampled levels: %s\n", error);
+        CHECK(drawn == 0);
+        uint32_t bgra[SIZE * SIZE];
+        CHECK(rt_executor_read_target(x, at(LEVELS_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+        const uint32_t expected = mip == 0 ? 0xffff0000u : 0xff0000ffu; /* BGRA words: red, or blue */
+        int covered = 0, right = 1;
+        for (int i = 0; i < SIZE * SIZE; i++)
+            if (bgra[i]) covered++, right &= bgra[i] == expected; /* the triangle's pixels */
+        if (!right) fprintf(stderr, "sampled levels, mip filter %u: a pixel %08x\n", mip, bgra[SIZE * SIZE / 2]);
+        CHECK(covered > 0 && right);
+    }
 }
 
 static void sampled_lookup(rt_executor *x)
@@ -337,7 +382,7 @@ static void sampled_lookup(rt_executor *x)
             CHECK(misses == 0);
         }
         if (k == 1 || k == 2) CHECK(lookup_misses(x, at(LOOKUP_TARGET)) > 0);
-        if (k == 3) CHECK(drawn == -1 && strstr(error, "filters 1 (magnifying) and 0"));
+        if (k == 3) CHECK(drawn == 0 && lookup_misses(x, at(LOOKUP_TARGET)) == 0); /* magnified: the bilinear filter */
         if (k == 4) CHECK(drawn == -1 && strstr(error, "clamp mode 6"));
         if (k == 6) CHECK(drawn == -1 && strstr(error, "filters 2 (magnifying)"));
         if (k == 7) CHECK(drawn == -1 && strstr(error, "depth compares"));
@@ -1255,6 +1300,7 @@ int main(void)
 
     sampled_images(x);
     sampled_lookup(x);
+    sampled_levels(x);
     fetch_shader(x);
     unset_user_data(x);
     target_read_in_buffer(x);

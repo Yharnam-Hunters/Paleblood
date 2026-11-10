@@ -2078,11 +2078,12 @@ static uint32_t sampler_variable(translator *t, unsigned j)
 }
 
 /* image_sample: float coordinates from VADDR on (x, then y for 2D, then the slice for an array, which
-   DA marks), sampled at level 0 with the sampler its SSAMP SGPRs name. GCN picks the level from the
-   coordinates' derivatives; level 0 is the same texels when the image has one level and the sampler's
-   minifying and magnifying filters agree, which the caller checks (and the derivatives would need
-   uniform control flow, which the translated program's dispatch loop does not have). Only active
-   lanes write their VGPRs. */
+   DA marks), sampled with the sampler its SSAMP SGPRs name at the level the coordinates' derivatives
+   pick, as GCN does: the derivatives across the pixel's 2x2 quad (x from the quad's first pixel to
+   its second, y from the first to its third; the slice has none), passed as explicit gradients
+   because the translated program's dispatch loop is not uniform control flow for Vulkan's implicit
+   derivatives; the quad's lanes take the same path, so its broadcasts are defined. Only active lanes
+   write their VGPRs. */
 static void image_sample(translator *t, const uint32_t *code, size_t at, const gcn_instruction *ins, unsigned binding, uint32_t texel_type,
                          unsigned dmask, unsigned vaddr, unsigned vdata)
 {
@@ -2125,14 +2126,31 @@ static void image_sample(translator *t, const uint32_t *code, size_t at, const g
         spirv_emit(&t->m, t->out, SPV_OP_COMPOSITE_CONSTRUCT, words, 2 + coordinates);
         coordinate = words[1];
     }
+    /* the gradients, from every lane of the quad (before the active lanes split off) */
+    const unsigned spatial = coordinates - (b->arrayed ? 1 : 0);
+    uint32_t dx[3] = {0}, dy[3] = {0};
+    for (unsigned i = 0; i < spatial; i++) {
+        uint32_t corner[3];
+        for (unsigned q = 0; q < 3; q++)
+            corner[q] = value(t, SPV_OP_GROUP_NON_UNIFORM_QUAD_BROADCAST, t_float(t), 3, konst(t, SPV_SCOPE_SUBGROUP), c[i], konst(t, q));
+        dx[i] = value(t, SPV_OP_F_SUB, t_float(t), 2, corner[1], corner[0]);
+        dy[i] = value(t, SPV_OP_F_SUB, t_float(t), 2, corner[2], corner[0]);
+    }
+    t->uses_quads = 1;
+    uint32_t gradient_x = dx[0], gradient_y = dy[0];
+    if (spatial > 1) {
+        const uint32_t vec = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_float(t), spatial}, 2);
+        gradient_x = value(t, SPV_OP_COMPOSITE_CONSTRUCT, vec, spatial, dx[0], dx[1], dx[2]);
+        gradient_y = value(t, SPV_OP_COMPOSITE_CONSTRUCT, vec, spatial, dy[0], dy[1], dy[2]);
+    }
     const uint32_t image_variable_id = image_variable(t, binding), sampler_id = sampler_variable(t, j);
     const uint32_t merge = begin_if(t, exec_bit(t));
     const uint32_t type = image_type(t, b);
     const uint32_t sampled_type = spirv_global(&t->m, SPV_OP_TYPE_SAMPLED_IMAGE, &type, 1);
     const uint32_t combined = value(t, SPV_OP_SAMPLED_IMAGE, sampled_type, 2, load(t, type, image_variable_id),
                                     load(t, spirv_global(&t->m, SPV_OP_TYPE_SAMPLER, NULL, 0), sampler_id));
-    const uint32_t texel = value(t, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, texel_type, 4, combined, coordinate, SPV_IMAGE_OPERANDS_LOD,
-                                 konst_float(t, 0.0f));
+    const uint32_t texel = value(t, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, texel_type, 5, combined, coordinate, SPV_IMAGE_OPERANDS_GRAD,
+                                 gradient_x, gradient_y);
     const uint32_t sampled = texel_component_type(t, b);
     unsigned next = vdata;
     for (unsigned i = 0; i < 4; i++) {
