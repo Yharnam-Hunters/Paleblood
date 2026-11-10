@@ -100,6 +100,12 @@ SYSLIB_TEST(file_names)
     CHECK(posix_error(p_rename("/data/b", "/savedata0/b"), EXDEV_) && exists("b", S_IFREG));
     CHECK(posix_error(p_rename("/data/b", "/savedata0/none/b"), ENOENT_));
     CHECK(posix_error(p_rename("/data/none", "/savedata0/b"), ENOENT_));
+    char save_file[700];
+    snprintf(save_file, sizeof save_file, "%s/file", save_dir);
+    FILE *f = fopen(save_file, "w");
+    if (f) fclose(f);
+    CHECK(posix_error(p_rename("/data/b", "/savedata0/file/b"), ENOTDIR_));
+    unlink(save_file);
     CHECK(p_rename("/data/b", "/data/a") == 0 && exists("a", S_IFREG));
 
     /* truncate */

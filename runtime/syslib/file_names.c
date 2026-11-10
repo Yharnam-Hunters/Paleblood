@@ -88,7 +88,6 @@ static int is_mount_root(const char *guest)
 /* The host path for a guest path that may change; a read-only mount stops by name. */
 static void writable_host_path(const char *caller, const char *guest, char *out)
 {
-    if (!guest) rt_fatal(caller, "no path: the error value is not established");
     if (rt_host_path(caller, guest, out, HOST_PATH_BYTES))
         rt_fatal(caller, "a change under a read-only mount: the order of FreeBSD's EROFS is not modelled");
 }
