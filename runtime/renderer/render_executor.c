@@ -1030,7 +1030,9 @@ fail:
 }
 
 /* The render pass and framebuffer for a colour target, a depth target or both (NULL for none): both
-   load what is there and keep it, as draws add to it. NULL after failing. */
+   load what is there and keep it, as draws add to it. Both address pixels from the same corner, so a
+   depth target larger than the colour target (padded, as the game's 2048x1152 one under 1920x1088)
+   is drawn with the colour target's size; a smaller one stops by name. NULL after failing. */
 static pass_entry *pass_for(rt_executor *x, const target_entry *color, const depth_entry *depth, char *error, size_t error_size)
 {
     const int c = color ? (int)(color - x->targets) : -1, z = depth ? (int)(depth - x->depths) : -1;
@@ -1040,8 +1042,8 @@ static pass_entry *pass_for(rt_executor *x, const target_entry *color, const dep
         failed(error, error_size, "more render passes than the executor keeps");
         return NULL;
     }
-    if (color && depth && (color->width != depth->width || color->height != depth->height)) {
-        failed(error, error_size, "a %ux%u colour target with a %ux%u depth target: not drawn yet", color->width, color->height, depth->width,
+    if (color && depth && (color->width > depth->width || color->height > depth->height)) {
+        failed(error, error_size, "a %ux%u colour target with a smaller %ux%u depth target: not drawn yet", color->width, color->height, depth->width,
                depth->height);
         return NULL;
     }

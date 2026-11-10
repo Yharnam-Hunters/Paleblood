@@ -407,7 +407,8 @@ Instead:
           replacements writing `DB_RENDER_CONTROL`, `DB_DEPTH_CLEAR` and `DB_STENCIL_CLEAR` report
           theirs. A draw that tests depth or stencil with a buffer bound gets an executor-owned depth
           image (Z_16 or Z_32_FLOAT, with or without 8-bit stencil, found by its write addresses and
-          sized from `DB_DEPTH_SIZE`) and Vulkan depth and stencil state; with none bound (format 0,
+          sized from `DB_DEPTH_SIZE`; one larger than the colour target, as the game pads it, is drawn
+          at the colour target's size, and a smaller one stops) and Vulkan depth and stencil state; with none bound (format 0,
           as switching the target off writes) the test has nothing to work on and the draw goes on
           as if it were off (shadPS4 takes it the same way). Compare functions are AMD's CompareFrag
           order, which is Vulkan's. Done: every compare function, and writes (depth writes; stencil
