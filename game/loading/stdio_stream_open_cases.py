@@ -8,10 +8,10 @@ The C library is scripted. Every combination of the four mode bits that pick the
 (compared as the executable's own mode strings), path pointers with either tag bit set, a
 successful open, and failed opens with each errno the function maps (fetched again for every
 comparison, so the number of __error calls is compared) and others. One case has rewind clear
-the stream's FILE pointer (a write through rewind's argument, addressed by the distance between
-the two buffers in the case sandbox, which tools/harness.py lays out from SANDBOX in name order,
-each followed by a guard page): the original reads the field again after rewind and treats the
-stream as failed. Generated fixtures, not inputs recorded in a game run.
+the stream's FILE pointer: fopen returns the address of the stream's own FILE field, so rewind's
+argument is that field and its scripted write clears it. The original reads the field again
+after rewind and treats the stream as failed. Generated fixtures, not inputs recorded in a game
+run.
 """
 import json
 import os
@@ -21,16 +21,6 @@ import sys
 ADDRESS = '0x00464b90'
 PATH = b'/hostapp/system/log.txt\0'
 ERRNO_CHECKS = {2: 1, 13: 2, 1: 3, 28: 4}   # errno -> __error calls before the answer
-SANDBOX, PAGE = 0x900000000, 4096
-
-
-def buffer_addresses(buffers):
-    """Each buffer's sandbox address, as tools/harness.py lays them out."""
-    out, offset = {}, 0
-    for name in sorted(buffers):
-        out[name] = SANDBOX + offset
-        offset += (max(1, (buffers[name]['size'] + PAGE - 1) // PAGE) + 1) * PAGE
-    return out
 
 
 def case(cid, mode, opened=True, errno=0, tag=0, other_bits=0, rewind_clears=False):
@@ -42,13 +32,12 @@ def case(cid, mode, opened=True, errno=0, tag=0, other_bits=0, rewind_clears=Fal
                      'errno': {'size': 8, 'bytes': struct.pack('<i', errno).hex()}, 'file': {'size': 0x10}},
          'memory': [{'addr': 'buf:stream+0x10', 'pointer': f'path+{tag}'}], 'imports': []}
     fopen = {'name': 'fopen', 'argc': 2, 'argmem': [{'arg': 0, 'size': len(PATH)}],
-             'ret': 'buf:file' if opened else '0x0'}
+             'ret': ('buf:stream+0x20' if rewind_clears else 'buf:file') if opened else '0x0'}
     c['imports'].append(fopen)
     if opened:
         rewind = {'name': 'rewind', 'argc': 1}
         if rewind_clears:
-            where = buffer_addresses(c['buffers'])
-            rewind['writes'] = [{'arg': 0, 'offset': where['stream'] + 0x20 - where['file'], 'bytes': '00' * 8}]
+            rewind['writes'] = [{'arg': 0, 'bytes': '00' * 8}]
         c['imports'].append(rewind)
     if not opened or rewind_clears:
         for _ in range(ERRNO_CHECKS.get(errno, 4)):

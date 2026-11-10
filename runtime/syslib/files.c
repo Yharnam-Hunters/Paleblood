@@ -8,7 +8,7 @@
 
    /data is a writable scratch mount. The engine's file system (0x02471a20) maps its temp: and
    title: drives there, and at start-up it creates a fresh cache file, temp:/cache.bin (0x02a6f6b0,
-   opened by 0x02a70890 read-write with create and truncate, mode 0777), carrying on whether or not
+   opened by the loader's kernel file open read-write with create and truncate, mode 0777), carrying on whether or not
    that works. Which folder backs it is the runtime's choice, not the console's: rt_process.data_dir
    (--data; tools/boot.py gives each boot a new empty one, so runs start alike). A path under any
    other mount, and one with a ".." component (which could leave the folder), stops by name.
