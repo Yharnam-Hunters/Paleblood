@@ -198,7 +198,10 @@ address,size,name,system,status,notes
 0x02a44140,59,engine_wide_string_destroy,engine,edge-verified,WideString destructor; unsigned capacity >=8 frees even null; ignores owns; callback before capacity and size reset and two-byte terminator
 0x02a70890,141,loading_kernel_file_open,loading,edge-verified,sceKernelOpen with FreeBSD flags and permissions from the platform mode bits; store the descriptor and set the open bit; -1 on error
 0x02a70920,46,loading_kernel_file_read,loading,edge-verified,"sceKernelRead the file's descriptor; -1 on a negative count, else store the count when asked and return 0"
-0x02a8c420,108,input_initialize_mouse_for_initial_user,input,original,"Initializes or reinitializes mouse input for the initial user, closing a previous connection if necessary."
+0x02a8bf30,108,input_mouse_b_open_for_initial_user,input,edge-verified,"Second mouse device class's open: initial user, close a positive handle at +0x128, sceMouseOpen(user, 0, 0, null); true when the new handle is positive"
+0x02a8c210,164,input_mouse_construct,input,edge-verified,"Mouse device constructor: base ctor with the third argument, vtable 0x056b7d00, clear 0x140..0x177, load sysmodule 0xa9, sceMouseInit, open via slot 32; handle 0 on any failure"
+0x02a8c420,108,input_initialize_mouse_for_initial_user,input,edge-verified,"Initializes or reinitializes mouse input for the initial user, closing a previous connection if necessary."
+0x02a9c790,84,input_pad_set_vibration,input,edge-verified,"scePadSetVibration on the pad's handle (+0x8) if open (+0xc): large motor from the third argument, small from the second; true on success"
 0x02aaa5a0,124,render_release_present_finish_node,render,edge-verified,"Release the finish node through the manager helper, retaining its head-match decision and reloading commands across retries."
 0x02aaddc0,393,render_allocate_shader_upload,render,edge-verified,"Allocate one shader-upload slice of at most 64 KiB. If no suitable block exists, acquire once, reclaim, then retry once. Preserve zero-size requests and delegate block policy to the original manager."
 0x02aaf030,508,render_managed_present_capacity,render,edge-verified,"Acquire managed command space, preserve partial block publication and copy the saved command snapshot in reverse order."
