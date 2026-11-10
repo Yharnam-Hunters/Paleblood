@@ -522,6 +522,56 @@ static void multiple_targets(rt_executor *x)
     CHECK(draw_two_targets(x, at(MRT_FIRST), at(ODD_THIRD), 0xf0f, 1, error, sizeof error) == -1 && strstr(error, "different sizes"));
 }
 
+/* A render target cleared by a compute shader (as the game clears its G-buffer): a dispatch stores
+   (0.25, 0.5, 0.75, 1) over a 16 x 16 8_8_8_8 image at the target's memory, then (in the next buffer)
+   a draw into the target
+   that keeps what is there (blend ZERO + ONE) leaves the cleared colour, which reaches the memory too;
+   a clear by a 32_32_32_32 float image there stops the draw by name. */
+static void compute_cleared_target(rt_executor *x)
+{
+    enum { CLEAR_BUFFER = 0xc0fd0000, DRAW_BUFFER = 0xc0fe0000, CLEAR_CODE = 0x3200, CLEARED = 0x1a80000, WIDE_CLEARED = 0x1ac0000, LINEAR_ALIGNED = 8 };
+    char error[200] = "";
+    memcpy((void *)(uintptr_t)at(CLEAR_CODE), image_clear_tile, sizeof image_clear_tile);
+    for (int wide = 0; wide < 2; wide++) {
+        const uint64_t target = at(wide ? WIDE_CLEARED : CLEARED);
+        memset((void *)(uintptr_t)target, 0, SIZE * SIZE * 16);
+        rt_render_forget(), rt_executor_reset(x);
+        const uint64_t code = at(CLEAR_CODE);
+        const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x3, 16 << 1, SIZE, SIZE, 1};
+        CHECK(rt_render_record_compute_shader_at(CLEAR_BUFFER + 0x10, shader) == 0);
+        uint32_t user[8];
+        image_descriptor(user, target, wide ? 14 : 10, wide ? 7 : 0, SIZE, SIZE); /* 32_32_32_32 float, or 8_8_8_8 unorm */
+        user[3] |= LINEAR_ALIGNED << 20;
+        CHECK(rt_render_record_user_data(CLEAR_BUFFER, 0x20, RT_STAGE_COMPUTE, 8, user, 8, error, sizeof error) == 0);
+        const uint32_t one[3] = {1, 1, 1};
+        CHECK(rt_render_record_dispatch(CLEAR_BUFFER, 0x30, one, error, sizeof error) == 0);
+        const int cleared_run = rt_executor_run(x, CLEAR_BUFFER, 0x40, error, sizeof error);
+        if (cleared_run) fprintf(stderr, "compute clear: %s\n", error);
+        CHECK(cleared_run == 0);
+        /* the draw in the next buffer: the executor keeps its images and targets between buffers */
+        rt_render_forget();
+        const uint32_t offset = record_setup(DRAW_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        CHECK(rt_render_record_register(DRAW_BUFFER, offset, 0xa1e0, 1u << 30 | 0u | 1u << 8, error, sizeof error) == 0);
+        const int ran = rt_executor_run(x, DRAW_BUFFER, record_triangle_draw(DRAW_BUFFER, offset + 0x10), error, sizeof error);
+        if (wide) {
+            CHECK(ran == -1 && strstr(error, "another format"));
+            continue;
+        }
+        if (ran) fprintf(stderr, "compute-cleared target: %s\n", error);
+        CHECK(ran == 0);
+        uint32_t bgra[SIZE * SIZE];
+        CHECK(rt_executor_read_target(x, target, bgra, SIZE, SIZE, error, sizeof error) == 0);
+        /* blue first for the display: red 0.25, green 0.5, blue 0.75, alpha 1 (the store's rounding of 0.5 to 127 or 128 either way) */
+        int cleared = 1;
+        for (int i = 0; i < SIZE * SIZE; i++)
+            cleared &= near(bgra[i] >> 16 & 0xff, 0.25f) && near(bgra[i] >> 8 & 0xff, 0.5f) && near(bgra[i] & 0xff, 0.75f) && bgra[i] >> 24 == 0xff;
+        if (!cleared) fprintf(stderr, "compute-cleared target: %08x\n", bgra[0]);
+        CHECK(cleared);
+        const uint32_t first = *(const uint32_t *)(uintptr_t)target; /* written back to the memory: red first */
+        CHECK(near(first & 0xff, 0.25f) && near(first >> 8 & 0xff, 0.5f) && near(first >> 16 & 0xff, 0.75f) && first >> 24 == 0xff);
+    }
+}
+
 /* Depth and stencil without a depth buffer, and triangle strips:
    - with the depth target switched off (DB_Z_INFO and DB_STENCIL_INFO 0, as the library's setter
      writes for no target), depth and stencil tests draw as if off; Z_WRITE_ENABLE alone writes nothing
@@ -1055,6 +1105,7 @@ int main(void)
     CHECK(run_with_registers(x, FOURTH, at(TARGET), line_strips, 1, 0, error, sizeof error) == -1 && strstr(error, "primitive type 5"));
     depth_and_strips(x);
     multiple_targets(x);
+    compute_cleared_target(x);
     const uint32_t resolve[][2] = {{0xa202, 0x3u << 4 | 0xccu << 16}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), resolve, 1, 0, error, sizeof error) == -1 && strstr(error, "colour mode 3"));
     const uint32_t unknown[][2] = {{0xa1e8, 0}};
