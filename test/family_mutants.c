@@ -80,3 +80,9 @@ __attribute__((naked)) void bb_mutant_clobbers_second_argument(void)
 {
     __asm__("xorl %esi, %esi\n\tret");
 }
+
+/* Returns 1.0f: the wrong float. */
+float bb_mutant_returns_float_one(void)
+{
+    return 1.0f;
+}

@@ -17,3 +17,4 @@ writes_first_qword,leaf,48 89 37 c3,void,23,92,"first-field setter: mov [rdi], r
 writes_first_dword,leaf,89 37 c3,void,5,15,"first 32-bit field setter: mov [rdi], esi; ret; leaves rax"
 returns_first_argument,leaf,48 89 f8 c3,i64,169,676,"identity: mov rax, rdi; ret"
 returns_second_argument,leaf,48 89 f0 c3,i64,56,224,"returns the second argument: mov rax, rsi; ret"
+returns_float_zero,leaf,c5 f8 57 c0 c3,f32,71,355,"returns 0.0f: vxorps xmm0, xmm0, xmm0; ret (all of xmm0 zero)"

@@ -103,6 +103,18 @@ def setter_cases(address: str, value: int | None) -> list[dict]:
     return out
 
 
+XMM0_SEED = '1e1fe00f3cc3a55a8899aabbccddeeff'
+XMM1_SEED = '00112233445566778899aabbccddeeff'
+
+
+def returns_float_zero(address: str, value: int | None) -> list[dict]:
+    """A body that zeroes xmm0 and nothing else: xmm0 and xmm1 enter seeded and are compared whole
+    (vec), and the untouched-state cases check rax, memory and the argument registers."""
+    vector = base_case(address, 'vector_registers', 'vec')
+    vector['args'] = {'xmm0': XMM0_SEED, 'xmm1': XMM1_SEED, 'rax': hex(RAX_SEED)}
+    return [vector] + untouched_state_cases(address, 'i64')
+
+
 CASES = {
     'returns_nothing': returns_nothing,
     'returns_zero': returns_a_value,
@@ -122,6 +134,7 @@ CASES = {
     'writes_first_dword': setter_cases,
     'returns_first_argument': returns_a_value,
     'returns_second_argument': returns_a_value,
+    'returns_float_zero': returns_float_zero,
 }
 
 # Deliberately wrong replacements (test/family_mutants.c) every member's cases must catch.
@@ -152,6 +165,7 @@ MUTANTS = {
     'writes_first_dword': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_qword', 'bb_mutant_returns_zero'],
     'returns_first_argument': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_returns_second_argument'],
     'returns_second_argument': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_returns_first_argument'],
+    'returns_float_zero': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_returns_float_one'],
 }
 
 
