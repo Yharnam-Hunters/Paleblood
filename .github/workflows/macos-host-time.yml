@@ -1,0 +1,63 @@
+name: macos-host-time
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/macos-host-time.yml'
+      - 'CMakeLists.txt'
+      - 'runtime/CMakeLists.txt'
+      - 'cmake/HostTime.cmake'
+      - 'cmake/HostTimeTests.cmake'
+      - 'runtime/host_time.c'
+      - 'runtime/include/runtime/**'
+      - 'runtime/syslib/audio_out.c'
+      - 'runtime/syslib/video_out.c'
+      - 'runtime/syslib/table.c'
+      - 'runtime/audio/audio_host_none.c'
+      - 'test/host_time/**'
+      - 'test/test_host_time*.c'
+      - 'test/test_host_time_cpp.cpp'
+  pull_request:
+    paths:
+      - '.github/workflows/macos-host-time.yml'
+      - 'CMakeLists.txt'
+      - 'runtime/CMakeLists.txt'
+      - 'cmake/HostTime.cmake'
+      - 'cmake/HostTimeTests.cmake'
+      - 'runtime/host_time.c'
+      - 'runtime/include/runtime/**'
+      - 'runtime/syslib/audio_out.c'
+      - 'runtime/syslib/video_out.c'
+      - 'runtime/syslib/table.c'
+      - 'runtime/audio/audio_host_none.c'
+      - 'test/host_time/**'
+      - 'test/test_host_time*.c'
+      - 'test/test_host_time_cpp.cpp'
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  host-time:
+    name: Host pacing (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure independent host timing tests
+        run: >-
+          cmake -S test/host_time -B build-host-time -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }}
+      - name: Build
+        run: cmake --build build-host-time --parallel 2
+      - name: Test interrupted deadlines and production consumers
+        run: ctest --test-dir build-host-time --output-on-failure --no-tests=error
