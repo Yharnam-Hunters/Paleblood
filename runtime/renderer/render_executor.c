@@ -121,13 +121,16 @@ typedef struct {
 typedef struct {
     uint32_t depth_test, depth_write, depth_compare;   /* VkCompareOp */
     uint32_t stencil_test, stencil_ops[2][4];           /* front, back: fail, pass, depth fail (VkStencilOp), compare (VkCompareOp) */
+    uint32_t reads;                                     /* a test compares with the buffer (not always or never) */
 } depth_plan;
 
 /* The image standing for a depth target, found by its depth and stencil buffers' addresses: written
-   only by draws (never read yet), so it starts cleared. */
+   only by draws, so it starts cleared; drawn says whether a draw has written it since, which a test
+   that reads it needs (its contents in guest memory are never loaded). */
 typedef struct {
     uint64_t z_address, stencil_address;
     uint32_t width, height;
+    int drawn;
     VkFormat format;
     VkImage image;
     VkDeviceMemory memory;
@@ -406,14 +409,27 @@ static int blend_state(uint32_t control, VkPipelineColorBlendAttachmentState *ou
      Z_WRITE_ENABLE without Z_ENABLE writes nothing, as in Vulkan.
    - Compare functions are AMD's CompareFrag (Mesa's sid.h V_028800_FRAG_*): never, less, equal, less or
      equal, greater, not equal, greater or equal, always, the order of Vulkan's VkCompareOp.
-   - Done: tests that do not read the buffer (always or never) and writes: stencil operations keep,
-     zero and replace with the test value (Mesa's V_02842C_STENCIL_KEEP 0, ZERO 1, REPLACE_TEST 3).
-     Reading the buffer (other compare functions), other operations, depth bounds and DB_RENDER_CONTROL's
-     clears and copies stop by name; so does a test while no depth target was ever set in the buffer.
+   - Done: every compare function, and writes: stencil operations keep, zero, replace with the test
+     value, invert, and add and subtract (clamped or wrapping) when they step by STENCILOPVAL 1 (Mesa's
+     V_02842C_STENCIL_*). A test that reads the buffer
+     (a compare function other than always or never) is planned with reads set: the draw then needs the
+     depth target's image to hold what earlier draws wrote (depth_entry's drawn), since the buffer's
+     contents in guest memory are never loaded into it. Other operations, depth bounds and
+     DB_RENDER_CONTROL's clears and copies stop by name; so does a test while no depth target was ever
+     set in the buffer.
    0, or -1 with the reason. */
 static int plan_depth(const draw_state *s, depth_plan *plan, char *error, size_t error_size)
 {
-    enum { COMPARE_NEVER = 0, COMPARE_ALWAYS = 7, STENCIL_KEEP = 0, STENCIL_ZERO = 1, STENCIL_REPLACE_TEST = 3, BACKFACE_ENABLE = 0x80 };
+    enum { COMPARE_NEVER = 0, COMPARE_ALWAYS = 7, BACKFACE_ENABLE = 0x80, STENCIL_OPS = 16, OP_VALUE_SHIFT = 24, ONE_STEP = 1 };
+    /* AMD's stencil operations (Mesa's V_02842C_STENCIL_*; shadPS4's StencilFunc agrees) as Vulkan's,
+       where one exists: the add and subtract operations step by STENCILOPVAL, so they are Vulkan's
+       increment and decrement only when it is 1 (op_steps); -1 is not drawn yet. */
+    static const int vulkan_op[STENCIL_OPS] = {
+        [0] = VK_STENCIL_OP_KEEP, [1] = VK_STENCIL_OP_ZERO, [2] = -1 /* ones */, [3] = VK_STENCIL_OP_REPLACE,
+        [4] = -1 /* replace with STENCILOPVAL */, [5] = VK_STENCIL_OP_INCREMENT_AND_CLAMP, [6] = VK_STENCIL_OP_DECREMENT_AND_CLAMP,
+        [7] = VK_STENCIL_OP_INVERT, [8] = VK_STENCIL_OP_INCREMENT_AND_WRAP, [9] = VK_STENCIL_OP_DECREMENT_AND_WRAP,
+        [10] = -1, [11] = -1, [12] = -1, [13] = -1, [14] = -1, [15] = -1 /* bitwise with STENCILOPVAL */};
+    static const int op_steps[STENCIL_OPS] = {[5] = 1, [6] = 1, [8] = 1, [9] = 1};
     memset(plan, 0, sizeof *plan);
     const uint32_t control = s->depth_set ? s->depth_control : 0;
     if (!(control & (Z_ENABLE | STENCIL_ENABLE | DEPTH_BOUNDS_ENABLE))) return 0;
@@ -426,8 +442,7 @@ static int plan_depth(const draw_state *s, depth_plan *plan, char *error, size_t
         return failed(error, error_size, "DB_RENDER_CONTROL %#x (depth or stencil clears and copies): not drawn yet", s->render_control);
     if ((control & Z_ENABLE) && depth_buffer) {
         const uint32_t compare = control >> 4 & 7;
-        if (compare != COMPARE_ALWAYS && compare != COMPARE_NEVER)
-            return failed(error, error_size, "a depth test reading the depth buffer (ZFUNC %u): not drawn yet", compare);
+        if (compare != COMPARE_ALWAYS && compare != COMPARE_NEVER) plan->reads = 1;
         plan->depth_test = 1, plan->depth_compare = compare, plan->depth_write = (control & Z_WRITE_ENABLE) != 0;
     }
     if ((control & STENCIL_ENABLE) && stencil_buffer) {
@@ -437,13 +452,16 @@ static int plan_depth(const draw_state *s, depth_plan *plan, char *error, size_t
             if (!s->stencil_reference_set[source])
                 return failed(error, error_size, "a stencil test with no %s set in the buffer", source ? "DB_STENCILREFMASK_BF" : "DB_STENCILREFMASK");
             const uint32_t compare = control >> (source ? 20 : 8) & 7, ops = s->stencil_control >> (source ? 12 : 0) & 0xfff;
-            if (compare != COMPARE_ALWAYS && compare != COMPARE_NEVER)
-                return failed(error, error_size, "a stencil test reading the stencil buffer (function %u): not drawn yet", compare);
+            if (compare != COMPARE_ALWAYS && compare != COMPARE_NEVER) plan->reads = 1;
+            const uint32_t op_value = s->stencil_reference[source] >> OP_VALUE_SHIFT;
             for (unsigned k = 0; k < 3; k++) {
                 const uint32_t op = ops >> (4 * k) & 0xf;
-                if (op != STENCIL_KEEP && op != STENCIL_ZERO && op != STENCIL_REPLACE_TEST)
+                if (vulkan_op[op] < 0)
                     return failed(error, error_size, "stencil operation %u (DB_STENCIL_CONTROL %#x): not drawn yet", op, s->stencil_control);
-                plan->stencil_ops[face][k] = op == STENCIL_KEEP ? VK_STENCIL_OP_KEEP : op == STENCIL_ZERO ? VK_STENCIL_OP_ZERO : VK_STENCIL_OP_REPLACE;
+                if (op_steps[op] && op_value != ONE_STEP)
+                    return failed(error, error_size, "stencil operation %u stepping by STENCILOPVAL %u: only steps of 1 are drawn yet", op,
+                                  op_value);
+                plan->stencil_ops[face][k] = (uint32_t)vulkan_op[op];
             }
             plan->stencil_ops[face][3] = compare;
         }
@@ -1313,7 +1331,9 @@ fail:
 }
 
 /* The render pass and framebuffer for a colour target, a depth target or both (NULL for none): both
-   load what is there and keep it, as draws add to it. NULL after failing. */
+   load what is there and keep it, as draws add to it. Both address pixels from the same corner, so a
+   depth target larger than the colour target (padded, as the game's 2048x1152 one under 1920x1088)
+   is drawn with the colour target's size; a smaller one stops by name. NULL after failing. */
 static pass_entry *pass_for(rt_executor *x, const target_entry *color, const depth_entry *depth, char *error, size_t error_size)
 {
     const int c = color ? (int)(color - x->targets) : -1, z = depth ? (int)(depth - x->depths) : -1;
@@ -1323,8 +1343,8 @@ static pass_entry *pass_for(rt_executor *x, const target_entry *color, const dep
         failed(error, error_size, "more render passes than the executor keeps");
         return NULL;
     }
-    if (color && depth && (color->width != depth->width || color->height != depth->height)) {
-        failed(error, error_size, "a %ux%u colour target with a %ux%u depth target: not drawn yet", color->width, color->height, depth->width,
+    if (color && depth && (color->width > depth->width || color->height > depth->height)) {
+        failed(error, error_size, "a %ux%u colour target with a smaller %ux%u depth target: not drawn yet", color->width, color->height, depth->width,
                depth->height);
         return NULL;
     }
@@ -1686,8 +1706,11 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int
         t->loaded_epoch = x->memory_epoch;
     }
     const int uses_depth = plan->depth_test || plan->stencil_test;
-    const depth_entry *z = uses_depth ? depth_for(x, s, error, error_size) : NULL;
+    depth_entry *z = uses_depth ? depth_for(x, s, error, error_size) : NULL;
     if (uses_depth && !z) return -1;
+    if (z && plan->reads && !z->drawn)
+        return failed(error, error_size, "a depth or stencil test reads depth target %#llx, which no draw has written yet: its contents in "
+                      "memory are not loaded", (unsigned long long)z->z_address);
     VkRenderPass render_pass = t ? t->pass : VK_NULL_HANDLE;
     VkFramebuffer framebuffer = t ? t->framebuffer : VK_NULL_HANDLE;
     if (z) {
@@ -1763,7 +1786,8 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int
     }
     vkCmdEndRenderPass(commands);
     if (t) t->drawn = 1, t->staging_current = 0;
-    return 0; /* the run-time stop word is checked once the batch has run */
+    if (z && plan_writes(plan)) z->drawn = 1;
+    return 0; /* the run-time stop words are checked once the batch has run */
 }
 
 /* The pipeline for a compute shader as dispatched now: translated once per workgroup size and

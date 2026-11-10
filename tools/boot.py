@@ -17,7 +17,9 @@ runtime serves read-only as /app0. Each run also gets a new empty folder, served
 (the game's scratch mount), and removed with the run.
 
 Each row of game/module_hooks.csv replaces a function inside a mapped module before any guest code
-runs: action "return" makes it return at once, "stop" ends the run there by name.
+runs: action "return" makes it return at once, "stop" ends the run there by name. Its first_bytes
+are the function's first bytes as the mapped module holds them; a module holding others there is
+refused.
 
 Writes, from the run:
   symbols/boot.json           where the boot stops, the furthest boot milestone, the import
@@ -45,6 +47,7 @@ import datetime
 import glob
 import json
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -172,9 +175,10 @@ def system_param_args(overrides: list[str]) -> list[str]:
 
 
 def module_hook_args(root: str) -> list[str]:
-    """--module-hook MODULE.elf:OFFSET:SIZE:ACTION:NAME for every row of game/module_hooks.csv. A row
-    for a module game/modules.csv does not map, an unknown action, a non-numeric offset or size, or
-    an empty name is an error."""
+    """--module-hook MODULE.elf:OFFSET:SIZE:BYTES:ACTION:NAME for every row of game/module_hooks.csv.
+    A row for a module game/modules.csv does not map, an unknown action, a non-numeric offset or
+    size, first bytes that are not 5 to 16 lowercase hex bytes within the size, or an empty name is
+    an error."""
     path = os.path.join(root, 'game', 'module_hooks.csv')
     if not os.path.isfile(path):
         return []
@@ -193,7 +197,10 @@ def module_hook_args(root: str) -> list[str]:
                 offset, size = int(r['offset'], 0), int(r['size'], 0)
             except ValueError:
                 raise ValueError(f'{where}: offset and size must be numbers') from None
-            args += ['--module-hook', f"{r['module']}.elf:{offset:#x}:{size}:{r['action']}:{r['name']}"]
+            first = r['first_bytes']
+            if not re.fullmatch(r'(?:[0-9a-f]{2}){5,16}', first) or len(first) // 2 > size:
+                raise ValueError(f'{where}: first_bytes must be 5 to 16 lowercase hex bytes, no more than the size')
+            args += ['--module-hook', f"{r['module']}.elf:{offset:#x}:{size}:{first}:{r['action']}:{r['name']}"]
     return args
 
 

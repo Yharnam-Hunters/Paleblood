@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 /* The process parameter block: the executable's PT_SCE_PROCPARAM segment as mapped. */
 static void *kernel_get_proc_param(void)
@@ -168,3 +169,17 @@ static void kernel_stack_chk_fail(void)
     rt_fatal("__stack_chk_fail", "the guest's stack protector found a stack frame overwritten");
 }
 RT_SYSLIB("libkernel", __stack_chk_fail, kernel_stack_chk_fail);
+
+/* _exit(int status), imported by libc.elf from libkernel: POSIX, and FreeBSD _exit(2) has the same
+   void(int) shape and never returns. It ends the process at once: no atexit handlers run, no stdio
+   buffer is flushed, and the parent sees the status's low 8 bits. The host's _exit does exactly
+   that. When the boot harness set rt_exit_observer, it first records the exit as the run's outcome
+   (runtime/boot.c) and does not return; if it does return, the process ends as usual. */
+void (*rt_exit_observer)(int status);
+
+static _Noreturn void kernel_exit(int status)
+{
+    if (rt_exit_observer) rt_exit_observer(status);
+    _exit(status);
+}
+RT_SYSLIB("libkernel", _exit, kernel_exit);
