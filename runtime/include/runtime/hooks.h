@@ -19,6 +19,17 @@ typedef struct {
     const char *returns;       /* return class for recorded cases (game/hooks.csv), or NULL */
 } rt_hook_entry;
 
+/* A member of a function family (docs/FAMILIES.md): a small original whose replacement it shares
+   with every other member of the same shape. extent is the member plus the NOP padding before the
+   next function, which the hook's jump may overwrite (at least 14 bytes). Family hooks are never
+   recorded and are installed after the table above. */
+typedef struct {
+    uint32_t address;
+    uint32_t extent;
+    const char *family;
+    rt_hook_fn fn;
+} rt_family_hook;
+
 /* Install a table sorted by strictly ascending address. Returns 0, or -1 if the
    table is not sorted or has a duplicate address. The table must outlive use. */
 int rt_hooks_install(const rt_hook_entry *table, size_t count);

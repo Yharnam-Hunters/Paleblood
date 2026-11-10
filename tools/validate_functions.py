@@ -12,6 +12,7 @@ import os
 import re
 import sys
 
+import families as fam
 import verification
 
 DEFAULT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -152,6 +153,7 @@ def main() -> int:
 
     errs += check_reviews(root, funcs)
     errs += verification.check(root, funcs)
+    errs += check_families(root, export, set(by_addr), {h['address'] for h in hooks}, systems)
 
     for e in errs:
         print(f'validate: {e}', file=sys.stderr)
@@ -159,6 +161,164 @@ def main() -> int:
 
 
 REVIEW_HEADER = ['address', 'name', 'date', 'reviewer', 'verdict', 'notes']
+EXTERN_C = re.compile(r'extern "C"\s+([\w ]+?)\s*(\*?)\s*\b(bb_\w+)\s*\(')
+FIELD_LIMIT = {'u8': 0xff, 'd8': 0x7f, 'u32': 0xffffffff}
+
+
+def replacement_definitions(root: str, system: str) -> dict[str, str]:
+    """bb_ symbol -> declared return type ('pointer' for any pointer) for every extern "C"
+    definition under game/<system>/."""
+    out = {}
+    for dp, _, fns in os.walk(os.path.join(root, 'game', system)):
+        for fn in fns:
+            if fn.endswith(('.c', '.cc', '.cpp')):
+                with open(os.path.join(dp, fn), errors='replace') as f:
+                    for m in EXTERN_C.finditer(f.read()):
+                        out[m.group(3)] = 'pointer' if m.group(2) else ' '.join(m.group(1).split()).replace('const ', '')
+    return out
+
+
+def check_families(root: str, export: list[dict], named: set[str], hooked: set[str], systems: list[str]) -> list[str]:
+    """symbols/families.csv and its member and verification tables (tools/families.py)."""
+    errs: list[str] = []
+    try:
+        rows = fam.families(root)
+    except ValueError as e:
+        return [str(e)]
+    order = [r['address'] for r in export if ADDR.match(r['address'])]
+    next_start = {a: int(b, 16) for a, b in zip(order, order[1:])}
+    size_of = {r['address']: r['size'] for r in export}
+    reviews = {}
+    review_path = os.path.join(root, 'symbols', 'reviews.csv')
+    if os.path.isfile(review_path):
+        with open(review_path, newline='') as f:
+            reviews = {r['address']: r for r in csv.DictReader(f)}
+    import family_scan
+    in_source = family_scan.source_addresses(root)
+    seen_families: set[str] = set()
+    seen_members: set[str] = set()
+    for family in rows:
+        where = f"symbols/families.csv:{family['_line']}"
+        name = family['family']
+        if not fam.FAMILY_NAME.match(name) or name in seen_families:
+            errs.append(f"{where}: family '{name}' must be a unique snake_case name")
+            continue
+        seen_families.add(name)
+        if family['system'] not in systems:
+            errs.append(f"{where}: system '{family['system']}' has no game/{family['system']}/ directory")
+            continue
+        try:
+            shape = fam.parse_shape(family['shape'])
+        except fam.ShapeError as e:
+            errs.append(f'{where}: {e}')
+            continue
+        if family['returns'] not in RETURN_CLASSES:
+            errs.append(f"{where}: returns '{family['returns']}' is not one of {', '.join(sorted(RETURN_CLASSES))}")
+            continue
+        if not (family['members'].isdigit() and family['bytes'].isdigit()):
+            errs.append(f'{where}: members and bytes must be numbers')
+            continue
+        if len(family['notes']) > MAX_NOTE:
+            errs.append(f'{where}: notes longer than {MAX_NOTE} characters')
+        rel = f'symbols/families/{name}.csv'
+        try:
+            members = fam.members(root, name)
+        except ValueError as e:
+            errs.append(str(e))
+            continue
+        if not members:
+            errs.append(f'{where}: {rel} is missing or empty')
+            continue
+        check_sorted_unique(members, rel, errs)
+        defined = replacement_definitions(root, family['system'])
+        try:
+            results = fam.read_table(fam.verification_path(root, name), verification.VERIFICATION_HEADER)
+        except ValueError as e:
+            errs.append(str(e))
+            results = []
+        current = fam.source_hash(root, family)
+        seen_results: set[tuple] = set()
+        for r in results:
+            key = (r['function'], r['cases'], r['option'])
+            if key in seen_results:
+                errs.append(f"symbols/families/{name}.verification.csv:{r['_line']}: more than one "
+                            f"{r['cases']} row for {r['function']}")
+                break
+            seen_results.add(key)
+        edge_ok = {r['function'] for r in results if r['cases'] == 'edge' and r['option'] == ''
+                   and r['source'] == current and r['total'].isdigit() and int(r['total']) > 0 and r['failed'] == '0'
+                   and r['passed'] == r['total']}
+        recorded_ok = {r['function'] for r in results if r['cases'] == 'recorded' and r['option'] == ''
+                       and r['source'] == current and r['total'].isdigit() and int(r['total']) > 0
+                       and r['failed'] == '0'}
+        member_names = set()
+        total_bytes = 0
+        for m in members:
+            mw = f"{rel}:{m['_line']}"
+            a = m['address']
+            if not ADDR.match(a):
+                continue
+            if a in seen_members:
+                errs.append(f'{mw}: {a} is a member of another family')
+            seen_members.add(a)
+            if a in named:
+                errs.append(f'{mw}: {a} has a row in symbols/functions.csv; a function is a member or named, not both')
+            if a in hooked:
+                errs.append(f'{mw}: {a} is in game/hooks.csv')
+            if int(a, 16) in in_source:
+                errs.append(f'{mw}: a source file under game/ names {a} (a declared original or an observe '
+                            f'hook); a member must not be')
+            if export and a not in size_of:
+                errs.append(f'{mw}: {a} is not a function in the Ghidra export')
+            elif export and m['size'] != size_of[a]:
+                errs.append(f"{mw}: size {m['size']} differs from the export ({size_of[a]})")
+            if not m['size'].isdigit() or int(m['size']) != shape.size:
+                errs.append(f"{mw}: size {m['size']} is not the shape's {shape.size} bytes")
+                continue
+            total_bytes += int(m['size'])
+            if not m['extent'].isdigit() or int(m['extent']) < fam.HOOK_JUMP or int(m['extent']) < int(m['size']):
+                errs.append(f"{mw}: extent {m['extent']} must be at least the size and {fam.HOOK_JUMP} (the hook's jump)")
+            elif export and a in next_start and int(a, 16) + int(m['extent']) != next_start[a]:
+                errs.append(f"{mw}: extent {m['extent']} does not reach the next function in the export")
+            elif export and a not in next_start:
+                errs.append(f'{mw}: the last function in the export cannot be a member (no known extent)')
+            if (m['value'] == '') != (shape.field is None):
+                errs.append(f"{mw}: value must be {'empty' if shape.field is None else 'the shape parameter'}")
+            elif m['value'] and not (re.fullmatch(r'0x[0-9a-f]+', m['value'])
+                                      and int(m['value'], 16) <= FIELD_LIMIT[shape.field]
+                                      and (shape.field != 'd8' or int(m['value'], 16) > 0)):
+                errs.append(f"{mw}: value {m['value']} is not a valid {{{shape.field}}}")
+            if m['status'] not in HOOKED:
+                errs.append(f"{mw}: status '{m['status']}' must be one of {'|'.join(HOOKED)}")
+            symbol = fam.replacement(family, m['value'])
+            if symbol not in defined:
+                errs.append(f'{mw}: no extern "C" definition of {symbol} under game/{family["system"]}/')
+            elif defined[symbol] not in RETURN_CLASSES[family['returns']]:
+                errs.append(f"{mw}: {symbol} returns '{defined[symbol]}', the family declares {family['returns']}")
+            member = fam.member_name(family, a)
+            member_names.add(member)
+            if m['status'] in ('edge-verified', 'verified') and member not in edge_ok:
+                errs.append(f'{mw}: {member} is {m["status"]} without a current, passing edge result in '
+                            f'symbols/families/{name}.verification.csv (tools/verify.py family --record)')
+            if m['status'] == 'verified':
+                review = reviews.get(a)
+                if member not in recorded_ok:
+                    errs.append(f'{mw}: {member} is verified without a current, passing recorded result')
+                if not review or review.get('verdict') != 'approved':
+                    errs.append(f'{mw}: {member} is verified without an approved review in symbols/reviews.csv')
+        if (len(members), total_bytes) != (int(family['members']), int(family['bytes'])):
+            errs.append(f"{where}: {rel} has {len(members)} members ({total_bytes} bytes); the row registers "
+                        f"{family['members']} ({family['bytes']} bytes)")
+        for r in results:
+            if r['function'] not in member_names:
+                errs.append(f"symbols/families/{name}.verification.csv:{r['_line']}: {r['function']} is not a member")
+    known = {f'{name}.csv' for name in seen_families} | {f'{name}.verification.csv' for name in seen_families}
+    directory = os.path.join(root, fam.MEMBERS_DIR)
+    if os.path.isdir(directory):
+        for fn in sorted(os.listdir(directory)):
+            if fn not in known:
+                errs.append(f'symbols/families/{fn}: no family of that name in symbols/families.csv')
+    return errs
 
 
 def replacement_return_type(root: str, replacement: str) -> str | None:

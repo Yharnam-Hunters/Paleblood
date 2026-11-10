@@ -40,10 +40,12 @@ SOURCE_HASH_LENGTH = 16
 INCLUDE = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.M)
 
 
-def defining_files(root: str, name: str) -> list[str]:
-    """Files under game/ that define the replacement bb_<name>."""
+def defining_files(root: str, name: str, family: bool = False) -> list[str]:
+    """Files under game/ that define the replacement bb_<name> (with family, also the
+    bb_<name>_<value> replacements of a parameterized family)."""
     out = []
-    pattern = re.compile(rf'\bbb_{re.escape(name)}\s*\(')
+    suffix = r'(?:_\w+)?' if family else ''
+    pattern = re.compile(rf'\bbb_{re.escape(name)}{suffix}\s*\(')
     for dp, _, fns in os.walk(os.path.join(root, 'game')):
         for fn in sorted(fns):
             if fn.endswith(('.c', '.cc', '.cpp')):
@@ -54,11 +56,11 @@ def defining_files(root: str, name: str) -> list[str]:
     return sorted(out)
 
 
-def source_files(root: str, name: str) -> list[str]:
+def source_files(root: str, name: str, family: bool = False) -> list[str]:
     """The defining files and every header they include from game/ or runtime/include/."""
     search = [os.path.join(root, 'game'), os.path.join(root, 'runtime', 'include')]
     seen: set[str] = set()
-    todo = [os.path.join(root, p) for p in defining_files(root, name)]
+    todo = [os.path.join(root, p) for p in defining_files(root, name, family)]
     while todo:
         path = os.path.normpath(todo.pop())
         if path in seen or not os.path.isfile(path):
@@ -75,8 +77,8 @@ def source_files(root: str, name: str) -> list[str]:
     return sorted(os.path.relpath(p, root).replace(os.sep, '/') for p in seen)
 
 
-def source_hash(root: str, name: str) -> str:
-    files = source_files(root, name)
+def source_hash(root: str, name: str, family: bool = False) -> str:
+    files = source_files(root, name, family)
     if not files:
         return ''
     h = hashlib.sha256()

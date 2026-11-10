@@ -176,6 +176,24 @@ static void sampled_images(rt_executor *x)
         }
     }
 
+    /* A mip-mapped image (LAST_LEVEL 2, linear): its levels follow level 0 as rt_tiling_mip_chain lays
+       them out, and a draw sampling at level 0 sees level 0's texels; with level 0 changed it does not */
+    {
+        enum { MIPPED = 0x900000 };
+        rt_tiling_level chain[3];
+        CHECK(rt_tiling_mip_chain(LINEAR_ALIGNED, 4, 1, 0, WIDTH, HEIGHT, WIDTH, HEIGHT, 3, 1, chain, error, sizeof error) == 0);
+        for (uint32_t i = 0; i < WIDTH * HEIGHT; i++) ((uint32_t *)(guest + MIPPED))[i] = reference_texel(i % WIDTH % SIZE, i / WIDTH % SIZE);
+        memset(guest + MIPPED + chain[1].offset, 0x55, chain[2].offset - chain[1].offset + WIDTH * HEIGHT); /* other levels: grey */
+        uint32_t mipped[8];
+        image_descriptor(mipped, at(MIPPED), 10, 0, WIDTH, HEIGHT);
+        mipped[3] |= LINEAR_ALIGNED << 20 | 2u << 16; /* LAST_LEVEL 2 */
+        const int mip_drawn = draw_texels(x, at(TEXEL_TARGET), mipped, error, sizeof error);
+        if (mip_drawn) fprintf(stderr, "mip-mapped image: %s\n", error);
+        CHECK(mip_drawn == 0 && differing_pixels(x, at(TEXEL_TARGET)) == 0);
+        memset(guest + MIPPED, 0x55, WIDTH * HEIGHT * 4); /* mutant: level 0 grey too */
+        CHECK(draw_texels(x, at(TEXEL_TARGET), mipped, error, sizeof error) == 0 && differing_pixels(x, at(TEXEL_TARGET)) > 0);
+    }
+
     /* the guest rewrites the texels: the next draw reads the new ones */
     for (uint32_t i = 0; i < WIDTH * HEIGHT; i++) ((uint32_t *)(guest + LINEAR))[i] = reference_texel(i % WIDTH % SIZE, i / WIDTH % SIZE);
     CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
@@ -548,6 +566,25 @@ static void depth_and_strips(rt_executor *x)
     const uint32_t unwritten[][2] = {{0xa010, 0xa0000003}, {0xa011, 0x20000001}, {0xa012, uz}, {0xa013, ust}, {0xa014, uz}, {0xa015, ust},
                                      {0xa016, depth_size}, {0xa017, 0}, {0xa002, 0}, {0xa200, 0x2 | 0x1u << 4}};
     CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), unwritten, 10, 3, error, sizeof error) == -1 && strstr(error, "no draw has written"));
+    /* replace with STENCILOPVAL (operation 4) on pass, the test always: the stencil under the triangle
+       becomes 0x7f though STENCILTESTVAL is 0x01, so EQUAL 0x7f draws the triangle and EQUAL 0x01
+       nothing; with an EQUAL test on 0x01 beside it, it stops by name */
+    {
+        enum { OP_REPLACED = 0x17c0000, OP_MISSED = 0x1800000 };
+        const uint32_t replace_op[][2] = {DEPTH_TARGET, {0xa08e, 0}, {0xa10c, 0x7fffff01}, {0xa10b, 0x40}, {0xa200, 0x1 | 0x7u << 8}};
+        drawn = run_counted(x, DEPTH_BUFFER, at(STENCIL_ONLY), replace_op, 13, 3, error, sizeof error);
+        if (drawn) fprintf(stderr, "stencil replace with STENCILOPVAL: %s\n", error);
+        CHECK(drawn == 0);
+        const uint32_t equal_op_value[][2] = {DEPTH_TARGET, {0xa10c, 0xffff7f}, {0xa10b, 0}, {0xa200, 0x1 | 0x2u << 8}};
+        CHECK(run_counted(x, DEPTH_BUFFER, at(OP_REPLACED), equal_op_value, 12, 3, error, sizeof error) == 0);
+        check_triangle(x, at(OP_REPLACED));
+        const uint32_t equal_test_value[][2] = {DEPTH_TARGET, {0xa10c, 0xffff01}, {0xa10b, 0}, {0xa200, 0x1 | 0x2u << 8}};
+        CHECK(run_counted(x, DEPTH_BUFFER, at(OP_MISSED), equal_test_value, 12, 3, error, sizeof error) == 0);
+        CHECK(nothing_drawn(x, at(OP_MISSED)));
+        const uint32_t conflicting[][2] = {DEPTH_TARGET, {0xa08e, 0}, {0xa10c, 0x7fffff01}, {0xa10b, 0x40}, {0xa200, 0x1 | 0x2u << 8}};
+        CHECK(run_counted(x, DEPTH_BUFFER, at(STENCIL_ONLY), conflicting, 13, 3, error, sizeof error) == -1 &&
+              strstr(error, "replace with STENCILOPVAL 127"));
+    }
     const uint32_t incremented[][2] = {DEPTH_TARGET, {0xa10c, 0xff0000}, {0xa10b, 0x50}, {0xa200, 0x1 | 0x7u << 8}};
     CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), incremented, 12, 3, error, sizeof error) == -1 && strstr(error, "stencil operation 5"));
     const uint32_t bounds[][2] = {DEPTH_TARGET, {0xa200, 0x8}};
