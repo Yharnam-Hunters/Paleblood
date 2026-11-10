@@ -33,6 +33,8 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 #include <time.h>
 
 typedef struct {
@@ -132,8 +134,138 @@ static int32_t get_day_of_week(int32_t year, int32_t month, int32_t day)
     return (int32_t)((days_since_year_one(year, month, day) + MONDAY) % DAYS_PER_WEEK);
 }
 
+/* Ticks and Unix time, UTC and local time.
+
+   - sceRtcSetTime_t(date and time *, time_t) (0x010b70a6: a count of seconds parsed from text,
+     then sceRtcGetTick on the result, going on only on 0): the date and time that many seconds
+     after 1970-01-01 00:00:00 UTC. A tick counts from year 1, so 1970 is tick 62135596800000000
+     (PS4Recomp's libSceRtc and shadPS4's rtc.cpp, facts only). Both say the conversion depends on
+     the SDK the title was built with: before SDK 3.00 only the low 32 bits of the count are used,
+     from 3.00 a negative count is an error. Counts from 0 to 0xffffffff mean the same either way;
+     others stop by name.
+   - sceRtcConvertUtcToLocalTime(const tick *utc, tick *local) and sceRtcConvertLocalTimeToUtc(const
+     tick *local, tick *utc) (11 and 2 sites, such as 0x01969648 and 0x019696ae: the tick passed
+     through a local copy, 0 is success, anything else is treated as no time): the host's time zone,
+     as for the local time above, including its daylight saving rule at that instant. A local time
+     the clock skips or shows twice (at a daylight saving change) stops by name, since the PS4's
+     choice there is not established.
+   - sceRtcFormatRFC2822LocalTime(char *text, const tick *utc) (0x023e5ca9, with no tick, meaning
+     now; 0 is success): RFC 2822 section 3.3's date and time, "Sun, 02 Nov 2026 14:05:09 +0100",
+     31 characters and a NUL, the day of the month with two digits as both PS4Recomp and shadPS4
+     write it, in the host's local time with its offset from UTC.
+   - sceRtcGetCurrentNetworkTick(tick *) (0x01086f50 and 0x010b70cf, 0 is success; the first
+     treats a failure as no time): the current UTC tick, from the host's clock, as both PS4Recomp and
+     shadPS4 answer. The host's wall clock stands for the network clock.
+   A missing argument and a tick past the year 9999 stop by name. */
+enum { UNIX_EPOCH_SECONDS = 62135596800 }; /* 0001-01-01 to 1970-01-01, in seconds */
+#define SECONDS_TO_YEAR_10000 (INT64_C(315537897600)) /* 0001-01-01 to 10000-01-01 */
+
+static int64_t unix_seconds_of(uint64_t tick) { return (int64_t)(tick / TICKS_PER_SECOND) - UNIX_EPOCH_SECONDS; }
+
+/* The tick of a Unix time (seconds) and a microsecond; stops past the year 9999 or before year 1. */
+static uint64_t tick_of(const char *caller, int64_t unix_seconds, uint32_t microsecond)
+{
+    const int64_t since_year_one = unix_seconds + UNIX_EPOCH_SECONDS;
+    if (since_year_one < 0 || since_year_one >= SECONDS_TO_YEAR_10000)
+        rt_fatal(caller, "a time before year 1 or past the year 9999: the error value is not established");
+    return (uint64_t)since_year_one * TICKS_PER_SECOND + microsecond;
+}
+
+static int32_t set_time_t(rtc_date_time *time, int64_t seconds)
+{
+    static const char fn[] = "sceRtcSetTime_t";
+    if (!time) rt_fatal(fn, "no structure for the date and time: the error value is not established");
+    if (seconds < 0 || seconds > UINT32_MAX)
+        rt_fatal(fn, "a count outside 0 to 0xffffffff: its answer depends on the title's SDK version");
+    const uint64_t tick = tick_of(fn, seconds, 0);
+    return set_tick(time, &tick);
+}
+
+/* The host's offset from UTC, in seconds, at a Unix time. */
+static int64_t local_offset(const char *caller, int64_t unix_seconds)
+{
+    const time_t t = (time_t)unix_seconds;
+    struct tm local;
+    if (!localtime_r(&t, &local)) rt_fatal(caller, "the host gave no local time");
+    return local.tm_gmtoff;
+}
+
+static int32_t convert_utc_to_local_time(const uint64_t *utc, uint64_t *local)
+{
+    static const char fn[] = "sceRtcConvertUtcToLocalTime";
+    if (!utc || !local) rt_fatal(fn, "no tick, or no variable for the answer: the error value is not established");
+    const int64_t seconds = unix_seconds_of(*utc);
+    *local = tick_of(fn, seconds + local_offset(fn, seconds), (uint32_t)(*utc % TICKS_PER_SECOND));
+    return 0;
+}
+
+static int32_t convert_local_time_to_utc(const uint64_t *local, uint64_t *utc)
+{
+    static const char fn[] = "sceRtcConvertLocalTimeToUtc";
+    if (!local || !utc) rt_fatal(fn, "no tick, or no variable for the answer: the error value is not established");
+    const int64_t wall = unix_seconds_of(*local); /* the local wall clock, counted as if it were UTC */
+    /* The UTC instant is the wall clock less the offset in force then. Try the offsets in force a
+       day either side (a time zone changes its offset at most once a day): the answer is the one
+       instant whose own offset gives back this wall clock. */
+    int64_t answer = 0;
+    int answers = 0;
+    const int64_t offsets[2] = {local_offset(fn, wall - SECONDS_PER_DAY), local_offset(fn, wall + SECONDS_PER_DAY)};
+    for (int i = 0; i < 2; i++) {
+        const int64_t candidate = wall - offsets[i];
+        if (i == 1 && offsets[1] == offsets[0]) break;
+        if (candidate + local_offset(fn, candidate) == wall) answer = candidate, answers++;
+    }
+    if (answers != 1) rt_fatal(fn, "a local time the clock skips or shows twice: the PS4's answer is not established");
+    *utc = tick_of(fn, answer, (uint32_t)(*local % TICKS_PER_SECOND));
+    return 0;
+}
+
+static uint64_t current_utc_tick(const char *caller)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_REALTIME, &now)) rt_fatal(caller, "the host gave no time");
+    return tick_of(caller, now.tv_sec, (uint32_t)(now.tv_nsec / 1000));
+}
+
+static int32_t get_current_network_tick(uint64_t *tick)
+{
+    static const char fn[] = "sceRtcGetCurrentNetworkTick";
+    if (!tick) rt_fatal(fn, "no variable for the tick: the error value is not established");
+    *tick = current_utc_tick(fn);
+    return 0;
+}
+
+enum { RFC2822_BYTES = 32 }; /* "Sun, 02 Nov 2026 14:05:09 +0100" and a NUL */
+
+static int32_t format_rfc2822_local_time(char *text, const uint64_t *utc)
+{
+    static const char fn[] = "sceRtcFormatRFC2822LocalTime";
+    static const char days[7][4] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+    static const char months[12][4] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    if (!text) rt_fatal(fn, "no buffer for the text: the error value is not established");
+    const uint64_t at = utc ? *utc : current_utc_tick(fn);
+    const int64_t offset = local_offset(fn, unix_seconds_of(at));
+    const uint64_t local_tick = tick_of(fn, unix_seconds_of(at) + offset, 0);
+    rtc_date_time local;
+    set_tick(&local, &local_tick);
+    const int64_t minutes = (offset < 0 ? -offset : offset) / 60;
+    char line[64]; /* room for any field values; a valid date fills RFC2822_BYTES */
+    snprintf(line, sizeof line, "%s, %02u %s %04u %02u:%02u:%02u %c%02u%02u",
+             days[get_day_of_week(local.year, local.month, local.day)], local.day, months[local.month - 1],
+             local.year, local.hour, local.minute, local.second, offset < 0 ? '-' : '+',
+             (unsigned)(minutes / 60), (unsigned)(minutes % 60));
+    memcpy(text, line, RFC2822_BYTES);
+    return 0;
+}
+
 RT_SYSLIB("libSceRtc", sceRtcGetCurrentClockLocalTime, get_current_clock_local_time);
 RT_SYSLIB("libSceRtc", sceRtcGetTick, get_tick);
 RT_SYSLIB("libSceRtc", sceRtcSetTick, set_tick);
 RT_SYSLIB("libSceRtc", sceRtcGetTickResolution, get_tick_resolution);
 RT_SYSLIB("libSceRtc", sceRtcGetDayOfWeek, get_day_of_week);
+RT_SYSLIB("libSceRtc", sceRtcSetTime_t, set_time_t);
+RT_SYSLIB("libSceRtc", sceRtcConvertUtcToLocalTime, convert_utc_to_local_time);
+RT_SYSLIB("libSceRtc", sceRtcConvertLocalTimeToUtc, convert_local_time_to_utc);
+RT_SYSLIB("libSceRtc", sceRtcGetCurrentNetworkTick, get_current_network_tick);
+RT_SYSLIB("libSceRtc", sceRtcFormatRFC2822LocalTime, format_rfc2822_local_time);

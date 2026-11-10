@@ -1,0 +1,29 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/* System call group: files and saves. The disc map (libSceDiscMap), which tells the file library
+   whether a part of a file is already on the console's hard disk or still only on the disc.
+
+   int32_t sceDiscMapIsRequestOnHDD(const char *path, int64_t offset, int64_t bytes, int32_t *on_hdd)
+   (shadPS4's disc_map.cpp declares the shape). The bundled file library's one call
+   (libSceFios2.elf+0x2d71c) passes a path, an offset, a size and a variable preset to 0: on 0 it
+   takes a nonzero variable as on the hard disk, and on any other answer it treats the request as
+   not mapped and remembers that the map is unavailable.
+
+   The runtime serves the title from files on the host, with no disc, so there is no disc bitmap:
+   it answers 0x81100004, "no bitmap info", as shadPS4 does for a title without a disc map (its
+   disc_map_codes.h numbers the error), and writes nothing. A missing path or variable stops by
+   name. */
+#include "runtime/process.h"
+#include "runtime/syslib.h"
+
+#include <stdint.h>
+
+#define DISC_MAP_ERROR_NO_BITMAP_INFO ((int32_t)0x81100004u)
+
+static int32_t is_request_on_hdd(const char *path, int64_t offset, int64_t bytes, int32_t *on_hdd)
+{
+    (void)offset, (void)bytes;
+    if (!path || !on_hdd) rt_fatal("sceDiscMapIsRequestOnHDD", "no path, or no variable for the answer: the error value is not established");
+    return DISC_MAP_ERROR_NO_BITMAP_INFO;
+}
+
+RT_SYSLIB("libSceDiscMap", sceDiscMapIsRequestOnHDD, is_request_on_hdd);

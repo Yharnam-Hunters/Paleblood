@@ -322,6 +322,71 @@ done:
     return error;
 }
 
+/* sceSaveDataDelete(const delete request *): the 64-byte request { user id, padding, title id *,
+   directory name *, unused, reserved } (shadPS4's OrbisSaveDataDelete). The executable's one caller
+   (0x02c3e765) clears it, copies the directory name into a 32-byte buffer it points at, passes no
+   title id, and asks again while the answer is 0x809F0014. Answers, as for a mount: not
+   initialized, no request or no directory name and a bad name 0x809F0000, a user below 0
+   0x809F0011, a save that is mounted 0x809F0003 (busy). Otherwise the save's folder and everything
+   in it are removed and the answer is 0. Stops by name: another title's saves, a save that is not
+   there (shadPS4 answers 0, which is not established for the console), and a host failure. */
+typedef struct {
+    int32_t user;
+    uint32_t padding;
+    const char *title_id, *dir_name;
+    uint32_t unused;
+    uint8_t reserved[32];
+    uint32_t tail;
+} delete_request;
+_Static_assert(sizeof(delete_request) == 64 && offsetof(delete_request, dir_name) == 16, "the delete request");
+
+/* Removes the folder at path (a buffer of size bytes, the path's own text) and everything in it,
+   depth first, extending and restoring the one buffer as it goes, so the stack holds only a
+   directory handle per level. 0, or -1 on a host failure. */
+static int remove_tree(char *path, size_t size)
+{
+    DIR *dir = opendir(path);
+    if (!dir) return -1;
+    const size_t length = strlen(path);
+    int result = 0;
+    for (struct dirent *entry; !result && (entry = readdir(dir));) {
+        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+        if (length + 1 + strlen(entry->d_name) >= size) { result = -1; break; }
+        path[length] = '/';
+        strcpy(path + length + 1, entry->d_name);
+        struct stat st;
+        if (lstat(path, &st)) result = -1;
+        else if (S_ISDIR(st.st_mode)) result = remove_tree(path, size);
+        else result = unlink(path);
+        path[length] = 0;
+    }
+    closedir(dir);
+    return result || rmdir(path) ? -1 : 0;
+}
+
+static int32_t delete_save(const delete_request *request)
+{
+    static const char fn[] = "sceSaveDataDelete";
+    pthread_mutex_lock(&save_lock);
+    int32_t error = !initialized ? not_initialized() : !request ? SAVE_ERROR_PARAMETER : 0;
+    if (!error) error = check_user(fn, request->user);
+    if (!error && !valid_dir_name(request->dir_name)) error = SAVE_ERROR_PARAMETER;
+    if (error) goto done;
+    if (request->title_id) rt_fatal(fn, "another title's saves (a title id) are not modelled");
+    for (int slot = 0; slot < MAX_MOUNTS; slot++)
+        if (mounts[slot].used && !strcmp(mounts[slot].dir_name, request->dir_name)) error = SAVE_ERROR_BUSY;
+    if (error) goto done;
+    static char save_dir[4096], sce_sys[4200];
+    user_path(fn, request->dir_name, save_dir, sizeof save_dir);
+    path_printf(fn, sce_sys, sizeof sce_sys, "%s/sce_sys", save_dir);
+    if (!path_exists(sce_sys)) rt_fatal(fn, "a save that is not there: the answer is not established");
+    if (remove_tree(save_dir, sizeof save_dir))
+        rt_fatal(fn, "the host could not remove the save's folder");
+done:
+    pthread_mutex_unlock(&save_lock);
+    return error;
+}
+
 /* The slot a mount point string names, or -1; with save_lock held. */
 static int slot_of(const char *mount_point)
 {
@@ -544,3 +609,4 @@ RT_SYSLIB("libSceSaveData", sceSaveDataDirNameSearch, dir_name_search);
 RT_SYSLIB("libSceSaveData", sceSaveDataSetupSaveDataMemory, setup_memory);
 RT_SYSLIB("libSceSaveData", sceSaveDataGetSaveDataMemory, get_memory);
 RT_SYSLIB("libSceSaveData", sceSaveDataSetSaveDataMemory, set_memory);
+RT_SYSLIB("libSceSaveData", sceSaveDataDelete, delete_save);

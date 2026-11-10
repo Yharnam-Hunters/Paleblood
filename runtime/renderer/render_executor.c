@@ -30,7 +30,8 @@
 #include <vulkan/vulkan.h>
 
 enum { MAX_SHADERS = 256, MAX_PIPELINES = 256, MAX_TARGETS = 64, MAX_RECT_STAGES = 16, MAX_COMPUTE_PIPELINES = 256, MAX_IMAGES = 64,
-       MAX_VIEWS = 16, MAX_SAMPLERS = 64, MAX_PASSES = 64, BATCH_SETS = 256, MAX_WRITTEN = 32 };
+       MAX_VIEWS = 16, MAX_SAMPLERS = 64, MAX_PASSES = 64, BATCH_SETS = 256, MAX_WRITTEN = 32,
+       STOP_SLOTS = MAX_SHADERS + MAX_COMPUTE_PIPELINES };
 enum { USER_DATA_BYTES = GCN_USER_SGPR_MAX * 4, VERTEX_USER_DATA = 0, PIXEL_USER_DATA = USER_DATA_BYTES };
 enum { COLOR_8_8_8_8 = 0xa, NUMBER_UNORM = 0, NUMBER_SRGB = 6, SWAP_STD = 0, SWAP_ALT = 1 };
 enum { PERSP_CENTER_ENA = 0x2, POS_X_FLOAT_ENA = 0x100, POS_Y_FLOAT_ENA = 0x200 };
@@ -274,10 +275,10 @@ struct rt_executor {
     size_t compute_count;
     image_entry images[MAX_IMAGES];
     size_t image_count;
-    /* the run-time stop word translated shaders write (runtime/gcn_spirv.h) */
+    /* the run-time stop words translated shaders write (runtime/gcn_spirv.h), one per shader */
     VkBuffer stop_buffer;
     VkDeviceMemory stop_memory;
-    volatile uint32_t *stop_word;
+    volatile uint32_t *stop_words;   /* one per translated shader (stop_slot) */
     uint64_t stop_address;
     /* moves on whenever the guest memory may have changed outside the render targets: at each buffer
        (the CPU runs between submissions) and after each dispatch (shaders store to memory) */
@@ -688,12 +689,12 @@ static int import_memory(rt_executor *x, const rt_executor_memory *memory, char 
     return 0;
 }
 
-/* The run-time stop word: host-visible, with a GPU address the translated shaders store to. */
+/* The run-time stop words: host-visible, with GPU addresses the translated shaders store to. */
 static int open_stop_word(rt_executor *x, char *error, size_t error_size)
 {
-    const VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = sizeof(uint32_t),
+    const VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = STOP_SLOTS * sizeof(uint32_t),
                                      .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT};
-    if (vkCreateBuffer(x->device, &info, NULL, &x->stop_buffer) != VK_SUCCESS) return failed(error, error_size, "no buffer for the stop word");
+    if (vkCreateBuffer(x->device, &info, NULL, &x->stop_buffer) != VK_SUCCESS) return failed(error, error_size, "no buffer for the stop words");
     VkMemoryRequirements need;
     vkGetBufferMemoryRequirements(x->device, x->stop_buffer, &need);
     const VkMemoryAllocateFlagsInfo flags = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO, .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
@@ -704,23 +705,21 @@ static int open_stop_word(rt_executor *x, char *error, size_t error_size)
     if (allocate.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(x->device, &allocate, NULL, &x->stop_memory) != VK_SUCCESS ||
         vkBindBufferMemory(x->device, x->stop_buffer, x->stop_memory, 0) != VK_SUCCESS ||
         vkMapMemory(x->device, x->stop_memory, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS)
-        return failed(error, error_size, "no memory for the stop word");
-    x->stop_word = mapped;
-    *x->stop_word = 0;
+        return failed(error, error_size, "no memory for the stop words");
+    x->stop_words = mapped;
+    memset(mapped, 0, STOP_SLOTS * sizeof(uint32_t));
     const VkBufferDeviceAddressInfo address = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = x->stop_buffer};
     x->stop_address = vkGetBufferDeviceAddress(x->device, &address);
     return 0;
 }
 
-/* After work has finished: 0, or -1 with the reason when a shader wrote a run-time stop code. */
-static int check_stop_word(rt_executor *x, char *error, size_t error_size)
+/* The reason a run-time stop code (runtime/gcn_spirv.h) gives. Returns -1. */
+static int stop_reason(uint32_t code, char *error, size_t error_size)
 {
-    const uint32_t code = *x->stop_word;
-    if (!code) return 0;
-    *x->stop_word = 0;
     if (code >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_BUFFER_FORMAT)
         return failed(error, error_size, "a %u-component buffer %s with format DATA_FORMAT %u, NUM_FORMAT %u%s at run time: only whole "
-                      "32-bit uint, sint or float components, and four-component 8_8_8_8 unorm stores, are done yet", code & 0x7,
+                      "32-bit uint, sint or float components, 8- and 16-bit uint and sint and 8-bit unorm loads, and "
+                      "four-component 8_8_8_8 unorm stores, are done yet", code & 0x7,
                       code & 0x80 ? "store" : "load", code >> 8 & 0xf, code >> 4 & 0x7, code & 8 ? " and a swizzle" : "");
     if (code >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_VCC_UNKNOWN)
         return failed(error, error_size, "a vertex or pixel shader read VCC as a lane mask after a scalar write of its halves: not done "
@@ -729,6 +728,32 @@ static int check_stop_word(rt_executor *x, char *error, size_t error_size)
         return failed(error, error_size, "a pixel shader loaded an image texel outside the image or past its last level: not done yet "
                       "(what the GPU returns there is not established)");
     return failed(error, error_size, "a shader stopped at run time with code %#x", code);
+}
+
+/* After work has finished: 0, or -1 with the reason when a shader wrote a run-time stop code. Each
+   translated shader has its own stop word (stop_slot), so the reason names the shader that stopped. */
+static int check_stop_words(rt_executor *x, char *error, size_t error_size)
+{
+    for (size_t i = 0; i < STOP_SLOTS; i++) {
+        const uint32_t code = x->stop_words[i];
+        if (!code) continue;
+        x->stop_words[i] = 0;
+        char reason[512];
+        stop_reason(code, reason, sizeof reason);
+        const int compute = i >= MAX_SHADERS;
+        const shader_entry *shader = compute ? NULL : &x->shaders[i];
+        const uint64_t code_address = compute ? x->computes[i - MAX_SHADERS].code : shader->code;
+        return failed(error, error_size, "the %s shader at %#llx: %s", compute ? "compute" : shader->stage == STAGE_VERTEX ? "vertex" : "pixel",
+                      (unsigned long long)code_address, reason);
+    }
+    return 0;
+}
+
+/* The GPU address of a translated shader's stop word: graphics shader entry `index`, or compute
+   entry `index` past them. */
+static uint64_t stop_slot(const rt_executor *x, int compute, size_t index)
+{
+    return x->stop_address + 4 * ((compute ? MAX_SHADERS : 0) + index);
 }
 
 int rt_executor_open(const rt_executor_memory *memory, rt_executor **executor, char *error, size_t error_size)
@@ -806,7 +831,7 @@ static int batch_finish(rt_executor *x, char *error, size_t error_size)
     vkResetDescriptorPool(x->device, x->descriptor_pool, 0);
     x->memory_pending = x->upload_pending = 0, x->written_count = 0;
     if (!ok) return failed(error, error_size, "the GPU did not finish a batch of draws and dispatches");
-    return check_stop_word(x, error, error_size);
+    return check_stop_words(x, error, error_size);
 }
 
 /* Before the CPU reads `size` bytes of guest memory at `address`: waits for the open batch when work in
@@ -1375,7 +1400,7 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
     if (stage == STAGE_VERTEX) {
         const gcn_vertex_layout layout = {.user_sgprs = user_sgprs, .output_control = settings,
                                           .push_constant_offset = VERTEX_USER_DATA, .address_offset = x->address_offset,
-                                          .error_address = x->stop_address, .callee = callee ? (const uint32_t *)(uintptr_t)callee : NULL,
+                                          .error_address = stop_slot(x, 0, x->shader_count), .callee = callee ? (const uint32_t *)(uintptr_t)callee : NULL,
                                           .callee_dwords = callee ? (size_t)((x->guest_base + x->size - callee) / 4) : 0,
                                           .code_address = code, .user_data_read = user_read};
         result = gcn_translate_vertex(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
@@ -1385,7 +1410,7 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
                                          .position_enable = (inputs & POS_X_FLOAT_ENA ? GCN_PIXEL_POSITION_X : 0u) |
                                                             (inputs & POS_Y_FLOAT_ENA ? GCN_PIXEL_POSITION_Y : 0u),
                                          .position_vgpr = pixel_input_vgpr(inputs, 8), .push_constant_offset = PIXEL_USER_DATA,
-                                         .address_offset = x->address_offset, .error_address = x->stop_address,
+                                         .address_offset = x->address_offset, .error_address = stop_slot(x, 0, x->shader_count),
                                          .images = images, .image_count = image_count, .samplers = samplers,
                                          .sampler_count = sampler_count, .user_data_read = user_read};
         result = gcn_translate_pixel(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
@@ -1757,7 +1782,7 @@ static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *
     }
     const gcn_compute_layout layout = {.local_size = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
                                        .workgroup_id_x_sgpr = workgroup_id_x_sgpr, .push_constant_offset = 0,
-                                       .address_offset = x->address_offset, .error_address = x->stop_address,
+                                       .address_offset = x->address_offset, .error_address = stop_slot(x, 1, x->compute_count),
                                        .images = images, .image_count = image_count, .user_data_read = user_read};
     uint32_t *spirv = NULL;
     size_t words = 0;
@@ -2075,7 +2100,11 @@ static int stage_images(rt_executor *x, uint64_t code, const uint32_t *user, uin
         rt_image_descriptor d;
         rt_image_descriptor_decode(words, &d);
         if (d.type != RT_IMAGE_1D && d.type != RT_IMAGE_2D && d.type != RT_IMAGE_1D_ARRAY && d.type != RT_IMAGE_2D_ARRAY)
-            return failed(error, error_size, "an image of type %u: only 1D and 2D images and their arrays are done yet", d.type);
+            return failed(error, error_size,
+                          "the %s shader at %#llx reads an image of type %u (descriptor %08x %08x %08x %08x %08x %08x %08x %08x): "
+                          "only 1D and 2D images and their arrays are done yet",
+                          stage, (unsigned long long)code, d.type, words[0], words[1], words[2], words[3], words[4], words[5], words[6],
+                          words[7]);
         if (d.base_level || d.last_level) return failed(error, error_size, "an image with mip levels: not done yet");
         if (d.layers > 1 && (d.base_array > d.last_array || d.last_array >= d.layers))
             return failed(error, error_size, "a view of an image array from layer %u to %u of %u", d.base_array, d.last_array, d.layers);
