@@ -1197,6 +1197,58 @@ flexible memory to a budget. The budget is not established and the runtime does 
 - a length that is not whole 16 KiB pages;
 - a missing variable.
 
+## Sockets, the resolver and HTTP requests, offline (`libSceNet`, `libSceHttp`, issue #41)
+
+**Sockets** are FreeBSD's socket calls under SCE names (shapes from OpenOrbis `net.h` and shadPS4's
+`net.cpp`, facts only). A failure answers `0x80410100` plus the error number, with the number in
+the network errno. The executable expects exactly that: it compares answers with `0x80410123`,
+`0x80410139`, `0x80410109` and `0x80410104` at `0x02f9a8d0`, and errno with 35 at `0x011c7c60`.
+
+A socket can be created, set up, bound and listened on, as FreeBSD 9 does with only its loopback
+interface. shadPS4, the droogie bbhost runtime and PS4Recomp also create sockets. A family of
+native ports refuses every socket call with ENETUNREACH instead, which breaks the executable's
+Havok code: its bind and listen checks test for -1. Nothing ever connects or arrives:
+- **Connect and send.** Connect, or a datagram to a non-loopback address, answers ENETUNREACH at
+  once (FreeBSD 9's `in_pcbladdr`). An unconnected stream socket answers ENOTCONN to send and
+  receive. A datagram socket with no destination answers EDESTADDRREQ to send.
+- **Accept and datagram receive.** These answer EWOULDBLOCK on a nonblocking socket (`SO_NBIO`). A
+  blocking socket waits until `sceNetSocketAbort` or `sceNetSocketClose` (EINTR), or until its
+  accept or receive timeout option passes (EWOULDBLOCK, as shadPS4 does). An abort with no waiter
+  answers ENOTBLK.
+- **Bind and listen.** Bind answers EINVAL when the socket is already bound, EADDRNOTAVAIL for an
+  address other than any or loopback, and EADDRINUSE for a port another socket holds, unless the new
+  one set `SO_REUSEADDR` or `SO_REUSEPORT` (FreeBSD 9's `in_pcbbind`). Listen on a datagram socket
+  answers EOPNOTSUPP.
+- **Options.** The executable's options are stored and read back.
+- **Epoll sets.** `sceNetEpollControl` adds a socket to a set (events 1 or 3) or removes it.
+  Answers, from shadPS4: EINVAL for a bad operation or event; EBADF for an unknown set or socket, or
+  for removing a socket the set does not hold; EEXIST for adding one twice. A closed socket leaves
+  every set. Offline nothing ever becomes ready.
+
+**The resolver.** With no DNS server, a name other than `localhost` answers RESOLVER_ENODNS,
+`0x804101e1` (shadPS4's offline resolver). An IPv4 literal is converted unless flag `0x10000` is
+set. A pool that is not live, including the 0 that the HavokScript debugger (`0x00dfd1b0`) passes,
+answers EBADF.
+
+**HTTP requests.** The executable's HTTP manager (`0x013d2740`) builds a connection and a request,
+then sets the content length, timeout and waiting handle. Its state machine (`0x013d2970`) sends,
+and treats any error other than busy, again or timeout as failure. The runtime builds both, with ids
+from 1 that are never reused:
+- `sceHttpSendRequest` answers `0x80431063` (network). PS4Recomp and the native port family answer
+  the same; shadPS4 sends in the background and then answers `0x80431065`. Either way, the job ends
+  failed.
+- The response calls answer `0x80431065`.
+- Ids that are not live answer `0x80431100`, a missing URL `0x80433060`, and NULL results
+  `0x804311fe` (shadPS4's codes).
+
+**What stops by name** (each needs a maintainer ruling or a real network to settle):
+- type 6 peer-to-peer sockets and other families;
+- binding port 0 (the PS4's ephemeral port is not known);
+- connect or datagrams to loopback (no loopback stack);
+- reading an option that was never set (the PS4's defaults are not known);
+- asynchronous resolving, listening while unbound, and abort flags;
+- non-HTTP URLs, methods other than GET, POST and PUT, and full tables.
+
 ## The network errno and epoll sets (`sceNetErrnoLoc`, `sceNetEpoll*`)
 
 Facts from shadPS4's `libSceNet` (`net.cpp`, `guest_net.cpp`,

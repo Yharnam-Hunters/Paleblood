@@ -9,4 +9,9 @@
    sceHttpsDisableOption; 0 for an id that is no template. A future HTTPS request reads them. */
 uint32_t rt_http_template_ssl_flags(int32_t id);
 
+/* Whether a template id is live, and whether a handle from sceHttpCreateEpoll is (aborted or not);
+   runtime/syslib/http_requests.c builds connections and requests on them. */
+int rt_http_template_is_live(int32_t id);
+int rt_http_epoll_is_live(const void *handle);
+
 #endif
