@@ -59,3 +59,8 @@ target_compile_definitions(test_depth_target_observer_absent PRIVATE PB_DEPTH_OB
 target_compile_options(test_depth_target_observer_absent PRIVATE -ffp-contract=off -fno-fast-math)
 target_link_libraries(test_depth_target_observer_absent PRIVATE ${CMAKE_DL_LIBS} pthread)
 add_test(NAME depth_target_observer_absent COMMAND test_depth_target_observer_absent)
+
+# The camera fixture generator and verifier contracts are checked beside their game-owned inputs.
+add_test(NAME camera_update_cases
+         COMMAND ${Python3_EXECUTABLE}
+                 "${CMAKE_CURRENT_SOURCE_DIR}/camera/tests/test_update_cases.py")

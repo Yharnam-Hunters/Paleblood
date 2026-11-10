@@ -249,12 +249,12 @@ of the current table, in functions and bytes (generated):
 <!-- source-files:start -->
 | Library | Functions | Bytes | Direct | File range | Library range |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| engine | 84,215 | 20,867,168 | 682 | 3,297 | 80,236 |
+| engine | 84,215 | 20,867,190 | 682 | 3,297 | 80,236 |
 | havok | 21,098 | 8,391,800 | 325 | 596 | 20,177 |
 | fmod | 4,272 | 1,065,798 | 402 | 1,182 | 2,688 |
 | yebis | 2,183 | 823,127 | 74 | 805 | 1,304 |
 | havokscript | 1,278 | 469,776 | 188 | 405 | 685 |
 | sce-gnmx | 113 | 30,745 | 7 | 20 | 86 |
 | untagged | 44,598 | 10,838,933 | | | |
-| all | 157,757 | 42,487,347 | | | |
+| all | 157,757 | 42,487,369 | | | |
 <!-- source-files:end -->
