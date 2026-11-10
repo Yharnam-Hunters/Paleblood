@@ -1432,6 +1432,43 @@ and modification times and the size on 0, and treats any other answer as no file
 is imported by `eboot`, `libc` and `libSceFios2`. Each guest thread runs on its own host thread,
 so a thread-local `int` is that thread's `errno`; it starts at 0, and success leaves it alone.
 
+### Truncating by name, and the POSIX mkdir, rmdir and rename
+
+`sceKernelTruncate(path, length)` (imported by `eboot` and `libSceFios2`) is FreeBSD's
+[`truncate(2)`](https://man.freebsd.org/cgi/man.cgi?query=truncate&sektion=2&manpath=FreeBSD+9.0-RELEASE)
+under its SCE name: 0, or `0x80020000` plus the error number. The shape is OpenOrbis
+`libkernel.h`'s; the executable's wrapper (`0x024733a4`) passes a 64-bit length and turns each
+`0x8002xxxx` answer into an engine error through a table (`0x02473530`). `eboot` also imports
+[`mkdir`](https://man.freebsd.org/cgi/man.cgi?query=mkdir&sektion=2&manpath=FreeBSD+9.0-RELEASE),
+[`rmdir`](https://man.freebsd.org/cgi/man.cgi?query=rmdir&sektion=2&manpath=FreeBSD+9.0-RELEASE) and
+[`rename`](https://man.freebsd.org/cgi/man.cgi?query=rename&sektion=2&manpath=FreeBSD+9.0-RELEASE)
+from `libScePosix`: 0, or -1 with `errno` set. The executable's calls (`0x00df0bf4`, `0x00e03e68`,
+`0x00e03ddb` and others) ignore the answer or only compare it with 0. (`sceKernelRename` and
+`sceKernelFtruncate` are under "Opening and reading".)
+
+**What the runtime does:**
+- **Paths** resolve as for opening: `/data`, the mounted save data, and `/app0`.
+- **Errors** are FreeBSD's numbers, never the host's: `ENOENT`, `ENOTDIR`, `EEXIST`, `EISDIR`,
+  `EINVAL` and `ENOTEMPTY` (66 on FreeBSD, 39 on Linux).
+- **`rmdir`** of a mount's own root is `EBUSY` (the man page's "mount point for a mounted file
+  system").
+- **`rename`** across mounts is `EXDEV`, after the source and the target's folder are looked up,
+  in FreeBSD's order (stable/9
+  [`vfs_syscalls.c`](https://cgit.freebsd.org/src/tree/sys/kern/vfs_syscalls.c?h=stable/9),
+  `kern_renameat`). A directory over a non-empty one is `ENOTEMPTY`.
+- **`truncate`** with a negative length is `EINVAL` before the lookup (`kern_truncate`; Linux checks
+  it first too); a directory is `EISDIR`. Growing a file fills with zero bytes.
+- **A new directory's mode** is `mode & 0777` less the host's umask. The PS4 process's umask is
+  not established.
+
+**What stops by name:**
+- no path;
+- any change under a read-only mount (`/app0`, save data mounted to read). FreeBSD answers
+  `EROFS`, but only after lookups whose order the runtime does not model for each call, and the
+  title's callers change only `/data` and its saves;
+- renaming a mount's root;
+- any other host error (`EACCES`, `ENOSPC`, `EIO` and the rest).
+
 ### Opening and reading
 
 `sceKernelOpen`, `sceKernelRead`, `sceKernelPread`, `sceKernelLseek`, `sceKernelFstat` and
