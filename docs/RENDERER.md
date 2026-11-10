@@ -144,13 +144,15 @@ Instead:
      - **Descriptors from memory:** each MIMG instruction's descriptor is found from the code before
        it (`gcn_resource_origin`): the user data's when nothing writes its SGPRs first, or loaded
        from memory when the last write is a whole `s_load_dwordx8` at an immediate offset from a
-       user-data pointer pair that nothing writes. The executor reads such a descriptor from guest
+       user-data pointer pair that nothing writes before it. The executor reads such a descriptor from guest
        memory when the draw runs. The same SGPRs can name different images at different
        instructions: the game's fullscreen pass reads the user data's image, then loads another
        descriptor over it. With branches in the program a load is followed only when every path to
        the instruction passes it: no branch lands between the load and the use, every branch target
-       is known, no loop goes back to the use after a later write to those SGPRs, and nothing writes
-       the pointer pair. Writes before the load do not matter (the game's guarded samples keep a
+       is known, no loop goes back to the use after a later write to those SGPRs, and, when a branch
+       goes back to the load or before it, nothing at all writes the pointer pair (without one, code
+       after the load may reuse the pointer's SGPRs, as the character creation preview's pixel
+       shaders do once their samples are done). Writes before the load do not matter (the game's guarded samples keep a
        compare's mask there, then branch over the load and the use together). Any other write (a scalar
        move, a compare's result, a written pointer) stops by name.
      - **Tiled layouts** (`runtime/tiling.h`): where each texel of an image lies in guest memory, for
