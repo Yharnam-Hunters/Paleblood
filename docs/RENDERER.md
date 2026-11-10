@@ -117,7 +117,8 @@ Instead:
        is what it picks too when the image has one level and the sampler's minifying and magnifying
        filters agree, which the executor requires. The executor makes a Vulkan sampler from the S#
        (the Sea Islands manual's layout, as shadPS4's `resource.h` names its fields): wrap, mirror
-       and clamp to the last texel; point or bilinear filtering. Anisotropy, depth compares,
+       and clamp to the last texel; point or bilinear filtering. The anisotropy fields are accepted with point or
+       bilinear filters, which they do not affect; anisotropic filters, depth compares,
        unnormalized coordinates, border and mirror-once modes and the truncation options stop by
        name, as does bilinear sampling of a format the device cannot filter. Filtering precision is
        the host GPU's.

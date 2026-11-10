@@ -2172,17 +2172,22 @@ static int stage_images(rt_executor *x, uint64_t code, const uint32_t *user, uin
 
    Made: wrap, mirror and clamp to the last texel (Vulkan's repeat, mirrored repeat and clamp to
    edge), point or bilinear filtering with the minifying and magnifying filters equal (the translator
-   samples level 0; with one level and equal filters that is what the GPU picks too). Anything else in
-   word 0 (anisotropy, depth compares, unnormalized coordinates, the truncation and degamma options, a
-   filter mode other than blending) stops by name. Words 1 and 3 and the LOD bias and mip and z filters
+   samples level 0; with one level and equal filters that is what the GPU picks too). The anisotropy
+   fields (MAX_ANISO_RATIO, ANISO_THRESHOLD, ANISO_BIAS) shape only the anisotropic filters (XY filters
+   2 and 3; Mesa's radeonsi switches XY_MAG_FILTER and XY_MIN_FILTER to them exactly when it asks for
+   anisotropy), so with point or bilinear filters they change nothing and are accepted. Anything else
+   in word 0 (depth compares, unnormalized coordinates, the truncation and degamma options, a filter
+   mode other than blending) stops by name. Words 1 and 3 and the LOD bias and mip and z filters
    change nothing for a one-level image sampled at level 0. */
 static VkSampler sampler_for(rt_executor *x, const uint32_t words[4], char *error, size_t error_size)
 {
     for (size_t i = 0; i < x->sampler_count; i++)
         if (!memcmp(x->samplers[i].words, words, sizeof x->samplers[i].words)) return x->samplers[i].sampler;
-    enum { CLAMP_BITS = 9, WRAP = 0, MIRROR = 1, CLAMP_LAST_TEXEL = 2, POINT = 0, BILINEAR = 1 };
-    if (words[0] >> CLAMP_BITS) {
-        failed(error, error_size, "a sampler with word 0 %#x (anisotropy, depth compares, unnormalized coordinates or filter options): "
+    enum { CLAMP_FIELDS = 0x1ff, WRAP = 0, MIRROR = 1, CLAMP_LAST_TEXEL = 2, POINT = 0, BILINEAR = 1 };
+    enum { MAX_ANISO_RATIO = 0x7u << 9, ANISO_THRESHOLD = 0x7u << 16, ANISO_BIAS = 0x3fu << 21 };
+    const uint32_t anisotropy_fields = MAX_ANISO_RATIO | ANISO_THRESHOLD | ANISO_BIAS;
+    if (words[0] & ~(CLAMP_FIELDS | anisotropy_fields)) {
+        failed(error, error_size, "a sampler with word 0 %#x (depth compares, unnormalized coordinates or filter options): "
                "not done yet", words[0]);
         return VK_NULL_HANDLE;
     }
