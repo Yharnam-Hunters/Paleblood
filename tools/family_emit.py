@@ -40,6 +40,80 @@ extern "C" uint64_t {symbol}(void)
 }}
 ''',
     },
+    'reads_qword_field': {
+        'header': '''\
+// 64-bit field getters: every member of the reads_qword_field family (symbols/families.csv) is
+// `mov rax, [rdi+K]; ret`, a getter that returns the 64-bit field (often a pointer) K bytes into
+// its object. One replacement per offset K.
+''',
+        'shared': '#include "object_field.h"\n',
+        'per_value': '''\
+constexpr std::size_t offset_{name} = {value};
+extern "C" uint64_t {symbol}(const ObjectWithFieldAt<offset_{name}, uint64_t> *object)
+{{
+    return object->field;
+}}
+''',
+    },
+    'reads_dword_field': {
+        'header': '''\
+// 32-bit field getters: every member of the reads_dword_field family (symbols/families.csv) is
+// `mov eax, [rdi+K]; ret`. The 32-bit load clears the upper half of rax, so each replacement
+// returns the field zero-extended to 64 bits; the family's cases compare all of rax.
+''',
+        'shared': '#include "object_field.h"\n',
+        'per_value': '''\
+constexpr std::size_t offset_{name} = {value};
+extern "C" uint64_t {symbol}(const ObjectWithFieldAt<offset_{name}, uint32_t> *object)
+{{
+    return object->field;
+}}
+''',
+    },
+    'reads_word_field': {
+        'header': '''\
+// 16-bit field getters: every member of the reads_word_field family (symbols/families.csv) is
+// `movzx eax, word [rdi+K]; ret`: the field zero-extended to all of rax.
+''',
+        'shared': '#include "object_field.h"\n',
+        'per_value': '''\
+constexpr std::size_t offset_{name} = {value};
+extern "C" uint64_t {symbol}(const ObjectWithFieldAt<offset_{name}, uint16_t> *object)
+{{
+    return object->field;
+}}
+''',
+    },
+    'reads_byte_field': {
+        'header': '''\
+// 8-bit field getters: every member of the reads_byte_field family (symbols/families.csv) is
+// `movzx eax, byte [rdi+K]; ret`: the field zero-extended to all of rax. (`mov al, [rdi+K]`
+// keeps the caller's upper bytes of rax, so it is not part of this family.)
+''',
+        'shared': '#include "object_field.h"\n',
+        'per_value': '''\
+constexpr std::size_t offset_{name} = {value};
+extern "C" uint64_t {symbol}(const ObjectWithFieldAt<offset_{name}, uint8_t> *object)
+{{
+    return object->field;
+}}
+''',
+    },
+    'field_address': {
+        'header': '''\
+// Member and base addresses: every member of the field_address family (symbols/families.csv) is
+// `lea rax, [rdi+K]; ret`, which returns the address K bytes into its object (a member, or a
+// base-class part of a derived object) without reading memory.
+''',
+        'shared': '#include "object_field.h"\n',
+        'per_value': '''\
+constexpr std::size_t offset_{name} = {value};
+extern "C" uint8_t *{symbol}(ObjectWithFieldAt<offset_{name}, uint8_t> *object)
+{{
+    return &object->field;
+}}
+''',
+    },
 }
 
 

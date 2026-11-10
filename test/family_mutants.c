@@ -40,3 +40,15 @@ uint64_t bb_mutant_returns_first_argument(uint64_t first)
 {
     return first;
 }
+
+/* Reads the first 32 bits of its object: the wrong width for a 64-bit getter. */
+uint64_t bb_mutant_reads_first_dword(const uint32_t *object)
+{
+    return *object;
+}
+
+/* Reads the first 64 bits of its object: the wrong width for a 32-bit getter. */
+uint64_t bb_mutant_reads_first_qword(const uint64_t *object)
+{
+    return *object;
+}
