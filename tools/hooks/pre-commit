@@ -60,6 +60,10 @@ git checkout-index -a --prefix="$tmp/"
 python3 "$tmp/tools/validate_functions.py" --root "$tmp" || fail "functions.csv / hooks.csv validation failed"
 python3 "$tmp/tools/progress.py" --root "$tmp" --check \
     || fail "README progress block is stale: run tools/progress.py --update-readme and stage README.md"
+if [ -f "$tmp/tools/source_files.py" ]; then
+    python3 "$tmp/tools/source_files.py" --root "$tmp" --check \
+        || fail "symbols/source_files.csv is stale: run tools/source_files.py --elf ELF and stage it"
+fi
 if [ -f "$tmp/tools/check_readable.py" ]; then
     # the list may only shrink against HEAD's (when HEAD has one: not on the commit introducing it)
     base=()
