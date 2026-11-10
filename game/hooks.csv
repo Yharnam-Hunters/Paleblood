@@ -75,6 +75,7 @@ address,replacement,system,returns
 0x01476790,bb_render_configure_screen_scissor,render,void
 0x01476980,bb_render_emit_pa_cl_vte_cntl,render,void
 0x014769e0,bb_render_emit_present_last_record_packet,render,i64
+0x01477150,bb_render_set_pa_sc_mode_cntl_0,render,void
 0x01477b30,bb_render_command_emit_counter_operation,render,void
 0x014784a0,bb_render_command_prepare_submission,render,void
 0x01485070,bb_render_set_present_last_record_depth_compress_disable,render,i64
@@ -101,6 +102,7 @@ address,replacement,system,returns
 0x01489940,bb_render_record_descriptor_count_exponent,render,i32
 0x01489960,bb_render_record_descriptor_encoding,render,i32
 0x01489c40,bb_render_record_step_user_pa_enabled,render,i8
+0x01496f60,bb_render_configure_viewport_and_guard_band,render,void
 0x0149c4e0,bb_render_initialize_record_geometry_flags,render,i32
 0x0149c850,bb_render_record_apply_parameter_tuple,render,i32
 0x0149cb30,bb_render_record_apply_mapping,render,i32
