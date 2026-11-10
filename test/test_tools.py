@@ -268,6 +268,23 @@ class GameData(unittest.TestCase):
         os.makedirs(os.path.join(self.d, 'docs'), exist_ok=True)
         self.assertEqual(self.check('docs/shot.png', self.PNG).returncode, 1)
 
+    def test_allowlisted_frame_may_be_up_to_8_mib(self):
+        self.allow('docs/assets/frame.png  # pbboot --display-capture: a renderer frame\n')
+        frame = self.PNG + b'\0' * (8 * 1024 * 1024 - len(self.PNG))
+        r = self.check('docs/assets/frame.png', frame)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_allowlisted_frame_over_8_mib_refused(self):
+        self.allow('docs/assets/frame.png  # pbboot --display-capture: a renderer frame\n')
+        r = self.check('docs/assets/frame.png', self.PNG + b'\0' * (9 * 1024 * 1024))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('byte limit', r.stderr)
+
+    def test_unlisted_3_mib_file_refused(self):
+        self.allow('docs/assets/frame.png  # pbboot --display-capture: a renderer frame\n')
+        self.assertEqual(self.check('docs/assets/data.txt', b'a' * (3 * 1024 * 1024)).returncode, 1)
+        self.assertEqual(self.check('docs/assets/other.png', self.PNG + b'\0' * (3 * 1024 * 1024)).returncode, 1)
+
     def test_unlisted_file_in_assets_refused(self):
         self.allow('docs/assets/verify.gif  # tools/verify.py run\n')
         self.assertEqual(self.check('docs/assets/other.png', self.PNG).returncode, 1)
