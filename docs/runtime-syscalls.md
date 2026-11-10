@@ -1426,8 +1426,13 @@ the next block.
 - A call waits until the block before it would have finished playing, then answers 0 (the caller
   only checks the sign).
 - A port that falls behind starts again from now.
+- No block (`samples` NULL) hands nothing over: the call waits until the port has room for the next
+  block and answers 0, without moving the port's timeline on. shadPS4 (`audioout.cpp`) waits for the
+  port's buffer to drain and copies nothing for a null pointer, returning 0 samples; PS4Recomp
+  (`ps4_audioout.c`) waits for room and pushes nothing, returning 0. The movie player's sound thread
+  calls it so when it has no sound to give (found during the opening movie).
 
-**What stops by name:** a missing block, and a handle the runtime did not hand out.
+**What stops by name:** a handle the runtime did not hand out.
 
 `int32_t sceAudioOutGetPortState(handle, void *state)`, as the SDK declares it, reports a port's
 state. Its `_types/audio_out.h` gives the layout (32 bytes): a 16-bit output, an 8-bit channel

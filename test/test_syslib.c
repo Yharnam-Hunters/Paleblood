@@ -891,8 +891,6 @@ static const int32_t ao_unity[8] = {32768, 32768, 32768, 32768, 32768, 32768, 32
 static void ao_volume_extra_channel(void) { ao_volume_fn(ao_stereo_port, 0x7, ao_unity); }
 static void ao_volume_unknown_port(void) { ao_volume_fn(99, 0x3, ao_unity); }
 typedef int32_t (*f_ao_output)(int32_t, const void *);
-static f_ao_output ao_output_fn;
-static void ao_output_no_samples(void) { ao_output_fn(1, NULL); }
 static void ao_volume_too_loud(void) { const int32_t v[8] = {40000}; ao_volume_fn(ao_stereo_port, 0x1, v); }
 
 /* sceKernelStat under /app0, served from a scratch directory. */
@@ -2698,8 +2696,14 @@ int main(void)
             for (int i = 0; i < 20; i++) CHECK(ao_output(port, block) == 0);
             const long elapsed = elapsed_us(&start);
             CHECK(elapsed >= 100000 && elapsed < 300000);
-            ao_output_fn = ao_output;
-            CHECK(died_in_fatal(ao_output_no_samples));
+            /* no block (NULL): wait for room, hand nothing over, so the timeline does not move on;
+               three such calls take about one block (5.33 ms), not three (16 ms), as shadPS4's and
+               PS4Recomp's waits for room without queueing */
+            clock_gettime(CLOCK_MONOTONIC, &start);
+            for (int i = 0; i < 3; i++) CHECK(ao_output(port, NULL) == 0);
+            CHECK(elapsed_us(&start) < 10000);
+            CHECK(ao_output(port, block) == 0); /* the next block about a block after the last one */
+            CHECK(elapsed_us(&start) < 15000);
         }
         /* sceAudioOutGetPortState: nothing is heard, so output (the first 16 bits) is 0. */
         typedef int32_t (*f_ao_state)(int32_t, void *);
