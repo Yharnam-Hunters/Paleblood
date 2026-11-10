@@ -124,11 +124,12 @@ typedef struct {
     uint32_t reads;                                     /* a test compares with the buffer (not always or never) */
 } depth_plan;
 
-/* The image standing for a depth target, found by its depth and stencil buffers' addresses: written
-   only by draws, so it starts cleared; drawn says whether a draw has written it since, which a test
-   that reads it needs (its contents in guest memory are never loaded). */
+/* The image standing for a depth target, found by its depth and stencil buffers' addresses and the
+   slice a view names: written only by draws, so it starts cleared; drawn says whether a draw has
+   written it since, which a test that reads it needs (its contents in guest memory are never loaded). */
 typedef struct {
     uint64_t z_address, stencil_address;
+    uint32_t slice;                  /* DB_DEPTH_VIEW's slice: each slice of an array target is an image of its own */
     uint32_t width, height;
     int drawn;
     VkFormat format;
@@ -1266,8 +1267,12 @@ static depth_entry *depth_for(rt_executor *x, const draw_state *s, char *error, 
 {
     enum { SLICE_START_MASK = 0x7ff, SLICE_MAX_SHIFT = 13, SLICE_MAX_MASK = 0x7ff, TILE = 8 };
     const uint32_t *r = s->depth_target;
-    if ((s->depth_view & SLICE_START_MASK) || (s->depth_view >> SLICE_MAX_SHIFT & SLICE_MAX_MASK)) {
-        failed(error, error_size, "a depth target view of slices other than 0 (DB_DEPTH_VIEW %#x): not drawn yet", s->depth_view);
+    /* DB_DEPTH_VIEW: SLICE_START bits 0-10, SLICE_MAX 13-23 (gfx_7_2_sh_mask.h); a draw into one slice of
+       an array target writes only it, so a slice is kept as its own image (nothing loads or reads the
+       slices as one array yet) */
+    const uint32_t slice = s->depth_view & SLICE_START_MASK;
+    if ((s->depth_view >> SLICE_MAX_SHIFT & SLICE_MAX_MASK) != slice) {
+        failed(error, error_size, "a depth target view of more than one slice (DB_DEPTH_VIEW %#x): not drawn yet", s->depth_view);
         return NULL;
     }
     const VkFormat format = depth_format(x, r[Z_INFO], r[STENCIL_INFO], error, error_size);
@@ -1276,7 +1281,7 @@ static depth_entry *depth_for(rt_executor *x, const draw_state *s, char *error, 
     const uint32_t width = ((r[DEPTH_SIZE] & 0x7ff) + 1) * TILE, height = ((r[DEPTH_SIZE] >> 11 & 0x7ff) + 1) * TILE;
     for (size_t i = 0; i < x->depth_count; i++) {
         depth_entry *d = &x->depths[i];
-        if (d->z_address != z_address || d->stencil_address != stencil_address) continue;
+        if (d->z_address != z_address || d->stencil_address != stencil_address || d->slice != slice) continue;
         if (d->width == width && d->height == height && d->format == format) return d;
         failed(error, error_size, "depth target %#llx changed size or format: not drawn yet", (unsigned long long)z_address);
         return NULL;
@@ -1286,7 +1291,8 @@ static depth_entry *depth_for(rt_executor *x, const draw_state *s, char *error, 
         return NULL;
     }
     depth_entry *d = &x->depths[x->depth_count];
-    *d = (depth_entry){.z_address = z_address, .stencil_address = stencil_address, .width = width, .height = height, .format = format};
+    *d = (depth_entry){.z_address = z_address, .stencil_address = stencil_address, .slice = slice, .width = width, .height = height,
+                       .format = format};
     const VkImageAspectFlags aspects = (format == VK_FORMAT_S8_UINT ? 0 : VK_IMAGE_ASPECT_DEPTH_BIT) |
                                        (format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_D32_SFLOAT ? 0 : VK_IMAGE_ASPECT_STENCIL_BIT);
     const VkImageCreateInfo image = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = format,
