@@ -1567,6 +1567,14 @@ queue for the engine-level graphics layer, and answers ids from 1.
 
 **What stops by name:** mapping the same pipe and queue twice, and a missing ring or read pointer.
 
+**The renderer and compute queues.** `sceGnmDingDong` completes each indirect buffer the ring points
+to (the temporary stand-in in `runtime/syslib/gnm.c`), then hands it to the renderer, which drops its
+recorded calls without running them (`rt_renderer_skip`): compute queues do not run on the renderer
+yet. Dropping them matters because a shader bound in a command buffer is recorded by its address. A
+compute queue's buffer is never submitted to the graphics queue, so before this its bindings stayed
+waiting, and a graphics buffer later built in the same memory picked them up: on the main menu after
+Play Offline, a stale compute shader replaced the one the graphics buffer had just bound.
+
 ## Kernel event queues (`sceKernelCreateEqueue`, `sceKernelWaitEqueue`, `sceKernelDeleteEqueue`, issue #34)
 
 The PS4 kernel is FreeBSD's, whose kqueue delivers `struct kevent`: ident (64-bit), filter (16-bit),

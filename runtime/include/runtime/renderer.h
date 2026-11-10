@@ -24,6 +24,13 @@ void rt_renderer_configure(int enabled);
 /* A command buffer the title submitted: its address and size in bytes. */
 void rt_renderer_submit(const char *function, const void *buffer, uint32_t bytes);
 
+/* A command buffer the title handed to a compute queue (sceGnmDingDong follows the ring's indirect
+   buffers): its recorded calls are taken and dropped, not run, since compute queues do not run on the
+   renderer yet. Taking them keeps them out of a later buffer that reuses the same memory: a shader
+   bound in a compute queue's buffer is placed by address (rt_renderer_bind_shader), and a graphics
+   buffer submitted later over that address would otherwise pick it up. */
+void rt_renderer_skip(const char *function, const void *buffer, uint32_t bytes);
+
 /* A vertex, pixel or compute shader the title bound (sceGnmSetVsShader, sceGnmSetPsShader and their
    Update forms, sceGnmSetCsShader): its register block, 7 words for a vertex or compute shader and 12
    for a pixel shader

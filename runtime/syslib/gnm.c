@@ -251,7 +251,9 @@ RT_SYSLIB("libSceGnmDriver", sceGnmMapComputeQueue, map_compute_queue);
      DISPATCH_DIRECT         skipped: compute shaders do not run, so their output is never written;
      RELEASE_MEM             performed: the "work done" value goes to its memory address, which is
                              what the CPU waits on.
-   Then the read pointer moves to the write offset, so the ring never fills. Any other packet, or a
+   Each indirect buffer is then handed to the renderer, which drops its recorded calls without
+   running them (rt_renderer_skip, runtime/renderer.h). Then the read pointer moves to the write
+   offset, so the ring never fills. Any other packet, or a
    completion this stand-in does not perform, stops by name. */
 #define PM4_TYPE_SHIFT 30
 #define PM4_TYPE3 3u
@@ -399,7 +401,9 @@ static _Noreturn void unknown_packet(const char *fn, uint32_t opcode, uint32_t l
 
 static void complete_packets(const char *fn, const uint32_t *packets, uint32_t dwords, int depth, int is_ring);
 
-static void follow_indirect_buffer(const char *fn, const uint32_t *packet, int depth)
+/* Completes an indirect buffer's packets. One a compute ring points to is also handed to the
+   renderer, which drops its recorded calls (rt_renderer_skip): compute queues do not run there yet. */
+static void follow_indirect_buffer(const char *fn, const uint32_t *packet, int depth, int from_ring)
 {
     if (depth == MAX_INDIRECT_BUFFER_DEPTH) rt_fatal(fn, "indirect buffers nested deeper than the stand-in follows");
     const uint32_t *buffer = (const uint32_t *)(uintptr_t)(packet[1] |
@@ -407,6 +411,7 @@ static void follow_indirect_buffer(const char *fn, const uint32_t *packet, int d
     const uint32_t dwords = packet[3] & INDIRECT_BUFFER_SIZE_MASK;
     if (!buffer && dwords) rt_fatal(fn, "an INDIRECT_BUFFER without an address");
     complete_packets(fn, buffer, dwords, depth + 1, 0);
+    if (from_ring) rt_renderer_skip(fn, buffer, dwords * (uint32_t)sizeof(uint32_t));
 }
 
 /* Acts on each packet in turn. A compute ring holds only INDIRECT_BUFFER packets; a command buffer
@@ -421,7 +426,7 @@ static void complete_packets(const char *fn, const uint32_t *packets, uint32_t d
         if (length > dwords - at) rt_fatal(fn, "a packet running past the end of its buffer");
         const uint32_t *packet = packets + at;
         if (opcode == PM4_INDIRECT_BUFFER && length == INDIRECT_BUFFER_DWORDS) {
-            follow_indirect_buffer(fn, packet, depth);
+            follow_indirect_buffer(fn, packet, depth, is_ring);
         } else if (is_ring) {
             rt_fatal(fn, "a compute ring packet other than INDIRECT_BUFFER");
         } else if (opcode == PM4_RELEASE_MEM && length == RELEASE_MEM_DWORDS) {
