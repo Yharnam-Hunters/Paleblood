@@ -190,19 +190,26 @@ static void image_programs(void)
     CHECK(gcn_image_resources(branch_first, 1 + sizeof pixel_two_images / 4, found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
           strstr(error, "s_cbranch_scc0"));
     /* With branches: a load followed when every path to the use passes it. An s_cbranch_execz over
-       both the load and the use (the game's guarded samples): from memory. A branch over the load
-       that lands before the use, a second load into the same SGPRs, or a write to the pointer
-       anywhere: refused by name. */
+       both the load and the use (the game's guarded samples): from memory; with a compare's mask
+       in those SGPRs before the load, or an earlier load into them, the load before the use still
+       counts. A branch over the load that lands before the use, a loop back to the use after a
+       write to those SGPRs, or a write to the pointer anywhere: refused by name. */
     static const uint32_t guarded[] = {0xbf880003, 0xc0c00904, 0xf0000f00, 0x00000401, 0xbf810000}; /* s_cbranch_execz to s_endpgm */
     static const uint32_t skipped_load[] = {0xbf840001, 0xc0c00904, 0xf0000f00, 0x00000401, 0xbf810000}; /* s_cbranch_scc0 to the use */
-    static const uint32_t loaded_twice[] = {0xbf880004, 0xc0c00904, 0xc0c00908, 0xf0000f00, 0x00000401, 0xbf810000};
+    static const uint32_t loaded_twice[] = {0xbf880004, 0xc0c00904, 0xc0c00908, 0xf0000f00, 0x00000401, 0xbf810000}; /* offsets 16, 32 */
+    static const uint32_t masked_first[] = {0xd0020000, 0x00020100, 0xbf880003, 0xc0c00904, 0xf0000f00, 0x00000401, 0xbf810000}; /* v_cmp_lt_f32 s[0:1] */
+    static const uint32_t looped[] = {0xc0c00904, 0xf0000f00, 0x00000401, 0xbe800380, 0xbf84fffc, 0xbf810000}; /* s_mov_b32 s0, 0; back to the use */
     static const uint32_t pointer_later[] = {0xbf880004, 0xc0c00904, 0xf0000f00, 0x00000401, 0xbe880380, 0xbf810000}; /* s_mov_b32 s8, 0 after */
     CHECK(gcn_image_resources(PROGRAM(guarded), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
     CHECK(count == 1 && found[0].origin.from_memory && found[0].origin.pointer_sgpr == 8 && found[0].origin.offset == 16);
     CHECK(gcn_image_resources(PROGRAM(skipped_load), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
           strstr(error, "lands at dword 2, between the load and its use"));
-    CHECK(gcn_image_resources(PROGRAM(loaded_twice), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
-          strstr(error, "s_cbranch_execz"));
+    CHECK(gcn_image_resources(PROGRAM(loaded_twice), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0 &&
+          count == 1 && found[0].origin.offset == 32);
+    CHECK(gcn_image_resources(PROGRAM(masked_first), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0 &&
+          count == 1 && found[0].origin.from_memory && found[0].origin.offset == 16);
+    CHECK(gcn_image_resources(PROGRAM(looped), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
+          strstr(error, "s_cbranch_scc0"));
     CHECK(gcn_image_resources(PROGRAM(pointer_later), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
           strstr(error, "loaded through s[8:9], which the program writes"));
     /* the two-image program translates with both bound, and stops naming the loaded one without it */
