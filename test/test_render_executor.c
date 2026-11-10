@@ -1076,6 +1076,30 @@ int main(void)
             for (unsigned i = 0; i < LANES * 4; i++) same &= back[i] == (float)i * 0.25f;
             CHECK(same);
         }
+
+        /* An 8_8_8_8 uint image (DATA_FORMAT 10, NUM_FORMAT 4), linear: each texel's four bytes read
+           back as four integers, red first. */
+        {
+            uint8_t *const bytes = (uint8_t *)(uintptr_t)at(IMAGE_B + 0xc000);
+            for (unsigned i = 0; i < LANES * 4; i++) bytes[i] = (uint8_t)(i * 7 + 3);
+            uint32_t *const words = (uint32_t *)back;
+            for (unsigned i = 0; i < LANES * 4; i++) words[i] = 0xeeeeeeeeu;
+            rt_render_forget(), rt_executor_reset(x);
+            image_descriptor(image_b, at(IMAGE_B + 0xc000), 10, 4, LANES, 1);
+            image_b[3] |= 8u << 20;
+            const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(codes[2] >> 8), (uint32_t)(codes[2] >> 40), 0x3, 16 << 1, LANES, 1, 1};
+            CHECK(rt_render_record_compute_shader_at(IMAGES + 0x10, shader) == 0);
+            descriptor(user, at(BACK), 16), memcpy(user + 8, image_b, sizeof image_b);
+            CHECK(rt_render_record_user_data(IMAGES, 0x20, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+            CHECK(rt_render_record_user_data(IMAGES, 0x30, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
+            CHECK(rt_render_record_dispatch(IMAGES, 0x40, one, error, sizeof error) == 0);
+            const int loaded = rt_executor_run(x, IMAGES, 0x50, error, sizeof error);
+            if (loaded) fprintf(stderr, "8_8_8_8 uint image: %s\n", error);
+            CHECK(loaded == 0);
+            int same = 1;
+            for (unsigned i = 0; i < LANES * 4; i++) same &= words[i] == (uint8_t)(i * 7 + 3);
+            CHECK(same);
+        }
     }
 
     sampled_images(x);

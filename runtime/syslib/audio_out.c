@@ -20,8 +20,8 @@
    SDK's (_types/audio_out.h names 0, 1, 3 and 4; shadPS4's audioout.h adds 2 and 5 as the
    eight-channel forms).
 
-   The runtime records each open port and hands out handles from 1; sound output belongs to the
-   output calls, which stop by name until they are implemented. What is not established stops by
+   The runtime records each open port and hands out handles from 1, the lowest one free, so a closed
+   port's handle is handed out again (shadPS4's audioout.cpp also reuses a closed port's slot). What is not established stops by
    name: any open other than the observed ones (256 float samples in formats 4 and 5, or 1024 samples
    in formats 0 to 5, at 48000 Hz), and running out of handles. */
 #include "runtime/audio_host.h"
@@ -58,11 +58,22 @@ typedef struct {
     struct timespec played; /* when the buffer handed over last finishes playing (monotonic) */
     void *host;             /* the host stream, with --audio host */
     int volume_set;         /* until the title sets volumes, the port plays at 0 dB */
+    int open;
 } audio_port;
 
 static atomic_int initialized;
-static atomic_int ports_opened;
+static pthread_mutex_t ports_lock = PTHREAD_MUTEX_INITIALIZER; /* handing out and taking back handles */
 static audio_port ports[MAX_PORTS + 1];
+
+/* Whether a handle names an open port. */
+static int port_open(int32_t handle)
+{
+    if (handle < 1 || handle > MAX_PORTS) return 0;
+    pthread_mutex_lock(&ports_lock);
+    const int open = ports[handle].open;
+    pthread_mutex_unlock(&ports_lock);
+    return open;
+}
 
 static int32_t audio_out_init(void)
 {
@@ -82,15 +93,19 @@ static int32_t audio_out_open(int32_t user, int32_t port_type, int32_t index, ui
     if (rate != OBSERVED_RATE || (!main_port && !movie_port))
         rt_fatal(fn, "a length, rate or format other than the observed: 256 float samples (2 or 8 channels), or 1024 samples "
                      "in formats 0 to 5, at 48000 Hz");
-    const int handle = atomic_fetch_add(&ports_opened, 1) + 1; /* handles from 1 */
-    if (handle > MAX_PORTS) rt_fatal(fn, "more ports than the runtime hands out handles for");
     static const uint32_t channels_of[] = {1, 2, 8, 1, 2, 8}; /* by format: mono, stereo, eight channels */
-    ports[handle] = (audio_port){length, rate, format, channels_of[format], {0}, PTHREAD_MUTEX_INITIALIZER, {0, 0}, NULL, 0};
+    void *host = NULL;
     if (rt_audio_host_enabled()) {
         char error[160];
-        ports[handle].host = rt_audio_host_open(ports[handle].channels, rate, error, sizeof error);
-        if (!ports[handle].host) rt_fatal(fn, error);
+        host = rt_audio_host_open(channels_of[format], rate, error, sizeof error);
+        if (!host) rt_fatal(fn, error);
     }
+    pthread_mutex_lock(&ports_lock);
+    int handle = 1; /* the lowest free, from 1 */
+    while (handle <= MAX_PORTS && ports[handle].open) handle++;
+    if (handle > MAX_PORTS) rt_fatal(fn, "more open ports than the runtime hands out handles for");
+    ports[handle] = (audio_port){length, rate, format, channels_of[format], {0}, PTHREAD_MUTEX_INITIALIZER, {0, 0}, host, 0, 1};
+    pthread_mutex_unlock(&ports_lock);
     return handle;
 }
 
@@ -102,8 +117,7 @@ static int32_t audio_out_open(int32_t user, int32_t port_type, int32_t index, ui
 static int32_t audio_out_set_volume(int32_t handle, int32_t flag, const int32_t *volume)
 {
     static const char fn[] = "sceAudioOutSetVolume";
-    if (handle < 1 || handle > atomic_load(&ports_opened))
-        rt_fatal(fn, "a handle the runtime did not hand out: the error value is not established");
+    if (!port_open(handle)) rt_fatal(fn, "a handle the runtime did not hand out: the error value is not established");
     audio_port *const port = &ports[handle];
     if (!volume || !flag || (uint32_t)flag >> port->channels)
         rt_fatal(fn, "no volumes, or a flag naming a channel the port does not have: the answer is not established");
@@ -178,8 +192,7 @@ static int64_t nanoseconds(const struct timespec *t) { return (int64_t)t->tv_sec
 static int32_t audio_out_output(int32_t handle, const void *samples)
 {
     static const char fn[] = "sceAudioOutOutput";
-    if (handle < 1 || handle > atomic_load(&ports_opened))
-        rt_fatal(fn, "a handle the runtime did not hand out: the error value is not established");
+    if (!port_open(handle)) rt_fatal(fn, "a handle the runtime did not hand out: the error value is not established");
     audio_port *const port = &ports[handle];
     if (port->host) {
         pthread_mutex_lock(&port->lock);
@@ -219,8 +232,7 @@ enum { PORT_STATE_SIZE = 32, OUTPUT_CONNECTED_PRIMARY = 0x1 };
 static int32_t audio_out_get_port_state(int32_t handle, void *state)
 {
     static const char fn[] = "sceAudioOutGetPortState";
-    if (handle < 1 || handle > atomic_load(&ports_opened))
-        rt_fatal(fn, "a handle the runtime did not hand out: the error value is not established");
+    if (!port_open(handle)) rt_fatal(fn, "a handle the runtime did not hand out: the error value is not established");
     if (!state) rt_fatal(fn, "no state: the error value is not established");
     memset(state, 0, PORT_STATE_SIZE);
     const uint16_t output = ports[handle].host ? OUTPUT_CONNECTED_PRIMARY : 0; /* heard on the host, or nowhere */
@@ -228,7 +240,30 @@ static int32_t audio_out_get_port_state(int32_t handle, void *state)
     return 0;
 }
 
+/* int32_t sceAudioOutClose(int32_t handle), as the SDK's AudioOut.h declares it. The movie player's
+   sound ends with one (0x02c2276f): it first hands its port no block (sceAudioOutOutput with NULL,
+   which waits for room), then closes the port and takes a negative result as failure. The runtime
+   takes the port back, after any output call on it has returned, closes its host stream and answers
+   0; the handle is free for the next open. shadPS4's audioout.cpp also frees the port and answers 0.
+   A handle that names no open port stops by name (the error value is not established). */
+static int32_t audio_out_close(int32_t handle)
+{
+    static const char fn[] = "sceAudioOutClose";
+    if (!port_open(handle)) rt_fatal(fn, "a handle that names no open port: the error value is not established");
+    audio_port *const port = &ports[handle];
+    pthread_mutex_lock(&port->lock); /* an output call on the port finishes first */
+    void *const host = port->host;
+    port->host = NULL;
+    pthread_mutex_unlock(&port->lock);
+    if (host) rt_audio_host_close(host);
+    pthread_mutex_lock(&ports_lock);
+    port->open = 0;
+    pthread_mutex_unlock(&ports_lock);
+    return 0;
+}
+
 RT_SYSLIB("libSceAudioOut", sceAudioOutInit, audio_out_init);
+RT_SYSLIB("libSceAudioOut", sceAudioOutClose, audio_out_close);
 RT_SYSLIB("libSceAudioOut", sceAudioOutGetPortState, audio_out_get_port_state);
 RT_SYSLIB("libSceAudioOut", sceAudioOutOutput, audio_out_output);
 RT_SYSLIB("libSceAudioOut", sceAudioOutOpen, audio_out_open);

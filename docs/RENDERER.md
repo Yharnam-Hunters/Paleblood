@@ -513,7 +513,7 @@ Instead:
         `runtime/tiling.h` and loaded again at a use that reads it when the guest memory changed since
         (the CPU or a buffer store may have changed them); one that is also a render target stops by name. Pixel shaders' images
         are found the same way and bound as sampled images. Formats: 32 (float, uint, sint), 32_32 and 32_32_32_32 float, 8_8_8_8
-        unorm, 8 and 8_8 unorm; 1D and 2D images and their arrays, one level, a view of any of an array's layers
+        unorm and uint, 8 and 8_8 unorm; 1D and 2D images and their arrays, one level, a view of any of an array's layers
         (slices count from `BASE_ARRAY`, as shadPS4 and Mesa's radeonsi have it), DST_SEL in place.
         On the game, all of the boot's compute passes now run (two clears and a buffer-to-image
         copy into a 3-layer 1D array), and the next stop is a draw whose pixel shader reads the
