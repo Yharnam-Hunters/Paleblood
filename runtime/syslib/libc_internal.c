@@ -23,13 +23,32 @@
    cannot hand to the host unchanged stops by name: a wide character or string (%lc, %ls: the PS4's
    wchar_t is not established), %n (the host's fortified printf refuses it from writable memory,
    and no call is known to pass it, so it is left off the list below), and any conversion ISO C
-   does not define. */
+   does not define.
+
+   localtime(timer) and mktime(tm) are ISO C 7.27.3.4 and 7.27.2.3 in the console's time zone,
+   which is the host's here (the same zone sceKernelGettimezone reports): localtime answers a
+   per-thread object as gmtime does; mktime normalizes the nine ints in place and answers the time,
+   or -1 when there is none. libSceFios2 calls localtime once and mktime from its time-zone helper.
+
+   malloc(size) and free(pointer) (ISO C 7.22.3) come from the host's allocator, which aligns to 16
+   bytes like the PS4's: libSceFios2 reaches them only through its default allocator (+0x3a5e0,
+   +0x3a5f0). fflush(stream) (7.21.5.2): libSceFios2 flushes &_Stdout after its default log line
+   (+0x2cad5), so _Stdout's address flushes the host's standard output and NULL flushes every host
+   stream; another stream stops by name. __cxa_finalize(dso) (the Itanium C++ ABI's DSO
+   destructor) runs the handlers __cxa_atexit registered for a module; libSceFios2 imports no
+   __cxa_atexit or atexit, so there are none and it does nothing.
+
+   Two data imports: _Stdout, libSceLibcInternal's standard output FILE, is an object of the size
+   libc.elf's own _Stdout export has (456 bytes) that nothing reads through (libSceFios2 only
+   passes its address to fflush); Need_sceLibcInternal is an int whose address libSceFios2 stores
+   and never reads (the droogie bbhost runtime's analogous Need_sceLibc holds 1, used here too). */
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -108,3 +127,51 @@ RT_SYSLIB("libSceLibcInternal", gmtime_s, libc_gmtime_s);
 RT_SYSLIB("libSceLibcInternal", printf, libc_printf);
 RT_SYSLIB("libSceLibcInternal", vprintf, libc_vprintf);
 RT_SYSLIB("libSceLibcInternal", vsnprintf, libc_vsnprintf);
+
+static _Thread_local guest_tm localtime_result;
+
+static guest_tm *libc_localtime(const int64_t *timer)
+{
+    if (!timer) rt_fatal("localtime", "no time: ISO C leaves it undefined");
+    const time_t seconds = (time_t)*timer;
+    struct tm t;
+    if (!localtime_r(&seconds, &t)) rt_fatal("localtime", "a time whose year does not fit: errno is not modelled");
+    localtime_result = (guest_tm){t.tm_sec, t.tm_min, t.tm_hour, t.tm_mday, t.tm_mon, t.tm_year, t.tm_wday, t.tm_yday, t.tm_isdst};
+    return &localtime_result;
+}
+
+static int64_t libc_mktime(guest_tm *time_parts)
+{
+    if (!time_parts) rt_fatal("mktime", "no time: ISO C leaves it undefined");
+    guest_tm *const g = time_parts;
+    struct tm t = {.tm_sec = g->sec, .tm_min = g->min, .tm_hour = g->hour, .tm_mday = g->mday,
+                   .tm_mon = g->mon, .tm_year = g->year, .tm_isdst = g->isdst};
+    const time_t seconds = mktime(&t);
+    if (seconds == (time_t)-1) return -1;
+    *g = (guest_tm){t.tm_sec, t.tm_min, t.tm_hour, t.tm_mday, t.tm_mon, t.tm_year, t.tm_wday, t.tm_yday, t.tm_isdst};
+    return (int64_t)seconds;
+}
+
+static void *libc_malloc(uint64_t size) { return malloc(size); }
+static void libc_free(void *pointer) { free(pointer); }
+
+enum { LIBC_FILE_BYTES = 456, LIBC_EOF = -1 };
+static _Alignas(16) uint8_t libc_stdout[LIBC_FILE_BYTES];
+static int32_t need_libc_internal[1] = {1}; /* an array, so its name is its address */
+
+static int32_t libc_fflush(void *stream)
+{
+    if (stream && stream != (void *)libc_stdout) rt_fatal("fflush", "a stream other than _Stdout: not modelled");
+    return fflush(stream ? stdout : NULL) ? LIBC_EOF : 0;
+}
+
+static void libc_cxa_finalize(void *dso) { (void)dso; }
+
+RT_SYSLIB("libSceLibcInternal", localtime, libc_localtime);
+RT_SYSLIB("libSceLibcInternal", mktime, libc_mktime);
+RT_SYSLIB("libSceLibcInternal", malloc, libc_malloc);
+RT_SYSLIB("libSceLibcInternal", free, libc_free);
+RT_SYSLIB("libSceLibcInternal", fflush, libc_fflush);
+RT_SYSLIB("libSceLibcInternal", __cxa_finalize, libc_cxa_finalize);
+RT_SYSLIB("libSceLibcInternal", _Stdout, libc_stdout);
+RT_SYSLIB("libSceLibcInternal", Need_sceLibcInternal, need_libc_internal);

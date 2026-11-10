@@ -319,7 +319,8 @@ Instead:
        command-buffer address they write to, it joins the calls of the buffer submitted with that
        address (`rt_render_record_*_shader_at`). The game's vertex shaders pass a fetch-shader
        modifier, which replaces `PGM_RSRC1`'s SGPR and input-VGPR counts. A null pixel shader
-       (a depth-only pass) is recorded too, and a draw with it stops by name.
+       (a depth-only pass) is recorded too: such a draw is drawn with no pixel stage when it writes
+       no colour target, and stops by name when it would.
    - **How the hooks attach:** the library's functions are being decompiled like the rest of the
      game, as replacements verified to write exactly the original packets. The renderer leaves
      those packets alone, so verification still holds. Each of these replacements also makes one

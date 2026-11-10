@@ -199,6 +199,23 @@ int main(void)
         CHECK(out_words[2 * LANES + i] == (uint32_t)((uint64_t)signed_by_lane >> 32));
     }
 
+    /* s_buffer_load is range-checked too: with NUM_RECORDS 8 bytes, the third and fourth dwords read 0;
+       with a 4-byte stride and 3 records, the fourth does. */
+    {
+        uint32_t scalar_user[USER_DATA_WORDS];
+        memcpy(scalar_user, user, sizeof scalar_user);
+        for (int i = 0; i < 4; i++) in_words[i] = 0x11111111u * (uint32_t)(i + 1);
+        for (int limit = 0; limit < 2; limit++) {
+            if (limit) scalar_user[1] |= 4u << 16, scalar_user[2] = 3;
+            else scalar_user[2] = 8;
+            memset(out.mapped, 0xaa, BUFFER_BYTES);
+            CHECK(run(&g, scalar_buffer_quad, sizeof scalar_buffer_quad / sizeof scalar_buffer_quad[0], scalar_user) == 0);
+            const int readable = limit ? 3 : 2;
+            for (int lane = 0; lane < LANES; lane++)
+                for (int k = 0; k < 4; k++) CHECK(out_words[lane * 4 + k] == (k < readable ? in_words[k] : 0u));
+        }
+    }
+
     /* Branches and EXEC. */
     memset(out.mapped, 0, BUFFER_BYTES);
     CHECK(run(&g, divergent_if, sizeof divergent_if / sizeof divergent_if[0], user) == 0);

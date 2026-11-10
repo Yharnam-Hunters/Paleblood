@@ -122,6 +122,7 @@ typedef struct {
     uint32_t depth_test, depth_write, depth_compare;   /* VkCompareOp */
     uint32_t stencil_test, stencil_ops[2][4];           /* front, back: fail, pass, depth fail (VkStencilOp), compare (VkCompareOp) */
     uint32_t reads;                                     /* a test compares with the buffer (not always or never) */
+    uint32_t reference_is_op_value[2];                  /* front, back: the stencil reference is STENCILOPVAL (replace-with-op) */
 } depth_plan;
 
 /* The image standing for a depth target, found by its depth and stencil buffers' addresses: written
@@ -413,8 +414,11 @@ static int blend_state(uint32_t control, VkPipelineColorBlendAttachmentState *ou
    - Compare functions are AMD's CompareFrag (Mesa's sid.h V_028800_FRAG_*): never, less, equal, less or
      equal, greater, not equal, greater or equal, always, the order of Vulkan's VkCompareOp.
    - Done: every compare function, and writes: stencil operations keep, zero, replace with the test
-     value, invert, and add and subtract (clamped or wrapping) when they step by STENCILOPVAL 1 (Mesa's
-     V_02842C_STENCIL_*). A test that reads the buffer
+     value, replace with STENCILOPVAL, invert, and add and subtract (clamped or wrapping) when they step
+     by STENCILOPVAL 1 (Mesa's V_02842C_STENCIL_*). Vulkan replaces with its one reference value, which
+     the test also compares with: replacing with STENCILOPVAL sets the reference to it, which is exact
+     when the compare does not read the reference (always, never) or STENCILTESTVAL equals it, and no
+     operation of the face replaces with the test value instead; otherwise it stops by name. A test that reads the buffer
      (a compare function other than always or never) is planned with reads set: the draw then needs the
      depth target's image to hold what earlier draws wrote (depth_entry's drawn), since the buffer's
      contents in guest memory are never loaded into it. Other operations, depth bounds and
@@ -423,13 +427,14 @@ static int blend_state(uint32_t control, VkPipelineColorBlendAttachmentState *ou
    0, or -1 with the reason. */
 static int plan_depth(const draw_state *s, depth_plan *plan, char *error, size_t error_size)
 {
-    enum { COMPARE_NEVER = 0, COMPARE_ALWAYS = 7, BACKFACE_ENABLE = 0x80, STENCIL_OPS = 16, OP_VALUE_SHIFT = 24, ONE_STEP = 1 };
+    enum { COMPARE_NEVER = 0, COMPARE_ALWAYS = 7, BACKFACE_ENABLE = 0x80, STENCIL_OPS = 16, OP_VALUE_SHIFT = 24, ONE_STEP = 1,
+           REPLACE_TEST = 3, REPLACE_OP = 4 };
     /* AMD's stencil operations (Mesa's V_02842C_STENCIL_*; shadPS4's StencilFunc agrees) as Vulkan's,
        where one exists: the add and subtract operations step by STENCILOPVAL, so they are Vulkan's
        increment and decrement only when it is 1 (op_steps); -1 is not drawn yet. */
     static const int vulkan_op[STENCIL_OPS] = {
         [0] = VK_STENCIL_OP_KEEP, [1] = VK_STENCIL_OP_ZERO, [2] = -1 /* ones */, [3] = VK_STENCIL_OP_REPLACE,
-        [4] = -1 /* replace with STENCILOPVAL */, [5] = VK_STENCIL_OP_INCREMENT_AND_CLAMP, [6] = VK_STENCIL_OP_DECREMENT_AND_CLAMP,
+        [4] = VK_STENCIL_OP_REPLACE /* with STENCILOPVAL: the reference becomes it (below) */, [5] = VK_STENCIL_OP_INCREMENT_AND_CLAMP, [6] = VK_STENCIL_OP_DECREMENT_AND_CLAMP,
         [7] = VK_STENCIL_OP_INVERT, [8] = VK_STENCIL_OP_INCREMENT_AND_WRAP, [9] = VK_STENCIL_OP_DECREMENT_AND_WRAP,
         [10] = -1, [11] = -1, [12] = -1, [13] = -1, [14] = -1, [15] = -1 /* bitwise with STENCILOPVAL */};
     static const int op_steps[STENCIL_OPS] = {[5] = 1, [6] = 1, [8] = 1, [9] = 1};
@@ -457,6 +462,17 @@ static int plan_depth(const draw_state *s, depth_plan *plan, char *error, size_t
             const uint32_t compare = control >> (source ? 20 : 8) & 7, ops = s->stencil_control >> (source ? 12 : 0) & 0xfff;
             if (compare != COMPARE_ALWAYS && compare != COMPARE_NEVER) plan->reads = 1;
             const uint32_t op_value = s->stencil_reference[source] >> OP_VALUE_SHIFT;
+            const uint32_t test_value = s->stencil_reference[source] & 0xff;
+            int replaces_with_test = 0, replaces_with_op = 0;
+            for (unsigned k = 0; k < 3; k++) {
+                const uint32_t op = ops >> (4 * k) & 0xf;
+                replaces_with_test |= op == REPLACE_TEST, replaces_with_op |= op == REPLACE_OP;
+            }
+            if (replaces_with_op && op_value != test_value &&
+                (replaces_with_test || (compare != COMPARE_ALWAYS && compare != COMPARE_NEVER)))
+                return failed(error, error_size, "a stencil replace with STENCILOPVAL %u beside a test or replace with STENCILTESTVAL %u: "
+                              "not drawn yet", op_value, test_value);
+            plan->reference_is_op_value[face] = (uint32_t)replaces_with_op;
             for (unsigned k = 0; k < 3; k++) {
                 const uint32_t op = ops >> (4 * k) & 0xf;
                 if (vulkan_op[op] < 0)
@@ -1480,11 +1496,18 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
         failed(error, error_size, "more pipelines than the executor keeps");
         return VK_NULL_HANDLE;
     }
-    const VkPipelineShaderStageCreateInfo stages[] = {
-        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vertex, .pName = "main"},
-        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = pixel, .pName = "main"},
-        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_GEOMETRY_BIT, .module = geometry, .pName = "main"},
-    };
+    /* the vertex stage, then the pixel stage unless the draw has none (a depth-only pass), then the
+       rect-list geometry stage if any */
+    VkPipelineShaderStageCreateInfo stages[3];
+    uint32_t stage_count = 0;
+    stages[stage_count++] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                             .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vertex, .pName = "main"};
+    if (pixel)
+        stages[stage_count++] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                                 .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = pixel, .pName = "main"};
+    if (geometry)
+        stages[stage_count++] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                                 .stage = VK_SHADER_STAGE_GEOMETRY_BIT, .module = geometry, .pName = "main"};
     const VkPipelineVertexInputStateCreateInfo input = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     const VkPipelineInputAssemblyStateCreateInfo assembly = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
                                                              .topology = strip ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP
@@ -1514,7 +1537,7 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
                                              VK_DYNAMIC_STATE_STENCIL_REFERENCE};
     const VkPipelineDynamicStateCreateInfo dynamic = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
                                                       .dynamicStateCount = 6, .pDynamicStates = dynamic_states};
-    const VkGraphicsPipelineCreateInfo info = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = geometry ? 3 : 2,
+    const VkGraphicsPipelineCreateInfo info = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = stage_count,
                                                .pStages = stages, .pVertexInputState = &input, .pInputAssemblyState = &assembly,
                                                .pViewportState = &viewport, .pRasterizationState = &raster,
                                                .pMultisampleState = &samples, .pColorBlendState = &blend, .pDynamicState = &dynamic,
@@ -1676,23 +1699,26 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int
     if (s->other_targets) return failed(error, error_size, "a draw with render targets beyond slot 0 is not drawn yet");
     if (!s->viewport_set) return failed(error, error_size, "a draw with no viewport");
     if (!s->vertex_set || !s->pixel_set) return failed(error, error_size, "a draw without a vertex and a pixel shader");
-    if (!s->pixel.code) return failed(error, error_size, "a draw with no pixel shader (a depth-only pass): not drawn yet");
+    /* no pixel shader: a depth-only pass, drawn with no pixel stage; it must write no colour target */
+    const int depth_only = !s->pixel.code;
+    if (depth_only && colour) return failed(error, error_size, "a draw with no pixel shader that writes a colour target");
     const uint32_t drawn_inputs = PERSP_CENTER_ENA | POS_X_FLOAT_ENA | POS_Y_FLOAT_ENA;
-    if (s->pixel.input_enable != s->pixel.input_address || !(s->pixel.input_enable & PERSP_CENTER_ENA) || (s->pixel.input_enable & ~drawn_inputs))
+    if (!depth_only && (s->pixel.input_enable != s->pixel.input_address || !(s->pixel.input_enable & PERSP_CENTER_ENA) ||
+                        (s->pixel.input_enable & ~drawn_inputs)))
         return failed(error, error_size, "pixel-shader inputs %#x (address %#x): only the perspective-centre barycentrics and the "
                       "position's x and y are drawn yet", s->pixel.input_enable, s->pixel.input_address);
     gcn_image_binding bindings[GCN_MAX_IMAGES];
     VkImageView views[GCN_MAX_IMAGES];
     unsigned image_count = 0;
     VkFormat view_formats[GCN_MAX_IMAGES];
-    if (stage_images(x, s->pixel.code, s->user[STAGE_PIXEL], s->pixel.user_sgprs, s->user_set[STAGE_PIXEL], 1, bindings, views, view_formats, &image_count, error,
+    if (!depth_only && stage_images(x, s->pixel.code, s->user[STAGE_PIXEL], s->pixel.user_sgprs, s->user_set[STAGE_PIXEL], 1, bindings, views, view_formats, &image_count, error,
                      error_size))
         return -1;
     gcn_resource_origin sampler_origins[GCN_MAX_SAMPLERS];
     VkSampler samplers[GCN_MAX_SAMPLERS];
     unsigned sampler_count = 0;
     int linear = 0;
-    if (stage_samplers(x, s->pixel.code, s->user[STAGE_PIXEL], s->pixel.user_sgprs, s->user_set[STAGE_PIXEL], sampler_origins, samplers, &sampler_count, &linear,
+    if (!depth_only && stage_samplers(x, s->pixel.code, s->user[STAGE_PIXEL], s->pixel.user_sgprs, s->user_set[STAGE_PIXEL], sampler_origins, samplers, &sampler_count, &linear,
                        error, error_size))
         return -1;
     /* a bilinear sampler may meet any of the shader's images: each must filter linearly on this device */
@@ -1714,6 +1740,7 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int
     if (z && plan->reads && !z->drawn)
         return failed(error, error_size, "a depth or stencil test reads depth target %#llx, which no draw has written yet: its contents in "
                       "memory are not loaded", (unsigned long long)z->z_address);
+    if (!t && !z) return 0; /* writes neither a colour nor a depth target: nothing to draw */
     VkRenderPass render_pass = t ? t->pass : VK_NULL_HANDLE;
     VkFramebuffer framebuffer = t ? t->framebuffer : VK_NULL_HANDLE;
     if (z) {
@@ -1727,12 +1754,13 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int
     uint32_t vertex_read = 0, pixel_read = 0;
     const VkShaderModule vertex = shader_for(x, STAGE_VERTEX, s->vertex.code, s->vertex.user_sgprs, s->vertex.output_control, NULL, 0,
                                              NULL, 0, callee, &vertex_read, error, error_size);
-    const VkShaderModule pixel = vertex ? shader_for(x, STAGE_PIXEL, s->pixel.code, s->pixel.user_sgprs, s->pixel.input_address, bindings,
-                                                     image_count, sampler_origins, sampler_count, 0, &pixel_read, error, error_size)
-                                        : VK_NULL_HANDLE;
-    if (!pixel) return -1;
+    if (!vertex) return -1;
+    const VkShaderModule pixel = depth_only ? VK_NULL_HANDLE
+                                            : shader_for(x, STAGE_PIXEL, s->pixel.code, s->pixel.user_sgprs, s->pixel.input_address, bindings,
+                                                         image_count, sampler_origins, sampler_count, 0, &pixel_read, error, error_size);
+    if (!depth_only && !pixel) return -1;
     if (check_user_data("vertex", s->vertex.code, vertex_read, s->user_set[STAGE_VERTEX], error, error_size) ||
-        check_user_data("pixel", s->pixel.code, pixel_read, s->user_set[STAGE_PIXEL], error, error_size))
+        (!depth_only && check_user_data("pixel", s->pixel.code, pixel_read, s->user_set[STAGE_PIXEL], error, error_size)))
         return -1;
     const int rect_list = s->primitive_set && s->primitive_type == DI_PT_RECTLIST;
     if (rect_list && index_count % 3) return failed(error, error_size, "a rect list of %u vertices, not whole rects of three", index_count);
@@ -1774,7 +1802,7 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int
     for (unsigned face = 0; face < 2; face++) {
         const uint32_t r = s->stencil_reference[face && (s->depth_control & 0x80) ? 1 : 0];
         const VkStencilFaceFlags which = face ? VK_STENCIL_FACE_BACK_BIT : VK_STENCIL_FACE_FRONT_BIT;
-        vkCmdSetStencilReference(commands, which, r & 0xff);
+        vkCmdSetStencilReference(commands, which, plan->reference_is_op_value[face] ? r >> 24 : r & 0xff); /* STENCILOPVAL or STENCILTESTVAL */
         vkCmdSetStencilCompareMask(commands, which, r >> 8 & 0xff);
         vkCmdSetStencilWriteMask(commands, which, r >> 16 & 0xff);
     }

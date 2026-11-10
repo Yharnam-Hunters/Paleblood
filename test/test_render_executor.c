@@ -573,11 +573,63 @@ static void depth_and_strips(rt_executor *x)
                                      {0xa016, 0}, {0xa017, 0}, {0xa002, 0}, {0xa200, 0x2 | 0x4 | 0x7u << 4}};
         CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), small, 10, 3, error, sizeof error) == -1 && strstr(error, "smaller"));
     }
+    /* A depth-only pass (no pixel shader, target mask 0, depth always with writes) into a fresh depth
+       target leaves the triangle's depth: LESS on the same triangle then draws nothing, LESS_EQUAL the
+       triangle. */
+    {
+        enum { DEPTH_ONLY_Z = 0x1640000, ONLY_LESS = 0x1680000, ONLY_LESS_EQUAL = 0x16c0000, NO_TARGET = 0x1700000 };
+        const uint32_t oz = (uint32_t)(at(DEPTH_ONLY_Z) >> 8), ost = (uint32_t)(at(DEPTH_ONLY_Z + 0x2000) >> 8);
+#define DEPTH_ONLY_TARGET {0xa010, 0xa0000003}, {0xa011, 0x20000001}, {0xa012, oz}, {0xa013, ost}, {0xa014, oz}, {0xa015, ost}, \
+                          {0xa016, depth_size}, {0xa017, 0}, {0xa002, 0}
+        const uint32_t prepass[][2] = {DEPTH_ONLY_TARGET, {0xa08e, 0}, {0xa200, 0x2 | 0x4 | 0x7u << 4}};
+        rt_render_forget(), rt_executor_reset(x);
+        uint32_t at_offset = record_setup(DEPTH_BUFFER, at(NO_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        static const uint32_t no_pixel_shader[RT_PIXEL_SHADER_WORDS];
+        CHECK(rt_render_record_pixel_shader_at(DEPTH_BUFFER + at_offset, no_pixel_shader) == 0);
+        at_offset += 0x10;
+        for (int i = 0; i < 11; i++, at_offset += 0x10)
+            CHECK(rt_render_record_register(DEPTH_BUFFER, at_offset, prepass[i][0], prepass[i][1], error, sizeof error) == 0);
+        CHECK(rt_render_record_draw_auto(DEPTH_BUFFER, at_offset, 3, error, sizeof error) == 0);
+        /* the colour draws after it, in the same run: the pixel shader placed again by record_setup's state */
+        const int prepassed = rt_executor_run(x, DEPTH_BUFFER, at_offset + 0x10, error, sizeof error);
+        if (prepassed) fprintf(stderr, "depth-only pass: %s\n", error);
+        CHECK(prepassed == 0);
+        CHECK(rt_executor_read_target(x, at(NO_TARGET), bgra, 2, 2, error, sizeof error) == -1 && strstr(error, "no draw"));
+        const uint32_t only_less[][2] = {DEPTH_ONLY_TARGET, {0xa200, 0x2 | 0x1u << 4}};
+        const uint32_t only_less_equal[][2] = {DEPTH_ONLY_TARGET, {0xa200, 0x2 | 0x3u << 4}};
+        /* run_counted resets the record but not the executor's depth targets: they keep what the pass wrote */
+        CHECK(run_counted(x, DEPTH_BUFFER, at(ONLY_LESS), only_less, 10, 3, error, sizeof error) == 0);
+        CHECK(nothing_drawn(x, at(ONLY_LESS)));
+        drawn = run_counted(x, DEPTH_BUFFER, at(ONLY_LESS_EQUAL), only_less_equal, 10, 3, error, sizeof error);
+        if (drawn) fprintf(stderr, "after the depth-only pass: %s\n", error);
+        CHECK(drawn == 0);
+        check_triangle(x, at(ONLY_LESS_EQUAL));
+#undef DEPTH_ONLY_TARGET
+    }
     /* a test reading a depth target no draw has written stops by name: its memory is never loaded */
     const uint32_t uz = (uint32_t)(at(UNWRITTEN) >> 8), ust = (uint32_t)(at(UNWRITTEN + 0x2000) >> 8);
     const uint32_t unwritten[][2] = {{0xa010, 0xa0000003}, {0xa011, 0x20000001}, {0xa012, uz}, {0xa013, ust}, {0xa014, uz}, {0xa015, ust},
                                      {0xa016, depth_size}, {0xa017, 0}, {0xa002, 0}, {0xa200, 0x2 | 0x1u << 4}};
     CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), unwritten, 10, 3, error, sizeof error) == -1 && strstr(error, "no draw has written"));
+    /* replace with STENCILOPVAL (operation 4) on pass, the test always: the stencil under the triangle
+       becomes 0x7f though STENCILTESTVAL is 0x01, so EQUAL 0x7f draws the triangle and EQUAL 0x01
+       nothing; with an EQUAL test on 0x01 beside it, it stops by name */
+    {
+        enum { OP_REPLACED = 0x17c0000, OP_MISSED = 0x1800000 };
+        const uint32_t replace_op[][2] = {DEPTH_TARGET, {0xa08e, 0}, {0xa10c, 0x7fffff01}, {0xa10b, 0x40}, {0xa200, 0x1 | 0x7u << 8}};
+        drawn = run_counted(x, DEPTH_BUFFER, at(STENCIL_ONLY), replace_op, 13, 3, error, sizeof error);
+        if (drawn) fprintf(stderr, "stencil replace with STENCILOPVAL: %s\n", error);
+        CHECK(drawn == 0);
+        const uint32_t equal_op_value[][2] = {DEPTH_TARGET, {0xa10c, 0xffff7f}, {0xa10b, 0}, {0xa200, 0x1 | 0x2u << 8}};
+        CHECK(run_counted(x, DEPTH_BUFFER, at(OP_REPLACED), equal_op_value, 12, 3, error, sizeof error) == 0);
+        check_triangle(x, at(OP_REPLACED));
+        const uint32_t equal_test_value[][2] = {DEPTH_TARGET, {0xa10c, 0xffff01}, {0xa10b, 0}, {0xa200, 0x1 | 0x2u << 8}};
+        CHECK(run_counted(x, DEPTH_BUFFER, at(OP_MISSED), equal_test_value, 12, 3, error, sizeof error) == 0);
+        CHECK(nothing_drawn(x, at(OP_MISSED)));
+        const uint32_t conflicting[][2] = {DEPTH_TARGET, {0xa08e, 0}, {0xa10c, 0x7fffff01}, {0xa10b, 0x40}, {0xa200, 0x1 | 0x2u << 8}};
+        CHECK(run_counted(x, DEPTH_BUFFER, at(STENCIL_ONLY), conflicting, 13, 3, error, sizeof error) == -1 &&
+              strstr(error, "replace with STENCILOPVAL 127"));
+    }
     const uint32_t incremented[][2] = {DEPTH_TARGET, {0xa10c, 0xff0000}, {0xa10b, 0x50}, {0xa200, 0x1 | 0x7u << 8}};
     CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), incremented, 12, 3, error, sizeof error) == -1 && strstr(error, "stencil operation 5"));
     const uint32_t bounds[][2] = {DEPTH_TARGET, {0xa200, 0x8}};
@@ -1026,14 +1078,14 @@ int main(void)
         memcpy(corners, saved_corners, sizeof saved_corners);
         memcpy(colors, saved_colors, sizeof saved_colors);
     }
-    /* No pixel shader (a depth-only pass, placed as the runtime's sceGnmSetPsShader places it): a
-       draw with it stops by name. */
+    /* No pixel shader (placed as the runtime's sceGnmSetPsShader places it) with the colour target
+       written: stops by name (a depth-only pass writes no colour target; depth_and_strips draws one). */
     rt_render_forget(), rt_executor_reset(x);
     uint32_t offset = record_setup(FOURTH, at(TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
     static const uint32_t no_pixel_shader[RT_PIXEL_SHADER_WORDS];
     CHECK(rt_render_record_pixel_shader_at(FOURTH + offset, no_pixel_shader) == 0);
     CHECK(rt_executor_run(x, FOURTH, record_triangle_draw(FOURTH, offset + 0x10), error, sizeof error) == -1 &&
-          strstr(error, "no pixel shader"));
+          strstr(error, "no pixel shader that writes a colour target"));
 
     /* A compute dispatch (scale_add: out[i] = in[i] * 2.5 + 1, one workgroup of 64) through the record:
        the shader placed as sceGnmSetCsShader places it, its user data the two buffer descriptors;
@@ -1140,6 +1192,36 @@ int main(void)
         for (unsigned i = 0; i < LANES; i++)
             right &= back[i * 4] == (float)i && back[i * 4 + 1] == 1.0f && back[i * 4 + 2] == 2.0f && back[i * 4 + 3] == 0.5f;
         CHECK(right);
+        }
+
+        /* Stores outside a storage image write nothing: 64 lanes fill a 40-texel image, and 40 lanes
+           read it back; texels 0-39 hold their values and nothing past them was touched. */
+        {
+            enum { NARROW = 40 };
+            rt_render_forget(), rt_executor_reset(x);
+            image_descriptor(image_a, at(IMAGE_A + 0x70000), 14, 7, NARROW, 1);
+            for (unsigned i = 0; i < LANES * 4; i++) back[i] = -1;
+            uint32_t offset = 0x10;
+            for (int pass = 0; pass < 2; pass++) {
+                const uint64_t code = pass ? codes[2] : codes[0];
+                const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x3, 16 << 1,
+                                                                  pass ? NARROW : LANES, 1, 1};
+                CHECK(rt_render_record_compute_shader_at(IMAGES + offset, shader) == 0);
+                memset(user, 0, sizeof user);
+                if (pass) descriptor(user, at(BACK), 16);
+                memcpy(user + 8, image_a, sizeof image_a);
+                CHECK(rt_render_record_user_data(IMAGES, offset + 0x10, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+                CHECK(rt_render_record_user_data(IMAGES, offset + 0x20, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
+                CHECK(rt_render_record_dispatch(IMAGES, offset + 0x30, one, error, sizeof error) == 0);
+                offset += 0x40;
+            }
+            const int ran = rt_executor_run(x, IMAGES, offset, error, sizeof error);
+            if (ran) fprintf(stderr, "stores past an image: %s\n", error);
+            CHECK(ran == 0);
+            int right = 1;
+            for (unsigned i = 0; i < LANES; i++)
+                right &= i < NARROW ? back[i * 4] == (float)i && back[i * 4 + 3] == 0.5f : back[i * 4] == -1 && back[i * 4 + 3] == -1;
+            CHECK(right);
         }
 
         /* An image no shader wrote holds the guest memory's texels: linear (tiling index 8) RGBA32F
