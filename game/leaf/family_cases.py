@@ -64,11 +64,13 @@ CASES = {
 
 # Deliberately wrong replacements (test/family_mutants.c) every member's cases must catch.
 MUTANTS = {
-    'returns_nothing': ['bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
-    'returns_zero': ['bb_mutant_does_nothing', 'bb_mutant_returns_one'],
+    'returns_nothing': ['bb_mutant_writes_first_argument', 'bb_mutant_returns_zero',
+                        'bb_mutant_clobbers_second_argument'],
+    'returns_zero': ['bb_mutant_does_nothing', 'bb_mutant_returns_one', 'bb_mutant_clobbers_second_argument'],
     # A constant family's mutants include the neighbouring value's replacement (tools/family_verify.py);
     # returns_one or returns_zero would be correct for the members whose constant is 1 or 0.
-    'returns_constant': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument'],
+    'returns_constant': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument',
+                         'bb_mutant_clobbers_second_argument'],
 }
 
 

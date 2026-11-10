@@ -40,3 +40,10 @@ uint64_t bb_mutant_returns_first_argument(uint64_t first)
 {
     return first;
 }
+
+/* Clears its second argument register and returns: wrong for a body that must leave the
+   argument registers alone (the cases compare them after the call). */
+__attribute__((naked)) void bb_mutant_clobbers_second_argument(void)
+{
+    __asm__("xorl %esi, %esi\n\tret");
+}
