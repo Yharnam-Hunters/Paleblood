@@ -12,6 +12,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, 'tools'))
 
 import families as fam  # noqa: E402
+import family_emit  # noqa: E402
 import family_scan  # noqa: E402
 import family_verify  # noqa: E402
 import gen_hooks  # noqa: E402
@@ -193,6 +194,27 @@ class Tables(unittest.TestCase):
         self.assertIn('void bb_leaf_returns_zero(void);', lines)
         self.assertIn('    { 0x00401000u, 16u, "returns_zero", (rt_hook_fn)bb_leaf_returns_zero },', lines)
         self.assertIn('const unsigned game_family_hook_count = 2u;', lines)
+
+
+class Emitter(unittest.TestCase):
+    def test_one_replacement_per_value_and_the_validator_compares(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        os.makedirs(os.path.join(d, 'game', 'leaf'))
+        write_csv(os.path.join(d, 'symbols', 'families.csv'), fam.FAMILY_HEADER,
+                  [['returns_constant', 'leaf', 'b8 {u32} c3', 'i64', '3', '18', 'mov eax, imm32; ret']])
+        write_csv(os.path.join(d, 'symbols', 'families', 'returns_constant.csv'), fam.MEMBER_HEADER,
+                  [['0x00401000', '6', '16', '0x2', 'replaced'], ['0x00401010', '6', '16', '0x10', 'replaced'],
+                   ['0x00401020', '6', '16', '0x2', 'replaced']])
+        text = family_emit.render(d, 'returns_constant')
+        self.assertEqual(text.count('extern "C" uint64_t bb_leaf_returns_constant_'), 2)
+        self.assertLess(text.index('_0x2(void)'), text.index('_0x10(void)'))
+        export = [{'address': f'0x{0x401000 + 16 * i:08x}', 'size': '6'} for i in range(4)]
+        errs = validate_functions.check_families(d, export, set(), set(), ['leaf'])
+        self.assertTrue(any("differs from tools/family_emit.py's output" in e for e in errs))
+        with open(os.path.join(d, 'game', 'leaf', 'returns_constant.cpp'), 'w') as f:
+            f.write(text)
+        self.assertEqual(validate_functions.check_families(d, export, set(), set(), ['leaf']), [])
 
 
 class Evidence(unittest.TestCase):

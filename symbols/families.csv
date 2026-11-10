@@ -1,2 +1,4 @@
 family,system,shape,returns,members,bytes,notes
 returns_nothing,leaf,c3,void,5040,5040,"empty function: the whole body is ret (empty virtual methods, no-op callbacks); excludes members with unlisted code in their padding"
+returns_zero,leaf,31 c0 c3,i64,4480,13440,"returns zero: xor eax, eax; ret (false, null, 0); excludes members with unlisted code in their padding"
+returns_constant,leaf,b8 {u32} c3,i64,2537,15222,"returns a constant: mov eax, imm32; ret, zero-extended to rax; excludes members with unlisted code in their padding"
