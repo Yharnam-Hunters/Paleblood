@@ -337,3 +337,7 @@ render_record_geometry_parameters,edge,,102,102,0,0,4406da6589f17dfe,2026-11-07
 render_record_geometry_resolve_parameter_index,edge,,68,68,0,0,9425ed9f14ed2918,2026-11-07
 render_record_geometry_round_up_power_of_two,edge,,36,36,0,0,4aecbac8f1ed59d0,2026-11-07
 render_record_geometry_second_exponent,edge,,72,72,0,0,378ec993a21873d9,2026-11-07
+render_capture_present_buffer_pool_record,edge,,33,33,0,0,9ecd3b9bb6d9b9c4,2026-11-07
+render_emit_present_release_delegate,edge,,8,8,0,0,44c6a754b371f521,2026-11-07
+render_emit_present_release_packet,edge,,14,14,0,0,49b21387b8cdc24b,2026-11-07
+render_pop_present_buffer_pool,edge,,25,25,0,0,36601bdfbc50357a,2026-11-07
