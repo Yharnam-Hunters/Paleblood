@@ -139,6 +139,13 @@ static void user_data(void)
     CHECK(rt_render_record_user_data(BUFFER, 0x40, RT_STAGE_VERTEX, 0, &one, 0, error, sizeof error) == -1);
     CHECK(rt_render_record_user_data(BUFFER, 0x40, RT_STAGE_VERTEX, 0, eight, 9, error, sizeof error) == -1);
     CHECK(rt_render_record_user_data(BUFFER, 0x40, RT_STAGE_VERTEX, 9, eight, 8, error, sizeof error) == -1 && strstr(error, "slots 9-16"));
+    /* Check the first slot before subtracting it: slot+count can wrap. */
+    const struct { unsigned slot, count; } invalid_ranges[] = {
+        {UINT32_MAX, 1}, {UINT32_MAX - 7, 8}, {UINT32_MAX - 6, 8}, {16, 1}, {15, 2},
+    };
+    for (size_t i = 0; i < sizeof invalid_ranges / sizeof *invalid_ranges; ++i)
+        CHECK(rt_render_record_user_data(BUFFER, 0x40, RT_STAGE_VERTEX, invalid_ranges[i].slot,
+                                         eight, invalid_ranges[i].count, error, sizeof error) == -1);
     rt_render_submitted(BUFFER, 0x100, &count);
     CHECK(count == 3);
     rt_render_forget();
