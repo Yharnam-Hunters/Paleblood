@@ -1010,6 +1010,13 @@ static void store_dword(translator *t, uint32_t pointer, uint32_t v)
     spirv_emit(&t->m, t->out, SPV_OP_STORE, words, 4);
 }
 
+enum { VSHARP_RECORDS_WORD = 2 }; /* a buffer descriptor's NUM_RECORDS */
+
+static uint32_t ulong_constant(translator *t, uint64_t v)
+{
+    return spirv_global(&t->m, SPV_OP_CONSTANT, (const uint32_t[]){t_ulong(t), (uint32_t)v, (uint32_t)(v >> 32)}, 3);
+}
+
 static void scalar_memory(translator *t, const uint32_t *w, const gcn_instruction *ins)
 {
     const char *name = ins->name;
@@ -1027,7 +1034,29 @@ static void scalar_memory(translator *t, const uint32_t *w, const gcn_instructio
     const uint32_t byte_offset = immediate ? konst(t, offset_field * BYTES_PER_DWORD) : load(t, t_uint(t), sgpr(t, offset_field));
     const int descriptor = !strncmp(name, "s_buffer_load", strlen("s_buffer_load"));
     const uint32_t base = address_in(t, base_sgpr, descriptor ? VSHARP_BASE_HIGH_MASK : POINTER_HIGH_MASK);
-    for (uint32_t i = 0; i < dwords_named(name); i++) write_sgpr(t, sdst + i, load_dword(t, dword_pointer(t, base, byte_offset, i)), ins);
+    if (!descriptor) {
+        for (uint32_t i = 0; i < dwords_named(name); i++) write_sgpr(t, sdst + i, load_dword(t, dword_pointer(t, base, byte_offset, i)), ins);
+        return;
+    }
+    /* s_buffer_load is range-checked against its descriptor as vector buffer accesses are: a dword at
+       or past the buffer's size reads 0 (NUM_RECORDS bytes with stride 0, NUM_RECORDS records of the
+       stride otherwise; CLRX's GCN memory handling notes, shadPS4's buffer size rule). The game's LUT
+       pass reads its constants through a descriptor loaded from memory as it runs. */
+    const uint32_t records = widen(t, load(t, t_uint(t), sgpr(t, base_sgpr + VSHARP_RECORDS_WORD)));
+    const uint32_t stride = widen(t, value(t, SPV_OP_BITWISE_AND, t_uint(t), 2,
+                                           value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, load(t, t_uint(t), sgpr(t, base_sgpr + 1)),
+                                                 konst(t, VSHARP_STRIDE_SHIFT)),
+                                           konst(t, VSHARP_STRIDE_MASK)));
+    const uint32_t size = value(t, SPV_OP_SELECT, t_ulong(t), 3, value(t, SPV_OP_I_EQUAL, t_bool(t), 2, stride, ulong_constant(t, 0)), records,
+                                value(t, SPV_OP_I_MUL, t_ulong(t), 2, records, stride));
+    for (uint32_t i = 0; i < dwords_named(name); i++) {
+        const uint32_t end = value(t, SPV_OP_I_ADD, t_ulong(t), 2, widen(t, byte_offset), ulong_constant(t, (uint64_t)(i + 1) * BYTES_PER_DWORD));
+        const uint32_t slot = function_variable(t, t_uint(t), konst(t, 0));
+        const uint32_t in_range = begin_if(t, value(t, SPV_OP_U_LESS_THAN_EQUAL, t_bool(t), 2, end, size));
+        store(t, t->out, slot, load_dword(t, dword_pointer(t, base, byte_offset, i)));
+        end_if(t, in_range);
+        write_sgpr(t, sdst + i, load(t, t_uint(t), slot), ins);
+    }
 }
 
 /* Typed buffer formats (MTBUF dfmt and nfmt; the numbers are those LLVM's GFX7 assembler gives
@@ -1206,7 +1235,6 @@ static void small_components(translator *t, uint32_t base, uint32_t offset, uint
    NUM_RECORDS or the offset at or past the stride. A strided access without an index is held to
    NUM_RECORDS records of the stride (the buffer's size as shadPS4 sizes it, GetBufferSize). Each
    dword is checked at its own byte, so a multi-dword access may be partly in range. */
-enum { VSHARP_RECORDS_WORD = 2 };
 
 typedef struct {
     unsigned indexed;     /* IDXEN */
@@ -1214,11 +1242,6 @@ typedef struct {
     uint32_t stride, records, soffset, index_in_range; /* ulong, ulong, ulong, bool */
     uint32_t offset;      /* the instruction offset + VGPR offset (uint) */
 } buffer_range;
-
-static uint32_t ulong_constant(translator *t, uint64_t v)
-{
-    return spirv_global(&t->m, SPV_OP_CONSTANT, (const uint32_t[]){t_ulong(t), (uint32_t)v, (uint32_t)(v >> 32)}, 3);
-}
 
 static buffer_range buffer_range_of(translator *t, unsigned srsrc, unsigned indexed, uint32_t index, uint32_t stride, uint32_t soffset,
                                     uint32_t offset)
