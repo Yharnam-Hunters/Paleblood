@@ -817,9 +817,43 @@ and gyroscope are not forwarded, because the units and axes the system reports t
 established here (shadPS4 scales SDL's m/s² by 0.098 without a source); acceleration and angular
 velocity stay 0 and the orientation the identity. **Stops by name:** a second initialize, a call
 before initialize, another user, port type, index or open parameters, an unknown handle, a
-missing argument, and the other error values. `scePadResetOrientation`,
-`scePadSetAngularVelocityDeadbandState` and `scePadSetTiltCorrectionState` stay unbound until the
-boot reaches them.
+missing argument, and the other error values.
+
+**The motion settings (issue #36).** `scePadResetOrientation(handle)` (OpenOrbis `Pad.h`) makes
+the pad's present attitude the reference its orientation is reported from;
+`scePadSetAngularVelocityDeadbandState(handle, bool)` and `scePadSetTiltCorrectionState(handle,
+bool)` (named in `Pad.h` without a signature; shadPS4's `pad.cpp` declares `(int32_t handle,
+bool enable)`, used as a fact) switch the motion sensors' deadband and tilt correction. The
+executable calls each through a small wrapper (`0x02a9082e`, `0x02a90852`, `0x02a90882`) with its
+open handle, and a bool for the two settings, and counts 0 as success. Since motion is not
+modelled, a reset leaves the reported orientation the identity, neither setting changes a
+reading with no motion, and each call answers 0 (`test/syslib/pad_motion_settings.c`). An
+unknown handle and a setting other than 0 or 1 stop by name.
+
+## The mouse, not connected (`libSceMouse`, issue #36)
+
+The runtime has no host mouse, so it answers as a console with no mouse plugged in
+(`runtime/syslib/mouse.c`, tests in `test/syslib/mouse_not_connected.c`).
+
+**Sources.** shadPS4's `libSceMouse` (`mouse.h`, `mouse.cpp`, `mouse_error.h`; facts only) gives
+the shapes: `sceMouseInit(void)`, `sceMouseOpen(user, type, index, param)`, `sceMouseRead(handle,
+data, count)` answering how many records it wrote (1 to 64 asked for), `sceMouseClose(handle)`,
+the 40-byte record `{ uint64_t timestamp, bool connected, uint32_t buttons, int32_t x, y, wheel,
+tilt, 8 reserved }` and `0x80DF0004` for a mouse already open. With no mouse it answers one
+record, not connected, all zero. OpenOrbis `Mouse.h` only names the calls.
+
+**The executable's calls agree.** It loads the library's system module (`0x02a8bce1`), then calls
+Init (six sites, such as `0x02a8bcea`) and counts 0 as success. Two input objects each open the
+mouse with (the initial user, 0, 0, NULL) (`0x02a8bf75`, `0x02a8c465`), keep the answer as their
+handle only when it is above 0, and close a handle above 0 before opening again. Read
+(`0x02a8c07f`, `0x02a8c56f`) asks for one record into the 40 bytes the object clears: below 0 is a
+failure, and a record that is not connected ends the poll.
+
+**What the runtime does.** Init answers 0 every time, as shadPS4 does. Open gives handle 1 (the
+runtime's choice; the title keeps only handles above 0) and `0x80DF0004` while it is open. Read
+writes one all-zero record (not connected) and answers 1. Close frees the handle. **Stops by
+name:** a call before Init, another user, type, index or open parameters, an unknown handle, a
+count outside 1 to 64, and a missing record.
 
 ## The common dialog's initialize (`libSceCommonDialog`, issue #40)
 
