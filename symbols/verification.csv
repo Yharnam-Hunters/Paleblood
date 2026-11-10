@@ -233,6 +233,8 @@ render_configure_record_shader,edge,,18,18,0,0,f676035c0f6f2a49,2026-11-07
 render_configure_record_shader_secondary,edge,,191,191,0,0,5e297be297985947,2026-11-07
 render_present_last_record_consume,edge,,56,56,0,0,8feb3252c4706117,2026-11-07
 render_present_record_consume,edge,,24,24,0,0,04690706835c471b,2026-11-07
+render_present_last_record_consume,edge,,56,56,0,0,96c1b92f3a40911f,2026-11-06
+render_present_record_consume,edge,,24,24,0,0,2bd2d7a830cd6972,2026-11-06
 render_read_present_pool_counter,edge,,18,18,0,0,1ef235dcff31de42,2026-11-03
 render_read_record_descriptor_component,edge,,28,28,0,0,0b5f7a5af7a39f49,2026-11-10
 render_read_record_mapping_word,edge,,224,224,0,0,68ea5b3aae2f9be4,2026-11-04
@@ -308,3 +310,8 @@ render_yebis_get_recursive_sample_parameters,edge,uncapped,23,23,0,0,6e6f0aa41d5
 render_initialize_swap_chain_resource,edge,,52,52,0,0,e636609d2c7f7211,2026-11-07
 render_build_shader_link_words,edge,,30,30,0,0,0179f06c079fc316,2026-11-07
 render_emit_shader_link_words,edge,,23,23,0,0,b26629b2274dd99e,2026-11-07
+render_set_render_target,edge,,19,19,0,0,2acb049cc1858420,2026-11-06
+render_set_depth_render_target,edge,,21,21,0,0,f0d031881735ea70,2026-11-06
+render_finish_record_shader,edge,,46,46,0,0,073880f2c3fe7a48,2026-11-06
+render_restore_color_target_from_bank,edge,,12,12,0,0,649b23425dd0ccb1,2026-11-06
+render_restore_depth_target_from_bank,edge,,12,12,0,0,8668e2d117190cf8,2026-11-06
