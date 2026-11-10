@@ -19,6 +19,7 @@
 #include "runtime/gcn_spirv.h"
 #include "runtime/rect_list.h"
 #include "runtime/render_calls.h"
+#include "runtime/tile_copy.h"
 #include "runtime/tiling.h"
 
 #include <stdarg.h>
@@ -29,7 +30,8 @@
 #include <vulkan/vulkan.h>
 
 enum { MAX_SHADERS = 256, MAX_PIPELINES = 256, MAX_TARGETS = 64, MAX_RECT_STAGES = 16, MAX_COMPUTE_PIPELINES = 256, MAX_IMAGES = 64,
-       MAX_VIEWS = 16, MAX_SAMPLERS = 64, MAX_PASSES = 64 };
+       MAX_VIEWS = 16, MAX_SAMPLERS = 64, MAX_PASSES = 64, BATCH_SETS = 256, MAX_WRITTEN = 32,
+       STOP_SLOTS = MAX_SHADERS + MAX_COMPUTE_PIPELINES };
 enum { USER_DATA_BYTES = GCN_USER_SGPR_MAX * 4, VERTEX_USER_DATA = 0, PIXEL_USER_DATA = USER_DATA_BYTES };
 enum { COLOR_8_8_8_8 = 0xa, NUMBER_UNORM = 0, NUMBER_SRGB = 6, SWAP_STD = 0, SWAP_ALT = 1 };
 enum { PERSP_CENTER_ENA = 0x2, POS_X_FLOAT_ENA = 0x100, POS_Y_FLOAT_ENA = 0x200 };
@@ -67,6 +69,25 @@ typedef struct {
     VkDeviceSize size;
 } staging_buffer;
 
+/* A buffer the GPU reaches by address (buffer device address): device-local for linear texels between an
+   image and the guest memory, or host-visible (mapped) for a tiled layout's table (runtime/tile_copy.h). */
+typedef struct {
+    VkBuffer buffer;
+    VkDeviceMemory memory;
+    void *mapped;
+    VkDeviceSize size;
+    VkDeviceAddress address;
+} gpu_buffer;
+
+/* How the GPU copies an image's elements between its tiled guest memory and linear rows: the table of
+   offsets (runtime/tile_copy.h) and the linear rows' buffer, made for one layout and size. */
+typedef struct {
+    gpu_buffer table, linear;
+    uint32_t width, height, slices;  /* elements per row, rows per slice */
+    uint32_t tiles_per_row, tiles_per_slice;
+    unsigned dwords;                 /* 32-bit words per element */
+} tile_plan;
+
 /* What the guest memory under an image held when the image and the memory last agreed (the image was
    loaded from it or written back to it): while the memory still holds exactly that, loading it again
    would change nothing. */
@@ -77,8 +98,8 @@ typedef struct {
 
 /* The image standing for a render target. The guest memory under it stays the target's contents
    (runtime/tiling.h, its tile mode): the image is loaded from it before a draw when the memory may have
-   changed since (memory_epoch) and differs from what they last agreed on, and written back once drawn
-   into, before anything else reads the memory. */
+   changed since (memory_epoch), and written back once drawn into, before anything else reads the memory.
+   Both copies run on the GPU (runtime/tile_copy.h). */
 typedef struct {
     uint64_t address;
     uint32_t width, height, tile_index;
@@ -90,9 +111,9 @@ typedef struct {
     VkFramebuffer framebuffer;
     uint64_t loaded_epoch;           /* the memory epoch the image was last loaded at */
     int drawn;                       /* drawn into since it was last written back */
-    staging_buffer staging;          /* after a transfer, the image's texels, linear, until it is drawn into */
-    int staging_current;
-    memory_snapshot agreed;
+    staging_buffer staging;          /* host-visible: the image's texels, for showing it */
+    int staging_current;             /* the staging buffer holds them (since the image last changed) */
+    tile_plan plan;                  /* its copies to and from the guest memory */
 } target_entry;
 
 /* What a draw does with the depth target: its test and writes, as Vulkan state. No padding: it is
@@ -100,13 +121,16 @@ typedef struct {
 typedef struct {
     uint32_t depth_test, depth_write, depth_compare;   /* VkCompareOp */
     uint32_t stencil_test, stencil_ops[2][4];           /* front, back: fail, pass, depth fail (VkStencilOp), compare (VkCompareOp) */
+    uint32_t reads;                                     /* a test compares with the buffer (not always or never) */
 } depth_plan;
 
 /* The image standing for a depth target, found by its depth and stencil buffers' addresses: written
-   only by draws (never read yet), so it starts cleared. */
+   only by draws, so it starts cleared; drawn says whether a draw has written it since, which a test
+   that reads it needs (its contents in guest memory are never loaded). */
 typedef struct {
     uint64_t z_address, stencil_address;
     uint32_t width, height;
+    int drawn;
     VkFormat format;
     VkImage image;
     VkDeviceMemory memory;
@@ -152,7 +176,9 @@ typedef struct {
     VkFormat format;
     uint32_t width, height, layers, type, tiling_index, pitch;
     int gpu_written;                 /* a shader has written it: its texels are the image's own */
-    memory_snapshot agreed;          /* the guest memory it was last loaded from */
+    memory_snapshot agreed;          /* the guest memory it was last loaded from (loads through the CPU) */
+    uint64_t loaded_epoch;           /* the memory epoch it was last loaded at (loads on the GPU) */
+    tile_plan plan;                  /* its loads on the GPU, for elements of whole 32-bit words */
     VkImage image;
     VkDeviceMemory memory;
     struct {
@@ -252,15 +278,32 @@ struct rt_executor {
     size_t compute_count;
     image_entry images[MAX_IMAGES];
     size_t image_count;
-    /* the run-time stop word translated shaders write (runtime/gcn_spirv.h) */
+    /* the run-time stop words translated shaders write (runtime/gcn_spirv.h), one per shader */
     VkBuffer stop_buffer;
     VkDeviceMemory stop_memory;
-    volatile uint32_t *stop_word;
+    volatile uint32_t *stop_words;   /* one per translated shader (stop_slot) */
     uint64_t stop_address;
     /* moves on whenever the guest memory may have changed outside the render targets: at each buffer
        (the CPU runs between submissions) and after each dispatch (shaders store to memory) */
     uint64_t memory_epoch;
     staging_buffer upload;           /* guest texels on their way into images */
+    /* The open batch: the GPU work the calls recorded since the CPU last waited, submitted at once by
+       batch_finish. The CPU waits only where it reads what that work produces (the run-time stop word,
+       guest memory a dispatch may have stored to, a render target written back) or refills a staging
+       buffer the batch still copies from, and at the end of each buffer. */
+    VkCommandBuffer batch;
+    VkFence batch_done;
+    int batch_open;
+    int memory_pending;              /* the batch holds a dispatch, which may store to any guest memory */
+    int upload_pending;              /* the batch copies from the upload staging buffer */
+    struct {
+        uint64_t address, size;
+    } written[MAX_WRITTEN];          /* guest memory the batch's write-backs store to */
+    unsigned written_count;
+    /* the GPU copies between tiled guest memory and linear rows (runtime/tile_copy.h), by words per
+       element (1, 2, 4) and direction (to the tiled memory or from it); made on first use */
+    VkPipelineLayout tile_copy_layout;
+    VkPipeline tile_copies[3][2];
     /* the GPU's state as the calls run so far set it: registers, user data and shaders carry over from
        one submitted buffer to the next, as on the console's GPU */
     draw_state state;
@@ -366,14 +409,27 @@ static int blend_state(uint32_t control, VkPipelineColorBlendAttachmentState *ou
      Z_WRITE_ENABLE without Z_ENABLE writes nothing, as in Vulkan.
    - Compare functions are AMD's CompareFrag (Mesa's sid.h V_028800_FRAG_*): never, less, equal, less or
      equal, greater, not equal, greater or equal, always, the order of Vulkan's VkCompareOp.
-   - Done: tests that do not read the buffer (always or never) and writes: stencil operations keep,
-     zero and replace with the test value (Mesa's V_02842C_STENCIL_KEEP 0, ZERO 1, REPLACE_TEST 3).
-     Reading the buffer (other compare functions), other operations, depth bounds and DB_RENDER_CONTROL's
-     clears and copies stop by name; so does a test while no depth target was ever set in the buffer.
+   - Done: every compare function, and writes: stencil operations keep, zero, replace with the test
+     value, invert, and add and subtract (clamped or wrapping) when they step by STENCILOPVAL 1 (Mesa's
+     V_02842C_STENCIL_*). A test that reads the buffer
+     (a compare function other than always or never) is planned with reads set: the draw then needs the
+     depth target's image to hold what earlier draws wrote (depth_entry's drawn), since the buffer's
+     contents in guest memory are never loaded into it. Other operations, depth bounds and
+     DB_RENDER_CONTROL's clears and copies stop by name; so does a test while no depth target was ever
+     set in the buffer.
    0, or -1 with the reason. */
 static int plan_depth(const draw_state *s, depth_plan *plan, char *error, size_t error_size)
 {
-    enum { COMPARE_NEVER = 0, COMPARE_ALWAYS = 7, STENCIL_KEEP = 0, STENCIL_ZERO = 1, STENCIL_REPLACE_TEST = 3, BACKFACE_ENABLE = 0x80 };
+    enum { COMPARE_NEVER = 0, COMPARE_ALWAYS = 7, BACKFACE_ENABLE = 0x80, STENCIL_OPS = 16, OP_VALUE_SHIFT = 24, ONE_STEP = 1 };
+    /* AMD's stencil operations (Mesa's V_02842C_STENCIL_*; shadPS4's StencilFunc agrees) as Vulkan's,
+       where one exists: the add and subtract operations step by STENCILOPVAL, so they are Vulkan's
+       increment and decrement only when it is 1 (op_steps); -1 is not drawn yet. */
+    static const int vulkan_op[STENCIL_OPS] = {
+        [0] = VK_STENCIL_OP_KEEP, [1] = VK_STENCIL_OP_ZERO, [2] = -1 /* ones */, [3] = VK_STENCIL_OP_REPLACE,
+        [4] = -1 /* replace with STENCILOPVAL */, [5] = VK_STENCIL_OP_INCREMENT_AND_CLAMP, [6] = VK_STENCIL_OP_DECREMENT_AND_CLAMP,
+        [7] = VK_STENCIL_OP_INVERT, [8] = VK_STENCIL_OP_INCREMENT_AND_WRAP, [9] = VK_STENCIL_OP_DECREMENT_AND_WRAP,
+        [10] = -1, [11] = -1, [12] = -1, [13] = -1, [14] = -1, [15] = -1 /* bitwise with STENCILOPVAL */};
+    static const int op_steps[STENCIL_OPS] = {[5] = 1, [6] = 1, [8] = 1, [9] = 1};
     memset(plan, 0, sizeof *plan);
     const uint32_t control = s->depth_set ? s->depth_control : 0;
     if (!(control & (Z_ENABLE | STENCIL_ENABLE | DEPTH_BOUNDS_ENABLE))) return 0;
@@ -386,8 +442,7 @@ static int plan_depth(const draw_state *s, depth_plan *plan, char *error, size_t
         return failed(error, error_size, "DB_RENDER_CONTROL %#x (depth or stencil clears and copies): not drawn yet", s->render_control);
     if ((control & Z_ENABLE) && depth_buffer) {
         const uint32_t compare = control >> 4 & 7;
-        if (compare != COMPARE_ALWAYS && compare != COMPARE_NEVER)
-            return failed(error, error_size, "a depth test reading the depth buffer (ZFUNC %u): not drawn yet", compare);
+        if (compare != COMPARE_ALWAYS && compare != COMPARE_NEVER) plan->reads = 1;
         plan->depth_test = 1, plan->depth_compare = compare, plan->depth_write = (control & Z_WRITE_ENABLE) != 0;
     }
     if ((control & STENCIL_ENABLE) && stencil_buffer) {
@@ -397,13 +452,16 @@ static int plan_depth(const draw_state *s, depth_plan *plan, char *error, size_t
             if (!s->stencil_reference_set[source])
                 return failed(error, error_size, "a stencil test with no %s set in the buffer", source ? "DB_STENCILREFMASK_BF" : "DB_STENCILREFMASK");
             const uint32_t compare = control >> (source ? 20 : 8) & 7, ops = s->stencil_control >> (source ? 12 : 0) & 0xfff;
-            if (compare != COMPARE_ALWAYS && compare != COMPARE_NEVER)
-                return failed(error, error_size, "a stencil test reading the stencil buffer (function %u): not drawn yet", compare);
+            if (compare != COMPARE_ALWAYS && compare != COMPARE_NEVER) plan->reads = 1;
+            const uint32_t op_value = s->stencil_reference[source] >> OP_VALUE_SHIFT;
             for (unsigned k = 0; k < 3; k++) {
                 const uint32_t op = ops >> (4 * k) & 0xf;
-                if (op != STENCIL_KEEP && op != STENCIL_ZERO && op != STENCIL_REPLACE_TEST)
+                if (vulkan_op[op] < 0)
                     return failed(error, error_size, "stencil operation %u (DB_STENCIL_CONTROL %#x): not drawn yet", op, s->stencil_control);
-                plan->stencil_ops[face][k] = op == STENCIL_KEEP ? VK_STENCIL_OP_KEEP : op == STENCIL_ZERO ? VK_STENCIL_OP_ZERO : VK_STENCIL_OP_REPLACE;
+                if (op_steps[op] && op_value != ONE_STEP)
+                    return failed(error, error_size, "stencil operation %u stepping by STENCILOPVAL %u: only steps of 1 are drawn yet", op,
+                                  op_value);
+                plan->stencil_ops[face][k] = (uint32_t)vulkan_op[op];
             }
             plan->stencil_ops[face][3] = compare;
         }
@@ -593,13 +651,19 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
             return failed(error, error_size, "no compute pipeline layout with images");
     }
     memcpy(x->push_ranges, ranges, sizeof x->push_ranges);
-    const VkDescriptorPoolSize pool_sizes[] = {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, GCN_MAX_IMAGES},
-                                               {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, GCN_MAX_IMAGES},
-                                               {VK_DESCRIPTOR_TYPE_SAMPLER, GCN_MAX_SAMPLERS}};
-    const VkDescriptorPoolCreateInfo descriptor_pool = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1,
+    /* the sets of one batch's draws and dispatches; the pool is reset once the batch has run */
+    const VkDescriptorPoolSize pool_sizes[] = {{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, GCN_MAX_IMAGES * BATCH_SETS},
+                                               {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, GCN_MAX_IMAGES * BATCH_SETS},
+                                               {VK_DESCRIPTOR_TYPE_SAMPLER, GCN_MAX_SAMPLERS * BATCH_SETS}};
+    const VkDescriptorPoolCreateInfo descriptor_pool = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = BATCH_SETS,
                                                         .poolSizeCount = 3, .pPoolSizes = pool_sizes};
     if (vkCreateDescriptorPool(x->device, &descriptor_pool, NULL, &x->descriptor_pool) != VK_SUCCESS)
         return failed(error, error_size, "no descriptor pool");
+    const VkCommandBufferAllocateInfo batch = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = x->pool,
+                                               .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1};
+    const VkFenceCreateInfo fence = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    if (vkAllocateCommandBuffers(x->device, &batch, &x->batch) != VK_SUCCESS || vkCreateFence(x->device, &fence, NULL, &x->batch_done) != VK_SUCCESS)
+        return failed(error, error_size, "no command buffer for batches");
     return 0;
 }
 
@@ -643,12 +707,12 @@ static int import_memory(rt_executor *x, const rt_executor_memory *memory, char 
     return 0;
 }
 
-/* The run-time stop word: host-visible, with a GPU address the translated shaders store to. */
+/* The run-time stop words: host-visible, with GPU addresses the translated shaders store to. */
 static int open_stop_word(rt_executor *x, char *error, size_t error_size)
 {
-    const VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = sizeof(uint32_t),
+    const VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = STOP_SLOTS * sizeof(uint32_t),
                                      .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT};
-    if (vkCreateBuffer(x->device, &info, NULL, &x->stop_buffer) != VK_SUCCESS) return failed(error, error_size, "no buffer for the stop word");
+    if (vkCreateBuffer(x->device, &info, NULL, &x->stop_buffer) != VK_SUCCESS) return failed(error, error_size, "no buffer for the stop words");
     VkMemoryRequirements need;
     vkGetBufferMemoryRequirements(x->device, x->stop_buffer, &need);
     const VkMemoryAllocateFlagsInfo flags = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO, .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
@@ -659,23 +723,21 @@ static int open_stop_word(rt_executor *x, char *error, size_t error_size)
     if (allocate.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(x->device, &allocate, NULL, &x->stop_memory) != VK_SUCCESS ||
         vkBindBufferMemory(x->device, x->stop_buffer, x->stop_memory, 0) != VK_SUCCESS ||
         vkMapMemory(x->device, x->stop_memory, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS)
-        return failed(error, error_size, "no memory for the stop word");
-    x->stop_word = mapped;
-    *x->stop_word = 0;
+        return failed(error, error_size, "no memory for the stop words");
+    x->stop_words = mapped;
+    memset(mapped, 0, STOP_SLOTS * sizeof(uint32_t));
     const VkBufferDeviceAddressInfo address = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = x->stop_buffer};
     x->stop_address = vkGetBufferDeviceAddress(x->device, &address);
     return 0;
 }
 
-/* After work has finished: 0, or -1 with the reason when a shader wrote a run-time stop code. */
-static int check_stop_word(rt_executor *x, char *error, size_t error_size)
+/* The reason a run-time stop code (runtime/gcn_spirv.h) gives. Returns -1. */
+static int stop_reason(uint32_t code, char *error, size_t error_size)
 {
-    const uint32_t code = *x->stop_word;
-    if (!code) return 0;
-    *x->stop_word = 0;
     if (code >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_BUFFER_FORMAT)
         return failed(error, error_size, "a %u-component buffer %s with format DATA_FORMAT %u, NUM_FORMAT %u%s at run time: only whole "
-                      "32-bit uint, sint or float components, and four-component 8_8_8_8 unorm stores, are done yet", code & 0x7,
+                      "32-bit uint, sint or float components, 8- and 16-bit uint and sint and 8-bit unorm loads, and "
+                      "four-component 8_8_8_8 unorm stores, are done yet", code & 0x7,
                       code & 0x80 ? "store" : "load", code >> 8 & 0xf, code >> 4 & 0x7, code & 8 ? " and a swizzle" : "");
     if (code >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_VCC_UNKNOWN)
         return failed(error, error_size, "a vertex or pixel shader read VCC as a lane mask after a scalar write of its halves: not done "
@@ -684,6 +746,32 @@ static int check_stop_word(rt_executor *x, char *error, size_t error_size)
         return failed(error, error_size, "a pixel shader loaded an image texel outside the image or past its last level: not done yet "
                       "(what the GPU returns there is not established)");
     return failed(error, error_size, "a shader stopped at run time with code %#x", code);
+}
+
+/* After work has finished: 0, or -1 with the reason when a shader wrote a run-time stop code. Each
+   translated shader has its own stop word (stop_slot), so the reason names the shader that stopped. */
+static int check_stop_words(rt_executor *x, char *error, size_t error_size)
+{
+    for (size_t i = 0; i < STOP_SLOTS; i++) {
+        const uint32_t code = x->stop_words[i];
+        if (!code) continue;
+        x->stop_words[i] = 0;
+        char reason[512];
+        stop_reason(code, reason, sizeof reason);
+        const int compute = i >= MAX_SHADERS;
+        const shader_entry *shader = compute ? NULL : &x->shaders[i];
+        const uint64_t code_address = compute ? x->computes[i - MAX_SHADERS].code : shader->code;
+        return failed(error, error_size, "the %s shader at %#llx: %s", compute ? "compute" : shader->stage == STAGE_VERTEX ? "vertex" : "pixel",
+                      (unsigned long long)code_address, reason);
+    }
+    return 0;
+}
+
+/* The GPU address of a translated shader's stop word: graphics shader entry `index`, or compute
+   entry `index` past them. */
+static uint64_t stop_slot(const rt_executor *x, int compute, size_t index)
+{
+    return x->stop_address + 4 * ((compute ? MAX_SHADERS : 0) + index);
 }
 
 int rt_executor_open(const rt_executor_memory *memory, rt_executor **executor, char *error, size_t error_size)
@@ -729,6 +817,215 @@ static void image_barrier(VkCommandBuffer commands, VkImage image, VkImageLayout
                                           .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                                           .image = image, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
     vkCmdPipelineBarrier(commands, src_stage, dst_stage, 0, 0, NULL, 0, NULL, 1, &barrier);
+}
+
+/* ---- the batch ---- */
+
+/* The open batch's command buffer, begun on first use; VK_NULL_HANDLE when it cannot begin. */
+static VkCommandBuffer batch_commands(rt_executor *x)
+{
+    if (x->batch_open) return x->batch;
+    const VkCommandBufferBeginInfo begin = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+    if (vkBeginCommandBuffer(x->batch, &begin) != VK_SUCCESS) return VK_NULL_HANDLE;
+    x->batch_open = 1;
+    return x->batch;
+}
+
+/* Submits the open batch and waits for it. Its writes (guest memory, staging buffers) are then visible
+   to the CPU, its staging buffers and descriptor sets free for reuse, and the run-time stop word, which
+   any of its shaders may have written, is checked. 0, or -1 with the reason. */
+static int batch_finish(rt_executor *x, char *error, size_t error_size)
+{
+    if (!x->batch_open) return 0;
+    x->batch_open = 0;
+    const VkMemoryBarrier to_host = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+                                     .dstAccessMask = VK_ACCESS_HOST_READ_BIT};
+    vkCmdPipelineBarrier(x->batch, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &to_host, 0, NULL, 0, NULL);
+    const VkSubmitInfo submit = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &x->batch};
+    const int ok = vkEndCommandBuffer(x->batch) == VK_SUCCESS && vkQueueSubmit(x->queue, 1, &submit, x->batch_done) == VK_SUCCESS &&
+                   vkWaitForFences(x->device, 1, &x->batch_done, VK_TRUE, UINT64_MAX) == VK_SUCCESS;
+    vkResetFences(x->device, 1, &x->batch_done);
+    vkResetDescriptorPool(x->device, x->descriptor_pool, 0);
+    x->memory_pending = x->upload_pending = 0, x->written_count = 0;
+    if (!ok) return failed(error, error_size, "the GPU did not finish a batch of draws and dispatches");
+    return check_stop_words(x, error, error_size);
+}
+
+/* Before the CPU reads `size` bytes of guest memory at `address`: waits for the open batch when work in
+   it may store there (a dispatch anywhere, a write-back to its own range). */
+static int guest_memory_settled(rt_executor *x, uint64_t address, uint64_t size, char *error, size_t error_size)
+{
+    int pending = x->memory_pending;
+    for (unsigned i = 0; i < x->written_count && !pending; i++)
+        pending = x->written[i].address < address + size && address < x->written[i].address + x->written[i].size;
+    return pending ? batch_finish(x, error, error_size) : 0;
+}
+
+/* Notes that the batch stores to guest memory at address (a write-back); past the list's room, as a
+   dispatch would. */
+static void batch_writes(rt_executor *x, uint64_t address, uint64_t size)
+{
+    if (x->written_count == MAX_WRITTEN) {
+        x->memory_pending = 1;
+        return;
+    }
+    x->written[x->written_count].address = address, x->written[x->written_count].size = size;
+    x->written_count++;
+}
+
+/* ---- copies between tiled guest memory and linear rows, on the GPU ---- */
+
+static void gpu_buffer_free(rt_executor *x, gpu_buffer *b)
+{
+    if (b->buffer) vkDestroyBuffer(x->device, b->buffer, NULL);
+    if (b->memory) vkFreeMemory(x->device, b->memory, NULL);
+    *b = (gpu_buffer){0};
+}
+
+/* Makes b a buffer of `bytes` with a GPU address: host-visible and mapped (`mapped`), or device-local
+   for transfers. 0, or -1. */
+static int gpu_buffer_make(rt_executor *x, gpu_buffer *b, VkDeviceSize bytes, int mapped)
+{
+    gpu_buffer_free(x, b);
+    const VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = bytes,
+                                     .usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                              VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+    if (vkCreateBuffer(x->device, &info, NULL, &b->buffer) != VK_SUCCESS) return -1;
+    VkMemoryRequirements need;
+    vkGetBufferMemoryRequirements(x->device, b->buffer, &need);
+    const VkMemoryPropertyFlags wanted = mapped ? VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+                                                : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    const VkMemoryAllocateFlagsInfo flags = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO, .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
+    const VkMemoryAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &flags, .allocationSize = need.size,
+                                           .memoryTypeIndex = memory_type(x, need.memoryTypeBits, wanted)};
+    if (allocate.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(x->device, &allocate, NULL, &b->memory) != VK_SUCCESS ||
+        vkBindBufferMemory(x->device, b->buffer, b->memory, 0) != VK_SUCCESS ||
+        (mapped && vkMapMemory(x->device, b->memory, 0, VK_WHOLE_SIZE, 0, &b->mapped) != VK_SUCCESS)) {
+        gpu_buffer_free(x, b);
+        return -1;
+    }
+    const VkBufferDeviceAddressInfo address = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = b->buffer};
+    b->address = vkGetBufferDeviceAddress(x->device, &address), b->size = bytes;
+    return 0;
+}
+
+static void tile_plan_free(rt_executor *x, tile_plan *p)
+{
+    gpu_buffer_free(x, &p->table);
+    gpu_buffer_free(x, &p->linear);
+    *p = (tile_plan){0};
+}
+
+/* Makes p the plan for copying `slices` slices of width x height elements laid out as `layout`: the
+   table (a micro tile's elements in memory order with their places, from rt_tiling_micro_spread, then
+   each micro tile's first element; runtime/tile_copy.h) and the linear rows' buffer. Kept while the layout and size stay. 0, or -1 with the reason. */
+static int tile_plan_make(rt_executor *x, tile_plan *p, const rt_tiling *layout, uint32_t width, uint32_t height, uint32_t slices,
+                          char *error, size_t error_size)
+{
+    tile_plan_free(x, p);
+    if (rt_tiling_size(layout, slices) > UINT32_MAX)
+        return failed(error, error_size, "a %ux%u image of %u slices spans more than the GPU copy's 32-bit offsets", width, height, slices);
+    *p = (tile_plan){.width = width, .height = height, .slices = slices, .dwords = layout->element_bytes / 4,
+                     .tiles_per_row = (width + RT_TILING_MICRO - 1) / RT_TILING_MICRO};
+    p->tiles_per_slice = p->tiles_per_row * ((height + RT_TILING_MICRO - 1) / RT_TILING_MICRO);
+    const VkDeviceSize entries = RT_TILE_COPY_TILE_BASES + (VkDeviceSize)p->tiles_per_slice * slices;
+    if (gpu_buffer_make(x, &p->table, entries * 4, 1) ||
+        gpu_buffer_make(x, &p->linear, (VkDeviceSize)width * height * slices * layout->element_bytes, 0)) {
+        tile_plan_free(x, p);
+        return failed(error, error_size, "no GPU memory for copying a %ux%u image", width, height);
+    }
+    uint32_t *table = p->table.mapped;
+    uint64_t spread[RT_TILING_MICRO_TEXELS];
+    rt_tiling_micro_spread(layout, spread);
+    /* the micro tile's elements in memory order (insertion sort of the 64 places by offset) */
+    uint32_t order[RT_TILING_MICRO_TEXELS];
+    for (unsigned i = 0; i < RT_TILING_MICRO_TEXELS; i++) {
+        unsigned at = i;
+        for (; at > 0 && spread[order[at - 1]] > spread[i]; at--) order[at] = order[at - 1];
+        order[at] = i;
+    }
+    for (unsigned k = 0; k < RT_TILING_MICRO_TEXELS; k++)
+        table[RT_TILE_COPY_OFFSETS + k] = (uint32_t)spread[order[k]], table[RT_TILE_COPY_PLACES + k] = order[k];
+    uint32_t *tile = table + RT_TILE_COPY_TILE_BASES;
+    for (uint32_t s = 0; s < slices; s++)
+        for (uint32_t ty = 0; ty < height; ty += RT_TILING_MICRO)
+            for (uint32_t tx = 0; tx < width; tx += RT_TILING_MICRO) *tile++ = (uint32_t)rt_tiling_offset(layout, tx, ty, s);
+    return 0;
+}
+
+/* The tile-copy pipeline for elements of `dwords` words, to the tiled memory or from it, made on first
+   use; VK_NULL_HANDLE after failing. */
+static VkPipeline tile_copy_pipeline(rt_executor *x, unsigned dwords, int to_tiled, char *error, size_t error_size)
+{
+    const unsigned kind = dwords == 1 ? 0 : dwords == 2 ? 1 : 2;
+    if (x->tile_copies[kind][to_tiled]) return x->tile_copies[kind][to_tiled];
+    if (!x->tile_copy_layout) {
+        const VkPushConstantRange range = {VK_SHADER_STAGE_COMPUTE_BIT, 0, RT_TILE_COPY_PUSH_WORDS * 4};
+        const VkPipelineLayoutCreateInfo layout = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .pushConstantRangeCount = 1,
+                                                   .pPushConstantRanges = &range};
+        if (vkCreatePipelineLayout(x->device, &layout, NULL, &x->tile_copy_layout) != VK_SUCCESS) {
+            failed(error, error_size, "no pipeline layout for GPU tile copies");
+            return VK_NULL_HANDLE;
+        }
+    }
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    if (rt_tile_copy_shader(dwords, to_tiled, &spirv, &words)) {
+        failed(error, error_size, "no GPU tile copy for %u-word elements", dwords);
+        return VK_NULL_HANDLE;
+    }
+    const VkShaderModuleCreateInfo module_info = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = words * 4, .pCode = spirv};
+    VkShaderModule module = VK_NULL_HANDLE;
+    const VkResult made = vkCreateShaderModule(x->device, &module_info, NULL, &module);
+    free(spirv);
+    if (made != VK_SUCCESS) {
+        failed(error, error_size, "the device refused the GPU tile copy");
+        return VK_NULL_HANDLE;
+    }
+    const VkComputePipelineCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = module, .pName = "main"},
+        .layout = x->tile_copy_layout};
+    const VkResult piped = vkCreateComputePipelines(x->device, VK_NULL_HANDLE, 1, &info, NULL, &x->tile_copies[kind][to_tiled]);
+    vkDestroyShaderModule(x->device, module, NULL);
+    if (piped != VK_SUCCESS) {
+        x->tile_copies[kind][to_tiled] = VK_NULL_HANDLE;
+        failed(error, error_size, "the device refused the GPU tile copy's pipeline");
+        return VK_NULL_HANDLE;
+    }
+    return x->tile_copies[kind][to_tiled];
+}
+
+/* Records into the batch the copy between the tiled guest memory at `address` and the plan's linear
+   rows: to the memory (to_tiled) or from it, with barriers so earlier work's writes are seen and later
+   work sees its own. 0, or -1 with the reason. */
+static int record_tile_copy(rt_executor *x, const tile_plan *p, uint64_t address, int to_tiled, char *error, size_t error_size)
+{
+    const VkPipeline pipeline = tile_copy_pipeline(x, p->dwords, to_tiled, error, error_size);
+    VkCommandBuffer commands = pipeline ? batch_commands(x) : VK_NULL_HANDLE;
+    if (!commands) return pipeline ? failed(error, error_size, "no command buffer") : -1;
+    const uint64_t groups = (uint64_t)p->tiles_per_slice * p->slices; /* one micro tile each */
+    enum { MAX_GROUPS = 65535 };
+    const uint32_t groups_x = groups < MAX_GROUPS ? (uint32_t)groups : MAX_GROUPS, groups_y = (uint32_t)((groups + groups_x - 1) / groups_x);
+    if (groups * RT_TILE_COPY_GROUP > UINT32_MAX || groups_y > MAX_GROUPS) return failed(error, error_size, "an image too large for the GPU copy");
+    const uint64_t tiled = address + x->address_offset; /* the guest address's GPU address (wraps as the shaders' adds do) */
+    const uint32_t push[RT_TILE_COPY_PUSH_WORDS] = {
+        [RT_TILE_COPY_TILED_LO] = (uint32_t)tiled, [RT_TILE_COPY_TILED_HI] = (uint32_t)(tiled >> 32),
+        [RT_TILE_COPY_LINEAR_LO] = (uint32_t)p->linear.address, [RT_TILE_COPY_LINEAR_HI] = (uint32_t)(p->linear.address >> 32),
+        [RT_TILE_COPY_TABLE_LO] = (uint32_t)p->table.address, [RT_TILE_COPY_TABLE_HI] = (uint32_t)(p->table.address >> 32),
+        [RT_TILE_COPY_WIDTH] = p->width, [RT_TILE_COPY_HEIGHT] = p->height, [RT_TILE_COPY_TILES_PER_ROW] = p->tiles_per_row,
+        [RT_TILE_COPY_TILES_PER_SLICE] = p->tiles_per_slice, [RT_TILE_COPY_TILES] = (uint32_t)groups, [RT_TILE_COPY_GROUPS_X] = groups_x};
+    const VkMemoryBarrier before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+                                    .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &before, 0, NULL, 0, NULL);
+    vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    vkCmdPushConstants(commands, x->tile_copy_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
+    vkCmdDispatch(commands, groups_x, groups_y, 1);
+    const VkMemoryBarrier after = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                                   .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &after, 0, NULL, 0, NULL);
+    return 0;
 }
 
 /* ---- render targets ---- */
@@ -844,60 +1141,92 @@ fail:
     return NULL;
 }
 
-/* Moves a render target's texels between its image and the guest memory under it, laid out as its tile
-   mode has them (runtime/tiling.h): to the memory (after draws), or from it (before draws, when it may
-   have changed). A load is skipped when the memory still holds what the image and it last agreed on.
-   0, or -1 with the reason (a layout not done yet, memory outside the GPU-visible range). */
-static int transfer_target(rt_executor *x, target_entry *t, int to_memory, char *error, size_t error_size)
+/* A render target's layout (runtime/tiling.h, its tile mode) and the bytes of guest memory it spans; its
+   tile plan made on first use. 0, or -1 with the reason (a layout not done yet, memory outside the
+   GPU-visible range). */
+static int target_memory(rt_executor *x, target_entry *t, rt_tiling *layout, uint64_t *span, char *error, size_t error_size)
 {
     enum { TEXEL_BYTES = 4 };
-    rt_tiling layout;
     char reason[160];
-    if (rt_tiling_layout(t->tile_index, TEXEL_BYTES, t->width, t->height, &layout, reason, sizeof reason))
+    if (rt_tiling_layout(t->tile_index, TEXEL_BYTES, t->width, t->height, layout, reason, sizeof reason))
         return failed(error, error_size, "render target %#llx: %s", (unsigned long long)t->address, reason);
-    const uint64_t span = rt_tiling_size(&layout, 1);
-    if (t->address < x->guest_base || t->address - x->guest_base > x->size || span > x->size - (t->address - x->guest_base))
+    *span = rt_tiling_size(layout, 1);
+    if (t->address < x->guest_base || t->address - x->guest_base > x->size || *span > x->size - (t->address - x->guest_base))
         return failed(error, error_size, "render target %#llx is outside the GPU-visible memory", (unsigned long long)t->address);
-    uint8_t *guest = (uint8_t *)x->view + (t->address - x->guest_base);
-    if (!to_memory && memory_unchanged(&t->agreed, guest, span)) return 0;
-    const VkDeviceSize bytes = (VkDeviceSize)t->width * t->height * TEXEL_BYTES;
-    if (staging_ready(x, &t->staging, bytes))
-        return failed(error, error_size, "no staging memory for render target %#llx", (unsigned long long)t->address);
-    t->staging_current = 0;
-    if (!to_memory) rt_tiling_detile(&layout, guest, t->staging.mapped, t->width, t->height, 1);
-    VkCommandBuffer commands = begin_commands(x);
+    if (!t->plan.table.buffer && tile_plan_make(x, &t->plan, layout, t->width, t->height, 1, error, error_size)) return -1;
+    return 0;
+}
+
+/* Records into the open batch the copy between a render target's image and its plan's linear rows: to
+   the rows (to_rows, for a write-back) or from them (a load). 0, or -1 with the reason. */
+static int record_target_copy(rt_executor *x, target_entry *t, int to_rows, char *error, size_t error_size)
+{
+    VkCommandBuffer commands = batch_commands(x);
     if (!commands) return failed(error, error_size, "no command buffer");
-    const VkImageLayout transfer = to_memory ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    const VkAccessFlags transfer_access = to_memory ? VK_ACCESS_TRANSFER_READ_BIT : VK_ACCESS_TRANSFER_WRITE_BIT;
+    const VkImageLayout transfer = to_rows ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    const VkAccessFlags transfer_access = to_rows ? VK_ACCESS_TRANSFER_READ_BIT : VK_ACCESS_TRANSFER_WRITE_BIT;
     image_barrier(commands, t->image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, transfer,
                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT, transfer_access,
                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
     const VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {t->width, t->height, 1}};
-    if (to_memory) vkCmdCopyImageToBuffer(commands, t->image, transfer, t->staging.buffer, 1, &copy);
-    else vkCmdCopyBufferToImage(commands, t->staging.buffer, t->image, transfer, 1, &copy);
+    if (to_rows) vkCmdCopyImageToBuffer(commands, t->image, transfer, t->plan.linear.buffer, 1, &copy);
+    else vkCmdCopyBufferToImage(commands, t->plan.linear.buffer, t->image, transfer, 1, &copy);
     image_barrier(commands, t->image, transfer, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, transfer_access,
                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-    const VkMemoryBarrier to_host = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-                                     .dstAccessMask = VK_ACCESS_HOST_READ_BIT};
-    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &to_host, 0, NULL, 0, NULL);
-    if (finish_commands(x, commands)) return failed(error, error_size, "the GPU did not copy render target %#llx", (unsigned long long)t->address);
-    if (to_memory) rt_tiling_tile(&layout, t->staging.mapped, guest, t->width, t->height, 1);
-    t->staging_current = 1;
-    memory_take(&t->agreed, guest, span);
+    const VkMemoryBarrier rows = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT,
+                                  .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &rows, 0, NULL, 0, NULL);
+    return 0;
+}
+
+/* Loads a render target's image from the guest memory under it, laid out as its tile mode has them
+   (runtime/tiling.h), before draws, when the memory may have changed: detiled on the GPU into its
+   linear rows (runtime/tile_copy.h), then copied into the image, with the batch. 0, or -1 with the
+   reason. */
+static int load_target(rt_executor *x, target_entry *t, char *error, size_t error_size)
+{
+    rt_tiling layout;
+    uint64_t span;
+    if (target_memory(x, t, &layout, &span, error, error_size) || record_tile_copy(x, &t->plan, t->address, 0, error, error_size) ||
+        record_target_copy(x, t, 0, error, error_size))
+        return -1;
+    t->staging_current = 0;
     return 0;
 }
 
 /* Writes every render target drawn into since back to the guest memory, so what reads the memory next
-   (a shader's buffer loads or images, the CPU after the buffer) sees the draws. 0, or -1. */
+   (a shader's buffer loads or images, the CPU after the buffer) sees the draws: copied into its linear
+   rows and tiled into place on the GPU, with the batch. The memory epoch moves on (images over that
+   memory load again); a target's own image already holds what it wrote. 0, or -1 with the reason. */
 static int write_back_targets(rt_executor *x, char *error, size_t error_size)
 {
+    int any = 0;
     for (size_t i = 0; i < x->target_count; i++) {
         target_entry *t = &x->targets[i];
         if (!t->drawn) continue;
-        if (transfer_target(x, t, 1, error, error_size)) return -1;
-        t->drawn = 0;
+        rt_tiling layout;
+        uint64_t span;
+        if (target_memory(x, t, &layout, &span, error, error_size) || record_target_copy(x, t, 1, error, error_size) ||
+            record_tile_copy(x, &t->plan, t->address, 1, error, error_size))
+            return -1;
+        batch_writes(x, t->address, span);
+        any = 1;
     }
+    if (!any) return 0;
+    x->memory_epoch++;
+    for (size_t i = 0; i < x->target_count; i++) {
+        target_entry *t = &x->targets[i];
+        if (!t->drawn) continue;
+        /* its image stays current unless another target written back overlaps it */
+        int overlapped = 0;
+        for (size_t k = 0; k < x->target_count; k++) {
+            const target_entry *o = &x->targets[k];
+            overlapped |= k != i && o->drawn && o->address < t->address + target_span(t) && t->address < o->address + target_span(o);
+        }
+        if (!overlapped) t->loaded_epoch = x->memory_epoch;
+    }
+    for (size_t i = 0; i < x->target_count; i++) x->targets[i].drawn = 0;
     return 0;
 }
 
@@ -1002,7 +1331,9 @@ fail:
 }
 
 /* The render pass and framebuffer for a colour target, a depth target or both (NULL for none): both
-   load what is there and keep it, as draws add to it. NULL after failing. */
+   load what is there and keep it, as draws add to it. Both address pixels from the same corner, so a
+   depth target larger than the colour target (padded, as the game's 2048x1152 one under 1920x1088)
+   is drawn with the colour target's size; a smaller one stops by name. NULL after failing. */
 static pass_entry *pass_for(rt_executor *x, const target_entry *color, const depth_entry *depth, char *error, size_t error_size)
 {
     const int c = color ? (int)(color - x->targets) : -1, z = depth ? (int)(depth - x->depths) : -1;
@@ -1012,8 +1343,8 @@ static pass_entry *pass_for(rt_executor *x, const target_entry *color, const dep
         failed(error, error_size, "more render passes than the executor keeps");
         return NULL;
     }
-    if (color && depth && (color->width != depth->width || color->height != depth->height)) {
-        failed(error, error_size, "a %ux%u colour target with a %ux%u depth target: not drawn yet", color->width, color->height, depth->width,
+    if (color && depth && (color->width > depth->width || color->height > depth->height)) {
+        failed(error, error_size, "a %ux%u colour target with a smaller %ux%u depth target: not drawn yet", color->width, color->height, depth->width,
                depth->height);
         return NULL;
     }
@@ -1097,7 +1428,7 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
     if (stage == STAGE_VERTEX) {
         const gcn_vertex_layout layout = {.user_sgprs = user_sgprs, .output_control = settings,
                                           .push_constant_offset = VERTEX_USER_DATA, .address_offset = x->address_offset,
-                                          .error_address = x->stop_address, .callee = callee ? (const uint32_t *)(uintptr_t)callee : NULL,
+                                          .error_address = stop_slot(x, 0, x->shader_count), .callee = callee ? (const uint32_t *)(uintptr_t)callee : NULL,
                                           .callee_dwords = callee ? (size_t)((x->guest_base + x->size - callee) / 4) : 0,
                                           .code_address = code, .user_data_read = user_read};
         result = gcn_translate_vertex(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
@@ -1107,7 +1438,7 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
                                          .position_enable = (inputs & POS_X_FLOAT_ENA ? GCN_PIXEL_POSITION_X : 0u) |
                                                             (inputs & POS_Y_FLOAT_ENA ? GCN_PIXEL_POSITION_Y : 0u),
                                          .position_vgpr = pixel_input_vgpr(inputs, 8), .push_constant_offset = PIXEL_USER_DATA,
-                                         .address_offset = x->address_offset, .error_address = x->stop_address,
+                                         .address_offset = x->address_offset, .error_address = stop_slot(x, 0, x->shader_count),
                                          .images = images, .image_count = image_count, .samplers = samplers,
                                          .sampler_count = sampler_count, .user_data_read = user_read};
         result = gcn_translate_pixel(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
@@ -1247,28 +1578,29 @@ static int stage_images(rt_executor *x, uint64_t code, const uint32_t *user, uin
 static int stage_samplers(rt_executor *x, uint64_t code, const uint32_t *user, uint32_t user_sgprs, uint32_t user_set, gcn_resource_origin *origins,
                           VkSampler *samplers, unsigned *count, int *linear, char *error, size_t error_size);
 
-/* A descriptor set of n images of one type, then m samplers, for set layout `layout` (the pool holds
-   one at a time: every run waits for the GPU). VK_NULL_HANDLE after failing. */
-static VkDescriptorSet image_set(rt_executor *x, VkDescriptorSetLayout layout, VkDescriptorType type, const VkImageView *views, unsigned n,
-                                 const VkSampler *samplers, unsigned m)
+/* A descriptor set of n images of one type, then m samplers, for set layout `layout`, from the pool the
+   batch's sets share (when it is full, the batch runs first and frees it). 0, or -1 with the reason. */
+static int image_set(rt_executor *x, VkDescriptorSetLayout layout, VkDescriptorType type, const VkImageView *views, unsigned n,
+                     const VkSampler *samplers, unsigned m, VkDescriptorSet *set, char *error, size_t error_size)
 {
-    vkResetDescriptorPool(x->device, x->descriptor_pool, 0);
     const VkDescriptorSetAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = x->descriptor_pool,
                                                   .descriptorSetCount = 1, .pSetLayouts = &layout};
-    VkDescriptorSet set = VK_NULL_HANDLE;
-    if (vkAllocateDescriptorSets(x->device, &allocate, &set) != VK_SUCCESS) return VK_NULL_HANDLE;
+    if (vkAllocateDescriptorSets(x->device, &allocate, set) != VK_SUCCESS) {
+        if (batch_finish(x, error, error_size)) return -1;
+        if (vkAllocateDescriptorSets(x->device, &allocate, set) != VK_SUCCESS) return failed(error, error_size, "no descriptor set");
+    }
     VkDescriptorImageInfo infos[GCN_MAX_IMAGES + GCN_MAX_SAMPLERS];
     VkWriteDescriptorSet writes[GCN_MAX_IMAGES + GCN_MAX_SAMPLERS];
     for (unsigned i = 0; i < n + m; i++) {
         const int sampler = i >= n;
         infos[i] = sampler ? (VkDescriptorImageInfo){samplers[i - n], VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED}
                            : (VkDescriptorImageInfo){VK_NULL_HANDLE, views[i], VK_IMAGE_LAYOUT_GENERAL};
-        writes[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = i,
+        writes[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = *set, .dstBinding = i,
                                            .descriptorCount = 1, .descriptorType = sampler ? VK_DESCRIPTOR_TYPE_SAMPLER : type,
                                            .pImageInfo = &infos[i]};
     }
     vkUpdateDescriptorSets(x->device, n + m, writes, 0, NULL);
-    return set;
+    return 0;
 }
 
 /* The descriptor set layout and pipeline layout of draws whose pixel shader reads n sampled images
@@ -1370,12 +1702,15 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int
     target_entry *t = colour ? target_for(x, &s->color, error, error_size) : NULL;
     if (colour && !t) return -1;
     if (t && t->loaded_epoch != x->memory_epoch) { /* the memory may have changed since the image last held it */
-        if (transfer_target(x, t, 0, error, error_size)) return -1;
+        if (load_target(x, t, error, error_size)) return -1;
         t->loaded_epoch = x->memory_epoch;
     }
     const int uses_depth = plan->depth_test || plan->stencil_test;
-    const depth_entry *z = uses_depth ? depth_for(x, s, error, error_size) : NULL;
+    depth_entry *z = uses_depth ? depth_for(x, s, error, error_size) : NULL;
     if (uses_depth && !z) return -1;
+    if (z && plan->reads && !z->drawn)
+        return failed(error, error_size, "a depth or stencil test reads depth target %#llx, which no draw has written yet: its contents in "
+                      "memory are not loaded", (unsigned long long)z->z_address);
     VkRenderPass render_pass = t ? t->pass : VK_NULL_HANDLE;
     VkFramebuffer framebuffer = t ? t->framebuffer : VK_NULL_HANDLE;
     if (z) {
@@ -1407,18 +1742,19 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int
     const VkPipeline pipeline = pipeline_for(x, vertex, geometry, pixel, render_pass, layout, s->blend0_set ? s->blend0_control : 0, strip,
                                              plan, t != NULL, z != NULL, error, error_size);
     if (!pipeline) return -1;
-    const VkDescriptorSet set = has_set ? image_set(x, x->pixel_set_layouts[image_count][sampler_count], VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-                                                    views, image_count, samplers, sampler_count)
-                                        : VK_NULL_HANDLE;
-    if (has_set && !set) return failed(error, error_size, "no descriptor set");
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    if (has_set && image_set(x, x->pixel_set_layouts[image_count][sampler_count], VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, views, image_count,
+                             samplers, sampler_count, &set, error, error_size))
+        return -1;
 
-    VkCommandBuffer commands = begin_commands(x);
+    VkCommandBuffer commands = batch_commands(x);
     if (!commands) return failed(error, error_size, "no command buffer");
     /* what earlier work wrote (images, guest memory) is visible to this draw's shaders */
     const VkMemoryBarrier earlier = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
-                                     .dstAccessMask = VK_ACCESS_SHADER_READ_BIT};
-    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                         0, 1, &earlier, 0, NULL, 0, NULL);
+                                     .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INDEX_READ_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                         VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 1,
+                         &earlier, 0, NULL, 0, NULL);
     const VkRenderPassBeginInfo pass = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = render_pass,
                                         .framebuffer = framebuffer, .renderArea = {{0, 0}, {width, height}}};
     vkCmdBeginRenderPass(commands, &pass, VK_SUBPASS_CONTENTS_INLINE);
@@ -1449,9 +1785,9 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, int
         vkCmdDraw(commands, index_count, 1, 0, 0);
     }
     vkCmdEndRenderPass(commands);
-    if (finish_commands(x, commands)) return failed(error, error_size, "the GPU did not finish a draw");
     if (t) t->drawn = 1, t->staging_current = 0;
-    return check_stop_word(x, error, error_size);
+    if (z && plan_writes(plan)) z->drawn = 1;
+    return 0; /* the run-time stop words are checked once the batch has run */
 }
 
 /* The pipeline for a compute shader as dispatched now: translated once per workgroup size and
@@ -1478,7 +1814,7 @@ static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *
     }
     const gcn_compute_layout layout = {.local_size = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
                                        .workgroup_id_x_sgpr = workgroup_id_x_sgpr, .push_constant_offset = 0,
-                                       .address_offset = x->address_offset, .error_address = x->stop_address,
+                                       .address_offset = x->address_offset, .error_address = stop_slot(x, 1, x->compute_count),
                                        .images = images, .image_count = image_count, .user_data_read = user_read};
     uint32_t *spirv = NULL;
     size_t words = 0;
@@ -1535,9 +1871,9 @@ static int image_format(const rt_image_descriptor *d, texel_format *f, char *err
         uint32_t data_format, num_format;
         texel_format f;
     } formats[] = {
-        {1, 0, {VK_FORMAT_R8_UNORM, GCN_IMAGE_FLOAT, 1, 1, 1}}, {4, 7, {VK_FORMAT_R32_SFLOAT, GCN_IMAGE_FLOAT, 1, 4, 1}}, {4, 4, {VK_FORMAT_R32_UINT, GCN_IMAGE_UINT, 1, 4, 1}},
+        {1, 0, {VK_FORMAT_R8_UNORM, GCN_IMAGE_FLOAT, 1, 1, 1}}, {3, 0, {VK_FORMAT_R8G8_UNORM, GCN_IMAGE_FLOAT, 2, 2, 1}}, {4, 7, {VK_FORMAT_R32_SFLOAT, GCN_IMAGE_FLOAT, 1, 4, 1}}, {4, 4, {VK_FORMAT_R32_UINT, GCN_IMAGE_UINT, 1, 4, 1}},
         {4, 5, {VK_FORMAT_R32_SINT, GCN_IMAGE_SINT, 1, 4, 1}}, {11, 7, {VK_FORMAT_R32G32_SFLOAT, GCN_IMAGE_FLOAT, 2, 8, 1}},
-        {14, 7, {VK_FORMAT_R32G32B32A32_SFLOAT, GCN_IMAGE_FLOAT, 4, 16, 1}}, {10, 0, {VK_FORMAT_R8G8B8A8_UNORM, GCN_IMAGE_FLOAT, 4, 4, 1}},
+        {14, 7, {VK_FORMAT_R32G32B32A32_SFLOAT, GCN_IMAGE_FLOAT, 4, 16, 1}}, {10, 0, {VK_FORMAT_R8G8B8A8_UNORM, GCN_IMAGE_FLOAT, 4, 4, 1}}, {10, 4, {VK_FORMAT_R8G8B8A8_UINT, GCN_IMAGE_UINT, 4, 4, 1}},
         {35, 0, {VK_FORMAT_BC1_RGBA_UNORM_BLOCK, GCN_IMAGE_FLOAT, 4, 8, 4}}, {35, 9, {VK_FORMAT_BC1_RGBA_SRGB_BLOCK, GCN_IMAGE_FLOAT, 4, 8, 4}},
         {36, 0, {VK_FORMAT_BC2_UNORM_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}}, {36, 9, {VK_FORMAT_BC2_SRGB_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}},
         {37, 0, {VK_FORMAT_BC3_UNORM_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}}, {37, 9, {VK_FORMAT_BC3_SRGB_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}},
@@ -1555,7 +1891,9 @@ static int image_format(const rt_image_descriptor *d, texel_format *f, char *err
 
 static int one_dimensional(uint32_t type) { return type == RT_IMAGE_1D || type == RT_IMAGE_1D_ARRAY; }
 
-/* Fills a kept image with the guest memory's texels under its descriptor, detiled (runtime/tiling.h).
+/* Fills a kept image with the guest memory's texels under its descriptor, detiled (runtime/tiling.h): on
+   the GPU for elements of whole 32-bit words, again whenever the memory may have changed since
+   (memory_epoch); by the CPU for smaller ones, again when the memory differs from what it last loaded.
    0, or -1 with the reason (a layout not done yet, texels outside the GPU-visible memory). */
 static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor *d, const texel_format *f, char *error, size_t error_size)
 {
@@ -1573,36 +1911,56 @@ static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor
     const uint64_t span = rt_tiling_size(&layout, e->layers);
     if (d->address < x->guest_base || d->address - x->guest_base > x->size || span > x->size - (d->address - x->guest_base))
         return failed(error, error_size, "the image at %#llx is outside the GPU-visible memory", (unsigned long long)d->address);
-    /* a render target drawn into since it was written back holds texels the memory lacks */
+    /* a render target drawn into since it was written back holds texels the memory lacks (the write-back
+       takes the other targets drawn into along: the memory would get them at the buffer's end anyway) */
     for (size_t i = 0; i < x->target_count; i++) {
         target_entry *t = &x->targets[i];
         if (t->drawn && t->address < d->address + span && d->address < t->address + target_span(t)) {
-            if (transfer_target(x, t, 1, error, error_size)) return -1;
-            t->drawn = 0;
+            if (write_back_targets(x, error, error_size)) return -1;
+            break;
         }
     }
-    const uint8_t *guest = (const uint8_t *)x->view + (d->address - x->guest_base);
     if (e->tiling_index != d->tiling_index || e->pitch != d->pitch) { /* the same memory read another way */
         e->tiling_index = d->tiling_index, e->pitch = d->pitch;
         memory_take(&e->agreed, NULL, 0);
+        tile_plan_free(x, &e->plan);
+        e->loaded_epoch = UINT64_MAX;
     }
+    const VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, e->layers},
+                                    .imageExtent = {e->width, one_dimensional(d->type) ? 1 : e->height, 1}};
+    if (bytes % 4 == 0) { /* whole words: detiled on the GPU (runtime/tile_copy.h), with the batch */
+        if (e->loaded_epoch == x->memory_epoch) return 0; /* nothing may have changed the memory since */
+        if (!e->plan.table.buffer && tile_plan_make(x, &e->plan, &layout, columns, rows, e->layers, error, error_size)) return -1;
+        if (record_tile_copy(x, &e->plan, d->address, 0, error, error_size)) return -1;
+        VkCommandBuffer commands = batch_commands(x);
+        if (!commands) return failed(error, error_size, "no command buffer to load an image");
+        vkCmdCopyBufferToImage(commands, e->plan.linear.buffer, e->image, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
+        const VkMemoryBarrier after = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                       .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
+        vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &after, 0, NULL, 0, NULL);
+        e->loaded_epoch = x->memory_epoch;
+        return 0;
+    }
+    /* smaller elements: detiled by the CPU, skipped while the memory holds what was loaded last */
+    if (guest_memory_settled(x, d->address, span, error, error_size)) return -1;
+    const uint8_t *guest = (const uint8_t *)x->view + (d->address - x->guest_base);
     if (memory_unchanged(&e->agreed, guest, span)) return 0; /* the image holds these texels already */
+    if (x->upload_pending && batch_finish(x, error, error_size)) return -1; /* the batch still copies from the upload buffer */
     const VkDeviceSize linear_bytes = (VkDeviceSize)columns * rows * e->layers * bytes;
     if (staging_ready(x, &x->upload, linear_bytes)) return failed(error, error_size, "no staging memory for a %ux%u image", e->width, rows);
     rt_tiling_detile(&layout, guest, x->upload.mapped, columns, rows, e->layers);
-    VkCommandBuffer commands = begin_commands(x);
+    VkCommandBuffer commands = batch_commands(x);
     if (!commands) return failed(error, error_size, "no command buffer to load an image");
     /* the image stays in the general layout; earlier work on it finishes before the copy, and the copy
        before later work */
     const VkMemoryBarrier before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT,
                                     .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT};
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before, 0, NULL, 0, NULL);
-    const VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, e->layers}, .imageExtent = {e->width, one_dimensional(d->type) ? 1 : e->height, 1}};
     vkCmdCopyBufferToImage(commands, x->upload.buffer, e->image, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
     const VkMemoryBarrier after = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
                                    .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &after, 0, NULL, 0, NULL);
-    if (finish_commands(x, commands)) return failed(error, error_size, "the GPU did not load an image");
+    x->upload_pending = 1;
     memory_take(&e->agreed, guest, span);
     return 0;
 }
@@ -1644,7 +2002,7 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
                                         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
         e = &x->images[x->image_count];
         *e = (image_entry){.address = d->address, .format = f->format, .width = d->width, .height = d->height, .layers = d->layers,
-                           .type = d->type, .tiling_index = d->tiling_index, .pitch = d->pitch};
+                           .type = d->type, .tiling_index = d->tiling_index, .pitch = d->pitch, .loaded_epoch = UINT64_MAX};
         if (vkCreateImage(x->device, &info, NULL, &e->image) != VK_SUCCESS) {
             failed(error, error_size, "the device refused a %ux%u image", d->width, d->height);
             return NULL;
@@ -1742,6 +2100,7 @@ static int descriptor_words(rt_executor *x, const gcn_resource_origin *origin, c
     enum { POINTER_HIGH_MASK = 0xffff };
     const uint64_t pointer = (uint64_t)(user[origin->pointer_sgpr + 1] & POINTER_HIGH_MASK) << 32 | user[origin->pointer_sgpr];
     const uint64_t address = pointer + origin->offset, bytes = count * sizeof *words;
+    if (guest_memory_settled(x, address, bytes, error, error_size)) return -1; /* the batch may store the descriptor */
     if (address % 4 || address < x->guest_base || address - x->guest_base > x->size || bytes > x->size - (address - x->guest_base))
         return failed(error, error_size, "a descriptor at %#llx (s[%u:%u] + %u) outside the GPU-visible memory", (unsigned long long)address,
                       origin->pointer_sgpr, origin->pointer_sgpr + 1, origin->offset);
@@ -1773,7 +2132,11 @@ static int stage_images(rt_executor *x, uint64_t code, const uint32_t *user, uin
         rt_image_descriptor d;
         rt_image_descriptor_decode(words, &d);
         if (d.type != RT_IMAGE_1D && d.type != RT_IMAGE_2D && d.type != RT_IMAGE_1D_ARRAY && d.type != RT_IMAGE_2D_ARRAY)
-            return failed(error, error_size, "an image of type %u: only 1D and 2D images and their arrays are done yet", d.type);
+            return failed(error, error_size,
+                          "the %s shader at %#llx reads an image of type %u (descriptor %08x %08x %08x %08x %08x %08x %08x %08x): "
+                          "only 1D and 2D images and their arrays are done yet",
+                          stage, (unsigned long long)code, d.type, words[0], words[1], words[2], words[3], words[4], words[5], words[6],
+                          words[7]);
         if (d.base_level || d.last_level) return failed(error, error_size, "an image with mip levels: not done yet");
         if (d.layers > 1 && (d.base_array > d.last_array || d.last_array >= d.layers))
             return failed(error, error_size, "a view of an image array from layer %u to %u of %u", d.base_array, d.last_array, d.layers);
@@ -1809,17 +2172,22 @@ static int stage_images(rt_executor *x, uint64_t code, const uint32_t *user, uin
 
    Made: wrap, mirror and clamp to the last texel (Vulkan's repeat, mirrored repeat and clamp to
    edge), point or bilinear filtering with the minifying and magnifying filters equal (the translator
-   samples level 0; with one level and equal filters that is what the GPU picks too). Anything else in
-   word 0 (anisotropy, depth compares, unnormalized coordinates, the truncation and degamma options, a
-   filter mode other than blending) stops by name. Words 1 and 3 and the LOD bias and mip and z filters
+   samples level 0; with one level and equal filters that is what the GPU picks too). The anisotropy
+   fields (MAX_ANISO_RATIO, ANISO_THRESHOLD, ANISO_BIAS) shape only the anisotropic filters (XY filters
+   2 and 3; Mesa's radeonsi switches XY_MAG_FILTER and XY_MIN_FILTER to them exactly when it asks for
+   anisotropy), so with point or bilinear filters they change nothing and are accepted. Anything else
+   in word 0 (depth compares, unnormalized coordinates, the truncation and degamma options, a filter
+   mode other than blending) stops by name. Words 1 and 3 and the LOD bias and mip and z filters
    change nothing for a one-level image sampled at level 0. */
 static VkSampler sampler_for(rt_executor *x, const uint32_t words[4], char *error, size_t error_size)
 {
     for (size_t i = 0; i < x->sampler_count; i++)
         if (!memcmp(x->samplers[i].words, words, sizeof x->samplers[i].words)) return x->samplers[i].sampler;
-    enum { CLAMP_BITS = 9, WRAP = 0, MIRROR = 1, CLAMP_LAST_TEXEL = 2, POINT = 0, BILINEAR = 1 };
-    if (words[0] >> CLAMP_BITS) {
-        failed(error, error_size, "a sampler with word 0 %#x (anisotropy, depth compares, unnormalized coordinates or filter options): "
+    enum { CLAMP_FIELDS = 0x1ff, WRAP = 0, MIRROR = 1, CLAMP_LAST_TEXEL = 2, POINT = 0, BILINEAR = 1 };
+    enum { MAX_ANISO_RATIO = 0x7u << 9, ANISO_THRESHOLD = 0x7u << 16, ANISO_BIAS = 0x3fu << 21 };
+    const uint32_t anisotropy_fields = MAX_ANISO_RATIO | ANISO_THRESHOLD | ANISO_BIAS;
+    if (words[0] & ~(CLAMP_FIELDS | anisotropy_fields)) {
+        failed(error, error_size, "a sampler with word 0 %#x (depth compares, unnormalized coordinates or filter options): "
                "not done yet", words[0]);
         return VK_NULL_HANDLE;
     }
@@ -1876,7 +2244,7 @@ static int stage_samplers(rt_executor *x, uint64_t code, const uint32_t *user, u
     return 0;
 }
 
-/* Runs a dispatch of the current compute shader; its writes reach the guest memory before this returns. */
+/* Records a dispatch of the current compute shader into the batch; its writes reach the guest memory once the batch has run. */
 static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3], char *error, size_t error_size)
 {
     if (!s->compute_set) return failed(error, error_size, "a dispatch without a compute shader");
@@ -1897,11 +2265,11 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     if (!pipeline) return -1;
     if (check_user_data("compute", c->code, user_read, s->compute_user_set, error, error_size)) return -1;
     const VkPipelineLayout layout = image_count ? x->image_layouts[image_count] : x->compute_layout;
-    const VkDescriptorSet set =
-        image_count ? image_set(x, x->image_set_layouts[image_count], VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, views, image_count, NULL, 0)
-                    : VK_NULL_HANDLE;
-    if (image_count && !set) return failed(error, error_size, "no descriptor set");
-    VkCommandBuffer commands = begin_commands(x);
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    if (image_count && image_set(x, x->image_set_layouts[image_count], VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, views, image_count, NULL, 0, &set,
+                                 error, error_size))
+        return -1;
+    VkCommandBuffer commands = batch_commands(x);
     if (!commands) return failed(error, error_size, "no command buffer");
     /* what earlier work wrote (images, guest memory) is visible to this dispatch */
     const VkMemoryBarrier earlier = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
@@ -1911,12 +2279,9 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     if (set) vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0, NULL);
     vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, USER_DATA_BYTES, s->compute_user);
     vkCmdDispatch(commands, groups[0], groups[1], groups[2]);
-    const VkMemoryBarrier to_host = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-                                     .dstAccessMask = VK_ACCESS_HOST_READ_BIT};
-    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &to_host, 0, NULL, 0, NULL);
-    if (finish_commands(x, commands)) return failed(error, error_size, "the GPU did not finish a dispatch");
     x->memory_epoch++; /* its stores may have changed any memory, render targets' included */
-    return check_stop_word(x, error, error_size);
+    x->memory_pending = 1; /* the CPU reads such memory only once the batch has run */
+    return 0;              /* the run-time stop word is checked once the batch has run */
 }
 
 /* The indices an indexed draw reads: count from the first, in the index buffer INDEX_BASE names, of
@@ -1947,10 +2312,30 @@ static int index_range_for(rt_executor *x, const draw_state *s, uint32_t first, 
 
 void rt_executor_reset(rt_executor *x) { memset(&x->state, 0, sizeof x->state); }
 
+static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, char *error, size_t error_size);
+
 int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t size, char *error, size_t error_size)
 {
     size_t count = 0;
     const rt_render_call *calls = rt_render_submitted(buffer, size, &count);
+    return rt_executor_run_calls(x, calls, count, error, error_size);
+}
+
+int rt_executor_run_calls(rt_executor *x, const rt_render_call *calls, size_t count, char *error, size_t error_size)
+{
+    if (run_calls(x, calls, count, error, error_size)) {
+        char later[64];
+        batch_finish(x, later, sizeof later); /* the calls before the failing one still run, as they did one by one */
+        return -1;
+    }
+    /* the CPU may read what the buffer drew: written back, and the batch run, before the steps after it (labels, flips) are performed */
+    if (write_back_targets(x, error, error_size)) return -1;
+    return batch_finish(x, error, error_size);
+}
+
+/* Records the buffer's calls into the batch, in order, keeping the state they set. */
+static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, char *error, size_t error_size)
+{
     draw_state *s = &x->state; /* the GPU's state carries over from buffer to buffer */
     x->memory_epoch++;          /* the CPU may have written memory since the last buffer */
     for (size_t i = 0; i < count; i++) {
@@ -2027,7 +2412,7 @@ int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t size, char *error,
         }
         }
     }
-    return write_back_targets(x, error, error_size); /* the CPU may read what the buffer drew */
+    return 0;
 }
 
 /* ---- reading a target ---- */
@@ -2038,6 +2423,7 @@ int rt_executor_read_target(rt_executor *x, uint64_t address, uint32_t *bgra, ui
     target_entry *t = find_target(x, address);
     if (!t) return failed(error, error_size, "no draw has used a render target at %#llx", (unsigned long long)address);
     if (width > t->width || height > t->height) return failed(error, error_size, "%ux%u is past the %ux%u target", width, height, t->width, t->height);
+    if (batch_finish(x, error, error_size)) return -1; /* each run ends with its batch run; this keeps it so */
     /* the staging buffer holds the image's texels after its last transfer, until it is drawn into again */
     if (!t->staging_current) {
         const VkDeviceSize bytes = (VkDeviceSize)t->width * t->height * 4;
@@ -2104,7 +2490,7 @@ void rt_executor_close(rt_executor *x)
             vkDestroyImage(x->device, t->image, NULL);
             vkFreeMemory(x->device, t->memory, NULL);
             staging_free(x, &x->targets[i].staging);
-            free(t->agreed.bytes);
+            tile_plan_free(x, &x->targets[i].plan);
         }
         staging_free(x, &x->upload);
         if (x->buffer) vkDestroyBuffer(x->device, x->buffer, NULL);
@@ -2127,9 +2513,15 @@ void rt_executor_close(rt_executor *x)
             vkDestroyImage(x->device, x->images[i].image, NULL);
             vkFreeMemory(x->device, x->images[i].memory, NULL);
             free(x->images[i].agreed.bytes);
+            tile_plan_free(x, &x->images[i].plan);
         }
         if (x->stop_buffer) vkDestroyBuffer(x->device, x->stop_buffer, NULL);
         if (x->stop_memory) vkFreeMemory(x->device, x->stop_memory, NULL);
+        if (x->batch_done) vkDestroyFence(x->device, x->batch_done, NULL);
+        for (unsigned k = 0; k < 3; k++)
+            for (unsigned to_tiled = 0; to_tiled < 2; to_tiled++)
+                if (x->tile_copies[k][to_tiled]) vkDestroyPipeline(x->device, x->tile_copies[k][to_tiled], NULL);
+        if (x->tile_copy_layout) vkDestroyPipelineLayout(x->device, x->tile_copy_layout, NULL);
         if (x->pool) vkDestroyCommandPool(x->device, x->pool, NULL);
         vkDestroyDevice(x->device, NULL);
     }

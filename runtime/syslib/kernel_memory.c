@@ -49,6 +49,7 @@
    call the executable makes respects. The PS4's own rule is not established here (see getpagesize
    in docs/runtime-syscalls.md), so anything finer stops by name instead of being rounded. */
 #define DIRECT_PAGE 0x4000ull
+#define SCE_KERNEL_ERROR_EINVAL ((int32_t)0x80020016) /* 0x80020000 plus FreeBSD's EINVAL, 22 */
 
 enum { PROT_CPU_READ = 0x1, PROT_CPU_WRITE = 0x2, PROT_GPU_READ = 0x10, PROT_GPU_WRITE = 0x20 };
 enum { MAP_NO_OVERWRITE = 0x80 }; /* sceKernelMapDirectMemory flags (shadPS4 kernel memory.h) */
@@ -194,8 +195,8 @@ static int range_holding(uint64_t start, uint64_t length)
 
 /* The guest mappings the runtime made (direct and flexible memory), with the protection the guest
    asked for, GPU bits included, for sceKernelQueryMemoryProtection and sceKernelVirtualQuery; a
-   direct map also keeps its offset in the pool and its range's memory type. Neither kind is ever
-   unmapped yet, so the list only grows. */
+   direct map also keeps its offset in the pool and its range's memory type. sceKernelMunmap
+   removes one. */
 typedef struct {
     uintptr_t start;
     uint64_t length;
@@ -391,6 +392,89 @@ static int32_t virtual_query(const void *address, int32_t flags, virtual_query_i
     return 0;
 }
 
+/* sceKernelMunmap(void *address, size_t length), sceKernelMprotect(const void *address, size_t
+   length, int protection) and sceKernelGetDirectMemoryType(off_t start, int32_t *type, off_t
+   *range_start, off_t *range_end), as OpenOrbis' libkernel.h declares them.
+
+   Munmap is FreeBSD's munmap(2) under its SCE name. The executable frees a direct map with
+   munmap and then sceKernelReleaseDirectMemory (0x024826fd, 0x0248270c), the order the release
+   requires. A zero length is EINVAL (FreeBSD's sys_munmap; shadPS4's sceKernelMunmap answers the
+   same). The runtime removes one whole mapping it made: the host mapping goes, and a direct map no
+   longer holds its range, which can then be released; the address is not handed out again.
+
+   Mprotect is FreeBSD's mprotect(2): the mapping takes the new protection, CPU bits on the host,
+   GPU bits recorded, as for a map. The executable's one call (0x02d03214) is a wrapper that answers
+   whether the result was 0.
+
+   GetDirectMemoryType answers the memory type of the allocated range that holds a pool offset,
+   with the range's start and end (just past it, as for sceKernelVirtualQuery). The executable's
+   one call (0x02abae74) passes the offset sceKernelVirtualQuery gave for an address and only tests
+   whether the type is 3 (write-combined garlic).
+
+   What stops by name: part of a mapping, more than one, or memory the runtime did not map (other
+   memory is not tracked); an offset outside every allocated range (shadPS4 answers ENOENT; no
+   public source settles it); a protection beyond CPU and GPU read and write; missing variables. */
+static int mapping_index(const char *caller, uintptr_t start, uint64_t length)
+{
+    for (int i = 0; i < mapping_count; i++) {
+        if (start < mappings[i].start || start - mappings[i].start >= mappings[i].length) continue;
+        if (start != mappings[i].start || length != mappings[i].length)
+            rt_fatal(caller, "part of a mapping, or more than one: not modelled");
+        return i;
+    }
+    rt_fatal(caller, "memory the runtime did not map: not tracked yet");
+}
+
+static int32_t kernel_munmap(void *address, uint64_t length)
+{
+    static const char name[] = "sceKernelMunmap";
+    if (!length) return SCE_KERNEL_ERROR_EINVAL;
+    pthread_mutex_lock(&mappings_lock);
+    const int i = mapping_index(name, (uintptr_t)address, length);
+    const guest_mapping m = mappings[i];
+    if (munmap(address, length)) rt_fatal(name, "the host could not unmap the memory");
+    mappings[i] = mappings[--mapping_count];
+    pthread_mutex_unlock(&mappings_lock);
+    if (m.direct) {
+        pthread_mutex_lock(&pool_lock);
+        const int range = range_holding((uint64_t)m.offset, m.length);
+        if (range >= 0) ranges[range].maps--;
+        pthread_mutex_unlock(&pool_lock);
+    }
+    return 0;
+}
+
+static int32_t kernel_mprotect(const void *address, uint64_t length, int32_t protection)
+{
+    static const char name[] = "sceKernelMprotect";
+    if (protection & ~(PROT_CPU_READ | PROT_CPU_WRITE | PROT_GPU_READ | PROT_GPU_WRITE))
+        rt_fatal(name, "protection other than CPU and GPU read and write is not established");
+    pthread_mutex_lock(&mappings_lock);
+    const int i = mapping_index(name, (uintptr_t)address, length);
+    const int host_protection = (protection & PROT_CPU_READ ? PROT_READ : 0) | (protection & PROT_CPU_WRITE ? PROT_WRITE : 0);
+    if (mprotect((void *)(uintptr_t)address, length, host_protection)) rt_fatal(name, "the host refused the protection");
+    mappings[i].protection = protection;
+    pthread_mutex_unlock(&mappings_lock);
+    return 0;
+}
+
+static int32_t get_direct_memory_type(int64_t start, int32_t *type, int64_t *range_start, int64_t *range_end)
+{
+    static const char name[] = "sceKernelGetDirectMemoryType";
+    if (!type || !range_start || !range_end) rt_fatal(name, "no variable for an answer: the error value is not established");
+    pthread_mutex_lock(&pool_lock);
+    const int range = start < 0 ? -1 : range_holding((uint64_t)start, 1);
+    if (range < 0) rt_fatal(name, "an offset outside every allocated range: the error value is not established");
+    *type = ranges[range].memory_type;
+    *range_start = (int64_t)ranges[range].start;
+    *range_end = (int64_t)(ranges[range].start + ranges[range].length);
+    pthread_mutex_unlock(&pool_lock);
+    return 0;
+}
+
+RT_SYSLIB("libkernel", sceKernelMunmap, kernel_munmap);
+RT_SYSLIB("libkernel", sceKernelMprotect, kernel_mprotect);
+RT_SYSLIB("libkernel", sceKernelGetDirectMemoryType, get_direct_memory_type);
 RT_SYSLIB("libkernel", sceKernelGetDirectMemorySize, get_direct_memory_size);
 RT_SYSLIB("libkernel", sceKernelAllocateDirectMemory, allocate_direct_memory);
 RT_SYSLIB("libkernel", sceKernelMapDirectMemory, map_direct_memory);
