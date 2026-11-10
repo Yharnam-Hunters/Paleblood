@@ -70,3 +70,17 @@ static int32_t get_status(uint8_t *status)
     return 0;
 }
 RT_SYSLIB("libSceSystemService", sceSystemServiceGetStatus, get_status);
+
+/* sceSystemServiceReceiveEvent(event *): takes the oldest pending system event (shadPS4's
+   libSceSystemService: a missing pointer answers 0x80A10003, an empty queue 0x80A10004, "no
+   event", in its systemservice_error.h). The executable calls it only inside a loop bounded by the
+   pending count sceSystemServiceGetStatus gave (0x01b8a433, 0x02276aa3), and acts on an event only
+   when the call answers 0. The runtime raises no system events, so there is never one to take: it
+   answers no event and writes nothing. */
+#define SYSTEM_SERVICE_ERROR_NO_EVENT ((int32_t)0x80A10004u)
+
+static int32_t receive_event(void *event)
+{
+    return event ? SYSTEM_SERVICE_ERROR_NO_EVENT : SYSTEM_SERVICE_ERROR_PARAMETER;
+}
+RT_SYSLIB("libSceSystemService", sceSystemServiceReceiveEvent, receive_event);
