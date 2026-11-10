@@ -82,12 +82,29 @@ static int differing_pixels(rt_executor *x, uint64_t target)
     return differ;
 }
 
+/* The pixels of target that differ from the reference image's red and green with blue 0 and alpha 1
+   (all of them on a failed read). */
+static int two_channel_misses(rt_executor *x, uint64_t target)
+{
+    uint32_t bgra[SIZE * SIZE];
+    char error[160] = "";
+    if (rt_executor_read_target(x, target, bgra, SIZE, SIZE, error, sizeof error)) return SIZE * SIZE;
+    int differ = 0;
+    for (int y = 0; y < SIZE; y++)
+        for (int px = 0; px < SIZE; px++) {
+            const uint32_t p = bgra[y * SIZE + px];
+            differ += !(near(p >> 16 & 0xff, ((float)px + 0.5f) / SIZE) && near(p >> 8 & 0xff, ((float)y + 0.5f) / SIZE) &&
+                        (p & 0xff) == 0 && (p >> 24) == 0xff);
+        }
+    return differ;
+}
+
 /* Pixel shaders reading images the CPU wrote into guest memory (image_load_mip from a sampled image):
    a 128 x 64 8_8_8_8 image tiled as Thin2DThin (index 14), its texels placed with runtime/tiling.h,
    draws the reference image; the same bytes described as Display2DThin (index 10) do not. A linear one
    (index 8), DST_SEL z, y, x, w over blue-first bytes, and the guest changing its texels between
-   draws all read what the guest memory holds. A target larger than the image reads outside it and
-   stops by name. */
+   draws all read what the guest memory holds; so does an 8_8 image. A target larger than the image
+   reads outside it and stops by name. */
 static void sampled_images(rt_executor *x)
 {
     enum { TILED = 0x800000, LINEAR = 0x810000, SMALL = 0x820000, TEXEL_TARGET = 0x880000, WIDTH = 128, HEIGHT = 64,
@@ -169,6 +186,25 @@ static void sampled_images(rt_executor *x)
         }
     }
 
+    /* 8_8 unorm (DATA_FORMAT 3), linear, DST_SEL x, y, 0, 1: red and green from the two bytes, blue 0,
+       alpha 1; read as 8_8_8_8 (mutant) the bytes land elsewhere */
+    {
+        enum { TWO_CHANNEL = 0x8a0000 };
+        for (uint32_t y = 0; y < HEIGHT; y++)
+            for (uint32_t px = 0; px < WIDTH; px++) {
+                const uint32_t texel = reference_texel(px % SIZE, y % SIZE);
+                const uint8_t pair[2] = {(uint8_t)texel, (uint8_t)(texel >> 8)};
+                memcpy(guest + TWO_CHANNEL + (y * WIDTH + px) * 2, pair, 2);
+            }
+        image_descriptor(image, at(TWO_CHANNEL), 3, 0, WIDTH, HEIGHT);
+        image[3] = (image[3] & ~0xfffu) | (4 | 5 << 3 | 0 << 6 | 1 << 9) | LINEAR_ALIGNED << 20;
+        drawn = draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error);
+        if (drawn) fprintf(stderr, "8_8 image: %s\n", error);
+        CHECK(drawn == 0 && two_channel_misses(x, at(TEXEL_TARGET)) == 0);
+        image_descriptor(image, at(TWO_CHANNEL), 10, 0, WIDTH / 2, HEIGHT);
+        image[3] = (image[3] & ~0xfffu) | (4 | 5 << 3 | 0 << 6 | 1 << 9) | LINEAR_ALIGNED << 20;
+        CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0 && two_channel_misses(x, at(TEXEL_TARGET)) > 0);
+    }
     image_descriptor(image, at(SMALL), 10, 0, 8, 8);
     image[3] |= LINEAR_ALIGNED << 20;
     CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == -1 && strstr(error, "outside the image"));
