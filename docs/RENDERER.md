@@ -108,6 +108,12 @@ Instead:
        (`rt_image_descriptor_decode`, the Sea Islands manual's T# layout as shadPS4's `resource.h`
        has it) and binds a storage image (set 0, binding i) whose shape the translation uses. Stores
        must cover every component the format has; data components past them are dropped.
+       The executor keeps what shaders store in the image (it is not written back to memory). When
+       a shader stores into a render target's memory (a compute clear, as the game clears its
+       G-buffer), the target's next draw first copies the image's texels into the target (an
+       8_8_8_8 image into an 8_8_8_8 target, otherwise the same format; at least the target's size),
+       and the image loads from memory again at its next use; an image over a target's memory loads
+       it even when only written, so a store that covers part of it keeps the rest.
      - **Pixel shaders read images** (`image_load`, `image_load_mip`) as sampled images (Vulkan's
        `SAMPLED_IMAGE`, `OpImageFetch` at the level given), so the view applies the descriptor's
        DST_SEL. A texel outside the image or a level past its last is a run-time stop

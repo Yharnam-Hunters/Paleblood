@@ -319,6 +319,17 @@ static const uint32_t image_fill[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* A clear: every lane of a 16 x 16 group stores (0.25, 0.5, 0.75, 1) at its (x, y), v0 and v1, of the
+   image in s[8:15]. */
+static const uint32_t image_clear_tile[] = {
+    0x7e0802ff, 0x3e800000, /* v_mov_b32_e32 v4, 0.25 */
+    0x7e0a02f0, /* v_mov_b32_e32 v5, 0.5 */
+    0x7e0c02ff, 0x3f400000, /* v_mov_b32_e32 v6, 0.75 */
+    0x7e0e02f2, /* v_mov_b32_e32 v7, 1.0 */
+    0xf0200f00, 0x00020400, /* image_store v[4:7], v[0:1], s[8:15] dmask:0xf */
+    0xbf810000, /* s_endpgm */
+};
+
 /* Per lane i, texel (i, 0) of the image in s[8:15] stored as four dwords at i * 16 bytes of the
    buffer in s[0:3]. */
 static const uint32_t image_to_buffer[] = {

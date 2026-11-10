@@ -1113,11 +1113,6 @@ static target_entry *target_for(rt_executor *x, const rt_color_target *color, ch
         failed(error, error_size, "more render targets than the executor keeps");
         return NULL;
     }
-    for (size_t i = 0; i < x->image_count; i++)
-        if (x->images[i].address == color->address && x->images[i].gpu_written) {
-            failed(error, error_size, "a render target at %#llx that a shader wrote as an image: not drawn yet", (unsigned long long)color->address);
-            return NULL;
-        }
     t = &x->targets[x->target_count];
     *t = (target_entry){.loaded_epoch = UINT64_MAX, .address = color->address, .width = color->pitch, .height = color->height, .tile_index = color->tile_mode_index,
                         .format = format};
@@ -1211,6 +1206,50 @@ static int load_target(rt_executor *x, target_entry *t, char *error, size_t erro
         return -1;
     t->staging_current = 0;
     return 0;
+}
+
+/* Whether two image formats hold the same bytes per texel in the same memory order for a raw copy:
+   the same format, or two 8_8_8_8 ones (sRGB or not, either component order: the images hold the
+   memory's bytes as they lie). */
+static int same_texel_bytes(VkFormat a, VkFormat b)
+{
+    const VkFormat bytes4[] = {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_B8G8R8A8_SRGB};
+    int a4 = 0, b4 = 0;
+    for (unsigned i = 0; i < sizeof bytes4 / sizeof *bytes4; i++) a4 |= a == bytes4[i], b4 |= b == bytes4[i];
+    return a == b || (a4 && b4);
+}
+
+/* A shader may have written a render target's memory as an image since the target was last drawn (a
+   compute clear, as the game clears its G-buffer): the image keeps those texels (image_for), so they
+   are the target's newest contents. They are copied into the target, which is then drawn into and
+   written back like any other; the image loads from the memory again at its next use. 1 when copied,
+   0 when no image holds newer texels, -1 with the reason (an image of another texel size, or smaller). */
+static int take_written_image(rt_executor *x, target_entry *t, char *error, size_t error_size)
+{
+    image_entry *e = NULL;
+    for (size_t i = 0; i < x->image_count && !e; i++)
+        if (x->images[i].address == t->address && x->images[i].gpu_written) e = &x->images[i];
+    if (!e) return 0;
+    if (!same_texel_bytes(e->format, t->format) || e->width < t->width || e->height < t->height || e->type != RT_IMAGE_2D)
+        return failed(error, error_size, "render target %#llx was written by a shader as an image of another format or shape (Vulkan format %d, "
+                      "%ux%u, type %u): not drawn yet", (unsigned long long)t->address, (int)e->format, e->width, e->height, e->type);
+    VkCommandBuffer commands = batch_commands(x);
+    if (!commands) return failed(error, error_size, "no command buffer");
+    const VkMemoryBarrier written = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                                     .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &written, 0, NULL, 0, NULL);
+    image_barrier(commands, t->image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    const VkImageCopy region = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                .extent = {t->width, t->height, 1}};
+    vkCmdCopyImage(commands, e->image, VK_IMAGE_LAYOUT_GENERAL, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    image_barrier(commands, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+    e->gpu_written = 0;
+    t->drawn = 1, t->staging_current = 0, t->loaded_epoch = x->memory_epoch;
+    return 1;
 }
 
 /* Writes every render target drawn into since back to the guest memory, so what reads the memory next
@@ -1772,6 +1811,7 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
         if (!(colours >> slot & 1)) continue;
         target_entry *t = targets[slot] = target_for(x, &s->colors[slot], error, error_size);
         if (!t) return -1;
+        if (take_written_image(x, t, error, error_size) < 0) return -1;
         if (t->loaded_epoch != x->memory_epoch) { /* the memory may have changed since the image last held it */
             if (load_target(x, t, error, error_size)) return -1;
             t->loaded_epoch = x->memory_epoch;
@@ -2183,7 +2223,10 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
         }
         x->image_count++;
     }
-    if ((access & GCN_IMAGE_READ) && !e->gpu_written && load_texels(x, e, d, f, error, error_size)) return NULL;
+    /* an image over a render target's memory loads it even to be written: a store may cover only part of
+       it, and the target takes the whole image's texels at its next draw (take_written_image) */
+    const int over_target = find_target(x, d->address) != NULL;
+    if (((access & GCN_IMAGE_READ) || over_target) && !e->gpu_written && load_texels(x, e, d, f, error, error_size)) return NULL;
     if (access & GCN_IMAGE_WRITE) e->gpu_written = 1;
     return e;
 }
