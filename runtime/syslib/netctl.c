@@ -18,7 +18,7 @@
      -  Argument shape comes from the public Vita-era declarations of the same API family,
      include/psp2/net/netctl.h in vitasdk/vita-headers and the PSP2SDK header reference at
      psp2sdk.github.io/netctl_8h.html: a state query takes `int *state`, an information query
-     takes an `int` module id and a pointer, a NAT query takes one pointer, and the callback check
+     takes an `int` code and a pointer, a NAT query takes one pointer, and the callback check
      takes nothing and returns `int`. Vita is a different operating system: these declarations are
      evidence for the shape of the calls, never proof of a PS4 value.
      -  The registration pair is keyed by a callback id the system hands back, which the guest's
@@ -164,28 +164,33 @@ static int netctl_unregister_callback(int id)
 }
 RT_SYSLIB("libSceNetCtl", sceNetCtlUnregisterCallback, netctl_unregister_callback);
 
-/* Reads one piece of network information into the caller's structure.
+/* Reads one piece of network information into the caller's structure; offline there is none
+   to read.
 
-   The layout and the answer are still not established, so the call stops before touching the
-   buffer: the Vita-era SceNetCtlInfo union is another operating system's, and nothing public
-   describes the PS4 structure. What the guest does tell us is which questions it asks: every call
-   site in the executable passes module id 14 (0x00dfd2b1 and 0x020413ee, each with a buffer in
-   the second argument) and prints that buffer as a string on the success path, and no other
-   module id appears anywhere. That is evidence about the guest, not about the system: what id 14
-   means, what the offline answer is, and how large the structure is stay open until the official
-   header or a console answers them.
+   Every call in the executable asks for code 14 (0x00dfd2b9 and 0x00dfd445, each with a buffer
+   in the second argument), which OpenOrbis' NetCtl.h and shadPS4's netctl.h name
+   ORBIS_NET_CTL_INFO_IP_ADDRESS; on success the caller prints the buffer as a string, and it skips
+   the print on a negative answer. shadPS4's sceNetCtlGetInfo answers 0x80412108 (not connected)
+   for every code while the console is not connected, before it writes anything, the answer this
+   file already gives for the NAT information. So code 14 answers "not connected" with nothing
+   written. Other codes stop by name: for some (the device, the link) a disconnected console may
+   still have an answer, and no source settles it; so does a missing buffer (PS4Recomp checks it
+   first, shadPS4 the connection first). */
+#define NETCTL_ERROR_NOT_CONNECTED ((int)0x80412108u)
+enum { NETCTL_INFO_IP_ADDRESS = 14 };
 
-   The module id is named in the message because the guest's own requests are the evidence for
-   which
-   ids matter: the boot log shows what the guest actually asks for. */
-static int netctl_get_info(int module, void *info)
+static int netctl_get_info(int code, const void *info)
 {
-    (void)info; /* never read: no established PS4 layout to write through */
-    char question[96];
-    snprintf(question, sizeof question, "no established PS4 answer for module id %d", module);
-    rt_fatal("sceNetCtlGetInfo", question);
+    static const char fn[] = "sceNetCtlGetInfo";
+    if (!info) rt_fatal(fn, "no structure: which check comes first is not established");
+    if (code != NETCTL_INFO_IP_ADDRESS) {
+        char question[96];
+        snprintf(question, sizeof question, "code %d: its offline answer is not established", code);
+        rt_fatal(fn, question);
+    }
+    return NETCTL_ERROR_NOT_CONNECTED;
 }
-RT_SYSLIB_UNRESOLVED("libSceNetCtl", sceNetCtlGetInfo, netctl_get_info);
+RT_SYSLIB("libSceNetCtl", sceNetCtlGetInfo, netctl_get_info);
 
 /* Reports the NAT type of the connection; offline there is none.
 
@@ -196,7 +201,6 @@ RT_SYSLIB_UNRESOLVED("libSceNetCtl", sceNetCtlGetInfo, netctl_get_info);
    other answer it takes NAT type 1 itself (0x0188942d). So the offline answer is "not connected",
    with nothing written, and the guest's own fallback applies. A size other than 16 and a missing
    structure stop by name: the answers for those are not established. */
-#define NETCTL_ERROR_NOT_CONNECTED ((int)0x80412108u)
 enum { NAT_INFO_BYTES = 16 };
 
 static int netctl_get_nat_info(const void *nat_info)
