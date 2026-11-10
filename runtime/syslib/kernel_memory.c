@@ -48,8 +48,9 @@
    (a memory file only takes host memory for the pages written). */
 #define RT_DIRECT_MEMORY_SIZE (5ull << 30)
 /* The granularity this runtime accepts for lengths, starts and alignments: 16 KiB, which every
-   call the executable makes respects. The PS4's own rule is not established here (see getpagesize
-   in docs/runtime-syscalls.md), so anything finer stops by name instead of being rounded. */
+   call the executable makes respects, and the page size getpagesize answers (runtime/syslib/kernel.c).
+   Whether the PS4 accepts finer values is not established, so anything finer stops by name instead
+   of being rounded. */
 #define DIRECT_PAGE 0x4000ull
 #define SCE_KERNEL_ERROR_EINVAL ((int32_t)0x80020016) /* 0x80020000 plus FreeBSD's EINVAL, 22 */
 
@@ -401,8 +402,12 @@ static int32_t virtual_query(const void *address, int32_t flags, virtual_query_i
    Munmap is FreeBSD's munmap(2) under its SCE name. The executable frees a direct map with
    munmap and then sceKernelReleaseDirectMemory (0x024826fd, 0x0248270c), the order the release
    requires. A zero length is EINVAL (FreeBSD's sys_munmap; shadPS4's sceKernelMunmap answers the
-   same). The runtime removes one whole mapping it made: the host mapping goes, and a direct map no
-   longer holds its range, which can then be released; the address is not handed out again.
+   same). As in FreeBSD, the range may span several mappings, reserved space and holes: every
+   mapping the runtime made inside it goes (a direct map no longer holds its range, which can then
+   be released), reserved space inside it is given back, and a hole is left as it is. The
+   executable relies on that: its block allocator (0x02d01eb0) unmaps a reserved range whose
+   pieces it mapped and unmapped one by one (sceKernelBatchMap, below). Addresses are not handed
+   out again.
 
    Mprotect is FreeBSD's mprotect(2): the mapping takes the new protection, CPU bits on the host,
    GPU bits recorded, as for a map. The executable's one call (0x02d03214) is a wrapper that answers
@@ -413,9 +418,11 @@ static int32_t virtual_query(const void *address, int32_t flags, virtual_query_i
    one call (0x02abae74) passes the offset sceKernelVirtualQuery gave for an address and only tests
    whether the type is 3 (write-combined garlic).
 
-   What stops by name: part of a mapping, more than one, or memory the runtime did not map (other
-   memory is not tracked); an offset outside every allocated range (shadPS4 answers ENOENT; no
-   public source settles it); a protection beyond CPU and GPU read and write; missing variables. */
+   What stops by name: part of a mapping; for munmap, a start off the 16 KiB page, and a range that
+   touches nothing the runtime mapped or reserved outside its map window (other memory is not
+   tracked); for mprotect, more than one mapping or memory the runtime did not map; an offset
+   outside every allocated range (shadPS4 answers ENOENT; no public source settles it); a
+   protection beyond CPU and GPU read and write; missing variables. */
 static int mapping_index(const char *caller, uintptr_t start, uint64_t length)
 {
     for (int i = 0; i < mapping_count; i++) {
@@ -427,24 +434,102 @@ static int mapping_index(const char *caller, uintptr_t start, uint64_t length)
     rt_fatal(caller, "memory the runtime did not map: not tracked yet");
 }
 
-static int32_t kernel_munmap(void *address, uint64_t length)
+/* Address space reserved by sceKernelReserveVirtualRange and not mapped since: host PROT_NONE
+   memory the guest maps into with sceKernelBatchMap. Guarded by mappings_lock. */
+typedef struct {
+    uintptr_t start;
+    uint64_t length;
+} reserved_space;
+
+enum { MAX_RESERVATIONS = 1024 };
+static reserved_space reservations[MAX_RESERVATIONS];
+static int reservation_count;
+
+static int overlaps(uintptr_t start, uint64_t length, uintptr_t other, uint64_t other_length)
 {
-    static const char name[] = "sceKernelMunmap";
-    if (!length) return SCE_KERNEL_ERROR_EINVAL;
-    pthread_mutex_lock(&mappings_lock);
-    const int i = mapping_index(name, (uintptr_t)address, length);
-    const guest_mapping m = mappings[i];
-    if (munmap(address, length)) rt_fatal(name, "the host could not unmap the memory");
-    mappings[i] = mappings[--mapping_count];
-    pthread_mutex_unlock(&mappings_lock);
-    if (m.direct) {
-        pthread_mutex_lock(&pool_lock);
-        const int range = range_holding((uint64_t)m.offset, m.length);
-        if (range >= 0) ranges[range].maps--;
-        pthread_mutex_unlock(&pool_lock);
+    return start < other + other_length && other < start + length;
+}
+
+static void note_reservation(const char *caller, uintptr_t start, uint64_t length)
+{
+    if (!length) return;
+    if (reservation_count == MAX_RESERVATIONS) rt_fatal(caller, "more reserved ranges than the runtime records");
+    reservations[reservation_count++] = (reserved_space){start, length};
+}
+
+/* Takes [start, start + length) out of the reserved space (mappings_lock held): what overlaps it is
+   cut away, keeping what lies on either side. */
+static void unreserve(const char *caller, uintptr_t start, uint64_t length)
+{
+    for (int i = 0; i < reservation_count;) {
+        const reserved_space r = reservations[i];
+        if (!overlaps(start, length, r.start, r.length)) {
+            i++;
+            continue;
+        }
+        reservations[i] = reservations[--reservation_count];
+        if (r.start < start) note_reservation(caller, r.start, start - r.start);
+        if (r.start + r.length > start + length) note_reservation(caller, start + length, r.start + r.length - (start + length));
+    }
+}
+
+/* Whether one reserved piece holds all of [start, start + length) (mappings_lock held). */
+static int is_reserved(uintptr_t start, uint64_t length)
+{
+    for (int i = 0; i < reservation_count; i++) {
+        const reserved_space r = reservations[i];
+        if (start >= r.start && start - r.start < r.length && length <= r.length - (start - r.start)) return 1;
     }
     return 0;
 }
+
+static int32_t unmap_range(const char *caller, void *address, uint64_t length, int flexible_only)
+{
+    if (!length) return SCE_KERNEL_ERROR_EINVAL;
+    const uintptr_t start = (uintptr_t)address;
+    if (start % DIRECT_PAGE) rt_fatal(caller, "a start off the 16 KiB page: the answer is not established");
+    if (start + length < start) rt_fatal(caller, "a range that wraps around the address space");
+    pthread_mutex_lock(&mappings_lock);
+    int touched = 0;
+    for (int i = 0; i < mapping_count; i++)
+        if (overlaps(start, length, mappings[i].start, mappings[i].length)) {
+            if (mappings[i].start < start || mappings[i].start + mappings[i].length > start + length)
+                rt_fatal(caller, "part of a mapping: not modelled");
+            if (flexible_only && mappings[i].direct) rt_fatal(caller, "a direct memory map: not flexible memory");
+            touched = 1;
+        }
+    for (int i = 0; i < reservation_count; i++) touched |= overlaps(start, length, reservations[i].start, reservations[i].length);
+    const int in_window = start >= MAP_WINDOW_START && start + length <= MAP_WINDOW_END;
+    if (!touched && !in_window) rt_fatal(caller, "memory the runtime did not map: not tracked yet");
+
+    for (int i = 0; i < mapping_count;) {
+        const guest_mapping m = mappings[i];
+        if (!overlaps(start, length, m.start, m.length)) {
+            i++;
+            continue;
+        }
+        if (munmap((void *)m.start, m.length)) rt_fatal(caller, "the host could not unmap the memory");
+        mappings[i] = mappings[--mapping_count];
+        if (m.direct) {
+            pthread_mutex_lock(&pool_lock);
+            const int range = range_holding((uint64_t)m.offset, m.length);
+            if (range >= 0) ranges[range].maps--;
+            pthread_mutex_unlock(&pool_lock);
+        }
+    }
+    for (int i = 0; i < reservation_count; i++) {
+        const reserved_space r = reservations[i];
+        if (!overlaps(start, length, r.start, r.length)) continue;
+        const uintptr_t from = r.start > start ? r.start : start;
+        const uintptr_t to = r.start + r.length < start + length ? r.start + r.length : start + length;
+        if (munmap((void *)from, to - from)) rt_fatal(caller, "the host could not give back the reserved space");
+    }
+    unreserve(caller, start, length);
+    pthread_mutex_unlock(&mappings_lock);
+    return 0;
+}
+
+static int32_t kernel_munmap(void *address, uint64_t length) { return unmap_range("sceKernelMunmap", address, length, 0); }
 
 static int32_t kernel_mprotect(const void *address, uint64_t length, int32_t protection)
 {
@@ -555,6 +640,126 @@ static int32_t kernel_mlock(const void *address, uint64_t length)
     return 0;
 }
 
+/* Reserving address space and mapping into it.
+
+   sceKernelReserveVirtualRange(void **address, size_t length, int flags, size_t alignment): address
+   space no memory backs yet (shadPS4 maps it with no access; facts only), for maps the title places
+   itself. The executable's block allocator (0x02d01eb0) reserves room for all its blocks at once
+   with flags 0x80 (no overwrite) and alignment 0, then maps an alias of each block into it with
+   sceKernelBatchMap. shadPS4's checks, which a family of native ports share (facts only), answer
+   EINVAL (0x80020016) for no variable, a length that is 0 or not whole 16 KiB pages, and an
+   alignment that is not 0 or a power-of-two multiple of 16 KiB up to 2 GiB. The runtime reserves
+   inaccessible host memory in its map window. An address hint and flags other than no overwrite
+   stop by name.
+
+   sceKernelBatchMap(entries, count, int *processed): a list of 32-byte map operations (shadPS4's
+   memory.h: start 0x00, offset 0x08, length 0x10, protection u8 0x18, type u8 0x19, operation s32
+   0x1c), carried out in order until one fails; *processed (when given) says how many succeeded.
+   shadPS4, a family of native ports and droogie's host agree that each map is placed at its
+   start exactly (an implicit MAP_FIXED) - the point of the call. No list, a zero length or an
+   operation above 4 answers EINVAL. The executable uses two operations: map direct memory (0) at
+   the start, an alias of memory it already mapped (its offset found with sceKernelVirtualQuery,
+   protection from the allocator), and unmap (1), which it applies to every entry when it frees the
+   blocks or when a map failed, before unmapping the whole reserved range. The runtime maps the
+   pool's range over the reserved space with the CPU bits; protect (2) is sceKernelMprotect. What
+   stops by name: a map outside reserved space (what a fixed map replaces is not modelled), an
+   aliased map with GPU access (the GPU reaches direct memory at one address per pool offset,
+   runtime/gpu_memory.h), and the flexible-memory and type-protect operations (3, 4), which the
+   executable does not use.
+
+   sceKernelReleaseFlexibleMemory(void *address, size_t length): the executable's allocator frees a
+   whole flexible block with it (0x02482721). The runtime unmaps it, as a family of native ports
+   and droogie's host do (shadPS4 keeps the mapping and drops its pages; facts only), the
+   maintainer's ruling of 2026-11-10. No address, a zero length or one that is not whole 16 KiB pages
+   answer EINVAL; direct memory in the range stops by name. */
+enum { RESERVE_ALIGNMENT_MAX = 0x80000000u };
+enum { BATCH_MAP_DIRECT = 0, BATCH_UNMAP = 1, BATCH_PROTECT = 2, BATCH_MAP_FLEXIBLE = 3, BATCH_TYPE_PROTECT = 4 };
+
+static int32_t reserve_virtual_range(void **address, uint64_t length, int32_t flags, uint64_t alignment)
+{
+    static const char name[] = "sceKernelReserveVirtualRange";
+    if (!address || !length || !is_page_multiple(length)) return SCE_KERNEL_ERROR_EINVAL;
+    if (alignment && (!is_power_of_two(alignment) || !is_page_multiple(alignment) || alignment > RESERVE_ALIGNMENT_MAX))
+        return SCE_KERNEL_ERROR_EINVAL;
+    if (flags & ~MAP_NO_OVERWRITE) rt_fatal(name, "flags other than no-overwrite (a fixed address and the others) are not established");
+    if (*address) rt_fatal(name, "an address hint: how the system uses it is not established");
+    void *const reserved = window_place(name, length, alignment ? alignment : DIRECT_PAGE, PROT_NONE,
+                                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    pthread_mutex_lock(&mappings_lock);
+    note_reservation(name, (uintptr_t)reserved, length);
+    pthread_mutex_unlock(&mappings_lock);
+    *address = reserved;
+    return 0;
+}
+
+typedef struct {
+    void *start;
+    int64_t offset;
+    uint64_t length;
+    uint8_t protection, type;
+    int16_t reserved;
+    int32_t operation;
+} batch_map_entry;
+_Static_assert(sizeof(batch_map_entry) == 32, "a batch map entry is 32 bytes");
+
+/* Maps a range of the pool at exactly `start`, inside reserved space (operation 0 of a batch). */
+static void map_direct_fixed(const char *caller, const batch_map_entry *entry)
+{
+    const uintptr_t start = (uintptr_t)entry->start;
+    if (start % DIRECT_PAGE || !is_page_multiple(entry->length) || entry->offset < 0 || !is_page_multiple((uint64_t)entry->offset))
+        rt_fatal(caller, "a map that is not whole 16 KiB pages: the answer is not established");
+    if (entry->protection & (PROT_GPU_READ | PROT_GPU_WRITE))
+        rt_fatal(caller, "an aliased GPU-visible map: the GPU reaches each pool range at one address");
+    if (!entry->protection || (entry->protection & ~(PROT_CPU_READ | PROT_CPU_WRITE)))
+        rt_fatal(caller, "protection other than CPU read and write is not established");
+    pthread_mutex_lock(&pool_lock);
+    const int range = range_holding((uint64_t)entry->offset, entry->length);
+    if (range < 0) rt_fatal(caller, "a range that was not allocated: the error value is not established");
+    ranges[range].maps++;
+    const int32_t memory_type = ranges[range].memory_type;
+    pthread_mutex_unlock(&pool_lock);
+
+    pthread_mutex_lock(&mappings_lock);
+    if (!is_reserved(start, entry->length)) rt_fatal(caller, "a fixed map outside reserved space: what it replaces is not modelled");
+    const int host_protection = (entry->protection & PROT_CPU_READ ? PROT_READ : 0) | (entry->protection & PROT_CPU_WRITE ? PROT_WRITE : 0);
+    void *const got = mmap(entry->start, entry->length, host_protection, MAP_SHARED | MAP_FIXED, pool(caller), (off_t)entry->offset);
+    if (got != entry->start) rt_fatal(caller, "the host could not map the memory at the address");
+    unreserve(caller, start, entry->length);
+    pthread_mutex_unlock(&mappings_lock);
+    note_mapping(caller, (guest_mapping){start, entry->length, entry->protection, 1, entry->offset, memory_type});
+}
+
+static int32_t batch_map(batch_map_entry *entries, int32_t count, int32_t *processed)
+{
+    static const char name[] = "sceKernelBatchMap";
+    int32_t answer = 0, done = 0;
+    for (; done < count; done++) {
+        batch_map_entry *const e = entries ? &entries[done] : NULL;
+        if (!e || !e->length || e->operation < 0 || e->operation > BATCH_TYPE_PROTECT) {
+            answer = SCE_KERNEL_ERROR_EINVAL;
+            break;
+        }
+        switch (e->operation) {
+        case BATCH_MAP_DIRECT: map_direct_fixed(name, e); break;
+        case BATCH_UNMAP: answer = unmap_range(name, e->start, e->length, 0); break;
+        case BATCH_PROTECT: answer = kernel_mprotect(e->start, e->length, e->protection); break;
+        default: rt_fatal(name, "the flexible-memory map and type-protect operations are not modelled");
+        }
+        if (answer) break;
+    }
+    if (processed) *processed = done;
+    return answer;
+}
+
+static int32_t release_flexible_memory(void *address, uint64_t length)
+{
+    if (!address || !length || !is_page_multiple(length)) return SCE_KERNEL_ERROR_EINVAL;
+    return unmap_range("sceKernelReleaseFlexibleMemory", address, length, 1);
+}
+
+RT_SYSLIB("libkernel", sceKernelReserveVirtualRange, reserve_virtual_range);
+RT_SYSLIB("libkernel", sceKernelBatchMap, batch_map);
+RT_SYSLIB("libkernel", sceKernelReleaseFlexibleMemory, release_flexible_memory);
 RT_SYSLIB("libkernel", sceKernelMunmap, kernel_munmap);
 RT_SYSLIB("libkernel", sceKernelMprotect, kernel_mprotect);
 RT_SYSLIB("libkernel", sceKernelGetDirectMemoryType, get_direct_memory_type);

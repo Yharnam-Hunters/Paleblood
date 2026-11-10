@@ -28,6 +28,8 @@ typedef struct {
     const char *symbol;    /* "sceKernelGetProcessTime", "malloc", ... */
     void *fn;              /* called with the System V AMD64 convention, as the PS4 does */
     rt_syslib_capability capability;
+    int by_nid;            /* 1: `symbol` is the import's NID itself, for a function known only by
+                              its hash (RT_SYSLIB_NID); 0: a name the loader hashes */
 } rt_syslib_entry;
 
 /* All entries, from every group (gathered by the linker; see RT_SYSLIB and RT_SYSLIB_UNRESOLVED). */
@@ -41,20 +43,27 @@ const rt_syslib_entry *rt_syslib_end(void);
 #else
 #define RT_SYSLIB_SECTION "rt_syslib"
 #endif
-#define RT_SYSLIB_REGISTER(entry, library, symbol, fn, capability)                                        \
+#define RT_SYSLIB_REGISTER(entry, library, symbol, fn, capability, by_nid)                                \
     __attribute__((used, section(RT_SYSLIB_SECTION), aligned(sizeof(void *)))) static const rt_syslib_entry \
-        entry = {library, #symbol, (void *)(fn), capability}
+        entry = {library, symbol, (void *)(fn), capability, by_nid}
 /* RT_SYSLIB("libkernel", sceKernelUsleep, my_usleep); at file scope. Use only when the runtime
    provides the imported behavior. tools/runtime_issues.py counts these as implemented. */
 #define RT_SYSLIB(library, symbol, fn) \
-    RT_SYSLIB_REGISTER(RT_SYSLIB_CAT(rt_syslib_entry_, __LINE__), library, symbol, fn, \
-                       RT_SYSLIB_CAPABILITY_IMPLEMENTED)
+    RT_SYSLIB_REGISTER(RT_SYSLIB_CAT(rt_syslib_entry_, __LINE__), library, #symbol, fn, \
+                       RT_SYSLIB_CAPABILITY_IMPLEMENTED, 0)
 /* A registered fail-loud diagnostic for a behavior that remains unresolved. The loader can bind
    this entry and report the specific call when reached, but runtime issue coverage must leave it
    unchecked. */
 #define RT_SYSLIB_UNRESOLVED(library, symbol, fn) \
-    RT_SYSLIB_REGISTER(RT_SYSLIB_CAT(rt_syslib_unresolved_entry_, __LINE__), library, symbol, fn, \
-                       RT_SYSLIB_CAPABILITY_UNRESOLVED)
+    RT_SYSLIB_REGISTER(RT_SYSLIB_CAT(rt_syslib_unresolved_entry_, __LINE__), library, #symbol, fn, \
+                       RT_SYSLIB_CAPABILITY_UNRESOLVED, 0)
+/* RT_SYSLIB_NID("libSceDiscMap", "ioKMruft1ek", fn); at file scope: an implementation of a function
+   whose name is not public, registered by its 11-character NID (the first part of the import's
+   "NID#library#module" name). tools/runtime_issues.py counts it as implemented, matching the
+   import row whose symbol starts with that NID. */
+#define RT_SYSLIB_NID(library, nid, fn) \
+    RT_SYSLIB_REGISTER(RT_SYSLIB_CAT(rt_syslib_nid_entry_, __LINE__), library, nid, fn, \
+                       RT_SYSLIB_CAPABILITY_IMPLEMENTED, 1)
 
 #ifdef __cplusplus
 }

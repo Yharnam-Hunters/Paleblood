@@ -10,19 +10,43 @@ import boot
 
 
 class RuntimeIssueStatusTests(unittest.TestCase):
-    def test_unresolved_entries_are_registered_but_not_implemented(self):
+    def test_repository_entries_mark_the_issue_bodies(self):
         entries = runtime_issues.read_runtime_entries(runtime_issues.ROOT)
 
-        # getpagesize is registered with RT_SYSLIB_UNRESOLVED (runtime/syslib/kernel.c).
+        # getpagesize is registered for two libraries (runtime/syslib/kernel.c); the disc map's
+        # unnamed import by its NID (runtime/syslib/disc_map.c).
         self.assertIn(('libSceNetCtl', 'sceNetCtlGetNatInfo'), entries)
-        self.assertNotIn(('libkernel', 'getpagesize'), entries)
+        self.assertIn(('libkernel', 'getpagesize'), entries)
+        self.assertIn(('libScePosix', 'getpagesize'), entries)
+        self.assertIn(('libSceDiscMap', 'ioKMruft1ek#'), entries)
 
         rows = runtime_issues.read_imports(runtime_issues.ROOT)
         kernel = next(group for group in runtime_issues.GROUPS if group[0] == 'kernel')
         body = runtime_issues.issue(kernel, rows, entries)['body']
-        self.assertIn('- [ ] `getpagesize`', body)
+        self.assertIn('- [x] `getpagesize`', body)
+        files = next(group for group in runtime_issues.GROUPS if group[0] == 'files')
+        self.assertIn('- [x] `ioKMruft1ek#A#B`', runtime_issues.issue(files, rows, entries)['body'])
         network = runtime_issues.issue(runtime_issues.GROUPS[-1], rows, entries)['body']
         self.assertIn('- [x] `sceNetCtlGetNatInfo`', network)
+
+    def test_nid_entries_match_only_their_unnamed_import(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = os.path.join(root, 'runtime', 'syslib')
+            os.makedirs(directory)
+            with open(os.path.join(directory, 'disc_map.c'), 'w', encoding='utf-8') as source:
+                source.write('''
+                    // RT_SYSLIB_NID("libSceDiscMap", "commentedNI", fn);
+                    RT_SYSLIB_NID ( "libSceDiscMap", "ioKMruft1ek", request );
+                    RT_SYSLIB_NID("libSceDiscMap", "tooShort", other);
+                ''')
+            entries = runtime_issues.read_runtime_entries(root)
+
+        self.assertEqual({('libSceDiscMap', 'ioKMruft1ek#')}, entries)
+        row = lambda library, symbol: {'library': library, 'symbol': symbol}
+        self.assertTrue(runtime_issues.registered(row('libSceDiscMap', 'ioKMruft1ek#A#B'), entries))
+        self.assertFalse(runtime_issues.registered(row('libSceDiscMap', 'ioKMruft1ek'), entries))
+        self.assertFalse(runtime_issues.registered(row('libSceOther', 'ioKMruft1ek#A#B'), entries))
+        self.assertFalse(runtime_issues.registered(row('libSceDiscMap', 'ioKMruft1el#A#B'), entries))
 
     def test_runtime_unresolved_provider_does_not_count_as_implemented(self):
         with tempfile.TemporaryDirectory() as root:

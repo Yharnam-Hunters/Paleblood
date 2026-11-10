@@ -4,8 +4,11 @@
    Binding uses library and NID, so one entry serves every importer. Public IDs
    come from psdevwiki via OpenOrbis; the library consumes the full 32-bit ID.
    Declared stubs only change loaded state, without mapping a module. Their would-be
-   imports remain unbound and stop by name. Early invalid-ID returns are established;
-   duplicate loads, refcounts, delegated errors and non-stub loading remain unknown.
+   imports remain unbound and stop by name. Early invalid-ID returns are established.
+   A load of a module already loaded succeeds and is counted, and each unload takes one
+   load back (shadPS4's sysmodule_internal.cpp counts them so; facts only; maintainer's
+   ruling of 2026-11-10): the message and commerce dialogs load their module on every
+   open. Delegated errors and non-stub loading remain unknown.
    See "Module loading at run time" in docs/runtime-syscalls.md. */
 #include "runtime/process.h"
 #include "runtime/syslib.h"
@@ -48,9 +51,7 @@ static int32_t sysmodule_load_module(uint32_t argument)
     const uint16_t id = stub_module_id("sceSysmoduleLoadModule", argument);
     rt_stub_module *stub = stub_module(id);
     if (!stub) sysmodule_fatal("sceSysmoduleLoadModule", id, NULL, "not a stub module, and the runtime cannot load system modules yet");
-    if (stub->loaded)
-        sysmodule_fatal("sceSysmoduleLoadModule", id, stub, "already loaded; whether the system counts a second load or refuses it is not established");
-    stub->loaded = 1;
+    stub->loaded++;
     return 0;
 }
 RT_SYSLIB("libSceSysmodule", sceSysmoduleLoadModule, sysmodule_load_module);
@@ -74,7 +75,7 @@ static int32_t sysmodule_unload_module(uint32_t argument)
     if (!stub) sysmodule_fatal("sceSysmoduleUnloadModule", id, NULL, "not a stub module, and the runtime cannot load system modules yet");
     if (!stub->loaded)
         sysmodule_fatal("sceSysmoduleUnloadModule", id, stub, "not loaded; the error value for a module not loaded is not established");
-    stub->loaded = 0;
+    stub->loaded--;
     return 0;
 }
 RT_SYSLIB("libSceSysmodule", sceSysmoduleUnloadModule, sysmodule_unload_module);
