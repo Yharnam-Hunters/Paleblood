@@ -120,6 +120,11 @@ void rt_fatal(const char *function, const char *message);
    run's outcome and never returns. If it does return, the process stops as usual. */
 extern void (*rt_fatal_observer)(const char *function, const char *message);
 
+/* Called by the guest's _exit before the process ends, when set (runtime/syslib/kernel.c): the
+   boot harness records the exit and its status as the run's outcome and never returns. If it does
+   return, the process ends as usual. */
+extern void (*rt_exit_observer)(int status);
+
 #ifdef __cplusplus
 }
 #endif

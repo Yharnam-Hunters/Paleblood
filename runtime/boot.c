@@ -2,7 +2,7 @@
 /* pbboot: runs a PS4 executable's entry on Paleblood's runtime, as far as the runtime goes.
 
      pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--addcont LABEL]... [--app0 DIR] [--data DIR] [--savedata DIR] [--display none|headless|window] [--audio none|host] [--input none|host] [--input-script SPEC|@FILE] [--display-capture DIR] [--nids NID_DB.xml]
-            [--module-hook MODULE:OFFSET:SIZE:ACTION:NAME]...
+            [--module-hook MODULE:OFFSET:SIZE:BYTES:ACTION:NAME]...
             [--status OUT.json] [--timeout SECONDS] [--trace] [--game-lib LIBRARY]
      pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]
             (list every import: importer, library, symbol, kind, provider, provider offset, size)
@@ -21,7 +21,12 @@
    A function inside a mapped module can be replaced before any guest code runs (--module-hook,
    from game data): MODULE is a --module's file name (the executable itself cannot be hooked),
    OFFSET and SIZE the function's place and length in its image (C notation), NAME its name, which
-   may hold colons. The range must lie in one executable segment and not overlap another hook's.
+   may hold colons. BYTES are the function's first bytes as the mapped and relocated module holds
+   them, in lowercase hex: at least the five the jump replaces, at most 16 and at most SIZE. A
+   module that holds other bytes there is
+   refused before any guest code runs, so offsets taken from another build fail loudly instead of
+   patching the middle of some other function. The range must lie in one executable segment and
+   not overlap another hook's.
    ACTION "return" makes the function return at once and write nothing (registers included);
    "stop" ends the run there and reports NAME and the caller, as an unimplemented import does, on
    any guest thread. The function's first five bytes become a relative jump to a stub in a page
@@ -73,6 +78,7 @@
 #define TRAMPOLINE_SIZE 48
 #define MAX_MODULE_HOOKS 16
 #define MODULE_HOOK_STUB_SIZE 32
+#define MODULE_HOOK_MAX_BYTES 16
 #define JUMP_REL32_SIZE 5
 #define PAGE_SIZE_HOST 4096
 
@@ -116,6 +122,8 @@ enum module_hook_action { HOOK_RETURN, HOOK_STOP };
 typedef struct {
     const char *module, *name;
     uint64_t offset, size;
+    unsigned char bytes[MODULE_HOOK_MAX_BYTES]; /* the function's first bytes, as expected */
+    size_t byte_count;
     enum module_hook_action action;
 } module_hook;
 
@@ -187,6 +195,17 @@ static void runtime_stopped(const char *function, const char *message)
     snprintf(runtime_stop_function, sizeof runtime_stop_function, "%s", function ? function : "");
     snprintf(runtime_stop_reason, sizeof runtime_stop_reason, "%s", message ? message : "");
     outcome = RUNTIME_STOP;
+    unwind();
+}
+
+/* rt_exit_observer: the guest ended the process with _exit (runtime/syslib/kernel.c). Recorded as
+   an exit with its status, from whichever guest thread called it, so the boot record is still
+   written. */
+static void guest_exited(int status)
+{
+    if (!claim_stop()) for (;;) pause();
+    exit_code = status;
+    outcome = EXITED;
     unwind();
 }
 
@@ -513,14 +532,45 @@ static int parse_u64(const char *text, uint64_t *out)
     return 0;
 }
 
-/* --module-hook MODULE:OFFSET:SIZE:ACTION:NAME. NAME is the rest of the argument, so it may hold
-   colons (a C++ name). Returns 0 when it was added, -2 when the table is full, else -1. */
+static const char hex_digits[] = "0123456789abcdef";
+
+/* A lowercase hex digit's value, or -1: game/module_hooks.csv writes them in lower case. */
+static int hex_digit_value(char c)
+{
+    const char *at = c ? strchr(hex_digits, c) : NULL;
+    return at ? (int)(at - hex_digits) : -1;
+}
+
+/* Lowercase hex digits, two per byte, into out (at most max bytes); returns the byte count, or -1. */
+static int parse_hex_bytes(const char *text, unsigned char *out, size_t max)
+{
+    const size_t digits = strlen(text);
+    if (digits % 2 || digits / 2 > max) return -1;
+    for (size_t i = 0; i < digits / 2; i++) {
+        const int high = hex_digit_value(text[2 * i]), low = hex_digit_value(text[2 * i + 1]);
+        if (high < 0 || low < 0) return -1;
+        out[i] = (unsigned char)(high << 4 | low);
+    }
+    return (int)(digits / 2);
+}
+
+static void format_hex_bytes(char *out, const unsigned char *bytes, size_t count)
+{
+    for (size_t i = 0; i < count; i++) {
+        out[2 * i] = hex_digits[bytes[i] >> 4];
+        out[2 * i + 1] = hex_digits[bytes[i] & 0xf];
+    }
+    out[2 * count] = 0;
+}
+
+/* --module-hook MODULE:OFFSET:SIZE:BYTES:ACTION:NAME. NAME is the rest of the argument, so it may
+   hold colons (a C++ name). Returns 0 when it was added, -2 when the table is full, else -1. */
 static int add_module_hook(const char *arg)
 {
     if (module_hook_count == MAX_MODULE_HOOKS) return -2;
-    char *copy = strdup(arg), *field[4], *p = copy;
+    char *copy = strdup(arg), *field[5], *p = copy;
     if (!copy) return -1;
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 5; i++) {
         char *colon = strchr(p, ':');
         if (!colon) return free(copy), -1;
         *colon = 0;
@@ -530,8 +580,11 @@ static int add_module_hook(const char *arg)
     module_hook h = {.module = field[0], .name = p};
     if (!*h.module || !*h.name || parse_u64(field[1], &h.offset) || parse_u64(field[2], &h.size))
         return free(copy), -1;
-    if (!strcmp(field[3], "return")) h.action = HOOK_RETURN;
-    else if (!strcmp(field[3], "stop")) h.action = HOOK_STOP;
+    const int byte_count = parse_hex_bytes(field[3], h.bytes, MODULE_HOOK_MAX_BYTES);
+    if (byte_count < JUMP_REL32_SIZE || (uint64_t)byte_count > h.size) return free(copy), -1;
+    h.byte_count = (size_t)byte_count;
+    if (!strcmp(field[4], "return")) h.action = HOOK_RETURN;
+    else if (!strcmp(field[4], "stop")) h.action = HOOK_STOP;
     else return free(copy), -1;
     module_hooks[module_hook_count++] = h;
     return 0;
@@ -551,7 +604,7 @@ static int install_module_hooks(char *error, size_t size)
             snprintf(error, size, "--module-hook %s: no module %s is mapped", h->name, h->module);
             return -1;
         }
-        if (h->size < JUMP_REL32_SIZE || h->offset > o->size || h->size > o->size - h->offset) {
+        if (h->offset > o->size || h->size > o->size - h->offset) {   /* the parser already wants SIZE >= 5 */
             snprintf(error, size, "--module-hook %s: %s+0x%llx, %llu bytes: no room for a %d-byte jump in the image",
                      h->name, h->module, (unsigned long long)h->offset, (unsigned long long)h->size,
                      JUMP_REL32_SIZE);
@@ -574,6 +627,16 @@ static int install_module_hooks(char *error, size_t size)
                          h->module);
                 return -1;
             }
+        }
+        unsigned char *entry = o->image + h->offset;
+        if (memcmp(entry, h->bytes, h->byte_count)) {
+            char held[2 * MODULE_HOOK_MAX_BYTES + 1], expected[2 * MODULE_HOOK_MAX_BYTES + 1];
+            format_hex_bytes(held, entry, h->byte_count);
+            format_hex_bytes(expected, h->bytes, h->byte_count);
+            snprintf(error, size, "--module-hook %s: %s+0x%llx holds %s, not the expected %s: "
+                     "not the build the hook was written for", h->name, h->module,
+                     (unsigned long long)h->offset, held, expected);
+            return -1;
         }
         if (!o->stubs) {
             const uint64_t start = (o->size + PAGE_SIZE_HOST - 1) / PAGE_SIZE_HOST * PAGE_SIZE_HOST;
@@ -601,7 +664,6 @@ static int install_module_hooks(char *error, size_t size)
             *p++ = 0x49, *p++ = 0xbb, memcpy(p, &target, 8), p += 8;      /* movabs r11, target */
             *p++ = 0x41, *p++ = 0xff, *p++ = 0xe3;                        /* jmp r11 */
         }
-        unsigned char *entry = o->image + h->offset;
         const int64_t distance = (int64_t)((intptr_t)stub - (intptr_t)(entry + JUMP_REL32_SIZE));
         if (distance < INT32_MIN || distance > INT32_MAX) {
             snprintf(error, size, "--module-hook %s: its stub is out of a relative jump's reach", h->name);
@@ -633,7 +695,7 @@ static int display_mode_named(const char *name, rt_display_mode *mode)
 
 static const char *usage =
     "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--addcont LABEL]... [--app0 DIR] [--data DIR] [--savedata DIR] [--display none|headless|window] [--audio none|host] [--input none|host] [--input-script SPEC|@FILE] [--display-capture DIR] [--nids NID_DB.xml]\n"
-    "              [--module-hook MODULE:OFFSET:SIZE:ACTION:NAME]...\n"
+    "              [--module-hook MODULE:OFFSET:SIZE:BYTES:ACTION:NAME]...\n"
     "              [--status OUT.json] [--timeout S] [--trace] [--game-lib LIBRARY]\n"
     "       pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]\n";
 
@@ -723,8 +785,8 @@ int main(int argc, char **argv)
             }
             if (added) {
                 fprintf(stderr,
-                        "pbboot: --module-hook %s: want MODULE:OFFSET:SIZE:ACTION:NAME, ACTION return or stop\n",
-                        argv[i]);
+                        "pbboot: --module-hook %s: want MODULE:OFFSET:SIZE:BYTES:ACTION:NAME, BYTES 5 to 16 "
+                        "lowercase hex bytes and no more than SIZE, ACTION return or stop\n", argv[i]);
                 return 2;
             }
         }
@@ -908,6 +970,7 @@ int main(int argc, char **argv)
     static const int signals[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGTRAP, SIGALRM, SIGUSR1};
     main_thread = pthread_self();
     rt_fatal_observer = runtime_stopped;
+    rt_exit_observer = guest_exited;
     for (size_t i = 0; i < sizeof signals / sizeof signals[0]; i++) sigaction(signals[i], &sa, NULL);
 
     if (prepare_module_tls(tp - tls_size, tls_size, error, sizeof error)) {
