@@ -408,6 +408,19 @@ static int set_affinity(guest_thread *thread, uint64_t mask)
     return 0;
 }
 
+/* scePthreadGetaffinity(thread, uint64_t *mask): the thread's CPU set, imported by the bundled
+   file library (libSceFios2.elf). A mask the guest set is answered back; a thread nobody set one on runs wherever the system lets it, which the runtime
+   answers as all ones (shadPS4 answers the host thread's set, PS4Recomp 0x3f; facts only; all
+   ones is the maintainer's ruling of 2026-11-10). No thread answers ESRCH, as for the set; no
+   variable stops by name. */
+static int get_affinity(guest_thread *thread, uint64_t *mask)
+{
+    if (!thread) return SCE_KERNEL_ERROR(BSD_ESRCH);
+    if (!mask) rt_fatal("scePthreadGetaffinity", "no variable for the mask: the error value is not established");
+    *mask = thread->affinity ? thread->affinity : UINT64_MAX;
+    return 0;
+}
+
 static int sce_attr_init(guest_attr **attr) { return sce(attr_init(attr)); }
 static int sce_attr_destroy(guest_attr **attr) { return sce(attr_destroy(attr)); }
 
@@ -499,6 +512,7 @@ RT_SYSLIB("libkernel", scePthreadCreate, create_thread);
 RT_SYSLIB("libScePosix", pthread_create_name_np, posix_create_name_np);
 RT_SYSLIB("libScePosix", pthread_create, posix_create);
 RT_SYSLIB("libkernel", scePthreadSetaffinity, set_affinity);
+RT_SYSLIB("libkernel", scePthreadGetaffinity, get_affinity);
 
 /* libScePosix: the same calls under their POSIX names, returning the errno values themselves.
    pthread_self has no error return, so it answers exactly as scePthreadSelf does. */

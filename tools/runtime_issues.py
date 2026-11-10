@@ -8,8 +8,9 @@ Each group is a set of PS4 system libraries, in the runtime roadmap's order. The
 every function of those libraries the executable imports, with what is implemented, so a
 contributor can claim a group (or part of one). Imports of the executable and of the game's own
 modules count once per library and symbol; one is done when a module provides it or the runtime
-registers its symbol with RT_SYSLIB. RT_SYSLIB_UNRESOLVED entries are callable diagnostics, not
-implementations. The imported-symbol list and denominators come from
+registers its symbol with RT_SYSLIB (or, for a function known only by its hash, its NID with
+RT_SYSLIB_NID: the row whose symbol is "NID#..."). RT_SYSLIB_UNRESOLVED entries are callable
+diagnostics, not implementations. The imported-symbol list and denominators come from
 symbols/imports.csv (written by tools/boot.py). --json prints
 [{key, title, body}]; otherwise the bodies as text.
 """
@@ -62,6 +63,9 @@ GROUPS = (
 BUNDLED = ('libc', 'libSceFios2')
 RT_SYSLIB = re.compile(
     r'\bRT_SYSLIB\s*\(\s*"([^"]+)"\s*,\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*\)')
+RT_SYSLIB_NID = re.compile(
+    r'\bRT_SYSLIB_NID\s*\(\s*"([^"]+)"\s*,\s*"([A-Za-z0-9+_-]{11})"\s*,\s*([A-Za-z_]\w*)\s*\)')
+NID_SUFFIX = '#'
 C_COMMENT = re.compile(r'/\*.*?\*/|//[^\n]*', re.S)
 
 
@@ -92,7 +96,8 @@ def check_coverage(rows: list[dict]) -> list[str]:
 
 
 def read_runtime_entries(root: str) -> set[tuple[str, str]]:
-    """Return implemented (library, symbol) pairs from ordinary RT_SYSLIB entries."""
+    """Return implemented (library, symbol) pairs from ordinary RT_SYSLIB entries, and
+    (library, "NID#") pairs from RT_SYSLIB_NID entries."""
     directory = os.path.join(root, 'runtime', 'syslib')
     entries = set()
     if not os.path.isdir(directory):
@@ -104,14 +109,25 @@ def read_runtime_entries(root: str) -> set[tuple[str, str]]:
         with open(path, encoding='utf-8') as source:
             text = C_COMMENT.sub('', source.read())
         entries.update((match.group(1), match.group(2)) for match in RT_SYSLIB.finditer(text))
+        entries.update((match.group(1), match.group(2) + NID_SUFFIX) for match in RT_SYSLIB_NID.finditer(text))
     return entries
+
+
+def registered(row: dict, runtime_entries: set[tuple[str, str]]) -> bool:
+    """Whether the runtime registers the row's symbol: by name, or by the NID that starts an
+    unnamed import ("ioKMruft1ek#A#B")."""
+    symbol = row['symbol']
+    if (row['library'], symbol) in runtime_entries:
+        return True
+    nid, hashed, _ = symbol.partition(NID_SUFFIX)
+    return bool(hashed) and (row['library'], nid + NID_SUFFIX) in runtime_entries
 
 
 def issue(group: tuple, rows: list[dict], runtime_entries: set[tuple[str, str]] | None = None) -> dict:
     key, title, libs, about = group
     mine = [r for r in rows if r['library'] in libs]
     runtime_entries = runtime_entries or set()
-    implemented = lambda r: r['implemented'] == 'yes' or (r['library'], r['symbol']) in runtime_entries
+    implemented = lambda r: r['implemented'] == 'yes' or registered(r, runtime_entries)
     done = sum(implemented(r) for r in mine)
     lines = [f'Runtime track, system call group **{title}** ({done} of {len(mine)} imported functions '
              f'implemented). {about}', '',

@@ -15,7 +15,10 @@
 #define PT_SCE_DYNLIBDATA 0x61000000u
 #define PT_SCE_PROCPARAM 0x61000001u
 #define PT_SCE_RELRO 0x61000010u
+#define PT_GNU_EH_FRAME 0x6474e550u
 #define DT_NULL 0
+#define DT_INIT 12
+#define DT_FINI 13
 #define DT_SCE_EXPORT_LIB 0x61000013
 #define DT_SCE_IMPORT_LIB 0x61000015
 #define DT_SCE_JMPREL 0x61000029
@@ -53,6 +56,8 @@ struct rt_elf {
     uint64_t entry, image_size;
     rt_elf_tls tls;
     uint64_t proc_param, proc_param_size;
+    uint64_t eh_frame_hdr, eh_frame_hdr_size; /* PT_GNU_EH_FRAME, 0 and 0 when absent */
+    uint64_t init, fini;                      /* DT_INIT and DT_FINI, 0 when absent */
     rt_elf_load *loads;
     uint64_t *load_offsets, *load_filesz;
     size_t load_count;
@@ -191,6 +196,9 @@ rt_elf *rt_elf_open(const char *path, char *error, size_t error_size)
             have_tls = 1;
             tls_offset = h.offset;
             e->tls = (rt_elf_tls){h.vaddr, h.filesz, h.memsz, h.align ? h.align : 1};
+        } else if (h.type == PT_GNU_EH_FRAME) {
+            e->eh_frame_hdr = h.vaddr;
+            e->eh_frame_hdr_size = h.memsz;
         } else if (h.type == PT_DYNAMIC) {
             dynamic = h;
             have_dynamic = 1;
@@ -238,6 +246,8 @@ rt_elf *rt_elf_open(const char *path, char *error, size_t error_size)
         int64_t tag;
         memcpy(&tag, d + dynamic.offset + i, 8);
         if (tag == DT_NULL) break;
+        if (tag == DT_INIT) e->init = u64(d + dynamic.offset + i + 8);
+        if (tag == DT_FINI) e->fini = u64(d + dynamic.offset + i + 8);
         for (int w = 0; w < 8; w++)
             if (tag == wanted[w] && !tag_seen[w]) {
                 tag_value[w] = u64(d + dynamic.offset + i + 8);
@@ -381,6 +391,15 @@ void rt_elf_close(rt_elf *e)
 uint64_t rt_elf_image_size(const rt_elf *e) { return e->image_size; }
 uint64_t rt_elf_entry(const rt_elf *e) { return e->entry; }
 const rt_elf_tls *rt_elf_tls_segment(const rt_elf *e) { return &e->tls; }
+uint64_t rt_elf_eh_frame_hdr(const rt_elf *e, uint64_t *size)
+{
+    if (size) *size = e->eh_frame_hdr_size;
+    return e->eh_frame_hdr;
+}
+
+uint64_t rt_elf_init(const rt_elf *e) { return e->init; }
+uint64_t rt_elf_fini(const rt_elf *e) { return e->fini; }
+
 uint64_t rt_elf_proc_param(const rt_elf *e, uint64_t *size)
 {
     if (size) *size = e->proc_param_size;

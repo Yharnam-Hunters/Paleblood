@@ -74,9 +74,13 @@ executable imports from it. `tools/boot.py` passes it like a stub, so a load is 
 and its imports bind to the runtime's entries by name. The first is `libSceAppContent` (`0x00b4` in
 the OpenOrbis id list), below.
 
-**Unknown**: the error values (a module not loaded, an id the system does not know), and whether a
-second load of a loaded module is counted, ignored or refused. Each is a named fatal until a console
-measurement or a guest call site settles it.
+**A second load** of a loaded module succeeds and is counted; each unload takes one load back, and
+the module is loaded until the last one (maintainer's ruling of 2026-11-10; shadPS4's
+`sysmodule_internal.cpp` counts loads the same way, facts only). The message and commerce dialogs
+load their module on every open, so a refused second load would stop the second dialog.
+
+**Unknown**: the error values (a module not loaded, an id the system does not know). Each is a
+named fatal until a console measurement or a guest call site settles it.
 
 The runtime validates the complete 32-bit module ID before consulting its configured
 module list. A wider ID such as `0xabcd7f01` does not alias the 16-bit ID `0x7f01`.
@@ -209,6 +213,11 @@ For the observed AF_INET path, the runtime uses the documented BSD [`inet_pton(3
 `sceNetInetNtop(family, source, destination, size)` is the reverse, BSD [`inet_ntop(3)`](https://man.freebsd.org/cgi/man.cgi?query=inet_ntop) for AF_INET: the four network-order bytes as dotted-decimal text, answering the destination. The executable's one call (`0x02f982df`) passes family `2`, an address from `sceNetHtonl` and a 16-byte buffer (enough for `255.255.255.255` and its terminator), and tests the answer for null. A buffer too small for the text answers null with `ENOSPC` in `errno` under BSD; the library's `errno` (`sceNetErrnoLoc`) is not modelled, so that case stops by name, as do other families and missing pointers.
 
 ## `getpagesize`: observed, inferred, unknown
+
+**Ruling (maintainer, 2026-11-10):** both entries answer **16384** (`runtime/syslib/kernel.c`).
+Every source we can cite agrees on 16 KiB: shadPS4's kernel, the bloodborne-native port family and
+the Astrr00 port (facts only), the `p_align` of every target segment, and the runtime's own 16 KiB
+memory granule. The record below is why it is a ruling and not a measurement.
 
 **Observed in our target** (read-only; the eight images verify against `target.sha256` and
 `target.image.sha256`):
@@ -505,10 +514,53 @@ are in `libc.elf` unless marked; `libSceFios2` imports from `libSceLibcInternal`
 - **`malloc` and `free`** (`libSceLibcInternal`) use the host allocator, reached through
   `libSceFios2`'s default allocator.
 
+**Process and input (maintainer's rulings, 2026-11-10)**
+- **`getpid`** answers 1000, the fixed id of the bloodborne-native port family (facts only): runs
+  stay reproducible, and the host's pid is not the guest's. libunwind passes it to `sysctl`.
+- **`_read`** on descriptor 0 (stdio, `+0x2729a`) answers end of file, 0 bytes: a console title has
+  no standard input. Other descriptors stop by name.
+- **`__stack_chk_guard`** (data) is the stack protector's canary, a fixed non-zero word,
+  `0xdeadbeef54321abc` (shadPS4's; droogie's and Astrr00's hosts also use fixed constants). Unbound,
+  the import read a zeroed page.
+
 **Exceptions**
 - **`sceKernelDebugRaiseException` and the `OnReleaseMode` variant.** A non-zero second argument
   answers EINVAL. Otherwise the program stops by name with the code: `abort()` raises
   `0xa002000b`. This is shadPS4's behaviour.
+
+## C++ exceptions and module information (`sceKernelGetModuleInfoFromAddr`, `__Ux86_64_setcontext`, issue #34)
+
+libc.elf's HP libunwind and FreeBSD's `__cxa_finalize` ask the system about modules and process
+memory (`runtime/syslib/kernel_unwind.c`). The runtime records every module it maps
+(`rt_process.modules`, filled by `runtime/boot.c` from the loader: segments, `PT_GNU_EH_FRAME`,
+`DT_INIT`, `DT_FINI`).
+
+- **`sceKernelGetModuleInfoFromAddr(address, flags, info)`** fills the 0x1a8-byte structure
+  shadPS4's `module.h` calls `OrbisKernelModuleInfoEx`: size, name (256 bytes), id, TLS fields
+  (left 0: no caller reads them), init and fini, the exception frame index and the frames it points
+  to with their sizes (`0x148`-`0x15c`), and up to four segments `{address, u32 size, s32 prot}`
+  with their count (`0x160`, `0x1a0`). The segments carry the program header's flags, as in
+  shadPS4. libunwind asks with flags 1 (`+0x61d34`, then reads the index at `0x148` and checks its
+  version byte); `__cxa_finalize` with flags 2. shadPS4's errors: flags 3 or more zero the
+  structure and answer `EINVAL`, no structure `EFAULT` (`0x8002000e`), an address in no module
+  `ESRCH` (`0x80020003`). The frames' start is decoded from the index's DWARF pointer encoding
+  (absolute or pc-relative, 4 or 8 bytes); other encodings, another version and frames after their
+  index stop by name.
+- **`__elf_phdr_match_addr(info, address)`** is FreeBSD libc's helper (`lib/libc/gen/elf_utils.c`):
+  1 when a segment with the execute flag holds the address, else 0 (`+0x2f39e`).
+- **`__Ux86_64_setcontext(context)`** resumes at a landing pad. The layout is the one libc.elf's own
+  getcontext writes (`+0x53cd0`, FreeBSD's `ucontext_t` with the machine context at `0x40`). Every
+  general register, the flags and the x87/SSE state (`fxrstor` from `0x120`) are restored; the
+  return address is pushed below the new stack pointer and returned to, as libunwind's own
+  setcontext does (maintainer's ruling). A context of another length or format, or a misaligned
+  FXSAVE area, stops by name.
+- **`sigreturn`** stops by name: the runtime delivers no guest signals and answers
+  `_is_signal_return` with 0, so libunwind never takes that path (maintainer's ruling).
+- **`sysctl`** answers `{CTL_KERN, KERN_PROC, KERN_PROC_VMMAP, pid}` (libunwind's process map query,
+  `+0x52f50`) with -1 and `ENOENT` (maintainer's ruling); libunwind then probes with `msync`. Any
+  other name stops by name.
+- **`sceKernelPrintBacktraceWithModuleInfo`** writes a line on standard error and answers 0
+  (PS4Recomp and the deadinside28 port do the same).
 
 ## Kernel semaphores (`libkernel`, issue #34)
 
@@ -676,6 +728,11 @@ What stops by name:
 **`scePthreadSetaffinity`** records the CPU mask. The executable sets it once per thread, within
 `0x3f`. Scheduling is left to the host, because the host's CPUs say nothing about the PS4's. An
 empty mask stops by name.
+
+**`scePthreadGetaffinity(thread, &mask)`** (imported by `libSceFios2`) answers the recorded mask, or
+all ones for a thread nobody set one on (maintainer's ruling of 2026-11-10; shadPS4 answers the
+host thread's set, PS4Recomp `0x3f`). No thread answers `ESRCH`, as for the set; no variable stops
+by name.
 
 **Stops on other threads.** A worker thread can fault or reach an unimplemented import. The boot
 records the first such stop and wakes the main thread (`SIGUSR1`) to make the usual report. Workers
@@ -2094,7 +2151,13 @@ only on the disc (`runtime/syslib/disc_map.c`).
 - **The answer:** the runtime serves the title from host files with no disc, so there is no disc
   bitmap. It answers `0x81100004` ("no bitmap info", numbered in shadPS4's `disc_map_codes.h`),
   as shadPS4 does, and writes nothing. A missing path or variable stops by name.
-- The library's other import, by hash `ioKMruft1ek`, has no call site and stays unbound.
+- **The unnamed import `ioKMruft1ek`.** Its name is not public, so it is registered by its NID
+  with `RT_SYSLIB_NID` (`runtime/include/runtime/syslib.h`): the loader matches the import's hash
+  directly, and `tools/runtime_issues.py` checks the row `ioKMruft1ek#A#B`. The file library calls
+  it as `(path, offset, bytes, int *, int *, int *)` (`libSceFios2.elf+0x29c6f`, `+0x2a381`) and
+  takes any non-zero answer as "no map". It answers `0x81100004` and writes nothing, as shadPS4
+  and the bloodborne-native ports do (PS4Recomp answers `0x80820001`); the maintainer's ruling of
+  2026-11-10 picked `0x81100004`. A missing path or variable stops by name.
 
 ## Memory protection queries (`sceKernelQueryMemoryProtection`, issue #34)
 
@@ -2182,9 +2245,11 @@ The shapes are OpenOrbis `libkernel.h`'s: `sceKernelMunmap(address, length)`,
 **What the runtime does:**
 - **Munmap** is FreeBSD's [`munmap(2)`](https://man.freebsd.org/cgi/man.cgi?query=munmap&sektion=2&manpath=FreeBSD+9.0-RELEASE).
   A zero length is `EINVAL` (FreeBSD's `sys_munmap`; shadPS4's `sceKernelMunmap` answers the
-  same, facts only). It removes one whole mapping the runtime made: the host mapping goes, and a
-  direct map no longer holds its range, which can then be released. A GPU-visible range can be
-  mapped again at its GPU address. The address is not handed out again for other maps.
+  same, facts only). As in FreeBSD the range may span several mappings, reserved space and holes:
+  every mapping the runtime made inside it goes (a direct map no longer holds its range, which can
+  then be released), reserved space inside it is given back, and holes stay as they are. A
+  GPU-visible range can be mapped again at its GPU address. The address is not handed out again
+  for other maps.
 - **Mprotect** is FreeBSD's [`mprotect(2)`](https://man.freebsd.org/cgi/man.cgi?query=mprotect&sektion=2&manpath=FreeBSD+9.0-RELEASE):
   the mapping takes the new protection, the CPU bits on the host and the GPU bits recorded, as for a
   map. The queries answer the new protection.
@@ -2192,14 +2257,43 @@ The shapes are OpenOrbis `libkernel.h`'s: `sceKernelMunmap(address, length)`,
   offset, and that range's start and end (just past it, as for `sceKernelVirtualQuery`).
 
 **What stops by name:**
-- part of a mapping, more than one, or memory the runtime did not map (other memory is not tracked
-  yet);
+- part of a mapping; for munmap, a start off the 16 KiB page, or a range outside the runtime's map
+  window that touches nothing it mapped or reserved; for mprotect, more than one mapping or memory
+  the runtime did not map (other memory is not tracked yet);
 - an offset outside every allocated range (shadPS4 answers `ENOENT`; no public source settles it);
 - protection beyond CPU and GPU read and write;
 - a missing variable.
 
-`sceKernelReleaseFlexibleMemory` stays unimplemented: shadPS4 gives the pages back and keeps the
-mapping, and no public source says whether the PS4 does that or unmaps.
+## Reserving address space and mapping into it (`sceKernelReserveVirtualRange`, `sceKernelBatchMap`, `sceKernelReleaseFlexibleMemory`, issue #34)
+
+The executable's block allocator (`0x02d01eb0`) builds one contiguous view of blocks it got
+separately. It reserves room for all of them (`sceKernelReserveVirtualRange`, flags `0x80`, no
+overwrite, alignment 0); for each block it asks `sceKernelVirtualQuery` where the block lies in
+direct memory, then maps an alias of every block at its place in the reserved range in one
+`sceKernelBatchMap`. To free the view (or after a failed batch) it turns every entry into an unmap,
+runs the batch again, and unmaps the whole reserved range, which by then is holes.
+
+- **`sceKernelReserveVirtualRange(&address, length, flags, alignment)`** reserves inaccessible space
+  in the runtime's map window (shadPS4 maps it with no access). `EINVAL` (`0x80020016`) for no
+  variable, a length that is 0 or not whole 16 KiB pages, and an alignment that is not 0 or a
+  power-of-two multiple of 16 KiB up to 2 GiB (shadPS4's checks, shared by the bloodborne-native
+  ports). An address hint and flags other than no overwrite stop by name.
+- **`sceKernelBatchMap(entries, count, &processed)`** runs 32-byte operations (start `0x00`, offset
+  `0x08`, length `0x10`, protection `0x18`, type `0x19`, operation `0x1c`; shadPS4's `memory.h`) in
+  order until one fails, and writes how many succeeded when `processed` is given. Each map is
+  placed at its start exactly: shadPS4, the bloodborne-native ports and droogie's host agree on the
+  implicit `MAP_FIXED`. No list, a zero length or an operation above 4 answers `EINVAL`.
+  - *Map direct (0)* maps the pool range over reserved space, with the CPU bits.
+  - *Unmap (1)* is the munmap above. *Protect (2)* is `sceKernelMprotect`.
+  - Stops by name: a map outside reserved space (what a fixed map replaces is not modelled), an
+    aliased map with GPU access (the GPU reaches each pool range at one address,
+    `runtime/gpu_memory.h`), and the flexible-map and type-protect operations (3, 4), which the
+    executable does not use.
+- **`sceKernelReleaseFlexibleMemory(address, length)`** unmaps (maintainer's ruling of
+  2026-11-10; the bloodborne-native ports and droogie's host unmap, shadPS4 keeps the mapping and
+  drops its pages). The allocator frees whole flexible blocks with it (`0x02482721`). `EINVAL` for
+  no address, a zero length or one that is not whole 16 KiB pages; direct memory in the range stops
+  by name.
 
 ## GNM: binding vertex and pixel shaders (`sceGnmSetVsShader`, `sceGnmSetPsShader`, issue #39)
 

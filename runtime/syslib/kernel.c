@@ -42,21 +42,17 @@ RT_SYSLIB("libkernel", __error, rt_guest_errno);
    (symbols/imports.csv, two rows naming one call): the loader binds an import by library and NID
    (runtime/boot.c), so each library needs its own entry, both pointing here.
 
-   The PS4's system page size is not established by any evidence we can cite. The target's ELF
-   headers bound it at best, and only under assumptions about the PS4 loader; the guest itself just
-   rejects a non-power-of-two and caches whatever it gets, so it never states the number. The full
-   record - what is observed, what is inferred and on which premise, and what remains open - is in
-   docs/runtime-syscalls.md, section "getpagesize: observed, inferred, unknown".
+   It answers 16384 (16 KiB), the maintainer's ruling of 2026-11-10. The PS4's own number is not
+   measured (docs/runtime-syscalls.md, "getpagesize: observed, inferred, unknown"), but every source
+   we can cite points the same way: shadPS4's kernel answers 16 KiB, as do a family of native
+   ports and the Astrr00 port (facts only); all sixteen PT_LOAD segments of the target's
+   images are aligned to 0x4000; and the runtime's own memory calls work in 16 KiB pages. The
+   guest only needs a power of two (its callers reject anything else) and caches it. */
+enum { GUEST_PAGE_SIZE = 0x4000 };
 
-   So the call fails loudly instead of returning an invented number or the host's page size. It is
-   registered with RT_SYSLIB_UNRESOLVED: the boot gets a named diagnostic if it reaches this, and
-   coverage leaves the import unchecked, since a diagnostic is not an implementation. */
-static void kernel_getpagesize(void)
-{
-    rt_fatal("getpagesize", "the PS4 system page size is not established by public evidence");
-}
-RT_SYSLIB_UNRESOLVED("libScePosix", getpagesize, kernel_getpagesize);
-RT_SYSLIB_UNRESOLVED("libkernel", getpagesize, kernel_getpagesize);
+static int32_t kernel_getpagesize(void) { return GUEST_PAGE_SIZE; }
+RT_SYSLIB("libScePosix", getpagesize, kernel_getpagesize);
+RT_SYSLIB("libkernel", getpagesize, kernel_getpagesize);
 
 /* memcpy and memset, imported by libSceFios2.elf from libSceLibcInternal (symbols/imports.csv). ISO C
    (7.24.2.1 and 7.24.6.1) fixes their whole result for valid arguments: memcpy copies n bytes from
