@@ -32,12 +32,14 @@
    part of an allocation or a mapped one, and the error values. */
 #define _GNU_SOURCE
 #include "runtime/gpu_memory.h"
+#include "runtime/guest_errno.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
 #include <errno.h>
 #include <pthread.h>
 #include <stdint.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -472,6 +474,87 @@ static int32_t get_direct_memory_type(int64_t start, int32_t *type, int64_t *ran
     return 0;
 }
 
+/* The POSIX memory calls libc.elf imports, and two more SCE ones its heap uses.
+
+   mmap(address, length, protection, flags, fd, offset) and munmap(address, length): POSIX/FreeBSD
+   mmap(2) and munmap(2), answering MAP_FAILED (-1) or -1 with errno. libc.elf maps anonymous
+   private memory, (NULL, length, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0), for
+   libunwind and its allocators (+0x52fac, +0x54f25, +0x5536d, +0x578c5, +0x57912) and unmaps
+   exactly what it mapped. As in shadPS4's posix_mmap and a family of native ports (facts only), an
+   anonymous map is flexible memory: the length rounded up to 16 KiB, placed by
+   sceKernelMapFlexibleMemory, and munmap is sceKernelMunmap with its error number in errno.
+   FreeBSD's rules give EINVAL for a zero length and for MAP_ANON with a descriptor other than -1 or
+   an offset other than 0. What stops by name: a file mapping (+0x530e1, after sysctl), an address
+   hint, other flags and protections.
+
+   msync(address, length, flags): FreeBSD msync(2). libunwind uses it as a probe of whether memory
+   is mapped (+0x541a5: MS_ASYNC on one or two 4 KiB pages; -1 means not readable), so a constant 0
+   would be wrong (it would make libunwind read unmapped memory). The runtime asks the host,
+   rounding to the host's page, and answers its result: 0, or -1 with ENOMEM (12) for memory not
+   mapped. Other host errors stop by name.
+
+   sceKernelMapNamedFlexibleMemory(address, length, protection, flags, name): libc.elf's heap
+   (+0x23ec0, +0x23ff9, +0x24932) maps flexible memory with a debug name; the runtime maps it as
+   sceKernelMapFlexibleMemory does. shadPS4's checks (facts only): no name is 0x8002000e (EFAULT),
+   a name of 32 characters or more 0x8002003f (ENAMETOOLONG).
+
+   sceKernelMlock(address, length): libc.elf calls it (+0x23ed9) only when a heap flag asks for
+   locked memory. Host memory is not paged out the way the PS4 would page it, so locking changes
+   nothing: the answer is 0, or EINVAL for no address, a zero length or a range that wraps (shadPS4
+   and PS4Recomp also answer 0). */
+enum { POSIX_PROT_RW = PROT_CPU_READ | PROT_CPU_WRITE, POSIX_MAP_PRIVATE = 0x2, POSIX_MAP_ANON = 0x1000 };
+enum { BSD_ENOMEM = 12, BSD_EINVAL_NUMBER = 22, NAMED_MEMORY_NAME_MAX = 31 };
+#define POSIX_MAP_FAILED ((void *)-1)
+#define SCE_KERNEL_ERROR_EFAULT ((int32_t)0x8002000e)
+#define SCE_KERNEL_ERROR_ENAMETOOLONG ((int32_t)0x8002003f)
+
+static void *posix_mmap(void *address, uint64_t length, int32_t protection, int32_t flags, int32_t fd, int64_t offset)
+{
+    static const char fn[] = "mmap";
+    if (!(flags & POSIX_MAP_ANON)) rt_fatal(fn, "a file mapping: not modelled");
+    if (!length || fd != -1 || offset != 0) {
+        *rt_guest_errno() = BSD_EINVAL_NUMBER;
+        return POSIX_MAP_FAILED;
+    }
+    if (address || flags != (POSIX_MAP_ANON | POSIX_MAP_PRIVATE) || protection != POSIX_PROT_RW)
+        rt_fatal(fn, "an address hint, other flags or other protection: not modelled");
+    void *mapped = NULL;
+    map_flexible_memory(&mapped, align_up(length, DIRECT_PAGE), protection, 0);
+    return mapped;
+}
+
+static int32_t posix_munmap(void *address, uint64_t length)
+{
+    const int32_t answer = kernel_munmap(address, length);
+    if (!answer) return 0;
+    *rt_guest_errno() = (int32_t)((uint32_t)answer - 0x80020000u);
+    return -1;
+}
+
+static int32_t posix_msync(void *address, uint64_t length, int32_t flags)
+{
+    (void)flags;
+    const uintptr_t page = (uintptr_t)sysconf(_SC_PAGESIZE);
+    const uintptr_t start = (uintptr_t)address & ~(page - 1), end = (uintptr_t)address + length;
+    if (!msync((void *)start, end - start, MS_ASYNC)) return 0;
+    if (errno != ENOMEM) rt_fatal("msync", "a host error without an established answer");
+    *rt_guest_errno() = BSD_ENOMEM;
+    return -1;
+}
+
+static int32_t map_named_flexible_memory(void **address, uint64_t length, int32_t protection, int32_t flags, const char *name)
+{
+    if (!name) return SCE_KERNEL_ERROR_EFAULT;
+    if (strnlen(name, NAMED_MEMORY_NAME_MAX + 1) > NAMED_MEMORY_NAME_MAX) return SCE_KERNEL_ERROR_ENAMETOOLONG;
+    return map_flexible_memory(address, length, protection, flags);
+}
+
+static int32_t kernel_mlock(const void *address, uint64_t length)
+{
+    if (!address || !length || (uintptr_t)address + length < (uintptr_t)address) return SCE_KERNEL_ERROR_EINVAL;
+    return 0;
+}
+
 RT_SYSLIB("libkernel", sceKernelMunmap, kernel_munmap);
 RT_SYSLIB("libkernel", sceKernelMprotect, kernel_mprotect);
 RT_SYSLIB("libkernel", sceKernelGetDirectMemoryType, get_direct_memory_type);
@@ -482,3 +565,8 @@ RT_SYSLIB("libkernel", sceKernelReleaseDirectMemory, release_direct_memory);
 RT_SYSLIB("libkernel", sceKernelMapFlexibleMemory, map_flexible_memory);
 RT_SYSLIB("libkernel", sceKernelQueryMemoryProtection, query_memory_protection);
 RT_SYSLIB("libkernel", sceKernelVirtualQuery, virtual_query);
+RT_SYSLIB("libkernel", mmap, posix_mmap);
+RT_SYSLIB("libkernel", munmap, posix_munmap);
+RT_SYSLIB("libkernel", msync, posix_msync);
+RT_SYSLIB("libkernel", sceKernelMapNamedFlexibleMemory, map_named_flexible_memory);
+RT_SYSLIB("libkernel", sceKernelMlock, kernel_mlock);
