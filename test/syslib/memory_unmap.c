@@ -4,8 +4,11 @@
 #define _GNU_SOURCE
 #include "../syslib_test.h"
 
+#include <signal.h>
 #include <stdint.h>
 #include <sys/mman.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 typedef size_t (*f_size)(void);
 typedef int32_t (*f_alloc)(int64_t, int64_t, uint64_t, uint64_t, int32_t, int64_t *);
@@ -33,13 +36,27 @@ static int is_unmapped(void *address)
     return 1;
 }
 
+/* Whether a write to address faults (in a child, so the test goes on). */
+static int write_faults(void *address)
+{
+    const pid_t child = fork();
+    if (child == 0) {
+        ((volatile char *)address)[0] = 1;
+        _exit(0);
+    }
+    int status = 0;
+    return waitpid(child, &status, 0) == child && WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV;
+}
+
 static void unmap_part(void) { unmap(mapped, PAGE); }
 static void unmap_unknown(void) { static char local[PAGE]; unmap(local, sizeof local); }
 static void query_after_unmap(void) { int32_t p; query(mapped, NULL, NULL, &p); }
 static void protect_unknown_bits(void) { protect(mapped, LENGTH, 0x4); }
 static void protect_part(void) { protect(mapped, PAGE, 1); }
 static void type_unallocated(void) { int32_t t; int64_t s, e; type_of(-PAGE, &t, &s, &e); }
-static void type_no_variable(void) { int64_t s, e; type_of(0, NULL, &s, &e); }
+static int64_t allocated_offset;
+static void type_no_variable(void) { int64_t s, e; type_of(allocated_offset, NULL, &s, &e); }
+static void protect_unknown(void) { static char local[PAGE] __attribute__((aligned(PAGE))); protect(local, sizeof local, 1); }
 
 SYSLIB_TEST(memory_unmap)
 {
@@ -62,6 +79,8 @@ SYSLIB_TEST(memory_unmap)
     CHECK(allocate(0, (int64_t)pool_size(), LENGTH, LENGTH, 3, &start) == 0 && start >= 0);
     CHECK(type_of(start + PAGE, &type, &range_start, &range_end) == 0);
     CHECK(type == 3 && range_start == start && range_end == start + LENGTH);
+    allocated_offset = start;
+    CHECK(died_in_fatal(type_no_variable));
 
     /* Protect a CPU map, then unmap it: the range can be released afterwards. */
     mapped = NULL;
@@ -69,9 +88,9 @@ SYSLIB_TEST(memory_unmap)
     ((volatile char *)mapped)[0] = 7;
     int32_t protection = 0;
     CHECK(protect(mapped, LENGTH, 1) == 0 && query(mapped, NULL, NULL, &protection) == 0 && protection == 1);
-    CHECK(((volatile char *)mapped)[0] == 7);
+    CHECK(((volatile char *)mapped)[0] == 7 && write_faults(mapped));
     CHECK(protect(mapped, LENGTH, 0x13) == 0 && query(mapped, NULL, NULL, &protection) == 0 && protection == 0x13);
-    CHECK(protect(mapped, LENGTH, 3) == 0);
+    CHECK(protect(mapped, LENGTH, 3) == 0 && !write_faults(mapped));
     CHECK(died_in_fatal(protect_unknown_bits) && died_in_fatal(protect_part));
     CHECK(unmap(mapped, 0) == (int32_t)0x80020016u);
     CHECK(died_in_fatal(unmap_part));
@@ -93,5 +112,5 @@ SYSLIB_TEST(memory_unmap)
     CHECK(unmap(flexible, LENGTH) == 0 && is_unmapped(flexible));
 
     CHECK(died_in_fatal(unmap_unknown));
-    CHECK(died_in_fatal(type_unallocated) && died_in_fatal(type_no_variable));
+    CHECK(died_in_fatal(type_unallocated) && died_in_fatal(protect_unknown));
 }
