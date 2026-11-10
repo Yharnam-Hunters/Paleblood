@@ -104,7 +104,12 @@ arguments. The first of the engine's own packet writers are mapped, all by [@evi
   - **sizes:** `render_calculate_second_auxiliary` (`0x0149e570`) works out the size and alignment
     of a second auxiliary area [#323](https://github.com/Yharnam-Hunters/Paleblood/pull/323), from #228;
   - **fields:** seven setters (`0x01486520`–`0x01486800`) replace one field each, keeping the
-    rest of the word [#324](https://github.com/Yharnam-Hunters/Paleblood/pull/324), from #236.
+    rest of the word [#324](https://github.com/Yharnam-Hunters/Paleblood/pull/324), from #236;
+  - **construction:** `render_record_constructor` (`0x01485f90`) clears a record's 44-byte prefix
+    and fills in the record and its auxiliary outputs, returning a packed 64-bit result;
+    `render_record_constructor_pack_pair` (`0x01471600`) packs a selector pair into an encoding,
+    and two optional steps (`0x0149e2d0`, `0x0149e400`) align paired components and work out the
+    geometry, writing their outputs even when a helper reports an error [#478](https://github.com/Yharnam-Hunters/Paleblood/pull/478), from #246 (edge-verified on synthetic cases);
   - **normalisation:** `render_record_normalize_mode2`, `…mode3` and `…mode4` (`0x025710a0`,
     `0x025711d0`, `0x02571340`) bring a record's input into one normalised form, copying the words
     they do not interpret unchanged and keeping each helper's writes and failure codes in order, and
