@@ -721,6 +721,34 @@ the days so, and notes that a real PS4's ticks count from year 1, as these do; b
 facts only. (The PSP SDK documents 0 as Monday, for an older library.) A date out of range stops
 by name.
 
+### Unix time, time zones, RFC 2822 and the network tick (issue #40)
+
+These five calls relate ticks to Unix time and to UTC (`runtime/syslib/rtc.c`, tests in
+`test/syslib/rtc_time_zones.c`).
+
+- **Ticks and Unix time:** a tick counts microseconds from year 1, so 1970-01-01 00:00:00 UTC is
+  tick 62135596800000000. PS4Recomp's `libSceRtc` and shadPS4's `rtc.cpp` both relate them so
+  (facts only).
+- **`sceRtcSetTime_t(date and time *, time_t)`** (`0x010b70a6`: seconds parsed from text, then
+  `sceRtcGetTick` on the result, going on only on 0) gives the UTC date and time that many seconds
+  after 1970. Both sources say the answer depends on the SDK the title was built with: before SDK
+  3.00 only the low 32 bits count, from 3.00 a negative count is an error. Counts from 0 to
+  `0xffffffff` mean the same either way; others stop by name.
+- **`sceRtcConvertUtcToLocalTime(const tick *, tick *)`** and **`sceRtcConvertLocalTimeToUtc`**
+  (11 and 2 call sites, such as `0x01969648` and `0x019696ae`; each passes a local copy of the
+  tick and treats anything but 0 as no time) use the host's time zone, as the local time above
+  does, with its daylight saving rule at that instant. A local time that the clock skips or shows
+  twice at a daylight saving change stops by name, because the PS4's choice there is not
+  established.
+- **`sceRtcFormatRFC2822LocalTime(char *, const tick *utc)`** (`0x023e5ca9`, with no tick, which
+  means now) writes RFC 2822 section 3.3's date and time in the host's local time, such as `Mon,
+  02 Nov 2026 15:05:09 +0100`: 31 characters and a NUL, the day of the month in two digits as both
+  sources write it.
+- **`sceRtcGetCurrentNetworkTick(tick *)`** (`0x01086f50`, `0x010b70cf`; 0 is success, and the first
+  treats a failure as no time) answers the current UTC tick from the host's clock, as both sources
+  do. The host's wall clock stands for the network clock.
+- **Stops by name:** a missing argument, and a time before year 1 or past the year 9999.
+
 ## The controller (`libScePad`)
 
 The runtime models one standard controller, the one user's, always connected
@@ -904,6 +932,15 @@ dialog is shown: each dialog library's own calls do that, and none is provided y
 
 Facts from shadPS4's `libSceSystemService` (`systemservice.cpp`, `systemservice.h`,
 `systemservice_error.h`).
+
+## System events (`sceSystemServiceReceiveEvent`, issue #40)
+
+`sceSystemServiceReceiveEvent(event *)` takes the oldest pending system event. shadPS4's
+`libSceSystemService` answers `0x80A10003` for a missing pointer and `0x80A10004` ("no event",
+`systemservice_error.h`) for an empty queue (facts only). The executable calls it only inside a
+loop bounded by the pending count `sceSystemServiceGetStatus` gave (`0x01b8a433`, `0x02276aa3`),
+and acts on an event only when the call answers 0. The runtime raises no system events, so it
+answers "no event" and writes nothing (`test/syslib/system_service_events.c`).
 
 ## System settings (`sceSystemServiceParamGetInt`, issue #40)
 
@@ -1845,6 +1882,7 @@ metadata.
 - [POSIX `clock_gettime`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/clock_gettime.html) and [clock definitions](https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/time.h.html)
 - [POSIX `getpid`](https://pubs.opengroup.org/onlinepubs/9699919799/functions/getpid.html)
 - [Older POSIX `gettimeofday` specification](https://pubs.opengroup.org/onlinepubs/009604599/functions/gettimeofday.html)
+- [RFC 2822 section 3.3, date and time specification](https://www.rfc-editor.org/rfc/rfc2822#section-3.3); [PS4Recomp `libSceRtc`](https://github.com/wie-project/PS4Recomp/tree/main/pkg/runtime/modules/libSceRtc) and [shadPS4 `rtc.cpp`](https://github.com/shadps4-emu/shadPS4/blob/main/src/core/libraries/rtc/rtc.cpp) (facts only: the year-1 tick epoch, the SDK-dependent `sceRtcSetTime_t`, the two-digit day, the network tick answered from the clock)
 - [FreeBSD `getpagesize(3)`](https://man.freebsd.org/cgi/man.cgi?query=getpagesize&sektion=3&manpath=FreeBSD+13.3-RELEASE)
 - [ELF ABI, program headers and `p_align`](https://refspecs.linuxfoundation.org/elf/gabi4%2B/ch5.pheader.html) (loadable segments must be congruent modulo the page size; `p_align` is the alignment the loader honors)
 - [FreeBSD AMD64 `param.h`](https://github.com/freebsd/freebsd/blob/releng/9.1/sys/amd64/include/param.h) (stock `PAGE_SIZE` 4096) and [Sony's open-source page for the PS4](https://www.playstation.com/en-us/oss/ps4/)
