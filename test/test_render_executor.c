@@ -528,6 +528,29 @@ static void depth_and_strips(rt_executor *x)
                                      {0xa016, 0}, {0xa017, 0}, {0xa002, 0}, {0xa200, 0x2 | 0x4 | 0x7u << 4}};
         CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), small, 10, 3, error, sizeof error) == -1 && strstr(error, "smaller"));
     }
+    /* Slices of an array depth target (DB_DEPTH_VIEW SLICE_START = SLICE_MAX): a draw into slice 1
+       writes slice 1 only: LESS on slice 1 then draws nothing, a test reading slice 0 meets a slice no
+       draw wrote; a view of two slices stops by name. */
+    {
+        enum { SLICED = 0x1740000, SLICE_COLOUR = 0x1780000, SLICE_ONE = 1u | 1u << 13, SLICES_ZERO_ONE = 0u | 1u << 13 };
+        const uint32_t sz2 = (uint32_t)(at(SLICED) >> 8), sst2 = (uint32_t)(at(SLICED + 0x2000) >> 8);
+#define SLICED_TARGET(view) {0xa010, 0xa0000003}, {0xa011, 0x20000001}, {0xa012, sz2}, {0xa013, sst2}, {0xa014, sz2}, {0xa015, sst2}, \
+                            {0xa016, depth_size}, {0xa017, 0}, {0xa002, view}
+        const uint32_t write_one[][2] = {SLICED_TARGET(SLICE_ONE), {0xa200, 0x2 | 0x4 | 0x7u << 4}};
+        drawn = run_counted(x, DEPTH_BUFFER, at(SLICE_COLOUR), write_one, 10, 3, error, sizeof error);
+        if (drawn) fprintf(stderr, "depth slice 1: %s\n", error);
+        CHECK(drawn == 0);
+        check_triangle(x, at(SLICE_COLOUR));
+        const uint32_t less_one[][2] = {SLICED_TARGET(SLICE_ONE), {0xa200, 0x2 | 0x1u << 4}};
+        CHECK(run_counted(x, DEPTH_BUFFER, at(SLICE_COLOUR), less_one, 10, 3, error, sizeof error) == 0);
+        const uint32_t less_zero[][2] = {SLICED_TARGET(0), {0xa200, 0x2 | 0x1u << 4}};
+        CHECK(run_counted(x, DEPTH_BUFFER, at(SLICE_COLOUR), less_zero, 10, 3, error, sizeof error) == -1 &&
+              strstr(error, "no draw has written"));
+        const uint32_t two_slices[][2] = {SLICED_TARGET(SLICES_ZERO_ONE), {0xa200, 0x2 | 0x4 | 0x7u << 4}};
+        CHECK(run_counted(x, DEPTH_BUFFER, at(SLICE_COLOUR), two_slices, 10, 3, error, sizeof error) == -1 &&
+              strstr(error, "more than one slice"));
+#undef SLICED_TARGET
+    }
     /* A depth-only pass (no pixel shader, target mask 0, depth always with writes) into a fresh depth
        target leaves the triangle's depth: LESS on the same triangle then draws nothing, LESS_EQUAL the
        triangle. */
