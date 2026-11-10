@@ -188,7 +188,7 @@ set_tests_properties(compiled_sdk PROPERTIES TIMEOUT 10)
 
 # Exercise the registered direct-memory calls, including rejected ranges before host mapping.
 add_executable(test_direct_memory_bounds test/test_direct_memory_bounds.c
-               runtime/syslib/kernel_memory.c runtime/syslib/table.c runtime/process.c)
+               runtime/syslib/kernel_memory.c runtime/syslib/kernel.c runtime/syslib/table.c runtime/process.c)
 target_include_directories(test_direct_memory_bounds PRIVATE runtime/include)
 add_test(NAME direct_memory_bounds COMMAND test_direct_memory_bounds)
 set_tests_properties(direct_memory_bounds PROPERTIES TIMEOUT 20)
