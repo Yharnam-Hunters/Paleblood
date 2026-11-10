@@ -127,9 +127,11 @@ Instead:
        user-data pointer pair that nothing writes. The executor reads such a descriptor from guest
        memory when the draw runs. The same SGPRs can name different images at different
        instructions: the game's fullscreen pass reads the user data's image, then loads another
-       descriptor over it. Followed only through code that runs straight to the instruction (no
-       branch before it, none back to it); any other write (a scalar move, a compare's result, a
-       written pointer) stops by name.
+       descriptor over it. With branches in the program a load is followed only when every path to
+       the instruction passes it: it is the only write to those SGPRs, no branch lands between the
+       load and the use, every branch target is known, and nothing writes the pointer pair (the
+       game's guarded samples branch over the load and the use together). Any other write (a scalar
+       move, a compare's result, a written pointer) stops by name.
      - **Tiled layouts** (`runtime/tiling.h`): where each texel of an image lies in guest memory, for
        reading images the CPU or a shader's buffer stores wrote. AMD's address library (addrlib, in
        Mesa) gives the formulas; the PS4's tile-mode and macro-tile-mode values are those shadPS4's

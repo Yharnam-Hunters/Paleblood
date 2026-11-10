@@ -167,7 +167,7 @@ static void image_programs(void)
     /* Where each MIMG's descriptor comes from. A whole s_load_dwordx8 from a user-data pointer: from
        memory, at the load's offset. Two uses of s[4:11], before and after such a load over it: two
        images, the user data's and the loaded one. A scalar move into it, a compare's 64-bit result,
-       or a branch before the use: refused by name. */
+       or a branch before a use of the user data's: refused by name. */
     static const uint32_t loaded[] = {0xc0c00904, 0xf0000f00, 0x00000401, 0xbf810000};   /* s_load_dwordx8 s[0:7], s[8:9], 4 */
     static const uint32_t moved[] = {0xbe8c0380, 0xf0000f00, 0x00020401, 0xbf810000};    /* s_mov_b32 s12, 0 */
     static const uint32_t compared[] = {0xd184000e, 0x00020300, 0xf0000f00, 0x00020401, 0xbf810000}; /* v_cmp_eq_u32_e64 s[14:15] */
@@ -189,6 +189,22 @@ static void image_programs(void)
           strstr(error, "loaded through s[8:9], which the program writes"));
     CHECK(gcn_image_resources(branch_first, 1 + sizeof pixel_two_images / 4, found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
           strstr(error, "s_cbranch_scc0"));
+    /* With branches: a load followed when every path to the use passes it. An s_cbranch_execz over
+       both the load and the use (the game's guarded samples): from memory. A branch over the load
+       that lands before the use, a second load into the same SGPRs, or a write to the pointer
+       anywhere: refused by name. */
+    static const uint32_t guarded[] = {0xbf880003, 0xc0c00904, 0xf0000f00, 0x00000401, 0xbf810000}; /* s_cbranch_execz to s_endpgm */
+    static const uint32_t skipped_load[] = {0xbf840001, 0xc0c00904, 0xf0000f00, 0x00000401, 0xbf810000}; /* s_cbranch_scc0 to the use */
+    static const uint32_t loaded_twice[] = {0xbf880004, 0xc0c00904, 0xc0c00908, 0xf0000f00, 0x00000401, 0xbf810000};
+    static const uint32_t pointer_later[] = {0xbf880004, 0xc0c00904, 0xf0000f00, 0x00000401, 0xbe880380, 0xbf810000}; /* s_mov_b32 s8, 0 after */
+    CHECK(gcn_image_resources(PROGRAM(guarded), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
+    CHECK(count == 1 && found[0].origin.from_memory && found[0].origin.pointer_sgpr == 8 && found[0].origin.offset == 16);
+    CHECK(gcn_image_resources(PROGRAM(skipped_load), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
+          strstr(error, "lands at dword 2, between the load and its use"));
+    CHECK(gcn_image_resources(PROGRAM(loaded_twice), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
+          strstr(error, "s_cbranch_execz"));
+    CHECK(gcn_image_resources(PROGRAM(pointer_later), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
+          strstr(error, "loaded through s[8:9], which the program writes"));
     /* the two-image program translates with both bound, and stops naming the loaded one without it */
     const gcn_image_binding two[] = {{{0, 4, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1}, {{1, 4, 2, 16}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1}};
     gcn_pixel_layout both_images = pixel_layout;
