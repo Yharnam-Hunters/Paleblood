@@ -392,7 +392,9 @@ Instead:
           buffer directly, in the batch: one invocation per element, its place from a table of the
           layout's offsets that `runtime/tiling.h` works out (each micro tile's first element, and the
           64 places within a micro tile, `rt_tiling_micro_spread`), so the GPU's placement is the CPU
-          code's by construction. Nothing waits for them: the batch notes the memory each write-back
+          code's by construction. Each group of 64 takes one micro tile with its lanes in memory order,
+          so neighbouring lanes touch neighbouring guest memory (taken in row order instead, the copies
+          cost about twice the GPU time, as host memory is read and written across PCIe). Nothing waits for them: the batch notes the memory each write-back
           stores to, and the CPU waits only before reading that memory itself. A target is loaded
           again, and such an image too, whenever the memory may have changed (the memory epoch: a new
           buffer, a dispatch, a write-back over it), without comparing bytes: reading it on the GPU

@@ -8,12 +8,14 @@
    Vulkan images and guest memory without the CPU touching the texels.
 
    Each invocation moves one element (a texel, or a block of a block-compressed image) of `dwords`
-   32-bit words: element i of the linear rows (rows of `width` elements, `height` rows a slice, slice
-   after slice) and the element at the tiled image's base plus table[64 + tile] + table[place], where
-   tile = slice * tiles_per_slice + (y / 8) * tiles_per_row + x / 8 and place = (y % 8) * 8 + x % 8.
-   The table holds 32-bit byte offsets: rt_tiling_micro_spread's 64 places, then the offset of every
-   micro tile's first element (rt_tiling_offset). Addresses are GPU addresses (buffer device
-   addresses), in the push constants as 32-bit words, low word first. */
+   32-bit words. Invocation i takes element k = i % 64, in memory order, of micro tile i / 64 (micro
+   tiles counted along each row of them, row after row, slice after slice), so neighbouring lanes
+   touch neighbouring guest memory. The table holds 32-bit words: the 64 elements' byte offsets in
+   their micro tile in increasing order (rt_tiling_micro_spread's values, sorted), the texel place
+   ((y % 8) * 8 + x % 8) of each, then each micro tile's first element's offset from the image's base
+   (rt_tiling_offset). Elements past the image's width or height are skipped. The linear rows hold
+   `width` elements a row, `height` rows a slice, slice after slice. Addresses are GPU addresses
+   (buffer device addresses), in the push constants as 32-bit words, low word first. */
 
 #include <stddef.h>
 #include <stdint.h>
@@ -24,12 +26,15 @@ extern "C" {
 
 enum { RT_TILE_COPY_GROUP = 64 };
 
-/* The push constants, one 32-bit word each. Workgroup (x, y) covers elements
-   (y * groups_x + x) * 64 to that plus 63; elements past `elements` do nothing. */
+/* The table's parts (word indices): offsets in a micro tile, texel places, micro tiles' offsets. */
+enum { RT_TILE_COPY_OFFSETS = 0, RT_TILE_COPY_PLACES = 64, RT_TILE_COPY_TILE_BASES = 128 };
+
+/* The push constants, one 32-bit word each. Workgroup (x, y) covers invocations
+   (y * groups_x + x) * 64 to that plus 63, one micro tile; those past `tiles` micro tiles do nothing. */
 enum {
     RT_TILE_COPY_TILED_LO, RT_TILE_COPY_TILED_HI, RT_TILE_COPY_LINEAR_LO, RT_TILE_COPY_LINEAR_HI, RT_TILE_COPY_TABLE_LO,
     RT_TILE_COPY_TABLE_HI, RT_TILE_COPY_WIDTH, RT_TILE_COPY_HEIGHT, RT_TILE_COPY_TILES_PER_ROW, RT_TILE_COPY_TILES_PER_SLICE,
-    RT_TILE_COPY_ELEMENTS, RT_TILE_COPY_GROUPS_X, RT_TILE_COPY_PUSH_WORDS
+    RT_TILE_COPY_TILES, RT_TILE_COPY_GROUPS_X, RT_TILE_COPY_PUSH_WORDS
 };
 
 /* The compute shader (SPIR-V 1.5) moving elements of `dwords` words (1, 2 or 4) to the tiled image

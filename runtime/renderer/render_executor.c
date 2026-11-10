@@ -900,8 +900,8 @@ static void tile_plan_free(rt_executor *x, tile_plan *p)
 }
 
 /* Makes p the plan for copying `slices` slices of width x height elements laid out as `layout`: the
-   table (rt_tiling_micro_spread's places, then each micro tile's first element, runtime/tile_copy.h)
-   and the linear rows' buffer. Kept while the layout and size stay. 0, or -1 with the reason. */
+   table (a micro tile's elements in memory order with their places, from rt_tiling_micro_spread, then
+   each micro tile's first element; runtime/tile_copy.h) and the linear rows' buffer. Kept while the layout and size stay. 0, or -1 with the reason. */
 static int tile_plan_make(rt_executor *x, tile_plan *p, const rt_tiling *layout, uint32_t width, uint32_t height, uint32_t slices,
                           char *error, size_t error_size)
 {
@@ -911,7 +911,7 @@ static int tile_plan_make(rt_executor *x, tile_plan *p, const rt_tiling *layout,
     *p = (tile_plan){.width = width, .height = height, .slices = slices, .dwords = layout->element_bytes / 4,
                      .tiles_per_row = (width + RT_TILING_MICRO - 1) / RT_TILING_MICRO};
     p->tiles_per_slice = p->tiles_per_row * ((height + RT_TILING_MICRO - 1) / RT_TILING_MICRO);
-    const VkDeviceSize entries = RT_TILING_MICRO_TEXELS + (VkDeviceSize)p->tiles_per_slice * slices;
+    const VkDeviceSize entries = RT_TILE_COPY_TILE_BASES + (VkDeviceSize)p->tiles_per_slice * slices;
     if (gpu_buffer_make(x, &p->table, entries * 4, 1) ||
         gpu_buffer_make(x, &p->linear, (VkDeviceSize)width * height * slices * layout->element_bytes, 0)) {
         tile_plan_free(x, p);
@@ -920,8 +920,16 @@ static int tile_plan_make(rt_executor *x, tile_plan *p, const rt_tiling *layout,
     uint32_t *table = p->table.mapped;
     uint64_t spread[RT_TILING_MICRO_TEXELS];
     rt_tiling_micro_spread(layout, spread);
-    for (unsigned i = 0; i < RT_TILING_MICRO_TEXELS; i++) table[i] = (uint32_t)spread[i];
-    uint32_t *tile = table + RT_TILING_MICRO_TEXELS;
+    /* the micro tile's elements in memory order (insertion sort of the 64 places by offset) */
+    uint32_t order[RT_TILING_MICRO_TEXELS];
+    for (unsigned i = 0; i < RT_TILING_MICRO_TEXELS; i++) {
+        unsigned at = i;
+        for (; at > 0 && spread[order[at - 1]] > spread[i]; at--) order[at] = order[at - 1];
+        order[at] = i;
+    }
+    for (unsigned k = 0; k < RT_TILING_MICRO_TEXELS; k++)
+        table[RT_TILE_COPY_OFFSETS + k] = (uint32_t)spread[order[k]], table[RT_TILE_COPY_PLACES + k] = order[k];
+    uint32_t *tile = table + RT_TILE_COPY_TILE_BASES;
     for (uint32_t s = 0; s < slices; s++)
         for (uint32_t ty = 0; ty < height; ty += RT_TILING_MICRO)
             for (uint32_t tx = 0; tx < width; tx += RT_TILING_MICRO) *tile++ = (uint32_t)rt_tiling_offset(layout, tx, ty, s);
@@ -979,17 +987,17 @@ static int record_tile_copy(rt_executor *x, const tile_plan *p, uint64_t address
     const VkPipeline pipeline = tile_copy_pipeline(x, p->dwords, to_tiled, error, error_size);
     VkCommandBuffer commands = pipeline ? batch_commands(x) : VK_NULL_HANDLE;
     if (!commands) return pipeline ? failed(error, error_size, "no command buffer") : -1;
-    const uint64_t elements = (uint64_t)p->width * p->height * p->slices, groups = (elements + RT_TILE_COPY_GROUP - 1) / RT_TILE_COPY_GROUP;
+    const uint64_t groups = (uint64_t)p->tiles_per_slice * p->slices; /* one micro tile each */
     enum { MAX_GROUPS = 65535 };
     const uint32_t groups_x = groups < MAX_GROUPS ? (uint32_t)groups : MAX_GROUPS, groups_y = (uint32_t)((groups + groups_x - 1) / groups_x);
-    if (elements > UINT32_MAX || groups_y > MAX_GROUPS) return failed(error, error_size, "an image too large for the GPU copy");
+    if (groups * RT_TILE_COPY_GROUP > UINT32_MAX || groups_y > MAX_GROUPS) return failed(error, error_size, "an image too large for the GPU copy");
     const uint64_t tiled = address + x->address_offset; /* the guest address's GPU address (wraps as the shaders' adds do) */
     const uint32_t push[RT_TILE_COPY_PUSH_WORDS] = {
         [RT_TILE_COPY_TILED_LO] = (uint32_t)tiled, [RT_TILE_COPY_TILED_HI] = (uint32_t)(tiled >> 32),
         [RT_TILE_COPY_LINEAR_LO] = (uint32_t)p->linear.address, [RT_TILE_COPY_LINEAR_HI] = (uint32_t)(p->linear.address >> 32),
         [RT_TILE_COPY_TABLE_LO] = (uint32_t)p->table.address, [RT_TILE_COPY_TABLE_HI] = (uint32_t)(p->table.address >> 32),
         [RT_TILE_COPY_WIDTH] = p->width, [RT_TILE_COPY_HEIGHT] = p->height, [RT_TILE_COPY_TILES_PER_ROW] = p->tiles_per_row,
-        [RT_TILE_COPY_TILES_PER_SLICE] = p->tiles_per_slice, [RT_TILE_COPY_ELEMENTS] = (uint32_t)elements, [RT_TILE_COPY_GROUPS_X] = groups_x};
+        [RT_TILE_COPY_TILES_PER_SLICE] = p->tiles_per_slice, [RT_TILE_COPY_TILES] = (uint32_t)groups, [RT_TILE_COPY_GROUPS_X] = groups_x};
     const VkMemoryBarrier before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
                                     .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &before, 0, NULL, 0, NULL);

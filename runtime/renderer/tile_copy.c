@@ -110,44 +110,59 @@ int rt_tile_copy_shader(unsigned dwords, int to_tiled, uint32_t **spirv, size_t 
     const uint32_t workgroup = input_vector(b, SPV_BUILT_IN_WORKGROUP_ID), lane = input_vector(b, SPV_BUILT_IN_LOCAL_INVOCATION_ID);
     const uint32_t uvec3 = spirv_global(m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){b->u32, 3}, 2);
 
-    /* the element: (group y * groups x + group x) * 64 + lane */
+    /* the invocation: (group y * groups x + group x) * 64 + lane, the k-th element in memory order of
+       micro tile `tile` */
     const uint32_t group = op(b, SPV_OP_LOAD, uvec3, &workgroup, 1), local = op(b, SPV_OP_LOAD, uvec3, &lane, 1);
     const uint32_t gx = op(b, SPV_OP_COMPOSITE_EXTRACT, b->u32, (const uint32_t[]){group, 0}, 2);
     const uint32_t gy = op(b, SPV_OP_COMPOSITE_EXTRACT, b->u32, (const uint32_t[]){group, 1}, 2);
     const uint32_t lx = op(b, SPV_OP_COMPOSITE_EXTRACT, b->u32, (const uint32_t[]){local, 0}, 2);
     const uint32_t flat_group = binary(b, SPV_OP_I_ADD, b->u32, binary(b, SPV_OP_I_MUL, b->u32, gy, push_word(b, RT_TILE_COPY_GROUPS_X)), gx);
     const uint32_t i = binary(b, SPV_OP_I_ADD, b->u32, binary(b, SPV_OP_I_MUL, b->u32, flat_group, konst(b, RT_TILE_COPY_GROUP)), lx);
-    const uint32_t inside = binary(b, SPV_OP_U_LESS_THAN, spirv_type_bool(m), i, push_word(b, RT_TILE_COPY_ELEMENTS));
+    const uint32_t bool_type = spirv_type_bool(m);
+    const uint32_t six = konst(b, 6), three = konst(b, 3), seven = konst(b, 7), word_bytes = konst(b, BYTES_PER_WORD);
+    const uint32_t tile = binary(b, SPV_OP_SHIFT_RIGHT_LOGICAL, b->u32, i, six);
+    const uint32_t inside = binary(b, SPV_OP_U_LESS_THAN, bool_type, tile, push_word(b, RT_TILE_COPY_TILES));
     const uint32_t body = spirv_new_id(m), merge = spirv_new_id(m);
     spirv_emit(m, &b->body, SPV_OP_SELECTION_MERGE, (const uint32_t[]){merge, SPV_SELECTION_CONTROL_NONE}, 2);
     spirv_emit(m, &b->body, SPV_OP_BRANCH_CONDITIONAL, (const uint32_t[]){inside, body, merge}, 3);
     spirv_emit(m, &b->body, SPV_OP_LABEL, &body, 1);
 
-    /* its row, column, slice and row in the slice; its micro tile and place there */
+    /* the micro tile's slice and place in it; the element's offset in the tile and texel place */
+    const uint32_t per_slice = push_word(b, RT_TILE_COPY_TILES_PER_SLICE), per_row = push_word(b, RT_TILE_COPY_TILES_PER_ROW);
+    const uint32_t slice = binary(b, SPV_OP_U_DIV, b->u32, tile, per_slice), in_slice = binary(b, SPV_OP_U_MOD, b->u32, tile, per_slice);
+    const uint32_t tile_y = binary(b, SPV_OP_U_DIV, b->u32, in_slice, per_row), tile_x = binary(b, SPV_OP_U_MOD, b->u32, in_slice, per_row);
+    const uint32_t k = binary(b, SPV_OP_BITWISE_AND, b->u32, i, konst(b, 63));
+    const uint32_t table = push_address(b, RT_TILE_COPY_TABLE_LO);
+    const uint32_t in_tile = load_word(b, offset_address(b, table, binary(b, SPV_OP_I_MUL, b->u32, k, word_bytes)));
+    const uint32_t place_entry = binary(b, SPV_OP_I_ADD, b->u32, k, konst(b, RT_TILE_COPY_PLACES));
+    const uint32_t place = load_word(b, offset_address(b, table, binary(b, SPV_OP_I_MUL, b->u32, place_entry, word_bytes)));
+    const uint32_t x = binary(b, SPV_OP_I_ADD, b->u32, binary(b, SPV_OP_SHIFT_LEFT_LOGICAL, b->u32, tile_x, three),
+                              binary(b, SPV_OP_BITWISE_AND, b->u32, place, seven));
+    const uint32_t y = binary(b, SPV_OP_I_ADD, b->u32, binary(b, SPV_OP_SHIFT_LEFT_LOGICAL, b->u32, tile_y, three),
+                              binary(b, SPV_OP_SHIFT_RIGHT_LOGICAL, b->u32, place, three));
     const uint32_t width = push_word(b, RT_TILE_COPY_WIDTH), height = push_word(b, RT_TILE_COPY_HEIGHT);
-    const uint32_t row = binary(b, SPV_OP_U_DIV, b->u32, i, width), x = binary(b, SPV_OP_U_MOD, b->u32, i, width);
-    const uint32_t slice = binary(b, SPV_OP_U_DIV, b->u32, row, height), y = binary(b, SPV_OP_U_MOD, b->u32, row, height);
-    const uint32_t three = konst(b, 3), seven = konst(b, 7);
-    const uint32_t tile_row = binary(b, SPV_OP_I_MUL, b->u32, binary(b, SPV_OP_SHIFT_RIGHT_LOGICAL, b->u32, y, three), push_word(b, RT_TILE_COPY_TILES_PER_ROW));
-    const uint32_t tile = binary(b, SPV_OP_I_ADD, b->u32,
-                                 binary(b, SPV_OP_I_ADD, b->u32, binary(b, SPV_OP_I_MUL, b->u32, slice, push_word(b, RT_TILE_COPY_TILES_PER_SLICE)), tile_row),
-                                 binary(b, SPV_OP_SHIFT_RIGHT_LOGICAL, b->u32, x, three));
-    const uint32_t place = binary(b, SPV_OP_I_ADD, b->u32,
-                                  binary(b, SPV_OP_SHIFT_LEFT_LOGICAL, b->u32, binary(b, SPV_OP_BITWISE_AND, b->u32, y, seven), three),
-                                  binary(b, SPV_OP_BITWISE_AND, b->u32, x, seven));
+    const uint32_t in_image = op(b, SPV_OP_LOGICAL_AND, bool_type, (const uint32_t[]){binary(b, SPV_OP_U_LESS_THAN, bool_type, x, width),
+                                                                                       binary(b, SPV_OP_U_LESS_THAN, bool_type, y, height)}, 2);
+    const uint32_t copy = spirv_new_id(m), copied = spirv_new_id(m);
+    spirv_emit(m, &b->body, SPV_OP_SELECTION_MERGE, (const uint32_t[]){copied, SPV_SELECTION_CONTROL_NONE}, 2);
+    spirv_emit(m, &b->body, SPV_OP_BRANCH_CONDITIONAL, (const uint32_t[]){in_image, copy, copied}, 3);
+    spirv_emit(m, &b->body, SPV_OP_LABEL, &copy, 1);
 
-    /* the table's two offsets, and the element's two addresses */
-    const uint32_t table = push_address(b, RT_TILE_COPY_TABLE_LO), word_bytes = konst(b, BYTES_PER_WORD);
-    const uint32_t tile_entry = binary(b, SPV_OP_I_ADD, b->u32, tile, konst(b, 64));
+    /* the element's two addresses: the tile's first element plus its offset there; (slice, y, x) in the rows */
+    const uint32_t tile_entry = binary(b, SPV_OP_I_ADD, b->u32, tile, konst(b, RT_TILE_COPY_TILE_BASES));
     const uint32_t base = load_word(b, offset_address(b, table, binary(b, SPV_OP_I_MUL, b->u32, tile_entry, word_bytes)));
-    const uint32_t spread = load_word(b, offset_address(b, table, binary(b, SPV_OP_I_MUL, b->u32, place, word_bytes)));
-    const uint32_t tiled = offset_address(b, push_address(b, RT_TILE_COPY_TILED_LO), binary(b, SPV_OP_I_ADD, b->u32, base, spread));
-    const uint32_t linear = offset_address(b, push_address(b, RT_TILE_COPY_LINEAR_LO), binary(b, SPV_OP_I_MUL, b->u32, i, konst(b, dwords * BYTES_PER_WORD)));
-    for (unsigned k = 0; k < dwords; k++) {
-        const uint32_t from = offset_address(b, to_tiled ? linear : tiled, konst(b, k * BYTES_PER_WORD));
-        const uint32_t to = offset_address(b, to_tiled ? tiled : linear, konst(b, k * BYTES_PER_WORD));
+    const uint32_t tiled = offset_address(b, push_address(b, RT_TILE_COPY_TILED_LO), binary(b, SPV_OP_I_ADD, b->u32, base, in_tile));
+    const uint32_t row = binary(b, SPV_OP_I_ADD, b->u32, binary(b, SPV_OP_I_MUL, b->u32, slice, height), y);
+    const uint32_t element = binary(b, SPV_OP_I_ADD, b->u32, binary(b, SPV_OP_I_MUL, b->u32, row, width), x);
+    const uint32_t linear = offset_address(b, push_address(b, RT_TILE_COPY_LINEAR_LO),
+                                           binary(b, SPV_OP_I_MUL, b->u32, element, konst(b, dwords * BYTES_PER_WORD)));
+    for (unsigned w = 0; w < dwords; w++) {
+        const uint32_t from = offset_address(b, to_tiled ? linear : tiled, konst(b, w * BYTES_PER_WORD));
+        const uint32_t to = offset_address(b, to_tiled ? tiled : linear, konst(b, w * BYTES_PER_WORD));
         store_word(b, to, load_word(b, from));
     }
+    spirv_emit(m, &b->body, SPV_OP_BRANCH, &copied, 1);
+    spirv_emit(m, &b->body, SPV_OP_LABEL, &copied, 1);
     spirv_emit(m, &b->body, SPV_OP_BRANCH, &merge, 1);
     spirv_emit(m, &b->body, SPV_OP_LABEL, &merge, 1);
     spirv_emit(m, &b->body, SPV_OP_RETURN, NULL, 0);
