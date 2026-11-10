@@ -136,7 +136,7 @@ target_include_directories(pbtiling PUBLIC runtime/include)
 add_executable(test_tiling test/test_tiling.c)
 target_link_libraries(test_tiling PRIVATE pbtiling)
 add_test(NAME tiling COMMAND test_tiling)
-add_library(pbgcn_spirv STATIC runtime/renderer/spirv.c runtime/renderer/gcn_spirv.c runtime/renderer/rect_list.c)
+add_library(pbgcn_spirv STATIC runtime/renderer/spirv.c runtime/renderer/gcn_spirv.c runtime/renderer/rect_list.c runtime/renderer/tile_copy.c)
 target_include_directories(pbgcn_spirv PUBLIC runtime/include)
 target_link_libraries(pbgcn_spirv PUBLIC pbgcn_decode)
 add_executable(test_gcn_spirv test/test_gcn_spirv.c)
@@ -177,6 +177,7 @@ add_test(NAME validate_functions COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_
 add_test(NAME check_agnostic COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_agnostic.py)
 add_test(NAME float_flags COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_float_flags.py ${CMAKE_BINARY_DIR})
 add_test(NAME progress_readme COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/progress.py --check)
+add_test(NAME source_files COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/source_files.py --check)
 
 # Compiled-SDK wire validation over the loader-owned process parameters.
 add_executable(test_compiled_sdk test/test_compiled_sdk.c
@@ -191,6 +192,22 @@ add_executable(test_direct_memory_bounds test/test_direct_memory_bounds.c
 target_include_directories(test_direct_memory_bounds PRIVATE runtime/include)
 add_test(NAME direct_memory_bounds COMMAND test_direct_memory_bounds)
 set_tests_properties(direct_memory_bounds PROPERTIES TIMEOUT 20)
+
+# The table is immutable in the original image. This unit uses owned values so
+# the last valid entry and a one-past access are independently observable.
+add_executable(test_present_encoding_units game/render/tests/test_present_encoding_units.cpp
+               game/render/present_encoding_units.cpp)
+target_include_directories(test_present_encoding_units PRIVATE runtime/include)
+target_compile_options(test_present_encoding_units PRIVATE
+                       -ffp-contract=off -fno-fast-math)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(test_present_encoding_units PRIVATE
+                           -fsanitize=bounds -fsanitize-undefined-trap-on-error)
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(test_present_encoding_units PRIVATE
+                           -fsanitize=bounds -fsanitize-trap=bounds)
+endif()
+add_test(NAME present_encoding_units COMMAND test_present_encoding_units)
 # Owned per-thread module blocks and the actual TLS registry entry.
 find_package(Threads REQUIRED)
 add_executable(test_module_tls test/test_module_tls.c runtime/syslib/kernel_tls.c
@@ -209,3 +226,11 @@ add_executable(test_videoout_transform test/test_videoout_transform.c
     runtime/syslib/video_out_transform_initialize.c runtime/syslib/video_out_transform_pack.c)
 target_include_directories(test_videoout_transform PRIVATE runtime/include)
 add_test(NAME videoout_transform COMMAND test_videoout_transform)
+
+
+# Full-width module arguments and proven early invalid-ID statuses.
+add_executable(test_sysmodule_ids test/test_sysmodule_ids.c
+               runtime/syslib/table.c runtime/syslib/kernel_sysmodule.c)
+target_include_directories(test_sysmodule_ids PRIVATE runtime/include)
+add_test(NAME sysmodule_ids COMMAND test_sysmodule_ids)
+set_tests_properties(sysmodule_ids PROPERTIES TIMEOUT 10)

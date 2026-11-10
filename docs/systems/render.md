@@ -71,6 +71,12 @@ arguments. The first of the engine's own packet writers are mapped, all by [@evi
 - **Present records.** `render_present_record_consume` (`0x02ab5a70`) turns a pending present
   record into commands: it classifies the record, clamps its range, copies its payload and
   writes the final fields ([#286](https://github.com/Yharnam-Hunters/Paleblood/pull/286)).
+- **Building present records.** `render_build_present_source_record` (`0x0256e1d0`) builds the
+  record for a present, by mode, keeping partial output, unsigned divisions and the packed
+  auxiliary requirements as the original does; `render_choose_record_constructor_selector`
+  (`0x02ab7a20`), `render_combine_record_parameters` (`0x02ab7ab0`) and
+  `render_reduce_record_parameter` (`0x02ab7e40`, a four-entry scale table, zero past its end)
+  pick and combine its constructor choices ([#473](https://github.com/Yharnam-Hunters/Paleblood/pull/473), from #268; edge-verified on synthetic cases).
 - **A record test.** `render_record_auxiliary_predicate` (`0x02abb4f0`) answers yes or no for a
   record's selector: always yes for two selector values, a flag bit for the next two, no otherwise
   ([#293](https://github.com/Yharnam-Hunters/Paleblood/pull/293), from #266).
@@ -98,7 +104,17 @@ arguments. The first of the engine's own packet writers are mapped, all by [@evi
   - **sizes:** `render_calculate_second_auxiliary` (`0x0149e570`) works out the size and alignment
     of a second auxiliary area [#323](https://github.com/Yharnam-Hunters/Paleblood/pull/323), from #228;
   - **fields:** seven setters (`0x01486520`–`0x01486800`) replace one field each, keeping the
-    rest of the word [#324](https://github.com/Yharnam-Hunters/Paleblood/pull/324), from #236.
+    rest of the word [#324](https://github.com/Yharnam-Hunters/Paleblood/pull/324), from #236;
+  - **construction:** `render_record_constructor` (`0x01485f90`) clears a record's 44-byte prefix
+    and fills in the record and its auxiliary outputs, returning a packed 64-bit result;
+    `render_record_constructor_pack_pair` (`0x01471600`) packs a selector pair into an encoding,
+    and two optional steps (`0x0149e2d0`, `0x0149e400`) align paired components and work out the
+    geometry, writing their outputs even when a helper reports an error [#478](https://github.com/Yharnam-Hunters/Paleblood/pull/478), from #246 (edge-verified on synthetic cases);
+  - **normalisation:** `render_record_normalize_mode2`, `…mode3` and `…mode4` (`0x025710a0`,
+    `0x025711d0`, `0x02571340`) bring a record's input into one normalised form, copying the words
+    they do not interpret unchanged and keeping each helper's writes and failure codes in order, and
+    `render_record_translate_selector` (`0x02ab7310`) maps a record selector to one output word,
+    answering status 12 for a selector it does not support [#249](https://github.com/Yharnam-Hunters/Paleblood/pull/249) (edge-verified on synthetic cases).
 
 ### Setting GPU state and drawing
 
@@ -202,6 +218,7 @@ frames. #279, #286 and #287 were brought up to date with `main` from #209, #259 
 | `0x01471270` | 57 | `render_command_buffer_init` | edge-verified | Initialize command pointers and callback, rounding capacity down to complete DWORDs while preserving auxiliary fields. |
 | `0x014712d0` | 51 | `render_compose_record_encoding_fields` | edge-verified | Pack one byte and five masked fields into an encoding DWORD; no memory access. |
 | `0x01471310` | 544 | `render_pack_record_mapping_word` | edge-verified | Pack numeric mapping fields with priority masks and full-width mode handling; return a zero-extended DWORD. |
+| `0x01471600` | 190 | `render_record_constructor_pack_pair` | edge-verified | Pack a full DWORD selector pair into an encoding; the first selector controls flag handling. |
 | `0x01471730` | 21 | `render_record_encoding_metadata` | edge-verified | Bounded first-byte metadata lookup; preserve original table entries and zero fallback. |
 | `0x01471770` | 27 | `render_record_encoding_byte_flags` | edge-verified | Map encoding byte 4 to 3, byte 2 to 1, and all other byte values to zero. |
 | `0x014717a0` | 505 | `render_record_encoding_components` | edge-verified | Select ordered packed component arrangement; optional output only on success and Boolean AL contract. |
@@ -233,6 +250,7 @@ frames. #279, #286 and #287 were brought up to date with `main` from #209, #259 
 | `0x01485220` | 81 | `render_set_pa_cl_vte_cntl` | edge-verified | Expand the toggled input byte into overlapping register fields. The original result is the shifted byte, independent of the preserved old bits or the final stored word. |
 | `0x01485390` | 24 | `render_set_record_register_range` | edge-verified | Pack one bit from the first input and three from the last, preserving all other bits. |
 | `0x014853f0` | 16 | `render_set_record_register_enabled` | edge-verified | Preserve the original byte-wide input: doubling it can contribute bits beyond bit one. |
+| `0x01485f90` | 1410 | `render_record_constructor` | edge-verified | Clear the 44-byte record prefix and publish partial record and auxiliary outputs; return the packed 64-bit result. |
 | `0x01486520` | 31 | `render_record_set_word_0c_fields` | edge-verified | Store two masked fields; return masked old word. No constructor add/subtract. |
 | `0x01486540` | 305 | `render_record_set_encoding` | edge-verified | Pack accepted encoding into record DWORD10 preserving other bits; invalid input has undefined native extractor locals. |
 | `0x014866e0` | 33 | `render_record_set_word_04_repeated_field` | edge-verified | Duplicate supplied low 11 bits; return preserved old word. |
@@ -249,6 +267,8 @@ frames. #279, #286 and #287 were brought up to date with `main` from #209, #259 
 | `0x0149c850` | 672 | `render_record_apply_parameter_tuple` | edge-verified | Select one output code from normalization tuple; ordered overrides and rejection preserve output. |
 | `0x0149cb30` | 204 | `render_record_apply_mapping` | edge-verified | Map derived normalization code to original layout-helper tuple; unsupported code preserves output. |
 | `0x0149cc60` | 350 | `render_convert_record_descriptor_classification` | edge-verified | Convert a tile-mode table index for the requested array mode; preserve output on error and bypass already matching modes. |
+| `0x0149e2d0` | 295 | `render_record_constructor_optional_first` | edge-verified | Align paired components; retain the pre-increment product and 55-bit quantity, then publish optional outputs in order. |
+| `0x0149e400` | 358 | `render_record_constructor_optional_second` | edge-verified | Calculate geometry and publish zeroed or partial auxiliary outputs even when a helper reports an error. |
 | `0x0149e570` | 279 | `render_calculate_second_auxiliary` | edge-verified | Calculate the second auxiliary layout through two ordered unit admissions and wrapped alignment. Publish its four optional size and alignment outputs in 8/4/4/4-byte order. |
 | `0x0149e900` | 16 | `render_record_tuple_parameter_supported` | edge-verified | Nonzero power-of-two test with Boolean AL interface. |
 | `0x0149e960` | 129 | `render_record_tuple_transform_classification` | edge-verified | Transform admitted classifications after wrapping 32-bit scaling and unsigned thresholds. |
@@ -258,6 +278,10 @@ frames. #279, #286 and #287 were brought up to date with `main` from #209, #259 
 | `0x014a2c40` | 595 | `render_calculate_record_descriptor_level_offset` | edge-verified | Accumulate levels inclusively using partial helper totals even after errors; publish the two QWORD outputs in order. |
 | `0x02377bd0` | 399 | `render_frame_update_02377bd0` | verified | per-frame: ages a list of ref-counted objects, updates RendMan-side child, steps another child by 1/30 s (Uncap: measured frame time) |
 | `0x0247eb80` | 16 | `render_read_present_pool_counter` | edge-verified | full-QWORD locked read/writeback retry, XOR before each attempt; caller adds one. Real AMD64 write cycles retained; non-AMD64 bridge unresolved Synthetic edges pass; no recordings. |
+| `0x0256e1d0` | 6280 | `render_build_present_source_record` | edge-verified | Build a mode-specific presentation record, preserving partial output, unsigned division and packed auxiliary requirements. Constructor selectors are 32-bit values even in stack slots. |
+| `0x025710a0` | 301 | `render_record_normalize_mode2` | edge-verified | Normalize mode-2 input; preserve ordered 36-byte copy, supplied parameter bypass and helper error/status ordering. |
+| `0x025711d0` | 361 | `render_record_normalize_mode3` | edge-verified | Normalize mode 3 input through an ordered 48-byte copy; cache mapping across conditional parameter helpers and preserve statuses and padding. |
+| `0x02571340` | 303 | `render_record_normalize_mode4` | edge-verified | Normalize mode-4 input; preserve ordered 40-byte copy, optional parameter path and status/reload ordering. |
 | `0x02571c60` | 47 | `render_clear_swap_chain_curve` | edge-verified | Release the swap-chain curve resource through its owner; clear only the resource after the callback. |
 | `0x02572290` | 47 | `render_clear_swap_chain_cached_record` | edge-verified | Release the swap-chain cached-record resource through its owner; clear only the resource after the callback. |
 | `0x025b2fb0` | 768 | `render_swap_chain_present` | verified | GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0) |
@@ -265,8 +289,12 @@ frames. #279, #286 and #287 were brought up to date with `main` from #209, #259 
 | `0x02aafb30` | 509 | `render_command_submit_present` | edge-verified | Prepare and delegate a present submission, preserving capacity-failure returns and resetting begin markers to the live cursor. |
 | `0x02ab0ce0` | 326 | `render_command_submit_batch` | edge-verified | Emit counter waits and submit nonempty regions with the packed video/index handle, or delegate the snapshot when no optional context exists. |
 | `0x02ab0e30` | 213 | `render_command_submit_snapshot` | edge-verified | Initialize the auxiliary command buffer and submit nonempty regions using only the video handle. |
-| `0x02ab5a70` | 1235 | `render_present_record_consume` | edge-verified | Track resource range or emit record commands; preserve cached tokens, index wrap and final state resets. Static reconstruction Synthetic GCC/Clang edges pass; no recordings. |
+| `0x02ab5a70` | 1235 | `render_present_record_consume` | edge-verified | Track a resource range or emit record commands; preserve cached tokens, index wrap and final state resets. |
 | `0x02ab6810` | 1173 | `render_present_last_record_consume` | edge-verified | Consume the final record range, or update its tracking bank when commands are not admitted. |
+| `0x02ab7310` | 629 | `render_record_translate_selector` | edge-verified | Map supported selectors to one output DWORD; unsupported selectors return status 12 and zero the output. |
+| `0x02ab7a20` | 66 | `render_choose_record_constructor_selector` | edge-verified | Choose a constructor selector from supported input values; only the low flag byte affects the extended case. |
+| `0x02ab7ab0` | 124 | `render_combine_record_parameters` | edge-verified | Combine constructor choices, using only the low flag byte and bounding the four-entry original table before access. |
+| `0x02ab7e40` | 22 | `render_reduce_record_parameter` | edge-verified | Return the original four-entry scale table value, or zero for an out-of-range unsigned index. |
 | `0x02ab9850` | 374 | `render_flush_shader_preparation` | edge-verified | Flush the pending barrier/range before the event. Mode 0 keeps the range fields, and a suppressed state returns without touching either group of fields. |
 | `0x02abaf10` | 78 | `render_record_derive_parameter` | edge-verified | Derive numeric normalization code; flag priority and mode-dependent base. |
 | `0x02abb4f0` | 31 | `render_record_auxiliary_predicate` | edge-verified | Return the auxiliary-processing predicate: selectors 0x13/0x14 enable it, 0x15/0x16 use flag bit 6, and all other selectors disable it. |

@@ -21,7 +21,9 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define TESSELLATION_FACTOR_RING_BASE 0xfe00000000ull
 
@@ -251,7 +253,9 @@ RT_SYSLIB("libSceGnmDriver", sceGnmMapComputeQueue, map_compute_queue);
      DISPATCH_DIRECT         skipped: compute shaders do not run, so their output is never written;
      RELEASE_MEM             performed: the "work done" value goes to its memory address, which is
                              what the CPU waits on.
-   Then the read pointer moves to the write offset, so the ring never fills. Any other packet, or a
+   Each indirect buffer is then handed to the renderer, which drops its recorded calls without
+   running them (rt_renderer_skip, runtime/renderer.h). Then the read pointer moves to the write
+   offset, so the ring never fills. Any other packet, or a
    completion this stand-in does not perform, stops by name. */
 #define PM4_TYPE_SHIFT 30
 #define PM4_TYPE3 3u
@@ -322,10 +326,56 @@ typedef struct {
     uint32_t data_low, data_high;
 } release_mem_packet;
 
+/* The GPU's steps after a submitted command buffer's work (runtime/renderer.h): while a submission's
+   packets are read, its "work done" writes and memory waits are collected here instead of performed,
+   and the renderer performs them once the buffer's drawing calls have run. NULL (compute rings, and
+   any other caller) performs them at once. */
+typedef struct {
+    rt_gpu_step *steps;
+    size_t count, capacity;
+} step_list;
+static _Thread_local step_list *collecting;
+static _Thread_local uint32_t packet_offset; /* the top-level packet being read, bytes into its buffer */
+
+static void collect(const char *fn, void (*perform)(const rt_gpu_step *), const uint64_t words[6])
+{
+    step_list *const list = collecting;
+    if (list->count == list->capacity) {
+        const size_t capacity = list->capacity ? list->capacity * 2 : 8;
+        rt_gpu_step *const grown = realloc(list->steps, capacity * sizeof *grown);
+        if (!grown) rt_fatal(fn, "no memory for the GPU's steps");
+        list->steps = grown, list->capacity = capacity;
+    }
+    rt_gpu_step *const step = &list->steps[list->count++];
+    step->perform = perform, step->function = fn, step->offset = packet_offset;
+    memcpy(step->words, words, sizeof step->words);
+}
+
+static void perform_completion(const char *fn, uint32_t data_size, uint32_t address_low, uint32_t address_high, uint32_t data_low,
+                               uint32_t data_high);
+
+static void completion_step(const rt_gpu_step *step)
+{
+    const uint64_t *w = step->words;
+    perform_completion(step->function, (uint32_t)w[0], (uint32_t)w[1], (uint32_t)w[2], (uint32_t)w[3], (uint32_t)w[4]);
+}
+
 /* A "work done" write: the packet's own 32- or 64-bit value to a memory address (the address's
-   high bits are the low 16 of address_high). Other kinds of value (a GPU clock, for one) stop. */
+   high bits are the low 16 of address_high), after the work before it (collected while a
+   submission is read). Other kinds of value (a GPU clock, for one) stop. */
 static void write_completion(const char *fn, uint32_t data_size, uint32_t address_low, uint32_t address_high,
                              uint32_t data_low, uint32_t data_high)
+{
+    if (collecting) {
+        const uint64_t words[6] = {data_size, address_low, address_high, data_low, data_high, 0};
+        collect(fn, completion_step, words);
+        return;
+    }
+    perform_completion(fn, data_size, address_low, address_high, data_low, data_high);
+}
+
+static void perform_completion(const char *fn, uint32_t data_size, uint32_t address_low, uint32_t address_high, uint32_t data_low,
+                               uint32_t data_high)
 {
     if (data_size == RELEASE_MEM_DATA_NONE) return;
     void *address = (void *)(uintptr_t)(address_low | (uint64_t)(address_high & RELEASE_MEM_ADDRESS_HIGH_MASK) << 32);
@@ -347,20 +397,48 @@ static void release_memory(const char *fn, const release_mem_packet *packet)
 }
 
 /* WAIT_REG_MEM makes the GPU wait until a value in memory compares as asked with a reference
-   (under a mask). Completing work at once leaves no later moment for the CPU to satisfy it, so the
-   stand-in checks that it already holds; one that does not, or one on a register, stops by name. */
+   (under a mask). It is a step after the work before it (collected while a submission is read), and
+   the renderer's thread waits for it, polling every 100 microseconds; one that does not hold within
+   two seconds (the CPU it waits for may be waiting on this GPU work), a wait performed at once
+   that does not already hold, and one on a register stop by name. */
 typedef struct {
     uint32_t control; /* compare function in bits 0-2, memory (not a register) in bit 4 */
     uint32_t address_low, address_high;
     uint32_t reference, mask, poll_interval;
 } wait_reg_mem_packet;
 
+static int wait_holds(const char *fn, const wait_reg_mem_packet *packet);
+
+static void wait_step(const rt_gpu_step *step)
+{
+    const wait_reg_mem_packet packet = {(uint32_t)step->words[0], (uint32_t)step->words[1], (uint32_t)step->words[2],
+                                        (uint32_t)step->words[3], (uint32_t)step->words[4], (uint32_t)step->words[5]};
+    enum { POLL_NANOSECONDS = 100000, POLLS = 20000 }; /* 100 us each: two seconds */
+    const struct timespec poll = {0, POLL_NANOSECONDS};
+    for (int i = 0; !wait_holds(step->function, &packet); i++) {
+        if (i == POLLS) rt_fatal(step->function, "a GPU wait on memory that did not come to hold what it waits for");
+        nanosleep(&poll, NULL);
+    }
+}
+
 static void check_wait(const char *fn, const wait_reg_mem_packet *packet)
 {
     if (!(packet->control & WAIT_ON_MEMORY)) rt_fatal(fn, "a GPU wait on a register: the stand-in has none");
+    if (!(packet->address_low | (packet->address_high & RELEASE_MEM_ADDRESS_HIGH_MASK))) rt_fatal(fn, "a GPU wait without an address");
+    if (collecting) {
+        const uint64_t words[6] = {packet->control, packet->address_low, packet->address_high, packet->reference, packet->mask,
+                                   packet->poll_interval};
+        collect(fn, wait_step, words);
+        return;
+    }
+    if (!wait_holds(fn, packet)) rt_fatal(fn, "a GPU wait on memory that does not yet hold what it waits for");
+}
+
+/* Whether a WAIT_REG_MEM's compare holds now. */
+static int wait_holds(const char *fn, const wait_reg_mem_packet *packet)
+{
     const volatile uint32_t *address = (const volatile uint32_t *)(uintptr_t)(packet->address_low |
                                        (uint64_t)(packet->address_high & RELEASE_MEM_ADDRESS_HIGH_MASK) << 32);
-    if (!address) rt_fatal(fn, "a GPU wait without an address");
     const uint32_t value = __atomic_load_n(address, __ATOMIC_ACQUIRE) & packet->mask, reference = packet->reference;
     int holds;
     switch (packet->control & WAIT_FUNCTION_MASK) {
@@ -373,7 +451,7 @@ static void check_wait(const char *fn, const wait_reg_mem_packet *packet)
     case 6: holds = value > reference; break;
     default: rt_fatal(fn, "a GPU wait with a compare function the format does not define");
     }
-    if (!holds) rt_fatal(fn, "a GPU wait on memory that does not yet hold what it waits for");
+    return holds;
 }
 
 /* The one DMA_DATA form the stand-in knows: a read from memory into CP_DMA_READ_TAGS, which only
@@ -399,7 +477,9 @@ static _Noreturn void unknown_packet(const char *fn, uint32_t opcode, uint32_t l
 
 static void complete_packets(const char *fn, const uint32_t *packets, uint32_t dwords, int depth, int is_ring);
 
-static void follow_indirect_buffer(const char *fn, const uint32_t *packet, int depth)
+/* Completes an indirect buffer's packets. One a compute ring points to is also handed to the
+   renderer, which drops its recorded calls (rt_renderer_skip): compute queues do not run there yet. */
+static void follow_indirect_buffer(const char *fn, const uint32_t *packet, int depth, int from_ring)
 {
     if (depth == MAX_INDIRECT_BUFFER_DEPTH) rt_fatal(fn, "indirect buffers nested deeper than the stand-in follows");
     const uint32_t *buffer = (const uint32_t *)(uintptr_t)(packet[1] |
@@ -407,6 +487,7 @@ static void follow_indirect_buffer(const char *fn, const uint32_t *packet, int d
     const uint32_t dwords = packet[3] & INDIRECT_BUFFER_SIZE_MASK;
     if (!buffer && dwords) rt_fatal(fn, "an INDIRECT_BUFFER without an address");
     complete_packets(fn, buffer, dwords, depth + 1, 0);
+    if (from_ring) rt_renderer_skip(fn, buffer, dwords * (uint32_t)sizeof(uint32_t));
 }
 
 /* Acts on each packet in turn. A compute ring holds only INDIRECT_BUFFER packets; a command buffer
@@ -420,8 +501,9 @@ static void complete_packets(const char *fn, const uint32_t *packets, uint32_t d
         const uint32_t length = ((header >> PM4_COUNT_SHIFT) & PM4_COUNT_MASK) + PM4_HEADER_AND_COUNT_BIAS;
         if (length > dwords - at) rt_fatal(fn, "a packet running past the end of its buffer");
         const uint32_t *packet = packets + at;
+        if (!depth) packet_offset = at * (uint32_t)sizeof(uint32_t); /* a step inside an indirect buffer comes at its packet */
         if (opcode == PM4_INDIRECT_BUFFER && length == INDIRECT_BUFFER_DWORDS) {
-            follow_indirect_buffer(fn, packet, depth);
+            follow_indirect_buffer(fn, packet, depth, is_ring);
         } else if (is_ring) {
             rt_fatal(fn, "a compute ring packet other than INDIRECT_BUFFER");
         } else if (opcode == PM4_RELEASE_MEM && length == RELEASE_MEM_DWORDS) {
@@ -480,11 +562,16 @@ RT_SYSLIB("libSceGnmDriver", sceGnmDingDong, ding_dong);
    library's wrapper at 0x01489a10), passes the constant arrays always, with an entry filled only
    when that draw buffer has one: an entry of no address and 0 bytes is no constant buffer.
 
-   TEMPORARY STAND-IN, as for sceGnmDingDong above: the work is completed at once on the calling
-   thread. The first boot to reach it (4 November 2026) found, besides the compute kinds, these
-   (AMD's public PM4 format):
-     EVENT_WRITE_EOP              performed: the end-of-work value goes to its memory address;
-     WAIT_REG_MEM                 checked: the memory must already hold what the GPU waits for;
+   TEMPORARY STAND-IN, as for sceGnmDingDong above: the packets are read on the calling thread when
+   the buffer is submitted, and the call returns at once. What the guest can observe of the GPU's
+   progress becomes a step after the buffer's drawing calls (rt_gpu_step, runtime/renderer.h), which
+   the renderer performs on its own thread once those calls have run, in submission order, as the
+   PS4's GPU works beside the CPU; with the display off the steps are performed at once. The first
+   boot to reach it (4 November 2026) found, besides the compute kinds, these (AMD's public PM4
+   format):
+     EVENT_WRITE_EOP              a step: the end-of-work value goes to its memory address;
+     WAIT_REG_MEM                 a step: the renderer's thread waits for the memory to hold what
+                                  the GPU waits for (two seconds at most);
      ACQUIRE_MEM, EVENT_WRITE     skipped: cache control and pipeline events, with no GPU caches
                                   (an EVENT_WRITE that also writes memory stops);
      SET_CONTEXT_REG, SET_UCONFIG_REG, NUM_INSTANCES, DRAW_INDEX_AUTO
@@ -498,15 +585,37 @@ RT_SYSLIB("libSceGnmDriver", sceGnmDingDong, ding_dong);
                                   100-byte read). It changes no memory and no state a shader
                                   sees, so it only brings the source into the GPU's cache, and the
                                   stand-in has none. Any other DMA_DATA stops.
-   The packets themselves draw nothing. Each buffer then goes to the renderer (runtime/renderer.h),
-   which runs the drawing calls recorded for it when the display is on. A constant command buffer
+   The packets themselves draw nothing. Each buffer then goes to the renderer (runtime/renderer.h)
+   with its steps, each at its packet's offset: it runs the drawing calls recorded before a step,
+   then the step, then the calls after it, so a wait holds before the draws after it read memory. A constant command buffer
    that holds anything, and any other packet, stops by name. */
 #define MAX_SUBMITTED_BUFFERS 64
 
-static int32_t submit_command_buffers(uint32_t count, void **draw_buffers, const uint32_t *draw_bytes,
-                                      void **constant_buffers, const uint32_t *constant_bytes)
+/* A flip after a submission's last buffer: video out shows the buffer once the work is done. */
+typedef struct {
+    int32_t handle, buffer, mode;
+    int64_t argument;
+} flip_request;
+
+static void flip_step(const rt_gpu_step *step)
 {
-    static const char fn[] = "sceGnmSubmitCommandBuffers";
+    rt_video_out_flip(step->function, (int32_t)step->words[0], (int32_t)step->words[1], (int32_t)step->words[2],
+                      (int64_t)step->words[3]);
+}
+
+static void collect_flip(const char *fn, step_list *steps, const flip_request *flip)
+{
+    const uint64_t words[6] = {(uint32_t)flip->handle, (uint32_t)flip->buffer, (uint32_t)flip->mode, (uint64_t)flip->argument, 0, 0};
+    step_list *const saved = collecting;
+    collecting = steps;
+    packet_offset = RT_GPU_STEP_AFTER_ALL; /* after every call of the last buffer */
+    collect(fn, flip_step, words);
+    collecting = saved;
+}
+
+static int32_t submit(const char *fn, uint32_t count, void **draw_buffers, const uint32_t *draw_bytes, void **constant_buffers,
+                      const uint32_t *constant_bytes, const flip_request *flip)
+{
     if (!count || count > MAX_SUBMITTED_BUFFERS || !draw_buffers || !draw_bytes)
         rt_fatal(fn, "no command buffers, or more than the stand-in takes: the answer is not established");
     if (!constant_buffers != !constant_bytes) rt_fatal(fn, "constant command buffers without their sizes, or sizes without buffers");
@@ -516,10 +625,21 @@ static int32_t submit_command_buffers(uint32_t count, void **draw_buffers, const
     }
     for (uint32_t k = 0; k < count; k++) {
         if (!draw_buffers[k] && draw_bytes[k]) rt_fatal(fn, "a command buffer without an address");
+        step_list steps = {0};
+        collecting = &steps; /* its completion writes and waits come after its work */
         complete_packets(fn, draw_buffers[k], draw_bytes[k] / sizeof(uint32_t), 0, 0);
-        rt_renderer_submit(fn, draw_buffers[k], draw_bytes[k]); /* its recorded drawing calls, when the renderer is on */
+        collecting = NULL;
+        if (flip && k == count - 1) collect_flip(fn, &steps, flip);
+        rt_renderer_submit(fn, draw_buffers[k], draw_bytes[k], steps.steps, steps.count); /* copied: runs beside the title */
+        free(steps.steps);
     }
     return 0;
+}
+
+static int32_t submit_command_buffers(uint32_t count, void **draw_buffers, const uint32_t *draw_bytes,
+                                      void **constant_buffers, const uint32_t *constant_bytes)
+{
+    return submit("sceGnmSubmitCommandBuffers", count, draw_buffers, draw_bytes, constant_buffers, constant_bytes, NULL);
 }
 
 RT_SYSLIB("libSceGnmDriver", sceGnmSubmitCommandBuffers, submit_command_buffers);
@@ -529,19 +649,21 @@ RT_SYSLIB("libSceGnmDriver", sceGnmSubmitCommandBuffers, submit_command_buffers)
    buffers and shows one of the display's buffers once they are done. OpenOrbis' GnmDriver.h only
    names it; the shape comes from the engine's frame end (0x02ab0ee2 and 0x02ab0dff), which passes
    one or two draw command buffers, no constant buffers, and the port, buffer, mode and argument of
-   its frame (the flip loop calling at 0x02ad6ee9), then calls sceGnmSubmitDone. The stand-in completes the buffers at once,
-   as sceGnmSubmitCommandBuffers does, then flips as sceVideoOutSubmitFlip does. */
+   its frame (the flip loop calling at 0x02ad6ee9), then calls sceGnmSubmitDone. The stand-in submits the buffers as
+   sceGnmSubmitCommandBuffers does, with the flip as a step after the last one's work: the flip (as
+   sceVideoOutSubmitFlip does it, with its flip event) happens once the frame is drawn, and the call
+   returns at once. */
 static int32_t submit_and_flip(uint32_t count, void **draw_buffers, const uint32_t *draw_bytes, void **constant_buffers,
                                const uint32_t *constant_bytes, int32_t video_out_handle, int32_t buffer, int32_t mode,
                                int64_t argument)
 {
-    submit_command_buffers(count, draw_buffers, draw_bytes, constant_buffers, constant_bytes);
-    return rt_video_out_flip("sceGnmSubmitAndFlipCommandBuffers", video_out_handle, buffer, mode, argument);
+    const flip_request flip = {video_out_handle, buffer, mode, argument};
+    return submit("sceGnmSubmitAndFlipCommandBuffers", count, draw_buffers, draw_bytes, constant_buffers, constant_bytes, &flip);
 }
 
 /* sceGnmSubmitDone(void): tells the system the frame's submissions are finished, after each
-   submit-and-flip (0x02ab0ee2, 0x02ab0dff), which ignore the answer. The stand-in has already
-   finished all submitted work, so there is nothing left to do; it answers 0. */
+   submit-and-flip (0x02ab0ee2, 0x02ab0dff), which ignore the answer. The submitted work goes on on
+   the renderer's thread and needs nothing more; it answers 0. */
 static int32_t submit_done(void)
 {
     return 0;

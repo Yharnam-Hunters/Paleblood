@@ -181,9 +181,45 @@ static int32_t set_vibration(int32_t handle, const uint8_t *speeds)
     return 0;
 }
 
+/* The motion settings. scePadResetOrientation(handle) (OpenOrbis Pad.h) makes the pad's present
+   attitude the reference the orientation is reported from. scePadSetAngularVelocityDeadbandState
+   (handle, bool) and scePadSetTiltCorrectionState(handle, bool) (Pad.h names them without a
+   signature; shadPS4's pad.cpp declares (int32_t handle, bool enable)) switch the motion sensors'
+   small-rotation deadband and tilt correction on or off. The executable calls each through a
+   wrapper (0x02a9082e, 0x02a90852, 0x02a90882) that passes its open handle, and for the two
+   settings a bool, and counts 0 as success. Motion is not modelled: the orientation is always the
+   identity quaternion and there is no angular velocity, so a reset leaves the reading as it is and
+   neither setting changes it; each call answers 0. A setting other than 0 or 1 stops by name. */
+static int32_t reset_orientation(int32_t handle)
+{
+    check_handle("scePadResetOrientation", handle);
+    return 0;
+}
+
+static void check_setting(const char *fn, int32_t handle, uint32_t enable)
+{
+    check_handle(fn, handle);
+    if (enable > 1) rt_fatal(fn, "a setting other than off (0) or on (1)");
+}
+
+static int32_t set_angular_velocity_deadband_state(int32_t handle, uint32_t enable)
+{
+    check_setting("scePadSetAngularVelocityDeadbandState", handle, enable & 0xff);
+    return 0;
+}
+
+static int32_t set_tilt_correction_state(int32_t handle, uint32_t enable)
+{
+    check_setting("scePadSetTiltCorrectionState", handle, enable & 0xff);
+    return 0;
+}
+
 RT_SYSLIB("libScePad", scePadInit, init);
 RT_SYSLIB("libScePad", scePadOpen, open_pad);
 RT_SYSLIB("libScePad", scePadClose, close_pad);
 RT_SYSLIB("libScePad", scePadReadState, read_state);
 RT_SYSLIB("libScePad", scePadGetControllerInformation, get_controller_information);
 RT_SYSLIB("libScePad", scePadSetVibration, set_vibration);
+RT_SYSLIB("libScePad", scePadResetOrientation, reset_orientation);
+RT_SYSLIB("libScePad", scePadSetAngularVelocityDeadbandState, set_angular_velocity_deadband_state);
+RT_SYSLIB("libScePad", scePadSetTiltCorrectionState, set_tilt_correction_state);

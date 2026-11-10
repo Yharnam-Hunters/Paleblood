@@ -1124,6 +1124,123 @@ static uint32_t unorm8_value(translator *t, uint32_t byte)
     return load(t, t_uint(t), element);
 }
 
+/* The 8- and 16-bit formats a load reads byte by byte (AMD's BUF_DATA_FORMAT numbering, as shadPS4's
+   DataFormat has it): each component's bytes and the format's component count. */
+static const struct {
+    uint32_t data_format, bytes, count;
+} small_formats[] = {{1, 1, 1}, {2, 2, 1}, {3, 1, 2}, {5, 2, 2}, {10, 1, 4}, {12, 2, 4}};
+
+enum { MAX_SMALL_FORMAT_DWORDS = 3 }; /* 8 bytes from an address 2 past a dword boundary */
+
+/* A small format's components (memory[0..3], the missing ones 0) at the byte address base + offset
+   (all 0 when the element is out of range, in_range false): the dwords that hold them are loaded aligned, and each component's bytes taken out of them. uint
+   components are zero-extended, sint ones sign-extended, 8-bit unorm ones v / 255 as a float's bits. */
+static void small_components(translator *t, uint32_t base, uint32_t offset, uint32_t component_bytes, uint32_t count,
+                             uint32_t num_format, uint32_t in_range, uint32_t memory[4])
+{
+    const uint32_t address = value(t, SPV_OP_I_ADD, t_ulong(t), 2, base, widen(t, offset));
+    const uint32_t misalign = value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, value(t, SPV_OP_U_CONVERT, t_uint(t), 1, address), konst(t, 3));
+    const uint32_t aligned = value(t, SPV_OP_I_SUB, t_ulong(t), 2, address, widen(t, misalign));
+    const uint32_t end = value(t, SPV_OP_I_ADD, t_uint(t), 2, misalign, value(t, SPV_OP_I_MUL, t_uint(t), 2, component_bytes, count));
+    uint32_t dword[MAX_SMALL_FORMAT_DWORDS];
+    for (uint32_t d = 0; d < MAX_SMALL_FORMAT_DWORDS; d++) {
+        /* only the dwords the format's bytes reach are read */
+        const uint32_t slot = function_variable(t, t_uint(t), konst(t, 0));
+        const uint32_t needed = begin_if(t, both(t, in_range, value(t, SPV_OP_U_GREATER_THAN, t_bool(t), 2, end, konst(t, d * BYTES_PER_DWORD))));
+        store(t, t->out, slot, load_dword(t, dword_pointer(t, aligned, konst(t, 0), d)));
+        end_if(t, needed);
+        dword[d] = load(t, t_uint(t), slot);
+    }
+    const uint32_t two_bytes = equals(t, component_bytes, konst(t, 2));
+    const uint32_t extend_shift = value(t, SPV_OP_SELECT, t_uint(t), 3, two_bytes, konst(t, 16), konst(t, 24));
+    for (uint32_t m = 0; m < 4; m++) {
+        uint32_t raw = konst(t, 0);
+        for (uint32_t b = 0; b < 2; b++) {
+            const uint32_t at = value(t, SPV_OP_I_ADD, t_uint(t), 2, misalign,
+                                      value(t, SPV_OP_I_ADD, t_uint(t), 2,
+                                            value(t, SPV_OP_I_MUL, t_uint(t), 2, component_bytes, konst(t, m)), konst(t, b)));
+            const uint32_t index = value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, at, konst(t, 2));
+            uint32_t holder = dword[MAX_SMALL_FORMAT_DWORDS - 1];
+            for (uint32_t d = MAX_SMALL_FORMAT_DWORDS - 1; d-- > 0;)
+                holder = value(t, SPV_OP_SELECT, t_uint(t), 3, equals(t, index, konst(t, d)), dword[d], holder);
+            const uint32_t shift = value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2,
+                                         value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, at, konst(t, 3)), konst(t, 3));
+            uint32_t byte = value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, holder, shift),
+                                  konst(t, 0xff));
+            if (b) byte = value(t, SPV_OP_SELECT, t_uint(t), 3, two_bytes, value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, byte, konst(t, 8)),
+                                konst(t, 0));
+            raw = value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, raw, byte);
+        }
+        const uint32_t sign_extended = value(t, SPV_OP_SHIFT_RIGHT_ARITHMETIC, t_uint(t), 2,
+                                             value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, raw, extend_shift), extend_shift);
+        uint32_t v = value(t, SPV_OP_SELECT, t_uint(t), 3, equals(t, num_format, konst(t, NUM_FORMAT_SINT)), sign_extended, raw);
+        v = value(t, SPV_OP_SELECT, t_uint(t), 3, equals(t, num_format, konst(t, NUM_FORMAT_UNORM)),
+                  unorm8_value(t, value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, raw, konst(t, 0xff))), v);
+        memory[m] = value(t, SPV_OP_SELECT, t_uint(t), 3, value(t, SPV_OP_U_LESS_THAN, t_bool(t), 2, konst(t, m), count), v, konst(t, 0));
+    }
+}
+
+/* Buffer range checking: a buffer access outside its descriptor's range reads 0 and writes nothing,
+   lane by lane, as the hardware does (CLRX's GCN memory handling notes, "Range checking"; gem5's
+   GCN3 model of the same). With the descriptor's stride 0, NUM_RECORDS (word 2) counts bytes and an
+   address is out of range when its offset (instruction offset + VGPR offset) is at or past
+   NUM_RECORDS less the SGPR offset; with a stride and an index (IDXEN), when the index is at or past
+   NUM_RECORDS or the offset at or past the stride. A strided access without an index is held to
+   NUM_RECORDS records of the stride (the buffer's size as shadPS4 sizes it, GetBufferSize). Each
+   dword is checked at its own byte, so a multi-dword access may be partly in range. */
+enum { VSHARP_RECORDS_WORD = 2 };
+
+typedef struct {
+    unsigned indexed;     /* IDXEN */
+    uint32_t stride_zero; /* bool */
+    uint32_t stride, records, soffset, index_in_range; /* ulong, ulong, ulong, bool */
+    uint32_t offset;      /* the instruction offset + VGPR offset (uint) */
+} buffer_range;
+
+static uint32_t ulong_constant(translator *t, uint64_t v)
+{
+    return spirv_global(&t->m, SPV_OP_CONSTANT, (const uint32_t[]){t_ulong(t), (uint32_t)v, (uint32_t)(v >> 32)}, 3);
+}
+
+static buffer_range buffer_range_of(translator *t, unsigned srsrc, unsigned indexed, uint32_t index, uint32_t stride, uint32_t soffset,
+                                    uint32_t offset)
+{
+    const uint32_t records = load(t, t_uint(t), sgpr(t, srsrc + VSHARP_RECORDS_WORD));
+    return (buffer_range){.indexed = indexed, .stride_zero = equals(t, stride, konst(t, 0)), .stride = widen(t, stride),
+                          .records = widen(t, records), .soffset = widen(t, soffset),
+                          .index_in_range = value(t, SPV_OP_U_LESS_THAN, t_bool(t), 2, index, records), .offset = offset};
+}
+
+/* Whether the byte `byte` past the access' offset is in range. */
+static uint32_t buffer_in_range(translator *t, const buffer_range *r, uint32_t byte)
+{
+    const uint32_t at = value(t, SPV_OP_I_ADD, t_ulong(t), 2, widen(t, r->offset), ulong_constant(t, byte));
+    const uint32_t from_start = value(t, SPV_OP_I_ADD, t_ulong(t), 2, at, r->soffset);
+    const uint32_t raw = value(t, SPV_OP_U_LESS_THAN, t_bool(t), 2, from_start, r->records);
+    const uint32_t strided = r->indexed ? both(t, r->index_in_range, value(t, SPV_OP_U_LESS_THAN, t_bool(t), 2, at, r->stride))
+                                        : value(t, SPV_OP_U_LESS_THAN, t_bool(t), 2, from_start,
+                                                value(t, SPV_OP_I_MUL, t_ulong(t), 2, r->records, r->stride));
+    return value(t, SPV_OP_SELECT, t_bool(t), 3, r->stride_zero, raw, strided);
+}
+
+/* A dword load that reads 0 out of range (the load itself is not made then). */
+static uint32_t checked_load_dword(translator *t, const buffer_range *r, uint32_t base, uint32_t offset, uint32_t index)
+{
+    const uint32_t slot = function_variable(t, t_uint(t), konst(t, 0));
+    const uint32_t in_range = begin_if(t, buffer_in_range(t, r, index * BYTES_PER_DWORD));
+    store(t, t->out, slot, load_dword(t, dword_pointer(t, base, offset, index)));
+    end_if(t, in_range);
+    return load(t, t_uint(t), slot);
+}
+
+/* A dword store that writes nothing out of range. */
+static void checked_store_dword(translator *t, const buffer_range *r, uint32_t base, uint32_t offset, uint32_t index, uint32_t v)
+{
+    const uint32_t in_range = begin_if(t, buffer_in_range(t, r, index * BYTES_PER_DWORD));
+    store_dword(t, dword_pointer(t, base, offset, index), v);
+    end_if(t, in_range);
+}
+
 /* buffer_load/store_format_*: the data format is the descriptor's, so the shader decides as it runs.
    Done exactly:
    - stores of whole 32-bit components (DATA_FORMAT 32 to 32_32_32_32; uint, sint or float), at least
@@ -1135,8 +1252,12 @@ static uint32_t unorm8_value(translator *t, uint32_t byte)
      lacks read 0), then each result component takes what its DST_SEL names: 0 (selector 0), 1
      (selector 1; 1.0 for float data), or memory component DST_SEL - 4, as shadPS4's
      lower_buffer_format_to_raw.cpp reads them; selectors 2 and 3 are reserved and stop;
-   - loads from 8_8_8_8 unorm: the dword's four bytes (x first) as v / 255 (unorm8_value), then each
-     result component takes what its DST_SEL names, as for 32-bit loads;
+   - loads of 8- and 16-bit components (DATA_FORMAT 8, 16, 8_8, 16_16, 8_8_8_8, 16_16_16_16) as uint
+     (zero-extended), sint (sign-extended), and for 8-bit components unorm (v / 255, unorm8_value):
+     memory is read byte by byte from the access' address, aligned or not, components x first and
+     each little-endian (the formats' layout in AMD's ISA manual, as shadPS4's
+     lower_buffer_format_to_raw.cpp unpacks them); the format's missing components read 0, then each
+     result component takes what its DST_SEL names, as for 32-bit loads (1 is 1.0 for unorm data);
    - a four-component store to 8_8_8_8 unorm whose DST_SEL is a permutation of x, y, z, w: the store
      undoes the swizzle (memory component DST_SEL[i] - 4 takes data component i, the inverse of a
      load's mapping, as shadPS4's lower_buffer_format_to_raw.cpp does), then packs as GLSL's
@@ -1144,7 +1265,7 @@ static uint32_t unorm8_value(translator *t, uint32_t byte)
      established).
    Anything else writes a run-time stop code (runtime/gcn_spirv.h) and touches no memory. */
 static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t components, int load_op, uint32_t base, uint32_t offset,
-                                     unsigned vdata)
+                                     const buffer_range *range, unsigned vdata)
 {
     const uint32_t word = load(t, t_uint(t), sgpr(t, srsrc + VSHARP_FORMAT_WORD));
     const uint32_t data_format = descriptor_field(t, word, DATA_FORMAT_SHIFT, 0xf);
@@ -1189,8 +1310,17 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
                                              equals(t, seen, konst(t, 0xf)))
                                       : spirv_constant_bool(&t->m, 0);
 
-    const uint32_t packed_load = load_op ? both(t, both(t, equals(t, data_format, konst(t, DATA_FORMAT_8_8_8_8)),
-                                                       equals(t, num_format, konst(t, NUM_FORMAT_UNORM))),
+    /* 8- and 16-bit loads: each component's bytes and the format's component count */
+    uint32_t component_bytes = konst(t, 0), small_count = konst(t, 0);
+    for (size_t f = 0; f < sizeof small_formats / sizeof small_formats[0]; f++) {
+        const uint32_t is = equals(t, data_format, konst(t, small_formats[f].data_format));
+        component_bytes = value(t, SPV_OP_SELECT, t_uint(t), 3, is, konst(t, small_formats[f].bytes), component_bytes);
+        small_count = value(t, SPV_OP_SELECT, t_uint(t), 3, is, konst(t, small_formats[f].count), small_count);
+    }
+    const uint32_t integer = either(t, equals(t, num_format, konst(t, NUM_FORMAT_UINT)), equals(t, num_format, konst(t, NUM_FORMAT_SINT)));
+    const uint32_t unorm8 = both(t, equals(t, num_format, konst(t, NUM_FORMAT_UNORM)), equals(t, component_bytes, konst(t, 1)));
+    const uint32_t packed_load = load_op ? both(t, both(t, value(t, SPV_OP_U_GREATER_THAN, t_bool(t), 2, small_count, konst(t, 0)),
+                                                       either(t, integer, unorm8)),
                                               selectors_valid)
                                          : spirv_constant_bool(&t->m, 0);
     /* neither: the stop code, from any active lane */
@@ -1210,7 +1340,8 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
         uint32_t memory[4];
         for (uint32_t m = 0; m < 4; m++) {
             const uint32_t slot = function_variable(t, t_uint(t), konst(t, 0));
-            const uint32_t present = begin_if(t, value(t, SPV_OP_U_GREATER_THAN, t_bool(t), 2, available, konst(t, m)));
+            const uint32_t present = begin_if(t, both(t, value(t, SPV_OP_U_GREATER_THAN, t_bool(t), 2, available, konst(t, m)),
+                                                      buffer_in_range(t, range, m * BYTES_PER_DWORD)));
             store(t, t->out, slot, load_dword(t, dword_pointer(t, base, offset, m)));
             end_if(t, present);
             memory[m] = load(t, t_uint(t), slot);
@@ -1224,17 +1355,17 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
             write_vgpr(t, vdata + c, result);
         }
     } else {
-        for (uint32_t i = 0; i < components; i++) store_dword(t, dword_pointer(t, base, offset, i), load(t, t_uint(t), vgpr(t, vdata + i)));
+        for (uint32_t i = 0; i < components; i++) checked_store_dword(t, range, base, offset, i, load(t, t_uint(t), vgpr(t, vdata + i)));
     }
     end_if(t, raw_merge);
     if (load_op) {
         const uint32_t packed_merge = begin_if(t, both(t, exec_bit(t), packed_load));
-        const uint32_t dword = load_dword(t, dword_pointer(t, base, offset, 0));
         uint32_t memory[4];
-        for (uint32_t m = 0; m < 4; m++) memory[m] = unorm8_value(t, descriptor_field(t, dword, 8 * m, 0xff));
+        small_components(t, base, offset, component_bytes, small_count, num_format, buffer_in_range(t, range, 0), memory);
+        const uint32_t one = value(t, SPV_OP_SELECT, t_uint(t), 3, unorm8, konst(t, 0x3f800000u), konst(t, 1));
         for (uint32_t c = 0; c < components; c++) {
             const uint32_t sel = descriptor_field(t, word, 3 * c, 0x7);
-            uint32_t result = value(t, SPV_OP_SELECT, t_uint(t), 3, equals(t, sel, konst(t, 1)), konst(t, 0x3f800000u), konst(t, 0));
+            uint32_t result = value(t, SPV_OP_SELECT, t_uint(t), 3, equals(t, sel, konst(t, 1)), one, konst(t, 0));
             for (uint32_t m = 0; m < 4; m++)
                 result = value(t, SPV_OP_SELECT, t_uint(t), 3, equals(t, sel, konst(t, DST_SEL_X + m)), memory[m], result);
             write_vgpr(t, vdata + c, result);
@@ -1254,7 +1385,7 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
     }
     enum { SPV_OP_COMPOSITE_CONSTRUCT = 80 };
     const uint32_t vec = value(t, SPV_OP_COMPOSITE_CONSTRUCT, t_vec4(t), 4, memory[0], memory[1], memory[2], memory[3]);
-    store_dword(t, dword_pointer(t, base, offset, 0), glsl(t, t_uint(t), SPV_GLSL_PACK_UNORM_4X8, vec, 0, 0, 1));
+    checked_store_dword(t, range, base, offset, 0, glsl(t, t_uint(t), SPV_GLSL_PACK_UNORM_4X8, vec, 0, 0, 1));
     end_if(t, packed_merge);
 }
 
@@ -1276,26 +1407,26 @@ static void buffer_memory(translator *t, const uint32_t *w, const gcn_instructio
     }
     /* base + soffset + instruction offset + vgpr offset (offen) + index * stride (idxen); with
        both, the index is in vaddr and the offset in vaddr + 1. */
-    uint32_t offset = value(t, SPV_OP_I_ADD, t_uint(t), 2, source(t, soffset, ins), konst(t, w[0] & 0xfff));
-    if (offen) offset = value(t, SPV_OP_I_ADD, t_uint(t), 2, offset, load(t, t_uint(t), vgpr(t, vaddr + idxen)));
-    if (idxen) {
-        const uint32_t stride = value(t, SPV_OP_BITWISE_AND, t_uint(t), 2,
-                                      value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, load(t, t_uint(t), sgpr(t, srsrc + 1)),
-                                            konst(t, VSHARP_STRIDE_SHIFT)),
-                                      konst(t, VSHARP_STRIDE_MASK));
-        offset = value(t, SPV_OP_I_ADD, t_uint(t), 2, offset,
-                       value(t, SPV_OP_I_MUL, t_uint(t), 2, load(t, t_uint(t), vgpr(t, vaddr)), stride));
-    }
+    const uint32_t soffset_value = source(t, soffset, ins);
+    uint32_t access_offset = konst(t, w[0] & 0xfff);
+    if (offen) access_offset = value(t, SPV_OP_I_ADD, t_uint(t), 2, access_offset, load(t, t_uint(t), vgpr(t, vaddr + idxen)));
+    const uint32_t stride = value(t, SPV_OP_BITWISE_AND, t_uint(t), 2,
+                                  value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, load(t, t_uint(t), sgpr(t, srsrc + 1)),
+                                        konst(t, VSHARP_STRIDE_SHIFT)),
+                                  konst(t, VSHARP_STRIDE_MASK));
+    const uint32_t index = idxen ? load(t, t_uint(t), vgpr(t, vaddr)) : konst(t, 0);
+    uint32_t offset = value(t, SPV_OP_I_ADD, t_uint(t), 2, soffset_value, access_offset);
+    if (idxen) offset = value(t, SPV_OP_I_ADD, t_uint(t), 2, offset, value(t, SPV_OP_I_MUL, t_uint(t), 2, index, stride));
+    const buffer_range range = buffer_range_of(t, srsrc, idxen, index, stride, soffset_value, access_offset);
     const uint32_t base = address_in(t, srsrc, VSHARP_BASE_HIGH_MASK);
     if (ins->encoding == GCN_MUBUF && strstr(name, "_format_")) {
-        descriptor_format_access(t, srsrc, dwords, load_op, base, offset, vdata);
+        descriptor_format_access(t, srsrc, dwords, load_op, base, offset, &range, vdata);
         return;
     }
     const uint32_t merge = begin_if(t, exec_bit(t));
     for (uint32_t i = 0; i < dwords; i++) {
-        const uint32_t pointer = dword_pointer(t, base, offset, i);
-        if (load_op) write_vgpr(t, vdata + i, load_dword(t, pointer));
-        else store_dword(t, pointer, load(t, t_uint(t), vgpr(t, vdata + i)));
+        if (load_op) write_vgpr(t, vdata + i, checked_load_dword(t, &range, base, offset, i));
+        else checked_store_dword(t, &range, base, offset, i, load(t, t_uint(t), vgpr(t, vdata + i)));
     }
     end_if(t, merge);
 }
@@ -1642,14 +1773,21 @@ static int branches(const uint32_t *w, const gcn_instruction *ins, size_t at, lo
 /* Where the descriptor that the instruction at dword `at` reads from s[first : first + width - 1]
    comes from (runtime/gcn_spirv.h): the user data when no instruction writes those SGPRs before it
    runs, or memory when the last write is an s_load of exactly those SGPRs, at an immediate offset
-   from a pointer pair no instruction before it writes. Writes before `at` are only followed when the
-   code up to it runs straight through. 0, or -1 with the reason. */
+   from a pointer pair no instruction before it writes. With branches in the program, the load is
+   followed only when every path to the use passes it: no branch lands between it and the use (code
+   runs forward between branches, so a path that skipped the load would have to land there), every
+   branch's target is known, no branch goes back to the use or before it when an instruction after
+   the use writes those SGPRs, and no instruction at all writes the pointer pair (so a loop that runs
+   the load again loads the same descriptor). Writes before the load do not matter: it replaces them
+   (the game's shaders keep a compare's mask in those SGPRs before loading the descriptor). A
+   branch that skips the load also skips the use, as the game's guarded samples do (an
+   s_cbranch_execz around both). 0, or -1 with the reason. */
 static int descriptor_origin(const uint32_t *code, size_t program, size_t at, unsigned first, unsigned width, gcn_resource_origin *origin,
                              char *error, size_t error_size)
 {
     *origin = (gcn_resource_origin){.sgpr = first};
     long writer = -1;
-    int written = 0;
+    int written = 0, written_after_use = 0;
     for (size_t p = 0; p < program;) {
         gcn_instruction ins;
         if (gcn_decode(code + p, program - p, &ins) || !ins.name) break;
@@ -1658,18 +1796,31 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
         if (n && dst < first + width && first < dst + n) {
             written = 1;
             if (p < at) writer = (long)p;
+            else written_after_use = 1;
         }
         p += ins.dwords;
     }
     if (!written) return 0;
+    int branched = 0, loops_to_load = 0; /* a branch back to the load or before it */
     for (size_t p = 0; p < program;) {
         gcn_instruction ins;
         if (gcn_decode(code + p, program - p, &ins) || !ins.name) break;
         long target;
         if (branches(code + p, &ins, p, &target) && (p < at || target < 0 || (size_t)target <= at)) {
-            snprintf(error, error_size, "the descriptor in s[%u:%u] is written by the program, and a branch (%s at dword %zu) comes "
-                     "before its use at dword %zu: not done yet", first, first + width - 1, ins.name, p, at);
-            return -1;
+            const int back_to_use = (size_t)target <= at && (size_t)target <= p && p >= at;
+            if (target < 0 || writer < 0 || (written_after_use && back_to_use)) {
+                snprintf(error, error_size, "the descriptor in s[%u:%u] is written by the program, and a branch (%s at dword %zu) comes "
+                         "before its use at dword %zu: not done yet", first, first + width - 1, ins.name, p, at);
+                return -1;
+            }
+            if (target > writer && (size_t)target <= at) {
+                snprintf(error, error_size, "the descriptor in s[%u:%u] is loaded at dword %ld, and a branch (%s at dword %zu) lands at "
+                         "dword %ld, between the load and its use at dword %zu: not done yet", first, first + width - 1, writer, ins.name,
+                         p, target, at);
+                return -1;
+            }
+            branched = 1;
+            if (target <= writer && (size_t)target <= p) loops_to_load = 1;
         }
         p += ins.dwords;
     }
@@ -1686,12 +1837,14 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
         return -1;
     }
     const unsigned pointer = ((w[0] >> 9) & 0x3f) * 2;
-    for (size_t p = 0; p < (size_t)writer;) {
+    for (size_t p = 0; p < (branched ? program : (size_t)writer);) {
         gcn_instruction before;
         gcn_decode(code + p, program - p, &before);
         unsigned d = 0;
         const unsigned m = sgprs_written(code + p, &before, &d);
-        if (m && d < pointer + 2 && pointer < d + m) {
+        /* the load may overwrite its own pointer (s[0:7] from s[0:1]) unless a loop runs it again */
+        const int the_load = p == (size_t)writer && !loops_to_load;
+        if (m && d < pointer + 2 && pointer < d + m && !the_load) {
             snprintf(error, error_size, "the descriptor in s[%u:%u] is loaded through s[%u:%u], which the program writes (%s at dword %zu): "
                      "not done yet", first, first + width - 1, pointer, pointer + 1, before.name, p);
             return -1;
