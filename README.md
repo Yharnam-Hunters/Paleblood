@@ -46,11 +46,13 @@ It is made by people who love this game and want it to outlive the hardware it w
 | | Functions | Bytes |
 |---|---:|---:|
 | Target (Ghidra export) | 157757 | 42487369 |
-| Replaced | 239 (0.15%) | 100967 (0.24%) |
-| Edge-verified | 239 (0.15%) | 100967 (0.24%) |
+| Replaced | 12296 (7.79%) | 134669 (0.32%) |
+| of which in 3 function families | 12057 (7.64%) | 33702 (0.08%) |
+| Edge-verified | 12296 (7.79%) | 134669 (0.32%) |
 | Verified | 21 (0.01%) | 14010 (0.03%) |
 
 Each row includes the next: verified functions are also edge-verified and replaced.
+Function families are many tiny identical functions (an empty method, a getter) that share one replacement each (docs/FAMILIES.md): they move the function count much more than the byte count.
 
 | Runtime | |
 |---|---|

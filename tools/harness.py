@@ -634,20 +634,30 @@ class Run:
         return out
 
 
-def load_replacement(lib_path: str, symbol: str, size: int) -> int:
-    """dlopen the game library, run its bbgame_init with a loader that installs no hooks, and
-    return the address of SYMBOL."""
-    lib = ctypes.CDLL(lib_path)
-    hook = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_void_p)(lambda o, s, t: 0)
-    load_replacement.keep = (lib, hook)
+_initialized: dict[str, ctypes.CDLL] = {}
+_keep_alive: list = []
 
-    class Host(ctypes.Structure):
-        _fields_ = [('version', ctypes.c_uint32), ('image', ctypes.c_void_p),
-                    ('image_size', ctypes.c_uint64), ('install_hook', ctypes.c_void_p)]
-    host = Host(1, IMAGE, size, ctypes.cast(hook, ctypes.c_void_p).value)
-    if lib.bbgame_init(ctypes.byref(host)):
-        raise BadInput('bbgame_init failed')
-    return ctypes.cast(getattr(lib, symbol), ctypes.c_void_p).value
+
+def load_replacement(lib_path: str, symbol: str, size: int) -> int:
+    """dlopen the game library, run its bbgame_init (once per library) with a loader that
+    installs no hooks, and return the address of SYMBOL."""
+    lib = _initialized.get(lib_path)
+    if lib is None:
+        lib = ctypes.CDLL(lib_path)
+        hook = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_void_p)(lambda o, s, t: 0)
+        _keep_alive.append(hook)
+
+        class Host(ctypes.Structure):
+            _fields_ = [('version', ctypes.c_uint32), ('image', ctypes.c_void_p),
+                        ('image_size', ctypes.c_uint64), ('install_hook', ctypes.c_void_p)]
+        host = Host(1, IMAGE, size, ctypes.cast(hook, ctypes.c_void_p).value)
+        if lib.bbgame_init(ctypes.byref(host)):
+            raise BadInput('bbgame_init failed')
+        _initialized[lib_path] = lib
+    try:
+        return ctypes.cast(getattr(lib, symbol), ctypes.c_void_p).value
+    except AttributeError as error:
+        raise BadInput(f'{symbol} is not exported by {os.path.basename(lib_path)}') from error
 
 
 def run_case(machine: Machine, case: dict, address: str, target: int | None) -> dict:
@@ -757,13 +767,37 @@ def batch(machine: Machine, cases_dir: str, address: str, target: int | None, ti
     return out
 
 
+def run_plan(machine: Machine, plan: list, image_size: int, timeout: int) -> dict:
+    """Every entry of a family plan (docs/FAMILIES.md), each in a fork of the one mapped machine:
+    {"key", "address", "case", and for a replacement "replacement" and "lib"}. Libraries are
+    loaded once each. Returns {key: result}."""
+    targets: dict[tuple[str, str], int] = {}
+    out = {}
+    for entry in plan:
+        key, address, case = entry['key'], entry['address'], entry['case']
+        target = None
+        if entry.get('replacement'):
+            lib, symbol = entry['lib'], entry['replacement']
+            if (lib, symbol) not in targets:
+                targets[(lib, symbol)] = load_replacement(lib, symbol, image_size)
+            target = targets[(lib, symbol)]
+        try:
+            out[key] = _run_isolated(machine, case, address, target, timeout, False, 0, None)
+        except BadInput as error:
+            raise BadInput(f'{key}: {error}') from error
+        out[key]['id'] = case.get('id', key)
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--elf', required=True, help='the executable (eboot.elf)')
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument('--case', help='one case file; prints its result')
     g.add_argument('--cases', help='a directory of case files; prints {file stem: result}')
-    ap.add_argument('--address', required=True)
+    g.add_argument('--plan', help='a family plan (JSON list of entries, each with its own address, case and '
+                   'replacement); prints {key: result}')
+    ap.add_argument('--address')
     ap.add_argument('--replacement')
     ap.add_argument('--lib')
     ap.add_argument('--timeout', type=int, default=20, help='per case, batch mode')
@@ -792,6 +826,14 @@ def main() -> int:
                 if not EBOOT_BASE <= addr < EBOOT_BASE + boot['size'] - len(data):
                     raise BadInput(f'patch line at 0x{addr:08x} is outside the image')
                 ctypes.memmove(IMAGE + addr - EBOOT_BASE, data, len(data))
+        if a.plan:
+            with open(a.plan) as f:
+                result = run_plan(machine, json.load(f), boot['size'], a.timeout)
+            json.dump(result, sys.stdout, sort_keys=True)
+            print()
+            return 0
+        if not a.address:
+            raise BadInput('--address is required with --case or --cases')
         target = None
         if a.replacement:
             if not a.lib:

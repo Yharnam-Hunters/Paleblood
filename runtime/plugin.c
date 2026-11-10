@@ -13,6 +13,9 @@ unsigned char *rt_image;
 
 extern const rt_hook_entry game_hooks[];
 extern const unsigned game_hook_count;
+/* Function family members (tools/gen_hooks.py from symbols/families/), when the library has any. */
+extern const rt_family_hook game_family_hooks[] __attribute__((weak));
+extern const unsigned game_family_hook_count __attribute__((weak));
 /* The game's observe hooks (runtime/observe_hooks.h), when the game library has any. */
 extern const rt_observe_hook game_observe_hooks[] __attribute__((weak));
 extern const unsigned game_observe_hook_count __attribute__((weak));
@@ -32,6 +35,46 @@ static int skipped(const rt_hook_entry *h)
             return 1;
         p += n + (p[n] == ',');
     }
+    return 0;
+}
+
+/* BB_HOOK_SKIP may also name a family, or `families` for all of them. */
+static int family_skipped(const rt_family_hook *h)
+{
+    const char *env = getenv("BB_HOOK_SKIP");
+    char addr[16];
+    if (!env || !*env)
+        return 0;
+    snprintf(addr, sizeof addr, "0x%08x", h->address);
+    for (const char *p = env; *p;) {
+        size_t n = strcspn(p, ",");
+        if ((n == strlen(addr) && !strncmp(p, addr, n)) || (n == strlen(h->family) && !strncmp(p, h->family, n)) ||
+            (n == strlen("families") && !strncmp(p, "families", n)))
+            return 1;
+        p += n + (p[n] == ',');
+    }
+    return 0;
+}
+
+static int install_family_hooks(const rt_host *host)
+{
+    if (!game_family_hooks || !&game_family_hook_count)
+        return 0;
+    unsigned installed = 0, skipped_count = 0;
+    for (unsigned i = 0; i < game_family_hook_count; i++) {
+        const rt_family_hook *h = &game_family_hooks[i];
+        if (family_skipped(h)) {
+            skipped_count++;
+            continue;
+        }
+        if (h->address < RT_EBOOT_BASE || host->install_hook(h->address - RT_EBOOT_BASE, h->extent, (const void *)h->fn)) {
+            fprintf(stderr, "bbgame: cannot hook family %s member at 0x%08x (%u bytes)\n", h->family, h->address, h->extent);
+            return 1;
+        }
+        installed++;
+    }
+    if (installed || skipped_count)
+        fprintf(stderr, "bbgame: %u family member hook(s) installed, %u skipped (BB_HOOK_SKIP)\n", installed, skipped_count);
     return 0;
 }
 
@@ -73,5 +116,7 @@ int bbgame_init(const rt_host *host)
     }
     free(targets);
     fprintf(stderr, "bbgame: %u hook(s) installed\n", installed);
+    if (install_family_hooks(host))
+        return 1;
     return rt_probes_install(host->image, host->image_size);
 }

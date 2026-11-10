@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Generate the hook table C source from game/hooks.csv, with sizes from functions.csv.
+"""Generate the hook table C source from game/hooks.csv, with sizes from functions.csv, and the
+family hook table from symbols/families.csv and symbols/families/ (tools/families.py).
 
 usage: gen_hooks.py HOOKS_CSV FUNCTIONS_CSV OUT_C
+The families are read from the repository that holds FUNCTIONS_CSV (its symbols/ directory).
 """
 from __future__ import annotations
 
 import csv
+import os
 import sys
+
+import families as fam
 
 
 def main() -> int:
@@ -28,9 +33,28 @@ def main() -> int:
         returns = f'"{r["returns"]}"' if r.get('returns') else '0'
         out.append(f"    {{ {r['address']}u, {sizes[r['address']]}u, \"{r['replacement']}\", (rt_hook_fn){r['replacement']}, {returns} }},")
     out += ['    { 0, 0, 0, 0, 0 }', '};', f'const unsigned game_hook_count = {len(rows)}u;', '']
+    out += family_table(os.path.dirname(os.path.dirname(os.path.abspath(sys.argv[2]))))
     with open(sys.argv[3], 'w') as f:
         f.write('\n'.join(out))
     return 0
+
+
+def family_table(root: str) -> list[str]:
+    """game_family_hooks: every member of every family, sorted by address, pointing at the
+    replacement its value selects."""
+    entries = []
+    symbols = set()
+    for family in fam.families(root):
+        for m in fam.members(root, family['family']):
+            symbol = fam.replacement(family, m['value'])
+            symbols.add(symbol)
+            entries.append((int(m['address'], 16), int(m['extent']), family['family'], symbol))
+    entries.sort()
+    out = [f'void {s}(void);' for s in sorted(symbols)]
+    out += ['', 'const rt_family_hook game_family_hooks[] = {']
+    out += [f'    {{ 0x{a:08x}u, {e}u, "{f}", (rt_hook_fn){s} }},' for a, e, f, s in entries]
+    out += ['    { 0, 0, 0, 0 }', '};', f'const unsigned game_family_hook_count = {len(entries)}u;', '']
+    return out
 
 
 if __name__ == '__main__':
