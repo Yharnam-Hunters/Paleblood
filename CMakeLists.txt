@@ -216,6 +216,7 @@ target_include_directories(test_module_tls PRIVATE runtime/include)
 target_link_libraries(test_module_tls PRIVATE Threads::Threads)
 add_test(NAME module_tls COMMAND test_module_tls)
 set_tests_properties(module_tls PROPERTIES TIMEOUT 10)
+include(cmake/HostFileStatTests.cmake)
 
 add_test(NAME module_tls_boot
          COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_module_tls_boot.py -v)

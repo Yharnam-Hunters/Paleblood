@@ -20,7 +20,7 @@
    anything else goes to its error path. The runtime fills the structure from the host file: type,
    size, block count and size, link count and times; the permission bits without write (the mount
    is read-only); device and inode numbers as the host's (they only identify the file); the birth
-   time as the modification time (the host's stat has none); owner, group, flags and generation 0. A missing file or directory component answers ENOENT or
+   time as the modification time (the runtime's policy on every host); owner, group, flags and generation 0. A missing file or directory component answers ENOENT or
    ENOTDIR (the same numbers on FreeBSD and Linux); any other host error stops by name.
 
    stat(path, struct stat *), imported by eboot from libScePosix: the same lookup and answer as
@@ -213,6 +213,17 @@ static int32_t kernel_stat(const char *path, guest_stat *out)
 
 enum { READ_AND_EXECUTE_BITS = 0555, PERMISSION_BITS = 0777 };
 
+/* Native timestamp member names differ; the guest wire and birth-time policy do not. */
+#if defined(__APPLE__) && defined(__MACH__)
+#define HOST_ATIME(st) ((st).st_atimespec)
+#define HOST_MTIME(st) ((st).st_mtimespec)
+#define HOST_CTIME(st) ((st).st_ctimespec)
+#else
+#define HOST_ATIME(st) ((st).st_atim)
+#define HOST_MTIME(st) ((st).st_mtim)
+#define HOST_CTIME(st) ((st).st_ctim)
+#endif
+
 /* /app0 is read-only, so its files show no write permission; /data's show the host's bits. */
 static void fill_stat(guest_stat *out, const struct stat *host, mount on)
 {
@@ -223,13 +234,13 @@ static void fill_stat(guest_stat *out, const struct stat *host, mount on)
         .ino = (uint32_t)st.st_ino,
         .mode = (uint16_t)((st.st_mode & S_IFMT) | (st.st_mode & permissions)),
         .nlink = (uint16_t)st.st_nlink,
-        .atime = timespec_of(st.st_atim),
-        .mtime = timespec_of(st.st_mtim),
-        .ctime = timespec_of(st.st_ctim),
+        .atime = timespec_of(HOST_ATIME(st)),
+        .mtime = timespec_of(HOST_MTIME(st)),
+        .ctime = timespec_of(HOST_CTIME(st)),
         .size = st.st_size,
         .blocks = st.st_blocks,
         .blksize = (uint32_t)st.st_blksize,
-        .birthtime = timespec_of(st.st_mtim),
+        .birthtime = timespec_of(HOST_MTIME(st)),
     };
 }
 
