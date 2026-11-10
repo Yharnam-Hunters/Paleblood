@@ -278,6 +278,16 @@ static const uint32_t load_format_xyzw[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* Per lane i, a format load of record i (the descriptor's stride apart, so any byte alignment) from
+   the buffer in s[0:3], stored as four dwords at i * 16 bytes of the buffer in s[4:7]. */
+static const uint32_t load_format_indexed[] = {
+    0xe00c2000, 0x80000400, /* buffer_load_format_xyzw v[4:7], v0, s[0:3], 0 idxen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x34060084, /* v_lshlrev_b32_e32 v3, 4, v0 */
+    0xe0781000, 0x80010403, /* buffer_store_dwordx4 v[4:7], v3, s[4:7], 0 offen */
+    0xbf810000, /* s_endpgm */
+};
+
 /* Whole quad mode: v_cmpx leaves lane i active when i % 4 == 1, s_wqm_b64 then activates every lane of
    each quad with an active lane, so all 64 store 1. */
 static const uint32_t whole_quad[] = {
