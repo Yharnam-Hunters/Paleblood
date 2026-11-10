@@ -73,3 +73,10 @@ void bb_mutant_writes_first_qword(uint64_t *object, uint64_t value)
 {
     *object = value;
 }
+
+/* Clears its second argument register and returns: wrong for a body that must leave the
+   argument registers alone (the cases compare them after the call). */
+__attribute__((naked)) void bb_mutant_clobbers_second_argument(void)
+{
+    __asm__("xorl %esi, %esi\n\tret");
+}
