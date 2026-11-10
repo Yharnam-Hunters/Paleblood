@@ -384,7 +384,8 @@ static void resolve(object *o)
         }
         for (const rt_syslib_entry *s = rt_syslib_begin(); !o->bound[i] && s && s != rt_syslib_end(); s++) {
             char nid[RT_NID_SIZE + 1];
-            rt_nid(s->symbol, nid);
+            if (s->by_nid) snprintf(nid, sizeof nid, "%.*s", RT_NID_SIZE - 1, s->symbol); /* registered by its hash */
+            else rt_nid(s->symbol, nid);
             nid[RT_NID_SIZE - 1] = '#', nid[RT_NID_SIZE] = 0;
             if (!strncmp(name, nid, RT_NID_SIZE) && library && !strcmp(library, s->library)) {
                 o->bound[i] = s->fn;
@@ -402,6 +403,26 @@ static uint64_t bind_import(void *user, size_t index, int kind)
     if (kind == RT_ELF_IMPORT_DATA)
         return o->bound[index] ? (uint64_t)(uintptr_t)o->bound[index] : (uint64_t)(uintptr_t)(o->data + 4096 * index);
     return (uint64_t)(uintptr_t)(o->tramp + TRAMPOLINE_SIZE * index);
+}
+
+/* Records a mapped object for the system's module queries (rt_process.modules): its first
+   RT_MAX_MODULE_SEGMENTS allocated segments, its exception frame index and init/fini functions.
+   The executable is reported under the name the guest's __progname gives it. */
+static void record_module(const object *o)
+{
+    if (rt_process.module_count == RT_MAX_MODULES) return;
+    rt_module *m = &rt_process.modules[rt_process.module_count++];
+    const uint64_t base = (uint64_t)(uintptr_t)o->image;
+    *m = (rt_module){.name = o == &objects[0] ? "eboot.bin" : o->label, .image = o->image, .image_size = o->size};
+    const rt_elf_load *loads = rt_elf_loads(o->elf);
+    for (size_t i = 0; i < rt_elf_load_count(o->elf) && m->segment_count < RT_MAX_MODULE_SEGMENTS; i++)
+        if (loads[i].memsz)
+            m->segments[m->segment_count++] = (rt_module_segment){base + loads[i].vaddr, loads[i].memsz, loads[i].flags};
+    uint64_t eh_frame_hdr_size;
+    const uint64_t eh_frame_hdr = rt_elf_eh_frame_hdr(o->elf, &eh_frame_hdr_size);
+    if (eh_frame_hdr_size) m->eh_frame_hdr = base + eh_frame_hdr, m->eh_frame_hdr_size = eh_frame_hdr_size;
+    if (rt_elf_init(o->elf)) m->init = base + rt_elf_init(o->elf);
+    if (rt_elf_fini(o->elf)) m->fini = base + rt_elf_fini(o->elf);
 }
 
 /* Where an address is: "label+0xoffset", or "host+0x..." */
@@ -903,6 +924,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "pbboot: %s\n", error);
         return 3;
     }
+    for (size_t k = 0; k < object_count; k++) record_module(&objects[k]);
     uint64_t proc_param_size;
     const uint64_t proc_param = rt_elf_proc_param(objects[0].elf, &proc_param_size);
     rt_process.image = objects[0].image;

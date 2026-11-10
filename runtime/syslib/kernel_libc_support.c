@@ -31,7 +31,20 @@
      owner's) and 0.
    - sceKernelDebugRaiseException(code, zero) and sceKernelDebugRaiseExceptionOnReleaseMode: the
      libc's fatal checks (abort() is +0x23560 with code 0xa002000b). As in shadPS4: a non-zero second
-     argument answers EINVAL (0x80020016); otherwise the program ends, here by name with the code. */
+     argument answers EINVAL (0x80020016); otherwise the program ends, here by name with the code.
+   - getpid(): the process id, which libunwind passes to sysctl's process memory map query
+     (runtime/syslib/kernel_unwind.c). The runtime answers 1000, the fixed id a family of native ports
+     uses (facts only; maintainer's ruling of 2026-11-10): a fixed number keeps runs
+     reproducible, and the host's pid is not the guest's.
+   - _read(fd, buffer, size): POSIX read(2) without the cancellation point; libc.elf's stdio reads
+     only standard input with it (+0x2729a; other files go through libSceFios2). A console title
+     has no standard input, so the answer is end of file, 0 bytes (maintainer's ruling); any other
+     descriptor stops by name.
+   - __stack_chk_guard (data): the stack protector's canary, a 64-bit word that code built with
+     -fstack-protector stores in each protected frame and compares on return. Every port we can
+     cite gives it a fixed non-zero value rather than a random one (shadPS4 0xdeadbeef54321abc, the
+     droogie and Astrr00 hosts their own constants; facts only), so runs are reproducible; the
+     runtime uses shadPS4's value (maintainer's ruling). Unbound, the import read a zeroed page. */
 #include "runtime/guest_errno.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
@@ -46,13 +59,25 @@
 #define SCE_KERNEL_ERROR_EINVAL ((int32_t)0x80020016u)
 enum { BSD_EINVAL = 22, BSD_SIGKILL = 9, BSD_SIGSTOP = 17, MAX_SIGNAL = 128, GUEST_STDOUT = 1, GUEST_STDERR = 2 };
 enum { RUSAGE_SELF_BSD = 0, RUSAGE_LONGS = 14, MINUTES_PER_DST = 60 };
+enum { GUEST_PROCESS_ID = 1000, GUEST_STDIN = 0 };
 #define SIG_DFL_GUEST ((uintptr_t)0)
 #define SIG_ERR_GUEST ((uintptr_t)-1)
 
 static const char program_name[] = "eboot.bin";
 static const char *progname[1] = {program_name}; /* the variable itself: an array, so its name is its address */
 
+static uint64_t stack_chk_guard[1] = {UINT64_C(0xdeadbeef54321abc)}; /* the variable itself, as for __progname */
+
 static void pthread_cxa_finalize(void *info) { (void)info; }
+
+static int32_t libc_getpid(void) { return GUEST_PROCESS_ID; }
+
+static int64_t libc_read(int32_t fd, void *buffer, uint64_t size)
+{
+    (void)buffer, (void)size;
+    if (fd != GUEST_STDIN) rt_fatal("_read", "a descriptor other than standard input: not modelled");
+    return 0; /* no standard input: end of file */
+}
 
 static int32_t is_signal_return(uintptr_t instruction) { (void)instruction; return 0; }
 
@@ -138,7 +163,10 @@ static int32_t debug_raise_exception_release(uint32_t code, int64_t zero)
 }
 
 RT_SYSLIB("libkernel", __progname, progname);
+RT_SYSLIB("libkernel", __stack_chk_guard, stack_chk_guard);
 RT_SYSLIB("libkernel", __pthread_cxa_finalize, pthread_cxa_finalize);
+RT_SYSLIB("libkernel", getpid, libc_getpid);
+RT_SYSLIB("libkernel", _read, libc_read);
 RT_SYSLIB("libkernel", _is_signal_return, is_signal_return);
 RT_SYSLIB("libkernel", _write, libc_write);
 RT_SYSLIB("libkernel", getrusage, libc_getrusage);

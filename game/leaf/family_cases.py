@@ -19,9 +19,12 @@ RAX_SEED = 0x5aa5c33c0ff0e11e
 PROBE_SIZE = 64
 
 
-def probe_bytes(seed: int) -> str:
-    """64 distinct non-zero bytes, so a write of any value or a read at a wrong offset shows."""
-    return bytes(((seed + 37 * i) % 255) + 1 for i in range(PROBE_SIZE)).hex()
+def probe_bytes(seed: int, size: int = PROBE_SIZE) -> str:
+    """SIZE (at most 255) distinct non-zero bytes, so a write of any value or a read at a wrong
+    offset shows."""
+    if size > 255:
+        raise ValueError('at most 255 distinct non-zero bytes')
+    return bytes(((seed + 37 * i) % 255) + 1 for i in range(size)).hex()
 
 
 def base_case(address: str, case_id: str, returns: str) -> dict:
@@ -56,10 +59,38 @@ def returns_a_value(address: str, value: int | None) -> list[dict]:
     return untouched_state_cases(address, 'i64')
 
 
+OBJECT_SIZE = 0xa0     # room for the largest positive 8-bit offset plus a qword, from either start
+
+
+def field_cases(address: str, value: int | None) -> list[dict]:
+    """A getter of the field at offset VALUE (0 for the first-field families): rdi points at an
+    object buffer of distinct bytes, so a read at any other offset or width returns another
+    value; the object starts at the buffer and 16 bytes into it, with two byte patterns. The
+    other arguments point into a probe buffer and are compared after the call; rax is seeded."""
+    out = []
+    for case_id, seed, start in (('object_a', 3, 0), ('object_b', 101, 0), ('object_shifted', 57, 0x10)):
+        case = base_case(address, case_id, 'i64')
+        case['buffers'] = {'object': {'size': OBJECT_SIZE, 'bytes': probe_bytes(seed, OBJECT_SIZE)},
+                           'probe': {'size': PROBE_SIZE, 'bytes': probe_bytes(seed + 1)}}
+        case['args'] = {reg: f'buf:probe+0x{8 * i:x}' for i, reg in enumerate(ARGUMENT_REGISTERS)}
+        case['args']['rdi'] = f'buf:object+0x{start:x}'
+        case['args']['rax'] = hex(RAX_SEED)
+        case['observe_registers'] = list(ARGUMENT_REGISTERS)
+        out.append(case)
+    return out
+
+
 CASES = {
     'returns_nothing': returns_nothing,
     'returns_zero': returns_a_value,
     'returns_constant': returns_a_value,
+    'reads_qword_field': field_cases,
+    'reads_dword_field': field_cases,
+    'reads_word_field': field_cases,
+    'reads_byte_field': field_cases,
+    'field_address': field_cases,
+    'reads_first_qword': field_cases,
+    'reads_first_dword': field_cases,
 }
 
 # Deliberately wrong replacements (test/family_mutants.c) every member's cases must catch.
@@ -71,6 +102,16 @@ MUTANTS = {
     # returns_one or returns_zero would be correct for the members whose constant is 1 or 0.
     'returns_constant': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument',
                          'bb_mutant_clobbers_second_argument'],
+    # Field getters: the neighbouring offset's replacement is the off-by-offset mutant.
+    'reads_qword_field': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument'],
+    'reads_dword_field': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument'],
+    'reads_word_field': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument'],
+    'reads_byte_field': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument'],
+    'field_address': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument'],
+    'reads_first_qword': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument',
+                          'bb_mutant_reads_first_dword'],
+    'reads_first_dword': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument',
+                          'bb_mutant_reads_first_qword'],
 }
 
 

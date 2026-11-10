@@ -89,8 +89,12 @@ int main(void)
     CHECK(queries[0](STUB_ID) == 0 && rt_process.stub_modules[0].loaded == 1);
     CHECK(rt_process.stub_modules[1].loaded == 1);
     CHECK(queries[1](STUB_ID) == 0);
-    unchanged_fatal(queries[0], names[0], STUB_ID, "already loaded");
+    /* A second load succeeds and is counted: the module stays loaded until both are unloaded. */
+    CHECK(queries[0](STUB_ID) == 0 && rt_process.stub_modules[0].loaded == 2);
+    CHECK(queries[2](STUB_ID) == 0 && rt_process.stub_modules[0].loaded == 1);
+    CHECK(queries[1](STUB_ID) == 0);
     CHECK(queries[2](STUB_ID) == 0 && rt_process.stub_modules[0].loaded == 0);
+    unchanged_fatal(queries[1], names[1], STUB_ID, "not loaded");
     CHECK(rt_process.stub_modules[1].loaded == 1);
     /* The final admitted ID and first wider ID distinguish the namespace boundary. */
     rt_process.stub_modules[2] = (rt_stub_module){UINT16_MAX, "synthetic-last", 0};
