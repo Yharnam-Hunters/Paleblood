@@ -1387,11 +1387,13 @@ are the runtime's own files, not a console's `param.sfo`.
 | `sceSaveDataDirNameSearch(condition, result)` | the user's saves (folders with `sce_sys/param.bin`, not `sce_*`), matched by an SQL-LIKE pattern without regard to case (`%`, `_`), sorted by name, user param or time (blocks are alike here), ascending or descending; a key above 5 or an order above 1 `0x809F0000` |
 | `sceSaveDataSetupSaveDataMemory(user, size, param)` | creates or grows `memory.dat` to the size (never shrinks it); size 0 `0x809F0000` |
 | `sceSaveDataGet/SetSaveDataMemory(user, buffer, size, offset)` | reads or writes at the offset; before setup `0x809F0012`; no buffer or a negative offset `0x809F0000` |
+| `sceSaveDataDelete(request)` | the 64-byte request { user, padding, title id, directory name, unused, reserved }; removes the save's folder and everything in it, 0. Mounted `0x809F0003`; no request, no name or a bad name `0x809F0000`; user below 0 `0x809F0011`. The executable's one caller (`0x02c3e765`) passes no title id and asks again while the answer is `0x809F0014` |
 
 **Stops by name** (not modelled): another title's saves (a title id), the free-space check and its
 required-blocks answer, the backup copy and its "corrupted" marker, sort key 4, and a memory read
-or write past the size set up. `sceSaveDataDelete` and the save data dialog stay unbound until the
-boot reaches them.
+or write past the size set up, a delete of a save that is not there (shadPS4 answers 0 then, which
+is not established for the console), and a host failure to remove a save. The save data dialog
+stays unbound until the boot reaches it.
 
 ## The title's files: `/app0`, `sceKernelStat`, opening and reading (issue #35)
 
@@ -1463,6 +1465,21 @@ hand out is `EBADF`. Any other host error stops by name.
 existing `to` as `rename(2)` does. Paths on two different mounts are `EXDEV` (`rename(2)`: "on
 different logical devices"); on the read-only `/app0` `EROFS`, after the lookup; a missing file or
 directory component `ENOENT` or `ENOTDIR`. Any other host error stops by name.
+
+## The disc map (`sceDiscMapIsRequestOnHDD`, issue #35)
+
+The disc map tells the file library whether part of a file is already on the hard disk or still
+only on the disc (`runtime/syslib/disc_map.c`).
+
+- **Shape:** `sceDiscMapIsRequestOnHDD(const char *path, int64_t offset, int64_t bytes, int32_t
+  *on_hdd)`, as shadPS4's `disc_map.cpp` declares it (a fact only).
+- **The caller:** the bundled file library's one call (`libSceFios2.elf+0x2d71c`) passes a
+  variable preset to 0. On 0 it takes a nonzero variable as on the hard disk; on any other answer
+  it treats the request as not mapped and remembers that the map is unavailable.
+- **The answer:** the runtime serves the title from host files with no disc, so there is no disc
+  bitmap. It answers `0x81100004` ("no bitmap info", numbered in shadPS4's `disc_map_codes.h`),
+  as shadPS4 does, and writes nothing. A missing path or variable stops by name.
+- The library's other import, by hash `ioKMruft1ek`, has no call site and stays unbound.
 
 ## Memory protection queries (`sceKernelQueryMemoryProtection`, issue #34)
 
