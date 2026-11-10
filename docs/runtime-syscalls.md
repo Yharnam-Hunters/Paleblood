@@ -1495,6 +1495,41 @@ past the mapping.
 - an address outside those mappings (other memory is not tracked yet);
 - a missing structure.
 
+## Unmapping, protecting and typing memory (`sceKernelMunmap`, `sceKernelMprotect`, `sceKernelGetDirectMemoryType`, issue #34)
+
+The shapes are OpenOrbis `libkernel.h`'s: `sceKernelMunmap(address, length)`,
+`sceKernelMprotect(address, length, protection)` and `sceKernelGetDirectMemoryType(start, &type,
+&range_start, &range_end)`.
+
+**What the executable does:**
+- It frees a direct map with `sceKernelMunmap` and then `sceKernelReleaseDirectMemory`
+  (`0x024826fd`, `0x0248270c`), the order the release needs.
+- `0x02d03214` wraps `sceKernelMprotect` and answers whether the result was 0.
+- `0x02abae74` passes the pool offset `sceKernelVirtualQuery` gave for an address to
+  `sceKernelGetDirectMemoryType` and only tests whether the type is 3 (write-combined garlic).
+
+**What the runtime does:**
+- **Munmap** is FreeBSD's [`munmap(2)`](https://man.freebsd.org/cgi/man.cgi?query=munmap&sektion=2&manpath=FreeBSD+9.0-RELEASE).
+  A zero length is `EINVAL` (FreeBSD's `sys_munmap`; shadPS4's `sceKernelMunmap` answers the
+  same, facts only). It removes one whole mapping the runtime made: the host mapping goes, and a
+  direct map no longer holds its range, which can then be released. A GPU-visible range can be
+  mapped again at its GPU address. The address is not handed out again for other maps.
+- **Mprotect** is FreeBSD's [`mprotect(2)`](https://man.freebsd.org/cgi/man.cgi?query=mprotect&sektion=2&manpath=FreeBSD+9.0-RELEASE):
+  the mapping takes the new protection, the CPU bits on the host and the GPU bits recorded, as for a
+  map. The queries answer the new protection.
+- **GetDirectMemoryType** answers the memory type of the allocated range that holds the pool
+  offset, and that range's start and end (just past it, as for `sceKernelVirtualQuery`).
+
+**What stops by name:**
+- part of a mapping, more than one, or memory the runtime did not map (other memory is not tracked
+  yet);
+- an offset outside every allocated range (shadPS4 answers `ENOENT`; no public source settles it);
+- protection beyond CPU and GPU read and write;
+- a missing variable.
+
+`sceKernelReleaseFlexibleMemory` stays unimplemented: shadPS4 gives the pages back and keeps the
+mapping, and no public source says whether the PS4 does that or unmaps.
+
 ## GNM: binding vertex and pixel shaders (`sceGnmSetVsShader`, `sceGnmSetPsShader`, issue #39)
 
 `sceGnmSetVsShader` and `sceGnmUpdateVsShader` take (command buffer, dwords, registers, modifier);
