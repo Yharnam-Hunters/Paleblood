@@ -89,7 +89,7 @@ Targets are limited to 4096 pixels per axis; viewport X/Y scales and translation
 finite and within ±4096, with a positive X scale and a nonzero Y scale.
 Only vertex input profile 0, with vertex ID in VGPR0, is modeled by the common translator.
 The other three `VGPR_COMP_CNT` encodings are rejected explicitly; their additional hardware
-inputs cannot be assumed to contain zero. This limit is separate from unsupported fetch-shader calls.
+inputs cannot be assumed to contain zero. Fetch calls use the same vertex-ID input profile.
 The recorded viewport clip bounds must be standard 0 and 1 (either signed zero is accepted);
 other bounds stop explicitly. Position and enabled clip-distance vectors require float4 export
 formats. Both clip vectors, including sparse selections of all eight distances, are supported;
@@ -153,9 +153,25 @@ Unsupported formats, shader instructions, shader inputs, layered/multisampled ta
 target reallocations return a named error. Blending, depth and unrecorded state remain outside
 this profile. Image and sampler bindings stay empty in this draw backend;
 `image_load`, `image_load_mip` and `image_sample` return named translation errors, including
-image descriptors loaded from memory. Fetch-shader callees are also unbound in this backend:
-`s_swappc_b64` returns a named translation error. Triangle strips and depth-target registers
+image descriptors loaded from memory. Triangle strips and depth-target registers
 remain outside this profile. Rectangle lists need a geometry expansion path and are rejected.
+
+## Vertex fetch calls
+
+A vertex program can call one straight-line fetch program through `s_swappc_b64` and return
+through its saved SGPR pair with `s_setpc_b64`. The backend reuses `gcn_call_sgpr` and the
+common vertex translator; it does not emulate calls separately. The target must come from
+an untouched, fully written pair within the declared vertex user data. Its 48-bit address
+must be dword aligned and inside the shared pool. The common bounded decoder includes the
+complete return instruction. Branches, nested calls, images, a changed target before the
+call, and writes to the saved return pair remain outside the common fetch contract.
+
+The target is resolved again at each draw, before a cache lookup or program read. The cache
+also compares complete live caller and fetch bytes, their addresses and the existing shader
+layout. Changing a target or overwriting either program therefore cannot select a stale
+translation. Descriptor-table pointers are read by the translated fetch program from the
+vertex stage's data; the normal required-versus-written checks also apply on cache hits and
+after reset. Auto-index and both supported indexed draw forms share this path.
 
 ## Buffer compute
 
@@ -220,7 +236,8 @@ recorder buffer isolation, recorder submission resets, null pixel shaders, 40-bi
 formats and swizzles in both stages, packed UNORM8 buffer loads, canonical logical index-size
 bounds and raw-header tagging, pool-end scalar loads with constant selectors, skipped-store
 canaries, format/VCC runtime-stop recovery, pixel-position/whole-quad guards, unbound pixel-image
-and sampling operations, descriptors loaded from memory, unbound fetch calls, strip/depth-target
+and sampling operations, descriptors loaded from memory, fetch rendering through live target and
+program changes, partial target writes, last-pair and pool-end guards, straight-line call refusals, strip/depth-target
 guards, required-versus-written user SGPRs with explicit zero and cached-reset checks, compute input/profile guards and rectangle-list refusals, readback bounds and mapping lifetime.
 It fails if no suitable GPU exists.
 Hosted CI compiles this code for ARM64 and x86-64; it does not run these GPU checks. A successful
