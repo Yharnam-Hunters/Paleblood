@@ -18,6 +18,15 @@
      0x014764a0  a pointer to words and their count (fifth argument), after the marker 0x6875000d.
    GCN's buffer and sampler descriptors are four words and its image descriptors eight; which the
    markers name is not established here.
+   The compute command buffer's writers (the class whose dispatch writer is 0x0148a350) take no stage:
+   they always write COMPUTE_USER_DATA_0 (0x240) plus the slot, with the same packets and markers, and
+   their arguments are (command buffer, slot, then the same):
+     0x0148ada0  one 32-bit value;                      0x0148ac90  one 64-bit value (a pointer);
+     0x0148aad0  four words after the marker 0x68750004; 0x0148ac00  four words after 0x68750006;
+     0x0148ab60  eight words after 0x68750005;           0x0148ad00  counted words after 0x6875000d.
+   Unobserved, a compute pass on that buffer ran with whatever user data the record held from before
+   (the LUT pass read its constant table through another pass's pointer, and now and then faulted
+   the GPU).
    The dispatch writers 0x01474c50 and 0x0148a350 (command buffer, x, y, z) write DISPATCH_DIRECT
    for x x y x z workgroups with initiator 1 (COMPUTE_SHADER_EN), then an event or a NOP. Their two
    relatives 0x01474d10 and 0x0148a410 take a fifth argument that sets the initiator's low two bits;
@@ -87,6 +96,20 @@ static void counted_words(const uint64_t args[RT_OBSERVED_ARGUMENTS])
         rt_observe_user_data(buffer, (uint32_t)(cursor - buffer), (rt_shader_stage)(uint32_t)args[ARGUMENT_STAGE], slot + done, words + done, n);
     }
 }
+
+/* The compute command buffer's writers: the same calls with the stage fixed and every later argument
+   one register earlier. */
+static void as_compute(const uint64_t args[RT_OBSERVED_ARGUMENTS], void (*observe_with_stage)(const uint64_t args[RT_OBSERVED_ARGUMENTS]))
+{
+    const uint64_t shifted[RT_OBSERVED_ARGUMENTS] = {args[0], RT_STAGE_COMPUTE, args[1], args[2], args[3], args[4]};
+    observe_with_stage(shifted);
+}
+
+static void compute_one_word(const uint64_t args[RT_OBSERVED_ARGUMENTS]) { as_compute(args, one_word); }
+static void compute_two_words(const uint64_t args[RT_OBSERVED_ARGUMENTS]) { as_compute(args, two_words); }
+static void compute_four_words(const uint64_t args[RT_OBSERVED_ARGUMENTS]) { as_compute(args, four_words); }
+static void compute_eight_words(const uint64_t args[RT_OBSERVED_ARGUMENTS]) { as_compute(args, eight_words); }
+static void compute_counted_words(const uint64_t args[RT_OBSERVED_ARGUMENTS]) { as_compute(args, counted_words); }
 
 static void dispatch(const uint64_t args[RT_OBSERVED_ARGUMENTS])
 {
@@ -199,5 +222,11 @@ const rt_observe_hook game_observe_hooks[] = {
     {0x01476420, 126, "render_set_user_data_1_word", one_word},
     {0x014764a0, 184, "render_set_user_data_words", counted_words},
     {0x0148a350, 177, "render_dispatch_compute_buffer", dispatch},
+    {0x0148aad0, 132, "render_compute_user_data_4_words_marker_4", compute_four_words},
+    {0x0148ab60, 148, "render_compute_user_data_8_words", compute_eight_words},
+    {0x0148ac00, 132, "render_compute_user_data_4_words_marker_6", compute_four_words},
+    {0x0148ac90, 109, "render_compute_user_data_2_words", compute_two_words},
+    {0x0148ad00, 146, "render_compute_user_data_words", compute_counted_words},
+    {0x0148ada0, 102, "render_compute_user_data_1_word", compute_one_word},
 };
 const unsigned game_observe_hook_count = sizeof game_observe_hooks / sizeof *game_observe_hooks;
