@@ -176,6 +176,24 @@ static void sampled_images(rt_executor *x)
         }
     }
 
+    /* A mip-mapped image (LAST_LEVEL 2, linear): its levels follow level 0 as rt_tiling_mip_chain lays
+       them out, and a draw sampling at level 0 sees level 0's texels; with level 0 changed it does not */
+    {
+        enum { MIPPED = 0x900000 };
+        rt_tiling_level chain[3];
+        CHECK(rt_tiling_mip_chain(LINEAR_ALIGNED, 4, 1, 0, WIDTH, HEIGHT, WIDTH, HEIGHT, 3, 1, chain, error, sizeof error) == 0);
+        for (uint32_t i = 0; i < WIDTH * HEIGHT; i++) ((uint32_t *)(guest + MIPPED))[i] = reference_texel(i % WIDTH % SIZE, i / WIDTH % SIZE);
+        memset(guest + MIPPED + chain[1].offset, 0x55, chain[2].offset - chain[1].offset + WIDTH * HEIGHT); /* other levels: grey */
+        uint32_t mipped[8];
+        image_descriptor(mipped, at(MIPPED), 10, 0, WIDTH, HEIGHT);
+        mipped[3] |= LINEAR_ALIGNED << 20 | 2u << 16; /* LAST_LEVEL 2 */
+        const int mip_drawn = draw_texels(x, at(TEXEL_TARGET), mipped, error, sizeof error);
+        if (mip_drawn) fprintf(stderr, "mip-mapped image: %s\n", error);
+        CHECK(mip_drawn == 0 && differing_pixels(x, at(TEXEL_TARGET)) == 0);
+        memset(guest + MIPPED, 0x55, WIDTH * HEIGHT * 4); /* mutant: level 0 grey too */
+        CHECK(draw_texels(x, at(TEXEL_TARGET), mipped, error, sizeof error) == 0 && differing_pixels(x, at(TEXEL_TARGET)) > 0);
+    }
+
     /* the guest rewrites the texels: the next draw reads the new ones */
     for (uint32_t i = 0; i < WIDTH * HEIGHT; i++) ((uint32_t *)(guest + LINEAR))[i] = reference_texel(i % WIDTH % SIZE, i / WIDTH % SIZE);
     CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
