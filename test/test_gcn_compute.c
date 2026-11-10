@@ -5,8 +5,9 @@
    manual.
 
    Buffers are reached as the translator expects: through buffer descriptors in the user data
-   (push constants) whose base address is the Vulkan buffer's device address. Without a Vulkan 1.2
-   device with buffer device addresses the test reports itself skipped (exit 77). Runs on the
+   (push constants) with 40-bit guest bases translated to the Vulkan buffer's device addresses.
+   The separate --wave64 test needs a native 64-lane subgroup for wave-wide branches. Without
+   the required device capability, that test reports itself skipped (exit 77). Runs on the
    maintainer's machine hold the shared GPU lock (tools/run_game.sh's /mnt/sdb1/bb/gpu.lock). */
 #include "runtime/gcn_spirv.h"
 
@@ -78,12 +79,23 @@ static uint32_t bits(float f)
     return u;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    const int wave64_only = argc == 2 && strcmp(argv[1], "--wave64") == 0;
+    if (argc != 1 && !wave64_only) return 2;
     gpu g = {0};
     if (open_gpu(&g)) {
         fprintf(stderr, "no Vulkan 1.2 device with buffer device addresses: skipped\n");
         return SKIPPED;
+    }
+    if (wave64_only) {
+        VkPhysicalDeviceSubgroupProperties subgroup = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
+        VkPhysicalDeviceProperties2 properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &subgroup};
+        vkGetPhysicalDeviceProperties2(g.physical, &properties);
+        if (subgroup.subgroupSize != LANES) {
+            fprintf(stderr, "wave-wide ballot requires a 64-lane subgroup; device reports %u: skipped\n", subgroup.subgroupSize);
+            return SKIPPED;
+        }
     }
     gpu_buffer in, out;
     if (make_buffer(&g, &in) || make_buffer(&g, &out)) {
@@ -100,6 +112,16 @@ int main(void)
     }
     float *const in_floats = in.mapped;
     uint32_t *const in_words = in.mapped, *const out_words = out.mapped;
+
+    if (wave64_only) {
+        CHECK(run(&g, compare_exec, sizeof compare_exec / sizeof compare_exec[0], user) == 0);
+        for (int i = 0; i < LANES; i++) {
+            CHECK(out_words[2 * i] == (i < 8 ? 1u : 0u) + 64u);
+            CHECK(out_words[2 * i + 1] == 5u);
+        }
+        vkDeviceWaitIdle(g.device);
+        return failures != 0;
+    }
 
     /* out[i] = in[i] * 2.5 + 1 */
     for (int i = 0; i < LANES; i++) in_floats[i] = (float)i * 0.5f;
@@ -195,13 +217,6 @@ int main(void)
     memset(out.mapped, 0, BUFFER_BYTES);
     CHECK(run(&g, vector_loop, sizeof vector_loop / sizeof vector_loop[0], user) == 0);
     for (int i = 0; i < LANES; i++) CHECK(out_words[i] == 10u * ((uint32_t)i & 3));
-
-    memset(out.mapped, 0, BUFFER_BYTES);
-    CHECK(run(&g, compare_exec, sizeof compare_exec / sizeof compare_exec[0], user) == 0);
-    for (int i = 0; i < LANES; i++) {
-        CHECK(out_words[2 * i] == (i < 8 ? 1u : 0u) + 64u);
-        CHECK(out_words[2 * i + 1] == 5u);
-    }
 
     memset(out.mapped, 0xaa, BUFFER_BYTES);
     CHECK(run(&g, masked_store, sizeof masked_store / sizeof masked_store[0], user) == 0);
