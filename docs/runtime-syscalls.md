@@ -1250,6 +1250,58 @@ flexible memory to a budget. The budget is not established and the runtime does 
 - a length that is not whole 16 KiB pages;
 - a missing variable.
 
+## Sockets, the resolver and HTTP requests, offline (`libSceNet`, `libSceHttp`, issue #41)
+
+**Sockets** are FreeBSD's socket calls under SCE names (shapes from OpenOrbis `net.h` and shadPS4's
+`net.cpp`, facts only). A failure answers `0x80410100` plus the error number, with the number in
+the network errno. The executable expects exactly that: it compares answers with `0x80410123`,
+`0x80410139`, `0x80410109` and `0x80410104` at `0x02f9a8d0`, and errno with 35 at `0x011c7c60`.
+
+A socket can be created, set up, bound and listened on, as FreeBSD 9 does with only its loopback
+interface. shadPS4, the droogie bbhost runtime and PS4Recomp also create sockets. A family of
+native ports refuses every socket call with ENETUNREACH instead, which breaks the executable's
+Havok code: its bind and listen checks test for -1. Nothing ever connects or arrives:
+- **Connect and send.** Connect, or a datagram to a non-loopback address, answers ENETUNREACH at
+  once (FreeBSD 9's `in_pcbladdr`). An unconnected stream socket answers ENOTCONN to send and
+  receive. A datagram socket with no destination answers EDESTADDRREQ to send.
+- **Accept and datagram receive.** These answer EWOULDBLOCK on a nonblocking socket (`SO_NBIO`). A
+  blocking socket waits until `sceNetSocketAbort` or `sceNetSocketClose` (EINTR), or until its
+  accept or receive timeout option passes (EWOULDBLOCK, as shadPS4 does). An abort with no waiter
+  answers ENOTBLK.
+- **Bind and listen.** Bind answers EINVAL when the socket is already bound, EADDRNOTAVAIL for an
+  address other than any or loopback, and EADDRINUSE for a port another socket holds, unless the new
+  one set `SO_REUSEADDR` or `SO_REUSEPORT` (FreeBSD 9's `in_pcbbind`). Listen on a datagram socket
+  answers EOPNOTSUPP.
+- **Options.** The executable's options are stored and read back.
+- **Epoll sets.** `sceNetEpollControl` adds a socket to a set (events 1 or 3) or removes it.
+  Answers, from shadPS4: EINVAL for a bad operation or event; EBADF for an unknown set or socket, or
+  for removing a socket the set does not hold; EEXIST for adding one twice. A closed socket leaves
+  every set. Offline nothing ever becomes ready.
+
+**The resolver.** With no DNS server, a name other than `localhost` answers RESOLVER_ENODNS,
+`0x804101e1` (shadPS4's offline resolver). An IPv4 literal is converted unless flag `0x10000` is
+set. A pool that is not live, including the 0 that the HavokScript debugger (`0x00dfd1b0`) passes,
+answers EBADF.
+
+**HTTP requests.** The executable's HTTP manager (`0x013d2740`) builds a connection and a request,
+then sets the content length, timeout and waiting handle. Its state machine (`0x013d2970`) sends,
+and treats any error other than busy, again or timeout as failure. The runtime builds both, with ids
+from 1 that are never reused:
+- `sceHttpSendRequest` answers `0x80431063` (network). PS4Recomp and the native port family answer
+  the same; shadPS4 sends in the background and then answers `0x80431065`. Either way, the job ends
+  failed.
+- The response calls answer `0x80431065`.
+- Ids that are not live answer `0x80431100`, a missing URL `0x80433060`, and NULL results
+  `0x804311fe` (shadPS4's codes).
+
+**What stops by name** (each needs a maintainer ruling or a real network to settle):
+- type 6 peer-to-peer sockets and other families;
+- binding port 0 (the PS4's ephemeral port is not known);
+- connect or datagrams to loopback (no loopback stack);
+- reading an option that was never set (the PS4's defaults are not known);
+- asynchronous resolving, listening while unbound, and abort flags;
+- non-HTTP URLs, methods other than GET, POST and PUT, and full tables.
+
 ## The network errno and epoll sets (`sceNetErrnoLoc`, `sceNetEpoll*`)
 
 Facts from shadPS4's `libSceNet` (`net.cpp`, `guest_net.cpp`,
@@ -1545,6 +1597,51 @@ one on junk input.
 
 **Stops by name:** codecs other than ATRAC9, sample formats other than 16-bit, resampling, format
 inputs and outputs, and the statistics instance.
+
+## No microphone and no voice chat (`libSceAudioIn`, `libSceVoice`, issue #37)
+
+**Microphone input.** The executable's only user is FMOD's PS4 record driver:
+- **Opening.** Its record start (`0x0111c050`) opens a port with
+  `sceAudioInOpen(user, type 0/1/5, index 0, 256 samples, 16000 Hz, param 0 = 16-bit mono)` at
+  `0x0111c11d`. A negative answer is an FMOD error.
+- **Reading.** Its update thread calls `sceAudioInInput` at `0x0111beee` and uses the answer as a
+  sample count to advance a ring buffer, so an open port must never answer an error there.
+- **Closing.** The port is closed at `0x0111c25b`, and the answer is ignored.
+
+The facts come from shadPS4's `audioin.cpp` and `audioin_error.h` (facts only), whose codes match
+the PS Vita SDK's `audioin.h`:
+- A port opens without a device and reads silence. PS4Recomp and the droogie bbhost runtime agree;
+  the bloodborne-native port family answers `0x80260109` (not opened) instead, so the majority answer
+  is used.
+- The length must be 1 to 2048 samples (`0x80260102`), the frequency 16000 or 48000 (`0x80260103`),
+  and the param 0 or 1, 16-bit mono or stereo (`0x80260106`).
+- An unknown handle is `0x80260101`, a NULL buffer `0x80260105`.
+
+**What the runtime does with the microphone:**
+- Open hands out handles from 1.
+- Input writes the port's samples of silence, waits for the time they last (length / frequency),
+  and answers the sample count.
+- Close frees the handle.
+- Stops by name: a type other than 0, 1 and 5; an index other than 0; a full table.
+
+**Voice chat.** At `0x010c8000` the executable initializes the library (`sceVoiceInit(param,
+100)`). It then creates a microphone port (type 0) and a speaker port (type 5) for the initial
+user. Its microphone loop (`0x010c8a50`) reads only while `sceVoiceGetPortInfo` reports bytes.
+Peer ports, connections, Start and the incoming packet path need an online peer. Teardown ignores
+every answer.
+
+shadPS4 (`voice.cpp`, `voice.h`), PS4Recomp (`ps4_voice.c`), the droogie bbhost runtime and the
+bloodborne-native port family all answer success with no audio behind it (facts only). The port
+info is 0x20 bytes: the byte count is at 0x10, and the frame size at 0x14 is 1 (shadPS4), which the
+incoming packet path divides by. Their error codes disagree (shadPS4 `0x804e08xx`, the PS Vita's;
+PS4Recomp `0x80233xxx`), so misuse stops by name.
+
+**What the runtime does with voice chat:**
+- **Answers 0.** Init; CreatePort, which hands out the lowest free id from 0; DeletePort, for any
+  id, since the executable also deletes `0xff`; Connect, Disconnect, Start and Stop; End, which
+  forgets every port.
+- **GetPortInfo** writes the type, frame size 1 and byte count 0.
+- **ReadFromOPort** reads 0 bytes, and **WriteToIPort** discards the data.
 
 ## Audio output (`sceAudioOutInit`, `sceAudioOutOpen`, `sceAudioOutSetVolume`, `sceAudioOutOutput`, issue #37)
 
@@ -2062,6 +2159,43 @@ Paleblood's `docs/RENDERER.md`).
 | The vertex shader's modifier | replaces `PGM_RSRC1`'s SGPR count (bits 6-9) and input VGPR count (bits 24-25): (`PGM_RSRC1 & 0xfcfffc3f`) OR the modifier, as shadPS4 applies it. The game's vertex shaders pass one (they call a fetch shader). A modifier with any other bit stops by name |
 | A null pixel shader block | no pixel shader (a depth-only pass): recorded as such, and a draw with it stops in the renderer |
 | No vertex shader registers | stops by name |
+
+## GNM: queries, debug calls and freeing compute queues (issue #39)
+
+- **Compute queues.**
+  - `sceGnmMapComputeQueueWithPriority` maps as `sceGnmMapComputeQueue`. The runtime runs no GPU
+    queues, so the priority changes nothing (shadPS4, the deadinside28 port and droogie bbhost
+    ignore it too).
+  - `sceGnmUnmapComputeQueue(id)` (teardown at `0x0148c81c`, answer ignored) forgets the queue and
+    answers 0. A later map takes the freed slot first. An id that names no mapped queue stops by
+    name.
+- **`sceGnmAreSubmitsAllowed`** answers 1. The console refuses submissions only while the system
+  holds the GPU (shadPS4: "no submission lock held"; bbhost answers 1).
+- **`sceGnmFlushGarlic`** is a memory fence. The runtime's GPU reads the CPU's memory.
+- **`sceGnmGetEqEventType(event)`** answers the kevent's data field (offset 16; shadPS4 and
+  deadinside28 agree). A NULL event stops by name.
+- **`sceGnmSetGsRingSizes(esgs, gsvs)`** answers 0 for sizes from 4 to 8 MiB in whole MiB, and
+  `0x08000000` otherwise (shadPS4's check). No geometry shader stage runs.
+- **The mip statistics report** follows shadPS4.
+  - Setup answers `0x80000001` for no buffer or one not 64-byte aligned. shadPS4 also refuses
+    addresses past 40 bits, the console GPU's range; the runtime's memory is the host's, so that
+    check is left out.
+  - Setup answers `0x80000002` for a size under 0x1040 or one not 0x40 past a 2 KiB multiple.
+  - Otherwise setup zeroes the buffer, writes 0x40 to its first word and answers 0. Request and
+    Disable answer 0.
+- **The Razor capture tools** exist only on development kits. The retail answers (shadPS4):
+  - `sceRazorIsLoaded` and `sceGnmDriverCaptureInProgress` answer 0;
+  - `sceGnmDriverTriggerCapture` answers `0x80d15001`;
+  - the four `sceRazorCapture*` calls answer `0x80d1500f`.
+
+**Still stopping by name** (each waits on a maintainer ruling or the renderer):
+- **`sceGnmAddEqEvent` and `sceGnmDeleteEqEvent`.** They need end-of-pipe interrupts raised from
+  the GPU's completion steps, which is renderer territory.
+- **`sceGnmGetEqTimeStamp` and `sceGnmDebugHardwareStatus`.** Their shapes are not established
+  (shadPS4 and bbhost disagree).
+- **The two `sceGnmLogicalCu*` calls.** Every caller is gated on `sceGnmIsUserPaEnabled`, which
+  answers 0. The physical mapping depends on each console's fused-off compute units.
+- **`sceGnmRequestFlipAndSubmitDone`.** It is on the flip and submit path.
 
 ## GNM: compute queues (`sceGnmMapComputeQueue`, issue #39)
 

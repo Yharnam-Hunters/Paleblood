@@ -3225,6 +3225,21 @@ int main(void)
             CHECK(eq_wait_fn(flips, ev, 1, &n, NULL) == 0 && n == 1 && (memcpy(&data, ev + 16, 8), data == 79));
             CHECK(vo_status_fn(vo_handle, st) == 0 && (memcpy(&arg, st + 0x18, 8), arg == 79));
             CHECK(died_in_fatal(gnm_submit_unknown));
+            /* 70 buffers in one call, as the character creation screen submits them: each one's
+               end-of-work write lands, in order (the last value stays) */
+            {
+                enum { MANY = 70 };
+                static uint32_t many[MANY][6];
+                void *many_buffers[MANY];
+                uint32_t many_bytes[MANY];
+                for (uint32_t k = 0; k < MANY; k++) {
+                    const uint32_t eop_words[6] = {0xc0044700u, 0x528, (uint32_t)eop, (uint32_t)(eop >> 32) | 0x40000000u, k + 1, 0x1};
+                    memcpy(many[k], eop_words, sizeof eop_words);
+                    many_buffers[k] = many[k], many_bytes[k] = sizeof many[k];
+                }
+                end_of_frame = 0;
+                CHECK(gnm_submit_fn(MANY, many_buffers, many_bytes, NULL, NULL) == 0 && end_of_frame == 0x100000000ull + MANY);
+            }
             /* the constant arrays present with empty entries, as 0x0149bf3a passes them: no constant buffer */
             void *no_constants[1] = {NULL};
             uint32_t no_constant_bytes[1] = {0};
