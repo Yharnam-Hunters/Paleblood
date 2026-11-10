@@ -500,23 +500,29 @@ static uint32_t half_toward_zero(translator *t, uint32_t x)
     return r;
 }
 
-/* A float's bits as a half's (in the low 16 bits), rounded to nearest, ties to even, IEEE 754's default
-   rounding: normal and subnormal results round on the dropped mantissa bits (a carry may step the
-   exponent, up to infinity), magnitudes from 65520 on are infinity, NaN stays a quiet NaN. */
-static uint32_t half_nearest_even(translator *t, uint32_t x)
+/* A float's bits as a small float's (in the low bits): 5 exponent bits (bias 15) and mantissa_bits of
+   mantissa (10: a half; 6 and 5: the unsigned 11- and 10-bit floats of 10_11_11), rounded to nearest,
+   ties to even, IEEE 754's default rounding: normal and subnormal results round on the dropped
+   mantissa bits (a carry may step the exponent, up to infinity), larger magnitudes are infinity, NaN
+   stays a quiet NaN. An unsigned format (no sign bit) takes negative numbers as 0. */
+static uint32_t small_float_nearest_even(translator *t, uint32_t x, unsigned mantissa_bits, int unsigned_format)
 {
-    enum { F32_EXPONENT_SPECIAL = 255, F32_FIRST_HALF_NORMAL = 113, F32_FIRST_ROUNDED = 102, F32_TO_F16_BIAS = 112,
-           MANTISSA_DROP = 13, HALF_INFINITY = 0x7c00, HALF_QUIET = 0x200, F32_IMPLICIT_ONE = 0x800000, HALF_EXPONENT_SHIFT = 10 };
+    enum { F32_EXPONENT_SPECIAL = 255, F32_FIRST_SMALL_NORMAL = 113, F32_TO_SMALL_BIAS = 112, SMALL_EXPONENT_ALL = 31,
+           F32_MANTISSA_BITS = 23, F32_IMPLICIT_ONE = 0x800000, SUBNORMAL_SHIFT_BASE = 136, ROUNDED_RANGE = 24 };
+    const uint32_t infinity = SMALL_EXPONENT_ALL << mantissa_bits, quiet = 1u << (mantissa_bits - 1);
 #define U(op, a, b) value(t, op, t_uint(t), 2, (a), (b))
 #define AT_LEAST_E(e) value(t, SPV_OP_U_GREATER_THAN_EQUAL, t_bool(t), 2, exponent, konst(t, (e)))
-    const uint32_t sign = U(SPV_OP_BITWISE_AND, U(SPV_OP_SHIFT_RIGHT_LOGICAL, x, konst(t, 16)), konst(t, 0x8000));
-    const uint32_t exponent = U(SPV_OP_BITWISE_AND, U(SPV_OP_SHIFT_RIGHT_LOGICAL, x, konst(t, 23)), konst(t, 0xff));
+    const uint32_t negative = value(t, SPV_OP_I_NOT_EQUAL, t_bool(t), 2, U(SPV_OP_SHIFT_RIGHT_LOGICAL, x, konst(t, 31)), konst(t, 0));
+    const uint32_t sign = unsigned_format ? konst(t, 0) : U(SPV_OP_SHIFT_LEFT_LOGICAL, U(SPV_OP_SHIFT_RIGHT_LOGICAL, x, konst(t, 31)),
+                                                             konst(t, mantissa_bits + 5));
+    const uint32_t exponent = U(SPV_OP_BITWISE_AND, U(SPV_OP_SHIFT_RIGHT_LOGICAL, x, konst(t, F32_MANTISSA_BITS)), konst(t, 0xff));
     const uint32_t mantissa = U(SPV_OP_BITWISE_AND, x, konst(t, 0x7fffff));
-    /* the significand to round, and how many bits it drops: 13 for a normal half, 14-24 for a subnormal */
-    const uint32_t normal = AT_LEAST_E(F32_FIRST_HALF_NORMAL);
+    /* the significand to round, and how many bits it drops: 23 - mantissa_bits for a normal result, more
+       (up to 24) for a subnormal one */
+    const uint32_t normal = AT_LEAST_E(F32_FIRST_SMALL_NORMAL);
     const uint32_t significand = value(t, SPV_OP_SELECT, t_uint(t), 3, normal, mantissa, U(SPV_OP_BITWISE_OR, mantissa, konst(t, F32_IMPLICIT_ONE)));
-    const uint32_t drop = value(t, SPV_OP_SELECT, t_uint(t), 3, normal, konst(t, MANTISSA_DROP),
-                                U(SPV_OP_BITWISE_AND, U(SPV_OP_I_SUB, konst(t, 126), exponent), konst(t, 31)));
+    const uint32_t drop = value(t, SPV_OP_SELECT, t_uint(t), 3, normal, konst(t, F32_MANTISSA_BITS - mantissa_bits),
+                                U(SPV_OP_BITWISE_AND, U(SPV_OP_I_SUB, konst(t, SUBNORMAL_SHIFT_BASE - mantissa_bits), exponent), konst(t, 31)));
     const uint32_t kept = U(SPV_OP_SHIFT_RIGHT_LOGICAL, significand, drop);
     const uint32_t remainder = U(SPV_OP_BITWISE_AND, significand, U(SPV_OP_I_SUB, U(SPV_OP_SHIFT_LEFT_LOGICAL, konst(t, 1), drop), konst(t, 1)));
     const uint32_t half_way = U(SPV_OP_SHIFT_LEFT_LOGICAL, konst(t, 1), U(SPV_OP_I_SUB, drop, konst(t, 1)));
@@ -524,22 +530,27 @@ static uint32_t half_nearest_even(translator *t, uint32_t x)
                                     value(t, SPV_OP_LOGICAL_AND, t_bool(t), 2, value(t, SPV_OP_I_EQUAL, t_bool(t), 2, remainder, half_way),
                                           value(t, SPV_OP_I_NOT_EQUAL, t_bool(t), 2, U(SPV_OP_BITWISE_AND, kept, konst(t, 1)), konst(t, 0))));
     const uint32_t biased = value(t, SPV_OP_SELECT, t_uint(t), 3, normal,
-                                  U(SPV_OP_SHIFT_LEFT_LOGICAL, U(SPV_OP_I_SUB, exponent, konst(t, F32_TO_F16_BIAS)), konst(t, HALF_EXPONENT_SHIFT)),
+                                  U(SPV_OP_SHIFT_LEFT_LOGICAL, U(SPV_OP_I_SUB, exponent, konst(t, F32_TO_SMALL_BIAS)), konst(t, mantissa_bits)),
                                   konst(t, 0));
     uint32_t magnitude = U(SPV_OP_I_ADD, U(SPV_OP_BITWISE_OR, biased, kept), value(t, SPV_OP_SELECT, t_uint(t), 3, round_up, konst(t, 1), konst(t, 0)));
-    magnitude = value(t, SPV_OP_SELECT, t_uint(t), 3, value(t, SPV_OP_U_GREATER_THAN_EQUAL, t_bool(t), 2, magnitude, konst(t, HALF_INFINITY)),
-                      konst(t, HALF_INFINITY), magnitude);
-    magnitude = value(t, SPV_OP_SELECT, t_uint(t), 3, AT_LEAST_E(F32_FIRST_ROUNDED), magnitude, konst(t, 0));
-    magnitude = value(t, SPV_OP_SELECT, t_uint(t), 3, AT_LEAST_E(F32_FIRST_HALF_NORMAL + 31), konst(t, HALF_INFINITY), magnitude);
+    magnitude = value(t, SPV_OP_SELECT, t_uint(t), 3, value(t, SPV_OP_U_GREATER_THAN_EQUAL, t_bool(t), 2, magnitude, konst(t, infinity)),
+                      konst(t, infinity), magnitude);
+    magnitude = value(t, SPV_OP_SELECT, t_uint(t), 3, AT_LEAST_E(SUBNORMAL_SHIFT_BASE - mantissa_bits - ROUNDED_RANGE), magnitude, konst(t, 0));
+    magnitude = value(t, SPV_OP_SELECT, t_uint(t), 3, AT_LEAST_E(F32_FIRST_SMALL_NORMAL + SMALL_EXPONENT_ALL), konst(t, infinity), magnitude);
+    if (unsigned_format) magnitude = value(t, SPV_OP_SELECT, t_uint(t), 3, negative, konst(t, 0), magnitude);
     const uint32_t nan = value(t, SPV_OP_I_NOT_EQUAL, t_bool(t), 2, mantissa, konst(t, 0));
     const uint32_t special = value(t, SPV_OP_SELECT, t_uint(t), 3, nan,
-                                   U(SPV_OP_BITWISE_OR, konst(t, HALF_INFINITY | HALF_QUIET), U(SPV_OP_SHIFT_RIGHT_LOGICAL, mantissa, konst(t, MANTISSA_DROP))),
-                                   konst(t, HALF_INFINITY));
+                                   U(SPV_OP_BITWISE_OR, konst(t, infinity | quiet),
+                                     U(SPV_OP_SHIFT_RIGHT_LOGICAL, mantissa, konst(t, F32_MANTISSA_BITS - mantissa_bits))),
+                                   value(t, SPV_OP_SELECT, t_uint(t), 3, unsigned_format ? negative : spirv_constant_bool(&t->m, 0),
+                                         konst(t, 0), konst(t, infinity)));
     magnitude = value(t, SPV_OP_SELECT, t_uint(t), 3, AT_LEAST_E(F32_EXPONENT_SPECIAL), special, magnitude);
 #undef AT_LEAST_E
 #undef U
     return value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, sign, magnitude);
 }
+
+static uint32_t half_nearest_even(translator *t, uint32_t x) { return small_float_nearest_even(t, x, 10, 0); }
 
 /* A bit field: width bits of data from bit offset (0-31) up, zero- or sign-extended. A width of 0
    gives 0; 32 or more takes everything from the offset up. The signed form shifts arithmetically,
@@ -1165,7 +1176,7 @@ enum { VSHARP_FORMAT_WORD = 3, DST_SEL_BITS = 12, DST_SEL_IDENTITY = 4 | 5 << 3 
 
 static uint32_t t_vec4(translator *t) { return spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_float(t), 4}, 2); }
 
-enum { DATA_FORMAT_8_8_8_8 = 10, DATA_FORMAT_16_16_16_16 = 12, NUM_FORMAT_UNORM = 0, DST_SEL_X = 4 };
+enum { DATA_FORMAT_10_11_11 = 6, DATA_FORMAT_8_8_8_8 = 10, DATA_FORMAT_16_16_16_16 = 12, NUM_FORMAT_UNORM = 0, DST_SEL_X = 4 };
 
 /* Writes a run-time stop code to the stop word (runtime/gcn_spirv.h). */
 static void runtime_stop(translator *t, uint32_t code)
@@ -1347,7 +1358,10 @@ static void checked_store_dword(translator *t, const buffer_range *r, uint32_t b
      established);
    - a four-component store to 16_16_16_16 float with DST_SEL a permutation: the swizzle undone as for
      8_8_8_8, each component a half rounded to nearest even (IEEE 754's default; shadPS4 packs these
-     with packHalf2x16), two to a dword, x first.
+     with packHalf2x16), two to a dword, x first;
+   - a store to 10_11_11 float with its three components in place: unsigned 11-, 11- and 10-bit floats
+     (x in bits 0-10, y 11-21, z 22-31, as shadPS4's PackUfloat10_11_11 lays them out), rounded to
+     nearest even, negative numbers 0.
    Anything else writes a run-time stop code (runtime/gcn_spirv.h) and touches no memory. */
 static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t components, int load_op, uint32_t base, uint32_t offset,
                                      const buffer_range *range, unsigned vdata)
@@ -1415,8 +1429,18 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
                                                    equals(t, num_format, konst(t, NFMT_FLOAT))),
                                            equals(t, seen, konst(t, 0xf)))
                                     : spirv_constant_bool(&t->m, 0);
+    /* a store to 10_11_11 float (unsigned floats: x in bits 0-10 and y in 11-21 with 6 mantissa bits,
+       z in 22-31 with 5; shadPS4's PackUfloat10_11_11 lays them out the same) with its three components
+       in place; a fourth data component has nowhere to go */
+    uint32_t in_place3 = spirv_constant_bool(&t->m, 1);
+    for (unsigned c = 0; c < 3; c++) in_place3 = both(t, in_place3, equals(t, select[c], konst(t, DST_SEL_X + c)));
+    const uint32_t float_10_11_11_store = !load_op && components >= 3
+                                              ? both(t, both(t, equals(t, data_format, konst(t, DATA_FORMAT_10_11_11)),
+                                                             equals(t, num_format, konst(t, NFMT_FLOAT))),
+                                                     in_place3)
+                                              : spirv_constant_bool(&t->m, 0);
     /* neither: the stop code, from any active lane */
-    const uint32_t done = either(t, either(t, either(t, raw, packed_store), packed_load), half_store);
+    const uint32_t done = either(t, either(t, either(t, either(t, raw, packed_store), packed_load), half_store), float_10_11_11_store);
     const uint32_t stop = begin_if(t, both(t, exec_bit(t), value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, done)));
     uint32_t code = value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, data_format, konst(t, 8)),
                           value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, num_format, konst(t, 4)));
@@ -1464,6 +1488,17 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
         }
         end_if(t, packed_merge);
         return;
+    }
+    if (components >= 3) {
+        const uint32_t merge = begin_if(t, both(t, exec_bit(t), float_10_11_11_store));
+        const uint32_t x = small_float_nearest_even(t, load(t, t_uint(t), vgpr(t, vdata)), 6, 1);
+        const uint32_t y = small_float_nearest_even(t, load(t, t_uint(t), vgpr(t, vdata + 1)), 6, 1);
+        const uint32_t z = small_float_nearest_even(t, load(t, t_uint(t), vgpr(t, vdata + 2)), 5, 1);
+        const uint32_t packed = value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, x,
+                                      value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, y, konst(t, 11)),
+                                            value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, z, konst(t, 22))));
+        checked_store_dword(t, range, base, offset, 0, packed);
+        end_if(t, merge);
     }
     if (components != 4) return;
 
