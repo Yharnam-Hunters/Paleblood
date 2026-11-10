@@ -703,7 +703,8 @@ int main(void)
     CHECK(rt_executor_read_target(x, at(TARGET), bgra, SIZE + 1, 1, error, sizeof error) == -1);
 
     /* A vertex shader that writes VCC's halves as scalars (as the game's do, before vector writes set
-       VCC): drawn as before; one that then reads VCC as a lane mask stops by name at run time. */
+       VCC): drawn as before; one that then reads VCC as a lane mask stops by name at run time, naming
+       that shader. */
     {
         enum { VCC_CODE = 0x2c00, VCC_TARGET = 0x780000 };
         static uint32_t dead_write[64], read_after[64];
@@ -727,6 +728,11 @@ int main(void)
                 check_triangle(x, at(VCC_TARGET));
             } else {
                 CHECK(drawn == -1 && strstr(error, "read VCC as a lane mask"));
+                /* the stop names the shader that wrote it, though it is checked after the batch */
+                char named[64];
+                snprintf(named, sizeof named, "the vertex shader at %#llx", (unsigned long long)code);
+                if (!strstr(error, named)) fprintf(stderr, "vcc stop: %s\n", error);
+                CHECK(strstr(error, named) != NULL);
             }
         }
     }

@@ -88,12 +88,14 @@ Instead:
        AMD's sizes (2 VGPRs per barycentric pair, 3 for the pull model, 1 for the rest), as AMD's
        register documentation and LLVM's AMDGPU backend have it.
      - **Run-time stops:** some of what a shader does is known only when it runs (a buffer access's
-       data format is its descriptor's). The executor owns a 32-bit stop word whose GPU address is
-       baked into every translation (`error_address`); a shader meeting a case it cannot do exactly
-       writes a code there and skips the access, and the executor checks the word after each
-       dispatch and draw and stops by name (`GCN_RUNTIME_STOP_*`).
-     - **Format buffer accesses** (`buffer_load/store_format_*`): loads from 8_8_8_8 unorm (each byte
-       v / 255, correctly rounded); whole 32-bit components (uint,
+       data format is its descriptor's). The executor owns a 32-bit stop word for each translated
+       shader, whose GPU address is baked into its translation (`error_address`); a shader meeting a
+       case it cannot do exactly writes a code there and skips the access, and the executor checks
+       the words once the work has run and stops by name (`GCN_RUNTIME_STOP_*`), naming the shader.
+     - **Format buffer accesses** (`buffer_load/store_format_*`): loads of 8- and 16-bit components
+       (8, 16, 8_8, 16_16, 8_8_8_8, 16_16_16_16) as uint (zero-extended), sint (sign-extended) and,
+       for 8-bit components, unorm (each byte v / 255, correctly rounded), read byte by byte from any
+       alignment, x first and little-endian; whole 32-bit components (uint,
        sint, float; the format's components in place, as a store only uses their selectors) move as they are, and a four-component store to 8_8_8_8 unorm
        undoes the descriptor's swizzle (shadPS4's rule: the inverse of a load's) and packs as GLSL's
        `packUnorm4x8` (the PS4's rounding of ties is not established). Anything else is a run-time stop.
@@ -383,8 +385,8 @@ Instead:
           GPU. The CPU waits only where it reads what the batch produces: a render target written back
           (before a dispatch, before a draw reads its memory as an image, at the end of the buffer), guest
           memory a dispatch in the batch may have stored to (a descriptor read from memory, a load's
-          comparison), a staging buffer the batch still copies from, and the run-time stop word, which is
-          checked once the batch has run. Each submitted buffer still ends with its batch run, so the CPU
+          comparison), a staging buffer the batch still copies from, and the run-time stop words, which are
+          checked once the batch has run (each shader has its own, so a stop still names its shader). Each submitted buffer still ends with its batch run, so the CPU
           sees everything it drew when the submission returns. On the logo and title screens this alone
           changed no frame count: a profile puts about 75% of the time in the CPU's copies (tiling,
           detiling and comparing render targets), not in waiting.
