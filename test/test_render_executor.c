@@ -264,8 +264,8 @@ static void sampled_images(rt_executor *x)
    with clamping to the last texel gives the ramp's own coordinate between texel centres (1/8 to 7/8)
    and the end texels' values outside; so does MAX_ANISO_RATIO 4 with bilinear filters. Mutants: point
    filtering and wrapping differ; with point minification and bilinear magnification the lookup is
-   magnified (a texel spans four pixels), so it is the bilinear one; a border clamp, anisotropic
-   filters or a depth compare stops by name. */
+   magnified (a texel spans four pixels), so it is the bilinear one, as are anisotropic bilinear
+   filters; a border clamp, a MAX_ANISO_RATIO past 4 or a depth compare stops by name. */
 static int lookup_misses(rt_executor *x, uint64_t target)
 {
     uint32_t bgra[SIZE * SIZE];
@@ -353,13 +353,15 @@ static void sampled_lookup(rt_executor *x)
     static const uint32_t unequal[4] = {0x2, 0, 1u << 20, 0};
     static const uint32_t border[4] = {0x6, 0, 1u << 20 | 1u << 22, 0};
     /* MAX_ANISO_RATIO 4 with bilinear filters: the same as bilinear (the ratio shapes only the
-       anisotropic filters); with anisotropic filters (2) it stops, as does a depth compare */
+       anisotropic filters); anisotropic bilinear filters (3) with ratio 4 (16 samples) magnify as the
+       bilinear one, a ratio past 4 stops, as does a depth compare */
     static const uint32_t ratio_bilinear[4] = {0x2 | 0x2 << 3 | 0x2 << 6 | 4u << 9, 0, 1u << 20 | 1u << 22, 0};
-    static const uint32_t anisotropic[4] = {0x2 | 0x2 << 3 | 0x2 << 6 | 4u << 9, 0, 2u << 20 | 2u << 22, 0};
+    static const uint32_t anisotropic[4] = {0x2 | 0x2 << 3 | 0x2 << 6 | 4u << 9, 0, 3u << 20 | 3u << 22, 0};
+    static const uint32_t past_ratio[4] = {0x2 | 0x2 << 3 | 0x2 << 6 | 5u << 9, 0, 3u << 20 | 3u << 22, 0};
     static const uint32_t depth_compare[4] = {0x2 | 0x2 << 3 | 0x2 << 6 | 3u << 12, 0, 1u << 20 | 1u << 22, 0};
     const uint32_t *const samplers[] = {bilinear_clamped, point_clamped, bilinear_wrapped, unequal, border, ratio_bilinear, anisotropic,
-                                        depth_compare};
-    for (int k = 0; k < 8; k++) {
+                                        depth_compare, past_ratio};
+    for (int k = 0; k < 9; k++) {
         uint32_t user[16] = {0};
         user[2] = (uint32_t)at(TABLE), user[3] = (uint32_t)(at(TABLE) >> 32);
         image_descriptor(user + 4, at(IMAGE), 10, 0, WIDTH, HEIGHT);
@@ -374,9 +376,9 @@ static void sampled_lookup(rt_executor *x)
         CHECK(rt_render_record_user_data(LOOKUP_BUFFER, offset + 0x10, RT_STAGE_PIXEL, 0, user, 8, error, sizeof error) == 0);
         CHECK(rt_render_record_user_data(LOOKUP_BUFFER, offset + 0x20, RT_STAGE_PIXEL, 8, user + 8, 8, error, sizeof error) == 0);
         const int drawn = rt_executor_run(x, LOOKUP_BUFFER, record_triangle_draw(LOOKUP_BUFFER, offset + 0x30), error, sizeof error);
-        if ((k < 3 || k == 5) && drawn) fprintf(stderr, "lookup %d: %s\n", k, error);
-        if (k < 3 || k == 5) CHECK(drawn == 0);
-        if (k == 0 || k == 5) {
+        if ((k < 3 || k == 5 || k == 6) && drawn) fprintf(stderr, "lookup %d: %s\n", k, error);
+        if (k < 3 || k == 5 || k == 6) CHECK(drawn == 0);
+        if (k == 0 || k == 5 || k == 6) {
             const int misses = lookup_misses(x, at(LOOKUP_TARGET));
             if (misses) fprintf(stderr, "lookup: %d pixels differ\n", misses);
             CHECK(misses == 0);
@@ -384,7 +386,7 @@ static void sampled_lookup(rt_executor *x)
         if (k == 1 || k == 2) CHECK(lookup_misses(x, at(LOOKUP_TARGET)) > 0);
         if (k == 3) CHECK(drawn == 0 && lookup_misses(x, at(LOOKUP_TARGET)) == 0); /* magnified: the bilinear filter */
         if (k == 4) CHECK(drawn == -1 && strstr(error, "clamp mode 6"));
-        if (k == 6) CHECK(drawn == -1 && strstr(error, "filters 2 (magnifying)"));
+        if (k == 8) CHECK(drawn == -1 && strstr(error, "MAX_ANISO_RATIO 5"));
         if (k == 7) CHECK(drawn == -1 && strstr(error, "depth compares"));
     }
 }
