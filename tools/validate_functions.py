@@ -193,6 +193,8 @@ def check_families(root: str, export: list[dict], named: set[str], hooked: set[s
     if os.path.isfile(review_path):
         with open(review_path, newline='') as f:
             reviews = {r['address']: r for r in csv.DictReader(f)}
+    import family_scan
+    in_source = family_scan.source_addresses(root)
     seen_families: set[str] = set()
     seen_members: set[str] = set()
     for family in rows:
@@ -235,6 +237,14 @@ def check_families(root: str, export: list[dict], named: set[str], hooked: set[s
             errs.append(str(e))
             results = []
         current = fam.source_hash(root, family)
+        seen_results: set[tuple] = set()
+        for r in results:
+            key = (r['function'], r['cases'], r['option'])
+            if key in seen_results:
+                errs.append(f"symbols/families/{name}.verification.csv:{r['_line']}: more than one "
+                            f"{r['cases']} row for {r['function']}")
+                break
+            seen_results.add(key)
         edge_ok = {r['function'] for r in results if r['cases'] == 'edge' and r['option'] == ''
                    and r['source'] == current and r['total'].isdigit() and int(r['total']) > 0 and r['failed'] == '0'
                    and r['passed'] == r['total']}
@@ -255,6 +265,9 @@ def check_families(root: str, export: list[dict], named: set[str], hooked: set[s
                 errs.append(f'{mw}: {a} has a row in symbols/functions.csv; a function is a member or named, not both')
             if a in hooked:
                 errs.append(f'{mw}: {a} is in game/hooks.csv')
+            if int(a, 16) in in_source:
+                errs.append(f'{mw}: a source file under game/ names {a} (a declared original or an observe '
+                            f'hook); a member must not be')
             if export and a not in size_of:
                 errs.append(f'{mw}: {a} is not a function in the Ghidra export')
             elif export and m['size'] != size_of[a]:

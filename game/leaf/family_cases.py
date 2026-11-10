@@ -56,7 +56,8 @@ CASES = {
 
 # Deliberately wrong replacements (test/family_mutants.c) every member's cases must catch.
 MUTANTS = {
-    'returns_nothing': ['bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
+    'returns_nothing': ['bb_mutant_writes_first_argument', 'bb_mutant_returns_zero',
+                        'bb_mutant_clobbers_second_argument'],
 }
 
 
