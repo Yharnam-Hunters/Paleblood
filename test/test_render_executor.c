@@ -533,6 +533,39 @@ static void depth_and_strips(rt_executor *x)
               strstr(error, "more than one slice"));
 #undef SLICED_TARGET
     }
+    /* A depth-only pass (no pixel shader, target mask 0, depth always with writes) into a fresh depth
+       target leaves the triangle's depth: LESS on the same triangle then draws nothing, LESS_EQUAL the
+       triangle. */
+    {
+        enum { DEPTH_ONLY_Z = 0x1640000, ONLY_LESS = 0x1680000, ONLY_LESS_EQUAL = 0x16c0000, NO_TARGET = 0x1700000 };
+        const uint32_t oz = (uint32_t)(at(DEPTH_ONLY_Z) >> 8), ost = (uint32_t)(at(DEPTH_ONLY_Z + 0x2000) >> 8);
+#define DEPTH_ONLY_TARGET {0xa010, 0xa0000003}, {0xa011, 0x20000001}, {0xa012, oz}, {0xa013, ost}, {0xa014, oz}, {0xa015, ost}, \
+                          {0xa016, depth_size}, {0xa017, 0}, {0xa002, 0}
+        const uint32_t prepass[][2] = {DEPTH_ONLY_TARGET, {0xa08e, 0}, {0xa200, 0x2 | 0x4 | 0x7u << 4}};
+        rt_render_forget(), rt_executor_reset(x);
+        uint32_t at_offset = record_setup(DEPTH_BUFFER, at(NO_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        static const uint32_t no_pixel_shader[RT_PIXEL_SHADER_WORDS];
+        CHECK(rt_render_record_pixel_shader_at(DEPTH_BUFFER + at_offset, no_pixel_shader) == 0);
+        at_offset += 0x10;
+        for (int i = 0; i < 11; i++, at_offset += 0x10)
+            CHECK(rt_render_record_register(DEPTH_BUFFER, at_offset, prepass[i][0], prepass[i][1], error, sizeof error) == 0);
+        CHECK(rt_render_record_draw_auto(DEPTH_BUFFER, at_offset, 3, error, sizeof error) == 0);
+        /* the colour draws after it, in the same run: the pixel shader placed again by record_setup's state */
+        const int prepassed = rt_executor_run(x, DEPTH_BUFFER, at_offset + 0x10, error, sizeof error);
+        if (prepassed) fprintf(stderr, "depth-only pass: %s\n", error);
+        CHECK(prepassed == 0);
+        CHECK(rt_executor_read_target(x, at(NO_TARGET), bgra, 2, 2, error, sizeof error) == -1 && strstr(error, "no draw"));
+        const uint32_t only_less[][2] = {DEPTH_ONLY_TARGET, {0xa200, 0x2 | 0x1u << 4}};
+        const uint32_t only_less_equal[][2] = {DEPTH_ONLY_TARGET, {0xa200, 0x2 | 0x3u << 4}};
+        /* run_counted resets the record but not the executor's depth targets: they keep what the pass wrote */
+        CHECK(run_counted(x, DEPTH_BUFFER, at(ONLY_LESS), only_less, 10, 3, error, sizeof error) == 0);
+        CHECK(nothing_drawn(x, at(ONLY_LESS)));
+        drawn = run_counted(x, DEPTH_BUFFER, at(ONLY_LESS_EQUAL), only_less_equal, 10, 3, error, sizeof error);
+        if (drawn) fprintf(stderr, "after the depth-only pass: %s\n", error);
+        CHECK(drawn == 0);
+        check_triangle(x, at(ONLY_LESS_EQUAL));
+#undef DEPTH_ONLY_TARGET
+    }
     /* a test reading a depth target no draw has written stops by name: its memory is never loaded */
     const uint32_t uz = (uint32_t)(at(UNWRITTEN) >> 8), ust = (uint32_t)(at(UNWRITTEN + 0x2000) >> 8);
     const uint32_t unwritten[][2] = {{0xa010, 0xa0000003}, {0xa011, 0x20000001}, {0xa012, uz}, {0xa013, ust}, {0xa014, uz}, {0xa015, ust},
@@ -986,14 +1019,14 @@ int main(void)
         memcpy(corners, saved_corners, sizeof saved_corners);
         memcpy(colors, saved_colors, sizeof saved_colors);
     }
-    /* No pixel shader (a depth-only pass, placed as the runtime's sceGnmSetPsShader places it): a
-       draw with it stops by name. */
+    /* No pixel shader (placed as the runtime's sceGnmSetPsShader places it) with the colour target
+       written: stops by name (a depth-only pass writes no colour target; depth_and_strips draws one). */
     rt_render_forget(), rt_executor_reset(x);
     uint32_t offset = record_setup(FOURTH, at(TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
     static const uint32_t no_pixel_shader[RT_PIXEL_SHADER_WORDS];
     CHECK(rt_render_record_pixel_shader_at(FOURTH + offset, no_pixel_shader) == 0);
     CHECK(rt_executor_run(x, FOURTH, record_triangle_draw(FOURTH, offset + 0x10), error, sizeof error) == -1 &&
-          strstr(error, "no pixel shader"));
+          strstr(error, "no pixel shader that writes a colour target"));
 
     /* A compute dispatch (scale_add: out[i] = in[i] * 2.5 + 1, one workgroup of 64) through the record:
        the shader placed as sceGnmSetCsShader places it, its user data the two buffer descriptors;
