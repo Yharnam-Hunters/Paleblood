@@ -9,15 +9,18 @@
    nobody holds the lock; readers are counted, not named. Locking again while holding the write
    lock is not an error there: the thread waits forever. Each rwlock is a host rwlock, plus the
    writer and the reader count, which the host does not expose. */
+#define _GNU_SOURCE /* pthread_mutex_clocklock, pthread_rwlock_clock*lock: the monotonic clock */
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
 #include <errno.h>
 #include <pthread.h>
+#include <stdint.h>
 #include <stdlib.h>
+#include <time.h>
 
 /* FreeBSD's numbers for the errors these functions return */
-enum { BSD_EPERM = 1, BSD_ENOMEM = 12, BSD_EBUSY = 16, BSD_EINVAL = 22, BSD_EAGAIN = 35 };
+enum { BSD_EPERM = 1, BSD_ENOMEM = 12, BSD_EBUSY = 16, BSD_EINVAL = 22, BSD_EAGAIN = 35, BSD_ETIMEDOUT = 60 };
 #define SCE_KERNEL_ERROR(e) ((int)(0x80020000u + (unsigned)(e)))
 
 #define RWLOCK_INITIALIZER ((guest_rwlock *)0)
@@ -42,6 +45,7 @@ static int bsd_errno(int host)
     case EBUSY: return BSD_EBUSY;
     case EINVAL: return BSD_EINVAL;
     case EAGAIN: return BSD_EAGAIN;
+    case ETIMEDOUT: return BSD_ETIMEDOUT;
     default: rt_fatal("rwlock", "host error without a FreeBSD equivalent here");
     }
 }
@@ -130,6 +134,41 @@ static int rwlock_trylock(guest_rwlock **rwlock, int write)
     return granted(l, write, write ? pthread_rwlock_trywrlock(&l->host) : pthread_rwlock_tryrdlock(&l->host));
 }
 
+/* scePthreadRwlockTimedrdlock and scePthreadRwlockTimedwrlock(rwlock, uint32_t microseconds): a
+   lock that gives up after the given time, relative to now (OpenOrbis' libkernel.h declares an
+   OrbisKernelUseconds; shadPS4 binds the names to libthr's relative-time rwlock calls, facts only).
+   The executable's wrappers (0x0247f681, 0x0247f411) take them for any timeout but -1 (which uses
+   the untimed calls) and tell EDEADLK, EINVAL and ETIMEDOUT apart. The kernel's umtx lock has no
+   owner check, so a thread that holds the write lock and asks again waits out the time and answers
+   ETIMEDOUT (do_rw_rdlock, do_rw_wrlock in kern_umtx.c); the host would answer EDEADLK at once, so
+   the runtime sleeps the time itself. */
+static struct timespec deadline_after(uint32_t microseconds)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    t.tv_sec += microseconds / 1000000;
+    t.tv_nsec += (long)(microseconds % 1000000) * 1000;
+    if (t.tv_nsec >= 1000000000) {
+        t.tv_sec++;
+        t.tv_nsec -= 1000000000;
+    }
+    return t;
+}
+
+static int rwlock_timedlock(guest_rwlock **rwlock, int write, uint32_t microseconds)
+{
+    guest_rwlock *l;
+    const int r = rwlock_get(rwlock, &l);
+    if (r) return r;
+    const struct timespec deadline = deadline_after(microseconds);
+    if (held_by_caller(l)) {
+        while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &deadline, NULL) == EINTR) {}
+        return BSD_ETIMEDOUT;
+    }
+    return granted(l, write, write ? pthread_rwlock_clockwrlock(&l->host, CLOCK_MONOTONIC, &deadline)
+                                   : pthread_rwlock_clockrdlock(&l->host, CLOCK_MONOTONIC, &deadline));
+}
+
 static int rwlock_unlock(guest_rwlock **rwlock)
 {
     if (!rwlock) return BSD_EINVAL;
@@ -172,6 +211,8 @@ static int sce_rwlock_wrlock(guest_rwlock **l) { return sce(rwlock_lock("scePthr
 static int sce_rwlock_tryrdlock(guest_rwlock **l) { return sce(rwlock_trylock(l, 0)); }
 static int sce_rwlock_trywrlock(guest_rwlock **l) { return sce(rwlock_trylock(l, 1)); }
 static int sce_rwlock_unlock(guest_rwlock **l) { return sce(rwlock_unlock(l)); }
+static int sce_rwlock_timedrdlock(guest_rwlock **l, uint32_t us) { return sce(rwlock_timedlock(l, 0, us)); }
+static int sce_rwlock_timedwrlock(guest_rwlock **l, uint32_t us) { return sce(rwlock_timedlock(l, 1, us)); }
 RT_SYSLIB("libkernel", scePthreadRwlockInit, sce_rwlock_init);
 RT_SYSLIB("libkernel", scePthreadRwlockDestroy, sce_rwlock_destroy);
 RT_SYSLIB("libkernel", scePthreadRwlockRdlock, sce_rwlock_rdlock);
@@ -179,3 +220,5 @@ RT_SYSLIB("libkernel", scePthreadRwlockWrlock, sce_rwlock_wrlock);
 RT_SYSLIB("libkernel", scePthreadRwlockTryrdlock, sce_rwlock_tryrdlock);
 RT_SYSLIB("libkernel", scePthreadRwlockTrywrlock, sce_rwlock_trywrlock);
 RT_SYSLIB("libkernel", scePthreadRwlockUnlock, sce_rwlock_unlock);
+RT_SYSLIB("libkernel", scePthreadRwlockTimedrdlock, sce_rwlock_timedrdlock);
+RT_SYSLIB("libkernel", scePthreadRwlockTimedwrlock, sce_rwlock_timedwrlock);

@@ -217,6 +217,10 @@ int rt_render_record_pixel_shader_at(uint64_t address, const uint32_t words[RT_P
    next call starts its list over, as the title then refills it from the start. The array stays
    valid until the next call records into that buffer. */
 const rt_render_call *rt_render_submitted(uint64_t buffer, uint32_t size, size_t *count);
+/* The same, as a copy the caller frees (malloc'd), taken under the lists' lock, so the buffer may be
+   recorded into again at once; NULL with count 0 when it has no calls, and count SIZE_MAX when there
+   is no memory for the copy. */
+rt_render_call *rt_render_take(uint64_t buffer, uint32_t size, size_t *count);
 
 /* Forgets every buffer's calls (between tests, and when a run starts). */
 void rt_render_forget(void);

@@ -266,6 +266,64 @@ int main(void)
         }
         CHECK(unorm);
         memcpy(in_words, saved_in, sizeof saved_in);
+        /* 8- and 16-bit components, read byte by byte from records a stride apart (any alignment), x
+           first and little-endian: uint zero-extended, sint sign-extended, 8-bit unorm v / 255; the
+           format's missing components read 0, DST_SEL 1 is 1 (1.0 for unorm). */
+        {
+            uint8_t *const bytes = (uint8_t *)in_words;
+            uint8_t saved_bytes[1024];
+            memcpy(saved_bytes, bytes, sizeof saved_bytes);
+            for (int k = 0; k < (int)sizeof saved_bytes; k++) bytes[k] = (uint8_t)(k * 37 + 11);
+            static const struct {
+                uint32_t data_format, num_format, stride, dst_sel;
+                const char *what;
+            } small[] = {
+                {1, 5, 3, 4 | 0 << 3 | 0 << 6 | 1 << 9, "8 sint, stride 3, DST_SEL x, 0, 0, 1"},
+                {5, 4, 6, 5 | 4 << 3 | 0 << 6 | 1 << 9, "16_16 uint, stride 6, DST_SEL y, x, 0, 1"},
+                {12, 5, 10, 4 | 5 << 3 | 6 << 6 | 7 << 9, "16_16_16_16 sint, stride 10 (3 dwords when 2 past a boundary)"},
+                {3, 0, 2, 4 | 5 << 3 | 6 << 6 | 1 << 9, "8_8 unorm, stride 2, DST_SEL x, y, z (missing), 1"},
+                {10, 4, 5, 7 | 6 << 3 | 5 << 6 | 4 << 9, "8_8_8_8 uint, stride 5, DST_SEL w, z, y, x"},
+            };
+            for (size_t f = 0; f < sizeof small / sizeof small[0]; f++) {
+                const uint32_t bytes_each = small[f].data_format == 5 || small[f].data_format == 12 ? 2 : 1;
+                const uint32_t count = small[f].data_format == 1 ? 1 : small[f].data_format == 3 || small[f].data_format == 5 ? 2 : 4;
+                memcpy(format_user, user, sizeof format_user);
+                format_user[1] |= small[f].stride << 16;
+                format_user[3] = small[f].dst_sel | small[f].num_format << 12 | small[f].data_format << 15;
+                *stop = 0;
+                memset(out.mapped, 0xcc, BUFFER_BYTES);
+                CHECK(run(&g, load_format_indexed, sizeof load_format_indexed / sizeof load_format_indexed[0], format_user) == 0);
+                int right = *stop == 0;
+                for (uint32_t i = 0; i < LANES; i++) {
+                    uint32_t memory[4] = {0, 0, 0, 0};
+                    for (uint32_t m = 0; m < count; m++) {
+                        const uint8_t *at = bytes + i * small[f].stride + m * bytes_each;
+                        uint32_t raw = at[0] | (bytes_each == 2 ? (uint32_t)at[1] << 8 : 0);
+                        if (small[f].num_format == 5) raw = bytes_each == 2 ? (uint32_t)(int32_t)(int16_t)raw : (uint32_t)(int32_t)(int8_t)raw;
+                        if (small[f].num_format == 0) {
+                            const float unorm = (float)raw / 255.0f;
+                            memcpy(&raw, &unorm, sizeof raw);
+                        }
+                        memory[m] = raw;
+                    }
+                    for (uint32_t c = 0; c < 4; c++) {
+                        const uint32_t sel = small[f].dst_sel >> (3 * c) & 7;
+                        const uint32_t want = sel >= 4 ? memory[sel - 4] : sel == 1 ? (small[f].num_format == 0 ? 0x3f800000u : 1u) : 0u;
+                        right &= out_words[i * 4 + c] == want;
+                    }
+                }
+                if (!right) fprintf(stderr, "format load %s: wrong\n", small[f].what);
+                CHECK(right);
+            }
+            /* 16-bit unorm loads are not done yet (v / 65535 needs its own correctly rounded values) */
+            format_user[3] = (4 | 0 << 3 | 0 << 6 | 1 << 9) | 0u << 12 | 2u << 15;
+            *stop = 0;
+            CHECK(run(&g, load_format_indexed, sizeof load_format_indexed / sizeof load_format_indexed[0], format_user) == 0);
+            CHECK(*stop == (GCN_RUNTIME_STOP_BUFFER_FORMAT << GCN_RUNTIME_STOP_KIND_SHIFT | 2u << 8 | 0u << 4 | 4u));
+            *stop = 0;
+            memcpy(bytes, saved_bytes, sizeof saved_bytes);
+            memcpy(format_user, user, sizeof format_user);
+        }
         /* a reserved selector (2) stops */
         format_user[3] = (4 | 2 << 3) | 7u << 12 | 4u << 15;
         CHECK(run(&g, load_format_xyzw, sizeof load_format_xyzw / sizeof load_format_xyzw[0], format_user) == 0 && *stop != 0);

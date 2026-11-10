@@ -124,7 +124,13 @@ static int32_t audio_out_set_volume(int32_t handle, int32_t flag, const int32_t 
    block. The runtime plays nothing yet: each port takes one block per length / rate seconds (256
    samples at 48000 Hz: 5.33 ms), and a call waits until the block before it would have finished
    playing, then answers 0 (the caller only checks the sign). A port that falls behind starts again
-   from now. A missing block and a handle the runtime did not hand out stop by name.
+   from now. A handle the runtime did not hand out stops by name.
+
+   No block (samples NULL) hands nothing over: the call only waits until the port has room for the
+   next block, as with a block, and answers 0 without moving the port's timeline on. shadPS4's
+   audioout.cpp waits for the port's buffer to drain and copies nothing for a null pointer, returning
+   0 samples; PS4Recomp's ps4_audioout.c waits for room the same way and pushes nothing, returning 0.
+   The movie player's sound thread calls it so when it has no sound to give.
 
    With --audio host (runtime/audio_host.h) the block is played on the host instead: each channel
    scaled by its volume (32768 is 0 dB, the level the title sets; until it sets one the port plays at
@@ -137,6 +143,16 @@ static float sample_at(const audio_port *port, const void *samples, uint32_t ind
 {
     if (port->format <= FORMAT_S16_8CH) return (float)((const int16_t *)samples)[index] / 32768.0f;
     return ((const float *)samples)[index];
+}
+
+/* Waits until no more than a few blocks wait to be played on the port's host stream. */
+static void wait_for_host_room(const char *fn, audio_port *port)
+{
+    const struct timespec millisecond = {0, NANOSECONDS_PER_SECOND / 1000};
+    for (int waited = 0; rt_audio_host_queued_frames(port->host) > HOST_BLOCKS_AHEAD * port->length; waited++) {
+        if (waited == HOST_WAIT_LIMIT_MS) rt_fatal(fn, "the host audio device stopped playing");
+        nanosleep(&millisecond, NULL);
+    }
 }
 
 static void play_on_host(const char *fn, audio_port *port, const void *samples)
@@ -154,11 +170,7 @@ static void play_on_host(const char *fn, audio_port *port, const void *samples)
     const int written = rt_audio_host_write(port->host, scaled, port->length);
     pthread_mutex_unlock(&scaled_lock);
     if (written) rt_fatal(fn, "the host refused the sound");
-    const struct timespec millisecond = {0, NANOSECONDS_PER_SECOND / 1000};
-    for (int waited = 0; rt_audio_host_queued_frames(port->host) > HOST_BLOCKS_AHEAD * port->length; waited++) {
-        if (waited == HOST_WAIT_LIMIT_MS) rt_fatal(fn, "the host audio device stopped playing");
-        nanosleep(&millisecond, NULL);
-    }
+    wait_for_host_room(fn, port);
 }
 
 static int64_t nanoseconds(const struct timespec *t) { return (int64_t)t->tv_sec * NANOSECONDS_PER_SECOND + t->tv_nsec; }
@@ -168,11 +180,11 @@ static int32_t audio_out_output(int32_t handle, const void *samples)
     static const char fn[] = "sceAudioOutOutput";
     if (handle < 1 || handle > atomic_load(&ports_opened))
         rt_fatal(fn, "a handle the runtime did not hand out: the error value is not established");
-    if (!samples) rt_fatal(fn, "no samples: what the system does then is not established");
     audio_port *const port = &ports[handle];
     if (port->host) {
         pthread_mutex_lock(&port->lock);
-        play_on_host(fn, port, samples);
+        if (samples) play_on_host(fn, port, samples);
+        else wait_for_host_room(fn, port);
         pthread_mutex_unlock(&port->lock);
         return 0;
     }
@@ -185,6 +197,10 @@ static int32_t audio_out_output(int32_t handle, const void *samples)
         clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &port->played, NULL);
     else
         wait_until = nanoseconds(&now); /* idle or behind: this block starts now */
+    if (!samples) { /* room for the next block, and nothing handed over */
+        pthread_mutex_unlock(&port->lock);
+        return 0;
+    }
     const int64_t done = wait_until + block;
     port->played = (struct timespec){done / NANOSECONDS_PER_SECOND, done % NANOSECONDS_PER_SECOND};
     pthread_mutex_unlock(&port->lock);
