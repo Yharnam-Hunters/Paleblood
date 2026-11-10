@@ -21,6 +21,10 @@ typedef struct rt_equeue rt_equeue;
    replaces its user data. Returns 0, or -1 when the queue is full. */
 int rt_equeue_add(rt_equeue *queue, int16_t filter, uint64_t ident, void *udata);
 
+/* Removes (filter, ident) from the queue, with any trigger it has not delivered yet. Returns 0, or -1
+   when the pair is not registered. */
+int rt_equeue_remove(rt_equeue *queue, int16_t filter, uint64_t ident);
+
 /* Marks (filter, ident) triggered with data and wakes the queue's waiters. Returns 0, or -1 when
    the pair is not registered. */
 int rt_equeue_trigger(rt_equeue *queue, int16_t filter, uint64_t ident, int64_t data);

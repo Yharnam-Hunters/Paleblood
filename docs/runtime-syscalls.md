@@ -2339,14 +2339,32 @@ Paleblood's `docs/RENDERER.md`).
   - `sceGnmDriverTriggerCapture` answers `0x80d15001`;
   - the four `sceRazorCapture*` calls answer `0x80d1500f`.
 
-**Still stopping by name** (each waits on a maintainer ruling or the renderer):
-- **`sceGnmAddEqEvent` and `sceGnmDeleteEqEvent`.** They need end-of-pipe interrupts raised from
-  the GPU's completion steps, which is renderer territory.
-- **`sceGnmGetEqTimeStamp` and `sceGnmDebugHardwareStatus`.** Their shapes are not established
-  (shadPS4 and bbhost disagree).
-- **The two `sceGnmLogicalCu*` calls.** Every caller is gated on `sceGnmIsUserPaEnabled`, which
-  answers 0. The physical mapping depends on each console's fused-off compute units.
-- **`sceGnmRequestFlipAndSubmitDone`.** It is on the flip and submit path.
+**The last six (maintainer's rulings of 2026-11-10).** Five of them are unreachable in the stock
+game: no instruction or relocated pointer in the executable reaches their wrappers (`0x01489a40`,
+`0x01489a50`, `0x01489a70`, `0x01489b40`, `0x01489b70`).
+- **`sceGnmAddEqEvent(queue, id, udata)` and `sceGnmDeleteEqEvent(queue, id)`** register and remove
+  a graphics-core event (filter -14) whose ident and data are the id (shadPS4). The GPU's
+  completion step raises it, after the work before the packet, on the renderer's thread (or at once
+  with the display off). This happens when an `EVENT_WRITE_EOP` or `RELEASE_MEM` asks for an
+  interrupt (select bits 24 and up: 1 interrupt only, 2 after the write, 3 for `RELEASE_MEM`).
+  Graphics submissions raise id `0x40`, the end of pipe. A compute queue's buffers raise its pipe
+  number, 0 to 6 (shadPS4's interrupt numbers). No queue answers `EBADF` (`0x80020009`). Deleting
+  an event that is not registered, an EOP select of 3 and a compute pipe above 6 stop by name.
+  Event queues gained `rt_equeue_remove` (`runtime/include/runtime/equeue.h`). The renderer is
+  untouched: the step is gnm.c's own.
+- **`sceGnmRequestFlipAndSubmitDone(command buffer, bytes, handle, index, mode, argument)`** takes
+  shadPS4's six-argument shape (droogie's host takes four; the GNM header and the workload variant
+  agree on six). Fewer than `0x100` bytes answers `0x80d11001` (not enough resources). Otherwise it
+  writes one NOP over the first `0x100` bytes and submits them with the flip as the step after
+  them, as `sceGnmSubmitAndFlipCommandBuffers` does.
+- **`sceGnmGetEqTimeStamp` and `sceGnmDebugHardwareStatus`** answer 0 and write nothing. shadPS4
+  (no arguments) and droogie's host (a pointer they write through) agree on the answer, not on the
+  arguments.
+- **`sceGnmLogicalCuIndexToPhysicalCuIndex(shader engine, index)` and
+  `sceGnmLogicalCuMaskToPhysicalCuMask(shader engine, mask)`** map by identity. The performance
+  counter set-up (`0x01482804` and eleven more; `0x014818fa`, `0x01481eb4`) passes the shader
+  engine first and reads back a byte and a 16-bit mask, only when `sceGnmIsUserPaEnabled` is on,
+  which it never is.
 
 ## GNM: compute queues (`sceGnmMapComputeQueue`, issue #39)
 
