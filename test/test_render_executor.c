@@ -304,6 +304,23 @@ static void blending(rt_executor *x)
     CHECK(blended_misses(x, at(SEPARATE), colour_halved_alpha_kept) == 0);
 }
 
+/* Draws in one buffer run as one batch, each after the last: the triangle drawn twice with ONE + ONE
+   into a new (zero) target, in one buffer, doubles it: the second draw blends over the first's output
+   with no wait between them. */
+static void draws_in_one_batch(rt_executor *x)
+{
+    enum { BATCH_BUFFER = 0xc0f40000, TWICE = 0x9c0000, ONE = 1 };
+    char error[200] = "";
+    rt_render_forget(), rt_executor_reset(x);
+    uint32_t offset = record_setup(BATCH_BUFFER, at(TWICE), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    CHECK(rt_render_record_register(BATCH_BUFFER, offset, 0xa1e0, 1u << 30 | ONE | ONE << 8, error, sizeof error) == 0);
+    offset = record_triangle_draw(BATCH_BUFFER, offset + 0x10);
+    const int ran = rt_executor_run(x, BATCH_BUFFER, record_triangle_draw(BATCH_BUFFER, offset), error, sizeof error);
+    if (ran) fprintf(stderr, "draws in one batch: %s\n", error);
+    CHECK(ran == 0);
+    CHECK(blended_misses(x, at(TWICE), doubled) == 0);
+}
+
 /* Runs the triangle's state with these registers and a draw of `count` vertices (record_setup's). */
 static int run_counted(rt_executor *x, uint64_t buffer, uint64_t target, const uint32_t (*registers)[2], int n, uint32_t count, char *error,
                        size_t error_size)
@@ -669,6 +686,7 @@ int main(void)
     const uint32_t dual_source[][2] = {{0xa1e0, 0x40000000u | 15}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), dual_source, 1, 0, error, sizeof error) == -1 && strstr(error, "blend factor 15"));
     blending(x);
+    draws_in_one_batch(x);
     const uint32_t depth[][2] = {{0xa200, 0x2}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), depth, 1, 0, error, sizeof error) == -1 && strstr(error, "depth or stencil"));
     const uint32_t line_strips[][2] = {{0xc242, 5}};
@@ -793,6 +811,25 @@ int main(void)
         CHECK(ran == 0);
         int right = 1;
         for (unsigned i = 0; i < LANES; i++) right &= output[i] == (float)i * 2.5f + 1.0f;
+        CHECK(right);
+
+        /* two dispatches in one buffer (one batch): the second reads what the first stored */
+        enum { SECOND_OUTPUT = 0x22800 };
+        float *second = (float *)(uintptr_t)at(SECOND_OUTPUT);
+        for (unsigned i = 0; i < LANES; i++) output[i] = -1, second[i] = -1;
+        rt_render_forget();
+        CHECK(rt_render_record_compute_shader_at(COMPUTE + 0x10, shader) == 0);
+        CHECK(rt_render_record_user_data(COMPUTE, 0x20, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+        CHECK(rt_render_record_dispatch(COMPUTE, 0x30, one, error, sizeof error) == 0);
+        uint32_t chained[8];
+        descriptor(chained, at(OUTPUT), 4);
+        descriptor(chained + 4, at(SECOND_OUTPUT), 4);
+        CHECK(rt_render_record_user_data(COMPUTE, 0x40, RT_STAGE_COMPUTE, 0, chained, 8, error, sizeof error) == 0);
+        CHECK(rt_render_record_dispatch(COMPUTE, 0x50, one, error, sizeof error) == 0);
+        const int chain = rt_executor_run(x, COMPUTE, 0x60, error, sizeof error);
+        if (chain) fprintf(stderr, "chained dispatches: %s\n", error);
+        CHECK(chain == 0);
+        for (unsigned i = 0; i < LANES; i++) right &= second[i] == ((float)i * 2.5f + 1.0f) * 2.5f + 1.0f;
         CHECK(right);
 
         rt_render_forget(), rt_executor_reset(x);

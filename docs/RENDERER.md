@@ -378,6 +378,16 @@ Instead:
           them), so showing a frame copies from the target's last write-back instead of the GPU. With
           these the boot's frames went from 66 to about 1,440 in 90 s (RTX 3070), which reaches the
           title screen.
+        - **One batch per buffer:** a buffer's draws, dispatches and copies are recorded into one Vulkan
+          command buffer and submitted once, with barriers between them, instead of each waiting for the
+          GPU. The CPU waits only where it reads what the batch produces: a render target written back
+          (before a dispatch, before a draw reads its memory as an image, at the end of the buffer), guest
+          memory a dispatch in the batch may have stored to (a descriptor read from memory, a load's
+          comparison), a staging buffer the batch still copies from, and the run-time stop word, which is
+          checked once the batch has run. Each submitted buffer still ends with its batch run, so the CPU
+          sees everything it drew when the submission returns. On the logo and title screens this alone
+          changed no frame count: a profile puts about 75% of the time in the CPU's copies (tiling,
+          detiling and comparing render targets), not in waiting.
         - **Unset user data stops:** the translator reports the user SGPRs a program reads before it
           writes them (in program order), and the executor tracks the slots the calls have set since
           the GPU's reset. A shader reading a slot no call has set, or a descriptor or descriptor
