@@ -77,7 +77,7 @@ typedef int (*f_attr_get)(void *, void **);
 typedef uint32_t (*f_u32_u32)(uint32_t);
 typedef uint16_t (*f_u16_u16)(uint16_t);
 typedef int (*f_inet_pton)(int, const char *, void *);
-typedef int32_t (*f_sysmodule)(uint16_t);
+typedef int32_t (*f_sysmodule)(uint32_t);
 
 static void *net_inet_pton_entry;
 static int net_pton_unknown_family(void)
@@ -310,6 +310,7 @@ static void unload_not_a_stub(void) { sysmodule_unload(NOT_A_STUB_ID); }
 static void load_stub_again(void) { sysmodule_load(STUB_ID); }
 static void is_loaded_other_stub(void) { sysmodule_is_loaded(OTHER_STUB_ID); }
 static void unload_other_stub(void) { sysmodule_unload(OTHER_STUB_ID); }
+static void unload_wide_stub(void) { sysmodule_unload(UINT32_C(0xabcd0000) | STUB_ID); }
 
 /* Thread creation will read an attribute's detach state through rt_thread_attr_detach_state. A
    state the guest did not set is one the system supplies, which is not established, so the read
@@ -1628,9 +1629,10 @@ int main(void)
     CHECK(died_in_fatal(load_stub_again));
     CHECK(sysmodule_unload(STUB_ID) == 0 && !rt_process.stub_modules[0].loaded);
     CHECK(sysmodule_load(STUB_ID) == 0 && sysmodule_is_loaded(STUB_ID) == 0);
-    /* the id is 16 bits: the upper half of the register the guest passes it in is not part of it */
-    CHECK(((int32_t (*)(uint32_t))(void *)sysmodule_unload)(UINT32_C(0xabcd0000) | STUB_ID) == 0);
-    CHECK(!rt_process.stub_modules[0].loaded);
+    /* A full-width request cannot unload the declared stub with matching low bits. */
+    CHECK(died_in_fatal(unload_wide_stub));
+    CHECK(sysmodule_is_loaded(STUB_ID) == 0);
+    CHECK(sysmodule_unload(STUB_ID) == 0 && !rt_process.stub_modules[0].loaded);
 
     /* Every answer the PS4 has not established stops the process instead of guessing, and the two
        structure calls stop before writing through a buffer whose layout is not established. */
