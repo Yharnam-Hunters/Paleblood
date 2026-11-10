@@ -91,8 +91,13 @@ int main(void)
         return 1;
     }
     uint32_t user[USER_DATA_WORDS] = {0};
-    descriptor(user, &in);
-    descriptor(user + 4, &out);
+    /* Keep shader inputs in one guest window, independent of the driver's address width. */
+    const uint64_t buffer_offset = in.address - UINT64_C(0x100000000);
+    address_offset = buffer_offset;
+    if (descriptor(user, &in, buffer_offset) || descriptor(user + 4, &out, buffer_offset)) {
+        fprintf(stderr, "the shader buffers do not fit one 40-bit guest window\n");
+        return 1;
+    }
     float *const in_floats = in.mapped;
     uint32_t *const in_words = in.mapped, *const out_words = out.mapped;
 
@@ -148,9 +153,9 @@ int main(void)
     }
     for (int i = 0; i < LANES; i++) in_floats[i] = (float)i * 0.5f;
     memset(out.mapped, 0, BUFFER_BYTES);
-    address_offset = GUEST_DISTANCE;
+    address_offset = buffer_offset + GUEST_DISTANCE;
     CHECK(run(&g, scale_add, sizeof scale_add / sizeof scale_add[0], guest_user) == 0);
-    address_offset = 0;
+    address_offset = buffer_offset;
     for (int i = 0; i < LANES; i++) CHECK(out_words[i] == bits((float)i * 0.5f * 2.5f + 1.0f));
 
     /* Range checking (CLRX's GCN memory handling notes): an access outside the descriptor's range
