@@ -52,3 +52,24 @@ uint64_t bb_mutant_reads_first_qword(const uint64_t *object)
 {
     return *object;
 }
+
+/* Returns its second argument. */
+uint64_t bb_mutant_returns_second_argument(uint64_t first, uint64_t second)
+{
+    (void)first;
+    return second;
+}
+
+/* Stores the low 32 bits of its second argument at the start of its object: the wrong width for
+   a 64-bit setter. */
+void bb_mutant_writes_first_dword(uint32_t *object, uint64_t value)
+{
+    *object = (uint32_t)value;
+}
+
+/* Stores all 64 bits of its second argument at the start of its object: the wrong width for a
+   32-bit setter. */
+void bb_mutant_writes_first_qword(uint64_t *object, uint64_t value)
+{
+    *object = value;
+}

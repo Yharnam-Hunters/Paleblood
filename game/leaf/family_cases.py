@@ -80,6 +80,29 @@ def field_cases(address: str, value: int | None) -> list[dict]:
     return out
 
 
+def setter_cases(address: str, value: int | None) -> list[dict]:
+    """A setter of the field at offset VALUE (0 for the first-field setters) from rsi: rdi points
+    at an object of distinct bytes, and rsi holds the bitwise complement of the eight bytes at the
+    field, so a store of any width at the field changes every byte it covers and a store at any
+    other offset changes other bytes. rax is seeded (a setter leaves it), the other arguments point
+    into a probe buffer, and the argument registers are compared."""
+    offset = value or 0
+    out = []
+    for case_id, seed, start in (('object_a', 5, 0), ('object_b', 133, 0), ('object_shifted', 71, 0x10)):
+        pattern = bytes.fromhex(probe_bytes(seed, OBJECT_SIZE))
+        field = pattern[start + offset:start + offset + 8]
+        case = base_case(address, case_id, 'i64')
+        case['buffers'] = {'object': {'size': OBJECT_SIZE, 'bytes': pattern.hex()},
+                           'probe': {'size': PROBE_SIZE, 'bytes': probe_bytes(seed + 1)}}
+        case['args'] = {reg: f'buf:probe+0x{8 * i:x}' for i, reg in enumerate(ARGUMENT_REGISTERS)}
+        case['args']['rdi'] = f'buf:object+0x{start:x}'
+        case['args']['rsi'] = hex(int.from_bytes(bytes(b ^ 0xff for b in field), 'little'))
+        case['args']['rax'] = hex(RAX_SEED)
+        case['observe_registers'] = list(ARGUMENT_REGISTERS)
+        out.append(case)
+    return out
+
+
 CASES = {
     'returns_nothing': returns_nothing,
     'returns_zero': returns_a_value,
@@ -91,6 +114,14 @@ CASES = {
     'field_address': field_cases,
     'reads_first_qword': field_cases,
     'reads_first_dword': field_cases,
+    'writes_qword_field': setter_cases,
+    'writes_dword_field': setter_cases,
+    'writes_word_field': setter_cases,
+    'writes_byte_field': setter_cases,
+    'writes_first_qword': setter_cases,
+    'writes_first_dword': setter_cases,
+    'returns_first_argument': returns_a_value,
+    'returns_second_argument': returns_a_value,
 }
 
 # Deliberately wrong replacements (test/family_mutants.c) every member's cases must catch.
@@ -110,6 +141,15 @@ MUTANTS = {
                           'bb_mutant_reads_first_dword'],
     'reads_first_dword': ['bb_mutant_does_nothing', 'bb_mutant_returns_first_argument',
                           'bb_mutant_reads_first_qword'],
+    # Setters: the neighbouring offset's replacement stores at the wrong place.
+    'writes_qword_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
+    'writes_dword_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
+    'writes_word_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
+    'writes_byte_field': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_argument', 'bb_mutant_returns_zero'],
+    'writes_first_qword': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_dword', 'bb_mutant_returns_zero'],
+    'writes_first_dword': ['bb_mutant_does_nothing', 'bb_mutant_writes_first_qword', 'bb_mutant_returns_zero'],
+    'returns_first_argument': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_returns_second_argument'],
+    'returns_second_argument': ['bb_mutant_does_nothing', 'bb_mutant_returns_zero', 'bb_mutant_returns_first_argument'],
 }
 
 
