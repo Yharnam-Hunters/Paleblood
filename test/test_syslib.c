@@ -307,7 +307,6 @@ static f_sysmodule sysmodule_load, sysmodule_is_loaded, sysmodule_unload;
 static void load_not_a_stub(void) { sysmodule_load(NOT_A_STUB_ID); }
 static void is_loaded_not_a_stub(void) { sysmodule_is_loaded(NOT_A_STUB_ID); }
 static void unload_not_a_stub(void) { sysmodule_unload(NOT_A_STUB_ID); }
-static void load_stub_again(void) { sysmodule_load(STUB_ID); }
 static void is_loaded_other_stub(void) { sysmodule_is_loaded(OTHER_STUB_ID); }
 static void unload_other_stub(void) { sysmodule_unload(OTHER_STUB_ID); }
 static void unload_wide_stub(void) { sysmodule_unload(UINT32_C(0xabcd0000) | STUB_ID); }
@@ -1626,7 +1625,10 @@ int main(void)
     CHECK(sysmodule_load(STUB_ID) == 0 && rt_process.stub_modules[0].loaded);
     CHECK(!rt_process.stub_modules[1].loaded);        /* only the module asked for */
     CHECK(sysmodule_is_loaded(STUB_ID) == 0);
-    CHECK(died_in_fatal(load_stub_again));
+    /* A second load succeeds and is counted (the dialogs load their module per open). */
+    CHECK(sysmodule_load(STUB_ID) == 0 && rt_process.stub_modules[0].loaded == 2);
+    CHECK(sysmodule_unload(STUB_ID) == 0 && rt_process.stub_modules[0].loaded == 1);
+    CHECK(sysmodule_is_loaded(STUB_ID) == 0);
     CHECK(sysmodule_unload(STUB_ID) == 0 && !rt_process.stub_modules[0].loaded);
     CHECK(sysmodule_load(STUB_ID) == 0 && sysmodule_is_loaded(STUB_ID) == 0);
     /* A full-width request cannot unload the declared stub with matching low bits. */
@@ -1654,16 +1656,12 @@ int main(void)
     CHECK(netctl_unregister(netctl_id_b) == 0);
     CHECK(netctl_check() == 0 && netctl_callbacks_run == 0);
 
-    /* the target page size has no public source, so both entries stop by name */
-    void (*posix_getpagesize)(void) = (void (*)(void))fn("libScePosix", "getpagesize");
-    void (*kernel_getpagesize)(void) = (void (*)(void))fn("libkernel", "getpagesize");
-    CHECK(died_in_fatal(posix_getpagesize));
-    CHECK(died_in_fatal(kernel_getpagesize));
-    /* Registered so a boot that reaches the call names it, but not counted as implemented: the
-       fatal alone does not prove the classification, since an absent entry would also never be
-       reported as implemented. */
-    CHECK(!is_implemented("libScePosix", "getpagesize"));
-    CHECK(!is_implemented("libkernel", "getpagesize"));
+    /* getpagesize answers 16 KiB from both libraries (the maintainer's ruling) */
+    int32_t (*posix_getpagesize)(void) = (int32_t (*)(void))fn("libScePosix", "getpagesize");
+    int32_t (*kernel_getpagesize)(void) = (int32_t (*)(void))fn("libkernel", "getpagesize");
+    CHECK(posix_getpagesize && posix_getpagesize() == 0x4000);
+    CHECK(kernel_getpagesize && kernel_getpagesize() == 0x4000);
+    CHECK(is_implemented("libScePosix", "getpagesize") && is_implemented("libkernel", "getpagesize"));
 
     /* memcpy and memset (libSceLibcInternal): ISO C fixes the bytes written and the returned
        destination. The guard bytes past n prove nothing beyond n is touched. */

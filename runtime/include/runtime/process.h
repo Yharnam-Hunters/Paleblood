@@ -17,7 +17,7 @@ extern "C" {
 typedef struct {
     uint16_t id;         /* its system module id, the one sceSysmoduleLoadModule is given */
     const char *name;    /* its library name, for reports */
-    int loaded;          /* the guest has loaded it and not unloaded it since */
+    int loaded;          /* how many loads the guest made that it has not unloaded yet (0: not loaded) */
 } rt_stub_module;
 
 #define RT_MAX_STUB_MODULES 32
@@ -50,6 +50,28 @@ typedef struct {
 
 #define RT_MAX_SYSTEM_PARAMS 16
 
+/* A module the runtime mapped (the executable first, then each --module), as the system reports it
+   to sceKernelGetModuleInfoFromAddr: its image, its allocated segments with their ELF flags, and
+   where its exception frame index and init/fini functions are (runtime/syslib/kernel_unwind.c). */
+#define RT_MAX_MODULE_SEGMENTS 4
+typedef struct {
+    uint64_t address; /* guest address of the segment's first byte */
+    uint64_t size;    /* its size in memory, rounded up to its alignment */
+    uint32_t flags;   /* the program header's flags: PF_X 1, PF_W 2, PF_R 4 */
+} rt_module_segment;
+
+typedef struct {
+    const char *name;
+    uint8_t *image;
+    uint64_t image_size;
+    rt_module_segment segments[RT_MAX_MODULE_SEGMENTS];
+    uint32_t segment_count;
+    uint64_t eh_frame_hdr, eh_frame_hdr_size; /* guest address and size; 0 and 0 when none */
+    uint64_t init, fini;                      /* guest addresses; 0 when none */
+} rt_module;
+
+#define RT_MAX_MODULES 16
+
 typedef struct {
     void *image;         /* where the executable is mapped */
     uint64_t image_size;
@@ -71,6 +93,8 @@ typedef struct {
        block is a copy of it, placed just below the thread pointer (x86-64 variant II). */
     const void *tls_image;
     uint64_t tls_filesz, tls_memsz, tls_align;
+    rt_module modules[RT_MAX_MODULES]; /* every mapped module, the executable first */
+    uint32_t module_count;
 } rt_process_info;
 
 extern rt_process_info rt_process;

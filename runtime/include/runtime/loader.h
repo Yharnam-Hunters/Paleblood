@@ -52,6 +52,13 @@ const rt_elf_tls *rt_elf_tls_segment(const rt_elf *elf);
 /* The process parameter block (PT_SCE_PROCPARAM): its offset in the image, and its size in *size;
    0 and 0 when the executable has none. */
 uint64_t rt_elf_proc_param(const rt_elf *elf, uint64_t *size);
+/* The exception frame index (PT_GNU_EH_FRAME, the .eh_frame_hdr section): its offset in the image,
+   and its size in *size; 0 and 0 when the executable has none. */
+uint64_t rt_elf_eh_frame_hdr(const rt_elf *elf, uint64_t *size);
+/* The initialization and termination functions' offsets in the image (DT_INIT, DT_FINI); 0 when
+   the executable names none. */
+uint64_t rt_elf_init(const rt_elf *elf);
+uint64_t rt_elf_fini(const rt_elf *elf);
 size_t rt_elf_load_count(const rt_elf *elf);
 const rt_elf_load *rt_elf_loads(const rt_elf *elf);
 size_t rt_elf_relocation_count(const rt_elf *elf);

@@ -11,7 +11,15 @@
    The runtime serves the title from files on the host, with no disc, so there is no disc bitmap:
    it answers 0x81100004, "no bitmap info", as shadPS4 does for a title without a disc map (its
    disc_map_codes.h numbers the error), and writes nothing. A missing path or variable stops by
-   name. */
+   name.
+
+   The library's other import has no public name, only its NID, ioKMruft1ek, so it is registered
+   with RT_SYSLIB_NID. The file library calls it as (const char *path, int64_t offset, int64_t
+   bytes, int32_t *, int32_t *, int32_t *) (libSceFios2.elf+0x29c6f and +0x2a381: a path, an
+   offset, a size and three variables) and takes any answer other than 0 as "no map", the same
+   way. shadPS4 answers it with "no bitmap info" too, as does a family of native ports
+   (facts only; PS4Recomp answers 0x80820001), and the maintainer's ruling of 2026-11-10 settles
+   on 0x81100004. Nothing is written. */
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
@@ -26,4 +34,14 @@ static int32_t is_request_on_hdd(const char *path, int64_t offset, int64_t bytes
     return DISC_MAP_ERROR_NO_BITMAP_INFO;
 }
 
+static int32_t request_map_info(const char *path, int64_t offset, int64_t bytes, int32_t *first, int32_t *second,
+                                int32_t *third)
+{
+    (void)offset, (void)bytes;
+    if (!path || !first || !second || !third)
+        rt_fatal("ioKMruft1ek (libSceDiscMap)", "no path, or no variable for an answer: the error value is not established");
+    return DISC_MAP_ERROR_NO_BITMAP_INFO;
+}
+
 RT_SYSLIB("libSceDiscMap", sceDiscMapIsRequestOnHDD, is_request_on_hdd);
+RT_SYSLIB_NID("libSceDiscMap", "ioKMruft1ek", request_map_info);
