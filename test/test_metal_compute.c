@@ -234,7 +234,7 @@ int main(void)
     const uint64_t vc = at(VERTEX_CODE), pc = at(PIXEL_CODE);
     const uint32_t vs[RT_VERTEX_SHADER_WORDS] = {(uint32_t)(vc >> 8), (uint32_t)(vc >> 40), 2, 8 << 1, 0, 4, 0};
     const uint32_t ps[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(pc >> 8), (uint32_t)(pc >> 40), 2, 0, 0, 4, 2, 2, 1, 0, 0, 15};
-    uint32_t target[RT_COLOR_TARGET_WORDS] = {(uint32_t)(at(TARGET) >> 8), 1, 3, 0, 0xau << 2};
+    uint32_t target[RT_COLOR_TARGET_WORDS] = {(uint32_t)(at(TARGET) >> 8), 1, 3, 0, 0xau << 2, 31};
     const float scale[3] = {8,8,1}, translate[3] = {8,8,0};
     CHECK(rt_render_record_color_target(buffer, 0x10, 0, target, error, sizeof error) == 0);
     CHECK(rt_render_record_viewport(buffer, 0x20, 0, 0, 1, scale, translate, error, sizeof error) == 0);
@@ -246,9 +246,9 @@ int main(void)
     CHECK(rt_executor_run(x, buffer, 0x70, error, sizeof error) == 0); rt_render_forget(); ++scenarios;
     uint32_t pixels[16 * 16]; CHECK(rt_executor_read_target(x, at(TARGET), pixels, 16, 16, error, sizeof error) == 0);
     CHECK(pixels[8 * 16 + 8] == UINT32_MAX);
-    execute(x, 1, "target-to-pool writeback");
+    execute(x, 1, NULL);
     rt_executor_reset(x); shader(CODE, 8, local, 0, 2); user_data(RT_STAGE_COMPUTE, 0, data, 8);
-    execute(x, 1, "target-to-pool writeback");
+    execute(x, 1, NULL);
     CHECK(rt_executor_read_target(x, at(TARGET), pixels, 16, 16, error, sizeof error) == 0);
     CHECK(pixels[8 * 16 + 8] == UINT32_MAX);
     rt_executor_close(x); rt_render_forget(); CHECK(munmap(pool, POOL_BYTES) == 0);

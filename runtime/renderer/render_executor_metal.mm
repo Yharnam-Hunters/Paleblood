@@ -6,6 +6,7 @@
 #include "runtime/gcn_spirv.h"
 #include "runtime/gcn.h"
 #include "runtime/render_calls.h"
+#include "runtime/tiling.h"
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -55,6 +56,7 @@ struct MetalTarget {
     uint64_t address;
     uint32_t width, height;
     MTLPixelFormat format;
+    rt_tiling layout;
     id<MTLTexture> texture;
     bool initialized = false;
 };
@@ -99,6 +101,7 @@ struct rt_executor {
     std::vector<MetalShader> shaders;
     std::vector<MetalComputePipeline> compute_pipelines;
     std::vector<MetalTarget> targets;
+    std::vector<uint8_t> target_rows;
     std::vector<MetalPipeline> pipelines;
 };
 /* Own the new mapping until Metal has accepted it, including Objective-C exceptions. */
@@ -271,12 +274,20 @@ static MetalTarget *target_for(rt_executor *x, const rt_color_target &color, cha
         return failed(error, size, "multisample, layered or compressed render targets are not drawn yet"), nullptr;
     if (!color.pitch || !color.height || color.pitch > MAX_DIMENSION || color.height > MAX_DIMENSION)
         return failed(error, size, "render target dimensions exceed the executor's 1..4096 profile"), nullptr;
+    rt_tiling layout{}; char reason[256] = {};
+    if (rt_tiling_layout(color.tile_mode_index, sizeof(uint32_t), color.pitch, color.height, &layout, reason, sizeof reason))
+        return failed(error, size, "render target layout: %s", reason), nullptr;
+    const uint64_t span = rt_tiling_size(&layout, 1);
+    if (color.address < x->guest_base || color.address - x->guest_base > x->size ||
+        span > x->size - (color.address - x->guest_base))
+        return failed(error, size, "render target is outside the GPU-visible pool"), nullptr;
     const MTLPixelFormat format = color.component_swap == SWAP_STD
         ? (color.number_type == NUMBER_SRGB ? MTLPixelFormatRGBA8Unorm_sRGB : MTLPixelFormatRGBA8Unorm)
         : (color.number_type == NUMBER_SRGB ? MTLPixelFormatBGRA8Unorm_sRGB : MTLPixelFormatBGRA8Unorm);
     for (auto &target : x->targets) if (target.address == color.address) {
-        if (target.width != color.pitch || target.height != color.height || target.format != format)
-            return failed(error, size, "a render target changed size or format; reallocation is not supported"), nullptr;
+        if (target.width != color.pitch || target.height != color.height || target.format != format ||
+            target.layout.tiling_index != color.tile_mode_index)
+            return failed(error, size, "a render target changed size, format or tiling; reallocation is not supported"), nullptr;
         return &target;
     }
     if (x->targets.size() == MAX_TARGETS) return failed(error, size, "render target cache is full"), nullptr;
@@ -287,8 +298,30 @@ static MetalTarget *target_for(rt_executor *x, const rt_color_target &color, cha
     descriptor.allowGPUOptimizedContents = NO;
     id<MTLTexture> texture = [x->device newTextureWithDescriptor:descriptor];
     if (!texture) return failed(error, size, "render target allocation failed"), nullptr;
-    x->targets.push_back({color.address, color.pitch, color.height, format, texture, false});
+    x->targets.push_back({color.address, color.pitch, color.height, format, layout, texture, false});
     return &x->targets.back();
+}
+
+/* Every draw loads the guest memory it will preserve and publishes completed pixels back to
+   that same memory. This synchronous path makes CPU, buffer, compute and overlapping-target
+   accesses observe one backing store without a second dirty-image lifetime. Encoded UNORM/sRGB
+   bytes keep the target's native channel order; the public readback API converts to BGRA. */
+static void load_target(rt_executor *x, const MetalTarget &target)
+{
+    x->target_rows.resize(static_cast<size_t>(target.width) * target.height * sizeof(uint32_t));
+    const auto *tiled = static_cast<const uint8_t *>(x->view) + target.address - x->guest_base;
+    rt_tiling_detile(&target.layout, tiled, x->target_rows.data(), target.width, target.height, 1);
+    [target.texture replaceRegion:MTLRegionMake2D(0, 0, target.width, target.height) mipmapLevel:0
+        withBytes:x->target_rows.data() bytesPerRow:static_cast<NSUInteger>(target.width) * sizeof(uint32_t)];
+}
+
+static void store_target(rt_executor *x, const MetalTarget &target)
+{
+    x->target_rows.resize(static_cast<size_t>(target.width) * target.height * sizeof(uint32_t));
+    [target.texture getBytes:x->target_rows.data() bytesPerRow:static_cast<NSUInteger>(target.width) * sizeof(uint32_t)
+        fromRegion:MTLRegionMake2D(0, 0, target.width, target.height) mipmapLevel:0];
+    auto *tiled = static_cast<uint8_t *>(x->view) + target.address - x->guest_base;
+    rt_tiling_tile(&target.layout, x->target_rows.data(), tiled, target.width, target.height, 1);
 }
 
 /* Both stages use the same pointer ABI, push-constant binding and safe MSL math. */
@@ -555,13 +588,10 @@ static id<MTLComputePipelineState> compute_pipeline_for(rt_executor *x, const rt
     return pipeline;
 }
 
-/* Until target writeback exists, completed render textures cannot be read through the
-   shared guest pool. Reset forgets GPU state, not those separately stored pixels. */
+/* Earlier draws have published their completed texels into the shared guest pool. */
 static int dispatch_compute(rt_executor *x, const MetalState &state, const uint32_t groups[3], char *error, size_t size)
 {
     if (!state.compute_set) return failed(error, size, "a dispatch requires a compute shader");
-    for (const auto &target : x->targets)
-        if (target.initialized) return failed(error, size, "compute after a draw requires target-to-pool writeback");
     const auto &shader = state.compute;
     if (shader.user_sgprs > GCN_USER_SGPR_MAX || shader.sgprs < shader.user_sgprs + (shader.workgroup_id_enables & 1u))
         return failed(error, size, "compute user SGPR count exceeds its modeled or declared allocation");
@@ -642,9 +672,10 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     const bool write_color = !state.target_mask_set || (state.target_mask & TARGET0_MASK) != 0;
     id<MTLRenderPipelineState> pipeline = pipeline_for(x, vertex, pixel, target->format, write_color, error, size);
     if (!pipeline) return -1;
+    load_target(x, *target);
     MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
     pass.colorAttachments[0].texture = target->texture;
-    pass.colorAttachments[0].loadAction = target->initialized ? MTLLoadActionLoad : MTLLoadActionClear;
+    pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
     pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
     *static_cast<volatile uint32_t *>(x->stop.contents) = 0;
@@ -667,6 +698,7 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     else [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:count];
     [encoder endEncoding];
     if (complete_commands(x, command, error, size)) return -1;
+    store_target(x, *target);
     target->initialized = true;
     return shader_runtime_stop(x, error, size);
 }
@@ -829,8 +861,8 @@ extern "C" int rt_executor_read_target(rt_executor *x, uint64_t address, uint32_
         if (!target.initialized || width > target.width || height > target.height)
             return failed(error, error_size, "read size is past the completed render target");
         @try {
-            [target.texture getBytes:bgra bytesPerRow:static_cast<NSUInteger>(width) * 4
-                fromRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0];
+            const auto *tiled = static_cast<const uint8_t *>(x->view) + target.address - x->guest_base;
+            rt_tiling_detile(&target.layout, tiled, reinterpret_cast<uint8_t *>(bgra), width, height, 1);
             if (target.format == MTLPixelFormatRGBA8Unorm || target.format == MTLPixelFormatRGBA8Unorm_sRGB)
                 for (size_t i = 0; i < static_cast<size_t>(width) * height; ++i) {
                     uint32_t pixel = bgra[i]; bgra[i] = (pixel & 0xff00ff00u) | (pixel & 0xffu) << 16 | (pixel >> 16 & 0xffu);
