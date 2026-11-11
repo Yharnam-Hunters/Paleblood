@@ -3289,8 +3289,9 @@ static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64
    Vulkan's anisotropy up to MAX_ANISO_RATIO's samples (within the device's limit; without the
    device's anisotropic filtering, the plain filter). ANISO_THRESHOLD and ANISO_BIAS, which tune when
    the hardware takes fewer samples, are not used; with point or bilinear filters the anisotropy
-   fields change nothing. Anything else
-   in word 0 (depth compares, unnormalized coordinates, the truncation and degamma options, a filter
+   fields change nothing. DEPTH_COMPARE_FUNC is applied by the translated program (gcn_spirv.c), the
+   Vulkan sampler compares nothing. Anything else
+   in word 0 (unnormalized coordinates, the truncation and degamma options, a filter
    mode other than blending) stops by name, as do the secondary LOD bias and the LOD rounding options
    in word 2. Z_FILTER (3D images, which are not done), word 1's PERF_MIP and PERF_Z (sampling
    performance hints) and word 3 (the border colour, for the border modes that stop) are not used. */
@@ -3300,10 +3301,12 @@ static VkSampler sampler_for(rt_executor *x, const uint32_t words[4], char *erro
         if (!memcmp(x->samplers[i].words, words, sizeof x->samplers[i].words)) return x->samplers[i].sampler;
     enum { CLAMP_FIELDS = 0x1ff, WRAP = 0, MIRROR = 1, CLAMP_LAST_TEXEL = 2, POINT = 0, BILINEAR = 1, ANISOTROPIC_POINT = 2,
            ANISOTROPIC_BILINEAR = 3, MAX_ANISO_RATIO_SHIFT = 9, HIGHEST_RATIO = 4 };
-    enum { MAX_ANISO_RATIO = 0x7u << 9, ANISO_THRESHOLD = 0x7u << 16, ANISO_BIAS = 0x3fu << 21 };
+    enum { MAX_ANISO_RATIO = 0x7u << 9, ANISO_THRESHOLD = 0x7u << 16, ANISO_BIAS = 0x3fu << 21, DEPTH_COMPARE_FUNC = 0x7u << 12 };
     const uint32_t anisotropy_fields = MAX_ANISO_RATIO | ANISO_THRESHOLD | ANISO_BIAS;
-    if (words[0] & ~(CLAMP_FIELDS | anisotropy_fields)) {
-        failed(error, error_size, "a sampler with word 0 %#x (depth compares, unnormalized coordinates or filter options): "
+    /* DEPTH_COMPARE_FUNC is the translated program's: it reads the S# for its image_sample_c_lz compares
+       (gcn_spirv.c compared_sample); samples without a compare do not use it */
+    if (words[0] & ~(CLAMP_FIELDS | anisotropy_fields | DEPTH_COMPARE_FUNC)) {
+        failed(error, error_size, "a sampler with word 0 %#x (unnormalized coordinates or filter options): "
                "not done yet", words[0]);
         return VK_NULL_HANDLE;
     }

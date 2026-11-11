@@ -2197,7 +2197,7 @@ static int same_origin(const gcn_resource_origin *a, const gcn_resource_origin *
 /* MIMG fields (the Sea Islands ISA manual): word 0 DMASK bits 8-11, UNORM 12, GLC 13, DA 14, R128 15,
    TFE 16, LWE 17, OP 18-24, SLC 25; word 1 VADDR bits 0-7, VDATA 8-15, SRSRC 16-20 (4 SGPRs each),
    SSAMP 21-25. */
-enum { MIMG_OP_LOAD = 0x00, MIMG_OP_LOAD_MIP = 0x01, MIMG_OP_STORE = 0x08, MIMG_OP_SAMPLE = 0x20, MIMG_OP_SAMPLE_L = 0x24, MIMG_OP_SAMPLE_LZ = 0x27, MIMG_SRSRC_UNIT = 4, RESOURCE_DWORDS = 8,
+enum { MIMG_OP_LOAD = 0x00, MIMG_OP_LOAD_MIP = 0x01, MIMG_OP_STORE = 0x08, MIMG_OP_SAMPLE = 0x20, MIMG_OP_SAMPLE_L = 0x24, MIMG_OP_SAMPLE_LZ = 0x27, MIMG_OP_SAMPLE_C_LZ = 0x2f, MIMG_SRSRC_UNIT = 4, RESOURCE_DWORDS = 8,
        SAMPLER_DWORDS = 4 };
 
 static unsigned mimg_resource_sgpr(const uint32_t *w) { return ((w[1] >> 16) & 0x1f) * MIMG_SRSRC_UNIT; }
@@ -2299,6 +2299,71 @@ static uint32_t sampler_variable(translator *t, unsigned j)
     return id;
 }
 
+/* A depth compare's result for one texel: 1.0 when the reference passes the sampler's
+   DEPTH_COMPARE_FUNC against the texel (0 never, 1 less, 2 equal, 3 less or equal, 4 greater, 5 not
+   equal, 6 greater or equal, 7 always, the reference on the left as in Vulkan's compare ops, which
+   shadPS4 maps these numbers to one for one), 0.0 otherwise. */
+static uint32_t depth_compare(translator *t, uint32_t function, uint32_t reference, uint32_t texel)
+{
+    static const uint16_t compares[] = {SPV_OP_F_ORD_LESS_THAN, SPV_OP_F_ORD_EQUAL, SPV_OP_F_ORD_LESS_THAN_EQUAL, SPV_OP_F_ORD_GREATER_THAN,
+                                        SPV_OP_F_ORD_NOT_EQUAL, SPV_OP_F_ORD_GREATER_THAN_EQUAL};
+    const uint32_t one = konst_float(t, 1.0f), zero = konst_float(t, 0.0f);
+    uint32_t result = value(t, SPV_OP_SELECT, t_float(t), 3, value(t, SPV_OP_I_EQUAL, t_bool(t), 2, function, konst(t, 7)), one, zero);
+    for (uint32_t f = 1; f <= 6; f++) {
+        const uint32_t passes = value(t, SPV_OP_SELECT, t_float(t), 3, value(t, compares[f - 1], t_bool(t), 2, reference, texel), one, zero);
+        result = value(t, SPV_OP_SELECT, t_float(t), 3, value(t, SPV_OP_I_EQUAL, t_bool(t), 2, function, konst(t, f)), passes, result);
+    }
+    return result;
+}
+
+static uint32_t lerp(translator *t, uint32_t a, uint32_t b, uint32_t f)
+{
+    return glsl(t, t_float(t), SPV_GLSL_FMA, value(t, SPV_OP_F_SUB, t_float(t), 2, b, a), f, a, 3);
+}
+
+/* image_sample_c_lz at level 0 of a 2D image (or array): the four texels around the coordinate
+   (Vulkan's gather, in its order: (i0, j1), (i1, j1), (i1, j0), (i0, j0)) each compared with the
+   reference, then blended with the bilinear weights of the coordinate's position between them, as
+   GCN filters a compare (percentage-closer filtering); a sampler whose magnifying filter is point
+   (XY_MAG_FILTER 0 or 2) takes the nearest texel's result instead. The compare function and the
+   filter come from the S# in its SGPRs as the program runs, so the Vulkan sampler itself does no
+   compare (a compare sampler would need a depth format, and the sampled images are colour views of
+   the depth data). */
+static uint32_t compared_sample(translator *t, const uint32_t *w, const gcn_image_binding *b, uint32_t combined, uint32_t image,
+                                uint32_t coordinate, uint32_t x, uint32_t y, uint32_t reference)
+{
+    enum { SPV_OP_COMPOSITE_CONSTRUCT = 80 };
+    const uint32_t vec4 = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_float(t), 4}, 2);
+    const uint32_t texels = value(t, SPV_OP_IMAGE_GATHER, vec4, 3, combined, coordinate, konst(t, 0));
+    const unsigned size_components = b->arrayed ? 3 : 2;
+    const uint32_t uvec = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_uint(t), size_components}, 2);
+    const uint32_t size = value(t, SPV_OP_IMAGE_QUERY_SIZE_LOD, uvec, 2, image, konst(t, 0));
+    t->queries_images = 1;
+    const unsigned sampler = mimg_sampler_sgpr(w);
+    const uint32_t word0 = load(t, t_uint(t), sgpr(t, sampler)), word2 = load(t, t_uint(t), sgpr(t, sampler + 2));
+    const uint32_t function = value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, word0, konst(t, 12)),
+                                    konst(t, 7));
+    const uint32_t bilinear = value(t, SPV_OP_I_NOT_EQUAL, t_bool(t), 2,
+                                    value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, word2, konst(t, 1u << 20)), konst(t, 0));
+    uint32_t weight[2];
+    const uint32_t axis[2] = {x, y};
+    for (unsigned i = 0; i < 2; i++) {
+        const uint32_t extent = value(t, SPV_OP_CONVERT_U_TO_F, t_float(t), 1, value(t, SPV_OP_COMPOSITE_EXTRACT, t_uint(t), 2, size, i));
+        const uint32_t texel_position = value(t, SPV_OP_F_SUB, t_float(t), 2, value(t, SPV_OP_F_MUL, t_float(t), 2, axis[i], extent),
+                                              konst_float(t, 0.5f));
+        const uint32_t fraction = glsl(t, t_float(t), SPV_GLSL_FRACT, texel_position, 0, 0, 1);
+        const uint32_t nearest = value(t, SPV_OP_SELECT, t_float(t), 3,
+                                       value(t, SPV_OP_F_ORD_GREATER_THAN_EQUAL, t_bool(t), 2, fraction, konst_float(t, 0.5f)),
+                                       konst_float(t, 1.0f), konst_float(t, 0.0f));
+        weight[i] = value(t, SPV_OP_SELECT, t_float(t), 3, bilinear, fraction, nearest);
+    }
+    uint32_t passed[4];
+    for (unsigned i = 0; i < 4; i++)
+        passed[i] = depth_compare(t, function, reference, value(t, SPV_OP_COMPOSITE_EXTRACT, t_float(t), 2, texels, i));
+    const uint32_t upper = lerp(t, passed[3], passed[2], weight[0]), lower = lerp(t, passed[0], passed[1], weight[0]);
+    return lerp(t, upper, lower, weight[1]);
+}
+
 /* image_sample, image_sample_l and image_sample_lz: float coordinates from VADDR on (x, then y for 2D,
    then the slice for an array, which DA marks), then for image_sample_l the level of detail, sampled
    with the sampler its SSAMP SGPRs name: image_sample_l at that level and image_sample_lz at level 0
@@ -2309,9 +2374,9 @@ static uint32_t sampler_variable(translator *t, unsigned j)
    its second, y from the first to its third; the slice has none), passed as explicit gradients
    because the translated program's dispatch loop is not uniform control flow for Vulkan's implicit
    derivatives; the quad's lanes take the same path, so its broadcasts are defined. Only active lanes
-   write their VGPRs. */
+   write their VGPRs. image_sample_c_lz is image_sample_lz with a depth compare (compared_sample). */
 static void image_sample(translator *t, const uint32_t *code, size_t at, const gcn_instruction *ins, unsigned binding, uint32_t texel_type,
-                         unsigned dmask, unsigned vaddr, unsigned vdata, int explicit_lod, int zero_lod)
+                         unsigned dmask, unsigned vaddr, unsigned vdata, int explicit_lod, int zero_lod, int compare)
 {
     enum { SPV_OP_COMPOSITE_CONSTRUCT = 80 };
     const uint32_t *w = code + at;
@@ -2342,6 +2407,14 @@ static void image_sample(translator *t, const uint32_t *code, size_t at, const g
         fail(t, "%s: the sampler in s[%u:%u] is not bound", ins->name, origin.sgpr, origin.sgpr + 3);
         return;
     }
+    if (compare && (b->dim != GCN_IMAGE_2D || b->cube || b->type != GCN_IMAGE_FLOAT || dmask != 1)) {
+        fail(t, "%s: a depth compare of other than one component of a 2D float image is not translated yet", ins->name);
+        return;
+    }
+    /* a compare's reference comes first (the ISA's address order: offset, bias, z-compare, derivatives,
+       the coordinates, LOD) */
+    const uint32_t reference = compare ? as_float(t, load(t, t_uint(t), vgpr(t, vaddr))) : 0;
+    if (compare) vaddr++;
     const unsigned coordinates = (b->dim == GCN_IMAGE_1D ? 1 : b->dim == GCN_IMAGE_2D ? 2 : 3) + (b->arrayed ? 1 : 0);
     uint32_t c[4];
     for (unsigned i = 0; i < coordinates; i++) c[i] = as_float(t, load(t, t_uint(t), vgpr(t, vaddr + i)));
@@ -2385,8 +2458,14 @@ static void image_sample(translator *t, const uint32_t *code, size_t at, const g
     const uint32_t merge = begin_if(t, exec_bit(t));
     const uint32_t type = image_type(t, b);
     const uint32_t sampled_type = spirv_global(&t->m, SPV_OP_TYPE_SAMPLED_IMAGE, &type, 1);
-    const uint32_t combined = value(t, SPV_OP_SAMPLED_IMAGE, sampled_type, 2, load(t, type, image_variable_id),
+    const uint32_t image = load(t, type, image_variable_id);
+    const uint32_t combined = value(t, SPV_OP_SAMPLED_IMAGE, sampled_type, 2, image,
                                     load(t, spirv_global(&t->m, SPV_OP_TYPE_SAMPLER, NULL, 0), sampler_id));
+    if (compare) {
+        write_vgpr(t, vdata, as_bits(t, compared_sample(t, w, b, combined, image, coordinate, c[0], c[1], reference)));
+        end_if(t, merge);
+        return;
+    }
     const uint32_t texel = explicit_lod ? value(t, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, texel_type, 4, combined, coordinate, SPV_IMAGE_OPERANDS_LOD, lod)
                                         : value(t, SPV_OP_IMAGE_SAMPLE_EXPLICIT_LOD, texel_type, 5, combined, coordinate, SPV_IMAGE_OPERANDS_GRAD,
                                                 gradient_x, gradient_y);
@@ -2412,7 +2491,7 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
     const char *name = ins->name;
     const unsigned op = (w[0] >> 18) & 0x7f, dmask = (w[0] >> 8) & 0xf, r128 = (w[0] >> 15) & 1, tfe = (w[0] >> 16) & 1,
                    lwe = (w[0] >> 17) & 1;
-    const int sample = op == MIMG_OP_SAMPLE || op == MIMG_OP_SAMPLE_L || op == MIMG_OP_SAMPLE_LZ;
+    const int sample = op == MIMG_OP_SAMPLE || op == MIMG_OP_SAMPLE_L || op == MIMG_OP_SAMPLE_LZ || op == MIMG_OP_SAMPLE_C_LZ;
     if (op != MIMG_OP_LOAD && op != MIMG_OP_LOAD_MIP && op != MIMG_OP_STORE && !sample) {
         fail(t, "%s (MIMG) is not translated yet", name);
         return;
@@ -2439,7 +2518,8 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
     const gcn_image_binding *b = &t->layout->images[binding];
     if (sample) {
         const uint32_t texel_type = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){texel_component_type(t, b), 4}, 2);
-        image_sample(t, code, at, ins, binding, texel_type, dmask, vaddr, vdata, op == MIMG_OP_SAMPLE_L, op == MIMG_OP_SAMPLE_LZ);
+        image_sample(t, code, at, ins, binding, texel_type, dmask, vaddr, vdata, op == MIMG_OP_SAMPLE_L,
+                     op == MIMG_OP_SAMPLE_LZ || op == MIMG_OP_SAMPLE_C_LZ, op == MIMG_OP_SAMPLE_C_LZ);
         return;
     }
     if (b->sampled && op == MIMG_OP_STORE) {
@@ -2575,7 +2655,7 @@ int gcn_called_image_resources(const uint32_t *code, size_t dwords, const uint32
                 resources[i] = (gcn_image_resource){origin, 0};
                 (*count)++;
             }
-            const int samples = op == MIMG_OP_SAMPLE || op == MIMG_OP_SAMPLE_L || op == MIMG_OP_SAMPLE_LZ;
+            const int samples = op == MIMG_OP_SAMPLE || op == MIMG_OP_SAMPLE_L || op == MIMG_OP_SAMPLE_LZ || op == MIMG_OP_SAMPLE_C_LZ;
             resources[i].access |= op == MIMG_OP_STORE ? GCN_IMAGE_WRITE : samples ? GCN_IMAGE_READ | GCN_IMAGE_SAMPLE
                                                                                                          : GCN_IMAGE_READ;
         }
@@ -2636,7 +2716,7 @@ int gcn_sampler_resources(const uint32_t *code, size_t dwords, gcn_resource_orig
             return -1;
         }
         const unsigned mimg_op = (code[at] >> 18) & 0x7f;
-        if (ins.encoding == GCN_MIMG && (mimg_op == MIMG_OP_SAMPLE || mimg_op == MIMG_OP_SAMPLE_L || mimg_op == MIMG_OP_SAMPLE_LZ)) {
+        if (ins.encoding == GCN_MIMG && (mimg_op == MIMG_OP_SAMPLE || mimg_op == MIMG_OP_SAMPLE_L || mimg_op == MIMG_OP_SAMPLE_LZ || mimg_op == MIMG_OP_SAMPLE_C_LZ)) {
             gcn_resource_origin origin;
             const callee_code no_callee = {NULL, 0};
             if (descriptor_origin(code, (size_t)program, &no_callee, at, mimg_sampler_sgpr(code + at), SAMPLER_DWORDS, &origin, error, error_size))
