@@ -2671,7 +2671,8 @@ typedef struct {
    targets), 10 8_8_8_8, 11 32_32, 12 16_16_16_16, 14 32_32_32_32, and the block-compressed 35 BC1 to 41 BC7
    (4 x 4 texels in 8 bytes for BC1 and BC4, 16 for the others; shadPS4's pixel_format.h numbers them
    the same); number formats 0 unorm, 1 snorm, 4 uint, 5 sint, 7 float, 9 sRGB. BC1 keeps its one-bit
-   alpha (Vulkan's RGBA form). BC6 stops by name until its number formats are established. */
+   alpha (Vulkan's RGBA form). BC6 (40) is BC6H's half floats, unsigned under number format 0 and signed
+   under 1 (shadPS4's liverpool_to_vk.cpp maps them so; the clinic's environment textures are BC6 unorm). */
 static int image_format(const rt_image_descriptor *d, texel_format *f, char *error, size_t error_size)
 {
     static const struct {
@@ -2689,6 +2690,7 @@ static int image_format(const rt_image_descriptor *d, texel_format *f, char *err
         {37, 0, {VK_FORMAT_BC3_UNORM_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}}, {37, 9, {VK_FORMAT_BC3_SRGB_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}},
         {38, 0, {VK_FORMAT_BC4_UNORM_BLOCK, GCN_IMAGE_FLOAT, 1, 8, 4}}, {38, 1, {VK_FORMAT_BC4_SNORM_BLOCK, GCN_IMAGE_FLOAT, 1, 8, 4}},
         {39, 0, {VK_FORMAT_BC5_UNORM_BLOCK, GCN_IMAGE_FLOAT, 2, 16, 4}}, {39, 1, {VK_FORMAT_BC5_SNORM_BLOCK, GCN_IMAGE_FLOAT, 2, 16, 4}},
+        {40, 0, {VK_FORMAT_BC6H_UFLOAT_BLOCK, GCN_IMAGE_FLOAT, 3, 16, 4}}, {40, 1, {VK_FORMAT_BC6H_SFLOAT_BLOCK, GCN_IMAGE_FLOAT, 3, 16, 4}},
         {41, 0, {VK_FORMAT_BC7_UNORM_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}}, {41, 9, {VK_FORMAT_BC7_SRGB_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}},
     };
     for (size_t i = 0; i < sizeof formats / sizeof *formats; i++)
