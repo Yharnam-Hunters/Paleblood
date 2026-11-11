@@ -42,6 +42,7 @@ static const uint32_t vertex_store_witness[] = {
 };
 static const uint64_t guest_base = 0x3000000000ull;
 static const uint32_t draw_indexed_header = 0xc0042700u, draw_indexed_offset_header = 0xc0033500u;
+enum { DST_XYZW = 4 | 5 << 3 | 6 << 6 | 7 << 9, DST_ZYXW = 6 | 5 << 3 | 4 << 6 | 7 << 9 };
 static unsigned failures, checks, scenarios;
 #define CHECK(condition) do { checks++; if (!(condition)) { \
     fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #condition); failures++; } } while (0)
@@ -71,8 +72,8 @@ static void pixel_registers(uint32_t words[RT_PIXEL_SHADER_WORDS], unsigned code
     words[2] = 2; words[5] = 4; words[6] = 2; words[7] = 2; words[8] = 1; words[11] = 15;
 }
 
-static uint32_t record_setup(uint64_t buffer, uint64_t target, unsigned width, unsigned height,
-                            unsigned swap, const float scale[3], const float translate[3], unsigned colors)
+static uint32_t record_state_setup(uint64_t buffer, uint64_t target, unsigned width, unsigned height,
+                                   unsigned swap, const float scale[3], const float translate[3])
 {
     char error[256] = "";
     uint32_t color[RT_COLOR_TARGET_WORDS] = {0};
@@ -87,10 +88,18 @@ static uint32_t record_setup(uint64_t buffer, uint64_t target, unsigned width, u
     const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(pc >> 8), (uint32_t)(pc >> 40), 2, 0, 0, 4, 2, 2, 1, 0, 0, 0xf};
     CHECK(rt_render_record_vertex_shader(buffer, 0x30, vertex, error, sizeof error) == 0);
     CHECK(rt_render_record_pixel_shader(buffer, 0x40, pixel, error, sizeof error) == 0);
+    return 0x50;
+}
+
+static uint32_t record_setup(uint64_t buffer, uint64_t target, unsigned width, unsigned height,
+                            unsigned swap, const float scale[3], const float translate[3], unsigned colors)
+{
+    const uint32_t size = record_state_setup(buffer, target, width, height, swap, scale, translate);
+    char error[256] = "";
     uint32_t user[8];
     descriptor(user, at(CORNERS)); descriptor(user + 4, at(colors));
-    CHECK(rt_render_record_user_data(buffer, 0x50, RT_STAGE_VERTEX, 0, user, 8, error, sizeof error) == 0);
-    return 0x60;
+    CHECK(rt_render_record_user_data(buffer, size, RT_STAGE_VERTEX, 0, user, 8, error, sizeof error) == 0);
+    return size + 0x10;
 }
 
 static uint32_t record_draw(uint64_t buffer, uint64_t target, unsigned width, unsigned height,
@@ -204,6 +213,191 @@ static void check_two_parameters(rt_executor *x, uint64_t target)
             !near(p >> 8 & 255, ((float)col + 0.5f) / 16) || !near(p & 255, 0.5f) || p >> 24 != 255) bad++;
     }
     CHECK(bad == 0);
+}
+
+/* Fetch cases use the same owned programs as the common translator tests. They start with no
+   implicit user writes, so the call target and descriptor-table reads each have their own witness. */
+static uint32_t record_fetch_setup(uint64_t buffer, unsigned user_count, unsigned pair,
+                                   uint64_t fetch, uint64_t table, uint32_t written)
+{
+    const float scale[3] = {8, 8, 1}, translate[3] = {8, 8, 0};
+    char error[256] = "";
+    uint32_t size = record_state_setup(buffer, at(0x930000), 16, 16, 0, scale, translate);
+    uint32_t vertex[RT_VERTEX_SHADER_WORDS]; vertex_registers(vertex, FETCH_CALLER_CODE);
+    vertex[2] = 0x42; vertex[3] = user_count << 1;
+    CHECK(rt_render_record_vertex_shader(buffer, size, vertex, error, sizeof error) == 0); size += 0x10;
+    uint32_t data[16] = {0};
+    data[2] = (uint32_t)table; data[3] = (uint32_t)(table >> 32);
+    if (pair < 15) { data[pair] = (uint32_t)fetch; data[pair + 1] = (uint32_t)(fetch >> 32); }
+    for (unsigned slot = 0; slot < 16; ++slot) if (written & (1u << slot)) {
+        CHECK(rt_render_record_user_data(buffer, size, RT_STAGE_VERTEX, slot, data + slot, 1, error, sizeof error) == 0);
+        size += 0x10;
+    }
+    return size;
+}
+
+static void check_fetch_pixels(rt_executor *x, int solid, int swap)
+{
+    uint32_t pixels[16 * 16]; char error[256] = "";
+    CHECK(rt_executor_read_target(x, at(0x930000), pixels, 16, 16, error, sizeof error) == 0);
+    unsigned bad = 0;
+    for (unsigned y = 0; y < 16; ++y) for (unsigned col = 0; col < 16; ++col) {
+        float red = solid ? 0.75f : ((float)col + 0.5f) / 16;
+        float green = solid ? 0.125f : ((float)y + 0.5f) / 16;
+        const float blue = solid ? 0.5f : 0.25f;
+        if (swap) { const float previous = red; red = green; green = previous; }
+        const uint32_t pixel = pixels[y * 16 + col];
+        if (!near(pixel >> 16 & 255, red) || !near(pixel >> 8 & 255, green) ||
+            !near(pixel & 255, blue) || pixel >> 24 != 255) bad++;
+    }
+    CHECK(bad == 0);
+}
+
+static void fetch_draw(rt_executor *x, uint64_t buffer, uint32_t size, int solid, int swap)
+{
+    char error[256] = "";
+    CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0);
+    if (!run(x, buffer, size + 0x10)) check_fetch_pixels(x, solid, swap);
+    scenarios++;
+}
+
+static void check_fetch_shaders(rt_executor *x, unsigned char *pool)
+{
+    enum { SECOND_FETCH = 0x2a000, BAD_FETCH = 0x2b000 };
+    uint32_t descriptors[12];
+    descriptor(descriptors, at(CORNERS)); descriptor(descriptors + 4, at(COLORS)); descriptor(descriptors + 8, at(SOLID_COLORS));
+    for (unsigned i = 0; i < 3; ++i) descriptors[4 * i + 3] = DST_XYZW | 7u << 12 | 14u << 15;
+    memcpy(pool + FETCH_DESCRIPTOR_TABLE, descriptors, sizeof descriptors);
+    memcpy(pool + SECOND_FETCH, fetch_position_color, sizeof fetch_position_color);
+    ((uint32_t *)(pool + SECOND_FETCH))[1] = 0xc0840308; /* LLVM: s_load_dwordx4 s[8:11], s[2:3], 0x8 */
+    uint64_t buffer = 2000;
+    char error[1024] = "";
+    uint32_t size;
+    rt_executor_reset(x);
+    size = record_fetch_setup(buffer, 4, 0, at(FETCH_CALLEE_CODE), at(FETCH_DESCRIPTOR_TABLE), 15);
+    fetch_draw(x, buffer++, size, 0, 0);
+
+    /* Only the target pair changes: same caller, table and cached state, different fetch body. */
+    uint64_t address = at(SECOND_FETCH);
+    uint32_t target[2] = {(uint32_t)address, (uint32_t)(address >> 32)};
+    CHECK(rt_render_record_user_data(buffer, 0x10, RT_STAGE_VERTEX, 0, target, 2, error, sizeof error) == 0);
+    fetch_draw(x, buffer++, 0x20, 1, 0);
+    ((uint32_t *)(pool + SECOND_FETCH))[1] = 0xc0840304;
+    fetch_draw(x, buffer++, 0x10, 0, 0); /* Same target address, live callee bytes changed. */
+    ((uint32_t *)(pool + SECOND_FETCH))[1] = 0xc0840308;
+    fetch_draw(x, buffer++, 0x10, 1, 0);
+
+    /* Same caller address, different exports. Recheck its complete bytes as well. */
+    ((uint32_t *)(pool + FETCH_CALLER_CODE))[3] = 0x08070506; /* LLVM: exp param0, v6, v5, v7, v8 */
+    fetch_draw(x, buffer++, 0x10, 1, 1);
+    memcpy(pool + FETCH_CALLER_CODE, vertex_calling_fetch, sizeof vertex_calling_fetch);
+    fetch_draw(x, buffer++, 0x10, 1, 0);
+
+    /* The pixel stage's data cannot redirect the fetch. */
+    const uint32_t poison[4] = {0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff};
+    CHECK(rt_render_record_user_data(buffer, 0x10, RT_STAGE_PIXEL, 0, poison, 4, error, sizeof error) == 0);
+    fetch_draw(x, buffer++, 0x20, 1, 0);
+
+    /* Both target words must be written even on a cache hit; a callee also needs its table pointer. */
+    const struct { uint32_t written; const char *reason; } missing[] = {
+        {14, "vertex fetch target shader reads unset user data 0x1"},
+        {13, "vertex fetch target shader reads unset user data 0x2"},
+        {3, "vertex shader reads unset user data 0xc"},
+        {7, "vertex shader reads unset user data 0x8"},
+        {11, "vertex shader reads unset user data 0x4"},
+    };
+    for (unsigned i = 0; i < sizeof missing / sizeof missing[0]; ++i) {
+        rt_executor_reset(x);
+        size = record_fetch_setup(buffer, 4, 0, at(SECOND_FETCH), at(FETCH_DESCRIPTOR_TABLE), missing[i].written);
+        CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0);
+        expect_error(x, buffer++, size + 0x10, missing[i].reason);
+        check_fetch_pixels(x, 1, 0);
+        scenarios++;
+    }
+
+    /* A zero low target word is explicitly set; unused high pointer bits are outside GCN's 48-bit address. */
+    memcpy(pool, fetch_position_color, sizeof fetch_position_color);
+    rt_executor_reset(x);
+    size = record_fetch_setup(buffer, 4, 0, guest_base | 0xabcd000000000000ull, at(FETCH_DESCRIPTOR_TABLE), 15);
+    fetch_draw(x, buffer++, size, 0, 0);
+
+    /* The last complete SGPR pair is supported; a neighboring incomplete pair is refused before a shift/read. */
+    ((uint32_t *)(pool + FETCH_CALLER_CODE))[0] = 0xbe80210e; /* LLVM: s_swappc_b64 s[0:1], s[14:15] */
+    rt_executor_reset(x);
+    size = record_fetch_setup(buffer, 16, 14, at(SECOND_FETCH), at(FETCH_DESCRIPTOR_TABLE), (3u << 14) | 12);
+    fetch_draw(x, buffer++, size, 1, 0);
+    const struct { unsigned pair, user; } outside_user[] = {{14, 15}, {15, 16}, {16, 16}, {104, 16}};
+    for (unsigned i = 0; i < sizeof outside_user / sizeof outside_user[0]; ++i) {
+        ((uint32_t *)(pool + FETCH_CALLER_CODE))[0] = 0xbe802100u | outside_user[i].pair;
+        rt_executor_reset(x);
+        size = record_fetch_setup(buffer, outside_user[i].user, 0, at(SECOND_FETCH), at(FETCH_DESCRIPTOR_TABLE), 15);
+        CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0);
+        expect_error(x, buffer++, size + 0x10, "outside its user data"); scenarios++;
+    }
+    memcpy(pool + FETCH_CALLER_CODE, vertex_calling_fetch, sizeof vertex_calling_fetch);
+
+    const uint64_t invalid[] = {guest_base - 4, guest_base + POOL_SIZE, at(FETCH_CALLEE_CODE) + 1, 0};
+    for (unsigned i = 0; i < sizeof invalid / sizeof invalid[0]; ++i) {
+        rt_executor_reset(x);
+        size = record_fetch_setup(buffer, 4, 0, invalid[i], at(FETCH_DESCRIPTOR_TABLE), 15);
+        CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0);
+        expect_error(x, buffer++, size + 0x10, "fetch shader code is outside the GPU-visible pool or unaligned"); scenarios++;
+    }
+
+    /* A return can occupy the last pool dword; an instruction needing a literal cannot. No vertex is fetched in this draw. */
+    uint32_t *last = (uint32_t *)(pool + POOL_SIZE - 4); *last = 0xbe802000;
+    rt_executor_reset(x);
+    size = record_fetch_setup(buffer, 4, 0, at(POOL_SIZE - 4), at(FETCH_DESCRIPTOR_TABLE), 15);
+    CHECK(rt_render_record_draw_auto(buffer, size, 0, error, sizeof error) == 0);
+    run(x, buffer++, size + 0x10); scenarios++;
+    *last = 0x7e1202ff; /* v_mov_b32 v9, literal, with no literal word in the pool */
+    rt_executor_reset(x);
+    size = record_fetch_setup(buffer, 4, 0, at(POOL_SIZE - 4), at(FETCH_DESCRIPTOR_TABLE), 15);
+    CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0);
+    expect_error(x, buffer++, size + 0x10, "fetch shader has no complete GFX7 program"); scenarios++;
+
+    const struct { uint32_t words[3]; unsigned count; const char *reason; } rejected[] = {
+        {{0xffffffff}, 1, "fetch shader has no complete GFX7 program"},
+        {{0xbf810000}, 1, "only straight-line callees"},
+        {{0xbe802002}, 1, "not the call's return pair"},
+        {{0xbf820000, 0xbe802000}, 2, "only straight-line callees"},
+        {{0xbe802100, 0xbe802000}, 2, "only straight-line callees"},
+        {{0xbe800380, 0xbe802000}, 2, "only straight-line callees"},
+    };
+    for (unsigned i = 0; i < sizeof rejected / sizeof rejected[0]; ++i) {
+        memcpy(pool + BAD_FETCH, rejected[i].words, rejected[i].count * sizeof(uint32_t));
+        rt_executor_reset(x);
+        size = record_fetch_setup(buffer, 4, 0, at(BAD_FETCH), at(FETCH_DESCRIPTOR_TABLE), 15);
+        CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0);
+        expect_error(x, buffer++, size + 0x10, rejected[i].reason); scenarios++;
+    }
+
+    /* Call analysis refuses a changed target or a second call without looking through that target. */
+    uint32_t *caller = (uint32_t *)(pool + FETCH_CALLER_CODE);
+    for (unsigned kind = 0; kind < 2; ++kind) {
+        caller[0] = kind ? 0xbe802100 : 0xbe800380;
+        memcpy(caller + 1, vertex_calling_fetch, sizeof vertex_calling_fetch);
+        rt_executor_reset(x);
+        size = record_fetch_setup(buffer, 4, 0, 0, 0, 0);
+        CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0);
+        expect_error(x, buffer++, size + 0x10, kind ? "more than one call" : "after s_mov_b32"); scenarios++;
+    }
+    memcpy(caller, vertex_calling_fetch, sizeof vertex_calling_fetch);
+
+    /* Both index widths feed the fetch's vertex index, including a nonzero index offset. */
+    descriptor(descriptors, at(INDEX_CORNERS)); descriptor(descriptors + 4, at(INDEX_COLORS));
+    descriptors[3] = descriptors[7] = DST_XYZW | 7u << 12 | 14u << 15;
+    memcpy(pool + FETCH_DESCRIPTOR_TABLE, descriptors, sizeof descriptors);
+    for (unsigned width = 0; width < 2; ++width) {
+        rt_executor_reset(x);
+        size = record_fetch_setup(buffer, 4, 0, at(FETCH_CALLEE_CODE), at(FETCH_DESCRIPTOR_TABLE), 15);
+        CHECK(rt_render_record_index_type(buffer, size, width, error, sizeof error) == 0); size += 0x10;
+        CHECK(rt_render_record_index_base(buffer, size, at(width ? INDICES32 : INDICES16), error, sizeof error) == 0); size += 0x10;
+        CHECK(rt_render_record_draw_index_offset_packet(buffer, size, draw_indexed_offset_header, 3, 1, 3, 0, error, sizeof error) == 0);
+        if (!run(x, buffer++, size + 0x10)) check_fetch_pixels(x, 0, 0);
+        scenarios++;
+    }
+    rt_executor_reset(x);
 }
 
 /* A state-only buffer feeds indexed draws in later buffers, including error and reset boundaries. */
@@ -1108,7 +1302,6 @@ int main(void)
     rt_executor_reset(x);
 
     /* Runtime descriptor formats use the real shared stop word in both shader stages. */
-    enum { DST_XYZW = 4 | 5 << 3 | 6 << 6 | 7 << 9, DST_ZYXW = 6 | 5 << 3 | 4 << 6 | 7 << 9 };
     const uint32_t whole_formats[] = {4, 5, 7}; /* uint, sint and float retain whole dwords */
     for (unsigned f = 0; f < sizeof whole_formats / sizeof whole_formats[0]; ++f) {
         const uint64_t buffer = 300 + f;
@@ -1345,22 +1538,7 @@ int main(void)
         rt_executor_reset(x);
     }
 
-    /* A valid owned fetch address and table still require an explicitly bound callee. */
-    uint32_t fetch_descriptors[8]; descriptor(fetch_descriptors, at(CORNERS)); descriptor(fetch_descriptors + 4, at(COLORS));
-    fetch_descriptors[3] = fetch_descriptors[7] = DST_XYZW | 7u << 12 | 14u << 15;
-    memcpy(pool + FETCH_DESCRIPTOR_TABLE, fetch_descriptors, sizeof fetch_descriptors);
-    uint32_t fetch_vertex[RT_VERTEX_SHADER_WORDS]; vertex_registers(fetch_vertex, FETCH_CALLER_CODE);
-    fetch_vertex[2] = 0x42; fetch_vertex[3] = 4 << 1;
-    const uint64_t fetch_address = at(FETCH_CALLEE_CODE), table_address = at(FETCH_DESCRIPTOR_TABLE);
-    const uint32_t fetch_user[4] = {(uint32_t)fetch_address, (uint32_t)(fetch_address >> 32),
-        (uint32_t)table_address, (uint32_t)(table_address >> 32)};
-    size = record_setup(390, at(0x930000), 16, 16, 0, scale, translate, COLORS);
-    CHECK(rt_render_record_vertex_shader(390, size, fetch_vertex, error, sizeof error) == 0); size += 0x10;
-    CHECK(rt_render_record_user_data(390, size, RT_STAGE_VERTEX, 0, fetch_user, 4, error, sizeof error) == 0); size += 0x10;
-    CHECK(rt_render_record_draw_auto(390, size, 3, error, sizeof error) == 0); size += 0x10;
-    expect_error(x, 390, size, "s_swappc_b64: a call with no callee given");
-    scenarios++;
-    rt_executor_reset(x);
+    check_fetch_shaders(x, pool);
 
     /* Compute binding is state only; a dispatch still requires that state. */
     const uint64_t compute_buffer = 0xc1000000;

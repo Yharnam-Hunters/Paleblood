@@ -34,11 +34,12 @@ enum { COLOR_8_8_8_8 = 0xa, NUMBER_UNORM = 0, NUMBER_SRGB = 6, SWAP_STD = 0, SWA
 enum { SPI_SHADER_FP16_ABGR = 4, SPI_SHADER_32_ABGR = 9, SPI_SHADER_4COMP = 4,
        CLIP_ENABLES = 0xff, CLIP_VECTOR_0 = 1 << 22, CLIP_VECTOR_1 = 1 << 23, PARAMETER_LIMIT = 32 };
 struct MetalShader {
-    uint64_t code;
+    uint64_t code, callee;
     unsigned user, output;
     unsigned required_parameters;
     uint32_t user_read;
     bool vertex, flip_y;
+    std::vector<uint32_t> program, fetch;
     id<MTLFunction> function;
 };
 struct MetalComputePipeline {
@@ -320,30 +321,78 @@ static id<MTLFunction> compile_msl(rt_executor *x, spirv_cross::CompilerMSL &com
     return function;
 }
 
-static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, unsigned user, unsigned output,
-                                 unsigned parameter_capacity, bool flip_y, uint32_t &user_read, char *error, size_t error_size)
+/* A physical zero in the backing array does not establish an incoming user SGPR's value. */
+static int check_user_data(const char *stage, uint32_t required, uint32_t written, char *error, size_t size)
 {
+    const uint32_t missing = required & ~written;
+    if (missing) return failed(error, size, "%s shader reads unset user data %#x", stage, missing);
+    return 0;
+}
+
+/* The common bounded decoder includes the final s_endpgm or fetch return. The common
+   translator then checks the fetch program's straight-line call contract. */
+struct MetalProgram {
+    uint64_t address = 0;
+    const uint32_t *words = nullptr;
+    size_t dwords = 0;
+};
+static int program_view(rt_executor *x, uint64_t address, bool fetch, MetalProgram &program, char *error, size_t size)
+{
+    if (address < x->guest_base || address - x->guest_base >= x->size || address % sizeof(uint32_t))
+        return failed(error, size, "%s shader code is outside the GPU-visible pool or unaligned", fetch ? "fetch" : "draw");
+    const auto *words = reinterpret_cast<const uint32_t *>(static_cast<const uint8_t *>(x->view) + address - x->guest_base);
+    const size_t available = static_cast<size_t>((x->size - (address - x->guest_base)) / sizeof(uint32_t));
+    const long length = gcn_program_dwords(words, available);
+    if (length <= 0) return failed(error, size, "%s shader has no complete GFX7 program", fetch ? "fetch" : "draw");
+    program = {address, words, static_cast<size_t>(length)};
+    return 0;
+}
+
+/* Resolve the call from this draw's vertex data before consulting the shader cache. A stale
+   or partially written target must not cause a CPU read through an unrelated address. */
+static int vertex_callee(rt_executor *x, const MetalProgram &program, unsigned user,
+                         const uint32_t *data, uint32_t written, MetalProgram &callee,
+                         uint32_t &target_read, char *error, size_t size)
+{
+    unsigned pair = 0; char reason[256] = {};
+    const int calls = gcn_call_sgpr(program.words, program.dwords, &pair, reason, sizeof reason);
+    if (calls < 0) return failed(error, size, "vertex fetch call: %s", reason);
+    if (!calls) return 0;
+    if (pair + 2 > user) return failed(error, size, "vertex fetch target s[%u:%u] is outside its user data", pair, pair + 1);
+    target_read = 3u << pair;
+    if (check_user_data("vertex fetch target", target_read, written, error, size)) return -1;
+    constexpr uint32_t pointer_high_mask = 0xffff; /* GCN's 48-bit program address. */
+    const uint64_t address = (static_cast<uint64_t>(data[pair + 1] & pointer_high_mask) << 32) | data[pair];
+    return program_view(x, address, true, callee, error, size);
+}
+
+static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, unsigned user, unsigned output,
+                                 unsigned parameter_capacity, bool flip_y, const uint32_t *data, uint32_t written,
+                                 uint32_t &user_read, char *error, size_t error_size)
+{
+    MetalProgram program, callee; uint32_t target_read = 0;
+    if (program_view(x, code, false, program, error, error_size) ||
+        (vertex && vertex_callee(x, program, user, data, written, callee, target_read, error, error_size))) return nil;
     for (const auto &shader : x->shaders)
-        if (shader.code == code && shader.vertex == vertex && shader.user == user && shader.output == output && shader.flip_y == flip_y) {
+        if (shader.code == code && shader.vertex == vertex && shader.user == user && shader.output == output && shader.flip_y == flip_y &&
+            shader.callee == callee.address && shader.program.size() == program.dwords &&
+            std::equal(shader.program.begin(), shader.program.end(), program.words) && shader.fetch.size() == callee.dwords &&
+            (!callee.dwords || std::equal(shader.fetch.begin(), shader.fetch.end(), callee.words))) {
             if (shader.required_parameters > parameter_capacity)
                 return failed(error, error_size, "%s allocation is smaller than the shader interface", vertex ? "vertex parameter" : "pixel interpolant"), nil;
             user_read = shader.user_read;
             return shader.function;
         }
-    if (code < x->guest_base || code - x->guest_base >= x->size || code % 4)
-        return failed(error, error_size, "shader code is outside the GPU-visible pool or unaligned"), nil;
     if (x->shaders.size() + x->compute_pipelines.size() >= MAX_SHADERS) return failed(error, error_size, "shader cache is full"), nil;
-    const auto *words = reinterpret_cast<const uint32_t *>(static_cast<const uint8_t *>(x->view) + code - x->guest_base);
-    const size_t available = static_cast<size_t>((x->size - (code - x->guest_base)) / 4);
     uint32_t *spirv = nullptr; size_t count = 0; char reason[256] = {};
     int result;
     if (vertex) {
-        /* Fetch callees stay unbound in this profile, so a call stops translation by name. */
         gcn_vertex_layout layout{};
         layout.user_sgprs = user; layout.output_control = output;
         layout.address_offset = x->address_offset; layout.error_address = x->stop.gpuAddress;
         layout.user_data_read = &user_read;
-        result = gcn_translate_vertex(words, available, &layout, &spirv, &count, reason, sizeof reason);
+        layout.callee = callee.words; layout.callee_dwords = callee.dwords; layout.code_address = code;
+        result = gcn_translate_vertex(program.words, program.dwords, &layout, &spirv, &count, reason, sizeof reason);
     } else {
         /* Only perspective-center barycentrics occupy VGPR0/1. Image and sampler bindings stay empty,
            so image instructions stop translation before any GPU access. */
@@ -351,9 +400,10 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
         layout.user_sgprs = user; layout.push_constant_offset = USER_BYTES;
         layout.address_offset = x->address_offset; layout.error_address = x->stop.gpuAddress;
         layout.user_data_read = &user_read;
-        result = gcn_translate_pixel(words, available, &layout, &spirv, &count, reason, sizeof reason);
+        result = gcn_translate_pixel(program.words, program.dwords, &layout, &spirv, &count, reason, sizeof reason);
     }
     if (result) return failed(error, error_size, "%s shader translation: %s", vertex ? "vertex" : "pixel", reason), nil;
+    user_read |= target_read;
     std::unique_ptr<uint32_t, decltype(&std::free)> owned(spirv, &std::free);
     try {
         spirv_cross::CompilerMSL compiler(spirv, count);
@@ -382,7 +432,10 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
         id<MTLFunction> function = compile_msl(x, compiler,
             vertex ? spv::ExecutionModelVertex : spv::ExecutionModelFragment, flip_y, error, error_size);
         if (!function) return nil;
-        x->shaders.push_back({code, user, output, required_parameters, user_read, vertex, flip_y, function});
+        std::vector<uint32_t> fetch;
+        if (callee.dwords) fetch.assign(callee.words, callee.words + callee.dwords);
+        x->shaders.push_back({code, callee.address, user, output, required_parameters, user_read, vertex, flip_y,
+            std::vector<uint32_t>(program.words, program.words + program.dwords), std::move(fetch), function});
         return function;
     } catch (const std::exception &exception) { return failed(error, error_size, "SPIR-V to MSL: %s", exception.what()), nil; }
 }
@@ -409,14 +462,6 @@ struct MetalIndices {
     MTLIndexType type;
     NSUInteger offset;
 };
-
-/* A physical zero in the backing array does not establish an incoming user SGPR's value. */
-static int check_user_data(const char *stage, uint32_t required, uint32_t written, char *error, size_t size)
-{
-    const uint32_t missing = required & ~written;
-    if (missing) return failed(error, size, "%s shader reads unset user data %#x", stage, missing);
-    return 0;
-}
 
 static int complete_commands(rt_executor *x, id<MTLCommandBuffer> command, char *error, size_t size)
 {
@@ -587,9 +632,10 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     if (screen_scissor(state, *target, scissor, error, size)) return -1;
     uint32_t vertex_read = 0, pixel_read = 0;
     id<MTLFunction> vertex = shader_for(x, true, state.vertex.code, state.vertex.user_sgprs,
-                                      state.vertex.output_control, state.vertex.parameter_count, state.scale[1] > 0, vertex_read, error, size);
+                                      state.vertex.output_control, state.vertex.parameter_count, state.scale[1] > 0,
+                                      state.user[0], state.user_set[0], vertex_read, error, size);
     id<MTLFunction> pixel = vertex ? shader_for(x, false, state.pixel.code, state.pixel.user_sgprs, 0,
-                                             state.pixel.interpolated, false, pixel_read, error, size) : nil;
+                                             state.pixel.interpolated, false, state.user[1], state.user_set[1], pixel_read, error, size) : nil;
     if (!pixel) return -1;
     if (check_user_data("vertex", vertex_read, state.user_set[0], error, size) ||
         check_user_data("pixel", pixel_read, state.user_set[1], error, size)) return -1;
