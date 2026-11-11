@@ -114,8 +114,9 @@ void rt_image_descriptor_decode(const uint32_t words[RT_IMAGE_DESCRIPTOR_WORDS],
         .last_array = field(words[5], 13, 13),
     };
     image->layers = 1;
-    if (image->type == RT_IMAGE_1D_ARRAY || image->type == RT_IMAGE_2D_ARRAY) {
-        image->layers = image->depth;
+    /* an array's DEPTH counts its layers, a cube's its whole cubes of six faces (as shadPS4's NumLayers) */
+    if (image->type == RT_IMAGE_1D_ARRAY || image->type == RT_IMAGE_2D_ARRAY || image->type == RT_IMAGE_CUBE) {
+        image->layers = image->type == RT_IMAGE_CUBE ? 6 * image->depth : image->depth;
         if (image->pow2_pad)
             while (image->layers & (image->layers - 1)) image->layers += image->layers & -image->layers;
     }

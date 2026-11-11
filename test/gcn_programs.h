@@ -63,6 +63,26 @@ static const uint32_t multiply_high[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* Per lane i, the direction (x, y, z) at in[3i .. 3i + 2]: out[i], out[64 + i], out[128 + i] and
+   out[192 + i] = its cube face id, s, t and major axis (v_cubeid/sc/tc/ma_f32). */
+static const uint32_t cube_faces[] = {
+    0x1602008c, /* v_mul_u32_u24_e32 v1, 12, v0 */
+    0xe0301000, 0x80000201, /* buffer_load_dword v2, v1, s[0:3], 0 offen */
+    0xe0301004, 0x80000301, /* buffer_load_dword v3, v1, s[0:3], 0 offen offset:4 */
+    0xe0301008, 0x80000401, /* buffer_load_dword v4, v1, s[0:3], 0 offen offset:8 */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xd2880005, 0x04120702, /* v_cubeid_f32 v5, v2, v3, v4 */
+    0xd28a0006, 0x04120702, /* v_cubesc_f32 v6, v2, v3, v4 */
+    0xd28c0007, 0x04120702, /* v_cubetc_f32 v7, v2, v3, v4 */
+    0xd28e0008, 0x04120702, /* v_cubema_f32 v8, v2, v3, v4 */
+    0x34120082, /* v_lshlrev_b32_e32 v9, 2, v0 */
+    0xe0701000, 0x80010509, /* buffer_store_dword v5, v9, s[4:7], 0 offen */
+    0xe0701100, 0x80010609, /* buffer_store_dword v6, v9, s[4:7], 0 offen offset:256 */
+    0xe0701200, 0x80010709, /* buffer_store_dword v7, v9, s[4:7], 0 offen offset:512 */
+    0xe0701300, 0x80010809, /* buffer_store_dword v8, v9, s[4:7], 0 offen offset:768 */
+    0xbf810000, /* s_endpgm */
+};
+
 /* Per lane i, out[4i .. 4i + 3] = the four dwords s_buffer_load_dwordx4 reads from the buffer in s[0:3]. */
 static const uint32_t scalar_buffer_quad[] = {
     0xc2840100, /* s_buffer_load_dwordx4 s[8:11], s[0:3], 0x0 */
@@ -548,6 +568,30 @@ static const uint32_t pixel_minified[] = {
     0xf0800f00, 0x00610604, /* image_sample v[6:9], v[4:5], s[4:11], s[12:15] dmask:0xf */
     0xbf8c0f70, /* s_waitcnt vmcnt(0) */
     0xf800180f, 0x09080706, /* exp mrt0, v6, v7, v8, v9 done vm */
+    0xbf810000, /* s_endpgm */
+};
+
+/* pixel_minified sampling at level of detail 1 whatever the derivatives (image_sample_l). */
+static const uint32_t pixel_explicit_level[] = {
+    0x100804ff, 0x3d800000, /* v_mul_f32_e32 v4, 0x3d800000 (1/16), v2 */
+    0x100a06ff, 0x3d800000, /* v_mul_f32_e32 v5, 0x3d800000 (1/16), v3 */
+    0x7e0c02f2, /* v_mov_b32_e32 v6, 1.0 */
+    0xf0900f00, 0x00610704, /* image_sample_l v[7:10], v[4:6], s[4:11], s[12:15] dmask:0xf */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf800180f, 0x0a090807, /* exp mrt0, v7, v8, v9, v10 done vm */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Samples the cube in s[4:11] with the sampler in s[0:3] at (1.5, 1.5) on the face whose number (a
+   float) is in s12, level 0 (image_sample_l, DA 0 as the game's shaders sample cubes). */
+static const uint32_t pixel_cube_face[] = {
+    0x7e0802ff, 0x3fc00000, /* v_mov_b32_e32 v4, 1.5 */
+    0x7e0a02ff, 0x3fc00000, /* v_mov_b32_e32 v5, 1.5 */
+    0x7e0c020c, /* v_mov_b32_e32 v6, s12 */
+    0x7e0e0280, /* v_mov_b32_e32 v7, 0 */
+    0xf0900f00, 0x00010804, /* image_sample_l v[8:11], v[4:7], s[4:11], s[0:3] dmask:0xf */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf800180f, 0x0b0a0908, /* exp mrt0, v8, v9, v10, v11 done vm */
     0xbf810000, /* s_endpgm */
 };
 

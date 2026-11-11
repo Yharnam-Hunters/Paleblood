@@ -2341,17 +2341,20 @@ static int stage_images(rt_executor *x, uint64_t code, const uint32_t *user, uin
         if (descriptor_words(x, origin, user, user_sgprs, user_set, words, RT_IMAGE_DESCRIPTOR_WORDS, error, error_size)) return -1;
         rt_image_descriptor d;
         rt_image_descriptor_decode(words, &d);
-        if (d.type != RT_IMAGE_1D && d.type != RT_IMAGE_2D && d.type != RT_IMAGE_1D_ARRAY && d.type != RT_IMAGE_2D_ARRAY)
+        const int cube = d.type == RT_IMAGE_CUBE;
+        if (cube && !pixel) return failed(error, error_size, "a cube image in a compute shader: not done yet");
+        if (d.type != RT_IMAGE_1D && d.type != RT_IMAGE_2D && d.type != RT_IMAGE_1D_ARRAY && d.type != RT_IMAGE_2D_ARRAY && !cube)
             return failed(error, error_size,
                           "the %s shader at %#llx reads an image of type %u (descriptor %08x %08x %08x %08x %08x %08x %08x %08x): "
-                          "only 1D and 2D images and their arrays are done yet",
+                          "only 1D and 2D images, their arrays and cubes are done yet",
                           stage, (unsigned long long)code, d.type, words[0], words[1], words[2], words[3], words[4], words[5], words[6],
                           words[7]);
         /* mip levels: a pixel shader's sampled images (a storage image has one level) */
         if (d.base_level > d.last_level || d.last_level >= RT_TILING_MAX_LEVELS)
             return failed(error, error_size, "an image with mip levels %u to %u", d.base_level, d.last_level);
         if (d.last_level && !pixel) return failed(error, error_size, "a mip-mapped image in a compute shader: not done yet");
-        if (d.layers > 1 && (d.base_array > d.last_array || d.last_array >= d.layers))
+        /* a cube is viewed whole: its BASE_ARRAY and LAST_ARRAY are not used (the game's give faces 0 to 35 of one cube) */
+        if (d.layers > 1 && !cube && (d.base_array > d.last_array || d.last_array >= d.layers))
             return failed(error, error_size, "a view of an image array from layer %u to %u of %u", d.base_array, d.last_array, d.layers);
         texel_format f;
         if (image_format(&d, &f, error, error_size)) return -1;
@@ -2369,10 +2372,11 @@ static int stage_images(rt_executor *x, uint64_t code, const uint32_t *user, uin
         }
         const int one_d = one_dimensional(d.type);
         bindings[i] = (gcn_image_binding){*origin, one_d ? GCN_IMAGE_1D : GCN_IMAGE_2D,
-                                          d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY, f.type, f.components, pixel};
+                                          d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY || cube, f.type, f.components, pixel, cube};
         if (formats) formats[i] = f.format;
         image_entry *e = image_for(x, &d, &f, resources[i].access, error, error_size);
-        const uint32_t first = d.layers > 1 ? d.base_array : 0, layers = d.layers > 1 ? d.last_array - d.base_array + 1 : 1;
+        /* a cube is viewed whole, its faces as layers (the shader names the face) */
+        const uint32_t first = d.layers > 1 && !cube ? d.base_array : 0, layers = cube ? d.layers : d.layers > 1 ? d.last_array - d.base_array + 1 : 1;
         if (!e || !(views[i] = image_view(x, e, first, layers, d.base_level, d.last_level - d.base_level + 1,
                                           pixel ? d.swizzle : (uint32_t)DST_SEL_IDENTITY, error, error_size)))
             return -1;

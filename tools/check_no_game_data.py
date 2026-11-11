@@ -10,6 +10,10 @@ No extracted game images or assets: image and video files (by extension or by th
 are refused unless they are under docs/assets/ and listed in docs/assets/ALLOWLIST with the tool
 that produced them (our own work: our tools' output, such as a terminal recording of
 tools/verify.py, or a frame drawn by Paleblood's renderer, added by the maintainer). The allowlist itself may list nothing outside docs/assets/.
+
+Size: every file is capped at 2 MiB, except an allowlisted image or video, which may be up to
+8 MiB so a renderer frame can be posted at full resolution, never downscaled (maintainer,
+2026-11-10).
 """
 from __future__ import annotations
 
@@ -55,6 +59,7 @@ DUMP_LINE = re.compile(rb'\b(undefined[1-8]?|(FUN|DAT|LAB|PTR|SUB|UNK)_[0-9a-fA-
 DUMP_THRESHOLD = 20
 DUMP_EXEMPT = ('README.md', 'QUIRKS.md', 'CONTRIBUTING.md', 'docs/', 'tools/', 'test/')
 MAX_SIZE = 2 * 1024 * 1024
+MAX_ALLOWLISTED_MEDIA_SIZE = 8 * 1024 * 1024
 SIZE_EXCEPTIONS = {'symbols/ghidra_functions.csv': 16 * 1024 * 1024}
 
 
@@ -114,7 +119,7 @@ def scan(path: str, data: bytes, hashes: set[str], allowed: set[str] = frozenset
             out.append(f'{path}: starts with {what} magic')
     if hashlib.sha256(data).hexdigest() in hashes:
         out.append(f'{path}: matches a hash in target.sha256')
-    limit = SIZE_EXCEPTIONS.get(path, MAX_SIZE)
+    limit = SIZE_EXCEPTIONS.get(path, MAX_ALLOWLISTED_MEDIA_SIZE if media and path in allowed else MAX_SIZE)
     if len(data) > limit:
         out.append(f'{path}: {len(data)} bytes exceeds the {limit} byte limit')
     if b'\x00' not in data[:8192] and not path.startswith(DUMP_EXEMPT) and path not in DUMP_EXEMPT:
