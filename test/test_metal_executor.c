@@ -1362,21 +1362,21 @@ int main(void)
     scenarios++;
     rt_executor_reset(x);
 
-    /* New upstream compute events and rectangle lists never silently succeed in a draw-only backend. */
+    /* Compute binding is state only; a dispatch still requires that state. */
     const uint64_t compute_buffer = 0xc1000000;
     const uint64_t compute_code = at(COMPUTE_CODE);
     const uint32_t compute[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(compute_code >> 8),
         (uint32_t)(compute_code >> 40), 2, 8 << 1, 1, 1, 1};
     CHECK(rt_render_record_compute_shader_at(compute_buffer + 0x10, compute) == 0);
-    expect_error(x, compute_buffer, 0x20, "compute shaders are outside the Metal draw profile");
+    CHECK(run(x, compute_buffer, 0x20) == 0);
     scenarios++;
     rt_executor_reset(x);
     const uint32_t groups[3] = {1, 1, 1};
     CHECK(rt_render_record_dispatch(330, 0x10, groups, error, sizeof error) == 0);
-    expect_error(x, 330, 0x20, "compute dispatches are outside the Metal draw profile");
+    expect_error(x, 330, 0x20, "a dispatch requires a compute shader");
     scenarios++;
     rt_executor_reset(x);
-    const rt_shader_stage unsupported_stages[] = {RT_STAGE_COMPUTE, RT_STAGE_GEOMETRY, RT_STAGE_EXPORT, RT_STAGE_HULL, RT_STAGE_LOCAL};
+    const rt_shader_stage unsupported_stages[] = {RT_STAGE_GEOMETRY, RT_STAGE_EXPORT, RT_STAGE_HULL, RT_STAGE_LOCAL};
     const uint32_t stage_word = 0x12345678;
     for (unsigned i = 0; i < sizeof unsupported_stages / sizeof unsupported_stages[0]; ++i) {
         CHECK(rt_render_record_user_data(332 + i, 0x10, unsupported_stages[i], 0, &stage_word, 1, error, sizeof error) == 0);
