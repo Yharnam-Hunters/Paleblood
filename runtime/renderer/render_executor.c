@@ -1994,7 +1994,8 @@ typedef struct {
 } texel_format;
 
 /* The format of a descriptor; 0, or -1 with the reason. DATA_FORMAT and NUM_FORMAT are AMD's (GFX7):
-   data formats 1 8, 4 32, 10 8_8_8_8, 11 32_32, 14 32_32_32_32, and the block-compressed 35 BC1 to 41 BC7
+   data formats 1 8, 2 16, 4 32, 5 16_16, 6 10_11_11 (x in the low bits: Vulkan's B10G11R11, as for render
+   targets), 10 8_8_8_8, 11 32_32, 12 16_16_16_16, 14 32_32_32_32, and the block-compressed 35 BC1 to 41 BC7
    (4 x 4 texels in 8 bytes for BC1 and BC4, 16 for the others; shadPS4's pixel_format.h numbers them
    the same); number formats 0 unorm, 1 snorm, 4 uint, 5 sint, 7 float, 9 sRGB. BC1 keeps its one-bit
    alpha (Vulkan's RGBA form). BC6 stops by name until its number formats are established. */
@@ -2008,6 +2009,8 @@ static int image_format(const rt_image_descriptor *d, texel_format *f, char *err
         {4, 5, {VK_FORMAT_R32_SINT, GCN_IMAGE_SINT, 1, 4, 1}}, {11, 7, {VK_FORMAT_R32G32_SFLOAT, GCN_IMAGE_FLOAT, 2, 8, 1}},
         {14, 7, {VK_FORMAT_R32G32B32A32_SFLOAT, GCN_IMAGE_FLOAT, 4, 16, 1}}, {10, 0, {VK_FORMAT_R8G8B8A8_UNORM, GCN_IMAGE_FLOAT, 4, 4, 1}}, {10, 4, {VK_FORMAT_R8G8B8A8_UINT, GCN_IMAGE_UINT, 4, 4, 1}},
         {10, 9, {VK_FORMAT_R8G8B8A8_SRGB, GCN_IMAGE_FLOAT, 4, 4, 1}},
+        {2, 7, {VK_FORMAT_R16_SFLOAT, GCN_IMAGE_FLOAT, 1, 2, 1}}, {5, 7, {VK_FORMAT_R16G16_SFLOAT, GCN_IMAGE_FLOAT, 2, 4, 1}},
+        {12, 7, {VK_FORMAT_R16G16B16A16_SFLOAT, GCN_IMAGE_FLOAT, 4, 8, 1}}, {6, 7, {VK_FORMAT_B10G11R11_UFLOAT_PACK32, GCN_IMAGE_FLOAT, 3, 4, 1}},
         {35, 0, {VK_FORMAT_BC1_RGBA_UNORM_BLOCK, GCN_IMAGE_FLOAT, 4, 8, 4}}, {35, 9, {VK_FORMAT_BC1_RGBA_SRGB_BLOCK, GCN_IMAGE_FLOAT, 4, 8, 4}},
         {36, 0, {VK_FORMAT_BC2_UNORM_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}}, {36, 9, {VK_FORMAT_BC2_SRGB_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}},
         {37, 0, {VK_FORMAT_BC3_UNORM_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}}, {37, 9, {VK_FORMAT_BC3_SRGB_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}},
