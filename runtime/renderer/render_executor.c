@@ -564,11 +564,15 @@ static int plan_writes(const depth_plan *plan)
     return 0;
 }
 
-/* CB_TARGET_MASK: four bits per slot (slot n in bits 4n to 4n+3), the export's x, y, z, w (red,
-   green, blue, alpha), as shadPS4 hands it to Vulkan's colour write mask. Unset: every channel. */
+/* The channels a draw writes in a slot: CB_TARGET_MASK and the pixel shader's CB_SHADER_MASK, four bits
+   per slot each (slot n in bits 4n to 4n+3, the export's x, y, z, w: red, green, blue, alpha), both
+   together as shadPS4 hands them to Vulkan's colour write mask. A slot the shader exports nothing to is
+   left alone, whatever target is set there (an output the shader never writes would leave the
+   attachment undefined in Vulkan). Unset target mask: every channel. */
 static uint32_t slot_mask(const draw_state *s, unsigned slot)
 {
-    return s->target_mask_set ? s->target_mask >> (4 * slot) & CHANNELS_MASK : CHANNELS_MASK;
+    const uint32_t target = s->target_mask_set ? s->target_mask >> (4 * slot) & CHANNELS_MASK : CHANNELS_MASK;
+    return s->pixel.code ? target & s->pixel.color_mask >> (4 * slot) : target;
 }
 
 /* Whether the registers describe what the draw below does: opaque or blended triangles into the colour
