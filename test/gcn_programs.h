@@ -633,6 +633,16 @@ static const uint32_t pixel_minified[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* pixel_minified sampling at level 0 whatever the derivatives (image_sample_lz: no LOD VGPR). */
+static const uint32_t pixel_level_zero[] = {
+    0x100804ff, 0x3d800000, /* v_mul_f32_e32 v4, 0x3d800000 (1/16), v2 */
+    0x100a06ff, 0x3d800000, /* v_mul_f32_e32 v5, 0x3d800000 (1/16), v3 */
+    0xf09c0f00, 0x00610704, /* image_sample_lz v[7:10], v[4:5], s[4:11], s[12:15] dmask:0xf */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf800180f, 0x0a090807, /* exp mrt0, v7, v8, v9, v10 done vm */
+    0xbf810000, /* s_endpgm */
+};
+
 /* pixel_minified sampling at level of detail 1 whatever the derivatives (image_sample_l). */
 static const uint32_t pixel_explicit_level[] = {
     0x100804ff, 0x3d800000, /* v_mul_f32_e32 v4, 0x3d800000 (1/16), v2 */
