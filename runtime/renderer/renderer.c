@@ -19,12 +19,14 @@ static rt_executor *executor;
 
 void rt_renderer_configure(int on) { enabled = on; }
 
+static int collect_cpu_writes(void (*written)(void *context, uint64_t pool_offset, uint64_t length), void *context);
+
 /* The executor, opened once the title has GPU-visible memory; NULL before that or when off. */
 static rt_executor *executor_for(const char *function)
 {
     if (!enabled || executor) return executor;
     /* the CPU's writes, when the runtime watches them (runtime/write_watch.h): textures reload only then */
-    rt_executor_memory memory = {.guest_base = rt_gpu_memory_base(), .collect_cpu_writes = rt_write_watch_active() ? rt_write_watch_collect : NULL};
+    rt_executor_memory memory = {.guest_base = rt_gpu_memory_base(), .collect_cpu_writes = rt_write_watch_active() ? collect_cpu_writes : NULL};
     if (rt_gpu_memory_pool(&memory.fd, &memory.size)) return NULL; /* no direct memory yet: nothing to draw from */
     char error[256];
     if (rt_executor_open(&memory, &executor, error, sizeof error)) rt_fatal(function, error);
@@ -39,6 +41,7 @@ typedef struct batch {
     size_t call_count;
     rt_gpu_step *steps;
     size_t step_count;
+    uint64_t submission;             /* its place among the submissions, from 1 */
     struct batch *next;
 } batch;
 
@@ -46,6 +49,12 @@ static pthread_mutex_t queue_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t queue_changed = PTHREAD_COND_INITIALIZER;
 static batch *queue_head, *queue_tail;
 static int thread_started, running; /* running: a batch taken off the queue and not finished */
+static uint64_t submissions;        /* buffers submitted so far (queue_lock) */
+/* The CPU's writes (runtime/write_watch.h) are collected at most once for all the buffers submitted
+   before the collect: running_submission is the buffer being run, collected_through the last buffer
+   submitted before the last collect. Scanning the watched memory for each buffer would cost more than
+   the reloads it saves (the character creation screen submits 70 buffers at once). */
+static uint64_t running_submission, collected_through;
 static pid_t thread_process;        /* a child after fork has no renderer thread: it starts its own */
 static _Thread_local int on_renderer_thread;
 
@@ -205,7 +214,7 @@ static void *renderer_thread(void *unused)
         batch *const b = queue_head;
         queue_head = b->next;
         if (!queue_head) queue_tail = NULL;
-        running = 1;
+        running = 1, running_submission = b->submission;
         pthread_mutex_unlock(&queue_lock);
         run_batch(b);
         pthread_mutex_lock(&queue_lock);
@@ -263,8 +272,22 @@ void rt_renderer_submit(const char *function, const void *buffer, uint32_t bytes
     if (queue_tail) queue_tail->next = b;
     else queue_head = b;
     queue_tail = b;
+    b->submission = ++submissions;
     pthread_cond_broadcast(&queue_changed);
     pthread_mutex_unlock(&queue_lock);
+}
+
+/* The executor's collect (on the renderer's thread): nothing new for a buffer submitted before the
+   last collect, whose writes before it that collect has reported. */
+static int collect_cpu_writes(void (*written)(void *context, uint64_t pool_offset, uint64_t length), void *context)
+{
+    if (running_submission <= collected_through) return 0;
+    pthread_mutex_lock(&queue_lock);
+    const uint64_t through = submissions;
+    pthread_mutex_unlock(&queue_lock);
+    if (rt_write_watch_collect(written, context)) return -1;
+    collected_through = through;
+    return 0;
 }
 
 void rt_renderer_bind_shader(const char *function, rt_renderer_shader kind, const void *at, const uint32_t *words)
