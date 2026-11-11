@@ -2103,8 +2103,10 @@ static int leaves_straight_line(const uint32_t *w, const gcn_instruction *ins, s
    comes from (runtime/gcn_spirv.h): the user data when no instruction writes those SGPRs before it
    runs, or memory when the last write is an s_load covering those SGPRs (exactly, or as part of a wider load), at an immediate or literal offset
    from a pointer pair no instruction before it writes. With branches in the program, the load is
-   followed only when every path to the use passes it: no branch lands between it and the use (code
-   runs forward between branches, so a path that skipped the load would have to land there), every
+   followed only when every path to the use passes it: no branch from before the load lands between it
+   and the use (code runs forward between branches, so a path that skipped the load would have to land
+   there; a loop from after the load back to there is such a path only if a branch from before the load
+   reaches the loop's branch, so none may land after the load up to it), every
    branch's target is known, no branch goes back to the use or before it when an instruction after
    the use and before that branch writes those SGPRs, and no instruction before the load writes the pointer pair, nor any
    instruction at all when a branch goes back to the load or before it (so a loop that runs the load
@@ -2136,6 +2138,8 @@ static int descriptor_origin(const uint32_t *code, size_t program, const callee_
     }
     if (!written) return 0;
     int loops_to_load = 0; /* a branch back to the load or before it */
+    long loop_end = -1;    /* the last branch from after the load back to between it and the use */
+    long skip_target = -1; /* the nearest place a branch from before the load lands after it */
     for (size_t p = 0; p < program;) {
         gcn_instruction ins;
         if (gcn_decode(code + p, program - p, &ins) || !ins.name) break;
@@ -2149,15 +2153,25 @@ static int descriptor_origin(const uint32_t *code, size_t program, const callee_
                          "before its use at dword %zu: not done yet", first, first + width - 1, ins.name, p, at);
                 return -1;
             }
-            if (writer >= 0 && target > writer && (size_t)target <= at) {
+            if (writer >= 0 && target > writer && (size_t)target <= at && (long)p > writer) {
+                /* a loop from after the load: a path that skipped the load could reach it only through a
+                   branch from before the load to the loop (checked below) */
+                if ((long)p > loop_end) loop_end = (long)p;
+            } else if (writer >= 0 && target > writer && (size_t)target <= at) {
                 snprintf(error, error_size, "the descriptor in s[%u:%u] is loaded at dword %ld, and a branch (%s at dword %zu) lands at "
                          "dword %ld, between the load and its use at dword %zu: not done yet", first, first + width - 1, writer, ins.name,
                          p, target, at);
                 return -1;
             }
             if (target <= writer && (size_t)target <= p) loops_to_load = 1;
+            if (writer >= 0 && (long)p < writer && target > writer && (skip_target < 0 || target < skip_target)) skip_target = target;
         }
         p += ins.dwords;
+    }
+    if (loop_end >= 0 && skip_target >= 0 && skip_target <= loop_end) {
+        snprintf(error, error_size, "the descriptor in s[%u:%u] is loaded at dword %ld, and a branch from before it lands at dword %ld, "
+                 "before a loop's branch back to its use at dword %zu: not done yet", first, first + width - 1, writer, skip_target, at);
+        return -1;
     }
     if (writer < 0) return 0;
     const uint32_t *w = code + writer;

@@ -237,6 +237,10 @@ static void image_programs(void)
     /* a loop over the use whose closing branch comes before the write (the loading screen's pixel shader at
        0x20d1ce7300 reuses the descriptor's SGPRs only after its loop): still the user data's */
     static const uint32_t user_data_reused_after_loop[] = {0xf0000f00, 0x00000401, 0xbf84fffd, 0xbe800380, 0xbf810000};
+    /* a descriptor loaded before a loop over its use (the same shader's sampler in s[16:19]): from memory;
+       with a branch from before the load into the loop (to the loop's s_nop), refused */
+    static const uint32_t loaded_then_looped[] = {0xc0c00904, 0xf0000f00, 0x00000401, 0xbf84fffd, 0xbf810000};
+    static const uint32_t skipped_into_loop[] = {0xbf880003, 0xc0c00904, 0xf0000f00, 0x00000401, 0xbf800000, 0xbf84fffc, 0xbf810000};
     static const uint32_t pointer_later[] = {0xbf880004, 0xc0c00904, 0xf0000f00, 0x00000401, 0xbe880380, 0xbf810000}; /* s_mov_b32 s8, 0 after */
     static const uint32_t pointer_looped[] = {0xc0c00904, 0xf0000f00, 0x00000401, 0xbe880380, 0xbf84fffb, 0xbf810000}; /* then back to the load */
     CHECK(gcn_image_resources(PROGRAM(guarded), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
@@ -256,6 +260,11 @@ static void image_programs(void)
     const int after_loop = gcn_image_resources(PROGRAM(user_data_reused_after_loop), found, GCN_MAX_IMAGES, &count, error, sizeof error);
     if (after_loop) fprintf(stderr, "user_data_reused_after_loop: %s\n", error);
     CHECK(after_loop == 0 && count == 1 && !found[0].origin.from_memory && found[0].origin.sgpr == 0);
+    const int before_loop = gcn_image_resources(PROGRAM(loaded_then_looped), found, GCN_MAX_IMAGES, &count, error, sizeof error);
+    if (before_loop) fprintf(stderr, "loaded_then_looped: %s\n", error);
+    CHECK(before_loop == 0 && count == 1 && found[0].origin.from_memory && found[0].origin.pointer_sgpr == 8 && found[0].origin.offset == 16);
+    CHECK(gcn_image_resources(PROGRAM(skipped_into_loop), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
+          strstr(error, "lands at dword 4, before a loop's branch back"));
     CHECK(gcn_image_resources(PROGRAM(pointer_later), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0 && count == 1 &&
           found[0].origin.from_memory && found[0].origin.pointer_sgpr == 8 && found[0].origin.offset == 16);
     CHECK(gcn_image_resources(PROGRAM(pointer_looped), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
