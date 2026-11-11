@@ -145,7 +145,9 @@ Instead:
        program's dispatch loop is not uniform control flow for Vulkan's implicit derivatives. The
        sampler's LOD bias, MIN_LOD and MAX_LOD (8 fraction bits) and mip filter (none: the view's first
        level, with a maximum LOD of 0.25 so the minifying filter still applies; point; linear) go to
-       the Vulkan sampler, and the minifying and magnifying filters may differ. The executor makes a Vulkan sampler from the S#
+       the Vulkan sampler, and the minifying and magnifying filters may differ. Anisotropic filters (2 point, 3 bilinear) are their
+       point or bilinear filter with Vulkan's anisotropy up to MAX_ANISO_RATIO's 1-16 samples, within
+       the device's limit (ANISO_THRESHOLD and ANISO_BIAS are not used). The executor makes a Vulkan sampler from the S#
        (the Sea Islands manual's layout, as shadPS4's `resource.h` names its fields): wrap, mirror
        and clamp to the last texel; point or bilinear filtering. The anisotropy fields are accepted with point or
        bilinear filters, which they do not affect; anisotropic filters, depth compares,
