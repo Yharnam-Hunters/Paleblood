@@ -362,12 +362,13 @@ static uint32_t float_source(translator *t, const vector_operands *o, unsigned i
     return f;
 }
 
+/* A float result with VOP3's output modifier (OMOD: 1 multiplies by 2, 2 by 4, 3 by 0.5) and then its
+   clamp to [0, 1] applied, the order the Sea Islands manual and LLVM's AMDGPU backend give them. */
 static void write_float(translator *t, const vector_operands *o, uint32_t f, const gcn_instruction *ins)
 {
-    if (o->omod) {
-        fail(t, "%s: the output modifier is not supported yet", ins->name);
-        return;
-    }
+    (void)ins;
+    static const float omod_factor[4] = {1.0f, 2.0f, 4.0f, 0.5f};
+    if (o->omod) f = value(t, SPV_OP_F_MUL, t_float(t), 2, f, konst_float(t, omod_factor[o->omod]));
     if (o->clamp) f = glsl(t, t_float(t), SPV_GLSL_F_CLAMP, f, konst_float(t, 0.0f), konst_float(t, 1.0f), 3);
     write_vgpr(t, o->dst, as_bits(t, f));
 }

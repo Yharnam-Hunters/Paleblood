@@ -63,6 +63,24 @@ static const uint32_t multiply_high[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* Per lane i with x = in[i]: out[i], out[64 + i], out[128 + i] and out[192 + i] = x * x + x (v_mad_f32)
+   with output modifiers 1, 2 and 3 (times 2, 4 and 0.5), and with modifier 1 and clamp. */
+static const uint32_t output_modifiers[] = {
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0xe0301000, 0x80000201, /* buffer_load_dword v2, v1, s[0:3], 0 offen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xd2820003, 0x0c0a0502, /* v_mad_f32 v3, v2, v2, v2 mul:2 */
+    0xd2820004, 0x140a0502, /* v_mad_f32 v4, v2, v2, v2 mul:4 */
+    0xd2820005, 0x1c0a0502, /* v_mad_f32 v5, v2, v2, v2 div:2 */
+    0xd2820806, 0x0c0a0502, /* v_mad_f32 v6, v2, v2, v2 clamp mul:2 */
+    0xe0701000, 0x80010301, /* buffer_store_dword v3, v1, s[4:7], 0 offen */
+    0xe0701100, 0x80010401, /* buffer_store_dword v4, v1, s[4:7], 0 offen offset:256 */
+    0xe0701200, 0x80010501, /* buffer_store_dword v5, v1, s[4:7], 0 offen offset:512 */
+    0xe0701300, 0x80010601, /* buffer_store_dword v6, v1, s[4:7], 0 offen offset:768 */
+    0xbf810000, /* s_endpgm */
+};
+
+
 /* Per lane i, the direction (x, y, z) at in[3i .. 3i + 2]: out[i], out[64 + i], out[128 + i] and
    out[192 + i] = its cube face id, s, t and major axis (v_cubeid/sc/tc/ma_f32). */
 static const uint32_t cube_faces[] = {

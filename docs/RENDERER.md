@@ -100,6 +100,8 @@ Instead:
        undoes the descriptor's swizzle (shadPS4's rule: the inverse of a load's) and packs as GLSL's
        `packUnorm4x8` (the PS4's rounding of ties is not established). Anything else is a run-time stop. A descriptor of DATA_FORMAT 0 (invalid, a null buffer's) reads 0 and writes nothing. A four-component store to 16_16_16_16 float packs halves, and one to 10_11_11 float unsigned
        11-, 11- and 10-bit floats (x in the low bits), rounded to nearest even.
+     - **VOP3 output modifiers** on float results: OMOD multiplies by 2, 4 or 0.5, then the clamp
+       to [0, 1] applies.
      - **Cube instructions** (`v_cubeid_f32`, `v_cubesc_f32`, `v_cubetc_f32`, `v_cubema_f32`): the
        face a direction's largest component picks (z, then y, then x on ties), its number, s and t
        before division and twice the major axis, as shadPS4 computes them without native cube

@@ -227,6 +227,22 @@ int main(int argc, char **argv)
         CHECK(out_words[2 * LANES + i] == (uint32_t)((uint64_t)signed_by_lane >> 32));
     }
 
+    /* VOP3 output modifiers: times 2, 4 and 0.5, applied before the clamp */
+    {
+        for (int i = 0; i < LANES; i++) in_words[i] = bits((float)i * 0.125f - 2.0f);
+        memset(out.mapped, 0, BUFFER_BYTES);
+        CHECK(run(&g, output_modifiers, sizeof output_modifiers / sizeof output_modifiers[0], user) == 0);
+        int modified = 1;
+        for (int i = 0; i < LANES; i++) {
+            const float x = (float)i * 0.125f - 2.0f, m = x * x + x, doubled = 2 * m;
+            modified &= out_words[i] == bits(2 * m) && out_words[LANES + i] == bits(4 * m) && out_words[2 * LANES + i] == bits(0.5f * m) &&
+                        out_words[3 * LANES + i] == bits(doubled < 0 ? 0.0f : doubled > 1 ? 1.0f : doubled);
+        }
+        if (!modified) fprintf(stderr, "output modifiers: lane 3 %08x %08x %08x %08x\n", out_words[3], out_words[LANES + 3], out_words[2 * LANES + 3],
+                               out_words[3 * LANES + 3]);
+        CHECK(modified);
+    }
+
     /* v_cubeid/sc/tc/ma_f32: each face, and the ties (z over y over x) */
     {
         static const float directions[8][3] = {{1, 0.5f, -0.25f}, {-2, 1, 0.5f}, {0.5f, 3, 1}, {0.25f, -1, 0.5f},
