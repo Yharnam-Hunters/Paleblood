@@ -105,7 +105,7 @@ file(GLOB PB_TEST_SYSLIB CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/runtime/syslib/
 # The syslib tests use the display's headless mode only, so they build without its window.
 # Each library's tests in their own file (test/syslib_test.h).
 file(GLOB PB_TEST_SYSLIB_TESTS CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/test/syslib/*.c)
-add_executable(test_syslib test/test_syslib.c ${PB_TEST_SYSLIB_TESTS} runtime/process.c runtime/memory.c ${PB_TEST_SYSLIB}
+add_executable(test_syslib test/test_syslib.c ${PB_TEST_SYSLIB_TESTS} runtime/process.c runtime/memory.c runtime/write_watch.c ${PB_TEST_SYSLIB}
                runtime/display/display.c runtime/display/display_window_none.c runtime/renderer/renderer_none.c
                runtime/audio/audio_host_none.c runtime/input/input.c runtime/input/input_script.c runtime/input/input_host_none.c ${PB_MEDIA_SOURCES})
 target_include_directories(test_syslib PRIVATE runtime/include)
@@ -173,7 +173,7 @@ if(PB_TEST_VULKAN_FOUND)
     target_link_libraries(test_render_executor PRIVATE pbrender_executor m)
     add_test(NAME render_executor COMMAND test_render_executor)
     set_tests_properties(render_executor PROPERTIES SKIP_RETURN_CODE 77)
-    add_executable(test_renderer test/test_renderer.c runtime/renderer/renderer.c)
+    add_executable(test_renderer test/test_renderer.c runtime/renderer/renderer.c runtime/write_watch.c)
     target_include_directories(test_renderer PRIVATE runtime/include)
     target_link_libraries(test_renderer PRIVATE pbrender_executor m)
     add_test(NAME renderer COMMAND test_renderer)
@@ -199,6 +199,13 @@ add_executable(test_compiled_sdk test/test_compiled_sdk.c
 target_include_directories(test_compiled_sdk PRIVATE runtime/include)
 add_test(NAME compiled_sdk COMMAND test_compiled_sdk)
 set_tests_properties(compiled_sdk PROPERTIES TIMEOUT 10)
+
+# The CPU write watch on direct memory (runtime/write_watch.h).
+add_executable(test_write_watch test/test_write_watch.c runtime/write_watch.c)
+target_include_directories(test_write_watch PRIVATE runtime/include)
+target_link_libraries(test_write_watch PRIVATE pthread)
+add_test(NAME write_watch COMMAND test_write_watch)
+set_tests_properties(write_watch PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 20)
 
 # Direct-memory placement, backing ownership and registered provider tests.
 include(cmake/HostMemoryTests.cmake)

@@ -1046,20 +1046,26 @@ modelled, a reset leaves the reported orientation the identity, neither setting 
 reading with no motion, and each call answers 0 (`test/syslib/pad_motion_settings.c`). An
 unknown handle and a setting other than 0 or 1 stop by name.
 
-## The on-screen keyboard, canceled (`libSceImeDialog`, issue #36)
+## The on-screen keyboard, canceled or given a text (`libSceImeDialog`, issue #36)
 
 **Facts.** OpenOrbis `ImeDialog.h` and `_types/ime_dialog.h` give:
 - the shapes: `sceImeDialogInit(setting, extended)`, `GetStatus()`, `GetResult(result)` and
   `Term()`;
 - the statuses: NONE 0, RUNNING 1, STOPPED 2;
 - the result: an end status (OK 0, CANCEL 1, ABORT 2) followed by 12 reserved bytes.
+- the setting (`OrbisImeDialogSetting`, 96 bytes): user, type, 64-bit languages, enter label,
+  input method, a text filter callback (`0x18`), option, maximum text length (`0x24`, 16-bit
+  characters without the terminating zero), the text buffer (`0x28`), position, alignments,
+  placeholder, title and 16 reserved bytes. The text is 16-bit characters (`wchar_t` is 16 bits on
+  the PS4). shadPS4's `OrbisImeDialogParam` has the same fields.
 
 shadPS4's `ime_dialog.cpp` (facts only) gives the states: Init from NONE to RUNNING, Abort from
 RUNNING to finished with ABORT, and Term from finished to NONE.
 
 **The executable's keyboard** (`0x02d03f80`):
-- **Opening.** It fills a setting with a text buffer that holds the initial text, calls Init with
-  no extended setting, and takes 0 as open.
+- **Opening.** It fills a setting on its stack (no text filter; a heap text buffer that holds the
+  initial text), calls Init with no extended setting, takes 0 as open and returns, so the setting's
+  memory is reused before the first status query. The runtime copies the setting at Init.
 - **Polling.** Each frame, `0x02d03df0` asks GetStatus. On 2 it reads the result: end status 0
   takes the buffer's text; 1 and 2 (or a failed GetResult) take none.
 - **Closing.** `0x02d03e70` then calls Term. `0x02d04300` calls Abort while the keyboard is open
@@ -1069,6 +1075,12 @@ RUNNING to finished with ABORT, and Term from finished to NONE.
 - **Cancel.** Init opens the keyboard, and the first GetStatus finds it closed with CANCEL, as if
   the user backed out at once. The title takes no text, the buffer is left as given, and nothing is
   shown.
+- **A given text** (`pbboot --keyboard-text TEXT`, `tools/boot.py --no-record --keyboard-text
+  TEXT`). The first GetStatus writes TEXT (UTF-8 on the command line, written as UTF-16) into the
+  setting's buffer, zero-terminated, and closes the keyboard with OK, as if the user typed it and
+  pressed Done. A title's text filter (shadPS4 calls it from GetStatus on the title's thread; facts
+  only) gets the text first, and its output is what the buffer gets. Character creation needs it: the contract cannot be finished without a name (the
+  game answers "A name is required."). Unattended boots use it with an input script.
 - **Abort and Term.** Abort of an open keyboard closes it with ABORT, and Term closes the library.
 
 **What stops by name:**
@@ -1076,7 +1088,10 @@ RUNNING to finished with ABORT, and Term from finished to NONE.
   `0x80bc0001`; this is not confirmed);
 - GetResult before the keyboard closed, or with no structure;
 - Abort when no keyboard is open;
-- Term before the keyboard closed.
+- Term before the keyboard closed;
+- with a given text: no text buffer, a text filter that refuses the text (non-zero; the keyboard's
+  answer then is not established) or answers more than fits, or a maximum length shorter than the
+  text.
 
 An extended setting is ignored.
 

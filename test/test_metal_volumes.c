@@ -304,7 +304,7 @@ int main(void)
     if(ftruncate(fd,POOL+GUARD)){perror("ftruncate");close(fd);return 1;}
     uint8_t *pool=mmap(NULL,POOL+GUARD,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);
     if(pool==MAP_FAILED){perror("mmap");close(fd);return 1;}memset(pool,CANARY,POOL+GUARD);
-    rt_executor *x=NULL;const rt_executor_memory memory={fd,POOL,base};int rc=rt_executor_open(&memory,&x,error,sizeof error);close(fd);
+    rt_executor *x=NULL;const rt_executor_memory memory={fd,POOL,base,NULL};int rc=rt_executor_open(&memory,&x,error,sizeof error);close(fd);
     CHECK(rc==0);if(rc){fprintf(stderr,"open: %s\n",error);munmap(pool,POOL+GUARD);return 1;}
     for(size_t p=0;p<COUNT(programs);++p){CHECK(programs[p].bytes<=256);memcpy(pool+CODE+p*256,programs[p].words,programs[p].bytes);}
     World world={pool,x};matrix(&world);read_write(&world);aliases_and_stops(&world);refusals(&world);native_limits(&world);
