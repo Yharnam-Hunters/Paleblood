@@ -382,7 +382,11 @@ Instead:
        (cleared, as radeonsi clears it) gets its memory filled with its `CB_COLORn_CLEAR_WORD0/1` texel
        and its CMASK set to all ones, as an eliminate pass would; eliminate passes then have nothing
        left to do. The clear words come from the library's setter (0x01473840). A partly cleared
-       CMASK stops by name.
+       CMASK stops by name. A texel of one repeated 32-bit word is filled on the GPU with the batch.
+       The CPU reads a CMASK or HTILE once no pending dispatch stores to it, and a dispatch counts as
+       storing to metadata only through a buffer descriptor based inside it, as shadPS4 takes a
+       compute store to metadata (`Rasterizer::IsComputeMetaClear`, facts only). The game's depth copy
+       declares a 2.2 GB range, and otherwise held up every check.
      - **Several render targets (MRT):** a draw writes the colour targets of every enabled slot
        0-7 whose `CB_TARGET_MASK` nibble (bits 4n to 4n+3: x, y, z, w, as shadPS4 hands them to
        Vulkan's colour write mask) is not 0, each with its own `CB_BLENDn_CONTROL`; slot n is
@@ -661,32 +665,30 @@ target again at every submitted buffer.
    has run. Guest CPU reads after them see the GPU's writes, and the run-time stop channel is
    unchanged. With both copies written, a CPU read needs no fault handling, and nothing goes
    wrong when the kernel reads guest memory for a system call.
-3. **CPU writes are found by page protection.** The GPU-visible guest mappings are made
-   read-only once their pages have been copied to the mirror. A guest write faults; the `SIGSEGV`
-   handler marks the page dirty and makes it writable again, then the write is retried. The
-   handler runs before the boot harness's crash handler and passes on any other fault.
-   Before each batch, the dirty pages are protected again and then copied from the host buffer to
-   the mirror with transfer commands, all in one batch. Protecting before copying means a write
-   that lands in between faults again and is copied next time. One lock orders the handler's
-   "mark dirty, unprotect" against the renderer's "clear, protect", so a page is never left
-   writable without being dirty. The facts behind this are shadPS4's page manager: write watchers
-   on cached memory, invalidation from a fault handler, and userfaultfd write protection. Those
-   are used as facts only; userfaultfd is not available here because unprivileged handling of
-   kernel faults is off (`vm.unprivileged_userfaultfd = 0`).
-4. **System calls that write guest memory say so first.** A protected page makes the kernel fail
-   a write into it with `EFAULT` rather than fault. The runtime's file reads (`sceKernelRead`,
-   `sceKernelPread`, libc's `_read`, save-data reads) mark the destination dirty and writable
-   before calling the host. Any other system-call path into GPU-visible memory that is found
-   later is handled the same way.
-5. **Aliases are copied every batch.** A CPU mapping of GPU-visible pool memory at another
-   address bypasses the protection (the game makes 16 KB batch maps). The pool pages under such
-   an alias count as dirty at every batch until it is unmapped. A released or unmapped
-   GPU-visible range stops being tracked.
-6. **Loads only when memory changed.** A render target or image is loaded again when the pages it
-   spans were copied from the CPU since its last load, or when GPU work stored into it: a dispatch
-   (its stores can reach any address) or an overlapping target's write-back. It is no longer
-   reloaded at every submitted buffer. Write-backs stay, but they now go into VRAM plus one
-   contiguous host write.
+3. **CPU writes are found by page protection** (`runtime/write_watch.c`, landed). Every guest
+   map of the direct-memory pool is registered with a userfaultfd in asynchronous write-protect
+   mode (`UFFD_FEATURE_WP_ASYNC`, Linux 6.7, with `WP_HUGETLBFS_SHMEM` and `WP_UNPOPULATED` for
+   the pool's memory file). The kernel resolves each write fault itself and marks the page
+   written: there is no signal handler, and nothing changes for the guest's threads. At each
+   buffer the renderer reads the written pages with `PAGEMAP_SCAN`, which protects them again in
+   the same step (`PM_SCAN_WP_MATCHING`), so a write between the read and the protection cannot
+   be lost. The facts behind this are shadPS4's page manager (write watchers on cached memory)
+   and the kernel's userfaultfd and pagemap documentation; they are used as facts only. A
+   userfaultfd limited to user-mode faults (`UFFD_USER_MODE_ONLY`) needs no privilege, so
+   `vm.unprivileged_userfaultfd = 0` does not stop it. Where any of this is missing, the watch
+   is off and the executor takes all memory as changed at each buffer, as before.
+4. **System calls that write guest memory need nothing.** With asynchronous write protection the
+   kernel's own writes into a protected page (a file read) succeed and mark the page written
+   (`test_write_watch` checks a `read` into a watched page).
+5. **Aliases are watched too.** A CPU map of pool memory at another address (the game's 16 KB
+   batch maps) is registered like any other direct map; its writes are reported at their pool
+   offsets. Unmapping a range takes it out of the watch.
+6. **Loads only when memory changed** (landed with step 3). The executor keeps, for each 64 KB of
+   guest memory, the count of the last change that reached it: the CPU's writes from the watch
+   at each buffer, and the GPU's as they are recorded (a dispatch's store ranges, a write-back, a
+   fast clear's fill; a dispatch whose stores may reach anything counts for all memory). A render
+   target or image loads again only when its span changed since its last load, instead of at
+   every submitted buffer and after every dispatch.
 
 ### Tests for each step
 

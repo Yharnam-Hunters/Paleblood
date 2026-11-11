@@ -253,7 +253,7 @@ int main(void)
     CHECK(ftruncate(fd,POOL)==0);uint8_t *pool=mmap(NULL,POOL,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);CHECK(pool!=MAP_FAILED);if(pool==MAP_FAILED)return 1;
     memcpy(pool+VS,vertex_position_color,sizeof vertex_position_color);memcpy(pool+PS,pixel_color,sizeof pixel_color);
     const float colors[3][4]={{1,1,1,1},{1,1,1,1},{1,1,1,1}};memcpy(pool+COLORS,colors,sizeof colors);
-    rt_executor *x=NULL;const rt_executor_memory memory={fd,POOL,base};
+    rt_executor *x=NULL;const rt_executor_memory memory={fd,POOL,base,NULL};
     int rc=rt_executor_open(&memory,&x,error,sizeof error);if(rc)fprintf(stderr,"open: %s\n",error);CHECK(rc==0);if(rc)return 1;
     depth_cases(x,pool);stencil_cases(x,pool);refusals(x,pool);
     rt_executor_close(x);munmap(pool,POOL);close(fd);

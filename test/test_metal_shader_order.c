@@ -189,7 +189,7 @@ int main(void)
     uint8_t *pool=mmap(NULL,POOL,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);
     if(pool==MAP_FAILED){perror("mmap");close(fd);return 1;}
     memcpy(pool+VS,position_vertex,sizeof position_vertex);memcpy(pool+PS,storage_discard,sizeof storage_discard);
-    rt_executor *x=NULL;const rt_executor_memory memory={fd,POOL,base};
+    rt_executor *x=NULL;const rt_executor_memory memory={fd,POOL,base,NULL};
     int rc=rt_executor_open(&memory,&x,error,sizeof error);CHECK(rc==0);
     if(rc){fprintf(stderr,"open: %s\n",error);munmap(pool,POOL);close(fd);return 1;}
     const uint32_t flags[]={0,0x10,0x40,0x50};

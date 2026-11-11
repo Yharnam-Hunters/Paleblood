@@ -375,7 +375,7 @@ records must contain 1..8 words within the modeled slots. Required user data mus
 have been explicitly written; zero is a valid written value.
 
 Compute images use the common descriptor origins, typed translation and canonical tiling. The
-backend binds up to sixteen single-level 1D/2D storage images or arrays. R8/RG8/RGBA8 UNORM,
+backend binds up to sixteen single-level 1D/2D storage images, arrays or selected 3D volumes. R8/RG8/RGBA8 UNORM,
 R32 FLOAT/UINT/SINT, RG32/RGBA32 FLOAT and RGBA8 UINT support separate loads/stores; native
 read/write access uses the device's supported [read/write texture tier](https://developer.apple.com/documentation/metal/mtldevice/readwritetexturesupport).
 RG8 UNORM and RG32 FLOAT require separate accesses. Present components keep identity selectors;
@@ -395,6 +395,29 @@ Each compute submission completes before a later dispatch or draw consumes its
 shared buffer and image writes. Completed draw pixels are already published into that pool,
 and the next draw reloads it. These checks do not establish a working game boot
 or character-creation rendering on macOS.
+
+3D storage uses true Metal volume textures, not arrays of independent 2D slices. This profile
+accepts mip zero, dimensions 1..2048 on each axis, zero `BASE_ARRAY`/`LAST_ARRAY` fields and the
+[index-19 thick microtile layout](volume-tiling.md). Zero array fields select the supported
+whole-volume view; this does not establish the meaning of other 3D descriptor view encodings.
+The physical pitch must meet that layout's alignment and width requirements. `POW2_PAD` is
+accepted only when the supplied dimensions and pitch already need no power-of-two growth.
+Other tile indices, compressed/sRGB storage and 3D sampling remain unsupported.
+
+The volume's complete padded allocation participates in pool bounds and overlapping-image
+checks. Before each dispatch, its visible texels are detiled into tightly packed XYZ rows and
+uploaded with a [3D region and row/image strides](https://developer.apple.com/documentation/metal/mtltexture/replace(region:mipmaplevel:slice:withbytes:bytesperrow:bytesperimage:)).
+The native texture has depth equal to the descriptor's depth, array length one and a whole-volume
+view. Completed writable images are read back through the same 3D region and retiled into guest
+memory; padding remains unchanged. Read-only images leave current guest bytes intact. Per-slice
+1D/2D transfers use zero `bytesPerImage`, as required by Metal for non-3D textures.
+
+`test_metal_volumes` uses owned LLVM-assembled programs and independent literal microtile tables.
+It observes initial texels, partial stores across thick-slice groups, cache reloads, all nine
+formats and device read/write restrictions. Later GPU buffer loads compare the entire physical
+allocation, including untouched padding. Cases cover deep-plane overlap, publication before a
+later shader stop, exact pool ends, unsupported descriptors, depth/height-one volumes and every
+axis at 2048. These are synthetic profile tests, not console tile-table or original-game proof.
 
 `test_metal_storage` exercises owned LLVM-assembled programs across all nine uncompressed
 formats, four dimension/array types and six tiling modes. It checks typed results, preserved raw

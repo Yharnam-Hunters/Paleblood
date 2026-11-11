@@ -173,7 +173,7 @@ int main(void)
     memcpy(pool+VS,position_and_witness,sizeof position_and_witness);
     memcpy(pool+SINGLE,single_coordinate,sizeof single_coordinate);memcpy(pool+BOTH,both_coordinates,sizeof both_coordinates);
     memcpy(pool+CONSTANT,constant_pixel,sizeof constant_pixel);
-    rt_executor *x=NULL;rt_executor_memory memory={fd,POOL,base};int rc=rt_executor_open(&memory,&x,error,sizeof error);
+    rt_executor *x=NULL;rt_executor_memory memory={fd,POOL,base,NULL};int rc=rt_executor_open(&memory,&x,error,sizeof error);
     CHECK(rc==0);if(rc){fprintf(stderr,"open: %s\n",error);munmap(pool,POOL);close(fd);return 1;}
     for(unsigned p=0;p<3;++p)for(int sy=-1;sy<=1;sy+=2)for(unsigned offset=0;offset<2;++offset)
         for(unsigned scissor=0;scissor<2;++scissor)positive(x,pool,p,sy,offset,scissor);

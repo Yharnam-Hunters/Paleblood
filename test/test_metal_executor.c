@@ -577,7 +577,7 @@ int main(void)
     memcpy(pool + INDICES32, indices32, sizeof indices32);
     rt_executor *x = NULL;
     char error[1024] = "";
-    const rt_executor_memory memory = {fd, POOL_SIZE, guest_base};
+    const rt_executor_memory memory = {fd, POOL_SIZE, guest_base, NULL};
     int opened = rt_executor_open(&memory, &x, error, sizeof error);
     if (opened) fprintf(stderr, "open: %s\n", error);
     CHECK(opened == 0);

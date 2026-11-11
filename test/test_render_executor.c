@@ -831,6 +831,95 @@ static void fast_clears(rt_executor *x)
     }
 }
 
+/* A dispatch storing to a target's CMASK through a buffer descriptor based there (a metadata clear, as
+   shadPS4 takes one) runs before the CPU reads that CMASK for the next draw's fast clear in the same
+   batch: scale_add's 1.0 floats (64 of them, from zeros) leave the CMASK mixed rather than one fill,
+   which stops the draw by name. Read before the dispatch had run, the CMASK of all ones would let the
+   draw go ahead. */
+static void metadata_store_waits(rt_executor *x)
+{
+    enum { BUFFER = 0xc0fec000, COMPUTE_CODE = 0x3000, TARGET_AT = 0x1da0000, CMASK = 0x1de0000, ZEROS = 0x1de1000, LANES = 64 };
+    char error[200] = "";
+    memcpy((void *)(uintptr_t)at(COMPUTE_CODE), scale_add, sizeof scale_add);
+    memset((void *)(uintptr_t)at(CMASK), 0xff, LANES * 4);
+    memset((void *)(uintptr_t)at(ZEROS), 0, LANES * 4);
+    rt_render_forget(), rt_executor_reset(x);
+    uint32_t offset = record_setup(BUFFER, at(TARGET_AT), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const uint64_t code = at(COMPUTE_CODE);
+    const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0, 8 << 1, LANES, 1, 1};
+    CHECK(rt_render_record_compute_shader_at(BUFFER + offset, shader) == 0);
+    uint32_t user[8];
+    descriptor(user, at(ZEROS), 4);
+    descriptor(user + 4, at(CMASK), 4);
+    CHECK(rt_render_record_user_data(BUFFER, offset + 0x10, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+    const uint32_t one[3] = {1, 1, 1};
+    CHECK(rt_render_record_dispatch(BUFFER, offset + 0x20, one, error, sizeof error) == 0);
+    uint32_t words[RT_COLOR_TARGET_WORDS];
+    color_target(words, at(TARGET_AT), COLOR_8_8_8_8, SWAP_STD);
+    words[4] |= 1u << 13, words[7] = (uint32_t)(at(CMASK) >> 8); /* FAST_CLEAR, CMASK */
+    CHECK(rt_render_record_color_target(BUFFER, offset + 0x30, 0, words, error, sizeof error) == 0);
+    const int ran = rt_executor_run(x, BUFFER, record_triangle_draw(BUFFER, offset + 0x40), error, sizeof error);
+    if (ran == 0 || !strstr(error, "partly fast-cleared")) fprintf(stderr, "metadata store: %d %s\n", ran, error);
+    CHECK(ran == -1 && strstr(error, "partly fast-cleared"));
+}
+
+/* Records a draw into a fast-clear target (CMASK at `cmask`, CLEAR_WORD0 0xff336699) that keeps what is
+   there (blend ZERO + ONE), after, when `dispatch_store` is set, a dispatch storing scale_add's floats
+   through a descriptor based at the CMASK; returns the buffer's size. */
+static uint32_t record_kept_fast_clear(uint64_t buffer, uint64_t target, uint64_t cmask, uint64_t zeros, int dispatch_store)
+{
+    enum { COMPUTE_CODE = 0x3000, LANES = 64, CLEAR_WORD0 = 0xa323 };
+    char error[200] = "";
+    uint32_t offset = record_setup(buffer, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    if (dispatch_store) {
+        const uint64_t code = at(COMPUTE_CODE);
+        const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0, 8 << 1, LANES, 1, 1};
+        CHECK(rt_render_record_compute_shader_at(buffer + offset, shader) == 0);
+        uint32_t user[8];
+        descriptor(user, zeros, 4);
+        descriptor(user + 4, cmask, 4);
+        CHECK(rt_render_record_user_data(buffer, offset + 0x10, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+        const uint32_t one[3] = {1, 1, 1};
+        CHECK(rt_render_record_dispatch(buffer, offset + 0x20, one, error, sizeof error) == 0);
+        offset += 0x30;
+    }
+    uint32_t words[RT_COLOR_TARGET_WORDS];
+    color_target(words, target, COLOR_8_8_8_8, SWAP_STD);
+    words[4] |= 1u << 13, words[7] = (uint32_t)(cmask >> 8); /* FAST_CLEAR, CMASK */
+    CHECK(rt_render_record_color_target(buffer, offset, 0, words, error, sizeof error) == 0);
+    CHECK(rt_render_record_register(buffer, offset + 0x10, CLEAR_WORD0, 0xff336699u, error, sizeof error) == 0);
+    CHECK(rt_render_record_register(buffer, offset + 0x20, 0xa1e0, 1u << 30 | 0u | 1u << 8, error, sizeof error) == 0);
+    return record_triangle_draw(buffer, offset + 0x30);
+}
+
+/* A dispatch storing to the CMASK of a target the executor knows clears it (shadPS4's rule): the next
+   fast-clear draw fills the target with its clear colour without reading the CMASK (scale_add's floats
+   would read as a partly cleared CMASK and stop the draw), and the CMASK is all ones once the batch has
+   run. A draw after that, with no store in between, leaves the target as it is. */
+static void metadata_store_clears(rt_executor *x)
+{
+    enum { BUFFER = 0xc0fed000, COMPUTE_CODE = 0x3000, TARGET_AT = 0x1e40000, CMASK = 0x1e80000, ZEROS = 0x1e81000, LANES = 64 };
+    char error[200] = "";
+    memcpy((void *)(uintptr_t)at(COMPUTE_CODE), scale_add, sizeof scale_add);
+    uint8_t *cmask = (uint8_t *)(uintptr_t)at(CMASK);
+    memset(cmask, 0xff, LANES * 4);
+    memset((void *)(uintptr_t)at(ZEROS), 0, LANES * 4);
+    memset((void *)(uintptr_t)at(TARGET_AT), 0, SIZE * SIZE * 4);
+    uint32_t bgra[SIZE * SIZE];
+    for (int pass = 0; pass < 3; pass++) {
+        rt_render_forget(), rt_executor_reset(x);
+        const int ran = rt_executor_run(x, BUFFER, record_kept_fast_clear(BUFFER, at(TARGET_AT), at(CMASK), at(ZEROS), pass == 1), error, sizeof error);
+        if (ran) fprintf(stderr, "metadata clear pass %d: %s\n", pass, error);
+        CHECK(ran == 0);
+        CHECK(rt_executor_read_target(x, at(TARGET_AT), bgra, SIZE, SIZE, error, sizeof error) == 0);
+        int cleared = 1, untouched = 1, expanded = 1;
+        for (int i = 0; i < SIZE * SIZE; i++) cleared &= bgra[i] == 0xff996633u, untouched &= bgra[i] == 0;
+        for (int i = 0; i < 128; i++) expanded &= cmask[i] == 0xff;
+        CHECK(pass == 0 ? untouched : cleared);
+        CHECK(expanded);
+    }
+}
+
 /* Depth and stencil without a depth buffer, and triangle strips:
    - with the depth target switched off (DB_Z_INFO and DB_STENCIL_INFO 0, as the library's setter
      writes for no target), depth and stencil tests draw as if off; Z_WRITE_ENABLE alone writes nothing
@@ -1408,7 +1497,7 @@ static void indexed_packets(rt_executor *x, int fd)
     /* A low guest window makes the unchecked sum wrap into valid GPU memory.
        With no targets enabled it would be accepted if the overflow guard vanished. */
     const uint64_t low_base = 0x100000000ull;
-    const rt_executor_memory low_memory = {fd, GUEST_SIZE, low_base};
+    const rt_executor_memory low_memory = {fd, GUEST_SIZE, low_base, NULL};
     rt_executor *low = NULL;
     const int opened = rt_executor_open(&low_memory, &low, error, sizeof error);
     if (opened) fprintf(stderr, "low index window: %s\n", error);
@@ -1605,6 +1694,74 @@ static void compressed_image(rt_executor *x)
     CHECK(differs);
 }
 
+/* The CPU writes the fake watch reports at the next buffer (runtime/write_watch.h's collect). */
+static struct {
+    uint64_t pool_offset, length;
+} reported_write;
+
+static int report_writes(const uint64_t (*ranges)[2], size_t count, void (*written)(void *context, uint64_t pool_offset, uint64_t length),
+                         void *context)
+{
+    (void)ranges, (void)count;
+    if (reported_write.length) written(context, reported_write.pool_offset, reported_write.length);
+    reported_write.length = 0;
+    return 0;
+}
+
+/* With the CPU's writes reported by a watch (collect_cpu_writes), an image loads again only when its
+   memory changed: a CPU write the watch did not report leaves the image as it was loaded (the draw
+   still shows the reference); once reported, the next draw shows the new texels; a dispatch storing
+   into the memory (scale_add's 1.0 floats over its first 64 texels) reloads it with no report. */
+static void watched_memory(int fd)
+{
+    enum { IMAGE = 0x1e00000, TEXEL_TARGET = 0x1e10000, COMPUTE = 0xc0e40000, COMPUTE_CODE = 0x3000, ZEROS = 0x1e20000, LANES = 64,
+           LINEAR_ALIGNED = 8 };
+    char error[256] = "";
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes};
+    rt_executor *x = NULL;
+    const int opened = rt_executor_open(&memory, &x, error, sizeof error);
+    if (opened) fprintf(stderr, "watched executor: %s\n", error);
+    CHECK(opened == 0);
+    if (!x) return;
+    uint32_t *texels = (uint32_t *)(uintptr_t)at(IMAGE);
+    for (uint32_t y = 0; y < SIZE; y++)
+        for (uint32_t px = 0; px < SIZE; px++) texels[y * SIZE + px] = reference_texel(px, y);
+    uint32_t image[8];
+    image_descriptor(image, at(IMAGE), 10, 0, SIZE, SIZE);
+    image[3] |= LINEAR_ALIGNED << 20;
+    CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
+    CHECK(differing_pixels(x, at(TEXEL_TARGET)) == 0);
+
+    memset(texels, 0, SIZE * SIZE * 4); /* not reported: the image keeps what it loaded */
+    CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
+    CHECK(differing_pixels(x, at(TEXEL_TARGET)) == 0);
+    reported_write.pool_offset = IMAGE, reported_write.length = SIZE * SIZE * 4;
+    CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
+    CHECK(differing_pixels(x, at(TEXEL_TARGET)) == SIZE * SIZE);
+
+    for (uint32_t y = 0; y < SIZE; y++)
+        for (uint32_t px = 0; px < SIZE; px++) texels[y * SIZE + px] = reference_texel(px, y);
+    reported_write.pool_offset = IMAGE, reported_write.length = SIZE * SIZE * 4;
+    CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
+    CHECK(differing_pixels(x, at(TEXEL_TARGET)) == 0);
+    memcpy((void *)(uintptr_t)at(COMPUTE_CODE), scale_add, sizeof scale_add);
+    memset((void *)(uintptr_t)at(ZEROS), 0, LANES * 4);
+    rt_render_forget(), rt_executor_reset(x);
+    const uint64_t code = at(COMPUTE_CODE);
+    const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0, 8 << 1, LANES, 1, 1};
+    CHECK(rt_render_record_compute_shader_at(COMPUTE + 0x10, shader) == 0);
+    uint32_t user[8];
+    descriptor(user, at(ZEROS), 4);
+    descriptor(user + 4, at(IMAGE), 4);
+    CHECK(rt_render_record_user_data(COMPUTE, 0x20, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+    const uint32_t one[3] = {1, 1, 1};
+    CHECK(rt_render_record_dispatch(COMPUTE, 0x30, one, error, sizeof error) == 0);
+    CHECK(rt_executor_run(x, COMPUTE, 0x40, error, sizeof error) == 0);
+    CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
+    CHECK(differing_pixels(x, at(TEXEL_TARGET)) == LANES);
+    rt_executor_close(x);
+}
+
 int main(void)
 {
     const int fd = map_guest_memory();
@@ -1614,7 +1771,7 @@ int main(void)
     }
     rt_executor *x = NULL;
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL};
     if (rt_executor_open(&memory, &x, error, sizeof error)) {
         fprintf(stderr, "skipped: %s\n", error);
         return SKIPPED;
@@ -1669,6 +1826,9 @@ int main(void)
     CHECK(run_with_registers(x, FOURTH, at(TARGET) + 0x480000, eliminate, 1, 0, error, sizeof error) == 0);
     CHECK(rt_executor_read_target(x, at(TARGET) + 0x480000, bgra, 2, 2, error, sizeof error) == -1 && strstr(error, "no draw"));
     fast_clears(x);
+    metadata_store_waits(x);
+    metadata_store_clears(x);
+    watched_memory(fd);
     const uint32_t resolve[][2] = {{0xa202, 0x3u << 4 | 0xccu << 16}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), resolve, 1, 0, error, sizeof error) == -1 && strstr(error, "colour mode 3"));
     const uint32_t unknown[][2] = {{0xa1e8, 0}};
