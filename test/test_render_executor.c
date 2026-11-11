@@ -1660,13 +1660,13 @@ int main(void)
         }
 
         /* An image no shader wrote holds the guest memory's texels: linear (tiling index 8) RGBA32F
-           texels the CPU wrote read back as written; a layout not done yet (index 0) stops by name. */
+           texels the CPU wrote read back as written; a layout not done yet (index 1) stops by name. */
         float *guest_texels = (float *)(uintptr_t)at(IMAGE_B + 0x8000);
         for (unsigned i = 0; i < LANES * 4; i++) guest_texels[i] = (float)i * 0.25f, back[i] = -1;
         for (int tiling = 0; tiling < 2; tiling++) {
             rt_render_forget(), rt_executor_reset(x);
             image_descriptor(image_b, at(IMAGE_B + 0x8000), 14, 7, LANES, 1);
-            image_b[3] |= (tiling ? 8u : 0u) << 20;
+            image_b[3] |= (tiling ? 8u : 1u) << 20;
             const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(codes[2] >> 8), (uint32_t)(codes[2] >> 40), 0x3, 16 << 1, LANES, 1, 1};
             CHECK(rt_render_record_compute_shader_at(IMAGES + 0x10, shader) == 0);
             descriptor(user, at(BACK), 16), memcpy(user + 8, image_b, sizeof image_b);
@@ -1675,7 +1675,7 @@ int main(void)
             CHECK(rt_render_record_dispatch(IMAGES, 0x40, one, error, sizeof error) == 0);
             const int loaded = rt_executor_run(x, IMAGES, 0x50, error, sizeof error);
             if (!tiling) {
-                CHECK(loaded == -1 && strstr(error, "tiling index 0"));
+                CHECK(loaded == -1 && strstr(error, "tiling index 1"));
                 continue;
             }
             if (loaded) fprintf(stderr, "guest texels: %s\n", error);

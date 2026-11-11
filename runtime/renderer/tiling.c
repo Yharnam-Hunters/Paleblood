@@ -12,7 +12,12 @@
        8 DisplayLinearAligned, 31 DisplayLinearGeneral: linear;
        9 Display1DThin, 13 Thin1DThin: 1D-tiled thin, display or thin micro tiles;
        10 Display2DThin, 14 Thin2DThin: 2D-tiled thin, pipe configuration P8_32x32_16x16 (8 pipes),
-          sample split 2.
+          sample split 2;
+       0 Depth2DThin64: 2D-tiled thin, depth micro tiles (the thin order), P8_32x32_16x16, tile split
+          64 bytes: a micro tile's bytes past 64 go to further slices, each piece's bank rotated by
+          (banks / 2 + 1) x its piece number, and the macro tile mode follows the split (addrlib's
+          ComputeSurfaceAddrFromCoordMacroTiled and ComputeBankFromCoord with tileSplitSlice, as
+          shadPS4's tiling.comp has them; its tiling.cpp's GetTileSplitHw and CalculateTileSplit).
    - The macro tile modes (GB_MACROTILE_MODEn) the 2D modes pick from, the same file's
      GetBankWidth, GetBankHeight, GetNumBanks and GetMacrotileAspect: mode 0 1x4_16 (bank width 1,
      bank height 4, 16 banks, aspect 4), 1 1x2_16 (1, 2, 16, 2), 2 1x1_16 (1, 1, 16, 2),
@@ -31,7 +36,7 @@
 #include <string.h>
 
 enum { MICRO = 8, MICRO_TEXELS = MICRO * MICRO, PIPE_INTERLEAVE_BITS = 8, PIPE_INTERLEAVE = 1 << PIPE_INTERLEAVE_BITS };
-enum { DISPLAY_LINEAR_ALIGNED = 8, DISPLAY_1D_THIN = 9, DISPLAY_2D_THIN = 10, THIN_1D_THIN = 13, THIN_2D_THIN = 14,
+enum { DEPTH_2D_THIN_64 = 0, DEPTH_TILE_SPLIT = 64, DISPLAY_LINEAR_ALIGNED = 8, DISPLAY_1D_THIN = 9, DISPLAY_2D_THIN = 10, THIN_1D_THIN = 13, THIN_2D_THIN = 14,
        DISPLAY_LINEAR_GENERAL = 31 };
 enum { P8_PIPES = 8 };
 
@@ -67,6 +72,7 @@ int rt_tiling_layout(unsigned tiling_index, unsigned element_bytes, uint32_t pit
     case THIN_1D_THIN: t.kind = RT_TILING_1D, t.micro = RT_MICRO_THIN; break;
     case DISPLAY_2D_THIN: t.kind = RT_TILING_2D, t.micro = RT_MICRO_DISPLAY; break;
     case THIN_2D_THIN: t.kind = RT_TILING_2D, t.micro = RT_MICRO_THIN; break;
+    case DEPTH_2D_THIN_64: t.kind = RT_TILING_2D, t.micro = RT_MICRO_THIN, t.tile_split = DEPTH_TILE_SPLIT; break;
     default: return failed(error, error_size, "tiling index %u: not done yet", tiling_index);
     }
     if (t.kind == RT_TILING_1D) {
@@ -75,7 +81,11 @@ int rt_tiling_layout(unsigned tiling_index, unsigned element_bytes, uint32_t pit
     }
     if (t.kind == RT_TILING_2D) {
         static const struct { unsigned bank_height, banks, aspect; } macro_modes[] = {{4, 16, 4}, {2, 16, 2}, {1, 16, 2}, {1, 16, 2}, {1, 8, 1}};
-        const unsigned mode = log2_of(element_bytes);
+        /* the macro tile mode: log2(tile bytes / 64), the tile bytes the micro tile's or the split's */
+        const unsigned micro_bytes = MICRO_TEXELS * element_bytes;
+        const unsigned tile_bytes = t.tile_split && t.tile_split < micro_bytes ? t.tile_split : micro_bytes > 1024 ? 1024 : micro_bytes;
+        const unsigned mode = log2_of(tile_bytes / 64);
+        if (t.tile_split >= micro_bytes) t.tile_split = 0; /* nothing to split */
         t.pipes = P8_PIPES, t.bank_width = 1, t.bank_height = macro_modes[mode].bank_height, t.banks = macro_modes[mode].banks;
         t.macro_aspect = macro_modes[mode].aspect;
         t.macro_width = MICRO * t.bank_width * t.pipes * t.macro_aspect;
@@ -143,14 +153,18 @@ uint64_t rt_tiling_offset(const rt_tiling *t, uint32_t x, uint32_t y, uint32_t s
     /* 2D: an offset within one channel (a pipe and bank), whose low 8 bits stay in place, with the pipe
        and the bank above them */
     const unsigned channels = t->pipes * t->banks, pipe_bits = log2_of(t->pipes), bank_bits = log2_of(t->banks);
-    const uint64_t macro_bytes = micro_bytes * (t->macro_width / MICRO) * (t->macro_height / MICRO) / channels;
+    /* a split micro tile: its piece (in_micro / split) lies in a further slice, its bank rotated */
+    const uint64_t piece_bytes = t->tile_split ? t->tile_split : micro_bytes, pieces = micro_bytes / piece_bytes;
+    const uint64_t piece = in_micro / piece_bytes, in_piece = in_micro % piece_bytes;
+    const uint64_t macro_bytes = piece_bytes * (t->macro_width / MICRO) * (t->macro_height / MICRO) / channels;
     const uint64_t macros_per_row = t->pitch / t->macro_width;
     const uint64_t slice_channel_bytes = macros_per_row * (t->height / t->macro_height) * macro_bytes;
     const uint64_t macro = (uint64_t)(y / t->macro_height) * macros_per_row + x / t->macro_width;
     const uint64_t tile = (uint64_t)(y / MICRO % t->bank_height) * t->bank_width + (x / MICRO / t->pipes) % t->bank_width;
-    const uint64_t in_channel = slice * slice_channel_bytes + macro * macro_bytes + tile * micro_bytes + in_micro;
+    const uint64_t in_channel = (piece + pieces * slice) * slice_channel_bytes + macro * macro_bytes + tile * piece_bytes + in_piece;
+    const unsigned bank = (bank_of(t, x, y, slice) ^ (unsigned)((t->banks / 2 + 1) * piece)) & (t->banks - 1);
     return (in_channel & (PIPE_INTERLEAVE - 1)) | (uint64_t)pipe_of(x, y) << PIPE_INTERLEAVE_BITS |
-           (uint64_t)bank_of(t, x, y, slice) << (PIPE_INTERLEAVE_BITS + pipe_bits) |
+           (uint64_t)bank << (PIPE_INTERLEAVE_BITS + pipe_bits) |
            (in_channel >> PIPE_INTERLEAVE_BITS) << (PIPE_INTERLEAVE_BITS + pipe_bits + bank_bits);
 }
 
@@ -241,10 +255,23 @@ void rt_tiling_micro_spread(const rt_tiling *t, uint64_t spread[RT_TILING_MICRO_
         }
 }
 
-/* Copies between the tiled image and linear rows, a micro tile at a time (rt_tiling_micro_spread). */
+int rt_tiling_uniform_micro(const rt_tiling *t) { return !t->tile_split; }
+
+/* Copies between the tiled image and linear rows, a micro tile at a time (rt_tiling_micro_spread), or
+   texel by texel for a split depth tile. */
 static void copy_texels(const rt_tiling *t, uint8_t *tiled, uint8_t *linear, uint32_t width, uint32_t height, uint32_t slices, int to_tiled)
 {
     const size_t element = t->element_bytes, row = (size_t)width * element;
+    if (!rt_tiling_uniform_micro(t)) {
+        for (uint32_t s = 0; s < slices; s++)
+            for (uint32_t y = 0; y < height; y++)
+                for (uint32_t x = 0; x < width; x++) {
+                    uint8_t *at = tiled + rt_tiling_offset(t, x, y, s), *texel = linear + ((size_t)s * height + y) * row + x * element;
+                    if (to_tiled) memcpy(at, texel, element);
+                    else memcpy(texel, at, element);
+                }
+        return;
+    }
     if (t->kind == RT_TILING_LINEAR) {
         for (uint32_t s = 0; s < slices; s++)
             for (uint32_t y = 0; y < height; y++, linear += row) {

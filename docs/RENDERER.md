@@ -182,6 +182,9 @@ Instead:
        sample, 1 to 16 bytes per element; others are refused by name. `test/test_tiling.c` checks
        offsets worked out by hand, mutated layouts that must miss them, shadPS4's table of macro-tile
        sizes, and that every layout is a permutation of the image's bytes.
+       Depth2DThin64 (tiling index 0, depth textures such as the preview's R32 view of its depth)
+       splits each micro tile into 64-byte pieces in further slices, each piece's bank rotated; those
+       images are detiled by the CPU texel by texel.
      - **Descriptor base addresses are 40 bits** (word 1's bits 0-7; the Sea Islands manual's Table
        8.5 as shadPS4's `resource.h` lays it out). The game sets word 1's bits 8-15, which the
        translator used to take as address bits, sending the GPU outside guest memory.
