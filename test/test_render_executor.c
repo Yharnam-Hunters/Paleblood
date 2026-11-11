@@ -843,6 +843,30 @@ static void depth_and_strips(rt_executor *x)
                                      {0xa016, 0}, {0xa017, 0}, {0xa002, 0}, {0xa200, 0x2 | 0x4 | 0x7u << 4}};
         CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), small, 10, 3, error, sizeof error) == -1 && strstr(error, "smaller"));
     }
+    /* A depth fast clear: with TILE_SURFACE_ENABLE and an HTILE whose every word has ZMASK 0 (cleared),
+       the depth reads DB_DEPTH_CLEAR (1.0): LESS_EQUAL on a target no draw wrote draws the triangle, and
+       the HTILE's words get ZMASK 0xf (the clear is used once). Without the clear the test would read a
+       target no draw wrote (a stop). A partly cleared HTILE stops by name. */
+    {
+        enum { CLEARED_Z = 0x1800000, CLEARED_HTILE = 0x1810000, CLEARED_COLOUR = 0x1820000, HTILE_WORDS = (SIZE / 8) * (SIZE / 8) };
+        const uint32_t cz = (uint32_t)(at(CLEARED_Z) >> 8), cst = (uint32_t)(at(CLEARED_Z + 0x2000) >> 8), htile = (uint32_t)(at(CLEARED_HTILE) >> 8);
+        uint32_t *words = (uint32_t *)(uintptr_t)at(CLEARED_HTILE);
+        for (unsigned i = 0; i < HTILE_WORDS; i++) words[i] = 0xfffffff0u;
+#define CLEARED_TARGET {0xa010, 0xa0000003}, {0xa011, 0x20000001}, {0xa012, cz}, {0xa013, cst}, {0xa014, cz}, {0xa015, cst}, \
+                       {0xa016, depth_size}, {0xa017, 0}, {0xa002, 0}, {0xa005, htile}, {0xa00b, 0x3f800000u}
+        const uint32_t less_equal_cleared[][2] = {CLEARED_TARGET, {0xa200, 0x2 | 0x3u << 4}};
+        drawn = run_counted(x, DEPTH_BUFFER, at(CLEARED_COLOUR), less_equal_cleared, 12, 3, error, sizeof error);
+        if (drawn) fprintf(stderr, "depth fast clear: %s\n", error);
+        CHECK(drawn == 0);
+        check_triangle(x, at(CLEARED_COLOUR));
+        int expanded = 1;
+        for (unsigned i = 0; i < HTILE_WORDS; i++) expanded &= words[i] == 0xffffffffu;
+        CHECK(expanded);
+        words[1] = 0xfffffff0u; /* one tile cleared again, the others not */
+        CHECK(run_counted(x, DEPTH_BUFFER, at(CLEARED_COLOUR), less_equal_cleared, 12, 3, error, sizeof error) == -1 &&
+              strstr(error, "partly fast-cleared HTILE"));
+#undef CLEARED_TARGET
+    }
     /* Slices of an array depth target (DB_DEPTH_VIEW SLICE_START = SLICE_MAX): a draw into slice 1
        writes slice 1 only: LESS on slice 1 then draws nothing, a test reading slice 0 meets a slice no
        draw wrote; a view of two slices stops by name. */
