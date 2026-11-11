@@ -84,10 +84,10 @@ patch edit is broken in v1.09, [QUIRKS.md](QUIRKS.md)). The task manager's frame
 
 ## Open questions (runtime)
 
-- The CPU affinity mask of the main thread on a PS4 (`scePthreadAttrGetaffinity` on
-  `scePthreadAttrGet(scePthreadSelf())`): the game's own C library counts its bits as the number
-  of CPUs while it starts, so the value can shape how many worker threads the game makes. The
-  boot stops there until the value is known from documentation or a measurement, not guessed.
+- The CPU affinity mask of the main thread on a PS4 is still not measured. Since the maintainer's
+  2026-11-10 ruling, a thread with no mask set by the guest answers all ones (`scePthreadGetaffinity`,
+  `scePthreadAttrGetaffinity`). The bundled C library's thread-count probe that asks for it stays
+  hooked out (#207), so the game's CPU count is not derived from that ruled value.
 
 ## Pipeline health
 
