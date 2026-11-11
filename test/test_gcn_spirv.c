@@ -407,6 +407,24 @@ static void rect_list_stages(void)
     CHECK(rt_rect_list_geometry(0, RT_RECT_LIST_MAX_CLIP_DISTANCES + 1, &spirv, &words) == -1);
 }
 
+/* Buffer stores' descriptors (gcn_buffer_store_resources): scale_add stores through the user data's
+   s[4:7]; a store through a descriptor the program writes first has no known origin (unknown); a
+   program with no buffer stores lists none. */
+static void store_resources(void)
+{
+    gcn_resource_origin found[GCN_MAX_IMAGES];
+    unsigned count = 99;
+    int unknown = 1;
+    char error[300] = "";
+    CHECK(gcn_buffer_store_resources(PROGRAM(scale_add), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
+    CHECK(count == 1 && !unknown && !found[0].from_memory && found[0].sgpr == 4);
+    static const uint32_t computed[] = {0xbe840380, 0xe0701000, 0x80010000, 0xbf810000}; /* s_mov_b32 s4, 0; buffer_store_dword ... s[4:7] */
+    CHECK(gcn_buffer_store_resources(PROGRAM(computed), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
+    CHECK(count == 0 && unknown);
+    CHECK(gcn_buffer_store_resources(PROGRAM(image_copy), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
+    CHECK(count == 0 && !unknown);
+}
+
 /* The renderer's GPU tile copies (runtime/tile_copy.h), every element size and direction: valid modules;
    other element sizes are refused. test_render_executor runs them against rt_tiling_offset. */
 static void tile_copy_shaders(void)
@@ -456,6 +474,7 @@ int main(void)
 {
     rect_list_stages();
     tile_copy_shaders();
+    store_resources();
     image_programs();
     calls();
     user_data_read();
