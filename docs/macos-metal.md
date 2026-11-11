@@ -123,8 +123,11 @@ compatibility behavior does not establish validity of such a program on GFX7 har
 [AMD Sea Islands ISA, sections 11.2.1 and 11.3](https://docs.amd.com/api/khub/documents/YO8RUh~LIQ5Cx3M_Kq9qkg/content).
 The shared `test_pixel_vm.c` runs as `pixel_vm_metal` on Metal and `pixel_vm` on Vulkan. Its
 owned programs drain each export before changing EXEC, exercise distinct branch exits and
-check literal framebuffer values plus physical stores and buffer guards. They do not measure
-shader invocation counts.
+check literal framebuffer values plus physical stores and buffer guards. Of 44 scenarios,
+32 exercise the documented GFX7 validity rules and 12 cover the accepted translator's no-VM
+default or opposing non-VM export compatibility. Those compatibility programs do not satisfy
+the hardware's final-export/DONE requirements (Sea Islands ISA sections 11.2.1 and 13.8).
+These tests do not measure shader invocation counts.
 
 The input remains valid GFX7 code with consistent resource metadata: this backend does not
 validate every instruction against its declared SGPR/VGPR allocation.

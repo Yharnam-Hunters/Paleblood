@@ -2,7 +2,10 @@
 /* Owned LLVM Bonaire programs test final executed VM validity independently of
    later EXEC changes. Physical stores are idempotent per-pixel/program witnesses,
    never invocation counts. The literal framebuffer oracle uses no renderer helper.
-   No target program, recording, original-side harness or expected failure is used. */
+   No target program, recording, original-side harness or expected failure is used.
+   The no-VM case and two opposing non-VM cases exercise translator compatibility,
+   not valid GFX7 programs: a DONE colour export requires EXEC to contain validity,
+   and the last executed export must have DONE (Sea Islands ISA11.2.1/13.8). */
 #include "runtime/render_executor.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -220,7 +223,9 @@ static void scenario(rt_executor *x,uint8_t *pool,const Case *test,int sy,unsign
 {
     setup(pool,test,sy,partial);uint8_t source[48+GUARD];memcpy(source,pool+POS,sizeof source);
     char error[1024]="";int rc=rt_executor_run_calls(x,calls,count,error,sizeof error);++scenarios;
-    if(rc)fprintf(stderr,"execute %s: %s\n",programs[test->program].name,error);CHECK(rc==0);if(rc)return;
+    if(rc)fprintf(stderr,"execute %s: %s\n",programs[test->program].name,error);
+    CHECK(rc==0);
+    if(rc)return;
     for(unsigned y=0;y<H;++y)for(unsigned col=0;col<W;++col){unsigned i=y*W+col;
         if(covered(col,y,partial)){
             word(store_expected[test->program][0],i,PRE_MARK+test->program);
