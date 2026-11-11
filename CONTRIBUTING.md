@@ -206,6 +206,8 @@ firmware, keys or decryption tools.
   `docs/assets/ALLOWLIST` with the command that produced them, and they are our own work:
   recordings of our tools' output, and frames drawn by Paleblood's own renderer, at full
   resolution, added by the maintainer with attribution (such as the README's title screen).
+  Every file is capped at 2 MiB; an allowlisted image may be up to 8 MiB, so a frame is posted
+  whole, never downscaled.
   Contributors do not add game frames themselves; propose one in an issue instead. This repository rule does not
   decide whether a contextual image may appear on the public documentation site: each proposed
   site asset requires its own documented source, rights basis, editorial purpose and maintainer

@@ -139,6 +139,13 @@ static void user_data(void)
     CHECK(rt_render_record_user_data(BUFFER, 0x40, RT_STAGE_VERTEX, 0, &one, 0, error, sizeof error) == -1);
     CHECK(rt_render_record_user_data(BUFFER, 0x40, RT_STAGE_VERTEX, 0, eight, 9, error, sizeof error) == -1);
     CHECK(rt_render_record_user_data(BUFFER, 0x40, RT_STAGE_VERTEX, 9, eight, 8, error, sizeof error) == -1 && strstr(error, "slots 9-16"));
+    /* Check the first slot before subtracting it: slot+count can wrap. */
+    const struct { unsigned slot, count; } invalid_ranges[] = {
+        {UINT32_MAX, 1}, {UINT32_MAX - 7, 8}, {UINT32_MAX - 6, 8}, {16, 1}, {15, 2},
+    };
+    for (size_t i = 0; i < sizeof invalid_ranges / sizeof *invalid_ranges; ++i)
+        CHECK(rt_render_record_user_data(BUFFER, 0x40, RT_STAGE_VERTEX, invalid_ranges[i].slot,
+                                         eight, invalid_ranges[i].count, error, sizeof error) == -1);
     rt_render_submitted(BUFFER, 0x100, &count);
     CHECK(count == 3);
     rt_render_forget();
@@ -287,9 +294,86 @@ static void compute_calls(void)
     rt_render_forget();
 }
 
+/* Index state keeps the emitted raw words and follows each buffer's submission lifetime. */
+static void index_state(void)
+{
+    const uint64_t buffer = 0x600000000ull, other = 0x600100000ull;
+    char error[128];
+    size_t count;
+    rt_render_forget();
+    CHECK(RT_CALL_REGISTER == 6 && RT_CALL_INSTANCES == 7 && RT_CALL_INDEX_TYPE == 12);
+    CHECK(rt_render_record_index_type(buffer, 0x10, 0x80000001u, error, sizeof error) == 0);
+    CHECK(rt_render_record_index_base(buffer, 0x18, 0xef12345678ull, error, sizeof error) == 0);
+    CHECK(rt_render_record_index_size(buffer, 0x24, 0xffffffffu, error, sizeof error) == 0);
+    CHECK(rt_render_record_index_type(other, 0, 1, error, sizeof error) == 0);
+    const rt_render_call *calls = rt_render_submitted(buffer, 0x30, &count);
+    CHECK(count == 3);
+    if (count == 3) {
+        CHECK(calls[0].kind == RT_CALL_INDEX_TYPE && calls[0].u.index_type.type == 0x80000001u);
+        CHECK(calls[1].kind == RT_CALL_INDEX_BASE && calls[1].u.index_base.address == 0xef12345678ull);
+        CHECK(calls[2].kind == RT_CALL_INDEX_SIZE && calls[2].u.index_size.count == 0xffffffffu);
+    }
+    rt_render_submitted(buffer, 0x24, &count);
+    CHECK(count == 2);
+    calls = rt_render_submitted(other, 0x10, &count);
+    CHECK(count == 1 && calls[0].u.index_type.type == 1);
+    CHECK(rt_render_record_index_size(buffer, 0, 0, error, sizeof error) == 0);
+    calls = rt_render_submitted(buffer, 0x30, &count);
+    CHECK(count == 1 && calls[0].kind == RT_CALL_INDEX_SIZE && calls[0].u.index_size.count == 0);
+    rt_render_forget();
+    rt_render_submitted(buffer, 0x30, &count);
+    CHECK(count == 0);
+}
+
+/* Raw draw payloads distinguish an address from a base-relative index offset. */
+static void indexed_draws(void)
+{
+    const uint64_t buffer = 0x700000000ull;
+    const uint64_t full_address = 0xabcdef1234567891ull;
+    char error[128];
+    size_t count;
+    rt_render_forget();
+    CHECK(RT_CALL_INDEX_SIZE == 11 && RT_CALL_DRAW_INDEXED == 14 && RT_CALL_DRAW_INDEX_OFFSET == 13);
+    CHECK(rt_render_record_draw_indexed(buffer, 0x10, 0xc0042701, 0x80000003, full_address, 0xffffffff, 0x12345678,
+                                        error, sizeof error) == 0);
+    CHECK(rt_render_record_draw_index_offset_packet(buffer, 0x30, 0xc0033501, 0x11223344, 0xfedcba98, 0x88776655, 0x87654321,
+                                               error, sizeof error) == 0);
+    const rt_render_call *calls = rt_render_submitted(buffer, 0x40, &count);
+    CHECK(count == 2);
+    if (count == 2) {
+        CHECK(calls[0].kind == RT_CALL_DRAW_INDEXED && calls[0].u.draw_indexed.max_size == 0x80000003);
+        CHECK(calls[0].u.draw_indexed.header == 0xc0042701 && calls[0].u.draw_indexed.address == full_address && calls[0].u.draw_indexed.index_count == 0xffffffff);
+        CHECK(calls[0].u.draw_indexed.initiator == 0x12345678);
+        CHECK(calls[1].kind == RT_CALL_DRAW_INDEX_OFFSET && calls[1].u.draw_index.max_size == 0x11223344);
+        CHECK(calls[1].u.draw_index.header == 0xc0033501 && calls[1].u.draw_index.first == 0xfedcba98);
+        CHECK(calls[1].u.draw_index.count == 0x88776655 && calls[1].u.draw_index.initiator == 0x87654321);
+    }
+    rt_render_submitted(buffer, 0x30, &count);
+    CHECK(count == 1);
+    CHECK(rt_render_record_draw_indexed(buffer, 0, 0, 0, 0, 0, 0, error, sizeof error) == 0);
+    calls = rt_render_submitted(buffer, 0x40, &count);
+    CHECK(count == 1 && calls[0].kind == RT_CALL_DRAW_INDEXED && calls[0].u.draw_indexed.index_count == 0);
+    rt_render_forget();
+    CHECK(rt_render_record_draw_index_offset(buffer, 0, 136, 60, error, sizeof error) == 0);
+    CHECK(rt_render_record_draw_index_offset_packet(buffer, 4, 0, 2, 136, 60, 0, error, sizeof error) == 0);
+    calls = rt_render_submitted(buffer, 8, &count);
+    CHECK(count == 2);
+    if (count == 2) {
+        CHECK(calls[0].kind == RT_CALL_DRAW_INDEX_OFFSET && calls[0].u.draw_index.first == 136);
+        CHECK(calls[0].u.draw_index.count == 60 && calls[0].u.draw_index.has_packet_fields == 0);
+        CHECK(calls[0].u.draw_index.header == 0 && calls[0].u.draw_index.max_size == 0 && calls[0].u.draw_index.initiator == 0);
+        CHECK(calls[1].kind == RT_CALL_DRAW_INDEX_OFFSET && calls[1].u.draw_index.has_packet_fields == 1);
+        CHECK(calls[1].u.draw_index.header == 0 && calls[1].u.draw_index.max_size == 2);
+        CHECK(calls[1].u.draw_index.first == 136 && calls[1].u.draw_index.count == 60);
+    }
+    rt_render_forget();
+}
+
 int main(void)
 {
     decoding();
+    index_state();
+    indexed_draws();
     registers_and_instances();
     shader_blocks();
     user_data();
