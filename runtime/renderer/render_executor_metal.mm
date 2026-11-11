@@ -28,6 +28,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "metal_rectangles.h"
 
 enum { MAX_SHADERS = 256, MAX_PIPELINES = 256, MAX_TARGETS = 64, MAX_DIMENSION = 4096,
        MAX_IMAGES = 64, MAX_SAMPLERS = 64, USER_BYTES = GCN_USER_SGPR_MAX * 4, GCN_WAVE_LANES = 64, MAX_COMPUTE_GROUPS = 65535, THREAD_ID_XYZ = 2 };
@@ -62,7 +63,8 @@ struct MetalShader {
     unsigned user, output;
     unsigned required_parameters;
     uint32_t user_read;
-    bool vertex, flip_y;
+    bool vertex, flip_y, capture;
+    MetalRectangleShader rectangle;
     std::vector<uint32_t> program, fetch;
     std::vector<gcn_image_binding> images;
     std::vector<gcn_resource_origin> samplers;
@@ -89,7 +91,7 @@ struct MetalTarget {
 struct MetalPipeline {
     id<MTLFunction> vertex, pixel;
     MTLPixelFormat format, depth_format, stencil_format;
-    bool write_color;
+    bool write_color, rasterize;
     id<MTLRenderPipelineState> pipeline;
 };
 struct MetalState {
@@ -192,10 +194,8 @@ static int set_register(MetalState &state, uint32_t address, uint32_t value)
 /* Validate the supported state. A zero colour mask still executes shaders and their writes. */
 static int check_state(const MetalState &state, char *error, size_t size)
 {
-    if (state.primitive_set && state.primitive == DI_PT_RECTLIST)
-        return failed(error, size, "rectangle lists require a geometry expansion profile, which Metal does not implement");
-    if (state.primitive_set && state.primitive != DI_PT_TRILIST)
-        return failed(error, size, "primitive type %u: only triangle lists are drawn yet", state.primitive);
+    if (state.primitive_set && state.primitive != DI_PT_TRILIST && state.primitive != DI_PT_RECTLIST)
+        return failed(error, size, "primitive type %u: only triangle and rectangle lists are drawn yet", state.primitive);
     if (state.blend_set && (state.blend & BLEND_ENABLE)) return failed(error, size, "blending is not drawn yet");
     if (state.color_control_set) {
         const uint32_t mode = (state.color_control & COLOR_MODE_MASK) >> COLOR_MODE_SHIFT;
@@ -373,9 +373,9 @@ static void store_target(rt_executor *x, const MetalTarget &target)
 }
 
 /* All stages use the same pointer ABI, push-constant binding and safe MSL math. */
-static id<MTLFunction> compile_msl(rt_executor *x, spirv_cross::CompilerMSL &compiler,
+static id<MTLFunction> compile_msl(rt_executor *x, MetalCompiler &compiler,
                                   spv::ExecutionModel stage, bool flip_y, char *error, size_t error_size,
-                                  const MetalResourceBindings *resources = nullptr)
+                                  const MetalResourceBindings *resources = nullptr, MetalRectangleShader *rectangle = nullptr)
 {
     auto options = compiler.get_msl_options(); options.set_msl_version(2, 3); options.texture_1D_as_2D = true;
     compiler.set_msl_options(options);
@@ -398,7 +398,9 @@ static id<MTLFunction> compile_msl(rt_executor *x, spirv_cross::CompilerMSL &com
     const auto entries = compiler.get_entry_points_and_stages();
     if (entries.size() != 1 || entries[0].execution_model != stage)
         return failed(error, error_size, "translated shader entry point does not match its stage"), nil;
-    const std::string source = compiler.compile();
+    if (rectangle) rectangle_capture_options(compiler);
+    std::string source = compiler.compile();
+    if (rectangle) source += rectangle_raster_source(compiler,flip_y,*rectangle);
     const std::string entry = compiler.get_cleansed_entry_point_name(entries[0].name, stage);
     MTLCompileOptions *metal_options = [MTLCompileOptions new];
     metal_options.languageVersion = MTLLanguageVersion2_3;
@@ -410,6 +412,10 @@ static id<MTLFunction> compile_msl(rt_executor *x, spirv_cross::CompilerMSL &com
     if (!library) return failed(error, error_size, "MSL compilation: %s", failure.localizedDescription.UTF8String), nil;
     id<MTLFunction> function = [library newFunctionWithName:[NSString stringWithUTF8String:entry.c_str()]];
     if (!function) return failed(error, error_size, "compiled MSL entry point is missing"), nil;
+    if (rectangle) {
+        rectangle->raster = [library newFunctionWithName:@"pb_rectangle_raster"];
+        if (!rectangle->raster) return failed(error,error_size,"rectangle raster entry point is missing"), nil;
+    }
     return function;
 }
 
@@ -677,19 +683,21 @@ static int pixel_resources(rt_executor *x, const MetalState &state, MetalPixelRe
 
 static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, unsigned user, unsigned output,
                                  unsigned parameter_capacity, bool flip_y, const uint32_t *data, uint32_t written,
-                                 const MetalPixelResources *pixel, uint32_t &user_read, char *error, size_t error_size)
+                                 const MetalPixelResources *pixel, uint32_t &user_read, char *error, size_t error_size,
+                                 MetalRectangleShader *rectangle = nullptr)
 {
     MetalProgram program, callee; uint32_t target_read = 0;
     if (program_view(x, code, false, program, error, error_size) ||
         (vertex && vertex_callee(x, program, user, data, written, callee, target_read, error, error_size))) return nil;
     for (const auto &shader : x->shaders)
-        if (shader.code == code && shader.vertex == vertex && shader.user == user && shader.output == output && shader.flip_y == flip_y &&
+        if (shader.code == code && shader.vertex == vertex && shader.user == user && shader.output == output && shader.flip_y == flip_y && shader.capture == (rectangle != nullptr) &&
             shader.callee == callee.address && shader.program.size() == program.dwords &&
             std::equal(shader.program.begin(), shader.program.end(), program.words) && shader.fetch.size() == callee.dwords &&
             (!callee.dwords || std::equal(shader.fetch.begin(), shader.fetch.end(), callee.words)) && same_pixel_resources(shader,pixel)) {
             if (shader.required_parameters > parameter_capacity)
                 return failed(error, error_size, "%s allocation is smaller than the shader interface", vertex ? "vertex parameter" : "pixel interpolant"), nil;
             user_read = shader.user_read;
+            if (rectangle) *rectangle = shader.rectangle;
             return shader.function;
         }
     if (x->shaders.size() + x->compute_pipelines.size() >= MAX_SHADERS) return failed(error, error_size, "shader cache is full"), nil;
@@ -716,7 +724,7 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
     user_read |= target_read;
     std::unique_ptr<uint32_t, decltype(&std::free)> owned(spirv, &std::free);
     try {
-        spirv_cross::CompilerMSL compiler(spirv, count);
+        MetalCompiler compiler(spirv, count);
         /* Fragment image_sample gradients use native 2x2 quad broadcasts. Whole-quad mask
            expansion also writes wave-wide SCC; its GCN-wave behavior is still outside this profile. */
         for (size_t at = 5; at < count;) {
@@ -747,11 +755,11 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
                 (!compiler.has_decoration(color.id, spv::DecorationLocation) || compiler.get_decoration(color.id, spv::DecorationLocation) != 0))
                 return failed(error, error_size, "pixel outputs beyond target 0 are not modeled"), nil;
         id<MTLFunction> function = compile_msl(x, compiler,
-            vertex ? spv::ExecutionModelVertex : spv::ExecutionModelFragment, flip_y, error, error_size, pixel);
+            vertex ? spv::ExecutionModelVertex : spv::ExecutionModelFragment, flip_y, error, error_size, pixel, rectangle);
         if (!function) return nil;
         std::vector<uint32_t> fetch;
         if (callee.dwords) fetch.assign(callee.words, callee.words + callee.dwords);
-        x->shaders.push_back({code, callee.address, user, output, required_parameters, user_read, vertex, flip_y,
+        x->shaders.push_back({code, callee.address, user, output, required_parameters, user_read, vertex, flip_y, rectangle != nullptr, rectangle ? *rectangle : MetalRectangleShader{},
             std::vector<uint32_t>(program.words, program.words + program.dwords), std::move(fetch),
             pixel ? std::vector<gcn_image_binding>(pixel->images,pixel->images + pixel->image_count) : std::vector<gcn_image_binding>{},
             pixel ? std::vector<gcn_resource_origin>(pixel->samplers,pixel->samplers + pixel->sampler_count) : std::vector<gcn_resource_origin>{},function});
@@ -761,22 +769,22 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
 
 static id<MTLRenderPipelineState> pipeline_for(rt_executor *x, id<MTLFunction> vertex, id<MTLFunction> pixel,
                                              MTLPixelFormat format, MTLPixelFormat depth_format, MTLPixelFormat stencil_format,
-                                             bool write_color, char *error, size_t size)
+                                             bool write_color, char *error, size_t size, bool rasterize = true)
 {
     for (const auto &entry : x->pipelines)
         if (entry.vertex == vertex && entry.pixel == pixel && entry.format == format && entry.depth_format == depth_format &&
-            entry.stencil_format == stencil_format && entry.write_color == write_color)
+            entry.stencil_format == stencil_format && entry.write_color == write_color && entry.rasterize == rasterize)
             return entry.pipeline;
     if (x->pipelines.size() == MAX_PIPELINES) return failed(error, size, "draw pipeline cache is full"), nil;
     NSError *failure = nil;
     MTLRenderPipelineDescriptor *description = [MTLRenderPipelineDescriptor new];
-    description.vertexFunction = vertex; description.fragmentFunction = pixel;
+    description.vertexFunction = vertex; description.fragmentFunction = pixel; description.rasterizationEnabled = rasterize;
     description.colorAttachments[0].pixelFormat = format;
     description.depthAttachmentPixelFormat = depth_format; description.stencilAttachmentPixelFormat = stencil_format;
     description.colorAttachments[0].writeMask = write_color ? MTLColorWriteMaskAll : MTLColorWriteMaskNone;
     id<MTLRenderPipelineState> pipeline = [x->device newRenderPipelineStateWithDescriptor:description error:&failure];
     if (!pipeline) return failed(error, size, "Metal draw pipeline: %s", failure.localizedDescription.UTF8String), nil;
-    x->pipelines.push_back({vertex, pixel, format, depth_format, stencil_format, write_color, pipeline});
+    x->pipelines.push_back({vertex, pixel, format, depth_format, stencil_format, write_color, rasterize, pipeline});
     return pipeline;
 }
 
@@ -1116,7 +1124,7 @@ static id<MTLComputePipelineState> compute_pipeline_for(rt_executor *x, const rt
         return failed(error, size, "compute shader translation: %s", reason), nil;
     std::unique_ptr<uint32_t, decltype(&std::free)> owned(spirv, &std::free);
     if (check_compute_subgroups(spirv, count, error, size)) return nil;
-    spirv_cross::CompilerMSL compiler(spirv, count);
+    MetalCompiler compiler(spirv, count);
     id<MTLFunction> function = compile_msl(x, compiler, spv::ExecutionModelGLCompute, false, error, size, &resources);
     if (!function) return nil;
     NSError *failure = nil;
@@ -1178,9 +1186,64 @@ static int dispatch_compute(rt_executor *x, const MetalState &state, const uint3
     return shader_runtime_stop(x, error, size);
 }
 
+/* Snapshot source IDs before the original VS can write guest memory. Capture by
+   source vertex ID, preserving the native indexed invocation/cache behavior. The
+   second pass only reads outputs; it never re-executes original shader effects. */
+struct MetalRectangleDraw {
+    id<MTLBuffer> outputs = nil, indices = nil;
+};
+static int capture_rectangle(rt_executor *x, const MetalState &state, uint32_t count, const MetalIndices *indices,
+                             id<MTLFunction> vertex, size_t stride, MetalRectangleDraw &out, char *error, size_t size)
+{
+    const uint64_t index_bytes = std::max<uint64_t>(count,1) * sizeof(uint32_t);
+    if (index_bytes > x->device.maxBufferLength) return failed(error,size,"rectangle source index snapshot exceeds the Metal buffer limit");
+    out.indices = [x->device newBufferWithLength:static_cast<NSUInteger>(index_bytes) options:MTLResourceStorageModeShared];
+    if (!out.indices) return failed(error,size,"rectangle source index allocation failed");
+    auto *ids = static_cast<uint32_t *>(out.indices.contents);
+    uint64_t span = 1;
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t id = i;
+        if (indices) {
+            const size_t width = indices->type == MTLIndexTypeUInt16 ? 2 : 4;
+            id = 0; std::memcpy(&id,static_cast<const uint8_t *>(x->view) + indices->offset + size_t(i)*width,width);
+        }
+        ids[i] = id; span = std::max(span,uint64_t(id)+1);
+    }
+    if (!stride || span > x->device.maxBufferLength / stride)
+        return failed(error,size,"rectangle captured vertex span exceeds the Metal buffer limit");
+    out.outputs = [x->device newBufferWithLength:static_cast<NSUInteger>(span * stride) options:MTLResourceStorageModeShared];
+    if (!out.outputs) return failed(error,size,"rectangle vertex capture allocation failed");
+    id<MTLRenderPipelineState> pipeline = pipeline_for(x,vertex,nil,MTLPixelFormatInvalid,MTLPixelFormatInvalid,
+        MTLPixelFormatInvalid,false,error,size,false);
+    if (!pipeline) return -1;
+    auto pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.renderTargetWidth = pass.renderTargetHeight = 1; pass.defaultRasterSampleCount = 1;
+    auto command = [x->queue commandBuffer]; auto encoder = [command renderCommandEncoderWithDescriptor:pass];
+    if (!command || !encoder) return failed(error,size,"rectangle capture encoder allocation failed");
+    /* The pinned capture ABI uses this first word only for instancing; the modeled
+       profile has one instance. Sparse IDs still require the full span above. */
+    const uint32_t indirect[4] = {count,1,0,0};
+    *static_cast<volatile uint32_t *>(x->stop.contents) = 0;
+    [encoder setRenderPipelineState:pipeline];
+    [encoder setVertexBytes:state.user length:sizeof state.user atIndex:0];
+    [encoder setVertexBuffer:out.outputs offset:0 atIndex:1];
+    [encoder setVertexBytes:indirect length:sizeof indirect atIndex:2];
+    [encoder useResource:x->memory usage:MTLResourceUsageRead | MTLResourceUsageWrite stages:MTLRenderStageVertex];
+    [encoder useResource:x->stop usage:MTLResourceUsageWrite stages:MTLRenderStageVertex];
+    if (indices) [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle indexCount:count indexType:MTLIndexTypeUInt32
+        indexBuffer:out.indices indexBufferOffset:0];
+    else [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:count];
+    [encoder endEncoding];
+    if (complete_commands(x,command,error,size)) return -1;
+    return shader_runtime_stop(x,error,size);
+}
+
 static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *error, size_t size,
                  const MetalIndices *indices = nullptr)
 {
+    const bool rectangle = state.primitive_set && state.primitive == DI_PT_RECTLIST;
+    if (rectangle && (count % 3 || count > UINT32_MAX / 2))
+        return failed(error,size,"rectangle lists require complete triples and a bounded expanded count");
     if (!state.color_enabled && !(state.depth_set && (state.depth & (Z_ENABLE | STENCIL_ENABLE | 8u))))
         return failed(error,size,"a draw has no color target or depth/stencil attachment");
     for (unsigned slot = 1; slot < RT_COLOR_TARGETS; ++slot)
@@ -1224,20 +1287,23 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     if (screen_scissor(state,width,height,scissor,error,size)) return -1;
     MetalPixelResources resources;
     if (state.pixel.code && pixel_resources(x,state,resources,error,size)) return -1;
+    MetalRectangleShader rectangle_shader;
     uint32_t vertex_read = 0, pixel_read = 0;
     id<MTLFunction> vertex = shader_for(x, true, state.vertex.code, state.vertex.user_sgprs,
                                       state.vertex.output_control, state.vertex.parameter_count, state.scale[1] > 0,
-                                      state.user[0], state.user_set[0], nullptr, vertex_read, error, size);
+                                      state.user[0], state.user_set[0], nullptr, vertex_read, error, size, rectangle ? &rectangle_shader : nullptr);
     if (!vertex) return -1;
     id<MTLFunction> pixel = state.pixel.code ? shader_for(x, false, state.pixel.code, state.pixel.user_sgprs, 0,
                                              state.pixel.interpolated, false, state.user[1], state.user_set[1], &resources, pixel_read, error, size) : nil;
     if (state.pixel.code && !pixel) return -1;
     if (check_user_data("vertex", vertex_read, state.user_set[0], error, size) ||
         check_user_data("pixel", pixel_read, state.user_set[1], error, size)) return -1;
-    id<MTLRenderPipelineState> pipeline = pipeline_for(x,vertex,pixel,target ? target->format : MTLPixelFormatInvalid,
+    id<MTLRenderPipelineState> pipeline = pipeline_for(x,rectangle ? rectangle_shader.raster : vertex,pixel,target ? target->format : MTLPixelFormatInvalid,
         depth.z.texture ? depth.z.texture.pixelFormat : MTLPixelFormatInvalid,
         depth.stencil.texture ? depth.stencil.texture.pixelFormat : MTLPixelFormatInvalid,write_color,error,size);
     if (!pipeline) return -1;
+    MetalRectangleDraw captured;
+    if (rectangle && capture_rectangle(x,state,count,indices,vertex,rectangle_shader.stride,captured,error,size)) return -1;
     if (target) load_target(x,*target);
     load_depth_plane(x,depth.z); load_depth_plane(x,depth.stencil);
     MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -1274,11 +1340,16 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     [encoder setScissorRect:scissor];
     [encoder setVertexBytes:state.user length:sizeof state.user atIndex:0];
     [encoder setFragmentBytes:state.user length:sizeof state.user atIndex:0];
+    if (rectangle) {
+        [encoder setVertexBuffer:captured.outputs offset:0 atIndex:1];
+        [encoder setVertexBuffer:captured.indices offset:0 atIndex:2];
+    }
     for (unsigned i = 0; i < resources.image_count; ++i) [encoder setFragmentTexture:resources.textures[i] atIndex:i];
     for (unsigned i = 0; i < resources.sampler_count; ++i) [encoder setFragmentSamplerState:resources.states[i] atIndex:i];
     [encoder useResource:x->memory usage:MTLResourceUsageRead | MTLResourceUsageWrite stages:MTLRenderStageVertex | MTLRenderStageFragment];
     [encoder useResource:x->stop usage:MTLResourceUsageWrite stages:MTLRenderStageVertex | MTLRenderStageFragment];
-    if (indices)
+    if (rectangle) [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:count * 2];
+    else if (indices)
         [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle indexCount:count indexType:indices->type
             indexBuffer:x->memory indexBufferOffset:indices->offset];
     else [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:count];
