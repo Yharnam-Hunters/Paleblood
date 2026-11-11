@@ -264,8 +264,11 @@ Compute images use the common descriptor origins, typed translation and canonica
 backend binds up to sixteen single-level 1D/2D storage images or arrays. R8/RG8/RGBA8 UNORM,
 R32 FLOAT/UINT/SINT, RG32/RGBA32 FLOAT and RGBA8 UINT support separate loads/stores; native
 read/write access uses the device's supported [read/write texture tier](https://developer.apple.com/documentation/metal/mtldevice/readwritetexturesupport).
-RG8 UNORM and RG32 FLOAT require separate accesses. Present components keep identity selectors;
-unused selectors do not affect storage. Nonzero mips, BC/sRGB storage, unsupported dimensions,
+RG8 UNORM and RG32 FLOAT require separate accesses. Four-component storage images accept
+bijective permutations of their four channel selectors. The common translator maps loads
+forward and stores by the inverse mapping; native views retain physical channel order. The
+compiled image-binding cache includes that mapping. One- and two-component stored channels
+retain their identity-only profile; unused selectors do not affect storage. Nonzero mips, BC/sRGB storage, unsupported dimensions,
 sampling, partial component stores and unsupported formats fail explicitly. Overlapping writable
 bindings must share the same native view; general overlapping-view coherence remains open.
 
@@ -281,6 +284,23 @@ Each compute submission completes before a later dispatch or draw consumes its
 shared buffer and image writes. Completed draw pixels are already published into that pool,
 and the next draw reloads it. These checks do not establish a working game boot
 or character-creation rendering on macOS.
+
+The full-four-component mapping follows the common translator's storage contract. AMD's
+[Kaveri image channel table](https://github.com/ROCm/ROCR-Runtime/blob/d614ea8bbd73a7832c265725117274d13041ff06/src/image/image_lut_kv.cpp)
+programs BGRA and the non-involutive ARGB mapping in the image descriptor. AMD's device-library
+and [LLVM store lowering](https://github.com/llvm/llvm-project/blob/llvmorg-19.1.7/llvm/lib/Target/AMDGPU/SIISelLowering.cpp#L8173)
+pass the original four-component value and descriptor through without a software channel reorder. This supports inverse stores as a driver/compiler inference;
+it is not a captured console truth table. Constant, reserved and repeated selectors remain
+refused in this four-component profile. Per-slice CPU transfers use zero `bytesPerImage` for
+these non-3D textures, following [Metal's transfer contract](https://developer.apple.com/documentation/metal/mtltexture/replace(region:mipmaplevel:slice:withbytes:bytesperrow:bytesperimage:)). Partial stores and arbitrary overlapping-view coherence
+remain outside the existing storage profile.
+
+`test_metal_permutations` checks all 24 full-four-component permutations in RGBA8 UNORM,
+RGBA8 UINT and RGBA32 FLOAT, across the existing 1D/2D and array shapes. Independent literal
+forward and inverse tables check logical loads, raw canonical stores and untouched padding.
+Dedicated same-program/address transitions include a non-involutive four-cycle and its inverse;
+CPU changes and later raw GPU buffer observations test cached reloads and publication. Every
+owned image-store instruction explicitly sets the ISA's required `unorm` flag.
 
 `test_metal_storage` exercises owned LLVM-assembled programs across all nine uncompressed
 formats, four dimension/array types and six tiling modes. It checks typed results, preserved raw
