@@ -205,7 +205,7 @@ used only by texel loads do not impose that restriction. The common translator s
 gradients for `image_sample`; the native unmipmapped sampler selects the view's first level. Nondefault minimum LOD, bias or reserved
 mip controls with a multi-level sampled view fail explicitly until their semantics are modeled;
 single-level views retain the common profile's irrelevant-field behavior. Pixel image stores
-and compute storage-image bindings remain separate unsupported paths.
+remain unsupported.
 
 `test_metal_images` uses one covered fragment to store raw results, independent of framebuffer
 quantization. Owned LLVM-assembled programs exercise every mapped format, dimensions, tiling,
@@ -235,7 +235,7 @@ This implementation copies through reusable CPU rows at each draw. It establishe
 memory behavior without a GPU tiling-copy or batching optimization; no full-game performance
 result is claimed.
 
-## Buffer compute
+## Compute
 
 The executor also accepts compute bindings, compute user data and ordered dispatches.
 It uses the common GFX7 compute translator and the same SPIRV-Cross/MSL compiler,
@@ -245,7 +245,7 @@ values while retaining compiled pipelines. The cache includes the complete progr
 bytes, local dimensions, user count and X workgroup-ID layout; changing code at an
 existing address does not reuse its previous pipeline.
 
-This is a lane-local buffer profile. All three thread-ID inputs must be explicitly
+This is a lane-local compute profile. All three thread-ID inputs must be explicitly
 enabled, and local XYZ dimensions must be positive, fit the device/pipeline limits
 and contain at most one logical 64-lane GCN wave. The profile does not assume that
 Metal has a native 64-lane SIMD group. Actual subgroup operations, including
@@ -255,15 +255,39 @@ capability declarations alone do not cause rejection. Lane-local VCC half writes
 retain the logical lane index from the common translator.
 
 The optional X workgroup-ID SGPR follows the declared user SGPRs. Y/Z ID SGPRs,
-packed workgroup-size input, compute images and compute samplers remain unsupported. Dispatches
+packed workgroup-size input and compute samplers remain unsupported. Dispatches
 accept 1..65535 X workgroups and one Y/Z workgroup. Compute copied-call user-data
 records must contain 1..8 words within the modeled slots. Required user data must
 have been explicitly written; zero is a valid written value.
 
+Compute images use the common descriptor origins, typed translation and canonical tiling. The
+backend binds up to sixteen single-level 1D/2D storage images or arrays. R8/RG8/RGBA8 UNORM,
+R32 FLOAT/UINT/SINT, RG32/RGBA32 FLOAT and RGBA8 UINT support separate loads/stores; native
+read/write access uses the device's supported [read/write texture tier](https://developer.apple.com/documentation/metal/mtldevice/readwritetexturesupport).
+RG8 UNORM and RG32 FLOAT require separate accesses. Present components keep identity selectors;
+unused selectors do not affect storage. Nonzero mips, BC/sRGB storage, unsupported dimensions,
+sampling, partial component stores and unsupported formats fail explicitly. Overlapping writable
+bindings must share the same native view; general overlapping-view coherence remains open.
+
+Descriptors and texels are resolved before every dispatch, including pipeline-cache hits. Cached
+translations also match image dimensions, array/type/component layout and origin. Completed stores
+publish exposed slices back to canonical guest bytes before reporting a later shader stop. Current
+bytes in unexposed slices and layout padding survive publication. Read-only images do not publish
+stale texels over buffer writes. Pixel and storage-image views have separate usage-aware cache
+entries and exchange data through the pool. This provides ordered dispatch/draw/CPU visibility;
+it does not establish arbitrary image/buffer alias coherence inside one dispatch.
+
 Each compute submission completes before a later dispatch or draw consumes its
-shared buffer writes. Completed draw pixels are already published into that pool,
+shared buffer and image writes. Completed draw pixels are already published into that pool,
 and the next draw reloads it. These checks do not establish a working game boot
 or character-creation rendering on macOS.
+
+`test_metal_storage` exercises owned LLVM-assembled programs across all nine uncompressed
+formats, four dimension/array types and six tiling modes. It checks typed results, preserved raw
+backing bytes and padding, view slices, read/write limits, live descriptor/cache changes, loaded
+48-bit pointers, complete descriptor/pool ends, all sixteen image slots, rejection of a seventeenth, and runtime-stop publication.
+Image tests also consume completed image stores as pixel input and completed draws as compute
+image input. These device tests use synthetic data and do not establish original-game equivalence.
 
 `test_metal_compute` runs owned buffer programs on the actual device. It checks
 partial and 64-invocation groups, multidimensional local IDs, X workgroups, VCC
