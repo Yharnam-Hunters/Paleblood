@@ -118,6 +118,7 @@ typedef enum {
     RT_CALL_COLOR_TARGET, RT_CALL_VIEWPORT, RT_CALL_DRAW_AUTO, RT_CALL_VERTEX_SHADER, RT_CALL_PIXEL_SHADER,
     RT_CALL_USER_DATA, RT_CALL_REGISTER, RT_CALL_INSTANCES, RT_CALL_COMPUTE_SHADER, RT_CALL_DISPATCH,
     RT_CALL_INDEX_BASE, RT_CALL_INDEX_SIZE, RT_CALL_INDEX_TYPE, RT_CALL_DRAW_INDEX_OFFSET,
+    RT_CALL_DRAW_INDEXED,
 } rt_render_call_kind;
 
 /* Register ranges a register call may set, as AMD numbers them (dword addresses, gfx_7_2_d.h):
@@ -161,7 +162,7 @@ typedef struct {
             uint32_t groups[3];      /* DISPATCH_DIRECT: workgroups in x, y and z */
         } dispatch;
         struct {
-            uint64_t address;        /* INDEX_BASE: the index buffer's address (40 bits, even) */
+            uint64_t address;        /* unmasked byte address from INDEX_BASE's low/high DWORDs */
         } index_base;
         struct {
             uint32_t count;          /* INDEX_BUFFER_SIZE: the index buffer's size in indices */
@@ -171,7 +172,14 @@ typedef struct {
         } index_type;
         struct {
             uint32_t first, count;   /* DRAW_INDEX_OFFSET_2: count indices from the first, in the index buffer */
+            uint32_t has_packet_fields; /* 0: legacy logical call; 1: final emitted packet below */
+            uint32_t header, max_size, initiator;
         } draw_index;
+        struct {
+            uint32_t header, max_size;
+            uint64_t address;
+            uint32_t index_count, initiator;
+        } draw_indexed;             /* DRAW_INDEX_2: all final emitted payload fields */
     } u;
 } rt_render_call;
 
@@ -204,6 +212,15 @@ int rt_render_record_index_size(uint64_t buffer, uint32_t offset, uint32_t count
 int rt_render_record_index_type(uint64_t buffer, uint32_t offset, uint32_t type, char *error, size_t error_size);
 /* An indexed draw of count indices from the first (DRAW_INDEX_OFFSET_2). */
 int rt_render_record_draw_index_offset(uint64_t buffer, uint32_t offset, uint32_t first, uint32_t count, char *error, size_t error_size);
+/* The same offset draw with its final packet fields. These raw values are not normalized:
+   the executor validates header/predicate, MAX_SIZE and DRAW_INITIATOR. Legacy calls above
+   have no packet fields and retain their INDEX_BUFFER_SIZE bound. */
+int rt_render_record_draw_index_offset_packet(uint64_t buffer, uint32_t offset, uint32_t header, uint32_t max_size,
+                                              uint32_t first, uint32_t count, uint32_t initiator,
+                                              char *error, size_t error_size);
+/* DRAW_INDEX_2 has its own full emitted address rather than an INDEX_BASE-relative offset. */
+int rt_render_record_draw_indexed(uint64_t buffer, uint32_t offset, uint32_t header, uint32_t max_size, uint64_t address,
+                                  uint32_t count, uint32_t initiator, char *error, size_t error_size);
 /* The instance count later draws use (the NUM_INSTANCES packet); at least 1. */
 int rt_render_record_instances(uint64_t buffer, uint32_t offset, uint32_t count, char *error, size_t error_size);
 

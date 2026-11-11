@@ -362,12 +362,13 @@ static uint32_t float_source(translator *t, const vector_operands *o, unsigned i
     return f;
 }
 
+/* A float result with VOP3's output modifier (OMOD: 1 multiplies by 2, 2 by 4, 3 by 0.5) and then its
+   clamp to [0, 1] applied, the order the Sea Islands manual and LLVM's AMDGPU backend give them. */
 static void write_float(translator *t, const vector_operands *o, uint32_t f, const gcn_instruction *ins)
 {
-    if (o->omod) {
-        fail(t, "%s: the output modifier is not supported yet", ins->name);
-        return;
-    }
+    (void)ins;
+    static const float omod_factor[4] = {1.0f, 2.0f, 4.0f, 0.5f};
+    if (o->omod) f = value(t, SPV_OP_F_MUL, t_float(t), 2, f, konst_float(t, omod_factor[o->omod]));
     if (o->clamp) f = glsl(t, t_float(t), SPV_GLSL_F_CLAMP, f, konst_float(t, 0.0f), konst_float(t, 1.0f), 3);
     write_vgpr(t, o->dst, as_bits(t, f));
 }
@@ -1119,12 +1120,13 @@ static void scalar_memory(translator *t, const uint32_t *w, const gcn_instructio
         fail(t, "%s (%s) is not translated yet", name, gcn_encoding_name(ins->encoding));
         return;
     }
-    if (!immediate && offset_field == OPERAND_LITERAL) {
-        fail(t, "%s: a literal offset (its unit is not established here)", name);
-        return;
-    }
-    /* An immediate offset counts dwords; an SGPR offset holds bytes. */
-    const uint32_t byte_offset = immediate ? konst(t, offset_field * BYTES_PER_DWORD) : load(t, t_uint(t), sgpr(t, offset_field));
+    /* An immediate offset counts dwords, as does a literal one (OFFSET 255 with IMM 0: the 32-bit word
+       after the instruction; the unit LLVM's AMDGPU backend gives for Sea Islands, and shadPS4 reads it
+       so); an SGPR offset holds bytes. */
+    const int literal = !immediate && offset_field == OPERAND_LITERAL;
+    const uint32_t byte_offset = immediate ? konst(t, offset_field * BYTES_PER_DWORD)
+                                 : literal ? konst(t, w[1] * BYTES_PER_DWORD)
+                                           : load(t, t_uint(t), sgpr(t, offset_field));
     const int descriptor = !strncmp(name, "s_buffer_load", strlen("s_buffer_load"));
     const uint32_t base = address_in(t, base_sgpr, descriptor ? VSHARP_BASE_HIGH_MASK : POINTER_HIGH_MASK);
     if (!descriptor) {
@@ -1402,7 +1404,9 @@ static void checked_store_dword(translator *t, const buffer_range *r, uint32_t b
      with packHalf2x16), two to a dword, x first;
    - a store to 10_11_11 float with its three components in place: unsigned 11-, 11- and 10-bit floats
      (x in bits 0-10, y 11-21, z 22-31, as shadPS4's PackUfloat10_11_11 lays them out), rounded to
-     nearest even, negative numbers 0.
+     nearest even, negative numbers 0;
+   - a descriptor of DATA_FORMAT 0 (invalid, as an unbound or null buffer has): loads read 0 in every
+     component and stores write nothing, as shadPS4's lower_buffer_format_to_raw.cpp treats it.
    Anything else writes a run-time stop code (runtime/gcn_spirv.h) and touches no memory. */
 static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t components, int load_op, uint32_t base, uint32_t offset,
                                      const buffer_range *range, unsigned vdata)
@@ -1480,8 +1484,11 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
                                                              equals(t, num_format, konst(t, NFMT_FLOAT))),
                                                      in_place3)
                                               : spirv_constant_bool(&t->m, 0);
+    /* DATA_FORMAT 0 (invalid): loads read 0, stores write nothing */
+    const uint32_t invalid = equals(t, data_format, konst(t, 0));
     /* neither: the stop code, from any active lane */
-    const uint32_t done = either(t, either(t, either(t, either(t, raw, packed_store), packed_load), half_store), float_10_11_11_store);
+    const uint32_t done = either(t, either(t, either(t, either(t, either(t, raw, packed_store), packed_load), half_store), float_10_11_11_store),
+                                 invalid);
     const uint32_t stop = begin_if(t, both(t, exec_bit(t), value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, done)));
     uint32_t code = value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, data_format, konst(t, 8)),
                           value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, num_format, konst(t, 4)));
@@ -1490,6 +1497,11 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
     code = value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, code, value(t, SPV_OP_SELECT, t_uint(t), 3, identity, konst(t, 0), konst(t, 8)));
     runtime_stop(t, code);
     end_if(t, stop);
+    if (load_op) {
+        const uint32_t invalid_merge = begin_if(t, both(t, exec_bit(t), invalid));
+        for (uint32_t c = 0; c < components; c++) write_vgpr(t, vdata + c, konst(t, 0));
+        end_if(t, invalid_merge);
+    }
 
     const uint32_t raw_merge = begin_if(t, both(t, exec_bit(t), raw));
     if (load_op) {
@@ -1964,7 +1976,7 @@ static int branches(const uint32_t *w, const gcn_instruction *ins, size_t at, lo
 
 /* Where the descriptor that the instruction at dword `at` reads from s[first : first + width - 1]
    comes from (runtime/gcn_spirv.h): the user data when no instruction writes those SGPRs before it
-   runs, or memory when the last write is an s_load covering those SGPRs (exactly, or as part of a wider load), at an immediate offset
+   runs, or memory when the last write is an s_load covering those SGPRs (exactly, or as part of a wider load), at an immediate or literal offset
    from a pointer pair no instruction before it writes. With branches in the program, the load is
    followed only when every path to the use passes it: no branch lands between it and the use (code
    runs forward between branches, so a path that skipped the load would have to land there), every
@@ -1972,7 +1984,10 @@ static int branches(const uint32_t *w, const gcn_instruction *ins, size_t at, lo
    the use writes those SGPRs, and no instruction before the load writes the pointer pair, nor any
    instruction at all when a branch goes back to the load or before it (so a loop that runs the load
    again loads the same descriptor; without one, code after the load may reuse the pointer's SGPRs, as
-   the game's pixel shaders do once their samples are done). Writes before the load do not matter: it replaces them
+   the game's pixel shaders do once their samples are done). The user data's descriptor holds at a use
+   that no write comes before, whatever branches run, unless one goes back to the use after a later
+   write (the game's pixel shaders reuse a sampler's SGPRs after their last sample). Writes before the
+   load do not matter: it replaces them
    (the game's shaders keep a compare's mask in those SGPRs before loading the descriptor). A
    branch that skips the load also skips the use, as the game's guarded samples do (an
    s_cbranch_execz around both). 0, or -1 with the reason. */
@@ -2002,12 +2017,12 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
         long target;
         if (branches(code + p, &ins, p, &target) && (p < at || target < 0 || (size_t)target <= at)) {
             const int back_to_use = (size_t)target <= at && (size_t)target <= p && p >= at;
-            if (target < 0 || writer < 0 || (written_after_use && back_to_use)) {
+            if (target < 0 || (written_after_use && back_to_use)) {
                 snprintf(error, error_size, "the descriptor in s[%u:%u] is written by the program, and a branch (%s at dword %zu) comes "
                          "before its use at dword %zu: not done yet", first, first + width - 1, ins.name, p, at);
                 return -1;
             }
-            if (target > writer && (size_t)target <= at) {
+            if (writer >= 0 && target > writer && (size_t)target <= at) {
                 snprintf(error, error_size, "the descriptor in s[%u:%u] is loaded at dword %ld, and a branch (%s at dword %zu) lands at "
                          "dword %ld, between the load and its use at dword %zu: not done yet", first, first + width - 1, writer, ins.name,
                          p, target, at);
@@ -2023,9 +2038,9 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
     gcn_decode(w, program - (size_t)writer, &ins);
     unsigned dst = 0;
     const unsigned n = sgprs_written(w, &ins, &dst);
-    const int immediate = (w[0] >> 8) & 1;
+    const int immediate = (w[0] >> 8) & 1, literal = !immediate && (w[0] & 0xff) == OPERAND_LITERAL;
     /* the load may bring more SGPRs than the descriptor (an s_load_dwordx16 of two image descriptors) */
-    if (ins.encoding != GCN_SMRD || strncmp(ins.name, "s_load_dword", 12) || dst > first || first + width > dst + n || !immediate) {
+    if (ins.encoding != GCN_SMRD || strncmp(ins.name, "s_load_dword", 12) || dst > first || first + width > dst + n || (!immediate && !literal)) {
         snprintf(error, error_size, "the descriptor in s[%u:%u] is written by the program (%s at dword %ld), not loaded from a "
                  "user-data pointer: not done yet", first, first + width - 1, ins.name, writer);
         return -1;
@@ -2046,7 +2061,7 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
         p += before.dwords;
     }
     *origin = (gcn_resource_origin){.from_memory = 1, .sgpr = first, .pointer_sgpr = pointer,
-                                    .offset = ((w[0] & 0xff) + (first - dst)) * BYTES_PER_DWORD};
+                                    .offset = ((literal ? w[1] : w[0] & 0xff) + (first - dst)) * BYTES_PER_DWORD};
     return 0;
 }
 

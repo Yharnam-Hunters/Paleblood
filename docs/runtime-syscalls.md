@@ -149,19 +149,18 @@ describes retrieving a stored attribute mask, success/error returns and invalid 
 its API includes a size argument absent at this target call. Its errors and CPU-set layout
 cannot simply be assigned to the SCE interface.
 
-**Still required before implementation:** independently establish the main thread's actual
-mask, how a fresh attribute differs from one filled by `scePthreadAttrGet`, the exact output
-write extent, success/error results, and invalid/null attribute or output handling. Host CPU
-availability and a guessed console core count establish none of these. No specific affinity
-implementation is added or registered by this investigation; the import remains unbound.
+**What the runtime answers (maintainer ruling, 2026-11-10).** The console's own mask is still not
+measured. The maintainer ruled that a thread with no mask set by the guest answers **all ones**,
+which is what `scePthreadGetaffinity` already answers. `scePthreadAttrGetaffinity(attr, mask)`
+therefore writes eight bytes:
+- the mask set on the attribute with `scePthreadAttrSetaffinity`, or copied from a thread by
+  `scePthreadAttrGet`, which copies the thread's mask (from its creation attribute or
+  `scePthreadSetaffinity`);
+- otherwise `UINT64_MAX`.
 
-A useful target measurement would record the console/firmware and executable identities, the
-results of attribute initialization and copying from `scePthreadSelf`, the getter's return bits,
-the output bytes with adjacent canaries, and repeated observations without changing affinity.
-Check current claims in [issue #34](https://github.com/Yharnam-Hunters/Paleblood/issues/34) before
-taking implementation work; mentions of the boot blocker are not themselves contributor claims.
-Generic gameplay capture remains separate contributor-owned work, not a reason to synthesize
-the missing affinity observation.
+A variable holding no attribute is `EINVAL`, as for the setter. No variable for the mask stops by
+name. Host CPU availability is not consulted. evill33t's #239 did the groundwork on this call; it
+took its value from the host, which the ruling replaced.
 
 **How the boot gets past it without a value.** These are observations from static analysis of the
 hash-pinned `eboot.elf`, `libc.elf` and `libSceFios2.elf` (Ghidra 12.0.3 with GhidraOrbis, issue
@@ -186,7 +185,9 @@ module holds them, with the ones the file gives (`first_bytes`), and refuses the
 guest code runs if they differ. It then writes each as a five-byte relative jump to a stub in the module's slot. A
 `return` stub leaves every register as the caller had it. A `stop` is reported like an
 unimplemented import: the status names the hook and its caller in `stopped_by_hook`.
-`scePthreadAttrGetaffinity` stays unbound.
+The call itself is implemented (above), but the probe never reaches it while this hook is in
+place, so the count stays zero. Whether to drop the hook and let the probe count the ruled mask is a
+separate decision.
 
 The hook guards calls only. A direct read of `+0xd1c54` that the analysis missed would see 0, not
 a measured count. The offsets fit only the pinned `libc.elf` (`target.sha256`); another build fails
@@ -2138,6 +2139,50 @@ directory, with no buffer, or into fewer than 512 bytes (a directory block: shad
 An entry added or removed between two calls can move the listing by one entry, as on any file
 system that lists by position.
 
+### Directories and removing files
+
+`sceKernelMkdir(path, mode)`, `sceKernelRmdir(path)` and `sceKernelUnlink(path)` are FreeBSD's
+`mkdir(2)`, `rmdir(2)` and `unlink(2)` under their SCE names, 0 or `0x80020000` plus the error
+number. `eboot` and `libSceFios2.elf` import all three from `libkernel` (`symbols/imports.csv`).
+The shapes come from the OpenOrbis homebrew SDK's `libkernel.h` (`int32_t sceKernelMkdir(const
+char *, OrbisKernelMode)`, `OrbisKernelMode` a `uint16_t` like FreeBSD's `mode_t`;
+`int32_t sceKernelRmdir(const char *)`, `int32_t sceKernelUnlink(const char *)`), supporting
+evidence for the shapes only. No call site in the repository shows them yet.
+
+**Under `/data` and a writable mount** the host does the work, and its error is translated:
+- a missing file or directory component is `ENOENT` or `ENOTDIR`, and `mkdir` of an existing
+  name `EEXIST` (the same numbers on FreeBSD and Linux);
+- `rmdir` of a directory with entries is `ENOTEMPTY`, 66 on FreeBSD (Linux's is 39), and of a
+  path whose last component is `.` `EINVAL` (`rmdir(2)`; Linux answers the same);
+- `unlink` of a directory is `EPERM`. FreeBSD's `unlink(2)` page lists both `EISDIR` and `EPERM`
+  for "the named file is a directory"; the kernel settles it: `kern_unlinkat` (stable/9) and
+  `kern_funlinkat` (current) answer `EPERM` ("POSIX"), and turn the lookup's `EINVAL` for a last
+  component `.` into `EPERM` too. Linux answers `EISDIR` for both, which the runtime translates.
+- Any other host error stops by name.
+
+**The mode of `mkdir`.** FreeBSD gives the new directory `(mode & ACCESSPERMS) & ~umask`
+(`kern_mkdirat`, stable/9 and current), so bits above 0777 are dropped. The runtime passes
+`mode & 0777` to the host, as `sceKernelOpen` does for a new file, and the host process's umask
+then applies. Not established: the PS4 process's umask, so the bits a later `sceKernelStat` shows
+are the host's answer, not a console's; and whether the console enforces those bits for the title
+(a folder made without the owner's write and search bits refuses files on the host, which then
+stop by name).
+
+**On a read-only mount** (`/app0`, a save mounted read-only) nothing changes, and the answers follow
+FreeBSD's lookup order (`vfs_lookup.c`, stable/9 and current):
+- a missing component of the path prefix is `ENOENT` or `ENOTDIR` first;
+- `mkdir` of an existing name is `EEXIST` (the read-only check is not made for a name that
+  exists), of a new name `EROFS`;
+- `rmdir` and `unlink` of an existing name, file or directory, are `EROFS`, before `rmdir`'s
+  `ENOTDIR` and `ENOTEMPTY` and `unlink`'s `EPERM` for a directory;
+- a last component `.` is refused by the lookup before that: `rmdir` `EINVAL`, `unlink` `EPERM`.
+
+**Stops by name**, besides the path checks every file call shares (no path, a path outside the
+mounts, a `..` component, a path longer than the runtime's buffer): `rmdir` of a mount point itself
+(`/data`, `/app0`, `/savedataN`). FreeBSD's `rmdir(2)` answers `EBUSY` for the root of a mounted
+file system, but whether `/data` is one on the console is not established, and the host would
+remove the runtime's own folder.
+
 ## The disc map (`sceDiscMapIsRequestOnHDD`, issue #35)
 
 The disc map tells the file library whether part of a file is already on the hard disk or still
@@ -2536,3 +2581,4 @@ metadata.
 - [POSIX `pthread_self`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_self.html) and [`pthread_attr_init`/`pthread_attr_destroy`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_attr_destroy.html)
 - [FreeBSD `pthread_attr(3)`](https://man.freebsd.org/cgi/man.cgi?query=pthread_attr_setdetachstate&sektion=3), [libthr `thr_attr.c`](https://cgit.freebsd.org/src/tree/lib/libthr/thread/thr_attr.c) (`_pthread_attr_setdetachstate`, `_pthread_attr_get_np`), [`thr_create.c`](https://cgit.freebsd.org/src/tree/lib/libthr/thread/thr_create.c) (`_pthread_create`: the default attribute for a null or empty variable) and [`include/pthread.h`](https://cgit.freebsd.org/src/tree/include/pthread.h) (`PTHREAD_CREATE_JOINABLE`, `PTHREAD_CREATE_DETACHED`)
 - [OpenOrbis `include/orbis/_types/pthread.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/_types/pthread.h) - the PS4 homebrew SDK's `ORBIS_PTHREAD_CREATE_*` values, which follow FreeBSD's
+- FreeBSD 9.0 [`mkdir(2)`](https://man.freebsd.org/cgi/man.cgi?query=mkdir&sektion=2&manpath=FreeBSD+9.0-RELEASE), [`rmdir(2)`](https://man.freebsd.org/cgi/man.cgi?query=rmdir&sektion=2&manpath=FreeBSD+9.0-RELEASE), [`unlink(2)`](https://man.freebsd.org/cgi/man.cgi?query=unlink&sektion=2&manpath=FreeBSD+9.0-RELEASE) and [current `unlink(2)`](https://man.freebsd.org/cgi/man.cgi?query=unlink&sektion=2); FreeBSD [`vfs_syscalls.c`](https://cgit.freebsd.org/src/tree/sys/kern/vfs_syscalls.c?h=stable/9) (stable/9 and main: `kern_mkdirat` and its mode, `kern_rmdirat`/`kern_frmdirat`, `kern_unlinkat`/`kern_funlinkat` and `EPERM` for a directory) and [`vfs_lookup.c`](https://cgit.freebsd.org/src/tree/sys/kern/vfs_lookup.c?h=stable/9) (stable/9 and main: the read-only checks and the `.` check, and their order); [OpenOrbis `libkernel.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/libkernel.h) and [`_types/kernel.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/_types/kernel.h) (`OrbisKernelMode`) for the shapes
