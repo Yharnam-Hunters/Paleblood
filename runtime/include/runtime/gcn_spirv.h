@@ -57,7 +57,7 @@ enum {
    (gcn_image_resources lists the descriptors a program uses and where each comes from).
 
    A descriptor comes from the user data (the SGPRs hold it from the start), or from memory: the
-   program loads it with an s_load_dwordx8 at an immediate offset from a pointer in two user-data
+   program loads it with an s_load_dwordx8 (or a wider s_load covering it) at an immediate offset from a pointer in two user-data
    SGPRs, which the caller reads at draw time. One SGPR range can hold different descriptors at
    different MIMG instructions (the game's pixel shaders read a user-data image, then load another
    descriptor over it); each MIMG's own is found from the code before it, when that code runs straight
@@ -83,6 +83,7 @@ typedef struct {
     gcn_image_sample_type type;      /* how its texels read and write: floats (unorm, float, ...) or integers */
     unsigned components;             /* the format's components, 1 to 4 */
     int sampled;                     /* a sampled image (reads only), not a storage image */
+    int cube;                        /* a cube, bound as a 2D array of its faces (dim 2D, arrayed) */
 } gcn_image_binding;
 
 enum { GCN_MAX_IMAGES = 8, GCN_IMAGE_READ = 1, GCN_IMAGE_WRITE = 2, GCN_IMAGE_SAMPLE = 4 /* read through image_sample */ };

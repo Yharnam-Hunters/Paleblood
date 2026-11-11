@@ -24,8 +24,8 @@ provider from the unresolved console kernel syscall behavior.
 
 | Function | Arguments and representation | Publicly documented result and errors | Evidence and open questions for PS4 |
 |---|---|---|---|
-| `getpagesize(void)` | No arguments. Returns the target's page size in bytes. The numeric value is platform-specific. | `getpagesize` is not in current POSIX; portable code is directed to `sysconf(_SC_PAGESIZE)`. Linux and FreeBSD document the byte count; their manuals do not define a general error return for this function. Linux exposes it as a libc interface, not necessarily a dedicated kernel syscall. FreeBSD notes the system page size may differ from the underlying hardware page size. | The import is present twice (`eboot` from `libScePosix`, `libc.elf` from `libkernel`), so both library names are registered against one implementation. The target images bound the value but do not pick one: every `PT_LOAD` of the eight hash-verified ELFs has `p_align` 0x4000 with `p_offset` congruent to `p_vaddr` modulo 0x4000, and the ELF ABI's congruence rule then limits the system page size to a divisor of 16384 (4096, 8192 or 16384); `p_align` is the alignment the image requires, not the page size the system reports. Stock FreeBSD on AMD64 uses 4096, and Sony's open-source page confirms the FreeBSD kernel is used but publishes the upstream sources, not the console's modifications, so no public source names the PS4's own value. The runtime entry is therefore registered with `RT_SYSLIB_UNRESOLVED`, so a boot that reaches it names the call, and it does not count as implemented (`runtime/syslib/kernel.c`). What would settle it: one observed `getpagesize()` or `sysconf(_SC_PAGESIZE)` result on a console, or a guest call site whose page arithmetic shows the granularity the system uses. See the section "getpagesize: observed, inferred, unknown" below; do not hard-code the build host's page size.
-| `getpid(void)` | No arguments. Returns a `pid_t` naming the calling process. | POSIX specifies that it succeeds and has no error return. Linux process IDs are scoped by PID namespaces; other systems have their own process-ID scope and lifecycle rules. | The import is present, but this repository does not establish the guest-visible process ID or its scope. Returning the host PID is not justified by the API contract alone. |
+| `getpagesize(void)` | No arguments. Returns the target's page size in bytes. The numeric value is platform-specific. | `getpagesize` is not in current POSIX; portable code is directed to `sysconf(_SC_PAGESIZE)`. Linux and FreeBSD document the byte count; their manuals do not define a general error return for this function. Linux exposes it as a libc interface, not necessarily a dedicated kernel syscall. FreeBSD notes the system page size may differ from the underlying hardware page size. | The import is present twice (`eboot` from `libScePosix`, `libc.elf` from `libkernel`), and both library names are registered against one implementation that answers **16384**, by the maintainer's ruling of 2026-11-10 (`runtime/syslib/kernel.c`, #528). It is a ruling, not a measurement: the target images bound the value without picking one (every `PT_LOAD` of the eight hash-verified ELFs has `p_align` 0x4000 with `p_offset` congruent to `p_vaddr` modulo 0x4000, so the ELF ABI's congruence rule limits the page size to a divisor of 16384), stock FreeBSD on AMD64 uses 4096, and no public source names the console's own value; every PS4 runtime and port we can cite answers 16 KiB. See "getpagesize: observed, inferred, unknown" below. What would still confirm it: one observed `getpagesize()` or `sysconf(_SC_PAGESIZE)` result on a console. |
+| `getpid(void)` | No arguments. Returns a `pid_t` naming the calling process. | POSIX specifies that it succeeds and has no error return. Linux process IDs are scoped by PID namespaces; other systems have their own process-ID scope and lifecycle rules. | Imported by `libc.elf` from `libkernel`; libunwind passes the result to `sysctl`. The runtime answers a fixed id, **1000**, by the maintainer's ruling of 2026-11-10 (`runtime/syslib/kernel.c`, #528, see "Process and input" below): runs stay reproducible, and the host's process id is not the guest's. The console's own value and its scope are not established. |
 | `clock_gettime(clock_id, tp)` | `clock_id` selects a clock; `tp` points to a `struct timespec`. On the POSIX interface, `tv_sec` is seconds and `tv_nsec` is nanoseconds in `[0, 1,000,000,000)`. The exact target structure layout still needs ABI evidence. | POSIX uses `0` for success and `-1` with `errno` for failure. An unsupported clock ID is an `EINVAL` case. Linux and BSD manuals document additional pointer-error details; use the target contract rather than assuming the host's errno mapping. | The imported wrapper is present. The verified `sceKernelClockGettime` call requests ID `4` (`CLOCK_MONOTONIC`). That is evidence for the SCE entry point only, not proof of the libc wrapper's IDs. Other IDs and exact PS4 error and pointer handling remain unresolved. Unknown IDs must not silently return a fabricated time. |
 | `gettimeofday(tv, tz)` | `tv` points to a `struct timeval`: seconds since the Epoch and microseconds in `[0, 1,000,000)`. The historical timezone argument is passed as null at the confirmed game call site. The exact target structure layout still needs ABI evidence. | The wall clock can jump and is not a monotonic elapsed-time source. Historical POSIX specified a zero return on success and left errors undefined; Linux documents `-1`/`EFAULT` for inaccessible pointers and ignores the timezone argument. POSIX.1-2024 removed the interface. | The imported wrapper and game call sites are present; the game passes null for the second argument. Exact target behavior for bad pointers, non-null timezone arguments, and error mapping is not established. Do not silently ignore an error without evidence. |
 | `sched_yield(void)` | No arguments. Returns `int`. | POSIX: the calling thread gives up the processor until it is again at the head of its thread list; `0` on success, `-1` with `errno` otherwise, and POSIX defines no error case for it. FreeBSD documents the same call. | Imported by `libc.elf` from `libkernel`. Implemented: a guest thread runs on a host thread, so the runtime yields the host thread and returns `0` (`runtime/syslib/kernel_thread.c`). A host failure has no FreeBSD error number to report, so it stops by name. Not observable in a unit test: that the host scheduler actually ran another thread. |
@@ -254,7 +254,7 @@ the upstream sources rather than the console's modifications, so that value desc
 and not the target. Our own loader does not depend on a page size either: it copies `PT_LOAD`
 segments at byte-exact `p_vaddr` into one image buffer (`runtime/loader.c`, `rt_elf_map`) and uses
 `p_align` only for TLS, and the `4096`s in `runtime/boot.c` are host allocation sizes. What would
-settle it: one observed `getpagesize()` or `sysconf(_SC_PAGESIZE)` result on a console.
+confirm the ruling: one observed `getpagesize()` or `sysconf(_SC_PAGESIZE)` result on a console.
 
 ## Network connection state (`libSceNetCtl`, issue #41)
 
@@ -2138,6 +2138,50 @@ directory, with no buffer, or into fewer than 512 bytes (a directory block: shad
 An entry added or removed between two calls can move the listing by one entry, as on any file
 system that lists by position.
 
+### Directories and removing files
+
+`sceKernelMkdir(path, mode)`, `sceKernelRmdir(path)` and `sceKernelUnlink(path)` are FreeBSD's
+`mkdir(2)`, `rmdir(2)` and `unlink(2)` under their SCE names, 0 or `0x80020000` plus the error
+number. `eboot` and `libSceFios2.elf` import all three from `libkernel` (`symbols/imports.csv`).
+The shapes come from the OpenOrbis homebrew SDK's `libkernel.h` (`int32_t sceKernelMkdir(const
+char *, OrbisKernelMode)`, `OrbisKernelMode` a `uint16_t` like FreeBSD's `mode_t`;
+`int32_t sceKernelRmdir(const char *)`, `int32_t sceKernelUnlink(const char *)`), supporting
+evidence for the shapes only. No call site in the repository shows them yet.
+
+**Under `/data` and a writable mount** the host does the work, and its error is translated:
+- a missing file or directory component is `ENOENT` or `ENOTDIR`, and `mkdir` of an existing
+  name `EEXIST` (the same numbers on FreeBSD and Linux);
+- `rmdir` of a directory with entries is `ENOTEMPTY`, 66 on FreeBSD (Linux's is 39), and of a
+  path whose last component is `.` `EINVAL` (`rmdir(2)`; Linux answers the same);
+- `unlink` of a directory is `EPERM`. FreeBSD's `unlink(2)` page lists both `EISDIR` and `EPERM`
+  for "the named file is a directory"; the kernel settles it: `kern_unlinkat` (stable/9) and
+  `kern_funlinkat` (current) answer `EPERM` ("POSIX"), and turn the lookup's `EINVAL` for a last
+  component `.` into `EPERM` too. Linux answers `EISDIR` for both, which the runtime translates.
+- Any other host error stops by name.
+
+**The mode of `mkdir`.** FreeBSD gives the new directory `(mode & ACCESSPERMS) & ~umask`
+(`kern_mkdirat`, stable/9 and current), so bits above 0777 are dropped. The runtime passes
+`mode & 0777` to the host, as `sceKernelOpen` does for a new file, and the host process's umask
+then applies. Not established: the PS4 process's umask, so the bits a later `sceKernelStat` shows
+are the host's answer, not a console's; and whether the console enforces those bits for the title
+(a folder made without the owner's write and search bits refuses files on the host, which then
+stop by name).
+
+**On a read-only mount** (`/app0`, a save mounted read-only) nothing changes, and the answers follow
+FreeBSD's lookup order (`vfs_lookup.c`, stable/9 and current):
+- a missing component of the path prefix is `ENOENT` or `ENOTDIR` first;
+- `mkdir` of an existing name is `EEXIST` (the read-only check is not made for a name that
+  exists), of a new name `EROFS`;
+- `rmdir` and `unlink` of an existing name, file or directory, are `EROFS`, before `rmdir`'s
+  `ENOTDIR` and `ENOTEMPTY` and `unlink`'s `EPERM` for a directory;
+- a last component `.` is refused by the lookup before that: `rmdir` `EINVAL`, `unlink` `EPERM`.
+
+**Stops by name**, besides the path checks every file call shares (no path, a path outside the
+mounts, a `..` component, a path longer than the runtime's buffer): `rmdir` of a mount point itself
+(`/data`, `/app0`, `/savedataN`). FreeBSD's `rmdir(2)` answers `EBUSY` for the root of a mounted
+file system, but whether `/data` is one on the console is not established, and the host would
+remove the runtime's own folder.
+
 ## The disc map (`sceDiscMapIsRequestOnHDD`, issue #35)
 
 The disc map tells the file library whether part of a file is already on the hard disk or still
@@ -2536,3 +2580,4 @@ metadata.
 - [POSIX `pthread_self`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_self.html) and [`pthread_attr_init`/`pthread_attr_destroy`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_attr_destroy.html)
 - [FreeBSD `pthread_attr(3)`](https://man.freebsd.org/cgi/man.cgi?query=pthread_attr_setdetachstate&sektion=3), [libthr `thr_attr.c`](https://cgit.freebsd.org/src/tree/lib/libthr/thread/thr_attr.c) (`_pthread_attr_setdetachstate`, `_pthread_attr_get_np`), [`thr_create.c`](https://cgit.freebsd.org/src/tree/lib/libthr/thread/thr_create.c) (`_pthread_create`: the default attribute for a null or empty variable) and [`include/pthread.h`](https://cgit.freebsd.org/src/tree/include/pthread.h) (`PTHREAD_CREATE_JOINABLE`, `PTHREAD_CREATE_DETACHED`)
 - [OpenOrbis `include/orbis/_types/pthread.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/_types/pthread.h) - the PS4 homebrew SDK's `ORBIS_PTHREAD_CREATE_*` values, which follow FreeBSD's
+- FreeBSD 9.0 [`mkdir(2)`](https://man.freebsd.org/cgi/man.cgi?query=mkdir&sektion=2&manpath=FreeBSD+9.0-RELEASE), [`rmdir(2)`](https://man.freebsd.org/cgi/man.cgi?query=rmdir&sektion=2&manpath=FreeBSD+9.0-RELEASE), [`unlink(2)`](https://man.freebsd.org/cgi/man.cgi?query=unlink&sektion=2&manpath=FreeBSD+9.0-RELEASE) and [current `unlink(2)`](https://man.freebsd.org/cgi/man.cgi?query=unlink&sektion=2); FreeBSD [`vfs_syscalls.c`](https://cgit.freebsd.org/src/tree/sys/kern/vfs_syscalls.c?h=stable/9) (stable/9 and main: `kern_mkdirat` and its mode, `kern_rmdirat`/`kern_frmdirat`, `kern_unlinkat`/`kern_funlinkat` and `EPERM` for a directory) and [`vfs_lookup.c`](https://cgit.freebsd.org/src/tree/sys/kern/vfs_lookup.c?h=stable/9) (stable/9 and main: the read-only checks and the `.` check, and their order); [OpenOrbis `libkernel.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/libkernel.h) and [`_types/kernel.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/_types/kernel.h) (`OrbisKernelMode`) for the shapes

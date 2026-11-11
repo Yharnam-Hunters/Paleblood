@@ -231,7 +231,7 @@ render_configure_viewport,edge,,11,11,0,0,f15d9c1438c4fd09,2026-11-06
 render_configure_viewport_and_guard_band,edge,,26,26,0,0,67cbc6eee27c8769,2026-11-10
 render_convert_constructor_record,edge,,98,98,0,0,8bd5968199c5fb5d,2026-11-10
 render_convert_record_descriptor_classification,edge,,236,236,0,0,a130fb1ef6469c41,2026-11-05
-render_emit_draw_index_auto,edge,,13,13,0,0,64f14c8cab398991,2026-11-06
+render_emit_draw_index_auto,edge,,14,14,0,0,ee788ee6a611a7a0,2026-11-10
 render_emit_event_write,edge,,17,17,0,0,d1a112029c3a3e46,2026-11-06
 render_emit_num_instances,edge,,14,14,0,0,60c78aac624b1dfe,2026-11-06
 render_emit_pa_cl_vte_cntl,edge,,14,14,0,0,5611618bfd5135ba,2026-11-05
@@ -365,3 +365,8 @@ render_yebis_get_recursive_sample_parameters,edge,,23,23,0,0,6e6f0aa41d5607ce,20
 render_yebis_get_recursive_sample_parameters,edge,30,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,60,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,uncapped,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
+render_prepare_present_context_scratch,edge,,34,34,0,0,056fab43a42fc1e4,2026-11-05
+render_reset_present_context_preparation,edge,,3,3,0,0,01cbcf76d92f08d4,2026-11-05
+render_reset_present_context_shader_state,edge,,6,6,0,0,5d72bb0a1a2edd62,2026-11-05
+render_reset_present_context_state_b518,edge,,3,3,0,0,bb895f0db392d45e,2026-11-05
+render_reset_present_context_state_b528,edge,,3,3,0,0,ea97afad90ad1322,2026-11-05

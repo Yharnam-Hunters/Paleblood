@@ -167,6 +167,47 @@ write exactly the original packets:
   (`0x0149cc60`, which converts a tile-mode table index), and how its parameters are derived
   (`0x02abaf10`, `0x0149cb30`).
 
+### Render targets, descriptors and the present path (10 November)
+
+Forty-five more of the library's functions were replaced on 10 November, all
+[@evill33t](https://github.com/evill33t)'s work, brought up to date with `main` and merged as
+[#482](https://github.com/Yharnam-Hunters/Paleblood/pull/482), [#485](https://github.com/Yharnam-Hunters/Paleblood/pull/485), [#486](https://github.com/Yharnam-Hunters/Paleblood/pull/486), [#487](https://github.com/Yharnam-Hunters/Paleblood/pull/487) and the batch [#489](https://github.com/Yharnam-Hunters/Paleblood/pull/489):
+
+- **Render targets** [#489](https://github.com/Yharnam-Hunters/Paleblood/pull/489): `render_set_render_target` (`0x014738b0`) writes a
+  colour target's register block, or switches the target off when there is no descriptor;
+  `render_set_depth_render_target` (`0x014739b0`) does the same for the depth target.
+  `render_restore_color_target_from_bank` and `render_restore_depth_target_from_bank`
+  (`0x02ad1e30`, `0x02ad1e70`) put a saved target back from one of two banks, and
+  `render_present_slot_emit` (`0x01473840`) writes a colour target's two clear words.
+- **Rasterizer state** [#489](https://github.com/Yharnam-Hunters/Paleblood/pull/489): `render_configure_viewport_and_guard_band` (`0x01496f60`) sets the
+  viewport and the guard band, the region outside the screen where triangles are kept rather than
+  clipped; `render_set_pa_sc_mode_cntl_0` (`0x01477150`) switches multisampling and the viewport
+  scissor.
+- **Linking shaders** [#489](https://github.com/Yharnam-Hunters/Paleblood/pull/489): `render_build_shader_link_words` (`0x014873a0`) matches a vertex
+  shader's outputs to a pixel shader's inputs and builds the words that connect them;
+  `render_emit_shader_link_words` (`0x01475000`) writes them. `render_configure_record_shader`,
+  its secondary path and `render_finish_record_shader` (`0x02ace1e0`, `0x02ace5e0`, `0x02acfc20`)
+  set up and finish a recorded shader's state.
+- **Descriptor geometry** [#482](https://github.com/Yharnam-Hunters/Paleblood/pull/482), [#485](https://github.com/Yharnam-Hunters/Paleblood/pull/485), [#486](https://github.com/Yharnam-Hunters/Paleblood/pull/486), [#489](https://github.com/Yharnam-Hunters/Paleblood/pull/489) (from #237, #247, #238): building a
+  resource descriptor and the requirements it adds up (`render_prepare_resource_descriptor`,
+  `0x02fa6af0`), the two- and three-part record descriptors and their size
+  (`0x01487ee0`, `0x01488590`, `0x01488370`, `0x014a27c0`, `0x01471a40`), converting a constructor's
+  record (`0x01488d90`), and `render_record_geometry` (`0x0149ce10`) with its helpers
+  (`0x0149c4e0`-`0x0149ed30`), which work out an image's dimensions and alignment for the record
+  constructor.
+- **The swap chain's resources** [#487](https://github.com/Yharnam-Hunters/Paleblood/pull/487), [#489](https://github.com/Yharnam-Hunters/Paleblood/pull/489) (from #245): `render_initialize_swap_chain_resource`
+  (`0x02565f90`) checks a frame buffer's parameters, prepares its storage and wraps it;
+  `render_prepare_swap_chain_resource_info` (`0x02571d60`) allocates that storage and publishes its
+  descriptor.
+- **Finishing a present** [#489](https://github.com/Yharnam-Hunters/Paleblood/pull/489): the chain that closes a frame's command lists and hands them on.
+  `render_finish_present_commands` (`0x02aaf700`) finishes pending lists and submits the pending
+  snapshot when there is room (`render_submit_present_finish_snapshot`, `0x02ab0b00`;
+  `render_managed_present_capacity`, `0x02aaf030`); a pool of present buffers is claimed and
+  released (`0x02ad3b80`, `0x02ad3c80`, `0x02ad3d40`, `0x02aaa5a0`); the release packets that tell
+  the GPU a buffer may be reused are written (`0x014778f0`, `0x02abb6d0`); and the present's
+  sources are prepared and their state flushed (`0x02ad1eb0`, `0x02ad1f80`), with the encoding
+  helpers `0x02564ed0` and `0x02565130` and the context finisher `0x02568530`.
+
 ### How the renderer learns what the game draws
 
 Paleblood does not replay the finished GPU commands. Instead, the GPU library's replacements, with
@@ -180,10 +221,14 @@ on your GPU (see Runtime: the renderer):
   replacements report too [#435](https://github.com/Yharnam-Hunters/Paleblood/pull/435).
 - **Observed functions without replacements yet** [#416](https://github.com/Yharnam-Hunters/Paleblood/pull/416), [#418](https://github.com/Yharnam-Hunters/Paleblood/pull/418), [#435](https://github.com/Yharnam-Hunters/Paleblood/pull/435),
   [#441](https://github.com/Yharnam-Hunters/Paleblood/pull/441): where a library function has no replacement, the runtime watches its arguments at
-  its entry and lets the original run. These are `setRenderTarget` (`0x014738b0`), the depth target
-  (`0x014739b0`), the stencil references (`0x01473190`, `0x014731f0`), the shaders' user-data writers
+  its entry and lets the original run. These were `setRenderTarget` (`0x014738b0`) and the depth
+  target (`0x014739b0`), now replaced (above), and still are the stencil references (`0x01473190`, `0x014731f0`), the shaders' user-data writers
   (`0x014761a0`-`0x014764a0`), the indexed-draw setters and draw (`0x01475270`-`0x01475320`,
   `0x01474420`) and two compute dispatch writers (`0x01474c50`, `0x0148a350`).
+- **The compute command buffer's user data** [#510](https://github.com/Yharnam-Hunters/Paleblood/pull/510): that buffer's six user-data writers
+  (`0x0148aad0`-`0x0148ada0`) take no stage argument and were not observed, so a compute pass ran
+  with whatever user data the record held from before; one colour lookup-table pass read another
+  pass's table. They now report through the same observers as the stage writers.
 
 This needs the game library built from the decompilation (`tools/boot.py --game-lib`). In the
 maintainer's local runs it was enough to draw the studio logos and the title screen [#441](https://github.com/Yharnam-Hunters/Paleblood/pull/441).
@@ -196,7 +241,9 @@ which also caught deliberately broken variants; none was checked on recorded gam
 are edge-verified. They are [@evill33t](https://github.com/evill33t)'s work, brought up to date
 with `main` and merged from the PRs named in brackets; #362 adds cases for the shader
 preparation's reset modes (from #350) and #352 derives the packet tests' addresses from the
-harness. The observer calls were added afterwards and leave the packets unchanged.
+harness. The observer calls were added afterwards and leave the packets unchanged. The
+functions of 10 November ([#482](https://github.com/Yharnam-Hunters/Paleblood/pull/482), [#485](https://github.com/Yharnam-Hunters/Paleblood/pull/485)-[#487](https://github.com/Yharnam-Hunters/Paleblood/pull/487), [#489](https://github.com/Yharnam-Hunters/Paleblood/pull/489)) were checked the same way and are
+edge-verified; [#489](https://github.com/Yharnam-Hunters/Paleblood/pull/489) lists each one's cases in its session report.
 
 </details>
 

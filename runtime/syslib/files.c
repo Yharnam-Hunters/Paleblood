@@ -20,7 +20,7 @@
    anything else goes to its error path. The runtime fills the structure from the host file: type,
    size, block count and size, link count and times; the permission bits without write (the mount
    is read-only); device and inode numbers as the host's (they only identify the file); the birth
-   time as the modification time (the host's stat has none); owner, group, flags and generation 0. A missing file or directory component answers ENOENT or
+   time as the modification time (the runtime's policy on every host); owner, group, flags and generation 0. A missing file or directory component answers ENOENT or
    ENOTDIR (the same numbers on FreeBSD and Linux); any other host error stops by name.
 
    stat(path, struct stat *), imported by eboot from libScePosix: the same lookup and answer as
@@ -213,6 +213,17 @@ static int32_t kernel_stat(const char *path, guest_stat *out)
 
 enum { READ_AND_EXECUTE_BITS = 0555, PERMISSION_BITS = 0777 };
 
+/* Native timestamp member names differ; the guest wire and birth-time policy do not. */
+#if defined(__APPLE__) && defined(__MACH__)
+#define HOST_ATIME(st) ((st).st_atimespec)
+#define HOST_MTIME(st) ((st).st_mtimespec)
+#define HOST_CTIME(st) ((st).st_ctimespec)
+#else
+#define HOST_ATIME(st) ((st).st_atim)
+#define HOST_MTIME(st) ((st).st_mtim)
+#define HOST_CTIME(st) ((st).st_ctim)
+#endif
+
 /* /app0 is read-only, so its files show no write permission; /data's show the host's bits. */
 static void fill_stat(guest_stat *out, const struct stat *host, mount on)
 {
@@ -223,13 +234,13 @@ static void fill_stat(guest_stat *out, const struct stat *host, mount on)
         .ino = (uint32_t)st.st_ino,
         .mode = (uint16_t)((st.st_mode & S_IFMT) | (st.st_mode & permissions)),
         .nlink = (uint16_t)st.st_nlink,
-        .atime = timespec_of(st.st_atim),
-        .mtime = timespec_of(st.st_mtim),
-        .ctime = timespec_of(st.st_ctim),
+        .atime = timespec_of(HOST_ATIME(st)),
+        .mtime = timespec_of(HOST_MTIME(st)),
+        .ctime = timespec_of(HOST_CTIME(st)),
         .size = st.st_size,
         .blocks = st.st_blocks,
         .blksize = (uint32_t)st.st_blksize,
-        .birthtime = timespec_of(st.st_mtim),
+        .birthtime = timespec_of(HOST_MTIME(st)),
     };
 }
 
@@ -479,6 +490,117 @@ static int descriptor_is_directory(int32_t fd)
     return directory;
 }
 
+/* Directories and removing files. sceKernelMkdir(path, mode), sceKernelRmdir(path) and
+   sceKernelUnlink(path): FreeBSD's mkdir(2), rmdir(2) and unlink(2) under their SCE names (the
+   OpenOrbis homebrew SDK's libkernel.h declares the shapes, the mode as a 16-bit OrbisKernelMode
+   like FreeBSD's mode_t), 0 or an SCE code. No call site in the repository shows them yet.
+
+   Under /data and a writable mount the host does the work, and its error is translated:
+   - a missing file or directory component is ENOENT or ENOTDIR, an existing name for mkdir EEXIST
+     (the same numbers on FreeBSD and Linux);
+   - rmdir of a directory with entries is ENOTEMPTY, 66 on FreeBSD (39 on Linux), and of a path
+     whose last component is "." EINVAL (rmdir(2); Linux answers the same);
+   - unlink of a directory is EPERM: FreeBSD's kern_unlinkat answers EPERM ("POSIX"), in stable/9
+     and current, and turns the lookup's EINVAL for a last component "." into EPERM too; its
+     unlink(2) page lists both EISDIR and EPERM for a directory, and the code settles it. Linux
+     answers EISDIR for both.
+   Other host errors are not established and stop by name.
+
+   mkdir's mode: FreeBSD gives the new directory (mode & ACCESSPERMS) & ~umask (kern_mkdirat, in
+   stable/9 and current), so bits above 0777 are dropped. The runtime passes mode & 0777 to the
+   host, as sceKernelOpen does for a new file, and the host process's umask then applies. The PS4
+   process's umask is not established, so the bits a later sceKernelStat shows are the host's
+   answer, not a console's.
+
+   On a read-only mount (/app0, a save mounted read-only) nothing changes, in FreeBSD's lookup
+   order (vfs_lookup.c, stable/9 and current): a missing component of the path prefix is ENOENT
+   or ENOTDIR first; mkdir of an existing name is EEXIST, of a new one EROFS; rmdir and unlink of
+   an existing name, file or directory, are EROFS (before rmdir's ENOTDIR and ENOTEMPTY and
+   unlink's EPERM for a directory), except a last component ".", which the lookup refuses first
+   (rmdir EINVAL, unlink EPERM). rmdir of a mount point itself stops by name: FreeBSD answers
+   EBUSY for the root of a mounted file system, but whether /data is one on the console is not
+   established, and the host would remove the runtime's own folder. */
+enum { BSD_EPERM = 1, BSD_EEXIST = 17, BSD_ENOTEMPTY = 66 }; /* ENOTEMPTY is 39 on Linux */
+
+/* Whether the guest path is its mount point itself: nothing but slashes after the point. */
+static int is_mount_point(const char *guest, const char point[RT_MOUNT_POINT_BYTES])
+{
+    for (const char *p = guest + strlen(point); *p; p++)
+        if (*p != '/') return 0;
+    return 1;
+}
+
+/* Whether the path's last component is ".", trailing slashes aside. */
+static int last_is_dot(const char *path)
+{
+    size_t n = strlen(path);
+    while (n > 1 && path[n - 1] == '/') n--;
+    return n >= 2 && path[n - 1] == '.' && path[n - 2] == '/';
+}
+
+/* For a name missing on a read-only mount: 0 when its parent directory exists (only the last
+   component is missing), otherwise the parent's lookup error as an SCE code. */
+static int32_t parent_lookup(const char *caller, const char *host)
+{
+    char parent[4096];
+    snprintf(parent, sizeof parent, "%s", host);
+    size_t n = strlen(parent);
+    while (n > 1 && parent[n - 1] == '/') n--; /* trailing slashes */
+    while (n > 1 && parent[n - 1] != '/') n--; /* the last component */
+    parent[n] = '\0';
+    struct stat st;
+    return stat(parent, &st) ? lookup_error(caller) : 0;
+}
+
+static int32_t kernel_mkdir(const char *path, uint32_t mode)
+{
+    static const char fn[] = "sceKernelMkdir";
+    char host[4096];
+    if (host_path(fn, path, host, sizeof host) == MOUNT_READ_ONLY) {
+        struct stat st;
+        if (!stat(host, &st)) return SCE_KERNEL_ERROR(BSD_EEXIST);
+        if (errno != ENOENT) return lookup_error(fn);
+        const int32_t parent = parent_lookup(fn, host);
+        return parent ? parent : SCE_KERNEL_ERROR(BSD_EROFS);
+    }
+    if (!mkdir(host, (mode_t)(mode & PERMISSION_BITS))) return 0;
+    if (errno == EEXIST) return SCE_KERNEL_ERROR(BSD_EEXIST);
+    return lookup_error(fn);
+}
+
+/* rmdir or unlink on a read-only mount: the lookup, then a last component "." (dot_errno), then
+   EROFS for anything that exists. */
+static int32_t remove_on_read_only(const char *caller, const char *guest, const char *host, int dot_errno)
+{
+    struct stat st;
+    if (stat(host, &st)) return lookup_error(caller);
+    if (last_is_dot(guest)) return SCE_KERNEL_ERROR(dot_errno);
+    return SCE_KERNEL_ERROR(BSD_EROFS);
+}
+
+static int32_t kernel_rmdir(const char *path)
+{
+    static const char fn[] = "sceKernelRmdir";
+    char host[4096], point[RT_MOUNT_POINT_BYTES];
+    const mount on = host_path_on(fn, path, host, sizeof host, point);
+    if (is_mount_point(path, point)) rt_fatal(fn, "removing a mount point itself: whether it answers EBUSY is not established");
+    if (on == MOUNT_READ_ONLY) return remove_on_read_only(fn, path, host, BSD_EINVAL);
+    if (!rmdir(host)) return 0;
+    if (errno == ENOTEMPTY) return SCE_KERNEL_ERROR(BSD_ENOTEMPTY);
+    if (errno == EINVAL) return SCE_KERNEL_ERROR(BSD_EINVAL); /* the last component is "." */
+    return lookup_error(fn);
+}
+
+static int32_t kernel_unlink(const char *path)
+{
+    static const char fn[] = "sceKernelUnlink";
+    char host[4096];
+    if (host_path(fn, path, host, sizeof host) == MOUNT_READ_ONLY) return remove_on_read_only(fn, path, host, BSD_EPERM);
+    if (!unlink(host)) return 0;
+    if (errno == EISDIR) return SCE_KERNEL_ERROR(BSD_EPERM); /* a directory: Linux says EISDIR, FreeBSD EPERM */
+    return lookup_error(fn);
+}
+
 static int64_t kernel_lseek(int32_t fd, int64_t offset, int32_t whence)
 {
     const int h = host_of(fd);
@@ -616,3 +738,6 @@ RT_SYSLIB("libkernel", sceKernelFstat, kernel_fstat);
 RT_SYSLIB("libkernel", sceKernelFsync, kernel_fsync);
 RT_SYSLIB("libkernel", sceKernelGetdirentries, kernel_getdirentries);
 RT_SYSLIB("libkernel", fstat, posix_fstat);
+RT_SYSLIB("libkernel", sceKernelMkdir, kernel_mkdir);
+RT_SYSLIB("libkernel", sceKernelRmdir, kernel_rmdir);
+RT_SYSLIB("libkernel", sceKernelUnlink, kernel_unlink);

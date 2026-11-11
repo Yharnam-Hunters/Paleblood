@@ -5,8 +5,9 @@
    manual.
 
    Buffers are reached as the translator expects: through buffer descriptors in the user data
-   (push constants) whose base address is the Vulkan buffer's device address. Without a Vulkan 1.2
-   device with buffer device addresses the test reports itself skipped (exit 77). Runs on the
+   (push constants) with 40-bit guest bases translated to the Vulkan buffer's device addresses.
+   The separate --wave64 test needs a native 64-lane subgroup for wave-wide branches. Without
+   the required device capability, that test reports itself skipped (exit 77). Runs on the
    maintainer's machine hold the shared GPU lock (tools/run_game.sh's /mnt/sdb1/bb/gpu.lock). */
 #include "runtime/gcn_spirv.h"
 
@@ -78,12 +79,23 @@ static uint32_t bits(float f)
     return u;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    const int wave64_only = argc == 2 && strcmp(argv[1], "--wave64") == 0;
+    if (argc != 1 && !wave64_only) return 2;
     gpu g = {0};
     if (open_gpu(&g)) {
         fprintf(stderr, "no Vulkan 1.2 device with buffer device addresses: skipped\n");
         return SKIPPED;
+    }
+    if (wave64_only) {
+        VkPhysicalDeviceSubgroupProperties subgroup = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
+        VkPhysicalDeviceProperties2 properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &subgroup};
+        vkGetPhysicalDeviceProperties2(g.physical, &properties);
+        if (subgroup.subgroupSize != LANES) {
+            fprintf(stderr, "wave-wide ballot requires a 64-lane subgroup; device reports %u: skipped\n", subgroup.subgroupSize);
+            return SKIPPED;
+        }
     }
     gpu_buffer in, out;
     if (make_buffer(&g, &in) || make_buffer(&g, &out)) {
@@ -91,10 +103,26 @@ int main(void)
         return 1;
     }
     uint32_t user[USER_DATA_WORDS] = {0};
-    descriptor(user, &in);
-    descriptor(user + 4, &out);
+    /* Keep shader inputs in one guest window, independent of the driver's address width. */
+    const uint64_t first_address = in.address < out.address ? in.address : out.address;
+    const uint64_t buffer_offset = first_address - UINT64_C(0x100000000);
+    address_offset = buffer_offset;
+    if (descriptor(user, &in, buffer_offset) || descriptor(user + 4, &out, buffer_offset)) {
+        fprintf(stderr, "the shader buffers do not fit one 40-bit guest window\n");
+        return 1;
+    }
     float *const in_floats = in.mapped;
     uint32_t *const in_words = in.mapped, *const out_words = out.mapped;
+
+    if (wave64_only) {
+        CHECK(run(&g, compare_exec, sizeof compare_exec / sizeof compare_exec[0], user) == 0);
+        for (int i = 0; i < LANES; i++) {
+            CHECK(out_words[2 * i] == (i < 8 ? 1u : 0u) + 64u);
+            CHECK(out_words[2 * i + 1] == 5u);
+        }
+        vkDeviceWaitIdle(g.device);
+        return failures != 0;
+    }
 
     /* out[i] = in[i] * 2.5 + 1 */
     for (int i = 0; i < LANES; i++) in_floats[i] = (float)i * 0.5f;
@@ -148,9 +176,9 @@ int main(void)
     }
     for (int i = 0; i < LANES; i++) in_floats[i] = (float)i * 0.5f;
     memset(out.mapped, 0, BUFFER_BYTES);
-    address_offset = GUEST_DISTANCE;
+    address_offset = buffer_offset + GUEST_DISTANCE;
     CHECK(run(&g, scale_add, sizeof scale_add / sizeof scale_add[0], guest_user) == 0);
-    address_offset = 0;
+    address_offset = buffer_offset;
     for (int i = 0; i < LANES; i++) CHECK(out_words[i] == bits((float)i * 0.5f * 2.5f + 1.0f));
 
     /* v_rcp_iflag_f32 is v_rcp_f32's reciprocal (exact for powers of two). */
@@ -199,6 +227,50 @@ int main(void)
         CHECK(out_words[2 * LANES + i] == (uint32_t)((uint64_t)signed_by_lane >> 32));
     }
 
+    /* VOP3 output modifiers: times 2, 4 and 0.5, applied before the clamp */
+    {
+        for (int i = 0; i < LANES; i++) in_words[i] = bits((float)i * 0.125f - 2.0f);
+        memset(out.mapped, 0, BUFFER_BYTES);
+        CHECK(run(&g, output_modifiers, sizeof output_modifiers / sizeof output_modifiers[0], user) == 0);
+        int modified = 1;
+        for (int i = 0; i < LANES; i++) {
+            const float x = (float)i * 0.125f - 2.0f, m = x * x + x, doubled = 2 * m;
+            modified &= out_words[i] == bits(2 * m) && out_words[LANES + i] == bits(4 * m) && out_words[2 * LANES + i] == bits(0.5f * m) &&
+                        out_words[3 * LANES + i] == bits(doubled < 0 ? 0.0f : doubled > 1 ? 1.0f : doubled);
+        }
+        if (!modified) fprintf(stderr, "output modifiers: lane 3 %08x %08x %08x %08x\n", out_words[3], out_words[LANES + 3], out_words[2 * LANES + 3],
+                               out_words[3 * LANES + 3]);
+        CHECK(modified);
+    }
+
+    /* v_cubeid/sc/tc/ma_f32: each face, and the ties (z over y over x) */
+    {
+        static const float directions[8][3] = {{1, 0.5f, -0.25f}, {-2, 1, 0.5f}, {0.5f, 3, 1}, {0.25f, -1, 0.5f},
+                                               {0.5f, -0.25f, 1}, {-0.5f, 0.25f, -1}, {1, 1, 1}, {1, 1, 0.5f}};
+        static const float expected[8][4] = {{0, 0.25f, -0.5f, 2}, {1, 0.5f, -1, -4}, {2, 0.5f, 1, 6}, {3, 0.25f, -0.5f, -2},
+                                             {4, 0.5f, 0.25f, 2}, {5, 0.5f, -0.25f, -2}, {4, 1, -1, 2}, {2, 1, 0.5f, 2}};
+        float *in_floats = (float *)in_words;
+        for (int i = 0; i < LANES; i++) memcpy(in_floats + 3 * i, directions[i % 8], sizeof directions[0]);
+        memset(out.mapped, 0, BUFFER_BYTES);
+        CHECK(run(&g, cube_faces, sizeof cube_faces / sizeof cube_faces[0], user) == 0);
+        int faces = 1;
+        for (int i = 0; i < LANES; i++)
+            for (int k = 0; k < 4; k++) faces &= out_words[k * LANES + i] == bits(expected[i % 8][k]);
+        if (!faces) fprintf(stderr, "cube: lane 1 %08x %08x %08x %08x\n", out_words[1], out_words[LANES + 1], out_words[2 * LANES + 1], out_words[3 * LANES + 1]);
+        CHECK(faces);
+    }
+
+    /* a scalar load at a literal offset counts it in dwords: dwords 2 to 5 */
+    {
+        for (int i = 0; i < 8; i++) in_words[i] = 0x01010101u * (uint32_t)(i + 1);
+        memset(out.mapped, 0, BUFFER_BYTES);
+        CHECK(run(&g, scalar_buffer_quad_literal, sizeof scalar_buffer_quad_literal / sizeof scalar_buffer_quad_literal[0], user) == 0);
+        int literal = 1;
+        for (int lane = 0; lane < LANES; lane++)
+            for (int k = 0; k < 4; k++) literal &= out_words[lane * 4 + k] == in_words[2 + k];
+        CHECK(literal);
+    }
+
     /* s_buffer_load is range-checked too: with NUM_RECORDS 8 bytes, the third and fourth dwords read 0;
        with a 4-byte stride and 3 records, the fourth does. */
     {
@@ -228,13 +300,6 @@ int main(void)
     memset(out.mapped, 0, BUFFER_BYTES);
     CHECK(run(&g, vector_loop, sizeof vector_loop / sizeof vector_loop[0], user) == 0);
     for (int i = 0; i < LANES; i++) CHECK(out_words[i] == 10u * ((uint32_t)i & 3));
-
-    memset(out.mapped, 0, BUFFER_BYTES);
-    CHECK(run(&g, compare_exec, sizeof compare_exec / sizeof compare_exec[0], user) == 0);
-    for (int i = 0; i < LANES; i++) {
-        CHECK(out_words[2 * i] == (i < 8 ? 1u : 0u) + 64u);
-        CHECK(out_words[2 * i + 1] == 5u);
-    }
 
     memset(out.mapped, 0xaa, BUFFER_BYTES);
     CHECK(run(&g, masked_store, sizeof masked_store / sizeof masked_store[0], user) == 0);
@@ -428,6 +493,25 @@ int main(void)
             CHECK(*stop == (GCN_RUNTIME_STOP_BUFFER_FORMAT << GCN_RUNTIME_STOP_KIND_SHIFT | 2u << 8 | 0u << 4 | 4u));
             *stop = 0;
             memcpy(bytes, saved_bytes, sizeof saved_bytes);
+            memcpy(format_user, user, sizeof format_user);
+        }
+        /* DATA_FORMAT 0 (an invalid, null buffer's): a load reads 0 in every component, a store writes nothing */
+        {
+            memset(out.mapped, 0xaa, BUFFER_BYTES);
+            format_user[3] = (4 | 0 << 3 | 0 << 6 | 1 << 9) | 0u << 12 | 0u << 15;
+            *stop = 0;
+            CHECK(run(&g, load_format_xyzw, sizeof load_format_xyzw / sizeof load_format_xyzw[0], format_user) == 0);
+            int zeros = *stop == 0;
+            for (int i = 0; i < LANES * 4; i++) zeros &= out_words[i] == 0;
+            CHECK(zeros);
+            uint32_t null_store[USER_DATA_WORDS];
+            memcpy(null_store, user, sizeof null_store);
+            null_store[7] = DST_SEL_XYZW | 0u << 12 | 0u << 15;
+            memset(out.mapped, 0xaa, BUFFER_BYTES);
+            CHECK(run(&g, store_format_xyzw, sizeof store_format_xyzw / sizeof store_format_xyzw[0], null_store) == 0);
+            int kept = *stop == 0;
+            for (int i = 0; i < LANES * 4; i++) kept &= out_words[i] == 0xaaaaaaaau;
+            CHECK(kept);
             memcpy(format_user, user, sizeof format_user);
         }
         /* a reserved selector (2) stops */

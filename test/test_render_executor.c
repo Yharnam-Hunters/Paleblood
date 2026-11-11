@@ -264,8 +264,8 @@ static void sampled_images(rt_executor *x)
    with clamping to the last texel gives the ramp's own coordinate between texel centres (1/8 to 7/8)
    and the end texels' values outside; so does MAX_ANISO_RATIO 4 with bilinear filters. Mutants: point
    filtering and wrapping differ; with point minification and bilinear magnification the lookup is
-   magnified (a texel spans four pixels), so it is the bilinear one; a border clamp, anisotropic
-   filters or a depth compare stops by name. */
+   magnified (a texel spans four pixels), so it is the bilinear one, as are anisotropic bilinear
+   filters; a border clamp, a MAX_ANISO_RATIO past 4 or a depth compare stops by name. */
 static int lookup_misses(rt_executor *x, uint64_t target)
 {
     uint32_t bgra[SIZE * SIZE];
@@ -285,10 +285,11 @@ static int lookup_misses(rt_executor *x, uint64_t target)
 
 /* Sampling picks the level the derivatives give (pixel_minified): a 64x64 image with three levels, red,
    green and blue, sampled at (x / 16, y / 16) over 16x16 pixels spans 4 texels a pixel, level 2:
-   blue with a point or linear mip filter, red (level 0) with none. */
+   blue with a point or linear mip filter, red (level 0) with none. image_sample_l at level 1
+   (pixel_explicit_level) draws green with a mip filter, red with none. */
 static void sampled_levels(rt_executor *x)
 {
-    enum { MIPPED = 0x8d0000, LEVELS_TARGET = 0x8e0000, LEVELS_CODE = 0x3400, LEVELS_BUFFER = 0xc0f30000, EDGE = 64, LEVELS = 3,
+    enum { MIPPED = 0x8d0000, LEVELS_TARGET = 0x8e0000, LEVELS_CODE = 0x3400, EXPLICIT_CODE = 0x3600, LEVELS_BUFFER = 0xc0f30000, EDGE = 64, LEVELS = 3,
            LINEAR_ALIGNED = 8, MIP_POINT = 1, MIP_LINEAR = 2 };
     static const uint32_t colours[LEVELS] = {0xff0000ffu, 0xff00ff00u, 0xffff0000u}; /* red, green, blue (bytes R, G, B, A) */
     char error[256] = "";
@@ -300,14 +301,16 @@ static void sampled_levels(rt_executor *x)
         for (uint32_t i = 0; i < texels; i++) ((uint32_t *)(guest + MIPPED + chain[m].offset))[i] = colours[m];
     }
     memcpy((void *)(uintptr_t)at(LEVELS_CODE), pixel_minified, sizeof pixel_minified);
-    for (unsigned mip = 0; mip <= MIP_LINEAR; mip++) {
+    memcpy((void *)(uintptr_t)at(EXPLICIT_CODE), pixel_explicit_level, sizeof pixel_explicit_level); /* its own address: shaders are kept by address */
+    for (unsigned run = 0; run < 2 * (MIP_LINEAR + 1); run++) {
+        const unsigned mip = run % (MIP_LINEAR + 1), explicit_level = run > MIP_LINEAR;
         uint32_t user[16] = {0};
         image_descriptor(user + 4, at(MIPPED), 10, 0, EDGE, EDGE);
         user[7] |= LINEAR_ALIGNED << 20 | (LEVELS - 1) << 16;
         user[12] = 0x2 | 0x2 << 3 | 0x2 << 6, user[13] = 15u * 256 << 12, user[14] = mip << 26; /* clamped, MAX_LOD 15, point filters */
         rt_render_forget(), rt_executor_reset(x);
         uint32_t offset = record_setup(LEVELS_BUFFER, at(LEVELS_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
-        const uint64_t code = at(LEVELS_CODE);
+        const uint64_t code = at(explicit_level ? EXPLICIT_CODE : LEVELS_CODE);
         const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 16 << 1, 0, 0x4, 0x302, 0x302,
                                                        0, 0, 0, 0xf};
         CHECK(rt_render_record_pixel_shader(LEVELS_BUFFER, offset, pixel, error, sizeof error) == 0);
@@ -318,12 +321,60 @@ static void sampled_levels(rt_executor *x)
         CHECK(drawn == 0);
         uint32_t bgra[SIZE * SIZE];
         CHECK(rt_executor_read_target(x, at(LEVELS_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
-        const uint32_t expected = mip == 0 ? 0xffff0000u : 0xff0000ffu; /* BGRA words: red, or blue */
+        const uint32_t expected = mip == 0 ? 0xffff0000u : explicit_level ? 0xff00ff00u : 0xff0000ffu; /* BGRA words: red, green, blue */
         int covered = 0, right = 1;
         for (int i = 0; i < SIZE * SIZE; i++)
             if (bgra[i]) covered++, right &= bgra[i] == expected; /* the triangle's pixels */
-        if (!right) fprintf(stderr, "sampled levels, mip filter %u: a pixel %08x\n", mip, bgra[SIZE * SIZE / 2]);
+        if (!right) fprintf(stderr, "sampled levels, mip filter %u%s: a pixel %08x\n", mip, explicit_level ? " (explicit)" : "", bgra[SIZE * SIZE / 2]);
         CHECK(covered > 0 && right);
+    }
+}
+
+/* A cube (T# TYPE 11, one cube: six 4x4 faces, linear, each face one colour) sampled at (1.5, 1.5)
+   on face 4, then face 1, and face 9 (face 1 of an array's second cube, which has none: the 2D array
+   of six faces clamps the layer to 5) draws each face's colour (pixel_cube_face). */
+static void sampled_cube(rt_executor *x)
+{
+    enum { CUBE = 0x8f0000, CUBE_TARGET = 0x900000, CUBE_CODE = 0x3800, CUBE_BUFFER = 0xc0f40000, EDGE = 4, FACES = 6, LINEAR_ALIGNED = 8,
+           TYPE_CUBE = 11 };
+    char error[256] = "";
+    rt_tiling layout;
+    CHECK(rt_tiling_layout(LINEAR_ALIGNED, 4, EDGE, EDGE, &layout, error, sizeof error) == 0);
+    for (uint32_t face = 0; face < FACES; face++)
+        for (uint32_t y = 0; y < EDGE; y++)
+            for (uint32_t px = 0; px < EDGE; px++) {
+                const uint32_t colour = 0xff000000u | (40u * (face + 1)) << 8 | 0x20u; /* bytes R 0x20, G 40 (face + 1), B 0, A 0xff */
+                memcpy((uint8_t *)(uintptr_t)at(CUBE) + rt_tiling_offset(&layout, px, y, face), &colour, 4);
+            }
+    memcpy((void *)(uintptr_t)at(CUBE_CODE), pixel_cube_face, sizeof pixel_cube_face);
+    static const float faces[] = {4, 1, 9};
+    static const uint32_t shown[] = {4, 1, 5};
+    for (unsigned k = 0; k < 3; k++) {
+        uint32_t user[13] = {0};
+        image_descriptor(user + 4, at(CUBE), 10, 0, EDGE, EDGE);
+        user[7] = (user[7] & 0x0fffffffu) | LINEAR_ALIGNED << 20 | (uint32_t)TYPE_CUBE << 28;
+        user[9] = 35u << 13; /* LAST_ARRAY 35, as the game's cube descriptors have it: not used */
+        user[0] = 0x2 | 0x2 << 3 | 0x2 << 6; /* the sampler: clamped, point filters */
+        memcpy(&user[12], &faces[k], 4);
+        rt_render_forget(), rt_executor_reset(x);
+        const uint32_t offset = record_setup(CUBE_BUFFER, at(CUBE_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        const uint64_t code = at(CUBE_CODE);
+        const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 13 << 1, 0, 0x4, PERSP_CENTER,
+                                                       PERSP_CENTER, 0, 0, 0, 0xf};
+        CHECK(rt_render_record_pixel_shader(CUBE_BUFFER, offset, pixel, error, sizeof error) == 0);
+        CHECK(rt_render_record_user_data(CUBE_BUFFER, offset + 0x10, RT_STAGE_PIXEL, 0, user, 8, error, sizeof error) == 0);
+        CHECK(rt_render_record_user_data(CUBE_BUFFER, offset + 0x20, RT_STAGE_PIXEL, 8, user + 8, 8, error, sizeof error) == 0);
+        CHECK(rt_render_record_user_data(CUBE_BUFFER, offset + 0x30, RT_STAGE_PIXEL, 12, user + 12, 1, error, sizeof error) == 0);
+        const int drawn = rt_executor_run(x, CUBE_BUFFER, record_triangle_draw(CUBE_BUFFER, offset + 0x40), error, sizeof error);
+        if (drawn) fprintf(stderr, "cube: %s\n", error);
+        CHECK(drawn == 0);
+        uint32_t bgra[SIZE * SIZE];
+        CHECK(rt_executor_read_target(x, at(CUBE_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+        const uint32_t expected = 0xff000000u | 0x20u << 16 | (40u * (shown[k] + 1)) << 8; /* BGRA: red 0x20, green by face */
+        int right = 1;
+        for (int i = 0; i < SIZE * SIZE; i++) right &= bgra[i] == expected;
+        if (!right) fprintf(stderr, "cube face %g: %08x, not %08x\n", (double)faces[k], bgra[0], expected);
+        CHECK(right);
     }
 }
 
@@ -353,13 +404,15 @@ static void sampled_lookup(rt_executor *x)
     static const uint32_t unequal[4] = {0x2, 0, 1u << 20, 0};
     static const uint32_t border[4] = {0x6, 0, 1u << 20 | 1u << 22, 0};
     /* MAX_ANISO_RATIO 4 with bilinear filters: the same as bilinear (the ratio shapes only the
-       anisotropic filters); with anisotropic filters (2) it stops, as does a depth compare */
+       anisotropic filters); anisotropic bilinear filters (3) with ratio 4 (16 samples) magnify as the
+       bilinear one, a ratio past 4 stops, as does a depth compare */
     static const uint32_t ratio_bilinear[4] = {0x2 | 0x2 << 3 | 0x2 << 6 | 4u << 9, 0, 1u << 20 | 1u << 22, 0};
-    static const uint32_t anisotropic[4] = {0x2 | 0x2 << 3 | 0x2 << 6 | 4u << 9, 0, 2u << 20 | 2u << 22, 0};
+    static const uint32_t anisotropic[4] = {0x2 | 0x2 << 3 | 0x2 << 6 | 4u << 9, 0, 3u << 20 | 3u << 22, 0};
+    static const uint32_t past_ratio[4] = {0x2 | 0x2 << 3 | 0x2 << 6 | 5u << 9, 0, 3u << 20 | 3u << 22, 0};
     static const uint32_t depth_compare[4] = {0x2 | 0x2 << 3 | 0x2 << 6 | 3u << 12, 0, 1u << 20 | 1u << 22, 0};
     const uint32_t *const samplers[] = {bilinear_clamped, point_clamped, bilinear_wrapped, unequal, border, ratio_bilinear, anisotropic,
-                                        depth_compare};
-    for (int k = 0; k < 8; k++) {
+                                        depth_compare, past_ratio};
+    for (int k = 0; k < 9; k++) {
         uint32_t user[16] = {0};
         user[2] = (uint32_t)at(TABLE), user[3] = (uint32_t)(at(TABLE) >> 32);
         image_descriptor(user + 4, at(IMAGE), 10, 0, WIDTH, HEIGHT);
@@ -374,9 +427,9 @@ static void sampled_lookup(rt_executor *x)
         CHECK(rt_render_record_user_data(LOOKUP_BUFFER, offset + 0x10, RT_STAGE_PIXEL, 0, user, 8, error, sizeof error) == 0);
         CHECK(rt_render_record_user_data(LOOKUP_BUFFER, offset + 0x20, RT_STAGE_PIXEL, 8, user + 8, 8, error, sizeof error) == 0);
         const int drawn = rt_executor_run(x, LOOKUP_BUFFER, record_triangle_draw(LOOKUP_BUFFER, offset + 0x30), error, sizeof error);
-        if ((k < 3 || k == 5) && drawn) fprintf(stderr, "lookup %d: %s\n", k, error);
-        if (k < 3 || k == 5) CHECK(drawn == 0);
-        if (k == 0 || k == 5) {
+        if ((k < 3 || k == 5 || k == 6) && drawn) fprintf(stderr, "lookup %d: %s\n", k, error);
+        if (k < 3 || k == 5 || k == 6) CHECK(drawn == 0);
+        if (k == 0 || k == 5 || k == 6) {
             const int misses = lookup_misses(x, at(LOOKUP_TARGET));
             if (misses) fprintf(stderr, "lookup: %d pixels differ\n", misses);
             CHECK(misses == 0);
@@ -384,7 +437,7 @@ static void sampled_lookup(rt_executor *x)
         if (k == 1 || k == 2) CHECK(lookup_misses(x, at(LOOKUP_TARGET)) > 0);
         if (k == 3) CHECK(drawn == 0 && lookup_misses(x, at(LOOKUP_TARGET)) == 0); /* magnified: the bilinear filter */
         if (k == 4) CHECK(drawn == -1 && strstr(error, "clamp mode 6"));
-        if (k == 6) CHECK(drawn == -1 && strstr(error, "filters 2 (magnifying)"));
+        if (k == 8) CHECK(drawn == -1 && strstr(error, "MAX_ANISO_RATIO 5"));
         if (k == 7) CHECK(drawn == -1 && strstr(error, "depth compares"));
     }
 }
@@ -979,6 +1032,84 @@ static void indexed_draws(rt_executor *x)
     CHECK(run_indexed(x, at(INDEXED_16), at(INDICES_16), 0, 5, 3, error, sizeof error) == -1 && strstr(error, "past the 5-index buffer"));
 }
 
+/* Record a packet draw of the last three indices, including fields that the older
+   first/count API cannot express. Each run starts with independent GPU state. */
+static int run_index_packet(rt_executor *x, uint64_t target, uint64_t indices, uint32_t saved_size,
+                            uint32_t header, uint32_t max_size, uint32_t count, uint32_t initiator,
+                            char *error, size_t error_size)
+{
+    enum { BUFFER = 0xc0fb0000 };
+    rt_render_forget(), rt_executor_reset(x);
+    uint32_t offset = record_setup(BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    CHECK(rt_render_record_index_base(BUFFER, offset, indices, error, error_size) == 0);
+    CHECK(rt_render_record_index_type(BUFFER, offset + 0x10, 0, error, error_size) == 0);
+    if (saved_size) CHECK(rt_render_record_index_size(BUFFER, offset + 0x20, saved_size, error, error_size) == 0);
+    CHECK(rt_render_record_draw_index_offset_packet(BUFFER, offset + 0x30, header, max_size, 3, count,
+                                                     initiator, error, error_size) == 0);
+    return rt_executor_run(x, BUFFER, offset + 0x40, error, error_size);
+}
+
+/* A packet's MAX_SIZE applies independently of INDEX_BUFFER_SIZE. Unsupported
+   packet fields stop before drawing; a valid packet draws the complete triangle. */
+static void indexed_packets(rt_executor *x, int fd)
+{
+    enum { INDICES = 0x12200, TARGET_PACKET = 0xd40000 };
+    const uint32_t offset_header = 0xc0033500u;
+    const uint16_t indices[] = {9, 9, 9, 0, 1, 2};
+    memcpy((void *)(uintptr_t)at(INDICES), indices, sizeof indices);
+    char error[200] = "";
+    CHECK(run_index_packet(x, at(TARGET_PACKET), at(INDICES), 1, offset_header, 3, 3, 0,
+                           error, sizeof error) == 0);
+    check_triangle(x, at(TARGET_PACKET));
+    CHECK(run_index_packet(x, at(TARGET_PACKET), at(INDICES), 0, offset_header, 3, 3, 0,
+                           error, sizeof error) == 0);
+    check_triangle(x, at(TARGET_PACKET));
+
+    const struct { uint32_t header, max_size, count, initiator; const char *reason; } refused[] = {
+        {offset_header | 1, 3, 3, 0, "predicated indexed draws"},
+        {0, 3, 3, 0, "unsupported indexed offset packet header"},
+        {offset_header, 3, 3, 1, "unsupported indexed offset draw initiator"},
+        {offset_header, 2, 3, 0, "beyond MAX_SIZE"},
+    };
+    for (size_t i = 0; i < sizeof refused / sizeof *refused; i++) {
+        error[0] = '\0';
+        CHECK(run_index_packet(x, at(TARGET_PACKET), at(INDICES), 0, refused[i].header,
+                               refused[i].max_size, refused[i].count, refused[i].initiator,
+                               error, sizeof error) == -1 && strstr(error, refused[i].reason));
+    }
+    rt_executor_reset(x);
+    const rt_render_call bad_tag = {.kind = RT_CALL_DRAW_INDEX_OFFSET,
+        .u.draw_index = {.count = 3, .has_packet_fields = 2, .header = offset_header, .max_size = 3}};
+    CHECK(rt_executor_run_calls(x, &bad_tag, 1, error, sizeof error) == -1 &&
+          strstr(error, "invalid indexed packet field tag"));
+    rt_render_forget();
+    CHECK(rt_render_record_draw_indexed(0xc0fc0000, 0, 0xc0042700u, 3, at(INDICES), 3, 0,
+                                         error, sizeof error) == 0);
+    CHECK(rt_executor_run(x, 0xc0fc0000, 0x20, error, sizeof error) == -1 &&
+          strstr(error, "DRAW_INDEX_2 is not implemented"));
+
+    /* A low guest window makes the unchecked sum wrap into valid GPU memory.
+       With no targets enabled it would be accepted if the overflow guard vanished. */
+    const uint64_t low_base = 0x100000000ull;
+    const rt_executor_memory low_memory = {fd, GUEST_SIZE, low_base};
+    rt_executor *low = NULL;
+    const int opened = rt_executor_open(&low_memory, &low, error, sizeof error);
+    if (opened) fprintf(stderr, "low index window: %s\n", error);
+    CHECK(opened == 0);
+    if (low) {
+        const rt_render_call overflow[] = {
+            {.kind = RT_CALL_INDEX_BASE, .u.index_base = {.address = UINT64_MAX - 5}},
+            {.kind = RT_CALL_INDEX_TYPE, .u.index_type = {.type = 0}},
+            {.kind = RT_CALL_DRAW_INDEX_OFFSET, .u.draw_index = {
+                .first = (uint32_t)(low_base / 2 + 3), .count = 3, .has_packet_fields = 1,
+                .header = offset_header, .max_size = 3}},
+        };
+        CHECK(rt_executor_run_calls(low, overflow, sizeof overflow / sizeof *overflow, error, sizeof error) == -1 &&
+              strstr(error, "index base plus offset overflows"));
+        rt_executor_close(low);
+    }
+}
+
 /* A render target's memory stays its contents: after a buffer draws the triangle into a linear target,
    the guest memory under it holds the reference image (red first, as SWAP_STD stores it); a pixel shader
    reading that memory as an image draws the reference image into another target; and when the CPU
@@ -1505,11 +1636,13 @@ int main(void)
     sampled_images(x);
     sampled_lookup(x);
     sampled_levels(x);
+    sampled_cube(x);
     fetch_shader(x);
     unset_user_data(x);
     target_read_in_buffer(x);
     state_across_buffers(x);
     indexed_draws(x);
+    indexed_packets(x, fd);
     target_memory(x);
     tiled_target_memory(x);
     float_targets(x);

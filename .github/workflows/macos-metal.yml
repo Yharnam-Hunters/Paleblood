@@ -9,9 +9,13 @@ on:
       - '.github/workflows/macos-metal.yml'
       - 'CMakeLists.txt'
       - 'cmake/Metal.cmake'
+      - 'cmake/MetalExecutor.cmake'
       - 'runtime/graphics_metal.mm'
       - 'runtime/include/runtime/graphics_metal.h'
       - 'test/test_metal_offscreen.mm'
+      - 'test/test_metal_executor.c'
+      - 'test/metal_executor_programs.h'
+      - 'runtime/include/runtime/render*.h'
       - 'runtime/renderer/**'
       - 'runtime/include/runtime/gcn*.h'
       - 'runtime/include/runtime/spirv.h'
@@ -22,9 +26,13 @@ on:
       - '.github/workflows/macos-metal.yml'
       - 'CMakeLists.txt'
       - 'cmake/Metal.cmake'
+      - 'cmake/MetalExecutor.cmake'
       - 'runtime/graphics_metal.mm'
       - 'runtime/include/runtime/graphics_metal.h'
       - 'test/test_metal_offscreen.mm'
+      - 'test/test_metal_executor.c'
+      - 'test/metal_executor_programs.h'
+      - 'runtime/include/runtime/render*.h'
       - 'runtime/renderer/**'
       - 'runtime/include/runtime/gcn*.h'
       - 'runtime/include/runtime/spirv.h'
@@ -50,6 +58,7 @@ jobs:
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }}
           -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 -DPB_ENABLE_METAL_SMOKE_TEST=ON
+          -DPB_ENABLE_METAL_EXECUTOR=ON
       - name: Check that normal runtime and game targets remain available
         run: |
           cmake --build build --target help > targets.txt
@@ -60,7 +69,7 @@ jobs:
           assert {'pbmetal', 'pbboot', 'pbloader', 'bbrt', 'bbgame'} <= names
           PY
       - name: Compile Metal library and real-device test
-        run: cmake --build build --target pbmetal test_metal_offscreen --parallel 2
+        run: cmake --build build --target pbmetal test_metal_offscreen test_metal_executor --parallel 2
       # Hosted compilation does not qualify a real Metal device or GPU execution.
 
   shaders:
