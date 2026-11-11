@@ -316,7 +316,12 @@ def main() -> int:
                     help='play the controller from a timed script instead (SPEC, or @FILE), e.g. "45:down,47:cross" '
                          '(seconds; 700f for presented frames); the format is in runtime/include/runtime/input_host.h. '
                          'Not for recorded boots')
+    ap.add_argument('--keyboard-text', default=None, metavar='TEXT',
+                    help='answer each on-screen keyboard as if TEXT was typed and Done pressed (e.g. a name '
+                         'for the character creation contract); without it the keyboard is canceled. Not for recorded boots')
     a = ap.parse_args()
+    if a.keyboard_text is not None and not a.no_record:
+        ap.error('--keyboard-text answers the title\'s keyboard: such a boot is not recorded (add --no-record)')
     if a.input_script and a.input == 'host':
         ap.error('--input-script plays the controller: leave out --input host')
     if a.input_script and not a.no_record:
@@ -369,6 +374,8 @@ def main() -> int:
         if a.input_script:
             spec = a.input_script
             cmd += ['--input-script', '@' + os.path.abspath(spec[1:]) if spec.startswith('@') else spec]
+        if a.keyboard_text is not None:
+            cmd += ['--keyboard-text', a.keyboard_text]
         if a.trace:
             cmd.append('--trace')
         if a.game_lib:
