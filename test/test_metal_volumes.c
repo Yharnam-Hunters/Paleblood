@@ -149,7 +149,7 @@ static void load_output(World *w,const Volume *v,const uint8_t *input,unsigned s
         unsigned x=single?px:(unsigned)(index%v->w),y=single?py:(unsigned)((index/v->w)%v->h),z=single?pz:(unsigned)(index/(v->w*v->h));
         uint32_t got;memcpy(&got,w->pool+OUTPUT+at*4,4);
         uint32_t expected=component(input+offset(v,x,y,z),v->format,c);
-        if(v->format->number==0){CHECK(isfinite(as_float(got))&&fabsf(as_float(got)-as_float(expected))<=0.000001f);}
+        if(v->format->number==0&&c<v->format->components){CHECK(isfinite(as_float(got))&&fabsf(as_float(got)-as_float(expected))<=0.000001f);}
         else{CHECK(got==expected);}
     }
     for(unsigned i=0;i<GUARD;++i){CHECK(w->pool[OUTPUT-GUARD+i]==CANARY);CHECK(w->pool[OUTPUT+n+i]==CANARY);}
