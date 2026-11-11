@@ -564,6 +564,13 @@ def cases():
               patch_cell=QNAN_A, frame_seconds=QNAN_A))
     add(build("settling_second_call", kept=([live(0x40, 0.5, seed=1), live(0x43, 2.0, seed=3)], [live(0x50, 0.4, seed=4)]),
               settling=1, settle_calls=1))
+    # Sources with the invalid handle (the real lookup rejects them) and flagged empty kept slots:
+    # the first list's count passes four and a later new source is written past the list.
+    add(build("strongest_overflow_invalid_handles",
+              [Source(INVALID, kind=0, scale=1.0), Source(0x81, kind=0, scale=2.0), Source(INVALID, kind=3, scale=3.0),
+               Source(0x82, kind=0, scale=4.0), Source(INVALID, kind=0, scale=50.0), Source(0x83, kind=3, scale=60.0),
+               Source(0x84, kind=2)],
+              kept=([live(INVALID, 0.0, flag=1) for _ in range(4)], []), active=(0, 1)))
     # Getter-backed sources with all four lanes.
     add(build("getters_mixed_lists", [Source(0xA0, kind=0, getters=True, tint=(QNAN_A, -0.0, 7.5, INF)),
                                       Source(0xA1, kind=9, getters=True, base_force=(1.0, 2.0, QNAN_B, -4.0))],
