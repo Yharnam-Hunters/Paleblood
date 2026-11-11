@@ -262,6 +262,10 @@ typedef struct {
     /* stencil and depth-block state: DB_STENCIL_CONTROL, DB_STENCILREFMASK and _BF, DB_RENDER_CONTROL */
     uint32_t stencil_control, stencil_reference[2], render_control;
     int stencil_control_set, stencil_reference_set[2], render_control_set;
+    /* the depth target's HTILE (DB_HTILE_DATA_BASE, the address shifted right by 8) and its clear value
+       (DB_DEPTH_CLEAR, a float's bits): a fast clear (resolve_depth_fast_clear) */
+    uint32_t htile_base, depth_clear;
+    int htile_set;
 } draw_state;
 
 struct rt_executor {
@@ -379,9 +383,11 @@ static int set_register(draw_state *s, uint32_t address, uint32_t value)
         return 0;
     case DB_RENDER_CONTROL: s->render_control = value, s->render_control_set = 1; return 0;
     case DB_DEPTH_VIEW: s->depth_view = value; return 0;
-    /* compression metadata (HTILE) and clear values: the executor keeps its own depth images, and clears
-       through DB_RENDER_CONTROL stop below */
-    case DB_HTILE_DATA_BASE: case DB_DEPTH_INFO: case DB_HTILE_SURFACE: case DB_DEPTH_CLEAR: case DB_STENCIL_CLEAR: return 0;
+    /* compression metadata (HTILE) and the depth clear value: a cleared HTILE clears the executor's depth
+       image (resolve_depth_fast_clear); clears through DB_RENDER_CONTROL stop below */
+    case DB_HTILE_DATA_BASE: s->htile_base = value, s->htile_set = 1; return 0;
+    case DB_DEPTH_CLEAR: s->depth_clear = value; return 0;
+    case DB_DEPTH_INFO: case DB_HTILE_SURFACE: case DB_STENCIL_CLEAR: return 0;
     default:
         if (address >= DB_Z_INFO && address <= DB_DEPTH_SLICE) {
             s->depth_target[address - DB_Z_INFO] = value;
@@ -1509,6 +1515,53 @@ fail:
    attachment. The colour targets must have one size. They and the depth target address pixels from the
    same corner, so a depth target larger than them (padded, as the game's 2048x1152 one under 1920x1088)
    is drawn with their size; a smaller one stops by name. NULL after failing. */
+/* Depth fast clears: the game clears a depth target by clearing its HTILE (one 32-bit word for each
+   8x8 tile, with DB_Z_INFO's TILE_SURFACE_ENABLE, bit 29) and leaves the depth to the GPU. A word whose
+   ZMASK (bits 0-3) is 0 marks its tile as cleared to DB_DEPTH_CLEAR, as AMD's public driver code (Mesa's
+   radeonsi) encodes HTILE; shadPS4 treats a cleared HTILE the same way, clearing the depth before the
+   draw. Before a draw that uses the depth target, an HTILE of only cleared tiles clears the image's
+   depth to DB_DEPTH_CLEAR (stencil is left as it is), and its words get ZMASK 0xf (expanded: the tile
+   holds its depth), so the clear happens once; an HTILE with no cleared tile needs nothing; a mix (a
+   partial fast clear) stops by name. Without DB_HTILE_DATA_BASE set there is no HTILE to read. 0, or -1
+   with the reason. */
+static int resolve_depth_fast_clear(rt_executor *x, const draw_state *s, depth_entry *z, char *error, size_t error_size)
+{
+    enum { TILE_SURFACE_ENABLE = 1u << 29, ZMASK = 0xf, TILE = 8 };
+    if (!(s->depth_target[Z_INFO] & TILE_SURFACE_ENABLE) || !s->htile_set || z->format == VK_FORMAT_S8_UINT) return 0;
+    const uint64_t htile = (uint64_t)s->htile_base << 8, bytes = (uint64_t)(z->width / TILE) * (z->height / TILE) * 4;
+    if (htile < x->guest_base || htile - x->guest_base > x->size || bytes > x->size - (htile - x->guest_base))
+        return failed(error, error_size, "depth target %#llx's HTILE at %#llx is outside the GPU-visible memory", (unsigned long long)z->z_address,
+                      (unsigned long long)htile);
+    if (guest_memory_settled(x, htile, bytes, error, error_size)) return -1; /* a dispatch in the batch may clear it */
+    uint32_t *words = (uint32_t *)((uint8_t *)x->view + (htile - x->guest_base));
+    const size_t count = (size_t)(bytes / 4);
+    size_t cleared = 0;
+    for (size_t i = 0; i < count; i++) cleared += (words[i] & ZMASK) == 0;
+    if (!cleared) return 0;
+    if (cleared != count)
+        return failed(error, error_size, "depth target %#llx with a partly fast-cleared HTILE (%zu of %zu tiles): not done yet",
+                      (unsigned long long)z->z_address, cleared, count);
+    VkCommandBuffer commands = batch_commands(x);
+    if (!commands) return failed(error, error_size, "no command buffer");
+    const VkImageSubresourceRange depth = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+    VkImageMemoryBarrier barrier = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                    .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                    .oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                    .image = z->image, .subresourceRange = depth};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+    VkClearDepthStencilValue value = {0.0f, 0};
+    memcpy(&value.depth, &s->depth_clear, sizeof value.depth);
+    vkCmdClearDepthStencilImage(commands, z->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1, &depth);
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+    for (size_t i = 0; i < count; i++) words[i] |= ZMASK;
+    z->drawn = 1;
+    return 0;
+}
+
 static pass_entry *pass_for(rt_executor *x, target_entry *const colors[RT_COLOR_TARGETS], const depth_entry *depth, char *error,
                             size_t error_size)
 {
@@ -1977,6 +2030,7 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     const int uses_depth = plan->depth_test || plan->stencil_test;
     depth_entry *z = uses_depth ? depth_for(x, s, error, error_size) : NULL;
     if (uses_depth && !z) return -1;
+    if (z && resolve_depth_fast_clear(x, s, z, error, error_size)) return -1;
     if (z && plan->reads && !z->drawn)
         return failed(error, error_size, "a depth or stencil test reads depth target %#llx, which no draw has written yet: its contents in "
                       "memory are not loaded", (unsigned long long)z->z_address);
