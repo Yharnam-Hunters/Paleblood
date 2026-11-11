@@ -217,6 +217,7 @@ typedef struct {
     int gpu_written;                 /* a shader has written it: its texels are the image's own */
     memory_snapshot agreed;          /* the guest memory it was last loaded from (loads through the CPU) */
     uint64_t loaded_change;          /* change_count when it was last loaded (UINT64_MAX: load it) */
+    uint64_t loaded_span;            /* the bytes of guest memory it was loaded from */
     tile_plan plan;                  /* its loads on the GPU, for elements of whole 32-bit words */
     VkImage image;
     VkDeviceMemory memory;
@@ -394,7 +395,10 @@ struct rt_executor {
        executor itself: the CPU's writes, and dispatch stores that may reach anything (metadata_state) */
     uint64_t outside_all;
     uint64_t *chunk_outside;
-    int (*collect_cpu_writes)(void (*written)(void *context, uint64_t pool_offset, uint64_t length), void *context);
+    int (*collect_cpu_writes)(const uint64_t (*ranges)[2], size_t count, void (*written)(void *context, uint64_t pool_offset, uint64_t length),
+                              void *context);
+    /* what note_cpu_writes asks about: the loaded images' and targets' memory, and their metadata */
+    uint64_t watch_ranges[MAX_IMAGES + 3 * MAX_TARGETS][2];
     /* The batches: slots[current] is the open one (batch_open) or the next to open. A batch is
        submitted when a buffer's calls end (batch_submit), without waiting: the CPU waits only where it
        reads what submitted work produces (the run-time stop words, guest memory a dispatch or
@@ -1148,10 +1152,51 @@ static void cpu_wrote(void *context, uint64_t pool_offset, uint64_t length)
     changed_outside(x, x->guest_base + pool_offset, length);
 }
 
-/* At each buffer: the CPU's writes since the last (all memory when they are not known). */
+static uint64_t target_span(const target_entry *t);
+
+static int by_start(const void *a, const void *b)
+{
+    const uint64_t *l = a, *r = b;
+    return l[0] < r[0] ? -1 : l[0] > r[0];
+}
+
+/* At each buffer: the CPU's writes since the last (all memory when they are not known), asked about
+   only where something loaded from memory would load again: under the images and targets loaded, and
+   the metadata known (pool offsets, sorted, merged into runs of whole chunks). The rest is loaded, or
+   read, anyway on first use. */
 static void note_cpu_writes(rt_executor *x)
 {
-    if (!x->collect_cpu_writes || x->collect_cpu_writes(cpu_wrote, x)) all_changed_outside(x);
+    if (!x->collect_cpu_writes) {
+        all_changed_outside(x);
+        return;
+    }
+    size_t n = 0;
+    for (size_t i = 0; i < x->image_count; i++) {
+        const image_entry *e = &x->images[i];
+        if (e->loaded_change != UINT64_MAX && e->loaded_span) x->watch_ranges[n][0] = e->address - x->guest_base, x->watch_ranges[n++][1] = e->loaded_span;
+    }
+    for (size_t i = 0; i < x->target_count; i++) {
+        const target_entry *t = &x->targets[i];
+        if (t->loaded_change != UINT64_MAX) x->watch_ranges[n][0] = t->address - x->guest_base, x->watch_ranges[n++][1] = target_span(t);
+        if (t->cmask.bytes) x->watch_ranges[n][0] = t->cmask.address - x->guest_base, x->watch_ranges[n++][1] = t->cmask.bytes;
+    }
+    for (size_t i = 0; i < x->depth_count; i++) {
+        const metadata_state *m = &x->depths[i].htile;
+        if (m->bytes) x->watch_ranges[n][0] = m->address - x->guest_base, x->watch_ranges[n++][1] = m->bytes;
+    }
+    qsort(x->watch_ranges, n, sizeof *x->watch_ranges, by_start);
+    size_t runs = 0;
+    for (size_t i = 0; i < n; i++) {
+        const uint64_t start = x->watch_ranges[i][0] / CHANGE_CHUNK * CHANGE_CHUNK;
+        const uint64_t end = (x->watch_ranges[i][0] + x->watch_ranges[i][1] + CHANGE_CHUNK - 1) / CHANGE_CHUNK * CHANGE_CHUNK;
+        if (runs && start <= x->watch_ranges[runs - 1][0] + x->watch_ranges[runs - 1][1]) {
+            const uint64_t run_end = x->watch_ranges[runs - 1][0] + x->watch_ranges[runs - 1][1];
+            if (end > run_end) x->watch_ranges[runs - 1][1] = end - x->watch_ranges[runs - 1][0];
+        } else {
+            x->watch_ranges[runs][0] = start, x->watch_ranges[runs++][1] = end - start;
+        }
+    }
+    if (x->collect_cpu_writes((const uint64_t(*)[2])x->watch_ranges, runs, cpu_wrote, x)) all_changed_outside(x);
 }
 
 /* Whether a batch, open or submitted, holds work that may store to `size` bytes of guest memory at
@@ -2713,14 +2758,14 @@ static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor
         const VkMemoryBarrier after = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
                                        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
         vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &after, 0, NULL, 0, NULL);
-        e->loaded_change = x->change_count;
+        e->loaded_change = x->change_count, e->loaded_span = span;
         return 0;
     }
     /* smaller elements: detiled by the CPU, skipped while the memory holds what was loaded last */
     if (!memory_changed_since(x, d->address, span, e->loaded_change)) return 0;
     if (guest_memory_settled(x, d->address, span, error, error_size)) return -1;
     const uint8_t *guest = (const uint8_t *)x->view + (d->address - x->guest_base);
-    e->loaded_change = x->change_count;
+    e->loaded_change = x->change_count, e->loaded_span = span;
     if (memory_unchanged(&e->agreed, guest, span)) return 0; /* the image holds these texels already */
     /* the open batch copies from its upload buffer already: on to the next batch */
     batch_slot *b = open_batch(x, error, error_size);
@@ -2772,7 +2817,7 @@ static int load_levels(rt_executor *x, image_entry *e, const rt_image_descriptor
     if (!memory_changed_since(x, d->address, span, e->loaded_change)) return 0;
     if (guest_memory_settled(x, d->address, span, error, error_size)) return -1;
     const uint8_t *guest = (const uint8_t *)x->view + (d->address - x->guest_base);
-    e->loaded_change = x->change_count;
+    e->loaded_change = x->change_count, e->loaded_span = span;
     if (memory_unchanged(&e->agreed, guest, span)) return 0;
     batch_slot *b = open_batch(x, error, error_size);
     if (b && b->upload_pending && (batch_submit(x, error, error_size) || !(b = open_batch(x, error, error_size)))) return -1;

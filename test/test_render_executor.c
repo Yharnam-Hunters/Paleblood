@@ -1699,8 +1699,10 @@ static struct {
     uint64_t pool_offset, length;
 } reported_write;
 
-static int report_writes(void (*written)(void *context, uint64_t pool_offset, uint64_t length), void *context)
+static int report_writes(const uint64_t (*ranges)[2], size_t count, void (*written)(void *context, uint64_t pool_offset, uint64_t length),
+                         void *context)
 {
+    (void)ranges, (void)count;
     if (reported_write.length) written(context, reported_write.pool_offset, reported_write.length);
     reported_write.length = 0;
     return 0;
