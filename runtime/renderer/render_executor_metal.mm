@@ -649,7 +649,7 @@ static int pixel_resources(rt_executor *x, const MetalState &state, MetalPixelRe
             return failed(error,size,"sampled image format does not support linear filtering on this Metal device");
         out.images[i] = {images[i].origin,
             descriptor.type == RT_IMAGE_1D || descriptor.type == RT_IMAGE_1D_ARRAY ? GCN_IMAGE_1D : GCN_IMAGE_2D,
-            descriptor.type == RT_IMAGE_1D_ARRAY || descriptor.type == RT_IMAGE_2D_ARRAY,format->type,format->components,1,0};
+            descriptor.type == RT_IMAGE_1D_ARRAY || descriptor.type == RT_IMAGE_2D_ARRAY,format->type,format->components,1,0,0};
         if (!(out.textures[i] = image_for(x,words,descriptor,*format,false,nullptr,error,size))) return -1;
     }
     return 0;
@@ -847,7 +847,7 @@ static int compute_resources(rt_executor *x, const rt_compute_shader &shader, co
             storage_read_write(x,format->metal,error,size)) return -1;
         out.images[i] = {images[i].origin,
             d.type == RT_IMAGE_1D || d.type == RT_IMAGE_1D_ARRAY ? GCN_IMAGE_1D : GCN_IMAGE_2D,
-            d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY,format->type,format->components,0,0};
+            d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY,format->type,format->components,0,0,0};
         out.access[i] = images[i].access;
         if (!(out.textures[i] = image_for(x,words,d,*format,true,&out.layouts[i],error,size))) return -1;
         for (unsigned j = 0; j < i; ++j) {

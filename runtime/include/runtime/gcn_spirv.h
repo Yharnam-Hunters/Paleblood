@@ -85,6 +85,9 @@ typedef struct {
     unsigned components;             /* the format's components, 1 to 4 */
     int sampled;                     /* a sampled image (reads only), not a storage image */
     int cube;                        /* a cube, bound as a 2D array of its faces (dim 2D, arrayed) */
+    uint32_t swizzle;                /* a storage image's DST_SEL (3 bits a component: 4-7 x, y, z, w), a permutation:
+                                        a load's component k is the texel's DST_SEL[k] - 4, a store writes it there;
+                                        0 is the identity (sampled images take theirs in the view) */
 } gcn_image_binding;
 
 /* GCN_MAX_IMAGES: up to 16 images a program (Vulkan guarantees 16 sampled images per stage) */

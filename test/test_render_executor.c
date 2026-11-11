@@ -926,6 +926,42 @@ static void depth_and_strips(rt_executor *x)
               strstr(error, "partly fast-cleared HTILE"));
 #undef CLEARED_TARGET
     }
+    /* Depth write-back: a 256 x 256 Depth2DThin64 depth target (tile index 0), fast-cleared to 1.0 through
+       HTILE, leaves 1.0 in every texel of its memory once a draw testing it (LEQUAL, no depth writes) has
+       run; a draw writing the triangle's depth (0) then leaves 0.0 under the triangle (the colour target's
+       16 x 16 corner). Without write-backs the memory keeps what it held (0x5a bytes here). */
+    {
+        enum { WB_Z = 0x1900000, WB_HTILE = 0x1980000, WB_COLOUR = 0x19a0000, WB_SIZE = 256, WB_WORDS = (WB_SIZE / 8) * (WB_SIZE / 8) };
+        const uint32_t wz = (uint32_t)(at(WB_Z) >> 8), wst = (uint32_t)(at(WB_Z + 0x40000) >> 8), wh = (uint32_t)(at(WB_HTILE) >> 8);
+        const uint32_t wb_size = (WB_SIZE / 8 - 1) | (WB_SIZE / 8 - 1) << 11;
+        uint32_t *htile_words = (uint32_t *)(uintptr_t)at(WB_HTILE);
+        for (unsigned i = 0; i < WB_WORDS; i++) htile_words[i] = 0xfffffff0u;
+        float *depth = (float *)(uintptr_t)at(WB_Z);
+        memset(depth, 0x5a, WB_SIZE * WB_SIZE * 4);
+#define WB_TARGET {0xa010, 0xa0000003}, {0xa011, 0x20000001}, {0xa012, wz}, {0xa013, wst}, {0xa014, wz}, {0xa015, wst}, \
+                  {0xa016, wb_size}, {0xa017, 0}, {0xa002, 0}, {0xa005, wh}, {0xa00b, 0x3f800000u}
+        const uint32_t clear_only[][2] = {WB_TARGET, {0xa200, 0x2 | 0x3u << 4}};
+        drawn = run_counted(x, DEPTH_BUFFER, at(WB_COLOUR), clear_only, 12, 3, error, sizeof error);
+        if (drawn) fprintf(stderr, "depth write-back (clear): %s\n", error);
+        CHECK(drawn == 0);
+        int ones = 1;
+        for (unsigned i = 0; i < WB_SIZE * WB_SIZE; i++) ones &= depth[i] == 1.0f;
+        CHECK(ones);
+        const uint32_t write_depth[][2] = {WB_TARGET, {0xa200, 0x2 | 0x4 | 0x7u << 4}};
+        drawn = run_counted(x, DEPTH_BUFFER, at(WB_COLOUR), write_depth, 12, 3, error, sizeof error);
+        if (drawn) fprintf(stderr, "depth write-back (draw): %s\n", error);
+        CHECK(drawn == 0);
+        int zeros = 1;
+        for (unsigned i = 0; i < 16 * 16; i++) { /* the colour target's 16 x 16 corner: the draw's area */
+            const unsigned px = i % 16, y = i / 16;
+            rt_tiling layout;
+            char reason[160];
+            CHECK(rt_tiling_layout(0, 4, WB_SIZE, WB_SIZE, &layout, reason, sizeof reason) == 0);
+            zeros &= *(const float *)((const uint8_t *)depth + rt_tiling_offset(&layout, px, y, 0)) == 0.0f;
+        }
+        CHECK(zeros);
+#undef WB_TARGET
+    }
     /* Slices of an array depth target (DB_DEPTH_VIEW SLICE_START = SLICE_MAX): a draw into slice 1
        writes slice 1 only: LESS on slice 1 then draws nothing, a test reading slice 0 meets a slice no
        draw wrote; a view of two slices stops by name. */
@@ -1788,6 +1824,172 @@ int main(void)
             for (unsigned i = 0; i < LANES; i++)
                 right &= i < NARROW ? back[i * 4] == (float)i && back[i * 4 + 3] == 0.5f : back[i * 4] == -1 && back[i * 4 + 3] == -1;
             CHECK(right);
+        }
+
+        /* A 3D image (TYPE 3D, DEPTH 1: two slices of 64 x 1), as the game's compute shader fills a colour
+           volume: texels stored in slice 1 read back from slice 1 as stored, and slice 0 keeps the new
+           image's zeros (a 3D image taken as one 2D slice would return the stored texels there too).
+           A storage cube (TYPE CUBE, faces 0 to 5) is an array of its faces: the same programs store to
+           face 1 and read faces 1 and 0. Reading a 3D image the GPU never wrote stops by name: its layout
+           in memory is not done yet. */
+        for (int cube = 0; cube < 2; cube++) {
+            enum { FILL3_CODE = 0x4c00, READ3_CODE = 0x5000, READ30_CODE = 0x5400, IMAGE_3D = IMAGE_A + 0x90000, CUBE_IMAGE = IMAGE_A + 0x98000 };
+            memcpy((void *)(uintptr_t)at(FILL3_CODE), image_fill_3d, sizeof image_fill_3d);
+            memcpy((void *)(uintptr_t)at(READ3_CODE), image_to_buffer_3d, sizeof image_to_buffer_3d);
+            memcpy((void *)(uintptr_t)at(READ30_CODE), image_to_buffer_3d_slice0, sizeof image_to_buffer_3d_slice0);
+            uint32_t volume[8];
+            image_descriptor(volume, at(cube ? CUBE_IMAGE : IMAGE_3D), 14, 7, LANES, 1);
+            volume[3] = (volume[3] & 0x0fffffffu) | (uint32_t)(cube ? RT_IMAGE_CUBE : RT_IMAGE_3D) << 28;
+            if (cube) volume[5] = 5u << 13; /* faces 0 to 5 (DEPTH 0: one cube) */
+            else volume[4] |= 1;            /* DEPTH: two slices */
+            for (int slice = 1; slice >= 0; slice--) {
+                rt_render_forget(), rt_executor_reset(x);
+                for (unsigned i = 0; i < LANES * 4; i++) back[i] = -1;
+                uint32_t offset = 0x10;
+                const uint64_t passes[2] = {at(FILL3_CODE), at(slice ? READ3_CODE : READ30_CODE)};
+                for (int pass = 0; pass < 2; pass++) {
+                    const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(passes[pass] >> 8), (uint32_t)(passes[pass] >> 40), 0x3, 16 << 1,
+                                                                      LANES, 1, 1};
+                    CHECK(rt_render_record_compute_shader_at(IMAGES + offset, shader) == 0);
+                    memset(user, 0, sizeof user);
+                    if (pass) descriptor(user, at(BACK), 16);
+                    memcpy(user + 8, volume, sizeof volume);
+                    CHECK(rt_render_record_user_data(IMAGES, offset + 0x10, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+                    CHECK(rt_render_record_user_data(IMAGES, offset + 0x20, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
+                    CHECK(rt_render_record_dispatch(IMAGES, offset + 0x30, one, error, sizeof error) == 0);
+                    offset += 0x40;
+                }
+                const int ran = rt_executor_run(x, IMAGES, offset, error, sizeof error);
+                if (ran) fprintf(stderr, "%s: %s\n", cube ? "storage cube" : "3D image", error);
+                CHECK(ran == 0);
+                int right = 1;
+                for (unsigned i = 0; i < LANES; i++)
+                    right &= slice ? back[i * 4] == (float)i && back[i * 4 + 1] == 1.0f && back[i * 4 + 2] == 2.0f && back[i * 4 + 3] == 0.5f
+                                   : back[i * 4] == 0 && back[i * 4 + 1] == 0 && back[i * 4 + 2] == 0 && back[i * 4 + 3] == 0;
+                CHECK(right);
+            }
+            if (cube) continue;
+            rt_render_forget(), rt_executor_reset(x);
+            const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(at(READ3_CODE) >> 8), (uint32_t)(at(READ3_CODE) >> 40), 0x3, 16 << 1,
+                                                              LANES, 1, 1};
+            CHECK(rt_render_record_compute_shader_at(IMAGES + 0x10, shader) == 0);
+            memset(user, 0, sizeof user);
+            descriptor(user, at(BACK), 16);
+            image_descriptor(volume, at(IMAGE_3D + 0x8000), 14, 7, LANES, 1);
+            volume[3] = (volume[3] & 0x0fffffffu) | (uint32_t)RT_IMAGE_3D << 28;
+            volume[4] |= 1;
+            memcpy(user + 8, volume, sizeof volume);
+            CHECK(rt_render_record_user_data(IMAGES, 0x20, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+            CHECK(rt_render_record_user_data(IMAGES, 0x30, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
+            CHECK(rt_render_record_dispatch(IMAGES, 0x40, one, error, sizeof error) == 0);
+            CHECK(rt_executor_run(x, IMAGES, 0x50, error, sizeof error) == -1 && strstr(error, "3D image") && strstr(error, "not done yet"));
+        }
+
+        /* A storage image's DST_SEL permutes its components (shadPS4 swizzles storage loads by it and
+           stores by its inverse): stores of (i, 1, 2, 0.5) through z, y, x, w (0xf2e) read back through
+           x, y, z, w as (2, 1, i, 0.5), and through z, y, x, w again as stored. */
+        {
+            enum { SWIZZLED = IMAGE_A + 0xa0000, BGRA = 6 | 5 << 3 | 4 << 6 | 7 << 9 };
+            for (int read_swizzled = 0; read_swizzled < 2; read_swizzled++) {
+                rt_render_forget(), rt_executor_reset(x);
+                for (unsigned i = 0; i < LANES * 4; i++) back[i] = -1;
+                uint32_t offset = 0x10;
+                for (int pass = 0; pass < 2; pass++) {
+                    const uint64_t code = pass ? codes[2] : codes[0];
+                    const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x3, 16 << 1, LANES, 1, 1};
+                    CHECK(rt_render_record_compute_shader_at(IMAGES + offset, shader) == 0);
+                    memset(user, 0, sizeof user);
+                    if (pass) descriptor(user, at(BACK), 16);
+                    image_descriptor(image_a, at(SWIZZLED), 14, 7, LANES, 1);
+                    if (!pass || read_swizzled) image_a[3] = (image_a[3] & ~0xfffu) | BGRA;
+                    memcpy(user + 8, image_a, sizeof image_a);
+                    CHECK(rt_render_record_user_data(IMAGES, offset + 0x10, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+                    CHECK(rt_render_record_user_data(IMAGES, offset + 0x20, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
+                    CHECK(rt_render_record_dispatch(IMAGES, offset + 0x30, one, error, sizeof error) == 0);
+                    offset += 0x40;
+                }
+                const int ran = rt_executor_run(x, IMAGES, offset, error, sizeof error);
+                if (ran) fprintf(stderr, "swizzled storage image: %s\n", error);
+                CHECK(ran == 0);
+                int right = 1;
+                for (unsigned i = 0; i < LANES; i++)
+                    right &= read_swizzled ? back[i * 4] == (float)i && back[i * 4 + 1] == 1.0f && back[i * 4 + 2] == 2.0f && back[i * 4 + 3] == 0.5f
+                                           : back[i * 4] == 2.0f && back[i * 4 + 1] == 1.0f && back[i * 4 + 2] == (float)i && back[i * 4 + 3] == 0.5f;
+                CHECK(right);
+            }
+        }
+
+        /* A one-component storage image with DST_SEL (0, 0, 0, x), as the game's alpha-only images: a store
+           of the shader's w alone (DMASK 8) writes x; read back through the identity it is x, and through
+           the same DST_SEL it is (0, 0, 0, x). */
+        {
+            enum { ALPHA_CODE = 0x5800, ALPHA_IMAGE = IMAGE_A + 0xc0000, TO_ALPHA = 0 | 0 << 3 | 0 << 6 | 4 << 9 };
+            memcpy((void *)(uintptr_t)at(ALPHA_CODE), image_fill_alpha, sizeof image_fill_alpha);
+            for (int read_swizzled = 0; read_swizzled < 2; read_swizzled++) {
+                rt_render_forget(), rt_executor_reset(x);
+                for (unsigned i = 0; i < LANES * 4; i++) back[i] = -1;
+                uint32_t offset = 0x10;
+                for (int pass = 0; pass < 2; pass++) {
+                    const uint64_t code = pass ? codes[2] : at(ALPHA_CODE);
+                    const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x3, 16 << 1, LANES, 1, 1};
+                    CHECK(rt_render_record_compute_shader_at(IMAGES + offset, shader) == 0);
+                    memset(user, 0, sizeof user);
+                    if (pass) descriptor(user, at(BACK), 16);
+                    image_descriptor(image_a, at(ALPHA_IMAGE), 4, 7, LANES, 1); /* 32 float */
+                    if (!pass || read_swizzled) image_a[3] = (image_a[3] & ~0xfffu) | TO_ALPHA;
+                    memcpy(user + 8, image_a, sizeof image_a);
+                    CHECK(rt_render_record_user_data(IMAGES, offset + 0x10, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+                    CHECK(rt_render_record_user_data(IMAGES, offset + 0x20, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
+                    CHECK(rt_render_record_dispatch(IMAGES, offset + 0x30, one, error, sizeof error) == 0);
+                    offset += 0x40;
+                }
+                const int ran = rt_executor_run(x, IMAGES, offset, error, sizeof error);
+                if (ran) fprintf(stderr, "alpha storage image: %s\n", error);
+                CHECK(ran == 0);
+                int right = 1;
+                for (unsigned i = 0; i < LANES; i++)
+                    right &= read_swizzled ? back[i * 4] == 0 && back[i * 4 + 1] == 0 && back[i * 4 + 2] == 0 && back[i * 4 + 3] == (float)i
+                                           : back[i * 4] == (float)i;
+                CHECK(right);
+            }
+        }
+
+        /* A compute shader's stores to an sRGB image (8_8_8_8, NUM_FORMAT 9) go out as UNORM, unconverted
+           (Vulkan has no sRGB storage images); a draw sampling the same memory as sRGB then reads those
+           texels, not the guest memory's (zeros here): row 0's texels hold (min(i, 1), 1, 1, 0.5), so pixel
+           (1, 0) is white with alpha about 128 and pixel (0, 0) has no red. A compute shader reading an sRGB
+           image stops by name. */
+        {
+            enum { SRGB_IMAGE = IMAGE_A + 0xb0000, SRGB_TARGET = 0x2180000 };
+            memset((void *)(uintptr_t)at(SRGB_IMAGE), 0, SIZE * SIZE * 4);
+            uint32_t srgb[8];
+            image_descriptor(srgb, at(SRGB_IMAGE), 10, 9, SIZE, SIZE);
+            srgb[3] |= 8u << 20; /* linear: the draw's load would read the memory as it lies */
+            rt_render_forget(), rt_executor_reset(x);
+            const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(codes[0] >> 8), (uint32_t)(codes[0] >> 40), 0x3, 16 << 1, LANES, 1, 1};
+            CHECK(rt_render_record_compute_shader_at(IMAGES + 0x10, shader) == 0);
+            memset(user, 0, sizeof user);
+            memcpy(user + 8, srgb, sizeof srgb);
+            CHECK(rt_render_record_user_data(IMAGES, 0x20, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
+            CHECK(rt_render_record_dispatch(IMAGES, 0x30, one, error, sizeof error) == 0);
+            int ran = rt_executor_run(x, IMAGES, 0x40, error, sizeof error);
+            if (ran) fprintf(stderr, "sRGB storage image: %s\n", error);
+            CHECK(ran == 0);
+            ran = draw_texels(x, at(SRGB_TARGET), srgb, error, sizeof error);
+            if (ran) fprintf(stderr, "sRGB image drawn: %s\n", error);
+            CHECK(ran == 0);
+            uint32_t bgra[SIZE * SIZE];
+            CHECK(rt_executor_read_target(x, at(SRGB_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+            const uint32_t alpha = bgra[1] >> 24; /* 0.5 as unorm: 127 or 128 */
+            CHECK((bgra[1] & 0xffffffu) == 0xffffffu && (alpha == 127 || alpha == 128) && (bgra[0] >> 16 & 0xff) == 0 && bgra[SIZE] == 0);
+            rt_render_forget(), rt_executor_reset(x);
+            const uint32_t reader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(codes[2] >> 8), (uint32_t)(codes[2] >> 40), 0x3, 16 << 1, LANES, 1, 1};
+            CHECK(rt_render_record_compute_shader_at(IMAGES + 0x10, reader) == 0);
+            descriptor(user, at(BACK), 16);
+            CHECK(rt_render_record_user_data(IMAGES, 0x20, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+            CHECK(rt_render_record_user_data(IMAGES, 0x30, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
+            CHECK(rt_render_record_dispatch(IMAGES, 0x40, one, error, sizeof error) == 0);
+            CHECK(rt_executor_run(x, IMAGES, 0x50, error, sizeof error) == -1 && strstr(error, "reading an sRGB image"));
         }
 
         /* An image no shader wrote holds the guest memory's texels: linear (tiling index 8) RGBA32F
