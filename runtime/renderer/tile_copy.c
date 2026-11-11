@@ -57,22 +57,22 @@ static uint32_t offset_address(builder *b, uint32_t address, uint32_t bytes)
     return binary(b, SPV_OP_I_ADD, b->u64, address, op(b, SPV_OP_U_CONVERT, b->u64, &bytes, 1));
 }
 
-static uint32_t word_pointer(builder *b, uint32_t address)
+/* A load of `type` (a word, or a vector of words) from address, `bytes`-aligned. */
+static uint32_t load_aligned(builder *b, uint32_t type, uint32_t address, uint32_t bytes)
 {
-    return op(b, SPV_OP_CONVERT_U_TO_PTR, spirv_type_pointer(&b->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, b->u32), &address, 1);
-}
-
-static uint32_t load_word(builder *b, uint32_t address)
-{
+    const uint32_t pointer = op(b, SPV_OP_CONVERT_U_TO_PTR, spirv_type_pointer(&b->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, type), &address, 1);
     const uint32_t id = spirv_new_id(&b->m);
-    spirv_emit(&b->m, &b->body, SPV_OP_LOAD, (const uint32_t[]){b->u32, id, word_pointer(b, address), SPV_MEMORY_ACCESS_ALIGNED, BYTES_PER_WORD}, 5);
+    spirv_emit(&b->m, &b->body, SPV_OP_LOAD, (const uint32_t[]){type, id, pointer, SPV_MEMORY_ACCESS_ALIGNED, bytes}, 5);
     return id;
 }
 
-static void store_word(builder *b, uint32_t address, uint32_t value)
+static void store_aligned(builder *b, uint32_t type, uint32_t address, uint32_t value, uint32_t bytes)
 {
-    spirv_emit(&b->m, &b->body, SPV_OP_STORE, (const uint32_t[]){word_pointer(b, address), value, SPV_MEMORY_ACCESS_ALIGNED, BYTES_PER_WORD}, 4);
+    const uint32_t pointer = op(b, SPV_OP_CONVERT_U_TO_PTR, spirv_type_pointer(&b->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, type), &address, 1);
+    spirv_emit(&b->m, &b->body, SPV_OP_STORE, (const uint32_t[]){pointer, value, SPV_MEMORY_ACCESS_ALIGNED, bytes}, 4);
 }
+
+static uint32_t load_word(builder *b, uint32_t address) { return load_aligned(b, b->u32, address, BYTES_PER_WORD); }
 
 static uint32_t input_vector(builder *b, uint32_t built_in)
 {
@@ -156,11 +156,12 @@ int rt_tile_copy_shader(unsigned dwords, int to_tiled, uint32_t **spirv, size_t 
     const uint32_t element = binary(b, SPV_OP_I_ADD, b->u32, binary(b, SPV_OP_I_MUL, b->u32, row, width), x);
     const uint32_t linear = offset_address(b, push_address(b, RT_TILE_COPY_LINEAR_LO),
                                            binary(b, SPV_OP_I_MUL, b->u32, element, konst(b, dwords * BYTES_PER_WORD)));
-    for (unsigned w = 0; w < dwords; w++) {
-        const uint32_t from = offset_address(b, to_tiled ? linear : tiled, konst(b, w * BYTES_PER_WORD));
-        const uint32_t to = offset_address(b, to_tiled ? tiled : linear, konst(b, w * BYTES_PER_WORD));
-        store_word(b, to, load_word(b, from));
-    }
+    /* the whole element in one access: lanes then write neighbouring bytes at once (separate word
+       stores leave gaps that the bus to host memory moves word by word, hundreds of times slower) */
+    const uint32_t element_type = dwords == 1 ? b->u32 : spirv_global(m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){b->u32, dwords}, 2);
+    const uint32_t element_bytes = dwords * BYTES_PER_WORD;
+    const uint32_t from = to_tiled ? linear : tiled, to = to_tiled ? tiled : linear;
+    store_aligned(b, element_type, to, load_aligned(b, element_type, from, element_bytes), element_bytes);
     spirv_emit(m, &b->body, SPV_OP_BRANCH, &copied, 1);
     spirv_emit(m, &b->body, SPV_OP_LABEL, &copied, 1);
     spirv_emit(m, &b->body, SPV_OP_BRANCH, &merge, 1);
