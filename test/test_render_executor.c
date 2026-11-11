@@ -316,11 +316,13 @@ static void many_images(rt_executor *x)
 /* Sampling picks the level the derivatives give (pixel_minified): a 64x64 image with three levels, red,
    green and blue, sampled at (x / 16, y / 16) over 16x16 pixels spans 4 texels a pixel, level 2:
    blue with a point or linear mip filter, red (level 0) with none. image_sample_l at level 1
-   (pixel_explicit_level) draws green with a mip filter, red with none. */
+   (pixel_explicit_level) draws green with a mip filter, red with none; image_sample_lz
+   (pixel_level_zero) draws red with any. */
 static void sampled_levels(rt_executor *x)
 {
-    enum { MIPPED = 0x8d0000, LEVELS_TARGET = 0x8e0000, LEVELS_CODE = 0x3400, EXPLICIT_CODE = 0x3600, LEVELS_BUFFER = 0xc0f30000, EDGE = 64, LEVELS = 3,
-           LINEAR_ALIGNED = 8, MIP_POINT = 1, MIP_LINEAR = 2 };
+    enum { MIPPED = 0x8d0000, LEVELS_TARGET = 0x8e0000, LEVELS_CODE = 0x3400, EXPLICIT_CODE = 0x3600, ZERO_CODE = 0x3c00, LEVELS_BUFFER = 0xc0f30000,
+           EDGE = 64, LEVELS = 3, LINEAR_ALIGNED = 8, MIP_POINT = 1, MIP_LINEAR = 2 };
+    enum { BY_DERIVATIVES, AT_LEVEL_1, AT_LEVEL_0, KINDS };
     static const uint32_t colours[LEVELS] = {0xff0000ffu, 0xff00ff00u, 0xffff0000u}; /* red, green, blue (bytes R, G, B, A) */
     char error[256] = "";
     uint8_t *guest = (uint8_t *)(uintptr_t)at(0);
@@ -332,15 +334,16 @@ static void sampled_levels(rt_executor *x)
     }
     memcpy((void *)(uintptr_t)at(LEVELS_CODE), pixel_minified, sizeof pixel_minified);
     memcpy((void *)(uintptr_t)at(EXPLICIT_CODE), pixel_explicit_level, sizeof pixel_explicit_level); /* its own address: shaders are kept by address */
-    for (unsigned run = 0; run < 2 * (MIP_LINEAR + 1); run++) {
-        const unsigned mip = run % (MIP_LINEAR + 1), explicit_level = run > MIP_LINEAR;
+    memcpy((void *)(uintptr_t)at(ZERO_CODE), pixel_level_zero, sizeof pixel_level_zero);
+    for (unsigned run = 0; run < KINDS * (MIP_LINEAR + 1); run++) {
+        const unsigned mip = run % (MIP_LINEAR + 1), kind = run / (MIP_LINEAR + 1);
         uint32_t user[16] = {0};
         image_descriptor(user + 4, at(MIPPED), 10, 0, EDGE, EDGE);
         user[7] |= LINEAR_ALIGNED << 20 | (LEVELS - 1) << 16;
         user[12] = 0x2 | 0x2 << 3 | 0x2 << 6, user[13] = 15u * 256 << 12, user[14] = mip << 26; /* clamped, MAX_LOD 15, point filters */
         rt_render_forget(), rt_executor_reset(x);
         uint32_t offset = record_setup(LEVELS_BUFFER, at(LEVELS_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
-        const uint64_t code = at(explicit_level ? EXPLICIT_CODE : LEVELS_CODE);
+        const uint64_t code = at(kind == AT_LEVEL_1 ? EXPLICIT_CODE : kind == AT_LEVEL_0 ? ZERO_CODE : LEVELS_CODE);
         const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 16 << 1, 0, 0x4, 0x302, 0x302,
                                                        0, 0, 0, 0xf};
         CHECK(rt_render_record_pixel_shader(LEVELS_BUFFER, offset, pixel, error, sizeof error) == 0);
@@ -351,11 +354,11 @@ static void sampled_levels(rt_executor *x)
         CHECK(drawn == 0);
         uint32_t bgra[SIZE * SIZE];
         CHECK(rt_executor_read_target(x, at(LEVELS_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
-        const uint32_t expected = mip == 0 ? 0xffff0000u : explicit_level ? 0xff00ff00u : 0xff0000ffu; /* BGRA words: red, green, blue */
+        const uint32_t expected = mip == 0 || kind == AT_LEVEL_0 ? 0xffff0000u : kind == AT_LEVEL_1 ? 0xff00ff00u : 0xff0000ffu; /* BGRA words: red, green, blue */
         int covered = 0, right = 1;
         for (int i = 0; i < SIZE * SIZE; i++)
             if (bgra[i]) covered++, right &= bgra[i] == expected; /* the triangle's pixels */
-        if (!right) fprintf(stderr, "sampled levels, mip filter %u%s: a pixel %08x\n", mip, explicit_level ? " (explicit)" : "", bgra[SIZE * SIZE / 2]);
+        if (!right) fprintf(stderr, "sampled levels, mip filter %u, kind %u: a pixel %08x\n", mip, kind, bgra[SIZE * SIZE / 2]);
         CHECK(covered > 0 && right);
     }
 }
