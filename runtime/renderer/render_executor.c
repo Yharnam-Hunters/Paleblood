@@ -217,7 +217,8 @@ typedef struct {
    (they stop the run). */
 typedef struct {
     uint64_t code, callee;
-    int samplers, used;
+    int samplers, used;              /* samplers: 0 the image scan, 1 the sampler scan, 2 the buffer-store scan */
+    int unknown;                     /* the buffer-store scan: some store's descriptor has no known origin */
     uint32_t *words, *callee_words;  /* the programs as scanned, through their ends (gcn_program_dwords) */
     size_t dwords, callee_dwords;
     unsigned count;
@@ -2856,6 +2857,39 @@ static int stage_samplers(rt_executor *x, uint64_t code, const uint32_t *user, u
 }
 
 /* Records a dispatch of the current compute shader into the batch; its writes reach the guest memory once the batch has run. */
+/* The memory a compute shader's buffer stores may reach as it is dispatched now: for each buffer
+   descriptor its stores write through (gcn_buffer_store_resources, the scan kept), the descriptor's range
+   (range checking keeps every store inside it: NUM_RECORDS bytes from the base with stride 0, NUM_RECORDS
+   records of the stride otherwise). *anywhere when a store's descriptor is not known (or there are more
+   than GCN_MAX_IMAGES): its stores may reach any memory. 0, or -1 with the reason. */
+static int dispatch_store_ranges(rt_executor *x, const rt_compute_shader *c, const uint32_t *user, uint32_t user_set, uint64_t ranges[][2],
+                                 unsigned *count, int *anywhere, char *error, size_t error_size)
+{
+    enum { STRIDE_SHIFT = 16, STRIDE_MASK = 0x3fff, BASE_HIGH_MASK = 0xff };
+    gcn_resource_origin origins[GCN_MAX_IMAGES];
+    *count = 0, *anywhere = 0;
+    scan_entry *scan = scan_for(x, c->code, 0, 2);
+    unsigned n = 0;
+    if (scan && scan->used) {
+        n = scan->count, *anywhere = scan->unknown;
+        memcpy(origins, scan->sampler_origins, n * sizeof *origins);
+    } else {
+        char reason[300];
+        if (gcn_buffer_store_resources((const uint32_t *)(uintptr_t)c->code, (size_t)((x->guest_base + x->size - c->code) / 4), origins,
+                                       GCN_MAX_IMAGES, &n, anywhere, reason, sizeof reason))
+            return failed(error, error_size, "compute shader at %#llx: %s", (unsigned long long)c->code, reason);
+        if (scan) scan_keep(x, scan, n, NULL, origins), scan->unknown = *anywhere;
+    }
+    for (unsigned i = 0; i < n; i++) {
+        uint32_t words[4];
+        if (descriptor_words(x, &origins[i], user, c->user_sgprs, user_set, words, 4, error, error_size)) return -1;
+        const uint64_t base = words[0] | (uint64_t)(words[1] & BASE_HIGH_MASK) << 32, stride = words[1] >> STRIDE_SHIFT & STRIDE_MASK;
+        ranges[i][0] = base, ranges[i][1] = stride ? stride * words[2] : words[2];
+    }
+    *count = n;
+    return 0;
+}
+
 static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3], char *error, size_t error_size)
 {
     if (!s->compute_set) return failed(error, error_size, "a dispatch without a compute shader");
@@ -2882,6 +2916,11 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     if (image_count && image_set(x, x->image_set_layouts[image_count], VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, views, image_count, NULL, 0, NULL, 0, &set,
                                  error, error_size))
         return -1;
+    uint64_t store_ranges[GCN_MAX_IMAGES][2]; /* the memory its buffer stores may reach: address, bytes */
+    unsigned store_count = 0;
+    int stores_anywhere = 0;
+    if (dispatch_store_ranges(x, c, s->compute_user, s->compute_user_set, store_ranges, &store_count, &stores_anywhere, error, error_size))
+        return -1;
     VkCommandBuffer commands = batch_commands(x);
     if (!commands) return failed(error, error_size, "no command buffer");
     /* what earlier work wrote (images, guest memory) is visible to this dispatch */
@@ -2893,7 +2932,9 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, USER_DATA_BYTES, s->compute_user);
     vkCmdDispatch(commands, groups[0], groups[1], groups[2]);
     x->memory_epoch++; /* its stores may have changed any memory, render targets' included */
-    x->slots[x->current].memory_pending = 1; /* the CPU reads such memory only once the batch has run */
+    /* the CPU reads memory it may store to only once the batch has run */
+    if (stores_anywhere) x->slots[x->current].memory_pending = 1;
+    for (unsigned i = 0; i < store_count; i++) batch_writes(x, store_ranges[i][0], store_ranges[i][1]);
     return 0;              /* the run-time stop word is checked once the batch has run */
 }
 
