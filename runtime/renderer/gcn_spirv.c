@@ -1054,6 +1054,14 @@ static void scalar_instruction(translator *t, const uint32_t *w, const gcn_instr
         }
     } else if (!strcmp(name, "s_movk_i32")) {
         write_sgpr(t, sdst, konst(t, (uint32_t)(int32_t)(int16_t)(w[0] & 0xffff)), ins);
+    } else if ((!strcmp(name, "s_addk_i32") || !strcmp(name, "s_mulk_i32")) && sdst < SGPR_VCC) {
+        /* D = D + the sign-extended SIMM16, SCC = signed overflow; or D = D * it, SCC kept (the Sea
+           Islands ISA manual's SOPK descriptions) */
+        const uint32_t a = load(t, t_uint(t), sgpr(t, sdst)), k = konst(t, (uint32_t)(int32_t)(int16_t)(w[0] & 0xffff));
+        const int add = !strcmp(name, "s_addk_i32");
+        const uint32_t r = value(t, add ? SPV_OP_I_ADD : SPV_OP_I_MUL, t_uint(t), 2, a, k);
+        if (add) set_scc(t, signed_overflow(t, a, k, r, 0));
+        write_sgpr(t, sdst, r, ins);
     } else if (!strcmp(name, "s_waitcnt") || !strcmp(name, "s_nop")) {
         /* Memory completes in order in SPIR-V within an invocation: nothing to wait for. */
     } else {
@@ -2103,15 +2111,19 @@ static int leaves_straight_line(const uint32_t *w, const gcn_instruction *ins, s
    comes from (runtime/gcn_spirv.h): the user data when no instruction writes those SGPRs before it
    runs, or memory when the last write is an s_load covering those SGPRs (exactly, or as part of a wider load), at an immediate or literal offset
    from a pointer pair no instruction before it writes. With branches in the program, the load is
-   followed only when every path to the use passes it: no branch lands between it and the use (code
-   runs forward between branches, so a path that skipped the load would have to land there), every
+   followed only when every path to the use passes it: no branch from before the load lands between it
+   and the use (code runs forward between branches, so a path that skipped the load would have to land
+   there; a loop from after the load back to there is such a path only if a branch from before the load
+   reaches the loop's branch, so none may land after the load up to it), every
    branch's target is known, no branch goes back to the use or before it when an instruction after
-   the use writes those SGPRs, and no instruction before the load writes the pointer pair, nor any
+   the use and before that branch writes those SGPRs, and no instruction before the load writes the pointer pair, nor any
    instruction at all when a branch goes back to the load or before it (so a loop that runs the load
    again loads the same descriptor; without one, code after the load may reuse the pointer's SGPRs, as
    the game's pixel shaders do once their samples are done). The user data's descriptor holds at a use
    that no write comes before, whatever branches run, unless one goes back to the use after a later
-   write (the game's pixel shaders reuse a sampler's SGPRs after their last sample). Writes before the
+   write (the game's pixel shaders reuse a sampler's SGPRs after their last sample; one at the loading
+   screen loops over samples through the user data's descriptor and reuses its SGPRs only after the
+   loop's closing branch). Writes before the
    load do not matter: it replaces them
    (the game's shaders keep a compare's mask in those SGPRs before loading the descriptor). A
    branch that skips the load also skips the use, as the game's guarded samples do (an
@@ -2120,40 +2132,54 @@ static int descriptor_origin(const uint32_t *code, size_t program, const callee_
                              gcn_resource_origin *origin, char *error, size_t error_size)
 {
     *origin = (gcn_resource_origin){.sgpr = first};
-    long writer = -1;
-    int written = 0, written_after_use = 0;
+    long writer = -1, written_after_use = -1; /* the last write before the use, the first after it */
+    int written = 0;
     for (size_t p = 0; p < program;) {
         gcn_instruction ins;
         if (gcn_decode(code + p, program - p, &ins) || !ins.name) break;
         if (writes_sgprs(code + p, &ins, callee, first, width)) {
             written = 1;
             if (p < at) writer = (long)p;
-            else written_after_use = 1;
+            else if (written_after_use < 0) written_after_use = (long)p;
         }
         p += ins.dwords;
     }
     if (!written) return 0;
     int loops_to_load = 0; /* a branch back to the load or before it */
+    long loop_end = -1;    /* the last branch from after the load back to between it and the use */
+    long skip_target = -1; /* the nearest place a branch from before the load lands after it */
     for (size_t p = 0; p < program;) {
         gcn_instruction ins;
         if (gcn_decode(code + p, program - p, &ins) || !ins.name) break;
         long target;
         if (leaves_straight_line(code + p, &ins, p, callee, &target) && (p < at || target < 0 || (size_t)target <= at)) {
+            /* a branch back to the use or before it, from after a write that follows the use: a loop whose
+               next pass would read what that write left (a write after the branch runs once the loop is done) */
             const int back_to_use = (size_t)target <= at && (size_t)target <= p && p >= at;
-            if (target < 0 || (written_after_use && back_to_use)) {
+            if (target < 0 || (written_after_use >= 0 && (size_t)written_after_use <= p && back_to_use)) {
                 snprintf(error, error_size, "the descriptor in s[%u:%u] is written by the program, and a branch (%s at dword %zu) comes "
                          "before its use at dword %zu: not done yet", first, first + width - 1, ins.name, p, at);
                 return -1;
             }
-            if (writer >= 0 && target > writer && (size_t)target <= at) {
+            if (writer >= 0 && target > writer && (size_t)target <= at && (long)p > writer) {
+                /* a loop from after the load: a path that skipped the load could reach it only through a
+                   branch from before the load to the loop (checked below) */
+                if ((long)p > loop_end) loop_end = (long)p;
+            } else if (writer >= 0 && target > writer && (size_t)target <= at) {
                 snprintf(error, error_size, "the descriptor in s[%u:%u] is loaded at dword %ld, and a branch (%s at dword %zu) lands at "
                          "dword %ld, between the load and its use at dword %zu: not done yet", first, first + width - 1, writer, ins.name,
                          p, target, at);
                 return -1;
             }
             if (target <= writer && (size_t)target <= p) loops_to_load = 1;
+            if (writer >= 0 && (long)p < writer && target > writer && (skip_target < 0 || target < skip_target)) skip_target = target;
         }
         p += ins.dwords;
+    }
+    if (loop_end >= 0 && skip_target >= 0 && skip_target <= loop_end) {
+        snprintf(error, error_size, "the descriptor in s[%u:%u] is loaded at dword %ld, and a branch from before it lands at dword %ld, "
+                 "before a loop's branch back to its use at dword %zu: not done yet", first, first + width - 1, writer, skip_target, at);
+        return -1;
     }
     if (writer < 0) return 0;
     const uint32_t *w = code + writer;
