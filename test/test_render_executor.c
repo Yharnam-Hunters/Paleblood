@@ -1440,7 +1440,7 @@ static void indexed_packets(rt_executor *x, int fd)
     /* A low guest window makes the unchecked sum wrap into valid GPU memory.
        With no targets enabled it would be accepted if the overflow guard vanished. */
     const uint64_t low_base = 0x100000000ull;
-    const rt_executor_memory low_memory = {fd, GUEST_SIZE, low_base};
+    const rt_executor_memory low_memory = {fd, GUEST_SIZE, low_base, NULL};
     rt_executor *low = NULL;
     const int opened = rt_executor_open(&low_memory, &low, error, sizeof error);
     if (opened) fprintf(stderr, "low index window: %s\n", error);
@@ -1637,6 +1637,72 @@ static void compressed_image(rt_executor *x)
     CHECK(differs);
 }
 
+/* The CPU writes the fake watch reports at the next buffer (runtime/write_watch.h's collect). */
+static struct {
+    uint64_t pool_offset, length;
+} reported_write;
+
+static int report_writes(void (*written)(void *context, uint64_t pool_offset, uint64_t length), void *context)
+{
+    if (reported_write.length) written(context, reported_write.pool_offset, reported_write.length);
+    reported_write.length = 0;
+    return 0;
+}
+
+/* With the CPU's writes reported by a watch (collect_cpu_writes), an image loads again only when its
+   memory changed: a CPU write the watch did not report leaves the image as it was loaded (the draw
+   still shows the reference); once reported, the next draw shows the new texels; a dispatch storing
+   into the memory (scale_add's 1.0 floats over its first 64 texels) reloads it with no report. */
+static void watched_memory(int fd)
+{
+    enum { IMAGE = 0x1e00000, TEXEL_TARGET = 0x1e10000, COMPUTE = 0xc0e40000, COMPUTE_CODE = 0x3000, ZEROS = 0x1e20000, LANES = 64,
+           LINEAR_ALIGNED = 8 };
+    char error[256] = "";
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes};
+    rt_executor *x = NULL;
+    const int opened = rt_executor_open(&memory, &x, error, sizeof error);
+    if (opened) fprintf(stderr, "watched executor: %s\n", error);
+    CHECK(opened == 0);
+    if (!x) return;
+    uint32_t *texels = (uint32_t *)(uintptr_t)at(IMAGE);
+    for (uint32_t y = 0; y < SIZE; y++)
+        for (uint32_t px = 0; px < SIZE; px++) texels[y * SIZE + px] = reference_texel(px, y);
+    uint32_t image[8];
+    image_descriptor(image, at(IMAGE), 10, 0, SIZE, SIZE);
+    image[3] |= LINEAR_ALIGNED << 20;
+    CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
+    CHECK(differing_pixels(x, at(TEXEL_TARGET)) == 0);
+
+    memset(texels, 0, SIZE * SIZE * 4); /* not reported: the image keeps what it loaded */
+    CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
+    CHECK(differing_pixels(x, at(TEXEL_TARGET)) == 0);
+    reported_write.pool_offset = IMAGE, reported_write.length = SIZE * SIZE * 4;
+    CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
+    CHECK(differing_pixels(x, at(TEXEL_TARGET)) == SIZE * SIZE);
+
+    for (uint32_t y = 0; y < SIZE; y++)
+        for (uint32_t px = 0; px < SIZE; px++) texels[y * SIZE + px] = reference_texel(px, y);
+    reported_write.pool_offset = IMAGE, reported_write.length = SIZE * SIZE * 4;
+    CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
+    CHECK(differing_pixels(x, at(TEXEL_TARGET)) == 0);
+    memcpy((void *)(uintptr_t)at(COMPUTE_CODE), scale_add, sizeof scale_add);
+    memset((void *)(uintptr_t)at(ZEROS), 0, LANES * 4);
+    rt_render_forget(), rt_executor_reset(x);
+    const uint64_t code = at(COMPUTE_CODE);
+    const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0, 8 << 1, LANES, 1, 1};
+    CHECK(rt_render_record_compute_shader_at(COMPUTE + 0x10, shader) == 0);
+    uint32_t user[8];
+    descriptor(user, at(ZEROS), 4);
+    descriptor(user + 4, at(IMAGE), 4);
+    CHECK(rt_render_record_user_data(COMPUTE, 0x20, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+    const uint32_t one[3] = {1, 1, 1};
+    CHECK(rt_render_record_dispatch(COMPUTE, 0x30, one, error, sizeof error) == 0);
+    CHECK(rt_executor_run(x, COMPUTE, 0x40, error, sizeof error) == 0);
+    CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
+    CHECK(differing_pixels(x, at(TEXEL_TARGET)) == LANES);
+    rt_executor_close(x);
+}
+
 int main(void)
 {
     const int fd = map_guest_memory();
@@ -1646,7 +1712,7 @@ int main(void)
     }
     rt_executor *x = NULL;
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL};
     if (rt_executor_open(&memory, &x, error, sizeof error)) {
         fprintf(stderr, "skipped: %s\n", error);
         return SKIPPED;
@@ -1702,6 +1768,7 @@ int main(void)
     CHECK(rt_executor_read_target(x, at(TARGET) + 0x480000, bgra, 2, 2, error, sizeof error) == -1 && strstr(error, "no draw"));
     fast_clears(x);
     metadata_store_waits(x);
+    watched_memory(fd);
     const uint32_t resolve[][2] = {{0xa202, 0x3u << 4 | 0xccu << 16}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), resolve, 1, 0, error, sizeof error) == -1 && strstr(error, "colour mode 3"));
     const uint32_t unknown[][2] = {{0xa1e8, 0}};

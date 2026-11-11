@@ -36,6 +36,7 @@
 #include "runtime/guest_errno.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
+#include "runtime/write_watch.h"
 
 #include <errno.h>
 #if defined(__APPLE__) && defined(__MACH__)
@@ -270,11 +271,15 @@ static pthread_mutex_t mappings_lock = PTHREAD_MUTEX_INITIALIZER;
 static guest_mapping mappings[MAX_MAPPINGS];
 static int mapping_count;
 
+/* Records a mapping. The CPU's writes to a direct map are watched (runtime/write_watch.h), so the
+   renderer loads a texture again only when its memory was written; a watch that cannot start
+   leaves the renderer taking all memory as changed. */
 static void note_mapping(const char *caller, guest_mapping mapping)
 {
     pthread_mutex_lock(&mappings_lock);
     if (mapping_count == MAX_MAPPINGS) rt_fatal(caller, "more mappings than the runtime records");
     mappings[mapping_count++] = mapping;
+    if (mapping.direct) rt_write_watch_add((void *)mapping.start, mapping.length, (uint64_t)mapping.offset);
     pthread_mutex_unlock(&mappings_lock);
 }
 
@@ -564,6 +569,7 @@ static int32_t unmap_range(const char *caller, void *address, uint64_t length, i
             i++;
             continue;
         }
+        if (m.direct) rt_write_watch_remove((void *)m.start, m.length);
         if (munmap((void *)m.start, m.length)) rt_fatal(caller, "the host could not unmap the memory");
         mappings[i] = mappings[--mapping_count];
         if (m.direct) {

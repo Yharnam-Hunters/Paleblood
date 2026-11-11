@@ -6,6 +6,7 @@
 #include "runtime/process.h"
 #include "runtime/render_calls.h"
 #include "runtime/render_executor.h"
+#include "runtime/write_watch.h"
 
 #include <pthread.h>
 #include <stdlib.h>
@@ -22,7 +23,8 @@ void rt_renderer_configure(int on) { enabled = on; }
 static rt_executor *executor_for(const char *function)
 {
     if (!enabled || executor) return executor;
-    rt_executor_memory memory = {.guest_base = rt_gpu_memory_base()};
+    /* the CPU's writes, when the runtime watches them (runtime/write_watch.h): textures reload only then */
+    rt_executor_memory memory = {.guest_base = rt_gpu_memory_base(), .collect_cpu_writes = rt_write_watch_active() ? rt_write_watch_collect : NULL};
     if (rt_gpu_memory_pool(&memory.fd, &memory.size)) return NULL; /* no direct memory yet: nothing to draw from */
     char error[256];
     if (rt_executor_open(&memory, &executor, error, sizeof error)) rt_fatal(function, error);

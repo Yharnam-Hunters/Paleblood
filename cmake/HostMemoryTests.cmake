@@ -3,6 +3,7 @@ get_filename_component(PB_HOST_MEMORY_ROOT "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLU
 find_package(Threads REQUIRED)
 set(PB_HOST_MEMORY_SOURCES
     "${PB_HOST_MEMORY_ROOT}/runtime/memory.c"
+    "${PB_HOST_MEMORY_ROOT}/runtime/write_watch.c"
     "${PB_HOST_MEMORY_ROOT}/runtime/syslib/kernel_memory.c"
     "${PB_HOST_MEMORY_ROOT}/runtime/syslib/kernel.c"
     "${PB_HOST_MEMORY_ROOT}/runtime/syslib/table.c"
