@@ -659,8 +659,10 @@ int main(int argc, char **argv)
 
     /* Scalar compares with 16-bit constants (zero-extended for u32, sign-extended for i32), min
        and max with SCC, and bit-field extracts; s8 = 0xffff, s9 = -1, s10 = 0x12345678,
-       s11 = 0xf000. */
-    static const uint32_t scalar_expected[16] = {
+       s11 = 0xf000. Then adds and multiplies by sign-extended 16-bit constants: s12 = 0x7ffffff8,
+       s13 = 5, s14 = 7. */
+    enum { SCALAR_WORDS = 22 };
+    static const uint32_t scalar_expected[SCALAR_WORDS] = {
         1,                   /* s_cmpk_eq_u32 s8, 0xffff */
         1,                   /* s_cmpk_eq_i32 s9, 0xffff (-1) */
         0,                   /* s_cmpk_lt_i32 s8, 0x8000: 65535 < -32768 */
@@ -671,10 +673,13 @@ int main(int argc, char **argv)
         0x00000056, 1,       /* s_bfe_u32 s10, offset 8 width 8 */
         0xffffffff, 1,       /* s_bfe_i32 s11, offset 12 width 4: 0xf sign-extended */
         0x00000000, 0,       /* s_bfe_u32 s10, width 0 */
+        0x80000008, 1,       /* s_addk_i32 s12, 0x10: signed overflow sets SCC */
+        0xffffffeb, 1,       /* s_mulk_i32 s14, -3: SCC kept from the add before */
+        0x00000003, 0,       /* s_addk_i32 s13, -2 */
     };
     memset(out.mapped, 0, BUFFER_BYTES);
     CHECK(run(&g, scalar_batch, sizeof scalar_batch / sizeof scalar_batch[0], user) == 0);
-    for (int k = 0; k < 16; k++) {
+    for (int k = 0; k < SCALAR_WORDS; k++) {
         if (out_words[k] != scalar_expected[k]) fprintf(stderr, "scalar_batch word %d: 0x%08x, expected 0x%08x\n", k, out_words[k], scalar_expected[k]);
         CHECK(out_words[k] == scalar_expected[k]);
     }

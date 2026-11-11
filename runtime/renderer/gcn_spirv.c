@@ -1054,6 +1054,14 @@ static void scalar_instruction(translator *t, const uint32_t *w, const gcn_instr
         }
     } else if (!strcmp(name, "s_movk_i32")) {
         write_sgpr(t, sdst, konst(t, (uint32_t)(int32_t)(int16_t)(w[0] & 0xffff)), ins);
+    } else if ((!strcmp(name, "s_addk_i32") || !strcmp(name, "s_mulk_i32")) && sdst < SGPR_VCC) {
+        /* D = D + the sign-extended SIMM16, SCC = signed overflow; or D = D * it, SCC kept (the Sea
+           Islands ISA manual's SOPK descriptions) */
+        const uint32_t a = load(t, t_uint(t), sgpr(t, sdst)), k = konst(t, (uint32_t)(int32_t)(int16_t)(w[0] & 0xffff));
+        const int add = !strcmp(name, "s_addk_i32");
+        const uint32_t r = value(t, add ? SPV_OP_I_ADD : SPV_OP_I_MUL, t_uint(t), 2, a, k);
+        if (add) set_scc(t, signed_overflow(t, a, k, r, 0));
+        write_sgpr(t, sdst, r, ins);
     } else if (!strcmp(name, "s_waitcnt") || !strcmp(name, "s_nop")) {
         /* Memory completes in order in SPIR-V within an invocation: nothing to wait for. */
     } else {
