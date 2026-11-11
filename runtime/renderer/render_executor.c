@@ -210,6 +210,22 @@ typedef struct {
     VkShaderModule module;
 } rect_stage;
 
+/* What a program's resource scan found (gcn_called_image_resources, or gcn_sampler_resources for
+   `samplers`), kept by its code address and its fetch shader's: a scan decodes the whole program, and
+   a frame repeats its shaders hundreds of times. A kept scan holds a copy of the program (and of its
+   fetch shader) and is used only while the memory still holds that code; failed scans are not kept
+   (they stop the run). */
+typedef struct {
+    uint64_t code, callee;
+    int samplers, used;
+    uint32_t *words, *callee_words;  /* the programs as scanned, through their ends (gcn_program_dwords) */
+    size_t dwords, callee_dwords;
+    unsigned count;
+    gcn_image_resource images[GCN_MAX_IMAGES];
+    gcn_resource_origin sampler_origins[GCN_MAX_SAMPLERS];
+} scan_entry;
+enum { SCAN_SLOTS = 4096 }; /* a power of two: open addressing; when full, programs are scanned each time */
+
 /* A depth target's registers from DB_Z_INFO (0xa010) to DB_DEPTH_SLICE (0xa017), in order. */
 enum { Z_INFO, STENCIL_INFO, Z_READ_BASE, STENCIL_READ_BASE, Z_WRITE_BASE, STENCIL_WRITE_BASE, DEPTH_SIZE, DEPTH_SLICE,
        DEPTH_TARGET_REGISTERS };
@@ -303,6 +319,7 @@ struct rt_executor {
     size_t compute_count;
     image_entry images[MAX_IMAGES];
     size_t image_count;
+    scan_entry scans[SCAN_SLOTS];    /* resource scans, by code (scan_for) */
     /* the run-time stop words translated shaders write (runtime/gcn_spirv.h), one per shader */
     VkBuffer stop_buffer;
     VkDeviceMemory stop_memory;
@@ -2451,6 +2468,61 @@ static int descriptor_words(rt_executor *x, const gcn_resource_origin *origin, c
 /* The images a shader uses, from the descriptors in its user data: their bindings (for translation)
    and views of kept images. A compute shader's are storage images; a pixel shader's are sampled
    images, which it only reads. 0, or -1 with the reason. */
+static void scan_free(scan_entry *e)
+{
+    free(e->words), free(e->callee_words);
+    *e = (scan_entry){0};
+}
+
+/* A copy of the program at code, through its end, into *words (*dwords long). 0, or -1 (no end found,
+   no memory). */
+static int program_copy(rt_executor *x, uint64_t code, uint32_t **words, size_t *dwords)
+{
+    const long length = gcn_program_dwords((const uint32_t *)(uintptr_t)code, (size_t)((x->guest_base + x->size - code) / 4));
+    if (length <= 0 || !(*words = malloc((size_t)length * 4))) return -1;
+    memcpy(*words, (const void *)(uintptr_t)code, (size_t)length * 4);
+    *dwords = (size_t)length;
+    return 0;
+}
+
+/* The kept scan of a program (scan_entry): its slot, found with the same code still in memory, or
+   newly taken (used 0: the caller scans, then keeps it with scan_keep); NULL when the table is full. */
+static scan_entry *scan_for(rt_executor *x, uint64_t code, uint64_t callee, int samplers)
+{
+    const uint64_t key = (code ^ callee * 0x9e3779b97f4a7c15ull ^ (uint64_t)samplers) * 0xff51afd7ed558ccdull;
+    for (unsigned probe = 0; probe < SCAN_SLOTS; probe++) {
+        scan_entry *e = &x->scans[((key >> 40) + probe) & (SCAN_SLOTS - 1)];
+        if (!e->used) {
+            *e = (scan_entry){.code = code, .callee = callee, .samplers = samplers};
+            return e;
+        }
+        if (e->code != code || e->callee != callee || e->samplers != samplers) continue;
+        const int same = !memcmp((const void *)(uintptr_t)code, e->words, e->dwords * 4) &&
+                         (!callee || !memcmp((const void *)(uintptr_t)callee, e->callee_words, e->callee_dwords * 4));
+        if (!same) { /* other code at the address now: scanned again */
+            scan_free(e);
+            *e = (scan_entry){.code = code, .callee = callee, .samplers = samplers};
+        }
+        return e;
+    }
+    return NULL;
+}
+
+/* Keeps a scan's result in its slot, with copies of the programs scanned (without them, it is not kept). */
+static void scan_keep(rt_executor *x, scan_entry *e, unsigned count, const gcn_image_resource *images, const gcn_resource_origin *samplers)
+{
+    if (program_copy(x, e->code, &e->words, &e->dwords) || (e->callee && program_copy(x, e->callee, &e->callee_words, &e->callee_dwords))) {
+        const uint64_t code = e->code, callee = e->callee;
+        const int kind = e->samplers;
+        scan_free(e);
+        *e = (scan_entry){.code = code, .callee = callee, .samplers = kind};
+        return;
+    }
+    e->count = count, e->used = 1;
+    if (images) memcpy(e->images, images, count * sizeof *images);
+    if (samplers) memcpy(e->sampler_origins, samplers, count * sizeof *samplers);
+}
+
 static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64_t callee, const uint32_t *user, uint32_t user_sgprs,
                         uint32_t user_set, int pixel, gcn_image_binding *bindings, VkImageView *views, VkFormat *formats, unsigned *count,
                         char *error, size_t error_size)
@@ -2458,12 +2530,19 @@ static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64
     if (code < x->guest_base || code >= x->guest_base + x->size || code % 4)
         return failed(error, error_size, "%s shader code at %#llx is outside the GPU-visible memory", stage, (unsigned long long)code);
     gcn_image_resource resources[GCN_MAX_IMAGES];
-    char reason[300];
-    const uint32_t *callee_words = callee ? (const uint32_t *)(uintptr_t)callee : NULL;
-    const size_t callee_dwords = callee ? (size_t)((x->guest_base + x->size - callee) / 4) : 0;
-    if (gcn_called_image_resources((const uint32_t *)(uintptr_t)code, (size_t)((x->guest_base + x->size - code) / 4), callee_words,
-                                   callee_dwords, resources, GCN_MAX_IMAGES, count, reason, sizeof reason))
-        return failed(error, error_size, "%s shader at %#llx: %s", stage, (unsigned long long)code, reason);
+    scan_entry *scan = scan_for(x, code, callee, 0);
+    if (scan && scan->used) {
+        *count = scan->count;
+        memcpy(resources, scan->images, scan->count * sizeof *resources);
+    } else {
+        char reason[300];
+        const uint32_t *callee_words = callee ? (const uint32_t *)(uintptr_t)callee : NULL;
+        const size_t callee_dwords = callee ? (size_t)((x->guest_base + x->size - callee) / 4) : 0;
+        if (gcn_called_image_resources((const uint32_t *)(uintptr_t)code, (size_t)((x->guest_base + x->size - code) / 4), callee_words,
+                                       callee_dwords, resources, GCN_MAX_IMAGES, count, reason, sizeof reason))
+            return failed(error, error_size, "%s shader at %#llx: %s", stage, (unsigned long long)code, reason);
+        if (scan) scan_keep(x, scan, *count, resources, NULL);
+    }
     if (*count && !pixel && !x->storage_images)
         return failed(error, error_size, "the Vulkan device cannot read and write images without a declared format");
     for (unsigned i = 0; i < *count; i++) {
@@ -2614,10 +2693,17 @@ static int stage_samplers(rt_executor *x, uint64_t code, const uint32_t *user, u
                           VkSampler *samplers, unsigned *count, int *linear, char *error, size_t error_size)
 {
     *linear = 0;
-    char reason[300];
-    if (gcn_sampler_resources((const uint32_t *)(uintptr_t)code, (size_t)((x->guest_base + x->size - code) / 4), origins, GCN_MAX_SAMPLERS,
-                              count, reason, sizeof reason))
-        return failed(error, error_size, "pixel shader at %#llx: %s", (unsigned long long)code, reason);
+    scan_entry *scan = scan_for(x, code, 0, 1);
+    if (scan && scan->used) {
+        *count = scan->count;
+        memcpy(origins, scan->sampler_origins, scan->count * sizeof *origins);
+    } else {
+        char reason[300];
+        if (gcn_sampler_resources((const uint32_t *)(uintptr_t)code, (size_t)((x->guest_base + x->size - code) / 4), origins, GCN_MAX_SAMPLERS,
+                                  count, reason, sizeof reason))
+            return failed(error, error_size, "pixel shader at %#llx: %s", (unsigned long long)code, reason);
+        if (scan) scan_keep(x, scan, *count, NULL, origins);
+    }
     for (unsigned i = 0; i < *count; i++) {
         uint32_t words[4];
         if (descriptor_words(x, &origins[i], user, user_sgprs, user_set, words, 4, error, error_size)) return -1;
@@ -2924,6 +3010,7 @@ void rt_executor_close(rt_executor *x)
             free(x->images[i].agreed.bytes);
             tile_plan_free(x, &x->images[i].plan);
         }
+        for (size_t i = 0; i < SCAN_SLOTS; i++) scan_free(&x->scans[i]);
         if (x->stop_buffer) vkDestroyBuffer(x->device, x->stop_buffer, NULL);
         if (x->stop_memory) vkFreeMemory(x->device, x->stop_memory, NULL);
         if (x->batch_done) vkDestroyFence(x->device, x->batch_done, NULL);
