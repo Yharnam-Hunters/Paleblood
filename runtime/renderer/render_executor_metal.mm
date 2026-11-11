@@ -81,7 +81,7 @@ struct MetalTarget {
 };
 struct MetalPipeline {
     id<MTLFunction> vertex, pixel;
-    MTLPixelFormat format;
+    MTLPixelFormat format, depth_format, stencil_format;
     bool write_color;
     id<MTLRenderPipelineState> pipeline;
 };
@@ -101,6 +101,9 @@ struct MetalState {
     uint32_t user_set[2] = {};
     uint32_t blend = 0, depth = 0, color_control = 0, target_mask = 0, primitive = 0, instances = 1;
     bool blend_set = false, depth_set = false, color_control_set = false, target_mask_set = false, primitive_set = false;
+    uint32_t depth_words[9] = {}, depth_written = 0, depth_view = 0, render_control = 0;
+    uint32_t stencil_control = 0, stencil_reference[2] = {};
+    bool depth_view_set = false, stencil_control_set = false, stencil_reference_set[2] = {};
     uint32_t scissor_tl = 0, scissor_br = 0;
     bool scissor_tl_set = false, scissor_br_set = false;
     uint32_t index_type = 0, index_size = 0;
@@ -140,7 +143,11 @@ static int failed(char *error, size_t size, const char *format, ...)
 }
 
 /* Validate the supported opaque-triangle profile using AMD GFX7 register fields. */
-enum { CB_TARGET_MASK = 0xa08e, DB_STENCIL_CONTROL = 0xa10b, CB_BLEND0_CONTROL = 0xa1e0,
+enum { DB_RENDER_CONTROL = 0xa000, DB_DEPTH_VIEW = 0xa002, DB_HTILE_DATA_BASE = 0xa005,
+       DB_STENCIL_CLEAR = 0xa00a, DB_DEPTH_CLEAR = 0xa00b, DB_DEPTH_INFO = 0xa00f,
+       DB_Z_INFO = 0xa010, DB_STENCIL_INFO = 0xa011, DB_DEPTH_SLICE = 0xa017, DB_HTILE_SURFACE = 0xa2af,
+       CB_TARGET_MASK = 0xa08e, DB_STENCIL_CONTROL = 0xa10b, DB_STENCILREFMASK = 0xa10c,
+       DB_STENCILREFMASK_BF = 0xa10d, CB_BLEND0_CONTROL = 0xa1e0,
        DB_DEPTH_CONTROL = 0xa200, CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242,
        PA_SC_SCREEN_SCISSOR_TL = 0xa00c, PA_SC_SCREEN_SCISSOR_BR = 0xa00d };
 enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 1, Z_ENABLE = 2, Z_WRITE_ENABLE = 4,
@@ -156,8 +163,22 @@ static int set_register(MetalState &state, uint32_t address, uint32_t value)
     case VGT_PRIMITIVE_TYPE: state.primitive = value; state.primitive_set = true; return 0;
     case PA_SC_SCREEN_SCISSOR_TL: state.scissor_tl = value; state.scissor_tl_set = true; return 0;
     case PA_SC_SCREEN_SCISSOR_BR: state.scissor_br = value; state.scissor_br_set = true; return 0;
-    case DB_STENCIL_CONTROL: return 0; /* Stencil testing itself is rejected before drawing. */
-    default: return -1;
+    case DB_DEPTH_VIEW: state.depth_view = value; state.depth_view_set = true; return 0;
+    case DB_RENDER_CONTROL: state.render_control = value; return 0;
+    case DB_STENCIL_CONTROL: state.stencil_control = value; state.stencil_control_set = true; return 0;
+    case DB_STENCILREFMASK: case DB_STENCILREFMASK_BF: {
+        const unsigned face = address - DB_STENCILREFMASK;
+        state.stencil_reference[face] = value; state.stencil_reference_set[face] = true; return 0;
+    }
+    /* These registers are inert in the admitted no-HTILE/no-clear profile. The active
+       metadata and clear controls are refused at the draw, never silently executed. */
+    case DB_HTILE_DATA_BASE: case DB_HTILE_SURFACE: case DB_STENCIL_CLEAR: case DB_DEPTH_CLEAR: return 0;
+    default:
+        if (address >= DB_DEPTH_INFO && address <= DB_DEPTH_SLICE) {
+            const unsigned index = address - DB_DEPTH_INFO;
+            state.depth_words[index] = value; state.depth_written |= 1u << index; return 0;
+        }
+        return -1;
     }
 }
 
@@ -169,12 +190,10 @@ static int check_state(const MetalState &state, char *error, size_t size)
     if (state.primitive_set && state.primitive != DI_PT_TRILIST)
         return failed(error, size, "primitive type %u: only triangle lists are drawn yet", state.primitive);
     if (state.blend_set && (state.blend & BLEND_ENABLE)) return failed(error, size, "blending is not drawn yet");
-    if (state.depth_set && (state.depth & (STENCIL_ENABLE | Z_ENABLE | Z_WRITE_ENABLE)))
-        return failed(error, size, "depth or stencil testing is not drawn yet");
     if (state.color_control_set) {
         const uint32_t mode = (state.color_control & COLOR_MODE_MASK) >> COLOR_MODE_SHIFT;
         const uint32_t rop = (state.color_control & ROP3_MASK) >> ROP3_SHIFT;
-        if (mode != CB_NORMAL || rop != ROP3_COPY)
+        if (mode != 0 && (mode != CB_NORMAL || rop != ROP3_COPY))
             return failed(error, size, "colour mode %u, raster operation %#x: only normal copies are drawn yet", mode, rop);
     }
     if (state.instances != 1) return failed(error, size, "%u instances: only one is drawn yet", state.instances);
@@ -188,9 +207,9 @@ static int shader_profile(const MetalState &state, char *error, size_t size)
 {
     if (state.vertex.vgpr_inputs)
         return failed(error, size, "vertex input VGPR profile %u: only vertex ID in VGPR0 is supported", state.vertex.vgpr_inputs);
-    if (state.vertex.user_sgprs > GCN_USER_SGPR_MAX || state.pixel.user_sgprs > GCN_USER_SGPR_MAX)
+    if (state.vertex.user_sgprs > GCN_USER_SGPR_MAX || (state.pixel.code && state.pixel.user_sgprs > GCN_USER_SGPR_MAX))
         return failed(error, size, "shader user SGPR count exceeds the modeled user-data range");
-    if (state.vertex.user_sgprs > state.vertex.sgprs || state.pixel.user_sgprs > state.pixel.sgprs)
+    if (state.vertex.user_sgprs > state.vertex.sgprs || (state.pixel.code && state.pixel.user_sgprs > state.pixel.sgprs))
         return failed(error, size, "shader user SGPR count exceeds its declared allocation");
     const uint32_t control = state.vertex.output_control;
     if (control & ~(CLIP_ENABLES | CLIP_VECTOR_0 | CLIP_VECTOR_1))
@@ -202,6 +221,7 @@ static int shader_profile(const MetalState &state, char *error, size_t size)
     if (control & CLIP_VECTOR_1) position_format = position_format << 4 | SPI_SHADER_4COMP;
     if (state.vertex.position_format != position_format)
         return failed(error, size, "SPI_SHADER_POS_FORMAT must declare float4 position and enabled clip vectors");
+    if (!state.pixel.code) return 0;
     if (state.pixel.input_enable != PERSP_CENTER_ENA || state.pixel.input_address != PERSP_CENTER_ENA)
         return failed(error, size, "pixel-shader inputs beyond perspective-center barycentrics are not modeled");
     if (state.pixel.depth_format) return failed(error, size, "pixel depth exports are not modeled");
@@ -219,10 +239,10 @@ static int shader_profile(const MetalState &state, char *error, size_t size)
 /* AMD CIK 3D registers, PA_SC_SCREEN_SCISSOR_TL/BR: signed 16-bit fields, negatives clamp
    to zero, upper-left inclusive and bottom-right exclusive. WINDOW_OFFSET does not apply.
    Intersect with the image because Metal requires a scissor wholly within its attachment. */
-static int screen_scissor(const MetalState &state, const MetalTarget &target, MTLScissorRect &rect,
+static int screen_scissor(const MetalState &state, uint32_t width, uint32_t height, MTLScissorRect &rect,
                           char *error, size_t size)
 {
-    rect = {0, 0, target.width, target.height};
+    rect = {0, 0, width, height};
     if (!state.scissor_tl_set && !state.scissor_br_set) return 0;
     if (!state.scissor_tl_set || !state.scissor_br_set)
         return failed(error, size, "screen scissor requires both TL and BR registers");
@@ -234,10 +254,10 @@ static int screen_scissor(const MetalState &state, const MetalTarget &target, MT
     int32_t right = signed_field(state.scissor_br, 0), bottom = signed_field(state.scissor_br, 16);
     if (left > 16383 || top > 16383 || right > 16384 || bottom > 16384)
         return failed(error, size, "screen scissor coordinate exceeds AMD's documented range");
-    left = std::clamp(left, 0, static_cast<int32_t>(target.width));
-    top = std::clamp(top, 0, static_cast<int32_t>(target.height));
-    right = std::clamp(right, 0, static_cast<int32_t>(target.width));
-    bottom = std::clamp(bottom, 0, static_cast<int32_t>(target.height));
+    left = std::clamp(left, 0, static_cast<int32_t>(width));
+    top = std::clamp(top, 0, static_cast<int32_t>(height));
+    right = std::clamp(right, 0, static_cast<int32_t>(width));
+    bottom = std::clamp(bottom, 0, static_cast<int32_t>(height));
     rect = {static_cast<NSUInteger>(left), static_cast<NSUInteger>(top),
         static_cast<NSUInteger>(std::max(0, right - left)), static_cast<NSUInteger>(std::max(0, bottom - top))};
     return 0;
@@ -718,20 +738,23 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
 }
 
 static id<MTLRenderPipelineState> pipeline_for(rt_executor *x, id<MTLFunction> vertex, id<MTLFunction> pixel,
-                                             MTLPixelFormat format, bool write_color, char *error, size_t size)
+                                             MTLPixelFormat format, MTLPixelFormat depth_format, MTLPixelFormat stencil_format,
+                                             bool write_color, char *error, size_t size)
 {
     for (const auto &entry : x->pipelines)
-        if (entry.vertex == vertex && entry.pixel == pixel && entry.format == format && entry.write_color == write_color)
+        if (entry.vertex == vertex && entry.pixel == pixel && entry.format == format && entry.depth_format == depth_format &&
+            entry.stencil_format == stencil_format && entry.write_color == write_color)
             return entry.pipeline;
     if (x->pipelines.size() == MAX_PIPELINES) return failed(error, size, "draw pipeline cache is full"), nil;
     NSError *failure = nil;
     MTLRenderPipelineDescriptor *description = [MTLRenderPipelineDescriptor new];
     description.vertexFunction = vertex; description.fragmentFunction = pixel;
     description.colorAttachments[0].pixelFormat = format;
+    description.depthAttachmentPixelFormat = depth_format; description.stencilAttachmentPixelFormat = stencil_format;
     description.colorAttachments[0].writeMask = write_color ? MTLColorWriteMaskAll : MTLColorWriteMaskNone;
     id<MTLRenderPipelineState> pipeline = [x->device newRenderPipelineStateWithDescriptor:description error:&failure];
     if (!pipeline) return failed(error, size, "Metal draw pipeline: %s", failure.localizedDescription.UTF8String), nil;
-    x->pipelines.push_back({vertex, pixel, format, write_color, pipeline});
+    x->pipelines.push_back({vertex, pixel, format, depth_format, stencil_format, write_color, pipeline});
     return pipeline;
 }
 
@@ -757,6 +780,182 @@ static int complete_commands(rt_executor *x, id<MTLCommandBuffer> command, char 
         x->failed = true; return failed(error, size, "Metal GPU submission failed: %s", command.error.localizedDescription.UTF8String);
     }
     return 0;
+}
+
+/* One native plane per guest aspect. Guest bytes remain authoritative between draws.
+   Private textures use explicit aspect blits; combined D32/S8 never assumes a host packing. */
+struct MetalDepthPlane {
+    rt_depth_layout layout{};
+    uint64_t address = 0;
+    uint32_t slice = 0;
+    bool write = false;
+    NSUInteger row = 0;
+    MTLBlitOption aspect = MTLBlitOptionNone;
+    id<MTLTexture> texture = nil;
+    id<MTLBuffer> staging = nil;
+};
+struct MetalDepthAttachments {
+    MetalDepthPlane z, stencil;
+    uint32_t width = 0, height = 0, reference[2] = {};
+    id<MTLDepthStencilState> state = nil;
+};
+enum { DEPTH_GEOMETRY, DEPTH_Z, DEPTH_STENCIL, DEPTH_Z_READ, DEPTH_STENCIL_READ,
+       DEPTH_Z_WRITE, DEPTH_STENCIL_WRITE, DEPTH_SIZE, DEPTH_SLICE };
+static bool depth_word_set(const MetalState &s, unsigned index) { return (s.depth_written & (1u << index)) != 0; }
+static bool pool_range(const rt_executor *x, uint64_t address, uint64_t span)
+{
+    return address >= x->guest_base && address - x->guest_base <= x->size && span <= x->size - (address - x->guest_base);
+}
+static bool overlap(uint64_t a, uint64_t as, uint64_t b, uint64_t bs) { return a < b + bs && b < a + as; }
+static MTLCompareFunction depth_compare(unsigned function)
+{
+    static const MTLCompareFunction functions[] = {MTLCompareFunctionNever, MTLCompareFunctionLess, MTLCompareFunctionEqual,
+        MTLCompareFunctionLessEqual, MTLCompareFunctionGreater, MTLCompareFunctionNotEqual, MTLCompareFunctionGreaterEqual,
+        MTLCompareFunctionAlways};
+    return functions[function];
+}
+static int depth_plane(rt_executor *x, const MetalState &s, bool stencil, bool write, MetalDepthPlane &p, char *error, size_t size)
+{
+    const unsigned read_index = stencil ? DEPTH_STENCIL_READ : DEPTH_Z_READ;
+    const unsigned write_index = stencil ? DEPTH_STENCIL_WRITE : DEPTH_Z_WRITE;
+    if (!depth_word_set(s,read_index) || (write && !depth_word_set(s,write_index)))
+        return failed(error,size,"%s plane requires its read and active write base",stencil ? "stencil" : "depth");
+    p.address = static_cast<uint64_t>(s.depth_words[read_index]) << 8;
+    if (write && s.depth_words[read_index] != s.depth_words[write_index])
+        return failed(error,size,"distinct depth/stencil read and write bases are not modeled");
+    p.slice = s.depth_view & 0x7ffu; p.write = write;
+    if (rt_tiling_depth_layout(s.depth_words[DEPTH_GEOMETRY],s.depth_words[DEPTH_Z],s.depth_words[DEPTH_STENCIL],
+        s.depth_words[DEPTH_SIZE],s.depth_words[DEPTH_SLICE],stencil ? RT_DEPTH_ASPECT_STENCIL : RT_DEPTH_ASPECT_Z,
+        &p.layout,error,size)) return -1;
+    if (!pool_range(x,p.address,rt_tiling_size(&p.layout.tiles,p.slice + 1)))
+        return failed(error,size,"%s plane is outside the GPU-visible pool",stencil ? "stencil" : "depth");
+    p.row = (static_cast<NSUInteger>(p.layout.width) * p.layout.tiles.element_bytes + 255) & ~NSUInteger(255);
+    p.staging = [x->device newBufferWithLength:p.row * p.layout.height options:MTLResourceStorageModeShared];
+    if (!p.staging) return failed(error,size,"depth/stencil staging allocation failed");
+    return 0;
+}
+static id<MTLTexture> depth_texture(rt_executor *x, MTLPixelFormat format, uint32_t width, uint32_t height)
+{
+    auto descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format width:width height:height mipmapped:NO];
+    descriptor.storageMode = MTLStorageModePrivate; descriptor.usage = MTLTextureUsageRenderTarget;
+    return [x->device newTextureWithDescriptor:descriptor];
+}
+/* AMD GFX7 compare/stencil encodings. No-HTILE surfaces only: clear, copy and
+   resummarize operations stop here, as do metadata-dependent profiles. */
+static int depth_attachments(rt_executor *x, const MetalState &s, MetalDepthAttachments &d, char *error, size_t size)
+{
+    const uint32_t control = s.depth_set ? s.depth : 0;
+    if (s.render_control & ~0x60u) return failed(error,size,"DB_RENDER_CONTROL clears, copies or resummarize are not modeled");
+    if (control & ~0x007007ffu) return failed(error,size,"unmodeled DB_DEPTH_CONTROL fields");
+    if (!(control & (Z_ENABLE | STENCIL_ENABLE | 8u))) return 0; /* Z_WRITE alone does not enable a test. */
+    if (!depth_word_set(s,DEPTH_Z) || !depth_word_set(s,DEPTH_STENCIL))
+        return failed(error,size,"depth or stencil testing requires an explicit depth target format");
+    const bool z_buffer = (s.depth_words[DEPTH_Z] & 3u) != 0;
+    if (z_buffer && (control & 8u)) return failed(error,size,"depth bounds testing is not modeled");
+    const bool z = (control & Z_ENABLE) && z_buffer;
+    const bool stencil = (control & STENCIL_ENABLE) && (s.depth_words[DEPTH_STENCIL] & 1u);
+    if (!z && !stencil) return 0; /* Explicitly disabled formats disable their tests. */
+    if (!s.depth_view_set || !depth_word_set(s,DEPTH_GEOMETRY) || !depth_word_set(s,DEPTH_SIZE) || !depth_word_set(s,DEPTH_SLICE))
+        return failed(error,size,"depth target requires geometry, extent, stride and view registers");
+    if ((s.depth_view & ~0x03ffe7ffu) || (s.depth_view & 0x7ffu) != (s.depth_view >> 13 & 0x7ffu))
+        return failed(error,size,"depth view must select exactly one slice with modeled view fields");
+    if ((s.depth_words[DEPTH_GEOMETRY] & ~0x001fffffu) || (s.depth_words[DEPTH_Z] & ~0xb870e00fu) ||
+        (s.depth_words[DEPTH_STENCIL] & ~0x2870e001u) || (s.depth_words[DEPTH_SIZE] & ~0x003fffffu) ||
+        (s.depth_words[DEPTH_SLICE] & ~0x003fffffu)) return failed(error,size,"unmodeled depth surface fields");
+    const uint32_t width = ((s.depth_words[DEPTH_SIZE] & 0x7ffu) + 1) * 8;
+    const uint32_t height = ((s.depth_words[DEPTH_SIZE] >> 11 & 0x7ffu) + 1) * 8;
+    if (width > MAX_DIMENSION || height > MAX_DIMENSION) return failed(error,size,"depth target dimensions exceed 4096");
+    if (s.depth_words[DEPTH_Z] & ((1u << 29) | (1u << 27)))
+        return failed(error,size,"HTILE or expanded depth clears are not modeled");
+    if (stencil && (s.depth_words[DEPTH_STENCIL] & (1u << 27)))
+        return failed(error,size,"expanded stencil clears are not modeled");
+    /* GFX7 RowSize encodings have a 1KiB minimum. Larger splits require an explicit
+       GB_ADDR_CONFIG profile, which this executor does not model. Split7 stays undefined. */
+    if ((s.depth_words[DEPTH_GEOMETRY] >> 4 & 15u) == 4) {
+        for (unsigned plane = 0; plane < 2; ++plane) {
+            if (!(plane ? stencil : z)) continue;
+            const unsigned split = s.depth_words[plane ? DEPTH_STENCIL : DEPTH_Z] >> 13 & 7u;
+            if (split == 5 || split == 6) return failed(error,size,"depth tile splits above 1024 bytes require a DRAM row profile");
+        }
+    }
+    auto description = [MTLDepthStencilDescriptor new];
+    description.depthCompareFunction = z ? depth_compare(control >> 4 & 7u) : MTLCompareFunctionAlways;
+    const bool z_write = z && (control & Z_WRITE_ENABLE) && !(s.depth_view & (1u << 24));
+    description.depthWriteEnabled = z_write;
+    bool stencil_write = false;
+    if (stencil) {
+        if (!s.stencil_control_set) return failed(error,size,"stencil test requires DB_STENCIL_CONTROL");
+        if (s.stencil_control & 0xff000000u) return failed(error,size,"unmodeled DB_STENCIL_CONTROL fields");
+        static const MTLStencilOperation operations[] = {MTLStencilOperationKeep,MTLStencilOperationZero,MTLStencilOperationKeep,
+            MTLStencilOperationReplace,MTLStencilOperationReplace,MTLStencilOperationIncrementClamp,MTLStencilOperationDecrementClamp,
+            MTLStencilOperationInvert,MTLStencilOperationIncrementWrap,MTLStencilOperationDecrementWrap};
+        for (unsigned face = 0; face < 2; ++face) {
+            const unsigned source = face && (control & 0x80u) ? 1 : 0;
+            if (!s.stencil_reference_set[source]) return failed(error,size,"stencil test requires its front/back reference mask");
+            const uint32_t reference = s.stencil_reference[source], ops = s.stencil_control >> (source * 12) & 0xfffu;
+            const unsigned compare = control >> (source ? 20 : 8) & 7u, op_value = reference >> 24, test_value = reference & 255u;
+            bool replace_test = false, replace_op = false, changes = false;
+            for (unsigned k = 0; k < 3; ++k) {
+                const unsigned op = ops >> (4 * k) & 15u;
+                if (op >= 10 || op == 2) return failed(error,size,"stencil operation %u is not modeled",op);
+                if ((op == 5 || op == 6 || op == 8 || op == 9) && op_value != 1)
+                    return failed(error,size,"stencil arithmetic requires STENCILOPVAL 1");
+                replace_test |= op == 3; replace_op |= op == 4; changes |= op != 0;
+            }
+            if (replace_op && op_value != test_value && (replace_test || (compare != 0 && compare != 7)))
+                return failed(error,size,"stencil replace operation value conflicts with its test reference");
+            auto f = [MTLStencilDescriptor new]; f.stencilCompareFunction = depth_compare(compare);
+            f.stencilFailureOperation = operations[ops & 15u];
+            f.depthStencilPassOperation = operations[ops >> 4 & 15u];
+            f.depthFailureOperation = operations[ops >> 8 & 15u];
+            f.readMask = reference >> 8 & 255u; f.writeMask = s.depth_view & (1u << 25) ? 0 : reference >> 16 & 255u;
+            stencil_write |= changes && f.writeMask != 0;
+            d.reference[face] = replace_op ? op_value : test_value;
+            if (face) description.backFaceStencil = f; else description.frontFaceStencil = f;
+        }
+    }
+    if (z && depth_plane(x,s,false,z_write,d.z,error,size)) return -1;
+    if (stencil && depth_plane(x,s,true,stencil_write,d.stencil,error,size)) return -1;
+    d.width = width; d.height = height;
+    const bool combined = z && stencil && (s.depth_words[DEPTH_Z] & 3u) == 3;
+    if (z && stencil && !combined && ![x->device supportsFamily:MTLGPUFamilyApple2])
+        return failed(error,size,"separate D16/S8 attachments require Apple GPU family 2");
+    if (z) d.z.texture = depth_texture(x,combined ? MTLPixelFormatDepth32Float_Stencil8 :
+        ((s.depth_words[DEPTH_Z] & 3u) == 1 ? MTLPixelFormatDepth16Unorm : MTLPixelFormatDepth32Float),width,height);
+    if (stencil) d.stencil.texture = combined ? d.z.texture : depth_texture(x,MTLPixelFormatStencil8,width,height);
+    if ((z && !d.z.texture) || (stencil && !d.stencil.texture)) return failed(error,size,"depth/stencil texture allocation failed");
+    if (combined) { d.z.aspect = MTLBlitOptionDepthFromDepthStencil; d.stencil.aspect = MTLBlitOptionStencilFromDepthStencil; }
+    d.state = [x->device newDepthStencilStateWithDescriptor:description];
+    if (!d.state) return failed(error,size,"depth/stencil state allocation failed");
+    if (z && stencil && overlap(d.z.address,rt_tiling_size(&d.z.layout.tiles,d.z.slice + 1),
+        d.stencil.address,rt_tiling_size(&d.stencil.layout.tiles,d.stencil.slice + 1)))
+        return failed(error,size,"overlapping depth and stencil planes are not modeled");
+    return 0;
+}
+static void load_depth_plane(rt_executor *x, const MetalDepthPlane &p)
+{
+    if (!p.texture) return;
+    const auto *guest = static_cast<const uint8_t *>(x->view) + p.address - x->guest_base;
+    auto *rows = static_cast<uint8_t *>(p.staging.contents); const auto &t = p.layout.tiles;
+    for (uint32_t y = 0; y < p.layout.height; ++y) for (uint32_t col = 0; col < p.layout.width; ++col)
+        std::memcpy(rows + y * p.row + col * t.element_bytes,guest + rt_tiling_offset(&t,col,y,p.slice),t.element_bytes);
+}
+static void copy_depth_plane(id<MTLBlitCommandEncoder> blit, const MetalDepthPlane &p, bool upload)
+{
+    if (!p.texture || (!upload && !p.write)) return;
+    const auto extent = MTLSizeMake(p.layout.width,p.layout.height,1);
+    if (upload) [blit copyFromBuffer:p.staging sourceOffset:0 sourceBytesPerRow:p.row sourceBytesPerImage:p.row * p.layout.height
+        sourceSize:extent toTexture:p.texture destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0,0,0) options:p.aspect];
+    else [blit copyFromTexture:p.texture sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0) sourceSize:extent
+        toBuffer:p.staging destinationOffset:0 destinationBytesPerRow:p.row destinationBytesPerImage:p.row * p.layout.height options:p.aspect];
+}
+static void store_depth_plane(rt_executor *x, const MetalDepthPlane &p)
+{
+    if (!p.texture || !p.write) return; /* Read-only planes are never converted or published back. */
+    auto *guest = static_cast<uint8_t *>(x->view) + p.address - x->guest_base;
+    const auto *rows = static_cast<const uint8_t *>(p.staging.contents); const auto &t = p.layout.tiles;
+    for (uint32_t y = 0; y < p.layout.height; ++y) for (uint32_t col = 0; col < p.layout.width; ++col)
+        std::memcpy(guest + rt_tiling_offset(&t,col,y,p.slice),rows + y * p.row + col * t.element_bytes,t.element_bytes);
 }
 
 static int shader_runtime_stop(rt_executor *x, char *error, size_t size)
@@ -878,13 +1077,12 @@ static int dispatch_compute(rt_executor *x, const MetalState &state, const uint3
 static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *error, size_t size,
                  const MetalIndices *indices = nullptr)
 {
-    if (!state.color_enabled) return failed(error, size, "a draw has no color target in slot 0");
+    if (!state.color_enabled && !(state.depth_set && (state.depth & (Z_ENABLE | STENCIL_ENABLE | 8u))))
+        return failed(error,size,"a draw has no color target or depth/stencil attachment");
     for (unsigned slot = 1; slot < RT_COLOR_TARGETS; ++slot)
         if (state.other[slot]) return failed(error, size, "render targets beyond slot 0 are not drawn yet");
     if (!state.viewport_set || !state.vertex_set || !state.pixel_set)
         return failed(error, size, "a draw requires viewport, vertex and pixel shader state");
-    if (!state.pixel.code)
-        return failed(error, size, "a draw with no pixel shader (a depth-only pass): not drawn yet");
     if (shader_profile(state, error, size)) return -1;
     uint32_t zmin_bits, zmax_bits;
     std::memcpy(&zmin_bits, &state.zmin, sizeof zmin_bits); std::memcpy(&zmax_bits, &state.zmax, sizeof zmax_bits);
@@ -900,35 +1098,71 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     if (state.scale[0] <= 0 || state.scale[1] == 0 || state.translate[2] < 0 ||
         state.translate[2] + state.scale[2] > 1 || state.scale[2] < 0)
         return failed(error, size, "viewport scale or depth range is not supported");
-    MetalTarget *target = target_for(x, state.color, error, size);
-    if (!target) return -1;
+    MetalDepthAttachments depth;
+    if (depth_attachments(x,state,depth,error,size)) return -1;
+    const bool has_depth = depth.z.texture || depth.stencil.texture;
+    if (!state.color_enabled && !has_depth) return failed(error,size,"a draw has no color target or depth/stencil attachment");
+    const bool write_color = state.color_enabled && (!state.target_mask_set || (state.target_mask & TARGET0_MASK)) &&
+        (!state.color_control_set || (state.color_control & COLOR_MODE_MASK) != 0);
+    if (!state.pixel.code && (write_color || !has_depth))
+        return failed(error,size,"a draw with no pixel shader requires depth/stencil and no color writes");
+    if (state.pixel.code && !state.color_enabled) return failed(error,size,"pixel color exports require a color target");
+    MetalTarget *target = state.color_enabled ? target_for(x,state.color,error,size) : nullptr;
+    if (state.color_enabled && !target) return -1;
+    const uint32_t width = target ? target->width : depth.width, height = target ? target->height : depth.height;
+    if (has_depth && (depth.width < width || depth.height < height))
+        return failed(error,size,"depth/stencil extent is smaller than the color target");
+    if (target) for (const auto *p : {&depth.z,&depth.stencil})
+        if (p->texture && overlap(target->address,rt_tiling_size(&target->layout,1),
+            p->address,rt_tiling_size(&p->layout.tiles,p->slice + 1)))
+            return failed(error,size,"overlapping color and depth/stencil attachments are not modeled");
     MTLScissorRect scissor;
-    if (screen_scissor(state, *target, scissor, error, size)) return -1;
+    if (screen_scissor(state,width,height,scissor,error,size)) return -1;
     MetalPixelResources resources;
-    if (pixel_resources(x,state,resources,error,size)) return -1;
+    if (state.pixel.code && pixel_resources(x,state,resources,error,size)) return -1;
     uint32_t vertex_read = 0, pixel_read = 0;
     id<MTLFunction> vertex = shader_for(x, true, state.vertex.code, state.vertex.user_sgprs,
                                       state.vertex.output_control, state.vertex.parameter_count, state.scale[1] > 0,
                                       state.user[0], state.user_set[0], nullptr, vertex_read, error, size);
-    id<MTLFunction> pixel = vertex ? shader_for(x, false, state.pixel.code, state.pixel.user_sgprs, 0,
+    if (!vertex) return -1;
+    id<MTLFunction> pixel = state.pixel.code ? shader_for(x, false, state.pixel.code, state.pixel.user_sgprs, 0,
                                              state.pixel.interpolated, false, state.user[1], state.user_set[1], &resources, pixel_read, error, size) : nil;
-    if (!pixel) return -1;
+    if (state.pixel.code && !pixel) return -1;
     if (check_user_data("vertex", vertex_read, state.user_set[0], error, size) ||
         check_user_data("pixel", pixel_read, state.user_set[1], error, size)) return -1;
-    const bool write_color = !state.target_mask_set || (state.target_mask & TARGET0_MASK) != 0;
-    id<MTLRenderPipelineState> pipeline = pipeline_for(x, vertex, pixel, target->format, write_color, error, size);
+    id<MTLRenderPipelineState> pipeline = pipeline_for(x,vertex,pixel,target ? target->format : MTLPixelFormatInvalid,
+        depth.z.texture ? depth.z.texture.pixelFormat : MTLPixelFormatInvalid,
+        depth.stencil.texture ? depth.stencil.texture.pixelFormat : MTLPixelFormatInvalid,write_color,error,size);
     if (!pipeline) return -1;
-    load_target(x, *target);
+    if (target) load_target(x,*target);
+    load_depth_plane(x,depth.z); load_depth_plane(x,depth.stencil);
     MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
-    pass.colorAttachments[0].texture = target->texture;
-    pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
-    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
-    pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
+    pass.renderTargetWidth = width; pass.renderTargetHeight = height;
+    if (target) {
+        pass.colorAttachments[0].texture = target->texture;
+        pass.colorAttachments[0].loadAction = MTLLoadActionLoad; pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    }
+    if (depth.z.texture) {
+        pass.depthAttachment.texture = depth.z.texture;
+        pass.depthAttachment.loadAction = MTLLoadActionLoad; pass.depthAttachment.storeAction = MTLStoreActionStore;
+    }
+    if (depth.stencil.texture) {
+        pass.stencilAttachment.texture = depth.stencil.texture;
+        pass.stencilAttachment.loadAction = MTLLoadActionLoad; pass.stencilAttachment.storeAction = MTLStoreActionStore;
+    }
     *static_cast<volatile uint32_t *>(x->stop.contents) = 0;
     id<MTLCommandBuffer> command = [x->queue commandBuffer];
+    if (!command) return failed(error,size,"Metal draw command allocation failed");
+    if (has_depth) {
+        auto blit = [command blitCommandEncoder];
+        if (!blit) return failed(error,size,"Metal depth upload encoder allocation failed");
+        copy_depth_plane(blit,depth.z,true); copy_depth_plane(blit,depth.stencil,true); [blit endEncoding];
+    }
     id<MTLRenderCommandEncoder> encoder = [command renderCommandEncoderWithDescriptor:pass];
     if (!command || !encoder) return failed(error, size, "Metal draw encoder allocation failed");
     [encoder setRenderPipelineState:pipeline]; [encoder setCullMode:MTLCullModeNone];
+    [encoder setDepthStencilState:depth.state]; [encoder setFrontFacingWinding:MTLWindingCounterClockwise];
+    [encoder setStencilFrontReferenceValue:depth.reference[0] backReferenceValue:depth.reference[1]];
     const double sy = std::fabs(state.scale[1]);
     const MTLViewport viewport = {state.translate[0] - state.scale[0], state.translate[1] - sy,
         2 * state.scale[0], 2 * sy, state.translate[2], state.translate[2] + state.scale[2]};
@@ -945,9 +1179,14 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
             indexBuffer:x->memory indexBufferOffset:indices->offset];
     else [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:count];
     [encoder endEncoding];
-    if (complete_commands(x, command, error, size)) return -1;
-    store_target(x, *target);
-    target->initialized = true;
+    if (depth.z.write || depth.stencil.write) {
+        auto blit = [command blitCommandEncoder];
+        if (!blit) return failed(error,size,"Metal depth readback encoder allocation failed");
+        copy_depth_plane(blit,depth.z,false); copy_depth_plane(blit,depth.stencil,false); [blit endEncoding];
+    }
+    if (complete_commands(x,command,error,size)) return -1;
+    if (target) { if (write_color) store_target(x,*target); target->initialized = true; }
+    store_depth_plane(x,depth.z); store_depth_plane(x,depth.stencil);
     return shader_runtime_stop(x, error, size);
 }
 
