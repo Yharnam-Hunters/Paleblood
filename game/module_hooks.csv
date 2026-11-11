@@ -1,3 +1,2 @@
 module,offset,size,first_bytes,action,name
-libc,0x00081a80,128,554889e54156534883ec204889fb4c8b,return,thread_count_probe
 libc,0x0005fac0,7,8b058e210700c3,stop,std::thread::hardware_concurrency
