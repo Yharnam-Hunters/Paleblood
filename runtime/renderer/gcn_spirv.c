@@ -63,6 +63,7 @@ typedef struct {
     const gcn_resource_origin *samplers;
     unsigned sampler_count;
     const uint32_t *input_controls;  /* a pixel shader's SPI_PS_INPUT_CNTL words, or NULL (runtime/gcn_spirv.h) */
+    uint32_t depth_export;           /* a pixel shader's GCN_DEPTH_EXPORT_* enables */
     unsigned first_binding;          /* the images' and samplers' bindings start here (runtime/gcn_spirv.h) */
     const uint32_t *callee;          /* a vertex shader's fetch shader, inlined at its call */
     size_t callee_dwords;
@@ -70,7 +71,7 @@ typedef struct {
     uint32_t *user_data_read;        /* runtime/gcn_spirv.h, "User data read" */
 } stage_layout;
 
-enum { POSITION_TARGET = 12, PARAMETER_TARGET_FIRST = 32, PARAMETER_COUNT = 32, COLOR_TARGET_COUNT = 8, MAX_INTERFACE = 80 };
+enum { DEPTH_TARGET = 8, POSITION_TARGET = 12, PARAMETER_TARGET_FIRST = 32, PARAMETER_COUNT = 32, COLOR_TARGET_COUNT = 8, MAX_INTERFACE = 80 };
 
 typedef struct {
     spirv_module m;
@@ -89,6 +90,7 @@ typedef struct {
     /* stage inputs and outputs, made on first use, and every one the entry point lists */
     uint32_t position, parameter[PARAMETER_COUNT], color[COLOR_TARGET_COUNT], attribute[PARAMETER_COUNT];
     uint32_t clip_distance;          /* the ClipDistance array, made on first use */
+    uint32_t frag_depth;             /* a pixel shader's FragDepth output, made on its first depth export */
     uint32_t image[GCN_MAX_IMAGES];  /* each image binding's variable, made on first use */
     uint32_t sampler[GCN_MAX_SAMPLERS]; /* each sampler binding's variable, made on first use */
     size_t program_dwords;           /* the program's length, for finding where its descriptors come from */
@@ -1801,10 +1803,23 @@ static void export_instruction(translator *t, const uint32_t *w)
 {
     const unsigned enabled = w[0] & 0xf, target = (w[0] >> 4) & 0x3f, compressed = (w[0] >> 10) & 1, valid_mask = (w[0] >> 12) & 1;
     const int extra_position = t->layout->stage == STAGE_VERTEX && target > POSITION_TARGET && target <= POSITION_TARGET + 3;
+    const int depth = t->layout->stage == STAGE_PIXEL && target == DEPTH_TARGET;
+    if (depth && (t->layout->depth_export & (GCN_DEPTH_EXPORT_STENCIL | GCN_DEPTH_EXPORT_MASK))) {
+        fail(t, "exp mrtz: stencil or sample-mask exports (DB_SHADER_CONTROL enables %#x) are not translated yet", t->layout->depth_export);
+        return;
+    }
+    if (depth && compressed) {
+        fail(t, "exp mrtz: a compressed depth export is not translated yet");
+        return;
+    }
+    const int depth_written = depth && (t->layout->depth_export & GCN_DEPTH_EXPORT_Z) && (enabled & 1);
+    if (depth && !depth_written && !valid_mask) return; /* nothing the hardware takes */
+    if (depth_written && !t->frag_depth)
+        t->frag_depth = interface_variable(t, SPV_STORAGE_OUTPUT, t_float(t), SPV_DECORATION_BUILT_IN, SPV_BUILT_IN_FRAG_DEPTH);
     const int vector = extra_position ? distance_vector(t, target) : -1;
     if (extra_position && vector < 0) return;
-    const uint32_t variable = extra_position ? 0 : export_variable(t, target);
-    if (!extra_position && !variable) return;
+    const uint32_t variable = extra_position || depth ? 0 : export_variable(t, target);
+    if (!extra_position && !depth && !variable) return;
     if (valid_mask && t->layout->stage == STAGE_PIXEL) {
         const uint32_t inactive = value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, exec_bit(t));
         const uint32_t discard = spirv_new_id(&t->m), merge = spirv_new_id(&t->m);
@@ -1826,6 +1841,13 @@ static void export_instruction(translator *t, const uint32_t *w)
     }
     if (extra_position) {
         export_distances(t, vector, enabled, components);
+        return;
+    }
+    if (depth) {
+        if (!depth_written) return;
+        const uint32_t merge = begin_if(t, exec_bit(t));
+        store(t, t->out, t->frag_depth, components[0]);
+        end_if(t, merge);
         return;
     }
     const uint32_t merge = begin_if(t, exec_bit(t));
@@ -3067,6 +3089,9 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
     else if (layout->stage == STAGE_PIXEL)
         spirv_emit(m, &m->sections[SPIRV_EXECUTION_MODES], SPV_OP_EXECUTION_MODE,
                    (const uint32_t[]){main_id, SPV_EXECUTION_MODE_ORIGIN_UPPER_LEFT}, 2);
+    if (t->frag_depth)
+        spirv_emit(m, &m->sections[SPIRV_EXECUTION_MODES], SPV_OP_EXECUTION_MODE,
+                   (const uint32_t[]){main_id, SPV_EXECUTION_MODE_DEPTH_REPLACING}, 2);
 
     int result = -1;
     if (!t->failed) {
@@ -3115,6 +3140,6 @@ int gcn_translate_pixel(const uint32_t *code, size_t dwords, const gcn_pixel_lay
                             .front_face_vgpr = layout->front_face_vgpr, .images = layout->images, .image_count = layout->image_count,
                             .samplers = layout->samplers, .sampler_count = layout->sampler_count, .input_controls = layout->input_controls,
                             .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address,
-                            .user_data_read = layout->user_data_read};
+                            .depth_export = layout->depth_export, .user_data_read = layout->user_data_read};
     return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
 }
