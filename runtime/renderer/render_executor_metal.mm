@@ -766,6 +766,24 @@ extern "C" int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t bytes, 
     return rt_executor_run_calls(x, calls, count, error, error_size);
 }
 
+/* Metal runs each buffer's calls to completion (rt_executor_run_calls), so a submission has run when
+   it returns: the ticket is only counted, and waiting for it returns at once. */
+extern "C" int rt_executor_submit_calls(rt_executor *x, const rt_render_call *calls, size_t count, uint64_t *ticket, char *error,
+                                        size_t error_size)
+{
+    static uint64_t submitted;
+    if (rt_executor_run_calls(x, calls, count, error, error_size)) return -1;
+    *ticket = ++submitted;
+    return 0;
+}
+
+extern "C" int rt_executor_wait_ticket(rt_executor *, uint64_t, char *, size_t) { return 0; }
+
+extern "C" int rt_executor_finish(rt_executor *x, char *error, size_t error_size)
+{
+    return !x || x->failed ? failed(error, error_size, "a usable executor is required") : 0;
+}
+
 /* The renderer copies calls before queuing them and may split them at a GPU step.
    Consume that copy directly, retaining the state set by earlier fragments. */
 extern "C" int rt_executor_run_calls(rt_executor *x, const rt_render_call *calls, size_t count,

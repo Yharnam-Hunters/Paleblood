@@ -464,7 +464,7 @@ static void collect(const char *fn, void (*perform)(const rt_gpu_step *), const 
         list->steps = grown, list->capacity = capacity;
     }
     rt_gpu_step *const step = &list->steps[list->count++];
-    step->perform = perform, step->function = fn, step->offset = packet_offset;
+    step->perform = perform, step->function = fn, step->offset = packet_offset, step->flags = 0;
     memcpy(step->words, words, sizeof step->words);
 }
 
@@ -498,6 +498,7 @@ static void write_completion(const char *fn, uint32_t data_size, uint32_t addres
         const uint64_t words[6] = {data_size, address_low, address_high, data_low, data_high,
                                    interrupt.select | (uint64_t)interrupt.number << INTERRUPT_NUMBER_SHIFT};
         collect(fn, completion_step, words);
+        collecting->steps[collecting->count - 1].flags = RT_GPU_STEP_DEFERRABLE; /* a write after work: may come later, in order */
         return;
     }
     perform_completion(fn, data_size, address_low, address_high, data_low, data_high, interrupt);
