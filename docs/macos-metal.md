@@ -150,6 +150,21 @@ reference. Explicit zero formats disable their tests; Z_WRITE alone does not ena
 A null pixel shader requires an active depth/stencil attachment and no colour writes. Colour
 mode CB_DISABLE also suppresses colour writes while the draw executes.
 
+Pixel `DB_SHADER_CONTROL` admits unforced `LATE_Z` and `EARLY_Z_THEN_LATE_Z`
+preferences with optional `KILL_ENABLE`. These use ordinary Metal fragment execution;
+the actual program controls discard. The preference does not force tests or depth writes
+before the shader, and it does not change generated code or shader-cache identity.
+Stores executed before discard remain observable; later discarded/helper writes are suppressed.
+Exact CIK hierarchical scheduling and fragment invocation counts are not reproduced.
+Export, coverage, execution-guarantee, forced-order and other control fields stop explicitly;
+`DB_RENDER_OVERRIDE` remains outside register admission.
+See [AMD CIK registers, pages 214/217](https://www.x.org/docs/AMD/old/CIK_3D_registers_v2.pdf)
+and [Apple's fragment execution guidance](https://developer.apple.com/videos/play/wwdc2016/606/).
+
+The common translator saves the final executed VM validity snapshot and discards at shader
+exit. Its shared fixture covers later EXEC changes separately; the ordering cases here use
+one final VM export with no subsequent EXEC change.
+
 The shared GFX7 layout decoder uses direct DB geometry and independent slice strides. Macro
 tile splits above 1024 bytes require an unmodeled guest DRAM-row profile and stop explicitly. Each
 active aspect requires explicit geometry, extent, stride, one selected view slice and its read

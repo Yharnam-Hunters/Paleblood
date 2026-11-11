@@ -37,6 +37,7 @@ enum { COLOR_8_8_8_8 = 0xa, NUMBER_UNORM = 0, NUMBER_SRGB = 6, SWAP_STD = 0, SWA
        VGT_INDEX_16 = 0, VGT_INDEX_32 = 1, DRAW_INITIATOR_DMA = 0, PM4_PREDICATE = 1 };
 enum { SPI_SHADER_FP16_ABGR = 4, SPI_SHADER_32_ABGR = 9, SPI_SHADER_4COMP = 4,
        CLIP_ENABLES = 0xff, CLIP_VECTOR_0 = 1 << 22, CLIP_VECTOR_1 = 1 << 23, PARAMETER_LIMIT = 32 };
+enum { SHADER_EARLY_Z_THEN_LATE_Z = 1u << 4, SHADER_KILL_ENABLE = 1u << 6 };
 struct MetalPixelResources {
     unsigned image_count = 0, sampler_count = 0;
     bool nondefault_lod = false;
@@ -241,7 +242,15 @@ static int shader_profile(const MetalState &state, char *error, size_t size)
     if (state.pixel.interpolated > PARAMETER_LIMIT)
         return failed(error, size, "SPI_PS_IN_CONTROL exceeds the modeled parameter range");
     if (state.pixel.barycentric_control) return failed(error, size, "nonzero SPI_BARYC_CNTL is not modeled");
-    if (state.pixel.depth_control) return failed(error, size, "nonzero DB_SHADER_CONTROL is not modeled");
+    /* Z_ORDER=0/1 are unforced preferences with late fallback; KILL_ENABLE
+       declares possible killing, while the program's EXEC/VM exports implement it.
+       Ordinary fragment execution preserves storage effects and discard semantics.
+       No EarlyFragmentTests mode is inferred. DB_RENDER_OVERRIDE remains rejected
+       by register admission, so it cannot force this preference. */
+    const uint32_t supported_shader_control = SHADER_EARLY_Z_THEN_LATE_Z | SHADER_KILL_ENABLE;
+    if (state.pixel.depth_control & ~supported_shader_control)
+        return failed(error, size, "DB_SHADER_CONTROL %#x: only unforced late/early-then-late preferences and the kill declaration are modeled",
+            state.pixel.depth_control);
     return 0;
 }
 
