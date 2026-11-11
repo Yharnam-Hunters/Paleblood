@@ -173,6 +173,26 @@ translation. Descriptor-table pointers are read by the translated fetch program 
 vertex stage's data; the normal required-versus-written checks also apply on cache hits and
 after reset. Auto-index and both supported indexed draw forms share this path.
 
+## Render-target memory
+
+Color targets use the shared guest pool as their backing store. Their full padded layout must
+fit in that pool. The backend reuses `runtime/tiling.h` for linear modes 8/31, 1D display/thin
+modes 9/13 and 2D display/thin modes 10/14. Unsupported tile modes and invalid pitches fail
+before allocating or using a texture. A cached target's size, format and tile mode stay fixed.
+
+Before each draw, encoded texels are detiled from the pool and loaded into the Metal texture;
+the pass preserves them with a load action. After synchronous completion, the native encoded
+texels are tiled back into the pool, preserving layout padding. Later CPU accesses, buffer
+reads, compute calls and overlapping target views therefore observe the completed draw,
+including when a later recorded call fails. Reset forgets stage state without erasing memory.
+The public BGRA readback reads the current backing bytes, so CPU and compute updates remain
+visible before another draw. UNORM/sRGB encoding and native channel order are preserved;
+only public readback converts RGBA storage into BGRA output.
+
+This implementation copies through reusable CPU rows at each draw. It establishes ordered
+memory behavior without a GPU tiling-copy or batching optimization; no full-game performance
+result is claimed.
+
 ## Buffer compute
 
 The executor also accepts compute bindings, compute user data and ordered dispatches.
@@ -199,17 +219,15 @@ records must contain 1..8 words within the modeled slots. Required user data mus
 have been explicitly written; zero is a valid written value.
 
 Each compute submission completes before a later dispatch or draw consumes its
-shared buffer writes. Render textures still have separate storage: after any draw
-has completed, compute requires target-to-pool writeback and is refused. Reset does
-not erase this resource-lifetime boundary. These limits do not establish a working
-game boot or character-creation rendering on macOS.
+shared buffer writes. Completed draw pixels are already published into that pool,
+and the next draw reloads it. These checks do not establish a working game boot
+or character-creation rendering on macOS.
 
 `test_metal_compute` runs owned buffer programs on the actual device. It checks
 partial and 64-invocation groups, multidimensional local IDs, X workgroups, VCC
 halves, stage isolation, partial user writes, cached resets, live code changes,
 metadata/admission guards, runtime-stop recovery, two ordered dispatches and a draw
-reading computed colors. It also checks the target-writeback refusal before and
-after reset. No original game shader or capture is used.
+reading computed colors. It also dispatches after a completed draw and after reset. No original game shader or capture is used.
 
 Descriptor-format accesses use the common translator's runtime stop channel: the executor owns
 a shared GPU-addressable stop word, declares its residency for both stages, and checks it after
@@ -249,3 +267,9 @@ On non-Apple builds the existing Linux build/tests are unchanged. Explicitly req
 any Metal option on a non-macOS platform fails rather
 than silently creating unsupported targets. The existing Linux verification suite is preserved
 for the normal GCC and Clang builds.
+
+`test_metal_coherence` exercises all supported target tile modes and both channel orders
+with UNORM and sRGB storage. It checks initial masked loads, complete raw buffer copies,
+compute writes, CPU patches, cached reloads, padding and neighboring canaries, overlapping
+targets, ordered errors, a draw reading another target through buffer loads, exact pool-end
+admission, padded bounds and tile-mode cache identity. It uses owned programs and descriptors.

@@ -15,6 +15,8 @@ on:
       - 'test/test_metal_offscreen.mm'
       - 'test/test_metal_executor.c'
       - 'test/test_metal_compute.c'
+      - 'test/test_metal_coherence.c'
+      - 'runtime/include/runtime/tiling.h'
       - 'test/metal_executor_programs.h'
       - 'runtime/include/runtime/render*.h'
       - 'runtime/renderer/**'
@@ -33,6 +35,8 @@ on:
       - 'test/test_metal_offscreen.mm'
       - 'test/test_metal_executor.c'
       - 'test/test_metal_compute.c'
+      - 'test/test_metal_coherence.c'
+      - 'runtime/include/runtime/tiling.h'
       - 'test/metal_executor_programs.h'
       - 'runtime/include/runtime/render*.h'
       - 'runtime/renderer/**'
@@ -71,7 +75,7 @@ jobs:
           assert {'pbmetal', 'pbboot', 'pbloader', 'bbrt', 'bbgame'} <= names
           PY
       - name: Compile Metal library and real-device test
-        run: cmake --build build --target pbmetal test_metal_offscreen test_metal_executor test_metal_compute --parallel 2
+        run: cmake --build build --target pbmetal test_metal_offscreen test_metal_executor test_metal_compute test_metal_coherence --parallel 2
       # Hosted compilation does not qualify a real Metal device or GPU execution.
 
   shaders:

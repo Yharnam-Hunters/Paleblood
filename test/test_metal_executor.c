@@ -14,7 +14,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-enum { POOL_SIZE = 4 << 20, VERTEX_CODE = 0x1000, PIXEL_CODE = 0x2000,
+enum { POOL_SIZE = 32 << 20, VERTEX_CODE = 0x1000, PIXEL_CODE = 0x2000,
        USER_PIXEL_CODE = 0x4000, UNSUPPORTED_CODE = 0x5000, STORE_VERTEX_CODE = 0x6000,
        CLIP_VERTEX_CODE = 0x7000, CLIP_EIGHT_CODE = 0x8000, TWO_VERTEX_CODE = 0x9000,
        TWO_PIXEL_CODE = 0xa000, FLOAT_PIXEL_CODE = 0xb000, FORMAT_VERTEX_CODE = 0xc000,
@@ -80,7 +80,7 @@ static uint32_t record_state_setup(uint64_t buffer, uint64_t target, unsigned wi
     color[0] = (uint32_t)(target >> 8);
     color[1] = width / 8 - 1;
     color[2] = width * height / 64 - 1;
-    color[4] = 0xau << 2 | swap << 11;
+    color[4] = 0xau << 2 | swap << 11; color[5] = 31;
     CHECK(rt_render_record_color_target(buffer, 0x10, 0, color, error, sizeof error) == 0);
     CHECK(rt_render_record_viewport(buffer, 0x20, 0, 0, 1, scale, translate, error, sizeof error) == 0);
     const uint64_t vc = at(VERTEX_CODE), pc = at(PIXEL_CODE);
@@ -532,6 +532,7 @@ int main(void)
     CHECK(fd >= 0);
     if (fd < 0) return 1;
     unlink(name);
+    CHECK(0x1110000 + 16 * 16 * 4 <= POOL_SIZE); /* Last owned render target fits its backing allocation. */
     CHECK(ftruncate(fd, POOL_SIZE) == 0);
     unsigned char *pool = mmap(NULL, POOL_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     CHECK(pool != MAP_FAILED);
@@ -642,7 +643,7 @@ int main(void)
     size = record_draw(17, at(0x3c0000), 16, 16, 0, scale, translate, COLORS);
     uint32_t srgb_target[RT_COLOR_TARGET_WORDS] = {0};
     srgb_target[0] = (uint32_t)(at(0x3d0000) >> 8); srgb_target[1] = 1; srgb_target[2] = 3;
-    srgb_target[4] = 0xa << 2 | 6 << 8 | 1 << 11;
+    srgb_target[4] = 0xa << 2 | 6 << 8 | 1 << 11; srgb_target[5] = 31;
     CHECK(rt_render_record_color_target(17, 0x70, 0, srgb_target, error, sizeof error) == 0);
     CHECK(rt_render_record_draw_auto(17, 0x80, 3, error, sizeof error) == 0);
     if (!run(x, 17, 0x90)) {
@@ -1220,12 +1221,12 @@ int main(void)
 
     /* Unsupported state and code must fail with a reason, without poisoning valid later draws. */
     size = record_draw(10, at(0x100000), 32, 16, 0, wide_scale, wide_translate, COLORS);
-    expect_error(x, 10, size, "changed size or format");
+    expect_error(x, 10, size, "changed size, format or tiling");
     size = record_draw(11, at(0x360000), 16, 16, 2, scale, translate, COLORS);
     expect_error(x, 11, size, "swap 2");
     size = record_draw(12, at(0x370000), 16, 16, 0, scale, translate, COLORS);
     uint32_t extra[RT_COLOR_TARGET_WORDS] = {0};
-    extra[0] = (uint32_t)(at(0x380000) >> 8); extra[1] = 1; extra[2] = 3; extra[4] = 0xa << 2;
+    extra[0] = (uint32_t)(at(0x380000) >> 8); extra[1] = 1; extra[2] = 3; extra[4] = 0xa << 2; extra[5] = 31;
     CHECK(rt_render_record_color_target(12, 0x70, 1, extra, error, sizeof error) == 0);
     CHECK(rt_render_record_draw_auto(12, 0x80, 3, error, sizeof error) == 0);
     expect_error(x, 12, 0x90, "beyond slot 0");
