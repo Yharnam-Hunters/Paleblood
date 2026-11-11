@@ -36,7 +36,7 @@ enum { MAX_SHADERS = 1024, MAX_PIPELINES = 1024, MAX_TARGETS = 128, MAX_RECT_STA
        STOP_SLOTS = MAX_SHADERS + MAX_COMPUTE_PIPELINES };
 enum { MAX_VERTEX_IMAGE_LAYOUTS = 32 };
 enum { USER_DATA_BYTES = GCN_USER_SGPR_MAX * 4, VERTEX_USER_DATA = 0, PIXEL_USER_DATA = USER_DATA_BYTES };
-enum { COLOR_10_11_11 = 0x6, COLOR_8_8_8_8 = 0xa, COLOR_16_16_16_16 = 0xc, NUMBER_UNORM = 0, NUMBER_SRGB = 6, NUMBER_FLOAT = 7, SWAP_STD = 0,
+enum { COLOR_32 = 0x4, COLOR_16_16 = 0x5, COLOR_10_11_11 = 0x6, COLOR_8_8_8_8 = 0xa, COLOR_16_16_16_16 = 0xc, NUMBER_UNORM = 0, NUMBER_SRGB = 6, NUMBER_FLOAT = 7, SWAP_STD = 0,
        SWAP_ALT = 1 };
 enum { PERSP_CENTER_ENA = 0x2, POS_X_FLOAT_ENA = 0x100, POS_Y_FLOAT_ENA = 0x200, FRONT_FACE_ENA = 0x1000 };
 /* SPI_BARYC_CNTL's FRONT_FACE_ALL_BITS (bit 24), and where a pixel shader's settings (below) carry it: SPI_PS_INPUT_ADDR uses bits 0-15 */
@@ -1444,7 +1444,10 @@ static int record_tile_copy(rt_executor *x, const tile_plan *p, uint64_t address
    - COLOR_8_8_8_8 UNORM or sRGB, in either component order (SWAP_STD R8G8B8A8, SWAP_ALT B8G8R8A8);
    - COLOR_10_11_11 FLOAT: unsigned floats with x in bits 0-10, y in 11-21 and z in 22-31 (AMD names
      formats from the top bits down), Vulkan's B10G11R11_UFLOAT_PACK32, as shadPS4 maps it;
-   - COLOR_16_16_16_16 FLOAT: halves, x first, R16G16B16A16_SFLOAT, 8 bytes.
+   - COLOR_16_16_16_16 FLOAT: halves, x first, R16G16B16A16_SFLOAT, 8 bytes;
+   - COLOR_32 FLOAT: one float, R32_SFLOAT; COLOR_16_16 FLOAT: two halves, x in the low half,
+     R16G16_SFLOAT (shadPS4's liverpool_to_vk.cpp maps them the same; the clinic's half-resolution depth
+     and its light probes' moments use them).
    Others stop by name (VK_FORMAT_UNDEFINED with the reason). */
 static VkFormat target_format(const rt_color_target *target, uint32_t *element_bytes, char *error, size_t error_size)
 {
@@ -1457,6 +1460,8 @@ static VkFormat target_format(const rt_color_target *target, uint32_t *element_b
     }
     /* unsigned 11-, 11- and 10-bit floats, x in the low bits */
     if (target->format == COLOR_10_11_11 && target->number_type == NUMBER_FLOAT && std) return VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+    if (target->format == COLOR_32 && target->number_type == NUMBER_FLOAT && std) return VK_FORMAT_R32_SFLOAT;
+    if (target->format == COLOR_16_16 && target->number_type == NUMBER_FLOAT && std) return VK_FORMAT_R16G16_SFLOAT;
     if (target->format == COLOR_16_16_16_16 && target->number_type == NUMBER_FLOAT && std) {
         *element_bytes = 8;
         return VK_FORMAT_R16G16B16A16_SFLOAT;

@@ -1608,16 +1608,19 @@ static float small_float_value(uint32_t bits, int mantissa_bits)
     return exponent ? ldexpf(1.0f + mantissa, exponent - 15) : ldexpf(mantissa, -14);
 }
 
-/* Float render targets: the triangle drawn into a 16_16_16_16 float target (8-byte texels) and into a
-   10_11_11 float one (Thin1DThin, tiling index 13) is written back to their memory as halves (x first)
-   and as unsigned 11-, 11- and 10-bit floats (x in the low bits): red (x + 0.5) / 16, green
-   (y + 0.5) / 16, blue 0.25 (alpha 1 in the halves). Reading them as BGRA stops by name. */
+/* Float render targets: the triangle drawn into a 16_16_16_16 float target (8-byte texels), a
+   10_11_11 float one, a 32 float one and a 16_16 float one (Thin1DThin, tiling index 13) is written
+   back to their memory as halves (x first), as unsigned 11-, 11- and 10-bit floats (x in the low
+   bits), as one float (red) and as two halves (red, green): red (x + 0.5) / 16, green (y + 0.5) / 16,
+   blue 0.25 (alpha 1 in the halves). Reading them as BGRA stops by name. */
 static void float_targets(rt_executor *x)
 {
-    enum { FLOAT_BUFFER = 0xc0fb0000, HALVES = 0x1b00000, SMALL_FLOATS = 0x1b80000, THIN_1D = 13, NUMBER_FLOAT = 7 };
-    static const struct { uint32_t address, format, bytes; } cases[] = {{HALVES, 0xc, 8}, {SMALL_FLOATS, 0x6, 4}};
+    enum { FLOAT_BUFFER = 0xc0fb0000, HALVES = 0x1b00000, SMALL_FLOATS = 0x1b80000, ONE_FLOAT = 0x1b40000, TWO_HALVES = 0x1ae0000,
+           THIN_1D = 13, NUMBER_FLOAT = 7 };
+    static const struct { uint32_t address, format, bytes, channels; } cases[] = {
+        {HALVES, 0xc, 8, 4}, {SMALL_FLOATS, 0x6, 4, 3}, {ONE_FLOAT, 0x4, 4, 1}, {TWO_HALVES, 0x5, 4, 2}};
     char error[200] = "";
-    for (unsigned c = 0; c < 2; c++) {
+    for (unsigned c = 0; c < sizeof cases / sizeof cases[0]; c++) {
         rt_tiling layout;
         CHECK(rt_tiling_layout(THIN_1D, cases[c].bytes, SIZE, SIZE, &layout, error, sizeof error) == 0);
         uint8_t *memory = (uint8_t *)(uintptr_t)at(cases[c].address);
@@ -1636,17 +1639,19 @@ static void float_targets(rt_executor *x)
             for (uint32_t px = 0; px < SIZE; px++) {
                 const uint8_t *texel = memory + rt_tiling_offset(&layout, px, y, 0);
                 float got[4] = {0, 0, 0, 1};
-                if (cases[c].bytes == 8) {
+                if (cases[c].bytes == 8 || cases[c].format == 0x5) {
                     uint16_t h[4];
-                    memcpy(h, texel, sizeof h);
-                    for (int k = 0; k < 4; k++) got[k] = half_value(h[k]);
+                    memcpy(h, texel, cases[c].channels * sizeof h[0]);
+                    for (unsigned k = 0; k < cases[c].channels; k++) got[k] = half_value(h[k]);
+                } else if (cases[c].format == 0x4) {
+                    memcpy(&got[0], texel, 4);
                 } else {
                     uint32_t p;
                     memcpy(&p, texel, 4);
                     got[0] = small_float_value(p & 0x7ff, 6), got[1] = small_float_value(p >> 11 & 0x7ff, 6), got[2] = small_float_value(p >> 22, 5);
                 }
                 const float want[4] = {((float)px + 0.5f) / SIZE, ((float)y + 0.5f) / SIZE, 0.25f, 1};
-                for (int k = 0; k < 4; k++) placed &= fabsf(got[k] - want[k]) <= want[k] / 32 + 1e-3f;
+                for (unsigned k = 0; k < cases[c].channels; k++) placed &= fabsf(got[k] - want[k]) <= want[k] / 32 + 1e-3f;
             }
         if (!placed) fprintf(stderr, "float target %#x: texels not as drawn\n", cases[c].format);
         CHECK(placed);
