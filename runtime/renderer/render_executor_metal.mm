@@ -1025,6 +1025,18 @@ extern "C" int rt_executor_submit_calls(rt_executor *x, const rt_render_call *ca
     return 0;
 }
 
+/* Recording runs the calls to completion too: there is no open batch to hand over. */
+extern "C" int rt_executor_record_calls(rt_executor *x, const rt_render_call *calls, size_t count, uint64_t *ticket, char *error,
+                                        size_t error_size)
+{
+    return rt_executor_submit_calls(x, calls, count, ticket, error, error_size);
+}
+
+extern "C" int rt_executor_submit(rt_executor *x, char *error, size_t error_size)
+{
+    return !x || x->failed ? failed(error, error_size, "a usable executor is required") : 0;
+}
+
 extern "C" int rt_executor_wait_ticket(rt_executor *, uint64_t, char *, size_t) { return 0; }
 
 extern "C" int rt_executor_finish(rt_executor *x, char *error, size_t error_size)

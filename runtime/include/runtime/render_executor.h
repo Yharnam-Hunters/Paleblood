@@ -53,6 +53,15 @@ int rt_executor_run_calls(rt_executor *executor, const rt_render_call *calls, si
    rt_executor_wait_ticket has returned for that ticket or a later one. Returns 0, or -1 with the reason. */
 int rt_executor_submit_calls(rt_executor *executor, const rt_render_call *calls, size_t count, uint64_t *ticket, char *error,
                              size_t error_size);
+/* The same without handing the work to the GPU yet: the calls are recorded into the open batch, with
+   their targets written back after them, and *ticket names the submission that will hold them. Later
+   calls join the same batch, until rt_executor_submit (or a wait inside the executor) hands it over.
+   Waiting for *ticket before then blocks until it has been submitted and has run. Returns 0, or -1
+   with the reason. */
+int rt_executor_record_calls(rt_executor *executor, const rt_render_call *calls, size_t count, uint64_t *ticket, char *error,
+                             size_t error_size);
+/* Hands the open batch, if any, to the GPU without waiting. Returns 0, or -1 with the reason. */
+int rt_executor_submit(rt_executor *executor, char *error, size_t error_size);
 /* Waits until the submission `ticket` (and every one before it) has run; ticket 0 returns at once. Unlike
    the other calls it may run on another thread while the executor records. Run-time stops are reported
    by the next call on the recording thread. Returns 0, or -1 with the reason (the GPU failed). */

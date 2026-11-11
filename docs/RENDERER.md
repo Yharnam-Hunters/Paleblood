@@ -477,6 +477,14 @@ Instead:
           sees everything it drew when the submission returns. On the logo and title screens this alone
           changed no frame count: a profile puts about 75% of the time in the CPU's copies (tiling,
           detiling and comparing render targets), not in waiting.
+        - **Many buffers per submission:** the renderer's thread records each queued buffer, and each
+          segment between its steps, into the executor's open batch (`rt_executor_record_calls`), and
+          hands the batch to the GPU only when its queue runs dry, after 512 calls, or before it waits
+          for deferred steps (`rt_executor_submit`). A deferred step waits for the ticket the open
+          batch will get. At the Contract screen this cut Vulkan submissions from about 1,060 to 130
+          a second (each one had waited for a free batch slot), and the screen went from 8.9 to 9.3
+          fps. Most of the remaining waiting is on the CPU's CMASK and HTILE reads, which wait for
+          the batch whenever a dispatch in it may store anywhere.
         - **Copies on the GPU** (`runtime/tile_copy.h`): a render target's loads and write-backs, and the
           loads of images whose elements are whole 32-bit words (8_8_8_8, 32-bit formats, the BC
           blocks), are detiled and tiled by a compute shader that reads and writes the guest memory
