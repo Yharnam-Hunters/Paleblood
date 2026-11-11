@@ -458,7 +458,7 @@ static void vector_stores(void)
    other element sizes are refused. test_render_executor runs them against rt_tiling_offset. */
 static void tile_copy_shaders(void)
 {
-    static const unsigned sizes[] = {1, 2, 4};
+    static const unsigned sizes[] = {1, 2, 4, 8, 16}; /* element bytes */
     for (size_t i = 0; i < sizeof sizes / sizeof *sizes; i++)
         for (int to_tiled = 0; to_tiled < 2; to_tiled++) {
             uint32_t *spirv = NULL;
