@@ -51,6 +51,7 @@ typedef struct {
     shader_stage stage;
     uint32_t local_size[3];
     unsigned user_sgprs;
+    unsigned thread_id_vgprs;
     int workgroup_id_x_sgpr;
     unsigned vertex_index_vgpr, barycentric_vgpr, position_enable, position_vgpr;
     int front_face, front_face_all_bits;  /* a pixel shader's front-face input (runtime/gcn_spirv.h) */
@@ -1864,8 +1865,8 @@ static uint32_t user_data_block(translator *t)
     return id;
 }
 
-/* The starting registers: user data in the first SGPRs, the workgroup index, and v0-v2 the lane's
-   position in the workgroup. */
+/* The starting registers: user data in the first SGPRs, the workgroup index, and the enabled
+   thread-ID VGPRs starting at v0 for compute (stage-specific inputs for vertex and pixel). */
 static void starting_registers(translator *t, const stage_layout *layout)
 {
     t->writing = 1; /* the hardware's starting values, not the program's reads or writes */
@@ -1909,7 +1910,7 @@ static void starting_registers(translator *t, const stage_layout *layout)
     }
     t->writing = 0;
     const uint32_t lane = load(t, uvec3, t->local_invocation_id);
-    for (unsigned axis = 0; axis < 3; axis++)
+    for (unsigned axis = 0; axis < layout->thread_id_vgprs; axis++)
         store(t, t->out, vgpr(t, axis), value(t, SPV_OP_COMPOSITE_EXTRACT, t_uint(t), 2, lane, axis));
 }
 
@@ -2906,7 +2907,13 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
 int gcn_translate_compute(const uint32_t *code, size_t dwords, const gcn_compute_layout *layout,
                           uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size)
 {
+    if (layout->thread_id_vgprs > 3) {
+        *spirv = NULL; *spirv_word_count = 0;
+        snprintf(error, error_size, "compute thread-ID VGPR count %u is outside 1..3", layout->thread_id_vgprs);
+        return -1;
+    }
     const stage_layout s = {.stage = STAGE_COMPUTE, .local_size = {layout->local_size[0], layout->local_size[1], layout->local_size[2]},
+                            .thread_id_vgprs = layout->thread_id_vgprs ? layout->thread_id_vgprs : 3,
                             .user_sgprs = layout->user_sgprs, .workgroup_id_x_sgpr = layout->workgroup_id_x_sgpr,
                             .images = layout->images, .image_count = layout->image_count,
                             .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address,
