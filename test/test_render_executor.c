@@ -283,6 +283,36 @@ static int lookup_misses(rt_executor *x, uint64_t target)
     return misses;
 }
 
+/* The executor keeps more images than the 64 it once did: 100 runs, each drawing a different 16x16
+   linear image (the reference image, written by the CPU) without a reset, all draw it. */
+static void many_images(rt_executor *x)
+{
+    enum { MANY = 100, MANY_BASE = 0x1c00000, MANY_TARGET = 0x1bc0000, MANY_BUFFER = 0xc0ff0000, MANY_CODE = 0x3a00, LINEAR_ALIGNED = 8 };
+    char error[200] = "";
+    memcpy((void *)(uintptr_t)at(MANY_CODE), pixel_image_texel, sizeof pixel_image_texel);
+    rt_render_forget(), rt_executor_reset(x);
+    int all = 1;
+    for (unsigned k = 0; k < MANY; k++) {
+        uint32_t *texels = (uint32_t *)(uintptr_t)at(MANY_BASE + k * 0x1000);
+        for (uint32_t y = 0; y < SIZE; y++)
+            for (uint32_t px = 0; px < SIZE; px++) texels[y * 64 + px] = reference_texel(px, y); /* linear aligned: 64-texel rows */
+        uint32_t image[8];
+        image_descriptor(image, at(MANY_BASE + k * 0x1000), 10, 0, SIZE, SIZE);
+        image[3] |= LINEAR_ALIGNED << 20, image[4] = 63u << 13; /* PITCH 64 */
+        rt_render_forget();
+        uint32_t offset = record_setup(MANY_BUFFER, at(MANY_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        const uint64_t code = at(MANY_CODE);
+        const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 8 << 1, 0, 0x4, 0x302, 0x302, 0, 0, 0, 0xf};
+        CHECK(rt_render_record_pixel_shader(MANY_BUFFER, offset, pixel, error, sizeof error) == 0);
+        CHECK(rt_render_record_user_data(MANY_BUFFER, offset + 0x10, RT_STAGE_PIXEL, 0, image, 8, error, sizeof error) == 0);
+        const int ran = rt_executor_run(x, MANY_BUFFER, record_triangle_draw(MANY_BUFFER, offset + 0x20), error, sizeof error);
+        if (ran) fprintf(stderr, "image %u: %s\n", k, error);
+        all &= ran == 0;
+    }
+    CHECK(all);
+    CHECK(differing_pixels(x, at(MANY_TARGET)) == 0);
+}
+
 /* Sampling picks the level the derivatives give (pixel_minified): a 64x64 image with three levels, red,
    green and blue, sampled at (x / 16, y / 16) over 16x16 pixels spans 4 texels a pixel, level 2:
    blue with a point or linear mip filter, red (level 0) with none. image_sample_l at level 1
@@ -1346,6 +1376,21 @@ int main(void)
     depth_and_strips(x);
     multiple_targets(x);
     compute_cleared_target(x);
+    /* a fast-clear eliminate pass (mode 2) over a target without fast clears writes nothing; over one
+       with CB_COLOR_INFO's FAST_CLEAR it stops by name */
+    const uint32_t eliminate[][2] = {{0xa202, 0x2u << 4 | 0xccu << 16}};
+    CHECK(run_with_registers(x, FOURTH, at(TARGET) + 0x480000, eliminate, 1, 0, error, sizeof error) == 0);
+    CHECK(rt_executor_read_target(x, at(TARGET) + 0x480000, bgra, 2, 2, error, sizeof error) == -1 && strstr(error, "no draw"));
+    {
+        rt_render_forget(), rt_executor_reset(x);
+        uint32_t offset = record_setup(FOURTH, at(TARGET) + 0x480000, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        uint32_t words[RT_COLOR_TARGET_WORDS];
+        color_target(words, at(TARGET) + 0x480000, COLOR_8_8_8_8, SWAP_STD);
+        words[4] |= 1u << 13; /* FAST_CLEAR */
+        CHECK(rt_render_record_color_target(FOURTH, offset, 0, words, error, sizeof error) == 0);
+        CHECK(rt_render_record_register(FOURTH, offset + 0x10, 0xa202, 0x2u << 4 | 0xccu << 16, error, sizeof error) == 0);
+        CHECK(rt_executor_run(x, FOURTH, record_triangle_draw(FOURTH, offset + 0x20), error, sizeof error) == -1 && strstr(error, "fast clears"));
+    }
     const uint32_t resolve[][2] = {{0xa202, 0x3u << 4 | 0xccu << 16}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), resolve, 1, 0, error, sizeof error) == -1 && strstr(error, "colour mode 3"));
     const uint32_t unknown[][2] = {{0xa1e8, 0}};
@@ -1635,6 +1680,7 @@ int main(void)
 
     sampled_images(x);
     sampled_lookup(x);
+    many_images(x);
     sampled_levels(x);
     sampled_cube(x);
     fetch_shader(x);

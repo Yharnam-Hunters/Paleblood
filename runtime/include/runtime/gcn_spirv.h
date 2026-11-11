@@ -86,7 +86,8 @@ typedef struct {
     int cube;                        /* a cube, bound as a 2D array of its faces (dim 2D, arrayed) */
 } gcn_image_binding;
 
-enum { GCN_MAX_IMAGES = 8, GCN_IMAGE_READ = 1, GCN_IMAGE_WRITE = 2, GCN_IMAGE_SAMPLE = 4 /* read through image_sample */ };
+/* GCN_MAX_IMAGES: up to 16 images a program (Vulkan guarantees 16 sampled images per stage) */
+enum { GCN_MAX_IMAGES = 16, GCN_IMAGE_READ = 1, GCN_IMAGE_WRITE = 2, GCN_IMAGE_SAMPLE = 4 /* read through image_sample */ };
 
 typedef struct {
     gcn_resource_origin origin;
@@ -96,7 +97,7 @@ typedef struct {
 /* Samplers (S#, 4 words), which image_sample names by its SSAMP SGPRs, are found the same way (an
    s_load_dwordx4 for one from memory). The caller binds sampler j at set 0, binding image_count + j,
    and makes it from the descriptor. */
-enum { GCN_MAX_SAMPLERS = 8 };
+enum { GCN_MAX_SAMPLERS = 16 }; /* as GCN_MAX_IMAGES, Vulkan's least per-stage limit for each */
 
 /* The distinct sampler descriptors a program's image_sample instructions use, by origin. 0 and
    *count, or -1 with the reason. */
