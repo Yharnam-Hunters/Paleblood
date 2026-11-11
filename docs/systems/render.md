@@ -219,7 +219,7 @@ Forty-five more of the library's functions were replaced on 10 November, all
 
 ### Wind on models
 
-`render_update_model_wind` (`0x02713870`, 11,646 bytes) gives each model its wind, which the grass
+`render_update_model_wind` (`0x02713870`) gives each model its wind, which the grass
 and tree shaders read as `WindForceAndTime` and `PointWindForce`. Every model draw calls it
 (`0x0216f9d0`, `0x02124660`). For the model's wind receiver it:
 
