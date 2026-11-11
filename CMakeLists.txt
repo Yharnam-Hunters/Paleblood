@@ -243,5 +243,9 @@ set_tests_properties(sysmodule_ids PROPERTIES TIMEOUT 10)
 # family); a test library, never loaded by the runtime.
 add_library(bbfamily_mutants SHARED test/family_mutants.c)
 
+include(cmake/DarwinBootTests.cmake)
+include(cmake/BootArenaTests.cmake)
+
+include(cmake/GameBridgeTests.cmake)
 include(cmake/ComputeThreadIdTests.cmake)
 include(cmake/ComputeWaveVoteTests.cmake)
