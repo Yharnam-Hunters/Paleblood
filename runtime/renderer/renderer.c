@@ -47,18 +47,108 @@ static int thread_started, running; /* running: a batch taken off the queue and 
 static pid_t thread_process;        /* a child after fork has no renderer thread: it starts its own */
 static _Thread_local int on_renderer_thread;
 
-/* Runs calls [first, last) of a batch; their targets are written back before it returns. */
+/* Deferred steps (RT_GPU_STEP_DEFERRABLE) waiting for the GPU, oldest first: each with the ticket of
+   the last submission before it (runtime/render_executor.h). The completion thread waits for each
+   ticket in turn and performs the step, so the renderer's thread can go on recording while the GPU
+   runs; steps are performed in submission order. */
+typedef struct deferred {
+    rt_gpu_step step;
+    uint64_t ticket;
+    struct deferred *next;
+} deferred;
+
+static pthread_mutex_t deferred_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t deferred_changed = PTHREAD_COND_INITIALIZER;
+static deferred *deferred_head, *deferred_tail;
+static int deferred_started, deferred_busy;
+static const deferred *deferred_running; /* the step the completion thread is performing (or waiting for), if any */
+static pid_t deferred_process;
+static _Thread_local int on_completion_thread;
+static uint64_t last_ticket; /* the renderer thread's last submission */
+
+static void *completion_thread(void *unused)
+{
+    (void)unused;
+    on_completion_thread = 1;
+    for (;;) {
+        pthread_mutex_lock(&deferred_lock);
+        while (!deferred_head) pthread_cond_wait(&deferred_changed, &deferred_lock);
+        deferred *const d = deferred_head;
+        deferred_head = d->next;
+        if (!deferred_head) deferred_tail = NULL;
+        deferred_busy = 1, deferred_running = d;
+        pthread_mutex_unlock(&deferred_lock);
+        char error[256];
+        /* the executor is open whenever a ticket is: tickets come only from its submissions */
+        if (d->ticket && rt_executor_wait_ticket(executor, d->ticket, error, sizeof error)) rt_fatal(d->step.function, error);
+        d->step.perform(&d->step);
+        pthread_mutex_lock(&deferred_lock);
+        deferred_busy = 0, deferred_running = NULL;
+        free(d);
+        pthread_cond_broadcast(&deferred_changed);
+        pthread_mutex_unlock(&deferred_lock);
+    }
+    return NULL;
+}
+
+static void defer_step(const rt_gpu_step *step, uint64_t ticket)
+{
+    deferred *const d = malloc(sizeof *d);
+    if (!d) rt_fatal(step->function, "no memory for a GPU step");
+    *d = (deferred){*step, ticket, NULL};
+    pthread_mutex_lock(&deferred_lock);
+    if (deferred_started && deferred_process != getpid()) deferred_started = 0, deferred_busy = 0, deferred_head = deferred_tail = NULL;
+    if (!deferred_started) {
+        pthread_t thread;
+        if (pthread_create(&thread, NULL, completion_thread, NULL)) rt_fatal(step->function, "the renderer's completion thread cannot start");
+        pthread_detach(thread);
+        deferred_started = 1, deferred_process = getpid();
+    }
+    if (deferred_tail) deferred_tail->next = d;
+    else deferred_head = d;
+    deferred_tail = d;
+    pthread_cond_broadcast(&deferred_changed);
+    pthread_mutex_unlock(&deferred_lock);
+}
+
+/* Whether a wait step will hold once the deferred steps not yet performed have been: one of them
+   writes what it waits for (rt_gpu_step's holds). */
+static int deferred_satisfies(const rt_gpu_step *wait)
+{
+    pthread_mutex_lock(&deferred_lock);
+    int satisfied = deferred_running && wait->holds(wait, &deferred_running->step);
+    for (const deferred *d = deferred_head; d && !satisfied; d = d->next) satisfied = wait->holds(wait, &d->step);
+    pthread_mutex_unlock(&deferred_lock);
+    return satisfied;
+}
+
+/* Waits until every deferred step so far has been performed. */
+static void drain_deferred(void)
+{
+    pthread_mutex_lock(&deferred_lock);
+    while (deferred_head || deferred_busy) pthread_cond_wait(&deferred_changed, &deferred_lock);
+    pthread_mutex_unlock(&deferred_lock);
+}
+
+/* Records and submits calls [first, last) of a batch without waiting for the GPU; their targets are
+   written back by the work submitted. */
 static void run_calls(batch *b, size_t first, size_t last)
 {
     if (first == last) return;
     pthread_mutex_lock(&renderer_lock);
     rt_executor *const x = executor_for(b->function);
     char error[256];
-    if (x && rt_executor_run_calls(x, b->calls + first, last - first, error, sizeof error)) rt_fatal(b->function, error);
+    uint64_t ticket = 0;
+    if (x && rt_executor_submit_calls(x, b->calls + first, last - first, &ticket, error, sizeof error)) rt_fatal(b->function, error);
+    if (x) last_ticket = ticket;
     pthread_mutex_unlock(&renderer_lock);
 }
 
-/* Each step once the calls before its offset have run, and before the calls after it. */
+/* Each step once the calls before its offset have run, and before the calls after it: a deferrable
+   step is handed to the completion thread with the ticket of the work before it; a wait that holds
+   already is performed at once, and one that a deferred step will satisfy is passed (the GPU runs the
+   work after it after the work before it in any case); any other waits for all earlier steps and
+   work, and is performed here. */
 static void run_batch(batch *b)
 {
     size_t done = 0;
@@ -67,6 +157,20 @@ static void run_batch(batch *b)
         while (upto < b->call_count && b->calls[upto].offset < b->steps[i].offset) upto++;
         run_calls(b, done, upto);
         done = upto;
+        if (b->steps[i].flags & RT_GPU_STEP_DEFERRABLE) {
+            defer_step(&b->steps[i], last_ticket);
+            continue;
+        }
+        if (b->steps[i].holds && b->steps[i].holds(&b->steps[i], NULL)) { /* a wait that holds already: the GPU passes it */
+            b->steps[i].perform(&b->steps[i]);
+            continue;
+        }
+        if (b->steps[i].holds && deferred_satisfies(&b->steps[i])) continue; /* the work ahead of it on the GPU writes what it waits for */
+        drain_deferred();
+        pthread_mutex_lock(&renderer_lock);
+        char error[256];
+        if (executor && rt_executor_finish(executor, error, sizeof error)) rt_fatal(b->steps[i].function, error);
+        pthread_mutex_unlock(&renderer_lock);
         b->steps[i].perform(&b->steps[i]);
     }
     run_calls(b, done, b->call_count);
@@ -98,10 +202,11 @@ static void *renderer_thread(void *unused)
 
 void rt_renderer_wait_idle(void)
 {
-    if (on_renderer_thread) return; /* its own steps: everything before them has run */
+    if (on_renderer_thread || on_completion_thread) return; /* their own steps: everything before them has run */
     pthread_mutex_lock(&queue_lock);
     while (queue_head || running) pthread_cond_wait(&queue_changed, &queue_lock);
     pthread_mutex_unlock(&queue_lock);
+    drain_deferred(); /* the last batch's deferred steps (its work: their tickets) */
 }
 
 void rt_renderer_submit(const char *function, const void *buffer, uint32_t bytes, const rt_gpu_step *steps, size_t step_count)

@@ -80,6 +80,8 @@ class MemoryMappingTests(unittest.TestCase):
             loaded = ctypes.CDLL(str(library), use_errno=True)
             loaded.rt_map_anonymous_at.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
             loaded.rt_map_anonymous_at.restype = ctypes.c_void_p
+            loaded.rt_map_at.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_long]
+            loaded.rt_map_at.restype = ctypes.c_void_p
             cls.libraries.append(loaded)
         cls.native, cls.observed = cls.libraries
         cls.observed.fixture_mode.argtypes = [ctypes.c_int]
@@ -181,6 +183,53 @@ class MemoryMappingTests(unittest.TestCase):
                 last = self.observed.fixture_last()
                 if last not in (None, FAILED):
                     self.assertEqual(self.libc.munmap(last, self.observed.fixture_size()), 0)
+
+
+    def test_shared_file_offset_and_cpu_alias_publication(self):
+        with tempfile.TemporaryFile() as backing:
+            offset = (1 << 32) + self.page
+            os.ftruncate(backing.fileno(), offset + self.page)
+            os.pwrite(backing.fileno(), b'original', offset)
+            with self.occupied() as (address, size):
+                middle = address + self.page
+                self.assertEqual(self.libc.munmap(middle, self.page), 0)
+                result = self.native.rt_map_at(middle, self.page, mmap.PROT_READ | mmap.PROT_WRITE,
+                                               mmap.MAP_SHARED, backing.fileno(), offset)
+                self.assertEqual(result, middle)
+                self.assertEqual(ctypes.string_at(middle, 8), b'original')
+                ctypes.memmove(middle, b'changed!', 8)
+                self.assertEqual(os.pread(backing.fileno(), 8, offset), b'changed!')
+                self.assertEqual(os.pread(backing.fileno(), 8, 0), b'\0' * 8)
+                self.assertEqual(ctypes.string_at(address, self.page), b'\xa5' * self.page)
+                self.assertEqual(ctypes.string_at(address + 2 * self.page, self.page), b'\xa5' * self.page)
+
+    def test_shared_mapping_does_not_replace_occupied_or_partial_ranges(self):
+        with tempfile.TemporaryFile() as backing, self.occupied() as (address, size):
+            os.ftruncate(backing.fileno(), size)
+            for start, length in ((address, size), (address - self.page, 2*self.page),
+                                  (address + size - self.page, 2*self.page)):
+                self.assertEqual(self.native.rt_map_at(start, length, mmap.PROT_READ | mmap.PROT_WRITE,
+                                                       mmap.MAP_SHARED, backing.fileno(), 0), FAILED)
+                self.assertEqual(ctypes.string_at(address, size), b'\xa5' * size)
+
+    def test_fixed_and_invalid_sharing_flags_reject_before_mapping(self):
+        with self.occupied() as (address, size):
+            for flags in (0, mmap.MAP_SHARED | mmap.MAP_PRIVATE, 0x10 | mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS):
+                self.observed.fixture_mode(1)
+                self.assertEqual(self.observed.rt_map_at(address, size, mmap.PROT_READ, flags, -1, 0), FAILED)
+                self.assertEqual(ctypes.get_errno(), errno.EINVAL)
+                self.assertEqual(self.observed.fixture_releases(), 0)
+                self.assertEqual(ctypes.string_at(address, size), b'\xa5' * size)
+
+    def test_shared_declined_hint_cleanup_preserves_requested_bytes(self):
+        with tempfile.TemporaryFile() as backing, self.occupied() as (address, size):
+            os.ftruncate(backing.fileno(), size)
+            self.observed.fixture_mode(1)
+            self.assertEqual(self.observed.rt_map_at(address, size, mmap.PROT_READ | mmap.PROT_WRITE,
+                                                     mmap.MAP_SHARED, backing.fileno(), 0), FAILED)
+            self.assertEqual(ctypes.get_errno(), errno.EADDRNOTAVAIL)
+            self.assertEqual(self.observed.fixture_releases(), 1)
+            self.assertEqual(ctypes.string_at(address, size), b'\xa5' * size)
 
 
 if __name__ == '__main__':
