@@ -48,6 +48,18 @@ int rt_executor_run(rt_executor *executor, uint64_t buffer, uint32_t size, char 
 /* The same for calls already taken from their buffer (rt_render_submitted): count of them, in order. */
 int rt_executor_run_calls(rt_executor *executor, const rt_render_call *calls, size_t count, char *error, size_t error_size);
 
+/* The same without waiting: the calls are recorded and handed to the GPU, and *ticket names the
+   submission (tickets count up). Their results (guest memory written, labels' preconditions) hold once
+   rt_executor_wait_ticket has returned for that ticket or a later one. Returns 0, or -1 with the reason. */
+int rt_executor_submit_calls(rt_executor *executor, const rt_render_call *calls, size_t count, uint64_t *ticket, char *error,
+                             size_t error_size);
+/* Waits until the submission `ticket` (and every one before it) has run; ticket 0 returns at once. Unlike
+   the other calls it may run on another thread while the executor records. Run-time stops are reported
+   by the next call on the recording thread. Returns 0, or -1 with the reason (the GPU failed). */
+int rt_executor_wait_ticket(rt_executor *executor, uint64_t ticket, char *error, size_t error_size);
+/* Waits until all submitted work has run and checks the run-time stop words. Returns 0, or -1 with the
+   reason. */
+int rt_executor_finish(rt_executor *executor, char *error, size_t error_size);
 /* Forgets the state earlier buffers set, as a GPU fresh from reset has none (tests: independent cases). */
 void rt_executor_reset(rt_executor *executor);
 

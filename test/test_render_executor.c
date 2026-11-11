@@ -82,6 +82,55 @@ static int differing_pixels(rt_executor *x, uint64_t target)
     return differ;
 }
 
+/* A positive float as an unsigned small float of mantissa_bits (5-bit exponent, bias 15), or (with
+   mantissa_bits 10 and the sign 0) a half: exact for the dyadic values the tests use. */
+static uint32_t small_float_bits(float v, int mantissa_bits)
+{
+    if (v == 0) return 0;
+    int exponent;
+    const float fraction = frexpf(v, &exponent); /* v = fraction * 2^exponent, fraction in [0.5, 1) */
+    const uint32_t mantissa = (uint32_t)lroundf((fraction * 2 - 1) * (float)(1u << mantissa_bits));
+    return (uint32_t)(exponent - 1 + 15) << mantissa_bits | mantissa;
+}
+
+/* Float image formats: the reference image as 16_16_16_16 float halves (DATA_FORMAT 12) and as
+   10_11_11 float small floats (DATA_FORMAT 6; alpha 1 from the missing component), linear, read texel
+   by texel (pixel_image_texel) into an 8_8_8_8 target, draw the reference image. */
+static void float_images(rt_executor *x)
+{
+    enum { HALVES = 0x1e00000, SMALL = 0x1e40000, FLOAT_IMAGE_TARGET = 0x1e80000, LINEAR_ALIGNED = 8, NUM_FLOAT = 7 };
+    char error[200] = "";
+    for (int kind = 0; kind < 2; kind++) {
+        const unsigned bytes = kind ? 4 : 8;
+        rt_tiling layout;
+        CHECK(rt_tiling_layout(LINEAR_ALIGNED, bytes, SIZE, SIZE, &layout, error, sizeof error) == 0);
+        uint8_t *memory = (uint8_t *)(uintptr_t)at(kind ? SMALL : HALVES);
+        for (uint32_t y = 0; y < SIZE; y++)
+            for (uint32_t px = 0; px < SIZE; px++) {
+                const float red = ((float)px + 0.5f) / SIZE, green = ((float)y + 0.5f) / SIZE;
+                uint8_t *texel = memory + rt_tiling_offset(&layout, px, y, 0);
+                if (kind) {
+                    const uint32_t packed = small_float_bits(red, 6) | small_float_bits(green, 6) << 11 | small_float_bits(0.25f, 5) << 22;
+                    memcpy(texel, &packed, 4);
+                } else {
+                    const uint16_t halves[4] = {(uint16_t)small_float_bits(red, 10), (uint16_t)small_float_bits(green, 10),
+                                                (uint16_t)small_float_bits(0.25f, 10), (uint16_t)small_float_bits(1.0f, 10)};
+                    memcpy(texel, halves, 8);
+                }
+            }
+        uint32_t image[8];
+        image_descriptor(image, at(kind ? SMALL : HALVES), kind ? 6 : 12, NUM_FLOAT, SIZE, SIZE);
+        image[3] |= LINEAR_ALIGNED << 20;
+        if (kind) image[3] = (image[3] & ~0xfffu) | (4 | 5 << 3 | 6 << 6 | 1 << 9); /* x, y, z, 1 */
+        const int drawn = draw_texels(x, at(FLOAT_IMAGE_TARGET), image, error, sizeof error);
+        if (drawn) fprintf(stderr, "float image %d: %s\n", kind, error);
+        CHECK(drawn == 0);
+        const int differ = differing_pixels(x, at(FLOAT_IMAGE_TARGET));
+        if (differ) fprintf(stderr, "float image %d: %d pixels differ\n", kind, differ);
+        CHECK(differ == 0);
+    }
+}
+
 /* The pixels of target that differ from the reference image's red and green with blue 0 and alpha 1
    (all of them on a failed read). */
 static int two_channel_misses(rt_executor *x, uint64_t target)
@@ -1820,6 +1869,7 @@ int main(void)
 
     sampled_images(x);
     sampled_lookup(x);
+    float_images(x);
     many_images(x);
     sampled_levels(x);
     sampled_cube(x);

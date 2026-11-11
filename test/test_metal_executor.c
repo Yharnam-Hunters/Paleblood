@@ -1515,26 +1515,26 @@ int main(void)
     scenarios++;
     rt_executor_reset(x);
 
-    /* Constant coordinates reach the missing-image-binding gate without position inputs or GPU image allocation. */
-    const struct { unsigned code, user_sgprs; int from_memory; const char *reason; } unbound_images[] = {
-        {IMAGE_PIXEL_CODE, 8, 0, "image_load: the image whose descriptor"},
-        {IMAGE_MIP_PIXEL_CODE, 8, 0, "image_load_mip: the image whose descriptor"},
-        {SAMPLE_PIXEL_CODE, 12, 0, "image_sample: the image whose descriptor"},
-        {MEMORY_IMAGE_PIXEL_CODE, 14, 1, "(loaded from memory) is not bound"},
+    /* Shader accesses require actual resource descriptors before a native image can be bound. */
+    const struct { unsigned code, user_sgprs; int from_memory; const char *reason; } missing_image_descriptors[] = {
+        {IMAGE_PIXEL_CODE, 8, 0, "pixel descriptor reads unset user data"},
+        {IMAGE_MIP_PIXEL_CODE, 8, 0, "pixel descriptor reads unset user data"},
+        {SAMPLE_PIXEL_CODE, 12, 0, "pixel descriptor reads unset user data"},
+        {MEMORY_IMAGE_PIXEL_CODE, 14, 1, "image DATA_FORMAT"},
     };
-    for (unsigned i = 0; i < sizeof unbound_images / sizeof unbound_images[0]; ++i) {
-        uint64_t buffer = 380 + i; uint32_t pixel[RT_PIXEL_SHADER_WORDS]; pixel_registers(pixel, unbound_images[i].code);
-        pixel[2] = 0x42; pixel[3] = unbound_images[i].user_sgprs << 1; pixel[5] = 9; pixel[8] = 0;
+    for (unsigned i = 0; i < sizeof missing_image_descriptors / sizeof missing_image_descriptors[0]; ++i) {
+        uint64_t buffer = 380 + i; uint32_t pixel[RT_PIXEL_SHADER_WORDS]; pixel_registers(pixel, missing_image_descriptors[i].code);
+        pixel[2] = 0x42; pixel[3] = missing_image_descriptors[i].user_sgprs << 1; pixel[5] = 9; pixel[8] = 0;
         size = record_setup(buffer, at(0x930000), 16, 16, 0, scale, translate, COLORS);
         CHECK(rt_render_record_pixel_shader(buffer, size, pixel, error, sizeof error) == 0); size += 0x10;
-        if (unbound_images[i].from_memory) {
-            /* The owned pointer is valid, but its descriptor must never be read by a GPU without a binding. */
+        if (missing_image_descriptors[i].from_memory) {
+            /* The owned pointer is valid; its zero descriptor must fail before any GPU texel access. */
             const uint64_t address = at(0x24000);
             const uint32_t pointer[2] = {(uint32_t)address, (uint32_t)(address >> 32)};
             CHECK(rt_render_record_user_data(buffer, size, RT_STAGE_PIXEL, 12, pointer, 2, error, sizeof error) == 0); size += 0x10;
         }
         CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
-        expect_error(x, buffer, size, unbound_images[i].reason);
+        expect_error(x, buffer, size, missing_image_descriptors[i].reason);
         scenarios++;
         rt_executor_reset(x);
     }

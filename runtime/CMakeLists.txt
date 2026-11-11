@@ -86,3 +86,7 @@ if(NOT APPLE)
     endforeach()
 endif()
 target_link_libraries(pbboot PRIVATE ${CMAKE_DL_LIBS} atrac9 pbhost_time)
+
+if(TARGET guest_pointer_owned)
+    target_link_libraries(pbboot PRIVATE guest_pointer_owned)
+endif()

@@ -16,7 +16,9 @@
 extern "C" {
 #endif
 
-/* The guest address of pool offset 0 for GPU-visible maps. */
+/* The guest address of pool offset 0 for GPU-visible maps. Linux uses the fixed runtime
+   window; Darwin selects an available aligned span below 2^40 on first use. This selects
+   an address policy, not a permanent reservation: each actual map remains non-replacing. */
 uint64_t rt_gpu_memory_base(void);
 
 /* The pool's host memory file and its size, for the renderer's own mapping; returns -1 before the

@@ -146,10 +146,12 @@ static int reg_value(const ucontext_t *uc, x86_reg reg, uint64_t next_rip, uint6
     return -1;
 }
 
+/* syscall is variadic: use the kernel's unsigned-long count/flag types. In particular,
+   a 32-bit zero can leave the upper half of flags' stack argument uninitialized. */
 static int read_self(trace_state *t, uint64_t addr, void *out, size_t n)
 {
     struct iovec local = {out, n}, remote = {(void *)(uintptr_t)addr, n};
-    return syscall(SYS_process_vm_readv, t->pid, &local, 1, &remote, 1, 0) == (long)n ? 0 : -1;
+    return syscall(SYS_process_vm_readv, t->pid, &local, 1UL, &remote, 1UL, 0UL) == (long)n ? 0 : -1;
 }
 
 static slot *find(trace_state *t, uint64_t addr)
@@ -371,7 +373,7 @@ static int import_enter(trace_state *t, ucontext_t *uc, const import_target *imp
     for (int i = 0; i < 6; i++) {
         t->snap_ptr[i] = (uint64_t)g[args[i]];
         struct iovec local = {t->snap + i * SNAPSHOT, SNAPSHOT}, remote = {(void *)(uintptr_t)t->snap_ptr[i], SNAPSHOT};
-        const long got = t->snap_ptr[i] >= 4096 ? syscall(SYS_process_vm_readv, t->pid, &local, 1, &remote, 1, 0) : -1;
+        const long got = t->snap_ptr[i] >= 4096 ? syscall(SYS_process_vm_readv, t->pid, &local, 1UL, &remote, 1UL, 0UL) : -1;
         t->snap_len[i] = got > 0 ? (size_t)got : 0;
     }
     uint64_t ret;
