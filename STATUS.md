@@ -17,8 +17,8 @@ Function families are many tiny identical functions (an empty method, a getter) 
 
 | Runtime | |
 |---|---|
-| System imports implemented | 683 of 686 (99.56%): 219 by the game's own modules, 464 by the runtime |
-| Other imports | 0 registered fail-loud diagnostics, 3 unbound |
+| System imports implemented | 686 of 686 (100.00%): 219 by the game's own modules, 467 by the runtime |
+| Other imports | 0 registered fail-loud diagnostics, 0 unbound |
 | Furthest boot milestone | first flip (8 of 8) |
 | Boot stops at | the run's time limit, still running (no call stopped it) |
 
@@ -86,8 +86,9 @@ patch edit is broken in v1.09, [QUIRKS.md](QUIRKS.md)). The task manager's frame
 
 - The CPU affinity mask of the main thread on a PS4 is still not measured. Since the maintainer's
   2026-11-10 ruling, a thread with no mask set by the guest answers all ones (`scePthreadGetaffinity`,
-  `scePthreadAttrGetaffinity`). The bundled C library's thread-count probe that asks for it stays
-  hooked out (#207), so the game's CPU count is not derived from that ruled value.
+  `scePthreadAttrGetaffinity`). The bundled C library's thread-count probe that asks for it is no
+  longer hooked out (#207's hook was dropped), so it now counts that ruled mask: 64 CPUs, not a
+  measured value. `std::thread::hardware_concurrency`, its only reader found, still stops by name.
 
 ## Pipeline health
 

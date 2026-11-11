@@ -162,36 +162,37 @@ A variable holding no attribute is `EINVAL`, as for the setter. No variable for 
 name. Host CPU availability is not consulted. evill33t's #239 did the groundwork on this call; it
 took its value from the host, which the ruling replaced.
 
-**How the boot gets past it without a value.** These are observations from static analysis of the
-hash-pinned `eboot.elf`, `libc.elf` and `libSceFios2.elf` (Ghidra 12.0.3 with GhidraOrbis, issue
-#34), not guarantees:
-- The probe's count is stored at `libc.elf+0xd1c54`. That lies past the RW segment's file size, so
-  it starts zero.
-- The probe returns nothing. It is reached only by a tail jump from the initializer at `+0x5fad0`,
-  which the module's `DT_INIT` runs.
+**The probe now runs.** Until 2026-11-10 `game/module_hooks.csv` replaced the probe with `return`
+(#207), because the call stopped by name. With the call implemented, that row is gone (maintainer
+decision, 2026-11-10) and the original probe runs in `libc.elf`'s `DT_INIT`, before any of the
+executable's code:
+- it calls `scePthreadAttrGetaffinity` on a copy of the main thread's attributes. The main thread
+  has no mask set by the guest at that point, so the answer is all ones;
+- it counts the 64 set bits and stores **64** at `libc.elf+0xd1c54`. A local boot without a display
+  (`tools/boot.py --no-record`) read 64 there from the running process; before, the slot stayed 0.
+
+That count is the ruling's consequence, not a measured console value: the executable's own thread
+setup asks for six CPUs (`0x3f`, below), and the console's own mask is still unmeasured.
+
+These observations come from static analysis of the hash-pinned `eboot.elf`, `libc.elf` and
+`libSceFios2.elf` (Ghidra 12.0.3 with GhidraOrbis, issue #34), not guarantees:
+- The count lies past the RW segment's file size, so it starts zero.
+- The probe returns nothing. It is reached only by a tail jump from the initializer at `+0x5fad0`.
 - The count's only reader found is the exported `std::thread::hardware_concurrency()` at
   `+0x5fac0`.
 - No reference to that function was found in those three objects, none of them imports it, and
   none imports `sceKernelDlsym`.
 
-So `game/module_hooks.csv` replaces two functions before any guest code runs:
-- the probe (`+0x81a80`, 128 bytes) with `return`, so the affinity query is never made and the
-  count stays zero;
-- `hardware_concurrency` (`+0x5fac0`, 7 bytes) with `stop`, so a caller ends the run by name
-  instead of reading a count nobody established.
+`game/module_hooks.csv` still replaces `hardware_concurrency` (`+0x5fac0`, 7 bytes) with `stop`, so
+a caller ends the run by name instead of reading the ruled count of 64 as if it were the console's.
 
 `pbboot --module-hook` first compares each function's first bytes, as the mapped and relocated
 module holds them, with the ones the file gives (`first_bytes`), and refuses the run before any
-guest code runs if they differ. It then writes each as a five-byte relative jump to a stub in the module's slot. A
-`return` stub leaves every register as the caller had it. A `stop` is reported like an
-unimplemented import: the status names the hook and its caller in `stopped_by_hook`.
-The call itself is implemented (above), but the probe never reaches it while this hook is in
-place, so the count stays zero. Whether to drop the hook and let the probe count the ruled mask is a
-separate decision.
-
-The hook guards calls only. A direct read of `+0xd1c54` that the analysis missed would see 0, not
-a measured count. The offsets fit only the pinned `libc.elf` (`target.sha256`); another build fails
-the byte check by name instead of being patched.
+guest code runs if they differ. It then writes each as a five-byte relative jump to a stub in the
+module's slot. A `return` stub leaves every register as the caller had it. A `stop` is reported
+like an unimplemented import: the status names the hook and its caller in `stopped_by_hook`.
+The offsets fit only the pinned `libc.elf` (`target.sha256`); another build fails the byte check by
+name instead of being patched.
 
 ## Clock IDs and platform differences
 
