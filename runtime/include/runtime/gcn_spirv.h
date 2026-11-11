@@ -228,8 +228,16 @@ typedef struct {
     const gcn_resource_origin *samplers;
     unsigned sampler_count;
     const uint32_t *input_controls; /* GCN_PIXEL_INPUTS SPI_PS_INPUT_CNTL words, or NULL (above) */
+    uint32_t depth_export;    /* DB_SHADER_CONTROL's export enables (GCN_DEPTH_EXPORT_*), 0 when SPI_SHADER_Z_FORMAT exports nothing */
     uint32_t *user_data_read; /* when not NULL, set on success to the user SGPRs read before written (User data read, below) */
 } gcn_pixel_layout;
+
+/* DB_SHADER_CONTROL's export enables (AMD's gfx_7_2_sh_mask.h): Z_EXPORT_ENABLE bit 0,
+   STENCIL_TEST_VAL_EXPORT_ENABLE 1, STENCIL_OP_VAL_EXPORT_ENABLE 2, MASK_EXPORT_ENABLE 8. With
+   Z_EXPORT_ENABLE, the depth export's (exp mrtz, target 8) first component replaces the pixel's
+   depth (FragDepth); the stencil and sample-mask exports stop translation; without any enable the
+   export is ignored, as the hardware ignores it. */
+enum { GCN_DEPTH_EXPORT_Z = 1u << 0, GCN_DEPTH_EXPORT_STENCIL = 3u << 1, GCN_DEPTH_EXPORT_MASK = 1u << 8 };
 
 int gcn_translate_pixel(const uint32_t *code, size_t dwords, const gcn_pixel_layout *layout,
                         uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size);
