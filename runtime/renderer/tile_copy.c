@@ -148,8 +148,12 @@ int rt_tile_copy_shader(unsigned dwords, int to_tiled, uint32_t **spirv, size_t 
     spirv_emit(m, &b->body, SPV_OP_BRANCH_CONDITIONAL, (const uint32_t[]){in_image, copy, copied}, 3);
     spirv_emit(m, &b->body, SPV_OP_LABEL, &copy, 1);
 
-    /* the element's two addresses: the tile's first element plus its offset there; (slice, y, x) in the rows */
-    const uint32_t tile_entry = binary(b, SPV_OP_I_ADD, b->u32, tile, konst(b, RT_TILE_COPY_TILE_BASES));
+    /* the element's two addresses: the first element of its tile (of its piece, for a split tile) plus its
+       offset there; (slice, y, x) in the rows */
+    const uint32_t pieces_log2 = push_word(b, RT_TILE_COPY_PIECES_LOG2);
+    const uint32_t piece = binary(b, SPV_OP_SHIFT_RIGHT_LOGICAL, b->u32, k, binary(b, SPV_OP_I_SUB, b->u32, six, pieces_log2));
+    const uint32_t tile_piece = binary(b, SPV_OP_I_ADD, b->u32, binary(b, SPV_OP_SHIFT_LEFT_LOGICAL, b->u32, tile, pieces_log2), piece);
+    const uint32_t tile_entry = binary(b, SPV_OP_I_ADD, b->u32, tile_piece, konst(b, RT_TILE_COPY_TILE_BASES));
     const uint32_t base = load_word(b, offset_address(b, table, binary(b, SPV_OP_I_MUL, b->u32, tile_entry, word_bytes)));
     const uint32_t tiled = offset_address(b, push_address(b, RT_TILE_COPY_TILED_LO), binary(b, SPV_OP_I_ADD, b->u32, base, in_tile));
     const uint32_t row = binary(b, SPV_OP_I_ADD, b->u32, binary(b, SPV_OP_I_MUL, b->u32, slice, height), y);
