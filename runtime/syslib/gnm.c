@@ -278,19 +278,20 @@ RT_SYSLIB("libSceGnmDriver", sceGnmUnmapComputeQueue, unmap_compute_queue);
    the end is full, then rings the doorbell with the queue id from sceGnmMapComputeQueue and the new
    write offset. Before writing, it checks the free space against the read pointer the GPU advances.
 
-   TEMPORARY STAND-IN (maintainer decision, 4 November 2026): Paleblood has no GPU, and the engine's
-   own renderer is to replace this layer (issue #39). Until then the doorbell completes the work at
-   once, on the calling thread: it follows each indirect buffer and acts only on the packets whose
-   effect the CPU can see. A boot on 4 November found four kinds in the engine's compute buffers
-   (packet types from AMD's public PM4 packet format):
-     NOP and SET_SH_REG      skipped: padding and shader registers, with no GPU to hold them;
-     DISPATCH_DIRECT         skipped: compute shaders do not run, so their output is never written;
-     RELEASE_MEM             performed: the "work done" value goes to its memory address, which is
-                             what the CPU waits on.
-   Each indirect buffer is then handed to the renderer, which drops its recorded calls without
-   running them (rt_renderer_skip, runtime/renderer.h). Then the read pointer moves to the write
-   offset, so the ring never fills. Any other packet, or a
-   completion this stand-in does not perform, stops by name. */
+   TEMPORARY STAND-IN (maintainer decision, 4 November 2026): the engine's own renderer is to
+   replace this layer (issue #39). Until then the doorbell reads each indirect buffer on the calling
+   thread, as sceGnmSubmitCommandBuffers below reads a graphics buffer, and hands it to the renderer
+   like a submitted one: its dispatches run (the compute shaders' recorded calls, on the renderer's
+   one queue, in submission order with the graphics work), and its completions are steps after its
+   work. A boot on 4 November found four kinds in the engine's compute buffers (packet types from
+   AMD's public PM4 packet format):
+     NOP and SET_SH_REG      skipped: padding and shader registers (the renderer's record has them);
+     DISPATCH_DIRECT         run by the renderer, with the buffer;
+     RELEASE_MEM             a step: the "work done" value goes to its memory address once the
+                             buffer's work has run (at once with the display off).
+   Then the read pointer moves to the write offset, so the ring never fills. Any other packet, or a
+   completion this stand-in does not perform, stops by name. The character creation screen needs
+   the queues' work: they fill the colour volume, images and light data its passes read. */
 #define PM4_TYPE_SHIFT 30
 #define PM4_TYPE3 3u
 #define PM4_OPCODE_SHIFT 8
@@ -650,8 +651,8 @@ static _Noreturn void unknown_packet(const char *fn, uint32_t opcode, uint32_t l
 
 static void complete_packets(const char *fn, const uint32_t *packets, uint32_t dwords, int depth, int is_ring);
 
-/* Completes an indirect buffer's packets. One a compute ring points to is also handed to the
-   renderer, which drops its recorded calls (rt_renderer_skip): compute queues do not run there yet. */
+/* Completes an indirect buffer's packets. One a compute ring points to is a submission of its own:
+   its completions are collected as steps after its work, and the renderer runs it (sceGnmDingDong). */
 static void follow_indirect_buffer(const char *fn, const uint32_t *packet, int depth, int from_ring)
 {
     if (depth == MAX_INDIRECT_BUFFER_DEPTH) rt_fatal(fn, "indirect buffers nested deeper than the stand-in follows");
@@ -659,8 +660,18 @@ static void follow_indirect_buffer(const char *fn, const uint32_t *packet, int d
                              (uint64_t)(packet[2] & INDIRECT_BUFFER_ADDRESS_HIGH_MASK) << 32);
     const uint32_t dwords = packet[3] & INDIRECT_BUFFER_SIZE_MASK;
     if (!buffer && dwords) rt_fatal(fn, "an INDIRECT_BUFFER without an address");
-    complete_packets(fn, buffer, dwords, depth + 1, 0);
-    if (from_ring) rt_renderer_skip(fn, buffer, dwords * (uint32_t)sizeof(uint32_t));
+    if (!from_ring) {
+        complete_packets(fn, buffer, dwords, depth + 1, 0);
+        return;
+    }
+    step_list steps = {0};
+    step_list *const saved = collecting;
+    const uint32_t saved_offset = packet_offset;
+    collecting = &steps; /* its steps' offsets count in this buffer, as a submitted buffer's do */
+    complete_packets(fn, buffer, dwords, 0, 0);
+    collecting = saved, packet_offset = saved_offset;
+    rt_renderer_submit(fn, buffer, dwords * (uint32_t)sizeof(uint32_t), steps.steps, steps.count);
+    free(steps.steps);
 }
 
 /* Acts on each packet in turn. A compute ring holds only INDIRECT_BUFFER packets; a command buffer
