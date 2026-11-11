@@ -2987,9 +2987,9 @@ int main(void)
         CHECK(qa > 0 && qb > 0 && qa != qb);
         CHECK(died_in_fatal(cq_twice));
         CHECK(died_in_fatal(cq_no_ring));
-        /* sceGnmDingDong: completes the work at once. Shader state and dispatches are skipped, the
-           RELEASE_MEM "done" value reaches its label, and the read pointer reaches the write offset,
-           also when the ring wraps. */
+        /* sceGnmDingDong: each indirect buffer goes to the renderer like a submitted one (with no
+           display, its work is done at once): the RELEASE_MEM "done" value reaches its label, and the
+           read pointer reaches the write offset, also when the ring wraps. */
         ding_dong_fn = (f_ding_dong)fn("libSceGnmDriver", "sceGnmDingDong");
         CHECK(ding_dong_fn != NULL);
         if (ding_dong_fn) {
