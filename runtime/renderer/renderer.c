@@ -133,8 +133,8 @@ static void run_calls(batch *b, size_t first, size_t last)
 }
 
 /* Each step once the calls before its offset have run, and before the calls after it: a deferrable
-   step is handed to the completion thread with the ticket of the work before it; any other waits for
-   all earlier steps and work, and is performed here. */
+   step is handed to the completion thread with the ticket of the work before it; a wait that holds
+   already is performed at once; any other waits for all earlier steps and work, and is performed here. */
 static void run_batch(batch *b)
 {
     size_t done = 0;
@@ -145,6 +145,10 @@ static void run_batch(batch *b)
         done = upto;
         if (b->steps[i].flags & RT_GPU_STEP_DEFERRABLE) {
             defer_step(&b->steps[i], last_ticket);
+            continue;
+        }
+        if (b->steps[i].holds && b->steps[i].holds(&b->steps[i])) { /* a wait that holds already: the GPU passes it */
+            b->steps[i].perform(&b->steps[i]);
             continue;
         }
         drain_deferred();

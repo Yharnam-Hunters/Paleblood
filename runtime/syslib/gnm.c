@@ -464,7 +464,7 @@ static void collect(const char *fn, void (*perform)(const rt_gpu_step *), const 
         list->steps = grown, list->capacity = capacity;
     }
     rt_gpu_step *const step = &list->steps[list->count++];
-    step->perform = perform, step->function = fn, step->offset = packet_offset, step->flags = 0;
+    step->perform = perform, step->function = fn, step->offset = packet_offset, step->flags = 0, step->holds = NULL;
     memcpy(step->words, words, sizeof step->words);
 }
 
@@ -556,6 +556,14 @@ typedef struct {
 
 static int wait_holds(const char *fn, const wait_reg_mem_packet *packet);
 
+/* Whether a collected WAIT_REG_MEM holds now (rt_gpu_step's holds). */
+static int wait_step_holds(const rt_gpu_step *step)
+{
+    const wait_reg_mem_packet packet = {(uint32_t)step->words[0], (uint32_t)step->words[1], (uint32_t)step->words[2],
+                                        (uint32_t)step->words[3], (uint32_t)step->words[4], (uint32_t)step->words[5]};
+    return wait_holds(step->function, &packet);
+}
+
 static void wait_step(const rt_gpu_step *step)
 {
     const wait_reg_mem_packet packet = {(uint32_t)step->words[0], (uint32_t)step->words[1], (uint32_t)step->words[2],
@@ -576,6 +584,7 @@ static void check_wait(const char *fn, const wait_reg_mem_packet *packet)
         const uint64_t words[6] = {packet->control, packet->address_low, packet->address_high, packet->reference, packet->mask,
                                    packet->poll_interval};
         collect(fn, wait_step, words);
+        collecting->steps[collecting->count - 1].holds = wait_step_holds;
         return;
     }
     if (!wait_holds(fn, packet)) rt_fatal(fn, "a GPU wait on memory that does not yet hold what it waits for");
