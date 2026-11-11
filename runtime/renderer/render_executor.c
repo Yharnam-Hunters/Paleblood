@@ -1287,11 +1287,15 @@ static int take_written_image(rt_executor *x, target_entry *t, char *error, size
 /* Fast clears (CB_COLOR_INFO's FAST_CLEAR): the game clears a target by clearing its CMASK (4 bits a
    8x8 tile; 0 means cleared to CB_COLORn_CLEAR_WORD0/1, as Mesa's radeonsi fast clears with a CMASK of
    0, and all bits set means the tile holds its texels) and leaves the colour to the GPU. Before each
-   draw the executor resolves them at once, as an eliminate pass would: a target whose CMASK is all 0
-   gets its memory filled with the clear texel (CLEAR_WORD0, or WORD0 then WORD1 for 8-byte texels: the
-   texel's bits in the target's format; a uniform texel fills a tiled layout the same way) and its CMASK
-   set to all ones, and its image loads again from memory. A CMASK of all ones needs nothing; a mixed
-   one (a partial fast clear) stops by name. 0, or -1 with the reason. */
+   draw the executor resolves them at once, as an eliminate pass would: a target whose CMASK is filled
+   with one value other than all ones gets its memory filled with the clear texel (CLEAR_WORD0, or WORD0
+   then WORD1 for 8-byte texels: the texel's bits in the target's format; a uniform texel fills a tiled
+   layout the same way) and its CMASK set to all ones, and its image loads again from memory. A fill
+   other than 0 counts too: the character creation screen's clear pass leaves its G-buffer's CMASK all
+   0x10 bytes; what such a code means to the hardware is not established in a public source, and
+   shadPS4 (Rasterizer::IsComputeMetaClear, facts only) takes any compute write to a CMASK as clearing
+   the whole target. A CMASK of all ones needs nothing; a mixed one (a partial fast clear) stops by name.
+   0, or -1 with the reason. */
 static int apply_fast_clears(rt_executor *x, const draw_state *s, char *error, size_t error_size)
 {
     for (unsigned slot = 0; slot < RT_COLOR_TARGETS; slot++) {
@@ -1303,10 +1307,10 @@ static int apply_fast_clears(rt_executor *x, const draw_state *s, char *error, s
                           (unsigned long long)cmask);
         if (guest_memory_settled(x, cmask, c->cmask_bytes, error, error_size)) return -1; /* the batch may store the CMASK */
         uint8_t *bits = (uint8_t *)x->view + (cmask - x->guest_base);
-        uint32_t zero = 0, ones = 0;
-        for (uint32_t i = 0; i < c->cmask_bytes; i++) zero += bits[i] == 0, ones += bits[i] == 0xff;
+        uint32_t filled = 0, ones = 0; /* bytes equal to the first, and bytes of all ones */
+        for (uint32_t i = 0; i < c->cmask_bytes; i++) filled += bits[i] == bits[0], ones += bits[i] == 0xff;
         if (ones == c->cmask_bytes) continue;
-        if (zero != c->cmask_bytes)
+        if (filled != c->cmask_bytes)
             return failed(error, error_size, "render target %#llx with a partly fast-cleared CMASK: not done yet", (unsigned long long)c->address);
         uint32_t element_bytes;
         if (target_format(c, &element_bytes, error, error_size) == VK_FORMAT_UNDEFINED) return -1;
@@ -2130,7 +2134,7 @@ static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor
     }
     const VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, e->layers},
                                     .imageExtent = {e->width, one_dimensional(d->type) ? 1 : e->height, 1}};
-    if (bytes % 4 == 0) { /* whole words: detiled on the GPU (runtime/tile_copy.h), with the batch */
+    if (bytes % 4 == 0 && rt_tiling_uniform_micro(&layout)) { /* whole words: detiled on the GPU (runtime/tile_copy.h), with the batch */
         if (e->loaded_epoch == x->memory_epoch) return 0; /* nothing may have changed the memory since */
         if (!e->plan.table.buffer && tile_plan_make(x, &e->plan, &layout, columns, rows, e->layers, error, error_size)) return -1;
         if (record_tile_copy(x, &e->plan, d->address, 0, error, error_size)) return -1;

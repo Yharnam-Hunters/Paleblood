@@ -704,38 +704,42 @@ static void compute_cleared_target(rt_executor *x)
 /* Fast clears: a target with CB_COLOR_INFO's FAST_CLEAR whose 128-byte CMASK (TILE_MAX 0) is all 0 is
    cleared to CB_COLOR0_CLEAR_WORD0 (0xff336699: red 0x99 first) before a draw that keeps what is there
    (blend ZERO + ONE), and its CMASK becomes all ones; the next draw (the triangle) draws over it as
-   usual; a mixed CMASK stops by name. */
+   usual; a CMASK filled with another value (0x10 bytes, as the game's clear pass leaves it) is cleared
+   the same way; a mixed CMASK stops by name. */
 static void fast_clears(rt_executor *x)
 {
     enum { CLEAR_BUFFER = 0xc0fe8000, FAST = 0x1d00000, CMASK = 0x1d80000, CLEAR_WORD0 = 0xa323 };
+    enum { CLEARED_TO_ZERO, DRAWN_OVER, CLEARED_TO_0X10, HALF_CLEARED, PASSES };
     char error[200] = "";
     uint8_t *cmask = (uint8_t *)(uintptr_t)at(CMASK);
-    for (int pass = 0; pass < 3; pass++) {
-        if (pass == 0) memset(cmask, 0, 128);
-        if (pass == 2) memset(cmask, 0, 64); /* half cleared */
+    for (int pass = 0; pass < PASSES; pass++) {
+        if (pass == CLEARED_TO_ZERO) memset(cmask, 0, 128);
+        if (pass == CLEARED_TO_0X10) memset(cmask, 0x10, 128);
+        if (pass == HALF_CLEARED) memset(cmask, 0, 64); /* the rest still all ones */
+        const int keeps = pass == CLEARED_TO_ZERO || pass == CLEARED_TO_0X10;
         rt_render_forget();
-        if (pass == 0) rt_executor_reset(x);
+        if (pass == CLEARED_TO_ZERO) rt_executor_reset(x);
         uint32_t offset = record_setup(CLEAR_BUFFER, at(FAST), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
         uint32_t words[RT_COLOR_TARGET_WORDS];
         color_target(words, at(FAST), COLOR_8_8_8_8, SWAP_STD);
         words[4] |= 1u << 13, words[7] = (uint32_t)(at(CMASK) >> 8); /* FAST_CLEAR, CMASK */
         CHECK(rt_render_record_color_target(CLEAR_BUFFER, offset, 0, words, error, sizeof error) == 0);
         CHECK(rt_render_record_register(CLEAR_BUFFER, offset + 0x10, CLEAR_WORD0, 0xff336699u, error, sizeof error) == 0);
-        CHECK(rt_render_record_register(CLEAR_BUFFER, offset + 0x20, 0xa1e0, pass == 0 ? (1u << 30 | 0u | 1u << 8) : 0, error, sizeof error) == 0);
+        CHECK(rt_render_record_register(CLEAR_BUFFER, offset + 0x20, 0xa1e0, keeps ? (1u << 30 | 0u | 1u << 8) : 0, error, sizeof error) == 0);
         const int ran = rt_executor_run(x, CLEAR_BUFFER, record_triangle_draw(CLEAR_BUFFER, offset + 0x30), error, sizeof error);
-        if (pass == 2) {
+        if (pass == HALF_CLEARED) {
             CHECK(ran == -1 && strstr(error, "partly fast-cleared"));
             break;
         }
         if (ran) fprintf(stderr, "fast clear pass %d: %s\n", pass, error);
         CHECK(ran == 0);
-        if (pass == 0) {
+        if (keeps) {
             uint32_t bgra[SIZE * SIZE];
             CHECK(rt_executor_read_target(x, at(FAST), bgra, SIZE, SIZE, error, sizeof error) == 0);
             int cleared = 1, expanded = 1;
             for (int i = 0; i < SIZE * SIZE; i++) cleared &= bgra[i] == 0xff996633u;
             for (int i = 0; i < 128; i++) expanded &= cmask[i] == 0xff;
-            if (!cleared) fprintf(stderr, "fast clear: %08x\n", bgra[0]);
+            if (!cleared) fprintf(stderr, "fast clear pass %d: %08x\n", pass, bgra[0]);
             CHECK(cleared && expanded);
         } else {
             check_triangle(x, at(FAST));
@@ -1663,13 +1667,13 @@ int main(void)
         }
 
         /* An image no shader wrote holds the guest memory's texels: linear (tiling index 8) RGBA32F
-           texels the CPU wrote read back as written; a layout not done yet (index 0) stops by name. */
+           texels the CPU wrote read back as written; a layout not done yet (index 1) stops by name. */
         float *guest_texels = (float *)(uintptr_t)at(IMAGE_B + 0x8000);
         for (unsigned i = 0; i < LANES * 4; i++) guest_texels[i] = (float)i * 0.25f, back[i] = -1;
         for (int tiling = 0; tiling < 2; tiling++) {
             rt_render_forget(), rt_executor_reset(x);
             image_descriptor(image_b, at(IMAGE_B + 0x8000), 14, 7, LANES, 1);
-            image_b[3] |= (tiling ? 8u : 0u) << 20;
+            image_b[3] |= (tiling ? 8u : 1u) << 20;
             const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(codes[2] >> 8), (uint32_t)(codes[2] >> 40), 0x3, 16 << 1, LANES, 1, 1};
             CHECK(rt_render_record_compute_shader_at(IMAGES + 0x10, shader) == 0);
             descriptor(user, at(BACK), 16), memcpy(user + 8, image_b, sizeof image_b);
@@ -1678,7 +1682,7 @@ int main(void)
             CHECK(rt_render_record_dispatch(IMAGES, 0x40, one, error, sizeof error) == 0);
             const int loaded = rt_executor_run(x, IMAGES, 0x50, error, sizeof error);
             if (!tiling) {
-                CHECK(loaded == -1 && strstr(error, "tiling index 0"));
+                CHECK(loaded == -1 && strstr(error, "tiling index 1"));
                 continue;
             }
             if (loaded) fprintf(stderr, "guest texels: %s\n", error);
