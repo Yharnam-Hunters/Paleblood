@@ -33,7 +33,8 @@
 enum { MAX_SHADERS = 256, MAX_PIPELINES = 256, MAX_TARGETS = 64, MAX_DIMENSION = 4096,
        MAX_IMAGES = 64, MAX_SAMPLERS = 64, USER_BYTES = GCN_USER_SGPR_MAX * 4, GCN_WAVE_LANES = 64, MAX_COMPUTE_GROUPS = 65535, THREAD_ID_XYZ = 2 };
 enum { COLOR_8_8_8_8 = 0xa, NUMBER_UNORM = 0, NUMBER_SRGB = 6, SWAP_STD = 0, SWAP_ALT = 1,
-       PERSP_CENTER_ENA = 2, VGT_INDEX_16 = 0, VGT_INDEX_32 = 1, DRAW_INITIATOR_DMA = 0, PM4_PREDICATE = 1 };
+       PERSP_CENTER_ENA = 2, POS_X_FLOAT_ENA = 0x100, POS_Y_FLOAT_ENA = 0x200, PIXEL_BARYCENTRIC_VGPRS = 2,
+       VGT_INDEX_16 = 0, VGT_INDEX_32 = 1, DRAW_INITIATOR_DMA = 0, PM4_PREDICATE = 1 };
 enum { SPI_SHADER_FP16_ABGR = 4, SPI_SHADER_32_ABGR = 9, SPI_SHADER_4COMP = 4,
        CLIP_ENABLES = 0xff, CLIP_VECTOR_0 = 1 << 22, CLIP_VECTOR_1 = 1 << 23, PARAMETER_LIMIT = 32 };
 struct MetalPixelResources {
@@ -54,7 +55,7 @@ struct MetalSampler {
 };
 struct MetalShader {
     uint64_t code, callee;
-    unsigned user, output;
+    unsigned user, interface_control;
     unsigned required_parameters;
     uint32_t user_read;
     bool vertex, flip_y, capture;
@@ -222,8 +223,14 @@ static int shader_profile(const MetalState &state, char *error, size_t size)
     if (state.vertex.position_format != position_format)
         return failed(error, size, "SPI_SHADER_POS_FORMAT must declare float4 position and enabled clip vectors");
     if (!state.pixel.code) return 0;
-    if (state.pixel.input_enable != PERSP_CENTER_ENA || state.pixel.input_address != PERSP_CENTER_ENA)
-        return failed(error, size, "pixel-shader inputs beyond perspective-center barycentrics are not modeled");
+    const uint32_t inputs = state.pixel.input_address;
+    const uint32_t supported_inputs = PERSP_CENTER_ENA | POS_X_FLOAT_ENA | POS_Y_FLOAT_ENA;
+    if (state.pixel.input_enable != inputs || !(inputs & PERSP_CENTER_ENA) || (inputs & ~supported_inputs))
+        return failed(error, size, "pixel inputs enable %#x/address %#x: only matching perspective-center with optional window X/Y are modeled",
+            state.pixel.input_enable, inputs);
+    const unsigned incoming_vgprs = PIXEL_BARYCENTRIC_VGPRS + ((inputs & POS_X_FLOAT_ENA) != 0) + ((inputs & POS_Y_FLOAT_ENA) != 0);
+    if (state.pixel.vgprs < incoming_vgprs)
+        return failed(error, size, "pixel shader incoming inputs require %u VGPRs; allocation declares %u", incoming_vgprs, state.pixel.vgprs);
     if (state.pixel.depth_format) return failed(error, size, "pixel depth exports are not modeled");
     if (state.pixel.color_formats != SPI_SHADER_FP16_ABGR && state.pixel.color_formats != SPI_SHADER_32_ABGR)
         return failed(error, size, "SPI_SHADER_COL_FORMAT must select FP16_ABGR or 32_ABGR for target 0 only");
@@ -659,7 +666,9 @@ static int pixel_resources(rt_executor *x, const MetalState &state, MetalPixelRe
     return 0;
 }
 
-static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, unsigned user, unsigned output,
+/* interface_control is PA_CL_VS_OUT_CNTL for vertex shaders and SPI_PS_INPUT_ADDR
+   for pixel shaders. Both alter the translated interface, including on cache hits. */
+static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, unsigned user, unsigned interface_control,
                                  unsigned parameter_capacity, bool flip_y, const uint32_t *data, uint32_t written,
                                  const MetalPixelResources *pixel, uint32_t &user_read, char *error, size_t error_size,
                                  MetalRectangleShader *rectangle = nullptr)
@@ -668,7 +677,7 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
     if (program_view(x, code, false, program, error, error_size) ||
         (vertex && vertex_callee(x, program, user, data, written, callee, target_read, error, error_size))) return nil;
     for (const auto &shader : x->shaders)
-        if (shader.code == code && shader.vertex == vertex && shader.user == user && shader.output == output && shader.flip_y == flip_y && shader.capture == (rectangle != nullptr) &&
+        if (shader.code == code && shader.vertex == vertex && shader.user == user && shader.interface_control == interface_control && shader.flip_y == flip_y && shader.capture == (rectangle != nullptr) &&
             shader.callee == callee.address && shader.program.size() == program.dwords &&
             std::equal(shader.program.begin(), shader.program.end(), program.words) && shader.fetch.size() == callee.dwords &&
             (!callee.dwords || std::equal(shader.fetch.begin(), shader.fetch.end(), callee.words)) && same_pixel_resources(shader,pixel)) {
@@ -683,15 +692,19 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
     int result;
     if (vertex) {
         gcn_vertex_layout layout{};
-        layout.user_sgprs = user; layout.output_control = output;
+        layout.user_sgprs = user; layout.output_control = interface_control;
         layout.address_offset = x->address_offset; layout.error_address = x->stop.gpuAddress;
         layout.user_data_read = &user_read;
         layout.callee = callee.words; layout.callee_dwords = callee.dwords; layout.code_address = code;
         result = gcn_translate_vertex(program.words, program.dwords, &layout, &spirv, &count, reason, sizeof reason);
     } else {
-        /* Only perspective-center barycentrics occupy VGPR0/1. Resources use the common origins. */
+        /* Perspective-center barycentrics occupy VGPR0/1. Enabled window X/Y values
+           follow densely; the common translator maps FragCoord without a fragment Y fixup. */
         gcn_pixel_layout layout{};
         layout.user_sgprs = user; layout.push_constant_offset = USER_BYTES;
+        layout.position_enable = (interface_control & POS_X_FLOAT_ENA ? GCN_PIXEL_POSITION_X : 0u) |
+            (interface_control & POS_Y_FLOAT_ENA ? GCN_PIXEL_POSITION_Y : 0u);
+        layout.position_vgpr = PIXEL_BARYCENTRIC_VGPRS;
         layout.address_offset = x->address_offset; layout.error_address = x->stop.gpuAddress;
         layout.user_data_read = &user_read;
         layout.images = pixel->images; layout.image_count = pixel->image_count;
@@ -737,7 +750,7 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
         if (!function) return nil;
         std::vector<uint32_t> fetch;
         if (callee.dwords) fetch.assign(callee.words, callee.words + callee.dwords);
-        x->shaders.push_back({code, callee.address, user, output, required_parameters, user_read, vertex, flip_y, rectangle != nullptr, rectangle ? *rectangle : MetalRectangleShader{},
+        x->shaders.push_back({code, callee.address, user, interface_control, required_parameters, user_read, vertex, flip_y, rectangle != nullptr, rectangle ? *rectangle : MetalRectangleShader{},
             std::vector<uint32_t>(program.words, program.words + program.dwords), std::move(fetch),
             pixel ? std::vector<gcn_image_binding>(pixel->images,pixel->images + pixel->image_count) : std::vector<gcn_image_binding>{},
             pixel ? std::vector<gcn_resource_origin>(pixel->samplers,pixel->samplers + pixel->sampler_count) : std::vector<gcn_resource_origin>{},function});
@@ -1189,7 +1202,7 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
                                       state.vertex.output_control, state.vertex.parameter_count, state.scale[1] > 0,
                                       state.user[0], state.user_set[0], nullptr, vertex_read, error, size, rectangle ? &rectangle_shader : nullptr);
     if (!vertex) return -1;
-    id<MTLFunction> pixel = state.pixel.code ? shader_for(x, false, state.pixel.code, state.pixel.user_sgprs, 0,
+    id<MTLFunction> pixel = state.pixel.code ? shader_for(x, false, state.pixel.code, state.pixel.user_sgprs, state.pixel.input_address,
                                              state.pixel.interpolated, false, state.user[1], state.user_set[1], &resources, pixel_read, error, size) : nil;
     if (state.pixel.code && !pixel) return -1;
     if (check_user_data("vertex", vertex_read, state.user_set[0], error, size) ||

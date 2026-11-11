@@ -38,6 +38,11 @@ target_compile_options(pbmetal_executor PRIVATE -fobjc-arc -fobjc-exceptions -fb
 target_link_libraries(pbmetal_executor PUBLIC pbgcn_spirv pbrender_calls pbtiling
     PRIVATE spirv-cross-msl ${PB_METAL_FRAMEWORK} ${PB_FOUNDATION_FRAMEWORK})
 if(PB_ENABLE_METAL_SMOKE_TEST)
+    add_executable(test_metal_window_position test/test_metal_window_position.c)
+    target_compile_options(test_metal_window_position PRIVATE -ffp-contract=off -fno-fast-math)
+    target_link_libraries(test_metal_window_position PRIVATE pbmetal_executor)
+    add_test(NAME metal_window_position COMMAND test_metal_window_position)
+    set_tests_properties(metal_window_position PROPERTIES TIMEOUT 120 LABELS "gpu;metal")
     add_executable(test_metal_rectangle_values test/test_metal_rectangle_values.mm)
     target_compile_options(test_metal_rectangle_values PRIVATE -fobjc-arc -fobjc-exceptions -fblocks -fno-modules
         -ffp-contract=off -fno-fast-math)

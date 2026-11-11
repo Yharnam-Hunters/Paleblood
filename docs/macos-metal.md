@@ -98,8 +98,15 @@ parameters. Declared vertex parameter and pixel interpolant capacities must cove
 interface, including on shader-cache hits; larger unused allocations are accepted.
 
 Pixel exports support target 0 RGBA as FP16_ABGR or 32_ABGR, perspective-center inputs and no
-depth export. Pixel-position X/Y inputs and whole-quad mask expansion are outside this profile
-and are rejected explicitly. Other color layouts, output masks, barycentric modes and depth
+depth export. Window-position X/Y inputs use the common translator's `FragCoord` mapping: enabled axes
+follow the two perspective-center VGPRs densely, so either axis alone occupies VGPR2 and
+both occupy VGPR2/3. Metal provides framebuffer coordinates with pixel-center values;
+viewport Y conversion affects geometry and does not add a fragment-coordinate Y flip.
+See [Apple's viewport and pixel coordinates](https://developer.apple.com/library/archive/documentation/Miscellaneous/Conceptual/MetalProgrammingGuide/Render-Ctx/Render-Ctx.html).
+Matching input-enable/address masks and enough incoming VGPRs are required, and the mask
+participates in shader-cache identity. Position-only pixel programs may declare zero ordinary
+interpolants. Other input modes and whole-quad mask expansion stop explicitly. Other color
+layouts, output masks, barycentric modes and depth
 controls stop with a reason. User SGPR counts must fit both the 16-word model and the declared shader allocation.
 The translator's required user-SGPR read mask is cached with each shader. Every draw checks it
 against slots explicitly written for that stage since reset; writing zero establishes a value,

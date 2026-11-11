@@ -929,7 +929,7 @@ int main(void)
         {0, 6, 1 << 4, "without their export vector"},
         {1, 4, 1, "pixel depth exports"},
         {1, 5, 0, "SPI_SHADER_COL_FORMAT"}, {1, 5, 3, "SPI_SHADER_COL_FORMAT"}, {1, 5, 0x44, "SPI_SHADER_COL_FORMAT"},
-        {1, 6, 6, "pixel-shader inputs"}, {1, 7, 0, "pixel-shader inputs"},
+        {1, 6, 6, "pixel inputs enable"}, {1, 7, 0, "pixel inputs enable"},
         {1, 8, 0, "pixel interpolant allocation"}, {1, 8, 33, "parameter range"},
         {1, 9, 1, "SPI_BARYC_CNTL"}, {1, 9, 0x80000000, "SPI_BARYC_CNTL"},
         {1, 10, 1, "DB_SHADER_CONTROL"}, {1, 10, 0x80000000, "DB_SHADER_CONTROL"},
@@ -1476,15 +1476,16 @@ int main(void)
     scenarios++;
     rt_executor_reset(x);
 
-    /* Position x/y inputs are decoded upstream, but are outside this explicitly barycentric-only profile. */
-    const uint32_t positions[] = {0x102, 0x202, 0x302};
+    /* Z/W and front-face inputs retain their explicit profile refusal. Window X/Y
+       admission and coordinates have their own real-device fixture. */
+    const uint32_t positions[] = {0x402, 0x802, 0x1002};
     for (unsigned i = 0; i < sizeof positions / sizeof positions[0]; ++i) {
         uint64_t buffer = 350 + i; uint32_t pixel[RT_PIXEL_SHADER_WORDS]; pixel_registers(pixel, POSITION_PIXEL_CODE);
         pixel[5] = 9; pixel[8] = 0; pixel[6] = pixel[7] = positions[i];
         size = record_setup(buffer, at(0x930000), 16, 16, 0, scale, translate, COLORS);
         CHECK(rt_render_record_pixel_shader(buffer, size, pixel, error, sizeof error) == 0); size += 0x10;
         CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
-        expect_error(x, buffer, size, "inputs beyond perspective-center barycentrics");
+        expect_error(x, buffer, size, "pixel inputs enable");
         scenarios++;
         rt_executor_reset(x);
     }
