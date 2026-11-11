@@ -283,6 +283,7 @@ struct rt_executor {
     pass_entry passes[MAX_PASSES];
     size_t pass_count;
     int geometry_shaders;            /* the device draws geometry stages (rect lists need one) */
+    float max_anisotropy;            /* the device's anisotropic filtering limit, or 0 without it */
     rect_stage rect_stages[MAX_RECT_STAGES];
     size_t rect_stage_count;
     compute_entry computes[MAX_COMPUTE_PIPELINES];
@@ -657,9 +658,13 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
                                                  .bufferDeviceAddress = VK_TRUE};
     x->geometry_shaders = features.features.geometryShader == VK_TRUE;
     x->storage_images = features.features.shaderStorageImageReadWithoutFormat && features.features.shaderStorageImageWriteWithoutFormat;
+    VkPhysicalDeviceProperties properties;
+    vkGetPhysicalDeviceProperties(x->physical, &properties);
+    x->max_anisotropy = features.features.samplerAnisotropy ? properties.limits.maxSamplerAnisotropy : 0.0f;
     const VkPhysicalDeviceFeatures2 enable = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &enable12,
                                               .features = {.shaderInt64 = VK_TRUE, .shaderClipDistance = VK_TRUE,
                                                            .geometryShader = features.features.geometryShader,
+                                                           .samplerAnisotropy = features.features.samplerAnisotropy,
                                                            .shaderStorageImageReadWithoutFormat = (VkBool32)x->storage_images,
                                                            .shaderStorageImageWriteWithoutFormat = (VkBool32)x->storage_images}};
     const char *extensions[] = {VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME};
@@ -2232,7 +2237,8 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
             failed(error, error_size, "no memory for a %ux%u image", d->width, d->height);
             return NULL;
         }
-        /* kept in the general layout, cleared */
+        /* Compressed images are loaded from guest memory before sampling. Vulkan
+           forbids clearing their format; only ordinary images need the zero fill. */
         const VkImageMemoryBarrier general = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
                                               .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
                                               .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -2240,7 +2246,7 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
         vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &general);
         const VkClearColorValue zero = {{0}};
         const VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, e->levels, 0, d->layers};
-        vkCmdClearColorImage(commands, e->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &all);
+        if (f->block == 1) vkCmdClearColorImage(commands, e->image, VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &all);
         if (finish_commands(x, commands)) {
             failed(error, error_size, "the GPU did not clear a new image");
             return NULL;
@@ -2400,16 +2406,19 @@ static int stage_images(rt_executor *x, uint64_t code, const uint32_t *user, uin
    FILTER_MODE 29-30; word 1 MIN_LOD and MAX_LOD; word 2 LOD_BIAS, XY_MAG_FILTER bits 20-21,
    XY_MIN_FILTER 22-23, Z_FILTER, MIP_FILTER 26-27; word 3 the border colour. Clamp modes: 0 wrap,
    1 mirror, 2 clamp to the last texel, 3-7 mirror-once and border modes. Filters: 0 point, 1 bilinear,
-   2-3 anisotropic.
+   2 anisotropic point, 3 anisotropic bilinear; MAX_ANISO_RATIO 0-4 allows 1, 2, 4, 8 or 16 samples (shadPS4's
+   resource.h names them so).
 
    Made: wrap, mirror and clamp to the last texel (Vulkan's repeat, mirrored repeat and clamp to
    edge), point or bilinear minifying and magnifying filters (the translator samples at the level the
    derivatives pick, so Vulkan chooses between them as GCN does), the mip filter (none, point,
    linear), LOD_BIAS, MIN_LOD and MAX_LOD (shadPS4's resource.h scales them: 8 fraction bits, the bias
-   signed). The anisotropy
-   fields (MAX_ANISO_RATIO, ANISO_THRESHOLD, ANISO_BIAS) shape only the anisotropic filters (XY filters
-   2 and 3; Mesa's radeonsi switches XY_MAG_FILTER and XY_MIN_FILTER to them exactly when it asks for
-   anisotropy), so with point or bilinear filters they change nothing and are accepted. Anything else
+   signed). The anisotropic filters (XY filters 2 and 3; Mesa's radeonsi switches XY_MAG_FILTER and
+   XY_MIN_FILTER to them exactly when it asks for anisotropy) are their point or bilinear filter with
+   Vulkan's anisotropy up to MAX_ANISO_RATIO's samples (within the device's limit; without the
+   device's anisotropic filtering, the plain filter). ANISO_THRESHOLD and ANISO_BIAS, which tune when
+   the hardware takes fewer samples, are not used; with point or bilinear filters the anisotropy
+   fields change nothing. Anything else
    in word 0 (depth compares, unnormalized coordinates, the truncation and degamma options, a filter
    mode other than blending) stops by name, as do the secondary LOD bias and the LOD rounding options
    in word 2. Z_FILTER (3D images, which are not done), word 1's PERF_MIP and PERF_Z (sampling
@@ -2418,7 +2427,8 @@ static VkSampler sampler_for(rt_executor *x, const uint32_t words[4], char *erro
 {
     for (size_t i = 0; i < x->sampler_count; i++)
         if (!memcmp(x->samplers[i].words, words, sizeof x->samplers[i].words)) return x->samplers[i].sampler;
-    enum { CLAMP_FIELDS = 0x1ff, WRAP = 0, MIRROR = 1, CLAMP_LAST_TEXEL = 2, POINT = 0, BILINEAR = 1 };
+    enum { CLAMP_FIELDS = 0x1ff, WRAP = 0, MIRROR = 1, CLAMP_LAST_TEXEL = 2, POINT = 0, BILINEAR = 1, ANISOTROPIC_POINT = 2,
+           ANISOTROPIC_BILINEAR = 3, MAX_ANISO_RATIO_SHIFT = 9, HIGHEST_RATIO = 4 };
     enum { MAX_ANISO_RATIO = 0x7u << 9, ANISO_THRESHOLD = 0x7u << 16, ANISO_BIAS = 0x3fu << 21 };
     const uint32_t anisotropy_fields = MAX_ANISO_RATIO | ANISO_THRESHOLD | ANISO_BIAS;
     if (words[0] & ~(CLAMP_FIELDS | anisotropy_fields)) {
@@ -2437,11 +2447,16 @@ static VkSampler sampler_for(rt_executor *x, const uint32_t words[4], char *erro
                                                                      : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     }
     const uint32_t magnify = words[2] >> 20 & 3, minify = words[2] >> 22 & 3, mip = words[2] >> 26 & 3;
-    if (magnify > BILINEAR || minify > BILINEAR) {
-        failed(error, error_size, "a sampler with filters %u (magnifying) and %u (minifying): only point and bilinear filters are "
-               "done yet", magnify, minify);
+    const int anisotropic = magnify >= ANISOTROPIC_POINT || minify >= ANISOTROPIC_POINT;
+    const uint32_t ratio = words[0] >> MAX_ANISO_RATIO_SHIFT & 7;
+    if (anisotropic && ratio > HIGHEST_RATIO) {
+        failed(error, error_size, "a sampler with MAX_ANISO_RATIO %u: not done yet", ratio);
         return VK_NULL_HANDLE;
     }
+    const float samples = anisotropic ? (float)(1u << ratio) : 1.0f;
+    const float anisotropy = samples < x->max_anisotropy ? samples : x->max_anisotropy;
+    /* the anisotropic filters filter as their point or bilinear one between samples */
+    const int magnify_linear = magnify == BILINEAR || magnify == ANISOTROPIC_BILINEAR, minify_linear = minify == BILINEAR || minify == ANISOTROPIC_BILINEAR;
     enum { MIP_NONE = 0, MIP_POINT = 1, MIP_LINEAR = 2, LOD_BIAS_SECONDARY = 0x3fu << 14, MIP_POINT_PRECLAMP = 1u << 28,
            DISABLE_LSB_CEIL = 1u << 29, LOD_UNITS = 256 };
     if (mip > MIP_LINEAR || (words[2] & (LOD_BIAS_SECONDARY | MIP_POINT_PRECLAMP | DISABLE_LSB_CEIL))) {
@@ -2459,8 +2474,9 @@ static VkSampler sampler_for(rt_executor *x, const uint32_t words[4], char *erro
     const int32_t bias_field = (int32_t)(words[2] & 0x3fff);
     const float bias = (float)(bias_field >= 0x2000 ? bias_field - 0x4000 : bias_field) / LOD_UNITS;
     const float min_lod = (float)(words[1] & 0xfff) / LOD_UNITS, max_lod = (float)(words[1] >> 12 & 0xfff) / LOD_UNITS;
-    const VkSamplerCreateInfo info = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = magnify == POINT ? VK_FILTER_NEAREST : VK_FILTER_LINEAR,
-                                      .minFilter = minify == POINT ? VK_FILTER_NEAREST : VK_FILTER_LINEAR,
+    const VkSamplerCreateInfo info = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = magnify_linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST,
+                                      .minFilter = minify_linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST,
+                                      .anisotropyEnable = anisotropy > 1.0f, .maxAnisotropy = anisotropy > 1.0f ? anisotropy : 1.0f,
                                       .mipmapMode = mip == MIP_LINEAR ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST,
                                       .addressModeU = modes[0], .addressModeV = modes[1], .addressModeW = modes[2], .mipLodBias = bias,
                                       .minLod = mip == MIP_NONE ? 0.0f : min_lod, .maxLod = mip == MIP_NONE ? 0.25f : max_lod};
@@ -2488,7 +2504,7 @@ static int stage_samplers(rt_executor *x, uint64_t code, const uint32_t *user, u
         uint32_t words[4];
         if (descriptor_words(x, &origins[i], user, user_sgprs, user_set, words, 4, error, error_size)) return -1;
         if (!(samplers[i] = sampler_for(x, words, error, error_size))) return -1;
-        *linear |= (words[2] >> 20 & 3) != 0;
+        *linear |= (words[2] >> 20 & 3) != 0 || (words[2] >> 22 & 3) != 0; /* any filter but point needs linear filtering */
     }
     return 0;
 }
@@ -2539,21 +2555,25 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
    library sets to the count, is taken as counting from INDEX_OFFSET: the game's draws start past it
    (the first at index 136 of 60), which under a count from INDEX_BASE would fetch no index at all;
    shadPS4 reads it the same way (it draws min(INDEX_COUNT, MAX_SIZE) indices from INDEX_OFFSET); this
-   is inferred from the game's use, not from a public description. When INDEX_BUFFER_SIZE was set,
-   the indices must lie within it. 0, or -1 with the reason (no base or type, other types or swaps,
+   is inferred from the game's use, not from a public description. Legacy logical calls retain INDEX_BUFFER_SIZE when it was set. Raw packet calls
+   use their own MAX_SIZE, independent of that saved size. 0, or -1 with the reason (no base or type, other types or swaps,
    indices past the buffer or outside the GPU-visible memory: what the GPU fetches there is not
    established here). */
-static int index_range_for(rt_executor *x, const draw_state *s, uint32_t first, uint32_t count, index_range *out, char *error,
+static int index_range_for(rt_executor *x, const draw_state *s, uint32_t first, uint32_t count, int use_size,
+                           index_range *out, char *error,
                            size_t error_size)
 {
     enum { INDEX_16 = 0, INDEX_32 = 1 };
     if (!s->index_base_set || !s->index_type_set) return failed(error, error_size, "an indexed draw with no index base and type set");
     if (s->index_type != INDEX_16 && s->index_type != INDEX_32)
         return failed(error, error_size, "index type %#x: only 16- and 32-bit indices without a swap are drawn yet", s->index_type);
-    if (s->index_size_set && (uint64_t)first + count > s->index_size)
+    if (use_size && s->index_size_set && (uint64_t)first + count > s->index_size)
         return failed(error, error_size, "an indexed draw of indices %u to %u, past the %u-index buffer", first, first + count, s->index_size);
-    const uint64_t bytes = s->index_type == INDEX_16 ? 2 : 4, start = s->index_base + first * bytes;
-    if (s->index_base < x->guest_base || start + count * bytes > x->guest_base + x->size || start % bytes)
+    const uint64_t bytes = s->index_type == INDEX_16 ? 2 : 4, delta = (uint64_t)first * bytes;
+    if (delta > UINT64_MAX - s->index_base)
+        return failed(error, error_size, "index base plus offset overflows");
+    const uint64_t start = s->index_base + delta, length = (uint64_t)count * bytes;
+    if (start < x->guest_base || start - x->guest_base > x->size || length > x->size - (start - x->guest_base) || start % bytes)
         return failed(error, error_size, "an index buffer at %#llx outside the GPU-visible memory", (unsigned long long)s->index_base);
     *out = (index_range){start - x->guest_base, s->index_type == INDEX_16 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32};
     return 0;
@@ -2648,9 +2668,24 @@ static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, 
         case RT_CALL_INDEX_BASE: s->index_base = c->u.index_base.address, s->index_base_set = 1; break;
         case RT_CALL_INDEX_SIZE: s->index_size = c->u.index_size.count, s->index_size_set = 1; break;
         case RT_CALL_INDEX_TYPE: s->index_type = c->u.index_type.type, s->index_type_set = 1; break;
+        case RT_CALL_DRAW_INDEXED:
+            return failed(error, error_size, "DRAW_INDEX_2 is not implemented by the Vulkan executor");
         case RT_CALL_DRAW_INDEX_OFFSET: {
             index_range indices;
-            if (index_range_for(x, s, c->u.draw_index.first, c->u.draw_index.count, &indices, error, error_size)) return -1;
+            if (c->u.draw_index.has_packet_fields) {
+                if (c->u.draw_index.has_packet_fields != 1)
+                    return failed(error, error_size, "invalid indexed packet field tag");
+                if (c->u.draw_index.header & 1u)
+                    return failed(error, error_size, "predicated indexed draws are not supported");
+                if (c->u.draw_index.header != 0xc0033500u)
+                    return failed(error, error_size, "unsupported indexed offset packet header");
+                if (c->u.draw_index.initiator != 0)
+                    return failed(error, error_size, "unsupported indexed offset draw initiator");
+                if (c->u.draw_index.count > c->u.draw_index.max_size)
+                    return failed(error, error_size, "indexed draw beyond MAX_SIZE requires unsupported DMA zero filling");
+            }
+            if (index_range_for(x, s, c->u.draw_index.first, c->u.draw_index.count,
+                                !c->u.draw_index.has_packet_fields, &indices, error, error_size)) return -1;
             depth_plan plan;
             uint32_t colours = 0;
             const int checked = check_state(s, &plan, &colours, error, error_size);

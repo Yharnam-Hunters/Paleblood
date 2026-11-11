@@ -21,6 +21,7 @@
    or rates, other open arguments, and errors stop by name. The flip event's ident is 0 and its data
    the flip argument: the PS4's values are not established and no caller reads them. */
 #include "runtime/equeue.h"
+#include "runtime/host_time.h"
 #include "runtime/process.h"
 #include "runtime/renderer.h"
 #include "runtime/display.h"
@@ -150,22 +151,21 @@ static int32_t register_buffers(int32_t handle, int32_t start, void *const *addr
 /* A vsync flip takes effect at the display's next vertical blank. The runtime has no display, so
    its vertical blanks are the 60 Hz ticks of the host's monotonic clock (flip rate 0, the only one
    it accepts): the flip waits on the calling thread for the next tick, then completes. */
-static void wait_for_vblank(void)
+static void wait_for_vblank(const char *function)
 {
     const int64_t period_ns = 1000000000 / VBLANKS_PER_SECOND;
     struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (clock_gettime(CLOCK_MONOTONIC, &now)) rt_fatal(function, "the host monotonic clock read failed");
     const int64_t now_ns = (int64_t)now.tv_sec * 1000000000 + now.tv_nsec;
     const int64_t next_ns = (now_ns / period_ns + 1) * period_ns;
     const struct timespec at = {(time_t)(next_ns / 1000000000), (long)(next_ns % 1000000000)};
-    while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &at, NULL) != 0) {
-    }
+    if (rt_host_sleep_until_monotonic(&at)) rt_fatal(function, "the host monotonic wait failed");
 }
 
 int32_t rt_video_out_flip(const char *fn, int32_t handle, int32_t buffer, int32_t mode, int64_t argument)
 {
     if (mode != FLIP_MODE_HSYNC && mode != FLIP_MODE_VSYNC) rt_fatal(fn, "a flip mode other than vsync (1) or hsync (2)");
-    if (mode == FLIP_MODE_VSYNC) wait_for_vblank();
+    if (mode == FLIP_MODE_VSYNC) wait_for_vblank(fn);
     pthread_mutex_lock(&ports_lock);
     video_port *const p = port_of(fn, handle);
     if (buffer < 0 || buffer >= p->buffer_count) rt_fatal(fn, "a buffer index outside the registered set");

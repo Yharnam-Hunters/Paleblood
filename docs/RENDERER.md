@@ -145,7 +145,9 @@ Instead:
        program's dispatch loop is not uniform control flow for Vulkan's implicit derivatives. The
        sampler's LOD bias, MIN_LOD and MAX_LOD (8 fraction bits) and mip filter (none: the view's first
        level, with a maximum LOD of 0.25 so the minifying filter still applies; point; linear) go to
-       the Vulkan sampler, and the minifying and magnifying filters may differ. The executor makes a Vulkan sampler from the S#
+       the Vulkan sampler, and the minifying and magnifying filters may differ. Anisotropic filters (2 point, 3 bilinear) are their
+       point or bilinear filter with Vulkan's anisotropy up to MAX_ANISO_RATIO's 1-16 samples, within
+       the device's limit (ANISO_THRESHOLD and ANISO_BIAS are not used). The executor makes a Vulkan sampler from the S#
        (the Sea Islands manual's layout, as shadPS4's `resource.h` names its fields): wrap, mirror
        and clamp to the last texel; point or bilinear filtering. The anisotropy fields are accepted with point or
        bilinear filters, which they do not affect; anisotropic filters, depth compares,
@@ -165,7 +167,9 @@ Instead:
        goes back to the load or before it, nothing at all writes the pointer pair (without one, code
        after the load may reuse the pointer's SGPRs, as the character creation preview's pixel
        shaders do once their samples are done). Writes before the load do not matter (the game's guarded samples keep a
-       compare's mask there, then branch over the load and the use together). Any other write (a scalar
+       compare's mask there, then branch over the load and the use together). The user data's descriptor holds at a use no write comes before, whatever
+       forward branches run (the game's shaders reuse a sampler's SGPRs after their last sample).
+       Any other write (a scalar
        move, a compare's result, a written pointer) stops by name.
      - **Tiled layouts** (`runtime/tiling.h`): where each texel of an image lies in guest memory, for
        reading images the CPU or a shader's buffer stores wrote. AMD's address library (addrlib, in
@@ -419,6 +423,8 @@ Instead:
         shader's at byte 64 (`push_constant_offset`), 128 bytes in all, the size every Vulkan
         device guarantees.
      3. **Running a buffer** (begun: `runtime/render_executor.h`).
+        The optional [Metal draw executor](macos-metal.md#draw-executor) uses the same call record
+        and readback API, with its own explicitly limited profile; the following describes Vulkan.
         - **What runs today:** COLOR_8_8_8_8 render targets in slots 0-7 (UNORM or sRGB, either
           component order; COLOR_10_11_11 and COLOR_16_16_16_16 FLOAT too, written back to their
           memory as the hardware lays them out, though only 8_8_8_8 ones are read as BGRA), viewport
@@ -538,8 +544,9 @@ Instead:
         in place of the black frame. The executor opens at the first buffer that has recorded calls:
         giving the GPU the 5 GiB pool takes about 2.4 s (measured on an RTX 3070), long enough to
         change which thread reaches its first unimplemented call first if it happened at every
-        boot. Until the library's replacements record calls, boots are unchanged in every display
-        mode.
+        boot. Recorded draws execute only the supported state; missing targets, unsupported
+        shaders and unimplemented modes stop with a reason. This does not establish a working
+        game frame.
      5. **The observer calls** in the library's replacements (begun). Replacements call
         `runtime/render_observer.h`, which finds the record in the boot harness (`pbboot` exports it)
         and does nothing under a host without it, so the replacements' verification is unchanged.
@@ -582,3 +589,25 @@ Instead:
 
 Each phase lands in small PRs with tests. A boot is recorded after each runtime change. The wiki's
 Runtime page and Gallery show where it stands.
+
+
+### Indexed draw packet fields
+
+The record keeps index-buffer state (`INDEX_BASE`, `INDEX_BUFFER_SIZE` and
+`INDEX_TYPE`) and distinguishes offset draws (`DRAW_INDEX_OFFSET_2`) from addressed
+draws (`DRAW_INDEX_2`). The recorded base is the byte address made from the two
+INDEX_BASE DWORDs, without masking either word. The executor rejects an unaligned
+address or a range outside GPU-visible memory. The recorder never reads index memory.
+
+An offset draw recorded through the existing first/count API has
+`has_packet_fields = 0` and retains its `INDEX_BUFFER_SIZE` bound. The packet API
+sets that tag to 1 and also records the emitted header, `MAX_SIZE` and
+`DRAW_INITIATOR`. Even a zero header remains a packet call and is rejected as an
+unsupported header. A packet's MAX_SIZE counts from its first index, independently
+of INDEX_BUFFER_SIZE. Counts above MAX_SIZE would require DMA zero filling, which
+the executor does not implement.
+
+Vulkan draws supported offset packets. Predicated packets, other headers and
+nonzero initiators fail with a reason. Addressed DRAW_INDEX_2 calls are recorded
+with their complete payload but are not yet executed by Vulkan. The packet
+observer bridge belongs with the GPU-library replacements that first call it.

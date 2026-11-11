@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Build-local, immutable upstream source; no system installation or offline Metal compiler.
+include(FetchContent)
+if(POLICY CMP0135)
+    cmake_policy(SET CMP0135 NEW)
+endif()
+set(SPIRV_CROSS_CLI OFF CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_ENABLE_HLSL OFF CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_ENABLE_CPP OFF CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_ENABLE_REFLECT OFF CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_ENABLE_C_API OFF CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_ENABLE_UTIL OFF CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_EXCEPTIONS_TO_ASSERTIONS OFF CACHE BOOL "" FORCE)
+set(SPIRV_CROSS_SKIP_INSTALL ON CACHE BOOL "" FORCE)
+FetchContent_Declare(spirv_cross
+    URL https://codeload.github.com/KhronosGroup/SPIRV-Cross/tar.gz/7affe74d77f93a622bb5002789d5332d32e512ee
+    URL_HASH SHA256=3d54721c7db5cf955c6b5f01be2702ea1154c86d5ef322685a3738788a093b3e)
+FetchContent_MakeAvailable(spirv_cross)
+
+# The standalone profile returns before the root's common renderer targets.
+if(PB_METAL_ONLY)
+    add_library(pbgcn_decode STATIC runtime/renderer/gcn_decode.c)
+    target_include_directories(pbgcn_decode PUBLIC runtime/include)
+    add_library(pbgcn_spirv STATIC runtime/renderer/spirv.c runtime/renderer/gcn_spirv.c)
+    target_include_directories(pbgcn_spirv PUBLIC runtime/include)
+    target_link_libraries(pbgcn_spirv PUBLIC pbgcn_decode)
+    add_library(pbrender_calls STATIC runtime/renderer/render_calls.c)
+    target_include_directories(pbrender_calls PUBLIC runtime/include)
+    target_link_libraries(pbrender_calls PUBLIC pthread)
+endif()
+add_library(pbmetal_executor STATIC runtime/renderer/render_executor_metal.mm)
+target_include_directories(pbmetal_executor PUBLIC runtime/include)
+target_compile_options(pbmetal_executor PRIVATE -fobjc-arc -fobjc-exceptions -fblocks -fno-modules)
+target_link_libraries(pbmetal_executor PUBLIC pbgcn_spirv pbrender_calls
+    PRIVATE spirv-cross-msl ${PB_METAL_FRAMEWORK} ${PB_FOUNDATION_FRAMEWORK})
+if(PB_ENABLE_METAL_SMOKE_TEST)
+    add_executable(test_metal_executor test/test_metal_executor.c)
+    target_link_libraries(test_metal_executor PRIVATE pbmetal_executor)
+    add_test(NAME metal_executor COMMAND test_metal_executor)
+    set_tests_properties(metal_executor PROPERTIES TIMEOUT 120 LABELS "gpu;metal")
+endif()
