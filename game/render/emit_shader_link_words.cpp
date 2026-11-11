@@ -2,6 +2,8 @@
 // Write consecutive SPI_PS_INPUT_CNTL entries from last word to first.
 // This order preserves the original reads when the source overlaps the output.
 // Keep the unmasked count shift, including zero and oversized input counts.
+// Each entry is also observed for the renderer: which vertex output each pixel input reads.
+#include "render_observe.h"
 #include "shader_link.h"
 
 extern "C" void bb_render_emit_shader_link_words(render::PacketBuffer *commands,
@@ -15,6 +17,12 @@ extern "C" void bb_render_emit_shader_link_words(render::PacketBuffer *commands,
     const uint32_t requested = count + header_words;
     uintptr_t cursor;
     if (!reserve_words(commands, requested, cursor)) return;
+    // Observed before any store: the packet may overlap the source words.
+    if (count != 0 && count <= shader_link_word_capacity) {
+        const auto *words = static_cast<const Field<uint32_t> *>(source);
+        for (uint32_t i = 0; i < count; i++)
+            observe_context_register(commands, cursor, pixel_shader_input_control_base_index + i, words[i].get());
+    }
     auto *header = reinterpret_cast<ShaderLinkCommandHeader *>(cursor);
     header->header.set((count << count_shift) | set_context_reg_header_base);
     header->register_index.set(pixel_shader_input_control_base_index);

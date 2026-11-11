@@ -1131,6 +1131,59 @@ static void fetch_shader(rt_executor *x)
     check_triangle(x, at(FETCH_TARGET));
 }
 
+/* Every pixel of the 16 x 16 target at `target` is `bgra`. */
+static int filled_with(rt_executor *x, uint64_t target, uint32_t bgra)
+{
+    uint32_t pixels[SIZE * SIZE];
+    char error[160] = "";
+    if (rt_executor_read_target(x, target, pixels, SIZE, SIZE, error, sizeof error)) return 0;
+    for (int i = 0; i < SIZE * SIZE; i++)
+        if (pixels[i] != bgra) return 0;
+    return 1;
+}
+
+/* SPI_PS_INPUT_CNTL_0 (0xa191) says what the pixel shader's attribute 0 reads (gcn_spirv.h): with OFFSET 1
+   it is the vertex shader's parameter 1 (vertex_colour_second's colour; without the register it reads
+   parameter 0, the position, and the triangle's pixels are wrong), DEFAULT_VAL gives a constant, and
+   FLAT_SHADE the first vertex's colour everywhere. */
+static void pixel_input_controls(rt_executor *x)
+{
+    enum { CONTROL_BUFFER = 0xc1010000, VS_CODE = 0x3e00, CONTROL_TARGET = 0x2f00000, SPI_PS_INPUT_CNTL_0 = 0xa191,
+           USE_DEFAULT = 0x20, DEFAULT_ONES = 3u << 8, DEFAULT_BLACK = 1u << 8, FLAT_SHADE = 0x400 };
+    char error[200] = "";
+    memcpy((void *)(uintptr_t)at(VS_CODE), vertex_colour_second, sizeof vertex_colour_second);
+    const uint64_t code = at(VS_CODE);
+    const uint32_t vertex[RT_VERTEX_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 8 << 1, 1 << 1, 0x4, 0};
+    for (int mapped = 0; mapped <= 1; mapped++) {
+        rt_render_forget(), rt_executor_reset(x);
+        uint32_t offset = record_setup(CONTROL_BUFFER, at(CONTROL_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        CHECK(rt_render_record_vertex_shader(CONTROL_BUFFER, offset, vertex, error, sizeof error) == 0);
+        if (mapped) CHECK(rt_render_record_register(CONTROL_BUFFER, offset + 0x10, SPI_PS_INPUT_CNTL_0, 1, error, sizeof error) == 0);
+        const int drawn = rt_executor_run(x, CONTROL_BUFFER, record_triangle_draw(CONTROL_BUFFER, offset + 0x20), error, sizeof error);
+        if (drawn) fprintf(stderr, "pixel input controls: %s\n", error);
+        CHECK(drawn == 0);
+        if (mapped) check_triangle(x, at(CONTROL_TARGET));
+        else {
+            uint32_t bgra[SIZE * SIZE];
+            CHECK(rt_executor_read_target(x, at(CONTROL_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+            CHECK((bgra[0] & 0xff) == 0); /* the position's z, 0, where the colour's blue is 0.25 */
+        }
+    }
+    const uint32_t white[][2] = {{SPI_PS_INPUT_CNTL_0, USE_DEFAULT | DEFAULT_ONES}};
+    CHECK(run_with_registers(x, CONTROL_BUFFER, at(CONTROL_TARGET), white, 1, 0, error, sizeof error) == 0);
+    CHECK(filled_with(x, at(CONTROL_TARGET), 0xffffffffu));
+    const uint32_t black[][2] = {{SPI_PS_INPUT_CNTL_0, USE_DEFAULT | DEFAULT_BLACK}};
+    CHECK(run_with_registers(x, CONTROL_BUFFER, at(CONTROL_TARGET), black, 1, 0, error, sizeof error) == 0);
+    CHECK(filled_with(x, at(CONTROL_TARGET), 0xff000000u));
+    const uint32_t flat[][2] = {{SPI_PS_INPUT_CNTL_0, FLAT_SHADE}}; /* the first vertex's (0, 0, 0.25, 1) */
+    CHECK(run_with_registers(x, CONTROL_BUFFER, at(CONTROL_TARGET), flat, 1, 0, error, sizeof error) == 0);
+    uint32_t bgra[SIZE * SIZE];
+    CHECK(rt_executor_read_target(x, at(CONTROL_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+    int same = 1;
+    for (int i = 0; i < SIZE * SIZE; i++) same &= (bgra[i] >> 16 & 0xff) == 0 && (bgra[i] >> 8 & 0xff) == 0 && near(bgra[i] & 0xff, 0.25f);
+    CHECK(same);
+}
+
 /* A vertex shader that calls its fetch shader and then loads a texel from an image whose descriptor is in
    its user data (vertex_fetch_then_image: s[8:15], which fetch_position_only leaves alone): the image is
    bound to the vertex stage, and every pixel of the triangle takes that texel's colour (a 1x1 linear
@@ -2076,6 +2129,7 @@ int main(void)
     sampled_levels(x);
     sampled_cube(x);
     fetch_shader(x);
+    pixel_input_controls(x);
     vertex_image_after_fetch(x);
     unset_user_data(x);
     target_read_in_buffer(x);
