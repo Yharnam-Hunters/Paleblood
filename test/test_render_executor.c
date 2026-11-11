@@ -361,6 +361,17 @@ static int lookup_misses(rt_executor *x, uint64_t target)
     return misses;
 }
 
+/* The red, green and blue bytes of the target's left column, summed. */
+static int left_column_sum(rt_executor *x, uint64_t target)
+{
+    uint32_t bgra[SIZE * SIZE];
+    char error[160] = "";
+    if (rt_executor_read_target(x, target, bgra, SIZE, SIZE, error, sizeof error)) return -1;
+    int sum = 0;
+    for (int y = 0; y < SIZE; y++) sum += (int)(bgra[y * SIZE] >> 16 & 0xff) + (int)(bgra[y * SIZE] >> 8 & 0xff) + (int)(bgra[y * SIZE] & 0xff);
+    return sum;
+}
+
 /* The executor keeps more images than the 64 it once did: 100 runs, each drawing a different 16x16
    linear image (the reference image, written by the CPU) without a reset, all draw it. */
 static void many_images(rt_executor *x)
@@ -513,7 +524,11 @@ static void sampled_lookup(rt_executor *x)
     static const uint32_t point_clamped[4] = {0x2 | 0x2 << 3 | 0x2 << 6, 0, 0, 0};
     static const uint32_t bilinear_wrapped[4] = {0, 0, 1u << 20 | 1u << 22, 0};
     static const uint32_t unequal[4] = {0x2, 0, 1u << 20, 0};
+    /* clamp to the border on x (transparent black, then opaque white), wrap on y; a border colour
+       from the table stops */
     static const uint32_t border[4] = {0x6, 0, 1u << 20 | 1u << 22, 0};
+    static const uint32_t border_white[4] = {0x6, 0, 1u << 20 | 1u << 22, 2u << 30};
+    static const uint32_t border_table[4] = {0x6, 0, 1u << 20 | 1u << 22, 3u << 30 | 5};
     /* MAX_ANISO_RATIO 4 with bilinear filters: the same as bilinear (the ratio shapes only the
        anisotropic filters); anisotropic bilinear filters (3) with ratio 4 (16 samples) magnify as the
        bilinear one, a ratio past 4 stops, as does a depth compare */
@@ -522,8 +537,9 @@ static void sampled_lookup(rt_executor *x)
     static const uint32_t past_ratio[4] = {0x2 | 0x2 << 3 | 0x2 << 6 | 5u << 9, 0, 3u << 20 | 3u << 22, 0};
     static const uint32_t depth_compare[4] = {0x2 | 0x2 << 3 | 0x2 << 6 | 3u << 12, 0, 1u << 20 | 1u << 22, 0};
     const uint32_t *const samplers[] = {bilinear_clamped, point_clamped, bilinear_wrapped, unequal, border, ratio_bilinear, anisotropic,
-                                        depth_compare, past_ratio};
-    for (int k = 0; k < 9; k++) {
+                                        depth_compare, past_ratio, border_white, border_table};
+    int black_border_sum = 0;
+    for (int k = 0; k < 11; k++) {
         uint32_t user[16] = {0};
         user[2] = (uint32_t)at(TABLE), user[3] = (uint32_t)(at(TABLE) >> 32);
         image_descriptor(user + 4, at(IMAGE), 10, 0, WIDTH, HEIGHT);
@@ -547,7 +563,14 @@ static void sampled_lookup(rt_executor *x)
         }
         if (k == 1 || k == 2) CHECK(lookup_misses(x, at(LOOKUP_TARGET)) > 0);
         if (k == 3) CHECK(drawn == 0 && lookup_misses(x, at(LOOKUP_TARGET)) == 0); /* magnified: the bilinear filter */
-        if (k == 4) CHECK(drawn == -1 && strstr(error, "clamp mode 6"));
+        if (k == 4 || k == 9) { /* the border colour shows at the left and right edges: brighter for white */
+            if (drawn) fprintf(stderr, "lookup %d: %s\n", k, error);
+            CHECK(drawn == 0 && lookup_misses(x, at(LOOKUP_TARGET)) > 0);
+            const int sum = left_column_sum(x, at(LOOKUP_TARGET));
+            if (k == 9) CHECK(sum > black_border_sum);
+            black_border_sum = sum;
+        }
+        if (k == 10) CHECK(drawn == -1 && strstr(error, "border colour from the table"));
         if (k == 8) CHECK(drawn == -1 && strstr(error, "MAX_ANISO_RATIO 5"));
         if (k == 7) CHECK(drawn == -1 && strstr(error, "depth compares"));
     }
