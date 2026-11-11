@@ -423,6 +423,11 @@ static void tile_copy_shaders(void)
             const int valid = validate(spirv, words, name);
             if (valid < 0) fprintf(stderr, "  %s: spirv-val not installed; validation skipped\n", name);
             CHECK(valid != 0);
+            /* the element moves in one store of its whole size (OpStore, opcode 62), not word by word:
+               word stores with gaps between them cross the bus to host memory one word at a time */
+            unsigned stores = 0;
+            for (size_t at = 5; at < words && spirv[at] >> 16; at += spirv[at] >> 16) stores += (spirv[at] & 0xffff) == 62;
+            CHECK(stores == 1);
             free(spirv);
         }
     uint32_t *spirv = NULL;

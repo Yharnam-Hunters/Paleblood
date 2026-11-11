@@ -432,16 +432,21 @@ static int set_affinity(guest_thread *thread, uint64_t mask)
     return 0;
 }
 
+/* The CPU set answered for a thread or attribute the guest gave no mask: the six CPUs 0 to 5. It is
+   the mask the executable's own thread set-up gives each thread (docs/runtime-syscalls.md) and
+   PS4Recomp's default (facts only); shadPS4 answers the host thread's set. The maintainer's ruling
+   of 2026-11-11 replaced the earlier all ones; the console's own main-thread mask is not measured. */
+#define DEFAULT_CPU_MASK UINT64_C(0x3f)
+
 /* scePthreadGetaffinity(thread, uint64_t *mask): the thread's CPU set, imported by the bundled
-   file library (libSceFios2.elf). A mask the guest set is answered back; a thread nobody set one on runs wherever the system lets it, which the runtime
-   answers as all ones (shadPS4 answers the host thread's set, PS4Recomp 0x3f; facts only; all
-   ones is the maintainer's ruling of 2026-11-10). No thread answers ESRCH, as for the set; no
-   variable stops by name. */
+   file library (libSceFios2.elf). A mask the guest set is answered back; a thread nobody set one
+   on answers DEFAULT_CPU_MASK. No thread answers ESRCH, as for the set; no variable stops by
+   name. */
 static int get_affinity(guest_thread *thread, uint64_t *mask)
 {
     if (!thread) return SCE_KERNEL_ERROR(BSD_ESRCH);
     if (!mask) rt_fatal("scePthreadGetaffinity", "no variable for the mask: the error value is not established");
-    *mask = thread->affinity ? thread->affinity : UINT64_MAX;
+    *mask = thread->affinity ? thread->affinity : DEFAULT_CPU_MASK;
     return 0;
 }
 
@@ -681,15 +686,14 @@ RT_SYSLIB("libkernel", scePthreadAttrSetaffinity, sce_attr_set_affinity);
    libc.elf, whose thread-count probe (+0x81a80) asks it for a copy of the main thread's attributes
    and counts the set bits of the eight-byte answer (docs/runtime-syscalls.md). A mask set with
    scePthreadAttrSetaffinity, or copied from a thread by scePthreadAttrGet, is answered back. Without
-   one the thread may run on any CPU, which the runtime answers as all ones, the same answer as
-   scePthreadGetaffinity (the maintainer's ruling of 2026-11-10; the console's own mask is not
-   measured). A variable holding no attribute is EINVAL, as for the setter; no variable for the mask
-   stops by name. */
+   one the answer is DEFAULT_CPU_MASK, as from scePthreadGetaffinity, so the probe counts six CPUs.
+   A variable holding no attribute is EINVAL, as for the setter; no variable for the mask stops by
+   name. */
 static int sce_attr_get_affinity(guest_attr **attr, uint64_t *mask)
 {
     if (!attr || !*attr) return SCE_KERNEL_ERROR(BSD_EINVAL);
     if (!mask) rt_fatal("scePthreadAttrGetaffinity", "no variable for the mask: the error value is not established");
-    *mask = (*attr)->affinity ? (*attr)->affinity : UINT64_MAX;
+    *mask = (*attr)->affinity ? (*attr)->affinity : DEFAULT_CPU_MASK;
     return 0;
 }
 RT_SYSLIB("libkernel", scePthreadAttrGetaffinity, sce_attr_get_affinity);
