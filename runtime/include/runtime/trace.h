@@ -86,7 +86,7 @@ typedef struct {
     uint64_t stopped_at;       /* where it stopped: the instruction it could not trace, or native code */
 } rt_trace_log;
 
-/* 1 when the runtime was built with the tracer (Capstone found). */
+/* 1 when this host has the single-step tracer (currently Linux with Capstone). */
 int rt_trace_available(void);
 
 /* Runs the call and fills `result` and `log` (free it with rt_trace_log_free). Returns 0 when
@@ -116,6 +116,9 @@ typedef struct {
     const char *name;
 } rt_trace_import;
 void rt_trace_set_imports(const rt_trace_import *table, size_t count);
+
+/* Relocation can be available independently of single-step tracing, including on Darwin. */
+int rt_trace_relocation_available(void);
 
 enum { RT_RELOCATE_MAX = 64 };   /* bytes of relocated entry code, including the jump back */
 
