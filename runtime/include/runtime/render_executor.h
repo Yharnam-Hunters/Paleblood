@@ -29,11 +29,17 @@ extern "C" {
 
 typedef struct rt_executor rt_executor;
 
-/* The guest memory the GPU reaches: the pool's file, its size, and the guest address of its offset 0. */
+/* The guest memory the GPU reaches: the pool's file, its size, and the guest address of its offset 0.
+   collect_cpu_writes reports the pool bytes inside the given ranges (pool offset and length,
+   ascending) that the CPU wrote since they were last collected (rt_write_watch_collect,
+   runtime/write_watch.h); without it, or when it answers -1, the executor takes all memory as
+   changed at each buffer. */
 typedef struct {
     int fd;
     uint64_t size;
     uint64_t guest_base;
+    int (*collect_cpu_writes)(const uint64_t (*ranges)[2], size_t count, void (*written)(void *context, uint64_t pool_offset, uint64_t length),
+                              void *context);
 } rt_executor_memory;
 
 /* Opens a GPU device and gives it the memory. Returns 0, or -1 with the reason in error (no

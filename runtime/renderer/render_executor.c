@@ -34,7 +34,7 @@
 /* What the executor keeps, made on first use: sized for a 3D scene (the character creation preview
    alone samples a few hundred textures through dozens of shaders, into two dozen targets) */
 enum { MAX_SHADERS = 1024, MAX_PIPELINES = 1024, MAX_TARGETS = 128, MAX_RECT_STAGES = 16, MAX_COMPUTE_PIPELINES = 512, MAX_IMAGES = 1024,
-       MAX_VIEWS = 16, MAX_SAMPLERS = 256, MAX_PASSES = 256, BATCH_SETS = 256, MAX_WRITTEN = 256, BATCH_SLOTS = 4,
+       MAX_VIEWS = 16, MAX_SAMPLERS = 256, MAX_PASSES = 256, BATCH_SETS = 256, MAX_WRITTEN = 256, BATCH_SLOTS = 4, CHANGE_CHUNK = 64 << 10,
        STOP_SLOTS = MAX_SHADERS + MAX_COMPUTE_PIPELINES };
 enum { MAX_VERTEX_IMAGE_LAYOUTS = 32 };
 enum { SNAPSHOT_SLOTS = 4 }; /* flip copies kept at once (rt_executor_snapshot_target) */
@@ -112,7 +112,7 @@ typedef struct {
 
 /* The image standing for a render target. The guest memory under it stays the target's contents
    (runtime/tiling.h, its tile mode): the image is loaded from it before a draw when the memory may have
-   changed since (memory_epoch), and written back once drawn into, before anything else reads the memory.
+   changed since (memory_changed_since), and written back once drawn into, before anything else reads the memory.
    Both copies run on the GPU (runtime/tile_copy.h). */
 typedef struct {
     uint64_t address;
@@ -122,7 +122,7 @@ typedef struct {
     VkImage image;
     VkDeviceMemory memory;
     VkImageView view;
-    uint64_t loaded_epoch;           /* the memory epoch the image was last loaded at */
+    uint64_t loaded_change;          /* change_count when the image was last loaded (UINT64_MAX: load it) */
     int drawn;                       /* drawn into since it was last written back */
     staging_buffer staging;          /* host-visible: the image's texels, for showing it */
     int staging_current;             /* the staging buffer holds them (since the image last changed) */
@@ -204,7 +204,8 @@ typedef struct {
     int pow2;                        /* the descriptor's POW2_PAD (where the levels lie) */
     int gpu_written;                 /* a shader has written it: its texels are the image's own */
     memory_snapshot agreed;          /* the guest memory it was last loaded from (loads through the CPU) */
-    uint64_t loaded_epoch;           /* the memory epoch it was last loaded at (loads on the GPU) */
+    uint64_t loaded_change;          /* change_count when it was last loaded (UINT64_MAX: load it) */
+    uint64_t loaded_span;            /* the bytes of guest memory it was loaded from */
     tile_plan plan;                  /* its loads on the GPU, for elements of whole 32-bit words */
     VkImage image;
     VkDeviceMemory memory;
@@ -372,9 +373,15 @@ struct rt_executor {
     VkDeviceMemory stop_memory;
     volatile uint32_t *stop_words;   /* one per translated shader (stop_slot) */
     uint64_t stop_address;
-    /* moves on whenever the guest memory may have changed outside the render targets: at each buffer
-       (the CPU runs between submissions) and after each dispatch (shaders store to memory) */
-    uint64_t memory_epoch;
+    /* What changed the guest memory, and when (memory_changed): each change counts one up, and each
+       CHANGE_CHUNK of the memory keeps the count of the last change that reached it. The CPU's writes
+       come from collect_cpu_writes at each buffer, the GPU's (dispatch stores, write-backs, fills) as
+       they are recorded. A change that may reach any memory sets all_changed. */
+    uint64_t change_count, all_changed;
+    uint64_t *chunk_changed;
+    int (*collect_cpu_writes)(const uint64_t (*ranges)[2], size_t count, void (*written)(void *context, uint64_t pool_offset, uint64_t length),
+                              void *context);
+    uint64_t watch_ranges[MAX_IMAGES + MAX_TARGETS][2]; /* what note_cpu_writes asks about: the loaded images' and targets' memory */
     /* The batches: slots[current] is the open one (batch_open) or the next to open. A batch is
        submitted when a buffer's calls end (batch_submit), without waiting: the CPU waits only where it
        reads what submitted work produces (the run-time stop words, guest memory a dispatch or
@@ -822,7 +829,9 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
 /* Our own mapping of the guest memory, imported as one buffer with a GPU address. */
 static int import_memory(rt_executor *x, const rt_executor_memory *memory, char *error, size_t error_size)
 {
-    x->size = memory->size, x->guest_base = memory->guest_base;
+    x->size = memory->size, x->guest_base = memory->guest_base, x->collect_cpu_writes = memory->collect_cpu_writes;
+    x->chunk_changed = calloc((size_t)((memory->size + CHANGE_CHUNK - 1) / CHANGE_CHUNK), sizeof *x->chunk_changed);
+    if (!x->chunk_changed) return failed(error, error_size, "no memory to note changes to the guest memory in");
     x->view = mmap(NULL, memory->size, PROT_READ | PROT_WRITE, MAP_SHARED, memory->fd, 0);
     if (x->view == MAP_FAILED) {
         x->view = NULL;
@@ -1053,6 +1062,80 @@ static int batch_finish(rt_executor *x, char *error, size_t error_size)
     return 0;
 }
 
+/* ---- changes to the guest memory ---- */
+
+/* Notes that `size` bytes of guest memory at `address` changed (or will, once the batch has run): what
+   was loaded from there loads again. Outside the GPU-visible memory nothing is loaded from. */
+static void memory_changed(rt_executor *x, uint64_t address, uint64_t size)
+{
+    if (!size || address >= x->guest_base + x->size || address + size <= x->guest_base) return;
+    const uint64_t from = address > x->guest_base ? address - x->guest_base : 0;
+    const uint64_t to = address + size - x->guest_base < x->size ? address + size - x->guest_base : x->size;
+    const uint64_t change = ++x->change_count;
+    for (uint64_t chunk = from / CHANGE_CHUNK; chunk <= (to - 1) / CHANGE_CHUNK; chunk++) x->chunk_changed[chunk] = change;
+}
+
+static void all_memory_changed(rt_executor *x) { x->all_changed = ++x->change_count; }
+
+/* Whether `size` bytes of guest memory at `address` may have changed since change_count was `since`
+   (UINT64_MAX: never loaded). */
+static int memory_changed_since(const rt_executor *x, uint64_t address, uint64_t size, uint64_t since)
+{
+    if (since == UINT64_MAX || x->all_changed > since) return 1;
+    if (!size || address < x->guest_base || address - x->guest_base >= x->size) return 1;
+    const uint64_t from = address - x->guest_base, to = from + size < x->size ? from + size : x->size;
+    for (uint64_t chunk = from / CHANGE_CHUNK; chunk <= (to - 1) / CHANGE_CHUNK; chunk++)
+        if (x->chunk_changed[chunk] > since) return 1;
+    return 0;
+}
+
+static void cpu_wrote(void *context, uint64_t pool_offset, uint64_t length)
+{
+    rt_executor *x = context;
+    memory_changed(x, x->guest_base + pool_offset, length);
+}
+
+static uint64_t target_span(const target_entry *t);
+
+static int by_start(const void *a, const void *b)
+{
+    const uint64_t *l = a, *r = b;
+    return l[0] < r[0] ? -1 : l[0] > r[0];
+}
+
+/* At each buffer: the CPU's writes since the last (all memory when they are not known), asked about
+   only where something loaded from memory would load again: under the images and targets loaded
+   (pool offsets, sorted, merged into runs of whole chunks). The rest is loaded anyway on first use. */
+static void note_cpu_writes(rt_executor *x)
+{
+    if (!x->collect_cpu_writes) {
+        all_memory_changed(x);
+        return;
+    }
+    size_t n = 0;
+    for (size_t i = 0; i < x->image_count; i++) {
+        const image_entry *e = &x->images[i];
+        if (e->loaded_change != UINT64_MAX && e->loaded_span) x->watch_ranges[n][0] = e->address - x->guest_base, x->watch_ranges[n++][1] = e->loaded_span;
+    }
+    for (size_t i = 0; i < x->target_count; i++) {
+        const target_entry *t = &x->targets[i];
+        if (t->loaded_change != UINT64_MAX) x->watch_ranges[n][0] = t->address - x->guest_base, x->watch_ranges[n++][1] = target_span(t);
+    }
+    qsort(x->watch_ranges, n, sizeof *x->watch_ranges, by_start);
+    size_t runs = 0;
+    for (size_t i = 0; i < n; i++) {
+        const uint64_t start = x->watch_ranges[i][0] / CHANGE_CHUNK * CHANGE_CHUNK;
+        const uint64_t end = (x->watch_ranges[i][0] + x->watch_ranges[i][1] + CHANGE_CHUNK - 1) / CHANGE_CHUNK * CHANGE_CHUNK;
+        if (runs && start <= x->watch_ranges[runs - 1][0] + x->watch_ranges[runs - 1][1]) {
+            const uint64_t run_end = x->watch_ranges[runs - 1][0] + x->watch_ranges[runs - 1][1];
+            if (end > run_end) x->watch_ranges[runs - 1][1] = end - x->watch_ranges[runs - 1][0];
+        } else {
+            x->watch_ranges[runs][0] = start, x->watch_ranges[runs++][1] = end - start;
+        }
+    }
+    if (x->collect_cpu_writes((const uint64_t(*)[2])x->watch_ranges, runs, cpu_wrote, x)) all_memory_changed(x);
+}
+
 /* Whether a batch, open or submitted, holds work that may store to `size` bytes of guest memory at
    `address`. With `metadata` the memory is a CMASK or HTILE (a target's fast-clear metadata), which a
    dispatch is taken to store to only through a buffer whose base lies in it: shadPS4 takes a compute
@@ -1093,9 +1176,11 @@ static int metadata_settled(rt_executor *x, uint64_t address, uint64_t size, cha
 }
 
 /* Notes that the open batch stores to guest memory at address: a write-back, or a dispatch's buffer
-   stores through a descriptor based there. Past the list's room, as a dispatch storing anywhere would. */
+   stores through a descriptor based there; what was loaded from there loads again. Past the list's
+   room, as a dispatch storing anywhere would. */
 static void batch_writes(rt_executor *x, uint64_t address, uint64_t size, int dispatch)
 {
+    memory_changed(x, address, size);
     batch_slot *b = &x->slots[x->current];
     if (b->written_count == MAX_WRITTEN) {
         b->memory_pending = 1;
@@ -1344,7 +1429,7 @@ static target_entry *target_for(rt_executor *x, const rt_color_target *color, ch
         return NULL;
     }
     t = &x->targets[x->target_count];
-    *t = (target_entry){.loaded_epoch = UINT64_MAX, .address = color->address, .width = color->pitch, .height = color->height, .tile_index = color->tile_mode_index,
+    *t = (target_entry){.loaded_change = UINT64_MAX, .address = color->address, .width = color->pitch, .height = color->height, .tile_index = color->tile_mode_index,
                         .format = format, .element_bytes = element_bytes};
     const VkImageCreateInfo image = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = format,
                                      .extent = {t->width, t->height, 1}, .mipLevels = 1, .arrayLayers = 1,
@@ -1477,7 +1562,7 @@ static int take_written_image(rt_executor *x, target_entry *t, char *error, size
                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
     e->gpu_written = 0;
-    t->drawn = 1, t->staging_current = 0, t->loaded_epoch = x->memory_epoch;
+    t->drawn = 1, t->staging_current = 0, t->loaded_change = x->change_count;
     return 1;
 }
 
@@ -1576,8 +1661,9 @@ static int apply_fast_clears(rt_executor *x, const draw_state *s, char *error, s
         }
         memset(bits, 0xff, c->cmask_bytes);
         target_entry *t = find_target(x, c->address);
-        if (t) t->drawn = 0, t->loaded_epoch = UINT64_MAX, t->staging_current = 0;
-        x->memory_epoch++; /* images over that memory load it again */
+        if (t) t->drawn = 0, t->loaded_change = UINT64_MAX, t->staging_current = 0;
+        memory_changed(x, c->address, span); /* images over that memory load it again */
+        memory_changed(x, cmask, c->cmask_bytes);
     }
     return 0;
 }
@@ -1604,7 +1690,6 @@ static int write_back_targets(rt_executor *x, char *error, size_t error_size)
         any = 1;
     }
     if (!any) return 0;
-    x->memory_epoch++;
     for (size_t i = 0; i < x->target_count; i++) {
         target_entry *t = &x->targets[i];
         if (!t->drawn) continue;
@@ -1614,7 +1699,7 @@ static int write_back_targets(rt_executor *x, char *error, size_t error_size)
             const target_entry *o = &x->targets[k];
             overlapped |= k != i && o->drawn && o->address < t->address + target_span(t) && t->address < o->address + target_span(o);
         }
-        if (!overlapped) t->loaded_epoch = x->memory_epoch;
+        if (!overlapped) t->loaded_change = x->change_count;
     }
     for (size_t i = 0; i < x->target_count; i++) x->targets[i].drawn = 0;
     return 0;
@@ -1775,6 +1860,7 @@ static int resolve_depth_fast_clear(rt_executor *x, const draw_state *s, depth_e
     barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
     for (size_t i = 0; i < count; i++) words[i] |= ZMASK;
+    memory_changed(x, htile, bytes);
     z->drawn = 1, z->unwritten = 1;
     return 0;
 }
@@ -2290,9 +2376,9 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
         target_entry *t = targets[slot] = target_for(x, &s->colors[slot], error, error_size);
         if (!t) return -1;
         if (take_written_image(x, t, error, error_size) < 0) return -1;
-        if (t->loaded_epoch != x->memory_epoch) { /* the memory may have changed since the image last held it */
+        if (memory_changed_since(x, t->address, target_span(t), t->loaded_change)) { /* since the image last held it */
             if (load_target(x, t, error, error_size)) return -1;
-            t->loaded_epoch = x->memory_epoch;
+            t->loaded_change = x->change_count;
         }
         if (s->blend_set >> slot & 1) blend_control[slot] = s->blend_control[slot];
         write_masks |= slot_mask(s, slot) << (4 * slot);
@@ -2508,7 +2594,7 @@ static uint32_t image_depth(const rt_image_descriptor *d) { return d->type == RT
 
 /* Fills a kept image with the guest memory's texels under its descriptor, detiled (runtime/tiling.h): on
    the GPU for elements of whole 32-bit words, again whenever the memory may have changed since
-   (memory_epoch); by the CPU for smaller ones, again when the memory differs from what it last loaded.
+   (memory_changed_since); by the CPU for smaller ones, again when the memory differs from what it last loaded.
    0, or -1 with the reason (a layout not done yet, texels outside the GPU-visible memory). */
 /* Whether a render target drawn into, or a depth target changed, since it was last written back lies
    over `size` bytes of guest memory at `address`: its texels are newer than the memory's (write-backs
@@ -2553,12 +2639,12 @@ static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor
         e->tiling_index = d->tiling_index, e->pitch = d->pitch;
         memory_take(&e->agreed, NULL, 0);
         tile_plan_free(x, &e->plan);
-        e->loaded_epoch = UINT64_MAX;
+        e->loaded_change = UINT64_MAX;
     }
     const VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, e->layers},
                                     .imageExtent = {e->width, one_dimensional(d->type) ? 1 : e->height, 1}};
     if (bytes % 4 == 0 && rt_tiling_uniform_micro(&layout)) { /* whole words: detiled on the GPU (runtime/tile_copy.h), with the batch */
-        if (e->loaded_epoch == x->memory_epoch) return 0; /* nothing may have changed the memory since */
+        if (!memory_changed_since(x, d->address, span, e->loaded_change)) return 0;
         if (!e->plan.table.buffer && tile_plan_make(x, &e->plan, &layout, columns, rows, e->layers, error, error_size)) return -1;
         if (record_tile_copy(x, &e->plan, d->address, 0, error, error_size)) return -1;
         VkCommandBuffer commands = batch_commands(x);
@@ -2567,12 +2653,14 @@ static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor
         const VkMemoryBarrier after = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
                                        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
         vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &after, 0, NULL, 0, NULL);
-        e->loaded_epoch = x->memory_epoch;
+        e->loaded_change = x->change_count, e->loaded_span = span;
         return 0;
     }
     /* smaller elements: detiled by the CPU, skipped while the memory holds what was loaded last */
+    if (!memory_changed_since(x, d->address, span, e->loaded_change)) return 0;
     if (guest_memory_settled(x, d->address, span, error, error_size)) return -1;
     const uint8_t *guest = (const uint8_t *)x->view + (d->address - x->guest_base);
+    e->loaded_change = x->change_count, e->loaded_span = span;
     if (memory_unchanged(&e->agreed, guest, span)) return 0; /* the image holds these texels already */
     /* the open batch copies from its upload buffer already: on to the next batch */
     batch_slot *b = open_batch(x, error, error_size);
@@ -2619,9 +2707,12 @@ static int load_levels(rt_executor *x, image_entry *e, const rt_image_descriptor
     if (e->tiling_index != d->tiling_index || e->pitch != d->pitch) {
         e->tiling_index = d->tiling_index, e->pitch = d->pitch;
         memory_take(&e->agreed, NULL, 0);
+        e->loaded_change = UINT64_MAX;
     }
+    if (!memory_changed_since(x, d->address, span, e->loaded_change)) return 0;
     if (guest_memory_settled(x, d->address, span, error, error_size)) return -1;
     const uint8_t *guest = (const uint8_t *)x->view + (d->address - x->guest_base);
+    e->loaded_change = x->change_count, e->loaded_span = span;
     if (memory_unchanged(&e->agreed, guest, span)) return 0;
     batch_slot *b = open_batch(x, error, error_size);
     if (b && b->upload_pending && (batch_submit(x, error, error_size) || !(b = open_batch(x, error, error_size)))) return -1;
@@ -2694,7 +2785,7 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
         e = &x->images[x->image_count];
         *e = (image_entry){.address = d->address, .format = f->format, .width = d->width, .height = d->height, .layers = d->layers,
                            .type = d->type, .tiling_index = d->tiling_index, .pitch = d->pitch, .levels = d->last_level + 1,
-                           .pow2 = (int)d->pow2_pad, .depth = image_depth(d), .loaded_epoch = UINT64_MAX};
+                           .pow2 = (int)d->pow2_pad, .depth = image_depth(d), .loaded_change = UINT64_MAX};
         if (vkCreateImage(x->device, &info, NULL, &e->image) != VK_SUCCESS) {
             failed(error, error_size, "the device refused a %ux%u image", d->width, d->height);
             return NULL;
@@ -2769,6 +2860,7 @@ static int write_back_image(rt_executor *x, image_entry *e, const rt_image_descr
         e->tiling_index = d->tiling_index, e->pitch = d->pitch;
         memory_take(&e->agreed, NULL, 0);
         tile_plan_free(x, &e->plan);
+        e->loaded_change = UINT64_MAX;
     }
     if (!e->plan.table.buffer && tile_plan_make(x, &e->plan, &layout, d->width, rows, e->layers, error, error_size)) return -1;
     VkCommandBuffer commands = batch_commands(x);
@@ -3203,9 +3295,9 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     vkCmdDispatch(commands, groups[0], groups[1], groups[2]);
     for (unsigned i = 0; i < x->stored_count; i++)
         if (write_back_image(x, &x->images[x->stored[i].image], &x->stored[i].descriptor, error, error_size)) return -1;
-    x->memory_epoch++; /* its stores may have changed any memory, render targets' included */
-    /* the CPU reads memory it may store to only once the batch has run */
-    if (stores_anywhere) x->slots[x->current].memory_pending = 1;
+    /* the CPU reads memory it may store to only once the batch has run; what was loaded from there
+       loads again (batch_writes) */
+    if (stores_anywhere) x->slots[x->current].memory_pending = 1, all_memory_changed(x);
     for (unsigned i = 0; i < store_count; i++) batch_writes(x, store_ranges[i][0], store_ranges[i][1], 1);
     return 0;              /* the run-time stop word is checked once the batch has run */
 }
@@ -3291,7 +3383,7 @@ int rt_executor_finish(rt_executor *x, char *error, size_t error_size) { return 
 static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, char *error, size_t error_size)
 {
     draw_state *s = &x->state; /* the GPU's state carries over from buffer to buffer */
-    x->memory_epoch++;          /* the CPU may have written memory since the last buffer */
+    note_cpu_writes(x);         /* the CPU runs between buffers */
     for (size_t i = 0; i < count; i++) {
         const rt_render_call *c = &calls[i];
         switch (c->kind) {
@@ -3561,5 +3653,6 @@ void rt_executor_close(rt_executor *x)
     }
     if (x->view) munmap(x->view, x->size);
     if (x->instance) vkDestroyInstance(x->instance, NULL);
+    free(x->chunk_changed);
     free(x);
 }
