@@ -1402,7 +1402,9 @@ static void checked_store_dword(translator *t, const buffer_range *r, uint32_t b
      with packHalf2x16), two to a dword, x first;
    - a store to 10_11_11 float with its three components in place: unsigned 11-, 11- and 10-bit floats
      (x in bits 0-10, y 11-21, z 22-31, as shadPS4's PackUfloat10_11_11 lays them out), rounded to
-     nearest even, negative numbers 0.
+     nearest even, negative numbers 0;
+   - a descriptor of DATA_FORMAT 0 (invalid, as an unbound or null buffer has): loads read 0 in every
+     component and stores write nothing, as shadPS4's lower_buffer_format_to_raw.cpp treats it.
    Anything else writes a run-time stop code (runtime/gcn_spirv.h) and touches no memory. */
 static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t components, int load_op, uint32_t base, uint32_t offset,
                                      const buffer_range *range, unsigned vdata)
@@ -1480,8 +1482,11 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
                                                              equals(t, num_format, konst(t, NFMT_FLOAT))),
                                                      in_place3)
                                               : spirv_constant_bool(&t->m, 0);
+    /* DATA_FORMAT 0 (invalid): loads read 0, stores write nothing */
+    const uint32_t invalid = equals(t, data_format, konst(t, 0));
     /* neither: the stop code, from any active lane */
-    const uint32_t done = either(t, either(t, either(t, either(t, raw, packed_store), packed_load), half_store), float_10_11_11_store);
+    const uint32_t done = either(t, either(t, either(t, either(t, either(t, raw, packed_store), packed_load), half_store), float_10_11_11_store),
+                                 invalid);
     const uint32_t stop = begin_if(t, both(t, exec_bit(t), value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, done)));
     uint32_t code = value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, data_format, konst(t, 8)),
                           value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, num_format, konst(t, 4)));
@@ -1490,6 +1495,11 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
     code = value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, code, value(t, SPV_OP_SELECT, t_uint(t), 3, identity, konst(t, 0), konst(t, 8)));
     runtime_stop(t, code);
     end_if(t, stop);
+    if (load_op) {
+        const uint32_t invalid_merge = begin_if(t, both(t, exec_bit(t), invalid));
+        for (uint32_t c = 0; c < components; c++) write_vgpr(t, vdata + c, konst(t, 0));
+        end_if(t, invalid_merge);
+    }
 
     const uint32_t raw_merge = begin_if(t, both(t, exec_bit(t), raw));
     if (load_op) {
