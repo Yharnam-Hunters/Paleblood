@@ -3204,16 +3204,25 @@ int rt_executor_run_calls(rt_executor *x, const rt_render_call *calls, size_t co
 
 int rt_executor_submit_calls(rt_executor *x, const rt_render_call *calls, size_t count, uint64_t *ticket, char *error, size_t error_size)
 {
+    if (rt_executor_record_calls(x, calls, count, ticket, error, error_size) || batch_submit(x, error, error_size)) return -1;
+    *ticket = x->submitted;
+    return 0;
+}
+
+int rt_executor_record_calls(rt_executor *x, const rt_render_call *calls, size_t count, uint64_t *ticket, char *error, size_t error_size)
+{
     if (run_calls(x, calls, count, error, error_size)) {
         char later[64];
         batch_finish(x, later, sizeof later); /* the calls before the failing one still run, as they did one by one */
         return -1;
     }
     /* the CPU may read what the buffer drew once its ticket is signalled: written back first */
-    if (write_back_targets(x, error, error_size) || batch_submit(x, error, error_size)) return -1;
-    *ticket = x->submitted;
+    if (write_back_targets(x, error, error_size)) return -1;
+    *ticket = x->batch_open ? x->submitted + 1 : x->submitted; /* the open batch gets the next ticket */
     return 0;
 }
+
+int rt_executor_submit(rt_executor *x, char *error, size_t error_size) { return batch_submit(x, error, error_size); }
 
 int rt_executor_wait_ticket(rt_executor *x, uint64_t ticket, char *error, size_t error_size)
 {
