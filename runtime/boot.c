@@ -54,11 +54,22 @@
 #include "runtime/renderer.h"
 #include "runtime/syslib.h"
 
+#if defined(__APPLE__) && defined(__MACH__)
+#if !defined(__x86_64__)
+#error Darwin guest startup requires a whole-process x86-64 build.
+#endif
+#include "runtime/boot_arena.h"
+#include "runtime/guest_pointer.h"
+#include <libkern/OSCacheControl.h>
+#else
 #include <asm/prctl.h>
+#include <sys/syscall.h>
+#endif
 #include <dlfcn.h>
 #include <errno.h>
 #include <pthread.h>
 #include <setjmp.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -66,8 +77,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <sys/syscall.h>
+#if defined(__APPLE__) && defined(__MACH__)
+#include <sys/ucontext.h>
+#else
 #include <ucontext.h>
+#endif
 #include <unistd.h>
 
 #define GUEST_BASE 0x800000000ull
@@ -135,7 +149,14 @@ static const char *const outcome_names[] = {"running", "unimplemented", "fault",
                                             "stopped", "runtime stop"};
 
 static sigjmp_buf back_to_host;
+#if defined(__APPLE__) && defined(__MACH__)
+static _Atomic enum outcome outcome = RUNNING;
+static _Atomic int recovery_active;
+static int terminal_call;
+static rt_boot_arena image_arena;
+#else
 static volatile enum outcome outcome = RUNNING;
+#endif
 /* The host thread that runs the boot. A stop on any other guest thread is recorded there and the
    main thread is told (SIGUSR1) to make the report; only the first stop counts. */
 static pthread_t main_thread;
@@ -160,7 +181,15 @@ static int claim_stop(void)
    to make the report and wait for the process to end there. */
 static _Noreturn void unwind(void)
 {
+#if defined(__APPLE__) && defined(__MACH__)
+    atomic_store_explicit(&stopped,2,memory_order_release); /* Publish the complete stop payload. */
+    if (pthread_equal(pthread_self(),main_thread)) {
+        if (atomic_load(&recovery_active)) siglongjmp(back_to_host,1);
+        _exit(125); /* A native error outside guest recovery cannot jump to an expired frame. */
+    }
+#else
     if (pthread_equal(pthread_self(), main_thread)) siglongjmp(back_to_host, 1);
+#endif
     pthread_kill(main_thread, SIGUSR1);
     for (;;) pause();
 }
@@ -211,32 +240,67 @@ static void guest_exited(int status)
 
 static void guest_exit(int code)
 {
+#if defined(__APPLE__) && defined(__MACH__)
+    guest_exited(code);
+#else
     exit_code = code;
     outcome = EXITED;
     siglongjmp(back_to_host, 1);
+#endif
 }
 
 static void on_signal(int sig, siginfo_t *info, void *context)
 {
     const ucontext_t *uc = context;
+#if defined(__APPLE__) && defined(__MACH__)
+    if (sig==SIGUSR1) {
+        if (!pthread_equal(pthread_self(),main_thread)) return;
+        if (atomic_load_explicit(&stopped,memory_order_acquire)==2 && atomic_load(&recovery_active))
+            siglongjmp(back_to_host,1);
+        return; /* A stop between phases is consumed before another guest call. */
+    }
+    if (!atomic_load(&recovery_active) && pthread_equal(pthread_self(),main_thread) && sig!=SIGALRM)
+        _exit(128+sig);
+    if (!claim_stop()) {
+        if (pthread_equal(pthread_self(),main_thread)) return;
+        for (;;) pause();
+    }
+#else
     if (sig == SIGUSR1) siglongjmp(back_to_host, 1); /* a worker stopped; its outcome is recorded */
     if (!claim_stop()) for (;;) pause();
+#endif
     if (sig == SIGALRM) {
+#if defined(__APPLE__) && defined(__MACH__)
+        fault_signal=SIGALRM;fault_address=0;
+#endif
         outcome = TIMEOUT;
     } else {
         outcome = FAULT;
         fault_signal = sig;
         fault_address = (uint64_t)(uintptr_t)info->si_addr;
     }
+#if defined(__APPLE__) && defined(__MACH__)
+    fault_rip=(uint64_t)uc->uc_mcontext->__ss.__rip;
+    if (pthread_equal(pthread_self(),main_thread) && !atomic_load(&recovery_active)) {
+        atomic_store_explicit(&stopped,2,memory_order_release);
+        return; /* A late owned timeout remains recorded without using an expired frame. */
+    }
+#else
     fault_rip = (uint64_t)uc->uc_mcontext.gregs[REG_RIP];
+#endif
     unwind();
 }
 
 /* Calls fn(a, b, c) on the guest stack: rt_boot_call(fn, a, stack_top, b, c). */
 uint64_t rt_boot_call(void *fn, void *a, void *stack_top, void *b, void *c);
+#if defined(__APPLE__) && defined(__MACH__)
+#define RT_BOOT_CALL_SYMBOL "_rt_boot_call"
+#else
+#define RT_BOOT_CALL_SYMBOL "rt_boot_call"
+#endif
 __asm__(".text\n"
-        ".globl rt_boot_call\n"
-        "rt_boot_call:\n"
+        ".globl " RT_BOOT_CALL_SYMBOL "\n"
+        RT_BOOT_CALL_SYMBOL ":\n"
         "  push %rbp\n  push %rbx\n  push %r12\n  push %r13\n  push %r14\n  push %r15\n"
         "  mov %rsp, %r12\n"
         "  mov %rdx, %rsp\n"
@@ -253,6 +317,44 @@ __asm__(".text\n"
    apart from main so that no caller state is live across the jump back. */
 static __attribute__((noinline)) void run_guest(void *fn, void *a, void *b, void *c, void *stack_top, int timeout)
 {
+#if defined(__APPLE__) && defined(__MACH__)
+    sigset_t owned,previous,pending;
+    if (sigemptyset(&owned) || sigaddset(&owned,SIGALRM) || sigaddset(&owned,SIGUSR1) ||
+        pthread_sigmask(SIG_BLOCK,&owned,&previous)) _exit(125);
+    if (!sigsetjmp(back_to_host,1)) {
+        atomic_store(&recovery_active,1);
+        if (pthread_sigmask(SIG_SETMASK,&previous,NULL)) _exit(125);
+        if (!atomic_load_explicit(&stopped,memory_order_acquire)) {
+            enum outcome expected=RETURNED;
+            (void)atomic_compare_exchange_strong(&outcome,&expected,RUNNING);
+            alarm((unsigned)timeout);
+            rt_boot_call(fn,a,stack_top,b,c);
+            expected=RUNNING;
+            (void)atomic_compare_exchange_strong(&outcome,&expected,RETURNED);
+        }
+    }
+    if (pthread_sigmask(SIG_BLOCK,&owned,NULL)) _exit(125);
+    alarm(0);
+    /* Disarm and consume pending timeouts before leaving this recovery frame. A pending
+       timeout is a result, not a successful near-pass; worker payload publication wins first. */
+    for (;;) {
+        if (sigpending(&pending)) _exit(125);
+        if (sigismember(&pending,SIGALRM)!=1) break;
+        sigset_t alarms;int received=0;
+        if (sigemptyset(&alarms) || sigaddset(&alarms,SIGALRM) || sigwait(&alarms,&received) || received!=SIGALRM) _exit(125);
+        if (claim_stop()) {
+            outcome=TIMEOUT;fault_signal=SIGALRM;fault_rip=fault_address=0;
+            atomic_store_explicit(&stopped,2,memory_order_release);
+        }
+    }
+    if (terminal_call && claim_stop()) {
+        outcome=RETURNED;
+        atomic_store_explicit(&stopped,2,memory_order_release);
+    }
+    while (atomic_load_explicit(&stopped,memory_order_acquire)==1) sched_yield();
+    atomic_store(&recovery_active,0);
+    if (pthread_sigmask(SIG_SETMASK,&previous,NULL)) _exit(125);
+#else
     outcome = RUNNING;
     if (!sigsetjmp(back_to_host, 1)) {
         alarm((unsigned)timeout);
@@ -260,6 +362,7 @@ static __attribute__((noinline)) void run_guest(void *fn, void *a, void *b, void
         outcome = RETURNED;
     }
     alarm(0);
+#endif
 }
 
 /* Each import's call goes through a trampoline: mark it called, then jump to the provider, or
@@ -662,9 +765,15 @@ static int install_module_hooks(char *error, size_t size)
         if (!o->stubs) {
             const uint64_t start = (o->size + PAGE_SIZE_HOST - 1) / PAGE_SIZE_HOST * PAGE_SIZE_HOST;
             void *want = o->image + start;
+#if defined(__APPLE__) && defined(__MACH__)
+            o->stubs=start+PAGE_SIZE_HOST<=MODULE_STRIDE &&
+                !rt_boot_arena_protect(&image_arena,(uintptr_t)want-(uintptr_t)image_arena.base,
+                                       PAGE_SIZE_HOST,PROT_READ|PROT_WRITE|PROT_EXEC) ? want : MAP_FAILED;
+#else
             o->stubs = start + PAGE_SIZE_HOST <= MODULE_STRIDE
                            ? rt_map_anonymous_at(want, PAGE_SIZE_HOST, PROT_READ | PROT_WRITE | PROT_EXEC)
                            : MAP_FAILED;
+#endif
             if (o->stubs != want) {
                 o->stubs = NULL;
                 snprintf(error, size, "--module-hook %s: no room for stubs past %s", h->name, h->module);
@@ -719,6 +828,46 @@ static const char *usage =
     "              [--module-hook MODULE:OFFSET:SIZE:BYTES:ACTION:NAME]...\n"
     "              [--status OUT.json] [--timeout S] [--trace] [--game-lib LIBRARY]\n"
     "       pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]\n";
+
+static int install_boot_signals(void)
+{
+    static unsigned char alt[1 << 16];
+    stack_t ss = {.ss_sp = alt, .ss_size = sizeof alt};
+#if defined(__APPLE__) && defined(__MACH__)
+    if (sigaltstack(&ss,NULL)) return -1;
+#else
+    sigaltstack(&ss, NULL);
+#endif
+    struct sigaction sa = {0};
+    sa.sa_sigaction = on_signal;
+#if defined(__APPLE__) && defined(__MACH__)
+    sa.sa_flags=SA_SIGINFO|SA_ONSTACK;
+    if (sigemptyset(&sa.sa_mask) || sigaddset(&sa.sa_mask,SIGUSR1) || sigaddset(&sa.sa_mask,SIGALRM)) return -1;
+#else
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_NODEFER;
+#endif
+    static const int signals[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGTRAP, SIGALRM, SIGUSR1};
+    main_thread = pthread_self();
+    rt_fatal_observer = runtime_stopped;
+    rt_exit_observer = guest_exited;
+    for (size_t i=0;i<sizeof signals/sizeof signals[0];++i) {
+#if defined(__APPLE__) && defined(__MACH__)
+        if (sigaction(signals[i],&sa,NULL)) return -1;
+#else
+        sigaction(signals[i],&sa,NULL);
+#endif
+    }
+
+    return 0;
+}
+
+#if defined(__APPLE__) && defined(__MACH__)
+static void *qualify_main_pointer(void *tcb)
+{
+    rt_guest_pointer_bind(tcb);
+    return tcb;
+}
+#endif
 
 int main(int argc, char **argv)
 {
@@ -873,7 +1022,7 @@ int main(int argc, char **argv)
     }
     char *db_text;
     db_count = read_nid_db(nid_path, &db, &db_text);
-    for (size_t k = 0; k < object_count; k++) resolve(&objects[k]);
+    if (list) for (size_t k = 0; k < object_count; k++) resolve(&objects[k]);
 
     if (list) {
         for (size_t k = 0; k < object_count; k++) {
@@ -898,11 +1047,31 @@ int main(int argc, char **argv)
         return 0;
     }
 
+#if defined(__APPLE__) && defined(__MACH__)
+    const uint64_t module_offset=MODULE_BASE-GUEST_BASE;
+    uint64_t span=objects[0].size;
+    if (object_count>1) {
+        if (span>module_offset) {fputs("pbboot: main image overlaps module slots\n",stderr);return 3;}
+        span=module_offset+(object_count-1)*MODULE_STRIDE;
+    }
+    if (rt_boot_arena_create(&image_arena,span)) {
+        fprintf(stderr,"pbboot: cannot reserve the image arena: %s\n",strerror(errno));return 3;
+    }
+    for (size_t k=0;k<object_count;++k)
+        objects[k].image=(unsigned char *)image_arena.base+(k ? module_offset+(k-1)*MODULE_STRIDE : 0);
+#endif
+    for (size_t k=0;k<object_count;++k) resolve(&objects[k]);
+
     /* Memory: each object's image, its trampolines and data imports; the guest stack and TLS. */
     for (size_t k = 0; k < object_count; k++) {
         object *o = &objects[k];
         void *want = o->image;
+#if defined(__APPLE__) && defined(__MACH__)
+        o->image=!rt_boot_arena_protect(&image_arena,(uintptr_t)want-(uintptr_t)image_arena.base,
+                                      o->size,PROT_READ|PROT_WRITE|PROT_EXEC) ? want : MAP_FAILED;
+#else
         o->image = rt_map_anonymous_at(want, o->size, PROT_READ | PROT_WRITE | PROT_EXEC);
+#endif
         o->tramp = mmap(NULL, (o->imports + 1) * TRAMPOLINE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC,
                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         o->data = mmap(NULL, (o->imports + 1) * 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -918,12 +1087,16 @@ int main(int argc, char **argv)
             fprintf(stderr, "pbboot: %s\n", error);
             return 3;
         }
+#if !defined(__APPLE__) || !defined(__MACH__)
         rt_elf_thread_pointer_to_gs(o->elf, o->image);
+#endif
     }
+#if !defined(__APPLE__) || !defined(__MACH__)
     if (install_module_hooks(error, sizeof error)) {
         fprintf(stderr, "pbboot: %s\n", error);
         return 3;
     }
+#endif
     for (size_t k = 0; k < object_count; k++) record_module(&objects[k]);
     uint64_t proc_param_size;
     const uint64_t proc_param = rt_elf_proc_param(objects[0].elf, &proc_param_size);
@@ -931,7 +1104,11 @@ int main(int argc, char **argv)
     rt_process.image_size = objects[0].size;
     rt_process.proc_param = proc_param_size ? objects[0].image + proc_param : NULL;
 
-    unsigned char *stack = mmap(NULL, STACK_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
+    int stack_flags=MAP_PRIVATE|MAP_ANONYMOUS;
+#ifdef MAP_STACK
+    stack_flags|=MAP_STACK;
+#endif
+    unsigned char *stack=mmap(NULL,STACK_SIZE,PROT_READ|PROT_WRITE,stack_flags,-1,0);
     if (stack == MAP_FAILED) {
         fprintf(stderr, "pbboot: cannot map the stack: %s\n", strerror(errno));
         return 3;
@@ -954,12 +1131,34 @@ int main(int argc, char **argv)
         fprintf(stderr, "pbboot: no memory for the thread-local storage block\n");
         return 3;
     }
+#if !defined(__APPLE__) || !defined(__MACH__)
     if (syscall(SYS_arch_prctl, ARCH_SET_GS, (unsigned long)(uintptr_t)tp)) {
         fprintf(stderr, "pbboot: arch_prctl: %s\n", strerror(errno));
         return 3;
     }
 
+#endif
     rt_thread_register_main(stack, STACK_SIZE);
+#if defined(__APPLE__) && defined(__MACH__)
+    if (install_boot_signals()) {fprintf(stderr,"pbboot: cannot install guest recovery: %s\n",strerror(errno));return 3;}
+    run_guest((void *)qualify_main_pointer,tp,NULL,NULL,stack+STACK_SIZE-64,timeout);
+    if (outcome!=RETURNED) {fputs("pbboot: main TCB qualification failed before guest entry\n",stderr);return 3;}
+    const uint32_t gs_offset=rt_guest_pointer_offset();
+    for (size_t k=0;k<object_count;++k) {
+        object *o=&objects[k];size_t changed=0;
+        if (rt_elf_thread_pointer_to_gs_offset(o->elf,o->image,gs_offset,&changed)) {
+            fputs("pbboot: cannot rewrite the qualified guest TLS displacement\n",stderr);return 3;
+        }
+        sys_icache_invalidate(o->image,(size_t)o->size);
+        sys_icache_invalidate(o->tramp,(o->imports+1)*TRAMPOLINE_SIZE);
+    }
+    if (install_module_hooks(error,sizeof error)) {fprintf(stderr,"pbboot: %s\n",error);return 3;}
+    for (size_t k=0;k<object_count;++k) {
+        if (objects[k].stubs) sys_icache_invalidate(objects[k].stubs,PAGE_SIZE_HOST);
+        sys_icache_invalidate(objects[k].image,(size_t)objects[k].size);
+    }
+#endif
+
     if (game_library_path) {
         /* Retain this library until process exit: installed jumps and optional probes refer to
            its code for the whole guest lifetime. Import listing returned before this point. */
@@ -983,17 +1182,9 @@ int main(int argc, char **argv)
         }
     }
 
-    static unsigned char alt[1 << 16];
-    stack_t ss = {.ss_sp = alt, .ss_size = sizeof alt};
-    sigaltstack(&ss, NULL);
-    struct sigaction sa = {0};
-    sa.sa_sigaction = on_signal;
-    sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_NODEFER;
-    static const int signals[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGTRAP, SIGALRM, SIGUSR1};
-    main_thread = pthread_self();
-    rt_fatal_observer = runtime_stopped;
-    rt_exit_observer = guest_exited;
-    for (size_t i = 0; i < sizeof signals / sizeof signals[0]; i++) sigaction(signals[i], &sa, NULL);
+#if !defined(__APPLE__) || !defined(__MACH__)
+    if (install_boot_signals()) {fprintf(stderr,"pbboot: cannot install guest recovery: %s\n",strerror(errno));return 3;}
+#endif
 
     if (prepare_module_tls(tp - tls_size, tls_size, error, sizeof error)) {
         fprintf(stderr, "pbboot: module TLS: %s\n", error);
@@ -1017,6 +1208,9 @@ int main(int argc, char **argv)
             const char *argv[3];
         } params = {1, 0, {"eboot.bin", NULL, NULL}};
         phase = "eboot";
+#if defined(__APPLE__) && defined(__MACH__)
+        terminal_call=1;
+#endif
         run_guest(objects[0].image + rt_elf_entry(objects[0].elf), &params, (void *)guest_exit, NULL, stack_top, timeout);
     }
 

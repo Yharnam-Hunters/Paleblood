@@ -1,0 +1,65 @@
+name: host-memory
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/host-memory.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/HostMemoryTests.cmake'
+      - 'runtime/memory.c'
+      - 'runtime/syslib/kernel_memory.c'
+      - 'runtime/syslib/kernel.c'
+      - 'runtime/syslib/table.c'
+      - 'runtime/process.c'
+      - 'runtime/include/runtime/**'
+      - 'test/host_memory/**'
+      - 'test/test_direct_memory*.c'
+      - 'test/test_memory_mapping.py'
+      - 'test/test_syslib_memory_host.c'
+      - 'test/syslib/memory*.c'
+  pull_request:
+    paths:
+      - '.github/workflows/host-memory.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/HostMemoryTests.cmake'
+      - 'runtime/memory.c'
+      - 'runtime/syslib/kernel_memory.c'
+      - 'runtime/syslib/kernel.c'
+      - 'runtime/syslib/table.c'
+      - 'runtime/process.c'
+      - 'runtime/include/runtime/**'
+      - 'test/host_memory/**'
+      - 'test/test_direct_memory*.c'
+      - 'test/test_memory_mapping.py'
+      - 'test/test_syslib_memory_host.c'
+      - 'test/syslib/memory*.c'
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  memory:
+    name: Host memory (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure independent memory tests
+        run: >-
+          cmake -S test/host_memory -B build-host-memory -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }}
+      - name: Build
+        run: cmake --build build-host-memory --parallel 2
+      - name: Test backing ownership, placement, reserve/batch and unmap
+        run: ctest --test-dir build-host-memory --output-on-failure --no-tests=error
+      - name: Test real non-replacing mappings and shared file offsets
+        run: python3 test/test_memory_mapping.py -v
