@@ -226,8 +226,14 @@ int main(void)
     memcpy(positions.mapped, corners, sizeof corners);
     memcpy(colors.mapped, corner_colors, sizeof corner_colors);
     uint32_t user[USER_DATA_WORDS] = {0};
-    descriptor(user, &positions);
-    descriptor(user + 4, &colors);
+    /* Keep shader inputs in one guest window, independent of the driver's address width. */
+    const uint64_t first_address = positions.address < colors.address ? positions.address : colors.address;
+    const uint64_t buffer_offset = first_address - UINT64_C(0x100000000);
+    address_offset = buffer_offset;
+    if (descriptor(user, &positions, buffer_offset) || descriptor(user + 4, &colors, buffer_offset)) {
+        fprintf(stderr, "the shader buffers do not fit one 40-bit guest window\n");
+        return 1;
+    }
     user[1] |= RECORD_STRIDE << 16, user[5] |= RECORD_STRIDE << 16;
     const float *pixels = readback.mapped;
 
@@ -273,11 +279,11 @@ int main(void)
     const float color[4] = {0.25f, 0.5f, 0.75f, 1.0f}; /* exact as halves */
     uint32_t pixel_user[USER_DATA_WORDS] = {0};
     memcpy(pixel_user, color, sizeof color);
-    address_offset = GUEST_DISTANCE;
+    address_offset = buffer_offset + GUEST_DISTANCE;
     memset(readback.mapped, 0, BUFFER_BYTES);
     CHECK(draw(&g, &t, PROGRAM_OF(vertex_position_color), PROGRAM_OF(pixel_user_color), guest_user, pixel_user, &readback,
                "pixel_user_color") == 0);
-    address_offset = 0;
+    address_offset = buffer_offset;
     for (int i = 0; i < SIZE * SIZE; i++)
         CHECK(memcmp(pixels + i * PIXEL_FLOATS, color, sizeof color) == 0);
 

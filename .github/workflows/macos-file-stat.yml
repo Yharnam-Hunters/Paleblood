@@ -1,0 +1,53 @@
+name: macos-file-stat
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/macos-file-stat.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/HostFileStatTests.cmake'
+      - 'runtime/syslib/files.c'
+      - 'runtime/syslib/table.c'
+      - 'runtime/process.c'
+      - 'runtime/include/runtime/**'
+      - 'test/host_file_stat/**'
+      - 'test/test_host_file_stat.c'
+  pull_request:
+    paths:
+      - '.github/workflows/macos-file-stat.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/HostFileStatTests.cmake'
+      - 'runtime/syslib/files.c'
+      - 'runtime/syslib/table.c'
+      - 'runtime/process.c'
+      - 'runtime/include/runtime/**'
+      - 'test/host_file_stat/**'
+      - 'test/test_host_file_stat.c'
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  host-file-stat:
+    name: Native stat timestamps (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure independent native stat test
+        run: >-
+          cmake -S test/host_file_stat -B build-host-file-stat -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }}
+      - name: Build
+        run: cmake --build build-host-file-stat --parallel 2
+      - name: Test native timestamps and guest output
+        run: ctest --test-dir build-host-file-stat --output-on-failure --no-tests=error
