@@ -24,7 +24,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { WORD_BASE, WORD_PITCH, WORD_SLICE, WORD_VIEW, WORD_INFO, WORD_ATTRIB };
+enum { WORD_BASE, WORD_PITCH, WORD_SLICE, WORD_VIEW, WORD_INFO, WORD_ATTRIB, WORD_RESERVED, WORD_CMASK, WORD_CMASK_SLICE };
+/* CMASK holds 4 bits per 8x8 tile; CMASK_SLICE.TILE_MAX counts 128x128-pixel blocks of it, 128 bytes each
+   (Mesa's radeonsi sizes it so: slice_tile_max = pixels / (128 * 128) - 1) */
+enum { CMASK_BLOCK_BYTES = 128 };
 enum { BASE_UNIT_SHIFT = 8, PITCH_UNIT = 8, SLICE_UNIT = 64 };
 enum {
     COLOR_INVALID = 0x0, COLOR_RESERVED_13 = 0xd, COLOR_RESERVED_15 = 0xf, COLOR_LAST_DEFINED = 0x16,
@@ -60,6 +63,8 @@ int rt_color_target_decode(const uint32_t words[RT_COLOR_TARGET_WORDS], rt_color
     target->last_slice = field(words[WORD_VIEW], 13, 11);
     target->tile_mode_index = field(words[WORD_ATTRIB], 0, 5);
     target->samples = 1u << field(words[WORD_ATTRIB], 12, 3);
+    target->cmask_address = (uint64_t)words[WORD_CMASK] << BASE_UNIT_SHIFT;
+    target->cmask_bytes = (field(words[WORD_CMASK_SLICE], 0, 14) + 1) * CMASK_BLOCK_BYTES;
     return 1;
 }
 

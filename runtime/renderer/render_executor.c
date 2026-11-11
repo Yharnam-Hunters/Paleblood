@@ -227,6 +227,7 @@ typedef struct {
     /* Registers the library set (AMD's layout, gfx_7_2_sh_mask.h), with whether each was set; an
        unset one is the state the drawing below assumes. */
     uint32_t blend_control[RT_COLOR_TARGETS], blend_set; /* CB_BLENDn_CONTROL, and which were set, a bit each */
+    uint32_t clear_words[RT_COLOR_TARGETS][2];             /* CB_COLORn_CLEAR_WORD0 and 1: a fast clear's texel */
     uint32_t depth_control, color_control, target_mask, primitive_type, instances;
     int depth_set, color_control_set, target_mask_set, primitive_set, instances_set;
     float blend_constants[4];        /* CB_BLEND_RED, GREEN, BLUE, ALPHA */
@@ -327,7 +328,7 @@ static int failed(char *error, size_t error_size, const char *format, ...) __att
 enum { DB_RENDER_CONTROL = 0xa000, DB_DEPTH_VIEW = 0xa002, DB_HTILE_DATA_BASE = 0xa005, DB_STENCIL_CLEAR = 0xa00a, DB_DEPTH_CLEAR = 0xa00b,
        DB_DEPTH_INFO = 0xa00f, DB_Z_INFO = 0xa010, DB_STENCIL_INFO = 0xa011, DB_DEPTH_SLICE = 0xa017, DB_STENCILREFMASK = 0xa10c,
        DB_STENCILREFMASK_BF = 0xa10d, DB_HTILE_SURFACE = 0xa2af, CB_TARGET_MASK = 0xa08e, CB_BLEND_RED = 0xa105, CB_BLEND_ALPHA = 0xa108, DB_STENCIL_CONTROL = 0xa10b, CB_BLEND0_CONTROL = 0xa1e0,
-       CB_BLEND7_CONTROL = 0xa1e7, DB_DEPTH_CONTROL = 0xa200,
+       CB_BLEND7_CONTROL = 0xa1e7, DB_DEPTH_CONTROL = 0xa200, CB_COLOR0_CLEAR_WORD0 = 0xa323, CB_COLOR_REGISTER_STRIDE = 15,
        CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242 };
 enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 0x1, Z_ENABLE = 0x2, Z_WRITE_ENABLE = 0x4,
        COLOR_MODE_MASK = 0x70, COLOR_MODE_SHIFT = 4, CB_NORMAL = 1, CB_ELIMINATE_FAST_CLEAR = 2, ROP3_MASK = 0xff0000, ROP3_SHIFT = 16, ROP3_COPY = 0xcc,
@@ -356,6 +357,12 @@ static int set_register(draw_state *s, uint32_t address, uint32_t value)
             s->depth_target[address - DB_Z_INFO] = value;
             if (address == DB_Z_INFO) s->z_info_set = 1;
             if (address == DB_STENCIL_INFO) s->stencil_info_set = 1;
+            return 0;
+        }
+        if (address >= CB_COLOR0_CLEAR_WORD0 && address < CB_COLOR0_CLEAR_WORD0 + RT_COLOR_TARGETS * CB_COLOR_REGISTER_STRIDE &&
+            (address - CB_COLOR0_CLEAR_WORD0) % CB_COLOR_REGISTER_STRIDE < 2) {
+            const uint32_t slot = (address - CB_COLOR0_CLEAR_WORD0) / CB_COLOR_REGISTER_STRIDE;
+            s->clear_words[slot][(address - CB_COLOR0_CLEAR_WORD0) % CB_COLOR_REGISTER_STRIDE] = value;
             return 0;
         }
         if (address >= CB_BLEND0_CONTROL && address <= CB_BLEND7_CONTROL) {
@@ -519,9 +526,8 @@ static uint32_t slot_mask(const draw_state *s, unsigned slot)
    *colours the slots it writes, a bit each: a target set, not masked off entirely, colour writes on
    (CB_COLOR_CONTROL's mode not CB_DISABLE). A fast-clear eliminate pass (mode CB_ELIMINATE_FAST_CLEAR,
    Mesa's sid.h numbering) writes the clear colour into the tiles CMASK marks cleared: the executor
-   applies no fast clears, so with FAST_CLEAR off in each target's CB_COLOR_INFO there are none and the
-   pass writes nothing; a target with FAST_CLEAR on stops by name. 1 when nothing at all would be
-   written, 0 to draw, -1 with the reason otherwise. */
+   applies fast clears before each draw (apply_fast_clears), so there is nothing left for the pass. 1
+   when nothing at all would be written, 0 to draw, -1 with the reason otherwise. */
 static int check_state(const draw_state *s, depth_plan *plan, uint32_t *colours, char *error, size_t error_size)
 {
     if (s->primitive_set && s->primitive_type != DI_PT_TRILIST && s->primitive_type != DI_PT_TRISTRIP && s->primitive_type != DI_PT_RECTLIST)
@@ -532,13 +538,8 @@ static int check_state(const draw_state *s, depth_plan *plan, uint32_t *colours,
     if (s->color_control_set) {
         const uint32_t mode = (s->color_control & COLOR_MODE_MASK) >> COLOR_MODE_SHIFT, rop = (s->color_control & ROP3_MASK) >> ROP3_SHIFT;
         if (mode == CB_DISABLE) *colours = 0;
-        else if (mode == CB_ELIMINATE_FAST_CLEAR) {
-            for (unsigned slot = 0; slot < RT_COLOR_TARGETS; slot++)
-                if ((s->color_enabled >> slot & 1) && s->colors[slot].fast_clear)
-                    return failed(error, error_size, "a fast-clear eliminate pass over render target %#llx, which uses fast clears: not done yet",
-                                  (unsigned long long)s->colors[slot].address);
-            return 1;
-        } else if (mode != CB_NORMAL || rop != ROP3_COPY)
+        else if (mode == CB_ELIMINATE_FAST_CLEAR) return 1;
+        else if (mode != CB_NORMAL || rop != ROP3_COPY)
             return failed(error, error_size, "colour mode %u, raster operation %#x: only normal copies are drawn yet", mode, rop);
     }
     for (unsigned slot = 0; slot < RT_COLOR_TARGETS; slot++) {
@@ -1274,6 +1275,52 @@ static int take_written_image(rt_executor *x, target_entry *t, char *error, size
     e->gpu_written = 0;
     t->drawn = 1, t->staging_current = 0, t->loaded_epoch = x->memory_epoch;
     return 1;
+}
+
+/* Fast clears (CB_COLOR_INFO's FAST_CLEAR): the game clears a target by clearing its CMASK (4 bits a
+   8x8 tile; 0 means cleared to CB_COLORn_CLEAR_WORD0/1, as Mesa's radeonsi fast clears with a CMASK of
+   0, and all bits set means the tile holds its texels) and leaves the colour to the GPU. Before each
+   draw the executor resolves them at once, as an eliminate pass would: a target whose CMASK is all 0
+   gets its memory filled with the clear texel (CLEAR_WORD0, or WORD0 then WORD1 for 8-byte texels: the
+   texel's bits in the target's format; a uniform texel fills a tiled layout the same way) and its CMASK
+   set to all ones, and its image loads again from memory. A CMASK of all ones needs nothing; a mixed
+   one (a partial fast clear) stops by name. 0, or -1 with the reason. */
+static int apply_fast_clears(rt_executor *x, const draw_state *s, char *error, size_t error_size)
+{
+    for (unsigned slot = 0; slot < RT_COLOR_TARGETS; slot++) {
+        const rt_color_target *c = &s->colors[slot];
+        if (!(s->color_enabled >> slot & 1) || !c->fast_clear) continue;
+        const uint64_t cmask = c->cmask_address;
+        if (cmask < x->guest_base || cmask - x->guest_base > x->size || c->cmask_bytes > x->size - (cmask - x->guest_base))
+            return failed(error, error_size, "render target %#llx's CMASK at %#llx is outside the GPU-visible memory", (unsigned long long)c->address,
+                          (unsigned long long)cmask);
+        if (guest_memory_settled(x, cmask, c->cmask_bytes, error, error_size)) return -1; /* the batch may store the CMASK */
+        uint8_t *bits = (uint8_t *)x->view + (cmask - x->guest_base);
+        uint32_t zero = 0, ones = 0;
+        for (uint32_t i = 0; i < c->cmask_bytes; i++) zero += bits[i] == 0, ones += bits[i] == 0xff;
+        if (ones == c->cmask_bytes) continue;
+        if (zero != c->cmask_bytes)
+            return failed(error, error_size, "render target %#llx with a partly fast-cleared CMASK: not done yet", (unsigned long long)c->address);
+        uint32_t element_bytes;
+        if (target_format(c, &element_bytes, error, error_size) == VK_FORMAT_UNDEFINED) return -1;
+        rt_tiling layout;
+        char reason[160];
+        if (rt_tiling_layout(c->tile_mode_index, element_bytes, c->pitch, c->height, &layout, reason, sizeof reason))
+            return failed(error, error_size, "fast-clearing render target %#llx: %s", (unsigned long long)c->address, reason);
+        const uint64_t span = rt_tiling_size(&layout, 1);
+        if (c->address < x->guest_base || c->address - x->guest_base > x->size || span > x->size - (c->address - x->guest_base))
+            return failed(error, error_size, "render target %#llx is outside the GPU-visible memory", (unsigned long long)c->address);
+        /* what the batch still does to that memory (a write-back) comes first; the clear replaces it */
+        if (batch_finish(x, error, error_size)) return -1;
+        uint32_t *texels = (uint32_t *)((uint8_t *)x->view + (c->address - x->guest_base));
+        const uint32_t words = element_bytes / 4;
+        for (uint64_t i = 0; i < span / 4; i++) texels[i] = s->clear_words[slot][i % words];
+        memset(bits, 0xff, c->cmask_bytes);
+        target_entry *t = find_target(x, c->address);
+        if (t) t->drawn = 0, t->loaded_epoch = UINT64_MAX, t->staging_current = 0;
+        x->memory_epoch++; /* images over that memory load it again */
+    }
+    return 0;
 }
 
 /* Writes every render target drawn into since back to the guest memory, so what reads the memory next
@@ -2638,6 +2685,7 @@ static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, 
             s->instances = c->u.instances.count, s->instances_set = 1;
             break;
         case RT_CALL_DRAW_AUTO: {
+            if (apply_fast_clears(x, s, error, error_size)) return -1;
             depth_plan plan;
             uint32_t colours = 0;
             const int checked = check_state(s, &plan, &colours, error, error_size);
@@ -2651,6 +2699,7 @@ static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, 
         case RT_CALL_DRAW_INDEX_OFFSET: {
             index_range indices;
             if (index_range_for(x, s, c->u.draw_index.first, c->u.draw_index.count, &indices, error, error_size)) return -1;
+            if (apply_fast_clears(x, s, error, error_size)) return -1;
             depth_plan plan;
             uint32_t colours = 0;
             const int checked = check_state(s, &plan, &colours, error, error_size);

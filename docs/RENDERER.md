@@ -364,6 +364,11 @@ Instead:
      draw yet: depth or stencil testing, primitives other than triangle lists, colour modes other
      than a normal copy, more than one instance, and any register it does not interpret. A draw
      whose targets are all masked off (and that writes no depth) writes nothing and is skipped.
+     - **Fast clears** (`CB_COLOR_INFO`'s FAST_CLEAR): before each draw a target whose CMASK is all 0
+       (cleared, as radeonsi clears it) gets its memory filled with its `CB_COLORn_CLEAR_WORD0/1` texel
+       and its CMASK set to all ones, as an eliminate pass would; eliminate passes then have nothing
+       left to do. The clear words come from the library's setter (0x01473840). A partly cleared
+       CMASK stops by name.
      - **Several render targets (MRT):** a draw writes the colour targets of every enabled slot
        0-7 whose `CB_TARGET_MASK` nibble (bits 4n to 4n+3: x, y, z, w, as shadPS4 hands them to
        Vulkan's colour write mask) is not 0, each with its own `CB_BLENDn_CONTROL`; slot n is
