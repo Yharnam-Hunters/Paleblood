@@ -2018,6 +2018,30 @@ int main(void)
             CHECK(same);
         }
 
+        /* What a shader stores to an image reaches the guest memory under it (write_back_image), laid out
+           as its tile mode has it: linear (tiling index 8) RGBA32F texels filled by image_fill are in the
+           memory as (float(i), 1, 2, 0.5) once the run returns, for any other view of it to load. */
+        {
+            float *const stored = (float *)(uintptr_t)at(IMAGE_B + 0x10000);
+            for (unsigned i = 0; i < LANES * 4; i++) stored[i] = -1;
+            rt_render_forget(), rt_executor_reset(x);
+            image_descriptor(image_b, at(IMAGE_B + 0x10000), 14, 7, LANES, 1);
+            image_b[3] |= 8u << 20;
+            const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(codes[0] >> 8), (uint32_t)(codes[0] >> 40), 0x3, 16 << 1, LANES, 1, 1};
+            CHECK(rt_render_record_compute_shader_at(IMAGES + 0x10, shader) == 0);
+            memset(user, 0, sizeof user);
+            memcpy(user + 8, image_b, sizeof image_b);
+            CHECK(rt_render_record_user_data(IMAGES, 0x20, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
+            CHECK(rt_render_record_dispatch(IMAGES, 0x30, one, error, sizeof error) == 0);
+            const int ran = rt_executor_run(x, IMAGES, 0x40, error, sizeof error);
+            if (ran) fprintf(stderr, "stored image written back: %s\n", error);
+            CHECK(ran == 0);
+            int written = 1;
+            for (unsigned i = 0; i < LANES; i++)
+                written &= stored[i * 4] == (float)i && stored[i * 4 + 1] == 1.0f && stored[i * 4 + 2] == 2.0f && stored[i * 4 + 3] == 0.5f;
+            CHECK(written);
+        }
+
         /* An 8_8_8_8 uint image (DATA_FORMAT 10, NUM_FORMAT 4), linear: each texel's four bytes read
            back as four integers, red first. */
         {
