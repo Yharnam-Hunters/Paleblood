@@ -131,6 +131,49 @@ static void float_images(rt_executor *x)
     }
 }
 
+/* 16-bit unorm images: the reference image as 16_16_16_16 unorm (DATA_FORMAT 12, NUM_FORMAT 0), and its
+   red and green as 16_16 unorm (DATA_FORMAT 5, the particle passes' storage format), linear, read
+   texel by texel (pixel_image_texel) into an 8_8_8_8 target: the reference image, and for 16_16 its red
+   and green with blue 0 and alpha 1 (DST_SEL x, y, 0, 1). */
+static void unorm16_images(rt_executor *x)
+{
+    enum { WIDE = 0x2340000, PAIRS = 0x2380000, UNORM16_TARGET = 0x23c0000, LINEAR_ALIGNED = 8, NUM_UNORM = 0 };
+    char error[200] = "";
+    for (int kind = 0; kind < 2; kind++) {
+        const unsigned components = kind ? 2 : 4;
+        rt_tiling layout;
+        CHECK(rt_tiling_layout(LINEAR_ALIGNED, 2 * components, SIZE, SIZE, &layout, error, sizeof error) == 0);
+        uint8_t *memory = (uint8_t *)(uintptr_t)at(kind ? PAIRS : WIDE);
+        for (uint32_t y = 0; y < SIZE; y++)
+            for (uint32_t px = 0; px < SIZE; px++) {
+                const float rgba[4] = {((float)px + 0.5f) / SIZE, ((float)y + 0.5f) / SIZE, 0.25f, 1.0f};
+                uint16_t texel[4];
+                for (unsigned c = 0; c < 4; c++) texel[c] = (uint16_t)lroundf(rgba[c] * 65535.0f);
+                memcpy(memory + rt_tiling_offset(&layout, px, y, 0), texel, 2 * components);
+            }
+        uint32_t image[8];
+        image_descriptor(image, at(kind ? PAIRS : WIDE), kind ? 5 : 12, NUM_UNORM, SIZE, SIZE);
+        image[3] |= LINEAR_ALIGNED << 20;
+        if (kind) image[3] = (image[3] & ~0xfffu) | (4 | 5 << 3 | 0 << 6 | 1 << 9); /* x, y, 0, 1 */
+        const int drawn = draw_texels(x, at(UNORM16_TARGET), image, error, sizeof error);
+        if (drawn) fprintf(stderr, "16-bit unorm image %d: %s\n", kind, error);
+        CHECK(drawn == 0);
+        if (!kind) {
+            CHECK(differing_pixels(x, at(UNORM16_TARGET)) == 0);
+            continue;
+        }
+        uint32_t bgra[SIZE * SIZE];
+        CHECK(rt_executor_read_target(x, at(UNORM16_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+        int right = 1;
+        for (int y = 0; y < SIZE; y++)
+            for (int px = 0; px < SIZE; px++) {
+                const uint32_t p = bgra[y * SIZE + px];
+                right &= near(p >> 16 & 0xff, ((float)px + 0.5f) / SIZE) && near(p >> 8 & 0xff, ((float)y + 0.5f) / SIZE) && (p & 0xff) == 0;
+            }
+        CHECK(right);
+    }
+}
+
 /* The pixels of target that differ from the reference image's red and green (with_green; 0 otherwise)
    with blue 0 and alpha 1 (all of them on a failed read). */
 static int channel_misses(rt_executor *x, uint64_t target, int with_green)
@@ -2445,6 +2488,7 @@ int main(void)
     sampled_images(x);
     sampled_lookup(x);
     float_images(x);
+    unorm16_images(x);
     many_images(x);
     sampled_levels(x);
     sampled_cube(x);
