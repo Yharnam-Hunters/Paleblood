@@ -1075,6 +1075,8 @@ static int record_tile_copy(rt_executor *x, const tile_plan *p, uint64_t address
     enum { MAX_GROUPS = 65535 };
     const uint32_t groups_x = groups < MAX_GROUPS ? (uint32_t)groups : MAX_GROUPS, groups_y = (uint32_t)((groups + groups_x - 1) / groups_x);
     if (groups * RT_TILE_COPY_GROUP > UINT32_MAX || groups_y > MAX_GROUPS) return failed(error, error_size, "an image too large for the GPU copy");
+    if (address % (p->dwords * 4))
+        return failed(error, error_size, "a tiled image at %#llx, not a multiple of its %u-byte elements", (unsigned long long)address, p->dwords * 4);
     const uint64_t tiled = address + x->address_offset; /* the guest address's GPU address (wraps as the shaders' adds do) */
     const uint32_t push[RT_TILE_COPY_PUSH_WORDS] = {
         [RT_TILE_COPY_TILED_LO] = (uint32_t)tiled, [RT_TILE_COPY_TILED_HI] = (uint32_t)(tiled >> 32),
