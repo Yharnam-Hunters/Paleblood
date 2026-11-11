@@ -46,7 +46,7 @@ struct MetalShader {
 struct MetalComputePipeline {
     uint64_t code;
     uint32_t local_size[3];
-    unsigned user;
+    unsigned user, thread_id_components;
     bool workgroup_x;
     uint32_t user_read;
     std::vector<uint32_t> program;
@@ -556,7 +556,8 @@ static id<MTLComputePipelineState> compute_pipeline_for(rt_executor *x, const rt
     const size_t dwords = static_cast<size_t>(length);
     const bool workgroup_x = (shader.workgroup_id_enables & 1u) != 0;
     for (const auto &entry : x->compute_pipelines)
-        if (entry.code == shader.code && entry.user == shader.user_sgprs && entry.workgroup_x == workgroup_x &&
+        if (entry.code == shader.code && entry.user == shader.user_sgprs && entry.thread_id_components == shader.thread_id_components &&
+            entry.workgroup_x == workgroup_x &&
             std::equal(entry.local_size, entry.local_size + 3, shader.threads) &&
             entry.program.size() == dwords && std::equal(entry.program.begin(), entry.program.end(), code)) {
             user_read = entry.user_read;
@@ -567,6 +568,7 @@ static id<MTLComputePipelineState> compute_pipeline_for(rt_executor *x, const rt
     gcn_compute_layout layout{};
     std::copy(shader.threads, shader.threads + 3, layout.local_size);
     layout.user_sgprs = shader.user_sgprs;
+    layout.thread_id_vgprs = shader.thread_id_components + 1;
     layout.workgroup_id_x_sgpr = workgroup_x ? static_cast<int>(shader.user_sgprs) : -1;
     layout.address_offset = x->address_offset;
     layout.error_address = x->stop.gpuAddress;
@@ -583,7 +585,7 @@ static id<MTLComputePipelineState> compute_pipeline_for(rt_executor *x, const rt
     id<MTLComputePipelineState> pipeline = [x->device newComputePipelineStateWithFunction:function error:&failure];
     if (!pipeline) return failed(error, size, "Metal compute pipeline: %s", failure.localizedDescription.UTF8String), nil;
     MetalComputePipeline entry{shader.code, {shader.threads[0], shader.threads[1], shader.threads[2]},
-        shader.user_sgprs, workgroup_x, user_read, std::vector<uint32_t>(code, code + dwords), pipeline};
+        shader.user_sgprs, shader.thread_id_components, workgroup_x, user_read, std::vector<uint32_t>(code, code + dwords), pipeline};
     x->compute_pipelines.push_back(std::move(entry));
     return pipeline;
 }
@@ -595,8 +597,11 @@ static int dispatch_compute(rt_executor *x, const MetalState &state, const uint3
     const auto &shader = state.compute;
     if (shader.user_sgprs > GCN_USER_SGPR_MAX || shader.sgprs < shader.user_sgprs + (shader.workgroup_id_enables & 1u))
         return failed(error, size, "compute user SGPR count exceeds its modeled or declared allocation");
-    if (shader.thread_id_components != THREAD_ID_XYZ || shader.vgprs < 3)
-        return failed(error, size, "compute requires enabled X, Y and Z thread-id VGPRs");
+    if (shader.thread_id_components > THREAD_ID_XYZ)
+        return failed(error, size, "undefined compute thread-id encoding %u", shader.thread_id_components);
+    if (shader.vgprs < shader.thread_id_components + 1)
+        return failed(error, size, "compute thread-id profile %u exceeds declared VGPR allocation %u",
+                      shader.thread_id_components, shader.vgprs);
     if (shader.workgroup_id_enables & ~1u)
         return failed(error, size, "compute Y or Z workgroup-id SGPRs are not modeled");
     if (shader.workgroup_size_enabled) return failed(error, size, "packed compute workgroup size is not modeled");
