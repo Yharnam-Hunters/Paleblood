@@ -219,6 +219,7 @@ typedef struct {
     uint64_t loaded_change;          /* change_count when it was last loaded (UINT64_MAX: load it) */
     uint64_t loaded_span;            /* the bytes of guest memory it was loaded from */
     tile_plan plan;                  /* its loads on the GPU, for elements of whole 32-bit words */
+    tile_plan *level_plans;          /* the same for each mip level of a mip-mapped image (load_levels), or NULL */
     VkImage image;
     VkDeviceMemory memory;
     struct {
@@ -1295,6 +1296,14 @@ static void tile_plan_free(rt_executor *x, tile_plan *p)
     gpu_buffer_free(x, &p->table);
     gpu_buffer_free(x, &p->linear);
     *p = (tile_plan){0};
+}
+
+static void level_plans_free(rt_executor *x, image_entry *e)
+{
+    if (!e->level_plans) return;
+    for (unsigned m = 0; m < e->levels; m++) tile_plan_free(x, &e->level_plans[m]);
+    free(e->level_plans);
+    e->level_plans = NULL;
 }
 
 /* Makes p the plan for copying `slices` slices of width x height elements laid out as `layout`: the
@@ -2792,6 +2801,37 @@ static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor
 /* A mip-mapped image's levels from the guest memory (rt_tiling_mip_chain): each level detiled by the CPU
    into the upload buffer and copied to its level, again when the memory differs from what was loaded
    last. 0, or -1 with the reason. */
+/* A mip-mapped image's levels detiled on the GPU (runtime/tile_copy.h), with the batch: each level
+   copied from its tiled memory into its own linear rows, then into its level of the image. Nothing
+   waits: what the batch stores to that memory first comes first in the GPU's order. 0, or -1 with the
+   reason. */
+static int load_levels_on_gpu(rt_executor *x, image_entry *e, const rt_image_descriptor *d, const texel_format *f,
+                              const rt_tiling_level levels[RT_TILING_MAX_LEVELS], uint64_t span, char *error, size_t error_size)
+{
+    const int one_d = one_dimensional(d->type);
+    if (!e->level_plans && !(e->level_plans = calloc(e->levels, sizeof *e->level_plans)))
+        return failed(error, error_size, "no memory for an image's level copies");
+    for (unsigned m = 0; m < e->levels; m++) {
+        tile_plan *p = &e->level_plans[m];
+        if (!p->table.buffer && tile_plan_make(x, p, &levels[m].layout, levels[m].columns, levels[m].rows, e->layers, error, error_size)) return -1;
+        if (record_tile_copy(x, p, d->address + levels[m].offset, 0, error, error_size)) return -1;
+    }
+    VkCommandBuffer commands = batch_commands(x);
+    if (!commands) return failed(error, error_size, "no command buffer to load an image");
+    for (unsigned m = 0; m < e->levels; m++) {
+        const uint32_t level_width = e->width >> m ? e->width >> m : 1, level_height = one_d ? 1 : (e->height >> m ? e->height >> m : 1);
+        const VkBufferImageCopy copy = {.bufferRowLength = levels[m].columns * f->block, .bufferImageHeight = levels[m].rows * f->block,
+                                        .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, m, 0, e->layers}, .imageExtent = {level_width, level_height, 1}};
+        vkCmdCopyBufferToImage(commands, e->level_plans[m].linear.buffer, e->image, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
+    }
+    const VkMemoryBarrier after = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                   .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &after, 0, NULL, 0, NULL);
+    memory_take(&e->agreed, NULL, 0); /* what the CPU path compares with is no longer what the image holds */
+    e->loaded_change = x->change_count, e->loaded_span = span;
+    return 0;
+}
+
 static int load_levels(rt_executor *x, image_entry *e, const rt_image_descriptor *d, const texel_format *f, char *error, size_t error_size)
 {
     const unsigned bytes = f->bytes, block = f->block;
@@ -2812,9 +2852,13 @@ static int load_levels(rt_executor *x, image_entry *e, const rt_image_descriptor
     if (e->tiling_index != d->tiling_index || e->pitch != d->pitch) {
         e->tiling_index = d->tiling_index, e->pitch = d->pitch;
         memory_take(&e->agreed, NULL, 0);
+        level_plans_free(x, e);
         e->loaded_change = UINT64_MAX;
     }
     if (!memory_changed_since(x, d->address, span, e->loaded_change)) return 0;
+    int on_gpu = bytes % 4 == 0; /* every level of whole words in a layout the GPU copy takes: detiled on the GPU */
+    for (unsigned m = 0; m < e->levels && on_gpu; m++) on_gpu = rt_tiling_uniform_micro(&levels[m].layout) && levels[m].offset % bytes == 0;
+    if (on_gpu) return load_levels_on_gpu(x, e, d, f, levels, span, error, error_size);
     if (guest_memory_settled(x, d->address, span, error, error_size)) return -1;
     const uint8_t *guest = (const uint8_t *)x->view + (d->address - x->guest_base);
     e->loaded_change = x->change_count, e->loaded_span = span;
@@ -3688,6 +3732,7 @@ void rt_executor_close(rt_executor *x)
             vkFreeMemory(x->device, x->images[i].memory, NULL);
             free(x->images[i].agreed.bytes);
             tile_plan_free(x, &x->images[i].plan);
+            level_plans_free(x, &x->images[i]);
         }
         for (size_t i = 0; i < SCAN_SLOTS; i++) scan_free(&x->scans[i]);
         if (x->stop_buffer) vkDestroyBuffer(x->device, x->stop_buffer, NULL);
