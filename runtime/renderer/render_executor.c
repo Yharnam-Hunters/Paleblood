@@ -2702,7 +2702,8 @@ typedef struct {
    targets), 10 8_8_8_8, 11 32_32, 12 16_16_16_16, 14 32_32_32_32, and the block-compressed 35 BC1 to 41 BC7
    (4 x 4 texels in 8 bytes for BC1 and BC4, 16 for the others; shadPS4's pixel_format.h numbers them
    the same); number formats 0 unorm, 1 snorm, 4 uint, 5 sint, 7 float, 9 sRGB. BC1 keeps its one-bit
-   alpha (Vulkan's RGBA form). BC6 stops by name until its number formats are established. */
+   alpha (Vulkan's RGBA form). BC6 (40) is BC6H's half floats, unsigned under number format 0 and signed
+   under 1 (shadPS4's liverpool_to_vk.cpp maps them so; the clinic's environment textures are BC6 unorm). */
 static int image_format(const rt_image_descriptor *d, texel_format *f, char *error, size_t error_size)
 {
     static const struct {
@@ -2720,6 +2721,7 @@ static int image_format(const rt_image_descriptor *d, texel_format *f, char *err
         {37, 0, {VK_FORMAT_BC3_UNORM_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}}, {37, 9, {VK_FORMAT_BC3_SRGB_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}},
         {38, 0, {VK_FORMAT_BC4_UNORM_BLOCK, GCN_IMAGE_FLOAT, 1, 8, 4}}, {38, 1, {VK_FORMAT_BC4_SNORM_BLOCK, GCN_IMAGE_FLOAT, 1, 8, 4}},
         {39, 0, {VK_FORMAT_BC5_UNORM_BLOCK, GCN_IMAGE_FLOAT, 2, 16, 4}}, {39, 1, {VK_FORMAT_BC5_SNORM_BLOCK, GCN_IMAGE_FLOAT, 2, 16, 4}},
+        {40, 0, {VK_FORMAT_BC6H_UFLOAT_BLOCK, GCN_IMAGE_FLOAT, 3, 16, 4}}, {40, 1, {VK_FORMAT_BC6H_SFLOAT_BLOCK, GCN_IMAGE_FLOAT, 3, 16, 4}},
         {41, 0, {VK_FORMAT_BC7_UNORM_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}}, {41, 9, {VK_FORMAT_BC7_SRGB_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}},
     };
     for (size_t i = 0; i < sizeof formats / sizeof *formats; i++)
@@ -3285,13 +3287,17 @@ static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64
    0-2, 3-5, 6-8, MAX_ANISO_RATIO 9-11, DEPTH_COMPARE_FUNC 12-14, FORCE_UNNORMALIZED 15, then
    ANISO_THRESHOLD, MC_COORD_TRUNC, FORCE_DEGAMMA, ANISO_BIAS, TRUNC_COORD, DISABLE_CUBE_WRAP and
    FILTER_MODE 29-30; word 1 MIN_LOD and MAX_LOD; word 2 LOD_BIAS, XY_MAG_FILTER bits 20-21,
-   XY_MIN_FILTER 22-23, Z_FILTER, MIP_FILTER 26-27; word 3 the border colour. Clamp modes: 0 wrap,
-   1 mirror, 2 clamp to the last texel, 3-7 mirror-once and border modes. Filters: 0 point, 1 bilinear,
+   XY_MIN_FILTER 22-23, Z_FILTER, MIP_FILTER 26-27; word 3 BORDER_COLOR_PTR bits 0-11 and
+   BORDER_COLOR_TYPE 30-31 (0 transparent black, 1 opaque black, 2 opaque white, 3 a colour from a
+   table). Clamp modes: 0 wrap, 1 mirror, 2 clamp to the last texel, 6 clamp to the border colour,
+   3-5 and 7 the mirror-once and half-border modes. Filters: 0 point, 1 bilinear,
    2 anisotropic point, 3 anisotropic bilinear; MAX_ANISO_RATIO 0-4 allows 1, 2, 4, 8 or 16 samples (shadPS4's
    resource.h names them so).
 
-   Made: wrap, mirror and clamp to the last texel (Vulkan's repeat, mirrored repeat and clamp to
-   edge), point or bilinear minifying and magnifying filters (the translator samples at the level the
+   Made: wrap, mirror, clamp to the last texel and clamp to the border colour (Vulkan's repeat,
+   mirrored repeat, clamp to edge and clamp to border, with the float transparent black, opaque
+   black or opaque white border as shadPS4's liverpool_to_vk.cpp maps the three fixed types; a
+   colour from the table stops), point or bilinear minifying and magnifying filters (the translator samples at the level the
    derivatives pick, so Vulkan chooses between them as GCN does), the mip filter (none, point,
    linear), LOD_BIAS, MIN_LOD and MAX_LOD (shadPS4's resource.h scales them: 8 fraction bits, the bias
    signed). The anisotropic filters (XY filters 2 and 3; Mesa's radeonsi switches XY_MAG_FILTER and
@@ -3304,12 +3310,12 @@ static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64
    in word 0 (unnormalized coordinates, the truncation and degamma options, a filter
    mode other than blending) stops by name, as do the secondary LOD bias and the LOD rounding options
    in word 2. Z_FILTER (3D images, which are not done), word 1's PERF_MIP and PERF_Z (sampling
-   performance hints) and word 3 (the border colour, for the border modes that stop) are not used. */
+   performance hints) and BORDER_COLOR_PTR (for table colours, which stop) are not used. */
 static VkSampler sampler_for(rt_executor *x, const uint32_t words[4], char *error, size_t error_size)
 {
     for (size_t i = 0; i < x->sampler_count; i++)
         if (!memcmp(x->samplers[i].words, words, sizeof x->samplers[i].words)) return x->samplers[i].sampler;
-    enum { CLAMP_FIELDS = 0x1ff, WRAP = 0, MIRROR = 1, CLAMP_LAST_TEXEL = 2, POINT = 0, BILINEAR = 1, ANISOTROPIC_POINT = 2,
+    enum { CLAMP_FIELDS = 0x1ff, WRAP = 0, MIRROR = 1, CLAMP_LAST_TEXEL = 2, CLAMP_BORDER = 6, POINT = 0, BILINEAR = 1, ANISOTROPIC_POINT = 2,
            ANISOTROPIC_BILINEAR = 3, MAX_ANISO_RATIO_SHIFT = 9, HIGHEST_RATIO = 4 };
     enum { MAX_ANISO_RATIO = 0x7u << 9, ANISO_THRESHOLD = 0x7u << 16, ANISO_BIAS = 0x3fu << 21, DEPTH_COMPARE_FUNC = 0x7u << 12 };
     const uint32_t anisotropy_fields = MAX_ANISO_RATIO | ANISO_THRESHOLD | ANISO_BIAS;
@@ -3320,16 +3326,28 @@ static VkSampler sampler_for(rt_executor *x, const uint32_t words[4], char *erro
                "not done yet", words[0]);
         return VK_NULL_HANDLE;
     }
+    enum { BORDER_COLOR_TYPE_SHIFT = 30, BORDER_TRANSPARENT_BLACK = 0, BORDER_OPAQUE_BLACK = 1, BORDER_OPAQUE_WHITE = 2 };
     VkSamplerAddressMode modes[3];
+    int border = 0;
     for (unsigned axis = 0; axis < 3; axis++) {
         const uint32_t clamp = words[0] >> (3 * axis) & 7;
-        if (clamp > CLAMP_LAST_TEXEL) {
-            failed(error, error_size, "a sampler with clamp mode %u: only wrap, mirror and clamp to the last texel are done yet", clamp);
+        if (clamp > CLAMP_LAST_TEXEL && clamp != CLAMP_BORDER) {
+            failed(error, error_size, "a sampler with clamp mode %u: only wrap, mirror, clamp to the last texel and clamp to the border "
+                   "are done yet", clamp);
             return VK_NULL_HANDLE;
         }
+        border |= clamp == CLAMP_BORDER;
         modes[axis] = clamp == WRAP ? VK_SAMPLER_ADDRESS_MODE_REPEAT : clamp == MIRROR ? VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT
-                                                                     : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+                    : clamp == CLAMP_BORDER ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     }
+    const uint32_t border_type = words[3] >> BORDER_COLOR_TYPE_SHIFT;
+    if (border && border_type > BORDER_OPAQUE_WHITE) {
+        failed(error, error_size, "a sampler clamping to a border colour from the table (BORDER_COLOR_PTR %u): not done yet", words[3] & 0xfff);
+        return VK_NULL_HANDLE;
+    }
+    const VkBorderColor border_color = border_type == BORDER_OPAQUE_WHITE  ? VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE
+                                       : border_type == BORDER_OPAQUE_BLACK ? VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK
+                                                                            : VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
     const uint32_t magnify = words[2] >> 20 & 3, minify = words[2] >> 22 & 3, mip = words[2] >> 26 & 3;
     const int anisotropic = magnify >= ANISOTROPIC_POINT || minify >= ANISOTROPIC_POINT;
     const uint32_t ratio = words[0] >> MAX_ANISO_RATIO_SHIFT & 7;
@@ -3363,6 +3381,7 @@ static VkSampler sampler_for(rt_executor *x, const uint32_t words[4], char *erro
                                       .anisotropyEnable = anisotropy > 1.0f, .maxAnisotropy = anisotropy > 1.0f ? anisotropy : 1.0f,
                                       .mipmapMode = mip == MIP_LINEAR ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST,
                                       .addressModeU = modes[0], .addressModeV = modes[1], .addressModeW = modes[2], .mipLodBias = bias,
+                                      .borderColor = border_color,
                                       .minLod = mip == MIP_NONE ? 0.0f : min_lod, .maxLod = mip == MIP_NONE ? 0.25f : max_lod};
     VkSampler sampler = VK_NULL_HANDLE;
     if (vkCreateSampler(x->device, &info, NULL, &sampler) != VK_SUCCESS) {

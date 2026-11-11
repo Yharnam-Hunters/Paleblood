@@ -154,10 +154,11 @@ Instead:
        the Vulkan sampler, and the minifying and magnifying filters may differ. Anisotropic filters (2 point, 3 bilinear) are their
        point or bilinear filter with Vulkan's anisotropy up to MAX_ANISO_RATIO's 1-16 samples, within
        the device's limit (ANISO_THRESHOLD and ANISO_BIAS are not used). The executor makes a Vulkan sampler from the S#
-       (the Sea Islands manual's layout, as shadPS4's `resource.h` names its fields): wrap, mirror
-       and clamp to the last texel; point or bilinear filtering. The anisotropy fields are accepted with point or
+       (the Sea Islands manual's layout, as shadPS4's `resource.h` names its fields): wrap, mirror,
+       clamp to the last texel and clamp to a transparent black, opaque black or opaque white
+       border; point or bilinear filtering. The anisotropy fields are accepted with point or
        bilinear filters, which they do not affect; anisotropic filters, depth compares,
-       unnormalized coordinates, border and mirror-once modes and the truncation options stop by
+       unnormalized coordinates, half-border, table border colour and mirror-once modes and the truncation options stop by
        name, as does bilinear sampling of a format the device cannot filter. Filtering precision is
        the host GPU's.
      - **Descriptors from memory:** each MIMG instruction's descriptor is found from the code before
