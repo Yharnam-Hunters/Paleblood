@@ -361,3 +361,8 @@ render_yebis_get_recursive_sample_parameters,edge,,23,23,0,0,6e6f0aa41d5607ce,20
 render_yebis_get_recursive_sample_parameters,edge,30,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,60,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,edge,uncapped,23,23,0,0,6e6f0aa41d5607ce,2026-10-07
+render_prepare_present_context_scratch,edge,,34,34,0,0,056fab43a42fc1e4,2026-11-05
+render_reset_present_context_preparation,edge,,3,3,0,0,01cbcf76d92f08d4,2026-11-05
+render_reset_present_context_shader_state,edge,,6,6,0,0,5d72bb0a1a2edd62,2026-11-05
+render_reset_present_context_state_b518,edge,,3,3,0,0,bb895f0db392d45e,2026-11-05
+render_reset_present_context_state_b528,edge,,3,3,0,0,ea97afad90ad1322,2026-11-05
