@@ -149,19 +149,18 @@ describes retrieving a stored attribute mask, success/error returns and invalid 
 its API includes a size argument absent at this target call. Its errors and CPU-set layout
 cannot simply be assigned to the SCE interface.
 
-**Still required before implementation:** independently establish the main thread's actual
-mask, how a fresh attribute differs from one filled by `scePthreadAttrGet`, the exact output
-write extent, success/error results, and invalid/null attribute or output handling. Host CPU
-availability and a guessed console core count establish none of these. No specific affinity
-implementation is added or registered by this investigation; the import remains unbound.
+**What the runtime answers (maintainer ruling, 2026-11-10).** The console's own mask is still not
+measured. The maintainer ruled that a thread with no mask set by the guest answers **all ones**,
+which is what `scePthreadGetaffinity` already answers. `scePthreadAttrGetaffinity(attr, mask)`
+therefore writes eight bytes:
+- the mask set on the attribute with `scePthreadAttrSetaffinity`, or copied from a thread by
+  `scePthreadAttrGet`, which copies the thread's mask (from its creation attribute or
+  `scePthreadSetaffinity`);
+- otherwise `UINT64_MAX`.
 
-A useful target measurement would record the console/firmware and executable identities, the
-results of attribute initialization and copying from `scePthreadSelf`, the getter's return bits,
-the output bytes with adjacent canaries, and repeated observations without changing affinity.
-Check current claims in [issue #34](https://github.com/Yharnam-Hunters/Paleblood/issues/34) before
-taking implementation work; mentions of the boot blocker are not themselves contributor claims.
-Generic gameplay capture remains separate contributor-owned work, not a reason to synthesize
-the missing affinity observation.
+A variable holding no attribute is `EINVAL`, as for the setter. No variable for the mask stops by
+name. Host CPU availability is not consulted. evill33t's #239 did the groundwork on this call; it
+took its value from the host, which the ruling replaced.
 
 **How the boot gets past it without a value.** These are observations from static analysis of the
 hash-pinned `eboot.elf`, `libc.elf` and `libSceFios2.elf` (Ghidra 12.0.3 with GhidraOrbis, issue
@@ -186,7 +185,9 @@ module holds them, with the ones the file gives (`first_bytes`), and refuses the
 guest code runs if they differ. It then writes each as a five-byte relative jump to a stub in the module's slot. A
 `return` stub leaves every register as the caller had it. A `stop` is reported like an
 unimplemented import: the status names the hook and its caller in `stopped_by_hook`.
-`scePthreadAttrGetaffinity` stays unbound.
+The call itself is implemented (above), but the probe never reaches it while this hook is in
+place, so the count stays zero. Whether to drop the hook and let the probe count the ruled mask is a
+separate decision.
 
 The hook guards calls only. A direct read of `+0xd1c54` that the analysis missed would see 0, not
 a measured count. The offsets fit only the pinned `libc.elf` (`target.sha256`); another build fails
