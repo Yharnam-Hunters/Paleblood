@@ -2759,7 +2759,6 @@ static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64
         rt_image_descriptor d;
         rt_image_descriptor_decode(words, &d);
         const int cube = d.type == RT_IMAGE_CUBE;
-        if (cube && !pixel) return failed(error, error_size, "a cube image in a compute shader: not done yet");
         const int three_d = d.type == RT_IMAGE_3D;
         if (d.type != RT_IMAGE_1D && d.type != RT_IMAGE_2D && d.type != RT_IMAGE_1D_ARRAY && d.type != RT_IMAGE_2D_ARRAY && !cube && !three_d)
             return failed(error, error_size,
@@ -2772,8 +2771,11 @@ static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64
             return failed(error, error_size, "an image with mip levels %u to %u", d.base_level, d.last_level);
         if (d.last_level && !pixel) return failed(error, error_size, "a mip-mapped image in a compute shader: not done yet");
         if (d.last_level && three_d) return failed(error, error_size, "a mip-mapped 3D image: not done yet");
-        /* a cube is viewed whole: its BASE_ARRAY and LAST_ARRAY are not used (the game's give faces 0 to 35 of one cube) */
-        if (d.layers > 1 && !cube && (d.base_array > d.last_array || d.last_array >= d.layers))
+        /* a sampled cube is viewed whole: its BASE_ARRAY and LAST_ARRAY are not used (the game's give faces 0
+           to 35 of one cube); a storage cube is a 2D array of its faces (the store names the face, shadPS4's
+           storage cubes are arrays of faces too), from BASE_ARRAY to LAST_ARRAY like any array */
+        const int whole_cube = cube && pixel;
+        if (d.layers > 1 && !whole_cube && (d.base_array > d.last_array || d.last_array >= d.layers))
             return failed(error, error_size, "a view of an image array from layer %u to %u of %u", d.base_array, d.last_array, d.layers);
         texel_format f;
         /* Vulkan has no sRGB storage images: a compute shader's stores to one go out as UNORM, the values
@@ -2797,12 +2799,13 @@ static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64
         }
         const int one_d = one_dimensional(d.type);
         bindings[i] = (gcn_image_binding){*origin, one_d ? GCN_IMAGE_1D : three_d ? GCN_IMAGE_3D : GCN_IMAGE_2D,
-                                          d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY || cube, f.type, f.components, pixel, cube,
+                                          d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY || cube, f.type, f.components, pixel, whole_cube,
                                           permutes && d.swizzle != DST_SEL_IDENTITY ? d.swizzle : 0};
         if (formats) formats[i] = f.format;
         image_entry *e = image_for(x, &d, &f, resources[i].access, error, error_size);
-        /* a cube is viewed whole, its faces as layers (the shader names the face) */
-        const uint32_t first = d.layers > 1 && !cube ? d.base_array : 0, layers = cube ? d.layers : d.layers > 1 ? d.last_array - d.base_array + 1 : 1;
+        /* a sampled cube is viewed whole, its faces as layers (the shader names the face) */
+        const uint32_t first = d.layers > 1 && !whole_cube ? d.base_array : 0,
+                       layers = whole_cube ? d.layers : d.layers > 1 ? d.last_array - d.base_array + 1 : 1;
         if (!e || !(views[i] = image_view(x, e, first, layers, d.base_level, d.last_level - d.base_level + 1,
                                           pixel ? d.swizzle : (uint32_t)DST_SEL_IDENTITY, error, error_size)))
             return -1;

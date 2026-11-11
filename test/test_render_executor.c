@@ -1793,16 +1793,19 @@ int main(void)
         /* A 3D image (TYPE 3D, DEPTH 1: two slices of 64 x 1), as the game's compute shader fills a colour
            volume: texels stored in slice 1 read back from slice 1 as stored, and slice 0 keeps the new
            image's zeros (a 3D image taken as one 2D slice would return the stored texels there too).
-           Reading a 3D image the GPU never wrote stops by name: its layout in memory is not done yet. */
-        {
-            enum { FILL3_CODE = 0x4c00, READ3_CODE = 0x5000, READ30_CODE = 0x5400, IMAGE_3D = IMAGE_A + 0x90000 };
+           A storage cube (TYPE CUBE, faces 0 to 5) is an array of its faces: the same programs store to
+           face 1 and read faces 1 and 0. Reading a 3D image the GPU never wrote stops by name: its layout
+           in memory is not done yet. */
+        for (int cube = 0; cube < 2; cube++) {
+            enum { FILL3_CODE = 0x4c00, READ3_CODE = 0x5000, READ30_CODE = 0x5400, IMAGE_3D = IMAGE_A + 0x90000, CUBE_IMAGE = IMAGE_A + 0x98000 };
             memcpy((void *)(uintptr_t)at(FILL3_CODE), image_fill_3d, sizeof image_fill_3d);
             memcpy((void *)(uintptr_t)at(READ3_CODE), image_to_buffer_3d, sizeof image_to_buffer_3d);
             memcpy((void *)(uintptr_t)at(READ30_CODE), image_to_buffer_3d_slice0, sizeof image_to_buffer_3d_slice0);
             uint32_t volume[8];
-            image_descriptor(volume, at(IMAGE_3D), 14, 7, LANES, 1);
-            volume[3] = (volume[3] & 0x0fffffffu) | (uint32_t)RT_IMAGE_3D << 28;
-            volume[4] |= 1; /* DEPTH: two slices */
+            image_descriptor(volume, at(cube ? CUBE_IMAGE : IMAGE_3D), 14, 7, LANES, 1);
+            volume[3] = (volume[3] & 0x0fffffffu) | (uint32_t)(cube ? RT_IMAGE_CUBE : RT_IMAGE_3D) << 28;
+            if (cube) volume[5] = 5u << 13; /* faces 0 to 5 (DEPTH 0: one cube) */
+            else volume[4] |= 1;            /* DEPTH: two slices */
             for (int slice = 1; slice >= 0; slice--) {
                 rt_render_forget(), rt_executor_reset(x);
                 for (unsigned i = 0; i < LANES * 4; i++) back[i] = -1;
@@ -1821,7 +1824,7 @@ int main(void)
                     offset += 0x40;
                 }
                 const int ran = rt_executor_run(x, IMAGES, offset, error, sizeof error);
-                if (ran) fprintf(stderr, "3D image: %s\n", error);
+                if (ran) fprintf(stderr, "%s: %s\n", cube ? "storage cube" : "3D image", error);
                 CHECK(ran == 0);
                 int right = 1;
                 for (unsigned i = 0; i < LANES; i++)
@@ -1829,6 +1832,7 @@ int main(void)
                                    : back[i * 4] == 0 && back[i * 4 + 1] == 0 && back[i * 4 + 2] == 0 && back[i * 4 + 3] == 0;
                 CHECK(right);
             }
+            if (cube) continue;
             rt_render_forget(), rt_executor_reset(x);
             const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(at(READ3_CODE) >> 8), (uint32_t)(at(READ3_CODE) >> 40), 0x3, 16 << 1,
                                                               LANES, 1, 1};
