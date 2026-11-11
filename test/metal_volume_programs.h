@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Owned Bonaire encodings: llvm-mc -triple=amdgcn -mcpu=bonaire --show-encoding. */
+/* GFX7 image stores set UNRM (Sea Islands ISA rev1.3, Table 8.7). */
 #ifndef PB_METAL_VOLUME_PROGRAMS_H
 #define PB_METAL_VOLUME_PROGRAMS_H
 #include <stdint.h>
@@ -59,7 +60,7 @@ static const uint32_t volume_grid_store_float[]={
     0x7e0e02f0, /* v_mov_b32_e32 v7, 0.5 */
     0x7e1002ff,0x13572468, /* v_mov_b32_e32 v8, 0x13572468 */
     0xe0701000,0x80020803, /* buffer_store_dword v8, v3, s[8:11], 0 offen */
-    0xf0200f00,0x00000400, /* image_store v[4:7], v[0:2], s[0:7] dmask:0xf */
+    0xf0201f00,0x00000400, /* image_store v[4:7], v[0:2], s[0:7] dmask:0xf unorm */
     0xbf810000, /* s_endpgm */
 };
 static const uint32_t volume_grid_store_bits[]={
@@ -89,7 +90,7 @@ static const uint32_t volume_grid_store_bits[]={
     0x7e0e02ff,0x000000a7, /* v_mov_b32_e32 v7, 0xa7 */
     0x7e1002ff,0x13572468, /* v_mov_b32_e32 v8, 0x13572468 */
     0xe0701000,0x80020803, /* buffer_store_dword v8, v3, s[8:11], 0 offen */
-    0xf0200f00,0x00000400, /* image_store v[4:7], v[0:2], s[0:7] dmask:0xf */
+    0xf0201f00,0x00000400, /* image_store v[4:7], v[0:2], s[0:7] dmask:0xf unorm */
     0xbf810000, /* s_endpgm */
 };
 static const uint32_t volume_probe_load[]={
@@ -113,7 +114,7 @@ static const uint32_t volume_probe_store_float[]={
     0x7e0e02f0, /* v_mov_b32_e32 v7, 0.5 */
     0x7e1002ff,0x13572468, /* v_mov_b32_e32 v8, 0x13572468 */
     0xe0701000,0x80020803, /* buffer_store_dword v8, v3, s[8:11], 0 offen */
-    0xf0200f00,0x00000400, /* image_store v[4:7], v[0:2], s[0:7] dmask:0xf */
+    0xf0201f00,0x00000400, /* image_store v[4:7], v[0:2], s[0:7] dmask:0xf unorm */
     0xbf810000, /* s_endpgm */
 };
 static const uint32_t volume_probe_inplace_float[]={
@@ -124,7 +125,7 @@ static const uint32_t volume_probe_inplace_float[]={
     0xf0000f00,0x00000400, /* image_load v[4:7], v[0:2], s[0:7] dmask:0xf */
     0xbf8c0f70, /* s_waitcnt vmcnt(0) */
     0x060808ff,0x3e800000, /* v_add_f32_e32 v4, 0x3e800000, v4 */
-    0xf0200f00,0x00000400, /* image_store v[4:7], v[0:2], s[0:7] dmask:0xf */
+    0xf0201f00,0x00000400, /* image_store v[4:7], v[0:2], s[0:7] dmask:0xf unorm */
     0xbf810000, /* s_endpgm */
 };
 static const uint32_t volume_probe_inplace_bits[]={
@@ -135,7 +136,7 @@ static const uint32_t volume_probe_inplace_bits[]={
     0xf0000f00,0x00000400, /* image_load v[4:7], v[0:2], s[0:7] dmask:0xf */
     0xbf8c0f70, /* s_waitcnt vmcnt(0) */
     0x3a080881, /* v_xor_b32_e32 v4, 1, v4 */
-    0xf0200f00,0x00000400, /* image_store v[4:7], v[0:2], s[0:7] dmask:0xf */
+    0xf0201f00,0x00000400, /* image_store v[4:7], v[0:2], s[0:7] dmask:0xf unorm */
     0xbf810000, /* s_endpgm */
 };
 static const uint32_t volume_raw_copy[]={
@@ -154,7 +155,7 @@ static const uint32_t volume_dual_copy[]={
     0xf0000f00,0x00000400, /* image_load v[4:7], v[0:2], s[0:7] dmask:0xf */
     0xbf8c0f70, /* s_waitcnt vmcnt(0) */
     0x7e000281, /* v_mov_b32_e32 v0, 1 */
-    0xf0200f00,0x00020400, /* image_store v[4:7], v[0:2], s[8:15] dmask:0xf */
+    0xf0201f00,0x00020400, /* image_store v[4:7], v[0:2], s[8:15] dmask:0xf unorm */
     0xbf810000, /* s_endpgm */
 };
 static const uint32_t volume_read_marker[]={
@@ -177,7 +178,7 @@ static const uint32_t volume_store_then_stop[]={
     0x7e0a02f0, /* v_mov_b32_e32 v5, 0.5 */
     0x7e0c02f0, /* v_mov_b32_e32 v6, 0.5 */
     0x7e0e02f0, /* v_mov_b32_e32 v7, 0.5 */
-    0xf0200f00,0x00000400, /* image_store v[4:7], v[0:2], s[0:7] dmask:0xf */
+    0xf0201f00,0x00000400, /* image_store v[4:7], v[0:2], s[0:7] dmask:0xf unorm */
     0xe0001000,0x80020803, /* buffer_load_format_x v8, v3, s[8:11], 0 offen */
     0xbf8c0f70, /* s_waitcnt vmcnt(0) */
     0xbf810000, /* s_endpgm */
