@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "runtime/host_time.h"
 #include <errno.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <sys/time.h>
@@ -26,8 +27,22 @@ int main(void)
     if (deadline.tv_nsec >= 1000000000) { deadline.tv_sec++; deadline.tv_nsec -= 1000000000; }
     CHECK(rt_host_sleep_until_monotonic(&deadline) == 0);
     CHECK(clock_gettime(CLOCK_MONOTONIC, &after) == 0);
+    /* Disarming does not discard an already pending alarm. Keep it blocked until all
+       pending timer notifications have been consumed, before restoring the old handler. */
+    sigset_t alarms, old_mask, pending;
+    CHECK(sigemptyset(&alarms) == 0 && sigaddset(&alarms, SIGALRM) == 0);
+    CHECK(pthread_sigmask(SIG_BLOCK, &alarms, &old_mask) == 0);
     timer = (struct itimerval){{0, 0}, {0, 0}}; CHECK(setitimer(ITIMER_REAL, &timer, NULL) == 0);
+    for (;;) {
+        CHECK(sigpending(&pending) == 0);
+        const int waiting = sigismember(&pending, SIGALRM);
+        CHECK(waiting >= 0);
+        if (!waiting) break;
+        int received = 0;
+        CHECK(sigwait(&alarms, &received) == 0 && received == SIGALRM);
+    }
     CHECK(sigaction(SIGALRM, &previous, NULL) == 0);
+    CHECK(pthread_sigmask(SIG_SETMASK, &old_mask, NULL) == 0);
     CHECK(!before(after, deadline)); CHECK(interrupts > 0);
     printf("host deadline: %u checks, interrupted=%d, passed\n", checks, (int)interrupts);
     return 0;
