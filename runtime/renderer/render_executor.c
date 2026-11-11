@@ -2550,6 +2550,18 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
 
 enum { DST_SEL_ZERO = 0, DST_SEL_ONE = 1, DST_SEL_X = 4, DST_SEL_IDENTITY = 4 | 5 << 3 | 6 << 6 | 7 << 9 };
 
+/* Whether DST_SEL names x, y, z and w once each (in any order). */
+static int swizzle_permutes(uint32_t swizzle)
+{
+    unsigned seen = 0;
+    for (unsigned k = 0; k < 4; k++) {
+        const uint32_t sel = swizzle >> (3 * k) & 7;
+        if (sel < DST_SEL_X) return 0;
+        seen |= 1u << (sel - DST_SEL_X);
+    }
+    return seen == 0xf;
+}
+
 /* A view of an image's layers first to first + count - 1, as its descriptor's type has it (an array
    stays an array), its components picked by swizzle (DST_SEL: 0 zero, 1 one, 4-7 x, y, z, w). A
    shader's slice coordinate counts from the view's first layer: the descriptor's BASE_ARRAY is where
@@ -2732,9 +2744,11 @@ static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64
            not established */
         if (!pixel && d.num_format == NUM_FORMAT_SRGB)
             return failed(error, error_size, "an sRGB image (DATA_FORMAT %u) in a compute shader: not done yet", d.data_format);
-        /* a storage image's DST_SEL must keep each of the format's components in place; a sampled view
-           picks them, or 0 or 1, but a component the format lacks is not established */
-        for (unsigned k = 0; k < (pixel ? 4 : f.components); k++) {
+        /* a sampled view picks the format's components, or 0 or 1 (a component the format lacks is not
+           established); a storage image's DST_SEL keeps each component in place, or for four components
+           may permute them (the translator swizzles its loads and stores, as shadPS4 does) */
+        const int permutes = !pixel && f.components == 4 && swizzle_permutes(d.swizzle);
+        for (unsigned k = 0; k < (pixel ? 4 : f.components) && !permutes; k++) {
             const uint32_t sel = d.swizzle >> (3 * k) & 7;
             const int ok = pixel ? sel == DST_SEL_ZERO || sel == DST_SEL_ONE || (sel >= DST_SEL_X && sel < DST_SEL_X + f.components)
                                  : sel == DST_SEL_X + k;
@@ -2742,7 +2756,8 @@ static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64
         }
         const int one_d = one_dimensional(d.type);
         bindings[i] = (gcn_image_binding){*origin, one_d ? GCN_IMAGE_1D : three_d ? GCN_IMAGE_3D : GCN_IMAGE_2D,
-                                          d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY || cube, f.type, f.components, pixel, cube};
+                                          d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY || cube, f.type, f.components, pixel, cube,
+                                          permutes && d.swizzle != DST_SEL_IDENTITY ? d.swizzle : 0};
         if (formats) formats[i] = f.format;
         image_entry *e = image_for(x, &d, &f, resources[i].access, error, error_size);
         /* a cube is viewed whole, its faces as layers (the shader names the face) */

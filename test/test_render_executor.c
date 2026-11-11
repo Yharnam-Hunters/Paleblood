@@ -1845,6 +1845,40 @@ int main(void)
             CHECK(rt_executor_run(x, IMAGES, 0x50, error, sizeof error) == -1 && strstr(error, "3D image") && strstr(error, "not done yet"));
         }
 
+        /* A storage image's DST_SEL permutes its components (shadPS4 swizzles storage loads by it and
+           stores by its inverse): stores of (i, 1, 2, 0.5) through z, y, x, w (0xf2e) read back through
+           x, y, z, w as (2, 1, i, 0.5), and through z, y, x, w again as stored. */
+        {
+            enum { SWIZZLED = IMAGE_A + 0xa0000, BGRA = 6 | 5 << 3 | 4 << 6 | 7 << 9 };
+            for (int read_swizzled = 0; read_swizzled < 2; read_swizzled++) {
+                rt_render_forget(), rt_executor_reset(x);
+                for (unsigned i = 0; i < LANES * 4; i++) back[i] = -1;
+                uint32_t offset = 0x10;
+                for (int pass = 0; pass < 2; pass++) {
+                    const uint64_t code = pass ? codes[2] : codes[0];
+                    const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x3, 16 << 1, LANES, 1, 1};
+                    CHECK(rt_render_record_compute_shader_at(IMAGES + offset, shader) == 0);
+                    memset(user, 0, sizeof user);
+                    if (pass) descriptor(user, at(BACK), 16);
+                    image_descriptor(image_a, at(SWIZZLED), 14, 7, LANES, 1);
+                    if (!pass || read_swizzled) image_a[3] = (image_a[3] & ~0xfffu) | BGRA;
+                    memcpy(user + 8, image_a, sizeof image_a);
+                    CHECK(rt_render_record_user_data(IMAGES, offset + 0x10, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+                    CHECK(rt_render_record_user_data(IMAGES, offset + 0x20, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
+                    CHECK(rt_render_record_dispatch(IMAGES, offset + 0x30, one, error, sizeof error) == 0);
+                    offset += 0x40;
+                }
+                const int ran = rt_executor_run(x, IMAGES, offset, error, sizeof error);
+                if (ran) fprintf(stderr, "swizzled storage image: %s\n", error);
+                CHECK(ran == 0);
+                int right = 1;
+                for (unsigned i = 0; i < LANES; i++)
+                    right &= read_swizzled ? back[i * 4] == (float)i && back[i * 4 + 1] == 1.0f && back[i * 4 + 2] == 2.0f && back[i * 4 + 3] == 0.5f
+                                           : back[i * 4] == 2.0f && back[i * 4 + 1] == 1.0f && back[i * 4 + 2] == (float)i && back[i * 4 + 3] == 0.5f;
+                CHECK(right);
+            }
+        }
+
         /* An image no shader wrote holds the guest memory's texels: linear (tiling index 8) RGBA32F
            texels the CPU wrote read back as written; a layout not done yet (index 1) stops by name. */
         float *guest_texels = (float *)(uintptr_t)at(IMAGE_B + 0x8000);

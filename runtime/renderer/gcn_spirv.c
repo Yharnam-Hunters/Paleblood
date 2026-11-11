@@ -2453,11 +2453,16 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
     }
     const uint32_t merge = begin_if(t, op == MIMG_OP_STORE || load_checked ? value(t, SPV_OP_LOGICAL_AND, t_bool(t), 2, exec_bit(t), in_range)
                                                                          : exec_bit(t));
+    /* the storage image's DST_SEL: shader component k is texel component place[k] (shadPS4 swizzles a
+       storage image's loads by DST_SEL and its stores by the inverse) */
+    unsigned place[4] = {0, 1, 2, 3};
+    if (b->swizzle)
+        for (unsigned k = 0; k < 4; k++) place[k] = (b->swizzle >> (3 * k) & 7) - 4;
     if (op == MIMG_OP_STORE) {
         uint32_t texel[4];
         for (unsigned i = 0; i < 4; i++) {
             const uint32_t bits = i < b->components ? load(t, t_uint(t), vgpr(t, vdata + i)) : konst(t, 0);
-            texel[i] = b->type == GCN_IMAGE_UINT ? bits : value(t, SPV_OP_BITCAST, sampled, 1, bits);
+            texel[place[i]] = b->type == GCN_IMAGE_UINT ? bits : value(t, SPV_OP_BITCAST, sampled, 1, bits);
         }
         const uint32_t vec = value(t, SPV_OP_COMPOSITE_CONSTRUCT, texel_type, 4, texel[0], texel[1], texel[2], texel[3]);
         spirv_emit(&t->m, t->out, SPV_OP_IMAGE_WRITE, (const uint32_t[]){image, coordinate, vec}, 3);
@@ -2467,7 +2472,7 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
         unsigned next = vdata;
         for (unsigned i = 0; i < 4; i++) {
             if (!(dmask >> i & 1)) continue;
-            const uint32_t component = value(t, SPV_OP_COMPOSITE_EXTRACT, sampled, 2, texel, i);
+            const uint32_t component = value(t, SPV_OP_COMPOSITE_EXTRACT, sampled, 2, texel, place[i]);
             write_vgpr(t, next++, b->type == GCN_IMAGE_UINT ? component : value(t, SPV_OP_BITCAST, t_uint(t), 1, component));
         }
         t->reads_images = 1;
