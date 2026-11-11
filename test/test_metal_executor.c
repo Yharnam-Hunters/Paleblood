@@ -929,7 +929,7 @@ int main(void)
         {0, 6, 1 << 4, "without their export vector"},
         {1, 4, 1, "pixel depth exports"},
         {1, 5, 0, "SPI_SHADER_COL_FORMAT"}, {1, 5, 3, "SPI_SHADER_COL_FORMAT"}, {1, 5, 0x44, "SPI_SHADER_COL_FORMAT"},
-        {1, 6, 6, "pixel-shader inputs"}, {1, 7, 0, "pixel-shader inputs"},
+        {1, 6, 6, "pixel inputs enable"}, {1, 7, 0, "pixel inputs enable"},
         {1, 8, 0, "pixel interpolant allocation"}, {1, 8, 33, "parameter range"},
         {1, 9, 1, "SPI_BARYC_CNTL"}, {1, 9, 0x80000000, "SPI_BARYC_CNTL"},
         {1, 10, 1, "DB_SHADER_CONTROL"}, {1, 10, 0x80000000, "DB_SHADER_CONTROL"},
@@ -1156,9 +1156,9 @@ int main(void)
 
     const struct { uint32_t address, value; const char *reason; } unsupported_registers[] = {
         {0xa1e0, 0x40000000, "blending"}, {0xa200, 2, "depth or stencil"},
-        {0xa202, 0, "colour mode"}, {0xa08e, 7, "write mask"},
-        {0xc242, 5, "primitive type"}, {0xa000, 0, "does not interpret"},
-        {0xc242, 6, "primitive type"}, {0xa010, 0, "does not interpret"},
+        {0xa202, 0x20, "colour mode"}, {0xa08e, 7, "write mask"},
+        {0xc242, 5, "primitive type"}, {0xa001, 0, "does not interpret"},
+        {0xc242, 6, "primitive type"}, {0xa018, 0, "does not interpret"},
     };
     for (unsigned i = 0; i < sizeof unsupported_registers / sizeof *unsupported_registers; ++i) {
         uint64_t buffer = 21 + i;
@@ -1298,7 +1298,7 @@ int main(void)
     size = record_setup(no_pixel_buffer, at(0x840000), 16, 16, 0, scale, translate, COLORS);
     CHECK(rt_render_record_pixel_shader_at(no_pixel_buffer + 0x70, no_pixel_shader) == 0);
     CHECK(rt_render_record_draw_auto(no_pixel_buffer, 0x80, 3, error, sizeof error) == 0);
-    expect_error(x, no_pixel_buffer, 0x90, "no pixel shader (a depth-only pass)");
+    expect_error(x, no_pixel_buffer, 0x90, "no pixel shader requires depth/stencil");
     scenarios++;
     rt_executor_reset(x);
 
@@ -1476,15 +1476,16 @@ int main(void)
     scenarios++;
     rt_executor_reset(x);
 
-    /* Position x/y inputs are decoded upstream, but are outside this explicitly barycentric-only profile. */
-    const uint32_t positions[] = {0x102, 0x202, 0x302};
+    /* Z/W and front-face inputs retain their explicit profile refusal. Window X/Y
+       admission and coordinates have their own real-device fixture. */
+    const uint32_t positions[] = {0x402, 0x802, 0x1002};
     for (unsigned i = 0; i < sizeof positions / sizeof positions[0]; ++i) {
         uint64_t buffer = 350 + i; uint32_t pixel[RT_PIXEL_SHADER_WORDS]; pixel_registers(pixel, POSITION_PIXEL_CODE);
         pixel[5] = 9; pixel[8] = 0; pixel[6] = pixel[7] = positions[i];
         size = record_setup(buffer, at(0x930000), 16, 16, 0, scale, translate, COLORS);
         CHECK(rt_render_record_pixel_shader(buffer, size, pixel, error, sizeof error) == 0); size += 0x10;
         CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
-        expect_error(x, buffer, size, "inputs beyond perspective-center barycentrics");
+        expect_error(x, buffer, size, "pixel inputs enable");
         scenarios++;
         rt_executor_reset(x);
     }
@@ -1565,8 +1566,8 @@ int main(void)
     }
     size = record_setup(331, at(0xc00000), 16, 16, 0, scale, translate, COLORS);
     CHECK(rt_render_record_register(331, size, 0xc242, 17, error, sizeof error) == 0); size += 0x10;
-    CHECK(rt_render_record_draw_auto(331, size, 3, error, sizeof error) == 0); size += 0x10;
-    expect_error(x, 331, size, "rectangle lists require a geometry expansion profile");
+    CHECK(rt_render_record_draw_auto(331, size, 2, error, sizeof error) == 0); size += 0x10;
+    expect_error(x, 331, size, "rectangle lists require complete triples");
     uint32_t unattached = 0xdeadbeef;
     CHECK(rt_executor_read_target(x, at(0xc00000), &unattached, 1, 1, error, sizeof error) == -1);
     CHECK(unattached == 0xdeadbeef);

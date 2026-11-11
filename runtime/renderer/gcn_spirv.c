@@ -78,6 +78,7 @@ typedef struct {
     spirv_words variables, setup, prologue, blocks; /* the entry function's parts */
     spirv_words *out;                               /* where instructions go now */
     uint32_t exec, scc, pc;                         /* EXEC's lane bit, SCC, the next block's index */
+    uint32_t pixel_valid;                          /* the last executed pixel VM export's validity */
     uint32_t glsl;                      /* the GLSL.std.450 import */
     uint32_t vgpr[VGPR_COUNT], sgpr[SGPR_COUNT], lane_bit[SGPR_COUNT]; /* variables, made on first use */
     /* the user SGPRs read before the program writes them, in program order (a bit each); writing is set
@@ -1765,8 +1766,8 @@ static uint32_t export_variable(translator *t, unsigned target)
 
 /* exp: writes the enabled components of a position, parameter or colour. Compressed (compr)
    exports carry two halves per VGPR: vsrc0 holds x (low 16 bits) and y, vsrc1 z and w. With vm
-   (valid mask) in a pixel shader, lanes not in EXEC are pixels the shader discards. Only active
-   lanes export. */
+   (valid mask) in a pixel shader, EXEC snapshots pixel validity; the final executed VM
+   determines discard at shader exit. Only active lanes export components. */
 static void export_instruction(translator *t, const uint32_t *w)
 {
     const unsigned enabled = w[0] & 0xf, target = (w[0] >> 4) & 0x3f, compressed = (w[0] >> 10) & 1, valid_mask = (w[0] >> 12) & 1;
@@ -1775,15 +1776,10 @@ static void export_instruction(translator *t, const uint32_t *w)
     if (extra_position && vector < 0) return;
     const uint32_t variable = extra_position ? 0 : export_variable(t, target);
     if (!extra_position && !variable) return;
-    if (valid_mask && t->layout->stage == STAGE_PIXEL) {
-        const uint32_t inactive = value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, exec_bit(t));
-        const uint32_t discard = spirv_new_id(&t->m), merge = spirv_new_id(&t->m);
-        spirv_emit(&t->m, t->out, SPV_OP_SELECTION_MERGE, (const uint32_t[]){merge, SPV_SELECTION_CONTROL_NONE}, 2);
-        spirv_emit(&t->m, t->out, SPV_OP_BRANCH_CONDITIONAL, (const uint32_t[]){inactive, discard, merge}, 3);
-        spirv_emit(&t->m, t->out, SPV_OP_LABEL, &discard, 1);
-        spirv_emit(&t->m, t->out, SPV_OP_KILL, NULL, 0);
-        spirv_emit(&t->m, t->out, SPV_OP_LABEL, &merge, 1);
-    }
+    /* VM is an exported validity snapshot, not a change to EXEC or shader control
+       flow. Later exports replace it; later instructions still execute under EXEC. */
+    if (valid_mask && t->layout->stage == STAGE_PIXEL)
+        store(t, t->out, t->pixel_valid, exec_bit(t));
     uint32_t components[4];
     for (unsigned c = 0; c < 4; c++) {
         if (compressed) {
@@ -1875,6 +1871,23 @@ static uint32_t user_data_block(translator *t)
     spirv_emit(m, &m->sections[SPIRV_GLOBALS], SPV_OP_VARIABLE,
                (const uint32_t[]){spirv_type_pointer(m, SPV_STORAGE_PUSH_CONSTANT, block), id, SPV_STORAGE_PUSH_CONSTANT}, 3);
     return id;
+}
+
+/* A pixel shader's final executed VM controls its raster result. Discard only
+   after all source instructions, preserving storage effects and later EXEC revival.
+   Every normal exit uses the snapshot rather than EXEC's possibly changed value. */
+static void program_return(translator *t)
+{
+    if (t->layout->stage == STAGE_PIXEL) {
+        const uint32_t inactive = value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, load(t, t_bool(t), t->pixel_valid));
+        const uint32_t discard = spirv_new_id(&t->m), merge = spirv_new_id(&t->m);
+        spirv_emit(&t->m, t->out, SPV_OP_SELECTION_MERGE, (const uint32_t[]){merge, SPV_SELECTION_CONTROL_NONE}, 2);
+        spirv_emit(&t->m, t->out, SPV_OP_BRANCH_CONDITIONAL, (const uint32_t[]){inactive, discard, merge}, 3);
+        spirv_emit(&t->m, t->out, SPV_OP_LABEL, &discard, 1);
+        spirv_emit(&t->m, t->out, SPV_OP_KILL, NULL, 0);
+        spirv_emit(&t->m, t->out, SPV_OP_LABEL, &merge, 1);
+    }
+    spirv_emit(&t->m, t->out, SPV_OP_RETURN, NULL, 0);
 }
 
 /* The starting registers: user data in the first SGPRs, the workgroup index, and v0-v2 the lane's
@@ -2824,6 +2837,8 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
     t->exec = function_variable(t, t_bool(t), spirv_constant_bool(m, 1));
     t->scc = function_variable(t, t_bool(t), spirv_constant_bool(m, 0));
     t->pc = function_variable(t, t_uint(t), konst(t, 0));
+    if (layout->stage == STAGE_PIXEL)
+        t->pixel_valid = function_variable(t, t_bool(t), spirv_constant_bool(m, 1));
     t->out = &t->prologue;
     starting_registers(t, layout);
 
@@ -2880,7 +2895,7 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
             const size_t next = d->at + d->ins.dwords;
             i++;
             if (d->ins.encoding == GCN_SOPP && !strcmp(name, "s_endpgm")) {
-                spirv_emit(m, t->out, SPV_OP_RETURN, NULL, 0);
+                program_return(t);
                 ended = 1;
                 break;
             }
@@ -2918,7 +2933,7 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
     spirv_emit(m, t->out, SPV_OP_LABEL, &continue_block, 1);
     spirv_emit(m, t->out, SPV_OP_BRANCH, &header, 1);
     spirv_emit(m, t->out, SPV_OP_LABEL, &loop_merge, 1);
-    spirv_emit(m, t->out, SPV_OP_RETURN, NULL, 0);
+    program_return(t);
 
     /* The entry function: variables, their zeroing, the starting registers, then the loop. */
     const uint32_t void_type = spirv_type_void(m);
