@@ -19,7 +19,8 @@ static rt_executor *executor;
 
 void rt_renderer_configure(int on) { enabled = on; }
 
-static int collect_cpu_writes(void (*written)(void *context, uint64_t pool_offset, uint64_t length), void *context);
+static int collect_cpu_writes(const uint64_t (*ranges)[2], size_t count, void (*written)(void *context, uint64_t pool_offset, uint64_t length),
+                              void *context);
 
 /* The executor, opened once the title has GPU-visible memory; NULL before that or when off. */
 static rt_executor *executor_for(const char *function)
@@ -279,13 +280,14 @@ void rt_renderer_submit(const char *function, const void *buffer, uint32_t bytes
 
 /* The executor's collect (on the renderer's thread): nothing new for a buffer submitted before the
    last collect, whose writes before it that collect has reported. */
-static int collect_cpu_writes(void (*written)(void *context, uint64_t pool_offset, uint64_t length), void *context)
+static int collect_cpu_writes(const uint64_t (*ranges)[2], size_t count, void (*written)(void *context, uint64_t pool_offset, uint64_t length),
+                              void *context)
 {
     if (running_submission <= collected_through) return 0;
     pthread_mutex_lock(&queue_lock);
     const uint64_t through = submissions;
     pthread_mutex_unlock(&queue_lock);
-    if (rt_write_watch_collect(written, context)) return -1;
+    if (rt_write_watch_collect(ranges, count, written, context)) return -1;
     collected_through = through;
     return 0;
 }

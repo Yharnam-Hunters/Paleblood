@@ -89,13 +89,11 @@ void rt_write_watch_remove(void *host, uint64_t length)
     pthread_mutex_unlock(&watch_lock);
 }
 
-/* Reports the pages of one map written since its last scan and protects them again, in one step
-   (PM_SCAN_WP_MATCHING with PM_SCAN_CHECK_WPASYNC). 0, or -1. */
-static int scan_map(const watched_map *w, rt_write_watch_visit *written, void *context)
+/* Reports the pages of [from, end) inside one map written since they were last scanned and protects
+   them again, in one step (PM_SCAN_WP_MATCHING with PM_SCAN_CHECK_WPASYNC). 0, or -1. */
+static int scan_map(const watched_map *w, uintptr_t from, uintptr_t end, rt_write_watch_visit *written, void *context)
 {
     struct page_region regions[SCAN_REGIONS];
-    uintptr_t from = w->host;
-    const uintptr_t end = w->host + w->length;
     while (from < end) {
         struct pm_scan_arg scan = {.size = sizeof scan, .flags = PM_SCAN_WP_MATCHING | PM_SCAN_CHECK_WPASYNC, .start = from, .end = end,
                                    .vec = (uintptr_t)regions, .vec_len = SCAN_REGIONS, .category_mask = PAGE_IS_WRITTEN,
@@ -111,19 +109,38 @@ static int scan_map(const watched_map *w, rt_write_watch_visit *written, void *c
 
 static void ignore_written(void *context, uint64_t pool_offset, uint64_t length) { (void)context, (void)pool_offset, (void)length; }
 
-int rt_write_watch_collect(rt_write_watch_visit *written, void *context)
+/* Scans the parts of one map inside the ranges (ascending): found by a binary search for the first
+   range ending past the map's start. 0, or -1. */
+static int scan_ranges(const watched_map *w, const uint64_t (*ranges)[2], size_t count, rt_write_watch_visit *written, void *context)
+{
+    const uint64_t map_end = w->pool_offset + w->length;
+    size_t low = 0, high = count;
+    while (low < high) {
+        const size_t middle = low + (high - low) / 2;
+        if (ranges[middle][0] + ranges[middle][1] <= w->pool_offset) low = middle + 1;
+        else high = middle;
+    }
+    for (size_t r = low; r < count && ranges[r][0] < map_end; r++) {
+        const uint64_t from = ranges[r][0] > w->pool_offset ? ranges[r][0] : w->pool_offset;
+        const uint64_t to = ranges[r][0] + ranges[r][1] < map_end ? ranges[r][0] + ranges[r][1] : map_end;
+        if (from < to && scan_map(w, w->host + (from - w->pool_offset), w->host + (to - w->pool_offset), written, context)) return -1;
+    }
+    return 0;
+}
+
+int rt_write_watch_collect(const uint64_t (*ranges)[2], size_t count, rt_write_watch_visit *written, void *context)
 {
     pthread_mutex_lock(&watch_lock);
     int ok = !watch_off && fault_fd >= 0;
     for (int i = 0; ok && i < watched_count; i++) {
         watched_map *w = &watched[i];
         if (w->fresh) { /* reported whole; the scan only protects again what was written since it was added */
-            ok = scan_map(w, ignore_written, NULL) == 0;
+            ok = scan_map(w, w->host, w->host + w->length, ignore_written, NULL) == 0;
             written(context, w->pool_offset, w->length);
             w->fresh = 0;
             continue;
         }
-        ok = scan_map(w, written, context) == 0;
+        ok = scan_ranges(w, ranges, count, written, context) == 0;
     }
     if (!ok) watch_off = 1;
     pthread_mutex_unlock(&watch_lock);
@@ -148,9 +165,9 @@ int rt_write_watch_add(void *host, uint64_t length, uint64_t pool_offset)
 
 void rt_write_watch_remove(void *host, uint64_t length) { (void)host, (void)length; }
 
-int rt_write_watch_collect(rt_write_watch_visit *written, void *context)
+int rt_write_watch_collect(const uint64_t (*ranges)[2], size_t count, rt_write_watch_visit *written, void *context)
 {
-    (void)written, (void)context;
+    (void)ranges, (void)count, (void)written, (void)context;
     return -1;
 }
 

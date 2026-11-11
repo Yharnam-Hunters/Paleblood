@@ -4,6 +4,8 @@
    - the first collect reports the whole map (nothing says what it held before), the next nothing;
    - a write through the watched map and a file read into it (the kernel writing) are reported, at
      their pool offsets; a write through the other map is not; a page is reported once per write;
+   - a collect reports only inside the ranges it is given; a write outside them is reported by the
+     first collect that takes it in;
    - a range taken out of the watch (unmapped) is no longer reported, the rest still is;
    - a write made after each collect is reported by the next, 1000 times over with the writer on
      another thread (the scan protects again what it reports, in one step).
@@ -48,10 +50,12 @@ static void note(void *context, uint64_t pool_offset, uint64_t length)
     }
 }
 
+static const uint64_t everything[1][2] = {{0, UINT64_MAX / 2}};
+
 static reported collect(void)
 {
     reported r = {{0}, 0};
-    CHECK(rt_write_watch_collect(note, &r) == 0);
+    CHECK(rt_write_watch_collect(everything, 1, note, &r) == 0);
     return r;
 }
 
@@ -109,6 +113,15 @@ int main(void)
     CHECK(count_pages(&r) == 2 && r.pages[3] == 1 && r.pages[7] == 1);
     r = collect();
     CHECK(count_pages(&r) == 0);
+
+    /* asked about page 10 only: page 12's write waits for a collect that takes it in */
+    guest[10 * page_size] = 7, guest[12 * page_size] = 8;
+    const uint64_t page_ten[1][2] = {{POOL_OFFSET + 10 * page_size, page_size}};
+    r = (reported){{0}, 0};
+    CHECK(rt_write_watch_collect(page_ten, 1, note, &r) == 0);
+    CHECK(count_pages(&r) == 1 && r.pages[10] == 1);
+    r = collect();
+    CHECK(count_pages(&r) == 1 && r.pages[12] == 1);
 
     rt_write_watch_remove(guest + 2 * page_size, 2 * page_size); /* pages 2 and 3 */
     guest[3 * page_size] = 4, guest[8 * page_size] = 5, guest[1 * page_size] = 6;

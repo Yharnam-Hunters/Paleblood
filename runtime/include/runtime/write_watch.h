@@ -15,6 +15,7 @@
    user-mode faults (UFFD_USER_MODE_ONLY) needs no privilege. Where any of that is missing, the
    watch is off and the renderer takes all memory as changed at each buffer, as before. */
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -30,11 +31,14 @@ int rt_write_watch_add(void *host, uint64_t length, uint64_t pool_offset);
    range's protection by itself). */
 void rt_write_watch_remove(void *host, uint64_t length);
 
-/* Calls `written` for each run of pool bytes written through a watched map since the last collect
-   (or since it was added), and protects them again. 0, or -1 when the watch is off: then anything
-   may have been written. */
+/* Calls `written` for each run of pool bytes inside the `count` ranges (pool offset, length; in
+   ascending order, not overlapping) written through a watched map since they were last collected,
+   and protects those pages again; a map not collected before is reported whole once. Pages outside
+   the ranges are left as they are: written ones stay writable without faults, and are reported by
+   the first collect whose ranges take them in. 0, or -1 when the watch is off: then anything may
+   have been written. */
 typedef void rt_write_watch_visit(void *context, uint64_t pool_offset, uint64_t length);
-int rt_write_watch_collect(rt_write_watch_visit *written, void *context);
+int rt_write_watch_collect(const uint64_t (*ranges)[2], size_t count, rt_write_watch_visit *written, void *context);
 
 /* Whether the watch is on: a map was added and nothing failed. */
 int rt_write_watch_active(void);
