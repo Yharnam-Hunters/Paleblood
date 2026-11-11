@@ -241,3 +241,4 @@ set_tests_properties(sysmodule_ids PROPERTIES TIMEOUT 10)
 add_library(bbfamily_mutants SHARED test/family_mutants.c)
 
 include(cmake/ComputeThreadIdTests.cmake)
+include(cmake/ComputeWaveVoteTests.cmake)

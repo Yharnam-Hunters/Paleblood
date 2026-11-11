@@ -51,7 +51,7 @@ typedef struct {
     shader_stage stage;
     uint32_t local_size[3];
     unsigned user_sgprs;
-    unsigned thread_id_vgprs;
+    unsigned thread_id_vgprs, workgroup_wave_votes;
     int workgroup_id_x_sgpr;
     unsigned vertex_index_vgpr, barycentric_vgpr, position_enable, position_vgpr;
     int front_face, front_face_all_bits;  /* a pixel shader's front-face input (runtime/gcn_spirv.h) */
@@ -77,6 +77,8 @@ typedef struct {
     const stage_layout *layout;
     spirv_words variables, setup, prologue, blocks; /* the entry function's parts */
     spirv_words *out;                               /* where instructions go now */
+    uint32_t stop_block;                           /* explicitly laid-out physical stop-word block for atomic access */
+    uint32_t wave_scratch;                         /* shared slots for cooperative compute votes and PC snapshots */
     uint32_t exec, scc, pc;                         /* EXEC's lane bit, SCC, the next block's index */
     uint32_t glsl;                      /* the GLSL.std.450 import */
     uint32_t vgpr[VGPR_COUNT], sgpr[SGPR_COUNT], lane_bit[SGPR_COUNT]; /* variables, made on first use */
@@ -320,12 +322,67 @@ static void end_if(translator *t, uint32_t merge)
     spirv_emit(&t->m, t->out, SPV_OP_LABEL, &merge, 1);
 }
 
-/* Whether any lane of the subgroup has the bit: GCN's wave-wide tests (EXECZ, VCCZ, a 64-bit
-   result's SCC). Exact when the subgroup is the wave (64 lanes); with smaller subgroups each one
-   decides for itself. */
+/* GCN wave-wide tests (EXECZ, VCCZ and a 64-bit result's SCC). The default uses
+   native subgroup votes; cooperative compute instead collects all 64 logical mask bits. */
+static uint32_t wave_slot(translator *t, uint32_t lane)
+{
+    if (!t->wave_scratch) {
+        const uint32_t array = spirv_global(&t->m, SPV_OP_TYPE_ARRAY, (const uint32_t[]){t_uint(t), konst(t, WAVE_LANES)}, 2);
+        const uint32_t words[] = {spirv_type_pointer(&t->m, SPV_STORAGE_WORKGROUP, array), spirv_new_id(&t->m), SPV_STORAGE_WORKGROUP};
+        spirv_emit(&t->m, &t->m.sections[SPIRV_GLOBALS], SPV_OP_VARIABLE, words, 3);
+        t->wave_scratch = words[1];
+        t->interface[t->interface_count++] = words[1];
+    }
+    return value(t, SPV_OP_ACCESS_CHAIN, spirv_type_pointer(&t->m, SPV_STORAGE_WORKGROUP, t_uint(t)), 2, t->wave_scratch, lane);
+}
+
+static void wave_barrier(translator *t)
+{
+    const uint32_t scope = konst(t, SPV_SCOPE_WORKGROUP);
+    spirv_emit(&t->m, t->out, SPV_OP_CONTROL_BARRIER,
+               (const uint32_t[]){scope, scope, konst(t, SPV_MEMORY_ACQUIRE_RELEASE_WORKGROUP)}, 3);
+}
+
 static uint32_t any_lane(translator *t, uint32_t b)
 {
-    return value(t, SPV_OP_GROUP_NON_UNIFORM_ANY, t_bool(t), 2, konst(t, SPV_SCOPE_SUBGROUP), b);
+    if (!t->layout->workgroup_wave_votes)
+        return value(t, SPV_OP_GROUP_NON_UNIFORM_ANY, t_bool(t), 2, konst(t, SPV_SCOPE_SUBGROUP), b);
+    /* A complete logical wave may span multiple native SIMD groups. Scalar votes include
+       every logical mask bit, even when its guest EXEC bit is clear. All host threads participate. */
+    store(t, t->out, wave_slot(t, wave_lane(t)), value(t, SPV_OP_SELECT, t_uint(t), 3, b, konst(t, 1), konst(t, 0)));
+    wave_barrier(t);
+    uint32_t bits = konst(t, 0);
+    for (unsigned lane = 0; lane < WAVE_LANES; ++lane)
+        bits = value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, bits, load(t, t_uint(t), wave_slot(t, konst(t, lane))));
+    /* No next vote/PC snapshot may overwrite a slot while another invocation reads it. */
+    wave_barrier(t);
+    return value(t, SPV_OP_I_NOT_EQUAL, t_bool(t), 2, bits, konst(t, 0));
+}
+
+/* Before every dispatcher case, prove that every host invocation will enter the same case.
+   Replicated scalar loads can disagree: refuse that state before it can strand a peer at a
+   later collective or return. The completed snapshot and decision are identical in every lane. */
+static void uniform_wave_pc(translator *t)
+{
+    if (!t->layout->workgroup_wave_votes) return;
+    const uint32_t lane = wave_lane(t);
+    store(t, t->out, wave_slot(t, lane), load(t, t_uint(t), t->pc));
+    wave_barrier(t);
+    const uint32_t first = load(t, t_uint(t), wave_slot(t, konst(t, 0)));
+    uint32_t same = spirv_constant_bool(&t->m, 1);
+    for (unsigned i = 1; i < WAVE_LANES; ++i)
+        same = value(t, SPV_OP_LOGICAL_AND, t_bool(t), 2, same,
+                     value(t, SPV_OP_I_EQUAL, t_bool(t), 2, first, load(t, t_uint(t), wave_slot(t, konst(t, i)))));
+    wave_barrier(t);
+    const uint32_t ready = spirv_new_id(&t->m), stopped = spirv_new_id(&t->m);
+    spirv_emit(&t->m, t->out, SPV_OP_SELECTION_MERGE, (const uint32_t[]){ready, SPV_SELECTION_CONTROL_NONE}, 2);
+    spirv_emit(&t->m, t->out, SPV_OP_BRANCH_CONDITIONAL, (const uint32_t[]){same, ready, stopped}, 3);
+    spirv_emit(&t->m, t->out, SPV_OP_LABEL, &stopped, 1);
+    const uint32_t leader = begin_if(t, value(t, SPV_OP_I_EQUAL, t_bool(t), 2, lane, konst(t, 0)));
+    runtime_stop(t, konst(t, (uint32_t)GCN_RUNTIME_STOP_WAVE_PC << GCN_RUNTIME_STOP_KIND_SHIFT));
+    end_if(t, leader);
+    spirv_emit(&t->m, t->out, SPV_OP_RETURN, NULL, 0);
+    spirv_emit(&t->m, t->out, SPV_OP_LABEL, &ready, 1);
 }
 
 /* ---- vector instructions ---- */
@@ -1228,7 +1285,23 @@ static void runtime_stop(translator *t, uint32_t code)
 {
     const uint64_t stop_word = t->layout->error_address;
     const uint32_t address = spirv_global(&t->m, SPV_OP_CONSTANT, (const uint32_t[]){t_ulong(t), (uint32_t)stop_word, (uint32_t)(stop_word >> 32)}, 3);
-    store_dword(t, value(t, SPV_OP_CONVERT_U_TO_PTR, spirv_type_pointer(&t->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, t_uint(t)), 1, address), code);
+    if (t->layout->workgroup_wave_votes) {
+        /* A block member is an lvalue in MSL, unlike a bare converted scalar pointer. */
+        if (!t->stop_block) {
+            t->stop_block = spirv_global(&t->m, SPV_OP_TYPE_STRUCT, (const uint32_t[]){t_uint(t)}, 1);
+            spirv_emit(&t->m, &t->m.sections[SPIRV_DECORATIONS], SPV_OP_DECORATE,
+                       (const uint32_t[]){t->stop_block, SPV_DECORATION_BLOCK}, 2);
+            spirv_emit(&t->m, &t->m.sections[SPIRV_DECORATIONS], SPV_OP_MEMBER_DECORATE,
+                       (const uint32_t[]){t->stop_block, 0, SPV_DECORATION_OFFSET, 0}, 4);
+        }
+        const uint32_t block = value(t, SPV_OP_CONVERT_U_TO_PTR,
+                                    spirv_type_pointer(&t->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, t->stop_block), 1, address);
+        const uint32_t member = value(t, SPV_OP_ACCESS_CHAIN,
+                                     spirv_type_pointer(&t->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, t_uint(t)), 2, block, konst(t, 0));
+        /* Every stop kind in this dispatch uses atomics: multiple workgroups share the word. */
+        (void)value(t, SPV_OP_ATOMIC_EXCHANGE, t_uint(t), 4, member, konst(t, SPV_SCOPE_DEVICE), konst(t, 0), code);
+    } else store_dword(t, value(t, SPV_OP_CONVERT_U_TO_PTR,
+                              spirv_type_pointer(&t->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, t_uint(t)), 1, address), code);
 }
 
 static uint32_t descriptor_field(translator *t, uint32_t word, unsigned shift, uint32_t mask)
@@ -2788,6 +2861,7 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
     spirv_emit(m, t->out, SPV_OP_LOOP_MERGE, (const uint32_t[]){loop_merge, continue_block, SPV_LOOP_CONTROL_NONE}, 3);
     spirv_emit(m, t->out, SPV_OP_BRANCH, &dispatch, 1);
     spirv_emit(m, t->out, SPV_OP_LABEL, &dispatch, 1);
+    uniform_wave_pc(t);
     const uint32_t pc_value = load(t, t_uint(t), t->pc);
     spirv_emit(m, t->out, SPV_OP_SELECTION_MERGE, (const uint32_t[]){switch_merge, SPV_SELECTION_CONTROL_NONE}, 2);
     {
@@ -2907,6 +2981,18 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
 int gcn_translate_compute(const uint32_t *code, size_t dwords, const gcn_compute_layout *layout,
                           uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size)
 {
+    uint32_t lanes = 1;
+    int whole_wave = 1;
+    for (unsigned axis = 0; axis < 3; ++axis) {
+        if (!layout->local_size[axis] || layout->local_size[axis] > WAVE_LANES) whole_wave = 0;
+        else lanes *= layout->local_size[axis];
+    }
+    if (layout->workgroup_wave_votes > 1 || (layout->workgroup_wave_votes &&
+        (!whole_wave || lanes != WAVE_LANES || !layout->error_address))) {
+        *spirv = NULL; *spirv_word_count = 0;
+        snprintf(error, error_size, "workgroup wave votes require exactly 64 invocations and a runtime-stop word");
+        return -1;
+    }
     if (layout->thread_id_vgprs > 3) {
         *spirv = NULL; *spirv_word_count = 0;
         snprintf(error, error_size, "compute thread-ID VGPR count %u is outside 1..3", layout->thread_id_vgprs);
@@ -2914,6 +3000,7 @@ int gcn_translate_compute(const uint32_t *code, size_t dwords, const gcn_compute
     }
     const stage_layout s = {.stage = STAGE_COMPUTE, .local_size = {layout->local_size[0], layout->local_size[1], layout->local_size[2]},
                             .thread_id_vgprs = layout->thread_id_vgprs ? layout->thread_id_vgprs : 3,
+                            .workgroup_wave_votes = layout->workgroup_wave_votes,
                             .user_sgprs = layout->user_sgprs, .workgroup_id_x_sgpr = layout->workgroup_id_x_sgpr,
                             .images = layout->images, .image_count = layout->image_count,
                             .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address,

@@ -89,7 +89,7 @@ jobs:
           assert {'pbmetal', 'pbboot', 'pbloader', 'bbrt', 'bbgame'} <= names
           PY
       - name: Compile Metal library and real-device test
-        run: cmake --build build --target pbmetal test_metal_offscreen test_metal_executor test_metal_compute test_metal_coherence test_metal_images test_metal_storage test_compute_thread_ids --parallel 2
+        run: cmake --build build --target pbmetal test_metal_offscreen test_metal_executor test_metal_compute test_metal_coherence test_metal_images test_metal_storage test_compute_thread_ids test_compute_wave_votes --parallel 2
       # Hosted compilation does not qualify a real Metal device or GPU execution.
 
   shaders:
