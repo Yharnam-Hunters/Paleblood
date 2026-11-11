@@ -307,6 +307,21 @@ static const uint32_t pack_halves[] = {
 
 /* Per lane i, a one-component format store of i at i * 4 bytes (buffer_store_format_x, the
    descriptor's format). */
+/* Per lane i, (i, i + 1, i + 2, i + 3) stored with one buffer_store_dwordx4 at i * 16 bytes plus the
+   instruction offset `offset`: a multi-dword store, at an address that is a multiple of its 16 bytes
+   (offset 0) or not (offset 4). */
+#define STORE_DWORDX4(offset) {                                                                  \
+    0x34020084, /* v_lshlrev_b32_e32 v1, 4, v0 */                                                \
+    0x7e080300, /* v_mov_b32_e32 v4, v0 */                                                       \
+    0x4a0a0081, /* v_add_i32_e32 v5, vcc, 1, v0 */                                               \
+    0x4a0c0082, /* v_add_i32_e32 v6, vcc, 2, v0 */                                               \
+    0x4a0e0083, /* v_add_i32_e32 v7, vcc, 3, v0 */                                               \
+    0xe0781000 | (offset), 0x80010401, /* buffer_store_dwordx4 v[4:7], v1, s[4:7], 0 offen offset:... */ \
+    0xbf810000, /* s_endpgm */                                                                   \
+}
+static const uint32_t store_dwordx4_aligned[] = STORE_DWORDX4(0);
+static const uint32_t store_dwordx4_unaligned[] = STORE_DWORDX4(4);
+
 static const uint32_t store_format_x[] = {
     0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
     0xe0101000, 0x80010001, /* buffer_store_format_x v0, v1, s[4:7], 0 offen */
