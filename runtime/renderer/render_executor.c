@@ -65,6 +65,8 @@ typedef struct {
     uint64_t callee;                 /* a vertex shader's fetch shader (its address), or 0 */
     unsigned first_binding;          /* where its images' bindings start (a vertex shader's follow the pixel shader's) */
     uint32_t user_read;              /* the user SGPRs it reads before writing them (gcn_spirv.h) */
+    uint32_t input_controls[GCN_PIXEL_INPUTS]; /* a pixel shader's SPI_PS_INPUT_CNTL words, when set */
+    int has_input_controls;
     VkShaderModule module;
 } shader_entry;
 
@@ -274,6 +276,10 @@ typedef struct {
        (DB_DEPTH_CLEAR, a float's bits): a fast clear (resolve_depth_fast_clear) */
     uint32_t htile_base, depth_clear;
     int htile_set;
+    /* SPI_PS_INPUT_CNTL_0 to 31: which vertex shader output each pixel shader attribute reads (gcn_spirv.h);
+       until the library sets them, attribute n reads output n */
+    uint32_t ps_input_control[GCN_PIXEL_INPUTS];
+    int ps_input_control_set;
 } draw_state;
 
 /* One batch: the GPU work recorded between waits, with what it holds until it has run (its descriptor
@@ -385,7 +391,7 @@ enum { DB_RENDER_CONTROL = 0xa000, DB_DEPTH_VIEW = 0xa002, DB_HTILE_DATA_BASE = 
        DB_DEPTH_INFO = 0xa00f, DB_Z_INFO = 0xa010, DB_STENCIL_INFO = 0xa011, DB_DEPTH_SLICE = 0xa017, DB_STENCILREFMASK = 0xa10c,
        DB_STENCILREFMASK_BF = 0xa10d, DB_HTILE_SURFACE = 0xa2af, CB_TARGET_MASK = 0xa08e, CB_BLEND_RED = 0xa105, CB_BLEND_ALPHA = 0xa108, DB_STENCIL_CONTROL = 0xa10b, CB_BLEND0_CONTROL = 0xa1e0,
        CB_BLEND7_CONTROL = 0xa1e7, DB_DEPTH_CONTROL = 0xa200, CB_COLOR0_CLEAR_WORD0 = 0xa323, CB_COLOR_REGISTER_STRIDE = 15,
-       CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242 };
+       CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242, SPI_PS_INPUT_CNTL_0 = 0xa191 };
 enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 0x1, Z_ENABLE = 0x2, Z_WRITE_ENABLE = 0x4,
        COLOR_MODE_MASK = 0x70, COLOR_MODE_SHIFT = 4, CB_NORMAL = 1, CB_ELIMINATE_FAST_CLEAR = 2, ROP3_MASK = 0xff0000, ROP3_SHIFT = 16, ROP3_COPY = 0xcc,
        CHANNELS_MASK = 0xf, DI_PT_TRILIST = 4, DI_PT_TRISTRIP = 6, DI_PT_RECTLIST = 17, CB_DISABLE = 0, DEPTH_BOUNDS_ENABLE = 0x8,
@@ -425,6 +431,12 @@ static int set_register(draw_state *s, uint32_t address, uint32_t value)
         }
         if (address >= CB_BLEND0_CONTROL && address <= CB_BLEND7_CONTROL) {
             s->blend_control[address - CB_BLEND0_CONTROL] = value, s->blend_set |= 1u << (address - CB_BLEND0_CONTROL);
+            return 0;
+        }
+        if (address >= SPI_PS_INPUT_CNTL_0 && address < SPI_PS_INPUT_CNTL_0 + GCN_PIXEL_INPUTS) {
+            if (!s->ps_input_control_set) /* the others keep reading their own output */
+                for (uint32_t n = 0; n < GCN_PIXEL_INPUTS; n++) s->ps_input_control[n] = n;
+            s->ps_input_control[address - SPI_PS_INPUT_CNTL_0] = value, s->ps_input_control_set = 1;
             return 0;
         }
         if (address >= CB_BLEND_RED && address <= CB_BLEND_ALPHA) {
@@ -1832,16 +1844,18 @@ static pass_entry *pass_for(rt_executor *x, target_entry *const colors[RT_COLOR_
 
 /* The code's length is found by the translator; it may read up to the end of the guest memory. */
 /* settings: a vertex shader's PA_CL_VS_OUT_CNTL, a pixel shader's SPI_PS_INPUT_ADDR with SETTINGS_FRONT_FACE_ALL_BITS (part of the
-   cache key). */
+   cache key, as are a pixel shader's input_controls: GCN_PIXEL_INPUTS words, or NULL). */
 static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint32_t user_sgprs, uint32_t settings,
                                  const gcn_image_binding *images, unsigned image_count, const gcn_resource_origin *samplers,
-                                 unsigned sampler_count, unsigned first_binding, uint64_t callee, uint32_t *user_read, char *error,
-                                 size_t error_size)
+                                 unsigned sampler_count, unsigned first_binding, uint64_t callee, const uint32_t *input_controls,
+                                 uint32_t *user_read, char *error, size_t error_size)
 {
+    const size_t control_bytes = GCN_PIXEL_INPUTS * sizeof *input_controls;
     for (size_t i = 0; i < x->shader_count; i++) {
         const shader_entry *s = &x->shaders[i];
         if (s->code == code && s->stage == stage && s->user_sgprs == user_sgprs && s->settings == settings && s->callee == callee &&
-            s->first_binding == first_binding &&
+            s->first_binding == first_binding && s->has_input_controls == (input_controls != NULL) &&
+            (!input_controls || !memcmp(s->input_controls, input_controls, control_bytes)) &&
             s->image_count == image_count && !memcmp(s->images, images, image_count * sizeof *images) &&
             s->sampler_count == sampler_count && !memcmp(s->samplers, samplers, sampler_count * sizeof *samplers)) {
             *user_read = s->user_read;
@@ -1881,7 +1895,8 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
                                          .front_face_vgpr = pixel_input_vgpr(inputs, 12), .push_constant_offset = PIXEL_USER_DATA,
                                          .address_offset = x->address_offset, .error_address = stop_slot(x, 0, x->shader_count),
                                          .images = images, .image_count = image_count, .samplers = samplers,
-                                         .sampler_count = sampler_count, .user_data_read = user_read};
+                                         .sampler_count = sampler_count, .input_controls = input_controls,
+                                         .user_data_read = user_read};
         result = gcn_translate_pixel(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
     }
     if (result) {
@@ -1902,6 +1917,7 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
                         .module = module};
     memcpy(e->images, images, image_count * sizeof *images);
     memcpy(e->samplers, samplers, sampler_count * sizeof *samplers);
+    if (input_controls) memcpy(e->input_controls, input_controls, control_bytes), e->has_input_controls = 1;
     return module;
 }
 
@@ -2243,14 +2259,15 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
         return -1;
     uint32_t vertex_read = 0, pixel_read = 0;
     const VkShaderModule vertex = shader_for(x, STAGE_VERTEX, s->vertex.code, s->vertex.user_sgprs, s->vertex.output_control, vertex_bindings,
-                                             vertex_image_count, NULL, 0, image_count + sampler_count, callee, &vertex_read, error, error_size);
+                                             vertex_image_count, NULL, 0, image_count + sampler_count, callee, NULL, &vertex_read, error, error_size);
     if (!vertex) return -1;
     const VkShaderModule pixel = depth_only ? VK_NULL_HANDLE
                                             : shader_for(x, STAGE_PIXEL, s->pixel.code, s->pixel.user_sgprs,
                                                          s->pixel.input_address |
                                                              (s->pixel.barycentric_control & FRONT_FACE_ALL_BITS ? SETTINGS_FRONT_FACE_ALL_BITS : 0u),
                                                          bindings,
-                                                         image_count, sampler_origins, sampler_count, 0, 0, &pixel_read, error, error_size);
+                                                         image_count, sampler_origins, sampler_count, 0, 0,
+                                                         s->ps_input_control_set ? s->ps_input_control : NULL, &pixel_read, error, error_size);
     if (!depth_only && !pixel) return -1;
     if (check_user_data("vertex", s->vertex.code, vertex_read, s->user_set[STAGE_VERTEX], error, error_size) ||
         (!depth_only && check_user_data("pixel", s->pixel.code, pixel_read, s->user_set[STAGE_PIXEL], error, error_size)))
