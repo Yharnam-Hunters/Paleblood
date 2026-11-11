@@ -139,8 +139,13 @@ add_executable(test_render_calls test/test_render_calls.c)
 target_link_libraries(test_render_calls PRIVATE pbrender_calls)
 add_test(NAME render_calls COMMAND test_render_calls)
 # The GPU's tiled image layouts, for reading images out of guest memory.
-add_library(pbtiling STATIC runtime/renderer/tiling.c)
+add_library(pbtiling STATIC runtime/renderer/tiling.c runtime/renderer/volume_tiling.c)
 target_include_directories(pbtiling PUBLIC runtime/include)
+add_executable(test_volume_tiling test/test_volume_tiling.c)
+target_compile_options(test_volume_tiling PRIVATE -ffp-contract=off -fno-fast-math)
+target_link_libraries(test_volume_tiling PRIVATE pbtiling)
+add_test(NAME volume_tiling COMMAND test_volume_tiling)
+set_tests_properties(volume_tiling PROPERTIES TIMEOUT 120)
 add_executable(test_tiling test/test_tiling.c)
 target_link_libraries(test_tiling PRIVATE pbtiling)
 add_test(NAME tiling COMMAND test_tiling)
@@ -246,3 +251,5 @@ set_tests_properties(sysmodule_ids PROPERTIES TIMEOUT 10)
 # Deliberately wrong replacements for the function families' mutation tests (tools/verify.py
 # family); a test library, never loaded by the runtime.
 add_library(bbfamily_mutants SHARED test/family_mutants.c)
+
+include(cmake/ComputeThreadIdTests.cmake)

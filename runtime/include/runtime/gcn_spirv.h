@@ -137,6 +137,9 @@ typedef struct {
     const gcn_image_binding *images;
     unsigned image_count;
     uint32_t *user_data_read; /* when not NULL, set on success to the user SGPRs read before written (User data read, below) */
+    unsigned thread_id_vgprs; /* 1=X, 2=XY, 3=XYZ; 0 preserves the existing XYZ default.
+                                 Other registers retain the translator's deterministic initial value,
+                                 not a hardware guarantee for disabled thread-ID inputs. */
 } gcn_compute_layout;
 
 /* User data read: a translation can report which of the user SGPRs (s0 to s(user_sgprs - 1)) the program
