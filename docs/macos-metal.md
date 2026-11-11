@@ -245,7 +245,7 @@ values while retaining compiled pipelines. The cache includes the complete progr
 bytes, local dimensions, user count, thread-ID input profile and X workgroup-ID layout;
 changing code or the ID input allocation does not reuse the previous pipeline.
 
-This is a lane-local compute profile. GFX7 `TIDIG_COMP_CNT` encodings 0, 1 and 2
+GFX7 `TIDIG_COMP_CNT` encodings 0, 1 and 2
 initialize X in v0, XY in v0-v1, or XYZ in v0-v2. Encoding 3 and a declared VGPR
 allocation smaller than the enabled input count stop before GPU work. Disabled slots
 retain the translator's existing deterministic register default; hardware leaves their
@@ -253,11 +253,29 @@ initial values unspecified. The compute layout's `thread_id_vgprs` takes counts 
 with 0 preserving the earlier XYZ default for existing callers. Local XYZ dimensions
 must be positive, fit the device/pipeline limits and contain at most one logical
 64-lane GCN wave. The profile does not assume that
-Metal has a native 64-lane SIMD group. Actual subgroup operations, including
-wave-wide votes and quad swaps, are rejected before MSL compilation. The common
-translator declares vote capabilities even for programs that never use them;
-capability declarations alone do not cause rejection. Lane-local VCC half writes
-retain the logical lane index from the common translator.
+Metal has a native 64-lane SIMD group. Full 64-invocation workgroups lower scalar
+wave-wide Any votes through workgroup scratch and full workgroup barriers, joining both
+native SIMD halves when necessary. Every logical mask bit participates, including bits
+whose guest EXEC is clear. A publish barrier makes all slots visible; a second barrier
+prevents their reuse until every invocation finishes reading. The scopes and memory
+semantics follow [SPIR-V's control barrier contract](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html#OpControlBarrier)
+and [Khronos's compute barrier mapping](https://github.khronos.org/Vulkan-Site/glslext/latest/glslext/khr/GL_KHR_vulkan_glsl.html).
+Native `simd_any` alone cannot join separate SIMD groups; see [MSL's synchronization and SIMD functions](https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf).
+
+Before each dispatcher case, all invocations publish their next block and compare the same
+completed snapshot. Any disagreement makes the entire group return, with a named stop written
+by one flat invocation per group, before threads can enter different collective instances or return
+past a peer. This guards rendezvous; it does not make replicated scalar-memory values or
+separate integer/mask register representations fully equivalent to GCN scalar state.
+Instruction-local EXEC selections reconverge before scalar votes. All stop kinds use a device-scope
+atomic exchange in this mode, because independent workgroups share the same stop word.
+
+The shared compute layout opts into this path with `workgroup_wave_votes=1`, requiring exactly
+64 local invocations and a runtime-stop word. Zero retains native subgroup translation for
+existing callers/backends. Partial-workgroup votes still fail: absent logical lanes cannot
+represent all mask bits after scalar VCC-half writes or NOT. Quad operations also remain
+unsupported. The common translator's unused vote capability declarations alone do not cause
+rejection. Lane-local VCC half writes retain their logical lane index.
 
 The encodings follow the [AMD CIK register manual, COMPUTE_PGM_RSRC2, page 198](https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/programmer-references/CIK_3D_registers_v2.pdf)
 and [LLVM's initial kernel execution state](https://releases.llvm.org/18.1.8/docs/AMDGPUUsage.html#initial-kernel-execution-state).
@@ -299,6 +317,12 @@ backing bytes and padding, view slices, read/write limits, live descriptor/cache
 48-bit pointers, complete descriptor/pool ends, all sixteen image slots, rejection of a seventeenth, and runtime-stop publication.
 Image tests also consume completed image stores as pixel input and completed draws as compute
 image input. These device tests use synthetic data and do not establish original-game equivalence.
+
+`test_compute_wave_votes` checks the default and cooperative module contracts, barrier scopes,
+invalid whole-wave layouts and missing stop words. Owned output can be checked with `spirv-val`.
+`test_metal_compute` also exercises full-wave EXEC/VCC/SCC branches, inactive EXEC with a scalar
+VCC high bit, scalar and masked loops, upper-half-only predicates, live thresholds through the
+same cached program and multidimensional local layouts. All output words and canaries are checked.
 
 `test_metal_compute` runs owned buffer programs on the actual device. It checks
 partial and 64-invocation groups, multidimensional local IDs, X workgroups, VCC

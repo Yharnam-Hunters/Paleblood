@@ -792,13 +792,15 @@ static int shader_runtime_stop(rt_executor *x, char *error, size_t size)
         return failed(error, size, "shader runtime stop: VCC lane mask is unknown after a scalar half write");
     if (stop >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_IMAGE_RANGE)
         return failed(error,size,"shader runtime stop: image access is outside its view");
+    if (stop >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_WAVE_PC)
+        return failed(error, size, "shader runtime stop: logical wave invocations disagree on the program counter");
     if (stop) return failed(error, size, "shader runtime stop with unknown code %#x", stop);
     return 0;
 }
 
 /* Capabilities include subgroup votes even for programs that never use them. Inspect
    actual instructions: native simd_any cannot reconstruct inactive GCN mask bits. */
-static int lane_local_compute(const uint32_t *spirv, size_t count, char *error, size_t size)
+static int check_compute_subgroups(const uint32_t *spirv, size_t count, char *error, size_t size)
 {
     if (count < 5 || spirv[0] != spv::MagicNumber)
         return failed(error, size, "invalid translated compute module");
@@ -806,7 +808,7 @@ static int lane_local_compute(const uint32_t *spirv, size_t count, char *error, 
         const uint32_t words = spirv[at] >> 16, opcode = spirv[at] & 0xffff;
         if (!words || words > count - at) return failed(error, size, "invalid translated compute instruction");
         if (opcode >= spv::OpGroupNonUniformElect && opcode <= spv::OpGroupNonUniformQuadSwap)
-            return failed(error, size, "wave-wide compute operations are outside the Metal lane-local profile");
+            return failed(error, size, "wave-wide compute operations require a complete 64-thread wave and supported operations (opcode %u)", opcode);
         at += words;
     }
     return 0;
@@ -904,6 +906,7 @@ static id<MTLComputePipelineState> compute_pipeline_for(rt_executor *x, const rt
     std::copy(shader.threads, shader.threads + 3, layout.local_size);
     layout.user_sgprs = shader.user_sgprs;
     layout.thread_id_vgprs = shader.thread_id_components + 1;
+    layout.workgroup_wave_votes = static_cast<uint64_t>(shader.threads[0]) * shader.threads[1] * shader.threads[2] == GCN_WAVE_LANES;
     layout.workgroup_id_x_sgpr = workgroup_x ? static_cast<int>(shader.user_sgprs) : -1;
     layout.address_offset = x->address_offset;
     layout.error_address = x->stop.gpuAddress;
@@ -913,7 +916,7 @@ static id<MTLComputePipelineState> compute_pipeline_for(rt_executor *x, const rt
     if (gcn_translate_compute(code, dwords, &layout, &spirv, &count, reason, sizeof reason))
         return failed(error, size, "compute shader translation: %s", reason), nil;
     std::unique_ptr<uint32_t, decltype(&std::free)> owned(spirv, &std::free);
-    if (lane_local_compute(spirv, count, error, size)) return nil;
+    if (check_compute_subgroups(spirv, count, error, size)) return nil;
     spirv_cross::CompilerMSL compiler(spirv, count);
     id<MTLFunction> function = compile_msl(x, compiler, spv::ExecutionModelGLCompute, false, error, size, &resources);
     if (!function) return nil;
@@ -966,7 +969,7 @@ static int dispatch_compute(rt_executor *x, const MetalState &state, const uint3
     [encoder setBytes:state.compute_user length:sizeof state.compute_user atIndex:0];
     for (unsigned i = 0; i < resources.image_count; ++i) [encoder setTexture:resources.textures[i] atIndex:i];
     [encoder useResource:x->memory usage:MTLResourceUsageRead | MTLResourceUsageWrite];
-    [encoder useResource:x->stop usage:MTLResourceUsageWrite];
+    [encoder useResource:x->stop usage:MTLResourceUsageRead | MTLResourceUsageWrite];
     [encoder dispatchThreadgroups:MTLSizeMake(groups[0], groups[1], groups[2])
            threadsPerThreadgroup:MTLSizeMake(shader.threads[0], shader.threads[1], shader.threads[2])];
     [encoder endEncoding];
@@ -1113,6 +1116,24 @@ extern "C" int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t bytes, 
     size_t count = 0;
     const rt_render_call *calls = rt_render_submitted(buffer, bytes, &count);
     return rt_executor_run_calls(x, calls, count, error, error_size);
+}
+
+/* Metal runs each buffer's calls to completion (rt_executor_run_calls), so a submission has run when
+   it returns: the ticket is only counted, and waiting for it returns at once. */
+extern "C" int rt_executor_submit_calls(rt_executor *x, const rt_render_call *calls, size_t count, uint64_t *ticket, char *error,
+                                        size_t error_size)
+{
+    static uint64_t submitted;
+    if (rt_executor_run_calls(x, calls, count, error, error_size)) return -1;
+    *ticket = ++submitted;
+    return 0;
+}
+
+extern "C" int rt_executor_wait_ticket(rt_executor *, uint64_t, char *, size_t) { return 0; }
+
+extern "C" int rt_executor_finish(rt_executor *x, char *error, size_t error_size)
+{
+    return !x || x->failed ? failed(error, error_size, "a usable executor is required") : 0;
 }
 
 /* The renderer copies calls before queuing them and may split them at a GPU step.

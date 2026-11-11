@@ -3,6 +3,7 @@
 #include "runtime/render_executor.h"
 #include "runtime/gcn_spirv.h"
 #include "gcn_programs.h"
+#include "metal_wave_programs.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -172,6 +173,44 @@ int main(void)
     rt_executor_reset(x); clear_output(output); shader(WAVE_CODE, 8, local, 0, 2);
     user_data(RT_STAGE_COMPUTE, 0, data, 8); execute(x, 1, "wave-wide compute operations");
     for (unsigned i = 0; i < OUTPUT_WORDS; ++i) CHECK(output[i] == SENTINEL);
+
+    /* Full-wave votes must join both native halves, including guest EXEC-inactive lanes.
+       Partial waves retain the refusal above because absent logical mask bits are not modeled. */
+    const uint32_t whole_wave[3] = {64,1,1};
+    const uint32_t *wave_programs[] = {inactive_vcc_branch,wave_inactive_vcc,divergent_if,vector_loop,uniform_loop,masked_store};
+    const size_t wave_lengths[] = {sizeof inactive_vcc_branch,sizeof wave_inactive_vcc,sizeof divergent_if,
+                                   sizeof vector_loop,sizeof uniform_loop,sizeof masked_store};
+    for (unsigned p = 0; p < sizeof wave_programs / sizeof *wave_programs; ++p) {
+        memcpy(pool + WAVE_CODE,wave_programs[p],wave_lengths[p]);
+        rt_executor_reset(x); clear_output(output); shader(WAVE_CODE,8,whole_wave,0,2);
+        user_data(RT_STAGE_COMPUTE,0,data,8); execute(x,1,NULL);
+        for (unsigned i = 0; i < OUTPUT_WORDS; ++i) {
+            uint32_t expected = SENTINEL;
+            if (i < 64) {
+                if (p < 2) expected = 7;
+                else if (p == 2) expected = i < 20 ? 2*i : 7;
+                else if (p == 3) expected = 10*(i&3);
+                else if (p == 4) expected = 45;
+                else if (i < 20) expected = 0x55;
+            }
+            CHECK(output[i] == expected);
+        }
+    }
+    memcpy(pool + WAVE_CODE,wave_threshold,sizeof wave_threshold);
+    const uint32_t vote_shapes[][3] = {{64,1,1},{8,4,2}};
+    const unsigned thresholds[] = {0,1,31,32,33,63,64,65};
+    for (unsigned shape = 0; shape < 2; ++shape) {
+        rt_executor_reset(x);
+        for (unsigned t = 0; t < sizeof thresholds / sizeof *thresholds; ++t) {
+            const uint32_t threshold = thresholds[t];
+            clear_output(output); shader(WAVE_CODE,9,vote_shapes[shape],0,2);
+            user_data(RT_STAGE_COMPUTE,0,data,8); user_data(RT_STAGE_COMPUTE,8,&threshold,1); execute(x,1,NULL);
+            for (unsigned i = 0; i < OUTPUT_WORDS; ++i) {
+                const uint32_t expected = i >= 64 ? SENTINEL : threshold >= 64 ? 9 : i >= threshold ? 7 : 5;
+                CHECK(output[i] == expected);
+            }
+        }
+    }
     shader(IMAGE_CODE, 8, local, 0, 2); execute(x, 1, "image");
 
     /* Invalid metadata reaches its advertised gate before any GPU work. */

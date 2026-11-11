@@ -29,13 +29,25 @@ void rt_renderer_configure(int enabled);
    byte offset of its packet in the buffer, and its words); the renderer performs it once the calls
    recorded before that offset have run, and runs the calls after it only once it is done. So the
    guest sees a label only once the work before it is done, and the work after a wait reads memory
-   only once the wait holds. RT_GPU_STEP_AFTER_ALL is after every call (a flip). */
-enum { RT_GPU_STEP_AFTER_ALL = UINT32_MAX };
+   only once the wait holds. RT_GPU_STEP_AFTER_ALL is after every call (a flip).
+
+   A step flagged RT_GPU_STEP_DEFERRABLE (a "work done" write and its interrupt) only needs the work
+   before it to have run: the renderer may run the calls after it first and perform it later, in
+   order with the other steps, from another thread, once the GPU has finished that work. Other steps
+   (waits, flips) are performed on the renderer's thread with all earlier work finished and every
+   earlier step performed, except a wait whose `holds` says it holds: with pending NULL, whether it
+   holds now (the GPU would pass it at once); otherwise whether that earlier step, still waiting for
+   its work, will make it hold (a completion write of the work before the wait, which the GPU's own
+   order already puts ahead of the work after it). Such a wait is not waited for: the work after it
+   goes on. */
+enum { RT_GPU_STEP_AFTER_ALL = UINT32_MAX, RT_GPU_STEP_DEFERRABLE = 1 };
 typedef struct rt_gpu_step {
     void (*perform)(const struct rt_gpu_step *step);
     const char *function; /* the submitting call, for stops by name */
     uint32_t offset;
     uint64_t words[6];
+    uint32_t flags;       /* RT_GPU_STEP_DEFERRABLE, or 0 */
+    int (*holds)(const struct rt_gpu_step *step, const struct rt_gpu_step *pending); /* a wait on memory (above); NULL for other steps */
 } rt_gpu_step;
 
 /* A command buffer the title submitted: its address and size in bytes, and the steps the GPU takes
@@ -47,7 +59,7 @@ typedef struct rt_gpu_step {
 void rt_renderer_submit(const char *function, const void *buffer, uint32_t bytes, const rt_gpu_step *steps, size_t step_count);
 
 /* Waits until every submission so far has run and its steps have been performed (at once when the
-   display is off, and on the renderer's own thread, which is always caught up with itself). */
+   display is off, and on the renderer's own threads, which are always caught up with themselves). */
 void rt_renderer_wait_idle(void);
 
 /* A command buffer the title handed to a compute queue (sceGnmDingDong follows the ring's indirect
