@@ -215,6 +215,23 @@ int main(void)
         CHECK(modified);
     }
 
+    /* v_cubeid/sc/tc/ma_f32: each face, and the ties (z over y over x) */
+    {
+        static const float directions[8][3] = {{1, 0.5f, -0.25f}, {-2, 1, 0.5f}, {0.5f, 3, 1}, {0.25f, -1, 0.5f},
+                                               {0.5f, -0.25f, 1}, {-0.5f, 0.25f, -1}, {1, 1, 1}, {1, 1, 0.5f}};
+        static const float expected[8][4] = {{0, 0.25f, -0.5f, 2}, {1, 0.5f, -1, -4}, {2, 0.5f, 1, 6}, {3, 0.25f, -0.5f, -2},
+                                             {4, 0.5f, 0.25f, 2}, {5, 0.5f, -0.25f, -2}, {4, 1, -1, 2}, {2, 1, 0.5f, 2}};
+        float *in_floats = (float *)in_words;
+        for (int i = 0; i < LANES; i++) memcpy(in_floats + 3 * i, directions[i % 8], sizeof directions[0]);
+        memset(out.mapped, 0, BUFFER_BYTES);
+        CHECK(run(&g, cube_faces, sizeof cube_faces / sizeof cube_faces[0], user) == 0);
+        int faces = 1;
+        for (int i = 0; i < LANES; i++)
+            for (int k = 0; k < 4; k++) faces &= out_words[k * LANES + i] == bits(expected[i % 8][k]);
+        if (!faces) fprintf(stderr, "cube: lane 1 %08x %08x %08x %08x\n", out_words[1], out_words[LANES + 1], out_words[2 * LANES + 1], out_words[3 * LANES + 1]);
+        CHECK(faces);
+    }
+
     /* s_buffer_load is range-checked too: with NUM_RECORDS 8 bytes, the third and fourth dwords read 0;
        with a 4-byte stride and 3 records, the fourth does. */
     {
