@@ -2715,6 +2715,8 @@ static int image_format(const rt_image_descriptor *d, texel_format *f, char *err
         {14, 7, {VK_FORMAT_R32G32B32A32_SFLOAT, GCN_IMAGE_FLOAT, 4, 16, 1}}, {10, 0, {VK_FORMAT_R8G8B8A8_UNORM, GCN_IMAGE_FLOAT, 4, 4, 1}}, {10, 4, {VK_FORMAT_R8G8B8A8_UINT, GCN_IMAGE_UINT, 4, 4, 1}},
         {10, 9, {VK_FORMAT_R8G8B8A8_SRGB, GCN_IMAGE_FLOAT, 4, 4, 1}},
         {2, 7, {VK_FORMAT_R16_SFLOAT, GCN_IMAGE_FLOAT, 1, 2, 1}}, {5, 7, {VK_FORMAT_R16G16_SFLOAT, GCN_IMAGE_FLOAT, 2, 4, 1}},
+        {2, 0, {VK_FORMAT_R16_UNORM, GCN_IMAGE_FLOAT, 1, 2, 1}}, {5, 0, {VK_FORMAT_R16G16_UNORM, GCN_IMAGE_FLOAT, 2, 4, 1}},
+        {12, 0, {VK_FORMAT_R16G16B16A16_UNORM, GCN_IMAGE_FLOAT, 4, 8, 1}},
         {12, 7, {VK_FORMAT_R16G16B16A16_SFLOAT, GCN_IMAGE_FLOAT, 4, 8, 1}}, {6, 7, {VK_FORMAT_B10G11R11_UFLOAT_PACK32, GCN_IMAGE_FLOAT, 3, 4, 1}},
         {35, 0, {VK_FORMAT_BC1_RGBA_UNORM_BLOCK, GCN_IMAGE_FLOAT, 4, 8, 4}}, {35, 9, {VK_FORMAT_BC1_RGBA_SRGB_BLOCK, GCN_IMAGE_FLOAT, 4, 8, 4}},
         {36, 0, {VK_FORMAT_BC2_UNORM_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}}, {36, 9, {VK_FORMAT_BC2_SRGB_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}},
@@ -2938,11 +2940,21 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
         failed(error, error_size, "a shader writing an image at %#llx that is also a render target: not done yet", (unsigned long long)d->address);
         return NULL;
     }
-    for (size_t i = 0; i < x->depth_count; i++)
-        if (x->depths[i].z_address == d->address || x->depths[i].stencil_address == d->address) {
-            failed(error, error_size, "an image at %#llx that is also a depth target: not done yet", (unsigned long long)d->address);
+    /* a depth target's 32-bit float depth is written back to its memory (write_back_depths) before an image
+       over it loads (unwritten_target_over), so a shader may read it as an image of the same layout; its
+       stencil is not written back, and nothing writes a depth target's memory as an image */
+    for (size_t i = 0; i < x->depth_count; i++) {
+        const depth_entry *z = &x->depths[i];
+        if (z->z_address != d->address && z->stencil_address != d->address) continue;
+        const int written_back = z->format == VK_FORMAT_D32_SFLOAT || z->format == VK_FORMAT_D32_SFLOAT_S8_UINT;
+        if (z->z_address != d->address || (access & GCN_IMAGE_WRITE) || !written_back || f->bytes != 4 || f->block != 1 ||
+            d->tiling_index != z->tile_index) {
+            failed(error, error_size, "an image at %#llx that is also a depth target (%s, tiling index %u, the depth's %u): not done yet",
+                   (unsigned long long)d->address, z->z_address != d->address ? "its stencil" : (access & GCN_IMAGE_WRITE) ? "written" : "read",
+                   d->tiling_index, z->tile_index);
             return NULL;
         }
+    }
     image_entry *e = NULL;
     for (size_t i = 0; i < x->image_count && !e; i++) {
         image_entry *k = &x->images[i];
