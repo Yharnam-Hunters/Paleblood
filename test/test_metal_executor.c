@@ -1156,9 +1156,9 @@ int main(void)
 
     const struct { uint32_t address, value; const char *reason; } unsupported_registers[] = {
         {0xa1e0, 0x40000000, "blending"}, {0xa200, 2, "depth or stencil"},
-        {0xa202, 0, "colour mode"}, {0xa08e, 7, "write mask"},
-        {0xc242, 5, "primitive type"}, {0xa000, 0, "does not interpret"},
-        {0xc242, 6, "primitive type"}, {0xa010, 0, "does not interpret"},
+        {0xa202, 0x20, "colour mode"}, {0xa08e, 7, "write mask"},
+        {0xc242, 5, "primitive type"}, {0xa001, 0, "does not interpret"},
+        {0xc242, 6, "primitive type"}, {0xa018, 0, "does not interpret"},
     };
     for (unsigned i = 0; i < sizeof unsupported_registers / sizeof *unsupported_registers; ++i) {
         uint64_t buffer = 21 + i;
@@ -1298,7 +1298,7 @@ int main(void)
     size = record_setup(no_pixel_buffer, at(0x840000), 16, 16, 0, scale, translate, COLORS);
     CHECK(rt_render_record_pixel_shader_at(no_pixel_buffer + 0x70, no_pixel_shader) == 0);
     CHECK(rt_render_record_draw_auto(no_pixel_buffer, 0x80, 3, error, sizeof error) == 0);
-    expect_error(x, no_pixel_buffer, 0x90, "no pixel shader (a depth-only pass)");
+    expect_error(x, no_pixel_buffer, 0x90, "no pixel shader requires depth/stencil");
     scenarios++;
     rt_executor_reset(x);
 
