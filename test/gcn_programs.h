@@ -114,6 +114,19 @@ static const uint32_t scalar_buffer_quad[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* scalar_buffer_quad from dword 2 of the buffer: a literal offset (OFFSET 255, the next word, in dwords). */
+static const uint32_t scalar_buffer_quad_literal[] = {
+    0xc28400ff, 0x00000002, /* s_buffer_load_dwordx4 s[8:11], s[0:3], 2 (literal) */
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+    0x7e040208, /* v_mov_b32_e32 v2, s8 */
+    0x7e060209, /* v_mov_b32_e32 v3, s9 */
+    0x7e08020a, /* v_mov_b32_e32 v4, s10 */
+    0x7e0a020b, /* v_mov_b32_e32 v5, s11 */
+    0x34020084, /* v_lshlrev_b32_e32 v1, 4, v0 */
+    0xe0781000, 0x80010201, /* buffer_store_dwordx4 v[2:5], v1, s[4:7], 0 offen */
+    0xbf810000, /* s_endpgm */
+};
+
 /* Per lane i, eight dwords at i * 32 bytes: (8 > i ? float(i) : 2.0), 105 + i, the carry out of
    0xffffffff + i, the legacy product 0 * infinity (0; the zero is read from in[64], so no
    compiler can fold the product away), float -4 to signed (-4) and to unsigned (0: saturated). */

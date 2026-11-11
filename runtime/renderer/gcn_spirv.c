@@ -1120,12 +1120,13 @@ static void scalar_memory(translator *t, const uint32_t *w, const gcn_instructio
         fail(t, "%s (%s) is not translated yet", name, gcn_encoding_name(ins->encoding));
         return;
     }
-    if (!immediate && offset_field == OPERAND_LITERAL) {
-        fail(t, "%s: a literal offset (its unit is not established here)", name);
-        return;
-    }
-    /* An immediate offset counts dwords; an SGPR offset holds bytes. */
-    const uint32_t byte_offset = immediate ? konst(t, offset_field * BYTES_PER_DWORD) : load(t, t_uint(t), sgpr(t, offset_field));
+    /* An immediate offset counts dwords, as does a literal one (OFFSET 255 with IMM 0: the 32-bit word
+       after the instruction; the unit LLVM's AMDGPU backend gives for Sea Islands, and shadPS4 reads it
+       so); an SGPR offset holds bytes. */
+    const int literal = !immediate && offset_field == OPERAND_LITERAL;
+    const uint32_t byte_offset = immediate ? konst(t, offset_field * BYTES_PER_DWORD)
+                                 : literal ? konst(t, w[1] * BYTES_PER_DWORD)
+                                           : load(t, t_uint(t), sgpr(t, offset_field));
     const int descriptor = !strncmp(name, "s_buffer_load", strlen("s_buffer_load"));
     const uint32_t base = address_in(t, base_sgpr, descriptor ? VSHARP_BASE_HIGH_MASK : POINTER_HIGH_MASK);
     if (!descriptor) {
@@ -1975,7 +1976,7 @@ static int branches(const uint32_t *w, const gcn_instruction *ins, size_t at, lo
 
 /* Where the descriptor that the instruction at dword `at` reads from s[first : first + width - 1]
    comes from (runtime/gcn_spirv.h): the user data when no instruction writes those SGPRs before it
-   runs, or memory when the last write is an s_load covering those SGPRs (exactly, or as part of a wider load), at an immediate offset
+   runs, or memory when the last write is an s_load covering those SGPRs (exactly, or as part of a wider load), at an immediate or literal offset
    from a pointer pair no instruction before it writes. With branches in the program, the load is
    followed only when every path to the use passes it: no branch lands between it and the use (code
    runs forward between branches, so a path that skipped the load would have to land there), every
@@ -2037,9 +2038,9 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
     gcn_decode(w, program - (size_t)writer, &ins);
     unsigned dst = 0;
     const unsigned n = sgprs_written(w, &ins, &dst);
-    const int immediate = (w[0] >> 8) & 1;
+    const int immediate = (w[0] >> 8) & 1, literal = !immediate && (w[0] & 0xff) == OPERAND_LITERAL;
     /* the load may bring more SGPRs than the descriptor (an s_load_dwordx16 of two image descriptors) */
-    if (ins.encoding != GCN_SMRD || strncmp(ins.name, "s_load_dword", 12) || dst > first || first + width > dst + n || !immediate) {
+    if (ins.encoding != GCN_SMRD || strncmp(ins.name, "s_load_dword", 12) || dst > first || first + width > dst + n || (!immediate && !literal)) {
         snprintf(error, error_size, "the descriptor in s[%u:%u] is written by the program (%s at dword %ld), not loaded from a "
                  "user-data pointer: not done yet", first, first + width - 1, ins.name, writer);
         return -1;
@@ -2060,7 +2061,7 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
         p += before.dwords;
     }
     *origin = (gcn_resource_origin){.from_memory = 1, .sgpr = first, .pointer_sgpr = pointer,
-                                    .offset = ((w[0] & 0xff) + (first - dst)) * BYTES_PER_DWORD};
+                                    .offset = ((literal ? w[1] : w[0] & 0xff) + (first - dst)) * BYTES_PER_DWORD};
     return 0;
 }
 

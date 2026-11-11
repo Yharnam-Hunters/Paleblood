@@ -260,6 +260,17 @@ int main(int argc, char **argv)
         CHECK(faces);
     }
 
+    /* a scalar load at a literal offset counts it in dwords: dwords 2 to 5 */
+    {
+        for (int i = 0; i < 8; i++) in_words[i] = 0x01010101u * (uint32_t)(i + 1);
+        memset(out.mapped, 0, BUFFER_BYTES);
+        CHECK(run(&g, scalar_buffer_quad_literal, sizeof scalar_buffer_quad_literal / sizeof scalar_buffer_quad_literal[0], user) == 0);
+        int literal = 1;
+        for (int lane = 0; lane < LANES; lane++)
+            for (int k = 0; k < 4; k++) literal &= out_words[lane * 4 + k] == in_words[2 + k];
+        CHECK(literal);
+    }
+
     /* s_buffer_load is range-checked too: with NUM_RECORDS 8 bytes, the third and fourth dwords read 0;
        with a 4-byte stride and 3 records, the fourth does. */
     {
