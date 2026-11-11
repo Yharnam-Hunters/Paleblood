@@ -221,7 +221,7 @@ static void image_programs(void)
     /* With branches: a load followed when every path to the use passes it. An s_cbranch_execz over
        both the load and the use (the game's guarded samples): from memory; with a compare's mask
        in those SGPRs before the load, or an earlier load into them, the load before the use still
-       counts. A branch over the load that lands before the use, a loop back to the use after a
+       counts. A branch over the load that lands before the use, a loop back to the use from after a
        write to those SGPRs, or a write to the pointer before the load or (with a branch back to the
        load) anywhere: refused by name. A write to the pointer after the use, with no branch back,
        does not matter. */
@@ -234,6 +234,9 @@ static void image_programs(void)
        still the user data's; with a branch back to the use after that write, refused */
     static const uint32_t user_data_later[] = {0xbf880003, 0xf0000f00, 0x00000401, 0xbe800380, 0xbf810000}; /* s_mov_b32 s0, 0 after */
     static const uint32_t user_data_looped[] = {0xf0000f00, 0x00000401, 0xbe800380, 0xbf84fffc, 0xbf810000};  /* then back to the use */
+    /* a loop over the use whose closing branch comes before the write (the loading screen's pixel shader at
+       0x20d1ce7300 reuses the descriptor's SGPRs only after its loop): still the user data's */
+    static const uint32_t user_data_reused_after_loop[] = {0xf0000f00, 0x00000401, 0xbf84fffd, 0xbe800380, 0xbf810000};
     static const uint32_t pointer_later[] = {0xbf880004, 0xc0c00904, 0xf0000f00, 0x00000401, 0xbe880380, 0xbf810000}; /* s_mov_b32 s8, 0 after */
     static const uint32_t pointer_looped[] = {0xc0c00904, 0xf0000f00, 0x00000401, 0xbe880380, 0xbf84fffb, 0xbf810000}; /* then back to the load */
     CHECK(gcn_image_resources(PROGRAM(guarded), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
@@ -250,6 +253,9 @@ static void image_programs(void)
           !found[0].origin.from_memory && found[0].origin.sgpr == 0);
     CHECK(gcn_image_resources(PROGRAM(user_data_looped), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
           strstr(error, "s_cbranch_scc0"));
+    const int after_loop = gcn_image_resources(PROGRAM(user_data_reused_after_loop), found, GCN_MAX_IMAGES, &count, error, sizeof error);
+    if (after_loop) fprintf(stderr, "user_data_reused_after_loop: %s\n", error);
+    CHECK(after_loop == 0 && count == 1 && !found[0].origin.from_memory && found[0].origin.sgpr == 0);
     CHECK(gcn_image_resources(PROGRAM(pointer_later), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0 && count == 1 &&
           found[0].origin.from_memory && found[0].origin.pointer_sgpr == 8 && found[0].origin.offset == 16);
     CHECK(gcn_image_resources(PROGRAM(pointer_looped), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
