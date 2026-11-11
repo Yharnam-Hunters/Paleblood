@@ -82,6 +82,55 @@ static int differing_pixels(rt_executor *x, uint64_t target)
     return differ;
 }
 
+/* A positive float as an unsigned small float of mantissa_bits (5-bit exponent, bias 15), or (with
+   mantissa_bits 10 and the sign 0) a half: exact for the dyadic values the tests use. */
+static uint32_t small_float_bits(float v, int mantissa_bits)
+{
+    if (v == 0) return 0;
+    int exponent;
+    const float fraction = frexpf(v, &exponent); /* v = fraction * 2^exponent, fraction in [0.5, 1) */
+    const uint32_t mantissa = (uint32_t)lroundf((fraction * 2 - 1) * (float)(1u << mantissa_bits));
+    return (uint32_t)(exponent - 1 + 15) << mantissa_bits | mantissa;
+}
+
+/* Float image formats: the reference image as 16_16_16_16 float halves (DATA_FORMAT 12) and as
+   10_11_11 float small floats (DATA_FORMAT 6; alpha 1 from the missing component), linear, read texel
+   by texel (pixel_image_texel) into an 8_8_8_8 target, draw the reference image. */
+static void float_images(rt_executor *x)
+{
+    enum { HALVES = 0x1e00000, SMALL = 0x1e40000, FLOAT_IMAGE_TARGET = 0x1e80000, LINEAR_ALIGNED = 8, NUM_FLOAT = 7 };
+    char error[200] = "";
+    for (int kind = 0; kind < 2; kind++) {
+        const unsigned bytes = kind ? 4 : 8;
+        rt_tiling layout;
+        CHECK(rt_tiling_layout(LINEAR_ALIGNED, bytes, SIZE, SIZE, &layout, error, sizeof error) == 0);
+        uint8_t *memory = (uint8_t *)(uintptr_t)at(kind ? SMALL : HALVES);
+        for (uint32_t y = 0; y < SIZE; y++)
+            for (uint32_t px = 0; px < SIZE; px++) {
+                const float red = ((float)px + 0.5f) / SIZE, green = ((float)y + 0.5f) / SIZE;
+                uint8_t *texel = memory + rt_tiling_offset(&layout, px, y, 0);
+                if (kind) {
+                    const uint32_t packed = small_float_bits(red, 6) | small_float_bits(green, 6) << 11 | small_float_bits(0.25f, 5) << 22;
+                    memcpy(texel, &packed, 4);
+                } else {
+                    const uint16_t halves[4] = {(uint16_t)small_float_bits(red, 10), (uint16_t)small_float_bits(green, 10),
+                                                (uint16_t)small_float_bits(0.25f, 10), (uint16_t)small_float_bits(1.0f, 10)};
+                    memcpy(texel, halves, 8);
+                }
+            }
+        uint32_t image[8];
+        image_descriptor(image, at(kind ? SMALL : HALVES), kind ? 6 : 12, NUM_FLOAT, SIZE, SIZE);
+        image[3] |= LINEAR_ALIGNED << 20;
+        if (kind) image[3] = (image[3] & ~0xfffu) | (4 | 5 << 3 | 6 << 6 | 1 << 9); /* x, y, z, 1 */
+        const int drawn = draw_texels(x, at(FLOAT_IMAGE_TARGET), image, error, sizeof error);
+        if (drawn) fprintf(stderr, "float image %d: %s\n", kind, error);
+        CHECK(drawn == 0);
+        const int differ = differing_pixels(x, at(FLOAT_IMAGE_TARGET));
+        if (differ) fprintf(stderr, "float image %d: %d pixels differ\n", kind, differ);
+        CHECK(differ == 0);
+    }
+}
+
 /* The pixels of target that differ from the reference image's red and green with blue 0 and alpha 1
    (all of them on a failed read). */
 static int two_channel_misses(rt_executor *x, uint64_t target)
@@ -842,6 +891,30 @@ static void depth_and_strips(rt_executor *x)
         const uint32_t small[][2] = {{0xa010, 0xa0000003}, {0xa011, 0x20000001}, {0xa012, sz}, {0xa013, sst}, {0xa014, sz}, {0xa015, sst},
                                      {0xa016, 0}, {0xa017, 0}, {0xa002, 0}, {0xa200, 0x2 | 0x4 | 0x7u << 4}};
         CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), small, 10, 3, error, sizeof error) == -1 && strstr(error, "smaller"));
+    }
+    /* A depth fast clear: with TILE_SURFACE_ENABLE and an HTILE whose every word has ZMASK 0 (cleared),
+       the depth reads DB_DEPTH_CLEAR (1.0): LESS_EQUAL on a target no draw wrote draws the triangle, and
+       the HTILE's words get ZMASK 0xf (the clear is used once). Without the clear the test would read a
+       target no draw wrote (a stop). A partly cleared HTILE stops by name. */
+    {
+        enum { CLEARED_Z = 0x1800000, CLEARED_HTILE = 0x1810000, CLEARED_COLOUR = 0x1820000, HTILE_WORDS = (SIZE / 8) * (SIZE / 8) };
+        const uint32_t cz = (uint32_t)(at(CLEARED_Z) >> 8), cst = (uint32_t)(at(CLEARED_Z + 0x2000) >> 8), htile = (uint32_t)(at(CLEARED_HTILE) >> 8);
+        uint32_t *words = (uint32_t *)(uintptr_t)at(CLEARED_HTILE);
+        for (unsigned i = 0; i < HTILE_WORDS; i++) words[i] = 0xfffffff0u;
+#define CLEARED_TARGET {0xa010, 0xa0000003}, {0xa011, 0x20000001}, {0xa012, cz}, {0xa013, cst}, {0xa014, cz}, {0xa015, cst}, \
+                       {0xa016, depth_size}, {0xa017, 0}, {0xa002, 0}, {0xa005, htile}, {0xa00b, 0x3f800000u}
+        const uint32_t less_equal_cleared[][2] = {CLEARED_TARGET, {0xa200, 0x2 | 0x3u << 4}};
+        drawn = run_counted(x, DEPTH_BUFFER, at(CLEARED_COLOUR), less_equal_cleared, 12, 3, error, sizeof error);
+        if (drawn) fprintf(stderr, "depth fast clear: %s\n", error);
+        CHECK(drawn == 0);
+        check_triangle(x, at(CLEARED_COLOUR));
+        int expanded = 1;
+        for (unsigned i = 0; i < HTILE_WORDS; i++) expanded &= words[i] == 0xffffffffu;
+        CHECK(expanded);
+        words[1] = 0xfffffff0u; /* one tile cleared again, the others not */
+        CHECK(run_counted(x, DEPTH_BUFFER, at(CLEARED_COLOUR), less_equal_cleared, 12, 3, error, sizeof error) == -1 &&
+              strstr(error, "partly fast-cleared HTILE"));
+#undef CLEARED_TARGET
     }
     /* Slices of an array depth target (DB_DEPTH_VIEW SLICE_START = SLICE_MAX): a draw into slice 1
        writes slice 1 only: LESS on slice 1 then draws nothing, a test reading slice 0 meets a slice no
@@ -1760,6 +1833,7 @@ int main(void)
 
     sampled_images(x);
     sampled_lookup(x);
+    float_images(x);
     many_images(x);
     sampled_levels(x);
     sampled_cube(x);

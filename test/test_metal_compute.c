@@ -72,7 +72,7 @@ static int execute(rt_executor *x, unsigned groups, const char *expected_error)
     const int result = rt_executor_run(x, buffer, 0x100, error, sizeof error);
     if (expected_error) {
         if (result != -1 || !strstr(error, expected_error))
-            fprintf(stderr, "compute scenario %u: expected '%s', result=%d, actual='%s'\n", scenarios, expected_error, result, error);
+            fprintf(stderr, "compute scenario %u expected [%s], got %d [%s]\n", scenarios + 1, expected_error, result, error);
         CHECK(result == -1 && strstr(error, expected_error));
     }
     else { if (result) fprintf(stderr, "compute: %s\n", error); CHECK(result == 0); }
@@ -262,20 +262,18 @@ int main(void)
     const uint32_t one[3] = {1,1,1};
     shader(EMPTY_CODE, 0, one, 0, 2); execute(x, 65535, NULL);
 
-    /* Null descriptors now read zero. An actually unsupported format must still stop, and
-       neither outcome poisons the usable context or its cached format pipeline. */
-    rt_executor_reset(x); clear_output(output); shader(FORMAT_CODE, 8, local, 0, 2);
-    user_data(RT_STAGE_COMPUTE, 0, data, 8); execute(x, 1, NULL);
+    /* DATA_FORMAT 0 is the common translator's null descriptor: format loads read zero. */
+    rt_executor_reset(x); clear_output(output); shader(FORMAT_CODE, 8, local, 0, 2); user_data(RT_STAGE_COMPUTE, 0, data, 8);
+    execute(x, 1, NULL);
     for (unsigned i = 0; i < OUTPUT_WORDS; ++i) CHECK(output[i] == (i < 32 * 4 ? 0 : SENTINEL));
-    uint32_t unsupported_format[8]; memcpy(unsupported_format, data, sizeof unsupported_format);
-    unsupported_format[3] = 15u << 15; /* DATA_FORMAT 15 is outside the current descriptor profile. */
-    user_data(RT_STAGE_COMPUTE, 0, unsupported_format, 8); clear_output(output);
-    execute(x, 1, "shader runtime stop");
-    /* The stop word is checked after dispatch: following raw stores can still run.
-       Memory outside those stores' declared span must remain untouched. */
+    /* A reserved format still stops, then the same context completes a normal dispatch. */
+    data[3] = 15u << 15;
+    shader(FORMAT_CODE, 8, local, 0, 2); user_data(RT_STAGE_COMPUTE, 0, data, 8);
+    clear_output(output); execute(x, 1, "DATA_FORMAT 15");
+    /* The stop word is checked after dispatch: later raw stores may still run. */
     for (unsigned i = 32 * 4; i < OUTPUT_WORDS; ++i) CHECK(output[i] == SENTINEL);
-    shader(CODE, 8, local, 0, 2); user_data(RT_STAGE_COMPUTE, 0, data, 8);
-    clear_output(output); execute(x, 1, NULL); check_scale(output, 32, 2.5f, 1);
+    data[3] = 0;
+    shader(CODE, 8, local, 0, 2); clear_output(output); execute(x, 1, NULL); check_scale(output, 32, 2.5f, 1);
 
     /* Complete one dispatch before the next consumes its shared-memory writes. */
     uint32_t chain[8]; descriptor(chain, OUTPUT, OUTPUT_WORDS * 4, 0); descriptor(chain + 4, SECOND, OUTPUT_WORDS * 4, 0);
