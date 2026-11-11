@@ -916,10 +916,10 @@ static void depth_and_strips(rt_executor *x)
               strstr(error, "partly fast-cleared HTILE"));
 #undef CLEARED_TARGET
     }
-    /* Depth write-back: a 256 x 256 Depth2DThin64 depth target (tile index 0) fast-cleared to 1.0 through
-       HTILE by a draw that tests nothing and writes no depth leaves 1.0 in every texel of its memory once
-       the buffer has run; a draw writing the triangle's depth (0, covering the target) then leaves 0.0
-       everywhere. Without write-backs the memory keeps what it held (0x5a bytes here). */
+    /* Depth write-back: a 256 x 256 Depth2DThin64 depth target (tile index 0), fast-cleared to 1.0 through
+       HTILE, leaves 1.0 in every texel of its memory once a draw testing it (LEQUAL, no depth writes) has
+       run; a draw writing the triangle's depth (0) then leaves 0.0 under the triangle (the colour target's
+       16 x 16 corner). Without write-backs the memory keeps what it held (0x5a bytes here). */
     {
         enum { WB_Z = 0x1900000, WB_HTILE = 0x1980000, WB_COLOUR = 0x19a0000, WB_SIZE = 256, WB_WORDS = (WB_SIZE / 8) * (WB_SIZE / 8) };
         const uint32_t wz = (uint32_t)(at(WB_Z) >> 8), wst = (uint32_t)(at(WB_Z + 0x40000) >> 8), wh = (uint32_t)(at(WB_HTILE) >> 8);
@@ -930,7 +930,7 @@ static void depth_and_strips(rt_executor *x)
         memset(depth, 0x5a, WB_SIZE * WB_SIZE * 4);
 #define WB_TARGET {0xa010, 0xa0000003}, {0xa011, 0x20000001}, {0xa012, wz}, {0xa013, wst}, {0xa014, wz}, {0xa015, wst}, \
                   {0xa016, wb_size}, {0xa017, 0}, {0xa002, 0}, {0xa005, wh}, {0xa00b, 0x3f800000u}
-        const uint32_t clear_only[][2] = {WB_TARGET, {0xa200, 0x2 | 0x7u << 4}};
+        const uint32_t clear_only[][2] = {WB_TARGET, {0xa200, 0x2 | 0x3u << 4}};
         drawn = run_counted(x, DEPTH_BUFFER, at(WB_COLOUR), clear_only, 12, 3, error, sizeof error);
         if (drawn) fprintf(stderr, "depth write-back (clear): %s\n", error);
         CHECK(drawn == 0);

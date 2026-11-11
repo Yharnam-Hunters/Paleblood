@@ -94,6 +94,7 @@ typedef struct {
     uint32_t width, height, slices;  /* elements per row, rows per slice */
     uint32_t tiles_per_row, tiles_per_slice;
     unsigned dwords;                 /* 32-bit words per element */
+    unsigned pieces_log2;            /* a split depth tile's pieces (runtime/tile_copy.h), log2; 0 unsplit */
 } tile_plan;
 
 /* What the guest memory under an image held when the image and the memory last agreed (the image was
@@ -1094,10 +1095,22 @@ static int tile_plan_make(rt_executor *x, tile_plan *p, const rt_tiling *layout,
     tile_plan_free(x, p);
     if (rt_tiling_size(layout, slices) > UINT32_MAX)
         return failed(error, error_size, "a %ux%u image of %u slices spans more than the GPU copy's 32-bit offsets", width, height, slices);
-    *p = (tile_plan){.width = width, .height = height, .slices = slices, .dwords = layout->element_bytes / 4,
-                     .tiles_per_row = (width + RT_TILING_MICRO - 1) / RT_TILING_MICRO};
+    /* A split tile (a depth layout's tile split, runtime/tiling.h) puts each piece of a micro tile in its
+       own place, its bytes in a row there: each piece gets its first element's offset, and the 64 offsets
+       are offsets in a piece. Done while a micro tile's elements stay in memory order inside one pipe
+       interleave (micro tiles of at most 256 bytes, which the split depth layouts of 32-bit elements are). */
+    enum { PIPE_INTERLEAVE_BYTES = 256 };
+    const unsigned element = layout->element_bytes, micro_bytes = RT_TILING_MICRO_TEXELS * element;
+    const unsigned pieces = rt_tiling_uniform_micro(layout) ? 1 : micro_bytes / layout->tile_split;
+    unsigned pieces_log2 = 0;
+    while (1u << pieces_log2 < pieces) pieces_log2++;
+    if (pieces > 1 && (micro_bytes > PIPE_INTERLEAVE_BYTES || 1u << pieces_log2 != pieces))
+        return failed(error, error_size, "a split tile of %u-byte elements in %u-byte pieces: the GPU copy does not take it yet", element,
+                      layout->tile_split);
+    *p = (tile_plan){.width = width, .height = height, .slices = slices, .dwords = element / 4,
+                     .tiles_per_row = (width + RT_TILING_MICRO - 1) / RT_TILING_MICRO, .pieces_log2 = pieces_log2};
     p->tiles_per_slice = p->tiles_per_row * ((height + RT_TILING_MICRO - 1) / RT_TILING_MICRO);
-    const VkDeviceSize entries = RT_TILE_COPY_TILE_BASES + (VkDeviceSize)p->tiles_per_slice * slices;
+    const VkDeviceSize entries = RT_TILE_COPY_TILE_BASES + (VkDeviceSize)p->tiles_per_slice * slices * pieces;
     if (gpu_buffer_make(x, &p->table, entries * 4, 1) ||
         gpu_buffer_make(x, &p->linear, (VkDeviceSize)width * height * slices * layout->element_bytes, 0)) {
         tile_plan_free(x, p);
@@ -1113,12 +1126,18 @@ static int tile_plan_make(rt_executor *x, tile_plan *p, const rt_tiling *layout,
         for (; at > 0 && spread[order[at - 1]] > spread[i]; at--) order[at] = order[at - 1];
         order[at] = i;
     }
+    const unsigned per_piece = RT_TILING_MICRO_TEXELS / pieces;
     for (unsigned k = 0; k < RT_TILING_MICRO_TEXELS; k++)
-        table[RT_TILE_COPY_OFFSETS + k] = (uint32_t)spread[order[k]], table[RT_TILE_COPY_PLACES + k] = order[k];
+        table[RT_TILE_COPY_OFFSETS + k] = (uint32_t)(pieces > 1 ? spread[order[k]] % layout->tile_split : spread[order[k]]),
+        table[RT_TILE_COPY_PLACES + k] = order[k];
     uint32_t *tile = table + RT_TILE_COPY_TILE_BASES;
     for (uint32_t s = 0; s < slices; s++)
         for (uint32_t ty = 0; ty < height; ty += RT_TILING_MICRO)
-            for (uint32_t tx = 0; tx < width; tx += RT_TILING_MICRO) *tile++ = (uint32_t)rt_tiling_offset(layout, tx, ty, s);
+            for (uint32_t tx = 0; tx < width; tx += RT_TILING_MICRO)
+                for (unsigned piece = 0; piece < pieces; piece++) { /* the piece's first element: offset 0 in it */
+                    const uint32_t first = order[piece * per_piece];
+                    *tile++ = (uint32_t)rt_tiling_offset(layout, tx + first % RT_TILING_MICRO, ty + first / RT_TILING_MICRO, s);
+                }
     return 0;
 }
 
@@ -1185,7 +1204,8 @@ static int record_tile_copy(rt_executor *x, const tile_plan *p, uint64_t address
         [RT_TILE_COPY_LINEAR_LO] = (uint32_t)p->linear.address, [RT_TILE_COPY_LINEAR_HI] = (uint32_t)(p->linear.address >> 32),
         [RT_TILE_COPY_TABLE_LO] = (uint32_t)p->table.address, [RT_TILE_COPY_TABLE_HI] = (uint32_t)(p->table.address >> 32),
         [RT_TILE_COPY_WIDTH] = p->width, [RT_TILE_COPY_HEIGHT] = p->height, [RT_TILE_COPY_TILES_PER_ROW] = p->tiles_per_row,
-        [RT_TILE_COPY_TILES_PER_SLICE] = p->tiles_per_slice, [RT_TILE_COPY_TILES] = (uint32_t)groups, [RT_TILE_COPY_GROUPS_X] = groups_x};
+        [RT_TILE_COPY_TILES_PER_SLICE] = p->tiles_per_slice, [RT_TILE_COPY_TILES] = (uint32_t)groups, [RT_TILE_COPY_GROUPS_X] = groups_x,
+        [RT_TILE_COPY_PIECES_LOG2] = p->pieces_log2};
     const VkMemoryBarrier before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
                                     .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &before, 0, NULL, 0, NULL);
