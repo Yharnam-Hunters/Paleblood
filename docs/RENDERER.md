@@ -602,6 +602,93 @@ Each phase lands in small PRs with tests. A boot is recorded after each runtime 
 Runtime page and Gallery show where it stands.
 
 
+## Guest memory on the GPU
+
+The maintainer's decision of 11 November 2026: quick wins first, then a GPU-resident copy of guest
+memory. This section is that design. It is written before the code, which lands in steps with
+tests.
+
+### Where it stands
+
+The executor imports the guest's direct-memory pool (a 5 GB memory file, sparse on the host) into
+Vulkan as one buffer (`VK_EXT_external_memory_host`). Translated shaders reach guest memory
+through buffer device addresses into it, and so do the GPU tile copies of render targets and
+images. Every GPU access to guest memory therefore crosses PCIe.
+
+Measured with a standalone test on an RTX 3070, with a 5 GB memfd imported the same way:
+
+- Copies and contiguous shader stores into host memory run at 17-25 GB/s.
+- Device-local memory is 5-10x faster again.
+- Stores that leave gaps across a wave are hundreds of times slower: 60-100 MB/s. A lane storing
+  one dword of an 8- or 16-byte element, then the next, is one example. The bus moves such
+  writes a dword at a time.
+
+The quick wins removed the gappy stores: whole-element tile copies (#586) and vector buffer
+stores (#587). Together with keeping shaders' resource scans (#589), the Contract screen went from
+0.5 fps to about 9 fps.
+
+What remains on the GPU at the Contract screen is about 40 ms a frame, mostly tile copies over
+host memory. Each 784x784 preview target is loaded and written back about ten times a frame. The
+executor cannot tell whether the CPU changed guest memory between submissions, so it loads a
+target again at every submitted buffer.
+
+### The design
+
+1. **A mirror of the GPU-visible memory in VRAM.** The executor allocates one device-local
+   buffer for the span of the pool that the game maps GPU-visible. That is about 3.4 GB in the
+   boot: the 152 MB command and constant memory at `0x2039400000`, and the texture and shader
+   memory from `0x2042c00000` to `0x210c400000`. Shaders' addresses, index buffers and tile
+   copies point into the mirror instead of the imported host buffer. A GPU-visible map made later
+   that falls outside the mirror stops by name. A GPU with less memory would need a sparse
+   buffer that binds memory only under the game's maps, as shadPS4's buffer arenas do. That comes
+   later.
+2. **GPU writes go to both copies.** Translated buffer stores write the mirror and the same
+   offset of the imported host buffer. Render-target write-backs do the same. The host copy is
+   therefore current once a batch has finished, as it is today, and nothing on the CPU side has to
+   ask for a download. Completion labels and EOP events are still performed only after the batch
+   has run. Guest CPU reads after them see the GPU's writes, and the run-time stop channel is
+   unchanged. With both copies written, a CPU read needs no fault handling, and nothing goes
+   wrong when the kernel reads guest memory for a system call.
+3. **CPU writes are found by page protection.** The GPU-visible guest mappings are made
+   read-only once their pages have been copied to the mirror. A guest write faults; the `SIGSEGV`
+   handler marks the page dirty and makes it writable again, then the write is retried. The
+   handler runs before the boot harness's crash handler and passes on any other fault.
+   Before each batch, the dirty pages are protected again and then copied from the host buffer to
+   the mirror with transfer commands, all in one batch. Protecting before copying means a write
+   that lands in between faults again and is copied next time. One lock orders the handler's
+   "mark dirty, unprotect" against the renderer's "clear, protect", so a page is never left
+   writable without being dirty. The facts behind this are shadPS4's page manager: write watchers
+   on cached memory, invalidation from a fault handler, and userfaultfd write protection. Those
+   are used as facts only; userfaultfd is not available here because unprivileged handling of
+   kernel faults is off (`vm.unprivileged_userfaultfd = 0`).
+4. **System calls that write guest memory say so first.** A protected page makes the kernel fail
+   a write into it with `EFAULT` rather than fault. The runtime's file reads (`sceKernelRead`,
+   `sceKernelPread`, libc's `_read`, save-data reads) mark the destination dirty and writable
+   before calling the host. Any other system-call path into GPU-visible memory that is found
+   later is handled the same way.
+5. **Aliases are copied every batch.** A CPU mapping of GPU-visible pool memory at another
+   address bypasses the protection (the game makes 16 KB batch maps). The pool pages under such
+   an alias count as dirty at every batch until it is unmapped. A released or unmapped
+   GPU-visible range stops being tracked.
+6. **Loads only when memory changed.** A render target or image is loaded again when the pages it
+   spans were copied from the CPU since its last load, or when GPU work stored into it: a dispatch
+   (its stores can reach any address) or an overlapping target's write-back. It is no longer
+   reloaded at every submitted buffer. Write-backs stay, but they now go into VRAM plus one
+   contiguous host write.
+
+### Tests for each step
+
+- A CPU write after a GPU write: the next draw sees the CPU's bytes.
+- A GPU read of CPU-written data: the data is uploaded before the batch that reads it, in the
+  same frame.
+- The fault path: a guest write to a protected page is marked dirty and retried, and other faults
+  reach the crash handler unchanged.
+- File reads into protected pages succeed and mark the pages dirty.
+- Guest threads writing the same and different pages while the renderer re-protects: no write is
+  lost.
+- Aliases are copied every batch.
+- Each step is measured at the Contract screen in fps, with GPU time split per call.
+
 ### Indexed draw packet fields
 
 The record keeps index-buffer state (`INDEX_BASE`, `INDEX_BUFFER_SIZE` and

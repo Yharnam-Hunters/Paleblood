@@ -98,7 +98,7 @@ parameters. Declared vertex parameter and pixel interpolant capacities must cove
 interface, including on shader-cache hits; larger unused allocations are accepted.
 
 Pixel exports support target 0 RGBA as FP16_ABGR or 32_ABGR, perspective-center inputs and no
-depth export. Pixel-position X/Y inputs and whole-quad shader operations are outside this profile
+depth export. Pixel-position X/Y inputs and whole-quad mask expansion are outside this profile
 and are rejected explicitly. Other color layouts, output masks, barycentric modes and depth
 controls stop with a reason. User SGPR counts must fit both the 16-word model and the declared shader allocation.
 The translator's required user-SGPR read mask is cached with each shader. Every draw checks it
@@ -151,9 +151,8 @@ bound to a raw packet's independent `MAX_SIZE`.
 
 Unsupported formats, shader instructions, shader inputs, layered/multisampled targets and
 target reallocations return a named error. Blending, depth and unrecorded state remain outside
-this profile. Image and sampler bindings stay empty in this draw backend;
-`image_load`, `image_load_mip` and `image_sample` return named translation errors, including
-image descriptors loaded from memory. Triangle strips and depth-target registers
+this profile. Pixel image loads and fixed-LOD sampling use the bindings described below.
+Triangle strips and depth-target registers
 remain outside this profile. Rectangle lists need a geometry expansion path and are rejected.
 
 ## Vertex fetch calls
@@ -172,6 +171,49 @@ layout. Changing a target or overwriting either program therefore cannot select 
 translation. Descriptor-table pointers are read by the translated fetch program from the
 vertex stage's data; the normal required-versus-written checks also apply on cache hits and
 after reset. Auto-index and both supported indexed draw forms share this path.
+
+## Pixel images and samplers
+
+Pixel resources reuse the common image/sampler origin analysis and GFX7 descriptor decoder.
+Descriptors can be in user SGPRs or loaded through a 48-bit pointer and proven byte offset.
+Declared SGPR bounds and written-slot masks are checked before reading either form, including
+on shader-cache hits. Texels and descriptor words are read again at each draw, so CPU, compute
+and completed render-target writes remain visible through cached native views.
+
+Fragment sampling accepts the common translator's quad broadcasts for coordinate gradients;
+SPIRV-Cross lowers them to native 2x2 fragment-quad operations. Whole-quad mask expansion remains
+rejected because its wave-wide SCC is not established by a native 32-lane SIMD group. Vertex quad
+operations remain rejected. Native sampler selection is still limited to relative mip zero below;
+accepting the gradient instructions does not broaden that LOD profile.
+
+The backend supports 1D/2D images and arrays, mip and layer view ranges, and the common tiling
+modes through `rt_tiling_mip_chain`. SPIRV-Cross lowers 1D textures as 2D with height one. Native
+views preserve the descriptor's base mip, base layer and component selectors; selectors for
+unknown or absent components fail explicitly. Complete padded allocations must fit the pool.
+Image dimensions are limited to 16384 and arrays to 2048 layers; actual native allocation and
+BC/32-bit filtering capabilities are also checked.
+
+Formats follow the common renderer's established table: R8/RG8/RGBA8 UNORM, R32 FLOAT/UINT/SINT,
+RG32/RGBA32 FLOAT, RGBA8 UINT/sRGB, BC1/2/3/7 UNORM/sRGB, and BC4/5 UNORM/SNORM. BC6 and other
+unestablished combinations fail by format name. Integer return bits stay integer bits; sRGB
+reads use Metal's native conversion before filtering. Its precision is checked using the
+encoded-byte rule in the [Metal language specification, section 8.7.7](https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf).
+
+Samplers support normalized wrap, mirror and clamp-to-edge addressing, with equal point or
+bilinear min/mag filters. Linear filtering requires a filterable sampled image; integer images
+used only by texel loads do not impose that restriction. The common translator supplies coordinate
+gradients for `image_sample`; the native unmipmapped sampler selects the view's first level. Nondefault minimum LOD, bias or reserved
+mip controls with a multi-level sampled view fail explicitly until their semantics are modeled;
+single-level views retain the common profile's irrelevant-field behavior. Pixel image stores
+and compute storage-image bindings remain separate unsupported paths.
+
+`test_metal_images` uses one covered fragment to store raw results, independent of framebuffer
+quantization. Owned LLVM-assembled programs exercise every mapped format, dimensions, tiling,
+relative mips/arrays, all sixteen image/sampler slots (and rejection of a seventeenth), descriptor rereads, CPU/compute/draw publication,
+point/bilinear/address modes, swizzles, native limits and rejected inputs. These device tests
+require BC support and 32-bit float filtering; hosted CI only compiles them. The use of native
+[texture views](https://developer.apple.com/documentation/metal/mtltexture) and capability queries
+establishes this backend's support profile, not a real-game or original-GPU comparison.
 
 ## Render-target memory
 
@@ -213,7 +255,7 @@ capability declarations alone do not cause rejection. Lane-local VCC half writes
 retain the logical lane index from the common translator.
 
 The optional X workgroup-ID SGPR follows the declared user SGPRs. Y/Z ID SGPRs,
-packed workgroup-size input, images and samplers remain unsupported. Dispatches
+packed workgroup-size input, compute images and compute samplers remain unsupported. Dispatches
 accept 1..65535 X workgroups and one Y/Z workgroup. Compute copied-call user-data
 records must contain 1..8 words within the modeled slots. Required user data must
 have been explicitly written; zero is a valid written value.
@@ -253,8 +295,7 @@ address forms, pool-end index reads, zero-count draws, index updates, placed-sha
 recorder buffer isolation, recorder submission resets, null pixel shaders, 40-bit descriptor bases, descriptor
 formats and swizzles in both stages, packed UNORM8 buffer loads, canonical logical index-size
 bounds and raw-header tagging, pool-end scalar loads with constant selectors, skipped-store
-canaries, format/VCC runtime-stop recovery, pixel-position/whole-quad guards, unbound pixel-image
-and sampling operations, descriptors loaded from memory, fetch rendering through live target and
+canaries, format/VCC runtime-stop recovery, pixel-position/whole-quad guards, missing image/sampler descriptor guards, descriptors loaded from memory, fetch rendering through live target and
 program changes, partial target writes, last-pair and pool-end guards, straight-line call refusals, strip/depth-target
 guards, required-versus-written user SGPRs with explicit zero and cached-reset checks, compute input/profile guards and rectangle-list refusals, readback bounds and mapping lifetime.
 It fails if no suitable GPU exists.
