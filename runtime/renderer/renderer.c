@@ -130,8 +130,14 @@ static void drain_deferred(void)
     pthread_mutex_unlock(&deferred_lock);
 }
 
-/* Records and submits calls [first, last) of a batch without waiting for the GPU; their targets are
-   written back by the work submitted. */
+/* Records calls [first, last) of a batch into the executor's open batch; their targets are written back
+   by the work recorded. The open batch goes to the GPU when the queue runs dry, when the calls recorded
+   since the last submission reach SUBMIT_CALLS, or before the renderer waits for the GPU (submit_open):
+   one Vulkan submission for many of the game's command buffers and their segments between steps,
+   instead of one each, each with its fence wait for a free batch slot. */
+enum { SUBMIT_CALLS = 512 };
+static size_t calls_unsubmitted;
+
 static void run_calls(batch *b, size_t first, size_t last)
 {
     if (first == last) return;
@@ -139,8 +145,18 @@ static void run_calls(batch *b, size_t first, size_t last)
     rt_executor *const x = executor_for(b->function);
     char error[256];
     uint64_t ticket = 0;
-    if (x && rt_executor_submit_calls(x, b->calls + first, last - first, &ticket, error, sizeof error)) rt_fatal(b->function, error);
-    if (x) last_ticket = ticket;
+    if (x && rt_executor_record_calls(x, b->calls + first, last - first, &ticket, error, sizeof error)) rt_fatal(b->function, error);
+    if (x) last_ticket = ticket, calls_unsubmitted += last - first;
+    pthread_mutex_unlock(&renderer_lock);
+}
+
+/* Hands the executor's open batch to the GPU (function names the submission for a stop). */
+static void submit_open(const char *function)
+{
+    pthread_mutex_lock(&renderer_lock);
+    char error[256];
+    if (executor && rt_executor_submit(executor, error, sizeof error)) rt_fatal(function, error);
+    calls_unsubmitted = 0;
     pthread_mutex_unlock(&renderer_lock);
 }
 
@@ -166,6 +182,7 @@ static void run_batch(batch *b)
             continue;
         }
         if (b->steps[i].holds && deferred_satisfies(&b->steps[i])) continue; /* the work ahead of it on the GPU writes what it waits for */
+        submit_open(b->steps[i].function); /* the deferred steps may wait for the open batch */
         drain_deferred();
         pthread_mutex_lock(&renderer_lock);
         char error[256];
@@ -189,6 +206,10 @@ static void *renderer_thread(void *unused)
         running = 1;
         pthread_mutex_unlock(&queue_lock);
         run_batch(b);
+        pthread_mutex_lock(&queue_lock);
+        const int queue_dry = queue_head == NULL;
+        pthread_mutex_unlock(&queue_lock);
+        if (queue_dry || calls_unsubmitted >= SUBMIT_CALLS) submit_open(b->function); /* nothing to join it soon, or enough to start on */
         free(b->calls);
         free(b->steps);
         free(b);
