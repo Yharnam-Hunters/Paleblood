@@ -36,7 +36,7 @@ enum { MAX_SHADERS = 1024, MAX_PIPELINES = 1024, MAX_TARGETS = 128, MAX_RECT_STA
        STOP_SLOTS = MAX_SHADERS + MAX_COMPUTE_PIPELINES };
 enum { MAX_VERTEX_IMAGE_LAYOUTS = 32 };
 enum { USER_DATA_BYTES = GCN_USER_SGPR_MAX * 4, VERTEX_USER_DATA = 0, PIXEL_USER_DATA = USER_DATA_BYTES };
-enum { COLOR_10_11_11 = 0x6, COLOR_8_8_8_8 = 0xa, COLOR_16_16_16_16 = 0xc, NUMBER_UNORM = 0, NUMBER_SRGB = 6, NUMBER_FLOAT = 7, SWAP_STD = 0,
+enum { COLOR_32 = 0x4, COLOR_16_16 = 0x5, COLOR_10_11_11 = 0x6, COLOR_8_8_8_8 = 0xa, COLOR_16_16_16_16 = 0xc, NUMBER_UNORM = 0, NUMBER_SRGB = 6, NUMBER_FLOAT = 7, SWAP_STD = 0,
        SWAP_ALT = 1 };
 enum { PERSP_CENTER_ENA = 0x2, POS_X_FLOAT_ENA = 0x100, POS_Y_FLOAT_ENA = 0x200, FRONT_FACE_ENA = 0x1000 };
 /* SPI_BARYC_CNTL's FRONT_FACE_ALL_BITS (bit 24), and where a pixel shader's settings (below) carry it: SPI_PS_INPUT_ADDR uses bits 0-15 */
@@ -219,6 +219,7 @@ typedef struct {
     uint64_t loaded_change;          /* change_count when it was last loaded (UINT64_MAX: load it) */
     uint64_t loaded_span;            /* the bytes of guest memory it was loaded from */
     tile_plan plan;                  /* its loads on the GPU, for elements of whole 32-bit words */
+    tile_plan *level_plans;          /* the same for each mip level of a mip-mapped image (load_levels), or NULL */
     VkImage image;
     VkDeviceMemory memory;
     struct {
@@ -1297,6 +1298,14 @@ static void tile_plan_free(rt_executor *x, tile_plan *p)
     *p = (tile_plan){0};
 }
 
+static void level_plans_free(rt_executor *x, image_entry *e)
+{
+    if (!e->level_plans) return;
+    for (unsigned m = 0; m < e->levels; m++) tile_plan_free(x, &e->level_plans[m]);
+    free(e->level_plans);
+    e->level_plans = NULL;
+}
+
 /* Makes p the plan for copying `slices` slices of width x height elements laid out as `layout`: the
    table (a micro tile's elements in memory order with their places, from rt_tiling_micro_spread, then
    each micro tile's first element; runtime/tile_copy.h) and the linear rows' buffer. Kept while the layout and size stay. 0, or -1 with the reason. */
@@ -1435,7 +1444,10 @@ static int record_tile_copy(rt_executor *x, const tile_plan *p, uint64_t address
    - COLOR_8_8_8_8 UNORM or sRGB, in either component order (SWAP_STD R8G8B8A8, SWAP_ALT B8G8R8A8);
    - COLOR_10_11_11 FLOAT: unsigned floats with x in bits 0-10, y in 11-21 and z in 22-31 (AMD names
      formats from the top bits down), Vulkan's B10G11R11_UFLOAT_PACK32, as shadPS4 maps it;
-   - COLOR_16_16_16_16 FLOAT: halves, x first, R16G16B16A16_SFLOAT, 8 bytes.
+   - COLOR_16_16_16_16 FLOAT: halves, x first, R16G16B16A16_SFLOAT, 8 bytes;
+   - COLOR_32 FLOAT: one float, R32_SFLOAT; COLOR_16_16 FLOAT: two halves, x in the low half,
+     R16G16_SFLOAT (shadPS4's liverpool_to_vk.cpp maps them the same; the clinic's half-resolution depth
+     and its light probes' moments use them).
    Others stop by name (VK_FORMAT_UNDEFINED with the reason). */
 static VkFormat target_format(const rt_color_target *target, uint32_t *element_bytes, char *error, size_t error_size)
 {
@@ -1448,6 +1460,8 @@ static VkFormat target_format(const rt_color_target *target, uint32_t *element_b
     }
     /* unsigned 11-, 11- and 10-bit floats, x in the low bits */
     if (target->format == COLOR_10_11_11 && target->number_type == NUMBER_FLOAT && std) return VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+    if (target->format == COLOR_32 && target->number_type == NUMBER_FLOAT && std) return VK_FORMAT_R32_SFLOAT;
+    if (target->format == COLOR_16_16 && target->number_type == NUMBER_FLOAT && std) return VK_FORMAT_R16G16_SFLOAT;
     if (target->format == COLOR_16_16_16_16 && target->number_type == NUMBER_FLOAT && std) {
         *element_bytes = 8;
         return VK_FORMAT_R16G16B16A16_SFLOAT;
@@ -2792,6 +2806,37 @@ static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor
 /* A mip-mapped image's levels from the guest memory (rt_tiling_mip_chain): each level detiled by the CPU
    into the upload buffer and copied to its level, again when the memory differs from what was loaded
    last. 0, or -1 with the reason. */
+/* A mip-mapped image's levels detiled on the GPU (runtime/tile_copy.h), with the batch: each level
+   copied from its tiled memory into its own linear rows, then into its level of the image. Nothing
+   waits: what the batch stores to that memory first comes first in the GPU's order. 0, or -1 with the
+   reason. */
+static int load_levels_on_gpu(rt_executor *x, image_entry *e, const rt_image_descriptor *d, const texel_format *f,
+                              const rt_tiling_level levels[RT_TILING_MAX_LEVELS], uint64_t span, char *error, size_t error_size)
+{
+    const int one_d = one_dimensional(d->type);
+    if (!e->level_plans && !(e->level_plans = calloc(e->levels, sizeof *e->level_plans)))
+        return failed(error, error_size, "no memory for an image's level copies");
+    for (unsigned m = 0; m < e->levels; m++) {
+        tile_plan *p = &e->level_plans[m];
+        if (!p->table.buffer && tile_plan_make(x, p, &levels[m].layout, levels[m].columns, levels[m].rows, e->layers, error, error_size)) return -1;
+        if (record_tile_copy(x, p, d->address + levels[m].offset, 0, error, error_size)) return -1;
+    }
+    VkCommandBuffer commands = batch_commands(x);
+    if (!commands) return failed(error, error_size, "no command buffer to load an image");
+    for (unsigned m = 0; m < e->levels; m++) {
+        const uint32_t level_width = e->width >> m ? e->width >> m : 1, level_height = one_d ? 1 : (e->height >> m ? e->height >> m : 1);
+        const VkBufferImageCopy copy = {.bufferRowLength = levels[m].columns * f->block, .bufferImageHeight = levels[m].rows * f->block,
+                                        .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, m, 0, e->layers}, .imageExtent = {level_width, level_height, 1}};
+        vkCmdCopyBufferToImage(commands, e->level_plans[m].linear.buffer, e->image, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
+    }
+    const VkMemoryBarrier after = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                   .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &after, 0, NULL, 0, NULL);
+    memory_take(&e->agreed, NULL, 0); /* what the CPU path compares with is no longer what the image holds */
+    e->loaded_change = x->change_count, e->loaded_span = span;
+    return 0;
+}
+
 static int load_levels(rt_executor *x, image_entry *e, const rt_image_descriptor *d, const texel_format *f, char *error, size_t error_size)
 {
     const unsigned bytes = f->bytes, block = f->block;
@@ -2812,9 +2857,13 @@ static int load_levels(rt_executor *x, image_entry *e, const rt_image_descriptor
     if (e->tiling_index != d->tiling_index || e->pitch != d->pitch) {
         e->tiling_index = d->tiling_index, e->pitch = d->pitch;
         memory_take(&e->agreed, NULL, 0);
+        level_plans_free(x, e);
         e->loaded_change = UINT64_MAX;
     }
     if (!memory_changed_since(x, d->address, span, e->loaded_change)) return 0;
+    int on_gpu = bytes % 4 == 0; /* every level of whole words in a layout the GPU copy takes: detiled on the GPU */
+    for (unsigned m = 0; m < e->levels && on_gpu; m++) on_gpu = rt_tiling_uniform_micro(&levels[m].layout) && levels[m].offset % bytes == 0;
+    if (on_gpu) return load_levels_on_gpu(x, e, d, f, levels, span, error, error_size);
     if (guest_memory_settled(x, d->address, span, error, error_size)) return -1;
     const uint8_t *guest = (const uint8_t *)x->view + (d->address - x->guest_base);
     e->loaded_change = x->change_count, e->loaded_span = span;
@@ -3688,6 +3737,7 @@ void rt_executor_close(rt_executor *x)
             vkFreeMemory(x->device, x->images[i].memory, NULL);
             free(x->images[i].agreed.bytes);
             tile_plan_free(x, &x->images[i].plan);
+            level_plans_free(x, &x->images[i]);
         }
         for (size_t i = 0; i < SCAN_SLOTS; i++) scan_free(&x->scans[i]);
         if (x->stop_buffer) vkDestroyBuffer(x->device, x->stop_buffer, NULL);
