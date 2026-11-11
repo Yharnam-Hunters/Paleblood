@@ -188,9 +188,10 @@ typedef struct {
 
 /* An image the executor keeps for a guest image (runtime/render_calls.h, rt_image_descriptor), found by
    its address and shape. The GPU's writes stay in it: an image the guest's shaders produce is never
-   read back from guest memory or tiled again. One they have not written holds the guest memory's
-   texels, detiled (runtime/tiling.h), loaded again at each use that reads it: the CPU or a buffer
-   store may have changed them since. */
+   read back from guest memory. They also go to the memory under it after each dispatch
+   (write_back_image), so another view of that memory (another format, more mip levels) reads them.
+   One they have not written holds the guest memory's texels, detiled (runtime/tiling.h), loaded
+   again at each use that reads it: the CPU or a buffer store may have changed them since. */
 typedef struct {
     uint64_t address;
     VkFormat format;
@@ -354,6 +355,13 @@ struct rt_executor {
     size_t compute_count;
     image_entry images[MAX_IMAGES];
     size_t image_count;
+    /* the storage images the dispatch being recorded writes (their index in images, with the descriptor
+       that named them, sRGB taken as UNORM): written back to the guest memory after it */
+    struct {
+        size_t image;
+        rt_image_descriptor descriptor;
+    } stored[GCN_MAX_IMAGES];
+    unsigned stored_count;
     scan_entry scans[SCAN_SLOTS];    /* resource scans, by code (scan_for) */
     /* the run-time stop words translated shaders write (runtime/gcn_spirv.h), one per shader */
     VkBuffer stop_buffer;
@@ -2682,6 +2690,47 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
     return e;
 }
 
+/* A storage image a dispatch wrote, written to the guest memory under it as its tile mode lays it out
+   (as a render target is written back): copied into its linear rows and tiled into place on the GPU,
+   with the batch, so a later view of that memory in another format or with more mip levels reads what
+   the shader stored (the game's face texture: written as 8_8_8_8 UINT, sampled as sRGB with mips).
+   Left in the image alone: one over a render target (the target takes its texels at its next draw,
+   take_written_image), a 3D image (its slices' layout is not done here), and elements that are not
+   whole 32-bit words (the GPU copy moves words). 0, or -1 with the reason. */
+static int write_back_image(rt_executor *x, image_entry *e, const rt_image_descriptor *d, char *error, size_t error_size)
+{
+    texel_format f;
+    if (find_target(x, d->address) || e->type == RT_IMAGE_3D || image_format(d, &f, error, error_size)) return 0;
+    rt_tiling layout;
+    char reason[160];
+    const uint32_t rows = one_dimensional(d->type) ? 1 : d->height;
+    if (f.block != 1 || f.bytes % 4 || d->pitch < d->width || rt_tiling_layout(d->tiling_index, f.bytes, d->pitch, rows, &layout, reason, sizeof reason) ||
+        !rt_tiling_uniform_micro(&layout))
+        return 0;
+    const uint64_t span = rt_tiling_size(&layout, e->layers);
+    if (d->address < x->guest_base || d->address - x->guest_base > x->size || span > x->size - (d->address - x->guest_base))
+        return failed(error, error_size, "the storage image at %#llx is outside the GPU-visible memory", (unsigned long long)d->address);
+    if (e->tiling_index != d->tiling_index || e->pitch != d->pitch) { /* the same memory laid out another way */
+        e->tiling_index = d->tiling_index, e->pitch = d->pitch;
+        memory_take(&e->agreed, NULL, 0);
+        tile_plan_free(x, &e->plan);
+    }
+    if (!e->plan.table.buffer && tile_plan_make(x, &e->plan, &layout, d->width, rows, e->layers, error, error_size)) return -1;
+    VkCommandBuffer commands = batch_commands(x);
+    if (!commands) return failed(error, error_size, "no command buffer to write an image back");
+    const VkMemoryBarrier stored = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                                    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &stored, 0, NULL, 0, NULL);
+    const VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, e->layers}, .imageExtent = {e->width, rows, 1}};
+    vkCmdCopyImageToBuffer(commands, e->image, VK_IMAGE_LAYOUT_GENERAL, e->plan.linear.buffer, 1, &copy);
+    const VkMemoryBarrier copied = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                    .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &copied, 0, NULL, 0, NULL);
+    if (record_tile_copy(x, &e->plan, d->address, 1, error, error_size)) return -1;
+    batch_writes(x, d->address, span); /* the CPU reads it once the batch has run */
+    return 0;
+}
+
 enum { DST_SEL_ZERO = 0, DST_SEL_ONE = 1, DST_SEL_X = 4, DST_SEL_IDENTITY = 4 | 5 << 3 | 6 << 6 | 7 << 9 };
 
 
@@ -2890,6 +2939,10 @@ static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64
                                           storage_swizzled ? d.swizzle : 0};
         if (formats) formats[i] = f.format;
         image_entry *e = image_for(x, &d, &f, resources[i].access, error, error_size);
+        if (e && !pixel && (resources[i].access & GCN_IMAGE_WRITE) && x->stored_count < GCN_MAX_IMAGES) {
+            x->stored[x->stored_count].image = (size_t)(e - x->images), x->stored[x->stored_count].descriptor = d;
+            x->stored_count++;
+        }
         /* a sampled cube is viewed whole, its faces as layers (the shader names the face) */
         const uint32_t first = d.layers > 1 && !whole_cube ? d.base_array : 0,
                        layers = whole_cube ? d.layers : d.layers > 1 ? d.last_array - d.base_array + 1 : 1;
@@ -3065,6 +3118,7 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     gcn_image_binding bindings[GCN_MAX_IMAGES];
     VkImageView views[GCN_MAX_IMAGES];
     unsigned image_count = 0;
+    x->stored_count = 0;
     if (stage_images(x, "compute", c->code, 0, s->compute_user, c->user_sgprs, s->compute_user_set, 0, bindings, views, NULL, &image_count, error,
                      error_size))
         return -1;
@@ -3092,6 +3146,8 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     if (set) vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0, NULL);
     vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, USER_DATA_BYTES, s->compute_user);
     vkCmdDispatch(commands, groups[0], groups[1], groups[2]);
+    for (unsigned i = 0; i < x->stored_count; i++)
+        if (write_back_image(x, &x->images[x->stored[i].image], &x->stored[i].descriptor, error, error_size)) return -1;
     x->memory_epoch++; /* its stores may have changed any memory, render targets' included */
     /* the CPU reads memory it may store to only once the batch has run */
     if (stores_anywhere) x->slots[x->current].memory_pending = 1;

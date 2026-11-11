@@ -114,7 +114,11 @@ Instead:
        (`rt_image_descriptor_decode`, the Sea Islands manual's T# layout as shadPS4's `resource.h`
        has it) and binds a storage image (set 0, binding i) whose shape the translation uses. Stores
        must cover every component the format has; data components past them are dropped.
-       The executor keeps what shaders store in the image (it is not written back to memory). When
+       The executor keeps what shaders store in the image, and after each dispatch writes it to the
+       memory under it as its tile mode lays it out (tiled on the GPU, like a render target's
+       write-back), so another view of that memory reads it: the game's face texture is written as
+       8_8_8_8 UINT and sampled as sRGB with mip levels. Images over a render target, 3D images and
+       elements narrower than 32-bit words stay in the image only. When
        a shader stores into a render target's memory (a compute clear, as the game clears its
        G-buffer), the target's next draw first copies the image's texels into the target (an
        8_8_8_8 image into an 8_8_8_8 target, otherwise the same format; at least the target's size),
