@@ -217,6 +217,40 @@ Forty-five more of the library's functions were replaced on 10 November, all
   resets (`0x02abba10`, `0x02ad3300`) set one embedded state block to zero and that marker, leaving
   padding and a shared scalar's bits as they were. What each bank's records stand for is still open.
 
+### Wind on models
+
+`render_update_model_wind` (`0x02713870`, 11,646 bytes) gives each model its wind, which the grass
+and tree shaders read as `WindForceAndTime` and `PointWindForce`. Every model draw calls it
+(`0x0216f9d0`, `0x02124660`). For the model's wind receiver it:
+
+1. ages the influences it keeps: each fades out over its last 0.75 s while its wave time advances
+   by the wind step;
+2. copies the live influences, up to four in each of two lists, to the output;
+3. samples every attached wind source: a base speed, a gust from fractal noise, and a direction
+   turned by noisy angles;
+4. adds or refreshes that source's influence, ramping it in over 0.1 s. Kinds 0 and 3 go to the
+   first list, which keeps the strongest four once full.
+
+It was the last function on the list of frame-rate-patched functions in issue [#32](https://github.com/Yharnam-Hunters/Paleblood/issues/32), now closed
+([#568](https://github.com/Yharnam-Hunters/Paleblood/pull/568), 11 November). The patches point its three 1/30 s step loads at their own frame-time cell
+and rewrite one to use the measured frame time; `BB_TARGET_FPS` does the same in code
+(see The frame limiter). Three quirks of the original are kept:
+three stale stack bytes copied into every influence, a failed lookup keeping the previous source's
+jitter, gust and cycle values, and a hold flag that zeroes the step for every later source. What
+each source kind stands for is still open.
+
+<details>
+<summary>How the wind update was verified</summary>
+
+Edge-verified: 120 constructed cases pass against the original stock and with the pinned
+community patch file for `30 FPS++`, `60 FPS++` and `Uncap FPS++` (each run with the matching
+`BB_TARGET_FPS`); 109 of the original's 125 branches were seen both ways, and every
+non-equivalent one of 70 deliberate mutants fails in at least one mode. A separate review
+session that did not write the code requested changes, then approved the fixes. It becomes
+verified once recordings from the game exist.
+
+</details>
+
 ### How the renderer learns what the game draws
 
 Paleblood does not replay the finished GPU commands. Instead, the GPU library's replacements, with
@@ -373,6 +407,7 @@ frames. #279, #286 and #287 were brought up to date with `main` from #209, #259 
 | `0x02571d60` | 1324 | `render_prepare_swap_chain_resource_info` | edge-verified | Allocate resource storage and publish its descriptor before copying initial data. Re-read entry counts after processing/copy callbacks; copy failures preserve partial output. |
 | `0x02572290` | 47 | `render_clear_swap_chain_cached_record` | edge-verified | Release the swap-chain cached-record resource through its owner; clear only the resource after the callback. |
 | `0x025b2fb0` | 768 | `render_swap_chain_present` | verified | GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0) |
+| `0x02713870` | 11646 | `render_update_model_wind` | edge-verified | Ages a model wind receiver's kept influences, lists the live ones and adds or refreshes one per attached wind source; applies selected frame-rate steps |
 | `0x02aaa5a0` | 124 | `render_release_present_finish_node` | edge-verified | Release the finish node through the manager helper, retaining its head-match decision and reloading commands across retries. |
 | `0x02aaddc0` | 393 | `render_allocate_shader_upload` | edge-verified | Allocate one shader-upload slice of at most 64 KiB. If no suitable block exists, acquire once, reclaim, then retry once. Preserve zero-size requests and delegate block policy to the original manager. |
 | `0x02aaf030` | 508 | `render_managed_present_capacity` | edge-verified | Acquire managed command space, preserve partial block publication and copy the saved command snapshot in reverse order. |
