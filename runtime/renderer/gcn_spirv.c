@@ -2595,6 +2595,42 @@ int gcn_called_image_resources(const uint32_t *code, size_t dwords, const uint32
     return 0;
 }
 
+int gcn_buffer_store_resources(const uint32_t *code, size_t dwords, gcn_resource_origin *buffers, unsigned max, unsigned *count, int *unknown,
+                               char *error, size_t error_size)
+{
+    enum { BUFFER_DWORDS = 4, SRSRC_UNIT = 4 };
+    *count = 0, *unknown = 0;
+    const long program = gcn_program_dwords(code, dwords);
+    if (program < 0) {
+        snprintf(error, error_size, "no program end found");
+        return -1;
+    }
+    const callee_code no_callee = {NULL, 0};
+    for (size_t at = 0; at < (size_t)program;) {
+        gcn_instruction ins;
+        if (gcn_decode(code + at, (size_t)program - at, &ins) || !ins.name) {
+            snprintf(error, error_size, "dword %zu: an instruction the decoder cannot name", at);
+            return -1;
+        }
+        if ((ins.encoding == GCN_MUBUF || ins.encoding == GCN_MTBUF) &&
+            (!strncmp(ins.name, "buffer_store", strlen("buffer_store")) || !strncmp(ins.name, "tbuffer_store", strlen("tbuffer_store")))) {
+            gcn_resource_origin origin;
+            char reason[256];
+            if (descriptor_origin(code, (size_t)program, &no_callee, at, ((code[at + 1] >> 16) & 0x1f) * SRSRC_UNIT, BUFFER_DWORDS, &origin, reason,
+                                  sizeof reason)) {
+                *unknown = 1;
+            } else {
+                unsigned i = 0;
+                while (i < *count && !same_origin(&buffers[i], &origin)) i++;
+                if (i == *count && *count == max) *unknown = 1;
+                else if (i == *count) buffers[(*count)++] = origin;
+            }
+        }
+        at += ins.dwords;
+    }
+    return 0;
+}
+
 int gcn_sampler_resources(const uint32_t *code, size_t dwords, gcn_resource_origin *samplers, unsigned max, unsigned *count, char *error,
                           size_t error_size)
 {

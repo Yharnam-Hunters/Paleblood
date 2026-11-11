@@ -95,6 +95,14 @@ typedef struct {
     unsigned access;                 /* GCN_IMAGE_READ | GCN_IMAGE_WRITE | GCN_IMAGE_SAMPLE */
 } gcn_image_resource;
 
+/* The buffer descriptors (V#, 4 words) a program's buffer and tbuffer stores write through, found the
+   same way, by origin, into buffers (up to max): a caller can bound the memory a dispatch may store to
+   (a store outside its descriptor's range writes nothing). *unknown is set when a store's descriptor has
+   no such origin (or there are more than max): its stores may reach any memory. 0, or -1 with the reason
+   (code that does not decode). */
+int gcn_buffer_store_resources(const uint32_t *code, size_t dwords, gcn_resource_origin *buffers, unsigned max, unsigned *count, int *unknown,
+                               char *error, size_t error_size);
+
 /* Samplers (S#, 4 words), which image_sample names by its SSAMP SGPRs, are found the same way (an
    s_load_dwordx4 for one from memory). The caller binds sampler j at set 0, binding image_count + j,
    and makes it from the descriptor. */
