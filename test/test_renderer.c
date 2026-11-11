@@ -14,6 +14,7 @@
 #include "runtime/render_executor.h"
 #include "runtime/renderer.h"
 
+#include "gcn_programs.h"
 #include "render_fixture.h"
 
 #include <pthread.h>
@@ -242,21 +243,36 @@ int main(void)
         CHECK(steps_seen() == 2 && step_order[1] == 11);
     }
 
-    /* A compute queue's buffer is skipped (sceGnmDingDong): a shader bound in it goes with it, so a
-       graphics buffer submitted later over the same memory (from another start) does not pick it up.
-       Without the skip it would. */
+    /* A compute queue's buffer (sceGnmDingDong submits each indirect buffer the ring points to) runs
+       like a graphics one: its dispatch (scale_add: out[i] = in[i] * 2.5 + 1, one workgroup of 64)
+       has stored its results by the time its completion step is performed. Its calls are taken, so
+       a graphics buffer submitted later over the same memory does not pick up its shader. */
     {
-        enum { QUEUE_BUFFER = 0xc0e80000, QUEUE_BYTES = 0x100, BIND_OFFSET = 0x40, LATER_START = 0x20 };
-        static const uint32_t compute_words[RT_COMPUTE_SHADER_WORDS];
-        const void *const bind_at = (const void *)(uintptr_t)(QUEUE_BUFFER + BIND_OFFSET);
+        enum { QUEUE_BUFFER = 0xc0e80000, QUEUE_BYTES = 0x100, COMPUTE_CODE = 0x3000, INPUT = 0x20000, OUTPUT = 0x21000, LANES = 64 };
+        char error[256] = "";
+        memcpy((void *)(uintptr_t)at(COMPUTE_CODE), scale_add, sizeof scale_add);
+        float *input = (float *)(uintptr_t)at(INPUT), *output = (float *)(uintptr_t)at(OUTPUT);
+        for (unsigned i = 0; i < LANES; i++) input[i] = (float)i, output[i] = -1;
+        const uint64_t code = at(COMPUTE_CODE);
+        const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0, 8 << 1, LANES, 1, 1};
+        uint32_t user[8];
+        descriptor(user, at(INPUT), 4);
+        descriptor(user + 4, at(OUTPUT), 4);
+        const uint32_t one[3] = {1, 1, 1};
+        CHECK(rt_render_record_compute_shader_at(QUEUE_BUFFER + 0x10, shader) == 0);
+        CHECK(rt_render_record_user_data(QUEUE_BUFFER, 0x20, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+        CHECK(rt_render_record_dispatch(QUEUE_BUFFER, 0x30, one, error, sizeof error) == 0);
+        step_count = 0;
+        const rt_gpu_step done = {note_step, "sceGnmDingDong", 0x40, {21}, 0, NULL};
+        rt_renderer_submit("sceGnmDingDong", (const void *)(uintptr_t)QUEUE_BUFFER, QUEUE_BYTES, &done, 1);
+        rt_renderer_wait_idle();
+        CHECK(steps_seen() == 1 && step_order[0] == 21);
+        int right = 1;
+        for (unsigned i = 0; i < LANES; i++) right &= output[i] == (float)i * 2.5f + 1.0f;
+        CHECK(right);
         size_t calls = 1;
-        rt_renderer_bind_shader("sceGnmSetCsShader", RT_RENDERER_COMPUTE_SHADER, bind_at, compute_words);
-        rt_renderer_skip("sceGnmDingDong", (const void *)(uintptr_t)QUEUE_BUFFER, QUEUE_BYTES);
-        rt_render_submitted(QUEUE_BUFFER + LATER_START, QUEUE_BYTES, &calls);
+        rt_render_submitted(QUEUE_BUFFER + 0x08, QUEUE_BYTES, &calls);
         CHECK(calls == 0);
-        rt_renderer_bind_shader("sceGnmSetCsShader", RT_RENDERER_COMPUTE_SHADER, bind_at, compute_words);
-        rt_render_submitted(QUEUE_BUFFER + LATER_START, QUEUE_BYTES, &calls);
-        CHECK(calls == 1); /* the leak the skip prevents */
     }
 
     rt_render_forget();
