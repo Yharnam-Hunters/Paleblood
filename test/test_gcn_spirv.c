@@ -355,6 +355,35 @@ static void calls(void)
     CHECK(gcn_translate_vertex(PROGRAM(vertex_calling_fetch), &layout, &spirv, &words, error, sizeof error) == -1 && strstr(error, "returns through s[2:3]"));
     layout.callee = NULL;
     CHECK(gcn_translate_vertex(PROGRAM(vertex_calling_fetch), &layout, &spirv, &words, error, sizeof error) == -1 && strstr(error, "no callee"));
+
+    /* An image descriptor in the user data that the fetch shader leaves alone keeps its origin past the
+       call: listed, and translated as a vertex shader's sampled image at the binding given; without the
+       callee the call counts as writing every SGPR, and a callee that loads into those SGPRs stops. */
+    gcn_image_resource found[GCN_MAX_IMAGES];
+    unsigned count = 0;
+    CHECK(gcn_called_image_resources(PROGRAM(vertex_fetch_then_image), fetch_position_only, sizeof fetch_position_only / 4, found,
+                                     GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
+    CHECK(count == 1 && !found[0].origin.from_memory && found[0].origin.sgpr == 8 && found[0].access == GCN_IMAGE_READ);
+    CHECK(gcn_image_resources(PROGRAM(vertex_fetch_then_image), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
+          strstr(error, "s_swappc_b64"));
+    CHECK(gcn_called_image_resources(PROGRAM(vertex_fetch_then_image), fetch_into_image_sgprs, sizeof fetch_into_image_sgprs / 4, found,
+                                     GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
+          strstr(error, "s_swappc_b64"));
+    const gcn_image_binding texture[] = {{{0, 8, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0}};
+    layout.callee = fetch_position_only, layout.callee_dwords = sizeof fetch_position_only / 4;
+    layout.images = texture, layout.image_count = 1, layout.first_binding = 3;
+    const int loaded = gcn_translate_vertex(PROGRAM(vertex_fetch_then_image), &layout, &spirv, &words, error, sizeof error);
+    if (loaded) fprintf(stderr, "vertex_fetch_then_image: %s\n", error);
+    CHECK(loaded == 0);
+    if (spirv) {
+        CHECK(validate(spirv, words, "vertex_fetch_then_image") != 0);
+        int bound_at_3 = 0; /* OpDecorate %image Binding 3 */
+        for (size_t i = 0; i + 3 < words; i++)
+            if (spirv[i] == (4u << 16 | 71u) && spirv[i + 2] == 33u && spirv[i + 3] == 3u) bound_at_3 = 1;
+        CHECK(bound_at_3);
+        free(spirv);
+        spirv = NULL;
+    }
 }
 
 static void rect_list_stages(void)
@@ -378,6 +407,35 @@ static void rect_list_stages(void)
     CHECK(rt_rect_list_geometry(0, RT_RECT_LIST_MAX_CLIP_DISTANCES + 1, &spirv, &words) == -1);
 }
 
+/* A buffer_store_dwordx4 translates to a valid module that holds a store of the whole 4-dword vector
+   (an OpTypePointer, opcode 32, in PhysicalStorageBuffer, 5349, to a vector, opcode 23, of four 32-bit
+   unsigned integers): stores of separate dwords cross the bus to host memory a dword at a time.
+   test_gcn_compute runs it, aligned and not, partly in range. */
+static void vector_stores(void)
+{
+    translates(store_dwordx4_aligned, sizeof store_dwordx4_aligned / sizeof *store_dwordx4_aligned, "store_dwordx4_aligned");
+    translates(store_dwordx4_unaligned, sizeof store_dwordx4_unaligned / sizeof *store_dwordx4_unaligned, "store_dwordx4_unaligned");
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    char error[256];
+    CHECK(translate(COMPUTE, store_dwordx4_aligned, sizeof store_dwordx4_aligned / sizeof *store_dwordx4_aligned, &spirv, &words, error,
+                    sizeof error) == 0);
+    if (!spirv) return;
+    enum { OP_TYPE_INT = 21, OP_TYPE_VECTOR = 23, OP_TYPE_POINTER = 32, PHYSICAL_STORAGE_BUFFER = 5349, MAX_ID = 1 << 16 };
+    static uint8_t uint32_type[MAX_ID], uvec4_type[MAX_ID];
+    memset(uint32_type, 0, sizeof uint32_type), memset(uvec4_type, 0, sizeof uvec4_type);
+    int vector_pointer = 0;
+    for (size_t at = 5; at < words && spirv[at] >> 16; at += spirv[at] >> 16) {
+        const uint32_t *in = spirv + at;
+        const unsigned opcode = in[0] & 0xffff;
+        if (opcode == OP_TYPE_INT && in[1] < MAX_ID && in[2] == 32 && in[3] == 0) uint32_type[in[1]] = 1;
+        if (opcode == OP_TYPE_VECTOR && in[1] < MAX_ID && in[2] < MAX_ID && uint32_type[in[2]] && in[3] == 4) uvec4_type[in[1]] = 1;
+        if (opcode == OP_TYPE_POINTER && in[2] == PHYSICAL_STORAGE_BUFFER && in[3] < MAX_ID && uvec4_type[in[3]]) vector_pointer = 1;
+    }
+    CHECK(vector_pointer);
+    free(spirv);
+}
+
 /* The renderer's GPU tile copies (runtime/tile_copy.h), every element size and direction: valid modules;
    other element sizes are refused. test_render_executor runs them against rt_tiling_offset. */
 static void tile_copy_shaders(void)
@@ -394,6 +452,11 @@ static void tile_copy_shaders(void)
             const int valid = validate(spirv, words, name);
             if (valid < 0) fprintf(stderr, "  %s: spirv-val not installed; validation skipped\n", name);
             CHECK(valid != 0);
+            /* the element moves in one store of its whole size (OpStore, opcode 62), not word by word:
+               word stores with gaps between them cross the bus to host memory one word at a time */
+            unsigned stores = 0;
+            for (size_t at = 5; at < words && spirv[at] >> 16; at += spirv[at] >> 16) stores += (spirv[at] & 0xffff) == 62;
+            CHECK(stores == 1);
             free(spirv);
         }
     uint32_t *spirv = NULL;
@@ -422,6 +485,7 @@ int main(void)
 {
     rect_list_stages();
     tile_copy_shaders();
+    vector_stores();
     image_programs();
     calls();
     user_data_read();

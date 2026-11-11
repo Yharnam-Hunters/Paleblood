@@ -34,6 +34,7 @@
 enum { MAX_SHADERS = 1024, MAX_PIPELINES = 1024, MAX_TARGETS = 128, MAX_RECT_STAGES = 16, MAX_COMPUTE_PIPELINES = 512, MAX_IMAGES = 1024,
        MAX_VIEWS = 16, MAX_SAMPLERS = 256, MAX_PASSES = 256, BATCH_SETS = 256, MAX_WRITTEN = 32,
        STOP_SLOTS = MAX_SHADERS + MAX_COMPUTE_PIPELINES };
+enum { MAX_VERTEX_IMAGE_LAYOUTS = 32 };
 enum { USER_DATA_BYTES = GCN_USER_SGPR_MAX * 4, VERTEX_USER_DATA = 0, PIXEL_USER_DATA = USER_DATA_BYTES };
 enum { COLOR_10_11_11 = 0x6, COLOR_8_8_8_8 = 0xa, COLOR_16_16_16_16 = 0xc, NUMBER_UNORM = 0, NUMBER_SRGB = 6, NUMBER_FLOAT = 7, SWAP_STD = 0,
        SWAP_ALT = 1 };
@@ -57,11 +58,12 @@ typedef struct {
     uint64_t code;
     int stage;
     uint32_t user_sgprs, settings;   /* PA_CL_VS_OUT_CNTL or SPI_PS_INPUT_ADDR */
-    gcn_image_binding images[GCN_MAX_IMAGES]; /* a pixel shader's sampled images and samplers */
+    gcn_image_binding images[GCN_MAX_IMAGES]; /* its sampled images (and a pixel shader's samplers) */
     unsigned image_count;
     gcn_resource_origin samplers[GCN_MAX_SAMPLERS];
     unsigned sampler_count;
     uint64_t callee;                 /* a vertex shader's fetch shader (its address), or 0 */
+    unsigned first_binding;          /* where its images' bindings start (a vertex shader's follow the pixel shader's) */
     uint32_t user_read;              /* the user SGPRs it reads before writing them (gcn_spirv.h) */
     VkShaderModule module;
 } shader_entry;
@@ -208,6 +210,22 @@ typedef struct {
     VkShaderModule module;
 } rect_stage;
 
+/* What a program's resource scan found (gcn_called_image_resources, or gcn_sampler_resources for
+   `samplers`), kept by its code address and its fetch shader's: a scan decodes the whole program, and
+   a frame repeats its shaders hundreds of times. A kept scan holds a copy of the program (and of its
+   fetch shader) and is used only while the memory still holds that code; failed scans are not kept
+   (they stop the run). */
+typedef struct {
+    uint64_t code, callee;
+    int samplers, used;
+    uint32_t *words, *callee_words;  /* the programs as scanned, through their ends (gcn_program_dwords) */
+    size_t dwords, callee_dwords;
+    unsigned count;
+    gcn_image_resource images[GCN_MAX_IMAGES];
+    gcn_resource_origin sampler_origins[GCN_MAX_SAMPLERS];
+} scan_entry;
+enum { SCAN_SLOTS = 4096 }; /* a power of two: open addressing; when full, programs are scanned each time */
+
 /* A depth target's registers from DB_Z_INFO (0xa010) to DB_DEPTH_SLICE (0xa017), in order. */
 enum { Z_INFO, STENCIL_INFO, Z_READ_BASE, STENCIL_READ_BASE, Z_WRITE_BASE, STENCIL_WRITE_BASE, DEPTH_SIZE, DEPTH_SLICE,
        DEPTH_TARGET_REGISTERS };
@@ -229,6 +247,7 @@ typedef struct {
     /* Registers the library set (AMD's layout, gfx_7_2_sh_mask.h), with whether each was set; an
        unset one is the state the drawing below assumes. */
     uint32_t blend_control[RT_COLOR_TARGETS], blend_set; /* CB_BLENDn_CONTROL, and which were set, a bit each */
+    uint32_t clear_words[RT_COLOR_TARGETS][2];             /* CB_COLORn_CLEAR_WORD0 and 1: a fast clear's texel */
     uint32_t depth_control, color_control, target_mask, primitive_type, instances;
     int depth_set, color_control_set, target_mask_set, primitive_set, instances_set;
     float blend_constants[4];        /* CB_BLEND_RED, GREEN, BLUE, ALPHA */
@@ -243,6 +262,10 @@ typedef struct {
     /* stencil and depth-block state: DB_STENCIL_CONTROL, DB_STENCILREFMASK and _BF, DB_RENDER_CONTROL */
     uint32_t stencil_control, stencil_reference[2], render_control;
     int stencil_control_set, stencil_reference_set[2], render_control_set;
+    /* the depth target's HTILE (DB_HTILE_DATA_BASE, the address shifted right by 8) and its clear value
+       (DB_DEPTH_CLEAR, a float's bits): a fast clear (resolve_depth_fast_clear) */
+    uint32_t htile_base, depth_clear;
+    int htile_set;
 } draw_state;
 
 struct rt_executor {
@@ -260,6 +283,14 @@ struct rt_executor {
        to n - 1, the samplers after them; made on first use */
     VkDescriptorSetLayout pixel_set_layouts[GCN_MAX_IMAGES + 1][GCN_MAX_SAMPLERS + 1];
     VkPipelineLayout pixel_layouts[GCN_MAX_IMAGES + 1][GCN_MAX_SAMPLERS + 1];
+    /* draws whose vertex shader also loads v images: the pixel shader's bindings, then the vertex
+       shader's images; made on first use, by (n, m, v) */
+    struct {
+        unsigned n, m, v;
+        VkDescriptorSetLayout set_layout;
+        VkPipelineLayout layout;
+    } vertex_image_layouts[MAX_VERTEX_IMAGE_LAYOUTS];
+    size_t vertex_image_layout_count;
     VkPushConstantRange push_ranges[STAGES];
     /* samplers made from sampler descriptors (S#), by their words */
     struct {
@@ -292,6 +323,7 @@ struct rt_executor {
     size_t compute_count;
     image_entry images[MAX_IMAGES];
     size_t image_count;
+    scan_entry scans[SCAN_SLOTS];    /* resource scans, by code (scan_for) */
     /* the run-time stop words translated shaders write (runtime/gcn_spirv.h), one per shader */
     VkBuffer stop_buffer;
     VkDeviceMemory stop_memory;
@@ -330,7 +362,7 @@ static int failed(char *error, size_t error_size, const char *format, ...) __att
 enum { DB_RENDER_CONTROL = 0xa000, DB_DEPTH_VIEW = 0xa002, DB_HTILE_DATA_BASE = 0xa005, DB_STENCIL_CLEAR = 0xa00a, DB_DEPTH_CLEAR = 0xa00b,
        DB_DEPTH_INFO = 0xa00f, DB_Z_INFO = 0xa010, DB_STENCIL_INFO = 0xa011, DB_DEPTH_SLICE = 0xa017, DB_STENCILREFMASK = 0xa10c,
        DB_STENCILREFMASK_BF = 0xa10d, DB_HTILE_SURFACE = 0xa2af, CB_TARGET_MASK = 0xa08e, CB_BLEND_RED = 0xa105, CB_BLEND_ALPHA = 0xa108, DB_STENCIL_CONTROL = 0xa10b, CB_BLEND0_CONTROL = 0xa1e0,
-       CB_BLEND7_CONTROL = 0xa1e7, DB_DEPTH_CONTROL = 0xa200,
+       CB_BLEND7_CONTROL = 0xa1e7, DB_DEPTH_CONTROL = 0xa200, CB_COLOR0_CLEAR_WORD0 = 0xa323, CB_COLOR_REGISTER_STRIDE = 15,
        CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242 };
 enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 0x1, Z_ENABLE = 0x2, Z_WRITE_ENABLE = 0x4,
        COLOR_MODE_MASK = 0x70, COLOR_MODE_SHIFT = 4, CB_NORMAL = 1, CB_ELIMINATE_FAST_CLEAR = 2, ROP3_MASK = 0xff0000, ROP3_SHIFT = 16, ROP3_COPY = 0xcc,
@@ -351,14 +383,22 @@ static int set_register(draw_state *s, uint32_t address, uint32_t value)
         return 0;
     case DB_RENDER_CONTROL: s->render_control = value, s->render_control_set = 1; return 0;
     case DB_DEPTH_VIEW: s->depth_view = value; return 0;
-    /* compression metadata (HTILE) and clear values: the executor keeps its own depth images, and clears
-       through DB_RENDER_CONTROL stop below */
-    case DB_HTILE_DATA_BASE: case DB_DEPTH_INFO: case DB_HTILE_SURFACE: case DB_DEPTH_CLEAR: case DB_STENCIL_CLEAR: return 0;
+    /* compression metadata (HTILE) and the depth clear value: a cleared HTILE clears the executor's depth
+       image (resolve_depth_fast_clear); clears through DB_RENDER_CONTROL stop below */
+    case DB_HTILE_DATA_BASE: s->htile_base = value, s->htile_set = 1; return 0;
+    case DB_DEPTH_CLEAR: s->depth_clear = value; return 0;
+    case DB_DEPTH_INFO: case DB_HTILE_SURFACE: case DB_STENCIL_CLEAR: return 0;
     default:
         if (address >= DB_Z_INFO && address <= DB_DEPTH_SLICE) {
             s->depth_target[address - DB_Z_INFO] = value;
             if (address == DB_Z_INFO) s->z_info_set = 1;
             if (address == DB_STENCIL_INFO) s->stencil_info_set = 1;
+            return 0;
+        }
+        if (address >= CB_COLOR0_CLEAR_WORD0 && address < CB_COLOR0_CLEAR_WORD0 + RT_COLOR_TARGETS * CB_COLOR_REGISTER_STRIDE &&
+            (address - CB_COLOR0_CLEAR_WORD0) % CB_COLOR_REGISTER_STRIDE < 2) {
+            const uint32_t slot = (address - CB_COLOR0_CLEAR_WORD0) / CB_COLOR_REGISTER_STRIDE;
+            s->clear_words[slot][(address - CB_COLOR0_CLEAR_WORD0) % CB_COLOR_REGISTER_STRIDE] = value;
             return 0;
         }
         if (address >= CB_BLEND0_CONTROL && address <= CB_BLEND7_CONTROL) {
@@ -522,9 +562,8 @@ static uint32_t slot_mask(const draw_state *s, unsigned slot)
    *colours the slots it writes, a bit each: a target set, not masked off entirely, colour writes on
    (CB_COLOR_CONTROL's mode not CB_DISABLE). A fast-clear eliminate pass (mode CB_ELIMINATE_FAST_CLEAR,
    Mesa's sid.h numbering) writes the clear colour into the tiles CMASK marks cleared: the executor
-   applies no fast clears, so with FAST_CLEAR off in each target's CB_COLOR_INFO there are none and the
-   pass writes nothing; a target with FAST_CLEAR on stops by name. 1 when nothing at all would be
-   written, 0 to draw, -1 with the reason otherwise. */
+   applies fast clears before each draw (apply_fast_clears), so there is nothing left for the pass. 1
+   when nothing at all would be written, 0 to draw, -1 with the reason otherwise. */
 static int check_state(const draw_state *s, depth_plan *plan, uint32_t *colours, char *error, size_t error_size)
 {
     if (s->primitive_set && s->primitive_type != DI_PT_TRILIST && s->primitive_type != DI_PT_TRISTRIP && s->primitive_type != DI_PT_RECTLIST)
@@ -535,13 +574,8 @@ static int check_state(const draw_state *s, depth_plan *plan, uint32_t *colours,
     if (s->color_control_set) {
         const uint32_t mode = (s->color_control & COLOR_MODE_MASK) >> COLOR_MODE_SHIFT, rop = (s->color_control & ROP3_MASK) >> ROP3_SHIFT;
         if (mode == CB_DISABLE) *colours = 0;
-        else if (mode == CB_ELIMINATE_FAST_CLEAR) {
-            for (unsigned slot = 0; slot < RT_COLOR_TARGETS; slot++)
-                if ((s->color_enabled >> slot & 1) && s->colors[slot].fast_clear)
-                    return failed(error, error_size, "a fast-clear eliminate pass over render target %#llx, which uses fast clears: not done yet",
-                                  (unsigned long long)s->colors[slot].address);
-            return 1;
-        } else if (mode != CB_NORMAL || rop != ROP3_COPY)
+        else if (mode == CB_ELIMINATE_FAST_CLEAR) return 1;
+        else if (mode != CB_NORMAL || rop != ROP3_COPY)
             return failed(error, error_size, "colour mode %u, raster operation %#x: only normal copies are drawn yet", mode, rop);
     }
     for (unsigned slot = 0; slot < RT_COLOR_TARGETS; slot++) {
@@ -1064,6 +1098,8 @@ static int record_tile_copy(rt_executor *x, const tile_plan *p, uint64_t address
     enum { MAX_GROUPS = 65535 };
     const uint32_t groups_x = groups < MAX_GROUPS ? (uint32_t)groups : MAX_GROUPS, groups_y = (uint32_t)((groups + groups_x - 1) / groups_x);
     if (groups * RT_TILE_COPY_GROUP > UINT32_MAX || groups_y > MAX_GROUPS) return failed(error, error_size, "an image too large for the GPU copy");
+    if (address % (p->dwords * 4))
+        return failed(error, error_size, "a tiled image at %#llx, not a multiple of its %u-byte elements", (unsigned long long)address, p->dwords * 4);
     const uint64_t tiled = address + x->address_offset; /* the guest address's GPU address (wraps as the shaders' adds do) */
     const uint32_t push[RT_TILE_COPY_PUSH_WORDS] = {
         [RT_TILE_COPY_TILED_LO] = (uint32_t)tiled, [RT_TILE_COPY_TILED_HI] = (uint32_t)(tiled >> 32),
@@ -1283,6 +1319,56 @@ static int take_written_image(rt_executor *x, target_entry *t, char *error, size
     return 1;
 }
 
+/* Fast clears (CB_COLOR_INFO's FAST_CLEAR): the game clears a target by clearing its CMASK (4 bits a
+   8x8 tile; 0 means cleared to CB_COLORn_CLEAR_WORD0/1, as Mesa's radeonsi fast clears with a CMASK of
+   0, and all bits set means the tile holds its texels) and leaves the colour to the GPU. Before each
+   draw the executor resolves them at once, as an eliminate pass would: a target whose CMASK is filled
+   with one value other than all ones gets its memory filled with the clear texel (CLEAR_WORD0, or WORD0
+   then WORD1 for 8-byte texels: the texel's bits in the target's format; a uniform texel fills a tiled
+   layout the same way) and its CMASK set to all ones, and its image loads again from memory. A fill
+   other than 0 counts too: the character creation screen's clear pass leaves its G-buffer's CMASK all
+   0x10 bytes; what such a code means to the hardware is not established in a public source, and
+   shadPS4 (Rasterizer::IsComputeMetaClear, facts only) takes any compute write to a CMASK as clearing
+   the whole target. A CMASK of all ones needs nothing; a mixed one (a partial fast clear) stops by name.
+   0, or -1 with the reason. */
+static int apply_fast_clears(rt_executor *x, const draw_state *s, char *error, size_t error_size)
+{
+    for (unsigned slot = 0; slot < RT_COLOR_TARGETS; slot++) {
+        const rt_color_target *c = &s->colors[slot];
+        if (!(s->color_enabled >> slot & 1) || !c->fast_clear) continue;
+        const uint64_t cmask = c->cmask_address;
+        if (cmask < x->guest_base || cmask - x->guest_base > x->size || c->cmask_bytes > x->size - (cmask - x->guest_base))
+            return failed(error, error_size, "render target %#llx's CMASK at %#llx is outside the GPU-visible memory", (unsigned long long)c->address,
+                          (unsigned long long)cmask);
+        if (guest_memory_settled(x, cmask, c->cmask_bytes, error, error_size)) return -1; /* the batch may store the CMASK */
+        uint8_t *bits = (uint8_t *)x->view + (cmask - x->guest_base);
+        uint32_t filled = 0, ones = 0; /* bytes equal to the first, and bytes of all ones */
+        for (uint32_t i = 0; i < c->cmask_bytes; i++) filled += bits[i] == bits[0], ones += bits[i] == 0xff;
+        if (ones == c->cmask_bytes) continue;
+        if (filled != c->cmask_bytes)
+            return failed(error, error_size, "render target %#llx with a partly fast-cleared CMASK: not done yet", (unsigned long long)c->address);
+        uint32_t element_bytes;
+        if (target_format(c, &element_bytes, error, error_size) == VK_FORMAT_UNDEFINED) return -1;
+        rt_tiling layout;
+        char reason[160];
+        if (rt_tiling_layout(c->tile_mode_index, element_bytes, c->pitch, c->height, &layout, reason, sizeof reason))
+            return failed(error, error_size, "fast-clearing render target %#llx: %s", (unsigned long long)c->address, reason);
+        const uint64_t span = rt_tiling_size(&layout, 1);
+        if (c->address < x->guest_base || c->address - x->guest_base > x->size || span > x->size - (c->address - x->guest_base))
+            return failed(error, error_size, "render target %#llx is outside the GPU-visible memory", (unsigned long long)c->address);
+        /* what the batch still does to that memory (a write-back) comes first; the clear replaces it */
+        if (batch_finish(x, error, error_size)) return -1;
+        uint32_t *texels = (uint32_t *)((uint8_t *)x->view + (c->address - x->guest_base));
+        const uint32_t words = element_bytes / 4;
+        for (uint64_t i = 0; i < span / 4; i++) texels[i] = s->clear_words[slot][i % words];
+        memset(bits, 0xff, c->cmask_bytes);
+        target_entry *t = find_target(x, c->address);
+        if (t) t->drawn = 0, t->loaded_epoch = UINT64_MAX, t->staging_current = 0;
+        x->memory_epoch++; /* images over that memory load it again */
+    }
+    return 0;
+}
+
 /* Writes every render target drawn into since back to the guest memory, so what reads the memory next
    (a shader's buffer loads or images, the CPU after the buffer) sees the draws: copied into its linear
    rows and tiled into place on the GPU, with the batch. The memory epoch moves on (images over that
@@ -1429,6 +1515,53 @@ fail:
    attachment. The colour targets must have one size. They and the depth target address pixels from the
    same corner, so a depth target larger than them (padded, as the game's 2048x1152 one under 1920x1088)
    is drawn with their size; a smaller one stops by name. NULL after failing. */
+/* Depth fast clears: the game clears a depth target by clearing its HTILE (one 32-bit word for each
+   8x8 tile, with DB_Z_INFO's TILE_SURFACE_ENABLE, bit 29) and leaves the depth to the GPU. A word whose
+   ZMASK (bits 0-3) is 0 marks its tile as cleared to DB_DEPTH_CLEAR, as AMD's public driver code (Mesa's
+   radeonsi) encodes HTILE; shadPS4 treats a cleared HTILE the same way, clearing the depth before the
+   draw. Before a draw that uses the depth target, an HTILE of only cleared tiles clears the image's
+   depth to DB_DEPTH_CLEAR (stencil is left as it is), and its words get ZMASK 0xf (expanded: the tile
+   holds its depth), so the clear happens once; an HTILE with no cleared tile needs nothing; a mix (a
+   partial fast clear) stops by name. Without DB_HTILE_DATA_BASE set there is no HTILE to read. 0, or -1
+   with the reason. */
+static int resolve_depth_fast_clear(rt_executor *x, const draw_state *s, depth_entry *z, char *error, size_t error_size)
+{
+    enum { TILE_SURFACE_ENABLE = 1u << 29, ZMASK = 0xf, TILE = 8 };
+    if (!(s->depth_target[Z_INFO] & TILE_SURFACE_ENABLE) || !s->htile_set || z->format == VK_FORMAT_S8_UINT) return 0;
+    const uint64_t htile = (uint64_t)s->htile_base << 8, bytes = (uint64_t)(z->width / TILE) * (z->height / TILE) * 4;
+    if (htile < x->guest_base || htile - x->guest_base > x->size || bytes > x->size - (htile - x->guest_base))
+        return failed(error, error_size, "depth target %#llx's HTILE at %#llx is outside the GPU-visible memory", (unsigned long long)z->z_address,
+                      (unsigned long long)htile);
+    if (guest_memory_settled(x, htile, bytes, error, error_size)) return -1; /* a dispatch in the batch may clear it */
+    uint32_t *words = (uint32_t *)((uint8_t *)x->view + (htile - x->guest_base));
+    const size_t count = (size_t)(bytes / 4);
+    size_t cleared = 0;
+    for (size_t i = 0; i < count; i++) cleared += (words[i] & ZMASK) == 0;
+    if (!cleared) return 0;
+    if (cleared != count)
+        return failed(error, error_size, "depth target %#llx with a partly fast-cleared HTILE (%zu of %zu tiles): not done yet",
+                      (unsigned long long)z->z_address, cleared, count);
+    VkCommandBuffer commands = batch_commands(x);
+    if (!commands) return failed(error, error_size, "no command buffer");
+    const VkImageSubresourceRange depth = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+    VkImageMemoryBarrier barrier = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+                                    .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                    .oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                    .image = z->image, .subresourceRange = depth};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+    VkClearDepthStencilValue value = {0.0f, 0};
+    memcpy(&value.depth, &s->depth_clear, sizeof value.depth);
+    vkCmdClearDepthStencilImage(commands, z->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1, &depth);
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+    for (size_t i = 0; i < count; i++) words[i] |= ZMASK;
+    z->drawn = 1;
+    return 0;
+}
+
 static pass_entry *pass_for(rt_executor *x, target_entry *const colors[RT_COLOR_TARGETS], const depth_entry *depth, char *error,
                             size_t error_size)
 {
@@ -1514,11 +1647,13 @@ static pass_entry *pass_for(rt_executor *x, target_entry *const colors[RT_COLOR_
    cache key). */
 static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint32_t user_sgprs, uint32_t settings,
                                  const gcn_image_binding *images, unsigned image_count, const gcn_resource_origin *samplers,
-                                 unsigned sampler_count, uint64_t callee, uint32_t *user_read, char *error, size_t error_size)
+                                 unsigned sampler_count, unsigned first_binding, uint64_t callee, uint32_t *user_read, char *error,
+                                 size_t error_size)
 {
     for (size_t i = 0; i < x->shader_count; i++) {
         const shader_entry *s = &x->shaders[i];
         if (s->code == code && s->stage == stage && s->user_sgprs == user_sgprs && s->settings == settings && s->callee == callee &&
+            s->first_binding == first_binding &&
             s->image_count == image_count && !memcmp(s->images, images, image_count * sizeof *images) &&
             s->sampler_count == sampler_count && !memcmp(s->samplers, samplers, sampler_count * sizeof *samplers)) {
             *user_read = s->user_read;
@@ -1545,7 +1680,8 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
                                           .push_constant_offset = VERTEX_USER_DATA, .address_offset = x->address_offset,
                                           .error_address = stop_slot(x, 0, x->shader_count), .callee = callee ? (const uint32_t *)(uintptr_t)callee : NULL,
                                           .callee_dwords = callee ? (size_t)((x->guest_base + x->size - callee) / 4) : 0,
-                                          .code_address = code, .user_data_read = user_read};
+                                          .code_address = code, .images = images, .image_count = image_count,
+                                          .first_binding = first_binding, .user_data_read = user_read};
         result = gcn_translate_vertex(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
     } else {
         const uint32_t inputs = settings & ~SETTINGS_FRONT_FACE_ALL_BITS; /* a pixel shader's SPI_PS_INPUT_ADDR */
@@ -1574,7 +1710,8 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
     }
     shader_entry *e = &x->shaders[x->shader_count++];
     *e = (shader_entry){.code = code, .stage = stage, .user_sgprs = user_sgprs, .settings = settings, .image_count = image_count,
-                        .sampler_count = sampler_count, .callee = callee, .user_read = *user_read, .module = module};
+                        .sampler_count = sampler_count, .first_binding = first_binding, .callee = callee, .user_read = *user_read,
+                        .module = module};
     memcpy(e->images, images, image_count * sizeof *images);
     memcpy(e->samplers, samplers, sampler_count * sizeof *samplers);
     return module;
@@ -1707,8 +1844,9 @@ static VkShaderModule rect_stage_for(rt_executor *x, const rt_vertex_shader *ver
 
 /* ---- running a buffer ---- */
 
-static int stage_images(rt_executor *x, uint64_t code, const uint32_t *user, uint32_t user_sgprs, uint32_t user_set, int pixel, gcn_image_binding *bindings,
-                        VkImageView *views, VkFormat *formats, unsigned *count, char *error, size_t error_size);
+static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64_t callee, const uint32_t *user, uint32_t user_sgprs,
+                        uint32_t user_set, int pixel, gcn_image_binding *bindings, VkImageView *views, VkFormat *formats, unsigned *count,
+                        char *error, size_t error_size);
 
 static int stage_samplers(rt_executor *x, uint64_t code, const uint32_t *user, uint32_t user_sgprs, uint32_t user_set, gcn_resource_origin *origins,
                           VkSampler *samplers, unsigned *count, int *linear, char *error, size_t error_size);
@@ -1716,7 +1854,8 @@ static int stage_samplers(rt_executor *x, uint64_t code, const uint32_t *user, u
 /* A descriptor set of n images of one type, then m samplers, for set layout `layout`, from the pool the
    batch's sets share (when it is full, the batch runs first and frees it). 0, or -1 with the reason. */
 static int image_set(rt_executor *x, VkDescriptorSetLayout layout, VkDescriptorType type, const VkImageView *views, unsigned n,
-                     const VkSampler *samplers, unsigned m, VkDescriptorSet *set, char *error, size_t error_size)
+                     const VkSampler *samplers, unsigned m, const VkImageView *vertex_views, unsigned v, VkDescriptorSet *set, char *error,
+                     size_t error_size)
 {
     const VkDescriptorSetAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = x->descriptor_pool,
                                                   .descriptorSetCount = 1, .pSetLayouts = &layout};
@@ -1724,17 +1863,18 @@ static int image_set(rt_executor *x, VkDescriptorSetLayout layout, VkDescriptorT
         if (batch_finish(x, error, error_size)) return -1;
         if (vkAllocateDescriptorSets(x->device, &allocate, set) != VK_SUCCESS) return failed(error, error_size, "no descriptor set");
     }
-    VkDescriptorImageInfo infos[GCN_MAX_IMAGES + GCN_MAX_SAMPLERS];
-    VkWriteDescriptorSet writes[GCN_MAX_IMAGES + GCN_MAX_SAMPLERS];
-    for (unsigned i = 0; i < n + m; i++) {
-        const int sampler = i >= n;
+    VkDescriptorImageInfo infos[2 * GCN_MAX_IMAGES + GCN_MAX_SAMPLERS];
+    VkWriteDescriptorSet writes[2 * GCN_MAX_IMAGES + GCN_MAX_SAMPLERS];
+    for (unsigned i = 0; i < n + m + v; i++) {
+        const int sampler = i >= n && i < n + m;
+        const VkImageView view = i < n ? views[i] : sampler ? VK_NULL_HANDLE : vertex_views[i - n - m];
         infos[i] = sampler ? (VkDescriptorImageInfo){samplers[i - n], VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED}
-                           : (VkDescriptorImageInfo){VK_NULL_HANDLE, views[i], VK_IMAGE_LAYOUT_GENERAL};
+                           : (VkDescriptorImageInfo){VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};
         writes[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = *set, .dstBinding = i,
                                            .descriptorCount = 1, .descriptorType = sampler ? VK_DESCRIPTOR_TYPE_SAMPLER : type,
                                            .pImageInfo = &infos[i]};
     }
-    vkUpdateDescriptorSets(x->device, n + m, writes, 0, NULL);
+    vkUpdateDescriptorSets(x->device, n + m + v, writes, 0, NULL);
     return 0;
 }
 
@@ -1756,6 +1896,43 @@ static int pixel_layout_for(rt_executor *x, unsigned n, unsigned m, char *error,
                                                     .pPushConstantRanges = x->push_ranges};
     if (vkCreatePipelineLayout(x->device, &with_images, NULL, &x->pixel_layouts[n][m]) != VK_SUCCESS)
         return failed(error, error_size, "no pipeline layout with images");
+    return 0;
+}
+
+/* The set layout and pipeline layout of draws whose pixel shader reads n sampled images with m samplers
+   and whose vertex shader loads v images (bindings n + m on, seen by the vertex stage), made on first
+   use. 0, or -1 with the reason. */
+static int graphics_layout_for(rt_executor *x, unsigned n, unsigned m, unsigned v, VkDescriptorSetLayout *set_layout, VkPipelineLayout *layout,
+                               char *error, size_t error_size)
+{
+    if (!v) {
+        if (pixel_layout_for(x, n, m, error, error_size)) return -1;
+        *set_layout = x->pixel_set_layouts[n][m], *layout = x->pixel_layouts[n][m];
+        return 0;
+    }
+    for (size_t i = 0; i < x->vertex_image_layout_count; i++)
+        if (x->vertex_image_layouts[i].n == n && x->vertex_image_layouts[i].m == m && x->vertex_image_layouts[i].v == v) {
+            *set_layout = x->vertex_image_layouts[i].set_layout, *layout = x->vertex_image_layouts[i].layout;
+            return 0;
+        }
+    if (x->vertex_image_layout_count == MAX_VERTEX_IMAGE_LAYOUTS) return failed(error, error_size, "more vertex-image layouts than the executor keeps");
+    VkDescriptorSetLayoutBinding bindings[2 * GCN_MAX_IMAGES + GCN_MAX_SAMPLERS];
+    for (unsigned b = 0; b < n + m + v; b++)
+        bindings[b] = (VkDescriptorSetLayoutBinding){b, b >= n && b < n + m ? VK_DESCRIPTOR_TYPE_SAMPLER : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1,
+                                                     b < n + m ? VK_SHADER_STAGE_FRAGMENT_BIT : VK_SHADER_STAGE_VERTEX_BIT, NULL};
+    const VkDescriptorSetLayoutCreateInfo set = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = n + m + v,
+                                                 .pBindings = bindings};
+    VkDescriptorSetLayout made_set = VK_NULL_HANDLE;
+    if (vkCreateDescriptorSetLayout(x->device, &set, NULL, &made_set) != VK_SUCCESS) return failed(error, error_size, "no descriptor set layout");
+    const VkPipelineLayoutCreateInfo with_images = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
+                                                    .pSetLayouts = &made_set, .pushConstantRangeCount = STAGES, .pPushConstantRanges = x->push_ranges};
+    VkPipelineLayout made = VK_NULL_HANDLE;
+    if (vkCreatePipelineLayout(x->device, &with_images, NULL, &made) != VK_SUCCESS) {
+        vkDestroyDescriptorSetLayout(x->device, made_set, NULL);
+        return failed(error, error_size, "no pipeline layout with vertex images");
+    }
+    x->vertex_image_layouts[x->vertex_image_layout_count++] = (__typeof__(x->vertex_image_layouts[0])){n, m, v, made_set, made};
+    *set_layout = made_set, *layout = made;
     return 0;
 }
 
@@ -1819,8 +1996,8 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     VkImageView views[GCN_MAX_IMAGES];
     unsigned image_count = 0;
     VkFormat view_formats[GCN_MAX_IMAGES];
-    if (!depth_only && stage_images(x, s->pixel.code, s->user[STAGE_PIXEL], s->pixel.user_sgprs, s->user_set[STAGE_PIXEL], 1, bindings, views, view_formats, &image_count, error,
-                     error_size))
+    if (!depth_only && stage_images(x, "pixel", s->pixel.code, 0, s->user[STAGE_PIXEL], s->pixel.user_sgprs, s->user_set[STAGE_PIXEL], 1, bindings,
+                                    views, view_formats, &image_count, error, error_size))
         return -1;
     gcn_resource_origin sampler_origins[GCN_MAX_SAMPLERS];
     VkSampler samplers[GCN_MAX_SAMPLERS];
@@ -1853,6 +2030,7 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     const int uses_depth = plan->depth_test || plan->stencil_test;
     depth_entry *z = uses_depth ? depth_for(x, s, error, error_size) : NULL;
     if (uses_depth && !z) return -1;
+    if (z && resolve_depth_fast_clear(x, s, z, error, error_size)) return -1;
     if (z && plan->reads && !z->drawn)
         return failed(error, error_size, "a depth or stencil test reads depth target %#llx, which no draw has written yet: its contents in "
                       "memory are not loaded", (unsigned long long)z->z_address);
@@ -1865,16 +2043,23 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     const uint32_t width = sized ? sized->width : z->width, height = sized ? sized->height : z->height;
     uint64_t callee = 0;
     if (vertex_callee(x, s, &callee, error, error_size)) return -1;
+    /* the vertex shader's own images (loaded, not sampled), bound after the pixel shader's images and samplers */
+    gcn_image_binding vertex_bindings[GCN_MAX_IMAGES];
+    VkImageView vertex_views[GCN_MAX_IMAGES];
+    unsigned vertex_image_count = 0;
+    if (stage_images(x, "vertex", s->vertex.code, callee, s->user[STAGE_VERTEX], s->vertex.user_sgprs, s->user_set[STAGE_VERTEX], 1,
+                     vertex_bindings, vertex_views, NULL, &vertex_image_count, error, error_size))
+        return -1;
     uint32_t vertex_read = 0, pixel_read = 0;
-    const VkShaderModule vertex = shader_for(x, STAGE_VERTEX, s->vertex.code, s->vertex.user_sgprs, s->vertex.output_control, NULL, 0,
-                                             NULL, 0, callee, &vertex_read, error, error_size);
+    const VkShaderModule vertex = shader_for(x, STAGE_VERTEX, s->vertex.code, s->vertex.user_sgprs, s->vertex.output_control, vertex_bindings,
+                                             vertex_image_count, NULL, 0, image_count + sampler_count, callee, &vertex_read, error, error_size);
     if (!vertex) return -1;
     const VkShaderModule pixel = depth_only ? VK_NULL_HANDLE
                                             : shader_for(x, STAGE_PIXEL, s->pixel.code, s->pixel.user_sgprs,
                                                          s->pixel.input_address |
                                                              (s->pixel.barycentric_control & FRONT_FACE_ALL_BITS ? SETTINGS_FRONT_FACE_ALL_BITS : 0u),
                                                          bindings,
-                                                         image_count, sampler_origins, sampler_count, 0, &pixel_read, error, error_size);
+                                                         image_count, sampler_origins, sampler_count, 0, 0, &pixel_read, error, error_size);
     if (!depth_only && !pixel) return -1;
     if (check_user_data("vertex", s->vertex.code, vertex_read, s->user_set[STAGE_VERTEX], error, error_size) ||
         (!depth_only && check_user_data("pixel", s->pixel.code, pixel_read, s->user_set[STAGE_PIXEL], error, error_size)))
@@ -1883,16 +2068,17 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     if (rect_list && index_count % 3) return failed(error, error_size, "a rect list of %u vertices, not whole rects of three", index_count);
     const VkShaderModule geometry = rect_list ? rect_stage_for(x, &s->vertex, error, error_size) : VK_NULL_HANDLE;
     if (rect_list && !geometry) return -1;
-    const int has_set = image_count || sampler_count;
-    if (has_set && pixel_layout_for(x, image_count, sampler_count, error, error_size)) return -1;
-    const VkPipelineLayout layout = has_set ? x->pixel_layouts[image_count][sampler_count] : x->layout;
+    const int has_set = image_count || sampler_count || vertex_image_count;
+    VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
+    VkPipelineLayout layout = x->layout;
+    if (has_set && graphics_layout_for(x, image_count, sampler_count, vertex_image_count, &set_layout, &layout, error, error_size)) return -1;
     const int strip = s->primitive_set && s->primitive_type == DI_PT_TRISTRIP;
     const VkPipeline pipeline = pipeline_for(x, vertex, geometry, pixel, render_pass, layout, colours, blend_control, write_masks, strip,
                                              plan, z != NULL, error, error_size);
     if (!pipeline) return -1;
     VkDescriptorSet set = VK_NULL_HANDLE;
-    if (has_set && image_set(x, x->pixel_set_layouts[image_count][sampler_count], VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, views, image_count,
-                             samplers, sampler_count, &set, error, error_size))
+    if (has_set && image_set(x, set_layout, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, views, image_count, samplers, sampler_count, vertex_views,
+                             vertex_image_count, &set, error, error_size))
         return -1;
 
     VkCommandBuffer commands = batch_commands(x);
@@ -2010,7 +2196,8 @@ typedef struct {
 } texel_format;
 
 /* The format of a descriptor; 0, or -1 with the reason. DATA_FORMAT and NUM_FORMAT are AMD's (GFX7):
-   data formats 1 8, 4 32, 10 8_8_8_8, 11 32_32, 14 32_32_32_32, and the block-compressed 35 BC1 to 41 BC7
+   data formats 1 8, 2 16, 4 32, 5 16_16, 6 10_11_11 (x in the low bits: Vulkan's B10G11R11, as for render
+   targets), 10 8_8_8_8, 11 32_32, 12 16_16_16_16, 14 32_32_32_32, and the block-compressed 35 BC1 to 41 BC7
    (4 x 4 texels in 8 bytes for BC1 and BC4, 16 for the others; shadPS4's pixel_format.h numbers them
    the same); number formats 0 unorm, 1 snorm, 4 uint, 5 sint, 7 float, 9 sRGB. BC1 keeps its one-bit
    alpha (Vulkan's RGBA form). BC6 stops by name until its number formats are established. */
@@ -2024,6 +2211,8 @@ static int image_format(const rt_image_descriptor *d, texel_format *f, char *err
         {4, 5, {VK_FORMAT_R32_SINT, GCN_IMAGE_SINT, 1, 4, 1}}, {11, 7, {VK_FORMAT_R32G32_SFLOAT, GCN_IMAGE_FLOAT, 2, 8, 1}},
         {14, 7, {VK_FORMAT_R32G32B32A32_SFLOAT, GCN_IMAGE_FLOAT, 4, 16, 1}}, {10, 0, {VK_FORMAT_R8G8B8A8_UNORM, GCN_IMAGE_FLOAT, 4, 4, 1}}, {10, 4, {VK_FORMAT_R8G8B8A8_UINT, GCN_IMAGE_UINT, 4, 4, 1}},
         {10, 9, {VK_FORMAT_R8G8B8A8_SRGB, GCN_IMAGE_FLOAT, 4, 4, 1}},
+        {2, 7, {VK_FORMAT_R16_SFLOAT, GCN_IMAGE_FLOAT, 1, 2, 1}}, {5, 7, {VK_FORMAT_R16G16_SFLOAT, GCN_IMAGE_FLOAT, 2, 4, 1}},
+        {12, 7, {VK_FORMAT_R16G16B16A16_SFLOAT, GCN_IMAGE_FLOAT, 4, 8, 1}}, {6, 7, {VK_FORMAT_B10G11R11_UFLOAT_PACK32, GCN_IMAGE_FLOAT, 3, 4, 1}},
         {35, 0, {VK_FORMAT_BC1_RGBA_UNORM_BLOCK, GCN_IMAGE_FLOAT, 4, 8, 4}}, {35, 9, {VK_FORMAT_BC1_RGBA_SRGB_BLOCK, GCN_IMAGE_FLOAT, 4, 8, 4}},
         {36, 0, {VK_FORMAT_BC2_UNORM_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}}, {36, 9, {VK_FORMAT_BC2_SRGB_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}},
         {37, 0, {VK_FORMAT_BC3_UNORM_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}}, {37, 9, {VK_FORMAT_BC3_SRGB_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}},
@@ -2083,7 +2272,7 @@ static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor
     }
     const VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, e->layers},
                                     .imageExtent = {e->width, one_dimensional(d->type) ? 1 : e->height, 1}};
-    if (bytes % 4 == 0) { /* whole words: detiled on the GPU (runtime/tile_copy.h), with the batch */
+    if (bytes % 4 == 0 && rt_tiling_uniform_micro(&layout)) { /* whole words: detiled on the GPU (runtime/tile_copy.h), with the batch */
         if (e->loaded_epoch == x->memory_epoch) return 0; /* nothing may have changed the memory since */
         if (!e->plan.table.buffer && tile_plan_make(x, &e->plan, &layout, columns, rows, e->layers, error, error_size)) return -1;
         if (record_tile_copy(x, &e->plan, d->address, 0, error, error_size)) return -1;
@@ -2338,22 +2527,87 @@ static int descriptor_words(rt_executor *x, const gcn_resource_origin *origin, c
 /* The images a shader uses, from the descriptors in its user data: their bindings (for translation)
    and views of kept images. A compute shader's are storage images; a pixel shader's are sampled
    images, which it only reads. 0, or -1 with the reason. */
-static int stage_images(rt_executor *x, uint64_t code, const uint32_t *user, uint32_t user_sgprs, uint32_t user_set, int pixel, gcn_image_binding *bindings,
-                        VkImageView *views, VkFormat *formats, unsigned *count, char *error, size_t error_size)
+static void scan_free(scan_entry *e)
 {
-    const char *stage = pixel ? "pixel" : "compute";
+    free(e->words), free(e->callee_words);
+    *e = (scan_entry){0};
+}
+
+/* A copy of the program at code, through its end, into *words (*dwords long). 0, or -1 (no end found,
+   no memory). */
+static int program_copy(rt_executor *x, uint64_t code, uint32_t **words, size_t *dwords)
+{
+    const long length = gcn_program_dwords((const uint32_t *)(uintptr_t)code, (size_t)((x->guest_base + x->size - code) / 4));
+    if (length <= 0 || !(*words = malloc((size_t)length * 4))) return -1;
+    memcpy(*words, (const void *)(uintptr_t)code, (size_t)length * 4);
+    *dwords = (size_t)length;
+    return 0;
+}
+
+/* The kept scan of a program (scan_entry): its slot, found with the same code still in memory, or
+   newly taken (used 0: the caller scans, then keeps it with scan_keep); NULL when the table is full. */
+static scan_entry *scan_for(rt_executor *x, uint64_t code, uint64_t callee, int samplers)
+{
+    const uint64_t key = (code ^ callee * 0x9e3779b97f4a7c15ull ^ (uint64_t)samplers) * 0xff51afd7ed558ccdull;
+    for (unsigned probe = 0; probe < SCAN_SLOTS; probe++) {
+        scan_entry *e = &x->scans[((key >> 40) + probe) & (SCAN_SLOTS - 1)];
+        if (!e->used) {
+            *e = (scan_entry){.code = code, .callee = callee, .samplers = samplers};
+            return e;
+        }
+        if (e->code != code || e->callee != callee || e->samplers != samplers) continue;
+        const int same = !memcmp((const void *)(uintptr_t)code, e->words, e->dwords * 4) &&
+                         (!callee || !memcmp((const void *)(uintptr_t)callee, e->callee_words, e->callee_dwords * 4));
+        if (!same) { /* other code at the address now: scanned again */
+            scan_free(e);
+            *e = (scan_entry){.code = code, .callee = callee, .samplers = samplers};
+        }
+        return e;
+    }
+    return NULL;
+}
+
+/* Keeps a scan's result in its slot, with copies of the programs scanned (without them, it is not kept). */
+static void scan_keep(rt_executor *x, scan_entry *e, unsigned count, const gcn_image_resource *images, const gcn_resource_origin *samplers)
+{
+    if (program_copy(x, e->code, &e->words, &e->dwords) || (e->callee && program_copy(x, e->callee, &e->callee_words, &e->callee_dwords))) {
+        const uint64_t code = e->code, callee = e->callee;
+        const int kind = e->samplers;
+        scan_free(e);
+        *e = (scan_entry){.code = code, .callee = callee, .samplers = kind};
+        return;
+    }
+    e->count = count, e->used = 1;
+    if (images) memcpy(e->images, images, count * sizeof *images);
+    if (samplers) memcpy(e->sampler_origins, samplers, count * sizeof *samplers);
+}
+
+static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64_t callee, const uint32_t *user, uint32_t user_sgprs,
+                        uint32_t user_set, int pixel, gcn_image_binding *bindings, VkImageView *views, VkFormat *formats, unsigned *count,
+                        char *error, size_t error_size)
+{
     if (code < x->guest_base || code >= x->guest_base + x->size || code % 4)
         return failed(error, error_size, "%s shader code at %#llx is outside the GPU-visible memory", stage, (unsigned long long)code);
     gcn_image_resource resources[GCN_MAX_IMAGES];
-    char reason[300];
-    if (gcn_image_resources((const uint32_t *)(uintptr_t)code, (size_t)((x->guest_base + x->size - code) / 4), resources, GCN_MAX_IMAGES,
-                            count, reason, sizeof reason))
-        return failed(error, error_size, "%s shader at %#llx: %s", stage, (unsigned long long)code, reason);
+    scan_entry *scan = scan_for(x, code, callee, 0);
+    if (scan && scan->used) {
+        *count = scan->count;
+        memcpy(resources, scan->images, scan->count * sizeof *resources);
+    } else {
+        char reason[300];
+        const uint32_t *callee_words = callee ? (const uint32_t *)(uintptr_t)callee : NULL;
+        const size_t callee_dwords = callee ? (size_t)((x->guest_base + x->size - callee) / 4) : 0;
+        if (gcn_called_image_resources((const uint32_t *)(uintptr_t)code, (size_t)((x->guest_base + x->size - code) / 4), callee_words,
+                                       callee_dwords, resources, GCN_MAX_IMAGES, count, reason, sizeof reason))
+            return failed(error, error_size, "%s shader at %#llx: %s", stage, (unsigned long long)code, reason);
+        if (scan) scan_keep(x, scan, *count, resources, NULL);
+    }
     if (*count && !pixel && !x->storage_images)
         return failed(error, error_size, "the Vulkan device cannot read and write images without a declared format");
     for (unsigned i = 0; i < *count; i++) {
         const gcn_resource_origin *origin = &resources[i].origin;
-        if (pixel && (resources[i].access & GCN_IMAGE_WRITE)) return failed(error, error_size, "a pixel shader that writes an image: not drawn yet");
+        if (pixel && (resources[i].access & GCN_IMAGE_WRITE))
+            return failed(error, error_size, "a %s shader that writes an image: not drawn yet", stage);
         uint32_t words[RT_IMAGE_DESCRIPTOR_WORDS];
         if (descriptor_words(x, origin, user, user_sgprs, user_set, words, RT_IMAGE_DESCRIPTOR_WORDS, error, error_size)) return -1;
         rt_image_descriptor d;
@@ -2498,10 +2752,17 @@ static int stage_samplers(rt_executor *x, uint64_t code, const uint32_t *user, u
                           VkSampler *samplers, unsigned *count, int *linear, char *error, size_t error_size)
 {
     *linear = 0;
-    char reason[300];
-    if (gcn_sampler_resources((const uint32_t *)(uintptr_t)code, (size_t)((x->guest_base + x->size - code) / 4), origins, GCN_MAX_SAMPLERS,
-                              count, reason, sizeof reason))
-        return failed(error, error_size, "pixel shader at %#llx: %s", (unsigned long long)code, reason);
+    scan_entry *scan = scan_for(x, code, 0, 1);
+    if (scan && scan->used) {
+        *count = scan->count;
+        memcpy(origins, scan->sampler_origins, scan->count * sizeof *origins);
+    } else {
+        char reason[300];
+        if (gcn_sampler_resources((const uint32_t *)(uintptr_t)code, (size_t)((x->guest_base + x->size - code) / 4), origins, GCN_MAX_SAMPLERS,
+                                  count, reason, sizeof reason))
+            return failed(error, error_size, "pixel shader at %#llx: %s", (unsigned long long)code, reason);
+        if (scan) scan_keep(x, scan, *count, NULL, origins);
+    }
     for (unsigned i = 0; i < *count; i++) {
         uint32_t words[4];
         if (descriptor_words(x, &origins[i], user, user_sgprs, user_set, words, 4, error, error_size)) return -1;
@@ -2526,14 +2787,16 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     gcn_image_binding bindings[GCN_MAX_IMAGES];
     VkImageView views[GCN_MAX_IMAGES];
     unsigned image_count = 0;
-    if (stage_images(x, c->code, s->compute_user, c->user_sgprs, s->compute_user_set, 0, bindings, views, NULL, &image_count, error, error_size)) return -1;
+    if (stage_images(x, "compute", c->code, 0, s->compute_user, c->user_sgprs, s->compute_user_set, 0, bindings, views, NULL, &image_count, error,
+                     error_size))
+        return -1;
     uint32_t user_read = 0;
     const VkPipeline pipeline = compute_pipeline_for(x, c, workgroup_id_x_sgpr, bindings, image_count, &user_read, error, error_size);
     if (!pipeline) return -1;
     if (check_user_data("compute", c->code, user_read, s->compute_user_set, error, error_size)) return -1;
     const VkPipelineLayout layout = image_count ? x->image_layouts[image_count] : x->compute_layout;
     VkDescriptorSet set = VK_NULL_HANDLE;
-    if (image_count && image_set(x, x->image_set_layouts[image_count], VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, views, image_count, NULL, 0, &set,
+    if (image_count && image_set(x, x->image_set_layouts[image_count], VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, views, image_count, NULL, 0, NULL, 0, &set,
                                  error, error_size))
         return -1;
     VkCommandBuffer commands = batch_commands(x);
@@ -2660,6 +2923,7 @@ static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, 
             s->instances = c->u.instances.count, s->instances_set = 1;
             break;
         case RT_CALL_DRAW_AUTO: {
+            if (apply_fast_clears(x, s, error, error_size)) return -1;
             depth_plan plan;
             uint32_t colours = 0;
             const int checked = check_state(s, &plan, &colours, error, error_size);
@@ -2688,6 +2952,7 @@ static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, 
             }
             if (index_range_for(x, s, c->u.draw_index.first, c->u.draw_index.count,
                                 !c->u.draw_index.has_packet_fields, &indices, error, error_size)) return -1;
+            if (apply_fast_clears(x, s, error, error_size)) return -1;
             depth_plan plan;
             uint32_t colours = 0;
             const int checked = check_state(s, &plan, &colours, error, error_size);
@@ -2787,6 +3052,10 @@ void rt_executor_close(rt_executor *x)
                 if (x->pixel_layouts[n][m]) vkDestroyPipelineLayout(x->device, x->pixel_layouts[n][m], NULL);
                 if (x->pixel_set_layouts[n][m]) vkDestroyDescriptorSetLayout(x->device, x->pixel_set_layouts[n][m], NULL);
             }
+        for (size_t i = 0; i < x->vertex_image_layout_count; i++) {
+            vkDestroyPipelineLayout(x->device, x->vertex_image_layouts[i].layout, NULL);
+            vkDestroyDescriptorSetLayout(x->device, x->vertex_image_layouts[i].set_layout, NULL);
+        }
         for (size_t i = 0; i < x->sampler_count; i++) vkDestroySampler(x->device, x->samplers[i].sampler, NULL);
         for (unsigned n = 1; n <= GCN_MAX_IMAGES; n++) {
             if (x->image_layouts[n]) vkDestroyPipelineLayout(x->device, x->image_layouts[n], NULL);
@@ -2800,6 +3069,7 @@ void rt_executor_close(rt_executor *x)
             free(x->images[i].agreed.bytes);
             tile_plan_free(x, &x->images[i].plan);
         }
+        for (size_t i = 0; i < SCAN_SLOTS; i++) scan_free(&x->scans[i]);
         if (x->stop_buffer) vkDestroyBuffer(x->device, x->stop_buffer, NULL);
         if (x->stop_memory) vkFreeMemory(x->device, x->stop_memory, NULL);
         if (x->batch_done) vkDestroyFence(x->device, x->batch_done, NULL);

@@ -1,10 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="620" viewBox="0 0 1000 620" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-label="Paleblood status: 683 of 686 imports working">
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="620" viewBox="0 0 1000 620" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" role="img" aria-label="Paleblood status: 686 of 686 imports working">
 <rect width="1000" height="620" rx="8" fill="#fcfcfb"/>
-<rect x="16.0" y="14" width="246.0" height="26" rx="4" fill="#52514e"/><path d="M136.0 14h122.0a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4h-122.0z" fill="#2a78d6"/><text x="22.0" y="31.5" fill="#ffffff" font-size="13" font-weight="normal" text-anchor="start">imports working</text><text x="142.0" y="31.5" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="start">683/686 (99.6%)</text>
-<rect x="270.0" y="14" width="174.4" height="26" rx="4" fill="#52514e"/><path d="M310.8 14h129.6a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4h-129.6z" fill="#1baf7a"/><text x="276.0" y="31.5" fill="#ffffff" font-size="13" font-weight="normal" text-anchor="start">boot</text><text x="316.8" y="31.5" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="start">first flip (8/8)</text>
-<rect x="452.4" y="14" width="244.8" height="26" rx="4" fill="#52514e"/><path d="M594.0 14h99.2a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4h-99.2z" fill="#2a78d6"/><text x="458.4" y="31.5" fill="#ffffff" font-size="13" font-weight="normal" text-anchor="start">in the last 7 days</text><text x="600.0" y="31.5" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="start">+431 imports</text>
-<rect x="705.2" y="14" width="320.0" height="26" rx="4" fill="#52514e"/><path d="M861.2 14h160.0a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4h-160.0z" fill="#1baf7a"/><text x="711.2" y="31.5" fill="#ffffff" font-size="13" font-weight="normal" text-anchor="start">functions decompiled</text><text x="867.2" y="31.5" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="start">18,264 (21 verified)</text>
-<text x="16.0" y="70.0" fill="#0b0b0b" font-size="14" font-weight="bold" text-anchor="start">System imports by library: 683 of 686 working</text>
+<rect x="16.0" y="14" width="253.6" height="26" rx="4" fill="#52514e"/><path d="M136.0 14h129.6a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4h-129.6z" fill="#2a78d6"/><text x="22.0" y="31.5" fill="#ffffff" font-size="13" font-weight="normal" text-anchor="start">imports working</text><text x="142.0" y="31.5" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="start">686/686 (100.0%)</text>
+<rect x="277.6" y="14" width="174.4" height="26" rx="4" fill="#52514e"/><path d="M318.4 14h129.6a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4h-129.6z" fill="#1baf7a"/><text x="283.6" y="31.5" fill="#ffffff" font-size="13" font-weight="normal" text-anchor="start">boot</text><text x="324.4" y="31.5" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="start">first flip (8/8)</text>
+<rect x="460.0" y="14" width="244.8" height="26" rx="4" fill="#52514e"/><path d="M601.6 14h99.2a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4h-99.2z" fill="#2a78d6"/><text x="466.0" y="31.5" fill="#ffffff" font-size="13" font-weight="normal" text-anchor="start">in the last 7 days</text><text x="607.6" y="31.5" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="start">+434 imports</text>
+<rect x="712.8" y="14" width="320.0" height="26" rx="4" fill="#52514e"/><path d="M868.8 14h160.0a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4h-160.0z" fill="#1baf7a"/><text x="718.8" y="31.5" fill="#ffffff" font-size="13" font-weight="normal" text-anchor="start">functions decompiled</text><text x="874.8" y="31.5" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="start">18,264 (21 verified)</text>
+<text x="16.0" y="70.0" fill="#0b0b0b" font-size="14" font-weight="bold" text-anchor="start">System imports by library: 686 of 686 working</text>
 <g><title>libc: 202 of 202 working (0 runtime, 202 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="18.0" y="82.0" width="237.7" height="319.5" rx="3" fill="none" stroke="#e1e0d9"/>
 <text x="22.0" y="93.5" fill="#52514e" font-size="10" font-weight="normal" text-anchor="start">libc 202/202</text>
@@ -211,9 +211,9 @@
 <rect x="109.5" y="367.4" width="16.9" height="16.9" rx="0.5" fill="#1baf7a"/>
 <rect x="127.4" y="367.4" width="16.9" height="16.9" rx="0.5" fill="#1baf7a"/>
 </g>
-<g><title>libkernel: 76 of 79 working (76 runtime, 0 game modules, 0 stop by name, 3 not yet)</title>
+<g><title>libkernel: 79 of 79 working (79 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="18.0" y="405.5" width="237.7" height="122.5" rx="3" fill="none" stroke="#e1e0d9"/>
-<text x="22.0" y="417.0" fill="#52514e" font-size="10" font-weight="normal" text-anchor="start">libkernel 76/79</text>
+<text x="22.0" y="417.0" fill="#52514e" font-size="10" font-weight="normal" text-anchor="start">libkernel 79/79</text>
 <rect x="20.0" y="422.5" width="15.5" height="15.5" rx="0.5" fill="#2a78d6"/>
 <rect x="36.5" y="422.5" width="15.5" height="15.5" rx="0.5" fill="#2a78d6"/>
 <rect x="53.0" y="422.5" width="15.5" height="15.5" rx="0.5" fill="#2a78d6"/>
@@ -290,9 +290,9 @@
 <rect x="69.5" y="505.0" width="15.5" height="15.5" rx="0.5" fill="#2a78d6"/>
 <rect x="86.0" y="505.0" width="15.5" height="15.5" rx="0.5" fill="#2a78d6"/>
 <rect x="102.5" y="505.0" width="15.5" height="15.5" rx="0.5" fill="#2a78d6"/>
-<rect x="119.0" y="505.0" width="15.5" height="15.5" rx="0.5" fill="#e1e0d9"/>
-<rect x="135.5" y="505.0" width="15.5" height="15.5" rx="0.5" fill="#e1e0d9"/>
-<rect x="152.0" y="505.0" width="15.5" height="15.5" rx="0.5" fill="#e1e0d9"/>
+<rect x="119.0" y="505.0" width="15.5" height="15.5" rx="0.5" fill="#2a78d6"/>
+<rect x="135.5" y="505.0" width="15.5" height="15.5" rx="0.5" fill="#2a78d6"/>
+<rect x="152.0" y="505.0" width="15.5" height="15.5" rx="0.5" fill="#2a78d6"/>
 </g>
 <g><title>libSceGnmDriver: 50 of 50 working (50 runtime, 0 game modules, 0 stop by name, 0 not yet)</title>
 <rect x="259.7" y="82.0" width="144.9" height="126.0" rx="3" fill="none" stroke="#e1e0d9"/>
@@ -832,13 +832,13 @@
 <rect x="598.2" y="501.1" width="8.7" height="8.7" rx="0.5" fill="#2a78d6"/>
 </g>
 <rect x="16" y="542" width="10" height="10" rx="2" fill="#2a78d6"/>
-<text x="30.0" y="551.0" fill="#52514e" font-size="11" font-weight="normal" text-anchor="start">implemented by the runtime (464)</text>
+<text x="30.0" y="551.0" fill="#52514e" font-size="11" font-weight="normal" text-anchor="start">implemented by the runtime (467)</text>
 <rect x="236.4" y="542" width="10" height="10" rx="2" fill="#1baf7a"/>
 <text x="250.4" y="551.0" fill="#52514e" font-size="11" font-weight="normal" text-anchor="start">the game&#x27;s own modules (219)</text>
 <rect x="432.0" y="542" width="10" height="10" rx="2" fill="#eda100"/>
 <text x="446.0" y="551.0" fill="#52514e" font-size="11" font-weight="normal" text-anchor="start">registered, stops by name (0)</text>
 <rect x="633.8" y="542" width="10" height="10" rx="2" fill="#e1e0d9"/>
-<text x="647.8" y="551.0" fill="#52514e" font-size="11" font-weight="normal" text-anchor="start">not yet (3)</text>
+<text x="647.8" y="551.0" fill="#52514e" font-size="11" font-weight="normal" text-anchor="start">not yet (0)</text>
 <text x="630.0" y="70.0" fill="#0b0b0b" font-size="14" font-weight="bold" text-anchor="start">Imports working at each recorded boot</text>
 <line x1="660" x2="980" y1="236.0" y2="236.0" stroke="#e1e0d9"/>
 <text x="656.0" y="240.0" fill="#898781" font-size="10" font-weight="normal" text-anchor="end">0</text>
@@ -850,7 +850,7 @@
 <text x="656.0" y="112.3" fill="#898781" font-size="10" font-weight="normal" text-anchor="end">600</text>
 <line x1="660" x2="980" y1="90.0" y2="90.0" stroke="#e1e0d9"/>
 <text x="656.0" y="94.0" fill="#898781" font-size="10" font-weight="normal" text-anchor="end">686</text>
-<polyline points="660.0,185.3 697.6,183.2 697.6,183.6 697.6,183.4 772.9,183.0 772.9,182.4 923.5,163.9 923.5,162.8 923.5,162.4 923.5,162.1 923.5,157.7 932.9,157.5 932.9,157.0 942.4,156.2 942.4,154.5 942.4,150.7 942.4,143.0 942.4,139.6 942.4,139.6 980.0,90.6" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<polyline points="660.0,185.3 697.6,183.2 697.6,183.6 697.6,183.4 772.9,183.0 772.9,182.4 923.5,163.9 923.5,162.8 923.5,162.4 923.5,162.1 923.5,157.7 932.9,157.5 932.9,157.0 942.4,156.2 942.4,154.5 942.4,150.7 942.4,143.0 942.4,139.6 942.4,139.6 980.0,90.6 980.0,90.0" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
 <circle cx="660.0" cy="185.3" r="3" fill="#2a78d6" stroke="#fcfcfb" stroke-width="1.5"><title>2026-10-07: 238 working, loaded</title></circle>
 <circle cx="697.6" cy="183.2" r="3" fill="#2a78d6" stroke="#fcfcfb" stroke-width="1.5"><title>2026-10-11: 248 working, loaded</title></circle>
 <circle cx="697.6" cy="183.6" r="3" fill="#2a78d6" stroke="#fcfcfb" stroke-width="1.5"><title>2026-10-11: 246 working, loaded</title></circle>
@@ -871,6 +871,7 @@
 <circle cx="942.4" cy="139.6" r="3" fill="#2a78d6" stroke="#fcfcfb" stroke-width="1.5"><title>2026-11-06: 453 working, first flip</title></circle>
 <circle cx="942.4" cy="139.6" r="3" fill="#2a78d6" stroke="#fcfcfb" stroke-width="1.5"><title>2026-11-06: 453 working, first flip</title></circle>
 <circle cx="980.0" cy="90.6" r="3" fill="#2a78d6" stroke="#fcfcfb" stroke-width="1.5"><title>2026-11-10: 683 working, first flip</title></circle>
+<circle cx="980.0" cy="90.0" r="3" fill="#2a78d6" stroke="#fcfcfb" stroke-width="1.5"><title>2026-11-10: 686 working, first flip</title></circle>
 <text x="660.0" y="252.0" fill="#898781" font-size="10" font-weight="normal" text-anchor="start">2026-10-07</text>
 <text x="980.0" y="252.0" fill="#898781" font-size="10" font-weight="normal" text-anchor="end">2026-11-10</text>
 <text x="630.0" y="290.0" fill="#0b0b0b" font-size="14" font-weight="bold" text-anchor="start">Boot</text>

@@ -13,7 +13,9 @@
    touch neighbouring guest memory. The table holds 32-bit words: the 64 elements' byte offsets in
    their micro tile in increasing order (rt_tiling_micro_spread's values, sorted), the texel place
    ((y % 8) * 8 + x % 8) of each, then each micro tile's first element's offset from the image's base
-   (rt_tiling_offset). Elements past the image's width or height are skipped. The linear rows hold
+   (rt_tiling_offset). Elements past the image's width or height are skipped. Each element moves in
+   one access of its whole size, so the tiled image's address must be a multiple of the element's
+   bytes (a guest image's base always is: descriptors hold it in units of 256 bytes). The linear rows hold
    `width` elements a row, `height` rows a slice, slice after slice. Addresses are GPU addresses
    (buffer device addresses), in the push constants as 32-bit words, low word first. */
 

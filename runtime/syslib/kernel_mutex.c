@@ -19,6 +19,9 @@
 #define _GNU_SOURCE /* pthread_mutex_clocklock, pthread_rwlock_clock*lock: the monotonic clock */
 #include "runtime/process.h"
 #include "runtime/syslib.h"
+#if defined(__APPLE__) && defined(__MACH__)
+#include "runtime/host_lock_wait.h"
+#endif
 
 #include <errno.h>
 #include <pthread.h>
@@ -224,7 +227,9 @@ static int cond_create(guest_cond **out)
     if (!c) return BSD_ENOMEM;
     pthread_condattr_t a;
     pthread_condattr_init(&a);
+#if !defined(__APPLE__) || !defined(__MACH__)
     pthread_condattr_setclock(&a, CLOCK_MONOTONIC); /* deadlines are computed on this clock */
+#endif
     const int r = pthread_cond_init(&c->host, &a);
     pthread_condattr_destroy(&a);
     if (r) {
@@ -307,7 +312,27 @@ static int cond_wait(guest_cond **cond, guest_mutex **mutex, const struct timesp
     for (int i = 1; i < levels; i++) pthread_mutex_unlock(&m->host); /* all but the one the wait releases */
     if (recursive) m->depth = 0;
     atomic_fetch_add(&c->waiters, 1);
+#if defined(__APPLE__) && defined(__MACH__)
+    if (deadline) {
+        for (;;) {
+            struct timespec now, remaining = {0, 0};
+            if (clock_gettime(CLOCK_MONOTONIC, &now)) { r = errno; break; }
+            if (deadline->tv_sec > now.tv_sec || (deadline->tv_sec == now.tv_sec && deadline->tv_nsec > now.tv_nsec)) {
+                remaining = (struct timespec){deadline->tv_sec - now.tv_sec, deadline->tv_nsec - now.tv_nsec};
+                if (remaining.tv_nsec < 0) { --remaining.tv_sec; remaining.tv_nsec += 1000000000; }
+            }
+            /* Large relative seconds can wrap the native nanosecond interval.
+               Wait at most an hour at a time, retaining the original deadline.
+               Each native wait releases/reacquires the mutex, including zero. */
+            const int limited = remaining.tv_sec > 3600 || (remaining.tv_sec == 3600 && remaining.tv_nsec != 0);
+            if (limited) remaining = (struct timespec){3600, 0};
+            r = pthread_cond_timedwait_relative_np(&c->host, &m->host, &remaining);
+            if (r != ETIMEDOUT || !limited) break;
+        }
+    } else r = pthread_cond_wait(&c->host, &m->host);
+#else
     r = deadline ? pthread_cond_timedwait(&c->host, &m->host, deadline) : pthread_cond_wait(&c->host, &m->host);
+#endif
     atomic_fetch_sub(&c->waiters, 1);
     if (recursive) {
         for (int i = 1; i < levels; i++) pthread_mutex_lock(&m->host);
@@ -339,15 +364,26 @@ static struct timespec deadline_after(uint32_t microseconds)
    owner locking its error-checking, adaptive or normal mutex again sleeps the whole time and
    answers ETIMEDOUT; a recursive mutex takes one more level. Otherwise the wait ends with the lock
    or ETIMEDOUT. */
+#if defined(__APPLE__) && defined(__MACH__)
+static int timed_mutex_attempt(void *mutex) { return pthread_mutex_trylock(mutex); }
+#endif
 static int mutex_timedlock(guest_mutex **mutex, uint32_t microseconds)
 {
     guest_mutex *m;
     const int r = mutex_get(mutex, &m);
     if (r) return r;
     const struct timespec deadline = deadline_after(microseconds);
+#if defined(__APPLE__) && defined(__MACH__)
+    const int host = rt_host_lock_wait(timed_mutex_attempt, &m->host, &deadline);
+#else
     const int host = pthread_mutex_clocklock(&m->host, CLOCK_MONOTONIC, &deadline);
+#endif
     if (host == EDEADLK) {
+#if defined(__APPLE__) && defined(__MACH__)
+        (void)rt_host_sleep_until_monotonic(&deadline);
+#else
         while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &deadline, NULL) == EINTR) {}
+#endif
         return BSD_ETIMEDOUT;
     }
     return note_locked(m, host);
