@@ -1973,7 +1973,10 @@ static int branches(const uint32_t *w, const gcn_instruction *ins, size_t at, lo
    the use writes those SGPRs, and no instruction before the load writes the pointer pair, nor any
    instruction at all when a branch goes back to the load or before it (so a loop that runs the load
    again loads the same descriptor; without one, code after the load may reuse the pointer's SGPRs, as
-   the game's pixel shaders do once their samples are done). Writes before the load do not matter: it replaces them
+   the game's pixel shaders do once their samples are done). The user data's descriptor holds at a use
+   that no write comes before, whatever branches run, unless one goes back to the use after a later
+   write (the game's pixel shaders reuse a sampler's SGPRs after their last sample). Writes before the
+   load do not matter: it replaces them
    (the game's shaders keep a compare's mask in those SGPRs before loading the descriptor). A
    branch that skips the load also skips the use, as the game's guarded samples do (an
    s_cbranch_execz around both). 0, or -1 with the reason. */
@@ -2003,12 +2006,12 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
         long target;
         if (branches(code + p, &ins, p, &target) && (p < at || target < 0 || (size_t)target <= at)) {
             const int back_to_use = (size_t)target <= at && (size_t)target <= p && p >= at;
-            if (target < 0 || writer < 0 || (written_after_use && back_to_use)) {
+            if (target < 0 || (written_after_use && back_to_use)) {
                 snprintf(error, error_size, "the descriptor in s[%u:%u] is written by the program, and a branch (%s at dword %zu) comes "
                          "before its use at dword %zu: not done yet", first, first + width - 1, ins.name, p, at);
                 return -1;
             }
-            if (target > writer && (size_t)target <= at) {
+            if (writer >= 0 && target > writer && (size_t)target <= at) {
                 snprintf(error, error_size, "the descriptor in s[%u:%u] is loaded at dword %ld, and a branch (%s at dword %zu) lands at "
                          "dword %ld, between the load and its use at dword %zu: not done yet", first, first + width - 1, writer, ins.name,
                          p, target, at);
