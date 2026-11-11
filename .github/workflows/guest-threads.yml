@@ -1,0 +1,73 @@
+name: guest-threads
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/guest-threads.yml'
+      - 'CMakeLists.txt'
+      - 'runtime/CMakeLists.txt'
+      - 'cmake/HostThreadTests.cmake'
+      - 'cmake/DarwinGuestPointer.cmake'
+      - 'runtime/guest_pointer_darwin.c'
+      - 'runtime/guest_tls_darwin.c'
+      - 'runtime/syslib/kernel_thread.c'
+      - 'runtime/syslib/kernel_key.c'
+      - 'runtime/syslib/table.c'
+      - 'runtime/process.c'
+      - 'runtime/memory.c'
+      - 'runtime/loader.c'
+      - 'runtime/nid.c'
+      - 'runtime/include/runtime/**'
+      - 'test/host_threads/**'
+      - 'test/test_syslib_threads_host.c'
+      - 'test/test_guest_threads.py'
+      - 'test/test_guest_pointer_failures.c'
+      - 'test/test_guest_thread_cleanup.c'
+      - 'test/syslib/thread_join.c'
+      - 'test/syslib_test.h'
+      - 'test/ps4elf.py'
+  pull_request:
+    paths:
+      - '.github/workflows/guest-threads.yml'
+      - 'CMakeLists.txt'
+      - 'runtime/CMakeLists.txt'
+      - 'cmake/HostThreadTests.cmake'
+      - 'cmake/DarwinGuestPointer.cmake'
+      - 'runtime/guest_pointer_darwin.c'
+      - 'runtime/guest_tls_darwin.c'
+      - 'runtime/syslib/kernel_thread.c'
+      - 'runtime/syslib/kernel_key.c'
+      - 'runtime/syslib/table.c'
+      - 'runtime/process.c'
+      - 'runtime/memory.c'
+      - 'runtime/loader.c'
+      - 'runtime/nid.c'
+      - 'runtime/include/runtime/**'
+      - 'test/host_threads/**'
+      - 'test/test_syslib_threads_host.c'
+      - 'test/test_guest_threads.py'
+      - 'test/test_guest_pointer_failures.c'
+      - 'test/test_guest_thread_cleanup.c'
+      - 'test/syslib/thread_join.c'
+      - 'test/syslib_test.h'
+      - 'test/ps4elf.py'
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  threads:
+    name: Guest workers (Darwin x86-64)
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure actual x86 guest execution tests
+        run: >-
+          cmake -S test/host_threads -B build-guest-threads -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_OSX_ARCHITECTURES=x86_64
+      - name: Build
+        run: cmake --build build-guest-threads --parallel 2
+      - name: Test thread lifecycle, rewritten ELF code, qualification failures and clear order
+        run: ctest --test-dir build-guest-threads --output-on-failure --no-tests=error

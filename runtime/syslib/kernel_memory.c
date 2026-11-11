@@ -23,7 +23,7 @@
    The pool is a host memory file, created on first use: an allocation is a range of it, a map is a
    host mapping of that range, so two maps of one range see the same bytes, as physical memory
    does. Where a map goes is the system's choice when the title gives no address hint: a GPU-visible
-   one (protection with GPU bits) goes at GPU_MEMORY_BASE + its offset in the pool, so that the
+   one (protection with GPU bits) goes at rt_gpu_memory_base() + its offset in the pool, so that the
    renderer's GPU reaches every such address at one fixed distance (runtime/gpu_memory.h); the
    others go anywhere free in the map window, which starts past that region. A second GPU-visible
    map of a range, which would need the same place, stops by name. Its size is this runtime's choice (RT_DIRECT_MEMORY_SIZE), not a measured PS4 value. Every
@@ -32,11 +32,16 @@
    part of an allocation or a mapped one, and the error values. */
 #define _GNU_SOURCE
 #include "runtime/gpu_memory.h"
+#include "runtime/memory.h"
 #include "runtime/guest_errno.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
 #include <errno.h>
+#if defined(__APPLE__) && defined(__MACH__)
+#include <fcntl.h>
+#include <stdio.h>
+#endif
 #include <pthread.h>
 #include <stdint.h>
 #include <string.h>
@@ -67,6 +72,9 @@ typedef struct {
 
 static pthread_mutex_t pool_lock = PTHREAD_MUTEX_INITIALIZER;
 static int pool_fd = -1;
+#if defined(__APPLE__) && defined(__MACH__)
+static FILE *pool_file; /* Retained for the process lifetime, like the Linux memfd. */
+#endif
 static direct_range ranges[MAX_RANGES]; /* allocated ranges, ascending by start */
 static int range_count;
 
@@ -78,9 +86,22 @@ static int is_power_of_two(uint64_t value) { return value && !(value & (value - 
 static int pool(const char *caller)
 {
     if (pool_fd >= 0) return pool_fd;
+#if defined(__APPLE__) && defined(__MACH__)
+    FILE *file = tmpfile();
+    if (!file) rt_fatal(caller, "cannot create the host file that holds direct memory");
+    const int fd = fileno(file);
+    const int descriptor_flags = fd < 0 ? -1 : fcntl(fd, F_GETFD);
+    if (descriptor_flags < 0 || fcntl(fd, F_SETFD, descriptor_flags | FD_CLOEXEC) ||
+        ftruncate(fd, (off_t)RT_DIRECT_MEMORY_SIZE)) {
+        (void)fclose(file);
+        rt_fatal(caller, "cannot initialize the host file that holds direct memory");
+    }
+    pool_file = file; /* Publish ownership only after all preparation succeeds. */
+#else
     const int fd = memfd_create("direct-memory", MFD_CLOEXEC);
     if (fd < 0 || ftruncate(fd, (off_t)RT_DIRECT_MEMORY_SIZE) != 0)
         rt_fatal(caller, "cannot create the host file that holds direct memory");
+#endif
     pool_fd = fd;
     return pool_fd;
 }
@@ -101,13 +122,48 @@ static uint64_t align_up(uint64_t value, uint64_t alignment) { return (value + a
 #define MAP_WINDOW_START 0x2000000000ull
 #define MAP_WINDOW_END 0xe000000000ull
 /* The window's first RT_DIRECT_MEMORY_SIZE bytes hold GPU-visible direct maps at their pool
-   offsets; everything else the system places goes after them. */
-#define GPU_MEMORY_BASE MAP_WINDOW_START
-
+   offsets; everything else the system places goes after them. Darwin may already occupy the
+   Linux window's start, so select a free aligned span without replacing any host allocation. */
 static pthread_mutex_t window_lock = PTHREAD_MUTEX_INITIALIZER;
-static uint64_t window_next = GPU_MEMORY_BASE + RT_DIRECT_MEMORY_SIZE;
+#if defined(__APPLE__) && defined(__MACH__)
+static uint64_t gpu_memory_base;
+static uint64_t window_next;
 
-uint64_t rt_gpu_memory_base(void) { return GPU_MEMORY_BASE; }
+/* window_lock held. This temporary probe selects a placement policy, not lifetime ownership:
+   every later mapping must still claim its own range without replacing a concurrent mapping.
+   Keep the original 128 GiB base alignment and the renderer's 40-bit address limit. */
+static void initialize_window(const char *caller)
+{
+    if (gpu_memory_base) return;
+    for (uint64_t base = MAP_WINDOW_START; base < MAP_WINDOW_END; base += MAP_WINDOW_START) {
+        void *const probe = rt_map_at((void *)(uintptr_t)base, RT_DIRECT_MEMORY_SIZE, PROT_NONE,
+                                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        if (probe == MAP_FAILED) {
+            if (errno == EEXIST || errno == EADDRNOTAVAIL) continue;
+            rt_fatal(caller, "the host cannot probe the direct-memory address window");
+        }
+        if (munmap(probe, RT_DIRECT_MEMORY_SIZE))
+            rt_fatal(caller, "the host cannot release the direct-memory address probe");
+        gpu_memory_base = base;
+        window_next = base + RT_DIRECT_MEMORY_SIZE;
+        return;
+    }
+    rt_fatal(caller, "no aligned direct-memory address span in the runtime's map window");
+}
+#else
+static uint64_t gpu_memory_base = MAP_WINDOW_START;
+static uint64_t window_next = MAP_WINDOW_START + RT_DIRECT_MEMORY_SIZE;
+static void initialize_window(const char *caller) { (void)caller; }
+#endif
+
+uint64_t rt_gpu_memory_base(void)
+{
+    pthread_mutex_lock(&window_lock);
+    initialize_window("rt_gpu_memory_base");
+    const uint64_t base = gpu_memory_base;
+    pthread_mutex_unlock(&window_lock);
+    return base;
+}
 
 int rt_gpu_memory_pool(int *fd, uint64_t *size)
 {
@@ -118,24 +174,24 @@ int rt_gpu_memory_pool(int *fd, uint64_t *size)
     return created ? 0 : -1;
 }
 
-/* An aligned address in the window with length bytes free after it, for a map the caller makes
-   with MAP_FIXED_NOREPLACE. A host mapping already there is stepped over. */
+/* Non-replacing placement in the address window. A declined POSIX hint is stepped over
+   without assuming the reason was occupancy; other host failures still stop by name. */
 static void *window_place(const char *caller, uint64_t length, uint64_t alignment, int host_protection, int map_flags,
                           int fd, off_t offset)
 {
     pthread_mutex_lock(&window_lock);
+    initialize_window(caller);
     for (;;) {
         const uint64_t at = align_up(window_next, alignment);
         if (at >= MAP_WINDOW_END || MAP_WINDOW_END - at < length) rt_fatal(caller, "the runtime's map window is full");
-        void *const got = mmap((void *)(uintptr_t)at, length, host_protection, map_flags | MAP_FIXED_NOREPLACE, fd, offset);
+        void *const got = rt_map_at((void *)(uintptr_t)at, length, host_protection, map_flags, fd, offset);
         if (got == (void *)(uintptr_t)at) {
             window_next = at + length;
             pthread_mutex_unlock(&window_lock);
             return got;
         }
-        if (got != MAP_FAILED) munmap(got, length); /* a host that ignored the placement */
-        else if (errno != EEXIST) rt_fatal(caller, "the host cannot map the memory");
-        window_next = at + alignment; /* in use: try the next aligned address */
+        if (errno != EEXIST && errno != EADDRNOTAVAIL) rt_fatal(caller, "the host cannot map the memory");
+        window_next = at + alignment;
     }
 }
 
@@ -242,7 +298,7 @@ static int32_t map_direct_memory(void **address, uint64_t length, int32_t protec
     static const char name[] = "sceKernelMapDirectMemory";
     if (!address) rt_fatal(name, "no variable for the address: the error value is not established");
     /* No overwrite (0x80, shadPS4's kernel memory.h) keeps a map off memory already mapped; the runtime
-       never replaces a mapping (hints are placed with MAP_FIXED_NOREPLACE), so it changes nothing. */
+       never replaces a mapping (hints use non-replacing placement), so it changes nothing. */
     if (flags & ~MAP_NO_OVERWRITE) rt_fatal(name, "map flags other than no-overwrite (a fixed address and the others) are not established");
     /* The runtime has no GPU yet: GPU access is accepted and the host mapping takes the CPU bits. */
     if (!protection || (protection & ~(PROT_CPU_READ | PROT_CPU_WRITE | PROT_GPU_READ | PROT_GPU_WRITE)))
@@ -263,15 +319,15 @@ static int32_t map_direct_memory(void **address, uint64_t length, int32_t protec
            the alignment stop by name. */
         aligned = *address;
         if ((uintptr_t)aligned & (alignment - 1)) rt_fatal(name, "an address hint off the alignment: the answer is not established");
-        void *const got = mmap(aligned, length, host_protection, MAP_SHARED | MAP_FIXED_NOREPLACE, pool(name), (off_t)start);
+        void *const got = rt_map_at(aligned, length, host_protection, MAP_SHARED, pool(name), (off_t)start);
         if (got != aligned) rt_fatal(name, "an address hint in use: where the system then maps is not established");
     } else if (protection & (PROT_GPU_READ | PROT_GPU_WRITE)) {
         /* At its offset in the pool, where the GPU reaches it (runtime/gpu_memory.h). The base is
            aligned far beyond any map alignment, so the address is aligned when the offset is. */
-        aligned = (unsigned char *)(uintptr_t)(GPU_MEMORY_BASE + (uint64_t)start);
+        aligned = (unsigned char *)(uintptr_t)(rt_gpu_memory_base() + (uint64_t)start);
         if ((uint64_t)start & (alignment - 1))
             rt_fatal(name, "a GPU-visible map whose pool offset is off its alignment: where it goes is not established");
-        void *const got = mmap(aligned, length, host_protection, MAP_SHARED | MAP_FIXED_NOREPLACE, pool(name), (off_t)start);
+        void *const got = rt_map_at(aligned, length, host_protection, MAP_SHARED, pool(name), (off_t)start);
         if (got != aligned)
             rt_fatal(name, "a second GPU-visible map of a pool range: the runtime keeps one, at the range's GPU address");
     } else {

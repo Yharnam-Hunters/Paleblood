@@ -649,7 +649,7 @@ static int pixel_resources(rt_executor *x, const MetalState &state, MetalPixelRe
             return failed(error,size,"sampled image format does not support linear filtering on this Metal device");
         out.images[i] = {images[i].origin,
             descriptor.type == RT_IMAGE_1D || descriptor.type == RT_IMAGE_1D_ARRAY ? GCN_IMAGE_1D : GCN_IMAGE_2D,
-            descriptor.type == RT_IMAGE_1D_ARRAY || descriptor.type == RT_IMAGE_2D_ARRAY,format->type,format->components,1,0};
+            descriptor.type == RT_IMAGE_1D_ARRAY || descriptor.type == RT_IMAGE_2D_ARRAY,format->type,format->components,1,0,0};
         if (!(out.textures[i] = image_for(x,words,descriptor,*format,false,nullptr,error,size))) return -1;
     }
     return 0;
@@ -845,7 +845,7 @@ static int compute_resources(rt_executor *x, const rt_compute_shader &shader, co
             storage_read_write(x,format->metal,error,size)) return -1;
         out.images[i] = {images[i].origin,
             d.type == RT_IMAGE_1D || d.type == RT_IMAGE_1D_ARRAY ? GCN_IMAGE_1D : GCN_IMAGE_2D,
-            d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY,format->type,format->components,0,0};
+            d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY,format->type,format->components,0,0,0};
         out.access[i] = images[i].access;
         if (!(out.textures[i] = image_for(x,words,d,*format,true,&out.layouts[i],error,size))) return -1;
         for (unsigned j = 0; j < i; ++j) {
@@ -1108,6 +1108,24 @@ extern "C" int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t bytes, 
     size_t count = 0;
     const rt_render_call *calls = rt_render_submitted(buffer, bytes, &count);
     return rt_executor_run_calls(x, calls, count, error, error_size);
+}
+
+/* Metal runs each buffer's calls to completion (rt_executor_run_calls), so a submission has run when
+   it returns: the ticket is only counted, and waiting for it returns at once. */
+extern "C" int rt_executor_submit_calls(rt_executor *x, const rt_render_call *calls, size_t count, uint64_t *ticket, char *error,
+                                        size_t error_size)
+{
+    static uint64_t submitted;
+    if (rt_executor_run_calls(x, calls, count, error, error_size)) return -1;
+    *ticket = ++submitted;
+    return 0;
+}
+
+extern "C" int rt_executor_wait_ticket(rt_executor *, uint64_t, char *, size_t) { return 0; }
+
+extern "C" int rt_executor_finish(rt_executor *x, char *error, size_t error_size)
+{
+    return !x || x->failed ? failed(error, error_size, "a usable executor is required") : 0;
 }
 
 /* The renderer copies calls before queuing them and may split them at a GPU step.
