@@ -333,7 +333,7 @@ enum { DB_RENDER_CONTROL = 0xa000, DB_DEPTH_VIEW = 0xa002, DB_HTILE_DATA_BASE = 
        CB_BLEND7_CONTROL = 0xa1e7, DB_DEPTH_CONTROL = 0xa200,
        CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242 };
 enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 0x1, Z_ENABLE = 0x2, Z_WRITE_ENABLE = 0x4,
-       COLOR_MODE_MASK = 0x70, COLOR_MODE_SHIFT = 4, CB_NORMAL = 1, ROP3_MASK = 0xff0000, ROP3_SHIFT = 16, ROP3_COPY = 0xcc,
+       COLOR_MODE_MASK = 0x70, COLOR_MODE_SHIFT = 4, CB_NORMAL = 1, CB_ELIMINATE_FAST_CLEAR = 2, ROP3_MASK = 0xff0000, ROP3_SHIFT = 16, ROP3_COPY = 0xcc,
        CHANNELS_MASK = 0xf, DI_PT_TRILIST = 4, DI_PT_TRISTRIP = 6, DI_PT_RECTLIST = 17, CB_DISABLE = 0, DEPTH_BOUNDS_ENABLE = 0x8,
        Z_FORMAT_MASK = 0x3, STENCIL_FORMAT_MASK = 0x1 };
 
@@ -520,8 +520,11 @@ static uint32_t slot_mask(const draw_state *s, unsigned slot)
 /* Whether the registers describe what the draw below does: opaque or blended triangles into the colour
    targets of slots 0-7, depth and stencil as plan_depth allows, one instance. Its plan in *plan, and in
    *colours the slots it writes, a bit each: a target set, not masked off entirely, colour writes on
-   (CB_COLOR_CONTROL's mode not CB_DISABLE). 1 when nothing at all would be written, 0 to draw, -1 with
-   the reason otherwise. */
+   (CB_COLOR_CONTROL's mode not CB_DISABLE). A fast-clear eliminate pass (mode CB_ELIMINATE_FAST_CLEAR,
+   Mesa's sid.h numbering) writes the clear colour into the tiles CMASK marks cleared: the executor
+   applies no fast clears, so with FAST_CLEAR off in each target's CB_COLOR_INFO there are none and the
+   pass writes nothing; a target with FAST_CLEAR on stops by name. 1 when nothing at all would be
+   written, 0 to draw, -1 with the reason otherwise. */
 static int check_state(const draw_state *s, depth_plan *plan, uint32_t *colours, char *error, size_t error_size)
 {
     if (s->primitive_set && s->primitive_type != DI_PT_TRILIST && s->primitive_type != DI_PT_TRISTRIP && s->primitive_type != DI_PT_RECTLIST)
@@ -532,7 +535,13 @@ static int check_state(const draw_state *s, depth_plan *plan, uint32_t *colours,
     if (s->color_control_set) {
         const uint32_t mode = (s->color_control & COLOR_MODE_MASK) >> COLOR_MODE_SHIFT, rop = (s->color_control & ROP3_MASK) >> ROP3_SHIFT;
         if (mode == CB_DISABLE) *colours = 0;
-        else if (mode != CB_NORMAL || rop != ROP3_COPY)
+        else if (mode == CB_ELIMINATE_FAST_CLEAR) {
+            for (unsigned slot = 0; slot < RT_COLOR_TARGETS; slot++)
+                if ((s->color_enabled >> slot & 1) && s->colors[slot].fast_clear)
+                    return failed(error, error_size, "a fast-clear eliminate pass over render target %#llx, which uses fast clears: not done yet",
+                                  (unsigned long long)s->colors[slot].address);
+            return 1;
+        } else if (mode != CB_NORMAL || rop != ROP3_COPY)
             return failed(error, error_size, "colour mode %u, raster operation %#x: only normal copies are drawn yet", mode, rop);
     }
     for (unsigned slot = 0; slot < RT_COLOR_TARGETS; slot++) {
