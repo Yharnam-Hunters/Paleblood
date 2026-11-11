@@ -149,14 +149,16 @@ describes retrieving a stored attribute mask, success/error returns and invalid 
 its API includes a size argument absent at this target call. Its errors and CPU-set layout
 cannot simply be assigned to the SCE interface.
 
-**What the runtime answers (maintainer ruling, 2026-11-10).** The console's own mask is still not
-measured. The maintainer ruled that a thread with no mask set by the guest answers **all ones**,
-which is what `scePthreadGetaffinity` already answers. `scePthreadAttrGetaffinity(attr, mask)`
-therefore writes eight bytes:
+**What the runtime answers (maintainer rulings, 2026-11-10 and 2026-11-11).** The console's own
+mask is still not measured. The maintainer ruled that a thread with no mask set by the guest
+answers **`0x3f`**, the six CPUs 0 to 5: the mask the executable's own thread setup gives each
+thread (below) and PS4Recomp's default. This replaced the first ruling (2026-11-10), all ones.
+`scePthreadGetaffinity` gives the same default. `scePthreadAttrGetaffinity(attr, mask)` therefore
+writes eight bytes:
 - the mask set on the attribute with `scePthreadAttrSetaffinity`, or copied from a thread by
   `scePthreadAttrGet`, which copies the thread's mask (from its creation attribute or
   `scePthreadSetaffinity`);
-- otherwise `UINT64_MAX`.
+- otherwise `0x3f`.
 
 A variable holding no attribute is `EINVAL`, as for the setter. No variable for the mask stops by
 name. Host CPU availability is not consulted. evill33t's #239 did the groundwork on this call; it
@@ -167,12 +169,14 @@ took its value from the host, which the ruling replaced.
 decision, 2026-11-10) and the original probe runs in `libc.elf`'s `DT_INIT`, before any of the
 executable's code:
 - it calls `scePthreadAttrGetaffinity` on a copy of the main thread's attributes. The main thread
-  has no mask set by the guest at that point, so the answer is all ones;
-- it counts the 64 set bits and stores **64** at `libc.elf+0xd1c54`. A local boot without a display
-  (`tools/boot.py --no-record`) read 64 there from the running process; before, the slot stayed 0.
+  has no mask set by the guest at that point, so the answer is `0x3f`;
+- it counts the six set bits and stores **6** at `libc.elf+0xd1c54`. A local boot without a display
+  (`tools/boot.py --no-record`) read 6 there from the running process. Under the first ruling it
+  read 64, and while #207's hook was in place the slot stayed 0.
 
-That count is the ruling's consequence, not a measured console value: the executable's own thread
-setup asks for six CPUs (`0x3f`, below), and the console's own mask is still unmeasured.
+That count is the ruling's consequence, not a measured console value. It agrees with the six CPUs
+the executable's own thread setup asks for (`0x3f`, below), but the console's own mask is still
+unmeasured.
 
 These observations come from static analysis of the hash-pinned `eboot.elf`, `libc.elf` and
 `libSceFios2.elf` (Ghidra 12.0.3 with GhidraOrbis, issue #34), not guarantees:
@@ -184,7 +188,7 @@ These observations come from static analysis of the hash-pinned `eboot.elf`, `li
   none imports `sceKernelDlsym`.
 
 `game/module_hooks.csv` still replaces `hardware_concurrency` (`+0x5fac0`, 7 bytes) with `stop`, so
-a caller ends the run by name instead of reading the ruled count of 64 as if it were the console's.
+a caller ends the run by name instead of reading the ruled count of 6 as if it were the console's.
 
 `pbboot --module-hook` first compares each function's first bytes, as the mapped and relocated
 module holds them, with the ones the file gives (`first_bytes`), and refuses the run before any
@@ -732,9 +736,9 @@ What stops by name:
 empty mask stops by name.
 
 **`scePthreadGetaffinity(thread, &mask)`** (imported by `libSceFios2`) answers the recorded mask, or
-all ones for a thread nobody set one on (maintainer's ruling of 2026-11-10; shadPS4 answers the
-host thread's set, PS4Recomp `0x3f`). No thread answers `ESRCH`, as for the set; no variable stops
-by name.
+`0x3f` for a thread nobody set one on (maintainer's ruling of 2026-11-11, replacing all ones;
+shadPS4 answers the host thread's set, PS4Recomp `0x3f`). No thread answers `ESRCH`, as for the
+set; no variable stops by name.
 
 **Stops on other threads.** A worker thread can fault or reach an unimplemented import. The boot
 records the first such stop and wakes the main thread (`SIGUSR1`) to make the usual report. Workers
