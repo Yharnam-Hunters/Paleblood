@@ -831,6 +831,38 @@ static void fast_clears(rt_executor *x)
     }
 }
 
+/* A dispatch storing to a target's CMASK through a buffer descriptor based there (a metadata clear, as
+   shadPS4 takes one) runs before the CPU reads that CMASK for the next draw's fast clear in the same
+   batch: scale_add's 1.0 floats (64 of them, from zeros) leave the CMASK mixed rather than one fill,
+   which stops the draw by name. Read before the dispatch had run, the CMASK of all ones would let the
+   draw go ahead. */
+static void metadata_store_waits(rt_executor *x)
+{
+    enum { BUFFER = 0xc0fec000, COMPUTE_CODE = 0x3000, TARGET_AT = 0x1da0000, CMASK = 0x1de0000, ZEROS = 0x1de1000, LANES = 64 };
+    char error[200] = "";
+    memcpy((void *)(uintptr_t)at(COMPUTE_CODE), scale_add, sizeof scale_add);
+    memset((void *)(uintptr_t)at(CMASK), 0xff, LANES * 4);
+    memset((void *)(uintptr_t)at(ZEROS), 0, LANES * 4);
+    rt_render_forget(), rt_executor_reset(x);
+    uint32_t offset = record_setup(BUFFER, at(TARGET_AT), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const uint64_t code = at(COMPUTE_CODE);
+    const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0, 8 << 1, LANES, 1, 1};
+    CHECK(rt_render_record_compute_shader_at(BUFFER + offset, shader) == 0);
+    uint32_t user[8];
+    descriptor(user, at(ZEROS), 4);
+    descriptor(user + 4, at(CMASK), 4);
+    CHECK(rt_render_record_user_data(BUFFER, offset + 0x10, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+    const uint32_t one[3] = {1, 1, 1};
+    CHECK(rt_render_record_dispatch(BUFFER, offset + 0x20, one, error, sizeof error) == 0);
+    uint32_t words[RT_COLOR_TARGET_WORDS];
+    color_target(words, at(TARGET_AT), COLOR_8_8_8_8, SWAP_STD);
+    words[4] |= 1u << 13, words[7] = (uint32_t)(at(CMASK) >> 8); /* FAST_CLEAR, CMASK */
+    CHECK(rt_render_record_color_target(BUFFER, offset + 0x30, 0, words, error, sizeof error) == 0);
+    const int ran = rt_executor_run(x, BUFFER, record_triangle_draw(BUFFER, offset + 0x40), error, sizeof error);
+    if (ran == 0 || !strstr(error, "partly fast-cleared")) fprintf(stderr, "metadata store: %d %s\n", ran, error);
+    CHECK(ran == -1 && strstr(error, "partly fast-cleared"));
+}
+
 /* Depth and stencil without a depth buffer, and triangle strips:
    - with the depth target switched off (DB_Z_INFO and DB_STENCIL_INFO 0, as the library's setter
      writes for no target), depth and stencil tests draw as if off; Z_WRITE_ENABLE alone writes nothing
@@ -1669,6 +1701,7 @@ int main(void)
     CHECK(run_with_registers(x, FOURTH, at(TARGET) + 0x480000, eliminate, 1, 0, error, sizeof error) == 0);
     CHECK(rt_executor_read_target(x, at(TARGET) + 0x480000, bgra, 2, 2, error, sizeof error) == -1 && strstr(error, "no draw"));
     fast_clears(x);
+    metadata_store_waits(x);
     const uint32_t resolve[][2] = {{0xa202, 0x3u << 4 | 0xccu << 16}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), resolve, 1, 0, error, sizeof error) == -1 && strstr(error, "colour mode 3"));
     const uint32_t unknown[][2] = {{0xa1e8, 0}};
