@@ -20,7 +20,7 @@ target_link_libraries(test_host_time_pacing PRIVATE Threads::Threads)
 add_test(NAME host_time_pacing COMMAND test_host_time_pacing)
 set_tests_properties(host_time_pacing PROPERTIES TIMEOUT 10)
 
-# Queue an owned alarm at disarm time: cleanup must drain it before restoring the old action.
+# Queue an owned alarm after sender join: drain it before restoring the old action.
 add_executable(test_host_time_cleanup "${PB_HOST_TIME_ROOT}/test/test_host_time_cleanup.c")
 target_link_libraries(test_host_time_cleanup PRIVATE pbhost_time Threads::Threads)
 add_test(NAME host_time_cleanup COMMAND test_host_time_cleanup)
