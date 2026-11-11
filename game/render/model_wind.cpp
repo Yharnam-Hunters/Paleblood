@@ -190,8 +190,10 @@ void publish_live(const WindInfluence *influences, WindInfluence *out, uint32_t 
 
 // ---- sampling a source -----------------------------------------------------------------------
 
-// What the source's methods report. The original leaves the out-parameter values uninitialized
-// when the source entry stops resolving between calls; it never does in play, and these start at 0.
+// What the source's methods report. The three out-parameter pairs (jitter angles, gust speeds,
+// cycle) keep the previous source's values when the entry stops resolving before that call: the
+// original's stack slots are written only by those calls (see SourceCarry). Before the first
+// source they are uninitialized in the original; here they start at 0.
 struct SourceReport {
     int32_t kind = 0;
     uint8_t point_source = 0;
@@ -209,6 +211,33 @@ struct SourceReport {
     Vec4 tint = lanes(1.0f, 1.0f, 1.0f, 1.0f);
     Matrix44 transform{};
 };
+
+// The out-parameter values carried from one source to the next.
+struct SourceCarry {
+    Vec4 jitter_minimum = Vec4::zero(), jitter_maximum = Vec4::zero();
+    float gust_base = 0.0f, gust_amplitude = 0.0f;
+    float cycle_unused = 0.0f, cycle_position = 0.0f;
+};
+
+void take_carry(SourceReport &report, const SourceCarry &carry)
+{
+    report.jitter_minimum = carry.jitter_minimum;
+    report.jitter_maximum = carry.jitter_maximum;
+    report.gust_base = carry.gust_base;
+    report.gust_amplitude = carry.gust_amplitude;
+    report.cycle_unused = carry.cycle_unused;
+    report.cycle_position = carry.cycle_position;
+}
+
+void keep_carry(SourceCarry &carry, const SourceReport &report)
+{
+    carry.jitter_minimum = report.jitter_minimum;
+    carry.jitter_maximum = report.jitter_maximum;
+    carry.gust_base = report.gust_base;
+    carry.gust_amplitude = report.gust_amplitude;
+    carry.cycle_unused = report.cycle_unused;
+    carry.cycle_position = report.cycle_position;
+}
 
 // The source entry for the current handle: looked up afresh before every method call, as the
 // original does, from the handle reread from the receiver's list.
@@ -446,6 +475,13 @@ void keep(const ListView &list, int slot, const Sample &sample, const RampedFiel
 
 enum class Kept { refreshed, added, no_room };
 
+// An output entry by index. The first list's count can pass four (see add_strongest); the
+// original then reads and writes "entries" past the list, over the second list's count and
+// entries, and so does this, by address.
+WindInfluence &listed_entry(WindInfluence *list, uint32_t index)
+{
+    return *reinterpret_cast<WindInfluence *>(reinterpret_cast<uintptr_t>(list) + index * sizeof(WindInfluence));
+}
 
 // Refreshes a kept source (ramping it further in, and its output entry if it is listed among the
 // first `listed`) or keeps it in a free slot, writing it to `new_out` in the output.
@@ -458,7 +494,7 @@ Kept refresh_or_keep(const ListView &list, const Sample &sample, const Context &
         const float weight = engine::min_of(engine::divide(ramp, ramp_seconds), 1.0f);
         const RampedFields fields = ramped(sample, weight, ramp);
         for (uint32_t i = 0; i < listed; ++i) {
-            if (WindInfluence &entry = list.out[i]; entry.source == sample.source) {
+            if (WindInfluence &entry = listed_entry(list.out, i); entry.source == sample.source) {
                 write_influence(entry, sample, fields, 0.0f, sample.point_source, context.padding);
                 break;
             }
@@ -492,7 +528,7 @@ void add_strongest(Context &context, const Sample &sample)
 {
     ModelWind &out = *context.out;
     const uint32_t listed = out.strongest_count;
-    WindInfluence *new_out = listed < list_capacity ? &out.strongest[listed] : nullptr;
+    WindInfluence *new_out = &listed_entry(out.strongest, listed);
     if (listed == list_capacity) {
         // Full: the source replaces the first listed influence weaker than it, unramped, even
         // when nothing is kept.
@@ -508,9 +544,11 @@ void add_strongest(Context &context, const Sample &sample)
     ReceiverWind &kept = *context.kept;
     const ListView list{kept.strongest, kept.strongest_target, kept.strongest_ramp, &kept.strongest_active,
                         out.strongest, false};
-    // In a full list the original would write a newly kept source over the replaced entry again,
-    // ramped from zero, and count it as a fifth entry. That cannot happen: four listed entries
-    // are four live kept slots, so there is no free slot to keep it in.
+    // Quirk: in a full list a newly kept source overwrites the replaced entry again, ramped from
+    // zero, and is counted as a fifth entry; a later new source then goes to "entry" five, past
+    // the list. Four listed entries are normally four live kept slots, leaving no free one; only
+    // sources whose handle is the invalid handle (which the real lookup rejects) get there, since
+    // a slot kept for such a source still counts as free.
     if (refresh_or_keep(list, sample, context, new_out, out.strongest_count) == Kept::added) ++out.strongest_count;
 }
 
@@ -613,11 +651,14 @@ render_update_model_wind_body(const ReceiverHandle *receiver_handle, ModelWind *
     // The original also calls the noise state's constructor and destructor, which do nothing
     // (both are members of the returns_nothing family).
     NoiseState noise{};
+    SourceCarry carry;
     const WindSourceList &sources = source_list(receiver_handle);
     for (const EntryHandle *handle = sources.begin; handle != sources.end; ++handle) {
         SourceReport report;
         if (!report_identity(handle, report)) continue;
+        take_carry(report, carry);
         report_values(handle, report);
+        keep_carry(carry, report);
         const Sample sample = sample_source(report, handle, noise, context.step);
         // Quirk: the hold flag's zero ramp step replaces the step for every later source.
         context.step = wind_hold.get() ? 0.0f : context.step;

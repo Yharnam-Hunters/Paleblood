@@ -140,6 +140,7 @@ class Case:
         self.buffers = {}
         self.memory = []
         self.queues = {}
+        self.carried_gust = (0.0, 0.0)   # gust speeds a lookup without an entry leaves in place
 
     def buffer(self, name, size, fill="00"):
         self.buffers[name] = {"size": size, "bytes": fill * size}
@@ -342,7 +343,9 @@ def script_source(c: Case, i: int, s: Source) -> None:
     if resolve()[0]:
         call("base_speed", f"0x{f32(s.base_speed):x}")
         effective["base_speed"] = s.base_speed
+    gust = c.carried_gust
     if resolve()[0]:
+        gust = c.carried_gust = s.gust
         call("gust_speeds", argc=3, writes=[{"arg": 1, "bytes": f32hex(s.gust[0])}, {"arg": 2, "bytes": f32hex(s.gust[1])}])
     if resolve()[0]:
         call("noise_time", f"0x{f32(s.noise_time):x}")
@@ -358,7 +361,7 @@ def script_source(c: Case, i: int, s: Source) -> None:
             call(name, value)
             if name == "force_scale":
                 effective["scale"] = s.scale
-    if gust_margin(s.gust[0], effective["base_speed"], effective["scale"]) > EPSILON:
+    if gust_margin(gust[0], effective["base_speed"], effective["scale"]) > EPSILON:
         c.stub(NOISE, {"argc": 2, "argf32": [0, 1], "argu32": [1], "ret": f"0x{f32(s.noise[0]):x}"})
     c.stub(NOISE, {"argc": 2, "argf32": [0, 1], "argu32": [1], "ret": f"0x{f32(s.noise[1]):x}"})
     if resolve()[0]:
@@ -540,6 +543,27 @@ def cases():
     add(build("jitter_negative_zero_alone", [Source(0x4B, kind=0, jitter=((-0.0, 0.0, -0.0, 0.0),) * 2, noise=(0.5, 0.5),
                                                     orientation=[flat[0], flat[1], (0.0, -0.0, 0.0, 0.0), flat[3]],
                                                     scale=-1.0, base_force=(-0.0, -0.0, -0.0, 0.0))]))
+    # The jitter, gust and cycle values a missing entry leaves from the previous source.
+    add(build("missing_entries_keep_previous_out_values",
+              [Source(0x20, kind=0, jitter=((0.5, 1.0, -0.75, 0.0), (2.0, 3.0, 1.0, 0.0)), gust=(4.0, 1.25),
+                      cycle=(1.0, 0.8125)),
+               Source(0x21, kind=1, lookups={5: None, 7: None, 9: None})]))
+    add(build("missing_entries_keep_previous_after_skip",
+              [Source(0x22, kind=3, gust=(0.5, 3.0), cycle=(2.0, -0.25)), Source(0x23, kind=-1),
+               Source(0x24, kind=0, lookups={7: None, 9: None}, gust=(1.5, 1.5))]))
+    # Boundaries and NaN-payload orders found by the independent review.
+    add(build("gust_amplitude_margin_at_epsilon",
+              [Source(0x20, kind=0, base_speed=1.0, scale=1.0, gust=(2.5, 1.0 + 2.0 ** -23))],
+              kept=([live(0x20, 0.3)], []), ramps=(0.05, 0.0, 0.0, 0.0)))
+    add(build("gust_base_margin_at_epsilon", [Source(0x20, kind=0, base_speed=1.0, scale=1.0, gust=(1.0 + 2.0 ** -23, 2.5))],
+              kept=([live(0x20, 0.3)], []), ramps=(0.05, 0.0, 0.0, 0.0)))
+    add(build("jitter_nan_lanes", [Source(0x20, kind=0, jitter=((QNAN_A, QNAN_B, 0.25, 0.0), (1.0, 2.0, 3.0, 0.0)))]))
+    add(build("jitter_nan_range_and_noise",
+              [Source(0x20, kind=0, jitter=((QNAN_A, 0.5, 0.25, 0.0), (1.0, 2.0, 3.0, 0.0)), noise=(0.375, QNAN_B))]))
+    add(build("step_and_speed_nan_payloads", [Source(0x20, kind=1, base_speed=QNAN_B)], kept=([], []), mode=0,
+              patch_cell=QNAN_A, frame_seconds=QNAN_A))
+    add(build("settling_second_call", kept=([live(0x40, 0.5, seed=1), live(0x43, 2.0, seed=3)], [live(0x50, 0.4, seed=4)]),
+              settling=1, settle_calls=1))
     # Getter-backed sources with all four lanes.
     add(build("getters_mixed_lists", [Source(0xA0, kind=0, getters=True, tint=(QNAN_A, -0.0, 7.5, INF)),
                                       Source(0xA1, kind=9, getters=True, base_force=(1.0, 2.0, QNAN_B, -4.0))],
