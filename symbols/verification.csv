@@ -241,6 +241,8 @@ render_emit_present_preparation_byte,edge,,18,18,0,0,53db19b5d95c9586,2026-11-06
 render_emit_present_preparation_scalar,edge,,20,20,0,0,40137647ab863b23,2026-11-06
 render_emit_present_release_delegate,edge,,8,8,0,0,44c6a754b371f521,2026-11-10
 render_emit_present_release_packet,edge,,14,14,0,0,49b21387b8cdc24b,2026-11-10
+render_emit_set_base,edge,,81,81,0,0,b203c9bcf4b1a8ff,2026-11-11
+render_emit_set_base,edge,instruction-trace,53,53,0,0,b203c9bcf4b1a8ff,2026-11-11
 render_emit_shader_link_words,edge,,23,23,0,0,b26629b2274dd99e,2026-11-10
 render_finish_present_commands,edge,,12,12,0,0,3adf6995cef8857d,2026-11-10
 render_finish_present_context,edge,,2,2,0,0,b114815a2dd2f5c2,2026-11-10
