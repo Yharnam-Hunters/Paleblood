@@ -232,6 +232,9 @@ render_configure_viewport_and_guard_band,edge,,26,26,0,0,67cbc6eee27c8769,2026-1
 render_convert_constructor_record,edge,,98,98,0,0,8bd5968199c5fb5d,2026-11-10
 render_convert_record_descriptor_classification,edge,,236,236,0,0,a130fb1ef6469c41,2026-11-05
 render_emit_draw_index_auto,edge,,14,14,0,0,ee788ee6a611a7a0,2026-11-10
+render_emit_draw_opaque_auto,edge,,95,95,0,0,fd5b31a01561f73c,2026-11-11
+render_emit_draw_opaque_auto,edge,instruction-trace-native-query-oracle,18,18,0,0,fd5b31a01561f73c,2026-11-11
+render_emit_draw_opaque_auto,edge,instruction-trace-scripted-query,18,0,0,18,fd5b31a01561f73c,2026-11-11
 render_emit_event_write,edge,,17,17,0,0,d1a112029c3a3e46,2026-11-06
 render_emit_num_instances,edge,,14,14,0,0,60c78aac624b1dfe,2026-11-06
 render_emit_pa_cl_vte_cntl,edge,,14,14,0,0,5611618bfd5135ba,2026-11-05
