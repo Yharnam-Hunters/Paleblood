@@ -215,6 +215,26 @@ int main(int argc, char **argv)
         for (int i = 0; i < LANES; i++) CHECK(out_words[i] == bits(1.0f));
     }
 
+    /* A multi-dword store goes out whole when its address is a multiple of its bytes and every dword
+       is in range, and dword by dword otherwise: either way the same bytes. NUM_RECORDS (stride 0)
+       ends two dwords into lane 63's store, so lanes 0-62 store all four dwords and lane 63 the first
+       two; at offset 4 no lane's address is a multiple of 16. */
+    for (uint32_t offset = 0; offset <= 4; offset += 4) {
+        uint32_t store_user[USER_DATA_WORDS];
+        memcpy(store_user, user, sizeof store_user);
+        store_user[6] = 63 * 16 + 8 + offset;
+        memset(out.mapped, 0xaa, BUFFER_BYTES);
+        const uint32_t *program = offset ? store_dwordx4_unaligned : store_dwordx4_aligned;
+        CHECK(run(&g, program, sizeof store_dwordx4_aligned / sizeof store_dwordx4_aligned[0], store_user) == 0);
+        int stored = 1;
+        for (uint32_t w = 0; w < BUFFER_BYTES / 4; w++) {
+            const uint32_t byte = w * 4, lane = (byte - offset) / 16, k = (byte - offset) % 16 / 4;
+            const int written = byte >= offset && lane < LANES && (lane < LANES - 1 || k < 2);
+            stored &= out_words[w] == (written ? lane + k : 0xaaaaaaaau);
+        }
+        CHECK(stored);
+    }
+
     /* v_mul_hi_u32 / v_mul_hi_i32: the high half of the 64-bit product, negative inputs included. */
     for (int i = 0; i < LANES; i++) in_words[i] = 0x9e3779b9u * (uint32_t)(i + 1);
     memset(out.mapped, 0, BUFFER_BYTES);
