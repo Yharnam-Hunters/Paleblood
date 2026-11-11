@@ -2138,6 +2138,50 @@ directory, with no buffer, or into fewer than 512 bytes (a directory block: shad
 An entry added or removed between two calls can move the listing by one entry, as on any file
 system that lists by position.
 
+### Directories and removing files
+
+`sceKernelMkdir(path, mode)`, `sceKernelRmdir(path)` and `sceKernelUnlink(path)` are FreeBSD's
+`mkdir(2)`, `rmdir(2)` and `unlink(2)` under their SCE names, 0 or `0x80020000` plus the error
+number. `eboot` and `libSceFios2.elf` import all three from `libkernel` (`symbols/imports.csv`).
+The shapes come from the OpenOrbis homebrew SDK's `libkernel.h` (`int32_t sceKernelMkdir(const
+char *, OrbisKernelMode)`, `OrbisKernelMode` a `uint16_t` like FreeBSD's `mode_t`;
+`int32_t sceKernelRmdir(const char *)`, `int32_t sceKernelUnlink(const char *)`), supporting
+evidence for the shapes only. No call site in the repository shows them yet.
+
+**Under `/data` and a writable mount** the host does the work, and its error is translated:
+- a missing file or directory component is `ENOENT` or `ENOTDIR`, and `mkdir` of an existing
+  name `EEXIST` (the same numbers on FreeBSD and Linux);
+- `rmdir` of a directory with entries is `ENOTEMPTY`, 66 on FreeBSD (Linux's is 39), and of a
+  path whose last component is `.` `EINVAL` (`rmdir(2)`; Linux answers the same);
+- `unlink` of a directory is `EPERM`. FreeBSD's `unlink(2)` page lists both `EISDIR` and `EPERM`
+  for "the named file is a directory"; the kernel settles it: `kern_unlinkat` (stable/9) and
+  `kern_funlinkat` (current) answer `EPERM` ("POSIX"), and turn the lookup's `EINVAL` for a last
+  component `.` into `EPERM` too. Linux answers `EISDIR` for both, which the runtime translates.
+- Any other host error stops by name.
+
+**The mode of `mkdir`.** FreeBSD gives the new directory `(mode & ACCESSPERMS) & ~umask`
+(`kern_mkdirat`, stable/9 and current), so bits above 0777 are dropped. The runtime passes
+`mode & 0777` to the host, as `sceKernelOpen` does for a new file, and the host process's umask
+then applies. Not established: the PS4 process's umask, so the bits a later `sceKernelStat` shows
+are the host's answer, not a console's; and whether the console enforces those bits for the title
+(a folder made without the owner's write and search bits refuses files on the host, which then
+stop by name).
+
+**On a read-only mount** (`/app0`, a save mounted read-only) nothing changes, and the answers follow
+FreeBSD's lookup order (`vfs_lookup.c`, stable/9 and current):
+- a missing component of the path prefix is `ENOENT` or `ENOTDIR` first;
+- `mkdir` of an existing name is `EEXIST` (the read-only check is not made for a name that
+  exists), of a new name `EROFS`;
+- `rmdir` and `unlink` of an existing name, file or directory, are `EROFS`, before `rmdir`'s
+  `ENOTDIR` and `ENOTEMPTY` and `unlink`'s `EPERM` for a directory;
+- a last component `.` is refused by the lookup before that: `rmdir` `EINVAL`, `unlink` `EPERM`.
+
+**Stops by name**, besides the path checks every file call shares (no path, a path outside the
+mounts, a `..` component, a path longer than the runtime's buffer): `rmdir` of a mount point itself
+(`/data`, `/app0`, `/savedataN`). FreeBSD's `rmdir(2)` answers `EBUSY` for the root of a mounted
+file system, but whether `/data` is one on the console is not established, and the host would
+remove the runtime's own folder.
+
 ## The disc map (`sceDiscMapIsRequestOnHDD`, issue #35)
 
 The disc map tells the file library whether part of a file is already on the hard disk or still
@@ -2536,3 +2580,4 @@ metadata.
 - [POSIX `pthread_self`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_self.html) and [`pthread_attr_init`/`pthread_attr_destroy`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_attr_destroy.html)
 - [FreeBSD `pthread_attr(3)`](https://man.freebsd.org/cgi/man.cgi?query=pthread_attr_setdetachstate&sektion=3), [libthr `thr_attr.c`](https://cgit.freebsd.org/src/tree/lib/libthr/thread/thr_attr.c) (`_pthread_attr_setdetachstate`, `_pthread_attr_get_np`), [`thr_create.c`](https://cgit.freebsd.org/src/tree/lib/libthr/thread/thr_create.c) (`_pthread_create`: the default attribute for a null or empty variable) and [`include/pthread.h`](https://cgit.freebsd.org/src/tree/include/pthread.h) (`PTHREAD_CREATE_JOINABLE`, `PTHREAD_CREATE_DETACHED`)
 - [OpenOrbis `include/orbis/_types/pthread.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/_types/pthread.h) - the PS4 homebrew SDK's `ORBIS_PTHREAD_CREATE_*` values, which follow FreeBSD's
+- FreeBSD 9.0 [`mkdir(2)`](https://man.freebsd.org/cgi/man.cgi?query=mkdir&sektion=2&manpath=FreeBSD+9.0-RELEASE), [`rmdir(2)`](https://man.freebsd.org/cgi/man.cgi?query=rmdir&sektion=2&manpath=FreeBSD+9.0-RELEASE), [`unlink(2)`](https://man.freebsd.org/cgi/man.cgi?query=unlink&sektion=2&manpath=FreeBSD+9.0-RELEASE) and [current `unlink(2)`](https://man.freebsd.org/cgi/man.cgi?query=unlink&sektion=2); FreeBSD [`vfs_syscalls.c`](https://cgit.freebsd.org/src/tree/sys/kern/vfs_syscalls.c?h=stable/9) (stable/9 and main: `kern_mkdirat` and its mode, `kern_rmdirat`/`kern_frmdirat`, `kern_unlinkat`/`kern_funlinkat` and `EPERM` for a directory) and [`vfs_lookup.c`](https://cgit.freebsd.org/src/tree/sys/kern/vfs_lookup.c?h=stable/9) (stable/9 and main: the read-only checks and the `.` check, and their order); [OpenOrbis `libkernel.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/libkernel.h) and [`_types/kernel.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/_types/kernel.h) (`OrbisKernelMode`) for the shapes
