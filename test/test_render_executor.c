@@ -1126,6 +1126,33 @@ static void depth_and_strips(rt_executor *x)
             zeros &= *(const float *)((const uint8_t *)depth + rt_tiling_offset(&layout, px, y, 0)) == 0.0f;
         }
         CHECK(zeros);
+        /* the depth target's memory read as a 32-bit float image of its layout (tiling index 0), texel by
+           texel into an 8_8_8_8 target: each pixel's red is the depth under it (0 under the triangle); with
+           another tiling index it stops by name */
+        enum { WB_SAMPLED = 0x2300000 };
+        uint32_t image[8];
+        image_descriptor(image, at(WB_Z), 4, 7, WB_SIZE, WB_SIZE);
+        image[3] = (image[3] & ~0xfffu) | (4 | 0 << 3 | 0 << 6 | 1 << 9); /* x, 0, 0, 1; tiling index 0 */
+        drawn = draw_texels(x, at(WB_SAMPLED), image, error, sizeof error);
+        if (drawn) fprintf(stderr, "depth read as an image: %s\n", error);
+        CHECK(drawn == 0);
+        uint32_t bgra[SIZE * SIZE];
+        CHECK(rt_executor_read_target(x, at(WB_SAMPLED), bgra, SIZE, SIZE, error, sizeof error) == 0);
+        rt_tiling depth_layout;
+        char reason[160];
+        CHECK(rt_tiling_layout(0, 4, WB_SIZE, WB_SIZE, &depth_layout, reason, sizeof reason) == 0);
+        int as_depth = 1, near_zeros = 0;
+        for (int y = 0; y < SIZE; y++)
+            for (int px = 0; px < SIZE; px++) {
+                const uint32_t p = bgra[y * SIZE + px];
+                if (!(p >> 24)) continue; /* outside the sampling triangle */
+                const float under = *(const float *)((const uint8_t *)depth + rt_tiling_offset(&depth_layout, (uint32_t)px, (uint32_t)y, 0));
+                as_depth &= near(p >> 16 & 0xff, under);
+                near_zeros += (p >> 16 & 0xff) == 0;
+            }
+        CHECK(as_depth && near_zeros > 0);
+        image[3] |= 1u << 20; /* tiling index 1 */
+        CHECK(draw_texels(x, at(WB_SAMPLED), image, error, sizeof error) == -1 && strstr(error, "also a depth target"));
 #undef WB_TARGET
     }
     /* Slices of an array depth target (DB_DEPTH_VIEW SLICE_START = SLICE_MAX): a draw into slice 1
