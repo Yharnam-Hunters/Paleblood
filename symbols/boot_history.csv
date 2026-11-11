@@ -19,3 +19,4 @@ date,milestone,milestone_index,imports_total,imports_bundled,imports_implemented
 2026-11-06,first flip,8,686,219,234,233,timeout at host+0x7f3965b2dcc0,timeout,eboot,,host+0x7f3965b2dcc0,0,0x0
 2026-11-06,first flip,8,686,219,234,233,timeout at eboot+0x2034b14,timeout,eboot,,eboot+0x2034b14,0,0x0
 2026-11-10,first flip,8,686,219,464,3,timeout at host+0x7f875ea8fcc0,timeout,eboot,,host+0x7f875ea8fcc0,0,0x0
+2026-11-10,first flip,8,686,219,467,0,timeout at eboot+0x2034b6f,timeout,eboot,,eboot+0x2034b6f,0,0x0

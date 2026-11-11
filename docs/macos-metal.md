@@ -89,7 +89,7 @@ Targets are limited to 4096 pixels per axis; viewport X/Y scales and translation
 finite and within ±4096, with a positive X scale and a nonzero Y scale.
 Only vertex input profile 0, with vertex ID in VGPR0, is modeled by the common translator.
 The other three `VGPR_COMP_CNT` encodings are rejected explicitly; their additional hardware
-inputs cannot be assumed to contain zero. This limit is separate from unsupported fetch-shader calls.
+inputs cannot be assumed to contain zero. Fetch calls use the same vertex-ID input profile.
 The recorded viewport clip bounds must be standard 0 and 1 (either signed zero is accepted);
 other bounds stop explicitly. Position and enabled clip-distance vectors require float4 export
 formats. Both clip vectors, including sparse selections of all eight distances, are supported;
@@ -153,10 +153,81 @@ Unsupported formats, shader instructions, shader inputs, layered/multisampled ta
 target reallocations return a named error. Blending, depth and unrecorded state remain outside
 this profile. Image and sampler bindings stay empty in this draw backend;
 `image_load`, `image_load_mip` and `image_sample` return named translation errors, including
-image descriptors loaded from memory. Fetch-shader callees are also unbound in this backend:
-`s_swappc_b64` returns a named translation error. Triangle strips and depth-target registers
-remain outside this profile. Rectangle lists need a geometry expansion path and are rejected; compute shader bindings and dispatch events are also rejected
-explicitly by this draw-only backend.
+image descriptors loaded from memory. Triangle strips and depth-target registers
+remain outside this profile. Rectangle lists need a geometry expansion path and are rejected.
+
+## Vertex fetch calls
+
+A vertex program can call one straight-line fetch program through `s_swappc_b64` and return
+through its saved SGPR pair with `s_setpc_b64`. The backend reuses `gcn_call_sgpr` and the
+common vertex translator; it does not emulate calls separately. The target must come from
+an untouched, fully written pair within the declared vertex user data. Its 48-bit address
+must be dword aligned and inside the shared pool. The common bounded decoder includes the
+complete return instruction. Branches, nested calls, images, a changed target before the
+call, and writes to the saved return pair remain outside the common fetch contract.
+
+The target is resolved again at each draw, before a cache lookup or program read. The cache
+also compares complete live caller and fetch bytes, their addresses and the existing shader
+layout. Changing a target or overwriting either program therefore cannot select a stale
+translation. Descriptor-table pointers are read by the translated fetch program from the
+vertex stage's data; the normal required-versus-written checks also apply on cache hits and
+after reset. Auto-index and both supported indexed draw forms share this path.
+
+## Render-target memory
+
+Color targets use the shared guest pool as their backing store. Their full padded layout must
+fit in that pool. The backend reuses `runtime/tiling.h` for linear modes 8/31, 1D display/thin
+modes 9/13 and 2D display/thin modes 10/14. Unsupported tile modes and invalid pitches fail
+before allocating or using a texture. A cached target's size, format and tile mode stay fixed.
+
+Before each draw, encoded texels are detiled from the pool and loaded into the Metal texture;
+the pass preserves them with a load action. After synchronous completion, the native encoded
+texels are tiled back into the pool, preserving layout padding. Later CPU accesses, buffer
+reads, compute calls and overlapping target views therefore observe the completed draw,
+including when a later recorded call fails. Reset forgets stage state without erasing memory.
+The public BGRA readback reads the current backing bytes, so CPU and compute updates remain
+visible before another draw. UNORM/sRGB encoding and native channel order are preserved;
+only public readback converts RGBA storage into BGRA output.
+
+This implementation copies through reusable CPU rows at each draw. It establishes ordered
+memory behavior without a GPU tiling-copy or batching optimization; no full-game performance
+result is claimed.
+
+## Buffer compute
+
+The executor also accepts compute bindings, compute user data and ordered dispatches.
+It uses the common GFX7 compute translator and the same SPIRV-Cross/MSL compiler,
+shared memory pool and runtime-stop channel as draws. Compute user data and its
+written-slot mask are independent of vertex and pixel state. A reset forgets those
+values while retaining compiled pipelines. The cache includes the complete program
+bytes, local dimensions, user count and X workgroup-ID layout; changing code at an
+existing address does not reuse its previous pipeline.
+
+This is a lane-local buffer profile. All three thread-ID inputs must be explicitly
+enabled, and local XYZ dimensions must be positive, fit the device/pipeline limits
+and contain at most one logical 64-lane GCN wave. The profile does not assume that
+Metal has a native 64-lane SIMD group. Actual subgroup operations, including
+wave-wide votes and quad swaps, are rejected before MSL compilation. The common
+translator declares vote capabilities even for programs that never use them;
+capability declarations alone do not cause rejection. Lane-local VCC half writes
+retain the logical lane index from the common translator.
+
+The optional X workgroup-ID SGPR follows the declared user SGPRs. Y/Z ID SGPRs,
+packed workgroup-size input, images and samplers remain unsupported. Dispatches
+accept 1..65535 X workgroups and one Y/Z workgroup. Compute copied-call user-data
+records must contain 1..8 words within the modeled slots. Required user data must
+have been explicitly written; zero is a valid written value.
+
+Each compute submission completes before a later dispatch or draw consumes its
+shared buffer writes. Completed draw pixels are already published into that pool,
+and the next draw reloads it. These checks do not establish a working game boot
+or character-creation rendering on macOS.
+
+`test_metal_compute` runs owned buffer programs on the actual device. It checks
+partial and 64-invocation groups, multidimensional local IDs, X workgroups, VCC
+halves, stage isolation, partial user writes, cached resets, live code changes,
+metadata/admission guards, runtime-stop recovery, two ordered dispatches and a draw
+reading computed colors. It also dispatches after a completed draw and after reset. No original game shader or capture is used.
 
 Descriptor-format accesses use the common translator's runtime stop channel: the executor owns
 a shared GPU-addressable stop word, declares its residency for both stages, and checks it after
@@ -183,9 +254,9 @@ recorder buffer isolation, recorder submission resets, null pixel shaders, 40-bi
 formats and swizzles in both stages, packed UNORM8 buffer loads, canonical logical index-size
 bounds and raw-header tagging, pool-end scalar loads with constant selectors, skipped-store
 canaries, format/VCC runtime-stop recovery, pixel-position/whole-quad guards, unbound pixel-image
-and sampling operations, descriptors loaded from memory, unbound fetch calls, strip/depth-target
-guards, required-versus-written user SGPRs with explicit zero and cached-reset checks, unsupported compute/rect
-events, readback bounds and mapping lifetime.
+and sampling operations, descriptors loaded from memory, fetch rendering through live target and
+program changes, partial target writes, last-pair and pool-end guards, straight-line call refusals, strip/depth-target
+guards, required-versus-written user SGPRs with explicit zero and cached-reset checks, compute input/profile guards and rectangle-list refusals, readback bounds and mapping lifetime.
 It fails if no suitable GPU exists.
 Hosted CI compiles this code for ARM64 and x86-64; it does not run these GPU checks. A successful
 offscreen test establishes neither window presentation nor execution of a game on macOS.
@@ -196,3 +267,9 @@ On non-Apple builds the existing Linux build/tests are unchanged. Explicitly req
 any Metal option on a non-macOS platform fails rather
 than silently creating unsupported targets. The existing Linux verification suite is preserved
 for the normal GCC and Clang builds.
+
+`test_metal_coherence` exercises all supported target tile modes and both channel orders
+with UNORM and sRGB storage. It checks initial masked loads, complete raw buffer copies,
+compute writes, CPU patches, cached reloads, padding and neighboring canaries, overlapping
+targets, ordered errors, a draw reading another target through buffer loads, exact pool-end
+admission, padded bounds and tile-mode cache identity. It uses owned programs and descriptors.

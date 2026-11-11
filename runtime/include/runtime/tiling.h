@@ -30,8 +30,13 @@ typedef struct {
     /* 2D-tiled only: the channels (pipes and banks) a macro tile spreads over */
     unsigned pipes, banks, bank_width, bank_height, macro_aspect;
     uint32_t macro_width, macro_height;
+    uint32_t tile_split;             /* 2D depth modes: a micro tile's bytes past this go to further slices (0: none) */
     uint64_t slice_bytes;            /* the bytes of one slice (array layer) */
 } rt_tiling;
+
+/* Whether each micro tile of the layout keeps its 64 elements at one spread of offsets from its first
+   (rt_tiling_micro_spread): every layout but a split depth tile's, whose pieces change bank. */
+int rt_tiling_uniform_micro(const rt_tiling *t);
 
 /* The layout of an image with this tiling index and element size whose rows are pitch texels apart
    (the descriptor's PITCH) and height rows high. 0, or -1 with the reason: a tiling index or element

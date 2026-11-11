@@ -169,6 +169,21 @@ static void image_programs(void)
        memory, at the load's offset. Two uses of s[4:11], before and after such a load over it: two
        images, the user data's and the loaded one. A scalar move into it or a compare's 64-bit
        result: refused by name. */
+    /* sixteen descriptors (s_load_dwordx8 s[0:7], s[8:9], 8k, then image_load each): sixteen images; a
+       seventeenth is more than a program may use */
+    {
+        static uint32_t many[3 * 17 + 1];
+        for (unsigned limit = 16; limit <= 17; limit++) {
+            unsigned n = 0;
+            for (unsigned k = 0; k < limit; k++) many[n++] = 0xc0c00900u | 8 * k, many[n++] = 0xf0000f00, many[n++] = 0x00000401;
+            many[n++] = 0xbf810000;
+            gcn_image_resource sixteen[GCN_MAX_IMAGES];
+            unsigned images = 0;
+            const int listed = gcn_image_resources(many, n, sixteen, GCN_MAX_IMAGES, &images, error, sizeof error);
+            if (limit == 16) CHECK(listed == 0 && images == 16 && sixteen[15].origin.offset == 15 * 32);
+            else CHECK(listed == -1 && strstr(error, "more than 16 images"));
+        }
+    }
     static const uint32_t loaded[] = {0xc0c00904, 0xf0000f00, 0x00000401, 0xbf810000};   /* s_load_dwordx8 s[0:7], s[8:9], 4 */
     static const uint32_t loaded_literal[] = {0xc0c008ff, 0x00000004, 0xf0000f00, 0x00000401, 0xbf810000}; /* the same at literal offset 4 */
     /* s_load_dwordx16 s[0:15], s[8:9], 4: the descriptor in its second half (s[8:15], MIMG SRSRC 2) is at 16 + 32 bytes */
@@ -340,6 +355,35 @@ static void calls(void)
     CHECK(gcn_translate_vertex(PROGRAM(vertex_calling_fetch), &layout, &spirv, &words, error, sizeof error) == -1 && strstr(error, "returns through s[2:3]"));
     layout.callee = NULL;
     CHECK(gcn_translate_vertex(PROGRAM(vertex_calling_fetch), &layout, &spirv, &words, error, sizeof error) == -1 && strstr(error, "no callee"));
+
+    /* An image descriptor in the user data that the fetch shader leaves alone keeps its origin past the
+       call: listed, and translated as a vertex shader's sampled image at the binding given; without the
+       callee the call counts as writing every SGPR, and a callee that loads into those SGPRs stops. */
+    gcn_image_resource found[GCN_MAX_IMAGES];
+    unsigned count = 0;
+    CHECK(gcn_called_image_resources(PROGRAM(vertex_fetch_then_image), fetch_position_only, sizeof fetch_position_only / 4, found,
+                                     GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
+    CHECK(count == 1 && !found[0].origin.from_memory && found[0].origin.sgpr == 8 && found[0].access == GCN_IMAGE_READ);
+    CHECK(gcn_image_resources(PROGRAM(vertex_fetch_then_image), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
+          strstr(error, "s_swappc_b64"));
+    CHECK(gcn_called_image_resources(PROGRAM(vertex_fetch_then_image), fetch_into_image_sgprs, sizeof fetch_into_image_sgprs / 4, found,
+                                     GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
+          strstr(error, "s_swappc_b64"));
+    const gcn_image_binding texture[] = {{{0, 8, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0}};
+    layout.callee = fetch_position_only, layout.callee_dwords = sizeof fetch_position_only / 4;
+    layout.images = texture, layout.image_count = 1, layout.first_binding = 3;
+    const int loaded = gcn_translate_vertex(PROGRAM(vertex_fetch_then_image), &layout, &spirv, &words, error, sizeof error);
+    if (loaded) fprintf(stderr, "vertex_fetch_then_image: %s\n", error);
+    CHECK(loaded == 0);
+    if (spirv) {
+        CHECK(validate(spirv, words, "vertex_fetch_then_image") != 0);
+        int bound_at_3 = 0; /* OpDecorate %image Binding 3 */
+        for (size_t i = 0; i + 3 < words; i++)
+            if (spirv[i] == (4u << 16 | 71u) && spirv[i + 2] == 33u && spirv[i + 3] == 3u) bound_at_3 = 1;
+        CHECK(bound_at_3);
+        free(spirv);
+        spirv = NULL;
+    }
 }
 
 static void rect_list_stages(void)
@@ -379,6 +423,11 @@ static void tile_copy_shaders(void)
             const int valid = validate(spirv, words, name);
             if (valid < 0) fprintf(stderr, "  %s: spirv-val not installed; validation skipped\n", name);
             CHECK(valid != 0);
+            /* the element moves in one store of its whole size (OpStore, opcode 62), not word by word:
+               word stores with gaps between them cross the bus to host memory one word at a time */
+            unsigned stores = 0;
+            for (size_t at = 5; at < words && spirv[at] >> 16; at += spirv[at] >> 16) stores += (spirv[at] & 0xffff) == 62;
+            CHECK(stores == 1);
             free(spirv);
         }
     uint32_t *spirv = NULL;

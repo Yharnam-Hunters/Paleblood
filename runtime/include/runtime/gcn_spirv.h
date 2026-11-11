@@ -86,7 +86,8 @@ typedef struct {
     int cube;                        /* a cube, bound as a 2D array of its faces (dim 2D, arrayed) */
 } gcn_image_binding;
 
-enum { GCN_MAX_IMAGES = 8, GCN_IMAGE_READ = 1, GCN_IMAGE_WRITE = 2, GCN_IMAGE_SAMPLE = 4 /* read through image_sample */ };
+/* GCN_MAX_IMAGES: up to 16 images a program (Vulkan guarantees 16 sampled images per stage) */
+enum { GCN_MAX_IMAGES = 16, GCN_IMAGE_READ = 1, GCN_IMAGE_WRITE = 2, GCN_IMAGE_SAMPLE = 4 /* read through image_sample */ };
 
 typedef struct {
     gcn_resource_origin origin;
@@ -96,7 +97,7 @@ typedef struct {
 /* Samplers (S#, 4 words), which image_sample names by its SSAMP SGPRs, are found the same way (an
    s_load_dwordx4 for one from memory). The caller binds sampler j at set 0, binding image_count + j,
    and makes it from the descriptor. */
-enum { GCN_MAX_SAMPLERS = 8 };
+enum { GCN_MAX_SAMPLERS = 16 }; /* as GCN_MAX_IMAGES, Vulkan's least per-stage limit for each */
 
 /* The distinct sampler descriptors a program's image_sample instructions use, by origin. 0 and
    *count, or -1 with the reason. */
@@ -108,6 +109,12 @@ int gcn_sampler_resources(const uint32_t *code, size_t dwords, gcn_resource_orig
    descriptor whose origin is not one of the two above). */
 int gcn_image_resources(const uint32_t *code, size_t dwords, gcn_image_resource *resources, unsigned max, unsigned *count, char *error,
                         size_t error_size);
+
+/* The same for a program that calls a fetch shader (gcn_call_sgpr): the callee's code (callee_dwords
+   long, through its s_setpc_b64 return), so that a descriptor the call leaves alone keeps its origin
+   past the call. A descriptor the callee writes stops by name. */
+int gcn_called_image_resources(const uint32_t *code, size_t dwords, const uint32_t *callee, size_t callee_dwords,
+                               gcn_image_resource *resources, unsigned max, unsigned *count, char *error, size_t error_size);
 
 typedef struct {
     uint32_t local_size[3];  /* the workgroup's size */
@@ -152,6 +159,11 @@ typedef struct {
     const uint32_t *callee;
     size_t callee_dwords;
     uint64_t code_address;
+    /* the images it loads (image_load, image_load_mip: sampled images, read only), in set 0 from
+       binding first_binding on, after the pixel shader's images and samplers */
+    const gcn_image_binding *images;
+    unsigned image_count;
+    unsigned first_binding;
     uint32_t *user_data_read; /* when not NULL, set on success to the user SGPRs read before written (User data read, below) */
 } gcn_vertex_layout;
 
