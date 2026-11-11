@@ -227,6 +227,22 @@ int main(int argc, char **argv)
         CHECK(out_words[2 * LANES + i] == (uint32_t)((uint64_t)signed_by_lane >> 32));
     }
 
+    /* VOP3 output modifiers: times 2, 4 and 0.5, applied before the clamp */
+    {
+        for (int i = 0; i < LANES; i++) in_words[i] = bits((float)i * 0.125f - 2.0f);
+        memset(out.mapped, 0, BUFFER_BYTES);
+        CHECK(run(&g, output_modifiers, sizeof output_modifiers / sizeof output_modifiers[0], user) == 0);
+        int modified = 1;
+        for (int i = 0; i < LANES; i++) {
+            const float x = (float)i * 0.125f - 2.0f, m = x * x + x, doubled = 2 * m;
+            modified &= out_words[i] == bits(2 * m) && out_words[LANES + i] == bits(4 * m) && out_words[2 * LANES + i] == bits(0.5f * m) &&
+                        out_words[3 * LANES + i] == bits(doubled < 0 ? 0.0f : doubled > 1 ? 1.0f : doubled);
+        }
+        if (!modified) fprintf(stderr, "output modifiers: lane 3 %08x %08x %08x %08x\n", out_words[3], out_words[LANES + 3], out_words[2 * LANES + 3],
+                               out_words[3 * LANES + 3]);
+        CHECK(modified);
+    }
+
     /* v_cubeid/sc/tc/ma_f32: each face, and the ties (z over y over x) */
     {
         static const float directions[8][3] = {{1, 0.5f, -0.25f}, {-2, 1, 0.5f}, {0.5f, 3, 1}, {0.25f, -1, 0.5f},
@@ -242,6 +258,17 @@ int main(int argc, char **argv)
             for (int k = 0; k < 4; k++) faces &= out_words[k * LANES + i] == bits(expected[i % 8][k]);
         if (!faces) fprintf(stderr, "cube: lane 1 %08x %08x %08x %08x\n", out_words[1], out_words[LANES + 1], out_words[2 * LANES + 1], out_words[3 * LANES + 1]);
         CHECK(faces);
+    }
+
+    /* a scalar load at a literal offset counts it in dwords: dwords 2 to 5 */
+    {
+        for (int i = 0; i < 8; i++) in_words[i] = 0x01010101u * (uint32_t)(i + 1);
+        memset(out.mapped, 0, BUFFER_BYTES);
+        CHECK(run(&g, scalar_buffer_quad_literal, sizeof scalar_buffer_quad_literal / sizeof scalar_buffer_quad_literal[0], user) == 0);
+        int literal = 1;
+        for (int lane = 0; lane < LANES; lane++)
+            for (int k = 0; k < 4; k++) literal &= out_words[lane * 4 + k] == in_words[2 + k];
+        CHECK(literal);
     }
 
     /* s_buffer_load is range-checked too: with NUM_RECORDS 8 bytes, the third and fourth dwords read 0;
@@ -466,6 +493,25 @@ int main(int argc, char **argv)
             CHECK(*stop == (GCN_RUNTIME_STOP_BUFFER_FORMAT << GCN_RUNTIME_STOP_KIND_SHIFT | 2u << 8 | 0u << 4 | 4u));
             *stop = 0;
             memcpy(bytes, saved_bytes, sizeof saved_bytes);
+            memcpy(format_user, user, sizeof format_user);
+        }
+        /* DATA_FORMAT 0 (an invalid, null buffer's): a load reads 0 in every component, a store writes nothing */
+        {
+            memset(out.mapped, 0xaa, BUFFER_BYTES);
+            format_user[3] = (4 | 0 << 3 | 0 << 6 | 1 << 9) | 0u << 12 | 0u << 15;
+            *stop = 0;
+            CHECK(run(&g, load_format_xyzw, sizeof load_format_xyzw / sizeof load_format_xyzw[0], format_user) == 0);
+            int zeros = *stop == 0;
+            for (int i = 0; i < LANES * 4; i++) zeros &= out_words[i] == 0;
+            CHECK(zeros);
+            uint32_t null_store[USER_DATA_WORDS];
+            memcpy(null_store, user, sizeof null_store);
+            null_store[7] = DST_SEL_XYZW | 0u << 12 | 0u << 15;
+            memset(out.mapped, 0xaa, BUFFER_BYTES);
+            CHECK(run(&g, store_format_xyzw, sizeof store_format_xyzw / sizeof store_format_xyzw[0], null_store) == 0);
+            int kept = *stop == 0;
+            for (int i = 0; i < LANES * 4; i++) kept &= out_words[i] == 0xaaaaaaaau;
+            CHECK(kept);
             memcpy(format_user, user, sizeof format_user);
         }
         /* a reserved selector (2) stops */

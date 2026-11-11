@@ -427,11 +427,13 @@ static int sce_attr_destroy(guest_attr **attr) { return sce(attr_destroy(attr));
 /* Copies a running thread's attributes into an initialised attribute object. The copy replaces
    everything the object held (libthr's pthread_attr_get_np copies the whole attribute block), so a
    detach state set on it before is dropped: the thread's own detach state is one the system
-   supplies, and the runtime does not know it. */
+   supplies, and the runtime does not know it. The thread's CPU mask comes along (0 when the guest
+   never set one), so scePthreadAttrGetaffinity on the copy answers as scePthreadGetaffinity does. */
 static int attr_get(guest_thread *thread, guest_attr **attr)
 {
     if (!thread || !attr || !*attr) return SCE_KERNEL_ERROR(BSD_EINVAL);
-    **attr = (guest_attr){.has_stack = 1, .stack = thread->stack, .stack_size = thread->stack_size};
+    **attr = (guest_attr){.has_stack = 1, .stack = thread->stack, .stack_size = thread->stack_size,
+                          .affinity = thread->affinity};
     return 0;
 }
 
@@ -650,6 +652,23 @@ static int sce_attr_set_affinity(guest_attr **attr, uint64_t mask)
     return 0;
 }
 RT_SYSLIB("libkernel", scePthreadAttrSetaffinity, sce_attr_set_affinity);
+
+/* scePthreadAttrGetaffinity(attr, uint64_t *mask): the attribute's CPU set, imported by the bundled
+   libc.elf, whose thread-count probe (+0x81a80) asks it for a copy of the main thread's attributes
+   and counts the set bits of the eight-byte answer (docs/runtime-syscalls.md). A mask set with
+   scePthreadAttrSetaffinity, or copied from a thread by scePthreadAttrGet, is answered back. Without
+   one the thread may run on any CPU, which the runtime answers as all ones, the same answer as
+   scePthreadGetaffinity (the maintainer's ruling of 2026-11-10; the console's own mask is not
+   measured). A variable holding no attribute is EINVAL, as for the setter; no variable for the mask
+   stops by name. */
+static int sce_attr_get_affinity(guest_attr **attr, uint64_t *mask)
+{
+    if (!attr || !*attr) return SCE_KERNEL_ERROR(BSD_EINVAL);
+    if (!mask) rt_fatal("scePthreadAttrGetaffinity", "no variable for the mask: the error value is not established");
+    *mask = (*attr)->affinity ? (*attr)->affinity : UINT64_MAX;
+    return 0;
+}
+RT_SYSLIB("libkernel", scePthreadAttrGetaffinity, sce_attr_get_affinity);
 
 /* scePthreadAttrSetinheritsched(attr, inherit): whether a thread created with the attribute takes
    its creator's scheduling (PTHREAD_INHERIT_SCHED, 4, libthr's default) or the attribute's
