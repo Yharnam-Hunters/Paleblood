@@ -1398,6 +1398,40 @@ static int take_written_image(rt_executor *x, target_entry *t, char *error, size
     return 1;
 }
 
+/* An image a shader wrote keeps its texels (image_for), and the guest memory under it does not get them.
+   A view of the same memory in another format of the same bytes must read those texels too: a compute
+   shader's stores to an sRGB image go to an R8G8B8A8_UNORM image (Vulkan has no sRGB storage images),
+   which a draw may then sample as R8G8B8A8_SRGB. So an image of the same shape that is about to be read
+   takes the written one's texels: Vulkan copies between formats of one texel size bit for bit. Single-level images only (a storage image has one level). 1 when
+   copied, 0 when no such image was written, -1 with the reason. */
+static int one_dimensional(uint32_t type);
+
+static int take_written_alias(rt_executor *x, image_entry *e, char *error, size_t error_size)
+{
+    const image_entry *w = NULL;
+    for (size_t i = 0; i < x->image_count && !w; i++) {
+        const image_entry *k = &x->images[i];
+        if (k != e && k->gpu_written && k->address == e->address && same_texel_bytes(k->format, e->format) && k->width == e->width &&
+            k->height == e->height && k->layers == e->layers && k->depth == e->depth && k->type == e->type && k->levels == 1 &&
+            e->levels == 1)
+            w = k;
+    }
+    if (!w) return 0;
+    VkCommandBuffer commands = batch_commands(x);
+    if (!commands) return failed(error, error_size, "no command buffer");
+    const VkMemoryBarrier written = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
+                                     .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &written, 0, NULL, 0, NULL);
+    const VkImageCopy region = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, e->layers},
+                                .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, e->layers},
+                                .extent = {e->width, one_dimensional(e->type) ? 1 : e->height, e->depth}};
+    vkCmdCopyImage(commands, w->image, VK_IMAGE_LAYOUT_GENERAL, e->image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+    const VkMemoryBarrier copied = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                    .dstAccessMask = VK_ACCESS_SHADER_READ_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &copied, 0, NULL, 0, NULL);
+    return 1;
+}
+
 /* Fast clears (CB_COLOR_INFO's FAST_CLEAR): the game clears a target by clearing its CMASK (4 bits a
    8x8 tile; 0 means cleared to CB_COLORn_CLEAR_WORD0/1, as Mesa's radeonsi fast clears with a CMASK of
    0, and all bits set means the tile holds its texels) and leaves the colour to the GPU. Before each
@@ -2310,7 +2344,7 @@ static int image_format(const rt_image_descriptor *d, texel_format *f, char *err
     return failed(error, error_size, "an image of DATA_FORMAT %u, NUM_FORMAT %u: not done yet", d->data_format, d->num_format);
 }
 
-enum { NUM_FORMAT_SRGB = 9 };
+enum { NUM_FORMAT_UNORM = 0, NUM_FORMAT_SRGB = 9 };
 
 static int one_dimensional(uint32_t type) { return type == RT_IMAGE_1D || type == RT_IMAGE_1D_ARRAY; }
 
@@ -2543,7 +2577,10 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
                d->tiling_index);
         return NULL;
     }
-    if (((access & GCN_IMAGE_READ) || over_target) && !e->gpu_written && load_texels(x, e, d, f, error, error_size)) return NULL;
+    if (((access & GCN_IMAGE_READ) || over_target) && !e->gpu_written) {
+        const int taken = take_written_alias(x, e, error, error_size);
+        if (taken < 0 || (!taken && load_texels(x, e, d, f, error, error_size))) return NULL;
+    }
     if (access & GCN_IMAGE_WRITE) e->gpu_written = 1;
     return e;
 }
@@ -2739,11 +2776,15 @@ static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64
         if (d.layers > 1 && !cube && (d.base_array > d.last_array || d.last_array >= d.layers))
             return failed(error, error_size, "a view of an image array from layer %u to %u of %u", d.base_array, d.last_array, d.layers);
         texel_format f;
+        /* Vulkan has no sRGB storage images: a compute shader's stores to one go out as UNORM, the values
+           unconverted (shadPS4 views a storage image of sRGB numbers as UNORM, with no conversion on
+           stores); whether its image_load decodes sRGB is not established */
+        if (!pixel && d.num_format == NUM_FORMAT_SRGB) {
+            if (resources[i].access & GCN_IMAGE_READ)
+                return failed(error, error_size, "a compute shader reading an sRGB image (DATA_FORMAT %u): not done yet", d.data_format);
+            d.num_format = NUM_FORMAT_UNORM;
+        }
         if (image_format(&d, &f, error, error_size)) return -1;
-        /* Vulkan has no sRGB storage images, and whether a compute shader's image_load decodes sRGB is
-           not established */
-        if (!pixel && d.num_format == NUM_FORMAT_SRGB)
-            return failed(error, error_size, "an sRGB image (DATA_FORMAT %u) in a compute shader: not done yet", d.data_format);
         /* a sampled view picks the format's components, or 0 or 1 (a component the format lacks is not
            established); a storage image's DST_SEL keeps each component in place, or for four components
            may permute them (the translator swizzles its loads and stores, as shadPS4 does) */

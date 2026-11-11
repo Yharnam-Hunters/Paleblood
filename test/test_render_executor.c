@@ -1879,6 +1879,44 @@ int main(void)
             }
         }
 
+        /* A compute shader's stores to an sRGB image (8_8_8_8, NUM_FORMAT 9) go out as UNORM, unconverted
+           (Vulkan has no sRGB storage images); a draw sampling the same memory as sRGB then reads those
+           texels, not the guest memory's (zeros here): row 0's texels hold (min(i, 1), 1, 1, 0.5), so pixel
+           (1, 0) is white with alpha about 128 and pixel (0, 0) has no red. A compute shader reading an sRGB
+           image stops by name. */
+        {
+            enum { SRGB_IMAGE = IMAGE_A + 0xb0000, SRGB_TARGET = 0x2180000 };
+            memset((void *)(uintptr_t)at(SRGB_IMAGE), 0, SIZE * SIZE * 4);
+            uint32_t srgb[8];
+            image_descriptor(srgb, at(SRGB_IMAGE), 10, 9, SIZE, SIZE);
+            srgb[3] |= 8u << 20; /* linear: the draw's load would read the memory as it lies */
+            rt_render_forget(), rt_executor_reset(x);
+            const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(codes[0] >> 8), (uint32_t)(codes[0] >> 40), 0x3, 16 << 1, LANES, 1, 1};
+            CHECK(rt_render_record_compute_shader_at(IMAGES + 0x10, shader) == 0);
+            memset(user, 0, sizeof user);
+            memcpy(user + 8, srgb, sizeof srgb);
+            CHECK(rt_render_record_user_data(IMAGES, 0x20, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
+            CHECK(rt_render_record_dispatch(IMAGES, 0x30, one, error, sizeof error) == 0);
+            int ran = rt_executor_run(x, IMAGES, 0x40, error, sizeof error);
+            if (ran) fprintf(stderr, "sRGB storage image: %s\n", error);
+            CHECK(ran == 0);
+            ran = draw_texels(x, at(SRGB_TARGET), srgb, error, sizeof error);
+            if (ran) fprintf(stderr, "sRGB image drawn: %s\n", error);
+            CHECK(ran == 0);
+            uint32_t bgra[SIZE * SIZE];
+            CHECK(rt_executor_read_target(x, at(SRGB_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+            const uint32_t alpha = bgra[1] >> 24; /* 0.5 as unorm: 127 or 128 */
+            CHECK((bgra[1] & 0xffffffu) == 0xffffffu && (alpha == 127 || alpha == 128) && (bgra[0] >> 16 & 0xff) == 0 && bgra[SIZE] == 0);
+            rt_render_forget(), rt_executor_reset(x);
+            const uint32_t reader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(codes[2] >> 8), (uint32_t)(codes[2] >> 40), 0x3, 16 << 1, LANES, 1, 1};
+            CHECK(rt_render_record_compute_shader_at(IMAGES + 0x10, reader) == 0);
+            descriptor(user, at(BACK), 16);
+            CHECK(rt_render_record_user_data(IMAGES, 0x20, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+            CHECK(rt_render_record_user_data(IMAGES, 0x30, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
+            CHECK(rt_render_record_dispatch(IMAGES, 0x40, one, error, sizeof error) == 0);
+            CHECK(rt_executor_run(x, IMAGES, 0x50, error, sizeof error) == -1 && strstr(error, "reading an sRGB image"));
+        }
+
         /* An image no shader wrote holds the guest memory's texels: linear (tiling index 8) RGBA32F
            texels the CPU wrote read back as written; a layout not done yet (index 1) stops by name. */
         float *guest_texels = (float *)(uintptr_t)at(IMAGE_B + 0x8000);
