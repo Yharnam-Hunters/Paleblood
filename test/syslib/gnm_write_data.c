@@ -10,7 +10,7 @@
 typedef int32_t (*submit_fn)(uint32_t, void **, uint32_t *, void **, uint32_t *);
 
 enum {
-    WRITE_DATA_THREE = 0xc0043700u, /* PM4 type 3, opcode 0x37, control + address + three dwords */
+    WRITE_DATA_THREE = 0xc0053700u, /* PM4 type 3, opcode 0x37, control + address + three dwords */
     TO_MEMORY = 5u << 8,
     TO_REGISTER = 0u << 8,
     ONE_ADDRESS = 1u << 16,
