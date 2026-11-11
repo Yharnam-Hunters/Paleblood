@@ -505,8 +505,9 @@ Instead:
           and 16-bit buffer access (Vulkan's `storageBuffer8BitAccess` and `storageBuffer16BitAccess`);
           without it, and for other element sizes, they are detiled by the CPU, which first waits for
           the batch's stores to that memory, skipped while the memory holds what was last loaded. At
-          the Contract screen those waits were about 100 every 2 s (8- and 16-bit images over memory
-          the GPU had written) before they moved to the GPU.
+          the Contract screen the CPU's waits for the GPU went from about 102 to 90 every 2 s when
+          they moved to the GPU; most of the rest are CPU reads of memory inside the depth copy's
+          2.2 GB store range.
           Showing a frame copies the target's image to a host-visible buffer once per flip.
           `test_render_executor` checks a 1D-tiled target's texels at `rt_tiling_offset` after a
           write-back and a CPU write showing at its pixel after a load; a mutated table fails both.
