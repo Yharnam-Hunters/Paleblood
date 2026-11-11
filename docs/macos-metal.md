@@ -127,7 +127,9 @@ check literal framebuffer values plus physical stores and buffer guards. Of 44 s
 32 exercise the documented GFX7 validity rules and 12 cover the accepted translator's no-VM
 default or opposing non-VM export compatibility. Those compatibility programs do not satisfy
 the hardware's final-export/DONE requirements (Sea Islands ISA sections 11.2.1 and 13.8).
-These tests do not measure shader invocation counts.
+These tests do not measure shader invocation counts. The Linux fixture reserves its owned
+pool at the guest address without replacing existing mappings, matching the current Vulkan
+executor's CPU shader reads; Metal keeps a separate CPU mapping.
 
 The input remains valid GFX7 code with consistent resource metadata: this backend does not
 validate every instruction against its declared SGPR/VGPR allocation.

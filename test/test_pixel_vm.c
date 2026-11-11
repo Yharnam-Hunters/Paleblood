@@ -6,6 +6,9 @@
    The no-VM case and two opposing non-VM cases exercise translator compatibility,
    not valid GFX7 programs: a DONE colour export requires EXEC to contain validity,
    and the last executed export must have DONE (Sea Islands ISA11.2.1/13.8). */
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE /* MAP_FIXED_NOREPLACE */
+#endif
 #include "runtime/render_executor.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -246,8 +249,15 @@ int main(void)
     char path[]="/tmp/paleblood-pixel-vm-XXXXXX",error[1024]="";int fd=mkstemp(path);
     if(fd<0){perror("mkstemp");return 1;}unlink(path);
     if(ftruncate(fd,POOL)){perror("ftruncate");close(fd);return 1;}
-    uint8_t *pool=mmap(NULL,POOL,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);
+    void *hint=NULL;int flags=MAP_SHARED;
+#if defined(__linux__)
+    /* Vulkan currently decodes CPU shader bytes at guest addresses. Reserve this
+       owned range without replacing a mapping; Metal exercises a separate view. */
+    hint=(void *)(uintptr_t)base;flags|=MAP_FIXED_NOREPLACE;
+#endif
+    uint8_t *pool=mmap(hint,POOL,PROT_READ|PROT_WRITE,flags,fd,0);
     if(pool==MAP_FAILED){perror("mmap");close(fd);return 1;}
+    if(hint&&pool!=hint){fprintf(stderr,"guest mapping unavailable\n");munmap(pool,POOL);close(fd);return 1;}
     memcpy(pool+VS,position_vertex,sizeof position_vertex);
     for(unsigned p=0;p<PROGRAMS;++p){CHECK(programs[p].count*4<=0x100);
         memcpy(pool+CODE+p*0x100,programs[p].words,programs[p].count*4);}
