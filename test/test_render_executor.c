@@ -590,6 +590,31 @@ static void draws_in_one_batch(rt_executor *x)
     CHECK(blended_misses(x, at(TWICE), doubled) == 0);
 }
 
+/* Two buffers recorded without submitting (rt_executor_record_calls) join one open batch: both name the
+   same ticket, the next one, and once rt_executor_submit hands the batch over and that ticket has run,
+   the target holds both blended draws (the second buffer's draw keeps the first's state). */
+static void buffers_in_one_submission(rt_executor *x)
+{
+    enum { FIRST_BUFFER = 0xc1020000, SECOND_BUFFER = 0xc1030000, JOINED = 0x2f80000, ONE = 1 };
+    char error[200] = "";
+    rt_render_forget(), rt_executor_reset(x);
+    CHECK(rt_executor_finish(x, error, sizeof error) == 0);
+    uint32_t offset = record_setup(FIRST_BUFFER, at(JOINED), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    CHECK(rt_render_record_register(FIRST_BUFFER, offset, 0xa1e0, 1u << 30 | ONE | ONE << 8, error, sizeof error) == 0);
+    const uint32_t first_size = record_triangle_draw(FIRST_BUFFER, offset + 0x10);
+    const uint32_t second_size = record_triangle_draw(SECOND_BUFFER, 0x10);
+    size_t count = 0;
+    uint64_t first_ticket = 0, second_ticket = 0;
+    const rt_render_call *calls = rt_render_submitted(FIRST_BUFFER, first_size, &count);
+    CHECK(rt_executor_record_calls(x, calls, count, &first_ticket, error, sizeof error) == 0);
+    calls = rt_render_submitted(SECOND_BUFFER, second_size, &count);
+    CHECK(rt_executor_record_calls(x, calls, count, &second_ticket, error, sizeof error) == 0);
+    CHECK(first_ticket && first_ticket == second_ticket);
+    CHECK(rt_executor_submit(x, error, sizeof error) == 0);
+    CHECK(rt_executor_wait_ticket(x, second_ticket, error, sizeof error) == 0);
+    CHECK(blended_misses(x, at(JOINED), doubled) == 0);
+}
+
 /* Runs the triangle's state with these registers and a draw of `count` vertices (record_setup's). */
 static int run_counted(rt_executor *x, uint64_t buffer, uint64_t target, const uint32_t (*registers)[2], int n, uint32_t count, char *error,
                        size_t error_size)
@@ -1663,6 +1688,7 @@ int main(void)
     CHECK(run_with_registers(x, FOURTH, at(TARGET), dual_source, 1, 0, error, sizeof error) == -1 && strstr(error, "blend factor 15"));
     blending(x);
     draws_in_one_batch(x);
+    buffers_in_one_submission(x);
     const uint32_t depth[][2] = {{0xa200, 0x2}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), depth, 1, 0, error, sizeof error) == -1 && strstr(error, "depth or stencil"));
     const uint32_t line_strips[][2] = {{0xc242, 5}};
