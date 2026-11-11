@@ -131,9 +131,9 @@ static void float_images(rt_executor *x)
     }
 }
 
-/* The pixels of target that differ from the reference image's red and green with blue 0 and alpha 1
-   (all of them on a failed read). */
-static int two_channel_misses(rt_executor *x, uint64_t target)
+/* The pixels of target that differ from the reference image's red and green (with_green; 0 otherwise)
+   with blue 0 and alpha 1 (all of them on a failed read). */
+static int channel_misses(rt_executor *x, uint64_t target, int with_green)
 {
     uint32_t bgra[SIZE * SIZE];
     char error[160] = "";
@@ -142,11 +142,13 @@ static int two_channel_misses(rt_executor *x, uint64_t target)
     for (int y = 0; y < SIZE; y++)
         for (int px = 0; px < SIZE; px++) {
             const uint32_t p = bgra[y * SIZE + px];
-            differ += !(near(p >> 16 & 0xff, ((float)px + 0.5f) / SIZE) && near(p >> 8 & 0xff, ((float)y + 0.5f) / SIZE) &&
-                        (p & 0xff) == 0 && (p >> 24) == 0xff);
+            const float green = with_green ? ((float)y + 0.5f) / SIZE : 0.0f;
+            differ += !(near(p >> 16 & 0xff, ((float)px + 0.5f) / SIZE) && near(p >> 8 & 0xff, green) && (p & 0xff) == 0 && (p >> 24) == 0xff);
         }
     return differ;
 }
+
+static int two_channel_misses(rt_executor *x, uint64_t target) { return channel_misses(x, target, 1); }
 
 /* Pixel shaders reading images the CPU wrote into guest memory (image_load_mip from a sampled image):
    a 128 x 64 8_8_8_8 image tiled as Thin2DThin (index 14), its texels placed with runtime/tiling.h,
@@ -299,6 +301,33 @@ static void sampled_images(rt_executor *x)
         image_descriptor(image, at(TWO_CHANNEL), 10, 0, WIDTH / 2, HEIGHT);
         image[3] = (image[3] & ~0xfffu) | (4 | 5 << 3 | 0 << 6 | 1 << 9) | LINEAR_ALIGNED << 20;
         CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0 && two_channel_misses(x, at(TEXEL_TARGET)) > 0);
+    }
+
+    /* Tiled images of 8- and 16-bit elements (detiled by the GPU tile copy where the device has 8- and
+       16-bit buffer access, by the CPU elsewhere): 8_8 tiled as Thin2DThin and 8 (DATA_FORMAT 1, DST_SEL
+       x, 0, 0, 1) tiled as Thin1DThin (index 13) read what rt_tiling_offset placed; the same bytes read
+       as linear (mutant) do not */
+    {
+        enum { TILED_PAIRS = 0x8b0000, TILED_BYTES = 0x8c8000, THIN_1D = 13 };
+        static const struct { uint32_t address, bytes, data_format, tiling; } cases[] = {{TILED_PAIRS, 2, 3, THIN_2D}, {TILED_BYTES, 1, 1, THIN_1D}};
+        for (size_t c = 0; c < sizeof cases / sizeof *cases; c++) {
+            rt_tiling layout;
+            CHECK(rt_tiling_layout(cases[c].tiling, cases[c].bytes, WIDTH, HEIGHT, &layout, error, sizeof error) == 0);
+            for (uint32_t y = 0; y < HEIGHT; y++)
+                for (uint32_t px = 0; px < WIDTH; px++) {
+                    const uint32_t texel = reference_texel(px % SIZE, y % SIZE);
+                    const uint8_t pair[2] = {(uint8_t)texel, (uint8_t)(texel >> 8)};
+                    memcpy(guest + cases[c].address + rt_tiling_offset(&layout, px, y, 0), pair, cases[c].bytes);
+                }
+            const uint32_t green = cases[c].bytes == 2 ? 5 : 0; /* DST_SEL y, or 0 */
+            image_descriptor(image, at(cases[c].address), cases[c].data_format, 0, WIDTH, HEIGHT);
+            image[3] = (image[3] & ~0xfffu) | (4 | green << 3 | 0 << 6 | 1 << 9) | cases[c].tiling << 20;
+            drawn = draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error);
+            if (drawn) fprintf(stderr, "tiled %u-byte image: %s\n", cases[c].bytes, error);
+            CHECK(drawn == 0 && channel_misses(x, at(TEXEL_TARGET), cases[c].bytes == 2) == 0);
+            image[3] = (image[3] & ~(0x1fu << 20)) | LINEAR_ALIGNED << 20;
+            CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0 && channel_misses(x, at(TEXEL_TARGET), cases[c].bytes == 2) > 0);
+        }
     }
     image_descriptor(image, at(SMALL), 10, 0, 8, 8);
     image[3] |= LINEAR_ALIGNED << 20;
