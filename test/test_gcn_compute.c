@@ -381,6 +381,25 @@ int main(int argc, char **argv)
             format_user[7] = DST_SEL_ZYXW | 7u << 12 | 12u << 15;
             CHECK(run(&g, store_format_loaded, sizeof store_format_loaded / sizeof store_format_loaded[0], format_user) == 0);
             CHECK(out_words[0] == 0xc1007bffu && out_words[1] == 0x3c003c00u && *stop == 0); /* z, y | x, w */
+            /* 16_16 float (DATA_FORMAT 5): x and y as halves in one dword, z and w have no room */
+            memset(out.mapped, 0, BUFFER_BYTES);
+            format_user[7] = DST_SEL_XYZW | 7u << 12 | 5u << 15;
+            CHECK(run(&g, store_format_loaded, sizeof store_format_loaded / sizeof store_format_loaded[0], format_user) == 0);
+            int stored_pairs = *stop == 0;
+            for (int i = 0; i < LANES; i++) stored_pairs &= out_words[i * 4] == halves[i % 3][0] && out_words[i * 4 + 1] == 0;
+            CHECK(stored_pairs);
+            /* DST_SEL y, x, z, w: memory x takes data y (-2.5), memory y takes data x (1.0) */
+            enum { DST_SEL_YXZW = 5 | 4 << 3 | 6 << 6 | 7 << 9, DST_SEL_ZZZW = 6 | 6 << 3 | 6 << 6 | 7 << 9 };
+            memset(out.mapped, 0, BUFFER_BYTES);
+            format_user[7] = DST_SEL_YXZW | 7u << 12 | 5u << 15;
+            CHECK(run(&g, store_format_loaded, sizeof store_format_loaded / sizeof store_format_loaded[0], format_user) == 0);
+            CHECK(out_words[0] == 0x3c00c100u && out_words[1] == 0 && *stop == 0);
+            /* no stored component selects memory x: nothing stored, the stop word names the format */
+            memset(out.mapped, 0, BUFFER_BYTES);
+            format_user[7] = DST_SEL_ZZZW | 7u << 12 | 5u << 15;
+            CHECK(run(&g, store_format_loaded, sizeof store_format_loaded / sizeof store_format_loaded[0], format_user) == 0);
+            CHECK(out_words[0] == 0 && *stop != 0 && (*stop >> 8 & 0xf) == 5);
+            *stop = 0;
         }
         /* 10_11_11 float (DATA_FORMAT 6): x and y unsigned 11-bit floats in bits 0-10 and 11-21, z a 10-bit
            one in 22-31, rounded to nearest even; negative numbers are 0, large ones infinity, NaN quiet;

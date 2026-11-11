@@ -496,7 +496,7 @@ static bool same_images(const std::vector<gcn_image_binding> &stored, const gcn_
     for (unsigned i = 0; i < count; ++i) {
         const auto &a = stored[i], &b = images[i];
         if (!same_origin(a.origin,b.origin) || a.dim != b.dim || a.arrayed != b.arrayed || a.type != b.type ||
-            a.components != b.components || a.sampled != b.sampled || a.cube != b.cube) return false;
+            a.components != b.components || a.sampled != b.sampled || a.cube != b.cube || a.swizzle != b.swizzle) return false;
     }
     return true;
 }
@@ -592,11 +592,17 @@ static id<MTLTexture> image_for(rt_executor *x, const uint32_t words[RT_IMAGE_DE
     MTLTextureSwizzleChannels swizzle{};
     MTLTextureSwizzle *channels[] = {&swizzle.red,&swizzle.green,&swizzle.blue,&swizzle.alpha};
     const MTLTextureSwizzle components[] = {MTLTextureSwizzleRed,MTLTextureSwizzleGreen,MTLTextureSwizzleBlue,MTLTextureSwizzleAlpha};
+    uint32_t selected_components = 0;
     for (unsigned i = 0; i < 4; ++i) {
         const unsigned select = d.swizzle >> (3 * i) & 7;
         if (storage) {
-            if (i < format.components && select != 4 + i)
+            if (format.components == 4 && !volume) {
+                if (select < 4 || (selected_components & (1u << (select - 4))))
+                    return failed(error,size,"compute image swizzle must preserve its stored components or permute all four"), nil;
+                selected_components |= 1u << (select - 4);
+            } else if (i < format.components && select != 4 + i)
                 return failed(error,size,"compute image swizzle must preserve its stored components"), nil;
+            /* The common translator maps storage channels; native views keep physical order. */
             *channels[i] = components[i];
         } else if (select == 0) *channels[i] = MTLTextureSwizzleZero;
         else if (select == 1) *channels[i] = MTLTextureSwizzleOne;
@@ -1107,7 +1113,8 @@ static int compute_resources(rt_executor *x, const rt_compute_shader &shader, co
             storage_read_write(x,format->metal,error,size)) return -1;
         out.images[i] = {images[i].origin,
             d.type == RT_IMAGE_1D || d.type == RT_IMAGE_1D_ARRAY ? GCN_IMAGE_1D : d.type == RT_IMAGE_3D ? GCN_IMAGE_3D : GCN_IMAGE_2D,
-            d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY,format->type,format->components,0,0,0};
+            d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY,format->type,format->components,0,0,
+            format->components == 4 && d.type != RT_IMAGE_3D ? d.swizzle : 0};
         out.access[i] = images[i].access;
         if (!(out.textures[i] = image_for(x,words,d,*format,true,&out.layouts[i],&out.volumes[i],error,size))) return -1;
         for (unsigned j = 0; j < i; ++j) {

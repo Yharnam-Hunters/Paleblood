@@ -1280,7 +1280,7 @@ enum { VSHARP_FORMAT_WORD = 3, DST_SEL_BITS = 12, DST_SEL_IDENTITY = 4 | 5 << 3 
 
 static uint32_t t_vec4(translator *t) { return spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_float(t), 4}, 2); }
 
-enum { DATA_FORMAT_10_11_11 = 6, DATA_FORMAT_8_8_8_8 = 10, DATA_FORMAT_16_16_16_16 = 12, NUM_FORMAT_UNORM = 0, DST_SEL_X = 4 };
+enum { DATA_FORMAT_16_16 = 5, DATA_FORMAT_10_11_11 = 6, DATA_FORMAT_8_8_8_8 = 10, DATA_FORMAT_16_16_16_16 = 12, NUM_FORMAT_UNORM = 0, DST_SEL_X = 4 };
 
 /* Writes a run-time stop code to the stop word (runtime/gcn_spirv.h). */
 static void runtime_stop(translator *t, uint32_t code)
@@ -1512,6 +1512,10 @@ static void checked_store_dwords(translator *t, const buffer_range *r, uint32_t 
    - a four-component store to 16_16_16_16 float with DST_SEL a permutation: the swizzle undone as for
      8_8_8_8, each component a half rounded to nearest even (IEEE 754's default; shadPS4 packs these
      with packHalf2x16), two to a dword, x first;
+   - a store of two or more components to 16_16 float in which some stored component selects each of
+     memory's x and y: memory component m takes data component i with DST_SEL[i] - 4 = m (the last
+     such i), as halves rounded to nearest even, x in the low half; the format has no room for the
+     other components (shadPS4's lower_buffer_format_to_raw.cpp keeps the format's components only);
    - a store to 10_11_11 float with its three components in place: unsigned 11-, 11- and 10-bit floats
      (x in bits 0-10, y 11-21, z 22-31, as shadPS4's PackUfloat10_11_11 lays them out), rounded to
      nearest even, negative numbers 0;
@@ -1584,6 +1588,17 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
                                                    equals(t, num_format, konst(t, NFMT_FLOAT))),
                                            equals(t, seen, konst(t, 0xf)))
                                     : spirv_constant_bool(&t->m, 0);
+    /* a store to 16_16 float: each of memory's two components selected by a stored data component */
+    uint32_t half2_covered = spirv_constant_bool(&t->m, 1);
+    for (unsigned m = 0; m < 2; m++) {
+        uint32_t selected = spirv_constant_bool(&t->m, 0);
+        for (unsigned c = 0; c < components && c < 4; c++) selected = either(t, selected, equals(t, select[c], konst(t, DST_SEL_X + m)));
+        half2_covered = both(t, half2_covered, selected);
+    }
+    const uint32_t half2_store = !load_op && components >= 2
+                                     ? both(t, both(t, equals(t, data_format, konst(t, DATA_FORMAT_16_16)), equals(t, num_format, konst(t, NFMT_FLOAT))),
+                                            half2_covered)
+                                     : spirv_constant_bool(&t->m, 0);
     /* a store to 10_11_11 float (unsigned floats: x in bits 0-10 and y in 11-21 with 6 mantissa bits,
        z in 22-31 with 5; shadPS4's PackUfloat10_11_11 lays them out the same) with its three components
        in place; a fourth data component has nowhere to go */
@@ -1597,7 +1612,8 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
     /* DATA_FORMAT 0 (invalid): loads read 0, stores write nothing */
     const uint32_t invalid = equals(t, data_format, konst(t, 0));
     /* neither: the stop code, from any active lane */
-    const uint32_t done = either(t, either(t, either(t, either(t, either(t, raw, packed_store), packed_load), half_store), float_10_11_11_store),
+    const uint32_t done = either(t, either(t, either(t, either(t, either(t, either(t, raw, packed_store), packed_load), half_store), half2_store),
+                                           float_10_11_11_store),
                                  invalid);
     const uint32_t stop = begin_if(t, both(t, exec_bit(t), value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, done)));
     uint32_t code = value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, data_format, konst(t, 8)),
@@ -1663,6 +1679,20 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
                                       value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, y, konst(t, 11)),
                                             value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, z, konst(t, 22))));
         checked_store_dword(t, range, base, offset, 0, packed);
+        end_if(t, merge);
+    }
+    if (components >= 2) {
+        const uint32_t merge = begin_if(t, both(t, exec_bit(t), half2_store));
+        uint32_t halves[2];
+        for (unsigned m = 0; m < 2; m++) {
+            uint32_t bits = konst(t, 0);
+            for (unsigned c = 0; c < components && c < 4; c++)
+                bits = value(t, SPV_OP_SELECT, t_uint(t), 3, equals(t, select[c], konst(t, DST_SEL_X + m)), load(t, t_uint(t), vgpr(t, vdata + c)),
+                             bits);
+            halves[m] = half_nearest_even(t, bits);
+        }
+        checked_store_dword(t, range, base, offset, 0,
+                            value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, halves[0], value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, halves[1], konst(t, 16))));
         end_if(t, merge);
     }
     if (components != 4) return;
