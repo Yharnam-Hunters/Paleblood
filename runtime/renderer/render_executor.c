@@ -193,6 +193,7 @@ typedef struct {
     uint64_t address;
     VkFormat format;
     uint32_t width, height, layers, type, tiling_index, pitch;
+    uint32_t depth;                  /* a 3D image's slices (DEPTH + 1); 1 for the other types */
     uint32_t levels;                 /* mip levels (LAST_LEVEL + 1) */
     int pow2;                        /* the descriptor's POW2_PAD (where the levels lie) */
     int gpu_written;                 /* a shader has written it: its texels are the image's own */
@@ -1422,6 +1423,40 @@ static int take_written_image(rt_executor *x, target_entry *t, char *error, size
     return 1;
 }
 
+/* An image a shader wrote keeps its texels (image_for), and the guest memory under it does not get them.
+   A view of the same memory in another format of the same bytes must read those texels too: a compute
+   shader's stores to an sRGB image go to an R8G8B8A8_UNORM image (Vulkan has no sRGB storage images),
+   which a draw may then sample as R8G8B8A8_SRGB. So an image of the same shape that is about to be read
+   takes the written one's texels: Vulkan copies between formats of one texel size bit for bit. Single-level images only (a storage image has one level). 1 when
+   copied, 0 when no such image was written, -1 with the reason. */
+static int one_dimensional(uint32_t type);
+
+static int take_written_alias(rt_executor *x, image_entry *e, char *error, size_t error_size)
+{
+    const image_entry *w = NULL;
+    for (size_t i = 0; i < x->image_count && !w; i++) {
+        const image_entry *k = &x->images[i];
+        if (k != e && k->gpu_written && k->address == e->address && same_texel_bytes(k->format, e->format) && k->width == e->width &&
+            k->height == e->height && k->layers == e->layers && k->depth == e->depth && k->type == e->type && k->levels == 1 &&
+            e->levels == 1)
+            w = k;
+    }
+    if (!w) return 0;
+    VkCommandBuffer commands = batch_commands(x);
+    if (!commands) return failed(error, error_size, "no command buffer");
+    const VkMemoryBarrier written = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
+                                     .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &written, 0, NULL, 0, NULL);
+    const VkImageCopy region = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, e->layers},
+                                .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, e->layers},
+                                .extent = {e->width, one_dimensional(e->type) ? 1 : e->height, e->depth}};
+    vkCmdCopyImage(commands, w->image, VK_IMAGE_LAYOUT_GENERAL, e->image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+    const VkMemoryBarrier copied = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                    .dstAccessMask = VK_ACCESS_SHADER_READ_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &copied, 0, NULL, 0, NULL);
+    return 1;
+}
+
 /* Fast clears (CB_COLOR_INFO's FAST_CLEAR): the game clears a target by clearing its CMASK (4 bits a
    8x8 tile; 0 means cleared to CB_COLORn_CLEAR_WORD0/1, as Mesa's radeonsi fast clears with a CMASK of
    0, and all bits set means the tile holds its texels) and leaves the colour to the GPU. Before each
@@ -2384,9 +2419,12 @@ static int image_format(const rt_image_descriptor *d, texel_format *f, char *err
     return failed(error, error_size, "an image of DATA_FORMAT %u, NUM_FORMAT %u: not done yet", d->data_format, d->num_format);
 }
 
-enum { NUM_FORMAT_SRGB = 9 };
+enum { NUM_FORMAT_UNORM = 0, NUM_FORMAT_SRGB = 9 };
 
 static int one_dimensional(uint32_t type) { return type == RT_IMAGE_1D || type == RT_IMAGE_1D_ARRAY; }
+
+/* A 3D image's slices: its descriptor's DEPTH + 1 (an array's DEPTH counts layers instead); 1 otherwise. */
+static uint32_t image_depth(const rt_image_descriptor *d) { return d->type == RT_IMAGE_3D ? d->depth : 1; }
 
 /* Fills a kept image with the guest memory's texels under its descriptor, detiled (runtime/tiling.h): on
    the GPU for elements of whole 32-bit words, again whenever the memory may have changed since
@@ -2556,7 +2594,7 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
     for (size_t i = 0; i < x->image_count && !e; i++) {
         image_entry *k = &x->images[i];
         if (k->address == d->address && k->format == f->format && k->width == d->width && k->height == d->height && k->layers == d->layers &&
-            k->type == d->type && k->levels == d->last_level + 1 && k->pow2 == (int)d->pow2_pad)
+            k->type == d->type && k->levels == d->last_level + 1 && k->pow2 == (int)d->pow2_pad && k->depth == image_depth(d))
             e = k;
     }
     if (!e) {
@@ -2565,8 +2603,9 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
             return NULL;
         }
         const int one_d = one_dimensional(d->type);
-        const VkImageCreateInfo info = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = one_d ? VK_IMAGE_TYPE_1D : VK_IMAGE_TYPE_2D,
-                                        .format = f->format, .extent = {d->width, one_d ? 1 : d->height, 1}, .mipLevels = d->last_level + 1,
+        const VkImageCreateInfo info = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+                                        .imageType = one_d ? VK_IMAGE_TYPE_1D : d->type == RT_IMAGE_3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D,
+                                        .format = f->format, .extent = {d->width, one_d ? 1 : d->height, image_depth(d)}, .mipLevels = d->last_level + 1,
                                         .arrayLayers = d->layers, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
                                         .usage = (f->block > 1 || f->format == VK_FORMAT_R8G8B8A8_SRGB ? 0 : VK_IMAGE_USAGE_STORAGE_BIT) |
                                                  VK_IMAGE_USAGE_SAMPLED_BIT |
@@ -2575,7 +2614,7 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
         e = &x->images[x->image_count];
         *e = (image_entry){.address = d->address, .format = f->format, .width = d->width, .height = d->height, .layers = d->layers,
                            .type = d->type, .tiling_index = d->tiling_index, .pitch = d->pitch, .levels = d->last_level + 1,
-                           .pow2 = (int)d->pow2_pad, .loaded_epoch = UINT64_MAX};
+                           .pow2 = (int)d->pow2_pad, .depth = image_depth(d), .loaded_epoch = UINT64_MAX};
         if (vkCreateImage(x->device, &info, NULL, &e->image) != VK_SUCCESS) {
             failed(error, error_size, "the device refused a %ux%u image", d->width, d->height);
             return NULL;
@@ -2611,12 +2650,23 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
     /* an image over a render target's memory loads it even to be written: a store may cover only part of
        it, and the target takes the whole image's texels at its next draw (take_written_image) */
     const int over_target = find_target(x, d->address) != NULL;
-    if (((access & GCN_IMAGE_READ) || over_target) && !e->gpu_written && load_texels(x, e, d, f, error, error_size)) return NULL;
+    /* a 3D image's slices in memory (thick tile modes among them) are not laid out here yet: one is used only
+       as the GPU wrote it */
+    if (((access & GCN_IMAGE_READ) || over_target) && !e->gpu_written && e->type == RT_IMAGE_3D) {
+        failed(error, error_size, "a 3D image at %#llx read from guest memory (tiling index %u): not done yet", (unsigned long long)d->address,
+               d->tiling_index);
+        return NULL;
+    }
+    if (((access & GCN_IMAGE_READ) || over_target) && !e->gpu_written) {
+        const int taken = take_written_alias(x, e, error, error_size);
+        if (taken < 0 || (!taken && load_texels(x, e, d, f, error, error_size))) return NULL;
+    }
     if (access & GCN_IMAGE_WRITE) e->gpu_written = 1;
     return e;
 }
 
 enum { DST_SEL_ZERO = 0, DST_SEL_ONE = 1, DST_SEL_X = 4, DST_SEL_IDENTITY = 4 | 5 << 3 | 6 << 6 | 7 << 9 };
+
 
 /* A view of an image's layers first to first + count - 1, as its descriptor's type has it (an array
    stays an array), its components picked by swizzle (DST_SEL: 0 zero, 1 one, 4-7 x, y, z, w). A
@@ -2641,7 +2691,8 @@ static VkImageView image_view(rt_executor *x, image_entry *e, uint32_t first, ui
                                                                                             : (VkComponentSwizzle)(VK_COMPONENT_SWIZZLE_R + sel - DST_SEL_X);
     }
     const VkImageViewType view_type = e->type == RT_IMAGE_1D ? VK_IMAGE_VIEW_TYPE_1D : e->type == RT_IMAGE_1D_ARRAY ? VK_IMAGE_VIEW_TYPE_1D_ARRAY
-                                    : e->type == RT_IMAGE_2D ? VK_IMAGE_VIEW_TYPE_2D : VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+                                    : e->type == RT_IMAGE_2D ? VK_IMAGE_VIEW_TYPE_2D : e->type == RT_IMAGE_3D ? VK_IMAGE_VIEW_TYPE_3D
+                                    : VK_IMAGE_VIEW_TYPE_2D_ARRAY;
     const VkImageViewCreateInfo view = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = e->image, .viewType = view_type,
                                         .format = e->format, .components = {components[0], components[1], components[2], components[3]},
                                         .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, first_level, level_count, first, count}};
@@ -2777,41 +2828,54 @@ static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64
         rt_image_descriptor d;
         rt_image_descriptor_decode(words, &d);
         const int cube = d.type == RT_IMAGE_CUBE;
-        if (cube && !pixel) return failed(error, error_size, "a cube image in a compute shader: not done yet");
-        if (d.type != RT_IMAGE_1D && d.type != RT_IMAGE_2D && d.type != RT_IMAGE_1D_ARRAY && d.type != RT_IMAGE_2D_ARRAY && !cube)
+        const int three_d = d.type == RT_IMAGE_3D;
+        if (d.type != RT_IMAGE_1D && d.type != RT_IMAGE_2D && d.type != RT_IMAGE_1D_ARRAY && d.type != RT_IMAGE_2D_ARRAY && !cube && !three_d)
             return failed(error, error_size,
                           "the %s shader at %#llx reads an image of type %u (descriptor %08x %08x %08x %08x %08x %08x %08x %08x): "
-                          "only 1D and 2D images, their arrays and cubes are done yet",
+                          "only 1D, 2D and 3D images, their arrays and cubes are done yet",
                           stage, (unsigned long long)code, d.type, words[0], words[1], words[2], words[3], words[4], words[5], words[6],
                           words[7]);
         /* mip levels: a pixel shader's sampled images (a storage image has one level) */
         if (d.base_level > d.last_level || d.last_level >= RT_TILING_MAX_LEVELS)
             return failed(error, error_size, "an image with mip levels %u to %u", d.base_level, d.last_level);
         if (d.last_level && !pixel) return failed(error, error_size, "a mip-mapped image in a compute shader: not done yet");
-        /* a cube is viewed whole: its BASE_ARRAY and LAST_ARRAY are not used (the game's give faces 0 to 35 of one cube) */
-        if (d.layers > 1 && !cube && (d.base_array > d.last_array || d.last_array >= d.layers))
+        if (d.last_level && three_d) return failed(error, error_size, "a mip-mapped 3D image: not done yet");
+        /* a sampled cube is viewed whole: its BASE_ARRAY and LAST_ARRAY are not used (the game's give faces 0
+           to 35 of one cube); a storage cube is a 2D array of its faces (the store names the face, shadPS4's
+           storage cubes are arrays of faces too), from BASE_ARRAY to LAST_ARRAY like any array */
+        const int whole_cube = cube && pixel;
+        if (d.layers > 1 && !whole_cube && (d.base_array > d.last_array || d.last_array >= d.layers))
             return failed(error, error_size, "a view of an image array from layer %u to %u of %u", d.base_array, d.last_array, d.layers);
         texel_format f;
-        if (image_format(&d, &f, error, error_size)) return -1;
-        /* Vulkan has no sRGB storage images, and whether a compute shader's image_load decodes sRGB is
-           not established */
-        if (!pixel && d.num_format == NUM_FORMAT_SRGB)
-            return failed(error, error_size, "an sRGB image (DATA_FORMAT %u) in a compute shader: not done yet", d.data_format);
-        /* a storage image's DST_SEL must keep each of the format's components in place; a sampled view
-           picks them, or 0 or 1, but a component the format lacks is not established */
-        for (unsigned k = 0; k < (pixel ? 4 : f.components); k++) {
-            const uint32_t sel = d.swizzle >> (3 * k) & 7;
-            const int ok = pixel ? sel == DST_SEL_ZERO || sel == DST_SEL_ONE || (sel >= DST_SEL_X && sel < DST_SEL_X + f.components)
-                                 : sel == DST_SEL_X + k;
-            if (!ok) return failed(error, error_size, "an image with swizzle %#x and %u components: not done yet", d.swizzle, f.components);
+        /* Vulkan has no sRGB storage images: a compute shader's stores to one go out as UNORM, the values
+           unconverted (shadPS4 views a storage image of sRGB numbers as UNORM, with no conversion on
+           stores); whether its image_load decodes sRGB is not established */
+        if (!pixel && d.num_format == NUM_FORMAT_SRGB) {
+            if (resources[i].access & GCN_IMAGE_READ)
+                return failed(error, error_size, "a compute shader reading an sRGB image (DATA_FORMAT %u): not done yet", d.data_format);
+            d.num_format = NUM_FORMAT_UNORM;
         }
+        if (image_format(&d, &f, error, error_size)) return -1;
+        /* DST_SEL picks texel components, or 0 or 1. A sampled view takes it as its component mapping, of
+           the format's components (one the format lacks is not established). A storage image's loads and
+           stores are swizzled by the translator (shadPS4 swizzles storage images in the shader too), which
+           checks that each of the format's components is stored; a load of a component the format lacks
+           reads what Vulkan gives (0, and 1 for alpha). */
+        for (unsigned k = 0; k < 4; k++) {
+            const uint32_t sel = d.swizzle >> (3 * k) & 7;
+            if (sel != DST_SEL_ZERO && sel != DST_SEL_ONE && (sel < DST_SEL_X || (pixel && sel >= DST_SEL_X + f.components)))
+                return failed(error, error_size, "an image with swizzle %#x and %u components: not done yet", d.swizzle, f.components);
+        }
+        const int storage_swizzled = !pixel && d.swizzle != DST_SEL_IDENTITY;
         const int one_d = one_dimensional(d.type);
-        bindings[i] = (gcn_image_binding){*origin, one_d ? GCN_IMAGE_1D : GCN_IMAGE_2D,
-                                          d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY || cube, f.type, f.components, pixel, cube};
+        bindings[i] = (gcn_image_binding){*origin, one_d ? GCN_IMAGE_1D : three_d ? GCN_IMAGE_3D : GCN_IMAGE_2D,
+                                          d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY || cube, f.type, f.components, pixel, whole_cube,
+                                          storage_swizzled ? d.swizzle : 0};
         if (formats) formats[i] = f.format;
         image_entry *e = image_for(x, &d, &f, resources[i].access, error, error_size);
-        /* a cube is viewed whole, its faces as layers (the shader names the face) */
-        const uint32_t first = d.layers > 1 && !cube ? d.base_array : 0, layers = cube ? d.layers : d.layers > 1 ? d.last_array - d.base_array + 1 : 1;
+        /* a sampled cube is viewed whole, its faces as layers (the shader names the face) */
+        const uint32_t first = d.layers > 1 && !whole_cube ? d.base_array : 0,
+                       layers = whole_cube ? d.layers : d.layers > 1 ? d.last_array - d.base_array + 1 : 1;
         if (!e || !(views[i] = image_view(x, e, first, layers, d.base_level, d.last_level - d.base_level + 1,
                                           pixel ? d.swizzle : (uint32_t)DST_SEL_IDENTITY, error, error_size)))
             return -1;
