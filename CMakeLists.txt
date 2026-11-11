@@ -104,7 +104,7 @@ file(GLOB PB_TEST_SYSLIB CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/runtime/syslib/
 # The syslib tests use the display's headless mode only, so they build without its window.
 # Each library's tests in their own file (test/syslib_test.h).
 file(GLOB PB_TEST_SYSLIB_TESTS CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/test/syslib/*.c)
-add_executable(test_syslib test/test_syslib.c ${PB_TEST_SYSLIB_TESTS} runtime/process.c ${PB_TEST_SYSLIB}
+add_executable(test_syslib test/test_syslib.c ${PB_TEST_SYSLIB_TESTS} runtime/process.c runtime/memory.c ${PB_TEST_SYSLIB}
                runtime/display/display.c runtime/display/display_window_none.c runtime/renderer/renderer_none.c
                runtime/audio/audio_host_none.c runtime/input/input.c runtime/input/input_script.c runtime/input/input_host_none.c ${PB_MEDIA_SOURCES})
 target_include_directories(test_syslib PRIVATE runtime/include)
@@ -190,12 +190,8 @@ target_include_directories(test_compiled_sdk PRIVATE runtime/include)
 add_test(NAME compiled_sdk COMMAND test_compiled_sdk)
 set_tests_properties(compiled_sdk PROPERTIES TIMEOUT 10)
 
-# Exercise the registered direct-memory calls, including rejected ranges before host mapping.
-add_executable(test_direct_memory_bounds test/test_direct_memory_bounds.c
-               runtime/syslib/kernel_memory.c runtime/syslib/kernel.c runtime/syslib/table.c runtime/process.c)
-target_include_directories(test_direct_memory_bounds PRIVATE runtime/include)
-add_test(NAME direct_memory_bounds COMMAND test_direct_memory_bounds)
-set_tests_properties(direct_memory_bounds PROPERTIES TIMEOUT 20)
+# Direct-memory placement, backing ownership and registered provider tests.
+include(cmake/HostMemoryTests.cmake)
 
 # The table is immutable in the original image. This unit uses owned values so
 # the last valid entry and a one-past access are independently observable.
