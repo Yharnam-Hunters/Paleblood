@@ -1,0 +1,65 @@
+name: host-locks
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/host-locks.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/HostLockTests.cmake'
+      - 'cmake/HostTime.cmake'
+      - 'runtime/host_time.c'
+      - 'runtime/include/runtime/host*.h'
+      - 'runtime/include/runtime/syslib.h'
+      - 'runtime/syslib/kernel_mutex.c'
+      - 'runtime/syslib/kernel_rwlock.c'
+      - 'runtime/syslib/table.c'
+      - 'runtime/process.c'
+      - 'test/host_locks/**'
+      - 'test/test_host_lock_wait.c'
+      - 'test/test_host_cond_wait.c'
+      - 'test/test_syslib_locks.c'
+      - 'test/syslib/timed_locks.c'
+      - 'test/syslib_test.h'
+  pull_request:
+    paths:
+      - '.github/workflows/host-locks.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/HostLockTests.cmake'
+      - 'cmake/HostTime.cmake'
+      - 'runtime/host_time.c'
+      - 'runtime/include/runtime/host*.h'
+      - 'runtime/include/runtime/syslib.h'
+      - 'runtime/syslib/kernel_mutex.c'
+      - 'runtime/syslib/kernel_rwlock.c'
+      - 'runtime/syslib/table.c'
+      - 'runtime/process.c'
+      - 'test/host_locks/**'
+      - 'test/test_host_lock_wait.c'
+      - 'test/test_host_cond_wait.c'
+      - 'test/test_syslib_locks.c'
+      - 'test/syslib/timed_locks.c'
+      - 'test/syslib_test.h'
+  merge_group:
+permissions:
+  contents: read
+jobs:
+  locks:
+    name: Host locks (${{ matrix.profile }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {profile: linux-gcc, os: ubuntu-24.04, cc: gcc, flags: ''}
+          - {profile: linux-clang, os: ubuntu-24.04, cc: clang, flags: ''}
+          - {profile: darwin-x86_64, os: macos-15-intel, cc: clang, flags: '-DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0'}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure isolated production-provider tests
+        env:
+          CC: ${{ matrix.cc }}
+        run: cmake -S test/host_locks -B build-host-locks -DCMAKE_BUILD_TYPE=Release ${{ matrix.flags }}
+      - name: Build
+        run: cmake --build build-host-locks --parallel 2
+      - name: Run
+        run: ctest --test-dir build-host-locks --output-on-failure
