@@ -329,12 +329,11 @@ void rt_renderer_bind_shader(const char *function, rt_renderer_shader kind, cons
 
 int rt_renderer_frame(uint64_t address, uint32_t *frame, uint32_t width, uint32_t height)
 {
-    if (on_completion_thread) { /* a flip performed later (show_later): its copy, if it has one */
+    if (on_completion_thread && performing && performing->has_snapshot) { /* a flip performed later (show_later): its copy */
         char error[256];
-        return performing && performing->has_snapshot &&
-               rt_executor_read_snapshot(executor, &performing->snapshot, frame, width, height, error, sizeof error) == 0;
+        return rt_executor_read_snapshot(executor, &performing->snapshot, frame, width, height, error, sizeof error) == 0;
     }
-    rt_renderer_wait_idle();
+    rt_renderer_wait_idle(); /* returns at once on the renderer's and the completion thread: the work before their steps has run */
     pthread_mutex_lock(&renderer_lock);
     char error[256];
     const int drawn = executor && rt_executor_read_target(executor, address, frame, width, height, error, sizeof error) == 0;
