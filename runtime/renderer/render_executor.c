@@ -2067,7 +2067,7 @@ static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor
     }
     const VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, e->layers},
                                     .imageExtent = {e->width, one_dimensional(d->type) ? 1 : e->height, 1}};
-    if (bytes % 4 == 0) { /* whole words: detiled on the GPU (runtime/tile_copy.h), with the batch */
+    if (bytes % 4 == 0 && rt_tiling_uniform_micro(&layout)) { /* whole words: detiled on the GPU (runtime/tile_copy.h), with the batch */
         if (e->loaded_epoch == x->memory_epoch) return 0; /* nothing may have changed the memory since */
         if (!e->plan.table.buffer && tile_plan_make(x, &e->plan, &layout, columns, rows, e->layers, error, error_size)) return -1;
         if (record_tile_copy(x, &e->plan, d->address, 0, error, error_size)) return -1;
