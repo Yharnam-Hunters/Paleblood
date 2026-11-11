@@ -13,11 +13,6 @@ void rt_renderer_submit(const char *function, const void *buffer, uint32_t bytes
 
 void rt_renderer_wait_idle(void) {}
 
-void rt_renderer_skip(const char *function, const void *buffer, uint32_t bytes)
-{
-    (void)function, (void)buffer, (void)bytes;
-}
-
 void rt_renderer_bind_shader(const char *function, rt_renderer_shader kind, const void *at, const uint32_t *words)
 {
     (void)function, (void)kind, (void)at, (void)words;

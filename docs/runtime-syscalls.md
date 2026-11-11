@@ -2428,18 +2428,22 @@ OpenOrbis' `GnmDriver.h` only names this call, so its shape comes from the engin
   the read pointer to 0.
 - The setup then reports success only when that id is not 0.
 
-**What the runtime does.** It does not run the GPU, so the ring is never read. It records each
+**What the runtime does.** It reads the ring only when `sceGnmDingDong` rings (below). It records each
 queue for the engine-level graphics layer, and answers ids from 1.
 
 **What stops by name:** mapping the same pipe and queue twice, and a missing ring or read pointer.
 
-**The renderer and compute queues.** `sceGnmDingDong` completes each indirect buffer the ring points
-to (the temporary stand-in in `runtime/syslib/gnm.c`), then hands it to the renderer, which drops its
-recorded calls without running them (`rt_renderer_skip`): compute queues do not run on the renderer
-yet. Dropping them matters because a shader bound in a command buffer is recorded by its address. A
-compute queue's buffer is never submitted to the graphics queue, so before this its bindings stayed
-waiting, and a graphics buffer later built in the same memory picked them up: on the main menu after
-Play Offline, a stale compute shader replaced the one the graphics buffer had just bound.
+**The renderer and compute queues.** `sceGnmDingDong` reads each indirect buffer the ring points
+to (the temporary stand-in in `runtime/syslib/gnm.c`) as `sceGnmSubmitCommandBuffers` reads a
+graphics buffer, and submits it to the renderer (`rt_renderer_submit`). Its dispatches run on the
+renderer's one queue, in submission order with the graphics work, and its RELEASE_MEM labels are
+steps written once that work has run (at once with the display off). The character creation screen
+needs this: the compute queues fill a 16x16x16 colour volume, composed images and the light data its
+clustered lighting pass reads; when the stand-in dropped their dispatches, the preview stayed unlit.
+Submitting also takes the buffer's recorded calls, which matters because a shader bound in a command
+buffer is recorded by its address: a graphics buffer later built in the same memory must not pick
+up a compute queue's binding (on the main menu after Play Offline, a stale compute shader once
+replaced the one the graphics buffer had just bound).
 
 ## Kernel event queues (`sceKernelCreateEqueue`, `sceKernelWaitEqueue`, `sceKernelDeleteEqueue`, issue #34)
 
