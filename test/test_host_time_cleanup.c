@@ -1,37 +1,37 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* Force a pending alarm at shutdown; observe mask, timer, drain and action restoration. */
+/* Force a pending alarm after sender join; observe mask, drain and action restoration. */
 #include <errno.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
-#include <sys/time.h>
-static unsigned injected,waits;
+
+static unsigned injected,waits,joins;
 static volatile sig_atomic_t unexpected;
-static int observed_setitimer(int which,const struct itimerval *value,struct itimerval *old)
+static int observed_join(pthread_t thread,void **result)
 {
-    const int result=setitimer(which,value,old);
-    if (!result && which==ITIMER_REAL && !value->it_value.tv_sec && !value->it_value.tv_usec) {
-        sigset_t mask;
-        if (pthread_sigmask(SIG_SETMASK,NULL,&mask) || sigismember(&mask,SIGALRM)!=1) {
-            fprintf(stderr,"cleanup: disarm must block SIGALRM before restoring its action\n");
-            errno=EINVAL;return -1;
-        }
-        if (raise(SIGALRM)) return -1;
-        ++injected;
+    const int error=pthread_join(thread,result);
+    if (error) return error;
+    ++joins;
+    sigset_t mask;
+    if (pthread_sigmask(SIG_SETMASK,NULL,&mask) || sigismember(&mask,SIGALRM)!=1) {
+        fprintf(stderr,"cleanup: sender join must block SIGALRM before restoring its action\n");
+        return EINVAL;
     }
-    return result;
+    if (raise(SIGALRM)) return EINVAL;
+    ++injected;
+    return 0;
 }
 static int observed_sigwait(const sigset_t *set,int *signal_number)
 {
     ++waits;return sigwait(set,signal_number);
 }
-#define setitimer observed_setitimer
+#define pthread_join observed_join
 #define sigwait observed_sigwait
 #define main host_time_fixture_main
 #include "test_host_time.c"
 #undef main
 #undef sigwait
-#undef setitimer
+#undef pthread_join
 #undef CHECK
 
 static unsigned control_checks;
@@ -48,17 +48,14 @@ int main(void)
     CHECK(sigaddset(&fixture_mask,SIGUSR1)==0 && sigdelset(&fixture_mask,SIGALRM)==0);
     CHECK(pthread_sigmask(SIG_SETMASK,&fixture_mask,NULL)==0);
     CHECK(host_time_fixture_main()==0);
-    CHECK(injected==1 && waits>=1 && unexpected==0);
+    CHECK(joins==1 && injected==1 && waits>=1 && unexpected==0);
     CHECK(sigaction(SIGALRM,NULL,&after)==0 && after.sa_handler==original_alarm);
     CHECK((after.sa_flags&SA_RESTART)!=0 && sigismember(&after.sa_mask,SIGUSR2)==1);
     CHECK(pthread_sigmask(SIG_SETMASK,NULL,&after_mask)==0);
     CHECK(sigismember(&after_mask,SIGALRM)==0 && sigismember(&after_mask,SIGUSR1)==1);
-    struct itimerval timer;
-    CHECK(getitimer(ITIMER_REAL,&timer)==0 && !timer.it_value.tv_sec && !timer.it_value.tv_usec
-          && !timer.it_interval.tv_sec && !timer.it_interval.tv_usec);
     CHECK(sigaction(SIGALRM,&outer,NULL)==0);
     CHECK(pthread_sigmask(SIG_SETMASK,&outer_mask,NULL)==0);
-    printf("host timer cleanup: %u checks, %u injected, %u drains, %d unexpected, passed\n",
+    printf("host sender cleanup: %u checks, %u injected, %u drains, %d unexpected, passed\n",
            control_checks,injected,waits,(int)unexpected);
     return 0;
 }
