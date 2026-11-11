@@ -38,6 +38,11 @@ target_compile_options(pbmetal_executor PRIVATE -fobjc-arc -fobjc-exceptions -fb
 target_link_libraries(pbmetal_executor PUBLIC pbgcn_spirv pbrender_calls pbtiling
     PRIVATE spirv-cross-msl ${PB_METAL_FRAMEWORK} ${PB_FOUNDATION_FRAMEWORK})
 if(PB_ENABLE_METAL_SMOKE_TEST)
+    add_executable(test_metal_volumes test/test_metal_volumes.c)
+    target_compile_options(test_metal_volumes PRIVATE -ffp-contract=off -fno-fast-math)
+    target_link_libraries(test_metal_volumes PRIVATE pbmetal_executor)
+    add_test(NAME metal_volumes COMMAND test_metal_volumes)
+    set_tests_properties(metal_volumes PROPERTIES TIMEOUT 120 LABELS "gpu;metal")
     include(${PROJECT_SOURCE_DIR}/cmake/ComputeThreadIdTests.cmake)
     add_executable(test_metal_executor test/test_metal_executor.c)
     target_link_libraries(test_metal_executor PRIVATE pbmetal_executor)

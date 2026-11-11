@@ -7,6 +7,7 @@
 #include "runtime/gcn.h"
 #include "runtime/render_calls.h"
 #include "runtime/tiling.h"
+#include "runtime/volume_tiling.h"
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
@@ -46,6 +47,7 @@ struct MetalPixelResources : MetalResourceBindings { bool nondefault_lod = false
 struct MetalComputeResources : MetalResourceBindings {
     rt_image_descriptor descriptors[GCN_MAX_IMAGES]{};
     rt_tiling layouts[GCN_MAX_IMAGES]{};
+    rt_volume_tiling volumes[GCN_MAX_IMAGES]{};
     unsigned access[GCN_MAX_IMAGES]{};
 };
 struct MetalImage {
@@ -518,14 +520,23 @@ static const MetalImageFormat *image_format(const rt_image_descriptor &d, char *
 
 static id<MTLTexture> image_for(rt_executor *x, const uint32_t words[RT_IMAGE_DESCRIPTOR_WORDS],
                                 const rt_image_descriptor &d, const MetalImageFormat &format, bool storage, rt_tiling *storage_layout,
+                                rt_volume_tiling *storage_volume,
                                 char *error, size_t size)
 {
     const char *stage = storage ? "compute" : "pixel";
     const bool one_d = d.type == RT_IMAGE_1D || d.type == RT_IMAGE_1D_ARRAY;
     const bool arrayed = d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY;
-    if (!one_d && d.type != RT_IMAGE_2D && d.type != RT_IMAGE_2D_ARRAY)
+    const bool volume = storage && d.type == RT_IMAGE_3D;
+    if (!one_d && d.type != RT_IMAGE_2D && d.type != RT_IMAGE_2D_ARRAY && !volume) {
+        if (storage) return failed(error,size,"compute image type %u is outside 1D/2D arrays and the selected 3D volume profile",d.type), nil;
         return failed(error, size, "only 1D/2D %s images and their arrays are modeled",stage), nil;
+    }
     constexpr uint32_t image_dimension_limit = 16384, image_layer_limit = 2048; /* Metal feature-table limits. */
+    constexpr uint32_t volume_dimension_limit = 2048;
+    if (volume && (!d.depth || d.width > volume_dimension_limit || d.height > volume_dimension_limit || d.depth > volume_dimension_limit))
+        return failed(error,size,"compute volume dimensions exceed the 3D profile"), nil;
+    if (volume && (d.base_array || d.last_array))
+        return failed(error,size,"compute volume view requires zero array fields"), nil;
     const uint32_t height = one_d ? 1 : d.height;
     if (!d.width || !height || d.width > image_dimension_limit || height > image_dimension_limit ||
         !d.layers || d.layers > image_layer_limit || d.pitch < d.width || d.pitch % format.block)
@@ -551,24 +562,34 @@ static id<MTLTexture> image_for(rt_executor *x, const uint32_t words[RT_IMAGE_DE
         else if (select >= 4 && select < 4 + format.components) *channels[i] = components[select - 4];
         else return failed(error, size, "pixel image component selector %u has no established component", select), nil;
     }
-    rt_tiling_level levels[RT_TILING_MAX_LEVELS]{}; char reason[256] = {};
-    if (rt_tiling_mip_chain(d.tiling_index,format.bytes,format.block,d.pow2_pad,d.pitch,height,d.width,height,
-                           d.last_level + 1,d.layers,levels,reason,sizeof reason))
-        return failed(error,size,"%s image layout: %s",stage,reason), nil;
-    const auto &last = levels[d.last_level];
-    const uint64_t span = last.offset + rt_tiling_size(&last.layout,d.layers);
+    rt_tiling_level levels[RT_TILING_MAX_LEVELS]{}; rt_volume_tiling volume_layout{}; char reason[256] = {};
+    uint64_t span = 0;
+    if (volume) {
+        if (rt_volume_layout(d.tiling_index,format.bytes,d.pitch,d.width,d.height,d.depth,d.pow2_pad,
+                             &volume_layout,reason,sizeof reason))
+            return failed(error,size,"compute volume layout: %s",reason), nil;
+        span = volume_layout.size_bytes;
+    } else {
+        if (rt_tiling_mip_chain(d.tiling_index,format.bytes,format.block,d.pow2_pad,d.pitch,height,d.width,height,
+                               d.last_level + 1,d.layers,levels,reason,sizeof reason))
+            return failed(error,size,"%s image layout: %s",stage,reason), nil;
+        const auto &last = levels[d.last_level];
+        span = last.offset + rt_tiling_size(&last.layout,d.layers);
+    }
     if (d.address < x->guest_base || d.address - x->guest_base > x->size || span > x->size - (d.address - x->guest_base))
         return failed(error,size,"%s image is outside the GPU-visible pool",stage), nil;
-    if (storage_layout) *storage_layout = levels[0].layout;
+    if (storage_layout && !volume) *storage_layout = levels[0].layout;
+    if (storage_volume && volume) *storage_volume = volume_layout;
     MetalImage *entry = nullptr;
     for (auto &image : x->images)
         if (image.storage == storage && std::equal(image.words.begin(),image.words.end(),words)) { entry = &image; break; }
     if (!entry) {
         if (x->images.size() == MAX_IMAGES) return failed(error,size,"%s image cache is full",stage), nil;
         MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
-        descriptor.textureType = arrayed ? MTLTextureType2DArray : MTLTextureType2D; /* 1D is lowered as 2D by SPIRV-Cross. */
+        descriptor.textureType = volume ? MTLTextureType3D : arrayed ? MTLTextureType2DArray : MTLTextureType2D; /* 1D is lowered as 2D by SPIRV-Cross. */
         descriptor.pixelFormat = format.metal; descriptor.width = d.width; descriptor.height = height;
-        descriptor.mipmapLevelCount = d.last_level + 1; descriptor.arrayLength = d.layers;
+        descriptor.depth = volume ? d.depth : 1;
+        descriptor.mipmapLevelCount = d.last_level + 1; descriptor.arrayLength = volume ? 1 : d.layers;
         descriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView;
         if (storage) descriptor.usage |= MTLTextureUsageShaderWrite;
         descriptor.storageMode = MTLStorageModeShared;
@@ -582,6 +603,14 @@ static id<MTLTexture> image_for(rt_executor *x, const uint32_t words[RT_IMAGE_DE
         image.storage = storage; image.texture = texture; image.view = view; x->images.push_back(std::move(image)); entry = &x->images.back();
     }
     const auto *base = static_cast<const uint8_t *>(x->view) + d.address - x->guest_base;
+    if (volume) {
+        const size_t row_bytes = static_cast<size_t>(d.width) * format.bytes, image_bytes = row_bytes * d.height;
+        x->image_rows.resize(image_bytes * d.depth);
+        rt_volume_detile(&volume_layout,base,x->image_rows.data());
+        [entry->texture replaceRegion:MTLRegionMake3D(0,0,0,d.width,d.height,d.depth) mipmapLevel:0 slice:0
+            withBytes:x->image_rows.data() bytesPerRow:row_bytes bytesPerImage:image_bytes];
+        return entry->view;
+    }
     for (unsigned level = 0; level <= d.last_level; ++level) {
         const auto &layout = levels[level];
         const uint32_t width = std::max(1u,d.width >> level), rows = std::max(1u,height >> level);
@@ -590,7 +619,7 @@ static id<MTLTexture> image_for(rt_executor *x, const uint32_t words[RT_IMAGE_DE
         rt_tiling_detile(&layout.layout,base + layout.offset,x->image_rows.data(),layout.columns,layout.rows,d.layers);
         for (uint32_t slice = 0; slice < d.layers; ++slice)
             [entry->texture replaceRegion:MTLRegionMake2D(0,0,width,rows) mipmapLevel:level slice:slice
-                withBytes:x->image_rows.data() + slice * slice_bytes bytesPerRow:row_bytes bytesPerImage:slice_bytes];
+                withBytes:x->image_rows.data() + slice * slice_bytes bytesPerRow:row_bytes bytesPerImage:0];
     }
     return entry->view;
 }
@@ -653,7 +682,7 @@ static int pixel_resources(rt_executor *x, const MetalState &state, MetalPixelRe
         out.images[i] = {images[i].origin,
             descriptor.type == RT_IMAGE_1D || descriptor.type == RT_IMAGE_1D_ARRAY ? GCN_IMAGE_1D : GCN_IMAGE_2D,
             descriptor.type == RT_IMAGE_1D_ARRAY || descriptor.type == RT_IMAGE_2D_ARRAY,format->type,format->components,1,0,0};
-        if (!(out.textures[i] = image_for(x,words,descriptor,*format,false,nullptr,error,size))) return -1;
+        if (!(out.textures[i] = image_for(x,words,descriptor,*format,false,nullptr,nullptr,error,size))) return -1;
     }
     return 0;
 }
@@ -847,25 +876,35 @@ static int compute_resources(rt_executor *x, const rt_compute_shader &shader, co
         if ((images[i].access & (GCN_IMAGE_READ | GCN_IMAGE_WRITE)) == (GCN_IMAGE_READ | GCN_IMAGE_WRITE) &&
             storage_read_write(x,format->metal,error,size)) return -1;
         out.images[i] = {images[i].origin,
-            d.type == RT_IMAGE_1D || d.type == RT_IMAGE_1D_ARRAY ? GCN_IMAGE_1D : GCN_IMAGE_2D,
+            d.type == RT_IMAGE_1D || d.type == RT_IMAGE_1D_ARRAY ? GCN_IMAGE_1D : d.type == RT_IMAGE_3D ? GCN_IMAGE_3D : GCN_IMAGE_2D,
             d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY,format->type,format->components,0,0,0};
         out.access[i] = images[i].access;
-        if (!(out.textures[i] = image_for(x,words,d,*format,true,&out.layouts[i],error,size))) return -1;
+        if (!(out.textures[i] = image_for(x,words,d,*format,true,&out.layouts[i],&out.volumes[i],error,size))) return -1;
         for (unsigned j = 0; j < i; ++j) {
             const auto &other = out.descriptors[j];
             if (((out.access[i] | out.access[j]) & GCN_IMAGE_WRITE) && out.textures[i] != out.textures[j] &&
-                d.address < other.address + rt_tiling_size(&out.layouts[j],other.layers) &&
-                other.address < d.address + rt_tiling_size(&out.layouts[i],d.layers))
+                d.address < other.address + (other.type == RT_IMAGE_3D ? out.volumes[j].size_bytes : rt_tiling_size(&out.layouts[j],other.layers)) &&
+                other.address < d.address + (d.type == RT_IMAGE_3D ? out.volumes[i].size_bytes : rt_tiling_size(&out.layouts[i],d.layers)))
                 return failed(error,size,"overlapping compute images require the same native view");
         }
     }
     return 0;
 }
 
-/* Publish only exposed slices, preserving current pool bytes in other slices and all padding. */
+/* Publish the exposed array slices or visible volume, preserving allocation padding. */
 static void store_compute_image(rt_executor *x, const MetalComputeResources &resources, unsigned i)
 {
     const auto &d = resources.descriptors[i]; const auto &layout = resources.layouts[i];
+    if (d.type == RT_IMAGE_3D) {
+        const auto &volume = resources.volumes[i];
+        const size_t row_bytes = static_cast<size_t>(d.width) * volume.element_bytes, image_bytes = row_bytes * d.height;
+        x->image_rows.resize(image_bytes * d.depth);
+        [resources.textures[i] getBytes:x->image_rows.data() bytesPerRow:row_bytes bytesPerImage:image_bytes
+            fromRegion:MTLRegionMake3D(0,0,0,d.width,d.height,d.depth) mipmapLevel:0 slice:0];
+        auto *backing = static_cast<uint8_t *>(x->view) + d.address - x->guest_base;
+        rt_volume_tile(&volume,x->image_rows.data(),backing);
+        return;
+    }
     const bool one_d = d.type == RT_IMAGE_1D || d.type == RT_IMAGE_1D_ARRAY;
     const bool arrayed = d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY;
     const uint32_t height = one_d ? 1 : d.height, first = arrayed ? d.base_array : 0, last = arrayed ? d.last_array : 0;
@@ -874,7 +913,7 @@ static void store_compute_image(rt_executor *x, const MetalComputeResources &res
     auto *backing = static_cast<uint8_t *>(x->view) + d.address - x->guest_base;
     rt_tiling_detile(&layout,backing,x->image_rows.data(),d.width,height,d.layers);
     for (uint32_t slice = first; slice <= last; ++slice)
-        [resources.textures[i] getBytes:x->image_rows.data() + slice * slice_bytes bytesPerRow:row_bytes bytesPerImage:slice_bytes
+        [resources.textures[i] getBytes:x->image_rows.data() + slice * slice_bytes bytesPerRow:row_bytes bytesPerImage:0
             fromRegion:MTLRegionMake2D(0,0,d.width,height) mipmapLevel:0 slice:slice - first];
     rt_tiling_tile(&layout,x->image_rows.data(),backing,d.width,height,d.layers);
 }
