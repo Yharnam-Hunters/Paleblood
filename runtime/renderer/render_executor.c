@@ -34,7 +34,7 @@
 /* What the executor keeps, made on first use: sized for a 3D scene (the character creation preview
    alone samples a few hundred textures through dozens of shaders, into two dozen targets) */
 enum { MAX_SHADERS = 1024, MAX_PIPELINES = 1024, MAX_TARGETS = 128, MAX_RECT_STAGES = 16, MAX_COMPUTE_PIPELINES = 512, MAX_IMAGES = 1024,
-       MAX_VIEWS = 16, MAX_SAMPLERS = 256, MAX_PASSES = 256, BATCH_SETS = 256, MAX_WRITTEN = 32, BATCH_SLOTS = 4,
+       MAX_VIEWS = 16, MAX_SAMPLERS = 256, MAX_PASSES = 256, BATCH_SETS = 256, MAX_WRITTEN = 256, BATCH_SLOTS = 4,
        STOP_SLOTS = MAX_SHADERS + MAX_COMPUTE_PIPELINES };
 enum { MAX_VERTEX_IMAGE_LAYOUTS = 32 };
 enum { SNAPSHOT_SLOTS = 4 }; /* flip copies kept at once (rt_executor_snapshot_target) */
@@ -299,7 +299,8 @@ typedef struct {
     int upload_pending;              /* it copies from its upload staging buffer */
     struct {
         uint64_t address, size;
-    } written[MAX_WRITTEN];          /* guest memory its write-backs store to */
+        int dispatch;                /* a dispatch's buffer stores, from address (its descriptor's base) */
+    } written[MAX_WRITTEN];          /* guest memory its write-backs and dispatches may store to */
     unsigned written_count;
 } batch_slot;
 
@@ -837,7 +838,7 @@ static int import_memory(rt_executor *x, const rt_executor_memory *memory, char 
                                                        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
     const VkBufferCreateInfo buffer = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &external, .size = memory->size,
                                        .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                                                VK_BUFFER_USAGE_INDEX_BUFFER_BIT};
+                                                VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
     if (vkCreateBuffer(x->device, &buffer, NULL, &x->buffer) != VK_SUCCESS) return failed(error, error_size, "no buffer for the guest memory");
     VkMemoryRequirements need;
     vkGetBufferMemoryRequirements(x->device, x->buffer, &need);
@@ -1052,24 +1053,48 @@ static int batch_finish(rt_executor *x, char *error, size_t error_size)
     return 0;
 }
 
-/* Before the CPU reads `size` bytes of guest memory at `address`: waits for the batches, open or
-   submitted, when work in one may store there (a dispatch anywhere, a write-back to its own range). */
-static int guest_memory_settled(rt_executor *x, uint64_t address, uint64_t size, char *error, size_t error_size)
+/* Whether a batch, open or submitted, holds work that may store to `size` bytes of guest memory at
+   `address`. With `metadata` the memory is a CMASK or HTILE (a target's fast-clear metadata), which a
+   dispatch is taken to store to only through a buffer whose base lies in it: shadPS4 takes a compute
+   store to metadata the same way (Rasterizer::IsComputeMetaClear and TextureCache::ClearMeta, facts
+   only: a buffer store whose descriptor's base address is a known CMASK or HTILE clears it, one
+   through any other descriptor leaves metadata alone). A copy whose descriptor spans most of the
+   memory (the game's depth copy at 0x20d1b00100 declares 2.2 GB) then does not hold the CPU up. */
+static int batch_may_store(const rt_executor *x, unsigned k, uint64_t address, uint64_t size, int metadata)
 {
-    for (unsigned k = 0; k < BATCH_SLOTS; k++) {
-        const batch_slot *b = &x->slots[k];
-        if (!b->in_flight && !(x->batch_open && k == x->current)) continue;
-        int pending = b->memory_pending;
-        for (unsigned i = 0; i < b->written_count && !pending; i++)
-            pending = b->written[i].address < address + size && address < b->written[i].address + b->written[i].size;
-        if (pending) return batch_finish(x, error, error_size);
+    const batch_slot *b = &x->slots[k];
+    if (!b->in_flight && !(x->batch_open && k == x->current)) return 0;
+    if (b->memory_pending) return 1;
+    for (unsigned i = 0; i < b->written_count; i++) {
+        const uint64_t start = b->written[i].address;
+        if (metadata && b->written[i].dispatch ? start >= address && start < address + size
+                                               : start < address + size && address < start + b->written[i].size)
+            return 1;
     }
     return 0;
 }
 
-/* Notes that the open batch stores to guest memory at address (a write-back); past the list's room,
-   as a dispatch would. */
-static void batch_writes(rt_executor *x, uint64_t address, uint64_t size)
+/* Before the CPU reads `size` bytes of guest memory at `address`: waits for the batches, open or
+   submitted, when work in one may store there (a dispatch whose stores reach it, a write-back to its
+   own range). */
+static int guest_memory_settled(rt_executor *x, uint64_t address, uint64_t size, char *error, size_t error_size)
+{
+    for (unsigned k = 0; k < BATCH_SLOTS; k++)
+        if (batch_may_store(x, k, address, size, 0)) return batch_finish(x, error, error_size);
+    return 0;
+}
+
+/* The same before the CPU reads a CMASK or HTILE (batch_may_store's `metadata`). */
+static int metadata_settled(rt_executor *x, uint64_t address, uint64_t size, char *error, size_t error_size)
+{
+    for (unsigned k = 0; k < BATCH_SLOTS; k++)
+        if (batch_may_store(x, k, address, size, 1)) return batch_finish(x, error, error_size);
+    return 0;
+}
+
+/* Notes that the open batch stores to guest memory at address: a write-back, or a dispatch's buffer
+   stores through a descriptor based there. Past the list's room, as a dispatch storing anywhere would. */
+static void batch_writes(rt_executor *x, uint64_t address, uint64_t size, int dispatch)
 {
     batch_slot *b = &x->slots[x->current];
     if (b->written_count == MAX_WRITTEN) {
@@ -1077,6 +1102,7 @@ static void batch_writes(rt_executor *x, uint64_t address, uint64_t size)
         return;
     }
     b->written[b->written_count].address = address, b->written[b->written_count].size = size;
+    b->written[b->written_count].dispatch = dispatch;
     b->written_count++;
 }
 
@@ -1495,7 +1521,10 @@ static int take_written_alias(rt_executor *x, image_entry *e, char *error, size_
    draw the executor resolves them at once, as an eliminate pass would: a target whose CMASK is filled
    with one value other than all ones gets its memory filled with the clear texel (CLEAR_WORD0, or WORD0
    then WORD1 for 8-byte texels: the texel's bits in the target's format; a uniform texel fills a tiled
-   layout the same way) and its CMASK set to all ones, and its image loads again from memory. A fill
+   layout the same way; filled on the GPU with the batch when it is one repeated 32-bit word, so
+   nothing waits, and by the CPU once the batch has run otherwise) and its CMASK set to all ones, and its
+   image loads again from memory. The CPU reads a CMASK once no dispatch storing to it is pending
+   (metadata_settled). A fill
    other than 0 counts too: the character creation screen's clear pass leaves its G-buffer's CMASK all
    0x10 bytes; what such a code means to the hardware is not established in a public source, and
    shadPS4 (Rasterizer::IsComputeMetaClear, facts only) takes any compute write to a CMASK as clearing
@@ -1510,7 +1539,7 @@ static int apply_fast_clears(rt_executor *x, const draw_state *s, char *error, s
         if (cmask < x->guest_base || cmask - x->guest_base > x->size || c->cmask_bytes > x->size - (cmask - x->guest_base))
             return failed(error, error_size, "render target %#llx's CMASK at %#llx is outside the GPU-visible memory", (unsigned long long)c->address,
                           (unsigned long long)cmask);
-        if (guest_memory_settled(x, cmask, c->cmask_bytes, error, error_size)) return -1; /* the batch may store the CMASK */
+        if (metadata_settled(x, cmask, c->cmask_bytes, error, error_size)) return -1; /* a dispatch may clear the CMASK */
         uint8_t *bits = (uint8_t *)x->view + (cmask - x->guest_base);
         uint32_t filled = 0, ones = 0; /* bytes equal to the first, and bytes of all ones */
         for (uint32_t i = 0; i < c->cmask_bytes; i++) filled += bits[i] == bits[0], ones += bits[i] == 0xff;
@@ -1526,11 +1555,25 @@ static int apply_fast_clears(rt_executor *x, const draw_state *s, char *error, s
         const uint64_t span = rt_tiling_size(&layout, 1);
         if (c->address < x->guest_base || c->address - x->guest_base > x->size || span > x->size - (c->address - x->guest_base))
             return failed(error, error_size, "render target %#llx is outside the GPU-visible memory", (unsigned long long)c->address);
-        /* what the batch still does to that memory (a write-back) comes first; the clear replaces it */
-        if (batch_finish(x, error, error_size)) return -1;
-        uint32_t *texels = (uint32_t *)((uint8_t *)x->view + (c->address - x->guest_base));
         const uint32_t words = element_bytes / 4;
-        for (uint64_t i = 0; i < span / 4; i++) texels[i] = s->clear_words[slot][i % words];
+        if (words == 1 || s->clear_words[slot][0] == s->clear_words[slot][1]) {
+            /* one repeated word: filled on the GPU with the batch, after what it already does to that memory */
+            VkCommandBuffer commands = batch_commands(x);
+            if (!commands) return failed(error, error_size, "no command buffer");
+            const VkMemoryBarrier before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT,
+                                            .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT};
+            vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before, 0, NULL, 0, NULL);
+            vkCmdFillBuffer(commands, x->buffer, c->address - x->guest_base, span & ~(uint64_t)3, s->clear_words[slot][0]);
+            const VkMemoryBarrier after = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                           .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
+            vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &after, 0, NULL, 0, NULL);
+            batch_writes(x, c->address, span, 0);
+        } else {
+            /* what the batch still does to that memory (a write-back) comes first; the clear replaces it */
+            if (batch_finish(x, error, error_size)) return -1;
+            uint32_t *texels = (uint32_t *)((uint8_t *)x->view + (c->address - x->guest_base));
+            for (uint64_t i = 0; i < span / 4; i++) texels[i] = s->clear_words[slot][i % words];
+        }
         memset(bits, 0xff, c->cmask_bytes);
         target_entry *t = find_target(x, c->address);
         if (t) t->drawn = 0, t->loaded_epoch = UINT64_MAX, t->staging_current = 0;
@@ -1557,7 +1600,7 @@ static int write_back_targets(rt_executor *x, char *error, size_t error_size)
         if (target_memory(x, t, &layout, &span, error, error_size) || record_target_copy(x, t, 1, error, error_size) ||
             record_tile_copy(x, &t->plan, t->address, 1, error, error_size))
             return -1;
-        batch_writes(x, t->address, span);
+        batch_writes(x, t->address, span, 0);
         any = 1;
     }
     if (!any) return 0;
@@ -1706,7 +1749,7 @@ static int resolve_depth_fast_clear(rt_executor *x, const draw_state *s, depth_e
     if (htile < x->guest_base || htile - x->guest_base > x->size || bytes > x->size - (htile - x->guest_base))
         return failed(error, error_size, "depth target %#llx's HTILE at %#llx is outside the GPU-visible memory", (unsigned long long)z->z_address,
                       (unsigned long long)htile);
-    if (guest_memory_settled(x, htile, bytes, error, error_size)) return -1; /* a dispatch in the batch may clear it */
+    if (metadata_settled(x, htile, bytes, error, error_size)) return -1; /* a dispatch in the batch may clear it */
     uint32_t *words = (uint32_t *)((uint8_t *)x->view + (htile - x->guest_base));
     const size_t count = (size_t)(bytes / 4);
     size_t cleared = 0;
@@ -1776,7 +1819,7 @@ static int write_back_depths(rt_executor *x, char *error, size_t error_size)
                                       .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
         vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &rows, 0, NULL, 0, NULL);
         if (record_tile_copy(x, &z->plan, z->z_address, 1, error, error_size)) return -1;
-        batch_writes(x, z->z_address, span);
+        batch_writes(x, z->z_address, span, 0);
         any = 1;
     }
     return any;
@@ -2739,7 +2782,7 @@ static int write_back_image(rt_executor *x, image_entry *e, const rt_image_descr
                                     .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &copied, 0, NULL, 0, NULL);
     if (record_tile_copy(x, &e->plan, d->address, 1, error, error_size)) return -1;
-    batch_writes(x, d->address, span); /* the CPU reads it once the batch has run */
+    batch_writes(x, d->address, span, 0); /* the CPU reads it once the batch has run */
     return 0;
 }
 
@@ -3163,7 +3206,7 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     x->memory_epoch++; /* its stores may have changed any memory, render targets' included */
     /* the CPU reads memory it may store to only once the batch has run */
     if (stores_anywhere) x->slots[x->current].memory_pending = 1;
-    for (unsigned i = 0; i < store_count; i++) batch_writes(x, store_ranges[i][0], store_ranges[i][1]);
+    for (unsigned i = 0; i < store_count; i++) batch_writes(x, store_ranges[i][0], store_ranges[i][1], 1);
     return 0;              /* the run-time stop word is checked once the batch has run */
 }
 

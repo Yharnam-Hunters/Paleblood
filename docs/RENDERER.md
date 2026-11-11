@@ -382,7 +382,11 @@ Instead:
        (cleared, as radeonsi clears it) gets its memory filled with its `CB_COLORn_CLEAR_WORD0/1` texel
        and its CMASK set to all ones, as an eliminate pass would; eliminate passes then have nothing
        left to do. The clear words come from the library's setter (0x01473840). A partly cleared
-       CMASK stops by name.
+       CMASK stops by name. A texel of one repeated 32-bit word is filled on the GPU with the batch.
+       The CPU reads a CMASK or HTILE once no pending dispatch stores to it, and a dispatch counts as
+       storing to metadata only through a buffer descriptor based inside it, as shadPS4 takes a
+       compute store to metadata (`Rasterizer::IsComputeMetaClear`, facts only). The game's depth copy
+       declares a 2.2 GB range, and otherwise held up every check.
      - **Several render targets (MRT):** a draw writes the colour targets of every enabled slot
        0-7 whose `CB_TARGET_MASK` nibble (bits 4n to 4n+3: x, y, z, w, as shadPS4 hands them to
        Vulkan's colour write mask) is not 0, each with its own `CB_BLENDn_CONTROL`; slot n is
