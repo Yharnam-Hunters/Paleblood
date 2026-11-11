@@ -20,3 +20,7 @@ if(PB_ENABLE_METAL_SMOKE_TEST)
     add_test(NAME metal_offscreen COMMAND test_metal_offscreen)
     set_tests_properties(metal_offscreen PROPERTIES TIMEOUT 30 LABELS "gpu;metal")
 endif()
+
+if(PB_ENABLE_METAL_EXECUTOR)
+    include(${PROJECT_SOURCE_DIR}/cmake/MetalExecutor.cmake)
+endif()
