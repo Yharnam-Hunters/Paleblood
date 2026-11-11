@@ -471,6 +471,37 @@ static const uint32_t fetch_position_color[] = {
     0xbe802000, /* s_setpc_b64 s[0:1] */
 };
 
+/* A vertex shader that calls its fetch shader (fetch_position_only writes s[4:7]), then loads a
+   texel at (0, 0), level 0, of the image whose descriptor is in its user data's s[8:15], and exports
+   it as parameter 0. */
+static const uint32_t vertex_fetch_then_image[] = {
+    0xbe802100,             /* s_swappc_b64 s[0:1], s[0:1] */
+    0x7e1a0280,             /* v_mov_b32 v13, 0 */
+    0x7e1c0280,             /* v_mov_b32 v14, 0 */
+    0x7e1e0280,             /* v_mov_b32 v15, 0 */
+    0xf0040f00, 0x0002090d, /* image_load_mip v[9:12], v[13:15], s[8:15] dmask 0xf */
+    0xbf8c0f70,             /* s_waitcnt vmcnt(0) */
+    0xf800020f, 0x0c0b0a09, /* exp param0, v9, v10, v11, v12 */
+    0xf80008cf, 0x04030201, /* exp pos0, v1, v2, v3, v4 done */
+    0xbf810000,             /* s_endpgm */
+};
+
+/* The position only: one vertex buffer, its descriptor loaded into s[4:7]. */
+static const uint32_t fetch_position_only[] = {
+    0xc0820300,             /* s_load_dwordx4 s[4:7], s[2:3], 0x0 */
+    0xbf8c007f,             /* s_waitcnt lgkmcnt(0) */
+    0xe00c2000, 0x80010100, /* buffer_load_format_xyzw v[1:4], v0, s[4:7], 0 idxen */
+    0xbf8c0f70,             /* s_waitcnt vmcnt(0) */
+    0xbe802000,             /* s_setpc_b64 s[0:1] */
+};
+
+/* A fetch shader that loads into s[8:11] too: the image's descriptor no longer survives the call. */
+static const uint32_t fetch_into_image_sgprs[] = {
+    0xc0840300, /* s_load_dwordx4 s[8:11], s[2:3], 0x0 */
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+    0xbe802000, /* s_setpc_b64 s[0:1] */
+};
+
 /* A pixel shader: attribute 0 interpolated (barycentrics in v0 and v1), packed as halves and
    written to colour target 0. */
 static const uint32_t pixel_color[] = {

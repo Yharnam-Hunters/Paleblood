@@ -984,6 +984,47 @@ static void fetch_shader(rt_executor *x)
     check_triangle(x, at(FETCH_TARGET));
 }
 
+/* A vertex shader that calls its fetch shader and then loads a texel from an image whose descriptor is in
+   its user data (vertex_fetch_then_image: s[8:15], which fetch_position_only leaves alone): the image is
+   bound to the vertex stage, and every pixel of the triangle takes that texel's colour (a 1x1 linear
+   32_32_32_32 float image holding red). */
+static void vertex_image_after_fetch(rt_executor *x)
+{
+    enum { VERTEX_IMAGE_BUFFER = 0xc0f90000, VS_CODE = 0x3800, FS_CODE = 0x3700, TABLE = 0x11000, TEXEL = 0x12000, VI_TARGET = 0x1e00000,
+           LINEAR_ALIGNED = 8, DATA_32_32_32_32 = 14, NUM_FLOAT = 7, USER_SGPRS = 16 };
+    char error[200] = "";
+    memcpy((void *)(uintptr_t)at(VS_CODE), vertex_fetch_then_image, sizeof vertex_fetch_then_image);
+    memcpy((void *)(uintptr_t)at(FS_CODE), fetch_position_only, sizeof fetch_position_only);
+    uint32_t *table = (uint32_t *)(uintptr_t)at(TABLE);
+    const uint32_t float_xyzw = 4 | 5 << 3 | 6 << 6 | 7 << 9 | 7u << 12 | 14u << 15;
+    descriptor(table, at(CORNERS), RECORD_STRIDE), table[3] = float_xyzw;
+    const float red[4] = {1, 0, 0, 1};
+    memcpy((void *)(uintptr_t)at(TEXEL), red, sizeof red);
+    memset((void *)(uintptr_t)at(VI_TARGET), 0, SIZE * SIZE * 4);
+    rt_render_forget(), rt_executor_reset(x);
+    uint32_t offset = record_setup(VERTEX_IMAGE_BUFFER, at(VI_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const uint64_t code = at(VS_CODE);
+    const uint32_t vertex[RT_VERTEX_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, USER_SGPRS << 1, 0, 0x4, 0};
+    CHECK(rt_render_record_vertex_shader(VERTEX_IMAGE_BUFFER, offset, vertex, error, sizeof error) == 0);
+    uint32_t user[USER_SGPRS] = {(uint32_t)at(FS_CODE), (uint32_t)(at(FS_CODE) >> 32), (uint32_t)at(TABLE), (uint32_t)(at(TABLE) >> 32)};
+    image_descriptor(user + 8, at(TEXEL), DATA_32_32_32_32, NUM_FLOAT, 1, 1);
+    user[8 + 3] |= LINEAR_ALIGNED << 20;
+    CHECK(rt_render_record_user_data(VERTEX_IMAGE_BUFFER, offset + 0x10, RT_STAGE_VERTEX, 0, user, 8, error, sizeof error) == 0);
+    CHECK(rt_render_record_user_data(VERTEX_IMAGE_BUFFER, offset + 0x20, RT_STAGE_VERTEX, 8, user + 8, 8, error, sizeof error) == 0);
+    const int drawn = rt_executor_run(x, VERTEX_IMAGE_BUFFER, record_triangle_draw(VERTEX_IMAGE_BUFFER, offset + 0x30), error, sizeof error);
+    if (drawn) fprintf(stderr, "vertex image after fetch: %s\n", error);
+    CHECK(drawn == 0);
+    uint32_t pixels[SIZE * SIZE];
+    CHECK(rt_executor_read_target(x, at(VI_TARGET), pixels, SIZE, SIZE, error, sizeof error) == 0);
+    unsigned covered = 0, red_pixels = 0;
+    for (unsigned i = 0; i < SIZE * SIZE; i++) {
+        if (!pixels[i]) continue;
+        covered++;
+        red_pixels += near(pixels[i] >> 16 & 0xff, 1) && near(pixels[i] >> 8 & 0xff, 0) && near(pixels[i] & 0xff, 0);
+    }
+    CHECK(covered > SIZE * SIZE / 8 && red_pixels == covered);
+}
+
 /* Within one buffer, a draw reading a render target's memory as an image sees an earlier draw into it:
    the triangle drawn into a linear target, then (same buffer) each pixel of another target the texel
    under it from that memory, gives the reference image. The target is written back for that read,
@@ -1720,6 +1761,7 @@ int main(void)
     sampled_levels(x);
     sampled_cube(x);
     fetch_shader(x);
+    vertex_image_after_fetch(x);
     unset_user_data(x);
     target_read_in_buffer(x);
     state_across_buffers(x);

@@ -355,6 +355,35 @@ static void calls(void)
     CHECK(gcn_translate_vertex(PROGRAM(vertex_calling_fetch), &layout, &spirv, &words, error, sizeof error) == -1 && strstr(error, "returns through s[2:3]"));
     layout.callee = NULL;
     CHECK(gcn_translate_vertex(PROGRAM(vertex_calling_fetch), &layout, &spirv, &words, error, sizeof error) == -1 && strstr(error, "no callee"));
+
+    /* An image descriptor in the user data that the fetch shader leaves alone keeps its origin past the
+       call: listed, and translated as a vertex shader's sampled image at the binding given; without the
+       callee the call counts as writing every SGPR, and a callee that loads into those SGPRs stops. */
+    gcn_image_resource found[GCN_MAX_IMAGES];
+    unsigned count = 0;
+    CHECK(gcn_called_image_resources(PROGRAM(vertex_fetch_then_image), fetch_position_only, sizeof fetch_position_only / 4, found,
+                                     GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
+    CHECK(count == 1 && !found[0].origin.from_memory && found[0].origin.sgpr == 8 && found[0].access == GCN_IMAGE_READ);
+    CHECK(gcn_image_resources(PROGRAM(vertex_fetch_then_image), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
+          strstr(error, "s_swappc_b64"));
+    CHECK(gcn_called_image_resources(PROGRAM(vertex_fetch_then_image), fetch_into_image_sgprs, sizeof fetch_into_image_sgprs / 4, found,
+                                     GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
+          strstr(error, "s_swappc_b64"));
+    const gcn_image_binding texture[] = {{{0, 8, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0}};
+    layout.callee = fetch_position_only, layout.callee_dwords = sizeof fetch_position_only / 4;
+    layout.images = texture, layout.image_count = 1, layout.first_binding = 3;
+    const int loaded = gcn_translate_vertex(PROGRAM(vertex_fetch_then_image), &layout, &spirv, &words, error, sizeof error);
+    if (loaded) fprintf(stderr, "vertex_fetch_then_image: %s\n", error);
+    CHECK(loaded == 0);
+    if (spirv) {
+        CHECK(validate(spirv, words, "vertex_fetch_then_image") != 0);
+        int bound_at_3 = 0; /* OpDecorate %image Binding 3 */
+        for (size_t i = 0; i + 3 < words; i++)
+            if (spirv[i] == (4u << 16 | 71u) && spirv[i + 2] == 33u && spirv[i + 3] == 3u) bound_at_3 = 1;
+        CHECK(bound_at_3);
+        free(spirv);
+        spirv = NULL;
+    }
 }
 
 static void rect_list_stages(void)

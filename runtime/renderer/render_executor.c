@@ -34,6 +34,7 @@
 enum { MAX_SHADERS = 1024, MAX_PIPELINES = 1024, MAX_TARGETS = 128, MAX_RECT_STAGES = 16, MAX_COMPUTE_PIPELINES = 512, MAX_IMAGES = 1024,
        MAX_VIEWS = 16, MAX_SAMPLERS = 256, MAX_PASSES = 256, BATCH_SETS = 256, MAX_WRITTEN = 32,
        STOP_SLOTS = MAX_SHADERS + MAX_COMPUTE_PIPELINES };
+enum { MAX_VERTEX_IMAGE_LAYOUTS = 32 };
 enum { USER_DATA_BYTES = GCN_USER_SGPR_MAX * 4, VERTEX_USER_DATA = 0, PIXEL_USER_DATA = USER_DATA_BYTES };
 enum { COLOR_10_11_11 = 0x6, COLOR_8_8_8_8 = 0xa, COLOR_16_16_16_16 = 0xc, NUMBER_UNORM = 0, NUMBER_SRGB = 6, NUMBER_FLOAT = 7, SWAP_STD = 0,
        SWAP_ALT = 1 };
@@ -57,11 +58,12 @@ typedef struct {
     uint64_t code;
     int stage;
     uint32_t user_sgprs, settings;   /* PA_CL_VS_OUT_CNTL or SPI_PS_INPUT_ADDR */
-    gcn_image_binding images[GCN_MAX_IMAGES]; /* a pixel shader's sampled images and samplers */
+    gcn_image_binding images[GCN_MAX_IMAGES]; /* its sampled images (and a pixel shader's samplers) */
     unsigned image_count;
     gcn_resource_origin samplers[GCN_MAX_SAMPLERS];
     unsigned sampler_count;
     uint64_t callee;                 /* a vertex shader's fetch shader (its address), or 0 */
+    unsigned first_binding;          /* where its images' bindings start (a vertex shader's follow the pixel shader's) */
     uint32_t user_read;              /* the user SGPRs it reads before writing them (gcn_spirv.h) */
     VkShaderModule module;
 } shader_entry;
@@ -261,6 +263,14 @@ struct rt_executor {
        to n - 1, the samplers after them; made on first use */
     VkDescriptorSetLayout pixel_set_layouts[GCN_MAX_IMAGES + 1][GCN_MAX_SAMPLERS + 1];
     VkPipelineLayout pixel_layouts[GCN_MAX_IMAGES + 1][GCN_MAX_SAMPLERS + 1];
+    /* draws whose vertex shader also loads v images: the pixel shader's bindings, then the vertex
+       shader's images; made on first use, by (n, m, v) */
+    struct {
+        unsigned n, m, v;
+        VkDescriptorSetLayout set_layout;
+        VkPipelineLayout layout;
+    } vertex_image_layouts[MAX_VERTEX_IMAGE_LAYOUTS];
+    size_t vertex_image_layout_count;
     VkPushConstantRange push_ranges[STAGES];
     /* samplers made from sampler descriptors (S#), by their words */
     struct {
@@ -1565,11 +1575,13 @@ static pass_entry *pass_for(rt_executor *x, target_entry *const colors[RT_COLOR_
    cache key). */
 static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint32_t user_sgprs, uint32_t settings,
                                  const gcn_image_binding *images, unsigned image_count, const gcn_resource_origin *samplers,
-                                 unsigned sampler_count, uint64_t callee, uint32_t *user_read, char *error, size_t error_size)
+                                 unsigned sampler_count, unsigned first_binding, uint64_t callee, uint32_t *user_read, char *error,
+                                 size_t error_size)
 {
     for (size_t i = 0; i < x->shader_count; i++) {
         const shader_entry *s = &x->shaders[i];
         if (s->code == code && s->stage == stage && s->user_sgprs == user_sgprs && s->settings == settings && s->callee == callee &&
+            s->first_binding == first_binding &&
             s->image_count == image_count && !memcmp(s->images, images, image_count * sizeof *images) &&
             s->sampler_count == sampler_count && !memcmp(s->samplers, samplers, sampler_count * sizeof *samplers)) {
             *user_read = s->user_read;
@@ -1596,7 +1608,8 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
                                           .push_constant_offset = VERTEX_USER_DATA, .address_offset = x->address_offset,
                                           .error_address = stop_slot(x, 0, x->shader_count), .callee = callee ? (const uint32_t *)(uintptr_t)callee : NULL,
                                           .callee_dwords = callee ? (size_t)((x->guest_base + x->size - callee) / 4) : 0,
-                                          .code_address = code, .user_data_read = user_read};
+                                          .code_address = code, .images = images, .image_count = image_count,
+                                          .first_binding = first_binding, .user_data_read = user_read};
         result = gcn_translate_vertex(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
     } else {
         const uint32_t inputs = settings & ~SETTINGS_FRONT_FACE_ALL_BITS; /* a pixel shader's SPI_PS_INPUT_ADDR */
@@ -1625,7 +1638,8 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
     }
     shader_entry *e = &x->shaders[x->shader_count++];
     *e = (shader_entry){.code = code, .stage = stage, .user_sgprs = user_sgprs, .settings = settings, .image_count = image_count,
-                        .sampler_count = sampler_count, .callee = callee, .user_read = *user_read, .module = module};
+                        .sampler_count = sampler_count, .first_binding = first_binding, .callee = callee, .user_read = *user_read,
+                        .module = module};
     memcpy(e->images, images, image_count * sizeof *images);
     memcpy(e->samplers, samplers, sampler_count * sizeof *samplers);
     return module;
@@ -1758,8 +1772,9 @@ static VkShaderModule rect_stage_for(rt_executor *x, const rt_vertex_shader *ver
 
 /* ---- running a buffer ---- */
 
-static int stage_images(rt_executor *x, uint64_t code, const uint32_t *user, uint32_t user_sgprs, uint32_t user_set, int pixel, gcn_image_binding *bindings,
-                        VkImageView *views, VkFormat *formats, unsigned *count, char *error, size_t error_size);
+static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64_t callee, const uint32_t *user, uint32_t user_sgprs,
+                        uint32_t user_set, int pixel, gcn_image_binding *bindings, VkImageView *views, VkFormat *formats, unsigned *count,
+                        char *error, size_t error_size);
 
 static int stage_samplers(rt_executor *x, uint64_t code, const uint32_t *user, uint32_t user_sgprs, uint32_t user_set, gcn_resource_origin *origins,
                           VkSampler *samplers, unsigned *count, int *linear, char *error, size_t error_size);
@@ -1767,7 +1782,8 @@ static int stage_samplers(rt_executor *x, uint64_t code, const uint32_t *user, u
 /* A descriptor set of n images of one type, then m samplers, for set layout `layout`, from the pool the
    batch's sets share (when it is full, the batch runs first and frees it). 0, or -1 with the reason. */
 static int image_set(rt_executor *x, VkDescriptorSetLayout layout, VkDescriptorType type, const VkImageView *views, unsigned n,
-                     const VkSampler *samplers, unsigned m, VkDescriptorSet *set, char *error, size_t error_size)
+                     const VkSampler *samplers, unsigned m, const VkImageView *vertex_views, unsigned v, VkDescriptorSet *set, char *error,
+                     size_t error_size)
 {
     const VkDescriptorSetAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = x->descriptor_pool,
                                                   .descriptorSetCount = 1, .pSetLayouts = &layout};
@@ -1775,17 +1791,18 @@ static int image_set(rt_executor *x, VkDescriptorSetLayout layout, VkDescriptorT
         if (batch_finish(x, error, error_size)) return -1;
         if (vkAllocateDescriptorSets(x->device, &allocate, set) != VK_SUCCESS) return failed(error, error_size, "no descriptor set");
     }
-    VkDescriptorImageInfo infos[GCN_MAX_IMAGES + GCN_MAX_SAMPLERS];
-    VkWriteDescriptorSet writes[GCN_MAX_IMAGES + GCN_MAX_SAMPLERS];
-    for (unsigned i = 0; i < n + m; i++) {
-        const int sampler = i >= n;
+    VkDescriptorImageInfo infos[2 * GCN_MAX_IMAGES + GCN_MAX_SAMPLERS];
+    VkWriteDescriptorSet writes[2 * GCN_MAX_IMAGES + GCN_MAX_SAMPLERS];
+    for (unsigned i = 0; i < n + m + v; i++) {
+        const int sampler = i >= n && i < n + m;
+        const VkImageView view = i < n ? views[i] : sampler ? VK_NULL_HANDLE : vertex_views[i - n - m];
         infos[i] = sampler ? (VkDescriptorImageInfo){samplers[i - n], VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED}
-                           : (VkDescriptorImageInfo){VK_NULL_HANDLE, views[i], VK_IMAGE_LAYOUT_GENERAL};
+                           : (VkDescriptorImageInfo){VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};
         writes[i] = (VkWriteDescriptorSet){.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = *set, .dstBinding = i,
                                            .descriptorCount = 1, .descriptorType = sampler ? VK_DESCRIPTOR_TYPE_SAMPLER : type,
                                            .pImageInfo = &infos[i]};
     }
-    vkUpdateDescriptorSets(x->device, n + m, writes, 0, NULL);
+    vkUpdateDescriptorSets(x->device, n + m + v, writes, 0, NULL);
     return 0;
 }
 
@@ -1807,6 +1824,43 @@ static int pixel_layout_for(rt_executor *x, unsigned n, unsigned m, char *error,
                                                     .pPushConstantRanges = x->push_ranges};
     if (vkCreatePipelineLayout(x->device, &with_images, NULL, &x->pixel_layouts[n][m]) != VK_SUCCESS)
         return failed(error, error_size, "no pipeline layout with images");
+    return 0;
+}
+
+/* The set layout and pipeline layout of draws whose pixel shader reads n sampled images with m samplers
+   and whose vertex shader loads v images (bindings n + m on, seen by the vertex stage), made on first
+   use. 0, or -1 with the reason. */
+static int graphics_layout_for(rt_executor *x, unsigned n, unsigned m, unsigned v, VkDescriptorSetLayout *set_layout, VkPipelineLayout *layout,
+                               char *error, size_t error_size)
+{
+    if (!v) {
+        if (pixel_layout_for(x, n, m, error, error_size)) return -1;
+        *set_layout = x->pixel_set_layouts[n][m], *layout = x->pixel_layouts[n][m];
+        return 0;
+    }
+    for (size_t i = 0; i < x->vertex_image_layout_count; i++)
+        if (x->vertex_image_layouts[i].n == n && x->vertex_image_layouts[i].m == m && x->vertex_image_layouts[i].v == v) {
+            *set_layout = x->vertex_image_layouts[i].set_layout, *layout = x->vertex_image_layouts[i].layout;
+            return 0;
+        }
+    if (x->vertex_image_layout_count == MAX_VERTEX_IMAGE_LAYOUTS) return failed(error, error_size, "more vertex-image layouts than the executor keeps");
+    VkDescriptorSetLayoutBinding bindings[2 * GCN_MAX_IMAGES + GCN_MAX_SAMPLERS];
+    for (unsigned b = 0; b < n + m + v; b++)
+        bindings[b] = (VkDescriptorSetLayoutBinding){b, b >= n && b < n + m ? VK_DESCRIPTOR_TYPE_SAMPLER : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1,
+                                                     b < n + m ? VK_SHADER_STAGE_FRAGMENT_BIT : VK_SHADER_STAGE_VERTEX_BIT, NULL};
+    const VkDescriptorSetLayoutCreateInfo set = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = n + m + v,
+                                                 .pBindings = bindings};
+    VkDescriptorSetLayout made_set = VK_NULL_HANDLE;
+    if (vkCreateDescriptorSetLayout(x->device, &set, NULL, &made_set) != VK_SUCCESS) return failed(error, error_size, "no descriptor set layout");
+    const VkPipelineLayoutCreateInfo with_images = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
+                                                    .pSetLayouts = &made_set, .pushConstantRangeCount = STAGES, .pPushConstantRanges = x->push_ranges};
+    VkPipelineLayout made = VK_NULL_HANDLE;
+    if (vkCreatePipelineLayout(x->device, &with_images, NULL, &made) != VK_SUCCESS) {
+        vkDestroyDescriptorSetLayout(x->device, made_set, NULL);
+        return failed(error, error_size, "no pipeline layout with vertex images");
+    }
+    x->vertex_image_layouts[x->vertex_image_layout_count++] = (__typeof__(x->vertex_image_layouts[0])){n, m, v, made_set, made};
+    *set_layout = made_set, *layout = made;
     return 0;
 }
 
@@ -1870,8 +1924,8 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     VkImageView views[GCN_MAX_IMAGES];
     unsigned image_count = 0;
     VkFormat view_formats[GCN_MAX_IMAGES];
-    if (!depth_only && stage_images(x, s->pixel.code, s->user[STAGE_PIXEL], s->pixel.user_sgprs, s->user_set[STAGE_PIXEL], 1, bindings, views, view_formats, &image_count, error,
-                     error_size))
+    if (!depth_only && stage_images(x, "pixel", s->pixel.code, 0, s->user[STAGE_PIXEL], s->pixel.user_sgprs, s->user_set[STAGE_PIXEL], 1, bindings,
+                                    views, view_formats, &image_count, error, error_size))
         return -1;
     gcn_resource_origin sampler_origins[GCN_MAX_SAMPLERS];
     VkSampler samplers[GCN_MAX_SAMPLERS];
@@ -1916,16 +1970,23 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     const uint32_t width = sized ? sized->width : z->width, height = sized ? sized->height : z->height;
     uint64_t callee = 0;
     if (vertex_callee(x, s, &callee, error, error_size)) return -1;
+    /* the vertex shader's own images (loaded, not sampled), bound after the pixel shader's images and samplers */
+    gcn_image_binding vertex_bindings[GCN_MAX_IMAGES];
+    VkImageView vertex_views[GCN_MAX_IMAGES];
+    unsigned vertex_image_count = 0;
+    if (stage_images(x, "vertex", s->vertex.code, callee, s->user[STAGE_VERTEX], s->vertex.user_sgprs, s->user_set[STAGE_VERTEX], 1,
+                     vertex_bindings, vertex_views, NULL, &vertex_image_count, error, error_size))
+        return -1;
     uint32_t vertex_read = 0, pixel_read = 0;
-    const VkShaderModule vertex = shader_for(x, STAGE_VERTEX, s->vertex.code, s->vertex.user_sgprs, s->vertex.output_control, NULL, 0,
-                                             NULL, 0, callee, &vertex_read, error, error_size);
+    const VkShaderModule vertex = shader_for(x, STAGE_VERTEX, s->vertex.code, s->vertex.user_sgprs, s->vertex.output_control, vertex_bindings,
+                                             vertex_image_count, NULL, 0, image_count + sampler_count, callee, &vertex_read, error, error_size);
     if (!vertex) return -1;
     const VkShaderModule pixel = depth_only ? VK_NULL_HANDLE
                                             : shader_for(x, STAGE_PIXEL, s->pixel.code, s->pixel.user_sgprs,
                                                          s->pixel.input_address |
                                                              (s->pixel.barycentric_control & FRONT_FACE_ALL_BITS ? SETTINGS_FRONT_FACE_ALL_BITS : 0u),
                                                          bindings,
-                                                         image_count, sampler_origins, sampler_count, 0, &pixel_read, error, error_size);
+                                                         image_count, sampler_origins, sampler_count, 0, 0, &pixel_read, error, error_size);
     if (!depth_only && !pixel) return -1;
     if (check_user_data("vertex", s->vertex.code, vertex_read, s->user_set[STAGE_VERTEX], error, error_size) ||
         (!depth_only && check_user_data("pixel", s->pixel.code, pixel_read, s->user_set[STAGE_PIXEL], error, error_size)))
@@ -1934,16 +1995,17 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     if (rect_list && index_count % 3) return failed(error, error_size, "a rect list of %u vertices, not whole rects of three", index_count);
     const VkShaderModule geometry = rect_list ? rect_stage_for(x, &s->vertex, error, error_size) : VK_NULL_HANDLE;
     if (rect_list && !geometry) return -1;
-    const int has_set = image_count || sampler_count;
-    if (has_set && pixel_layout_for(x, image_count, sampler_count, error, error_size)) return -1;
-    const VkPipelineLayout layout = has_set ? x->pixel_layouts[image_count][sampler_count] : x->layout;
+    const int has_set = image_count || sampler_count || vertex_image_count;
+    VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
+    VkPipelineLayout layout = x->layout;
+    if (has_set && graphics_layout_for(x, image_count, sampler_count, vertex_image_count, &set_layout, &layout, error, error_size)) return -1;
     const int strip = s->primitive_set && s->primitive_type == DI_PT_TRISTRIP;
     const VkPipeline pipeline = pipeline_for(x, vertex, geometry, pixel, render_pass, layout, colours, blend_control, write_masks, strip,
                                              plan, z != NULL, error, error_size);
     if (!pipeline) return -1;
     VkDescriptorSet set = VK_NULL_HANDLE;
-    if (has_set && image_set(x, x->pixel_set_layouts[image_count][sampler_count], VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, views, image_count,
-                             samplers, sampler_count, &set, error, error_size))
+    if (has_set && image_set(x, set_layout, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, views, image_count, samplers, sampler_count, vertex_views,
+                             vertex_image_count, &set, error, error_size))
         return -1;
 
     VkCommandBuffer commands = batch_commands(x);
@@ -2389,22 +2451,25 @@ static int descriptor_words(rt_executor *x, const gcn_resource_origin *origin, c
 /* The images a shader uses, from the descriptors in its user data: their bindings (for translation)
    and views of kept images. A compute shader's are storage images; a pixel shader's are sampled
    images, which it only reads. 0, or -1 with the reason. */
-static int stage_images(rt_executor *x, uint64_t code, const uint32_t *user, uint32_t user_sgprs, uint32_t user_set, int pixel, gcn_image_binding *bindings,
-                        VkImageView *views, VkFormat *formats, unsigned *count, char *error, size_t error_size)
+static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64_t callee, const uint32_t *user, uint32_t user_sgprs,
+                        uint32_t user_set, int pixel, gcn_image_binding *bindings, VkImageView *views, VkFormat *formats, unsigned *count,
+                        char *error, size_t error_size)
 {
-    const char *stage = pixel ? "pixel" : "compute";
     if (code < x->guest_base || code >= x->guest_base + x->size || code % 4)
         return failed(error, error_size, "%s shader code at %#llx is outside the GPU-visible memory", stage, (unsigned long long)code);
     gcn_image_resource resources[GCN_MAX_IMAGES];
     char reason[300];
-    if (gcn_image_resources((const uint32_t *)(uintptr_t)code, (size_t)((x->guest_base + x->size - code) / 4), resources, GCN_MAX_IMAGES,
-                            count, reason, sizeof reason))
+    const uint32_t *callee_words = callee ? (const uint32_t *)(uintptr_t)callee : NULL;
+    const size_t callee_dwords = callee ? (size_t)((x->guest_base + x->size - callee) / 4) : 0;
+    if (gcn_called_image_resources((const uint32_t *)(uintptr_t)code, (size_t)((x->guest_base + x->size - code) / 4), callee_words,
+                                   callee_dwords, resources, GCN_MAX_IMAGES, count, reason, sizeof reason))
         return failed(error, error_size, "%s shader at %#llx: %s", stage, (unsigned long long)code, reason);
     if (*count && !pixel && !x->storage_images)
         return failed(error, error_size, "the Vulkan device cannot read and write images without a declared format");
     for (unsigned i = 0; i < *count; i++) {
         const gcn_resource_origin *origin = &resources[i].origin;
-        if (pixel && (resources[i].access & GCN_IMAGE_WRITE)) return failed(error, error_size, "a pixel shader that writes an image: not drawn yet");
+        if (pixel && (resources[i].access & GCN_IMAGE_WRITE))
+            return failed(error, error_size, "a %s shader that writes an image: not drawn yet", stage);
         uint32_t words[RT_IMAGE_DESCRIPTOR_WORDS];
         if (descriptor_words(x, origin, user, user_sgprs, user_set, words, RT_IMAGE_DESCRIPTOR_WORDS, error, error_size)) return -1;
         rt_image_descriptor d;
@@ -2577,14 +2642,16 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     gcn_image_binding bindings[GCN_MAX_IMAGES];
     VkImageView views[GCN_MAX_IMAGES];
     unsigned image_count = 0;
-    if (stage_images(x, c->code, s->compute_user, c->user_sgprs, s->compute_user_set, 0, bindings, views, NULL, &image_count, error, error_size)) return -1;
+    if (stage_images(x, "compute", c->code, 0, s->compute_user, c->user_sgprs, s->compute_user_set, 0, bindings, views, NULL, &image_count, error,
+                     error_size))
+        return -1;
     uint32_t user_read = 0;
     const VkPipeline pipeline = compute_pipeline_for(x, c, workgroup_id_x_sgpr, bindings, image_count, &user_read, error, error_size);
     if (!pipeline) return -1;
     if (check_user_data("compute", c->code, user_read, s->compute_user_set, error, error_size)) return -1;
     const VkPipelineLayout layout = image_count ? x->image_layouts[image_count] : x->compute_layout;
     VkDescriptorSet set = VK_NULL_HANDLE;
-    if (image_count && image_set(x, x->image_set_layouts[image_count], VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, views, image_count, NULL, 0, &set,
+    if (image_count && image_set(x, x->image_set_layouts[image_count], VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, views, image_count, NULL, 0, NULL, 0, &set,
                                  error, error_size))
         return -1;
     VkCommandBuffer commands = batch_commands(x);
@@ -2840,6 +2907,10 @@ void rt_executor_close(rt_executor *x)
                 if (x->pixel_layouts[n][m]) vkDestroyPipelineLayout(x->device, x->pixel_layouts[n][m], NULL);
                 if (x->pixel_set_layouts[n][m]) vkDestroyDescriptorSetLayout(x->device, x->pixel_set_layouts[n][m], NULL);
             }
+        for (size_t i = 0; i < x->vertex_image_layout_count; i++) {
+            vkDestroyPipelineLayout(x->device, x->vertex_image_layouts[i].layout, NULL);
+            vkDestroyDescriptorSetLayout(x->device, x->vertex_image_layouts[i].set_layout, NULL);
+        }
         for (size_t i = 0; i < x->sampler_count; i++) vkDestroySampler(x->device, x->samplers[i].sampler, NULL);
         for (unsigned n = 1; n <= GCN_MAX_IMAGES; n++) {
             if (x->image_layouts[n]) vkDestroyPipelineLayout(x->device, x->image_layouts[n], NULL);
