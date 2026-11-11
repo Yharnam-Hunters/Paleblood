@@ -655,9 +655,11 @@ static void front_face(rt_executor *x)
         }
 }
 
-/* Draws pixel_color_two_targets with colour targets in slots 0 and 2 (none in 1) and CB_TARGET_MASK mask;
-   the run's result. A slot-2 target of another size when odd_size. */
-static int draw_two_targets(rt_executor *x, uint64_t first, uint64_t third, uint32_t mask, int odd_size, char *error, size_t error_size)
+/* Draws pixel_color_two_targets with colour targets in slots 0 and 2 (none in 1), CB_TARGET_MASK mask
+   and the pixel shader's CB_SHADER_MASK shader_mask; the run's result. A slot-2 target of another size
+   when odd_size. */
+static int draw_two_targets(rt_executor *x, uint64_t first, uint64_t third, uint32_t mask, uint32_t shader_mask, int odd_size, char *error,
+                            size_t error_size)
 {
     enum { TWO_BUFFER = 0xc0f80000, TWO_CODE = 0x2e00 };
     memcpy((void *)(uintptr_t)at(TWO_CODE), pixel_color_two_targets, sizeof pixel_color_two_targets);
@@ -665,7 +667,7 @@ static int draw_two_targets(rt_executor *x, uint64_t first, uint64_t third, uint
     uint32_t offset = record_setup(TWO_BUFFER, first, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
     const uint64_t code = at(TWO_CODE);
     const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 0, 0, 0x404,
-                                                   PERSP_CENTER, PERSP_CENTER, 1, 0, 0, 0xf0f};
+                                                   PERSP_CENTER, PERSP_CENTER, 1, 0, 0, shader_mask};
     CHECK(rt_render_record_pixel_shader(TWO_BUFFER, offset, pixel, error, error_size) == 0);
     uint32_t words[RT_COLOR_TARGET_WORDS];
     color_target(words, third, COLOR_8_8_8_8, SWAP_STD);
@@ -678,17 +680,20 @@ static int draw_two_targets(rt_executor *x, uint64_t first, uint64_t third, uint
 /* Several colour targets in one draw (MRT): the pixel shader's mrt0 and mrt2 exports land in the
    targets of slots 0 and 2, with no target in slot 1 between them; CB_TARGET_MASK's nibble per slot
    masks channels: 0x7 on slot 2 leaves its alpha as it was (0), and slot 0 masked off entirely draws
-   only slot 2. Colour targets of different sizes in one draw stop by name. */
+   only slot 2. A slot the pixel shader's CB_SHADER_MASK leaves out is not written either, whatever
+   CB_TARGET_MASK says: with shader mask 0x00f slot 2's target is never drawn into (Vulkan would leave
+   it undefined). Colour targets of different sizes in one draw stop by name. */
 static void multiple_targets(rt_executor *x)
 {
-    enum { MRT_FIRST = 0x1900000, MRT_THIRD = 0x1940000, MASKED_FIRST = 0x1980000, MASKED_THIRD = 0x19c0000, ODD_THIRD = 0x1a00000 };
+    enum { MRT_FIRST = 0x1900000, MRT_THIRD = 0x1940000, MASKED_FIRST = 0x1980000, MASKED_THIRD = 0x19c0000, ODD_THIRD = 0x1a00000,
+           SHADER_FIRST = 0x2100000, SHADER_THIRD = 0x2140000 };
     char error[200] = "";
-    int drawn = draw_two_targets(x, at(MRT_FIRST), at(MRT_THIRD), 0xf0f, 0, error, sizeof error);
+    int drawn = draw_two_targets(x, at(MRT_FIRST), at(MRT_THIRD), 0xf0f, 0xf0f, 0, error, sizeof error);
     if (drawn) fprintf(stderr, "two targets: %s\n", error);
     CHECK(drawn == 0);
     check_triangle(x, at(MRT_FIRST));
     check_triangle(x, at(MRT_THIRD));
-    drawn = draw_two_targets(x, at(MASKED_FIRST), at(MASKED_THIRD), 0x700, 0, error, sizeof error);
+    drawn = draw_two_targets(x, at(MASKED_FIRST), at(MASKED_THIRD), 0x700, 0xf0f, 0, error, sizeof error);
     if (drawn) fprintf(stderr, "masked targets: %s\n", error);
     CHECK(drawn == 0);
     uint32_t bgra[SIZE * SIZE];
@@ -697,7 +702,12 @@ static void multiple_targets(rt_executor *x)
     for (int i = 0; i < SIZE * SIZE; i++) bgra[i] |= 0xffu << 24; /* alpha was masked: 0, as the memory held */
     check_triangle_pixels(bgra);
     CHECK(rt_executor_read_target(x, at(MASKED_THIRD), bgra, SIZE, SIZE, error, sizeof error) == 0 && (bgra[0] >> 24) == 0);
-    CHECK(draw_two_targets(x, at(MRT_FIRST), at(ODD_THIRD), 0xf0f, 1, error, sizeof error) == -1 && strstr(error, "different sizes"));
+    drawn = draw_two_targets(x, at(SHADER_FIRST), at(SHADER_THIRD), 0xf0f, 0x00f, 0, error, sizeof error);
+    if (drawn) fprintf(stderr, "shader-masked targets: %s\n", error);
+    CHECK(drawn == 0);
+    check_triangle(x, at(SHADER_FIRST));
+    CHECK(rt_executor_read_target(x, at(SHADER_THIRD), bgra, SIZE, SIZE, error, sizeof error) == -1 && strstr(error, "no draw"));
+    CHECK(draw_two_targets(x, at(MRT_FIRST), at(ODD_THIRD), 0xf0f, 0xf0f, 1, error, sizeof error) == -1 && strstr(error, "different sizes"));
 }
 
 /* A render target cleared by a compute shader (as the game clears its G-buffer): a dispatch stores
