@@ -35,8 +35,9 @@ enum { MAX_SHADERS = 1024, MAX_PIPELINES = 1024, MAX_TARGETS = 128, MAX_RECT_STA
        MAX_VIEWS = 16, MAX_SAMPLERS = 256, MAX_PASSES = 256, BATCH_SETS = 256, MAX_WRITTEN = 256, BATCH_SLOTS = 4, CHANGE_CHUNK = 64 << 10,
        STOP_SLOTS = MAX_SHADERS + MAX_COMPUTE_PIPELINES };
 enum { MAX_VERTEX_IMAGE_LAYOUTS = 32 };
+enum { TILE_COPY_SIZES = 5 }; /* GPU tile copies of 1, 2, 4, 8 and 16-byte elements */
 enum { USER_DATA_BYTES = GCN_USER_SGPR_MAX * 4, VERTEX_USER_DATA = 0, PIXEL_USER_DATA = USER_DATA_BYTES };
-enum { COLOR_10_11_11 = 0x6, COLOR_8_8_8_8 = 0xa, COLOR_16_16_16_16 = 0xc, NUMBER_UNORM = 0, NUMBER_SRGB = 6, NUMBER_FLOAT = 7, SWAP_STD = 0,
+enum { COLOR_32 = 0x4, COLOR_16_16 = 0x5, COLOR_10_11_11 = 0x6, COLOR_8_8_8_8 = 0xa, COLOR_16_16_16_16 = 0xc, NUMBER_UNORM = 0, NUMBER_SRGB = 6, NUMBER_FLOAT = 7, SWAP_STD = 0,
        SWAP_ALT = 1 };
 enum { PERSP_CENTER_ENA = 0x2, POS_X_FLOAT_ENA = 0x100, POS_Y_FLOAT_ENA = 0x200, FRONT_FACE_ENA = 0x1000 };
 /* SPI_BARYC_CNTL's FRONT_FACE_ALL_BITS (bit 24), and where a pixel shader's settings (below) carry it: SPI_PS_INPUT_ADDR uses bits 0-15 */
@@ -95,7 +96,7 @@ typedef struct {
     gpu_buffer table, linear;
     uint32_t width, height, slices;  /* elements per row, rows per slice */
     uint32_t tiles_per_row, tiles_per_slice;
-    unsigned dwords;                 /* 32-bit words per element */
+    unsigned element_bytes;          /* 1, 2, 4, 8 or 16 */
     unsigned pieces_log2;            /* a split depth tile's pieces (runtime/tile_copy.h), log2; 0 unsplit */
 } tile_plan;
 
@@ -218,7 +219,7 @@ typedef struct {
     memory_snapshot agreed;          /* the guest memory it was last loaded from (loads through the CPU) */
     uint64_t loaded_change;          /* change_count when it was last loaded (UINT64_MAX: load it) */
     uint64_t loaded_span;            /* the bytes of guest memory it was loaded from */
-    tile_plan plan;                  /* its loads on the GPU, for elements of whole 32-bit words */
+    tile_plan plan;                  /* its loads on the GPU (tile_copy_moves) */
     tile_plan *level_plans;          /* the same for each mip level of a mip-mapped image (load_levels), or NULL */
     VkImage image;
     VkDeviceMemory memory;
@@ -350,6 +351,7 @@ struct rt_executor {
     size_t sampler_count;
     VkDescriptorPool descriptor_pool;
     int storage_images;              /* the device reads and writes storage images without a declared format */
+    int small_elements;              /* the device loads and stores 8- and 16-bit values in buffer memory: GPU tile copies of such elements */
     /* the guest memory: our own mapping of the pool, imported */
     void *view;
     uint64_t size, guest_base, address_offset;
@@ -411,10 +413,10 @@ struct rt_executor {
     int batch_open;
     VkSemaphore timeline;
     uint64_t submitted;
-    /* the GPU copies between tiled guest memory and linear rows (runtime/tile_copy.h), by words per
-       element (1, 2, 4) and direction (to the tiled memory or from it); made on first use */
+    /* the GPU copies between tiled guest memory and linear rows (runtime/tile_copy.h), by bytes per
+       element (1, 2, 4, 8, 16: log2 indexes) and direction (to the tiled memory or from it); made on first use */
     VkPipelineLayout tile_copy_layout;
-    VkPipeline tile_copies[3][2];
+    VkPipeline tile_copies[TILE_COPY_SIZES][2];
     /* the GPU's state as the calls run so far set it: registers, user data and shaders carry over from
        one submitted buffer to the next, as on the console's GPU */
     draw_state state;
@@ -750,7 +752,8 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
     uint32_t count = 1;
     if (vkEnumeratePhysicalDevices(x->instance, &count, &x->physical) < 0 || count == 0)
         return failed(error, error_size, "no Vulkan device");
-    VkPhysicalDeviceVulkan12Features features12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+    VkPhysicalDeviceVulkan11Features features11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+    VkPhysicalDeviceVulkan12Features features12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &features11};
     VkPhysicalDeviceFeatures2 features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &features12};
     vkGetPhysicalDeviceFeatures2(x->physical, &features);
     if (!features12.bufferDeviceAddress || !features.features.shaderInt64 || !features.features.shaderClipDistance)
@@ -766,8 +769,12 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
     const VkDeviceQueueCreateInfo queue = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = x->family,
                                            .queueCount = 1, .pQueuePriorities = &priority};
     if (!features12.timelineSemaphore) return failed(error, error_size, "the Vulkan device lacks timeline semaphores");
-    VkPhysicalDeviceVulkan12Features enable12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-                                                 .bufferDeviceAddress = VK_TRUE, .timelineSemaphore = VK_TRUE};
+    x->small_elements = features12.storageBuffer8BitAccess && features11.storageBuffer16BitAccess;
+    VkPhysicalDeviceVulkan11Features enable11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+                                                 .storageBuffer16BitAccess = (VkBool32)x->small_elements};
+    VkPhysicalDeviceVulkan12Features enable12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = &enable11,
+                                                 .bufferDeviceAddress = VK_TRUE, .timelineSemaphore = VK_TRUE,
+                                                 .storageBuffer8BitAccess = (VkBool32)x->small_elements};
     x->geometry_shaders = features.features.geometryShader == VK_TRUE;
     x->storage_images = features.features.shaderStorageImageReadWithoutFormat && features.features.shaderStorageImageWriteWithoutFormat;
     VkPhysicalDeviceProperties properties;
@@ -1327,7 +1334,7 @@ static int tile_plan_make(rt_executor *x, tile_plan *p, const rt_tiling *layout,
     if (pieces > 1 && (micro_bytes > PIPE_INTERLEAVE_BYTES || 1u << pieces_log2 != pieces))
         return failed(error, error_size, "a split tile of %u-byte elements in %u-byte pieces: the GPU copy does not take it yet", element,
                       layout->tile_split);
-    *p = (tile_plan){.width = width, .height = height, .slices = slices, .dwords = element / 4,
+    *p = (tile_plan){.width = width, .height = height, .slices = slices, .element_bytes = element,
                      .tiles_per_row = (width + RT_TILING_MICRO - 1) / RT_TILING_MICRO, .pieces_log2 = pieces_log2};
     p->tiles_per_slice = p->tiles_per_row * ((height + RT_TILING_MICRO - 1) / RT_TILING_MICRO);
     const VkDeviceSize entries = RT_TILE_COPY_TILE_BASES + (VkDeviceSize)p->tiles_per_slice * slices * pieces;
@@ -1361,11 +1368,20 @@ static int tile_plan_make(rt_executor *x, tile_plan *p, const rt_tiling *layout,
     return 0;
 }
 
-/* The tile-copy pipeline for elements of `dwords` words, to the tiled memory or from it, made on first
-   use; VK_NULL_HANDLE after failing. */
-static VkPipeline tile_copy_pipeline(rt_executor *x, unsigned dwords, int to_tiled, char *error, size_t error_size)
+/* Whether the GPU tile copy moves elements of `bytes` bytes on this device: 4, 8 and 16 everywhere, 1
+   and 2 with the device's 8- and 16-bit buffer access. */
+static int tile_copy_moves(const rt_executor *x, unsigned bytes)
 {
-    const unsigned kind = dwords == 1 ? 0 : dwords == 2 ? 1 : 2;
+    if (bytes == 1 || bytes == 2) return x->small_elements;
+    return bytes == 4 || bytes == 8 || bytes == 16;
+}
+
+/* The tile-copy pipeline for elements of `element_bytes` bytes, to the tiled memory or from it, made on
+   first use; VK_NULL_HANDLE after failing. */
+static VkPipeline tile_copy_pipeline(rt_executor *x, unsigned element_bytes, int to_tiled, char *error, size_t error_size)
+{
+    unsigned kind = 0;
+    while (kind + 1 < TILE_COPY_SIZES && 1u << kind < element_bytes) kind++;
     if (x->tile_copies[kind][to_tiled]) return x->tile_copies[kind][to_tiled];
     if (!x->tile_copy_layout) {
         const VkPushConstantRange range = {VK_SHADER_STAGE_COMPUTE_BIT, 0, RT_TILE_COPY_PUSH_WORDS * 4};
@@ -1378,8 +1394,8 @@ static VkPipeline tile_copy_pipeline(rt_executor *x, unsigned dwords, int to_til
     }
     uint32_t *spirv = NULL;
     size_t words = 0;
-    if (rt_tile_copy_shader(dwords, to_tiled, &spirv, &words)) {
-        failed(error, error_size, "no GPU tile copy for %u-word elements", dwords);
+    if (1u << kind != element_bytes || rt_tile_copy_shader(element_bytes, to_tiled, &spirv, &words)) {
+        failed(error, error_size, "no GPU tile copy for %u-byte elements", element_bytes);
         return VK_NULL_HANDLE;
     }
     const VkShaderModuleCreateInfo module_info = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = words * 4, .pCode = spirv};
@@ -1409,15 +1425,15 @@ static VkPipeline tile_copy_pipeline(rt_executor *x, unsigned dwords, int to_til
    work sees its own. 0, or -1 with the reason. */
 static int record_tile_copy(rt_executor *x, const tile_plan *p, uint64_t address, int to_tiled, char *error, size_t error_size)
 {
-    const VkPipeline pipeline = tile_copy_pipeline(x, p->dwords, to_tiled, error, error_size);
+    const VkPipeline pipeline = tile_copy_pipeline(x, p->element_bytes, to_tiled, error, error_size);
     VkCommandBuffer commands = pipeline ? batch_commands(x) : VK_NULL_HANDLE;
     if (!commands) return pipeline ? failed(error, error_size, "no command buffer") : -1;
     const uint64_t groups = (uint64_t)p->tiles_per_slice * p->slices; /* one micro tile each */
     enum { MAX_GROUPS = 65535 };
     const uint32_t groups_x = groups < MAX_GROUPS ? (uint32_t)groups : MAX_GROUPS, groups_y = (uint32_t)((groups + groups_x - 1) / groups_x);
     if (groups * RT_TILE_COPY_GROUP > UINT32_MAX || groups_y > MAX_GROUPS) return failed(error, error_size, "an image too large for the GPU copy");
-    if (address % (p->dwords * 4))
-        return failed(error, error_size, "a tiled image at %#llx, not a multiple of its %u-byte elements", (unsigned long long)address, p->dwords * 4);
+    if (address % p->element_bytes)
+        return failed(error, error_size, "a tiled image at %#llx, not a multiple of its %u-byte elements", (unsigned long long)address, p->element_bytes);
     const uint64_t tiled = address + x->address_offset; /* the guest address's GPU address (wraps as the shaders' adds do) */
     const uint32_t push[RT_TILE_COPY_PUSH_WORDS] = {
         [RT_TILE_COPY_TILED_LO] = (uint32_t)tiled, [RT_TILE_COPY_TILED_HI] = (uint32_t)(tiled >> 32),
@@ -1444,7 +1460,10 @@ static int record_tile_copy(rt_executor *x, const tile_plan *p, uint64_t address
    - COLOR_8_8_8_8 UNORM or sRGB, in either component order (SWAP_STD R8G8B8A8, SWAP_ALT B8G8R8A8);
    - COLOR_10_11_11 FLOAT: unsigned floats with x in bits 0-10, y in 11-21 and z in 22-31 (AMD names
      formats from the top bits down), Vulkan's B10G11R11_UFLOAT_PACK32, as shadPS4 maps it;
-   - COLOR_16_16_16_16 FLOAT: halves, x first, R16G16B16A16_SFLOAT, 8 bytes.
+   - COLOR_16_16_16_16 FLOAT: halves, x first, R16G16B16A16_SFLOAT, 8 bytes;
+   - COLOR_32 FLOAT: one float, R32_SFLOAT; COLOR_16_16 FLOAT: two halves, x in the low half,
+     R16G16_SFLOAT (shadPS4's liverpool_to_vk.cpp maps them the same; the clinic's half-resolution depth
+     and its light probes' moments use them).
    Others stop by name (VK_FORMAT_UNDEFINED with the reason). */
 static VkFormat target_format(const rt_color_target *target, uint32_t *element_bytes, char *error, size_t error_size)
 {
@@ -1457,6 +1476,8 @@ static VkFormat target_format(const rt_color_target *target, uint32_t *element_b
     }
     /* unsigned 11-, 11- and 10-bit floats, x in the low bits */
     if (target->format == COLOR_10_11_11 && target->number_type == NUMBER_FLOAT && std) return VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+    if (target->format == COLOR_32 && target->number_type == NUMBER_FLOAT && std) return VK_FORMAT_R32_SFLOAT;
+    if (target->format == COLOR_16_16 && target->number_type == NUMBER_FLOAT && std) return VK_FORMAT_R16G16_SFLOAT;
     if (target->format == COLOR_16_16_16_16 && target->number_type == NUMBER_FLOAT && std) {
         *element_bytes = 8;
         return VK_FORMAT_R16G16B16A16_SFLOAT;
@@ -2706,10 +2727,6 @@ static int one_dimensional(uint32_t type) { return type == RT_IMAGE_1D || type =
 /* A 3D image's slices: its descriptor's DEPTH + 1 (an array's DEPTH counts layers instead); 1 otherwise. */
 static uint32_t image_depth(const rt_image_descriptor *d) { return d->type == RT_IMAGE_3D ? d->depth : 1; }
 
-/* Fills a kept image with the guest memory's texels under its descriptor, detiled (runtime/tiling.h): on
-   the GPU for elements of whole 32-bit words, again whenever the memory may have changed since
-   (memory_changed_since); by the CPU for smaller ones, again when the memory differs from what it last loaded.
-   0, or -1 with the reason (a layout not done yet, texels outside the GPU-visible memory). */
 /* Whether a render target drawn into, or a depth target changed, since it was last written back lies
    over `size` bytes of guest memory at `address`: its texels are newer than the memory's (write-backs
    take every such target along: the memory would get them at the buffer's end anyway). A depth
@@ -2729,6 +2746,10 @@ static int unwritten_target_over(const rt_executor *x, uint64_t address, uint64_
 
 static int load_levels(rt_executor *x, image_entry *e, const rt_image_descriptor *d, const texel_format *f, char *error, size_t error_size);
 
+/* Fills a kept image with the guest memory's texels under its descriptor, detiled (runtime/tiling.h): on
+   the GPU for elements the GPU copy moves (tile_copy_moves), again whenever the memory may have changed
+   since (memory_changed_since); by the CPU for others, again when the memory differs from what it last
+   loaded. 0, or -1 with the reason (a layout not done yet, texels outside the GPU-visible memory). */
 static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor *d, const texel_format *f, char *error, size_t error_size)
 {
     if (e->levels > 1) return load_levels(x, e, d, f, error, error_size);
@@ -2757,7 +2778,7 @@ static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor
     }
     const VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, e->layers},
                                     .imageExtent = {e->width, one_dimensional(d->type) ? 1 : e->height, 1}};
-    if (bytes % 4 == 0 && rt_tiling_uniform_micro(&layout)) { /* whole words: detiled on the GPU (runtime/tile_copy.h), with the batch */
+    if (tile_copy_moves(x, bytes) && rt_tiling_uniform_micro(&layout)) { /* detiled on the GPU (runtime/tile_copy.h), with the batch */
         if (!memory_changed_since(x, d->address, span, e->loaded_change)) return 0;
         if (!e->plan.table.buffer && tile_plan_make(x, &e->plan, &layout, columns, rows, e->layers, error, error_size)) return -1;
         if (record_tile_copy(x, &e->plan, d->address, 0, error, error_size)) return -1;
@@ -2770,7 +2791,7 @@ static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor
         e->loaded_change = x->change_count, e->loaded_span = span;
         return 0;
     }
-    /* smaller elements: detiled by the CPU, skipped while the memory holds what was loaded last */
+    /* other elements: detiled by the CPU, skipped while the memory holds what was loaded last */
     if (!memory_changed_since(x, d->address, span, e->loaded_change)) return 0;
     if (guest_memory_settled(x, d->address, span, error, error_size)) return -1;
     const uint8_t *guest = (const uint8_t *)x->view + (d->address - x->guest_base);
@@ -2856,7 +2877,7 @@ static int load_levels(rt_executor *x, image_entry *e, const rt_image_descriptor
         e->loaded_change = UINT64_MAX;
     }
     if (!memory_changed_since(x, d->address, span, e->loaded_change)) return 0;
-    int on_gpu = bytes % 4 == 0; /* every level of whole words in a layout the GPU copy takes: detiled on the GPU */
+    int on_gpu = tile_copy_moves(x, bytes); /* every level in a layout the GPU copy takes: detiled on the GPU */
     for (unsigned m = 0; m < e->levels && on_gpu; m++) on_gpu = rt_tiling_uniform_micro(&levels[m].layout) && levels[m].offset % bytes == 0;
     if (on_gpu) return load_levels_on_gpu(x, e, d, f, levels, span, error, error_size);
     if (guest_memory_settled(x, d->address, span, error, error_size)) return -1;
@@ -2990,8 +3011,8 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
    with the batch, so a later view of that memory in another format or with more mip levels reads what
    the shader stored (the game's face texture: written as 8_8_8_8 UINT, sampled as sRGB with mips).
    Left in the image alone: one over a render target (the target takes its texels at its next draw,
-   take_written_image), a 3D image (its slices' layout is not done here), and elements that are not
-   whole 32-bit words (the GPU copy moves words). 0, or -1 with the reason. */
+   take_written_image), a 3D image (its slices' layout is not done here), and elements the GPU copy
+   does not move (tile_copy_moves). 0, or -1 with the reason. */
 static int write_back_image(rt_executor *x, image_entry *e, const rt_image_descriptor *d, char *error, size_t error_size)
 {
     texel_format f;
@@ -2999,7 +3020,7 @@ static int write_back_image(rt_executor *x, image_entry *e, const rt_image_descr
     rt_tiling layout;
     char reason[160];
     const uint32_t rows = one_dimensional(d->type) ? 1 : d->height;
-    if (f.block != 1 || f.bytes % 4 || d->pitch < d->width || rt_tiling_layout(d->tiling_index, f.bytes, d->pitch, rows, &layout, reason, sizeof reason) ||
+    if (f.block != 1 || !tile_copy_moves(x, f.bytes) || d->pitch < d->width || rt_tiling_layout(d->tiling_index, f.bytes, d->pitch, rows, &layout, reason, sizeof reason) ||
         !rt_tiling_uniform_micro(&layout))
         return 0;
     const uint64_t span = rt_tiling_size(&layout, e->layers);
@@ -3738,7 +3759,7 @@ void rt_executor_close(rt_executor *x)
         if (x->stop_buffer) vkDestroyBuffer(x->device, x->stop_buffer, NULL);
         if (x->stop_memory) vkFreeMemory(x->device, x->stop_memory, NULL);
         if (x->timeline) vkDestroySemaphore(x->device, x->timeline, NULL);
-        for (unsigned k = 0; k < 3; k++)
+        for (unsigned k = 0; k < TILE_COPY_SIZES; k++)
             for (unsigned to_tiled = 0; to_tiled < 2; to_tiled++)
                 if (x->tile_copies[k][to_tiled]) vkDestroyPipeline(x->device, x->tile_copies[k][to_tiled], NULL);
         if (x->tile_copy_layout) vkDestroyPipelineLayout(x->device, x->tile_copy_layout, NULL);

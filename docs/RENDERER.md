@@ -98,7 +98,7 @@ Instead:
        alignment, x first and little-endian; whole 32-bit components (uint,
        sint, float; the format's components in place, as a store only uses their selectors) move as they are, and a four-component store to 8_8_8_8 unorm
        undoes the descriptor's swizzle (shadPS4's rule: the inverse of a load's) and packs as GLSL's
-       `packUnorm4x8` (the PS4's rounding of ties is not established). Anything else is a run-time stop. A descriptor of DATA_FORMAT 0 (invalid, a null buffer's) reads 0 and writes nothing. A four-component store to 16_16_16_16 float packs halves, and one to 10_11_11 float unsigned
+       `packUnorm4x8` (the PS4's rounding of ties is not established). Anything else is a run-time stop. A descriptor of DATA_FORMAT 0 (invalid, a null buffer's) reads 0 and writes nothing. A four-component store to 16_16_16_16 float packs halves (a store to 16_16 float its two selected components), and one to 10_11_11 float unsigned
        11-, 11- and 10-bit floats (x in the low bits), rounded to nearest even.
      - **VOP3 output modifiers** on float results: OMOD multiplies by 2, 4 or 0.5, then the clamp
        to [0, 1] applies.
@@ -494,8 +494,8 @@ Instead:
           fps. Most of the remaining waiting is on the CPU's CMASK and HTILE reads, which wait for
           the batch whenever a dispatch in it may store anywhere.
         - **Copies on the GPU** (`runtime/tile_copy.h`): a render target's loads and write-backs, and the
-          loads of images whose elements are whole 32-bit words (8_8_8_8, 32-bit formats, the BC
-          blocks), are detiled and tiled by a compute shader that reads and writes the guest memory
+          loads of images of 1-, 2-, 4-, 8- and 16-byte elements (8, 8_8, 16, 8_8_8_8, 32-bit formats,
+          the BC blocks), are detiled and tiled by a compute shader that reads and writes the guest memory
           buffer directly, in the batch: one invocation per element, its place from a table of the
           layout's offsets that `runtime/tiling.h` works out (each micro tile's first element, and the
           64 places within a micro tile, `rt_tiling_micro_spread`), so the GPU's placement is the CPU
@@ -505,8 +505,13 @@ Instead:
           stores to, and the CPU waits only before reading that memory itself. A target is loaded
           again, and such an image too, whenever the memory may have changed (the memory epoch: a new
           buffer, a dispatch, a write-back over it), without comparing bytes: reading it on the GPU
-          costs less than comparing it on the CPU. Images of 8- and 16-bit elements (the title's glyph
-          atlas) are still detiled by the CPU, skipped while the memory holds what was last loaded.
+          costs less than comparing it on the CPU. Images of 8- and 16-bit elements need the device's 8-
+          and 16-bit buffer access (Vulkan's `storageBuffer8BitAccess` and `storageBuffer16BitAccess`);
+          without it, and for other element sizes, they are detiled by the CPU, which first waits for
+          the batch's stores to that memory, skipped while the memory holds what was last loaded. At
+          the Contract screen the CPU's waits for the GPU went from about 102 to 90 every 2 s when
+          they moved to the GPU; most of the rest are CPU reads of memory inside the depth copy's
+          2.2 GB store range.
           Showing a frame copies the target's image to a host-visible buffer once per flip.
           `test_render_executor` checks a 1D-tiled target's texels at `rt_tiling_offset` after a
           write-back and a CPU write showing at its pixel after a load; a mutated table fails both.

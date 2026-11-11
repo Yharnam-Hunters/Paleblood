@@ -330,6 +330,15 @@ RT_SYSLIB("libSceGnmDriver", sceGnmUnmapComputeQueue, unmap_compute_queue);
 #define DMA_DATA_DESTINATION_IS_REGISTER (1u << 27)            /* DAS */
 #define DMA_DATA_SOURCE_FIXED (1u << 28)                       /* SAIC: the source is not incremented */
 #define DMA_DATA_DESTINATION_FIXED (1u << 29)                  /* DAIC: the destination is not incremented */
+/* WRITE_DATA (opcode 0x37): control, address low, address high, then the dwords to write. In the
+   control, DST_SEL bits 8-11 (2 memory through L2, 5 memory) and WR_ONE_ADDR bit 16 (every dword
+   to the same address). */
+#define PM4_WRITE_DATA 0x37u
+#define WRITE_DATA_HEADER_DWORDS 4
+#define WRITE_DATA_DESTINATION(control) ((control) >> 8 & 0xfu)
+#define WRITE_DATA_TO_L2 2u
+#define WRITE_DATA_TO_MEMORY 5u
+#define WRITE_DATA_ONE_ADDRESS (1u << 16)
 #define CP_DMA_READ_TAGS_BYTE_ADDRESS (0xc08bu * 4)             /* mmCP_DMA_READ_TAGS, gfx_7_2_d.h */
 
 #define EVENT_WRITE_WITHOUT_MEMORY_DWORDS 2
@@ -541,6 +550,46 @@ static void write_completion_value(const char *fn, uint32_t data_size, uint32_t 
         rt_fatal(fn, "a completion writing a value other than the packet's own data");
 }
 
+/* A WRITE_DATA's dwords and where they go, copied at submission (the title may reuse the buffer). */
+typedef struct {
+    uint32_t *address;
+    uint32_t dwords;
+    uint32_t data[];
+} data_write;
+
+/* A step: the command processor writes the dwords into memory, in order with the work around it
+   (the draws after it may read them). */
+static void data_write_step(const rt_gpu_step *step)
+{
+    data_write *const write = (data_write *)(uintptr_t)step->words[0];
+    memcpy(write->address, write->data, write->dwords * sizeof(uint32_t));
+    free(write);
+}
+
+/* WRITE_DATA to memory: a step that writes the packet's dwords at its address (shadPS4's
+   liverpool.cpp copies them the same way, facts only). Writes to registers, to one address, and
+   without an address stop by name. */
+static void write_data(const char *fn, const uint32_t *packet, uint32_t length)
+{
+    const uint32_t control = packet[1], destination = WRITE_DATA_DESTINATION(control);
+    if (destination != WRITE_DATA_TO_L2 && destination != WRITE_DATA_TO_MEMORY)
+        rt_fatal(fn, "a WRITE_DATA to a destination other than memory: the stand-in writes memory only");
+    if (control & WRITE_DATA_ONE_ADDRESS) rt_fatal(fn, "a WRITE_DATA of every dword to one address: not established");
+    uint32_t *const address = (uint32_t *)(uintptr_t)(packet[2] | (uint64_t)packet[3] << 32);
+    const uint32_t dwords = length - WRITE_DATA_HEADER_DWORDS;
+    if (!address && dwords) rt_fatal(fn, "a WRITE_DATA without an address");
+    data_write *const write = malloc(sizeof *write + dwords * sizeof(uint32_t));
+    if (!write) rt_fatal(fn, "no memory for a WRITE_DATA");
+    write->address = address, write->dwords = dwords;
+    memcpy(write->data, packet + WRITE_DATA_HEADER_DWORDS, dwords * sizeof(uint32_t));
+    const rt_gpu_step step = {.words = {(uintptr_t)write}};
+    if (!collecting) {
+        data_write_step(&step);
+        return;
+    }
+    collect(fn, data_write_step, step.words);
+}
+
 static void release_memory(const char *fn, const release_mem_packet *packet)
 {
     const uint32_t destination = (packet->data_control >> RELEASE_MEM_DESTINATION_SHIFT) & RELEASE_MEM_DESTINATION_MASK;
@@ -700,6 +749,8 @@ static void complete_packets(const char *fn, const uint32_t *packets, uint32_t d
             release_mem_packet release;
             memcpy(&release, packet + 1, sizeof release);
             release_memory(fn, &release);
+        } else if (opcode == PM4_WRITE_DATA && length >= WRITE_DATA_HEADER_DWORDS) {
+            write_data(fn, packet, length);
         } else if (opcode == PM4_EVENT_WRITE_EOP && length == EVENT_WRITE_EOP_DWORDS) {
             const uint32_t interrupt_select = (packet[3] >> INTERRUPT_SELECT_SHIFT) & EOP_INTERRUPT_SELECT_MASK;
             if (interrupt_select == INTERRUPT_RELEASE_MEM_OTHER) rt_fatal(fn, "an EVENT_WRITE_EOP interrupt select of 3, which the packet format does not define");
@@ -786,6 +837,9 @@ RT_SYSLIB("libSceGnmDriver", sceGnmDingDong, ding_dong);
                                   100-byte read). It changes no memory and no state a shader
                                   sees, so it only brings the source into the GPU's cache, and the
                                   stand-in has none. Any other DMA_DATA stops.
+     WRITE_DATA                   a step: its dwords go to memory in order with the work (found 11
+                                  November 2026, the loading screen after character creation);
+                                  writes to registers or to one address stop;
    The packets themselves draw nothing. Each buffer then goes to the renderer (runtime/renderer.h)
    with its steps, each at its packet's offset: it runs the drawing calls recorded before a step,
    then the step, then the calls after it, so a wait holds before the draws after it read memory. A constant command buffer
