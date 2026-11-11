@@ -1384,7 +1384,8 @@ int main(void)
         uint32_t pixel[RT_PIXEL_SHADER_WORDS], user[4]; pixel_registers(pixel, FORMAT_PIXEL_CODE);
         pixel[3] = 4 << 1; pixel[5] = 9; pixel[8] = 0;
         descriptor(user, at(SOLID_COLORS));
-        user[3] = f == 1 ? DST_XYZW | 5u << 15 :
+        /* 10_11_11 UNORM remains unsupported; 16_16 UNORM loads are now modeled. */
+        user[3] = f == 1 ? DST_XYZW | 6u << 15 :
             (f == 2 ? DST_ZYXW : f == 3 ? (DST_XYZW & ~7u) | 2 : DST_XYZW) | 7u << 12 | 14u << 15;
         CHECK(rt_render_record_pixel_shader(buffer, size, pixel, error, sizeof error) == 0); size += 0x10;
         CHECK(rt_render_record_user_data(buffer, size, RT_STAGE_PIXEL, 0, user, 4, error, sizeof error) == 0); size += 0x10;
