@@ -98,8 +98,10 @@ Instead:
        alignment, x first and little-endian; whole 32-bit components (uint,
        sint, float; the format's components in place, as a store only uses their selectors) move as they are, and a four-component store to 8_8_8_8 unorm
        undoes the descriptor's swizzle (shadPS4's rule: the inverse of a load's) and packs as GLSL's
-       `packUnorm4x8` (the PS4's rounding of ties is not established). Anything else is a run-time stop. A four-component store to 16_16_16_16 float packs halves, and one to 10_11_11 float unsigned
+       `packUnorm4x8` (the PS4's rounding of ties is not established). Anything else is a run-time stop. A descriptor of DATA_FORMAT 0 (invalid, a null buffer's) reads 0 and writes nothing. A four-component store to 16_16_16_16 float packs halves, and one to 10_11_11 float unsigned
        11-, 11- and 10-bit floats (x in the low bits), rounded to nearest even.
+     - **VOP3 output modifiers** on float results: OMOD multiplies by 2, 4 or 0.5, then the clamp
+       to [0, 1] applies.
      - **Cube instructions** (`v_cubeid_f32`, `v_cubesc_f32`, `v_cubetc_f32`, `v_cubema_f32`): the
        face a direction's largest component picks (z, then y, then x on ties), its number, s and t
        before division and twice the major axis, as shadPS4 computes them without native cube
@@ -145,7 +147,9 @@ Instead:
        program's dispatch loop is not uniform control flow for Vulkan's implicit derivatives. The
        sampler's LOD bias, MIN_LOD and MAX_LOD (8 fraction bits) and mip filter (none: the view's first
        level, with a maximum LOD of 0.25 so the minifying filter still applies; point; linear) go to
-       the Vulkan sampler, and the minifying and magnifying filters may differ. The executor makes a Vulkan sampler from the S#
+       the Vulkan sampler, and the minifying and magnifying filters may differ. Anisotropic filters (2 point, 3 bilinear) are their
+       point or bilinear filter with Vulkan's anisotropy up to MAX_ANISO_RATIO's 1-16 samples, within
+       the device's limit (ANISO_THRESHOLD and ANISO_BIAS are not used). The executor makes a Vulkan sampler from the S#
        (the Sea Islands manual's layout, as shadPS4's `resource.h` names its fields): wrap, mirror
        and clamp to the last texel; point or bilinear filtering. The anisotropy fields are accepted with point or
        bilinear filters, which they do not affect; anisotropic filters, depth compares,
@@ -155,7 +159,8 @@ Instead:
      - **Descriptors from memory:** each MIMG instruction's descriptor is found from the code before
        it (`gcn_resource_origin`): the user data's when nothing writes its SGPRs first, or loaded
        from memory when the last write is an `s_load_dwordx8` (or a wider load that covers the
-       descriptor's SGPRs, as the game's `s_load_dwordx16` of two image descriptors) at an immediate offset from a
+       descriptor's SGPRs, as the game's `s_load_dwordx16` of two image descriptors) at an immediate or
+       literal offset (a literal counts dwords, as LLVM's AMDGPU backend has it for Sea Islands) from a
        user-data pointer pair that nothing writes before it. The executor reads such a descriptor from guest
        memory when the draw runs. The same SGPRs can name different images at different
        instructions: the game's fullscreen pass reads the user data's image, then loads another
@@ -421,6 +426,8 @@ Instead:
         shader's at byte 64 (`push_constant_offset`), 128 bytes in all, the size every Vulkan
         device guarantees.
      3. **Running a buffer** (begun: `runtime/render_executor.h`).
+        The optional [Metal draw executor](macos-metal.md#draw-executor) uses the same call record
+        and readback API, with its own explicitly limited profile; the following describes Vulkan.
         - **What runs today:** COLOR_8_8_8_8 render targets in slots 0-7 (UNORM or sRGB, either
           component order; COLOR_10_11_11 and COLOR_16_16_16_16 FLOAT too, written back to their
           memory as the hardware lays them out, though only 8_8_8_8 ones are read as BGRA), viewport
@@ -540,8 +547,9 @@ Instead:
         in place of the black frame. The executor opens at the first buffer that has recorded calls:
         giving the GPU the 5 GiB pool takes about 2.4 s (measured on an RTX 3070), long enough to
         change which thread reaches its first unimplemented call first if it happened at every
-        boot. Until the library's replacements record calls, boots are unchanged in every display
-        mode.
+        boot. Recorded draws execute only the supported state; missing targets, unsupported
+        shaders and unimplemented modes stop with a reason. This does not establish a working
+        game frame.
      5. **The observer calls** in the library's replacements (begun). Replacements call
         `runtime/render_observer.h`, which finds the record in the boot harness (`pbboot` exports it)
         and does nothing under a host without it, so the replacements' verification is unchanged.

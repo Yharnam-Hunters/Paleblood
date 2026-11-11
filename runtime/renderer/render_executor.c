@@ -283,6 +283,7 @@ struct rt_executor {
     pass_entry passes[MAX_PASSES];
     size_t pass_count;
     int geometry_shaders;            /* the device draws geometry stages (rect lists need one) */
+    float max_anisotropy;            /* the device's anisotropic filtering limit, or 0 without it */
     rect_stage rect_stages[MAX_RECT_STAGES];
     size_t rect_stage_count;
     compute_entry computes[MAX_COMPUTE_PIPELINES];
@@ -648,9 +649,13 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
                                                  .bufferDeviceAddress = VK_TRUE};
     x->geometry_shaders = features.features.geometryShader == VK_TRUE;
     x->storage_images = features.features.shaderStorageImageReadWithoutFormat && features.features.shaderStorageImageWriteWithoutFormat;
+    VkPhysicalDeviceProperties properties;
+    vkGetPhysicalDeviceProperties(x->physical, &properties);
+    x->max_anisotropy = features.features.samplerAnisotropy ? properties.limits.maxSamplerAnisotropy : 0.0f;
     const VkPhysicalDeviceFeatures2 enable = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &enable12,
                                               .features = {.shaderInt64 = VK_TRUE, .shaderClipDistance = VK_TRUE,
                                                            .geometryShader = features.features.geometryShader,
+                                                           .samplerAnisotropy = features.features.samplerAnisotropy,
                                                            .shaderStorageImageReadWithoutFormat = (VkBool32)x->storage_images,
                                                            .shaderStorageImageWriteWithoutFormat = (VkBool32)x->storage_images}};
     const char *extensions[] = {VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME};
@@ -2395,16 +2400,19 @@ static int stage_images(rt_executor *x, uint64_t code, const uint32_t *user, uin
    FILTER_MODE 29-30; word 1 MIN_LOD and MAX_LOD; word 2 LOD_BIAS, XY_MAG_FILTER bits 20-21,
    XY_MIN_FILTER 22-23, Z_FILTER, MIP_FILTER 26-27; word 3 the border colour. Clamp modes: 0 wrap,
    1 mirror, 2 clamp to the last texel, 3-7 mirror-once and border modes. Filters: 0 point, 1 bilinear,
-   2-3 anisotropic.
+   2 anisotropic point, 3 anisotropic bilinear; MAX_ANISO_RATIO 0-4 allows 1, 2, 4, 8 or 16 samples (shadPS4's
+   resource.h names them so).
 
    Made: wrap, mirror and clamp to the last texel (Vulkan's repeat, mirrored repeat and clamp to
    edge), point or bilinear minifying and magnifying filters (the translator samples at the level the
    derivatives pick, so Vulkan chooses between them as GCN does), the mip filter (none, point,
    linear), LOD_BIAS, MIN_LOD and MAX_LOD (shadPS4's resource.h scales them: 8 fraction bits, the bias
-   signed). The anisotropy
-   fields (MAX_ANISO_RATIO, ANISO_THRESHOLD, ANISO_BIAS) shape only the anisotropic filters (XY filters
-   2 and 3; Mesa's radeonsi switches XY_MAG_FILTER and XY_MIN_FILTER to them exactly when it asks for
-   anisotropy), so with point or bilinear filters they change nothing and are accepted. Anything else
+   signed). The anisotropic filters (XY filters 2 and 3; Mesa's radeonsi switches XY_MAG_FILTER and
+   XY_MIN_FILTER to them exactly when it asks for anisotropy) are their point or bilinear filter with
+   Vulkan's anisotropy up to MAX_ANISO_RATIO's samples (within the device's limit; without the
+   device's anisotropic filtering, the plain filter). ANISO_THRESHOLD and ANISO_BIAS, which tune when
+   the hardware takes fewer samples, are not used; with point or bilinear filters the anisotropy
+   fields change nothing. Anything else
    in word 0 (depth compares, unnormalized coordinates, the truncation and degamma options, a filter
    mode other than blending) stops by name, as do the secondary LOD bias and the LOD rounding options
    in word 2. Z_FILTER (3D images, which are not done), word 1's PERF_MIP and PERF_Z (sampling
@@ -2413,7 +2421,8 @@ static VkSampler sampler_for(rt_executor *x, const uint32_t words[4], char *erro
 {
     for (size_t i = 0; i < x->sampler_count; i++)
         if (!memcmp(x->samplers[i].words, words, sizeof x->samplers[i].words)) return x->samplers[i].sampler;
-    enum { CLAMP_FIELDS = 0x1ff, WRAP = 0, MIRROR = 1, CLAMP_LAST_TEXEL = 2, POINT = 0, BILINEAR = 1 };
+    enum { CLAMP_FIELDS = 0x1ff, WRAP = 0, MIRROR = 1, CLAMP_LAST_TEXEL = 2, POINT = 0, BILINEAR = 1, ANISOTROPIC_POINT = 2,
+           ANISOTROPIC_BILINEAR = 3, MAX_ANISO_RATIO_SHIFT = 9, HIGHEST_RATIO = 4 };
     enum { MAX_ANISO_RATIO = 0x7u << 9, ANISO_THRESHOLD = 0x7u << 16, ANISO_BIAS = 0x3fu << 21 };
     const uint32_t anisotropy_fields = MAX_ANISO_RATIO | ANISO_THRESHOLD | ANISO_BIAS;
     if (words[0] & ~(CLAMP_FIELDS | anisotropy_fields)) {
@@ -2432,11 +2441,16 @@ static VkSampler sampler_for(rt_executor *x, const uint32_t words[4], char *erro
                                                                      : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     }
     const uint32_t magnify = words[2] >> 20 & 3, minify = words[2] >> 22 & 3, mip = words[2] >> 26 & 3;
-    if (magnify > BILINEAR || minify > BILINEAR) {
-        failed(error, error_size, "a sampler with filters %u (magnifying) and %u (minifying): only point and bilinear filters are "
-               "done yet", magnify, minify);
+    const int anisotropic = magnify >= ANISOTROPIC_POINT || minify >= ANISOTROPIC_POINT;
+    const uint32_t ratio = words[0] >> MAX_ANISO_RATIO_SHIFT & 7;
+    if (anisotropic && ratio > HIGHEST_RATIO) {
+        failed(error, error_size, "a sampler with MAX_ANISO_RATIO %u: not done yet", ratio);
         return VK_NULL_HANDLE;
     }
+    const float samples = anisotropic ? (float)(1u << ratio) : 1.0f;
+    const float anisotropy = samples < x->max_anisotropy ? samples : x->max_anisotropy;
+    /* the anisotropic filters filter as their point or bilinear one between samples */
+    const int magnify_linear = magnify == BILINEAR || magnify == ANISOTROPIC_BILINEAR, minify_linear = minify == BILINEAR || minify == ANISOTROPIC_BILINEAR;
     enum { MIP_NONE = 0, MIP_POINT = 1, MIP_LINEAR = 2, LOD_BIAS_SECONDARY = 0x3fu << 14, MIP_POINT_PRECLAMP = 1u << 28,
            DISABLE_LSB_CEIL = 1u << 29, LOD_UNITS = 256 };
     if (mip > MIP_LINEAR || (words[2] & (LOD_BIAS_SECONDARY | MIP_POINT_PRECLAMP | DISABLE_LSB_CEIL))) {
@@ -2454,8 +2468,9 @@ static VkSampler sampler_for(rt_executor *x, const uint32_t words[4], char *erro
     const int32_t bias_field = (int32_t)(words[2] & 0x3fff);
     const float bias = (float)(bias_field >= 0x2000 ? bias_field - 0x4000 : bias_field) / LOD_UNITS;
     const float min_lod = (float)(words[1] & 0xfff) / LOD_UNITS, max_lod = (float)(words[1] >> 12 & 0xfff) / LOD_UNITS;
-    const VkSamplerCreateInfo info = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = magnify == POINT ? VK_FILTER_NEAREST : VK_FILTER_LINEAR,
-                                      .minFilter = minify == POINT ? VK_FILTER_NEAREST : VK_FILTER_LINEAR,
+    const VkSamplerCreateInfo info = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = magnify_linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST,
+                                      .minFilter = minify_linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST,
+                                      .anisotropyEnable = anisotropy > 1.0f, .maxAnisotropy = anisotropy > 1.0f ? anisotropy : 1.0f,
                                       .mipmapMode = mip == MIP_LINEAR ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST,
                                       .addressModeU = modes[0], .addressModeV = modes[1], .addressModeW = modes[2], .mipLodBias = bias,
                                       .minLod = mip == MIP_NONE ? 0.0f : min_lod, .maxLod = mip == MIP_NONE ? 0.25f : max_lod};
@@ -2483,7 +2498,7 @@ static int stage_samplers(rt_executor *x, uint64_t code, const uint32_t *user, u
         uint32_t words[4];
         if (descriptor_words(x, &origins[i], user, user_sgprs, user_set, words, 4, error, error_size)) return -1;
         if (!(samplers[i] = sampler_for(x, words, error, error_size))) return -1;
-        *linear |= (words[2] >> 20 & 3) != 0;
+        *linear |= (words[2] >> 20 & 3) != 0 || (words[2] >> 22 & 3) != 0; /* any filter but point needs linear filtering */
     }
     return 0;
 }
