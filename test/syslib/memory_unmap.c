@@ -30,8 +30,12 @@ static void *mapped;
 /* Whether nothing is mapped at address any more: the host maps there again. */
 static int is_unmapped(void *address)
 {
-    void *again = mmap(address, PAGE, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
-    if (again != address) return 0;
+    int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+#ifdef MAP_FIXED_NOREPLACE
+    flags |= MAP_FIXED_NOREPLACE;
+#endif
+    void *again = mmap(address, PAGE, PROT_READ, flags, -1, 0);
+    if (again != address) { if (again != MAP_FAILED) munmap(again, PAGE); return 0; }
     munmap(again, PAGE);
     return 1;
 }
@@ -45,7 +49,12 @@ static int write_faults(void *address)
         _exit(0);
     }
     int status = 0;
-    return waitpid(child, &status, 0) == child && WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV;
+    if (waitpid(child, &status, 0) != child || !WIFSIGNALED(status)) return 0;
+#if defined(__APPLE__) && defined(__MACH__)
+    return WTERMSIG(status) == SIGSEGV || WTERMSIG(status) == SIGBUS;
+#else
+    return WTERMSIG(status) == SIGSEGV;
+#endif
 }
 
 static void unmap_part(void) { unmap(mapped, PAGE); }
