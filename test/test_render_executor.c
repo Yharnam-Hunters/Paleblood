@@ -863,6 +863,63 @@ static void metadata_store_waits(rt_executor *x)
     CHECK(ran == -1 && strstr(error, "partly fast-cleared"));
 }
 
+/* Records a draw into a fast-clear target (CMASK at `cmask`, CLEAR_WORD0 0xff336699) that keeps what is
+   there (blend ZERO + ONE), after, when `dispatch_store` is set, a dispatch storing scale_add's floats
+   through a descriptor based at the CMASK; returns the buffer's size. */
+static uint32_t record_kept_fast_clear(uint64_t buffer, uint64_t target, uint64_t cmask, uint64_t zeros, int dispatch_store)
+{
+    enum { COMPUTE_CODE = 0x3000, LANES = 64, CLEAR_WORD0 = 0xa323 };
+    char error[200] = "";
+    uint32_t offset = record_setup(buffer, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    if (dispatch_store) {
+        const uint64_t code = at(COMPUTE_CODE);
+        const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0, 8 << 1, LANES, 1, 1};
+        CHECK(rt_render_record_compute_shader_at(buffer + offset, shader) == 0);
+        uint32_t user[8];
+        descriptor(user, zeros, 4);
+        descriptor(user + 4, cmask, 4);
+        CHECK(rt_render_record_user_data(buffer, offset + 0x10, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+        const uint32_t one[3] = {1, 1, 1};
+        CHECK(rt_render_record_dispatch(buffer, offset + 0x20, one, error, sizeof error) == 0);
+        offset += 0x30;
+    }
+    uint32_t words[RT_COLOR_TARGET_WORDS];
+    color_target(words, target, COLOR_8_8_8_8, SWAP_STD);
+    words[4] |= 1u << 13, words[7] = (uint32_t)(cmask >> 8); /* FAST_CLEAR, CMASK */
+    CHECK(rt_render_record_color_target(buffer, offset, 0, words, error, sizeof error) == 0);
+    CHECK(rt_render_record_register(buffer, offset + 0x10, CLEAR_WORD0, 0xff336699u, error, sizeof error) == 0);
+    CHECK(rt_render_record_register(buffer, offset + 0x20, 0xa1e0, 1u << 30 | 0u | 1u << 8, error, sizeof error) == 0);
+    return record_triangle_draw(buffer, offset + 0x30);
+}
+
+/* A dispatch storing to the CMASK of a target the executor knows clears it (shadPS4's rule): the next
+   fast-clear draw fills the target with its clear colour without reading the CMASK (scale_add's floats
+   would read as a partly cleared CMASK and stop the draw), and the CMASK is all ones once the batch has
+   run. A draw after that, with no store in between, leaves the target as it is. */
+static void metadata_store_clears(rt_executor *x)
+{
+    enum { BUFFER = 0xc0fed000, COMPUTE_CODE = 0x3000, TARGET_AT = 0x1e40000, CMASK = 0x1e80000, ZEROS = 0x1e81000, LANES = 64 };
+    char error[200] = "";
+    memcpy((void *)(uintptr_t)at(COMPUTE_CODE), scale_add, sizeof scale_add);
+    uint8_t *cmask = (uint8_t *)(uintptr_t)at(CMASK);
+    memset(cmask, 0xff, LANES * 4);
+    memset((void *)(uintptr_t)at(ZEROS), 0, LANES * 4);
+    memset((void *)(uintptr_t)at(TARGET_AT), 0, SIZE * SIZE * 4);
+    uint32_t bgra[SIZE * SIZE];
+    for (int pass = 0; pass < 3; pass++) {
+        rt_render_forget(), rt_executor_reset(x);
+        const int ran = rt_executor_run(x, BUFFER, record_kept_fast_clear(BUFFER, at(TARGET_AT), at(CMASK), at(ZEROS), pass == 1), error, sizeof error);
+        if (ran) fprintf(stderr, "metadata clear pass %d: %s\n", pass, error);
+        CHECK(ran == 0);
+        CHECK(rt_executor_read_target(x, at(TARGET_AT), bgra, SIZE, SIZE, error, sizeof error) == 0);
+        int cleared = 1, untouched = 1, expanded = 1;
+        for (int i = 0; i < SIZE * SIZE; i++) cleared &= bgra[i] == 0xff996633u, untouched &= bgra[i] == 0;
+        for (int i = 0; i < 128; i++) expanded &= cmask[i] == 0xff;
+        CHECK(pass == 0 ? untouched : cleared);
+        CHECK(expanded);
+    }
+}
+
 /* Depth and stencil without a depth buffer, and triangle strips:
    - with the depth target switched off (DB_Z_INFO and DB_STENCIL_INFO 0, as the library's setter
      writes for no target), depth and stencil tests draw as if off; Z_WRITE_ENABLE alone writes nothing
@@ -1768,6 +1825,7 @@ int main(void)
     CHECK(rt_executor_read_target(x, at(TARGET) + 0x480000, bgra, 2, 2, error, sizeof error) == -1 && strstr(error, "no draw"));
     fast_clears(x);
     metadata_store_waits(x);
+    metadata_store_clears(x);
     watched_memory(fd);
     const uint32_t resolve[][2] = {{0xa202, 0x3u << 4 | 0xccu << 16}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), resolve, 1, 0, error, sizeof error) == -1 && strstr(error, "colour mode 3"));
