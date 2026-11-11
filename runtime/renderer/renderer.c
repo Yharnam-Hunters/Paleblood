@@ -244,13 +244,6 @@ void rt_renderer_submit(const char *function, const void *buffer, uint32_t bytes
     pthread_mutex_unlock(&queue_lock);
 }
 
-void rt_renderer_skip(const char *function, const void *buffer, uint32_t bytes)
-{
-    (void)function;
-    size_t calls = 0;
-    rt_render_submitted((uint64_t)(uintptr_t)buffer, bytes, &calls); /* taken, and not run */
-}
-
 void rt_renderer_bind_shader(const char *function, rt_renderer_shader kind, const void *at, const uint32_t *words)
 {
     if (!enabled) return; /* nothing would take the call: boots without graphics record nothing */

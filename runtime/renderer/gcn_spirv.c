@@ -63,6 +63,7 @@ typedef struct {
     unsigned image_count;
     const gcn_resource_origin *samplers;
     unsigned sampler_count;
+    const uint32_t *input_controls;  /* a pixel shader's SPI_PS_INPUT_CNTL words, or NULL (runtime/gcn_spirv.h) */
     unsigned first_binding;          /* the images' and samplers' bindings start here (runtime/gcn_spirv.h) */
     const uint32_t *callee;          /* a vertex shader's fetch shader, inlined at its call */
     size_t callee_dwords;
@@ -80,6 +81,7 @@ typedef struct {
     uint32_t stop_block;                           /* explicitly laid-out physical stop-word block for atomic access */
     uint32_t wave_scratch;                         /* shared slots for cooperative compute votes and PC snapshots */
     uint32_t exec, scc, pc;                         /* EXEC's lane bit, SCC, the next block's index */
+    uint32_t pixel_valid;                          /* the last executed pixel VM export's validity */
     uint32_t glsl;                      /* the GLSL.std.450 import */
     uint32_t vgpr[VGPR_COUNT], sgpr[SGPR_COUNT], lane_bit[SGPR_COUNT]; /* variables, made on first use */
     /* the user SGPRs read before the program writes them, in program order (a bit each); writing is set
@@ -1838,8 +1840,8 @@ static uint32_t export_variable(translator *t, unsigned target)
 
 /* exp: writes the enabled components of a position, parameter or colour. Compressed (compr)
    exports carry two halves per VGPR: vsrc0 holds x (low 16 bits) and y, vsrc1 z and w. With vm
-   (valid mask) in a pixel shader, lanes not in EXEC are pixels the shader discards. Only active
-   lanes export. */
+   (valid mask) in a pixel shader, EXEC snapshots pixel validity; the final executed VM
+   determines discard at shader exit. Only active lanes export components. */
 static void export_instruction(translator *t, const uint32_t *w)
 {
     const unsigned enabled = w[0] & 0xf, target = (w[0] >> 4) & 0x3f, compressed = (w[0] >> 10) & 1, valid_mask = (w[0] >> 12) & 1;
@@ -1848,15 +1850,10 @@ static void export_instruction(translator *t, const uint32_t *w)
     if (extra_position && vector < 0) return;
     const uint32_t variable = extra_position ? 0 : export_variable(t, target);
     if (!extra_position && !variable) return;
-    if (valid_mask && t->layout->stage == STAGE_PIXEL) {
-        const uint32_t inactive = value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, exec_bit(t));
-        const uint32_t discard = spirv_new_id(&t->m), merge = spirv_new_id(&t->m);
-        spirv_emit(&t->m, t->out, SPV_OP_SELECTION_MERGE, (const uint32_t[]){merge, SPV_SELECTION_CONTROL_NONE}, 2);
-        spirv_emit(&t->m, t->out, SPV_OP_BRANCH_CONDITIONAL, (const uint32_t[]){inactive, discard, merge}, 3);
-        spirv_emit(&t->m, t->out, SPV_OP_LABEL, &discard, 1);
-        spirv_emit(&t->m, t->out, SPV_OP_KILL, NULL, 0);
-        spirv_emit(&t->m, t->out, SPV_OP_LABEL, &merge, 1);
-    }
+    /* VM is an exported validity snapshot, not a change to EXEC or shader control
+       flow. Later exports replace it; later instructions still execute under EXEC. */
+    if (valid_mask && t->layout->stage == STAGE_PIXEL)
+        store(t, t->out, t->pixel_valid, exec_bit(t));
     uint32_t components[4];
     for (unsigned c = 0; c < 4; c++) {
         if (compressed) {
@@ -1904,9 +1901,21 @@ static void interpolation_instruction(translator *t, const uint32_t *w, const gc
         return;
     }
     t->interpolation_pending[vdst] = first ? key : 0;
-    if (!t->attribute[attribute])
-        t->attribute[attribute] = interface_variable(t, SPV_STORAGE_INPUT, t_vec4(t), SPV_DECORATION_LOCATION, attribute);
-    const uint32_t interpolated = load(t, t_float(t), vec4_component(t, SPV_STORAGE_INPUT, t->attribute[attribute], channel));
+    const uint32_t control = t->layout->input_controls ? t->layout->input_controls[attribute] : attribute;
+    if (control & GCN_PS_INPUT_USE_DEFAULT) {
+        static const float defaults[4][4] = {{0, 0, 0, 0}, {0, 0, 0, 1}, {1, 1, 1, 0}, {1, 1, 1, 1}};
+        const unsigned which = control >> GCN_PS_INPUT_DEFAULT_SHIFT & GCN_PS_INPUT_DEFAULT_MASK;
+        write_vgpr(t, vdst, as_bits(t, konst_float(t, defaults[which][channel])));
+        return;
+    }
+    /* one input per vertex shader parameter read, flat when any attribute reading it says so */
+    const unsigned location = control & GCN_PS_INPUT_OFFSET_MASK;
+    if (!t->attribute[location]) {
+        t->attribute[location] = interface_variable(t, SPV_STORAGE_INPUT, t_vec4(t), SPV_DECORATION_LOCATION, location);
+        if (control & GCN_PS_INPUT_FLAT_SHADE)
+            spirv_emit(&t->m, &t->m.sections[SPIRV_DECORATIONS], SPV_OP_DECORATE, (const uint32_t[]){t->attribute[location], SPV_DECORATION_FLAT}, 2);
+    }
+    const uint32_t interpolated = load(t, t_float(t), vec4_component(t, SPV_STORAGE_INPUT, t->attribute[location], channel));
     write_vgpr(t, vdst, as_bits(t, interpolated));
 }
 
@@ -1936,6 +1945,23 @@ static uint32_t user_data_block(translator *t)
     spirv_emit(m, &m->sections[SPIRV_GLOBALS], SPV_OP_VARIABLE,
                (const uint32_t[]){spirv_type_pointer(m, SPV_STORAGE_PUSH_CONSTANT, block), id, SPV_STORAGE_PUSH_CONSTANT}, 3);
     return id;
+}
+
+/* A pixel shader's final executed VM controls its raster result. Discard only
+   after all source instructions, preserving storage effects and later EXEC revival.
+   Every normal exit uses the snapshot rather than EXEC's possibly changed value. */
+static void program_return(translator *t)
+{
+    if (t->layout->stage == STAGE_PIXEL) {
+        const uint32_t inactive = value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, load(t, t_bool(t), t->pixel_valid));
+        const uint32_t discard = spirv_new_id(&t->m), merge = spirv_new_id(&t->m);
+        spirv_emit(&t->m, t->out, SPV_OP_SELECTION_MERGE, (const uint32_t[]){merge, SPV_SELECTION_CONTROL_NONE}, 2);
+        spirv_emit(&t->m, t->out, SPV_OP_BRANCH_CONDITIONAL, (const uint32_t[]){inactive, discard, merge}, 3);
+        spirv_emit(&t->m, t->out, SPV_OP_LABEL, &discard, 1);
+        spirv_emit(&t->m, t->out, SPV_OP_KILL, NULL, 0);
+        spirv_emit(&t->m, t->out, SPV_OP_LABEL, &merge, 1);
+    }
+    spirv_emit(&t->m, t->out, SPV_OP_RETURN, NULL, 0);
 }
 
 /* The starting registers: user data in the first SGPRs, the workgroup index, and the enabled
@@ -2885,6 +2911,8 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
     t->exec = function_variable(t, t_bool(t), spirv_constant_bool(m, 1));
     t->scc = function_variable(t, t_bool(t), spirv_constant_bool(m, 0));
     t->pc = function_variable(t, t_uint(t), konst(t, 0));
+    if (layout->stage == STAGE_PIXEL)
+        t->pixel_valid = function_variable(t, t_bool(t), spirv_constant_bool(m, 1));
     t->out = &t->prologue;
     starting_registers(t, layout);
 
@@ -2942,7 +2970,7 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
             const size_t next = d->at + d->ins.dwords;
             i++;
             if (d->ins.encoding == GCN_SOPP && !strcmp(name, "s_endpgm")) {
-                spirv_emit(m, t->out, SPV_OP_RETURN, NULL, 0);
+                program_return(t);
                 ended = 1;
                 break;
             }
@@ -2980,7 +3008,7 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
     spirv_emit(m, t->out, SPV_OP_LABEL, &continue_block, 1);
     spirv_emit(m, t->out, SPV_OP_BRANCH, &header, 1);
     spirv_emit(m, t->out, SPV_OP_LABEL, &loop_merge, 1);
-    spirv_emit(m, t->out, SPV_OP_RETURN, NULL, 0);
+    program_return(t);
 
     /* The entry function: variables, their zeroing, the starting registers, then the loop. */
     const uint32_t void_type = spirv_type_void(m);
@@ -3084,7 +3112,7 @@ int gcn_translate_pixel(const uint32_t *code, size_t dwords, const gcn_pixel_lay
                             .position_vgpr = layout->position_vgpr,
                             .front_face = layout->front_face, .front_face_all_bits = layout->front_face_all_bits,
                             .front_face_vgpr = layout->front_face_vgpr, .images = layout->images, .image_count = layout->image_count,
-                            .samplers = layout->samplers, .sampler_count = layout->sampler_count,
+                            .samplers = layout->samplers, .sampler_count = layout->sampler_count, .input_controls = layout->input_controls,
                             .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address,
                             .user_data_read = layout->user_data_read};
     return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);

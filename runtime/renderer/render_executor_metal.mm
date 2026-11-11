@@ -37,6 +37,7 @@ enum { COLOR_8_8_8_8 = 0xa, NUMBER_UNORM = 0, NUMBER_SRGB = 6, SWAP_STD = 0, SWA
        VGT_INDEX_16 = 0, VGT_INDEX_32 = 1, DRAW_INITIATOR_DMA = 0, PM4_PREDICATE = 1 };
 enum { SPI_SHADER_FP16_ABGR = 4, SPI_SHADER_32_ABGR = 9, SPI_SHADER_4COMP = 4,
        CLIP_ENABLES = 0xff, CLIP_VECTOR_0 = 1 << 22, CLIP_VECTOR_1 = 1 << 23, PARAMETER_LIMIT = 32 };
+enum { SHADER_EARLY_Z_THEN_LATE_Z = 1u << 4, SHADER_KILL_ENABLE = 1u << 6 };
 struct MetalResourceBindings {
     unsigned image_count = 0, sampler_count = 0;
     gcn_image_binding images[GCN_MAX_IMAGES]{};
@@ -159,7 +160,7 @@ enum { DB_RENDER_CONTROL = 0xa000, DB_DEPTH_VIEW = 0xa002, DB_HTILE_DATA_BASE = 
        CB_TARGET_MASK = 0xa08e, DB_STENCIL_CONTROL = 0xa10b, DB_STENCILREFMASK = 0xa10c,
        DB_STENCILREFMASK_BF = 0xa10d, CB_BLEND0_CONTROL = 0xa1e0,
        DB_DEPTH_CONTROL = 0xa200, CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242,
-       PA_SC_SCREEN_SCISSOR_TL = 0xa00c, PA_SC_SCREEN_SCISSOR_BR = 0xa00d };
+       PA_SC_SCREEN_SCISSOR_TL = 0xa00c, PA_SC_SCREEN_SCISSOR_BR = 0xa00d, SPI_PS_INPUT_CNTL_0 = 0xa191, PS_INPUTS = 32 };
 enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 1, Z_ENABLE = 2, Z_WRITE_ENABLE = 4,
        COLOR_MODE_MASK = 0x70, COLOR_MODE_SHIFT = 4, CB_NORMAL = 1, ROP3_MASK = 0xff0000,
        ROP3_SHIFT = 16, ROP3_COPY = 0xcc, TARGET0_MASK = 15, DI_PT_TRILIST = 4, DI_PT_RECTLIST = 17 };
@@ -188,6 +189,8 @@ static int set_register(MetalState &state, uint32_t address, uint32_t value)
             const unsigned index = address - DB_DEPTH_INFO;
             state.depth_words[index] = value; state.depth_written |= 1u << index; return 0;
         }
+        /* SPI_PS_INPUT_CNTL_n: only attribute n reading vertex output n, interpolated, is in the profile */
+        if (address >= SPI_PS_INPUT_CNTL_0 && address < SPI_PS_INPUT_CNTL_0 + PS_INPUTS) return value == address - SPI_PS_INPUT_CNTL_0 ? 0 : -1;
         return -1;
     }
 }
@@ -246,7 +249,15 @@ static int shader_profile(const MetalState &state, char *error, size_t size)
     if (state.pixel.interpolated > PARAMETER_LIMIT)
         return failed(error, size, "SPI_PS_IN_CONTROL exceeds the modeled parameter range");
     if (state.pixel.barycentric_control) return failed(error, size, "nonzero SPI_BARYC_CNTL is not modeled");
-    if (state.pixel.depth_control) return failed(error, size, "nonzero DB_SHADER_CONTROL is not modeled");
+    /* Z_ORDER=0/1 are unforced preferences with late fallback; KILL_ENABLE
+       declares possible killing, while the program's EXEC/VM exports implement it.
+       Ordinary fragment execution preserves storage effects and discard semantics.
+       No EarlyFragmentTests mode is inferred. DB_RENDER_OVERRIDE remains rejected
+       by register admission, so it cannot force this preference. */
+    const uint32_t supported_shader_control = SHADER_EARLY_Z_THEN_LATE_Z | SHADER_KILL_ENABLE;
+    if (state.pixel.depth_control & ~supported_shader_control)
+        return failed(error, size, "DB_SHADER_CONTROL %#x: only unforced late/early-then-late preferences and the kill declaration are modeled",
+            state.pixel.depth_control);
     return 0;
 }
 

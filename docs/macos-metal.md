@@ -115,6 +115,22 @@ forgets written slots while keeping the shader cache. This follows the public tr
 program-order report: a write encountered in one branch can suppress a later read in another;
 it does not provide path-sensitive initialization analysis.
 
+A pixel VM export snapshots EXEC as pixel validity. The final dynamically executed VM snapshot
+controls discard at every shader exit; later EXEC changes do not replace it. Instructions
+after an invalid snapshot still execute under EXEC, including stores after EXEC revival.
+Programs without a VM export retain the translator's existing visible-pixel default; that
+compatibility behavior does not establish validity of such a program on GFX7 hardware. See
+[AMD Sea Islands ISA, sections 11.2.1 and 11.3](https://docs.amd.com/api/khub/documents/YO8RUh~LIQ5Cx3M_Kq9qkg/content).
+The shared `test_pixel_vm.c` runs as `pixel_vm_metal` on Metal and `pixel_vm` on Vulkan. Its
+owned programs drain each export before changing EXEC, exercise distinct branch exits and
+check literal framebuffer values plus physical stores and buffer guards. Of 44 scenarios,
+32 exercise the documented GFX7 validity rules and 12 cover the accepted translator's no-VM
+default or opposing non-VM export compatibility. Those compatibility programs do not satisfy
+the hardware's final-export/DONE requirements (Sea Islands ISA sections 11.2.1 and 13.8).
+These tests do not measure shader invocation counts. The Linux fixture reserves its owned
+pool at the guest address without replacing existing mappings, matching the current Vulkan
+executor's CPU shader reads; Metal keeps a separate CPU mapping.
+
 The input remains valid GFX7 code with consistent resource metadata: this backend does not
 validate every instruction against its declared SGPR/VGPR allocation.
 
@@ -133,6 +149,21 @@ Replacement with STENCILOPVAL stops if it conflicts with a distinct comparison o
 reference. Explicit zero formats disable their tests; Z_WRITE alone does not enable depth.
 A null pixel shader requires an active depth/stencil attachment and no colour writes. Colour
 mode CB_DISABLE also suppresses colour writes while the draw executes.
+
+Pixel `DB_SHADER_CONTROL` admits unforced `LATE_Z` and `EARLY_Z_THEN_LATE_Z`
+preferences with optional `KILL_ENABLE`. These use ordinary Metal fragment execution;
+the actual program controls discard. The preference does not force tests or depth writes
+before the shader, and it does not change generated code or shader-cache identity.
+Stores executed before discard remain observable; later discarded/helper writes are suppressed.
+Exact CIK hierarchical scheduling and fragment invocation counts are not reproduced.
+Export, coverage, execution-guarantee, forced-order and other control fields stop explicitly;
+`DB_RENDER_OVERRIDE` remains outside register admission.
+See [AMD CIK registers, pages 214/217](https://www.x.org/docs/AMD/old/CIK_3D_registers_v2.pdf)
+and [Apple's fragment execution guidance](https://developer.apple.com/videos/play/wwdc2016/606/).
+
+The common translator saves the final executed VM validity snapshot and discards at shader
+exit. Its shared fixture covers later EXEC changes separately; the ordering cases here use
+one final VM export with no subsequent EXEC change.
 
 The shared GFX7 layout decoder uses direct DB geometry and independent slice strides. Macro
 tile splits above 1024 bytes require an unmodeled guest DRAM-row profile and stop explicitly. Each

@@ -199,13 +199,21 @@ int gcn_translate_vertex(const uint32_t *code, size_t dwords, const gcn_vertex_l
                          uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size);
 
 /* A pixel shader. Its inputs are the perspective-correct barycentrics at the pixel's centre (i, then j
-   in the next VGPR), which v_interp reads (attribute n is the input at location n, interpolated by the
-   GPU), and, when position_enable says so, the pixel's window position: x (bit 0) and y (bit 1) as
+   in the next VGPR), which v_interp reads (attribute n is the vertex output its SPI_PS_INPUT_CNTL
+   names, below, interpolated by the GPU), and, when position_enable says so, the pixel's window position: x (bit 0) and y (bit 1) as
    floats at the pixel's centre, from position_vgpr on (y in the next VGPR when both), and, when
    front_face is set, whether the primitive faces the viewer, in front_face_vgpr: 1 or 0 with
    front_face_all_bits (SPI_BARYC_CNTL's FRONT_FACE_ALL_BITS), otherwise a float whose sign says it
-   (1.0 front, -1.0 back), as shadPS4 fills that VGPR. Exports: mrt n becomes the output at location n. */
-enum { GCN_PIXEL_POSITION_X = 1, GCN_PIXEL_POSITION_Y = 2 };
+   (1.0 front, -1.0 back), as shadPS4 fills that VGPR. Exports: mrt n becomes the output at location n.
+
+   Which vertex shader output attribute n reads is SPI_PS_INPUT_CNTL_n's (input_controls; NULL: the
+   output at location n). Its fields (AMD's gfx_7_2_sh_mask.h; shadPS4's PsInputControl the same):
+   OFFSET bits 0-4, the vertex shader parameter read; DEFAULT_VAL bit 5 set, a constant instead, the
+   one DEFAULT_VAL bits 8-9 pick ((0,0,0,0), (0,0,0,1), (1,1,1,0), (1,1,1,1)); FLAT_SHADE bit 10,
+   the provoking vertex's value, not interpolated. */
+enum { GCN_PIXEL_POSITION_X = 1, GCN_PIXEL_POSITION_Y = 2, GCN_PIXEL_INPUTS = 32 };
+enum { GCN_PS_INPUT_OFFSET_MASK = 0x1f, GCN_PS_INPUT_USE_DEFAULT = 0x20, GCN_PS_INPUT_DEFAULT_SHIFT = 8, GCN_PS_INPUT_DEFAULT_MASK = 3,
+       GCN_PS_INPUT_FLAT_SHADE = 0x400 };
 typedef struct {
     unsigned user_sgprs;
     unsigned barycentric_vgpr;
@@ -219,6 +227,7 @@ typedef struct {
     unsigned image_count;
     const gcn_resource_origin *samplers;
     unsigned sampler_count;
+    const uint32_t *input_controls; /* GCN_PIXEL_INPUTS SPI_PS_INPUT_CNTL words, or NULL (above) */
     uint32_t *user_data_read; /* when not NULL, set on success to the user SGPRs read before written (User data read, below) */
 } gcn_pixel_layout;
 
