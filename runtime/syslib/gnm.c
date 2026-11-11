@@ -794,11 +794,14 @@ static void flip_step(const rt_gpu_step *step)
 
 static void collect_flip(const char *fn, step_list *steps, const flip_request *flip)
 {
-    const uint64_t words[6] = {(uint32_t)flip->handle, (uint32_t)flip->buffer, (uint32_t)flip->mode, (uint64_t)flip->argument, 0, 0};
+    /* words[4]: the buffer's address, the target the renderer copies for the flip (RT_GPU_STEP_SHOWS_TARGET) */
+    const uint64_t words[6] = {(uint32_t)flip->handle, (uint32_t)flip->buffer, (uint32_t)flip->mode, (uint64_t)flip->argument,
+                               rt_video_out_buffer_address(fn, flip->handle, flip->buffer), 0};
     step_list *const saved = collecting;
     collecting = steps;
     packet_offset = RT_GPU_STEP_AFTER_ALL; /* after every call of the last buffer */
     collect(fn, flip_step, words);
+    steps->steps[steps->count - 1].flags = RT_GPU_STEP_SHOWS_TARGET;
     collecting = saved;
 }
 
