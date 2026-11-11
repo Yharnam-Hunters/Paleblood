@@ -12,6 +12,9 @@
 #define _GNU_SOURCE /* pthread_mutex_clocklock, pthread_rwlock_clock*lock: the monotonic clock */
 #include "runtime/process.h"
 #include "runtime/syslib.h"
+#if defined(__APPLE__) && defined(__MACH__)
+#include "runtime/host_lock_wait.h"
+#endif
 
 #include <errno.h>
 #include <pthread.h>
@@ -155,6 +158,10 @@ static struct timespec deadline_after(uint32_t microseconds)
     return t;
 }
 
+#if defined(__APPLE__) && defined(__MACH__)
+static int timed_read_attempt(void *lock) { return pthread_rwlock_tryrdlock(lock); }
+static int timed_write_attempt(void *lock) { return pthread_rwlock_trywrlock(lock); }
+#endif
 static int rwlock_timedlock(guest_rwlock **rwlock, int write, uint32_t microseconds)
 {
     guest_rwlock *l;
@@ -162,11 +169,19 @@ static int rwlock_timedlock(guest_rwlock **rwlock, int write, uint32_t microseco
     if (r) return r;
     const struct timespec deadline = deadline_after(microseconds);
     if (held_by_caller(l)) {
+#if defined(__APPLE__) && defined(__MACH__)
+        (void)rt_host_sleep_until_monotonic(&deadline);
+#else
         while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &deadline, NULL) == EINTR) {}
+#endif
         return BSD_ETIMEDOUT;
     }
+#if defined(__APPLE__) && defined(__MACH__)
+    return granted(l, write, rt_host_lock_wait(write ? timed_write_attempt : timed_read_attempt, &l->host, &deadline));
+#else
     return granted(l, write, write ? pthread_rwlock_clockwrlock(&l->host, CLOCK_MONOTONIC, &deadline)
                                    : pthread_rwlock_clockrdlock(&l->host, CLOCK_MONOTONIC, &deadline));
+#endif
 }
 
 static int rwlock_unlock(guest_rwlock **rwlock)
