@@ -489,6 +489,16 @@ Instead:
           open or submitted batch may store there and no target with unwritten draws lies over it; the
           copy's real sources then bound what is written back, and its real destinations what loads
           again. Otherwise the descriptors' ranges stand.
+        - **Targets stay in their images:** the renderer records buffers without writing their targets
+          back at each buffer's end (`rt_executor_record_calls`). A target's memory receives its draws
+          only when GPU work reads that memory: before a dispatch, and before a draw reads an image over
+          it. `rt_executor_submit_calls` and `rt_executor_run` (tests, tools) still write every drawn
+          target back. So the CPU reading render-target memory after a buffer's ticket does not see
+          its draws. shadPS4 runs the game the same way: its GPU readbacks are off by default
+          (`readbacks_mode` Disabled, `readback_linear_images` false in its `emulator_settings.h`), and
+          it fills buffer memory from an image only for a read-only texel buffer over it. At the
+          Contract screen the end-of-buffer write-backs were about 1,000 of the 1,100 target
+          write-backs every 2 s.
         - **One batch per buffer:** a buffer's draws, dispatches and copies are recorded into one Vulkan
           command buffer and submitted once, with barriers between them, instead of each waiting for the
           GPU. The CPU waits only where it reads what the batch produces: a render target written back

@@ -1651,6 +1651,8 @@ static int same_texel_bytes(VkFormat a, VkFormat b)
    are the target's newest contents. They are copied into the target, which is then drawn into and
    written back like any other; the image loads from the memory again at its next use. 1 when copied,
    0 when no image holds newer texels, -1 with the reason (an image of another texel size, or smaller). */
+static int unwritten_target_over(const rt_executor *x, uint64_t address, uint64_t size);
+
 static int take_written_image(rt_executor *x, target_entry *t, char *error, size_t error_size)
 {
     image_entry *e = NULL;
@@ -2559,7 +2561,10 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
         if (s->colors[slot].fast_clear) metadata_at(&t->cmask, s->colors[slot].cmask_address, s->colors[slot].cmask_bytes); /* stores to it now clear it */
         if (take_written_image(x, t, error, error_size) < 0) return -1;
         if (memory_changed_since(x, t->address, target_span(t), t->loaded_change)) { /* since the image last held it */
-            if (load_target(x, t, error, error_size)) return -1;
+            /* a target drawn into since its last write-back holds draws its memory lacks: its image stays
+               its contents (rt_executor_record_calls); another such target over it is written back first */
+            if (!t->drawn && unwritten_target_over(x, t->address, target_span(t)) && write_back_targets(x, error, error_size)) return -1;
+            if (!t->drawn && load_target(x, t, error, error_size)) return -1;
             t->loaded_change = x->change_count;
         }
         if (s->blend_set >> slot & 1) blend_control[slot] = s->blend_control[slot];
@@ -3758,7 +3763,10 @@ int rt_executor_run_calls(rt_executor *x, const rt_render_call *calls, size_t co
 
 int rt_executor_submit_calls(rt_executor *x, const rt_render_call *calls, size_t count, uint64_t *ticket, char *error, size_t error_size)
 {
-    if (rt_executor_record_calls(x, calls, count, ticket, error, error_size) || batch_submit(x, error, error_size)) return -1;
+    /* the CPU may read what the buffer drew once its ticket is signalled: written back first */
+    if (rt_executor_record_calls(x, calls, count, ticket, error, error_size) || write_back_targets(x, error, error_size) ||
+        batch_submit(x, error, error_size))
+        return -1;
     *ticket = x->submitted;
     return 0;
 }
@@ -3770,8 +3778,7 @@ int rt_executor_record_calls(rt_executor *x, const rt_render_call *calls, size_t
         batch_finish(x, later, sizeof later); /* the calls before the failing one still run, as they did one by one */
         return -1;
     }
-    /* the CPU may read what the buffer drew once its ticket is signalled: written back first */
-    if (write_back_targets(x, error, error_size)) return -1;
+    /* the targets it drew stay in their images until GPU work reads their memory (render_executor.h) */
     *ticket = x->batch_open ? x->submitted + 1 : x->submitted; /* the open batch gets the next ticket */
     return 0;
 }

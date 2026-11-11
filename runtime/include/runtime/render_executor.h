@@ -59,11 +59,14 @@ int rt_executor_run_calls(rt_executor *executor, const rt_render_call *calls, si
    rt_executor_wait_ticket has returned for that ticket or a later one. Returns 0, or -1 with the reason. */
 int rt_executor_submit_calls(rt_executor *executor, const rt_render_call *calls, size_t count, uint64_t *ticket, char *error,
                              size_t error_size);
-/* The same without handing the work to the GPU yet: the calls are recorded into the open batch, with
-   their targets written back after them, and *ticket names the submission that will hold them. Later
-   calls join the same batch, until rt_executor_submit (or a wait inside the executor) hands it over.
-   Waiting for *ticket before then blocks until it has been submitted and has run. Returns 0, or -1
-   with the reason. */
+/* The same without handing the work to the GPU yet: the calls are recorded into the open batch, and
+   *ticket names the submission that will hold them. Later calls join the same batch, until
+   rt_executor_submit (or a wait inside the executor) hands it over. Waiting for *ticket before then
+   blocks until it has been submitted and has run. The render targets they draw stay in their images:
+   their guest memory receives the draws only when later GPU work reads that memory (a dispatch, an
+   image over it) or rt_executor_submit_calls writes every drawn target back. The CPU reading render
+   target memory after the ticket does not see these draws, as with shadPS4's default of no GPU
+   readbacks, which runs the game. Returns 0, or -1 with the reason. */
 int rt_executor_record_calls(rt_executor *executor, const rt_render_call *calls, size_t count, uint64_t *ticket, char *error,
                              size_t error_size);
 /* Hands the open batch, if any, to the GPU without waiting. Returns 0, or -1 with the reason. */

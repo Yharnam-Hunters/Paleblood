@@ -1817,6 +1817,34 @@ static void tiled_target_memory(rt_executor *x)
     CHECK(rt_executor_read_target(x, at(TILED), bgra, SIZE, SIZE, error, sizeof error) == 0);
     CHECK(bgra[3 * SIZE + 5] == 0xff102040u);
     CHECK(differing_pixels(x, at(TILED)) == 1);
+
+    /* Recorded without a submit (rt_executor_record_calls, as the renderer does), the draw stays in the
+       target's image: its memory keeps the zeros after the batch has run. An image over that memory
+       read later gets it written back first, and draws the reference image. */
+    {
+        enum { TEXEL_TARGET = 0xee0000 };
+        memset(memory, 0, rt_tiling_size(&layout, 1));
+        rt_render_forget(), rt_executor_reset(x);
+        uint32_t offset = record_setup(TILED_BUFFER, at(TILED), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        uint32_t words[RT_COLOR_TARGET_WORDS];
+        color_target(words, at(TILED), COLOR_8_8_8_8, SWAP_STD);
+        words[5] = THIN_1D;
+        CHECK(rt_render_record_color_target(TILED_BUFFER, offset, 0, words, error, sizeof error) == 0);
+        CHECK(rt_render_record_register(TILED_BUFFER, offset + 0x10, 0xa1e0, 0, error, sizeof error) == 0);
+        size_t count = 0;
+        const rt_render_call *calls = rt_render_submitted(TILED_BUFFER, record_triangle_draw(TILED_BUFFER, offset + 0x20), &count);
+        uint64_t ticket = 0;
+        CHECK(rt_executor_record_calls(x, calls, count, &ticket, error, sizeof error) == 0);
+        CHECK(rt_executor_finish(x, error, sizeof error) == 0);
+        int untouched = 1;
+        for (uint64_t i = 0; i < rt_tiling_size(&layout, 1); i++) untouched &= memory[i] == 0;
+        CHECK(untouched);
+        uint32_t image[8];
+        image_descriptor(image, at(TILED), 10, 0, SIZE, SIZE);
+        image[3] |= THIN_1D << 20;
+        CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
+        CHECK(differing_pixels(x, at(TEXEL_TARGET)) == 0);
+    }
 }
 
 /* A half (IEEE binary16) as a float. */
