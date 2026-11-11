@@ -107,6 +107,15 @@ cases pass against the original. None was checked on recorded game runs.
 
 </details>
 
+### Vector and rotation math
+
+The wind update of [#568](https://github.com/Yharnam-Hunters/Paleblood/pull/568) (see [Render](render.md#wind-on-models)) inlines the engine's four-lane
+vector math, now in `game/engine/rotation_math.h`: a sine and cosine polynomial evaluated on four
+values at once, a rotation quaternion built from half-angles, the rotation matrix made from it, and
+a vector length refined with a Newton step. `vector_operations.h` gained additions and
+multiplications that keep the original's operand order, so NaN results carry the same payloads.
+They are helpers of that replacement, not separate functions of the executable.
+
 ## Key functions
 
 | Address | Size | Name | Status | Notes |

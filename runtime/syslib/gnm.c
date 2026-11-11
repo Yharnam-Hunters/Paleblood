@@ -745,10 +745,13 @@ typedef struct {
     int64_t argument;
 } flip_request;
 
+/* Performed once the work before it is done (on the renderer's thread when it draws): the flip is
+   queued (rt_video_out_queue_flip) and waits for its vertical blank without holding up the work
+   after it. */
 static void flip_step(const rt_gpu_step *step)
 {
-    rt_video_out_flip(step->function, (int32_t)step->words[0], (int32_t)step->words[1], (int32_t)step->words[2],
-                      (int64_t)step->words[3]);
+    rt_video_out_queue_flip(step->function, (int32_t)step->words[0], (int32_t)step->words[1], (int32_t)step->words[2],
+                            (int64_t)step->words[3]);
 }
 
 static void collect_flip(const char *fn, step_list *steps, const flip_request *flip)
