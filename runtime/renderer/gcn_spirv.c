@@ -1558,7 +1558,7 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
             write_vgpr(t, vdata + c, result);
         }
     } else {
-        uint32_t words[4];
+        uint32_t words[4] = {0};
         for (uint32_t i = 0; i < components; i++) words[i] = load(t, t_uint(t), vgpr(t, vdata + i));
         checked_store_dwords(t, range, base, offset, 0, words, components);
     }
@@ -1661,7 +1661,7 @@ static void buffer_memory(translator *t, const uint32_t *w, const gcn_instructio
     if (load_op) {
         for (uint32_t i = 0; i < dwords; i++) write_vgpr(t, vdata + i, checked_load_dword(t, &range, base, offset, i));
     } else {
-        uint32_t words[4];
+        uint32_t words[4] = {0};
         for (uint32_t i = 0; i < dwords; i++) words[i] = load(t, t_uint(t), vgpr(t, vdata + i));
         checked_store_dwords(t, &range, base, offset, 0, words, dwords);
     }
