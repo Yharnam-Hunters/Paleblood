@@ -62,6 +62,7 @@ typedef struct {
     unsigned image_count;
     const gcn_resource_origin *samplers;
     unsigned sampler_count;
+    unsigned first_binding;          /* the images' and samplers' bindings start here (runtime/gcn_spirv.h) */
     const uint32_t *callee;          /* a vertex shader's fetch shader, inlined at its call */
     size_t callee_dwords;
     uint64_t code_address;
@@ -1974,6 +1975,48 @@ static int branches(const uint32_t *w, const gcn_instruction *ins, size_t at, lo
     return strstr(name, "branch") || strstr(name, "setpc") || strstr(name, "swappc");
 }
 
+/* A call's callee (a vertex shader's fetch shader, which the translator inlines; gcn_call_sgpr): its
+   code, or NULL when the program makes no call or the callee is not known. */
+typedef struct {
+    const uint32_t *code;
+    size_t dwords;
+} callee_code;
+
+/* Whether the instruction at w writes any of s[first : first + width - 1]. A call (s_swappc_b64)
+   writes its return pair and whatever its callee writes up to its closing s_setpc_b64; a callee that
+   is not known, or not straight-line code ending so, counts as writing every SGPR. */
+static int writes_sgprs(const uint32_t *w, const gcn_instruction *ins, const callee_code *callee, unsigned first, unsigned width)
+{
+    if (!strcmp(ins->name, "s_swappc_b64") && callee->code) {
+        const unsigned return_pair = (w[0] >> 16) & 0x7f;
+        if (return_pair < first + width && first < return_pair + 2) return 1;
+        for (size_t p = 0; p < callee->dwords;) {
+            gcn_instruction c;
+            if (gcn_decode(callee->code + p, callee->dwords - p, &c) || !c.name) return 1;
+            if (!strcmp(c.name, "s_setpc_b64")) return 0;
+            long target;
+            if (!strcmp(c.name, "s_swappc_b64") || branches(callee->code + p, &c, p, &target)) return 1;
+            unsigned dst = 0;
+            const unsigned n = sgprs_written(callee->code + p, &c, &dst);
+            if (n && dst < first + width && first < dst + n) return 1;
+            p += c.dwords;
+        }
+        return 1;
+    }
+    unsigned dst = 0;
+    const unsigned n = sgprs_written(w, ins, &dst);
+    return n && dst < first + width && first < dst + n;
+}
+
+/* Whether an instruction may go somewhere other than the next one: a branch, or a call whose callee
+   is not known (a known callee is straight-line code that returns to the instruction after the call,
+   writes_sgprs). */
+static int leaves_straight_line(const uint32_t *w, const gcn_instruction *ins, size_t at, const callee_code *callee, long *target)
+{
+    if (!strcmp(ins->name, "s_swappc_b64") && callee->code) return 0;
+    return branches(w, ins, at, target);
+}
+
 /* Where the descriptor that the instruction at dword `at` reads from s[first : first + width - 1]
    comes from (runtime/gcn_spirv.h): the user data when no instruction writes those SGPRs before it
    runs, or memory when the last write is an s_load covering those SGPRs (exactly, or as part of a wider load), at an immediate or literal offset
@@ -1991,8 +2034,8 @@ static int branches(const uint32_t *w, const gcn_instruction *ins, size_t at, lo
    (the game's shaders keep a compare's mask in those SGPRs before loading the descriptor). A
    branch that skips the load also skips the use, as the game's guarded samples do (an
    s_cbranch_execz around both). 0, or -1 with the reason. */
-static int descriptor_origin(const uint32_t *code, size_t program, size_t at, unsigned first, unsigned width, gcn_resource_origin *origin,
-                             char *error, size_t error_size)
+static int descriptor_origin(const uint32_t *code, size_t program, const callee_code *callee, size_t at, unsigned first, unsigned width,
+                             gcn_resource_origin *origin, char *error, size_t error_size)
 {
     *origin = (gcn_resource_origin){.sgpr = first};
     long writer = -1;
@@ -2000,9 +2043,7 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
     for (size_t p = 0; p < program;) {
         gcn_instruction ins;
         if (gcn_decode(code + p, program - p, &ins) || !ins.name) break;
-        unsigned dst = 0;
-        const unsigned n = sgprs_written(code + p, &ins, &dst);
-        if (n && dst < first + width && first < dst + n) {
+        if (writes_sgprs(code + p, &ins, callee, first, width)) {
             written = 1;
             if (p < at) writer = (long)p;
             else written_after_use = 1;
@@ -2015,7 +2056,7 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
         gcn_instruction ins;
         if (gcn_decode(code + p, program - p, &ins) || !ins.name) break;
         long target;
-        if (branches(code + p, &ins, p, &target) && (p < at || target < 0 || (size_t)target <= at)) {
+        if (leaves_straight_line(code + p, &ins, p, callee, &target) && (p < at || target < 0 || (size_t)target <= at)) {
             const int back_to_use = (size_t)target <= at && (size_t)target <= p && p >= at;
             if (target < 0 || (written_after_use && back_to_use)) {
                 snprintf(error, error_size, "the descriptor in s[%u:%u] is written by the program, and a branch (%s at dword %zu) comes "
@@ -2049,11 +2090,9 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
     for (size_t p = 0; p < (loops_to_load ? program : (size_t)writer);) {
         gcn_instruction before;
         gcn_decode(code + p, program - p, &before);
-        unsigned d = 0;
-        const unsigned m = sgprs_written(code + p, &before, &d);
         /* the load may overwrite its own pointer (s[0:7] from s[0:1]) unless a loop runs it again */
         const int the_load = p == (size_t)writer && !loops_to_load;
-        if (m && d < pointer + 2 && pointer < d + m && !the_load) {
+        if (writes_sgprs(code + p, &before, callee, pointer, 2) && !the_load) {
             snprintf(error, error_size, "the descriptor in s[%u:%u] is loaded through s[%u:%u], which the program writes (%s at dword %zu): "
                      "not done yet", first, first + width - 1, pointer, pointer + 1, before.name, p);
             return -1;
@@ -2110,7 +2149,7 @@ static uint32_t image_variable(translator *t, unsigned binding)
     spirv_emit(m, &m->sections[SPIRV_GLOBALS], SPV_OP_VARIABLE,
                (const uint32_t[]){spirv_type_pointer(m, SPV_STORAGE_UNIFORM_CONSTANT, type), id, SPV_STORAGE_UNIFORM_CONSTANT}, 3);
     spirv_emit(m, &m->sections[SPIRV_DECORATIONS], SPV_OP_DECORATE, (const uint32_t[]){id, SPV_DECORATION_DESCRIPTOR_SET, 0}, 3);
-    spirv_emit(m, &m->sections[SPIRV_DECORATIONS], SPV_OP_DECORATE, (const uint32_t[]){id, SPV_DECORATION_BINDING, binding}, 3);
+    spirv_emit(m, &m->sections[SPIRV_DECORATIONS], SPV_OP_DECORATE, (const uint32_t[]){id, SPV_DECORATION_BINDING, t->layout->first_binding + binding}, 3);
     if (t->interface_count == MAX_INTERFACE) fail(t, "more stage inputs, outputs and images than the translator takes");
     else t->interface[t->interface_count++] = id; /* SPIR-V 1.4 on: every global the entry point uses */
     if (b->dim == GCN_IMAGE_1D) {
@@ -2161,7 +2200,7 @@ static void sampled_load(translator *t, const gcn_image_binding *b, uint32_t var
     end_if(t, merge);
 }
 
-/* The sampler binding's variable (set 0, binding image_count + j), made on first use. */
+/* The sampler binding's variable (set 0, binding first_binding + image_count + j), made on first use. */
 static uint32_t sampler_variable(translator *t, unsigned j)
 {
     if (t->sampler[j]) return t->sampler[j];
@@ -2171,7 +2210,7 @@ static uint32_t sampler_variable(translator *t, unsigned j)
                (const uint32_t[]){spirv_type_pointer(m, SPV_STORAGE_UNIFORM_CONSTANT, type), id, SPV_STORAGE_UNIFORM_CONSTANT}, 3);
     spirv_emit(m, &m->sections[SPIRV_DECORATIONS], SPV_OP_DECORATE, (const uint32_t[]){id, SPV_DECORATION_DESCRIPTOR_SET, 0}, 3);
     spirv_emit(m, &m->sections[SPIRV_DECORATIONS], SPV_OP_DECORATE,
-               (const uint32_t[]){id, SPV_DECORATION_BINDING, t->layout->image_count + j}, 3);
+               (const uint32_t[]){id, SPV_DECORATION_BINDING, t->layout->first_binding + t->layout->image_count + j}, 3);
     if (t->interface_count == MAX_INTERFACE) fail(t, "more stage inputs, outputs and images than the translator takes");
     else t->interface[t->interface_count++] = id;
     t->sampler[j] = id;
@@ -2208,7 +2247,8 @@ static void image_sample(translator *t, const uint32_t *code, size_t at, const g
     }
     gcn_resource_origin origin;
     char reason[256];
-    if (descriptor_origin(code, t->program_dwords, at, mimg_sampler_sgpr(w), SAMPLER_DWORDS, &origin, reason, sizeof reason)) {
+    const callee_code callee = {t->layout->callee, t->layout->callee_dwords};
+    if (descriptor_origin(code, t->program_dwords, &callee, at, mimg_sampler_sgpr(w), SAMPLER_DWORDS, &origin, reason, sizeof reason)) {
         fail(t, "%s: the sampler: %s", ins->name, reason);
         return;
     }
@@ -2299,7 +2339,8 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
     const unsigned sgpr_base = mimg_resource_sgpr(w), vaddr = w[1] & 0xff, vdata = (w[1] >> 8) & 0xff;
     gcn_resource_origin origin;
     char reason[256];
-    if (descriptor_origin(code, t->program_dwords, at, sgpr_base, RESOURCE_DWORDS, &origin, reason, sizeof reason)) {
+    const callee_code callee = {t->layout->callee, t->layout->callee_dwords};
+    if (descriptor_origin(code, t->program_dwords, &callee, at, sgpr_base, RESOURCE_DWORDS, &origin, reason, sizeof reason)) {
         fail(t, "%s: %s", name, reason);
         return;
     }
@@ -2395,6 +2436,13 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
 int gcn_image_resources(const uint32_t *code, size_t dwords, gcn_image_resource *resources, unsigned max, unsigned *count, char *error,
                         size_t error_size)
 {
+    return gcn_called_image_resources(code, dwords, NULL, 0, resources, max, count, error, error_size);
+}
+
+int gcn_called_image_resources(const uint32_t *code, size_t dwords, const uint32_t *callee_words, size_t callee_dwords,
+                               gcn_image_resource *resources, unsigned max, unsigned *count, char *error, size_t error_size)
+{
+    const callee_code callee = {callee_words, callee_dwords};
     *count = 0;
     const long program = gcn_program_dwords(code, dwords);
     if (program < 0) {
@@ -2410,7 +2458,7 @@ int gcn_image_resources(const uint32_t *code, size_t dwords, gcn_image_resource 
         if (ins.encoding == GCN_MIMG) {
             const unsigned op = (code[at] >> 18) & 0x7f;
             gcn_resource_origin origin;
-            if (descriptor_origin(code, (size_t)program, at, mimg_resource_sgpr(code + at), RESOURCE_DWORDS, &origin, error, error_size))
+            if (descriptor_origin(code, (size_t)program, &callee, at, mimg_resource_sgpr(code + at), RESOURCE_DWORDS, &origin, error, error_size))
                 return -1;
             unsigned i = 0;
             while (i < *count && !same_origin(&resources[i].origin, &origin)) i++;
@@ -2448,7 +2496,8 @@ int gcn_sampler_resources(const uint32_t *code, size_t dwords, gcn_resource_orig
         const unsigned mimg_op = (code[at] >> 18) & 0x7f;
         if (ins.encoding == GCN_MIMG && (mimg_op == MIMG_OP_SAMPLE || mimg_op == MIMG_OP_SAMPLE_L)) {
             gcn_resource_origin origin;
-            if (descriptor_origin(code, (size_t)program, at, mimg_sampler_sgpr(code + at), SAMPLER_DWORDS, &origin, error, error_size))
+            const callee_code no_callee = {NULL, 0};
+            if (descriptor_origin(code, (size_t)program, &no_callee, at, mimg_sampler_sgpr(code + at), SAMPLER_DWORDS, &origin, error, error_size))
                 return -1;
             unsigned i = 0;
             while (i < *count && !same_origin(&samplers[i], &origin)) i++;
@@ -2828,6 +2877,7 @@ int gcn_translate_vertex(const uint32_t *code, size_t dwords, const gcn_vertex_l
     const stage_layout s = {.stage = STAGE_VERTEX, .user_sgprs = layout->user_sgprs, .workgroup_id_x_sgpr = -1,
                             .vertex_index_vgpr = layout->vertex_index_vgpr, .output_control = layout->output_control,
                             .callee = layout->callee, .callee_dwords = layout->callee_dwords, .code_address = layout->code_address,
+                            .images = layout->images, .image_count = layout->image_count, .first_binding = layout->first_binding,
                             .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address,
                             .user_data_read = layout->user_data_read};
     return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);

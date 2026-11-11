@@ -110,6 +110,12 @@ int gcn_sampler_resources(const uint32_t *code, size_t dwords, gcn_resource_orig
 int gcn_image_resources(const uint32_t *code, size_t dwords, gcn_image_resource *resources, unsigned max, unsigned *count, char *error,
                         size_t error_size);
 
+/* The same for a program that calls a fetch shader (gcn_call_sgpr): the callee's code (callee_dwords
+   long, through its s_setpc_b64 return), so that a descriptor the call leaves alone keeps its origin
+   past the call. A descriptor the callee writes stops by name. */
+int gcn_called_image_resources(const uint32_t *code, size_t dwords, const uint32_t *callee, size_t callee_dwords,
+                               gcn_image_resource *resources, unsigned max, unsigned *count, char *error, size_t error_size);
+
 typedef struct {
     uint32_t local_size[3];  /* the workgroup's size */
     unsigned user_sgprs;     /* s0 .. s(user_sgprs - 1) start as the user data (push constants) */
@@ -153,6 +159,11 @@ typedef struct {
     const uint32_t *callee;
     size_t callee_dwords;
     uint64_t code_address;
+    /* the images it loads (image_load, image_load_mip: sampled images, read only), in set 0 from
+       binding first_binding on, after the pixel shader's images and samplers */
+    const gcn_image_binding *images;
+    unsigned image_count;
+    unsigned first_binding;
     uint32_t *user_data_read; /* when not NULL, set on success to the user SGPRs read before written (User data read, below) */
 } gcn_vertex_layout;
 
