@@ -142,7 +142,7 @@ static int failed(char *error, size_t size, const char *format, ...)
 /* Validate the supported opaque-triangle profile using AMD GFX7 register fields. */
 enum { CB_TARGET_MASK = 0xa08e, DB_STENCIL_CONTROL = 0xa10b, CB_BLEND0_CONTROL = 0xa1e0,
        DB_DEPTH_CONTROL = 0xa200, CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242,
-       PA_SC_SCREEN_SCISSOR_TL = 0xa00c, PA_SC_SCREEN_SCISSOR_BR = 0xa00d };
+       PA_SC_SCREEN_SCISSOR_TL = 0xa00c, PA_SC_SCREEN_SCISSOR_BR = 0xa00d, SPI_PS_INPUT_CNTL_0 = 0xa191, PS_INPUTS = 32 };
 enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 1, Z_ENABLE = 2, Z_WRITE_ENABLE = 4,
        COLOR_MODE_MASK = 0x70, COLOR_MODE_SHIFT = 4, CB_NORMAL = 1, ROP3_MASK = 0xff0000,
        ROP3_SHIFT = 16, ROP3_COPY = 0xcc, TARGET0_MASK = 15, DI_PT_TRILIST = 4, DI_PT_RECTLIST = 17 };
@@ -157,7 +157,10 @@ static int set_register(MetalState &state, uint32_t address, uint32_t value)
     case PA_SC_SCREEN_SCISSOR_TL: state.scissor_tl = value; state.scissor_tl_set = true; return 0;
     case PA_SC_SCREEN_SCISSOR_BR: state.scissor_br = value; state.scissor_br_set = true; return 0;
     case DB_STENCIL_CONTROL: return 0; /* Stencil testing itself is rejected before drawing. */
-    default: return -1;
+    default:
+        /* SPI_PS_INPUT_CNTL_n: only attribute n reading vertex output n, interpolated, is in the profile */
+        if (address >= SPI_PS_INPUT_CNTL_0 && address < SPI_PS_INPUT_CNTL_0 + PS_INPUTS) return value == address - SPI_PS_INPUT_CNTL_0 ? 0 : -1;
+        return -1;
     }
 }
 
