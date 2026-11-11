@@ -556,12 +556,23 @@ typedef struct {
 
 static int wait_holds(const char *fn, const wait_reg_mem_packet *packet);
 
-/* Whether a collected WAIT_REG_MEM holds now (rt_gpu_step's holds). */
-static int wait_step_holds(const rt_gpu_step *step)
+static int wait_compare(const char *fn, const wait_reg_mem_packet *packet, uint32_t value);
+static void completion_step(const rt_gpu_step *step);
+
+/* rt_gpu_step's holds for a collected WAIT_REG_MEM: with pending NULL, whether it holds now; otherwise
+   whether `pending`, an earlier completion write not yet performed, writes the address it waits on
+   with a value that makes it hold (its low 32 bits, which the wait reads). */
+static int wait_step_holds(const rt_gpu_step *step, const rt_gpu_step *pending)
 {
     const wait_reg_mem_packet packet = {(uint32_t)step->words[0], (uint32_t)step->words[1], (uint32_t)step->words[2],
                                         (uint32_t)step->words[3], (uint32_t)step->words[4], (uint32_t)step->words[5]};
-    return wait_holds(step->function, &packet);
+    if (!pending) return wait_holds(step->function, &packet);
+    if (pending->perform != completion_step) return 0;
+    const uint32_t size = (uint32_t)pending->words[0];
+    if (size != RELEASE_MEM_DATA_32_BITS && size != RELEASE_MEM_DATA_64_BITS) return 0;
+    const uint64_t written = (uint32_t)pending->words[1] | (uint64_t)((uint32_t)pending->words[2] & RELEASE_MEM_ADDRESS_HIGH_MASK) << 32;
+    const uint64_t waited = packet.address_low | (uint64_t)(packet.address_high & RELEASE_MEM_ADDRESS_HIGH_MASK) << 32;
+    return written == waited && wait_compare(step->function, &packet, (uint32_t)pending->words[3] & packet.mask);
 }
 
 static void wait_step(const rt_gpu_step *step)
@@ -595,7 +606,13 @@ static int wait_holds(const char *fn, const wait_reg_mem_packet *packet)
 {
     const volatile uint32_t *address = (const volatile uint32_t *)(uintptr_t)(packet->address_low |
                                        (uint64_t)(packet->address_high & RELEASE_MEM_ADDRESS_HIGH_MASK) << 32);
-    const uint32_t value = __atomic_load_n(address, __ATOMIC_ACQUIRE) & packet->mask, reference = packet->reference;
+    return wait_compare(fn, packet, __atomic_load_n(address, __ATOMIC_ACQUIRE) & packet->mask);
+}
+
+/* Whether a WAIT_REG_MEM's compare holds for a (masked) value. */
+static int wait_compare(const char *fn, const wait_reg_mem_packet *packet, uint32_t value)
+{
+    const uint32_t reference = packet->reference;
     int holds;
     switch (packet->control & WAIT_FUNCTION_MASK) {
     case 0: holds = 1; break;

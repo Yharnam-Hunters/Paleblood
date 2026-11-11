@@ -35,8 +35,11 @@ void rt_renderer_configure(int enabled);
    before it to have run: the renderer may run the calls after it first and perform it later, in
    order with the other steps, from another thread, once the GPU has finished that work. Other steps
    (waits, flips) are performed on the renderer's thread with all earlier work finished and every
-   earlier step performed, except a wait whose `holds` says it holds already: the GPU would pass it
-   at once, so it is performed at once (it returns) and the work after it goes on. */
+   earlier step performed, except a wait whose `holds` says it holds: with pending NULL, whether it
+   holds now (the GPU would pass it at once); otherwise whether that earlier step, still waiting for
+   its work, will make it hold (a completion write of the work before the wait, which the GPU's own
+   order already puts ahead of the work after it). Such a wait is not waited for: the work after it
+   goes on. */
 enum { RT_GPU_STEP_AFTER_ALL = UINT32_MAX, RT_GPU_STEP_DEFERRABLE = 1 };
 typedef struct rt_gpu_step {
     void (*perform)(const struct rt_gpu_step *step);
@@ -44,7 +47,7 @@ typedef struct rt_gpu_step {
     uint32_t offset;
     uint64_t words[6];
     uint32_t flags;       /* RT_GPU_STEP_DEFERRABLE, or 0 */
-    int (*holds)(const struct rt_gpu_step *step); /* a wait on memory: whether it holds now; NULL for other steps */
+    int (*holds)(const struct rt_gpu_step *step, const struct rt_gpu_step *pending); /* a wait on memory (above); NULL for other steps */
 } rt_gpu_step;
 
 /* A command buffer the title submitted: its address and size in bytes, and the steps the GPU takes

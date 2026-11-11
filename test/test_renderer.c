@@ -69,10 +69,17 @@ static void frame_step(const rt_gpu_step *step)
     note_step(step);
 }
 
-static int already_holds(const rt_gpu_step *step)
+static int already_holds(const rt_gpu_step *step, const rt_gpu_step *pending)
+{
+    (void)step, (void)pending;
+    return 1;
+}
+
+/* A wait that holds only once a pending step with words[0] 11 has been performed. */
+static int held_by_eleven(const rt_gpu_step *step, const rt_gpu_step *pending)
 {
     (void)step;
-    return 1;
+    return pending && pending->words[0] == 11;
 }
 
 static int steps_seen(void)
@@ -216,6 +223,23 @@ int main(void)
         pthread_mutex_unlock(&step_lock);
         rt_renderer_wait_idle();
         CHECK(steps_seen() == 6 && step_order[5] == 8);
+        /* A wait that a still-held deferrable step (11) will satisfy is passed: a step after it (12) is
+           not held up by the gate; the wait itself is never performed. */
+        step_count = 0, gate_open = 0;
+        const rt_gpu_step eleven = {gate_step, "sceGnmSubmitCommandBuffers", 0, {11}, RT_GPU_STEP_DEFERRABLE, NULL};
+        const rt_gpu_step satisfied = {note_step, "sceGnmSubmitCommandBuffers", 0, {13}, 0, held_by_eleven};
+        const rt_gpu_step twelve = {note_step, "sceGnmSubmitCommandBuffers", 0, {12}, 0, already_holds};
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", (const void *)(uintptr_t)DEFERRED, deferred_size, &eleven, 1);
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", (const void *)(uintptr_t)(DEFERRED + 0x1000), 0x100, &satisfied, 1);
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", (const void *)(uintptr_t)(DEFERRED + 0x2000), 0x100, &twelve, 1);
+        for (int tries = 0; tries < 2000 && steps_seen() < 1; tries++) usleep(1000);
+        CHECK(steps_seen() == 1 && step_order[0] == 12);
+        pthread_mutex_lock(&step_lock);
+        gate_open = 1;
+        pthread_cond_broadcast(&step_changed);
+        pthread_mutex_unlock(&step_lock);
+        rt_renderer_wait_idle();
+        CHECK(steps_seen() == 2 && step_order[1] == 11);
     }
 
     /* A compute queue's buffer is skipped (sceGnmDingDong): a shader bound in it goes with it, so a
