@@ -155,7 +155,8 @@ static void mutants(void)
 }
 
 /* shadPS4's texture_cache/tile.h tabulates each mode's macro tile (width, height) by element size
-   (1, 2, 4, 8, 16 bytes) for one sample: modes 10 and 14 agree with ours. */
+   (1, 2, 4, 8, 16 bytes) for one sample: modes 10 and 14 agree with ours, and mode 0 (Depth2DThin64,
+   its 64-byte tile split picking macro mode 0 at every size) is 256 x 128 at every size. */
 static void macro_tiles(void)
 {
     static const uint32_t sizes[5][2] = {{256, 128}, {128, 128}, {128, 64}, {128, 64}, {64, 64}};
@@ -165,13 +166,18 @@ static void macro_tiles(void)
             CHECK(t.macro_width == sizes[b][0] && t.macro_height == sizes[b][1]);
             CHECK(t.height == sizes[b][1]);
         }
+    for (unsigned b = 0; b < 5; b++) {
+        const rt_tiling t = layout(0, 1u << b, 256, 1);
+        CHECK(t.macro_width == 256 && t.macro_height == 128);
+        CHECK(rt_tiling_uniform_micro(&t) == (b == 0)); /* a 1-byte micro tile is the split's 64 bytes: nothing to split */
+    }
 }
 
 /* Every texel of a two-slice image lands on its own element inside the image: the layout is a
    permutation of the image's bytes, for every mode and element size done. */
 static void permutations(void)
 {
-    static const unsigned modes[] = {LINEAR_ALIGNED, DISPLAY_1D, DISPLAY_2D, THIN_1D, THIN_2D, LINEAR_GENERAL};
+    static const unsigned modes[] = {LINEAR_ALIGNED, DISPLAY_1D, DISPLAY_2D, THIN_1D, THIN_2D, LINEAR_GENERAL, 0 /* Depth2DThin64 */};
     for (size_t m = 0; m < COUNT(modes); m++)
         for (unsigned b = 0; b < 5; b++) {
             const unsigned bytes = 1u << b;
@@ -191,6 +197,33 @@ static void permutations(void)
             CHECK(ok);
             free(seen);
         }
+}
+
+/* Depth2DThin64 (mode 0), 4-byte elements, worked by hand from addrlib's macro-tiled formula with
+   tileSplitSlice: a 256 x 128 image is one macro tile (mode 0: bank height 4, 16 banks, aspect 4), its
+   pieces 64 bytes, so the macro tile holds 256 bytes per channel. (1, 0) is element 1 of the first
+   piece: 4; (0, 2) is element 8 (thin order x0 y0 x1 y1): 32; (0, 4) is element 32, byte 128: piece 2,
+   two slices of 256 channel bytes up (512: channel row 2), its bank rotated by (16 / 2 + 1) x 2 = 2:
+   2 << 11 | 2 << 15 = 69632. Detiling a split layout puts each texel back too. */
+static void depth_tiles(void)
+{
+    const rt_tiling t = layout(0, 4, 256, 128);
+    CHECK(rt_tiling_offset(&t, 0, 0, 0) == 0 && rt_tiling_offset(&t, 1, 0, 0) == 4 && rt_tiling_offset(&t, 0, 2, 0) == 32);
+    CHECK(rt_tiling_offset(&t, 0, 4, 0) == 69632);
+    uint32_t *tiled = calloc(rt_tiling_size(&t, 1) / 4, 4), *linear = calloc(256 * 128, 4);
+    if (!tiled || !linear) {
+        free(tiled), free(linear);
+        failures++;
+        return;
+    }
+    for (uint32_t y = 0; y < 128; y++)
+        for (uint32_t x = 0; x < 256; x++) tiled[rt_tiling_offset(&t, x, y, 0) / 4] = y << 16 | x;
+    rt_tiling_detile(&t, (const uint8_t *)tiled, (uint8_t *)linear, 256, 128, 1);
+    int ok = 1;
+    for (uint32_t y = 0; y < 128; y++)
+        for (uint32_t x = 0; x < 256; x++) ok &= linear[y * 256 + x] == (y << 16 | x);
+    CHECK(ok);
+    free(tiled), free(linear);
 }
 
 /* Detiling puts each texel back in row order. */
@@ -276,7 +309,7 @@ static void refusals(void)
 {
     rt_tiling t;
     char error[160] = "";
-    CHECK(rt_tiling_layout(0, 4, 128, 64, &t, error, sizeof error) == -1 && strstr(error, "tiling index 0"));
+    CHECK(rt_tiling_layout(4, 4, 128, 64, &t, error, sizeof error) == -1 && strstr(error, "tiling index 4"));
     CHECK(rt_tiling_layout(THIN_2D, 4, 1000, 64, &t, error, sizeof error) == -1 && strstr(error, "pitch 1000"));
     CHECK(rt_tiling_layout(THIN_1D, 4, 12, 8, &t, error, sizeof error) == -1 && strstr(error, "pitch 12"));
     CHECK(rt_tiling_layout(THIN_2D, 3, 128, 64, &t, error, sizeof error) == -1 && strstr(error, "3 bytes"));
@@ -319,6 +352,7 @@ int main(void)
     macro_tiles();
     permutations();
     detiling();
+    depth_tiles();
     fast_copies();
     micro_spreads();
     refusals();

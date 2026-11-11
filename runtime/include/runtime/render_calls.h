@@ -44,6 +44,8 @@ typedef struct {
     uint32_t tile_mode_index;        /* an index into the GPU's tile-mode table */
     uint32_t samples;
     int fast_clear, compression;     /* whether CMASK and FMASK metadata are in use */
+    uint64_t cmask_address;          /* CMASK counts 256-byte units */
+    uint32_t cmask_bytes;            /* a slice's CMASK: CMASK_SLICE.TILE_MAX + 1 blocks of 128 bytes */
 } rt_color_target;
 
 /* Decodes a render target's words. Returns 1 for a target, 0 for a switched-off slot (INFO's
