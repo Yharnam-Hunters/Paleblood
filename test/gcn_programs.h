@@ -385,6 +385,43 @@ static const uint32_t image_fill[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* Per lane i, texel (i, 0, 1) of the 3D image in s[8:15] (slice 1) set to (float(i), 1.0, 2.0, 0.5). */
+static const uint32_t image_fill_3d[] = {
+    0x7e080d00, /* v_cvt_f32_u32_e32 v4, v0 */
+    0x7e0a02f2, /* v_mov_b32_e32 v5, 1.0 */
+    0x7e0c02f4, /* v_mov_b32_e32 v6, 2.0 */
+    0x7e0e02f0, /* v_mov_b32_e32 v7, 0.5 */
+    0x7e020300, /* v_mov_b32_e32 v1, v0 */
+    0x7e040280, /* v_mov_b32_e32 v2, 0 */
+    0x7e060281, /* v_mov_b32_e32 v3, 1 */
+    0xf0200f00, 0x00020401, /* image_store v[4:7], v[1:3], s[8:15] dmask:0xf */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Per lane i, texel (i, 0, z) of the 3D image in s[8:15] stored as four dwords at i * 16 bytes of the
+   buffer in s[0:3]; z is 1 here, 0 in image_to_buffer_3d_slice0. */
+static const uint32_t image_to_buffer_3d[] = {
+    0x7e020300, /* v_mov_b32_e32 v1, v0 */
+    0x7e040280, /* v_mov_b32_e32 v2, 0 */
+    0x7e060281, /* v_mov_b32_e32 v3, 1 */
+    0xf0000f00, 0x00020401, /* image_load v[4:7], v[1:3], s[8:15] dmask:0xf */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x34060084, /* v_lshlrev_b32_e32 v3, 4, v0 */
+    0xe0781000, 0x80000403, /* buffer_store_dwordx4 v[4:7], v3, s[0:3], 0 offen */
+    0xbf810000, /* s_endpgm */
+};
+
+static const uint32_t image_to_buffer_3d_slice0[] = {
+    0x7e020300, /* v_mov_b32_e32 v1, v0 */
+    0x7e040280, /* v_mov_b32_e32 v2, 0 */
+    0x7e060280, /* v_mov_b32_e32 v3, 0 */
+    0xf0000f00, 0x00020401, /* image_load v[4:7], v[1:3], s[8:15] dmask:0xf */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x34060084, /* v_lshlrev_b32_e32 v3, 4, v0 */
+    0xe0781000, 0x80000403, /* buffer_store_dwordx4 v[4:7], v3, s[0:3], 0 offen */
+    0xbf810000, /* s_endpgm */
+};
+
 /* A clear: every lane of a 16 x 16 group stores (0.25, 0.5, 0.75, 1) at its (x, y), v0 and v1, of the
    image in s[8:15]. */
 static const uint32_t image_clear_tile[] = {

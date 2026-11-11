@@ -1790,6 +1790,61 @@ int main(void)
             CHECK(right);
         }
 
+        /* A 3D image (TYPE 3D, DEPTH 1: two slices of 64 x 1), as the game's compute shader fills a colour
+           volume: texels stored in slice 1 read back from slice 1 as stored, and slice 0 keeps the new
+           image's zeros (a 3D image taken as one 2D slice would return the stored texels there too).
+           Reading a 3D image the GPU never wrote stops by name: its layout in memory is not done yet. */
+        {
+            enum { FILL3_CODE = 0x4c00, READ3_CODE = 0x5000, READ30_CODE = 0x5400, IMAGE_3D = IMAGE_A + 0x90000 };
+            memcpy((void *)(uintptr_t)at(FILL3_CODE), image_fill_3d, sizeof image_fill_3d);
+            memcpy((void *)(uintptr_t)at(READ3_CODE), image_to_buffer_3d, sizeof image_to_buffer_3d);
+            memcpy((void *)(uintptr_t)at(READ30_CODE), image_to_buffer_3d_slice0, sizeof image_to_buffer_3d_slice0);
+            uint32_t volume[8];
+            image_descriptor(volume, at(IMAGE_3D), 14, 7, LANES, 1);
+            volume[3] = (volume[3] & 0x0fffffffu) | (uint32_t)RT_IMAGE_3D << 28;
+            volume[4] |= 1; /* DEPTH: two slices */
+            for (int slice = 1; slice >= 0; slice--) {
+                rt_render_forget(), rt_executor_reset(x);
+                for (unsigned i = 0; i < LANES * 4; i++) back[i] = -1;
+                uint32_t offset = 0x10;
+                const uint64_t passes[2] = {at(FILL3_CODE), at(slice ? READ3_CODE : READ30_CODE)};
+                for (int pass = 0; pass < 2; pass++) {
+                    const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(passes[pass] >> 8), (uint32_t)(passes[pass] >> 40), 0x3, 16 << 1,
+                                                                      LANES, 1, 1};
+                    CHECK(rt_render_record_compute_shader_at(IMAGES + offset, shader) == 0);
+                    memset(user, 0, sizeof user);
+                    if (pass) descriptor(user, at(BACK), 16);
+                    memcpy(user + 8, volume, sizeof volume);
+                    CHECK(rt_render_record_user_data(IMAGES, offset + 0x10, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+                    CHECK(rt_render_record_user_data(IMAGES, offset + 0x20, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
+                    CHECK(rt_render_record_dispatch(IMAGES, offset + 0x30, one, error, sizeof error) == 0);
+                    offset += 0x40;
+                }
+                const int ran = rt_executor_run(x, IMAGES, offset, error, sizeof error);
+                if (ran) fprintf(stderr, "3D image: %s\n", error);
+                CHECK(ran == 0);
+                int right = 1;
+                for (unsigned i = 0; i < LANES; i++)
+                    right &= slice ? back[i * 4] == (float)i && back[i * 4 + 1] == 1.0f && back[i * 4 + 2] == 2.0f && back[i * 4 + 3] == 0.5f
+                                   : back[i * 4] == 0 && back[i * 4 + 1] == 0 && back[i * 4 + 2] == 0 && back[i * 4 + 3] == 0;
+                CHECK(right);
+            }
+            rt_render_forget(), rt_executor_reset(x);
+            const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(at(READ3_CODE) >> 8), (uint32_t)(at(READ3_CODE) >> 40), 0x3, 16 << 1,
+                                                              LANES, 1, 1};
+            CHECK(rt_render_record_compute_shader_at(IMAGES + 0x10, shader) == 0);
+            memset(user, 0, sizeof user);
+            descriptor(user, at(BACK), 16);
+            image_descriptor(volume, at(IMAGE_3D + 0x8000), 14, 7, LANES, 1);
+            volume[3] = (volume[3] & 0x0fffffffu) | (uint32_t)RT_IMAGE_3D << 28;
+            volume[4] |= 1;
+            memcpy(user + 8, volume, sizeof volume);
+            CHECK(rt_render_record_user_data(IMAGES, 0x20, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+            CHECK(rt_render_record_user_data(IMAGES, 0x30, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
+            CHECK(rt_render_record_dispatch(IMAGES, 0x40, one, error, sizeof error) == 0);
+            CHECK(rt_executor_run(x, IMAGES, 0x50, error, sizeof error) == -1 && strstr(error, "3D image") && strstr(error, "not done yet"));
+        }
+
         /* An image no shader wrote holds the guest memory's texels: linear (tiling index 8) RGBA32F
            texels the CPU wrote read back as written; a layout not done yet (index 1) stops by name. */
         float *guest_texels = (float *)(uintptr_t)at(IMAGE_B + 0x8000);
