@@ -452,6 +452,60 @@ static void sampled_levels(rt_executor *x)
     }
 }
 
+/* Depth compares (image_sample_c_lz, pixel_compared): an 8x8 32-bit float image (DATA_FORMAT 4,
+   NUMBER_FORMAT 7, linear) of 0.25 in its left half and 0.75 in its right, compared with 0.5 at
+   (x / 16, y / 16) over 16 pixels: pixel column px samples at texel position px / 2 - 0.25 (clamped
+   to the edge), between texels 3 and 4 at columns 7 and 8 (weights 0.25 and 0.75). With "less"
+   (the reference less than the texel passes) and bilinear filters, columns 0-6 draw 0, 7 draws 0.25,
+   8 draws 0.75 and the rest 1; with point filters 7 draws 0 and 8 draws 1 (the nearest texel's
+   result); "greater" draws the bilinear result's complement. */
+static void compared_samples(rt_executor *x)
+{
+    enum { DEPTHS = 0x2280000, COMPARED_TARGET = 0x22c0000, COMPARED_CODE = 0x5c00, COMPARED_BUFFER = 0xc1040000, EDGE = 8, LINEAR_ALIGNED = 8,
+           DATA_32 = 4, NUM_FLOAT = 7, LESS = 1, GREATER = 4, POINT = 0, BILINEAR = 1, CLAMP_LAST_TEXEL = 2 };
+    char error[256] = "";
+    rt_tiling layout;
+    CHECK(rt_tiling_layout(LINEAR_ALIGNED, 4, EDGE, EDGE, &layout, error, sizeof error) == 0);
+    float *depths = (float *)(uintptr_t)at(DEPTHS);
+    for (uint32_t y = 0; y < EDGE; y++)
+        for (uint32_t px = 0; px < EDGE; px++) depths[y * layout.pitch + px] = px < EDGE / 2 ? 0.25f : 0.75f;
+    memcpy((void *)(uintptr_t)at(COMPARED_CODE), pixel_compared, sizeof pixel_compared);
+    static const struct {
+        uint32_t function, filter;
+        float column[4]; /* the result at columns 6, 7, 8 and 9 (and 0-5 as 6, 10-15 as 9) */
+    } cases[] = {{LESS, BILINEAR, {0, 0.25f, 0.75f, 1}}, {LESS, POINT, {0, 0, 1, 1}}, {GREATER, BILINEAR, {1, 0.75f, 0.25f, 0}}};
+    for (unsigned c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+        uint32_t user[16] = {0};
+        image_descriptor(user + 4, at(DEPTHS), DATA_32, NUM_FLOAT, EDGE, EDGE);
+        user[7] = (user[7] & ~0xfffu) | (4 | 0 << 3 | 0 << 6 | 1 << 9) | LINEAR_ALIGNED << 20; /* x, 0, 0, 1 */
+        user[12] = CLAMP_LAST_TEXEL | CLAMP_LAST_TEXEL << 3 | CLAMP_LAST_TEXEL << 6 | cases[c].function << 12;
+        user[14] = cases[c].filter << 20 | cases[c].filter << 22;
+        rt_render_forget(), rt_executor_reset(x);
+        uint32_t offset = record_setup(COMPARED_BUFFER, at(COMPARED_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        const uint64_t code = at(COMPARED_CODE);
+        const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 16 << 1, 0, 0x4, 0x302, 0x302,
+                                                       0, 0, 0, 0xf};
+        CHECK(rt_render_record_pixel_shader(COMPARED_BUFFER, offset, pixel, error, sizeof error) == 0);
+        CHECK(rt_render_record_user_data(COMPARED_BUFFER, offset + 0x10, RT_STAGE_PIXEL, 0, user, 8, error, sizeof error) == 0);
+        CHECK(rt_render_record_user_data(COMPARED_BUFFER, offset + 0x20, RT_STAGE_PIXEL, 8, user + 8, 8, error, sizeof error) == 0);
+        const int drawn = rt_executor_run(x, COMPARED_BUFFER, record_triangle_draw(COMPARED_BUFFER, offset + 0x30), error, sizeof error);
+        if (drawn) fprintf(stderr, "compared samples: %s\n", error);
+        CHECK(drawn == 0);
+        uint32_t bgra[SIZE * SIZE];
+        CHECK(rt_executor_read_target(x, at(COMPARED_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+        int covered = 0, right = 1;
+        for (int y = 0; y < SIZE; y++)
+            for (int px = 0; px < SIZE; px++) {
+                const uint32_t p = bgra[y * SIZE + px];
+                if (!(p >> 24)) continue; /* outside the triangle */
+                const float want = cases[c].column[px < 6 ? 0 : px > 9 ? 3 : px - 6]; /* columns 0-6 and 9-15 alike */
+                covered++, right &= near(p >> 16 & 0xff, want);
+                if (!near(p >> 16 & 0xff, want)) fprintf(stderr, "compared samples case %u: pixel (%d, %d) red %u, want %f\n", c, px, y, p >> 16 & 0xff, want);
+            }
+        CHECK(covered > 0 && right);
+    }
+}
+
 /* A cube (T# TYPE 11, one cube: six 4x4 faces, linear, each face one colour) sampled at (1.5, 1.5)
    on face 4, then face 1, and face 9 (face 1 of an array's second cube, which has none: the 2D array
    of six faces clamps the layer to 5) draws each face's colour (pixel_cube_face). */
@@ -531,13 +585,13 @@ static void sampled_lookup(rt_executor *x)
     static const uint32_t border_table[4] = {0x6, 0, 1u << 20 | 1u << 22, 3u << 30 | 5};
     /* MAX_ANISO_RATIO 4 with bilinear filters: the same as bilinear (the ratio shapes only the
        anisotropic filters); anisotropic bilinear filters (3) with ratio 4 (16 samples) magnify as the
-       bilinear one, a ratio past 4 stops, as does a depth compare */
+       bilinear one, a ratio past 4 stops, as do unnormalized coordinates (FORCE_UNNORMALIZED) */
     static const uint32_t ratio_bilinear[4] = {0x2 | 0x2 << 3 | 0x2 << 6 | 4u << 9, 0, 1u << 20 | 1u << 22, 0};
     static const uint32_t anisotropic[4] = {0x2 | 0x2 << 3 | 0x2 << 6 | 4u << 9, 0, 3u << 20 | 3u << 22, 0};
     static const uint32_t past_ratio[4] = {0x2 | 0x2 << 3 | 0x2 << 6 | 5u << 9, 0, 3u << 20 | 3u << 22, 0};
-    static const uint32_t depth_compare[4] = {0x2 | 0x2 << 3 | 0x2 << 6 | 3u << 12, 0, 1u << 20 | 1u << 22, 0};
+    static const uint32_t unnormalized[4] = {0x2 | 0x2 << 3 | 0x2 << 6 | 1u << 15, 0, 1u << 20 | 1u << 22, 0};
     const uint32_t *const samplers[] = {bilinear_clamped, point_clamped, bilinear_wrapped, unequal, border, ratio_bilinear, anisotropic,
-                                        depth_compare, past_ratio, border_white, border_table};
+                                        unnormalized, past_ratio, border_white, border_table};
     int black_border_sum = 0;
     for (int k = 0; k < 11; k++) {
         uint32_t user[16] = {0};
@@ -572,7 +626,7 @@ static void sampled_lookup(rt_executor *x)
         }
         if (k == 10) CHECK(drawn == -1 && strstr(error, "border colour from the table"));
         if (k == 8) CHECK(drawn == -1 && strstr(error, "MAX_ANISO_RATIO 5"));
-        if (k == 7) CHECK(drawn == -1 && strstr(error, "depth compares"));
+        if (k == 7) CHECK(drawn == -1 && strstr(error, "unnormalized coordinates"));
     }
 }
 
@@ -2420,6 +2474,7 @@ int main(void)
     float_images(x);
     many_images(x);
     sampled_levels(x);
+    compared_samples(x);
     sampled_cube(x);
     fetch_shader(x);
     pixel_input_controls(x);

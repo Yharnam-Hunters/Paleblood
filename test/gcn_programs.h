@@ -716,6 +716,19 @@ static const uint32_t pixel_level_zero[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* A depth compare at level 0: the reference 0.5 against the image in s[4:11] at (x / 16, y / 16), through
+   the sampler in s[12:15] (its compare function and filter); the result in red, green and blue, alpha 1. */
+static const uint32_t pixel_compared[] = {
+    0x100804ff, 0x3d800000, /* v_mul_f32_e32 v4, 0x3d800000 (1/16), v2 */
+    0x100a06ff, 0x3d800000, /* v_mul_f32_e32 v5, 0x3d800000 (1/16), v3 */
+    0x7e0602f0, /* v_mov_b32_e32 v3, 0.5 */
+    0x7e1002f2, /* v_mov_b32_e32 v8, 1.0 */
+    0xf0bc0100, 0x00610703, /* image_sample_c_lz v7, v[3:5], s[4:11], s[12:15] dmask:0x1 */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf800180f, 0x08070707, /* exp mrt0, v7, v7, v7, v8 done vm */
+    0xbf810000, /* s_endpgm */
+};
+
 /* pixel_minified sampling at level of detail 1 whatever the derivatives (image_sample_l). */
 static const uint32_t pixel_explicit_level[] = {
     0x100804ff, 0x3d800000, /* v_mul_f32_e32 v4, 0x3d800000 (1/16), v2 */

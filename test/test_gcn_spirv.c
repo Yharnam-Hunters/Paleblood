@@ -514,6 +514,53 @@ static void user_data_read(void)
     CHECK(read == 1u << 2);
 }
 
+/* Whether the module holds the instruction (opcode, then the words given after its word count). */
+static int has_instruction(const uint32_t *spirv, size_t words, uint16_t opcode, const uint32_t *operands, size_t count, int skip_first)
+{
+    for (size_t i = 5; i < words;) {
+        const size_t length = spirv[i] >> 16;
+        if (!length) break;
+        if ((spirv[i] & 0xffff) == opcode && length == count + 1 + (size_t)skip_first &&
+            !memcmp(spirv + i + 1 + skip_first, operands, count * sizeof *operands))
+            return 1;
+        i += length;
+    }
+    return 0;
+}
+
+/* exp mrtz (target 8): with DB_SHADER_CONTROL's Z_EXPORT_ENABLE, its first component becomes FragDepth
+   (BuiltIn 22, with the DepthReplacing execution mode); without any enable it is ignored; a stencil
+   export enable stops by name. */
+static void depth_exports(void)
+{
+    enum { OP_EXECUTION_MODE = 16, OP_DECORATE = 71, DECORATION_BUILT_IN = 11, BUILT_IN_FRAG_DEPTH = 22, MODE_DEPTH_REPLACING = 12 };
+    static const uint32_t exported[] = {0x7e0002f0, /* v_mov_b32 v0, 0.5 */
+                                        0xf8001881, 0x00000000, /* exp mrtz v0 done vm */
+                                        0xbf810000};
+    const uint32_t depth_export[3] = {GCN_DEPTH_EXPORT_Z, 0, 1u << 1};
+    for (int k = 0; k < 3; k++) {
+        gcn_pixel_layout layout = pixel_layout;
+        layout.depth_export = depth_export[k];
+        uint32_t *spirv = NULL;
+        size_t words = 0;
+        char error[256] = "";
+        const int result = gcn_translate_pixel(PROGRAM(exported), &layout, &spirv, &words, error, sizeof error);
+        if (k == 2) {
+            CHECK(result == -1 && strstr(error, "stencil or sample-mask exports"));
+            continue;
+        }
+        if (result) fprintf(stderr, "depth export %d: %s\n", k, error);
+        CHECK(result == 0 && spirv);
+        if (!spirv) continue;
+        const uint32_t frag_depth[2] = {DECORATION_BUILT_IN, BUILT_IN_FRAG_DEPTH}, replacing[1] = {MODE_DEPTH_REPLACING};
+        CHECK(has_instruction(spirv, words, OP_DECORATE, frag_depth, 2, 1) == (k == 0));
+        CHECK(has_instruction(spirv, words, OP_EXECUTION_MODE, replacing, 1, 1) == (k == 0));
+        const int valid = validate(spirv, words, k ? "depth_ignored" : "depth_export");
+        CHECK(valid != 0);
+        free(spirv);
+    }
+}
+
 int main(void)
 {
     rect_list_stages();
@@ -523,6 +570,7 @@ int main(void)
     image_programs();
     calls();
     user_data_read();
+    depth_exports();
     translates(PROGRAM(scale_add), "scale_add");
     translates(PROGRAM(integer_and_select), "integer_and_select");
     translates(PROGRAM(constants_and_modifiers), "constants_and_modifiers");
