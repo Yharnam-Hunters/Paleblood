@@ -1751,6 +1751,58 @@ static void compressed_image(rt_executor *x)
     CHECK(differs);
 }
 
+/* A BC6H block (DATA_FORMAT 40, number format 0: unsigned half floats; Microsoft's BC6H format
+   description) in mode 11: mode bits 00011, one region, 10-bit endpoints RGB w then RGB x, no transform,
+   then 63 index bits. With every index 0 the texel is endpoint w, unquantized ((e << 16) + 0x8000) >> 10
+   and finished (e * 31) >> 6 into a half's bits. */
+static void bc6h_block(uint32_t words[4], uint32_t red, uint32_t green, uint32_t blue)
+{
+    uint64_t low = 0x3 | (uint64_t)red << 5 | (uint64_t)green << 15 | (uint64_t)blue << 25; /* rx gx bx and the indices stay 0 */
+    words[0] = (uint32_t)low, words[1] = (uint32_t)(low >> 32), words[2] = 0, words[3] = 0;
+}
+
+static float bc6h_endpoint_value(uint32_t endpoint)
+{
+    const uint32_t unquantized = ((endpoint << 16) + 0x8000) >> 10;
+    return half_value((uint16_t)((unquantized * 31) >> 6));
+}
+
+/* A BC6H image the CPU wrote, linear: solid blocks whose red endpoint grows with the block's column and
+   green with its row (0.25 to 0.75, as the 8_8_8_8 target holds them); image_load_mip shows each block's
+   value. Read as BC7 (mutant) it does not. */
+static void bc6h_image(rt_executor *x)
+{
+    enum { BLOCKS = 0x2200000, BLOCK_TARGET = 0x2240000, BLOCKS_PER_ROW = SIZE / 4, LINEAR_ALIGNED = 8, BC6 = 40, BC7 = 41 };
+    char error[200] = "";
+    uint32_t *blocks = (uint32_t *)(uintptr_t)at(BLOCKS);
+    for (uint32_t by = 0; by < BLOCKS_PER_ROW; by++)
+        for (uint32_t bx = 0; bx < BLOCKS_PER_ROW; bx++) bc6h_block(blocks + (by * BLOCKS_PER_ROW + bx) * 4, 430 + bx * 16, 430 + by * 16, 462);
+    uint32_t image[8];
+    image_descriptor(image, at(BLOCKS), BC6, 0, SIZE, SIZE);
+    image[3] = (image[3] & ~0xfffu) | (4 | 5 << 3 | 6 << 6 | 1 << 9) | LINEAR_ALIGNED << 20; /* x, y, z, one: BC6H has no alpha */
+    const int drawn = draw_texels(x, at(BLOCK_TARGET), image, error, sizeof error);
+    if (drawn) fprintf(stderr, "BC6H: %s\n", error);
+    CHECK(drawn == 0);
+    uint32_t bgra[SIZE * SIZE];
+    CHECK(rt_executor_read_target(x, at(BLOCK_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+    int right = 1;
+    for (int y = 0; y < SIZE; y++)
+        for (int px = 0; px < SIZE; px++) {
+            const uint32_t p = bgra[y * SIZE + px];
+            right &= near(p >> 16 & 0xff, bc6h_endpoint_value(430 + (uint32_t)px / 4 * 16)) &&
+                     near(p >> 8 & 0xff, bc6h_endpoint_value(430 + (uint32_t)y / 4 * 16)) && near(p & 0xff, bc6h_endpoint_value(462));
+        }
+    if (!right) fprintf(stderr, "BC6H: texels %#x %#x, want red %f\n", bgra[0], bgra[SIZE * SIZE - 1], bc6h_endpoint_value(430));
+    CHECK(right);
+    image_descriptor(image, at(BLOCKS), BC7, 0, SIZE, SIZE);
+    image[3] |= LINEAR_ALIGNED << 20;
+    CHECK(draw_texels(x, at(BLOCK_TARGET), image, error, sizeof error) == 0);
+    CHECK(rt_executor_read_target(x, at(BLOCK_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+    int differs = 0;
+    for (int i = 0; i < SIZE * SIZE; i++) differs |= !near(bgra[i] >> 16 & 0xff, bc6h_endpoint_value(430 + (uint32_t)(i % SIZE) / 4 * 16));
+    CHECK(differs);
+}
+
 /* The CPU writes the fake watch reports at the next buffer (runtime/write_watch.h's collect). */
 static struct {
     uint64_t pool_offset, length;
@@ -2381,6 +2433,7 @@ int main(void)
     tiled_target_memory(x);
     float_targets(x);
     compressed_image(x);
+    bc6h_image(x);
 
     rt_executor_close(x);
     rt_render_forget();
