@@ -28,6 +28,14 @@ One page per game system: summary, key functions, structs and globals, patch poi
 
 Counts are cumulative: verified functions are included in edge-verified and replaced totals.
 
+| With function families | Functions (of target) | Bytes (of target) |
+|---|---:|---:|
+| Members of 19 function families | 18,019 (11.42%) | 62,426 (0.15%) |
+| Replaced, with family members | 18,258 (11.57%) | 163,393 (0.38%) |
+| Edge-verified, with family members | 18,258 (11.57%) | 163,393 (0.38%) |
+
+Family members are tiny functions (one to a few bytes each) that share one replacement per family: they add far more to the function count than to the bytes.
+
 | System | Tracked | Replaced | Edge-verified (includes verified) | Verified | Replaced bytes |
 |---|---:|---:|---:|---:|---:|
 | ai | 1 | 1 | 1 | 1 | 2,693 |

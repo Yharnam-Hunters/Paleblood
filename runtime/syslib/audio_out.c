@@ -25,6 +25,7 @@
    name: any open other than the observed ones (256 float samples in formats 4 and 5, or 1024 samples
    in formats 0 to 5, at 48000 Hz), and running out of handles. */
 #include "runtime/audio_host.h"
+#include "runtime/host_time.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
 
@@ -204,11 +205,17 @@ static int32_t audio_out_output(int32_t handle, const void *samples)
     const int64_t block = (int64_t)port->length * NANOSECONDS_PER_SECOND / port->rate;
     pthread_mutex_lock(&port->lock);
     struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (clock_gettime(CLOCK_MONOTONIC, &now)) {
+        pthread_mutex_unlock(&port->lock);
+        rt_fatal(fn, "the host monotonic clock read failed");
+    }
     int64_t wait_until = nanoseconds(&port->played);
-    if (wait_until > nanoseconds(&now))
-        clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &port->played, NULL);
-    else
+    if (wait_until > nanoseconds(&now)) {
+        if (rt_host_sleep_until_monotonic(&port->played)) {
+            pthread_mutex_unlock(&port->lock);
+            rt_fatal(fn, "the host monotonic wait failed");
+        }
+    } else
         wait_until = nanoseconds(&now); /* idle or behind: this block starts now */
     if (!samples) { /* room for the next block, and nothing handed over */
         pthread_mutex_unlock(&port->lock);

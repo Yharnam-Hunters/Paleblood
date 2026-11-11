@@ -100,13 +100,17 @@ static int make_buffer(gpu *g, gpu_buffer *b)
     return 0;
 }
 
-/* A buffer descriptor: base address (low word, then bits 47:32), no stride, BUFFER_BYTES records. */
-static void descriptor(uint32_t *words, const gpu_buffer *b)
+/* The descriptor carries a 40-bit guest address. The layout adds address_offset
+   to reach the Vulkan buffer, whose device address may be wider on a software GPU. */
+static int descriptor(uint32_t *words, const gpu_buffer *b, uint64_t address_offset)
 {
-    words[0] = (uint32_t)b->address;
-    words[1] = (uint32_t)(b->address >> 32) & 0xffff;
+    const uint64_t guest = b->address - address_offset;
+    if (guest >= (UINT64_C(1) << 40)) return -1;
+    words[0] = (uint32_t)guest;
+    words[1] = (uint32_t)(guest >> 32);
     words[2] = BUFFER_BYTES;
     words[3] = 0;
+    return 0;
 }
 
 #endif

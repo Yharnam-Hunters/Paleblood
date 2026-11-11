@@ -582,6 +582,19 @@ static const uint32_t pixel_explicit_level[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* Samples the cube in s[4:11] with the sampler in s[0:3] at (1.5, 1.5) on the face whose number (a
+   float) is in s12, level 0 (image_sample_l, DA 0 as the game's shaders sample cubes). */
+static const uint32_t pixel_cube_face[] = {
+    0x7e0802ff, 0x3fc00000, /* v_mov_b32_e32 v4, 1.5 */
+    0x7e0a02ff, 0x3fc00000, /* v_mov_b32_e32 v5, 1.5 */
+    0x7e0c020c, /* v_mov_b32_e32 v6, s12 */
+    0x7e0e0280, /* v_mov_b32_e32 v7, 0 */
+    0xf0900f00, 0x00010804, /* image_sample_l v[8:11], v[4:7], s[4:11], s[0:3] dmask:0xf */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf800180f, 0x0b0a0908, /* exp mrt0, v8, v9, v10, v11 done vm */
+    0xbf810000, /* s_endpgm */
+};
+
 /* As pixel_color, but pixels whose red is below 0.5 are discarded (v_cmpx clears their EXEC bit
    and the export's valid mask drops them). */
 static const uint32_t pixel_discard_left[] = {

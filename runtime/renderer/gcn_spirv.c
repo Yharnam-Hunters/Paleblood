@@ -1972,7 +1972,10 @@ static int branches(const uint32_t *w, const gcn_instruction *ins, size_t at, lo
    the use writes those SGPRs, and no instruction before the load writes the pointer pair, nor any
    instruction at all when a branch goes back to the load or before it (so a loop that runs the load
    again loads the same descriptor; without one, code after the load may reuse the pointer's SGPRs, as
-   the game's pixel shaders do once their samples are done). Writes before the load do not matter: it replaces them
+   the game's pixel shaders do once their samples are done). The user data's descriptor holds at a use
+   that no write comes before, whatever branches run, unless one goes back to the use after a later
+   write (the game's pixel shaders reuse a sampler's SGPRs after their last sample). Writes before the
+   load do not matter: it replaces them
    (the game's shaders keep a compare's mask in those SGPRs before loading the descriptor). A
    branch that skips the load also skips the use, as the game's guarded samples do (an
    s_cbranch_execz around both). 0, or -1 with the reason. */
@@ -2002,12 +2005,12 @@ static int descriptor_origin(const uint32_t *code, size_t program, size_t at, un
         long target;
         if (branches(code + p, &ins, p, &target) && (p < at || target < 0 || (size_t)target <= at)) {
             const int back_to_use = (size_t)target <= at && (size_t)target <= p && p >= at;
-            if (target < 0 || writer < 0 || (written_after_use && back_to_use)) {
+            if (target < 0 || (written_after_use && back_to_use)) {
                 snprintf(error, error_size, "the descriptor in s[%u:%u] is written by the program, and a branch (%s at dword %zu) comes "
                          "before its use at dword %zu: not done yet", first, first + width - 1, ins.name, p, at);
                 return -1;
             }
-            if (target > writer && (size_t)target <= at) {
+            if (writer >= 0 && target > writer && (size_t)target <= at) {
                 snprintf(error, error_size, "the descriptor in s[%u:%u] is loaded at dword %ld, and a branch (%s at dword %zu) lands at "
                          "dword %ld, between the load and its use at dword %zu: not done yet", first, first + width - 1, writer, ins.name,
                          p, target, at);
@@ -2187,7 +2190,7 @@ static void image_sample(translator *t, const uint32_t *code, size_t at, const g
         fail(t, "%s: unnormalized coordinates (UNORM) are not translated yet", ins->name);
         return;
     }
-    if (array != (unsigned)b->arrayed) {
+    if (array != (unsigned)b->arrayed && !b->cube) { /* a cube's coordinates are (s, t, face) whatever DA says */
         fail(t, "%s: DA %u with a%s image", ins->name, array, b->arrayed ? "n array" : " non-array");
         return;
     }
@@ -2206,6 +2209,15 @@ static void image_sample(translator *t, const uint32_t *code, size_t at, const g
     const unsigned coordinates = (b->dim == GCN_IMAGE_1D ? 1 : b->dim == GCN_IMAGE_2D ? 2 : 3) + (b->arrayed ? 1 : 0);
     uint32_t c[4];
     for (unsigned i = 0; i < coordinates; i++) c[i] = as_float(t, load(t, t_uint(t), vgpr(t, vaddr + i)));
+    if (b->cube) {
+        /* the cube instructions leave s and t in [1, 2] on the face (s / |ma| + 1.5): the face's 2D
+           coordinates are one less; the face number counts 8 per cube of an array, 6 faces each
+           (as shadPS4 samples cubes as 2D arrays) */
+        const uint32_t one = konst_float(t, 1.0f);
+        c[0] = value(t, SPV_OP_F_SUB, t_float(t), 2, c[0], one), c[1] = value(t, SPV_OP_F_SUB, t_float(t), 2, c[1], one);
+        const uint32_t cubes = glsl(t, t_float(t), SPV_GLSL_FLOOR, value(t, SPV_OP_F_MUL, t_float(t), 2, c[2], konst_float(t, 0.125f)), 0, 0, 1);
+        c[2] = glsl(t, t_float(t), SPV_GLSL_FMA, cubes, konst_float(t, -2.0f), c[2], 3);
+    }
     uint32_t coordinate = c[0];
     if (coordinates > 1) {
         const uint32_t vec = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_float(t), coordinates}, 2);
