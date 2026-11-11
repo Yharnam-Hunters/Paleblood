@@ -423,6 +423,33 @@ static void store_resources(void)
     CHECK(count == 0 && unknown);
     CHECK(gcn_buffer_store_resources(PROGRAM(image_copy), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
     CHECK(count == 0 && !unknown);
+/* A buffer_store_dwordx4 translates to a valid module that holds a store of the whole 4-dword vector
+   (an OpTypePointer, opcode 32, in PhysicalStorageBuffer, 5349, to a vector, opcode 23, of four 32-bit
+   unsigned integers): stores of separate dwords cross the bus to host memory a dword at a time.
+   test_gcn_compute runs it, aligned and not, partly in range. */
+static void vector_stores(void)
+{
+    translates(store_dwordx4_aligned, sizeof store_dwordx4_aligned / sizeof *store_dwordx4_aligned, "store_dwordx4_aligned");
+    translates(store_dwordx4_unaligned, sizeof store_dwordx4_unaligned / sizeof *store_dwordx4_unaligned, "store_dwordx4_unaligned");
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    char error[256];
+    CHECK(translate(COMPUTE, store_dwordx4_aligned, sizeof store_dwordx4_aligned / sizeof *store_dwordx4_aligned, &spirv, &words, error,
+                    sizeof error) == 0);
+    if (!spirv) return;
+    enum { OP_TYPE_INT = 21, OP_TYPE_VECTOR = 23, OP_TYPE_POINTER = 32, PHYSICAL_STORAGE_BUFFER = 5349, MAX_ID = 1 << 16 };
+    static uint8_t uint32_type[MAX_ID], uvec4_type[MAX_ID];
+    memset(uint32_type, 0, sizeof uint32_type), memset(uvec4_type, 0, sizeof uvec4_type);
+    int vector_pointer = 0;
+    for (size_t at = 5; at < words && spirv[at] >> 16; at += spirv[at] >> 16) {
+        const uint32_t *in = spirv + at;
+        const unsigned opcode = in[0] & 0xffff;
+        if (opcode == OP_TYPE_INT && in[1] < MAX_ID && in[2] == 32 && in[3] == 0) uint32_type[in[1]] = 1;
+        if (opcode == OP_TYPE_VECTOR && in[1] < MAX_ID && in[2] < MAX_ID && uint32_type[in[2]] && in[3] == 4) uvec4_type[in[1]] = 1;
+        if (opcode == OP_TYPE_POINTER && in[2] == PHYSICAL_STORAGE_BUFFER && in[3] < MAX_ID && uvec4_type[in[3]]) vector_pointer = 1;
+    }
+    CHECK(vector_pointer);
+    free(spirv);
 }
 
 /* The renderer's GPU tile copies (runtime/tile_copy.h), every element size and direction: valid modules;
@@ -475,6 +502,7 @@ int main(void)
     rect_list_stages();
     tile_copy_shaders();
     store_resources();
+    vector_stores();
     image_programs();
     calls();
     user_data_read();

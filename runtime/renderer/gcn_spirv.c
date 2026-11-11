@@ -1378,6 +1378,39 @@ static void checked_store_dword(translator *t, const buffer_range *r, uint32_t b
     end_if(t, in_range);
 }
 
+/* `count` dwords stored from dword `first` on (values[i] at dword first + i), each written only in
+   range, as count checked_store_dword calls write them. When every one is in range and the address is
+   a multiple of their bytes, they go out as one store of the whole vector (2 or 4 dwords): a lane's
+   separate dword stores leave gaps that the bus to host memory moves a dword at a time, hundreds of
+   times slower. The range test is monotonic in the byte (buffer_in_range), so the last dword in range
+   means all are. */
+static void checked_store_dwords(translator *t, const buffer_range *r, uint32_t base, uint32_t offset, uint32_t first, const uint32_t *values,
+                                 uint32_t count)
+{
+    if (count != 2 && count != 4) {
+        for (uint32_t i = 0; i < count; i++) checked_store_dword(t, r, base, offset, first + i, values[i]);
+        return;
+    }
+    const uint32_t bytes = count * BYTES_PER_DWORD;
+    const uint32_t at = value(t, SPV_OP_I_ADD, t_ulong(t), 2, base, widen(t, value(t, SPV_OP_I_ADD, t_uint(t), 2, offset, konst(t, first * BYTES_PER_DWORD))));
+    const uint32_t low = value(t, SPV_OP_U_CONVERT, t_uint(t), 1, at);
+    const uint32_t aligned = equals(t, value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, low, konst(t, bytes - 1)), konst(t, 0));
+    const uint32_t whole = both(t, aligned, buffer_in_range(t, r, (first + count - 1) * BYTES_PER_DWORD));
+    const uint32_t vector_type = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_uint(t), count}, 2);
+    const uint32_t vector_merge = begin_if(t, whole);
+    {
+        enum { SPV_OP_COMPOSITE_CONSTRUCT = 80 };
+        const uint32_t vector = count == 2 ? value(t, SPV_OP_COMPOSITE_CONSTRUCT, vector_type, 2, values[0], values[1])
+                                           : value(t, SPV_OP_COMPOSITE_CONSTRUCT, vector_type, 4, values[0], values[1], values[2], values[3]);
+        const uint32_t pointer = value(t, SPV_OP_CONVERT_U_TO_PTR, spirv_type_pointer(&t->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, vector_type), 1, at);
+        spirv_emit(&t->m, t->out, SPV_OP_STORE, (const uint32_t[]){pointer, vector, SPV_MEMORY_ACCESS_ALIGNED, bytes}, 4);
+    }
+    end_if(t, vector_merge);
+    const uint32_t split_merge = begin_if(t, value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, whole));
+    for (uint32_t i = 0; i < count; i++) checked_store_dword(t, r, base, offset, first + i, values[i]);
+    end_if(t, split_merge);
+}
+
 /* buffer_load/store_format_*: the data format is the descriptor's, so the shader decides as it runs.
    Done exactly:
    - stores of whole 32-bit components (DATA_FORMAT 32 to 32_32_32_32; uint, sint or float), at least
@@ -1525,7 +1558,9 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
             write_vgpr(t, vdata + c, result);
         }
     } else {
-        for (uint32_t i = 0; i < components; i++) checked_store_dword(t, range, base, offset, i, load(t, t_uint(t), vgpr(t, vdata + i)));
+        uint32_t words[4] = {0};
+        for (uint32_t i = 0; i < components; i++) words[i] = load(t, t_uint(t), vgpr(t, vdata + i));
+        checked_store_dwords(t, range, base, offset, 0, words, components);
     }
     end_if(t, raw_merge);
     if (load_op) {
@@ -1566,10 +1601,11 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
                              bits);
             halves[m] = half_nearest_even(t, bits);
         }
+        uint32_t packed[2];
         for (unsigned d = 0; d < 2; d++)
-            checked_store_dword(t, range, base, offset, d,
-                                value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, halves[2 * d],
-                                      value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, halves[2 * d + 1], konst(t, 16))));
+            packed[d] = value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, halves[2 * d],
+                              value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, halves[2 * d + 1], konst(t, 16)));
+        checked_store_dwords(t, range, base, offset, 0, packed, 2);
         end_if(t, half_merge);
     }
 
@@ -1622,9 +1658,12 @@ static void buffer_memory(translator *t, const uint32_t *w, const gcn_instructio
         return;
     }
     const uint32_t merge = begin_if(t, exec_bit(t));
-    for (uint32_t i = 0; i < dwords; i++) {
-        if (load_op) write_vgpr(t, vdata + i, checked_load_dword(t, &range, base, offset, i));
-        else checked_store_dword(t, &range, base, offset, i, load(t, t_uint(t), vgpr(t, vdata + i)));
+    if (load_op) {
+        for (uint32_t i = 0; i < dwords; i++) write_vgpr(t, vdata + i, checked_load_dword(t, &range, base, offset, i));
+    } else {
+        uint32_t words[4] = {0};
+        for (uint32_t i = 0; i < dwords; i++) words[i] = load(t, t_uint(t), vgpr(t, vdata + i));
+        checked_store_dwords(t, &range, base, offset, 0, words, dwords);
     }
     end_if(t, merge);
 }
