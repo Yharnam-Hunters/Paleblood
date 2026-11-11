@@ -423,6 +423,8 @@ static void store_resources(void)
     CHECK(count == 0 && unknown);
     CHECK(gcn_buffer_store_resources(PROGRAM(image_copy), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
     CHECK(count == 0 && !unknown);
+}
+
 /* A buffer_store_dwordx4 translates to a valid module that holds a store of the whole 4-dword vector
    (an OpTypePointer, opcode 32, in PhysicalStorageBuffer, 5349, to a vector, opcode 23, of four 32-bit
    unsigned integers): stores of separate dwords cross the bus to host memory a dword at a time.
