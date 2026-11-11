@@ -218,7 +218,7 @@ static void descriptor_guards(void)
         if (variant == 0) { user[11] |= 1u << 16; reason = "require relative and physical mip zero"; }
         if (variant == 1) { user[11] = (user[11] & ~15u) | 1; reason = "swizzle must preserve"; }
         if (variant == 2) { user[12] = 11u << 13; reason = "dimensions, layers or pitch"; }
-        if (variant == 3) { user[11] = (user[11] & 0x0fffffffu) | RT_IMAGE_3D << 28; reason = "compute volume"; }
+        if (variant == 3) { user[11] = (user[11] & 0x0fffffffu) | (uint32_t)RT_IMAGE_3D << 28; reason = "compute volume"; }
         if (variant == 4) { user[9] = (user[9] & ~(63u << 20 | 15u << 26)) | 35u << 20; reason = "compressed and sRGB"; }
         if (variant == 5) { user[9] = (user[9] & ~(63u << 20 | 15u << 26)) | 10u << 20 | 9u << 26; reason = "compressed and sRGB"; }
         if (variant == 6) { user[11] = (user[11] & ~(31u << 20)) | 1u << 20; reason = "compute image layout"; }
