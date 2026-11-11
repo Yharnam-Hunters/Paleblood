@@ -144,6 +144,9 @@ python3 tools/boot.py --no-record --game-lib build/game/libbbgame.so \
     --display headless --display-capture frames/ --input-script "45:down,47:cross" --timeout 120
 ```
 
+Character creation's contract needs a name: `--keyboard-text Hunter` answers the on-screen
+keyboard as if that name was typed (without it the keyboard is canceled).
+
 Plain `python3 tools/boot.py` (no options) runs without the replacements, display, sound or
 input, and records how far the boot gets.
 

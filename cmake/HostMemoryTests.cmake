@@ -25,7 +25,7 @@ if(APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     target_include_directories(test_direct_memory_darwin PRIVATE "${PB_HOST_MEMORY_ROOT}/runtime/include")
     target_link_libraries(test_direct_memory_darwin PRIVATE Threads::Threads)
     target_sources(test_direct_memory_darwin PRIVATE "${PB_HOST_MEMORY_ROOT}/runtime/process.c"
-        "${PB_HOST_MEMORY_ROOT}/runtime/syslib/kernel.c")
+        "${PB_HOST_MEMORY_ROOT}/runtime/syslib/kernel.c" "${PB_HOST_MEMORY_ROOT}/runtime/write_watch.c")
     add_test(NAME direct_memory_darwin COMMAND test_direct_memory_darwin)
     set_tests_properties(direct_memory_darwin PROPERTIES TIMEOUT 20)
 endif()
