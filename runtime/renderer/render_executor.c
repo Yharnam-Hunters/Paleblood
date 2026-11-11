@@ -914,7 +914,7 @@ static int stop_reason(uint32_t code, char *error, size_t error_size)
 {
     if (code >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_BUFFER_FORMAT)
         return failed(error, error_size, "a %u-component buffer %s with format DATA_FORMAT %u, NUM_FORMAT %u%s at run time: only whole "
-                      "32-bit uint, sint or float components, 8- and 16-bit uint and sint and 8-bit unorm loads, and "
+                      "32-bit uint, sint or float components, 8- and 16-bit uint, sint and unorm loads, and "
                       "four-component 8_8_8_8 unorm stores, are done yet", code & 0x7,
                       code & 0x80 ? "store" : "load", code >> 8 & 0xf, code >> 4 & 0x7, code & 8 ? " and a swizzle" : "");
     if (code >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_VCC_UNKNOWN)
