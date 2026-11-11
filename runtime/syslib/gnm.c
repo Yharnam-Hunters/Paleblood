@@ -464,7 +464,7 @@ static void collect(const char *fn, void (*perform)(const rt_gpu_step *), const 
         list->steps = grown, list->capacity = capacity;
     }
     rt_gpu_step *const step = &list->steps[list->count++];
-    step->perform = perform, step->function = fn, step->offset = packet_offset;
+    step->perform = perform, step->function = fn, step->offset = packet_offset, step->flags = 0, step->holds = NULL;
     memcpy(step->words, words, sizeof step->words);
 }
 
@@ -498,6 +498,7 @@ static void write_completion(const char *fn, uint32_t data_size, uint32_t addres
         const uint64_t words[6] = {data_size, address_low, address_high, data_low, data_high,
                                    interrupt.select | (uint64_t)interrupt.number << INTERRUPT_NUMBER_SHIFT};
         collect(fn, completion_step, words);
+        collecting->steps[collecting->count - 1].flags = RT_GPU_STEP_DEFERRABLE; /* a write after work: may come later, in order */
         return;
     }
     perform_completion(fn, data_size, address_low, address_high, data_low, data_high, interrupt);
@@ -555,6 +556,25 @@ typedef struct {
 
 static int wait_holds(const char *fn, const wait_reg_mem_packet *packet);
 
+static int wait_compare(const char *fn, const wait_reg_mem_packet *packet, uint32_t value);
+static void completion_step(const rt_gpu_step *step);
+
+/* rt_gpu_step's holds for a collected WAIT_REG_MEM: with pending NULL, whether it holds now; otherwise
+   whether `pending`, an earlier completion write not yet performed, writes the address it waits on
+   with a value that makes it hold (its low 32 bits, which the wait reads). */
+static int wait_step_holds(const rt_gpu_step *step, const rt_gpu_step *pending)
+{
+    const wait_reg_mem_packet packet = {(uint32_t)step->words[0], (uint32_t)step->words[1], (uint32_t)step->words[2],
+                                        (uint32_t)step->words[3], (uint32_t)step->words[4], (uint32_t)step->words[5]};
+    if (!pending) return wait_holds(step->function, &packet);
+    if (pending->perform != completion_step) return 0;
+    const uint32_t size = (uint32_t)pending->words[0];
+    if (size != RELEASE_MEM_DATA_32_BITS && size != RELEASE_MEM_DATA_64_BITS) return 0;
+    const uint64_t written = (uint32_t)pending->words[1] | (uint64_t)((uint32_t)pending->words[2] & RELEASE_MEM_ADDRESS_HIGH_MASK) << 32;
+    const uint64_t waited = packet.address_low | (uint64_t)(packet.address_high & RELEASE_MEM_ADDRESS_HIGH_MASK) << 32;
+    return written == waited && wait_compare(step->function, &packet, (uint32_t)pending->words[3] & packet.mask);
+}
+
 static void wait_step(const rt_gpu_step *step)
 {
     const wait_reg_mem_packet packet = {(uint32_t)step->words[0], (uint32_t)step->words[1], (uint32_t)step->words[2],
@@ -575,6 +595,7 @@ static void check_wait(const char *fn, const wait_reg_mem_packet *packet)
         const uint64_t words[6] = {packet->control, packet->address_low, packet->address_high, packet->reference, packet->mask,
                                    packet->poll_interval};
         collect(fn, wait_step, words);
+        collecting->steps[collecting->count - 1].holds = wait_step_holds;
         return;
     }
     if (!wait_holds(fn, packet)) rt_fatal(fn, "a GPU wait on memory that does not yet hold what it waits for");
@@ -585,7 +606,13 @@ static int wait_holds(const char *fn, const wait_reg_mem_packet *packet)
 {
     const volatile uint32_t *address = (const volatile uint32_t *)(uintptr_t)(packet->address_low |
                                        (uint64_t)(packet->address_high & RELEASE_MEM_ADDRESS_HIGH_MASK) << 32);
-    const uint32_t value = __atomic_load_n(address, __ATOMIC_ACQUIRE) & packet->mask, reference = packet->reference;
+    return wait_compare(fn, packet, __atomic_load_n(address, __ATOMIC_ACQUIRE) & packet->mask);
+}
+
+/* Whether a WAIT_REG_MEM's compare holds for a (masked) value. */
+static int wait_compare(const char *fn, const wait_reg_mem_packet *packet, uint32_t value)
+{
+    const uint32_t reference = packet->reference;
     int holds;
     switch (packet->control & WAIT_FUNCTION_MASK) {
     case 0: holds = 1; break;
