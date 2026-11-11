@@ -422,6 +422,16 @@ static const uint32_t image_to_buffer_3d_slice0[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* Per lane i, texel (i, 0) of the image in s[8:15] gets float(i) as the shader's w component alone
+   (DMASK 8): with DST_SEL (0, 0, 0, x) it lands in a one-component image's x. */
+static const uint32_t image_fill_alpha[] = {
+    0x7e080d00, /* v_cvt_f32_u32_e32 v4, v0 */
+    0x7e020300, /* v_mov_b32_e32 v1, v0 */
+    0x7e040280, /* v_mov_b32_e32 v2, 0 */
+    0xf0200800, 0x00020401, /* image_store v4, v[1:2], s[8:15] dmask:0x8 */
+    0xbf810000, /* s_endpgm */
+};
+
 /* A clear: every lane of a 16 x 16 group stores (0.25, 0.5, 0.75, 1) at its (x, y), v0 and v1, of the
    image in s[8:15]. */
 static const uint32_t image_clear_tile[] = {

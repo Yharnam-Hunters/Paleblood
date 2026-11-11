@@ -1883,6 +1883,41 @@ int main(void)
             }
         }
 
+        /* A one-component storage image with DST_SEL (0, 0, 0, x), as the game's alpha-only images: a store
+           of the shader's w alone (DMASK 8) writes x; read back through the identity it is x, and through
+           the same DST_SEL it is (0, 0, 0, x). */
+        {
+            enum { ALPHA_CODE = 0x5800, ALPHA_IMAGE = IMAGE_A + 0xc0000, TO_ALPHA = 0 | 0 << 3 | 0 << 6 | 4 << 9 };
+            memcpy((void *)(uintptr_t)at(ALPHA_CODE), image_fill_alpha, sizeof image_fill_alpha);
+            for (int read_swizzled = 0; read_swizzled < 2; read_swizzled++) {
+                rt_render_forget(), rt_executor_reset(x);
+                for (unsigned i = 0; i < LANES * 4; i++) back[i] = -1;
+                uint32_t offset = 0x10;
+                for (int pass = 0; pass < 2; pass++) {
+                    const uint64_t code = pass ? codes[2] : at(ALPHA_CODE);
+                    const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x3, 16 << 1, LANES, 1, 1};
+                    CHECK(rt_render_record_compute_shader_at(IMAGES + offset, shader) == 0);
+                    memset(user, 0, sizeof user);
+                    if (pass) descriptor(user, at(BACK), 16);
+                    image_descriptor(image_a, at(ALPHA_IMAGE), 4, 7, LANES, 1); /* 32 float */
+                    if (!pass || read_swizzled) image_a[3] = (image_a[3] & ~0xfffu) | TO_ALPHA;
+                    memcpy(user + 8, image_a, sizeof image_a);
+                    CHECK(rt_render_record_user_data(IMAGES, offset + 0x10, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+                    CHECK(rt_render_record_user_data(IMAGES, offset + 0x20, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
+                    CHECK(rt_render_record_dispatch(IMAGES, offset + 0x30, one, error, sizeof error) == 0);
+                    offset += 0x40;
+                }
+                const int ran = rt_executor_run(x, IMAGES, offset, error, sizeof error);
+                if (ran) fprintf(stderr, "alpha storage image: %s\n", error);
+                CHECK(ran == 0);
+                int right = 1;
+                for (unsigned i = 0; i < LANES; i++)
+                    right &= read_swizzled ? back[i * 4] == 0 && back[i * 4 + 1] == 0 && back[i * 4 + 2] == 0 && back[i * 4 + 3] == (float)i
+                                           : back[i * 4] == (float)i;
+                CHECK(right);
+            }
+        }
+
         /* A compute shader's stores to an sRGB image (8_8_8_8, NUM_FORMAT 9) go out as UNORM, unconverted
            (Vulkan has no sRGB storage images); a draw sampling the same memory as sRGB then reads those
            texels, not the guest memory's (zeros here): row 0's texels hold (min(i, 1), 1, 1, 0.5), so pixel

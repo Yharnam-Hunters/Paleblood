@@ -2587,17 +2587,6 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
 
 enum { DST_SEL_ZERO = 0, DST_SEL_ONE = 1, DST_SEL_X = 4, DST_SEL_IDENTITY = 4 | 5 << 3 | 6 << 6 | 7 << 9 };
 
-/* Whether DST_SEL names x, y, z and w once each (in any order). */
-static int swizzle_permutes(uint32_t swizzle)
-{
-    unsigned seen = 0;
-    for (unsigned k = 0; k < 4; k++) {
-        const uint32_t sel = swizzle >> (3 * k) & 7;
-        if (sel < DST_SEL_X) return 0;
-        seen |= 1u << (sel - DST_SEL_X);
-    }
-    return seen == 0xf;
-}
 
 /* A view of an image's layers first to first + count - 1, as its descriptor's type has it (an array
    stays an array), its components picked by swizzle (DST_SEL: 0 zero, 1 one, 4-7 x, y, z, w). A
@@ -2787,20 +2776,21 @@ static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64
             d.num_format = NUM_FORMAT_UNORM;
         }
         if (image_format(&d, &f, error, error_size)) return -1;
-        /* a sampled view picks the format's components, or 0 or 1 (a component the format lacks is not
-           established); a storage image's DST_SEL keeps each component in place, or for four components
-           may permute them (the translator swizzles its loads and stores, as shadPS4 does) */
-        const int permutes = !pixel && f.components == 4 && swizzle_permutes(d.swizzle);
-        for (unsigned k = 0; k < (pixel ? 4 : f.components) && !permutes; k++) {
+        /* DST_SEL picks texel components, or 0 or 1. A sampled view takes it as its component mapping, of
+           the format's components (one the format lacks is not established). A storage image's loads and
+           stores are swizzled by the translator (shadPS4 swizzles storage images in the shader too), which
+           checks that each of the format's components is stored; a load of a component the format lacks
+           reads what Vulkan gives (0, and 1 for alpha). */
+        for (unsigned k = 0; k < 4; k++) {
             const uint32_t sel = d.swizzle >> (3 * k) & 7;
-            const int ok = pixel ? sel == DST_SEL_ZERO || sel == DST_SEL_ONE || (sel >= DST_SEL_X && sel < DST_SEL_X + f.components)
-                                 : sel == DST_SEL_X + k;
-            if (!ok) return failed(error, error_size, "an image with swizzle %#x and %u components: not done yet", d.swizzle, f.components);
+            if (sel != DST_SEL_ZERO && sel != DST_SEL_ONE && (sel < DST_SEL_X || (pixel && sel >= DST_SEL_X + f.components)))
+                return failed(error, error_size, "an image with swizzle %#x and %u components: not done yet", d.swizzle, f.components);
         }
+        const int storage_swizzled = !pixel && d.swizzle != DST_SEL_IDENTITY;
         const int one_d = one_dimensional(d.type);
         bindings[i] = (gcn_image_binding){*origin, one_d ? GCN_IMAGE_1D : three_d ? GCN_IMAGE_3D : GCN_IMAGE_2D,
                                           d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY || cube, f.type, f.components, pixel, whole_cube,
-                                          permutes && d.swizzle != DST_SEL_IDENTITY ? d.swizzle : 0};
+                                          storage_swizzled ? d.swizzle : 0};
         if (formats) formats[i] = f.format;
         image_entry *e = image_for(x, &d, &f, resources[i].access, error, error_size);
         /* a sampled cube is viewed whole, its faces as layers (the shader names the face) */

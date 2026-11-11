@@ -2409,11 +2409,24 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
     }
     const unsigned axes = b->dim == GCN_IMAGE_1D ? 1 : b->dim == GCN_IMAGE_2D ? 2 : 3;
     const unsigned coordinates = axes + (b->arrayed ? 1 : 0);
-    const unsigned format_mask = (1u << b->components) - 1;
-    if (op == MIMG_OP_STORE && (dmask & format_mask) != format_mask) {
-        fail(t, "%s: DMASK %#x with a %u-component format: partial stores are not translated yet", name, dmask, b->components);
-        return;
-    }
+    /* The storage image's DST_SEL (identity when the binding has none): shader component k is 0 (0), 1 (1)
+       or texel component m (4 + m). A load swizzles by it, a store by its inverse, as shadPS4 does for
+       storage images. DMASK names the shader components a store's VGPRs hold, in order; every texel
+       component of the format must come from exactly one of them. */
+    enum { SEL_ZERO = 0, SEL_ONE = 1, SEL_X = 4 };
+    unsigned sel[4], writer[4] = {0};
+    for (unsigned k = 0; k < 4; k++) sel[k] = b->swizzle ? (b->swizzle >> (3 * k) & 7) : SEL_X + k;
+    if (op == MIMG_OP_STORE)
+        for (unsigned m = 0; m < b->components; m++) {
+            unsigned writers = 0;
+            for (unsigned k = 0; k < 4; k++)
+                if ((dmask >> k & 1) && sel[k] == SEL_X + m) writer[m] = k, writers++;
+            if (writers != 1) {
+                fail(t, "%s: DMASK %#x and DST_SEL %#x with a %u-component format: partial stores are not translated yet", name, dmask,
+                     b->swizzle, b->components);
+                return;
+            }
+        }
     const uint32_t ivec = coordinates == 1 ? t_int(t) : spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_int(t), coordinates}, 2);
     uint32_t c[4];
     for (unsigned i = 0; i < coordinates; i++) c[i] = value(t, SPV_OP_BITCAST, t_int(t), 1, load(t, t_uint(t), vgpr(t, vaddr + i)));
@@ -2453,16 +2466,12 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
     }
     const uint32_t merge = begin_if(t, op == MIMG_OP_STORE || load_checked ? value(t, SPV_OP_LOGICAL_AND, t_bool(t), 2, exec_bit(t), in_range)
                                                                          : exec_bit(t));
-    /* the storage image's DST_SEL: shader component k is texel component place[k] (shadPS4 swizzles a
-       storage image's loads by DST_SEL and its stores by the inverse) */
-    unsigned place[4] = {0, 1, 2, 3};
-    if (b->swizzle)
-        for (unsigned k = 0; k < 4; k++) place[k] = (b->swizzle >> (3 * k) & 7) - 4;
     if (op == MIMG_OP_STORE) {
         uint32_t texel[4];
-        for (unsigned i = 0; i < 4; i++) {
-            const uint32_t bits = i < b->components ? load(t, t_uint(t), vgpr(t, vdata + i)) : konst(t, 0);
-            texel[place[i]] = b->type == GCN_IMAGE_UINT ? bits : value(t, SPV_OP_BITCAST, sampled, 1, bits);
+        for (unsigned m = 0; m < 4; m++) {
+            const unsigned k = writer[m], held_before = (unsigned)__builtin_popcount(dmask & ((1u << k) - 1));
+            const uint32_t bits = m < b->components ? load(t, t_uint(t), vgpr(t, vdata + held_before)) : konst(t, 0);
+            texel[m] = b->type == GCN_IMAGE_UINT ? bits : value(t, SPV_OP_BITCAST, sampled, 1, bits);
         }
         const uint32_t vec = value(t, SPV_OP_COMPOSITE_CONSTRUCT, texel_type, 4, texel[0], texel[1], texel[2], texel[3]);
         spirv_emit(&t->m, t->out, SPV_OP_IMAGE_WRITE, (const uint32_t[]){image, coordinate, vec}, 3);
@@ -2472,7 +2481,13 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
         unsigned next = vdata;
         for (unsigned i = 0; i < 4; i++) {
             if (!(dmask >> i & 1)) continue;
-            const uint32_t component = value(t, SPV_OP_COMPOSITE_EXTRACT, sampled, 2, texel, place[i]);
+            enum { FLOAT_ONE = 0x3f800000 };
+            const int integer = b->type != GCN_IMAGE_FLOAT;
+            if (sel[i] == SEL_ZERO || sel[i] == SEL_ONE) { /* a constant: 0, or 1 as the format's numbers have it */
+                write_vgpr(t, next++, konst(t, sel[i] == SEL_ZERO ? 0 : integer ? 1 : FLOAT_ONE));
+                continue;
+            }
+            const uint32_t component = value(t, SPV_OP_COMPOSITE_EXTRACT, sampled, 2, texel, sel[i] - SEL_X);
             write_vgpr(t, next++, b->type == GCN_IMAGE_UINT ? component : value(t, SPV_OP_BITCAST, t_uint(t), 1, component));
         }
         t->reads_images = 1;
