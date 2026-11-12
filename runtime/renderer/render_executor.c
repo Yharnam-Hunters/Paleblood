@@ -43,6 +43,17 @@ enum { PERSP_CENTER_ENA = 0x2, POS_X_FLOAT_ENA = 0x100, POS_Y_FLOAT_ENA = 0x200,
 /* SPI_BARYC_CNTL's FRONT_FACE_ALL_BITS (bit 24), and where a pixel shader's settings (below) carry it: SPI_PS_INPUT_ADDR uses bits 0-15 */
 #define FRONT_FACE_ALL_BITS (1u << 24)
 #define SETTINGS_FRONT_FACE_ALL_BITS (1u << 31)
+/* and DB_SHADER_CONTROL's depth export enables (GCN_DEPTH_EXPORT_*: bits 0-2 and 8) in bits 16-24, when SPI_SHADER_Z_FORMAT
+   exports anything */
+#define SETTINGS_DEPTH_EXPORT_SHIFT 16
+#define SETTINGS_DEPTH_EXPORT (0x1ffu << SETTINGS_DEPTH_EXPORT_SHIFT)
+
+static uint32_t pixel_settings(const rt_pixel_shader *p)
+{
+    const uint32_t exports = p->depth_format ? p->depth_control & (GCN_DEPTH_EXPORT_Z | GCN_DEPTH_EXPORT_STENCIL | GCN_DEPTH_EXPORT_MASK) : 0;
+    return (p->input_address & 0xffff) | (p->barycentric_control & FRONT_FACE_ALL_BITS ? SETTINGS_FRONT_FACE_ALL_BITS : 0u) |
+           exports << SETTINGS_DEPTH_EXPORT_SHIFT;
+}
 
 /* The VGPR where the pixel input at `bit` of SPI_PS_INPUT_ADDR starts: after every enabled input below it. */
 static unsigned pixel_input_vgpr(uint32_t input_address, unsigned bit)
@@ -914,7 +925,7 @@ static int stop_reason(uint32_t code, char *error, size_t error_size)
 {
     if (code >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_BUFFER_FORMAT)
         return failed(error, error_size, "a %u-component buffer %s with format DATA_FORMAT %u, NUM_FORMAT %u%s at run time: only whole "
-                      "32-bit uint, sint or float components, 8- and 16-bit uint and sint and 8-bit unorm loads, and "
+                      "32-bit uint, sint or float components, 8- and 16-bit uint, sint and unorm loads, and "
                       "four-component 8_8_8_8 unorm stores, are done yet", code & 0x7,
                       code & 0x80 ? "store" : "load", code >> 8 & 0xf, code >> 4 & 0x7, code & 8 ? " and a swizzle" : "");
     if (code >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_VCC_UNKNOWN)
@@ -2126,7 +2137,7 @@ static pass_entry *pass_for(rt_executor *x, target_entry *const colors[RT_COLOR_
 /* ---- shaders and pipelines ---- */
 
 /* The code's length is found by the translator; it may read up to the end of the guest memory. */
-/* settings: a vertex shader's PA_CL_VS_OUT_CNTL, a pixel shader's SPI_PS_INPUT_ADDR with SETTINGS_FRONT_FACE_ALL_BITS (part of the
+/* settings: a vertex shader's PA_CL_VS_OUT_CNTL, a pixel shader's pixel_settings (part of the
    cache key, as are a pixel shader's input_controls: GCN_PIXEL_INPUTS words, or NULL). */
 static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint32_t user_sgprs, uint32_t settings,
                                  const gcn_image_binding *images, unsigned image_count, const gcn_resource_origin *samplers,
@@ -2169,7 +2180,7 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
                                           .first_binding = first_binding, .user_data_read = user_read};
         result = gcn_translate_vertex(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
     } else {
-        const uint32_t inputs = settings & ~SETTINGS_FRONT_FACE_ALL_BITS; /* a pixel shader's SPI_PS_INPUT_ADDR */
+        const uint32_t inputs = settings & ~(SETTINGS_FRONT_FACE_ALL_BITS | SETTINGS_DEPTH_EXPORT); /* a pixel shader's SPI_PS_INPUT_ADDR */
         const gcn_pixel_layout layout = {.user_sgprs = user_sgprs, .barycentric_vgpr = pixel_input_vgpr(inputs, 1),
                                          .position_enable = (inputs & POS_X_FLOAT_ENA ? GCN_PIXEL_POSITION_X : 0u) |
                                                             (inputs & POS_Y_FLOAT_ENA ? GCN_PIXEL_POSITION_Y : 0u),
@@ -2179,6 +2190,7 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
                                          .address_offset = x->address_offset, .error_address = stop_slot(x, 0, x->shader_count),
                                          .images = images, .image_count = image_count, .samplers = samplers,
                                          .sampler_count = sampler_count, .input_controls = input_controls,
+                                         .depth_export = (settings & SETTINGS_DEPTH_EXPORT) >> SETTINGS_DEPTH_EXPORT_SHIFT,
                                          .user_data_read = user_read};
         result = gcn_translate_pixel(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
     }
@@ -2547,9 +2559,7 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     if (!vertex) return -1;
     const VkShaderModule pixel = depth_only ? VK_NULL_HANDLE
                                             : shader_for(x, STAGE_PIXEL, s->pixel.code, s->pixel.user_sgprs,
-                                                         s->pixel.input_address |
-                                                             (s->pixel.barycentric_control & FRONT_FACE_ALL_BITS ? SETTINGS_FRONT_FACE_ALL_BITS : 0u),
-                                                         bindings,
+                                                         pixel_settings(&s->pixel), bindings,
                                                          image_count, sampler_origins, sampler_count, 0, 0,
                                                          s->ps_input_control_set ? s->ps_input_control : NULL, &pixel_read, error, error_size);
     if (!depth_only && !pixel) return -1;
@@ -2692,7 +2702,8 @@ typedef struct {
    targets), 10 8_8_8_8, 11 32_32, 12 16_16_16_16, 14 32_32_32_32, and the block-compressed 35 BC1 to 41 BC7
    (4 x 4 texels in 8 bytes for BC1 and BC4, 16 for the others; shadPS4's pixel_format.h numbers them
    the same); number formats 0 unorm, 1 snorm, 4 uint, 5 sint, 7 float, 9 sRGB. BC1 keeps its one-bit
-   alpha (Vulkan's RGBA form). BC6 stops by name until its number formats are established. */
+   alpha (Vulkan's RGBA form). BC6 (40) is BC6H's half floats, unsigned under number format 0 and signed
+   under 1 (shadPS4's liverpool_to_vk.cpp maps them so; the clinic's environment textures are BC6 unorm). */
 static int image_format(const rt_image_descriptor *d, texel_format *f, char *error, size_t error_size)
 {
     static const struct {
@@ -2704,12 +2715,15 @@ static int image_format(const rt_image_descriptor *d, texel_format *f, char *err
         {14, 7, {VK_FORMAT_R32G32B32A32_SFLOAT, GCN_IMAGE_FLOAT, 4, 16, 1}}, {10, 0, {VK_FORMAT_R8G8B8A8_UNORM, GCN_IMAGE_FLOAT, 4, 4, 1}}, {10, 4, {VK_FORMAT_R8G8B8A8_UINT, GCN_IMAGE_UINT, 4, 4, 1}},
         {10, 9, {VK_FORMAT_R8G8B8A8_SRGB, GCN_IMAGE_FLOAT, 4, 4, 1}},
         {2, 7, {VK_FORMAT_R16_SFLOAT, GCN_IMAGE_FLOAT, 1, 2, 1}}, {5, 7, {VK_FORMAT_R16G16_SFLOAT, GCN_IMAGE_FLOAT, 2, 4, 1}},
+        {2, 0, {VK_FORMAT_R16_UNORM, GCN_IMAGE_FLOAT, 1, 2, 1}}, {5, 0, {VK_FORMAT_R16G16_UNORM, GCN_IMAGE_FLOAT, 2, 4, 1}},
+        {12, 0, {VK_FORMAT_R16G16B16A16_UNORM, GCN_IMAGE_FLOAT, 4, 8, 1}},
         {12, 7, {VK_FORMAT_R16G16B16A16_SFLOAT, GCN_IMAGE_FLOAT, 4, 8, 1}}, {6, 7, {VK_FORMAT_B10G11R11_UFLOAT_PACK32, GCN_IMAGE_FLOAT, 3, 4, 1}},
         {35, 0, {VK_FORMAT_BC1_RGBA_UNORM_BLOCK, GCN_IMAGE_FLOAT, 4, 8, 4}}, {35, 9, {VK_FORMAT_BC1_RGBA_SRGB_BLOCK, GCN_IMAGE_FLOAT, 4, 8, 4}},
         {36, 0, {VK_FORMAT_BC2_UNORM_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}}, {36, 9, {VK_FORMAT_BC2_SRGB_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}},
         {37, 0, {VK_FORMAT_BC3_UNORM_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}}, {37, 9, {VK_FORMAT_BC3_SRGB_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}},
         {38, 0, {VK_FORMAT_BC4_UNORM_BLOCK, GCN_IMAGE_FLOAT, 1, 8, 4}}, {38, 1, {VK_FORMAT_BC4_SNORM_BLOCK, GCN_IMAGE_FLOAT, 1, 8, 4}},
         {39, 0, {VK_FORMAT_BC5_UNORM_BLOCK, GCN_IMAGE_FLOAT, 2, 16, 4}}, {39, 1, {VK_FORMAT_BC5_SNORM_BLOCK, GCN_IMAGE_FLOAT, 2, 16, 4}},
+        {40, 0, {VK_FORMAT_BC6H_UFLOAT_BLOCK, GCN_IMAGE_FLOAT, 3, 16, 4}}, {40, 1, {VK_FORMAT_BC6H_SFLOAT_BLOCK, GCN_IMAGE_FLOAT, 3, 16, 4}},
         {41, 0, {VK_FORMAT_BC7_UNORM_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}}, {41, 9, {VK_FORMAT_BC7_SRGB_BLOCK, GCN_IMAGE_FLOAT, 4, 16, 4}},
     };
     for (size_t i = 0; i < sizeof formats / sizeof *formats; i++)
@@ -2926,11 +2940,21 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
         failed(error, error_size, "a shader writing an image at %#llx that is also a render target: not done yet", (unsigned long long)d->address);
         return NULL;
     }
-    for (size_t i = 0; i < x->depth_count; i++)
-        if (x->depths[i].z_address == d->address || x->depths[i].stencil_address == d->address) {
-            failed(error, error_size, "an image at %#llx that is also a depth target: not done yet", (unsigned long long)d->address);
+    /* a depth target's 32-bit float depth is written back to its memory (write_back_depths) before an image
+       over it loads (unwritten_target_over), so a shader may read it as an image of the same layout; its
+       stencil is not written back, and nothing writes a depth target's memory as an image */
+    for (size_t i = 0; i < x->depth_count; i++) {
+        const depth_entry *z = &x->depths[i];
+        if (z->z_address != d->address && z->stencil_address != d->address) continue;
+        const int written_back = z->format == VK_FORMAT_D32_SFLOAT || z->format == VK_FORMAT_D32_SFLOAT_S8_UINT;
+        if (z->z_address != d->address || (access & GCN_IMAGE_WRITE) || !written_back || f->bytes != 4 || f->block != 1 ||
+            d->tiling_index != z->tile_index) {
+            failed(error, error_size, "an image at %#llx that is also a depth target (%s, tiling index %u, the depth's %u): not done yet",
+                   (unsigned long long)d->address, z->z_address != d->address ? "its stencil" : (access & GCN_IMAGE_WRITE) ? "written" : "read",
+                   d->tiling_index, z->tile_index);
             return NULL;
         }
+    }
     image_entry *e = NULL;
     for (size_t i = 0; i < x->image_count && !e; i++) {
         image_entry *k = &x->images[i];
@@ -3275,13 +3299,17 @@ static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64
    0-2, 3-5, 6-8, MAX_ANISO_RATIO 9-11, DEPTH_COMPARE_FUNC 12-14, FORCE_UNNORMALIZED 15, then
    ANISO_THRESHOLD, MC_COORD_TRUNC, FORCE_DEGAMMA, ANISO_BIAS, TRUNC_COORD, DISABLE_CUBE_WRAP and
    FILTER_MODE 29-30; word 1 MIN_LOD and MAX_LOD; word 2 LOD_BIAS, XY_MAG_FILTER bits 20-21,
-   XY_MIN_FILTER 22-23, Z_FILTER, MIP_FILTER 26-27; word 3 the border colour. Clamp modes: 0 wrap,
-   1 mirror, 2 clamp to the last texel, 3-7 mirror-once and border modes. Filters: 0 point, 1 bilinear,
+   XY_MIN_FILTER 22-23, Z_FILTER, MIP_FILTER 26-27; word 3 BORDER_COLOR_PTR bits 0-11 and
+   BORDER_COLOR_TYPE 30-31 (0 transparent black, 1 opaque black, 2 opaque white, 3 a colour from a
+   table). Clamp modes: 0 wrap, 1 mirror, 2 clamp to the last texel, 6 clamp to the border colour,
+   3-5 and 7 the mirror-once and half-border modes. Filters: 0 point, 1 bilinear,
    2 anisotropic point, 3 anisotropic bilinear; MAX_ANISO_RATIO 0-4 allows 1, 2, 4, 8 or 16 samples (shadPS4's
    resource.h names them so).
 
-   Made: wrap, mirror and clamp to the last texel (Vulkan's repeat, mirrored repeat and clamp to
-   edge), point or bilinear minifying and magnifying filters (the translator samples at the level the
+   Made: wrap, mirror, clamp to the last texel and clamp to the border colour (Vulkan's repeat,
+   mirrored repeat, clamp to edge and clamp to border, with the float transparent black, opaque
+   black or opaque white border as shadPS4's liverpool_to_vk.cpp maps the three fixed types; a
+   colour from the table stops), point or bilinear minifying and magnifying filters (the translator samples at the level the
    derivatives pick, so Vulkan chooses between them as GCN does), the mip filter (none, point,
    linear), LOD_BIAS, MIN_LOD and MAX_LOD (shadPS4's resource.h scales them: 8 fraction bits, the bias
    signed). The anisotropic filters (XY filters 2 and 3; Mesa's radeonsi switches XY_MAG_FILTER and
@@ -3289,34 +3317,49 @@ static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64
    Vulkan's anisotropy up to MAX_ANISO_RATIO's samples (within the device's limit; without the
    device's anisotropic filtering, the plain filter). ANISO_THRESHOLD and ANISO_BIAS, which tune when
    the hardware takes fewer samples, are not used; with point or bilinear filters the anisotropy
-   fields change nothing. Anything else
-   in word 0 (depth compares, unnormalized coordinates, the truncation and degamma options, a filter
+   fields change nothing. DEPTH_COMPARE_FUNC is applied by the translated program (gcn_spirv.c), the
+   Vulkan sampler compares nothing. Anything else
+   in word 0 (unnormalized coordinates, the truncation and degamma options, a filter
    mode other than blending) stops by name, as do the secondary LOD bias and the LOD rounding options
    in word 2. Z_FILTER (3D images, which are not done), word 1's PERF_MIP and PERF_Z (sampling
-   performance hints) and word 3 (the border colour, for the border modes that stop) are not used. */
+   performance hints) and BORDER_COLOR_PTR (for table colours, which stop) are not used. */
 static VkSampler sampler_for(rt_executor *x, const uint32_t words[4], char *error, size_t error_size)
 {
     for (size_t i = 0; i < x->sampler_count; i++)
         if (!memcmp(x->samplers[i].words, words, sizeof x->samplers[i].words)) return x->samplers[i].sampler;
-    enum { CLAMP_FIELDS = 0x1ff, WRAP = 0, MIRROR = 1, CLAMP_LAST_TEXEL = 2, POINT = 0, BILINEAR = 1, ANISOTROPIC_POINT = 2,
+    enum { CLAMP_FIELDS = 0x1ff, WRAP = 0, MIRROR = 1, CLAMP_LAST_TEXEL = 2, CLAMP_BORDER = 6, POINT = 0, BILINEAR = 1, ANISOTROPIC_POINT = 2,
            ANISOTROPIC_BILINEAR = 3, MAX_ANISO_RATIO_SHIFT = 9, HIGHEST_RATIO = 4 };
-    enum { MAX_ANISO_RATIO = 0x7u << 9, ANISO_THRESHOLD = 0x7u << 16, ANISO_BIAS = 0x3fu << 21 };
+    enum { MAX_ANISO_RATIO = 0x7u << 9, ANISO_THRESHOLD = 0x7u << 16, ANISO_BIAS = 0x3fu << 21, DEPTH_COMPARE_FUNC = 0x7u << 12 };
     const uint32_t anisotropy_fields = MAX_ANISO_RATIO | ANISO_THRESHOLD | ANISO_BIAS;
-    if (words[0] & ~(CLAMP_FIELDS | anisotropy_fields)) {
-        failed(error, error_size, "a sampler with word 0 %#x (depth compares, unnormalized coordinates or filter options): "
+    /* DEPTH_COMPARE_FUNC is the translated program's: it reads the S# for its image_sample_c_lz compares
+       (gcn_spirv.c compared_sample); samples without a compare do not use it */
+    if (words[0] & ~(CLAMP_FIELDS | anisotropy_fields | DEPTH_COMPARE_FUNC)) {
+        failed(error, error_size, "a sampler with word 0 %#x (unnormalized coordinates or filter options): "
                "not done yet", words[0]);
         return VK_NULL_HANDLE;
     }
+    enum { BORDER_COLOR_TYPE_SHIFT = 30, BORDER_TRANSPARENT_BLACK = 0, BORDER_OPAQUE_BLACK = 1, BORDER_OPAQUE_WHITE = 2 };
     VkSamplerAddressMode modes[3];
+    int border = 0;
     for (unsigned axis = 0; axis < 3; axis++) {
         const uint32_t clamp = words[0] >> (3 * axis) & 7;
-        if (clamp > CLAMP_LAST_TEXEL) {
-            failed(error, error_size, "a sampler with clamp mode %u: only wrap, mirror and clamp to the last texel are done yet", clamp);
+        if (clamp > CLAMP_LAST_TEXEL && clamp != CLAMP_BORDER) {
+            failed(error, error_size, "a sampler with clamp mode %u: only wrap, mirror, clamp to the last texel and clamp to the border "
+                   "are done yet", clamp);
             return VK_NULL_HANDLE;
         }
+        border |= clamp == CLAMP_BORDER;
         modes[axis] = clamp == WRAP ? VK_SAMPLER_ADDRESS_MODE_REPEAT : clamp == MIRROR ? VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT
-                                                                     : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+                    : clamp == CLAMP_BORDER ? VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER : VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     }
+    const uint32_t border_type = words[3] >> BORDER_COLOR_TYPE_SHIFT;
+    if (border && border_type > BORDER_OPAQUE_WHITE) {
+        failed(error, error_size, "a sampler clamping to a border colour from the table (BORDER_COLOR_PTR %u): not done yet", words[3] & 0xfff);
+        return VK_NULL_HANDLE;
+    }
+    const VkBorderColor border_color = border_type == BORDER_OPAQUE_WHITE  ? VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE
+                                       : border_type == BORDER_OPAQUE_BLACK ? VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK
+                                                                            : VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
     const uint32_t magnify = words[2] >> 20 & 3, minify = words[2] >> 22 & 3, mip = words[2] >> 26 & 3;
     const int anisotropic = magnify >= ANISOTROPIC_POINT || minify >= ANISOTROPIC_POINT;
     const uint32_t ratio = words[0] >> MAX_ANISO_RATIO_SHIFT & 7;
@@ -3350,6 +3393,7 @@ static VkSampler sampler_for(rt_executor *x, const uint32_t words[4], char *erro
                                       .anisotropyEnable = anisotropy > 1.0f, .maxAnisotropy = anisotropy > 1.0f ? anisotropy : 1.0f,
                                       .mipmapMode = mip == MIP_LINEAR ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST,
                                       .addressModeU = modes[0], .addressModeV = modes[1], .addressModeW = modes[2], .mipLodBias = bias,
+                                      .borderColor = border_color,
                                       .minLod = mip == MIP_NONE ? 0.0f : min_lod, .maxLod = mip == MIP_NONE ? 0.25f : max_lod};
     VkSampler sampler = VK_NULL_HANDLE;
     if (vkCreateSampler(x->device, &info, NULL, &sampler) != VK_SUCCESS) {

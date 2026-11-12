@@ -477,7 +477,7 @@ int main(int argc, char **argv)
         CHECK(unorm);
         memcpy(in_words, saved_in, sizeof saved_in);
         /* 8- and 16-bit components, read byte by byte from records a stride apart (any alignment), x
-           first and little-endian: uint zero-extended, sint sign-extended, 8-bit unorm v / 255; the
+           first and little-endian: uint zero-extended, sint sign-extended, unorm v / 255 or v / 65535; the
            format's missing components read 0, DST_SEL 1 is 1 (1.0 for unorm). */
         {
             uint8_t *const bytes = (uint8_t *)in_words;
@@ -493,6 +493,7 @@ int main(int argc, char **argv)
                 {12, 5, 10, 4 | 5 << 3 | 6 << 6 | 7 << 9, "16_16_16_16 sint, stride 10 (3 dwords when 2 past a boundary)"},
                 {3, 0, 2, 4 | 5 << 3 | 6 << 6 | 1 << 9, "8_8 unorm, stride 2, DST_SEL x, y, z (missing), 1"},
                 {10, 4, 5, 7 | 6 << 3 | 5 << 6 | 4 << 9, "8_8_8_8 uint, stride 5, DST_SEL w, z, y, x"},
+                {5, 0, 6, 4 | 5 << 3 | 0 << 6 | 1 << 9, "16_16 unorm, stride 6, DST_SEL x, y, 0, 1"},
             };
             for (size_t f = 0; f < sizeof small / sizeof small[0]; f++) {
                 const uint32_t bytes_each = small[f].data_format == 5 || small[f].data_format == 12 ? 2 : 1;
@@ -511,7 +512,7 @@ int main(int argc, char **argv)
                         uint32_t raw = at[0] | (bytes_each == 2 ? (uint32_t)at[1] << 8 : 0);
                         if (small[f].num_format == 5) raw = bytes_each == 2 ? (uint32_t)(int32_t)(int16_t)raw : (uint32_t)(int32_t)(int8_t)raw;
                         if (small[f].num_format == 0) {
-                            const float unorm = (float)raw / 255.0f;
+                            const float unorm = (float)raw / (bytes_each == 2 ? 65535.0f : 255.0f);
                             memcpy(&raw, &unorm, sizeof raw);
                         }
                         memory[m] = raw;
@@ -519,17 +520,15 @@ int main(int argc, char **argv)
                     for (uint32_t c = 0; c < 4; c++) {
                         const uint32_t sel = small[f].dst_sel >> (3 * c) & 7;
                         const uint32_t want = sel >= 4 ? memory[sel - 4] : sel == 1 ? (small[f].num_format == 0 ? 0x3f800000u : 1u) : 0u;
-                        right &= out_words[i * 4 + c] == want;
+                        /* 16-bit unorm within Vulkan's division precision (2.5 ULP): the bits of positive floats differ by at most 2 */
+                        const uint32_t got = out_words[i * 4 + c];
+                        const int ulps = small[f].num_format == 0 && bytes_each == 2 && sel >= 4;
+                        right &= ulps ? (got > want ? got - want : want - got) <= 2 : got == want;
                     }
                 }
                 if (!right) fprintf(stderr, "format load %s: wrong\n", small[f].what);
                 CHECK(right);
             }
-            /* 16-bit unorm loads are not done yet (v / 65535 needs its own correctly rounded values) */
-            format_user[3] = (4 | 0 << 3 | 0 << 6 | 1 << 9) | 0u << 12 | 2u << 15;
-            *stop = 0;
-            CHECK(run(&g, load_format_indexed, sizeof load_format_indexed / sizeof load_format_indexed[0], format_user) == 0);
-            CHECK(*stop == (GCN_RUNTIME_STOP_BUFFER_FORMAT << GCN_RUNTIME_STOP_KIND_SHIFT | 2u << 8 | 0u << 4 | 4u));
             *stop = 0;
             memcpy(bytes, saved_bytes, sizeof saved_bytes);
             memcpy(format_user, user, sizeof format_user);
@@ -659,8 +658,10 @@ int main(int argc, char **argv)
 
     /* Scalar compares with 16-bit constants (zero-extended for u32, sign-extended for i32), min
        and max with SCC, and bit-field extracts; s8 = 0xffff, s9 = -1, s10 = 0x12345678,
-       s11 = 0xf000. */
-    static const uint32_t scalar_expected[16] = {
+       s11 = 0xf000. Then adds and multiplies by sign-extended 16-bit constants: s12 = 0x7ffffff8,
+       s13 = 5, s14 = 7. */
+    enum { SCALAR_WORDS = 22 };
+    static const uint32_t scalar_expected[SCALAR_WORDS] = {
         1,                   /* s_cmpk_eq_u32 s8, 0xffff */
         1,                   /* s_cmpk_eq_i32 s9, 0xffff (-1) */
         0,                   /* s_cmpk_lt_i32 s8, 0x8000: 65535 < -32768 */
@@ -671,10 +672,13 @@ int main(int argc, char **argv)
         0x00000056, 1,       /* s_bfe_u32 s10, offset 8 width 8 */
         0xffffffff, 1,       /* s_bfe_i32 s11, offset 12 width 4: 0xf sign-extended */
         0x00000000, 0,       /* s_bfe_u32 s10, width 0 */
+        0x80000008, 1,       /* s_addk_i32 s12, 0x10: signed overflow sets SCC */
+        0xffffffeb, 1,       /* s_mulk_i32 s14, -3: SCC kept from the add before */
+        0x00000003, 0,       /* s_addk_i32 s13, -2 */
     };
     memset(out.mapped, 0, BUFFER_BYTES);
     CHECK(run(&g, scalar_batch, sizeof scalar_batch / sizeof scalar_batch[0], user) == 0);
-    for (int k = 0; k < 16; k++) {
+    for (int k = 0; k < SCALAR_WORDS; k++) {
         if (out_words[k] != scalar_expected[k]) fprintf(stderr, "scalar_batch word %d: 0x%08x, expected 0x%08x\n", k, out_words[k], scalar_expected[k]);
         CHECK(out_words[k] == scalar_expected[k]);
     }

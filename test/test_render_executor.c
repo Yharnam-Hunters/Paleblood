@@ -131,6 +131,49 @@ static void float_images(rt_executor *x)
     }
 }
 
+/* 16-bit unorm images: the reference image as 16_16_16_16 unorm (DATA_FORMAT 12, NUM_FORMAT 0), and its
+   red and green as 16_16 unorm (DATA_FORMAT 5, the particle passes' storage format), linear, read
+   texel by texel (pixel_image_texel) into an 8_8_8_8 target: the reference image, and for 16_16 its red
+   and green with blue 0 and alpha 1 (DST_SEL x, y, 0, 1). */
+static void unorm16_images(rt_executor *x)
+{
+    enum { WIDE = 0x2340000, PAIRS = 0x2380000, UNORM16_TARGET = 0x23c0000, LINEAR_ALIGNED = 8, NUM_UNORM = 0 };
+    char error[200] = "";
+    for (int kind = 0; kind < 2; kind++) {
+        const unsigned components = kind ? 2 : 4;
+        rt_tiling layout;
+        CHECK(rt_tiling_layout(LINEAR_ALIGNED, 2 * components, SIZE, SIZE, &layout, error, sizeof error) == 0);
+        uint8_t *memory = (uint8_t *)(uintptr_t)at(kind ? PAIRS : WIDE);
+        for (uint32_t y = 0; y < SIZE; y++)
+            for (uint32_t px = 0; px < SIZE; px++) {
+                const float rgba[4] = {((float)px + 0.5f) / SIZE, ((float)y + 0.5f) / SIZE, 0.25f, 1.0f};
+                uint16_t texel[4];
+                for (unsigned c = 0; c < 4; c++) texel[c] = (uint16_t)lroundf(rgba[c] * 65535.0f);
+                memcpy(memory + rt_tiling_offset(&layout, px, y, 0), texel, 2 * components);
+            }
+        uint32_t image[8];
+        image_descriptor(image, at(kind ? PAIRS : WIDE), kind ? 5 : 12, NUM_UNORM, SIZE, SIZE);
+        image[3] |= LINEAR_ALIGNED << 20;
+        if (kind) image[3] = (image[3] & ~0xfffu) | (4 | 5 << 3 | 0 << 6 | 1 << 9); /* x, y, 0, 1 */
+        const int drawn = draw_texels(x, at(UNORM16_TARGET), image, error, sizeof error);
+        if (drawn) fprintf(stderr, "16-bit unorm image %d: %s\n", kind, error);
+        CHECK(drawn == 0);
+        if (!kind) {
+            CHECK(differing_pixels(x, at(UNORM16_TARGET)) == 0);
+            continue;
+        }
+        uint32_t bgra[SIZE * SIZE];
+        CHECK(rt_executor_read_target(x, at(UNORM16_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+        int right = 1;
+        for (int y = 0; y < SIZE; y++)
+            for (int px = 0; px < SIZE; px++) {
+                const uint32_t p = bgra[y * SIZE + px];
+                right &= near(p >> 16 & 0xff, ((float)px + 0.5f) / SIZE) && near(p >> 8 & 0xff, ((float)y + 0.5f) / SIZE) && (p & 0xff) == 0;
+            }
+        CHECK(right);
+    }
+}
+
 /* The pixels of target that differ from the reference image's red and green (with_green; 0 otherwise)
    with blue 0 and alpha 1 (all of them on a failed read). */
 static int channel_misses(rt_executor *x, uint64_t target, int with_green)
@@ -361,6 +404,17 @@ static int lookup_misses(rt_executor *x, uint64_t target)
     return misses;
 }
 
+/* The red, green and blue bytes of the target's left column, summed. */
+static int left_column_sum(rt_executor *x, uint64_t target)
+{
+    uint32_t bgra[SIZE * SIZE];
+    char error[160] = "";
+    if (rt_executor_read_target(x, target, bgra, SIZE, SIZE, error, sizeof error)) return -1;
+    int sum = 0;
+    for (int y = 0; y < SIZE; y++) sum += (int)(bgra[y * SIZE] >> 16 & 0xff) + (int)(bgra[y * SIZE] >> 8 & 0xff) + (int)(bgra[y * SIZE] & 0xff);
+    return sum;
+}
+
 /* The executor keeps more images than the 64 it once did: 100 runs, each drawing a different 16x16
    linear image (the reference image, written by the CPU) without a reset, all draw it. */
 static void many_images(rt_executor *x)
@@ -441,6 +495,60 @@ static void sampled_levels(rt_executor *x)
     }
 }
 
+/* Depth compares (image_sample_c_lz, pixel_compared): an 8x8 32-bit float image (DATA_FORMAT 4,
+   NUMBER_FORMAT 7, linear) of 0.25 in its left half and 0.75 in its right, compared with 0.5 at
+   (x / 16, y / 16) over 16 pixels: pixel column px samples at texel position px / 2 - 0.25 (clamped
+   to the edge), between texels 3 and 4 at columns 7 and 8 (weights 0.25 and 0.75). With "less"
+   (the reference less than the texel passes) and bilinear filters, columns 0-6 draw 0, 7 draws 0.25,
+   8 draws 0.75 and the rest 1; with point filters 7 draws 0 and 8 draws 1 (the nearest texel's
+   result); "greater" draws the bilinear result's complement. */
+static void compared_samples(rt_executor *x)
+{
+    enum { DEPTHS = 0x2280000, COMPARED_TARGET = 0x22c0000, COMPARED_CODE = 0x5c00, COMPARED_BUFFER = 0xc1040000, EDGE = 8, LINEAR_ALIGNED = 8,
+           DATA_32 = 4, NUM_FLOAT = 7, LESS = 1, GREATER = 4, POINT = 0, BILINEAR = 1, CLAMP_LAST_TEXEL = 2 };
+    char error[256] = "";
+    rt_tiling layout;
+    CHECK(rt_tiling_layout(LINEAR_ALIGNED, 4, EDGE, EDGE, &layout, error, sizeof error) == 0);
+    float *depths = (float *)(uintptr_t)at(DEPTHS);
+    for (uint32_t y = 0; y < EDGE; y++)
+        for (uint32_t px = 0; px < EDGE; px++) depths[y * layout.pitch + px] = px < EDGE / 2 ? 0.25f : 0.75f;
+    memcpy((void *)(uintptr_t)at(COMPARED_CODE), pixel_compared, sizeof pixel_compared);
+    static const struct {
+        uint32_t function, filter;
+        float column[4]; /* the result at columns 6, 7, 8 and 9 (and 0-5 as 6, 10-15 as 9) */
+    } cases[] = {{LESS, BILINEAR, {0, 0.25f, 0.75f, 1}}, {LESS, POINT, {0, 0, 1, 1}}, {GREATER, BILINEAR, {1, 0.75f, 0.25f, 0}}};
+    for (unsigned c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+        uint32_t user[16] = {0};
+        image_descriptor(user + 4, at(DEPTHS), DATA_32, NUM_FLOAT, EDGE, EDGE);
+        user[7] = (user[7] & ~0xfffu) | (4 | 0 << 3 | 0 << 6 | 1 << 9) | LINEAR_ALIGNED << 20; /* x, 0, 0, 1 */
+        user[12] = CLAMP_LAST_TEXEL | CLAMP_LAST_TEXEL << 3 | CLAMP_LAST_TEXEL << 6 | cases[c].function << 12;
+        user[14] = cases[c].filter << 20 | cases[c].filter << 22;
+        rt_render_forget(), rt_executor_reset(x);
+        uint32_t offset = record_setup(COMPARED_BUFFER, at(COMPARED_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        const uint64_t code = at(COMPARED_CODE);
+        const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 16 << 1, 0, 0x4, 0x302, 0x302,
+                                                       0, 0, 0, 0xf};
+        CHECK(rt_render_record_pixel_shader(COMPARED_BUFFER, offset, pixel, error, sizeof error) == 0);
+        CHECK(rt_render_record_user_data(COMPARED_BUFFER, offset + 0x10, RT_STAGE_PIXEL, 0, user, 8, error, sizeof error) == 0);
+        CHECK(rt_render_record_user_data(COMPARED_BUFFER, offset + 0x20, RT_STAGE_PIXEL, 8, user + 8, 8, error, sizeof error) == 0);
+        const int drawn = rt_executor_run(x, COMPARED_BUFFER, record_triangle_draw(COMPARED_BUFFER, offset + 0x30), error, sizeof error);
+        if (drawn) fprintf(stderr, "compared samples: %s\n", error);
+        CHECK(drawn == 0);
+        uint32_t bgra[SIZE * SIZE];
+        CHECK(rt_executor_read_target(x, at(COMPARED_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+        int covered = 0, right = 1;
+        for (int y = 0; y < SIZE; y++)
+            for (int px = 0; px < SIZE; px++) {
+                const uint32_t p = bgra[y * SIZE + px];
+                if (!(p >> 24)) continue; /* outside the triangle */
+                const float want = cases[c].column[px < 6 ? 0 : px > 9 ? 3 : px - 6]; /* columns 0-6 and 9-15 alike */
+                covered++, right &= near(p >> 16 & 0xff, want);
+                if (!near(p >> 16 & 0xff, want)) fprintf(stderr, "compared samples case %u: pixel (%d, %d) red %u, want %f\n", c, px, y, p >> 16 & 0xff, want);
+            }
+        CHECK(covered > 0 && right);
+    }
+}
+
 /* A cube (T# TYPE 11, one cube: six 4x4 faces, linear, each face one colour) sampled at (1.5, 1.5)
    on face 4, then face 1, and face 9 (face 1 of an array's second cube, which has none: the 2D array
    of six faces clamps the layer to 5) draws each face's colour (pixel_cube_face). */
@@ -513,17 +621,22 @@ static void sampled_lookup(rt_executor *x)
     static const uint32_t point_clamped[4] = {0x2 | 0x2 << 3 | 0x2 << 6, 0, 0, 0};
     static const uint32_t bilinear_wrapped[4] = {0, 0, 1u << 20 | 1u << 22, 0};
     static const uint32_t unequal[4] = {0x2, 0, 1u << 20, 0};
+    /* clamp to the border on x (transparent black, then opaque white), wrap on y; a border colour
+       from the table stops */
     static const uint32_t border[4] = {0x6, 0, 1u << 20 | 1u << 22, 0};
+    static const uint32_t border_white[4] = {0x6, 0, 1u << 20 | 1u << 22, 2u << 30};
+    static const uint32_t border_table[4] = {0x6, 0, 1u << 20 | 1u << 22, 3u << 30 | 5};
     /* MAX_ANISO_RATIO 4 with bilinear filters: the same as bilinear (the ratio shapes only the
        anisotropic filters); anisotropic bilinear filters (3) with ratio 4 (16 samples) magnify as the
-       bilinear one, a ratio past 4 stops, as does a depth compare */
+       bilinear one, a ratio past 4 stops, as do unnormalized coordinates (FORCE_UNNORMALIZED) */
     static const uint32_t ratio_bilinear[4] = {0x2 | 0x2 << 3 | 0x2 << 6 | 4u << 9, 0, 1u << 20 | 1u << 22, 0};
     static const uint32_t anisotropic[4] = {0x2 | 0x2 << 3 | 0x2 << 6 | 4u << 9, 0, 3u << 20 | 3u << 22, 0};
     static const uint32_t past_ratio[4] = {0x2 | 0x2 << 3 | 0x2 << 6 | 5u << 9, 0, 3u << 20 | 3u << 22, 0};
-    static const uint32_t depth_compare[4] = {0x2 | 0x2 << 3 | 0x2 << 6 | 3u << 12, 0, 1u << 20 | 1u << 22, 0};
+    static const uint32_t unnormalized[4] = {0x2 | 0x2 << 3 | 0x2 << 6 | 1u << 15, 0, 1u << 20 | 1u << 22, 0};
     const uint32_t *const samplers[] = {bilinear_clamped, point_clamped, bilinear_wrapped, unequal, border, ratio_bilinear, anisotropic,
-                                        depth_compare, past_ratio};
-    for (int k = 0; k < 9; k++) {
+                                        unnormalized, past_ratio, border_white, border_table};
+    int black_border_sum = 0;
+    for (int k = 0; k < 11; k++) {
         uint32_t user[16] = {0};
         user[2] = (uint32_t)at(TABLE), user[3] = (uint32_t)(at(TABLE) >> 32);
         image_descriptor(user + 4, at(IMAGE), 10, 0, WIDTH, HEIGHT);
@@ -547,9 +660,16 @@ static void sampled_lookup(rt_executor *x)
         }
         if (k == 1 || k == 2) CHECK(lookup_misses(x, at(LOOKUP_TARGET)) > 0);
         if (k == 3) CHECK(drawn == 0 && lookup_misses(x, at(LOOKUP_TARGET)) == 0); /* magnified: the bilinear filter */
-        if (k == 4) CHECK(drawn == -1 && strstr(error, "clamp mode 6"));
+        if (k == 4 || k == 9) { /* the border colour shows at the left and right edges: brighter for white */
+            if (drawn) fprintf(stderr, "lookup %d: %s\n", k, error);
+            CHECK(drawn == 0 && lookup_misses(x, at(LOOKUP_TARGET)) > 0);
+            const int sum = left_column_sum(x, at(LOOKUP_TARGET));
+            if (k == 9) CHECK(sum > black_border_sum);
+            black_border_sum = sum;
+        }
+        if (k == 10) CHECK(drawn == -1 && strstr(error, "border colour from the table"));
         if (k == 8) CHECK(drawn == -1 && strstr(error, "MAX_ANISO_RATIO 5"));
-        if (k == 7) CHECK(drawn == -1 && strstr(error, "depth compares"));
+        if (k == 7) CHECK(drawn == -1 && strstr(error, "unnormalized coordinates"));
     }
 }
 
@@ -1103,6 +1223,33 @@ static void depth_and_strips(rt_executor *x)
             zeros &= *(const float *)((const uint8_t *)depth + rt_tiling_offset(&layout, px, y, 0)) == 0.0f;
         }
         CHECK(zeros);
+        /* the depth target's memory read as a 32-bit float image of its layout (tiling index 0), texel by
+           texel into an 8_8_8_8 target: each pixel's red is the depth under it (0 under the triangle); with
+           another tiling index it stops by name */
+        enum { WB_SAMPLED = 0x2300000 };
+        uint32_t image[8];
+        image_descriptor(image, at(WB_Z), 4, 7, WB_SIZE, WB_SIZE);
+        image[3] = (image[3] & ~0xfffu) | (4 | 0 << 3 | 0 << 6 | 1 << 9); /* x, 0, 0, 1; tiling index 0 */
+        drawn = draw_texels(x, at(WB_SAMPLED), image, error, sizeof error);
+        if (drawn) fprintf(stderr, "depth read as an image: %s\n", error);
+        CHECK(drawn == 0);
+        uint32_t bgra[SIZE * SIZE];
+        CHECK(rt_executor_read_target(x, at(WB_SAMPLED), bgra, SIZE, SIZE, error, sizeof error) == 0);
+        rt_tiling depth_layout;
+        char reason[160];
+        CHECK(rt_tiling_layout(0, 4, WB_SIZE, WB_SIZE, &depth_layout, reason, sizeof reason) == 0);
+        int as_depth = 1, near_zeros = 0;
+        for (int y = 0; y < SIZE; y++)
+            for (int px = 0; px < SIZE; px++) {
+                const uint32_t p = bgra[y * SIZE + px];
+                if (!(p >> 24)) continue; /* outside the sampling triangle */
+                const float under = *(const float *)((const uint8_t *)depth + rt_tiling_offset(&depth_layout, (uint32_t)px, (uint32_t)y, 0));
+                as_depth &= near(p >> 16 & 0xff, under);
+                near_zeros += (p >> 16 & 0xff) == 0;
+            }
+        CHECK(as_depth && near_zeros > 0);
+        image[3] |= 1u << 20; /* tiling index 1 */
+        CHECK(draw_texels(x, at(WB_SAMPLED), image, error, sizeof error) == -1 && strstr(error, "also a depth target"));
 #undef WB_TARGET
     }
     /* Slices of an array depth target (DB_DEPTH_VIEW SLICE_START = SLICE_MAX): a draw into slice 1
@@ -1728,6 +1875,58 @@ static void compressed_image(rt_executor *x)
     CHECK(differs);
 }
 
+/* A BC6H block (DATA_FORMAT 40, number format 0: unsigned half floats; Microsoft's BC6H format
+   description) in mode 11: mode bits 00011, one region, 10-bit endpoints RGB w then RGB x, no transform,
+   then 63 index bits. With every index 0 the texel is endpoint w, unquantized ((e << 16) + 0x8000) >> 10
+   and finished (e * 31) >> 6 into a half's bits. */
+static void bc6h_block(uint32_t words[4], uint32_t red, uint32_t green, uint32_t blue)
+{
+    uint64_t low = 0x3 | (uint64_t)red << 5 | (uint64_t)green << 15 | (uint64_t)blue << 25; /* rx gx bx and the indices stay 0 */
+    words[0] = (uint32_t)low, words[1] = (uint32_t)(low >> 32), words[2] = 0, words[3] = 0;
+}
+
+static float bc6h_endpoint_value(uint32_t endpoint)
+{
+    const uint32_t unquantized = ((endpoint << 16) + 0x8000) >> 10;
+    return half_value((uint16_t)((unquantized * 31) >> 6));
+}
+
+/* A BC6H image the CPU wrote, linear: solid blocks whose red endpoint grows with the block's column and
+   green with its row (0.25 to 0.75, as the 8_8_8_8 target holds them); image_load_mip shows each block's
+   value. Read as BC7 (mutant) it does not. */
+static void bc6h_image(rt_executor *x)
+{
+    enum { BLOCKS = 0x2200000, BLOCK_TARGET = 0x2240000, BLOCKS_PER_ROW = SIZE / 4, LINEAR_ALIGNED = 8, BC6 = 40, BC7 = 41 };
+    char error[200] = "";
+    uint32_t *blocks = (uint32_t *)(uintptr_t)at(BLOCKS);
+    for (uint32_t by = 0; by < BLOCKS_PER_ROW; by++)
+        for (uint32_t bx = 0; bx < BLOCKS_PER_ROW; bx++) bc6h_block(blocks + (by * BLOCKS_PER_ROW + bx) * 4, 430 + bx * 16, 430 + by * 16, 462);
+    uint32_t image[8];
+    image_descriptor(image, at(BLOCKS), BC6, 0, SIZE, SIZE);
+    image[3] = (image[3] & ~0xfffu) | (4 | 5 << 3 | 6 << 6 | 1 << 9) | LINEAR_ALIGNED << 20; /* x, y, z, one: BC6H has no alpha */
+    const int drawn = draw_texels(x, at(BLOCK_TARGET), image, error, sizeof error);
+    if (drawn) fprintf(stderr, "BC6H: %s\n", error);
+    CHECK(drawn == 0);
+    uint32_t bgra[SIZE * SIZE];
+    CHECK(rt_executor_read_target(x, at(BLOCK_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+    int right = 1;
+    for (int y = 0; y < SIZE; y++)
+        for (int px = 0; px < SIZE; px++) {
+            const uint32_t p = bgra[y * SIZE + px];
+            right &= near(p >> 16 & 0xff, bc6h_endpoint_value(430 + (uint32_t)px / 4 * 16)) &&
+                     near(p >> 8 & 0xff, bc6h_endpoint_value(430 + (uint32_t)y / 4 * 16)) && near(p & 0xff, bc6h_endpoint_value(462));
+        }
+    if (!right) fprintf(stderr, "BC6H: texels %#x %#x, want red %f\n", bgra[0], bgra[SIZE * SIZE - 1], bc6h_endpoint_value(430));
+    CHECK(right);
+    image_descriptor(image, at(BLOCKS), BC7, 0, SIZE, SIZE);
+    image[3] |= LINEAR_ALIGNED << 20;
+    CHECK(draw_texels(x, at(BLOCK_TARGET), image, error, sizeof error) == 0);
+    CHECK(rt_executor_read_target(x, at(BLOCK_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+    int differs = 0;
+    for (int i = 0; i < SIZE * SIZE; i++) differs |= !near(bgra[i] >> 16 & 0xff, bc6h_endpoint_value(430 + (uint32_t)(i % SIZE) / 4 * 16));
+    CHECK(differs);
+}
+
 /* The CPU writes the fake watch reports at the next buffer (runtime/write_watch.h's collect). */
 static struct {
     uint64_t pool_offset, length;
@@ -2343,8 +2542,10 @@ int main(void)
     sampled_images(x);
     sampled_lookup(x);
     float_images(x);
+    unorm16_images(x);
     many_images(x);
     sampled_levels(x);
+    compared_samples(x);
     sampled_cube(x);
     fetch_shader(x);
     pixel_input_controls(x);
@@ -2358,6 +2559,7 @@ int main(void)
     tiled_target_memory(x);
     float_targets(x);
     compressed_image(x);
+    bc6h_image(x);
 
     rt_executor_close(x);
     rt_render_forget();
