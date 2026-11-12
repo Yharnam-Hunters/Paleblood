@@ -214,6 +214,10 @@ address,size,name,system,status,notes
 0x02434520,552,frame_timing_flipper_init,frame_timing,verified,SprjFlipper constructor: reads Game.FlipMode (default 4; pending default 3; clamped to 4); unset in the shipped config
 0x02434770,2077,frame_timing_pace_frame,frame_timing,verified,Frame limiter: target interval at +0x18 (1/30 or 1/60 s); spins out the frame (the sleeping wait is compiled in but unused); 32-frame ring; every FPS patch edits it
 0x024512a0,78,frame_timing_task_frame_024512a0,frame_timing,verified,"task manager frame entry from the frame step: FD4TaskManager singleton, then 0x01388c60"
+0x0246cf50,549,loading_disk_device_resolve_root_0246cf50,loading,edge-verified,Ps4DiskFileDevice root mounts: split "name:" off the path; first entry with that name replaces name+2 chars with its target; true unless the name is "title"
+0x0246d180,558,loading_disk_device_resolve_alias_0246d180,loading,edge-verified,Ps4DiskFileDevice alias mounts: same code as 0x0246cf50 on the alias table (+0x80)
+0x02470d50,517,loading_mount_table_push_back_02470d50,loading,edge-verified,mount table push_back: grow 1.5x when full (source inside the table found again); copy name and target; end moves on even without a buffer
+0x024716d0,539,loading_mount_table_reallocate_024716d0,loading,edge-verified,mount table reallocate to exact capacity: copy entries; destroy old (heap text freed); free old buffer; failed allocation: transaction jump or report
 0x0247eb80,16,render_read_present_pool_counter,render,edge-verified,"full-QWORD locked read/writeback retry, XOR before each attempt; caller adds one. Real AMD64 write cycles retained; non-AMD64 bridge unresolved Synthetic edges pass; no recordings."
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
 0x02484c70,361,engine_fixed_allocator_allocate_02484c70,engine,edge-verified,DLFixedAllocator allocation: front element of the current chunk or the first chunk with room; a new chunk from the backing allocator joins the list and the address tree
@@ -232,7 +236,9 @@ address,size,name,system,status,notes
 0x02489fc0,1081,engine_segregated_regular_heap_allocate_aligned_top_02489fc0,engine,edge-verified,DLSegregatedRegularHeap aligned top allocation: highest-address block holding the size aligned; placed at the highest aligned fit; front and tail stay free
 0x0248a400,688,engine_segregated_regular_heap_free_0248a400,engine,edge-verified,DLSegregatedRegularHeap free: hash-table lookup (unknown address reported); merges with free neighbours; to the front of its class list
 0x024bd150,216,frame_timing_job_take_result,frame_timing,verified,"Job handle result: mode 0 polls (null if not done), 2 takes, others wait 1 ms at a time; bumps the job's holder count under the job lock"
+0x024bd930,249,loading_resource_info_release_024bd930,loading,edge-verified,DLResourceInfo drop reference: last one sets releasing once (shared lock); manager release; cancel pending requests from the stream queue
 0x024bdd40,36,frame_timing_job_wait,frame_timing,edge-verified,"Poll a job's state until finished (2), sleeping 1 ms in the kernel between polls"
+0x024be250,343,loading_load_request_construct_024be250,loading,edge-verified,resource load request base constructor: clear words; keep the third argument at +0x20; name string on the request heap (heap check) from wcslen; tail via 0x024be8e0
 0x02564ed0,25,render_present_encoding_units,render,edge-verified,Return the full 64-bit entry for wrapped encoding minus one when its index is below 99; otherwise return zero.
 0x02565130,30,render_present_record_bit_width,render,verified,Return the bit width of the OR of three 32-bit inputs. All-zero input returns zero; the presentation fallback passes one as the third input.
 0x02565f90,855,render_initialize_swap_chain_resource,render,edge-verified,"Validate resource parameters, choose independent allocator and owner defaults, prepare resource storage and publish its wrapper. Allocation failure clears the output and releases prepared storage."
@@ -246,7 +252,11 @@ address,size,name,system,status,notes
 0x02572290,47,render_clear_swap_chain_cached_record,render,edge-verified,Release the swap-chain cached-record resource through its owner; clear only the resource after the callback.
 0x025b2fb0,768,render_swap_chain_present,render,verified,"GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0)"
 0x02713870,11646,render_update_model_wind,render,edge-verified,"Ages a model wind receiver's kept influences, lists the live ones and adds or refreshes one per attached wind source; applies selected frame-rate steps"
+0x02a2aca0,180,loading_path_token_next_02a2aca0,loading,edge-verified,wide path token scanner: skip delimiters (wcschr); return length and start of the next token; cursor moves to the delimiter after it
 0x02a44140,59,engine_wide_string_destroy,engine,edge-verified,WideString destructor; unsigned capacity >=8 frees even null; ignores owns; callback before capacity and size reset and two-byte terminator
+0x02a69b70,340,loading_load_event_array_push_back_02a69b70,loading,edge-verified,resource load event (0x158) push_back: grow 1.5x when full (source inside found again); copy two words; copy-construct the request; queued vtable
+0x02a6b520,395,loading_file_load_slots_construct_02a6b520,loading,edge-verified,file load event queue: construct its 32 slots (0x338 bytes each) in order with 0x024d63f0
+0x02a6bc50,618,loading_load_event_array_reallocate_02a6bc50,loading,edge-verified,load event array reallocate to exact capacity: copy events; destroy old (base vtable; data freed; three strings released); free old buffer
 0x02a70890,141,loading_kernel_file_open,loading,verified,sceKernelOpen with FreeBSD flags and permissions from the platform mode bits; store the descriptor and set the open bit; -1 on error
 0x02a70920,46,loading_kernel_file_read,loading,edge-verified,"sceKernelRead the file's descriptor; -1 on a negative count, else store the count when asked and return 0"
 0x02a8bf30,108,input_mouse_b_open_for_initial_user,input,edge-verified,"Second mouse device class's open: initial user, close a positive handle at +0x128, sceMouseOpen(user, 0, 0, null); true when the new handle is positive"
