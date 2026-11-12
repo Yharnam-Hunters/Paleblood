@@ -2342,6 +2342,28 @@ int main(void)
     CHECK(rt_executor_run(x, FOURTH, record_triangle_draw(FOURTH, offset + 0x10), error, sizeof error) == -1 &&
           strstr(error, "no pixel shader that writes a colour target"));
 
+    /* A draw into slice 2 of a 6-slice array target (CB_COLOR0_VIEW SLICE_START 2, SLICE_MAX 5, as the game's
+       cube-face passes draw one face each): the triangle lands in that slice, SIZE x SIZE x 4 bytes per slice
+       past the base; slice 0's memory stays as it was. */
+    {
+        enum { SLICES = 0xc0e10000, SLICE = 2, SLICE_BYTES = SIZE * SIZE * 4, VIEW = 3, MARK = 0x5a5a5a5au };
+        uint32_t *memory = (uint32_t *)(uintptr_t)at(OTHER_TARGET);
+        for (unsigned i = 0; i < 6 * SLICE_BYTES / 4; i++) memory[i] = MARK;
+        rt_render_forget(), rt_executor_reset(x);
+        uint32_t words[RT_COLOR_TARGET_WORDS];
+        color_target(words, at(OTHER_TARGET), COLOR_8_8_8_8, SWAP_STD);
+        words[VIEW] = SLICE | 5u << 13;
+        uint32_t offset = record_setup(SLICES, at(OTHER_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        CHECK(rt_render_record_color_target(SLICES, offset, 0, words, error, sizeof error) == 0);
+        const int sliced = rt_executor_run(x, SLICES, record_triangle_draw(SLICES, offset + 0x10), error, sizeof error);
+        if (sliced) fprintf(stderr, "array slice: %s\n", error);
+        CHECK(sliced == 0);
+        check_triangle(x, at(OTHER_TARGET) + SLICE * SLICE_BYTES);
+        int untouched = 1;
+        for (unsigned i = 0; i < SLICE_BYTES / 4; i++) untouched &= memory[i] == MARK;
+        CHECK(untouched);
+    }
+
     /* A compute dispatch (scale_add: out[i] = in[i] * 2.5 + 1, one workgroup of 64) through the record:
        the shader placed as sceGnmSetCsShader places it, its user data the two buffer descriptors;
        the results are in the guest memory when the run returns. Then a dispatch with no compute

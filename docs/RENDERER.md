@@ -590,7 +590,11 @@ Instead:
           `CB_COLOR_CONTROL`'s mode `CB_DISABLE`) draws without a colour target; one that writes
           nothing is skipped. Triangle strips (`VGT_PRIMITIVE_TYPE` 6) are drawn too. A view of one
           slice of an array depth target (`DB_DEPTH_VIEW` SLICE_START = SLICE_MAX) draws into an image
-          kept for that slice alone; a view of several slices stops by name.
+          kept for that slice alone; a view of several slices stops by name. A colour target's view
+          (`CB_COLORn_VIEW`) draws into its first slice (SLICE_START: the shader picks no layer), kept
+          as a 2D target of its own at that slice's memory, `CB_COLORn_SLICE` elements per slice past
+          the base, its CMASK `CMASK_SLICE` bytes per slice past the first (shadPS4's
+          `GetColorSliceSize`): the cube-face passes of the clinic's light probes draw one face each.
         - **Not yet:** other formats, more
           render targets and other pixel inputs. These stop with the reason.
         - **The image's memory order:** an image's pixels only leave the GPU through

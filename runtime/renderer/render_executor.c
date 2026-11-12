@@ -1524,6 +1524,25 @@ static VkFormat target_format(const rt_color_target *target, uint32_t *element_b
     return VK_FORMAT_UNDEFINED;
 }
 
+/* A draw writes slice SLICE_START of an array colour target (CB_COLORn_VIEW, SLICE_START to SLICE_MAX):
+   the slice its shader picks counts from there, and a shader that picks none writes SLICE_START (a layer
+   output stops translation, runtime/gcn_spirv.h). Each slice is drawn as a 2D target of its own at its
+   memory: slices follow one another every CB_COLORn_SLICE elements (pitch x height, times the samples)
+   and their CMASKs every CMASK_SLICE bytes (shadPS4's regs_color.h, GetColorSliceSize). The result names
+   that slice alone, at slice 0. A target whose format is not drawn is left as it is: its draw stops on
+   the format. */
+static rt_color_target color_slice(rt_color_target c)
+{
+    uint32_t element_bytes;
+    char unused[8];
+    if (!c.first_slice || target_format(&c, &element_bytes, unused, sizeof unused) == VK_FORMAT_UNDEFINED) return c;
+    c.address += (uint64_t)c.first_slice * c.pitch * c.height * c.samples * element_bytes;
+    c.cmask_address += (uint64_t)c.first_slice * c.cmask_bytes;
+    c.last_slice = c.last_slice > c.first_slice ? c.last_slice - c.first_slice : 0;
+    c.first_slice = 0;
+    return c;
+}
+
 static target_entry *find_target(rt_executor *x, uint64_t address)
 {
     for (size_t i = 0; i < x->target_count; i++)
@@ -3875,7 +3894,7 @@ static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, 
         {
             const unsigned slot = c->u.color_target.slot;
             if (slot >= RT_COLOR_TARGETS) return failed(error, error_size, "a colour target in slot %u", slot);
-            s->colors[slot] = c->u.color_target.target;
+            s->colors[slot] = color_slice(c->u.color_target.target);
             s->color_enabled = c->u.color_target.enabled ? s->color_enabled | 1u << slot : s->color_enabled & ~(1u << slot);
         }
             break;
