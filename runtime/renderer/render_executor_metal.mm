@@ -846,6 +846,12 @@ static int compute_resources(rt_executor *x, const rt_compute_shader &shader, co
         uint32_t words[RT_IMAGE_DESCRIPTOR_WORDS];
         if (descriptor_words(x,images[i].origin,user,shader.user_sgprs,written,"compute",words,RT_IMAGE_DESCRIPTOR_WORDS,error,size)) return -1;
         auto &d = out.descriptors[i]; rt_image_descriptor_decode(words,&d);
+        /* Match the Vulkan backend's explicit write-only sRGB compatibility policy:
+           native RGBA8 storage is UNORM. GFX7 does not establish sRGB image stores. */
+        const bool storage_1d2d = d.type == RT_IMAGE_1D || d.type == RT_IMAGE_2D ||
+            d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY;
+        if (storage_1d2d && images[i].access == GCN_IMAGE_WRITE && d.data_format == 10 && d.num_format == 9)
+            d.num_format = 0;
         const auto *format = image_format(d,error,size); if (!format) return -1;
         if (format->block != 1 || d.num_format == 9)
             return failed(error,size,"compressed and sRGB compute storage images are not modeled");

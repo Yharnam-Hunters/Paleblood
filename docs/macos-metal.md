@@ -268,7 +268,7 @@ RG8 UNORM and RG32 FLOAT require separate accesses. Four-component storage image
 bijective permutations of their four channel selectors. The common translator maps loads
 forward and stores by the inverse mapping; native views retain physical channel order. The
 compiled image-binding cache includes that mapping. One- and two-component stored channels
-retain their identity-only profile; unused selectors do not affect storage. Nonzero mips, BC/sRGB storage, unsupported dimensions,
+retain their identity-only profile; unused selectors do not affect storage. Nonzero mips, BC storage, sRGB reads, unsupported dimensions,
 sampling, partial component stores and unsupported formats fail explicitly. Overlapping writable
 bindings must share the same native view; general overlapping-view coherence remains open.
 
@@ -279,6 +279,19 @@ bytes in unexposed slices and layout padding survive publication. Read-only imag
 stale texels over buffer writes. Pixel and storage-image views have separate usage-aware cache
 entries and exchange data through the pool. This provides ordered dispatch/draw/CPU visibility;
 it does not establish arbitrary image/buffer alias coherence inside one dispatch.
+
+Write-only RGBA8 sRGB descriptors in the 1D/2D and array profiles follow the Vulkan
+backend's [explicit compatibility policy](https://github.com/Yharnam-Hunters/Paleblood/blob/a7729d573ae6c0f790447c041c50f2b0c8328ada/runtime/renderer/render_executor.c#L3257-L3265): the local storage format becomes RGBA8 UNORM before
+native allocation and binding. Values are packed as UNORM without gamma encoding, including
+alpha. The raw descriptor remains the texture-cache key; ordinary current-guest upload and
+completed-store publication preserve untouched texels and padding. Reads, read/write access,
+compressed sRGB storage and 3D descriptors remain refused by this compatibility profile.
+
+This is a project compatibility choice, not GFX7 hardware equivalence. The [Sea Islands ISA's
+format table](https://docs.amd.com/api/khub/documents/YO8RUh~LIQ5Cx3M_Kq9qkg/content#page=80) does not list sRGB image writes, and [AMD PAL deliberately converts a write view to
+UNORM](https://github.com/GPUOpen-Drivers/pal/blob/7ce51b199c72021b8d027c50b55da515fd9b2e0b/src/core/hw/gfxip/rpm/rsrcProcMgr.cpp#L1125-L1131) after performing any needed gamma conversion in its shader. The native UNORM compatibility
+write does not establish GFX7 behavior for an sRGB descriptor. `test_metal_srgb_storage` uses
+interior RGB and independent alpha to distinguish this raw-UNORM policy from automatic gamma encoding.
 
 Each compute submission completes before a later dispatch or draw consumes its
 shared buffer and image writes. Completed draw pixels are already published into that pool,
