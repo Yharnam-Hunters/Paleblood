@@ -872,6 +872,20 @@ static const uint32_t pixel_lookup[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* image_sample_l with DA from the second image (the table's, as in pixel_lookup) at x = v2, slice 0,
+   LOD 0: the LOD's VGPR follows the slice's. */
+static const uint32_t pixel_lookup_level[] = {
+    0xc0c00300, /* s_load_dwordx8 s[0:7], s[2:3], 0x0 */
+    0xbf8c0070, /* s_waitcnt vmcnt(0) lgkmcnt(0) */
+    0x7e080302, /* v_mov_b32_e32 v4, v2 */
+    0x7e0a0280, /* v_mov_b32_e32 v5, 0 */
+    0x7e0c0280, /* v_mov_b32_e32 v6, 0 */
+    0xf0904100, 0x00600004, /* image_sample_l v0, v[4:6], s[0:7], s[12:15] dmask:0x1 da */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf800180f, 0x00000000, /* exp mrt0, v0, v0, v0, v0 done vm */
+    0xbf810000, /* s_endpgm */
+};
+
 /* The image in s[4:11] sampled through the sampler in s[12:15] at (x / 16, y / 16) of the pixel's
    position: the level its derivatives pick. */
 static const uint32_t pixel_minified[] = {

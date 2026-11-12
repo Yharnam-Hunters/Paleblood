@@ -327,7 +327,19 @@ static void image_programs(void)
           strstr(error, "sampler in s[12:15] is not bound"));
     const gcn_image_binding flat[] = {{{0, 4, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0}, {{1, 0, 2, 0}, GCN_IMAGE_1D, 0, GCN_IMAGE_FLOAT, 1, 1, 0, 0}};
     lookup.images = flat, lookup.sampler_count = 1;
-    CHECK(gcn_translate_pixel(PROGRAM(pixel_lookup), &lookup, &spirv, &words, error, sizeof error) == -1 && strstr(error, "DA 1"));
+    /* DA 1 on a 1D image that is not an array: the image's type decides and the slice VGPR is not read;
+       with a LOD VGPR after the coordinates (image_sample_l), where that VGPR is depends on how the
+       slice counts, so it still stops by name. */
+    const int flat_sampled = gcn_translate_pixel(PROGRAM(pixel_lookup), &lookup, &spirv, &words, error, sizeof error);
+    if (flat_sampled) fprintf(stderr, "pixel_lookup (1D): %s\n", error);
+    CHECK(flat_sampled == 0);
+    if (spirv) {
+        CHECK(validate(spirv, words, "pixel_lookup_1d") != 0);
+        CHECK(to_metal(spirv, words, "pixel_lookup_1d") != 0);
+        free(spirv);
+        spirv = NULL;
+    }
+    CHECK(gcn_translate_pixel(PROGRAM(pixel_lookup_level), &lookup, &spirv, &words, error, sizeof error) == -1 && strstr(error, "DA 1"));
 
     /* A pixel shader's image_load_mip from a sampled image (its range checked at run time, so only
        with a stop word); a storage binding refuses image_load_mip. */
