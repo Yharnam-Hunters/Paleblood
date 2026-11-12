@@ -1248,21 +1248,25 @@ static void multiple_targets(rt_executor *x)
    (0.25, 0.5, 0.75, 1) over a 16 x 16 8_8_8_8 image at the target's memory, then (in the next buffer)
    a draw into the target
    that keeps what is there (blend ZERO + ONE) leaves the cleared colour, which reaches the memory too;
-   a clear by a 32_32_32_32 float image there stops the draw by name. */
+   a clear by a 32_32_32_32 float image there stops the draw by name. An image of the target's width with
+   fewer rows (a 1080-row image under a target whose slice counts 1088) clears those rows only. */
 static void compute_cleared_target(rt_executor *x)
 {
-    enum { CLEAR_BUFFER = 0xc0fd0000, DRAW_BUFFER = 0xc0fe0000, CLEAR_CODE = 0x3200, CLEARED = 0x1a80000, WIDE_CLEARED = 0x1ac0000, LINEAR_ALIGNED = 8 };
+    enum { CLEAR_BUFFER = 0xc0fd0000, DRAW_BUFFER = 0xc0fe0000, CLEAR_CODE = 0x3200, CLEARED = 0x1a80000, WIDE_CLEARED = 0x1ac0000, SHORT_CLEARED = 0x3dc0000,
+           LINEAR_ALIGNED = 8, PLAIN = 0, WIDE = 1, SHORT = 2, SHORT_ROWS = SIZE / 2 };
     char error[200] = "";
     memcpy((void *)(uintptr_t)at(CLEAR_CODE), image_clear_tile, sizeof image_clear_tile);
-    for (int wide = 0; wide < 2; wide++) {
-        const uint64_t target = at(wide ? WIDE_CLEARED : CLEARED);
+    for (int kind = PLAIN; kind <= (int)SHORT; kind++) {
+        const int wide = kind == WIDE;
+        const uint32_t rows = kind == SHORT ? SHORT_ROWS : SIZE;
+        const uint64_t target = at(kind == WIDE ? WIDE_CLEARED : kind == SHORT ? SHORT_CLEARED : CLEARED);
         memset((void *)(uintptr_t)target, 0, SIZE * SIZE * 16);
         rt_render_forget(), rt_executor_reset(x);
         const uint64_t code = at(CLEAR_CODE);
         const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x3, 16 << 1, SIZE, SIZE, 1};
         CHECK(rt_render_record_compute_shader_at(CLEAR_BUFFER + 0x10, shader) == 0);
         uint32_t user[8];
-        image_descriptor(user, target, wide ? 14 : 10, wide ? 7 : 0, SIZE, SIZE); /* 32_32_32_32 float, or 8_8_8_8 unorm */
+        image_descriptor(user, target, wide ? 14 : 10, wide ? 7 : 0, SIZE, rows); /* 32_32_32_32 float, or 8_8_8_8 unorm */
         user[3] |= LINEAR_ALIGNED << 20;
         CHECK(rt_render_record_user_data(CLEAR_BUFFER, 0x20, RT_STAGE_COMPUTE, 8, user, 8, error, sizeof error) == 0);
         const uint32_t one[3] = {1, 1, 1};
@@ -1285,8 +1289,9 @@ static void compute_cleared_target(rt_executor *x)
         CHECK(rt_executor_read_target(x, target, bgra, SIZE, SIZE, error, sizeof error) == 0);
         /* blue first for the display: red 0.25, green 0.5, blue 0.75, alpha 1 (the store's rounding of 0.5 to 127 or 128 either way) */
         int cleared = 1;
-        for (int i = 0; i < SIZE * SIZE; i++)
+        for (int i = 0; i < SIZE * (int)rows; i++)
             cleared &= near(bgra[i] >> 16 & 0xff, 0.25f) && near(bgra[i] >> 8 & 0xff, 0.5f) && near(bgra[i] & 0xff, 0.75f) && bgra[i] >> 24 == 0xff;
+        for (int i = SIZE * (int)rows; i < SIZE * SIZE; i++) cleared &= bgra[i] == 0; /* the rows past the image keep the memory's 0 */
         if (!cleared) fprintf(stderr, "compute-cleared target: %08x\n", bgra[0]);
         CHECK(cleared);
         const uint32_t first = *(const uint32_t *)(uintptr_t)target; /* written back to the memory: red first */
@@ -2182,11 +2187,23 @@ static int run_index_packet(rt_executor *x, uint64_t target, uint64_t indices, u
     return rt_executor_run(x, BUFFER, offset + 0x40, error, error_size);
 }
 
+/* The triangle drawn by DRAW_INDEX_2 with its indices at address: INDEX_TYPE set, no INDEX_BASE. */
+static int run_addressed_index_packet(rt_executor *x, uint64_t target, uint64_t address, uint32_t header, uint32_t max_size, uint32_t count,
+                                      uint32_t initiator, char *error, size_t error_size)
+{
+    enum { BUFFER = 0xc0fc0000 };
+    rt_render_forget(), rt_executor_reset(x);
+    uint32_t offset = record_setup(BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    CHECK(rt_render_record_index_type(BUFFER, offset, 0, error, error_size) == 0);
+    CHECK(rt_render_record_draw_indexed(BUFFER, offset + 0x10, header, max_size, address, count, initiator, error, error_size) == 0);
+    return rt_executor_run(x, BUFFER, offset + 0x20, error, error_size);
+}
+
 /* A packet's MAX_SIZE applies independently of INDEX_BUFFER_SIZE. Unsupported
    packet fields stop before drawing; a valid packet draws the complete triangle. */
 static void indexed_packets(rt_executor *x, int fd)
 {
-    enum { INDICES = 0x12200, TARGET_PACKET = 0xd40000 };
+    enum { INDICES = 0x12200, TARGET_PACKET = 0xd40000, TARGET_ADDRESSED = 0x3d80000 };
     const uint32_t offset_header = 0xc0033500u;
     const uint16_t indices[] = {9, 9, 9, 0, 1, 2};
     memcpy((void *)(uintptr_t)at(INDICES), indices, sizeof indices);
@@ -2215,11 +2232,25 @@ static void indexed_packets(rt_executor *x, int fd)
         .u.draw_index = {.count = 3, .has_packet_fields = 2, .header = offset_header, .max_size = 3}};
     CHECK(rt_executor_run_calls(x, &bad_tag, 1, error, sizeof error) == -1 &&
           strstr(error, "invalid indexed packet field tag"));
-    rt_render_forget();
-    CHECK(rt_render_record_draw_indexed(0xc0fc0000, 0, 0xc0042700u, 3, at(INDICES), 3, 0,
-                                         error, sizeof error) == 0);
-    CHECK(rt_executor_run(x, 0xc0fc0000, 0x20, error, sizeof error) == -1 &&
-          strstr(error, "DRAW_INDEX_2 is not implemented"));
+    /* DRAW_INDEX_2 draws the indices at its own address (the triangle's, after the three 9s), with no
+       INDEX_BASE set; its unsupported fields stop before drawing */
+    const uint32_t addressed_header = 0xc0042700u;
+    CHECK(run_addressed_index_packet(x, at(TARGET_ADDRESSED), at(INDICES) + 3 * sizeof *indices, addressed_header, 3, 3, 0,
+                                     error, sizeof error) == 0);
+    check_triangle(x, at(TARGET_ADDRESSED));
+    const struct { uint32_t header, max_size, count, initiator; uint64_t address; const char *reason; } refused_addressed[] = {
+        {addressed_header | 1, 3, 3, 0, 6, "predicated indexed draws"},
+        {offset_header, 3, 3, 0, 6, "unsupported indexed packet header"},
+        {addressed_header, 3, 3, 1, 6, "unsupported indexed draw initiator"},
+        {addressed_header, 2, 3, 0, 6, "beyond MAX_SIZE"},
+        {addressed_header, 3, 3, 0, 7, "outside the GPU-visible memory"},
+    };
+    for (size_t i = 0; i < sizeof refused_addressed / sizeof *refused_addressed; i++) {
+        error[0] = '\0';
+        CHECK(run_addressed_index_packet(x, at(TARGET_ADDRESSED), at(INDICES) + refused_addressed[i].address, refused_addressed[i].header,
+                                         refused_addressed[i].max_size, refused_addressed[i].count, refused_addressed[i].initiator,
+                                         error, sizeof error) == -1 && strstr(error, refused_addressed[i].reason));
+    }
 
     /* A low guest window makes the unchecked sum wrap into valid GPU memory.
        With no targets enabled it would be accepted if the overflow guard vanished. */
