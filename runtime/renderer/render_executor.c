@@ -4431,14 +4431,20 @@ static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64
             return failed(error, error_size, "a %s shader that writes an image: not drawn yet", stage);
         uint32_t words[RT_IMAGE_DESCRIPTOR_WORDS];
         if (descriptor_words(x, stage, code, origin, user, user_sgprs, user_set, words, RT_IMAGE_DESCRIPTOR_WORDS, error, error_size)) return -1;
-        /* An image descriptor with no address (base 0; all 8 words 0 is the null descriptor Mesa's RADV writes
-           for VK_EXT_robustness2, whose reads return 0). On the PS4 a read there would reach unmapped memory,
-           and what it returns is not established; a pixel shader reads 0, as from a null descriptor: it
-           samples a 1x1 8_8_8_8 image of zeros of the executor's own, at an address past any guest memory
-           (no guest image or depth target matches it), made as if written so it is never loaded, and its
-           image_load reads 0 without a range check (the binding's null_descriptor). */
+        /* A null image descriptor (all 8 words 0, the descriptor Mesa's radeonsi writes for an unbound image and
+           RADV for a VK_EXT_robustness2 null descriptor, on every GCN generation the drivers support, so
+           reads through it return 0 on the hardware): a pixel shader samples a 1x1 8_8_8_8 image of zeros of
+           the executor's own, at an address past any guest memory (no guest image or depth target matches
+           it), made as if written so it is never loaded, and its image_load reads 0 without a range check
+           (the binding's null_descriptor). A descriptor with base address 0 but other fields set would read
+           unmapped memory, and what the PS4 returns there is not established: it stops by name. */
         enum { ADDRESS_WORD_1_MASK = 0x3f };
-        const int null_image = pixel && !words[0] && !(words[1] & ADDRESS_WORD_1_MASK);
+        int null_image = pixel;
+        for (unsigned w = 0; w < RT_IMAGE_DESCRIPTOR_WORDS; w++) null_image &= !words[w];
+        if (!null_image && !words[0] && !(words[1] & ADDRESS_WORD_1_MASK))
+            return failed(error, error_size, "a %s shader at %#llx reads an image descriptor with base address 0 that is not null "
+                          "(words %08x %08x %08x %08x %08x %08x %08x %08x): what the PS4 returns there is not established", stage,
+                          (unsigned long long)code, words[0], words[1], words[2], words[3], words[4], words[5], words[6], words[7]);
         if (null_image) {
             enum { DATA_FORMAT_8_8_8_8 = 10, DATA_FORMAT_SHIFT = 20, TYPE_SHIFT = 28 };
             enum { ADDRESS_HIGH_BITS = 0x3f }; /* the 46-bit address's highest bits: 0x3fffffffff00 */

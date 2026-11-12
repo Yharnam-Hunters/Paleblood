@@ -1246,7 +1246,8 @@ static void multiple_targets(rt_executor *x)
 
 /* A null image descriptor (all 8 words 0, as YEBIS binds for a pass that samples nothing there): the
    pixel shader's reads return 0, as from a VK_EXT_robustness2 null descriptor, so the pixels the triangle
-   covers are 0 and the others keep the memory's pattern. */
+   covers are 0 and the others keep the memory's pattern. One with base address 0 and other fields set
+   stops by name. */
 static void null_image_descriptor(rt_executor *x)
 {
     enum { NULL_TARGET = 0x3e00000, PATTERN = 0x11223344u };
@@ -1263,6 +1264,9 @@ static void null_image_descriptor(rt_executor *x)
     int zero = 0, other = 0;
     for (int i = 0; i < SIZE * SIZE; i++) zero += bgra[i] == 0, other += bgra[i] != 0 && bgra[i] != shown;
     CHECK(zero > 0 && other == 0);
+    /* base address 0 with a format and type: not a null descriptor, and what the PS4 reads there is not known */
+    const uint32_t base_zero[8] = {0, 10u << 20, 0, 2u << 28 | 0xfac, 0, 0, 0, 0};
+    CHECK(draw_texels(x, at(NULL_TARGET), base_zero, error, sizeof error) == -1 && strstr(error, "base address 0"));
 }
 
 /* A render target cleared by a compute shader (as the game clears its G-buffer): a dispatch stores
