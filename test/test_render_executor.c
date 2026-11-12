@@ -1273,6 +1273,35 @@ static void reshaped_target(rt_executor *x)
     CHECK(near(first & 0xff, 0.5f / SIZE) && near(first >> 8 & 0xff, 0.5f / SIZE) && near(first >> 16 & 0xff, 0.25f));
 }
 
+/* More render targets than the executor keeps (YEBIS moves its post targets through memory): 130 targets
+   drawn one after another, each written back at its buffer's end; the oldest are freed for the newest. The
+   first target's memory still holds its triangle, and drawn again keeping what is there, the target made
+   for it anew loads the triangle from the memory. */
+static void many_targets(rt_executor *x)
+{
+    enum { MANY_BUFFER = 0xc0fd4000, MANY_FIRST = 0x3800000, MANY = 130, TARGET_BYTES = SIZE * SIZE * 4 };
+    char error[200] = "";
+    rt_render_forget(), rt_executor_reset(x);
+    memset((void *)(uintptr_t)at(MANY_FIRST), 0, (size_t)MANY * TARGET_BYTES);
+    int drawn = 1;
+    for (unsigned k = 0; k < MANY; k++) {
+        rt_render_forget();
+        const int ran = rt_executor_run(x, MANY_BUFFER, record_draw(MANY_BUFFER, at(MANY_FIRST) + (uint64_t)k * TARGET_BYTES, COLOR_8_8_8_8, SWAP_STD,
+                                                                     PERSP_CENTER), error, sizeof error);
+        if (ran && drawn) fprintf(stderr, "target %u of many: %s\n", k, error);
+        drawn &= ran == 0;
+    }
+    CHECK(drawn);
+    CHECK(rt_executor_finish(x, error, sizeof error) == 0);
+    const uint32_t first = *(const uint32_t *)(uintptr_t)at(MANY_FIRST); /* pixel (0, 0), red first */
+    CHECK(near(first & 0xff, 0.5f / SIZE) && near(first >> 8 & 0xff, 0.5f / SIZE) && near(first >> 16 & 0xff, 0.25f));
+    rt_render_forget();
+    const uint32_t offset = record_setup(MANY_BUFFER, at(MANY_FIRST), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    CHECK(rt_render_record_register(MANY_BUFFER, offset, 0xa1e0, 1u << 30 | 0u | 1u << 8, error, sizeof error) == 0); /* ZERO + ONE */
+    CHECK(rt_executor_run(x, MANY_BUFFER, record_triangle_draw(MANY_BUFFER, offset + 0x10), error, sizeof error) == 0);
+    check_triangle(x, at(MANY_FIRST));
+}
+
 /* A null image descriptor (all 8 words 0, as YEBIS binds for a pass that samples nothing there): the
    pixel shader's reads return 0, as from a VK_EXT_robustness2 null descriptor, so the pixels the triangle
    covers are 0 and the others keep the memory's pattern. A read through one with base address 0 and other
@@ -2914,6 +2943,7 @@ int main(void)
     compute_cleared_target(x);
     null_image_descriptor(x);
     reshaped_target(x);
+    many_targets(x);
     /* a fast-clear eliminate pass (mode 2) over a target without fast clears writes nothing */
     const uint32_t eliminate[][2] = {{0xa202, 0x2u << 4 | 0xccu << 16}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET) + 0x480000, eliminate, 1, 0, error, sizeof error) == 0);

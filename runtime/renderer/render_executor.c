@@ -180,6 +180,8 @@ typedef struct {
     metadata_state cmask;
     int set_aside;                   /* a target of another size or format took its address (target_for): it holds
                                         nothing the memory lacks, and is taken back when the address has its shape again */
+    uint64_t used_ticket;            /* the batch that last used it (its ticket once submitted) */
+    uint64_t used_call;              /* the draw that last used it (call_serial) */
 } target_entry;
 
 /* What a draw does with the depth target: its test and writes, as Vulkan state. No padding: it is
@@ -1963,6 +1965,55 @@ static uint64_t target_span(const target_entry *t)
     return rt_tiling_layout(t->tile_index, t->element_bytes, t->width, t->height, &layout, reason, sizeof reason) ? 0 : rt_tiling_size(&layout, 1);
 }
 
+/* Frees the slot of a render target no unfinished batch and no part of the draw being recorded uses, and
+   whose memory holds all of its texels (not drawn since written back): its image, and the render passes
+   that draw into it with the pipelines made for them. NULL when no target can go: the one set aside
+   longest first (a game moving its targets through memory leaves them behind), then the least recently
+   used. */
+static target_entry *target_slot_to_free(rt_executor *x)
+{
+    uint64_t done = 0;
+    if (vkGetSemaphoreCounterValue(x->device, x->timeline, &done) != VK_SUCCESS) return NULL;
+    target_entry *pick = NULL;
+    for (size_t i = 0; i < x->target_count; i++) {
+        target_entry *k = &x->targets[i];
+        if (k->drawn || k->used_ticket > done || k->used_call == x->call_serial) continue;
+        if (!pick || k->set_aside > pick->set_aside || (k->set_aside == pick->set_aside && k->used_ticket < pick->used_ticket)) pick = k;
+    }
+    if (!pick) return NULL;
+    const int index = (int)(pick - x->targets);
+    for (size_t i = 0; i < x->pass_count;) {
+        pass_entry *p = &x->passes[i];
+        int uses = 0;
+        for (unsigned slot = 0; slot < RT_COLOR_TARGETS; slot++) uses |= p->color[slot] == index;
+        if (!uses) {
+            i++;
+            continue;
+        }
+        for (size_t k = 0; k < x->pipeline_count;) {
+            if (x->pipelines[k].pass != p->pass) {
+                k++;
+                continue;
+            }
+            vkDestroyPipeline(x->device, x->pipelines[k].pipeline, NULL);
+            x->pipelines[k] = x->pipelines[--x->pipeline_count];
+        }
+        vkDestroyFramebuffer(x->device, p->framebuffer, NULL);
+        vkDestroyRenderPass(x->device, p->pass, NULL);
+        *p = x->passes[--x->pass_count];
+    }
+    for (size_t i = 0; i < x->image_count; i++)
+        if (x->images[i].copied_from == pick) x->images[i].copied_from = NULL;
+    if (pick->guarded && x->unguard) x->unguard(pick->address, target_span(pick));
+    vkDestroyImageView(x->device, pick->view, NULL);
+    vkDestroyImage(x->device, pick->image, NULL);
+    vkFreeMemory(x->device, pick->memory, NULL);
+    staging_free(x, &pick->staging);
+    tile_plan_free(x, &pick->plan);
+    *pick = (target_entry){.address = UINT64_MAX, .set_aside = 1};
+    return pick;
+}
+
 static int target_has_shape(const target_entry *t, const rt_color_target *color, VkFormat format)
 {
     return t->width == color->pitch && t->height == color->height && t->format == format && t->tile_index == color->tile_mode_index;
@@ -1978,7 +2029,10 @@ static target_entry *target_for(rt_executor *x, const rt_color_target *color, ch
     const VkFormat format = target_format(color, &element_bytes, error, error_size);
     if (format == VK_FORMAT_UNDEFINED) return NULL;
     target_entry *t = find_target(x, color->address);
-    if (t && target_has_shape(t, color, format)) return t;
+    if (t && target_has_shape(t, color, format)) {
+        t->used_ticket = x->submitted + 1, t->used_call = x->call_serial;
+        return t;
+    }
     if (t) {
         const memory_span memory = {t->address, target_span(t)};
         if (t->drawn && write_back_targets_in(x, &memory, 1, error, error_size)) return NULL;
@@ -1987,17 +2041,21 @@ static target_entry *target_for(rt_executor *x, const rt_color_target *color, ch
             target_entry *k = &x->targets[i];
             if (k->address == color->address && k->set_aside && target_has_shape(k, color, format)) {
                 k->set_aside = 0; /* loaded at its draw: the write-back of the target set aside marked the memory changed */
+                k->used_ticket = x->submitted + 1, k->used_call = x->call_serial;
                 return k;
             }
         }
     }
-    if (x->target_count == MAX_TARGETS) {
-        failed(error, error_size, "more render targets than the executor keeps");
+    t = x->target_count < MAX_TARGETS ? &x->targets[x->target_count] : target_slot_to_free(x);
+    if (!t && batch_finish(x, error, error_size)) return NULL; /* every target is in use: the GPU's work is waited for */
+    if (!t) t = target_slot_to_free(x);
+    if (!t) {
+        failed(error, error_size, "more render targets than the executor keeps, all of them drawn into since written back or used by this draw");
         return NULL;
     }
-    t = &x->targets[x->target_count];
+    const int appended = t == &x->targets[x->target_count];
     *t = (target_entry){.cmask.resolved = UINT64_MAX, .loaded_change = UINT64_MAX, .address = color->address, .width = color->pitch, .height = color->height, .tile_index = color->tile_mode_index,
-                        .format = format, .element_bytes = element_bytes};
+                        .format = format, .element_bytes = element_bytes, .used_ticket = x->submitted + 1, .used_call = x->call_serial};
     const VkImageCreateInfo image = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = format,
                                      .extent = {t->width, t->height, 1}, .mipLevels = 1, .arrayLayers = 1,
                                      .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
@@ -2026,13 +2084,14 @@ static target_entry *target_for(rt_executor *x, const rt_color_target *color, ch
                   VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
                   VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
     if (finish_commands(x, commands)) goto fail;
-    x->target_count++;
+    if (appended) x->target_count++;
     return t;
 fail:
     failed(error, error_size, "the device cannot make a %ux%u render target", t->width, t->height);
     if (t->view) vkDestroyImageView(x->device, t->view, NULL);
     if (t->image) vkDestroyImage(x->device, t->image, NULL);
     if (t->memory) vkFreeMemory(x->device, t->memory, NULL);
+    *t = (target_entry){.address = UINT64_MAX, .set_aside = 1}; /* a free slot */
     return NULL;
 }
 
