@@ -10,6 +10,7 @@ Derived only from committed files under symbols/ (no game data):
 - symbols/verification.csv, symbols/matching.csv and the families' tables: the evidence behind
   each verified function, and the date each function was first tested ("in the last 7 days" counts
   back from the newest such date, never from the clock, so the same files give the same bytes).
+The libraries' display names and groups come from game/progress_map.csv (tools/ stays game-agnostic).
 
 The map is a treemap grouped by library, its area proportional to bytes, so the size of what is
 left reads honestly; each block is a grid of cells, each cell the same number of that block's
@@ -48,24 +49,12 @@ MARGIN = 12
 MAP_HEIGHT = 560
 PITCH = 5  # one cell: 4 px and a 1 px gap
 
-# Library (symbols/source_files.csv) -> name on the map; groups in drawing order.
-LIBRARY_NAMES = {
-    'engine': 'FromSoftware: Dantelion2 and FD4 engine, SPRJ game',
-    'havok': 'Havok (physics, animation, AI)',
-    'scaleform': 'Scaleform GFx (menus)',
-    'fmod': 'FMOD Ex (audio)',
-    'yebis': 'YEBIS (post effects)',
-    'havokscript': 'HavokScript (Lua)',
-    'sce-gnmx': 'Sony Gnmx (GPU)',
-    '': 'not attributed yet',
-}
-SHORT_NAMES = {'engine': 'Engine and game', 'havok': 'Havok', 'scaleform': 'Scaleform', 'fmod': 'FMOD',
-               'yebis': 'YEBIS', 'havokscript': 'HavokScript', 'sce-gnmx': 'Gnmx', '': 'Unattributed'}
-GROUPS = (
-    ('Bloodborne engine and game code', ('engine',)),
-    ('Middleware and Sony SDK libraries', None),  # every library not named in another group
-    ('Not attributed to a library yet', ('',)),
-)
+# How the map names and groups the libraries of symbols/source_files.csv: game/progress_map.csv
+# (library, group, name, short). Groups are drawn in the order they first appear there; a library
+# it does not list goes into OTHER_GROUP under its own name.
+NAMES_TABLE = os.path.join('game', 'progress_map.csv')
+OTHER_GROUP = 'Other libraries'
+UNATTRIBUTED = 'not attributed yet'
 
 
 # ---------------------------------------------------------------- data
@@ -75,6 +64,30 @@ def read_csv(path: str) -> list[dict]:
         return []
     with open(path, newline='') as f:
         return list(csv.DictReader(f))
+
+
+class Names:
+    """Display names and groups for libraries (game/progress_map.csv)."""
+
+    def __init__(self, root: str):
+        self.rows = {r['library']: r for r in read_csv(os.path.join(root, NAMES_TABLE))}
+
+    def name(self, lib: str) -> str:
+        return self.rows[lib]['name'] if lib in self.rows else (lib or UNATTRIBUTED)
+
+    def short(self, lib: str) -> str:
+        return self.rows[lib]['short'] if lib in self.rows else (lib or 'unattributed')
+
+    def groups(self, libs: list[str]) -> list[tuple[str, list[str]]]:
+        """(group title, its libraries) in table order, then OTHER_GROUP and unattributed code."""
+        order: dict[str, list[str]] = {r['group']: [] for r in self.rows.values()}
+        for lib in libs:
+            if lib in self.rows:
+                group = self.rows[lib]['group']
+            else:
+                group = OTHER_GROUP if lib else UNATTRIBUTED[0].upper() + UNATTRIBUTED[1:]
+            order.setdefault(group, []).append(lib)
+        return [(g, members) for g, members in order.items() if members]
 
 
 class Libraries:
@@ -295,13 +308,13 @@ def cell_runs(start: int, count: int, columns: int) -> list[tuple[int, int, int,
 
 # ---------------------------------------------------------------- drawing
 
-def draw_block(key: str, lib: dict, x: float, y: float, w: float, h: float) -> list[str]:
-    name = LIBRARY_NAMES.get(key, key)
+def draw_block(names: Names, key: str, lib: dict, x: float, y: float, w: float, h: float) -> list[str]:
+    name = names.name(key)
     tip = (f"{name}: {mb(lib['bytes'])} in {lib['functions']:,} functions. Replaced {lib['replaced']:,} functions, "
            f"{mb(lib['replaced_bytes'])} ({pct_text(lib['replaced_bytes'], lib['bytes'])} of its bytes); verified "
            f"{lib['verified']:,}, {mb(lib['verified_bytes'])} ({pct_text(lib['verified_bytes'], lib['bytes'])}).")
     room = w - 8
-    short = SHORT_NAMES.get(key, key)
+    short = names.short(key)
     detail = f"{pct_text(lib['verified_bytes'], lib['bytes'])} verified, {mb(lib['bytes'])}"
     captions = []  # (text, size, weight): the block's name and numbers above its cells, when they fit
     for title, size in ((name, 13), (short, 13), (short, 10)):
@@ -331,13 +344,9 @@ def draw_block(key: str, lib: dict, x: float, y: float, w: float, h: float) -> l
     return parts
 
 
-def draw_map(libs: dict[str, dict], x: float, y: float, w: float, h: float) -> list[str]:
-    named = {k for _, keys in GROUPS if keys for k in keys}
-    groups = []
-    for title, keys in GROUPS:
-        members = [k for k in (keys if keys else sorted(set(libs) - named)) if k in libs and libs[k]['bytes']]
-        if members:
-            groups.append((title, sorted(members, key=lambda k: (-libs[k]['bytes'], k))))
+def draw_map(names: Names, libs: dict[str, dict], x: float, y: float, w: float, h: float) -> list[str]:
+    present = sorted((k for k in libs if libs[k]['bytes']), key=lambda k: (-libs[k]['bytes'], k))
+    groups = names.groups(present)
     sizes = [sum(libs[k]['bytes'] for k in keys) for _, keys in groups]
     parts = []
     header = 22
@@ -350,7 +359,7 @@ def draw_map(libs: dict[str, dict], x: float, y: float, w: float, h: float) -> l
         parts.append(label(gx, gy + 15, caption, 14, 'bold'))
         rects = squarify([libs[k]['bytes'] for k in keys], gx, gy + header, gw, gh - header)
         for key, (bx, by, bw, bh) in zip(keys, rects):
-            parts += draw_block(key, libs[key], bx, by, bw, bh)
+            parts += draw_block(names, key, libs[key], bx, by, bw, bh)
     return parts
 
 
@@ -382,6 +391,7 @@ def draw_bars(title: str, rows: list[tuple], x: float, y: float, w: float) -> tu
 
 def render_map(root: str, data: dict, rows: list[dict]) -> str:
     libs = library_totals(root, rows)
+    names = Names(root)
     t, r, v = data['total'], data['replaced'], data['verified']
     parts = []
     y = 26
@@ -396,7 +406,7 @@ def render_map(root: str, data: dict, rows: list[dict]) -> str:
                        f"({mb(r['bytes'])}); verified {pct_text(v['bytes'], t['bytes'])} ({mb(v['bytes'])})",
                        13, fill=MUTED))
     y += 14
-    parts += draw_map(libs, MARGIN, y, WIDTH - 2 * MARGIN, MAP_HEIGHT)
+    parts += draw_map(names, libs, MARGIN, y, WIDTH - 2 * MARGIN, MAP_HEIGHT)
     y += MAP_HEIGHT + 20
     lx = MARGIN
     for status in ('verified', 'replaced', 'open'):
@@ -409,7 +419,7 @@ def render_map(root: str, data: dict, rows: list[dict]) -> str:
 
     col_w = (WIDTH - 2 * MARGIN - 30) / 2
     order = sorted(libs, key=lambda k: (-libs[k]['bytes'], k))
-    lib_rows = [(SHORT_NAMES.get(k, k), [(libs[k]['verified'], 'verified'),
+    lib_rows = [(names.short(k), [(libs[k]['verified'], 'verified'),
                                           (libs[k]['replaced'] - libs[k]['verified'], 'replaced')],
                  libs[k]['functions'], f"{libs[k]['replaced']:,}/{libs[k]['functions']:,}") for k in order]
     left, lh = draw_bars('Functions replaced by library', lib_rows, MARGIN, y, col_w)

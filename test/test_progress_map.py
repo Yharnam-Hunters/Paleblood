@@ -83,7 +83,7 @@ class Synthetic(unittest.TestCase):
     def test_every_block_has_a_tooltip(self):
         tree = ET.fromstring(progress_map.render_all(self.root)[progress_map.MAP])
         titles = [t.text for t in tree.iter(f'{SVG}title')]
-        for name in ('FromSoftware', 'Havok', 'not attributed yet'):
+        for name in ('engine', 'havok', 'not attributed yet'):
             self.assertTrue(any(name in t for t in titles), name)
 
     def test_no_output_without_the_export(self):
@@ -128,6 +128,11 @@ class Layout(unittest.TestCase):
 
 
 class MainTables(unittest.TestCase):
+    def test_every_attributed_library_has_a_name(self):
+        names = progress_map.Names(ROOT)
+        libraries = {r['library'] for r in progress_map.read_csv(os.path.join(ROOT, 'symbols', 'source_files.csv'))}
+        self.assertEqual(sorted(libraries - set(names.rows)), [])
+
     def test_generates_from_mains_tables_and_agrees_with_progress(self):
         out = progress_map.render_all(ROOT)
         data = progress.compute(ROOT)
