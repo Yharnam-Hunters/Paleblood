@@ -1336,8 +1336,27 @@ static void depth_and_strips(rt_executor *x)
     CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), incremented, 12, 3, error, sizeof error) == -1 && strstr(error, "stencil operation 5"));
     const uint32_t bounds[][2] = {DEPTH_TARGET, {0xa200, 0x8}};
     CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), bounds, 10, 3, error, sizeof error) == -1 && strstr(error, "depth bounds"));
-    const uint32_t clearing[][2] = {DEPTH_TARGET, {0xa000, 0x1}, {0xa200, 0x2 | 0x4 | 0x7u << 4}};
-    CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), clearing, 11, 3, error, sizeof error) == -1 && strstr(error, "DB_RENDER_CONTROL"));
+    /* a depth-clearing draw (DB_RENDER_CONTROL DEPTH_CLEAR_ENABLE, DB_DEPTH_CLEAR 0.5, always with writes) leaves
+       0.5 under the triangle, not the triangle's depth (0): LESS on the triangle then draws it, GREATER nothing;
+       the other clears and copies stop by name */
+    {
+        enum { CLEARED_LESS = 0x1e90000, CLEARED_GREATER = 0x1ea0000 };
+        const uint32_t clearing[][2] = {DEPTH_TARGET, {0xa00b, 0x3f000000u}, {0xa000, 0x1}, {0xa200, 0x2 | 0x4 | 0x7u << 4}};
+        drawn = run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), clearing, 12, 3, error, sizeof error);
+        if (drawn) fprintf(stderr, "depth-clearing draw: %s\n", error);
+        CHECK(drawn == 0);
+        const uint32_t less_after[][2] = {DEPTH_TARGET, {0xa000, 0}, {0xa200, 0x2 | 0x1u << 4}};
+        drawn = run_counted(x, DEPTH_BUFFER, at(CLEARED_LESS), less_after, 11, 3, error, sizeof error);
+        if (drawn) fprintf(stderr, "after the depth-clearing draw: %s\n", error);
+        CHECK(drawn == 0);
+        check_triangle(x, at(CLEARED_LESS));
+        const uint32_t greater_after[][2] = {DEPTH_TARGET, {0xa000, 0}, {0xa200, 0x2 | 0x4u << 4}};
+        CHECK(run_counted(x, DEPTH_BUFFER, at(CLEARED_GREATER), greater_after, 11, 3, error, sizeof error) == 0);
+        CHECK(nothing_drawn(x, at(CLEARED_GREATER)));
+        const uint32_t stencil_clearing[][2] = {DEPTH_TARGET, {0xa000, 0x2}, {0xa200, 0x2 | 0x4 | 0x7u << 4}};
+        CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), stencil_clearing, 11, 3, error, sizeof error) == -1 &&
+              strstr(error, "DB_RENDER_CONTROL"));
+    }
     const uint32_t no_reference[][2] = {DEPTH_TARGET, {0xa10b, 0x30030}, {0xa200, 0x1 | 0x7u << 8}};
     CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), no_reference, 11, 3, error, sizeof error) == -1 && strstr(error, "DB_STENCILREFMASK"));
 #undef DEPTH_TARGET
