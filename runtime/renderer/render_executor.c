@@ -150,6 +150,7 @@ typedef struct {
     VkImageView view;
     uint64_t loaded_change;          /* change_count when the image was last loaded (UINT64_MAX: load it) */
     int drawn;                       /* drawn into since it was last written back */
+    uint64_t drawn_serial;           /* counts the draws into it (image_from_target) */
     int guarded;                     /* its memory is guarded from the CPU (rt_executor_memory's guard) */
     staging_buffer staging;          /* host-visible: the image's texels, for showing it */
     int staging_current;             /* the staging buffer holds them (since the image last changed) */
@@ -237,6 +238,8 @@ typedef struct {
     memory_snapshot agreed;          /* the guest memory it was last loaded from (loads through the CPU) */
     uint64_t loaded_change;          /* change_count when it was last loaded (UINT64_MAX: load it) */
     uint64_t loaded_span;            /* the bytes of guest memory it was loaded from */
+    const void *copied_from;         /* the render target whose texels it holds (image_from_target), and its draws then */
+    uint64_t copied_serial;
     tile_plan plan;                  /* its loads on the GPU (tile_copy_moves) */
     tile_plan *level_plans;          /* the same for each mip level of a mip-mapped image (load_levels), or NULL */
     VkImage image;
@@ -1730,7 +1733,7 @@ static int unwritten_target_over(const rt_executor *x, uint64_t address, uint64_
    back at the buffer's end. */
 static void target_drawn(rt_executor *x, target_entry *t)
 {
-    t->drawn = 1, t->staging_current = 0;
+    t->drawn = 1, t->staging_current = 0, t->drawn_serial++;
     if (!t->guarded && x->guard) t->guarded = x->guard(t->address, target_span(t)) == 0;
 }
 
@@ -2918,6 +2921,49 @@ static int unwritten_target_over(const rt_executor *x, uint64_t address, uint64_
 
 static int load_levels(rt_executor *x, image_entry *e, const rt_image_descriptor *d, const texel_format *f, char *error, size_t error_size);
 
+/* An image over a render target drawn into since its write-back, laid out the same way (the same
+   address, tiling index, pitch and texel bytes, within the target): the write-back would put the
+   target's texels in the memory and this load take the same bytes back, so the target's image is
+   copied into it on the GPU instead, again after each new draw. 1 when copied (or already holding
+   them), 0 when the image is not one, -1 with the reason. */
+static int image_from_target(rt_executor *x, image_entry *e, const rt_image_descriptor *d, const texel_format *f, uint64_t span, char *error,
+                             size_t error_size)
+{
+    target_entry *t = find_target(x, d->address);
+    if (!t || !t->drawn || f->block != 1 || f->bytes != t->element_bytes || d->tiling_index != t->tile_index || d->pitch != t->width ||
+        e->width > t->width || e->height > t->height || e->layers != 1 || e->levels != 1 || d->type != RT_IMAGE_2D)
+        return 0;
+    for (size_t i = 0; i < x->target_count; i++) { /* the target alone holds unwritten texels there */
+        const target_entry *o = &x->targets[i];
+        if (o != t && o->drawn && o->address < d->address + span && d->address < o->address + target_span(o)) return 0;
+    }
+    for (size_t i = 0; i < x->depth_count; i++)
+        if (x->depths[i].unwritten && x->depths[i].z_address < d->address + span && d->address < x->depths[i].z_address + depth_span(&x->depths[i]))
+            return 0;
+    if (e->copied_from == t && e->copied_serial == t->drawn_serial) return 1;
+    VkCommandBuffer commands = batch_commands(x);
+    if (!commands) return failed(error, error_size, "no command buffer");
+    image_barrier(commands, t->image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    const VkMemoryBarrier before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+                                    .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before, 0, NULL, 0, NULL);
+    const VkImageCopy region = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                .extent = {e->width, e->height, 1}};
+    vkCmdCopyImage(commands, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, e->image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+    image_barrier(commands, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT,
+                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+    const VkMemoryBarrier after = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                   .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &after, 0, NULL, 0, NULL);
+    /* once the target is written back, its memory holds what the image now does: it loads again then */
+    e->copied_from = t, e->copied_serial = t->drawn_serial, e->loaded_change = x->change_count, e->loaded_span = span;
+    e->tiling_index = d->tiling_index, e->pitch = d->pitch;
+    return 1;
+}
+
 /* Fills a kept image with the guest memory's texels under its descriptor, detiled (runtime/tiling.h): on
    the GPU for elements the GPU copy moves (tile_copy_moves), again whenever the memory may have changed
    since (memory_changed_since); by the CPU for others, again when the memory differs from what it last
@@ -2941,6 +2987,9 @@ static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor
         return failed(error, error_size, "the image at %#llx is outside the GPU-visible memory", (unsigned long long)d->address);
     /* a render target drawn into since it was written back holds texels the memory lacks: those over
        the image are written back first (write_back_targets_in) */
+    const int from_target = image_from_target(x, e, d, f, span, error, error_size);
+    if (from_target) return from_target < 0 ? -1 : 0;
+    e->copied_from = NULL;
     const memory_span image_memory = {d->address, span};
     if (unwritten_target_over(x, d->address, span) && write_back_targets_in(x, &image_memory, 1, error, error_size)) return -1;
     if (e->tiling_index != d->tiling_index || e->pitch != d->pitch) { /* the same memory read another way */
