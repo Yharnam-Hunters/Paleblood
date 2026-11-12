@@ -187,6 +187,8 @@ address,size,name,system,status,notes
 0x02487380,675,engine_robust_heap_allocate_top_02487380,engine,edge-verified,DLRobustHeap top allocation: the highest-address free block that fits (lists and tree) is carved from its end; the front stays free
 0x02487650,1252,engine_robust_heap_allocate_aligned_top_02487650,engine,edge-verified,DLRobustHeap aligned top allocation: highest block whose top aligned payload fits; front and rest stay free
 0x02487b50,481,engine_robust_heap_free_02487b50,engine,edge-verified,DLRobustHeap free: reports double frees and foreign pointers (then frees anyway); merges with free neighbours and files the result by size
+0x02488030,677,engine_segregated_bi_heap_allocate_bottom_02488030,engine,edge-verified,DLSegregatedBiHeap bottom allocation: first free block (address order) holding the 16-rounded size aligned; split rest/front via new descriptors; to the bottom chain
+0x02488900,1000,engine_segregated_bi_heap_free_02488900,engine,edge-verified,DLSegregatedBiHeap free: find in bottom then top chain; merge free neighbours (descriptors back to the pool); relink into the address-ordered free list
 0x024bd150,216,frame_timing_job_take_result,frame_timing,edge-verified,"Job handle result: mode 0 polls (null if not done), 2 takes, others wait 1 ms at a time; bumps the job's holder count under the job lock"
 0x024bdd40,36,frame_timing_job_wait,frame_timing,edge-verified,"Poll a job's state until finished (2), sleeping 1 ms in the kernel between polls"
 0x02564ed0,25,render_present_encoding_units,render,edge-verified,Return the full 64-bit entry for wrapped encoding minus one when its index is below 99; otherwise return zero.
