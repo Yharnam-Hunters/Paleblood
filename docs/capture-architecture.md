@@ -42,6 +42,9 @@ ranges (an import or other native code), unreadable memory, the instruction limi
   buffer down to it, so it is written as `buf:NAME+off` and keeps its distance to those bytes.
 - Bytes of the executable's read-only segments are not inputs: the verifier maps the same
   executable, and presetting them would write into read-only memory.
+- An access 256 bytes to 1 MiB away from the base pointer it went through (a large object whose
+  fields lie in separate runs) keeps the pointer and the bytes it reached in one buffer, so the
+  replay keeps their distance. A buffer's `bytes` leave out its trailing zeros.
 - Arguments (`rdi`..`r9`, `xmm0`, `xmm1`) and the stack arguments read are written the same way:
   `buf:NAME+off`, `guest:0xADDRESS`, or a number.
 - `returns` comes from the hook table: the return class is data (`game/hooks.csv`), not inferred.
@@ -53,7 +56,9 @@ and nothing is recorded.
 
 **Proof.** `test/test_capture_trace.cpp` traces synthetic guest code (`test/capture_trace_guest.S`)
 mapped as an image: a pointer argument to a struct holding a pointer, an image global, stack
-arguments, a float argument and result, a call between guest functions, and `rep movsb`. It checks
+arguments, a float argument and result, a call between guest functions, `rep movsb`, two fields
+4 KiB apart through one pointer, and imports that leave a register pointing at memory they change,
+write through two registers at once, or change memory far past what they wrote. It checks
 the results and the inputs, and that an `xmm2` read, a thread-local access, a call into native code
 and the instruction limit give no case while the call still completes.
 `test/capture_trace_integration.py` then replays every recorded case with `tools/verify.py`: each
@@ -132,11 +137,27 @@ loaded from the slot), the call runs natively and is recorded instead of ending 
 tracer snapshots up to 4096 bytes behind each argument register, sends the import's return to a
 one-byte `int3` pad, and lets it run untraced. At the pad it records the return value and every byte
 that changed behind each pointer argument, notes those bytes as written (later reads of them are not
-inputs: the case's script writes them), puts the real return address back and resumes tracing. Only
-bytes above the return slot are compared: an unused argument register can hold a stale pointer below
-the stack, where the import's own frames and the trap handler write, and none of that is visible to
-the caller once the import returns. The
-case scripts each call in order: `{"name", "argc": 0, "ret", "writes": [{"arg", "offset", "bytes"}]}`.
+inputs: the case's script writes them), puts the real return address back and resumes tracing.
+The import's argument count is not known, and each change is scripted as a write through its
+register, which a replay sets differently for registers that were not arguments, so a change counts
+only when it can be the import's write for the caller:
+
+- not through a register an earlier import left and the traced code has not set since (an unused
+  argument register holds whatever the last import put there);
+- not on bytes an earlier register of the same call already scripts (two registers pointing at the
+  same memory);
+- not below the import's return slot on the private stack the call runs on (the import's own frames
+  and the trap handler's), nor below the caller's stack pointer (the recording thread's own native
+  frames);
+- in the traced call's own frame, within 256 bytes after the pointer or after the last change kept
+  through it (a filled buffer whose runs kept some of their values), or on bytes the traced code
+  read or wrote before: other threads change memory behind any pointer while the import runs.
+
+The case scripts each call in order: `{"name", "argc": 0, "ret", "writes": [...]}`. A kept change in
+a buffer or the image is written at its place (`{"addr", "bytes"}`), since the register it was seen
+through need not be an argument (an import that updates labels in the command buffers it was
+given, seen through a register it does not read); a change in the traced call's own frame, which has
+no place in the case, is written through its register (`{"arg", "offset", "bytes"}`).
 Reads of an import's slot are never inputs, since the verifier binds its own stub there.
 
 The host's loader binds the imports, so the runtime finds the slots itself at install time: it maps
