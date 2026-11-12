@@ -340,8 +340,7 @@ class Run:
             if libc.syscall(SYS_ARCH_PRCTL, ARCH_SET_GS, ctypes.c_ulong(self.value(self.case['gs']))):
                 raise BadInput(f'arch_prctl(ARCH_SET_GS) failed: errno {ctypes.get_errno()}')
         for m in self.case.get('memory', []):
-            target = m['addr']
-            addr = self.value(target) if isinstance(target, str) and target.startswith('buf:') else self.guest(hexint(target))
+            addr = self.location(m['addr'])
             if 'pointer' in m:
                 data = struct.pack('<Q', self.value(f"buf:{m['pointer']}"))
             elif 'guest' in m:
@@ -350,6 +349,10 @@ class Run:
                 data = bytes.fromhex(m['bytes'])
             self.check_memory(addr, len(data), write=True, source="fixture_setup")
             ctypes.memmove(addr, data, len(data))
+
+    def location(self, target) -> int:
+        """A `memory` or write address: buf:NAME+off, or a PS4 address in the image."""
+        return self.value(target) if isinstance(target, str) and target.startswith('buf:') else self.guest(hexint(target))
 
     def guest(self, ps4: int) -> int:
         if not EBOOT_BASE <= ps4 < EBOOT_BASE + self.boot['size']:
@@ -507,7 +510,8 @@ class Run:
             data = bytes.fromhex(w['bytes'])
             if 'size' in w and len(data) != int(w['size']):
                 self.errors.append(f"{entry['name']}: write of {len(data)} bytes, the case says {w['size']}")
-            address = args[int(w['arg'])] + int(w.get('offset', 0))
+            # At a fixed place (a buffer or the image), or through an argument register.
+            address = self.location(w['addr']) if 'addr' in w else args[int(w['arg'])] + int(w.get('offset', 0))
             self.check_memory(address, len(data), write=True, source="import_write")
             ctypes.memmove(address, data, len(data))
         return self.value(entry.get('ret', 0)) & 0xffffffffffffffff

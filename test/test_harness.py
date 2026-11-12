@@ -766,6 +766,18 @@ class Harness(unittest.TestCase):
                             for event in r['access_trace']))
         self.assertIn('not instrumented', r['access_trace_scope'])
 
+    def test_import_write_at_a_fixed_place(self):
+        # A recorded import's change seen through a register that need not be an argument is
+        # scripted at its place: it lands there whatever the registers hold in the replay.
+        script = dict(CASE['imports'][0])
+        script['writes'] = script['writes'] + [{'addr': 'buf:aux+0x8', 'bytes': 'aabbccdd'}]
+        case = dict(CASE, buffers={'out': {'size': 8}, 'aux': {'size': 16}}, imports=[script])
+        Path(self.case).write_text(json.dumps(case))
+        r = self.side()
+        self.assertIn({'addr': 'buf:aux+0x8', 'bytes': 'aabbccdd'}, r['writes'])
+        self.assertIn({'addr': 'buf:out+0x0', 'bytes': '3413'}, r['writes'])
+        self.assertNotIn('errors', r)
+
     def test_byte_precise_redzone_reports_guest_buffer_overrun(self):
         case = {'schema': 1, 'address': '0x00400940', 'id': 'redzone', 'returns': 'void',
                 'args': {'rdi': 'buf:out'}, 'buffers': {'out': {'size': 8}},

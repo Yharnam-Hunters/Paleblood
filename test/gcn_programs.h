@@ -365,6 +365,96 @@ static const uint32_t pack_halves[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* The negated float compares: per lane i, the floats (a, b) at in[2i], in[2i + 1]; each of nge, nlg, ngt
+   and nle stores 1 where it holds, 0 elsewhere, at out[8i .. 8i + 3]; neq and nlt at out[8i + 4], out[8i + 5];
+   then v_cmpx_ngt leaves active only the lanes where ngt holds, which store (neq, nlt, 1, 0) at
+   out[8i + 4 .. 8i + 7] (the others store nothing there). */
+static const uint32_t negated_compares[] = {
+    0x34020083, /* v_lshlrev_b32_e32 v1, 3, v0 */
+    0xe0341000, 0x80000201, /* buffer_load_dwordx2 v[2:3], v1, s[0:3], 0 offen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x34020085, /* v_lshlrev_b32_e32 v1, 5, v0 */
+    0x7c120702, /* v_cmp_nge_f32_e32 vcc, v2, v3 */
+    0xd2000004, 0x01a90280, /* v_cndmask_b32_e64 v4, 0, 1, vcc */
+    0x7c140702, /* v_cmp_nlg_f32_e32 vcc, v2, v3 */
+    0xd2000005, 0x01a90280, /* v_cndmask_b32_e64 v5, 0, 1, vcc */
+    0x7c160702, /* v_cmp_ngt_f32_e32 vcc, v2, v3 */
+    0xd2000006, 0x01a90280, /* v_cndmask_b32_e64 v6, 0, 1, vcc */
+    0x7c180702, /* v_cmp_nle_f32_e32 vcc, v2, v3 */
+    0xd2000007, 0x01a90280, /* v_cndmask_b32_e64 v7, 0, 1, vcc */
+    0xe0781000, 0x80010401, /* buffer_store_dwordx4 v[4:7], v1, s[4:7], 0 offen */
+    0x7c1a0702, /* v_cmp_neq_f32_e32 vcc, v2, v3 */
+    0xd2000004, 0x01a90280, /* v_cndmask_b32_e64 v4, 0, 1, vcc */
+    0x7c1c0702, /* v_cmp_nlt_f32_e32 vcc, v2, v3 */
+    0xd2000005, 0x01a90280, /* v_cndmask_b32_e64 v5, 0, 1, vcc */
+    0x7c360702, /* v_cmpx_ngt_f32_e32 vcc, v2, v3 */
+    0x7e0c0281, /* v_mov_b32_e32 v6, 1 */
+    0x7e0e0280, /* v_mov_b32_e32 v7, 0 */
+    0xe0781010, 0x80010401, /* buffer_store_dwordx4 v[4:7], v1, s[4:7], 0 offen offset:16 */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Per lane i, from in[i]: out[i] = the half in its low 16 bits as a float (the high 16 bits ignored);
+   out[64 + i] = the same with the source negated (VOP3 neg). */
+static const uint32_t unpack_halves[] = {
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0xe0301000, 0x80000201, /* buffer_load_dword v2, v1, s[0:3], 0 offen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x7e061702, /* v_cvt_f32_f16_e32 v3, v2 */
+    0xd3160004, 0x20000102, /* v_cvt_f32_f16_e64 v4, -v2 */
+    0xe0701000, 0x80010301, /* buffer_store_dword v3, v1, s[4:7], 0 offen */
+    0xe0701100, 0x80010401, /* buffer_store_dword v4, v1, s[4:7], 0 offen offset:256 */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Buffer atomics, all lanes on the same dwords of out: an add of 1 at out[0] returning the old value (GLC),
+   stored at out[1 + i]; an unsigned max of i at out[128] (no return); a compare-exchange at out[129] of i + 1
+   where it holds 0, returning the old value, stored at out[256 + i]. */
+static const uint32_t buffer_atomics[] = {
+    0x7e020281, /* v_mov_b32_e32 v1, 1 */
+    0x7e040280, /* v_mov_b32_e32 v2, 0 */
+    0xe0c85000, 0x80010102, /* buffer_atomic_add v1, v2, s[4:7], 0 offen glc */
+    0x34060082, /* v_lshlrev_b32_e32 v3, 2, v0 */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xe0701004, 0x80010103, /* buffer_store_dword v1, v3, s[4:7], 0 offen offset:4 */
+    0x7e080300, /* v_mov_b32_e32 v4, v0 */
+    0xe0e01200, 0x80010402, /* buffer_atomic_umax v4, v2, s[4:7], 0 offen offset:512 */
+    0x4a0a0081, /* v_add_i32_e32 v5, vcc, 1, v0 */
+    0x7e0c0280, /* v_mov_b32_e32 v6, 0 */
+    0xe0c45204, 0x80010502, /* buffer_atomic_cmpswap v[5:6], v2, s[4:7], 0 offen offset:516 glc */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xe0701400, 0x80010503, /* buffer_store_dword v5, v3, s[4:7], 0 offen offset:1024 */
+    0xbf810000, /* s_endpgm */
+};
+
+/* An append and a consume buffer on the GDS (M0's base 0x20): lane i first stores its place in the wave
+   (v_mbcnt with constant masks) at out[128 + i]; then the lanes with i % 4 != 0 rank themselves among the
+   active lanes (v_mbcnt with EXEC's halves), ds_append the counter at GDS byte 0x24 and store old + rank at
+   out[i]; then all lanes ds_consume the counter at byte 0x28 and store old - rank at out[64 + i]. */
+static const uint32_t gds_append_consume[] = {
+    0x34080082, /* v_lshlrev_b32_e32 v4, 2, v0 */
+    0xd2460008, 0x000100c1, /* v_mbcnt_lo_u32_b32_e64 v8, -1, 0 */
+    0x481010c1, /* v_mbcnt_hi_u32_b32_e32 v8, -1, v8 */
+    0xe0701200, 0x80010804, /* buffer_store_dword v8, v4, s[4:7], 0 offen offset:512 */
+    0x36120083, /* v_and_b32_e32 v9, 3, v0 */
+    0x7daa1280, /* v_cmpx_ne_u32_e32 vcc, 0, v9 */
+    0xbefc03ff, 0x00200000, /* s_mov_b32 m0, 0x200000 */
+    0xd2480001, 0x0001007f, /* v_mbcnt_hi_u32_b32_e64 v1, exec_hi, 0 */
+    0x4602027e, /* v_mbcnt_lo_u32_b32_e32 v1, exec_lo, v1 */
+    0xd8fa0004, 0x02000000, /* ds_append v2 offset:4 gds */
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+    0x4a060302, /* v_add_i32_e32 v3, vcc, v2, v1 */
+    0xe0701000, 0x80010304, /* buffer_store_dword v3, v4, s[4:7], 0 offen */
+    0xbefe04c1, /* s_mov_b64 exec, -1 */
+    0xd2480005, 0x0001007f, /* v_mbcnt_hi_u32_b32_e64 v5, exec_hi, 0 */
+    0x460a0a7e, /* v_mbcnt_lo_u32_b32_e32 v5, exec_lo, v5 */
+    0xd8f60008, 0x06000000, /* ds_consume v6 offset:8 gds */
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+    0x4c0e0b06, /* v_sub_i32_e32 v7, vcc, v6, v5 */
+    0xe0701100, 0x80010704, /* buffer_store_dword v7, v4, s[4:7], 0 offen offset:256 */
+    0xbf810000, /* s_endpgm */
+};
+
 /* Per lane i, a one-component format store of i at i * 4 bytes (buffer_store_format_x, the
    descriptor's format). */
 /* Per lane i, (i, i + 1, i + 2, i + 3) stored with one buffer_store_dwordx4 at i * 16 bytes plus the
@@ -584,6 +674,20 @@ static const uint32_t vertex_position_color[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* As vertex_position_color, with the colour at record vertex + 3 x the instance index (v3, VGPR_COMP_CNT 3), and as
+   vertex_instance_color_stepped, with the instance index over VGT_INSTANCE_STEP_RATE_0 (v1, VGPR_COMP_CNT 1). */
+#define VERTEX_INSTANCE_COLOR(index_vgpr) {                                                                                   \
+    0xd2860009, 0x04010700 | (index_vgpr), /* v_mad_u32_u24 v9, v<index_vgpr>, 3, v0 */                                      \
+    0xebf32000, 0x80000100, /* tbuffer_load_format_xyzw v[1:4], v0, s[0:3], 0 format:[32_32_32_32,FLOAT] idxen */            \
+    0xebf32000, 0x80010509, /* tbuffer_load_format_xyzw v[5:8], v9, s[4:7], 0 format:[32_32_32_32,FLOAT] idxen */            \
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */                                                                                      \
+    0xf800020f, 0x08070605, /* exp param0, v5, v6, v7, v8 */                                                                  \
+    0xf80008cf, 0x04030201, /* exp pos0, v1, v2, v3, v4 done */                                                               \
+    0xbf810000, /* s_endpgm */                                                                                                \
+}
+static const uint32_t vertex_instance_color[] = VERTEX_INSTANCE_COLOR(3);
+static const uint32_t vertex_instance_color_stepped[] = VERTEX_INSTANCE_COLOR(1);
+
 /* As vertex_position_color, but the position also goes out as parameter 0 and the colour as parameter 1. */
 static const uint32_t vertex_colour_second[] = {
     0xebf32000, 0x80000100, /* tbuffer_load_format_xyzw v[1:4], v0, s[0:3], 0 format:[BUF_DATA_FORMAT_32_32_32_32,BUF_NUM_FORMAT_FLOAT] idxen */
@@ -799,6 +903,21 @@ static const uint32_t pixel_compared[] = {
     0xf0bc0100, 0x00610703, /* image_sample_c_lz v7, v[3:5], s[4:11], s[12:15] dmask:0x1 */
     0xbf8c0f70, /* s_waitcnt vmcnt(0) */
     0xf800180f, 0x08070707, /* exp mrt0, v7, v7, v7, v8 done vm */
+    0xbf810000, /* s_endpgm */
+};
+
+/* pixel_minified's coordinates sampled with given derivatives (image_sample_d): 1/32 a pixel in x along x and in
+   y along y, 2 texels of a 64-texel image, the level 1 whatever the coordinates' own derivatives. */
+static const uint32_t pixel_given_derivatives[] = {
+    0x101004ff, 0x3d800000, /* v_mul_f32_e32 v8, 0x3d800000 (1/16), v2 */
+    0x101206ff, 0x3d800000, /* v_mul_f32_e32 v9, 0x3d800000 (1/16), v3 */
+    0x7e0802ff, 0x3d000000, /* v_mov_b32_e32 v4, 0x3d000000 (1/32: ds/dx) */
+    0x7e0a0280, /* v_mov_b32_e32 v5, 0 (dt/dx) */
+    0x7e0c0280, /* v_mov_b32_e32 v6, 0 (ds/dy) */
+    0x7e0e02ff, 0x3d000000, /* v_mov_b32_e32 v7, 0x3d000000 (1/32: dt/dy) */
+    0xf0880f00, 0x00610a04, /* image_sample_d v[10:13], v[4:9], s[4:11], s[12:15] dmask:0xf */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf800180f, 0x0d0c0b0a, /* exp mrt0, v10, v11, v12, v13 done vm */
     0xbf810000, /* s_endpgm */
 };
 

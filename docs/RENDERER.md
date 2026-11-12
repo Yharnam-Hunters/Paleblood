@@ -252,8 +252,21 @@ Instead:
        writes of 8, 16, 32 and 64 bits, the two-address `read2` and `write2` forms (including `st64`),
        and the 32-bit atomics `add`, `sub`, `min`, `max`, `and`, `or`, `xor`, `wrxchg` and `cmpst`, in plain and
        `_rtn` forms. An access at or past the LDS's size reads 0 and writes nothing. `s_barrier` is a
-       workgroup control barrier that also makes LDS writes visible. The global data share (GDS), the
-       other atomics, `ds_swizzle`, `ds_append` and `ds_consume` stop by name.
+       workgroup control barrier that also makes LDS writes visible. The other atomics, `ds_swizzle`, and
+       `ds_append` and `ds_consume` on the LDS stop by name.
+     - **The global data share (GDS) and append buffers:** the GDS is 64 KB beside guest memory. The
+       runtime keeps it in host memory (`rt_gpu_memory_gds`), which the command processor's `DMA_DATA`
+       steps reach on the CPU and the executor imports for the GPU, so both see the same counters. In a
+       compute shader, `ds_append` and `ds_consume` with the GDS bit move the dword at GDS byte
+       `M0[31:16]` plus the offset by the wave's count of active lanes and give every active lane its old
+       value. `v_mbcnt_lo/hi_u32_b32` gives a lane's rank among the active lanes, so each lane gets a slot
+       of its own. The game's clinic compute shaders use this pattern. Here a wave is a Vulkan subgroup:
+       one elected lane does the atomic for its subgroup, and `v_mbcnt` with EXEC's halves counts the
+       subgroup's active lanes below the lane (a ballot). That is exact with 64-lane subgroups. With
+       32-lane subgroups, each subgroup counts as its own wave, so slots stay unique and dense but are
+       handed out per half wave. `v_mbcnt` with a constant mask uses the compute lane's place in its wave.
+       Other masks, and `v_mbcnt` outside compute shaders (Metal has no subgroup lanes in vertex and
+       fragment functions), stop by name.
      - **Tessellation stages** (`runtime/gcn_spirv.h`): GCN runs a tessellated draw's control points
        through a local shader (LS), which writes them to LDS. It runs the patches through a hull shader
        (HS), which writes the tessellation factors to the factor ring. Then the hardware VS stage runs
@@ -421,8 +434,13 @@ Instead:
      control, colour control, the target mask, the primitive type) and the instance count. The
      executor understands those registers and, at each draw, stops by name on what it does not
      draw yet: depth or stencil testing, primitives other than triangle lists, colour modes other
-     than a normal copy, more than one instance, and any register it does not interpret. A draw
+     than a normal copy, and any register it does not interpret. A draw
      whose targets are all masked off (and that writes no depth) writes nothing and is skipped.
+     - **Instancing:** a draw takes `NUM_INSTANCES` instances from instance 0. A vertex shader asks for
+       the instance index with `VGPR_COMP_CNT` (the input VGPRs after the vertex index): v1 holds the
+       instance index over `VGT_INSTANCE_STEP_RATE_0`, v2 over `VGT_INSTANCE_STEP_RATE_1`, and v3 the
+       instance index itself. A shader that reads v1 or v2 before writing it, with that step rate never
+       set (or 0), stops by name. So does a draw of 0 instances.
      - **Fast clears** (`CB_COLOR_INFO`'s FAST_CLEAR): before each draw a target whose CMASK is all 0
        (cleared, as radeonsi clears it) gets its memory filled with its `CB_COLORn_CLEAR_WORD0/1` texel
        and its CMASK set to all ones, as an eliminate pass would; eliminate passes then have nothing
@@ -757,6 +775,27 @@ Instead:
 
 Each phase lands in small PRs with tests. A boot is recorded after each runtime change. The wiki's
 Runtime page and Gallery show where it stands.
+
+## Coverage survey
+
+Rather than finding the translator's gaps one boot stop at a time, two diagnostic tools list them all.
+Neither changes what a normal run does.
+
+- **Offline, over every shader the game ships:** `game/render/tools/shader_survey.py` reads the shader
+  bundles in your own copy of the game by their archive entries (each shader keeps its name and stage)
+  and the shader files inside the executable, and runs each distinct program through `build/pbgcn_survey`.
+  That tool translates in the translator's **survey mode** (`gcn_spirv_set_survey`): an instruction it
+  cannot translate is noted with its dword and translation goes on, so one pass names every gap a
+  program has. The layout comes from the shader's registers (user SGPRs, pixel inputs, workgroup size,
+  LDS); images and samplers are bound as the code shows them, and a fetch-shader call calls one that only
+  returns. A setting only a draw knows can therefore add or hide a reason. Programs that translate are
+  checked with `spirv-val`. It prints counts, reasons and shader names; `--report` and `--results` write
+  them to files outside the repository. No game code or data enters the repository.
+- **At run time, over what a boot reaches:** with `BB_SHADER_SWEEP` naming a directory, the Vulkan
+  executor writes every distinct shader it meets there (`<stage>-<address>.bin`, and `.spv` when it
+  translates), translates in survey mode, records each shader's reasons in `sweep.txt`, and records and
+  skips a draw, dispatch or register it cannot do instead of stopping. The frames such a run shows lack
+  the skipped draws: it is for listing gaps, never for judging output.
 
 
 ## Guest memory on the GPU
