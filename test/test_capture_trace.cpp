@@ -147,6 +147,24 @@ int self_test()
               log.addr[i] >= reinterpret_cast<uintptr_t>(image + 0x1808), "import: its slot is not an input");
     rt_trace_log_free(&log);
 
+    /* The call's own frame is never dead, even when its private stack lies just below the caller's
+       rsp: here the caller's rsp is put right above where the frame was on the previous call. */
+    trace(0x380, arguments(), log);
+    rt_trace_log_free(&log);
+    uint64_t frame;
+    std::memcpy(&frame, image + 0x1808, sizeof frame);
+    rt_trace_args above = arguments();
+    above.caller_rsp = frame + 0x100;
+    r = trace(0x380, above, log);
+    uint64_t again;
+    std::memcpy(&again, image + 0x1808, sizeof again);
+    if (again == frame)          /* the private stack came back at the same place, as it usually does */
+        check(!log.incomplete && r.rax == 21 && log.import_count == 1 && log.imports[0].writes == 1,
+              "import: a write into the call's own frame is scripted, whatever the caller's rsp");
+    else
+        std::puts("capture trace: private stack moved between calls; frame check skipped");
+    rt_trace_log_free(&log);
+
     /* A value whose upper bytes were already right changes one byte, but the whole word is
        scripted, so a replay does not keep what its own memory held there. */
     alignas(8) int32_t word[2] = {0, 0};

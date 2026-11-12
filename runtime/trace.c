@@ -390,10 +390,11 @@ static int import_enter(trace_state *t, ucontext_t *uc, const import_target *imp
     return 0;
 }
 
-/* Below the caller's rsp, on the calling thread's stack: nothing the caller can see. */
+/* Below the caller's rsp, on the calling thread's stack: nothing the caller can see. The private
+   stack the call runs on may be mapped right below that stack; it is never dead. */
 static int dead(const trace_state *t, uint64_t addr)
 {
-    return addr >= t->dead_lo && addr < t->dead_hi;
+    return addr >= t->dead_lo && addr < t->dead_hi && !(addr >= t->stack_lo && addr < t->stack_hi);
 }
 
 /* Back from the import at the pad: record its result and the bytes it changed, then go on
