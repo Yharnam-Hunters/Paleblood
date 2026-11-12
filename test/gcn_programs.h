@@ -232,6 +232,21 @@ static const uint32_t constants_and_modifiers[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* The roundings: per lane i, the float in[i] toward zero, up, to the nearest (ties to even), and its
+   negation toward zero (VOP3 neg), at out[4i .. 4i + 3]. */
+static const uint32_t roundings[] = {
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0xe0301000, 0x80000201, /* buffer_load_dword v2, v1, s[0:3], 0 offen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x7e064302, /* v_trunc_f32_e32 v3, v2 */
+    0x7e084502, /* v_ceil_f32_e32 v4, v2 */
+    0x7e0a4702, /* v_rndne_f32_e32 v5, v2 */
+    0xd3420006, 0x20000102, /* v_trunc_f32_e64 v6, -v2 */
+    0x340e0084, /* v_lshlrev_b32_e32 v7, 4, v0 */
+    0xe0781000, 0x80010307, /* buffer_store_dwordx4 v[3:6], v7, s[4:7], 0 offen */
+    0xbf810000, /* s_endpgm */
+};
+
 /* An instruction the translator does not handle yet: translation stops naming it. */
 static const uint32_t unsupported[] = {
     0xc8040002, /* v_interp_p1_f32 v1, v2, attr0.x */
