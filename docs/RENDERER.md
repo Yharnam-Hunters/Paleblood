@@ -135,7 +135,9 @@ Instead:
        while they span a macro tile, smaller ones (and every 1D-tiled level) micro tiled with 256-byte
        slices (AMD's address library for GFX7, as shadPS4's `ComputeImageSize` follows). The levels
        are detiled by the CPU. `image_load` and `image_load_mip` read them exactly, `image_sample`
-       at the level its derivatives pick (below). A storage image keeps one level.
+       at the level its derivatives pick (below). A storage image keeps one level: `image_load_mip`
+       reads it at level 0, and a level past it stops at run time, as a sampled image's level past
+       its last does.
      - **Cube images** (T# TYPE 11) in pixel shaders: a 2D array of six faces per cube (DEPTH counts
        whole cubes), viewed whole. Sampling takes (s, t, face), whatever DA says: the cube
        instructions leave s and t in [1, 2], so the face's coordinates are one less, and the face
@@ -590,13 +592,21 @@ Instead:
           when they step by `STENCILOPVAL` 1, which is Vulkan's increment and decrement). A test that reads the buffer compares with what
           earlier draws wrote into the depth image; one reading a depth image no draw has written yet
           stops by name, as do other stencil operations and steps, depth bounds and `DB_RENDER_CONTROL`'s
-          clears, so the depth image's starting contents (and the HTILE metadata the game may clear
-          it with) are never seen. The buffer's contents in guest memory are never loaded: a depth
+          stencil clears and copies, so the depth image's starting contents (and the HTILE metadata the
+          game may clear it with) are never seen. A depth-clearing draw (`DB_RENDER_CONTROL`
+          DEPTH_CLEAR_ENABLE) writes `DB_DEPTH_CLEAR` as the depth of the pixels it covers, given it as
+          the viewport's depth range. The buffer's contents in guest memory are never loaded: a depth
           or stencil buffer the CPU or a compute shader writes would not be seen (not found yet). A draw that writes only the depth target (target mask 0, or
           `CB_COLOR_CONTROL`'s mode `CB_DISABLE`) draws without a colour target; one that writes
           nothing is skipped. Triangle strips (`VGT_PRIMITIVE_TYPE` 6) are drawn too. A view of one
           slice of an array depth target (`DB_DEPTH_VIEW` SLICE_START = SLICE_MAX) draws into an image
-          kept for that slice alone; a view of several slices stops by name.
+          kept for that slice alone, at that slice's memory: `DB_DEPTH_SLICE` tiles of 64 elements per
+          slice past the depth and stencil bases (shadPS4's `GetDepthSliceSize`), where its depth is
+          written back; a view of several slices stops by name. A colour target's view
+          (`CB_COLORn_VIEW`) draws into its first slice (SLICE_START: the shader picks no layer), kept
+          as a 2D target of its own at that slice's memory, `CB_COLORn_SLICE` elements per slice past
+          the base, its CMASK `CMASK_SLICE` bytes per slice past the first (shadPS4's
+          `GetColorSliceSize`): the cube-face passes of the clinic's light probes draw one face each.
         - **Not yet:** other formats, more
           render targets and other pixel inputs. These stop with the reason.
         - **The image's memory order:** an image's pixels only leave the GPU through

@@ -473,7 +473,8 @@ enum { DB_RENDER_CONTROL = 0xa000, DB_DEPTH_VIEW = 0xa002, DB_HTILE_DATA_BASE = 
 enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 0x1, Z_ENABLE = 0x2, Z_WRITE_ENABLE = 0x4,
        COLOR_MODE_MASK = 0x70, COLOR_MODE_SHIFT = 4, CB_NORMAL = 1, CB_ELIMINATE_FAST_CLEAR = 2, ROP3_MASK = 0xff0000, ROP3_SHIFT = 16, ROP3_COPY = 0xcc,
        CHANNELS_MASK = 0xf, DI_PT_TRILIST = 4, DI_PT_TRISTRIP = 6, DI_PT_RECTLIST = 17, CB_DISABLE = 0, DEPTH_BOUNDS_ENABLE = 0x8,
-       Z_FORMAT_MASK = 0x3, STENCIL_FORMAT_MASK = 0x1 };
+       Z_FORMAT_MASK = 0x3, STENCIL_FORMAT_MASK = 0x1,
+       DEPTH_CLEAR_ENABLE = 0x1 /* DB_RENDER_CONTROL */ };
 
 /* Keeps a register the library set; 0, or -1 for one the executor does not understand yet. */
 static int set_register(draw_state *s, uint32_t address, uint32_t value)
@@ -490,7 +491,7 @@ static int set_register(draw_state *s, uint32_t address, uint32_t value)
     case DB_RENDER_CONTROL: s->render_control = value, s->render_control_set = 1; return 0;
     case DB_DEPTH_VIEW: s->depth_view = value; return 0;
     /* compression metadata (HTILE) and the depth clear value: a cleared HTILE clears the executor's depth
-       image (resolve_depth_fast_clear); clears through DB_RENDER_CONTROL stop below */
+       image (resolve_depth_fast_clear); DB_RENDER_CONTROL's depth-clearing draws write it (plan_depth) */
     case DB_HTILE_DATA_BASE: s->htile_base = value, s->htile_set = 1; return 0;
     case DB_DEPTH_CLEAR: s->depth_clear = value; return 0;
     case DB_DEPTH_INFO: case DB_HTILE_SURFACE: case DB_STENCIL_CLEAR: return 0;
@@ -585,8 +586,8 @@ static int blend_state(uint32_t control, VkPipelineColorBlendAttachmentState *ou
      (a compare function other than always or never) is planned with reads set: the draw then needs the
      depth target's image to hold what earlier draws wrote (depth_entry's drawn), since the buffer's
      contents in guest memory are never loaded into it. Other operations, depth bounds and
-     DB_RENDER_CONTROL's clears and copies stop by name; so does a test while no depth target was ever
-     set in the buffer.
+     DB_RENDER_CONTROL's stencil clears and copies stop by name (its depth clear is drawn, below); so
+     does a test while no depth target was ever set in the buffer.
    0, or -1 with the reason. */
 static int plan_depth(const draw_state *s, depth_plan *plan, char *error, size_t error_size)
 {
@@ -609,8 +610,16 @@ static int plan_depth(const draw_state *s, depth_plan *plan, char *error, size_t
     const int depth_buffer = (s->depth_target[Z_INFO] & Z_FORMAT_MASK) != 0;
     const int stencil_buffer = (s->depth_target[STENCIL_INFO] & STENCIL_FORMAT_MASK) != 0;
     if ((control & DEPTH_BOUNDS_ENABLE) && depth_buffer) return failed(error, error_size, "a depth bounds test: not drawn yet");
-    if ((depth_buffer || stencil_buffer) && s->render_control_set && s->render_control)
-        return failed(error, error_size, "DB_RENDER_CONTROL %#x (depth or stencil clears and copies): not drawn yet", s->render_control);
+    /* DB_RENDER_CONTROL's DEPTH_CLEAR_ENABLE (bit 0) alone: the draw writes DB_DEPTH_CLEAR as the depth of the
+       pixels it covers (AMD's register reference; Mesa's radeonsi clears depth by such draws), which draw()
+       gives it through the viewport's depth range; a pixel shader exporting depth would override it */
+    if ((depth_buffer || stencil_buffer) && s->render_control_set && s->render_control) {
+        if (s->render_control != DEPTH_CLEAR_ENABLE || !depth_buffer)
+            return failed(error, error_size, "DB_RENDER_CONTROL %#x (depth or stencil clears and copies): not drawn yet", s->render_control);
+        if (s->pixel.code && (pixel_settings(&s->pixel) >> SETTINGS_DEPTH_EXPORT_SHIFT & GCN_DEPTH_EXPORT_Z))
+            return failed(error, error_size, "a depth-clearing draw (DB_RENDER_CONTROL %#x) whose pixel shader exports depth: not drawn yet",
+                          s->render_control);
+    }
     if ((control & Z_ENABLE) && depth_buffer) {
         const uint32_t compare = control >> 4 & 7;
         if (compare != COMPARE_ALWAYS && compare != COMPARE_NEVER) plan->reads = 1;
@@ -961,7 +970,7 @@ static int stop_reason(uint32_t code, char *error, size_t error_size)
         return failed(error, error_size, "a vertex or pixel shader read VCC as a lane mask after a scalar write of its halves: not done "
                       "yet (a lane has no known place in the wave there)");
     if (code >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_IMAGE_RANGE)
-        return failed(error, error_size, "a pixel shader loaded an image texel outside the image or past its last level: not done yet "
+        return failed(error, error_size, "a shader loaded an image texel outside the image or past its last level: not done yet "
                       "(what the GPU returns there is not established)");
     return failed(error, error_size, "a shader stopped at run time with code %#x", code);
 }
@@ -1527,6 +1536,25 @@ static VkFormat target_format(const rt_color_target *target, uint32_t *element_b
     return VK_FORMAT_UNDEFINED;
 }
 
+/* A draw writes slice SLICE_START of an array colour target (CB_COLORn_VIEW, SLICE_START to SLICE_MAX):
+   the slice its shader picks counts from there, and a shader that picks none writes SLICE_START (a layer
+   output stops translation, runtime/gcn_spirv.h). Each slice is drawn as a 2D target of its own at its
+   memory: slices follow one another every CB_COLORn_SLICE elements (pitch x height, times the samples)
+   and their CMASKs every CMASK_SLICE bytes (shadPS4's regs_color.h, GetColorSliceSize). The result names
+   that slice alone, at slice 0. A target whose format is not drawn is left as it is: its draw stops on
+   the format. */
+static rt_color_target color_slice(rt_color_target c)
+{
+    uint32_t element_bytes;
+    char unused[8];
+    if (!c.first_slice || target_format(&c, &element_bytes, unused, sizeof unused) == VK_FORMAT_UNDEFINED) return c;
+    c.address += (uint64_t)c.first_slice * c.pitch * c.height * c.samples * element_bytes;
+    c.cmask_address += (uint64_t)c.first_slice * c.cmask_bytes;
+    c.last_slice = c.last_slice > c.first_slice ? c.last_slice - c.first_slice : 0;
+    c.first_slice = 0;
+    return c;
+}
+
 static target_entry *find_target(rt_executor *x, uint64_t address)
 {
     for (size_t i = 0; i < x->target_count; i++)
@@ -1955,7 +1983,15 @@ static depth_entry *depth_for(rt_executor *x, const draw_state *s, char *error, 
     }
     const VkFormat format = depth_format(x, r[Z_INFO], r[STENCIL_INFO], error, error_size);
     if (format == VK_FORMAT_UNDEFINED) return NULL;
-    const uint64_t z_address = (uint64_t)r[Z_WRITE_BASE] << 8, stencil_address = (uint64_t)r[STENCIL_WRITE_BASE] << 8;
+    /* slice n's depth and stencil start n slices past the bases: DB_DEPTH_SLICE's SLICE_TILE_MAX (bits 0-21)
+       + 1 tiles of 64 elements each (shadPS4's regs_depth.h, GetDepthSliceSize), so that writing the slice
+       back reaches its own memory */
+    enum { SLICE_TILE_MAX_MASK = 0x3fffff, TILE_ELEMENTS = 64 };
+    const uint64_t slice_elements = (uint64_t)slice * ((r[DEPTH_SLICE] & SLICE_TILE_MAX_MASK) + 1) * TILE_ELEMENTS;
+    const uint32_t depth_bytes = format == VK_FORMAT_S8_UINT ? 0 : format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_D16_UNORM_S8_UINT ? 2 : 4;
+    const uint32_t stencil_bytes = format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_D32_SFLOAT ? 0 : 1;
+    const uint64_t z_address = ((uint64_t)r[Z_WRITE_BASE] << 8) + slice_elements * depth_bytes,
+                   stencil_address = ((uint64_t)r[STENCIL_WRITE_BASE] << 8) + slice_elements * stencil_bytes;
     const uint32_t width = ((r[DEPTH_SIZE] & 0x7ff) + 1) * TILE, height = ((r[DEPTH_SIZE] >> 11 & 0x7ff) + 1) * TILE;
     for (size_t i = 0; i < x->depth_count; i++) {
         depth_entry *d = &x->depths[i];
@@ -2687,7 +2723,12 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     const float sx = s->viewport_scale[0], sy = s->viewport_scale[1], sz = s->viewport_scale[2];
     const float tx = s->viewport_translate[0], ty = s->viewport_translate[1], tz = s->viewport_translate[2];
-    const VkViewport viewport = {.x = tx - sx, .y = ty - sy, .width = 2 * sx, .height = 2 * sy, .minDepth = tz, .maxDepth = tz + sz};
+    VkViewport viewport = {.x = tx - sx, .y = ty - sy, .width = 2 * sx, .height = 2 * sy, .minDepth = tz, .maxDepth = tz + sz};
+    if (z && s->render_control_set && s->render_control == DEPTH_CLEAR_ENABLE) { /* every pixel's depth is DB_DEPTH_CLEAR (plan_depth) */
+        float clear;
+        memcpy(&clear, &s->depth_clear, sizeof clear);
+        viewport.minDepth = viewport.maxDepth = clear;
+    }
     const VkRect2D scissor = {{0, 0}, {width, height}};
     vkCmdSetViewport(commands, 0, 1, &viewport);
     vkCmdSetScissor(commands, 0, 1, &scissor);
@@ -3924,7 +3965,7 @@ static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, 
         {
             const unsigned slot = c->u.color_target.slot;
             if (slot >= RT_COLOR_TARGETS) return failed(error, error_size, "a colour target in slot %u", slot);
-            s->colors[slot] = c->u.color_target.target;
+            s->colors[slot] = color_slice(c->u.color_target.target);
             s->color_enabled = c->u.color_target.enabled ? s->color_enabled | 1u << slot : s->color_enabled & ~(1u << slot);
         }
             break;
