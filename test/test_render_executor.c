@@ -197,7 +197,8 @@ static int two_channel_misses(rt_executor *x, uint64_t target) { return channel_
    a 128 x 64 8_8_8_8 image tiled as Thin2DThin (index 14), its texels placed with runtime/tiling.h,
    draws the reference image; the same bytes described as Display2DThin (index 10) do not. A linear one
    (index 8), DST_SEL z, y, x, w over blue-first bytes, and the guest changing its texels between
-   draws all read what the guest memory holds; so does an 8_8 image. A target larger than the image
+   draws all read what the guest memory holds; so does an 8_8 image, and one in a depth layout whose
+   micro tiles split (tiling index 0, detiled on the GPU). A target larger than the image
    reads outside it and stops by name. */
 static void sampled_images(rt_executor *x)
 {
@@ -371,6 +372,24 @@ static void sampled_images(rt_executor *x)
             image[3] = (image[3] & ~(0x1fu << 20)) | LINEAR_ALIGNED << 20;
             CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0 && channel_misses(x, at(TEXEL_TARGET), cases[c].bytes == 2) > 0);
         }
+    }
+    /* A 256 x 256 8_8_8_8 image in the depth layout of tiling index 0, whose 256-byte micro tiles of
+       32-bit elements split into four 64-byte pieces (detiled by the GPU tile copy, which takes such
+       splits, tile_copy_pieces), reads what rt_tiling_offset placed */
+    {
+        enum { SPLIT = 0x2600000, SPLIT_SIZE = 256, DEPTH_TILING = 0 };
+        rt_tiling layout;
+        CHECK(rt_tiling_layout(DEPTH_TILING, 4, SPLIT_SIZE, SPLIT_SIZE, &layout, error, sizeof error) == 0 && !rt_tiling_uniform_micro(&layout));
+        for (uint32_t y = 0; y < SPLIT_SIZE; y++)
+            for (uint32_t px = 0; px < SPLIT_SIZE; px++) {
+                const uint32_t texel = reference_texel(px % SIZE, y % SIZE);
+                memcpy(guest + SPLIT + rt_tiling_offset(&layout, px, y, 0), &texel, 4);
+            }
+        image_descriptor(image, at(SPLIT), 10, 0, SPLIT_SIZE, SPLIT_SIZE);
+        image[3] |= DEPTH_TILING << 20;
+        drawn = draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error);
+        if (drawn) fprintf(stderr, "split-tile image: %s\n", error);
+        CHECK(drawn == 0 && differing_pixels(x, at(TEXEL_TARGET)) == 0);
     }
     image_descriptor(image, at(SMALL), 10, 0, 8, 8);
     image[3] |= LINEAR_ALIGNED << 20;

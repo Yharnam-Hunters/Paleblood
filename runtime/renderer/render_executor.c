@@ -1350,6 +1350,20 @@ static void level_plans_free(rt_executor *x, image_entry *e)
     e->level_plans = NULL;
 }
 
+/* A split tile (a depth layout's tile split, runtime/tiling.h) puts each piece of a micro tile in its
+   own place, its bytes in a row there: each piece gets its first element's offset, and the 64 offsets
+   are offsets in a piece. Done while a micro tile's elements stay in memory order inside one pipe
+   interleave (micro tiles of at most 256 bytes, which the split depth layouts of 32-bit elements are).
+   How many pieces a micro tile of the layout has (1 when it is not split), or 0 when the GPU copy does
+   not take its split. */
+static unsigned tile_copy_pieces(const rt_tiling *layout)
+{
+    enum { PIPE_INTERLEAVE_BYTES = 256 };
+    if (rt_tiling_uniform_micro(layout)) return 1;
+    const unsigned micro_bytes = RT_TILING_MICRO_TEXELS * layout->element_bytes, pieces = micro_bytes / layout->tile_split;
+    return micro_bytes <= PIPE_INTERLEAVE_BYTES && pieces && !(pieces & (pieces - 1)) ? pieces : 0;
+}
+
 /* Makes p the plan for copying `slices` slices of width x height elements laid out as `layout`: the
    table (a micro tile's elements in memory order with their places, from rt_tiling_micro_spread, then
    each micro tile's first element; runtime/tile_copy.h) and the linear rows' buffer. Kept while the layout and size stay. 0, or -1 with the reason. */
@@ -1359,18 +1373,12 @@ static int tile_plan_make(rt_executor *x, tile_plan *p, const rt_tiling *layout,
     tile_plan_free(x, p);
     if (rt_tiling_size(layout, slices) > UINT32_MAX)
         return failed(error, error_size, "a %ux%u image of %u slices spans more than the GPU copy's 32-bit offsets", width, height, slices);
-    /* A split tile (a depth layout's tile split, runtime/tiling.h) puts each piece of a micro tile in its
-       own place, its bytes in a row there: each piece gets its first element's offset, and the 64 offsets
-       are offsets in a piece. Done while a micro tile's elements stay in memory order inside one pipe
-       interleave (micro tiles of at most 256 bytes, which the split depth layouts of 32-bit elements are). */
-    enum { PIPE_INTERLEAVE_BYTES = 256 };
-    const unsigned element = layout->element_bytes, micro_bytes = RT_TILING_MICRO_TEXELS * element;
-    const unsigned pieces = rt_tiling_uniform_micro(layout) ? 1 : micro_bytes / layout->tile_split;
-    unsigned pieces_log2 = 0;
-    while (1u << pieces_log2 < pieces) pieces_log2++;
-    if (pieces > 1 && (micro_bytes > PIPE_INTERLEAVE_BYTES || 1u << pieces_log2 != pieces))
+    const unsigned element = layout->element_bytes, pieces = tile_copy_pieces(layout);
+    if (!pieces)
         return failed(error, error_size, "a split tile of %u-byte elements in %u-byte pieces: the GPU copy does not take it yet", element,
                       layout->tile_split);
+    unsigned pieces_log2 = 0;
+    while (1u << pieces_log2 < pieces) pieces_log2++;
     *p = (tile_plan){.width = width, .height = height, .slices = slices, .element_bytes = element,
                      .tiles_per_row = (width + RT_TILING_MICRO - 1) / RT_TILING_MICRO, .pieces_log2 = pieces_log2};
     p->tiles_per_slice = p->tiles_per_row * ((height + RT_TILING_MICRO - 1) / RT_TILING_MICRO);
@@ -2907,7 +2915,7 @@ static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor
     }
     const VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, e->layers},
                                     .imageExtent = {e->width, one_dimensional(d->type) ? 1 : e->height, 1}};
-    if (tile_copy_moves(x, bytes) && rt_tiling_uniform_micro(&layout)) { /* detiled on the GPU (runtime/tile_copy.h), with the batch */
+    if (tile_copy_moves(x, bytes) && tile_copy_pieces(&layout)) { /* detiled on the GPU (runtime/tile_copy.h), with the batch */
         if (!memory_changed_since(x, d->address, span, e->loaded_change)) return 0;
         if (!e->plan.table.buffer && tile_plan_make(x, &e->plan, &layout, columns, rows, e->layers, error, error_size)) return -1;
         if (record_tile_copy(x, &e->plan, d->address, 0, error, error_size)) return -1;
@@ -3008,7 +3016,7 @@ static int load_levels(rt_executor *x, image_entry *e, const rt_image_descriptor
     }
     if (!memory_changed_since(x, d->address, span, e->loaded_change)) return 0;
     int on_gpu = tile_copy_moves(x, bytes); /* every level in a layout the GPU copy takes: detiled on the GPU */
-    for (unsigned m = 0; m < e->levels && on_gpu; m++) on_gpu = rt_tiling_uniform_micro(&levels[m].layout) && levels[m].offset % bytes == 0;
+    for (unsigned m = 0; m < e->levels && on_gpu; m++) on_gpu = tile_copy_pieces(&levels[m].layout) && levels[m].offset % bytes == 0;
     if (on_gpu) return load_levels_on_gpu(x, e, d, f, levels, span, error, error_size);
     if (guest_memory_settled(x, d->address, span, error, error_size)) return -1;
     const uint8_t *guest = (const uint8_t *)x->view + (d->address - x->guest_base);
@@ -3161,7 +3169,7 @@ static int write_back_image(rt_executor *x, image_entry *e, const rt_image_descr
     char reason[160];
     const uint32_t rows = one_dimensional(d->type) ? 1 : d->height;
     if (f.block != 1 || !tile_copy_moves(x, f.bytes) || d->pitch < d->width || rt_tiling_layout(d->tiling_index, f.bytes, d->pitch, rows, &layout, reason, sizeof reason) ||
-        !rt_tiling_uniform_micro(&layout))
+        !tile_copy_pieces(&layout))
         return 0;
     const uint64_t span = rt_tiling_size(&layout, e->layers);
     if (d->address < x->guest_base || d->address - x->guest_base > x->size || span > x->size - (d->address - x->guest_base))
