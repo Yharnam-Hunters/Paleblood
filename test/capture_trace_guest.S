@@ -137,6 +137,56 @@ import_thunk:
     mov (%rax), %eax
     add $8, %rsp
     ret
+/* Native imports (test/test_capture_trace.cpp) called through their own slots below:
+   plain stores 21 at rdi; far also changes the byte 1024 bytes further on, as another thread
+   might; stale counts its calls in a counter of its own, stores the count at rdi and leaves rdx
+   pointing at the counter. */
+/* 0x400: int32_t stale_argument(int32_t *a) { stale(a); stale(a); return *a; } the second call
+   leaves rdx as the first returned it. */
+    .org 0x400
+    push %rbx
+    mov %rdi, %rbx
+    call stale_thunk
+    mov %rbx, %rdi
+    call stale_thunk
+    mov (%rbx), %eax
+    pop %rbx
+    ret
+    .org 0x430
+stale_thunk:
+    jmp *stale_slot(%rip)
+/* 0x440: void same_pointer(int32_t *a) { plain(a) } with rsi = rdi too. */
+    .org 0x440
+    sub $8, %rsp
+    mov %rdi, %rsi
+    call plain_thunk
+    add $8, %rsp
+    ret
+    .org 0x470
+plain_thunk:
+    jmp *plain_slot(%rip)
+/* 0x480: void far_untouched(char *p) { far(p); } */
+    .org 0x480
+    sub $8, %rsp
+    call far_thunk
+    add $8, %rsp
+    ret
+    .org 0x4b0
+far_thunk:
+    jmp *far_slot(%rip)
+/* 0x4c0: int32_t far_touched(char *p) { int32_t v = p[1024]; far(p); return v; } */
+    .org 0x4c0
+    push %rbx
+    movzbl 1024(%rdi), %ebx
+    call far_thunk
+    mov %ebx, %eax
+    pop %rbx
+    ret
+/* 0x500: void two_fields(struct *s) { s->field_0 = 1; s->field_1000 = 2; } */
+    .org 0x500
+    movl $1, (%rdi)
+    movl $2, 0x1000(%rdi)
+    ret
     .org 0x1000
 global:
     .long 1000
@@ -147,6 +197,13 @@ import_slot:
     .quad 0
 /* 0x1808: where frame_import leaves its stack pointer. */
 frame_seen:
+    .quad 0
+/* 0x1810..0x1820: the native imports' slots. */
+stale_slot:
+    .quad 0
+plain_slot:
+    .quad 0
+far_slot:
     .quad 0
     .org 0x2000
     .globl capture_trace_guest_end

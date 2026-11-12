@@ -8,6 +8,8 @@
    - An eight-byte input whose value points into a buffer or into the image is a pointer: the
      case gives it the buffer's address (`pointer`) or the image address (`guest`), so it still
      points at the same thing in the verifier's sandbox.
+   - An access through a base pointer 256 bytes to 64 KiB away from it puts the pointer and what it
+     reached in one buffer, so the replay keeps their distance.
    - Arguments and stack arguments that point into a buffer or the image are written the same way;
      other values are numbers.
    - Imports the call made are scripted in order: return value, and the bytes each changed behind
@@ -115,6 +117,18 @@ public:
             }
             for (Region &r : regions_)
                 if (v > r.end && v - r.end <= MERGE_GAP) r.end = v;
+        }
+        /* An access far from the pointer it went through (a large object whose fields lie in
+           separate runs) keeps the pointer and what it reached in one buffer, at their distance. */
+        for (size_t i = 0; i < log.link_count; i++) {
+            const uint64_t base = log.link[i][0], reached = log.link[i][1];
+            if (in_image(base) || in_image(reached)) continue;
+            Region *r = nullptr;
+            for (Region &x : regions_)
+                if (reached >= x.base && reached < x.end) r = &x;
+            if (!r) continue;               /* the private stack: not a buffer */
+            r->base = std::min(r->base, base & ~uint64_t{15});
+            r->end = std::max(r->end, base + 1);
         }
         std::sort(regions_.begin(), regions_.end(), [](const Region &a, const Region &b) { return a.base < b.base; });
         /* Widened buffers may now meet: join them. */

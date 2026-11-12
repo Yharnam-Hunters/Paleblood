@@ -23,6 +23,31 @@
 
 extern "C" const unsigned char capture_trace_guest_start[], capture_trace_guest_end[];
 
+/* Native imports for the guest functions at 0x400..0x4c0 (test/capture_trace_guest.S). */
+extern "C" {
+int32_t trace_stale_counter;
+void trace_stale_import(int32_t *out);
+void trace_plain_import(int32_t *out);
+void trace_far_import(char *p);
+}
+asm(R"(
+    .text
+    .globl trace_stale_import, trace_plain_import, trace_far_import
+trace_stale_import:
+    incl trace_stale_counter(%rip)
+    mov trace_stale_counter(%rip), %eax
+    mov %eax, (%rdi)
+    lea trace_stale_counter(%rip), %rdx
+    ret
+trace_plain_import:
+    movl $21, (%rdi)
+    ret
+trace_far_import:
+    movl $21, (%rdi)
+    incb 1024(%rdi)
+    ret
+)");
+
 unsigned char *rt_image;
 
 namespace {
@@ -199,6 +224,49 @@ int self_test()
           "import: a change below the caller's rsp is not scripted");
     rt_trace_log_free(&log);
 
+    /* An argument register an earlier import left is not an argument: the second call's rdx
+       still points where the first left it, at memory the import changes for itself. */
+    alignas(8) int32_t stale_out[2] = {0, 0};
+    r = trace(0x400, arguments(reinterpret_cast<uint64_t>(stale_out)), log);
+    check(!log.incomplete && static_cast<int32_t>(r.rax) == trace_stale_counter && log.import_count == 2 && log.imports[1].writes == 1 &&
+              log.writes[log.imports[1].first_write].arg == 0,
+          "import: a register an earlier import left is not scripted through");
+    rt_trace_log_free(&log);
+
+    /* Two registers pointing at the same bytes: scripted once, through the first. */
+    alignas(8) int32_t same[2] = {0, 0};
+    r = trace(0x440, arguments(reinterpret_cast<uint64_t>(same)), log);
+    check(!log.incomplete && same[0] == 21 && log.import_count == 1 && log.imports[0].writes == 1 &&
+              log.writes[0].arg == 0,
+          "import: bytes two registers point at are scripted once");
+    rt_trace_log_free(&log);
+
+    /* A change far past what the import wrote, on bytes the traced code never touches (another
+       thread's), is not the import's write; on bytes the traced code read, it is scripted. */
+    alignas(16) static char far_bytes[2048];
+    r = trace(0x480, arguments(reinterpret_cast<uint64_t>(far_bytes)), log);
+    check(!log.incomplete && far_bytes[1024] == 1 && log.import_count == 1 && log.imports[0].writes == 1 &&
+              log.writes[0].offset == 0,
+          "import: a far change on untouched bytes is not scripted");
+    rt_trace_log_free(&log);
+    far_bytes[0] = 0;
+    r = trace(0x4c0, arguments(reinterpret_cast<uint64_t>(far_bytes)), log);
+    check(!log.incomplete && r.rax == 1 && far_bytes[1024] == 2 && log.import_count == 1 && log.imports[0].writes == 2 &&
+              log.writes[1].offset == 1024,
+          "import: a far change on bytes the traced code read is scripted");
+    rt_trace_log_free(&log);
+
+    /* Two fields 4 KiB apart, through one pointer: one buffer, so the replay keeps the distance. */
+    alignas(16) static char object[0x1010];
+    rt_trace_args object_args = arguments(reinterpret_cast<uint64_t>(object));
+    trace(0x500, object_args, log);
+    const rt_traced_function two_fields = {"capture_trace_two_fields", 0x400500, "void", at(0x500)};
+    const std::string object_case = rt::traced_case(log, object_args, two_fields, 0, "selftest", {image, image + image_size});
+    check(!log.incomplete && log.link_count == 1 && object_case.find("\"rdi\": \"buf:b0+0x0\"") != std::string::npos &&
+              object_case.find("\"b1\"") == std::string::npos && object_case.find("\"size\": 4112") != std::string::npos,
+          "a far field through a pointer is in the pointer's buffer");
+    rt_trace_log_free(&log);
+
     /* What a case cannot express: the call still runs to the end, but there is no case. */
     trace(0x180, arguments(), log);
     check(log.incomplete != nullptr, "xmm2 read: incomplete");
@@ -311,15 +379,21 @@ int main(int argc, char **argv)
     rt_image = image;
     /* Bind the import, as a loader would, and list it for the tracer. The image file the replay
        builds from is written before binding (emit), so its slot holds 0 for the verifier to bind. */
-    static const rt_trace_import import_table[] = {{image + 0x1800, "testFill"}};
+    static const rt_trace_import import_table[] = {{image + 0x1800, "testFill"},
+                                                   {image + 0x1810, "testStale"},
+                                                   {image + 0x1818, "testPlain"},
+                                                   {image + 0x1820, "testFar"}};
     if (!rt_trace_available()) {
         std::puts("capture trace: built without Capstone; nothing to test");
         return 0;
     }
     const auto bind = [] {
-        const uint64_t target = reinterpret_cast<uintptr_t>(fill);
-        std::memcpy(image + 0x1800, &target, sizeof target);
-        rt_trace_set_imports(import_table, 1);
+        const uint64_t targets[] = {reinterpret_cast<uintptr_t>(fill), reinterpret_cast<uintptr_t>(trace_stale_import),
+                                    reinterpret_cast<uintptr_t>(trace_plain_import),
+                                    reinterpret_cast<uintptr_t>(trace_far_import)};
+        std::memcpy(image + 0x1800, &targets[0], sizeof targets[0]);
+        std::memcpy(image + 0x1810, &targets[1], 3 * sizeof targets[0]);
+        rt_trace_set_imports(import_table, 4);
     };
     if (argc == 2 && !std::strcmp(argv[1], "--self-test")) return bind(), self_test();
     if (argc == 3 && !std::strcmp(argv[1], "--image")) {
