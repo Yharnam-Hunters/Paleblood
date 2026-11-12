@@ -239,8 +239,10 @@ private:
 };
 
 /* The imports the call made, scripted in order: name, return value, and what each changed behind
-   its pointer arguments. Arguments are not compared (argc 0): their count is not known here. */
-std::string imports(const rt_trace_log &log)
+   its pointer arguments. Arguments are not compared (argc 0): their count is not known here. A
+   return value that points into a buffer or the image (memset returns its destination) is written
+   as such, like an argument, so the replay's code gets its own address back. */
+std::string imports(const rt_trace_log &log, const Builder &b)
 {
     std::string out;
     for (size_t i = 0; i < log.import_count; i++) {
@@ -252,9 +254,11 @@ std::string imports(const rt_trace_log &log)
                                                       std::to_string(x.offset) + ", \"bytes\": \"" +
                                                       bytes_hex(log.write_bytes + x.data, x.size) + "\"}");
         }
-        out += (out.empty() ? "" : ", ") + ("{\"name\": \"" + std::string(c.name) + "\", \"argc\": 0, \"ret\": " +
-                                             std::to_string(static_cast<unsigned long long>(c.ret)) + ", \"writes\": [" +
-                                             writes + "]}");
+        const std::string described = b.describe(c.ret);
+        const std::string ret = described.rfind("0x", 0) == 0 ? std::to_string(static_cast<unsigned long long>(c.ret))
+                                                               : "\"" + described + "\"";
+        out += (out.empty() ? "" : ", ") + ("{\"name\": \"" + std::string(c.name) + "\", \"argc\": 0, \"ret\": " + ret +
+                                             ", \"writes\": [" + writes + "]}");
     }
     return out;
 }
@@ -267,6 +271,7 @@ std::string rt::traced_case(const rt_trace_log &log, const rt_trace_args &args, 
     if (log.incomplete || number < 0 || !run || !f.function || !valid_returns(f.returns)) return "";
     std::vector<uint64_t> pointers(args.gpr, args.gpr + 6);
     pointers.insert(pointers.end(), args.stack, args.stack + log.stack_slots);
+    for (size_t i = 0; i < log.import_count; i++) pointers.push_back(log.imports[i].ret);
     const Builder b(log, image, pointers);
     static const char *const registers[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
     std::string arguments;
@@ -281,7 +286,7 @@ std::string rt::traced_case(const rt_trace_log &log, const rt_trace_args &args, 
     return "{\"schema\": 1, \"address\": \"" + guest_hex(f.address) + "\", \"id\": \"" + id + "\", \"returns\": \"" +
            f.returns + "\", \"capture\": {\"function\": \"" + f.function + "\", \"run_id\": \"" + run +
            "\"}, \"args\": {" + arguments + "}, \"stack\": [" + stack + "], \"buffers\": {" + b.buffers() +
-           "}, \"memory\": [" + b.memory() + "], \"stubs\": [], \"imports\": [" + imports(log) + "]}";
+           "}, \"memory\": [" + b.memory() + "], \"stubs\": [], \"imports\": [" + imports(log, b) + "]}";
 }
 
 extern "C" void rt_capture_set_constant(const rt_code_range *ranges, size_t count)

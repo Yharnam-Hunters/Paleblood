@@ -128,6 +128,15 @@ import_thunk:
     mov (%rsp), %eax
     add $24, %rsp
     ret
+/* 0x3c0: int32_t read_returned(int32_t *p) { return *import(p, 7); } with an import that
+   returns its first argument. */
+    .org 0x3c0
+    sub $8, %rsp
+    mov $7, %esi
+    call import_thunk
+    mov (%rax), %eax
+    add $8, %rsp
+    ret
     .org 0x1000
 global:
     .long 1000

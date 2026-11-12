@@ -28,8 +28,11 @@ unsigned char *rt_image;
 namespace {
 
 /* The import use_import calls: writes v * 3 through out and returns 5. */
-int32_t fill(int32_t *out, int32_t v)
+bool fill_returns_out;   /* read_returned's import gives its first argument back, as memset does */
+
+int64_t fill(int32_t *out, int32_t v)
 {
+    if (fill_returns_out) return reinterpret_cast<intptr_t>(out);
     *out = v * 3;
     return 5;
 }
@@ -163,6 +166,19 @@ int self_test()
               "import: a write into the call's own frame is scripted, whatever the caller's rsp");
     else
         std::puts("capture trace: private stack moved between calls; frame check skipped");
+    rt_trace_log_free(&log);
+
+    /* An import that returns a pointer into a buffer has it scripted as a buffer pointer. */
+    alignas(16) int32_t returned[4] = {41, 0, 0, 0};
+    fill_returns_out = true;
+    rt_trace_args give = arguments(reinterpret_cast<uint64_t>(returned));
+    r = trace(0x3c0, give, log);
+    fill_returns_out = false;
+    const rt_traced_function read_returned = {"capture_trace_read_returned", 0x4003c0, "i32", at(0x3c0)};
+    check(!log.incomplete && r.rax == 41 &&
+              rt::traced_case(log, give, read_returned, 0, "selftest", {image, image + image_size})
+                      .find("\"ret\": \"buf:b0+0x0\"") != std::string::npos,
+          "import: a returned pointer into a buffer is a buffer pointer");
     rt_trace_log_free(&log);
 
     /* A value whose upper bytes were already right changes one byte, but the whole word is

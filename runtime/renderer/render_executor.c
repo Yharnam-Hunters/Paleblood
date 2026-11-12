@@ -1243,11 +1243,13 @@ static batch_slot *open_batch(rt_executor *x, char *error, size_t error_size)
     return b;
 }
 
-/* The open batch's command buffer, begun on first use; VK_NULL_HANDLE when it cannot begin. */
-static VkCommandBuffer batch_commands(rt_executor *x)
+/* The open batch's command buffer, begun on first use; VK_NULL_HANDLE when it cannot begin, with the
+   reason (often the slot's earlier batch: a shader's run-time stop, or the GPU not finishing it). */
+static VkCommandBuffer batch_commands(rt_executor *x, char *error, size_t error_size)
 {
     char reason[256];
     batch_slot *b = open_batch(x, reason, sizeof reason);
+    if (!b) failed(error, error_size, "no command buffer: %s", reason);
     return b ? b->commands : VK_NULL_HANDLE;
 }
 
@@ -1640,8 +1642,8 @@ static VkPipeline tile_copy_pipeline(rt_executor *x, unsigned element_bytes, int
 static int record_tile_copy(rt_executor *x, const tile_plan *p, uint64_t address, int to_tiled, char *error, size_t error_size)
 {
     const VkPipeline pipeline = tile_copy_pipeline(x, p->element_bytes, to_tiled, error, error_size);
-    VkCommandBuffer commands = pipeline ? batch_commands(x) : VK_NULL_HANDLE;
-    if (!commands) return pipeline ? failed(error, error_size, "no command buffer") : -1;
+    VkCommandBuffer commands = pipeline ? batch_commands(x, error, error_size) : VK_NULL_HANDLE;
+    if (!commands) return -1;
     const uint64_t groups = (uint64_t)p->tiles_per_slice * p->slices; /* one micro tile each */
     enum { MAX_GROUPS = 65535 };
     const uint32_t groups_x = groups < MAX_GROUPS ? (uint32_t)groups : MAX_GROUPS, groups_y = (uint32_t)((groups + groups_x - 1) / groups_x);
@@ -1814,8 +1816,8 @@ static int target_memory(rt_executor *x, target_entry *t, rt_tiling *layout, uin
    the rows (to_rows, for a write-back) or from them (a load). 0, or -1 with the reason. */
 static int record_target_copy(rt_executor *x, target_entry *t, int to_rows, char *error, size_t error_size)
 {
-    VkCommandBuffer commands = batch_commands(x);
-    if (!commands) return failed(error, error_size, "no command buffer");
+    VkCommandBuffer commands = batch_commands(x, error, error_size);
+    if (!commands) return -1;
     const VkImageLayout transfer = to_rows ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     const VkAccessFlags transfer_access = to_rows ? VK_ACCESS_TRANSFER_READ_BIT : VK_ACCESS_TRANSFER_WRITE_BIT;
     image_barrier(commands, t->image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, transfer,
@@ -1893,8 +1895,8 @@ static int take_written_image(rt_executor *x, target_entry *t, char *error, size
     if (!same_texel_bytes(e->format, t->format) || e->width < t->width || e->height < t->height || e->type != RT_IMAGE_2D)
         return failed(error, error_size, "render target %#llx was written by a shader as an image of another format or shape (Vulkan format %d, "
                       "%ux%u, type %u): not drawn yet", (unsigned long long)t->address, (int)e->format, e->width, e->height, e->type);
-    VkCommandBuffer commands = batch_commands(x);
-    if (!commands) return failed(error, error_size, "no command buffer");
+    VkCommandBuffer commands = batch_commands(x, error, error_size);
+    if (!commands) return -1;
     const VkMemoryBarrier written = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
                                      .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT};
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &written, 0, NULL, 0, NULL);
@@ -1932,8 +1934,8 @@ static int take_written_alias(rt_executor *x, image_entry *e, char *error, size_
             w = k;
     }
     if (!w) return 0;
-    VkCommandBuffer commands = batch_commands(x);
-    if (!commands) return failed(error, error_size, "no command buffer");
+    VkCommandBuffer commands = batch_commands(x, error, error_size);
+    if (!commands) return -1;
     const VkMemoryBarrier written = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
                                      .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT};
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &written, 0, NULL, 0, NULL);
@@ -1952,8 +1954,8 @@ static int take_written_alias(rt_executor *x, image_entry *e, char *error, size_
    (batch_writes). 0, or -1 with the reason. */
 static int fill_guest_memory(rt_executor *x, uint64_t address, uint64_t bytes, uint32_t word, char *error, size_t error_size)
 {
-    VkCommandBuffer commands = batch_commands(x);
-    if (!commands) return failed(error, error_size, "no command buffer");
+    VkCommandBuffer commands = batch_commands(x, error, error_size);
+    if (!commands) return -1;
     const VkMemoryBarrier before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT,
                                     .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT};
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before, 0, NULL, 0, NULL);
@@ -2257,8 +2259,8 @@ static int resolve_depth_fast_clear(rt_executor *x, const draw_state *s, depth_e
             return failed(error, error_size, "depth target %#llx with a partly fast-cleared HTILE (%zu of %zu tiles): not done yet",
                           (unsigned long long)z->z_address, cleared, count);
     }
-    VkCommandBuffer commands = batch_commands(x);
-    if (!commands) return failed(error, error_size, "no command buffer");
+    VkCommandBuffer commands = batch_commands(x, error, error_size);
+    if (!commands) return -1;
     const VkImageSubresourceRange depth = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
     VkImageMemoryBarrier barrier = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                                     .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -2316,8 +2318,8 @@ static int write_back_depths(rt_executor *x, const memory_span *spans, unsigned 
         if (z->z_address < x->guest_base || z->z_address - x->guest_base > x->size || span > x->size - (z->z_address - x->guest_base))
             return failed(error, error_size, "depth target %#llx is outside the GPU-visible memory", (unsigned long long)z->z_address);
         if (!z->plan.table.buffer && tile_plan_make(x, &z->plan, &layout, z->width, z->height, 1, error, error_size)) return -1;
-        VkCommandBuffer commands = batch_commands(x);
-        if (!commands) return failed(error, error_size, "no command buffer");
+        VkCommandBuffer commands = batch_commands(x, error, error_size);
+        if (!commands) return -1;
         const VkImageSubresourceRange depth = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
         VkImageMemoryBarrier barrier = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
                                         .srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -3425,8 +3427,8 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
                              vertex_image_count, &set, error, error_size))
         return -1;
 
-    VkCommandBuffer commands = batch_commands(x);
-    if (!commands) return failed(error, error_size, "no command buffer");
+    VkCommandBuffer commands = batch_commands(x, error, error_size);
+    if (!commands) return -1;
     const int64_t indirect_entry = indirect ? draw_indirect_arguments(x, commands, indirect, error, error_size) : 0;
     if (indirect_entry < 0) return -1;
     /* what earlier work wrote (images, guest memory, the indirect arguments) is visible to this draw */
@@ -3648,8 +3650,8 @@ static int image_from_target(rt_executor *x, image_entry *e, const rt_image_desc
         if (x->depths[i].unwritten && x->depths[i].z_address < d->address + span && d->address < x->depths[i].z_address + depth_span(&x->depths[i]))
             return 0;
     if (e->copied_from == t && e->copied_serial == t->drawn_serial) return 1;
-    VkCommandBuffer commands = batch_commands(x);
-    if (!commands) return failed(error, error_size, "no command buffer");
+    VkCommandBuffer commands = batch_commands(x, error, error_size);
+    if (!commands) return -1;
     image_barrier(commands, t->image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
@@ -3711,8 +3713,8 @@ static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor
         if (!memory_changed_since(x, d->address, span, e->loaded_change)) return 0;
         if (!e->plan.table.buffer && tile_plan_make(x, &e->plan, &layout, columns, rows, e->layers, error, error_size)) return -1;
         if (record_tile_copy(x, &e->plan, d->address, 0, error, error_size)) return -1;
-        VkCommandBuffer commands = batch_commands(x);
-        if (!commands) return failed(error, error_size, "no command buffer to load an image");
+        VkCommandBuffer commands = batch_commands(x, error, error_size);
+        if (!commands) return -1;
         vkCmdCopyBufferToImage(commands, e->plan.linear.buffer, e->image, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
         const VkMemoryBarrier after = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
                                        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
@@ -3766,8 +3768,8 @@ static int load_levels_on_gpu(rt_executor *x, image_entry *e, const rt_image_des
         if (!p->table.buffer && tile_plan_make(x, p, &levels[m].layout, levels[m].columns, levels[m].rows, e->layers, error, error_size)) return -1;
         if (record_tile_copy(x, p, d->address + levels[m].offset, 0, error, error_size)) return -1;
     }
-    VkCommandBuffer commands = batch_commands(x);
-    if (!commands) return failed(error, error_size, "no command buffer to load an image");
+    VkCommandBuffer commands = batch_commands(x, error, error_size);
+    if (!commands) return -1;
     for (unsigned m = 0; m < e->levels; m++) {
         const uint32_t level_width = e->width >> m ? e->width >> m : 1, level_height = one_d ? 1 : (e->height >> m ? e->height >> m : 1);
         const VkBufferImageCopy copy = {.bufferRowLength = levels[m].columns * f->block, .bufferImageHeight = levels[m].rows * f->block,
@@ -3973,8 +3975,8 @@ static int write_back_image(rt_executor *x, image_entry *e, const rt_image_descr
         e->loaded_change = UINT64_MAX;
     }
     if (!e->plan.table.buffer && tile_plan_make(x, &e->plan, &layout, d->width, rows, e->layers, error, error_size)) return -1;
-    VkCommandBuffer commands = batch_commands(x);
-    if (!commands) return failed(error, error_size, "no command buffer to write an image back");
+    VkCommandBuffer commands = batch_commands(x, error, error_size);
+    if (!commands) return -1;
     const VkMemoryBarrier stored = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
                                     .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT};
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &stored, 0, NULL, 0, NULL);
@@ -4571,8 +4573,8 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     if (image_count && image_set(x, x->image_set_layouts[image_count], VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, views, image_count, NULL, 0, NULL, 0, &set,
                                  error, error_size))
         return -1;
-    VkCommandBuffer commands = batch_commands(x);
-    if (!commands) return failed(error, error_size, "no command buffer");
+    VkCommandBuffer commands = batch_commands(x, error, error_size);
+    if (!commands) return -1;
     /* what earlier work wrote (images, guest memory) is visible to this dispatch */
     const VkMemoryBarrier earlier = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
                                      .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
@@ -4904,8 +4906,8 @@ int rt_executor_snapshot_target(rt_executor *x, uint64_t address, rt_executor_sn
     }
     const VkDeviceSize bytes = (VkDeviceSize)t->width * t->height * 4;
     if (staging_ready(x, &x->snapshots[slot].staging, bytes)) return failed(error, error_size, "no staging memory");
-    VkCommandBuffer commands = batch_commands(x);
-    if (!commands) return failed(error, error_size, "no command buffer");
+    VkCommandBuffer commands = batch_commands(x, error, error_size);
+    if (!commands) return -1;
     image_barrier(commands, t->image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                   VK_PIPELINE_STAGE_TRANSFER_BIT);
