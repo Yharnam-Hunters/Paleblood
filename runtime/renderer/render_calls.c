@@ -98,6 +98,58 @@ void rt_compute_shader_decode(const uint32_t words[RT_COMPUTE_SHADER_WORDS], rt_
     };
 }
 
+enum { LDS_UNIT = 512, HS_TF_PARAM = 4, HS_MAX_LEVEL, HS_MIN_LEVEL, HS_LS_HS_CONFIG, GS_REGISTERS = 4 };
+
+static float float_bits(uint32_t bits)
+{
+    float f;
+    memcpy(&f, &bits, sizeof f);
+    return f;
+}
+
+void rt_local_shader_decode(const uint32_t words[RT_LOCAL_SHADER_WORDS], rt_local_shader *shader)
+{
+    const uint32_t resources = words[RESOURCES_1], resources2 = words[RESOURCES_2];
+    *shader = (rt_local_shader){
+        .code = program_address(words),
+        .vgprs = (field(resources, 0, 6) + 1) * VGPR_UNIT,
+        .sgprs = (field(resources, 6, 4) + 1) * SGPR_UNIT,
+        .vgpr_inputs = field(resources, 24, 2),
+        .user_sgprs = field(resources2, 1, 5),
+        .lds_bytes = field(resources2, 7, 9) * LDS_UNIT,
+    };
+}
+
+void rt_hull_shader_decode(const uint32_t words[RT_HULL_SHADER_WORDS], rt_hull_shader *shader)
+{
+    const uint32_t resources = words[RESOURCES_1], resources2 = words[RESOURCES_2];
+    const uint32_t tf = words[HS_TF_PARAM], config = words[HS_LS_HS_CONFIG];
+    *shader = (rt_hull_shader){
+        .code = program_address(words),
+        .vgprs = (field(resources, 0, 6) + 1) * VGPR_UNIT,
+        .sgprs = (field(resources, 6, 4) + 1) * SGPR_UNIT,
+        .user_sgprs = field(resources2, 1, 5),
+        .off_chip = (int)field(resources2, 7, 1),
+        .workgroup_size_enabled = (int)field(resources2, 8, 1),
+        .domain = field(tf, 0, 2), .partitioning = field(tf, 2, 3), .topology = field(tf, 5, 3),
+        .max_level = float_bits(words[HS_MAX_LEVEL]), .min_level = float_bits(words[HS_MIN_LEVEL]),
+        .patches = field(config, 0, 8), .input_points = field(config, 8, 6), .output_points = field(config, 14, 6),
+    };
+}
+
+void rt_geometry_stage_shader_decode(const uint32_t *words, int geometry, rt_geometry_stage_shader *shader)
+{
+    const uint32_t resources = words[RESOURCES_1], resources2 = words[RESOURCES_2];
+    *shader = (rt_geometry_stage_shader){
+        .code = program_address(words),
+        .vgprs = (field(resources, 0, 6) + 1) * VGPR_UNIT,
+        .sgprs = (field(resources, 6, 4) + 1) * SGPR_UNIT,
+        .user_sgprs = field(resources2, 1, 5),
+        .resources = {resources, resources2},
+    };
+    if (geometry) memcpy(shader->registers, words + GS_REGISTERS, sizeof shader->registers);
+}
+
 void rt_image_descriptor_decode(const uint32_t words[RT_IMAGE_DESCRIPTOR_WORDS], rt_image_descriptor *image)
 {
     enum { ADDRESS_UNIT_SHIFT = 8 };
@@ -348,6 +400,34 @@ int rt_render_record_compute_shader_at(uint64_t address, const uint32_t words[RT
 {
     rt_render_call call = {.kind = RT_CALL_COMPUTE_SHADER};
     rt_compute_shader_decode(words, &call.u.compute_shader);
+    return place(address, &call);
+}
+
+int rt_render_record_local_shader_at(uint64_t address, const uint32_t words[RT_LOCAL_SHADER_WORDS])
+{
+    rt_render_call call = {.kind = RT_CALL_LOCAL_SHADER};
+    rt_local_shader_decode(words, &call.u.local_shader);
+    return place(address, &call);
+}
+
+int rt_render_record_hull_shader_at(uint64_t address, const uint32_t words[RT_HULL_SHADER_WORDS])
+{
+    rt_render_call call = {.kind = RT_CALL_HULL_SHADER};
+    rt_hull_shader_decode(words, &call.u.hull_shader);
+    return place(address, &call);
+}
+
+int rt_render_record_export_shader_at(uint64_t address, const uint32_t words[RT_EXPORT_SHADER_WORDS])
+{
+    rt_render_call call = {.kind = RT_CALL_EXPORT_SHADER};
+    rt_geometry_stage_shader_decode(words, 0, &call.u.geometry_stage_shader);
+    return place(address, &call);
+}
+
+int rt_render_record_geometry_shader_at(uint64_t address, const uint32_t words[RT_GEOMETRY_SHADER_WORDS])
+{
+    rt_render_call call = {.kind = RT_CALL_GEOMETRY_SHADER};
+    rt_geometry_stage_shader_decode(words, 1, &call.u.geometry_stage_shader);
     return place(address, &call);
 }
 

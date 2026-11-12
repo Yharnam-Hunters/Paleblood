@@ -298,6 +298,11 @@ typedef struct {
     rt_vertex_shader vertex;
     rt_pixel_shader pixel;
     int vertex_set, pixel_set;
+    /* the tessellation and geometry-shader stages, for draws whose VGT_SHADER_STAGES_EN turns them on */
+    rt_local_shader local;
+    rt_hull_shader hull;
+    rt_geometry_stage_shader export_stage, geometry;
+    int local_set, hull_set, export_set, geometry_set;
     uint32_t user[STAGES][GCN_USER_SGPR_MAX];
     rt_compute_shader compute;
     int compute_set;
@@ -713,8 +718,14 @@ static int check_state(const draw_state *s, depth_plan *plan, uint32_t *colours,
        GPU library's setter (0x01476030) takes 0 (vertex and pixel shaders), 0x45 (local, hull and vertex:
        tessellation), 0xad (tessellation with a geometry shader), 0xb0 (export and geometry) and 0x200 */
     if (s->shader_stages)
-        return failed(error, error_size, "shader stages VGT_SHADER_STAGES_EN %#x (tessellation or a geometry shader): not drawn yet",
-                      s->shader_stages);
+        return failed(error, error_size,
+                      "shader stages VGT_SHADER_STAGES_EN %#x (tessellation or a geometry shader): not drawn yet (local shader %#llx, "
+                      "hull shader %#llx: %u patches of %u to %u points, domain %u, partitioning %u, topology %u; export shader %#llx, "
+                      "geometry shader %#llx; vertex shader %#llx)",
+                      s->shader_stages, s->local_set ? (unsigned long long)s->local.code : 0ull,
+                      s->hull_set ? (unsigned long long)s->hull.code : 0ull, s->hull.patches, s->hull.input_points, s->hull.output_points,
+                      s->hull.domain, s->hull.partitioning, s->hull.topology, s->export_set ? (unsigned long long)s->export_stage.code : 0ull,
+                      s->geometry_set ? (unsigned long long)s->geometry.code : 0ull, s->vertex_set ? (unsigned long long)s->vertex.code : 0ull);
     if (s->primitive_set && s->primitive_type != DI_PT_TRILIST && s->primitive_type != DI_PT_TRISTRIP && s->primitive_type != DI_PT_RECTLIST)
         return failed(error, error_size, "primitive type %u: only triangle lists and strips and rect lists are drawn yet", s->primitive_type);
     if (plan_depth(s, plan, error, error_size)) return -1;
@@ -4033,6 +4044,18 @@ static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, 
             break;
         case RT_CALL_COMPUTE_SHADER:
             s->compute = c->u.compute_shader, s->compute_set = 1;
+            break;
+        case RT_CALL_LOCAL_SHADER:
+            s->local = c->u.local_shader, s->local_set = 1;
+            break;
+        case RT_CALL_HULL_SHADER:
+            s->hull = c->u.hull_shader, s->hull_set = 1;
+            break;
+        case RT_CALL_EXPORT_SHADER:
+            s->export_stage = c->u.geometry_stage_shader, s->export_set = 1;
+            break;
+        case RT_CALL_GEOMETRY_SHADER:
+            s->geometry = c->u.geometry_stage_shader, s->geometry_set = 1;
             break;
         case RT_CALL_DISPATCH:
             if (dispatch(x, s, c->u.dispatch.groups, 0, error, error_size)) return -1;

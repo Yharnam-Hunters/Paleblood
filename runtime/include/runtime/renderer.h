@@ -75,7 +75,12 @@ void rt_renderer_wait_idle(void);
    takes it into the drawing calls of the buffer submitted with that address. No pixel shader (words
    NULL, a depth-only pass) is recorded as a pixel shader at code address 0, and a draw with it stops
    in the executor. */
-typedef enum { RT_RENDERER_VERTEX_SHADER, RT_RENDERER_PIXEL_SHADER, RT_RENDERER_COMPUTE_SHADER } rt_renderer_shader;
+/* The tessellation and geometry-shader stages (sceGnmSetLsShader, SetHsShader, SetEsShader,
+   SetGsShader) hand theirs the same way: RT_LOCAL_SHADER_WORDS, RT_HULL_SHADER_WORDS (the hull
+   shader's 7 register words, then the call's VGT_LS_HS_CONFIG), RT_EXPORT_SHADER_WORDS and
+   RT_GEOMETRY_SHADER_WORDS words. */
+typedef enum { RT_RENDERER_VERTEX_SHADER, RT_RENDERER_PIXEL_SHADER, RT_RENDERER_COMPUTE_SHADER, RT_RENDERER_LOCAL_SHADER,
+               RT_RENDERER_HULL_SHADER, RT_RENDERER_EXPORT_SHADER, RT_RENDERER_GEOMETRY_SHADER } rt_renderer_shader;
 void rt_renderer_bind_shader(const char *function, rt_renderer_shader kind, const void *at, const uint32_t *words);
 
 /* What has been drawn into the frame buffer at a guest address, as width x height BGRA pixels into
