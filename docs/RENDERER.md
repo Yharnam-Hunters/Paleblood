@@ -511,8 +511,14 @@ Instead:
        (`rt_executor_snapshot_target`, a ring of four) and performs the flip on the completion thread
        once that copy has run, as the PS4's GPU goes on with the commands after a flip. Before, each
        flip waited for all work and then read the target back, so the GPU sat idle while the CPU
-       recorded the next frame. A stop on the renderer's thread still names the submitting call and
-       the shader. Before this, each submit ran its work on the calling thread: the engine's movie
+       recorded the next frame. A submit returns only once the renderer's thread has taken a buffer
+       at most four before it (`RENDER_LAG_LIMIT`), except while that thread performs a wait step,
+       which may wait for memory the submitting thread has yet to write. The console's GPU starts on a
+       buffer soon after it is submitted, and the game's per-frame GPU memory rings rely on that:
+       without the bound the renderer fell tens of seconds behind during the clinic's load, the
+       rings' allocations came back empty, and the game wrote draws whose vertex shader's fetch table
+       pointer (user data 2-3) was null; the GPU faulted on them (NVIDIA Xid 109). A stop on the
+       renderer's thread still names the submitting call and the shader. Before this, each submit ran its work on the calling thread: the engine's movie
        playback draws from the main thread while its render thread submits, and the render
        thread, held for tens of milliseconds by its own submit, still had the shared graphics
        context when the main thread drew (found at the opening movie, 10 November 2026).

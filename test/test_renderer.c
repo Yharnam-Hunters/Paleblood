@@ -19,6 +19,7 @@
 
 #include <pthread.h>
 #include <stdlib.h>
+#include <time.h>
 #include <sys/wait.h>
 
 enum { FATAL_EXIT = 3 };
@@ -95,6 +96,55 @@ static int steps_seen(void)
     const int n = step_count;
     pthread_mutex_unlock(&step_lock);
     return n;
+}
+
+/* The bound on how far submissions run ahead of the renderer (renderer.c's RENDER_LAG_LIMIT, 4): a
+   thread submits buffers while the renderer's thread is held, counting the submits that returned. */
+enum { LAG_LIMIT = 4, LAG_BUFFER = 0xc0e70000 };
+static int lag_returned, lag_flag;
+
+static void *submit_ahead(void *count)
+{
+    for (int i = 0; i < *(const int *)count; i++) {
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", (const void *)(uintptr_t)(LAG_BUFFER + 0x1000u * (unsigned)i), 0x100, NULL, 0);
+        pthread_mutex_lock(&step_lock);
+        lag_returned++;
+        pthread_cond_broadcast(&step_changed);
+        pthread_mutex_unlock(&step_lock);
+    }
+    pthread_mutex_lock(&step_lock);
+    lag_flag = 1; /* what the wait step below waits for, written only after every submit returned */
+    pthread_cond_broadcast(&step_changed);
+    pthread_mutex_unlock(&step_lock);
+    return NULL;
+}
+
+static int returned_after(int milliseconds)
+{
+    const struct timespec pause = {0, milliseconds * 1000000L};
+    nanosleep(&pause, NULL);
+    pthread_mutex_lock(&step_lock);
+    const int n = lag_returned;
+    pthread_mutex_unlock(&step_lock);
+    return n;
+}
+
+/* A wait step for lag_flag (holds is only asked whether it holds yet). */
+static int flag_set(const rt_gpu_step *step, const rt_gpu_step *pending)
+{
+    (void)step, (void)pending;
+    pthread_mutex_lock(&step_lock);
+    const int set = lag_flag;
+    pthread_mutex_unlock(&step_lock);
+    return set;
+}
+
+static void wait_for_flag(const rt_gpu_step *step)
+{
+    pthread_mutex_lock(&step_lock);
+    while (!lag_flag) pthread_cond_wait(&step_changed, &step_lock);
+    pthread_mutex_unlock(&step_lock);
+    note_step(step);
 }
 
 /* A submit that must stop: runs it in a child and checks it ended through rt_fatal. */
@@ -268,6 +318,39 @@ int main(void)
         rt_renderer_submit("sceGnmSubmitAndFlipCommandBuffers", (const void *)(uintptr_t)(FLIPPED + 0x1000), 0x100, &blank, 1);
         rt_renderer_wait_idle();
         CHECK(steps_seen() == 2 && step_order[1] == 15 && !step_saw_triangle);
+    }
+
+    /* Submissions run at most LAG_LIMIT buffers ahead of the renderer's thread: with it held in a step
+       (gate), the first LAG_LIMIT submits after the gated one return and the next waits until the gate
+       opens. A wait step (holds) does not hold submissions: one waiting for memory the submitting thread
+       writes only after more than LAG_LIMIT further submits still ends. */
+    {
+        step_count = 0, gate_open = 0, lag_returned = 0, lag_flag = 0;
+        const rt_gpu_step gate = {gate_step, "sceGnmSubmitCommandBuffers", 0, {30}, 0, NULL};
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", (const void *)(uintptr_t)(LAG_BUFFER - 0x1000), 0x100, &gate, 1);
+        int count = LAG_LIMIT + 2;
+        pthread_t thread;
+        CHECK(pthread_create(&thread, NULL, submit_ahead, &count) == 0);
+        const int held = returned_after(300);
+        if (held != LAG_LIMIT) fprintf(stderr, "lag: %d submits returned while the renderer was held\n", held);
+        CHECK(held == LAG_LIMIT);
+        pthread_mutex_lock(&step_lock);
+        gate_open = 1;
+        pthread_cond_broadcast(&step_changed);
+        pthread_mutex_unlock(&step_lock);
+        pthread_join(thread, NULL);
+        CHECK(lag_returned == LAG_LIMIT + 2);
+        rt_renderer_wait_idle();
+        CHECK(steps_seen() == 1 && step_order[0] == 30);
+
+        step_count = 0, lag_returned = 0, lag_flag = 0;
+        const rt_gpu_step waiting = {wait_for_flag, "sceGnmSubmitCommandBuffers", 0, {31}, 0, flag_set};
+        rt_renderer_submit("sceGnmSubmitCommandBuffers", (const void *)(uintptr_t)(LAG_BUFFER - 0x2000), 0x100, &waiting, 1);
+        count = 2 * LAG_LIMIT;
+        CHECK(pthread_create(&thread, NULL, submit_ahead, &count) == 0);
+        pthread_join(thread, NULL); /* without the exception this never returns */
+        rt_renderer_wait_idle();
+        CHECK(lag_returned == 2 * LAG_LIMIT && steps_seen() == 1 && step_order[0] == 31);
     }
 
     /* A compute queue's buffer (sceGnmDingDong submits each indirect buffer the ring points to) runs
