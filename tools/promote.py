@@ -3,6 +3,7 @@
 """Upgrades edge-verified functions to verified once inputs recorded in the game exist and pass.
 
 usage: promote.py [--captures DIR] [--dry-run] [--check-unreviewed]
+       promote.py --families [--dry-run]
 
 For each row of symbols/functions.csv with status edge-verified: if the capture library
 (--captures, default $BB_CAPTURES, then ../captures) holds recorded cases for it (CAPTURES/NAME/*.json),
@@ -18,6 +19,12 @@ failure in any case set or option, nothing stale. Nothing changes otherwise; a f
 approved review yet, without recording anything, and lists those that pass as awaiting review
 (the next step: an independent review, CONTRIBUTING.md); a failure among them makes the exit
 code 1 too.
+
+--families promotes function family members instead (docs/FAMILIES.md): a member that is
+edge-verified becomes verified when it has a current, passing edge result, a current recorded result
+or a current byte-exact row in symbols/families/<family>.matching.csv (tools/match.py family,
+docs/MATCHING.md), and an approved review (symbols/families/<family>.reviews.csv). It runs nothing:
+the evidence is already recorded, and tools/validate_functions.py applies the same rule.
 """
 from __future__ import annotations
 
@@ -57,13 +64,44 @@ def passes(name: str, directory: str, record: str | None) -> tuple[bool, str]:
     return ok, f"{r['passed']}/{n} passed" + (f', {held} quarantined' if held else '')
 
 
+def promote_families(dry_run: bool) -> int:
+    sys.path.insert(0, os.path.join(ROOT, 'tools'))
+    import families as fam
+    import validate_functions
+    total = 0
+    for family in fam.families(ROOT):
+        members = fam.members(ROOT, family['family'])
+        evidence = validate_functions.family_evidence(ROOT, family, members)
+        changed = waiting = 0
+        for m in members:
+            member = fam.member_name(family, m['address'])
+            if (m['status'] == 'edge-verified' and member in evidence['edge'] and member in evidence['approved']
+                    and (member in evidence['recorded'] or member in evidence['matched'])):
+                m['status'] = 'verified'
+                changed += 1
+            elif m['status'] == 'edge-verified':
+                waiting += 1
+        if changed or waiting:
+            print(f"promote: {family['family']}: {changed} verified, {waiting} still edge-verified")
+        if changed and not dry_run:
+            fam.write_table(fam.members_path(ROOT, family['family']), fam.MEMBER_HEADER, members)
+        total += changed
+    if total and not dry_run:
+        print(f'promote: {total} family members verified; run tools/progress.py --update-readme')
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--captures', default=os.environ.get('BB_CAPTURES') or os.path.join(ROOT, '..', 'captures'))
     ap.add_argument('--dry-run', action='store_true')
     ap.add_argument('--check-unreviewed', action='store_true',
                     help='also verify functions with recordings but no approved review, and list those that pass')
+    ap.add_argument('--families', action='store_true',
+                    help='promote function family members on their recorded evidence instead (no runs)')
     a = ap.parse_args()
+    if a.families:
+        return promote_families(a.dry_run)
     if not os.path.isdir(a.captures):
         print(f'promote: no capture library at {a.captures}; nothing to do')
         return 0

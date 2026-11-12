@@ -473,4 +473,5 @@ C source with upstream clang 3.4.2 and the SDK's documented flags, then compares
 with the original in your dump. A byte-exact match can stand in for recorded cases when its
 references were checked too (`targets_checked=yes`: every call, jump and data reference reaches
 the same function, global or import as the original's); the edge results and the independent
-review stay required. See [MATCHING.md](MATCHING.md).
+review stay required. See [MATCHING.md](MATCHING.md). Function family members use the same rule
+with a per-member matching table (MATCHING.md, "Families").

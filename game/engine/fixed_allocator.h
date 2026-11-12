@@ -34,9 +34,12 @@ static_assert(offsetof(Chunk, free_count) == 0x30 && sizeof(Chunk) == 0x38);
 
 struct BackingAllocator;
 struct BackingAllocatorVtable {
-    void *unknown_slots[14];
+    void *unknown_slots[11];
+    void *(*allocate_aligned)(BackingAllocator *, uint64_t size, uint64_t alignment);
+    void *unknown_slots_0x60[2];
     void (*free)(BackingAllocator *, void *memory);
 };
+static_assert(offsetof(BackingAllocatorVtable, allocate_aligned) == 0x58);
 static_assert(offsetof(BackingAllocatorVtable, free) == 0x70);
 
 struct BackingAllocator {
@@ -67,7 +70,9 @@ static_assert(offsetof(Allocator, elements_per_chunk) == 0x28 && offsetof(Alloca
 static_assert(offsetof(Allocator, chunk_count) == 0x38 && offsetof(Allocator, backing) == 0x40);
 static_assert(offsetof(Allocator, chunks_with_room) == 0x48 && offsetof(Allocator, chunk_tree) == 0x58);
 
-// The engine's red-black tree removal (shared with the heaps).
+// The engine's red-black tree code (shared with the heaps): remove a node, and rebalance after
+// linking a new node below `parent`.
 RT_ORIGINAL(0x024f8460, tree_remove, void(TreeNode **root, TreeNode *node));
+RT_ORIGINAL(0x024f8350, tree_insert_fixup, void(TreeNode **root, TreeNode *node, TreeNode *parent));
 
 }  // namespace engine::fixed_allocator
