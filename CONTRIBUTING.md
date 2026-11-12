@@ -121,7 +121,11 @@ Systems that lack documentation get a **Document a system** issue first: its pag
 Forks of a public repository are public. Everything you push there, including branches you
 never open a pull request for, is visible to anyone: never push game files, dumps, decompiler
 projects or raw decompiler output, not even temporarily. Keep your dump, your Ghidra project,
-drafts and captures outside the repository (the tools default to `../data`, next to your clone).
+drafts and captures outside the repository. The tools read your dump from `../data` (next to your
+clone, `$BB_DATA_ROOT`) and never write there: drafts go to `$BB_DRAFTS` (default
+`~/.cache/paleblood/drafts`) and the Ghidra project lives at `$BB_GHIDRA_PROJECT` (default
+`~/.local/share/paleblood/ghidra/run1-classes`), because Ghidra writes lock files into a project
+it opens.
 
 ## Pull request contents
 
