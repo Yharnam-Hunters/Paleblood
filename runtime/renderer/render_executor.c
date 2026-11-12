@@ -961,7 +961,7 @@ static int stop_reason(uint32_t code, char *error, size_t error_size)
         return failed(error, error_size, "a vertex or pixel shader read VCC as a lane mask after a scalar write of its halves: not done "
                       "yet (a lane has no known place in the wave there)");
     if (code >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_IMAGE_RANGE)
-        return failed(error, error_size, "a pixel shader loaded an image texel outside the image or past its last level: not done yet "
+        return failed(error, error_size, "a shader loaded an image texel outside the image or past its last level: not done yet "
                       "(what the GPU returns there is not established)");
     return failed(error, error_size, "a shader stopped at run time with code %#x", code);
 }
@@ -1974,7 +1974,15 @@ static depth_entry *depth_for(rt_executor *x, const draw_state *s, char *error, 
     }
     const VkFormat format = depth_format(x, r[Z_INFO], r[STENCIL_INFO], error, error_size);
     if (format == VK_FORMAT_UNDEFINED) return NULL;
-    const uint64_t z_address = (uint64_t)r[Z_WRITE_BASE] << 8, stencil_address = (uint64_t)r[STENCIL_WRITE_BASE] << 8;
+    /* slice n's depth and stencil start n slices past the bases: DB_DEPTH_SLICE's SLICE_TILE_MAX (bits 0-21)
+       + 1 tiles of 64 elements each (shadPS4's regs_depth.h, GetDepthSliceSize), so that writing the slice
+       back reaches its own memory */
+    enum { SLICE_TILE_MAX_MASK = 0x3fffff, TILE_ELEMENTS = 64 };
+    const uint64_t slice_elements = (uint64_t)slice * ((r[DEPTH_SLICE] & SLICE_TILE_MAX_MASK) + 1) * TILE_ELEMENTS;
+    const uint32_t depth_bytes = format == VK_FORMAT_S8_UINT ? 0 : format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_D16_UNORM_S8_UINT ? 2 : 4;
+    const uint32_t stencil_bytes = format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_D32_SFLOAT ? 0 : 1;
+    const uint64_t z_address = ((uint64_t)r[Z_WRITE_BASE] << 8) + slice_elements * depth_bytes,
+                   stencil_address = ((uint64_t)r[STENCIL_WRITE_BASE] << 8) + slice_elements * stencil_bytes;
     const uint32_t width = ((r[DEPTH_SIZE] & 0x7ff) + 1) * TILE, height = ((r[DEPTH_SIZE] >> 11 & 0x7ff) + 1) * TILE;
     for (size_t i = 0; i < x->depth_count; i++) {
         depth_entry *d = &x->depths[i];

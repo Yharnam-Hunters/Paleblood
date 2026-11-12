@@ -1253,18 +1253,30 @@ static void depth_and_strips(rt_executor *x)
 #undef WB_TARGET
     }
     /* Slices of an array depth target (DB_DEPTH_VIEW SLICE_START = SLICE_MAX): a draw into slice 1
-       writes slice 1 only: LESS on slice 1 then draws nothing, a test reading slice 0 meets a slice no
-       draw wrote; a view of two slices stops by name. */
+       writes slice 1 only, written back to slice 1's memory (DB_DEPTH_SLICE: 256 x 256 floats per
+       slice) with slice 0's left as it was: LESS on slice 1 then draws nothing, a test reading slice 0
+       meets a slice no draw wrote; a view of two slices stops by name. */
     {
-        enum { SLICED = 0x1740000, SLICE_COLOUR = 0x1780000, SLICE_ONE = 1u | 1u << 13, SLICES_ZERO_ONE = 0u | 1u << 13 };
-        const uint32_t sz2 = (uint32_t)(at(SLICED) >> 8), sst2 = (uint32_t)(at(SLICED + 0x2000) >> 8);
+        enum { SLICED = 0x3000000, SLICE_COLOUR = 0x3100000, SLICE_ONE = 1u | 1u << 13, SLICES_ZERO_ONE = 0u | 1u << 13,
+               SLICE_SIZE = 256, SLICE_TILES = SLICE_SIZE * SLICE_SIZE / 64, SLICE_FLOATS = SLICE_SIZE * SLICE_SIZE,
+               SLICED_STENCIL = SLICED + 2 * SLICE_FLOATS * 4 };
+        /* 256 x 256 slices (Depth2DThin64 needs whole macro tiles to be written back), drawn in the colour
+           target's 16 x 16 corner */
+        const uint32_t sz2 = (uint32_t)(at(SLICED) >> 8), sst2 = (uint32_t)(at(SLICED_STENCIL) >> 8),
+                       slice_size = (SLICE_SIZE / 8 - 1) | (SLICE_SIZE / 8 - 1) << 11;
 #define SLICED_TARGET(view) {0xa010, 0xa0000003}, {0xa011, 0x20000001}, {0xa012, sz2}, {0xa013, sst2}, {0xa014, sz2}, {0xa015, sst2}, \
-                            {0xa016, depth_size}, {0xa017, 0}, {0xa002, view}
+                            {0xa016, slice_size}, {0xa017, SLICE_TILES - 1}, {0xa002, view}
+        float *sliced = (float *)(uintptr_t)at(SLICED);
+        for (unsigned i = 0; i < 2 * SLICE_FLOATS; i++) sliced[i] = 0.75f;
         const uint32_t write_one[][2] = {SLICED_TARGET(SLICE_ONE), {0xa200, 0x2 | 0x4 | 0x7u << 4}};
         drawn = run_counted(x, DEPTH_BUFFER, at(SLICE_COLOUR), write_one, 10, 3, error, sizeof error);
         if (drawn) fprintf(stderr, "depth slice 1: %s\n", error);
         CHECK(drawn == 0);
         check_triangle(x, at(SLICE_COLOUR));
+        int slice_zero_kept = 1, slice_one_written = 0;
+        for (unsigned i = 0; i < SLICE_FLOATS; i++) slice_zero_kept &= sliced[i] == 0.75f, slice_one_written += sliced[SLICE_FLOATS + i] != 0.75f;
+        CHECK(slice_zero_kept);
+        CHECK(slice_one_written > 0);
         const uint32_t less_one[][2] = {SLICED_TARGET(SLICE_ONE), {0xa200, 0x2 | 0x1u << 4}};
         CHECK(run_counted(x, DEPTH_BUFFER, at(SLICE_COLOUR), less_one, 10, 3, error, sizeof error) == 0);
         const uint32_t less_zero[][2] = {SLICED_TARGET(0), {0xa200, 0x2 | 0x1u << 4}};
@@ -2518,6 +2530,45 @@ int main(void)
         for (unsigned i = 0; i < LANES; i++)
             right &= back[i * 4] == (float)i && back[i * 4 + 1] == 1.0f && back[i * 4 + 2] == 2.0f && back[i * 4 + 3] == 0.5f;
         CHECK(right);
+        }
+
+        /* image_load_mip from a storage image (bound as one level): at level 0 the copy pass reads each
+           texel as image_load does; at level 1 (past the only level) it stops at run time by name. */
+        for (int level = 0; level < 2; level++) {
+            enum { MIP_COPY_CODE = 0x4c00 }; /* a program each (compute pipelines are kept by code address) */
+            const uint32_t *program = level ? image_copy_level_1 : image_copy_level_0;
+            const uint64_t mip_code = at(MIP_COPY_CODE + 0x100 * (unsigned)level);
+            memcpy((void *)(uintptr_t)mip_code, program, sizeof image_copy_level_0);
+            const uint64_t mip_codes[3] = {codes[0], mip_code, codes[2]};
+            image_descriptor(image_a, at(IMAGE_A + 0x80000), 14, 7, LANES, 1);
+            image_descriptor(image_b, at(IMAGE_B + 0x80000), 14, 7, LANES, 1);
+            for (unsigned i = 0; i < LANES * 4; i++) back[i] = -1;
+            rt_render_forget(), rt_executor_reset(x);
+            uint32_t offset = 0x10;
+            for (int pass = 0; pass < 3; pass++) {
+                const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(mip_codes[pass] >> 8), (uint32_t)(mip_codes[pass] >> 40), 0x3,
+                                                                  16 << 1, LANES, 1, 1};
+                CHECK(rt_render_record_compute_shader_at(IMAGES + offset, shader) == 0);
+                memset(user, 0, sizeof user);
+                if (pass == 0) memcpy(user + 8, image_a, sizeof image_a);
+                if (pass == 1) memcpy(user, image_a, sizeof image_a), memcpy(user + 8, image_b, sizeof image_b);
+                if (pass == 2) descriptor(user, at(BACK), 16), memcpy(user + 8, image_b, sizeof image_b);
+                CHECK(rt_render_record_user_data(IMAGES, offset + 0x10, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+                CHECK(rt_render_record_user_data(IMAGES, offset + 0x20, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
+                CHECK(rt_render_record_dispatch(IMAGES, offset + 0x30, one, error, sizeof error) == 0);
+                offset += 0x40;
+            }
+            const int ran = rt_executor_run(x, IMAGES, offset, error, sizeof error);
+            if (level == 0) {
+                if (ran) fprintf(stderr, "image_load_mip of a storage image: %s\n", error);
+                CHECK(ran == 0);
+                int right = 1;
+                for (unsigned i = 0; i < LANES; i++)
+                    right &= back[i * 4] == (float)i && back[i * 4 + 1] == 1.0f && back[i * 4 + 2] == 2.0f && back[i * 4 + 3] == 0.5f;
+                CHECK(right);
+            } else {
+                CHECK(ran == -1 && strstr(error, "past its last level"));
+            }
         }
 
         /* Stores outside a storage image write nothing: 64 lanes fill a 40-texel image, and 40 lanes

@@ -2582,8 +2582,8 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
         fail(t, "%s: a store to a sampled image", name);
         return;
     }
-    if (!b->sampled && op == MIMG_OP_LOAD_MIP) {
-        fail(t, "%s: a storage image has one level; image_load_mip of one is not translated yet", name);
+    if (!b->sampled && op == MIMG_OP_LOAD_MIP && !t->layout->error_address) { /* its level is checked at run time (below) */
+        fail(t, "%s: image_load_mip of a storage image (one level) without a run-time stop word", name);
         return;
     }
     const unsigned axes = b->dim == GCN_IMAGE_1D ? 1 : b->dim == GCN_IMAGE_2D ? 2 : 3;
@@ -2635,7 +2635,11 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
     const uint32_t bvec = coordinates == 1 ? t_bool(t) : spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_bool(t), coordinates}, 2);
     const uint32_t size = value(t, SPV_OP_IMAGE_QUERY_SIZE, uvec, 1, image);
     const uint32_t inside = value(t, SPV_OP_U_LESS_THAN, bvec, 2, value(t, SPV_OP_BITCAST, uvec, 1, coordinate), size);
-    const uint32_t in_range = coordinates == 1 ? inside : value(t, SPV_OP_ALL, t_bool(t), 1, inside);
+    uint32_t in_range = coordinates == 1 ? inside : value(t, SPV_OP_ALL, t_bool(t), 1, inside);
+    /* a storage image is bound as one level: image_load_mip reads it at level 0 (the VGPR after the
+       coordinates), and a level past it stops as a level past the last does for a sampled image */
+    if (op == MIMG_OP_LOAD_MIP)
+        in_range = both(t, in_range, equals(t, load(t, t_uint(t), vgpr(t, vaddr + coordinates)), konst(t, 0)));
     t->queries_images = 1;
     const int load_checked = op != MIMG_OP_STORE && t->layout->error_address; /* stops need the stop word */
     if (load_checked) {
