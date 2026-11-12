@@ -664,9 +664,11 @@ Instead:
           triangle strips with primitive restart. The ring item sizes and `VGT_GS_MAX_VERT_OUT` come from the GPU
           library's writers `0x01475a90` (`VGT_ESGS_RING_ITEMSIZE`) and `0x01475af0` (`VGT_GS_VERT_ITEMSIZE`,
           `VGT_GSVS_RING_OFFSET_1-3`, `VGT_GS_MAX_VERT_OUT`, `VGT_GSVS_RING_ITEMSIZE`), and `VGT_GS_MODE` from
-          `0x014756b0`, observed like the stage setter. Output other than triangle strips (`VGT_GS_OUT_PRIM_TYPE`),
-          stream output, instanced geometry shaders, and indirect or instanced draws with a geometry shader stop by name,
-          as does a draw of more vertices or primitives than the rings and strip buffer hold. The clinic's first tessellated draw (local shader `0x20d52d5b00`, hull `0x20d52e0100`) draws quads of one control point, 15 patches a workgroup. Triangle strips (`VGT_PRIMITIVE_TYPE` 6) are drawn too. A view of one
+          `0x014756b0`, observed like the stage setter. The geometry pass writes the strips' indexed draw into the
+          draw's record, so an indirect draw's GPU-written vertex count (copied into the record) reaches the passes and
+          the draw; an indirect draw runs as many workgroups as the rings hold. Output other than triangle strips
+          (`VGT_GS_OUT_PRIM_TYPE`), stream output, instanced geometry shaders and instanced draws stop by name, as does a
+          draw of more vertices or primitives than the rings and strip buffer hold (an indirect one at run time). The clinic's first tessellated draw (local shader `0x20d52d5b00`, hull `0x20d52e0100`) draws quads of one control point, 15 patches a workgroup. Triangle strips (`VGT_PRIMITIVE_TYPE` 6) are drawn too. A view of one
           slice of an array depth target (`DB_DEPTH_VIEW` SLICE_START = SLICE_MAX) draws into an image
           kept for that slice alone, at that slice's memory: `DB_DEPTH_SLICE` tiles of 64 elements per
           slice past the depth and stencil bases (shadPS4's `GetDepthSliceSize`), where its depth is
