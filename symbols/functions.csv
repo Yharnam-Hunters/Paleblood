@@ -253,6 +253,8 @@ address,size,name,system,status,notes
 0x02470d50,517,loading_mount_table_push_back_02470d50,loading,edge-verified,mount table push_back: grow 1.5x when full (source inside the table found again); copy name and target; end moves on even without a buffer
 0x024716d0,539,loading_mount_table_reallocate_024716d0,loading,edge-verified,mount table reallocate to exact capacity: copy entries; destroy old (heap text freed); free old buffer; failed allocation: transaction jump or report
 0x0247d250,304,engine_temporary_heap_create_for_thread_0247d250,engine,edge-verified,DLTemporaryHeap per-thread creation: the thread's size setting (0x20000 when 0; under 0x38 reported); memory from the default allocator; empty bump region after the 0x38-byte object
+0x0247e780,366,engine_condition_signal_set_0247e780,engine,edge-verified,DLConditionSignal set/clear under its mutex; setting wakes every waiter (pthread_cond_broadcast) when one has waited; errors reported; 0
+0x0247e8f0,329,engine_condition_signal_wait_0247e8f0,engine,edge-verified,DLConditionSignal wait under its mutex unless already set (marks a waiter); returns the condition wait result or 0
 0x0247eb80,16,render_read_present_pool_counter,render,edge-verified,"full-QWORD locked read/writeback retry; XOR before each attempt; caller adds one. Real AMD64 write cycles retained; non-AMD64 bridge unresolved Synthetic edges pass; no recordings."
 0x0247ed40,115,engine_pthread_mutex_destroy_base_0247ed40,engine,edge-verified,"PthreadMutex base destructor: resets the vtable, destroys a handle still marked initialized (busy kept)"
 0x0247edc0,124,engine_pthread_mutex_finalize_0247edc0,engine,edge-verified,"PthreadMutex finalize: destroys the handle when initialized; -2 when busy; errors reported, then uninitialized"

@@ -29,29 +29,17 @@ RT_ORIGINAL(0x02fbfea8, sce_mutexattr_init, int32_t(SystemAttributes *));
 RT_ORIGINAL(0x02fbfeb8, sce_mutexattr_settype, int32_t(SystemAttributes *, int32_t type));
 RT_ORIGINAL(0x02fbfec8, sce_mutex_init, int32_t(void **handle, SystemAttributes *, const char *name));
 RT_ORIGINAL(0x02fbfed8, sce_mutexattr_destroy, int32_t(SystemAttributes *));
-RT_ORIGINAL(0x02fbfef8, sce_mutex_lock, int32_t(void **handle));
 RT_ORIGINAL(0x02fc0cb8, sce_mutex_trylock, int32_t(void **handle));
-RT_ORIGINAL(0x02fbff08, sce_mutex_unlock, int32_t(void **handle));
 
 constexpr int32_t mutex_type_recursive = 2;
 
 // SCE error codes (0x80020000 plus the FreeBSD error number)
-constexpr int32_t sce_eperm = static_cast<int32_t>(0x80020001), sce_edeadlk = static_cast<int32_t>(0x8002000b),
-                  sce_enomem = static_cast<int32_t>(0x8002000c), sce_eagain = static_cast<int32_t>(0x80020023),
-                  sce_etimedout = static_cast<int32_t>(0x8002003c);
+constexpr int32_t sce_enomem = static_cast<int32_t>(0x8002000c);
 
 // "N:\SPRJ\Source\Library\Dantelion2\dist_ps4\source\ClassLibrary\Core\Kernel\Source\ps4\DLLightMutex.cpp"
 RT_GLOBAL(0x04d3bcaa, light_mutex_source_file, const char);
 // "Mutex is not initialized."
 RT_GLOBAL(0x04d3bd11, message_not_initialized, const char);
-// "Deadlock. Mutex is locked from owner thread.(EDEADLK)"
-RT_GLOBAL(0x04d3c2bd, message_deadlock, const char);
-// "Logical Error. Invalid mutex.(EINVAL)"
-RT_GLOBAL(0x04d3c2f3, message_invalid_mutex, const char);
-// "Logical Error. Max number of lock exceeded.(EAGAIN)"
-RT_GLOBAL(0x04d3c319, message_too_many_locks, const char);
-// "Runtime Error."
-RT_GLOBAL(0x04d3c34d, message_runtime_error, const char);
 
 constexpr int32_t line_create_einval = 0x39, line_create_unknown = 0x3b;
 
@@ -66,35 +54,10 @@ void check_initialized(Mutex *mutex, int32_t line)
         engine::fatal_error(light_mutex_source_file.address(), line, message_not_initialized.address());
 }
 
-// The source lines of a lock call's reports, in their order in the source.
-struct LockReportLines {
-    int32_t deadlock, invalid_mutex, too_many_locks, runtime_error;
-};
-
 // The source lines of each call's reports.
 constexpr int32_t line_lock_not_initialized = 0x7e, line_try_lock_not_initialized = 0x8c,
                   line_unlock_not_initialized = 0x99;
-constexpr LockReportLines lock_lines = {0x80, 0x82, 0x84, 0x86};
 constexpr LockReportLines try_lock_lines = {0xa5, 0xa7, 0xa9, 0xab};
-constexpr int32_t line_unlock_invalid_mutex = 0xc0, line_unlock_runtime_error = 0xc5;
-
-// Reports a lock error: from its own message through the ones after it.
-void report_lock_error(int32_t result, const LockReportLines &lines)
-{
-    switch (result) {
-    case sce_edeadlk:
-        report(lines.deadlock, message_deadlock);
-        [[fallthrough]];
-    case sce_einval:
-        report(lines.invalid_mutex, message_invalid_mutex);
-        [[fallthrough]];
-    case sce_eagain:
-        report(lines.too_many_locks, message_too_many_locks);
-        [[fallthrough]];
-    default:
-        report(lines.runtime_error, message_runtime_error);
-    }
-}
 
 }  // namespace
 
@@ -130,13 +93,7 @@ extern "C" int32_t bb_engine_light_mutex_lock_0247ee90(Mutex *mutex)
 {
     constexpr int32_t timed_out = -3;
     check_initialized(mutex, line_lock_not_initialized);
-    const int32_t result = sce_mutex_lock(&mutex->handle);
-    if (result == 0)
-        return 0;
-    if (result == sce_etimedout)
-        return timed_out;
-    report_lock_error(result, lock_lines);
-    return 0;
+    return lock_handle(&mutex->handle) == sce_etimedout ? timed_out : 0;
 }
 
 extern "C" int32_t bb_engine_light_mutex_try_lock_0247ef80(Mutex *mutex)
@@ -155,12 +112,6 @@ extern "C" int32_t bb_engine_light_mutex_try_lock_0247ef80(Mutex *mutex)
 extern "C" int32_t bb_engine_light_mutex_unlock_0247f070(Mutex *mutex)
 {
     check_initialized(mutex, line_unlock_not_initialized);
-    const int32_t result = sce_mutex_unlock(&mutex->handle);
-    if (result == 0 || result == sce_eperm)
-        return 0;
-    if (result == sce_einval)
-        report(line_unlock_invalid_mutex, message_invalid_mutex);
-    else
-        report(line_unlock_runtime_error, message_runtime_error);
+    unlock_handle(&mutex->handle);
     return 0;
 }
