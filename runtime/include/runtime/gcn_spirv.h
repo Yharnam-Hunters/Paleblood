@@ -23,6 +23,12 @@ extern "C" {
 
 enum { GCN_USER_SGPR_MAX = 16, GCN_PUSH_CONSTANT_LIMIT = 128 };
 
+/* Survey mode, for listing what the translator lacks (pbgcn_survey, docs/RENDERER.md "Coverage survey";
+   never on in a draw): a translation meeting an instruction it cannot translate notes the reason and goes
+   on with the next instruction instead of stopping, and fails at the end with every distinct reason in
+   the error, one a line after the dword it was first met at ("@dword reason\n"). Process-wide. */
+void gcn_spirv_set_survey(int on);
+
 /* Every layout below also says where the shader finds its data:
      push_constant_offset  the byte offset of its user data (GCN_USER_SGPR_MAX words) in the push
                            constants, so that the stages of one draw keep theirs apart (a vertex

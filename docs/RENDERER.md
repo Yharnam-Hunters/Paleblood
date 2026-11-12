@@ -776,6 +776,27 @@ Instead:
 Each phase lands in small PRs with tests. A boot is recorded after each runtime change. The wiki's
 Runtime page and Gallery show where it stands.
 
+## Coverage survey
+
+Rather than finding the translator's gaps one boot stop at a time, two diagnostic tools list them all.
+Neither changes what a normal run does.
+
+- **Offline, over every shader the game ships:** `game/render/tools/shader_survey.py` reads the shader
+  bundles in your own copy of the game by their archive entries (each shader keeps its name and stage)
+  and the shader files inside the executable, and runs each distinct program through `build/pbgcn_survey`.
+  That tool translates in the translator's **survey mode** (`gcn_spirv_set_survey`): an instruction it
+  cannot translate is noted with its dword and translation goes on, so one pass names every gap a
+  program has. The layout comes from the shader's registers (user SGPRs, pixel inputs, workgroup size,
+  LDS); images and samplers are bound as the code shows them, and a fetch-shader call calls one that only
+  returns. A setting only a draw knows can therefore add or hide a reason. Programs that translate are
+  checked with `spirv-val`. It prints counts, reasons and shader names; `--report` and `--results` write
+  them to files outside the repository. No game code or data enters the repository.
+- **At run time, over what a boot reaches:** with `BB_SHADER_SWEEP` naming a directory, the Vulkan
+  executor writes every distinct shader it meets there (`<stage>-<address>.bin`, and `.spv` when it
+  translates), translates in survey mode, records each shader's reasons in `sweep.txt`, and records and
+  skips a draw, dispatch or register it cannot do instead of stopping. The frames such a run shows lack
+  the skipped draws: it is for listing gaps, never for judging output.
+
 
 ## Guest memory on the GPU
 
