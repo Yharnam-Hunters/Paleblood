@@ -16,6 +16,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "runtime/host.h"
 #include "runtime/hooks.h"
@@ -24,9 +25,20 @@
 extern "C" {
 #endif
 
-/* The integer argument registers of the observed call, in order: rdi, rsi, rdx, rcx, r8, r9. */
-enum { RT_OBSERVED_ARGUMENTS = 6 };
+/* The integer argument registers of the observed call, in order: rdi, rsi, rdx, rcx, r8, r9. The
+   array is the frame rt_observe_entry saved (runtime/observe_entry.S): after them come rax and the
+   hook, then xmm0-xmm7, 16 bytes each from word RT_OBSERVED_XMM0, where floating-point arguments
+   arrive (rt_observed_float); an observer reading them declares the whole frame. */
+enum { RT_OBSERVED_ARGUMENTS = 6, RT_OBSERVED_XMM0 = 8, RT_OBSERVED_XMM_WORDS = 2, RT_OBSERVED_FRAME_WORDS = RT_OBSERVED_XMM0 + 8 * RT_OBSERVED_XMM_WORDS };
 typedef void (*rt_observer_fn)(const uint64_t args[RT_OBSERVED_ARGUMENTS]);
+
+/* The observed call's n-th float argument (in xmm n's low 32 bits). */
+static inline float rt_observed_float(const uint64_t frame[RT_OBSERVED_FRAME_WORDS], unsigned n)
+{
+    float value;
+    memcpy(&value, &frame[RT_OBSERVED_XMM0 + RT_OBSERVED_XMM_WORDS * n], sizeof value);
+    return value;
+}
 
 typedef struct {
     uint32_t address;          /* PS4 virtual address of the observed function */

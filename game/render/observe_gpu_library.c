@@ -44,6 +44,8 @@
    DB_DEPTH_INFO (0xa00f), word 8 to DB_DEPTH_VIEW (0xa002), word 9 to DB_HTILE_DATA_BASE (0xa005),
    word 10 to DB_HTILE_SURFACE (0xa2af); otherwise DB_Z_INFO and DB_STENCIL_INFO = 0 (no depth target).
    The observer reports the same registers.
+   The depth bounds setter 0x01473520 (command buffer, min, max; two floats, in xmm0 and xmm1) writes
+   DB_DEPTH_BOUNDS_MIN (0xa008) and DB_DEPTH_BOUNDS_MAX (0xa009) in one packet, the floats' bits as they are.
    The stencil reference setters write DB_STENCILREFMASK (0xa10c) and DB_STENCILREFMASK_BF (0xa10d) in one
    packet: 0x01473190 (command buffer, value) writes the value to both, 0x014731f0 (command buffer,
    front, back) one to each.
@@ -57,6 +59,7 @@
 #include "runtime/render_observer.h"
 
 #include <stdint.h>
+#include <string.h>
 
 enum { COMMAND_BUFFER_BEGIN = 0x0, COMMAND_BUFFER_CURSOR = 0x10 };
 /* the arguments: (command buffer, stage, slot, value or words) and (command buffer, slot, target) */
@@ -177,6 +180,19 @@ static void stencil_reference_each(const uint64_t args[RT_OBSERVED_ARGUMENTS])
     stencil_references(args, (uint32_t)args[ARGUMENT_FRONT], (uint32_t)args[ARGUMENT_BACK]);
 }
 
+enum { DB_DEPTH_BOUNDS_MIN = 0xa008, DB_DEPTH_BOUNDS_MAX = 0xa009, FLOAT_MIN = 0, FLOAT_MAX = 1, BOUNDS = 2 };
+
+static void depth_bounds(const uint64_t frame[RT_OBSERVED_FRAME_WORDS])
+{
+    const uint64_t buffer = *(const uint64_t *)(uintptr_t)(frame[ARGUMENT_COMMAND_BUFFER] + COMMAND_BUFFER_BEGIN);
+    const uint32_t offset = (uint32_t)(*(const uint64_t *)(uintptr_t)(frame[ARGUMENT_COMMAND_BUFFER] + COMMAND_BUFFER_CURSOR) - buffer);
+    const float bounds[BOUNDS] = {rt_observed_float(frame, FLOAT_MIN), rt_observed_float(frame, FLOAT_MAX)};
+    uint32_t bits[BOUNDS];
+    memcpy(bits, bounds, sizeof bits);
+    rt_observe_register(buffer, offset, DB_DEPTH_BOUNDS_MIN, bits[FLOAT_MIN]);
+    rt_observe_register(buffer, offset, DB_DEPTH_BOUNDS_MAX, bits[FLOAT_MAX]);
+}
+
 enum { ARGUMENT_INDEX_VALUE = 1, ARGUMENT_INDEX_COUNT = 2 };
 static const uint64_t index_base_mask = 0xfffffffffeull; /* bits 1-39 */
 
@@ -226,6 +242,7 @@ static void dispatch_indirect(const uint64_t args[RT_OBSERVED_ARGUMENTS])
 const rt_observe_hook game_observe_hooks[] = {
     {0x01473190, 87, "render_set_stencil_reference", stencil_reference_both},
     {0x014731f0, 99, "render_set_stencil_reference_separate", stencil_reference_each},
+    {0x01473520, 107, "render_set_depth_bounds", depth_bounds},
     {0x014738b0, 246, "render_set_render_target", render_target},
     {0x014739b0, 344, "render_set_depth_render_target", depth_target},
     {0x014742f0, 107, "render_set_indirect_base", indirect_base},
