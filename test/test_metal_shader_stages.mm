@@ -135,6 +135,12 @@ int perform(rt_executor *x,PBStageQueue *queue,uint8_t *pool,const char *id,cons
     if(api==API::Submit)rc=rt_executor_submit_calls(x,calls.data(),calls.size(),&ticket,error,sizeof error);
     else if(api==API::Record)rc=rt_executor_record_calls(x,calls.data(),calls.size(),&ticket,error,sizeof error);
     else rc=rt_executor_run_calls(x,calls.data(),calls.size(),error,sizeof error);
+    if(rc!=0) {
+        std::printf("stage_error id=%s hex=",id);
+        for(size_t i=0;i<sizeof error&&error[i];++i)
+            std::printf("%02x",static_cast<unsigned>(static_cast<unsigned char>(error[i])));
+        std::putchar('\n');
+    }
     const bool named=!reason||std::strstr(error,reason);
     STAGE_CHECK(rc==(reason?-1:0));STAGE_CHECK(named);STAGE_CHECK(x->state.shader_stages==retained);
     if(api!=API::Run){if(reason)STAGE_CHECK(ticket==UINT64_C(0xa5a5a5a5a5a5a5a5));else STAGE_CHECK(ticket&&rt_executor_wait_ticket(x,ticket,error,sizeof error)==0);}
