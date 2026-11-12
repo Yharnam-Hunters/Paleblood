@@ -184,6 +184,19 @@ int main(int argc, char **argv)
         CHECK(lane[3] == 0xdeadbeefu);
     }
 
+    /* The roundings, on halves (ties), fractions either side of them, negative values, -0 and infinity:
+       each result worked out with C's truncf, ceilf and nearbyintf (ties to even in the default mode). */
+    static const float rounded[] = {2.5f, -2.5f, 1.5f, 0.5f, -0.5f, 3.7f, -3.7f, 0.2f, -0.0f, 1e9f, INFINITY, -1.25f};
+    enum { ROUNDED = sizeof rounded / sizeof rounded[0] };
+    memset(in.mapped, 0, BUFFER_BYTES), memset(out.mapped, 0, BUFFER_BYTES);
+    memcpy(in.mapped, rounded, sizeof rounded);
+    CHECK(run(&g, roundings, sizeof roundings / sizeof roundings[0], user) == 0);
+    for (int i = 0; i < LANES; i++) {
+        const float v = i < ROUNDED ? rounded[i] : 0.0f;
+        const uint32_t *lane = out_words + i * 4;
+        CHECK(lane[0] == bits(truncf(v)) && lane[1] == bits(ceilf(v)) && lane[2] == bits(nearbyintf(v)) && lane[3] == bits(truncf(-v)));
+    }
+
     /* Guest addresses: the descriptors name addresses 1 MiB below the real buffers, as a guest
        would, and the layout's address offset brings every access back to the same bytes. */
     enum { GUEST_DISTANCE = 0x100000 };
@@ -726,6 +739,16 @@ int main(int argc, char **argv)
         }
     }
     CHECK(winners == 1);
+
+    /* SGPR spill slots: every lane gets the restored scalars' sum and its own mask bit back, through the
+       restored descriptor. */
+    memset(out.mapped, 0, BUFFER_BYTES);
+    CHECK(run(&g, spill_slots, sizeof spill_slots / sizeof spill_slots[0], user) == 0);
+    for (int i = 0; i < LANES; i++) {
+        if (out_words[i] != 0x11111119u || out_words[LANES + i] != (i < 8 ? 1u : 0u))
+            fprintf(stderr, "spill_slots lane %d: 0x%08x %u\n", i, out_words[i], out_words[LANES + i]);
+        CHECK(out_words[i] == 0x11111119u && out_words[LANES + i] == (i < 8 ? 1u : 0u));
+    }
 
     /* valu_batch: each result worked out with plain C from the Sea Islands manual's definitions (floats:
        fminf and fmaxf ignore a NaN, as the NMin and NMax the translation uses; the legacy forms take y when

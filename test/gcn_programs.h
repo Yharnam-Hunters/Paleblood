@@ -232,6 +232,21 @@ static const uint32_t constants_and_modifiers[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* The roundings: per lane i, the float in[i] toward zero, up, to the nearest (ties to even), and its
+   negation toward zero (VOP3 neg), at out[4i .. 4i + 3]. */
+static const uint32_t roundings[] = {
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0xe0301000, 0x80000201, /* buffer_load_dword v2, v1, s[0:3], 0 offen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x7e064302, /* v_trunc_f32_e32 v3, v2 */
+    0x7e084502, /* v_ceil_f32_e32 v4, v2 */
+    0x7e0a4702, /* v_rndne_f32_e32 v5, v2 */
+    0xd3420006, 0x20000102, /* v_trunc_f32_e64 v6, -v2 */
+    0x340e0084, /* v_lshlrev_b32_e32 v7, 4, v0 */
+    0xe0781000, 0x80010307, /* buffer_store_dwordx4 v[3:6], v7, s[4:7], 0 offen */
+    0xbf810000, /* s_endpgm */
+};
+
 /* An instruction the translator does not handle yet: translation stops naming it. */
 static const uint32_t unsupported[] = {
     0xc8040002, /* v_interp_p1_f32 v1, v2, attr0.x */
@@ -1040,10 +1055,77 @@ static const uint32_t vertex_pos1[] = {
     0xbf810000, /* s_endpgm */
 };
 
-/* Per lane i, from in record i (x, y, z, w; 16 bytes): out record i (64 bytes) holds
-   v_mul_i32_i24 x, y; v_mul_u32_u24 x, y; v_mad_i32_i24 x, y, z; v_bfe_u32 and v_bfe_i32 of x at
-   offset y, width z; v_bfm_b32 y, z; x + y + carry (carry in: w != 0) and its carry out; x - y -
-   borrow (borrow in: w != 0) and its borrow out; v_mad_u32_u24 x, y, z. */
+/* SGPR spill slots (v_writelane_b32, v_readlane_b32): v2 is an ordinary VGPR (the lane's index, from which v3
+   = the lane's byte offset), then holds s8, s9, the output descriptor s[4:7] and the mask s[12:13] (lanes
+   below 8) in lanes 0, 5, 6-9, 10-11 while those SGPRs are cleared, which come back (s8 and s9 into s10 and
+   s11); then v2 is ordinary again (1). Each lane stores s10 + s11 + v2 = 0x11111119 at out[i] and its mask
+   bit at out[64 + i], through the restored descriptor. */
+static const uint32_t spill_slots[] = {
+    0xbe8803ff, 0x11111111, /* s_mov_b32 s8, 0x11111111 */
+    0xbe890387, /* s_mov_b32 s9, 7 */
+    0x7e040300, /* v_mov_b32_e32 v2, v0 */
+    0x34060482, /* v_lshlrev_b32_e32 v3, 2, v2 */
+    0xd188000c, 0x00020088, /* v_cmp_gt_u32_e64 s[12:13], 8, v0 */
+    0x04050008, /* v_writelane_b32 v2, s8, 0 */
+    0x04050a09, /* v_writelane_b32 v2, s9, 5 */
+    0x04050c04, /* v_writelane_b32 v2, s4, 6 */
+    0x04050e05, /* v_writelane_b32 v2, s5, 7 */
+    0x04051006, /* v_writelane_b32 v2, s6, 8 */
+    0x04051207, /* v_writelane_b32 v2, s7, 9 */
+    0x0405140c, /* v_writelane_b32 v2, s12, 10 */
+    0x0405160d, /* v_writelane_b32 v2, s13, 11 */
+    0xbe880380, /* s_mov_b32 s8, 0 */
+    0xbe890380, /* s_mov_b32 s9, 0 */
+    0xbe840480, /* s_mov_b64 s[4:5], 0 */
+    0xbe860480, /* s_mov_b64 s[6:7], 0 */
+    0xbe8c0480, /* s_mov_b64 s[12:13], 0 */
+    0x02150102, /* v_readlane_b32 s10, v2, 0 */
+    0x02170b02, /* v_readlane_b32 s11, v2, 5 */
+    0x02090d02, /* v_readlane_b32 s4, v2, 6 */
+    0x020b0f02, /* v_readlane_b32 s5, v2, 7 */
+    0x020d1102, /* v_readlane_b32 s6, v2, 8 */
+    0x020f1302, /* v_readlane_b32 s7, v2, 9 */
+    0x02191502, /* v_readlane_b32 s12, v2, 10 */
+    0x021b1702, /* v_readlane_b32 s13, v2, 11 */
+    0x7e08020a, /* v_mov_b32_e32 v4, s10 */
+    0x4a08080b, /* v_add_i32_e32 v4, vcc, s11, v4 */
+    0x7e040281, /* v_mov_b32_e32 v2, 1 */
+    0x4a080902, /* v_add_i32_e32 v4, vcc, v2, v4 */
+    0xd2000005, 0x00310280, /* v_cndmask_b32_e64 v5, 0, 1, s[12:13] */
+    0xe0701000, 0x80010403, /* buffer_store_dword v4, v3, s[4:7], 0 offen */
+    0xe0701100, 0x80010503, /* buffer_store_dword v5, v3, s[4:7], 0 offen offset:256 */
+    0xbf810000, /* s_endpgm */
+};
+
+/* A descriptor spilled and restored: s_load_dwordx8 s[0:7] from s[8:9] + 16 bytes, spilled to v1's lanes
+   2-9, cleared, restored into s[12:19] and used by image_load. */
+static const uint32_t spilled_descriptor[] = {
+    0xc0c00904, /* s_load_dwordx8 s[0:7], s[8:9], 0x4 */
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+    0x04030400, /* v_writelane_b32 v1, s0, 2 */
+    0x04030601, /* v_writelane_b32 v1, s1, 3 */
+    0x04030802, /* v_writelane_b32 v1, s2, 4 */
+    0x04030a03, /* v_writelane_b32 v1, s3, 5 */
+    0x04030c04, /* v_writelane_b32 v1, s4, 6 */
+    0x04030e05, /* v_writelane_b32 v1, s5, 7 */
+    0x04031006, /* v_writelane_b32 v1, s6, 8 */
+    0x04031207, /* v_writelane_b32 v1, s7, 9 */
+    0xbe800480, /* s_mov_b64 s[0:1], 0 */
+    0xbe820480, /* s_mov_b64 s[2:3], 0 */
+    0xbe840480, /* s_mov_b64 s[4:5], 0 */
+    0xbe860480, /* s_mov_b64 s[6:7], 0 */
+    0x02190501, /* v_readlane_b32 s12, v1, 2 */
+    0x021b0701, /* v_readlane_b32 s13, v1, 3 */
+    0x021d0901, /* v_readlane_b32 s14, v1, 4 */
+    0x021f0b01, /* v_readlane_b32 s15, v1, 5 */
+    0x02210d01, /* v_readlane_b32 s16, v1, 6 */
+    0x02230f01, /* v_readlane_b32 s17, v1, 7 */
+    0x02251101, /* v_readlane_b32 s18, v1, 8 */
+    0x02271301, /* v_readlane_b32 s19, v1, 9 */
+    0xf0000f00, 0x00030402, /* image_load v[4:7], v[2:3], s[12:19] dmask:0xf */
+    0xbf810000, /* s_endpgm */
+};
+
 /* Three-way min, max and middle (f32, i32, u32), bit-field insert, 64-bit shifts and the legacy float min
    and max: lane i reads (x, y, z, w) at in[4i] and, for lanes 0-11, writes v6-v25 at out[20i]: min3, max3,
    med3 of (x, y, z) as i32 then u32, bfi(x, y, z), the pair (y:x) shifted left, right and arithmetically
@@ -1079,6 +1161,10 @@ static const uint32_t valu_batch[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* Per lane i, from in record i (x, y, z, w; 16 bytes): out record i (64 bytes) holds
+   v_mul_i32_i24 x, y; v_mul_u32_u24 x, y; v_mad_i32_i24 x, y, z; v_bfe_u32 and v_bfe_i32 of x at
+   offset y, width z; v_bfm_b32 y, z; x + y + carry (carry in: w != 0) and its carry out; x - y -
+   borrow (borrow in: w != 0) and its borrow out; v_mad_u32_u24 x, y, z. */
 static const uint32_t integer_batch[] = {
     0x34020084, /* v_lshlrev_b32_e32 v1, 4, v0 */
     0xe0381000, 0x80000201, /* buffer_load_dwordx4 v[2:5], v1, s[0:3], 0 offen */
