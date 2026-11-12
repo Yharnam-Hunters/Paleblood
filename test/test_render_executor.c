@@ -848,6 +848,69 @@ static void other_viewports(rt_executor *x)
     check_triangle(x, at(TARGET_ONE));
 }
 
+/* Tessellation (docs/RENDERER.md): two quad patches of one control point each (gcn_programs.h's tess_local,
+   tess_hull and tess_domain). The local pass writes each point's (vertex index, 0.5) to LDS, the hull pass
+   six factors of 1.0 to the factor ring, and the domain shader exports the position (u, v) and its patch's
+   pair: both patches cover the target's bottom-right quarter, the later one (vertex 1) on top, red 1 and
+   green 0.5; the rest stays clear. With one patch a workgroup (first, while the factor buffer holds no
+   factors at its second patch's place), the second patch is workgroup 1's (its LDS block and its
+   factor-ring offset); with 15 both share one workgroup's LDS. Drawn directly and indirectly (its vertex
+   count in guest memory). */
+static int run_tessellated(rt_executor *x, uint64_t buffer, uint64_t target, uint32_t patches, uint64_t indirect, char *error, size_t error_size)
+{
+    enum { LOCAL = 0x3f00000, HULL = 0x3f00400, DOMAIN = 0x3f00800 };
+    memcpy((void *)(uintptr_t)at(LOCAL), tess_local, sizeof tess_local);
+    memcpy((void *)(uintptr_t)at(HULL), tess_hull, sizeof tess_hull);
+    memcpy((void *)(uintptr_t)at(DOMAIN), tess_domain, sizeof tess_domain);
+    rt_render_forget(), rt_executor_reset(x);
+    uint32_t offset = record_setup(buffer, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const uint32_t domain[RT_VERTEX_SHADER_WORDS] = {(uint32_t)(at(DOMAIN) >> 8), 0, 0x2, 0, 0, 0x4, 0};
+    CHECK(rt_render_record_vertex_shader(buffer, offset, domain, error, error_size) == 0);
+    const uint32_t local[RT_LOCAL_SHADER_WORDS] = {(uint32_t)(at(LOCAL) >> 8), 0, 0x2, 7u << 7}; /* LDS 3584 bytes */
+    const uint32_t hull[RT_HULL_SHADER_WORDS] = {(uint32_t)(at(HULL) >> 8), 0, 0x2, 8u << 1, 0x42, 0x42800000, 0x3f800000,
+                                                  patches | 1u << 8 | 1u << 14}; /* quads, integer, clockwise; levels 1 to 64 */
+    CHECK(rt_render_record_local_shader_at(buffer + offset + 0x10, local) == 0);
+    CHECK(rt_render_record_hull_shader_at(buffer + offset + 0x20, hull) == 0);
+    const uint32_t ring[4] = {(uint32_t)RT_TESSELLATION_FACTOR_RING, (uint32_t)(RT_TESSELLATION_FACTOR_RING >> 32), 128 << 10, 0};
+    CHECK(rt_render_record_user_data(buffer, offset + 0x30, RT_STAGE_HULL, 0, ring, 4, error, error_size) == 0);
+    CHECK(rt_render_record_register(buffer, offset + 0x40, 0xa2d5, 0x45, error, error_size) == 0);
+    if (indirect) {
+        CHECK(rt_render_record_indirect_base(buffer, offset + 0x50, indirect, error, error_size) == 0);
+        CHECK(rt_render_record_draw_indirect(buffer, offset + 0x60, 0, RT_STAGE_LOCAL, 0, 0, error, error_size) == 0);
+    } else {
+        CHECK(rt_render_record_draw_auto(buffer, offset + 0x60, 2, error, error_size) == 0);
+    }
+    return rt_executor_run(x, buffer, offset + 0x70, error, error_size);
+}
+
+static void tessellated_draws(rt_executor *x)
+{
+    enum { TESS = 0xc1060000, ONE_GROUP = 0x2e00000, TWO_GROUPS = 0x2e10000, INDIRECT = 0x2e20000, ARGUMENTS = 0x2e30000 };
+    uint32_t *const counts = (uint32_t *)(uintptr_t)at(ARGUMENTS);
+    counts[0] = 2, counts[1] = 1, counts[2] = 0, counts[3] = 0;
+    const struct { uint64_t target; uint32_t patches; uint64_t indirect; const char *name; } runs[] = {
+        {TWO_GROUPS, 1, 0, "two workgroups"}, {ONE_GROUP, 15, 0, "one workgroup"}, {INDIRECT, 1, ARGUMENTS, "indirect"}};
+    for (unsigned r = 0; r < sizeof runs / sizeof runs[0]; r++) {
+        char error[256] = "";
+        const int ran = run_tessellated(x, TESS, at(runs[r].target), runs[r].patches, runs[r].indirect ? at(runs[r].indirect) : 0, error,
+                                        sizeof error);
+        if (ran) fprintf(stderr, "tessellated draw (%s): %s\n", runs[r].name, error);
+        CHECK(ran == 0);
+        uint32_t bgra[SIZE * SIZE];
+        CHECK(rt_executor_read_target(x, at(runs[r].target), bgra, SIZE, SIZE, error, sizeof error) == 0);
+        int right = 1;
+        for (int y = 0; y < SIZE; y++)
+            for (int px = 0; px < SIZE; px++) {
+                const uint32_t p = bgra[y * SIZE + px];
+                const int inside = px >= SIZE / 2 && y >= SIZE / 2;
+                const int ok = inside ? near(p >> 16 & 0xff, 1.0f) && near(p >> 8 & 0xff, 0.5f) && near(p & 0xff, 0.0f) && p >> 24 == 0xff : p == 0;
+                if (!ok && right) fprintf(stderr, "tessellated draw (%s): pixel (%d, %d) = %08x\n", runs[r].name, px, y, p);
+                right &= ok;
+            }
+        CHECK(right);
+    }
+}
+
 static void indirect_draws(rt_executor *x)
 {
     enum { INDIRECT = 0xc1040000, ARGUMENTS = 0x2fc0000, DATA_OFFSET = 0x20, PLAIN = 0x2fd0000, TWICE = 0x2fe0000, NONE = 0x2ff0000, ONE = 1 };
@@ -1468,7 +1531,7 @@ static void depth_and_strips(rt_executor *x)
     /* hardware shader stages other than vertex and pixel (VGT_SHADER_STAGES_EN 0x45: tessellation) stop by
        name; set back to 0 the triangle draws, and a local stage's user data is kept aside */
     const uint32_t tessellation[][2] = {{0xa2d5, 0x45}};
-    CHECK(run_counted(x, DEPTH_BUFFER, at(NO_BUFFER), tessellation, 1, 3, error, sizeof error) == -1 && strstr(error, "VGT_SHADER_STAGES_EN 0x45"));
+    CHECK(run_counted(x, DEPTH_BUFFER, at(NO_BUFFER), tessellation, 1, 3, error, sizeof error) == -1 && strstr(error, "without a local and a hull shader"));
     {
         enum { STAGES_OFF = 0x1ed0000 };
         rt_render_forget(), rt_executor_reset(x);
@@ -2389,6 +2452,7 @@ int main(void)
     draws_in_one_batch(x);
     indirect_draws(x);
     other_viewports(x);
+    tessellated_draws(x);
     buffers_in_one_submission(x);
     const uint32_t depth[][2] = {{0xa200, 0x2}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), depth, 1, 0, error, sizeof error) == -1 && strstr(error, "depth or stencil"));

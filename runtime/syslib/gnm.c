@@ -27,7 +27,7 @@
 #include <string.h>
 #include <time.h>
 
-#define TESSELLATION_FACTOR_RING_BASE 0xfe00000000ull
+#define TESSELLATION_FACTOR_RING_BASE RT_TESSELLATION_FACTOR_RING
 
 static uint64_t tessellation_factor_ring_base(void)
 {
