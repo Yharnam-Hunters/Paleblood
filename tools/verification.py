@@ -136,10 +136,25 @@ def record(root: str, function: str, cases: str, option: str, case_names: list[s
         rows = [r for r in read_csv(path, VERIFICATION_HEADER)
                 if (r['function'], r['cases'], r['option']) != (function, cases, option)]
         rows.append(row)
-        rows.sort(key=lambda r: (r['function'], CASE_SETS.index(r['cases']) if r['cases'] in CASE_SETS else 99,
-                                 r['option']))
+        rows.sort(key=record_order)
         write_csv(path, VERIFICATION_HEADER, rows)
     return row
+
+
+def record_order(r: dict) -> tuple:
+    """The order record() keeps the rows in: by function, case set and option. One row per key,
+    one row per line, so pull requests that record different functions merge without conflicts
+    (CONTRIBUTING.md, "Generated progress and merging main")."""
+    return (r['function'], CASE_SETS.index(r['cases']) if r['cases'] in CASE_SETS else 99, r['option'])
+
+
+def order_errors(rows: list[dict], rel: str, key) -> list[str]:
+    errs = []
+    for prev, r in zip(rows, rows[1:]):
+        if key(r) <= key(prev):
+            errs.append(f"{rel}:{r['_line']}: rows must be unique and in order (tools/verify.py run --record "
+                        "keeps them so; tools/remerge.py restores it after a merge)")
+    return errs
 
 
 def check(root: str, funcs: list[dict]) -> list[str]:
@@ -161,6 +176,9 @@ def check(root: str, funcs: list[dict]) -> list[str]:
             errs.append(f"{where}: a quarantined case needs its reason")
         if not q['case'].strip():
             errs.append(f"{where}: case is empty")
+    errs += order_errors(results, 'symbols/verification.csv', record_order)
+    errs += order_errors(quarantine, 'symbols/quarantine.csv',
+                         lambda q: (*record_order(q), q['case']))
     counts: dict[tuple, int] = {}
     for q in quarantine:
         key = (q['function'], q['cases'], q['option'])
