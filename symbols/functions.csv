@@ -254,7 +254,13 @@ address,size,name,system,status,notes
 0x024716d0,539,loading_mount_table_reallocate_024716d0,loading,edge-verified,mount table reallocate to exact capacity: copy entries; destroy old (heap text freed); free old buffer; failed allocation: transaction jump or report
 0x0247d250,304,engine_temporary_heap_create_for_thread_0247d250,engine,edge-verified,DLTemporaryHeap per-thread creation: the thread's size setting (0x20000 when 0; under 0x38 reported); memory from the default allocator; empty bump region after the 0x38-byte object
 0x0247eb80,16,render_read_present_pool_counter,render,edge-verified,"full-QWORD locked read/writeback retry; XOR before each attempt; caller adds one. Real AMD64 write cycles retained; non-AMD64 bridge unresolved Synthetic edges pass; no recordings."
+0x0247ed40,115,engine_pthread_mutex_destroy_base_0247ed40,engine,edge-verified,"PthreadMutex base destructor: resets the vtable, destroys a handle still marked initialized (busy kept)"
+0x0247edc0,124,engine_pthread_mutex_finalize_0247edc0,engine,edge-verified,"PthreadMutex finalize: destroys the handle when initialized; -2 when busy; errors reported, then uninitialized"
+0x0247ee90,226,engine_light_mutex_lock_0247ee90,engine,edge-verified,"DLLightMutex lock: reports an uninitialized mutex; -3 on ETIMEDOUT; EDEADLK/EINVAL/EAGAIN/other report chains, 0"
+0x0247ef80,230,engine_light_mutex_try_lock_0247ef80,engine,edge-verified,"DLLightMutex try-lock: reports an uninitialized mutex; -2 when busy; EDEADLK/EINVAL/EAGAIN/other report chains, 0"
+0x0247f070,124,engine_light_mutex_unlock_0247f070,engine,edge-verified,DLLightMutex unlock: reports an uninitialized mutex; EPERM ignored; EINVAL and other errors reported; 0
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
+0x02483fe0,196,engine_pthread_mutex_create_02483fe0,engine,edge-verified,"PthreadMutex creation: a recursive system mutex; -1 on ENOMEM or EAGAIN; EINVAL and other errors reported, 0"
 0x024846f0,105,engine_fast_small_object_allocator_delete_024846f0,engine,edge-verified,"DLFastSmallObjectAllocator deleting destructor: every class allocator released (0x02a3bc40), class array freed to the backing allocator, operator delete"
 0x02484760,106,engine_fast_small_object_allocator_destroy_02484760,engine,edge-verified,"DLFastSmallObjectAllocator destructor: every class allocator released (0x02a3bc40), class array freed and forgotten"
 0x024847d0,309,engine_fast_small_object_allocator_delete_locked_024847d0,engine,edge-verified,"DLFastSmallObjectAllocator deleting destructor, locked variant: classes released, array freed, PthreadMutex torn down (errors reported, busy kept), operator delete"

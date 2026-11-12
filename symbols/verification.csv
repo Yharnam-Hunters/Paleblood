@@ -52,6 +52,9 @@ engine_fixed_allocator_release_chunks_02484ae0,edge,,10,10,0,0,5dad1163477f190e,
 engine_fixed_allocator_shrink_02484f20,edge,,17,17,0,0,bfe97a652512d54b,2026-11-12
 engine_initialize_static_wide_string_0217ffb0,recorded,,1,1,0,0,ccdadef0d4bd7152,2026-11-12
 engine_initialize_static_wide_string_0217ffb0,edge,,30,30,0,0,ccdadef0d4bd7152,2026-11-12
+engine_light_mutex_lock_0247ee90,edge,,18,18,0,0,225d1c275364c22d,2026-11-12
+engine_light_mutex_try_lock_0247ef80,edge,,18,18,0,0,225d1c275364c22d,2026-11-12
+engine_light_mutex_unlock_0247f070,edge,,18,18,0,0,225d1c275364c22d,2026-11-12
 engine_linear_heap_allocate_02485100,edge,,8,8,0,0,a5d9654aaa60d6f5,2026-11-12
 engine_linear_heap_allocate_aligned_02485120,edge,,12,12,0,0,a5d9654aaa60d6f5,2026-11-12
 engine_linear_heap_allocate_aligned_top_024851d0,edge,,10,10,0,0,a5d9654aaa60d6f5,2026-11-12
@@ -61,6 +64,9 @@ engine_linear_heap_contains_02485330,edge,,8,8,0,0,ae393922f4e0cc2c,2026-11-12
 engine_linear_heap_free_02485230,edge,,12,12,0,0,866d183e356bf2e9,2026-11-12
 engine_linear_heap_free_until_024852d0,edge,,8,8,0,0,866d183e356bf2e9,2026-11-12
 engine_linear_heap_walk_02485340,edge,,10,10,0,0,ae393922f4e0cc2c,2026-11-12
+engine_pthread_mutex_create_02483fe0,edge,,15,15,0,0,225d1c275364c22d,2026-11-12
+engine_pthread_mutex_destroy_base_0247ed40,edge,,17,17,0,0,225d1c275364c22d,2026-11-12
+engine_pthread_mutex_finalize_0247edc0,edge,,19,19,0,0,225d1c275364c22d,2026-11-12
 engine_regular_heap_allocate_02485730,edge,,23,23,0,0,ceba07c492cd7255,2026-11-12
 engine_regular_heap_allocate_aligned_02485a60,edge,,25,25,0,0,7e5a8ce832324bd5,2026-11-12
 engine_regular_heap_check_block_02485e20,edge,,35,35,0,0,ecd40822cc0dfbde,2026-11-12
