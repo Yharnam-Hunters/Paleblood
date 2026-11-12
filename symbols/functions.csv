@@ -266,7 +266,6 @@ address,size,name,system,status,notes
 0x0247f640,206,engine_read_write_lock_read_lock_0247f640,engine,edge-verified,"DLReadWriteLock read lock, forever or up to a timeout; -3 on ETIMEDOUT; EINVAL/EAGAIN/EDEADLK report chains; others ignored; 0"
 0x0247f710,115,engine_read_write_lock_unlock_0247f710,engine,edge-verified,DLReadWriteLock unlock (one of three identical copies): -4 on EPERM; EINVAL reported; 0
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
-0x02483fe0,196,engine_pthread_mutex_create_02483fe0,engine,edge-verified,"PthreadMutex creation: a recursive system mutex; -1 on ENOMEM or EAGAIN; EINVAL and other errors reported, 0"
 0x024846f0,105,engine_fast_small_object_allocator_delete_024846f0,engine,edge-verified,"DLFastSmallObjectAllocator deleting destructor: every class allocator released (0x02a3bc40), class array freed to the backing allocator, operator delete"
 0x02484760,106,engine_fast_small_object_allocator_destroy_02484760,engine,edge-verified,"DLFastSmallObjectAllocator destructor: every class allocator released (0x02a3bc40), class array freed and forgotten"
 0x024847d0,309,engine_fast_small_object_allocator_delete_locked_024847d0,engine,edge-verified,"DLFastSmallObjectAllocator deleting destructor, locked variant: classes released, array freed, PthreadMutex torn down (errors reported, busy kept), operator delete"

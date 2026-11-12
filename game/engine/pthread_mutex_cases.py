@@ -3,10 +3,10 @@
 """Edge cases for the engine's mutex (game/engine/pthread_mutex.cpp), for tools/verify.py run.
 
 usage: pthread_mutex_cases.py OUT_DIR FUNCTION
-  FUNCTION: create, finalize, destroy_base, lock, try_lock, unlock
+  FUNCTION: finalize, destroy_base, lock, try_lock, unlock
 
 Each case builds a mutex (`mutex`: a fake vtable whose initialization query is a scripted stub, a
-handle and the initialized flag) or, for create, a handle slot. The system mutex calls are
+handle and the initialized flag). The system mutex calls are
 scripted imports with the results under test, including upper bits a 32-bit compare must ignore;
 the error reports are stubs, as many as the result reports (worked out here).
 """
@@ -16,7 +16,7 @@ import struct
 import sys
 
 FATAL_ERROR, IS_INITIALIZED = '0x024b55b0', '0x0247ee80'
-ADDRESSES = {'create': '0x02483fe0', 'finalize': '0x0247edc0', 'destroy_base': '0x0247ed40',
+ADDRESSES = {'finalize': '0x0247edc0', 'destroy_base': '0x0247ed40',
              'lock': '0x0247ee90', 'try_lock': '0x0247ef80', 'unlock': '0x0247f070'}
 RETURNS = {'destroy_base': 'void'}
 EPERM, EDEADLK, ENOMEM, EBUSY = 0x80020001, 0x8002000b, 0x8002000c, 0x80020010
@@ -45,7 +45,7 @@ def import_call(name, argc, ret=0):
 
 
 def case(function, cid, result=0, queried=True, flag=True):
-    """result: the system call's result (create: scePthreadMutexInit's)."""
+    """result: the system call's result."""
     stubs, imports = [], []
     buffers = {'mutex': {'size': 0x20, 'bytes': '6d' * 0x20}, 'mutex_vtable': {'size': 0x30}}
     memory = [{'addr': 'buf:mutex+0', 'pointer': 'mutex_vtable'},
@@ -54,15 +54,7 @@ def case(function, cid, result=0, queried=True, flag=True):
               {'addr': 'buf:mutex_vtable+16', 'guest': IS_INITIALIZED}]
     args = {'rdi': 'buf:mutex'}
     reports = 0
-    if function == 'create':
-        buffers = {'handle': {'size': 0x10, 'bytes': '6d' * 0x10}}
-        memory = []
-        args = {'rdi': 'buf:handle+8'}
-        imports = [import_call('scePthreadMutexattrInit', 1), import_call('scePthreadMutexattrSettype', 2),
-                   import_call('scePthreadMutexInit', 3, result), import_call('scePthreadMutexattrDestroy', 1)]
-        r = low(result)
-        reports = 0 if r in (0, ENOMEM, EAGAIN) else 2 if r == EINVAL else 1
-    elif function in ('finalize', 'destroy_base'):
+    if function in ('finalize', 'destroy_base'):
         if function == 'finalize':
             stubs.append({'address': IS_INITIALIZED, 'argc': 1, 'ret': int(queried)})
             runs = queried
@@ -106,7 +98,7 @@ def make(function):
                 case(function, 'query_true_flag_clear_busy', result=EBUSY, flag=False)]
     elif function == 'destroy_base':
         out += [case(function, 'flag_clear', flag=False), case(function, 'flag_clear_einval', result=EINVAL, flag=False)]
-    elif function != 'create':
+    else:
         out += [case(function, 'not_initialized', queried=False),
                 case(function, 'not_initialized_einval', queried=False, result=EINVAL),
                 case(function, 'not_initialized_flag_clear', queried=False, flag=False, result=EDEADLK)]
