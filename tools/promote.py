@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Upgrades edge-verified functions to verified once inputs recorded in the game exist and pass.
 
-usage: promote.py [--captures DIR] [--dry-run] [--check-unreviewed]
+usage: promote.py [--captures DIR] [--dry-run] [--check-unreviewed] [--jobs N]
 
 For each row of symbols/functions.csv with status edge-verified: if the capture library
 (--captures, default $BB_CAPTURES, then ../captures) holds recorded cases for it (CAPTURES/NAME/*.json),
@@ -22,6 +22,7 @@ code 1 too.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import csv
 import glob
 import io
@@ -35,7 +36,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def cases(directory: str) -> int:
-    return len(glob.glob(os.path.join(directory, '*.json')))
+    """Case files, as verify.py runs them: abi.json is a fixture manifest, not a case."""
+    return len([p for p in glob.glob(os.path.join(directory, '*.json')) if os.path.basename(p) != 'abi.json'])
 
 
 def passes(name: str, directory: str, record: str | None) -> tuple[bool, str]:
@@ -61,6 +63,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--captures', default=os.environ.get('BB_CAPTURES') or os.path.join(ROOT, '..', 'captures'))
     ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--jobs', type=int, default=1, metavar='N', help='functions verified side by side (default 1)')
     ap.add_argument('--check-unreviewed', action='store_true',
                     help='also verify functions with recordings but no approved review, and list those that pass')
     a = ap.parse_args()
@@ -74,6 +77,11 @@ def main() -> int:
     head = rows[0]
     status, name_col = head.index('status'), head.index('name')
     changed, awaiting, failed = [], [], False
+    sys.path.insert(0, os.path.join(ROOT, 'tools'))
+    from validate_functions import check_reviews
+    # Which functions to run, and how: reviewed ones record their runs, unreviewed ones (with
+    # --check-unreviewed) are only checked.
+    work = []
     for row in rows[1:]:
         if row[status] != 'edge-verified':
             continue
@@ -85,14 +93,24 @@ def main() -> int:
         if not cases(edge):
             print(f'promote: {name}: recorded cases but no edge cases; left edge-verified')
             continue
-        sys.path.insert(0, os.path.join(ROOT, 'tools'))
-        from validate_functions import check_reviews
-        if check_reviews(ROOT, [{'address': row[head.index('address')], 'name': name, 'status': 'verified', '_line': 0}]):
-            if not a.check_unreviewed:
-                print(f'promote: {name}: recordings exist, but no approved review yet (symbols/reviews.csv); left edge-verified')
-                continue
-            ok_r, msg_r = passes(name, recorded, None)
-            ok_e, msg_e = passes(name, edge, None) if ok_r else (False, 'not run')
+        reviewed = not check_reviews(ROOT, [{'address': row[head.index('address')], 'name': name, 'status': 'verified', '_line': 0}])
+        if not reviewed and not a.check_unreviewed:
+            print(f'promote: {name}: recordings exist, but no approved review yet (symbols/reviews.csv); left edge-verified')
+            continue
+        work.append((row, name, recorded, edge, reviewed))
+
+    def run(item):
+        row, name, recorded, edge, reviewed = item
+        record = 'recorded' if reviewed and not a.dry_run else None
+        ok_r, msg_r = passes(name, recorded, record)
+        ok_e, msg_e = passes(name, edge, record and 'edge') if ok_r else (False, 'not run')
+        return ok_r, msg_r, ok_e, msg_e
+
+    # Functions run side by side (--jobs); verify.py --record serializes its writes.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, a.jobs)) as pool:
+        results = list(pool.map(run, work))
+    for (row, name, recorded, edge, reviewed), (ok_r, msg_r, ok_e, msg_e) in zip(work, results):
+        if not reviewed:
             if ok_r and ok_e:
                 print(f'promote: {name}: recorded {msg_r}, edge {msg_e}: awaiting an independent review')
                 awaiting.append(name)
@@ -100,9 +118,6 @@ def main() -> int:
                 print(f'promote: {name}: recorded {msg_r}, edge {msg_e}: fails (not reviewed yet)', file=sys.stderr)
                 failed = True
             continue
-        record = None if a.dry_run else 'recorded'
-        ok_r, msg_r = passes(name, recorded, record)
-        ok_e, msg_e = passes(name, edge, record and 'edge') if ok_r else (False, 'not run')
         if ok_r and ok_e and not a.dry_run:
             import verification
             # Every function is listed (quarantine rows name other functions too), and only this
