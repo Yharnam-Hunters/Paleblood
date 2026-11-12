@@ -68,6 +68,29 @@ static const uint32_t reciprocals[] = {
 static const uint32_t indexed_scale_add[] = INDEXED_SCALE_ADD(0);
 static const uint32_t indexed_scale_add_past_stride[] = INDEXED_SCALE_ADD(4);
 
+/* A table-driven copy (gcn_table_copy_shape): user data s[0:3] the table of (x, y, count), three
+   dwords per workgroup, s[4:7] the source, s[8:11] the destination, s12 the workgroup's x index; lane
+   i <= count copies source element y + i to destination element x + i (both indexed, idxen). The
+   table loads with `table_load` (buffer_load_dwordx3, 0xe03c2000, or buffer_load_format_xyz,
+   0xe0082000), the store with instruction offset `store_offset`. */
+#define TABLE_COPY(table_load, store_offset) {                                                   \
+    0x7e02020c, /* v_mov_b32_e32 v1, s12 */                                                     \
+    (table_load), 0x80000401, /* buffer_load_dwordx3 v[4:6], v1, s[0:3], 0 idxen */           \
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */                                                        \
+    0x7d8c0106, /* v_cmp_ge_u32_e32 vcc, v6, v0 */                                              \
+    0xbe8e246a, /* s_and_saveexec_b64 s[14:15], vcc */                                          \
+    0xbf880007, /* s_cbranch_execz 7 (to s_endpgm) */                                           \
+    0x4a0e0b00, /* v_add_i32_e32 v7, vcc, v0, v5 */                                             \
+    0xe0302000, 0x80010807, /* buffer_load_dword v8, v7, s[4:7], 0 idxen */                    \
+    0x4a120900, /* v_add_i32_e32 v9, vcc, v0, v4 */                                             \
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */                                                        \
+    0xe0702000 | (store_offset), 0x80020809, /* buffer_store_dword v8, v9, s[8:11], 0 idxen */ \
+    0xbf810000, /* s_endpgm */                                                                  \
+}
+static const uint32_t table_copy[] = TABLE_COPY(0xe03c2000, 0);
+static const uint32_t table_copy_format[] = TABLE_COPY(0xe0082000, 0);
+static const uint32_t table_copy_store_offset[] = TABLE_COPY(0xe03c2000, 4);
+
 /* out[i] = v_mul_hi_u32(in[i], in[i]), out[64 + i] = v_mul_hi_i32(in[i], in[i]),
    out[128 + i] = v_mul_hi_i32(in[i], 4 * i). */
 static const uint32_t multiply_high[] = {

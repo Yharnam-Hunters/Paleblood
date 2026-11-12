@@ -481,6 +481,19 @@ Instead:
           before reading. With these (and, then, copies by the CPU skipped while the guest memory held
           what the image and it last agreed on) the boot's frames went from 66 to about 1,440 in 90 s
           (RTX 3070), which reaches the title screen.
+        - **Only the targets a dispatch can touch:** before a dispatch, only the targets drawn into over
+          memory it may read or store are written back (with any drawn target overlapping one of those),
+          and before an image loads, only those over the image. What a compute shader reads is bounded
+          by its loads (`gcn_memory_reads`): each buffer descriptor's range, and each `s_load`'s bytes
+          from a user-data pointer; a load whose memory is not known (a flat load, a computed pointer)
+          writes them all back, as before. The game's depth copy (compute shader `0x20d1b00100`, about 13
+          dispatches a frame at the Contract screen) declares source and destination ranges of 2.2 GB,
+          so it used to write back every target before it and mark all its range changed after it. It
+          is a table-driven copy (`gcn_table_copy_shape`: each workgroup's entry gives its first
+          destination and source elements and a count), so the CPU reads its table when nothing in an
+          open or submitted batch may store there and no target with unwritten draws lies over it; the
+          copy's real sources then bound what is written back, and its real destinations what loads
+          again. Otherwise the descriptors' ranges stand.
         - **One batch per buffer:** a buffer's draws, dispatches and copies are recorded into one Vulkan
           command buffer and submitted once, with barriers between them, instead of each waiting for the
           GPU. The CPU waits only where it reads what the batch produces: a render target written back
@@ -565,7 +578,11 @@ Instead:
           slice of an array depth target (`DB_DEPTH_VIEW` SLICE_START = SLICE_MAX) draws into an image
           kept for that slice alone, at that slice's memory: `DB_DEPTH_SLICE` tiles of 64 elements per
           slice past the depth and stencil bases (shadPS4's `GetDepthSliceSize`), where its depth is
-          written back; a view of several slices stops by name.
+          written back; a view of several slices stops by name. A colour target's view
+          (`CB_COLORn_VIEW`) draws into its first slice (SLICE_START: the shader picks no layer), kept
+          as a 2D target of its own at that slice's memory, `CB_COLORn_SLICE` elements per slice past
+          the base, its CMASK `CMASK_SLICE` bytes per slice past the first (shadPS4's
+          `GetColorSliceSize`): the cube-face passes of the clinic's light probes draw one face each.
         - **Not yet:** other formats, more
           render targets and other pixel inputs. These stop with the reason.
         - **The image's memory order:** an image's pixels only leave the GPU through
