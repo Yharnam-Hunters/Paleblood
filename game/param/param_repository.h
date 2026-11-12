@@ -175,20 +175,47 @@ struct RowLookup {
 };
 static_assert(offsetof(RowLookup, row) == 0x8);
 
+// Row descriptor `row_number`'s fields, from whichever descriptor layout the table uses.
+struct RowDescription {
+    uint32_t id;
+    uint64_t data_offset;  // from the header
+    uint64_t name_offset;  // from the header; zero when the row has no name
+};
+
+inline RowDescription describe_row(const TableHeader *table, uint32_t row_number)
+{
+    const auto *base = reinterpret_cast<const uint8_t *>(table);
+    if (table->format == compact_header_format) {
+        const RowDescriptor32 &row = reinterpret_cast<const RowDescriptor32 *>(base + compact_header_size)[row_number];
+        return {row.id, row.data_offset, row.name_offset};
+    }
+    if (table->format < first_wide_capable_format || (table->format_flags & wide_offsets_flag) == 0) {
+        const RowDescriptor32 &row = reinterpret_cast<const RowDescriptor32 *>(base + header_size)[row_number];
+        return {row.id, row.data_offset, row.name_offset};
+    }
+    const RowDescriptor64 &row = reinterpret_cast<const RowDescriptor64 *>(base + header_size)[row_number];
+    return {row.id, row.data_offset, row.name_offset};
+}
+
+// The address `offset` bytes from the header. A 64-bit offset may wrap around: the address
+// arithmetic is unsigned, as in the original.
+inline const uint8_t *at_offset(const TableHeader *table, uint64_t offset)
+{
+    return reinterpret_cast<const uint8_t *>(reinterpret_cast<uintptr_t>(table) + offset);
+}
+
 // The data of row `row_number` of a table.
 inline const uint8_t *row_data(const TableHeader *table, uint32_t row_number)
 {
-    const auto *base = reinterpret_cast<const uint8_t *>(table);
-    uint64_t offset;
-    if (table->format == compact_header_format) {
-        offset = reinterpret_cast<const RowDescriptor32 *>(base + compact_header_size)[row_number].data_offset;
-    } else if (table->format < first_wide_capable_format || (table->format_flags & wide_offsets_flag) == 0) {
-        offset = reinterpret_cast<const RowDescriptor32 *>(base + header_size)[row_number].data_offset;
-    } else {
-        offset = reinterpret_cast<const RowDescriptor64 *>(base + header_size)[row_number].data_offset;
-    }
-    // A 64-bit offset may wrap around: the address arithmetic is unsigned, as in the original.
-    return reinterpret_cast<const uint8_t *>(reinterpret_cast<uintptr_t>(base) + offset);
+    return at_offset(table, describe_row(table, row_number).data_offset);
+}
+
+// The data of row `row_number`, or null when the table has no such row. The ReturnPointParam
+// scans read every row through this, so a row number past the count gives null.
+inline const uint8_t *row_data_if_present(const TableHeader *table, uint32_t row_number)
+{
+    if (row_number >= table->row_count) return nullptr;
+    return row_data(table, row_number);
 }
 
 // The search index after a table.
@@ -201,8 +228,9 @@ inline const IndexEntry *index_of(const TableHeader *table)
     return reinterpret_cast<const IndexEntry *>(base + static_cast<int32_t>(rounded));
 }
 
-// Binary search of the index for `id` (ids compare unsigned); the row's data, or null.
-inline const uint8_t *find_row_in_table(const TableHeader *table, uint32_t id)
+// Binary search of the index for `id` (ids compare unsigned): the row number the index gives it
+// (negative when the entry has no row), or -1 when the id is not in the index.
+inline int32_t find_row_number(const TableHeader *table, uint32_t id)
 {
     const IndexEntry *index = index_of(table);
     int32_t low = 0;
@@ -211,16 +239,33 @@ inline const uint8_t *find_row_in_table(const TableHeader *table, uint32_t id)
         // Both bounds stay within a 16-bit row count, so the sum cannot overflow.
         const int32_t middle = (low + high) >> 1;
         const IndexEntry &entry = index[middle];
-        if (entry.id == id) {
-            if (entry.row_number < 0) return nullptr;
-            return row_data(table, static_cast<uint32_t>(entry.row_number));
-        }
+        if (entry.id == id) return entry.row_number;
         if (entry.id < id)
             low = middle + 1;
         else
             high = middle - 1;
     }
-    return nullptr;
+    return -1;
+}
+
+// The data of the row with id `id`, or null.
+inline const uint8_t *find_row_in_table(const TableHeader *table, uint32_t id)
+{
+    const int32_t row_number = find_row_number(table, id);
+    if (row_number < 0) return nullptr;
+    return row_data(table, static_cast<uint32_t>(row_number));
+}
+
+// The name of the row with id `id` (text the file keeps after the rows), or null when there is
+// no such row or it has no name. Unlike the data lookups, this one checks the index's row
+// number against the row count.
+inline const char *find_row_name_in_table(const TableHeader *table, uint32_t id)
+{
+    const int32_t row_number = find_row_number(table, id);
+    if (row_number < 0 || static_cast<uint32_t>(row_number) >= table->row_count) return nullptr;
+    const uint64_t name_offset = describe_row(table, static_cast<uint32_t>(row_number)).name_offset;
+    if (name_offset == 0) return nullptr;
+    return reinterpret_cast<const char *>(at_offset(table, name_offset));
 }
 
 // Lookups for a few types also return the low byte of the table's data version (when the table

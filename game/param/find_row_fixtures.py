@@ -68,6 +68,7 @@ LOOKUPS = {
     'param_find_row_return_point': ('0x02326b40', 50),
     'param_find_row_item_lot': ('0x02320640', 19),  # only from data version 2 on
     'param_find_row_dungeon_feature': ('0x023167f0', 53),  # publishes header word 0x06
+    'param_find_row_npc': ('0x023226c0', 6),  # returns two header words, checks the version
 }
 DUNGEON_FEATURE_WORD = '0x05992cb0'
 
@@ -81,10 +82,11 @@ def u64(v):
 
 
 def table_bytes(index, format=2, flags=0, offsets=None, size=None, backwards=False, past_end=(),
-                version=None, word_06=0x6e06):
+                version=None, word_06=0x6e06, names=None, ids=None):
     """index: (id, row number) pairs in index order; offsets: each row's data offset (one row per
     index entry by default); past_end: index entries after the counted ones, which the search must
-    never reach. Returns (buffer bytes, header offset in the buffer)."""
+    never reach; names, ids: each row descriptor's name offset and id (invented values by default).
+    Returns (buffer bytes, header offset in the buffer)."""
     rows = len(offsets) if offsets is not None else len(index)
     if offsets is None:
         offsets = [0x1000 + 0x40 * k for k in range(rows)]
@@ -97,12 +99,16 @@ def table_bytes(index, format=2, flags=0, offsets=None, size=None, backwards=Fal
     header[0x8:0xa] = struct.pack('<H', 0x3a5c + format if version is None else version)
     header[0x2d] = format & 0xff
     header[0x2e] = flags & 0xff
+    if names is None:
+        names = [0x9000 + k for k in range(rows)]
+    if ids is None:
+        ids = [0x7000 + k for k in range(rows)]
     descriptors = b''
     for k, off in enumerate(offsets):
         if wide:
-            descriptors += u32(0x7000 + k) + u32(0xdddddddd) + u64(off) + u64(0x9000 + k)
+            descriptors += u32(ids[k]) + u32(0xdddddddd) + u64(off) + u64(names[k])
         else:
-            descriptors += u32(0x7000 + k) + u32(off) + u32(0x9000 + k)
+            descriptors += u32(ids[k]) + u32(off) + u32(names[k])
     body = bytes(header) + descriptors
     pairs = b''.join(u32(i) + u32(r) for i, r in list(index) + list(past_end))
     if backwards:
@@ -237,6 +243,16 @@ def cases(address, slot):
     for case in out:
         # The DungeonFeatureParam lookup's published word starts as a known value.
         case['memory'].append({'addr': DUNGEON_FEATURE_WORD, 'bytes': u32(0x13572468).hex()})
+    if address == LOOKUPS['param_find_row_npc'][0]:
+        # Versions 2 and older are reported (the report is stubbed) and searched anyway.
+        old = [{'address': FATAL_ERROR, 'ret': 0, 'argc': 3}]
+        for cid, id, version, stubs in (('version_0', 5, 0, old), ('version_2', 7, 2, old),
+                                        ('version_2_missing', 4, 2, old), ('version_3', 5, 3, []),
+                                        ('version_258', 5, 0x102, []), ('version_65535', 9, 0xffff, [])):
+            case = c(cid, id, sorted_ids, version=version, word_06=0x8001)
+            case['stubs'] = stubs
+            out.append(case)
+        out.append(c('word_06_zero', 3, sorted_ids, word_06=0))
     if address == LOOKUPS['param_find_row_dungeon_feature'][0]:
         out += [
             c('word_06_zero', 4, sorted_ids, word_06=0),

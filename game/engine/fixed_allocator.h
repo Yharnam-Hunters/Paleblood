@@ -87,6 +87,27 @@ inline void *chunk_memory(const Allocator *allocator, TreeNode *node)
     return reinterpret_cast<void *>(descriptor + sizeof(Chunk) - allocator->chunk_size);
 }
 
+// Sets an allocator up empty: no chunks yet, elements of `element_size`, `elements_per_chunk` to a
+// chunk (whose memory ends in its descriptor), chunks aligned to `chunk_alignment` and taken from
+// `backing`.
+inline void set_up(Allocator *allocator, BackingAllocator *backing, uint64_t element_size,
+                   uint64_t elements_per_chunk, uint64_t chunk_alignment)
+{
+    allocator->last_freed_into = nullptr;
+    allocator->current = nullptr;
+    allocator->chunk_alignment = chunk_alignment;
+    allocator->chunk_count = 0;
+    allocator->free_count = 0;
+    allocator->element_size = element_size;
+    allocator->elements_per_chunk = elements_per_chunk;
+    allocator->chunk_size = elements_per_chunk * element_size + sizeof(Chunk);
+    allocator->backing = backing;
+    auto *sentinel = reinterpret_cast<Chunk *>(&allocator->chunks_with_room);
+    allocator->chunks_with_room.prev = sentinel;
+    allocator->chunks_with_room.next = sentinel;
+    allocator->chunk_tree = nullptr;
+}
+
 // Forgets every chunk (after releasing them): no current chunk, an empty list and tree.
 inline void forget_chunks(Allocator *allocator)
 {
