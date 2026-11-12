@@ -1011,8 +1011,9 @@ def byte_exact_members(root: str, family: dict) -> set[str]:
 
 def check_family(root: str, family: dict, members: list[dict]) -> list[str]:
     """Errors in symbols/families/<family>.matching.csv (format only: CI has no dump): its
-    columns, one row per member and only members, the family's own matching source, and that the
-    source still is the code that was matched."""
+    columns, rows only for members and under their names, the family's own matching source, and
+    that the source still is the code that was matched. A member without a row is not an error:
+    it is simply not matched."""
     import families as fam
     import family_emit
     path = family_table(root, family['family'])

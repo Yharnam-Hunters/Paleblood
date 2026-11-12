@@ -186,6 +186,40 @@ row has `targets_checked=yes`. It also checks that each row names a function in
 and that the source has not changed since it was matched. A changed source needs `--record`
 again.
 
+## Families
+
+Function family members ([FAMILIES.md](FAMILIES.md)) are tiny template instances, thousands of
+them byte-identical, and cannot be recorded in the game. They are matched in bulk:
+
+```
+tools/family_emit.py reads_qword_field --matching      # writes game/matching/leaf/reads_qword_field.c
+tools/match.py family reads_qword_field --record       # or: tools/match.py family all --record
+```
+
+- **The source** is generated, like a parameterized family's replacement: `tools/family_emit.py
+  FAMILY --matching` writes `game/matching/<system>/<family>.c` from the family's template
+  (`MATCHING_TEMPLATES`) and the values in its member table. It holds one C function per value,
+  named like the replacement without `bb_` (`leaf_reads_qword_field_0x8`, or `leaf_returns_nothing`
+  for a family without a parameter). `tools/validate_functions.py` refuses a matching source that
+  differs from the generator's output.
+- **The comparison** compiles that source once and compares the function of each value with
+  **every member** that has that value, each against its own bytes in your dump. A member has no
+  relocations (the scanner excludes them), so a compiled function that keeps any relocation is not
+  byte-exact; one with none has nothing left to resolve, and its row has `targets_checked=yes`.
+- **The record** is `symbols/families/<family>.matching.csv`: one row per member, with
+  `symbols/matching.csv`'s columns (`name` is the member's name, `objdiff_percent` empty).
+  `tools/validate_functions.py` checks its format, that every row is a member under its own name,
+  that the source is the family's generated matching source, and that the source has not changed
+  since it was matched.
+
+A current byte-exact row counts for a member exactly as it does for a named function (below): it
+stands in for the recorded cases, and the member still needs its current edge result
+(`verify.py family --record`) and an approved independent review, which for a family goes in
+`symbols/families/<family>.reviews.csv`. The review covers the whole family once: the template
+and generator, the matching source against the replacement, the per-member match and edge
+evidence, and readability; it writes one row per member it approves. `tools/promote.py --families`
+then promotes ([FAMILIES.md](FAMILIES.md)).
+
 ## What a match counts for
 
 - **Below 100%:** information only. A large drop usually means a semantic difference, so it is a
