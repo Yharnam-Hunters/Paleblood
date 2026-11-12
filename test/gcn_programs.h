@@ -365,6 +365,35 @@ static const uint32_t pack_halves[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* The negated float compares: per lane i, the floats (a, b) at in[2i], in[2i + 1]; each of nge, nlg, ngt
+   and nle stores 1 where it holds, 0 elsewhere, at out[8i .. 8i + 3]; neq and nlt at out[8i + 4], out[8i + 5];
+   then v_cmpx_ngt leaves active only the lanes where ngt holds, which store (neq, nlt, 1, 0) at
+   out[8i + 4 .. 8i + 7] (the others store nothing there). */
+static const uint32_t negated_compares[] = {
+    0x34020083, /* v_lshlrev_b32_e32 v1, 3, v0 */
+    0xe0341000, 0x80000201, /* buffer_load_dwordx2 v[2:3], v1, s[0:3], 0 offen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x34020085, /* v_lshlrev_b32_e32 v1, 5, v0 */
+    0x7c120702, /* v_cmp_nge_f32_e32 vcc, v2, v3 */
+    0xd2000004, 0x01a90280, /* v_cndmask_b32_e64 v4, 0, 1, vcc */
+    0x7c140702, /* v_cmp_nlg_f32_e32 vcc, v2, v3 */
+    0xd2000005, 0x01a90280, /* v_cndmask_b32_e64 v5, 0, 1, vcc */
+    0x7c160702, /* v_cmp_ngt_f32_e32 vcc, v2, v3 */
+    0xd2000006, 0x01a90280, /* v_cndmask_b32_e64 v6, 0, 1, vcc */
+    0x7c180702, /* v_cmp_nle_f32_e32 vcc, v2, v3 */
+    0xd2000007, 0x01a90280, /* v_cndmask_b32_e64 v7, 0, 1, vcc */
+    0xe0781000, 0x80010401, /* buffer_store_dwordx4 v[4:7], v1, s[4:7], 0 offen */
+    0x7c1a0702, /* v_cmp_neq_f32_e32 vcc, v2, v3 */
+    0xd2000004, 0x01a90280, /* v_cndmask_b32_e64 v4, 0, 1, vcc */
+    0x7c1c0702, /* v_cmp_nlt_f32_e32 vcc, v2, v3 */
+    0xd2000005, 0x01a90280, /* v_cndmask_b32_e64 v5, 0, 1, vcc */
+    0x7c360702, /* v_cmpx_ngt_f32_e32 vcc, v2, v3 */
+    0x7e0c0281, /* v_mov_b32_e32 v6, 1 */
+    0x7e0e0280, /* v_mov_b32_e32 v7, 0 */
+    0xe0781010, 0x80010401, /* buffer_store_dwordx4 v[4:7], v1, s[4:7], 0 offen offset:16 */
+    0xbf810000, /* s_endpgm */
+};
+
 /* Per lane i, a one-component format store of i at i * 4 bytes (buffer_store_format_x, the
    descriptor's format). */
 /* Per lane i, (i, i + 1, i + 2, i + 3) stored with one buffer_store_dwordx4 at i * 16 bytes plus the
