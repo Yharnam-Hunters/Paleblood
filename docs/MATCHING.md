@@ -87,9 +87,12 @@ tools/match.py all                                    # re-run every recorded ro
 `symbols/functions.csv`) and compares the two:
 
 - **byte_exact**: every byte is equal, except the 4-byte fields the compiler leaves to the linker
-  (relocations: calls, tail calls, references to globals). One linker decision is also allowed:
-  a GOT load (`mov reg, [rip+sym@GOTPCREL]`) that the linker relaxed to `lea` for a symbol
-  defined in the executable.
+  (relocations: calls, tail calls, references to globals), **and** every one of those fields goes
+  to the same place as the original's (below). One linker decision is also allowed: a GOT load
+  (`mov reg, [rip+sym@GOTPCREL]`) that the linker relaxed to `lea` for a symbol defined in the
+  executable.
+- **targets_checked**: `yes` when each reference was resolved on both sides and found equal.
+  A byte-exact row always has it; the column keeps rows recorded before the check apart.
 - **match_percent**: how similar the two instruction sequences are. Branch targets inside the
   function become offsets, and references outside it become placeholders. It is 100.0 only for
   a byte-exact match.
@@ -97,6 +100,28 @@ tools/match.py all                                    # re-run every recorded ro
   function as a relocatable object with its external references as relocations, so objdiff
   compares like with like. objdiff cannot know about the GOT relaxation, so a byte-exact function
   that reads a global can score below 100 there.
+
+### Where the references go
+
+Masking the relocation fields alone would accept a call to the wrong function or a load of the
+wrong global. So for every relocation in our object, `match.py` works out the place it means and
+the place the original's field at the same offset reaches, and requires them to be the same:
+
+| our reference | means | the original's field |
+|---|---|---|
+| an undefined name in `symbols/functions.csv` | that function's address | a call or jump's target; a RIP-relative address |
+| an undefined name declared by a replacement with `RT_ORIGINAL` or `RT_GLOBAL` | that address | the same, or the GOT slot a `mov` reads (what the loader writes there), or the address a relaxed `lea` takes |
+| any other undefined name | an import: the PS4 name id (NID) of the name | a call through a PLT stub, or a GOT slot, that the loader fills with that NID |
+| our own read-only data (string, constant pool, switch or jump table) | its bytes | the bytes there, compared in full; a jump table's entries are resolved like the code's references |
+
+A name the repository gives one function and a different one elsewhere is refused as ambiguous.
+Writable data defined in the matching source is refused: equal starting values do not make two
+globals the same, so declare it `extern` with its `RT_GLOBAL` name. Matching sources never vouch
+for their own names: only `symbols/functions.csv` and the `RT_ORIGINAL` / `RT_GLOBAL`
+declarations outside `game/matching/` count. Each reference that cannot be shown equal is printed
+(`target: ...`) and the function is not byte-exact. The fix is either a wrong callee in the source,
+or a missing name: use the name the repository already has for that address, or give it one in
+the replacement that uses it.
 
 The objects are built in a temporary directory and removed afterwards. `--diff` prints both
 instruction sequences to your terminal: that is the game's disassembly. Keep it on your machine,
@@ -115,8 +140,11 @@ Exit codes: 0 byte-exact, 1 not byte-exact, 3 bad input.
 - **Language:** C (gnu99), or C++11 in a `.cpp` file. Clang 3.4 knows nothing newer. C++
   functions are declared `extern "C"` so their names are not mangled.
 - **Names:** the C function has the `symbols/functions.csv` name (`engine_string_length`, not
-  `bb_engine_string_length`). Calls to other game functions and system calls are plain `extern`
-  declarations with names. Headers are clang's own (`stdint.h`, `stddef.h`, `stdbool.h`): the
+  `bb_engine_string_length`). Calls to other game functions and uses of game globals are plain
+  `extern` declarations with the repository's name for them (`symbols/functions.csv`, or the
+  replacement's `RT_ORIGINAL` / `RT_GLOBAL`), and system calls use the library's own name
+  (`sceKernelUsleep`, `sceGnmDrawInitDefaultHardwareState200`), so the reference check can
+  resolve them. Headers are clang's own (`stdint.h`, `stddef.h`, `stdbool.h`): the
   system's include directories are not searched.
 - **Readable**, by the same rules as the replacements ([STYLE.md](../STYLE.md)): structs with
   named fields, named constants (an `enum` costs nothing at `-O2`) and a comment that says what
@@ -148,11 +176,13 @@ bytes or disassembly.
 | `match_percent` | instruction similarity, one decimal; `100.0` only when byte-exact |
 | `objdiff_percent` | objdiff's score when it was run, otherwise empty |
 | `byte_exact` | `yes` or `no` |
+| `targets_checked` | `yes` when every external reference was shown to reach the same place as the original's, else `no` |
 | `source`, `source_sha256` | the matching source under `game/`, and a hash of it and the headers it includes with quotes |
 | `date` | the day of the run |
 
-`tools/validate_functions.py` (pre-commit and CI) checks the format. It also checks that each row
-names a function in `symbols/functions.csv`, that the source exists and defines that function,
+`tools/validate_functions.py` (pre-commit and CI) checks the format, including that a byte-exact
+row has `targets_checked=yes`. It also checks that each row names a function in
+`symbols/functions.csv`, that the source exists and defines that function,
 and that the source has not changed since it was matched. A changed source needs `--record`
 again.
 
@@ -161,7 +191,9 @@ again.
 - **Below 100%:** information only. A large drop usually means a semantic difference, so it is a
   useful check on a transcription.
 - **Byte-exact**, on a small C-style function: strong evidence toward `verified`. A current
-  byte-exact row stands in for the recorded cases that `verified` otherwise needs. Until the
+  byte-exact row with `targets_checked=yes` stands in for the recorded cases that `verified`
+  otherwise needs: the instructions are the original's, and so is every function, global and
+  import they reach. Until the
   runtime runs the game, those recordings often cannot be made at all. The rest of the rule does
   not change. The function still needs a current, passing edge result for the shipped
   replacement (`tools/verify.py run --record edge`) and an approved independent review in

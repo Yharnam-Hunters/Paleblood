@@ -158,14 +158,14 @@ enum {
 };
 
 // The packed field word of each geometry format.
-extern const uint32_t render_geometry_fields[GEOMETRY_FIELD_ENTRIES];
+extern const uint32_t record_geometry_fields[GEOMETRY_FIELD_ENTRIES];
 
 // Bits 22..24 (the category) of a format's field word.
 uint32_t render_record_geometry_category(uint32_t *output, uint32_t format)
 {
     if (!output || format >= GEOMETRY_FIELD_ENTRIES)
         return GEOMETRY_UNSUPPORTED;
-    *output = (render_geometry_fields[format] >> CATEGORY_SHIFT) & CATEGORY_MASK;
+    *output = (record_geometry_fields[format] >> CATEGORY_SHIFT) & CATEGORY_MASK;
     return 0;
 }
 
@@ -174,7 +174,7 @@ uint32_t render_record_geometry_classification(uint32_t *output, uint32_t format
 {
     if (!output || format >= GEOMETRY_FIELD_ENTRIES)
         return GEOMETRY_UNSUPPORTED;
-    *output = (render_geometry_fields[format] >> CLASSIFICATION_SHIFT) & CLASSIFICATION_MASK;
+    *output = (record_geometry_fields[format] >> CLASSIFICATION_SHIFT) & CLASSIFICATION_MASK;
     return 0;
 }
 
@@ -183,7 +183,7 @@ uint32_t render_record_geometry_first_exponent(uint32_t *output, uint32_t format
 {
     if (!output || format >= GEOMETRY_FIELD_ENTRIES)
         return GEOMETRY_UNSUPPORTED;
-    *output = (render_geometry_fields[format] >> FIRST_EXPONENT_SHIFT) & FIRST_EXPONENT_MASK;
+    *output = (record_geometry_fields[format] >> FIRST_EXPONENT_SHIFT) & FIRST_EXPONENT_MASK;
     return 0;
 }
 
@@ -192,6 +192,6 @@ uint32_t render_record_geometry_second_exponent(uint32_t *output, uint32_t forma
 {
     if (!output || format >= GEOMETRY_FIELD_ENTRIES)
         return GEOMETRY_UNSUPPORTED;
-    *output = (render_geometry_fields[format] >> SECOND_EXPONENT_SHIFT) & SECOND_EXPONENT_MASK;
+    *output = (record_geometry_fields[format] >> SECOND_EXPONENT_SHIFT) & SECOND_EXPONENT_MASK;
     return 0;
 }

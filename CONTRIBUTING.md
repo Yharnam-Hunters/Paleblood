@@ -189,8 +189,9 @@ byte for byte with the original in your own dump ([docs/MATCHING.md](docs/MATCHI
 result goes in `symbols/matching.csv`. Matching is optional and local only, like `verify.py`.
 Sony's own compiler is never used.
 
-A byte-exact match can stand in for the recorded cases that `verified` needs. The edge results
-and the independent review are still required. Write matching C from your own understanding of
+A byte-exact match, whose calls and data references were also checked to reach the same places
+as the original's (`targets_checked=yes`), can stand in for the recorded cases that `verified`
+needs. The edge results and the independent review are still required. Write matching C from your own understanding of
 the function, never from decompiler output, and don't chase matching for large C++ engine
 functions.
 

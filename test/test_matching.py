@@ -35,7 +35,8 @@ class Record(unittest.TestCase):
 
     def row(self, **change):
         r = {'address': '0x00401000', 'name': 'x_f', 'compiler': 'clang-3.4.2', 'flags': 'ps4-o2',
-             'match_percent': '100.0', 'objdiff_percent': '', 'byte_exact': 'yes', 'source': self.source,
+             'match_percent': '100.0', 'objdiff_percent': '', 'byte_exact': 'yes', 'targets_checked': 'yes',
+             'source': self.source,
              'source_sha256': match.source_hash(self.root, self.source), 'date': '2026-11-12'}
         r.update(change)
         return r
@@ -71,6 +72,8 @@ class Record(unittest.TestCase):
             'flags': self.row(flags='O3'),
             'match_percent': self.row(match_percent='100'),
             'byte_exact': self.row(byte_exact='no'),
+            'targets_checked must be yes or no': self.row(targets_checked='maybe'),
+            'targets_checked is no': self.row(targets_checked='no'),
             'objdiff_percent': self.row(objdiff_percent='abc'),
             'under game/': self.row(source='tools/f.c'),
             'does not exist': self.row(source='game/matching/x/missing.c'),
@@ -97,8 +100,14 @@ class Record(unittest.TestCase):
         self.assertTrue(any('current recorded result' in e for e in verification.check(self.root, verified)))
         self.write(self.row())
         self.assertEqual(verification.check(self.root, verified), [])
-        self.write(self.row(byte_exact='no', match_percent='97.0'))
+        self.write(self.row(byte_exact='no', match_percent='97.0', targets_checked='no'))
         self.assertTrue(any('current recorded result' in e for e in verification.check(self.root, verified)))
+
+    def test_byte_exact_without_checked_targets_does_not_stand_in(self):
+        self.write(self.row(targets_checked='no'))
+        self.assertNotIn('x_f', match.byte_exact_functions(self.root))
+        self.write(self.row())
+        self.assertIn('x_f', match.byte_exact_functions(self.root))
 
 
 class Comparison(unittest.TestCase):
@@ -126,6 +135,139 @@ class Comparison(unittest.TestCase):
         self.assertEqual(refs, {2: 0x5000, 11: 0x101f})
         self.assertEqual(match.normalize(insns, start, set(refs)),
                          ['push rbp', 'call EXT', 'je L+10', 'GOTADDR rax'])
+
+
+# A synthetic game image: one read-only executable segment at 0x00401000 and the PS4 dynamic
+# tables for one imported function, reached through a PLT stub.
+FUNCTION, ALPHA, BETA, STUB, STRING, GAMMA, SLOT = (0x00401000, 0x00402000, 0x00402040, 0x00402100,
+                                                     0x00402200, 0x00402300, 0x00403000)
+TEXT_OFFSET, TEXT_SIZE, DYNLIB_OFFSET, DYNAMIC_OFFSET = 0x1000, 0x3000, 0x5000, 0x6000
+SOURCE = """
+.text
+.globl x_f
+.type x_f,@function
+x_f:
+    push %rbp
+    call {callee}@PLT
+    call {library}@PLT
+    lea .Lmessage(%rip), %rdi
+    movq gamma@GOTPCREL(%rip), %rax
+    pop %rbp
+    ret
+.size x_f, .-x_f
+.section .rodata.str1.1,"aMS",@progbits,1
+.Lmessage: .asciz "{message}"
+"""
+
+
+def game_elf(path: str, code: bytes, message: bytes, import_name: str) -> None:
+    image = bytearray(DYNAMIC_OFFSET + 0x100)
+    struct.pack_into('4s', image, 0, b'\x7fELF')
+    phdrs = [(1, 5, TEXT_OFFSET, TEXT_OFFSET, TEXT_OFFSET, TEXT_SIZE, TEXT_SIZE, 0x1000),
+             (match.PT_DYNAMIC, 4, DYNAMIC_OFFSET, 0, 0, 7 * 16, 7 * 16, 8),
+             (match.PT_SCE_DYNLIBDATA, 4, DYNLIB_OFFSET, 0, 0, 0x400, 0x400, 8)]
+    struct.pack_into('<QH', image, 0x20, 0x40, 0)
+    struct.pack_into('<H', image, 0x38, len(phdrs))
+    for i, ph in enumerate(phdrs):
+        struct.pack_into('<IIQQQQQQ', image, 0x40 + 56 * i, *ph)
+
+    def put(address, data):
+        start = TEXT_OFFSET + (address - 0x00401000)
+        image[start:start + len(data)] = data
+    put(FUNCTION, code)
+    put(STUB, bytes([0xff, 0x25]) + struct.pack('<i', SLOT - (STUB + 6)))
+    put(STRING, message + b'\0')
+    strtab = b'\0' + f'{match.nid(import_name)}#A#B'.encode() + b'\0'
+    symtab = bytes(24) + struct.pack('<IBBHQQ', 1, 0x12, 0, 0, 0, 0)
+    jmprel = struct.pack('<QQq', SLOT - 0x00400000, (1 << 32) | match.R_X86_64_JUMP_SLOT, 0)
+    blob = symtab + strtab.ljust(64, b'\0') + jmprel
+    image[DYNLIB_OFFSET:DYNLIB_OFFSET + len(blob)] = blob
+    tags = [(match.DT_SCE_SYMTAB, 0), (match.DT_SCE_SYMTABSZ, len(symtab)), (match.DT_SCE_STRTAB, len(symtab)),
+            (match.DT_SCE_JMPREL, len(symtab) + 64), (match.DT_SCE_PLTRELSZ, len(jmprel)),
+            (match.DT_NULL, 0)]
+    for i, (tag, value) in enumerate(tags):
+        struct.pack_into('<qQ', image, DYNAMIC_OFFSET + 16 * i, tag, value)
+    with open(path, 'wb') as f:
+        f.write(image)
+
+
+@unittest.skipUnless(shutil.which('as') and shutil.which('objdump'), 'needs binutils')
+class Targets(unittest.TestCase):
+    """The reference check: a byte-exact match must also reach the original's callees, imports,
+    globals and data. The original is the same assembly linked against the synthetic image."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.root, 'symbols'))
+        os.makedirs(os.path.join(self.root, 'game', 'x'))
+        with open(os.path.join(self.root, 'symbols', 'functions.csv'), 'w') as f:
+            f.write('address,size,name,system,status,notes\n'
+                    f'0x{FUNCTION:08x},32,x_f,x,original,\n'
+                    f'0x{ALPHA:08x},16,alpha,x,original,\n'
+                    f'0x{BETA:08x},16,beta,x,original,\n')
+        with open(os.path.join(self.root, 'game', 'x', 'globals.h'), 'w') as f:
+            f.write(f'RT_GLOBAL(0x{GAMMA:08x}, gamma, int);\n')
+
+    def tearDown(self):
+        shutil.rmtree(self.root)
+
+    def assemble(self, callee='alpha', library='sceKernelUsleep', message='hello'):
+        source = os.path.join(self.root, f'{callee}-{library}-{message}.s')
+        obj = source[:-2] + '.o'
+        with open(source, 'w') as f:
+            f.write(SOURCE.format(callee=callee, library=library, message=message))
+        subprocess.run(['as', '--64', source, '-o', obj], check=True)
+        return obj
+
+    def original(self, callee=ALPHA):
+        """Our correct object's code with each field pointing where the game's linker put it."""
+        code, relocs = match.object_function(self.assemble(), 'x_f')
+        code = bytearray(code)
+        insns = match.disassemble(bytes(code), FUNCTION, self.root)
+        ends = [a - FUNCTION + len(raw) for a, raw, _ in insns]
+        fields = sorted(relocs)                 # call, call, lea, GOT load, in source order
+        for off, target in zip(fields, (callee, STUB, STRING, GAMMA)):
+            end = next(e for e in ends if e > off)
+            struct.pack_into('<i', code, off, target - (FUNCTION + end))
+        code[fields[3] - 2] = match.LEA         # the linker relaxed the GOT load
+        return bytes(code)
+
+    def problems(self, obj, original, message=b'hello', import_name='sceKernelUsleep'):
+        elf = os.path.join(self.root, 'eboot.elf')
+        game_elf(elf, original, message, import_name)
+        ours = match.object_function(obj, 'x_f')[0]
+        self.assertTrue(match.masked_equal(original, ours, match.object_function(obj, 'x_f')[1]))
+        check = match.TargetCheck(self.root, match.GameImage(elf), match.ObjectFile(obj), 'x_f', FUNCTION,
+                                  original, match.disassemble(ours, FUNCTION, self.root))
+        return check.run()
+
+    def test_same_places(self):
+        self.assertEqual(self.problems(self.assemble(), self.original()), (4, []))
+
+    def test_swapped_callee_in_the_source_is_not_byte_exact(self):
+        count, problems = self.problems(self.assemble(callee='beta'), self.original())
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn('beta', problems[0])
+        self.assertIn('(alpha)', problems[0])
+
+    def test_original_calls_elsewhere(self):
+        _, problems = self.problems(self.assemble(), self.original(callee=BETA))
+        self.assertTrue(problems and '(beta)' in problems[0], problems)
+
+    def test_import_by_name_id(self):
+        _, problems = self.problems(self.assemble(library='sceKernelSleep'), self.original())
+        self.assertTrue(problems and 'sceKernelSleep' in problems[0], problems)
+
+    def test_unknown_name_is_unresolved(self):
+        _, problems = self.problems(self.assemble(callee='gamma_update'), self.original())
+        self.assertTrue(problems and 'gamma_update' in problems[0], problems)
+
+    def test_read_only_data_compared_by_content(self):
+        _, problems = self.problems(self.assemble(), self.original(), message=b'hellO')
+        self.assertTrue(problems and 'differs' in problems[0], problems)
+
+    def test_nid(self):
+        self.assertEqual(match.nid('__stack_chk_fail'), 'Ou3iL1abvng')
 
 
 class Sources(unittest.TestCase):

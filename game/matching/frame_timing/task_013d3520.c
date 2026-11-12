@@ -21,23 +21,23 @@ typedef struct {
     void *part_0x70;
 } Task;
 
-void task_scope_begin(int scope);
-void task_scope_end(int scope);
-void task_scope_finish(void);
-void task_part_0x70_update(void *part);
-void task_part_0x18_update(void *part, FrameTime *frame_time);
-void task_part_0x10_update(void *part, float seconds);
+void task_begin(int scope);
+void task_end(int scope);
+void task_finish(void);
+void part_0x70_update(void *part);
+void part_0x18_update(void *part, FrameTime *frame_time);
+void part_0x10_update(void *part, float seconds);
 
 // Updates each present part with this frame's time.
 void frame_timing_task_013d3520(Task *task, FrameTime *frame_time)
 {
-    task_scope_begin(TIMING_SCOPE_ZERO);
+    task_begin(TIMING_SCOPE_ZERO);
     if (task->part_0x70)
-        task_part_0x70_update(task->part_0x70);
+        part_0x70_update(task->part_0x70);
     if (task->part_0x18)
-        task_part_0x18_update(task->part_0x18, frame_time);
+        part_0x18_update(task->part_0x18, frame_time);
     if (task->part_0x10)
-        task_part_0x10_update(task->part_0x10, frame_time->seconds);
-    task_scope_end(TIMING_SCOPE_ZERO);
-    task_scope_finish();
+        part_0x10_update(task->part_0x10, frame_time->seconds);
+    task_end(TIMING_SCOPE_ZERO);
+    task_finish();
 }

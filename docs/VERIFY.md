@@ -469,5 +469,7 @@ establish observed original-game behavior.
 
 `tools/match.py` is a separate, optional check for small C-style functions. It compiles matching
 C source with upstream clang 3.4.2 and the SDK's documented flags, then compares the machine code
-with the original in your dump. A byte-exact match can stand in for recorded cases; the edge
-results and the independent review stay required. See [MATCHING.md](MATCHING.md).
+with the original in your dump. A byte-exact match can stand in for recorded cases when its
+references were checked too (`targets_checked=yes`: every call, jump and data reference reaches
+the same function, global or import as the original's); the edge results and the independent
+review stay required. See [MATCHING.md](MATCHING.md).

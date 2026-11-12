@@ -98,7 +98,7 @@ typedef struct {
 #define INVALID_DOUBLE_WORD 0xffffffffffffffffull
 #define PACKED_STATE_SENTINEL 0x0000ffff0000ffffull
 
-extern const float render_context_reset_scalar;
+extern const float context_reset_scalar_word;
 
 // Reset the scalar state: invalid markers, the shared default scalar three times and zero state.
 void render_reset_present_context_state_b528(ContextScalarState *state)
@@ -106,7 +106,7 @@ void render_reset_present_context_state_b528(ContextScalarState *state)
     float scalar;
     state->invalid_00 = INVALID_WORD;
     state->invalid_04 = INVALID_WORD;
-    scalar = render_context_reset_scalar;
+    scalar = context_reset_scalar_word;
     state->scalar_08 = scalar;
     state->scalar_0c = scalar;
     state->scalar_10 = scalar;

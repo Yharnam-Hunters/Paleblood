@@ -90,7 +90,7 @@ typedef struct {
 typedef uint32_t __attribute__((may_alias)) AliasedPacketWord;
 
 // The EVENT_WRITE event index of each event type.
-extern const uint32_t render_event_index_table[];
+extern const uint32_t record_control_mode_words[];
 
 // Makes room for `words` more words; false when no room could be made.
 typedef bool (*CommandBufferGrow)(CommandBuffer *buffer, uint32_t words, void *argument);
@@ -270,7 +270,7 @@ void render_emit_event_write(CommandBuffer *buffer, uint32_t event_type)
     if (!command_buffer_reserve(buffer, TWO_WORD_PACKET_WORDS))
         return;
     uint32_t event = (event_type & EVENT_TYPE_MASK)
-                   | ((render_event_index_table[event_type] & EVENT_INDEX_MASK) << EVENT_INDEX_SHIFT);
+                   | ((record_control_mode_words[event_type] & EVENT_INDEX_MASK) << EVENT_INDEX_SHIFT);
     AliasedPacketWord *packet = buffer->cursor;
     packet[0] = EVENT_WRITE_HEADER;
     packet[1] = event;
