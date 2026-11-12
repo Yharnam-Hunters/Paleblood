@@ -37,6 +37,12 @@
    GPU reads the workgroup counts, three 32-bit words, at the base plus the offset when it runs the
    dispatch (shadPS4's liverpool.cpp reads them there, facts only). Its relative 0x01474e80 takes a
    third argument for the initiator's bits 3-4, not established, so it is not observed yet.
+   Indirect draws: 0x014744d0 (command buffer, data offset, stage, base-vertex SGPR, start-instance SGPR)
+   writes DRAW_INDIRECT with the offset, then for each SGPR that is not 0 its register offset (the
+   stage's user-data base from the table at 0x04b2bf30, plus the SGPR, from 0x2c00; 0 for none), and
+   initiator 2 (auto index). The GPU reads the four 32-bit arguments (vertices per instance,
+   instances, start vertex, start instance) at the base plus the offset and writes the start vertex and
+   instance to those SGPRs. The SGPR arguments are bytes.
    The depth render target's setter 0x014739b0 (command buffer, target) writes context registers from the
    target's words when the target is not NULL and has a depth or a stencil buffer (word 2,
    DB_Z_READ_BASE, or word 3, DB_STENCIL_READ_BASE, not 0: the two checks it calls, 0x01472770 and
@@ -255,6 +261,15 @@ static void dispatch_indirect(const uint64_t args[RT_OBSERVED_ARGUMENTS])
     rt_observe_dispatch_indirect(observed_buffer(args), observed_offset(args), (uint32_t)args[ARGUMENT_INDIRECT_VALUE]);
 }
 
+enum { ARGUMENT_INDIRECT_STAGE = 2, ARGUMENT_BASE_VERTEX_SGPR = 3, ARGUMENT_START_INSTANCE_SGPR = 4, SGPR_ARGUMENT_MASK = 0xff };
+
+static void draw_indirect(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    rt_observe_draw_indirect(observed_buffer(args), observed_offset(args), (uint32_t)args[ARGUMENT_INDIRECT_VALUE],
+                             (rt_shader_stage)(uint32_t)args[ARGUMENT_INDIRECT_STAGE], (uint32_t)args[ARGUMENT_BASE_VERTEX_SGPR] & SGPR_ARGUMENT_MASK,
+                             (uint32_t)args[ARGUMENT_START_INSTANCE_SGPR] & SGPR_ARGUMENT_MASK);
+}
+
 const rt_observe_hook game_observe_hooks[] = {
     {0x01473190, 87, "render_set_stencil_reference", stencil_reference_both},
     {0x014731f0, 99, "render_set_stencil_reference_separate", stencil_reference_each},
@@ -263,6 +278,7 @@ const rt_observe_hook game_observe_hooks[] = {
     {0x014739b0, 344, "render_set_depth_render_target", depth_target},
     {0x014742f0, 107, "render_set_indirect_base", indirect_base},
     {0x01474420, 176, "render_draw_index_offset", draw_index_offset},
+    {0x014744d0, 246, "render_draw_indirect", draw_indirect},
     {0x01474c50, 177, "render_dispatch", dispatch},
     {0x01474de0, 155, "render_dispatch_indirect", dispatch_indirect},
     {0x01475270, 76, "render_set_index_type", index_type},
