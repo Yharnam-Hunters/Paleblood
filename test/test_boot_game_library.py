@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
+import sys
 import subprocess
 import tempfile
 import unittest
@@ -18,9 +20,11 @@ class BootGameLibrary(unittest.TestCase):
     def setUpClass(cls):
         cls.pbboot = Path(os.environ.get('BB_PBBOOT', ROOT / 'build/runtime/pbboot'))
         if not cls.pbboot.is_file():
+            if 'BB_PBBOOT' in os.environ:
+                raise RuntimeError('selected pbboot is not built')
             raise unittest.SkipTest('pbboot not built')
-        compiler = shutil.which(os.environ.get('CC', 'cc'))
-        if not compiler:
+        compiler = shlex.split(os.environ.get('CC', 'cc'))
+        if not compiler or not shutil.which(compiler[0]):
             raise unittest.SkipTest('host compiler not available for owned plugin fixtures')
         cls.workspace = tempfile.TemporaryDirectory()
         cls.addClassCleanup(cls.workspace.cleanup)
@@ -48,8 +52,9 @@ int bbgame_init(const rt_host *host)
         cls.libraries = []
         for mode in range(3):
             library = cls.root / ('fixture-' + str(mode) + '.so')
-            built = subprocess.run([compiler, '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', '-fPIC',
-                                    '-shared', '-DMODE=' + str(mode), '-I' + str(ROOT / 'runtime/include'),
+            platform_flags = ['-dynamiclib', '-arch', 'x86_64'] if sys.platform == 'darwin' else ['-shared']
+            built = subprocess.run([*compiler, *platform_flags, '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', '-fPIC',
+                                    '-DMODE=' + str(mode), '-I' + str(ROOT / 'runtime/include'),
                                     str(source), '-o', str(library)], capture_output=True, text=True, timeout=60)
             if built.returncode:
                 raise RuntimeError('owned plugin fixture compilation failed: ' + built.stderr)
