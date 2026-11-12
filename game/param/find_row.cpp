@@ -8,6 +8,18 @@
 using param::ParamType;
 using param::RowLookup;
 
+namespace {
+
+// The ActionButtonParam and ReturnPointParam lookups fill a result that starts 8 bytes into the
+// object they are given.
+struct EmbeddedRowLookup {
+    uint8_t unknown_0x00[0x8];
+    RowLookup lookup;
+};
+static_assert(offsetof(EmbeddedRowLookup, lookup) == 0x8);
+
+}  // namespace
+
 extern "C" void bb_param_find_row_equip_param_accessory(RowLookup *out, int32_t id)
 {
     param::find_row(out, id, ParamType::equip_param_accessory);
@@ -185,4 +197,14 @@ extern "C" void bb_param_find_row_weapon_gen(RowLookup *out, int32_t id)
 extern "C" void bb_param_find_row_reinforce_param_weapon(RowLookup *out, int32_t id)
 {
     param::find_row(out, id, ParamType::reinforce_param_weapon);
+}
+
+extern "C" void bb_param_find_row_action_button(EmbeddedRowLookup *out, int32_t id)
+{
+    param::find_row(&out->lookup, id, ParamType::action_button);
+}
+
+extern "C" void bb_param_find_row_return_point(EmbeddedRowLookup *out, int32_t id)
+{
+    param::find_row(&out->lookup, id, ParamType::return_point);
 }

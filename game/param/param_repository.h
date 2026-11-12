@@ -88,14 +88,15 @@ constexpr int32_t param_type_count = 62;
 
 // The start of a PARAM file: only the fields the lookup reads.
 struct TableHeader {
-    uint8_t unknown_0x00[0x8];
-    uint8_t data_version;  // the low byte of the 16-bit data version of the file's layout
-    uint8_t unknown_0x09;
+    uint8_t unknown_0x00[0x6];
+    uint16_t header_word_06;  // meaning unknown; the DungeonFeatureParam lookup publishes it
+    uint16_t data_version;    // version of the file's row layout
     uint16_t row_count;
     uint8_t unknown_0x0c[0x21];
     uint8_t format;        // which row-descriptor layout follows the header (below)
     uint8_t format_flags;  // bit 1: 64-bit data offsets, from format 4 on
 };
+static_assert(offsetof(TableHeader, header_word_06) == 0x6);
 static_assert(offsetof(TableHeader, data_version) == 0x8);
 static_assert(offsetof(TableHeader, row_count) == 0xa);
 static_assert(offsetof(TableHeader, format) == 0x2d);
@@ -222,7 +223,8 @@ inline const uint8_t *find_row_in_table(const TableHeader *table, uint32_t id)
     return nullptr;
 }
 
-// Lookups for a few types also return the table's data version (when the table is loaded).
+// Lookups for a few types also return the low byte of the table's data version (when the table
+// is loaded).
 struct VersionedRowLookup {
     RowLookup lookup;
     uint8_t data_version;
@@ -268,7 +270,7 @@ inline void find_row_with_version(VersionedRowLookup *out, int32_t id, ParamType
     const uint8_t *row = nullptr;
     if (id >= 0) {
         if (const TableHeader *table = loaded_table(type)) {
-            out->data_version = table->data_version;
+            out->data_version = static_cast<uint8_t>(table->data_version);
             row = find_row_in_table(table, static_cast<uint32_t>(id));
         }
     }
