@@ -1,6 +1,6 @@
 address,size,name,system,status,notes
 0x004632d0,67,frame_timing_get_time_us,frame_timing,original,dead in the stock game: only unwind entries refer to it; the community frame-rate patches overwrite it as a code cave (gettimeofday in microseconds)
-0x00464b90,215,loading_stdio_stream_open,loading,edge-verified,fopen the tagged path with rb/r+b/wb/w+b/ab/a+b from mode bits at +0x28; rewind; map errno (fetched per check) to 0x1001-0x1004; zero +0x30
+0x00464b90,215,loading_stdio_stream_open,loading,verified,fopen the tagged path with rb/r+b/wb/w+b/ab/a+b from mode bits at +0x28; rewind; map errno (fetched per check) to 0x1001-0x1004; zero +0x30
 0x00466810,19,frame_timing_posix_sleep_ms,frame_timing,edge-verified,Sleep milliseconds through POSIX usleep (32-bit multiply wraps); ignore its result and return true
 0x0084d5a0,158,loading_fios_directory_delete,loading,edge-verified,"FIOS directory object deleting destructor: close the DH at +0x28, free entries and both tagged paths, free 0x38 bytes (or the header's size) to the thread allocator"
 0x00857cd0,176,loading_fios_open_file,loading,edge-verified,sceFiosFHOpenSync with the caller's 16-bit open flags; on success a 0x18-byte file object from the thread allocator (vtable 0x055c1e00) marked open
@@ -15,7 +15,7 @@ address,size,name,system,status,notes
 0x0111a760,131,frame_timing_get_monotonic_us,frame_timing,edge-verified,Microseconds since the shared monotonic clock base; unsigned 32-bit seconds and nanoseconds truncate and wrap; clock failures preserve output and state
 0x0111a7f0,131,frame_timing_get_monotonic_ms,frame_timing,verified,Milliseconds since its first call from CLOCK_MONOTONIC; keeps the first seconds in the clock state object
 0x0111a880,19,frame_timing_sleep_ms,frame_timing,edge-verified,Convert milliseconds to microseconds with uint32 wrapping; always call the kernel and discard its result
-0x0111a8a0,26,kernel_thread_self,kernel,edge-verified,Copy the complete opaque current-thread handle to the output and return zero
+0x0111a8a0,26,kernel_thread_self,kernel,verified,Copy the complete opaque current-thread handle to the output and return zero
 0x0111a8c0,290,audio_fmod_thread_affinity_lookup,audio,edge-verified,FMOD thread-name affinity masks; eight 64-bit slots; nonblocking uses a 23-byte prefix; unknown names leave output untouched
 0x0111abb0,207,kernel_mutex_create,kernel,edge-verified,Create a recursive mutex in static or allocated storage; low-byte ownership flag; publish storage only after all kernel stages succeed; no error cleanup
 0x0111ac80,78,kernel_mutex_destroy,kernel,edge-verified,Destroy the mutex and release storage only after kernel success with a zero low-byte static flag; errors map to 0x21; ignore release result
@@ -27,17 +27,17 @@ address,size,name,system,status,notes
 0x0111adc0,28,kernel_semaphore_signal,kernel,edge-verified,Signal one unit using the full opaque handle including null; preserve kernel writes and translate every nonzero low32 result to 0x21
 0x0111b060,14,audio_fmod_output_driver_count,audio,edge-verified,FMOD Orbis AudioOut descriptor callback installed by 0x0111aed0; optional output receives one driver; return zero
 0x0111b0b0,37,audio_fmod_output_defaults,audio,edge-verified,FMOD output descriptor callback writes 132 then 48000 then 6 to optional outputs; sample-rate and speaker-mode meanings remain hypotheses
-0x011c4510,15,engine_store_word_product,engine,edge-verified,Store low 32-bit input at owner+0x18 and modulo-32-bit product times four at owner+0x1c; valid unaligned byte view and full zero return; field meanings unknown
-0x011c47f0,29,engine_string_length,engine,edge-verified,Engine strlen; scan to the first NUL and return the low 32 length bits zero-extended into RAX; other incoming GP registers are ignored
-0x011c4810,34,audio_fmod_string_copy,audio,edge-verified,NUL-terminated string copy used by FMOD callers; includes terminator and returns destination; finite aliases covered
-0x011c4840,38,audio_fmod_string_copy_counted,audio,edge-verified,FMOD bounded string copy uses low32 count; stops at NUL or count without padding; zero count accesses neither pointer
-0x011c4870,51,engine_string_append,engine,edge-verified,NUL-terminated string append returns original destination; includes prefixes beyond four bytes and finite aliases
+0x011c4510,15,engine_store_word_product,engine,verified,Store low 32-bit input at owner+0x18 and modulo-32-bit product times four at owner+0x1c; valid unaligned byte view and full zero return; field meanings unknown
+0x011c47f0,29,engine_string_length,engine,verified,Engine strlen; scan to the first NUL and return the low 32 length bits zero-extended into RAX; other incoming GP registers are ignored
+0x011c4810,34,audio_fmod_string_copy,audio,verified,NUL-terminated string copy used by FMOD callers; includes terminator and returns destination; finite aliases covered
+0x011c4840,38,audio_fmod_string_copy_counted,audio,verified,FMOD bounded string copy uses low32 count; stops at NUL or count without padding; zero count accesses neither pointer
+0x011c4870,51,engine_string_append,engine,verified,NUL-terminated string append returns original destination; includes prefixes beyond four bytes and finite aliases
 0x011c48b0,60,engine_string_append_counted,engine,edge-verified,Bounded string append uses low32 count; zero count touches neither pointer; appends NUL after count bytes when needed
-0x011c48f0,18,engine_ascii_to_lower,engine,edge-verified,"ASCII lowercase of the low input byte; sign-extend the result byte to 32 bits; the upper 32 bits of RAX are zero"
+0x011c48f0,18,engine_ascii_to_lower,engine,edge-verified,ASCII lowercase of the low input byte; sign-extend the result byte to 32 bits; the upper 32 bits of RAX are zero
 0x011c4910,44,engine_ascii_to_upper_in_place,engine,edge-verified,Convert ASCII a-z to A-Z in place through NUL; retain all other bytes and return original pointer; caller 0x01127ca0
 0x011c4940,44,engine_ascii_to_lower_in_place,engine,edge-verified,Convert ASCII A-Z to a-z in place through NUL; retain all other bytes and return original pointer; caller 0x01127ca0
 0x011c4970,29,engine_compare_signed_strings,engine,edge-verified,Compare zero-terminated strings by signed bytes and return their first differing byte subtraction
-0x011c4990,47,engine_compare_signed_prefix,engine,edge-verified,Compare signed bytes up to a signed 32-bit bound; always compare the first byte even for zero or negative lengths
+0x011c4990,47,engine_compare_signed_prefix,engine,verified,Compare signed bytes up to a signed 32-bit bound; always compare the first byte even for zero or negative lengths
 0x011c49c0,56,engine_compare_ascii_ignoring_case,engine,edge-verified,Case-insensitive string comparison folds ASCII uppercase bytes then returns signed-byte difference as int32; bounded aliases covered
 0x01314320,54,engine_entry_manager_resolve,engine,edge-verified,Resolve an enabled low32 handle index with unsigned bounds; reject full-width handle and entry sentinels; return opaque table pointers unchanged
 0x0132c590,49,engine_release_owner_storage,engine,edge-verified,Free nonnull owner storage through its allocator before clearing the field; wider role unknown; caller 0x02713870
@@ -51,67 +51,67 @@ address,size,name,system,status,notes
 0x014400a0,180,frame_timing_task_workers_step_014400a0,frame_timing,verified,"task manager workers: three rounds over the worker queues +0x58, +0x68, +0x60"
 0x01448580,149,frame_timing_stopwatch_start,frame_timing,edge-verified,"Start a stopwatch from exactly zero: seconds since game start (double divide, float store) at +0x38; bump counters 0x44 and 0x4c"
 0x01448620,168,frame_timing_stopwatch_stop,frame_timing,edge-verified,Stop a positive stopwatch: add seconds since its start to the totals at +0x3c and +0x54; clear the start
-0x01471270,57,render_command_buffer_init,render,edge-verified,"Initialize command pointers and callback, rounding capacity down to complete DWORDs while preserving auxiliary fields."
-0x014712d0,51,render_compose_record_encoding_fields,render,edge-verified,Pack one byte and five masked fields into an encoding DWORD; no memory access.
-0x01471310,544,render_pack_record_mapping_word,render,edge-verified,Pack numeric mapping fields with priority masks and full-width mode handling; return a zero-extended DWORD.
+0x01471270,57,render_command_buffer_init,render,verified,"Initialize command pointers and callback, rounding capacity down to complete DWORDs while preserving auxiliary fields."
+0x014712d0,51,render_compose_record_encoding_fields,render,verified,Pack one byte and five masked fields into an encoding DWORD; no memory access.
+0x01471310,544,render_pack_record_mapping_word,render,verified,Pack numeric mapping fields with priority masks and full-width mode handling; return a zero-extended DWORD.
 0x01471600,190,render_record_constructor_pack_pair,render,edge-verified,Pack a full DWORD selector pair into an encoding; the first selector controls flag handling.
 0x01471730,21,render_record_encoding_metadata,render,edge-verified,Bounded first-byte metadata lookup; preserve original table entries and zero fallback.
 0x01471770,27,render_record_encoding_byte_flags,render,edge-verified,"Map encoding byte 4 to 3, byte 2 to 1, and all other byte values to zero."
-0x014717a0,505,render_record_encoding_components,render,edge-verified,Select ordered packed component arrangement; optional output only on success and Boolean AL contract.
-0x014719a0,117,render_record_encoding_category,render,edge-verified,Decode accepted category nibbles; optional DWORD output untouched on rejection.
+0x014717a0,505,render_record_encoding_components,render,verified,Select ordered packed component arrangement; optional output only on success and Boolean AL contract.
+0x014719a0,117,render_record_encoding_category,render,verified,Decode accepted category nibbles; optional DWORD output untouched on rejection.
 0x01471a40,73,render_read_record_descriptor_component,render,edge-verified,Read one encoding DWORD and extract one of four 3-bit components; invalid selectors return 2 without reading input.
-0x014721d0,31,render_set_present_last_record_indices,render,edge-verified,Replace two packed indices while preserving the remaining bits. Return the old preserved bits.
-0x01472870,90,render_emit_present_context_section,render,edge-verified,Keep the low-DWORD capacity decision separate from the full remaining-word count sent to the original import. Its effects may change the live cursor.
-0x01472fd0,86,render_set_cb_target_mask,render,edge-verified,"Write the complete CB_TARGET_MASK value, preserving all supplied component-enable bits."
-0x01473090,109,render_set_cb_blend_control,render,edge-verified,Write masked CB_BLENDn_CONTROL for the selected color-buffer bank.
-0x01473320,117,render_set_cb_color_control,render,edge-verified,Write CB_COLOR_CONTROL.MODE and ROP3 from their masked input fields.
-0x014733a0,93,render_set_db_depth_control,render,edge-verified,Write the observed mask of DB_DEPTH_CONTROL depth/stencil test and write-control fields.
-0x01473400,93,render_set_db_stencil_control,render,edge-verified,"Write the low 24 bits of DB_STENCIL_CONTROL, including front- and back-face stencil operations."
-0x01473590,95,render_emit_present_preparation_scalar,render,edge-verified,Write the captured float bits to DB_DEPTH_CLEAR. Admission tests the callback low byte; rejection returns its full 64-bit result.
-0x014735f0,89,render_emit_present_preparation_byte,render,edge-verified,Write the captured input low byte to DB_STENCIL_CLEAR. Admission tests the callback low byte; rejection returns its full 64-bit result.
-0x01473650,116,render_set_screen_offset,render,edge-verified,Write the observed masked X/Y fields of PA_SU_HARDWARE_SCREEN_OFFSET.
-0x014736d0,124,render_set_guard_band_clip_adjust,render,edge-verified,Write vertical then horizontal guard-band clip adjustments as unchanged float bit patterns. Capture both float representations before the capacity callback and publish from the captured cursor.
-0x01473750,124,render_set_guard_band_discard_adjust,render,edge-verified,Write vertical then horizontal guard-band discard adjustments as unchanged float bit patterns. Capture both float representations before the capacity callback and publish from the captured cursor.
-0x01473840,104,render_present_slot_emit,render,edge-verified,Write the selected color target's two clear-word registers. Prefix stores precede an aliased input read; the final increment uses the live stored cursor.
-0x014738b0,246,render_set_render_target,render,edge-verified,"Emit color-buffer registers, or clear CB_COLORn_INFO for an absent descriptor, then append its NOP payload. Recheck validity after admission and reload the cursor before overlapping trailing writes."
-0x014739b0,344,render_set_depth_render_target,render,edge-verified,"Emit depth/stencil, view and HTILE registers, or clear DB_Z_INFO and DB_STENCIL_INFO for an absent descriptor. Preserve repeated validity tests and delayed reads when output overlaps descriptor state."
-0x01473fe0,90,render_set_vgt_primitive_type,render,edge-verified,Write the low six primitive-type bits to VGT_PRIMITIVE_TYPE.
-0x014741b0,156,render_emit_draw_index_auto,render,edge-verified,Emit DRAW_INDEX_AUTO and a query-selected THREAD_TRACE_MARKER event or NOP. Reload flags and cursor after overlapping packet stores before selecting and publishing the trailing packet.
-0x01475000,397,render_emit_shader_link_words,render,edge-verified,Write SPI_PS_INPUT_CNTL entries from last word to first to preserve overlapping reads; retain the unmasked count shift for zero and oversized counts.
-0x01475370,76,render_emit_num_instances,render,edge-verified,Emit NUM_INSTANCES with the complete supplied instance count.
-0x01475da0,101,render_emit_event_write,render,edge-verified,Emit EVENT_WRITE with a masked event type and the original table-selected event index.
-0x014765e0,238,render_configure_viewport,render,edge-verified,"Write viewport ZMIN/ZMAX, then X/Y/Z scale and offset values for the selected viewport. Capture all six borrowed source words before output; retain the live and captured cursor publications."
-0x01476790,135,render_configure_screen_scissor,render,edge-verified,Write PA_SC_SCREEN_SCISSOR_TL/BR using the low 16 bits of each supplied coordinate. Packet stores may overlap the cursor; its final increment reads the stored value after those writes.
-0x01476980,93,render_emit_pa_cl_vte_cntl,render,edge-verified,Write PA_CL_VTE_CNTL viewport-transform enable/format bits after capacity admission.
-0x014769e0,93,render_emit_present_last_record_packet,render,edge-verified,Write DB_RENDER_CONTROL for the last-record path. Publish and return the captured cursor plus twelve bytes; return the full callback result on rejection.
-0x01477150,109,render_set_pa_sc_mode_cntl_0,render,edge-verified,Write MSAA_ENABLE and VPORT_SCISSOR_ENABLE in PA_SC_MODE_CNTL_0 after reserving three packet words.
-0x014778f0,204,render_emit_present_release_packet,render,edge-verified,"Emit EVENT_WRITE_EOP with by-value selectors, address and data; preserve the complete callback rejection result and final live cursor increment."
-0x01477b30,172,render_command_emit_counter_operation,render,edge-verified,"Emit the seven-word counter packet; callback admission uses its low byte, and the label range selects the masked encoding."
-0x014784a0,82,render_command_prepare_submission,render,edge-verified,Reserve 64 command words; callback admission uses its low byte before two marker stores and the cursor advance.
-0x01485070,16,render_set_present_last_record_depth_compress_disable,render,edge-verified,Replace DEPTH_COMPRESS_DISABLE in the saved DB_RENDER_CONTROL word using the input low bit. Return the old bits with that flag cleared.
-0x01485080,16,render_set_present_last_record_stencil_compress_disable,render,edge-verified,Replace STENCIL_COMPRESS_DISABLE in the saved DB_RENDER_CONTROL word using the input low bit. Return the old bits with that flag cleared.
-0x01485220,81,render_set_pa_cl_vte_cntl,render,edge-verified,"Expand the toggled input byte into overlapping register fields. The original result is the shifted byte, independent of the preserved old bits or the final stored word."
-0x01485390,24,render_set_record_register_range,render,edge-verified,"Pack one bit from the first input and three from the last, preserving all other bits."
-0x014853f0,16,render_set_record_register_enabled,render,edge-verified,Preserve the original byte-wide input: doubling it can contribute bits beyond bit one.
+0x014721d0,31,render_set_present_last_record_indices,render,verified,Replace two packed indices while preserving the remaining bits. Return the old preserved bits.
+0x01472870,90,render_emit_present_context_section,render,verified,Keep the low-DWORD capacity decision separate from the full remaining-word count sent to the original import. Its effects may change the live cursor.
+0x01472fd0,86,render_set_cb_target_mask,render,verified,"Write the complete CB_TARGET_MASK value, preserving all supplied component-enable bits."
+0x01473090,109,render_set_cb_blend_control,render,verified,Write masked CB_BLENDn_CONTROL for the selected color-buffer bank.
+0x01473320,117,render_set_cb_color_control,render,verified,Write CB_COLOR_CONTROL.MODE and ROP3 from their masked input fields.
+0x014733a0,93,render_set_db_depth_control,render,verified,Write the observed mask of DB_DEPTH_CONTROL depth/stencil test and write-control fields.
+0x01473400,93,render_set_db_stencil_control,render,verified,"Write the low 24 bits of DB_STENCIL_CONTROL, including front- and back-face stencil operations."
+0x01473590,95,render_emit_present_preparation_scalar,render,verified,Write the captured float bits to DB_DEPTH_CLEAR. Admission tests the callback low byte; rejection returns its full 64-bit result.
+0x014735f0,89,render_emit_present_preparation_byte,render,verified,Write the captured input low byte to DB_STENCIL_CLEAR. Admission tests the callback low byte; rejection returns its full 64-bit result.
+0x01473650,116,render_set_screen_offset,render,verified,Write the observed masked X/Y fields of PA_SU_HARDWARE_SCREEN_OFFSET.
+0x014736d0,124,render_set_guard_band_clip_adjust,render,verified,Write vertical then horizontal guard-band clip adjustments as unchanged float bit patterns. Capture both float representations before the capacity callback and publish from the captured cursor.
+0x01473750,124,render_set_guard_band_discard_adjust,render,verified,Write vertical then horizontal guard-band discard adjustments as unchanged float bit patterns. Capture both float representations before the capacity callback and publish from the captured cursor.
+0x01473840,104,render_present_slot_emit,render,verified,Write the selected color target's two clear-word registers. Prefix stores precede an aliased input read; the final increment uses the live stored cursor.
+0x014738b0,246,render_set_render_target,render,verified,"Emit color-buffer registers, or clear CB_COLORn_INFO for an absent descriptor, then append its NOP payload. Recheck validity after admission and reload the cursor before overlapping trailing writes."
+0x014739b0,344,render_set_depth_render_target,render,verified,"Emit depth/stencil, view and HTILE registers, or clear DB_Z_INFO and DB_STENCIL_INFO for an absent descriptor. Preserve repeated validity tests and delayed reads when output overlaps descriptor state."
+0x01473fe0,90,render_set_vgt_primitive_type,render,verified,Write the low six primitive-type bits to VGT_PRIMITIVE_TYPE.
+0x014741b0,156,render_emit_draw_index_auto,render,verified,Emit DRAW_INDEX_AUTO and a query-selected THREAD_TRACE_MARKER event or NOP. Reload flags and cursor after overlapping packet stores before selecting and publishing the trailing packet.
+0x01475000,397,render_emit_shader_link_words,render,verified,Write SPI_PS_INPUT_CNTL entries from last word to first to preserve overlapping reads; retain the unmasked count shift for zero and oversized counts.
+0x01475370,76,render_emit_num_instances,render,verified,Emit NUM_INSTANCES with the complete supplied instance count.
+0x01475da0,101,render_emit_event_write,render,verified,Emit EVENT_WRITE with a masked event type and the original table-selected event index.
+0x014765e0,238,render_configure_viewport,render,verified,"Write viewport ZMIN/ZMAX, then X/Y/Z scale and offset values for the selected viewport. Capture all six borrowed source words before output; retain the live and captured cursor publications."
+0x01476790,135,render_configure_screen_scissor,render,verified,Write PA_SC_SCREEN_SCISSOR_TL/BR using the low 16 bits of each supplied coordinate. Packet stores may overlap the cursor; its final increment reads the stored value after those writes.
+0x01476980,93,render_emit_pa_cl_vte_cntl,render,verified,Write PA_CL_VTE_CNTL viewport-transform enable/format bits after capacity admission.
+0x014769e0,93,render_emit_present_last_record_packet,render,verified,Write DB_RENDER_CONTROL for the last-record path. Publish and return the captured cursor plus twelve bytes; return the full callback result on rejection.
+0x01477150,109,render_set_pa_sc_mode_cntl_0,render,verified,Write MSAA_ENABLE and VPORT_SCISSOR_ENABLE in PA_SC_MODE_CNTL_0 after reserving three packet words.
+0x014778f0,204,render_emit_present_release_packet,render,verified,"Emit EVENT_WRITE_EOP with by-value selectors, address and data; preserve the complete callback rejection result and final live cursor increment."
+0x01477b30,172,render_command_emit_counter_operation,render,verified,"Emit the seven-word counter packet; callback admission uses its low byte, and the label range selects the masked encoding."
+0x014784a0,82,render_command_prepare_submission,render,verified,Reserve 64 command words; callback admission uses its low byte before two marker stores and the cursor advance.
+0x01485070,16,render_set_present_last_record_depth_compress_disable,render,verified,Replace DEPTH_COMPRESS_DISABLE in the saved DB_RENDER_CONTROL word using the input low bit. Return the old bits with that flag cleared.
+0x01485080,16,render_set_present_last_record_stencil_compress_disable,render,verified,Replace STENCIL_COMPRESS_DISABLE in the saved DB_RENDER_CONTROL word using the input low bit. Return the old bits with that flag cleared.
+0x01485220,81,render_set_pa_cl_vte_cntl,render,verified,"Expand the toggled input byte into overlapping register fields. The original result is the shifted byte, independent of the preserved old bits or the final stored word."
+0x01485390,24,render_set_record_register_range,render,verified,"Pack one bit from the first input and three from the last, preserving all other bits."
+0x014853f0,16,render_set_record_register_enabled,render,verified,Preserve the original byte-wide input: doubling it can contribute bits beyond bit one.
 0x01485f90,1410,render_record_constructor,render,edge-verified,Clear the 44-byte record prefix and publish partial record and auxiliary outputs; return the packed 64-bit result.
-0x01486520,31,render_record_set_word_0c_fields,render,edge-verified,Store two masked fields; return masked old word. No constructor add/subtract.
-0x01486540,305,render_record_set_encoding,render,edge-verified,Pack accepted encoding into record DWORD10 preserving other bits; invalid input has undefined native extractor locals.
-0x014866e0,33,render_record_set_word_04_repeated_field,render,edge-verified,Duplicate supplied low 11 bits; return preserved old word.
-0x01486710,20,render_record_set_word_08_low22,render,edge-verified,Replace this word's low 22 bits and return the preserved old upper bits.
-0x01486760,20,render_record_set_word_14_second_low5_field,render,edge-verified,Replace the second five-bit field and return the preserved old word bits.
-0x014867c0,21,render_record_set_first_auxiliary_flag,render,edge-verified,Clear only bit 13 then OR full input byte shifted13; return preserved old word.
-0x014867e0,21,render_record_set_second_auxiliary_flag,render,edge-verified,Clear only bit 14 then OR full input byte shifted14; return preserved old word.
-0x01486800,20,render_record_set_word_28_low22,render,edge-verified,Replace this word's low 22 bits and return the preserved old upper bits.
-0x01486cf0,38,render_read_record_mapping_word,render,edge-verified,Read one unaligned mapping DWORD and delegate three extracted fields to the original encoder. Full return is zero-extended.
-0x014873a0,163,render_build_shader_link_words,render,edge-verified,"Match byte-pair keys, then publish each packed word in the original four-store order."
+0x01486520,31,render_record_set_word_0c_fields,render,verified,Store two masked fields; return masked old word. No constructor add/subtract.
+0x01486540,305,render_record_set_encoding,render,verified,Pack accepted encoding into record DWORD10 preserving other bits; invalid input has undefined native extractor locals.
+0x014866e0,33,render_record_set_word_04_repeated_field,render,verified,Duplicate supplied low 11 bits; return preserved old word.
+0x01486710,20,render_record_set_word_08_low22,render,verified,Replace this word's low 22 bits and return the preserved old upper bits.
+0x01486760,20,render_record_set_word_14_second_low5_field,render,verified,Replace the second five-bit field and return the preserved old word bits.
+0x014867c0,21,render_record_set_first_auxiliary_flag,render,verified,Clear only bit 13 then OR full input byte shifted13; return preserved old word.
+0x014867e0,21,render_record_set_second_auxiliary_flag,render,verified,Clear only bit 14 then OR full input byte shifted14; return preserved old word.
+0x01486800,20,render_record_set_word_28_low22,render,verified,Replace this word's low 22 bits and return the preserved old upper bits.
+0x01486cf0,38,render_read_record_mapping_word,render,verified,Read one unaligned mapping DWORD and delegate three extracted fields to the original encoder. Full return is zero-extended.
+0x014873a0,163,render_build_shader_link_words,render,verified,"Match byte-pair keys, then publish each packed word in the original four-store order."
 0x01487ee0,1090,render_initialize_pair_record_descriptor,render,edge-verified,"Clear 32 bytes; admit counts after float rounding, test flag bytes independently, and return packed requirements."
-0x01488370,17,render_record_descriptor_set_high_field,render,edge-verified,Set the descriptor top nibble and return the preserved old low 28 bits.
+0x01488370,17,render_record_descriptor_set_high_field,render,verified,Set the descriptor top nibble and return the preserved old low 28 bits.
 0x01488590,969,render_initialize_triple_record_descriptor,render,edge-verified,"Clear 32 bytes in order, delegate flags, retain partial writes and return packed requirements."
 0x01488d90,813,render_convert_constructor_record,render,edge-verified,"Convert a constructor record into a GCN image descriptor. Preserve overlapping reads, ordered component calls and independent low/middle-field tests when choosing its type."
 0x01489910,24,render_record_descriptor_level_count,render,edge-verified,Read bits 16..19 below the upper descriptor partition; otherwise return zero.
 0x01489940,24,render_record_descriptor_count_exponent,render,edge-verified,Read bits 16..19 in the upper descriptor partition; otherwise return zero.
-0x01489960,68,render_record_descriptor_encoding,render,edge-verified,Read packed words at offsets 0x04 then 0x0c; pass six extracted fields to the encoding packer.
-0x01489c40,16,render_record_step_user_pa_enabled,render,edge-verified,"Query the actual import once; no cached global, fallback or service value is invented."
+0x01489960,68,render_record_descriptor_encoding,render,verified,Read packed words at offsets 0x04 then 0x0c; pass six extracted fields to the encoding packer.
+0x01489c40,16,render_record_step_user_pa_enabled,render,verified,"Query the actual import once; no cached global, fallback or service value is invented."
 0x01496f60,525,render_configure_viewport_and_guard_band,render,edge-verified,"Configure viewport transforms, scissor extent and guard-band pairs using ordered float arithmetic, floor rounding and the original upper clamp."
 0x0149c4e0,114,render_initialize_record_geometry_flags,render,edge-verified,Clear the output before selector admission; selectors 7-12 copy the parameter flag only when the full 32-bit parameter equals 1.
 0x0149c660,486,render_record_geometry_resolve_parameter_index,render,edge-verified,Resolve the packed parameter-table index with the original validation order and wrapping scale operations.
@@ -122,9 +122,9 @@ address,size,name,system,status,notes
 0x0149e2d0,295,render_record_constructor_optional_first,render,edge-verified,"Align paired components; retain the pre-increment product and 55-bit quantity, then publish optional outputs in order."
 0x0149e400,358,render_record_constructor_optional_second,render,edge-verified,Calculate geometry and publish zeroed or partial auxiliary outputs even when a helper reports an error.
 0x0149e570,279,render_calculate_second_auxiliary,render,edge-verified,Calculate the second auxiliary layout through two ordered unit admissions and wrapped alignment. Publish its four optional size and alignment outputs in 8/4/4/4-byte order.
-0x0149e8d0,40,render_record_geometry_round_up_power_of_two,render,edge-verified,Round upward in the unsigned 32-bit domain; zero and an overflowing next power wrap to zero.
+0x0149e8d0,40,render_record_geometry_round_up_power_of_two,render,verified,Round upward in the unsigned 32-bit domain; zero and an overflowing next power wrap to zero.
 0x0149e900,16,render_record_tuple_parameter_supported,render,edge-verified,Nonzero power-of-two test with Boolean AL interface.
-0x0149e920,18,render_record_geometry_index_logarithm,render,edge-verified,"Extract the exponent after converting the positive integer to float, including float rounding near powers of two."
+0x0149e920,18,render_record_geometry_index_logarithm,render,verified,"Extract the exponent after converting the positive integer to float, including float rounding near powers of two."
 0x0149e960,129,render_record_tuple_transform_classification,render,edge-verified,Transform admitted classifications after wrapping 32-bit scaling and unsigned thresholds.
 0x0149ea20,28,render_record_tuple_classification_group,render,edge-verified,Bounded classification-to-group lookup with fallback one and original shared table.
 0x0149ea70,25,render_record_tuple_alternate_classification,render,edge-verified,Recognize bounded alternate-classification subset with zero fallback.
@@ -137,7 +137,7 @@ address,size,name,system,status,notes
 0x014a27c0,627,render_get_record_descriptor_size,render,edge-verified,Initialize mandatory outputs after the decoder call; accumulate live values and retain partial outputs on error.
 0x014a2c40,595,render_calculate_record_descriptor_level_offset,render,edge-verified,Accumulate levels inclusively using partial helper totals even after errors; publish the two QWORD outputs in order.
 0x016efd00,368,event_emk_add,event,verified,SprjEmkSystem: find or add an event entry in two keyed lists; first advance with the 1/30 s step (1/60 s in the 60 FPS patches)
-0x017cfcc0,177,event_flag_write,event,edge-verified,finds an exact event-flag group in a tree and sets or clears one bit
+0x017cfcc0,177,event_flag_write,event,verified,finds an exact event-flag group in a tree and sets or clears one bit
 0x0183ac60,20077,camera_update_follow,camera,edge-verified,"Updates subject-relative camera position and orientation through input, chase, collision avoidance and territory constraints; applies selected frame-rate gains"
 0x0183fad0,79,camera_follow_pitch,camera,edge-verified,Pitch from the forward basis; preserve scalar square underflow and zero fallback; call atan2 and XOR the returned sign bits
 0x0183fb20,43,camera_follow_yaw,camera,edge-verified,Yaw from the forward X/Z direction; exact signed-zero fallback preserves stored angle; unordered components reach atan2 unchanged
@@ -172,7 +172,7 @@ address,size,name,system,status,notes
 0x020128f0,121,frame_timing_until_idle_020128f0,frame_timing,edge-verified,"state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (the Chalice Dungeon gate's state, at +0x108 in SprjDungeonGateIns; not reached by the routes yet)"
 0x02012a60,151,frame_timing_request_7_02012a60,frame_timing,edge-verified,"state method: when idle in states 2..5, request 7 and advance the owner one fixed step (the Chalice Dungeon gate's state, at +0x108 in SprjDungeonGateIns; not reached by the routes yet)"
 0x02012bf0,121,frame_timing_until_idle_02012bf0,frame_timing,edge-verified,"state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (the Chalice Dungeon gate's state, at +0x108 in SprjDungeonGateIns; not reached by the routes yet)"
-0x0217ffb0,205,engine_initialize_static_wide_string_0217ffb0,engine,edge-verified,Guarded static empty wide string; byte-only entry test; captured allocator; exact partial stores; destructor registration before full guard publication
+0x0217ffb0,205,engine_initialize_static_wide_string_0217ffb0,engine,verified,Guarded static empty wide string; byte-only entry test; captured allocator; exact partial stores; destructor registration before full guard publication
 0x0222bc10,2693,ai_hk_frame_update_0222bc10,ai,verified,"SprjHkAiManager per-frame update: steps the AI world by 1/30 s (the 60 FPS patches: 1/60), AI debug display and drawing"
 0x02311c80,283,param_find_row_equip_param_accessory,param,edge-verified,SoloParamRepository row lookup for EquipParamAccessory (type 2): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x02312b60,283,param_find_row_ai_sound,param,edge-verified,SoloParamRepository row lookup for AiSoundParam (type 48): binary search of the loader index by id; writes id and row data pointer (null if none)
@@ -237,12 +237,12 @@ address,size,name,system,status,notes
 0x02489d20,672,engine_segregated_regular_heap_allocate_top_02489d20,engine,edge-verified,DLSegregatedRegularHeap top allocation: highest-address fitting free block; the allocation takes its end; the front stays free
 0x02489fc0,1081,engine_segregated_regular_heap_allocate_aligned_top_02489fc0,engine,edge-verified,DLSegregatedRegularHeap aligned top allocation: highest-address block holding the size aligned; placed at the highest aligned fit; front and tail stay free
 0x0248a400,688,engine_segregated_regular_heap_free_0248a400,engine,edge-verified,DLSegregatedRegularHeap free: hash-table lookup (unknown address reported); merges with free neighbours; to the front of its class list
-0x024bd150,216,frame_timing_job_take_result,frame_timing,edge-verified,"Job handle result: mode 0 polls (null if not done), 2 takes, others wait 1 ms at a time; bumps the job's holder count under the job lock"
+0x024bd150,216,frame_timing_job_take_result,frame_timing,verified,"Job handle result: mode 0 polls (null if not done), 2 takes, others wait 1 ms at a time; bumps the job's holder count under the job lock"
 0x024bdd40,36,frame_timing_job_wait,frame_timing,edge-verified,"Poll a job's state until finished (2), sleeping 1 ms in the kernel between polls"
 0x02564ed0,25,render_present_encoding_units,render,edge-verified,Return the full 64-bit entry for wrapped encoding minus one when its index is below 99; otherwise return zero.
-0x02565130,30,render_present_record_bit_width,render,edge-verified,Return the bit width of the OR of three 32-bit inputs. All-zero input returns zero; the presentation fallback passes one as the third input.
+0x02565130,30,render_present_record_bit_width,render,verified,Return the bit width of the OR of three 32-bit inputs. All-zero input returns zero; the presentation fallback passes one as the third input.
 0x02565f90,855,render_initialize_swap_chain_resource,render,edge-verified,"Validate resource parameters, choose independent allocator and owner defaults, prepare resource storage and publish its wrapper. Allocation failure clears the output and releases prepared storage."
-0x02568530,190,render_finish_present_context,render,edge-verified,Run the presentation context's finishing calls in order with a zeroed snapshot.
+0x02568530,190,render_finish_present_context,render,verified,Run the presentation context's finishing calls in order with a zeroed snapshot.
 0x0256e1d0,6280,render_build_present_source_record,render,edge-verified,"Build a mode-specific presentation record, preserving partial output, unsigned division and packed auxiliary requirements. Constructor selectors are 32-bit values even in stack slots."
 0x025710a0,301,render_record_normalize_mode2,render,edge-verified,"Normalize mode-2 input; preserve ordered 36-byte copy, supplied parameter bypass and helper error/status ordering."
 0x025711d0,361,render_record_normalize_mode3,render,edge-verified,Normalize mode 3 input through an ordered 48-byte copy; cache mapping across conditional parameter helpers and preserve statuses and padding.
@@ -253,21 +253,21 @@ address,size,name,system,status,notes
 0x025b2fb0,768,render_swap_chain_present,render,verified,"GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0)"
 0x02713870,11646,render_update_model_wind,render,edge-verified,"Ages a model wind receiver's kept influences, lists the live ones and adds or refreshes one per attached wind source; applies selected frame-rate steps"
 0x02a44140,59,engine_wide_string_destroy,engine,edge-verified,WideString destructor; unsigned capacity >=8 frees even null; ignores owns; callback before capacity and size reset and two-byte terminator
-0x02a70890,141,loading_kernel_file_open,loading,edge-verified,sceKernelOpen with FreeBSD flags and permissions from the platform mode bits; store the descriptor and set the open bit; -1 on error
+0x02a70890,141,loading_kernel_file_open,loading,verified,sceKernelOpen with FreeBSD flags and permissions from the platform mode bits; store the descriptor and set the open bit; -1 on error
 0x02a70920,46,loading_kernel_file_read,loading,edge-verified,"sceKernelRead the file's descriptor; -1 on a negative count, else store the count when asked and return 0"
 0x02a8bf30,108,input_mouse_b_open_for_initial_user,input,edge-verified,"Second mouse device class's open: initial user, close a positive handle at +0x128, sceMouseOpen(user, 0, 0, null); true when the new handle is positive"
 0x02a8c210,164,input_mouse_construct,input,edge-verified,"Mouse device constructor: base ctor with the third argument, vtable 0x056b7d00, clear 0x140..0x177, load sysmodule 0xa9, sceMouseInit, open via slot 32; handle 0 on any failure"
 0x02a8c420,108,input_initialize_mouse_for_initial_user,input,edge-verified,"Initializes or reinitializes mouse input for the initial user, closing a previous connection if necessary."
-0x02a9c790,84,input_pad_set_vibration,input,edge-verified,"scePadSetVibration on the pad's handle (+0x8) if open (+0xc): large motor from the third argument, small from the second; true on success"
-0x02aaa5a0,124,render_release_present_finish_node,render,edge-verified,"Release the finish node through the manager helper, retaining its head-match decision and reloading commands across retries."
-0x02aaddc0,393,render_allocate_shader_upload,render,edge-verified,"Allocate one shader-upload slice of at most 64 KiB. If no suitable block exists, acquire once, reclaim, then retry once. Preserve zero-size requests and delegate block policy to the original manager."
+0x02a9c790,84,input_pad_set_vibration,input,verified,"scePadSetVibration on the pad's handle (+0x8) if open (+0xc): large motor from the third argument, small from the second; true on success"
+0x02aaa5a0,124,render_release_present_finish_node,render,verified,"Release the finish node through the manager helper, retaining its head-match decision and reloading commands across retries."
+0x02aaddc0,393,render_allocate_shader_upload,render,verified,"Allocate one shader-upload slice of at most 64 KiB. If no suitable block exists, acquire once, reclaim, then retry once. Preserve zero-size requests and delegate block policy to the original manager."
 0x02aaf030,508,render_managed_present_capacity,render,edge-verified,"Acquire managed command space, preserve partial block publication and copy the saved command snapshot in reverse order."
 0x02aaf700,750,render_finish_present_commands,render,edge-verified,"Finish pending command lists with live block and counter reads, then conditionally submit the cursor snapshot."
 0x02aafb30,509,render_command_submit_present,render,edge-verified,"Prepare and delegate a present submission, preserving capacity-failure returns and resetting begin markers to the live cursor."
 0x02ab0b00,326,render_submit_present_finish_snapshot,render,edge-verified,Emit required counter waits and submit nonempty command regions in order; construct an empty second region when optional commands are absent.
 0x02ab0ce0,326,render_command_submit_batch,render,edge-verified,"Emit counter waits and submit nonempty regions with the packed video/index handle, or delegate the snapshot when no optional context exists."
 0x02ab0e30,213,render_command_submit_snapshot,render,edge-verified,Initialize the auxiliary command buffer and submit nonempty regions using only the video handle.
-0x02ab5a70,1235,render_present_record_consume,render,edge-verified,"Track a resource range or emit record commands; preserve cached tokens, index wrap and final state resets."
+0x02ab5a70,1235,render_present_record_consume,render,verified,"Track a resource range or emit record commands; preserve cached tokens, index wrap and final state resets."
 0x02ab6810,1173,render_present_last_record_consume,render,edge-verified,"Consume the final record range, or update its tracking bank when commands are not admitted."
 0x02ab7310,629,render_record_translate_selector,render,edge-verified,Map supported selectors to one output DWORD; unsupported selectors return status 12 and zero the output.
 0x02ab7a20,66,render_choose_record_constructor_selector,render,edge-verified,Choose a constructor selector from supported input values; only the low flag byte affects the extended case.
@@ -276,20 +276,20 @@ address,size,name,system,status,notes
 0x02ab9850,374,render_flush_shader_preparation,render,edge-verified,"Flush the pending barrier/range before the event. Mode 0 keeps the range fields, and a suppressed state returns without touching either group of fields."
 0x02abaf10,78,render_record_derive_parameter,render,edge-verified,Derive numeric normalization code; flag priority and mode-dependent base.
 0x02abb4f0,31,render_record_auxiliary_predicate,render,edge-verified,"Return the auxiliary-processing predicate: selectors 0x13/0x14 enable it, 0x15/0x16 use flag bit 6, and all other selectors disable it."
-0x02abb6d0,48,render_emit_present_release_delegate,render,edge-verified,Forward address and data to the release writer with fixed flags and mode and a zero final selector.
-0x02abba10,22,render_reset_present_context_state_b518,render,edge-verified,Reset the first 64-bit field to zero and the second to the packed invalid-value sentinel.
-0x02acd190,601,render_reset_present_context_shader_state,render,edge-verified,"Clear the conditional command flag, then preserve the sentinel stores around each distinct state-fill call."
+0x02abb6d0,48,render_emit_present_release_delegate,render,verified,Forward address and data to the release writer with fixed flags and mode and a zero final selector.
+0x02abba10,22,render_reset_present_context_state_b518,render,verified,Reset the first 64-bit field to zero and the second to the packed invalid-value sentinel.
+0x02acd190,601,render_reset_present_context_shader_state,render,verified,"Clear the conditional command flag, then preserve the sentinel stores around each distinct state-fill call."
 0x02ace1e0,1016,render_configure_record_shader,render,edge-verified,"Populate sparse primary and optional shader bindings, update special-slot caches, bind VS/PS programs, and emit up to 32 PS link words."
 0x02ace5e0,5473,render_configure_record_shader_secondary,render,edge-verified,"Consume two sparse shader binding banks, emit descriptor and address packets, copy selected upload spans, and update shared upload caches."
-0x02acfc20,207,render_finish_record_shader,render,edge-verified,"Finalize two dirty-state passes using cached event flags, clear the source dirty flags, then read the current command mode and apply a pending mode change."
+0x02acfc20,207,render_finish_record_shader,render,verified,"Finalize two dirty-state passes using cached event flags, clear the source dirty flags, then read the current command mode and apply a pending mode change."
 0x02ad1e30,55,render_restore_color_target_from_bank,render,edge-verified,Restore one color target from the bank selected by flag bit 0. Keep the preparation cache unchanged while delegating the register writes.
 0x02ad1e70,61,render_restore_depth_target_from_bank,render,edge-verified,"Restore the depth target from the bank selected by flag bit 1, independently of the color-target bank in flag bit 0."
 0x02ad1eb0,194,render_present_source_prepare,render,edge-verified,Flush source state and select an explicit or derived record count. Stop at the first builder error; reload the source parameter before consuming each successful record.
-0x02ad1f80,385,render_present_source_flush_state,render,edge-verified,"Emit dirty non-null slots from the selected bank. Keep count and flags cached on skips; reload the pending value, flags and slot count after each emission."
-0x02ad2c30,120,render_reset_present_preparation_dirty,render,edge-verified,"Emit changed depth and stencil clear values, then cache their post-call values. Preserve the second writer's upper return bits while replacing its low word."
-0x02ad2d20,517,render_reset_present_context_preparation,render,edge-verified,Reset both nine-entry banks and surrounding state; interleave the first eight entries before loading the live scalar.
+0x02ad1f80,385,render_present_source_flush_state,render,verified,"Emit dirty non-null slots from the selected bank. Keep count and flags cached on skips; reload the pending value, flags and slot count after each emission."
+0x02ad2c30,120,render_reset_present_preparation_dirty,render,verified,"Emit changed depth and stencil clear values, then cache their post-call values. Preserve the second writer's upper return bits while replacing its low word."
+0x02ad2d20,517,render_reset_present_context_preparation,render,verified,Reset both nine-entry banks and surrounding state; interleave the first eight entries before loading the live scalar.
 0x02ad3070,351,render_prepare_present_context_scratch,render,edge-verified,Prepare changed live-bank records before finishing; retain eligible pointers across refresh calls and reload the bank each iteration.
-0x02ad3300,76,render_reset_present_context_state_b528,render,edge-verified,Reset the embedded state without changing padding; copy the shared scalar bits unchanged.
+0x02ad3300,76,render_reset_present_context_state_b528,render,verified,Reset the embedded state without changing padding; copy the shared scalar bits unchanged.
 0x02ad3b80,252,render_pop_present_buffer_pool,render,edge-verified,Scan pool entries using the original counter and compare/exchange calls; publish the counter before successful output.
 0x02ad3c80,42,render_process_present_finish_item,render,edge-verified,"Mark the final pool word as processed; pass its address and a fixed selector to the release delegate, forwarding the packet result."
 0x02ad3d40,35,render_capture_present_buffer_pool_record,render,edge-verified,"Return zero for a zero begin address; otherwise locate the containing pool record using wrapped subtraction, arithmetic shift and unsigned division remainder."

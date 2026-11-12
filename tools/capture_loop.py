@@ -127,11 +127,14 @@ def replacement_sources(root: str) -> dict[str, str]:
 
 
 def edge_generator(root: str, name: str, system: str, source: str | None) -> str | None:
-    """The edge-case generator: beside the replacement's file, or named after the function in its
-    system's directory (game/<system>/<name without the system prefix>_cases.py)."""
-    candidates = [os.path.splitext(source)[0] + '_cases.py'] if source else []
+    """The edge-case generator: named after the function in its system's directory
+    (game/<system>/<name without the system prefix>_cases.py), else beside the replacement's file
+    (a file holding several replacements has one generator per function, named after it)."""
+    candidates = []
     if name.startswith(system + '_'):
         candidates.append(os.path.join(root, 'game', system, name[len(system) + 1:] + '_cases.py'))
+    if source:
+        candidates.append(os.path.splitext(source)[0] + '_cases.py')
     return next((c for c in candidates if os.path.isfile(c)), None)
 
 
@@ -219,7 +222,7 @@ def main() -> int:
             print(f'capture_loop: {name}: edge cases: {problem}', file=sys.stderr)
     print(f'capture_loop: {len(recorded)} of {len(candidates)} edge-verified functions have recordings', flush=True)
     p = subprocess.run([sys.executable, os.path.join(ROOT, 'tools', 'promote.py'), '--captures', captures,
-                        '--check-unreviewed'])
+                        '--check-unreviewed', '--jobs', str(max(1, (os.cpu_count() or 2) // 2))])
     if p.returncode:
         failed = True
     return 1 if failed else 0
