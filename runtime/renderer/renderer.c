@@ -61,7 +61,8 @@ static rt_executor *executor_for(const char *function)
     /* the CPU's writes, when the runtime watches them (runtime/write_watch.h): textures reload only then */
     const int watched = rt_write_watch_active();
     rt_executor_memory memory = {.guest_base = rt_gpu_memory_base(), .collect_cpu_writes = watched ? collect_cpu_writes : NULL,
-                                 .guard = watched ? guard_target : NULL, .unguard = watched ? unguard_target : NULL};
+                                 .guard = watched ? guard_target : NULL, .unguard = watched ? unguard_target : NULL,
+                                 .gds = rt_gpu_memory_gds(), .gds_bytes = RT_GPU_GDS_BYTES};
     if (rt_gpu_memory_pool(&memory.fd, &memory.size)) return NULL; /* no direct memory yet: nothing to draw from */
     if (watched) rt_write_watch_set_resolver(resolve_guarded);
     char error[256];

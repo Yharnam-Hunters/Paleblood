@@ -73,6 +73,7 @@ typedef struct {
     uint32_t step_rates[2];
     unsigned step_rates_set;
     gcn_lds lds;                     /* the workgroup's LDS (runtime/gcn_spirv.h) */
+    uint64_t gds_address;            /* a compute shader's GDS (runtime/gcn_spirv.h), or 0 */
     uint32_t lds_workgroups;         /* the tessellation stages' LDS buffer's workgroups */
     /* tessellation (runtime/gcn_spirv.h): the local and hull shaders run as compute shaders, the domain
        shader as a vertex shader's translation in a tessellation evaluation shader */
@@ -120,7 +121,8 @@ typedef struct {
     uint32_t image[GCN_MAX_IMAGES];  /* each image binding's variable, made on first use */
     uint32_t sampler[GCN_MAX_SAMPLERS]; /* each sampler binding's variable, made on first use */
     size_t program_dwords;           /* the program's length, for finding where its descriptors come from */
-    int uses_1d_images, uses_sampled_1d_images, queries_images, reads_images, writes_images, uses_quads;
+    int uses_1d_images, uses_sampled_1d_images, queries_images, reads_images, writes_images, uses_quads, uses_ballots;
+    uint32_t subgroup_lane;          /* the SubgroupLocalInvocationId input, made on first use */
     /* input VGPRs whose starting value is not known (a vertex shader's instance index over a step rate no
        call set), and those of them the program read before writing */
     uint32_t unknown_inputs, unknown_read;
@@ -379,6 +381,24 @@ static void end_if(translator *t, uint32_t merge)
 static uint32_t any_lane(translator *t, uint32_t b)
 {
     return value(t, SPV_OP_GROUP_NON_UNIFORM_ANY, t_bool(t), 2, konst(t, SPV_SCOPE_SUBGROUP), b);
+}
+
+/* The subgroup's lanes that have the bit, as a ballot: bit i of the four words for subgroup lane i. */
+static uint32_t subgroup_ballot(translator *t, uint32_t b)
+{
+    const uint32_t uvec4 = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_uint(t), 4}, 2);
+    t->uses_ballots = 1;
+    return value(t, SPV_OP_GROUP_NON_UNIFORM_BALLOT, uvec4, 2, konst(t, SPV_SCOPE_SUBGROUP), b);
+}
+
+static uint32_t interface_variable(translator *t, uint32_t storage, uint32_t type, uint32_t decoration, uint32_t number);
+
+/* The lane's place in its subgroup (SubgroupLocalInvocationId). */
+static uint32_t subgroup_lane(translator *t)
+{
+    if (!t->subgroup_lane)
+        t->subgroup_lane = interface_variable(t, SPV_STORAGE_INPUT, t_uint(t), SPV_DECORATION_BUILT_IN, SPV_BUILT_IN_SUBGROUP_LOCAL_INVOCATION_ID);
+    return load(t, t_uint(t), t->subgroup_lane);
 }
 
 /* ---- vector instructions ---- */
@@ -801,6 +821,45 @@ static void three_way(translator *t, const vector_operands *o, const gcn_instruc
     else write_vgpr(t, o->dst, r);
 }
 
+/* v_mbcnt_lo_u32_b32 and v_mbcnt_hi_u32_b32 (the Sea Islands manual): S1 plus the bits of S0 set for the
+   wave's lanes below this one, among lanes 0-31 (lo) or 32-63 (hi). hi(EXEC_HI, 0) then lo(EXEC_LO, that)
+   is a lane's rank among the wave's active lanes, which append buffers add to ds_append's old count
+   (runtime/gcn_spirv.h, "The global data share"). An EXEC half comes from a subgroup ballot of the lanes'
+   EXEC bits, with the lane's place in its subgroup as its place in the wave; a constant S0 takes the
+   compute lane's place in its 64-lane wave (wave_lane). Compute shaders only; other masks are not
+   translated yet. */
+static uint32_t masked_bit_count(translator *t, const vector_operands *o, const gcn_instruction *ins, int high)
+{
+    const unsigned mask = o->src[0];
+    const int constant = (mask >= OPERAND_INT_ZERO && mask <= OPERAND_INT_LAST_NEGATIVE) || mask == OPERAND_LITERAL;
+    uint32_t bits, lane;
+    if (mask == SGPR_EXEC || mask == SGPR_EXEC + 1) {
+        if (t->layout->stage != STAGE_COMPUTE) { /* Metal has no subgroup lanes in its vertex and fragment functions */
+            fail(t, "%s with an EXEC half outside a compute shader is not translated yet", ins->name);
+            return konst(t, 0);
+        }
+        bits = value(t, SPV_OP_COMPOSITE_EXTRACT, t_uint(t), 2, subgroup_ballot(t, exec_bit(t)), mask - SGPR_EXEC);
+        lane = subgroup_lane(t);
+    } else if (constant && t->layout->stage == STAGE_COMPUTE) {
+        bits = source(t, mask, ins);
+        lane = wave_lane(t);
+    } else {
+        fail(t, "%s with a mask other than an EXEC half or a compute shader's constant is not translated yet", ins->name);
+        return konst(t, 0);
+    }
+    /* the half's lanes below this one: none before the half, all 32 past it, else the lanes under it */
+    const uint32_t first = konst(t, high ? WAVE_HALF_LANES : 0);
+    const uint32_t before = value(t, SPV_OP_U_LESS_THAN, t_bool(t), 2, lane, first);
+    const uint32_t past = value(t, SPV_OP_U_GREATER_THAN_EQUAL, t_bool(t), 2, lane, konst(t, high ? WAVE_LANES : WAVE_HALF_LANES));
+    const uint32_t within = value(t, SPV_OP_SELECT, t_uint(t), 3, value(t, SPV_OP_LOGICAL_OR, t_bool(t), 2, before, past), konst(t, 0),
+                                  value(t, SPV_OP_I_SUB, t_uint(t), 2, lane, first));
+    const uint32_t below = value(t, SPV_OP_I_SUB, t_uint(t), 2, value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, konst(t, 1), within), konst(t, 1));
+    const uint32_t lanes = value(t, SPV_OP_SELECT, t_uint(t), 3, past, konst(t, UINT32_MAX),
+                                 value(t, SPV_OP_SELECT, t_uint(t), 3, before, konst(t, 0), below));
+    const uint32_t count = value(t, SPV_OP_BIT_COUNT, t_uint(t), 1, value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, bits, lanes));
+    return value(t, SPV_OP_I_ADD, t_uint(t), 2, count, source(t, o->src[1], ins));
+}
+
 static void vector_instruction(translator *t, const uint32_t *w, const gcn_instruction *ins)
 {
     const vector_operands o = vector_fields(w, ins);
@@ -969,6 +1028,9 @@ static void vector_instruction(translator *t, const uint32_t *w, const gcn_instr
         write_vector_lane_bit(t, ins->encoding == GCN_VOPC ? SGPR_VCC : o.dst, result);
         if (writes_exec) /* v_cmpx: EXEC becomes the result too (inactive lanes stay off) */
             store(t, t->out, t->exec, value(t, SPV_OP_LOGICAL_AND, t_bool(t), 2, exec_bit(t), result));
+    } else if (!strcmp(name, "v_mbcnt_lo_u32_b32") || !strcmp(name, "v_mbcnt_hi_u32_b32")) {
+        if (o.abs || o.neg || o.clamp || o.omod) fail(t, "%s: modifiers on an integer operation", name);
+        write_vgpr(t, o.dst, masked_bit_count(t, &o, ins, !strcmp(name, "v_mbcnt_hi_u32_b32")));
     } else if (!strcmp(name, "v_mov_b32")) {
         write_vgpr(t, o.dst, source(t, o.src[0], ins));
     } else if (!strcmp(name, "v_not_b32")) {
@@ -2713,11 +2775,45 @@ static const struct {
     {"xor", SPV_OP_ATOMIC_XOR}, {"wrxchg", SPV_OP_ATOMIC_EXCHANGE}, {"cmpst", SPV_OP_ATOMIC_COMPARE_EXCHANGE},
 };
 
+/* ds_append and ds_consume on the GDS (runtime/gcn_spirv.h, "The global data share"): the dword at GDS byte
+   M0[31:16] + OFFSET1:OFFSET0 (M0's base as shadPS4's DS_APPEND reads it, facts only) goes up (append) or
+   down (consume) by the wave's count of active lanes, once, and every active lane gets its old value in
+   VDST. One elected lane of the subgroup's active lanes does the atomic for them all and they take its
+   result. */
+static void gds_counter(translator *t, const uint32_t *w, const gcn_instruction *ins)
+{
+    const int append = !strcmp(ins->name, "ds_append");
+    if (!t->layout->gds_address || (!append && strcmp(ins->name, "ds_consume"))) {
+        fail(t, "%s: %s", ins->name, t->layout->gds_address ? "not translated yet on the global data share (GDS)" : "the shader has no GDS here");
+        return;
+    }
+    const unsigned vdst = w[1] >> 24;
+    const uint32_t scope = konst(t, SPV_SCOPE_SUBGROUP);
+    const uint32_t base = value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, load(t, t_uint(t), sgpr(t, SGPR_M0)), konst(t, 16));
+    const uint32_t index = value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, value(t, SPV_OP_I_ADD, t_uint(t), 2, base, konst(t, w[0] & 0xffff)),
+                                 konst(t, 2));
+    const uint32_t merge = begin_if(t, exec_bit(t));
+    const uint32_t lanes = value(t, SPV_OP_GROUP_NON_UNIFORM_BALLOT_BIT_COUNT, t_uint(t), 3, scope, SPV_GROUP_OPERATION_REDUCE,
+                                 subgroup_ballot(t, spirv_constant_bool(&t->m, 1)));
+    const uint32_t old = function_variable(t, t_uint(t), konst(t, 0));
+    const uint32_t elected = begin_if(t, value(t, SPV_OP_GROUP_NON_UNIFORM_ELECT, t_bool(t), 1, scope));
+    const uint32_t inside = begin_if(t, value(t, SPV_OP_U_LESS_THAN, t_bool(t), 2, index, konst(t, GCN_GDS_BYTES / BYTES_PER_DWORD)));
+    const uint32_t address = value(t, SPV_OP_I_ADD, t_ulong(t), 2, ulong_constant(t, t->layout->gds_address),
+                                   widen(t, value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, index, konst(t, 2))));
+    const uint32_t pointer = value(t, SPV_OP_CONVERT_U_TO_PTR, spirv_type_pointer(&t->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, t_uint(t)), 1, address);
+    store(t, t->out, old,
+          value(t, append ? SPV_OP_ATOMIC_I_ADD : SPV_OP_ATOMIC_I_SUB, t_uint(t), 4, pointer, konst(t, SPV_SCOPE_DEVICE), konst(t, 0), lanes));
+    end_if(t, inside);
+    end_if(t, elected);
+    write_vgpr(t, vdst, value(t, SPV_OP_GROUP_NON_UNIFORM_BROADCAST_FIRST, t_uint(t), 2, scope, load(t, t_uint(t), old)));
+    end_if(t, merge);
+}
+
 static void lds_instruction(translator *t, const uint32_t *w, const gcn_instruction *ins)
 {
     const char *name = ins->name;
     if (w[0] & DS_GDS) {
-        fail(t, "%s: the global data share (GDS) is not translated yet", name);
+        gds_counter(t, w, ins);
         return;
     }
     if (!t->layout->lds.bytes) {
@@ -4094,6 +4190,8 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
         spirv_emit(m, &m->sections[SPIRV_CAPABILITIES], SPV_OP_CAPABILITY, (const uint32_t[]){SPV_CAPABILITY_CLIP_DISTANCE}, 1);
     if (t->uses_quads)
         spirv_emit(m, &m->sections[SPIRV_CAPABILITIES], SPV_OP_CAPABILITY, (const uint32_t[]){SPV_CAPABILITY_GROUP_NON_UNIFORM_QUAD}, 1);
+    if (t->uses_ballots)
+        spirv_emit(m, &m->sections[SPIRV_CAPABILITIES], SPV_OP_CAPABILITY, (const uint32_t[]){SPV_CAPABILITY_GROUP_NON_UNIFORM_BALLOT}, 1);
     if (t->uses_1d_images) spirv_emit(m, &m->sections[SPIRV_CAPABILITIES], SPV_OP_CAPABILITY, (const uint32_t[]){SPV_CAPABILITY_IMAGE_1D}, 1);
     if (t->uses_sampled_1d_images)
         spirv_emit(m, &m->sections[SPIRV_CAPABILITIES], SPV_OP_CAPABILITY, (const uint32_t[]){SPV_CAPABILITY_SAMPLED_1D}, 1);
@@ -4162,7 +4260,7 @@ int gcn_translate_compute(const uint32_t *code, size_t dwords, const gcn_compute
                             .user_sgprs = layout->user_sgprs, .workgroup_id_enables = layout->workgroup_id_enables,
                             .images = layout->images, .image_count = layout->image_count,
                             .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address,
-                            .user_data_read = layout->user_data_read, .lds = layout->lds};
+                            .user_data_read = layout->user_data_read, .lds = layout->lds, .gds_address = layout->gds_address};
     return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
 }
 
