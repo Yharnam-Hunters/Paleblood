@@ -52,6 +52,8 @@
    The observer reports the same registers.
    The depth bounds setter 0x01473520 (command buffer, min, max; two floats, in xmm0 and xmm1) writes
    DB_DEPTH_BOUNDS_MIN (0xa008) and DB_DEPTH_BOUNDS_MAX (0xa009) in one packet, the floats' bits as they are.
+   The shader stage setter 0x01476030 (command buffer, stages) writes VGT_SHADER_STAGES_EN (0xa2d5) with
+   the value when it is 0, 0x45, 0xad, 0xb0 or 0x200, and nothing otherwise.
    The stencil reference setters write DB_STENCILREFMASK (0xa10c) and DB_STENCILREFMASK_BF (0xa10d) in one
    packet: 0x01473190 (command buffer, value) writes the value to both, 0x014731f0 (command buffer,
    front, back) one to each.
@@ -199,6 +201,20 @@ static void depth_bounds(const uint64_t frame[RT_OBSERVED_FRAME_WORDS])
     rt_observe_register(buffer, offset, DB_DEPTH_BOUNDS_MAX, bits[FLOAT_MAX]);
 }
 
+enum { VGT_SHADER_STAGES_EN = 0xa2d5, ARGUMENT_STAGES = 1, STAGES_VERTEX = 0, STAGES_TESSELLATION = 0x45, STAGES_TESSELLATION_GEOMETRY = 0xad,
+       STAGES_GEOMETRY = 0xb0, STAGES_0X200 = 0x200 };
+
+static void shader_stages(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    const uint32_t stages = (uint32_t)args[ARGUMENT_STAGES];
+    if (stages != STAGES_VERTEX && stages != STAGES_TESSELLATION && stages != STAGES_TESSELLATION_GEOMETRY && stages != STAGES_GEOMETRY &&
+        stages != STAGES_0X200)
+        return; /* the setter writes nothing */
+    const uint64_t buffer = *(const uint64_t *)(uintptr_t)(args[ARGUMENT_COMMAND_BUFFER] + COMMAND_BUFFER_BEGIN);
+    const uint64_t cursor = *(const uint64_t *)(uintptr_t)(args[ARGUMENT_COMMAND_BUFFER] + COMMAND_BUFFER_CURSOR);
+    rt_observe_register(buffer, (uint32_t)(cursor - buffer), VGT_SHADER_STAGES_EN, stages);
+}
+
 enum { ARGUMENT_INDEX_VALUE = 1, ARGUMENT_INDEX_COUNT = 2 };
 static const uint64_t index_base_mask = 0xfffffffffeull; /* bits 1-39 */
 
@@ -268,6 +284,7 @@ const rt_observe_hook game_observe_hooks[] = {
     {0x01475270, 76, "render_set_index_type", index_type},
     {0x014752c0, 92, "render_set_index_base", index_base},
     {0x01475320, 76, "render_set_index_buffer_size", index_size},
+    {0x01476030, 140, "render_set_shader_stages", shader_stages},
     {0x014761a0, 156, "render_set_user_data_4_words_marker_4", four_words},
     {0x01476240, 172, "render_set_user_data_8_words", eight_words},
     {0x014762f0, 156, "render_set_user_data_4_words_marker_6", four_words},

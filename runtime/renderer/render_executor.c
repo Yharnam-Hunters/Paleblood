@@ -309,6 +309,7 @@ typedef struct {
     uint32_t clear_words[RT_COLOR_TARGETS][2];             /* CB_COLORn_CLEAR_WORD0 and 1: a fast clear's texel */
     uint32_t depth_control, color_control, target_mask, primitive_type, instances;
     int depth_set, color_control_set, target_mask_set, primitive_set, instances_set;
+    uint32_t shader_stages;          /* VGT_SHADER_STAGES_EN: 0 (vertex and pixel shaders only) until set */
     float blend_constants[4];        /* CB_BLEND_RED, GREEN, BLUE, ALPHA */
     /* the index buffer: INDEX_BASE, INDEX_BUFFER_SIZE (indices), INDEX_TYPE */
     uint64_t index_base;
@@ -479,7 +480,7 @@ enum { DB_RENDER_CONTROL = 0xa000, DB_DEPTH_VIEW = 0xa002, DB_HTILE_DATA_BASE = 
        DB_DEPTH_INFO = 0xa00f, DB_Z_INFO = 0xa010, DB_STENCIL_INFO = 0xa011, DB_DEPTH_SLICE = 0xa017, DB_STENCILREFMASK = 0xa10c,
        DB_STENCILREFMASK_BF = 0xa10d, DB_HTILE_SURFACE = 0xa2af, CB_TARGET_MASK = 0xa08e, CB_BLEND_RED = 0xa105, CB_BLEND_ALPHA = 0xa108, DB_STENCIL_CONTROL = 0xa10b, CB_BLEND0_CONTROL = 0xa1e0,
        CB_BLEND7_CONTROL = 0xa1e7, DB_DEPTH_CONTROL = 0xa200, CB_COLOR0_CLEAR_WORD0 = 0xa323, CB_COLOR_REGISTER_STRIDE = 15,
-       CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242, SPI_PS_INPUT_CNTL_0 = 0xa191 };
+       CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242, VGT_SHADER_STAGES_EN = 0xa2d5, SPI_PS_INPUT_CNTL_0 = 0xa191 };
 enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 0x1, Z_ENABLE = 0x2, Z_WRITE_ENABLE = 0x4,
        COLOR_MODE_MASK = 0x70, COLOR_MODE_SHIFT = 4, CB_NORMAL = 1, CB_ELIMINATE_FAST_CLEAR = 2, ROP3_MASK = 0xff0000, ROP3_SHIFT = 16, ROP3_COPY = 0xcc,
        CHANNELS_MASK = 0xf, DI_PT_TRILIST = 4, DI_PT_TRISTRIP = 6, DI_PT_RECTLIST = 17, CB_DISABLE = 0, DEPTH_BOUNDS_ENABLE = 0x8,
@@ -494,6 +495,7 @@ static int set_register(draw_state *s, uint32_t address, uint32_t value)
     case CB_COLOR_CONTROL: s->color_control = value, s->color_control_set = 1; return 0;
     case CB_TARGET_MASK: s->target_mask = value, s->target_mask_set = 1; return 0;
     case VGT_PRIMITIVE_TYPE: s->primitive_type = value, s->primitive_set = 1; return 0;
+    case VGT_SHADER_STAGES_EN: s->shader_stages = value; return 0;
     case DB_STENCIL_CONTROL: s->stencil_control = value, s->stencil_control_set = 1; return 0;
     case DB_STENCILREFMASK: case DB_STENCILREFMASK_BF:
         s->stencil_reference[address - DB_STENCILREFMASK] = value, s->stencil_reference_set[address - DB_STENCILREFMASK] = 1;
@@ -709,6 +711,12 @@ static uint32_t slot_mask(const draw_state *s, unsigned slot)
    when nothing at all would be written, 0 to draw, -1 with the reason otherwise. */
 static int check_state(const draw_state *s, depth_plan *plan, uint32_t *colours, char *error, size_t error_size)
 {
+    /* VGT_SHADER_STAGES_EN (gfx_7_2_sh_mask.h): LS_EN bits 0-1, HS_EN 2, ES_EN 3-4, GS_EN 5, VS_EN 6-7; the
+       GPU library's setter (0x01476030) takes 0 (vertex and pixel shaders), 0x45 (local, hull and vertex:
+       tessellation), 0xad (tessellation with a geometry shader), 0xb0 (export and geometry) and 0x200 */
+    if (s->shader_stages)
+        return failed(error, error_size, "shader stages VGT_SHADER_STAGES_EN %#x (tessellation or a geometry shader): not drawn yet",
+                      s->shader_stages);
     if (s->primitive_set && s->primitive_type != DI_PT_TRILIST && s->primitive_type != DI_PT_TRISTRIP && s->primitive_type != DI_PT_RECTLIST)
         return failed(error, error_size, "primitive type %u: only triangle lists and strips and rect lists are drawn yet", s->primitive_type);
     if (plan_depth(s, plan, error, error_size)) return -1;
@@ -4086,8 +4094,9 @@ static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, 
                 break;
             }
             const int stage = c->u.user_data.stage == RT_STAGE_VERTEX ? STAGE_VERTEX : c->u.user_data.stage == RT_STAGE_PIXEL ? STAGE_PIXEL : -1;
-            if (stage < 0) return failed(error, error_size, "user data for stage %u: only vertex and pixel shaders are drawn yet",
-                                         (unsigned)c->u.user_data.stage);
+            /* the local, hull, export and geometry stages' user data reach only draws with those stages on
+               (VGT_SHADER_STAGES_EN), which stop by name (check_state) */
+            if (stage < 0) break;
             memcpy(&s->user[stage][c->u.user_data.slot], c->u.user_data.words, c->u.user_data.count * sizeof(uint32_t));
             s->user_set[stage] |= slots;
             break;
