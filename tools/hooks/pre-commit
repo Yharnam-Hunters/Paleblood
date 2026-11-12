@@ -5,7 +5,8 @@
 #   2. local-only files are never committed (AGENTS.md, CLAUDE.md, .handoff/, notes/, SESSION*.md,
 #      KICKOFF*.md, and the patterns in `git config --get-all bb.localOnly`)
 #   3. no game data (tools/check_no_game_data.py --staged)
-#   4. functions.csv, hooks.csv and the README progress block agree with the staged tree
+#   4. functions.csv and hooks.csv agree with the staged tree; generated progress text the commit
+#      changes is current (main regenerates it: tools/progress_pr.py)
 #   5. game/ is readable (tools/check_readable.py, STYLE.md); its allowlist only shrinks
 # Installed as commit-msg too: lines matching `git config --get-all bb.refuseMessage` (extended
 # regular expressions, case-insensitive) are refused.
@@ -58,8 +59,17 @@ cleanup_tmp() {
 trap cleanup_tmp EXIT
 git checkout-index -a --prefix="$tmp/"
 python3 "$tmp/tools/validate_functions.py" --root "$tmp" || fail "functions.csv / hooks.csv validation failed"
-python3 "$tmp/tools/progress.py" --root "$tmp" --check \
-    || fail "README progress block is stale: run tools/progress.py --update-readme and stage README.md"
+# Progress is regenerated on main (tools/progress_pr.py), so a commit may leave the generated
+# text as it was (in HEAD, or in the branch being merged); text it changes must be current.
+touched=(HEAD)
+if git rev-parse -q --verify MERGE_HEAD >/dev/null; then touched+=(MERGE_HEAD); fi
+if git rev-parse -q --verify HEAD >/dev/null; then
+    python3 "$tmp/tools/progress.py" --root "$tmp" --check-touched "${touched[@]}" \
+        || fail "progress block is stale or hand-edited: restore main's text (tools/remerge.py) or run tools/progress.py --update-readme"
+else
+    python3 "$tmp/tools/progress.py" --root "$tmp" --check \
+        || fail "progress block is stale: run tools/progress.py --update-readme"
+fi
 if [ -f "$tmp/tools/source_files.py" ]; then
     python3 "$tmp/tools/source_files.py" --root "$tmp" --check \
         || fail "symbols/source_files.csv is stale: run tools/source_files.py --elf ELF and stage it"

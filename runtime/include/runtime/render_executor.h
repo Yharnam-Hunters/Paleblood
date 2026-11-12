@@ -92,6 +92,9 @@ int rt_executor_wait_ticket(rt_executor *executor, uint64_t ticket, char *error,
 /* Waits until all submitted work has run and checks the run-time stop words. Returns 0, or -1 with the
    reason. */
 int rt_executor_finish(rt_executor *executor, char *error, size_t error_size);
+/* How long a wait for submitted work gives the GPU before the call fails naming the unfinished batch's
+   draws and dispatches; 0 is the default (20 s, render_executor.c). For tests. */
+void rt_executor_set_wait_limit(rt_executor *executor, uint64_t nanoseconds);
 /* Forgets the state earlier buffers set, as a GPU fresh from reset has none (tests: independent cases). */
 void rt_executor_reset(rt_executor *executor);
 

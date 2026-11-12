@@ -346,7 +346,19 @@ static void image_programs(void)
           strstr(error, "sampler in s[12:15] is not bound"));
     const gcn_image_binding flat[] = {{{0, 4, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0}, {{1, 0, 2, 0}, GCN_IMAGE_1D, 0, GCN_IMAGE_FLOAT, 1, 1, 0, 0}};
     lookup.images = flat, lookup.sampler_count = 1;
-    CHECK(gcn_translate_pixel(PROGRAM(pixel_lookup), &lookup, &spirv, &words, error, sizeof error) == -1 && strstr(error, "DA 1"));
+    /* DA 1 on a 1D image that is not an array: the image's type decides and the slice VGPR is not read;
+       with a LOD VGPR after the coordinates (image_sample_l), where that VGPR is depends on how the
+       slice counts, so it still stops by name. */
+    const int flat_sampled = gcn_translate_pixel(PROGRAM(pixel_lookup), &lookup, &spirv, &words, error, sizeof error);
+    if (flat_sampled) fprintf(stderr, "pixel_lookup (1D): %s\n", error);
+    CHECK(flat_sampled == 0);
+    if (spirv) {
+        CHECK(validate(spirv, words, "pixel_lookup_1d") != 0);
+        CHECK(to_metal(spirv, words, "pixel_lookup_1d") != 0);
+        free(spirv);
+        spirv = NULL;
+    }
+    CHECK(gcn_translate_pixel(PROGRAM(pixel_lookup_level), &lookup, &spirv, &words, error, sizeof error) == -1 && strstr(error, "DA 1"));
 
     /* A pixel shader's image_load_mip from a sampled image (its range checked at run time, so only
        with a stop word); a storage binding refuses image_load_mip. */
@@ -812,6 +824,7 @@ int main(void)
     refused_as(COMPUTE, PROGRAM(sgpr_mask), "a mask other than");
     translates(PROGRAM(integer_batch), "integer_batch");
     translates(PROGRAM(spill_slots), "spill_slots");
+    translates(PROGRAM(valu_batch), "valu_batch");
     translates(PROGRAM(scalar_batch), "scalar_batch");
     translates(PROGRAM(vcc_halves), "vcc_halves");
     translates(PROGRAM(whole_quad), "whole_quad");
@@ -859,6 +872,16 @@ int main(void)
     char error[256] = "";
     CHECK(gcn_translate_compute(PROGRAM(unsupported), &layout, &spirv, &words, error, sizeof error) == -1);
     CHECK(spirv == NULL && strstr(error, "v_interp_p1_f32") != NULL);
+    /* v_interp_mov_f32 from P0: a Flat input; from P10 or P20, or of an input also read interpolated, refused by name */
+    translates_as(PIXEL, PROGRAM(pixel_flat_color), "pixel_flat_color");
+    {
+        uint32_t from_p10[sizeof pixel_flat_color / sizeof pixel_flat_color[0]], mixed[sizeof pixel_flat_color / sizeof pixel_flat_color[0]];
+        memcpy(from_p10, pixel_flat_color, sizeof from_p10), memcpy(mixed, pixel_flat_color, sizeof mixed);
+        from_p10[1] = 0xc80a0000;                        /* v_interp_mov_f32 v2, p10, attr0.x */
+        mixed[1] = 0xc8080000, mixed[2] = 0xc8090001;     /* attr0.x interpolated into v2 (p1, p2), y still flat */
+        refused_as(PIXEL, PROGRAM(from_p10), "from P10");
+        refused_as(PIXEL, PROGRAM(mixed), "read both flat");
+    }
 
     CHECK(gcn_translate_compute(PROGRAM(typed_unorm), &layout, &spirv, &words, error, sizeof error) == -1);
     CHECK(spirv == NULL && strstr(error, "dfmt 10 nfmt 0") != NULL);
