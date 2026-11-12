@@ -653,6 +653,69 @@ int main(int argc, char **argv)
         CHECK(out_words[LANES + i] == (high << 16 | halves[i % HALF_CASES].negated));
     }
 
+    /* The negated float compares, on ordered pairs, equal pairs, signed zeros, infinities and NaNs: each
+       holds exactly where its condition (worked out with C's ordered compares, false for a NaN) does not. */
+    static const float pairs[][2] = {{1, 2}, {2, 1}, {1, 1}, {NAN, 1}, {1, NAN}, {NAN, NAN}, {-0.0f, 0.0f}, {INFINITY, INFINITY},
+                                     {-INFINITY, 3}, {5, -INFINITY}};
+    enum { PAIRS = sizeof pairs / sizeof pairs[0] };
+    memset(in.mapped, 0, BUFFER_BYTES), memset(out.mapped, 0, BUFFER_BYTES);
+    for (int i = 0; i < PAIRS; i++) in_floats[2 * i] = pairs[i][0], in_floats[2 * i + 1] = pairs[i][1];
+    CHECK(run(&g, negated_compares, sizeof negated_compares / sizeof negated_compares[0], user) == 0);
+    for (int i = 0; i < LANES; i++) {
+        const float a = i < PAIRS ? pairs[i][0] : 0, b = i < PAIRS ? pairs[i][1] : 0;
+        const uint32_t nge = !(a >= b), nlg = !(a < b || a > b), ngt = !(a > b), nle = !(a <= b), neq = !(a == b), nlt = !(a < b);
+        const uint32_t *lane = out_words + 8 * i;
+        CHECK(lane[0] == nge && lane[1] == nlg && lane[2] == ngt && lane[3] == nle);
+        if (ngt) CHECK(lane[4] == neq && lane[5] == nlt && lane[6] == 1 && lane[7] == 0);
+        else CHECK(lane[4] == 0 && lane[5] == 0 && lane[6] == 0 && lane[7] == 0);
+    }
+
+    /* Halves to floats (exact); each expected float worked out by hand from the IEEE formats. The high
+       16 bits of each input word are not part of the half. */
+    static const struct {
+        uint32_t in, f32, negated;
+    } unpacked[] = {
+        {0xabcd3c00, 0x3f800000, 0xbf800000}, /* 1 */
+        {0x0000c000, 0xc0000000, 0x40000000}, /* -2 */
+        {0xffff7bff, 0x477fe000, 0xc77fe000}, /* 65504, the largest half */
+        {0x12340400, 0x38800000, 0xb8800000}, /* 2^-14, the smallest normal half */
+        {0x00000001, 0x33800000, 0xb3800000}, /* 2^-24, the smallest subnormal */
+        {0x00000300, 0x38400000, 0xb8400000}, /* 1.5 * 2^-15, a subnormal half */
+        {0x00008000, 0x80000000, 0x00000000}, /* -0 */
+        {0x00007c00, 0x7f800000, 0xff800000}, /* infinity */
+        {0x00003555, 0x3eaaa000, 0xbeaaa000}, /* 0.333251953125 */
+    };
+    enum { UNPACK_CASES = sizeof unpacked / sizeof unpacked[0] };
+    memset(out.mapped, 0, BUFFER_BYTES);
+    for (int i = 0; i < LANES; i++) in_words[i] = unpacked[i % UNPACK_CASES].in;
+    CHECK(run(&g, unpack_halves, sizeof unpack_halves / sizeof unpack_halves[0], user) == 0);
+    for (int i = 0; i < LANES; i++) {
+        CHECK(out_words[i] == unpacked[i % UNPACK_CASES].f32);
+        CHECK(out_words[LANES + i] == unpacked[i % UNPACK_CASES].negated);
+    }
+
+    /* Buffer atomics: the 64 adds return 0 to 63, once each, and leave 64; the max is 63; exactly one lane's
+       compare-exchange finds 0 and stores its i + 1, and every other lane's returns that value. */
+    memset(out.mapped, 0, BUFFER_BYTES);
+    CHECK(run(&g, buffer_atomics, sizeof buffer_atomics / sizeof buffer_atomics[0], user) == 0);
+    enum { COUNTER = 0, OLD_COUNTS = 1, MAXIMUM = 128, EXCHANGED = 129, OLD_EXCHANGED = 256 };
+    CHECK(out_words[COUNTER] == LANES && out_words[MAXIMUM] == LANES - 1);
+    uint64_t seen = 0;
+    for (int i = 0; i < LANES; i++)
+        if (out_words[OLD_COUNTS + i] < LANES) seen |= 1ull << out_words[OLD_COUNTS + i];
+    CHECK(seen == ~0ull);
+    const uint32_t winner_value = out_words[EXCHANGED];
+    int winners = 0;
+    for (int i = 0; i < LANES; i++) {
+        if (out_words[OLD_EXCHANGED + i] == 0) {
+            winners++;
+            CHECK(winner_value == (uint32_t)i + 1);
+        } else {
+            CHECK(out_words[OLD_EXCHANGED + i] == winner_value);
+        }
+    }
+    CHECK(winners == 1);
+
     /* 24-bit multiplies, bit fields and carries: per case (x, y, z, w), the expected words in
        integer_batch's order, worked out by hand from the definitions (and checked with plain
        integer arithmetic). */
