@@ -729,8 +729,33 @@ static void geometry_shaders(void)
     CHECK(gcn_translate_export(PROGRAM(gs_export), &l, &spirv, &words, error, sizeof error) == -1 && strstr(error, "rings"));
 }
 
+/* Survey mode (gcn_spirv_set_survey): a program with two instructions the translator does not take, in a
+   compute shader, names both, each after its dword, and still fails; out of survey mode only the first. */
+static void survey_mode(void)
+{
+    static const uint32_t two_gaps[] = {
+        0xc8080000, /* v_interp_p1_f32 v2, v0, attr0.x: pixel shaders only */
+        0xbf900001, /* s_sendmsg 1: outside a geometry shader */
+        0xbf810000, /* s_endpgm */
+    };
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    char error[1024] = "";
+    gcn_spirv_set_survey(1);
+    CHECK(translate(COMPUTE, PROGRAM(two_gaps), &spirv, &words, error, sizeof error) == -1);
+    gcn_spirv_set_survey(0);
+    CHECK(spirv == NULL);
+    CHECK(!strncmp(error, "@0 v_interp_p1_f32", strlen("@0 v_interp_p1_f32")));
+    CHECK(strstr(error, "\n@1 s_sendmsg") != NULL);
+    CHECK(error[strlen(error) - 1] == '\n');
+    error[0] = 0;
+    CHECK(translate(COMPUTE, PROGRAM(two_gaps), &spirv, &words, error, sizeof error) == -1);
+    CHECK(strstr(error, "v_interp_p1_f32") != NULL && !strstr(error, "s_sendmsg") && error[0] != '@');
+}
+
 int main(void)
 {
+    survey_mode();
     tessellation();
     geometry_shaders();
     rect_list_stages();
@@ -773,6 +798,15 @@ int main(void)
     translates(PROGRAM(transcendentals), "transcendentals");
     translates_as(VERTEX, PROGRAM(vertex_position_color), "vertex_position_color");
     translates_as(PIXEL, PROGRAM(pixel_color), "pixel_color");
+    /* ds_swizzle_b32's quad mode with one source lane: compute and pixel shaders; other patterns, the
+       bit-mask mode and vertex shaders stop by name */
+    translates(PROGRAM(quad_swizzle), "quad_swizzle");
+    translates_as(PIXEL, PROGRAM(pixel_quad_swizzle), "pixel_quad_swizzle");
+    static const uint32_t mixed_quad[] = {0xd8d480e4, 0x03000002, 0xbf810000}; /* ds_swizzle_b32 v3, v2 offset:swizzle(QUAD_PERM,0,1,2,3) */
+    static const uint32_t bit_mask[] = {0xd8d4041f, 0x03000002, 0xbf810000};   /* ds_swizzle_b32 v3, v2 offset:0x41f */
+    refused_as(COMPUTE, PROGRAM(mixed_quad), "offset 0x80e4");
+    refused_as(COMPUTE, PROGRAM(bit_mask), "offset 0x41f");
+    refused_as(VERTEX, PROGRAM(quad_swizzle), "in a vertex shader");
     translates_as(PIXEL, PROGRAM(pixel_discard_left), "pixel_discard_left");
     translates_as(PIXEL, PROGRAM(pixel_user_color), "pixel_user_color");
 

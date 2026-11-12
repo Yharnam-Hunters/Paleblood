@@ -252,8 +252,8 @@ Instead:
        writes of 8, 16, 32 and 64 bits, the two-address `read2` and `write2` forms (including `st64`),
        and the 32-bit atomics `add`, `sub`, `min`, `max`, `and`, `or`, `xor`, `wrxchg` and `cmpst`, in plain and
        `_rtn` forms. An access at or past the LDS's size reads 0 and writes nothing. `s_barrier` is a
-       workgroup control barrier that also makes LDS writes visible. The other atomics, `ds_swizzle`, and
-       `ds_append` and `ds_consume` on the LDS stop by name.
+       workgroup control barrier that also makes LDS writes visible. The other atomics, and `ds_append` and
+       `ds_consume` on the LDS stop by name.
      - **The global data share (GDS) and append buffers:** the GDS is 64 KB beside guest memory. The
        runtime keeps it in host memory (`rt_gpu_memory_gds`), which the command processor's `DMA_DATA`
        steps reach on the CPU and the executor imports for the GPU, so both see the same counters. In a
@@ -267,6 +267,10 @@ Instead:
        handed out per half wave. `v_mbcnt` with a constant mask uses the compute lane's place in its wave.
        Other masks, and `v_mbcnt` outside compute shaders (Metal has no subgroup lanes in vertex and
        fragment functions), stop by name.
+     - **`ds_swizzle_b32`** exchanges a VGPR between lanes without the LDS. Its quad mode with one source
+       lane for all four lanes of a quad becomes a Vulkan quad broadcast: GCN's quads are Vulkan's (a 2x2
+       pixel block in a pixel shader). The game's pixel shaders use it to take a value's screen-space
+       differences by hand. Other patterns, the bit-mask mode and vertex shaders stop by name.
      - **Tessellation stages** (`runtime/gcn_spirv.h`): GCN runs a tessellated draw's control points
        through a local shader (LS), which writes them to LDS. It runs the patches through a hull shader
        (HS), which writes the tessellation factors to the factor ring. Then the hardware VS stage runs
@@ -304,7 +308,7 @@ Instead:
          shader is an ordinary vertex shader whose ring loads read the GSVS ring.
        - Emits to streams other than 0 stop by name.
      - **Not yet:** anything else stops with the instruction's name. One group needs a design of its own:
-       - reads across lanes (`v_readlane`, `v_writelane`, `ds_swizzle`), whose results depend
+       - reads across lanes (`v_readlane`, `v_writelane`, `ds_swizzle` outside its quad mode), whose results depend
          on GCN's 64-lane wave where Vulkan and Metal GPUs often run 32 lanes.
      - **Tests:** `test/test_gcn_spirv.c` checks every module with `spirv-val` for Vulkan 1.2.
        `test/test_gcn_compute.c` runs programs on a Vulkan device and compares every output word
@@ -775,6 +779,27 @@ Instead:
 
 Each phase lands in small PRs with tests. A boot is recorded after each runtime change. The wiki's
 Runtime page and Gallery show where it stands.
+
+## Coverage survey
+
+Rather than finding the translator's gaps one boot stop at a time, two diagnostic tools list them all.
+Neither changes what a normal run does.
+
+- **Offline, over every shader the game ships:** `game/render/tools/shader_survey.py` reads the shader
+  bundles in your own copy of the game by their archive entries (each shader keeps its name and stage)
+  and the shader files inside the executable, and runs each distinct program through `build/pbgcn_survey`.
+  That tool translates in the translator's **survey mode** (`gcn_spirv_set_survey`): an instruction it
+  cannot translate is noted with its dword and translation goes on, so one pass names every gap a
+  program has. The layout comes from the shader's registers (user SGPRs, pixel inputs, workgroup size,
+  LDS); images and samplers are bound as the code shows them, and a fetch-shader call calls one that only
+  returns. A setting only a draw knows can therefore add or hide a reason. Programs that translate are
+  checked with `spirv-val`. It prints counts, reasons and shader names; `--report` and `--results` write
+  them to files outside the repository. No game code or data enters the repository.
+- **At run time, over what a boot reaches:** with `BB_SHADER_SWEEP` naming a directory, the Vulkan
+  executor writes every distinct shader it meets there (`<stage>-<address>.bin`, and `.spv` when it
+  translates), translates in survey mode, records each shader's reasons in `sweep.txt`, and records and
+  skips a draw, dispatch or register it cannot do instead of stopping. The frames such a run shows lack
+  the skipped draws: it is for listing gaps, never for judging output.
 
 
 ## Guest memory on the GPU

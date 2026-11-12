@@ -138,7 +138,15 @@ typedef struct {
     char *error;
     size_t error_size;
     int failed;
+    /* survey mode (gcn_spirv_set_survey): the dword of the instruction being translated, and how many
+       instructions failed and were passed over */
+    size_t at;
+    unsigned surveyed;
 } translator;
+
+static int survey_mode; /* gcn_spirv_set_survey */
+
+void gcn_spirv_set_survey(int on) { survey_mode = on != 0; }
 
 static void fail(translator *t, const char *format, ...)
 {
@@ -146,8 +154,18 @@ static void fail(translator *t, const char *format, ...)
     t->failed = 1;
     va_list args;
     va_start(args, format);
-    vsnprintf(t->error, t->error_size, format, args);
+    if (!survey_mode) {
+        vsnprintf(t->error, t->error_size, format, args);
+        va_end(args);
+        return;
+    }
+    /* survey mode: each distinct reason once, on its own line after the dword it was first met at */
+    char reason[512];
+    vsnprintf(reason, sizeof reason, format, args);
     va_end(args);
+    if (strstr(t->error, reason)) return;
+    const size_t used = strlen(t->error);
+    if (used + 1 < t->error_size) snprintf(t->error + used, t->error_size - used, "@%zu %s\n", t->at, reason);
 }
 
 /* Types used throughout. */
@@ -2685,6 +2703,30 @@ static const struct {
     {"xor", SPV_OP_ATOMIC_XOR}, {"wrxchg", SPV_OP_ATOMIC_EXCHANGE}, {"cmpst", SPV_OP_ATOMIC_COMPARE_EXCHANGE},
 };
 
+/* ds_swizzle_b32 (the Sea Islands manual): lanes exchange a VGPR without the LDS, by OFFSET1:OFFSET0. With
+   bit 15 set (quad mode), lane i of each quad of four takes ADDR's value from the quad's lane at bits
+   2i + 1 : 2i. A pattern that names one lane for all four is a quad broadcast, as Vulkan's quads (a 2x2 pixel
+   block in a pixel shader, four consecutive lanes in a compute shader) are GCN's. Other patterns, the
+   bit-mask mode and vertex shaders (Metal has no quads there) are not translated yet. What a lane reads
+   from a quad lane outside EXEC is not established: here it is that lane's register (the game's shaders
+   swizzle in whole quad mode, with every lane of the quad active). */
+enum { SWIZZLE_QUAD_MODE = 1u << 15, SWIZZLE_QUAD_LANE_BITS = 2, SWIZZLE_QUAD_LANE_MASK = 3 };
+
+static void swizzle(translator *t, const uint32_t *w, const gcn_instruction *ins)
+{
+    const uint32_t offset = w[0] & 0xffff, lane = offset & SWIZZLE_QUAD_LANE_MASK;
+    int one_lane = 1;
+    for (unsigned i = 1; i < 4; i++) one_lane &= ((offset >> (i * SWIZZLE_QUAD_LANE_BITS)) & SWIZZLE_QUAD_LANE_MASK) == lane;
+    if (!(offset & SWIZZLE_QUAD_MODE) || !one_lane || t->layout->stage == STAGE_VERTEX) {
+        fail(t, "%s with offset %#x%s is not translated yet", ins->name, offset, t->layout->stage == STAGE_VERTEX ? " in a vertex shader" : "");
+        return;
+    }
+    const unsigned address = w[1] & 0xff, vdst = w[1] >> 24;
+    t->uses_quads = 1;
+    write_vgpr(t, vdst, value(t, SPV_OP_GROUP_NON_UNIFORM_QUAD_BROADCAST, t_uint(t), 3, konst(t, SPV_SCOPE_SUBGROUP),
+                              load(t, t_uint(t), vgpr(t, address)), konst(t, lane)));
+}
+
 /* ds_append and ds_consume on the GDS (runtime/gcn_spirv.h, "The global data share"): the dword at GDS byte
    M0[31:16] + OFFSET1:OFFSET0 (M0's base as shadPS4's DS_APPEND reads it, facts only) goes up (append) or
    down (consume) by the wave's count of active lanes, once, and every active lane gets its old value in
@@ -2724,6 +2766,10 @@ static void lds_instruction(translator *t, const uint32_t *w, const gcn_instruct
     const char *name = ins->name;
     if (w[0] & DS_GDS) {
         gds_counter(t, w, ins);
+        return;
+    }
+    if (!strcmp(name, "ds_swizzle_b32")) {
+        swizzle(t, w, ins);
         return;
     }
     if (!t->layout->lds.bytes) {
@@ -4032,6 +4078,9 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
         }
     }
 
+    /* survey mode: what failed before the instructions (the layout, the program's decoding) is kept, and
+       the instructions are still surveyed when they decoded */
+    if (t->failed && survey_mode && count >= 0 && labels) t->failed = 0, t->surveyed++;
     /* each block */
     for (long i = 0; !t->failed && i < count;) {
         const uint32_t b = block_of[instructions[i].at];
@@ -4050,7 +4099,9 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
             if (d->ins.encoding == GCN_SOPP && is_branch_named(name)) {
                 const long condition = branch_condition(t, name);
                 if (condition < 0) {
+                    t->at = d->at;
                     fail(t, "%s is not translated yet", name);
+                    if (survey_mode) t->failed = 0, t->surveyed++;
                     break;
                 }
                 const uint32_t target = block_of[(size_t)((long)next + (int16_t)(code[d->at] & 0xffff))];
@@ -4061,7 +4112,9 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
                 store(t, t->out, t->pc, chosen);
                 break;
             }
+            t->at = d->at;
             translate_instruction(t, code, d);
+            if (t->failed && survey_mode) t->failed = 0, t->surveyed++; /* pass over it, and go on to the rest */
             if (t->failed) break;
             if (i == count) {
                 fail(t, "the program runs past its end without s_endpgm");
@@ -4149,6 +4202,7 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
         fail(t, "the program reads v%u, the instance index over VGT_INSTANCE_STEP_RATE_%u, which no call set (or set to 0): not done yet", n,
              n - layout->vertex_index_vgpr - 1);
     }
+    if (t->surveyed) t->failed = 1;
     int result = -1;
     if (!t->failed) {
         *spirv = spirv_finish(m, spirv_word_count);
