@@ -1028,4 +1028,75 @@ static const uint32_t pixel_user_color[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* The local data share (LDS, 272 bytes: 68 dwords). Each lane writes lane + 100 at dword lane and adds 1
+   to dword 64; lanes 0-3 write byte 260 + lane = lane + 1; after s_barrier each lane stores, at byte
+   lane * 32 of s[4:7]: dword lane ^ 1, dwords lane and lane + 1 (ds_read2), dword 64 (the count, 64),
+   the short at byte 261 (0x0302), and dword 1024 (past the LDS: 0). */
+static const uint32_t lds_exchange[] = {
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0x4a0400ff, 0x00000064, /* v_add_i32_e32 v2, vcc, 0x64, v0 */
+    0xd8340000, 0x00000201, /* ds_write_b32 v1, v2 */
+    0x7e1402ff, 0x00000100, /* v_mov_b32_e32 v10, 0x100 */
+    0x7e120281, /* v_mov_b32_e32 v9, 1 */
+    0xd8000000, 0x0000090a, /* ds_add_u32 v10, v9 */
+    0x7d880084, /* v_cmp_gt_u32_e32 vcc, 4, v0 */
+    0xbe8c246a, /* s_and_saveexec_b64 s[12:13], vcc */
+    0x4a1600ff, 0x00000104, /* v_add_i32_e32 v11, vcc, 0x104, v0 */
+    0x4a180081, /* v_add_i32_e32 v12, vcc, 1, v0 */
+    0xd8780000, 0x00000c0b, /* ds_write_b8 v11, v12 */
+    0xbefe040c, /* s_mov_b64 exec, s[12:13] */
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+    0xbf8a0000, /* s_barrier */
+    0x3a060081, /* v_xor_b32_e32 v3, 1, v0 */
+    0x34060682, /* v_lshlrev_b32_e32 v3, 2, v3 */
+    0xd8d80000, 0x04000003, /* ds_read_b32 v4, v3 */
+    0xd8dc0100, 0x05000001, /* ds_read2_b32 v[5:6], v1 offset1:1 */
+    0xd8d80000, 0x0700000a, /* ds_read_b32 v7, v10 */
+    0x7e1a02ff, 0x00000104, /* v_mov_b32_e32 v13, 0x104 */
+    0xd8f00001, 0x0800000d, /* ds_read_u16 v8, v13 offset:1 */
+    0x7e1e02ff, 0x00001000, /* v_mov_b32_e32 v15, 0x1000 */
+    0xd8d80000, 0x1000000f, /* ds_read_b32 v16, v15 */
+    0x341c0085, /* v_lshlrev_b32_e32 v14, 5, v0 */
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+    0xe0781000, 0x8001040e, /* buffer_store_dwordx4 v[4:7], v14, s[4:7], 0 offen */
+    0xe0701010, 0x8001080e, /* buffer_store_dword v8, v14, s[4:7], 0 offen offset:16 */
+    0xe0701014, 0x8001100e, /* buffer_store_dword v16, v14, s[4:7], 0 offen offset:20 */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Tessellation stages (runtime/gcn_spirv.h). The local shader writes (float(vertex index), 0.5) at
+   16 * its RelAutoIndex in LDS; the hull shader writes six factors of 1.0 (a quad's) at its patch's 24
+   bytes of the tessellation-factor ring (the descriptor in s[0:3], the workgroup's offset in s8); the
+   domain shader reads its patch's two words back (16 * v2) and exports them as parameter 0, with the
+   position (u, v, 0, 1). */
+static const uint32_t tess_local[] = {
+    0x34080284, /* v_lshlrev_b32_e32 v4, 4, v1 */
+    0x7e0a0d00, /* v_cvt_f32_u32_e32 v5, v0 */
+    0x7e0c02f0, /* v_mov_b32_e32 v6, 0.5 */
+    0xd8380100, 0x00060504, /* ds_write2_b32 v4, v5, v6 offset1:1 */
+    0xbf810000, /* s_endpgm */
+};
+static const uint32_t tess_hull[] = {
+    0xd2900002, 0x02210101, /* v_bfe_u32 v2, v1, 0, 8 */
+    0x16060498, /* v_mul_u32_u24_e32 v3, 24, v2 */
+    0x7e0802f2, /* v_mov_b32_e32 v4, 1.0 */
+    0xe0701000, 0x08000403, /* buffer_store_dword v4, v3, s[0:3], s8 offen */
+    0xe0701004, 0x08000403, /* buffer_store_dword v4, v3, s[0:3], s8 offen offset:4 */
+    0xe0701008, 0x08000403, /* buffer_store_dword v4, v3, s[0:3], s8 offen offset:8 */
+    0xe070100c, 0x08000403, /* buffer_store_dword v4, v3, s[0:3], s8 offen offset:12 */
+    0xe0701010, 0x08000403, /* buffer_store_dword v4, v3, s[0:3], s8 offen offset:16 */
+    0xe0701014, 0x08000403, /* buffer_store_dword v4, v3, s[0:3], s8 offen offset:20 */
+    0xbf810000, /* s_endpgm */
+};
+static const uint32_t tess_domain[] = {
+    0x34080484, /* v_lshlrev_b32_e32 v4, 4, v2 */
+    0xd8dc0100, 0x05000004, /* ds_read2_b32 v[5:6], v4 offset1:1 */
+    0x7e0e0280, /* v_mov_b32_e32 v7, 0 */
+    0x7e1002f2, /* v_mov_b32_e32 v8, 1.0 */
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+    0xf800020f, 0x08070605, /* exp param0, v5, v6, v7, v8 */
+    0xf80008cf, 0x08070100, /* exp pos0, v0, v1, v7, v8 done */
+    0xbf810000, /* s_endpgm */
+};
+
 #endif

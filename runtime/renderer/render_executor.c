@@ -36,7 +36,7 @@
    alone samples a few hundred textures through dozens of shaders, into two dozen targets) */
 enum { MAX_SHADERS = 1024, MAX_PIPELINES = 1024, MAX_TARGETS = 128, MAX_RECT_STAGES = 16, MAX_COMPUTE_PIPELINES = 512, MAX_IMAGES = 1024,
        MAX_VIEWS = 16, MAX_SAMPLERS = 256, MAX_PASSES = 256, BATCH_SETS = 256, MAX_WRITTEN = 256, BATCH_SLOTS = 4, CHANGE_CHUNK = 64 << 10,
-       STOP_SLOTS = MAX_SHADERS + MAX_COMPUTE_PIPELINES };
+       MAX_TESS_PASSES = 64, MAX_TESS_CONTROLS = 16, STOP_SLOTS = MAX_SHADERS + MAX_COMPUTE_PIPELINES + MAX_TESS_PASSES };
 enum { MAX_VERTEX_IMAGE_LAYOUTS = 32 };
 enum { SNAPSHOT_SLOTS = 4 }; /* flip copies kept at once (rt_executor_snapshot_target) */
 enum { TILE_COPY_SIZES = 5 }; /* GPU tile copies of 1, 2, 4, 8 and 16-byte elements */
@@ -69,6 +69,8 @@ static unsigned pixel_input_vgpr(uint32_t input_address, unsigned bit)
     return vgpr;
 }
 enum { STAGE_VERTEX, STAGE_PIXEL, STAGES };
+/* a shader module's kind besides those: a domain shader (a tessellated draw's VS stage) */
+enum { STAGE_DOMAIN = STAGES };
 
 typedef struct {
     uint64_t code;
@@ -83,6 +85,7 @@ typedef struct {
     uint32_t user_read;              /* the user SGPRs it reads before writing them (gcn_spirv.h) */
     uint32_t input_controls[GCN_PIXEL_INPUTS]; /* a pixel shader's SPI_PS_INPUT_CNTL words, when set */
     int has_input_controls;
+    uint64_t tessellation;           /* a domain shader's tessellation settings (tessellation_key), 0 otherwise */
     VkShaderModule module;
 } shader_entry;
 
@@ -206,6 +209,8 @@ typedef struct {
     uint32_t write_masks;            /* CB_TARGET_MASK, the slots not written cleared */
     int strip;                       /* triangle strips, not lists */
     depth_plan depth;
+    VkShaderModule control;          /* a tessellated draw's control shader (its vertex shader then the domain shader), or VK_NULL_HANDLE */
+    uint32_t patch_points;           /* its control points a patch */
     VkPipeline pipeline;
 } pipeline_entry;
 
@@ -303,6 +308,7 @@ typedef struct {
     rt_hull_shader hull;
     rt_geometry_stage_shader export_stage, geometry;
     int local_set, hull_set, export_set, geometry_set;
+    uint32_t tess_user[2][GCN_USER_SGPR_MAX], tess_user_set[2]; /* the local and hull shaders' user data */
     uint32_t user[STAGES][GCN_USER_SGPR_MAX];
     rt_compute_shader compute;
     int compute_set;
@@ -411,6 +417,28 @@ struct rt_executor {
     size_t pass_count;
     int geometry_shaders;            /* the device draws geometry stages (rect lists need one) */
     int depth_bounds;                /* the device tests depth bounds (VkPhysicalDeviceFeatures depthBounds) */
+    /* tessellation (docs/RENDERER.md, "Tessellation"): whether the device draws it; the stages the vertex user
+       data reaches (a domain shader's too); the local and hull passes' LDS buffer and the factor buffer their
+       factor-ring accesses reach; the passes' pipeline layout and pipelines; the control shaders; the empty
+       vertex shader */
+    int tessellation;
+    VkShaderStageFlags vertex_stages;
+    gpu_buffer tess_lds, tess_factors;
+    VkPipelineLayout tess_layout;
+    struct {
+        uint64_t code, callee;
+        uint64_t key;                /* tessellation_key */
+        int hull;                    /* the hull pass, not the local one */
+        uint32_t user_sgprs, user_read;
+        VkPipeline pipeline;
+    } tess_passes[MAX_TESS_PASSES];
+    size_t tess_pass_count;
+    struct {
+        gcn_tessellation_control control;
+        VkShaderModule module;
+    } tess_controls[MAX_TESS_CONTROLS];
+    size_t tess_control_count;
+    VkShaderModule tess_vertex;
     float max_anisotropy;            /* the device's anisotropic filtering limit, or 0 without it */
     rect_stage rect_stages[MAX_RECT_STAGES];
     size_t rect_stage_count;
@@ -714,12 +742,15 @@ static uint32_t slot_mask(const draw_state *s, unsigned slot)
    Mesa's sid.h numbering) writes the clear colour into the tiles CMASK marks cleared: the executor
    applies fast clears before each draw (apply_fast_clears), so there is nothing left for the pass. 1
    when nothing at all would be written, 0 to draw, -1 with the reason otherwise. */
+/* VGT_SHADER_STAGES_EN 0x45: local, hull and vertex (as the domain shader) stages, a tessellated draw */
+enum { STAGES_TESSELLATION = 0x45 };
+
 static int check_state(const draw_state *s, depth_plan *plan, uint32_t *colours, char *error, size_t error_size)
 {
     /* VGT_SHADER_STAGES_EN (gfx_7_2_sh_mask.h): LS_EN bits 0-1, HS_EN 2, ES_EN 3-4, GS_EN 5, VS_EN 6-7; the
        GPU library's setter (0x01476030) takes 0 (vertex and pixel shaders), 0x45 (local, hull and vertex:
        tessellation), 0xad (tessellation with a geometry shader), 0xb0 (export and geometry) and 0x200 */
-    if (s->shader_stages)
+    if (s->shader_stages && s->shader_stages != STAGES_TESSELLATION)
         return failed(error, error_size,
                       "shader stages VGT_SHADER_STAGES_EN %#x (tessellation or a geometry shader): not drawn yet (local shader %#llx, "
                       "hull shader %#llx: %u patches of %u to %u points, domain %u, partitioning %u, topology %u; export shader %#llx, "
@@ -728,7 +759,7 @@ static int check_state(const draw_state *s, depth_plan *plan, uint32_t *colours,
                       s->hull_set ? (unsigned long long)s->hull.code : 0ull, s->hull.patches, s->hull.input_points, s->hull.output_points,
                       s->hull.domain, s->hull.partitioning, s->hull.topology, s->export_set ? (unsigned long long)s->export_stage.code : 0ull,
                       s->geometry_set ? (unsigned long long)s->geometry.code : 0ull, s->vertex_set ? (unsigned long long)s->vertex.code : 0ull);
-    if (s->primitive_set && s->primitive_type != DI_PT_TRILIST && s->primitive_type != DI_PT_TRISTRIP && s->primitive_type != DI_PT_RECTLIST)
+    if (s->shader_stages != STAGES_TESSELLATION && s->primitive_set && s->primitive_type != DI_PT_TRILIST && s->primitive_type != DI_PT_TRISTRIP && s->primitive_type != DI_PT_RECTLIST)
         return failed(error, error_size, "primitive type %u: only triangle lists and strips and rect lists are drawn yet", s->primitive_type);
     if (plan_depth(s, plan, error, error_size)) return -1;
     if (s->instances_set && s->instances != 1) return failed(error, error_size, "%u instances: only one is drawn yet", s->instances);
@@ -862,6 +893,8 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
                                                  .storageBuffer8BitAccess = (VkBool32)x->small_elements};
     x->geometry_shaders = features.features.geometryShader == VK_TRUE;
     x->depth_bounds = features.features.depthBounds == VK_TRUE;
+    x->tessellation = features.features.tessellationShader == VK_TRUE;
+    x->vertex_stages = VK_SHADER_STAGE_VERTEX_BIT | (x->tessellation ? VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT : 0);
     x->storage_images = features.features.shaderStorageImageReadWithoutFormat && features.features.shaderStorageImageWriteWithoutFormat;
     VkPhysicalDeviceProperties properties;
     vkGetPhysicalDeviceProperties(x->physical, &properties);
@@ -871,6 +904,7 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
                                                            .geometryShader = features.features.geometryShader,
                                                            .samplerAnisotropy = features.features.samplerAnisotropy,
                                                            .depthBounds = features.features.depthBounds,
+                                                           .tessellationShader = features.features.tessellationShader,
                                                            .shaderStorageImageReadWithoutFormat = (VkBool32)x->storage_images,
                                                            .shaderStorageImageWriteWithoutFormat = (VkBool32)x->storage_images}};
     const char *extensions[] = {VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME};
@@ -883,7 +917,7 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
                                           .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT};
     if (vkCreateCommandPool(x->device, &pool, NULL, &x->pool) != VK_SUCCESS) return failed(error, error_size, "no command pool");
     /* each stage's user data in the push constants: the vertex shader's at 0, the pixel shader's at 64 */
-    const VkPushConstantRange ranges[] = {{VK_SHADER_STAGE_VERTEX_BIT, VERTEX_USER_DATA, USER_DATA_BYTES},
+    const VkPushConstantRange ranges[] = {{x->vertex_stages, VERTEX_USER_DATA, USER_DATA_BYTES},
                                           {VK_SHADER_STAGE_FRAGMENT_BIT, PIXEL_USER_DATA, USER_DATA_BYTES}};
     const VkPipelineLayoutCreateInfo layout = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .pushConstantRangeCount = 2,
                                                .pPushConstantRanges = ranges};
@@ -894,6 +928,12 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
                                                        .pushConstantRangeCount = 1, .pPushConstantRanges = &compute_range};
     if (vkCreatePipelineLayout(x->device, &compute_layout, NULL, &x->compute_layout) != VK_SUCCESS)
         return failed(error, error_size, "no compute pipeline layout");
+    /* the tessellation passes': the user data, then the draw record's address (gcn_spirv.h) */
+    const VkPushConstantRange tess_range = {VK_SHADER_STAGE_COMPUTE_BIT, 0, GCN_TESS_DRAW_OFFSET + 2 * sizeof(uint32_t)};
+    const VkPipelineLayoutCreateInfo tess_layout = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                                    .pushConstantRangeCount = 1, .pPushConstantRanges = &tess_range};
+    if (vkCreatePipelineLayout(x->device, &tess_layout, NULL, &x->tess_layout) != VK_SUCCESS)
+        return failed(error, error_size, "no tessellation pipeline layout");
     /* compute shaders with storage images: set 0, bindings 0 to n - 1 */
     for (unsigned n = 1; n <= GCN_MAX_IMAGES; n++) {
         VkDescriptorSetLayoutBinding bindings[GCN_MAX_IMAGES];
@@ -1012,6 +1052,9 @@ static int stop_reason(uint32_t code, char *error, size_t error_size)
     if (code >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_IMAGE_RANGE)
         return failed(error, error_size, "a shader loaded an image texel outside the image or past its last level: not done yet "
                       "(what the GPU returns there is not established)");
+    if (code >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_TESSELLATION_LIMIT)
+        return failed(error, error_size, "a tessellated draw of %u patches, more than the LDS buffer's workgroups or the tessellation-factor "
+                      "ring hold: not drawn yet", code & 0xffffff);
     return failed(error, error_size, "a shader stopped at run time with code %#x", code);
 }
 
@@ -1025,10 +1068,16 @@ static int check_stop_words(rt_executor *x, char *error, size_t error_size)
         x->stop_words[i] = 0;
         char reason[512];
         stop_reason(code, reason, sizeof reason);
+        if (i >= MAX_SHADERS + MAX_COMPUTE_PIPELINES) { /* a tessellation pass (tessellation_pass_for) */
+            const size_t k = i - MAX_SHADERS - MAX_COMPUTE_PIPELINES;
+            return failed(error, error_size, "the %s shader at %#llx: %s", x->tess_passes[k].hull ? "hull" : "local",
+                          (unsigned long long)x->tess_passes[k].code, reason);
+        }
         const int compute = i >= MAX_SHADERS;
         const shader_entry *shader = compute ? NULL : &x->shaders[i];
         const uint64_t code_address = compute ? x->computes[i - MAX_SHADERS].code : shader->code;
-        return failed(error, error_size, "the %s shader at %#llx: %s", compute ? "compute" : shader->stage == STAGE_VERTEX ? "vertex" : "pixel",
+        return failed(error, error_size, "the %s shader at %#llx: %s",
+                      compute ? "compute" : shader->stage == STAGE_VERTEX ? "vertex" : shader->stage == STAGE_DOMAIN ? "domain" : "pixel",
                       (unsigned long long)code_address, reason);
     }
     return 0;
@@ -2309,11 +2358,41 @@ static pass_entry *pass_for(rt_executor *x, target_entry *const colors[RT_COLOR_
 /* The code's length is found by the translator; it may read up to the end of the guest memory. */
 /* settings: a vertex shader's PA_CL_VS_OUT_CNTL, a pixel shader's pixel_settings (part of the
    cache key, as are a pixel shader's input_controls: GCN_PIXEL_INPUTS words, or NULL). */
+/* ---- tessellation (docs/RENDERER.md, "Tessellation") ----
+
+   A tessellated draw (VGT_SHADER_STAGES_EN 0x45) runs the local and hull shaders as compute passes over
+   workgroups of VGT_LS_HS_CONFIG's patches, whose LDS lives in one buffer, then draws with a tessellation
+   pipeline: an empty vertex shader, a control shader taking the factors the hull pass left in the factor
+   buffer, the domain shader as the evaluation shader, and the pixel shader (runtime/gcn_spirv.h). */
+enum { TESS_LDS_BYTES = 16 << 20, TESS_FACTOR_RING_BYTES = 128 << 10, TESS_RECORD_WORDS = 8, TESS_DISPATCH_WORD = 5 };
+
+/* The settings a tessellation stage's translation depends on, in one key (never 0). */
+static uint64_t tessellation_key(const rt_hull_shader *h, uint32_t lds_bytes)
+{
+    return (uint64_t)lds_bytes << 32 | (uint64_t)(h->domain | h->partitioning << 2 | h->topology << 5 | (h->patches & 0xff) << 8 |
+                                                  (h->input_points & 0x3f) << 16 | (h->output_points & 0x3f) << 22 | (uint32_t)h->off_chip << 28);
+}
+
+static uint32_t factor_stride(uint32_t domain) { return domain == RT_TESS_QUADS ? 24 : domain == RT_TESS_TRIANGLES ? 16 : 8; }
+
+static gcn_tessellation_layout tessellation_layout(const rt_executor *x, const rt_hull_shader *h, uint32_t lds_bytes, uint32_t user_sgprs,
+                                                   uint64_t error_address)
+{
+    return (gcn_tessellation_layout){.user_sgprs = user_sgprs, .patches = h->patches, .input_points = h->input_points,
+                                     .output_points = h->output_points, .address_offset = x->address_offset, .error_address = error_address,
+                                     .lds = {.bytes = lds_bytes, .address = x->tess_lds.address}, .lds_workgroups = TESS_LDS_BYTES / lds_bytes,
+                                     .off_chip = h->off_chip, .factor_stride = factor_stride(h->domain),
+                                     .factor_ring = RT_TESSELLATION_FACTOR_RING, .factor_ring_bytes = TESS_FACTOR_RING_BYTES,
+                                     .factor_buffer = x->tess_factors.address, .domain = h->domain, .partitioning = h->partitioning,
+                                     .topology = h->topology};
+}
+
 static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint32_t user_sgprs, uint32_t settings,
                                  const gcn_image_binding *images, unsigned image_count, const gcn_resource_origin *samplers,
                                  unsigned sampler_count, unsigned first_binding, uint64_t callee, const uint32_t *input_controls,
-                                 uint32_t *user_read, char *error, size_t error_size)
+                                 const draw_state *tess, uint32_t *user_read, char *error, size_t error_size)
 {
+    const uint64_t tessellation = stage == STAGE_DOMAIN ? tessellation_key(&tess->hull, tess->local.lds_bytes) : 0;
     const size_t control_bytes = GCN_PIXEL_INPUTS * sizeof *input_controls;
     for (size_t i = 0; i < x->shader_count; i++) {
         const shader_entry *s = &x->shaders[i];
@@ -2321,13 +2400,13 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
             s->first_binding == first_binding && s->has_input_controls == (input_controls != NULL) &&
             (!input_controls || !memcmp(s->input_controls, input_controls, control_bytes)) &&
             s->image_count == image_count && !memcmp(s->images, images, image_count * sizeof *images) &&
-            s->sampler_count == sampler_count && !memcmp(s->samplers, samplers, sampler_count * sizeof *samplers)) {
+            s->sampler_count == sampler_count && !memcmp(s->samplers, samplers, sampler_count * sizeof *samplers) && s->tessellation == tessellation) {
             *user_read = s->user_read;
             return s->module;
         }
     }
     if (code < x->guest_base || code >= x->guest_base + x->size || code % 4) {
-        failed(error, error_size, "%s shader code at %#llx is outside the GPU-visible memory", stage == STAGE_VERTEX ? "vertex" : "pixel",
+        failed(error, error_size, "%s shader code at %#llx is outside the GPU-visible memory", stage == STAGE_PIXEL ? "pixel" : "vertex",
                (unsigned long long)code);
         return VK_NULL_HANDLE;
     }
@@ -2349,6 +2428,11 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
                                           .code_address = code, .images = images, .image_count = image_count,
                                           .first_binding = first_binding, .user_data_read = user_read};
         result = gcn_translate_vertex(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
+    } else if (stage == STAGE_DOMAIN) {
+        gcn_tessellation_layout layout = tessellation_layout(x, &tess->hull, tess->local.lds_bytes, user_sgprs, stop_slot(x, 0, x->shader_count));
+        layout.push_constant_offset = VERTEX_USER_DATA, layout.output_control = settings, layout.images = images;
+        layout.image_count = image_count, layout.first_binding = first_binding, layout.user_data_read = user_read;
+        result = gcn_translate_domain(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
     } else {
         const uint32_t inputs = settings & ~(SETTINGS_FRONT_FACE_ALL_BITS | SETTINGS_DEPTH_EXPORT); /* a pixel shader's SPI_PS_INPUT_ADDR */
         const gcn_pixel_layout layout = {.user_sgprs = user_sgprs, .barycentric_vgpr = pixel_input_vgpr(inputs, 1),
@@ -2365,7 +2449,8 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
         result = gcn_translate_pixel(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
     }
     if (result) {
-        failed(error, error_size, "%s shader at %#llx: %s", stage == STAGE_VERTEX ? "vertex" : "pixel", (unsigned long long)code, reason);
+        failed(error, error_size, "%s shader at %#llx: %s", stage == STAGE_VERTEX ? "vertex" : stage == STAGE_DOMAIN ? "domain" : "pixel",
+               (unsigned long long)code, reason);
         return VK_NULL_HANDLE;
     }
     const VkShaderModuleCreateInfo info = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = spirv_words * 4, .pCode = spirv};
@@ -2379,22 +2464,25 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
     shader_entry *e = &x->shaders[x->shader_count++];
     *e = (shader_entry){.code = code, .stage = stage, .user_sgprs = user_sgprs, .settings = settings, .image_count = image_count,
                         .sampler_count = sampler_count, .first_binding = first_binding, .callee = callee, .user_read = *user_read,
-                        .module = module};
+                        .tessellation = tessellation, .module = module};
     memcpy(e->images, images, image_count * sizeof *images);
     memcpy(e->samplers, samplers, sampler_count * sizeof *samplers);
     if (input_controls) memcpy(e->input_controls, input_controls, control_bytes), e->has_input_controls = 1;
     return module;
 }
 
+/* With control set, a tessellation pipeline: the empty vertex shader, control, then vertex (the domain shader)
+   as the evaluation shader, over patches of patch_points points. */
 static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderModule geometry, VkShaderModule pixel, VkRenderPass pass,
                                VkPipelineLayout layout, uint32_t colours, const uint32_t blend_control[RT_COLOR_TARGETS], uint32_t write_masks,
-                               int strip, const depth_plan *depth, int has_depth, char *error, size_t error_size)
+                               int strip, const depth_plan *depth, int has_depth, VkShaderModule control, uint32_t patch_points,
+                               char *error, size_t error_size)
 {
     for (size_t i = 0; i < x->pipeline_count; i++) {
         const pipeline_entry *p = &x->pipelines[i];
         if (p->vertex == vertex && p->geometry == geometry && p->pixel == pixel && p->pass == pass && p->layout == layout &&
             p->colours == colours && !memcmp(p->blend_control, blend_control, sizeof p->blend_control) && p->write_masks == write_masks &&
-            p->strip == strip && !memcmp(&p->depth, depth, sizeof *depth))
+            p->strip == strip && !memcmp(&p->depth, depth, sizeof *depth) && p->control == control && p->patch_points == patch_points)
             return p->pipeline;
     }
     if (x->pipeline_count == MAX_PIPELINES) {
@@ -2403,10 +2491,17 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
     }
     /* the vertex stage, then the pixel stage unless the draw has none (a depth-only pass), then the
        rect-list geometry stage if any */
-    VkPipelineShaderStageCreateInfo stages[3];
+    VkPipelineShaderStageCreateInfo stages[4];
     uint32_t stage_count = 0;
     stages[stage_count++] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                                                             .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vertex, .pName = "main"};
+                                                             .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = control ? x->tess_vertex : vertex,
+                                                             .pName = "main"};
+    if (control) {
+        stages[stage_count++] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                                 .stage = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, .module = control, .pName = "main"};
+        stages[stage_count++] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                                 .stage = VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, .module = vertex, .pName = "main"};
+    }
     if (pixel)
         stages[stage_count++] = (VkPipelineShaderStageCreateInfo){.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                                                                  .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = pixel, .pName = "main"};
@@ -2415,8 +2510,11 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
                                                                  .stage = VK_SHADER_STAGE_GEOMETRY_BIT, .module = geometry, .pName = "main"};
     const VkPipelineVertexInputStateCreateInfo input = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     const VkPipelineInputAssemblyStateCreateInfo assembly = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-                                                             .topology = strip ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP
-                                                                               : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+                                                             .topology = control ? VK_PRIMITIVE_TOPOLOGY_PATCH_LIST
+                                                                         : strip ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP
+                                                                                 : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+    const VkPipelineTessellationStateCreateInfo tessellation = {.sType = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO,
+                                                                .patchControlPoints = patch_points};
     const VkPipelineViewportStateCreateInfo viewport = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
                                                         .viewportCount = 1, .scissorCount = 1};
     const VkPipelineRasterizationStateCreateInfo raster = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
@@ -2453,6 +2551,7 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
                                                       .dynamicStateCount = depth->depth_bounds ? 7 : 6, .pDynamicStates = dynamic_states};
     const VkGraphicsPipelineCreateInfo info = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = stage_count,
                                                .pStages = stages, .pVertexInputState = &input, .pInputAssemblyState = &assembly,
+                                               .pTessellationState = control ? &tessellation : NULL,
                                                .pViewportState = &viewport, .pRasterizationState = &raster,
                                                .pMultisampleState = &samples, .pColorBlendState = &blend, .pDynamicState = &dynamic,
                                                .pDepthStencilState = has_depth ? &depth_stencil : NULL, .layout = layout, .renderPass = pass};
@@ -2463,7 +2562,8 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
     }
     x->pipelines[x->pipeline_count++] =
         (pipeline_entry){.vertex = vertex, .geometry = geometry, .pixel = pixel, .pass = pass, .layout = layout, .colours = colours,
-                         .write_masks = write_masks, .strip = strip, .depth = *depth, .pipeline = pipeline};
+                         .write_masks = write_masks, .strip = strip, .depth = *depth, .control = control, .patch_points = patch_points,
+                         .pipeline = pipeline};
     memcpy(x->pipelines[x->pipeline_count - 1].blend_control, blend_control, sizeof x->pipelines[0].blend_control);
     return pipeline;
 }
@@ -2591,7 +2691,7 @@ static int graphics_layout_for(rt_executor *x, unsigned n, unsigned m, unsigned 
     VkDescriptorSetLayoutBinding bindings[2 * GCN_MAX_IMAGES + GCN_MAX_SAMPLERS];
     for (unsigned b = 0; b < n + m + v; b++)
         bindings[b] = (VkDescriptorSetLayoutBinding){b, b >= n && b < n + m ? VK_DESCRIPTOR_TYPE_SAMPLER : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1,
-                                                     b < n + m ? VK_SHADER_STAGE_FRAGMENT_BIT : VK_SHADER_STAGE_VERTEX_BIT, NULL};
+                                                     b < n + m ? VK_SHADER_STAGE_FRAGMENT_BIT : x->vertex_stages, NULL};
     const VkDescriptorSetLayoutCreateInfo set = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = n + m + v,
                                                  .pBindings = bindings};
     VkDescriptorSetLayout made_set = VK_NULL_HANDLE;
@@ -2678,6 +2778,194 @@ static int64_t draw_indirect_arguments(rt_executor *x, VkCommandBuffer commands,
     return (int64_t)entry;
 }
 
+/* The tessellation buffers, made on the first tessellated draw: 0, or -1 with the reason. */
+static int tessellation_buffers(rt_executor *x, char *error, size_t error_size)
+{
+    if (!x->tessellation) return failed(error, error_size, "a tessellated draw, which this device does not draw");
+    if (!x->tess_lds.buffer && gpu_buffer_make(x, &x->tess_lds, TESS_LDS_BYTES, 0))
+        return failed(error, error_size, "no buffer for the tessellation stages' LDS");
+    if (!x->tess_factors.buffer && gpu_buffer_make(x, &x->tess_factors, TESS_FACTOR_RING_BYTES, 0))
+        return failed(error, error_size, "no buffer for the tessellation factors");
+    if (!x->tess_vertex) {
+        uint32_t *spirv = NULL;
+        size_t words = 0;
+        char reason[200];
+        if (gcn_tessellation_vertex_shader(&spirv, &words, reason, sizeof reason)) return failed(error, error_size, "%s", reason);
+        const VkShaderModuleCreateInfo info = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = words * 4, .pCode = spirv};
+        const VkResult made = vkCreateShaderModule(x->device, &info, NULL, &x->tess_vertex);
+        free(spirv);
+        if (made != VK_SUCCESS) return failed(error, error_size, "the device refused the tessellation vertex shader");
+    }
+    return 0;
+}
+
+/* The control shader for the hull shader's settings, made once. */
+static VkShaderModule tessellation_control_for(rt_executor *x, const rt_hull_shader *h, char *error, size_t error_size)
+{
+    const gcn_tessellation_control c = {.domain = h->domain, .partitioning = h->partitioning, .min_level = h->min_level,
+                                        .max_level = h->max_level, .factor_buffer = x->tess_factors.address,
+                                        .factor_stride = factor_stride(h->domain)};
+    for (size_t i = 0; i < x->tess_control_count; i++)
+        if (!memcmp(&x->tess_controls[i].control, &c, sizeof c)) return x->tess_controls[i].module;
+    if (x->tess_control_count == MAX_TESS_CONTROLS) {
+        failed(error, error_size, "more tessellation control shaders than the executor keeps");
+        return VK_NULL_HANDLE;
+    }
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    char reason[200];
+    if (gcn_tessellation_control_shader(&c, &spirv, &words, reason, sizeof reason)) {
+        failed(error, error_size, "%s", reason);
+        return VK_NULL_HANDLE;
+    }
+    const VkShaderModuleCreateInfo info = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = words * 4, .pCode = spirv};
+    VkShaderModule module = VK_NULL_HANDLE;
+    const VkResult made = vkCreateShaderModule(x->device, &info, NULL, &module);
+    free(spirv);
+    if (made != VK_SUCCESS) {
+        failed(error, error_size, "the device refused a tessellation control shader");
+        return VK_NULL_HANDLE;
+    }
+    x->tess_controls[x->tess_control_count].control = c;
+    x->tess_controls[x->tess_control_count++].module = module;
+    return module;
+}
+
+/* The local (hull 0) or hull pass's pipeline, translated once per shader and settings. */
+static VkPipeline tessellation_pass_for(rt_executor *x, const draw_state *s, int hull, uint32_t *user_read, char *error, size_t error_size)
+{
+    const uint64_t code = hull ? s->hull.code : s->local.code;
+    const uint32_t user_sgprs = hull ? s->hull.user_sgprs : s->local.user_sgprs;
+    const uint64_t key = tessellation_key(&s->hull, s->local.lds_bytes);
+    if (code < x->guest_base || code >= x->guest_base + x->size || code % 4) {
+        failed(error, error_size, "%s shader code at %#llx is outside the GPU-visible memory", hull ? "hull" : "local", (unsigned long long)code);
+        return VK_NULL_HANDLE;
+    }
+    /* the local shader may call a fetch shader, as a vertex shader does */
+    uint64_t callee = 0;
+    unsigned pair = 0;
+    char reason[256];
+    const size_t dwords = (size_t)((x->guest_base + x->size - code) / 4);
+    const int calls = hull ? 0 : gcn_call_sgpr((const uint32_t *)(uintptr_t)code, dwords, &pair, reason, sizeof reason);
+    if (calls < 0) {
+        failed(error, error_size, "local shader at %#llx: %s", (unsigned long long)code, reason);
+        return VK_NULL_HANDLE;
+    }
+    if (calls) {
+        if (pair + 2 > user_sgprs) {
+            failed(error, error_size, "local shader at %#llx calls through s[%u:%u], not in its user data", (unsigned long long)code, pair, pair + 1);
+            return VK_NULL_HANDLE;
+        }
+        callee = (uint64_t)(s->tess_user[0][pair + 1] & 0xffff) << 32 | s->tess_user[0][pair];
+        if (callee < x->guest_base || callee >= x->guest_base + x->size || callee % 4) {
+            failed(error, error_size, "a fetch shader at %#llx, outside the GPU-visible memory", (unsigned long long)callee);
+            return VK_NULL_HANDLE;
+        }
+    }
+    for (size_t i = 0; i < x->tess_pass_count; i++)
+        if (x->tess_passes[i].code == code && x->tess_passes[i].hull == hull && x->tess_passes[i].key == key &&
+            x->tess_passes[i].callee == callee && x->tess_passes[i].user_sgprs == user_sgprs) {
+            *user_read = x->tess_passes[i].user_read;
+            return x->tess_passes[i].pipeline;
+        }
+    if (x->tess_pass_count == MAX_TESS_PASSES) {
+        failed(error, error_size, "more tessellation passes than the executor keeps");
+        return VK_NULL_HANDLE;
+    }
+    gcn_tessellation_layout layout = tessellation_layout(x, &s->hull, s->local.lds_bytes, user_sgprs,
+                                                         x->stop_address + 4 * (MAX_SHADERS + MAX_COMPUTE_PIPELINES + x->tess_pass_count));
+    layout.user_data_read = user_read;
+    if (callee) {
+        layout.callee = (const uint32_t *)(uintptr_t)callee, layout.callee_dwords = (size_t)((x->guest_base + x->size - callee) / 4);
+        layout.code_address = code;
+    }
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    const int result = hull ? gcn_translate_hull((const uint32_t *)(uintptr_t)code, dwords, &layout, &spirv, &words, reason, sizeof reason)
+                            : gcn_translate_local((const uint32_t *)(uintptr_t)code, dwords, &layout, &spirv, &words, reason, sizeof reason);
+    if (result) {
+        failed(error, error_size, "%s shader at %#llx: %s", hull ? "hull" : "local", (unsigned long long)code, reason);
+        return VK_NULL_HANDLE;
+    }
+    const VkShaderModuleCreateInfo module_info = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = words * 4, .pCode = spirv};
+    VkShaderModule module = VK_NULL_HANDLE;
+    const VkResult made = vkCreateShaderModule(x->device, &module_info, NULL, &module);
+    free(spirv);
+    if (made != VK_SUCCESS) {
+        failed(error, error_size, "the device refused a translated %s shader", hull ? "hull" : "local");
+        return VK_NULL_HANDLE;
+    }
+    const VkComputePipelineCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = module,
+                  .pName = "main"},
+        .layout = x->tess_layout};
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    const VkResult piped = vkCreateComputePipelines(x->device, VK_NULL_HANDLE, 1, &info, NULL, &pipeline);
+    vkDestroyShaderModule(x->device, module, NULL);
+    if (piped != VK_SUCCESS) {
+        failed(error, error_size, "the device refused a %s pass pipeline", hull ? "hull" : "local");
+        return VK_NULL_HANDLE;
+    }
+    x->tess_passes[x->tess_pass_count++] = (__typeof__(x->tess_passes[0])){.code = code, .callee = callee, .key = key, .hull = hull,
+                                                                           .user_sgprs = user_sgprs, .user_read = *user_read, .pipeline = pipeline};
+    return pipeline;
+}
+
+/* The local and hull passes of a tessellated draw, recorded before its render pass: the draw's record
+   (gcn_spirv.h: its control points, first, and index buffer) and the passes' workgroup count, one per control
+   point (lanes past the draw's patches do nothing), written to a batch entry; the count is copied from an
+   indirect draw's arguments on the GPU. vertices and first are a direct draw's; index_address (a GPU address)
+   and index_size an indexed draw's. 0, or -1 with the reason. */
+static int tessellation_passes(rt_executor *x, VkCommandBuffer commands, const draw_state *s, uint64_t indirect, uint32_t vertices,
+                               uint64_t index_address, uint32_t index_size, const VkPipeline passes[2], char *error, size_t error_size)
+{
+    enum { ENTRY_BYTES = INDIRECT_DRAW_WORDS * sizeof(uint32_t), ENTRIES = TESS_RECORD_WORDS * sizeof(uint32_t) / ENTRY_BYTES };
+    batch_slot *b = &x->slots[x->current];
+    if (!b->indirect.buffer && gpu_buffer_make(x, &b->indirect, (VkDeviceSize)INDIRECT_DRAWS_PER_BATCH * ENTRY_BYTES, 0))
+        return failed(error, error_size, "no buffer for indirect draws' arguments");
+    if (b->indirect_count + ENTRIES > INDIRECT_DRAWS_PER_BATCH)
+        return failed(error, error_size, "more than %d indirect draws in one batch", INDIRECT_DRAWS_PER_BATCH);
+    const VkDeviceSize entry = (VkDeviceSize)b->indirect_count * ENTRY_BYTES;
+    b->indirect_count += ENTRIES;
+    const uint32_t record[TESS_RECORD_WORDS] = {vertices, 0, (uint32_t)index_address, (uint32_t)(index_address >> 32), index_size, vertices, 1, 1};
+    /* earlier work's writes (the indirect arguments) and reads (the LDS and factor buffers, the last entry) come first */
+    const VkMemoryBarrier earlier = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT,
+                                     .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT |
+                                                      VK_ACCESS_SHADER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                         &earlier, 0, NULL, 0, NULL);
+    vkCmdUpdateBuffer(commands, b->indirect.buffer, entry, sizeof record, record);
+    if (indirect) { /* the arguments' vertex count, as the draw's and as the workgroup count */
+        const VkBufferCopy counts[] = {{.srcOffset = indirect - x->guest_base, .dstOffset = entry, .size = sizeof(uint32_t)},
+                                       {.srcOffset = indirect - x->guest_base, .dstOffset = entry + TESS_DISPATCH_WORD * sizeof(uint32_t),
+                                        .size = sizeof(uint32_t)}};
+        vkCmdCopyBuffer(commands, x->buffer, b->indirect.buffer, 2, counts);
+    }
+    const VkMemoryBarrier written = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                     .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
+                         &written, 0, NULL, 0, NULL);
+    const uint64_t record_address = b->indirect.address + entry;
+    for (int hull = 0; hull < 2; hull++) {
+        uint32_t push[GCN_USER_SGPR_MAX + 2] = {0};
+        memcpy(push, s->tess_user[hull], sizeof s->tess_user[hull]);
+        push[GCN_USER_SGPR_MAX] = (uint32_t)record_address, push[GCN_USER_SGPR_MAX + 1] = (uint32_t)(record_address >> 32);
+        vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, passes[hull]);
+        vkCmdPushConstants(commands, x->tess_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
+        vkCmdDispatchIndirect(commands, b->indirect.buffer, entry + TESS_DISPATCH_WORD * sizeof(uint32_t));
+        /* the local pass's LDS writes reach the hull pass; both passes' writes reach the draw's stages */
+        const VkMemoryBarrier pass = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+                                      .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
+        vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             hull ? VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT | VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT |
+                                        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+                                  : VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 1, &pass, 0, NULL, 0, NULL);
+    }
+    return 0;
+}
+
 /* A draw of index_count vertices (indices, when given, index them), or, with `indirect` not 0, of the
    counts in guest memory there (draw_indirect_arguments). */
 static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uint32_t colours, uint32_t index_count, const index_range *indices,
@@ -2685,9 +2973,19 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
 {
     if (indirect && (indirect < x->guest_base || indirect - x->guest_base > x->size - INDIRECT_DRAW_WORDS * sizeof(uint32_t)))
         return failed(error, error_size, "an indirect draw's arguments at %#llx, outside the guest memory", (unsigned long long)indirect);
-    if (indirect && s->vertex_set && s->vertex.vgpr_inputs)
+    const int tess = s->shader_stages == STAGES_TESSELLATION;
+    if (indirect && !tess && s->vertex_set && s->vertex.vgpr_inputs)
         return failed(error, error_size, "an indirect draw whose vertex shader takes instance indexes (VGPR_COMP_CNT %u): not drawn yet",
                       s->vertex.vgpr_inputs);
+    if (tess) {
+        if (!s->local_set || !s->hull_set) return failed(error, error_size, "a tessellated draw without a local and a hull shader");
+        if (s->instances_set && s->instances > 1) return failed(error, error_size, "an instanced tessellated draw: not drawn yet");
+        if (!s->local.lds_bytes || s->hull.patches * s->hull.input_points > 1024 || s->hull.patches * s->hull.output_points > 1024)
+            return failed(error, error_size, "a tessellated draw with %u bytes of LDS and %u patches of %u to %u points: not drawn yet",
+                          s->local.lds_bytes, s->hull.patches, s->hull.input_points, s->hull.output_points);
+        if (s->hull.workgroup_size_enabled) return failed(error, error_size, "a hull shader taking its workgroup's size (TG_SIZE_EN): not drawn yet");
+        if (tessellation_buffers(x, error, error_size)) return -1;
+    }
     if (!s->viewport_set) return failed(error, error_size, "a draw with no viewport");
     if (!s->vertex_set || !s->pixel_set) return failed(error, error_size, "a draw without a vertex and a pixel shader");
     /* no pixel shader: a depth-only pass, drawn with no pixel stage; it must write no colour target */
@@ -2764,19 +3062,34 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
                      vertex_bindings, vertex_views, NULL, &vertex_image_count, error, error_size))
         return -1;
     uint32_t vertex_read = 0, pixel_read = 0;
-    const VkShaderModule vertex = shader_for(x, STAGE_VERTEX, s->vertex.code, s->vertex.user_sgprs, s->vertex.output_control, vertex_bindings,
-                                             vertex_image_count, NULL, 0, image_count + sampler_count, callee, NULL, &vertex_read, error, error_size);
+    const VkShaderModule vertex = shader_for(x, tess ? STAGE_DOMAIN : STAGE_VERTEX, s->vertex.code, s->vertex.user_sgprs, s->vertex.output_control,
+                                             vertex_bindings, vertex_image_count, NULL, 0, image_count + sampler_count, callee, NULL, s,
+                                             &vertex_read, error, error_size);
     if (!vertex) return -1;
+    VkShaderModule control = VK_NULL_HANDLE;
+    VkPipeline passes[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    if (tess) {
+        if (callee) return failed(error, error_size, "a domain shader that calls a fetch shader: not drawn yet");
+        control = tessellation_control_for(x, &s->hull, error, error_size);
+        if (!control) return -1;
+        for (int hull = 0; hull < 2; hull++) {
+            uint32_t read = 0;
+            passes[hull] = tessellation_pass_for(x, s, hull, &read, error, error_size);
+            if (!passes[hull] || check_user_data(hull ? "hull" : "local", hull ? s->hull.code : s->local.code, read, s->tess_user_set[hull], error,
+                                                 error_size))
+                return -1;
+        }
+    }
     const VkShaderModule pixel = depth_only ? VK_NULL_HANDLE
                                             : shader_for(x, STAGE_PIXEL, s->pixel.code, s->pixel.user_sgprs,
                                                          pixel_settings(&s->pixel), bindings,
                                                          image_count, sampler_origins, sampler_count, 0, 0,
-                                                         s->ps_input_control_set ? s->ps_input_control : NULL, &pixel_read, error, error_size);
+                                                         s->ps_input_control_set ? s->ps_input_control : NULL, NULL, &pixel_read, error, error_size);
     if (!depth_only && !pixel) return -1;
     if (check_user_data("vertex", s->vertex.code, vertex_read, s->user_set[STAGE_VERTEX], error, error_size) ||
         (!depth_only && check_user_data("pixel", s->pixel.code, pixel_read, s->user_set[STAGE_PIXEL], error, error_size)))
         return -1;
-    const int rect_list = s->primitive_set && s->primitive_type == DI_PT_RECTLIST;
+    const int rect_list = !tess && s->primitive_set && s->primitive_type == DI_PT_RECTLIST;
     if (rect_list && !indirect && index_count % 3) return failed(error, error_size, "a rect list of %u vertices, not whole rects of three", index_count);
     const VkShaderModule geometry = rect_list ? rect_stage_for(x, &s->vertex, error, error_size) : VK_NULL_HANDLE;
     if (rect_list && !geometry) return -1;
@@ -2784,9 +3097,9 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
     VkPipelineLayout layout = x->layout;
     if (has_set && graphics_layout_for(x, image_count, sampler_count, vertex_image_count, &set_layout, &layout, error, error_size)) return -1;
-    const int strip = s->primitive_set && s->primitive_type == DI_PT_TRISTRIP;
+    const int strip = !tess && s->primitive_set && s->primitive_type == DI_PT_TRISTRIP;
     const VkPipeline pipeline = pipeline_for(x, vertex, geometry, pixel, render_pass, layout, colours, blend_control, write_masks, strip,
-                                             plan, z != NULL, error, error_size);
+                                             plan, z != NULL, control, tess ? s->hull.input_points : 0, error, error_size);
     if (!pipeline) return -1;
     VkDescriptorSet set = VK_NULL_HANDLE;
     if (has_set && image_set(x, set_layout, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, views, image_count, samplers, sampler_count, vertex_views,
@@ -2802,8 +3115,14 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
                                      .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INDEX_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT};
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                          VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
-                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | (tess ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                                                                                 VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT : 0),
                          0, 1, &earlier, 0, NULL, 0, NULL);
+    if (tess) { /* an indexed draw's indices are read by the local pass, at their GPU address */
+        const uint64_t index_address = indices ? x->guest_base + indices->offset + x->address_offset : 0;
+        const uint32_t index_size = !indices ? 0 : indices->type == VK_INDEX_TYPE_UINT16 ? 2 : 4;
+        if (tessellation_passes(x, commands, s, indirect, index_count, index_address, index_size, passes, error, error_size)) return -1;
+    }
     const VkRenderPassBeginInfo pass = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = render_pass,
                                         .framebuffer = framebuffer, .renderArea = {{0, 0}, {width, height}}};
     vkCmdBeginRenderPass(commands, &pass, VK_SUBPASS_CONTENTS_INLINE);
@@ -2832,9 +3151,9 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
         vkCmdSetStencilWriteMask(commands, which, r >> 16 & 0xff);
     }
     if (set) vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set, 0, NULL);
-    vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_VERTEX_BIT, VERTEX_USER_DATA, USER_DATA_BYTES, s->user[STAGE_VERTEX]);
+    vkCmdPushConstants(commands, layout, x->vertex_stages, VERTEX_USER_DATA, USER_DATA_BYTES, s->user[STAGE_VERTEX]);
     vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_FRAGMENT_BIT, PIXEL_USER_DATA, USER_DATA_BYTES, s->user[STAGE_PIXEL]);
-    if (indices) {
+    if (indices && !tess) {
         vkCmdBindIndexBuffer(commands, x->buffer, indices->offset, indices->type);
         vkCmdDrawIndexed(commands, index_count, 1, 0, 0, 0);
     } else if (indirect) {
@@ -4118,8 +4437,14 @@ static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, 
                 break;
             }
             const int stage = c->u.user_data.stage == RT_STAGE_VERTEX ? STAGE_VERTEX : c->u.user_data.stage == RT_STAGE_PIXEL ? STAGE_PIXEL : -1;
-            /* the local, hull, export and geometry stages' user data reach only draws with those stages on
-               (VGT_SHADER_STAGES_EN), which stop by name (check_state) */
+            /* the local and hull shaders' user data are kept for tessellated draws; the export and geometry stages'
+               reach only geometry-shader draws, which stop by name (check_state) */
+            if (c->u.user_data.stage == RT_STAGE_LOCAL || c->u.user_data.stage == RT_STAGE_HULL) {
+                const int hull = c->u.user_data.stage == RT_STAGE_HULL;
+                memcpy(&s->tess_user[hull][c->u.user_data.slot], c->u.user_data.words, c->u.user_data.count * sizeof(uint32_t));
+                s->tess_user_set[hull] |= slots;
+                break;
+            }
             if (stage < 0) break;
             memcpy(&s->user[stage][c->u.user_data.slot], c->u.user_data.words, c->u.user_data.count * sizeof(uint32_t));
             s->user_set[stage] |= slots;
@@ -4306,6 +4631,11 @@ void rt_executor_close(rt_executor *x)
             vkDestroyPipeline(x->device, x->computes[i].pipeline, NULL);
             vkDestroyShaderModule(x->device, x->computes[i].module, NULL);
         }
+        for (size_t i = 0; i < x->tess_pass_count; i++) vkDestroyPipeline(x->device, x->tess_passes[i].pipeline, NULL);
+        for (size_t i = 0; i < x->tess_control_count; i++) vkDestroyShaderModule(x->device, x->tess_controls[i].module, NULL);
+        if (x->tess_vertex) vkDestroyShaderModule(x->device, x->tess_vertex, NULL);
+        gpu_buffer_free(x, &x->tess_lds), gpu_buffer_free(x, &x->tess_factors);
+        if (x->tess_layout) vkDestroyPipelineLayout(x->device, x->tess_layout, NULL);
         for (size_t i = 0; i < x->pass_count; i++) {
             vkDestroyFramebuffer(x->device, x->passes[i].framebuffer, NULL);
             vkDestroyRenderPass(x->device, x->passes[i].pass, NULL);
