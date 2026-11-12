@@ -650,6 +650,7 @@ static void tessellation(void)
 {
     compute_lds = (gcn_lds){.bytes = 272};
     translates(PROGRAM(lds_exchange), "lds_exchange");
+    translates(PROGRAM(negated_compares), "negated_compares");
     compute_lds = (gcn_lds){0};
     refused_as(COMPUTE, PROGRAM(lds_exchange), "with no LDS");
     static const uint32_t barrier_in_vertex[] = {0xbf8a0000, 0xbf810000}; /* s_barrier; s_endpgm */

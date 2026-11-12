@@ -429,6 +429,13 @@ RT_SYSLIB("libSceGnmDriver", sceGnmUnmapComputeQueue, unmap_compute_queue);
 #define CP_DMA_READ_TAGS_BYTE_ADDRESS (0xc08bu * 4)             /* mmCP_DMA_READ_TAGS, gfx_7_2_d.h */
 
 #define EVENT_WRITE_WITHOUT_MEMORY_DWORDS 2
+/* EVENT_WRITE with two more dwords (AMD's public PM4 format: event type bits 0-5, event index bits 8-11) */
+#define EVENT_WRITE_WITH_MEMORY_DWORDS 4
+#define EVENT_TYPE(control) ((control) & 0x3fu)
+#define EVENT_INDEX(control) ((control) >> 8 & 0xfu)
+#define EVENT_INDEX_ZPASS_DONE 1u
+#define PIXEL_PIPE_STAT_CONTROL 0x38u /* VGT_EVENT_TYPE (Mesa's sid.h, facts only) */
+#define PIXEL_PIPE_STAT_DUMP 0x39u
 #define EVENT_WRITE_EOP_DWORDS 6
 /* EVENT_WRITE_EOS: event control, address low, address high (bits 0-15) with a command in bits
    29-31 (1 stores GDS data, 2 stores the packet's 32-bit value), the value */
@@ -834,6 +841,52 @@ static void dma_data(const char *fn, const uint32_t *packet)
 }
 
 
+/* Occlusion counts (AMD's public PM4 format; the PS4's layout as Gnm's occlusion queries use it, from
+   the notes of two public PS4 runtime projects, facts only). Each of the GPU's 8 depth blocks (DBs)
+   counts the samples that pass the depth test; an EVENT_WRITE of PIXEL_PIPE_STAT_DUMP with the ZPASS_DONE
+   index makes every DB store its 64-bit count, bit 63 (valid) set, at the packet's address + 16 * DB.
+   A Gnm query is a 128-byte block of 8 {begin, end} pairs: the game zeroes it (DMA_DATA), dumps into it
+   before the draws it measures (+0) and after them (+8), and waits for every valid bit; the samples that
+   passed are the sum of end - begin. Before each dump the game sends PIXEL_PIPE_STAT_CONTROL with the
+   same index, whose two dwords are a control value (0x7fc00, 0 in the game), not an address: it
+   configures the counters and writes nothing.
+
+   The stand-in counts no samples yet: each dump stores one running count that grows by
+   OCCLUSION_COUNT_STEP per dump, the same in every DB, so every query reads visible (end > begin):
+   what the game tests is drawn, never hidden by a wrong "occluded". The dump is a step, in order with
+   the work and the DMA_DATA that zeroed the block. */
+enum { OCCLUSION_DEPTH_BLOCKS = 8, OCCLUSION_PAIR_BYTES = 16, OCCLUSION_COUNT_STEP = 0x10000 };
+#define OCCLUSION_COUNT_VALID (UINT64_C(1) << 63)
+
+static void occlusion_dump_step(const rt_gpu_step *step)
+{
+    static uint64_t count;
+    const uint64_t stored = __atomic_add_fetch(&count, OCCLUSION_COUNT_STEP, __ATOMIC_RELAXED) | OCCLUSION_COUNT_VALID;
+    uint8_t *const block = (uint8_t *)(uintptr_t)step->words[0];
+    for (unsigned db = 0; db < OCCLUSION_DEPTH_BLOCKS; db++) memcpy(block + db * OCCLUSION_PAIR_BYTES, &stored, sizeof stored);
+}
+
+/* An EVENT_WRITE carrying two more dwords: the occlusion events above; others stop by name. */
+static void event_write_with_memory(const char *fn, const uint32_t *packet)
+{
+    const uint32_t control = packet[1], type = EVENT_TYPE(control), index = EVENT_INDEX(control);
+    if (index == EVENT_INDEX_ZPASS_DONE && type == PIXEL_PIPE_STAT_CONTROL) return;
+    if (index != EVENT_INDEX_ZPASS_DONE || type != PIXEL_PIPE_STAT_DUMP) {
+        static char message[128];
+        snprintf(message, sizeof message, "an EVENT_WRITE of event type %#x, index %u, with an address: not done yet", type, index);
+        rt_fatal(fn, message);
+    }
+    const uint64_t address = (uint64_t)(packet[3] & 0xffffu) << 32 | (packet[2] & ~7u);
+    if (!address) rt_fatal(fn, "an occlusion dump to address 0");
+    const uint64_t words[6] = {address};
+    if (!collecting) {
+        const rt_gpu_step step = {.function = fn, .words = {address}};
+        occlusion_dump_step(&step);
+        return;
+    }
+    collect(fn, occlusion_dump_step, words);
+}
+
 /* The constant engine (CE): a second command processor beside the draw engine (DE), with its own
    48 KB constant RAM, that runs a submission's constant command buffer (AMD's public PM4 format;
    shadPS4's liverpool.cpp runs it the same way, facts only). Character creation's Finish (the
@@ -1039,8 +1092,10 @@ static void complete_packets(const char *fn, const uint32_t *packets, uint32_t d
             wait_on_constant_engine(fn);
         } else if (opcode == PM4_INCREMENT_DE_COUNTER && length == 2) {
             increment_draw_engine_counter(fn);
+        } else if (opcode == PM4_EVENT_WRITE && length == EVENT_WRITE_WITH_MEMORY_DWORDS) {
+            event_write_with_memory(fn, packet);
         } else if (opcode == PM4_EVENT_WRITE && length != EVENT_WRITE_WITHOUT_MEMORY_DWORDS) {
-            unknown_packet(fn, opcode, length); /* an event that also writes memory */
+            unknown_packet(fn, opcode, length);
         } else if (opcode != PM4_NOP && opcode != PM4_SET_SH_REG && opcode != PM4_DISPATCH_DIRECT &&
                    opcode != PM4_ACQUIRE_MEM && opcode != PM4_EVENT_WRITE && opcode != PM4_SET_CONTEXT_REG &&
                    opcode != PM4_SET_UCONFIG_REG && opcode != PM4_NUM_INSTANCES && opcode != PM4_DRAW_INDEX_AUTO &&
@@ -1100,8 +1155,10 @@ RT_SYSLIB("libSceGnmDriver", sceGnmDingDong, ding_dong);
                                   only); one storing GDS data stops;
      WAIT_REG_MEM                 a step: the renderer's thread waits for the memory to hold what
                                   the GPU waits for (two seconds at most);
-     ACQUIRE_MEM, EVENT_WRITE     skipped: cache control and pipeline events, with no GPU caches
-                                  (an EVENT_WRITE that also writes memory stops);
+     ACQUIRE_MEM, EVENT_WRITE     skipped: cache control and pipeline events, with no GPU caches;
+     EVENT_WRITE occlusion events  PIXEL_PIPE_STAT_CONTROL skipped, PIXEL_PIPE_STAT_DUMP a step that
+                                  stores the occlusion counts (above; found 12 November 2026, entering
+                                  Iosefka's Clinic); another EVENT_WRITE with an address stops;
      SET_CONTEXT_REG, SET_UCONFIG_REG, NUM_INSTANCES, DRAW_INDEX_AUTO
                                   skipped: draw state and draws (the first frame's);
      INDEX_TYPE, INDEX_BASE, INDEX_BUFFER_SIZE, DRAW_INDEX_2, DRAW_INDEX_OFFSET_2

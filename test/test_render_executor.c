@@ -509,12 +509,14 @@ static void many_images(rt_executor *x)
    green and blue, sampled at (x / 16, y / 16) over 16x16 pixels spans 4 texels a pixel, level 2:
    blue with a point or linear mip filter, red (level 0) with none. image_sample_l at level 1
    (pixel_explicit_level) draws green with a mip filter, red with none; image_sample_lz
-   (pixel_level_zero) draws red with any. */
+   (pixel_level_zero) draws red with any; image_sample_d with derivatives of 2 texels a pixel
+   (pixel_given_derivatives) draws green with a mip filter, red with none. */
 static void sampled_levels(rt_executor *x)
 {
-    enum { MIPPED = 0x8d0000, LEVELS_TARGET = 0x8e0000, LEVELS_CODE = 0x3400, EXPLICIT_CODE = 0x3600, ZERO_CODE = 0x3c00, LEVELS_BUFFER = 0xc0f30000,
+    enum { MIPPED = 0x8d0000, LEVELS_TARGET = 0x8e0000, LEVELS_CODE = 0x3400, EXPLICIT_CODE = 0x3600, ZERO_CODE = 0x3c00, GIVEN_CODE = 0x7e00,
+           LEVELS_BUFFER = 0xc0f30000,
            EDGE = 64, LEVELS = 3, LINEAR_ALIGNED = 8, MIP_POINT = 1, MIP_LINEAR = 2 };
-    enum { BY_DERIVATIVES, AT_LEVEL_1, AT_LEVEL_0, KINDS };
+    enum { BY_DERIVATIVES, AT_LEVEL_1, AT_LEVEL_0, BY_GIVEN_DERIVATIVES, KINDS };
     static const uint32_t colours[LEVELS] = {0xff0000ffu, 0xff00ff00u, 0xffff0000u}; /* red, green, blue (bytes R, G, B, A) */
     char error[256] = "";
     uint8_t *guest = (uint8_t *)(uintptr_t)at(0);
@@ -527,6 +529,7 @@ static void sampled_levels(rt_executor *x)
     memcpy((void *)(uintptr_t)at(LEVELS_CODE), pixel_minified, sizeof pixel_minified);
     memcpy((void *)(uintptr_t)at(EXPLICIT_CODE), pixel_explicit_level, sizeof pixel_explicit_level); /* its own address: shaders are kept by address */
     memcpy((void *)(uintptr_t)at(ZERO_CODE), pixel_level_zero, sizeof pixel_level_zero);
+    memcpy((void *)(uintptr_t)at(GIVEN_CODE), pixel_given_derivatives, sizeof pixel_given_derivatives);
     for (unsigned run = 0; run < KINDS * (MIP_LINEAR + 1); run++) {
         const unsigned mip = run % (MIP_LINEAR + 1), kind = run / (MIP_LINEAR + 1);
         uint32_t user[16] = {0};
@@ -535,7 +538,7 @@ static void sampled_levels(rt_executor *x)
         user[12] = 0x2 | 0x2 << 3 | 0x2 << 6, user[13] = 15u * 256 << 12, user[14] = mip << 26; /* clamped, MAX_LOD 15, point filters */
         rt_render_forget(), rt_executor_reset(x);
         uint32_t offset = record_setup(LEVELS_BUFFER, at(LEVELS_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
-        const uint64_t code = at(kind == AT_LEVEL_1 ? EXPLICIT_CODE : kind == AT_LEVEL_0 ? ZERO_CODE : LEVELS_CODE);
+        const uint64_t code = at(kind == AT_LEVEL_1 ? EXPLICIT_CODE : kind == AT_LEVEL_0 ? ZERO_CODE : kind == BY_GIVEN_DERIVATIVES ? GIVEN_CODE : LEVELS_CODE);
         const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 16 << 1, 0, 0x4, 0x302, 0x302,
                                                        0, 0, 0, 0xf};
         CHECK(rt_render_record_pixel_shader(LEVELS_BUFFER, offset, pixel, error, sizeof error) == 0);
@@ -546,7 +549,9 @@ static void sampled_levels(rt_executor *x)
         CHECK(drawn == 0);
         uint32_t bgra[SIZE * SIZE];
         CHECK(rt_executor_read_target(x, at(LEVELS_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
-        const uint32_t expected = mip == 0 || kind == AT_LEVEL_0 ? 0xffff0000u : kind == AT_LEVEL_1 ? 0xff00ff00u : 0xff0000ffu; /* BGRA words: red, green, blue */
+        const uint32_t expected = mip == 0 || kind == AT_LEVEL_0                    ? 0xffff0000u
+                                  : kind == AT_LEVEL_1 || kind == BY_GIVEN_DERIVATIVES ? 0xff00ff00u
+                                                                                       : 0xff0000ffu; /* BGRA words: red, green, blue */
         int covered = 0, right = 1;
         for (int i = 0; i < SIZE * SIZE; i++)
             if (bgra[i]) covered++, right &= bgra[i] == expected; /* the triangle's pixels */
@@ -1015,6 +1020,55 @@ static void geometry_shader_draws(rt_executor *x)
             }
         CHECK(right);
     }
+}
+
+/* Records the triangle with the vertex shader at code taking vgpr_inputs input VGPRs (VGPR_COMP_CNT), these
+   registers set, and a draw of 2 instances, into a cleared target, and runs it. */
+static int run_instanced(rt_executor *x, uint64_t buffer, uint64_t target, uint64_t code, uint32_t vgpr_inputs, const uint32_t (*registers)[2],
+                         int count, char *error, size_t error_size)
+{
+    enum { VGPR_COMP_CNT_SHIFT = 24, INSTANCES = 2 };
+    memset((void *)(uintptr_t)target, 0, SIZE * SIZE * 4);
+    rt_render_forget(), rt_executor_reset(x);
+    uint32_t offset = record_setup(buffer, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const uint32_t vertex[RT_VERTEX_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2 | vgpr_inputs << VGPR_COMP_CNT_SHIFT,
+                                                     8 << 1, 0, 0x4, 0};
+    CHECK(rt_render_record_vertex_shader(buffer, offset, vertex, error, error_size) == 0);
+    offset += 0x10;
+    for (int i = 0; i < count; i++, offset += 0x10)
+        CHECK(rt_render_record_register(buffer, offset, registers[i][0], registers[i][1], error, error_size) == 0);
+    CHECK(rt_render_record_instances(buffer, offset, INSTANCES, error, error_size) == 0);
+    return rt_executor_run(x, buffer, record_triangle_draw(buffer, offset + 0x10), error, error_size);
+}
+
+static void unchanged(float c[4]) { (void)c; }
+
+/* Instancing (NUM_INSTANCES): 2 instances blended ONE + ONE double the colour. A vertex shader taking the
+   instance index (v3) reads instance 1's colours past the triangle's, where they are 0: the colour is the
+   triangle's, once. One taking the instance index over VGT_INSTANCE_STEP_RATE_0 (v1) stops by name with no
+   step rate set, and with a step rate of 2 reads instance 1's colours at the triangle's (1 / 2 = 0): doubled. */
+static void instanced_draws(rt_executor *x)
+{
+    enum { INSTANCED = 0xc1050000, INSTANCE_CODE = 0x2c00, STEPPED_CODE = 0x2d00, TWICE = 0x2f00000, ONCE = 0x2f10000, STEPPED = 0x2f20000,
+           VERTEX_CODE_AT = VERTEX_CODE, PLAIN_INPUTS = 0, INSTANCE_INPUTS = 3, STEP_RATE_INPUTS = 1, COLOR_RECORDS = 3 };
+    char error[200] = "";
+    const uint32_t add[][2] = {{0xa1e0, 1u << 30 | 1 | 1u << 8}};
+    const uint32_t add_stepped[][2] = {{0xa1e0, 1u << 30 | 1 | 1u << 8}, {0xa2a8, 2}};
+    float *const later_colors = (float *)(uintptr_t)at(COLORS + COLOR_RECORDS * RECORD_STRIDE);
+    memset(later_colors, 0, COLOR_RECORDS * RECORD_STRIDE);
+    memcpy((void *)(uintptr_t)at(INSTANCE_CODE), vertex_instance_color, sizeof vertex_instance_color);
+    memcpy((void *)(uintptr_t)at(STEPPED_CODE), vertex_instance_color_stepped, sizeof vertex_instance_color_stepped);
+    int ran = run_instanced(x, INSTANCED, at(TWICE), at(VERTEX_CODE_AT), PLAIN_INPUTS, add, 1, error, sizeof error);
+    if (ran) fprintf(stderr, "two instances: %s\n", error);
+    CHECK(ran == 0 && blended_misses(x, at(TWICE), doubled) == 0);
+    ran = run_instanced(x, INSTANCED, at(ONCE), at(INSTANCE_CODE), INSTANCE_INPUTS, add, 1, error, sizeof error);
+    if (ran) fprintf(stderr, "instance index: %s\n", error);
+    CHECK(ran == 0 && blended_misses(x, at(ONCE), unchanged) == 0);
+    CHECK(run_instanced(x, INSTANCED, at(STEPPED), at(STEPPED_CODE), STEP_RATE_INPUTS, add, 1, error, sizeof error) == -1 &&
+          strstr(error, "VGT_INSTANCE_STEP_RATE_0"));
+    ran = run_instanced(x, INSTANCED, at(STEPPED), at(STEPPED_CODE), STEP_RATE_INPUTS, add_stepped, 2, error, sizeof error);
+    if (ran) fprintf(stderr, "instance index over a step rate: %s\n", error);
+    CHECK(ran == 0 && blended_misses(x, at(STEPPED), doubled) == 0);
 }
 
 static void indirect_draws(rt_executor *x)
@@ -2581,7 +2635,7 @@ int main(void)
     size = record_draw(THIRD, at(TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER | 0x10); /* the linear barycentrics */
     CHECK(rt_executor_run(x, THIRD, size, error, sizeof error) == -1 && strstr(error, "pixel-shader inputs"));
     /* The library's registers: the normal state draws as before, a target masked off draws nothing,
-       and what is not drawn yet (blending, depth, other primitives, instances) stops by name. */
+       and what is not drawn yet (blending, depth, other primitives) stops by name. */
     enum { FOURTH = 0xc0e10000 };
     const uint32_t normal[][2] = {{0xa1e0, 0}, {0xa200, 0}, {0xa202, 0x1u << 4 | 0xccu << 16}, {0xa08e, 0xf}, {0xc242, 4}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), normal, 5, 1, error, sizeof error) == 0);
@@ -2595,6 +2649,7 @@ int main(void)
     blending(x);
     draws_in_one_batch(x);
     indirect_draws(x);
+    instanced_draws(x);
     other_viewports(x);
     tessellated_draws(x);
     geometry_shader_draws(x);
@@ -2619,7 +2674,6 @@ int main(void)
     CHECK(run_with_registers(x, FOURTH, at(TARGET), resolve, 1, 0, error, sizeof error) == -1 && strstr(error, "colour mode 3"));
     const uint32_t unknown[][2] = {{0xa1e8, 0}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), unknown, 1, 0, error, sizeof error) == -1 && strstr(error, "0xa1e8"));
-    CHECK(run_with_registers(x, FOURTH, at(TARGET), normal, 0, 2, error, sizeof error) == -1 && strstr(error, "2 instances"));
     CHECK(rt_executor_read_target(x, at(0x300000), bgra, 2, 2, error, sizeof error) == -1 && strstr(error, "no draw"));
     CHECK(rt_executor_read_target(x, at(TARGET), bgra, SIZE + 1, 1, error, sizeof error) == -1);
 
