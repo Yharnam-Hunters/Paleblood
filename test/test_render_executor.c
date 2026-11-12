@@ -899,11 +899,16 @@ static void tessellated_draws(rt_executor *x)
    Each point's geometry shader emits a quad over the bottom half and, after a cut, one over the top quarter,
    at x from index - 1 to index, coloured (index, 0.5, 0) from what its export shader wrote: vertex 0 the left
    half, vertex 1 the right; the band between the strips stays clear (without the cut, the strip would join
-   them across it). Drawn directly (two points, one wave), and through 16-bit indices: 128 points of vertex 5
-   (drawn off to the right) before vertices 0 and 1, so the drawn ones are the third wave's in both rings. */
-static int run_geometry(rt_executor *x, uint64_t buffer, uint64_t target, int indexed, char *error, size_t error_size)
+   them across it). Drawn directly (two points, one wave); through 16-bit indices: 128 points of vertex 5
+   (drawn off to the right) before vertices 0 and 1, so the drawn ones are the third wave's in both rings;
+   and indirectly (two points, the count in guest memory). */
+enum { GS_DIRECT, GS_INDEXED, GS_INDIRECT };
+static int run_geometry(rt_executor *x, uint64_t buffer, uint64_t target, int how, char *error, size_t error_size)
 {
-    enum { EXPORT = 0x3f10000, GEOMETRY = 0x3f10400, COPY = 0x3f10c00, INDICES = 0x3f11000, POINTS = 130, POINTLIST = 1, MAX_VERT_OUT = 8 };
+    enum { EXPORT = 0x3f10000, GEOMETRY = 0x3f10400, COPY = 0x3f10c00, INDICES = 0x3f11000, ARGUMENTS = 0x3f12000, POINTS = 130, POINTLIST = 1,
+           MAX_VERT_OUT = 8 };
+    uint32_t *const counts = (uint32_t *)(uintptr_t)at(ARGUMENTS);
+    counts[0] = 2, counts[1] = 1, counts[2] = 0, counts[3] = 0;
     memcpy((void *)(uintptr_t)at(EXPORT), gs_export, sizeof gs_export);
     memcpy((void *)(uintptr_t)at(GEOMETRY), gs_geometry, sizeof gs_geometry);
     memcpy((void *)(uintptr_t)at(COPY), gs_copy, sizeof gs_copy);
@@ -925,11 +930,14 @@ static int run_geometry(rt_executor *x, uint64_t buffer, uint64_t target, int in
     offset += 0x50;
     for (unsigned i = 0; i < sizeof registers / sizeof registers[0]; i++, offset += 0x10)
         CHECK(rt_render_record_register(buffer, offset, registers[i][0], registers[i][1], error, error_size) == 0);
-    if (indexed) {
+    if (how == GS_INDEXED) {
         CHECK(rt_render_record_index_base(buffer, offset, at(INDICES), error, error_size) == 0);
         CHECK(rt_render_record_index_type(buffer, offset + 0x10, 0, error, error_size) == 0);
         CHECK(rt_render_record_index_size(buffer, offset + 0x20, POINTS, error, error_size) == 0);
         CHECK(rt_render_record_draw_index_offset(buffer, offset + 0x30, 0, POINTS, error, error_size) == 0);
+    } else if (how == GS_INDIRECT) {
+        CHECK(rt_render_record_indirect_base(buffer, offset + 0x20, at(ARGUMENTS), error, error_size) == 0);
+        CHECK(rt_render_record_draw_indirect(buffer, offset + 0x30, 0, RT_STAGE_EXPORT, 0, 0, error, error_size) == 0);
     } else {
         CHECK(rt_render_record_draw_auto(buffer, offset + 0x30, 2, error, error_size) == 0);
     }
@@ -938,11 +946,12 @@ static int run_geometry(rt_executor *x, uint64_t buffer, uint64_t target, int in
 
 static void geometry_shader_draws(rt_executor *x)
 {
-    enum { GS = 0xc1070000, DIRECT = 0x2d00000, INDEXED = 0x2d10000 };
-    const struct { uint64_t target; int indexed; const char *name; } runs[] = {{DIRECT, 0, "direct"}, {INDEXED, 1, "indexed"}};
+    enum { GS = 0xc1070000, DIRECT = 0x2d00000, INDEXED = 0x2d10000, INDIRECT = 0x2d20000 };
+    const struct { uint64_t target; int how; const char *name; } runs[] = {
+        {DIRECT, GS_DIRECT, "direct"}, {INDEXED, GS_INDEXED, "indexed"}, {INDIRECT, GS_INDIRECT, "indirect"}};
     for (unsigned r = 0; r < sizeof runs / sizeof runs[0]; r++) {
         char error[256] = "";
-        const int ran = run_geometry(x, GS, at(runs[r].target), runs[r].indexed, error, sizeof error);
+        const int ran = run_geometry(x, GS, at(runs[r].target), runs[r].how, error, sizeof error);
         if (ran) fprintf(stderr, "geometry shader draw (%s): %s\n", runs[r].name, error);
         CHECK(ran == 0);
         uint32_t bgra[SIZE * SIZE];

@@ -2831,6 +2831,15 @@ static int64_t draw_indirect_arguments(rt_executor *x, VkCommandBuffer commands,
     return (int64_t)entry;
 }
 
+/* Orders the record's update before an indirect draw's count is copied over its first word: transfers
+   that write the same bytes are not ordered by themselves. */
+static void record_then_copy(VkCommandBuffer commands)
+{
+    const VkMemoryBarrier updated = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                     .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &updated, 0, NULL, 0, NULL);
+}
+
 /* The tessellation buffers, made on the first tessellated draw: 0, or -1 with the reason. */
 static int tessellation_buffers(rt_executor *x, char *error, size_t error_size)
 {
@@ -2997,6 +3006,7 @@ static int tessellation_passes(rt_executor *x, VkCommandBuffer commands, const d
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
                          &earlier, 0, NULL, 0, NULL);
     vkCmdUpdateBuffer(commands, b->indirect.buffer, entry, sizeof record, record);
+    record_then_copy(commands);
     if (indirect) { /* the arguments' vertex count, as the draw's and as the workgroup count */
         const VkBufferCopy counts[] = {{.srcOffset = indirect - x->guest_base, .dstOffset = entry, .size = sizeof(uint32_t)},
                                        {.srcOffset = indirect - x->guest_base, .dstOffset = entry + TESS_DISPATCH_WORD * sizeof(uint32_t),
@@ -3163,8 +3173,8 @@ static int geometry_draw_checks(const draw_state *s, uint32_t vertices, uint64_t
                       s->geometry.registers[0] | s->streamout_config);
     if (s->geometry.registers[2] & INSTANCE_ENABLE)
         return failed(error, error_size, "an instanced geometry shader (VGT_GS_INSTANCE_CNT %#x): not drawn yet", s->geometry.registers[2]);
-    if (indirect) return failed(error, error_size, "an indirect draw with a geometry shader: not drawn yet");
     if (s->instances_set && s->instances > 1) return failed(error, error_size, "an instanced draw with a geometry shader: not drawn yet");
+    if (indirect) return 0; /* its count is the GPU's: the passes check it (GCN_RUNTIME_STOP_GEOMETRY_LIMIT) */
     const uint64_t waves = (vertices + GCN_GS_WAVE_LANES - 1) / GCN_GS_WAVE_LANES;
     const uint64_t primitive_waves = (geometry_primitives(s, vertices) + GCN_GS_WAVE_LANES - 1) / GCN_GS_WAVE_LANES;
     const uint64_t strip_bytes = (uint64_t)geometry_primitives(s, vertices) * gcn_geometry_strip_indices(s->gs_max_vert_out) * sizeof(uint32_t);
@@ -3176,12 +3186,16 @@ static int geometry_draw_checks(const draw_state *s, uint32_t vertices, uint64_t
 }
 
 /* The export and geometry passes of a draw with a geometry shader, recorded before its render pass: the
-   draw's record (gcn_spirv.h) to a batch entry, the strips filled with restarts, then the two passes. 0, or
-   -1 with the reason. */
-static int geometry_passes(rt_executor *x, VkCommandBuffer commands, const draw_state *s, uint32_t vertices, uint64_t index_address,
-                           uint32_t index_size, const VkPipeline passes[2], char *error, size_t error_size)
+   draw's record (gcn_spirv.h) to a batch entry, the strips filled with restarts, then the two passes, which
+   leave the strips' draw in the record (its offset in the batch's indirect buffer in *draw_entry). A direct
+   draw runs the workgroups its vertices and primitives need; an indirect one, whose vertex count is copied
+   into the record on the GPU, as many as the buffers hold (lanes past the draw's do nothing), over strips
+   filled whole. 0, or -1 with the reason. */
+static int geometry_passes(rt_executor *x, VkCommandBuffer commands, const draw_state *s, uint64_t indirect, uint32_t vertices,
+                           uint64_t index_address, uint32_t index_size, const VkPipeline passes[2], VkDeviceSize *draw_entry, char *error,
+                           size_t error_size)
 {
-    enum { ENTRY_BYTES = INDIRECT_DRAW_WORDS * sizeof(uint32_t), ENTRIES = TESS_RECORD_WORDS * sizeof(uint32_t) / ENTRY_BYTES };
+    enum { ENTRY_BYTES = INDIRECT_DRAW_WORDS * sizeof(uint32_t), ENTRIES = GCN_GS_DRAW_RECORD_WORDS * sizeof(uint32_t) / ENTRY_BYTES };
     batch_slot *b = &x->slots[x->current];
     if (!b->indirect.buffer && gpu_buffer_make(x, &b->indirect, (VkDeviceSize)INDIRECT_DRAWS_PER_BATCH * ENTRY_BYTES, 0))
         return failed(error, error_size, "no buffer for indirect draws' arguments");
@@ -3189,21 +3203,38 @@ static int geometry_passes(rt_executor *x, VkCommandBuffer commands, const draw_
         return failed(error, error_size, "more than %d indirect draws in one batch", INDIRECT_DRAWS_PER_BATCH);
     const VkDeviceSize entry = (VkDeviceSize)b->indirect_count * ENTRY_BYTES;
     b->indirect_count += ENTRIES;
-    const uint32_t primitives = geometry_primitives(s, vertices);
-    const uint32_t record[TESS_RECORD_WORDS] = {vertices, 0, (uint32_t)index_address, (uint32_t)(index_address >> 32), index_size};
-    /* earlier work's writes and reads (the rings, the strips the last draw read) come first */
+    *draw_entry = entry + GCN_GS_DRAW_ARGUMENTS * sizeof(uint32_t);
+    const uint32_t strip_indices = gcn_geometry_strip_indices(s->gs_max_vert_out);
+    const uint32_t record[GCN_GS_DRAW_RECORD_WORDS] = {vertices, 0, (uint32_t)index_address, (uint32_t)(index_address >> 32), index_size};
+    /* earlier work's writes and reads (the indirect arguments, the rings, the strips the last draw read) come first */
     const VkMemoryBarrier earlier = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT,
-                                     .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
+                                     .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT |
+                                                      VK_ACCESS_SHADER_WRITE_BIT};
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
                          &earlier, 0, NULL, 0, NULL);
     vkCmdUpdateBuffer(commands, b->indirect.buffer, entry, sizeof record, record);
-    const VkDeviceSize strip_bytes = (VkDeviceSize)primitives * gcn_geometry_strip_indices(s->gs_max_vert_out) * sizeof(uint32_t);
-    if (strip_bytes) vkCmdFillBuffer(commands, x->gs_strips.buffer, 0, strip_bytes, 0xffffffffu); /* every strip index a restart */
+    record_then_copy(commands);
+    if (indirect) { /* the arguments' vertex count, as the draw's */
+        const VkBufferCopy count = {.srcOffset = indirect - x->guest_base, .dstOffset = entry, .size = sizeof(uint32_t)};
+        vkCmdCopyBuffer(commands, x->buffer, b->indirect.buffer, 1, &count);
+    }
+    /* every strip index a restart; the most a primitive takes, for the primitives that can run */
+    const uint64_t esgs_wave = (uint64_t)s->esgs_itemsize * GCN_GS_WAVE_LANES * sizeof(uint32_t);
+    const uint64_t gsvs_wave = (uint64_t)s->gsvs_itemsize * GCN_GS_WAVE_LANES * sizeof(uint32_t);
+    uint64_t primitive_room = GS_GSVS_BYTES / gsvs_wave * GCN_GS_WAVE_LANES;
+    if (GS_STRIP_BYTES / ((uint64_t)strip_indices * sizeof(uint32_t)) < primitive_room)
+        primitive_room = GS_STRIP_BYTES / ((uint64_t)strip_indices * sizeof(uint32_t));
+    const uint64_t primitives = indirect ? primitive_room : geometry_primitives(s, vertices);
+    const uint64_t vertex_count = indirect ? GS_ESGS_BYTES / esgs_wave * GCN_GS_WAVE_LANES : vertices;
+    const VkDeviceSize strip_bytes = (VkDeviceSize)primitives * strip_indices * sizeof(uint32_t);
+    if (strip_bytes) vkCmdFillBuffer(commands, x->gs_strips.buffer, 0, strip_bytes, 0xffffffffu);
     const VkMemoryBarrier written = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
                                      .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &written, 0, NULL, 0, NULL);
     const uint64_t record_address = b->indirect.address + entry;
-    const uint32_t groups[2] = {(vertices + GCN_GS_WAVE_LANES - 1) / GCN_GS_WAVE_LANES, (primitives + GCN_GS_WAVE_LANES - 1) / GCN_GS_WAVE_LANES};
+    /* the geometry pass always runs a workgroup: its lane 0 writes the strips' draw */
+    const uint32_t groups[2] = {(uint32_t)((vertex_count + GCN_GS_WAVE_LANES - 1) / GCN_GS_WAVE_LANES),
+                                primitives ? (uint32_t)((primitives + GCN_GS_WAVE_LANES - 1) / GCN_GS_WAVE_LANES) : 1};
     for (int geometry = 0; geometry < 2; geometry++) {
         uint32_t push[GCN_USER_SGPR_MAX + 2] = {0};
         memcpy(push, s->gs_user[geometry], sizeof s->gs_user[geometry]);
@@ -3211,11 +3242,13 @@ static int geometry_passes(rt_executor *x, VkCommandBuffer commands, const draw_
         vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, passes[geometry]);
         vkCmdPushConstants(commands, x->tess_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof push, push);
         if (groups[geometry]) vkCmdDispatch(commands, groups[geometry], 1, 1);
-        /* the export pass's ESGS writes reach the geometry pass; its GSVS writes and strips reach the draw */
+        /* the export pass's ESGS writes reach the geometry pass; its GSVS writes, strips and draw reach the draw */
         const VkMemoryBarrier pass = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-                                      .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_INDEX_READ_BIT};
+                                      .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_INDEX_READ_BIT |
+                                                       VK_ACCESS_INDIRECT_COMMAND_READ_BIT};
         vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             geometry ? VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT : VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             geometry ? VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT
+                                      : VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                              0, 1, &pass, 0, NULL, 0, NULL);
     }
     return 0;
@@ -3386,11 +3419,13 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
                                                                                  VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT : 0) |
                              (gs ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT : 0),
                          0, 1, &earlier, 0, NULL, 0, NULL);
+    VkDeviceSize strip_draw = 0; /* the strips' draw in the batch's indirect buffer (geometry_passes) */
     if (tess || gs) { /* an indexed draw's indices are read by the local or export pass, at their GPU address */
         const uint64_t index_address = indices ? x->guest_base + indices->offset + x->address_offset : 0;
         const uint32_t index_size = !indices ? 0 : indices->type == VK_INDEX_TYPE_UINT16 ? 2 : 4;
         if (tess && tessellation_passes(x, commands, s, indirect, index_count, index_address, index_size, passes, error, error_size)) return -1;
-        if (gs && geometry_passes(x, commands, s, index_count, index_address, index_size, passes, error, error_size)) return -1;
+        if (gs && geometry_passes(x, commands, s, indirect, index_count, index_address, index_size, passes, &strip_draw, error, error_size))
+            return -1;
     }
     const VkRenderPassBeginInfo pass = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = render_pass,
                                         .framebuffer = framebuffer, .renderArea = {{0, 0}, {width, height}}};
@@ -3424,7 +3459,7 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_FRAGMENT_BIT, PIXEL_USER_DATA, USER_DATA_BYTES, s->user[STAGE_PIXEL]);
     if (gs) { /* the copy shader over the strips (geometry_passes) */
         vkCmdBindIndexBuffer(commands, x->gs_strips.buffer, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(commands, geometry_primitives(s, index_count) * gcn_geometry_strip_indices(s->gs_max_vert_out), 1, 0, 0, 0);
+        vkCmdDrawIndexedIndirect(commands, x->slots[x->current].indirect.buffer, strip_draw, 1, 0);
     } else if (indices && !tess) {
         vkCmdBindIndexBuffer(commands, x->buffer, indices->offset, indices->type);
         vkCmdDrawIndexed(commands, index_count, 1, 0, 0, 0);

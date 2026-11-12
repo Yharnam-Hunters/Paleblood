@@ -2200,8 +2200,8 @@ static uint32_t workgroup_lds(translator *t, uint32_t group)
     return value(t, SPV_OP_I_ADD, t_ulong(t), 2, ulong_value(t, t->layout->lds.address), offset);
 }
 
-/* Word `word` of the draw's record (runtime/gcn_spirv.h), at the address in the push constants. */
-static uint32_t draw_word(translator *t, unsigned word)
+/* A pointer to word `word` of the draw's record (runtime/gcn_spirv.h), at the address in the push constants. */
+static uint32_t draw_word_pointer(translator *t, unsigned word)
 {
     uint32_t half[2];
     for (unsigned i = 0; i < 2; i++)
@@ -2210,8 +2210,10 @@ static uint32_t draw_word(translator *t, unsigned word)
     const uint32_t record = value(t, SPV_OP_BITWISE_OR, t_ulong(t), 2, half[0],
                                   value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_ulong(t), 2, half[1], ulong_value(t, 32)));
     const uint32_t address = value(t, SPV_OP_I_ADD, t_ulong(t), 2, record, ulong_value(t, word * BYTES_PER_DWORD));
-    return load_dword(t, value(t, SPV_OP_CONVERT_U_TO_PTR, spirv_type_pointer(&t->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, t_uint(t)), 1, address));
+    return value(t, SPV_OP_CONVERT_U_TO_PTR, spirv_type_pointer(&t->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, t_uint(t)), 1, address);
 }
+
+static uint32_t draw_word(translator *t, unsigned word) { return load_dword(t, draw_word_pointer(t, word)); }
 
 
 /* The local shader's vertex index for the draw's control point n: first + n, or the index buffer's entry
@@ -2364,6 +2366,13 @@ static void geometry_registers(translator *t, const stage_layout *layout)
                                value(t, SPV_OP_U_LESS_THAN_EQUAL, t_bool(t), 2, vertices, konst(t, vertex_room)));
     const uint32_t valid = both(t, fits, value(t, SPV_OP_U_LESS_THAN, t_bool(t), 2, item, primitives));
     store(t, t->out, t->exec, valid);
+    /* lane 0 of the pass writes the strips' draw: the primitives that run, each its strip's indices, one instance */
+    const uint32_t first_lane = begin_if(t, equals(t, item, konst(t, 0)));
+    const uint32_t drawn = value(t, SPV_OP_SELECT, t_uint(t), 3, fits, primitives, konst(t, 0));
+    const uint32_t arguments[GCN_GS_DRAW_ARGUMENT_WORDS] = {value(t, SPV_OP_I_MUL, t_uint(t), 2, drawn, konst(t, gcn_geometry_strip_indices(layout->max_vertices))),
+                                                           konst(t, 1), konst(t, 0), konst(t, 0), konst(t, 0)};
+    for (unsigned w = 0; w < GCN_GS_DRAW_ARGUMENT_WORDS; w++) store_dword(t, draw_word_pointer(t, GCN_GS_DRAW_ARGUMENTS + w), arguments[w]);
+    end_if(t, first_lane);
     static const unsigned per_primitive[] = {[GCN_GS_INPUT_POINTS] = 1, [GCN_GS_INPUT_LINES] = 2, [GCN_GS_INPUT_TRIANGLES] = 3,
                                              [GCN_GS_INPUT_TRIANGLE_STRIP] = 3};
     static const unsigned offset_vgpr[] = {0, 1, 3}; /* vertex 2's offset follows the primitive's index in v2 */

@@ -417,12 +417,16 @@ int gcn_tessellation_vertex_shader(uint32_t **spirv, size_t *spirv_word_count, c
    (max_vertices) 32-bit indices at strip_buffer + p * 4 * that, which the caller fills with restarts
    first (a cut after a cut, or before any emit, adds nothing, so there is always room for a last restart
    between one primitive's strip and the next's). Both read the draw's numbers in its record, as the
-   tessellation passes do (GCN_TESS_DRAW_*, at the address in the push constants after the user data); a
-   draw of more vertices or primitives than the rings or the strip buffer hold runs only those that fit
-   and writes GCN_RUNTIME_STOP_GEOMETRY_LIMIT. Emits to another stream, and the export and geometry
+   tessellation passes do (GCN_TESS_DRAW_*, at the address in the push constants after the user data), so
+   that an indirect draw's GPU-written vertex count reaches them; the geometry pass's lane 0 (primitive 0)
+   writes the strips' indexed draw there in turn, from word GCN_GS_DRAW_ARGUMENTS on, as Vulkan's
+   VkDrawIndexedIndirectCommand: the primitives times gcn_geometry_strip_indices, 1 instance, then 0, 0, 0.
+   A draw of more vertices or primitives than the rings or the strip buffer hold runs none of them, draws
+   nothing and writes GCN_RUNTIME_STOP_GEOMETRY_LIMIT. Emits to another stream, and the export and geometry
    shaders' other ways of meeting the rings (an indexed ring access, a format access), stop translation.
    The copy shader is a vertex shader (gcn_vertex_layout) with its gsvs_ring set: its vertex index is the
    strip's, and its ring loads read the GSVS ring. */
+enum { GCN_GS_DRAW_ARGUMENTS = 8, GCN_GS_DRAW_ARGUMENT_WORDS = 5, GCN_GS_DRAW_RECORD_WORDS = 16 };
 enum { GCN_GS_INPUT_POINTS = 0, GCN_GS_INPUT_LINES = 1, GCN_GS_INPUT_TRIANGLES = 2, GCN_GS_INPUT_TRIANGLE_STRIP = 3,
        GCN_GS_WAVE_LANES = 64 };
 typedef struct {
