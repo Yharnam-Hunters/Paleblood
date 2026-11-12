@@ -501,6 +501,13 @@ Instead:
        playback draws from the main thread while its render thread submits, and the render
        thread, held for tens of milliseconds by its own submit, still had the shared graphics
        context when the main thread drew (found at the opening movie, 10 November 2026).
+     - **A batch the GPU does not finish stops by name.** Each wait for submitted work gives the GPU
+       20 seconds, far past any batch the game's frames make; then the run stops naming the oldest
+       unfinished batch's draws (vertex and pixel shader, most vertices) and dispatches (shader, most
+       workgroups), runs of the same shaders counted once. Before, the wait had no end: at the
+       clinic's load (12 November 2026) the GPU stopped finishing (the kernel logged an NVIDIA
+       context switch timeout) and the title sat on its loading screen with nothing said. A stop
+       reading a descriptor names its shader too.
      1. **Guest memory on the GPU.** Shaders reach memory through guest addresses: buffer
         descriptors and pointers in their user data. The game's GPU-visible memory is direct
         memory, a range of the runtime's pool (one host memory file).
