@@ -95,6 +95,14 @@ class CaptureLoop(unittest.TestCase):
         self.assertEqual([os.path.basename(f) for f in found], ['pool_both_cases.py', 'thing_cases.py'])
         self.assertEqual(capture_loop.generator_variants(found[0]), ['take', 'give'])
         self.assertEqual(capture_loop.generator_variants(str(self.root / 'game/kernel/thing_cases.py')), [None])
+        # A required variant without brackets, and a list wrapped onto the next line, as some
+        # generators write their usage line.
+        for usage, variants in (('OUT_DIR open|find|device', ['open', 'find', 'device']),
+                                ('OUT_DIR allocate|allocate_aligned|\n    allocate_top|free',
+                                 ['allocate', 'allocate_aligned', 'allocate_top', 'free']),
+                                ('OUT_DIR\n\nNo variants here: a|b', [None])):
+            write(self.root / 'game/kernel/usage_cases.py', f'"""Edge cases.\nusage: usage_cases.py {usage}\n"""\n')
+            self.assertEqual(capture_loop.generator_variants(str(self.root / 'game/kernel/usage_cases.py')), variants)
 
     def test_edge_cases_are_the_functions_own(self):
         source = self.shared_generator()

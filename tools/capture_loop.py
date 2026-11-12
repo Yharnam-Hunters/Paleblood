@@ -157,10 +157,12 @@ def generator_doc(path: str) -> str:
 
 
 def generator_variants(path: str) -> list[str | None]:
-    """The variants a generator's usage line offers (usage: X_cases.py OUT_DIR [a|b|c]), or the
+    """The variants a generator's usage line offers, optional (usage: X_cases.py OUT_DIR [a|b|c])
+    or required (OUT_DIR a|b|c, which may wrap onto the next line after a `|`), or the
     generator's one default when it lists none."""
-    m = re.search(r'^usage:\s*\S+\s+OUT_DIR\s+\[([A-Za-z0-9_|]+)\]', generator_doc(path), re.M)
-    return m.group(1).split('|') if m else [None]
+    m = re.search(r'^usage:\s*\S+\s+OUT_DIR\s+\[?((?:[A-Za-z0-9_]+\|\s*)+[A-Za-z0-9_]+)\]?',
+                  generator_doc(path), re.M)
+    return [v.strip() for v in m.group(1).split('|')] if m else [None]
 
 
 def case_address(path: str) -> int | None:
