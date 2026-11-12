@@ -91,6 +91,23 @@ static const uint32_t table_copy[] = TABLE_COPY(0xe03c2000, 0);
 static const uint32_t table_copy_format[] = TABLE_COPY(0xe0082000, 0);
 static const uint32_t table_copy_store_offset[] = TABLE_COPY(0xe03c2000, 4);
 
+/* out[i] = v_min_i32(-3, in[i]), out[64 + i] = v_max_i32(-3, in[i]), out[128 + i] = v_min_u32(7, in[i]),
+   out[192 + i] = v_max_u32(7, in[i]). */
+static const uint32_t integer_min_max[] = {
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0xe0301000, 0x80000201, /* buffer_load_dword v2, v1, s[0:3], 0 offen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x220604c3, /* v_min_i32_e32 v3, -3, v2 */
+    0x240804c3, /* v_max_i32_e32 v4, -3, v2 */
+    0x260a0487, /* v_min_u32_e32 v5, 7, v2 */
+    0x280c0487, /* v_max_u32_e32 v6, 7, v2 */
+    0xe0701000, 0x80010301, /* buffer_store_dword v3, v1, s[4:7], 0 offen */
+    0xe0701100, 0x80010401, /* buffer_store_dword v4, v1, s[4:7], 0 offen offset:256 */
+    0xe0701200, 0x80010501, /* buffer_store_dword v5, v1, s[4:7], 0 offen offset:512 */
+    0xe0701300, 0x80010601, /* buffer_store_dword v6, v1, s[4:7], 0 offen offset:768 */
+    0xbf810000, /* s_endpgm */
+};
+
 /* out[i] = v_mul_hi_u32(in[i], in[i]), out[64 + i] = v_mul_hi_i32(in[i], in[i]),
    out[128 + i] = v_mul_hi_i32(in[i], 4 * i). */
 static const uint32_t multiply_high[] = {

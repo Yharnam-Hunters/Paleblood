@@ -247,6 +247,21 @@ int main(int argc, char **argv)
         CHECK(out_words[2 * LANES + i] == (uint32_t)((uint64_t)signed_by_lane >> 32));
     }
 
+    /* v_min_i32 / v_max_i32 / v_min_u32 / v_max_u32 against -3 and 7: negative, small and large inputs */
+    {
+        for (int i = 0; i < LANES; i++) in_words[i] = (uint32_t)(i - 32) * 0x01010101u;
+        memset(out.mapped, 0, BUFFER_BYTES);
+        CHECK(run(&g, integer_min_max, sizeof integer_min_max / sizeof integer_min_max[0], user) == 0);
+        int right = 1;
+        for (int i = 0; i < LANES; i++) {
+            const uint32_t a = in_words[i];
+            const int32_t s = (int32_t)a;
+            right &= out_words[i] == (uint32_t)(s < -3 ? s : -3) && out_words[LANES + i] == (uint32_t)(s > -3 ? s : -3) &&
+                     out_words[2 * LANES + i] == (a < 7 ? a : 7) && out_words[3 * LANES + i] == (a > 7 ? a : 7);
+        }
+        CHECK(right);
+    }
+
     /* VOP3 output modifiers: times 2, 4 and 0.5, applied before the clamp */
     {
         for (int i = 0; i < LANES; i++) in_words[i] = bits((float)i * 0.125f - 2.0f);
