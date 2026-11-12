@@ -37,6 +37,11 @@ ranges (an import or other native code), unreadable memory, the instruction limi
   read; written-only bytes are zero.
 - An eight-byte input whose value points into a buffer or into the image becomes a `pointer` or
   `guest` entry, so it still points at the same thing in the verifier's sandbox.
+- A pointer (an argument or an eight-byte input) that lies before the bytes it reaches, up to
+  64 KiB (a struct whose first fields go unread, a table base indexed far into), widens their
+  buffer down to it, so it is written as `buf:NAME+off` and keeps its distance to those bytes.
+- Bytes of the executable's read-only segments are not inputs: the verifier maps the same
+  executable, and presetting them would write into read-only memory.
 - Arguments (`rdi`..`r9`, `xmm0`, `xmm1`) and the stack arguments read are written the same way:
   `buf:NAME+off`, `guest:0xADDRESS`, or a number.
 - `returns` comes from the hook table: the return class is data (`game/hooks.csv`), not inferred.
@@ -81,7 +86,7 @@ arguments copied, and returns the original's result to the caller; the case is w
 trace is complete. Reads of the relocated code itself (the jump back reads its own target) are not
 inputs. A function whose traces give no case three times in a row is not traced again in the run.
 Tracing costs microseconds per instruction (default limit 200,000 per call), so it is opt-in and
-best paired with `BB_CAPTURE_ONLY`.
+best paired with `BB_CAPTURE_ONLY`. `BB_CAPTURE_FIRST` and `BB_CAPTURE_EVERY` change the sampling.
 
 **Repeats.** Before a case is written, `rt_capture_keep` compares it with every case the library
 already holds for the function (read once per run) and those of this run, apart from its `id` and
@@ -94,7 +99,10 @@ hook (not recordable, left out by `BB_CAPTURE_ONLY`) and every family hook is no
 replacement runs. The renderer's observe hooks then also watch the functions that have a
 replacement (`render_set_render_target`), which are observed rather than recorded. Without it,
 unsampled calls run the replacements, as in any boot with the game library; the runtime's renderer
-still needs that today (with originals only, the title's draws stop at a missing viewport).
+still needs that today (with originals only, the title's draws stop at a missing viewport): some
+render replacements report the packets they emit to it (`runtime/render_observer.h`), and their
+originals do not. For the same reason a recorded call of such a function loses that report, so
+`tools/boot.py` records them only in a boot without a display.
 
 `tools/boot.py --capture DIR` sets all of this up (`BB_CAPTURE_DIR`, `BB_CAPTURE_TRACE`, `BB_ELF`,
 `BB_CAPTURE_IMPORTS`, `BB_CAPTURE_ONLY`, `BB_CAPTURE_MAX`), and `tools/capture_loop.py` runs it for
@@ -133,6 +141,9 @@ marker (data imports get a marker of their own, which never names a slot), finds
 markers, and names each from the symbol list (`BB_CAPTURE_IMPORTS`,
 `symbols/imports.csv`; `tools/run_game.sh` points it there) by matching each name's NID. A slot whose
 NID has no name in the list is not scripted, and a call through it ends the trace.
+
+Changes below the caller's stack pointer are never scripted: an unused argument register can point
+there, at the thread's own native frames, which the caller cannot see.
 
 Limits: arguments are not compared (`argc` 0), since their count is not known; a return value is
 scripted from `rax`, so an import returning a float is not reproduced; memory an import changes

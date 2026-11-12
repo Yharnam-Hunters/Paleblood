@@ -77,6 +77,12 @@ class CaptureLoop(unittest.TestCase):
         self.assertEqual(boot.capture_functions(str(self.root), 'all'), '')
         self.assertEqual(boot.capture_functions(str(self.root), 'all-edge-verified'), 'kernel_thing,render_named_file')
         self.assertEqual(boot.capture_functions(str(self.root), ' a, b ,'), 'a,b')
+        # With the renderer running, a replacement that reports to it is not recorded.
+        write(self.root / 'runtime/include/runtime/render_observer.h', '')
+        write(self.root / 'game/render/named.h', '#include "runtime/render_observer.h"\n')
+        write(self.root / 'game/render/named.cpp', '#include "named.h"\nvoid\nbb_render_named_file(int)\n{\n}\n')
+        self.assertEqual(boot.capture_functions(str(self.root), 'all-edge-verified', renderer=True), 'kernel_thing')
+        self.assertEqual(boot.capture_functions(str(self.root), 'all-edge-verified'), 'kernel_thing,render_named_file')
         env = boot.capture_environment(str(self.root), str(self.captures), 'all', 7, '/elf')
         self.assertEqual((env['BB_CAPTURE_TRACE'], env['BB_CAPTURE_ORIGINAL'], env['BB_CAPTURE_MAX']), ('1', '0', '7'))
         self.assertEqual(boot.capture_environment(str(self.root), 'x', 'all', 1, '/elf', originals=True)['BB_CAPTURE_ORIGINAL'], '1')

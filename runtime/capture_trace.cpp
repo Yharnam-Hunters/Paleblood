@@ -28,6 +28,9 @@
 namespace {
 
 constexpr uint64_t MERGE_GAP = 256;
+/* How far before the bytes it reaches a pointer may lie (a table base, then an index into it) and
+   still have their buffer widened to start at it. */
+constexpr uint64_t POINTER_REACH = 64 * 1024;
 
 /* The image's read-only segments (rt_capture_set_constant): the verifier maps the same executable,
    so their bytes are never case inputs, and presetting them would write into read-only memory. */
@@ -80,9 +83,11 @@ bool valid_returns(const char *r)
 
 class Builder {
 public:
-    /* `pointers`: argument values the code may use as base addresses. One that lies just before
-       or after the bytes it touched (a struct whose first fields go unread) widens their buffer
-       to reach it, so it is still written as buf:NAME+off rather than as this run's address. */
+    /* `pointers`: argument values the code may use as base addresses, as are the eight-byte
+       inputs. One that lies before the bytes it reaches (a struct whose first fields go unread,
+       or a table base the code indexes far into) widens their buffer down to it, and one just past
+       a buffer's end widens it up to it: the pointer is then written as buf:NAME+off rather than
+       as this run's address, and the distance to the bytes it reaches is kept. */
     Builder(const rt_trace_log &log, rt_code_range image, const std::vector<uint64_t> &pointers = {})
         : log_(log), lo_(reinterpret_cast<uintptr_t>(image.lo)), hi_(reinterpret_cast<uintptr_t>(image.hi))
     {
@@ -100,12 +105,18 @@ public:
             if (input(log.qword[i], 8, &v)) anchors.push_back(v);
         }
         for (uint64_t v : anchors) {
-            if (in_image(v)) continue;
-            for (Region &r : regions_) {
-                if (v < r.base && r.base - v <= MERGE_GAP) r.base = v & ~uint64_t{15};
-                else if (v > r.end && v - r.end <= MERGE_GAP) r.end = v;
+            if (in_image(v) || region(v, false)) continue;
+            Region *after = nullptr;                    /* the nearest buffer above the pointer */
+            for (Region &r : regions_)
+                if (r.base > v && r.base - v <= POINTER_REACH && (!after || r.base < after->base)) after = &r;
+            if (after) {
+                after->base = v & ~uint64_t{15};
+                continue;
             }
+            for (Region &r : regions_)
+                if (v > r.end && v - r.end <= MERGE_GAP) r.end = v;
         }
+        std::sort(regions_.begin(), regions_.end(), [](const Region &a, const Region &b) { return a.base < b.base; });
         /* Widened buffers may now meet: join them. */
         std::vector<Region> joined;
         for (const Region &r : regions_) {

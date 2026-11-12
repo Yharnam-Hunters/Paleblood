@@ -6,8 +6,8 @@
    BB_CAPTURE_DIR is set. Every hooked function that records writes to
    $BB_CAPTURE_DIR/<function>/<run>_NNNN.json, outside the repository, so one run feeds every
    function and later runs add to the same library (<run>: BB_CAPTURE_RUN, or start time and
-   process id). Per function and run: the first 50 calls, then every 1000th, until 200 distinct
-   cases are kept (BB_CAPTURE_MAX). A case identical to one the library already holds for the
+   process id). Per function and run: the first 50 calls (BB_CAPTURE_FIRST), then every 1000th
+   (BB_CAPTURE_EVERY), until 200 distinct cases are kept (BB_CAPTURE_MAX). A case identical to one the library already holds for the
    function, apart from its id and run, is not written again (rt_capture_keep). */
 
 #ifdef __cplusplus

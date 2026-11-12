@@ -323,6 +323,7 @@ int rt_capture_dispatch(capture_hook *c, rt_capture_frame *f)
     memcpy(args.gpr, f->gpr, sizeof args.gpr);
     memcpy(args.xmm, f->xmm, sizeof args.xmm);
     copy_stack(f->caller_rsp, args.stack);
+    args.caller_rsp = f->caller_rsp;
     const rt_code_range code[2] = {image_range, code_range};
     rt_trace_result result;
     const int written = rt_capture_traced_call(&c->traced, number, &args, image_range, code, 2, &result);

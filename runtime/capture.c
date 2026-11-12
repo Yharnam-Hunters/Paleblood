@@ -93,13 +93,13 @@ int rt_capture_wanted(const char *function)
     return function && wanted(function);
 }
 
-/* BB_CAPTURE_MAX: distinct cases kept per function and run (default MAX_CASES). */
-static int case_limit(void)
+/* A positive whole number from the environment, or `fallback`. */
+static unsigned setting(const char *name, unsigned fallback)
 {
-    const char *env = getenv("BB_CAPTURE_MAX");
+    const char *env = getenv(name);
     char *end;
     const long n = env && *env ? strtol(env, &end, 10) : 0;
-    return env && *env && !*end && n > 0 && n <= 100000 ? (int)n : MAX_CASES;
+    return env && *env && !*end && n > 0 && n <= 1000000 ? (unsigned)n : fallback;
 }
 
 int rt_capture_begin(const char *function)
@@ -111,10 +111,11 @@ int rt_capture_begin(const char *function)
         return -1;
     if (!wanted(function))
         return -1;
-    if (atomic_load(&slots[s].kept) >= case_limit())
+    /* BB_CAPTURE_MAX distinct cases; BB_CAPTURE_FIRST calls, then every BB_CAPTURE_EVERY-th. */
+    if (atomic_load(&slots[s].kept) >= (int)setting("BB_CAPTURE_MAX", MAX_CASES))
         return -1;
     unsigned call = atomic_fetch_add(&slots[s].calls, 1);
-    if (call >= FIRST && call % EVERY)
+    if (call >= setting("BB_CAPTURE_FIRST", FIRST) && call % setting("BB_CAPTURE_EVERY", EVERY))
         return -1;
     return atomic_fetch_add(&slots[s].numbered, 1);
 }

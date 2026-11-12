@@ -147,6 +147,15 @@ int self_test()
               log.addr[i] >= reinterpret_cast<uintptr_t>(image + 0x1808), "import: its slot is not an input");
     rt_trace_log_free(&log);
 
+    /* Changes below the caller's rsp are dead to the caller: not scripted as the import's writes. */
+    filled = 0x55555555;
+    rt_trace_args below = arguments(reinterpret_cast<uint64_t>(&filled));
+    below.caller_rsp = reinterpret_cast<uint64_t>(&filled) + sizeof filled;
+    r = trace(0x2c0, below, log);
+    check(!log.incomplete && filled == 21 && log.import_count == 1 && log.imports[0].writes == 0,
+          "import: a change below the caller's rsp is not scripted");
+    rt_trace_log_free(&log);
+
     /* What a case cannot express: the call still runs to the end, but there is no case. */
     trace(0x180, arguments(), log);
     check(log.incomplete != nullptr, "xmm2 read: incomplete");
@@ -198,6 +207,15 @@ int self_test()
     const rt_traced_function store_field = {"capture_trace_store_field", 0x400300, "void", at(0x300)};
     check(rt::traced_case(log, store, store_field, 0, "selftest", whole).find("\"rdi\": \"buf:b0+0x0\"") != std::string::npos,
           "case: a pointer before the bytes it reaches is a buffer pointer");
+    rt_trace_log_free(&log);
+    /* A table base far below the one entry read keeps its distance to it. */
+    alignas(16) static unsigned char table[0x1010] = {};
+    rt_trace_args far = arguments(reinterpret_cast<uint64_t>(table));
+    trace(0x340, far, log);
+    const rt_traced_function read_far = {"capture_trace_read_far", 0x400340, "i32", at(0x340)};
+    const std::string far_case = rt::traced_case(log, far, read_far, 0, "selftest", whole);
+    check(far_case.find("\"rdi\": \"buf:b0+0x0\"") != std::string::npos && far_case.find("\"size\": 4112") != std::string::npos,
+          "case: a table base far below the entry read is a buffer pointer");
     rt_trace_log_free(&log);
 
     if (!failures) std::puts("capture trace self-test: traced calls, inputs and fail-closed cases passed");

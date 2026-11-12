@@ -64,7 +64,11 @@ hook of the game library into a recording thunk, and a sampled call of a replace
 the game's original code under the tracer, which writes the inputs it read as a case
 (docs/capture-architecture.md). The recorded call always runs the original; other calls run the
 replacements as in any `--game-lib` boot, or, with `--capture-originals`, no replacement runs at
-all. `--capture-functions` picks the functions (`all-edge-verified` by default, `all`, or a list)
+all. `--capture-functions` picks the functions (`all-edge-verified` by default, `all`, or a list;
+with a `--display`, `all-edge-verified` leaves out the functions whose replacements report what
+they emitted to the runtime's renderer (`runtime/render_observer.h`): a recorded call runs the
+original, which reports nothing, and the renderer would stop at the state it missed; a scene with
+`"display": "none"` records them)
 and `--capture-cases N` caps the distinct cases kept per function and run (200). A case identical
 to one the library already holds, apart from its id and run, is not written again, so repeated
 runs only add new situations.

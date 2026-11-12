@@ -28,6 +28,7 @@ typedef struct {
     uint64_t gpr[6];                          /* rdi, rsi, rdx, rcx, r8, r9 */
     uint8_t xmm[8][16];                       /* xmm0..xmm7 */
     uint64_t stack[RT_TRACE_STACK_SLOTS];     /* [rsp+8], [rsp+16], ... at the call */
+    uint64_t caller_rsp;                      /* rsp at the call (the return address), or 0 */
 } rt_trace_args;
 
 typedef struct {

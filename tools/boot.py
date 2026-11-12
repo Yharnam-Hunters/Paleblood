@@ -42,7 +42,8 @@ DIR/<function>/: a recorded call always runs the game's original code. Other cal
 replacements, as in any boot with --game-lib (the renderer needs some of them); with
 --capture-originals no replacement runs at all.
 --capture-functions picks which: all-edge-verified (default: every edge-verified function of
-symbols/functions.csv), all (every hook), or a comma-separated list; --capture-cases caps the
+symbols/functions.csv; with a --display, not those whose replacements report to the renderer,
+which would miss a recorded call's state), all (every hook), or a comma-separated list; --capture-cases caps the
 distinct cases kept per function and run. A case identical to one DIR already holds is not
 written again.
 
@@ -216,24 +217,35 @@ def module_hook_args(root: str) -> list[str]:
     return args
 
 
-def capture_functions(root: str, which: str) -> str:
-    """BB_CAPTURE_ONLY for --capture-functions: names, or "" for every hook."""
+def reports_to_renderer(root: str, name: str) -> bool:
+    """Whether the replacement tells the runtime's renderer what it emitted (runtime/render_observer.h).
+    A recorded call runs the original instead, which tells nothing: with a display, the renderer
+    would then miss that call's state and stop."""
+    sys.path.insert(0, os.path.join(root, 'tools'))
+    import verification
+    return 'runtime/include/runtime/render_observer.h' in verification.source_files(root, name)
+
+
+def capture_functions(root: str, which: str, renderer: bool = False) -> str:
+    """BB_CAPTURE_ONLY for --capture-functions: names, or "" for every hook. With the renderer
+    running, all-edge-verified leaves out the functions whose replacements report to it."""
     if which == 'all':
         return ''
     if which != 'all-edge-verified':
         return ','.join(n.strip() for n in which.split(',') if n.strip())
     with open(os.path.join(root, 'symbols', 'functions.csv'), newline='') as f:
-        return ','.join(r['name'] for r in csv.DictReader(f) if r['status'] == 'edge-verified')
+        names = [r['name'] for r in csv.DictReader(f) if r['status'] == 'edge-verified']
+    return ','.join(n for n in names if not (renderer and reports_to_renderer(root, n)))
 
 
 def capture_environment(root: str, directory: str, which: str, cases: int, elf: str,
-                        originals: bool = False) -> dict[str, str]:
+                        originals: bool = False, renderer: bool = False) -> dict[str, str]:
     """The runtime's capture settings (runtime/capture.h, runtime/capture_hooks.c) for --capture."""
     env = {'BB_CAPTURE_DIR': os.path.abspath(directory), 'BB_CAPTURE_TRACE': '1',
            'BB_CAPTURE_ORIGINAL': '1' if originals else '0',
            'BB_CAPTURE_MAX': str(cases), 'BB_ELF': os.path.abspath(elf),
            'BB_CAPTURE_IMPORTS': os.path.join(root, 'symbols', 'imports.csv'),
-           'BB_CAPTURE_ONLY': capture_functions(root, which)}
+           'BB_CAPTURE_ONLY': capture_functions(root, which, renderer)}
     return env
 
 
@@ -444,7 +456,7 @@ def main() -> int:
             if not a.game_lib:
                 cmd += ['--game-lib', game_lib]
             env = {**os.environ, **capture_environment(ROOT, a.capture, a.capture_functions, a.capture_cases, elf,
-                                                          a.capture_originals)}
+                                                          a.capture_originals, a.display != 'none')}
         if a.game_lib:
             cmd += ['--game-lib', a.game_lib]
         # The guest runs in this process's child; a hard limit covers a runaway harness.
