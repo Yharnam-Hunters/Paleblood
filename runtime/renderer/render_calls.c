@@ -463,6 +463,19 @@ int rt_render_record_dispatch_indirect(uint64_t buffer, uint32_t offset, uint32_
     return record(buffer, &call, error, error_size);
 }
 
+int rt_render_record_draw_indirect(uint64_t buffer, uint32_t offset, uint32_t data_offset, rt_shader_stage stage, uint32_t base_vertex_sgpr,
+                                   uint32_t start_instance_sgpr, char *error, size_t error_size)
+{
+    if (data_offset % sizeof(uint32_t)) {
+        snprintf(error, error_size, "an indirect draw's arguments at %#x bytes from the base: not a whole word", data_offset);
+        return -1;
+    }
+    rt_render_call call = {.kind = RT_CALL_DRAW_INDIRECT, .offset = offset};
+    call.u.draw_indirect.data_offset = data_offset, call.u.draw_indirect.stage = stage;
+    call.u.draw_indirect.base_vertex_sgpr = base_vertex_sgpr, call.u.draw_indirect.start_instance_sgpr = start_instance_sgpr;
+    return record(buffer, &call, error, error_size);
+}
+
 int rt_render_record_pixel_shader_at(uint64_t address, const uint32_t words[RT_PIXEL_SHADER_WORDS])
 {
     rt_render_call call = {.kind = RT_CALL_PIXEL_SHADER};

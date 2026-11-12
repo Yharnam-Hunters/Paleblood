@@ -418,6 +418,8 @@ RT_SYSLIB("libSceGnmDriver", sceGnmUnmapComputeQueue, unmap_compute_queue);
 #define SET_BASE_INDEX_MASK 0xfu
 #define SET_BASE_DRAW_INDEX_INDIRECT 1u /* the draw and dispatch indirect arguments' base */
 #define DISPATCH_INDIRECT_DWORDS 3
+#define PM4_DRAW_INDIRECT 0x24u
+#define DRAW_INDIRECT_DWORDS 5
 #define WRITE_DATA_HEADER_DWORDS 4
 #define WRITE_DATA_DESTINATION(control) ((control) >> 8 & 0xfu)
 #define WRITE_DATA_TO_L2 2u
@@ -1044,7 +1046,8 @@ static void complete_packets(const char *fn, const uint32_t *packets, uint32_t d
                    opcode != PM4_SET_UCONFIG_REG && opcode != PM4_NUM_INSTANCES && opcode != PM4_DRAW_INDEX_AUTO &&
                    opcode != PM4_INDEX_TYPE && opcode != PM4_INDEX_BASE && opcode != PM4_INDEX_BUFFER_SIZE &&
                    opcode != PM4_DRAW_INDEX_2 && opcode != PM4_DRAW_INDEX_OFFSET_2 &&
-                   !(opcode == PM4_DISPATCH_INDIRECT && length == DISPATCH_INDIRECT_DWORDS)) {
+                   !(opcode == PM4_DISPATCH_INDIRECT && length == DISPATCH_INDIRECT_DWORDS) &&
+                   !(opcode == PM4_DRAW_INDIRECT && length == DRAW_INDIRECT_DWORDS)) {
             unknown_packet(fn, opcode, length);
         }
         at += length;
@@ -1124,6 +1127,8 @@ RT_SYSLIB("libSceGnmDriver", sceGnmDingDong, ding_dong);
                                   (found 11 November 2026, loading Iosefka's Clinic; shadPS4's
                                   pm4_cmds.h has the fields, facts only): the renderer runs it from
                                   its recorded calls;
+     DRAW_INDIRECT                skipped: an auto-index draw whose counts the GPU reads at that
+                                  base (found the same day, right after); it only reads memory;
      WAIT_ON_CE_COUNTER, INCREMENT_DE_COUNTER
                                   the draw engine's side of the constant engine (above): a wait
                                   becomes a step that runs the constant buffer up to the

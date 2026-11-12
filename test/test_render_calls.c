@@ -338,6 +338,12 @@ static void compute_calls(void)
     calls = rt_render_submitted(BUFFER, 0x100, &count);
     CHECK(count == 2 && calls[0].kind == RT_CALL_INDIRECT_BASE && calls[0].u.indirect_base.address == 0x2043490060ull &&
           calls[1].kind == RT_CALL_DISPATCH_INDIRECT && calls[1].offset == 0x50 && calls[1].u.dispatch_indirect.data_offset == 0x24);
+    CHECK(rt_render_record_draw_indirect(BUFFER, 0x70, 0x30, RT_STAGE_VERTEX, 5, 6, error, sizeof error) == 0);
+    CHECK(rt_render_record_draw_indirect(BUFFER, 0x80, 0x31, RT_STAGE_VERTEX, 0, 0, error, sizeof error) == -1 && strstr(error, "whole word"));
+    calls = rt_render_submitted(BUFFER, 0x100, &count);
+    CHECK(count == 1 && calls[0].kind == RT_CALL_DRAW_INDIRECT && calls[0].u.draw_indirect.data_offset == 0x30 &&
+          calls[0].u.draw_indirect.stage == RT_STAGE_VERTEX && calls[0].u.draw_indirect.base_vertex_sgpr == 5 &&
+          calls[0].u.draw_indirect.start_instance_sgpr == 6);
     rt_render_forget();
 }
 
