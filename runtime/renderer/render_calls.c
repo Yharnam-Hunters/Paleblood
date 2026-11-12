@@ -362,6 +362,27 @@ int rt_render_record_dispatch(uint64_t buffer, uint32_t offset, const uint32_t g
     return record(buffer, &call, error, error_size);
 }
 
+/* SET_BASE writes the address's bits 3-31 and 32-39 (the library's writer, 0x014742f0, masks them so):
+   the base the GPU uses is those bits alone. */
+int rt_render_record_indirect_base(uint64_t buffer, uint32_t offset, uint64_t address, char *error, size_t error_size)
+{
+    static const uint64_t base_low_mask = 0xfffffff8u, base_high_mask = 0xffu;
+    rt_render_call call = {.kind = RT_CALL_INDIRECT_BASE, .offset = offset};
+    call.u.indirect_base.address = (address & base_low_mask) | ((address >> 32) & base_high_mask) << 32;
+    return record(buffer, &call, error, error_size);
+}
+
+int rt_render_record_dispatch_indirect(uint64_t buffer, uint32_t offset, uint32_t data_offset, char *error, size_t error_size)
+{
+    if (data_offset % sizeof(uint32_t)) {
+        snprintf(error, error_size, "an indirect dispatch's arguments at %#x bytes from the base: not a whole word", data_offset);
+        return -1;
+    }
+    rt_render_call call = {.kind = RT_CALL_DISPATCH_INDIRECT, .offset = offset};
+    call.u.dispatch_indirect.data_offset = data_offset;
+    return record(buffer, &call, error, error_size);
+}
+
 int rt_render_record_pixel_shader_at(uint64_t address, const uint32_t words[RT_PIXEL_SHADER_WORDS])
 {
     rt_render_call call = {.kind = RT_CALL_PIXEL_SHADER};

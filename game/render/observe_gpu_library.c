@@ -31,6 +31,12 @@
    for x x y x z workgroups with initiator 1 (COMPUTE_SHADER_EN), then an event or a NOP. Their two
    relatives 0x01474d10 and 0x0148a410 take a fifth argument that sets the initiator's low two bits;
    what those select is not established, so they are not observed yet.
+   Indirect dispatches: 0x014742f0 (command buffer, address) writes SET_BASE with base index 1 (the
+   draw and dispatch indirect table) and the address's bits 3-31 and 32-39; 0x01474de0 (command buffer,
+   data offset) writes DISPATCH_INDIRECT with that offset and initiator 1, then an event or a NOP. The
+   GPU reads the workgroup counts, three 32-bit words, at the base plus the offset when it runs the
+   dispatch (shadPS4's liverpool.cpp reads them there, facts only). Its relative 0x01474e80 takes a
+   third argument for the initiator's bits 3-4, not established, so it is not observed yet.
    The depth render target's setter 0x014739b0 (command buffer, target) writes context registers from the
    target's words when the target is not NULL and has a depth or a stencil buffer (word 2,
    DB_Z_READ_BASE, or word 3, DB_STENCIL_READ_BASE, not 0: the two checks it calls, 0x01472770 and
@@ -205,13 +211,27 @@ static void draw_index_offset(const uint64_t args[RT_OBSERVED_ARGUMENTS])
                                  (uint32_t)args[ARGUMENT_INDEX_COUNT]);
 }
 
+enum { ARGUMENT_INDIRECT_VALUE = 1 };
+
+static void indirect_base(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    rt_observe_indirect_base(observed_buffer(args), observed_offset(args), args[ARGUMENT_INDIRECT_VALUE]);
+}
+
+static void dispatch_indirect(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    rt_observe_dispatch_indirect(observed_buffer(args), observed_offset(args), (uint32_t)args[ARGUMENT_INDIRECT_VALUE]);
+}
+
 const rt_observe_hook game_observe_hooks[] = {
     {0x01473190, 87, "render_set_stencil_reference", stencil_reference_both},
     {0x014731f0, 99, "render_set_stencil_reference_separate", stencil_reference_each},
     {0x014738b0, 246, "render_set_render_target", render_target},
     {0x014739b0, 344, "render_set_depth_render_target", depth_target},
+    {0x014742f0, 107, "render_set_indirect_base", indirect_base},
     {0x01474420, 176, "render_draw_index_offset", draw_index_offset},
     {0x01474c50, 177, "render_dispatch", dispatch},
+    {0x01474de0, 155, "render_dispatch_indirect", dispatch_indirect},
     {0x01475270, 76, "render_set_index_type", index_type},
     {0x014752c0, 92, "render_set_index_base", index_base},
     {0x01475320, 76, "render_set_index_buffer_size", index_size},

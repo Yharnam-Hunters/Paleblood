@@ -2468,6 +2468,34 @@ int main(void)
                     for (unsigned lane = 0; lane < LANES; lane++)
                         each &= indexes[((z * 3 + y) * 2 + gx) * LANES + lane] == (gx | y << 8 | z << 16);
         CHECK(each);
+
+        /* The same grid as an indirect dispatch: the counts are in guest memory at the indirect base plus
+           the data offset, written after the calls were recorded (the GPU reads them when it runs); a
+           dispatch with no base set stops by name. */
+        enum { ARGUMENTS = 0x24800, DATA_OFFSET = 0x10 };
+        memset(indexes, 0xff, GROUPS * LANES * sizeof *indexes);
+        rt_render_forget(), rt_executor_reset(x);
+        CHECK(rt_render_record_compute_shader_at(COMPUTE + 0x10, groups_shader) == 0);
+        CHECK(rt_render_record_user_data(COMPUTE, 0x20, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+        CHECK(rt_render_record_dispatch_indirect(COMPUTE, 0x28, DATA_OFFSET, error, sizeof error) == 0);
+        CHECK(rt_executor_run(x, COMPUTE, 0x40, error, sizeof error) == -1 && strstr(error, "no indirect base"));
+        rt_render_forget(), rt_executor_reset(x);
+        CHECK(rt_render_record_compute_shader_at(COMPUTE + 0x10, groups_shader) == 0);
+        CHECK(rt_render_record_user_data(COMPUTE, 0x20, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+        CHECK(rt_render_record_indirect_base(COMPUTE, 0x28, at(ARGUMENTS), error, sizeof error) == 0);
+        CHECK(rt_render_record_dispatch_indirect(COMPUTE, 0x30, DATA_OFFSET, error, sizeof error) == 0);
+        uint32_t *counts = (uint32_t *)(uintptr_t)at(ARGUMENTS + DATA_OFFSET);
+        counts[0] = 2, counts[1] = 3, counts[2] = 4;
+        const int indirect = rt_executor_run(x, COMPUTE, 0x40, error, sizeof error);
+        if (indirect) fprintf(stderr, "indirect dispatch: %s\n", error);
+        CHECK(indirect == 0);
+        each = 1;
+        for (uint32_t z = 0; z < 4; z++)
+            for (uint32_t y = 0; y < 3; y++)
+                for (uint32_t gx = 0; gx < 2; gx++)
+                    for (unsigned lane = 0; lane < LANES; lane++)
+                        each &= indexes[((z * 3 + y) * 2 + gx) * LANES + lane] == (gx | y << 8 | z << 16);
+        CHECK(each);
     }
 
     /* Storage images through the record: a fill pass writes a 64 x 1 RGBA32F image (its first use, so
