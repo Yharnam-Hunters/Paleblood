@@ -41,11 +41,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
-#include <sys/syscall.h>
-#include <sys/uio.h>
 #include <unistd.h>
 
 #include "runtime/capture.h"
+#include "runtime/capture_stack.h"
 #include "runtime/capture_trace.h"
 #include "runtime/guest.h"
 #include "runtime/loader.h"
@@ -311,16 +310,6 @@ int rt_capture_hooks_prepare(unsigned char *image, uint64_t image_size, const rt
     return (int)recorded;
 }
 
-/* The caller's stack arguments, as far as its stack is readable. */
-static void copy_stack(uint64_t caller_rsp, uint64_t *out)
-{
-    memset(out, 0, sizeof(uint64_t) * RT_TRACE_STACK_SLOTS);
-    for (size_t n = RT_TRACE_STACK_SLOTS; n > 0; n--) {
-        struct iovec local = {out, n * 8}, remote = {(void *)(uintptr_t)(caller_rsp + 8), n * 8};
-        if (syscall(SYS_process_vm_readv, getpid(), &local, 1, &remote, 1, 0) == (long)(n * 8)) return;
-    }
-}
-
 int rt_capture_dispatch(capture_hook *c, rt_capture_frame *f)
 {
     if (rt_trace_active() || atomic_load(&c->failed) >= GIVE_UP) return 0;
@@ -329,7 +318,7 @@ int rt_capture_dispatch(capture_hook *c, rt_capture_frame *f)
     rt_trace_args args;
     memcpy(args.gpr, f->gpr, sizeof args.gpr);
     memcpy(args.xmm, f->xmm, sizeof args.xmm);
-    copy_stack(f->caller_rsp, args.stack);
+    rt_capture_copy_stack(f->caller_rsp, args.stack);
     args.caller_rsp = f->caller_rsp;
     const rt_code_range code[2] = {image_range, code_range};
     rt_trace_result result;
