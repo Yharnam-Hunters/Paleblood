@@ -139,6 +139,24 @@ resources loaded from their descriptors; colour and depth/stencil attachments us
 guest memory.
 The generic register events validate this backend's supported opaque-triangle profile: blending,
 non-copy colour operations, partial colour masks and multiple instances stop with a reason.
+`VGT_SHADER_STAGES_EN` (`0xa2d5` in the GFX7 dword register layout) retains the complete
+32-bit word across call fragments and submissions. Draws require the word to be exactly zero:
+AMD's GFX7 `VS_STAGE_REAL` selector is zero, with the other pre-raster stage enables clear.
+This is the existing vertex/pixel host profile and reset default, not a hardware power-on claim.
+Every nonzero word, including unlisted high bits, is retained but refused by name and full value
+when an auto or indexed draw consumes it. A later zero write restores the profile without a
+reset. The check precedes target allocation, shader/pipeline caches, rectangle capture and native
+draw work; existing indexed packet validation and CPU bookkeeping can precede it.
+Tessellation, geometry and other stage combinations need separate implementations; no field is
+masked away or declared harmless. The separate compute dispatch path is unchanged.
+The opt-in `metal_shader_stages` fixture uses owned vertex/pixel programs with literal colour,
+D32 and per-vertex buffer-store expectations. It observes the real executor's retained state and
+caches, forwarding command-buffer creation to the native queue. Nonzero-word refusal, ordered
+restoration, reset, indexed routes and independent instance restrictions remain observable even
+with warm caches. These are host-profile tests, not execution of unsupported hardware stages.
+The register/field identity comes from AMD's public [GFX7.2 register definitions](https://github.com/torvalds/linux/blob/ee83899302a0457a3ba47464a13e8682bd7ba27d/drivers/gpu/drm/amd/include/asic_reg/gca/gfx_7_2_d.h)
+and [stage selectors](https://github.com/torvalds/linux/blob/ee83899302a0457a3ba47464a13e8682bd7ba27d/drivers/gpu/drm/amd/include/asic_reg/gca/gfx_7_2_enum.h).
+
 A zero colour mask disables attachment writes while still executing the draw. The Metal test
 observes an owned vertex shader's buffer stores while the attachment remains unchanged. The pipeline cache includes
 the write mask, and restoring it enables colour writes again.

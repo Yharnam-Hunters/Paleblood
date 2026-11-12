@@ -115,6 +115,7 @@ struct MetalState {
     uint32_t user[2][GCN_USER_SGPR_MAX] = {};
     uint32_t user_set[2] = {};
     uint32_t blend = 0, depth = 0, color_control = 0, target_mask = 0, primitive = 0, instances = 1;
+    uint32_t shader_stages = 0; // The existing plain vertex/pixel host profile.
     bool blend_set = false, depth_set = false, color_control_set = false, target_mask_set = false, primitive_set = false;
     uint32_t depth_words[9] = {}, depth_written = 0, depth_view = 0, render_control = 0;
     uint32_t stencil_control = 0, stencil_reference[2] = {};
@@ -163,7 +164,7 @@ enum { DB_RENDER_CONTROL = 0xa000, DB_DEPTH_VIEW = 0xa002, DB_HTILE_DATA_BASE = 
        DB_Z_INFO = 0xa010, DB_STENCIL_INFO = 0xa011, DB_DEPTH_SLICE = 0xa017, DB_HTILE_SURFACE = 0xa2af,
        CB_TARGET_MASK = 0xa08e, DB_STENCIL_CONTROL = 0xa10b, DB_STENCILREFMASK = 0xa10c,
        DB_STENCILREFMASK_BF = 0xa10d, CB_BLEND0_CONTROL = 0xa1e0,
-       DB_DEPTH_CONTROL = 0xa200, CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242,
+       DB_DEPTH_CONTROL = 0xa200, CB_COLOR_CONTROL = 0xa202, VGT_SHADER_STAGES_EN = 0xa2d5, VGT_PRIMITIVE_TYPE = 0xc242,
        PA_SC_SCREEN_SCISSOR_TL = 0xa00c, PA_SC_SCREEN_SCISSOR_BR = 0xa00d, SPI_PS_INPUT_CNTL_0 = 0xa191, PS_INPUTS = 32 };
 enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 1, Z_ENABLE = 2, Z_WRITE_ENABLE = 4,
        COLOR_MODE_MASK = 0x70, COLOR_MODE_SHIFT = 4, CB_NORMAL = 1, ROP3_MASK = 0xff0000,
@@ -176,6 +177,7 @@ static int set_register(MetalState &state, uint32_t address, uint32_t value)
     case CB_COLOR_CONTROL: state.color_control = value; state.color_control_set = true; return 0;
     case CB_TARGET_MASK: state.target_mask = value; state.target_mask_set = true; return 0;
     case VGT_PRIMITIVE_TYPE: state.primitive = value; state.primitive_set = true; return 0;
+    case VGT_SHADER_STAGES_EN: state.shader_stages = value; return 0;
     case PA_SC_SCREEN_SCISSOR_TL: state.scissor_tl = value; state.scissor_tl_set = true; return 0;
     case PA_SC_SCREEN_SCISSOR_BR: state.scissor_br = value; state.scissor_br_set = true; return 0;
     case DB_DEPTH_VIEW: state.depth_view = value; state.depth_view_set = true; return 0;
@@ -202,6 +204,9 @@ static int set_register(MetalState &state, uint32_t address, uint32_t value)
 /* Validate the supported state. A zero colour mask still executes shaders and their writes. */
 static int check_state(const MetalState &state, char *error, size_t size)
 {
+    if (state.shader_stages != 0)
+        return failed(error, size, "VGT_SHADER_STAGES_EN 0x%08x: only the plain vertex/pixel path is drawn yet",
+                      static_cast<unsigned>(state.shader_stages));
     if (state.primitive_set && state.primitive != DI_PT_TRILIST && state.primitive != DI_PT_RECTLIST)
         return failed(error, size, "primitive type %u: only triangle and rectangle lists are drawn yet", state.primitive);
     if (state.blend_set && (state.blend & BLEND_ENABLE)) return failed(error, size, "blending is not drawn yet");
