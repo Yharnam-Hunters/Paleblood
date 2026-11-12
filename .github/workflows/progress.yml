@@ -1,0 +1,49 @@
+# Whether main's generated progress text is current. No game data is needed or used.
+#
+# Feature branches no longer regenerate the README, STATUS and CONTRIBUTING progress blocks or the
+# status card (docs/assets/status-*.svg): every pull request rewrote the same lines, so parallel
+# pull requests kept conflicting in the merge queue. Main is regenerated instead, by one pull
+# request on the branch auto/regenerate-progress that tools/progress_pr.py opens or updates and
+# queues (CONTRIBUTING.md, "Generated progress"). This workflow is that gate, moved to main: it
+# fails while main's generated text is behind symbols/, and its summary says how to catch up.
+#
+# It cannot open the pull request itself: the repository does not let GitHub Actions create pull
+# requests, and a pull request made with the default token would start none of the required
+# checks. Whoever has merged runs tools/progress_pr.py.
+name: progress
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: progress
+  cancel-in-progress: true
+
+jobs:
+  main-current:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generated progress text matches symbols/ on main
+        run: |
+          if python3 tools/progress.py --check 2>"$RUNNER_TEMP/stale"; then
+            echo "Main's generated progress text is current." >> "$GITHUB_STEP_SUMMARY"
+          else
+            cat "$RUNNER_TEMP/stale" >&2
+            {
+              echo "### Main's generated progress text is behind symbols/"
+              echo
+              cat "$RUNNER_TEMP/stale"
+              echo
+              echo 'Run `tools/progress_pr.py` (it opens or updates the one regeneration pull request,'
+              echo '`auto/regenerate-progress`, and queues it). Do not regenerate progress in a feature branch.'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi

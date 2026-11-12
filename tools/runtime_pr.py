@@ -65,7 +65,14 @@ def is_runtime_document_path(path: str) -> bool:
     )
 
 
+# The status card is generated documentation: tools/progress_pr.py regenerates it with the
+# Markdown progress blocks in one documentation-only pull request.
+GENERATED_DOC_FILES = {'docs/assets/status-light.svg', 'docs/assets/status-dark.svg'}
+
+
 def is_documentation_path(path: str) -> bool:
+    if path in GENERATED_DOC_FILES:
+        return True
     p = PurePosixPath(path)
     return p.suffix.lower() == '.md' and (
         len(p.parts) == 1 or p.parts[0] == 'docs' or p.parts[0] == '.github'

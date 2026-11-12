@@ -800,6 +800,20 @@ static const uint32_t pixel_color[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* As pixel_color, but attribute 0 read flat with v_interp_mov_f32 from P0 (the first vertex's value), not
+   interpolated. */
+static const uint32_t pixel_flat_color[] = {
+    0xbefc0300, /* s_mov_b32 m0, s0 */
+    0xc80a0002, /* v_interp_mov_f32 v2, p0, attr0.x */
+    0xc80e0102, /* v_interp_mov_f32 v3, p0, attr0.y */
+    0xc8120202, /* v_interp_mov_f32 v4, p0, attr0.z */
+    0xc8160302, /* v_interp_mov_f32 v5, p0, attr0.w */
+    0x5e0c0702, /* v_cvt_pkrtz_f16_f32_e32 v6, v2, v3 */
+    0x5e0e0b04, /* v_cvt_pkrtz_f16_f32_e32 v7, v4, v5 */
+    0xf8001c0f, 0x00000706, /* exp mrt0, v6, v6, v7, v7 done compr vm */
+    0xbf810000, /* s_endpgm */
+};
+
 /* Pixel shaders (SPI_PS_INPUT 0x1002: the front face in v2 after the barycentrics) colouring each pixel
    (face, 0.25, 0.25, 1): the face VGPR as a float, or (pixel_face_bits) converted from an unsigned integer. */
 static const uint32_t pixel_face_float[] = {
@@ -899,6 +913,20 @@ static const uint32_t pixel_lookup[] = {
     0xf0804100, 0x00600204, /* image_sample v2, v[4:5], s[0:7], s[12:15] dmask:0x1 da */
     0xbf8c0f70, /* s_waitcnt vmcnt(0) */
     0xf800180f, 0x03020100, /* exp mrt0, v0, v1, v2, v3 done vm */
+    0xbf810000, /* s_endpgm */
+};
+
+/* image_sample_l with DA from the second image (the table's, as in pixel_lookup) at x = v2, slice 0,
+   LOD 0: the LOD's VGPR follows the slice's. */
+static const uint32_t pixel_lookup_level[] = {
+    0xc0c00300, /* s_load_dwordx8 s[0:7], s[2:3], 0x0 */
+    0xbf8c0070, /* s_waitcnt vmcnt(0) lgkmcnt(0) */
+    0x7e080302, /* v_mov_b32_e32 v4, v2 */
+    0x7e0a0280, /* v_mov_b32_e32 v5, 0 */
+    0x7e0c0280, /* v_mov_b32_e32 v6, 0 */
+    0xf0904100, 0x00600004, /* image_sample_l v0, v[4:6], s[0:7], s[12:15] dmask:0x1 da */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf800180f, 0x00000000, /* exp mrt0, v0, v0, v0, v0 done vm */
     0xbf810000, /* s_endpgm */
 };
 
@@ -1016,6 +1044,41 @@ static const uint32_t vertex_pos1[] = {
    v_mul_i32_i24 x, y; v_mul_u32_u24 x, y; v_mad_i32_i24 x, y, z; v_bfe_u32 and v_bfe_i32 of x at
    offset y, width z; v_bfm_b32 y, z; x + y + carry (carry in: w != 0) and its carry out; x - y -
    borrow (borrow in: w != 0) and its borrow out; v_mad_u32_u24 x, y, z. */
+/* Three-way min, max and middle (f32, i32, u32), bit-field insert, 64-bit shifts and the legacy float min
+   and max: lane i reads (x, y, z, w) at in[4i] and, for lanes 0-11, writes v6-v25 at out[20i]: min3, max3,
+   med3 of (x, y, z) as i32 then u32, bfi(x, y, z), the pair (y:x) shifted left, right and arithmetically
+   right by w, min3(x, y, z), max3(x, y, -z), med3(x, y, z) as floats, max_legacy(x, y), min_legacy(x, y),
+   and the 64-bit -1 shifted left by w. */
+static const uint32_t valu_batch[] = {
+    0x34020084, /* v_lshlrev_b32_e32 v1, 4, v0 */
+    0xe0381000, 0x80000201, /* buffer_load_dwordx4 v[2:5], v1, s[0:3], 0 offen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x160200ff, 0x00000050, /* v_mul_u32_u24_e32 v1, 0x50, v0 */
+    0xd2a40006, 0x04120702, /* v_min3_i32 v6, v2, v3, v4 */
+    0xd2aa0007, 0x04120702, /* v_max3_i32 v7, v2, v3, v4 */
+    0xd2b00008, 0x04120702, /* v_med3_i32 v8, v2, v3, v4 */
+    0xd2a60009, 0x04120702, /* v_min3_u32 v9, v2, v3, v4 */
+    0xd2ac000a, 0x04120702, /* v_max3_u32 v10, v2, v3, v4 */
+    0xd2b2000b, 0x04120702, /* v_med3_u32 v11, v2, v3, v4 */
+    0xd294000c, 0x04120702, /* v_bfi_b32 v12, v2, v3, v4 */
+    0xd2c2000d, 0x00020b02, /* v_lshl_b64 v[13:14], v[2:3], v5 */
+    0xd2c4000f, 0x00020b02, /* v_lshr_b64 v[15:16], v[2:3], v5 */
+    0xd2c60011, 0x00020b02, /* v_ashr_i64 v[17:18], v[2:3], v5 */
+    0xd2a20013, 0x04120702, /* v_min3_f32 v19, v2, v3, v4 */
+    0xd2a80014, 0x84120702, /* v_max3_f32 v20, v2, v3, -v4 */
+    0xd2ae0015, 0x04120702, /* v_med3_f32 v21, v2, v3, v4 */
+    0x1c2c0702, /* v_max_legacy_f32_e32 v22, v2, v3 */
+    0x1a2e0702, /* v_min_legacy_f32_e32 v23, v2, v3 */
+    0xd2c20018, 0x00020ac1, /* v_lshl_b64 v[24:25], -1, v5 */
+    0x7da8008c, /* v_cmpx_gt_u32_e32 vcc, 12, v0 */
+    0xe0781000, 0x80010601, /* buffer_store_dwordx4 v[6:9], v1, s[4:7], 0 offen */
+    0xe0781010, 0x80010a01, /* buffer_store_dwordx4 v[10:13], v1, s[4:7], 0 offen offset:16 */
+    0xe0781020, 0x80010e01, /* buffer_store_dwordx4 v[14:17], v1, s[4:7], 0 offen offset:32 */
+    0xe0781030, 0x80011201, /* buffer_store_dwordx4 v[18:21], v1, s[4:7], 0 offen offset:48 */
+    0xe0781040, 0x80011601, /* buffer_store_dwordx4 v[22:25], v1, s[4:7], 0 offen offset:64 */
+    0xbf810000, /* s_endpgm */
+};
+
 static const uint32_t integer_batch[] = {
     0x34020084, /* v_lshlrev_b32_e32 v1, 4, v0 */
     0xe0381000, 0x80000201, /* buffer_load_dwordx4 v[2:5], v1, s[0:3], 0 offen */
