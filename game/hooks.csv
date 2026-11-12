@@ -178,6 +178,10 @@ address,replacement,system,returns
 0x02434520,bb_frame_timing_flipper_init,frame_timing,void
 0x02434770,bb_frame_timing_pace_frame,frame_timing,void
 0x024512a0,bb_frame_timing_task_frame_024512a0,frame_timing,void
+0x0246cf50,bb_loading_disk_device_resolve_root_0246cf50,loading,i8
+0x0246d180,bb_loading_disk_device_resolve_alias_0246d180,loading,i8
+0x02470d50,bb_loading_mount_table_push_back_02470d50,loading,void
+0x024716d0,bb_loading_mount_table_reallocate_024716d0,loading,void
 0x0247eb80,bb_render_read_present_pool_counter,render,i64
 0x02483e80,bb_kernel_condition_wait,kernel,i32
 0x02486810,bb_engine_robust_heap_allocate_02486810,engine,i64
@@ -202,6 +206,7 @@ address,replacement,system,returns
 0x02572290,bb_render_clear_swap_chain_cached_record,render,void
 0x025b2fb0,bb_render_swap_chain_present,render,void
 0x02713870,bb_render_update_model_wind,render,void
+0x02a2aca0,bb_loading_path_token_next_02a2aca0,loading,i128
 0x02a44140,bb_engine_wide_string_destroy,engine,void
 0x02a70890,bb_loading_kernel_file_open,loading,i32
 0x02a70920,bb_loading_kernel_file_read,loading,i32
