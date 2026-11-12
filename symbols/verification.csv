@@ -50,6 +50,15 @@ engine_fixed_allocator_release_chunks_02484ae0,edge,,10,10,0,0,5dad1163477f190e,
 engine_fixed_allocator_shrink_02484f20,edge,,17,17,0,0,bfe97a652512d54b,2026-11-12
 engine_initialize_static_wide_string_0217ffb0,recorded,,1,1,0,0,ccdadef0d4bd7152,2026-11-12
 engine_initialize_static_wide_string_0217ffb0,edge,,30,30,0,0,ccdadef0d4bd7152,2026-11-12
+engine_linear_heap_allocate_02485100,edge,,8,8,0,0,a5d9654aaa60d6f5,2026-11-12
+engine_linear_heap_allocate_aligned_02485120,edge,,12,12,0,0,a5d9654aaa60d6f5,2026-11-12
+engine_linear_heap_allocate_aligned_top_024851d0,edge,,10,10,0,0,a5d9654aaa60d6f5,2026-11-12
+engine_linear_heap_allocate_top_02485190,edge,,9,9,0,0,a5d9654aaa60d6f5,2026-11-12
+engine_linear_heap_check_owned_02485160,edge,,8,8,0,0,ae393922f4e0cc2c,2026-11-12
+engine_linear_heap_contains_02485330,edge,,8,8,0,0,ae393922f4e0cc2c,2026-11-12
+engine_linear_heap_free_02485230,edge,,12,12,0,0,866d183e356bf2e9,2026-11-12
+engine_linear_heap_free_until_024852d0,edge,,8,8,0,0,866d183e356bf2e9,2026-11-12
+engine_linear_heap_walk_02485340,edge,,10,10,0,0,ae393922f4e0cc2c,2026-11-12
 engine_regular_heap_allocate_02485730,edge,,23,23,0,0,ceba07c492cd7255,2026-11-12
 engine_regular_heap_allocate_aligned_02485a60,edge,,25,25,0,0,7e5a8ce832324bd5,2026-11-12
 engine_regular_heap_check_block_02485e20,edge,,35,35,0,0,ecd40822cc0dfbde,2026-11-12
@@ -71,6 +80,7 @@ engine_segregated_bi_heap_free_02488900,edge,,25,25,0,0,1acebc5d97a7d097,2026-11
 engine_segregated_bi_heap_free_top_02488f40,edge,,17,17,0,0,0cc6d67c8e8d5f6b,2026-11-12
 engine_segregated_bi_heap_initialize_02487e50,edge,,14,14,0,0,83db1414b98f2507,2026-11-12
 engine_segregated_bi_heap_is_consistent_02488cf0,edge,,39,39,0,0,2ec3498648c39dc5,2026-11-12
+engine_segregated_bi_heap_reset_02487dd0,edge,,4,4,0,0,871bfbf32aaca6ce,2026-11-12
 engine_segregated_regular_heap_allocate_02489620,edge,,21,21,0,0,3e0bbdcd0dd77f4b,2026-11-12
 engine_segregated_regular_heap_allocate_aligned_024898c0,edge,,24,24,0,0,330b6354137a6429,2026-11-12
 engine_segregated_regular_heap_allocate_aligned_top_02489fc0,edge,,16,16,0,0,2c6282bccb71803a,2026-11-12

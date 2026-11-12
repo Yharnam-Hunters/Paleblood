@@ -265,6 +265,15 @@ address,size,name,system,status,notes
 0x02484c70,361,engine_fixed_allocator_allocate_02484c70,engine,edge-verified,DLFixedAllocator allocation: front element of the current chunk or the first chunk with room; a new chunk from the backing allocator joins the list and the address tree
 0x02484de0,295,engine_fixed_allocator_free_02484de0,engine,edge-verified,DLFixedAllocator free: chunk from the last-freed hint or the address tree; element to the front of its chunk; emptied chunk released past two chunks of free elements
 0x02484f20,162,engine_fixed_allocator_shrink_02484f20,engine,edge-verified,DLFixedAllocator shrink: every chunk in the with-room list whose elements are all free leaves the list and tree and goes back to the backing allocator
+0x02485100,23,engine_linear_heap_allocate_02485100,engine,edge-verified,"DLLinearHeap bottom allocation: the next size bytes, null when the bottom would pass the top"
+0x02485120,56,engine_linear_heap_allocate_aligned_02485120,engine,edge-verified,DLLinearHeap aligned bottom allocation: bottom padded to the alignment first; null for a non-power-of-two alignment or no room
+0x02485160,38,engine_linear_heap_check_owned_02485160,engine,edge-verified,"DLLinearHeap ownership check: reports an address outside [lowest, highest)"
+0x02485190,64,engine_linear_heap_allocate_top_02485190,engine,edge-verified,"DLLinearHeap top allocation: an 8-aligned block below the top with a 16-byte header (previous top, in use); null when it would pass the bottom"
+0x024851d0,91,engine_linear_heap_allocate_aligned_top_024851d0,engine,edge-verified,DLLinearHeap aligned top allocation: aligned to at least 8; null for a non-power-of-two alignment or no room
+0x02485230,113,engine_linear_heap_free_02485230,engine,edge-verified,DLLinearHeap free: the lowest top block moves the top up past the blocks no longer in use; another block is only marked; outside addresses reported
+0x024852d0,65,engine_linear_heap_free_until_024852d0,engine,edge-verified,"DLLinearHeap FreeUntil: rewinds the bottom to a mark below it; a mark outside [lowest, highest] reported"
+0x02485330,16,engine_linear_heap_contains_02485330,engine,edge-verified,"DLLinearHeap: whether an address is in [lowest, highest)"
+0x02485340,183,engine_linear_heap_walk_02485340,engine,edge-verified,"DLLinearHeap walk step: the bottom used region, the free gap, then each top block up to the end"
 0x02485500,256,engine_regular_heap_initialize_02485500,engine,edge-verified,DLRegularHeap set-up: 64 empty lists; one free block from the first 16-aligned payload to the end block; under 0x40 bytes the heap object is zeroed (memset) and false
 0x02485730,356,engine_regular_heap_allocate_02485730,engine,edge-verified,"DLRegularHeap allocation: first block of the lowest non-empty larger list, else first fit in the own list; rest split off into its list"
 0x024858a0,445,engine_regular_heap_free_024858a0,engine,edge-verified,DLRegularHeap free: range and in-use reports (continue); merge free neighbours (16-byte blocks in no list); merged block to the front of list floor(log2(size))
@@ -277,6 +286,7 @@ address,size,name,system,status,notes
 0x02487380,675,engine_robust_heap_allocate_top_02487380,engine,edge-verified,DLRobustHeap top allocation: the highest-address free block that fits (lists and tree) is carved from its end; the front stays free
 0x02487650,1252,engine_robust_heap_allocate_aligned_top_02487650,engine,edge-verified,DLRobustHeap aligned top allocation: highest block whose top aligned payload fits; front and rest stay free
 0x02487b50,481,engine_robust_heap_free_02487b50,engine,edge-verified,DLRobustHeap free: reports double frees and foreign pointers (then frees anyway); merges with free neighbours and files the result by size
+0x02487dd0,117,engine_segregated_bi_heap_reset_02487dd0,engine,edge-verified,"DLSegregatedBiHeap state reset: clears from the set-up flag to the end of the state (terminator, chains, range, counters)"
 0x02487e50,469,engine_segregated_bi_heap_initialize_02487e50,engine,edge-verified,"DLSegregatedBiHeap set-up: 16-aligned range, inline descriptor allocator (0x66 per chunk), terminator at the limit, one free block; no descriptor tears the allocator down and fails"
 0x02488030,677,engine_segregated_bi_heap_allocate_bottom_02488030,engine,edge-verified,DLSegregatedBiHeap bottom allocation: first free block (address order) holding the 16-rounded size aligned; split rest/front via new descriptors; to the bottom chain
 0x024882f0,815,engine_segregated_bi_heap_allocate_top_024882f0,engine,edge-verified,"DLSegregatedBiHeap top allocation: last free block (address order) holding the 16-rounded size aligned; a new descriptor takes its highest aligned place, the gap above stays free; to the top chain"
