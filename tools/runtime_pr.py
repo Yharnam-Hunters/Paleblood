@@ -65,8 +65,9 @@ def is_runtime_document_path(path: str) -> bool:
     )
 
 
-# The status card is generated documentation: tools/progress_pr.py regenerates it with the
-# Markdown progress blocks in one documentation-only pull request.
+# Generated documentation files that a documentation-only pull request may carry. The former
+# status card (removed: the progress map is now published by .github/workflows/progress-map.yml)
+# stays listed so that removing it reads as documentation.
 GENERATED_DOC_FILES = {'docs/assets/status-light.svg', 'docs/assets/status-dark.svg'}
 
 
