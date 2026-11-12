@@ -34,7 +34,11 @@ ranges (an import or other native code), unreadable memory, the instruction limi
 - Bytes inside the executable's image are `memory` entries at their PS4 addresses.
 - Every other touched byte belongs to a buffer: bytes closer than 256 apart join one buffer, which
   starts on a 16-byte boundary so aligned vector loads stay aligned. Read bytes hold the value
-  read; written-only bytes are zero.
+  read; written-only bytes are zero. Each buffer notes its `origin`, its address in the run. The
+  verifier replays it there when it can (docs/VERIFY.md, `buffers`), because code may depend on
+  where memory lies: an engine heap takes a block's size from the distance to the next block, which
+  can be another buffer megabytes away, and a different distance files the rest of a split block
+  in a list the run never read.
 - An eight-byte input whose value points into a buffer or into the image becomes a `pointer` or
   `guest` entry, so it still points at the same thing in the verifier's sandbox.
 - A pointer (an argument or an eight-byte input) that lies before the bytes it reaches, up to

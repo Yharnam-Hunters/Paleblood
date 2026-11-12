@@ -212,8 +212,13 @@ public:
                object's buffer large and mostly unread). */
             size_t used = b.size();
             while (used && !b[used - 1]) used--;
+            /* `origin`: where the buffer lay in the run. The verifier puts it back there when it
+               can, since code may depend on where its memory lies, not only on what it holds: a
+               heap block's size is the distance to the next block, which may be in another buffer,
+               and a heap checks a block against its own recorded bounds. */
             out += (out.empty() ? "" : ", ") + ("\"" + regions_[i].name + "\": {\"size\": " + std::to_string(b.size()) +
-                                                ", \"bytes\": \"" +
+                                                ", \"origin\": \"" + number_hex(regions_[i].base) +
+                                                "\", \"bytes\": \"" +
                                                 bytes_hex(reinterpret_cast<const uint8_t *>(b.data()), used) + "\"}");
         }
         return out;
