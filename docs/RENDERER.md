@@ -135,7 +135,9 @@ Instead:
        while they span a macro tile, smaller ones (and every 1D-tiled level) micro tiled with 256-byte
        slices (AMD's address library for GFX7, as shadPS4's `ComputeImageSize` follows). The levels
        are detiled by the CPU. `image_load` and `image_load_mip` read them exactly, `image_sample`
-       at the level its derivatives pick (below). A storage image keeps one level.
+       at the level its derivatives pick (below). A storage image keeps one level: `image_load_mip`
+       reads it at level 0, and a level past it stops at run time, as a sampled image's level past
+       its last does.
      - **Cube images** (T# TYPE 11) in pixel shaders: a 2D array of six faces per cube (DEPTH counts
        whole cubes), viewed whole. Sampling takes (s, t, face), whatever DA says: the cube
        instructions leave s and t in [1, 2], so the face's coordinates are one less, and the face

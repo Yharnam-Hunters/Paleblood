@@ -416,6 +416,19 @@ static const uint32_t image_copy[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* image_copy through image_load_mip at level `level` (in v3, after the coordinates). */
+#define IMAGE_COPY_MIP(level) {                                                     \
+    0x7e020300,             /* v_mov_b32_e32 v1, v0 */                              \
+    0x7e040280,             /* v_mov_b32_e32 v2, 0 */                               \
+    0x7e060280 + (level),   /* v_mov_b32_e32 v3, level */                           \
+    0xf0040f00, 0x00000401, /* image_load_mip v[4:7], v[1:3], s[0:7] dmask:0xf */   \
+    0xbf8c0f70,             /* s_waitcnt vmcnt(0) */                                \
+    0xf0200f00, 0x00020401, /* image_store v[4:7], v[1:2], s[8:15] dmask:0xf */     \
+    0xbf810000,             /* s_endpgm */                                          \
+}
+static const uint32_t image_copy_level_0[] = IMAGE_COPY_MIP(0);
+static const uint32_t image_copy_level_1[] = IMAGE_COPY_MIP(1);
+
 /* Per lane i, texel (i, 0) of the image in s[8:15] set to (float(i), 1.0, 2.0, 0.5). */
 static const uint32_t image_fill[] = {
     0x7e080d00, /* v_cvt_f32_u32_e32 v4, v0 */

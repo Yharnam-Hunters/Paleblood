@@ -953,7 +953,7 @@ static int stop_reason(uint32_t code, char *error, size_t error_size)
         return failed(error, error_size, "a vertex or pixel shader read VCC as a lane mask after a scalar write of its halves: not done "
                       "yet (a lane has no known place in the wave there)");
     if (code >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_IMAGE_RANGE)
-        return failed(error, error_size, "a pixel shader loaded an image texel outside the image or past its last level: not done yet "
+        return failed(error, error_size, "a shader loaded an image texel outside the image or past its last level: not done yet "
                       "(what the GPU returns there is not established)");
     return failed(error, error_size, "a shader stopped at run time with code %#x", code);
 }
