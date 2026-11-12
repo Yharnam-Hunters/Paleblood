@@ -211,6 +211,13 @@ Instead:
        index from its vertex data (the main menu's last draw after New Game) sent the GPU far outside
        the guest memory, and the NVIDIA driver reset the context (Xid 109, `CTX SWITCH TIMEOUT`); out
        of range stores could write anywhere in guest memory.
+     - **SGPR spill slots** (`v_writelane_b32`, `v_readlane_b32`): the game's shader compiler spills
+       SGPRs into a VGPR's lanes and restores them later. From such a VGPR's first lane instruction to its
+       last, each lane it names is a slot: a word, and the SGPR's lane bit when it held a mask, the same in
+       every lane as the SGPR was. Before and after, the VGPR is an ordinary one (its register is reused);
+       any other use in between, a lane chosen by an SGPR, or the VOP3 forms stop by name. A descriptor
+       restored this way comes from where the spilled SGPRs' descriptor came from, when each slot is
+       written once, from consecutive SGPRs that nothing writes while they are spilled.
      - **Typed buffer loads and stores** (`tbuffer_load_format_*`, `tbuffer_store_format_*`):
        the format is in the instruction. The game uses only 32-bit float data (one to four
        components, as many as the access names), which moves whole dwords with no conversion, so
@@ -324,8 +331,9 @@ Instead:
          shader is an ordinary vertex shader whose ring loads read the GSVS ring.
        - Emits to streams other than 0 stop by name.
      - **Not yet:** anything else stops with the instruction's name. One group needs a design of its own:
-       - reads across lanes (`v_readlane`, `v_writelane`, `ds_swizzle` outside its quad mode), whose results depend
-         on GCN's 64-lane wave where Vulkan and Metal GPUs often run 32 lanes.
+       - reads across lanes (`v_readlane` and `v_writelane` other than as SGPR spill slots,
+         `ds_swizzle` outside its quad mode), whose results depend on GCN's 64-lane wave where Vulkan and
+         Metal GPUs often run 32 lanes.
      - **Tests:** `test/test_gcn_spirv.c` checks every module with `spirv-val` for Vulkan 1.2.
        `test/test_gcn_compute.c` runs programs on a Vulkan device and compares every output word
        with values worked out by hand from the manual. `test/test_gcn_draw.c` draws a triangle
