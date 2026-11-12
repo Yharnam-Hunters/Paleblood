@@ -1,0 +1,4 @@
+first,last,library,evidence
+0x00400170,0x00740310,scaleform,"GFx movie and SWF loader messages (GFx_ReadFillStyles, Invalid SWF file), Scaleform::Render::DrawableImage, scaleform.gfx.* ActionScript 3 class names, Render HAL markers (HAL::BeginScene-SetState); after the C runtime start, before the zlib/libpng code"
+0x023380f0,0x0233e8f0,scaleform,"Scaleform 4 page-table heap (MemoryHeapPT): page header signature 0x5fc0, page table 0x05994470, page manager 0x05940360; between Dantelion container code (0x02337e70, 0x0233e9c0)"
+0x02785580,0x028bf790,scaleform,"ActionScript 3 class stubs (The method instance::File::... is not implemented), Invalid SWF file: failed to load sprite's frame, Render HAL markers (HAL::DrawableCxform), the heap's page bitset (0x027ec640); after Dantelion SerializeLight code (0x02785100), before Havok"
