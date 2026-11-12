@@ -29,6 +29,8 @@ step "game data"
 run python3 tools/check_no_game_data.py --tracked
 step "game-agnostic runtime"
 run python3 tools/check_agnostic.py
+step "capture library (warnings only: tools/capture_loop.py records and promotes)"
+run python3 tools/capture_status.py
 step "hook installed and executable"
 hook=$(git rev-parse --git-path hooks/pre-commit)   # works in linked worktrees too
 if [ -x "$hook" ] && [ -x tools/hooks/pre-commit ]; then echo ok; else echo "FAILED: run tools/install_hooks.sh" >&2; status=1; fi

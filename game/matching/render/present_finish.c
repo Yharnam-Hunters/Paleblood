@@ -6,7 +6,7 @@
 
 typedef struct PacketBuffer PacketBuffer;
 
-extern uintptr_t emit_release_delegate(PacketBuffer *buffer, uint32_t selector, uint64_t *address,
+extern uintptr_t emit_present_release_delegate(PacketBuffer *buffer, uint32_t selector, uint64_t *address,
                                        uint64_t data, uint32_t stack_selector);
 
 typedef struct {
@@ -25,7 +25,7 @@ uintptr_t render_process_present_finish_item(FinishItemProcessor *processor,
 {
     uint64_t *last = &item[processor->count - 1];
     *last = ITEM_PROCESSED;
-    return emit_release_delegate(commands, ITEM_PACKET_SELECTOR, last, 0, 0);
+    return emit_present_release_delegate(commands, ITEM_PACKET_SELECTOR, last, 0, 0);
 }
 
 typedef struct {

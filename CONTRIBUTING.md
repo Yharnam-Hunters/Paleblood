@@ -153,7 +153,10 @@ A function's status in `symbols/functions.csv` goes through three levels:
 Chalice Dungeon state, say, without a save that gets there). You don't upgrade it by hand:
 `tools/promote.py` (run by `tools/end_session.sh`) re-runs every `edge-verified` function once
 recordings for it exist in your capture library, and marks it `verified` only if every recorded
-and edge case passes. A failure leaves it where it was and is reported.
+and edge case passes. A failure leaves it where it was and is reported. The runtime records those
+inputs itself: `tools/capture_loop.py` boots every scene it reaches with recording on, then runs
+`tools/promote.py` and lists the functions that pass and await their independent review
+([docs/VERIFY.md](docs/VERIFY.md), "Recording in the game").
 
 ### Definition of done
 
@@ -186,8 +189,9 @@ byte for byte with the original in your own dump ([docs/MATCHING.md](docs/MATCHI
 result goes in `symbols/matching.csv`. Matching is optional and local only, like `verify.py`.
 Sony's own compiler is never used.
 
-A byte-exact match can stand in for the recorded cases that `verified` needs. The edge results
-and the independent review are still required. Write matching C from your own understanding of
+A byte-exact match, whose calls and data references were also checked to reach the same places
+as the original's (`targets_checked=yes`), can stand in for the recorded cases that `verified`
+needs. The edge results and the independent review are still required. Write matching C from your own understanding of
 the function, never from decompiler output, and don't chase matching for large C++ engine
 functions.
 

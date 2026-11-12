@@ -35,6 +35,18 @@ Writes, from the run:
                               uses: tracked like game functions (status original), replaceable later
 Prints "milestone reached: NAME" when the run gets further than the last recorded one.
 
+--capture DIR records the inputs of the game's own functions into the capture library DIR
+(docs/VERIFY.md, "Where inputs come from"): the game library's hooks become recording thunks that
+trace sampled calls of each original (docs/capture-architecture.md) and write schema-1 cases to
+DIR/<function>/: a recorded call always runs the game's original code. Other calls run the
+replacements, as in any boot with --game-lib (the renderer needs some of them); with
+--capture-originals no replacement runs at all.
+--capture-functions picks which: all-edge-verified (default: every edge-verified function of
+symbols/functions.csv; with a --display, not those whose replacements report to the renderer,
+which would miss a recorded call's state), all (every hook), or a comma-separated list; --capture-cases caps the
+distinct cases kept per function and run. A case identical to one DIR already holds is not
+written again.
+
 --elf defaults to $BB_ELF, then $BB_DATA_ROOT/elf/eboot.elf. --nids (a public NID database, for
 names) defaults to $BB_NID_DB, then GhidraOrbis's nid_db.xml under ../tools. The harness binary
 is $BB_PBBOOT or build/runtime/pbboot.
@@ -205,6 +217,38 @@ def module_hook_args(root: str) -> list[str]:
     return args
 
 
+def reports_to_renderer(root: str, name: str) -> bool:
+    """Whether the replacement tells the runtime's renderer what it emitted (runtime/render_observer.h).
+    A recorded call runs the original instead, which tells nothing: with a display, the renderer
+    would then miss that call's state and stop."""
+    sys.path.insert(0, os.path.join(root, 'tools'))
+    import verification
+    return 'runtime/include/runtime/render_observer.h' in verification.source_files(root, name)
+
+
+def capture_functions(root: str, which: str, renderer: bool = False) -> str:
+    """BB_CAPTURE_ONLY for --capture-functions: names, or "" for every hook. With the renderer
+    running, all-edge-verified leaves out the functions whose replacements report to it."""
+    if which == 'all':
+        return ''
+    if which != 'all-edge-verified':
+        return ','.join(n.strip() for n in which.split(',') if n.strip())
+    with open(os.path.join(root, 'symbols', 'functions.csv'), newline='') as f:
+        names = [r['name'] for r in csv.DictReader(f) if r['status'] == 'edge-verified']
+    return ','.join(n for n in names if not (renderer and reports_to_renderer(root, n)))
+
+
+def capture_environment(root: str, directory: str, which: str, cases: int, elf: str,
+                        originals: bool = False, renderer: bool = False) -> dict[str, str]:
+    """The runtime's capture settings (runtime/capture.h, runtime/capture_hooks.c) for --capture."""
+    env = {'BB_CAPTURE_DIR': os.path.abspath(directory), 'BB_CAPTURE_TRACE': '1',
+           'BB_CAPTURE_ORIGINAL': '1' if originals else '0',
+           'BB_CAPTURE_MAX': str(cases), 'BB_ELF': os.path.abspath(elf),
+           'BB_CAPTURE_IMPORTS': os.path.join(root, 'symbols', 'imports.csv'),
+           'BB_CAPTURE_ONLY': capture_functions(root, which, renderer)}
+    return env
+
+
 def stops_at(b: dict) -> str:
     s = b.get('first_unimplemented')
     if s:
@@ -323,7 +367,22 @@ def main() -> int:
     ap.add_argument('--keyboard-text', default=None, metavar='TEXT',
                     help='answer each on-screen keyboard as if TEXT was typed and Done pressed (e.g. a name '
                          'for the character creation contract); without it the keyboard is canceled. Not for recorded boots')
+    ap.add_argument('--capture', default=None, metavar='DIR',
+                    help='record the inputs of the game\'s own functions into the capture library DIR (outside the '
+                         'repository). Not for recorded boots')
+    ap.add_argument('--capture-functions', default='all-edge-verified', metavar='WHICH',
+                    help='with --capture: all-edge-verified (default), all, or NAME[,NAME...]')
+    ap.add_argument('--capture-cases', type=int, default=200, metavar='N',
+                    help='with --capture: distinct cases kept per function and run (default 200)')
+    ap.add_argument('--capture-originals', action='store_true',
+                    help='with --capture: no replacement runs, recorded or not (BB_CAPTURE_ORIGINAL)')
     a = ap.parse_args()
+    if a.capture and not a.no_record:
+        ap.error('--capture traces the game\'s functions: such a boot is not recorded (add --no-record)')
+    if a.capture and a.capture_cases < 1:
+        ap.error('--capture-cases: at least 1')
+    if a.capture and os.path.realpath(a.capture).startswith(os.path.realpath(ROOT) + os.sep):
+        ap.error('--capture: the capture library holds inputs from your own dump; keep it outside the repository')
     if a.savedata_from and a.savedata:
         ap.error('--savedata-from starts a new save folder: leave out --savedata')
     if a.savedata_from and not a.no_record:
@@ -390,10 +449,18 @@ def main() -> int:
             cmd += ['--keyboard-text', a.keyboard_text]
         if a.trace:
             cmd.append('--trace')
+        env = None
+        if a.capture:
+            # The hooks are where recording happens: the game library is loaded even without --game-lib.
+            game_lib = a.game_lib or os.path.join(ROOT, 'build', 'game', 'libbbgame.so')
+            if not a.game_lib:
+                cmd += ['--game-lib', game_lib]
+            env = {**os.environ, **capture_environment(ROOT, a.capture, a.capture_functions, a.capture_cases, elf,
+                                                          a.capture_originals, a.display != 'none')}
         if a.game_lib:
             cmd += ['--game-lib', a.game_lib]
         # The guest runs in this process's child; a hard limit covers a runaway harness.
-        p = subprocess.run(cmd, timeout=a.timeout + 60)
+        p = subprocess.run(cmd, timeout=a.timeout + 60, env=env)
         if p.returncode != 0 or not os.path.isfile(out):
             print(f'boot: harness failed (exit {p.returncode})', file=sys.stderr)
             return 3

@@ -482,7 +482,8 @@ Instead:
         - **What runs today:** COLOR_8_8_8_8 render targets in slots 0-7 (UNORM or sRGB, either
           component order; COLOR_10_11_11 and COLOR_16_16_16_16 FLOAT too, written back to their
           memory as the hardware lays them out, though only 8_8_8_8 ones are read as BGRA), viewport
-          0, vertex and pixel shaders with their user data, and
+          0 (viewports 1-15 are set aside: a primitive takes another only through the viewport index its vertex shader exports in
+          the misc vector, whose export stops translation by name), vertex and pixel shaders with their user data, and
           auto-index draws as triangle lists.
         - **Rect lists** (primitive type 17, which the game's fullscreen passes use): Vulkan has no
           such primitive, so each rect's three vertices go through a generated geometry stage

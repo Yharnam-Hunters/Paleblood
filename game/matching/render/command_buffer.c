@@ -51,11 +51,11 @@ typedef struct {
 } __attribute__((may_alias)) ClearColorPacket;
 
 // The grow callback used when the caller gives none.
-extern bool render_default_command_buffer_grow(CommandBuffer *buffer, uint32_t words, void *argument);
+extern bool original_default_command_space_callback(CommandBuffer *buffer, uint32_t words, void *argument);
 
 // Writes the default hardware state into `output` (at most `available_words` words) and returns
 // the number of words written.
-extern uint32_t render_draw_init_default_hardware_state(uint32_t *output, uint64_t available_words);
+extern uint32_t sceGnmDrawInitDefaultHardwareState200(uint32_t *output, uint64_t available_words);
 
 // True when the buffer has room for `words` more words, after growing it if needed.
 static inline bool command_buffer_reserve(CommandBuffer *buffer, uint32_t words)
@@ -78,7 +78,7 @@ void render_command_buffer_init(CommandStream *stream, uint32_t *begin, uint32_t
         stream->commands.grow = grow;
         stream->commands.grow_argument = grow_argument;
     } else {
-        stream->commands.grow = render_default_command_buffer_grow;
+        stream->commands.grow = original_default_command_space_callback;
         stream->commands.grow_argument = 0;
     }
 }
@@ -113,6 +113,6 @@ void render_emit_present_context_section(CommandBuffer *buffer)
     if (!command_buffer_reserve(buffer, HARDWARE_STATE_SECTION_WORDS))
         return;
     uintptr_t free_bytes = (uintptr_t)buffer->end - (uintptr_t)buffer->cursor;
-    uint32_t written = render_draw_init_default_hardware_state(buffer->cursor, free_bytes / COMMAND_WORD_BYTES);
+    uint32_t written = sceGnmDrawInitDefaultHardwareState200(buffer->cursor, free_bytes / COMMAND_WORD_BYTES);
     buffer->cursor += written;
 }

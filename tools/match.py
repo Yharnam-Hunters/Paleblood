@@ -13,7 +13,11 @@ driver defaults, cuts the original function out of YOUR OWN dump's executable, r
 external references as relocations in a throwaway object, and compares the two:
 
   byte_exact     every byte equal, except the 4-byte fields the compiler leaves to the linker
-                 (relocations), and a GOT load the linker relaxed to `lea` (decided at link time)
+                 (relocations), and a GOT load the linker relaxed to `lea` (decided at link time);
+                 and every relocation reaches the same place as the original's field
+  targets_checked  each relocation resolved to a function or global the repository names
+                 (symbols/functions.csv, RT_ORIGINAL / RT_GLOBAL), an import by name id, or our
+                 own read-only data compared by content, and found equal to the original's
   match_percent  similarity of the two instruction sequences, with branch targets inside the
                  function as offsets and references outside it as placeholders
   objdiff        objdiff-cli's own score for the same pair of objects, when --objdiff (or
@@ -29,6 +33,7 @@ Exit codes: 0 byte-exact, 1 not byte-exact, 3 bad input.
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 import ctypes
 import datetime
@@ -52,7 +57,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 IMAGE_BASE = 0x00400000
 MATCHING_CSV = 'symbols/matching.csv'
 HEADER = ['address', 'name', 'compiler', 'flags', 'match_percent', 'objdiff_percent', 'byte_exact',
-          'source', 'source_sha256', 'date']
+          'targets_checked', 'source', 'source_sha256', 'date']
 SOURCE_HASH_LENGTH = 16
 SOURCE_SUFFIXES = ('.c', '.cpp')
 
@@ -87,8 +92,11 @@ LANGUAGE_FLAGS = {'.c': ['-x', 'c', '-std=gnu99'], '.cpp': ['-x', 'c++', '-std=g
 
 # ELF constants (executables and relocatable objects).
 PT_LOAD, PF_X = 1, 1
-SHT_SYMTAB, SHT_RELA = 2, 4
-STT_FUNC = 2
+SHT_SYMTAB, SHT_RELA, SHT_NOBITS = 2, 4, 8
+STT_OBJECT, STT_FUNC, STT_SECTION = 1, 2, 3
+STB_LOCAL = 0
+SHF_WRITE, SHF_STRINGS = 0x1, 0x20
+R_X86_64_64, R_X86_64_PC32, R_X86_64_PLT32 = 1, 2, 4
 R_X86_64_GOTPCREL, R_X86_64_GOTPCRELX, R_X86_64_REX_GOTPCRELX = 9, 41, 42
 GOT_LOADS = (R_X86_64_GOTPCREL, R_X86_64_GOTPCRELX, R_X86_64_REX_GOTPCRELX)
 MOV_LOAD, LEA = 0x8b, 0x8d
@@ -212,35 +220,59 @@ def original_bytes(elf: str, address: int, size: int) -> bytes:
     raise BadInput(f'0x{address:08x}+{size}: not inside an executable segment of {elf}')
 
 
+class ObjectFile:
+    """The sections, symbols and relocations of a relocatable object (ours, or the rebuilt target)."""
+
+    def __init__(self, path: str):
+        with open(path, 'rb') as f:
+            self.data = d = f.read()
+        shoff, = struct.unpack_from('<Q', d, 0x28)
+        shentsize, shnum, shstrndx = struct.unpack_from('<HHH', d, 0x3a)
+        # (name, type, flags, addr, offset, size, link, info, align, entsize)
+        raw = [struct.unpack_from('<IIQQQQIIQQ', d, shoff + shentsize * i) for i in range(shnum)]
+        names = raw[shstrndx][4] if shstrndx < shnum else 0
+        self.sections = [(self._string(names, s[0]),) + s[1:] for s in raw]
+        symtab = next((s for s in raw if s[1] == SHT_SYMTAB), None)
+        if symtab is None:
+            raise BadInput(f'{path}: no symbol table')
+        strtab = raw[symtab[6]][4]
+        self.symbols = []           # (name, info, shndx, value, size)
+        for off in range(symtab[4], symtab[4] + symtab[5], 24):
+            st_name, st_info, _, st_shndx, st_value, st_size = struct.unpack_from('<IBBHQQ', d, off)
+            self.symbols.append((self._string(strtab, st_name), st_info, st_shndx, st_value, st_size))
+        self.relocations: dict[int, list[tuple[int, int, int, int]]] = {}   # section: (offset, type, symbol, addend)
+        for s in raw:
+            if s[1] == SHT_RELA:
+                self.relocations[s[7]] = [(o, i & 0xffffffff, i >> 32, a) for o, i, a in
+                                          (struct.unpack_from('<QQq', d, off) for off in range(s[4], s[4] + s[5], 24))]
+
+    def _string(self, table: int, offset: int) -> str:
+        return self.data[table + offset:self.data.index(b'\0', table + offset)].decode()
+
+    def section_bytes(self, index: int) -> bytes:
+        s = self.sections[index]
+        return bytes(s[5]) if s[1] == SHT_NOBITS else self.data[s[4]:s[4] + s[5]]
+
+    def function(self, symbol: str) -> tuple[int, int, int]:
+        """(section, value, size) of a function defined in the object."""
+        found = None
+        for name, info, shndx, value, size in self.symbols:
+            if name == symbol and info & 0xf == STT_FUNC:
+                found = (shndx, value, size)
+        if found is None:
+            raise BadInput(f'{symbol}: not defined as a function (C++ sources declare it extern "C")')
+        return found
+
+
 def object_function(path: str, symbol: str) -> tuple[bytes, dict[int, int]]:
     """(bytes, {offset in the function: relocation type}) of a function in a relocatable object."""
-    with open(path, 'rb') as f:
-        d = f.read()
-    shoff, = struct.unpack_from('<Q', d, 0x28)
-    shentsize, shnum = struct.unpack_from('<HH', d, 0x3a)
-    sections = [struct.unpack_from('<IIQQQQIIQQ', d, shoff + shentsize * i) for i in range(shnum)]
-    symtab = next((s for s in sections if s[1] == SHT_SYMTAB), None)
-    if symtab is None:
-        raise BadInput(f'{path}: no symbol table')
-    strtab = sections[symtab[6]]
-    found = None
-    for off in range(symtab[4], symtab[4] + symtab[5], 24):
-        st_name, st_info, _, st_shndx, st_value, st_size = struct.unpack_from('<IBBHQQ', d, off)
-        name = d[strtab[4] + st_name:d.index(b'\0', strtab[4] + st_name)].decode()
-        if name == symbol and st_info & 0xf == STT_FUNC:
-            found = (st_shndx, st_value, st_size)
-    if found is None:
-        raise BadInput(f'{path}: no function named {symbol} (C++ sources declare it extern "C")')
-    shndx, value, size = found
-    text = sections[shndx]
-    code = d[text[4] + value:text[4] + value + size]
-    relocs = {}
-    for s in sections:
-        if s[1] == SHT_RELA and s[7] == shndx:
-            for off in range(s[4], s[4] + s[5], 24):
-                r_offset, r_info, _ = struct.unpack_from('<QQq', d, off)
-                if value <= r_offset < value + size:
-                    relocs[r_offset - value] = r_info & 0xffffffff
+    obj = ObjectFile(path)
+    try:
+        shndx, value, size = obj.function(symbol)
+    except BadInput as e:
+        raise BadInput(f'{path}: {e}') from None
+    code = obj.section_bytes(shndx)[value:value + size]
+    relocs = {o - value: kind for o, kind, _, _ in obj.relocations.get(shndx, []) if value <= o < value + size}
     return code, relocs
 
 
@@ -329,6 +361,320 @@ def masked_equal(original: bytes, ours: bytes, relocs: dict[int, int]) -> bool:
     return a == b
 
 
+# ---- where the references go ------------------------------------------------------------------
+#
+# Masking the relocation fields hides where a call or a load goes. So a byte-exact match also
+# resolves each of our relocations to a place in the game (a function or global the repository
+# names, an import by name id, or our own read-only data compared by content) and the original's
+# field at the same offset to the place it reaches, and requires the two to be the same.
+
+PF_W = 2
+PT_DYNAMIC, PT_SCE_DYNLIBDATA = 2, 0x61000000
+DT_NULL = 0
+DT_SCE_JMPREL, DT_SCE_PLTRELSZ, DT_SCE_RELA, DT_SCE_RELASZ = 0x61000029, 0x6100002d, 0x6100002f, 0x61000031
+DT_SCE_STRTAB, DT_SCE_SYMTAB, DT_SCE_SYMTABSZ = 0x61000035, 0x61000039, 0x6100003f
+R_X86_64_GLOB_DAT, R_X86_64_JUMP_SLOT, R_X86_64_RELATIVE = 6, 7, 8
+JMP_INDIRECT = b'\xff\x25'      # jmp [rip+slot]: a PLT stub
+PLT_STUB_SIZE = 6
+NID_SALT = bytes.fromhex('518d64a635ded8c1e6b039b1c3e55230')
+# The names the replacements give the game's functions and globals (runtime/original.h).
+SYMBOL_DECLARATION = re.compile(r'\bRT_(?:ORIGINAL|GLOBAL)\(\s*(0x[0-9a-fA-F]+)\s*,\s*(\w+)\s*,')
+DECLARATION_SUFFIXES = ('.h', '.hpp', '.c', '.cc', '.cpp')
+
+
+def nid(name: str) -> str:
+    """The PS4 loader's name id for an imported symbol (as in tools/harness.py)."""
+    digest = hashlib.sha1(name.encode('ascii') + NID_SALT).digest()[:8][::-1]
+    return base64.b64encode(digest).decode().rstrip('=').replace('/', '-')
+
+
+class GameImage:
+    """The dump's executable, read only: its loaded bytes, and what the loader writes into each
+    pointer slot: ('address', A) for a RELATIVE relocation, ('import', name id) for a symbol."""
+
+    def __init__(self, path: str):
+        with open(path, 'rb') as f:
+            self.data = d = f.read()
+        if d[:4] != b'\x7fELF':
+            raise BadInput(f'{path}: not an ELF file')
+        phoff, = struct.unpack_from('<Q', d, 0x20)
+        phnum, = struct.unpack_from('<H', d, 0x38)
+        self.segments = []      # (address, file offset, file size, memory size, flags)
+        dynamic = dynlib = None
+        for i in range(phnum):
+            p_type, p_flags, p_offset, p_vaddr, _, p_filesz, p_memsz = struct.unpack_from('<IIQQQQQ', d, phoff + 56 * i)
+            if p_type == PT_LOAD:
+                self.segments.append((p_vaddr + IMAGE_BASE, p_offset, p_filesz, p_memsz, p_flags))
+            elif p_type == PT_DYNAMIC:
+                dynamic = (p_offset, p_filesz)
+            elif p_type == PT_SCE_DYNLIBDATA:
+                dynlib = p_offset
+        self.slots: dict[int, tuple[str, int | str]] = {}
+        if dynamic is None or dynlib is None:
+            return
+        tags: dict[int, int] = {}
+        for off in range(dynamic[0], dynamic[0] + dynamic[1], 16):
+            tag, val = struct.unpack_from('<qQ', d, off)
+            if tag == DT_NULL:
+                break
+            tags.setdefault(tag, val)
+        names = []
+        if all(t in tags for t in (DT_SCE_SYMTAB, DT_SCE_SYMTABSZ, DT_SCE_STRTAB)):
+            strings = dynlib + tags[DT_SCE_STRTAB]
+            for off in range(dynlib + tags[DT_SCE_SYMTAB], dynlib + tags[DT_SCE_SYMTAB] + tags[DT_SCE_SYMTABSZ], 24):
+                st_name, = struct.unpack_from('<I', d, off)
+                name = d[strings + st_name:d.index(b'\0', strings + st_name)].decode('ascii', 'replace')
+                names.append(name.split('#')[0])        # "nid#library#module"
+        for table, size in ((DT_SCE_RELA, DT_SCE_RELASZ), (DT_SCE_JMPREL, DT_SCE_PLTRELSZ)):
+            if table not in tags or size not in tags:
+                continue
+            start = dynlib + tags[table]
+            for off in range(start, start + tags[size], 24):
+                r_offset, r_info, r_addend = struct.unpack_from('<QQq', d, off)
+                kind, symbol = r_info & 0xffffffff, r_info >> 32
+                if kind == R_X86_64_RELATIVE:
+                    self.slots[r_offset + IMAGE_BASE] = ('address', r_addend + IMAGE_BASE)
+                elif kind in (R_X86_64_64, R_X86_64_GLOB_DAT, R_X86_64_JUMP_SLOT) and symbol < len(names):
+                    label = names[symbol] + (f'{r_addend:+d}' if r_addend else '')
+                    self.slots[r_offset + IMAGE_BASE] = ('import', label)
+
+    def _segment(self, address: int) -> tuple | None:
+        return next((s for s in self.segments if s[0] <= address < s[0] + s[3]), None)
+
+    def read(self, address: int, size: int) -> bytes | None:
+        """size loaded bytes at address (zero past the file, like .bss), or None outside the image."""
+        seg = self._segment(address)
+        if seg is None or address + size > seg[0] + seg[3]:
+            return None
+        start = address - seg[0]
+        chunk = self.data[seg[1] + start:seg[1] + min(start + size, seg[2])] if start < seg[2] else b''
+        return chunk + bytes(size - len(chunk))
+
+    def writable(self, address: int) -> bool:
+        seg = self._segment(address)
+        return seg is None or bool(seg[4] & PF_W)
+
+    def destination(self, address: int) -> tuple[str, int | str]:
+        """Where a call or jump to address ends up: the import behind a PLT stub, else address."""
+        stub = self.read(address, PLT_STUB_SIZE)
+        if stub and stub[:2] == JMP_INDIRECT:
+            slot = address + PLT_STUB_SIZE + struct.unpack_from('<i', stub, 2)[0]
+            if self.slots.get(slot, ('',))[0] == 'import':
+                return self.slots[slot]
+        return ('address', address)
+
+
+_IMAGES: dict[str, GameImage] = {}
+_SYMBOLS: dict[str, dict[str, set[int]]] = {}
+
+
+def game_image(elf: str) -> GameImage:
+    if elf not in _IMAGES:
+        _IMAGES[elf] = GameImage(elf)
+    return _IMAGES[elf]
+
+
+def repository_symbols(root: str) -> dict[str, set[int]]:
+    """{name: addresses} of the game's functions and globals that the repository names:
+    symbols/functions.csv, and the RT_ORIGINAL / RT_GLOBAL declarations of the replacements.
+    Matching sources are left out, so a name can never vouch for itself."""
+    if root in _SYMBOLS:
+        return _SYMBOLS[root]
+    names: dict[str, set[int]] = {}
+    for r in read_csv(os.path.join(root, 'symbols', 'functions.csv')):
+        names.setdefault(r['name'], set()).add(int(r['address'], 16))
+    matching = os.path.join(root, 'game', 'matching')
+    for top in ('game', 'runtime'):
+        for dirpath, dirnames, files in os.walk(os.path.join(root, top)):
+            if os.path.normpath(dirpath) == os.path.normpath(matching):
+                dirnames[:] = []
+                continue
+            for fn in files:
+                if fn.endswith(DECLARATION_SUFFIXES):
+                    with open(os.path.join(dirpath, fn), errors='replace') as f:
+                        for address, name in SYMBOL_DECLARATION.findall(f.read()):
+                            names.setdefault(name, set()).add(int(address, 16))
+    _SYMBOLS[root] = names
+    return names
+
+
+def describe(place: tuple, names_at: dict[int, str]) -> str:
+    kind, value = place
+    if kind == 'import':
+        return f'import {value}'
+    return f'0x{value:08x}' + (f' ({names_at[value]})' if value in names_at else '')
+
+
+class TargetCheck:
+    """Resolves the relocations of our function and compares them with the original's references."""
+
+    def __init__(self, root: str, image: GameImage, obj: ObjectFile, name: str, address: int,
+                 original: bytes, ours_insns: list[tuple[int, bytes, str]]):
+        self.image, self.obj, self.address, self.original = image, obj, address, original
+        self.symbols = repository_symbols(root)
+        self.names_at = {a: n for n, addrs in self.symbols.items() for a in addrs}
+        self.shndx, self.value, self.size = obj.function(name)
+        self.ends = sorted((a - address, a - address + len(raw)) for a, raw, _ in ours_insns)
+
+    def insn_end(self, offset: int) -> int:
+        for start, end in self.ends:
+            if start <= offset < end:
+                return end
+        raise BadInput(f'relocation at +0x{offset:x} is not inside an instruction')
+
+    def place(self, index: int, bias: int) -> tuple:
+        """Where symbol index plus bias is in the game: ('address', A), ('import', nid),
+        ('data', section, offset) for our own read-only data, or ('problem', why)."""
+        name, info, shndx, value, _ = self.obj.symbols[index]
+        if shndx == 0:
+            addresses = self.symbols.get(name, set())
+            if len(addresses) == 1:
+                return ('address', next(iter(addresses)) + bias)
+            if len(addresses) > 1:
+                return ('problem', f'{name} names {len(addresses)} different addresses in the repository')
+            if bias:
+                return ('problem', f'{name}{bias:+d}: an offset from an unknown symbol')
+            return ('import', nid(name), name)
+        offset = value + bias
+        section = self.obj.sections[shndx]
+        if shndx == self.shndx and self.value <= offset < self.value + self.size:
+            return ('address', self.address + offset - self.value)
+        if info >> 4 != STB_LOCAL and info & 0xf in (STT_FUNC, STT_OBJECT) and name in self.symbols:
+            return self.place_by_name(name, bias)
+        covering = [s for s in self.obj.symbols if s[2] == shndx and s[1] & 0xf in (STT_FUNC, STT_OBJECT)
+                    and s[3] <= offset < s[3] + max(s[4], 1)]
+        if covering and covering[0][1] >> 4 != STB_LOCAL and covering[0][0] in self.symbols:
+            return self.place_by_name(covering[0][0], offset - covering[0][3])
+        if section[2] & SHF_WRITE or section[1] == SHT_NOBITS:
+            label = covering[0][0] if covering else section[0]
+            return ('problem', f'{label}: writable data defined in the source; declare it extern with its '
+                               f'RT_GLOBAL name')
+        if info & 0xf == STT_FUNC or (covering and covering[0][1] & 0xf == STT_FUNC):
+            label = name if info & 0xf == STT_FUNC else covering[0][0]
+            return ('problem', f'{label}: a function defined beside it that symbols/functions.csv does not name')
+        return ('data', shndx, offset)
+
+    def place_by_name(self, name: str, bias: int) -> tuple:
+        addresses = self.symbols[name]
+        if len(addresses) > 1:
+            return ('problem', f'{name} names {len(addresses)} different addresses in the repository')
+        return ('address', next(iter(addresses)) + bias)
+
+    def run(self) -> tuple[int, list[str]]:
+        """(references checked, problems). Our function and the original are already byte-exact
+        apart from the relocation fields, so each field sits in the same instruction in both."""
+        problems = []
+        relocations = [r for r in self.obj.relocations.get(self.shndx, [])
+                       if self.value <= r[0] < self.value + self.size]
+        for r_offset, kind, index, addend in relocations:
+            off = r_offset - self.value
+            end = self.insn_end(off)
+            field, = struct.unpack_from('<i', self.original, off)
+            reached = self.address + end + field         # where the original's field points
+            bias = addend + (end - off)
+            label = self.obj.symbols[index][0] or self.obj.sections[self.obj.symbols[index][2]][0]
+            where = f'+0x{off:x} {label}'
+            if kind in GOT_LOADS:
+                if bias:
+                    problems.append(f'{where}: a GOT load with an offset')
+                    continue
+                ours = self.place(index, 0)
+                if self.original[off - 2] == LEA:            # relaxed by the linker: the address itself
+                    theirs = ('address', reached)
+                else:
+                    theirs = self.image.slots.get(reached)
+                    if theirs is None:
+                        problems.append(f'{where}: the original reads a GOT slot the loader never fills')
+                        continue
+            elif kind in (R_X86_64_PC32, R_X86_64_PLT32):
+                ours = self.place(index, bias)
+                theirs = ('address', reached)
+                if kind == R_X86_64_PLT32:          # a call or jump: follow PLT stubs on both sides
+                    theirs = self.image.destination(reached)
+                    if ours[0] == 'address':
+                        ours = self.image.destination(ours[1])
+            else:
+                problems.append(f'{where}: relocation type {kind} is not checked')
+                continue
+            problem = self.compare(where, ours, theirs)
+            if problem:
+                problems.append(problem)
+        return len(relocations), problems
+
+    def compare(self, where: str, ours: tuple, theirs: tuple) -> str | None:
+        if ours[0] == 'problem':
+            return f'{where}: {ours[1]}'
+        if ours[0] == 'data':
+            if theirs[0] != 'address':
+                return f'{where}: our read-only data, the original reaches {describe(theirs, self.names_at)}'
+            why = self.compare_data(ours[1], ours[2], theirs[1])
+            return f'{where}: {why}' if why else None
+        if ours[0] == 'import':
+            if theirs == ('import', ours[1]):
+                return None
+            hint = '' if theirs[0] == 'import' else '; name it after symbols/functions.csv or an RT_ORIGINAL / RT_GLOBAL'
+            return (f'{where}: not a name the repository gives the game, and not the import the original '
+                    f'reaches ({describe(theirs, self.names_at)}){hint}')
+        if theirs != ours:
+            return f'{where}: ours is {describe(ours, self.names_at)}, the original reaches {describe(theirs, self.names_at)}'
+        return None
+
+    def data_extent(self, shndx: int, offset: int) -> int:
+        """Where the object that starts at offset in our section ends."""
+        name, kind, flags, *_rest = self.obj.sections[shndx]
+        content = self.obj.section_bytes(shndx)
+        entsize = self.obj.sections[shndx][9]
+        if flags & SHF_STRINGS:
+            nul = content.find(b'\0', offset)
+            return len(content) if nul < 0 else nul + entsize
+        if entsize:
+            return offset + entsize
+        for s in self.obj.symbols:
+            if s[2] == shndx and s[1] & 0xf == STT_OBJECT and s[3] <= offset < s[3] + s[4]:
+                return s[3] + s[4]
+        bounds = {len(content)} | {s[3] for s in self.obj.symbols if s[2] == shndx and s[3] > offset}
+        for relocations in self.obj.relocations.values():         # other references into the section
+            for _, _, index, addend in relocations:
+                sym = self.obj.symbols[index]
+                if sym[2] == shndx and sym[1] & 0xf == STT_SECTION and addend + 4 > offset:
+                    bounds.add(addend + 4)
+        return min(bounds)
+
+    def compare_data(self, shndx: int, offset: int, target: int) -> str | None:
+        """Our read-only data at offset against the original's at target, byte for byte, with the
+        pointers in it (a jump table's entries) resolved like the code's references."""
+        if self.image.writable(target):
+            return f'our read-only data, the original reaches writable {describe(("address", target), self.names_at)}'
+        end = self.data_extent(shndx, offset)
+        ours = bytearray(self.obj.section_bytes(shndx)[offset:end])
+        theirs = self.image.read(target, end - offset)
+        if theirs is None:
+            return f'the original reaches 0x{target:08x}, outside the image'
+        theirs = bytearray(theirs)
+        for r_offset, kind, index, addend in self.obj.relocations.get(shndx, []):
+            if not offset <= r_offset < end:
+                continue
+            at = r_offset - offset
+            slot = target + at
+            pointee = self.place(index, addend)
+            if pointee[0] != 'address':
+                return f'a pointer in the data at +{at} goes to {pointee[-1]}'
+            if kind == R_X86_64_PC32:
+                if struct.unpack_from('<i', theirs, at)[0] != pointee[1] - slot:
+                    return f'entry +{at} of the data differs from the original'
+                width = FIELD
+            elif kind == R_X86_64_64:
+                if self.image.slots.get(slot) != pointee[:2]:
+                    return f'pointer +{at} of the data differs from the original'
+                width = 8
+            else:
+                return f'relocation type {kind} in the data is not checked'
+            ours[at:at + width] = theirs[at:at + width] = bytes(width)
+        if ours != theirs:
+            return f'our read-only data ({end - offset} bytes) differs from the original at 0x{target:08x}'
+        return None
+
+
 # ---- the comparison -----------------------------------------------------------------------------
 
 def target_object(compiler: str, symbol: str, address: int, code: bytes, fields: dict, workdir: str) -> str:
@@ -409,11 +755,17 @@ def match(root: str, name: str, source: str, flags: str, compiler: str, elf: str
         o_norm = normalize(o_insns, address, refs)
         c_norm = normalize(c_insns, address, set(relocs))
         percent = 100.0 * difflib.SequenceMatcher(None, o_norm, c_norm, autojunk=False).ratio()
-        exact = masked_equal(original, ours, relocs)
+        same_bytes = masked_equal(original, ours, relocs)
+        references, problems = 0, []
+        if same_bytes:
+            check = TargetCheck(root, game_image(elf), ObjectFile(ours_obj), name, address, original, c_insns)
+            references, problems = check.run()
+        exact = same_bytes and not problems
         result = {'function': name, 'address': f'0x{address:08x}', 'size': size, 'compiled_size': len(ours),
                   'compiler': compiler, 'flags': flags, 'source': source,
                   'match_percent': f'{100.0 if exact else min(percent, 99.9):.1f}',
-                  'byte_exact': 'yes' if exact else 'no', 'objdiff_percent': ''}
+                  'byte_exact': 'yes' if exact else 'no', 'targets_checked': 'yes' if exact else 'no',
+                  'references': references, 'target_problems': problems, 'objdiff_percent': ''}
         if objdiff:
             target = target_object(compiler, name, address, original, fields, work)
             result['objdiff_percent'] = objdiff_percent(objdiff, target, ours_obj, name)
@@ -473,7 +825,7 @@ def write_rows(path: str, rows: list[dict]) -> None:
     w = csv.writer(out, lineterminator='\n')
     w.writerow(HEADER)
     for r in sorted(rows, key=lambda r: r['address']):
-        w.writerow([r[k] for k in HEADER])
+        w.writerow([r.get(k, 'no' if k == 'targets_checked' else '') for k in HEADER])   # rows from before the column: not checked
     with open(path, 'w', newline='') as f:
         f.write(out.getvalue())
 
@@ -482,6 +834,7 @@ def record(root: str, result: dict) -> dict:
     row = {'address': result['address'], 'name': result['function'], 'compiler': result['compiler'],
            'flags': result['flags'], 'match_percent': result['match_percent'],
            'objdiff_percent': result['objdiff_percent'], 'byte_exact': result['byte_exact'],
+           'targets_checked': result['targets_checked'],
            'source': result['source'], 'source_sha256': source_hash(root, result['source']),
            'date': datetime.date.today().isoformat()}
     path = os.path.join(root, MATCHING_CSV)
@@ -494,11 +847,12 @@ def record(root: str, result: dict) -> dict:
 
 
 def byte_exact_functions(root: str) -> set[str]:
-    """Names with a byte-exact row whose matching source is unchanged since it was matched."""
+    """Names with a byte-exact row whose references were all checked against the original
+    (targets_checked) and whose matching source is unchanged since it was matched."""
     out = set()
     for r in read_csv(os.path.join(root, MATCHING_CSV)):
         src = r.get('source', '')
-        if (r.get('byte_exact') == 'yes' and src.startswith('game/') and '..' not in src.split('/')
+        if (r.get('byte_exact') == 'yes' and r.get('targets_checked') == 'yes' and src.startswith('game/') and '..' not in src.split('/')
                 and os.path.isfile(os.path.join(root, src)) and r.get('source_sha256') == source_hash(root, src)):
             out.add(r.get('name'))
     return out
@@ -553,6 +907,11 @@ def check(root: str, funcs: list[dict]) -> list[str]:
             errs.append(f"{where}: byte_exact must be yes or no")
         elif (r['byte_exact'] == 'yes') != (r['match_percent'] == '100.0'):
             errs.append(f"{where}: byte_exact is {r['byte_exact']} but match_percent is {r['match_percent']}")
+        if r['targets_checked'] not in ('yes', 'no'):
+            errs.append(f"{where}: targets_checked must be yes or no")
+        elif r['byte_exact'] == 'yes' and r['targets_checked'] != 'yes':
+            errs.append(f"{where}: byte_exact is yes but targets_checked is {r['targets_checked']}: re-run "
+                        f"tools/match.py run {r['name']} --record (docs/MATCHING.md)")
         if not DATE.match(r['date']):
             errs.append(f"{where}: date must be YYYY-MM-DD")
         src = r['source']
@@ -585,8 +944,11 @@ def default_elf() -> str | None:
 def print_result(result: dict) -> None:
     extra = f", objdiff {result['objdiff_percent']}%" if result.get('objdiff_percent') else ''
     verdict = 'byte-exact' if result['byte_exact'] == 'yes' else f"{result['match_percent']}%"
+    targets = f", {result['references']} reference(s) checked" if result['byte_exact'] == 'yes' else ''
     print(f"{result['function']} {result['address']} ({result['size']} bytes, ours {result['compiled_size']}): "
-          f"{verdict}{extra}  [{result['compiler']} {result['flags']}, {result['source']}]")
+          f"{verdict}{targets}{extra}  [{result['compiler']} {result['flags']}, {result['source']}]")
+    for problem in result['target_problems']:
+        print(f'  target: {problem}')
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -640,9 +1002,11 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print_result(result)
             old = rows.get(name)
-            if a.command == 'all' and old and (old['match_percent'], old['byte_exact']) != (result['match_percent'], result['byte_exact']):
+            fields = ('match_percent', 'byte_exact', 'targets_checked')
+            if a.command == 'all' and old and any(old.get(k) != result[k] for k in fields):
                 changed += 1
-                print(f"  recorded {old['match_percent']}% byte_exact={old['byte_exact']}", file=sys.stderr)
+                print(f"  recorded {old['match_percent']}% byte_exact={old['byte_exact']} "
+                      f"targets_checked={old.get('targets_checked', '')}", file=sys.stderr)
             if a.record:
                 record(ROOT, result)
             if result['byte_exact'] != 'yes':

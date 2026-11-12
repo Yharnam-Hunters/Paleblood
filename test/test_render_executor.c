@@ -832,6 +832,22 @@ static int run_indirect(rt_executor *x, uint64_t buffer, uint64_t target, uint32
     return rt_executor_run(x, buffer, offset + 0x30, error, error_size);
 }
 
+/* Viewports past 0 (here viewport 1, covering nothing) change nothing: a draw uses viewport 0 unless its
+   vertex shader exports a viewport index, which stops translation. */
+static void other_viewports(rt_executor *x)
+{
+    enum { VIEWPORTS = 0xc1070000, TARGET_ONE = 0x2e40000 };
+    char error[200] = "";
+    rt_render_forget(), rt_executor_reset(x);
+    const uint32_t offset = record_setup(VIEWPORTS, at(TARGET_ONE), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const float scale[3] = {0, 0, 0}, translate[3] = {-100, -100, 0};
+    CHECK(rt_render_record_viewport(VIEWPORTS, offset, 1, 0, 1, scale, translate, error, sizeof error) == 0);
+    const int drawn = rt_executor_run(x, VIEWPORTS, record_triangle_draw(VIEWPORTS, offset + 0x10), error, sizeof error);
+    if (drawn) fprintf(stderr, "viewport 1: %s\n", error);
+    CHECK(drawn == 0);
+    check_triangle(x, at(TARGET_ONE));
+}
+
 /* Tessellation (docs/RENDERER.md): two quad patches of one control point each (gcn_programs.h's tess_local,
    tess_hull and tess_domain). The local pass writes each point's (vertex index, 0.5) to LDS, the hull pass
    six factors of 1.0 to the factor ring, and the domain shader exports the position (u, v) and its patch's
@@ -2435,6 +2451,7 @@ int main(void)
     blending(x);
     draws_in_one_batch(x);
     indirect_draws(x);
+    other_viewports(x);
     tessellated_draws(x);
     buffers_in_one_submission(x);
     const uint32_t depth[][2] = {{0xa200, 0x2}};

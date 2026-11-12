@@ -50,8 +50,8 @@ enum {
 
 #define NO_TARGET ((TargetDescriptor *)UINTPTR_MAX)
 
-extern void set_render_target(PacketBuffer *commands, uint32_t slot, const void *payload);
-extern void set_depth_render_target(PacketBuffer *commands, const void *payload);
+extern void render_set_render_target(PacketBuffer *commands, uint32_t slot, const void *payload);
+extern void render_set_depth_render_target(PacketBuffer *commands, const void *payload);
 
 // Write color target `slot` from the bank chosen by flag bit 0.
 void render_restore_color_target_from_bank(PreparationState *state, PacketBuffer *commands,
@@ -59,9 +59,9 @@ void render_restore_color_target_from_bank(PreparationState *state, PacketBuffer
 {
     TargetDescriptor *target = state->banks[state->flags & 1].color_targets[slot];
     if (target == 0 || target == NO_TARGET)
-        set_render_target(commands, slot, 0);
+        render_set_render_target(commands, slot, 0);
     else
-        set_render_target(commands, slot, target->payload);
+        render_set_render_target(commands, slot, target->payload);
 }
 
 // Write the depth target from the bank chosen by flag bit 1.
@@ -70,13 +70,14 @@ void render_restore_depth_target_from_bank(PreparationState *state, PacketBuffer
     uint32_t bank = (state->flags >> FLAG_DEPTH_TARGET_BANK_SHIFT) & 1;
     TargetDescriptor *target = state->banks[bank].depth_target;
     if (target == 0 || target == NO_TARGET)
-        set_depth_render_target(commands, 0);
+        render_set_depth_render_target(commands, 0);
     else
-        set_depth_render_target(commands, target->payload);
+        render_set_depth_render_target(commands, target->payload);
 }
 
-extern void emit_depth_clear_value(PacketBuffer *commands, float depth);
-extern void emit_stencil_clear_value(PacketBuffer *commands, uint8_t stencil);
+// The repository's names for these two emitters; here they write the depth and stencil clear values.
+extern void render_emit_present_preparation_scalar(PacketBuffer *commands, float depth);
+extern void render_emit_present_preparation_byte(PacketBuffer *commands, uint8_t stencil);
 
 // Write a dirty depth clear value and then a dirty stencil clear value, caching each written
 // value and clearing its dirty flag after its writer returns. It matches as a void function with
@@ -85,12 +86,12 @@ extern void emit_stencil_clear_value(PacketBuffer *commands, uint8_t stencil);
 void render_reset_present_preparation_dirty(PreparationState *state, PreparationContext *context)
 {
     if (state->flags & FLAG_DEPTH_DIRTY) {
-        emit_depth_clear_value(&context->commands, state->depth_clear);
+        render_emit_present_preparation_scalar(&context->commands, state->depth_clear);
         state->cached_depth_clear = state->depth_clear;
         state->flags &= ~FLAG_DEPTH_DIRTY;
     }
     if (state->flags & FLAG_STENCIL_DIRTY) {
-        emit_stencil_clear_value(&context->commands, (uint8_t)state->stencil_clear);
+        render_emit_present_preparation_byte(&context->commands, (uint8_t)state->stencil_clear);
         state->cached_stencil_clear = state->stencil_clear;
         state->flags &= ~FLAG_STENCIL_DIRTY;
     }
