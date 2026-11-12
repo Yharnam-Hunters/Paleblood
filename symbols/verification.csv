@@ -69,6 +69,10 @@ engine_linear_heap_walk_02485340,edge,,10,10,0,0,ae393922f4e0cc2c,2026-11-12
 engine_pthread_mutex_create_02483fe0,edge,,15,15,0,0,45c84dd5c29d3a96,2026-11-12
 engine_pthread_mutex_destroy_base_0247ed40,edge,,17,17,0,0,45c84dd5c29d3a96,2026-11-12
 engine_pthread_mutex_finalize_0247edc0,edge,,19,19,0,0,45c84dd5c29d3a96,2026-11-12
+engine_read_write_lock_read_lock_0247f640,edge,,20,20,0,0,7e8f6a1d2f5b95ef,2026-11-12
+engine_read_write_lock_unlock_0247f540,edge,,15,15,0,0,7e8f6a1d2f5b95ef,2026-11-12
+engine_read_write_lock_unlock_0247f5c0,edge,,15,15,0,0,7e8f6a1d2f5b95ef,2026-11-12
+engine_read_write_lock_unlock_0247f710,edge,,15,15,0,0,7e8f6a1d2f5b95ef,2026-11-12
 engine_regular_heap_allocate_02485730,edge,,23,23,0,0,ceba07c492cd7255,2026-11-12
 engine_regular_heap_allocate_aligned_02485a60,edge,,25,25,0,0,7e5a8ce832324bd5,2026-11-12
 engine_regular_heap_check_block_02485e20,edge,,35,35,0,0,ecd40822cc0dfbde,2026-11-12
