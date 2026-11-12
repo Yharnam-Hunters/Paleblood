@@ -264,6 +264,8 @@ loading_memory_stream_read_024de230,edge,,12,12,0,0,0de848db403b0c24,2026-11-12
 loading_mount_table_push_back_02470d50,edge,,11,11,0,0,56c29f3bfad4ccf6,2026-11-12
 loading_mount_table_reallocate_024716d0,edge,,9,9,0,0,56c29f3bfad4ccf6,2026-11-12
 loading_path_token_next_02a2aca0,edge,,18,18,0,0,d7482430d506fc6c,2026-11-12
+loading_resource_info_drop_reference_02a3a2a0,recorded,,48,48,0,0,9a98c18512cf922a,2026-11-13
+loading_resource_info_reference_count_02a3a1b0,recorded,,37,37,0,0,9a98c18512cf922a,2026-11-13
 loading_resource_info_release_024bd930,edge,,10,10,0,0,d3a6f64f145f445e,2026-11-12
 loading_resource_manager_release_024c1530,edge,,11,11,0,0,c10eba1a72ea7bd4,2026-11-12
 loading_stdio_close_files,edge,,9,9,0,0,66b528bb054522f0,2026-11-10
