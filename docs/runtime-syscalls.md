@@ -1937,7 +1937,9 @@ holding no attribute is `EINVAL`.
 
 The title's saves live in the host folder given to `pbboot --savedata`. `tools/boot.py` gives
 each run a new empty one, so boots start alike, unless `--savedata DIR` names a folder to keep
-them in. A mounted save appears to the title as `/savedataN` (N the lowest free of 16), through
+them in. `--savedata-from DIR` (with `--no-record`) starts the new folder as a copy of a checkpoint
+in the runtime's layout (`<user id>/<directory>/`, below), which the run never changes: a boot can
+load a save the game wrote in an earlier run and start where it left off. A mounted save appears to the title as `/savedataN` (N the lowest free of 16), through
 the same file calls as `/app0` and `/data`, read-only or writable as mounted.
 
 **Sources.** shadPS4's `libSceSaveData` (`savedata.cpp`, `savedata.h`, `savedata_error.h`,

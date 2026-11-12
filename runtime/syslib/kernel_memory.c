@@ -279,7 +279,8 @@ static void note_mapping(const char *caller, guest_mapping mapping)
     pthread_mutex_lock(&mappings_lock);
     if (mapping_count == MAX_MAPPINGS) rt_fatal(caller, "more mappings than the runtime records");
     mappings[mapping_count++] = mapping;
-    if (mapping.direct) rt_write_watch_add((void *)mapping.start, mapping.length, (uint64_t)mapping.offset);
+    const int host_protection = (mapping.protection & PROT_CPU_READ ? PROT_READ : 0) | (mapping.protection & PROT_CPU_WRITE ? PROT_WRITE : 0);
+    if (mapping.direct) rt_write_watch_add((void *)mapping.start, mapping.length, (uint64_t)mapping.offset, host_protection);
     pthread_mutex_unlock(&mappings_lock);
 }
 
@@ -601,7 +602,10 @@ static int32_t kernel_mprotect(const void *address, uint64_t length, int32_t pro
     pthread_mutex_lock(&mappings_lock);
     const int i = mapping_index(name, (uintptr_t)address, length);
     const int host_protection = (protection & PROT_CPU_READ ? PROT_READ : 0) | (protection & PROT_CPU_WRITE ? PROT_WRITE : 0);
+    /* memory the renderer guards (runtime/write_watch.h) is made current first, then keeps the new protection */
+    rt_write_watch_touch(address, length);
     if (mprotect((void *)(uintptr_t)address, length, host_protection)) rt_fatal(name, "the host refused the protection");
+    rt_write_watch_protect((void *)(uintptr_t)address, length, host_protection);
     mappings[i].protection = protection;
     pthread_mutex_unlock(&mappings_lock);
     return 0;

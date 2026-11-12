@@ -31,6 +31,7 @@
 #include "runtime/mounts.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
+#include "runtime/write_watch.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -352,6 +353,7 @@ static int64_t kernel_read(int32_t fd, void *buffer, uint64_t size)
     const int h = host_of(fd);
     if (h < 0) return SCE_KERNEL_ERROR(BSD_EBADF);
     if (!buffer && size) rt_fatal(fn, "no buffer: the error value is not established");
+    rt_write_watch_touch(buffer, size); /* the kernel does not fault on memory the renderer guards */
     return read_result(fn, read(h, buffer, size));
 }
 
@@ -362,6 +364,7 @@ static int64_t kernel_pread(int32_t fd, void *buffer, uint64_t size, int64_t off
     if (h < 0) return SCE_KERNEL_ERROR(BSD_EBADF);
     if (offset < 0) return SCE_KERNEL_ERROR(BSD_EINVAL);
     if (!buffer && size) rt_fatal(fn, "no buffer: the error value is not established");
+    rt_write_watch_touch(buffer, size);
     return read_result(fn, pread(h, buffer, size, offset));
 }
 
@@ -409,6 +412,7 @@ static int64_t kernel_write(int32_t fd, const void *buffer, uint64_t size)
     const int h = writable_host_of(fn, fd, &flags);
     if (h < 0) return SCE_KERNEL_ERROR(BSD_EBADF);
     if (!buffer && size) rt_fatal(fn, "no buffer: the error value is not established");
+    rt_write_watch_touch(buffer, size);
     return write_result(fn, write(h, buffer, size));
 }
 
@@ -422,6 +426,7 @@ static int64_t kernel_pwrite(int32_t fd, const void *buffer, uint64_t size, int6
     if (offset < 0) return SCE_KERNEL_ERROR(BSD_EINVAL);
     if (!buffer && size) rt_fatal(fn, "no buffer: the error value is not established");
     if (flags & O_APPEND) rt_fatal(fn, "an O_APPEND descriptor: POSIX writes at the offset, FreeBSD and Linux append");
+    rt_write_watch_touch(buffer, size);
     return write_result(fn, pwrite(h, buffer, size, offset));
 }
 

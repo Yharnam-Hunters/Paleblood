@@ -8,7 +8,12 @@
      first collect that takes it in;
    - a range taken out of the watch (unmapped) is no longer reported, the rest still is;
    - a write made after each collect is reported by the next, 1000 times over with the writer on
-     another thread (the scan protects again what it reports, in one step).
+     another thread (the scan protects again what it reports, in one step);
+   - guards: without a resolver none is set; a read or a write of a guarded page waits for the
+     resolver (which here fills the range through the other map, as a write-back would, and lifts
+     the guard), on this thread and another, then sees the memory; a system call on a guarded page
+     fails, and succeeds after rt_write_watch_touch; two guards sharing a page: lifting one leaves
+     the page guarded by the other; a guard taken over a map's new protection keeps it once lifted.
    Skipped (77) where the host has no asynchronous write protection. */
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
@@ -66,8 +71,22 @@ static int count_pages(const reported *r)
     return n;
 }
 
-static unsigned char *guest;
+static unsigned char *guest, *other;
 static atomic_int round_written, round_seen;
+static atomic_int resolutions;
+
+/* The resolver: fills the guarded range with its count through the other map, then lifts the guard. */
+static void resolve(uint64_t pool_offset, uint64_t length)
+{
+    const int n = atomic_fetch_add(&resolutions, 1) + 1;
+    memset(other + (pool_offset - POOL_OFFSET), n, length);
+    rt_write_watch_unguard(pool_offset, length);
+}
+
+static void *read_guarded(void *at)
+{
+    return (void *)(uintptr_t)*(volatile unsigned char *)at;
+}
 
 /* Writes a page, then waits for the main thread to have seen it, ROUNDS times. */
 static void *writer(void *unused)
@@ -88,10 +107,10 @@ int main(void)
     const int fd = memfd_create("write-watch-test", MFD_CLOEXEC);
     if (fd < 0 || ftruncate(fd, (off_t)(POOL_OFFSET + length))) return 1;
     guest = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, POOL_OFFSET);
-    unsigned char *other = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, POOL_OFFSET);
+    other = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, POOL_OFFSET);
     if (guest == MAP_FAILED || other == MAP_FAILED) return 1;
     guest[0] = 1; /* touched before the watch */
-    if (rt_write_watch_add(guest, length, POOL_OFFSET)) {
+    if (rt_write_watch_add(guest, length, POOL_OFFSET, PROT_READ | PROT_WRITE)) {
         fprintf(stderr, "no asynchronous write protection here: skipped\n");
         return SKIPPED;
     }
@@ -140,6 +159,47 @@ int main(void)
     }
     pthread_join(thread, NULL);
     CHECK(missed == 0);
+
+    const uint64_t page20 = POOL_OFFSET + 20 * page_size;
+    CHECK(rt_write_watch_guard(page20, page_size) == -1); /* no resolver yet */
+    rt_write_watch_set_resolver(resolve);
+    CHECK(rt_write_watch_guard(page20, 2 * page_size) == 0);
+    CHECK(*(volatile unsigned char *)(guest + 21 * page_size + 5) == 1 && atomic_load(&resolutions) == 1);
+    guest[20 * page_size] = 9; /* lifted: writes go through */
+    CHECK(other[20 * page_size] == 9 && atomic_load(&resolutions) == 1);
+    CHECK(rt_write_watch_guard(page20, page_size) == 0);
+    guest[20 * page_size + 1] = 10; /* a write waits for the resolver too, then lands */
+    CHECK(atomic_load(&resolutions) == 2 && other[20 * page_size] == 2 && other[20 * page_size + 1] == 10);
+    CHECK(rt_write_watch_guard(page20, page_size) == 0);
+    void *seen = NULL;
+    CHECK(pthread_create(&thread, NULL, read_guarded, guest + 20 * page_size + 2) == 0);
+    pthread_join(thread, &seen);
+    CHECK((uintptr_t)seen == 3 && atomic_load(&resolutions) == 3);
+
+    /* the kernel does not fault on a guarded page: touched first, the read succeeds */
+    CHECK(rt_write_watch_guard(page20, page_size) == 0);
+    CHECK(write(pipe_fds[1], "hunter", 6) == 6);
+    CHECK(read(pipe_fds[0], guest + 20 * page_size + 100, 6) == -1);
+    rt_write_watch_touch(guest + 20 * page_size + 100, 6);
+    CHECK(atomic_load(&resolutions) == 4);
+    CHECK(read(pipe_fds[0], guest + 20 * page_size + 100, 6) == 6 && memcmp(other + 20 * page_size + 100, "hunter", 6) == 0);
+
+    /* two guards in one page: lifting one leaves the page with the other */
+    CHECK(rt_write_watch_guard(page20, 16) == 0 && rt_write_watch_guard(page20 + 64, 16) == 0);
+    rt_write_watch_unguard(page20, 16);
+    CHECK(atomic_load(&resolutions) == 4);
+    CHECK(*(volatile unsigned char *)(guest + 20 * page_size + 64) == 5 && atomic_load(&resolutions) == 5);
+
+    /* the guest makes page 22 read-only; a guard there gives it back read-only */
+    rt_write_watch_touch(guest + 22 * page_size, page_size);
+    CHECK(mprotect(guest + 22 * page_size, page_size, PROT_READ) == 0);
+    rt_write_watch_protect(guest + 22 * page_size, page_size, PROT_READ);
+    CHECK(rt_write_watch_guard(page20 + 2 * page_size, page_size) == 0);
+    rt_write_watch_unguard(page20 + 2 * page_size, page_size);
+    CHECK(write(pipe_fds[1], "x", 1) == 1);
+    CHECK(read(pipe_fds[0], guest + 22 * page_size, 1) == -1); /* read-only: the kernel cannot write it */
+    const unsigned char kept = *(volatile unsigned char *)(guest + 22 * page_size); /* readable, without the resolver */
+    CHECK(kept == other[22 * page_size] && atomic_load(&resolutions) == 5);
 
     if (failures) fprintf(stderr, "%d failure(s)\n", failures);
     return failures != 0;
