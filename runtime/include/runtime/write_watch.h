@@ -23,9 +23,14 @@ extern "C" {
 #endif
 
 /* Starts watching a guest map of `length` bytes of the pool at `host`, which maps pool offset
-   `pool_offset`; its pages count as written once. 0, or -1 when the watch is off (it then stays
-   off: every later collect answers -1). */
-int rt_write_watch_add(void *host, uint64_t length, uint64_t pool_offset);
+   `pool_offset` with the host protection `protection` (PROT_READ, PROT_WRITE); its pages count as
+   written once. 0, or -1 when the watch is off (it then stays off: every later collect answers -1). */
+int rt_write_watch_add(void *host, uint64_t length, uint64_t pool_offset, int protection);
+
+/* The guest gave [host, host + length) the host protection `protection` (sceKernelMprotect), after
+   the runtime resolved the guards there (rt_write_watch_touch) and changed it: the watch notes it as
+   the maps' protection, and guards over the range since then take their pages again. */
+void rt_write_watch_protect(void *host, uint64_t length, int protection);
 
 /* Stops watching what the guest unmapped in [host, host + length) (the kernel forgets an unmapped
    range's protection by itself). */
@@ -42,6 +47,34 @@ int rt_write_watch_collect(const uint64_t (*ranges)[2], size_t count, rt_write_w
 
 /* Whether the watch is on: a map was added and nothing failed. */
 int rt_write_watch_active(void);
+
+/* Guards: pool memory whose bytes are stale for the CPU (a render target whose draws are still only
+   on the GPU, docs/RENDERER.md "Targets stay on the GPU"). Every watched map's pages over a guarded
+   range lose all CPU access (PROT_NONE). A guest access to one faults; the fault is handed to the
+   watch's own thread, which calls the resolver for each guard over the page while the faulting thread
+   waits, and the access then runs again. The resolver makes the memory current (writes the target
+   back) and lifts the guard (rt_write_watch_unguard); one that leaves the page guarded stops the
+   process. Faults on pages not guarded go to the handler installed before. A page also holding other
+   memory faults on that too, which resolves the guard all the same. Maps added over a guarded range
+   are guarded as they come.
+
+   The kernel does not fault on a guarded page: a system call reading or writing one fails. The
+   runtime calls rt_write_watch_touch on guest memory before it hands it to such a call (file reads
+   and writes, sockets), and before the guest changes its protection. */
+typedef void rt_write_watch_resolver(uint64_t pool_offset, uint64_t length);
+void rt_write_watch_set_resolver(rt_write_watch_resolver *resolve);
+
+/* Guards `length` bytes of the pool at `pool_offset`. 0, or -1 when guards are not available (no
+   watch, no resolver, or too many guards): the memory then has to be kept current by its owner. */
+int rt_write_watch_guard(uint64_t pool_offset, uint64_t length);
+
+/* Lifts the guards lying inside [pool_offset, pool_offset + length); the pages covered by no other
+   guard get their maps' protection back. */
+void rt_write_watch_unguard(uint64_t pool_offset, uint64_t length);
+
+/* Resolves the guards over guest memory [host, host + length) in watched maps, on this thread
+   (rt_write_watch_resolver), so a system call may read or write it. */
+void rt_write_watch_touch(const void *host, uint64_t length);
 
 #ifdef __cplusplus
 }

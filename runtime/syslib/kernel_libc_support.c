@@ -48,6 +48,7 @@
 #include "runtime/guest_errno.h"
 #include "runtime/process.h"
 #include "runtime/syslib.h"
+#include "runtime/write_watch.h"
 
 #include <pthread.h>
 #include <stdint.h>
@@ -85,6 +86,7 @@ static int64_t libc_write(int32_t fd, const void *buffer, uint64_t size)
 {
     static const char fn[] = "_write";
     if (fd != GUEST_STDOUT && fd != GUEST_STDERR) rt_fatal(fn, "a descriptor other than standard output and error: not modelled");
+    rt_write_watch_touch(buffer, size); /* the kernel does not fault on memory the renderer guards */
     const ssize_t n = write(fd == GUEST_STDOUT ? STDOUT_FILENO : STDERR_FILENO, buffer, size);
     if (n < 0) rt_fatal(fn, "a host write error without an established answer");
     return n;

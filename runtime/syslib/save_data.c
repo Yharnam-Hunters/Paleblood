@@ -37,6 +37,7 @@
 #include "runtime/sdk.h"
 #include "runtime/syslib.h"
 #include "runtime/user.h"
+#include "runtime/write_watch.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -581,6 +582,7 @@ static int32_t memory_io(const char *caller, int32_t user, void *buffer, uint64_
     memory_path(caller, "memory.dat", file, sizeof file);
     const int h = open(file, writing ? O_WRONLY | O_CLOEXEC : O_RDONLY | O_CLOEXEC);
     if (h < 0) rt_fatal(caller, "the host could not open the memory save");
+    rt_write_watch_touch(buffer, size); /* the kernel does not fault on memory the renderer guards */
     const ssize_t n = writing ? pwrite(h, buffer, (size_t)size, (off_t)offset) : pread(h, buffer, (size_t)size, (off_t)offset);
     close(h);
     if (n < 0 || (uint64_t)n != size) rt_fatal(caller, "the host read or wrote less than asked");

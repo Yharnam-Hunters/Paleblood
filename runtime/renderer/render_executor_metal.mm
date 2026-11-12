@@ -1042,6 +1042,9 @@ extern "C" int rt_executor_submit(rt_executor *x, char *error, size_t error_size
 
 extern "C" int rt_executor_wait_ticket(rt_executor *, uint64_t, char *, size_t) { return 0; }
 
+/* Metal runs each buffer to completion with its targets in memory and never guards them: nothing to resolve. */
+extern "C" int rt_executor_resolve(rt_executor *, uint64_t, uint64_t, char *, size_t) { return 0; }
+
 extern "C" int rt_executor_finish(rt_executor *x, char *error, size_t error_size)
 {
     return !x || x->failed ? failed(error, error_size, "a usable executor is required") : 0;
