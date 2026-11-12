@@ -6,6 +6,8 @@ usage:
   match.py toolchain [--fetch]          where clang 3.4.2 is (with --fetch: download it from llvm.org)
   match.py run FUNCTION [--source FILE] [--flags ID] [--record] [--diff] [--objdiff BIN] [--elf ELF]
   match.py all [--record] [--objdiff BIN] [--elf ELF]    re-run every row of symbols/matching.csv
+  match.py family FAMILY... [--record] [--elf ELF]       every member of a function family against its
+                                        generated matching source (symbols/families/<family>.matching.csv)
 
 Optional supporting evidence, local only, like tools/verify.py (docs/MATCHING.md). `run` compiles
 the function's matching source (C, or C++11) with upstream clang 3.4.2 and the PS4 SDK's documented
@@ -931,6 +933,148 @@ def check(root: str, funcs: list[dict]) -> list[str]:
     return errs
 
 
+# ---- families (docs/MATCHING.md, "Families") ----------------------------------------------------
+
+def family_table(root: str, family: str) -> str:
+    return os.path.join(root, 'symbols', 'families', f'{family}.matching.csv')
+
+
+def member_digest(source_digest: str, value: str) -> str:
+    """A family matching row's source_sha256: the matching source's hash bound to the member's
+    value, so a row stops counting when either the source or the member's value changes."""
+    if not value:
+        return source_digest
+    return hashlib.sha256(f'{source_digest}\0{value}'.encode()).hexdigest()[:SOURCE_HASH_LENGTH]
+
+
+def match_family(root: str, name: str, elf: str, compiler: str = DEFAULT_COMPILER,
+                 flags: str = DEFAULT_FLAGS) -> dict:
+    """Compiles the family's generated matching source once and compares the function of each
+    value with every member that has that value, each against its own bytes in the dump. A member
+    has no relocations (tools/family_scan.py refuses them), so a function the compiler leaves any
+    relocation in is not byte-exact; with none, every reference (there are none) is checked."""
+    import families as fam
+    import family_emit
+    rows = [f for f in fam.families(root) if f['family'] == name]
+    if not rows:
+        raise BadInput(f'{name}: not in symbols/families.csv')
+    family = rows[0]
+    source = family_emit.matching_source(family)
+    path = os.path.join(root, source)
+    if not os.path.isfile(path):
+        raise BadInput(f'{source}: no such file (tools/family_emit.py {name} --matching)')
+    shape = fam.parse_shape(family['shape'])
+    members = fam.members(root, name)
+    results = []
+    with tempfile.TemporaryDirectory(prefix='pb-match-family-') as work:
+        obj = os.path.join(work, 'ours.o')
+        compile_source(compiler, flags, path, obj)
+        compiled: dict[str, tuple[bytes, dict[int, int]]] = {}
+        for m in members:
+            symbol = family_emit.matching_symbol(family, m['value'])
+            if symbol not in compiled:
+                compiled[symbol] = object_function(obj, symbol)
+            ours, relocs = compiled[symbol]
+            address, size = int(m['address'], 16), int(m['size'])
+            original = original_bytes(elf, address, size)
+            exact = not relocs and ours == original and shape.matches(original)
+            if exact:
+                percent = 100.0
+            else:
+                o_norm = normalize(disassemble(original, address, work), address, set())
+                c_norm = normalize(disassemble(ours, address, work), address, set(relocs))
+                percent = min(99.9, 100.0 * difflib.SequenceMatcher(None, o_norm, c_norm, autojunk=False).ratio())
+            results.append({'address': m['address'], 'function': fam.member_name(family, m['address']),
+                            'symbol': symbol, 'value': m['value'], 'match_percent': f'{percent:.1f}',
+                            'byte_exact': 'yes' if exact else 'no', 'targets_checked': 'yes' if exact else 'no'})
+    exact = sum(r['byte_exact'] == 'yes' for r in results)
+    return {'family': name, 'source': source, 'compiler': compiler, 'flags': flags, 'members': len(results),
+            'byte_exact': exact, 'functions': len(compiled), 'results': results}
+
+
+def record_family(root: str, summary: dict) -> None:
+    """Writes symbols/families/<family>.matching.csv: one row per member, matching.csv's columns."""
+    today = datetime.date.today().isoformat()
+    digest = source_hash(root, summary['source'])
+    rows = [{'address': r['address'], 'name': r['function'], 'compiler': summary['compiler'],
+             'flags': summary['flags'], 'match_percent': r['match_percent'], 'objdiff_percent': '',
+             'byte_exact': r['byte_exact'], 'targets_checked': r['targets_checked'],
+             'source': summary['source'], 'source_sha256': member_digest(digest, r['value']), 'date': today}
+            for r in summary['results']]
+    write_rows(family_table(root, summary['family']), rows)
+
+
+def byte_exact_members(root: str, family: dict) -> set[str]:
+    """Member names with a byte-exact, target-checked row in the family's matching table whose
+    source is the family's generated matching source, unchanged since it was matched, for the
+    member's current value."""
+    import families as fam
+    import family_emit
+    src = family_emit.matching_source(family)
+    if not os.path.isfile(os.path.join(root, src)):
+        return set()
+    digest = source_hash(root, src)
+    value = {m['address']: m['value'] for m in fam.members(root, family['family'])}
+    return {r['name'] for r in read_csv(family_table(root, family['family']))
+            if r.get('byte_exact') == 'yes' and r.get('targets_checked') == 'yes' and r.get('source') == src
+            and r.get('address') in value and r.get('source_sha256') == member_digest(digest, value[r['address']])}
+
+
+def check_family(root: str, family: dict, members: list[dict]) -> list[str]:
+    """Errors in symbols/families/<family>.matching.csv (format only: CI has no dump): its
+    columns, rows only for members and under their names, the family's own matching source, and
+    that the source still is the code that was matched. A member without a row is not an error:
+    it is simply not matched."""
+    import families as fam
+    import family_emit
+    path = family_table(root, family['family'])
+    rel = os.path.relpath(path, root).replace(os.sep, '/')
+    if not os.path.isfile(path):
+        return []
+    with open(path, newline='') as f:
+        rows = list(csv.reader(f))
+    if not rows or rows[0] != HEADER:
+        return [f'{rel}: header must be {",".join(HEADER)}']
+    errs = []
+    by_addr = {m['address']: m for m in members}
+    src = family_emit.matching_source(family)
+    digest = source_hash(root, src) if os.path.isfile(os.path.join(root, src)) else None
+    if digest is None:
+        errs.append(f'{rel}: {src} does not exist (tools/family_emit.py {family["family"]} --matching)')
+    prev = None
+    for n, values in enumerate(rows[1:], 2):
+        where = f'{rel}:{n}'
+        if len(values) != len(HEADER):
+            errs.append(f'{where}: expected {len(HEADER)} columns, got {len(values)}')
+            continue
+        r = dict(zip(HEADER, values))
+        if prev is not None and r['address'] <= prev:
+            errs.append(f'{where}: addresses must be unique and ascending')
+        prev = r['address']
+        if r['address'] not in by_addr:
+            errs.append(f"{where}: {r['address']} is not a member of {family['family']}")
+        elif r['name'] != fam.member_name(family, r['address']):
+            errs.append(f"{where}: name must be {fam.member_name(family, r['address'])}")
+        if r['compiler'] not in TOOLCHAINS or r['flags'] not in FLAG_SETS:
+            errs.append(f'{where}: unknown compiler or flags')
+        if not PERCENT.match(r['match_percent']) or r['objdiff_percent']:
+            errs.append(f"{where}: match_percent must be 0.0 to 100.0 and objdiff_percent empty")
+        if r['byte_exact'] not in ('yes', 'no') or (r['byte_exact'] == 'yes') != (r['match_percent'] == '100.0'):
+            errs.append(f"{where}: byte_exact must be yes exactly when match_percent is 100.0")
+        if r['targets_checked'] != r['byte_exact']:
+            errs.append(f"{where}: targets_checked must equal byte_exact (a member has no references)")
+        if not DATE.match(r['date']):
+            errs.append(f'{where}: date must be YYYY-MM-DD')
+        if r['source'] != src:
+            errs.append(f"{where}: source must be {src}")
+        elif (digest is not None and r['address'] in by_addr
+              and r['source_sha256'] != member_digest(digest, by_addr[r['address']]['value'])):
+            errs.append(f"{where}: {src} or the member's value changed since it was matched: re-run "
+                        f"tools/match.py family {family['family']} --record (docs/MATCHING.md)")
+            break       # one message for the whole table
+    return errs
+
+
 # ---- command line -------------------------------------------------------------------------------
 
 def default_elf() -> str | None:
@@ -951,12 +1095,39 @@ def print_result(result: dict) -> None:
         print(f'  target: {problem}')
 
 
+def run_families(names: list[str], elf: str, record_rows: bool, as_json: bool) -> int:
+    import families as fam
+    if names == ['all']:
+        names = [f['family'] for f in fam.families(ROOT)]
+    worst = EXIT_EXACT
+    for name in names:
+        summary = match_family(ROOT, name, elf)
+        missed = [r for r in summary['results'] if r['byte_exact'] != 'yes']
+        if as_json:
+            print(json.dumps({k: v for k, v in summary.items() if k != 'results'}))
+        else:
+            print(f"{name}: {summary['byte_exact']} of {summary['members']} members byte-exact "
+                  f"({summary['functions']} function(s), [{summary['compiler']} {summary['flags']}, {summary['source']}])")
+            for r in missed[:10]:
+                print(f"  {r['function']}: {r['match_percent']}%")
+        if record_rows:
+            record_family(ROOT, summary)
+        if missed:
+            worst = EXIT_DIFFERENT
+    return worst
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     sub = ap.add_subparsers(dest='command', required=True)
     t = sub.add_parser('toolchain', help='show or download the compiler')
     t.add_argument('--fetch', action='store_true')
     t.add_argument('--compiler', default=DEFAULT_COMPILER, choices=sorted(TOOLCHAINS))
+    fp = sub.add_parser('family', help='match every member of function families (docs/MATCHING.md, "Families")')
+    fp.add_argument('families', nargs='+', help='family names, or "all"')
+    fp.add_argument('--record', action='store_true', help='write symbols/families/<family>.matching.csv')
+    fp.add_argument('--elf', help='your dump\'s eboot.elf (default $BB_ELF, then $BB_DATA_ROOT/elf/eboot.elf)')
+    fp.add_argument('--json', action='store_true', help='print each family summary as JSON (no per-member rows)')
     for name in ('run', 'all'):
         p = sub.add_parser(name)
         if name == 'run':
@@ -983,6 +1154,8 @@ def main(argv: list[str] | None = None) -> int:
         elf = a.elf or default_elf()
         if not elf or not os.path.isfile(elf):
             raise BadInput('no executable: pass --elf or set BB_ELF (your dump\'s eboot.elf, tools/prepare_dump.sh)')
+        if a.command == 'family':
+            return run_families(a.families, elf, a.record, a.json)
         rows = {r['name']: r for r in read_csv(os.path.join(ROOT, MATCHING_CSV))}
         if a.command == 'run':
             row = rows.get(a.function, {})
