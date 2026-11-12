@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Graphics events and the last GNM calls (runtime/syslib/gnm.c): sceGnmAddEqEvent and
-   sceGnmDeleteEqEvent, raised by the end-of-work packets' interrupts in the GPU's completion step;
+   sceGnmDeleteEqEvent, raised by the end-of-work packets' interrupts in the GPU's completion step
+   (and EVENT_WRITE_EOS's value write, which raises none);
    sceGnmRequestFlipAndSubmitDone; sceGnmGetEqTimeStamp, sceGnmDebugHardwareStatus and the logical
    compute unit mappings. With the display off the completion steps are performed at once. */
 #include "../syslib_test.h"
@@ -47,6 +48,17 @@ static void submit_eop(uint32_t interrupt_select, uint32_t value)
     submit(1, buffers, bytes, NULL, NULL);
 }
 static void eop_select_three(void) { submit_eop(3, 1); }
+
+/* A graphics command buffer with one EVENT_WRITE_EOS: the command (2 stores the value, 1 GDS data). */
+static void submit_eos(uint32_t command, uint32_t value)
+{
+    const uint64_t at = (uint64_t)(uintptr_t)&label;
+    uint32_t packets[] = {0xc0034800u, 0x62f, (uint32_t)at, (uint32_t)(at >> 32) | command << 29, value};
+    void *buffers[1] = {packets};
+    uint32_t bytes[1] = {sizeof packets};
+    submit(1, buffers, bytes, NULL, NULL);
+}
+static void eos_storing_gds(void) { submit_eos(1, 0x10000); }
 static void delete_unregistered(void) { del(events, 0x41); }
 static void delete_eop_again(void) { del(events, EOP); }
 
@@ -140,6 +152,11 @@ SYSLIB_TEST(gnm_events)
     CHECK(wait(events, got, 2, &n, NULL) == 0 && n == 1 && field(got, 0) == 2);
     CHECK(died_in_fatal(delete_unregistered));
     CHECK(died_in_fatal(eop_select_three));
+    /* EVENT_WRITE_EOS: the value lands once the work before it is done, with no event; GDS stops */
+    label = 0;
+    submit_eos(2, 0x5eed);
+    CHECK(label == 0x5eed);
+    CHECK(died_in_fatal(eos_storing_gds));
     CHECK(died_in_fatal(release_on_pipe_seven));
     CHECK(del(events, 2) == 0);
     CHECK(delete_queue(events) == 0);
