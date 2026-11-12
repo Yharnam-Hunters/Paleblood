@@ -82,6 +82,11 @@ static const char *stage_name(int stage)
     return stage == STAGE_VERTEX ? "vertex" : stage == STAGE_DOMAIN ? "domain" : stage == STAGE_COPY ? "copy" : "pixel";
 }
 
+/* A vertex shader's instancing inputs (gcn_vertex_layout's): VGPR_COMP_CNT and the step-rate registers */
+typedef struct {
+    uint32_t vgprs, step_rates[2], step_rates_set;
+} vertex_instancing;
+
 typedef struct {
     uint64_t code;
     int stage;
@@ -96,6 +101,7 @@ typedef struct {
     uint32_t input_controls[GCN_PIXEL_INPUTS]; /* a pixel shader's SPI_PS_INPUT_CNTL words, when set */
     int has_input_controls;
     uint64_t tessellation;           /* a domain shader's tessellation settings (tessellation_key), 0 otherwise */
+    vertex_instancing instancing;    /* a vertex shader's instancing inputs (vertex_instancing_of), zero otherwise */
     VkShaderModule module;
 } shader_entry;
 
@@ -335,6 +341,7 @@ typedef struct {
     uint32_t blend_control[RT_COLOR_TARGETS], blend_set; /* CB_BLENDn_CONTROL, and which were set, a bit each */
     uint32_t clear_words[RT_COLOR_TARGETS][2];             /* CB_COLORn_CLEAR_WORD0 and 1: a fast clear's texel */
     uint32_t depth_control, color_control, target_mask, primitive_type, instances;
+    uint32_t step_rates[2], step_rates_set; /* VGT_INSTANCE_STEP_RATE_0/1, the ones set (bit 0, bit 1) */
     int depth_set, color_control_set, target_mask_set, primitive_set, instances_set;
     uint32_t shader_stages;          /* VGT_SHADER_STAGES_EN: 0 (vertex and pixel shaders only) until set */
     float blend_constants[4];        /* CB_BLEND_RED, GREEN, BLUE, ALPHA */
@@ -474,6 +481,10 @@ struct rt_executor {
     /* the run-time stop words translated shaders write (runtime/gcn_spirv.h), one per shader */
     VkBuffer stop_buffer;
     VkDeviceMemory stop_memory;
+    /* the GDS's host memory, imported (rt_executor_memory's gds), and its GPU address; 0 without one */
+    VkBuffer gds_buffer;
+    VkDeviceMemory gds_memory;
+    VkDeviceAddress gds_address;
     volatile uint32_t *stop_words;   /* one per translated shader (stop_slot) */
     uint64_t stop_address;
     /* What changed the guest memory, and when (memory_changed): each change counts one up, and each
@@ -533,7 +544,7 @@ enum { DB_RENDER_CONTROL = 0xa000, DB_DEPTH_VIEW = 0xa002, DB_HTILE_DATA_BASE = 
        CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242, VGT_SHADER_STAGES_EN = 0xa2d5, SPI_PS_INPUT_CNTL_0 = 0xa191,
        VGT_GS_MODE = 0xa290, VGT_GSVS_RING_OFFSET_1 = 0xa298, VGT_GSVS_RING_OFFSET_3 = 0xa29a, VGT_ESGS_RING_ITEMSIZE = 0xa2ab,
        VGT_GSVS_RING_ITEMSIZE = 0xa2ac, VGT_GS_MAX_VERT_OUT = 0xa2ce, VGT_GS_VERT_ITEMSIZE = 0xa2d7, VGT_GS_VERT_ITEMSIZE_3 = 0xa2da,
-       VGT_STRMOUT_CONFIG = 0xa2e5 };
+       VGT_STRMOUT_CONFIG = 0xa2e5, VGT_INSTANCE_STEP_RATE_0 = 0xa2a8, VGT_INSTANCE_STEP_RATE_1 = 0xa2a9 };
 enum { GS_REGISTER_ESGS_ITEMSIZE = 1, GS_REGISTER_VERT_ITEMSIZE = 2, GS_REGISTER_MAX_VERT_OUT = 4, GS_REGISTER_GSVS_ITEMSIZE = 8,
        GS_REGISTERS_NEEDED = 15 };
 enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 0x1, Z_ENABLE = 0x2, Z_WRITE_ENABLE = 0x4,
@@ -555,6 +566,9 @@ static int set_register(draw_state *s, uint32_t address, uint32_t value)
     case VGT_GS_MAX_VERT_OUT: s->gs_max_vert_out = value, s->gs_registers_set |= GS_REGISTER_MAX_VERT_OUT; return 0;
     case VGT_GSVS_RING_ITEMSIZE: s->gsvs_itemsize = value, s->gs_registers_set |= GS_REGISTER_GSVS_ITEMSIZE; return 0;
     case VGT_GS_MODE: s->gs_mode = value; return 0;
+    case VGT_INSTANCE_STEP_RATE_0: case VGT_INSTANCE_STEP_RATE_1:
+        s->step_rates[address - VGT_INSTANCE_STEP_RATE_0] = value, s->step_rates_set |= 1u << (address - VGT_INSTANCE_STEP_RATE_0);
+        return 0;
     case VGT_STRMOUT_CONFIG: s->streamout_config = value; return 0;
     case DB_STENCIL_CONTROL: s->stencil_control = value, s->stencil_control_set = 1; return 0;
     case DB_STENCILREFMASK: case DB_STENCILREFMASK_BF:
@@ -807,7 +821,7 @@ static int check_state(const draw_state *s, depth_plan *plan, uint32_t *colours,
         return failed(error, error_size, "primitive type %u: only triangle lists and strips and rect lists are drawn yet", s->primitive_type);
     }
     if (plan_depth(s, plan, error, error_size)) return -1;
-    if (s->instances_set && s->instances != 1) return failed(error, error_size, "%u instances: only one is drawn yet", s->instances);
+    if (s->instances_set && !s->instances) return failed(error, error_size, "a draw of 0 instances: what the GPU draws is not established");
     *colours = s->color_enabled;
     if (s->color_control_set) {
         const uint32_t mode = (s->color_control & COLOR_MODE_MASK) >> COLOR_MODE_SHIFT, rop = (s->color_control & ROP3_MASK) >> ROP3_SHIFT;
@@ -1014,7 +1028,41 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
     return 0;
 }
 
-/* Our own mapping of the guest memory, imported as one buffer with a GPU address. */
+/* Host memory (`bytes` at `view`, aligned as the device imports it) as a buffer with a GPU address; 0, or -1
+   with what in the reason. */
+static int import_host(rt_executor *x, void *view, uint64_t bytes, VkBufferUsageFlags usage, VkBuffer *buffer, VkDeviceMemory *memory,
+                       VkDeviceAddress *address, const char *what, char *error, size_t error_size)
+{
+    PFN_vkGetMemoryHostPointerPropertiesEXT host_pointer_properties =
+        (PFN_vkGetMemoryHostPointerPropertiesEXT)vkGetDeviceProcAddr(x->device, "vkGetMemoryHostPointerPropertiesEXT");
+    VkMemoryHostPointerPropertiesEXT host = {.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
+    if (!host_pointer_properties ||
+        host_pointer_properties(x->device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, view, &host) != VK_SUCCESS)
+        return failed(error, error_size, "the device reports no memory type for %s", what);
+    const VkExternalMemoryBufferCreateInfo external = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
+                                                       .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
+    const VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &external, .size = bytes, .usage = usage};
+    if (vkCreateBuffer(x->device, &info, NULL, buffer) != VK_SUCCESS) return failed(error, error_size, "no buffer for %s", what);
+    VkMemoryRequirements need;
+    vkGetBufferMemoryRequirements(x->device, *buffer, &need);
+    const uint32_t type = memory_type(x, host.memoryTypeBits & need.memoryTypeBits, 0);
+    if (type == UINT32_MAX) return failed(error, error_size, "no memory type both the buffer and %s allow", what);
+    const VkImportMemoryHostPointerInfoEXT import = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
+                                                     .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
+                                                     .pHostPointer = view};
+    const VkMemoryAllocateFlagsInfo flags = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO, .pNext = &import,
+                                             .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
+    const VkMemoryAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &flags,
+                                           .allocationSize = bytes, .memoryTypeIndex = type};
+    if (vkAllocateMemory(x->device, &allocate, NULL, memory) != VK_SUCCESS) return failed(error, error_size, "the device cannot import %s", what);
+    if (vkBindBufferMemory(x->device, *buffer, *memory, 0) != VK_SUCCESS) return failed(error, error_size, "cannot bind %s", what);
+    const VkBufferDeviceAddressInfo address_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = *buffer};
+    *address = vkGetBufferDeviceAddress(x->device, &address_info);
+    return 0;
+}
+
+/* Our own mapping of the guest memory, imported as one buffer with a GPU address, and the GDS's host
+   memory (runtime/gcn_spirv.h, "The global data share") as another. */
 static int import_memory(rt_executor *x, const rt_executor_memory *memory, char *error, size_t error_size)
 {
     x->size = memory->size, x->guest_base = memory->guest_base, x->collect_cpu_writes = memory->collect_cpu_writes;
@@ -1027,36 +1075,17 @@ static int import_memory(rt_executor *x, const rt_executor_memory *memory, char 
         x->view = NULL;
         return failed(error, error_size, "the guest memory cannot be mapped a second time");
     }
-    PFN_vkGetMemoryHostPointerPropertiesEXT host_pointer_properties =
-        (PFN_vkGetMemoryHostPointerPropertiesEXT)vkGetDeviceProcAddr(x->device, "vkGetMemoryHostPointerPropertiesEXT");
-    VkMemoryHostPointerPropertiesEXT host = {.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
-    if (!host_pointer_properties ||
-        host_pointer_properties(x->device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, x->view, &host) != VK_SUCCESS)
-        return failed(error, error_size, "the device reports no memory type for the guest memory");
-    const VkExternalMemoryBufferCreateInfo external = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
-                                                       .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
-    const VkBufferCreateInfo buffer = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &external, .size = memory->size,
-                                       .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                                                VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                                                VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
-    if (vkCreateBuffer(x->device, &buffer, NULL, &x->buffer) != VK_SUCCESS) return failed(error, error_size, "no buffer for the guest memory");
-    VkMemoryRequirements need;
-    vkGetBufferMemoryRequirements(x->device, x->buffer, &need);
-    const uint32_t type = memory_type(x, host.memoryTypeBits & need.memoryTypeBits, 0);
-    if (type == UINT32_MAX) return failed(error, error_size, "no memory type both the buffer and the guest memory allow");
-    const VkImportMemoryHostPointerInfoEXT import = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
-                                                     .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
-                                                     .pHostPointer = x->view};
-    const VkMemoryAllocateFlagsInfo flags = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO, .pNext = &import,
-                                             .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
-    const VkMemoryAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &flags,
-                                           .allocationSize = memory->size, .memoryTypeIndex = type};
-    if (vkAllocateMemory(x->device, &allocate, NULL, &x->memory) != VK_SUCCESS)
-        return failed(error, error_size, "the device cannot import the guest memory");
-    if (vkBindBufferMemory(x->device, x->buffer, x->memory, 0) != VK_SUCCESS) return failed(error, error_size, "cannot bind the guest memory");
-    const VkBufferDeviceAddressInfo address = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = x->buffer};
-    x->address_offset = vkGetBufferDeviceAddress(x->device, &address) - x->guest_base; /* wraps as the shaders' adds do */
-    return 0;
+    VkDeviceAddress address = 0;
+    if (import_host(x, x->view, memory->size,
+                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                        VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                    &x->buffer, &x->memory, &address, "the guest memory", error, error_size))
+        return -1;
+    x->address_offset = address - x->guest_base; /* wraps as the shaders' adds do */
+    if (!memory->gds) return 0;
+    if (memory->gds_bytes != GCN_GDS_BYTES) return failed(error, error_size, "a GDS of %u bytes, not 64 KB", memory->gds_bytes);
+    return import_host(x, memory->gds, memory->gds_bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                       &x->gds_buffer, &x->gds_memory, &x->gds_address, "the GDS", error, error_size);
 }
 
 /* The run-time stop words: host-visible, with GPU addresses the translated shaders store to. */
@@ -2445,6 +2474,10 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
                                  const draw_state *tess, uint32_t *user_read, char *error, size_t error_size)
 {
     const uint64_t tessellation = stage == STAGE_DOMAIN ? tessellation_key(&tess->hull, tess->local.lds_bytes) : 0;
+    vertex_instancing instancing = {0};
+    if (stage == STAGE_VERTEX && tess)
+        instancing = (vertex_instancing){.vgprs = tess->vertex.vgpr_inputs, .step_rates = {tess->step_rates[0], tess->step_rates[1]},
+                                         .step_rates_set = tess->step_rates_set};
     const size_t control_bytes = GCN_PIXEL_INPUTS * sizeof *input_controls;
     for (size_t i = 0; i < x->shader_count; i++) {
         const shader_entry *s = &x->shaders[i];
@@ -2452,7 +2485,8 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
             s->first_binding == first_binding && s->has_input_controls == (input_controls != NULL) &&
             (!input_controls || !memcmp(s->input_controls, input_controls, control_bytes)) &&
             s->image_count == image_count && !memcmp(s->images, images, image_count * sizeof *images) &&
-            s->sampler_count == sampler_count && !memcmp(s->samplers, samplers, sampler_count * sizeof *samplers) && s->tessellation == tessellation) {
+            s->sampler_count == sampler_count && !memcmp(s->samplers, samplers, sampler_count * sizeof *samplers) && s->tessellation == tessellation &&
+            !memcmp(&s->instancing, &instancing, sizeof instancing)) {
             *user_read = s->user_read;
             return s->module;
         }
@@ -2480,7 +2514,9 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
                                           .callee_dwords = callee ? (size_t)((x->guest_base + x->size - callee) / 4) : 0,
                                           .code_address = code, .images = images, .image_count = image_count,
                                           .first_binding = first_binding, .user_data_read = user_read,
-                                          .gsvs_ring = copy ? x->gs_gsvs.address : 0, .gsvs_ring_bytes = copy ? GS_GSVS_BYTES : 0};
+                                          .gsvs_ring = copy ? x->gs_gsvs.address : 0, .gsvs_ring_bytes = copy ? GS_GSVS_BYTES : 0,
+                                          .instance_vgprs = instancing.vgprs, .step_rates = {instancing.step_rates[0], instancing.step_rates[1]},
+                                          .step_rates_set = instancing.step_rates_set};
         result = gcn_translate_vertex(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
     } else if (stage == STAGE_DOMAIN) {
         gcn_tessellation_layout layout = tessellation_layout(x, &tess->hull, tess->local.lds_bytes, user_sgprs, stop_slot(x, 0, x->shader_count));
@@ -2518,7 +2554,7 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
     shader_entry *e = &x->shaders[x->shader_count++];
     *e = (shader_entry){.code = code, .stage = stage, .user_sgprs = user_sgprs, .settings = settings, .image_count = image_count,
                         .sampler_count = sampler_count, .first_binding = first_binding, .callee = callee, .user_read = *user_read,
-                        .tessellation = tessellation, .module = module};
+                        .tessellation = tessellation, .instancing = instancing, .module = module};
     memcpy(e->images, images, image_count * sizeof *images);
     memcpy(e->samplers, samplers, sampler_count * sizeof *samplers);
     if (input_controls) memcpy(e->input_controls, input_controls, control_bytes), e->has_input_controls = 1;
@@ -3459,16 +3495,17 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     if (set) vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set, 0, NULL);
     vkCmdPushConstants(commands, layout, x->vertex_stages, VERTEX_USER_DATA, USER_DATA_BYTES, s->user[STAGE_VERTEX]);
     vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_FRAGMENT_BIT, PIXEL_USER_DATA, USER_DATA_BYTES, s->user[STAGE_PIXEL]);
+    const uint32_t instances = s->instances_set ? s->instances : 1; /* NUM_INSTANCES, from instance 0 */
     if (gs) { /* the copy shader over the strips (geometry_passes) */
         vkCmdBindIndexBuffer(commands, x->gs_strips.buffer, 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexedIndirect(commands, x->slots[x->current].indirect.buffer, strip_draw, 1, 0);
     } else if (indices && !tess) {
         vkCmdBindIndexBuffer(commands, x->buffer, indices->offset, indices->type);
-        vkCmdDrawIndexed(commands, index_count, 1, 0, 0, 0);
+        vkCmdDrawIndexed(commands, index_count, instances, 0, 0, 0);
     } else if (indirect) {
         vkCmdDrawIndirect(commands, x->slots[x->current].indirect.buffer, (VkDeviceSize)indirect_entry, 1, 0);
     } else {
-        vkCmdDraw(commands, index_count, 1, 0, 0);
+        vkCmdDraw(commands, index_count, instances, 0, 0);
     }
     vkCmdEndRenderPass(commands);
     for (unsigned slot = 0; slot < RT_COLOR_TARGETS; slot++)
@@ -3502,7 +3539,8 @@ static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *
     const gcn_compute_layout layout = {.local_size = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
                                        .workgroup_id_enables = c->workgroup_id_enables, .push_constant_offset = 0,
                                        .address_offset = x->address_offset, .error_address = stop_slot(x, 1, x->compute_count),
-                                       .images = images, .image_count = image_count, .user_data_read = user_read};
+                                       .images = images, .image_count = image_count, .user_data_read = user_read,
+                                       .gds_address = x->gds_address};
     uint32_t *spirv = NULL;
     size_t words = 0;
     char reason[256];
@@ -5006,6 +5044,8 @@ void rt_executor_close(rt_executor *x)
         for (size_t i = 0; i < SCAN_SLOTS; i++) scan_free(&x->scans[i]);
         if (x->stop_buffer) vkDestroyBuffer(x->device, x->stop_buffer, NULL);
         if (x->stop_memory) vkFreeMemory(x->device, x->stop_memory, NULL);
+        if (x->gds_buffer) vkDestroyBuffer(x->device, x->gds_buffer, NULL);
+        if (x->gds_memory) vkFreeMemory(x->device, x->gds_memory, NULL);
         if (x->timeline) vkDestroySemaphore(x->device, x->timeline, NULL);
         for (unsigned k = 0; k < TILE_COPY_SIZES; k++)
             for (unsigned to_tiled = 0; to_tiled < 2; to_tiled++)
