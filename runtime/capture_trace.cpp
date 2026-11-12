@@ -8,6 +8,8 @@
    - An eight-byte input whose value points into a buffer or into the image is a pointer: the
      case gives it the buffer's address (`pointer`) or the image address (`guest`), so it still
      points at the same thing in the verifier's sandbox.
+   - An access through a base pointer 256 bytes to 1 MiB away from it puts the pointer and what it
+     reached in one buffer, so the replay keeps their distance.
    - Arguments and stack arguments that point into a buffer or the image are written the same way;
      other values are numbers.
    - Imports the call made are scripted in order: return value, and the bytes each changed behind
@@ -116,6 +118,18 @@ public:
             for (Region &r : regions_)
                 if (v > r.end && v - r.end <= MERGE_GAP) r.end = v;
         }
+        /* An access far from the pointer it went through (a large object whose fields lie in
+           separate runs) keeps the pointer and what it reached in one buffer, at their distance. */
+        for (size_t i = 0; i < log.link_count; i++) {
+            const uint64_t base = log.link[i][0], reached = log.link[i][1];
+            if (in_image(base) || in_image(reached)) continue;
+            Region *r = nullptr;
+            for (Region &x : regions_)
+                if (reached >= x.base && reached < x.end) r = &x;
+            if (!r) continue;               /* the private stack: not a buffer */
+            r->base = std::min(r->base, base & ~uint64_t{15});
+            r->end = std::max(r->end, base + 1);
+        }
         std::sort(regions_.begin(), regions_.end(), [](const Region &a, const Region &b) { return a.base < b.base; });
         /* Widened buffers may now meet: join them. */
         std::vector<Region> joined;
@@ -141,6 +155,14 @@ public:
         for (const Region &r : regions_)
             if (a >= r.base && (a < r.end || (allow_end && a == r.end))) return &r;
         return nullptr;
+    }
+
+    /* 1 when all n bytes at `a` have a place in the case: one buffer, or the image. */
+    bool placed(uint64_t a, size_t n) const
+    {
+        if (in_image(a)) return in_image(a + n - 1);
+        const Region *r = region(a, false);
+        return r && a + n <= r->end;
     }
 
     /* Where an input byte lives in the case: an image address or buf:NAME+off. */
@@ -186,9 +208,13 @@ public:
         std::string out;
         for (size_t i = 0; i < regions_.size(); i++) {
             const std::string &b = bytes[i];
+            /* `bytes` is zero-padded to `size`: trailing zeros are left out (a far field keeps its
+               object's buffer large and mostly unread). */
+            size_t used = b.size();
+            while (used && !b[used - 1]) used--;
             out += (out.empty() ? "" : ", ") + ("\"" + regions_[i].name + "\": {\"size\": " + std::to_string(b.size()) +
                                                 ", \"bytes\": \"" +
-                                                bytes_hex(reinterpret_cast<const uint8_t *>(b.data()), b.size()) + "\"}");
+                                                bytes_hex(reinterpret_cast<const uint8_t *>(b.data()), used) + "\"}");
         }
         return out;
     }
@@ -239,7 +265,12 @@ private:
 };
 
 /* The imports the call made, scripted in order: name, return value, and what each changed behind
-   its pointer arguments. Arguments are not compared (argc 0): their count is not known here. A
+   its pointer arguments. Arguments are not compared (argc 0): their count is not known here. What
+   an import changed in a buffer or the image is scripted at that place (`addr`): the register it
+   was seen through need not be one of the import's arguments (a command buffer's labels, seen
+   through a register the import does not read), and a replay sets such registers differently.
+   Only changes in the traced call's own frame, which has no place in the case, are scripted
+   through their register. A
    return value that points into a buffer or the image (memset returns its destination) is written
    as such, like an argument, so the replay's code gets its own address back. */
 std::string imports(const rt_trace_log &log, const Builder &b)
@@ -250,9 +281,11 @@ std::string imports(const rt_trace_log &log, const Builder &b)
         std::string writes;
         for (size_t w = c.first_write; w < c.first_write + c.writes; w++) {
             const rt_trace_write &x = log.writes[w];
-            writes += (writes.empty() ? "" : ", ") + ("{\"arg\": " + std::to_string(x.arg) + ", \"offset\": " +
-                                                      std::to_string(x.offset) + ", \"bytes\": \"" +
-                                                      bytes_hex(log.write_bytes + x.data, x.size) + "\"}");
+            const std::string where = b.placed(x.addr, x.size)
+                                          ? "\"addr\": \"" + b.location(x.addr) + "\""
+                                          : "\"arg\": " + std::to_string(x.arg) + ", \"offset\": " + std::to_string(x.offset);
+            writes += (writes.empty() ? "" : ", ") +
+                      ("{" + where + ", \"bytes\": \"" + bytes_hex(log.write_bytes + x.data, x.size) + "\"}");
         }
         const std::string described = b.describe(c.ret);
         const std::string ret = described.rfind("0x", 0) == 0 ? std::to_string(static_cast<unsigned long long>(c.ret))
