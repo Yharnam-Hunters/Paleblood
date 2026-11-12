@@ -182,6 +182,7 @@ address,replacement,system,returns
 0x02483e80,bb_kernel_condition_wait,kernel,i32
 0x02484c70,bb_engine_fixed_allocator_allocate_02484c70,engine,i64
 0x02484de0,bb_engine_fixed_allocator_free_02484de0,engine,void
+0x024858a0,bb_engine_regular_heap_free_024858a0,engine,void
 0x02486810,bb_engine_robust_heap_allocate_02486810,engine,i64
 0x02486cd0,bb_engine_robust_heap_allocate_aligned_02486cd0,engine,i64
 0x02487380,bb_engine_robust_heap_allocate_top_02487380,engine,i64
