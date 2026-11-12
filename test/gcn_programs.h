@@ -365,6 +365,36 @@ static const uint32_t pack_halves[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* ds_swizzle_b32's quad mode: lane i holds i * i and takes the value of its quad's lane 0, 2 and 3 (one
+   source lane for the whole quad), stored at out[i], out[64 + i] and out[128 + i]. */
+static const uint32_t quad_swizzle[] = {
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0x16040100, /* v_mul_u32_u24_e32 v2, v0, v0 */
+    0xd8d48000, 0x03000002, /* ds_swizzle_b32 v3, v2 offset:swizzle(QUAD_PERM,0,0,0,0) */
+    0xd8d480aa, 0x04000002, /* ds_swizzle_b32 v4, v2 offset:swizzle(QUAD_PERM,2,2,2,2) */
+    0xd8d480ff, 0x05000002, /* ds_swizzle_b32 v5, v2 offset:swizzle(QUAD_PERM,3,3,3,3) */
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+    0xe0701000, 0x80010301, /* buffer_store_dword v3, v1, s[4:7], 0 offen */
+    0xe0701100, 0x80010401, /* buffer_store_dword v4, v1, s[4:7], 0 offen offset:256 */
+    0xe0701200, 0x80010501, /* buffer_store_dword v5, v1, s[4:7], 0 offen offset:512 */
+    0xbf810000, /* s_endpgm */
+};
+
+/* A pixel shader's screen-space difference by hand, as the game's do: attribute x of the quad's lane 1
+   minus that of its lane 0 (ds_swizzle_b32's quad mode), exported as the colour. */
+static const uint32_t pixel_quad_swizzle[] = {
+    0xbefc0300, /* s_mov_b32 m0, s0 */
+    0xc8080000, /* v_interp_p1_f32 v2, v0, attr0.x */
+    0xc8090001, /* v_interp_p2_f32 v2, v1, attr0.x */
+    0xd8d48055, 0x03000002, /* ds_swizzle_b32 v3, v2 offset:swizzle(QUAD_PERM,1,1,1,1) */
+    0xd8d48000, 0x04000002, /* ds_swizzle_b32 v4, v2 offset:swizzle(QUAD_PERM,0,0,0,0) */
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+    0x08060903, /* v_sub_f32_e32 v3, v3, v4 */
+    0x5e0c0703, /* v_cvt_pkrtz_f16_f32_e32 v6, v3, v3 */
+    0xf8001c0f, 0x00000606, /* exp mrt0, v6, v6, v6, v6 done compr vm */
+    0xbf810000, /* s_endpgm */
+};
+
 /* The negated float compares: per lane i, the floats (a, b) at in[2i], in[2i + 1]; each of nge, nlg, ngt
    and nle stores 1 where it holds, 0 elsewhere, at out[8i .. 8i + 3]; neq and nlt at out[8i + 4], out[8i + 5];
    then v_cmpx_ngt leaves active only the lanes where ngt holds, which store (neq, nlt, 1, 0) at
