@@ -42,9 +42,9 @@ ranges (an import or other native code), unreadable memory, the instruction limi
   buffer down to it, so it is written as `buf:NAME+off` and keeps its distance to those bytes.
 - Bytes of the executable's read-only segments are not inputs: the verifier maps the same
   executable, and presetting them would write into read-only memory.
-- An access 256 bytes to 64 KiB away from the base pointer it went through (a large object whose
+- An access 256 bytes to 1 MiB away from the base pointer it went through (a large object whose
   fields lie in separate runs) keeps the pointer and the bytes it reached in one buffer, so the
-  replay keeps their distance.
+  replay keeps their distance. A buffer's `bytes` leave out its trailing zeros.
 - Arguments (`rdi`..`r9`, `xmm0`, `xmm1`) and the stack arguments read are written the same way:
   `buf:NAME+off`, `guest:0xADDRESS`, or a number.
 - `returns` comes from the hook table: the return class is data (`game/hooks.csv`), not inferred.

@@ -187,6 +187,12 @@ far_thunk:
     movl $1, (%rdi)
     movl $2, 0x1000(%rdi)
     ret
+/* 0x540: void store_last(const struct { int64_t pad, count; } *n, int64_t *slots)
+   { slots[n->count - 1] = 2; } */
+    .org 0x540
+    mov 8(%rdi), %rcx
+    movq $2, -8(%rsi,%rcx,8)
+    ret
     .org 0x1000
 global:
     .long 1000

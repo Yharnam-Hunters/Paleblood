@@ -8,7 +8,7 @@
    - An eight-byte input whose value points into a buffer or into the image is a pointer: the
      case gives it the buffer's address (`pointer`) or the image address (`guest`), so it still
      points at the same thing in the verifier's sandbox.
-   - An access through a base pointer 256 bytes to 64 KiB away from it puts the pointer and what it
+   - An access through a base pointer 256 bytes to 1 MiB away from it puts the pointer and what it
      reached in one buffer, so the replay keeps their distance.
    - Arguments and stack arguments that point into a buffer or the image are written the same way;
      other values are numbers.
@@ -200,9 +200,13 @@ public:
         std::string out;
         for (size_t i = 0; i < regions_.size(); i++) {
             const std::string &b = bytes[i];
+            /* `bytes` is zero-padded to `size`: trailing zeros are left out (a far field keeps its
+               object's buffer large and mostly unread). */
+            size_t used = b.size();
+            while (used && !b[used - 1]) used--;
             out += (out.empty() ? "" : ", ") + ("\"" + regions_[i].name + "\": {\"size\": " + std::to_string(b.size()) +
                                                 ", \"bytes\": \"" +
-                                                bytes_hex(reinterpret_cast<const uint8_t *>(b.data()), b.size()) + "\"}");
+                                                bytes_hex(reinterpret_cast<const uint8_t *>(b.data()), used) + "\"}");
         }
         return out;
     }

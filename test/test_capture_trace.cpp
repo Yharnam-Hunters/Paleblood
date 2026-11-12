@@ -267,6 +267,19 @@ int self_test()
           "a far field through a pointer is in the pointer's buffer");
     rt_trace_log_free(&log);
 
+    /* An index 256 KiB into a table whose base is never read: one buffer from the base, its
+       unread zeros left out of the case. */
+    alignas(16) static int64_t count_object[2] = {0, 0x8000};
+    static int64_t slots[0x8000];
+    rt_trace_args slots_args = arguments(reinterpret_cast<uint64_t>(count_object), reinterpret_cast<uint64_t>(slots));
+    trace(0x540, slots_args, log);
+    const rt_traced_function store_last = {"capture_trace_store_last", 0x400540, "void", at(0x540)};
+    const std::string slots_case = rt::traced_case(log, slots_args, store_last, 0, "selftest", {image, image + image_size});
+    check(!log.incomplete && slots[0x7fff] == 2 && slots_case.find("\"rsi\": \"buf:b1+0x0\"") != std::string::npos &&
+              slots_case.find("\"size\": 262144") != std::string::npos && slots_case.size() < 4096,
+          "a far index from a base pointer: one buffer from the base, without its trailing zeros");
+    rt_trace_log_free(&log);
+
     /* What a case cannot express: the call still runs to the end, but there is no case. */
     trace(0x180, arguments(), log);
     check(log.incomplete != nullptr, "xmm2 read: incomplete");

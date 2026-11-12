@@ -65,7 +65,7 @@ typedef struct {
     uint8_t *flags;            /* RT_TRACE_READ: read before written; RT_TRACE_WRITTEN */
     size_t qword_count;        /* addresses of the eight-byte reads that were inputs */
     uint64_t *qword;
-    size_t link_count;         /* far reaches through a base pointer (256 B .. 64 KiB from it) */
+    size_t link_count;         /* far reaches through a base pointer (256 B .. 1 MiB from it) */
     uint64_t (*link)[2];       /* {base pointer, address reached}: the two belong in one buffer */
     unsigned stack_slots;      /* stack arguments read: 0 .. RT_TRACE_STACK_SLOTS */
     size_t import_count;       /* imports called, in order */

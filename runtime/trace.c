@@ -37,7 +37,7 @@ enum {
     WRITE_REACH = 256,
     LINK_BITS = 15,                        /* far reaches noted per call: up to half of 2^LINK_BITS */
     LINK_NEAR = 256,                       /* a reach this close to its base pointer is not noted */
-    LINK_FAR = 64 * 1024,                  /* nor one this far (an unrelated address) */                     /* how far past what it wrote before an import's write may lie */
+    LINK_FAR = 1 << 20,                    /* nor one this far (the case's buffers fit in 16 MiB) */                     /* how far past what it wrote before an import's write may lie */
 };
 #define DEFAULT_STEP_LIMIT 200000ull
 
