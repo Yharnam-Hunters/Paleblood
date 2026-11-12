@@ -42,6 +42,8 @@ engine_robust_heap_allocate_aligned_02486cd0,edge,,25,25,0,0,268593c11983abde,20
 engine_robust_heap_allocate_aligned_top_02487650,edge,,18,18,0,0,268593c11983abde,2026-11-12
 engine_robust_heap_allocate_top_02487380,edge,,22,22,0,0,99db3f551a546e94,2026-11-12
 engine_robust_heap_free_02487b50,edge,,20,20,0,0,384d50d46b2da2c0,2026-11-12
+engine_segregated_bi_heap_allocate_bottom_02488030,edge,,25,25,0,0,1907ad8897b13483,2026-11-12
+engine_segregated_bi_heap_free_02488900,edge,,25,25,0,0,0b30a2675eae25a6,2026-11-12
 engine_store_word_product,edge,,32,32,0,0,ecb3d664ff30b9e2,2026-11-05
 engine_string_append,edge,,32,32,0,0,f9bbc2ec8f450f14,2026-11-05
 engine_string_append_counted,edge,,48,48,0,0,f7f96f0ac221364a,2026-11-05

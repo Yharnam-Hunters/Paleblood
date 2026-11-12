@@ -59,10 +59,17 @@ def prologue(draft: str):
     return None, 'function too short'
 
 
+def default_drafts() -> str:
+    """Where tools/draft.sh writes: $BB_DRAFTS, else the user's cache (never the game data)."""
+    cache = os.environ.get('XDG_CACHE_HOME') or os.path.join(os.path.expanduser('~'), '.cache')
+    return os.environ.get('BB_DRAFTS') or os.path.join(cache, 'paleblood', 'drafts')
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--elf', required=True)
-    ap.add_argument('--drafts', default=os.environ.get('BB_DRAFTS', os.path.join(os.environ.get('BB_DATA_ROOT', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '..', 'data')), 'drafts')))
+    ap.add_argument('--drafts', default=default_drafts(),
+                    help='the drafts of tools/draft.sh (default $BB_DRAFTS, then $XDG_CACHE_HOME/paleblood/drafts)')
     ap.add_argument('--base', default='0x400000')
     ap.add_argument('addresses', nargs='+')
     a = ap.parse_args()
