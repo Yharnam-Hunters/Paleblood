@@ -125,7 +125,9 @@ struct StreamLoadQueue;
 struct LoadEventQueue;
 
 struct ResourceInfo {
-    uint8_t unknown_0x00[0x31];
+    uintptr_t mutex;            // the engine's PthreadMutex guarding the count
+    int32_t reference_count;
+    uint8_t unknown_0x0c[0x25];
     uint8_t flags;
     uint8_t unknown_0x32[0x36];
     LoadEventQueue *load_queue;   // the load event queue it was queued in (0x02a698e0), if any
@@ -135,6 +137,7 @@ struct ResourceInfo {
     uint64_t pending_count;
     engine::Allocator *pending_allocator;
 };
+static_assert(offsetof(ResourceInfo, reference_count) == 0x08);
 static_assert(offsetof(ResourceInfo, flags) == 0x31 && offsetof(ResourceInfo, stream_queue) == 0x70);
 static_assert(offsetof(ResourceInfo, load_queue) == 0x68);
 static_assert(offsetof(ResourceInfo, pending_head) == 0x80 && offsetof(ResourceInfo, pending_allocator) == 0x90);
