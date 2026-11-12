@@ -38,6 +38,8 @@ enum { MAX_SHADERS = 1024, MAX_PIPELINES = 1024, MAX_TARGETS = 128, MAX_RECT_STA
        MAX_VIEWS = 16, MAX_SAMPLERS = 256, MAX_PASSES = 256, BATCH_SETS = 256, MAX_WRITTEN = 256, BATCH_SLOTS = 4, CHANGE_CHUNK = 64 << 10,
        MAX_TESS_PASSES = 64, MAX_TESS_CONTROLS = 16, STOP_SLOTS = MAX_SHADERS + MAX_COMPUTE_PIPELINES + MAX_TESS_PASSES };
 enum { MAX_VERTEX_IMAGE_LAYOUTS = 32 };
+/* room for a translation's reasons: in the shader sweep's survey mode, every one a shader has */
+enum { TRANSLATION_REASON_BYTES = 4096 };
 enum { SNAPSHOT_SLOTS = 4 }; /* flip copies kept at once (rt_executor_snapshot_target) */
 enum { TILE_COPY_SIZES = 5 }; /* GPU tile copies of 1, 2, 4, 8 and 16-byte elements */
 enum { USER_DATA_BYTES = GCN_USER_SGPR_MAX * 4, VERTEX_USER_DATA = 0, PIXEL_USER_DATA = USER_DATA_BYTES };
@@ -526,6 +528,7 @@ struct rt_executor {
     /* the GPU's state as the calls run so far set it: registers, user data and shaders carry over from
        one submitted buffer to the next, as on the console's GPU */
     draw_state state;
+    struct shader_sweep *sweep; /* BB_SHADER_SWEEP's record, or NULL (the sweep, below) */
 };
 
 
@@ -1148,11 +1151,123 @@ static uint64_t stop_slot(const rt_executor *x, int compute, size_t index)
     return x->stop_address + 4 * ((compute ? MAX_SHADERS : 0) + index);
 }
 
+/* ---- the shader sweep ----
+   A diagnostic mode, never the default (docs/RENDERER.md, "Coverage survey"): with BB_SHADER_SWEEP naming a
+   directory, every distinct shader the executor translates is written there (<stage>-<address>.bin, the
+   program's code; <stage>-<address>.spv, its SPIR-V when it translates), the translator runs in survey mode
+   (gcn_spirv_set_survey: every reason a shader cannot be translated, not only the first), sweep.txt records
+   each shader's reasons, and a draw, dispatch or register the executor cannot do is recorded there and
+   skipped instead of stopping the run, so that one run lists every gap the game reaches. What it draws is
+   not the game's frame: draws are missing. */
+enum { SWEEP_SEEN = 1 << 14 };
+struct shader_sweep {
+    FILE *log;
+    char directory[512];
+    uint64_t seen[SWEEP_SEEN]; /* hashes of what has been recorded (an open-addressed set; 0 empty) */
+};
+
+static uint64_t sweep_hash(const char *text, uint64_t value)
+{
+    uint64_t h = 14695981039346656037ull ^ value; /* FNV-1a */
+    for (; *text; text++) h = (h ^ (unsigned char)*text) * 1099511628211ull;
+    return h ? h : 1;
+}
+
+/* 1 the first time this hash is offered (a full set takes nothing more, and says yes) */
+static int sweep_first(struct shader_sweep *w, uint64_t h)
+{
+    for (size_t i = 0, at = h % SWEEP_SEEN; i < SWEEP_SEEN; i++, at = (at + 1) % SWEEP_SEEN) {
+        if (w->seen[at] == h) return 0;
+        if (!w->seen[at]) {
+            w->seen[at] = h;
+            return 1;
+        }
+    }
+    return 1;
+}
+
+static int sweep_open(rt_executor *x, char *error, size_t error_size)
+{
+    const char *directory = getenv("BB_SHADER_SWEEP");
+    if (!directory || !*directory) return 0;
+    struct shader_sweep *w = calloc(1, sizeof *w);
+    if (!w) return failed(error, error_size, "no memory");
+    snprintf(w->directory, sizeof w->directory, "%s", directory);
+    char path[600];
+    snprintf(path, sizeof path, "%s/sweep.txt", w->directory);
+    w->log = fopen(path, "a");
+    if (!w->log) {
+        free(w);
+        return failed(error, error_size, "BB_SHADER_SWEEP: cannot write %s", path);
+    }
+    setvbuf(w->log, NULL, _IOLBF, 0);
+    fprintf(w->log, "sweep: started\n");
+    gcn_spirv_set_survey(1);
+    x->sweep = w;
+    return 0;
+}
+
+static void sweep_close(rt_executor *x)
+{
+    if (!x->sweep) return;
+    fclose(x->sweep->log);
+    free(x->sweep);
+    x->sweep = NULL;
+    gcn_spirv_set_survey(0);
+}
+
+static void sweep_write(const struct shader_sweep *w, const char *name, const void *bytes, size_t size)
+{
+    char path[700];
+    snprintf(path, sizeof path, "%s/%s", w->directory, name);
+    FILE *f = fopen(path, "wb");
+    if (!f) return;
+    fwrite(bytes, 1, size, f);
+    fclose(f);
+}
+
+/* A translated (reason NULL) or untranslated shader: its code and SPIR-V written once per stage and address,
+   its reasons once per distinct set. */
+static void sweep_shader(rt_executor *x, const char *stage, uint64_t code, const char *reason, const uint32_t *spirv, size_t spirv_words)
+{
+    struct shader_sweep *w = x->sweep;
+    if (!w || !sweep_first(w, sweep_hash(reason ? reason : "", sweep_hash(stage, code)))) return;
+    char name[96];
+    const long program = gcn_program_dwords((const uint32_t *)(uintptr_t)code, (size_t)((x->guest_base + x->size - code) / 4));
+    if (program > 0 && sweep_first(w, sweep_hash("code", sweep_hash(stage, code)))) {
+        snprintf(name, sizeof name, "%s-%llx.bin", stage, (unsigned long long)code);
+        sweep_write(w, name, (const void *)(uintptr_t)code, (size_t)program * 4);
+    }
+    if (!reason && spirv) {
+        snprintf(name, sizeof name, "%s-%llx.spv", stage, (unsigned long long)code);
+        sweep_write(w, name, spirv, spirv_words * 4);
+    }
+    fprintf(w->log, "shader %s %#llx %s\n", stage, (unsigned long long)code, reason ? "not translated:" : "translated");
+    for (const char *line = reason; line && *line;) {
+        const char *end = strchr(line, '\n');
+        const int length = end ? (int)(end - line) : (int)strlen(line);
+        fprintf(w->log, "  %.*s\n", length, line);
+        line = end ? end + 1 : line + length;
+    }
+}
+
+/* In the sweep, what the executor cannot do (the error) is recorded once and skipped: 1, and the run goes on;
+   otherwise 0, and it stops as always. */
+static int sweep_skip(rt_executor *x, const char *what, char *error)
+{
+    struct shader_sweep *w = x->sweep;
+    if (!w) return 0;
+    if (sweep_first(w, sweep_hash(error ? error : "", sweep_hash(what, 0)))) fprintf(w->log, "skipped %s: %s\n", what, error);
+    if (error) error[0] = 0;
+    return 1;
+}
+
 int rt_executor_open(const rt_executor_memory *memory, rt_executor **executor, char *error, size_t error_size)
 {
     rt_executor *x = calloc(1, sizeof *x);
     if (!x) return failed(error, error_size, "no memory");
-    if (open_device(x, error, error_size) || import_memory(x, memory, error, error_size) || open_stop_word(x, error, error_size)) {
+    if (open_device(x, error, error_size) || import_memory(x, memory, error, error_size) || open_stop_word(x, error, error_size) ||
+        sweep_open(x, error, error_size)) {
         rt_executor_close(x);
         return -1;
     }
@@ -2485,7 +2600,7 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
     const size_t dwords = (size_t)((x->guest_base + x->size - code) / 4);
     uint32_t *spirv = NULL;
     size_t spirv_words = 0;
-    char reason[256];
+    char reason[TRANSLATION_REASON_BYTES];
     int result;
     if (stage == STAGE_VERTEX || stage == STAGE_COPY) {
         const int copy = stage == STAGE_COPY; /* a geometry shader's copy shader reads the GSVS ring */
@@ -2519,6 +2634,7 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
                                          .user_data_read = user_read};
         result = gcn_translate_pixel(words, dwords, &layout, &spirv, &spirv_words, reason, sizeof reason);
     }
+    sweep_shader(x, stage_name(stage), code, result ? reason : NULL, spirv, spirv_words);
     if (result) {
         failed(error, error_size, "%s shader at %#llx: %s", stage_name(stage),
                (unsigned long long)code, reason);
@@ -2951,7 +3067,7 @@ static VkPipeline tessellation_pass_for(rt_executor *x, const draw_state *s, int
     /* the local shader may call a fetch shader, as a vertex shader does */
     uint64_t callee = 0;
     unsigned pair = 0;
-    char reason[256];
+    char reason[TRANSLATION_REASON_BYTES];
     const size_t dwords = (size_t)((x->guest_base + x->size - code) / 4);
     const int calls = hull ? 0 : gcn_call_sgpr((const uint32_t *)(uintptr_t)code, dwords, &pair, reason, sizeof reason);
     if (calls < 0) {
@@ -2990,6 +3106,7 @@ static VkPipeline tessellation_pass_for(rt_executor *x, const draw_state *s, int
     size_t words = 0;
     const int result = hull ? gcn_translate_hull((const uint32_t *)(uintptr_t)code, dwords, &layout, &spirv, &words, reason, sizeof reason)
                             : gcn_translate_local((const uint32_t *)(uintptr_t)code, dwords, &layout, &spirv, &words, reason, sizeof reason);
+    sweep_shader(x, hull ? "hull" : "local", code, result ? reason : NULL, spirv, words);
     if (result) {
         failed(error, error_size, "%s shader at %#llx: %s", hull ? "hull" : "local", (unsigned long long)code, reason);
         return VK_NULL_HANDLE;
@@ -3122,7 +3239,7 @@ static VkPipeline geometry_pass_for(rt_executor *x, const draw_state *s, int geo
     /* the export shader may call a fetch shader, as a vertex shader does */
     uint64_t callee = 0;
     unsigned pair = 0;
-    char reason[256];
+    char reason[TRANSLATION_REASON_BYTES];
     const size_t dwords = (size_t)((x->guest_base + x->size - g->code) / 4);
     const int calls = geometry ? 0 : gcn_call_sgpr((const uint32_t *)(uintptr_t)g->code, dwords, &pair, reason, sizeof reason);
     if (calls < 0) {
@@ -3162,6 +3279,7 @@ static VkPipeline geometry_pass_for(rt_executor *x, const draw_state *s, int geo
     const uint32_t *code = (const uint32_t *)(uintptr_t)g->code;
     const int result = geometry ? gcn_translate_geometry(code, dwords, &layout, &spirv, &words, reason, sizeof reason)
                                 : gcn_translate_export(code, dwords, &layout, &spirv, &words, reason, sizeof reason);
+    sweep_shader(x, pass_names[kind], g->code, result ? reason : NULL, spirv, words);
     if (result) {
         failed(error, error_size, "%s shader at %#llx: %s", pass_names[kind], (unsigned long long)g->code, reason);
         return VK_NULL_HANDLE;
@@ -3523,9 +3641,11 @@ static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *
                                        .images = images, .image_count = image_count, .user_data_read = user_read};
     uint32_t *spirv = NULL;
     size_t words = 0;
-    char reason[256];
-    if (gcn_translate_compute((const uint32_t *)(uintptr_t)c->code, (size_t)((x->guest_base + x->size - c->code) / 4), &layout, &spirv,
-                              &words, reason, sizeof reason)) {
+    char reason[TRANSLATION_REASON_BYTES];
+    const int translated = gcn_translate_compute((const uint32_t *)(uintptr_t)c->code, (size_t)((x->guest_base + x->size - c->code) / 4),
+                                                 &layout, &spirv, &words, reason, sizeof reason);
+    sweep_shader(x, "compute", c->code, translated ? reason : NULL, spirv, words);
+    if (translated) {
         failed(error, error_size, "compute shader at %#llx: %s", (unsigned long long)c->code, reason);
         return VK_NULL_HANDLE;
     }
@@ -4704,6 +4824,66 @@ int rt_executor_wait_ticket(rt_executor *x, uint64_t ticket, char *error, size_t
 int rt_executor_finish(rt_executor *x, char *error, size_t error_size) { return batch_finish(x, error, error_size); }
 
 /* Records the buffer's calls into the batch, in order, keeping the state they set. */
+/* A draw call: its checks, then the draw (or nothing, when check_state finds nothing to draw). */
+static int draw_call(rt_executor *x, draw_state *s, const rt_render_call *c, char *error, size_t error_size)
+{
+    switch (c->kind) {
+    case RT_CALL_DRAW_AUTO: {
+        if (apply_fast_clears(x, s, error, error_size)) return -1;
+        depth_plan plan;
+        uint32_t colours = 0;
+        const int checked = check_state(s, &plan, &colours, error, error_size);
+        if (checked < 0) return -1;
+        if (checked == 0 && draw(x, s, &plan, colours, c->u.draw_auto.index_count, NULL, 0, error, error_size)) return -1;
+        break;
+    }
+    case RT_CALL_DRAW_INDIRECT: {
+        const uint32_t base_vertex = c->u.draw_indirect.base_vertex_sgpr, start_instance = c->u.draw_indirect.start_instance_sgpr;
+        if (!s->indirect_base_set) return failed(error, error_size, "an indirect draw with no indirect base set");
+        if (base_vertex || start_instance)
+            return failed(error, error_size, "an indirect draw writing its start vertex or instance to user SGPRs %u and %u of stage %u: not "
+                          "drawn yet", base_vertex, start_instance, (unsigned)c->u.draw_indirect.stage);
+        if (apply_fast_clears(x, s, error, error_size)) return -1;
+        depth_plan plan;
+        uint32_t colours = 0;
+        const int checked = check_state(s, &plan, &colours, error, error_size);
+        if (checked < 0) return -1;
+        if (checked == 0 && draw(x, s, &plan, colours, 0, NULL, s->indirect_base + c->u.draw_indirect.data_offset, error, error_size))
+            return -1;
+        break;
+    }
+    case RT_CALL_DRAW_INDEXED:
+        return failed(error, error_size, "DRAW_INDEX_2 is not implemented by the Vulkan executor");
+    case RT_CALL_DRAW_INDEX_OFFSET: {
+        index_range indices;
+        if (c->u.draw_index.has_packet_fields) {
+            if (c->u.draw_index.has_packet_fields != 1)
+                return failed(error, error_size, "invalid indexed packet field tag");
+            if (c->u.draw_index.header & 1u)
+                return failed(error, error_size, "predicated indexed draws are not supported");
+            if (c->u.draw_index.header != 0xc0033500u)
+                return failed(error, error_size, "unsupported indexed offset packet header");
+            if (c->u.draw_index.initiator != 0)
+                return failed(error, error_size, "unsupported indexed offset draw initiator");
+            if (c->u.draw_index.count > c->u.draw_index.max_size)
+                return failed(error, error_size, "indexed draw beyond MAX_SIZE requires unsupported DMA zero filling");
+        }
+        if (index_range_for(x, s, c->u.draw_index.first, c->u.draw_index.count,
+                            !c->u.draw_index.has_packet_fields, &indices, error, error_size)) return -1;
+        if (apply_fast_clears(x, s, error, error_size)) return -1;
+        depth_plan plan;
+        uint32_t colours = 0;
+        const int checked = check_state(s, &plan, &colours, error, error_size);
+        if (checked < 0) return -1;
+        if (checked == 0 && draw(x, s, &plan, colours, c->u.draw_index.count, &indices, 0, error, error_size)) return -1;
+        break;
+    }
+    default:
+        break;
+    }
+    return 0;
+}
+
 static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, char *error, size_t error_size)
 {
     draw_state *s = &x->state; /* the GPU's state carries over from buffer to buffer */
@@ -4750,14 +4930,16 @@ static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, 
             s->geometry = c->u.geometry_stage_shader, s->geometry_set = 1;
             break;
         case RT_CALL_DISPATCH:
-            if (dispatch(x, s, c->u.dispatch.groups, 0, error, error_size)) return -1;
+            if (dispatch(x, s, c->u.dispatch.groups, 0, error, error_size) && !sweep_skip(x, "dispatch", error)) return -1;
             break;
         case RT_CALL_INDIRECT_BASE:
             s->indirect_base = c->u.indirect_base.address, s->indirect_base_set = 1;
             break;
         case RT_CALL_DISPATCH_INDIRECT:
             if (!s->indirect_base_set) return failed(error, error_size, "an indirect dispatch with no indirect base set");
-            if (dispatch(x, s, NULL, s->indirect_base + c->u.dispatch_indirect.data_offset, error, error_size)) return -1;
+            if (dispatch(x, s, NULL, s->indirect_base + c->u.dispatch_indirect.data_offset, error, error_size) &&
+                !sweep_skip(x, "indirect dispatch", error))
+                return -1;
             break;
         case RT_CALL_USER_DATA: {
             const uint32_t slots = (uint32_t)(((1ull << c->u.user_data.count) - 1) << c->u.user_data.slot);
@@ -4787,65 +4969,22 @@ static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, 
             break;
         }
         case RT_CALL_REGISTER:
-            if (set_register(s, c->u.reg.address, c->u.reg.value))
-                return failed(error, error_size, "register %#x: the executor does not interpret it yet", c->u.reg.address);
+            if (set_register(s, c->u.reg.address, c->u.reg.value) &&
+                (failed(error, error_size, "register %#x: the executor does not interpret it yet", c->u.reg.address), !sweep_skip(x, "register", error)))
+                return -1;
             break;
         case RT_CALL_INSTANCES:
             s->instances = c->u.instances.count, s->instances_set = 1;
             break;
-        case RT_CALL_DRAW_AUTO: {
-            if (apply_fast_clears(x, s, error, error_size)) return -1;
-            depth_plan plan;
-            uint32_t colours = 0;
-            const int checked = check_state(s, &plan, &colours, error, error_size);
-            if (checked < 0) return -1;
-            if (checked == 0 && draw(x, s, &plan, colours, c->u.draw_auto.index_count, NULL, 0, error, error_size)) return -1;
+        case RT_CALL_DRAW_AUTO:
+        case RT_CALL_DRAW_INDIRECT:
+        case RT_CALL_DRAW_INDEXED:
+        case RT_CALL_DRAW_INDEX_OFFSET:
+            if (draw_call(x, s, c, error, error_size) && !sweep_skip(x, "draw", error)) return -1;
             break;
-        }
-        case RT_CALL_DRAW_INDIRECT: {
-            const uint32_t base_vertex = c->u.draw_indirect.base_vertex_sgpr, start_instance = c->u.draw_indirect.start_instance_sgpr;
-            if (!s->indirect_base_set) return failed(error, error_size, "an indirect draw with no indirect base set");
-            if (base_vertex || start_instance)
-                return failed(error, error_size, "an indirect draw writing its start vertex or instance to user SGPRs %u and %u of stage %u: not "
-                              "drawn yet", base_vertex, start_instance, (unsigned)c->u.draw_indirect.stage);
-            if (apply_fast_clears(x, s, error, error_size)) return -1;
-            depth_plan plan;
-            uint32_t colours = 0;
-            const int checked = check_state(s, &plan, &colours, error, error_size);
-            if (checked < 0) return -1;
-            if (checked == 0 && draw(x, s, &plan, colours, 0, NULL, s->indirect_base + c->u.draw_indirect.data_offset, error, error_size))
-                return -1;
-            break;
-        }
         case RT_CALL_INDEX_BASE: s->index_base = c->u.index_base.address, s->index_base_set = 1; break;
         case RT_CALL_INDEX_SIZE: s->index_size = c->u.index_size.count, s->index_size_set = 1; break;
         case RT_CALL_INDEX_TYPE: s->index_type = c->u.index_type.type, s->index_type_set = 1; break;
-        case RT_CALL_DRAW_INDEXED:
-            return failed(error, error_size, "DRAW_INDEX_2 is not implemented by the Vulkan executor");
-        case RT_CALL_DRAW_INDEX_OFFSET: {
-            index_range indices;
-            if (c->u.draw_index.has_packet_fields) {
-                if (c->u.draw_index.has_packet_fields != 1)
-                    return failed(error, error_size, "invalid indexed packet field tag");
-                if (c->u.draw_index.header & 1u)
-                    return failed(error, error_size, "predicated indexed draws are not supported");
-                if (c->u.draw_index.header != 0xc0033500u)
-                    return failed(error, error_size, "unsupported indexed offset packet header");
-                if (c->u.draw_index.initiator != 0)
-                    return failed(error, error_size, "unsupported indexed offset draw initiator");
-                if (c->u.draw_index.count > c->u.draw_index.max_size)
-                    return failed(error, error_size, "indexed draw beyond MAX_SIZE requires unsupported DMA zero filling");
-            }
-            if (index_range_for(x, s, c->u.draw_index.first, c->u.draw_index.count,
-                                !c->u.draw_index.has_packet_fields, &indices, error, error_size)) return -1;
-            if (apply_fast_clears(x, s, error, error_size)) return -1;
-            depth_plan plan;
-            uint32_t colours = 0;
-            const int checked = check_state(s, &plan, &colours, error, error_size);
-            if (checked < 0) return -1;
-            if (checked == 0 && draw(x, s, &plan, colours, c->u.draw_index.count, &indices, 0, error, error_size)) return -1;
-            break;
-        }
         }
     }
     return 0;
@@ -4958,6 +5097,7 @@ void rt_executor_release_snapshot(rt_executor *x, const rt_executor_snapshot *sn
 void rt_executor_close(rt_executor *x)
 {
     if (!x) return;
+    sweep_close(x);
     if (x->device) {
         vkDeviceWaitIdle(x->device);
         for (size_t i = 0; i < x->pipeline_count; i++) vkDestroyPipeline(x->device, x->pipelines[i].pipeline, NULL);
