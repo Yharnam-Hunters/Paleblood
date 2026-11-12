@@ -184,6 +184,7 @@ address,replacement,system,returns
 0x02486cd0,bb_engine_robust_heap_allocate_aligned_02486cd0,engine,i64
 0x02487380,bb_engine_robust_heap_allocate_top_02487380,engine,i64
 0x02487650,bb_engine_robust_heap_allocate_aligned_top_02487650,engine,i64
+0x02487b50,bb_engine_robust_heap_free_02487b50,engine,void
 0x024bd150,bb_frame_timing_job_take_result,frame_timing,i64
 0x024bdd40,bb_frame_timing_job_wait,frame_timing,void
 0x02564ed0,bb_render_present_encoding_units,render,i64

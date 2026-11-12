@@ -235,7 +235,7 @@ extern "C" void *bb_engine_robust_heap_allocate_aligned_top_02487650(Heap *heap,
         heap->available += usable + block_overhead;
         return nullptr;
     }
-    unlink_free_block(heap, block);
+    unlink_free_block(heap, block, free_block_usable(block));
     const uintptr_t payload = top_aligned_payload(block, usable, alignment);
     if (payload == address_of(&block->payload)) {
         take_block_start(heap, block, usable);

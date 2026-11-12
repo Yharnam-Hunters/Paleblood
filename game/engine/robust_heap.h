@@ -62,9 +62,12 @@ struct Heap {
     uint64_t allocation_count;
     uint8_t *small_bins;        // 31 list sentinels, 16 bytes apart
     FreeNode *large_root;
+    uintptr_t lowest_payload;   // the range a payload passed to free must lie in
+    uintptr_t highest_payload;
 };
 static_assert(offsetof(Heap, available) == 0x8 && offsetof(Heap, allocation_count) == 0x10);
 static_assert(offsetof(Heap, small_bins) == 0x18 && offsetof(Heap, large_root) == 0x20);
+static_assert(offsetof(Heap, lowest_payload) == 0x28 && offsetof(Heap, highest_payload) == 0x30);
 
 // Red-black tree helpers (shared engine code): remove a node, and rebalance after linking a new
 // node below `parent`.
@@ -197,10 +200,9 @@ inline void take_block_start(Heap *heap, Block *block, uint64_t usable)
     }
 }
 
-// Unlinks a free block from wherever its size files it.
-inline void unlink_free_block(Heap *heap, Block *block)
+// Unlinks a free block of this usable size from wherever its size files it.
+inline void unlink_free_block(Heap *heap, Block *block, uint64_t usable)
 {
-    const uint64_t usable = free_block_usable(block);
     if (usable < smallest_usable)
         return;
     if (usable <= largest_small)
