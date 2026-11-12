@@ -2505,11 +2505,39 @@ static const struct {
     {"xor", SPV_OP_ATOMIC_XOR}, {"wrxchg", SPV_OP_ATOMIC_EXCHANGE}, {"cmpst", SPV_OP_ATOMIC_COMPARE_EXCHANGE},
 };
 
+/* ds_swizzle_b32 (the Sea Islands manual): lanes exchange a VGPR without the LDS, by OFFSET1:OFFSET0. With
+   bit 15 set (quad mode), lane i of each quad of four takes ADDR's value from the quad's lane at bits
+   2i + 1 : 2i. A pattern that names one lane for all four is a quad broadcast, as Vulkan's quads (a 2x2 pixel
+   block in a pixel shader, four consecutive lanes in a compute shader) are GCN's. Other patterns, the
+   bit-mask mode and vertex shaders (Metal has no quads there) are not translated yet. What a lane reads
+   from a quad lane outside EXEC is not established: here it is that lane's register (the game's shaders
+   swizzle in whole quad mode, with every lane of the quad active). */
+enum { SWIZZLE_QUAD_MODE = 1u << 15, SWIZZLE_QUAD_LANE_BITS = 2, SWIZZLE_QUAD_LANE_MASK = 3 };
+
+static void swizzle(translator *t, const uint32_t *w, const gcn_instruction *ins)
+{
+    const uint32_t offset = w[0] & 0xffff, lane = offset & SWIZZLE_QUAD_LANE_MASK;
+    int one_lane = 1;
+    for (unsigned i = 1; i < 4; i++) one_lane &= ((offset >> (i * SWIZZLE_QUAD_LANE_BITS)) & SWIZZLE_QUAD_LANE_MASK) == lane;
+    if (!(offset & SWIZZLE_QUAD_MODE) || !one_lane || t->layout->stage == STAGE_VERTEX) {
+        fail(t, "%s with offset %#x%s is not translated yet", ins->name, offset, t->layout->stage == STAGE_VERTEX ? " in a vertex shader" : "");
+        return;
+    }
+    const unsigned address = w[1] & 0xff, vdst = w[1] >> 24;
+    t->uses_quads = 1;
+    write_vgpr(t, vdst, value(t, SPV_OP_GROUP_NON_UNIFORM_QUAD_BROADCAST, t_uint(t), 3, konst(t, SPV_SCOPE_SUBGROUP),
+                              load(t, t_uint(t), vgpr(t, address)), konst(t, lane)));
+}
+
 static void lds_instruction(translator *t, const uint32_t *w, const gcn_instruction *ins)
 {
     const char *name = ins->name;
     if (w[0] & DS_GDS) {
         fail(t, "%s: the global data share (GDS) is not translated yet", name);
+        return;
+    }
+    if (!strcmp(name, "ds_swizzle_b32")) {
+        swizzle(t, w, ins);
         return;
     }
     if (!t->layout->lds.bytes) {

@@ -253,7 +253,11 @@ Instead:
        and the 32-bit atomics `add`, `sub`, `min`, `max`, `and`, `or`, `xor`, `wrxchg` and `cmpst`, in plain and
        `_rtn` forms. An access at or past the LDS's size reads 0 and writes nothing. `s_barrier` is a
        workgroup control barrier that also makes LDS writes visible. The global data share (GDS), the
-       other atomics, `ds_swizzle`, `ds_append` and `ds_consume` stop by name.
+       other atomics, `ds_append` and `ds_consume` stop by name.
+     - **`ds_swizzle_b32`** exchanges a VGPR between lanes without the LDS. Its quad mode with one source
+       lane for all four lanes of a quad becomes a Vulkan quad broadcast: GCN's quads are Vulkan's (a 2x2
+       pixel block in a pixel shader). The game's pixel shaders use it to take a value's screen-space
+       differences by hand. Other patterns, the bit-mask mode and vertex shaders stop by name.
      - **Tessellation stages** (`runtime/gcn_spirv.h`): GCN runs a tessellated draw's control points
        through a local shader (LS), which writes them to LDS. It runs the patches through a hull shader
        (HS), which writes the tessellation factors to the factor ring. Then the hardware VS stage runs
@@ -291,7 +295,7 @@ Instead:
          shader is an ordinary vertex shader whose ring loads read the GSVS ring.
        - Emits to streams other than 0 stop by name.
      - **Not yet:** anything else stops with the instruction's name. One group needs a design of its own:
-       - reads across lanes (`v_readlane`, `v_writelane`, `ds_swizzle`), whose results depend
+       - reads across lanes (`v_readlane`, `v_writelane`, `ds_swizzle` outside its quad mode), whose results depend
          on GCN's 64-lane wave where Vulkan and Metal GPUs often run 32 lanes.
      - **Tests:** `test/test_gcn_spirv.c` checks every module with `spirv-val` for Vulkan 1.2.
        `test/test_gcn_compute.c` runs programs on a Vulkan device and compares every output word
