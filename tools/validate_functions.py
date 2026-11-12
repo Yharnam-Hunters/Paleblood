@@ -464,6 +464,7 @@ def check_reviews(root: str, funcs: list[dict]) -> list[str]:
             allow = {ln.strip() for ln in f if ln.strip() and not ln.lstrip().startswith('#')}
     path = os.path.join(root, 'symbols', 'reviews.csv')
     reviews: dict[str, dict] = {}
+    prev_key = None
     if os.path.isfile(path):
         with open(path, newline='') as f:
             rd = csv.reader(f)
@@ -479,7 +480,13 @@ def check_reviews(root: str, funcs: list[dict]) -> list[str]:
                     errs.append(f"symbols/reviews.csv:{n}: verdict must be 'approved' or 'changes requested'")
                 if not r['reviewer'].strip():
                     errs.append(f'symbols/reviews.csv:{n}: reviewer is empty')
-                reviews[r['address']] = r       # the latest row for an address counts
+                # In address and date order, so that pull requests adding reviews of different
+                # functions merge without conflicts; the latest row for an address counts.
+                key = (r['address'], r['date'])
+                if prev_key is not None and key < prev_key:
+                    errs.append(f'symbols/reviews.csv:{n}: rows must be in address and date order')
+                prev_key = key
+                reviews[r['address']] = r
     for r in funcs:
         if r['status'] != 'verified':
             continue

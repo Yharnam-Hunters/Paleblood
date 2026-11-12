@@ -14,6 +14,7 @@
    modules and thread objects. It is the runtime's choice, not the PS4's value: the engine only
    maps it and hands it back to the GPU calls. */
 #include "runtime/equeue.h"
+#include "runtime/gpu_memory.h"
 #include "runtime/process.h"
 #include "runtime/render_calls.h"
 #include "runtime/renderer.h"
@@ -776,18 +777,17 @@ static int wait_compare(const char *fn, const wait_reg_mem_packet *packet, uint3
     return holds;
 }
 
-/* The GPU's global data share (GDS): 64 KB of on-chip memory beside guest memory, which DMA_DATA and
-   shaders' GDS instructions reach by byte offset (AMD's Sea Islands ISA, "Global Data Share"). The
+/* The GPU's global data share (runtime/gpu_memory.h), which the shaders on the GPU reach too. The
    engine keeps counters there (structured append buffers: a DMA_DATA loads each from memory before
-   its passes and another saves it back after), at offsets from 0x20. */
-enum { GDS_BYTES = 64 << 10, DMA_DATA_BYTE_COUNT_MASK = 0x1fffff };
-static uint8_t gds[GDS_BYTES];
+   its passes, the shaders' ds_append and ds_consume move it, and another DMA_DATA saves it back after),
+   at offsets from 0x20. */
+enum { DMA_DATA_BYTE_COUNT_MASK = 0x1fffff };
 
 /* The byte offset and count inside the GDS, or a stop by name. */
 static uint8_t *gds_bytes(const char *fn, uint32_t offset, uint32_t bytes)
 {
-    if (offset > GDS_BYTES || bytes > GDS_BYTES - offset) rt_fatal(fn, "a DMA_DATA reaching past the 64 KB GDS");
-    return gds + offset;
+    if (offset > RT_GPU_GDS_BYTES || bytes > RT_GPU_GDS_BYTES - offset) rt_fatal(fn, "a DMA_DATA reaching past the 64 KB GDS");
+    return rt_gpu_memory_gds() + offset;
 }
 
 /* A step: the command processor's DMA, after the work before it and before the work after it. The

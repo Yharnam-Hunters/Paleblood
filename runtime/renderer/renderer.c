@@ -13,6 +13,9 @@
 #include <string.h>
 #include <unistd.h>
 
+/* The executor's reasons: long enough for an unfinished batch's list of draws and dispatches. */
+enum { RENDER_ERROR_BYTES = 1024 };
+
 static pthread_mutex_t renderer_lock = PTHREAD_MUTEX_INITIALIZER;
 static _Thread_local int holds_renderer_lock; /* a fault this thread takes while holding it cannot be resolved */
 static int enabled;
@@ -49,7 +52,7 @@ static void resolve_guarded(uint64_t pool_offset, uint64_t length)
     static const char function[] = "the renderer (a CPU access to a render target's memory)";
     if (holds_renderer_lock) rt_fatal(function, "the renderer's own thread touched a guarded render target");
     lock_renderer();
-    char error[256];
+    char error[RENDER_ERROR_BYTES];
     if (executor && rt_executor_resolve(executor, rt_gpu_memory_base() + pool_offset, length, error, sizeof error)) rt_fatal(function, error);
     unlock_renderer();
 }
@@ -61,10 +64,11 @@ static rt_executor *executor_for(const char *function)
     /* the CPU's writes, when the runtime watches them (runtime/write_watch.h): textures reload only then */
     const int watched = rt_write_watch_active();
     rt_executor_memory memory = {.guest_base = rt_gpu_memory_base(), .collect_cpu_writes = watched ? collect_cpu_writes : NULL,
-                                 .guard = watched ? guard_target : NULL, .unguard = watched ? unguard_target : NULL};
+                                 .guard = watched ? guard_target : NULL, .unguard = watched ? unguard_target : NULL,
+                                 .gds = rt_gpu_memory_gds(), .gds_bytes = RT_GPU_GDS_BYTES};
     if (rt_gpu_memory_pool(&memory.fd, &memory.size)) return NULL; /* no direct memory yet: nothing to draw from */
     if (watched) rt_write_watch_set_resolver(resolve_guarded);
-    char error[256];
+    char error[RENDER_ERROR_BYTES];
     if (rt_executor_open(&memory, &executor, error, sizeof error)) rt_fatal(function, error);
     return executor;
 }
@@ -128,7 +132,7 @@ static void *completion_thread(void *unused)
         if (!deferred_head) deferred_tail = NULL;
         deferred_busy = 1, deferred_running = d;
         pthread_mutex_unlock(&deferred_lock);
-        char error[256];
+        char error[RENDER_ERROR_BYTES];
         /* the executor is open whenever a ticket is: tickets come only from its submissions */
         if (d->ticket && rt_executor_wait_ticket(executor, d->ticket, error, sizeof error)) rt_fatal(d->step.function, error);
         performing = d;
@@ -196,7 +200,7 @@ static void run_calls(batch *b, size_t first, size_t last)
     if (first == last) return;
     lock_renderer();
     rt_executor *const x = executor_for(b->function);
-    char error[256];
+    char error[RENDER_ERROR_BYTES];
     uint64_t ticket = 0;
     if (x && rt_executor_record_calls(x, b->calls + first, last - first, &ticket, error, sizeof error)) rt_fatal(b->function, error);
     if (x) last_ticket = ticket, calls_unsubmitted += last - first;
@@ -207,7 +211,7 @@ static void run_calls(batch *b, size_t first, size_t last)
 static void submit_open(const char *function)
 {
     lock_renderer();
-    char error[256];
+    char error[RENDER_ERROR_BYTES];
     if (executor && rt_executor_submit(executor, error, sizeof error)) rt_fatal(function, error);
     calls_unsubmitted = 0;
     unlock_renderer();
@@ -219,7 +223,7 @@ static void submit_open(const char *function)
 static void show_later(const rt_gpu_step *step)
 {
     lock_renderer();
-    char error[256];
+    char error[RENDER_ERROR_BYTES];
     rt_executor_snapshot snapshot;
     const int copied = executor && rt_executor_snapshot_target(executor, step->words[4], &snapshot, error, sizeof error) == 0;
     unlock_renderer();
@@ -256,7 +260,7 @@ static void run_batch(batch *b)
         submit_open(b->steps[i].function); /* the deferred steps may wait for the open batch */
         drain_deferred();
         lock_renderer();
-        char error[256];
+        char error[RENDER_ERROR_BYTES];
         if (executor && rt_executor_finish(executor, error, sizeof error)) rt_fatal(b->steps[i].function, error);
         unlock_renderer();
         b->steps[i].perform(&b->steps[i]);
@@ -369,12 +373,12 @@ void rt_renderer_bind_shader(const char *function, rt_renderer_shader kind, cons
 int rt_renderer_frame(uint64_t address, uint32_t *frame, uint32_t width, uint32_t height)
 {
     if (on_completion_thread && performing && performing->has_snapshot) { /* a flip performed later (show_later): its copy */
-        char error[256];
+        char error[RENDER_ERROR_BYTES];
         return rt_executor_read_snapshot(executor, &performing->snapshot, frame, width, height, error, sizeof error) == 0;
     }
     rt_renderer_wait_idle(); /* returns at once on the renderer's and the completion thread: the work before their steps has run */
     lock_renderer();
-    char error[256];
+    char error[RENDER_ERROR_BYTES];
     const int drawn = executor && rt_executor_read_target(executor, address, frame, width, height, error, sizeof error) == 0;
     unlock_renderer();
     return drawn;

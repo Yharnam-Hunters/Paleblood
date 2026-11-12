@@ -14,7 +14,7 @@ if ! $audit_only; then
     # records how far our runtime boots (both need your own executable; skipped without it)
     python3 tools/promote.py || echo "promote: some edge-verified functions fail their recordings (above)" >&2
     if [ -x build/runtime/pbboot ]; then python3 tools/boot.py || true; fi
-    python3 tools/progress.py --update-readme
+    # progress blocks and the status card are regenerated on main, not here (tools/progress_pr.py)
 fi
 
 status=0
@@ -23,8 +23,8 @@ run() { "$@" || { echo "FAILED: $*" >&2; status=1; }; }
 
 step "functions.csv / hooks.csv"
 run python3 tools/validate_functions.py
-step "README progress and target blocks"
-run python3 tools/progress.py --check
+step "generated progress text: unchanged from main, or current (main regenerates it: tools/progress_pr.py)"
+run python3 tools/progress.py --check-touched
 step "game data"
 run python3 tools/check_no_game_data.py --tracked
 step "game-agnostic runtime"

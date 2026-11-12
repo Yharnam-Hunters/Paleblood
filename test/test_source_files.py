@@ -134,6 +134,33 @@ class Propagate(unittest.TestCase):
                           ('0x00500040', '0x00500040', 1, 16, 'direct', 'high')])
 
 
+    def test_extents(self):
+        """An extent tags untagged and range functions inside it, never a direct tag or a function
+        outside it; its rows are `extent` with no file and medium confidence."""
+        fns = layout(8)
+        tags = sf.propagate(fns, {at(fns, 0): A, at(fns, 3): A, at(fns, 5): B})
+        got = sf.apply_extents(fns, tags, [(at(fns, 2), at(fns, 6), 'gamma')])
+        gamma = ('gamma', '', 'extent')
+        self.assertEqual(got, [(*A, 'direct'), (*A, 'range'), gamma, (*A, 'direct'), gamma,
+                               (*B, 'direct'), gamma, None])
+        rows = sf.to_rows(fns, got)
+        self.assertEqual([(r['address'], r['library'], r['file'], r['evidence'], r['confidence'])
+                          for r in rows if r['library'] == 'gamma'],
+                         [('0x00500020', 'gamma', '', 'extent', 'medium'),
+                          ('0x00500040', 'gamma', '', 'extent', 'medium'),
+                          ('0x00500060', 'gamma', '', 'extent', 'medium')])
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'extents.csv')
+            self.assertEqual(sf.read_extents(path), [], 'no file, no extents')
+            with open(path, 'w') as f:
+                f.write('first,last,library,evidence\n0x00500020,0x00500060,gamma,"why, with a comma"\n')
+            self.assertEqual(sf.read_extents(path), [(0x500020, 0x500060, 'gamma')])
+            with open(path, 'w') as f:
+                f.write('first,last,library,evidence\n0x00500060,0x00500020,gamma,backwards\n')
+            with self.assertRaises(ValueError):
+                sf.read_extents(path)
+
+
 class EndToEnd(unittest.TestCase):
     """A synthetic executable: eight functions, three of which load source paths."""
 
@@ -191,6 +218,18 @@ class EndToEnd(unittest.TestCase):
                 f.write(text.replace('0x00400060,0x00400060', '0x00400050,0x00400060'))
             self.assertNotEqual(sf.check(root, None), [], 'a widened direct row no longer matches its counts')
             self.assertNotEqual(sf.check(root, elf), [])
+            with open(table, 'w') as f:
+                f.write(text)
+            with open(os.path.join(root, sf.EXTENTS), 'w') as f:
+                f.write('first,last,library,evidence\n0x00400040,0x00400050,gamma,test\n')
+            self.assertNotEqual(sf.check(root, None), [], 'a new extent makes the table stale')
+            text = sf.generate(root, elf)
+            self.assertIn('0x00400040,0x00400050,2,32,gamma,,extent,medium', text)
+            with open(table, 'w') as f:
+                f.write(text)
+            self.assertEqual(sf.update_doc(root, text, write=True), [])
+            self.assertEqual(sf.check(root, None), [])
+            self.assertEqual(sf.check(root, elf), [])
 
 
 if __name__ == '__main__':

@@ -23,6 +23,12 @@ extern "C" {
 
 enum { GCN_USER_SGPR_MAX = 16, GCN_PUSH_CONSTANT_LIMIT = 128 };
 
+/* Survey mode, for listing what the translator lacks (pbgcn_survey, docs/RENDERER.md "Coverage survey";
+   never on in a draw): a translation meeting an instruction it cannot translate notes the reason and goes
+   on with the next instruction instead of stopping, and fails at the end with every distinct reason in
+   the error, one a line after the dword it was first met at ("@dword reason\n"). Process-wide. */
+void gcn_spirv_set_survey(int on);
+
 /* Every layout below also says where the shader finds its data:
      push_constant_offset  the byte offset of its user data (GCN_USER_SGPR_MAX words) in the push
                            constants, so that the stages of one draw keep theirs apart (a vertex
@@ -179,6 +185,17 @@ typedef struct {
     uint64_t address;
 } gcn_lds;
 
+/* The global data share (GDS): 64 KB beside guest memory, the same for every shader (runtime/gpu_memory.h).
+   A compute shader's ds_append and ds_consume with the GDS bit add their wave's count of active lanes
+   to, or take it from, the dword at GDS byte M0[31:16] + the instruction's offset, and give every active
+   lane the dword's old value; with v_mbcnt (its lane's rank among the wave's active lanes) each lane
+   gets a slot of its own in an append buffer. gds_address is the GDS's GPU address (0: these stop
+   translation). Here a wave is a subgroup of the Vulkan device: one subgroup lane adds the subgroup's
+   count, and v_mbcnt with an EXEC half ranks a lane among the active lanes of its subgroup (exact where
+   subgroups have 64 lanes; with 32-lane subgroups each holds the low half of a wave of its own), so the
+   slots stay unique and dense. An access past the GDS changes nothing and gives 0. */
+enum { GCN_GDS_BYTES = 64 << 10 };
+
 typedef struct {
     uint32_t local_size[3];  /* the workgroup's size */
     unsigned user_sgprs;     /* s0 .. s(user_sgprs - 1) start as the user data (push constants) */
@@ -191,6 +208,7 @@ typedef struct {
     unsigned image_count;
     uint32_t *user_data_read; /* when not NULL, set on success to the user SGPRs read before written (User data read, below) */
     gcn_lds lds;              /* the workgroup's LDS (above) */
+    uint64_t gds_address;     /* the GDS's GPU address (above), or 0 */
 } gcn_compute_layout;
 
 /* User data read: a translation can report which of the user SGPRs (s0 to s(user_sgprs - 1)) the program

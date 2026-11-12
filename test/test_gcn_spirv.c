@@ -92,6 +92,7 @@ static const gcn_pixel_layout pixel_layout = {.user_sgprs = 8, .push_constant_of
 
 static uint32_t output_control; /* the vertex layout's, for the next translation */
 static gcn_lds compute_lds;     /* the compute layout's, for the next translation */
+static uint64_t compute_gds;    /* the compute layout's GDS address, for the next translation */
 
 static int translate(stage s, const uint32_t *code, size_t dwords, uint32_t **spirv, size_t *words, char *error, size_t error_size)
 {
@@ -101,6 +102,7 @@ static int translate(stage s, const uint32_t *code, size_t dwords, uint32_t **sp
     if (s == PIXEL) return gcn_translate_pixel(code, dwords, &pixel_layout, spirv, words, error, error_size);
     gcn_compute_layout compute = layout;
     compute.lds = compute_lds;
+    compute.gds_address = compute_gds;
     return gcn_translate_compute(code, dwords, &compute, spirv, words, error, error_size);
 }
 
@@ -199,6 +201,25 @@ static void image_programs(void)
     static uint32_t branch_first[64];
     branch_first[0] = 0xbf840000;                                                      /* s_cbranch_scc0 to the next instruction */
     memcpy(branch_first + 1, pixel_two_images, sizeof pixel_two_images);
+    /* a descriptor restored from spill slots comes from where the spilled SGPRs' did; a slot written twice is not followed */
+    CHECK(gcn_image_resources(PROGRAM(spilled_descriptor), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
+    CHECK(count == 1 && found[0].origin.from_memory && found[0].origin.sgpr == 12 && found[0].origin.pointer_sgpr == 8 &&
+          found[0].origin.offset == 16);
+    {
+        enum { WRITES = 2 + 8, SPILLED = sizeof spilled_descriptor / sizeof spilled_descriptor[0] };
+        uint32_t twice[SPILLED + 1];
+        memcpy(twice, spilled_descriptor, WRITES * sizeof twice[0]);
+        twice[WRITES] = spilled_descriptor[WRITES - 1]; /* v1's lane 9 written again from s7 */
+        memcpy(twice + WRITES + 1, spilled_descriptor + WRITES, (SPILLED - WRITES) * sizeof twice[0]);
+        CHECK(gcn_image_resources(PROGRAM(twice), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
+              strstr(error, "not each written once"));
+        /* an ordinary use of v1 between its spills and restores stops by name */
+        uint32_t used[SPILLED + 1];
+        memcpy(used, spilled_descriptor, WRITES * sizeof used[0]);
+        used[WRITES] = 0x7e020280; /* v_mov_b32 v1, 0 */
+        memcpy(used + WRITES + 1, spilled_descriptor + WRITES, (SPILLED - WRITES) * sizeof used[0]);
+        refused_as(COMPUTE, PROGRAM(used), "v1 holds SGPR spill slots");
+    }
     CHECK(gcn_image_resources(PROGRAM(loaded), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
     CHECK(count == 1 && found[0].origin.from_memory && found[0].origin.sgpr == 0 && found[0].origin.pointer_sgpr == 8 &&
           found[0].origin.offset == 16);
@@ -325,7 +346,19 @@ static void image_programs(void)
           strstr(error, "sampler in s[12:15] is not bound"));
     const gcn_image_binding flat[] = {{{0, 4, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0}, {{1, 0, 2, 0}, GCN_IMAGE_1D, 0, GCN_IMAGE_FLOAT, 1, 1, 0, 0}};
     lookup.images = flat, lookup.sampler_count = 1;
-    CHECK(gcn_translate_pixel(PROGRAM(pixel_lookup), &lookup, &spirv, &words, error, sizeof error) == -1 && strstr(error, "DA 1"));
+    /* DA 1 on a 1D image that is not an array: the image's type decides and the slice VGPR is not read;
+       with a LOD VGPR after the coordinates (image_sample_l), where that VGPR is depends on how the
+       slice counts, so it still stops by name. */
+    const int flat_sampled = gcn_translate_pixel(PROGRAM(pixel_lookup), &lookup, &spirv, &words, error, sizeof error);
+    if (flat_sampled) fprintf(stderr, "pixel_lookup (1D): %s\n", error);
+    CHECK(flat_sampled == 0);
+    if (spirv) {
+        CHECK(validate(spirv, words, "pixel_lookup_1d") != 0);
+        CHECK(to_metal(spirv, words, "pixel_lookup_1d") != 0);
+        free(spirv);
+        spirv = NULL;
+    }
+    CHECK(gcn_translate_pixel(PROGRAM(pixel_lookup_level), &lookup, &spirv, &words, error, sizeof error) == -1 && strstr(error, "DA 1"));
 
     /* A pixel shader's image_load_mip from a sampled image (its range checked at run time, so only
        with a stop word); a storage binding refuses image_load_mip. */
@@ -727,8 +760,33 @@ static void geometry_shaders(void)
     CHECK(gcn_translate_export(PROGRAM(gs_export), &l, &spirv, &words, error, sizeof error) == -1 && strstr(error, "rings"));
 }
 
+/* Survey mode (gcn_spirv_set_survey): a program with two instructions the translator does not take, in a
+   compute shader, names both, each after its dword, and still fails; out of survey mode only the first. */
+static void survey_mode(void)
+{
+    static const uint32_t two_gaps[] = {
+        0xc8080000, /* v_interp_p1_f32 v2, v0, attr0.x: pixel shaders only */
+        0xbf900001, /* s_sendmsg 1: outside a geometry shader */
+        0xbf810000, /* s_endpgm */
+    };
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    char error[1024] = "";
+    gcn_spirv_set_survey(1);
+    CHECK(translate(COMPUTE, PROGRAM(two_gaps), &spirv, &words, error, sizeof error) == -1);
+    gcn_spirv_set_survey(0);
+    CHECK(spirv == NULL);
+    CHECK(!strncmp(error, "@0 v_interp_p1_f32", strlen("@0 v_interp_p1_f32")));
+    CHECK(strstr(error, "\n@1 s_sendmsg") != NULL);
+    CHECK(error[strlen(error) - 1] == '\n');
+    error[0] = 0;
+    CHECK(translate(COMPUTE, PROGRAM(two_gaps), &spirv, &words, error, sizeof error) == -1);
+    CHECK(strstr(error, "v_interp_p1_f32") != NULL && !strstr(error, "s_sendmsg") && error[0] != '@');
+}
+
 int main(void)
 {
+    survey_mode();
     tessellation();
     geometry_shaders();
     rect_list_stages();
@@ -753,13 +811,35 @@ int main(void)
     translates(PROGRAM(pack_halves), "pack_halves");
     translates(PROGRAM(unpack_halves), "unpack_halves");
     translates(PROGRAM(buffer_atomics), "buffer_atomics");
+    /* ds_append and ds_consume need the GDS on the GPU; v_mbcnt with EXEC's halves a compute shader */
+    compute_gds = 0x500000000ull;
+    translates(PROGRAM(gds_append_consume), "gds_append_consume");
+    compute_gds = 0;
+    refused_as(COMPUTE, PROGRAM(gds_append_consume), "no GDS");
+    static const uint32_t rank[] = {0xd2480001, 0x0001007f, 0x4602027e, 0xbf810000}; /* v_mbcnt_hi v1, exec_hi, 0; v_mbcnt_lo v1, exec_lo, v1 */
+    translates(PROGRAM(rank), "rank_compute");
+    refused_as(VERTEX, PROGRAM(rank), "outside a compute shader");
+    refused_as(PIXEL, PROGRAM(rank), "outside a compute shader");
+    static const uint32_t sgpr_mask[] = {0xd2480001, 0x00010004, 0xbf810000}; /* v_mbcnt_hi v1, s4, 0 */
+    refused_as(COMPUTE, PROGRAM(sgpr_mask), "a mask other than");
     translates(PROGRAM(integer_batch), "integer_batch");
+    translates(PROGRAM(spill_slots), "spill_slots");
+    translates(PROGRAM(valu_batch), "valu_batch");
     translates(PROGRAM(scalar_batch), "scalar_batch");
     translates(PROGRAM(vcc_halves), "vcc_halves");
     translates(PROGRAM(whole_quad), "whole_quad");
     translates(PROGRAM(transcendentals), "transcendentals");
     translates_as(VERTEX, PROGRAM(vertex_position_color), "vertex_position_color");
     translates_as(PIXEL, PROGRAM(pixel_color), "pixel_color");
+    /* ds_swizzle_b32's quad mode with one source lane: compute and pixel shaders; other patterns, the
+       bit-mask mode and vertex shaders stop by name */
+    translates(PROGRAM(quad_swizzle), "quad_swizzle");
+    translates_as(PIXEL, PROGRAM(pixel_quad_swizzle), "pixel_quad_swizzle");
+    static const uint32_t mixed_quad[] = {0xd8d480e4, 0x03000002, 0xbf810000}; /* ds_swizzle_b32 v3, v2 offset:swizzle(QUAD_PERM,0,1,2,3) */
+    static const uint32_t bit_mask[] = {0xd8d4041f, 0x03000002, 0xbf810000};   /* ds_swizzle_b32 v3, v2 offset:0x41f */
+    refused_as(COMPUTE, PROGRAM(mixed_quad), "offset 0x80e4");
+    refused_as(COMPUTE, PROGRAM(bit_mask), "offset 0x41f");
+    refused_as(VERTEX, PROGRAM(quad_swizzle), "in a vertex shader");
     translates_as(PIXEL, PROGRAM(pixel_discard_left), "pixel_discard_left");
     translates_as(PIXEL, PROGRAM(pixel_user_color), "pixel_user_color");
 
@@ -792,6 +872,16 @@ int main(void)
     char error[256] = "";
     CHECK(gcn_translate_compute(PROGRAM(unsupported), &layout, &spirv, &words, error, sizeof error) == -1);
     CHECK(spirv == NULL && strstr(error, "v_interp_p1_f32") != NULL);
+    /* v_interp_mov_f32 from P0: a Flat input; from P10 or P20, or of an input also read interpolated, refused by name */
+    translates_as(PIXEL, PROGRAM(pixel_flat_color), "pixel_flat_color");
+    {
+        uint32_t from_p10[sizeof pixel_flat_color / sizeof pixel_flat_color[0]], mixed[sizeof pixel_flat_color / sizeof pixel_flat_color[0]];
+        memcpy(from_p10, pixel_flat_color, sizeof from_p10), memcpy(mixed, pixel_flat_color, sizeof mixed);
+        from_p10[1] = 0xc80a0000;                        /* v_interp_mov_f32 v2, p10, attr0.x */
+        mixed[1] = 0xc8080000, mixed[2] = 0xc8090001;     /* attr0.x interpolated into v2 (p1, p2), y still flat */
+        refused_as(PIXEL, PROGRAM(from_p10), "from P10");
+        refused_as(PIXEL, PROGRAM(mixed), "read both flat");
+    }
 
     CHECK(gcn_translate_compute(PROGRAM(typed_unorm), &layout, &spirv, &words, error, sizeof error) == -1);
     CHECK(spirv == NULL && strstr(error, "dfmt 10 nfmt 0") != NULL);

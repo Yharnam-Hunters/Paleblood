@@ -22,13 +22,14 @@
 static uint64_t address_offset; /* the layout's, for the next run */
 static uint64_t error_address;  /* the run-time stop word's GPU address, or 0 */
 static uint32_t lds_bytes;      /* the workgroup's LDS (workgroup memory), or 0 */
+static uint64_t gds_address;    /* the GDS's GPU address, or 0 */
 
 /* Translates code and runs it over one workgroup of LANES lanes with the given user data. */
 static int run(gpu *g, const uint32_t *code, size_t dwords, const uint32_t *user_data)
 {
     const gcn_compute_layout layout = {.local_size = {LANES, 1, 1}, .user_sgprs = 8,
                                        .address_offset = address_offset, .error_address = error_address,
-                                       .lds = {.bytes = lds_bytes}};
+                                       .lds = {.bytes = lds_bytes}, .gds_address = gds_address};
     uint32_t *spirv = NULL;
     size_t words = 0;
     char error[256];
@@ -653,6 +654,16 @@ int main(int argc, char **argv)
         CHECK(out_words[LANES + i] == (high << 16 | halves[i % HALF_CASES].negated));
     }
 
+    /* ds_swizzle_b32's quad mode: each lane of quad q (lanes 4q to 4q + 3) gets the square of lane 4q, 4q + 2
+       and 4q + 3. */
+    memset(out.mapped, 0, BUFFER_BYTES);
+    CHECK(run(&g, quad_swizzle, sizeof quad_swizzle / sizeof quad_swizzle[0], user) == 0);
+    for (uint32_t i = 0; i < LANES; i++) {
+        const uint32_t first = i & ~3u;
+        CHECK(out_words[i] == first * first && out_words[64 + i] == (first + 2) * (first + 2) &&
+              out_words[128 + i] == (first + 3) * (first + 3));
+    }
+
     /* The negated float compares, on ordered pairs, equal pairs, signed zeros, infinities and NaNs: each
        holds exactly where its condition (worked out with C's ordered compares, false for a NaN) does not. */
     static const float pairs[][2] = {{1, 2}, {2, 1}, {1, 1}, {NAN, 1}, {1, NAN}, {NAN, NAN}, {-0.0f, 0.0f}, {INFINITY, INFINITY},
@@ -715,6 +726,87 @@ int main(int argc, char **argv)
         }
     }
     CHECK(winners == 1);
+
+    /* SGPR spill slots: every lane gets the restored scalars' sum and its own mask bit back, through the
+       restored descriptor. */
+    memset(out.mapped, 0, BUFFER_BYTES);
+    CHECK(run(&g, spill_slots, sizeof spill_slots / sizeof spill_slots[0], user) == 0);
+    for (int i = 0; i < LANES; i++) {
+        if (out_words[i] != 0x11111119u || out_words[LANES + i] != (i < 8 ? 1u : 0u))
+            fprintf(stderr, "spill_slots lane %d: 0x%08x %u\n", i, out_words[i], out_words[LANES + i]);
+        CHECK(out_words[i] == 0x11111119u && out_words[LANES + i] == (i < 8 ? 1u : 0u));
+    }
+
+    /* valu_batch: each result worked out with plain C from the Sea Islands manual's definitions (floats:
+       fminf and fmaxf ignore a NaN, as the NMin and NMax the translation uses; the legacy forms take y when
+       either is a NaN). */
+    static const uint32_t valu_cases[][4] = {
+        {3, 5, 7, 4}, {0xfffffffe, 2, 0x80000000, 1}, {0x3f800000, 0x40000000, 0xbf800000, 31}, {0x7fc00000, 0x3f000000, 0x40400000, 32},
+        {0x40a00000, 0x7fc00000, 0x3e800000, 33}, {0x0f0f0f0f, 0x12345678, 0x9abcdef0, 63}, {0x80000001, 0x7fffffff, 0, 0},
+        {0xc0400000, 0xc0000000, 0xc0800000, 64 + 3}, {10, 10, 9, 40}, {0xffffffff, 0, 0xffffffff, 1}, {1, 0xff800000, 0x7f800000, 12},
+        {0x42c80000, 0x42c80000, 0x42c80000, 20},
+    };
+    enum { VALU_CASES = sizeof valu_cases / sizeof valu_cases[0], VALU_WORDS = 20 };
+    memset(in.mapped, 0, BUFFER_BYTES), memset(out.mapped, 0, BUFFER_BYTES);
+    for (int i = 0; i < VALU_CASES; i++) memcpy(in_words + 4 * i, valu_cases[i], sizeof valu_cases[i]);
+    CHECK(run(&g, valu_batch, sizeof valu_batch / sizeof valu_batch[0], user) == 0);
+    for (int i = 0; i < VALU_CASES; i++) {
+        const uint32_t x = valu_cases[i][0], y = valu_cases[i][1], z = valu_cases[i][2], amount = valu_cases[i][3] & 63;
+        const int32_t sx = (int32_t)x, sy = (int32_t)y, sz = (int32_t)z;
+        float fx, fy, fz;
+        memcpy(&fx, &x, 4), memcpy(&fy, &y, 4), memcpy(&fz, &z, 4);
+        const int32_t smin = sx < sy ? (sx < sz ? sx : sz) : (sy < sz ? sy : sz), smax = sx > sy ? (sx > sz ? sx : sz) : (sy > sz ? sy : sz);
+        const uint32_t umin = x < y ? (x < z ? x : z) : (y < z ? y : z), umax = x > y ? (x > z ? x : z) : (y > z ? y : z);
+        const int32_t slo = sx < sy ? sx : sy, shi = sx < sy ? sy : sx;
+        const uint32_t ulo = x < y ? x : y, uhi = x < y ? y : x;
+        const int32_t smed = slo > (shi < sz ? shi : sz) ? slo : (shi < sz ? shi : sz);
+        const uint32_t umed = ulo > (uhi < z ? uhi : z) ? ulo : (uhi < z ? uhi : z);
+        const uint64_t pair = (uint64_t)y << 32 | x;
+        const uint64_t left = pair << amount, right = pair >> amount, arith = (uint64_t)((int64_t)pair >> amount), ones = UINT64_MAX << amount;
+        const float fmed = fmaxf(fminf(fx, fy), fminf(fmaxf(fx, fy), fz));
+        const float floats[5] = {fminf(fminf(fx, fy), fz), fmaxf(fmaxf(fx, fy), -fz), fmed,
+                                 isnan(fx) || isnan(fy) ? fy : fmaxf(fx, fy), isnan(fx) || isnan(fy) ? fy : fminf(fx, fy)};
+        uint32_t want[VALU_WORDS] = {(uint32_t)smin, (uint32_t)smax, (uint32_t)smed, umin, umax, umed, (x & y) | (~x & z),
+                                     (uint32_t)left, (uint32_t)(left >> 32), (uint32_t)right, (uint32_t)(right >> 32),
+                                     (uint32_t)arith, (uint32_t)(arith >> 32)};
+        memcpy(want + 13, floats, sizeof floats);
+        want[18] = (uint32_t)ones, want[19] = (uint32_t)(ones >> 32);
+        for (int k = 0; k < VALU_WORDS; k++) {
+            const uint32_t got = out_words[VALU_WORDS * i + k];
+            /* a NaN result may be any NaN */
+            const int both_nan = k >= 13 && k < 18 && (got & 0x7f800000) == 0x7f800000 && (got & 0x7fffff) &&
+                                 (want[k] & 0x7f800000) == 0x7f800000 && (want[k] & 0x7fffff);
+            if (got != want[k] && !both_nan) fprintf(stderr, "valu_batch case %d word %d: 0x%08x, expected 0x%08x\n", i, k, got, want[k]);
+            CHECK(got == want[k] || both_nan);
+        }
+    }
+    for (int k = VALU_CASES * VALU_WORDS; k < LANES * VALU_WORDS && k < BUFFER_BYTES / 4; k++) CHECK(out_words[k] == 0); /* lanes 12-63 store nothing */
+
+    /* The GDS (a buffer standing for it: the accesses stay in its first bytes): every lane knows its place
+       in the wave; the 48 appending lanes get the slots 1000 to 1047, once each, rising with the lane within
+       each half wave (a subgroup of 32 lanes ranks its own), and leave the counter at 1048; the 64
+       consuming lanes get 500 down to 437, once each, and leave 436. */
+    gpu_buffer gds;
+    CHECK(make_buffer(&g, &gds) == 0);
+    uint32_t *const counters = gds.mapped;
+    enum { APPENDED = 0x24 / 4, CONSUMED = 0x28 / 4, APPEND_START = 1000, CONSUME_START = 500, APPENDING = 48 };
+    counters[APPENDED] = APPEND_START, counters[CONSUMED] = CONSUME_START;
+    memset(out.mapped, 0, BUFFER_BYTES);
+    gds_address = gds.address;
+    CHECK(run(&g, gds_append_consume, sizeof gds_append_consume / sizeof gds_append_consume[0], user) == 0);
+    gds_address = 0;
+    CHECK(counters[APPENDED] == APPEND_START + APPENDING && counters[CONSUMED] == CONSUME_START - LANES);
+    uint64_t slots = 0, taken = 0;
+    for (int i = 0; i < LANES; i++) {
+        CHECK(out_words[128 + i] == (uint32_t)i);
+        const uint32_t slot = out_words[i], left = out_words[64 + i];
+        if (i % 4 == 0) CHECK(slot == 0);
+        else if (slot >= APPEND_START && slot < APPEND_START + APPENDING) slots |= 1ull << (slot - APPEND_START);
+        if (i % 4 > 1) CHECK(slot > out_words[i - 1]);
+        if (left <= CONSUME_START && left > CONSUME_START - LANES) taken |= 1ull << (CONSUME_START - left);
+        if (i % 32) CHECK(left < out_words[64 + i - 1]);
+    }
+    CHECK(slots == (1ull << APPENDING) - 1 && taken == ~0ull);
 
     /* 24-bit multiplies, bit fields and carries: per case (x, y, z, w), the expected words in
        integer_batch's order, worked out by hand from the definitions (and checked with plain

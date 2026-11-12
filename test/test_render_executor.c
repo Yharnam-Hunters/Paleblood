@@ -446,8 +446,10 @@ static void sampled_images(rt_executor *x)
    and the end texels' values outside; so does MAX_ANISO_RATIO 4 with bilinear filters. Mutants: point
    filtering and wrapping differ; with point minification and bilinear magnification the lookup is
    magnified (a texel spans four pixels), so it is the bilinear one, as are anisotropic bilinear
-   filters; a border clamp, a MAX_ANISO_RATIO past 4 or a depth compare stops by name. */
-static int lookup_misses(rt_executor *x, uint64_t target)
+   filters; a border clamp, a MAX_ANISO_RATIO past 4 or a depth compare stops by name. With one_layer
+   (a 1D image that is not an array, sampled with DA) every channel reads the ramp: green is not
+   inverted, and blue (64 / 255) reads the ramp at its own value. */
+static int lookup_misses_in(rt_executor *x, uint64_t target, int one_layer)
 {
     uint32_t bgra[SIZE * SIZE];
     char error[160] = "";
@@ -458,11 +460,14 @@ static int lookup_misses(rt_executor *x, uint64_t target)
             const uint32_t p = bgra[y * SIZE + px];
             /* the texel bytes reference_texel stores, as unorm values */
             const float red = (float)lroundf(((float)px + 0.5f) / SIZE * 255) / 255, green = (float)lroundf(((float)y + 0.5f) / SIZE * 255) / 255;
-            const float r = fminf(fmaxf(red, 0.125f), 0.875f), g = 1 - fminf(fmaxf(green, 0.125f), 0.875f);
-            misses += !(near(p >> 16 & 0xff, r) && near(p >> 8 & 0xff, g) && near(p & 0xff, 0.25f) && (p >> 24) == 0xff);
+            const float r = fminf(fmaxf(red, 0.125f), 0.875f), ramp_green = fminf(fmaxf(green, 0.125f), 0.875f);
+            const float g = one_layer ? ramp_green : 1 - ramp_green, b = one_layer ? 64 / 255.0f : 0.25f;
+            misses += !(near(p >> 16 & 0xff, r) && near(p >> 8 & 0xff, g) && near(p & 0xff, b) && (p >> 24) == 0xff);
         }
     return misses;
 }
+
+static int lookup_misses(rt_executor *x, uint64_t target) { return lookup_misses_in(x, target, 0); }
 
 /* The red, green and blue bytes of the target's left column, summed. */
 static int left_column_sum(rt_executor *x, uint64_t target)
@@ -736,6 +741,29 @@ static void sampled_lookup(rt_executor *x)
         if (k == 8) CHECK(drawn == -1 && strstr(error, "MAX_ANISO_RATIO 5"));
         if (k == 7) CHECK(drawn == -1 && strstr(error, "unnormalized coordinates"));
     }
+    /* The same program (DA 1) with the table naming a 1D image, not an array: the image's type decides,
+       so the slice coordinate is not read and every lookup reads its one layer, the ramp. */
+    table[3] = (table[3] & ~(0xfu << 28)) | 8u << 28; /* 1D */
+    table[4] = (LUT_TEXELS - 1) << 13, table[5] = 0;  /* one layer */
+    uint32_t user[16] = {0};
+    user[2] = (uint32_t)at(TABLE), user[3] = (uint32_t)(at(TABLE) >> 32);
+    image_descriptor(user + 4, at(IMAGE), 10, 0, WIDTH, HEIGHT);
+    user[7] |= LINEAR_ALIGNED << 20;
+    memcpy(user + 12, bilinear_clamped, 4 * sizeof *user);
+    rt_render_forget(), rt_executor_reset(x);
+    uint32_t offset = record_setup(LOOKUP_BUFFER, at(LOOKUP_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const uint64_t code = at(LOOKUP_CODE);
+    const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 16 << 1, 0, 0x4, 0x302, 0x302,
+                                                   0, 0, 0, 0xf};
+    CHECK(rt_render_record_pixel_shader(LOOKUP_BUFFER, offset, pixel, error, sizeof error) == 0);
+    CHECK(rt_render_record_user_data(LOOKUP_BUFFER, offset + 0x10, RT_STAGE_PIXEL, 0, user, 8, error, sizeof error) == 0);
+    CHECK(rt_render_record_user_data(LOOKUP_BUFFER, offset + 0x20, RT_STAGE_PIXEL, 8, user + 8, 8, error, sizeof error) == 0);
+    const int drawn = rt_executor_run(x, LOOKUP_BUFFER, record_triangle_draw(LOOKUP_BUFFER, offset + 0x30), error, sizeof error);
+    if (drawn) fprintf(stderr, "one-layer lookup: %s\n", error);
+    CHECK(drawn == 0);
+    const int misses = lookup_misses_in(x, at(LOOKUP_TARGET), 1);
+    if (misses) fprintf(stderr, "one-layer lookup: %d pixels differ\n", misses);
+    CHECK(misses == 0);
 }
 
 /* Every pixel of a 16 x 16 target is the triangle's colour (red, green, 0.25, 1) put through f: the
@@ -1816,6 +1844,32 @@ static void pixel_input_controls(rt_executor *x)
     CHECK(same);
 }
 
+/* v_interp_mov_f32 from P0 (pixel_flat_color): every pixel takes the first vertex's colour, (0, 0, 0.25, 1), as
+   FLAT_SHADE gives it (pixel_input_controls), with no register saying so. */
+static void flat_moves(rt_executor *x)
+{
+    enum { FLAT_BUFFER = 0xc1020000, FLAT_CODE = 0x3f00, FLAT_TARGET = 0x2f40000 };
+    char error[200] = "";
+    memcpy((void *)(uintptr_t)at(FLAT_CODE), pixel_flat_color, sizeof pixel_flat_color);
+    const uint64_t code = at(FLAT_CODE);
+    rt_render_forget(), rt_executor_reset(x);
+    const uint32_t offset = record_setup(FLAT_BUFFER, at(FLAT_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 0, 0, 0x4, PERSP_CENTER, PERSP_CENTER, 1, 0, 0, 0xf};
+    CHECK(rt_render_record_pixel_shader(FLAT_BUFFER, offset, pixel, error, sizeof error) == 0);
+    const int drawn = rt_executor_run(x, FLAT_BUFFER, record_triangle_draw(FLAT_BUFFER, offset + 0x10), error, sizeof error);
+    if (drawn) fprintf(stderr, "flat moves: %s\n", error);
+    CHECK(drawn == 0);
+    uint32_t bgra[SIZE * SIZE];
+    CHECK(rt_executor_read_target(x, at(FLAT_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+    int same = 1, covered = 0;
+    for (int i = 0; i < SIZE * SIZE; i++) {
+        if (!bgra[i]) continue; /* outside the triangle */
+        covered++;
+        same &= (bgra[i] >> 16 & 0xff) == 0 && (bgra[i] >> 8 & 0xff) == 0 && near(bgra[i] & 0xff, 0.25f) && (bgra[i] >> 24) == 0xff;
+    }
+    CHECK(same && covered > SIZE * SIZE / 4);
+}
+
 /* A vertex shader that calls its fetch shader and then loads a texel from an image whose descriptor is in
    its user data (vertex_fetch_then_image: s[8:15], which fetch_position_only leaves alone): the image is
    bound to the vertex stage, and every pixel of the triangle takes that texel's colour (a 1x1 linear
@@ -1934,6 +1988,61 @@ static void table_copied(rt_executor *x)
     CHECK(any_drawn);
     CHECK(memcmp((const void *)(uintptr_t)at(COPIED), drawn, SIZE * SIZE * 4) == 0);
 
+    /* A wait that gives the GPU 1 ns does not see the batch finish: the call fails naming the batch's
+       draw and dispatch by their shaders (the default limit is 20 s; a batch still running then holds
+       a shader that does not end). With the default again, the batch is waited for and retired. The
+       GPU may beat the 1 ns wait now and then: up to five tries. */
+    char dispatch_named[64];
+    snprintf(dispatch_named, sizeof dispatch_named, "dispatch %#llx", (unsigned long long)at(TABLE_COPY_CODE));
+    int named = 0;
+    for (int attempt = 0; attempt < 5 && !named; attempt++) {
+        rt_executor_set_wait_limit(x, 1);
+        const int timed = rt_executor_run(x, COPY_BUFFER, offset + 0x40, error, sizeof error);
+        rt_executor_set_wait_limit(x, 0);
+        named = timed == -1 && strstr(error, "did not finish a batch of 2 draws and dispatches in 1e-09 s") && strstr(error, "draw (vertex 0x") &&
+                strstr(error, dispatch_named);
+        if (timed && !named) fprintf(stderr, "table copy, 1 ns wait: %s\n", error);
+        CHECK(rt_executor_finish(x, error, sizeof error) == 0);
+    }
+    CHECK(named);
+}
+
+/* The executor's GDS (rt_executor_memory's gds, imported): a compute dispatch of gcn_programs.h's
+   gds_append_consume reaches the counters the CPU set in it, as the DMA_DATA steps do, and leaves them
+   moved by the lanes' appends and consumes; the slots it stores are each lane's own. */
+enum { TEST_GDS_BYTES = 64 << 10 }; /* the GDS's 64 KB */
+static _Alignas(TEST_GDS_BYTES) uint8_t test_gds[TEST_GDS_BYTES];
+
+static void gds_counters(rt_executor *x)
+{
+    enum { GDS_BUFFER = 0xc0e70000, GDS_CODE = 0x2e000, GDS_OUT = 0x1f80000, LANES = 64, APPENDING = 48, USER_SGPRS = 8 };
+    enum { APPENDED = 0x24 / 4, CONSUMED = 0x28 / 4, APPEND_START = 1000, CONSUME_START = 500 };
+    char error[256] = "";
+    uint32_t *const counters = (uint32_t *)test_gds;
+    counters[APPENDED] = APPEND_START, counters[CONSUMED] = CONSUME_START;
+    memcpy((void *)(uintptr_t)at(GDS_CODE), gds_append_consume, sizeof gds_append_consume);
+    uint32_t *const out = (uint32_t *)(uintptr_t)at(GDS_OUT);
+    memset(out, 0, 3 * LANES * sizeof *out);
+    const uint64_t code = at(GDS_CODE);
+    const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0, USER_SGPRS << 1, LANES, 1, 1};
+    uint32_t user[USER_SGPRS] = {0};
+    descriptor(user + 4, at(GDS_OUT), DWORD_STRIDE);
+    rt_render_forget(), rt_executor_reset(x);
+    CHECK(rt_render_record_compute_shader_at(GDS_BUFFER, shader) == 0);
+    CHECK(rt_render_record_user_data(GDS_BUFFER, 0x10, RT_STAGE_COMPUTE, 0, user, USER_SGPRS, error, sizeof error) == 0);
+    const uint32_t one[3] = {1, 1, 1};
+    CHECK(rt_render_record_dispatch(GDS_BUFFER, 0x20, one, error, sizeof error) == 0);
+    const int ran = rt_executor_run(x, GDS_BUFFER, 0x30, error, sizeof error);
+    if (ran) fprintf(stderr, "GDS counters: %s\n", error);
+    CHECK(ran == 0);
+    CHECK(counters[APPENDED] == APPEND_START + APPENDING && counters[CONSUMED] == (uint32_t)(CONSUME_START - LANES));
+    uint64_t slots = 0, taken = 0;
+    for (uint32_t i = 0; i < LANES; i++) {
+        CHECK(out[128 + i] == i);
+        if (i % 4 && out[i] >= APPEND_START && out[i] < APPEND_START + APPENDING) slots |= 1ull << (out[i] - APPEND_START);
+        if (out[64 + i] <= CONSUME_START && out[64 + i] > CONSUME_START - LANES) taken |= 1ull << (CONSUME_START - out[64 + i]);
+    }
+    CHECK(slots == (1ull << APPENDING) - 1 && taken == ~0ull);
 }
 
 /* User data a shader uses that no call has set stops the draw by name, rather than running on zeros: a
@@ -2091,7 +2200,7 @@ static void indexed_packets(rt_executor *x, int fd)
     /* A low guest window makes the unchecked sum wrap into valid GPU memory.
        With no targets enabled it would be accepted if the overflow guard vanished. */
     const uint64_t low_base = 0x100000000ull;
-    const rt_executor_memory low_memory = {fd, GUEST_SIZE, low_base, NULL, NULL, NULL};
+    const rt_executor_memory low_memory = {fd, GUEST_SIZE, low_base, NULL, NULL, NULL, NULL, 0};
     rt_executor *low = NULL;
     const int opened = rt_executor_open(&low_memory, &low, error, sizeof error);
     if (opened) fprintf(stderr, "low index window: %s\n", error);
@@ -2249,7 +2358,7 @@ static void guarded_targets(int fd, rt_executor *shared)
     rt_tiling layout;
     CHECK(rt_tiling_layout(RECORDED_TILING, 4, SIZE, SIZE, &layout, error, sizeof error) == 0);
     uint8_t *memory = (uint8_t *)(uintptr_t)at(TILED_TARGET);
-    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard};
+    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&with_guard, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -2476,7 +2585,7 @@ static void watched_memory(int fd)
     enum { IMAGE = 0x1e00000, TEXEL_TARGET = 0x1e10000, COMPUTE = 0xc0e40000, COMPUTE_CODE = 0x3000, ZEROS = 0x1e20000, LANES = 64,
            LINEAR_ALIGNED = 8 };
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0};
     rt_executor *x = NULL;
     const int opened = rt_executor_open(&memory, &x, error, sizeof error);
     if (opened) fprintf(stderr, "watched executor: %s\n", error);
@@ -2529,7 +2638,7 @@ static void watched_table_copy(int fd)
     enum { COPY_BUFFER = 0xc0e60000, ZEROS = 0x1f20000, IMAGE = 0x1f40000, TEXEL_TARGET = 0x1f50000, LANES = TABLE_COPY_LANES,
            USER_SGPRS = TABLE_COPY_SGPRS, LINEAR_ALIGNED = 8 };
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&memory, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -2559,6 +2668,47 @@ static void watched_table_copy(int fd)
     rt_executor_close(x);
 }
 
+/* The shader sweep (BB_SHADER_SWEEP): an executor opened with it set records each shader it translates (its
+   code and SPIR-V written to the directory) and skips, with a record, a draw it cannot do instead of
+   stopping; without it the same draw stops (main, above). */
+static void shader_sweep(const rt_executor_memory *memory)
+{
+    enum { SWEEP_BUFFER = 0xc0e20000 };
+    char directory[] = "/tmp/pb-sweep-XXXXXX", path[128], error[256] = "", log[4096] = "";
+    CHECK(mkdtemp(directory) != NULL);
+    setenv("BB_SHADER_SWEEP", directory, 1);
+    rt_executor *x = NULL;
+    const int opened = rt_executor_open(memory, &x, error, sizeof error);
+    unsetenv("BB_SHADER_SWEEP");
+    CHECK(opened == 0);
+    if (opened) return;
+    rt_render_forget(), rt_executor_reset(x);
+    uint32_t size = record_draw(SWEEP_BUFFER, at(TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER | 0x10); /* linear barycentrics */
+    CHECK(rt_executor_run(x, SWEEP_BUFFER, size, error, sizeof error) == 0);
+    size = record_draw(SWEEP_BUFFER, at(TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    CHECK(rt_executor_run(x, SWEEP_BUFFER, size, error, sizeof error) == 0);
+    check_triangle(x, at(TARGET));
+    rt_executor_close(x);
+    snprintf(path, sizeof path, "%s/sweep.txt", directory);
+    FILE *f = fopen(path, "r");
+    CHECK(f != NULL);
+    if (f) log[fread(log, 1, sizeof log - 1, f)] = 0, fclose(f);
+    CHECK(strstr(log, "skipped draw: ") && strstr(log, "pixel-shader inputs"));
+    CHECK(strstr(log, "shader pixel 0x") && strstr(log, " translated\n"));
+    unsigned written = 0;
+    const char *at_line = strstr(log, "shader pixel 0x");
+    unsigned long long code = at_line ? strtoull(at_line + strlen("shader pixel "), NULL, 16) : 0;
+    for (int kind = 0; kind < 2; kind++) {
+        snprintf(path, sizeof path, "%s/pixel-%llx.%s", directory, code, kind ? "spv" : "bin");
+        if (!access(path, R_OK)) written++;
+        unlink(path);
+    }
+    CHECK(written == 2);
+    snprintf(path, sizeof path, "%s/sweep.txt", directory);
+    unlink(path);
+    rmdir(directory);
+}
+
 int main(void)
 {
     const int fd = map_guest_memory();
@@ -2568,7 +2718,7 @@ int main(void)
     }
     rt_executor *x = NULL;
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, test_gds, sizeof test_gds};
     if (rt_executor_open(&memory, &x, error, sizeof error)) {
         fprintf(stderr, "skipped: %s\n", error);
         return SKIPPED;
@@ -3266,10 +3416,12 @@ int main(void)
     sampled_cube(x);
     fetch_shader(x);
     pixel_input_controls(x);
+    flat_moves(x);
     vertex_image_after_fetch(x);
     unset_user_data(x);
     target_read_in_buffer(x);
     table_copied(x);
+    gds_counters(x);
     state_across_buffers(x);
     indexed_draws(x);
     indexed_packets(x, fd);
@@ -3281,6 +3433,7 @@ int main(void)
     bc6h_image(x);
 
     rt_executor_close(x);
+    shader_sweep(&memory);
     rt_render_forget();
     munmap((void *)(uintptr_t)GUEST_BASE, GUEST_SIZE);
     close(fd);

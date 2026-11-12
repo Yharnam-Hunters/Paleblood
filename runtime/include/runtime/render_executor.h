@@ -36,7 +36,10 @@ typedef struct rt_executor rt_executor;
    changed at each buffer. guard keeps the CPU from `length` bytes at guest address `address` until
    unguard lifts it, and answers 0, or -1 when it cannot (rt_write_watch_guard): a render target drawn
    into is guarded until it is written back and the CPU touches it (rt_executor_resolve). Without
-   them every drawn target is written back at each recorded buffer's end. */
+   them every drawn target is written back at each recorded buffer's end. gds is the GPU's global data
+   share (runtime/gpu_memory.h), gds_bytes of host memory aligned to its size, which the executor gives the
+   GPU too: compute shaders' ds_append and ds_consume reach it (runtime/gcn_spirv.h); NULL leaves them
+   stopping. */
 typedef struct {
     int fd;
     uint64_t size;
@@ -45,6 +48,8 @@ typedef struct {
                               void *context);
     int (*guard)(uint64_t address, uint64_t length);
     void (*unguard)(uint64_t address, uint64_t length);
+    void *gds;
+    uint32_t gds_bytes;
 } rt_executor_memory;
 
 /* Opens a GPU device and gives it the memory. Returns 0, or -1 with the reason in error (no
@@ -87,6 +92,9 @@ int rt_executor_wait_ticket(rt_executor *executor, uint64_t ticket, char *error,
 /* Waits until all submitted work has run and checks the run-time stop words. Returns 0, or -1 with the
    reason. */
 int rt_executor_finish(rt_executor *executor, char *error, size_t error_size);
+/* How long a wait for submitted work gives the GPU before the call fails naming the unfinished batch's
+   draws and dispatches; 0 is the default (20 s, render_executor.c). For tests. */
+void rt_executor_set_wait_limit(rt_executor *executor, uint64_t nanoseconds);
 /* Forgets the state earlier buffers set, as a GPU fresh from reset has none (tests: independent cases). */
 void rt_executor_reset(rt_executor *executor);
 
