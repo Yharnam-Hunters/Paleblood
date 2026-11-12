@@ -78,6 +78,9 @@ address,replacement,system,returns
 0x014741b0,bb_render_emit_draw_index_auto,render,void
 0x01475000,bb_render_emit_shader_link_words,render,void
 0x01475370,bb_render_emit_num_instances,render,void
+0x014753c0,bb_render_emit_set_ps_shader_014753c0,render,void
+0x01475420,bb_render_emit_update_ps_shader_01475420,render,void
+0x01475480,bb_render_emit_set_vs_shader_01475480,render,void
 0x01475da0,bb_render_emit_event_write,render,void
 0x014765e0,bb_render_configure_viewport,render,void
 0x01476790,bb_render_configure_screen_scissor,render,void
