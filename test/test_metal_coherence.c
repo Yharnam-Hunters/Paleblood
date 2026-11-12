@@ -103,7 +103,7 @@ int main(void)
     memcpy(pool+COPY_CODE,copy_words,sizeof copy_words); memcpy(pool+FORMAT_CODE,vertex_descriptor_format,sizeof vertex_descriptor_format);
     const float positions[12]={-1,-1,0,1,3,-1,0,1,-1,3,0,1}; memcpy(pool+POSITIONS,positions,sizeof positions);
     const float colors[12]={0.25f,0.5f,0.75f,1,0.25f,0.5f,0.75f,1,0.25f,0.5f,0.75f,1}; memcpy(pool+COLORS,colors,sizeof colors);
-    rt_executor *x=NULL; const rt_executor_memory memory={fd,POOL_BYTES,guest_base,NULL,NULL,NULL};
+    rt_executor *x=NULL; const rt_executor_memory memory={fd,POOL_BYTES,guest_base,NULL,NULL,NULL,NULL,0};
     CHECK(rt_executor_open(&memory,&x,error,sizeof error)==0); if(!x)return 1;
     CHECK(close(fd)==0); /* Executor and caller mappings keep their shared allocation alive. */
     rt_render_call calls[10];

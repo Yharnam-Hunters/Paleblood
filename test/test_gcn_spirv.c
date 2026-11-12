@@ -92,6 +92,7 @@ static const gcn_pixel_layout pixel_layout = {.user_sgprs = 8, .push_constant_of
 
 static uint32_t output_control; /* the vertex layout's, for the next translation */
 static gcn_lds compute_lds;     /* the compute layout's, for the next translation */
+static uint64_t compute_gds;    /* the compute layout's GDS address, for the next translation */
 
 static int translate(stage s, const uint32_t *code, size_t dwords, uint32_t **spirv, size_t *words, char *error, size_t error_size)
 {
@@ -101,6 +102,7 @@ static int translate(stage s, const uint32_t *code, size_t dwords, uint32_t **sp
     if (s == PIXEL) return gcn_translate_pixel(code, dwords, &pixel_layout, spirv, words, error, error_size);
     gcn_compute_layout compute = layout;
     compute.lds = compute_lds;
+    compute.gds_address = compute_gds;
     return gcn_translate_compute(code, dwords, &compute, spirv, words, error, error_size);
 }
 
@@ -753,6 +755,17 @@ int main(void)
     translates(PROGRAM(pack_halves), "pack_halves");
     translates(PROGRAM(unpack_halves), "unpack_halves");
     translates(PROGRAM(buffer_atomics), "buffer_atomics");
+    /* ds_append and ds_consume need the GDS on the GPU; v_mbcnt with EXEC's halves a compute shader */
+    compute_gds = 0x500000000ull;
+    translates(PROGRAM(gds_append_consume), "gds_append_consume");
+    compute_gds = 0;
+    refused_as(COMPUTE, PROGRAM(gds_append_consume), "no GDS");
+    static const uint32_t rank[] = {0xd2480001, 0x0001007f, 0x4602027e, 0xbf810000}; /* v_mbcnt_hi v1, exec_hi, 0; v_mbcnt_lo v1, exec_lo, v1 */
+    translates(PROGRAM(rank), "rank_compute");
+    refused_as(VERTEX, PROGRAM(rank), "outside a compute shader");
+    refused_as(PIXEL, PROGRAM(rank), "outside a compute shader");
+    static const uint32_t sgpr_mask[] = {0xd2480001, 0x00010004, 0xbf810000}; /* v_mbcnt_hi v1, s4, 0 */
+    refused_as(COMPUTE, PROGRAM(sgpr_mask), "a mask other than");
     translates(PROGRAM(integer_batch), "integer_batch");
     translates(PROGRAM(scalar_batch), "scalar_batch");
     translates(PROGRAM(vcc_halves), "vcc_halves");
