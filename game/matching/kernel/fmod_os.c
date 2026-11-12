@@ -21,7 +21,7 @@ typedef struct {
     void *memory_pool;
 } FmodGlobals;
 
-extern FmodGlobals *fmod_globals;
+extern FmodGlobals *kernel_context_instance;
 
 int sceKernelClose(long descriptor);
 long sceKernelRead(long descriptor, void *buffer, unsigned long size);
@@ -30,7 +30,7 @@ int scePthreadMutexDestroy(void *mutex);
 int scePthreadMutexUnlock(void *mutex);
 int sceKernelDeleteSema(void *semaphore);
 int sceKernelWaitSema(void *semaphore, int count, unsigned *timeout);
-void fmod_memory_free(void *pool, void *pointer, const char *file, int line);
+void release_mutex_storage(void *pool, void *pointer, const char *file, int line);
 
 int kernel_file_close(long descriptor)
 {
@@ -60,7 +60,7 @@ int kernel_mutex_destroy(void *mutex, bool static_storage)
     if (scePthreadMutexDestroy(mutex))
         return KERNEL_ERROR;
     if (!static_storage)
-        fmod_memory_free(fmod_globals->memory_pool, mutex,
+        release_mutex_storage(kernel_context_instance->memory_pool, mutex,
                          "N:\\FMOD\\Source\\fmodexsrc44450\\fmod4\\orbis\\src\\fmod_os_misc.cpp",
                          MUTEX_FREE_SOURCE_LINE);
     return 0;

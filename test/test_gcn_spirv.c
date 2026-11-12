@@ -681,9 +681,43 @@ static void tessellation(void)
     CHECK(gcn_tessellation_control_shader(&few, &spirv, &words, error, sizeof error) == -1 && strstr(error, "fewer"));
 }
 
+
+/* The geometry-shader stages (runtime/gcn_spirv.h): the export and geometry passes and the copy shader make
+   modules spirv-val accepts, for each input primitive; an emit to stream 1, a ring load in the export
+   shader, a message outside a geometry shader and rings too small for one wave stop by name. */
+static void geometry_shaders(void)
+{
+    gcn_geometry_layout l = {.user_sgprs = 4, .input_primitive = GCN_GS_INPUT_POINTS, .esgs_itemsize = 2, .gsvs_itemsize = 32,
+                             .max_vertices = 8, .esgs_ring = 0x100000000ull, .esgs_ring_bytes = 1 << 20, .gsvs_ring = 0x200000000ull,
+                             .gsvs_ring_bytes = 1 << 20, .strip_buffer = 0x300000000ull, .strip_buffer_bytes = 1 << 20,
+                             .error_address = 0x400000000ull};
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    char error[256] = "";
+    int r = gcn_translate_export(PROGRAM(gs_export), &l, &spirv, &words, error, sizeof error);
+    tessellation_module(r, spirv, words, error, "gs_export");
+    for (uint32_t input = GCN_GS_INPUT_POINTS; input <= GCN_GS_INPUT_TRIANGLE_STRIP; input++) {
+        l.input_primitive = input;
+        r = gcn_translate_geometry(PROGRAM(gs_geometry), &l, &spirv, &words, error, sizeof error);
+        tessellation_module(r, spirv, words, error, "gs_geometry");
+    }
+    const gcn_vertex_layout copy = {.user_sgprs = 4, .gsvs_ring = 0x200000000ull, .gsvs_ring_bytes = 1 << 20};
+    r = gcn_translate_vertex(PROGRAM(gs_copy), &copy, &spirv, &words, error, sizeof error);
+    tessellation_module(r, spirv, words, error, "gs_copy");
+
+    static const uint32_t stream_one[] = {0xbf900122, 0xbf810000}; /* s_sendmsg sendmsg(MSG_GS, GS_OP_EMIT, 1); s_endpgm */
+    CHECK(gcn_translate_geometry(PROGRAM(stream_one), &l, &spirv, &words, error, sizeof error) == -1 && strstr(error, "stream 1"));
+    CHECK(gcn_translate_export(PROGRAM(gs_geometry), &l, &spirv, &words, error, sizeof error) == -1 && strstr(error, "load of the ESGS ring"));
+    static const uint32_t emit_only[] = {0xbf900022, 0xbf810000};
+    refused_as(VERTEX, PROGRAM(emit_only), "outside a geometry shader");
+    l.esgs_ring_bytes = 256;
+    CHECK(gcn_translate_export(PROGRAM(gs_export), &l, &spirv, &words, error, sizeof error) == -1 && strstr(error, "rings"));
+}
+
 int main(void)
 {
     tessellation();
+    geometry_shaders();
     rect_list_stages();
     tile_copy_shaders();
     store_resources();

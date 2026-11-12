@@ -273,9 +273,24 @@ Instead:
        - A generated control shader reads each patch's factors from the factor buffer. It clamps them
          to `VGT_HOS_MIN/MAX_TESS_LEVEL` and writes the tessellation levels; isolines' two factors are
          reversed, as Mesa writes them.
-     - **Not yet:** anything else stops with the instruction's name. Two groups need designs of their own:
-       - **geometry shaders**, which pass vertices on with `s_sendmsg` (about 1,700 of the
-         game's shaders);
+     - **Geometry shaders** (`runtime/gcn_spirv.h`): GCN runs a draw with a geometry shader in three
+       hardware stages that talk through two rings in memory. The export shader (ES) writes each vertex to
+       the ESGS ring; the geometry shader (GS) reads a primitive's vertices there, writes the vertices it
+       makes to the GSVS ring and says with `s_sendmsg` GS emit and cut which to draw, as strips; the
+       copy shader (the hardware VS stage) reads each drawn vertex from the GSVS ring.
+       - The export and geometry shaders become compute shaders of 64-lane workgroups, one wave each, over
+         ring buffers laid out as the hardware lays them out (Mesa's radeonsi, facts only): stores swizzled
+         (dword d of lane l at soffset + d x 256 + l x 4), loads linear. Ring accesses are the
+         `buffer_load/store_dword*` instructions with GLC and SLC set, as shadPS4 tells them apart (facts
+         only); their descriptors are not read.
+       - The export shader's lane is the draw's vertex (v0 its vertex index, then its ESGS offset after the
+         user SGPRs). The geometry shader's lane is a primitive: v0, v1, v3 its vertices' ESGS offsets, v2
+         the primitive, then its GSVS offset and wave index after the user SGPRs.
+       - Emit appends the invocation's next vertex (its GSVS slot, counted by its emits) to its strip in a
+         strip buffer, as the copy shader's vertex index for that slot; cut appends a restart index. The copy
+         shader is an ordinary vertex shader whose ring loads read the GSVS ring.
+       - Emits to streams other than 0 stop by name.
+     - **Not yet:** anything else stops with the instruction's name. One group needs a design of its own:
        - reads across lanes (`v_readlane`, `v_writelane`, `ds_swizzle`), whose results depend
          on GCN's 64-lane wave where Vulkan and Metal GPUs often run 32 lanes.
      - **Tests:** `test/test_gcn_spirv.c` checks every module with `spirv-val` for Vulkan 1.2.
@@ -482,7 +497,8 @@ Instead:
         - **What runs today:** COLOR_8_8_8_8 render targets in slots 0-7 (UNORM or sRGB, either
           component order; COLOR_10_11_11 and COLOR_16_16_16_16 FLOAT too, written back to their
           memory as the hardware lays them out, though only 8_8_8_8 ones are read as BGRA), viewport
-          0, vertex and pixel shaders with their user data, and
+          0 (viewports 1-15 are set aside: a primitive takes another only through the viewport index its vertex shader exports in
+          the misc vector, whose export stops translation by name), vertex and pixel shaders with their user data, and
           auto-index draws as triangle lists.
         - **Rect lists** (primitive type 17, which the game's fullscreen passes use): Vulkan has no
           such primitive, so each rect's three vertices go through a generated geometry stage
@@ -629,9 +645,8 @@ Instead:
           or stencil buffer the CPU or a compute shader writes would not be seen (not found yet). A draw that writes only the depth target (target mask 0, or
           `CB_COLOR_CONTROL`'s mode `CB_DISABLE`) draws without a colour target; one that writes
           nothing is skipped. The hardware shader stages (`VGT_SHADER_STAGES_EN`, from the GPU
-          library's stage setter `0x01476030`) must be vertex and pixel only: tessellation and
-          geometry-shader stages stop by name at the draw, and the local, hull, export and geometry
-          stages' user data is set aside until then. Their shaders (`sceGnmSetLsShader`, `SetHsShader`, `SetEsShader`, `SetGsShader` and the Update forms, with the argument orders of shadPS4's `gnmdriver.cpp`) are recorded like the vertex shader's (`runtime/render_calls.h` decodes their blocks: the local shader's LDS size, the hull shader's `VGT_TF_PARAM`, tessellation level clamps and `VGT_LS_HS_CONFIG`), and the stop names them. A tessellated draw (`VGT_SHADER_STAGES_EN` 0x45) is drawn in three steps. First, the local and
+          library's stage setter `0x01476030`) are vertex and pixel, tessellation (0x45, below) or
+          a geometry shader (0xb0, below); others stop by name at the draw. Their shaders (`sceGnmSetLsShader`, `SetHsShader`, `SetEsShader`, `SetGsShader` and the Update forms, with the argument orders of shadPS4's `gnmdriver.cpp`) are recorded like the vertex shader's (`runtime/render_calls.h` decodes their blocks: the local shader's LDS size, the hull shader's `VGT_TF_PARAM`, tessellation level clamps and `VGT_LS_HS_CONFIG`), and the stop names them. A tessellated draw (`VGT_SHADER_STAGES_EN` 0x45) is drawn in three steps. First, the local and
           hull shaders run as compute passes over a 16 MiB LDS buffer, one workgroup per `NUM_PATCHES` patches. Second, the hull
           pass's factor-ring writes land in a 128 KiB factor buffer (the ring's size). Third, a Vulkan tessellation pipeline draws:
           the empty vertex shader, the generated control shader, the domain shader as the evaluation shader, and the pixel shader,
@@ -640,8 +655,21 @@ Instead:
             copied into it on the GPU, and so is the passes' workgroup count, one per control point (lanes past the patches do
             nothing). A draw of more patches than the buffers hold stops at run time by name.
           - Domain origin and winding are Vulkan's defaults with `VGT_TF_PARAM`'s order, as shadPS4 sets them (facts only).
-          - Instanced tessellated draws, a hull shader with `TG_SIZE_EN`, a domain shader calling a fetch shader, and the
-            geometry-shader stages stop by name. The clinic's first tessellated draw (local shader `0x20d52d5b00`, hull `0x20d52e0100`) draws quads of one control point, 15 patches a workgroup. Triangle strips (`VGT_PRIMITIVE_TYPE` 6) are drawn too. A view of one
+          - Instanced tessellated draws, a hull shader with `TG_SIZE_EN`, a domain shader calling a fetch shader, and
+            tessellation with a geometry shader (0xad) stop by name.
+          A draw with a geometry shader (`VGT_SHADER_STAGES_EN` 0xb0) is drawn in three steps (`runtime/gcn_spirv.h`,
+          "Geometry shaders"). First, the export shader runs as a compute pass over a 16 MiB ESGS ring, one lane a vertex.
+          Second, the geometry shader runs as a compute pass, one lane a primitive of `VGT_PRIMITIVE_TYPE`'s (points,
+          lines, triangles, triangle strips), writing a 64 MiB GSVS ring and its strips' indices into a 16 MiB strip
+          buffer filled with restart indices first. Third, the vertex shader (the copy shader) draws those indices as
+          triangle strips with primitive restart. The ring item sizes and `VGT_GS_MAX_VERT_OUT` come from the GPU
+          library's writers `0x01475a90` (`VGT_ESGS_RING_ITEMSIZE`) and `0x01475af0` (`VGT_GS_VERT_ITEMSIZE`,
+          `VGT_GSVS_RING_OFFSET_1-3`, `VGT_GS_MAX_VERT_OUT`, `VGT_GSVS_RING_ITEMSIZE`), and `VGT_GS_MODE` from
+          `0x014756b0`, observed like the stage setter. The geometry pass writes the strips' indexed draw into the
+          draw's record, so an indirect draw's GPU-written vertex count (copied into the record) reaches the passes and
+          the draw; an indirect draw runs as many workgroups as the rings hold. Output other than triangle strips
+          (`VGT_GS_OUT_PRIM_TYPE`), stream output, instanced geometry shaders and instanced draws stop by name, as does a
+          draw of more vertices or primitives than the rings and strip buffer hold (an indirect one at run time). The clinic's first tessellated draw (local shader `0x20d52d5b00`, hull `0x20d52e0100`) draws quads of one control point, 15 patches a workgroup. Triangle strips (`VGT_PRIMITIVE_TYPE` 6) are drawn too. A view of one
           slice of an array depth target (`DB_DEPTH_VIEW` SLICE_START = SLICE_MAX) draws into an image
           kept for that slice alone, at that slice's memory: `DB_DEPTH_SLICE` tiles of 64 elements per
           slice past the depth and stencil bases (shadPS4's `GetDepthSliceSize`), where its depth is

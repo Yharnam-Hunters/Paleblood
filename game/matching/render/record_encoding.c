@@ -19,7 +19,7 @@
 #define INVALID_COMPONENT 2
 
 // The metadata word of each format.
-extern const uint32_t render_record_encoding_metadata_table[FORMAT_COUNT];
+extern const uint32_t record_encoding_metadata[FORMAT_COUNT];
 
 // Category nibbles with a category, and the category of each.
 enum {
@@ -101,5 +101,5 @@ uint32_t render_record_encoding_metadata(const uint32_t *encoding)
     uint32_t format = *encoding & FORMAT_MASK;
     if (format >= FORMAT_COUNT)
         return 0;
-    return render_record_encoding_metadata_table[format];
+    return record_encoding_metadata[format];
 }

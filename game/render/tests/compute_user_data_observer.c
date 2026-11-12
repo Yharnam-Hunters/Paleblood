@@ -4,7 +4,8 @@
    buffer's cursor. The record's functions are stubs here that keep the last call. The indirect
    dispatch's two writers report the base address and the data offset they are given. The depth bounds
    setter reports its two float arguments, from the saved frame's xmm0 and xmm1, as the two registers.
-   The shader stage setter reports VGT_SHADER_STAGES_EN for the values it writes, and nothing for others. */
+   The shader stage setter reports VGT_SHADER_STAGES_EN for the values it writes, and nothing for others.
+   The geometry-shader register writers report the registers they write, with the values they compute. */
 #include "runtime/observe_hooks.h"
 #include "runtime/render_observer.h"
 
@@ -20,6 +21,10 @@ enum { WRITE_ONE = 0x0148ada0, WRITE_POINTER = 0x0148ac90, WRITE_FOUR_MARKER_4 =
        DRAW_INDIRECT = 0x014744d0 };
 enum { INDIRECT_DATA_OFFSET = 0x24, SGPR_WORD = 0x1205, SGPR_BYTE = 0x05, ZERO_LOW_BYTE = 0x3400 };
 enum { SET_DEPTH_BOUNDS = 0x01473520, DB_DEPTH_BOUNDS_MIN = 0xa008, DB_DEPTH_BOUNDS_MAX = 0xa009 };
+enum { SET_GS_MODE = 0x014756b0, SET_ESGS_ITEMSIZE = 0x01475a90, SET_GS_RING_SIZES = 0x01475af0 };
+enum { VGT_GS_MODE = 0xa290, VGT_GSVS_RING_OFFSET_1 = 0xa298, VGT_ESGS_RING_ITEMSIZE = 0xa2ab, VGT_GSVS_RING_ITEMSIZE = 0xa2ac,
+       VGT_GS_MAX_VERT_OUT = 0xa2ce, VGT_GS_VERT_ITEMSIZE = 0xa2d7, VGT_STRMOUT_CONFIG = 0xa2e5, GS_STREAMS = 4, GS_VERTICES = 40,
+       ITEMSIZE_ARGUMENT = 0x1803c, STREAM_0 = 12, STREAM_1 = 2, STREAM_2 = 0, STREAM_3 = 1, ITEMSIZE_WRITTEN = 0x3c, GS_MODE_ON = 2, GS_CUT_MODE = 1, GS_MODE_WRITTEN = 0x12 };
 enum { SET_SHADER_STAGES = 0x01476030, VGT_SHADER_STAGES_EN = 0xa2d5, TESSELLATION = 0x45, NOT_WRITTEN = 0x7 };
 static const uint32_t one_value = 0x11223344u;
 static const uint64_t pointer_value = 0x0000002043490060ull;
@@ -62,7 +67,7 @@ void rt_observe_draw_indirect(uint64_t b, uint32_t o, uint32_t d, rt_shader_stag
     (void)b, (void)o;
     indirect_draw.draws++, indirect_draw.data_offset = d, indirect_draw.stage = s, indirect_draw.base_vertex_sgpr = v, indirect_draw.start_instance_sgpr = i;
 }
-enum { KEPT_REGISTERS = 2 };
+enum { KEPT_REGISTERS = 12, BOUNDS_REGISTERS = 2 };
 static struct {
     unsigned count;
     uint32_t address[KEPT_REGISTERS], value[KEPT_REGISTERS];
@@ -164,7 +169,7 @@ int main(void)
         bounds(frame);
         uint32_t low_bits, high_bits;
         memcpy(&low_bits, &low, sizeof low_bits), memcpy(&high_bits, &high, sizeof high_bits);
-        CHECK(registers.count == KEPT_REGISTERS && registers.address[0] == DB_DEPTH_BOUNDS_MIN && registers.value[0] == low_bits &&
+        CHECK(registers.count == BOUNDS_REGISTERS && registers.address[0] == DB_DEPTH_BOUNDS_MIN && registers.value[0] == low_bits &&
               registers.address[1] == DB_DEPTH_BOUNDS_MAX && registers.value[1] == high_bits);
     }
     /* the shader stages: 0x45 (tessellation) is reported, 7 (which the setter does not write) is not */
@@ -176,6 +181,37 @@ int main(void)
         stages(tessellation);
         stages(other);
         CHECK(registers.count == 1 && registers.address[0] == VGT_SHADER_STAGES_EN && registers.value[0] == TESSELLATION);
+    }
+    /* the geometry-shader registers: the ESGS item size masked to 15 bits; stream sizes 12, 2, 0, 1 for 40
+       vertices: the four sizes, the next streams' offsets (12, 14, 14 dwords x 40), 40 vertices and 15 x 40 dwords
+       a primitive; mode 2 with cut mode 1, then mode 0, which also clears the stream-output configuration */
+    const rt_observer_fn esgs = observer(SET_ESGS_ITEMSIZE), rings = observer(SET_GS_RING_SIZES), mode = observer(SET_GS_MODE);
+    CHECK(esgs != NULL && rings != NULL && mode != NULL);
+    if (esgs && rings && mode) {
+        memset(&registers, 0, sizeof registers);
+        const uint64_t itemsize[RT_OBSERVED_ARGUMENTS] = {object_address, ITEMSIZE_ARGUMENT};
+        esgs(itemsize);
+        CHECK(registers.count == 1 && registers.address[0] == VGT_ESGS_RING_ITEMSIZE && registers.value[0] == ITEMSIZE_WRITTEN);
+        memset(&registers, 0, sizeof registers);
+        static const uint32_t sizes[GS_STREAMS] = {STREAM_0, STREAM_1, STREAM_2, STREAM_3};
+        const uint64_t ring_args[RT_OBSERVED_ARGUMENTS] = {object_address, (uint64_t)(uintptr_t)sizes, GS_VERTICES};
+        rings(ring_args);
+        enum { VERT_1 = VGT_GS_VERT_ITEMSIZE + 1, VERT_2, VERT_3, OFFSET_2 = VGT_GSVS_RING_OFFSET_1 + 1, OFFSET_3 };
+        static const struct { uint32_t address, value; } expected[] = {
+            {VGT_GS_VERT_ITEMSIZE, STREAM_0}, {VGT_GSVS_RING_OFFSET_1, STREAM_0 * GS_VERTICES}, {VERT_1, STREAM_1},
+            {OFFSET_2, (STREAM_0 + STREAM_1) * GS_VERTICES}, {VERT_2, STREAM_2}, {OFFSET_3, (STREAM_0 + STREAM_1 + STREAM_2) * GS_VERTICES},
+            {VERT_3, STREAM_3}, {VGT_GS_MAX_VERT_OUT, GS_VERTICES}, {VGT_GSVS_RING_ITEMSIZE, (STREAM_0 + STREAM_1 + STREAM_2 + STREAM_3) * GS_VERTICES}};
+        CHECK(registers.count == sizeof expected / sizeof *expected);
+        for (unsigned i = 0; i < sizeof expected / sizeof *expected; i++)
+            CHECK(registers.address[i] == expected[i].address && registers.value[i] == expected[i].value);
+        memset(&registers, 0, sizeof registers);
+        const uint64_t on[RT_OBSERVED_ARGUMENTS] = {object_address, GS_MODE_ON, GS_CUT_MODE}, off[RT_OBSERVED_ARGUMENTS] = {object_address, 0, 0};
+        mode(on);
+        mode(off);
+        enum { MODE_ON, MODE_OFF, STREAMOUT_OFF, MODE_REGISTERS };
+        CHECK(registers.count == MODE_REGISTERS && registers.address[MODE_ON] == VGT_GS_MODE && registers.value[MODE_ON] == GS_MODE_WRITTEN &&
+              registers.address[MODE_OFF] == VGT_GS_MODE && registers.value[MODE_OFF] == 0 && registers.address[STREAMOUT_OFF] == VGT_STRMOUT_CONFIG &&
+              registers.value[STREAMOUT_OFF] == 0);
     }
     if (failures) fprintf(stderr, "%d failure(s)\n", failures);
     else printf("compute user data observer: ok\n");

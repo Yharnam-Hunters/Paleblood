@@ -6,7 +6,7 @@
 #define FRAME_VALUE_INDEX 2
 
 int sceKernelUsleep(unsigned microseconds);
-void frame_timing_task_run(void *manager, int task, void *frame);
+void task_run(void *manager, int task, void *frame);
 
 typedef struct {
     unsigned long long unknown_0x00;
@@ -23,7 +23,7 @@ int frame_timing_sleep_ms(unsigned milliseconds)
 // Runs every task of the manager for this frame (task index -1 means all).
 void frame_timing_task_run_all_01388c60(void *manager, void *frame)
 {
-    frame_timing_task_run(manager, ALL_TASKS, frame);
+    task_run(manager, ALL_TASKS, frame);
 }
 
 // Stores the frame's third float into the global frame value.

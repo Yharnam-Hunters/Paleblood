@@ -62,14 +62,21 @@ struct Heap {
     uint64_t allocation_count;
     uint8_t *small_bins;        // 31 list sentinels, 16 bytes apart
     FreeNode *large_root;
+    uintptr_t lowest_payload;   // the range a payload passed to free must lie in
+    uintptr_t highest_payload;
 };
 static_assert(offsetof(Heap, available) == 0x8 && offsetof(Heap, allocation_count) == 0x10);
 static_assert(offsetof(Heap, small_bins) == 0x18 && offsetof(Heap, large_root) == 0x20);
+static_assert(offsetof(Heap, lowest_payload) == 0x28 && offsetof(Heap, highest_payload) == 0x30);
 
 // Red-black tree helpers (shared engine code): remove a node, and rebalance after linking a new
 // node below `parent`.
 RT_ORIGINAL(0x024f8460, tree_remove, void(FreeNode **root, FreeNode *node));
 RT_ORIGINAL(0x024f8350, tree_insert_fixup, void(FreeNode **root, FreeNode *node, FreeNode *parent));
+
+// The two allocation strategies (robust_heap_allocate.cpp), which the aligned ones fall back to.
+RT_ORIGINAL(0x02486810, allocate, void *(Heap *, uint64_t request));
+RT_ORIGINAL(0x02487380, allocate_top, void *(Heap *, uint64_t request));
 
 inline Block *block_of(FreeNode *payload)
 {
@@ -179,6 +186,29 @@ inline Block *split_front(Block *block, uint64_t usable)
     block->next_and_flags = reinterpret_cast<uintptr_t>(rest) | prev_in_use | block_in_use;
     rest->next_and_flags = next_and_flags;
     return rest;
+}
+
+// Takes a free block (already unlinked) from its start: split when it is bigger than needed (the
+// rest filed by its size), otherwise all of it.
+inline void take_block_start(Heap *heap, Block *block, uint64_t usable)
+{
+    if (free_block_usable(block) > usable) {
+        Block *rest = split_front(block, usable);
+        file_free_block(heap, rest, free_block_usable(rest));
+    } else {
+        mark_in_use(block);
+    }
+}
+
+// Unlinks a free block of this usable size from wherever its size files it.
+inline void unlink_free_block(Heap *heap, Block *block, uint64_t usable)
+{
+    if (usable < smallest_usable)
+        return;
+    if (usable <= largest_small)
+        list_unlink(&block->payload);
+    else
+        tree_remove(&heap->large_root, &block->payload);
 }
 
 // The tree's smallest node.
