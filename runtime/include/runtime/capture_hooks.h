@@ -16,9 +16,13 @@ extern "C" {
 
 /* Called before the hooks are installed, while the originals are intact. Fills targets[i] with
    what hook i should jump to: a recording thunk when capture is on and the hook can be recorded,
-   else the replacement itself. Returns how many hooks can be recorded. */
+   else the replacement itself, or NULL (with BB_CAPTURE_ORIGINAL=1): leave this hook out, so the
+   original runs. Returns how many hooks can be recorded. */
 int rt_capture_hooks_prepare(unsigned char *image, uint64_t image_size, const rt_hook_entry *table, size_t count,
                              const void **targets);
+
+/* Capture is on with BB_CAPTURE_ORIGINAL=1: only originals run (family hooks are left out too). */
+int rt_capture_original_mode(void);
 
 /* A writable block of size bytes within 1.75 GB of the image (relocated RIP-relative operands still
    reach their data), or NULL. */

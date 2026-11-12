@@ -64,6 +64,26 @@ int main()
     CHECK(json.find("\"bytes\": \"11111111\"") != std::string::npos);
     CHECK(json.find("\"bytes\": \"22222222\"") != std::string::npos);
 
+    // Repeats: a case identical apart from its id and run is kept once, also across runs (the
+    // library's own files count), and only distinct cases count towards BB_CAPTURE_MAX.
+    {
+        const std::string library = std::string(root) + "/capture_repeat_test";
+        std::filesystem::create_directories(library);
+        { std::ofstream f(library + "/earlier_0000.json"); f << "{\"id\": \"capture_0000\", \"capture\": {\"run_id\": \"earlier\"}, \"x\": 1}\n"; }
+        setenv("BB_CAPTURE_MAX", "2", 1);
+        CHECK(rt_capture_keep("capture_repeat_test", "{\"id\": \"capture_0005\", \"capture\": {\"run_id\": \"now\"}, \"x\": 1}") == 0);
+        CHECK(rt_capture_keep("capture_repeat_test", "{\"id\": \"capture_0006\", \"capture\": {\"run_id\": \"now\"}, \"x\": 2}") == 1);
+        CHECK(rt_capture_keep("capture_repeat_test", "{\"id\": \"capture_0007\", \"capture\": {\"run_id\": \"later\"}, \"x\": 2}") == 0);
+        CHECK(rt_capture_begin("capture_repeat_test") >= 0);
+        CHECK(rt_capture_keep("capture_repeat_test", "{\"id\": \"capture_0008\", \"capture\": {\"run_id\": \"now\"}, \"x\": 3}") == 1);
+        CHECK(rt_capture_begin("capture_repeat_test") == -1);
+        unsetenv("BB_CAPTURE_MAX");
+        setenv("BB_CAPTURE_ONLY", "capture_a,capture_b", 1);
+        CHECK(rt_capture_wanted("capture_b") && !rt_capture_wanted("capture_c") && !rt_capture_wanted("capture_"));
+        unsetenv("BB_CAPTURE_ONLY");
+        CHECK(rt_capture_wanted("capture_c"));
+    }
+
     const std::string blocked_root = std::string(root) + "/regular-file";
     { std::ofstream f(blocked_root); f << "keep"; }
     setenv("BB_CAPTURE_DIR", blocked_root.c_str(), 1);

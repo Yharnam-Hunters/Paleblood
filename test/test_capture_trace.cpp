@@ -178,11 +178,26 @@ int self_test()
     const std::string json = rt::traced_case(log, args, scale, 0, "selftest", whole);
     check(json.find("\"rsi\": \"buf:b") != std::string::npos && json.find("\"pointer\": \"b") != std::string::npos &&
           json.find("\"addr\": \"0x00401000\", \"bytes\": \"e8030000\"") != std::string::npos, "case: buffers, pointer and global");
+    /* Bytes of a read-only segment are not inputs: the verifier maps the same executable. */
+    const rt_code_range globals = {image + 0x1000, image + 0x1800};
+    rt_capture_set_constant(&globals, 1);
+    check(rt::traced_case(log, args, scale, 0, "selftest", whole).find("\"addr\": \"0x00401000\"") == std::string::npos,
+          "case: a read-only global is left out");
+    rt_capture_set_constant(nullptr, 0);
     log.incomplete = "forced";
     check(rt::traced_case(log, args, scale, 0, "selftest", whole).empty(), "incomplete trace: no case");
     log.incomplete = nullptr;
     const rt_traced_function wrong = {"capture_trace_scale", 0x400000, "u32", at(0x000)};
     check(rt::traced_case(log, args, wrong, 0, "selftest", whole).empty(), "unknown return class: no case");
+    rt_trace_log_free(&log);
+
+    /* A pointer argument just before the only bytes it reaches still points into their buffer. */
+    alignas(16) unsigned char record[0x80] = {};
+    rt_trace_args store = arguments(reinterpret_cast<uint64_t>(record), 9);
+    trace(0x300, store, log);
+    const rt_traced_function store_field = {"capture_trace_store_field", 0x400300, "void", at(0x300)};
+    check(rt::traced_case(log, store, store_field, 0, "selftest", whole).find("\"rdi\": \"buf:b0+0x0\"") != std::string::npos,
+          "case: a pointer before the bytes it reaches is a buffer pointer");
     rt_trace_log_free(&log);
 
     if (!failures) std::puts("capture trace self-test: traced calls, inputs and fail-closed cases passed");

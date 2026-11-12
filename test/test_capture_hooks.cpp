@@ -8,6 +8,9 @@
    be recorded at all.
 
    --self-test  checks those behaviours, recording into a temporary directory.
+   --original-self-test  the same image with BB_CAPTURE_ORIGINAL=1: no replacement may run; a
+                recorded function's unsampled calls run its original, every other hook is left
+                out, and a repeated case is not written twice.
    --emit DIR   records into DIR for test/capture_trace_integration.py.
    --image FILE writes the image before binding and hooking, which the replay builds its
                 executable from. */
@@ -15,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -166,6 +170,48 @@ int run(const std::string &dir, bool self_test)
     return failures ? 1 : 0;
 }
 
+/* BB_CAPTURE_ORIGINAL=1: the game's own code runs everywhere, recorded or not. */
+int run_original(const std::string &dir)
+{
+    const size_t size = static_cast<size_t>(capture_trace_guest_end - capture_trace_guest_start);
+    auto *image = static_cast<unsigned char *>(mmap(nullptr, size, PROT_READ | PROT_WRITE | PROT_EXEC,
+                                                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+    if (image == MAP_FAILED) return 1;
+    std::memcpy(image, capture_trace_guest_start, size);
+    setenv("BB_CAPTURE_DIR", dir.c_str(), 1);
+    setenv("BB_CAPTURE_RUN", "original", 1);
+    setenv("BB_CAPTURE_TRACE", "1", 1);
+    setenv("BB_CAPTURE_ORIGINAL", "1", 1);
+    setenv("BB_CAPTURE_MAX", "1", 1);
+    /* increment is not wanted; count_down is wanted but cannot be recorded. */
+    setenv("BB_CAPTURE_ONLY", "capture_trace_scale,capture_trace_twice,capture_trace_count_down", 1);
+    rt_host host = {RT_HOST_API_VERSION, image, size, nullptr};
+    if (rt_host_hooks_initialize(&host) || bbgame_init(&host)) {
+        std::fprintf(stderr, "capture hooks: bbgame_init failed\n");
+        return 1;
+    }
+    Inner inner{0, 7};
+    Outer outer{0, &inner};
+    int32_t result = 0;
+    auto scale = reinterpret_cast<int32_t (*)(int32_t *, const Outer *, int32_t)>(image + 0x000);
+    check(scale(&result, &outer, 6) == 1042 && exists(dir + "/capture_trace_scale/original_0000.json"),
+          "original: the first call is traced and recorded");
+    check(scale(&result, &outer, 6) == 1042 && !exists(dir + "/capture_trace_scale/original_0001.json"),
+          "original: the same inputs again give no second case");
+    check(scale(&result, &outer, 5) == 1035 && !exists(dir + "/capture_trace_scale/original_0002.json"),
+          "original: past BB_CAPTURE_MAX distinct cases, the call runs the original unrecorded");
+    int32_t counter = 40;
+    auto increment = reinterpret_cast<int32_t (*)(int32_t *)>(image + 0x100);
+    check(increment(&counter) == 41 && counter == 41, "original: an unwanted hook is left out, so its original runs");
+    auto count_down = reinterpret_cast<int32_t (*)(int32_t)>(image + 0x280);
+    check(count_down(3) == 7, "original: an unrecordable hook is left out, so its original runs");
+    auto twice = reinterpret_cast<int32_t (*)(int32_t *)>(image + 0x0c0);
+    check(twice(&counter) == 43 && exists(dir + "/capture_trace_twice/original_0000.json"), "original: twice traced");
+    check(scale_calls + twice_calls + increment_calls + count_down_calls == 0, "original: no replacement ran");
+    if (!failures) std::puts("capture hooks original self-test: only originals ran, repeats dropped");
+    return failures ? 1 : 0;
+}
+
 }  // namespace
 
 int main(int argc, char **argv)
@@ -182,12 +228,20 @@ int main(int argc, char **argv)
         if (std::system(cleanup.c_str())) return 1;
         return rc;
     }
+    if (argc == 2 && !std::strcmp(argv[1], "--original-self-test")) {
+        char dir[] = "/tmp/pb-capture-original-XXXXXX";
+        if (!mkdtemp(dir)) return 1;
+        const int rc = run_original(dir);
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);            /* the fresh mkdtemp directory above */
+        return ec ? 1 : rc;
+    }
     if (argc == 3 && !std::strcmp(argv[1], "--emit")) return run(argv[2], false);
     if (argc == 3 && !std::strcmp(argv[1], "--image")) {
         FILE *out = std::fopen(argv[2], "wb");
         const size_t size = static_cast<size_t>(capture_trace_guest_end - capture_trace_guest_start);
         return out && std::fwrite(capture_trace_guest_start, 1, size, out) == size && !std::fclose(out) ? 0 : 1;
     }
-    std::fprintf(stderr, "usage: %s --self-test | --emit DIR\n", argv[0]);
+    std::fprintf(stderr, "usage: %s --self-test | --original-self-test | --emit DIR\n", argv[0]);
     return 2;
 }

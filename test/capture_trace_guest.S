@@ -109,6 +109,10 @@ increment:
 import_thunk:
     jmp *import_slot(%rip)
 
+/* 0x300: void store_field(struct *s, int32_t v) { s->field_40 = v; } touches only +0x40. */
+    .org 0x300
+    mov %esi, 0x40(%rdi)
+    ret
     .org 0x1000
 global:
     .long 1000

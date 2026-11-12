@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+#include <dirent.h>
 #include <stdatomic.h>
+#include <stdint.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -10,9 +12,22 @@
 #include <unistd.h>
 #include "runtime/capture.h"
 
-enum { FIRST = 50, EVERY = 1000, MAX_CASES = 200, MAX_FUNCTIONS = 64 };
+enum { FIRST = 50, EVERY = 1000, MAX_CASES = 200, MAX_FUNCTIONS = 1024 };
 
-static struct { char name[128]; atomic_uint calls; atomic_int recorded; } slots[MAX_FUNCTIONS];
+/* Per function: calls seen, case numbers handed out, distinct cases kept in this run, and the
+   digests of every case it has (the library's, read once, and this run's), for dropping repeats. */
+typedef struct {
+    char name[128];
+    atomic_uint calls;
+    atomic_int numbered;
+    atomic_int kept;
+    atomic_flag lock;
+    int loaded;
+    uint64_t *digests;
+    size_t digest_count, digest_capacity;
+} capture_slot;
+
+static capture_slot slots[MAX_FUNCTIONS];
 static int slot_count;
 static atomic_flag slots_lock = ATOMIC_FLAG_INIT;
 static atomic_flag run_lock = ATOMIC_FLAG_INIT;
@@ -73,6 +88,20 @@ static int wanted(const char *function)
     return 0;
 }
 
+int rt_capture_wanted(const char *function)
+{
+    return function && wanted(function);
+}
+
+/* BB_CAPTURE_MAX: distinct cases kept per function and run (default MAX_CASES). */
+static int case_limit(void)
+{
+    const char *env = getenv("BB_CAPTURE_MAX");
+    char *end;
+    const long n = env && *env ? strtol(env, &end, 10) : 0;
+    return env && *env && !*end && n > 0 && n <= 100000 ? (int)n : MAX_CASES;
+}
+
 int rt_capture_begin(const char *function)
 {
     if (!getenv("BB_CAPTURE_DIR") || !component(function) || !rt_capture_run_id())
@@ -82,11 +111,93 @@ int rt_capture_begin(const char *function)
         return -1;
     if (!wanted(function))
         return -1;
+    if (atomic_load(&slots[s].kept) >= case_limit())
+        return -1;
     unsigned call = atomic_fetch_add(&slots[s].calls, 1);
     if (call >= FIRST && call % EVERY)
         return -1;
-    int number = atomic_fetch_add(&slots[s].recorded, 1);
-    return number < MAX_CASES ? number : -1;
+    return atomic_fetch_add(&slots[s].numbered, 1);
+}
+
+/* FNV-1a over a case, leaving out the values of "id" and "run_id": two calls that read the same
+   inputs give the same digest, whichever run or case number recorded them. */
+static uint64_t case_digest(const char *json)
+{
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (const char *p = json; *p; p++) {
+        if (!strncmp(p, "\"id\": \"", 7) || !strncmp(p, "\"run_id\": \"", 11)) {
+            p = strchr(p, ':') + 3;                     /* the value's first character */
+            while (*p && *p != '"') p++;
+            if (!*p) break;
+        }
+        h = (h ^ (unsigned char)*p) * 0x100000001b3ull;
+    }
+    return h;
+}
+
+static int add_digest(capture_slot *s, uint64_t digest)
+{
+    for (size_t i = 0; i < s->digest_count; i++)
+        if (s->digests[i] == digest) return 0;
+    if (s->digest_count == s->digest_capacity) {
+        const size_t cap = s->digest_capacity ? s->digest_capacity * 2 : 64;
+        uint64_t *more = realloc(s->digests, cap * sizeof *more);
+        if (!more) return 1;                            /* no memory: keep the case rather than lose it */
+        s->digests = more;
+        s->digest_capacity = cap;
+    }
+    s->digests[s->digest_count++] = digest;
+    return 1;
+}
+
+/* The digests of the cases already in the library for this function (earlier runs). It runs on a
+   game thread, whose stack is small: the buffers come from the heap. */
+static void load_library(capture_slot *s, const char *function)
+{
+    enum { PATH = 4096, CHUNK = 65536 };
+    const char *dir = getenv("BB_CAPTURE_DIR");
+    char *path = malloc(PATH), *file = malloc(PATH), *chunk = malloc(CHUNK);
+    DIR *d = path && file && chunk && dir && snprintf(path, PATH, "%s/%s", dir, function) < PATH ? opendir(path) : NULL;
+    for (struct dirent *e; d && (e = readdir(d));) {
+        const size_t len = strlen(e->d_name);
+        if (len < 6 || strcmp(e->d_name + len - 5, ".json") || snprintf(file, PATH, "%s/%s", path, e->d_name) >= PATH)
+            continue;
+        FILE *f = fopen(file, "r");
+        if (!f) continue;
+        char *text = NULL;
+        size_t size = 0;
+        FILE *buffer = open_memstream(&text, &size);
+        if (buffer) {
+            for (size_t n; (n = fread(chunk, 1, CHUNK, f));) fwrite(chunk, 1, n, buffer);
+            fclose(buffer);
+            /* Cases end in a newline the writer adds; the digest is of the object alone. */
+            if (size && text[size - 1] == '\n') text[size - 1] = 0;
+            if (text) add_digest(s, case_digest(text));
+        }
+        free(text);
+        fclose(f);
+    }
+    if (d) closedir(d);
+    free(path);
+    free(file);
+    free(chunk);
+}
+
+int rt_capture_keep(const char *function, const char *json)
+{
+    if (!function || !json) return 0;
+    const int index = slot_for(function);
+    if (index < 0) return 1;
+    capture_slot *s = &slots[index];
+    while (atomic_flag_test_and_set(&s->lock)) {}
+    if (!s->loaded) {
+        load_library(s, function);
+        s->loaded = 1;
+    }
+    const int fresh = add_digest(s, case_digest(json));
+    atomic_flag_clear(&s->lock);
+    if (fresh) atomic_fetch_add(&s->kept, 1);
+    return fresh;
 }
 
 /* Identifies one game run in file names, so runs add to the library instead of overwriting:

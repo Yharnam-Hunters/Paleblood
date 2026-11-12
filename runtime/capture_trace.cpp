@@ -29,6 +29,17 @@ namespace {
 
 constexpr uint64_t MERGE_GAP = 256;
 
+/* The image's read-only segments (rt_capture_set_constant): the verifier maps the same executable,
+   so their bytes are never case inputs, and presetting them would write into read-only memory. */
+std::vector<rt_code_range> constant_ranges;
+
+bool constant(uint64_t a)
+{
+    for (const rt_code_range &r : constant_ranges)
+        if (a >= reinterpret_cast<uintptr_t>(r.lo) && a < reinterpret_cast<uintptr_t>(r.hi)) return true;
+    return false;
+}
+
 struct Region {
     uint64_t base, end;     /* [base, end), end rounded up to 16 */
     std::string name;
@@ -69,7 +80,10 @@ bool valid_returns(const char *r)
 
 class Builder {
 public:
-    Builder(const rt_trace_log &log, rt_code_range image)
+    /* `pointers`: argument values the code may use as base addresses. One that lies just before
+       or after the bytes it touched (a struct whose first fields go unread) widens their buffer
+       to reach it, so it is still written as buf:NAME+off rather than as this run's address. */
+    Builder(const rt_trace_log &log, rt_code_range image, const std::vector<uint64_t> &pointers = {})
         : log_(log), lo_(reinterpret_cast<uintptr_t>(image.lo)), hi_(reinterpret_cast<uintptr_t>(image.hi))
     {
         for (size_t i = 0; i < log.count; i++) {
@@ -80,6 +94,27 @@ public:
             else
                 regions_.back().end = a + 1;
         }
+        std::vector<uint64_t> anchors(pointers);
+        for (size_t i = 0; i < log.qword_count; i++) {
+            uint64_t v;
+            if (input(log.qword[i], 8, &v)) anchors.push_back(v);
+        }
+        for (uint64_t v : anchors) {
+            if (in_image(v)) continue;
+            for (Region &r : regions_) {
+                if (v < r.base && r.base - v <= MERGE_GAP) r.base = v & ~uint64_t{15};
+                else if (v > r.end && v - r.end <= MERGE_GAP) r.end = v;
+            }
+        }
+        /* Widened buffers may now meet: join them. */
+        std::vector<Region> joined;
+        for (const Region &r : regions_) {
+            if (!joined.empty() && r.base <= ((joined.back().end + 15) & ~uint64_t{15}))
+                joined.back().end = std::max(joined.back().end, r.end);
+            else
+                joined.push_back(r);
+        }
+        regions_.swap(joined);
         for (size_t i = 0; i < regions_.size(); i++) {
             regions_[i].end = (regions_[i].end + 15) & ~uint64_t{15};
             regions_[i].name = "b" + std::to_string(i);
@@ -157,7 +192,7 @@ public:
         qwords.erase(std::unique(qwords.begin(), qwords.end()), qwords.end());
         for (uint64_t q : qwords) {
             uint64_t v;
-            if (!input(q, 8, &v)) continue;
+            if (constant(q) || !input(q, 8, &v)) continue;
             std::string target;
             if (const Region *r = region(v, true))
                 target = "\"pointer\": \"" + r->name + "+" + number_hex(v - r->base) + "\"";
@@ -171,13 +206,13 @@ public:
         /* Image inputs as runs of consecutive bytes. */
         for (size_t i = 0; i < log_.count;) {
             const uint64_t a = log_.addr[i];
-            if (!in_image(a) || !(log_.flags[i] & RT_TRACE_READ) || pointer_bytes.count(a)) {
+            if (!in_image(a) || constant(a) || !(log_.flags[i] & RT_TRACE_READ) || pointer_bytes.count(a)) {
                 i++;
                 continue;
             }
             std::vector<uint8_t> run;
             size_t j = i;
-            while (j < log_.count && log_.addr[j] == a + run.size() && in_image(log_.addr[j]) &&
+            while (j < log_.count && log_.addr[j] == a + run.size() && in_image(log_.addr[j]) && !constant(log_.addr[j]) &&
                    (log_.flags[j] & RT_TRACE_READ) && !pointer_bytes.count(log_.addr[j]))
                 run.push_back(log_.value[j++]);
             add("{\"addr\": \"" + guest_hex(guest(a)) + "\", \"bytes\": \"" + bytes_hex(run.data(), run.size()) + "\"}");
@@ -219,7 +254,9 @@ std::string rt::traced_case(const rt_trace_log &log, const rt_trace_args &args, 
                             int number, const char *run, rt_code_range image)
 {
     if (log.incomplete || number < 0 || !run || !f.function || !valid_returns(f.returns)) return "";
-    const Builder b(log, image);
+    std::vector<uint64_t> pointers(args.gpr, args.gpr + 6);
+    pointers.insert(pointers.end(), args.stack, args.stack + log.stack_slots);
+    const Builder b(log, image, pointers);
     static const char *const registers[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
     std::string arguments;
     for (int i = 0; i < 6; i++)
@@ -236,6 +273,11 @@ std::string rt::traced_case(const rt_trace_log &log, const rt_trace_args &args, 
            "}, \"memory\": [" + b.memory() + "], \"stubs\": [], \"imports\": [" + imports(log) + "]}";
 }
 
+extern "C" void rt_capture_set_constant(const rt_code_range *ranges, size_t count)
+{
+    constant_ranges.assign(ranges, ranges + count);
+}
+
 extern "C" int rt_capture_traced_call(const rt_traced_function *f, int number, const rt_trace_args *args,
                                       rt_code_range image, const rt_code_range *code, size_t ranges,
                                       rt_trace_result *result)
@@ -246,7 +288,8 @@ extern "C" int rt_capture_traced_call(const rt_traced_function *f, int number, c
     const char *run = rt_capture_run_id();
     const std::string json = rt::traced_case(log, *args, *f, number, run, image);
     if (!json.empty()) {
-        rt_capture_write(f->function, number, json.c_str());
+        /* A repeat of a case the library holds is dropped, but the trace still succeeded. */
+        if (rt_capture_keep(f->function, json.c_str())) rt_capture_write(f->function, number, json.c_str());
         written = 1;
     } else if (std::getenv("BB_CAPTURE_VERBOSE")) {
         std::fprintf(stderr, "capture: %s: no case: %s\n", f->function,
