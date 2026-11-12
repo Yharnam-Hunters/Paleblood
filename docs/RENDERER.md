@@ -508,6 +508,12 @@ Instead:
           write every drawn target back. shadPS4 skips such write-backs altogether by default
           (`readbacks_mode` Disabled in its `emulator_settings.h`; facts only). At the Contract screen
           the end-of-buffer write-backs were about 1,250 of the 1,370 target write-backs every 2 s.
+        - **Images straight from targets:** an image over a render target drawn into since its
+          write-back, at the same address with the same tiling index, pitch and texel bytes (2D, one
+          level and layer, within the target, no other unwritten target over it), takes the target's
+          texels with a GPU image copy (`image_from_target`) instead of a write-back and a load: the two
+          would move the same bytes through host memory. It is copied again after the target's next draws.
+          At the Contract screen this removed the image-overlap write-backs (about 700 every 2 s).
         - **One batch per buffer:** a buffer's draws, dispatches and copies are recorded into one Vulkan
           command buffer and submitted once, with barriers between them, instead of each waiting for the
           GPU. The CPU waits only where it reads what the batch produces: a render target written back

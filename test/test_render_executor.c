@@ -53,7 +53,7 @@ static uint32_t reference_texel(uint32_t px, uint32_t y)
 
 /* Draws pixel_image_texel (each pixel the texel under it) into target with the image descriptor in the
    pixel shader's user data; the run's result. */
-static int draw_texels(rt_executor *x, uint64_t target, const uint32_t image[8], char *error, size_t error_size)
+static int draw_texels_as(rt_executor *x, uint64_t target, const uint32_t image[8], int recorded, char *error, size_t error_size)
 {
     enum { TEXEL_BUFFER = 0xc0f00000, TEXEL_CODE = 0x2a00 };
     memcpy((void *)(uintptr_t)at(TEXEL_CODE), pixel_image_texel, sizeof pixel_image_texel);
@@ -63,7 +63,17 @@ static int draw_texels(rt_executor *x, uint64_t target, const uint32_t image[8],
     const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 8 << 1, 0, 0x4, 0x302, 0x302, 0, 0, 0, 0xf};
     CHECK(rt_render_record_pixel_shader(TEXEL_BUFFER, offset, pixel, error, error_size) == 0);
     CHECK(rt_render_record_user_data(TEXEL_BUFFER, offset + 0x10, RT_STAGE_PIXEL, 0, image, 8, error, error_size) == 0);
-    return rt_executor_run(x, TEXEL_BUFFER, record_triangle_draw(TEXEL_BUFFER, offset + 0x20), error, error_size);
+    const uint32_t size = record_triangle_draw(TEXEL_BUFFER, offset + 0x20);
+    if (!recorded) return rt_executor_run(x, TEXEL_BUFFER, size, error, error_size);
+    size_t count = 0;
+    const rt_render_call *calls = rt_render_submitted(TEXEL_BUFFER, size, &count);
+    uint64_t ticket = 0;
+    return rt_executor_record_calls(x, calls, count, &ticket, error, error_size) || rt_executor_finish(x, error, error_size) ? -1 : 0;
+}
+
+static int draw_texels(rt_executor *x, uint64_t target, const uint32_t image[8], char *error, size_t error_size)
+{
+    return draw_texels_as(x, target, image, 0, error, error_size);
 }
 
 /* The pixels of target that differ from the reference image (all of them on a failed read). */
@@ -1823,7 +1833,7 @@ static void tiled_target_memory(rt_executor *x)
 /* Records the tiled target's draw (tiled_target_memory's) into the target at TILED_TARGET without a
    submit (rt_executor_record_calls, as the renderer does) and runs the batch. */
 enum { TILED_TARGET = 0xec0000, RECORDED_BUFFER = 0xc0fa0000, RECORDED_TILING = 13 };
-static int record_tiled_draw(rt_executor *x, char *error, size_t error_size)
+static int record_tiled_draw_blended(rt_executor *x, uint32_t blend, char *error, size_t error_size)
 {
     rt_render_forget(), rt_executor_reset(x);
     uint32_t offset = record_setup(RECORDED_BUFFER, at(TILED_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
@@ -1831,13 +1841,15 @@ static int record_tiled_draw(rt_executor *x, char *error, size_t error_size)
     color_target(words, at(TILED_TARGET), COLOR_8_8_8_8, SWAP_STD);
     words[5] = RECORDED_TILING;
     if (rt_render_record_color_target(RECORDED_BUFFER, offset, 0, words, error, error_size) ||
-        rt_render_record_register(RECORDED_BUFFER, offset + 0x10, 0xa1e0, 0, error, error_size))
+        rt_render_record_register(RECORDED_BUFFER, offset + 0x10, 0xa1e0, blend, error, error_size))
         return -1;
     size_t count = 0;
     const rt_render_call *calls = rt_render_submitted(RECORDED_BUFFER, record_triangle_draw(RECORDED_BUFFER, offset + 0x20), &count);
     uint64_t ticket = 0;
     return rt_executor_record_calls(x, calls, count, &ticket, error, error_size) || rt_executor_finish(x, error, error_size) ? -1 : 0;
 }
+
+static int record_tiled_draw(rt_executor *x, char *error, size_t error_size) { return record_tiled_draw_blended(x, 0, error, error_size); }
 
 /* Whether the tiled target's memory holds nothing but zeros. */
 static int tiled_memory_zero(void)
@@ -1852,7 +1864,7 @@ static int tiled_memory_zero(void)
 }
 
 static struct {
-    uint64_t address, length;
+    uint64_t address, length, unguarded; /* the last guard's range, the last unguard's address */
     int guards, unguards, answer;
 } guarded;
 
@@ -1864,8 +1876,8 @@ static int test_guard(uint64_t address, uint64_t length)
 
 static void test_unguard(uint64_t address, uint64_t length)
 {
-    CHECK(address == guarded.address && length == guarded.length);
-    guarded.unguards++;
+    CHECK(length > 0);
+    guarded.unguarded = address, guarded.unguards++;
 }
 
 /* Recorded buffers and the CPU (rt_executor_memory's guard): with a guard, the tiled target's draw
@@ -1892,12 +1904,27 @@ static void guarded_targets(int fd, rt_executor *shared)
     CHECK(record_tiled_draw(x, error, sizeof error) == 0); /* drawn again: still guarded, not again */
     CHECK(guarded.guards == 1 && tiled_memory_zero());
     CHECK(rt_executor_resolve(x, at(TILED_TARGET) + 64, 4, error, sizeof error) == 0);
-    CHECK(!tiled_memory_zero() && guarded.unguards == 1);
+    CHECK(!tiled_memory_zero() && guarded.unguards == 1 && guarded.unguarded == at(TILED_TARGET));
     uint32_t image[8];
     image_descriptor(image, at(TILED_TARGET), 10, 0, SIZE, SIZE);
     image[3] |= RECORDED_TILING << 20;
     CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
     CHECK(differing_pixels(x, at(TEXEL_TARGET)) == 0);
+
+    /* an image over a guarded drawn target laid out the same way gets the target's texels on the GPU
+       (image_from_target): the draw shows, and the memory keeps its zeros; drawn again (ZERO + ZERO
+       blending blacks the triangle), the image takes the new texels */
+    memset(memory, 0, rt_tiling_size(&layout, 1));
+    const int guards_before = guarded.guards;
+    CHECK(record_tiled_draw(x, error, sizeof error) == 0);
+    CHECK(guarded.guards == guards_before + 1 && guarded.address == at(TILED_TARGET) && tiled_memory_zero());
+    CHECK(draw_texels_as(x, at(TEXEL_TARGET), image, 1, error, sizeof error) == 0); /* recorded: nothing written back after it */
+    CHECK(differing_pixels(x, at(TEXEL_TARGET)) == 0 && tiled_memory_zero());
+    CHECK(record_tiled_draw_blended(x, 1u << 30, error, sizeof error) == 0);
+    CHECK(draw_texels_as(x, at(TEXEL_TARGET), image, 1, error, sizeof error) == 0);
+    CHECK(differing_pixels(x, at(TEXEL_TARGET)) > 0 && tiled_memory_zero());
+    /* written back (all zeros now: the background was, the triangle is black) and lifted */
+    CHECK(rt_executor_resolve(x, at(TILED_TARGET), 4, error, sizeof error) == 0 && guarded.unguards == 2 && guarded.unguarded == at(TILED_TARGET));
 
     memset(memory, 0, rt_tiling_size(&layout, 1));
     guarded.answer = -1;
