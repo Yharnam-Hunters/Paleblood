@@ -1934,6 +1934,23 @@ static void table_copied(rt_executor *x)
     CHECK(any_drawn);
     CHECK(memcmp((const void *)(uintptr_t)at(COPIED), drawn, SIZE * SIZE * 4) == 0);
 
+    /* A wait that gives the GPU 1 ns does not see the batch finish: the call fails naming the batch's
+       draw and dispatch by their shaders (the default limit is 20 s; a batch still running then holds
+       a shader that does not end). With the default again, the batch is waited for and retired. The
+       GPU may beat the 1 ns wait now and then: up to five tries. */
+    char dispatch_named[64];
+    snprintf(dispatch_named, sizeof dispatch_named, "dispatch %#llx", (unsigned long long)at(TABLE_COPY_CODE));
+    int named = 0;
+    for (int attempt = 0; attempt < 5 && !named; attempt++) {
+        rt_executor_set_wait_limit(x, 1);
+        const int timed = rt_executor_run(x, COPY_BUFFER, offset + 0x40, error, sizeof error);
+        rt_executor_set_wait_limit(x, 0);
+        named = timed == -1 && strstr(error, "did not finish a batch of 2 draws and dispatches in 1e-09 s") && strstr(error, "draw (vertex 0x") &&
+                strstr(error, dispatch_named);
+        if (timed && !named) fprintf(stderr, "table copy, 1 ns wait: %s\n", error);
+        CHECK(rt_executor_finish(x, error, sizeof error) == 0);
+    }
+    CHECK(named);
 }
 
 /* The executor's GDS (rt_executor_memory's gds, imported): a compute dispatch of gcn_programs.h's
