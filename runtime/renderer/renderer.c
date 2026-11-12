@@ -6,6 +6,7 @@
 #include "runtime/process.h"
 #include "runtime/render_calls.h"
 #include "runtime/render_executor.h"
+#include "runtime/render_placed.h"
 #include "runtime/write_watch.h"
 
 #include <pthread.h>
@@ -33,7 +34,15 @@ static void unlock_renderer(void)
     pthread_mutex_unlock(&renderer_lock);
 }
 
-void rt_renderer_configure(int on) { enabled = on; }
+/* Placed calls are checked against the command buffer they were placed in (runtime/render_placed.h): a
+   guest address is the host's address of that memory. */
+static uint32_t guest_word(uint64_t address) { return *(const volatile uint32_t *)(uintptr_t)address; }
+
+void rt_renderer_configure(int on)
+{
+    enabled = on;
+    rt_render_check_placed_calls(on ? guest_word : NULL);
+}
 
 static int collect_cpu_writes(const uint64_t (*ranges)[2], size_t count, void (*written)(void *context, uint64_t pool_offset, uint64_t length),
                               void *context);

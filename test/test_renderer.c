@@ -275,8 +275,12 @@ int main(void)
        has stored its results by the time its completion step is performed. Its calls are taken, so
        a graphics buffer submitted later over the same memory does not pick up its shader. */
     {
-        enum { QUEUE_BUFFER = 0xc0e80000, QUEUE_BYTES = 0x100, COMPUTE_CODE = 0x3000, INPUT = 0x20000, OUTPUT = 0x21000, LANES = 64 };
+        enum { QUEUE = 0x30000, QUEUE_BYTES = 0x100, COMPUTE_CODE = 0x3000, INPUT = 0x20000, OUTPUT = 0x21000, LANES = 64 };
+        const uint64_t QUEUE_BUFFER = at(QUEUE);
         char error[256] = "";
+        /* the bind's place holds the NOP packet the GNM call writes there (runtime/render_placed.h) */
+        uint32_t *queue = (uint32_t *)(uintptr_t)QUEUE_BUFFER;
+        queue[0x10 / 4] = 0xc0001000u, queue[0x14 / 4] = 0;
         memcpy((void *)(uintptr_t)at(COMPUTE_CODE), scale_add, sizeof scale_add);
         float *input = (float *)(uintptr_t)at(INPUT), *output = (float *)(uintptr_t)at(OUTPUT);
         for (unsigned i = 0; i < LANES; i++) input[i] = (float)i, output[i] = -1;

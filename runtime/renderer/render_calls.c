@@ -17,6 +17,7 @@
      SPI_PS_IN_CONTROL NUM_INTERP[5:0]
    and ColorFormat from its enum header (gca/gfx_7_2_enum.h). */
 #include "runtime/render_calls.h"
+#include "runtime/render_placed.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -231,12 +232,38 @@ static size_t list_count;
    oldest are dropped. */
 typedef struct {
     uint64_t address;
+    uint32_t header; /* the NOP header at the address when the call was placed (with a reader) */
     rt_render_call call;
 } placed_call;
 
 enum { MAX_PLACED_CALLS = 4096 };
 static placed_call placed[MAX_PLACED_CALLS];
 static size_t placed_count;
+static rt_render_word_reader read_word; /* runtime/render_placed.h */
+
+/* PM4 type-3 packet headers (AMD's public PM4 format): type bits 30-31, the count of the dwords after
+   the header minus one in bits 16-29, the opcode in bits 8-15; NOP is opcode 0x10. */
+#define PM4_TYPE3_NOP_MASK 0xc000ff00u
+#define PM4_TYPE3_NOP 0xc0001000u
+#define PM4_COUNT(header) (((header) >> 16) & 0x3fffu)
+
+void rt_render_check_placed_calls(rt_render_word_reader read)
+{
+    pthread_mutex_lock(&lists_lock);
+    read_word = read;
+    pthread_mutex_unlock(&lists_lock);
+}
+
+/* Whether the memory at a placed call still holds the NOP packet it was placed on. Called with lists_lock held. */
+static int still_placed(const placed_call *p)
+{
+    if (!read_word) return 1;
+    if (read_word(p->address) != p->header || (p->header & PM4_TYPE3_NOP_MASK) != PM4_TYPE3_NOP) return 0;
+    const uint32_t body = PM4_COUNT(p->header) + 1;
+    for (uint32_t i = 1; i <= body; i++)
+        if (read_word(p->address + 4ull * i)) return 0;
+    return 1;
+}
 
 static call_list *list_for(uint64_t buffer)
 {
@@ -384,7 +411,15 @@ static int place(uint64_t address, const rt_render_call *call)
         memmove(placed, placed + 1, (MAX_PLACED_CALLS - 1) * sizeof *placed);
         placed_count--;
     }
-    placed[placed_count++] = (placed_call){.address = address, .call = *call};
+    uint32_t header = 0;
+    if (read_word) {
+        header = read_word(address);
+        size_t kept = 0; /* an older call at this address: its memory has been written again since */
+        for (size_t i = 0; i < placed_count; i++)
+            if (placed[i].address != address) placed[kept++] = placed[i];
+        placed_count = kept;
+    }
+    placed[placed_count++] = (placed_call){.address = address, .header = header, .call = *call};
     pthread_mutex_unlock(&lists_lock);
     return 0;
 }
@@ -495,6 +530,7 @@ static void take_placed(uint64_t buffer, uint32_t size)
             placed[kept++] = *p;
             continue;
         }
+        if (!still_placed(p)) continue; /* placed in an earlier use of this memory: dropped */
         if (!list) {
             list = list_for(buffer);
             if (!list) { placed[kept++] = *p; continue; }
