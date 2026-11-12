@@ -8,6 +8,9 @@
    be recorded at all.
 
    --self-test  checks those behaviours, recording into a temporary directory.
+   --native-self-test  with BB_CAPTURE_NATIVE naming increment: twice's traced call reaches
+                increment's replacement, so its trace ends there (no case) and increment's
+                replacement runs, as a renderer-reporting replacement must.
    --original-self-test  the same image with BB_CAPTURE_ORIGINAL=1: no replacement may run; a
                 recorded function's unsampled calls run its original, every other hook is left
                 out, and a repeated case is not written twice.
@@ -170,6 +173,33 @@ int run(const std::string &dir, bool self_test)
     return failures ? 1 : 0;
 }
 
+/* BB_CAPTURE_NATIVE: a replacement that must run for every call, traced callers included. */
+int run_native(const std::string &dir)
+{
+    const size_t size = static_cast<size_t>(capture_trace_guest_end - capture_trace_guest_start);
+    auto *image = static_cast<unsigned char *>(mmap(nullptr, size, PROT_READ | PROT_WRITE | PROT_EXEC,
+                                                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+    if (image == MAP_FAILED) return 1;
+    std::memcpy(image, capture_trace_guest_start, size);
+    setenv("BB_CAPTURE_DIR", dir.c_str(), 1);
+    setenv("BB_CAPTURE_RUN", "native", 1);
+    setenv("BB_CAPTURE_TRACE", "1", 1);
+    setenv("BB_CAPTURE_NATIVE", "capture_trace_increment", 1);
+    rt_host host = {RT_HOST_API_VERSION, image, size, nullptr};
+    if (rt_host_hooks_initialize(&host) || bbgame_init(&host)) {
+        std::fprintf(stderr, "capture hooks: bbgame_init failed\n");
+        return 1;
+    }
+    int32_t counter = 40;
+    auto twice = reinterpret_cast<int32_t (*)(int32_t *)>(image + 0x0c0);
+    check(twice(&counter) == 42 && counter == 42 && twice_calls == 0 && increment_calls == 2,
+          "native: a traced caller runs the native replacement for both calls");
+    check(!exists(dir + "/capture_trace_twice") && !exists(dir + "/capture_trace_increment"),
+          "native: the caller's trace ended, and the native function is never recorded");
+    if (!failures) std::puts("capture hooks native self-test: traced callers run the native replacement");
+    return failures ? 1 : 0;
+}
+
 /* BB_CAPTURE_ORIGINAL=1: the game's own code runs everywhere, recorded or not. */
 int run_original(const std::string &dir)
 {
@@ -228,6 +258,14 @@ int main(int argc, char **argv)
         if (std::system(cleanup.c_str())) return 1;
         return rc;
     }
+    if (argc == 2 && !std::strcmp(argv[1], "--native-self-test")) {
+        char dir[] = "/tmp/pb-capture-native-XXXXXX";
+        if (!mkdtemp(dir)) return 1;
+        const int rc = run_native(dir);
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);            /* the fresh mkdtemp directory above */
+        return ec ? 1 : rc;
+    }
     if (argc == 2 && !std::strcmp(argv[1], "--original-self-test")) {
         char dir[] = "/tmp/pb-capture-original-XXXXXX";
         if (!mkdtemp(dir)) return 1;
@@ -242,6 +280,6 @@ int main(int argc, char **argv)
         const size_t size = static_cast<size_t>(capture_trace_guest_end - capture_trace_guest_start);
         return out && std::fwrite(capture_trace_guest_start, 1, size, out) == size && !std::fclose(out) ? 0 : 1;
     }
-    std::fprintf(stderr, "usage: %s --self-test | --original-self-test | --emit DIR\n", argv[0]);
+    std::fprintf(stderr, "usage: %s --self-test | --native-self-test | --original-self-test | --emit DIR\n", argv[0]);
     return 2;
 }

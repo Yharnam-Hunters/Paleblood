@@ -67,8 +67,9 @@ replacements as in any `--game-lib` boot, or, with `--capture-originals`, no rep
 all. `--capture-functions` picks the functions (`all-edge-verified` by default, `all`, or a list;
 with a `--display`, `all-edge-verified` leaves out the functions whose replacements report what
 they emitted to the runtime's renderer (`runtime/render_observer.h`): a recorded call runs the
-original, which reports nothing, and the renderer would stop at the state it missed; a scene with
-`"display": "none"` records them)
+original, which reports nothing, and the renderer would stop at the state it missed; their
+replacements then run for every call, also inside a recorded caller, whose trace ends there; a
+scene with `"display": "none"` records them)
 and `--capture-cases N` caps the distinct cases kept per function and run (200). A case identical
 to one the library already holds, apart from its id and run, is not written again, so repeated
 runs only add new situations.
