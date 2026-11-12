@@ -118,7 +118,7 @@ typedef enum {
     RT_CALL_COLOR_TARGET, RT_CALL_VIEWPORT, RT_CALL_DRAW_AUTO, RT_CALL_VERTEX_SHADER, RT_CALL_PIXEL_SHADER,
     RT_CALL_USER_DATA, RT_CALL_REGISTER, RT_CALL_INSTANCES, RT_CALL_COMPUTE_SHADER, RT_CALL_DISPATCH,
     RT_CALL_INDEX_BASE, RT_CALL_INDEX_SIZE, RT_CALL_INDEX_TYPE, RT_CALL_DRAW_INDEX_OFFSET,
-    RT_CALL_DRAW_INDEXED,
+    RT_CALL_DRAW_INDEXED, RT_CALL_INDIRECT_BASE, RT_CALL_DISPATCH_INDIRECT,
 } rt_render_call_kind;
 
 /* Register ranges a register call may set, as AMD numbers them (dword addresses, gfx_7_2_d.h):
@@ -161,6 +161,12 @@ typedef struct {
         struct {
             uint32_t groups[3];      /* DISPATCH_DIRECT: workgroups in x, y and z */
         } dispatch;
+        struct {
+            uint64_t address;        /* SET_BASE (base 1): where later indirect calls' arguments are */
+        } indirect_base;
+        struct {
+            uint32_t data_offset;    /* DISPATCH_INDIRECT: bytes from the indirect base to x, y, z */
+        } dispatch_indirect;
         struct {
             uint64_t address;        /* unmasked byte address from INDEX_BASE's low/high DWORDs */
         } index_base;
@@ -205,6 +211,12 @@ int rt_render_record_register(uint64_t buffer, uint32_t offset, uint32_t address
                               size_t error_size);
 /* A compute dispatch of groups[0] x groups[1] x groups[2] workgroups (DISPATCH_DIRECT); each at least 1. */
 int rt_render_record_dispatch(uint64_t buffer, uint32_t offset, const uint32_t groups[3], char *error, size_t error_size);
+/* The base address of later indirect calls' arguments (SET_BASE with base index 1, the draw and
+   dispatch indirect table): an address the packet keeps (bits 3-39). */
+int rt_render_record_indirect_base(uint64_t buffer, uint32_t offset, uint64_t address, char *error, size_t error_size);
+/* A compute dispatch whose workgroup counts the GPU reads when it runs (DISPATCH_INDIRECT): three
+   32-bit words, x, y and z, at data_offset bytes from the indirect base, a multiple of 4. */
+int rt_render_record_dispatch_indirect(uint64_t buffer, uint32_t offset, uint32_t data_offset, char *error, size_t error_size);
 /* The index buffer later indexed draws read: its address (INDEX_BASE), its size in indices
    (INDEX_BUFFER_SIZE) and the index type (INDEX_TYPE). */
 int rt_render_record_index_base(uint64_t buffer, uint32_t offset, uint64_t address, char *error, size_t error_size);

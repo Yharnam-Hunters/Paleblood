@@ -309,6 +309,8 @@ typedef struct {
     uint64_t index_base;
     uint32_t index_size, index_type;
     int index_base_set, index_size_set, index_type_set;
+    uint64_t indirect_base;          /* SET_BASE: where indirect dispatches' workgroup counts are */
+    int indirect_base_set;
     /* the depth target's registers, as setting it (or switching it off: DB_Z_INFO and DB_STENCIL_INFO 0)
        writes them: DB_Z_INFO to DB_DEPTH_SLICE, and DB_DEPTH_VIEW */
     uint32_t depth_target[DEPTH_TARGET_REGISTERS], depth_view;
@@ -910,7 +912,8 @@ static int import_memory(rt_executor *x, const rt_executor_memory *memory, char 
                                                        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
     const VkBufferCreateInfo buffer = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &external, .size = memory->size,
                                        .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                                                VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+                                                VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                                                VK_BUFFER_USAGE_TRANSFER_DST_BIT};
     if (vkCreateBuffer(x->device, &buffer, NULL, &x->buffer) != VK_SUCCESS) return failed(error, error_size, "no buffer for the guest memory");
     VkMemoryRequirements need;
     vkGetBufferMemoryRequirements(x->device, x->buffer, &need);
@@ -1359,6 +1362,20 @@ static void level_plans_free(rt_executor *x, image_entry *e)
     e->level_plans = NULL;
 }
 
+/* A split tile (a depth layout's tile split, runtime/tiling.h) puts each piece of a micro tile in its
+   own place, its bytes in a row there: each piece gets its first element's offset, and the 64 offsets
+   are offsets in a piece. Done while a micro tile's elements stay in memory order inside one pipe
+   interleave (micro tiles of at most 256 bytes, which the split depth layouts of 32-bit elements are).
+   How many pieces a micro tile of the layout has (1 when it is not split), or 0 when the GPU copy does
+   not take its split. */
+static unsigned tile_copy_pieces(const rt_tiling *layout)
+{
+    enum { PIPE_INTERLEAVE_BYTES = 256 };
+    if (rt_tiling_uniform_micro(layout)) return 1;
+    const unsigned micro_bytes = RT_TILING_MICRO_TEXELS * layout->element_bytes, pieces = micro_bytes / layout->tile_split;
+    return micro_bytes <= PIPE_INTERLEAVE_BYTES && pieces && !(pieces & (pieces - 1)) ? pieces : 0;
+}
+
 /* Makes p the plan for copying `slices` slices of width x height elements laid out as `layout`: the
    table (a micro tile's elements in memory order with their places, from rt_tiling_micro_spread, then
    each micro tile's first element; runtime/tile_copy.h) and the linear rows' buffer. Kept while the layout and size stay. 0, or -1 with the reason. */
@@ -1368,18 +1385,12 @@ static int tile_plan_make(rt_executor *x, tile_plan *p, const rt_tiling *layout,
     tile_plan_free(x, p);
     if (rt_tiling_size(layout, slices) > UINT32_MAX)
         return failed(error, error_size, "a %ux%u image of %u slices spans more than the GPU copy's 32-bit offsets", width, height, slices);
-    /* A split tile (a depth layout's tile split, runtime/tiling.h) puts each piece of a micro tile in its
-       own place, its bytes in a row there: each piece gets its first element's offset, and the 64 offsets
-       are offsets in a piece. Done while a micro tile's elements stay in memory order inside one pipe
-       interleave (micro tiles of at most 256 bytes, which the split depth layouts of 32-bit elements are). */
-    enum { PIPE_INTERLEAVE_BYTES = 256 };
-    const unsigned element = layout->element_bytes, micro_bytes = RT_TILING_MICRO_TEXELS * element;
-    const unsigned pieces = rt_tiling_uniform_micro(layout) ? 1 : micro_bytes / layout->tile_split;
-    unsigned pieces_log2 = 0;
-    while (1u << pieces_log2 < pieces) pieces_log2++;
-    if (pieces > 1 && (micro_bytes > PIPE_INTERLEAVE_BYTES || 1u << pieces_log2 != pieces))
+    const unsigned element = layout->element_bytes, pieces = tile_copy_pieces(layout);
+    if (!pieces)
         return failed(error, error_size, "a split tile of %u-byte elements in %u-byte pieces: the GPU copy does not take it yet", element,
                       layout->tile_split);
+    unsigned pieces_log2 = 0;
+    while (1u << pieces_log2 < pieces) pieces_log2++;
     *p = (tile_plan){.width = width, .height = height, .slices = slices, .element_bytes = element,
                      .tiles_per_row = (width + RT_TILING_MICRO - 1) / RT_TILING_MICRO, .pieces_log2 = pieces_log2};
     p->tiles_per_slice = p->tiles_per_row * ((height + RT_TILING_MICRO - 1) / RT_TILING_MICRO);
@@ -2921,7 +2932,7 @@ static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor
     }
     const VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, e->layers},
                                     .imageExtent = {e->width, one_dimensional(d->type) ? 1 : e->height, 1}};
-    if (tile_copy_moves(x, bytes) && rt_tiling_uniform_micro(&layout)) { /* detiled on the GPU (runtime/tile_copy.h), with the batch */
+    if (tile_copy_moves(x, bytes) && tile_copy_pieces(&layout)) { /* detiled on the GPU (runtime/tile_copy.h), with the batch */
         if (!memory_changed_since(x, d->address, span, e->loaded_change)) return 0;
         if (!e->plan.table.buffer && tile_plan_make(x, &e->plan, &layout, columns, rows, e->layers, error, error_size)) return -1;
         if (record_tile_copy(x, &e->plan, d->address, 0, error, error_size)) return -1;
@@ -3022,7 +3033,7 @@ static int load_levels(rt_executor *x, image_entry *e, const rt_image_descriptor
     }
     if (!memory_changed_since(x, d->address, span, e->loaded_change)) return 0;
     int on_gpu = tile_copy_moves(x, bytes); /* every level in a layout the GPU copy takes: detiled on the GPU */
-    for (unsigned m = 0; m < e->levels && on_gpu; m++) on_gpu = rt_tiling_uniform_micro(&levels[m].layout) && levels[m].offset % bytes == 0;
+    for (unsigned m = 0; m < e->levels && on_gpu; m++) on_gpu = tile_copy_pieces(&levels[m].layout) && levels[m].offset % bytes == 0;
     if (on_gpu) return load_levels_on_gpu(x, e, d, f, levels, span, error, error_size);
     if (guest_memory_settled(x, d->address, span, error, error_size)) return -1;
     const uint8_t *guest = (const uint8_t *)x->view + (d->address - x->guest_base);
@@ -3175,7 +3186,7 @@ static int write_back_image(rt_executor *x, image_entry *e, const rt_image_descr
     char reason[160];
     const uint32_t rows = one_dimensional(d->type) ? 1 : d->height;
     if (f.block != 1 || !tile_copy_moves(x, f.bytes) || d->pitch < d->width || rt_tiling_layout(d->tiling_index, f.bytes, d->pitch, rows, &layout, reason, sizeof reason) ||
-        !rt_tiling_uniform_micro(&layout))
+        !tile_copy_pieces(&layout))
         return 0;
     const uint64_t span = rt_tiling_size(&layout, e->layers);
     if (d->address < x->guest_base || d->address - x->guest_base > x->size || span > x->size - (d->address - x->guest_base))
@@ -3685,8 +3696,8 @@ static int table_copy_spans(rt_executor *x, const rt_compute_shader *c, const gc
 
 /* The memory a dispatch of the compute shader reads now, as spans (gcn_memory_reads: each descriptor's
    range, each s_load's bytes); *anywhere when it cannot be bounded. For a table-driven copy whose table
-   can be read (table_copy_spans), the real reads, and in *exact with `stores` the real stores. 0, or -1
-   with the reason. */
+   can be read (table_copy_spans), the real reads, and in *exact with `stores` the real stores; groups is
+   NULL for an indirect dispatch, whose workgroup count only the GPU reads. 0, or -1 with the reason. */
 static int dispatch_reads(rt_executor *x, const rt_compute_shader *c, const uint32_t *user, uint32_t user_set, const uint32_t groups[3],
                           memory_span *reads, unsigned *read_count, int *anywhere, memory_span *stores, unsigned *store_count, int *exact,
                           char *error, size_t error_size)
@@ -3713,7 +3724,7 @@ static int dispatch_reads(rt_executor *x, const rt_compute_shader *c, const uint
             if (scan->used) memcpy(scan->reads, found, n * sizeof *found), scan->unknown = *anywhere, scan->table_copy = table_copy, scan->copy = shape;
         }
     }
-    if (table_copy) {
+    if (table_copy && groups) { /* an indirect dispatch's workgroup count is not known here */
         const int known = table_copy_spans(x, c, &shape, user, user_set, groups, reads, read_count, stores, store_count, error, error_size);
         if (known < 0) return -1;
         if (known) return *exact = 1, *anywhere = 0, 0;
@@ -3731,9 +3742,16 @@ static int dispatch_reads(rt_executor *x, const rt_compute_shader *c, const uint
     return 0;
 }
 
-static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3], char *error, size_t error_size)
+/* A dispatch of the bound compute shader: of groups[0] x groups[1] x groups[2] workgroups, or, with
+   groups NULL, of the counts the GPU reads from guest memory at `arguments` when it runs
+   (DISPATCH_INDIRECT: three 32-bit words, x, y, z, which earlier work may have written). */
+static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3], uint64_t arguments, char *error, size_t error_size)
 {
+    enum { INDIRECT_ARGUMENT_BYTES = 3 * sizeof(uint32_t) };
     if (!s->compute_set) return failed(error, error_size, "a dispatch without a compute shader");
+    if (!groups && (arguments < x->guest_base || arguments - x->guest_base > x->size - INDIRECT_ARGUMENT_BYTES))
+        return failed(error, error_size, "an indirect dispatch's workgroup counts at %#llx, outside the guest memory",
+                      (unsigned long long)arguments);
     const rt_compute_shader *c = &s->compute;
     if (!c->threads[0] || !c->threads[1] || !c->threads[2])
         return failed(error, error_size, "a compute shader with a workgroup of %u x %u x %u threads", c->threads[0], c->threads[1], c->threads[2]);
@@ -3755,6 +3773,7 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     if (exact_stores) stores_anywhere = 0;
     else
         for (unsigned i = 0; i < store_count; i++) span_add(stores, &store_span_count, store_ranges[i][0], store_ranges[i][1]);
+    if (!groups) span_add(reads, &read_count, arguments, INDIRECT_ARGUMENT_BYTES); /* drawn targets over them are written back too */
     memcpy(touched, reads, read_count * sizeof *reads);
     memcpy(touched + read_count, stores, store_span_count * sizeof *stores);
     if (reads_anywhere || stores_anywhere ? write_back_targets(x, error, error_size)
@@ -3780,12 +3799,16 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     if (!commands) return failed(error, error_size, "no command buffer");
     /* what earlier work wrote (images, guest memory) is visible to this dispatch */
     const VkMemoryBarrier earlier = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
-                                     .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
-    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &earlier, 0, NULL, 0, NULL);
+                                     .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                                                      (groups ? 0 : VK_ACCESS_INDIRECT_COMMAND_READ_BIT)};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | (groups ? 0 : VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT), 0, 1, &earlier, 0, NULL,
+                         0, NULL);
     vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
     if (set) vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0, NULL);
     vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, USER_DATA_BYTES, s->compute_user);
-    vkCmdDispatch(commands, groups[0], groups[1], groups[2]);
+    if (groups) vkCmdDispatch(commands, groups[0], groups[1], groups[2]);
+    else vkCmdDispatchIndirect(commands, x->buffer, arguments - x->guest_base);
     for (unsigned i = 0; i < x->stored_count; i++)
         if (write_back_image(x, &x->images[x->stored[i].image], &x->stored[i].descriptor, error, error_size)) return -1;
     /* the CPU reads memory it may store to only once the batch has run; what was loaded from there
@@ -3936,7 +3959,14 @@ static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, 
             s->compute = c->u.compute_shader, s->compute_set = 1;
             break;
         case RT_CALL_DISPATCH:
-            if (dispatch(x, s, c->u.dispatch.groups, error, error_size)) return -1;
+            if (dispatch(x, s, c->u.dispatch.groups, 0, error, error_size)) return -1;
+            break;
+        case RT_CALL_INDIRECT_BASE:
+            s->indirect_base = c->u.indirect_base.address, s->indirect_base_set = 1;
+            break;
+        case RT_CALL_DISPATCH_INDIRECT:
+            if (!s->indirect_base_set) return failed(error, error_size, "an indirect dispatch with no indirect base set");
+            if (dispatch(x, s, NULL, s->indirect_base + c->u.dispatch_indirect.data_offset, error, error_size)) return -1;
             break;
         case RT_CALL_USER_DATA: {
             const uint32_t slots = (uint32_t)(((1ull << c->u.user_data.count) - 1) << c->u.user_data.slot);

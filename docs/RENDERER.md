@@ -647,7 +647,13 @@ Instead:
         start in the SGPRs after the user data, one per enabled axis in that order (AMD's Sea
         Islands manual, compute shader initial state); its size information stops by name. The
         two dispatch writers with a fifth argument (`0x01474d10`, `0x0148a410`) are not observed
-        yet. Compute shaders' **images** are executor-owned Vulkan images
+        yet. **Indirect dispatches** (found loading Iosefka's Clinic): `0x014742f0` (command
+        buffer, address) writes `SET_BASE` with base index 1, the indirect arguments' base, and
+        `0x01474de0` (command buffer, data offset) writes `DISPATCH_INDIRECT`; both are observed,
+        and the executor runs the dispatch with `vkCmdDispatchIndirect` on the guest memory
+        buffer, so the GPU reads the three workgroup counts at the base plus the offset when the
+        dispatch runs, after the work before it (which may have written them). Drawn targets over
+        those 12 bytes are written back first. Compute shaders' **images** are executor-owned Vulkan images
         found by their descriptor's address and shape: an image the GPU writes stays there and is
         never tiled back into guest memory; a new image whose first use writes it starts cleared.
         An image no shader has written holds the guest memory's texels, detiled with

@@ -197,7 +197,8 @@ static int two_channel_misses(rt_executor *x, uint64_t target) { return channel_
    a 128 x 64 8_8_8_8 image tiled as Thin2DThin (index 14), its texels placed with runtime/tiling.h,
    draws the reference image; the same bytes described as Display2DThin (index 10) do not. A linear one
    (index 8), DST_SEL z, y, x, w over blue-first bytes, and the guest changing its texels between
-   draws all read what the guest memory holds; so does an 8_8 image. A target larger than the image
+   draws all read what the guest memory holds; so does an 8_8 image, and one in a depth layout whose
+   micro tiles split (tiling index 0, detiled on the GPU). A target larger than the image
    reads outside it and stops by name. */
 static void sampled_images(rt_executor *x)
 {
@@ -371,6 +372,24 @@ static void sampled_images(rt_executor *x)
             image[3] = (image[3] & ~(0x1fu << 20)) | LINEAR_ALIGNED << 20;
             CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0 && channel_misses(x, at(TEXEL_TARGET), cases[c].bytes == 2) > 0);
         }
+    }
+    /* A 256 x 256 8_8_8_8 image in the depth layout of tiling index 0, whose 256-byte micro tiles of
+       32-bit elements split into four 64-byte pieces (detiled by the GPU tile copy, which takes such
+       splits, tile_copy_pieces), reads what rt_tiling_offset placed */
+    {
+        enum { SPLIT = 0x2600000, SPLIT_SIZE = 256, DEPTH_TILING = 0 };
+        rt_tiling layout;
+        CHECK(rt_tiling_layout(DEPTH_TILING, 4, SPLIT_SIZE, SPLIT_SIZE, &layout, error, sizeof error) == 0 && !rt_tiling_uniform_micro(&layout));
+        for (uint32_t y = 0; y < SPLIT_SIZE; y++)
+            for (uint32_t px = 0; px < SPLIT_SIZE; px++) {
+                const uint32_t texel = reference_texel(px % SIZE, y % SIZE);
+                memcpy(guest + SPLIT + rt_tiling_offset(&layout, px, y, 0), &texel, 4);
+            }
+        image_descriptor(image, at(SPLIT), 10, 0, SPLIT_SIZE, SPLIT_SIZE);
+        image[3] |= DEPTH_TILING << 20;
+        drawn = draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error);
+        if (drawn) fprintf(stderr, "split-tile image: %s\n", error);
+        CHECK(drawn == 0 && differing_pixels(x, at(TEXEL_TARGET)) == 0);
     }
     image_descriptor(image, at(SMALL), 10, 0, 8, 8);
     image[3] |= LINEAR_ALIGNED << 20;
@@ -2462,6 +2481,34 @@ int main(void)
         if (indexed) fprintf(stderr, "workgroup indexes: %s\n", error);
         CHECK(indexed == 0);
         int each = 1;
+        for (uint32_t z = 0; z < 4; z++)
+            for (uint32_t y = 0; y < 3; y++)
+                for (uint32_t gx = 0; gx < 2; gx++)
+                    for (unsigned lane = 0; lane < LANES; lane++)
+                        each &= indexes[((z * 3 + y) * 2 + gx) * LANES + lane] == (gx | y << 8 | z << 16);
+        CHECK(each);
+
+        /* The same grid as an indirect dispatch: the counts are in guest memory at the indirect base plus
+           the data offset, written after the calls were recorded (the GPU reads them when it runs); a
+           dispatch with no base set stops by name. */
+        enum { ARGUMENTS = 0x24800, DATA_OFFSET = 0x10 };
+        memset(indexes, 0xff, GROUPS * LANES * sizeof *indexes);
+        rt_render_forget(), rt_executor_reset(x);
+        CHECK(rt_render_record_compute_shader_at(COMPUTE + 0x10, groups_shader) == 0);
+        CHECK(rt_render_record_user_data(COMPUTE, 0x20, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+        CHECK(rt_render_record_dispatch_indirect(COMPUTE, 0x28, DATA_OFFSET, error, sizeof error) == 0);
+        CHECK(rt_executor_run(x, COMPUTE, 0x40, error, sizeof error) == -1 && strstr(error, "no indirect base"));
+        rt_render_forget(), rt_executor_reset(x);
+        CHECK(rt_render_record_compute_shader_at(COMPUTE + 0x10, groups_shader) == 0);
+        CHECK(rt_render_record_user_data(COMPUTE, 0x20, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+        CHECK(rt_render_record_indirect_base(COMPUTE, 0x28, at(ARGUMENTS), error, sizeof error) == 0);
+        CHECK(rt_render_record_dispatch_indirect(COMPUTE, 0x30, DATA_OFFSET, error, sizeof error) == 0);
+        uint32_t *counts = (uint32_t *)(uintptr_t)at(ARGUMENTS + DATA_OFFSET);
+        counts[0] = 2, counts[1] = 3, counts[2] = 4;
+        const int indirect = rt_executor_run(x, COMPUTE, 0x40, error, sizeof error);
+        if (indirect) fprintf(stderr, "indirect dispatch: %s\n", error);
+        CHECK(indirect == 0);
+        each = 1;
         for (uint32_t z = 0; z < 4; z++)
             for (uint32_t y = 0; y < 3; y++)
                 for (uint32_t gx = 0; gx < 2; gx++)

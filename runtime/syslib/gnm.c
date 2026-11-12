@@ -344,6 +344,12 @@ RT_SYSLIB("libSceGnmDriver", sceGnmUnmapComputeQueue, unmap_compute_queue);
    control, DST_SEL bits 8-11 (2 memory through L2, 5 memory) and WR_ONE_ADDR bit 16 (every dword
    to the same address). */
 #define PM4_WRITE_DATA 0x37u
+#define PM4_SET_BASE 0x11u
+#define PM4_DISPATCH_INDIRECT 0x16u
+#define SET_BASE_DWORDS 4
+#define SET_BASE_INDEX_MASK 0xfu
+#define SET_BASE_DRAW_INDEX_INDIRECT 1u /* the draw and dispatch indirect arguments' base */
+#define DISPATCH_INDIRECT_DWORDS 3
 #define WRITE_DATA_HEADER_DWORDS 4
 #define WRITE_DATA_DESTINATION(control) ((control) >> 8 & 0xfu)
 #define WRITE_DATA_TO_L2 2u
@@ -956,6 +962,9 @@ static void complete_packets(const char *fn, const uint32_t *packets, uint32_t d
             check_wait(fn, &wait);
         } else if (opcode == PM4_DMA_DATA && length == DMA_DATA_DWORDS) {
             dma_data(fn, packet);
+        } else if (opcode == PM4_SET_BASE && length == SET_BASE_DWORDS) {
+            if ((packet[1] & SET_BASE_INDEX_MASK) != SET_BASE_DRAW_INDEX_INDIRECT)
+                rt_fatal(fn, "a SET_BASE of a base other than the indirect arguments': not established");
         } else if (opcode == PM4_WAIT_ON_CE_COUNTER && length == 2) {
             wait_on_constant_engine(fn);
         } else if (opcode == PM4_INCREMENT_DE_COUNTER && length == 2) {
@@ -966,7 +975,8 @@ static void complete_packets(const char *fn, const uint32_t *packets, uint32_t d
                    opcode != PM4_ACQUIRE_MEM && opcode != PM4_EVENT_WRITE && opcode != PM4_SET_CONTEXT_REG &&
                    opcode != PM4_SET_UCONFIG_REG && opcode != PM4_NUM_INSTANCES && opcode != PM4_DRAW_INDEX_AUTO &&
                    opcode != PM4_INDEX_TYPE && opcode != PM4_INDEX_BASE && opcode != PM4_INDEX_BUFFER_SIZE &&
-                   opcode != PM4_DRAW_INDEX_2 && opcode != PM4_DRAW_INDEX_OFFSET_2) {
+                   opcode != PM4_DRAW_INDEX_2 && opcode != PM4_DRAW_INDEX_OFFSET_2 &&
+                   !(opcode == PM4_DISPATCH_INDIRECT && length == DISPATCH_INDIRECT_DWORDS)) {
             unknown_packet(fn, opcode, length);
         }
         at += length;
@@ -1041,6 +1051,11 @@ RT_SYSLIB("libSceGnmDriver", sceGnmDingDong, ding_dong);
    The packets themselves draw nothing. Each buffer then goes to the renderer (runtime/renderer.h)
    with its steps, each at its packet's offset: it runs the drawing calls recorded before a step,
    then the step, then the calls after it, so a wait holds before the draws after it read memory.
+     SET_BASE, DISPATCH_INDIRECT  skipped: the indirect arguments' base (base index 1; another base
+                                  stops) and a dispatch whose workgroup counts the GPU reads there
+                                  (found 11 November 2026, loading Iosefka's Clinic; shadPS4's
+                                  pm4_cmds.h has the fields, facts only): the renderer runs it from
+                                  its recorded calls;
      WAIT_ON_CE_COUNTER, INCREMENT_DE_COUNTER
                                   the draw engine's side of the constant engine (above): a wait
                                   becomes a step that runs the constant buffer up to the
