@@ -2504,6 +2504,45 @@ int main(void)
         CHECK(right);
         }
 
+        /* image_load_mip from a storage image (bound as one level): at level 0 the copy pass reads each
+           texel as image_load does; at level 1 (past the only level) it stops at run time by name. */
+        for (int level = 0; level < 2; level++) {
+            enum { MIP_COPY_CODE = 0x4c00 }; /* a program each (compute pipelines are kept by code address) */
+            const uint32_t *program = level ? image_copy_level_1 : image_copy_level_0;
+            const uint64_t mip_code = at(MIP_COPY_CODE + 0x100 * (unsigned)level);
+            memcpy((void *)(uintptr_t)mip_code, program, sizeof image_copy_level_0);
+            const uint64_t mip_codes[3] = {codes[0], mip_code, codes[2]};
+            image_descriptor(image_a, at(IMAGE_A + 0x80000), 14, 7, LANES, 1);
+            image_descriptor(image_b, at(IMAGE_B + 0x80000), 14, 7, LANES, 1);
+            for (unsigned i = 0; i < LANES * 4; i++) back[i] = -1;
+            rt_render_forget(), rt_executor_reset(x);
+            uint32_t offset = 0x10;
+            for (int pass = 0; pass < 3; pass++) {
+                const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(mip_codes[pass] >> 8), (uint32_t)(mip_codes[pass] >> 40), 0x3,
+                                                                  16 << 1, LANES, 1, 1};
+                CHECK(rt_render_record_compute_shader_at(IMAGES + offset, shader) == 0);
+                memset(user, 0, sizeof user);
+                if (pass == 0) memcpy(user + 8, image_a, sizeof image_a);
+                if (pass == 1) memcpy(user, image_a, sizeof image_a), memcpy(user + 8, image_b, sizeof image_b);
+                if (pass == 2) descriptor(user, at(BACK), 16), memcpy(user + 8, image_b, sizeof image_b);
+                CHECK(rt_render_record_user_data(IMAGES, offset + 0x10, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+                CHECK(rt_render_record_user_data(IMAGES, offset + 0x20, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
+                CHECK(rt_render_record_dispatch(IMAGES, offset + 0x30, one, error, sizeof error) == 0);
+                offset += 0x40;
+            }
+            const int ran = rt_executor_run(x, IMAGES, offset, error, sizeof error);
+            if (level == 0) {
+                if (ran) fprintf(stderr, "image_load_mip of a storage image: %s\n", error);
+                CHECK(ran == 0);
+                int right = 1;
+                for (unsigned i = 0; i < LANES; i++)
+                    right &= back[i * 4] == (float)i && back[i * 4 + 1] == 1.0f && back[i * 4 + 2] == 2.0f && back[i * 4 + 3] == 0.5f;
+                CHECK(right);
+            } else {
+                CHECK(ran == -1 && strstr(error, "past its last level"));
+            }
+        }
+
         /* Stores outside a storage image write nothing: 64 lanes fill a 40-texel image, and 40 lanes
            read it back; texels 0-39 hold their values and nothing past them was touched. */
         {
