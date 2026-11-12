@@ -59,6 +59,7 @@ typedef struct {
     uint32_t output_control;         /* a vertex shader's PA_CL_VS_OUT_CNTL */
     uint32_t push_constant_offset;   /* runtime/gcn_spirv.h */
     uint64_t address_offset, error_address;
+    gcn_guest_memory guest;          /* runtime/gcn_spirv.h; bytes 0: no range check */
     const gcn_image_binding *images;
     unsigned image_count;
     const gcn_resource_origin *samplers;
@@ -1456,10 +1457,39 @@ static uint32_t address_in(translator *t, unsigned first_sgpr, uint32_t high_mas
     return value(t, SPV_OP_I_ADD, t_ulong(t), 2, guest, gpu_distance);
 }
 
+static uint32_t ulong_constant(translator *t, uint64_t v);
+
+/* The GPU address an access of `bytes` bytes at the GPU address `address` (a ulong, guest address +
+   address_offset) may use: the address itself inside the guest memory (gcn_guest_memory), else the
+   sink, with GCN_RUNTIME_STOP_GUEST_RANGE written to the stop word (runtime/gcn_spirv.h). A hull
+   shader's factor-ring accesses already go to the layout's factor buffer (buffer_base), which is not
+   guest memory and stays reachable. Without a range in the layout, the address as it is. */
+static uint32_t guest_reachable(translator *t, uint32_t address, uint32_t bytes)
+{
+    const stage_layout *l = t->layout;
+    if (!l->guest.bytes || bytes > l->guest.bytes) return address;
+    const uint32_t from_low = value(t, SPV_OP_I_SUB, t_ulong(t), 2, address, ulong_constant(t, l->guest.base + l->address_offset));
+    uint32_t inside = value(t, SPV_OP_U_LESS_THAN_EQUAL, t_bool(t), 2, from_low, ulong_constant(t, l->guest.bytes - bytes));
+    if (l->tess == TESS_HULL && l->factor_ring_bytes >= bytes) {
+        const uint32_t into_factors = value(t, SPV_OP_I_SUB, t_ulong(t), 2, address, ulong_constant(t, l->factor_buffer));
+        inside = value(t, SPV_OP_LOGICAL_OR, t_bool(t), 2, inside,
+                       value(t, SPV_OP_U_LESS_THAN_EQUAL, t_bool(t), 2, into_factors, ulong_constant(t, l->factor_ring_bytes - bytes)));
+    }
+    if (l->error_address) {
+        const uint32_t outside = begin_if(t, value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, inside));
+        const uint32_t guest = value(t, SPV_OP_I_SUB, t_ulong(t), 2, address, ulong_constant(t, l->address_offset));
+        const uint32_t page = value(t, SPV_OP_U_CONVERT, t_uint(t), 1, value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_ulong(t), 2, guest, ulong_constant(t, 16)));
+        runtime_stop(t, value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, page, konst(t, 0xffffff)),
+                              konst(t, (uint32_t)GCN_RUNTIME_STOP_GUEST_RANGE << GCN_RUNTIME_STOP_KIND_SHIFT)));
+        end_if(t, outside);
+    }
+    return value(t, SPV_OP_SELECT, t_ulong(t), 3, inside, address, ulong_constant(t, l->guest.sink));
+}
+
 static uint32_t dword_pointer(translator *t, uint32_t base, uint32_t byte_offset, uint32_t index)
 {
     const uint32_t offset = value(t, SPV_OP_I_ADD, t_uint(t), 2, byte_offset, konst(t, index * BYTES_PER_DWORD));
-    const uint32_t address = value(t, SPV_OP_I_ADD, t_ulong(t), 2, base, widen(t, offset));
+    const uint32_t address = guest_reachable(t, value(t, SPV_OP_I_ADD, t_ulong(t), 2, base, widen(t, offset)), BYTES_PER_DWORD);
     return value(t, SPV_OP_CONVERT_U_TO_PTR, spirv_type_pointer(&t->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, t_uint(t)), 1, address);
 }
 
@@ -1779,7 +1809,8 @@ static void checked_store_dwords(translator *t, const buffer_range *r, uint32_t 
         enum { SPV_OP_COMPOSITE_CONSTRUCT = 80 };
         const uint32_t vector = count == 2 ? value(t, SPV_OP_COMPOSITE_CONSTRUCT, vector_type, 2, values[0], values[1])
                                            : value(t, SPV_OP_COMPOSITE_CONSTRUCT, vector_type, 4, values[0], values[1], values[2], values[3]);
-        const uint32_t pointer = value(t, SPV_OP_CONVERT_U_TO_PTR, spirv_type_pointer(&t->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, vector_type), 1, at);
+        const uint32_t pointer = value(t, SPV_OP_CONVERT_U_TO_PTR, spirv_type_pointer(&t->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, vector_type), 1,
+                                       guest_reachable(t, at, bytes));
         spirv_emit(&t->m, t->out, SPV_OP_STORE, (const uint32_t[]){pointer, vector, SPV_MEMORY_ACCESS_ALIGNED, bytes}, 4);
     }
     end_if(t, vector_merge);
@@ -4498,7 +4529,7 @@ int gcn_translate_compute(const uint32_t *code, size_t dwords, const gcn_compute
     const stage_layout s = {.stage = STAGE_COMPUTE, .local_size = {layout->local_size[0], layout->local_size[1], layout->local_size[2]},
                             .user_sgprs = layout->user_sgprs, .workgroup_id_enables = layout->workgroup_id_enables,
                             .images = layout->images, .image_count = layout->image_count,
-                            .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address,
+                            .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address, .guest = layout->guest,
                             .user_data_read = layout->user_data_read, .lds = layout->lds, .gds_address = layout->gds_address};
     return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
 }
@@ -4510,7 +4541,7 @@ int gcn_translate_vertex(const uint32_t *code, size_t dwords, const gcn_vertex_l
                             .vertex_index_vgpr = layout->vertex_index_vgpr, .output_control = layout->output_control,
                             .callee = layout->callee, .callee_dwords = layout->callee_dwords, .code_address = layout->code_address,
                             .images = layout->images, .image_count = layout->image_count, .first_binding = layout->first_binding,
-                            .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address,
+                            .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address, .guest = layout->guest,
                             .user_data_read = layout->user_data_read, .gs = layout->gsvs_ring ? GS_COPY : GS_NONE,
                             .gsvs_ring = layout->gsvs_ring, .gsvs_ring_bytes = layout->gsvs_ring_bytes,
                             .instance_vgprs = layout->instance_vgprs, .step_rates = {layout->step_rates[0], layout->step_rates[1]},
@@ -4534,7 +4565,7 @@ static int geometry_stage(const gcn_geometry_layout *l, int gs, stage_layout *s,
     }
     *s = (stage_layout){.stage = STAGE_COMPUTE, .gs = gs, .local_size = {GCN_GS_WAVE_LANES, 1, 1}, .user_sgprs = l->user_sgprs,
                         .callee = gs == GS_EXPORT ? l->callee : NULL, .callee_dwords = l->callee_dwords, .code_address = l->code_address,
-                        .address_offset = l->address_offset, .error_address = l->error_address, .user_data_read = l->user_data_read,
+                        .address_offset = l->address_offset, .error_address = l->error_address, .guest = l->guest, .user_data_read = l->user_data_read,
                         .input_primitive = l->input_primitive, .esgs_itemsize = l->esgs_itemsize, .gsvs_itemsize = l->gsvs_itemsize,
                         .max_vertices = l->max_vertices, .esgs_ring = l->esgs_ring, .esgs_ring_bytes = l->esgs_ring_bytes,
                         .gsvs_ring = l->gsvs_ring, .gsvs_ring_bytes = l->gsvs_ring_bytes, .strip_buffer = l->strip_buffer,
@@ -4592,7 +4623,7 @@ static stage_layout tessellation_stage(const gcn_tessellation_layout *l, int tes
                           .callee = tess == TESS_LOCAL ? l->callee : NULL, .callee_dwords = l->callee_dwords, .code_address = l->code_address,
                           .images = l->images, .image_count = tess == TESS_DOMAIN ? l->image_count : 0, .first_binding = l->first_binding,
                           .push_constant_offset = tess == TESS_DOMAIN ? l->push_constant_offset : 0, .address_offset = l->address_offset,
-                          .error_address = l->error_address, .user_data_read = l->user_data_read, .lds = l->lds,
+                          .error_address = l->error_address, .guest = l->guest, .user_data_read = l->user_data_read, .lds = l->lds,
                           .lds_workgroups = l->lds_workgroups,
                           .patches = l->patches, .input_points = l->input_points, .output_points = l->output_points,
                           .off_chip = l->off_chip, .factor_stride = l->factor_stride, .factor_ring = l->factor_ring,
@@ -4759,7 +4790,7 @@ int gcn_translate_pixel(const uint32_t *code, size_t dwords, const gcn_pixel_lay
                             .front_face = layout->front_face, .front_face_all_bits = layout->front_face_all_bits,
                             .front_face_vgpr = layout->front_face_vgpr, .images = layout->images, .image_count = layout->image_count,
                             .samplers = layout->samplers, .sampler_count = layout->sampler_count, .input_controls = layout->input_controls,
-                            .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address,
+                            .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address, .guest = layout->guest,
                             .depth_export = layout->depth_export, .user_data_read = layout->user_data_read};
     return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
 }

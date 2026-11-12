@@ -23,13 +23,14 @@ static uint64_t address_offset; /* the layout's, for the next run */
 static uint64_t error_address;  /* the run-time stop word's GPU address, or 0 */
 static uint32_t lds_bytes;      /* the workgroup's LDS (workgroup memory), or 0 */
 static uint64_t gds_address;    /* the GDS's GPU address, or 0 */
+static gcn_guest_memory guest;  /* the guest memory's range and sink, or all 0 (no range check) */
 
 /* Translates code and runs it over one workgroup of LANES lanes with the given user data. */
 static int run(gpu *g, const uint32_t *code, size_t dwords, const uint32_t *user_data)
 {
     const gcn_compute_layout layout = {.local_size = {LANES, 1, 1}, .user_sgprs = 8,
                                        .address_offset = address_offset, .error_address = error_address,
-                                       .lds = {.bytes = lds_bytes}, .gds_address = gds_address};
+                                       .lds = {.bytes = lds_bytes}, .gds_address = gds_address, .guest = guest};
     uint32_t *spirv = NULL;
     size_t words = 0;
     char error[256];
@@ -340,6 +341,49 @@ int main(int argc, char **argv)
             for (int lane = 0; lane < LANES; lane++)
                 for (int k = 0; k < 4; k++) CHECK(out_words[lane * 4 + k] == (k < readable ? in_words[k] : 0u));
         }
+    }
+
+    /* The guest memory range (gcn_guest_memory): with both test buffers as the guest memory, a scalar
+       load through a descriptor inside reads as before; one whose base is outside (far past the buffers,
+       or 0: a null descriptor) reads the sink's first dword for every dword instead and leaves GCN_RUNTIME_STOP_GUEST_RANGE with the
+       guest address's bits 16-39 in the stop word, the last dword of the output buffer. Without the
+       check the load would reach memory the device never gave the shader. */
+    {
+        const uint64_t in_guest = in.address - address_offset, out_guest = out.address - address_offset;
+        const uint64_t low = in_guest < out_guest ? in_guest : out_guest;
+        const uint64_t high = (in_guest > out_guest ? in_guest : out_guest) + BUFFER_BYTES;
+        uint32_t *const stop = out_words + BUFFER_BYTES / 4 - 1;
+        uint32_t *const sink = out_words + 2048 / 4;
+        const uint64_t stop_before = error_address;
+        guest = (gcn_guest_memory){.base = low, .bytes = high - low, .sink = out.address + 2048};
+        error_address = out.address + BUFFER_BYTES - 4;
+        uint32_t range_user[USER_DATA_WORDS];
+        memcpy(range_user, user, sizeof range_user);
+        for (int i = 0; i < 4; i++) in_words[i] = 0x01020304u * (uint32_t)(i + 1);
+        memset(out.mapped, 0, BUFFER_BYTES);
+        CHECK(run(&g, scalar_buffer_quad, sizeof scalar_buffer_quad / sizeof scalar_buffer_quad[0], range_user) == 0);
+        int inside = *stop == 0;
+        for (int lane = 0; lane < LANES; lane++)
+            for (int k = 0; k < 4; k++) inside &= out_words[lane * 4 + k] == in_words[k];
+        CHECK(inside);
+        const uint64_t outside_bases[] = {high + (UINT64_C(1) << 36), 0};
+        for (int b = 0; b < 2; b++) {
+            range_user[0] = (uint32_t)outside_bases[b], range_user[1] = (uint32_t)(outside_bases[b] >> 32) & 0xff;
+            memset(out.mapped, 0, BUFFER_BYTES);
+            for (int k = 0; k < 4; k++) sink[k] = 0x5a5a0000u + (uint32_t)k;
+            CHECK(run(&g, scalar_buffer_quad, sizeof scalar_buffer_quad / sizeof scalar_buffer_quad[0], range_user) == 0);
+            int sunk = 1;
+            for (int lane = 0; lane < LANES; lane++)
+                for (int k = 0; k < 4; k++) sunk &= out_words[lane * 4 + k] == 0x5a5a0000u;
+            if (!sunk) fprintf(stderr, "guest range: lane 0 read %08x %08x %08x %08x\n", out_words[0], out_words[1], out_words[2], out_words[3]);
+            CHECK(sunk);
+            const uint32_t expected = (uint32_t)GCN_RUNTIME_STOP_GUEST_RANGE << GCN_RUNTIME_STOP_KIND_SHIFT |
+                                      (uint32_t)(outside_bases[b] >> 16 & 0xffffff);
+            if (*stop != expected) fprintf(stderr, "guest range stop: %#x, expected %#x\n", *stop, expected);
+            CHECK(*stop == expected);
+        }
+        guest = (gcn_guest_memory){0};
+        error_address = stop_before;
     }
 
     /* Branches and EXEC. */

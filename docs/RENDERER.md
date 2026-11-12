@@ -92,6 +92,24 @@ Instead:
        shader, whose GPU address is baked into its translation (`error_address`); a shader meeting a
        case it cannot do exactly writes a code there and skips the access, and the executor checks
        the words once the work has run and stops by name (`GCN_RUNTIME_STOP_*`), naming the shader.
+     - **Guest memory range checks** (`gcn_guest_memory`): every guest memory access a translated
+       shader makes through an address it forms (a scalar load's SGPR pair, a buffer descriptor's
+       base plus its offsets) is first checked against the imported pool. An access outside goes to
+       a 256-byte scratch sink after the stop words instead and stops by name
+       (`GCN_RUNTIME_STOP_GUEST_RANGE`, with the address's bits 16-39: 0 means a null pointer plus an
+       offset). Without the check such an access reaches memory Vulkan never gave the shader; on an
+       RTX 3070 that stops the GPU context (NVIDIA Xid 109) and the batch never finishes, which held
+       the clinic's load with no name for the work. On the console the same access would fault the
+       GPU too, so it is an error to report, not behaviour to imitate. The Metal executor does not
+       fill the range yet (its layouts leave it 0: unchecked).
+     - **Device diagnostics**, each used when the device offers it: `robustImageAccess2`
+       (`VK_EXT_robustness2`: an image access outside the image reads zero, alpha 1 for a format
+       without alpha, and writes nothing, as AMD's hardware does; Mesa's RADV exposes that by default
+       with no shader-side bounds code), a checkpoint before each draw and dispatch
+       (`VK_NV_device_diagnostic_checkpoints`), and the fault's addresses on a lost device
+       (`VK_EXT_device_fault`). A batch that does not finish in the wait limit is reported with the
+       work the checkpoints show begun and ended, and with any stop word a shader has already
+       written.
      - **Format buffer accesses** (`buffer_load/store_format_*`): loads of 8- and 16-bit components
        (8, 16, 8_8, 16_16, 8_8_8_8, 16_16_16_16) as uint (zero-extended), sint (sign-extended) and,
        for 8-bit components, unorm (each byte v / 255, correctly rounded), read byte by byte from any
