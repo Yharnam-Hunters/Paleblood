@@ -2518,6 +2518,19 @@ static void guarded_targets(int fd, rt_executor *shared)
     /* written back (all zeros now: the background was, the triangle is black) and lifted */
     CHECK(rt_executor_resolve(x, at(TILED_TARGET), 4, error, sizeof error) == 0 && guarded.unguards == 2 && guarded.unguarded == at(TILED_TARGET));
 
+    /* a 16_16_16_16 float target's guard spans its 8-byte texels' memory, not 4 bytes a texel's */
+    enum { HALVES_BUFFER = 0xc0fb8000, HALVES_TARGET = 0x3740000, HALVES_FORMAT = 0xc, NUMBER_FLOAT = 7, HALF_TEXELS = 8 };
+    rt_tiling halves;
+    CHECK(rt_tiling_layout(RECORDED_TILING, HALF_TEXELS, SIZE, SIZE, &halves, error, sizeof error) == 0);
+    rt_render_forget();
+    const uint32_t halves_offset = record_setup(HALVES_BUFFER, at(HALVES_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    uint32_t halves_words[RT_COLOR_TARGET_WORDS];
+    color_target(halves_words, at(HALVES_TARGET), HALVES_FORMAT, SWAP_STD);
+    halves_words[4] |= NUMBER_FLOAT << 8, halves_words[5] = RECORDED_TILING;
+    CHECK(rt_render_record_color_target(HALVES_BUFFER, halves_offset, 0, halves_words, error, sizeof error) == 0);
+    CHECK(rt_executor_run(x, HALVES_BUFFER, record_triangle_draw(HALVES_BUFFER, halves_offset + 0x10), error, sizeof error) == 0);
+    CHECK(guarded.address == at(HALVES_TARGET) && guarded.length >= rt_tiling_size(&halves, 1));
+
     memset(memory, 0, rt_tiling_size(&layout, 1));
     guarded.answer = -1;
     CHECK(record_tiled_draw(x, error, sizeof error) == 0);

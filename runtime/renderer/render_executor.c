@@ -1960,7 +1960,7 @@ static uint64_t target_span(const target_entry *t)
 {
     rt_tiling layout;
     char reason[160];
-    return rt_tiling_layout(t->tile_index, 4, t->width, t->height, &layout, reason, sizeof reason) ? 0 : rt_tiling_size(&layout, 1);
+    return rt_tiling_layout(t->tile_index, t->element_bytes, t->width, t->height, &layout, reason, sizeof reason) ? 0 : rt_tiling_size(&layout, 1);
 }
 
 static int target_has_shape(const target_entry *t, const rt_color_target *color, VkFormat format)
