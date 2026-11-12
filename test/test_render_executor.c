@@ -1724,7 +1724,7 @@ static void indexed_packets(rt_executor *x, int fd)
     /* A low guest window makes the unchecked sum wrap into valid GPU memory.
        With no targets enabled it would be accepted if the overflow guard vanished. */
     const uint64_t low_base = 0x100000000ull;
-    const rt_executor_memory low_memory = {fd, GUEST_SIZE, low_base, NULL};
+    const rt_executor_memory low_memory = {fd, GUEST_SIZE, low_base, NULL, NULL, NULL};
     rt_executor *low = NULL;
     const int opened = rt_executor_open(&low_memory, &low, error, sizeof error);
     if (opened) fprintf(stderr, "low index window: %s\n", error);
@@ -1817,6 +1817,97 @@ static void tiled_target_memory(rt_executor *x)
     CHECK(rt_executor_read_target(x, at(TILED), bgra, SIZE, SIZE, error, sizeof error) == 0);
     CHECK(bgra[3 * SIZE + 5] == 0xff102040u);
     CHECK(differing_pixels(x, at(TILED)) == 1);
+
+}
+
+/* Records the tiled target's draw (tiled_target_memory's) into the target at TILED_TARGET without a
+   submit (rt_executor_record_calls, as the renderer does) and runs the batch. */
+enum { TILED_TARGET = 0xec0000, RECORDED_BUFFER = 0xc0fa0000, RECORDED_TILING = 13 };
+static int record_tiled_draw(rt_executor *x, char *error, size_t error_size)
+{
+    rt_render_forget(), rt_executor_reset(x);
+    uint32_t offset = record_setup(RECORDED_BUFFER, at(TILED_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    uint32_t words[RT_COLOR_TARGET_WORDS];
+    color_target(words, at(TILED_TARGET), COLOR_8_8_8_8, SWAP_STD);
+    words[5] = RECORDED_TILING;
+    if (rt_render_record_color_target(RECORDED_BUFFER, offset, 0, words, error, error_size) ||
+        rt_render_record_register(RECORDED_BUFFER, offset + 0x10, 0xa1e0, 0, error, error_size))
+        return -1;
+    size_t count = 0;
+    const rt_render_call *calls = rt_render_submitted(RECORDED_BUFFER, record_triangle_draw(RECORDED_BUFFER, offset + 0x20), &count);
+    uint64_t ticket = 0;
+    return rt_executor_record_calls(x, calls, count, &ticket, error, error_size) || rt_executor_finish(x, error, error_size) ? -1 : 0;
+}
+
+/* Whether the tiled target's memory holds nothing but zeros. */
+static int tiled_memory_zero(void)
+{
+    rt_tiling layout;
+    char error[160];
+    if (rt_tiling_layout(RECORDED_TILING, 4, SIZE, SIZE, &layout, error, sizeof error)) return 0;
+    const uint8_t *memory = (const uint8_t *)(uintptr_t)at(TILED_TARGET);
+    int zero = 1;
+    for (uint64_t i = 0; i < rt_tiling_size(&layout, 1); i++) zero &= memory[i] == 0;
+    return zero;
+}
+
+static struct {
+    uint64_t address, length;
+    int guards, unguards, answer;
+} guarded;
+
+static int test_guard(uint64_t address, uint64_t length)
+{
+    guarded.address = address, guarded.length = length, guarded.guards++;
+    return guarded.answer;
+}
+
+static void test_unguard(uint64_t address, uint64_t length)
+{
+    CHECK(address == guarded.address && length == guarded.length);
+    guarded.unguards++;
+}
+
+/* Recorded buffers and the CPU (rt_executor_memory's guard): with a guard, the tiled target's draw
+   stays in its image (its memory keeps the zeros after the batch has run) and the target's memory
+   is guarded once; rt_executor_resolve over part of it writes it back (the memory holds the draw) and
+   lifts the guard; an image over the memory read later shows the draw. A guard that answers -1 leaves
+   the target written back at the buffer's end; and without one (the shared executor) it is too. */
+static void guarded_targets(int fd, rt_executor *shared)
+{
+    enum { TEXEL_TARGET = 0xee0000 };
+    char error[256] = "";
+    rt_tiling layout;
+    CHECK(rt_tiling_layout(RECORDED_TILING, 4, SIZE, SIZE, &layout, error, sizeof error) == 0);
+    uint8_t *memory = (uint8_t *)(uintptr_t)at(TILED_TARGET);
+    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard};
+    rt_executor *x = NULL;
+    CHECK(rt_executor_open(&with_guard, &x, error, sizeof error) == 0);
+    if (!x) return;
+    memset(memory, 0, rt_tiling_size(&layout, 1));
+    guarded.answer = 0;
+    CHECK(record_tiled_draw(x, error, sizeof error) == 0);
+    CHECK(tiled_memory_zero());
+    CHECK(guarded.guards == 1 && guarded.address == at(TILED_TARGET) && guarded.length >= rt_tiling_size(&layout, 1) && !guarded.unguards);
+    CHECK(record_tiled_draw(x, error, sizeof error) == 0); /* drawn again: still guarded, not again */
+    CHECK(guarded.guards == 1 && tiled_memory_zero());
+    CHECK(rt_executor_resolve(x, at(TILED_TARGET) + 64, 4, error, sizeof error) == 0);
+    CHECK(!tiled_memory_zero() && guarded.unguards == 1);
+    uint32_t image[8];
+    image_descriptor(image, at(TILED_TARGET), 10, 0, SIZE, SIZE);
+    image[3] |= RECORDED_TILING << 20;
+    CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
+    CHECK(differing_pixels(x, at(TEXEL_TARGET)) == 0);
+
+    memset(memory, 0, rt_tiling_size(&layout, 1));
+    guarded.answer = -1;
+    CHECK(record_tiled_draw(x, error, sizeof error) == 0);
+    CHECK(!tiled_memory_zero());
+    rt_executor_close(x);
+
+    memset(memory, 0, rt_tiling_size(&layout, 1));
+    CHECK(record_tiled_draw(shared, error, sizeof error) == 0);
+    CHECK(!tiled_memory_zero());
 }
 
 /* A half (IEEE binary16) as a float. */
@@ -2001,7 +2092,7 @@ static void watched_memory(int fd)
     enum { IMAGE = 0x1e00000, TEXEL_TARGET = 0x1e10000, COMPUTE = 0xc0e40000, COMPUTE_CODE = 0x3000, ZEROS = 0x1e20000, LANES = 64,
            LINEAR_ALIGNED = 8 };
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL};
     rt_executor *x = NULL;
     const int opened = rt_executor_open(&memory, &x, error, sizeof error);
     if (opened) fprintf(stderr, "watched executor: %s\n", error);
@@ -2054,7 +2145,7 @@ static void watched_table_copy(int fd)
     enum { COPY_BUFFER = 0xc0e60000, ZEROS = 0x1f20000, IMAGE = 0x1f40000, TEXEL_TARGET = 0x1f50000, LANES = TABLE_COPY_LANES,
            USER_SGPRS = TABLE_COPY_SGPRS, LINEAR_ALIGNED = 8 };
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&memory, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -2093,7 +2184,7 @@ int main(void)
     }
     rt_executor *x = NULL;
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL};
     if (rt_executor_open(&memory, &x, error, sizeof error)) {
         fprintf(stderr, "skipped: %s\n", error);
         return SKIPPED;
@@ -2691,6 +2782,7 @@ int main(void)
     indexed_packets(x, fd);
     target_memory(x);
     tiled_target_memory(x);
+    guarded_targets(fd, x);
     float_targets(x);
     compressed_image(x);
     bc6h_image(x);

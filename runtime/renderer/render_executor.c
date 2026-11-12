@@ -149,6 +149,7 @@ typedef struct {
     VkImageView view;
     uint64_t loaded_change;          /* change_count when the image was last loaded (UINT64_MAX: load it) */
     int drawn;                       /* drawn into since it was last written back */
+    int guarded;                     /* its memory is guarded from the CPU (rt_executor_memory's guard) */
     staging_buffer staging;          /* host-visible: the image's texels, for showing it */
     int staging_current;             /* the staging buffer holds them (since the image last changed) */
     tile_plan plan;                  /* its copies to and from the guest memory */
@@ -176,6 +177,7 @@ typedef struct {
     uint32_t tile_index;             /* DB_Z_INFO's TILE_MODE_INDEX: the depth's layout in memory */
     int drawn;
     int unwritten;                   /* its depth changed since it was last written back */
+    int guarded;                     /* as a colour target's */
     tile_plan plan;                  /* its write-backs */
     VkFormat format;
     VkImage image;
@@ -423,6 +425,8 @@ struct rt_executor {
     uint64_t *chunk_outside;
     int (*collect_cpu_writes)(const uint64_t (*ranges)[2], size_t count, void (*written)(void *context, uint64_t pool_offset, uint64_t length),
                               void *context);
+    int (*guard)(uint64_t address, uint64_t length); /* rt_executor_memory's */
+    void (*unguard)(uint64_t address, uint64_t length);
     /* what note_cpu_writes asks about: the loaded images' and targets' memory, and their metadata */
     uint64_t watch_ranges[MAX_IMAGES + 3 * MAX_TARGETS][2];
     /* The batches: slots[current] is the open one (batch_open) or the next to open. A batch is
@@ -878,6 +882,7 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
 static int import_memory(rt_executor *x, const rt_executor_memory *memory, char *error, size_t error_size)
 {
     x->size = memory->size, x->guest_base = memory->guest_base, x->collect_cpu_writes = memory->collect_cpu_writes;
+    if (memory->guard && memory->unguard) x->guard = memory->guard, x->unguard = memory->unguard;
     x->chunk_changed = calloc((size_t)((memory->size + CHANGE_CHUNK - 1) / CHANGE_CHUNK), sizeof *x->chunk_changed);
     x->chunk_outside = calloc((size_t)((memory->size + CHANGE_CHUNK - 1) / CHANGE_CHUNK), sizeof *x->chunk_outside);
     if (!x->chunk_changed || !x->chunk_outside) return failed(error, error_size, "no memory to note changes to the guest memory in");
@@ -1682,6 +1687,26 @@ static int same_texel_bytes(VkFormat a, VkFormat b)
    are the target's newest contents. They are copied into the target, which is then drawn into and
    written back like any other; the image loads from the memory again at its next use. 1 when copied,
    0 when no image holds newer texels, -1 with the reason (an image of another texel size, or smaller). */
+static int unwritten_target_over(const rt_executor *x, uint64_t address, uint64_t size);
+
+/* A target drawn into: its memory lacks the draws until it is written back, so the CPU is kept from
+   it (rt_executor_memory's guard) until then; without a guard, rt_executor_record_calls writes it
+   back at the buffer's end. */
+static void target_drawn(rt_executor *x, target_entry *t)
+{
+    t->drawn = 1, t->staging_current = 0;
+    if (!t->guarded && x->guard) t->guarded = x->guard(t->address, target_span(t)) == 0;
+}
+
+static uint64_t depth_span(const depth_entry *z);
+
+static void depth_drawn(rt_executor *x, depth_entry *z)
+{
+    z->drawn = 1, z->unwritten = 1;
+    const int written_back = z->format == VK_FORMAT_D32_SFLOAT || z->format == VK_FORMAT_D32_SFLOAT_S8_UINT; /* write_back_depths */
+    if (!z->guarded && x->guard && written_back) z->guarded = x->guard(z->z_address, depth_span(z)) == 0;
+}
+
 static int take_written_image(rt_executor *x, target_entry *t, char *error, size_t error_size)
 {
     image_entry *e = NULL;
@@ -1706,7 +1731,8 @@ static int take_written_image(rt_executor *x, target_entry *t, char *error, size
                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
     e->gpu_written = 0;
-    t->drawn = 1, t->staging_current = 0, t->loaded_change = x->change_count;
+    target_drawn(x, t);
+    t->loaded_change = x->change_count;
     return 1;
 }
 
@@ -2071,7 +2097,7 @@ static int resolve_depth_fast_clear(rt_executor *x, const draw_state *s, depth_e
         memory_changed(x, htile, bytes);
     }
     m->cleared = 0, m->resolved = x->change_count;
-    z->drawn = 1, z->unwritten = 1;
+    depth_drawn(x, z);
     return 0;
 }
 
@@ -2080,6 +2106,15 @@ static int resolve_depth_fast_clear(rt_executor *x, const draw_state *s, depth_e
    batch, as colour targets are (write_back_targets calls it first). Depth targets of 32-bit floats only,
    in a layout runtime/tiling.h has; others keep their memory as it was (nothing read it so far). The
    stencil is not written back. 1 when any was written back, 0 when none, -1 with the reason. */
+/* The bytes of a depth target's depth in memory: its tile mode's size, or 4 per texel when that is not laid out here. */
+static uint64_t depth_span(const depth_entry *z)
+{
+    rt_tiling layout;
+    char reason[160];
+    return rt_tiling_layout(z->tile_index, 4, z->width, z->height, &layout, reason, sizeof reason) ? (uint64_t)z->width * z->height * 4
+                                                                                                   : rt_tiling_size(&layout, 1);
+}
+
 static int write_back_depths(rt_executor *x, const memory_span *spans, unsigned span_count, char *error, size_t error_size)
 {
     int any = 0;
@@ -2590,7 +2625,12 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
         if (s->colors[slot].fast_clear) metadata_at(&t->cmask, s->colors[slot].cmask_address, s->colors[slot].cmask_bytes); /* stores to it now clear it */
         if (take_written_image(x, t, error, error_size) < 0) return -1;
         if (memory_changed_since(x, t->address, target_span(t), t->loaded_change)) { /* since the image last held it */
-            if (load_target(x, t, error, error_size)) return -1;
+            /* a target drawn into since its last write-back holds draws its memory lacks: its image stays
+               its contents (rt_executor_record_calls); another such target over it is written back first */
+            const memory_span memory = {t->address, target_span(t)};
+            if (!t->drawn && unwritten_target_over(x, t->address, target_span(t)) && write_back_targets_in(x, &memory, 1, error, error_size))
+                return -1;
+            if (!t->drawn && load_target(x, t, error, error_size)) return -1;
             t->loaded_change = x->change_count;
         }
         if (s->blend_set >> slot & 1) blend_control[slot] = s->blend_control[slot];
@@ -2688,8 +2728,8 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     }
     vkCmdEndRenderPass(commands);
     for (unsigned slot = 0; slot < RT_COLOR_TARGETS; slot++)
-        if (targets[slot]) targets[slot]->drawn = 1, targets[slot]->staging_current = 0;
-    if (z && plan_writes(plan)) z->drawn = 1, z->unwritten = 1;
+        if (targets[slot]) target_drawn(x, targets[slot]);
+    if (z && plan_writes(plan)) depth_drawn(x, z);
     return 0; /* the run-time stop words are checked once the batch has run */
 }
 
@@ -2819,7 +2859,7 @@ static int unwritten_target_over(const rt_executor *x, uint64_t address, uint64_
     }
     for (size_t i = 0; i < x->depth_count; i++) {
         const depth_entry *z = &x->depths[i];
-        if (z->unwritten && z->z_address < address + size && address < z->z_address + (uint64_t)z->width * z->height * 4) return 1;
+        if (z->unwritten && z->z_address < address + size && address < z->z_address + depth_span(z)) return 1;
     }
     return 0;
 }
@@ -3786,7 +3826,10 @@ int rt_executor_run_calls(rt_executor *x, const rt_render_call *calls, size_t co
 
 int rt_executor_submit_calls(rt_executor *x, const rt_render_call *calls, size_t count, uint64_t *ticket, char *error, size_t error_size)
 {
-    if (rt_executor_record_calls(x, calls, count, ticket, error, error_size) || batch_submit(x, error, error_size)) return -1;
+    /* the CPU may read what the buffer drew once its ticket is signalled: written back first */
+    if (rt_executor_record_calls(x, calls, count, ticket, error, error_size) || write_back_targets(x, error, error_size) ||
+        batch_submit(x, error, error_size))
+        return -1;
     *ticket = x->submitted;
     return 0;
 }
@@ -3798,9 +3841,34 @@ int rt_executor_record_calls(rt_executor *x, const rt_render_call *calls, size_t
         batch_finish(x, later, sizeof later); /* the calls before the failing one still run, as they did one by one */
         return -1;
     }
-    /* the CPU may read what the buffer drew once its ticket is signalled: written back first */
-    if (write_back_targets(x, error, error_size)) return -1;
+    /* the targets it drew stay in their images until GPU work or the CPU reads their memory
+       (render_executor.h); those the CPU is not kept from are written back now */
+    memory_span unguarded[2 * MAX_TARGETS];
+    unsigned count_unguarded = 0;
+    for (size_t i = 0; i < x->target_count; i++)
+        if (x->targets[i].drawn && !x->targets[i].guarded) unguarded[count_unguarded++] = (memory_span){x->targets[i].address, target_span(&x->targets[i])};
+    for (size_t i = 0; i < x->depth_count; i++)
+        if (x->depths[i].unwritten && !x->depths[i].guarded) unguarded[count_unguarded++] = (memory_span){x->depths[i].z_address, depth_span(&x->depths[i])};
+    if (count_unguarded && write_back_targets_in(x, unguarded, count_unguarded, error, error_size)) return -1;
     *ticket = x->batch_open ? x->submitted + 1 : x->submitted; /* the open batch gets the next ticket */
+    return 0;
+}
+
+int rt_executor_resolve(rt_executor *x, uint64_t address, uint64_t length, char *error, size_t error_size)
+{
+    const memory_span memory = {address, length};
+    if (unwritten_target_over(x, address, length) && write_back_targets_in(x, &memory, 1, error, error_size)) return -1;
+    if (guest_memory_settled(x, address, length, error, error_size)) return -1; /* the write-backs (and any store there) have run */
+    for (size_t i = 0; i < x->target_count; i++) {
+        target_entry *t = &x->targets[i];
+        if (t->guarded && !t->drawn && t->address < address + length && address < t->address + target_span(t))
+            x->unguard(t->address, target_span(t)), t->guarded = 0;
+    }
+    for (size_t i = 0; i < x->depth_count; i++) {
+        depth_entry *z = &x->depths[i];
+        if (z->guarded && !z->unwritten && z->z_address < address + length && address < z->z_address + depth_span(z))
+            x->unguard(z->z_address, depth_span(z)), z->guarded = 0;
+    }
     return 0;
 }
 
