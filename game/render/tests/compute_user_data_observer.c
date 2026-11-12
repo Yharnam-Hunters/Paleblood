@@ -3,7 +3,8 @@
    reports COMPUTE_USER_DATA from the slot it is given, with the words the call passes, at the command
    buffer's cursor. The record's functions are stubs here that keep the last call. The indirect
    dispatch's two writers report the base address and the data offset they are given. The depth bounds
-   setter reports its two float arguments, from the saved frame's xmm0 and xmm1, as the two registers. */
+   setter reports its two float arguments, from the saved frame's xmm0 and xmm1, as the two registers.
+   The shader stage setter reports VGT_SHADER_STAGES_EN for the values it writes, and nothing for others. */
 #include "runtime/observe_hooks.h"
 #include "runtime/render_observer.h"
 
@@ -17,6 +18,7 @@ enum { ONE_WORD = 1, TWO_WORDS = 2, FOUR_WORDS = 4, EIGHT_WORDS = 8, FIRST_COUNT
 enum { WRITE_ONE = 0x0148ada0, WRITE_POINTER = 0x0148ac90, WRITE_FOUR_MARKER_4 = 0x0148aad0, WRITE_FOUR_MARKER_6 = 0x0148ac00,
        WRITE_EIGHT = 0x0148ab60, WRITE_COUNTED = 0x0148ad00, SET_INDIRECT_BASE = 0x014742f0, DISPATCH_INDIRECT = 0x01474de0 };
 enum { INDIRECT_DATA_OFFSET = 0x24, SET_DEPTH_BOUNDS = 0x01473520, DB_DEPTH_BOUNDS_MIN = 0xa008, DB_DEPTH_BOUNDS_MAX = 0xa009 };
+enum { SET_SHADER_STAGES = 0x01476030, VGT_SHADER_STAGES_EN = 0xa2d5, TESSELLATION = 0x45, NOT_WRITTEN = 0x7 };
 static const uint32_t one_value = 0x11223344u;
 static const uint64_t pointer_value = 0x0000002043490060ull;
 
@@ -143,6 +145,16 @@ int main(void)
         memcpy(&low_bits, &low, sizeof low_bits), memcpy(&high_bits, &high, sizeof high_bits);
         CHECK(registers.count == KEPT_REGISTERS && registers.address[0] == DB_DEPTH_BOUNDS_MIN && registers.value[0] == low_bits &&
               registers.address[1] == DB_DEPTH_BOUNDS_MAX && registers.value[1] == high_bits);
+    }
+    /* the shader stages: 0x45 (tessellation) is reported, 7 (which the setter does not write) is not */
+    const rt_observer_fn stages = observer(SET_SHADER_STAGES);
+    CHECK(stages != NULL);
+    if (stages) {
+        memset(&registers, 0, sizeof registers);
+        const uint64_t tessellation[RT_OBSERVED_ARGUMENTS] = {object_address, TESSELLATION}, other[RT_OBSERVED_ARGUMENTS] = {object_address, NOT_WRITTEN};
+        stages(tessellation);
+        stages(other);
+        CHECK(registers.count == 1 && registers.address[0] == VGT_SHADER_STAGES_EN && registers.value[0] == TESSELLATION);
     }
     if (failures) fprintf(stderr, "%d failure(s)\n", failures);
     else printf("compute user data observer: ok\n");

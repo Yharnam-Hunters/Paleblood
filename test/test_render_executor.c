@@ -1409,6 +1409,23 @@ static void depth_and_strips(rt_executor *x)
         CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), stencil_clearing, 11, 3, error, sizeof error) == -1 &&
               strstr(error, "DB_RENDER_CONTROL"));
     }
+    /* hardware shader stages other than vertex and pixel (VGT_SHADER_STAGES_EN 0x45: tessellation) stop by
+       name; set back to 0 the triangle draws, and a local stage's user data is kept aside */
+    const uint32_t tessellation[][2] = {{0xa2d5, 0x45}};
+    CHECK(run_counted(x, DEPTH_BUFFER, at(NO_BUFFER), tessellation, 1, 3, error, sizeof error) == -1 && strstr(error, "VGT_SHADER_STAGES_EN 0x45"));
+    {
+        enum { STAGES_OFF = 0x1ed0000 };
+        rt_render_forget(), rt_executor_reset(x);
+        uint32_t offset = record_setup(DEPTH_BUFFER, at(STAGES_OFF), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        const uint32_t local_user[2] = {1, 2};
+        CHECK(rt_render_record_user_data(DEPTH_BUFFER, offset, RT_STAGE_LOCAL, 0, local_user, 2, error, sizeof error) == 0);
+        CHECK(rt_render_record_register(DEPTH_BUFFER, offset + 0x10, 0xa2d5, 0x45, error, sizeof error) == 0);
+        CHECK(rt_render_record_register(DEPTH_BUFFER, offset + 0x20, 0xa2d5, 0, error, sizeof error) == 0);
+        drawn = rt_executor_run(x, DEPTH_BUFFER, record_triangle_draw(DEPTH_BUFFER, offset + 0x30), error, sizeof error);
+        if (drawn) fprintf(stderr, "shader stages off: %s\n", error);
+        CHECK(drawn == 0);
+        check_triangle(x, at(STAGES_OFF));
+    }
     const uint32_t no_reference[][2] = {DEPTH_TARGET, {0xa10b, 0x30030}, {0xa200, 0x1 | 0x7u << 8}};
     CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), no_reference, 11, 3, error, sizeof error) == -1 && strstr(error, "DB_STENCILREFMASK"));
 #undef DEPTH_TARGET
