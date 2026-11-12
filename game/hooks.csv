@@ -239,6 +239,10 @@ address,replacement,system,returns
 0x02329c20,bb_param_row_name_equip_param_weapon,param,i64
 0x0232c930,bb_param_find_row_reinforce_param_weapon,param,void
 0x02377bd0,bb_render_frame_update_02377bd0,render,void
+0x02415fe0,bb_menu_text_input_destroy,menu,void
+0x02416040,bb_menu_text_input_close,menu,i8
+0x024162a0,bb_menu_text_input_open,menu,i8
+0x02416300,bb_menu_text_input_update,menu,i8
 0x02418d20,bb_frame_timing_frame_step,frame_timing,i8
 0x02434520,bb_frame_timing_flipper_init,frame_timing,void
 0x02434770,bb_frame_timing_pace_frame,frame_timing,void

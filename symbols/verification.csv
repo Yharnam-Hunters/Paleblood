@@ -252,6 +252,10 @@ loading_resource_info_release_024bd930,edge,,10,10,0,0,5535fe9dfa553d6f,2026-11-
 loading_stdio_close_files,edge,,9,9,0,0,66b528bb054522f0,2026-11-10
 loading_stdio_stream_open,recorded,,98,98,0,0,66b528bb054522f0,2026-11-12
 loading_stdio_stream_open,edge,,30,30,0,0,66b528bb054522f0,2026-11-12
+menu_text_input_close,edge,,18,18,0,0,076e6d850a523d38,2026-11-12
+menu_text_input_destroy,edge,,8,8,0,0,076e6d850a523d38,2026-11-12
+menu_text_input_open,edge,,12,12,0,0,076e6d850a523d38,2026-11-12
+menu_text_input_update,edge,,18,18,0,0,076e6d850a523d38,2026-11-12
 param_find_row_action_button,edge,,50,50,0,0,80e146de909c868f,2026-11-12
 param_find_row_ai_sound,edge,,50,50,0,0,80e146de909c868f,2026-11-12
 param_find_row_bullet,edge,,50,50,0,0,80e146de909c868f,2026-11-12
