@@ -508,7 +508,14 @@ static uint16_t comparison(const char *name, int *is_float, int *writes_exec)
         {"gt", SPV_OP_F_ORD_GREATER_THAN, SPV_OP_S_GREATER_THAN, SPV_OP_U_GREATER_THAN},
         {"lg", SPV_OP_F_ORD_NOT_EQUAL, 0, 0},
         {"ge", SPV_OP_F_ORD_GREATER_THAN_EQUAL, SPV_OP_S_GREATER_THAN_EQUAL, SPV_OP_U_GREATER_THAN_EQUAL},
+        /* the negated float compares hold where their condition does not, unordered (a NaN) included (the
+           Sea Islands manual: V_CMP_NGE_F32 is !(S0 >= S1), and so on) */
+        {"nge", SPV_OP_F_UNORD_LESS_THAN, 0, 0},
+        {"nlg", SPV_OP_F_UNORD_EQUAL, 0, 0},
+        {"ngt", SPV_OP_F_UNORD_LESS_THAN_EQUAL, 0, 0},
+        {"nle", SPV_OP_F_UNORD_GREATER_THAN, 0, 0},
         {"neq", SPV_OP_F_UNORD_NOT_EQUAL, 0, 0},
+        {"nlt", SPV_OP_F_UNORD_GREATER_THAN_EQUAL, 0, 0},
         {"ne", 0, SPV_OP_I_NOT_EQUAL, SPV_OP_I_NOT_EQUAL},
     };
     const char prefix[] = "v_cmp_", exec_prefix[] = "v_cmpx_";
