@@ -2620,4 +2620,3 @@ block, valid bit set), so **every query reads visible**. This is a stand-in, not
 counts need Vulkan occlusion queries over the draws between two dumps, copied into the game's 8-block
 layout (follow-up). Until then, anything the game decides from visibility (flares, culling of hidden
 objects) behaves as if everything were visible.
-
