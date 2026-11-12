@@ -15,6 +15,7 @@
    maps it and hands it back to the GPU calls. */
 #include "runtime/equeue.h"
 #include "runtime/process.h"
+#include "runtime/render_calls.h"
 #include "runtime/renderer.h"
 #include "runtime/syslib.h"
 #include "runtime/video_out.h"
@@ -126,7 +127,7 @@ RT_SYSLIB("libSceGnmDriver", sceGnmSetCsShader, set_cs_shader);
        buffer before drawing into it.
    Paleblood has no GPU to hold shader registers, no GPU debugger to read markers, and no GPU that
    could draw into a buffer early, so each fills its reserved space with one PM4 NOP packet and
-   answers 0, as sceGnmSetCsShader does: the command buffer stays well-formed and nothing in it
+   answers 0, as sceGnmSetCsShader does (the shader stages also hand the renderer their registers, below): the command buffer stays well-formed and nothing in it
    acts. The arguments after the count are not used. */
 static int32_t write_nothing_for_the_gpu(uint32_t *command_buffer, uint32_t dwords)
 {
@@ -174,12 +175,79 @@ RT_SYSLIB("libSceGnmDriver", sceGnmSetVsShader, gnm_set_vs_shader);
 RT_SYSLIB("libSceGnmDriver", sceGnmUpdateVsShader, gnm_update_vs_shader);
 RT_SYSLIB("libSceGnmDriver", sceGnmSetPsShader, gnm_set_ps_shader);
 RT_SYSLIB("libSceGnmDriver", sceGnmUpdatePsShader, gnm_update_ps_shader);
-RT_SYSLIB("libSceGnmDriver", sceGnmSetEsShader, write_nothing_for_the_gpu);
-RT_SYSLIB("libSceGnmDriver", sceGnmSetGsShader, write_nothing_for_the_gpu);
-RT_SYSLIB("libSceGnmDriver", sceGnmSetHsShader, write_nothing_for_the_gpu);
-RT_SYSLIB("libSceGnmDriver", sceGnmSetLsShader, write_nothing_for_the_gpu);
-RT_SYSLIB("libSceGnmDriver", sceGnmUpdateGsShader, write_nothing_for_the_gpu);
-RT_SYSLIB("libSceGnmDriver", sceGnmUpdateHsShader, write_nothing_for_the_gpu);
+
+/* The tessellation and geometry-shader stages hand the renderer theirs the same way
+   (runtime/renderer.h), with the argument orders of shadPS4's gnmdriver.cpp (facts only):
+     sceGnmSetLsShader(command buffer, dwords, registers, modifier): 4 words. The modifier replaces
+       PGM_RSRC1's SGPR count (bits 6-9) alone when it has no other bit, else that and the input VGPR
+       count (bits 24-25); a modifier with any other bit is refused there and stops here by name.
+     sceGnmSetEsShader(command buffer, dwords, registers, modifier): 4 words, the modifier as the
+       vertex shader's (both fields).
+     sceGnmSetHsShader / sceGnmUpdateHsShader(command buffer, dwords, registers, VGT_LS_HS_CONFIG):
+       7 words, then the configuration as an eighth.
+     sceGnmSetGsShader / sceGnmUpdateGsShader(command buffer, dwords, registers): 7 words.
+   A boot shows the local and hull blocks' code addresses, resources and tessellation settings matching
+   the shaders' own code (docs/RENDERER.md). Missing registers stop by name. */
+enum { LS_MODIFIER_SGPRS = 0x000003c0u };
+static void bind_stage(const char *function, rt_renderer_shader kind, uint32_t *command_buffer, uint32_t dwords, const uint32_t *words)
+{
+    fill_with_nop(function, command_buffer, dwords);
+    rt_renderer_bind_shader(function, kind, command_buffer, words);
+}
+
+static int32_t set_ls_shader(uint32_t *b, uint32_t n, const uint32_t *r, uint32_t modifier)
+{
+    static const char fn[] = "sceGnmSetLsShader";
+    if (!r) rt_fatal(fn, "no local shader registers: the answer is not established");
+    const uint32_t fields = (modifier & ~LS_MODIFIER_SGPRS) ? VS_MODIFIER_FIELDS : LS_MODIFIER_SGPRS;
+    if (modifier & ~fields) rt_fatal(fn, "a shader modifier with bits outside PGM_RSRC1's SGPRS and VGPR_COMP_CNT");
+    uint32_t words[RT_LOCAL_SHADER_WORDS];
+    memcpy(words, r, sizeof words);
+    if (modifier) words[2] = (words[2] & ~fields) | modifier;
+    bind_stage(fn, RT_RENDERER_LOCAL_SHADER, b, n, words);
+    return 0;
+}
+
+static int32_t set_es_shader(uint32_t *b, uint32_t n, const uint32_t *r, uint32_t modifier)
+{
+    static const char fn[] = "sceGnmSetEsShader";
+    if (!r) rt_fatal(fn, "no export shader registers: the answer is not established");
+    if (modifier & ~VS_MODIFIER_FIELDS) rt_fatal(fn, "a shader modifier with bits outside PGM_RSRC1's SGPRS and VGPR_COMP_CNT");
+    uint32_t words[RT_EXPORT_SHADER_WORDS];
+    memcpy(words, r, sizeof words);
+    if (modifier) words[2] = (words[2] & ~VS_MODIFIER_FIELDS) | modifier;
+    bind_stage(fn, RT_RENDERER_EXPORT_SHADER, b, n, words);
+    return 0;
+}
+
+static int32_t set_hs_shader(uint32_t *b, uint32_t n, const uint32_t *r, uint32_t config, const char *function)
+{
+    if (!r) rt_fatal(function, "no hull shader registers: the answer is not established");
+    uint32_t words[RT_HULL_SHADER_WORDS];
+    memcpy(words, r, (RT_HULL_SHADER_WORDS - 1) * sizeof *words);
+    words[RT_HULL_SHADER_WORDS - 1] = config;
+    bind_stage(function, RT_RENDERER_HULL_SHADER, b, n, words);
+    return 0;
+}
+
+static int32_t set_gs_shader(uint32_t *b, uint32_t n, const uint32_t *r, const char *function)
+{
+    if (!r) rt_fatal(function, "no geometry shader registers: the answer is not established");
+    bind_stage(function, RT_RENDERER_GEOMETRY_SHADER, b, n, r);
+    return 0;
+}
+
+static int32_t gnm_set_hs_shader(uint32_t *b, uint32_t n, const uint32_t *r, uint32_t c) { return set_hs_shader(b, n, r, c, "sceGnmSetHsShader"); }
+static int32_t gnm_update_hs_shader(uint32_t *b, uint32_t n, const uint32_t *r, uint32_t c) { return set_hs_shader(b, n, r, c, "sceGnmUpdateHsShader"); }
+static int32_t gnm_set_gs_shader(uint32_t *b, uint32_t n, const uint32_t *r) { return set_gs_shader(b, n, r, "sceGnmSetGsShader"); }
+static int32_t gnm_update_gs_shader(uint32_t *b, uint32_t n, const uint32_t *r) { return set_gs_shader(b, n, r, "sceGnmUpdateGsShader"); }
+
+RT_SYSLIB("libSceGnmDriver", sceGnmSetEsShader, set_es_shader);
+RT_SYSLIB("libSceGnmDriver", sceGnmSetGsShader, gnm_set_gs_shader);
+RT_SYSLIB("libSceGnmDriver", sceGnmSetHsShader, gnm_set_hs_shader);
+RT_SYSLIB("libSceGnmDriver", sceGnmSetLsShader, set_ls_shader);
+RT_SYSLIB("libSceGnmDriver", sceGnmUpdateGsShader, gnm_update_gs_shader);
+RT_SYSLIB("libSceGnmDriver", sceGnmUpdateHsShader, gnm_update_hs_shader);
 RT_SYSLIB("libSceGnmDriver", sceGnmInsertPushMarker, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmInsertPopMarker, write_nothing_for_the_gpu);
 RT_SYSLIB("libSceGnmDriver", sceGnmInsertSetMarker, write_nothing_for_the_gpu);
