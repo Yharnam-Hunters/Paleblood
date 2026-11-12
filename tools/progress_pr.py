@@ -33,10 +33,13 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BRANCH = 'auto/regenerate-progress'
-DEFAULT_REPO = 'Yharnam-Hunters/Paleblood'
 GENERATED = ('README.md', 'STATUS.md', 'CONTRIBUTING.md',
              'docs/assets/status-light.svg', 'docs/assets/status-dark.svg')
 ATTEMPTS = 3
+
+
+def repo_flag(repo: str | None) -> list[str]:
+    return ['-R', repo] if repo else []
 
 
 class Failure(Exception):
@@ -61,7 +64,7 @@ def is_ancestor(a: str, b: str) -> bool:
 
 
 def open_pr(repo: str) -> int | None:
-    out = run(['gh', 'pr', 'list', '-R', repo, '--head', BRANCH, '--state', 'open',
+    out = run(['gh', 'pr', 'list', *repo_flag(repo), '--head', BRANCH, '--state', 'open',
                '--json', 'number', '--jq', '.[].number']).stdout.split()
     return int(out[0]) if out else None
 
@@ -121,7 +124,7 @@ def commit_message(wt: str, main_sha: str, co_author: str | None) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--remote', default='origin')
-    ap.add_argument('--repo', default=DEFAULT_REPO)
+    ap.add_argument('--repo', help='OWNER/NAME for gh (default: the repository of the remote gh picks)')
     ap.add_argument('--co-author')
     ap.add_argument('--dry-run', action='store_true')
     ap.add_argument('--no-queue', action='store_true')
@@ -138,7 +141,7 @@ def main() -> int:
                 if number:
                     print(f'progress-pr: main {main_sha[:12]} is current; pull request #{number} is no longer '
                           'needed', file=sys.stderr)
-                    run(['gh', 'pr', 'close', str(number), '-R', a.repo, '--comment',
+                    run(['gh', 'pr', 'close', str(number), *repo_flag(a.repo), '--comment',
                          f'Main {main_sha[:12]} already has current progress text (tools/progress_pr.py).'])
                 else:
                     print(f'progress-pr: main {main_sha[:12]} is current; nothing to do')
@@ -169,12 +172,12 @@ def main() -> int:
             body_path = os.path.join(parent, 'body.md')
             with open(body_path, 'w') as f:
                 f.write(report_body(main_sha, changed))
-            url = run(['gh', 'pr', 'create', '-R', a.repo, '--base', 'main', '--head', BRANCH,
+            url = run(['gh', 'pr', 'create', *repo_flag(a.repo), '--base', 'main', '--head', BRANCH,
                        '--title', 'docs: regenerate progress', '--body-file', body_path]).stdout.strip()
             number = int(url.rstrip('/').rsplit('/', 1)[-1])
         print(f'progress-pr: pushed {head[:12]} to {BRANCH}; pull request #{number}')
         if not a.no_queue:
-            run(['gh', 'pr', 'merge', str(number), '-R', a.repo, '--auto', '--match-head-commit', head])
+            run(['gh', 'pr', 'merge', str(number), *repo_flag(a.repo), '--auto', '--match-head-commit', head])
             print(f'progress-pr: #{number} queued (auto-merge)')
         return 0
     except Failure as e:

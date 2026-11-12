@@ -37,7 +37,6 @@ import sys
 import tempfile
 import time
 
-DEFAULT_REPO = 'Yharnam-Hunters/Paleblood'
 GENERATED_MARKDOWN = {'README.md': ('status', 'progress', 'target'), 'STATUS.md': ('progress',),
                       'CONTRIBUTING.md': ('status',)}
 GENERATED_FILES = ('docs/assets/status-light.svg', 'docs/assets/status-dark.svg')
@@ -69,6 +68,10 @@ TABLES = (
     ('symbols/families/*.reviews.csv', None, lambda r: (int(r['address'], 16), r['date']), False),
     ('symbols/families/*.csv', ('address',), by_address, False),
 )
+
+
+def repo_flag(repo: str | None) -> list[str]:
+    return ['-R', repo] if repo else []
 
 
 class Conflict(Exception):
@@ -292,7 +295,7 @@ def build_and_validate(repo: Repo, build: bool) -> bool:
 def arm(repo: Repo, number: int, project: str) -> bool:
     head = repo.git('rev-parse', 'HEAD')
     for attempt in range(6):    # GitHub takes a moment to see a pushed head
-        r = repo.run(['gh', 'pr', 'merge', str(number), '-R', project, '--auto', '--match-head-commit', head],
+        r = repo.run(['gh', 'pr', 'merge', str(number), *repo_flag(project), '--auto', '--match-head-commit', head],
                      check=False)
         if r.returncode == 0:
             print(f'remerge: #{number} armed for auto-merge at {head[:12]}')
@@ -310,7 +313,7 @@ def main() -> int:
     ap.add_argument('--no-build', action='store_true')
     ap.add_argument('--push', action='store_true')
     ap.add_argument('--pr', type=int)
-    ap.add_argument('--repo', default=DEFAULT_REPO)
+    ap.add_argument('--repo', help='OWNER/NAME for gh (default: the repository of the remote gh picks)')
     ap.add_argument('--co-author')
     a = ap.parse_args()
 
