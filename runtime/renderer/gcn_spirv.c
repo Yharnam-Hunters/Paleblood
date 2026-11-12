@@ -884,6 +884,15 @@ static void vector_instruction(translator *t, const uint32_t *w, const gcn_instr
         write_float(t, &o, f, ins);
     } else if (!strcmp(name, "v_cvt_u32_f32") || !strcmp(name, "v_cvt_i32_f32")) {
         write_vgpr(t, o.dst, float_to_integer(t, float_source(t, &o, 0, ins), !strcmp(name, "v_cvt_i32_f32")));
+    } else if (!strcmp(name, "v_cvt_f32_f16")) {
+        /* the half in the source's low 16 bits as a float (exact); abs and neg change only its sign, the same
+           before the conversion as after */
+        const uint32_t vec2 = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_float(t), 2}, 2);
+        const uint32_t low = value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, source(t, o.src[0], ins), konst(t, 0xffff));
+        uint32_t f = value(t, SPV_OP_COMPOSITE_EXTRACT, t_float(t), 2, glsl(t, vec2, SPV_GLSL_UNPACK_HALF_2X16, low, 0, 0, 1), 0);
+        if (o.abs & 1) f = glsl(t, t_float(t), SPV_GLSL_F_ABS, f, 0, 0, 1);
+        if (o.neg & 1) f = value(t, SPV_OP_F_NEGATE, t_float(t), 1, f);
+        write_float(t, &o, f, ins);
     } else if (!strcmp(name, "v_cvt_pkrtz_f16_f32")) {
         /* Two floats as halves rounded toward zero: src0 in the low 16 bits, src1 in the high. */
         if (o.clamp || o.omod) fail(t, "%s: clamp and output modifiers are not supported", name);
@@ -1806,6 +1815,61 @@ static uint32_t buffer_base(translator *t, unsigned srsrc)
     return value(t, SPV_OP_SELECT, t_ulong(t), 3, in_ring, factors, base);
 }
 
+/* MUBUF buffer_atomic_* on one dword (the Sea Islands manual): the dword at the access' address (as a load
+   forms it: the descriptor's base, soffset, the instruction offset, the VGPR offset with OFFEN, the index
+   times the stride with IDXEN) takes the operation with VDATA, atomically for the whole device; with GLC,
+   VDATA receives the dword's old value. cmpswap stores VDATA where the dword equals VDATA + 1. An access
+   outside the descriptor's range changes nothing and returns 0, as a load there reads 0. inc, dec and the
+   64-bit forms stop by name. */
+static const struct {
+    const char *name;
+    uint16_t opcode;
+} buffer_atomics[] = {
+    {"buffer_atomic_swap", SPV_OP_ATOMIC_EXCHANGE}, {"buffer_atomic_cmpswap", SPV_OP_ATOMIC_COMPARE_EXCHANGE},
+    {"buffer_atomic_add", SPV_OP_ATOMIC_I_ADD}, {"buffer_atomic_sub", SPV_OP_ATOMIC_I_SUB}, {"buffer_atomic_smin", SPV_OP_ATOMIC_S_MIN},
+    {"buffer_atomic_umin", SPV_OP_ATOMIC_U_MIN}, {"buffer_atomic_smax", SPV_OP_ATOMIC_S_MAX}, {"buffer_atomic_umax", SPV_OP_ATOMIC_U_MAX},
+    {"buffer_atomic_and", SPV_OP_ATOMIC_AND}, {"buffer_atomic_or", SPV_OP_ATOMIC_OR}, {"buffer_atomic_xor", SPV_OP_ATOMIC_XOR},
+};
+
+static void buffer_atomic(translator *t, const uint32_t *w, const gcn_instruction *ins)
+{
+    const char *name = ins->name;
+    uint16_t opcode = 0;
+    for (size_t i = 0; i < sizeof buffer_atomics / sizeof buffer_atomics[0]; i++)
+        if (!strcmp(name, buffer_atomics[i].name)) opcode = buffer_atomics[i].opcode;
+    const unsigned offen = (w[0] >> 12) & 1, idxen = (w[0] >> 13) & 1, glc = (w[0] >> 14) & 1, addr64 = (w[0] >> 15) & 1;
+    const unsigned vaddr = w[1] & 0xff, vdata = (w[1] >> 8) & 0xff, srsrc = ((w[1] >> 16) & 0x1f) * 4;
+    const unsigned tfe = (w[1] >> 23) & 1, soffset = w[1] >> 24;
+    if (!opcode || addr64 || tfe) {
+        fail(t, "%s%s is not translated yet", name, opcode ? " with addr64 or tfe" : "");
+        return;
+    }
+    const uint32_t soffset_value = source(t, soffset, ins);
+    uint32_t access_offset = konst(t, w[0] & 0xfff);
+    if (offen) access_offset = value(t, SPV_OP_I_ADD, t_uint(t), 2, access_offset, load(t, t_uint(t), vgpr(t, vaddr + idxen)));
+    const uint32_t stride = value(t, SPV_OP_BITWISE_AND, t_uint(t), 2,
+                                  value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, load(t, t_uint(t), sgpr(t, srsrc + 1)),
+                                        konst(t, VSHARP_STRIDE_SHIFT)),
+                                  konst(t, VSHARP_STRIDE_MASK));
+    const uint32_t index = idxen ? load(t, t_uint(t), vgpr(t, vaddr)) : konst(t, 0);
+    uint32_t offset = value(t, SPV_OP_I_ADD, t_uint(t), 2, soffset_value, access_offset);
+    if (idxen) offset = value(t, SPV_OP_I_ADD, t_uint(t), 2, offset, value(t, SPV_OP_I_MUL, t_uint(t), 2, index, stride));
+    const buffer_range range = buffer_range_of(t, srsrc, idxen, index, stride, soffset_value, access_offset);
+    const uint32_t base = buffer_base(t, srsrc);
+    const uint32_t merge = begin_if(t, exec_bit(t));
+    const uint32_t result = function_variable(t, t_uint(t), konst(t, 0));
+    const uint32_t in_range = begin_if(t, buffer_in_range(t, &range, 0));
+    const uint32_t pointer = dword_pointer(t, base, offset, 0), scope = konst(t, SPV_SCOPE_DEVICE), relaxed = konst(t, 0);
+    const uint32_t data = load(t, t_uint(t), vgpr(t, vdata));
+    const uint32_t old = opcode == SPV_OP_ATOMIC_COMPARE_EXCHANGE
+                             ? value(t, opcode, t_uint(t), 6, pointer, scope, relaxed, relaxed, data, load(t, t_uint(t), vgpr(t, vdata + 1)))
+                             : value(t, opcode, t_uint(t), 4, pointer, scope, relaxed, data);
+    store(t, t->out, result, old);
+    end_if(t, in_range);
+    if (glc) write_vgpr(t, vdata, load(t, t_uint(t), result));
+    end_if(t, merge);
+}
+
 /* A geometry-shader stage's ring access (runtime/gcn_spirv.h, "Geometry shaders"): `dwords` dwords at
    byte `offset` (the instruction offset plus any VGPR offset) and soffset, swizzled for a store, linear
    for a load, in the ring its stage meets: the export shader stores to the ESGS ring, the geometry shader
@@ -1859,6 +1923,10 @@ static void ring_access(translator *t, const gcn_instruction *ins, int load_op, 
 static void buffer_memory(translator *t, const uint32_t *w, const gcn_instruction *ins)
 {
     const char *name = ins->name;
+    if (ins->encoding == GCN_MUBUF && !strncmp(name, "buffer_atomic_", strlen("buffer_atomic_"))) {
+        buffer_atomic(t, w, ins);
+        return;
+    }
     int load_op = 0;
     const uint32_t dwords = buffer_access_dwords(t, w, ins, &load_op);
     if (!dwords) return;
@@ -2771,11 +2839,13 @@ static int leaves_straight_line(const uint32_t *w, const gcn_instruction *ins, s
    and the use (code runs forward between branches, so a path that skipped the load would have to land
    there; a loop from after the load back to there is such a path only if a branch from before the load
    reaches the loop's branch, so none may land after the load up to it), every
-   branch's target is known, no branch goes back to the use or before it when an instruction after
-   the use and before that branch writes those SGPRs, and no instruction before the load writes the pointer pair, nor any
-   instruction at all when a branch goes back to the load or before it (so a loop that runs the load
+   branch's target is known, no branch goes back to the use or before it (but not to the load or before
+   it, which loads the descriptor again) when an instruction after the use and before that branch writes
+   those SGPRs, and no instruction before the load writes the pointer pair, nor any
+   instruction before the last branch back to the load or before it (so a loop that runs the load
    again loads the same descriptor; without one, code after the load may reuse the pointer's SGPRs, as
-   the game's pixel shaders do once their samples are done). The user data's descriptor holds at a use
+   the game's pixel shaders do once their samples are done, and code after the last such branch may too,
+   as a clinic compute shader does once its loops are done: nothing runs the load after it). The user data's descriptor holds at a use
    that no write comes before, whatever branches run, unless one goes back to the use after a later
    write (the game's pixel shaders reuse a sampler's SGPRs after their last sample; one at the loading
    screen loops over samples through the user data's descriptor and reuses its SGPRs only after the
@@ -2802,6 +2872,7 @@ static int descriptor_origin(const uint32_t *code, size_t program, const callee_
     }
     if (!written) return 0;
     int loops_to_load = 0; /* a branch back to the load or before it */
+    size_t last_loop_back = 0; /* the last such branch */
     long loop_end = -1;    /* the last branch from after the load back to between it and the use */
     long skip_target = -1; /* the nearest place a branch from before the load lands after it */
     for (size_t p = 0; p < program;) {
@@ -2810,9 +2881,11 @@ static int descriptor_origin(const uint32_t *code, size_t program, const callee_
         long target;
         if (leaves_straight_line(code + p, &ins, p, callee, &target) && (p < at || target < 0 || (size_t)target <= at)) {
             /* a branch back to the use or before it, from after a write that follows the use: a loop whose
-               next pass would read what that write left (a write after the branch runs once the loop is done) */
+               next pass would read what that write left (a write after the branch runs once the loop is done),
+               unless the branch goes back to the load or before it, so the next pass loads the descriptor again */
             const int back_to_use = (size_t)target <= at && (size_t)target <= p && p >= at;
-            if (target < 0 || (written_after_use >= 0 && (size_t)written_after_use <= p && back_to_use)) {
+            const int back_to_load = writer >= 0 && target >= 0 && target <= writer;
+            if (target < 0 || (written_after_use >= 0 && (size_t)written_after_use <= p && back_to_use && !back_to_load)) {
                 snprintf(error, error_size, "the descriptor in s[%u:%u] is written by the program, and a branch (%s at dword %zu) comes "
                          "before its use at dword %zu: not done yet", first, first + width - 1, ins.name, p, at);
                 return -1;
@@ -2827,7 +2900,7 @@ static int descriptor_origin(const uint32_t *code, size_t program, const callee_
                          p, target, at);
                 return -1;
             }
-            if (target <= writer && (size_t)target <= p) loops_to_load = 1;
+            if (target <= writer && (size_t)target <= p) loops_to_load = 1, last_loop_back = p;
             if (writer >= 0 && (long)p < writer && target > writer && (skip_target < 0 || target < skip_target)) skip_target = target;
         }
         p += ins.dwords;
@@ -2851,7 +2924,8 @@ static int descriptor_origin(const uint32_t *code, size_t program, const callee_
         return -1;
     }
     const unsigned pointer = ((w[0] >> 9) & 0x3f) * 2;
-    for (size_t p = 0; p < (loops_to_load ? program : (size_t)writer);) {
+    const size_t checked_end = loops_to_load && last_loop_back > (size_t)writer ? last_loop_back : (size_t)writer;
+    for (size_t p = 0; p < checked_end;) {
         gcn_instruction before;
         gcn_decode(code + p, program - p, &before);
         /* the load may overwrite its own pointer (s[0:7] from s[0:1]) unless a loop runs it again */
@@ -3368,7 +3442,8 @@ int gcn_buffer_store_resources(const uint32_t *code, size_t dwords, gcn_resource
             return -1;
         }
         if ((ins.encoding == GCN_MUBUF || ins.encoding == GCN_MTBUF) &&
-            (!strncmp(ins.name, "buffer_store", strlen("buffer_store")) || !strncmp(ins.name, "tbuffer_store", strlen("tbuffer_store")))) {
+            (!strncmp(ins.name, "buffer_store", strlen("buffer_store")) || !strncmp(ins.name, "tbuffer_store", strlen("tbuffer_store")) ||
+             !strncmp(ins.name, "buffer_atomic", strlen("buffer_atomic")))) { /* an atomic writes too */
             gcn_resource_origin origin;
             char reason[256];
             if (descriptor_origin(code, (size_t)program, &no_callee, at, ((code[at + 1] >> 16) & 0x1f) * SRSRC_UNIT, BUFFER_DWORDS, &origin, reason,
