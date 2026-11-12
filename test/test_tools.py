@@ -1163,6 +1163,49 @@ class Boot(unittest.TestCase):
         finally:
             shutil.rmtree(d)
 
+    def test_boot_starts_the_save_folder_from_a_checkpoint(self):
+        """--savedata-from: the run's save folder starts as a copy of the checkpoint, which the run's
+        writes leave unchanged; it needs --no-record and excludes --savedata."""
+        import boot
+        d = tempfile.mkdtemp()
+        try:
+            for name in ['eboot', *boot.mapped_modules(ROOT)]:
+                open(os.path.join(d, f'{name}.elf'), 'wb').close()
+            checkpoint = os.path.join(d, 'checkpoint', '1', 'SAVE0001')
+            os.makedirs(os.path.join(checkpoint, 'sce_sys'))
+            with open(os.path.join(checkpoint, 'userdata0000'), 'wb') as fh:
+                fh.write(b'before')
+            fake = os.path.join(d, 'pbboot')  # records the save folder's file, then overwrites it, as a save would
+            with open(fake, 'w') as fh:
+                fh.write('#!/usr/bin/env python3\nimport json, os, sys\n'
+                         'saves = sys.argv[sys.argv.index("--savedata") + 1]\n'
+                         'path = os.path.join(saves, "1", "SAVE0001", "userdata0000")\n'
+                         f'json.dump([saves, open(path).read()], open({os.path.join(d, "seen.json")!r}, "w"))\n'
+                         'open(path, "w").write("after")\n'
+                         'open(sys.argv[sys.argv.index("--status") + 1], "w").write("{}")\n')
+            os.chmod(fake, 0o755)
+            keys = b'USER_DEFINED_PARAM_1\0'
+            sfo = struct.pack('<4sIIII', b'\0PSF', 0x101, 20 + 16, 20 + 16 + len(keys), 1)
+            sfo += struct.pack('<HHIII', 0, 0x0404, 4, 4, 0) + keys + struct.pack('<i', 1)
+            with open(os.path.join(d, 'param.sfo'), 'wb') as fh:
+                fh.write(sfo)
+            base = [sys.executable, os.path.join(ROOT, 'tools', 'boot.py'), '--elf', os.path.join(d, 'eboot.elf'),
+                    '--param-sfo', os.path.join(d, 'param.sfo'), '--app0', d, '--savedata-from', os.path.join(d, 'checkpoint')]
+            env = {**os.environ, 'BB_PBBOOT': fake, 'BB_NID_DB': ''}
+            p = subprocess.run(base + ['--no-record'], env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            with open(os.path.join(d, 'seen.json')) as fh:
+                saves, seen = json.load(fh)
+            self.assertEqual(seen, 'before')
+            self.assertNotEqual(os.path.realpath(saves), os.path.realpath(os.path.join(d, 'checkpoint')))
+            with open(os.path.join(checkpoint, 'userdata0000')) as fh:
+                self.assertEqual(fh.read(), 'before')
+            for extra in ([], ['--no-record', '--savedata', os.path.join(d, 'kept')]):
+                p = subprocess.run(base + extra, env=env, capture_output=True, text=True, timeout=60)
+                self.assertEqual(p.returncode, 2, p.stderr)
+        finally:
+            shutil.rmtree(d)
+
     def test_a_stop_hook_is_recorded_as_where_the_boot_stops(self):
         import boot
         hook = {'module': 'm.elf', 'offset': '0x80', 'name': 'ns::h', 'returns_to': 'm.elf+0xe'}

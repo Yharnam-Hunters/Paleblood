@@ -48,6 +48,7 @@ import glob
 import json
 import os
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -296,6 +297,9 @@ def main() -> int:
     ap.add_argument('--app0', default=None, help="your own copy's application directory (served read-only as /app0)")
     ap.add_argument('--savedata', default=None, metavar='DIR',
                     help='keep the game\'s save data in DIR (default: a new empty folder for each run)')
+    ap.add_argument('--savedata-from', default=None, metavar='DIR',
+                    help='start the run\'s new save folder as a copy of DIR (a checkpoint in the runtime\'s layout, '
+                         '<user id>/<directory>/...); DIR itself is never changed')
     ap.add_argument('--system-param', action='append', default=[], metavar='ID=VALUE',
                     help='a console system setting, e.g. 1=18 for English (United Kingdom)')
     ap.add_argument('--addcont', action='append', default=[], metavar='LABEL',
@@ -320,6 +324,12 @@ def main() -> int:
                     help='answer each on-screen keyboard as if TEXT was typed and Done pressed (e.g. a name '
                          'for the character creation contract); without it the keyboard is canceled. Not for recorded boots')
     a = ap.parse_args()
+    if a.savedata_from and a.savedata:
+        ap.error('--savedata-from starts a new save folder: leave out --savedata')
+    if a.savedata_from and not a.no_record:
+        ap.error('--savedata-from starts from a checkpoint: such a boot is not recorded (add --no-record)')
+    if a.savedata_from and not os.path.isdir(a.savedata_from):
+        ap.error(f'--savedata-from {a.savedata_from}: not a folder')
     if a.keyboard_text is not None and not a.no_record:
         ap.error('--keyboard-text answers the title\'s keyboard: such a boot is not recorded (add --no-record)')
     if a.input_script and a.input == 'host':
@@ -365,6 +375,8 @@ def main() -> int:
         os.mkdir(data)
         # Save data, the same way unless --savedata names a folder to keep saves in across runs.
         savedata = a.savedata or os.path.join(d, 'savedata')
+        if a.savedata_from:
+            shutil.copytree(a.savedata_from, savedata, symlinks=False)
         os.makedirs(savedata, exist_ok=True)
         cmd = [pbboot, *objects, *stubs, *hooks, '--data', data, '--savedata', savedata, '--status', out,
                '--timeout', str(a.timeout), *names,
