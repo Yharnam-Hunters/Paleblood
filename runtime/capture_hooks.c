@@ -19,6 +19,15 @@
    jumps straight to its replacement, as before. A function whose traces keep giving no case
    (GIVE_UP in a row) is not traced again in this run.
 
+   BB_CAPTURE_NATIVE names replacements that must run for every call, traced callers included
+   (render replacements that report to the runtime's renderer): they get neither a thunk nor a
+   redirect, so a traced call that reaches one ends its trace and runs on natively.
+
+   BB_CAPTURE_ORIGINAL=1 records the game's own inputs: no replacement runs at all. A recorded
+   hook's unsampled calls go on to its relocated original instead of the replacement, and every
+   other hook (not recordable, or left out by BB_CAPTURE_ONLY) is not installed, so its original
+   runs untouched. A buggy replacement then cannot change the state later calls read.
+
    Imports: the host's loader binds them, so their slots are found by mapping the executable
    (BB_ELF) again into scratch memory with each import bound to a numbered marker, and named
    from the symbol list (BB_CAPTURE_IMPORTS, symbols/imports.csv) by matching each name's NID.
@@ -74,6 +83,9 @@ static size_t code_size;
 static rt_code_range image_range, code_range;
 
 #define IMPORT_MARKER 0xfeed000000000000ull
+/* Data imports (the game's executable has some) must be bound too, or the scratch map fails; their
+   marker never matches IMPORT_MARKER, since only function slots are scripted. */
+#define DATA_MARKER 0xfeec000000000000ull
 
 typedef struct {
     char nid[RT_NID_SIZE];
@@ -83,7 +95,7 @@ typedef struct {
 static uint64_t bind_marker(void *user, size_t index, int kind)
 {
     (void)user;
-    return kind == RT_ELF_IMPORT_FUNCTION ? IMPORT_MARKER | index : 0;
+    return (kind == RT_ELF_IMPORT_FUNCTION ? IMPORT_MARKER : DATA_MARKER) | index;
 }
 
 static int compare_nid(const void *a, const void *b)
@@ -121,6 +133,18 @@ static named_nid *read_names(const char *path, size_t *count)
     if (out) qsort(out, n, sizeof *out, compare_nid);
     *count = n;
     return out;
+}
+
+/* The executable's read-only segments, which cases leave out (rt_capture_set_constant). */
+static void set_constant_ranges(unsigned char *image, const rt_elf_load *loads, size_t count)
+{
+    enum { MAX_RANGES = 16, WRITABLE = 2 };
+    rt_code_range ranges[MAX_RANGES];
+    size_t n = 0;
+    for (size_t l = 0; l < count && n < MAX_RANGES; l++)
+        if (!(loads[l].flags & WRITABLE))
+            ranges[n++] = (rt_code_range){image + loads[l].vaddr, image + loads[l].vaddr + loads[l].memsz};
+    rt_capture_set_constant(ranges, n);
 }
 
 /* The import table for the tracer: each function import's slot in the live image, by name. */
@@ -169,6 +193,7 @@ static size_t find_imports(unsigned char *image, uint64_t image_size, rt_trace_i
             }
         }
         fprintf(stderr, "capture: %zu import slot(s) named\n", n);
+        set_constant_ranges(image, loads, rt_elf_load_count(elf));
     }
     if (scratch != MAP_FAILED) munmap(scratch, size);
     if (elf) rt_elf_close(elf);
@@ -207,11 +232,26 @@ static int capture_requested(void)
     return dir && *dir && trace && !strcmp(trace, "1") && rt_trace_available();
 }
 
+int rt_capture_original_mode(void)
+{
+    const char *original = getenv("BB_CAPTURE_ORIGINAL");
+    return capture_requested() && original && !strcmp(original, "1");
+}
+
+/* The name cases are filed under: the replacement's, without its bb_ prefix. */
+static const char *case_name(const rt_hook_entry *h)
+{
+    return strncmp(h->name, "bb_", 3) ? h->name : h->name + 3;
+}
+
 int rt_capture_hooks_prepare(unsigned char *image, uint64_t image_size, const rt_hook_entry *table, size_t count,
                              const void **targets)
 {
     for (size_t i = 0; i < count; i++) targets[i] = (const void *)table[i].fn;
     if (!capture_requested() || !count || count > MAX_HOOKS) return 0;
+    const int original_only = rt_capture_original_mode();
+    if (original_only)
+        for (size_t i = 0; i < count; i++) targets[i] = NULL;
 
     code_size = (count * (RT_RELOCATE_MAX + THUNK_SIZE) + 0xfff) & ~(size_t)0xfff;
     code_block = rt_map_near_image(image, image_size, code_size);
@@ -228,14 +268,17 @@ int rt_capture_hooks_prepare(unsigned char *image, uint64_t image_size, const rt
         unsigned char *original = image + (h->address - RT_EBOOT_BASE);
         unsigned char *entry = entries + i * RT_RELOCATE_MAX;
         size_t copied, written;
+        if (original_only && !rt_capture_wanted(case_name(h))) continue;
+        /* No thunk and no redirect: a traced caller that reaches it leaves the traced code and
+           runs on natively, through the replacement. */
+        if (!original_only && rt_capture_native(case_name(h))) continue;
         if (!h->returns || h->address < RT_EBOOT_BASE || h->size < HOOK_JUMP ||
             rt_trace_relocate(original, HOOK_JUMP, entry, &copied, &written) ||
             rt_trace_branches_into(original, h->size, copied))
             continue;
         capture_hook *c = &hooks[hook_count++];
-        c->replacement = h->fn;
-        /* Cases are filed under the function's name: the replacement's without its bb_ prefix. */
-        snprintf(c->name, sizeof c->name, "%s", strncmp(h->name, "bb_", 3) ? h->name : h->name + 3);
+        c->replacement = original_only ? (rt_hook_fn)(uintptr_t)entry : h->fn;
+        snprintf(c->name, sizeof c->name, "%s", case_name(h));
         c->traced = (rt_traced_function){c->name, h->address, h->returns, entry};
         /* movabs r11, c; jmp qword ptr [rip]; .quad rt_capture_entry */
         unsigned char *t = thunks + i * THUNK_SIZE;
@@ -250,7 +293,7 @@ int rt_capture_hooks_prepare(unsigned char *image, uint64_t image_size, const rt
         recorded++;
     }
     if (mprotect(code_block, code_size, PROT_READ | PROT_EXEC)) {
-        for (size_t i = 0; i < count; i++) targets[i] = (const void *)table[i].fn;
+        for (size_t i = 0; i < count; i++) targets[i] = original_only ? NULL : (const void *)table[i].fn;
         hook_count = redirect_count = 0;
         fprintf(stderr, "capture: cannot make the relocated entries executable; nothing is recorded\n");
         return 0;
@@ -262,7 +305,8 @@ int rt_capture_hooks_prepare(unsigned char *image, uint64_t image_size, const rt
     rt_trace_set_imports(import_table, imports);
     image_range = (rt_code_range){image, image + image_size};
     code_range = (rt_code_range){code_block, code_block + count * RT_RELOCATE_MAX};
-    fprintf(stderr, "capture: %zu of %zu hooked function(s) can be recorded\n", recorded, count);
+    fprintf(stderr, "capture: %zu of %zu hooked function(s) can be recorded%s\n", recorded, count,
+            original_only ? "; no replacement runs (BB_CAPTURE_ORIGINAL)" : "");
     return (int)recorded;
 }
 
@@ -275,6 +319,7 @@ int rt_capture_dispatch(capture_hook *c, rt_capture_frame *f)
     memcpy(args.gpr, f->gpr, sizeof args.gpr);
     memcpy(args.xmm, f->xmm, sizeof args.xmm);
     rt_capture_copy_stack(f->caller_rsp, args.stack);
+    args.caller_rsp = f->caller_rsp;
     const rt_code_range code[2] = {image_range, code_range};
     rt_trace_result result;
     const int written = rt_capture_traced_call(&c->traced, number, &args, image_range, code, 2, &result);

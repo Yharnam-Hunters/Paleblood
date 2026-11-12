@@ -89,6 +89,8 @@ set_tests_properties(capture_trace_replay PROPERTIES
 add_executable(test_capture_hooks test/test_capture_hooks.cpp test/capture_trace_guest.S)
 target_link_libraries(test_capture_hooks bbrt)
 add_test(NAME capture_hooks COMMAND test_capture_hooks --self-test)
+add_test(NAME capture_hooks_original COMMAND test_capture_hooks --original-self-test)
+add_test(NAME capture_hooks_native COMMAND test_capture_hooks --native-self-test)
 add_test(NAME capture_hooks_replay
          COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/capture_trace_integration.py $<TARGET_FILE:test_capture_hooks>
                  capture_trace_scale capture_trace_twice capture_trace_copy capture_trace_use_import)
@@ -248,6 +250,14 @@ add_test(NAME module_tls_boot
 set_tests_properties(module_tls_boot PROPERTIES TIMEOUT 30
     ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>")
 
+# pbboot ends once it has reported, without running library teardown (test/test_boot_exit.py).
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_library(boot_exit_destructor SHARED test/boot_exit_destructor.c)
+    add_test(NAME boot_exit
+             COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_boot_exit.py -v)
+    set_tests_properties(boot_exit PROPERTIES TIMEOUT 60
+        ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>;BB_BOOT_EXIT_FIXTURE=$<TARGET_FILE:boot_exit_destructor>")
+endif()
 
 # Full-width module arguments and proven early invalid-ID statuses.
 add_executable(test_sysmodule_ids test/test_sysmodule_ids.c

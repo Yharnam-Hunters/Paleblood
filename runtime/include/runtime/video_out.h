@@ -52,6 +52,10 @@ int32_t rt_video_out_flip(const char *caller, int32_t handle, int32_t buffer, in
    Returns 0. */
 int32_t rt_video_out_queue_flip(const char *caller, int32_t handle, int32_t buffer, int32_t mode, int64_t argument);
 
+/* The guest address of a registered display buffer (what a flip of it shows); a port or buffer the
+   runtime did not hand out stops by name. */
+uint64_t rt_video_out_buffer_address(const char *caller, int32_t handle, int32_t buffer);
+
 #ifdef __cplusplus
 }
 #endif

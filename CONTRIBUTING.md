@@ -121,7 +121,11 @@ Systems that lack documentation get a **Document a system** issue first: its pag
 Forks of a public repository are public. Everything you push there, including branches you
 never open a pull request for, is visible to anyone: never push game files, dumps, decompiler
 projects or raw decompiler output, not even temporarily. Keep your dump, your Ghidra project,
-drafts and captures outside the repository (the tools default to `../data`, next to your clone).
+drafts and captures outside the repository. The tools read your dump from `../data` (next to your
+clone, `$BB_DATA_ROOT`) and never write there: drafts go to `$BB_DRAFTS` (default
+`~/.cache/paleblood/drafts`) and the Ghidra project lives at `$BB_GHIDRA_PROJECT` (default
+`~/.local/share/paleblood/ghidra/run1-classes`), because Ghidra writes lock files into a project
+it opens.
 
 ## Pull request contents
 
@@ -153,7 +157,10 @@ A function's status in `symbols/functions.csv` goes through three levels:
 Chalice Dungeon state, say, without a save that gets there). You don't upgrade it by hand:
 `tools/promote.py` (run by `tools/end_session.sh`) re-runs every `edge-verified` function once
 recordings for it exist in your capture library, and marks it `verified` only if every recorded
-and edge case passes. A failure leaves it where it was and is reported.
+and edge case passes. A failure leaves it where it was and is reported. The runtime records those
+inputs itself: `tools/capture_loop.py` boots every scene it reaches with recording on, then runs
+`tools/promote.py` and lists the functions that pass and await their independent review
+([docs/VERIFY.md](docs/VERIFY.md), "Recording in the game").
 
 ### Definition of done
 
@@ -177,6 +184,20 @@ A function goes to `main` only when it is **verified and readable**:
   case anywhere, under any option, unless the case is in `symbols/quarantine.csv` with the
   reason it can't be used (docs/VERIFY.md, "Recorded results and quarantine").
   `tools/validate_functions.py` checks it in CI.
+
+### Matching (optional)
+
+For small C-style functions, `tools/match.py` adds a stronger kind of evidence. It compiles C
+source with upstream clang 3.4.2 and the PS4 SDK's documented flags, then compares the result
+byte for byte with the original in your own dump ([docs/MATCHING.md](docs/MATCHING.md)). The
+result goes in `symbols/matching.csv`. Matching is optional and local only, like `verify.py`.
+Sony's own compiler is never used.
+
+A byte-exact match, whose calls and data references were also checked to reach the same places
+as the original's (`targets_checked=yes`), can stand in for the recorded cases that `verified`
+needs. The edge results and the independent review are still required. Write matching C from your own understanding of
+the function, never from decompiler output, and don't chase matching for large C++ engine
+functions.
 
 Investigation notes and logs go in the pull request, not in the repository. Game screenshots and
 clips do not belong in the Paleblood code repository, issues, pull requests, or Discussions (see

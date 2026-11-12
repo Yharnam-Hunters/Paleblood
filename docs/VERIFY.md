@@ -52,11 +52,49 @@ request. Keep them under `$BB_CAPTURES` (for example `/mnt/.../captures/<functio
 - **Real runs.** Inputs recorded while the game ran: one directory per function,
   `$BB_CAPTURES/<function>/*.json`. Verification reuses everything recorded so far: point
   `--captures` at the function's directory. Replacements do not record their own inputs
-  (STYLE.md: no recording code under `game/`); recording is the runtime's job, so new recordings
-  come once Paleblood's runtime runs the game. Until then a new function is `edge-verified`, and
-  `tools/promote.py` upgrades it when recordings for it exist.
+  (STYLE.md: no recording code under `game/`); recording is the runtime's job (below). A new
+  function is `edge-verified` until recordings for it exist, and `tools/promote.py` upgrades it.
 - **Edge cases.** A generator next to the replacement writes the situations a short run does
   not reach (`game/<system>/*_cases.py`).
+
+## Recording in the game
+
+Paleblood's runtime records while it runs the game: `tools/boot.py --capture DIR` turns every
+hook of the game library into a recording thunk, and a sampled call of a replaced function runs
+the game's original code under the tracer, which writes the inputs it read as a case
+(docs/capture-architecture.md). The recorded call always runs the original; other calls run the
+replacements as in any `--game-lib` boot, or, with `--capture-originals`, no replacement runs at
+all. `--capture-functions` picks the functions (`all-edge-verified` by default, `all`, or a list;
+with a `--display`, `all-edge-verified` leaves out the functions whose replacements report what
+they emitted to the runtime's renderer (`runtime/render_observer.h`): a recorded call runs the
+original, which reports nothing, and the renderer would stop at the state it missed; their
+replacements then run for every call, also inside a recorded caller, whose trace ends there; a
+scene with `"display": "none"` records them)
+and `--capture-cases N` caps the distinct cases kept per function and run (200). A case identical
+to one the library already holds, apart from its id and run, is not written again, so repeated
+runs only add new situations.
+
+The whole loop is one command, for every scene the runtime reaches:
+
+```
+tools/capture_loop.py --captures "$BB_CAPTURES"
+```
+
+1. one capture boot per scene of the scene list (`--scenes`, default `$BB_CAPTURE_SCENES`, then
+   `CAPTURES/scenes.json`; kept outside the repository, since a checkpoint is your own save
+   data): a new game through character creation, each save checkpoint (`savedata_from`), with the
+   input script and keyboard text that get there. Each boot holds the GPU lock;
+2. the edge cases of every function with recordings, written to `CAPTURES/NAME/edge` by the
+   generator beside its replacement;
+3. `tools/promote.py --check-unreviewed`: reviewed functions whose recorded and edge cases all
+   pass become `verified`; those that pass without a review are listed as awaiting one (the
+   independent review, CONTRIBUTING.md); a failure is reported (a bug to fix, or a quarantine with
+   its reason, below).
+
+Run it whenever the runtime reaches new game code (a new scene, a new boot record).
+`tools/end_session.sh` warns (`tools/capture_status.py`) when the library was last recorded before
+the newest boot record, and when edge-verified functions have recordings but no recorded result
+for their current code.
 
 ## Case file (schema 1)
 
@@ -427,3 +465,12 @@ Instruction-level first-divergence state traces and control-flow/CFG coverage re
 No coverage feedback is used to steer exploration. These are blockers for broad automated batch
 decompilation. A match is evidence for supplied fixtures only; it does not promote a function or
 establish observed original-game behavior.
+
+## Matching
+
+`tools/match.py` is a separate, optional check for small C-style functions. It compiles matching
+C source with upstream clang 3.4.2 and the SDK's documented flags, then compares the machine code
+with the original in your dump. A byte-exact match can stand in for recorded cases when its
+references were checked too (`targets_checked=yes`: every call, jump and data reference reaches
+the same function, global or import as the original's); the edge results and the independent
+review stay required. See [MATCHING.md](MATCHING.md).

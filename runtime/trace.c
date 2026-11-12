@@ -27,6 +27,7 @@ enum {
     TABLE_BITS = 20,                       /* bytes noted per call: up to half of 2^20 */
     QWORD_LIMIT = 1 << 16,
     PRIVATE_STACK = 16 << 20,
+    DEAD_STACK = 1 << 20,               /* how far below the caller's rsp import changes are ignored */
     TRAP_FLAG = 0x100,
     DIRECTION_FLAG = 0x400,
     IMPORT_CALL_LIMIT = 256,
@@ -62,6 +63,7 @@ typedef struct {
     rt_code_range code[RT_TRACE_MAX_RANGES];
     size_t ranges;
     uintptr_t stack_lo, stack_top, args_lo, args_hi, stack_hi;
+    uintptr_t dead_lo, dead_hi;         /* the calling thread's stack below its caller's rsp */
     slot *table;
     size_t used;
     uint64_t *qword;
@@ -388,6 +390,12 @@ static int import_enter(trace_state *t, ucontext_t *uc, const import_target *imp
     return 0;
 }
 
+/* Below the caller's rsp, on the calling thread's stack: nothing the caller can see. */
+static int dead(const trace_state *t, uint64_t addr)
+{
+    return addr >= t->dead_lo && addr < t->dead_hi;
+}
+
 /* Back from the import at the pad: record its result and the bytes it changed, then go on
    tracing at its real return address. */
 static void import_return(trace_state *t, ucontext_t *uc)
@@ -404,10 +412,21 @@ static void import_return(trace_state *t, ucontext_t *uc)
         size_t off = 0;
         if (t->snap_ptr[i] < visible)
             off = visible - t->snap_ptr[i] < t->snap_len[i] ? (size_t)(visible - t->snap_ptr[i]) : t->snap_len[i];
+        /* A stale argument register may point below the caller's rsp, where the thread's own
+           native frames (the recording dispatch) live: nothing the caller can see. */
+        const uint64_t at = t->snap_ptr[i];
+        size_t done = off;                  /* bytes before this are scripted or left alone */
         while (off < t->snap_len[i]) {
-            if (now[off] == before[off]) { off++; continue; }
+            if (now[off] == before[off] || dead(t, at + off)) { off++; continue; }
             size_t end = off;
-            while (end < t->snap_len[i] && now[end] != before[end]) end++;
+            while (end < t->snap_len[i] && now[end] != before[end] && !dead(t, at + end))
+                end++;
+            /* A changed run widens to whole eight-byte words: an import that writes a value whose
+               upper bytes happen to equal what was there (a struct timespec's seconds) changes
+               only some of its bytes, and the rest must be scripted too, or a replay reads what its
+               own stack held there. */
+            while (off > done && ((at + off) & 7) && !dead(t, at + off - 1)) off--;
+            while (end < t->snap_len[i] && ((at + end) & 7) && !dead(t, at + end)) end++;
             if (t->nwrites >= WRITE_LIMIT || t->write_used + (end - off) > WRITE_BYTES) {
                 t->incomplete = "an import changed too much memory to script";
                 break;
@@ -418,7 +437,7 @@ static void import_return(trace_state *t, ucontext_t *uc)
             c->writes++;
             /* Later reads of these bytes see what the import wrote, which the case scripts. */
             note(t, t->snap_ptr[i] + off, end - off, 1, NULL);
-            off = end;
+            off = done = end;
         }
     }
     t->in_import = 0;
@@ -659,6 +678,10 @@ int rt_trace_call(const void *entry, const rt_trace_args *args, const rt_code_ra
     t.stack_lo = (uintptr_t)stack;
     t.stack_hi = (uintptr_t)stack + PRIVATE_STACK;
     t.stack_top = ret_slot;
+    if (args->caller_rsp > DEAD_STACK) {
+        t.dead_lo = args->caller_rsp - DEAD_STACK;
+        t.dead_hi = args->caller_rsp;
+    }
     t.args_lo = ret_slot + 8;
     t.args_hi = ret_slot + 8 + 8 * RT_TRACE_STACK_SLOTS;
     t.pid = getpid();

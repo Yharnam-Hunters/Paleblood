@@ -115,6 +115,46 @@ static void shader_blocks(void)
     rt_render_forget();
 }
 
+/* The tessellation and geometry stages' blocks (a boot's local and hull shaders): decoded, and placed
+   at the address their call wrote. */
+static void tessellation_stages(void)
+{
+    const uint32_t local[RT_LOCAL_SHADER_WORDS] = {0x20d52d5b, 0, 0x030c0040, 0x38c};
+    rt_local_shader l;
+    rt_local_shader_decode(local, &l);
+    CHECK(l.code == 0x20d52d5b00ull && l.vgprs == 4 && l.sgprs == 16 && l.vgpr_inputs == 3 && l.user_sgprs == 6 && l.lds_bytes == 7 * 512);
+    const uint32_t hull[RT_HULL_SHADER_WORDS] = {0x20d52e01, 0, 0x000c0043, 0x190, 0x42, 0x40400000, 0x3f800000, 0x410f};
+    rt_hull_shader h;
+    rt_hull_shader_decode(hull, &h);
+    CHECK(h.code == 0x20d52e0100ull && h.vgprs == 16 && h.user_sgprs == 8 && h.off_chip && h.workgroup_size_enabled);
+    CHECK(h.domain == RT_TESS_QUADS && h.partitioning == RT_TESS_INTEGER && h.topology == RT_TESS_TRIANGLES_CW);
+    CHECK(h.max_level == 3.0f && h.min_level == 1.0f && h.patches == 15 && h.input_points == 1 && h.output_points == 1);
+    const uint32_t geometry[RT_GEOMETRY_SHADER_WORDS] = {0x20d52d7d, 0, 0x000c0149, 0x10, 0, 2, 0};
+    rt_geometry_stage_shader g;
+    rt_geometry_stage_shader_decode(geometry, 1, &g);
+    CHECK(g.code == 0x20d52d7d00ull && g.user_sgprs == 8 && g.registers[1] == 2 && g.resources[0] == 0x000c0149);
+    rt_geometry_stage_shader_decode(local, 0, &g);
+    CHECK(g.code == 0x20d52d5b00ull && g.user_sgprs == 6 && g.registers[1] == 0);
+
+    rt_render_forget();
+    enum { BUFFER = 0x480000000ull };
+    char error[128] = "";
+    CHECK(rt_render_record_draw_auto(BUFFER, 0x80, 3, error, sizeof error) == 0);
+    CHECK(rt_render_record_local_shader_at(BUFFER + 0x10, local) == 0);
+    CHECK(rt_render_record_hull_shader_at(BUFFER + 0x20, hull) == 0);
+    CHECK(rt_render_record_export_shader_at(BUFFER + 0x30, local) == 0);
+    CHECK(rt_render_record_geometry_shader_at(BUFFER + 0x40, geometry) == 0);
+    size_t count = 0;
+    const rt_render_call *calls = rt_render_submitted(BUFFER, 0x100, &count);
+    CHECK(count == 5);
+    if (count == 5) {
+        CHECK(calls[0].kind == RT_CALL_LOCAL_SHADER && calls[0].offset == 0x10 && calls[0].u.local_shader.lds_bytes == 7 * 512);
+        CHECK(calls[1].kind == RT_CALL_HULL_SHADER && calls[1].offset == 0x20 && calls[1].u.hull_shader.patches == 15);
+        CHECK(calls[2].kind == RT_CALL_EXPORT_SHADER && calls[3].kind == RT_CALL_GEOMETRY_SHADER && calls[4].kind == RT_CALL_DRAW_AUTO);
+    }
+    rt_render_forget();
+}
+
 static void user_data(void)
 {
     enum { BUFFER = 0x500000000ull };
@@ -291,6 +331,19 @@ static void compute_calls(void)
     const rt_render_call *calls = rt_render_submitted(BUFFER, 0x100, &count);
     CHECK(count == 2 && calls[0].kind == RT_CALL_COMPUTE_SHADER && calls[0].offset == 0x10 && calls[1].kind == RT_CALL_DISPATCH &&
           calls[1].u.dispatch.groups[0] == 4 && calls[1].u.dispatch.groups[1] == 2);
+    /* a new submission: the indirect dispatch; the base keeps bits 3-39, as SET_BASE writes it; the offset must be whole words */
+    CHECK(rt_render_record_indirect_base(BUFFER, 0x40, 0xab00002043490067ull, error, sizeof error) == 0);
+    CHECK(rt_render_record_dispatch_indirect(BUFFER, 0x50, 0x24, error, sizeof error) == 0);
+    CHECK(rt_render_record_dispatch_indirect(BUFFER, 0x60, 0x26, error, sizeof error) == -1 && strstr(error, "whole word"));
+    calls = rt_render_submitted(BUFFER, 0x100, &count);
+    CHECK(count == 2 && calls[0].kind == RT_CALL_INDIRECT_BASE && calls[0].u.indirect_base.address == 0x2043490060ull &&
+          calls[1].kind == RT_CALL_DISPATCH_INDIRECT && calls[1].offset == 0x50 && calls[1].u.dispatch_indirect.data_offset == 0x24);
+    CHECK(rt_render_record_draw_indirect(BUFFER, 0x70, 0x30, RT_STAGE_VERTEX, 5, 6, error, sizeof error) == 0);
+    CHECK(rt_render_record_draw_indirect(BUFFER, 0x80, 0x31, RT_STAGE_VERTEX, 0, 0, error, sizeof error) == -1 && strstr(error, "whole word"));
+    calls = rt_render_submitted(BUFFER, 0x100, &count);
+    CHECK(count == 1 && calls[0].kind == RT_CALL_DRAW_INDIRECT && calls[0].u.draw_indirect.data_offset == 0x30 &&
+          calls[0].u.draw_indirect.stage == RT_STAGE_VERTEX && calls[0].u.draw_indirect.base_vertex_sgpr == 5 &&
+          calls[0].u.draw_indirect.start_instance_sgpr == 6);
     rt_render_forget();
 }
 
@@ -376,6 +429,7 @@ int main(void)
     indexed_draws();
     registers_and_instances();
     shader_blocks();
+    tessellation_stages();
     user_data();
     recording();
     placed_calls();

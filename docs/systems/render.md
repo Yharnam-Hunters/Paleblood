@@ -272,6 +272,22 @@ on your GPU (see Runtime: the renderer):
   (`0x0148aad0`-`0x0148ada0`) take no stage argument and were not observed, so a compute pass ran
   with whatever user data the record held from before; one colour lookup-table pass read another
   pass's table. They now report through the same observers as the stage writers.
+- **Clinic loading** [#649](https://github.com/Yharnam-Hunters/Paleblood/pull/649), [#654](https://github.com/Yharnam-Hunters/Paleblood/pull/654), [#655](https://github.com/Yharnam-Hunters/Paleblood/pull/655), [#652](https://github.com/Yharnam-Hunters/Paleblood/pull/652): the load into Iosefka's Clinic (12 November, local runs)
+  reached five more library functions without replacements, now observed at their entry: the
+  indirect-argument base (`0x014742f0`, which writes `SET_BASE` with base index 1), the indirect
+  dispatch (`0x01474de0`, `DISPATCH_INDIRECT` with a data offset; the GPU reads the three
+  workgroup counts at the base plus that offset) and the depth bounds setter (`0x01473520`), whose
+  two bounds arrive as floats in `xmm0` and `xmm1` and are written as `DB_DEPTH_BOUNDS_MIN` and
+  `_MAX`. The fourth is the shader-stage setter (`0x01476030`), which writes `VGT_SHADER_STAGES_EN`
+  for five values only (0, 0x45, 0xad, 0xb0, 0x200) and nothing for any other: 0x45 turns on the
+  local, hull and vertex stages of tessellation, 0xad adds a geometry shader, 0xb0 is export plus
+  geometry. The engine's indirect draw caller (`0x02569a4c`) picks the local stage's user data
+  exactly for 0x45 and 0xad. The fifth is the indirect draw (`0x014744d0`: command buffer, data
+  offset, stage, and the SGPRs for the base vertex and start instance, each 0 for none), which
+  writes `DRAW_INDIRECT`; the GPU reads the four arguments (vertices per instance, instances, start
+  vertex, start instance) at the indirect base plus the offset. Its caller at `0x02569a89` passes
+  no SGPRs. A related dispatch writer with a third argument (`0x01474e80`) is not
+  observed yet.
 
 This needs the game library built from the decompilation (`tools/boot.py --game-lib`). In the
 maintainer's local runs it was enough to draw the studio logos and the title screen [#441](https://github.com/Yharnam-Hunters/Paleblood/pull/441).

@@ -46,9 +46,9 @@ It is made by people who love this game and want it to outlive the hardware it w
 | | Functions | Bytes |
 |---|---:|---:|
 | Target (Ghidra export) | 157757 | 42487404 |
-| Replaced | 18264 (11.58%) | 176606 (0.42%) |
+| Replaced | 18269 (11.58%) | 181899 (0.43%) |
 | of which in 19 function families | 18019 (11.42%) | 62426 (0.15%) |
-| Edge-verified | 18264 (11.58%) | 176606 (0.42%) |
+| Edge-verified | 18269 (11.58%) | 181899 (0.43%) |
 | Verified | 21 (0.01%) | 14010 (0.03%) |
 
 Each row includes the next: verified functions are also edge-verified and replaced.
@@ -145,7 +145,9 @@ python3 tools/boot.py --no-record --game-lib build/game/libbbgame.so \
 ```
 
 Character creation's contract needs a name: `--keyboard-text Hunter` answers the on-screen
-keyboard as if that name was typed (without it the keyboard is canceled).
+keyboard as if that name was typed (without it the keyboard is canceled). `--savedata-from DIR`
+starts the run's saves as a copy of DIR, a save folder an earlier boot kept with `--savedata`, so a
+boot can continue from the game's own save instead of replaying the start.
 
 Plain `python3 tools/boot.py` (no options) runs without the replacements, display, sound or
 input, and records how far the boot gets.

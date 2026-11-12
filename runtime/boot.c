@@ -250,6 +250,21 @@ static void guest_exit(int code)
 #endif
 }
 
+/* Ends the process once the run is reported. When the guest stops, its other threads are still
+   running or parked where they were (a stop parks the thread that met it, and the timeout
+   interrupts the main thread in whatever call it was making), so locks in libc, the Vulkan driver
+   or the game library may stay held forever. exit() would then run atexit handlers and every
+   library's destructors under those locks and could block for good, after the report was already
+   printed. So, like the guest's own _exit (runtime/syslib/kernel.c), the process ends at once:
+   the report's streams are flushed and nothing else runs. stdout and stderr are flushed by name,
+   not with fflush(NULL), which would lock every open stream, including any a parked thread holds. */
+static _Noreturn void end_after_report(int code)
+{
+    fflush(stdout);
+    fflush(stderr);
+    _exit(code);
+}
+
 static void on_signal(int sig, siginfo_t *info, void *context)
 {
     const ucontext_t *uc = context;
@@ -1301,7 +1316,7 @@ int main(int argc, char **argv)
         FILE *f = fopen(status_path, "w");
         if (!f) {
             fprintf(stderr, "pbboot: cannot write %s\n", status_path);
-            return 3;
+            end_after_report(3);
         }
         fprintf(f, "{\n  \"schema\": 2,\n  \"phase\": ");
         json_string(f, phase);
@@ -1390,8 +1405,5 @@ int main(int argc, char **argv)
         fprintf(f, "\n}\n");
         fclose(f);
     }
-    module_tls_cleanup();
-    free(db);
-    free(db_text);
-    return 0;
+    end_after_report(0);
 }

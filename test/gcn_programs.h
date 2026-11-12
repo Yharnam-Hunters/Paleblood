@@ -22,6 +22,26 @@ static const uint32_t scale_add[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* Each lane of workgroup (x, y, z) of a 2 x 3 x 4 dispatch stores x | y << 8 | z << 16 at byte
+   ((z * 3 + y) * 2 + x) * 256 + 4 * lane of the buffer in s[4:7]: the workgroup's indexes start in
+   s8, s9 and s10, after 8 user SGPRs (TGID_X/Y/Z_EN all set). */
+static const uint32_t workgroup_indexes[] = {
+    0x930b830a, /* s_mul_i32 s11, s10, 3 */
+    0x800b090b, /* s_add_u32 s11, s11, s9 */
+    0x8f0b810b, /* s_lshl_b32 s11, s11, 1 */
+    0x800b080b, /* s_add_u32 s11, s11, s8 */
+    0x8f0b880b, /* s_lshl_b32 s11, s11, 8 */
+    0x8f0c8809, /* s_lshl_b32 s12, s9, 8 */
+    0x8f0d900a, /* s_lshl_b32 s13, s10, 16 */
+    0x880c0d0c, /* s_or_b32 s12, s12, s13 */
+    0x880c080c, /* s_or_b32 s12, s12, s8 */
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0x4a02020b, /* v_add_i32_e32 v1, vcc, s11, v1 */
+    0x7e04020c, /* v_mov_b32_e32 v2, s12 */
+    0xe0701000, 0x80010201, /* buffer_store_dword v2, v1, s[4:7], 0 offen */
+    0xbf810000, /* s_endpgm */
+};
+
 /* out[i] = v_rcp_iflag_f32(in[i]), out[64 + i] = v_rcp_f32(in[i]). */
 static const uint32_t reciprocals[] = {
     0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
@@ -47,6 +67,46 @@ static const uint32_t reciprocals[] = {
 }
 static const uint32_t indexed_scale_add[] = INDEXED_SCALE_ADD(0);
 static const uint32_t indexed_scale_add_past_stride[] = INDEXED_SCALE_ADD(4);
+
+/* A table-driven copy (gcn_table_copy_shape): user data s[0:3] the table of (x, y, count), three
+   dwords per workgroup, s[4:7] the source, s[8:11] the destination, s12 the workgroup's x index; lane
+   i <= count copies source element y + i to destination element x + i (both indexed, idxen). The
+   table loads with `table_load` (buffer_load_dwordx3, 0xe03c2000, or buffer_load_format_xyz,
+   0xe0082000), the store with instruction offset `store_offset`. */
+#define TABLE_COPY(table_load, store_offset) {                                                   \
+    0x7e02020c, /* v_mov_b32_e32 v1, s12 */                                                     \
+    (table_load), 0x80000401, /* buffer_load_dwordx3 v[4:6], v1, s[0:3], 0 idxen */           \
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */                                                        \
+    0x7d8c0106, /* v_cmp_ge_u32_e32 vcc, v6, v0 */                                              \
+    0xbe8e246a, /* s_and_saveexec_b64 s[14:15], vcc */                                          \
+    0xbf880007, /* s_cbranch_execz 7 (to s_endpgm) */                                           \
+    0x4a0e0b00, /* v_add_i32_e32 v7, vcc, v0, v5 */                                             \
+    0xe0302000, 0x80010807, /* buffer_load_dword v8, v7, s[4:7], 0 idxen */                    \
+    0x4a120900, /* v_add_i32_e32 v9, vcc, v0, v4 */                                             \
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */                                                        \
+    0xe0702000 | (store_offset), 0x80020809, /* buffer_store_dword v8, v9, s[8:11], 0 idxen */ \
+    0xbf810000, /* s_endpgm */                                                                  \
+}
+static const uint32_t table_copy[] = TABLE_COPY(0xe03c2000, 0);
+static const uint32_t table_copy_format[] = TABLE_COPY(0xe0082000, 0);
+static const uint32_t table_copy_store_offset[] = TABLE_COPY(0xe03c2000, 4);
+
+/* out[i] = v_min_i32(-3, in[i]), out[64 + i] = v_max_i32(-3, in[i]), out[128 + i] = v_min_u32(7, in[i]),
+   out[192 + i] = v_max_u32(7, in[i]). */
+static const uint32_t integer_min_max[] = {
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0xe0301000, 0x80000201, /* buffer_load_dword v2, v1, s[0:3], 0 offen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x220604c3, /* v_min_i32_e32 v3, -3, v2 */
+    0x240804c3, /* v_max_i32_e32 v4, -3, v2 */
+    0x260a0487, /* v_min_u32_e32 v5, 7, v2 */
+    0x280c0487, /* v_max_u32_e32 v6, 7, v2 */
+    0xe0701000, 0x80010301, /* buffer_store_dword v3, v1, s[4:7], 0 offen */
+    0xe0701100, 0x80010401, /* buffer_store_dword v4, v1, s[4:7], 0 offen offset:256 */
+    0xe0701200, 0x80010501, /* buffer_store_dword v5, v1, s[4:7], 0 offen offset:512 */
+    0xe0701300, 0x80010601, /* buffer_store_dword v6, v1, s[4:7], 0 offen offset:768 */
+    0xbf810000, /* s_endpgm */
+};
 
 /* out[i] = v_mul_hi_u32(in[i], in[i]), out[64 + i] = v_mul_hi_i32(in[i], in[i]),
    out[128 + i] = v_mul_hi_i32(in[i], 4 * i). */
@@ -372,6 +432,19 @@ static const uint32_t image_copy[] = {
     0xf0200f00, 0x00020401, /* image_store v[4:7], v[1:2], s[8:15] dmask:0xf */
     0xbf810000, /* s_endpgm */
 };
+
+/* image_copy through image_load_mip at level `level` (in v3, after the coordinates). */
+#define IMAGE_COPY_MIP(level) {                                                     \
+    0x7e020300,             /* v_mov_b32_e32 v1, v0 */                              \
+    0x7e040280,             /* v_mov_b32_e32 v2, 0 */                               \
+    0x7e060280 + (level),   /* v_mov_b32_e32 v3, level */                           \
+    0xf0040f00, 0x00000401, /* image_load_mip v[4:7], v[1:3], s[0:7] dmask:0xf */   \
+    0xbf8c0f70,             /* s_waitcnt vmcnt(0) */                                \
+    0xf0200f00, 0x00020401, /* image_store v[4:7], v[1:2], s[8:15] dmask:0xf */     \
+    0xbf810000,             /* s_endpgm */                                          \
+}
+static const uint32_t image_copy_level_0[] = IMAGE_COPY_MIP(0);
+static const uint32_t image_copy_level_1[] = IMAGE_COPY_MIP(1);
 
 /* Per lane i, texel (i, 0) of the image in s[8:15] set to (float(i), 1.0, 2.0, 0.5). */
 static const uint32_t image_fill[] = {
@@ -952,6 +1025,165 @@ static const uint32_t pixel_user_color[] = {
     0x5e0c0702, /* v_cvt_pkrtz_f16_f32_e32 v6, v2, v3 */
     0x5e0e0b04, /* v_cvt_pkrtz_f16_f32_e32 v7, v4, v5 */
     0xf8001c0f, 0x00000706, /* exp mrt0, v6, v6, v7, v7 done compr vm */
+    0xbf810000, /* s_endpgm */
+};
+
+/* The local data share (LDS, 272 bytes: 68 dwords). Each lane writes lane + 100 at dword lane and adds 1
+   to dword 64; lanes 0-3 write byte 260 + lane = lane + 1; after s_barrier each lane stores, at byte
+   lane * 32 of s[4:7]: dword lane ^ 1, dwords lane and lane + 1 (ds_read2), dword 64 (the count, 64),
+   the short at byte 261 (0x0302), and dword 1024 (past the LDS: 0). */
+static const uint32_t lds_exchange[] = {
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0x4a0400ff, 0x00000064, /* v_add_i32_e32 v2, vcc, 0x64, v0 */
+    0xd8340000, 0x00000201, /* ds_write_b32 v1, v2 */
+    0x7e1402ff, 0x00000100, /* v_mov_b32_e32 v10, 0x100 */
+    0x7e120281, /* v_mov_b32_e32 v9, 1 */
+    0xd8000000, 0x0000090a, /* ds_add_u32 v10, v9 */
+    0x7d880084, /* v_cmp_gt_u32_e32 vcc, 4, v0 */
+    0xbe8c246a, /* s_and_saveexec_b64 s[12:13], vcc */
+    0x4a1600ff, 0x00000104, /* v_add_i32_e32 v11, vcc, 0x104, v0 */
+    0x4a180081, /* v_add_i32_e32 v12, vcc, 1, v0 */
+    0xd8780000, 0x00000c0b, /* ds_write_b8 v11, v12 */
+    0xbefe040c, /* s_mov_b64 exec, s[12:13] */
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+    0xbf8a0000, /* s_barrier */
+    0x3a060081, /* v_xor_b32_e32 v3, 1, v0 */
+    0x34060682, /* v_lshlrev_b32_e32 v3, 2, v3 */
+    0xd8d80000, 0x04000003, /* ds_read_b32 v4, v3 */
+    0xd8dc0100, 0x05000001, /* ds_read2_b32 v[5:6], v1 offset1:1 */
+    0xd8d80000, 0x0700000a, /* ds_read_b32 v7, v10 */
+    0x7e1a02ff, 0x00000104, /* v_mov_b32_e32 v13, 0x104 */
+    0xd8f00001, 0x0800000d, /* ds_read_u16 v8, v13 offset:1 */
+    0x7e1e02ff, 0x00001000, /* v_mov_b32_e32 v15, 0x1000 */
+    0xd8d80000, 0x1000000f, /* ds_read_b32 v16, v15 */
+    0x341c0085, /* v_lshlrev_b32_e32 v14, 5, v0 */
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+    0xe0781000, 0x8001040e, /* buffer_store_dwordx4 v[4:7], v14, s[4:7], 0 offen */
+    0xe0701010, 0x8001080e, /* buffer_store_dword v8, v14, s[4:7], 0 offen offset:16 */
+    0xe0701014, 0x8001100e, /* buffer_store_dword v16, v14, s[4:7], 0 offen offset:20 */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Tessellation stages (runtime/gcn_spirv.h). The local shader writes (float(vertex index), 0.5) at
+   16 * its RelAutoIndex in LDS; the hull shader writes six factors of 1.0 (a quad's) at its patch's 24
+   bytes of the tessellation-factor ring (the descriptor in s[0:3], the workgroup's offset in s8); the
+   domain shader reads its patch's two words back (16 * v2) and exports them as parameter 0, with the
+   position (u, v, 0, 1). */
+static const uint32_t tess_local[] = {
+    0x34080284, /* v_lshlrev_b32_e32 v4, 4, v1 */
+    0x7e0a0d00, /* v_cvt_f32_u32_e32 v5, v0 */
+    0x7e0c02f0, /* v_mov_b32_e32 v6, 0.5 */
+    0xd8380100, 0x00060504, /* ds_write2_b32 v4, v5, v6 offset1:1 */
+    0xbf810000, /* s_endpgm */
+};
+static const uint32_t tess_hull[] = {
+    0xd2900002, 0x02210101, /* v_bfe_u32 v2, v1, 0, 8 */
+    0x16060498, /* v_mul_u32_u24_e32 v3, 24, v2 */
+    0x7e0802f2, /* v_mov_b32_e32 v4, 1.0 */
+    0xe0701000, 0x08000403, /* buffer_store_dword v4, v3, s[0:3], s8 offen */
+    0xe0701004, 0x08000403, /* buffer_store_dword v4, v3, s[0:3], s8 offen offset:4 */
+    0xe0701008, 0x08000403, /* buffer_store_dword v4, v3, s[0:3], s8 offen offset:8 */
+    0xe070100c, 0x08000403, /* buffer_store_dword v4, v3, s[0:3], s8 offen offset:12 */
+    0xe0701010, 0x08000403, /* buffer_store_dword v4, v3, s[0:3], s8 offen offset:16 */
+    0xe0701014, 0x08000403, /* buffer_store_dword v4, v3, s[0:3], s8 offen offset:20 */
+    0xbf810000, /* s_endpgm */
+};
+static const uint32_t tess_domain[] = {
+    0x34080484, /* v_lshlrev_b32_e32 v4, 4, v2 */
+    0xd8dc0100, 0x05000004, /* ds_read2_b32 v[5:6], v4 offset1:1 */
+    0x7e0e0280, /* v_mov_b32_e32 v7, 0 */
+    0x7e1002f2, /* v_mov_b32_e32 v8, 1.0 */
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+    0xf800020f, 0x08070605, /* exp param0, v5, v6, v7, v8 */
+    0xf80008cf, 0x08070100, /* exp pos0, v0, v1, v7, v8 done */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Geometry-shader stages (runtime/gcn_spirv.h, "Geometry shaders"); ring accesses carry GLC and SLC, through
+   s[0:3], whose descriptor is not read. The export shader writes each vertex's (float(vertex index), 0.5)
+   to the ESGS ring (its offset in s4). The geometry shader, for a point list, reads its vertex's two words
+   back (v0 its ESGS offset, the second word 256 bytes on) and emits two strips: a quad over x from index - 1
+   to index and y from 0 to 1, a cut, then a quad over the same x and y from -1 to -0.5; each of its eight
+   vertices is four GSVS dwords (x, y, the index, 0.5) stored at offset (dword * 8 + vertex) * 4 from its
+   GSVS offset in s4, for VGT_GS_MAX_VERT_OUT 8. The copy shader reads its vertex's four dwords (v0 << 2, then
+   8 * 256 bytes a dword on) and exports the position (x, y, 0, 1) and parameter 0 (index, 0.5, 0, 1). */
+static const uint32_t gs_export[] = {
+    0x7e020d00, /* v_cvt_f32_u32_e32 v1, v0 */
+    0x7e0402f0, /* v_mov_b32_e32 v2, 0.5 */
+    0xe0704000, 0x04400100, /* buffer_store_dword v1, off, s[0:3], s4 glc slc */
+    0xe0704004, 0x04400200, /* buffer_store_dword v2, off, s[0:3], s4 offset:4 glc slc */
+    0xbf810000, /* s_endpgm */
+};
+static const uint32_t gs_geometry[] = {
+    0xbefc0305, /* s_mov_b32 m0, s5 */
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0xe0305000, 0x80400301, /* buffer_load_dword v3, v1, s[0:3], 0 offen glc slc */
+    0xb0060100, /* s_movk_i32 s6, 0x100 */
+    0xe0305000, 0x06400401, /* buffer_load_dword v4, v1, s[0:3], s6 offen glc slc */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x060a06f3, /* v_add_f32_e32 v5, -1.0, v3 */
+    0x060c0af2, /* v_add_f32_e32 v6, 1.0, v5 */
+    0x7e0e0280, /* v_mov_b32_e32 v7, 0 */
+    0x7e1002f2, /* v_mov_b32_e32 v8, 1.0 */
+    0x7e1202f3, /* v_mov_b32_e32 v9, -1.0 */
+    0x7e1402f1, /* v_mov_b32_e32 v10, -0.5 */
+    0xe0704000, 0x04400500, /* buffer_store_dword v5, off, s[0:3], s4 glc slc */
+    0xe0704020, 0x04400700, /* buffer_store_dword v7, off, s[0:3], s4 offset:32 glc slc */
+    0xe0704040, 0x04400300, /* buffer_store_dword v3, off, s[0:3], s4 offset:64 glc slc */
+    0xe0704060, 0x04400400, /* buffer_store_dword v4, off, s[0:3], s4 offset:96 glc slc */
+    0xbf900022, /* s_sendmsg sendmsg(MSG_GS, GS_OP_EMIT, 0) */
+    0xe0704004, 0x04400600, /* buffer_store_dword v6, off, s[0:3], s4 offset:4 glc slc */
+    0xe0704024, 0x04400700, /* buffer_store_dword v7, off, s[0:3], s4 offset:36 glc slc */
+    0xe0704044, 0x04400300, /* buffer_store_dword v3, off, s[0:3], s4 offset:68 glc slc */
+    0xe0704064, 0x04400400, /* buffer_store_dword v4, off, s[0:3], s4 offset:100 glc slc */
+    0xbf900022, /* s_sendmsg sendmsg(MSG_GS, GS_OP_EMIT, 0) */
+    0xe0704008, 0x04400500, /* buffer_store_dword v5, off, s[0:3], s4 offset:8 glc slc */
+    0xe0704028, 0x04400800, /* buffer_store_dword v8, off, s[0:3], s4 offset:40 glc slc */
+    0xe0704048, 0x04400300, /* buffer_store_dword v3, off, s[0:3], s4 offset:72 glc slc */
+    0xe0704068, 0x04400400, /* buffer_store_dword v4, off, s[0:3], s4 offset:104 glc slc */
+    0xbf900022, /* s_sendmsg sendmsg(MSG_GS, GS_OP_EMIT, 0) */
+    0xe070400c, 0x04400600, /* buffer_store_dword v6, off, s[0:3], s4 offset:12 glc slc */
+    0xe070402c, 0x04400800, /* buffer_store_dword v8, off, s[0:3], s4 offset:44 glc slc */
+    0xe070404c, 0x04400300, /* buffer_store_dword v3, off, s[0:3], s4 offset:76 glc slc */
+    0xe070406c, 0x04400400, /* buffer_store_dword v4, off, s[0:3], s4 offset:108 glc slc */
+    0xbf900022, /* s_sendmsg sendmsg(MSG_GS, GS_OP_EMIT, 0) */
+    0xbf900012, /* s_sendmsg sendmsg(MSG_GS, GS_OP_CUT, 0) */
+    0xe0704010, 0x04400500, /* buffer_store_dword v5, off, s[0:3], s4 offset:16 glc slc */
+    0xe0704030, 0x04400900, /* buffer_store_dword v9, off, s[0:3], s4 offset:48 glc slc */
+    0xe0704050, 0x04400300, /* buffer_store_dword v3, off, s[0:3], s4 offset:80 glc slc */
+    0xe0704070, 0x04400400, /* buffer_store_dword v4, off, s[0:3], s4 offset:112 glc slc */
+    0xbf900022, /* s_sendmsg sendmsg(MSG_GS, GS_OP_EMIT, 0) */
+    0xe0704014, 0x04400600, /* buffer_store_dword v6, off, s[0:3], s4 offset:20 glc slc */
+    0xe0704034, 0x04400900, /* buffer_store_dword v9, off, s[0:3], s4 offset:52 glc slc */
+    0xe0704054, 0x04400300, /* buffer_store_dword v3, off, s[0:3], s4 offset:84 glc slc */
+    0xe0704074, 0x04400400, /* buffer_store_dword v4, off, s[0:3], s4 offset:116 glc slc */
+    0xbf900022, /* s_sendmsg sendmsg(MSG_GS, GS_OP_EMIT, 0) */
+    0xe0704018, 0x04400500, /* buffer_store_dword v5, off, s[0:3], s4 offset:24 glc slc */
+    0xe0704038, 0x04400a00, /* buffer_store_dword v10, off, s[0:3], s4 offset:56 glc slc */
+    0xe0704058, 0x04400300, /* buffer_store_dword v3, off, s[0:3], s4 offset:88 glc slc */
+    0xe0704078, 0x04400400, /* buffer_store_dword v4, off, s[0:3], s4 offset:120 glc slc */
+    0xbf900022, /* s_sendmsg sendmsg(MSG_GS, GS_OP_EMIT, 0) */
+    0xe070401c, 0x04400600, /* buffer_store_dword v6, off, s[0:3], s4 offset:28 glc slc */
+    0xe070403c, 0x04400a00, /* buffer_store_dword v10, off, s[0:3], s4 offset:60 glc slc */
+    0xe070405c, 0x04400300, /* buffer_store_dword v3, off, s[0:3], s4 offset:92 glc slc */
+    0xe070407c, 0x04400400, /* buffer_store_dword v4, off, s[0:3], s4 offset:124 glc slc */
+    0xbf900022, /* s_sendmsg sendmsg(MSG_GS, GS_OP_EMIT, 0) */
+    0xbf900003, /* s_sendmsg sendmsg(MSG_GS_DONE, GS_OP_NOP) */
+    0xbf810000, /* s_endpgm */
+};
+static const uint32_t gs_copy[] = {
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0xe0305000, 0x80400201, /* buffer_load_dword v2, v1, s[0:3], 0 offen glc slc */
+    0xe0305800, 0x80400301, /* buffer_load_dword v3, v1, s[0:3], 0 offen offset:2048 glc slc */
+    0xb0041000, /* s_movk_i32 s4, 0x1000 */
+    0xe0305000, 0x04400401, /* buffer_load_dword v4, v1, s[0:3], s4 offen glc slc */
+    0xb0041800, /* s_movk_i32 s4, 0x1800 */
+    0xe0305000, 0x04400501, /* buffer_load_dword v5, v1, s[0:3], s4 offen glc slc */
+    0x7e0c0280, /* v_mov_b32_e32 v6, 0 */
+    0x7e0e02f2, /* v_mov_b32_e32 v7, 1.0 */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf800020f, 0x07060504, /* exp param0, v4, v5, v6, v7 */
+    0xf80008cf, 0x07060302, /* exp pos0, v2, v3, v6, v7 done */
     0xbf810000, /* s_endpgm */
 };
 

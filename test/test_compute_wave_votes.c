@@ -37,7 +37,7 @@ static unsigned inspect(const uint32_t *words, size_t count, unsigned opcode, ui
 }
 int main(int argc, char **argv)
 {
-    gcn_compute_layout layout = {.local_size={64,1,1},.user_sgprs=9,.workgroup_id_x_sgpr=-1,.error_address=0x1000};
+    gcn_compute_layout layout = {.local_size={64,1,1},.user_sgprs=9,.workgroup_id_enables=0,.error_address=0x1000};
     uint32_t *native=NULL,*cooperative=NULL; size_t native_count=0,count=0;
     CHECK(translate(&layout,&native,&native_count)==0);
     CHECK(native && inspect(native,native_count,SPV_OP_GROUP_NON_UNIFORM_ANY,0,0)>0);

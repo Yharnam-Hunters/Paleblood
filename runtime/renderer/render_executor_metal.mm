@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -24,6 +25,7 @@
 #include <memory>
 #include <new>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 #include <sys/mman.h>
@@ -1066,13 +1068,17 @@ static int shader_runtime_stop(rt_executor *x, char *error, size_t size)
 
 /* Capabilities include subgroup votes even for programs that never use them. Inspect
    actual instructions: native simd_any cannot reconstruct inactive GCN mask bits. */
-static int check_compute_subgroups(const uint32_t *spirv, size_t count, char *error, size_t size)
+static int check_compute_subgroups(const uint32_t *spirv, size_t count, bool guarded_wave, char *error, size_t size)
 {
     if (count < 5 || spirv[0] != spv::MagicNumber)
         return failed(error, size, "invalid translated compute module");
     for (size_t at = 5; at < count;) {
         const uint32_t words = spirv[at] >> 16, opcode = spirv[at] & 0xffff;
         if (!words || words > count - at) return failed(error, size, "invalid translated compute instruction");
+        /* Partial waves have no uniform program-counter guard around the interpreter.
+           A source barrier may therefore be reached by different host iterations. */
+        if (opcode == spv::OpControlBarrier && !guarded_wave)
+            return failed(error, size, "partial Metal compute workgroups do not support workgroup barriers");
         if (opcode >= spv::OpGroupNonUniformElect && opcode <= spv::OpGroupNonUniformQuadSwap)
             return failed(error, size, "wave-wide compute operations require a complete 64-thread wave and supported operations (opcode %u)", opcode);
         at += words;
@@ -1190,7 +1196,7 @@ static id<MTLComputePipelineState> compute_pipeline_for(rt_executor *x, const rt
     layout.user_sgprs = shader.user_sgprs;
     layout.thread_id_vgprs = shader.thread_id_components + 1;
     layout.workgroup_wave_votes = static_cast<uint64_t>(shader.threads[0]) * shader.threads[1] * shader.threads[2] == GCN_WAVE_LANES;
-    layout.workgroup_id_x_sgpr = workgroup_x ? static_cast<int>(shader.user_sgprs) : -1;
+    layout.workgroup_id_enables = workgroup_x ? 1u : 0u;
     layout.address_offset = x->address_offset;
     layout.error_address = x->stop.gpuAddress;
     layout.user_data_read = &user_read;
@@ -1199,7 +1205,7 @@ static id<MTLComputePipelineState> compute_pipeline_for(rt_executor *x, const rt
     if (gcn_translate_compute(code, dwords, &layout, &spirv, &count, reason, sizeof reason))
         return failed(error, size, "compute shader translation: %s", reason), nil;
     std::unique_ptr<uint32_t, decltype(&std::free)> owned(spirv, &std::free);
-    if (check_compute_subgroups(spirv, count, error, size)) return nil;
+    if (check_compute_subgroups(spirv, count, layout.workgroup_wave_votes != 0, error, size)) return nil;
     MetalCompiler compiler(spirv, count);
     id<MTLFunction> function = compile_msl(x, compiler, spv::ExecutionModelGLCompute, false, error, size, &resources);
     if (!function) return nil;
@@ -1529,6 +1535,9 @@ extern "C" int rt_executor_submit(rt_executor *x, char *error, size_t error_size
 
 extern "C" int rt_executor_wait_ticket(rt_executor *, uint64_t, char *, size_t) { return 0; }
 
+/* Metal runs each buffer to completion with its targets in memory and never guards them: nothing to resolve. */
+extern "C" int rt_executor_resolve(rt_executor *, uint64_t, uint64_t, char *, size_t) { return 0; }
+
 extern "C" int rt_executor_finish(rt_executor *x, char *error, size_t error_size)
 {
     return !x || x->failed ? failed(error, error_size, "a usable executor is required") : 0;
@@ -1639,6 +1648,53 @@ extern "C" int rt_executor_read_target(rt_executor *x, uint64_t address, uint32_
         } @catch (NSException *exception) { x->failed = true; return failed(error, error_size, "Metal readback: %s", exception.reason.UTF8String); }
     }
     return failed(error, error_size, "no draw has used that render target");
+}
+
+/* Flip copies (runtime/render_executor.h): Metal runs calls as they are recorded, so a snapshot reads
+   the target at once (rt_executor_read_target) into a copy of its own; its ticket is 0. */
+namespace {
+struct MetalSnapshot {
+    std::vector<uint32_t> pixels;
+    uint32_t width = 0, height = 0;
+    std::atomic<int> held{0};
+};
+constexpr unsigned METAL_SNAPSHOTS = 4;
+MetalSnapshot metal_snapshots[METAL_SNAPSHOTS];
+unsigned metal_next_snapshot;
+}
+
+extern "C" int rt_executor_snapshot_target(rt_executor *x, uint64_t address, rt_executor_snapshot *snapshot, char *error, size_t error_size)
+{
+    if (!x || x->failed) return failed(error, error_size, "a usable executor is required");
+    uint32_t width = 0, height = 0;
+    for (const auto &target : x->targets)
+        if (target.address == address) width = target.width, height = target.height;
+    if (!width || !height) return failed(error, error_size, "no draw has used a render target at %#llx", (unsigned long long)address);
+    const unsigned slot = metal_next_snapshot;
+    metal_next_snapshot = (slot + 1) % METAL_SNAPSHOTS;
+    MetalSnapshot &copy = metal_snapshots[slot];
+    while (copy.held.load()) std::this_thread::yield();
+    copy.pixels.resize((size_t)width * height);
+    if (rt_executor_read_target(x, address, copy.pixels.data(), width, height, error, error_size)) return -1;
+    copy.width = width, copy.height = height;
+    copy.held.store(1);
+    snapshot->ticket = 0, snapshot->slot = slot;
+    return 0;
+}
+
+extern "C" int rt_executor_read_snapshot(rt_executor *, const rt_executor_snapshot *snapshot, uint32_t *bgra, uint32_t width, uint32_t height,
+                                         char *error, size_t error_size)
+{
+    if (snapshot->slot >= METAL_SNAPSHOTS) return failed(error, error_size, "no such snapshot");
+    const MetalSnapshot &copy = metal_snapshots[snapshot->slot];
+    if (width > copy.width || height > copy.height) return failed(error, error_size, "read size is past the copied target");
+    for (uint32_t y = 0; y < height; y++) std::memcpy(bgra + (size_t)y * width, copy.pixels.data() + (size_t)y * copy.width, (size_t)width * 4);
+    return 0;
+}
+
+extern "C" void rt_executor_release_snapshot(rt_executor *, const rt_executor_snapshot *snapshot)
+{
+    if (snapshot->slot < METAL_SNAPSHOTS) metal_snapshots[snapshot->slot].held.store(0);
 }
 
 extern "C" void rt_executor_close(rt_executor *x) { delete x; }

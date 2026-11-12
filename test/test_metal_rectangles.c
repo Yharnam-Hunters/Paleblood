@@ -173,7 +173,7 @@ int main(void)
 {
     char path[]="/tmp/paleblood-metal-rectangles-XXXXXX",error[1024]="";int fd=mkstemp(path);CHECK(fd>=0);if(fd<0)return 1;unlink(path);
     CHECK(ftruncate(fd,POOL)==0);uint8_t *pool=mmap(NULL,POOL,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);CHECK(pool!=MAP_FAILED);if(pool==MAP_FAILED)return 1;
-    rt_executor *x=NULL;rt_executor_memory memory={fd,POOL,base,NULL};int rc=rt_executor_open(&memory,&x,error,sizeof error);CHECK(rc==0);if(rc){fprintf(stderr,"open %s\n",error);return 1;}
+    rt_executor *x=NULL;rt_executor_memory memory={fd,POOL,base,NULL,NULL,NULL};int rc=rt_executor_open(&memory,&x,error,sizeof error);CHECK(rc==0);if(rc){fprintf(stderr,"open %s\n",error);return 1;}
     for(unsigned p=0;p<5;++p)for(unsigned permutation=0;permutation<6;++permutation)for(unsigned indexed=0;indexed<3;++indexed)for(int sy=-1;sy<=1;sy+=2)
         compare(x,pool,permutation,indexed,p,sy);
     multiple(x,pool,2);multiple(x,pool,4);effects(x,pool);

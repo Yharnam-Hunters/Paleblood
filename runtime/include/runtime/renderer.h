@@ -39,14 +39,20 @@ void rt_renderer_configure(int enabled);
    holds now (the GPU would pass it at once); otherwise whether that earlier step, still waiting for
    its work, will make it hold (a completion write of the work before the wait, which the GPU's own
    order already puts ahead of the work after it). Such a wait is not waited for: the work after it
-   goes on. */
-enum { RT_GPU_STEP_AFTER_ALL = UINT32_MAX, RT_GPU_STEP_DEFERRABLE = 1 };
+   goes on.
+
+   A step flagged RT_GPU_STEP_SHOWS_TARGET (a flip) shows the render target at guest address words[4]:
+   the renderer copies that target's image in order with the work (rt_executor_snapshot_target) and
+   performs the step later from the other thread, as a deferrable one, once the copy has run;
+   rt_renderer_frame called from the step reads the copy. The work after it goes on meanwhile, as the
+   PS4's GPU goes on with the commands after a flip. */
+enum { RT_GPU_STEP_AFTER_ALL = UINT32_MAX, RT_GPU_STEP_DEFERRABLE = 1, RT_GPU_STEP_SHOWS_TARGET = 2 };
 typedef struct rt_gpu_step {
     void (*perform)(const struct rt_gpu_step *step);
     const char *function; /* the submitting call, for stops by name */
     uint32_t offset;
     uint64_t words[6];
-    uint32_t flags;       /* RT_GPU_STEP_DEFERRABLE, or 0 */
+    uint32_t flags;       /* RT_GPU_STEP_DEFERRABLE, RT_GPU_STEP_SHOWS_TARGET, or 0 */
     int (*holds)(const struct rt_gpu_step *step, const struct rt_gpu_step *pending); /* a wait on memory (above); NULL for other steps */
 } rt_gpu_step;
 
@@ -69,7 +75,12 @@ void rt_renderer_wait_idle(void);
    takes it into the drawing calls of the buffer submitted with that address. No pixel shader (words
    NULL, a depth-only pass) is recorded as a pixel shader at code address 0, and a draw with it stops
    in the executor. */
-typedef enum { RT_RENDERER_VERTEX_SHADER, RT_RENDERER_PIXEL_SHADER, RT_RENDERER_COMPUTE_SHADER } rt_renderer_shader;
+/* The tessellation and geometry-shader stages (sceGnmSetLsShader, SetHsShader, SetEsShader,
+   SetGsShader) hand theirs the same way: RT_LOCAL_SHADER_WORDS, RT_HULL_SHADER_WORDS (the hull
+   shader's 7 register words, then the call's VGT_LS_HS_CONFIG), RT_EXPORT_SHADER_WORDS and
+   RT_GEOMETRY_SHADER_WORDS words. */
+typedef enum { RT_RENDERER_VERTEX_SHADER, RT_RENDERER_PIXEL_SHADER, RT_RENDERER_COMPUTE_SHADER, RT_RENDERER_LOCAL_SHADER,
+               RT_RENDERER_HULL_SHADER, RT_RENDERER_EXPORT_SHADER, RT_RENDERER_GEOMETRY_SHADER } rt_renderer_shader;
 void rt_renderer_bind_shader(const char *function, rt_renderer_shader kind, const void *at, const uint32_t *words);
 
 /* What has been drawn into the frame buffer at a guest address, as width x height BGRA pixels into

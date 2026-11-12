@@ -49,7 +49,13 @@ enum {
     GCN_RUNTIME_STOP_VCC_UNKNOWN = 2,
     /* image_load/image_load_mip of a texel outside the image, or of a level past its last */
     GCN_RUNTIME_STOP_IMAGE_RANGE = 3,
-    GCN_RUNTIME_STOP_WAVE_PC = 4, /* cooperative compute invocations disagree on the next block */
+    /* a tessellated draw of more patches than the LDS buffer or the factor ring holds (gcn_tessellation_layout);
+       details: the draw's patch count, its low 24 bits */
+    GCN_RUNTIME_STOP_TESSELLATION_LIMIT = 4,
+    /* a draw with a geometry shader of more vertices or primitives than its rings or strip buffer hold
+       (gcn_geometry_layout); details: the draw's vertex count, its low 24 bits */
+    GCN_RUNTIME_STOP_GEOMETRY_LIMIT = 5,
+    GCN_RUNTIME_STOP_WAVE_PC = 6, /* cooperative compute invocations disagree on the next block */
 };
 
 /* Images (MIMG). A shader names an image by the SGPRs holding its 8-word descriptor (T#), which the
@@ -106,6 +112,40 @@ typedef struct {
 int gcn_buffer_store_resources(const uint32_t *code, size_t dwords, gcn_resource_origin *buffers, unsigned max, unsigned *count, int *unknown,
                                char *error, size_t error_size);
 
+/* The memory a program reads (not counting its images): each buffer descriptor its buffer and tbuffer
+   loads, atomics and s_buffer_loads read through (pointer 0: the descriptor's range, found by origin as
+   above), and each s_load from a user-data pointer pair the program does not write, at an immediate or
+   literal offset (pointer 1: `bytes` from the pointer in s[origin.sgpr : origin.sgpr + 1] plus
+   `offset`; a descriptor loaded from memory is read this way too). A caller can then bound what a
+   dispatch reads, and write back only the render targets in that memory. *unknown is set when a load
+   has neither (or there are more than max reads, or the program reads memory some other way): it may
+   read any memory. 0, or -1 with the reason (code that does not decode). */
+typedef struct {
+    int pointer;
+    gcn_resource_origin origin;
+    uint32_t offset, bytes;
+} gcn_memory_read;
+int gcn_memory_reads(const uint32_t *code, size_t dwords, gcn_memory_read *reads, unsigned max, unsigned *count, int *unknown, char *error,
+                     size_t error_size);
+
+/* A table-driven copy: a compute program that loads its workgroup's entry of three 32-bit words (x, y,
+   count) from a table buffer, indexed by its workgroup's x index, and in each thread (lane id v0, its
+   local x index) loads the source buffer's element y + v0 and stores it as the destination buffer's
+   element x + v0 (both indexed, IDXEN, with no offsets), threads past the count doing nothing. The game
+   copies depth this way (the compute shader at 0x20d1b00100), through descriptors whose ranges span
+   most of the memory; its table, written by the CPU, gives the copy's real source and destination.
+   The match is strict: only those three buffer accesses, v_mov_b32, v_add_i32 and compares to build
+   the indices, exec masking, waits and branches to the program's end, and no write to the
+   descriptors' SGPRs or the workgroup index's. Elements past the count are taken as read and stored
+   (lanes up to the workgroup's width), so the caller's ranges cover the copy. 1 and *shape when the
+   program is one, 0 otherwise. */
+typedef struct {
+    unsigned table_sgpr, source_sgpr, destination_sgpr; /* each descriptor's first SGPR, in the user data */
+    unsigned workgroup_sgpr;                           /* the SGPR holding the workgroup's x index */
+    int table_format;                                  /* 1: the table is read by buffer_load_format_xyz, 0: buffer_load_dwordx3 */
+} gcn_table_copy;
+int gcn_table_copy_shape(const uint32_t *code, size_t dwords, gcn_table_copy *shape);
+
 /* Samplers (S#, 4 words), which image_sample names by its SSAMP SGPRs, are found the same way (an
    s_load_dwordx4 for one from memory). The caller binds sampler j at set 0, binding image_count + j,
    and makes it from the descriptor. */
@@ -128,10 +168,23 @@ int gcn_image_resources(const uint32_t *code, size_t dwords, gcn_image_resource 
 int gcn_called_image_resources(const uint32_t *code, size_t dwords, const uint32_t *callee, size_t callee_dwords,
                                gcn_image_resource *resources, unsigned max, unsigned *count, char *error, size_t error_size);
 
+/* The local data share (LDS): a workgroup's shared memory, which the ds_* instructions read and write at
+   a byte address (the address VGPR plus the instruction's offsets). bytes is its size (0: a ds_*
+   instruction stops translation); an access at or past it reads 0 and writes nothing, as the hardware
+   bounds LDS accesses by the allocation. address 0 keeps it as workgroup shared memory (a compute
+   shader's, gone when the workgroup ends); otherwise it is memory at that GPU address, workgroup g's at
+   address + g * bytes, and lasts from one pass to the next (the tessellation stages, below). s_barrier
+   waits for the workgroup's lanes and makes their LDS writes visible to each other. */
+typedef struct {
+    uint32_t bytes;
+    uint64_t address;
+} gcn_lds;
+
 typedef struct {
     uint32_t local_size[3];  /* the workgroup's size */
     unsigned user_sgprs;     /* s0 .. s(user_sgprs - 1) start as the user data (push constants) */
-    int workgroup_id_x_sgpr; /* the SGPR that starts as the workgroup's x index, or -1 */
+    uint32_t workgroup_id_enables; /* bits 0-2: the workgroup's x, y, z index each start in an SGPR, in that
+                                      order right after the user data (COMPUTE_PGM_RSRC2's TGID_X/Y/Z_EN) */
     uint32_t push_constant_offset;
     uint64_t address_offset;
     uint64_t error_address;   /* the run-time stop word (GCN_RUNTIME_STOP_*), or 0: run-time cases stop translation */
@@ -144,6 +197,7 @@ typedef struct {
     unsigned workgroup_wave_votes; /* 1: full 64-thread logical-wave votes with a uniform dispatcher guard.
                                        Requires exactly 64 local invocations and a runtime-stop word.
                                        0 preserves native subgroup translation for other backends. */
+    gcn_lds lds;              /* the workgroup's LDS (above) */
 } gcn_compute_layout;
 
 /* User data read: a translation can report which of the user SGPRs (s0 to s(user_sgprs - 1)) the program
@@ -183,6 +237,9 @@ typedef struct {
     unsigned image_count;
     unsigned first_binding;
     uint32_t *user_data_read; /* when not NULL, set on success to the user SGPRs read before written (User data read, below) */
+    /* a geometry shader's copy shader (Geometry shaders, below): its ring loads read the GSVS ring, here
+       on the GPU; 0 for any other vertex shader */
+    uint64_t gsvs_ring, gsvs_ring_bytes;
 } gcn_vertex_layout;
 
 /* Calls. A vertex shader may start by calling a fetch shader, which loads its vertex inputs:
@@ -241,6 +298,167 @@ enum { GCN_DEPTH_EXPORT_Z = 1u << 0, GCN_DEPTH_EXPORT_STENCIL = 3u << 1, GCN_DEP
 
 int gcn_translate_pixel(const uint32_t *code, size_t dwords, const gcn_pixel_layout *layout,
                         uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size);
+
+/* Tessellation (docs/RENDERER.md, "Tessellation"). GCN runs a tessellated draw's control points
+   through a local shader (LS), which writes them to LDS, and its patches through a hull shader (HS),
+   which reads them there and writes the tessellation factors to the tessellation-factor ring; the
+   hardware VS stage then runs as the domain shader for each point the tessellator makes, reading what
+   the two left in LDS. Here the local and hull shaders run as compute passes over the same workgroups,
+   whose LDS lives in a buffer (gcn_lds with an address), and the domain shader is the tessellation
+   evaluation shader of a Vulkan tessellation pipeline, whose control shader takes the factors.
+
+   The local shader: one workgroup per `patches` patches (VGT_LS_HS_CONFIG NUM_PATCHES), one lane per
+   control point: lane l of workgroup g is control point l % input_points of patch
+   g * patches + l / input_points (the draw's control point n = patch * input_points + its point). It
+   starts with v0 the point's vertex index (the draw's first vertex plus n, or the index buffer's entry
+   first + n), v1 = l (the hardware's RelAutoIndex, as Mesa's radeonsi names the LS inputs), v2 and v3 0
+   (the instance: one instance only), and may call a fetch shader as a vertex shader does.
+   The hull shader: the same workgroups, one lane per output control point: lane l is output point
+   l % output_points of the workgroup's patch l / output_points; v0 = the patch's index in the draw,
+   v1 = its index in the workgroup | the output point << 8; after the user SGPRs, the off-chip offset (0)
+   when off_chip, then the workgroup's offset into the tessellation-factor ring, g * patches *
+   factor_stride (shadPS4's frontend gives the HS these inputs, facts only). Its buffer accesses through a
+   descriptor based in the ring (factor_ring, factor_ring_bytes long, a guest address) go to
+   factor_buffer (a GPU address) instead. In both passes, lanes past the draw's patches start with EXEC
+   clear. The draw's numbers are in memory, at the GPU address the push constants hold after the user
+   data (two words, low first, at byte GCN_TESS_DRAW_OFFSET), so that an indirect draw's GPU-written count
+   reaches them: GCN_TESS_DRAW_WORDS words, the draw's vertex count (its control points: patches = count /
+   input_points), the first vertex (or first index), the index buffer's GPU address (low, high) and its
+   index size in bytes (2 or 4; 0 for no index buffer). A draw of more patches than the LDS buffer's
+   workgroups (lds_workgroups) or the factor ring hold runs none of them and writes
+   GCN_RUNTIME_STOP_TESSELLATION_LIMIT to the stop word.
+   The domain shader: v0 and v1 the point's (u, v) (TessCoord), v2 the patch's index in its workgroup and
+   v3 its index in the draw (PrimitiveId); its LDS is workgroup PrimitiveId / patches's. Its exports are a
+   vertex shader's (gcn_translate_vertex), and domain, partitioning and topology (VGT_TF_PARAM's, the
+   GCN_TESS_* values) its execution modes; power-of-two partitioning is integer spacing, the control
+   shader rounding the factors. */
+enum { GCN_TESS_ISOLINES = 0, GCN_TESS_TRIANGLES = 1, GCN_TESS_QUADS = 2 };
+enum { GCN_TESS_INTEGER = 0, GCN_TESS_POW2 = 1, GCN_TESS_FRACTIONAL_ODD = 2, GCN_TESS_FRACTIONAL_EVEN = 3 };
+enum { GCN_TESS_POINTS = 0, GCN_TESS_LINES = 1, GCN_TESS_TRIANGLES_CW = 2, GCN_TESS_TRIANGLES_CCW = 3 };
+enum { GCN_TESS_DRAW_OFFSET = 64, GCN_TESS_DRAW_VERTICES = 0, GCN_TESS_DRAW_FIRST, GCN_TESS_DRAW_INDEX_LOW, GCN_TESS_DRAW_INDEX_HIGH,
+       GCN_TESS_DRAW_INDEX_SIZE, GCN_TESS_DRAW_WORDS };
+typedef struct {
+    unsigned user_sgprs;
+    uint32_t patches, input_points, output_points; /* VGT_LS_HS_CONFIG */
+    uint32_t push_constant_offset;   /* the domain shader's; the local and hull shaders' user data is at 0 */
+    uint64_t address_offset;
+    uint64_t error_address;
+    gcn_lds lds;                     /* the workgroups' LDS, in a buffer (address not 0) */
+    uint32_t lds_workgroups;         /* the workgroups the LDS buffer holds */
+    /* the local shader's fetch shader and its own guest address, as gcn_vertex_layout's */
+    const uint32_t *callee;
+    size_t callee_dwords;
+    uint64_t code_address;
+    /* the hull shader's */
+    int off_chip;                    /* SPI_SHADER_PGM_RSRC2_HS's OC_LDS_EN */
+    uint32_t factor_stride;          /* bytes of factors a patch: 4 for each outer and inner factor */
+    uint64_t factor_ring, factor_ring_bytes, factor_buffer;
+    /* the domain shader's: as gcn_vertex_layout's, and VGT_TF_PARAM's fields */
+    uint32_t output_control;
+    const gcn_image_binding *images;
+    unsigned image_count, first_binding;
+    uint32_t domain, partitioning, topology;
+    uint32_t *user_data_read;
+} gcn_tessellation_layout;
+
+int gcn_translate_local(const uint32_t *code, size_t dwords, const gcn_tessellation_layout *layout, uint32_t **spirv,
+                        size_t *spirv_word_count, char *error, size_t error_size);
+int gcn_translate_hull(const uint32_t *code, size_t dwords, const gcn_tessellation_layout *layout, uint32_t **spirv,
+                       size_t *spirv_word_count, char *error, size_t error_size);
+int gcn_translate_domain(const uint32_t *code, size_t dwords, const gcn_tessellation_layout *layout, uint32_t **spirv,
+                         size_t *spirv_word_count, char *error, size_t error_size);
+
+/* The tessellation pipeline's other two stages, which carry no game code: a vertex shader that does
+   nothing (one control point a patch, which the control shader does not read), and the control shader,
+   one output point, which reads patch PrimitiveId's factors from factor_buffer + PrimitiveId *
+   factor_stride (where the hull pass left them) as 32-bit floats, clamps each to [min_level,
+   max_level] (VGT_HOS_MIN/MAX_TESS_LEVEL) but keeps an outer factor of 0 or less (or NaN) at 0, which culls
+   the patch (Direct3D 11's tessellator rule), rounds them up to a power of two for GCN_TESS_POW2, and
+   writes them as the tessellation levels. The ring's order: quads outer 0-3 then inner 0-1, triangles
+   outer 0-2 then inner, isolines the line detail then the line density (Mesa's radeonsi writes isolines'
+   two outer levels reversed, facts only): Vulkan's outer level 0 is the density. Both return 0 and a
+   module the caller frees, or -1 with the reason. */
+typedef struct {
+    uint32_t domain, partitioning;
+    float min_level, max_level;
+    uint64_t factor_buffer;
+    uint32_t factor_stride;
+} gcn_tessellation_control;
+int gcn_tessellation_control_shader(const gcn_tessellation_control *control, uint32_t **spirv, size_t *spirv_word_count, char *error,
+                                    size_t error_size);
+int gcn_tessellation_vertex_shader(uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size);
+
+/* Geometry shaders (docs/RENDERER.md, "Geometry shaders"). GCN runs a draw with a geometry shader
+   (VGT_SHADER_STAGES_EN 0xb0) in three hardware stages that talk through two rings in memory: the export
+   shader (ES) runs once per vertex and writes it to the ESGS ring; the geometry shader (GS) runs once per
+   primitive, reads its vertices there, writes the vertices it makes to the GSVS ring and tells the
+   hardware with s_sendmsg GS emit and cut which ones to draw, as strips; then the copy shader (the
+   hardware VS stage) runs once per drawn vertex and reads it from the GSVS ring. Here the export and
+   geometry shaders run as compute passes of 64-lane workgroups (one wave each) over ring buffers the
+   layout gives, the emits and cuts become an index buffer of strips with restarts, and the copy shader
+   is the vertex shader of an indexed draw over it.
+
+   Ring accesses are the buffer_load/store_dword* instructions with both GLC and SLC set (shadPS4's
+   ring_access_elimination.cpp tells them apart the same way, facts only); their descriptors are not
+   read. The rings are laid out as the hardware lays them out (Mesa's radeonsi for Sea Islands, facts
+   only): a store is swizzled, dword d of the access (its instruction offset plus its VGPR offset with
+   OFFEN, over 4) of lane l at ring + soffset + d * 256 + l * 4, so each wave's block holds dword d of its
+   64 lanes together; a load is linear, at ring + soffset + its instruction offset + its VGPR offset. An
+   access outside its ring reads 0 or writes nothing.
+
+   The export shader: lane l of workgroup g is the draw's vertex n = g * 64 + l (lanes past the draw's
+   vertices start with EXEC clear); v0 is its vertex index as a local shader's (the draw's record, below),
+   v1 to v3 are 0 (one instance), and after the user SGPRs comes its ESGS offset, g * esgs_itemsize * 256
+   (VGT_ESGS_RING_ITEMSIZE dwords a vertex). It may call a fetch shader as a vertex shader does.
+   The geometry shader: lane l of workgroup g is the draw's primitive p = g * 64 + l, of input_primitive's
+   vertices (GCN_GS_INPUT_*: a triangle strip's primitive p takes vertices p, p + 1, p + 2, p + 1 first
+   when p is odd, keeping the winding); v0, v1, v3 hold its vertices' ESGS offsets (in dwords: vertex n at
+   (n / 64) * esgs_itemsize * 64 + n % 64, where the export pass wrote it), v2 the primitive's index,
+   v4 to v7 0 (no adjacency, one instance); after the user SGPRs, its GSVS offset g * gsvs_itemsize * 256
+   (VGT_GSVS_RING_ITEMSIZE dwords a primitive) and its wave's index g (the GS wave id, for M0).
+   s_sendmsg GS emit (stream 0) appends the invocation's next vertex k (counted from 0 by its emits,
+   the GSVS slot its stores at instruction offset (dword * max_vertices + k) * 4 wrote) to its strip: the
+   index g * gsvs_itemsize * 64 + k * 64 + l, the copy shader's vertex index for that slot; emits past
+   max_vertices (VGT_GS_MAX_VERT_OUT) are dropped, as the hardware drops them. GS cut ends the strip with a
+   restart index (0xffffffff), emit-cut does both. Primitive p's strip is gcn_geometry_strip_indices
+   (max_vertices) 32-bit indices at strip_buffer + p * 4 * that, which the caller fills with restarts
+   first (a cut after a cut, or before any emit, adds nothing, so there is always room for a last restart
+   between one primitive's strip and the next's). Both read the draw's numbers in its record, as the
+   tessellation passes do (GCN_TESS_DRAW_*, at the address in the push constants after the user data), so
+   that an indirect draw's GPU-written vertex count reaches them; the geometry pass's lane 0 (primitive 0)
+   writes the strips' indexed draw there in turn, from word GCN_GS_DRAW_ARGUMENTS on, as Vulkan's
+   VkDrawIndexedIndirectCommand: the primitives times gcn_geometry_strip_indices, 1 instance, then 0, 0, 0.
+   A draw of more vertices or primitives than the rings or the strip buffer hold runs none of them, draws
+   nothing and writes GCN_RUNTIME_STOP_GEOMETRY_LIMIT. Emits to another stream, and the export and geometry
+   shaders' other ways of meeting the rings (an indexed ring access, a format access), stop translation.
+   The copy shader is a vertex shader (gcn_vertex_layout) with its gsvs_ring set: its vertex index is the
+   strip's, and its ring loads read the GSVS ring. */
+enum { GCN_GS_DRAW_ARGUMENTS = 8, GCN_GS_DRAW_ARGUMENT_WORDS = 5, GCN_GS_DRAW_RECORD_WORDS = 16 };
+enum { GCN_GS_INPUT_POINTS = 0, GCN_GS_INPUT_LINES = 1, GCN_GS_INPUT_TRIANGLES = 2, GCN_GS_INPUT_TRIANGLE_STRIP = 3,
+       GCN_GS_WAVE_LANES = 64 };
+typedef struct {
+    unsigned user_sgprs;
+    uint32_t input_primitive;        /* GCN_GS_INPUT_* */
+    uint32_t esgs_itemsize, gsvs_itemsize, max_vertices; /* VGT_ESGS_RING_ITEMSIZE, VGT_GSVS_RING_ITEMSIZE, VGT_GS_MAX_VERT_OUT */
+    uint64_t esgs_ring, esgs_ring_bytes, gsvs_ring, gsvs_ring_bytes; /* GPU addresses and sizes */
+    uint64_t strip_buffer, strip_buffer_bytes;
+    uint64_t address_offset;
+    uint64_t error_address;
+    /* the export shader's fetch shader and its own guest address, as gcn_vertex_layout's */
+    const uint32_t *callee;
+    size_t callee_dwords;
+    uint64_t code_address;
+    uint32_t *user_data_read;
+} gcn_geometry_layout;
+
+/* The 32-bit indices a primitive's strip takes: an index for each emitted vertex and a restart after
+   each, at most, and one more. */
+static inline uint32_t gcn_geometry_strip_indices(uint32_t max_vertices) { return 2 * max_vertices + 1; }
+
+int gcn_translate_export(const uint32_t *code, size_t dwords, const gcn_geometry_layout *layout, uint32_t **spirv, size_t *spirv_word_count,
+                         char *error, size_t error_size);
+int gcn_translate_geometry(const uint32_t *code, size_t dwords, const gcn_geometry_layout *layout, uint32_t **spirv,
+                           size_t *spirv_word_count, char *error, size_t error_size);
 
 #ifdef __cplusplus
 }

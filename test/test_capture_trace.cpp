@@ -147,6 +147,24 @@ int self_test()
               log.addr[i] >= reinterpret_cast<uintptr_t>(image + 0x1808), "import: its slot is not an input");
     rt_trace_log_free(&log);
 
+    /* A value whose upper bytes were already right changes one byte, but the whole word is
+       scripted, so a replay does not keep what its own memory held there. */
+    alignas(8) int32_t word[2] = {0, 0};
+    r = trace(0x2c0, arguments(reinterpret_cast<uint64_t>(&word[0])), log);
+    check(!log.incomplete && word[0] == 21 && log.import_count == 1 && log.imports[0].writes == 1 &&
+              log.writes[0].offset == 0 && log.writes[0].size == 8 && log.write_bytes[log.writes[0].data] == 21,
+          "import: a partly changed word is scripted whole");
+    rt_trace_log_free(&log);
+
+    /* Changes below the caller's rsp are dead to the caller: not scripted as the import's writes. */
+    filled = 0x55555555;
+    rt_trace_args below = arguments(reinterpret_cast<uint64_t>(&filled));
+    below.caller_rsp = reinterpret_cast<uint64_t>(&filled) + sizeof filled;
+    r = trace(0x2c0, below, log);
+    check(!log.incomplete && filled == 21 && log.import_count == 1 && log.imports[0].writes == 0,
+          "import: a change below the caller's rsp is not scripted");
+    rt_trace_log_free(&log);
+
     /* What a case cannot express: the call still runs to the end, but there is no case. */
     trace(0x180, arguments(), log);
     check(log.incomplete != nullptr, "xmm2 read: incomplete");
@@ -178,11 +196,35 @@ int self_test()
     const std::string json = rt::traced_case(log, args, scale, 0, "selftest", whole);
     check(json.find("\"rsi\": \"buf:b") != std::string::npos && json.find("\"pointer\": \"b") != std::string::npos &&
           json.find("\"addr\": \"0x00401000\", \"bytes\": \"e8030000\"") != std::string::npos, "case: buffers, pointer and global");
+    /* Bytes of a read-only segment are not inputs: the verifier maps the same executable. */
+    const rt_code_range globals = {image + 0x1000, image + 0x1800};
+    rt_capture_set_constant(&globals, 1);
+    check(rt::traced_case(log, args, scale, 0, "selftest", whole).find("\"addr\": \"0x00401000\"") == std::string::npos,
+          "case: a read-only global is left out");
+    rt_capture_set_constant(nullptr, 0);
     log.incomplete = "forced";
     check(rt::traced_case(log, args, scale, 0, "selftest", whole).empty(), "incomplete trace: no case");
     log.incomplete = nullptr;
     const rt_traced_function wrong = {"capture_trace_scale", 0x400000, "u32", at(0x000)};
     check(rt::traced_case(log, args, wrong, 0, "selftest", whole).empty(), "unknown return class: no case");
+    rt_trace_log_free(&log);
+
+    /* A pointer argument just before the only bytes it reaches still points into their buffer. */
+    alignas(16) unsigned char record[0x80] = {};
+    rt_trace_args store = arguments(reinterpret_cast<uint64_t>(record), 9);
+    trace(0x300, store, log);
+    const rt_traced_function store_field = {"capture_trace_store_field", 0x400300, "void", at(0x300)};
+    check(rt::traced_case(log, store, store_field, 0, "selftest", whole).find("\"rdi\": \"buf:b0+0x0\"") != std::string::npos,
+          "case: a pointer before the bytes it reaches is a buffer pointer");
+    rt_trace_log_free(&log);
+    /* A table base far below the one entry read keeps its distance to it. */
+    alignas(16) static unsigned char table[0x1010] = {};
+    rt_trace_args far = arguments(reinterpret_cast<uint64_t>(table));
+    trace(0x340, far, log);
+    const rt_traced_function read_far = {"capture_trace_read_far", 0x400340, "i32", at(0x340)};
+    const std::string far_case = rt::traced_case(log, far, read_far, 0, "selftest", whole);
+    check(far_case.find("\"rdi\": \"buf:b0+0x0\"") != std::string::npos && far_case.find("\"size\": 4112") != std::string::npos,
+          "case: a table base far below the entry read is a buffer pointer");
     rt_trace_log_free(&log);
 
     if (!failures) std::puts("capture trace self-test: traced calls, inputs and fail-closed cases passed");

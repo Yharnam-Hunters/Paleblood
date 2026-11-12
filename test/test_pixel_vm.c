@@ -261,7 +261,7 @@ int main(void)
     memcpy(pool+VS,position_vertex,sizeof position_vertex);
     for(unsigned p=0;p<PROGRAMS;++p){CHECK(programs[p].count*4<=0x100);
         memcpy(pool+CODE+p*0x100,programs[p].words,programs[p].count*4);}
-    rt_executor *x=NULL;const rt_executor_memory memory={fd,POOL,base,NULL};
+    rt_executor *x=NULL;const rt_executor_memory memory={fd,POOL,base,NULL,NULL,NULL};
     int rc=rt_executor_open(&memory,&x,error,sizeof error);CHECK(rc==0);
     if(rc){fprintf(stderr,"open: %s\n",error);munmap(pool,POOL);close(fd);return 1;}
     for(int sy=-1;sy<=1;sy+=2)for(unsigned partial=0;partial<2;++partial)

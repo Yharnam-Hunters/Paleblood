@@ -135,7 +135,10 @@ Instead:
        while they span a macro tile, smaller ones (and every 1D-tiled level) micro tiled with 256-byte
        slices (AMD's address library for GFX7, as shadPS4's `ComputeImageSize` follows). The levels
        are detiled by the CPU. `image_load` and `image_load_mip` read them exactly, `image_sample`
-       at the level its derivatives pick (below). A storage image keeps one level.
+       at the level its derivatives pick (below). A storage image keeps one level: a compute shader's view
+       of a mip-mapped image is its BASE_LEVEL alone, which `image_load` and `image_store` address;
+       `image_load_mip` reads it at level 0 of that view, and a level past it stops at run time, as a
+       sampled image's level past its last does.
      - **Cube images** (T# TYPE 11) in pixel shaders: a 2D array of six faces per cube (DEPTH counts
        whole cubes), viewed whole. Sampling takes (s, t, face), whatever DA says: the cube
        instructions leave s and t in [1, 2], so the face's coordinates are one less, and the face
@@ -243,10 +246,51 @@ Instead:
        when the callee is straight-line code ending in that return, which it checks; a callee with a
        branch, an image instruction or a write to the return pair stops by name. Descriptor analyses
        take a call as writing every SGPR.
-     - **Not yet:** anything else stops with the instruction's name. Three groups need designs of their own:
-       - **geometry shaders**, which pass vertices on with `s_sendmsg` (about 1,700 of the
-         game's shaders);
-       - the GPU's on-chip shared memory (`ds_*`);
+     - **The local data share (`ds_*`):** a workgroup's shared memory. In compute shaders it is
+       workgroup memory of the size the layout gives (`gcn_lds`). In the tessellation stages it is a
+       buffer, one block per workgroup, that lasts from one pass to the next (below). Covered: reads and
+       writes of 8, 16, 32 and 64 bits, the two-address `read2` and `write2` forms (including `st64`),
+       and the 32-bit atomics `add`, `sub`, `min`, `max`, `and`, `or`, `xor`, `wrxchg` and `cmpst`, in plain and
+       `_rtn` forms. An access at or past the LDS's size reads 0 and writes nothing. `s_barrier` is a
+       workgroup control barrier that also makes LDS writes visible. The global data share (GDS), the
+       other atomics, `ds_swizzle`, `ds_append` and `ds_consume` stop by name.
+     - **Tessellation stages** (`runtime/gcn_spirv.h`): GCN runs a tessellated draw's control points
+       through a local shader (LS), which writes them to LDS. It runs the patches through a hull shader
+       (HS), which writes the tessellation factors to the factor ring. Then the hardware VS stage runs
+       as the domain shader, once for each point the tessellator makes, and reads LDS. The clinic's
+       first tessellated draw does exactly this: its domain shader reads the local shader's outputs with
+       `ds_read2_b32`.
+       - Here the local and hull shaders become compute shaders over the same workgroups, one per
+         `VGT_LS_HS_CONFIG` NUM_PATCHES patches, and their LDS stays in a buffer between the passes.
+       - The local shader's lane l is control point l mod HS_NUM_INPUT_CP. It starts with v0 = its vertex
+         index and v1 = l (RelAutoIndex, as Mesa's radeonsi names the LS inputs).
+       - The hull shader starts with v0 = the patch and v1 = the patch in its workgroup | the output point
+         << 8. After the user SGPRs it gets the off-chip offset (when OC_LDS_EN is set) and the
+         workgroup's factor-ring offset. shadPS4's frontend gives the HS the same inputs (facts only).
+       - The hull shader's descriptors based in the factor ring are redirected to a factor buffer.
+       - The domain shader becomes the tessellation evaluation shader: v0 and v1 are (u, v), v2 is the
+         patch in its workgroup, v3 is PrimitiveId. `VGT_TF_PARAM` supplies its execution modes.
+       - A generated control shader reads each patch's factors from the factor buffer. It clamps them
+         to `VGT_HOS_MIN/MAX_TESS_LEVEL` and writes the tessellation levels; isolines' two factors are
+         reversed, as Mesa writes them.
+     - **Geometry shaders** (`runtime/gcn_spirv.h`): GCN runs a draw with a geometry shader in three
+       hardware stages that talk through two rings in memory. The export shader (ES) writes each vertex to
+       the ESGS ring; the geometry shader (GS) reads a primitive's vertices there, writes the vertices it
+       makes to the GSVS ring and says with `s_sendmsg` GS emit and cut which to draw, as strips; the
+       copy shader (the hardware VS stage) reads each drawn vertex from the GSVS ring.
+       - The export and geometry shaders become compute shaders of 64-lane workgroups, one wave each, over
+         ring buffers laid out as the hardware lays them out (Mesa's radeonsi, facts only): stores swizzled
+         (dword d of lane l at soffset + d x 256 + l x 4), loads linear. Ring accesses are the
+         `buffer_load/store_dword*` instructions with GLC and SLC set, as shadPS4 tells them apart (facts
+         only); their descriptors are not read.
+       - The export shader's lane is the draw's vertex (v0 its vertex index, then its ESGS offset after the
+         user SGPRs). The geometry shader's lane is a primitive: v0, v1, v3 its vertices' ESGS offsets, v2
+         the primitive, then its GSVS offset and wave index after the user SGPRs.
+       - Emit appends the invocation's next vertex (its GSVS slot, counted by its emits) to its strip in a
+         strip buffer, as the copy shader's vertex index for that slot; cut appends a restart index. The copy
+         shader is an ordinary vertex shader whose ring loads read the GSVS ring.
+       - Emits to streams other than 0 stop by name.
+     - **Not yet:** anything else stops with the instruction's name. One group needs a design of its own:
        - reads across lanes (`v_readlane`, `v_writelane`, `ds_swizzle`), whose results depend
          on GCN's 64-lane wave where Vulkan and Metal GPUs often run 32 lanes.
      - **Tests:** `test/test_gcn_spirv.c` checks every module with `spirv-val` for Vulkan 1.2.
@@ -409,7 +453,12 @@ Instead:
        memory the GPU writes before its batch is done. Descriptors and memory the draws read are
        read when they run, as the PS4's GPU reads them; the title keeps them valid until it sees the
        work's label. A video-out flip from the CPU, and a frame read for the display, wait for the
-       submissions before them. A stop on the renderer's thread still names the submitting call and
+       submissions before them. The submit-and-flip's flip does not hold up the work after it: the
+       renderer copies the flipped target's image into a host-visible buffer in order with the work
+       (`rt_executor_snapshot_target`, a ring of four) and performs the flip on the completion thread
+       once that copy has run, as the PS4's GPU goes on with the commands after a flip. Before, each
+       flip waited for all work and then read the target back, so the GPU sat idle while the CPU
+       recorded the next frame. A stop on the renderer's thread still names the submitting call and
        the shader. Before this, each submit ran its work on the calling thread: the engine's movie
        playback draws from the main thread while its render thread submits, and the render
        thread, held for tens of milliseconds by its own submit, still had the shared graphics
@@ -448,7 +497,8 @@ Instead:
         - **What runs today:** COLOR_8_8_8_8 render targets in slots 0-7 (UNORM or sRGB, either
           component order; COLOR_10_11_11 and COLOR_16_16_16_16 FLOAT too, written back to their
           memory as the hardware lays them out, though only 8_8_8_8 ones are read as BGRA), viewport
-          0, vertex and pixel shaders with their user data, and
+          0 (viewports 1-15 are set aside: a primitive takes another only through the viewport index its vertex shader exports in
+          the misc vector, whose export stops translation by name), vertex and pixel shaders with their user data, and
           auto-index draws as triangle lists.
         - **Rect lists** (primitive type 17, which the game's fullscreen passes use): Vulkan has no
           such primitive, so each rect's three vertices go through a generated geometry stage
@@ -476,6 +526,39 @@ Instead:
           before reading. With these (and, then, copies by the CPU skipped while the guest memory held
           what the image and it last agreed on) the boot's frames went from 66 to about 1,440 in 90 s
           (RTX 3070), which reaches the title screen.
+        - **Only the targets a dispatch can touch:** before a dispatch, only the targets drawn into over
+          memory it may read or store are written back (with any drawn target overlapping one of those),
+          and before an image loads, only those over the image. What a compute shader reads is bounded
+          by its loads (`gcn_memory_reads`): each buffer descriptor's range, and each `s_load`'s bytes
+          from a user-data pointer; a load whose memory is not known (a flat load, a computed pointer)
+          writes them all back, as before. The game's depth copy (compute shader `0x20d1b00100`, about 13
+          dispatches a frame at the Contract screen) declares source and destination ranges of 2.2 GB,
+          so it used to write back every target before it and mark all its range changed after it. It
+          is a table-driven copy (`gcn_table_copy_shape`: each workgroup's entry gives its first
+          destination and source elements and a count), so the CPU reads its table when nothing in an
+          open or submitted batch may store there and no target with unwritten draws lies over it; the
+          copy's real sources then bound what is written back, and its real destinations what loads
+          again. Otherwise the descriptors' ranges stand.
+        - **Targets stay on the GPU:** the renderer records buffers without writing their targets back
+          at each buffer's end (`rt_executor_record_calls`). A target's memory receives its draws when
+          GPU work reads that memory (before a dispatch that reads or stores there, before a draw reads
+          an image over it), or when the CPU touches it. A target drawn into is guarded
+          (`rt_write_watch_guard`, `runtime/write_watch.h`): every guest map's pages over it get no CPU
+          access. A guest read or write there faults; the write watch's own thread writes the targets
+          over the page back (`rt_executor_resolve`), waits for that, lifts their guards, and the access
+          runs again. The kernel does not fault on such a page, so the runtime resolves guest memory it
+          hands to a system call first (file reads and writes, the memory save, `_write`), and memory the
+          guest reprotects. A target that cannot be guarded (no write watch, as on macOS) is written back
+          at the buffer's end as before; `rt_executor_submit_calls` and `rt_executor_run` (tests, tools)
+          write every drawn target back. shadPS4 skips such write-backs altogether by default
+          (`readbacks_mode` Disabled in its `emulator_settings.h`; facts only). At the Contract screen
+          the end-of-buffer write-backs were about 1,250 of the 1,370 target write-backs every 2 s.
+        - **Images straight from targets:** an image over a render target drawn into since its
+          write-back, at the same address with the same tiling index, pitch and texel bytes (2D, one
+          level and layer, within the target, no other unwritten target over it), takes the target's
+          texels with a GPU image copy (`image_from_target`) instead of a write-back and a load: the two
+          would move the same bytes through host memory. It is copied again after the target's next draws.
+          At the Contract screen this removed the image-overlap write-backs (about 700 every 2 s).
         - **One batch per buffer:** a buffer's draws, dispatches and copies are recorded into one Vulkan
           command buffer and submitted once, with barriers between them, instead of each waiting for the
           GPU. The CPU waits only where it reads what the batch produces: a render target written back
@@ -551,14 +634,50 @@ Instead:
           keep, zero, replace with the test value, invert, and add or subtract, clamped or wrapping,
           when they step by `STENCILOPVAL` 1, which is Vulkan's increment and decrement). A test that reads the buffer compares with what
           earlier draws wrote into the depth image; one reading a depth image no draw has written yet
-          stops by name, as do other stencil operations and steps, depth bounds and `DB_RENDER_CONTROL`'s
-          clears, so the depth image's starting contents (and the HTILE metadata the game may clear
-          it with) are never seen. The buffer's contents in guest memory are never loaded: a depth
+          stops by name, as do other stencil operations and steps and `DB_RENDER_CONTROL`'s
+          stencil clears and copies, so the depth image's starting contents (and the HTILE metadata the
+          game may clear it with) are never seen. A depth-clearing draw (`DB_RENDER_CONTROL`
+          DEPTH_CLEAR_ENABLE) writes `DB_DEPTH_CLEAR` as the depth of the pixels it covers, given it as
+          the viewport's depth range. The depth bounds test (`DEPTH_BOUNDS_ENABLE`) passes pixels
+          whose stored depth lies within `DB_DEPTH_BOUNDS_MIN` to `_MAX`, Vulkan's depth bounds test
+          with dynamic bounds; the library's setter (`0x01473520`) takes them as two floats, which
+          its observe hook reads from the saved frame's xmm0 and xmm1. The buffer's contents in guest memory are never loaded: a depth
           or stencil buffer the CPU or a compute shader writes would not be seen (not found yet). A draw that writes only the depth target (target mask 0, or
           `CB_COLOR_CONTROL`'s mode `CB_DISABLE`) draws without a colour target; one that writes
-          nothing is skipped. Triangle strips (`VGT_PRIMITIVE_TYPE` 6) are drawn too. A view of one
+          nothing is skipped. The hardware shader stages (`VGT_SHADER_STAGES_EN`, from the GPU
+          library's stage setter `0x01476030`) are vertex and pixel, tessellation (0x45, below) or
+          a geometry shader (0xb0, below); others stop by name at the draw. Their shaders (`sceGnmSetLsShader`, `SetHsShader`, `SetEsShader`, `SetGsShader` and the Update forms, with the argument orders of shadPS4's `gnmdriver.cpp`) are recorded like the vertex shader's (`runtime/render_calls.h` decodes their blocks: the local shader's LDS size, the hull shader's `VGT_TF_PARAM`, tessellation level clamps and `VGT_LS_HS_CONFIG`), and the stop names them. A tessellated draw (`VGT_SHADER_STAGES_EN` 0x45) is drawn in three steps. First, the local and
+          hull shaders run as compute passes over a 16 MiB LDS buffer, one workgroup per `NUM_PATCHES` patches. Second, the hull
+          pass's factor-ring writes land in a 128 KiB factor buffer (the ring's size). Third, a Vulkan tessellation pipeline draws:
+          the empty vertex shader, the generated control shader, the domain shader as the evaluation shader, and the pixel shader,
+          over patches of `HS_NUM_INPUT_CP` points (`runtime/gcn_spirv.h`, "Tessellation").
+          - The draw's record (its control points, first, and index buffer) is a batch entry. An indirect draw's vertex count is
+            copied into it on the GPU, and so is the passes' workgroup count, one per control point (lanes past the patches do
+            nothing). A draw of more patches than the buffers hold stops at run time by name.
+          - Domain origin and winding are Vulkan's defaults with `VGT_TF_PARAM`'s order, as shadPS4 sets them (facts only).
+          - Instanced tessellated draws, a hull shader with `TG_SIZE_EN`, a domain shader calling a fetch shader, and
+            tessellation with a geometry shader (0xad) stop by name.
+          A draw with a geometry shader (`VGT_SHADER_STAGES_EN` 0xb0) is drawn in three steps (`runtime/gcn_spirv.h`,
+          "Geometry shaders"). First, the export shader runs as a compute pass over a 16 MiB ESGS ring, one lane a vertex.
+          Second, the geometry shader runs as a compute pass, one lane a primitive of `VGT_PRIMITIVE_TYPE`'s (points,
+          lines, triangles, triangle strips), writing a 64 MiB GSVS ring and its strips' indices into a 16 MiB strip
+          buffer filled with restart indices first. Third, the vertex shader (the copy shader) draws those indices as
+          triangle strips with primitive restart. The ring item sizes and `VGT_GS_MAX_VERT_OUT` come from the GPU
+          library's writers `0x01475a90` (`VGT_ESGS_RING_ITEMSIZE`) and `0x01475af0` (`VGT_GS_VERT_ITEMSIZE`,
+          `VGT_GSVS_RING_OFFSET_1-3`, `VGT_GS_MAX_VERT_OUT`, `VGT_GSVS_RING_ITEMSIZE`), and `VGT_GS_MODE` from
+          `0x014756b0`, observed like the stage setter. The geometry pass writes the strips' indexed draw into the
+          draw's record, so an indirect draw's GPU-written vertex count (copied into the record) reaches the passes and
+          the draw; an indirect draw runs as many workgroups as the rings hold. Output other than triangle strips
+          (`VGT_GS_OUT_PRIM_TYPE`), stream output, instanced geometry shaders and instanced draws stop by name, as does a
+          draw of more vertices or primitives than the rings and strip buffer hold (an indirect one at run time). The clinic's first tessellated draw (local shader `0x20d52d5b00`, hull `0x20d52e0100`) draws quads of one control point, 15 patches a workgroup. Triangle strips (`VGT_PRIMITIVE_TYPE` 6) are drawn too. A view of one
           slice of an array depth target (`DB_DEPTH_VIEW` SLICE_START = SLICE_MAX) draws into an image
-          kept for that slice alone; a view of several slices stops by name.
+          kept for that slice alone, at that slice's memory: `DB_DEPTH_SLICE` tiles of 64 elements per
+          slice past the depth and stencil bases (shadPS4's `GetDepthSliceSize`), where its depth is
+          written back; a view of several slices stops by name. A colour target's view
+          (`CB_COLORn_VIEW`) draws into its first slice (SLICE_START: the shader picks no layer), kept
+          as a 2D target of its own at that slice's memory, `CB_COLORn_SLICE` elements per slice past
+          the base, its CMASK `CMASK_SLICE` bytes per slice past the first (shadPS4's
+          `GetColorSliceSize`): the cube-face passes of the clinic's light probes draw one face each.
         - **Not yet:** other formats, more
           render targets and other pixel inputs. These stop with the reason.
         - **The image's memory order:** an image's pixels only leave the GPU through
@@ -601,9 +720,25 @@ Instead:
         shadPS4's `gnmdriver.cpp` writes them), placed like the other shaders; the dispatch writers
         `0x01474c50` and `0x0148a350` (command buffer, x, y, z) are observed; and the executor
         translates the shader for its workgroup size and runs the dispatch, its writes in the guest
-        memory before the next call. A workgroup's y or z index and its size information stop by
-        name. The two dispatch writers with a fifth argument (`0x01474d10`, `0x0148a410`) are not
-        observed yet. Compute shaders' **images** are executor-owned Vulkan images
+        memory before the next call. The workgroup's x, y and z indexes (RSRC2's `TGID_X/Y/Z_EN`)
+        start in the SGPRs after the user data, one per enabled axis in that order (AMD's Sea
+        Islands manual, compute shader initial state); its size information stops by name. The
+        two dispatch writers with a fifth argument (`0x01474d10`, `0x0148a410`) are not observed
+        yet. **Indirect dispatches** (found loading Iosefka's Clinic): `0x014742f0` (command
+        buffer, address) writes `SET_BASE` with base index 1, the indirect arguments' base, and
+        `0x01474de0` (command buffer, data offset) writes `DISPATCH_INDIRECT`; both are observed,
+        and the executor runs the dispatch with `vkCmdDispatchIndirect` on the guest memory
+        buffer, so the GPU reads the three workgroup counts at the base plus the offset when the
+        dispatch runs, after the work before it (which may have written them). Drawn targets over
+        those 12 bytes are written back first. **Indirect draws:** `0x014744d0` (command buffer,
+        data offset, stage, base-vertex SGPR, start-instance SGPR) writes `DRAW_INDIRECT`. The GPU
+        reads four words at the base plus the offset: vertices per instance, instances, start vertex
+        and start instance. The start vertex and instance reach the shader only through the named
+        user SGPRs; the vertex index itself counts from 0 (shadPS4's `translate.cpp` subtracts
+        Vulkan's base vertex for that reason). So the executor copies the first two words, on the
+        GPU, into a per-batch buffer whose entries have first vertex and instance 0, and draws them
+        with `vkCmdDrawIndirect`. A vertex shader that takes instance indexes, and SGPRs named for
+        the start vertex or instance, stop by name. Compute shaders' **images** are executor-owned Vulkan images
         found by their descriptor's address and shape: an image the GPU writes stays there and is
         never tiled back into guest memory; a new image whose first use writes it starts cleared.
         An image no shader has written holds the guest memory's texels, detiled with

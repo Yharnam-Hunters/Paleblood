@@ -31,6 +31,18 @@
    for x x y x z workgroups with initiator 1 (COMPUTE_SHADER_EN), then an event or a NOP. Their two
    relatives 0x01474d10 and 0x0148a410 take a fifth argument that sets the initiator's low two bits;
    what those select is not established, so they are not observed yet.
+   Indirect dispatches: 0x014742f0 (command buffer, address) writes SET_BASE with base index 1 (the
+   draw and dispatch indirect table) and the address's bits 3-31 and 32-39; 0x01474de0 (command buffer,
+   data offset) writes DISPATCH_INDIRECT with that offset and initiator 1, then an event or a NOP. The
+   GPU reads the workgroup counts, three 32-bit words, at the base plus the offset when it runs the
+   dispatch (shadPS4's liverpool.cpp reads them there, facts only). Its relative 0x01474e80 takes a
+   third argument for the initiator's bits 3-4, not established, so it is not observed yet.
+   Indirect draws: 0x014744d0 (command buffer, data offset, stage, base-vertex SGPR, start-instance SGPR)
+   writes DRAW_INDIRECT with the offset, then for each SGPR that is not 0 its register offset (the
+   stage's user-data base from the table at 0x04b2bf30, plus the SGPR, from 0x2c00; 0 for none), and
+   initiator 2 (auto index). The GPU reads the four 32-bit arguments (vertices per instance,
+   instances, start vertex, start instance) at the base plus the offset and writes the start vertex and
+   instance to those SGPRs. The SGPR arguments are bytes.
    The depth render target's setter 0x014739b0 (command buffer, target) writes context registers from the
    target's words when the target is not NULL and has a depth or a stencil buffer (word 2,
    DB_Z_READ_BASE, or word 3, DB_STENCIL_READ_BASE, not 0: the two checks it calls, 0x01472770 and
@@ -38,6 +50,10 @@
    DB_DEPTH_INFO (0xa00f), word 8 to DB_DEPTH_VIEW (0xa002), word 9 to DB_HTILE_DATA_BASE (0xa005),
    word 10 to DB_HTILE_SURFACE (0xa2af); otherwise DB_Z_INFO and DB_STENCIL_INFO = 0 (no depth target).
    The observer reports the same registers.
+   The depth bounds setter 0x01473520 (command buffer, min, max; two floats, in xmm0 and xmm1) writes
+   DB_DEPTH_BOUNDS_MIN (0xa008) and DB_DEPTH_BOUNDS_MAX (0xa009) in one packet, the floats' bits as they are.
+   The shader stage setter 0x01476030 (command buffer, stages) writes VGT_SHADER_STAGES_EN (0xa2d5) with
+   the value when it is 0, 0x45, 0xad, 0xb0 or 0x200, and nothing otherwise.
    The stencil reference setters write DB_STENCILREFMASK (0xa10c) and DB_STENCILREFMASK_BF (0xa10d) in one
    packet: 0x01473190 (command buffer, value) writes the value to both, 0x014731f0 (command buffer,
    front, back) one to each.
@@ -46,11 +62,20 @@
    0x01475270 (command buffer, type) INDEX_TYPE with the type as it is; 0x01474420 (command buffer,
    first, count) DRAW_INDEX_OFFSET_2 with MAX_SIZE = count, INDEX_OFFSET = first, INDEX_COUNT = count and
    initiator 0, then an event or a NOP.
+   The geometry-shader register writers (from their disassembly): 0x01475a90 (command buffer, item size) writes
+   VGT_ESGS_RING_ITEMSIZE (0xa2ab) = the size & 0x7fff; 0x01475af0 (command buffer, a pointer to four 32-bit
+   vertex sizes in dwords, one a stream, the most vertices a primitive) writes VGT_GS_VERT_ITEMSIZE to _3
+   (0xa2d7-0xa2da) = each size & 0x7fff, VGT_GSVS_RING_OFFSET_1 to _3 (0xa298-0xa29a) = (the sizes of the
+   streams before it) x the most vertices, each & 0x7fff, VGT_GS_MAX_VERT_OUT (0xa2ce) = the most vertices & 0x7ff,
+   and VGT_GSVS_RING_ITEMSIZE (0xa2ac) = (the four sizes' sum) x the most vertices & 0x7fff; 0x014756b0
+   (command buffer, mode, cut mode) writes VGT_GS_MODE (0xa290) = the mode with bits 4-5 the cut mode's low two
+   bits, and, when the mode is 0, VGT_STRMOUT_CONFIG (0xa2e5) = 0.
    The command buffer starts with its begin and holds its cursor at +0x10 (game/render/command_packets.h). */
 #include "runtime/observe_hooks.h"
 #include "runtime/render_observer.h"
 
 #include <stdint.h>
+#include <string.h>
 
 enum { COMMAND_BUFFER_BEGIN = 0x0, COMMAND_BUFFER_CURSOR = 0x10 };
 /* the arguments: (command buffer, stage, slot, value or words) and (command buffer, slot, target) */
@@ -171,6 +196,33 @@ static void stencil_reference_each(const uint64_t args[RT_OBSERVED_ARGUMENTS])
     stencil_references(args, (uint32_t)args[ARGUMENT_FRONT], (uint32_t)args[ARGUMENT_BACK]);
 }
 
+enum { DB_DEPTH_BOUNDS_MIN = 0xa008, DB_DEPTH_BOUNDS_MAX = 0xa009, FLOAT_MIN = 0, FLOAT_MAX = 1, BOUNDS = 2 };
+
+static void depth_bounds(const uint64_t frame[RT_OBSERVED_FRAME_WORDS])
+{
+    const uint64_t buffer = *(const uint64_t *)(uintptr_t)(frame[ARGUMENT_COMMAND_BUFFER] + COMMAND_BUFFER_BEGIN);
+    const uint32_t offset = (uint32_t)(*(const uint64_t *)(uintptr_t)(frame[ARGUMENT_COMMAND_BUFFER] + COMMAND_BUFFER_CURSOR) - buffer);
+    const float bounds[BOUNDS] = {rt_observed_float(frame, FLOAT_MIN), rt_observed_float(frame, FLOAT_MAX)};
+    uint32_t bits[BOUNDS];
+    memcpy(bits, bounds, sizeof bits);
+    rt_observe_register(buffer, offset, DB_DEPTH_BOUNDS_MIN, bits[FLOAT_MIN]);
+    rt_observe_register(buffer, offset, DB_DEPTH_BOUNDS_MAX, bits[FLOAT_MAX]);
+}
+
+enum { VGT_SHADER_STAGES_EN = 0xa2d5, ARGUMENT_STAGES = 1, STAGES_VERTEX = 0, STAGES_TESSELLATION = 0x45, STAGES_TESSELLATION_GEOMETRY = 0xad,
+       STAGES_GEOMETRY = 0xb0, STAGES_0X200 = 0x200 };
+
+static void shader_stages(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    const uint32_t stages = (uint32_t)args[ARGUMENT_STAGES];
+    if (stages != STAGES_VERTEX && stages != STAGES_TESSELLATION && stages != STAGES_TESSELLATION_GEOMETRY && stages != STAGES_GEOMETRY &&
+        stages != STAGES_0X200)
+        return; /* the setter writes nothing */
+    const uint64_t buffer = *(const uint64_t *)(uintptr_t)(args[ARGUMENT_COMMAND_BUFFER] + COMMAND_BUFFER_BEGIN);
+    const uint64_t cursor = *(const uint64_t *)(uintptr_t)(args[ARGUMENT_COMMAND_BUFFER] + COMMAND_BUFFER_CURSOR);
+    rt_observe_register(buffer, (uint32_t)(cursor - buffer), VGT_SHADER_STAGES_EN, stages);
+}
+
 enum { ARGUMENT_INDEX_VALUE = 1, ARGUMENT_INDEX_COUNT = 2 };
 static const uint64_t index_base_mask = 0xfffffffffeull; /* bits 1-39 */
 
@@ -205,16 +257,78 @@ static void draw_index_offset(const uint64_t args[RT_OBSERVED_ARGUMENTS])
                                  (uint32_t)args[ARGUMENT_INDEX_COUNT]);
 }
 
+enum { ARGUMENT_INDIRECT_VALUE = 1 };
+
+static void indirect_base(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    rt_observe_indirect_base(observed_buffer(args), observed_offset(args), args[ARGUMENT_INDIRECT_VALUE]);
+}
+
+static void dispatch_indirect(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    rt_observe_dispatch_indirect(observed_buffer(args), observed_offset(args), (uint32_t)args[ARGUMENT_INDIRECT_VALUE]);
+}
+
+enum { ARGUMENT_INDIRECT_STAGE = 2, ARGUMENT_BASE_VERTEX_SGPR = 3, ARGUMENT_START_INSTANCE_SGPR = 4, SGPR_ARGUMENT_MASK = 0xff };
+
+static void draw_indirect(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    rt_observe_draw_indirect(observed_buffer(args), observed_offset(args), (uint32_t)args[ARGUMENT_INDIRECT_VALUE],
+                             (rt_shader_stage)(uint32_t)args[ARGUMENT_INDIRECT_STAGE], (uint32_t)args[ARGUMENT_BASE_VERTEX_SGPR] & SGPR_ARGUMENT_MASK,
+                             (uint32_t)args[ARGUMENT_START_INSTANCE_SGPR] & SGPR_ARGUMENT_MASK);
+}
+
+enum { VGT_GS_MODE = 0xa290, VGT_GSVS_RING_OFFSET_1 = 0xa298, VGT_ESGS_RING_ITEMSIZE = 0xa2ab, VGT_GSVS_RING_ITEMSIZE = 0xa2ac,
+       VGT_GS_MAX_VERT_OUT = 0xa2ce, VGT_GS_VERT_ITEMSIZE = 0xa2d7, VGT_STRMOUT_CONFIG = 0xa2e5, ITEMSIZE_MASK = 0x7fff,
+       MAX_VERT_OUT_MASK = 0x7ff, GS_STREAMS = 4, GS_CUT_MODE_SHIFT = 4, GS_CUT_MODE_MASK = 0x30, ARGUMENT_GS_SIZES = 1,
+       ARGUMENT_GS_MAX_VERTICES = 2, ARGUMENT_GS_MODE = 1, ARGUMENT_GS_CUT_MODE = 2 };
+
+static void esgs_itemsize(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    rt_observe_register(observed_buffer(args), observed_offset(args), VGT_ESGS_RING_ITEMSIZE, (uint32_t)args[ARGUMENT_INDEX_VALUE] & ITEMSIZE_MASK);
+}
+
+static void gs_ring_sizes(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    const uint64_t buffer = observed_buffer(args);
+    const uint32_t offset = observed_offset(args);
+    const uint32_t *sizes = (const uint32_t *)(uintptr_t)args[ARGUMENT_GS_SIZES], most = (uint32_t)args[ARGUMENT_GS_MAX_VERTICES];
+    uint32_t before = 0;
+    for (unsigned stream = 0; stream < GS_STREAMS; stream++) {
+        rt_observe_register(buffer, offset, VGT_GS_VERT_ITEMSIZE + stream, sizes[stream] & ITEMSIZE_MASK);
+        before += sizes[stream];
+        if (stream + 1 < GS_STREAMS) rt_observe_register(buffer, offset, VGT_GSVS_RING_OFFSET_1 + stream, before * most & ITEMSIZE_MASK);
+    }
+    rt_observe_register(buffer, offset, VGT_GS_MAX_VERT_OUT, most & MAX_VERT_OUT_MASK);
+    rt_observe_register(buffer, offset, VGT_GSVS_RING_ITEMSIZE, before * most & ITEMSIZE_MASK);
+}
+
+static void gs_mode(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    const uint32_t mode = (uint32_t)args[ARGUMENT_GS_MODE], cut = (uint32_t)args[ARGUMENT_GS_CUT_MODE];
+    rt_observe_register(observed_buffer(args), observed_offset(args), VGT_GS_MODE,
+                        (mode & ~(uint32_t)GS_CUT_MODE_MASK) | (cut << GS_CUT_MODE_SHIFT & GS_CUT_MODE_MASK));
+    if (!mode) rt_observe_register(observed_buffer(args), observed_offset(args), VGT_STRMOUT_CONFIG, 0);
+}
+
 const rt_observe_hook game_observe_hooks[] = {
     {0x01473190, 87, "render_set_stencil_reference", stencil_reference_both},
     {0x014731f0, 99, "render_set_stencil_reference_separate", stencil_reference_each},
+    {0x01473520, 107, "render_set_depth_bounds", depth_bounds},
     {0x014738b0, 246, "render_set_render_target", render_target},
     {0x014739b0, 344, "render_set_depth_render_target", depth_target},
+    {0x014742f0, 107, "render_set_indirect_base", indirect_base},
     {0x01474420, 176, "render_draw_index_offset", draw_index_offset},
+    {0x014744d0, 246, "render_draw_indirect", draw_indirect},
     {0x01474c50, 177, "render_dispatch", dispatch},
+    {0x01474de0, 155, "render_dispatch_indirect", dispatch_indirect},
     {0x01475270, 76, "render_set_index_type", index_type},
     {0x014752c0, 92, "render_set_index_base", index_base},
     {0x01475320, 76, "render_set_index_buffer_size", index_size},
+    {0x014756b0, 152, "render_set_gs_mode", gs_mode},
+    {0x01475a90, 93, "render_set_esgs_ring_itemsize", esgs_itemsize},
+    {0x01475af0, 279, "render_set_gs_ring_sizes", gs_ring_sizes},
+    {0x01476030, 140, "render_set_shader_stages", shader_stages},
     {0x014761a0, 156, "render_set_user_data_4_words_marker_4", four_words},
     {0x01476240, 172, "render_set_user_data_8_words", eight_words},
     {0x014762f0, 156, "render_set_user_data_4_words_marker_6", four_words},

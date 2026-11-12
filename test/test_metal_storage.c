@@ -33,7 +33,7 @@ static World open_world(void)
     unsigned char *pool = mmap(NULL,POOL,PROT_READ | PROT_WRITE,MAP_SHARED,fd,0);
     if (pool == MAP_FAILED) exit(1);
     memset(pool,CANARY,POOL);
-    rt_executor_memory memory = {fd,POOL,guest_base,NULL}; rt_executor *executor = NULL;
+    rt_executor_memory memory = {fd,POOL,guest_base,NULL,NULL,NULL}; rt_executor *executor = NULL;
     if (rt_executor_open(&memory,&executor,error,sizeof error)) { fprintf(stderr,"open: %s\n",error); exit(1); }
     CHECK(close(fd) == 0); return (World){pool,executor,16,RT_STAGE_COMPUTE};
 }
