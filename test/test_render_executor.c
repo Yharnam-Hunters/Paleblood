@@ -71,6 +71,36 @@ static int draw_texels_as(rt_executor *x, uint64_t target, const uint32_t image[
     return rt_executor_record_calls(x, calls, count, &ticket, error, error_size) || rt_executor_finish(x, error, error_size) ? -1 : 0;
 }
 
+/* A run-time stop in a submitted batch is found when the batch's slot is next opened: the work recorded
+   there then stops with the stop's own reason (not just "no command buffer"). The draw of texels past
+   the image is submitted without waiting, then triangle draws, one a batch, until one meets it. */
+static void stop_found_by_a_later_batch(rt_executor *x, uint64_t target, const uint32_t image[8])
+{
+    enum { TEXEL_BUFFER = 0xc0f00000, TEXEL_CODE = 0x2a00, LATER_BUFFER = 0xc0f40000, MOST_BATCHES = 8 };
+    char error[512] = "";
+    memcpy((void *)(uintptr_t)at(TEXEL_CODE), pixel_image_texel, sizeof pixel_image_texel);
+    rt_render_forget(), rt_executor_reset(x);
+    uint32_t offset = record_setup(TEXEL_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const uint64_t code = at(TEXEL_CODE);
+    const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 8 << 1, 0, 0x4, 0x302, 0x302, 0, 0, 0, 0xf};
+    CHECK(rt_render_record_pixel_shader(TEXEL_BUFFER, offset, pixel, error, sizeof error) == 0);
+    CHECK(rt_render_record_user_data(TEXEL_BUFFER, offset + 0x10, RT_STAGE_PIXEL, 0, image, 8, error, sizeof error) == 0);
+    const uint32_t size = record_triangle_draw(TEXEL_BUFFER, offset + 0x20);
+    size_t count = 0;
+    uint64_t ticket = 0;
+    const rt_render_call *calls = rt_render_submitted(TEXEL_BUFFER, size, &count);
+    CHECK(rt_executor_submit_calls(x, calls, count, &ticket, error, sizeof error) == 0);
+    int stopped = 0;
+    for (unsigned k = 0; k < MOST_BATCHES && !stopped; k++) {
+        const uint32_t later = record_draw(LATER_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        calls = rt_render_submitted(LATER_BUFFER, later, &count);
+        stopped = rt_executor_submit_calls(x, calls, count, &ticket, error, sizeof error) != 0;
+    }
+    if (!stopped || !strstr(error, "outside the image")) fprintf(stderr, "stop found by a later batch: %s\n", stopped ? error : "no stop");
+    CHECK(stopped && strstr(error, "no command buffer: ") && strstr(error, "outside the image"));
+    rt_executor_finish(x, error, sizeof error);
+}
+
 static int draw_texels(rt_executor *x, uint64_t target, const uint32_t image[8], char *error, size_t error_size)
 {
     return draw_texels_as(x, target, image, 0, error, error_size);
@@ -404,6 +434,7 @@ static void sampled_images(rt_executor *x)
     image_descriptor(image, at(SMALL), 10, 0, 8, 8);
     image[3] |= LINEAR_ALIGNED << 20;
     CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == -1 && strstr(error, "outside the image"));
+    stop_found_by_a_later_batch(x, at(TEXEL_TARGET), image);
     image[3] = (image[3] & ~(0x1fu << 20)) | 2u << 20;
     CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == -1 && strstr(error, "tiling index 2"));
 }

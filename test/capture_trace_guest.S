@@ -117,6 +117,26 @@ import_thunk:
     .org 0x340
     mov 0x1000(%rdi), %eax
     ret
+/* 0x380: int32_t frame_import(void) { int32_t local; fill(&local, 7); return local; } and it
+   stores its stack pointer in frame_seen, so the test knows where its frame was. */
+    .org 0x380
+    sub $24, %rsp
+    mov %rsp, frame_seen(%rip)
+    mov %rsp, %rdi
+    mov $7, %esi
+    call import_thunk
+    mov (%rsp), %eax
+    add $24, %rsp
+    ret
+/* 0x3c0: int32_t read_returned(int32_t *p) { return *import(p, 7); } with an import that
+   returns its first argument. */
+    .org 0x3c0
+    sub $8, %rsp
+    mov $7, %esi
+    call import_thunk
+    mov (%rax), %eax
+    add $8, %rsp
+    ret
     .org 0x1000
 global:
     .long 1000
@@ -124,6 +144,9 @@ global:
 /* 0x1800: the import's slot; the test (or the verifier's loader) binds it. */
     .org 0x1800
 import_slot:
+    .quad 0
+/* 0x1808: where frame_import leaves its stack pointer. */
+frame_seen:
     .quad 0
     .org 0x2000
     .globl capture_trace_guest_end
