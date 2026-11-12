@@ -70,6 +70,7 @@ typedef struct {
     uint64_t code_address;
     uint32_t *user_data_read;        /* runtime/gcn_spirv.h, "User data read" */
     gcn_lds lds;                     /* the workgroup's LDS (runtime/gcn_spirv.h) */
+    uint32_t lds_workgroups;         /* the tessellation stages' LDS buffer's workgroups */
     /* tessellation (runtime/gcn_spirv.h): the local and hull shaders run as compute shaders, the domain
        shader as a vertex shader's translation in a tessellation evaluation shader */
     int tess;
@@ -1980,7 +1981,7 @@ static uint32_t user_data_block(translator *t)
     const uint32_t array = spirv_global(m, SPV_OP_TYPE_ARRAY, (const uint32_t[]){t_uint(t), konst(t, GCN_USER_SGPR_MAX)}, 2);
     /* the local and hull passes also take the draw's words (GCN_TESS_DRAW_*) after the user data */
     const int draw_words = t->layout->tess == TESS_LOCAL || t->layout->tess == TESS_HULL;
-    const uint32_t draw = spirv_global(m, SPV_OP_TYPE_ARRAY, (const uint32_t[]){t_uint(t), konst(t, GCN_TESS_DRAW_WORDS)}, 2);
+    const uint32_t draw = spirv_global(m, SPV_OP_TYPE_ARRAY, (const uint32_t[]){t_uint(t), konst(t, 2)}, 2); /* the draw record's address */
     const uint32_t block = draw_words ? spirv_global(m, SPV_OP_TYPE_STRUCT, (const uint32_t[]){array, draw}, 2)
                                       : spirv_global(m, SPV_OP_TYPE_STRUCT, (const uint32_t[]){array}, 1);
     spirv_emit(m, &m->sections[SPIRV_DECORATIONS], SPV_OP_DECORATE, (const uint32_t[]){array, SPV_DECORATION_ARRAY_STRIDE, BYTES_PER_DWORD}, 3);
@@ -2070,11 +2071,17 @@ static uint32_t workgroup_lds(translator *t, uint32_t group)
     return value(t, SPV_OP_I_ADD, t_ulong(t), 2, ulong_value(t, t->layout->lds.address), offset);
 }
 
+/* Word `word` of the draw's record (runtime/gcn_spirv.h), at the address in the push constants. */
 static uint32_t draw_word(translator *t, unsigned word)
 {
-    const uint32_t pointer = value(t, SPV_OP_ACCESS_CHAIN, spirv_type_pointer(&t->m, SPV_STORAGE_PUSH_CONSTANT, t_uint(t)), 3,
-                                   t->push_constants, konst(t, 1), konst(t, word));
-    return load(t, t_uint(t), pointer);
+    uint32_t half[2];
+    for (unsigned i = 0; i < 2; i++)
+        half[i] = widen(t, load(t, t_uint(t), value(t, SPV_OP_ACCESS_CHAIN, spirv_type_pointer(&t->m, SPV_STORAGE_PUSH_CONSTANT, t_uint(t)), 3,
+                                                    t->push_constants, konst(t, 1), konst(t, i))));
+    const uint32_t record = value(t, SPV_OP_BITWISE_OR, t_ulong(t), 2, half[0],
+                                  value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_ulong(t), 2, half[1], ulong_value(t, 32)));
+    const uint32_t address = value(t, SPV_OP_I_ADD, t_ulong(t), 2, record, ulong_value(t, word * BYTES_PER_DWORD));
+    return load_dword(t, value(t, SPV_OP_CONVERT_U_TO_PTR, spirv_type_pointer(&t->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, t_uint(t)), 1, address));
 }
 
 static uint32_t udiv(translator *t, uint32_t a, uint32_t b) { return value(t, SPV_OP_U_DIV, t_uint(t), 2, a, b); }
@@ -2120,7 +2127,9 @@ static void tessellation_registers(translator *t, const stage_layout *layout)
             store(t, t->out, vgpr(t, axis), as_bits(t, value(t, SPV_OP_COMPOSITE_EXTRACT, t_float(t), 2, uv, axis)));
         store(t, t->out, vgpr(t, 2), umod(t, patch, konst(t, layout->patches)));
         store(t, t->out, vgpr(t, 3), patch);
-        t->lds = workgroup_lds(t, udiv(t, patch, konst(t, layout->patches)));
+        /* past the buffer's workgroups (the passes then stopped, GCN_RUNTIME_STOP_TESSELLATION_LIMIT), the last one's: reads stay in the buffer */
+        const uint32_t group = udiv(t, patch, konst(t, layout->patches)), last = konst(t, layout->lds_workgroups - 1);
+        t->lds = workgroup_lds(t, value(t, SPV_OP_SELECT, t_uint(t), 3, value(t, SPV_OP_U_LESS_THAN, t_bool(t), 2, group, last), group, last));
         return;
     }
     const uint32_t uvec3 = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_uint(t), 3}, 2);
@@ -2130,7 +2139,19 @@ static void tessellation_registers(translator *t, const stage_layout *layout)
     const uint32_t points = konst(t, layout->tess == TESS_LOCAL ? layout->input_points : layout->output_points);
     const uint32_t relative = udiv(t, lane, points), point = umod(t, lane, points);
     const uint32_t patch = value(t, SPV_OP_I_ADD, t_uint(t), 2, value(t, SPV_OP_I_MUL, t_uint(t), 2, group, konst(t, layout->patches)), relative);
-    const uint32_t valid = value(t, SPV_OP_U_LESS_THAN, t_bool(t), 2, patch, draw_word(t, GCN_TESS_DRAW_PATCHES));
+    const uint32_t patches = udiv(t, draw_word(t, GCN_TESS_DRAW_VERTICES), konst(t, layout->input_points));
+    /* the patches the LDS buffer's workgroups and the factor ring hold: past them, no lane runs and the stop word says so */
+    uint32_t most = layout->lds_workgroups * layout->patches;
+    if (layout->tess == TESS_HULL && layout->factor_stride && layout->factor_ring_bytes / layout->factor_stride < most)
+        most = (uint32_t)(layout->factor_ring_bytes / layout->factor_stride);
+    const uint32_t fits = value(t, SPV_OP_U_LESS_THAN_EQUAL, t_bool(t), 2, patches, konst(t, most));
+    if (layout->error_address) {
+        const uint32_t over = begin_if(t, value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, fits));
+        runtime_stop(t, value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, konst(t, GCN_RUNTIME_STOP_TESSELLATION_LIMIT << GCN_RUNTIME_STOP_KIND_SHIFT),
+                              value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, patches, konst(t, 0xffffff))));
+        end_if(t, over);
+    }
+    const uint32_t valid = both(t, fits, value(t, SPV_OP_U_LESS_THAN, t_bool(t), 2, patch, patches));
     store(t, t->out, t->exec, valid);
     if (layout->tess == TESS_LOCAL) {
         const uint32_t n = value(t, SPV_OP_I_ADD, t_uint(t), 2, value(t, SPV_OP_I_MUL, t_uint(t), 2, patch, konst(t, layout->input_points)), point);
@@ -3692,7 +3713,7 @@ static int tessellation_layout(const gcn_tessellation_layout *l, int tess, char 
         snprintf(error, error_size, "a tessellation workgroup of %u patches of %u points: not done", l->patches, points);
         return -1;
     }
-    if (!l->lds.address || !l->lds.bytes) {
+    if (!l->lds.address || !l->lds.bytes || !l->lds_workgroups) {
         snprintf(error, error_size, "a tessellation stage with no LDS buffer");
         return -1;
     }
@@ -3715,6 +3736,7 @@ static stage_layout tessellation_stage(const gcn_tessellation_layout *l, int tes
                           .images = l->images, .image_count = tess == TESS_DOMAIN ? l->image_count : 0, .first_binding = l->first_binding,
                           .push_constant_offset = tess == TESS_DOMAIN ? l->push_constant_offset : 0, .address_offset = l->address_offset,
                           .error_address = l->error_address, .user_data_read = l->user_data_read, .lds = l->lds,
+                          .lds_workgroups = l->lds_workgroups,
                           .patches = l->patches, .input_points = l->input_points, .output_points = l->output_points,
                           .off_chip = l->off_chip, .factor_stride = l->factor_stride, .factor_ring = l->factor_ring,
                           .factor_ring_bytes = l->factor_ring_bytes, .factor_buffer = l->factor_buffer,
@@ -3851,6 +3873,12 @@ int gcn_tessellation_control_shader(const gcn_tessellation_control *c, uint32_t 
                          EMIT(SPV_OP_EXT_INST, float_type, glsl, SPV_GLSL_CEIL, EMIT(SPV_OP_EXT_INST, float_type, glsl, SPV_GLSL_LOG2, level)));
         /* the ring's factor k is outer level k, then inner level k - outer; isolines' two are reversed */
         const int is_outer = k < outer;
+        /* an outer factor of 0 or less, or NaN, culls the patch before any clamping (Direct3D 11's tessellator
+           rule, which GCN's follows): its level stays 0, which culls it in Vulkan too */
+        if (is_outer)
+            level = EMIT(SPV_OP_SELECT, float_type, EMIT(SPV_OP_F_ORD_GREATER_THAN, spirv_type_bool(&m), factor,
+                                                         spirv_global(&m, SPV_OP_CONSTANT, (const uint32_t[]){float_type, 0}, 2)),
+                         level, spirv_global(&m, SPV_OP_CONSTANT, (const uint32_t[]){float_type, 0}, 2));
         const unsigned slot = !is_outer ? k - outer : c->domain == GCN_TESS_ISOLINES ? 1 - k : k;
         const uint32_t target = EMIT(SPV_OP_ACCESS_CHAIN, spirv_type_pointer(&m, SPV_STORAGE_OUTPUT, float_type), is_outer ? outer_levels : inner_levels,
                                      spirv_constant_uint(&m, slot));

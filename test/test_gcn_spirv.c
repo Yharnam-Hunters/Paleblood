@@ -642,7 +642,7 @@ static void tessellation(void)
     refused_as(VERTEX, PROGRAM(barrier_in_vertex), "s_barrier outside a compute shader");
 
     gcn_tessellation_layout l = {.user_sgprs = 8, .patches = 15, .input_points = 1, .output_points = 1,
-                                 .lds = {.bytes = 3584, .address = 0x100000000ull}, .factor_stride = 24,
+                                 .lds = {.bytes = 3584, .address = 0x100000000ull}, .lds_workgroups = 64, .factor_stride = 24,
                                  .factor_ring = 0xfe00000000ull, .factor_ring_bytes = 0x20000, .factor_buffer = 0x200000000ull,
                                  .domain = GCN_TESS_QUADS, .partitioning = GCN_TESS_INTEGER, .topology = GCN_TESS_TRIANGLES_CW};
     uint32_t *spirv = NULL;

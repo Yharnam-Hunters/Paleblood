@@ -49,6 +49,9 @@ enum {
     GCN_RUNTIME_STOP_VCC_UNKNOWN = 2,
     /* image_load/image_load_mip of a texel outside the image, or of a level past its last */
     GCN_RUNTIME_STOP_IMAGE_RANGE = 3,
+    /* a tessellated draw of more patches than the LDS buffer or the factor ring holds (gcn_tessellation_layout);
+       details: the draw's patch count, its low 24 bits */
+    GCN_RUNTIME_STOP_TESSELLATION_LIMIT = 4,
 };
 
 /* Images (MIMG). A shader names an image by the SGPRs holding its 8-word descriptor (T#), which the
@@ -304,9 +307,13 @@ int gcn_translate_pixel(const uint32_t *code, size_t dwords, const gcn_pixel_lay
    factor_stride (shadPS4's frontend gives the HS these inputs, facts only). Its buffer accesses through a
    descriptor based in the ring (factor_ring, factor_ring_bytes long, a guest address) go to
    factor_buffer (a GPU address) instead. In both passes, lanes past the draw's patches start with EXEC
-   clear, and the draw's numbers are push constants after the user data, GCN_TESS_DRAW_WORDS words at byte
-   GCN_TESS_DRAW_OFFSET: the patch count, the first vertex (or first index), the index buffer's GPU
-   address (low, high) and its index size in bytes (2 or 4; 0 for no index buffer).
+   clear. The draw's numbers are in memory, at the GPU address the push constants hold after the user
+   data (two words, low first, at byte GCN_TESS_DRAW_OFFSET), so that an indirect draw's GPU-written count
+   reaches them: GCN_TESS_DRAW_WORDS words, the draw's vertex count (its control points: patches = count /
+   input_points), the first vertex (or first index), the index buffer's GPU address (low, high) and its
+   index size in bytes (2 or 4; 0 for no index buffer). A draw of more patches than the LDS buffer's
+   workgroups (lds_workgroups) or the factor ring hold runs none of them and writes
+   GCN_RUNTIME_STOP_TESSELLATION_LIMIT to the stop word.
    The domain shader: v0 and v1 the point's (u, v) (TessCoord), v2 the patch's index in its workgroup and
    v3 its index in the draw (PrimitiveId); its LDS is workgroup PrimitiveId / patches's. Its exports are a
    vertex shader's (gcn_translate_vertex), and domain, partitioning and topology (VGT_TF_PARAM's, the
@@ -315,7 +322,7 @@ int gcn_translate_pixel(const uint32_t *code, size_t dwords, const gcn_pixel_lay
 enum { GCN_TESS_ISOLINES = 0, GCN_TESS_TRIANGLES = 1, GCN_TESS_QUADS = 2 };
 enum { GCN_TESS_INTEGER = 0, GCN_TESS_POW2 = 1, GCN_TESS_FRACTIONAL_ODD = 2, GCN_TESS_FRACTIONAL_EVEN = 3 };
 enum { GCN_TESS_POINTS = 0, GCN_TESS_LINES = 1, GCN_TESS_TRIANGLES_CW = 2, GCN_TESS_TRIANGLES_CCW = 3 };
-enum { GCN_TESS_DRAW_OFFSET = 64, GCN_TESS_DRAW_PATCHES = 0, GCN_TESS_DRAW_FIRST, GCN_TESS_DRAW_INDEX_LOW, GCN_TESS_DRAW_INDEX_HIGH,
+enum { GCN_TESS_DRAW_OFFSET = 64, GCN_TESS_DRAW_VERTICES = 0, GCN_TESS_DRAW_FIRST, GCN_TESS_DRAW_INDEX_LOW, GCN_TESS_DRAW_INDEX_HIGH,
        GCN_TESS_DRAW_INDEX_SIZE, GCN_TESS_DRAW_WORDS };
 typedef struct {
     unsigned user_sgprs;
@@ -324,6 +331,7 @@ typedef struct {
     uint64_t address_offset;
     uint64_t error_address;
     gcn_lds lds;                     /* the workgroups' LDS, in a buffer (address not 0) */
+    uint32_t lds_workgroups;         /* the workgroups the LDS buffer holds */
     /* the local shader's fetch shader and its own guest address, as gcn_vertex_layout's */
     const uint32_t *callee;
     size_t callee_dwords;
@@ -351,7 +359,8 @@ int gcn_translate_domain(const uint32_t *code, size_t dwords, const gcn_tessella
    nothing (one control point a patch, which the control shader does not read), and the control shader,
    one output point, which reads patch PrimitiveId's factors from factor_buffer + PrimitiveId *
    factor_stride (where the hull pass left them) as 32-bit floats, clamps each to [min_level,
-   max_level] (VGT_HOS_MIN/MAX_TESS_LEVEL), rounds them up to a power of two for GCN_TESS_POW2, and
+   max_level] (VGT_HOS_MIN/MAX_TESS_LEVEL) but keeps an outer factor of 0 or less (or NaN) at 0, which culls
+   the patch (Direct3D 11's tessellator rule), rounds them up to a power of two for GCN_TESS_POW2, and
    writes them as the tessellation levels. The ring's order: quads outer 0-3 then inner 0-1, triangles
    outer 0-2 then inner, isolines the line detail then the line density (Mesa's radeonsi writes isolines'
    two outer levels reversed, facts only): Vulkan's outer level 0 is the density. Both return 0 and a
