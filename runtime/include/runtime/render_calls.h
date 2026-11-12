@@ -118,7 +118,7 @@ typedef enum {
     RT_CALL_COLOR_TARGET, RT_CALL_VIEWPORT, RT_CALL_DRAW_AUTO, RT_CALL_VERTEX_SHADER, RT_CALL_PIXEL_SHADER,
     RT_CALL_USER_DATA, RT_CALL_REGISTER, RT_CALL_INSTANCES, RT_CALL_COMPUTE_SHADER, RT_CALL_DISPATCH,
     RT_CALL_INDEX_BASE, RT_CALL_INDEX_SIZE, RT_CALL_INDEX_TYPE, RT_CALL_DRAW_INDEX_OFFSET,
-    RT_CALL_DRAW_INDEXED, RT_CALL_INDIRECT_BASE, RT_CALL_DISPATCH_INDIRECT,
+    RT_CALL_DRAW_INDEXED, RT_CALL_INDIRECT_BASE, RT_CALL_DISPATCH_INDIRECT, RT_CALL_DRAW_INDIRECT,
 } rt_render_call_kind;
 
 /* Register ranges a register call may set, as AMD numbers them (dword addresses, gfx_7_2_d.h):
@@ -167,6 +167,11 @@ typedef struct {
         struct {
             uint32_t data_offset;    /* DISPATCH_INDIRECT: bytes from the indirect base to x, y, z */
         } dispatch_indirect;
+        struct {
+            uint32_t data_offset;    /* DRAW_INDIRECT: bytes from the indirect base to the draw's arguments */
+            rt_shader_stage stage;   /* the stage whose user SGPRs the two below count in */
+            uint32_t base_vertex_sgpr, start_instance_sgpr; /* user SGPRs the GPU writes them to; 0 none */
+        } draw_indirect;
         struct {
             uint64_t address;        /* unmasked byte address from INDEX_BASE's low/high DWORDs */
         } index_base;
@@ -217,6 +222,12 @@ int rt_render_record_indirect_base(uint64_t buffer, uint32_t offset, uint64_t ad
 /* A compute dispatch whose workgroup counts the GPU reads when it runs (DISPATCH_INDIRECT): three
    32-bit words, x, y and z, at data_offset bytes from the indirect base, a multiple of 4. */
 int rt_render_record_dispatch_indirect(uint64_t buffer, uint32_t offset, uint32_t data_offset, char *error, size_t error_size);
+/* An auto-index draw whose counts the GPU reads when it runs (DRAW_INDIRECT): four 32-bit words,
+   vertices per instance, instances, start vertex and start instance, at data_offset bytes from the
+   indirect base, a multiple of 4. The start vertex and instance go to the stage's user SGPRs
+   base_vertex_sgpr and start_instance_sgpr (0: to none). */
+int rt_render_record_draw_indirect(uint64_t buffer, uint32_t offset, uint32_t data_offset, rt_shader_stage stage, uint32_t base_vertex_sgpr,
+                                   uint32_t start_instance_sgpr, char *error, size_t error_size);
 /* The index buffer later indexed draws read: its address (INDEX_BASE), its size in indices
    (INDEX_BUFFER_SIZE) and the index type (INDEX_TYPE). */
 int rt_render_record_index_base(uint64_t buffer, uint32_t offset, uint64_t address, char *error, size_t error_size);

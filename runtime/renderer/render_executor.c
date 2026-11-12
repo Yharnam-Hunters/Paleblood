@@ -352,6 +352,8 @@ typedef struct {
         int dispatch;                /* a dispatch's buffer stores, from address (its descriptor's base) */
     } written[MAX_WRITTEN];          /* guest memory its write-backs and dispatches may store to */
     unsigned written_count;
+    gpu_buffer indirect;             /* its indirect draws' Vulkan arguments (draw_indirect_arguments) */
+    unsigned indirect_count;
 } batch_slot;
 
 struct rt_executor {
@@ -940,7 +942,7 @@ static int import_memory(rt_executor *x, const rt_executor_memory *memory, char 
     const VkBufferCreateInfo buffer = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &external, .size = memory->size,
                                        .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
                                                 VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                                                VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+                                                VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
     if (vkCreateBuffer(x->device, &buffer, NULL, &x->buffer) != VK_SUCCESS) return failed(error, error_size, "no buffer for the guest memory");
     VkMemoryRequirements need;
     vkGetBufferMemoryRequirements(x->device, x->buffer, &need);
@@ -1110,7 +1112,7 @@ static batch_slot *open_batch(rt_executor *x, char *error, size_t error_size)
         failed(error, error_size, "no command buffer");
         return NULL;
     }
-    x->batch_open = 1;
+    x->batch_open = 1, b->indirect_count = 0;
     return b;
 }
 
@@ -1354,7 +1356,8 @@ static int gpu_buffer_make(rt_executor *x, gpu_buffer *b, VkDeviceSize bytes, in
     gpu_buffer_free(x, b);
     const VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = bytes,
                                      .usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                              VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+                                              VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                              VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT};
     if (vkCreateBuffer(x->device, &info, NULL, &b->buffer) != VK_SUCCESS) return -1;
     VkMemoryRequirements need;
     vkGetBufferMemoryRequirements(x->device, b->buffer, &need);
@@ -2637,9 +2640,43 @@ static int check_user_data(const char *stage, uint64_t code, uint32_t read, uint
                   (unsigned long long)code, __builtin_ctz(read & ~set), set);
 }
 
-static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uint32_t colours, uint32_t index_count, const index_range *indices,
-                char *error, size_t error_size)
+/* An indirect draw's arguments, as the GPU reads them (DRAW_INDIRECT, AMD's PM4 format): vertices
+   per instance, instances, start vertex, start instance. The start vertex and instance reach the
+   shader only through the user SGPRs the packet names; the vertex index counts from 0 (shadPS4's
+   translate.cpp subtracts the base vertex from Vulkan's index for that reason, facts only). So the
+   Vulkan draw takes the first two words, copied on the GPU when the draw runs, with its first vertex
+   and instance 0. The copy goes to the open batch's own buffer, an entry per draw. The offset of
+   the entry, or -1 with the reason. */
+enum { INDIRECT_DRAW_WORDS = 4, INDIRECT_DRAWS_PER_BATCH = 4096 };
+static int64_t draw_indirect_arguments(rt_executor *x, VkCommandBuffer commands, uint64_t arguments, char *error, size_t error_size)
 {
+    enum { COUNTS_BYTES = 2 * sizeof(uint32_t), ENTRY_BYTES = INDIRECT_DRAW_WORDS * sizeof(uint32_t) };
+    batch_slot *b = &x->slots[x->current];
+    if (!b->indirect.buffer && gpu_buffer_make(x, &b->indirect, (VkDeviceSize)INDIRECT_DRAWS_PER_BATCH * ENTRY_BYTES, 0))
+        return failed(error, error_size, "no buffer for indirect draws' arguments");
+    if (b->indirect_count == INDIRECT_DRAWS_PER_BATCH)
+        return failed(error, error_size, "more than %d indirect draws in one batch", INDIRECT_DRAWS_PER_BATCH);
+    const VkDeviceSize entry = (VkDeviceSize)b->indirect_count++ * ENTRY_BYTES;
+    /* what earlier work wrote to the arguments is visible to the copy */
+    const VkMemoryBarrier earlier = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+                                     .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &earlier, 0, NULL, 0, NULL);
+    const VkBufferCopy counts = {.srcOffset = arguments - x->guest_base, .dstOffset = entry, .size = COUNTS_BYTES};
+    vkCmdCopyBuffer(commands, x->buffer, b->indirect.buffer, 1, &counts);
+    vkCmdFillBuffer(commands, b->indirect.buffer, entry + COUNTS_BYTES, ENTRY_BYTES - COUNTS_BYTES, 0); /* first vertex and instance */
+    return (int64_t)entry;
+}
+
+/* A draw of index_count vertices (indices, when given, index them), or, with `indirect` not 0, of the
+   counts in guest memory there (draw_indirect_arguments). */
+static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uint32_t colours, uint32_t index_count, const index_range *indices,
+                uint64_t indirect, char *error, size_t error_size)
+{
+    if (indirect && (indirect < x->guest_base || indirect - x->guest_base > x->size - INDIRECT_DRAW_WORDS * sizeof(uint32_t)))
+        return failed(error, error_size, "an indirect draw's arguments at %#llx, outside the guest memory", (unsigned long long)indirect);
+    if (indirect && s->vertex_set && s->vertex.vgpr_inputs)
+        return failed(error, error_size, "an indirect draw whose vertex shader takes instance indexes (VGPR_COMP_CNT %u): not drawn yet",
+                      s->vertex.vgpr_inputs);
     if (!s->viewport_set) return failed(error, error_size, "a draw with no viewport");
     if (!s->vertex_set || !s->pixel_set) return failed(error, error_size, "a draw without a vertex and a pixel shader");
     /* no pixel shader: a depth-only pass, drawn with no pixel stage; it must write no colour target */
@@ -2729,7 +2766,7 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
         (!depth_only && check_user_data("pixel", s->pixel.code, pixel_read, s->user_set[STAGE_PIXEL], error, error_size)))
         return -1;
     const int rect_list = s->primitive_set && s->primitive_type == DI_PT_RECTLIST;
-    if (rect_list && index_count % 3) return failed(error, error_size, "a rect list of %u vertices, not whole rects of three", index_count);
+    if (rect_list && !indirect && index_count % 3) return failed(error, error_size, "a rect list of %u vertices, not whole rects of three", index_count);
     const VkShaderModule geometry = rect_list ? rect_stage_for(x, &s->vertex, error, error_size) : VK_NULL_HANDLE;
     if (rect_list && !geometry) return -1;
     const int has_set = image_count || sampler_count || vertex_image_count;
@@ -2747,12 +2784,15 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
 
     VkCommandBuffer commands = batch_commands(x);
     if (!commands) return failed(error, error_size, "no command buffer");
-    /* what earlier work wrote (images, guest memory) is visible to this draw's shaders */
+    const int64_t indirect_entry = indirect ? draw_indirect_arguments(x, commands, indirect, error, error_size) : 0;
+    if (indirect_entry < 0) return -1;
+    /* what earlier work wrote (images, guest memory, the indirect arguments) is visible to this draw */
     const VkMemoryBarrier earlier = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
-                                     .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INDEX_READ_BIT};
+                                     .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INDEX_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT};
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                         VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 1,
-                         &earlier, 0, NULL, 0, NULL);
+                         VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         0, 1, &earlier, 0, NULL, 0, NULL);
     const VkRenderPassBeginInfo pass = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = render_pass,
                                         .framebuffer = framebuffer, .renderArea = {{0, 0}, {width, height}}};
     vkCmdBeginRenderPass(commands, &pass, VK_SUBPASS_CONTENTS_INLINE);
@@ -2786,6 +2826,8 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     if (indices) {
         vkCmdBindIndexBuffer(commands, x->buffer, indices->offset, indices->type);
         vkCmdDrawIndexed(commands, index_count, 1, 0, 0, 0);
+    } else if (indirect) {
+        vkCmdDrawIndirect(commands, x->slots[x->current].indirect.buffer, (VkDeviceSize)indirect_entry, 1, 0);
     } else {
         vkCmdDraw(commands, index_count, 1, 0, 0);
     }
@@ -4073,7 +4115,22 @@ static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, 
             uint32_t colours = 0;
             const int checked = check_state(s, &plan, &colours, error, error_size);
             if (checked < 0) return -1;
-            if (checked == 0 && draw(x, s, &plan, colours, c->u.draw_auto.index_count, NULL, error, error_size)) return -1;
+            if (checked == 0 && draw(x, s, &plan, colours, c->u.draw_auto.index_count, NULL, 0, error, error_size)) return -1;
+            break;
+        }
+        case RT_CALL_DRAW_INDIRECT: {
+            const uint32_t base_vertex = c->u.draw_indirect.base_vertex_sgpr, start_instance = c->u.draw_indirect.start_instance_sgpr;
+            if (!s->indirect_base_set) return failed(error, error_size, "an indirect draw with no indirect base set");
+            if (base_vertex || start_instance)
+                return failed(error, error_size, "an indirect draw writing its start vertex or instance to user SGPRs %u and %u of stage %u: not "
+                              "drawn yet", base_vertex, start_instance, (unsigned)c->u.draw_indirect.stage);
+            if (apply_fast_clears(x, s, error, error_size)) return -1;
+            depth_plan plan;
+            uint32_t colours = 0;
+            const int checked = check_state(s, &plan, &colours, error, error_size);
+            if (checked < 0) return -1;
+            if (checked == 0 && draw(x, s, &plan, colours, 0, NULL, s->indirect_base + c->u.draw_indirect.data_offset, error, error_size))
+                return -1;
             break;
         }
         case RT_CALL_INDEX_BASE: s->index_base = c->u.index_base.address, s->index_base_set = 1; break;
@@ -4102,7 +4159,7 @@ static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, 
             uint32_t colours = 0;
             const int checked = check_state(s, &plan, &colours, error, error_size);
             if (checked < 0) return -1;
-            if (checked == 0 && draw(x, s, &plan, colours, c->u.draw_index.count, &indices, error, error_size)) return -1;
+            if (checked == 0 && draw(x, s, &plan, colours, c->u.draw_index.count, &indices, 0, error, error_size)) return -1;
             break;
         }
         }
@@ -4244,7 +4301,7 @@ void rt_executor_close(rt_executor *x)
             staging_free(x, &x->targets[i].staging);
             tile_plan_free(x, &x->targets[i].plan);
         }
-        for (unsigned k = 0; k < BATCH_SLOTS; k++) staging_free(x, &x->slots[k].upload);
+        for (unsigned k = 0; k < BATCH_SLOTS; k++) staging_free(x, &x->slots[k].upload), gpu_buffer_free(x, &x->slots[k].indirect);
         for (unsigned k = 0; k < SNAPSHOT_SLOTS; k++) staging_free(x, &x->snapshots[k].staging);
         if (x->buffer) vkDestroyBuffer(x->device, x->buffer, NULL);
         if (x->memory) vkFreeMemory(x->device, x->memory, NULL);

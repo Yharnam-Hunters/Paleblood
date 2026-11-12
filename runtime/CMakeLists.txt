@@ -80,7 +80,7 @@ if(NOT APPLE)
     foreach(symbol rt_fatal rt_render_record_color_target rt_render_record_viewport rt_render_record_draw_auto
                    rt_render_record_vertex_shader rt_render_record_pixel_shader rt_render_record_user_data
                    rt_render_record_register rt_render_record_instances rt_render_record_dispatch rt_render_record_indirect_base
-                   rt_render_record_dispatch_indirect rt_render_record_index_base
+                   rt_render_record_dispatch_indirect rt_render_record_draw_indirect rt_render_record_index_base
                    rt_render_record_index_size rt_render_record_index_type rt_render_record_draw_index_offset
                    rt_render_record_draw_index_offset_packet rt_render_record_draw_indexed)
         target_link_options(pbboot PRIVATE "LINKER:--export-dynamic-symbol=${symbol}")
