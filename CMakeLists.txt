@@ -237,6 +237,14 @@ add_test(NAME module_tls_boot
 set_tests_properties(module_tls_boot PROPERTIES TIMEOUT 30
     ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>")
 
+# pbboot ends once it has reported, without running library teardown (test/test_boot_exit.py).
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_library(boot_exit_destructor SHARED test/boot_exit_destructor.c)
+    add_test(NAME boot_exit
+             COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_boot_exit.py -v)
+    set_tests_properties(boot_exit PROPERTIES TIMEOUT 60
+        ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>;BB_BOOT_EXIT_FIXTURE=$<TARGET_FILE:boot_exit_destructor>")
+endif()
 
 # Full-width module arguments and proven early invalid-ID statuses.
 add_executable(test_sysmodule_ids test/test_sysmodule_ids.c
