@@ -42,8 +42,10 @@ DIR/<function>/: a recorded call always runs the game's original code. Other cal
 replacements, as in any boot with --game-lib (the renderer needs some of them); with
 --capture-originals no replacement runs at all.
 --capture-functions picks which: all-edge-verified (default: every edge-verified function of
-symbols/functions.csv; with a --display, not those whose replacements report to the renderer,
-which would miss a recorded call's state), all (every hook), or a comma-separated list; --capture-cases caps the
+symbols/functions.csv), all (every hook), or a comma-separated list. With a --display, the
+functions whose replacements report to the renderer are never recorded and their replacements run
+for every call, even inside a recorded call of a caller, whose trace then ends there: the renderer
+would otherwise miss that state and stop. --capture-cases caps the
 distinct cases kept per function and run. A case identical to one DIR already holds is not
 written again.
 
@@ -226,6 +228,13 @@ def reports_to_renderer(root: str, name: str) -> bool:
     return 'runtime/include/runtime/render_observer.h' in verification.source_files(root, name)
 
 
+def renderer_reporting(root: str) -> list[str]:
+    """Every hooked function whose replacement reports to the renderer (game/hooks.csv)."""
+    with open(os.path.join(root, 'game', 'hooks.csv'), newline='') as f:
+        names = [r['replacement'].removeprefix('bb_') for r in csv.DictReader(f)]
+    return [n for n in names if reports_to_renderer(root, n)]
+
+
 def capture_functions(root: str, which: str, renderer: bool = False) -> str:
     """BB_CAPTURE_ONLY for --capture-functions: names, or "" for every hook. With the renderer
     running, all-edge-verified leaves out the functions whose replacements report to it."""
@@ -246,6 +255,10 @@ def capture_environment(root: str, directory: str, which: str, cases: int, elf: 
            'BB_CAPTURE_MAX': str(cases), 'BB_ELF': os.path.abspath(elf),
            'BB_CAPTURE_IMPORTS': os.path.join(root, 'symbols', 'imports.csv'),
            'BB_CAPTURE_ONLY': capture_functions(root, which, renderer)}
+    if renderer:
+        # Their replacements run for every call, also inside a recorded call of a caller (whose
+        # trace then ends there): the renderer needs each report.
+        env['BB_CAPTURE_NATIVE'] = ','.join(renderer_reporting(root))
     return env
 
 

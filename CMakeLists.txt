@@ -90,6 +90,7 @@ add_executable(test_capture_hooks test/test_capture_hooks.cpp test/capture_trace
 target_link_libraries(test_capture_hooks bbrt)
 add_test(NAME capture_hooks COMMAND test_capture_hooks --self-test)
 add_test(NAME capture_hooks_original COMMAND test_capture_hooks --original-self-test)
+add_test(NAME capture_hooks_native COMMAND test_capture_hooks --native-self-test)
 add_test(NAME capture_hooks_replay
          COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/capture_trace_integration.py $<TARGET_FILE:test_capture_hooks>
                  capture_trace_scale capture_trace_twice capture_trace_copy capture_trace_use_import)

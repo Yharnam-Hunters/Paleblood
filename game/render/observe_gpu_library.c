@@ -62,6 +62,14 @@
    0x01475270 (command buffer, type) INDEX_TYPE with the type as it is; 0x01474420 (command buffer,
    first, count) DRAW_INDEX_OFFSET_2 with MAX_SIZE = count, INDEX_OFFSET = first, INDEX_COUNT = count and
    initiator 0, then an event or a NOP.
+   The geometry-shader register writers (from their disassembly): 0x01475a90 (command buffer, item size) writes
+   VGT_ESGS_RING_ITEMSIZE (0xa2ab) = the size & 0x7fff; 0x01475af0 (command buffer, a pointer to four 32-bit
+   vertex sizes in dwords, one a stream, the most vertices a primitive) writes VGT_GS_VERT_ITEMSIZE to _3
+   (0xa2d7-0xa2da) = each size & 0x7fff, VGT_GSVS_RING_OFFSET_1 to _3 (0xa298-0xa29a) = (the sizes of the
+   streams before it) x the most vertices, each & 0x7fff, VGT_GS_MAX_VERT_OUT (0xa2ce) = the most vertices & 0x7ff,
+   and VGT_GSVS_RING_ITEMSIZE (0xa2ac) = (the four sizes' sum) x the most vertices & 0x7fff; 0x014756b0
+   (command buffer, mode, cut mode) writes VGT_GS_MODE (0xa290) = the mode with bits 4-5 the cut mode's low two
+   bits, and, when the mode is 0, VGT_STRMOUT_CONFIG (0xa2e5) = 0.
    The command buffer starts with its begin and holds its cursor at +0x10 (game/render/command_packets.h). */
 #include "runtime/observe_hooks.h"
 #include "runtime/render_observer.h"
@@ -270,6 +278,39 @@ static void draw_indirect(const uint64_t args[RT_OBSERVED_ARGUMENTS])
                              (uint32_t)args[ARGUMENT_START_INSTANCE_SGPR] & SGPR_ARGUMENT_MASK);
 }
 
+enum { VGT_GS_MODE = 0xa290, VGT_GSVS_RING_OFFSET_1 = 0xa298, VGT_ESGS_RING_ITEMSIZE = 0xa2ab, VGT_GSVS_RING_ITEMSIZE = 0xa2ac,
+       VGT_GS_MAX_VERT_OUT = 0xa2ce, VGT_GS_VERT_ITEMSIZE = 0xa2d7, VGT_STRMOUT_CONFIG = 0xa2e5, ITEMSIZE_MASK = 0x7fff,
+       MAX_VERT_OUT_MASK = 0x7ff, GS_STREAMS = 4, GS_CUT_MODE_SHIFT = 4, GS_CUT_MODE_MASK = 0x30, ARGUMENT_GS_SIZES = 1,
+       ARGUMENT_GS_MAX_VERTICES = 2, ARGUMENT_GS_MODE = 1, ARGUMENT_GS_CUT_MODE = 2 };
+
+static void esgs_itemsize(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    rt_observe_register(observed_buffer(args), observed_offset(args), VGT_ESGS_RING_ITEMSIZE, (uint32_t)args[ARGUMENT_INDEX_VALUE] & ITEMSIZE_MASK);
+}
+
+static void gs_ring_sizes(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    const uint64_t buffer = observed_buffer(args);
+    const uint32_t offset = observed_offset(args);
+    const uint32_t *sizes = (const uint32_t *)(uintptr_t)args[ARGUMENT_GS_SIZES], most = (uint32_t)args[ARGUMENT_GS_MAX_VERTICES];
+    uint32_t before = 0;
+    for (unsigned stream = 0; stream < GS_STREAMS; stream++) {
+        rt_observe_register(buffer, offset, VGT_GS_VERT_ITEMSIZE + stream, sizes[stream] & ITEMSIZE_MASK);
+        before += sizes[stream];
+        if (stream + 1 < GS_STREAMS) rt_observe_register(buffer, offset, VGT_GSVS_RING_OFFSET_1 + stream, before * most & ITEMSIZE_MASK);
+    }
+    rt_observe_register(buffer, offset, VGT_GS_MAX_VERT_OUT, most & MAX_VERT_OUT_MASK);
+    rt_observe_register(buffer, offset, VGT_GSVS_RING_ITEMSIZE, before * most & ITEMSIZE_MASK);
+}
+
+static void gs_mode(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    const uint32_t mode = (uint32_t)args[ARGUMENT_GS_MODE], cut = (uint32_t)args[ARGUMENT_GS_CUT_MODE];
+    rt_observe_register(observed_buffer(args), observed_offset(args), VGT_GS_MODE,
+                        (mode & ~(uint32_t)GS_CUT_MODE_MASK) | (cut << GS_CUT_MODE_SHIFT & GS_CUT_MODE_MASK));
+    if (!mode) rt_observe_register(observed_buffer(args), observed_offset(args), VGT_STRMOUT_CONFIG, 0);
+}
+
 const rt_observe_hook game_observe_hooks[] = {
     {0x01473190, 87, "render_set_stencil_reference", stencil_reference_both},
     {0x014731f0, 99, "render_set_stencil_reference_separate", stencil_reference_each},
@@ -284,6 +325,9 @@ const rt_observe_hook game_observe_hooks[] = {
     {0x01475270, 76, "render_set_index_type", index_type},
     {0x014752c0, 92, "render_set_index_base", index_base},
     {0x01475320, 76, "render_set_index_buffer_size", index_size},
+    {0x014756b0, 152, "render_set_gs_mode", gs_mode},
+    {0x01475a90, 93, "render_set_esgs_ring_itemsize", esgs_itemsize},
+    {0x01475af0, 279, "render_set_gs_ring_sizes", gs_ring_sizes},
     {0x01476030, 140, "render_set_shader_stages", shader_stages},
     {0x014761a0, 156, "render_set_user_data_4_words_marker_4", four_words},
     {0x01476240, 172, "render_set_user_data_8_words", eight_words},
