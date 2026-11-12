@@ -410,19 +410,21 @@ interior RGB and independent alpha to distinguish this raw-UNORM policy from aut
 Cube stores have a separate, bounded host policy. A single square RGBA8 UNORM cube
 (`DATA_FORMAT=10`, `NUM_FORMAT=0`, decoded depth one and six physical face layers) uses a
 Metal 2D-array allocation, including when the selected view exposes only one face. The profile
-requires mip zero, tile index 13, pitch aligned to eight texels, no `POW2_PAD`, `BASE_ARRAY=0`
-and `LAST_ARRAY` from zero through five. Access must be exactly write-only. All four channel
+requires mip zero, tile index 13, pitch aligned to eight texels, no `POW2_PAD`, and
+`0 <= BASE_ARRAY <= LAST_ARRAY < 6`. Access must be exactly write-only. All four channel
 selectors must form a permutation; the common inverse store mapping preserves canonical bytes.
-Reads, read/write access, other formats or tiles, sRGB, multi-cube arrays, nonzero base faces
-and sampling remain outside this profile.
+Reads, read/write access, other formats or tiles, sRGB, multi-cube arrays and sampling remain
+outside this profile.
 
-The common unsampled translator consumes the third VGPR coordinate as an unsigned flat face
-index independently of DA. Its image-size check suppresses stores outside the selected prefix
-without changing memory. This is an explicit host policy, matching the common renderer's
-selected 2D-array storage view; DA and partial-view hardware equivalence are not established.
+The common unsampled translator consumes the third VGPR coordinate as an unsigned index
+relative to the selected face window, independently of DA. A coordinate zero selects physical
+face `BASE_ARRAY`; publication maps each relative face back to its physical allocation slice.
+The selected 2D-array view supplies the image-size check, which suppresses stores outside that
+window without changing memory. This is an explicit host policy; DA, partial-view and base
+rebasing equivalence to GFX7 hardware are not established.
 The [Sea Islands cube coordinate table](https://docs.amd.com/api/khub/documents/YO8RUh~LIQ5Cx3M_Kq9qkg/content#page=73)
-packs the cube slice with an eight-face stride. Only first-cube face IDs zero through five
-coincide with flat layers here; the backend performs no general multi-cube coordinate conversion.
+packs the cube slice with an eight-face stride. The backend performs no general multi-cube
+coordinate conversion, and this policy does not establish GFX7 rebasing for partial face views.
 
 All six physical faces participate in pool bounds and overlapping-image checks. Current guest
 texels from all faces are uploaded before a dispatch. Publication replaces only exposed face
@@ -434,11 +436,12 @@ actual packed row and face strides. This policy does not establish console outpu
 
 `test_metal_cube_stores` uses owned LLVM-assembled stores and a separate raw GPU buffer
 observer. Literal thin-tile offsets and inverse channel tables check all six physical faces,
-including untouched texels and padding. Cases cover both DA encodings, every prefix and valid
-face, all 24 permutations, successful out-of-range suppression, live cached descriptors and CPU
-updates, exact pool ends and descriptor refusals. Two individually valid cubes also overlap only
-in an unexposed face, checking that allocation-wide alias bounds survive a narrow view. These
-are synthetic host-policy checks; hardware prefix behavior and native cube sampling stay unproven.
+including untouched texels and padding. Cases cover both DA encodings, every face window and
+exposed relative position, all 24 permutations, successful out-of-range suppression, cached
+base/last transitions and CPU updates, exact pool ends and descriptor refusals. Two individually
+valid cubes also overlap only in an unexposed face; disjoint views of one allocation retain the
+same allocation-wide alias refusal. These are synthetic host-policy checks; GFX7 partial-view
+behavior and native cube sampling stay unproven.
 
 Each compute submission completes before a later dispatch or draw consumes its
 shared buffer and image writes. Completed draw pixels are already published into that pool,

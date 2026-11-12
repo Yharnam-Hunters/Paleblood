@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Owned witnesses for a deliberately bounded host-project cube-store policy:
-   one six-face cube, zero-based prefix view, tile13, RGBA8 UNORM, WRITE only.
+   one six-face cube, bounded face window, tile13, RGBA8 UNORM, WRITE only.
    DA0/DA1 use the same existing host translation; this is not hardware proof.
    No runtime tiling helper supplies either addresses or expected stored bytes. */
 #include "runtime/render_executor.h"
@@ -14,7 +14,7 @@
 enum { POOL = 2 << 20, CODE = 0x1000, CODE_STEP = 0x100, OUTPUT = 0x10000,
        IMAGE = 0x20000, RAW = 0x80000, GUARD = 64, OUTPUT_BYTES = 256,
        CANARY = 0xa5, OUTPUT_UNWRITTEN = 0x6d, RAW_UNWRITTEN = 0x5a,
-       PLANNED_SCENARIOS = 1173 };
+       PLANNED_SCENARIOS = 3239, PLANNED_RAW_OBSERVATIONS = 3182 };
 static const uint64_t guest_base = UINT64_C(0x3000000000);
 static unsigned scenarios, setups, raw_observations, checks, failures;
 static char case_id[192] = "setup";
@@ -111,13 +111,17 @@ static unsigned swizzle(unsigned p)
     for (unsigned c = 0; c < 4; ++c) value |= (4u + permutations[p].select[c]) << (3 * c);
     return value;
 }
-static void descriptor(uint32_t words[8], const Geometry *g, unsigned last, unsigned selectors)
+static void window_descriptor(uint32_t words[8], const Geometry *g, unsigned base, unsigned last, unsigned selectors)
 {
     const uint64_t address = at(g->image) >> 8; memset(words,0,32);
     words[0] = (uint32_t)address; words[1] = (uint32_t)(address >> 32) | 10u << 20;
     words[2] = (g->side - 1) | (g->side - 1) << 14;
     words[3] = selectors | 13u << 20 | (uint32_t)RT_IMAGE_CUBE << 28;
-    words[4] = (g->pitch - 1) << 13; words[5] = last << 13;
+    words[4] = (g->pitch - 1) << 13; words[5] = base | last << 13;
+}
+static void descriptor(uint32_t words[8], const Geometry *g, unsigned last, unsigned selectors)
+{
+    window_descriptor(words,g,0,last,selectors);
 }
 static void buffer_descriptor(uint32_t words[4], unsigned address, unsigned bytes)
 {
@@ -204,25 +208,25 @@ static void raw_observer(World *world, const Geometry *g, const unsigned char *e
     if (!result.rc) compare(world->pool + RAW,expected,written,g->span);
     guards(world,RAW,g->span); output_untouched(world); memcpy(case_id,saved,sizeof case_id);
 }
-static void success(World *world, const char *name, const Geometry *g, unsigned last, unsigned p, unsigned da,
+static void window_success(World *world, const char *name, const Geometry *g, unsigned base, unsigned last, unsigned p, unsigned da,
                     uint32_t x, uint32_t y, uint32_t face, unsigned lanes, unsigned seed, unsigned valid_lanes, int setup)
 {
     snprintf(case_id,sizeof case_id,"%s",name); if (setup) ++setups; else ++scenarios;
     const unsigned failures_before = failures;
-    CHECK(g->image + g->span <= POOL && last < 6 && p < 24 && da < 2 && lanes && lanes <= 7);
+    CHECK(g->image + g->span <= POOL && base <= last && last < 6 && p < 24 && da < 2 && lanes && lanes <= 7);
     initialize(world,g,seed);
     unsigned char *before = allocate(g->span), *expected = allocate(g->span), *written = allocate(g->span);
     memcpy(before,world->pool + g->image,g->span); memcpy(expected,before,g->span); memset(written,0,g->span);
     unsigned expected_lanes = 0;
     for (unsigned lane = 0; lane < lanes; ++lane) {
         const uint32_t coordinate_x = x + lane;
-        if (coordinate_x >= g->side || y >= g->side || face > last || face >= 6) continue;
-        ++expected_lanes; const size_t address = offset(g,coordinate_x,y,face); CHECK(address + 4 <= g->span);
+        if (coordinate_x >= g->side || y >= g->side || face > last - base || face >= 6) continue;
+        ++expected_lanes; const size_t address = offset(g,coordinate_x,y,base + face); CHECK(address + 4 <= g->span);
         for (unsigned c = 0; c < 4; ++c) { expected[address + c] = permutations[p].raw[c]; written[address + c] = 1; }
     }
     CHECK(expected_lanes == valid_lanes);
     uint32_t user[16] = {0}; values(user); user[4] = y; user[5] = face; user[6] = x;
-    descriptor(user + 8,g,last,swizzle(p));
+    window_descriptor(user + 8,g,base,last,swizzle(p));
     const Result result = execute(world,da ? STORE1 : STORE0,user,lanes,1,NULL);
     const size_t image_changes = changed(world->pool + g->image,before,g->span), output_changes = output_changed(world);
     CHECK(image_changes == 4u * valid_lanes); CHECK(output_changes == 0);
@@ -231,6 +235,12 @@ static void success(World *world, const char *name, const Geometry *g, unsigned 
     printf("cube_case kind=%s id=%s rc=%d image_changed_bytes=%zu output_changed_bytes=%zu expected_written_lanes=%u failures_delta=%u\n",
         setup ? "setup" : valid_lanes ? "write" : "suppressed",case_id,result.rc,image_changes,output_changes,valid_lanes,failures - failures_before);
     free(before); free(expected); free(written);
+}
+/* Keep every existing prefix case's inputs and independent oracle unchanged. */
+static void success(World *world, const char *name, const Geometry *g, unsigned last, unsigned p, unsigned da,
+                    uint32_t x, uint32_t y, uint32_t face, unsigned lanes, unsigned seed, unsigned valid_lanes, int setup)
+{
+    window_success(world,name,g,0,last,p,da,x,y,face,lanes,seed,valid_lanes,setup);
 }
 static void matrix(void)
 {
@@ -303,7 +313,7 @@ static void full_span_success(void)
     }
     close_world(&world);
 }
-enum { BAD_READ, BAD_RW, BAD_MULTI, BAD_BASE, BAD_BASE_GT_LAST, BAD_LAST6, BAD_LAST_MAX,
+enum { BAD_READ, BAD_RW, BAD_MULTI, VALID_BASE_WINDOW, BAD_BASE_GT_LAST, BAD_LAST6, BAD_LAST_MAX,
        BAD_NONSQUARE, BAD_POW2, BAD_PITCH, BAD_TILE31, BAD_TILE9, BAD_TILE14, BAD_TILE19,
        BAD_R8, BAD_UINT, BAD_SRGB, BAD_COMPRESSED, BAD_LAST_MIP, BAD_BASE_MIP,
        BAD_ZERO, BAD_REPEAT0, BAD_REPEAT1, BAD_REPEAT2, BAD_REPEAT3, BAD_ONE, BAD_RESERVED2, BAD_RESERVED3, BAD_UNKNOWN };
@@ -313,7 +323,7 @@ typedef struct { const char *label; unsigned mutation,da; const char *reason; } 
 static const Bad bad[] = {
     {"read-da0",BAD_READ,0,access_reason}, {"read-da1",BAD_READ,1,access_reason},
     {"rw-da0",BAD_RW,0,access_reason}, {"rw-da1",BAD_RW,1,access_reason},
-    {"multi-cube",BAD_MULTI,1,type_reason}, {"nonzero-base",BAD_BASE,1,type_reason},
+    {"multi-cube",BAD_MULTI,1,type_reason}, {"base1-last5-positive",VALID_BASE_WINDOW,1,NULL},
     {"base-after-last",BAD_BASE_GT_LAST,1,type_reason}, {"last6",BAD_LAST6,1,type_reason},
     {"last8191",BAD_LAST_MAX,1,type_reason}, {"non-square",BAD_NONSQUARE,1,type_reason},
     {"pow2-pad",BAD_POW2,1,type_reason}, {"unaligned-pitch15",BAD_PITCH,1,type_reason},
@@ -329,13 +339,13 @@ static const Bad bad[] = {
     {"reserved3",BAD_RESERVED3,1,selector_reason},
     {"unknown-format-pair",BAD_UNKNOWN,1,"image DATA_FORMAT 1, NUM_FORMAT 9 is not modeled"},
 };
-static void refusal(World *world, const char *name, const Geometry *g, uint32_t words[8], unsigned program, const char *reason)
+static void refusal_at(World *world, const char *name, const Geometry *g, uint32_t words[8], unsigned program, const char *reason, unsigned face)
 {
     snprintf(case_id,sizeof case_id,"%s",name); ++scenarios; const unsigned failures_before = failures;
     initialize(world,g,419 + scenarios); uint32_t user[16] = {0};
     if (program == LOAD0 || program == LOAD1 || program == RW0 || program == RW1) buffer_descriptor(user,OUTPUT,OUTPUT_BYTES);
     else values(user);
-    user[4] = 4; user[5] = 0; user[6] = 2; memcpy(user + 8,words,32);
+    user[4] = 4; user[5] = face; user[6] = 2; memcpy(user + 8,words,32);
     unsigned char *before = allocate(POOL); memcpy(before,world->pool,POOL);
     const Result result = execute(world,program,user,3,1,reason);
     const size_t available = g->span < POOL - g->image ? g->span : POOL - g->image;
@@ -347,16 +357,29 @@ static void refusal(World *world, const char *name, const Geometry *g, uint32_t 
         case_id,result.rc,image_changes,output_changes,pool_changes,failures - failures_before);
     free(before);
 }
+static void refusal(World *world, const char *name, const Geometry *g, uint32_t words[8], unsigned program, const char *reason)
+{
+    refusal_at(world,name,g,words,program,reason,0);
+}
 static void refusals(void)
 {
     const Geometry g = geometry(9,16,IMAGE); World world = open_world();
     for (unsigned item = 0; item < sizeof bad / sizeof *bad; ++item) {
         const Bad *b = bad + item; uint32_t words[8]; descriptor(words,&g,5,swizzle(0));
+        if (b->mutation == VALID_BASE_WINDOW) {
+            /* The old refusal/nonzero-base [1,5] is now explicitly positive.
+               Its own World preserves every other old refusal's cache state;
+               retaining the slot preserves their scenario-dependent seeds too. */
+            World migration = open_world();
+            window_success(&migration,"view/nonzero-base1-last5/da1/relative0-physical1",&g,1,5,0,1,
+                           2,4,0,3,420 + scenarios,3,0);
+            close_world(&migration);
+            continue;
+        }
         unsigned program = b->da ? STORE1 : STORE0;
         if (b->mutation == BAD_READ) program = b->da ? LOAD1 : LOAD0;
         else if (b->mutation == BAD_RW) program = b->da ? RW1 : RW0;
         else if (b->mutation == BAD_MULTI) words[4] |= 1;
-        else if (b->mutation == BAD_BASE) words[5] |= 1;
         else if (b->mutation == BAD_BASE_GT_LAST) words[5] = 1;
         else if (b->mutation == BAD_LAST6) words[5] = 6u << 13;
         else if (b->mutation == BAD_LAST_MAX) words[5] = 8191u << 13;
@@ -432,6 +455,209 @@ static void overlap_refusals(void)
     close_world(&world);
 }
 
+static void window_literal_oracles(void)
+{
+    const Geometry row = geometry(1,8,IMAGE), padded = geometry(9,24,IMAGE);
+    CHECK(row.slice == 256 && row.span == 1536);
+    CHECK(offset(&row,0,0,1) == 256 && offset(&row,0,0,5) == 1280);
+    CHECK(padded.slice == 1536 && padded.span == 9216);
+    CHECK(offset(&padded,0,0,2) == 3072 && offset(&padded,0,0,4) == 6144);
+    CHECK(offset(&padded,8,8,4) == 7168);
+}
+/* All15 nonzero windows, all35 exposed relative positions, both DA forms
+   and all24 literal inverse maps:1680 independently named writes. Geometry is
+   constant within a window, keeping each World's native cache at15 views. */
+static void window_matrix(void)
+{
+    static const unsigned sides[] = {1,3,8,9,17};
+    for (unsigned da = 0; da < 2; ++da) for (unsigned p = 0; p < 24; ++p) {
+        World world = open_world();
+        for (unsigned base = 1; base < 6; ++base) for (unsigned last = base; last < 6; ++last) {
+            const unsigned side = sides[(p + base + last + da) % 5];
+            const unsigned pitch = (side + 7) / 8 * 8 + 8 * ((p + base + da) % 3);
+            const Geometry g = geometry(side,pitch,IMAGE); const unsigned lanes = side < 7 ? side : 7;
+            for (unsigned relative = 0; relative <= last - base; ++relative) {
+                char name[192];
+                snprintf(name,sizeof name,"window-matrix/da%u/p%02u/base%u/last%u/relative%u/physical%u/s%u/pitch%u",
+                         da,p,base,last,relative,base + relative,side,pitch);
+                window_success(&world,name,&g,base,last,p,da,side - lanes,
+                               (3 * p + relative + base + last + da) % side,relative,lanes,
+                               811 + 29 * p + 17 * base + 7 * last + relative + da,lanes,0);
+            }
+        }
+        close_world(&world);
+    }
+}
+static void window_anchors(void)
+{
+    const Geometry partial = geometry(9,24,IMAGE), thin_row = geometry(1,8,IMAGE);
+    for (unsigned da = 0; da < 2; ++da) {
+        World world = open_world(); char name[192];
+        /* A wrong native first slice can hide behind publication on a fully
+           overwritten1x1 face. Distinct untouched texels make this partial case
+           a data witness rather than an API-error witness. */
+        snprintf(name,sizeof name,"window-anchor/da%u/base2/last4/relative0/partial9x9",da);
+        window_success(&world,name,&partial,2,4,0,da,2,4,0,3,929 + da,3,0);
+        snprintf(name,sizeof name,"window-anchor/da%u/base5/last5/relative0/thin1x1",da);
+        window_success(&world,name,&thin_row,5,5,9,da,0,0,0,1,947 + da,1,0);
+        close_world(&world);
+    }
+}
+static void window_bounds(void)
+{
+    static const char *const labels[] = {"next-relative-face","relative6","relative-max","absolute-looking5",
+                                         "x-end","y-end","x-max","y-max","mixed-x-edge"};
+    const Geometry g = geometry(9,24,IMAGE);
+    for (unsigned da = 0; da < 2; ++da) {
+        World world = open_world();
+        for (unsigned base = 1; base < 6; ++base) for (unsigned last = base; last < 6; ++last)
+            for (unsigned item = 0; item < sizeof labels / sizeof *labels; ++item) {
+                uint32_t x = 2, y = 4, relative = 0; unsigned lanes = 1, valid = 0;
+                if (item == 0) relative = last - base + 1;
+                if (item == 1) relative = 6;
+                if (item == 2) relative = UINT32_MAX;
+                if (item == 3) relative = 5;
+                if (item == 4) x = 9;
+                if (item == 5) y = 9;
+                if (item == 6) x = UINT32_MAX;
+                if (item == 7) y = UINT32_MAX;
+                if (item == 8) { x = 8; lanes = 2; valid = 1; }
+                char name[192]; snprintf(name,sizeof name,"window-bounds/da%u/base%u/last%u/%s",da,base,last,labels[item]);
+                /* relative=N suppresses. A coordinated decoded-LAST+1 defect
+                   for LAST<5 would instead publish exactly the next owned face.
+                   Widening only a native view is not claimed distinguishable. */
+                window_success(&world,name,&g,base,last,9,da,x,y,relative,lanes,
+                               1009 + 23 * base + 7 * last + item + da,valid,0);
+            }
+        close_world(&world);
+    }
+}
+static void window_cache_transitions(void)
+{
+    static const struct { const char *sequence; unsigned base,last,p,relative; } sequence[] = {
+        {"same-last",0,5,0,0},{"same-last",2,5,0,0},{"same-last",5,5,0,0},
+        {"same-last",1,5,0,0},{"same-last",2,5,0,0},
+        {"equal-length",0,1,0,0},{"equal-length",2,3,9,1},{"equal-length",4,5,14,0},
+        {"permutation",2,4,0,2},{"permutation",2,4,9,0},{"permutation",2,4,14,1},
+        {"permutation",2,4,18,2},{"permutation",2,4,0,1}
+    };
+    const Geometry g = geometry(17,32,IMAGE);
+    for (unsigned da = 0; da < 2; ++da) {
+        /* Eleven descriptor identities and at most five pipelines including
+           raw copy fit the existing caches; nothing resets between refreshes. */
+        World world = open_world();
+        for (unsigned step = 0; step < sizeof sequence / sizeof *sequence; ++step) for (unsigned refresh = 0; refresh < 2; ++refresh) {
+            char name[192];
+            snprintf(name,sizeof name,"window-cache/da%u/%s/step%u/base%u/last%u/relative%u/p%02u/cpu%u",
+                     da,sequence[step].sequence,step,sequence[step].base,sequence[step].last,
+                     sequence[step].relative,sequence[step].p,refresh);
+            window_success(&world,name,&g,sequence[step].base,sequence[step].last,sequence[step].p,da,
+                           10,16,sequence[step].relative,7,1213 + 97 * step + 53 * refresh + da,7,0);
+        }
+        close_world(&world);
+    }
+}
+static void window_full_span_success(void)
+{
+    Geometry g = geometry(9,16,IMAGE); g.image = POOL - (unsigned)g.span;
+    World world = open_world();
+    for (unsigned da = 0; da < 2; ++da) for (unsigned base = 1; base < 6; ++base) for (unsigned last = base; last < 6; ++last) {
+        char name[192]; snprintf(name,sizeof name,"window-pool-exact/da%u/base%u/last%u/relative%u",da,base,last,last - base);
+        window_success(&world,name,&g,base,last,9,da,2,8,last - base,7,1429 + 11 * base + last + da,7,0);
+    }
+    close_world(&world);
+}
+static void window_full_span_refusals(void)
+{
+    const Geometry shape = geometry(1,8,IMAGE); World world = open_world();
+    for (unsigned da = 0; da < 2; ++da) for (unsigned item = 0; item < 2; ++item) {
+        Geometry g = shape; uint32_t words[8]; char name[192];
+        if (!item) {
+            g.image = POOL - 2 * (unsigned)g.slice;
+            window_descriptor(words,&g,1,1,swizzle(0));
+        } else {
+            g.image = POOL - (unsigned)g.span + 256;
+            window_descriptor(words,&g,5,5,swizzle(0));
+        }
+        snprintf(name,sizeof name,"window-refusal/full-six-face-span/da%u/%s",da,
+                 item ? "base5-last256-missing" : "base1-visible-face-fits-only");
+        refusal(&world,name,&g,words,da ? STORE1 : STORE0,pool_reason);
+    }
+    close_world(&world);
+}
+static void window_access_refusals(void)
+{
+    const Geometry g = geometry(9,16,IMAGE);
+    for (unsigned da = 0; da < 2; ++da) {
+        World world = open_world(); char name[192]; uint32_t words[8];
+        snprintf(name,sizeof name,"window-access-warm/da%u/base1/last3/relative2",da);
+        window_success(&world,name,&g,1,3,0,da,2,4,2,3,1601 + da,3,0);
+        for (unsigned rw = 0; rw < 2; ++rw) {
+            window_descriptor(words,&g,1,3,swizzle(0));
+            snprintf(name,sizeof name,"window-refusal/%s/da%u/base1/last3/relative2",rw ? "read-write" : "read-only",da);
+            /* relative2 is inside [1,3]. Removing the exact WRITE gate must
+               reach a meaningful owned READ/RW, not merely an OOB suppression. */
+            refusal_at(&world,name,&g,words,rw ? (da ? RW1 : RW0) : (da ? LOAD1 : LOAD0),access_reason,2);
+        }
+        close_world(&world);
+    }
+}
+static void window_policy_refusals(void)
+{
+    static const char *const labels[] = {"base6-last5","base3-after-last2","base1-last6","base-last8191",
+                                         "srgb-base2-last4","mip1-base2-last4","repeat0-base2-last4","uint-base2-last4"};
+    const Geometry g = geometry(9,16,IMAGE);
+    for (unsigned da = 0; da < 2; ++da) {
+        World world = open_world(); char name[192];
+        snprintf(name,sizeof name,"window-policy-warm/da%u/base2/last4/relative0",da);
+        window_success(&world,name,&g,2,4,0,da,2,4,0,3,1693 + da,3,0);
+        for (unsigned item = 0; item < sizeof labels / sizeof *labels; ++item) {
+            uint32_t words[8]; window_descriptor(words,&g,2,4,swizzle(0));
+            const char *reason = type_reason;
+            if (item == 0) words[5] = 6u | 5u << 13;
+            if (item == 1) words[5] = 3u | 2u << 13;
+            if (item == 2) words[5] = 1u | 6u << 13;
+            if (item == 3) words[5] = 8191u | 8191u << 13;
+            if (item == 4) { words[1] |= 9u << 26; reason = format_reason; }
+            if (item == 5) { words[3] |= 1u << 16; reason = mip_reason; }
+            if (item == 6) { words[3] = (words[3] & ~7u) | 5u; reason = selector_reason; }
+            if (item == 7) words[1] |= 4u << 26;
+            snprintf(name,sizeof name,"window-refusal/da%u/%s",da,labels[item]);
+            refusal(&world,name,&g,words,da ? STORE1 : STORE0,reason);
+        }
+        close_world(&world);
+    }
+}
+/* Two disjoint one-face views of the same allocation are still writable aliases.
+   If the guard is removed, the existing two-store program safely changes four
+   bytes in physical face1 and four in face5: eight bytes in the whole pool. */
+static void window_overlap_refusals(void)
+{
+    const Geometry g = geometry(1,8,IMAGE); World world = open_world();
+    CHECK(g.slice == 256 && g.span == 1536);
+    for (unsigned da = 0; da < 2; ++da) {
+        snprintf(case_id,sizeof case_id,"window-refusal/same-address-disjoint-faces/base1-last1-base5-last5/da%u",da);
+        ++scenarios; const unsigned failures_before = failures;
+        initialize(&world,&g,1811 + da);
+        uint32_t user[16]; window_descriptor(user,&g,1,1,swizzle(0)); window_descriptor(user + 8,&g,5,5,swizzle(0));
+        unsigned char *before = allocate(POOL); memcpy(before,world.pool,POOL);
+        const Result result = execute(&world,da ? OVERLAP1 : OVERLAP0,user,1,1,
+                                      "overlapping compute images require the same native view");
+        const size_t pool_changes = changed(world.pool,before,POOL);
+        const size_t image_changes = changed(world.pool + g.image,before + g.image,g.span);
+        const size_t output_changes = changed(world.pool + OUTPUT,before + OUTPUT,OUTPUT_BYTES);
+        const size_t a_changes = changed(world.pool + g.image + g.slice,before + g.image + g.slice,4);
+        const size_t b_changes = changed(world.pool + g.image + 5 * g.slice,before + g.image + 5 * g.slice,4);
+        CHECK(pool_changes == 0); CHECK(memcmp(world.pool,before,POOL) == 0);
+        CHECK(a_changes == 0 && b_changes == 0 && output_changes == 0);
+        printf("cube_case kind=refusal id=%s rc=%d image_changed_bytes=%zu output_changed_bytes=%zu pool_changed_bytes=%zu "
+               "a_face1_changed_bytes=%zu b_face5_changed_bytes=%zu failures_delta=%u\n",
+               case_id,result.rc,image_changes,output_changes,pool_changes,a_changes,b_changes,failures - failures_before);
+        free(before);
+    }
+    close_world(&world);
+}
+
 static void literal_oracles(void)
 {
     static const unsigned char logical[] = {32,80,143,207}, cycle[] = {207,32,80,143};
@@ -459,7 +685,10 @@ static void literal_oracles(void)
 int main(void)
 {
     literal_oracles(); matrix(); suppressed(); cache_transitions(); full_span_success(); refusals(); overlap_refusals();
+    window_literal_oracles(); window_matrix(); window_anchors(); window_bounds(); window_cache_transitions(); window_full_span_success();
+    window_full_span_refusals(); window_access_refusals(); window_policy_refusals(); window_overlap_refusals();
     snprintf(case_id,sizeof case_id,"complete"); CHECK(scenarios == PLANNED_SCENARIOS); CHECK(setups == 5);
+    CHECK(raw_observations == PLANNED_RAW_OBSERVATIONS);
     printf("metal cube stores host policy: %u scenarios, %u named setups, %u raw observations, %u checks, %u failures\n",
         scenarios,setups,raw_observations,checks,failures);
     return failures ? 1 : 0;

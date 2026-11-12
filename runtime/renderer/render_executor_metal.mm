@@ -568,12 +568,12 @@ static id<MTLTexture> image_for(rt_executor *x, const uint32_t words[RT_IMAGE_DE
 {
     const char *stage = storage ? "compute" : "pixel";
     const bool one_d = d.type == RT_IMAGE_1D || d.type == RT_IMAGE_1D_ARRAY;
-    /* Bounded host policy: one cube's zero-based face prefix is a flat 2D array.
-       The common unsampled path consumes the third coordinate independently of DA.
-       Multi-cube packing and hardware prefix semantics are outside this policy. */
+    /* Bounded host policy: a window of one cube's faces is a flat 2D array.
+       The third unsampled coordinate is relative to that window, independently of DA.
+       Multi-cube packing and hardware base/view semantics are outside this policy. */
     const bool cube = storage && d.type == RT_IMAGE_CUBE && d.data_format == 10 && d.num_format == 0 &&
         d.depth == 1 && d.layers == 6 && d.width == d.height && !d.pow2_pad &&
-        !d.base_array && d.last_array < 6 && !d.base_level && !d.last_level &&
+        d.base_array <= d.last_array && d.last_array < 6 && !d.base_level && !d.last_level &&
         d.tiling_index == 13 && d.pitch % 8 == 0;
     const bool arrayed = d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY || cube;
     const bool volume = storage && d.type == RT_IMAGE_3D;
