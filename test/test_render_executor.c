@@ -1127,7 +1127,7 @@ static void depth_and_strips(rt_executor *x)
        - tests that read the buffer (depth LESS and LESS_EQUAL, stencil EQUAL) compare with what earlier
          draws wrote; add-and-wrap steps by 1; one reading a depth target no draw wrote, an add stepping
          by another STENCILOPVAL, a depth target smaller than the colour target (a larger one draws),
-         another stencil operation, depth bounds,
+         another stencil operation, depth bounds without their range set,
          DB_RENDER_CONTROL's clears, or a missing DB_STENCILREFMASK stop by name. */
     enum { DEPTH = 0xb40000, DEPTH_COLOUR = 0xb80000, STENCIL_ONLY = 0xbc0000 };
     const uint32_t depth_size = (SIZE / 8 - 1) | (SIZE / 8 - 1) << 11, z = (uint32_t)(at(DEPTH) >> 8), st = (uint32_t)(at(DEPTH + 0x2000) >> 8);
@@ -1376,7 +1376,7 @@ static void depth_and_strips(rt_executor *x)
     const uint32_t incremented[][2] = {DEPTH_TARGET, {0xa10c, 0xff0000}, {0xa10b, 0x50}, {0xa200, 0x1 | 0x7u << 8}};
     CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), incremented, 12, 3, error, sizeof error) == -1 && strstr(error, "stencil operation 5"));
     const uint32_t bounds[][2] = {DEPTH_TARGET, {0xa200, 0x8}};
-    CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), bounds, 10, 3, error, sizeof error) == -1 && strstr(error, "depth bounds"));
+    CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), bounds, 10, 3, error, sizeof error) == -1 && strstr(error, "DB_DEPTH_BOUNDS_MIN"));
     /* a depth-clearing draw (DB_RENDER_CONTROL DEPTH_CLEAR_ENABLE, DB_DEPTH_CLEAR 0.5, always with writes) leaves
        0.5 under the triangle, not the triangle's depth (0): LESS on the triangle then draws it, GREATER nothing;
        the other clears and copies stop by name */
@@ -1394,6 +1394,17 @@ static void depth_and_strips(rt_executor *x)
         const uint32_t greater_after[][2] = {DEPTH_TARGET, {0xa000, 0}, {0xa200, 0x2 | 0x4u << 4}};
         CHECK(run_counted(x, DEPTH_BUFFER, at(CLEARED_GREATER), greater_after, 11, 3, error, sizeof error) == 0);
         CHECK(nothing_drawn(x, at(CLEARED_GREATER)));
+        /* the depth bounds test alone (DEPTH_BOUNDS_ENABLE, no depth test) on the 0.5 the clear left: bounds 0.4
+           to 0.6 draw the triangle, 0.6 to 1 nothing */
+        enum { BOUNDS_HIT = 0x1eb0000, BOUNDS_MISS = 0x1ec0000, POINT_FOUR = 0x3ecccccdu, POINT_SIX = 0x3f19999au, ONE = 0x3f800000u };
+        const uint32_t bounds_hit[][2] = {DEPTH_TARGET, {0xa000, 0}, {0xa008, POINT_FOUR}, {0xa009, POINT_SIX}, {0xa200, 0x8}};
+        drawn = run_counted(x, DEPTH_BUFFER, at(BOUNDS_HIT), bounds_hit, 13, 3, error, sizeof error);
+        if (drawn) fprintf(stderr, "depth bounds: %s\n", error);
+        CHECK(drawn == 0);
+        check_triangle(x, at(BOUNDS_HIT));
+        const uint32_t bounds_miss[][2] = {DEPTH_TARGET, {0xa000, 0}, {0xa008, POINT_SIX}, {0xa009, ONE}, {0xa200, 0x8}};
+        CHECK(run_counted(x, DEPTH_BUFFER, at(BOUNDS_MISS), bounds_miss, 13, 3, error, sizeof error) == 0);
+        CHECK(nothing_drawn(x, at(BOUNDS_MISS)));
         const uint32_t stencil_clearing[][2] = {DEPTH_TARGET, {0xa000, 0x2}, {0xa200, 0x2 | 0x4 | 0x7u << 4}};
         CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), stencil_clearing, 11, 3, error, sizeof error) == -1 &&
               strstr(error, "DB_RENDER_CONTROL"));
