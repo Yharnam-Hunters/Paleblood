@@ -2730,9 +2730,10 @@ static int leaves_straight_line(const uint32_t *w, const gcn_instruction *ins, s
    reaches the loop's branch, so none may land after the load up to it), every
    branch's target is known, no branch goes back to the use or before it when an instruction after
    the use and before that branch writes those SGPRs, and no instruction before the load writes the pointer pair, nor any
-   instruction at all when a branch goes back to the load or before it (so a loop that runs the load
+   instruction before the last branch back to the load or before it (so a loop that runs the load
    again loads the same descriptor; without one, code after the load may reuse the pointer's SGPRs, as
-   the game's pixel shaders do once their samples are done). The user data's descriptor holds at a use
+   the game's pixel shaders do once their samples are done, and code after the last such branch may too,
+   as a clinic compute shader does once its loops are done: nothing runs the load after it). The user data's descriptor holds at a use
    that no write comes before, whatever branches run, unless one goes back to the use after a later
    write (the game's pixel shaders reuse a sampler's SGPRs after their last sample; one at the loading
    screen loops over samples through the user data's descriptor and reuses its SGPRs only after the
@@ -2759,6 +2760,7 @@ static int descriptor_origin(const uint32_t *code, size_t program, const callee_
     }
     if (!written) return 0;
     int loops_to_load = 0; /* a branch back to the load or before it */
+    size_t last_loop_back = 0; /* the last such branch */
     long loop_end = -1;    /* the last branch from after the load back to between it and the use */
     long skip_target = -1; /* the nearest place a branch from before the load lands after it */
     for (size_t p = 0; p < program;) {
@@ -2784,7 +2786,7 @@ static int descriptor_origin(const uint32_t *code, size_t program, const callee_
                          p, target, at);
                 return -1;
             }
-            if (target <= writer && (size_t)target <= p) loops_to_load = 1;
+            if (target <= writer && (size_t)target <= p) loops_to_load = 1, last_loop_back = p;
             if (writer >= 0 && (long)p < writer && target > writer && (skip_target < 0 || target < skip_target)) skip_target = target;
         }
         p += ins.dwords;
@@ -2808,7 +2810,8 @@ static int descriptor_origin(const uint32_t *code, size_t program, const callee_
         return -1;
     }
     const unsigned pointer = ((w[0] >> 9) & 0x3f) * 2;
-    for (size_t p = 0; p < (loops_to_load ? program : (size_t)writer);) {
+    const size_t checked_end = loops_to_load && last_loop_back > (size_t)writer ? last_loop_back : (size_t)writer;
+    for (size_t p = 0; p < checked_end;) {
         gcn_instruction before;
         gcn_decode(code + p, program - p, &before);
         /* the load may overwrite its own pointer (s[0:7] from s[0:1]) unless a loop runs it again */
