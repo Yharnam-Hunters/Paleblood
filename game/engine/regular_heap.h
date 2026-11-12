@@ -10,6 +10,10 @@
 // sentinels: list k holds the sizes from 2^k up to 2^(k+1) - 1, and bit k of a mask says that list
 // is not empty. A free block of only the two header words (16 bytes) has no room for links and
 // sits in no list until it is merged.
+//
+// A block in use of size S gives S - 8 bytes to its caller: the payload starts after the two
+// header words and runs on over the next block's prev word, which only a free block needs. The
+// heap's range ends in a header-only block that stays in use.
 #pragma once
 
 #include <cstddef>
@@ -46,10 +50,14 @@ struct Heap {
     uint64_t available;         // free bytes, block headers included
     uint64_t allocation_count;
     ListLinks lists[list_count];
+    Block *first_block;         // where the range starts
+    Block *end_block;           // the closing block
+    uint64_t capacity;          // the free bytes of the empty heap
 };
 static_assert(offsetof(Heap, lowest_payload) == 0x8 && offsetof(Heap, highest_payload) == 0x10);
 static_assert(offsetof(Heap, available) == 0x18 && offsetof(Heap, allocation_count) == 0x20);
-static_assert(offsetof(Heap, lists) == 0x28 && sizeof(Heap) == 0x428);
+static_assert(offsetof(Heap, lists) == 0x28 && offsetof(Heap, first_block) == 0x428);
+static_assert(offsetof(Heap, capacity) == 0x438 && sizeof(Heap) == 0x440);
 
 inline uintptr_t address_of(const void *pointer)
 {
@@ -96,6 +104,49 @@ inline void push_free_block(Heap *heap, Block *block, Block *next)
     first->list_prev = block;
     if (first == sentinel)
         heap->nonempty_lists |= uint64_t{1} << index;
+}
+
+// The size of the block that serves a request: room for the request in the payload (at least
+// 0x18 bytes), the block a multiple of 16.
+inline uint64_t block_size_for(uint64_t request)
+{
+    constexpr uint64_t smallest_payload = 0x18;
+    constexpr uint64_t payload_granularity = 16;
+    constexpr uint64_t overlap = offsetof(Block, next_and_flags);  // the next block's prev word
+    uint64_t payload = smallest_payload;
+    if (request > smallest_payload)
+        payload = ((request - (overlap + 1)) & ~(payload_granularity - 1)) + smallest_payload;
+    return payload + overlap;
+}
+
+// Takes a free block out of list `index`, clearing the list's bit when it empties.
+inline void take_from_list(Heap *heap, Block *block, int index)
+{
+    Block *prev_in_list = block->list_prev;
+    Block *next_in_list = block->list_next;
+    prev_in_list->list_next = next_in_list;
+    next_in_list->list_prev = prev_in_list;
+    if (next_in_list == prev_in_list)
+        heap->nonempty_lists &= ~(uint64_t{1} << index);
+}
+
+// Books an allocation of a block of `size` bytes.
+inline void book_allocation(Heap *heap, uint64_t size)
+{
+    heap->available -= size;
+    heap->allocation_count += 1;
+}
+
+// Makes [rest, next) a free block behind a block in use. `next_word` is the word that described
+// the next block before the split (the next block's address with prev_in_use), so the rest copies
+// it. The rest goes into its list unless it is only a header.
+inline void free_rest(Heap *heap, Block *rest, uintptr_t next_word)
+{
+    Block *next = reinterpret_cast<Block *>(next_word - prev_in_use);
+    rest->next_and_flags = next_word;
+    next->prev = rest;
+    if (address_of(rest) + block_header_size != address_of(next))
+        push_free_block(heap, rest, next);
 }
 
 }  // namespace engine::regular_heap

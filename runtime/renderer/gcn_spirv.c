@@ -135,6 +135,8 @@ typedef struct {
     unsigned interface_count;
     /* v_interp_p1 results waiting for their p2: attribute * 4 + channel + 1 per VGPR, or 0 */
     uint32_t interpolation_pending[VGPR_COUNT];
+    /* per input location: 1 read flat by v_interp_mov_f32 (declared Flat for it), 2 read interpolated */
+    unsigned char attribute_use[PARAMETER_COUNT];
     char *error;
     size_t error_size;
     int failed;
@@ -775,6 +777,79 @@ static const named_operation float_unary[] = {
     {"v_rndne_f32", SPV_GLSL_ROUND_EVEN, 0},
 };
 
+/* A 64-bit source operand (a VOP3 instruction's src0 of a 64-bit shift): a VGPR or SGPR pair, low dword first,
+   or an integer inline constant, sign-extended (the Sea Islands manual's inline constants are 64-bit for 64-bit
+   operands). Its low and high dwords. */
+static void source_pair(translator *t, uint32_t field, const gcn_instruction *ins, uint32_t *low, uint32_t *high)
+{
+    if (field >= OPERAND_VGPR && field + 1 < OPERAND_VGPR + VGPR_COUNT) {
+        *low = load(t, t_uint(t), vgpr(t, field - OPERAND_VGPR)), *high = load(t, t_uint(t), vgpr(t, field - OPERAND_VGPR + 1));
+    } else if (field + 1 < SGPR_VCC) {
+        *low = load(t, t_uint(t), sgpr(t, field)), *high = load(t, t_uint(t), sgpr(t, field + 1));
+    } else if (field >= OPERAND_INT_ZERO && field <= OPERAND_INT_LAST_NEGATIVE) {
+        *low = source(t, field, ins), *high = konst(t, field > OPERAND_INT_LAST_POSITIVE ? UINT32_MAX : 0);
+    } else {
+        fail(t, "%s: 64-bit source operand %u is not supported yet", ins->name, field);
+        *low = *high = konst(t, 0);
+    }
+}
+
+/* v_lshl_b64, v_lshr_b64, v_ashr_i64 (the Sea Islands manual): src0's 64 bits shifted by src1[5:0], into the
+   VGPR pair at vdst. */
+static void shift_64(translator *t, const vector_operands *o, const gcn_instruction *ins)
+{
+    if (o->abs || o->neg || o->clamp || o->omod) fail(t, "%s: modifiers on an integer operation", ins->name);
+    if (o->dst + 1 >= VGPR_COUNT) fail(t, "%s: a destination pair past v255", ins->name);
+    uint32_t low, high;
+    source_pair(t, o->src[0], ins, &low, &high);
+    const uint32_t thirty_two = spirv_global(&t->m, SPV_OP_CONSTANT, (const uint32_t[]){t_ulong(t), 32, 0}, 3);
+    const uint32_t wide = value(t, SPV_OP_BITWISE_OR, t_ulong(t), 2, widen(t, low),
+                                value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_ulong(t), 2, widen(t, high), thirty_two));
+    const uint32_t amount = value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, source(t, o->src[1], ins), konst(t, 63));
+    const uint16_t opcode = !strcmp(ins->name, "v_lshl_b64") ? SPV_OP_SHIFT_LEFT_LOGICAL
+                            : !strcmp(ins->name, "v_lshr_b64") ? SPV_OP_SHIFT_RIGHT_LOGICAL
+                                                               : SPV_OP_SHIFT_RIGHT_ARITHMETIC;
+    const uint32_t shifted = value(t, opcode, t_ulong(t), 2, wide, amount);
+    write_vgpr(t, o->dst, value(t, SPV_OP_U_CONVERT, t_uint(t), 1, shifted));
+    write_vgpr(t, o->dst + 1, value(t, SPV_OP_U_CONVERT, t_uint(t), 1, value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_ulong(t), 2, shifted, thirty_two)));
+}
+
+/* v_min3, v_max3, v_med3 for f32, i32 and u32 (the Sea Islands manual): the least, the greatest, or the middle
+   of three; the middle is max(min(a, b), min(max(a, b), c)). Floats take VOP3's modifiers and use the
+   NaN-ignoring min and max, as v_min_f32 and v_max_f32 do here. */
+static int is_three_way(const char *name)
+{
+    return (!strncmp(name, "v_min3_", 7) || !strncmp(name, "v_max3_", 7) || !strncmp(name, "v_med3_", 7)) &&
+           (!strcmp(name + 7, "f32") || !strcmp(name + 7, "i32") || !strcmp(name + 7, "u32"));
+}
+
+/* the smaller (least) or larger of two: floats with the NaN-ignoring GLSL.std.450 NMin and NMax, integers
+   (uint values) by a signed or unsigned compare */
+static uint32_t pick(translator *t, int is_float, int is_signed, int least, uint32_t a, uint32_t b)
+{
+    if (is_float) return glsl(t, t_float(t), least ? SPV_GLSL_N_MIN : SPV_GLSL_N_MAX, a, b, 0, 2);
+    const uint32_t a_less = value(t, is_signed ? SPV_OP_S_LESS_THAN : SPV_OP_U_LESS_THAN, t_bool(t), 2, a, b);
+    return value(t, SPV_OP_SELECT, t_uint(t), 3, a_less, least ? a : b, least ? b : a);
+}
+
+static void three_way(translator *t, const vector_operands *o, const gcn_instruction *ins)
+{
+    const char *type = ins->name + 7;
+    const int is_float = !strcmp(type, "f32"), is_signed = !strcmp(type, "i32");
+    if (!is_float && (o->abs || o->neg || o->clamp || o->omod)) fail(t, "%s: modifiers on an integer operation", ins->name);
+    uint32_t v[3];
+    for (unsigned i = 0; i < 3; i++) v[i] = is_float ? float_source(t, o, i, ins) : source(t, o->src[i], ins);
+    uint32_t r;
+    if (!strncmp(ins->name, "v_min3", 6)) r = pick(t, is_float, is_signed, 1, pick(t, is_float, is_signed, 1, v[0], v[1]), v[2]);
+    else if (!strncmp(ins->name, "v_max3", 6)) r = pick(t, is_float, is_signed, 0, pick(t, is_float, is_signed, 0, v[0], v[1]), v[2]);
+    else {
+        const uint32_t low = pick(t, is_float, is_signed, 1, v[0], v[1]), high = pick(t, is_float, is_signed, 0, v[0], v[1]);
+        r = pick(t, is_float, is_signed, 0, low, pick(t, is_float, is_signed, 1, high, v[2]));
+    }
+    if (is_float) write_float(t, o, r, ins);
+    else write_vgpr(t, o->dst, r);
+}
+
 /* v_mbcnt_lo_u32_b32 and v_mbcnt_hi_u32_b32 (the Sea Islands manual): S1 plus the bits of S0 set for the
    wave's lanes below this one, among lanes 0-31 (lo) or 32-63 (hi). hi(EXEC_HI, 0) then lo(EXEC_LO, that)
    is a lane's rank among the wave's active lanes, which append buffers add to ds_append's old count
@@ -949,6 +1024,23 @@ static void vector_instruction(translator *t, const uint32_t *w, const gcn_instr
                                     value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, konst(t, 1), shift_amount(t, source(t, o.src[0], ins))),
                                     konst(t, 1));
         write_vgpr(t, o.dst, value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, ones, shift_amount(t, source(t, o.src[1], ins))));
+    } else if (!strcmp(name, "v_bfi_b32")) {
+        /* bit-field insert (the Sea Islands manual): (src0 & src1) | (~src0 & src2) */
+        if (o.abs || o.neg || o.clamp || o.omod) fail(t, "%s: modifiers on an integer operation", name);
+        const uint32_t mask = source(t, o.src[0], ins);
+        const uint32_t kept = value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, mask, source(t, o.src[1], ins));
+        const uint32_t other = value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, value(t, SPV_OP_NOT, t_uint(t), 1, mask), source(t, o.src[2], ins));
+        write_vgpr(t, o.dst, value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, kept, other));
+    } else if (!strcmp(name, "v_lshl_b64") || !strcmp(name, "v_lshr_b64") || !strcmp(name, "v_ashr_i64")) {
+        shift_64(t, &o, ins);
+    } else if (is_three_way(name)) {
+        three_way(t, &o, ins);
+    } else if (!strcmp(name, "v_min_legacy_f32") || !strcmp(name, "v_max_legacy_f32")) {
+        /* Direct3D 9's min and max: src1 when either source is a NaN (shadPS4's V_MIN_F32/V_MAX_F32 with
+           is_legacy, facts only), else the min or max */
+        const uint32_t a = float_source(t, &o, 0, ins), b = float_source(t, &o, 1, ins);
+        const uint32_t m = glsl(t, t_float(t), !strcmp(name, "v_min_legacy_f32") ? SPV_GLSL_N_MIN : SPV_GLSL_N_MAX, a, b, 0, 2);
+        write_float(t, &o, value(t, SPV_OP_SELECT, t_float(t), 3, value(t, SPV_OP_LOGICAL_OR, t_bool(t), 2, is_nan(t, a), is_nan(t, b)), b, m), ins);
     } else if (is_transcendental(name)) {
         write_float(t, &o, transcendental(t, name, float_source(t, &o, 0, ins)), ins);
     } else if (!strcmp(name, "v_cndmask_b32")) {
@@ -2228,17 +2320,27 @@ static void export_instruction(translator *t, const uint32_t *w)
 /* v_interp_p1/p2: GCN interpolates an attribute in two halves, from its per-vertex values: p1
    gives P0 + i * P10 and p2 adds j * P20 (i and j the barycentrics). Here the GPU interpolates the
    input itself, so p1 already writes the finished value and p2, which must follow it into the same
-   VGPR for the same channel (as compilers emit the pair), writes it again. */
+   VGPR for the same channel (as compilers emit the pair), writes it again.
+   v_interp_mov_f32 (the Sea Islands manual) copies one of the three without interpolating, by its VSRC
+   field: 0 P10, 1 P20, 2 P0, the attribute at the primitive's first vertex. P0 is a Vulkan Flat input (whose
+   value is the provoking vertex's, the first by default), so an input read that way is declared Flat; one a
+   shader reads both flat and interpolated, and P10 or P20, are not translated yet. The game's particle
+   pixel shaders read packed halves this way (v_interp_mov_f32 then v_cvt_f32_f16 of a half). */
+enum { INTERP_MOV_P0 = 2, ATTRIBUTE_READ_FLAT = 1, ATTRIBUTE_READ_INTERPOLATED = 2 };
 static void interpolation_instruction(translator *t, const uint32_t *w, const gcn_instruction *ins)
 {
     const char *name = ins->name;
     const unsigned vsrc = w[0] & 0xff, channel = (w[0] >> 8) & 3, attribute = (w[0] >> 10) & 0x3f, vdst = (w[0] >> 18) & 0xff;
-    const int first = !strcmp(name, "v_interp_p1_f32"), second = !strcmp(name, "v_interp_p2_f32");
-    if (t->layout->stage != STAGE_PIXEL || (!first && !second)) {
+    const int first = !strcmp(name, "v_interp_p1_f32"), second = !strcmp(name, "v_interp_p2_f32"), mov = !strcmp(name, "v_interp_mov_f32");
+    if (t->layout->stage != STAGE_PIXEL || (!first && !second && !mov)) {
         fail(t, "%s is not translated yet%s", name, t->layout->stage != STAGE_PIXEL ? " outside pixel shaders" : "");
         return;
     }
-    if (vsrc != t->layout->barycentric_vgpr + (second ? 1u : 0u)) {
+    if (mov && vsrc != INTERP_MOV_P0) {
+        fail(t, "%s from P%s (an attribute's difference between vertices) is not translated yet", name, vsrc ? "20" : "10");
+        return;
+    }
+    if (!mov && vsrc != t->layout->barycentric_vgpr + (second ? 1u : 0u)) {
         fail(t, "%s: barycentrics in v%u, not the perspective centre's (another interpolation mode)", name, vsrc);
         return;
     }
@@ -2259,11 +2361,19 @@ static void interpolation_instruction(translator *t, const uint32_t *w, const gc
         write_vgpr(t, vdst, as_bits(t, konst_float(t, defaults[which][channel])));
         return;
     }
-    /* one input per vertex shader parameter read, flat when any attribute reading it says so */
+    /* one input per vertex shader parameter read, flat when any attribute reading it says so, or when
+       v_interp_mov_f32 reads it */
     const unsigned location = control & GCN_PS_INPUT_OFFSET_MASK;
+    const unsigned use = mov && !(control & GCN_PS_INPUT_FLAT_SHADE) ? ATTRIBUTE_READ_FLAT : ATTRIBUTE_READ_INTERPOLATED;
+    if (t->attribute_use[location] && t->attribute_use[location] != use) {
+        fail(t, "%s: the vertex shader's parameter %u read both flat (v_interp_mov_f32) and interpolated is not translated yet", name,
+             location);
+        return;
+    }
+    t->attribute_use[location] = (unsigned char)use;
     if (!t->attribute[location]) {
         t->attribute[location] = interface_variable(t, SPV_STORAGE_INPUT, t_vec4(t), SPV_DECORATION_LOCATION, location);
-        if (control & GCN_PS_INPUT_FLAT_SHADE)
+        if ((control & GCN_PS_INPUT_FLAT_SHADE) || use == ATTRIBUTE_READ_FLAT)
             spirv_emit(&t->m, &t->m.sections[SPIRV_DECORATIONS], SPV_OP_DECORATE, (const uint32_t[]){t->attribute[location], SPV_DECORATION_FLAT}, 2);
     }
     const uint32_t interpolated = load(t, t_float(t), vec4_component(t, SPV_STORAGE_INPUT, t->attribute[location], channel));
@@ -2709,6 +2819,30 @@ static const struct {
     {"xor", SPV_OP_ATOMIC_XOR}, {"wrxchg", SPV_OP_ATOMIC_EXCHANGE}, {"cmpst", SPV_OP_ATOMIC_COMPARE_EXCHANGE},
 };
 
+/* ds_swizzle_b32 (the Sea Islands manual): lanes exchange a VGPR without the LDS, by OFFSET1:OFFSET0. With
+   bit 15 set (quad mode), lane i of each quad of four takes ADDR's value from the quad's lane at bits
+   2i + 1 : 2i. A pattern that names one lane for all four is a quad broadcast, as Vulkan's quads (a 2x2 pixel
+   block in a pixel shader, four consecutive lanes in a compute shader) are GCN's. Other patterns, the
+   bit-mask mode and vertex shaders (Metal has no quads there) are not translated yet. What a lane reads
+   from a quad lane outside EXEC is not established: here it is that lane's register (the game's shaders
+   swizzle in whole quad mode, with every lane of the quad active). */
+enum { SWIZZLE_QUAD_MODE = 1u << 15, SWIZZLE_QUAD_LANE_BITS = 2, SWIZZLE_QUAD_LANE_MASK = 3 };
+
+static void swizzle(translator *t, const uint32_t *w, const gcn_instruction *ins)
+{
+    const uint32_t offset = w[0] & 0xffff, lane = offset & SWIZZLE_QUAD_LANE_MASK;
+    int one_lane = 1;
+    for (unsigned i = 1; i < 4; i++) one_lane &= ((offset >> (i * SWIZZLE_QUAD_LANE_BITS)) & SWIZZLE_QUAD_LANE_MASK) == lane;
+    if (!(offset & SWIZZLE_QUAD_MODE) || !one_lane || t->layout->stage == STAGE_VERTEX) {
+        fail(t, "%s with offset %#x%s is not translated yet", ins->name, offset, t->layout->stage == STAGE_VERTEX ? " in a vertex shader" : "");
+        return;
+    }
+    const unsigned address = w[1] & 0xff, vdst = w[1] >> 24;
+    t->uses_quads = 1;
+    write_vgpr(t, vdst, value(t, SPV_OP_GROUP_NON_UNIFORM_QUAD_BROADCAST, t_uint(t), 3, konst(t, SPV_SCOPE_SUBGROUP),
+                              load(t, t_uint(t), vgpr(t, address)), konst(t, lane)));
+}
+
 /* ds_append and ds_consume on the GDS (runtime/gcn_spirv.h, "The global data share"): the dword at GDS byte
    M0[31:16] + OFFSET1:OFFSET0 (M0's base as shadPS4's DS_APPEND reads it, facts only) goes up (append) or
    down (consume) by the wave's count of active lanes, once, and every active lane gets its old value in
@@ -2748,6 +2882,10 @@ static void lds_instruction(translator *t, const uint32_t *w, const gcn_instruct
     const char *name = ins->name;
     if (w[0] & DS_GDS) {
         gds_counter(t, w, ins);
+        return;
+    }
+    if (!strcmp(name, "ds_swizzle_b32")) {
+        swizzle(t, w, ins);
         return;
     }
     if (!t->layout->lds.bytes) {
@@ -3282,7 +3420,12 @@ static void image_sample(translator *t, const uint32_t *code, size_t at, const g
         fail(t, "%s: unnormalized coordinates (UNORM) are not translated yet", ins->name);
         return;
     }
-    if (array != (unsigned)b->arrayed && !b->cube) { /* a cube's coordinates are (s, t, face) whatever DA says */
+    /* DA 1 on an image that is not an array: the image's own type decides the coordinates (shadPS4
+       samples such an image as the view its descriptor names and reads only its coordinates, facts
+       only), so the slice VGPR after them is not read; with one layer any slice is that layer. Only
+       when nothing follows the coordinates, so the LOD's VGPR is the same however the slice counts. */
+    const int slice_ignored = array && !b->arrayed && !b->cube && (!explicit_lod || zero_lod);
+    if (array != (unsigned)b->arrayed && !b->cube && !slice_ignored) { /* a cube's coordinates are (s, t, face) whatever DA says */
         fail(t, "%s: DA %u with a%s image", ins->name, array, b->arrayed ? "n array" : " non-array");
         return;
     }

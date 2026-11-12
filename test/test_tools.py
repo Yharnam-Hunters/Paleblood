@@ -84,6 +84,38 @@ class Progress(Fixture):
         open(p, 'w').write(txt)
         self.assertEqual(run('progress.py', '--root', self.d, '--check').returncode, 1)
 
+    def test_check_touched_answers_only_for_generated_text_the_change_made(self):
+        # main regenerates progress (tools/progress_pr.py): a branch may leave the block as the base
+        # has it, even when stale, but text it changes must be current
+        def git(*args):
+            subprocess.run(['git', '-c', 'user.name=T', '-c', 'user.email=t@example.invalid',
+                            '-c', f'core.hooksPath={self.d}/no-hooks', *args],
+                           cwd=self.d, check=True, capture_output=True)
+        git('init', '-q')
+        git('add', '-A')
+        git('commit', '-q', '-m', 'base')
+        touched = ('--root', self.d, '--check-touched', 'HEAD')
+        self.assertEqual(run('progress.py', '--root', self.d, '--check').returncode, 1)   # stale, untouched
+        self.assertEqual(run('progress.py', *touched).returncode, 0)
+        self.assertEqual(run('progress.py', '--root', self.d, '--update-readme').returncode, 0)
+        self.assertEqual(run('progress.py', *touched).returncode, 0)                       # touched, current
+        p = f'{self.d}/README.md'
+        with open(p) as f:
+            text = f.read().replace('62.50%', '99.00%')
+        with open(p, 'w') as f:
+            f.write(text)
+        r = run('progress.py', *touched)
+        self.assertEqual(r.returncode, 1)                                                  # touched by hand
+        self.assertIn('README.md (progress block)', r.stderr)
+
+    def test_check_blocks_is_structure_only(self):
+        self.assertEqual(run('progress.py', '--root', self.d, '--check-blocks').returncode, 0)
+        with open(f'{self.d}/README.md', 'w') as f:
+            f.write('<!-- target:start -->\n<!-- target:end -->\n')
+        r = run('progress.py', '--root', self.d, '--check-blocks')
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('no progress block', r.stderr)
+
     def test_empty_export(self):
         write_csv(f'{self.d}/symbols/ghidra_functions.csv', ['address', 'size'], [])
         d = json.loads(run('progress.py', '--root', self.d).stdout)
