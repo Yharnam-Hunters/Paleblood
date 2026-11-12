@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Validate symbols/functions.csv, symbols/ghidra_functions.csv and game/hooks.csv.
+"""Validate symbols/functions.csv, symbols/ghidra_functions.csv, game/hooks.csv and the evidence tables
+(symbols/reviews.csv, verification.csv, matching.csv, families).
 
 usage: validate_functions.py [--root DIR]
 """
@@ -14,6 +15,7 @@ import sys
 
 import families as fam
 import family_emit
+import match
 import verification
 
 DEFAULT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -154,6 +156,7 @@ def main() -> int:
 
     errs += check_reviews(root, funcs)
     errs += verification.check(root, funcs)
+    errs += match.check(root, funcs)
     errs += check_families(root, export, set(by_addr), {h['address'] for h in hooks}, systems)
 
     for e in errs:

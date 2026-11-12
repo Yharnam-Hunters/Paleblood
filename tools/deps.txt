@@ -8,6 +8,8 @@ make                    build
 python                  tools
 capstone                optional bounded x86-64 instruction-memory tracing (Capstone 5)
 git                     repositories
+binutils                objdump for tools/match.py (optional matching, docs/MATCHING.md)
+ncurses                 libtinfo for the clang 3.4.2 that tools/match.py downloads
 github-cli              issues, pull requests, CI
 # Your dump to checked ELFs (tools/prepare_dump.sh)
 rust                    cargo install orbis-pkg-util --version 0.1.0 --locked
