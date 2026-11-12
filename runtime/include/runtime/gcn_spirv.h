@@ -52,6 +52,9 @@ enum {
     /* a tessellated draw of more patches than the LDS buffer or the factor ring holds (gcn_tessellation_layout);
        details: the draw's patch count, its low 24 bits */
     GCN_RUNTIME_STOP_TESSELLATION_LIMIT = 4,
+    /* a draw with a geometry shader of more vertices or primitives than its rings or strip buffer hold
+       (gcn_geometry_layout); details: the draw's vertex count, its low 24 bits */
+    GCN_RUNTIME_STOP_GEOMETRY_LIMIT = 5,
 };
 
 /* Images (MIMG). A shader names an image by the SGPRs holding its 8-word descriptor (T#), which the
@@ -227,6 +230,9 @@ typedef struct {
     unsigned image_count;
     unsigned first_binding;
     uint32_t *user_data_read; /* when not NULL, set on success to the user SGPRs read before written (User data read, below) */
+    /* a geometry shader's copy shader (Geometry shaders, below): its ring loads read the GSVS ring, here
+       on the GPU; 0 for any other vertex shader */
+    uint64_t gsvs_ring, gsvs_ring_bytes;
 } gcn_vertex_layout;
 
 /* Calls. A vertex shader may start by calling a fetch shader, which loads its vertex inputs:
@@ -374,6 +380,74 @@ typedef struct {
 int gcn_tessellation_control_shader(const gcn_tessellation_control *control, uint32_t **spirv, size_t *spirv_word_count, char *error,
                                     size_t error_size);
 int gcn_tessellation_vertex_shader(uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size);
+
+/* Geometry shaders (docs/RENDERER.md, "Geometry shaders"). GCN runs a draw with a geometry shader
+   (VGT_SHADER_STAGES_EN 0xb0) in three hardware stages that talk through two rings in memory: the export
+   shader (ES) runs once per vertex and writes it to the ESGS ring; the geometry shader (GS) runs once per
+   primitive, reads its vertices there, writes the vertices it makes to the GSVS ring and tells the
+   hardware with s_sendmsg GS emit and cut which ones to draw, as strips; then the copy shader (the
+   hardware VS stage) runs once per drawn vertex and reads it from the GSVS ring. Here the export and
+   geometry shaders run as compute passes of 64-lane workgroups (one wave each) over ring buffers the
+   layout gives, the emits and cuts become an index buffer of strips with restarts, and the copy shader
+   is the vertex shader of an indexed draw over it.
+
+   Ring accesses are the buffer_load/store_dword* instructions with both GLC and SLC set (shadPS4's
+   ring_access_elimination.cpp tells them apart the same way, facts only); their descriptors are not
+   read. The rings are laid out as the hardware lays them out (Mesa's radeonsi for Sea Islands, facts
+   only): a store is swizzled, dword d of the access (its instruction offset plus its VGPR offset with
+   OFFEN, over 4) of lane l at ring + soffset + d * 256 + l * 4, so each wave's block holds dword d of its
+   64 lanes together; a load is linear, at ring + soffset + its instruction offset + its VGPR offset. An
+   access outside its ring reads 0 or writes nothing.
+
+   The export shader: lane l of workgroup g is the draw's vertex n = g * 64 + l (lanes past the draw's
+   vertices start with EXEC clear); v0 is its vertex index as a local shader's (the draw's record, below),
+   v1 to v3 are 0 (one instance), and after the user SGPRs comes its ESGS offset, g * esgs_itemsize * 256
+   (VGT_ESGS_RING_ITEMSIZE dwords a vertex). It may call a fetch shader as a vertex shader does.
+   The geometry shader: lane l of workgroup g is the draw's primitive p = g * 64 + l, of input_primitive's
+   vertices (GCN_GS_INPUT_*: a triangle strip's primitive p takes vertices p, p + 1, p + 2, p + 1 first
+   when p is odd, keeping the winding); v0, v1, v3 hold its vertices' ESGS offsets (in dwords: vertex n at
+   (n / 64) * esgs_itemsize * 64 + n % 64, where the export pass wrote it), v2 the primitive's index,
+   v4 to v7 0 (no adjacency, one instance); after the user SGPRs, its GSVS offset g * gsvs_itemsize * 256
+   (VGT_GSVS_RING_ITEMSIZE dwords a primitive) and its wave's index g (the GS wave id, for M0).
+   s_sendmsg GS emit (stream 0) appends the invocation's next vertex k (counted from 0 by its emits,
+   the GSVS slot its stores at instruction offset (dword * max_vertices + k) * 4 wrote) to its strip: the
+   index g * gsvs_itemsize * 64 + k * 64 + l, the copy shader's vertex index for that slot; emits past
+   max_vertices (VGT_GS_MAX_VERT_OUT) are dropped, as the hardware drops them. GS cut ends the strip with a
+   restart index (0xffffffff), emit-cut does both. Primitive p's strip is gcn_geometry_strip_indices
+   (max_vertices) 32-bit indices at strip_buffer + p * 4 * that, which the caller fills with restarts
+   first (a cut after a cut, or before any emit, adds nothing, so there is always room for a last restart
+   between one primitive's strip and the next's). Both read the draw's numbers in its record, as the
+   tessellation passes do (GCN_TESS_DRAW_*, at the address in the push constants after the user data); a
+   draw of more vertices or primitives than the rings or the strip buffer hold runs only those that fit
+   and writes GCN_RUNTIME_STOP_GEOMETRY_LIMIT. Emits to another stream, and the export and geometry
+   shaders' other ways of meeting the rings (an indexed ring access, a format access), stop translation.
+   The copy shader is a vertex shader (gcn_vertex_layout) with its gsvs_ring set: its vertex index is the
+   strip's, and its ring loads read the GSVS ring. */
+enum { GCN_GS_INPUT_POINTS = 0, GCN_GS_INPUT_LINES = 1, GCN_GS_INPUT_TRIANGLES = 2, GCN_GS_INPUT_TRIANGLE_STRIP = 3,
+       GCN_GS_WAVE_LANES = 64 };
+typedef struct {
+    unsigned user_sgprs;
+    uint32_t input_primitive;        /* GCN_GS_INPUT_* */
+    uint32_t esgs_itemsize, gsvs_itemsize, max_vertices; /* VGT_ESGS_RING_ITEMSIZE, VGT_GSVS_RING_ITEMSIZE, VGT_GS_MAX_VERT_OUT */
+    uint64_t esgs_ring, esgs_ring_bytes, gsvs_ring, gsvs_ring_bytes; /* GPU addresses and sizes */
+    uint64_t strip_buffer, strip_buffer_bytes;
+    uint64_t address_offset;
+    uint64_t error_address;
+    /* the export shader's fetch shader and its own guest address, as gcn_vertex_layout's */
+    const uint32_t *callee;
+    size_t callee_dwords;
+    uint64_t code_address;
+    uint32_t *user_data_read;
+} gcn_geometry_layout;
+
+/* The 32-bit indices a primitive's strip takes: an index for each emitted vertex and a restart after
+   each, at most, and one more. */
+static inline uint32_t gcn_geometry_strip_indices(uint32_t max_vertices) { return 2 * max_vertices + 1; }
+
+int gcn_translate_export(const uint32_t *code, size_t dwords, const gcn_geometry_layout *layout, uint32_t **spirv, size_t *spirv_word_count,
+                         char *error, size_t error_size);
+int gcn_translate_geometry(const uint32_t *code, size_t dwords, const gcn_geometry_layout *layout, uint32_t **spirv,
+                           size_t *spirv_word_count, char *error, size_t error_size);
 
 #ifdef __cplusplus
 }
