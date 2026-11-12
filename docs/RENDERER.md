@@ -144,6 +144,12 @@ Instead:
        instructions leave s and t in [1, 2], so the face's coordinates are one less, and the face
        number counts 8 per cube of an array (as shadPS4 samples cubes as 2D arrays). Filtering does
        not cross faces.
+     - **DA on an image that is not an array**: the image's own type (its T# TYPE) decides the
+       coordinates, so a sample with DA 1 from a 1D or 2D image does not read the slice VGPR after
+       them (shadPS4 samples such an image as the view its descriptor names, facts only); with one
+       layer, any slice is that layer. Found at the clinic's load (pixel shader 0x20d1b00f00, a LUT
+       pass, 12 November 2026). With a LOD VGPR after the coordinates (`image_sample_l`) where that
+       VGPR is would depend on how the slice counts, so it still stops by name.
      - **`image_sample_l`** takes its level of detail after the coordinates and samples there
        (Vulkan's explicit `Lod`, which the sampler's LOD bias and clamps still adjust).
      - **`image_sample`** with the sampler (S#) its SSAMP SGPRs name, found like image descriptors and
@@ -218,6 +224,13 @@ Instead:
        whole turns), base-2 `v_exp_f32` and `v_log_f32`, and `v_rsq_clamp_f32` (the largest float
        instead of infinity). Cases GLSL leaves undefined (the log of zero or of a negative number,
        the reciprocal square root of a negative number) are spelled out as IEEE defines them.
+     - **Three-way and wide operations** (from the coverage survey's list): `v_min3`, `v_max3` and
+       `v_med3` for f32, i32 and u32 (the middle is max(min(a, b), min(max(a, b), c)); floats ignore a
+       NaN, as `v_min_f32` and `v_max_f32` do here), the bit-field insert `v_bfi_b32`, the 64-bit shifts
+       `v_lshl_b64`, `v_lshr_b64` and `v_ashr_i64` (a VGPR or SGPR pair, or a sign-extended integer
+       constant, shifted by bits 5:0 of the count), and Direct3D 9's `v_min_legacy_f32` and
+       `v_max_legacy_f32` (the second source when either is a NaN). The clinic's particle compute
+       shaders use the first three kinds.
      - **Vertex and pixel shaders** (`gcn_translate_vertex`, `gcn_translate_pixel`):
        - **Exports (`exp`):** a vertex shader's `pos0` becomes the position and `param` n the
          output at location n; a pixel shader's `mrt` n becomes colour output n. Only the enabled
@@ -234,8 +247,11 @@ Instead:
          shader's `v_interp_p1`/`p2` pair reads attribute n at location n, interpolated by the GPU
          with perspective at the pixel centre; the layout names the VGPRs that hold those
          barycentrics. GCN computes the pair in two halves, so here `p1` already writes the finished
-         value and `p2` must follow it into the same VGPR. Other interpolation modes,
-         `v_interp_mov` and other pixel inputs stop translation.
+         value and `p2` must follow it into the same VGPR. `v_interp_mov_f32` from P0 (the
+         attribute at the primitive's first vertex, not interpolated) reads a Flat input, the
+         provoking vertex's value, which Vulkan takes from the first vertex; the game's particle pixel
+         shaders read packed halves that way. From P10 or P20, or of an input the shader also reads
+         interpolated, it stops by name, as do other interpolation modes and other pixel inputs.
        - **Matching the stages:** parameter n of the vertex shader feeds attribute n of the pixel
          shader. The console maps them through GPU settings; the engine hooks will set that up.
      - **Calls to fetch shaders** (`s_swappc_b64`): the game's vertex shaders call a fetch shader at
@@ -779,6 +795,10 @@ Instead:
 
 Each phase lands in small PRs with tests. A boot is recorded after each runtime change. The wiki's
 Runtime page and Gallery show where it stands.
+
+**Stand-in: occlusion counts.** The game's occlusion query dumps (`EVENT_WRITE` `PIXEL_PIPE_STAT_DUMP`)
+store an invented, always-visible count (`runtime/syslib/gnm.c`; docs/runtime-syscalls.md, "Occlusion
+query counts"). Real counts from Vulkan occlusion queries are the follow-up.
 
 ## Coverage survey
 
