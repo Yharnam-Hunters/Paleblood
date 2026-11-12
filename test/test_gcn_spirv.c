@@ -91,6 +91,7 @@ enum { CLIP_DISTANCES_0_1 = 0x400003, MISC_VECTOR_FIRST = 0x600003, CULL_DISTANC
 static const gcn_pixel_layout pixel_layout = {.user_sgprs = 8, .push_constant_offset = 64};
 
 static uint32_t output_control; /* the vertex layout's, for the next translation */
+static gcn_lds compute_lds;     /* the compute layout's, for the next translation */
 
 static int translate(stage s, const uint32_t *code, size_t dwords, uint32_t **spirv, size_t *words, char *error, size_t error_size)
 {
@@ -98,7 +99,9 @@ static int translate(stage s, const uint32_t *code, size_t dwords, uint32_t **sp
     vertex.output_control = output_control;
     if (s == VERTEX) return gcn_translate_vertex(code, dwords, &vertex, spirv, words, error, error_size);
     if (s == PIXEL) return gcn_translate_pixel(code, dwords, &pixel_layout, spirv, words, error, error_size);
-    return gcn_translate_compute(code, dwords, &layout, spirv, words, error, error_size);
+    gcn_compute_layout compute = layout;
+    compute.lds = compute_lds;
+    return gcn_translate_compute(code, dwords, &compute, spirv, words, error, error_size);
 }
 
 /* The program translates, as the stage given, to a module spirv-val and SPIRV-Cross accept. */
@@ -613,8 +616,74 @@ static void depth_exports(void)
     }
 }
 
+/* A tessellation module: made, and accepted by spirv-val (the Metal executor stops at tessellation
+   by name, so these are not converted). */
+static void tessellation_module(int result, uint32_t *spirv, size_t words, const char *error, const char *name)
+{
+    if (result) fprintf(stderr, "  %s: %s\n", name, error);
+    CHECK(result == 0 && spirv && words > 5);
+    if (!spirv) return;
+    const int valid = validate(spirv, words, name);
+    if (valid < 0) fprintf(stderr, "  %s: spirv-val not installed; validation skipped\n", name);
+    else CHECK(valid == 1);
+    free(spirv);
+}
+
+/* The LDS in a compute shader (workgroup memory) and the tessellation stages (LDS in a buffer): modules
+   spirv-val accepts; a ds_* instruction with no LDS stops by name, as do s_barrier outside a compute
+   shader and a workgroup of more than 1024 lanes. */
+static void tessellation(void)
+{
+    compute_lds = (gcn_lds){.bytes = 272};
+    translates(PROGRAM(lds_exchange), "lds_exchange");
+    compute_lds = (gcn_lds){0};
+    refused_as(COMPUTE, PROGRAM(lds_exchange), "with no LDS");
+    static const uint32_t barrier_in_vertex[] = {0xbf8a0000, 0xbf810000}; /* s_barrier; s_endpgm */
+    refused_as(VERTEX, PROGRAM(barrier_in_vertex), "s_barrier outside a compute shader");
+
+    gcn_tessellation_layout l = {.user_sgprs = 8, .patches = 15, .input_points = 1, .output_points = 1,
+                                 .lds = {.bytes = 3584, .address = 0x100000000ull}, .factor_stride = 24,
+                                 .factor_ring = 0xfe00000000ull, .factor_ring_bytes = 0x20000, .factor_buffer = 0x200000000ull,
+                                 .domain = GCN_TESS_QUADS, .partitioning = GCN_TESS_INTEGER, .topology = GCN_TESS_TRIANGLES_CW};
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    char error[256] = "";
+    int r = gcn_translate_local(PROGRAM(tess_local), &l, &spirv, &words, error, sizeof error);
+    tessellation_module(r, spirv, words, error, "tess_local");
+    r = gcn_translate_hull(PROGRAM(tess_hull), &l, &spirv, &words, error, sizeof error);
+    tessellation_module(r, spirv, words, error, "tess_hull");
+    l.off_chip = 1;
+    r = gcn_translate_hull(PROGRAM(tess_hull), &l, &spirv, &words, error, sizeof error);
+    tessellation_module(r, spirv, words, error, "tess_hull_off_chip");
+    l.off_chip = 0;
+    static const uint32_t topologies[][3] = {{GCN_TESS_QUADS, GCN_TESS_INTEGER, GCN_TESS_TRIANGLES_CW},
+                                             {GCN_TESS_TRIANGLES, GCN_TESS_FRACTIONAL_ODD, GCN_TESS_TRIANGLES_CCW},
+                                             {GCN_TESS_TRIANGLES, GCN_TESS_FRACTIONAL_EVEN, GCN_TESS_POINTS},
+                                             {GCN_TESS_ISOLINES, GCN_TESS_POW2, GCN_TESS_LINES}};
+    for (unsigned i = 0; i < 4; i++) {
+        l.domain = topologies[i][0], l.partitioning = topologies[i][1], l.topology = topologies[i][2];
+        l.push_constant_offset = 0;
+        r = gcn_translate_domain(PROGRAM(tess_domain), &l, &spirv, &words, error, sizeof error);
+        tessellation_module(r, spirv, words, error, "tess_domain");
+        const gcn_tessellation_control c = {.domain = l.domain, .partitioning = l.partitioning, .min_level = 1.0f, .max_level = 64.0f,
+                                            .factor_buffer = 0x200000000ull, .factor_stride = 24};
+        r = gcn_tessellation_control_shader(&c, &spirv, &words, error, sizeof error);
+        tessellation_module(r, spirv, words, error, "tess_control");
+    }
+    r = gcn_tessellation_vertex_shader(&spirv, &words, error, sizeof error);
+    tessellation_module(r, spirv, words, error, "tess_vertex");
+
+    l.domain = GCN_TESS_QUADS, l.topology = GCN_TESS_LINES; /* lines are isolines' alone */
+    CHECK(gcn_translate_domain(PROGRAM(tess_domain), &l, &spirv, &words, error, sizeof error) == -1 && strstr(error, "VGT_TF_PARAM"));
+    l.topology = GCN_TESS_TRIANGLES_CW, l.patches = 64, l.input_points = 32;
+    CHECK(gcn_translate_local(PROGRAM(tess_local), &l, &spirv, &words, error, sizeof error) == -1 && strstr(error, "workgroup"));
+    const gcn_tessellation_control few = {.domain = GCN_TESS_QUADS, .min_level = 1.0f, .max_level = 64.0f, .factor_buffer = 1, .factor_stride = 16};
+    CHECK(gcn_tessellation_control_shader(&few, &spirv, &words, error, sizeof error) == -1 && strstr(error, "fewer"));
+}
+
 int main(void)
 {
+    tessellation();
     rect_list_stages();
     tile_copy_shaders();
     store_resources();

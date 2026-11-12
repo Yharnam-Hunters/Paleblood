@@ -161,6 +161,18 @@ int gcn_image_resources(const uint32_t *code, size_t dwords, gcn_image_resource 
 int gcn_called_image_resources(const uint32_t *code, size_t dwords, const uint32_t *callee, size_t callee_dwords,
                                gcn_image_resource *resources, unsigned max, unsigned *count, char *error, size_t error_size);
 
+/* The local data share (LDS): a workgroup's shared memory, which the ds_* instructions read and write at
+   a byte address (the address VGPR plus the instruction's offsets). bytes is its size (0: a ds_*
+   instruction stops translation); an access at or past it reads 0 and writes nothing, as the hardware
+   bounds LDS accesses by the allocation. address 0 keeps it as workgroup shared memory (a compute
+   shader's, gone when the workgroup ends); otherwise it is memory at that GPU address, workgroup g's at
+   address + g * bytes, and lasts from one pass to the next (the tessellation stages, below). s_barrier
+   waits for the workgroup's lanes and makes their LDS writes visible to each other. */
+typedef struct {
+    uint32_t bytes;
+    uint64_t address;
+} gcn_lds;
+
 typedef struct {
     uint32_t local_size[3];  /* the workgroup's size */
     unsigned user_sgprs;     /* s0 .. s(user_sgprs - 1) start as the user data (push constants) */
@@ -172,6 +184,7 @@ typedef struct {
     const gcn_image_binding *images;
     unsigned image_count;
     uint32_t *user_data_read; /* when not NULL, set on success to the user SGPRs read before written (User data read, below) */
+    gcn_lds lds;              /* the workgroup's LDS (above) */
 } gcn_compute_layout;
 
 /* User data read: a translation can report which of the user SGPRs (s0 to s(user_sgprs - 1)) the program
@@ -269,6 +282,89 @@ enum { GCN_DEPTH_EXPORT_Z = 1u << 0, GCN_DEPTH_EXPORT_STENCIL = 3u << 1, GCN_DEP
 
 int gcn_translate_pixel(const uint32_t *code, size_t dwords, const gcn_pixel_layout *layout,
                         uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size);
+
+/* Tessellation (docs/RENDERER.md, "Tessellation"). GCN runs a tessellated draw's control points
+   through a local shader (LS), which writes them to LDS, and its patches through a hull shader (HS),
+   which reads them there and writes the tessellation factors to the tessellation-factor ring; the
+   hardware VS stage then runs as the domain shader for each point the tessellator makes, reading what
+   the two left in LDS. Here the local and hull shaders run as compute passes over the same workgroups,
+   whose LDS lives in a buffer (gcn_lds with an address), and the domain shader is the tessellation
+   evaluation shader of a Vulkan tessellation pipeline, whose control shader takes the factors.
+
+   The local shader: one workgroup per `patches` patches (VGT_LS_HS_CONFIG NUM_PATCHES), one lane per
+   control point: lane l of workgroup g is control point l % input_points of patch
+   g * patches + l / input_points (the draw's control point n = patch * input_points + its point). It
+   starts with v0 the point's vertex index (the draw's first vertex plus n, or the index buffer's entry
+   first + n), v1 = l (the hardware's RelAutoIndex, as Mesa's radeonsi names the LS inputs), v2 and v3 0
+   (the instance: one instance only), and may call a fetch shader as a vertex shader does.
+   The hull shader: the same workgroups, one lane per output control point: lane l is output point
+   l % output_points of the workgroup's patch l / output_points; v0 = the patch's index in the draw,
+   v1 = its index in the workgroup | the output point << 8; after the user SGPRs, the off-chip offset (0)
+   when off_chip, then the workgroup's offset into the tessellation-factor ring, g * patches *
+   factor_stride (shadPS4's frontend gives the HS these inputs, facts only). Its buffer accesses through a
+   descriptor based in the ring (factor_ring, factor_ring_bytes long, a guest address) go to
+   factor_buffer (a GPU address) instead. In both passes, lanes past the draw's patches start with EXEC
+   clear, and the draw's numbers are push constants after the user data, GCN_TESS_DRAW_WORDS words at byte
+   GCN_TESS_DRAW_OFFSET: the patch count, the first vertex (or first index), the index buffer's GPU
+   address (low, high) and its index size in bytes (2 or 4; 0 for no index buffer).
+   The domain shader: v0 and v1 the point's (u, v) (TessCoord), v2 the patch's index in its workgroup and
+   v3 its index in the draw (PrimitiveId); its LDS is workgroup PrimitiveId / patches's. Its exports are a
+   vertex shader's (gcn_translate_vertex), and domain, partitioning and topology (VGT_TF_PARAM's, the
+   GCN_TESS_* values) its execution modes; power-of-two partitioning is integer spacing, the control
+   shader rounding the factors. */
+enum { GCN_TESS_ISOLINES = 0, GCN_TESS_TRIANGLES = 1, GCN_TESS_QUADS = 2 };
+enum { GCN_TESS_INTEGER = 0, GCN_TESS_POW2 = 1, GCN_TESS_FRACTIONAL_ODD = 2, GCN_TESS_FRACTIONAL_EVEN = 3 };
+enum { GCN_TESS_POINTS = 0, GCN_TESS_LINES = 1, GCN_TESS_TRIANGLES_CW = 2, GCN_TESS_TRIANGLES_CCW = 3 };
+enum { GCN_TESS_DRAW_OFFSET = 64, GCN_TESS_DRAW_PATCHES = 0, GCN_TESS_DRAW_FIRST, GCN_TESS_DRAW_INDEX_LOW, GCN_TESS_DRAW_INDEX_HIGH,
+       GCN_TESS_DRAW_INDEX_SIZE, GCN_TESS_DRAW_WORDS };
+typedef struct {
+    unsigned user_sgprs;
+    uint32_t patches, input_points, output_points; /* VGT_LS_HS_CONFIG */
+    uint32_t push_constant_offset;   /* the domain shader's; the local and hull shaders' user data is at 0 */
+    uint64_t address_offset;
+    uint64_t error_address;
+    gcn_lds lds;                     /* the workgroups' LDS, in a buffer (address not 0) */
+    /* the local shader's fetch shader and its own guest address, as gcn_vertex_layout's */
+    const uint32_t *callee;
+    size_t callee_dwords;
+    uint64_t code_address;
+    /* the hull shader's */
+    int off_chip;                    /* SPI_SHADER_PGM_RSRC2_HS's OC_LDS_EN */
+    uint32_t factor_stride;          /* bytes of factors a patch: 4 for each outer and inner factor */
+    uint64_t factor_ring, factor_ring_bytes, factor_buffer;
+    /* the domain shader's: as gcn_vertex_layout's, and VGT_TF_PARAM's fields */
+    uint32_t output_control;
+    const gcn_image_binding *images;
+    unsigned image_count, first_binding;
+    uint32_t domain, partitioning, topology;
+    uint32_t *user_data_read;
+} gcn_tessellation_layout;
+
+int gcn_translate_local(const uint32_t *code, size_t dwords, const gcn_tessellation_layout *layout, uint32_t **spirv,
+                        size_t *spirv_word_count, char *error, size_t error_size);
+int gcn_translate_hull(const uint32_t *code, size_t dwords, const gcn_tessellation_layout *layout, uint32_t **spirv,
+                       size_t *spirv_word_count, char *error, size_t error_size);
+int gcn_translate_domain(const uint32_t *code, size_t dwords, const gcn_tessellation_layout *layout, uint32_t **spirv,
+                         size_t *spirv_word_count, char *error, size_t error_size);
+
+/* The tessellation pipeline's other two stages, which carry no game code: a vertex shader that does
+   nothing (one control point a patch, which the control shader does not read), and the control shader,
+   one output point, which reads patch PrimitiveId's factors from factor_buffer + PrimitiveId *
+   factor_stride (where the hull pass left them) as 32-bit floats, clamps each to [min_level,
+   max_level] (VGT_HOS_MIN/MAX_TESS_LEVEL), rounds them up to a power of two for GCN_TESS_POW2, and
+   writes them as the tessellation levels. The ring's order: quads outer 0-3 then inner 0-1, triangles
+   outer 0-2 then inner, isolines the line detail then the line density (Mesa's radeonsi writes isolines'
+   two outer levels reversed, facts only): Vulkan's outer level 0 is the density. Both return 0 and a
+   module the caller frees, or -1 with the reason. */
+typedef struct {
+    uint32_t domain, partitioning;
+    float min_level, max_level;
+    uint64_t factor_buffer;
+    uint32_t factor_stride;
+} gcn_tessellation_control;
+int gcn_tessellation_control_shader(const gcn_tessellation_control *control, uint32_t **spirv, size_t *spirv_word_count, char *error,
+                                    size_t error_size);
+int gcn_tessellation_vertex_shader(uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size);
 
 #ifdef __cplusplus
 }
