@@ -792,6 +792,7 @@ int main(void)
     static const uint32_t sgpr_mask[] = {0xd2480001, 0x00010004, 0xbf810000}; /* v_mbcnt_hi v1, s4, 0 */
     refused_as(COMPUTE, PROGRAM(sgpr_mask), "a mask other than");
     translates(PROGRAM(integer_batch), "integer_batch");
+    translates(PROGRAM(valu_batch), "valu_batch");
     translates(PROGRAM(scalar_batch), "scalar_batch");
     translates(PROGRAM(vcc_halves), "vcc_halves");
     translates(PROGRAM(whole_quad), "whole_quad");
