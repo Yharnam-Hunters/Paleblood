@@ -96,6 +96,8 @@ engine_segregated_regular_heap_allocate_top_02489d20,edge,,14,14,0,0,4dca96173b0
 engine_segregated_regular_heap_finalize_02489530,edge,,4,4,0,0,ba5b1dc5f3aeccb6,2026-11-12
 engine_segregated_regular_heap_free_0248a400,edge,,13,13,0,0,22f332c094a74c2f,2026-11-12
 engine_segregated_regular_heap_initialize_02489340,edge,,12,12,0,0,47ac96af64ff580c,2026-11-12
+engine_semaphore_signal_02a3b0d0,edge,,19,19,0,0,c15ae6e931c8ddcd,2026-11-12
+engine_semaphore_wait_02a3ae00,edge,,20,20,0,0,c15ae6e931c8ddcd,2026-11-12
 engine_small_object_allocator_construct_02fa1e20,edge,,16,16,0,0,296d5eeec7c4405f,2026-11-12
 engine_small_object_allocator_construct_locked_02fa22a0,edge,,19,19,0,0,296d5eeec7c4405f,2026-11-12
 engine_small_object_allocator_delete_0248a9f0,edge,,5,5,0,0,adc614a3057af972,2026-11-12
