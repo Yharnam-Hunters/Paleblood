@@ -805,7 +805,11 @@ Instead:
         (the CPU or a buffer store may have changed them). One a shader writes over a render target first takes
         the target's texels, and the target takes the image's at its next draw (`take_written_image`); the copy
         covers the two's overlap, since a target's size counts its pitch and its slice's whole tiles (a 960x540
-        image under a 1024x576 target, 1920x1080 under 1920x1088). Pixel shaders' images
+        image under a 1024x576 target, 1920x1080 under 1920x1088). An image of another texel size or a non-2D
+        image over a target (a YEBIS pass in the clinic stores a 37x14 16_16_16_16 float image over another
+        format's target) is instead tiled into the guest memory after its dispatch (`write_back_image`, the
+        target's own draws written back first), and the target loads that memory at its next draw, as the
+        PS4's colour buffer reads whatever bytes a shader stored at its address. Pixel shaders' images
         are found the same way and bound as sampled images. A pixel shader's null image descriptor (all 8
         words 0) reads 0: Mesa's radeonsi writes 8 zero words for an unbound sampler view or image
         (`si_reset_sampler_view_slot`, `si_disable_shader_image`) and RADV zeroes the descriptor of a

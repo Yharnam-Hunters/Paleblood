@@ -259,6 +259,7 @@ typedef struct {
     uint32_t levels;                 /* mip levels (LAST_LEVEL + 1) */
     int pow2;                        /* the descriptor's POW2_PAD (where the levels lie) */
     int gpu_written;                 /* a shader has written it: its texels are the image's own */
+    int written_back;                /* its texels written since are in the guest memory too (write_back_image) */
     memory_snapshot agreed;          /* the guest memory it was last loaded from (loads through the CPU) */
     uint64_t loaded_change;          /* change_count when it was last loaded (UINT64_MAX: load it) */
     uint64_t loaded_span;            /* the bytes of guest memory it was loaded from */
@@ -2077,6 +2078,15 @@ static int same_texel_bytes(VkFormat a, VkFormat b)
     return a == b || (a4 && b4);
 }
 
+/* Whether a render target takes the texels of an image a shader wrote over its memory straight from that
+   image (take_written_image): a 2D image of the same texel bytes. Any other image over it is written to the
+   memory as its tile mode lays it out (write_back_image), and the target loads it from there, as the PS4's
+   colour buffer reads whatever bytes a shader stored at its address. */
+static int target_takes_image(VkFormat target, VkFormat image, unsigned image_type)
+{
+    return same_texel_bytes(target, image) && image_type == RT_IMAGE_2D;
+}
+
 /* A shader may have written a render target's memory as an image since the target was last drawn (a
    compute clear, as the game clears its G-buffer): the image keeps those texels (image_for), so they
    are the target's newest contents. They are copied into the target, which is then drawn into and
@@ -2108,9 +2118,16 @@ static int take_written_image(rt_executor *x, target_entry *t, char *error, size
     for (size_t i = 0; i < x->image_count && !e; i++)
         if (x->images[i].address == t->address && x->images[i].gpu_written) e = &x->images[i];
     if (!e) return 0;
-    if (!same_texel_bytes(e->format, t->format) || e->type != RT_IMAGE_2D)
-        return failed(error, error_size, "render target %#llx was written by a shader as an image of another format or shape (Vulkan format %d, "
-                      "%ux%u, type %u): not drawn yet", (unsigned long long)t->address, (int)e->format, e->width, e->height, e->type);
+    if (!target_takes_image(t->format, e->format, e->type) && e->written_back) {
+        /* the memory holds its texels, and the target loads them (memory_changed_since); its draws then
+           supersede the image, which loads the memory again at its next use */
+        e->gpu_written = 0;
+        return 0;
+    }
+    if (!target_takes_image(t->format, e->format, e->type)) /* one write_back_image could not lay out */
+        return failed(error, error_size, "render target %#llx (Vulkan format %d, %ux%u) was written by a shader as an image of another format "
+                      "or shape (Vulkan format %d, %ux%u, type %u): not drawn yet", (unsigned long long)t->address, (int)t->format, t->width,
+                      t->height, (int)e->format, e->width, e->height, e->type);
     VkCommandBuffer commands = batch_commands(x, error, error_size);
     if (!commands) return -1;
     const VkMemoryBarrier written = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
@@ -4214,7 +4231,7 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
         const int taken = take_written_alias(x, e, error, error_size);
         if (taken < 0 || (!taken && load_texels(x, e, d, f, error, error_size))) return NULL;
     }
-    if (access & GCN_IMAGE_WRITE) e->gpu_written = 1;
+    if (access & GCN_IMAGE_WRITE) e->gpu_written = 1, e->written_back = 0;
     return e;
 }
 
@@ -4222,13 +4239,19 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
    (as a render target is written back): copied into its linear rows and tiled into place on the GPU,
    with the batch, so a later view of that memory in another format or with more mip levels reads what
    the shader stored (the game's face texture: written as 8_8_8_8 UINT, sampled as sRGB with mips).
-   Left in the image alone: one over a render target (the target takes its texels at its next draw,
-   take_written_image), a 3D image (its slices' layout is not done here), and elements the GPU copy
-   does not move (tile_copy_moves). 0, or -1 with the reason. */
+   Left in the image alone: one over a render target that takes its texels at its next draw
+   (target_takes_image), a 3D image (its slices' layout is not done here), and elements the GPU copy
+   does not move (tile_copy_moves). One over a target of another format or shape (a YEBIS pass in the
+   clinic stores a 37x14 16_16_16_16 float image over another format's target) is written to the memory
+   once the target's own draws are there, and the target loads the memory at its next draw
+   (take_written_image), as the PS4's colour buffer reads whatever bytes were stored at its address.
+   0, or -1 with the reason. */
 static int write_back_image(rt_executor *x, image_entry *e, const rt_image_descriptor *d, char *error, size_t error_size)
 {
     texel_format f;
-    if (find_target(x, d->address) || e->type == RT_IMAGE_3D || image_format(d, &f, error, error_size)) return 0;
+    const target_entry *target = find_target(x, d->address);
+    if ((target && target_takes_image(target->format, e->format, e->type)) || e->type == RT_IMAGE_3D || image_format(d, &f, error, error_size))
+        return 0;
     rt_tiling layout;
     char reason[160];
     const uint32_t rows = one_dimensional(d->type) ? 1 : d->height;
@@ -4245,6 +4268,8 @@ static int write_back_image(rt_executor *x, image_entry *e, const rt_image_descr
         e->loaded_change = UINT64_MAX;
     }
     if (!e->plan.table.buffer && tile_plan_make(x, &e->plan, &layout, d->width, rows, e->layers, error, error_size)) return -1;
+    const memory_span memory = {d->address, span};
+    if (target && write_back_targets_in(x, &memory, 1, error, error_size)) return -1; /* the older draws first */
     VkCommandBuffer commands = batch_commands(x, error, error_size);
     if (!commands) return -1;
     const VkMemoryBarrier stored = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
@@ -4257,6 +4282,7 @@ static int write_back_image(rt_executor *x, image_entry *e, const rt_image_descr
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &copied, 0, NULL, 0, NULL);
     if (record_tile_copy(x, &e->plan, d->address, 1, error, error_size)) return -1;
     batch_writes(x, d->address, span, 0); /* the CPU reads it once the batch has run */
+    e->written_back = 1;
     return 0;
 }
 

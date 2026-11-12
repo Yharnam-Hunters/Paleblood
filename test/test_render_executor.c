@@ -1273,7 +1273,8 @@ static void null_image_descriptor(rt_executor *x)
    (0.25, 0.5, 0.75, 1) over a 16 x 16 8_8_8_8 image at the target's memory, then (in the next buffer)
    a draw into the target
    that keeps what is there (blend ZERO + ONE) leaves the cleared colour, which reaches the memory too;
-   a clear by a 32_32_32_32 float image there stops the draw by name. An image of the target's width with
+   a clear by a 32_32_32_32 float image there is written to the memory as floats, and the target loads and
+   keeps those bytes. An image of the target's width with
    fewer rows (a 1080-row image under a target whose slice counts 1088) clears those rows only; one with
    fewer columns (a 960-wide image under a target of pitch 1024) clears those columns only. A target already
    drawn (the triangle) and then cleared by the shader shows the clear too. */
@@ -1314,8 +1315,11 @@ static void compute_cleared_target(rt_executor *x)
         const uint32_t offset = record_setup(DRAW_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
         CHECK(rt_render_record_register(DRAW_BUFFER, offset, 0xa1e0, 1u << 30 | 0u | 1u << 8, error, sizeof error) == 0);
         const int ran = rt_executor_run(x, DRAW_BUFFER, record_triangle_draw(DRAW_BUFFER, offset + 0x10), error, sizeof error);
-        if (wide) {
-            CHECK(ran == -1 && strstr(error, "another format"));
+        if (wide) { /* the float image's bytes reach the memory, the target loads them and the draw keeps them */
+            if (ran) fprintf(stderr, "float image under an 8_8_8_8 target: %s\n", error);
+            CHECK(ran == 0);
+            const float *stored = (const float *)(uintptr_t)target;
+            CHECK(stored[0] == 0.25f && stored[1] == 0.5f && stored[2] == 0.75f && stored[3] == 1.0f);
             continue;
         }
         if (ran) fprintf(stderr, "compute-cleared target: %s\n", error);
