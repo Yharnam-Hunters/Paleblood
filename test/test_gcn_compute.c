@@ -654,6 +654,16 @@ int main(int argc, char **argv)
         CHECK(out_words[LANES + i] == (high << 16 | halves[i % HALF_CASES].negated));
     }
 
+    /* ds_swizzle_b32's quad mode: each lane of quad q (lanes 4q to 4q + 3) gets the square of lane 4q, 4q + 2
+       and 4q + 3. */
+    memset(out.mapped, 0, BUFFER_BYTES);
+    CHECK(run(&g, quad_swizzle, sizeof quad_swizzle / sizeof quad_swizzle[0], user) == 0);
+    for (uint32_t i = 0; i < LANES; i++) {
+        const uint32_t first = i & ~3u;
+        CHECK(out_words[i] == first * first && out_words[64 + i] == (first + 2) * (first + 2) &&
+              out_words[128 + i] == (first + 3) * (first + 3));
+    }
+
     /* The negated float compares, on ordered pairs, equal pairs, signed zeros, infinities and NaNs: each
        holds exactly where its condition (worked out with C's ordered compares, false for a NaN) does not. */
     static const float pairs[][2] = {{1, 2}, {2, 1}, {1, 1}, {NAN, 1}, {1, NAN}, {NAN, NAN}, {-0.0f, 0.0f}, {INFINITY, INFINITY},

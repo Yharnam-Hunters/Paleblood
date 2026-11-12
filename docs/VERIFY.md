@@ -135,7 +135,10 @@ reused run ID and case number cannot silently replace an existing recording.
   `pointer` (`NAME[+off]` within a buffer) or `guest` (the host address of a PS4 address, for example a
   game function a fake vtable points at, which the case then stubs).
 - `imports`: scripted calls in order, per library function. `name` is the function name (its
-  NID is computed); `argc` arguments are recorded and compared. Both imports and stubs accept
+  NID is computed); `argc` arguments are recorded and compared. An import's write is made through an
+  argument (`arg`, `offset`) or at a fixed place (`addr`: `buf:NAME+off` or an image address, as in
+  `memory`), which recorded cases use for what an import changed in a buffer or the image, since
+  the register it was seen through need not be an argument. Both imports and stubs accept
   `argi`, `argu8`, `argu32`, `argmem`, and `argf32` as described below. A write may give `size`: a
   write whose bytes do not have that length is reported as an error (a truncated capture).
   For long runs of the same call (a wait that polls the clock), one entry can stand for many
