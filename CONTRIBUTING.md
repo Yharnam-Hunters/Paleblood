@@ -178,6 +178,19 @@ A function goes to `main` only when it is **verified and readable**:
   reason it can't be used (docs/VERIFY.md, "Recorded results and quarantine").
   `tools/validate_functions.py` checks it in CI.
 
+### Matching (optional)
+
+For small C-style functions, `tools/match.py` adds a stronger kind of evidence. It compiles C
+source with upstream clang 3.4.2 and the PS4 SDK's documented flags, then compares the result
+byte for byte with the original in your own dump ([docs/MATCHING.md](docs/MATCHING.md)). The
+result goes in `symbols/matching.csv`. Matching is optional and local only, like `verify.py`.
+Sony's own compiler is never used.
+
+A byte-exact match can stand in for the recorded cases that `verified` needs. The edge results
+and the independent review are still required. Write matching C from your own understanding of
+the function, never from decompiler output, and don't chase matching for large C++ engine
+functions.
+
 Investigation notes and logs go in the pull request, not in the repository. Game screenshots and
 clips do not belong in the Paleblood code repository, issues, pull requests, or Discussions (see
 Rules for what is allowed).

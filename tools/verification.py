@@ -21,7 +21,9 @@ symbols/quarantine.csv     cases that cannot be used, each with the reason.
 
 A function may be verified only when it has current recorded and edge rows without an option,
 and none of its current rows has a failure that is not quarantined (docs/VERIFY.md,
-"Quarantine"); tools/validate_functions.py enforces it.
+"Quarantine"); tools/validate_functions.py enforces it. A current byte-exact row in
+symbols/matching.csv (tools/match.py, docs/MATCHING.md) may stand in for the recorded row; the edge
+row and the independent review are still required.
 """
 from __future__ import annotations
 
@@ -178,6 +180,8 @@ def check(root: str, funcs: list[dict]) -> list[str]:
         if held > counts.get((r['function'], r['cases'], r['option']), 0):
             errs.append(f'{where}: {held} quarantined, but symbols/quarantine.csv lists fewer cases for it')
         by_function.setdefault(r['function'], []).append(r)
+    import match
+    matched = match.byte_exact_functions(root)
     for f in funcs:
         if f['status'] != 'verified':
             continue
@@ -187,6 +191,8 @@ def check(root: str, funcs: list[dict]) -> list[str]:
         stale = [r for r in rows if r['source'] != current]
         fresh = [r for r in rows if r['source'] == current]
         for need in ('recorded', 'edge'):
+            if need == 'recorded' and f['name'] in matched:
+                continue        # a current byte-exact match stands in for recordings (docs/MATCHING.md)
             if not any(r['cases'] == need and r['option'] == '' for r in fresh):
                 errs.append(f"{where} without a current {need} result in symbols/verification.csv "
                             f"(tools/verify.py run --record {need})")
