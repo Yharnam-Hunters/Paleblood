@@ -107,6 +107,7 @@ void setup(Calls &calls,unsigned scene,Route route)
     reg(calls,0xa012,static_cast<uint32_t>((Base+Depth[scene])>>8));
     reg(calls,0xa014,static_cast<uint32_t>((Base+Depth[scene])>>8));
     reg(calls,0xa016,(Width/8-1)|((Height/8-1)<<11));reg(calls,0xa017,Pixels/64-1);
+    reg(calls,0xa002,0); // DB_DEPTH_VIEW: slice0.
     reg(calls,0xa200,2|4|1<<4); // D32 LESS, write enabled; the seed is .75 and geometry .25.
     const bool wide=route==Route::Direct32||route==Route::Offset32||route==Route::Logical32;
     event(calls,RT_CALL_INDEX_TYPE).u.index_type.type=wide?1:0;
