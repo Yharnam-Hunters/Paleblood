@@ -44,6 +44,12 @@ engine_robust_heap_allocate_aligned_02486cd0,edge,,25,25,0,0,268593c11983abde,20
 engine_robust_heap_allocate_aligned_top_02487650,edge,,18,18,0,0,268593c11983abde,2026-11-12
 engine_robust_heap_allocate_top_02487380,edge,,22,22,0,0,99db3f551a546e94,2026-11-12
 engine_robust_heap_free_02487b50,edge,,20,20,0,0,384d50d46b2da2c0,2026-11-12
+engine_scaleform_heap_allocate_0233c870,edge,,22,22,0,0,98918222db96638a,2026-11-12
+engine_scaleform_heap_bin_allocate_0233a7f0,edge,,24,24,0,0,158454bc2e0725d6,2026-11-12
+engine_scaleform_heap_bin_allocate_aligned_0233ae40,edge,,15,15,0,0,96c644473a7d284e,2026-11-12
+engine_scaleform_heap_bin_free_0233ab20,edge,,18,18,0,0,d4612c99ad56c662,2026-11-12
+engine_scaleform_heap_bin_reallocate_0233b2f0,edge,,29,29,0,0,ff332ac9ec6e0a6f,2026-11-12
+engine_scaleform_heap_reallocate_023392d0,edge,,29,29,0,0,6eb80ddb0113a586,2026-11-12
 engine_segregated_bi_heap_allocate_bottom_02488030,edge,,25,25,0,0,1907ad8897b13483,2026-11-12
 engine_segregated_bi_heap_free_02488900,edge,,25,25,0,0,0b30a2675eae25a6,2026-11-12
 engine_segregated_regular_heap_allocate_02489620,edge,,21,21,0,0,8ca50456f8933b9a,2026-11-12
