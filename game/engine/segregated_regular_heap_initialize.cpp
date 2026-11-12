@@ -19,28 +19,9 @@ namespace {
 using namespace engine::segregated_regular_heap;
 
 constexpr uint64_t descriptors_per_chunk = 0x66;
-constexpr uint64_t descriptor_chunk_size = descriptors_per_chunk * sizeof(Descriptor) + sizeof(engine::fixed_allocator::Chunk);
 constexpr uint64_t descriptor_chunk_alignment = 8;
 constexpr uintptr_t range_alignment_mask = 0xf;
 constexpr uint64_t smallest_range = 0x10;
-static_assert(descriptor_chunk_size == 0x1028);
-
-void set_up_descriptor_pool(engine::fixed_allocator::Allocator *pool, engine::fixed_allocator::BackingAllocator *backing)
-{
-    pool->last_freed_into = nullptr;
-    pool->current = nullptr;
-    pool->chunk_alignment = descriptor_chunk_alignment;
-    pool->chunk_count = 0;
-    pool->free_count = 0;
-    pool->element_size = sizeof(Descriptor);
-    pool->elements_per_chunk = descriptors_per_chunk;
-    pool->chunk_size = descriptor_chunk_size;
-    pool->backing = backing;
-    auto *sentinel = reinterpret_cast<engine::fixed_allocator::Chunk *>(&pool->chunks_with_room);
-    pool->chunks_with_room.prev = sentinel;
-    pool->chunks_with_room.next = sentinel;
-    pool->chunk_tree = nullptr;
-}
 
 }  // namespace
 
@@ -63,7 +44,8 @@ extern "C" bool bb_engine_segregated_regular_heap_initialize_02489340(Heap *heap
     heap->available = bytes;
     heap->capacity = bytes;
     heap->allocation_count = 0;
-    set_up_descriptor_pool(&heap->descriptor_pool, backing);
+    engine::fixed_allocator::set_up(&heap->descriptor_pool, backing, sizeof(Descriptor), descriptors_per_chunk,
+                                    descriptor_chunk_alignment);
     heap->class_mask = 0;
     for (ListNode &sentinel : heap->classes) {
         sentinel.prev = &sentinel;
