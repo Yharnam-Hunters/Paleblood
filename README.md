@@ -145,7 +145,9 @@ python3 tools/boot.py --no-record --game-lib build/game/libbbgame.so \
 ```
 
 Character creation's contract needs a name: `--keyboard-text Hunter` answers the on-screen
-keyboard as if that name was typed (without it the keyboard is canceled).
+keyboard as if that name was typed (without it the keyboard is canceled). `--savedata-from DIR`
+starts the run's saves as a copy of DIR, a save folder an earlier boot kept with `--savedata`, so a
+boot can continue from the game's own save instead of replaying the start.
 
 Plain `python3 tools/boot.py` (no options) runs without the replacements, display, sound or
 input, and records how far the boot gets.
