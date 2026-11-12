@@ -646,6 +646,20 @@ static const uint32_t vertex_position_color[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* As vertex_position_color, with the colour at record vertex + 3 x the instance index (v3, VGPR_COMP_CNT 3), and as
+   vertex_instance_color_stepped, with the instance index over VGT_INSTANCE_STEP_RATE_0 (v1, VGPR_COMP_CNT 1). */
+#define VERTEX_INSTANCE_COLOR(index_vgpr) {                                                                                   \
+    0xd2860009, 0x04010700 | (index_vgpr), /* v_mad_u32_u24 v9, v<index_vgpr>, 3, v0 */                                      \
+    0xebf32000, 0x80000100, /* tbuffer_load_format_xyzw v[1:4], v0, s[0:3], 0 format:[32_32_32_32,FLOAT] idxen */            \
+    0xebf32000, 0x80010509, /* tbuffer_load_format_xyzw v[5:8], v9, s[4:7], 0 format:[32_32_32_32,FLOAT] idxen */            \
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */                                                                                      \
+    0xf800020f, 0x08070605, /* exp param0, v5, v6, v7, v8 */                                                                  \
+    0xf80008cf, 0x04030201, /* exp pos0, v1, v2, v3, v4 done */                                                               \
+    0xbf810000, /* s_endpgm */                                                                                                \
+}
+static const uint32_t vertex_instance_color[] = VERTEX_INSTANCE_COLOR(3);
+static const uint32_t vertex_instance_color_stepped[] = VERTEX_INSTANCE_COLOR(1);
+
 /* As vertex_position_color, but the position also goes out as parameter 0 and the colour as parameter 1. */
 static const uint32_t vertex_colour_second[] = {
     0xebf32000, 0x80000100, /* tbuffer_load_format_xyzw v[1:4], v0, s[0:3], 0 format:[BUF_DATA_FORMAT_32_32_32_32,BUF_NUM_FORMAT_FLOAT] idxen */
