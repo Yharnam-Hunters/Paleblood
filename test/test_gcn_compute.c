@@ -22,13 +22,14 @@
 static uint64_t address_offset; /* the layout's, for the next run */
 static uint64_t error_address;  /* the run-time stop word's GPU address, or 0 */
 static uint32_t lds_bytes;      /* the workgroup's LDS (workgroup memory), or 0 */
+static uint64_t gds_address;    /* the GDS's GPU address, or 0 */
 
 /* Translates code and runs it over one workgroup of LANES lanes with the given user data. */
 static int run(gpu *g, const uint32_t *code, size_t dwords, const uint32_t *user_data)
 {
     const gcn_compute_layout layout = {.local_size = {LANES, 1, 1}, .user_sgprs = 8,
                                        .address_offset = address_offset, .error_address = error_address,
-                                       .lds = {.bytes = lds_bytes}};
+                                       .lds = {.bytes = lds_bytes}, .gds_address = gds_address};
     uint32_t *spirv = NULL;
     size_t words = 0;
     char error[256];
@@ -725,6 +726,32 @@ int main(int argc, char **argv)
             fprintf(stderr, "spill_slots lane %d: 0x%08x %u\n", i, out_words[i], out_words[LANES + i]);
         CHECK(out_words[i] == 0x11111119u && out_words[LANES + i] == (i < 8 ? 1u : 0u));
     }
+
+    /* The GDS (a buffer standing for it: the accesses stay in its first bytes): every lane knows its place
+       in the wave; the 48 appending lanes get the slots 1000 to 1047, once each, rising with the lane within
+       each half wave (a subgroup of 32 lanes ranks its own), and leave the counter at 1048; the 64
+       consuming lanes get 500 down to 437, once each, and leave 436. */
+    gpu_buffer gds;
+    CHECK(make_buffer(&g, &gds) == 0);
+    uint32_t *const counters = gds.mapped;
+    enum { APPENDED = 0x24 / 4, CONSUMED = 0x28 / 4, APPEND_START = 1000, CONSUME_START = 500, APPENDING = 48 };
+    counters[APPENDED] = APPEND_START, counters[CONSUMED] = CONSUME_START;
+    memset(out.mapped, 0, BUFFER_BYTES);
+    gds_address = gds.address;
+    CHECK(run(&g, gds_append_consume, sizeof gds_append_consume / sizeof gds_append_consume[0], user) == 0);
+    gds_address = 0;
+    CHECK(counters[APPENDED] == APPEND_START + APPENDING && counters[CONSUMED] == CONSUME_START - LANES);
+    uint64_t slots = 0, taken = 0;
+    for (int i = 0; i < LANES; i++) {
+        CHECK(out_words[128 + i] == (uint32_t)i);
+        const uint32_t slot = out_words[i], left = out_words[64 + i];
+        if (i % 4 == 0) CHECK(slot == 0);
+        else if (slot >= APPEND_START && slot < APPEND_START + APPENDING) slots |= 1ull << (slot - APPEND_START);
+        if (i % 4 > 1) CHECK(slot > out_words[i - 1]);
+        if (left <= CONSUME_START && left > CONSUME_START - LANES) taken |= 1ull << (CONSUME_START - left);
+        if (i % 32) CHECK(left < out_words[64 + i - 1]);
+    }
+    CHECK(slots == (1ull << APPENDING) - 1 && taken == ~0ull);
 
     /* 24-bit multiplies, bit fields and carries: per case (x, y, z, w), the expected words in
        integer_batch's order, worked out by hand from the definitions (and checked with plain

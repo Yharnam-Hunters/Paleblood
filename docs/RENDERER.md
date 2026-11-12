@@ -259,8 +259,21 @@ Instead:
        writes of 8, 16, 32 and 64 bits, the two-address `read2` and `write2` forms (including `st64`),
        and the 32-bit atomics `add`, `sub`, `min`, `max`, `and`, `or`, `xor`, `wrxchg` and `cmpst`, in plain and
        `_rtn` forms. An access at or past the LDS's size reads 0 and writes nothing. `s_barrier` is a
-       workgroup control barrier that also makes LDS writes visible. The global data share (GDS), the
-       other atomics, `ds_swizzle`, `ds_append` and `ds_consume` stop by name.
+       workgroup control barrier that also makes LDS writes visible. The other atomics, `ds_swizzle`, and
+       `ds_append` and `ds_consume` on the LDS stop by name.
+     - **The global data share (GDS) and append buffers:** the GDS is 64 KB beside guest memory. The
+       runtime keeps it in host memory (`rt_gpu_memory_gds`), which the command processor's `DMA_DATA`
+       steps reach on the CPU and the executor imports for the GPU, so both see the same counters. In a
+       compute shader, `ds_append` and `ds_consume` with the GDS bit move the dword at GDS byte
+       `M0[31:16]` plus the offset by the wave's count of active lanes and give every active lane its old
+       value. `v_mbcnt_lo/hi_u32_b32` gives a lane's rank among the active lanes, so each lane gets a slot
+       of its own. The game's clinic compute shaders use this pattern. Here a wave is a Vulkan subgroup:
+       one elected lane does the atomic for its subgroup, and `v_mbcnt` with EXEC's halves counts the
+       subgroup's active lanes below the lane (a ballot). That is exact with 64-lane subgroups. With
+       32-lane subgroups, each subgroup counts as its own wave, so slots stay unique and dense but are
+       handed out per half wave. `v_mbcnt` with a constant mask uses the compute lane's place in its wave.
+       Other masks, and `v_mbcnt` outside compute shaders (Metal has no subgroup lanes in vertex and
+       fragment functions), stop by name.
      - **Tessellation stages** (`runtime/gcn_spirv.h`): GCN runs a tessellated draw's control points
        through a local shader (LS), which writes them to LDS. It runs the patches through a hull shader
        (HS), which writes the tessellation factors to the factor ring. Then the hardware VS stage runs
