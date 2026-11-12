@@ -305,6 +305,7 @@ RT_SYSLIB("libSceGnmDriver", sceGnmUnmapComputeQueue, unmap_compute_queue);
 #define PM4_INDIRECT_BUFFER 0x3fu
 #define PM4_EVENT_WRITE 0x46u
 #define PM4_EVENT_WRITE_EOP 0x47u
+#define PM4_EVENT_WRITE_EOS 0x48u
 #define PM4_RELEASE_MEM 0x49u
 #define PM4_ACQUIRE_MEM 0x58u
 #define PM4_SET_SH_REG 0x76u
@@ -348,6 +349,11 @@ RT_SYSLIB("libSceGnmDriver", sceGnmUnmapComputeQueue, unmap_compute_queue);
 
 #define EVENT_WRITE_WITHOUT_MEMORY_DWORDS 2
 #define EVENT_WRITE_EOP_DWORDS 6
+/* EVENT_WRITE_EOS: event control, address low, address high (bits 0-15) with a command in bits
+   29-31 (1 stores GDS data, 2 stores the packet's 32-bit value), the value */
+#define EVENT_WRITE_EOS_DWORDS 5
+#define EVENT_WRITE_EOS_COMMAND_SHIFT 29
+#define EVENT_WRITE_EOS_STORE_VALUE 2u
 #define EVENT_WRITE_EOP_DATA_SHIFT 29
 #define INTERRUPT_SELECT_SHIFT 24      /* EVENT_WRITE_EOP and RELEASE_MEM: the interrupt the GPU raises */
 #define EOP_INTERRUPT_SELECT_MASK 3u   /* two bits in EVENT_WRITE_EOP */
@@ -885,6 +891,10 @@ static void complete_packets(const char *fn, const uint32_t *packets, uint32_t d
             const uint32_t interrupt_select = (packet[3] >> INTERRUPT_SELECT_SHIFT) & EOP_INTERRUPT_SELECT_MASK;
             if (interrupt_select == INTERRUPT_RELEASE_MEM_OTHER) rt_fatal(fn, "an EVENT_WRITE_EOP interrupt select of 3, which the packet format does not define");
             write_completion(fn, packet[3] >> EVENT_WRITE_EOP_DATA_SHIFT, packet[2], packet[3], packet[4], packet[5], interrupt_select);
+        } else if (opcode == PM4_EVENT_WRITE_EOS && length == EVENT_WRITE_EOS_DWORDS) {
+            if (packet[3] >> EVENT_WRITE_EOS_COMMAND_SHIFT != EVENT_WRITE_EOS_STORE_VALUE)
+                rt_fatal(fn, "an EVENT_WRITE_EOS storing GDS data: the stand-in has no GDS");
+            write_completion(fn, RELEASE_MEM_DATA_32_BITS, packet[2], packet[3], packet[4], 0, INTERRUPT_NONE);
         } else if (opcode == PM4_WAIT_REG_MEM && length == WAIT_REG_MEM_DWORDS) {
             wait_reg_mem_packet wait;
             memcpy(&wait, packet + 1, sizeof wait);
@@ -948,6 +958,10 @@ RT_SYSLIB("libSceGnmDriver", sceGnmDingDong, ding_dong);
    boot to reach it (4 November 2026) found, besides the compute kinds, these (AMD's public PM4
    format):
      EVENT_WRITE_EOP              a step: the end-of-work value goes to its memory address;
+     EVENT_WRITE_EOS              the same for the end of the shaders' work: a 32-bit value, no
+                                  interrupt (found 11 November 2026, the loading screen after
+                                  character creation; shadPS4's pm4_cmds.h has the fields, facts
+                                  only); one storing GDS data stops;
      WAIT_REG_MEM                 a step: the renderer's thread waits for the memory to hold what
                                   the GPU waits for (two seconds at most);
      ACQUIRE_MEM, EVENT_WRITE     skipped: cache control and pipeline events, with no GPU caches
