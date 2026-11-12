@@ -182,6 +182,89 @@ def replacement_definitions(root: str, system: str) -> dict[str, str]:
     return out
 
 
+FAMILY_TABLE_SUFFIXES = ('.csv', '.verification.csv', '.matching.csv', '.reviews.csv')
+
+
+def passing_results(results: list[dict], current: str) -> tuple[set[str], set[str]]:
+    """Members with a current, passing edge result and with a current, passing recorded result."""
+    def ok(r: dict, cases: str) -> bool:
+        return (r['cases'] == cases and r['option'] == '' and r['source'] == current and r['total'].isdigit()
+                and int(r['total']) > 0 and r['failed'] == '0' and (cases != 'edge' or r['passed'] == r['total']))
+    return ({r['function'] for r in results if ok(r, 'edge')},
+            {r['function'] for r in results if ok(r, 'recorded')})
+
+
+def family_evidence(root: str, family: dict, members: list[dict]) -> dict[str, set[str]]:
+    """Per kind of evidence the member names that have it: 'edge' and 'recorded' (current, passing
+    results), 'matched' (a current byte-exact row) and 'approved' (an approved review, in the family's
+    review table or symbols/reviews.csv). tools/promote.py --families promotes on these."""
+    results = fam.read_table(fam.verification_path(root, family['family']), verification.VERIFICATION_HEADER)
+    edge_ok, recorded_ok = passing_results(results, fam.source_hash(root, family))
+    family_reviews, _ = read_family_reviews(root, family, members)
+    shared = {}
+    path = os.path.join(root, 'symbols', 'reviews.csv')
+    if os.path.isfile(path):
+        with open(path, newline='') as f:
+            shared = {r['address']: r for r in csv.DictReader(f)}
+    approved = set()
+    for m in members:
+        review = family_reviews.get(m['address']) or shared.get(m['address'])
+        if review and review.get('verdict') == 'approved':
+            approved.add(fam.member_name(family, m['address']))
+    return {'edge': edge_ok, 'recorded': recorded_ok, 'matched': match.byte_exact_members(root, family),
+            'approved': approved}
+
+
+def read_family_reviews(root: str, family: dict, members: list[dict]) -> tuple[dict, list[str]]:
+    """symbols/families/<family>.reviews.csv: one symbols/reviews.csv-style row per reviewed member
+    (a family's reviews would overflow reviews.csv). Returns address -> latest row, and errors."""
+    path = os.path.join(root, fam.MEMBERS_DIR, f"{family['family']}.reviews.csv")
+    rel = f"symbols/families/{family['family']}.reviews.csv"
+    if not os.path.isfile(path):
+        return {}, []
+    with open(path, newline='') as f:
+        rows = list(csv.reader(f))
+    if not rows or rows[0] != REVIEW_HEADER:
+        return {}, [f"{rel}: header must be {','.join(REVIEW_HEADER)}"]
+    errs, out = [], {}
+    names = {m['address']: fam.member_name(family, m['address']) for m in members}
+    for n, row in enumerate(rows[1:], 2):
+        if len(row) != len(REVIEW_HEADER):
+            errs.append(f'{rel}:{n}: expected {len(REVIEW_HEADER)} fields')
+            continue
+        r = dict(zip(REVIEW_HEADER, row))
+        if r['address'] not in names:
+            errs.append(f"{rel}:{n}: {r['address']} is not a member of {family['family']}")
+        elif r['name'] != names[r['address']]:
+            errs.append(f"{rel}:{n}: name must be {names[r['address']]}")
+        if r['verdict'] not in ('approved', 'changes requested'):
+            errs.append(f"{rel}:{n}: verdict must be 'approved' or 'changes requested'")
+        if not r['reviewer'].strip():
+            errs.append(f'{rel}:{n}: reviewer is empty')
+        out[r['address']] = r       # the latest row for an address counts
+    return out, errs
+
+
+def check_matching_source(root: str, family: dict) -> list[str]:
+    """A family's matching source, once it exists or is used, is tools/family_emit.py's output."""
+    path = family_emit.matching_path(root, family)
+    table = match.family_table(root, family['family'])
+    if not os.path.isfile(path) and not os.path.isfile(table):
+        return []
+    try:
+        expected = family_emit.render_matching(root, family['family'])
+    except SystemExit as e:
+        return [f"symbols/families.csv: {family['family']}: {e}"]
+    current = None
+    if os.path.isfile(path):
+        with open(path) as f:
+            current = f.read()
+    if current != expected:
+        return [f"{os.path.relpath(path, root)} differs from tools/family_emit.py --matching's output "
+                f"(tools/family_emit.py {family['family']} --matching)"]
+    return []
+
+
 def check_families(root: str, export: list[dict], named: set[str], hooked: set[str], systems: list[str]) -> list[str]:
     """symbols/families.csv and its member and verification tables (tools/families.py)."""
     errs: list[str] = []
@@ -249,12 +332,12 @@ def check_families(root: str, export: list[dict], named: set[str], hooked: set[s
                             f"{r['cases']} row for {r['function']}")
                 break
             seen_results.add(key)
-        edge_ok = {r['function'] for r in results if r['cases'] == 'edge' and r['option'] == ''
-                   and r['source'] == current and r['total'].isdigit() and int(r['total']) > 0 and r['failed'] == '0'
-                   and r['passed'] == r['total']}
-        recorded_ok = {r['function'] for r in results if r['cases'] == 'recorded' and r['option'] == ''
-                       and r['source'] == current and r['total'].isdigit() and int(r['total']) > 0
-                       and r['failed'] == '0'}
+        edge_ok, recorded_ok = passing_results(results, current)
+        family_reviews, review_errs = read_family_reviews(root, family, members)
+        errs += review_errs
+        errs += match.check_family(root, family, members)
+        matched_ok = match.byte_exact_members(root, family)
+        errs += check_matching_source(root, family)
         if shape.field is not None and name not in family_emit.TEMPLATES:
             errs.append(f'{where}: a parameterized family needs a template in tools/family_emit.py')
         elif shape.field is not None:
@@ -320,18 +403,20 @@ def check_families(root: str, export: list[dict], named: set[str], hooked: set[s
                 errs.append(f'{mw}: {member} is {m["status"]} without a current, passing edge result in '
                             f'symbols/families/{name}.verification.csv (tools/verify.py family --record)')
             if m['status'] == 'verified':
-                review = reviews.get(a)
-                if member not in recorded_ok:
-                    errs.append(f'{mw}: {member} is verified without a current, passing recorded result')
+                review = family_reviews.get(a) or reviews.get(a)
+                if member not in recorded_ok and member not in matched_ok:
+                    errs.append(f'{mw}: {member} is verified without a current, passing recorded result or a '
+                                f'current byte-exact row in symbols/families/{name}.matching.csv (docs/MATCHING.md)')
                 if not review or review.get('verdict') != 'approved':
-                    errs.append(f'{mw}: {member} is verified without an approved review in symbols/reviews.csv')
+                    errs.append(f'{mw}: {member} is verified without an approved review in '
+                                f'symbols/families/{name}.reviews.csv or symbols/reviews.csv')
         if (len(members), total_bytes) != (int(family['members']), int(family['bytes'])):
             errs.append(f"{where}: {rel} has {len(members)} members ({total_bytes} bytes); the row registers "
                         f"{family['members']} ({family['bytes']} bytes)")
         for r in results:
             if r['function'] not in member_names:
                 errs.append(f"symbols/families/{name}.verification.csv:{r['_line']}: {r['function']} is not a member")
-    known = {f'{name}.csv' for name in seen_families} | {f'{name}.verification.csv' for name in seen_families}
+    known = {f'{name}{suffix}' for name in seen_families for suffix in FAMILY_TABLE_SUFFIXES}
     directory = os.path.join(root, fam.MEMBERS_DIR)
     if os.path.isdir(directory):
         for fn in sorted(os.listdir(directory)):
