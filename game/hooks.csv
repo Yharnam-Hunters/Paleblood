@@ -184,6 +184,7 @@ address,replacement,system,returns
 0x024716d0,bb_loading_mount_table_reallocate_024716d0,loading,void
 0x0247eb80,bb_render_read_present_pool_counter,render,i64
 0x02483e80,bb_kernel_condition_wait,kernel,i32
+0x02484de0,bb_engine_fixed_allocator_free_02484de0,engine,void
 0x024858a0,bb_engine_regular_heap_free_024858a0,engine,void
 0x02486810,bb_engine_robust_heap_allocate_02486810,engine,i64
 0x02486cd0,bb_engine_robust_heap_allocate_aligned_02486cd0,engine,i64
