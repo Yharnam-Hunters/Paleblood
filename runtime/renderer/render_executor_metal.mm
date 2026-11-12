@@ -561,6 +561,23 @@ static const MetalImageFormat *image_format(const rt_image_descriptor &d, char *
     return nullptr;
 }
 
+/* A bounded common-renderer policy: R8's physical red component appears in one
+   logical slot and the remaining slots are constants. Other mappings retain their
+   existing profile; native storage views always keep physical channel order. */
+static bool storage_r8_projection(const rt_image_descriptor &d)
+{
+    const bool dimension = d.type == RT_IMAGE_1D || d.type == RT_IMAGE_2D ||
+        d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY;
+    if (!dimension || d.data_format != 1 || d.num_format != 0) return false;
+    unsigned red = 0;
+    for (unsigned i = 0; i < 4; ++i) {
+        const unsigned select = d.swizzle >> (3 * i) & 7;
+        if (select == 4) ++red;
+        else if (select > 1) return false;
+    }
+    return red == 1;
+}
+
 static id<MTLTexture> image_for(rt_executor *x, const uint32_t words[RT_IMAGE_DESCRIPTOR_WORDS],
                                 const rt_image_descriptor &d, const MetalImageFormat &format, bool storage, rt_tiling *storage_layout,
                                 rt_volume_tiling *storage_volume,
@@ -577,6 +594,7 @@ static id<MTLTexture> image_for(rt_executor *x, const uint32_t words[RT_IMAGE_DE
         d.tiling_index == 13 && d.pitch % 8 == 0;
     const bool arrayed = d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY || cube;
     const bool volume = storage && d.type == RT_IMAGE_3D;
+    const bool r8_projection = storage && storage_r8_projection(d);
     if (!one_d && d.type != RT_IMAGE_2D && d.type != RT_IMAGE_2D_ARRAY && !volume && !cube) {
         if (storage) return failed(error,size,"compute image type %u is outside 1D/2D arrays and the selected 3D volume profile",d.type), nil;
         return failed(error, size, "only 1D/2D %s images and their arrays are modeled",stage), nil;
@@ -609,7 +627,7 @@ static id<MTLTexture> image_for(rt_executor *x, const uint32_t words[RT_IMAGE_DE
                 if (select < 4 || (selected_components & (1u << (select - 4))))
                     return failed(error,size,"compute image swizzle must preserve its stored components or permute all four"), nil;
                 selected_components |= 1u << (select - 4);
-            } else if (i < format.components && select != 4 + i)
+            } else if (!r8_projection && i < format.components && select != 4 + i)
                 return failed(error,size,"compute image swizzle must preserve its stored components"), nil;
             /* The common translator maps storage channels; native views keep physical order. */
             *channels[i] = components[i];
@@ -1136,7 +1154,7 @@ static int compute_resources(rt_executor *x, const rt_compute_shader &shader, co
         out.images[i] = {images[i].origin,
             d.type == RT_IMAGE_1D || d.type == RT_IMAGE_1D_ARRAY ? GCN_IMAGE_1D : d.type == RT_IMAGE_3D ? GCN_IMAGE_3D : GCN_IMAGE_2D,
             d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY || d.type == RT_IMAGE_CUBE,format->type,format->components,0,0,
-            format->components == 4 && d.type != RT_IMAGE_3D ? d.swizzle : 0};
+            ((format->components == 4 && d.type != RT_IMAGE_3D) || storage_r8_projection(d)) ? d.swizzle : 0};
         out.access[i] = images[i].access;
         if (!(out.textures[i] = image_for(x,words,d,*format,true,&out.layouts[i],&out.volumes[i],error,size))) return -1;
         for (unsigned j = 0; j < i; ++j) {

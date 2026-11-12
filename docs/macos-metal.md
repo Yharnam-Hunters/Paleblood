@@ -381,10 +381,25 @@ read/write access uses the device's supported [read/write texture tier](https://
 RG8 UNORM and RG32 FLOAT require separate accesses. Four-component 1D/2D storage images and arrays accept
 bijective permutations of their four channel selectors. The common translator maps loads
 forward and stores by the inverse mapping; native views retain physical channel order. The
-compiled image-binding cache includes that mapping. One- and two-component stored channels
-retain their identity-only profile; unused selectors do not affect storage. Nonzero mips, BC storage, sRGB reads, unsupported dimensions,
+compiled image-binding cache includes that mapping. Outside the R8 profile below, one- and
+two-component stored channels retain their identity-only profile and unused selectors do not
+affect storage. Nonzero mips, BC storage, sRGB reads, unsupported dimensions,
 sampling, partial component stores and unsupported formats fail explicitly. Overlapping writable
 bindings must share the same native view; general overlapping-view coherence remains open.
+
+R8 UNORM storage (`DATA_FORMAT=1`, `NUM_FORMAT=0`) in 1D/2D images and their arrays
+also supports 32 selector mappings: exactly one logical slot selects the physical red component
+(selector 4), and each other slot selects constant zero or one (selectors 0 and 1). Loads return
+those logical components in DMASK order. A store's DMASK must include the red-valued logical
+slot; the common translator packs its VGPRs and writes the inverse mapping. READ, WRITE and
+READ/WRITE retain their existing access and native capability checks. Native views remain in
+physical order, and the compiled binding cache includes the complete selected mapping.
+
+Twenty-four mappings place red outside the first logical slot. Eight already admitted mappings
+place red first; forwarding their selectors now honors the other slots' constants. The exact
+XYZW identity and other legacy mappings keep their existing profile. This is an explicit common
+renderer host policy; general GFX7 DST_SEL inverse-store, DA and view equivalence remain
+unestablished. Cube/3D images, sRGB and other formats gain no new selector profile.
 
 Descriptors and texels are resolved before every dispatch, including pipeline-cache hits. Cached
 translations also match image dimensions, array/type/component layout and origin. Completed stores
