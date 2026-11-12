@@ -2608,3 +2608,16 @@ metadata.
 - [FreeBSD `pthread_attr(3)`](https://man.freebsd.org/cgi/man.cgi?query=pthread_attr_setdetachstate&sektion=3), [libthr `thr_attr.c`](https://cgit.freebsd.org/src/tree/lib/libthr/thread/thr_attr.c) (`_pthread_attr_setdetachstate`, `_pthread_attr_get_np`), [`thr_create.c`](https://cgit.freebsd.org/src/tree/lib/libthr/thread/thr_create.c) (`_pthread_create`: the default attribute for a null or empty variable) and [`include/pthread.h`](https://cgit.freebsd.org/src/tree/include/pthread.h) (`PTHREAD_CREATE_JOINABLE`, `PTHREAD_CREATE_DETACHED`)
 - [OpenOrbis `include/orbis/_types/pthread.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/_types/pthread.h) - the PS4 homebrew SDK's `ORBIS_PTHREAD_CREATE_*` values, which follow FreeBSD's
 - FreeBSD 9.0 [`mkdir(2)`](https://man.freebsd.org/cgi/man.cgi?query=mkdir&sektion=2&manpath=FreeBSD+9.0-RELEASE), [`rmdir(2)`](https://man.freebsd.org/cgi/man.cgi?query=rmdir&sektion=2&manpath=FreeBSD+9.0-RELEASE), [`unlink(2)`](https://man.freebsd.org/cgi/man.cgi?query=unlink&sektion=2&manpath=FreeBSD+9.0-RELEASE) and [current `unlink(2)`](https://man.freebsd.org/cgi/man.cgi?query=unlink&sektion=2); FreeBSD [`vfs_syscalls.c`](https://cgit.freebsd.org/src/tree/sys/kern/vfs_syscalls.c?h=stable/9) (stable/9 and main: `kern_mkdirat` and its mode, `kern_rmdirat`/`kern_frmdirat`, `kern_unlinkat`/`kern_funlinkat` and `EPERM` for a directory) and [`vfs_lookup.c`](https://cgit.freebsd.org/src/tree/sys/kern/vfs_lookup.c?h=stable/9) (stable/9 and main: the read-only checks and the `.` check, and their order); [OpenOrbis `libkernel.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/libkernel.h) and [`_types/kernel.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/_types/kernel.h) (`OrbisKernelMode`) for the shapes
+
+## Occlusion query counts (Gnm, a stand-in)
+
+The game's occlusion queries reach the command processor as `EVENT_WRITE` packets with the `ZPASS_DONE`
+index: `PIXEL_PIPE_STAT_CONTROL` before each dump, then `PIXEL_PIPE_STAT_DUMP` with an address, where the
+GPU stores each of its 8 depth blocks' running count of samples that passed the depth test (a 64-bit begin
+and end pair per block, bit 63 the valid bit; the game sums end - begin). `runtime/syslib/gnm.c` skips the
+control event and, for a dump, stores an invented running count (0x10000 more per dump, the same in every
+block, valid bit set), so **every query reads visible**. This is a stand-in, not the GPU's behavior: real
+counts need Vulkan occlusion queries over the draws between two dumps, copied into the game's 8-block
+layout (follow-up). Until then, anything the game decides from visibility (flares, culling of hidden
+objects) behaves as if everything were visible.
+

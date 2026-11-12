@@ -766,6 +766,10 @@ Instead:
 Each phase lands in small PRs with tests. A boot is recorded after each runtime change. The wiki's
 Runtime page and Gallery show where it stands.
 
+**Stand-in: occlusion counts.** The game's occlusion query dumps (`EVENT_WRITE` `PIXEL_PIPE_STAT_DUMP`)
+store an invented, always-visible count (`runtime/syslib/gnm.c`; docs/runtime-syscalls.md, "Occlusion
+query counts"). Real counts from Vulkan occlusion queries are the follow-up.
+
 
 ## Guest memory on the GPU
 
