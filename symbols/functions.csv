@@ -259,6 +259,14 @@ address,size,name,system,status,notes
 0x02470d50,517,loading_mount_table_push_back_02470d50,loading,edge-verified,mount table push_back: grow 1.5x when full (source inside the table found again); copy name and target; end moves on even without a buffer
 0x024716d0,539,loading_mount_table_reallocate_024716d0,loading,edge-verified,mount table reallocate to exact capacity: copy entries; destroy old (heap text freed); free old buffer; failed allocation: transaction jump or report
 0x0247eb80,16,render_read_present_pool_counter,render,edge-verified,"full-QWORD locked read/writeback retry; XOR before each attempt; caller adds one. Real AMD64 write cycles retained; non-AMD64 bridge unresolved Synthetic edges pass; no recordings."
+0x0247ecb0,15,kernel_light_mutex_construct,kernel,edge-verified,DLLightMutex constructor: its vtable and a cleared initialized flag; the system mutex handle is left as it was
+0x0247ecc0,118,kernel_light_mutex_delete,kernel,edge-verified,DLLightMutex deleting destructor: destroys an initialized mutex (errors reported) without clearing the flag then frees the object
+0x0247ed40,115,kernel_light_mutex_destruct,kernel,edge-verified,DLLightMutex destructor: destroys an initialized mutex; EBUSY keeps the flag set; EINVAL and unknown errors reported
+0x0247edc0,124,kernel_light_mutex_finalize,kernel,edge-verified,DLLightMutex finalize: asks the vtable; EBUSY returns -2 and keeps the flag; otherwise the flag clears after any error reports
+0x0247ee40,49,kernel_light_mutex_initialize,kernel,edge-verified,DLLightMutex initialize: asks the vtable; the PthreadMutex initialize (0x02483fe0); a nonzero result is returned and the flag stays clear
+0x0247ee90,226,kernel_light_mutex_lock,kernel,edge-verified,DLLightMutex lock: the PthreadMutex lock inlined (forever); ETIMEDOUT returns -3; a mutex not initialized is reported then used
+0x0247ef80,230,kernel_light_mutex_try_lock,kernel,edge-verified,DLLightMutex try lock: the PthreadMutex try lock inlined; EBUSY returns -2; a mutex not initialized is reported then used
+0x0247f070,124,kernel_light_mutex_unlock,kernel,edge-verified,DLLightMutex unlock: the PthreadMutex unlock inlined; EPERM accepted; a mutex not initialized is reported then used
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
 0x02484ae0,74,engine_fixed_allocator_release_chunks_02484ae0,engine,edge-verified,"DLFixedAllocator chunk release: left subtree, right subtree, then the node's own chunk back to the backing allocator (vtable +0x70); the tree is left as it was"
 0x02484b30,239,engine_fixed_allocator_initialize_02484b30,engine,edge-verified,DLFixedAllocator set-up: reports a non-power-of-two alignment and room for fewer than two elements; element at least 8 rounded to the alignment; empty chunk list and tree
