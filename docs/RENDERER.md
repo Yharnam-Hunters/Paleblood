@@ -246,10 +246,36 @@ Instead:
        when the callee is straight-line code ending in that return, which it checks; a callee with a
        branch, an image instruction or a write to the return pair stops by name. Descriptor analyses
        take a call as writing every SGPR.
-     - **Not yet:** anything else stops with the instruction's name. Three groups need designs of their own:
+     - **The local data share (`ds_*`):** a workgroup's shared memory. In compute shaders it is
+       workgroup memory of the size the layout gives (`gcn_lds`). In the tessellation stages it is a
+       buffer, one block per workgroup, that lasts from one pass to the next (below). Covered: reads and
+       writes of 8, 16, 32 and 64 bits, the two-address `read2` and `write2` forms (including `st64`),
+       and the 32-bit atomics `add`, `sub`, `min`, `max`, `and`, `or`, `xor`, `wrxchg` and `cmpst`, in plain and
+       `_rtn` forms. An access at or past the LDS's size reads 0 and writes nothing. `s_barrier` is a
+       workgroup control barrier that also makes LDS writes visible. The global data share (GDS), the
+       other atomics, `ds_swizzle`, `ds_append` and `ds_consume` stop by name.
+     - **Tessellation stages** (`runtime/gcn_spirv.h`): GCN runs a tessellated draw's control points
+       through a local shader (LS), which writes them to LDS. It runs the patches through a hull shader
+       (HS), which writes the tessellation factors to the factor ring. Then the hardware VS stage runs
+       as the domain shader, once for each point the tessellator makes, and reads LDS. The clinic's
+       first tessellated draw does exactly this: its domain shader reads the local shader's outputs with
+       `ds_read2_b32`.
+       - Here the local and hull shaders become compute shaders over the same workgroups, one per
+         `VGT_LS_HS_CONFIG` NUM_PATCHES patches, and their LDS stays in a buffer between the passes.
+       - The local shader's lane l is control point l mod HS_NUM_INPUT_CP. It starts with v0 = its vertex
+         index and v1 = l (RelAutoIndex, as Mesa's radeonsi names the LS inputs).
+       - The hull shader starts with v0 = the patch and v1 = the patch in its workgroup | the output point
+         << 8. After the user SGPRs it gets the off-chip offset (when OC_LDS_EN is set) and the
+         workgroup's factor-ring offset. shadPS4's frontend gives the HS the same inputs (facts only).
+       - The hull shader's descriptors based in the factor ring are redirected to a factor buffer.
+       - The domain shader becomes the tessellation evaluation shader: v0 and v1 are (u, v), v2 is the
+         patch in its workgroup, v3 is PrimitiveId. `VGT_TF_PARAM` supplies its execution modes.
+       - A generated control shader reads each patch's factors from the factor buffer. It clamps them
+         to `VGT_HOS_MIN/MAX_TESS_LEVEL` and writes the tessellation levels; isolines' two factors are
+         reversed, as Mesa writes them.
+     - **Not yet:** anything else stops with the instruction's name. Two groups need designs of their own:
        - **geometry shaders**, which pass vertices on with `s_sendmsg` (about 1,700 of the
          game's shaders);
-       - the GPU's on-chip shared memory (`ds_*`);
        - reads across lanes (`v_readlane`, `v_writelane`, `ds_swizzle`), whose results depend
          on GCN's 64-lane wave where Vulkan and Metal GPUs often run 32 lanes.
      - **Tests:** `test/test_gcn_spirv.c` checks every module with `spirv-val` for Vulkan 1.2.
@@ -605,7 +631,17 @@ Instead:
           nothing is skipped. The hardware shader stages (`VGT_SHADER_STAGES_EN`, from the GPU
           library's stage setter `0x01476030`) must be vertex and pixel only: tessellation and
           geometry-shader stages stop by name at the draw, and the local, hull, export and geometry
-          stages' user data is set aside until then. Their shaders (`sceGnmSetLsShader`, `SetHsShader`, `SetEsShader`, `SetGsShader` and the Update forms, with the argument orders of shadPS4's `gnmdriver.cpp`) are recorded like the vertex shader's (`runtime/render_calls.h` decodes their blocks: the local shader's LDS size, the hull shader's `VGT_TF_PARAM`, tessellation level clamps and `VGT_LS_HS_CONFIG`), and the stop names them. The clinic's first tessellated draw (local shader `0x20d52d5b00`, hull `0x20d52e0100`) draws quads of one control point, 15 patches a workgroup. Triangle strips (`VGT_PRIMITIVE_TYPE` 6) are drawn too. A view of one
+          stages' user data is set aside until then. Their shaders (`sceGnmSetLsShader`, `SetHsShader`, `SetEsShader`, `SetGsShader` and the Update forms, with the argument orders of shadPS4's `gnmdriver.cpp`) are recorded like the vertex shader's (`runtime/render_calls.h` decodes their blocks: the local shader's LDS size, the hull shader's `VGT_TF_PARAM`, tessellation level clamps and `VGT_LS_HS_CONFIG`), and the stop names them. A tessellated draw (`VGT_SHADER_STAGES_EN` 0x45) is drawn in three steps. First, the local and
+          hull shaders run as compute passes over a 16 MiB LDS buffer, one workgroup per `NUM_PATCHES` patches. Second, the hull
+          pass's factor-ring writes land in a 128 KiB factor buffer (the ring's size). Third, a Vulkan tessellation pipeline draws:
+          the empty vertex shader, the generated control shader, the domain shader as the evaluation shader, and the pixel shader,
+          over patches of `HS_NUM_INPUT_CP` points (`runtime/gcn_spirv.h`, "Tessellation").
+          - The draw's record (its control points, first, and index buffer) is a batch entry. An indirect draw's vertex count is
+            copied into it on the GPU, and so is the passes' workgroup count, one per control point (lanes past the patches do
+            nothing). A draw of more patches than the buffers hold stops at run time by name.
+          - Domain origin and winding are Vulkan's defaults with `VGT_TF_PARAM`'s order, as shadPS4 sets them (facts only).
+          - Instanced tessellated draws, a hull shader with `TG_SIZE_EN`, a domain shader calling a fetch shader, and the
+            geometry-shader stages stop by name. The clinic's first tessellated draw (local shader `0x20d52d5b00`, hull `0x20d52e0100`) draws quads of one control point, 15 patches a workgroup. Triangle strips (`VGT_PRIMITIVE_TYPE` 6) are drawn too. A view of one
           slice of an array depth target (`DB_DEPTH_VIEW` SLICE_START = SLICE_MAX) draws into an image
           kept for that slice alone, at that slice's memory: `DB_DEPTH_SLICE` tiles of 64 elements per
           slice past the depth and stencil bases (shadPS4's `GetDepthSliceSize`), where its depth is

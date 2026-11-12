@@ -134,6 +134,9 @@ typedef struct {
     uint32_t resources[2];           /* PGM_RSRC1 and PGM_RSRC2 as written */
     uint32_t registers[3];           /* a geometry shader's VGT_STRMOUT_CONFIG, VGT_GS_OUT_PRIM_TYPE, VGT_GS_INSTANCE_CNT (0 for export) */
 } rt_geometry_stage_shader;
+/* The tessellation-factor ring's guest address: the runtime's answer to
+   sceGnmGetTheTessellationFactorRingBufferBaseAddress (runtime/syslib/gnm.c), where the title maps it. */
+#define RT_TESSELLATION_FACTOR_RING 0xfe00000000ull
 enum { RT_TESS_ISOLINES = 0, RT_TESS_TRIANGLES = 1, RT_TESS_QUADS = 2 };
 enum { RT_TESS_INTEGER = 0, RT_TESS_POW2 = 1, RT_TESS_FRACTIONAL_ODD = 2, RT_TESS_FRACTIONAL_EVEN = 3 };
 enum { RT_TESS_POINTS = 0, RT_TESS_LINES = 1, RT_TESS_TRIANGLES_CW = 2, RT_TESS_TRIANGLES_CCW = 3 };

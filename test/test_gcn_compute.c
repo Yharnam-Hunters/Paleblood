@@ -21,12 +21,14 @@
 
 static uint64_t address_offset; /* the layout's, for the next run */
 static uint64_t error_address;  /* the run-time stop word's GPU address, or 0 */
+static uint32_t lds_bytes;      /* the workgroup's LDS (workgroup memory), or 0 */
 
 /* Translates code and runs it over one workgroup of LANES lanes with the given user data. */
 static int run(gpu *g, const uint32_t *code, size_t dwords, const uint32_t *user_data)
 {
     const gcn_compute_layout layout = {.local_size = {LANES, 1, 1}, .user_sgprs = 8,
-                                       .address_offset = address_offset, .error_address = error_address};
+                                       .address_offset = address_offset, .error_address = error_address,
+                                       .lds = {.bytes = lds_bytes}};
     uint32_t *spirv = NULL;
     size_t words = 0;
     char error[256];
@@ -122,6 +124,22 @@ int main(int argc, char **argv)
         }
         vkDeviceWaitIdle(g.device);
         return failures != 0;
+    }
+
+    /* The LDS (gcn_programs.h's lds_exchange): each lane sees its neighbour's write after s_barrier, the
+       atomic count of 64 lanes, the bytes four lanes wrote, and 0 past the LDS. */
+    memset(out.mapped, 0, BUFFER_BYTES);
+    lds_bytes = 272;
+    CHECK(run(&g, lds_exchange, sizeof lds_exchange / sizeof lds_exchange[0], user) == 0);
+    lds_bytes = 0;
+    for (int i = 0; i < LANES; i++) {
+        const uint32_t *lane = out_words + i * 8;
+        CHECK(lane[0] == (uint32_t)((i ^ 1) + 100));
+        CHECK(lane[1] == (uint32_t)(i + 100));
+        CHECK(lane[2] == (i < LANES - 1 ? (uint32_t)(i + 101) : 64u)); /* lane 63's next dword is the count */
+        CHECK(lane[3] == 64u);
+        CHECK(lane[4] == 0x0302u);
+        CHECK(lane[5] == 0u);
     }
 
     /* out[i] = in[i] * 2.5 + 1 */

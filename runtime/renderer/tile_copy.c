@@ -9,7 +9,7 @@
 #include <string.h>
 
 enum {
-    SPV_OP_U_DIV = 134, SPV_OP_U_MOD = 137, MAX_OPERANDS = 4, BYTES_PER_WORD = 4,
+    MAX_OPERANDS = 4, BYTES_PER_WORD = 4,
     /* SPIR-V capabilities for 8- and 16-bit values in buffer memory (core in SPIR-V 1.5) */
     SPV_CAPABILITY_STORAGE_BUFFER_16_BIT_ACCESS = 4433, SPV_CAPABILITY_STORAGE_BUFFER_8_BIT_ACCESS = 4448
 };

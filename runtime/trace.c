@@ -27,6 +27,7 @@ enum {
     TABLE_BITS = 20,                       /* bytes noted per call: up to half of 2^20 */
     QWORD_LIMIT = 1 << 16,
     PRIVATE_STACK = 16 << 20,
+    DEAD_STACK = 1 << 20,               /* how far below the caller's rsp import changes are ignored */
     TRAP_FLAG = 0x100,
     DIRECTION_FLAG = 0x400,
     IMPORT_CALL_LIMIT = 256,
@@ -62,6 +63,7 @@ typedef struct {
     rt_code_range code[RT_TRACE_MAX_RANGES];
     size_t ranges;
     uintptr_t stack_lo, stack_top, args_lo, args_hi, stack_hi;
+    uintptr_t dead_lo, dead_hi;         /* the calling thread's stack below its caller's rsp */
     slot *table;
     size_t used;
     uint64_t *qword;
@@ -404,10 +406,14 @@ static void import_return(trace_state *t, ucontext_t *uc)
         size_t off = 0;
         if (t->snap_ptr[i] < visible)
             off = visible - t->snap_ptr[i] < t->snap_len[i] ? (size_t)(visible - t->snap_ptr[i]) : t->snap_len[i];
+        /* A stale argument register may point below the caller's rsp, where the thread's own
+           native frames (the recording dispatch) live: nothing the caller can see. */
+        const uint64_t at = t->snap_ptr[i];
         while (off < t->snap_len[i]) {
-            if (now[off] == before[off]) { off++; continue; }
+            if (now[off] == before[off] || (at + off >= t->dead_lo && at + off < t->dead_hi)) { off++; continue; }
             size_t end = off;
-            while (end < t->snap_len[i] && now[end] != before[end]) end++;
+            while (end < t->snap_len[i] && now[end] != before[end] && !(at + end >= t->dead_lo && at + end < t->dead_hi))
+                end++;
             if (t->nwrites >= WRITE_LIMIT || t->write_used + (end - off) > WRITE_BYTES) {
                 t->incomplete = "an import changed too much memory to script";
                 break;
@@ -659,6 +665,10 @@ int rt_trace_call(const void *entry, const rt_trace_args *args, const rt_code_ra
     t.stack_lo = (uintptr_t)stack;
     t.stack_hi = (uintptr_t)stack + PRIVATE_STACK;
     t.stack_top = ret_slot;
+    if (args->caller_rsp > DEAD_STACK) {
+        t.dead_lo = args->caller_rsp - DEAD_STACK;
+        t.dead_hi = args->caller_rsp;
+    }
     t.args_lo = ret_slot + 8;
     t.args_hi = ret_slot + 8 + 8 * RT_TRACE_STACK_SLOTS;
     t.pid = getpid();

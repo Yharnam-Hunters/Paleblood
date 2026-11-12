@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Upgrades edge-verified functions to verified once inputs recorded in the game exist and pass.
 
-usage: promote.py [--captures DIR] [--dry-run]
+usage: promote.py [--captures DIR] [--dry-run] [--check-unreviewed]
 
 For each row of symbols/functions.csv with status edge-verified: if the capture library
 (--captures, default $BB_CAPTURES, then ../captures) holds recorded cases for it (CAPTURES/NAME/*.json),
@@ -13,6 +13,11 @@ recorded in symbols/verification.csv (verify.py --record; failing cases listed i
 symbols/quarantine.csv with their reason don't count as failures), and the function's whole
 record must then satisfy tools/validate_functions.py's rule for verified: no unexplained
 failure in any case set or option, nothing stale. Nothing changes otherwise; a failure is printed and makes the exit code 1. Without a capture library or an executable it does nothing and says so.
+
+--check-unreviewed also runs the recorded and edge cases of functions that have recordings but no
+approved review yet, without recording anything, and lists those that pass as awaiting review
+(the next step: an independent review, CONTRIBUTING.md); a failure among them makes the exit
+code 1 too.
 """
 from __future__ import annotations
 
@@ -56,6 +61,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--captures', default=os.environ.get('BB_CAPTURES') or os.path.join(ROOT, '..', 'captures'))
     ap.add_argument('--dry-run', action='store_true')
+    ap.add_argument('--check-unreviewed', action='store_true',
+                    help='also verify functions with recordings but no approved review, and list those that pass')
     a = ap.parse_args()
     if not os.path.isdir(a.captures):
         print(f'promote: no capture library at {a.captures}; nothing to do')
@@ -66,7 +73,7 @@ def main() -> int:
     rows = list(csv.reader(io.StringIO(text)))
     head = rows[0]
     status, name_col = head.index('status'), head.index('name')
-    changed, failed = [], False
+    changed, awaiting, failed = [], [], False
     for row in rows[1:]:
         if row[status] != 'edge-verified':
             continue
@@ -81,14 +88,28 @@ def main() -> int:
         sys.path.insert(0, os.path.join(ROOT, 'tools'))
         from validate_functions import check_reviews
         if check_reviews(ROOT, [{'address': row[head.index('address')], 'name': name, 'status': 'verified', '_line': 0}]):
-            print(f'promote: {name}: recordings exist, but no approved review yet (symbols/reviews.csv); left edge-verified')
+            if not a.check_unreviewed:
+                print(f'promote: {name}: recordings exist, but no approved review yet (symbols/reviews.csv); left edge-verified')
+                continue
+            ok_r, msg_r = passes(name, recorded, None)
+            ok_e, msg_e = passes(name, edge, None) if ok_r else (False, 'not run')
+            if ok_r and ok_e:
+                print(f'promote: {name}: recorded {msg_r}, edge {msg_e}: awaiting an independent review')
+                awaiting.append(name)
+            else:
+                print(f'promote: {name}: recorded {msg_r}, edge {msg_e}: fails (not reviewed yet)', file=sys.stderr)
+                failed = True
             continue
         record = None if a.dry_run else 'recorded'
         ok_r, msg_r = passes(name, recorded, record)
         ok_e, msg_e = passes(name, edge, record and 'edge') if ok_r else (False, 'not run')
         if ok_r and ok_e and not a.dry_run:
             import verification
-            problems = verification.check(ROOT, [{'name': name, 'status': 'verified', '_line': row[0]}])
+            # Every function is listed (quarantine rows name other functions too), and only this
+            # one's problems count: the rest is tools/validate_functions.py's.
+            listed = [{'name': r[name_col], 'status': 'verified' if r is row else r[status], '_line': n + 2}
+                      for n, r in enumerate(rows[1:])]
+            problems = [p for p in verification.check(ROOT, listed) if f' {name} is verified' in p]
             if problems:
                 print(f'promote: {name}: recorded {msg_r}, edge {msg_e}, but: ' + '; '.join(problems), file=sys.stderr)
                 failed = True
@@ -106,6 +127,8 @@ def main() -> int:
         with open(path, 'w', newline='') as f:
             f.write(out.getvalue())
         print(f'promote: {len(changed)} verified; run tools/progress.py --update-readme')
+    if awaiting:
+        print(f'promote: {len(awaiting)} awaiting an independent review: ' + ', '.join(awaiting))
     return 1 if failed else 0
 
 
