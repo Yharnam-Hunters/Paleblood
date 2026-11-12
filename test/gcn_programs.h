@@ -427,6 +427,34 @@ static const uint32_t buffer_atomics[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* An append and a consume buffer on the GDS (M0's base 0x20): lane i first stores its place in the wave
+   (v_mbcnt with constant masks) at out[128 + i]; then the lanes with i % 4 != 0 rank themselves among the
+   active lanes (v_mbcnt with EXEC's halves), ds_append the counter at GDS byte 0x24 and store old + rank at
+   out[i]; then all lanes ds_consume the counter at byte 0x28 and store old - rank at out[64 + i]. */
+static const uint32_t gds_append_consume[] = {
+    0x34080082, /* v_lshlrev_b32_e32 v4, 2, v0 */
+    0xd2460008, 0x000100c1, /* v_mbcnt_lo_u32_b32_e64 v8, -1, 0 */
+    0x481010c1, /* v_mbcnt_hi_u32_b32_e32 v8, -1, v8 */
+    0xe0701200, 0x80010804, /* buffer_store_dword v8, v4, s[4:7], 0 offen offset:512 */
+    0x36120083, /* v_and_b32_e32 v9, 3, v0 */
+    0x7daa1280, /* v_cmpx_ne_u32_e32 vcc, 0, v9 */
+    0xbefc03ff, 0x00200000, /* s_mov_b32 m0, 0x200000 */
+    0xd2480001, 0x0001007f, /* v_mbcnt_hi_u32_b32_e64 v1, exec_hi, 0 */
+    0x4602027e, /* v_mbcnt_lo_u32_b32_e32 v1, exec_lo, v1 */
+    0xd8fa0004, 0x02000000, /* ds_append v2 offset:4 gds */
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+    0x4a060302, /* v_add_i32_e32 v3, vcc, v2, v1 */
+    0xe0701000, 0x80010304, /* buffer_store_dword v3, v4, s[4:7], 0 offen */
+    0xbefe04c1, /* s_mov_b64 exec, -1 */
+    0xd2480005, 0x0001007f, /* v_mbcnt_hi_u32_b32_e64 v5, exec_hi, 0 */
+    0x460a0a7e, /* v_mbcnt_lo_u32_b32_e32 v5, exec_lo, v5 */
+    0xd8f60008, 0x06000000, /* ds_consume v6 offset:8 gds */
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0) */
+    0x4c0e0b06, /* v_sub_i32_e32 v7, vcc, v6, v5 */
+    0xe0701100, 0x80010704, /* buffer_store_dword v7, v4, s[4:7], 0 offen offset:256 */
+    0xbf810000, /* s_endpgm */
+};
+
 /* Per lane i, a one-component format store of i at i * 4 bytes (buffer_store_format_x, the
    descriptor's format). */
 /* Per lane i, (i, i + 1, i + 2, i + 3) stored with one buffer_store_dwordx4 at i * 16 bytes plus the

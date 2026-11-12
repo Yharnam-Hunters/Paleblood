@@ -33,6 +33,12 @@ int rt_gpu_memory_pool(int *fd, uint64_t *size)
     return 0;
 }
 
+uint8_t *rt_gpu_memory_gds(void)
+{
+    static _Alignas(RT_GPU_GDS_BYTES) uint8_t gds[RT_GPU_GDS_BYTES];
+    return gds;
+}
+
 _Noreturn void rt_fatal(const char *function, const char *message)
 {
     fprintf(stderr, "stopped (as expected): %s: %s\n", function, message);
@@ -115,7 +121,7 @@ int main(void)
     { /* skipped without a device that can run the executor */
         rt_executor *probe = NULL;
         char error[256];
-        const rt_executor_memory memory = {guest_fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL};
+        const rt_executor_memory memory = {guest_fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, NULL, 0};
         if (rt_executor_open(&memory, &probe, error, sizeof error)) {
             fprintf(stderr, "skipped: %s\n", error);
             return 77;

@@ -481,6 +481,10 @@ struct rt_executor {
     /* the run-time stop words translated shaders write (runtime/gcn_spirv.h), one per shader */
     VkBuffer stop_buffer;
     VkDeviceMemory stop_memory;
+    /* the GDS's host memory, imported (rt_executor_memory's gds), and its GPU address; 0 without one */
+    VkBuffer gds_buffer;
+    VkDeviceMemory gds_memory;
+    VkDeviceAddress gds_address;
     volatile uint32_t *stop_words;   /* one per translated shader (stop_slot) */
     uint64_t stop_address;
     /* What changed the guest memory, and when (memory_changed): each change counts one up, and each
@@ -1024,7 +1028,41 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
     return 0;
 }
 
-/* Our own mapping of the guest memory, imported as one buffer with a GPU address. */
+/* Host memory (`bytes` at `view`, aligned as the device imports it) as a buffer with a GPU address; 0, or -1
+   with what in the reason. */
+static int import_host(rt_executor *x, void *view, uint64_t bytes, VkBufferUsageFlags usage, VkBuffer *buffer, VkDeviceMemory *memory,
+                       VkDeviceAddress *address, const char *what, char *error, size_t error_size)
+{
+    PFN_vkGetMemoryHostPointerPropertiesEXT host_pointer_properties =
+        (PFN_vkGetMemoryHostPointerPropertiesEXT)vkGetDeviceProcAddr(x->device, "vkGetMemoryHostPointerPropertiesEXT");
+    VkMemoryHostPointerPropertiesEXT host = {.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
+    if (!host_pointer_properties ||
+        host_pointer_properties(x->device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, view, &host) != VK_SUCCESS)
+        return failed(error, error_size, "the device reports no memory type for %s", what);
+    const VkExternalMemoryBufferCreateInfo external = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
+                                                       .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
+    const VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &external, .size = bytes, .usage = usage};
+    if (vkCreateBuffer(x->device, &info, NULL, buffer) != VK_SUCCESS) return failed(error, error_size, "no buffer for %s", what);
+    VkMemoryRequirements need;
+    vkGetBufferMemoryRequirements(x->device, *buffer, &need);
+    const uint32_t type = memory_type(x, host.memoryTypeBits & need.memoryTypeBits, 0);
+    if (type == UINT32_MAX) return failed(error, error_size, "no memory type both the buffer and %s allow", what);
+    const VkImportMemoryHostPointerInfoEXT import = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
+                                                     .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
+                                                     .pHostPointer = view};
+    const VkMemoryAllocateFlagsInfo flags = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO, .pNext = &import,
+                                             .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
+    const VkMemoryAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &flags,
+                                           .allocationSize = bytes, .memoryTypeIndex = type};
+    if (vkAllocateMemory(x->device, &allocate, NULL, memory) != VK_SUCCESS) return failed(error, error_size, "the device cannot import %s", what);
+    if (vkBindBufferMemory(x->device, *buffer, *memory, 0) != VK_SUCCESS) return failed(error, error_size, "cannot bind %s", what);
+    const VkBufferDeviceAddressInfo address_info = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = *buffer};
+    *address = vkGetBufferDeviceAddress(x->device, &address_info);
+    return 0;
+}
+
+/* Our own mapping of the guest memory, imported as one buffer with a GPU address, and the GDS's host
+   memory (runtime/gcn_spirv.h, "The global data share") as another. */
 static int import_memory(rt_executor *x, const rt_executor_memory *memory, char *error, size_t error_size)
 {
     x->size = memory->size, x->guest_base = memory->guest_base, x->collect_cpu_writes = memory->collect_cpu_writes;
@@ -1037,36 +1075,17 @@ static int import_memory(rt_executor *x, const rt_executor_memory *memory, char 
         x->view = NULL;
         return failed(error, error_size, "the guest memory cannot be mapped a second time");
     }
-    PFN_vkGetMemoryHostPointerPropertiesEXT host_pointer_properties =
-        (PFN_vkGetMemoryHostPointerPropertiesEXT)vkGetDeviceProcAddr(x->device, "vkGetMemoryHostPointerPropertiesEXT");
-    VkMemoryHostPointerPropertiesEXT host = {.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
-    if (!host_pointer_properties ||
-        host_pointer_properties(x->device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, x->view, &host) != VK_SUCCESS)
-        return failed(error, error_size, "the device reports no memory type for the guest memory");
-    const VkExternalMemoryBufferCreateInfo external = {.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO,
-                                                       .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
-    const VkBufferCreateInfo buffer = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &external, .size = memory->size,
-                                       .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                                                VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-                                                VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
-    if (vkCreateBuffer(x->device, &buffer, NULL, &x->buffer) != VK_SUCCESS) return failed(error, error_size, "no buffer for the guest memory");
-    VkMemoryRequirements need;
-    vkGetBufferMemoryRequirements(x->device, x->buffer, &need);
-    const uint32_t type = memory_type(x, host.memoryTypeBits & need.memoryTypeBits, 0);
-    if (type == UINT32_MAX) return failed(error, error_size, "no memory type both the buffer and the guest memory allow");
-    const VkImportMemoryHostPointerInfoEXT import = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
-                                                     .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
-                                                     .pHostPointer = x->view};
-    const VkMemoryAllocateFlagsInfo flags = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO, .pNext = &import,
-                                             .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
-    const VkMemoryAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &flags,
-                                           .allocationSize = memory->size, .memoryTypeIndex = type};
-    if (vkAllocateMemory(x->device, &allocate, NULL, &x->memory) != VK_SUCCESS)
-        return failed(error, error_size, "the device cannot import the guest memory");
-    if (vkBindBufferMemory(x->device, x->buffer, x->memory, 0) != VK_SUCCESS) return failed(error, error_size, "cannot bind the guest memory");
-    const VkBufferDeviceAddressInfo address = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = x->buffer};
-    x->address_offset = vkGetBufferDeviceAddress(x->device, &address) - x->guest_base; /* wraps as the shaders' adds do */
-    return 0;
+    VkDeviceAddress address = 0;
+    if (import_host(x, x->view, memory->size,
+                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                        VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                    &x->buffer, &x->memory, &address, "the guest memory", error, error_size))
+        return -1;
+    x->address_offset = address - x->guest_base; /* wraps as the shaders' adds do */
+    if (!memory->gds) return 0;
+    if (memory->gds_bytes != GCN_GDS_BYTES) return failed(error, error_size, "a GDS of %u bytes, not 64 KB", memory->gds_bytes);
+    return import_host(x, memory->gds, memory->gds_bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                       &x->gds_buffer, &x->gds_memory, &x->gds_address, "the GDS", error, error_size);
 }
 
 /* The run-time stop words: host-visible, with GPU addresses the translated shaders store to. */
@@ -3520,7 +3539,8 @@ static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *
     const gcn_compute_layout layout = {.local_size = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
                                        .workgroup_id_enables = c->workgroup_id_enables, .push_constant_offset = 0,
                                        .address_offset = x->address_offset, .error_address = stop_slot(x, 1, x->compute_count),
-                                       .images = images, .image_count = image_count, .user_data_read = user_read};
+                                       .images = images, .image_count = image_count, .user_data_read = user_read,
+                                       .gds_address = x->gds_address};
     uint32_t *spirv = NULL;
     size_t words = 0;
     char reason[256];
@@ -5024,6 +5044,8 @@ void rt_executor_close(rt_executor *x)
         for (size_t i = 0; i < SCAN_SLOTS; i++) scan_free(&x->scans[i]);
         if (x->stop_buffer) vkDestroyBuffer(x->device, x->stop_buffer, NULL);
         if (x->stop_memory) vkFreeMemory(x->device, x->stop_memory, NULL);
+        if (x->gds_buffer) vkDestroyBuffer(x->device, x->gds_buffer, NULL);
+        if (x->gds_memory) vkFreeMemory(x->device, x->gds_memory, NULL);
         if (x->timeline) vkDestroySemaphore(x->device, x->timeline, NULL);
         for (unsigned k = 0; k < TILE_COPY_SIZES; k++)
             for (unsigned to_tiled = 0; to_tiled < 2; to_tiled++)
