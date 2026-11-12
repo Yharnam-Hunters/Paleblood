@@ -184,6 +184,19 @@ int main(int argc, char **argv)
         CHECK(lane[3] == 0xdeadbeefu);
     }
 
+    /* The roundings, on halves (ties), fractions either side of them, negative values, -0 and infinity:
+       each result worked out with C's truncf, ceilf and nearbyintf (ties to even in the default mode). */
+    static const float rounded[] = {2.5f, -2.5f, 1.5f, 0.5f, -0.5f, 3.7f, -3.7f, 0.2f, -0.0f, 1e9f, INFINITY, -1.25f};
+    enum { ROUNDED = sizeof rounded / sizeof rounded[0] };
+    memset(in.mapped, 0, BUFFER_BYTES), memset(out.mapped, 0, BUFFER_BYTES);
+    memcpy(in.mapped, rounded, sizeof rounded);
+    CHECK(run(&g, roundings, sizeof roundings / sizeof roundings[0], user) == 0);
+    for (int i = 0; i < LANES; i++) {
+        const float v = i < ROUNDED ? rounded[i] : 0.0f;
+        const uint32_t *lane = out_words + i * 4;
+        CHECK(lane[0] == bits(truncf(v)) && lane[1] == bits(ceilf(v)) && lane[2] == bits(nearbyintf(v)) && lane[3] == bits(truncf(-v)));
+    }
+
     /* Guest addresses: the descriptors name addresses 1 MiB below the real buffers, as a guest
        would, and the layout's address offset brings every access back to the same bytes. */
     enum { GUEST_DISTANCE = 0x100000 };

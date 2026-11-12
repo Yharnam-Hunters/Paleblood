@@ -816,6 +816,15 @@ static int is_transcendental(const char *name)
            !strcmp(name, "v_rsq_clamp_f32");
 }
 
+/* One-source float operations that are GLSL.std.450's (the Sea Islands manual): square root, reciprocal square
+   root, and the roundings: floor, the fraction, toward zero (V_TRUNC_F32), up (V_CEIL_F32) and to the nearest,
+   ties to even (V_RNDNE_F32). Here opcode is the GLSL.std.450 instruction. */
+static const named_operation float_unary[] = {
+    {"v_sqrt_f32", SPV_GLSL_SQRT, 0}, {"v_rsq_f32", SPV_GLSL_INVERSE_SQRT, 0}, {"v_floor_f32", SPV_GLSL_FLOOR, 0},
+    {"v_fract_f32", SPV_GLSL_FRACT, 0}, {"v_trunc_f32", SPV_GLSL_TRUNC, 0}, {"v_ceil_f32", SPV_GLSL_CEIL, 0},
+    {"v_rndne_f32", SPV_GLSL_ROUND_EVEN, 0},
+};
+
 /* A 64-bit source operand (a VOP3 instruction's src0 of a 64-bit shift): a VGPR or SGPR pair, low dword first,
    or an integer inline constant, sign-extended (the Sea Islands manual's inline constants are 64-bit for 64-bit
    operands). Its low and high dwords. */
@@ -1136,11 +1145,8 @@ static void vector_instruction(translator *t, const uint32_t *w, const gcn_instr
            divide by zero rather than the float ones: the Sea Islands manual's opcode list; shadPS4
            translates it as the reciprocal), and shaders read no flags. */
         write_float(t, &o, value(t, SPV_OP_F_DIV, t_float(t), 2, konst_float(t, 1.0f), float_source(t, &o, 0, ins)), ins);
-    } else if (!strcmp(name, "v_sqrt_f32") || !strcmp(name, "v_rsq_f32") || !strcmp(name, "v_floor_f32") ||
-               !strcmp(name, "v_fract_f32")) {
-        const uint32_t which = !strcmp(name, "v_sqrt_f32") ? SPV_GLSL_SQRT : !strcmp(name, "v_rsq_f32") ? SPV_GLSL_INVERSE_SQRT
-                             : !strcmp(name, "v_floor_f32") ? SPV_GLSL_FLOOR : SPV_GLSL_FRACT;
-        write_float(t, &o, glsl(t, t_float(t), which, float_source(t, &o, 0, ins), 0, 0, 1), ins);
+    } else if ((op = FIND(float_unary, name))) {
+        write_float(t, &o, glsl(t, t_float(t), op->opcode, float_source(t, &o, 0, ins), 0, 0, 1), ins);
     } else {
         fail(t, "%s (%s) is not translated yet", name, gcn_encoding_name(ins->encoding));
     }
