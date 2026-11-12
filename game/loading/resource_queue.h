@@ -305,7 +305,8 @@ struct LoadEventQueue {
     const LoadEventQueueVtable *vtable;
     uint64_t unknown_0x08;
     ResourceManager *manager;   // the original reads it through a one-line getter
-    uint8_t unknown_0x18[0x10];
+    void *transfer_task_manager;  // the same (+0x18, another getter)
+    uint8_t unknown_0x20[0x8];
     TransferTasks *transfer_tasks;
     uint8_t unknown_0x30[0x40];
     uint8_t event_storage[event_storage_size];
@@ -338,12 +339,16 @@ struct ReadWriteLock {
     uint8_t unknown_0x00[0x10];
 };
 constexpr int transfer_task_list_count = 6;
+struct FileTaskPool;
 struct TransferTasks {
     uint8_t unknown_0x00[0x18];
     engine::Array<TransferTask *> lists[transfer_task_list_count];
     ReadWriteLock lock;
+    uint8_t unknown_0x118[0x8];
+    FileTaskPool *file_task_pool;   // where the file load queue takes its file tasks from
 };
 static_assert(offsetof(TransferTasks, lists) == 0x18 && offsetof(TransferTasks, lock) == 0x108);
+static_assert(offsetof(TransferTasks, file_task_pool) == 0x120);
 RT_ORIGINAL(0x0247f640, read_write_lock_read, uint64_t(ReadWriteLock *, int32_t timeout));
 RT_ORIGINAL(0x0247f710, read_write_lock_unlock, uint64_t(ReadWriteLock *));
 // The removal's assertion: no transfer tasks ("Invalid Parameter...").
@@ -351,23 +356,44 @@ RT_GLOBAL(0x04c6bd3c, load_queue_source_file, const char);
 RT_GLOBAL(0x04c6bdd3, invalid_parameter_message, const char);
 constexpr int32_t load_queue_remove_line = 0x247;
 
-// A queue of finished entries kept by an object of the load event queue's code (0x02a69fb0 copies
-// its front, 0x02a6a020 drops it): an MSVC-style list (head node, count, allocator) stored at +0x30
-// aligned up to 8, guarded by the lock at +0x58. What owns it and what an entry holds beyond its
-// two parts (a job result, then a second part at +0x38; copied by 0x02aa4b90) is not known yet.
+// The load event queue's finished entries (0x02a6b0e0 posts one, 0x02a69fb0 copies the front,
+// 0x02a6a020 drops it): an MSVC-style list (head node, count, allocator) stored at +0x30 aligned
+// up to 8, guarded by the lock at +0x58. An entry is a result (a base class: four words of the
+// request, a code and a word; constructor 0x024bcfa0, copy 0x024bcfe0; its destructor is empty)
+// and a handle to the request's resource info (the manager finds it from the four words,
+// 0x024c1630). Copied by 0x02aa4b90.
 struct FinishedEntry;
 struct FinishedEntryVtable {
     void (*destroy)(FinishedEntry *);
 };
+constexpr int request_word_count = 4;
+struct RequestWords {
+    uint64_t words[request_word_count];
+};
 struct FinishedEntry {
     const FinishedEntryVtable *vtable;
+    RequestWords request_words;
+    int32_t code;
+    uint8_t unknown_0x2c[0x4];
+    uint64_t request_word_0x20;
+    ResourceHandle handle;
 };
+static_assert(offsetof(FinishedEntry, code) == 0x28 && offsetof(FinishedEntry, handle) == 0x38);
+static_assert(sizeof(FinishedEntry) == 0x48);
 struct FinishedNode {
     FinishedNode *next;
     FinishedNode *previous;
     FinishedEntry entry;
 };
 static_assert(offsetof(FinishedNode, entry) == 0x10);
+RT_ORIGINAL(0x024bcfa0, result_construct, void(FinishedEntry *, const RequestWords *, int32_t code, uint64_t request_word_0x20));
+RT_ORIGINAL(0x024bcfe0, result_copy, void(FinishedEntry *, const FinishedEntry *source));
+RT_ORIGINAL(0x024c1630, resource_manager_find_info, ResourceInfo *(ResourceManager *, RequestWords request_words));
+RT_ORIGINAL(0x024bd310, resource_handle_assign, void(ResourceHandle *, const ResourceHandle *source));
+RT_GLOBAL(0x056b9a40, finished_entry_vtable, const uint8_t);
+RT_ORIGINAL(0x02aa4a30, finished_entry_construct,
+            void(FinishedEntry *, const RequestWords *, int32_t code, uint64_t request_word_0x20, ResourceManager *));
+RT_ORIGINAL(0x02aa4b40, finished_entry_destroy, void(FinishedEntry *));
 struct FinishedList {
     uint64_t unknown_0x00;
     FinishedNode *head;
@@ -377,11 +403,16 @@ struct FinishedList {
 static_assert(offsetof(FinishedList, count) == 0x10 && sizeof(FinishedList) == 0x20);
 constexpr uintptr_t finished_storage_alignment = 8;
 struct FinishedQueue {
-    uint8_t unknown_0x00[0x30];
+    uint8_t unknown_0x00[0x10];
+    ResourceManager *manager;   // as in the load event queue; read through a one-line getter
+    uint8_t unknown_0x18[0x18];
     uint8_t finished_storage[sizeof(FinishedList) + finished_storage_alignment];
     frame_timing::job::JobLock lock;
 };
 static_assert(offsetof(FinishedQueue, finished_storage) == 0x30 && offsetof(FinishedQueue, lock) == 0x58);
 RT_ORIGINAL(0x02aa4b90, finished_entry_copy, FinishedEntry *(FinishedEntry *, const FinishedEntry *source));
+// The list's push_back of a copy (0x02a6b1a0, a standard list template instance on the engine's
+// allocator).
+RT_ORIGINAL(0x02a6b1a0, finished_list_push_back, void(FinishedList *, const FinishedEntry *));
 
 }  // namespace loading::resource_queue
