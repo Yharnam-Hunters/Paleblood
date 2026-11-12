@@ -2623,6 +2623,47 @@ static void watched_table_copy(int fd)
     rt_executor_close(x);
 }
 
+/* The shader sweep (BB_SHADER_SWEEP): an executor opened with it set records each shader it translates (its
+   code and SPIR-V written to the directory) and skips, with a record, a draw it cannot do instead of
+   stopping; without it the same draw stops (main, above). */
+static void shader_sweep(const rt_executor_memory *memory)
+{
+    enum { SWEEP_BUFFER = 0xc0e20000 };
+    char directory[] = "/tmp/pb-sweep-XXXXXX", path[128], error[256] = "", log[4096] = "";
+    CHECK(mkdtemp(directory) != NULL);
+    setenv("BB_SHADER_SWEEP", directory, 1);
+    rt_executor *x = NULL;
+    const int opened = rt_executor_open(memory, &x, error, sizeof error);
+    unsetenv("BB_SHADER_SWEEP");
+    CHECK(opened == 0);
+    if (opened) return;
+    rt_render_forget(), rt_executor_reset(x);
+    uint32_t size = record_draw(SWEEP_BUFFER, at(TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER | 0x10); /* linear barycentrics */
+    CHECK(rt_executor_run(x, SWEEP_BUFFER, size, error, sizeof error) == 0);
+    size = record_draw(SWEEP_BUFFER, at(TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    CHECK(rt_executor_run(x, SWEEP_BUFFER, size, error, sizeof error) == 0);
+    check_triangle(x, at(TARGET));
+    rt_executor_close(x);
+    snprintf(path, sizeof path, "%s/sweep.txt", directory);
+    FILE *f = fopen(path, "r");
+    CHECK(f != NULL);
+    if (f) log[fread(log, 1, sizeof log - 1, f)] = 0, fclose(f);
+    CHECK(strstr(log, "skipped draw: ") && strstr(log, "pixel-shader inputs"));
+    CHECK(strstr(log, "shader pixel 0x") && strstr(log, " translated\n"));
+    unsigned written = 0;
+    const char *at_line = strstr(log, "shader pixel 0x");
+    unsigned long long code = at_line ? strtoull(at_line + strlen("shader pixel "), NULL, 16) : 0;
+    for (int kind = 0; kind < 2; kind++) {
+        snprintf(path, sizeof path, "%s/pixel-%llx.%s", directory, code, kind ? "spv" : "bin");
+        if (!access(path, R_OK)) written++;
+        unlink(path);
+    }
+    CHECK(written == 2);
+    snprintf(path, sizeof path, "%s/sweep.txt", directory);
+    unlink(path);
+    rmdir(directory);
+}
+
 int main(void)
 {
     const int fd = map_guest_memory();
@@ -3347,6 +3388,7 @@ int main(void)
     bc6h_image(x);
 
     rt_executor_close(x);
+    shader_sweep(&memory);
     rt_render_forget();
     munmap((void *)(uintptr_t)GUEST_BASE, GUEST_SIZE);
     close(fd);

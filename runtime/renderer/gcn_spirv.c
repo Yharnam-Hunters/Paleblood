@@ -140,7 +140,15 @@ typedef struct {
     char *error;
     size_t error_size;
     int failed;
+    /* survey mode (gcn_spirv_set_survey): the dword of the instruction being translated, and how many
+       instructions failed and were passed over */
+    size_t at;
+    unsigned surveyed;
 } translator;
+
+static int survey_mode; /* gcn_spirv_set_survey */
+
+void gcn_spirv_set_survey(int on) { survey_mode = on != 0; }
 
 static void fail(translator *t, const char *format, ...)
 {
@@ -148,8 +156,18 @@ static void fail(translator *t, const char *format, ...)
     t->failed = 1;
     va_list args;
     va_start(args, format);
-    vsnprintf(t->error, t->error_size, format, args);
+    if (!survey_mode) {
+        vsnprintf(t->error, t->error_size, format, args);
+        va_end(args);
+        return;
+    }
+    /* survey mode: each distinct reason once, on its own line after the dword it was first met at */
+    char reason[512];
+    vsnprintf(reason, sizeof reason, format, args);
     va_end(args);
+    if (strstr(t->error, reason)) return;
+    const size_t used = strlen(t->error);
+    if (used + 1 < t->error_size) snprintf(t->error + used, t->error_size - used, "@%zu %s\n", t->at, reason);
 }
 
 /* Types used throughout. */
@@ -4052,6 +4070,9 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
         }
     }
 
+    /* survey mode: what failed before the instructions (the layout, the program's decoding) is kept, and
+       the instructions are still surveyed when they decoded */
+    if (t->failed && survey_mode && count >= 0 && labels) t->failed = 0, t->surveyed++;
     /* each block */
     for (long i = 0; !t->failed && i < count;) {
         const uint32_t b = block_of[instructions[i].at];
@@ -4070,7 +4091,9 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
             if (d->ins.encoding == GCN_SOPP && is_branch_named(name)) {
                 const long condition = branch_condition(t, name);
                 if (condition < 0) {
+                    t->at = d->at;
                     fail(t, "%s is not translated yet", name);
+                    if (survey_mode) t->failed = 0, t->surveyed++;
                     break;
                 }
                 const uint32_t target = block_of[(size_t)((long)next + (int16_t)(code[d->at] & 0xffff))];
@@ -4081,7 +4104,9 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
                 store(t, t->out, t->pc, chosen);
                 break;
             }
+            t->at = d->at;
             translate_instruction(t, code, d);
+            if (t->failed && survey_mode) t->failed = 0, t->surveyed++; /* pass over it, and go on to the rest */
             if (t->failed) break;
             if (i == count) {
                 fail(t, "the program runs past its end without s_endpgm");
@@ -4169,6 +4194,7 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
         fail(t, "the program reads v%u, the instance index over VGT_INSTANCE_STEP_RATE_%u, which no call set (or set to 0): not done yet", n,
              n - layout->vertex_index_vgpr - 1);
     }
+    if (t->surveyed) t->failed = 1;
     int result = -1;
     if (!t->failed) {
         *spirv = spirv_finish(m, spirv_word_count);
