@@ -2081,7 +2081,7 @@ static int same_texel_bytes(VkFormat a, VkFormat b)
    compute clear, as the game clears its G-buffer): the image keeps those texels (image_for), so they
    are the target's newest contents. They are copied into the target, which is then drawn into and
    written back like any other; the image loads from the memory again at its next use. 1 when copied,
-   0 when no image holds newer texels, -1 with the reason (an image of another texel size, or narrower). */
+   0 when no image holds newer texels, -1 with the reason (an image of another texel size or type). */
 static int unwritten_target_over(const rt_executor *x, uint64_t address, uint64_t size);
 
 /* A target drawn into: its memory lacks the draws until it is written back, so the CPU is kept from
@@ -2108,7 +2108,7 @@ static int take_written_image(rt_executor *x, target_entry *t, char *error, size
     for (size_t i = 0; i < x->image_count && !e; i++)
         if (x->images[i].address == t->address && x->images[i].gpu_written) e = &x->images[i];
     if (!e) return 0;
-    if (!same_texel_bytes(e->format, t->format) || e->width < t->width || e->type != RT_IMAGE_2D)
+    if (!same_texel_bytes(e->format, t->format) || e->type != RT_IMAGE_2D)
         return failed(error, error_size, "render target %#llx was written by a shader as an image of another format or shape (Vulkan format %d, "
                       "%ux%u, type %u): not drawn yet", (unsigned long long)t->address, (int)e->format, e->width, e->height, e->type);
     VkCommandBuffer commands = batch_commands(x, error, error_size);
@@ -2119,11 +2119,11 @@ static int take_written_image(rt_executor *x, target_entry *t, char *error, size
     image_barrier(commands, t->image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-    /* a target's height counts its slice's whole tiles (1088 rows for a 1080-row image): the image's rows
-       are the ones a shader wrote, the target's rows past them keep what they held */
-    const uint32_t rows = e->height < t->height ? e->height : t->height;
+    /* a target's size counts its pitch and its slice's whole tiles (1024 x 576 for a 960 x 540 image): the
+       image's texels are the ones a shader wrote, the target's texels past them keep what they held */
+    const uint32_t columns = e->width < t->width ? e->width : t->width, rows = e->height < t->height ? e->height : t->height;
     const VkImageCopy region = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                                .extent = {t->width, rows, 1}};
+                                .extent = {columns, rows, 1}};
     vkCmdCopyImage(commands, e->image, VK_IMAGE_LAYOUT_GENERAL, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
     image_barrier(commands, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -4115,17 +4115,15 @@ static image_entry *image_to_evict(rt_executor *x)
 static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, const texel_format *f, unsigned access, char *error,
                               size_t error_size)
 {
-    /* a render target's memory is kept current (write_back_targets), so reading it as an image reads that */
-    if ((access & GCN_IMAGE_WRITE) && find_target(x, d->address)) {
-        failed(error, error_size, "a shader writing an image at %#llx that is also a render target: not done yet", (unsigned long long)d->address);
-        return NULL;
-    }
+    /* a render target's memory is kept current (write_back_targets), so reading it as an image reads that; an
+       image a shader writes over a target first takes the target's texels (load_texels: over_target below),
+       and the target takes the image's at its next draw (take_written_image) */
     /* a depth target's 32-bit float depth is written back to its memory (write_back_depths) before an image
        over it loads (unwritten_target_over), so a shader may read it as an image of the same layout; its
        stencil is not written back, and nothing writes a depth target's memory as an image */
     for (size_t i = 0; i < x->depth_count; i++) {
         const depth_entry *z = &x->depths[i];
-        if (z->z_address != d->address && z->stencil_address != d->address) continue;
+        if (z->z_address != d->address && (!z->stencil_address || z->stencil_address != d->address)) continue; /* 0: no stencil buffer */
         const int written_back = z->format == VK_FORMAT_D32_SFLOAT || z->format == VK_FORMAT_D32_SFLOAT_S8_UINT;
         if (z->z_address != d->address || (access & GCN_IMAGE_WRITE) || !written_back || f->bytes != 4 || f->block != 1 ||
             d->tiling_index != z->tile_index) {
@@ -4433,6 +4431,21 @@ static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64
             return failed(error, error_size, "a %s shader that writes an image: not drawn yet", stage);
         uint32_t words[RT_IMAGE_DESCRIPTOR_WORDS];
         if (descriptor_words(x, stage, code, origin, user, user_sgprs, user_set, words, RT_IMAGE_DESCRIPTOR_WORDS, error, error_size)) return -1;
+        /* An image descriptor with no address (base 0; all 8 words 0 is the null descriptor Mesa's RADV writes
+           for VK_EXT_robustness2, whose reads return 0). On the PS4 a read there would reach unmapped memory,
+           and what it returns is not established; a pixel shader reads 0, as from a null descriptor: it
+           samples a 1x1 8_8_8_8 image of zeros of the executor's own, at an address past any guest memory
+           (no guest image or depth target matches it), made as if written so it is never loaded, and its
+           image_load reads 0 without a range check (the binding's null_descriptor). */
+        enum { ADDRESS_WORD_1_MASK = 0x3f };
+        const int null_image = pixel && !words[0] && !(words[1] & ADDRESS_WORD_1_MASK);
+        if (null_image) {
+            enum { DATA_FORMAT_8_8_8_8 = 10, DATA_FORMAT_SHIFT = 20, TYPE_SHIFT = 28 };
+            enum { ADDRESS_HIGH_BITS = 0x3f }; /* the 46-bit address's highest bits: 0x3fffffffff00 */
+            memset(words, 0, sizeof words); /* 1x1, one level, one layer */
+            words[0] = UINT32_MAX, words[1] = ADDRESS_HIGH_BITS | DATA_FORMAT_8_8_8_8 << DATA_FORMAT_SHIFT;
+            words[3] = DST_SEL_IDENTITY | (uint32_t)RT_IMAGE_2D << TYPE_SHIFT;
+        }
         rt_image_descriptor d;
         rt_image_descriptor_decode(words, &d);
         const int cube = d.type == RT_IMAGE_CUBE;
@@ -4479,9 +4492,9 @@ static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64
         const int one_d = one_dimensional(d.type);
         bindings[i] = (gcn_image_binding){*origin, one_d ? GCN_IMAGE_1D : three_d ? GCN_IMAGE_3D : GCN_IMAGE_2D,
                                           d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY || cube, f.type, f.components, pixel, whole_cube,
-                                          storage_swizzled ? d.swizzle : 0};
+                                          storage_swizzled ? d.swizzle : 0, null_image};
         if (formats) formats[i] = f.format;
-        image_entry *e = image_for(x, &d, &f, resources[i].access, error, error_size);
+        image_entry *e = image_for(x, &d, &f, null_image ? GCN_IMAGE_WRITE : resources[i].access, error, error_size);
         if (e && !pixel && (resources[i].access & GCN_IMAGE_WRITE) && x->stored_count < GCN_MAX_IMAGES) {
             x->stored[x->stored_count].image = (size_t)(e - x->images), x->stored[x->stored_count].descriptor = d;
             x->stored_count++;

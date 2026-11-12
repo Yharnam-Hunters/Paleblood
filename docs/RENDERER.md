@@ -802,8 +802,16 @@ Instead:
         never tiled back into guest memory; a new image whose first use writes it starts cleared.
         An image no shader has written holds the guest memory's texels, detiled with
         `runtime/tiling.h` and loaded again at a use that reads it when the guest memory changed since
-        (the CPU or a buffer store may have changed them); one that is also a render target stops by name. Pixel shaders' images
-        are found the same way and bound as sampled images. Formats: 32 (float, uint, sint), 32_32 and 32_32_32_32 float, 8_8_8_8
+        (the CPU or a buffer store may have changed them). One a shader writes over a render target first takes
+        the target's texels, and the target takes the image's at its next draw (`take_written_image`); the copy
+        covers the two's overlap, since a target's size counts its pitch and its slice's whole tiles (a 960x540
+        image under a 1024x576 target, 1920x1080 under 1920x1088). Pixel shaders' images
+        are found the same way and bound as sampled images. A pixel shader's image descriptor with no
+        address (base 0; all 8 words 0 is the null descriptor Mesa's RADV writes for VK_EXT_robustness2,
+        whose reads return 0) reads 0: the executor binds a 1x1 image of zeros of its own, and the
+        translator writes 0 for its `image_load` without a range check (`gcn_image_binding.null_descriptor`).
+        What the PS4 returns for a read at address 0 is not established; YEBIS binds such descriptors in
+        the clinic's post-processing passes. Formats: 32 (float, uint, sint), 32_32 and 32_32_32_32 float, 8_8_8_8
         unorm and uint, 8 and 8_8 unorm; 1D and 2D images and their arrays, one level, a view of any of an array's layers
         (slices count from `BASE_ARRAY`, as shadPS4 and Mesa's radeonsi have it), DST_SEL in place.
         On the game, all of the boot's compute passes now run (two clears and a buffer-to-image
