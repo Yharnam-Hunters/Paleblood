@@ -95,15 +95,34 @@ jobs:
             git fetch --depth=1 origin "$base" 2>/dev/null || base=
           fi
           python3 tools/check_readable.py ${base:+--base "$base"}
-      - name: README progress matches progress.py
-        run: python3 tools/progress.py --check
+      - name: Generated progress text (README, STATUS, CONTRIBUTING, status card)
+        # Progress is regenerated on main by one pull request from tools/progress_pr.py
+        # (.github/workflows/progress.yml reports when main is behind), so feature branches no
+        # longer race to rewrite the same lines. A pull request may leave the generated text as main
+        # has it; text it changes must be what progress.py generates. The regeneration pull request
+        # itself must be fully current. The merge queue and main check the structure only.
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT" = pull_request ] && [ "$HEAD_REF" = auto/regenerate-progress ]; then
+            python3 tools/progress.py --check
+          elif [ "$EVENT" = pull_request ]; then
+            # the base the merge commit was made on, and the base as it is now
+            git fetch --depth=1 origin "$BASE_SHA" "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF"
+            python3 tools/progress.py --check-touched "$BASE_SHA" "origin/$BASE_REF"
+          else
+            python3 tools/progress.py --check-blocks
+          fi
       - name: Source-file tags match the function extents (source_files.py)
         run: python3 tools/source_files.py --check
       - name: Hooks behave
         run: tools/test_hooks.sh
       - name: Contributor tooling (session report, handoff)
         working-directory: test
-        run: python3 -m unittest test_handoff test_runtime_pr test_tools.SessionReport test_combined_check
+        run: python3 -m unittest test_handoff test_runtime_pr test_tools.SessionReport test_combined_check test_remerge
 
   # Two pull requests can pass alone and break together; the merge queue would stop the second,
   # but only once it is queued. This checks every pair early. Runs unprivileged, like the build.

@@ -483,7 +483,7 @@ class Runner:
         ] + [
             [sys.executable, "-m", "unittest", "discover", "-s", "test", "-p", "test_*.py"],
             [sys.executable, "tools/validate_functions.py"],
-            [sys.executable, "tools/progress.py", "--check"],
+            [sys.executable, "tools/progress.py", "--check-touched"],
             [sys.executable, "tools/check_no_game_data.py", "--tracked"],
             [sys.executable, "tools/check_agnostic.py"],
             [sys.executable, "tools/check_readable.py"],

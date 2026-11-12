@@ -48,8 +48,9 @@ analyzeHeadless PROJECT_DIR bb_eboot -import /path/to/eboot.elf \
 
   The catalog stores the executable hash, not its local path. See
   [Function intelligence catalog](FUNCTION_CATALOG.md) for field definitions and unknown handling.
-- Check the export with `tools/validate_functions.py` after copying it to `symbols/`, then run
-  `tools/progress.py --update-readme`.
+- Check the export with `tools/validate_functions.py` after copying it to `symbols/`. Once that
+  pull request has merged, `tools/progress_pr.py` regenerates main's progress text
+  (CONTRIBUTING.md, "Generated progress"); the pull request itself leaves it alone.
 - Full auto-analysis of the eboot took about 26 minutes on the maintainer's machine with the
   heap at 14G. `analyzeHeadless` prints the total at the end of its run.
 
