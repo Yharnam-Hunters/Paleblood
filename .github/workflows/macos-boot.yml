@@ -1,0 +1,62 @@
+# All guest programs here are generated from repository-owned bytes; no game data is needed.
+name: macos-boot
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/macos-boot.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - 'runtime/**'
+      - 'test/test_boot*.c'
+      - 'test/test_boot*.py'
+      - 'test/boot_arena/**'
+      - 'test/test_module_tls_boot.py'
+      - 'test/ps4elf.py'
+  pull_request:
+    paths:
+      - '.github/workflows/macos-boot.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - 'runtime/**'
+      - 'test/test_boot*.c'
+      - 'test/test_boot*.py'
+      - 'test/boot_arena/**'
+      - 'test/test_module_tls_boot.py'
+      - 'test/ps4elf.py'
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  boot:
+    name: Owned guest startup (Darwin x86-64)
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure the actual CLI without optional host media and window libraries
+        run: >-
+          cmake -S . -B build-boot -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
+          -DCMAKE_DISABLE_FIND_PACKAGE_PkgConfig=TRUE
+      - name: Build CLI, recovery controller and arena tests
+        run: >-
+          cmake --build build-boot --parallel 2 --target
+          pbboot test_boot_scope_darwin test_boot_arena test_boot_arena_failures
+      - name: Run owned code through imports, workers, TLS, hooks and signal recovery
+        run: >-
+          ctest --test-dir build-boot --output-on-failure --no-tests=error
+          -R '^(darwin_boot_scope|boot_owned_startup|boot_game_library|module_tls_boot|boot_arena|boot_arena_failures)$'
+  arena:
+    name: Image arena (Darwin arm64)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure host ownership tests
+        run: cmake -S test/boot_arena -B build-arena -DCMAKE_OSX_ARCHITECTURES=arm64
+      - name: Build
+        run: cmake --build build-arena --parallel 2
+      - name: Test non-replacement, bounds and failure ownership
+        run: ctest --test-dir build-arena --output-on-failure --no-tests=error

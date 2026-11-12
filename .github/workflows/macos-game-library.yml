@@ -1,0 +1,74 @@
+# Owned fixtures only. The pinned public decoder is downloaded into the ephemeral build tree.
+name: macos-game-library
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - '.github/workflows/macos-game-library.yml'
+      - 'CMakeLists.txt'
+      - 'runtime/**'
+      - 'game/CMakeLists.txt'
+      - 'cmake/**'
+      - 'test/test_capture*'
+      - 'test/test_observe_hooks.c'
+      - 'test/test_probe_bridge.c'
+      - 'test/test_host_hooks.c'
+      - 'test/game_bridge/**'
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  bridge:
+    name: Game observation bridge (Darwin x86-64)
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stage matching public Capstone decoder without installing packages
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib, os, pathlib, urllib.request, zipfile, io
+          url = 'https://files.pythonhosted.org/packages/da/f3/43f4dbfc36c7740d512621a9d42b276ac21bb6ca7cb974d4c8a19060d387/capstone-5.0.9-py3-none-macosx_10_9_universal2.whl'
+          data = urllib.request.urlopen(url, timeout=60).read()
+          assert hashlib.sha256(data).hexdigest() == '58a874d9a6cb15122135b1385a782e5b54c8a4d9396161b6498465046d2e0442'
+          prefix = pathlib.Path(os.environ['RUNNER_TEMP']) / 'capstone-5.0.9'
+          with zipfile.ZipFile(io.BytesIO(data)) as archive:
+              for member in archive.infolist():
+                  name = member.filename
+                  if (name.startswith('capstone/include/') or name.startswith('capstone/lib/')) and not member.is_dir():
+                      target = prefix / name.removeprefix('capstone/')
+                      target.parent.mkdir(parents=True, exist_ok=True)
+                      target.write_bytes(archive.read(member))
+          (prefix / 'lib/libcapstone.5.dylib').symlink_to('libcapstone.dylib')
+          PYTHON
+      - name: Configure the actual runtime and game library
+        run: >-
+          cmake -S . -B build-bridge -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0
+          -DCMAKE_DISABLE_FIND_PACKAGE_PkgConfig=TRUE
+          -DPB_CAPSTONE_ROOT="$RUNNER_TEMP/capstone-5.0.9"
+      - name: Build real library and bridge fixtures
+        run: >-
+          cmake --build build-bridge --parallel 2 --target
+          bbgame pbboot test_observe_hooks test_host_hooks test_render_observer test_capture
+          test_capture_stack test_capture_observe_entry test_probe_bridge
+      - name: Execute observation, ABI, stack, probe and optional-library fixtures
+        env:
+          PB_REQUIRE_RELOCATION: '1'
+        run: >-
+          ctest --test-dir build-bridge --output-on-failure --no-tests=error --timeout 30
+          -R '^(observe_hooks|host_hooks|render_observer|capture|capture_stack|capture_observe_entry|probe_bridge|boot_game_library)$'
+  stack:
+    name: Guarded capture stack (Darwin arm64)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S test/game_bridge -B build-stack -DCMAKE_OSX_ARCHITECTURES=arm64
+      - name: Build
+        run: cmake --build build-stack --parallel 2
+      - name: Read through real guard pages
+        run: ctest --test-dir build-stack --output-on-failure --no-tests=error
