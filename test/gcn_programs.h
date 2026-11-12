@@ -742,6 +742,20 @@ static const uint32_t pixel_color[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* As pixel_color, but attribute 0 read flat with v_interp_mov_f32 from P0 (the first vertex's value), not
+   interpolated. */
+static const uint32_t pixel_flat_color[] = {
+    0xbefc0300, /* s_mov_b32 m0, s0 */
+    0xc80a0002, /* v_interp_mov_f32 v2, p0, attr0.x */
+    0xc80e0102, /* v_interp_mov_f32 v3, p0, attr0.y */
+    0xc8120202, /* v_interp_mov_f32 v4, p0, attr0.z */
+    0xc8160302, /* v_interp_mov_f32 v5, p0, attr0.w */
+    0x5e0c0702, /* v_cvt_pkrtz_f16_f32_e32 v6, v2, v3 */
+    0x5e0e0b04, /* v_cvt_pkrtz_f16_f32_e32 v7, v4, v5 */
+    0xf8001c0f, 0x00000706, /* exp mrt0, v6, v6, v7, v7 done compr vm */
+    0xbf810000, /* s_endpgm */
+};
+
 /* Pixel shaders (SPI_PS_INPUT 0x1002: the front face in v2 after the barycentrics) colouring each pixel
    (face, 0.25, 0.25, 1): the face VGPR as a float, or (pixel_face_bits) converted from an unsigned integer. */
 static const uint32_t pixel_face_float[] = {

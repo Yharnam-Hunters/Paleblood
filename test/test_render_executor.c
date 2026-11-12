@@ -1816,6 +1816,32 @@ static void pixel_input_controls(rt_executor *x)
     CHECK(same);
 }
 
+/* v_interp_mov_f32 from P0 (pixel_flat_color): every pixel takes the first vertex's colour, (0, 0, 0.25, 1), as
+   FLAT_SHADE gives it (pixel_input_controls), with no register saying so. */
+static void flat_moves(rt_executor *x)
+{
+    enum { FLAT_BUFFER = 0xc1020000, FLAT_CODE = 0x3f00, FLAT_TARGET = 0x2f40000 };
+    char error[200] = "";
+    memcpy((void *)(uintptr_t)at(FLAT_CODE), pixel_flat_color, sizeof pixel_flat_color);
+    const uint64_t code = at(FLAT_CODE);
+    rt_render_forget(), rt_executor_reset(x);
+    const uint32_t offset = record_setup(FLAT_BUFFER, at(FLAT_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 0, 0, 0x4, PERSP_CENTER, PERSP_CENTER, 1, 0, 0, 0xf};
+    CHECK(rt_render_record_pixel_shader(FLAT_BUFFER, offset, pixel, error, sizeof error) == 0);
+    const int drawn = rt_executor_run(x, FLAT_BUFFER, record_triangle_draw(FLAT_BUFFER, offset + 0x10), error, sizeof error);
+    if (drawn) fprintf(stderr, "flat moves: %s\n", error);
+    CHECK(drawn == 0);
+    uint32_t bgra[SIZE * SIZE];
+    CHECK(rt_executor_read_target(x, at(FLAT_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+    int same = 1, covered = 0;
+    for (int i = 0; i < SIZE * SIZE; i++) {
+        if (!bgra[i]) continue; /* outside the triangle */
+        covered++;
+        same &= (bgra[i] >> 16 & 0xff) == 0 && (bgra[i] >> 8 & 0xff) == 0 && near(bgra[i] & 0xff, 0.25f) && (bgra[i] >> 24) == 0xff;
+    }
+    CHECK(same && covered > SIZE * SIZE / 4);
+}
+
 /* A vertex shader that calls its fetch shader and then loads a texel from an image whose descriptor is in
    its user data (vertex_fetch_then_image: s[8:15], which fetch_position_only leaves alone): the image is
    bound to the vertex stage, and every pixel of the triangle takes that texel's colour (a 1x1 linear
@@ -3266,6 +3292,7 @@ int main(void)
     sampled_cube(x);
     fetch_shader(x);
     pixel_input_controls(x);
+    flat_moves(x);
     vertex_image_after_fetch(x);
     unset_user_data(x);
     target_read_in_buffer(x);
