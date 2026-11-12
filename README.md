@@ -3,7 +3,7 @@
 *Bloodborne, rewritten as readable C++ one verified function at a time, running natively on a PC on a runtime of its own.*
 
 <!-- status:start -->
-The game doesn't run on Paleblood yet: 8224 of 157757 functions are verified (5.21%). On [our own runtime](runtime/) the executable's boot gets as far as the run's time limit, still running (no call stopped it), with 686 of 686 system imports implemented.
+The game doesn't run on Paleblood yet: 8303 of 157757 functions are verified (5.26%). On [our own runtime](runtime/) the executable's boot gets as far as the run's time limit, still running (no call stopped it), with 686 of 686 system imports implemented.
 <!-- status:end -->
 
 **[Start here](https://github.com/Yharnam-Hunters/Paleblood/issues/31)** ·
@@ -46,10 +46,10 @@ It is made by people who love this game and want it to outlive the hardware it w
 | | Functions | Bytes |
 |---|---:|---:|
 | Target (Ghidra export) | 157757 | 42487404 |
-| Replaced | 18271 (11.58%) | 183576 (0.43%) |
+| Replaced | 18314 (11.61%) | 198805 (0.47%) |
 | of which in 19 function families | 18019 (11.42%) | 62426 (0.15%) |
-| Edge-verified | 18271 (11.58%) | 183576 (0.43%) |
-| Verified | 8224 (5.21%) | 56701 (0.13%) |
+| Edge-verified | 18314 (11.61%) | 198805 (0.47%) |
+| Verified | 8303 (5.26%) | 67992 (0.16%) |
 
 Each row includes the next: verified functions are also edge-verified and replaced.
 Function families are many tiny identical functions (an empty method, a getter) that share one replacement each (docs/FAMILIES.md): they move the function count much more than the byte count.
