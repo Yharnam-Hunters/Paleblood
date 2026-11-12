@@ -2164,7 +2164,8 @@ int main(void)
     /* A compute dispatch (scale_add: out[i] = in[i] * 2.5 + 1, one workgroup of 64) through the record:
        the shader placed as sceGnmSetCsShader places it, its user data the two buffer descriptors;
        the results are in the guest memory when the run returns. Then a dispatch with no compute
-       shader, and one whose shader takes its workgroup's y index, stop by name. */
+       shader stops by name, and a 2 x 3 x 4 dispatch of workgroup_indexes finds its workgroup's x, y
+       and z index in the SGPRs after the user data. */
     {
         enum { COMPUTE = 0xc0e20000, COMPUTE_CODE = 0x3000, INPUT = 0x20000, OUTPUT = 0x21000, LANES = 64 };
         memcpy((void *)(uintptr_t)at(COMPUTE_CODE), scale_add, sizeof scale_add);
@@ -2209,10 +2210,30 @@ int main(void)
         rt_render_forget(), rt_executor_reset(x);
         CHECK(rt_render_record_dispatch(COMPUTE, 0x30, one, error, sizeof error) == 0);
         CHECK(rt_executor_run(x, COMPUTE, 0x40, error, sizeof error) == -1 && strstr(error, "without a compute shader"));
-        shader[3] |= 1u << 8; /* TGID_Y_EN */
-        CHECK(rt_render_record_compute_shader_at(COMPUTE + 0x10, shader) == 0);
-        CHECK(rt_render_record_dispatch(COMPUTE, 0x30, one, error, sizeof error) == 0);
-        CHECK(rt_executor_run(x, COMPUTE, 0x40, error, sizeof error) == -1 && strstr(error, "y or z index"));
+
+        enum { GROUPS_CODE = 0x3400, GROUPS_OUTPUT = 0x24000, GROUPS = 2 * 3 * 4 };
+        memcpy((void *)(uintptr_t)at(GROUPS_CODE), workgroup_indexes, sizeof workgroup_indexes);
+        uint32_t *indexes = (uint32_t *)(uintptr_t)at(GROUPS_OUTPUT);
+        memset(indexes, 0xff, GROUPS * LANES * sizeof *indexes);
+        const uint64_t groups_code = at(GROUPS_CODE);
+        const uint32_t groups_shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(groups_code >> 8), (uint32_t)(groups_code >> 40), 1 << 6 /* 16 SGPRs */,
+                                                                 8 << 1 | 7 << 7 /* TGID_X/Y/Z_EN */, LANES, 1, 1};
+        rt_render_forget(), rt_executor_reset(x);
+        CHECK(rt_render_record_compute_shader_at(COMPUTE + 0x10, groups_shader) == 0);
+        descriptor(user + 4, at(GROUPS_OUTPUT), 4);
+        CHECK(rt_render_record_user_data(COMPUTE, 0x20, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+        const uint32_t grid[3] = {2, 3, 4};
+        CHECK(rt_render_record_dispatch(COMPUTE, 0x30, grid, error, sizeof error) == 0);
+        const int indexed = rt_executor_run(x, COMPUTE, 0x40, error, sizeof error);
+        if (indexed) fprintf(stderr, "workgroup indexes: %s\n", error);
+        CHECK(indexed == 0);
+        int each = 1;
+        for (uint32_t z = 0; z < 4; z++)
+            for (uint32_t y = 0; y < 3; y++)
+                for (uint32_t gx = 0; gx < 2; gx++)
+                    for (unsigned lane = 0; lane < LANES; lane++)
+                        each &= indexes[((z * 3 + y) * 2 + gx) * LANES + lane] == (gx | y << 8 | z << 16);
+        CHECK(each);
     }
 
     /* Storage images through the record: a fill pass writes a 64 x 1 RGBA32F image (its first use, so
