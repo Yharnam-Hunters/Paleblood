@@ -359,6 +359,10 @@ void rt_renderer_bind_shader(const char *function, rt_renderer_shader kind, cons
     static const uint32_t no_pixel_shader[RT_PIXEL_SHADER_WORDS]; /* code address 0: a draw with it stops */
     if (kind == RT_RENDERER_VERTEX_SHADER) rt_render_record_vertex_shader_at(address, words);
     else if (kind == RT_RENDERER_COMPUTE_SHADER) rt_render_record_compute_shader_at(address, words);
+    else if (kind == RT_RENDERER_LOCAL_SHADER) rt_render_record_local_shader_at(address, words);
+    else if (kind == RT_RENDERER_HULL_SHADER) rt_render_record_hull_shader_at(address, words);
+    else if (kind == RT_RENDERER_EXPORT_SHADER) rt_render_record_export_shader_at(address, words);
+    else if (kind == RT_RENDERER_GEOMETRY_SHADER) rt_render_record_geometry_shader_at(address, words);
     else rt_render_record_pixel_shader_at(address, words ? words : no_pixel_shader);
 }
 
