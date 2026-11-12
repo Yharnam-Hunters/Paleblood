@@ -336,6 +336,10 @@ RT_SYSLIB("libSceGnmDriver", sceGnmUnmapComputeQueue, unmap_compute_queue);
 #define DMA_DATA_DESTINATION_IS_REGISTER (1u << 27)            /* DAS */
 #define DMA_DATA_SOURCE_FIXED (1u << 28)                       /* SAIC: the source is not incremented */
 #define DMA_DATA_DESTINATION_FIXED (1u << 29)                  /* DAIC: the destination is not incremented */
+#define DMA_DATA_FROM_GDS 1u
+#define DMA_DATA_FROM_DATA 2u
+#define DMA_DATA_TO_GDS 1u
+#define DMA_DATA_DESTINATION_RESERVED 2u
 /* WRITE_DATA (opcode 0x37): control, address low, address high, then the dwords to write. In the
    control, DST_SEL bits 8-11 (2 memory through L2, 5 memory) and WR_ONE_ADDR bit 16 (every dword
    to the same address). */
@@ -689,17 +693,68 @@ static int wait_compare(const char *fn, const wait_reg_mem_packet *packet, uint3
     return holds;
 }
 
-/* The one DMA_DATA form the stand-in knows: a read from memory into CP_DMA_READ_TAGS, which only
-   brings the source into the GPU's cache. Any other form stops by name. */
-static void check_dma_data(const char *fn, const uint32_t *packet)
+/* The GPU's global data share (GDS): 64 KB of on-chip memory beside guest memory, which DMA_DATA and
+   shaders' GDS instructions reach by byte offset (AMD's Sea Islands ISA, "Global Data Share"). The
+   engine keeps counters there (structured append buffers: a DMA_DATA loads each from memory before
+   its passes and another saves it back after), at offsets from 0x20. */
+enum { GDS_BYTES = 64 << 10, DMA_DATA_BYTE_COUNT_MASK = 0x1fffff };
+static uint8_t gds[GDS_BYTES];
+
+/* The byte offset and count inside the GDS, or a stop by name. */
+static uint8_t *gds_bytes(const char *fn, uint32_t offset, uint32_t bytes)
+{
+    if (offset > GDS_BYTES || bytes > GDS_BYTES - offset) rt_fatal(fn, "a DMA_DATA reaching past the 64 KB GDS");
+    return gds + offset;
+}
+
+/* A step: the command processor's DMA, after the work before it and before the work after it. The
+   words: control, source low and high (or the data), destination low and high, command. */
+static void dma_data_step(const rt_gpu_step *step)
+{
+    const char *fn = step->function;
+    const uint32_t control = (uint32_t)step->words[0], command = (uint32_t)step->words[5];
+    const uint32_t source = DMA_DATA_SOURCE_SELECT(control), destination = DMA_DATA_DESTINATION_SELECT(control);
+    const uint32_t bytes = command & DMA_DATA_BYTE_COUNT_MASK;
+    const uint64_t source_address = step->words[1] | step->words[2] << 32, destination_address = step->words[3] | step->words[4] << 32;
+    uint8_t *to = destination == DMA_DATA_TO_GDS ? gds_bytes(fn, (uint32_t)step->words[3], bytes) : (uint8_t *)(uintptr_t)destination_address;
+    if (!to && bytes) rt_fatal(fn, "a DMA_DATA without a destination address");
+    if (source == DMA_DATA_FROM_DATA) { /* the packet's own 32-bit value, in every dword */
+        const uint32_t value = (uint32_t)step->words[1];
+        if (bytes % sizeof value) rt_fatal(fn, "a DMA_DATA fill of a byte count that is not whole dwords");
+        for (uint32_t at = 0; at < bytes; at += sizeof value) memcpy(to + at, &value, sizeof value);
+        return;
+    }
+    const uint8_t *from = source == DMA_DATA_FROM_GDS ? gds_bytes(fn, (uint32_t)step->words[1], bytes) : (const uint8_t *)(uintptr_t)source_address;
+    if (!from && bytes) rt_fatal(fn, "a DMA_DATA without a source address");
+    memmove(to, from, bytes);
+}
+
+/* DMA_DATA: a read from memory into CP_DMA_READ_TAGS only brings the source into the GPU's cache,
+   which the stand-in has none of: skipped. Copies and fills between memory (sources 0 and 3,
+   destinations 0 and 3), the GDS (1) and the packet's data (source 2) become a step (shadPS4's
+   liverpool.cpp handles the same five pairs, facts only). Register addresses, addresses that do not
+   advance, byte swaps and a GDS destination with a data source of other than whole dwords stop by
+   name. */
+static void dma_data(const char *fn, const uint32_t *packet)
 {
     const uint32_t control = packet[1], destination_low = packet[4], destination_high = packet[5], command = packet[6];
-    const uint32_t source = DMA_DATA_SOURCE_SELECT(control);
-    const int read_tags = (source == 0 || source == 3) && DMA_DATA_DESTINATION_SELECT(control) == 0 &&
+    const uint32_t source = DMA_DATA_SOURCE_SELECT(control), destination = DMA_DATA_DESTINATION_SELECT(control);
+    const int read_tags = (source == 0 || source == 3) && destination == 0 &&
                           (command & DMA_DATA_DESTINATION_IS_REGISTER) && (command & DMA_DATA_DESTINATION_FIXED) &&
                           !(command & (DMA_DATA_SOURCE_IS_REGISTER | DMA_DATA_SOURCE_FIXED)) && !DMA_DATA_SWAPS(command) &&
                           destination_low == CP_DMA_READ_TAGS_BYTE_ADDRESS && destination_high == 0;
-    if (!read_tags) rt_fatal(fn, "a DMA_DATA other than a read into CP_DMA_READ_TAGS: the stand-in does not copy or fill");
+    if (read_tags) return;
+    if (command & (DMA_DATA_SOURCE_IS_REGISTER | DMA_DATA_DESTINATION_IS_REGISTER | DMA_DATA_SOURCE_FIXED | DMA_DATA_DESTINATION_FIXED) ||
+        DMA_DATA_SWAPS(command))
+        rt_fatal(fn, "a DMA_DATA with register addresses, addresses that do not advance or byte swaps: the stand-in does not copy those");
+    if (destination == DMA_DATA_DESTINATION_RESERVED) rt_fatal(fn, "a DMA_DATA to destination select 2, which the format does not define");
+    const uint64_t words[6] = {control, packet[2], packet[3], destination_low, destination_high, command};
+    if (!collecting) {
+        const rt_gpu_step step = {.function = fn, .words = {words[0], words[1], words[2], words[3], words[4], words[5]}};
+        dma_data_step(&step);
+        return;
+    }
+    collect(fn, dma_data_step, words);
 }
 
 
@@ -900,7 +955,7 @@ static void complete_packets(const char *fn, const uint32_t *packets, uint32_t d
             memcpy(&wait, packet + 1, sizeof wait);
             check_wait(fn, &wait);
         } else if (opcode == PM4_DMA_DATA && length == DMA_DATA_DWORDS) {
-            check_dma_data(fn, packet);
+            dma_data(fn, packet);
         } else if (opcode == PM4_WAIT_ON_CE_COUNTER && length == 2) {
             wait_on_constant_engine(fn);
         } else if (opcode == PM4_INCREMENT_DE_COUNTER && length == 2) {
@@ -972,11 +1027,14 @@ RT_SYSLIB("libSceGnmDriver", sceGnmDingDong, ding_dong);
                                   skipped: an indexed draw's state (index size, buffer address and
                                   length) and the draw itself (found 6 November 2026); like the
                                   other draws they only read memory;
+     DMA_DATA copies and fills  a step: between memory, the GDS and the packet's data (found 12
+                                  November 2026, loading Iosefka's Clinic: a counter loaded into the
+                                  GDS);
      DMA_DATA to CP_DMA_READ_TAGS skipped: memory read into the command processor's read tags,
                                   the destination not incremented (found 6 November 2026, a
                                   100-byte read). It changes no memory and no state a shader
                                   sees, so it only brings the source into the GPU's cache, and the
-                                  stand-in has none. Any other DMA_DATA stops.
+                                  stand-in has none.
      WRITE_DATA                   a step: its dwords go to memory in order with the work (found 11
                                   November 2026, the loading screen after character creation);
                                   writes to registers or to one address stop;
