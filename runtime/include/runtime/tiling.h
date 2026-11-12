@@ -44,6 +44,24 @@ int rt_tiling_uniform_micro(const rt_tiling *t);
 int rt_tiling_layout(unsigned tiling_index, unsigned element_bytes, uint32_t pitch, uint32_t height, rt_tiling *layout, char *error,
                      size_t error_size);
 
+/* GFX7 DB surfaces use direct DB_DEPTH_INFO geometry, not GFX6 tile-mode indices.
+   The programmed surface extent comes from DB_DEPTH_SIZE; DB_DEPTH_SLICE independently
+   specifies the padded slice stride in units of 64 pixels. Addresses, views, compression/clear state
+   read-only flags, and global hardware limits (including DRAM row size) are validated by
+   the caller, not this layout decoder. */
+typedef enum { RT_DEPTH_ASPECT_Z, RT_DEPTH_ASPECT_STENCIL } rt_depth_aspect;
+typedef struct {
+    rt_tiling tiles; /* tiling_index=UINT32_MAX marks direct register geometry */
+    uint32_t width, height;
+} rt_depth_layout;
+
+/* Single-sample D16/D32 or S8, linear/1D-thin or the existing 8-pipe,8/16-bank 2D-thin
+   address mapper. Nonzero ADDR5 swizzle and other pipe/bank/thick profiles are refused.
+   On failure, output is untouched. Use rt_tiling_offset for split depth, not a micro table. */
+int rt_tiling_depth_layout(uint32_t depth_info, uint32_t z_info, uint32_t stencil_info,
+                           uint32_t depth_size, uint32_t depth_slice, rt_depth_aspect aspect,
+                           rt_depth_layout *output, char *error, size_t error_size);
+
 /* A mip-mapped image's levels (runtime/renderer/tiling.c, rt_tiling_mip_chain): each level's own
    layout, its offset from the image's base and its element counts. */
 enum { RT_TILING_MAX_LEVELS = 16 };

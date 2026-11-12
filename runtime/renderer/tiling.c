@@ -99,6 +99,66 @@ int rt_tiling_layout(unsigned tiling_index, unsigned element_bytes, uint32_t pit
     return 0;
 }
 
+/* CI/VI direct depth geometry: AMD PAL gfx6DepthStencilView distinguishes this from
+   the GFX6 index path. Field encodings follow AMD's CIK register reference and GFX7 headers. */
+int rt_tiling_depth_layout(uint32_t depth_info, uint32_t z_info, uint32_t stencil_info,
+                           uint32_t depth_size, uint32_t depth_slice, rt_depth_aspect aspect,
+                           rt_depth_layout *output, char *error, size_t error_size)
+{
+    if (aspect != RT_DEPTH_ASPECT_Z && aspect != RT_DEPTH_ASPECT_STENCIL)
+        return failed(error,error_size,"unknown depth aspect %u",(unsigned)aspect);
+    if (z_info & 0xcu) return failed(error,error_size,"multisampled depth layouts are not modeled");
+    unsigned bytes;
+    if (aspect == RT_DEPTH_ASPECT_STENCIL) {
+        if (!(stencil_info & 1u)) return failed(error,error_size,"stencil format is disabled");
+        bytes = 1;
+    } else {
+        const unsigned format = z_info & 3u;
+        if (format != 1 && format != 3) return failed(error,error_size,"depth format %u is not modeled",format);
+        bytes = format == 1 ? 2 : 4;
+    }
+    if (depth_info & 15u) return failed(error,error_size,"depth ADDR5 swizzle is not modeled");
+    rt_depth_layout d = {0};
+    d.width = ((depth_size & 0x7ffu) + 1) * MICRO;
+    d.height = (((depth_size >> 11) & 0x7ffu) + 1) * MICRO;
+    rt_tiling *t = &d.tiles;
+    *t = (rt_tiling){.tiling_index=UINT32_MAX,.micro=RT_MICRO_THIN,.element_bytes=bytes,
+                     .pitch=d.width,.height=d.height};
+    const unsigned array = depth_info >> 4 & 15u;
+    if (array == 0 || array == 1) t->kind = RT_TILING_LINEAR;
+    else if (array == 2) t->kind = RT_TILING_1D;
+    else if (array == 4) {
+        t->kind = RT_TILING_2D;
+        const unsigned pipe = depth_info >> 8 & 31u, bank_code = depth_info >> 19 & 3u;
+        if (pipe != 0xc || bank_code < 2)
+            return failed(error,error_size,"depth pipe configuration %u or bank code %u is not modeled",pipe,bank_code);
+        t->pipes = P8_PIPES; t->banks = 2u << bank_code;
+        t->bank_width = 1u << (depth_info >> 13 & 3u);
+        t->bank_height = 1u << (depth_info >> 15 & 3u);
+        t->macro_aspect = 1u << (depth_info >> 17 & 3u);
+        t->macro_width = MICRO * t->bank_width * t->pipes * t->macro_aspect;
+        t->macro_height = MICRO * t->bank_height * t->banks / t->macro_aspect;
+        if (t->pitch % t->macro_width)
+            return failed(error,error_size,"depth pitch %u is not a whole number of %u-texel macro tiles",t->pitch,t->macro_width);
+        t->height = (d.height + t->macro_height - 1) / t->macro_height * t->macro_height;
+        const unsigned split_code = (aspect == RT_DEPTH_ASPECT_Z ? z_info : stencil_info) >> 13 & 7u;
+        if (split_code == 7) return failed(error,error_size,"depth tile-split code 7 is not defined");
+        const uint32_t split = 64u << split_code;
+        t->tile_split = split < MICRO_TEXELS * bytes ? split : 0;
+    } else return failed(error,error_size,"depth array mode %u is not modeled",array);
+
+    const uint64_t pixels = ((uint64_t)(depth_slice & 0x3fffffu) + 1) * MICRO_TEXELS;
+    const uint64_t stride = pixels * bytes, minimum = (uint64_t)t->pitch * t->height * bytes;
+    if (stride < minimum)
+        return failed(error,error_size,"depth slice stride is smaller than its padded surface");
+    /* Complete pipe/bank interleave groups keep every mapped byte inside its slice span. */
+    if (t->kind == RT_TILING_2D && stride % (PIPE_INTERLEAVE * t->pipes * t->banks))
+        return failed(error,error_size,"depth slice stride is not a whole pipe/bank interleave group");
+    t->slice_bytes = stride;
+    *output = d;
+    return 0;
+}
+
 /* The texel's place (0-63) in its 8x8 micro tile: which coordinate bit each of the index's six bits
    takes, x0-x2 as 0-2 and y0-y2 as 3-5 (addrlib's ComputePixelIndexWithinMicroTile). The display
    order depends on the element size; the thin (and depth) order does not. */
@@ -145,7 +205,7 @@ static unsigned bank_of(const rt_tiling *t, uint32_t x, uint32_t y, uint32_t sli
 uint64_t rt_tiling_offset(const rt_tiling *t, uint32_t x, uint32_t y, uint32_t slice)
 {
     const uint64_t element = t->element_bytes;
-    if (t->kind == RT_TILING_LINEAR) return (((uint64_t)slice * t->height + y) * t->pitch + x) * element;
+    if (t->kind == RT_TILING_LINEAR) return slice * t->slice_bytes + ((uint64_t)y * t->pitch + x) * element;
     const uint64_t micro_bytes = MICRO_TEXELS * element;
     const uint64_t in_micro = micro_index(t, x, y) * element;
     if (t->kind == RT_TILING_1D)
@@ -158,7 +218,7 @@ uint64_t rt_tiling_offset(const rt_tiling *t, uint32_t x, uint32_t y, uint32_t s
     const uint64_t piece = in_micro / piece_bytes, in_piece = in_micro % piece_bytes;
     const uint64_t macro_bytes = piece_bytes * (t->macro_width / MICRO) * (t->macro_height / MICRO) / channels;
     const uint64_t macros_per_row = t->pitch / t->macro_width;
-    const uint64_t slice_channel_bytes = macros_per_row * (t->height / t->macro_height) * macro_bytes;
+    const uint64_t slice_channel_bytes = t->slice_bytes / (channels * pieces);
     const uint64_t macro = (uint64_t)(y / t->macro_height) * macros_per_row + x / t->macro_width;
     const uint64_t tile = (uint64_t)(y / MICRO % t->bank_height) * t->bank_width + (x / MICRO / t->pipes) % t->bank_width;
     const uint64_t in_channel = (piece + pieces * slice) * slice_channel_bytes + macro * macro_bytes + tile * piece_bytes + in_piece;

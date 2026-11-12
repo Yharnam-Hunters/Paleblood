@@ -20,9 +20,12 @@
 #endif
 #include "runtime/write_watch.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -38,6 +41,26 @@ static int failures;
 
 enum { PAGES = 64, POOL_OFFSET = 0x40000, SKIPPED = 77, ROUNDS = 1000 };
 static uint64_t page_size;
+
+/* Keep Linux's shmem-backed watch fixture; other hosts still exercise both shared maps
+   before the runtime reports whether asynchronous write protection is available. */
+static int backing_file(void)
+{
+#if defined(__linux__)
+    return memfd_create("write-watch-test", MFD_CLOEXEC);
+#else
+    char path[] = "/tmp/paleblood-write-watch-XXXXXX";
+    const int fd = mkstemp(path);
+    if (fd < 0) return -1;
+    if (unlink(path) || fcntl(fd, F_SETFD, FD_CLOEXEC) < 0) {
+        const int saved = errno;
+        close(fd);
+        errno = saved;
+        return -1;
+    }
+    return fd;
+#endif
+}
 
 /* What a collect reported: a mark per page of the map, and how many runs. */
 typedef struct {
@@ -102,17 +125,34 @@ static void *writer(void *unused)
 
 int main(void)
 {
-    page_size = (uint64_t)sysconf(_SC_PAGESIZE);
+    const long host_page_size = sysconf(_SC_PAGESIZE);
+    if (host_page_size <= 0) {
+        fprintf(stderr, "cannot determine the host page size\n");
+        return 1;
+    }
+    page_size = (uint64_t)host_page_size;
     const uint64_t length = PAGES * page_size;
-    const int fd = memfd_create("write-watch-test", MFD_CLOEXEC);
-    if (fd < 0 || ftruncate(fd, (off_t)(POOL_OFFSET + length))) return 1;
+    int result = 1;
+    guest = MAP_FAILED;
+    other = MAP_FAILED;
+    const int fd = backing_file();
+    if (fd < 0) { perror("backing file"); return 1; }
+    if (ftruncate(fd, (off_t)(POOL_OFFSET + length))) { perror("ftruncate"); goto cleanup; }
     guest = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, POOL_OFFSET);
+    if (guest == MAP_FAILED) { perror("guest mmap"); goto cleanup; }
     other = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, POOL_OFFSET);
-    if (guest == MAP_FAILED || other == MAP_FAILED) return 1;
+    if (other == MAP_FAILED) { perror("other mmap"); goto cleanup; }
     guest[0] = 1; /* touched before the watch */
+    CHECK(other[0] == 1);
+    other[0] = 2;
+    CHECK(guest[0] == 2);
+    guest[0] = 1;
+    if (failures) goto cleanup;
+    fprintf(stderr, "shared backing maps: passed (write-watch availability checked next)\n");
     if (rt_write_watch_add(guest, length, POOL_OFFSET, PROT_READ | PROT_WRITE)) {
         fprintf(stderr, "no asynchronous write protection here: skipped\n");
-        return SKIPPED;
+        result = SKIPPED;
+        goto cleanup;
     }
     CHECK(rt_write_watch_active());
 
@@ -201,6 +241,12 @@ int main(void)
     const unsigned char kept = *(volatile unsigned char *)(guest + 22 * page_size); /* readable, without the resolver */
     CHECK(kept == other[22 * page_size] && atomic_load(&resolutions) == 5);
 
+    rt_write_watch_remove(guest, length);
+    result = failures != 0;
+cleanup:
+    if (guest != MAP_FAILED && munmap(guest, length)) { perror("guest munmap"); result = 1; }
+    if (other != MAP_FAILED && munmap(other, length)) { perror("other munmap"); result = 1; }
+    if (close(fd)) { perror("close backing file"); result = 1; }
     if (failures) fprintf(stderr, "%d failure(s)\n", failures);
-    return failures != 0;
+    return result;
 }
