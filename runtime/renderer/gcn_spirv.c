@@ -69,7 +69,18 @@ typedef struct {
     size_t callee_dwords;
     uint64_t code_address;
     uint32_t *user_data_read;        /* runtime/gcn_spirv.h, "User data read" */
+    gcn_lds lds;                     /* the workgroup's LDS (runtime/gcn_spirv.h) */
+    /* tessellation (runtime/gcn_spirv.h): the local and hull shaders run as compute shaders, the domain
+       shader as a vertex shader's translation in a tessellation evaluation shader */
+    int tess;
+    uint32_t patches, input_points, output_points;
+    int off_chip;
+    uint32_t factor_stride;
+    uint64_t factor_ring, factor_ring_bytes, factor_buffer;
+    uint32_t domain, partitioning, topology;
 } stage_layout;
+
+enum { TESS_NONE, TESS_LOCAL, TESS_HULL, TESS_DOMAIN };
 
 enum { DEPTH_TARGET = 8, POSITION_TARGET = 12, PARAMETER_TARGET_FIRST = 32, PARAMETER_COUNT = 32, COLOR_TARGET_COUNT = 8, MAX_INTERFACE = 80 };
 
@@ -87,6 +98,7 @@ typedef struct {
     int writing;
     unsigned char sgpr_written[SGPR_COUNT];
     uint32_t push_constants, local_invocation_id, workgroup_id;
+    uint32_t lds;                    /* the LDS: a workgroup array, or (in a buffer) its base address, a ulong value */
     /* stage inputs and outputs, made on first use, and every one the entry point lists */
     uint32_t position, parameter[PARAMETER_COUNT], color[COLOR_TARGET_COUNT], attribute[PARAMETER_COUNT];
     uint32_t clip_distance;          /* the ClipDistance array, made on first use */
@@ -1073,6 +1085,16 @@ static void scalar_instruction(translator *t, const uint32_t *w, const gcn_instr
         const uint32_t r = value(t, add ? SPV_OP_I_ADD : SPV_OP_I_MUL, t_uint(t), 2, a, k);
         if (add) set_scc(t, signed_overflow(t, a, k, r, 0));
         write_sgpr(t, sdst, r, ins);
+    } else if (!strcmp(name, "s_barrier")) {
+        /* the workgroup's lanes wait for each other, their LDS writes made visible (runtime/gcn_spirv.h) */
+        if (t->layout->stage != STAGE_COMPUTE) {
+            fail(t, "s_barrier outside a compute shader is not translated yet");
+            return;
+        }
+        uint32_t semantics = SPV_SEMANTICS_ACQUIRE_RELEASE | SPV_SEMANTICS_WORKGROUP_MEMORY;
+        if (t->layout->lds.address) semantics |= SPV_SEMANTICS_UNIFORM_MEMORY;
+        spirv_emit(&t->m, t->out, SPV_OP_CONTROL_BARRIER,
+                   (const uint32_t[]){konst(t, SPV_SCOPE_WORKGROUP), konst(t, SPV_SCOPE_WORKGROUP), konst(t, semantics)}, 3);
     } else if (!strcmp(name, "s_waitcnt") || !strcmp(name, "s_nop")) {
         /* Memory completes in order in SPIR-V within an invocation: nothing to wait for. */
     } else {
@@ -1127,6 +1149,7 @@ static void store_dword(translator *t, uint32_t pointer, uint32_t v)
 
 enum { VSHARP_RECORDS_WORD = 2 }; /* a buffer descriptor's NUM_RECORDS */
 
+static uint32_t ulong_value(translator *t, uint64_t v);
 static uint32_t ulong_constant(translator *t, uint64_t v)
 {
     return spirv_global(&t->m, SPV_OP_CONSTANT, (const uint32_t[]){t_ulong(t), (uint32_t)v, (uint32_t)(v >> 32)}, 3);
@@ -1680,6 +1703,20 @@ static void descriptor_format_access(translator *t, unsigned srsrc, uint32_t com
 }
 
 /* MUBUF buffer_load/store_dword* and MTBUF tbuffer_load/store_format_* on 32-bit float data. */
+/* A buffer descriptor's base on the GPU. A hull shader's descriptor based in the tessellation-factor
+   ring reaches the layout's factor buffer instead (runtime/gcn_spirv.h). */
+static uint32_t buffer_base(translator *t, unsigned srsrc)
+{
+    const uint32_t base = address_in(t, srsrc, VSHARP_BASE_HIGH_MASK);
+    const stage_layout *l = t->layout;
+    if (l->tess != TESS_HULL || !l->factor_ring_bytes) return base;
+    const uint32_t guest = value(t, SPV_OP_I_SUB, t_ulong(t), 2, base, ulong_value(t, l->address_offset));
+    const uint32_t into_ring = value(t, SPV_OP_I_SUB, t_ulong(t), 2, guest, ulong_value(t, l->factor_ring));
+    const uint32_t in_ring = value(t, SPV_OP_U_LESS_THAN, t_bool(t), 2, into_ring, ulong_value(t, l->factor_ring_bytes));
+    const uint32_t factors = value(t, SPV_OP_I_ADD, t_ulong(t), 2, ulong_value(t, l->factor_buffer), into_ring);
+    return value(t, SPV_OP_SELECT, t_ulong(t), 3, in_ring, factors, base);
+}
+
 static void buffer_memory(translator *t, const uint32_t *w, const gcn_instruction *ins)
 {
     const char *name = ins->name;
@@ -1708,7 +1745,7 @@ static void buffer_memory(translator *t, const uint32_t *w, const gcn_instructio
     uint32_t offset = value(t, SPV_OP_I_ADD, t_uint(t), 2, soffset_value, access_offset);
     if (idxen) offset = value(t, SPV_OP_I_ADD, t_uint(t), 2, offset, value(t, SPV_OP_I_MUL, t_uint(t), 2, index, stride));
     const buffer_range range = buffer_range_of(t, srsrc, idxen, index, stride, soffset_value, access_offset);
-    const uint32_t base = address_in(t, srsrc, VSHARP_BASE_HIGH_MASK);
+    const uint32_t base = buffer_base(t, srsrc);
     if (ins->encoding == GCN_MUBUF && strstr(name, "_format_")) {
         descriptor_format_access(t, srsrc, dwords, load_op, base, offset, &range, vdata);
         return;
@@ -1941,11 +1978,20 @@ static uint32_t user_data_block(translator *t)
 {
     spirv_module *m = &t->m;
     const uint32_t array = spirv_global(m, SPV_OP_TYPE_ARRAY, (const uint32_t[]){t_uint(t), konst(t, GCN_USER_SGPR_MAX)}, 2);
-    const uint32_t block = spirv_global(m, SPV_OP_TYPE_STRUCT, (const uint32_t[]){array}, 1);
+    /* the local and hull passes also take the draw's words (GCN_TESS_DRAW_*) after the user data */
+    const int draw_words = t->layout->tess == TESS_LOCAL || t->layout->tess == TESS_HULL;
+    const uint32_t draw = spirv_global(m, SPV_OP_TYPE_ARRAY, (const uint32_t[]){t_uint(t), konst(t, GCN_TESS_DRAW_WORDS)}, 2);
+    const uint32_t block = draw_words ? spirv_global(m, SPV_OP_TYPE_STRUCT, (const uint32_t[]){array, draw}, 2)
+                                      : spirv_global(m, SPV_OP_TYPE_STRUCT, (const uint32_t[]){array}, 1);
     spirv_emit(m, &m->sections[SPIRV_DECORATIONS], SPV_OP_DECORATE, (const uint32_t[]){array, SPV_DECORATION_ARRAY_STRIDE, BYTES_PER_DWORD}, 3);
     spirv_emit(m, &m->sections[SPIRV_DECORATIONS], SPV_OP_DECORATE, (const uint32_t[]){block, SPV_DECORATION_BLOCK}, 2);
     spirv_emit(m, &m->sections[SPIRV_DECORATIONS], SPV_OP_MEMBER_DECORATE,
                (const uint32_t[]){block, 0, SPV_DECORATION_OFFSET, t->layout->push_constant_offset}, 4);
+    if (draw_words) {
+        spirv_emit(m, &m->sections[SPIRV_DECORATIONS], SPV_OP_DECORATE, (const uint32_t[]){draw, SPV_DECORATION_ARRAY_STRIDE, BYTES_PER_DWORD}, 3);
+        spirv_emit(m, &m->sections[SPIRV_DECORATIONS], SPV_OP_MEMBER_DECORATE,
+                   (const uint32_t[]){block, 1, SPV_DECORATION_OFFSET, GCN_TESS_DRAW_OFFSET}, 4);
+    }
     const uint32_t id = spirv_new_id(m);
     spirv_emit(m, &m->sections[SPIRV_GLOBALS], SPV_OP_VARIABLE,
                (const uint32_t[]){spirv_type_pointer(m, SPV_STORAGE_PUSH_CONSTANT, block), id, SPV_STORAGE_PUSH_CONSTANT}, 3);
@@ -1954,6 +2000,8 @@ static uint32_t user_data_block(translator *t)
 
 /* The starting registers: user data in the first SGPRs, the workgroup index, and v0-v2 the lane's
    position in the workgroup. */
+static void tessellation_registers(translator *t, const stage_layout *layout);
+
 static void starting_registers(translator *t, const stage_layout *layout)
 {
     t->writing = 1; /* the hardware's starting values, not the program's reads or writes */
@@ -1962,6 +2010,11 @@ static void starting_registers(translator *t, const stage_layout *layout)
         const uint32_t pointer = value(t, SPV_OP_ACCESS_CHAIN, spirv_type_pointer(&t->m, SPV_STORAGE_PUSH_CONSTANT, t_uint(t)), 3,
                                        t->push_constants, konst(t, 0), konst(t, i));
         store(t, t->out, sgpr(t, i), load(t, t_uint(t), pointer));
+    }
+    if (layout->tess) {
+        tessellation_registers(t, layout);
+        t->writing = 0;
+        return;
     }
     if (layout->stage == STAGE_VERTEX) {
         const uint32_t index = interface_variable(t, SPV_STORAGE_INPUT, t_int(t), SPV_DECORATION_BUILT_IN, SPV_BUILT_IN_VERTEX_INDEX);
@@ -2001,6 +2054,271 @@ static void starting_registers(translator *t, const stage_layout *layout)
     const uint32_t lane = load(t, uvec3, t->local_invocation_id);
     for (unsigned axis = 0; axis < 3; axis++)
         store(t, t->out, vgpr(t, axis), value(t, SPV_OP_COMPOSITE_EXTRACT, t_uint(t), 2, lane, axis));
+}
+
+/* ---- tessellation stages (runtime/gcn_spirv.h) ---- */
+
+static uint32_t ulong_value(translator *t, uint64_t v)
+{
+    return spirv_global(&t->m, SPV_OP_CONSTANT, (const uint32_t[]){t_ulong(t), (uint32_t)v, (uint32_t)(v >> 32)}, 3);
+}
+
+/* The LDS of workgroup `group` (a uint value), in the layout's buffer: its base address. */
+static uint32_t workgroup_lds(translator *t, uint32_t group)
+{
+    const uint32_t offset = value(t, SPV_OP_I_MUL, t_ulong(t), 2, widen(t, group), ulong_value(t, t->layout->lds.bytes));
+    return value(t, SPV_OP_I_ADD, t_ulong(t), 2, ulong_value(t, t->layout->lds.address), offset);
+}
+
+static uint32_t draw_word(translator *t, unsigned word)
+{
+    const uint32_t pointer = value(t, SPV_OP_ACCESS_CHAIN, spirv_type_pointer(&t->m, SPV_STORAGE_PUSH_CONSTANT, t_uint(t)), 3,
+                                   t->push_constants, konst(t, 1), konst(t, word));
+    return load(t, t_uint(t), pointer);
+}
+
+static uint32_t udiv(translator *t, uint32_t a, uint32_t b) { return value(t, SPV_OP_U_DIV, t_uint(t), 2, a, b); }
+static uint32_t umod(translator *t, uint32_t a, uint32_t b) { return value(t, SPV_OP_U_MOD, t_uint(t), 2, a, b); }
+
+/* The local shader's vertex index for the draw's control point n: first + n, or the index buffer's entry
+   first + n (2 or 4 bytes each, little-endian). */
+static uint32_t local_vertex_index(translator *t, uint32_t n)
+{
+    const uint32_t first = draw_word(t, GCN_TESS_DRAW_FIRST), size = draw_word(t, GCN_TESS_DRAW_INDEX_SIZE);
+    const uint32_t entry = value(t, SPV_OP_I_ADD, t_uint(t), 2, first, n);
+    const uint32_t indexed = value(t, SPV_OP_I_NOT_EQUAL, t_bool(t), 2, size, konst(t, 0));
+    /* read the dword holding the entry: an index buffer of 0 entries is never read (the select keeps entry 0's address valid) */
+    const uint32_t low = widen(t, draw_word(t, GCN_TESS_DRAW_INDEX_LOW));
+    const uint32_t high = value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_ulong(t), 2, widen(t, draw_word(t, GCN_TESS_DRAW_INDEX_HIGH)), ulong_value(t, 32));
+    const uint32_t base = value(t, SPV_OP_BITWISE_OR, t_ulong(t), 2, low, high);
+    const uint32_t byte = value(t, SPV_OP_I_MUL, t_uint(t), 2, value(t, SPV_OP_SELECT, t_uint(t), 3, indexed, entry, konst(t, 0)), size);
+    const uint32_t aligned = value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, byte, konst(t, ~3u));
+    const uint32_t address = value(t, SPV_OP_I_ADD, t_ulong(t), 2, value(t, SPV_OP_SELECT, t_ulong(t), 3, indexed, base, ulong_value(t, 0)),
+                                   widen(t, aligned));
+    const uint32_t merge_word = function_variable(t, t_uint(t), konst(t, 0));
+    const uint32_t merge = begin_if(t, indexed);
+    store(t, t->out, merge_word,
+          load_dword(t, value(t, SPV_OP_CONVERT_U_TO_PTR, spirv_type_pointer(&t->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, t_uint(t)), 1, address)));
+    end_if(t, merge);
+    const uint32_t word = load(t, t_uint(t), merge_word);
+    const uint32_t shift = value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, byte, konst(t, 3)), konst(t, 3));
+    const uint32_t shifted = value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, word, shift);
+    const uint32_t index = value(t, SPV_OP_SELECT, t_uint(t), 3, value(t, SPV_OP_I_EQUAL, t_bool(t), 2, size, konst(t, 2)),
+                                 value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, shifted, konst(t, 0xffff)), word);
+    return value(t, SPV_OP_SELECT, t_uint(t), 3, indexed, index, entry);
+}
+
+static void tessellation_registers(translator *t, const stage_layout *layout)
+{
+    if (layout->tess == TESS_DOMAIN) {
+        const uint32_t vec3 = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_float(t), 3}, 2);
+        const uint32_t coord = interface_variable(t, SPV_STORAGE_INPUT, vec3, SPV_DECORATION_BUILT_IN, SPV_BUILT_IN_TESS_COORD);
+        const uint32_t primitive = interface_variable(t, SPV_STORAGE_INPUT, t_int(t), SPV_DECORATION_BUILT_IN, SPV_BUILT_IN_PRIMITIVE_ID);
+        const uint32_t uv = load(t, vec3, coord);
+        const uint32_t patch = value(t, SPV_OP_BITCAST, t_uint(t), 1, load(t, t_int(t), primitive));
+        for (unsigned axis = 0; axis < 2; axis++)
+            store(t, t->out, vgpr(t, axis), as_bits(t, value(t, SPV_OP_COMPOSITE_EXTRACT, t_float(t), 2, uv, axis)));
+        store(t, t->out, vgpr(t, 2), umod(t, patch, konst(t, layout->patches)));
+        store(t, t->out, vgpr(t, 3), patch);
+        t->lds = workgroup_lds(t, udiv(t, patch, konst(t, layout->patches)));
+        return;
+    }
+    const uint32_t uvec3 = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_uint(t), 3}, 2);
+    const uint32_t lane = value(t, SPV_OP_COMPOSITE_EXTRACT, t_uint(t), 2, load(t, uvec3, t->local_invocation_id), 0);
+    const uint32_t group = value(t, SPV_OP_COMPOSITE_EXTRACT, t_uint(t), 2, load(t, uvec3, t->workgroup_id), 0);
+    t->lds = workgroup_lds(t, group);
+    const uint32_t points = konst(t, layout->tess == TESS_LOCAL ? layout->input_points : layout->output_points);
+    const uint32_t relative = udiv(t, lane, points), point = umod(t, lane, points);
+    const uint32_t patch = value(t, SPV_OP_I_ADD, t_uint(t), 2, value(t, SPV_OP_I_MUL, t_uint(t), 2, group, konst(t, layout->patches)), relative);
+    const uint32_t valid = value(t, SPV_OP_U_LESS_THAN, t_bool(t), 2, patch, draw_word(t, GCN_TESS_DRAW_PATCHES));
+    store(t, t->out, t->exec, valid);
+    if (layout->tess == TESS_LOCAL) {
+        const uint32_t n = value(t, SPV_OP_I_ADD, t_uint(t), 2, value(t, SPV_OP_I_MUL, t_uint(t), 2, patch, konst(t, layout->input_points)), point);
+        store(t, t->out, vgpr(t, 0), local_vertex_index(t, value(t, SPV_OP_SELECT, t_uint(t), 3, valid, n, konst(t, 0))));
+        store(t, t->out, vgpr(t, 1), lane);
+        store(t, t->out, vgpr(t, 2), konst(t, 0));
+        store(t, t->out, vgpr(t, 3), konst(t, 0));
+        return;
+    }
+    store(t, t->out, vgpr(t, 0), patch);
+    store(t, t->out, vgpr(t, 1), value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, relative,
+                                       value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, point, konst(t, 8))));
+    unsigned next = layout->user_sgprs;
+    if (layout->off_chip) store(t, t->out, sgpr(t, next++), konst(t, 0));
+    const uint32_t first_patch = value(t, SPV_OP_I_MUL, t_uint(t), 2, group, konst(t, layout->patches));
+    store(t, t->out, sgpr(t, next), value(t, SPV_OP_I_MUL, t_uint(t), 2, first_patch, konst(t, layout->factor_stride)));
+}
+
+/* ---- the local data share (ds_*) ----
+
+   DS fields (the Sea Islands manual): word 0 OFFSET0 bits 0-7, OFFSET1 8-15, GDS 17, OP 18-25; word 1
+   ADDR bits 0-7, DATA0 8-15, DATA1 16-23, VDST 24-31. One-address instructions take OFFSET1:OFFSET0 as
+   one 16-bit byte offset; the two-address ones (read2, write2) take each offset in units of their
+   element (4 or 8 bytes; 64 elements for the st64 forms). Elements are read and written as dwords at
+   address / 4 (the low two bits ignored for dword accesses). */
+enum { DS_GDS = 1u << 17 };
+
+static uint32_t lds_dwords(translator *t) { return t->layout->lds.bytes / BYTES_PER_DWORD; }
+
+/* A pointer to the LDS dword at index (in range). */
+static uint32_t lds_pointer(translator *t, uint32_t index)
+{
+    if (t->layout->lds.address) {
+        const uint32_t address = value(t, SPV_OP_I_ADD, t_ulong(t), 2, t->lds,
+                                       widen(t, value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, index, konst(t, 2))));
+        return value(t, SPV_OP_CONVERT_U_TO_PTR, spirv_type_pointer(&t->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, t_uint(t)), 1, address);
+    }
+    return value(t, SPV_OP_ACCESS_CHAIN, spirv_type_pointer(&t->m, SPV_STORAGE_WORKGROUP, t_uint(t)), 2, t->lds, index);
+}
+
+/* Shared between lanes: a buffer LDS's accesses are volatile, so each lane sees the others' writes
+   after a barrier. */
+static uint32_t lds_load(translator *t, uint32_t pointer)
+{
+    if (!t->layout->lds.address) return load(t, t_uint(t), pointer);
+    const uint32_t words[] = {t_uint(t), spirv_new_id(&t->m), pointer, SPV_MEMORY_ACCESS_ALIGNED | SPV_MEMORY_ACCESS_VOLATILE, BYTES_PER_DWORD};
+    spirv_emit(&t->m, t->out, SPV_OP_LOAD, words, 5);
+    return words[1];
+}
+
+static void lds_store(translator *t, uint32_t pointer, uint32_t v)
+{
+    if (!t->layout->lds.address) {
+        store(t, t->out, pointer, v);
+        return;
+    }
+    const uint32_t words[] = {pointer, v, SPV_MEMORY_ACCESS_ALIGNED | SPV_MEMORY_ACCESS_VOLATILE, BYTES_PER_DWORD};
+    spirv_emit(&t->m, t->out, SPV_OP_STORE, words, 4);
+}
+
+static uint32_t lds_in_range(translator *t, uint32_t index)
+{
+    return value(t, SPV_OP_U_LESS_THAN, t_bool(t), 2, index, konst(t, lds_dwords(t)));
+}
+
+/* The dword at byte address byte: 0 past the LDS. */
+static uint32_t lds_read(translator *t, uint32_t byte)
+{
+    const uint32_t index = value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, byte, konst(t, 2));
+    const uint32_t in = lds_in_range(t, index);
+    const uint32_t word = lds_load(t, lds_pointer(t, value(t, SPV_OP_SELECT, t_uint(t), 3, in, index, konst(t, 0))));
+    return value(t, SPV_OP_SELECT, t_uint(t), 3, in, word, konst(t, 0));
+}
+
+static void lds_write(translator *t, uint32_t byte, uint32_t v)
+{
+    const uint32_t index = value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, byte, konst(t, 2));
+    const uint32_t merge = begin_if(t, lds_in_range(t, index));
+    lds_store(t, lds_pointer(t, index), v);
+    end_if(t, merge);
+}
+
+/* An atomic on the dword at byte (nothing past the LDS, which returns 0): opcode with value (and, for a
+   compare-exchange, comparator). */
+static uint32_t lds_atomic(translator *t, uint16_t opcode, uint32_t byte, uint32_t v, uint32_t comparator)
+{
+    const uint32_t index = value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, byte, konst(t, 2));
+    const uint32_t result = function_variable(t, t_uint(t), konst(t, 0));
+    const uint32_t merge = begin_if(t, lds_in_range(t, index));
+    const uint32_t pointer = lds_pointer(t, index), scope = konst(t, SPV_SCOPE_WORKGROUP), relaxed = konst(t, 0);
+    const uint32_t old = opcode == SPV_OP_ATOMIC_COMPARE_EXCHANGE
+                             ? value(t, opcode, t_uint(t), 6, pointer, scope, relaxed, relaxed, v, comparator)
+                             : value(t, opcode, t_uint(t), 4, pointer, scope, relaxed, v);
+    store(t, t->out, result, old);
+    end_if(t, merge);
+    return load(t, t_uint(t), result);
+}
+
+/* A byte or short write: the dword's other bytes stay as other lanes leave them (an atomic AND clears
+   these bits, an atomic OR sets them). */
+static void lds_write_part(translator *t, uint32_t byte, uint32_t v, unsigned bits)
+{
+    const uint32_t shift = value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, byte, konst(t, 3)), konst(t, 3));
+    const uint32_t mask = value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, konst(t, (1u << bits) - 1), shift);
+    const uint32_t part = value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, v, shift), mask);
+    lds_atomic(t, SPV_OP_ATOMIC_AND, byte, value(t, SPV_OP_NOT, t_uint(t), 1, mask), 0);
+    lds_atomic(t, SPV_OP_ATOMIC_OR, byte, part, 0);
+}
+
+static const struct {
+    const char *name;
+    uint16_t opcode;
+} lds_atomics[] = {
+    {"add", SPV_OP_ATOMIC_I_ADD}, {"sub", SPV_OP_ATOMIC_I_SUB}, {"min_i32", SPV_OP_ATOMIC_S_MIN}, {"max_i32", SPV_OP_ATOMIC_S_MAX},
+    {"min_u32", SPV_OP_ATOMIC_U_MIN}, {"max_u32", SPV_OP_ATOMIC_U_MAX}, {"and", SPV_OP_ATOMIC_AND}, {"or", SPV_OP_ATOMIC_OR},
+    {"xor", SPV_OP_ATOMIC_XOR}, {"wrxchg", SPV_OP_ATOMIC_EXCHANGE}, {"cmpst", SPV_OP_ATOMIC_COMPARE_EXCHANGE},
+};
+
+static void lds_instruction(translator *t, const uint32_t *w, const gcn_instruction *ins)
+{
+    const char *name = ins->name;
+    if (w[0] & DS_GDS) {
+        fail(t, "%s: the global data share (GDS) is not translated yet", name);
+        return;
+    }
+    if (!t->layout->lds.bytes) {
+        fail(t, "%s: a ds_* instruction in a shader with no LDS", name);
+        return;
+    }
+    const unsigned offset0 = w[0] & 0xff, offset1 = (w[0] >> 8) & 0xff;
+    const unsigned address = w[1] & 0xff, data0 = (w[1] >> 8) & 0xff, data1 = (w[1] >> 16) & 0xff, vdst = w[1] >> 24;
+    const char *op = name + strlen("ds_");
+    const int two = !strncmp(op, "read2", 5) || !strncmp(op, "write2", 6), st64 = strstr(op, "st64") != NULL;
+    const int wide = strstr(op, "_b64") != NULL; /* elements of two dwords */
+    /* the element addresses: one, or two with their own offsets */
+    const unsigned element = (wide ? 8u : 4u) * (st64 ? 64u : 1u);
+    const uint32_t base = load(t, t_uint(t), vgpr(t, address));
+    const uint32_t first = value(t, SPV_OP_I_ADD, t_uint(t), 2, base, konst(t, two ? offset0 * element : offset1 << 8 | offset0));
+    const uint32_t second = two ? value(t, SPV_OP_I_ADD, t_uint(t), 2, base, konst(t, offset1 * element)) : 0;
+    const unsigned dwords = wide ? 2 : 1;
+    const uint32_t merge = begin_if(t, exec_bit(t));
+    if (!strcmp(op, "write_b32") || !strcmp(op, "write_b64") || !strcmp(op, "write2_b32") || !strcmp(op, "write2st64_b32") ||
+        !strcmp(op, "write2_b64") || !strcmp(op, "write2st64_b64")) {
+        for (unsigned i = 0; i < dwords; i++) {
+            lds_write(t, value(t, SPV_OP_I_ADD, t_uint(t), 2, first, konst(t, i * 4)), load(t, t_uint(t), vgpr(t, data0 + i)));
+            if (two)
+                lds_write(t, value(t, SPV_OP_I_ADD, t_uint(t), 2, second, konst(t, i * 4)), load(t, t_uint(t), vgpr(t, data1 + i)));
+        }
+    } else if (!strcmp(op, "read_b32") || !strcmp(op, "read_b64") || !strcmp(op, "read2_b32") || !strcmp(op, "read2st64_b32") ||
+               !strcmp(op, "read2_b64") || !strcmp(op, "read2st64_b64")) {
+        uint32_t got[4];
+        for (unsigned i = 0; i < dwords; i++) {
+            got[i] = lds_read(t, value(t, SPV_OP_I_ADD, t_uint(t), 2, first, konst(t, i * 4)));
+            if (two) got[dwords + i] = lds_read(t, value(t, SPV_OP_I_ADD, t_uint(t), 2, second, konst(t, i * 4)));
+        }
+        for (unsigned i = 0; i < dwords * (two ? 2u : 1u); i++) write_vgpr(t, vdst + i, got[i]);
+    } else if (!strcmp(op, "write_b8") || !strcmp(op, "write_b16")) {
+        lds_write_part(t, first, load(t, t_uint(t), vgpr(t, data0)), !strcmp(op, "write_b8") ? 8 : 16);
+    } else if (!strcmp(op, "read_u8") || !strcmp(op, "read_i8") || !strcmp(op, "read_u16") || !strcmp(op, "read_i16")) {
+        const uint32_t shift = value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_uint(t), 2, value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, first, konst(t, 3)), konst(t, 3));
+        const unsigned bits = strstr(op, "8") ? 8 : 16;
+        write_vgpr(t, vdst, bit_field(t, lds_read(t, first), shift, konst(t, bits), op[5] == 'i'));
+    } else {
+        /* a 32-bit atomic: ds_<op>_u32/_i32/_b32, or its _rtn_ form returning the dword's old value */
+        const int returns = strstr(op, "_rtn_") != NULL;
+        char plain[32];
+        snprintf(plain, sizeof plain, "%s", op);
+        char *rtn = strstr(plain, "_rtn");
+        if (rtn) memmove(rtn, rtn + 4, strlen(rtn + 4) + 1);
+        uint16_t opcode = 0;
+        for (size_t i = 0; i < sizeof lds_atomics / sizeof lds_atomics[0] && !opcode; i++) {
+            const size_t n = strlen(lds_atomics[i].name);
+            const char *suffix = plain + n;
+            if (!strncmp(plain, lds_atomics[i].name, n) &&
+                (!strcmp(suffix, "_u32") || !strcmp(suffix, "_b32") || (!*suffix && strstr(lds_atomics[i].name, "_"))))
+                opcode = lds_atomics[i].opcode;
+        }
+        if (!opcode) {
+            fail(t, "%s is not translated yet", name);
+        } else {
+            /* ds_cmpst_b32: the dword becomes DATA1 where it equals DATA0 */
+            const int compare = opcode == SPV_OP_ATOMIC_COMPARE_EXCHANGE;
+            const uint32_t v = load(t, t_uint(t), vgpr(t, compare ? data1 : data0));
+            const uint32_t old = lds_atomic(t, opcode, first, v, compare ? load(t, t_uint(t), vgpr(t, data0)) : 0);
+            if (returns) write_vgpr(t, vdst, old);
+        }
+    }
+    end_if(t, merge);
 }
 
 /* ---- control flow ----
@@ -3064,6 +3382,7 @@ static void translate_instruction(translator *t, const uint32_t *code, const dec
     case GCN_EXP: export_instruction(t, w); break;
     case GCN_VINTRP: interpolation_instruction(t, w, ins); break;
     case GCN_MIMG: image_memory(t, code, d->at, ins); break;
+    case GCN_DS: lds_instruction(t, w, ins); break;
     default: fail(t, "%s (%s) is not translated yet", ins->name, gcn_encoding_name(ins->encoding));
     }
 }
@@ -3150,6 +3469,18 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
                (const uint32_t[]){SPV_ADDRESSING_PHYSICAL_STORAGE_BUFFER64, SPV_MEMORY_MODEL_GLSL450}, 2);
     t->push_constants = user_data_block(t);
     t->interface[t->interface_count++] = t->push_constants;
+    if (layout->lds.bytes % BYTES_PER_DWORD) fail(t, "an LDS of %u bytes: not whole dwords", layout->lds.bytes);
+    if (layout->lds.bytes && !layout->lds.address) {
+        if (layout->stage != STAGE_COMPUTE) fail(t, "workgroup LDS outside a compute shader");
+        /* uint lds[bytes / 4], shared by the workgroup */
+        const uint32_t array = spirv_global(m, SPV_OP_TYPE_ARRAY, (const uint32_t[]){t_uint(t), konst(t, layout->lds.bytes / BYTES_PER_DWORD)}, 2);
+        t->lds = spirv_new_id(m);
+        spirv_emit(m, &m->sections[SPIRV_GLOBALS], SPV_OP_VARIABLE,
+                   (const uint32_t[]){spirv_type_pointer(m, SPV_STORAGE_WORKGROUP, array), t->lds, SPV_STORAGE_WORKGROUP}, 3);
+        t->interface[t->interface_count++] = t->lds;
+    } else if (layout->lds.address && !layout->tess) {
+        fail(t, "LDS in a buffer outside the tessellation stages");
+    }
     if (layout->stage == STAGE_COMPUTE) {
         t->local_invocation_id = input_vector(t, SPV_BUILT_IN_LOCAL_INVOCATION_ID);
         t->workgroup_id = input_vector(t, SPV_BUILT_IN_WORKGROUP_ID);
@@ -3285,8 +3616,26 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
         spirv_emit(m, &m->sections[SPIRV_CAPABILITIES], SPV_OP_CAPABILITY, (const uint32_t[]){SPV_CAPABILITY_STORAGE_IMAGE_WRITE_WITHOUT_FORMAT}, 1);
     static const uint32_t models[] = {[STAGE_COMPUTE] = SPV_EXECUTION_MODEL_GL_COMPUTE, [STAGE_VERTEX] = SPV_EXECUTION_MODEL_VERTEX,
                                       [STAGE_PIXEL] = SPV_EXECUTION_MODEL_FRAGMENT};
+    const uint32_t model = layout->tess == TESS_DOMAIN ? SPV_EXECUTION_MODEL_TESSELLATION_EVALUATION : models[layout->stage];
     spirv_emit_with_string(m, &m->sections[SPIRV_ENTRY_POINTS], SPV_OP_ENTRY_POINT,
-                           (const uint32_t[]){models[layout->stage], main_id}, 2, "main", t->interface, t->interface_count);
+                           (const uint32_t[]){model, main_id}, 2, "main", t->interface, t->interface_count);
+    if (layout->tess == TESS_DOMAIN) {
+        /* VGT_TF_PARAM as execution modes: the domain, the spacing (power of two as integer, the control shader
+           rounding the factors), and the triangles' order or points */
+        static const uint32_t domains[] = {[GCN_TESS_ISOLINES] = SPV_EXECUTION_MODE_ISOLINES, [GCN_TESS_TRIANGLES] = SPV_EXECUTION_MODE_TRIANGLES,
+                                           [GCN_TESS_QUADS] = SPV_EXECUTION_MODE_QUADS};
+        static const uint32_t spacings[] = {[GCN_TESS_INTEGER] = SPV_EXECUTION_MODE_SPACING_EQUAL, [GCN_TESS_POW2] = SPV_EXECUTION_MODE_SPACING_EQUAL,
+                                            [GCN_TESS_FRACTIONAL_ODD] = SPV_EXECUTION_MODE_SPACING_FRACTIONAL_ODD,
+                                            [GCN_TESS_FRACTIONAL_EVEN] = SPV_EXECUTION_MODE_SPACING_FRACTIONAL_EVEN};
+        spirv_emit(m, &m->sections[SPIRV_CAPABILITIES], SPV_OP_CAPABILITY, (const uint32_t[]){SPV_CAPABILITY_TESSELLATION}, 1);
+        spirv_emit(m, &m->sections[SPIRV_EXECUTION_MODES], SPV_OP_EXECUTION_MODE, (const uint32_t[]){main_id, domains[layout->domain]}, 2);
+        spirv_emit(m, &m->sections[SPIRV_EXECUTION_MODES], SPV_OP_EXECUTION_MODE, (const uint32_t[]){main_id, spacings[layout->partitioning]}, 2);
+        const uint32_t order = layout->topology == GCN_TESS_POINTS ? SPV_EXECUTION_MODE_POINT_MODE
+                               : layout->topology == GCN_TESS_TRIANGLES_CCW ? SPV_EXECUTION_MODE_VERTEX_ORDER_CCW
+                                                                             : SPV_EXECUTION_MODE_VERTEX_ORDER_CW;
+        if (layout->topology != GCN_TESS_LINES)
+            spirv_emit(m, &m->sections[SPIRV_EXECUTION_MODES], SPV_OP_EXECUTION_MODE, (const uint32_t[]){main_id, order}, 2);
+    }
     if (layout->stage == STAGE_COMPUTE)
         spirv_emit(m, &m->sections[SPIRV_EXECUTION_MODES], SPV_OP_EXECUTION_MODE,
                    (const uint32_t[]){main_id, SPV_EXECUTION_MODE_LOCAL_SIZE, layout->local_size[0], layout->local_size[1],
@@ -3319,7 +3668,7 @@ int gcn_translate_compute(const uint32_t *code, size_t dwords, const gcn_compute
                             .user_sgprs = layout->user_sgprs, .workgroup_id_enables = layout->workgroup_id_enables,
                             .images = layout->images, .image_count = layout->image_count,
                             .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address,
-                            .user_data_read = layout->user_data_read};
+                            .user_data_read = layout->user_data_read, .lds = layout->lds};
     return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
 }
 
@@ -3333,6 +3682,187 @@ int gcn_translate_vertex(const uint32_t *code, size_t dwords, const gcn_vertex_l
                             .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address,
                             .user_data_read = layout->user_data_read};
     return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
+}
+
+/* The checks the three tessellation stages share; 0, or -1 with the reason. */
+static int tessellation_layout(const gcn_tessellation_layout *l, int tess, char *error, size_t error_size)
+{
+    const uint32_t points = tess == TESS_LOCAL ? l->input_points : l->output_points;
+    if (!l->patches || !points || (tess != TESS_DOMAIN && l->patches * points > 1024)) {
+        snprintf(error, error_size, "a tessellation workgroup of %u patches of %u points: not done", l->patches, points);
+        return -1;
+    }
+    if (!l->lds.address || !l->lds.bytes) {
+        snprintf(error, error_size, "a tessellation stage with no LDS buffer");
+        return -1;
+    }
+    if (l->domain > GCN_TESS_QUADS || l->partitioning > GCN_TESS_FRACTIONAL_EVEN || l->topology > GCN_TESS_TRIANGLES_CCW ||
+        (l->topology == GCN_TESS_LINES) != (l->domain == GCN_TESS_ISOLINES)) {
+        snprintf(error, error_size, "tessellation domain %u, partitioning %u, topology %u: not a valid VGT_TF_PARAM", l->domain, l->partitioning,
+                 l->topology);
+        return -1;
+    }
+    return 0;
+}
+
+static stage_layout tessellation_stage(const gcn_tessellation_layout *l, int tess)
+{
+    const uint32_t points = tess == TESS_LOCAL ? l->input_points : l->output_points;
+    return (stage_layout){.stage = tess == TESS_DOMAIN ? STAGE_VERTEX : STAGE_COMPUTE, .tess = tess,
+                          .local_size = {tess == TESS_DOMAIN ? 1 : l->patches * points, 1, 1},
+                          .user_sgprs = l->user_sgprs, .output_control = l->output_control,
+                          .callee = tess == TESS_LOCAL ? l->callee : NULL, .callee_dwords = l->callee_dwords, .code_address = l->code_address,
+                          .images = l->images, .image_count = tess == TESS_DOMAIN ? l->image_count : 0, .first_binding = l->first_binding,
+                          .push_constant_offset = tess == TESS_DOMAIN ? l->push_constant_offset : 0, .address_offset = l->address_offset,
+                          .error_address = l->error_address, .user_data_read = l->user_data_read, .lds = l->lds,
+                          .patches = l->patches, .input_points = l->input_points, .output_points = l->output_points,
+                          .off_chip = l->off_chip, .factor_stride = l->factor_stride, .factor_ring = l->factor_ring,
+                          .factor_ring_bytes = l->factor_ring_bytes, .factor_buffer = l->factor_buffer,
+                          .domain = l->domain, .partitioning = l->partitioning, .topology = l->topology};
+}
+
+int gcn_translate_local(const uint32_t *code, size_t dwords, const gcn_tessellation_layout *layout, uint32_t **spirv,
+                        size_t *spirv_word_count, char *error, size_t error_size)
+{
+    if (tessellation_layout(layout, TESS_LOCAL, error, error_size)) return -1;
+    const stage_layout s = tessellation_stage(layout, TESS_LOCAL);
+    return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
+}
+
+int gcn_translate_hull(const uint32_t *code, size_t dwords, const gcn_tessellation_layout *layout, uint32_t **spirv,
+                       size_t *spirv_word_count, char *error, size_t error_size)
+{
+    if (tessellation_layout(layout, TESS_HULL, error, error_size)) return -1;
+    const stage_layout s = tessellation_stage(layout, TESS_HULL);
+    return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
+}
+
+int gcn_translate_domain(const uint32_t *code, size_t dwords, const gcn_tessellation_layout *layout, uint32_t **spirv,
+                         size_t *spirv_word_count, char *error, size_t error_size)
+{
+    if (tessellation_layout(layout, TESS_DOMAIN, error, error_size)) return -1;
+    const stage_layout s = tessellation_stage(layout, TESS_DOMAIN);
+    return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
+}
+
+/* The modules' common start: capabilities, the GLSL import, the memory model. */
+static uint32_t tessellation_module_start(spirv_module *m)
+{
+    static const uint32_t capabilities[] = {SPV_CAPABILITY_SHADER, SPV_CAPABILITY_TESSELLATION, SPV_CAPABILITY_INT64,
+                                            SPV_CAPABILITY_PHYSICAL_STORAGE_BUFFER};
+    for (size_t i = 0; i < sizeof capabilities / sizeof capabilities[0]; i++)
+        spirv_emit(m, &m->sections[SPIRV_CAPABILITIES], SPV_OP_CAPABILITY, &capabilities[i], 1);
+    const uint32_t glsl = spirv_new_id(m);
+    spirv_emit_with_string(m, &m->sections[SPIRV_EXTENSION_IMPORTS], SPV_OP_EXT_INST_IMPORT, &glsl, 1, "GLSL.std.450", NULL, 0);
+    spirv_emit(m, &m->sections[SPIRV_MEMORY_MODEL], SPV_OP_MEMORY_MODEL,
+               (const uint32_t[]){SPV_ADDRESSING_PHYSICAL_STORAGE_BUFFER64, SPV_MEMORY_MODEL_GLSL450}, 2);
+    return glsl;
+}
+
+static int tessellation_module_finish(spirv_module *m, uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size)
+{
+    *spirv = spirv_finish(m, spirv_word_count);
+    spirv_free(m);
+    if (*spirv) return 0;
+    snprintf(error, error_size, "no memory");
+    return -1;
+}
+
+int gcn_tessellation_vertex_shader(uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size)
+{
+    spirv_module m;
+    spirv_init(&m);
+    tessellation_module_start(&m);
+    const uint32_t void_type = spirv_type_void(&m), function_type = spirv_global(&m, SPV_OP_TYPE_FUNCTION, &void_type, 1);
+    const uint32_t main_id = spirv_new_id(&m), entry = spirv_new_id(&m);
+    spirv_words *fn = &m.sections[SPIRV_FUNCTIONS];
+    spirv_emit(&m, fn, SPV_OP_FUNCTION, (const uint32_t[]){void_type, main_id, SPV_FUNCTION_CONTROL_NONE, function_type}, 4);
+    spirv_emit(&m, fn, SPV_OP_LABEL, &entry, 1);
+    spirv_emit(&m, fn, SPV_OP_RETURN, NULL, 0);
+    spirv_emit(&m, fn, SPV_OP_FUNCTION_END, NULL, 0);
+    spirv_emit_with_string(&m, &m.sections[SPIRV_ENTRY_POINTS], SPV_OP_ENTRY_POINT, (const uint32_t[]){SPV_EXECUTION_MODEL_VERTEX, main_id}, 2,
+                           "main", NULL, 0);
+    return tessellation_module_finish(&m, spirv, spirv_word_count, error, error_size);
+}
+
+int gcn_tessellation_control_shader(const gcn_tessellation_control *c, uint32_t **spirv, size_t *spirv_word_count, char *error,
+                                    size_t error_size)
+{
+    if (c->domain > GCN_TESS_QUADS || c->partitioning > GCN_TESS_FRACTIONAL_EVEN || !c->factor_buffer || !(c->min_level <= c->max_level)) {
+        snprintf(error, error_size, "tessellation control: domain %u, partitioning %u, levels %g to %g: not done", c->domain, c->partitioning,
+                 (double)c->min_level, (double)c->max_level);
+        return -1;
+    }
+    static const unsigned outer_count[] = {2, 3, 4}, inner_count[] = {0, 1, 2};
+    const unsigned outer = outer_count[c->domain], inner = inner_count[c->domain];
+    if (c->factor_stride < (outer + inner) * BYTES_PER_DWORD) {
+        snprintf(error, error_size, "tessellation control: %u bytes of factors a patch, fewer than its %u levels", c->factor_stride, outer + inner);
+        return -1;
+    }
+    spirv_module m;
+    spirv_init(&m);
+    const uint32_t glsl = tessellation_module_start(&m);
+    const uint32_t uint_type = spirv_type_uint(&m), int_type = spirv_type_int(&m), float_type = spirv_type_float(&m), ulong = spirv_type_ulong(&m);
+    const uint32_t void_type = spirv_type_void(&m), function_type = spirv_global(&m, SPV_OP_TYPE_FUNCTION, &void_type, 1);
+    /* PrimitiveId in; TessLevelOuter[4] and TessLevelInner[2] out (patch built-ins) */
+    const uint32_t primitive = spirv_new_id(&m), outer_levels = spirv_new_id(&m), inner_levels = spirv_new_id(&m);
+    const uint32_t outer_array = spirv_global(&m, SPV_OP_TYPE_ARRAY, (const uint32_t[]){float_type, spirv_constant_uint(&m, 4)}, 2);
+    const uint32_t inner_array = spirv_global(&m, SPV_OP_TYPE_ARRAY, (const uint32_t[]){float_type, spirv_constant_uint(&m, 2)}, 2);
+    const struct { uint32_t id, type, storage, built_in; } variables[] = {
+        {primitive, int_type, SPV_STORAGE_INPUT, SPV_BUILT_IN_PRIMITIVE_ID},
+        {outer_levels, outer_array, SPV_STORAGE_OUTPUT, SPV_BUILT_IN_TESS_LEVEL_OUTER},
+        {inner_levels, inner_array, SPV_STORAGE_OUTPUT, SPV_BUILT_IN_TESS_LEVEL_INNER},
+    };
+    uint32_t interface[3];
+    for (unsigned i = 0; i < 3; i++) {
+        spirv_emit(&m, &m.sections[SPIRV_GLOBALS], SPV_OP_VARIABLE,
+                   (const uint32_t[]){spirv_type_pointer(&m, variables[i].storage, variables[i].type), variables[i].id, variables[i].storage}, 3);
+        spirv_emit(&m, &m.sections[SPIRV_DECORATIONS], SPV_OP_DECORATE, (const uint32_t[]){variables[i].id, SPV_DECORATION_BUILT_IN, variables[i].built_in}, 3);
+        if (i) spirv_emit(&m, &m.sections[SPIRV_DECORATIONS], SPV_OP_DECORATE, (const uint32_t[]){variables[i].id, SPV_DECORATION_PATCH}, 2);
+        interface[i] = variables[i].id;
+    }
+    const uint32_t main_id = spirv_new_id(&m), entry = spirv_new_id(&m);
+    spirv_words *fn = &m.sections[SPIRV_FUNCTIONS];
+    spirv_emit(&m, fn, SPV_OP_FUNCTION, (const uint32_t[]){void_type, main_id, SPV_FUNCTION_CONTROL_NONE, function_type}, 4);
+    spirv_emit(&m, fn, SPV_OP_LABEL, &entry, 1);
+#define EMIT(opcode, type, ...)                                                                                                     \
+    ({                                                                                                                              \
+        const uint32_t operands_[] = {type, spirv_new_id(&m), __VA_ARGS__};                                                         \
+        spirv_emit(&m, fn, opcode, operands_, sizeof operands_ / sizeof operands_[0]);                                               \
+        operands_[1];                                                                                                               \
+    })
+    const uint32_t patch = EMIT(SPV_OP_BITCAST, uint_type, EMIT(SPV_OP_LOAD, int_type, primitive));
+    const uint32_t offset = EMIT(SPV_OP_I_MUL, ulong, EMIT(SPV_OP_U_CONVERT, ulong, patch),
+                                 spirv_global(&m, SPV_OP_CONSTANT, (const uint32_t[]){ulong, c->factor_stride, 0}, 3));
+    const uint32_t base = EMIT(SPV_OP_I_ADD, ulong, offset,
+                               spirv_global(&m, SPV_OP_CONSTANT, (const uint32_t[]){ulong, (uint32_t)c->factor_buffer, (uint32_t)(c->factor_buffer >> 32)}, 3));
+    uint32_t min_bits, max_bits;
+    memcpy(&min_bits, &c->min_level, sizeof min_bits), memcpy(&max_bits, &c->max_level, sizeof max_bits);
+    const uint32_t low = spirv_global(&m, SPV_OP_CONSTANT, (const uint32_t[]){float_type, min_bits}, 2);
+    const uint32_t high = spirv_global(&m, SPV_OP_CONSTANT, (const uint32_t[]){float_type, max_bits}, 2);
+    const uint32_t float_pointer = spirv_type_pointer(&m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, float_type);
+    for (unsigned k = 0; k < outer + inner; k++) {
+        const uint32_t address = EMIT(SPV_OP_I_ADD, ulong, base, spirv_global(&m, SPV_OP_CONSTANT, (const uint32_t[]){ulong, k * BYTES_PER_DWORD, 0}, 3));
+        const uint32_t pointer = EMIT(SPV_OP_CONVERT_U_TO_PTR, float_pointer, address);
+        const uint32_t factor = EMIT(SPV_OP_LOAD, float_type, pointer, SPV_MEMORY_ACCESS_ALIGNED, BYTES_PER_DWORD);
+        uint32_t level = EMIT(SPV_OP_EXT_INST, float_type, glsl, SPV_GLSL_F_CLAMP, factor, low, high);
+        if (c->partitioning == GCN_TESS_POW2)
+            level = EMIT(SPV_OP_EXT_INST, float_type, glsl, SPV_GLSL_EXP2,
+                         EMIT(SPV_OP_EXT_INST, float_type, glsl, SPV_GLSL_CEIL, EMIT(SPV_OP_EXT_INST, float_type, glsl, SPV_GLSL_LOG2, level)));
+        /* the ring's factor k is outer level k, then inner level k - outer; isolines' two are reversed */
+        const int is_outer = k < outer;
+        const unsigned slot = !is_outer ? k - outer : c->domain == GCN_TESS_ISOLINES ? 1 - k : k;
+        const uint32_t target = EMIT(SPV_OP_ACCESS_CHAIN, spirv_type_pointer(&m, SPV_STORAGE_OUTPUT, float_type), is_outer ? outer_levels : inner_levels,
+                                     spirv_constant_uint(&m, slot));
+        spirv_emit(&m, fn, SPV_OP_STORE, (const uint32_t[]){target, level}, 2);
+    }
+#undef EMIT
+    spirv_emit(&m, fn, SPV_OP_RETURN, NULL, 0);
+    spirv_emit(&m, fn, SPV_OP_FUNCTION_END, NULL, 0);
+    spirv_emit_with_string(&m, &m.sections[SPIRV_ENTRY_POINTS], SPV_OP_ENTRY_POINT,
+                           (const uint32_t[]){SPV_EXECUTION_MODEL_TESSELLATION_CONTROL, main_id}, 2, "main", interface, 3);
+    spirv_emit(&m, &m.sections[SPIRV_EXECUTION_MODES], SPV_OP_EXECUTION_MODE, (const uint32_t[]){main_id, SPV_EXECUTION_MODE_OUTPUT_VERTICES, 1}, 3);
+    return tessellation_module_finish(&m, spirv, spirv_word_count, error, error_size);
 }
 
 int gcn_translate_pixel(const uint32_t *code, size_t dwords, const gcn_pixel_layout *layout,
