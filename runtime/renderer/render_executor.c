@@ -22,7 +22,9 @@
 #include "runtime/tile_copy.h"
 #include "runtime/tiling.h"
 
+#include <sched.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,6 +37,7 @@ enum { MAX_SHADERS = 1024, MAX_PIPELINES = 1024, MAX_TARGETS = 128, MAX_RECT_STA
        MAX_VIEWS = 16, MAX_SAMPLERS = 256, MAX_PASSES = 256, BATCH_SETS = 256, MAX_WRITTEN = 256, BATCH_SLOTS = 4, CHANGE_CHUNK = 64 << 10,
        STOP_SLOTS = MAX_SHADERS + MAX_COMPUTE_PIPELINES };
 enum { MAX_VERTEX_IMAGE_LAYOUTS = 32 };
+enum { SNAPSHOT_SLOTS = 4 }; /* flip copies kept at once (rt_executor_snapshot_target) */
 enum { TILE_COPY_SIZES = 5 }; /* GPU tile copies of 1, 2, 4, 8 and 16-byte elements */
 enum { USER_DATA_BYTES = GCN_USER_SGPR_MAX * 4, VERTEX_USER_DATA = 0, PIXEL_USER_DATA = USER_DATA_BYTES };
 enum { COLOR_32 = 0x4, COLOR_16_16 = 0x5, COLOR_10_11_11 = 0x6, COLOR_8_8_8_8 = 0xa, COLOR_16_16_16_16 = 0xc, NUMBER_UNORM = 0, NUMBER_SRGB = 6, NUMBER_FLOAT = 7, SWAP_STD = 0,
@@ -205,7 +208,7 @@ typedef struct {
 typedef struct {
     uint64_t code;
     uint32_t threads[3], user_sgprs;
-    int workgroup_id_x_sgpr;
+    uint32_t workgroup_id_enables;
     gcn_image_binding images[GCN_MAX_IMAGES];
     unsigned image_count;
     uint32_t user_read;              /* the user SGPRs it reads before writing them (gcn_spirv.h) */
@@ -429,6 +432,15 @@ struct rt_executor {
        when the renderer asks (rt_executor_wait_ticket, rt_executor_finish). Each submission signals
        the timeline semaphore with its ticket, counting up from 1 (submitted: the last). */
     batch_slot slots[BATCH_SLOTS];
+    /* copies of targets for flips (rt_executor_snapshot_target): host-visible, each with the target's
+       size and order, held from the copy until the reader releases it */
+    struct {
+        staging_buffer staging;
+        uint32_t width, height;
+        int red_first;
+        atomic_int held;
+    } snapshots[SNAPSHOT_SLOTS];
+    unsigned next_snapshot;
     unsigned current;
     int batch_open;
     VkSemaphore timeline;
@@ -2664,13 +2676,13 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
 
 /* The pipeline for a compute shader as dispatched now: translated once per workgroup size and
    register layout. VK_NULL_HANDLE after failing. */
-static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *c, int workgroup_id_x_sgpr, const gcn_image_binding *images,
+static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *c, const gcn_image_binding *images,
                                        unsigned image_count, uint32_t *user_read, char *error, size_t error_size)
 {
     for (size_t i = 0; i < x->compute_count; i++) {
         const compute_entry *e = &x->computes[i];
         if (e->code == c->code && !memcmp(e->threads, c->threads, sizeof e->threads) && e->user_sgprs == c->user_sgprs &&
-            e->workgroup_id_x_sgpr == workgroup_id_x_sgpr && e->image_count == image_count &&
+            e->workgroup_id_enables == c->workgroup_id_enables && e->image_count == image_count &&
             !memcmp(e->images, images, image_count * sizeof *images)) {
             *user_read = e->user_read;
             return e->pipeline;
@@ -2685,7 +2697,7 @@ static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *
         return VK_NULL_HANDLE;
     }
     const gcn_compute_layout layout = {.local_size = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
-                                       .workgroup_id_x_sgpr = workgroup_id_x_sgpr, .push_constant_offset = 0,
+                                       .workgroup_id_enables = c->workgroup_id_enables, .push_constant_offset = 0,
                                        .address_offset = x->address_offset, .error_address = stop_slot(x, 1, x->compute_count),
                                        .images = images, .image_count = image_count, .user_data_read = user_read};
     uint32_t *spirv = NULL;
@@ -2717,7 +2729,7 @@ static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *
     }
     compute_entry *e = &x->computes[x->compute_count++];
     *e = (compute_entry){.user_read = *user_read, .code = c->code, .threads = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
-                         .workgroup_id_x_sgpr = workgroup_id_x_sgpr, .image_count = image_count, .module = module, .pipeline = pipeline};
+                         .workgroup_id_enables = c->workgroup_id_enables, .image_count = image_count, .module = module, .pipeline = pipeline};
     memcpy(e->images, images, image_count * sizeof *images);
     return pipeline;
 }
@@ -3644,8 +3656,6 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     const rt_compute_shader *c = &s->compute;
     if (!c->threads[0] || !c->threads[1] || !c->threads[2])
         return failed(error, error_size, "a compute shader with a workgroup of %u x %u x %u threads", c->threads[0], c->threads[1], c->threads[2]);
-    if (c->workgroup_id_enables & ~1u)
-        return failed(error, error_size, "a compute shader that takes its workgroup's y or z index: not run yet");
     if (c->workgroup_size_enabled) return failed(error, error_size, "a compute shader that takes its workgroup's size information: not run yet");
     /* it may read what draws wrote, and what it stores lands over their written-back memory: the
        targets drawn into over the memory it reads or stores are written back first (all of them when
@@ -3669,7 +3679,6 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     if (reads_anywhere || stores_anywhere ? write_back_targets(x, error, error_size)
                                           : write_back_targets_in(x, touched, read_count + store_span_count, error, error_size))
         return -1;
-    const int workgroup_id_x_sgpr = (c->workgroup_id_enables & 1u) ? (int)c->user_sgprs : -1;
     gcn_image_binding bindings[GCN_MAX_IMAGES];
     VkImageView views[GCN_MAX_IMAGES];
     unsigned image_count = 0;
@@ -3678,7 +3687,7 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
                      error_size))
         return -1;
     uint32_t user_read = 0;
-    const VkPipeline pipeline = compute_pipeline_for(x, c, workgroup_id_x_sgpr, bindings, image_count, &user_read, error, error_size);
+    const VkPipeline pipeline = compute_pipeline_for(x, c, bindings, image_count, &user_read, error, error_size);
     if (!pipeline) return -1;
     if (check_user_data("compute", c->code, user_read, s->compute_user_set, error, error_size)) return -1;
     const VkPipelineLayout layout = image_count ? x->image_layouts[image_count] : x->compute_layout;
@@ -3886,6 +3895,8 @@ static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, 
 
 /* ---- reading a target ---- */
 
+static void copy_bgra(const uint32_t *texels, uint32_t pitch, int red_first, uint32_t *bgra, uint32_t width, uint32_t height);
+
 int rt_executor_read_target(rt_executor *x, uint64_t address, uint32_t *bgra, uint32_t width, uint32_t height, char *error,
                             size_t error_size)
 {
@@ -3916,9 +3927,48 @@ int rt_executor_read_target(rt_executor *x, uint64_t address, uint32_t *bgra, ui
         t->staging_current = 1;
     }
     /* R8G8B8A8 images hold red first; the display wants blue first */
-    const int red_first = t->format == VK_FORMAT_R8G8B8A8_UNORM || t->format == VK_FORMAT_R8G8B8A8_SRGB;
+    copy_bgra(t->staging.mapped, t->width, t->format == VK_FORMAT_R8G8B8A8_UNORM || t->format == VK_FORMAT_R8G8B8A8_SRGB, bgra, width, height);
+    return 0;
+}
+
+int rt_executor_snapshot_target(rt_executor *x, uint64_t address, rt_executor_snapshot *snapshot, char *error, size_t error_size)
+{
+    target_entry *t = find_target(x, address);
+    if (!t) return failed(error, error_size, "no draw has used a render target at %#llx", (unsigned long long)address);
+    if (t->element_bytes != 4 || t->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32)
+        return failed(error, error_size, "render target %#llx is not 8_8_8_8: only those are read as BGRA", (unsigned long long)address);
+    const unsigned slot = x->next_snapshot;
+    x->next_snapshot = (slot + 1) % SNAPSHOT_SLOTS;
+    if (atomic_load(&x->snapshots[slot].held)) {
+        /* its reader waits for a ticket, perhaps the open batch's: that goes to the GPU first */
+        if (batch_submit(x, error, error_size)) return -1;
+        while (atomic_load(&x->snapshots[slot].held)) sched_yield();
+    }
+    const VkDeviceSize bytes = (VkDeviceSize)t->width * t->height * 4;
+    if (staging_ready(x, &x->snapshots[slot].staging, bytes)) return failed(error, error_size, "no staging memory");
+    VkCommandBuffer commands = batch_commands(x);
+    if (!commands) return failed(error, error_size, "no command buffer");
+    image_barrier(commands, t->image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT);
+    const VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {t->width, t->height, 1}};
+    vkCmdCopyImageToBuffer(commands, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, x->snapshots[slot].staging.buffer, 1, &copy);
+    image_barrier(commands, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT,
+                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+    /* batch_submit ends the batch with every write made visible to the host */
+    x->snapshots[slot].width = t->width, x->snapshots[slot].height = t->height;
+    x->snapshots[slot].red_first = t->format == VK_FORMAT_R8G8B8A8_UNORM || t->format == VK_FORMAT_R8G8B8A8_SRGB;
+    atomic_store(&x->snapshots[slot].held, 1);
+    snapshot->ticket = x->submitted + 1, snapshot->slot = slot; /* the open batch's ticket */
+    return 0;
+}
+
+/* Copies width x height BGRA pixels from a target's texels, rows of `pitch` pixels, red first or not. */
+static void copy_bgra(const uint32_t *texels, uint32_t pitch, int red_first, uint32_t *bgra, uint32_t width, uint32_t height)
+{
     for (uint32_t y = 0; y < height; y++) {
-        const uint32_t *row = (const uint32_t *)t->staging.mapped + (size_t)y * t->width;
+        const uint32_t *row = texels + (size_t)y * pitch;
         uint32_t *out = bgra + (size_t)y * width;
         if (!red_first) {
             memcpy(out, row, (size_t)width * 4);
@@ -3929,7 +3979,22 @@ int rt_executor_read_target(rt_executor *x, uint64_t address, uint32_t *bgra, ui
             out[i] = (p & 0xff00ff00u) | (p & 0xffu) << 16 | (p >> 16 & 0xffu);
         }
     }
+}
+
+int rt_executor_read_snapshot(rt_executor *x, const rt_executor_snapshot *snapshot, uint32_t *bgra, uint32_t width, uint32_t height,
+                              char *error, size_t error_size)
+{
+    if (snapshot->slot >= SNAPSHOT_SLOTS) return failed(error, error_size, "no such snapshot");
+    const unsigned slot = snapshot->slot;
+    if (width > x->snapshots[slot].width || height > x->snapshots[slot].height)
+        return failed(error, error_size, "%ux%u is past the %ux%u target", width, height, x->snapshots[slot].width, x->snapshots[slot].height);
+    copy_bgra(x->snapshots[slot].staging.mapped, x->snapshots[slot].width, x->snapshots[slot].red_first, bgra, width, height);
     return 0;
+}
+
+void rt_executor_release_snapshot(rt_executor *x, const rt_executor_snapshot *snapshot)
+{
+    if (snapshot->slot < SNAPSHOT_SLOTS) atomic_store(&x->snapshots[snapshot->slot].held, 0);
 }
 
 void rt_executor_close(rt_executor *x)
@@ -3963,6 +4028,7 @@ void rt_executor_close(rt_executor *x)
             tile_plan_free(x, &x->targets[i].plan);
         }
         for (unsigned k = 0; k < BATCH_SLOTS; k++) staging_free(x, &x->slots[k].upload);
+        for (unsigned k = 0; k < SNAPSHOT_SLOTS; k++) staging_free(x, &x->snapshots[k].staging);
         if (x->buffer) vkDestroyBuffer(x->device, x->buffer, NULL);
         if (x->memory) vkFreeMemory(x->device, x->memory, NULL);
         if (x->layout) vkDestroyPipelineLayout(x->device, x->layout, NULL);

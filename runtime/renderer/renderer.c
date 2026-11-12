@@ -67,6 +67,8 @@ typedef struct deferred {
     rt_gpu_step step;
     uint64_t ticket;
     struct deferred *next;
+    int has_snapshot;                /* a flip's copy of its target (RT_GPU_STEP_SHOWS_TARGET) */
+    rt_executor_snapshot snapshot;
 } deferred;
 
 static pthread_mutex_t deferred_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -76,6 +78,7 @@ static int deferred_started, deferred_busy;
 static const deferred *deferred_running; /* the step the completion thread is performing (or waiting for), if any */
 static pid_t deferred_process;
 static _Thread_local int on_completion_thread;
+static _Thread_local const deferred *performing; /* the step the completion thread is performing */
 static uint64_t last_ticket; /* the renderer thread's last submission */
 
 static void *completion_thread(void *unused)
@@ -93,7 +96,10 @@ static void *completion_thread(void *unused)
         char error[256];
         /* the executor is open whenever a ticket is: tickets come only from its submissions */
         if (d->ticket && rt_executor_wait_ticket(executor, d->ticket, error, sizeof error)) rt_fatal(d->step.function, error);
+        performing = d;
         d->step.perform(&d->step);
+        performing = NULL;
+        if (d->has_snapshot) rt_executor_release_snapshot(executor, &d->snapshot);
         pthread_mutex_lock(&deferred_lock);
         deferred_busy = 0, deferred_running = NULL;
         free(d);
@@ -103,11 +109,11 @@ static void *completion_thread(void *unused)
     return NULL;
 }
 
-static void defer_step(const rt_gpu_step *step, uint64_t ticket)
+static void defer_step(const rt_gpu_step *step, uint64_t ticket, const rt_executor_snapshot *snapshot)
 {
     deferred *const d = malloc(sizeof *d);
     if (!d) rt_fatal(step->function, "no memory for a GPU step");
-    *d = (deferred){*step, ticket, NULL};
+    *d = (deferred){*step, ticket, NULL, snapshot != NULL, snapshot ? *snapshot : (rt_executor_snapshot){0, 0}};
     pthread_mutex_lock(&deferred_lock);
     if (deferred_started && deferred_process != getpid()) deferred_started = 0, deferred_busy = 0, deferred_head = deferred_tail = NULL;
     if (!deferred_started) {
@@ -172,6 +178,20 @@ static void submit_open(const char *function)
     pthread_mutex_unlock(&renderer_lock);
 }
 
+/* A flip (RT_GPU_STEP_SHOWS_TARGET): its target copied with the work recorded so far, and the step
+   performed from the completion thread once the copy has run. Without a copy (no draw has used the
+   target yet) the step still comes later, and shows nothing. */
+static void show_later(const rt_gpu_step *step)
+{
+    pthread_mutex_lock(&renderer_lock);
+    char error[256];
+    rt_executor_snapshot snapshot;
+    const int copied = executor && rt_executor_snapshot_target(executor, step->words[4], &snapshot, error, sizeof error) == 0;
+    pthread_mutex_unlock(&renderer_lock);
+    submit_open(step->function); /* the frame goes to the GPU now, not with the next one's work */
+    defer_step(step, copied ? snapshot.ticket : last_ticket, copied ? &snapshot : NULL);
+}
+
 /* Each step once the calls before its offset have run, and before the calls after it: a deferrable
    step is handed to the completion thread with the ticket of the work before it; a wait that holds
    already is performed at once, and one that a deferred step will satisfy is passed (the GPU runs the
@@ -186,7 +206,11 @@ static void run_batch(batch *b)
         run_calls(b, done, upto);
         done = upto;
         if (b->steps[i].flags & RT_GPU_STEP_DEFERRABLE) {
-            defer_step(&b->steps[i], last_ticket);
+            defer_step(&b->steps[i], last_ticket, NULL);
+            continue;
+        }
+        if (b->steps[i].flags & RT_GPU_STEP_SHOWS_TARGET) {
+            show_later(&b->steps[i]);
             continue;
         }
         if (b->steps[i].holds && b->steps[i].holds(&b->steps[i], NULL)) { /* a wait that holds already: the GPU passes it */
@@ -305,7 +329,11 @@ void rt_renderer_bind_shader(const char *function, rt_renderer_shader kind, cons
 
 int rt_renderer_frame(uint64_t address, uint32_t *frame, uint32_t width, uint32_t height)
 {
-    rt_renderer_wait_idle();
+    if (on_completion_thread && performing && performing->has_snapshot) { /* a flip performed later (show_later): its copy */
+        char error[256];
+        return rt_executor_read_snapshot(executor, &performing->snapshot, frame, width, height, error, sizeof error) == 0;
+    }
+    rt_renderer_wait_idle(); /* returns at once on the renderer's and the completion thread: the work before their steps has run */
     pthread_mutex_lock(&renderer_lock);
     char error[256];
     const int drawn = executor && rt_executor_read_target(executor, address, frame, width, height, error, sizeof error) == 0;

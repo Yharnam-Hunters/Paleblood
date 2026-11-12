@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -23,6 +24,7 @@
 #include <memory>
 #include <new>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 #include <sys/mman.h>
@@ -814,7 +816,7 @@ static id<MTLComputePipelineState> compute_pipeline_for(rt_executor *x, const rt
     gcn_compute_layout layout{};
     std::copy(shader.threads, shader.threads + 3, layout.local_size);
     layout.user_sgprs = shader.user_sgprs;
-    layout.workgroup_id_x_sgpr = workgroup_x ? static_cast<int>(shader.user_sgprs) : -1;
+    layout.workgroup_id_enables = workgroup_x ? 1u : 0u;
     layout.address_offset = x->address_offset;
     layout.error_address = x->stop.gpuAddress;
     layout.user_data_read = &user_read;
@@ -1152,6 +1154,53 @@ extern "C" int rt_executor_read_target(rt_executor *x, uint64_t address, uint32_
         } @catch (NSException *exception) { x->failed = true; return failed(error, error_size, "Metal readback: %s", exception.reason.UTF8String); }
     }
     return failed(error, error_size, "no draw has used that render target");
+}
+
+/* Flip copies (runtime/render_executor.h): Metal runs calls as they are recorded, so a snapshot reads
+   the target at once (rt_executor_read_target) into a copy of its own; its ticket is 0. */
+namespace {
+struct MetalSnapshot {
+    std::vector<uint32_t> pixels;
+    uint32_t width = 0, height = 0;
+    std::atomic<int> held{0};
+};
+constexpr unsigned METAL_SNAPSHOTS = 4;
+MetalSnapshot metal_snapshots[METAL_SNAPSHOTS];
+unsigned metal_next_snapshot;
+}
+
+extern "C" int rt_executor_snapshot_target(rt_executor *x, uint64_t address, rt_executor_snapshot *snapshot, char *error, size_t error_size)
+{
+    if (!x || x->failed) return failed(error, error_size, "a usable executor is required");
+    uint32_t width = 0, height = 0;
+    for (const auto &target : x->targets)
+        if (target.address == address) width = target.width, height = target.height;
+    if (!width || !height) return failed(error, error_size, "no draw has used a render target at %#llx", (unsigned long long)address);
+    const unsigned slot = metal_next_snapshot;
+    metal_next_snapshot = (slot + 1) % METAL_SNAPSHOTS;
+    MetalSnapshot &copy = metal_snapshots[slot];
+    while (copy.held.load()) std::this_thread::yield();
+    copy.pixels.resize((size_t)width * height);
+    if (rt_executor_read_target(x, address, copy.pixels.data(), width, height, error, error_size)) return -1;
+    copy.width = width, copy.height = height;
+    copy.held.store(1);
+    snapshot->ticket = 0, snapshot->slot = slot;
+    return 0;
+}
+
+extern "C" int rt_executor_read_snapshot(rt_executor *, const rt_executor_snapshot *snapshot, uint32_t *bgra, uint32_t width, uint32_t height,
+                                         char *error, size_t error_size)
+{
+    if (snapshot->slot >= METAL_SNAPSHOTS) return failed(error, error_size, "no such snapshot");
+    const MetalSnapshot &copy = metal_snapshots[snapshot->slot];
+    if (width > copy.width || height > copy.height) return failed(error, error_size, "read size is past the copied target");
+    for (uint32_t y = 0; y < height; y++) std::memcpy(bgra + (size_t)y * width, copy.pixels.data() + (size_t)y * copy.width, (size_t)width * 4);
+    return 0;
+}
+
+extern "C" void rt_executor_release_snapshot(rt_executor *, const rt_executor_snapshot *snapshot)
+{
+    if (snapshot->slot < METAL_SNAPSHOTS) metal_snapshots[snapshot->slot].held.store(0);
 }
 
 extern "C" void rt_executor_close(rt_executor *x) { delete x; }
