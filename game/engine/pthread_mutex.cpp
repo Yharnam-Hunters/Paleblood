@@ -3,7 +3,12 @@
 // pthread_mutex.h).
 //
 // - engine_pthread_mutex_finalize_0247edc0 (0x0247edc0) and engine_pthread_mutex_destroy_base_0247ed40
-//   (0x0247ed40) tear a mutex down (finalize_handle and destroy_base in pthread_mutex.h).
+//   (0x0247ed40) tear a mutex down (finalize_handle and destroy_base in pthread_mutex.h), and
+//   engine_pthread_mutex_delete_0247ecc0 (0x0247ecc0) is the deleting destructor: the base
+//   destructor's work without the last clear, then the memory freed.
+// - engine_pthread_mutex_initialize_0247ee40 (0x0247ee40) creates the handle (PthreadMutex.cpp's
+//   creation, 0x02483fe0) unless the vtable says the mutex is initialized, and marks it initialized
+//   when that succeeds. Returns the creation's result, 0 when it did not create.
 // - engine_light_mutex_lock_0247ee90 (0x0247ee90), engine_light_mutex_try_lock_0247ef80
 //   (0x0247ef80) and engine_light_mutex_unlock_0247f070 (0x0247f070) lock and unlock it (the
 //   engine's hottest kernel calls). Each reports a mutex its vtable says is not initialized and
@@ -19,6 +24,8 @@ using namespace engine::pthread_mutex;
 
 namespace {
 
+RT_ORIGINAL(0x02483fe0, mutex_create, int32_t(void **handle));
+RT_ORIGINAL(0x02fbe588, operator_delete, void(void *));
 // The executable's call stub for scePthreadMutexTrylock.
 RT_ORIGINAL(0x02fc0cb8, sce_mutex_trylock, int32_t(void **handle));
 
@@ -39,6 +46,22 @@ constexpr int32_t line_lock_not_initialized = 0x7e, line_try_lock_not_initialize
 constexpr LockReportLines try_lock_lines = {0xa5, 0xa7, 0xa9, 0xab};
 
 }  // namespace
+
+extern "C" void bb_engine_pthread_mutex_delete_0247ecc0(Mutex *mutex)
+{
+    destroy_base(mutex, false);
+    operator_delete(mutex);
+}
+
+extern "C" int32_t bb_engine_pthread_mutex_initialize_0247ee40(Mutex *mutex)
+{
+    if (mutex->vtable->is_initialized(mutex))
+        return 0;
+    const int32_t result = mutex_create(&mutex->handle);
+    if (result == 0)
+        mutex->initialized = true;
+    return result;
+}
 
 extern "C" int32_t bb_engine_pthread_mutex_finalize_0247edc0(Mutex *mutex)
 {

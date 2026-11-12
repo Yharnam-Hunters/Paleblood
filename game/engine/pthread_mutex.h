@@ -108,9 +108,9 @@ inline void unlock_handle(void **handle)
 // Destroys the handle. A busy mutex is left alone (returns false: still initialized). Any other
 // failure is reported (EINVAL first by name, then as unknown, since the report returns) and the
 // mutex counts as gone (returns true), as on success.
-inline bool destroy_handle(Mutex *mutex)
+inline bool destroy_system_handle(void **handle)
 {
-    const int32_t result = sce_mutex_destroy(&mutex->handle);
+    const int32_t result = sce_mutex_destroy(handle);
     if (result == sce_ebusy)
         return false;
     if (result != 0) {
@@ -119,6 +119,11 @@ inline bool destroy_handle(Mutex *mutex)
         fatal_error(source_file.address(), line_unknown_error, message_unknown_error.address());
     }
     return true;
+}
+
+inline bool destroy_handle(Mutex *mutex)
+{
+    return destroy_system_handle(&mutex->handle);
 }
 
 // The mutex's finalization (0x0247edc0): when the vtable says it is initialized, destroys the

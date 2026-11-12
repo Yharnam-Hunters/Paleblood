@@ -3,12 +3,13 @@
 """Edge cases for the engine's mutex (game/engine/pthread_mutex.cpp), for tools/verify.py run.
 
 usage: pthread_mutex_cases.py OUT_DIR FUNCTION
-  FUNCTION: finalize, destroy_base, lock, try_lock, unlock
+  FUNCTION: finalize, destroy_base, delete, initialize, lock, try_lock, unlock
 
 Each case builds a mutex (`mutex`: a fake vtable whose initialization query is a scripted stub, a
 handle and the initialized flag). The system mutex calls are
 scripted imports with the results under test, including upper bits a 32-bit compare must ignore;
-the error reports are stubs, as many as the result reports (worked out here).
+the error reports are stubs, as many as the result reports (worked out here). Initialization's
+creation (0x02483fe0) is a stub with the result under test.
 """
 import json
 import os
@@ -16,9 +17,11 @@ import struct
 import sys
 
 FATAL_ERROR, IS_INITIALIZED = '0x024b55b0', '0x0247ee80'
-ADDRESSES = {'finalize': '0x0247edc0', 'destroy_base': '0x0247ed40',
+ADDRESSES = {'finalize': '0x0247edc0', 'destroy_base': '0x0247ed40', 'delete': '0x0247ecc0',
+             'initialize': '0x0247ee40',
              'lock': '0x0247ee90', 'try_lock': '0x0247ef80', 'unlock': '0x0247f070'}
-RETURNS = {'destroy_base': 'void'}
+RETURNS = {'destroy_base': 'void', 'delete': 'void'}
+MUTEX_CREATE = '0x02483fe0'
 EPERM, EDEADLK, ENOMEM, EBUSY = 0x80020001, 0x8002000b, 0x8002000c, 0x80020010
 EINVAL, EAGAIN, ETIMEDOUT = 0x80020016, 0x80020023, 0x8002003c
 HANDLE = 0x1122334455667788
@@ -54,7 +57,11 @@ def case(function, cid, result=0, queried=True, flag=True):
               {'addr': 'buf:mutex_vtable+16', 'guest': IS_INITIALIZED}]
     args = {'rdi': 'buf:mutex'}
     reports = 0
-    if function in ('finalize', 'destroy_base'):
+    if function == 'initialize':
+        stubs.append({'address': IS_INITIALIZED, 'argc': 1, 'ret': int(queried)})
+        if not queried:
+            stubs.append({'address': MUTEX_CREATE, 'argc': 1, 'ret': hex(result)})
+    elif function in ('finalize', 'destroy_base', 'delete'):
         if function == 'finalize':
             stubs.append({'address': IS_INITIALIZED, 'argc': 1, 'ret': int(queried)})
             runs = queried
@@ -64,6 +71,8 @@ def case(function, cid, result=0, queried=True, flag=True):
             imports.append(import_call('scePthreadMutexDestroy', 1, result))
             r = low(result)
             reports = 0 if r in (0, EBUSY) else 2 if r == EINVAL else 1
+        if function == 'delete':
+            imports.append(import_call('_ZdlPv', 1))
     else:
         stubs.append({'address': IS_INITIALIZED, 'argc': 1, 'ret': int(queried)})
         reports = 0 if queried else 1
@@ -96,7 +105,12 @@ def make(function):
                 case(function, 'query_false_flag_set', queried=False, flag=True),
                 case(function, 'query_true_flag_clear', result=0, flag=False),
                 case(function, 'query_true_flag_clear_busy', result=EBUSY, flag=False)]
-    elif function == 'destroy_base':
+    elif function == 'initialize':
+        out = [case(function, name, result=r, queried=False) for name, r in COMMON_ERRORS]
+        out += [case(function, 'already_initialized', queried=True),
+                case(function, 'already_initialized_flag_clear', queried=True, flag=False),
+                case(function, 'creates_flag_clear', queried=False, flag=False)]
+    elif function in ('destroy_base', 'delete'):
         out += [case(function, 'flag_clear', flag=False), case(function, 'flag_clear_einval', result=EINVAL, flag=False)]
     else:
         out += [case(function, 'not_initialized', queried=False),

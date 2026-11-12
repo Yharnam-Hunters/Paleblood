@@ -253,14 +253,41 @@ address,size,name,system,status,notes
 0x02470d50,517,loading_mount_table_push_back_02470d50,loading,edge-verified,mount table push_back: grow 1.5x when full (source inside the table found again); copy name and target; end moves on even without a buffer
 0x024716d0,539,loading_mount_table_reallocate_024716d0,loading,edge-verified,mount table reallocate to exact capacity: copy entries; destroy old (heap text freed); free old buffer; failed allocation: transaction jump or report
 0x0247d250,304,engine_temporary_heap_create_for_thread_0247d250,engine,edge-verified,DLTemporaryHeap per-thread creation: the thread's size setting (0x20000 when 0; under 0x38 reported); memory from the default allocator; empty bump region after the 0x38-byte object
+0x0247d3a0,140,engine_temporary_heap_destroy_for_thread_0247d3a0,engine,edge-verified,"DLTemporaryHeap per-thread destruction: range cleared, memory freed through the default allocator (quit query and allocator made when missing), slot cleared"
+0x0247d430,34,engine_temporary_heap_set_size_0247d430,engine,edge-verified,DLTemporaryHeap size setting for the thread (0 -> 0x20000)
+0x0247d470,58,engine_temporary_heap_allocator_0247d470,engine,edge-verified,"DLTemporaryHeap allocator interface of the thread's heap (+0x20), creating the heap first"
+0x0247d4b0,86,engine_temporary_heap_allocate_0247d4b0,engine,edge-verified,DLTemporaryHeap bottom allocation on the thread's heap (linear heap step)
+0x0247d510,121,engine_temporary_heap_allocate_aligned_0247d510,engine,edge-verified,DLTemporaryHeap aligned bottom allocation on the thread's heap (linear heap step)
+0x0247d590,31,engine_temporary_heap_ensure_0247d590,engine,edge-verified,DLTemporaryHeap: creates the thread's heap when missing
+0x0247d5b0,58,engine_temporary_heap_mark_0247d5b0,engine,edge-verified,DLTemporaryHeap mark: the thread heap's bottom
+0x0247d5f0,110,engine_temporary_heap_free_until_0247d5f0,engine,edge-verified,DLTemporaryHeap FreeUntil on the thread's heap: rewinds the bottom; a mark outside the range reported
+0x0247dd30,31,engine_temporary_heap_ensure_0247dd30,engine,edge-verified,DLTemporaryHeap: creates the thread's heap when missing (identical copy)
+0x0247dd60,127,engine_temporary_heap_allocate_top_0247dd60,engine,edge-verified,DLTemporaryHeap 8-aligned top allocation on the thread's heap (linear heap step)
+0x0247dde0,156,engine_temporary_heap_allocate_aligned_top_0247dde0,engine,edge-verified,DLTemporaryHeap aligned top allocation on the thread's heap (linear heap step)
+0x0247e1a0,161,engine_temporary_heap_free_0247e1a0,engine,edge-verified,DLTemporaryHeap top block free on the thread's heap (linear heap step)
+0x0247e400,18,engine_condition_signal_construct_0247e400,engine,edge-verified,"DLConditionSignal constructor: vtable, flags cleared"
+0x0247e420,201,engine_condition_signal_delete_0247e420,engine,edge-verified,"DLConditionSignal deleting destructor: when created, mutex then condition destroyed (busy stops; errors reported); freed"
+0x0247e4f0,198,engine_condition_signal_destroy_base_0247e4f0,engine,edge-verified,"DLConditionSignal base destructor: when created, mutex then condition destroyed; created flag cleared unless busy"
+0x0247e5c0,206,engine_condition_signal_finalize_0247e5c0,engine,edge-verified,"DLConditionSignal finalize: when created per vtable, destroys mutex and condition; -2 when busy, else 0 and not created"
+0x0247e690,211,engine_condition_signal_create_0247e690,engine,edge-verified,"DLConditionSignal create: skipped when created; argument byte -> signalled, waited cleared; mutex failure returned; ENOMEM/EAGAIN -1; EINVAL/EBUSY/other reported, created"
 0x0247e780,366,engine_condition_signal_set_0247e780,engine,edge-verified,DLConditionSignal set/clear under its mutex; setting wakes every waiter (pthread_cond_broadcast) when one has waited; errors reported; 0
 0x0247e8f0,329,engine_condition_signal_wait_0247e8f0,engine,edge-verified,DLConditionSignal wait under its mutex unless already set (marks a waiter); returns the condition wait result or 0
+0x0247ea40,61,engine_condition_signal_poll_0247ea40,engine,edge-verified,"DLConditionSignal poll: reports an uncreated object; 0 when signalled, else -2"
+0x0247ea80,40,engine_condition_signal_check_0247ea80,engine,edge-verified,DLConditionSignal check: reports an uncreated object; 0
 0x0247eb80,16,render_read_present_pool_counter,render,edge-verified,"full-QWORD locked read/writeback retry; XOR before each attempt; caller adds one. Real AMD64 write cycles retained; non-AMD64 bridge unresolved Synthetic edges pass; no recordings."
+0x0247ecc0,118,engine_pthread_mutex_delete_0247ecc0,engine,edge-verified,"PthreadMutex deleting destructor: vtable reset, handle still initialized destroyed (busy kept), freed"
 0x0247ed40,115,engine_pthread_mutex_destroy_base_0247ed40,engine,edge-verified,"PthreadMutex base destructor: resets the vtable, destroys a handle still marked initialized (busy kept)"
 0x0247edc0,124,engine_pthread_mutex_finalize_0247edc0,engine,edge-verified,"PthreadMutex finalize: destroys the handle when initialized; -2 when busy; errors reported, then uninitialized"
+0x0247ee40,49,engine_pthread_mutex_initialize_0247ee40,engine,edge-verified,PthreadMutex initialize: creates the handle unless initialized per vtable; marks it on success; returns the creation result
 0x0247ee90,226,engine_light_mutex_lock_0247ee90,engine,edge-verified,"DLLightMutex lock: reports an uninitialized mutex; -3 on ETIMEDOUT; EDEADLK/EINVAL/EAGAIN/other report chains, 0"
 0x0247ef80,230,engine_light_mutex_try_lock_0247ef80,engine,edge-verified,"DLLightMutex try-lock: reports an uninitialized mutex; -2 when busy; EDEADLK/EINVAL/EAGAIN/other report chains, 0"
 0x0247f070,124,engine_light_mutex_unlock_0247f070,engine,edge-verified,DLLightMutex unlock: reports an uninitialized mutex; EPERM ignored; EINVAL and other errors reported; 0
+0x0247f190,81,engine_read_write_lock_delete_0247f190,engine,edge-verified,"DLReadWriteLock deleting destructor: vtable reset, created handle destroyed (EINVAL reported), freed"
+0x0247f1f0,85,engine_read_write_lock_destroy_base_0247f1f0,engine,edge-verified,"DLReadWriteLock base destructor: vtable reset, created handle destroyed, flag cleared unless busy"
+0x0247f250,94,engine_read_write_lock_finalize_0247f250,engine,edge-verified,"DLReadWriteLock finalize: when created per vtable, destroys; -2 when busy; EINVAL reported; else not created, 0"
+0x0247f2b0,244,engine_read_write_lock_create_0247f2b0,engine,edge-verified,"DLReadWriteLock create: unless created; -1 on ENOMEM/EAGAIN; EPERM/EBUSY/EINVAL/EFAULT report chains; created, 0"
+0x0247f3d0,198,engine_read_write_lock_write_lock_0247f3d0,engine,edge-verified,"DLReadWriteLock write lock, forever or timed: -3 on ETIMEDOUT; EINVAL/EDEADLK chains; other results reported unknown; 0"
+0x0247f4a0,146,engine_read_write_lock_try_write_lock_0247f4a0,engine,edge-verified,DLReadWriteLock try write lock: -2 when busy; EINVAL/EDEADLK report chains; 0
 0x0247f540,115,engine_read_write_lock_unlock_0247f540,engine,edge-verified,DLReadWriteLock unlock (one of three identical copies): -4 on EPERM; EINVAL reported; 0
 0x0247f5c0,115,engine_read_write_lock_unlock_0247f5c0,engine,edge-verified,DLReadWriteLock unlock (one of three identical copies): -4 on EPERM; EINVAL reported; 0
 0x0247f640,206,engine_read_write_lock_read_lock_0247f640,engine,edge-verified,"DLReadWriteLock read lock, forever or up to a timeout; -3 on ETIMEDOUT; EINVAL/EAGAIN/EDEADLK report chains; others ignored; 0"
@@ -315,6 +342,9 @@ address,size,name,system,status,notes
 0x0248a9f0,159,engine_small_object_allocator_delete_0248a9f0,engine,edge-verified,"DLSmallObjectAllocator deleting destructor: every class emptied (chunks released and forgotten), class array freed, operator delete"
 0x0248aa90,160,engine_small_object_allocator_destroy_0248aa90,engine,edge-verified,"DLSmallObjectAllocator destructor: every class emptied (chunks released and forgotten), class array freed and forgotten"
 0x0248ab30,363,engine_small_object_allocator_delete_locked_0248ab30,engine,edge-verified,"DLSmallObjectAllocator deleting destructor, locked variant: classes emptied, array freed, PthreadMutex torn down (errors reported, busy kept), operator delete"
+0x0248adc0,528,engine_thread_construct_0248adc0,engine,edge-verified,"DLThread constructor (default stack): start mutex created and locked, condition signal, name (unnamed when null/empty), thread created; failures reported"
+0x0248afe0,540,engine_thread_construct_with_affinity_0248afe0,engine,edge-verified,DLThread constructor with stack size and core mask: same members; thread created with the mask; failures reported
+0x0248b200,532,engine_thread_construct_sized_0248b200,engine,edge-verified,DLThread constructor with a stack size: same members; failures reported
 0x024bd150,216,frame_timing_job_take_result,frame_timing,verified,"Job handle result: mode 0 polls (null if not done); 2 takes; others wait 1 ms at a time; bumps the job's holder count under the job lock"
 0x024bd930,249,loading_resource_info_release_024bd930,loading,edge-verified,DLResourceInfo drop reference: last one sets releasing once (shared lock); manager release; cancel pending requests from the stream queue
 0x024bdd40,36,frame_timing_job_wait,frame_timing,edge-verified,"Poll a job's state until finished (2); sleeping 1 ms in the kernel between polls"
