@@ -754,6 +754,7 @@ int main(void)
     translates(PROGRAM(unpack_halves), "unpack_halves");
     translates(PROGRAM(buffer_atomics), "buffer_atomics");
     translates(PROGRAM(integer_batch), "integer_batch");
+    translates(PROGRAM(valu_batch), "valu_batch");
     translates(PROGRAM(scalar_batch), "scalar_batch");
     translates(PROGRAM(vcc_halves), "vcc_halves");
     translates(PROGRAM(whole_quad), "whole_quad");

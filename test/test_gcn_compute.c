@@ -716,6 +716,51 @@ int main(int argc, char **argv)
     }
     CHECK(winners == 1);
 
+    /* valu_batch: each result worked out with plain C from the Sea Islands manual's definitions (floats:
+       fminf and fmaxf ignore a NaN, as the NMin and NMax the translation uses; the legacy forms take y when
+       either is a NaN). */
+    static const uint32_t valu_cases[][4] = {
+        {3, 5, 7, 4}, {0xfffffffe, 2, 0x80000000, 1}, {0x3f800000, 0x40000000, 0xbf800000, 31}, {0x7fc00000, 0x3f000000, 0x40400000, 32},
+        {0x40a00000, 0x7fc00000, 0x3e800000, 33}, {0x0f0f0f0f, 0x12345678, 0x9abcdef0, 63}, {0x80000001, 0x7fffffff, 0, 0},
+        {0xc0400000, 0xc0000000, 0xc0800000, 64 + 3}, {10, 10, 9, 40}, {0xffffffff, 0, 0xffffffff, 1}, {1, 0xff800000, 0x7f800000, 12},
+        {0x42c80000, 0x42c80000, 0x42c80000, 20},
+    };
+    enum { VALU_CASES = sizeof valu_cases / sizeof valu_cases[0], VALU_WORDS = 20 };
+    memset(in.mapped, 0, BUFFER_BYTES), memset(out.mapped, 0, BUFFER_BYTES);
+    for (int i = 0; i < VALU_CASES; i++) memcpy(in_words + 4 * i, valu_cases[i], sizeof valu_cases[i]);
+    CHECK(run(&g, valu_batch, sizeof valu_batch / sizeof valu_batch[0], user) == 0);
+    for (int i = 0; i < VALU_CASES; i++) {
+        const uint32_t x = valu_cases[i][0], y = valu_cases[i][1], z = valu_cases[i][2], amount = valu_cases[i][3] & 63;
+        const int32_t sx = (int32_t)x, sy = (int32_t)y, sz = (int32_t)z;
+        float fx, fy, fz;
+        memcpy(&fx, &x, 4), memcpy(&fy, &y, 4), memcpy(&fz, &z, 4);
+        const int32_t smin = sx < sy ? (sx < sz ? sx : sz) : (sy < sz ? sy : sz), smax = sx > sy ? (sx > sz ? sx : sz) : (sy > sz ? sy : sz);
+        const uint32_t umin = x < y ? (x < z ? x : z) : (y < z ? y : z), umax = x > y ? (x > z ? x : z) : (y > z ? y : z);
+        const int32_t slo = sx < sy ? sx : sy, shi = sx < sy ? sy : sx;
+        const uint32_t ulo = x < y ? x : y, uhi = x < y ? y : x;
+        const int32_t smed = slo > (shi < sz ? shi : sz) ? slo : (shi < sz ? shi : sz);
+        const uint32_t umed = ulo > (uhi < z ? uhi : z) ? ulo : (uhi < z ? uhi : z);
+        const uint64_t pair = (uint64_t)y << 32 | x;
+        const uint64_t left = pair << amount, right = pair >> amount, arith = (uint64_t)((int64_t)pair >> amount), ones = UINT64_MAX << amount;
+        const float fmed = fmaxf(fminf(fx, fy), fminf(fmaxf(fx, fy), fz));
+        const float floats[5] = {fminf(fminf(fx, fy), fz), fmaxf(fmaxf(fx, fy), -fz), fmed,
+                                 isnan(fx) || isnan(fy) ? fy : fmaxf(fx, fy), isnan(fx) || isnan(fy) ? fy : fminf(fx, fy)};
+        uint32_t want[VALU_WORDS] = {(uint32_t)smin, (uint32_t)smax, (uint32_t)smed, umin, umax, umed, (x & y) | (~x & z),
+                                     (uint32_t)left, (uint32_t)(left >> 32), (uint32_t)right, (uint32_t)(right >> 32),
+                                     (uint32_t)arith, (uint32_t)(arith >> 32)};
+        memcpy(want + 13, floats, sizeof floats);
+        want[18] = (uint32_t)ones, want[19] = (uint32_t)(ones >> 32);
+        for (int k = 0; k < VALU_WORDS; k++) {
+            const uint32_t got = out_words[VALU_WORDS * i + k];
+            /* a NaN result may be any NaN */
+            const int both_nan = k >= 13 && k < 18 && (got & 0x7f800000) == 0x7f800000 && (got & 0x7fffff) &&
+                                 (want[k] & 0x7f800000) == 0x7f800000 && (want[k] & 0x7fffff);
+            if (got != want[k] && !both_nan) fprintf(stderr, "valu_batch case %d word %d: 0x%08x, expected 0x%08x\n", i, k, got, want[k]);
+            CHECK(got == want[k] || both_nan);
+        }
+    }
+    for (int k = VALU_CASES * VALU_WORDS; k < LANES * VALU_WORDS && k < BUFFER_BYTES / 4; k++) CHECK(out_words[k] == 0); /* lanes 12-63 store nothing */
+
     /* 24-bit multiplies, bit fields and carries: per case (x, y, z, w), the expected words in
        integer_batch's order, worked out by hand from the definitions (and checked with plain
        integer arithmetic). */

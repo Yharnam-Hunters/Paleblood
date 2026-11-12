@@ -958,6 +958,41 @@ static const uint32_t vertex_pos1[] = {
    v_mul_i32_i24 x, y; v_mul_u32_u24 x, y; v_mad_i32_i24 x, y, z; v_bfe_u32 and v_bfe_i32 of x at
    offset y, width z; v_bfm_b32 y, z; x + y + carry (carry in: w != 0) and its carry out; x - y -
    borrow (borrow in: w != 0) and its borrow out; v_mad_u32_u24 x, y, z. */
+/* Three-way min, max and middle (f32, i32, u32), bit-field insert, 64-bit shifts and the legacy float min
+   and max: lane i reads (x, y, z, w) at in[4i] and, for lanes 0-11, writes v6-v25 at out[20i]: min3, max3,
+   med3 of (x, y, z) as i32 then u32, bfi(x, y, z), the pair (y:x) shifted left, right and arithmetically
+   right by w, min3(x, y, z), max3(x, y, -z), med3(x, y, z) as floats, max_legacy(x, y), min_legacy(x, y),
+   and the 64-bit -1 shifted left by w. */
+static const uint32_t valu_batch[] = {
+    0x34020084, /* v_lshlrev_b32_e32 v1, 4, v0 */
+    0xe0381000, 0x80000201, /* buffer_load_dwordx4 v[2:5], v1, s[0:3], 0 offen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x160200ff, 0x00000050, /* v_mul_u32_u24_e32 v1, 0x50, v0 */
+    0xd2a40006, 0x04120702, /* v_min3_i32 v6, v2, v3, v4 */
+    0xd2aa0007, 0x04120702, /* v_max3_i32 v7, v2, v3, v4 */
+    0xd2b00008, 0x04120702, /* v_med3_i32 v8, v2, v3, v4 */
+    0xd2a60009, 0x04120702, /* v_min3_u32 v9, v2, v3, v4 */
+    0xd2ac000a, 0x04120702, /* v_max3_u32 v10, v2, v3, v4 */
+    0xd2b2000b, 0x04120702, /* v_med3_u32 v11, v2, v3, v4 */
+    0xd294000c, 0x04120702, /* v_bfi_b32 v12, v2, v3, v4 */
+    0xd2c2000d, 0x00020b02, /* v_lshl_b64 v[13:14], v[2:3], v5 */
+    0xd2c4000f, 0x00020b02, /* v_lshr_b64 v[15:16], v[2:3], v5 */
+    0xd2c60011, 0x00020b02, /* v_ashr_i64 v[17:18], v[2:3], v5 */
+    0xd2a20013, 0x04120702, /* v_min3_f32 v19, v2, v3, v4 */
+    0xd2a80014, 0x84120702, /* v_max3_f32 v20, v2, v3, -v4 */
+    0xd2ae0015, 0x04120702, /* v_med3_f32 v21, v2, v3, v4 */
+    0x1c2c0702, /* v_max_legacy_f32_e32 v22, v2, v3 */
+    0x1a2e0702, /* v_min_legacy_f32_e32 v23, v2, v3 */
+    0xd2c20018, 0x00020ac1, /* v_lshl_b64 v[24:25], -1, v5 */
+    0x7da8008c, /* v_cmpx_gt_u32_e32 vcc, 12, v0 */
+    0xe0781000, 0x80010601, /* buffer_store_dwordx4 v[6:9], v1, s[4:7], 0 offen */
+    0xe0781010, 0x80010a01, /* buffer_store_dwordx4 v[10:13], v1, s[4:7], 0 offen offset:16 */
+    0xe0781020, 0x80010e01, /* buffer_store_dwordx4 v[14:17], v1, s[4:7], 0 offen offset:32 */
+    0xe0781030, 0x80011201, /* buffer_store_dwordx4 v[18:21], v1, s[4:7], 0 offen offset:48 */
+    0xe0781040, 0x80011601, /* buffer_store_dwordx4 v[22:25], v1, s[4:7], 0 offen offset:64 */
+    0xbf810000, /* s_endpgm */
+};
+
 static const uint32_t integer_batch[] = {
     0x34020084, /* v_lshlrev_b32_e32 v1, 4, v0 */
     0xe0381000, 0x80000201, /* buffer_load_dwordx4 v[2:5], v1, s[0:3], 0 offen */

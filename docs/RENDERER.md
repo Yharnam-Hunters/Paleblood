@@ -218,6 +218,13 @@ Instead:
        whole turns), base-2 `v_exp_f32` and `v_log_f32`, and `v_rsq_clamp_f32` (the largest float
        instead of infinity). Cases GLSL leaves undefined (the log of zero or of a negative number,
        the reciprocal square root of a negative number) are spelled out as IEEE defines them.
+     - **Three-way and wide operations** (from the coverage survey's list): `v_min3`, `v_max3` and
+       `v_med3` for f32, i32 and u32 (the middle is max(min(a, b), min(max(a, b), c)); floats ignore a
+       NaN, as `v_min_f32` and `v_max_f32` do here), the bit-field insert `v_bfi_b32`, the 64-bit shifts
+       `v_lshl_b64`, `v_lshr_b64` and `v_ashr_i64` (a VGPR or SGPR pair, or a sign-extended integer
+       constant, shifted by bits 5:0 of the count), and Direct3D 9's `v_min_legacy_f32` and
+       `v_max_legacy_f32` (the second source when either is a NaN). The clinic's particle compute
+       shaders use the first three kinds.
      - **Vertex and pixel shaders** (`gcn_translate_vertex`, `gcn_translate_pixel`):
        - **Exports (`exp`):** a vertex shader's `pos0` becomes the position and `param` n the
          output at location n; a pixel shader's `mrt` n becomes colour output n. Only the enabled
