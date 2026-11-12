@@ -739,6 +739,15 @@ static void vector_instruction(translator *t, const uint32_t *w, const gcn_instr
             op->opcode == SPV_OP_SHIFT_RIGHT_ARITHMETIC)
             b = shift_amount(t, b);
         write_vgpr(t, o.dst, value(t, op->opcode, t_uint(t), 2, a, b));
+    } else if (!strcmp(name, "v_min_i32") || !strcmp(name, "v_max_i32") || !strcmp(name, "v_min_u32") || !strcmp(name, "v_max_u32")) {
+        /* D = the smaller (min) or larger (max) of S0 and S1, signed (_i32) or unsigned (_u32) (Sea Islands
+           manual) */
+        if (o.abs || o.neg || o.clamp || o.omod) fail(t, "%s: modifiers on an integer operation", name);
+        const int is_signed = strstr(name, "_i32") != NULL, is_min = !strncmp(name, "v_min", 5);
+        const uint32_t a = source(t, o.src[0], ins), b = source(t, o.src[1], ins);
+        const uint16_t less = is_signed ? SPV_OP_S_LESS_THAN : SPV_OP_U_LESS_THAN;
+        const uint32_t a_less = value(t, less, t_bool(t), 2, a, b);
+        write_vgpr(t, o.dst, value(t, SPV_OP_SELECT, t_uint(t), 3, a_less, is_min ? a : b, is_min ? b : a));
     } else if (!strcmp(name, "v_add_i32") || !strcmp(name, "v_sub_i32") || !strcmp(name, "v_subrev_i32")) {
         /* The carry (or borrow) out goes to VCC, or VOP3's SGPR pair, as this lane's bit. */
         uint32_t a = source(t, o.src[0], ins), b = source(t, o.src[1], ins);
