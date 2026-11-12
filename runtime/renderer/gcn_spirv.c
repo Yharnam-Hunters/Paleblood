@@ -2728,8 +2728,9 @@ static int leaves_straight_line(const uint32_t *w, const gcn_instruction *ins, s
    and the use (code runs forward between branches, so a path that skipped the load would have to land
    there; a loop from after the load back to there is such a path only if a branch from before the load
    reaches the loop's branch, so none may land after the load up to it), every
-   branch's target is known, no branch goes back to the use or before it when an instruction after
-   the use and before that branch writes those SGPRs, and no instruction before the load writes the pointer pair, nor any
+   branch's target is known, no branch goes back to the use or before it (but not to the load or before
+   it, which loads the descriptor again) when an instruction after the use and before that branch writes
+   those SGPRs, and no instruction before the load writes the pointer pair, nor any
    instruction before the last branch back to the load or before it (so a loop that runs the load
    again loads the same descriptor; without one, code after the load may reuse the pointer's SGPRs, as
    the game's pixel shaders do once their samples are done, and code after the last such branch may too,
@@ -2769,9 +2770,11 @@ static int descriptor_origin(const uint32_t *code, size_t program, const callee_
         long target;
         if (leaves_straight_line(code + p, &ins, p, callee, &target) && (p < at || target < 0 || (size_t)target <= at)) {
             /* a branch back to the use or before it, from after a write that follows the use: a loop whose
-               next pass would read what that write left (a write after the branch runs once the loop is done) */
+               next pass would read what that write left (a write after the branch runs once the loop is done),
+               unless the branch goes back to the load or before it, so the next pass loads the descriptor again */
             const int back_to_use = (size_t)target <= at && (size_t)target <= p && p >= at;
-            if (target < 0 || (written_after_use >= 0 && (size_t)written_after_use <= p && back_to_use)) {
+            const int back_to_load = writer >= 0 && target >= 0 && target <= writer;
+            if (target < 0 || (written_after_use >= 0 && (size_t)written_after_use <= p && back_to_use && !back_to_load)) {
                 snprintf(error, error_size, "the descriptor in s[%u:%u] is written by the program, and a branch (%s at dword %zu) comes "
                          "before its use at dword %zu: not done yet", first, first + width - 1, ins.name, p, at);
                 return -1;

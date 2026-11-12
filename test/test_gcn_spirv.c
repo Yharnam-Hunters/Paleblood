@@ -249,6 +249,9 @@ static void image_programs(void)
     /* a write to the pointer after the last branch back to the load (a clinic compute shader at 0x20d52e8e00
        reloads s[0:3] over its pointer once its loops are done): from memory */
     static const uint32_t pointer_after_loop[] = {0xc0c00904, 0xf0000f00, 0x00000401, 0xbf84fffc, 0xbe880380, 0xbf810000};
+    /* a loop back to the load whose pass writes the descriptor's SGPRs after the use (the same shader reuses
+       s[72:79] after its image load, and its loop loads them again before the next one): from memory */
+    static const uint32_t reloaded_in_loop[] = {0xc0c00904, 0xf0000f00, 0x00000401, 0xbe800380, 0xbf84fffb, 0xbf810000};
     CHECK(gcn_image_resources(PROGRAM(guarded), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
     CHECK(count == 1 && found[0].origin.from_memory && found[0].origin.pointer_sgpr == 8 && found[0].origin.offset == 16);
     CHECK(gcn_image_resources(PROGRAM(skipped_load), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
@@ -278,6 +281,9 @@ static void image_programs(void)
     const int after_loops = gcn_image_resources(PROGRAM(pointer_after_loop), found, GCN_MAX_IMAGES, &count, error, sizeof error);
     if (after_loops) fprintf(stderr, "pointer_after_loop: %s\n", error);
     CHECK(after_loops == 0 && count == 1 && found[0].origin.from_memory && found[0].origin.pointer_sgpr == 8 && found[0].origin.offset == 16);
+    const int reloaded = gcn_image_resources(PROGRAM(reloaded_in_loop), found, GCN_MAX_IMAGES, &count, error, sizeof error);
+    if (reloaded) fprintf(stderr, "reloaded_in_loop: %s\n", error);
+    CHECK(reloaded == 0 && count == 1 && found[0].origin.from_memory && found[0].origin.pointer_sgpr == 8 && found[0].origin.offset == 16);
     /* the two-image program translates with both bound, and stops naming the loaded one without it */
     const gcn_image_binding two[] = {{{0, 4, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0}, {{1, 4, 2, 16}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0}};
     gcn_pixel_layout both_images = pixel_layout;
