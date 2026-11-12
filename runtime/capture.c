@@ -71,21 +71,33 @@ static int slot_for(const char *function)
     return found;
 }
 
-/* BB_CAPTURE_ONLY: comma-separated function names; when set, only those are recorded (a run
- * aimed at new functions should not stall on recording ones already verified). */
-static int wanted(const char *function)
+/* Whether the comma-separated list in the environment variable names this function. */
+static int listed(const char *variable, const char *function)
 {
-    const char *only = getenv("BB_CAPTURE_ONLY");
-    if (!only || !*only)
-        return 1;
+    const char *list = getenv(variable);
+    if (!list)
+        return 0;
     size_t len = strlen(function);
-    for (const char *p = only; *p;) {
+    for (const char *p = list; *p;) {
         size_t n = strcspn(p, ",");
         if (n == len && !strncmp(p, function, n))
             return 1;
         p += n + (p[n] == ',');
     }
     return 0;
+}
+
+/* BB_CAPTURE_ONLY: comma-separated function names; when set, only those are recorded (a run
+ * aimed at new functions should not stall on recording ones already verified). */
+static int wanted(const char *function)
+{
+    const char *only = getenv("BB_CAPTURE_ONLY");
+    return !only || !*only || listed("BB_CAPTURE_ONLY", function);
+}
+
+int rt_capture_native(const char *function)
+{
+    return function && listed("BB_CAPTURE_NATIVE", function);
 }
 
 int rt_capture_wanted(const char *function)

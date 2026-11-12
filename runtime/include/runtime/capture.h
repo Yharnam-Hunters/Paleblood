@@ -18,6 +18,10 @@ extern "C" {
 int rt_capture_begin(const char *function);
 /* Whether BB_CAPTURE_ONLY (comma-separated names) lets this function record; unset: all. */
 int rt_capture_wanted(const char *function);
+/* Whether BB_CAPTURE_NATIVE (comma-separated names) says this function's replacement must run
+   for every call, also inside a traced call (it reports to the runtime): it is not recorded, and a
+   traced call that reaches it ends its trace there and runs on natively. */
+int rt_capture_native(const char *function);
 /* Call before writing a case: 1 when it differs from every case the library and this run hold
    for the function (it is then counted towards BB_CAPTURE_MAX), 0 for a repeat to drop. */
 int rt_capture_keep(const char *function, const char *json);

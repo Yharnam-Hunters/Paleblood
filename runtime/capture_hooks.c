@@ -19,6 +19,10 @@
    jumps straight to its replacement, as before. A function whose traces keep giving no case
    (GIVE_UP in a row) is not traced again in this run.
 
+   BB_CAPTURE_NATIVE names replacements that must run for every call, traced callers included
+   (render replacements that report to the runtime's renderer): they get neither a thunk nor a
+   redirect, so a traced call that reaches one ends its trace and runs on natively.
+
    BB_CAPTURE_ORIGINAL=1 records the game's own inputs: no replacement runs at all. A recorded
    hook's unsampled calls go on to its relocated original instead of the replacement, and every
    other hook (not recordable, or left out by BB_CAPTURE_ONLY) is not installed, so its original
@@ -266,6 +270,9 @@ int rt_capture_hooks_prepare(unsigned char *image, uint64_t image_size, const rt
         unsigned char *entry = entries + i * RT_RELOCATE_MAX;
         size_t copied, written;
         if (original_only && !rt_capture_wanted(case_name(h))) continue;
+        /* No thunk and no redirect: a traced caller that reaches it leaves the traced code and
+           runs on natively, through the replacement. */
+        if (!original_only && rt_capture_native(case_name(h))) continue;
         if (!h->returns || h->address < RT_EBOOT_BASE || h->size < HOOK_JUMP ||
             rt_trace_relocate(original, HOOK_JUMP, entry, &copied, &written) ||
             rt_trace_branches_into(original, h->size, copied))

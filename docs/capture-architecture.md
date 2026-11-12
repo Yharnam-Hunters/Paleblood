@@ -101,8 +101,12 @@ replacement (`render_set_render_target`), which are observed rather than recorde
 unsampled calls run the replacements, as in any boot with the game library; the runtime's renderer
 still needs that today (with originals only, the title's draws stop at a missing viewport): some
 render replacements report the packets they emit to it (`runtime/render_observer.h`), and their
-originals do not. For the same reason a recorded call of such a function loses that report, so
-`tools/boot.py` records them only in a boot without a display.
+originals do not. For the same reason a recorded call of such a function loses that report, and
+so does a recorded call of any function that calls one (the trace follows the callee's original).
+With a display, `tools/boot.py` therefore names them in `BB_CAPTURE_NATIVE`: they get neither a
+thunk nor a redirect, so their replacement runs for every call, and a traced caller that reaches
+one leaves the traced code there (no case) and runs on natively. They are recorded only in a boot
+without a display.
 
 `tools/boot.py --capture DIR` sets all of this up (`BB_CAPTURE_DIR`, `BB_CAPTURE_TRACE`, `BB_ELF`,
 `BB_CAPTURE_IMPORTS`, `BB_CAPTURE_ONLY`, `BB_CAPTURE_MAX`), and `tools/capture_loop.py` runs it for

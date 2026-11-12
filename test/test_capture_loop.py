@@ -83,6 +83,12 @@ class CaptureLoop(unittest.TestCase):
         write(self.root / 'game/render/named.cpp', '#include "named.h"\nvoid\nbb_render_named_file(int)\n{\n}\n')
         self.assertEqual(boot.capture_functions(str(self.root), 'all-edge-verified', renderer=True), 'kernel_thing')
         self.assertEqual(boot.capture_functions(str(self.root), 'all-edge-verified'), 'kernel_thing,render_named_file')
+        write(self.root / 'game/hooks.csv', 'address,replacement,system,returns\n0x1,bb_kernel_thing,kernel,i32\n'
+              '0x3,bb_render_named_file,render,void\n')
+        self.assertEqual(boot.renderer_reporting(str(self.root)), ['render_named_file'])
+        env = boot.capture_environment(str(self.root), str(self.captures), 'all-edge-verified', 7, '/elf', renderer=True)
+        self.assertEqual((env['BB_CAPTURE_ONLY'], env['BB_CAPTURE_NATIVE']), ('kernel_thing', 'render_named_file'))
+        self.assertNotIn('BB_CAPTURE_NATIVE', boot.capture_environment(str(self.root), 'x', 'all', 1, '/elf'))
         env = boot.capture_environment(str(self.root), str(self.captures), 'all', 7, '/elf')
         self.assertEqual((env['BB_CAPTURE_TRACE'], env['BB_CAPTURE_ORIGINAL'], env['BB_CAPTURE_MAX']), ('1', '0', '7'))
         self.assertEqual(boot.capture_environment(str(self.root), 'x', 'all', 1, '/elf', originals=True)['BB_CAPTURE_ORIGINAL'], '1')
