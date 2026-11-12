@@ -125,7 +125,9 @@ struct StreamLoadQueue;
 struct LoadEventQueue;
 
 struct ResourceInfo {
-    uint8_t unknown_0x00[0x31];
+    uint8_t unknown_0x00[0x10];
+    int32_t transfer_claimed;     // set to 1 (an atomic exchange) when a transfer task takes it
+    uint8_t unknown_0x14[0x1d];
     uint8_t flags;
     uint8_t unknown_0x32[0x36];
     LoadEventQueue *load_queue;   // the load event queue it was queued in (0x02a698e0), if any
@@ -135,6 +137,7 @@ struct ResourceInfo {
     uint64_t pending_count;
     engine::Allocator *pending_allocator;
 };
+static_assert(offsetof(ResourceInfo, transfer_claimed) == 0x10);
 static_assert(offsetof(ResourceInfo, flags) == 0x31 && offsetof(ResourceInfo, stream_queue) == 0x70);
 static_assert(offsetof(ResourceInfo, load_queue) == 0x68);
 static_assert(offsetof(ResourceInfo, pending_head) == 0x80 && offsetof(ResourceInfo, pending_allocator) == 0x90);
@@ -190,13 +193,24 @@ RT_ORIGINAL(0x024c3260, resource_manager_remove_released, uint64_t(ResourceManag
 using RequestPointerArray = engine::Array<void *>;
 constexpr uintptr_t request_storage_alignment = 8;
 constexpr size_t request_storage_size = sizeof(RequestPointerArray) + request_storage_alignment;
+struct LoadEventQueueVtable;
+constexpr uintptr_t stream_event_storage_alignment = 8;
+constexpr size_t stream_event_storage_size = sizeof(StreamLoadEventArray) + stream_event_storage_alignment;
 struct StreamLoadQueue {
-    uint8_t unknown_0x00[0xc8];
+    const LoadEventQueueVtable *vtable;   // its first slot reports a request it could not queue
+    uint64_t unknown_0x08;
+    ResourceManager *manager;             // the original reads it through a one-line getter
+    uint8_t unknown_0x18[0x60];
+    uint8_t event_storage[stream_event_storage_size];
+    frame_timing::job::JobLock lock;
+    uint8_t unknown_0xb0[0x18];
     uint8_t *pool;
     uint64_t pool_size;
     uint8_t released_storage[request_storage_size];
     uint8_t in_use_storage[request_storage_size];
 };
+static_assert(offsetof(StreamLoadQueue, manager) == 0x10 && offsetof(StreamLoadQueue, event_storage) == 0x78);
+static_assert(offsetof(StreamLoadQueue, lock) == 0xa8);
 static_assert(offsetof(StreamLoadQueue, pool) == 0xc8 && offsetof(StreamLoadQueue, released_storage) == 0xd8);
 static_assert(offsetof(StreamLoadQueue, in_use_storage) == 0x108);
 
@@ -256,6 +270,25 @@ static_assert(sizeof(ResourceHandle) == 0x10);
 RT_ORIGINAL(0x024bd470, resource_handle_construct, void(ResourceHandle *, ResourceInfo *));
 RT_ORIGINAL(0x024bd4c0, resource_handle_destroy, void(ResourceHandle *));
 RT_GLOBAL(0x057b4af0, load_handle_vtable, const uint8_t);
+
+// The stream queue's request: a load request and one more byte, which its queued event keeps.
+struct StreamLoadRequest {
+    LoadRequest request;
+    uint8_t byte_0x148;
+};
+static_assert(offsetof(StreamLoadRequest, byte_0x148) == 0x148);
+
+// The stream queue's handle: a resource handle that also knows the queue (its constructor
+// 0x02a70a90 makes the info remember the queue, +0x70, when it has both).
+struct StreamHandle {
+    ResourceHandle handle;
+    StreamLoadQueue *queue;
+};
+static_assert(offsetof(StreamHandle, queue) == 0x10 && sizeof(StreamHandle) == 0x18);
+RT_GLOBAL(0x056b6f90, stream_handle_vtable, const uint8_t);
+RT_ORIGINAL(0x02a70a90, stream_handle_construct, void(StreamHandle *, ResourceInfo *, StreamLoadQueue *));
+RT_ORIGINAL(0x02a6d010, stream_event_array_push_back, void(StreamLoadEventArray *, const StreamLoadEvent *));
+constexpr int32_t stream_event_kind = 0;
 
 // The resource load event queue (Dantelion2 DLResourceLoadEventQueue and its file load
 // subclass): its first vtable slot reports a request it could not queue; its events (an array
@@ -317,5 +350,38 @@ RT_ORIGINAL(0x0247f710, read_write_lock_unlock, uint64_t(ReadWriteLock *));
 RT_GLOBAL(0x04c6bd3c, load_queue_source_file, const char);
 RT_GLOBAL(0x04c6bdd3, invalid_parameter_message, const char);
 constexpr int32_t load_queue_remove_line = 0x247;
+
+// A queue of finished entries kept by an object of the load event queue's code (0x02a69fb0 copies
+// its front, 0x02a6a020 drops it): an MSVC-style list (head node, count, allocator) stored at +0x30
+// aligned up to 8, guarded by the lock at +0x58. What owns it and what an entry holds beyond its
+// two parts (a job result, then a second part at +0x38; copied by 0x02aa4b90) is not known yet.
+struct FinishedEntry;
+struct FinishedEntryVtable {
+    void (*destroy)(FinishedEntry *);
+};
+struct FinishedEntry {
+    const FinishedEntryVtable *vtable;
+};
+struct FinishedNode {
+    FinishedNode *next;
+    FinishedNode *previous;
+    FinishedEntry entry;
+};
+static_assert(offsetof(FinishedNode, entry) == 0x10);
+struct FinishedList {
+    uint64_t unknown_0x00;
+    FinishedNode *head;
+    uint64_t count;
+    engine::Allocator *allocator;
+};
+static_assert(offsetof(FinishedList, count) == 0x10 && sizeof(FinishedList) == 0x20);
+constexpr uintptr_t finished_storage_alignment = 8;
+struct FinishedQueue {
+    uint8_t unknown_0x00[0x30];
+    uint8_t finished_storage[sizeof(FinishedList) + finished_storage_alignment];
+    frame_timing::job::JobLock lock;
+};
+static_assert(offsetof(FinishedQueue, finished_storage) == 0x30 && offsetof(FinishedQueue, lock) == 0x58);
+RT_ORIGINAL(0x02aa4b90, finished_entry_copy, FinishedEntry *(FinishedEntry *, const FinishedEntry *source));
 
 }  // namespace loading::resource_queue
