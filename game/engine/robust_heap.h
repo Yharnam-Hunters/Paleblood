@@ -57,7 +57,7 @@ constexpr uint64_t split_in_place_margin = 0x200;
 
 // The heap's state (part of the DLRobustHeap object).
 struct Heap {
-    uint8_t unknown_0x00[0x8];
+    uint64_t capacity;          // the free bytes of the empty heap
     uint64_t available;         // free bytes, block overhead included
     uint64_t allocation_count;
     uint8_t *small_bins;        // 31 list sentinels, 16 bytes apart
