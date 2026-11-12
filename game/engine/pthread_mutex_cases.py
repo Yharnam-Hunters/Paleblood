@@ -109,7 +109,9 @@ def make(function):
         out = [case(function, name, result=r, queried=False) for name, r in COMMON_ERRORS]
         out += [case(function, 'already_initialized', queried=True),
                 case(function, 'already_initialized_flag_clear', queried=True, flag=False),
-                case(function, 'creates_flag_clear', queried=False, flag=False)]
+                case(function, 'creates_flag_clear', queried=False, flag=False),
+                case(function, 'positive_flag_clear', queried=False, flag=False, result=5),
+                case(function, 'fails_flag_clear', queried=False, flag=False, result=0xffffffff)]
     elif function in ('destroy_base', 'delete'):
         out += [case(function, 'flag_clear', flag=False), case(function, 'flag_clear_einval', result=EINVAL, flag=False)]
     else:
