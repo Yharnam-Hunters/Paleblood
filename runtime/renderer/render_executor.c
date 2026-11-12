@@ -4074,7 +4074,10 @@ static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, 
         }
             break;
         case RT_CALL_VIEWPORT:
-            if (c->u.viewport.index != 0) return failed(error, error_size, "viewport %u: only viewport 0 is drawn yet", c->u.viewport.index);
+            /* viewports 1-15: a primitive takes another viewport than 0 only through the viewport index its vertex
+               shader exports in the misc vector (PA_CL_VS_OUT_CNTL's USE_VTX_VIEWPORT_INDX, AMD's gfx_7_2_sh_mask.h),
+               whose export stops translation by name: no draw here reads them */
+            if (c->u.viewport.index != 0) break;
             memcpy(s->viewport_scale, c->u.viewport.scale, sizeof s->viewport_scale);
             memcpy(s->viewport_translate, c->u.viewport.translate, sizeof s->viewport_translate);
             s->viewport_set = 1;
