@@ -716,6 +716,19 @@ static const uint32_t pixel_level_zero[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* A depth compare at level 0: the reference 0.5 against the image in s[4:11] at (x / 16, y / 16), through
+   the sampler in s[12:15] (its compare function and filter); the result in red, green and blue, alpha 1. */
+static const uint32_t pixel_compared[] = {
+    0x100804ff, 0x3d800000, /* v_mul_f32_e32 v4, 0x3d800000 (1/16), v2 */
+    0x100a06ff, 0x3d800000, /* v_mul_f32_e32 v5, 0x3d800000 (1/16), v3 */
+    0x7e0602f0, /* v_mov_b32_e32 v3, 0.5 */
+    0x7e1002f2, /* v_mov_b32_e32 v8, 1.0 */
+    0xf0bc0100, 0x00610703, /* image_sample_c_lz v7, v[3:5], s[4:11], s[12:15] dmask:0x1 */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf800180f, 0x08070707, /* exp mrt0, v7, v7, v7, v8 done vm */
+    0xbf810000, /* s_endpgm */
+};
+
 /* pixel_minified sampling at level of detail 1 whatever the derivatives (image_sample_l). */
 static const uint32_t pixel_explicit_level[] = {
     0x100804ff, 0x3d800000, /* v_mul_f32_e32 v4, 0x3d800000 (1/16), v2 */
@@ -813,8 +826,8 @@ static const uint32_t integer_batch[] = {
     0xbf810000, /* s_endpgm */
 };
 
-/* Scalar compares with constants, min and max, and bit-field extracts; every lane stores the
-   same sixteen words (out[0..15]): see test_gcn_compute.c for each. */
+/* Scalar compares with constants, min and max, bit-field extracts, and adds and multiplies by
+   constants; every lane stores the same 22 words (out[0..21]): see test_gcn_compute.c for each. */
 static const uint32_t scalar_batch[] = {
     0xbe8803ff, 0x0000ffff, /* s_mov_b32 s8, 0xffff */
     0xbe8903c1, /* s_mov_b32 s9, -1 */
@@ -840,6 +853,15 @@ static const uint32_t scalar_batch[] = {
     0x85218081, /* s_cselect_b32 s33, 1, 0 */
     0x93a2880a, /* s_bfe_u32 s34, s10, 8 */
     0x85238081, /* s_cselect_b32 s35, 1, 0 */
+    0xbe8c03ff, 0x7ffffff8, /* s_mov_b32 s12, 0x7ffffff8 */
+    0xbe8d0385, /* s_mov_b32 s13, 5 */
+    0xbe8e0387, /* s_mov_b32 s14, 7 */
+    0xb78c0010, /* s_addk_i32 s12, 0x10: overflows */
+    0x85248081, /* s_cselect_b32 s36, 1, 0 */
+    0xb80efffd, /* s_mulk_i32 s14, 0xfffd (-3): SCC kept */
+    0x85268081, /* s_cselect_b32 s38, 1, 0 */
+    0xb78dfffe, /* s_addk_i32 s13, 0xfffe (-2) */
+    0x85258081, /* s_cselect_b32 s37, 1, 0 */
     0x7e020214, /* v_mov_b32_e32 v1, s20 */
     0x7e040215, /* v_mov_b32_e32 v2, s21 */
     0x7e060216, /* v_mov_b32_e32 v3, s22 */
@@ -872,6 +894,18 @@ static const uint32_t scalar_batch[] = {
     0xe0700034, 0x80010e00, /* buffer_store_dword v14, off, s[4:7], 0 offset:52 */
     0xe0700038, 0x80010f00, /* buffer_store_dword v15, off, s[4:7], 0 offset:56 */
     0xe070003c, 0x80011000, /* buffer_store_dword v16, off, s[4:7], 0 offset:60 */
+    0x7e22020c, /* v_mov_b32_e32 v17, s12 */
+    0x7e240224, /* v_mov_b32_e32 v18, s36 */
+    0x7e26020e, /* v_mov_b32_e32 v19, s14 */
+    0x7e280226, /* v_mov_b32_e32 v20, s38 */
+    0x7e2a020d, /* v_mov_b32_e32 v21, s13 */
+    0x7e2c0225, /* v_mov_b32_e32 v22, s37 */
+    0xe0700040, 0x80011100, /* buffer_store_dword v17, off, s[4:7], 0 offset:64 */
+    0xe0700044, 0x80011200, /* buffer_store_dword v18, off, s[4:7], 0 offset:68 */
+    0xe0700048, 0x80011300, /* buffer_store_dword v19, off, s[4:7], 0 offset:72 */
+    0xe070004c, 0x80011400, /* buffer_store_dword v20, off, s[4:7], 0 offset:76 */
+    0xe0700050, 0x80011500, /* buffer_store_dword v21, off, s[4:7], 0 offset:80 */
+    0xe0700054, 0x80011600, /* buffer_store_dword v22, off, s[4:7], 0 offset:84 */
     0xbf810000, /* s_endpgm */
 };
 
