@@ -844,7 +844,6 @@ static int check_state(const draw_state *s, depth_plan *plan, uint32_t *colours,
         return failed(error, error_size, "primitive type %u: only triangle lists and strips and rect lists are drawn yet", s->primitive_type);
     }
     if (plan_depth(s, plan, error, error_size)) return -1;
-    if (s->instances_set && !s->instances) return failed(error, error_size, "a draw of 0 instances: what the GPU draws is not established");
     *colours = s->color_enabled;
     if (s->color_control_set) {
         const uint32_t mode = (s->color_control & COLOR_MODE_MASK) >> COLOR_MODE_SHIFT, rop = (s->color_control & ROP3_MASK) >> ROP3_SHIFT;
@@ -3704,7 +3703,9 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     if (set) vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set, 0, NULL);
     vkCmdPushConstants(commands, layout, x->vertex_stages, VERTEX_USER_DATA, USER_DATA_BYTES, s->user[STAGE_VERTEX]);
     vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_FRAGMENT_BIT, PIXEL_USER_DATA, USER_DATA_BYTES, s->user[STAGE_PIXEL]);
-    const uint32_t instances = s->instances_set ? s->instances : 1; /* NUM_INSTANCES, from instance 0 */
+    /* NUM_INSTANCES, from instance 0; 0 is one instance (AMD's CIK 3D register reference, VGT_NUM_INSTANCES:
+       "if set to zero, it is interpreted as 1"; shadPS4's regs_vertex.h agrees) */
+    const uint32_t instances = s->instances_set && s->instances ? s->instances : 1;
     note_work(x, s->vertex.code, s->pixel.code, indirect ? 0 : (uint64_t)index_count * instances);
     if (gs) { /* the copy shader over the strips (geometry_passes) */
         vkCmdBindIndexBuffer(commands, x->gs_strips.buffer, 0, VK_INDEX_TYPE_UINT32);

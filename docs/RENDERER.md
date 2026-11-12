@@ -474,7 +474,8 @@ Instead:
        the instance index with `VGPR_COMP_CNT` (the input VGPRs after the vertex index): v1 holds the
        instance index over `VGT_INSTANCE_STEP_RATE_0`, v2 over `VGT_INSTANCE_STEP_RATE_1`, and v3 the
        instance index itself. A shader that reads v1 or v2 before writing it, with that step rate never
-       set (or 0), stops by name. So does a draw of 0 instances.
+       set (or 0), stops by name. `NUM_INSTANCES` 0 draws one instance, as the GPU does (AMD's CIK 3D
+       register reference, `VGT_NUM_INSTANCES`: "if set to zero, it is interpreted as 1").
      - **Fast clears** (`CB_COLOR_INFO`'s FAST_CLEAR): before each draw a target whose CMASK is all 0
        (cleared, as radeonsi clears it) gets its memory filled with its `CB_COLORn_CLEAR_WORD0/1` texel
        and its CMASK set to all ones, as an eliminate pass would; eliminate passes then have nothing
