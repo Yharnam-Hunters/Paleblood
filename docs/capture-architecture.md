@@ -44,7 +44,16 @@ ranges (an import or other native code), unreadable memory, the instruction limi
   executable, and presetting them would write into read-only memory.
 - An access 256 bytes to 1 MiB away from the base pointer it went through (a large object whose
   fields lie in separate runs) keeps the pointer and the bytes it reached in one buffer, so the
-  replay keeps their distance. A buffer's `bytes` leave out its trailing zeros.
+  replay keeps their distance. A buffer's `bytes` leave out its trailing zeros. A pointer computed
+  from another by address arithmetic (`lea`, `add` of a loaded offset, `mov` between registers;
+  a table's search index at the table plus its stored size) counts as the pointer it came from,
+  so an access through it keeps its distance to that pointer too; any other write to the register
+  forgets this.
+- The private stack is filled with `0xa5` below the return slot before the call, so an import that
+  writes into the traced code's frame (a zero result, a timespec) always changes it and is scripted.
+- Imports' arguments are not compared (`argc` 0), except the first 32-bit number of
+  `sceKernelUsleep` and `sceKernelClockGettime` (`argu32`): a replacement that sleeps for another
+  time or reads another clock fails.
 - Arguments (`rdi`..`r9`, `xmm0`, `xmm1`) and the stack arguments read are written the same way:
   `buf:NAME+off`, `guest:0xADDRESS`, or a number.
 - `returns` comes from the hook table: the return class is data (`game/hooks.csv`), not inferred.
@@ -58,7 +67,9 @@ and nothing is recorded.
 mapped as an image: a pointer argument to a struct holding a pointer, an image global, stack
 arguments, a float argument and result, a call between guest functions, `rep movsb`, two fields
 4 KiB apart through one pointer, and imports that leave a register pointing at memory they change,
-write through two registers at once, or change memory far past what they wrote. It checks
+write through two registers at once, change memory far past what they wrote, or write a zero into
+the frame, a table index reached through a computed pointer (add and lea forms, and a register a
+load replaced), and a sleep whose length is compared. It checks
 the results and the inputs, and that an `xmm2` read, a thread-local access, a call into native code
 and the instruction limit give no case while the call still completes.
 `test/capture_trace_integration.py` then replays every recorded case with `tools/verify.py`: each

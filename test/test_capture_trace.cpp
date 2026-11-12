@@ -23,16 +23,18 @@
 
 extern "C" const unsigned char capture_trace_guest_start[], capture_trace_guest_end[];
 
-/* Native imports for the guest functions at 0x400..0x4c0 (test/capture_trace_guest.S). */
+/* Native imports for the guest functions at 0x400..0x4c0, 0x640 and 0x680 (test/capture_trace_guest.S). */
 extern "C" {
 int32_t trace_stale_counter;
 void trace_stale_import(int32_t *out);
 void trace_plain_import(int32_t *out);
 void trace_far_import(char *p);
+void trace_zero_import(int32_t *out);
+int trace_usleep_import(uint32_t microseconds);
 }
 asm(R"(
     .text
-    .globl trace_stale_import, trace_plain_import, trace_far_import
+    .globl trace_stale_import, trace_plain_import, trace_far_import, trace_zero_import, trace_usleep_import
 trace_stale_import:
     incl trace_stale_counter(%rip)
     mov trace_stale_counter(%rip), %eax
@@ -45,6 +47,12 @@ trace_plain_import:
 trace_far_import:
     movl $21, (%rdi)
     incb 1024(%rdi)
+    ret
+trace_zero_import:
+    movl $0, (%rdi)
+    ret
+trace_usleep_import:
+    xor %eax, %eax
     ret
 )");
 
@@ -351,6 +359,53 @@ int self_test()
           "case: a table base far below the entry read is a buffer pointer");
     rt_trace_log_free(&log);
 
+    /* A pointer computed from a table (table + its stored size, by add or lea) and read near
+       itself: the entry keeps its distance to the table, in the table's buffer. */
+    alignas(16) static uint32_t sized_table[0x404] = {0x1000};
+    sized_table[0x402] = 77;
+    for (const uint32_t offset : {0x580u, 0x5c0u}) {
+        rt_trace_args sized = arguments(reinterpret_cast<uint64_t>(sized_table));
+        r = trace(offset, sized, log);
+        const rt_traced_function index_after = {"capture_trace_index_after", 0x400000 + offset, "i32", at(offset)};
+        const std::string sized_case = rt::traced_case(log, sized, index_after, 0, "selftest", whole);
+        check(!log.incomplete && r.rax == 77 && sized_case.find("\"rdi\": \"buf:b0+0x0\"") != std::string::npos &&
+                  sized_case.find("\"b1\"") == std::string::npos && sized_case.find("\"size\": 4112") != std::string::npos,
+              offset == 0x580 ? "case: an index computed by add from a table is in the table's buffer"
+                              : "case: an index computed by lea from a table is in the table's buffer");
+        rt_trace_log_free(&log);
+    }
+
+    /* A register computed from the table, then replaced by a 32-bit load: the access through it
+       is no reach from the table, which stays in a buffer of its own. */
+    alignas(16) static int32_t two_objects[0x2200] = {0x400};
+    two_objects[0x2100] = 88;
+    rt_trace_args offset_args =
+        arguments(reinterpret_cast<uint64_t>(two_objects), reinterpret_cast<uint64_t>(&two_objects[0x2000]));
+    r = trace(0x600, offset_args, log);
+    const rt_traced_function offset_into = {"capture_trace_offset_into", 0x400600, "i32", at(0x600)};
+    const std::string offset_case = rt::traced_case(log, offset_args, offset_into, 0, "selftest", whole);
+    check(!log.incomplete && r.rax == 88 && offset_case.find("\"rsi\": \"buf:b1+0x0\"") != std::string::npos,
+          "case: a register a load replaced no longer reaches from the table");
+    rt_trace_log_free(&log);
+
+    /* An import that writes 0 into the traced code's frame: scripted, so the replay's local is 0
+       too and not whatever its stack held. */
+    r = trace(0x640, arguments(), log);
+    check(!log.incomplete && r.rax == 0 && log.import_count == 1 && log.imports[0].writes == 1,
+          "import: a zero written into the frame is scripted");
+    const rt_traced_function zero_local = {"capture_trace_zero_local", 0x400640, "i32", at(0x640)};
+    check(rt::traced_case(log, arguments(), zero_local, 0, "selftest", whole).find("argu32") == std::string::npos,
+          "case: an import's arguments are not compared by default");
+    rt_trace_log_free(&log);
+
+    /* A sleep's length is compared: a replacement that sleeps for another time fails. */
+    trace(0x680, arguments(), log);
+    const rt_traced_function nap = {"capture_trace_nap", 0x400680, "void", at(0x680)};
+    check(!log.incomplete && rt::traced_case(log, arguments(), nap, 0, "selftest", whole)
+                                     .find("\"name\": \"sceKernelUsleep\", \"argc\": 0, \"argu32\": [0]") != std::string::npos,
+          "case: sceKernelUsleep's microseconds are compared");
+    rt_trace_log_free(&log);
+
     if (!failures) std::puts("capture trace self-test: traced calls, inputs and fail-closed cases passed");
     return failures ? 1 : 0;
 }
@@ -404,7 +459,9 @@ int main(int argc, char **argv)
     static const rt_trace_import import_table[] = {{image + 0x1800, "testFill"},
                                                    {image + 0x1810, "testStale"},
                                                    {image + 0x1818, "testPlain"},
-                                                   {image + 0x1820, "testFar"}};
+                                                   {image + 0x1820, "testFar"},
+                                                   {image + 0x1828, "testZero"},
+                                                   {image + 0x1830, "sceKernelUsleep"}};
     if (!rt_trace_available()) {
         std::puts("capture trace: built without Capstone; nothing to test");
         return 0;
@@ -412,10 +469,12 @@ int main(int argc, char **argv)
     const auto bind = [] {
         const uint64_t targets[] = {reinterpret_cast<uintptr_t>(fill), reinterpret_cast<uintptr_t>(trace_stale_import),
                                     reinterpret_cast<uintptr_t>(trace_plain_import),
-                                    reinterpret_cast<uintptr_t>(trace_far_import)};
+                                    reinterpret_cast<uintptr_t>(trace_far_import),
+                                    reinterpret_cast<uintptr_t>(trace_zero_import),
+                                    reinterpret_cast<uintptr_t>(trace_usleep_import)};
         std::memcpy(image + 0x1800, &targets[0], sizeof targets[0]);
-        std::memcpy(image + 0x1810, &targets[1], 3 * sizeof targets[0]);
-        rt_trace_set_imports(import_table, 4);
+        std::memcpy(image + 0x1810, &targets[1], 5 * sizeof targets[0]);
+        rt_trace_set_imports(import_table, 6);
     };
     if (argc == 2 && !std::strcmp(argv[1], "--self-test")) return bind(), self_test();
     if (argc == 3 && !std::strcmp(argv[1], "--image")) {

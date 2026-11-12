@@ -264,8 +264,21 @@ private:
     std::vector<Region> regions_;
 };
 
+/* Imports whose first argument is a 32-bit number the traced code computes (a sleep's length, a
+   clock's id): the case compares its low 32 bits (`argu32`), so a replacement that passes a
+   different value fails. Their other arguments are pointers into the caller's own frame, which
+   differ between the two sides, and are not compared. */
+bool compares_first_word(const char *name)
+{
+    static const char *const known[] = {"sceKernelUsleep", "sceKernelClockGettime"};
+    for (const char *k : known)
+        if (!std::strcmp(name, k)) return true;
+    return false;
+}
+
 /* The imports the call made, scripted in order: name, return value, and what each changed behind
-   its pointer arguments. Arguments are not compared (argc 0): their count is not known here. What
+   its pointer arguments. Arguments are not compared (argc 0): their count is not known here, except
+   for a few imports' first number (compares_first_word). What
    an import changed in a buffer or the image is scripted at that place (`addr`): the register it
    was seen through need not be one of the import's arguments (a command buffer's labels, seen
    through a register the import does not read), and a replay sets such registers differently.
@@ -290,8 +303,9 @@ std::string imports(const rt_trace_log &log, const Builder &b)
         const std::string described = b.describe(c.ret);
         const std::string ret = described.rfind("0x", 0) == 0 ? std::to_string(static_cast<unsigned long long>(c.ret))
                                                                : "\"" + described + "\"";
-        out += (out.empty() ? "" : ", ") + ("{\"name\": \"" + std::string(c.name) + "\", \"argc\": 0, \"ret\": " + ret +
-                                             ", \"writes\": [" + writes + "]}");
+        const char *compared = compares_first_word(c.name) ? ", \"argu32\": [0]" : "";
+        out += (out.empty() ? "" : ", ") + ("{\"name\": \"" + std::string(c.name) + "\", \"argc\": 0" + compared +
+                                             ", \"ret\": " + ret + ", \"writes\": [" + writes + "]}");
     }
     return out;
 }
