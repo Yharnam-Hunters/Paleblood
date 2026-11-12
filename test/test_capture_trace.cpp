@@ -147,6 +147,15 @@ int self_test()
               log.addr[i] >= reinterpret_cast<uintptr_t>(image + 0x1808), "import: its slot is not an input");
     rt_trace_log_free(&log);
 
+    /* A value whose upper bytes were already right changes one byte, but the whole word is
+       scripted, so a replay does not keep what its own memory held there. */
+    alignas(8) int32_t word[2] = {0, 0};
+    r = trace(0x2c0, arguments(reinterpret_cast<uint64_t>(&word[0])), log);
+    check(!log.incomplete && word[0] == 21 && log.import_count == 1 && log.imports[0].writes == 1 &&
+              log.writes[0].offset == 0 && log.writes[0].size == 8 && log.write_bytes[log.writes[0].data] == 21,
+          "import: a partly changed word is scripted whole");
+    rt_trace_log_free(&log);
+
     /* Changes below the caller's rsp are dead to the caller: not scripted as the import's writes. */
     filled = 0x55555555;
     rt_trace_args below = arguments(reinterpret_cast<uint64_t>(&filled));

@@ -390,6 +390,12 @@ static int import_enter(trace_state *t, ucontext_t *uc, const import_target *imp
     return 0;
 }
 
+/* Below the caller's rsp, on the calling thread's stack: nothing the caller can see. */
+static int dead(const trace_state *t, uint64_t addr)
+{
+    return addr >= t->dead_lo && addr < t->dead_hi;
+}
+
 /* Back from the import at the pad: record its result and the bytes it changed, then go on
    tracing at its real return address. */
 static void import_return(trace_state *t, ucontext_t *uc)
@@ -409,11 +415,18 @@ static void import_return(trace_state *t, ucontext_t *uc)
         /* A stale argument register may point below the caller's rsp, where the thread's own
            native frames (the recording dispatch) live: nothing the caller can see. */
         const uint64_t at = t->snap_ptr[i];
+        size_t done = off;                  /* bytes before this are scripted or left alone */
         while (off < t->snap_len[i]) {
-            if (now[off] == before[off] || (at + off >= t->dead_lo && at + off < t->dead_hi)) { off++; continue; }
+            if (now[off] == before[off] || dead(t, at + off)) { off++; continue; }
             size_t end = off;
-            while (end < t->snap_len[i] && now[end] != before[end] && !(at + end >= t->dead_lo && at + end < t->dead_hi))
+            while (end < t->snap_len[i] && now[end] != before[end] && !dead(t, at + end))
                 end++;
+            /* A changed run widens to whole eight-byte words: an import that writes a value whose
+               upper bytes happen to equal what was there (a struct timespec's seconds) changes
+               only some of its bytes, and the rest must be scripted too, or a replay reads what its
+               own stack held there. */
+            while (off > done && ((at + off) & 7) && !dead(t, at + off - 1)) off--;
+            while (end < t->snap_len[i] && ((at + end) & 7) && !dead(t, at + end)) end++;
             if (t->nwrites >= WRITE_LIMIT || t->write_used + (end - off) > WRITE_BYTES) {
                 t->incomplete = "an import changed too much memory to script";
                 break;
@@ -424,7 +437,7 @@ static void import_return(trace_state *t, ucontext_t *uc)
             c->writes++;
             /* Later reads of these bytes see what the import wrote, which the case scripts. */
             note(t, t->snap_ptr[i] + off, end - off, 1, NULL);
-            off = end;
+            off = done = end;
         }
     }
     t->in_import = 0;
