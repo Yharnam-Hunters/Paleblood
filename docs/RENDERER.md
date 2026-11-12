@@ -144,6 +144,12 @@ Instead:
        instructions leave s and t in [1, 2], so the face's coordinates are one less, and the face
        number counts 8 per cube of an array (as shadPS4 samples cubes as 2D arrays). Filtering does
        not cross faces.
+     - **DA on an image that is not an array**: the image's own type (its T# TYPE) decides the
+       coordinates, so a sample with DA 1 from a 1D or 2D image does not read the slice VGPR after
+       them (shadPS4 samples such an image as the view its descriptor names, facts only); with one
+       layer, any slice is that layer. Found at the clinic's load (pixel shader 0x20d1b00f00, a LUT
+       pass, 12 November 2026). With a LOD VGPR after the coordinates (`image_sample_l`) where that
+       VGPR is would depend on how the slice counts, so it still stops by name.
      - **`image_sample_l`** takes its level of detail after the coordinates and samples there
        (Vulkan's explicit `Lod`, which the sampler's LOD bias and clamps still adjust).
      - **`image_sample`** with the sampler (S#) its SSAMP SGPRs name, found like image descriptors and

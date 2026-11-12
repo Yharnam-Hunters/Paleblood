@@ -3394,7 +3394,12 @@ static void image_sample(translator *t, const uint32_t *code, size_t at, const g
         fail(t, "%s: unnormalized coordinates (UNORM) are not translated yet", ins->name);
         return;
     }
-    if (array != (unsigned)b->arrayed && !b->cube) { /* a cube's coordinates are (s, t, face) whatever DA says */
+    /* DA 1 on an image that is not an array: the image's own type decides the coordinates (shadPS4
+       samples such an image as the view its descriptor names and reads only its coordinates, facts
+       only), so the slice VGPR after them is not read; with one layer any slice is that layer. Only
+       when nothing follows the coordinates, so the LOD's VGPR is the same however the slice counts. */
+    const int slice_ignored = array && !b->arrayed && !b->cube && (!explicit_lod || zero_lod);
+    if (array != (unsigned)b->arrayed && !b->cube && !slice_ignored) { /* a cube's coordinates are (s, t, face) whatever DA says */
         fail(t, "%s: DA %u with a%s image", ins->name, array, b->arrayed ? "n array" : " non-array");
         return;
     }
