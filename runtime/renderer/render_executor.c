@@ -275,6 +275,8 @@ typedef struct {
         VkImageView view;
     } views[MAX_VIEWS];              /* made on first use */
     unsigned view_count;
+    uint64_t used_ticket;            /* the batch that last used it (its ticket once submitted) */
+    uint64_t used_call;              /* the draw or dispatch that last used it (call_serial) */
 } image_entry;
 
 /* A rect-list geometry stage (runtime/rect_list.h), for one vertex-shader output shape. */
@@ -533,6 +535,7 @@ struct rt_executor {
     int batch_open;
     VkSemaphore timeline;
     uint64_t submitted;
+    uint64_t call_serial;            /* counts the draws and dispatches recorded (an image they use stays) */
     uint64_t wait_limit;             /* nanoseconds a wait for a batch gives the GPU (BATCH_WAIT_LIMIT) */
     /* each batch in flight's work as words, by ticket (ring by BATCH_SLOTS), for a wait on any thread
        that ends without it (unfinished) */
@@ -4077,6 +4080,35 @@ static int load_levels(rt_executor *x, image_entry *e, const rt_image_descriptor
 /* The image the executor keeps for a descriptor, made on first use. A use that reads an image no
    shader has written loads the guest memory's texels first (each time: the guest may have changed
    them); a new image first written is cleared. VK_NULL_HANDLE after failing. */
+/* Frees what an image holds; its slot then matches no descriptor until it is reused. */
+static void image_release(rt_executor *x, image_entry *e)
+{
+    for (unsigned v = 0; v < e->view_count; v++) vkDestroyImageView(x->device, e->views[v].view, NULL);
+    vkDestroyImage(x->device, e->image, NULL);
+    vkFreeMemory(x->device, e->memory, NULL);
+    free(e->agreed.bytes);
+    tile_plan_free(x, &e->plan);
+    level_plans_free(x, e);
+    *e = (image_entry){.address = UINT64_MAX};
+}
+
+/* When every slot holds an image: one to reuse, the least recently used of those whose texels are
+   guest memory's (loaded from it, never written by a shader) and that no batch the GPU has not
+   finished, and no part of the draw or dispatch being recorded, uses. NULL when there is none. */
+static image_entry *image_to_evict(rt_executor *x)
+{
+    uint64_t done = 0;
+    if (vkGetSemaphoreCounterValue(x->device, x->timeline, &done) != VK_SUCCESS) return NULL;
+    image_entry *oldest = NULL;
+    for (size_t i = 0; i < x->image_count; i++) {
+        image_entry *k = &x->images[i];
+        if (!k->image) return k; /* released earlier */
+        if (k->gpu_written || k->used_ticket > done || k->used_call == x->call_serial) continue;
+        if (!oldest || k->used_ticket < oldest->used_ticket) oldest = k;
+    }
+    return oldest;
+}
+
 static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, const texel_format *f, unsigned access, char *error,
                               size_t error_size)
 {
@@ -4107,11 +4139,20 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
             k->type == d->type && k->levels == d->last_level + 1 && k->pow2 == (int)d->pow2_pad && k->depth == image_depth(d))
             e = k;
     }
-    if (!e) {
-        if (x->image_count == MAX_IMAGES) {
-            failed(error, error_size, "more images than the executor keeps");
+    image_entry *slot = NULL;
+    if (!e && x->image_count == MAX_IMAGES) {
+        /* the cache is full: reuse an image's slot (a loading screen streams in more textures than it
+           holds); the batches still using images are waited for if none is free */
+        slot = image_to_evict(x);
+        if (!slot && batch_finish(x, error, error_size)) return NULL;
+        if (!slot) slot = image_to_evict(x);
+        if (!slot) {
+            failed(error, error_size, "more images than the executor keeps, all of them written by shaders or used by this call");
             return NULL;
         }
+        image_release(x, slot);
+    }
+    if (!e) {
         const int one_d = one_dimensional(d->type);
         const VkImageCreateInfo info = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
                                         .imageType = one_d ? VK_IMAGE_TYPE_1D : d->type == RT_IMAGE_3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D,
@@ -4121,7 +4162,7 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
                                                  VK_IMAGE_USAGE_SAMPLED_BIT |
                                                  VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                                         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
-        e = &x->images[x->image_count];
+        e = slot ? slot : &x->images[x->image_count];
         *e = (image_entry){.address = d->address, .format = f->format, .width = d->width, .height = d->height, .layers = d->layers,
                            .type = d->type, .tiling_index = d->tiling_index, .pitch = d->pitch, .levels = d->last_level + 1,
                            .pow2 = (int)d->pow2_pad, .depth = image_depth(d), .loaded_change = UINT64_MAX};
@@ -4155,8 +4196,9 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
             failed(error, error_size, "the GPU did not clear a new image");
             return NULL;
         }
-        x->image_count++;
+        if (!slot) x->image_count++;
     }
+    e->used_ticket = x->submitted + 1, e->used_call = x->call_serial;
     /* an image over a render target's memory loads it even to be written: a store may cover only part of
        it, and the target takes the whole image's texels at its next draw (take_written_image) */
     const int over_target = find_target(x, d->address) != NULL;
@@ -4763,6 +4805,7 @@ static int dispatch_reads(rt_executor *x, const rt_compute_shader *c, const uint
    (DISPATCH_INDIRECT: three 32-bit words, x, y, z, which earlier work may have written). */
 static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3], uint64_t arguments, char *error, size_t error_size)
 {
+    x->call_serial++;
     enum { INDIRECT_ARGUMENT_BYTES = 3 * sizeof(uint32_t) };
     if (!s->compute_set) return failed(error, error_size, "a dispatch without a compute shader");
     if (!groups && (arguments < x->guest_base || arguments - x->guest_base > x->size - INDIRECT_ARGUMENT_BYTES))
@@ -4950,6 +4993,7 @@ int rt_executor_finish(rt_executor *x, char *error, size_t error_size) { return 
 /* A draw call: its checks, then the draw (or nothing, when check_state finds nothing to draw). */
 static int draw_call(rt_executor *x, draw_state *s, const rt_render_call *c, char *error, size_t error_size)
 {
+    x->call_serial++;
     switch (c->kind) {
     case RT_CALL_DRAW_AUTO: {
         if (apply_fast_clears(x, s, error, error_size)) return -1;
