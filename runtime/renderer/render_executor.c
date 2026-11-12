@@ -22,6 +22,7 @@
 #include "runtime/tile_copy.h"
 #include "runtime/tiling.h"
 
+#include <math.h>
 #include <sched.h>
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -149,6 +150,7 @@ typedef struct {
     VkImageView view;
     uint64_t loaded_change;          /* change_count when the image was last loaded (UINT64_MAX: load it) */
     int drawn;                       /* drawn into since it was last written back */
+    uint64_t drawn_serial;           /* counts the draws into it (image_from_target) */
     int guarded;                     /* its memory is guarded from the CPU (rt_executor_memory's guard) */
     staging_buffer staging;          /* host-visible: the image's texels, for showing it */
     int staging_current;             /* the staging buffer holds them (since the image last changed) */
@@ -163,6 +165,7 @@ typedef struct {
     uint32_t stencil_test, stencil_ops[2][4];           /* front, back: fail, pass, depth fail (VkStencilOp), compare (VkCompareOp) */
     uint32_t reads;                                     /* a test compares with the buffer (not always or never) */
     uint32_t reference_is_op_value[2];                  /* front, back: the stencil reference is STENCILOPVAL (replace-with-op) */
+    uint32_t depth_bounds;                              /* the depth bounds test: draw() sets the bounds */
 } depth_plan;
 
 /* The image standing for a depth target, found by its depth and stencil buffers' addresses and the
@@ -235,6 +238,8 @@ typedef struct {
     memory_snapshot agreed;          /* the guest memory it was last loaded from (loads through the CPU) */
     uint64_t loaded_change;          /* change_count when it was last loaded (UINT64_MAX: load it) */
     uint64_t loaded_span;            /* the bytes of guest memory it was loaded from */
+    const void *copied_from;         /* the render target whose texels it holds (image_from_target), and its draws then */
+    uint64_t copied_serial;
     tile_plan plan;                  /* its loads on the GPU (tile_copy_moves) */
     tile_plan *level_plans;          /* the same for each mip level of a mip-mapped image (load_levels), or NULL */
     VkImage image;
@@ -317,6 +322,8 @@ typedef struct {
     int z_info_set, stencil_info_set;
     /* stencil and depth-block state: DB_STENCIL_CONTROL, DB_STENCILREFMASK and _BF, DB_RENDER_CONTROL */
     uint32_t stencil_control, stencil_reference[2], render_control;
+    float depth_bounds[2];           /* DB_DEPTH_BOUNDS_MIN and _MAX */
+    uint32_t depth_bounds_set;       /* which of the two were set, a bit each */
     int stencil_control_set, stencil_reference_set[2], render_control_set;
     /* the depth target's HTILE (DB_HTILE_DATA_BASE, the address shifted right by 8) and its clear value
        (DB_DEPTH_CLEAR, a float's bits): a fast clear (resolve_depth_fast_clear) */
@@ -397,6 +404,7 @@ struct rt_executor {
     pass_entry passes[MAX_PASSES];
     size_t pass_count;
     int geometry_shaders;            /* the device draws geometry stages (rect lists need one) */
+    int depth_bounds;                /* the device tests depth bounds (VkPhysicalDeviceFeatures depthBounds) */
     float max_anisotropy;            /* the device's anisotropic filtering limit, or 0 without it */
     rect_stage rect_stages[MAX_RECT_STAGES];
     size_t rect_stage_count;
@@ -466,7 +474,8 @@ struct rt_executor {
 static int failed(char *error, size_t error_size, const char *format, ...) __attribute__((format(printf, 3, 4)));
 
 /* Registers the executor understands (gfx_7_2_d.h); others stop by name until it does. */
-enum { DB_RENDER_CONTROL = 0xa000, DB_DEPTH_VIEW = 0xa002, DB_HTILE_DATA_BASE = 0xa005, DB_STENCIL_CLEAR = 0xa00a, DB_DEPTH_CLEAR = 0xa00b,
+enum { DB_RENDER_CONTROL = 0xa000, DB_DEPTH_VIEW = 0xa002, DB_HTILE_DATA_BASE = 0xa005, DB_DEPTH_BOUNDS_MIN = 0xa008, DB_DEPTH_BOUNDS_MAX = 0xa009,
+       DB_STENCIL_CLEAR = 0xa00a, DB_DEPTH_CLEAR = 0xa00b,
        DB_DEPTH_INFO = 0xa00f, DB_Z_INFO = 0xa010, DB_STENCIL_INFO = 0xa011, DB_DEPTH_SLICE = 0xa017, DB_STENCILREFMASK = 0xa10c,
        DB_STENCILREFMASK_BF = 0xa10d, DB_HTILE_SURFACE = 0xa2af, CB_TARGET_MASK = 0xa08e, CB_BLEND_RED = 0xa105, CB_BLEND_ALPHA = 0xa108, DB_STENCIL_CONTROL = 0xa10b, CB_BLEND0_CONTROL = 0xa1e0,
        CB_BLEND7_CONTROL = 0xa1e7, DB_DEPTH_CONTROL = 0xa200, CB_COLOR0_CLEAR_WORD0 = 0xa323, CB_COLOR_REGISTER_STRIDE = 15,
@@ -495,6 +504,9 @@ static int set_register(draw_state *s, uint32_t address, uint32_t value)
        image (resolve_depth_fast_clear); DB_RENDER_CONTROL's depth-clearing draws write it (plan_depth) */
     case DB_HTILE_DATA_BASE: s->htile_base = value, s->htile_set = 1; return 0;
     case DB_DEPTH_CLEAR: s->depth_clear = value; return 0;
+    case DB_DEPTH_BOUNDS_MIN: case DB_DEPTH_BOUNDS_MAX: /* floats: the depth bounds test's range */
+        memcpy(&s->depth_bounds[address - DB_DEPTH_BOUNDS_MIN], &value, sizeof value), s->depth_bounds_set |= 1u << (address - DB_DEPTH_BOUNDS_MIN);
+        return 0;
     case DB_DEPTH_INFO: case DB_HTILE_SURFACE: case DB_STENCIL_CLEAR: return 0;
     default:
         if (address >= DB_Z_INFO && address <= DB_DEPTH_SLICE) {
@@ -610,7 +622,12 @@ static int plan_depth(const draw_state *s, depth_plan *plan, char *error, size_t
         return failed(error, error_size, "depth or stencil testing (DB_DEPTH_CONTROL %#x) with no depth target set in the buffer", control);
     const int depth_buffer = (s->depth_target[Z_INFO] & Z_FORMAT_MASK) != 0;
     const int stencil_buffer = (s->depth_target[STENCIL_INFO] & STENCIL_FORMAT_MASK) != 0;
-    if ((control & DEPTH_BOUNDS_ENABLE) && depth_buffer) return failed(error, error_size, "a depth bounds test: not drawn yet");
+    /* the depth bounds test passes a pixel whose depth already in the buffer lies within DB_DEPTH_BOUNDS_MIN
+       to _MAX (AMD's register reference; Vulkan's depth bounds test is the same, on the stored depth) */
+    if ((control & DEPTH_BOUNDS_ENABLE) && depth_buffer) {
+        if (s->depth_bounds_set != 3) return failed(error, error_size, "a depth bounds test without DB_DEPTH_BOUNDS_MIN and _MAX set in the buffer");
+        plan->depth_bounds = 1, plan->reads = 1;
+    }
     /* DB_RENDER_CONTROL's DEPTH_CLEAR_ENABLE (bit 0) alone: the draw writes DB_DEPTH_CLEAR as the depth of the
        pixels it covers (AMD's register reference; Mesa's radeonsi clears depth by such draws), which draw()
        gives it through the viewport's depth range; a pixel shader exporting depth would override it */
@@ -825,6 +842,7 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
                                                  .bufferDeviceAddress = VK_TRUE, .timelineSemaphore = VK_TRUE,
                                                  .storageBuffer8BitAccess = (VkBool32)x->small_elements};
     x->geometry_shaders = features.features.geometryShader == VK_TRUE;
+    x->depth_bounds = features.features.depthBounds == VK_TRUE;
     x->storage_images = features.features.shaderStorageImageReadWithoutFormat && features.features.shaderStorageImageWriteWithoutFormat;
     VkPhysicalDeviceProperties properties;
     vkGetPhysicalDeviceProperties(x->physical, &properties);
@@ -833,6 +851,7 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
                                               .features = {.shaderInt64 = VK_TRUE, .shaderClipDistance = VK_TRUE,
                                                            .geometryShader = features.features.geometryShader,
                                                            .samplerAnisotropy = features.features.samplerAnisotropy,
+                                                           .depthBounds = features.features.depthBounds,
                                                            .shaderStorageImageReadWithoutFormat = (VkBool32)x->storage_images,
                                                            .shaderStorageImageWriteWithoutFormat = (VkBool32)x->storage_images}};
     const char *extensions[] = {VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME};
@@ -1365,6 +1384,20 @@ static void level_plans_free(rt_executor *x, image_entry *e)
     e->level_plans = NULL;
 }
 
+/* A split tile (a depth layout's tile split, runtime/tiling.h) puts each piece of a micro tile in its
+   own place, its bytes in a row there: each piece gets its first element's offset, and the 64 offsets
+   are offsets in a piece. Done while a micro tile's elements stay in memory order inside one pipe
+   interleave (micro tiles of at most 256 bytes, which the split depth layouts of 32-bit elements are).
+   How many pieces a micro tile of the layout has (1 when it is not split), or 0 when the GPU copy does
+   not take its split. */
+static unsigned tile_copy_pieces(const rt_tiling *layout)
+{
+    enum { PIPE_INTERLEAVE_BYTES = 256 };
+    if (rt_tiling_uniform_micro(layout)) return 1;
+    const unsigned micro_bytes = RT_TILING_MICRO_TEXELS * layout->element_bytes, pieces = micro_bytes / layout->tile_split;
+    return micro_bytes <= PIPE_INTERLEAVE_BYTES && pieces && !(pieces & (pieces - 1)) ? pieces : 0;
+}
+
 /* Makes p the plan for copying `slices` slices of width x height elements laid out as `layout`: the
    table (a micro tile's elements in memory order with their places, from rt_tiling_micro_spread, then
    each micro tile's first element; runtime/tile_copy.h) and the linear rows' buffer. Kept while the layout and size stay. 0, or -1 with the reason. */
@@ -1374,18 +1407,12 @@ static int tile_plan_make(rt_executor *x, tile_plan *p, const rt_tiling *layout,
     tile_plan_free(x, p);
     if (rt_tiling_size(layout, slices) > UINT32_MAX)
         return failed(error, error_size, "a %ux%u image of %u slices spans more than the GPU copy's 32-bit offsets", width, height, slices);
-    /* A split tile (a depth layout's tile split, runtime/tiling.h) puts each piece of a micro tile in its
-       own place, its bytes in a row there: each piece gets its first element's offset, and the 64 offsets
-       are offsets in a piece. Done while a micro tile's elements stay in memory order inside one pipe
-       interleave (micro tiles of at most 256 bytes, which the split depth layouts of 32-bit elements are). */
-    enum { PIPE_INTERLEAVE_BYTES = 256 };
-    const unsigned element = layout->element_bytes, micro_bytes = RT_TILING_MICRO_TEXELS * element;
-    const unsigned pieces = rt_tiling_uniform_micro(layout) ? 1 : micro_bytes / layout->tile_split;
-    unsigned pieces_log2 = 0;
-    while (1u << pieces_log2 < pieces) pieces_log2++;
-    if (pieces > 1 && (micro_bytes > PIPE_INTERLEAVE_BYTES || 1u << pieces_log2 != pieces))
+    const unsigned element = layout->element_bytes, pieces = tile_copy_pieces(layout);
+    if (!pieces)
         return failed(error, error_size, "a split tile of %u-byte elements in %u-byte pieces: the GPU copy does not take it yet", element,
                       layout->tile_split);
+    unsigned pieces_log2 = 0;
+    while (1u << pieces_log2 < pieces) pieces_log2++;
     *p = (tile_plan){.width = width, .height = height, .slices = slices, .element_bytes = element,
                      .tiles_per_row = (width + RT_TILING_MICRO - 1) / RT_TILING_MICRO, .pieces_log2 = pieces_log2};
     p->tiles_per_slice = p->tiles_per_row * ((height + RT_TILING_MICRO - 1) / RT_TILING_MICRO);
@@ -1709,7 +1736,7 @@ static int unwritten_target_over(const rt_executor *x, uint64_t address, uint64_
    back at the buffer's end. */
 static void target_drawn(rt_executor *x, target_entry *t)
 {
-    t->drawn = 1, t->staging_current = 0;
+    t->drawn = 1, t->staging_current = 0, t->drawn_serial++;
     if (!t->guarded && x->guard) t->guarded = x->guard(t->address, target_span(t)) == 0;
 }
 
@@ -2397,14 +2424,14 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
     const VkPipelineDepthStencilStateCreateInfo depth_stencil = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO, .depthTestEnable = depth->depth_test != 0,
         .depthWriteEnable = depth->depth_write != 0, .depthCompareOp = (VkCompareOp)depth->depth_compare,
-        .stencilTestEnable = depth->stencil_test != 0, .front = faces[0], .back = faces[1]};
+        .stencilTestEnable = depth->stencil_test != 0, .front = faces[0], .back = faces[1], .depthBoundsTestEnable = depth->depth_bounds != 0};
     const VkPipelineColorBlendStateCreateInfo blend = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                                                        .attachmentCount = slots, .pAttachments = writes};
     const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_BLEND_CONSTANTS,
                                              VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK, VK_DYNAMIC_STATE_STENCIL_WRITE_MASK,
-                                             VK_DYNAMIC_STATE_STENCIL_REFERENCE};
+                                             VK_DYNAMIC_STATE_STENCIL_REFERENCE, VK_DYNAMIC_STATE_DEPTH_BOUNDS};
     const VkPipelineDynamicStateCreateInfo dynamic = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-                                                      .dynamicStateCount = 6, .pDynamicStates = dynamic_states};
+                                                      .dynamicStateCount = depth->depth_bounds ? 7 : 6, .pDynamicStates = dynamic_states};
     const VkGraphicsPipelineCreateInfo info = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = stage_count,
                                                .pStages = stages, .pVertexInputState = &input, .pInputAssemblyState = &assembly,
                                                .pViewportState = &viewport, .pRasterizationState = &raster,
@@ -2693,7 +2720,8 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
         if (s->blend_set >> slot & 1) blend_control[slot] = s->blend_control[slot];
         write_masks |= slot_mask(s, slot) << (4 * slot);
     }
-    const int uses_depth = plan->depth_test || plan->stencil_test;
+    if (plan->depth_bounds && !x->depth_bounds) return failed(error, error_size, "a depth bounds test, which this device does not do");
+    const int uses_depth = plan->depth_test || plan->stencil_test || plan->depth_bounds;
     depth_entry *z = uses_depth ? depth_for(x, s, error, error_size) : NULL;
     if (uses_depth && !z) return -1;
     if (z && resolve_depth_fast_clear(x, s, z, error, error_size)) return -1;
@@ -2773,6 +2801,8 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     vkCmdSetViewport(commands, 0, 1, &viewport);
     vkCmdSetScissor(commands, 0, 1, &scissor);
     vkCmdSetBlendConstants(commands, s->blend_constants);
+    if (plan->depth_bounds) /* Vulkan takes bounds within 0 to 1; the stored depth is within them too */
+        vkCmdSetDepthBounds(commands, fminf(fmaxf(s->depth_bounds[0], 0.0f), 1.0f), fminf(fmaxf(s->depth_bounds[1], 0.0f), 1.0f));
     /* DB_STENCILREFMASK: STENCILTESTVAL bits 0-7, STENCILMASK 8-15, STENCILWRITEMASK 16-23; the back
        face's from _BF with BACKFACE_ENABLE (plan_depth checked they were set) */
     for (unsigned face = 0; face < 2; face++) {
@@ -2933,6 +2963,49 @@ static int unwritten_target_over(const rt_executor *x, uint64_t address, uint64_
 
 static int load_levels(rt_executor *x, image_entry *e, const rt_image_descriptor *d, const texel_format *f, char *error, size_t error_size);
 
+/* An image over a render target drawn into since its write-back, laid out the same way (the same
+   address, tiling index, pitch and texel bytes, within the target): the write-back would put the
+   target's texels in the memory and this load take the same bytes back, so the target's image is
+   copied into it on the GPU instead, again after each new draw. 1 when copied (or already holding
+   them), 0 when the image is not one, -1 with the reason. */
+static int image_from_target(rt_executor *x, image_entry *e, const rt_image_descriptor *d, const texel_format *f, uint64_t span, char *error,
+                             size_t error_size)
+{
+    target_entry *t = find_target(x, d->address);
+    if (!t || !t->drawn || f->block != 1 || f->bytes != t->element_bytes || d->tiling_index != t->tile_index || d->pitch != t->width ||
+        e->width > t->width || e->height > t->height || e->layers != 1 || e->levels != 1 || d->type != RT_IMAGE_2D)
+        return 0;
+    for (size_t i = 0; i < x->target_count; i++) { /* the target alone holds unwritten texels there */
+        const target_entry *o = &x->targets[i];
+        if (o != t && o->drawn && o->address < d->address + span && d->address < o->address + target_span(o)) return 0;
+    }
+    for (size_t i = 0; i < x->depth_count; i++)
+        if (x->depths[i].unwritten && x->depths[i].z_address < d->address + span && d->address < x->depths[i].z_address + depth_span(&x->depths[i]))
+            return 0;
+    if (e->copied_from == t && e->copied_serial == t->drawn_serial) return 1;
+    VkCommandBuffer commands = batch_commands(x);
+    if (!commands) return failed(error, error_size, "no command buffer");
+    image_barrier(commands, t->image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    const VkMemoryBarrier before = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+                                    .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before, 0, NULL, 0, NULL);
+    const VkImageCopy region = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                .extent = {e->width, e->height, 1}};
+    vkCmdCopyImage(commands, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, e->image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+    image_barrier(commands, t->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT,
+                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+    const VkMemoryBarrier after = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                   .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &after, 0, NULL, 0, NULL);
+    /* once the target is written back, its memory holds what the image now does: it loads again then */
+    e->copied_from = t, e->copied_serial = t->drawn_serial, e->loaded_change = x->change_count, e->loaded_span = span;
+    e->tiling_index = d->tiling_index, e->pitch = d->pitch;
+    return 1;
+}
+
 /* Fills a kept image with the guest memory's texels under its descriptor, detiled (runtime/tiling.h): on
    the GPU for elements the GPU copy moves (tile_copy_moves), again whenever the memory may have changed
    since (memory_changed_since); by the CPU for others, again when the memory differs from what it last
@@ -2956,6 +3029,9 @@ static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor
         return failed(error, error_size, "the image at %#llx is outside the GPU-visible memory", (unsigned long long)d->address);
     /* a render target drawn into since it was written back holds texels the memory lacks: those over
        the image are written back first (write_back_targets_in) */
+    const int from_target = image_from_target(x, e, d, f, span, error, error_size);
+    if (from_target) return from_target < 0 ? -1 : 0;
+    e->copied_from = NULL;
     const memory_span image_memory = {d->address, span};
     if (unwritten_target_over(x, d->address, span) && write_back_targets_in(x, &image_memory, 1, error, error_size)) return -1;
     if (e->tiling_index != d->tiling_index || e->pitch != d->pitch) { /* the same memory read another way */
@@ -2966,7 +3042,7 @@ static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor
     }
     const VkBufferImageCopy copy = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, e->layers},
                                     .imageExtent = {e->width, one_dimensional(d->type) ? 1 : e->height, 1}};
-    if (tile_copy_moves(x, bytes) && rt_tiling_uniform_micro(&layout)) { /* detiled on the GPU (runtime/tile_copy.h), with the batch */
+    if (tile_copy_moves(x, bytes) && tile_copy_pieces(&layout)) { /* detiled on the GPU (runtime/tile_copy.h), with the batch */
         if (!memory_changed_since(x, d->address, span, e->loaded_change)) return 0;
         if (!e->plan.table.buffer && tile_plan_make(x, &e->plan, &layout, columns, rows, e->layers, error, error_size)) return -1;
         if (record_tile_copy(x, &e->plan, d->address, 0, error, error_size)) return -1;
@@ -3067,7 +3143,7 @@ static int load_levels(rt_executor *x, image_entry *e, const rt_image_descriptor
     }
     if (!memory_changed_since(x, d->address, span, e->loaded_change)) return 0;
     int on_gpu = tile_copy_moves(x, bytes); /* every level in a layout the GPU copy takes: detiled on the GPU */
-    for (unsigned m = 0; m < e->levels && on_gpu; m++) on_gpu = rt_tiling_uniform_micro(&levels[m].layout) && levels[m].offset % bytes == 0;
+    for (unsigned m = 0; m < e->levels && on_gpu; m++) on_gpu = tile_copy_pieces(&levels[m].layout) && levels[m].offset % bytes == 0;
     if (on_gpu) return load_levels_on_gpu(x, e, d, f, levels, span, error, error_size);
     if (guest_memory_settled(x, d->address, span, error, error_size)) return -1;
     const uint8_t *guest = (const uint8_t *)x->view + (d->address - x->guest_base);
@@ -3220,7 +3296,7 @@ static int write_back_image(rt_executor *x, image_entry *e, const rt_image_descr
     char reason[160];
     const uint32_t rows = one_dimensional(d->type) ? 1 : d->height;
     if (f.block != 1 || !tile_copy_moves(x, f.bytes) || d->pitch < d->width || rt_tiling_layout(d->tiling_index, f.bytes, d->pitch, rows, &layout, reason, sizeof reason) ||
-        !rt_tiling_uniform_micro(&layout))
+        !tile_copy_pieces(&layout))
         return 0;
     const uint64_t span = rt_tiling_size(&layout, e->layers);
     if (d->address < x->guest_base || d->address - x->guest_base > x->size || span > x->size - (d->address - x->guest_base))

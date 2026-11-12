@@ -53,7 +53,7 @@ static uint32_t reference_texel(uint32_t px, uint32_t y)
 
 /* Draws pixel_image_texel (each pixel the texel under it) into target with the image descriptor in the
    pixel shader's user data; the run's result. */
-static int draw_texels(rt_executor *x, uint64_t target, const uint32_t image[8], char *error, size_t error_size)
+static int draw_texels_as(rt_executor *x, uint64_t target, const uint32_t image[8], int recorded, char *error, size_t error_size)
 {
     enum { TEXEL_BUFFER = 0xc0f00000, TEXEL_CODE = 0x2a00 };
     memcpy((void *)(uintptr_t)at(TEXEL_CODE), pixel_image_texel, sizeof pixel_image_texel);
@@ -63,7 +63,17 @@ static int draw_texels(rt_executor *x, uint64_t target, const uint32_t image[8],
     const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 8 << 1, 0, 0x4, 0x302, 0x302, 0, 0, 0, 0xf};
     CHECK(rt_render_record_pixel_shader(TEXEL_BUFFER, offset, pixel, error, error_size) == 0);
     CHECK(rt_render_record_user_data(TEXEL_BUFFER, offset + 0x10, RT_STAGE_PIXEL, 0, image, 8, error, error_size) == 0);
-    return rt_executor_run(x, TEXEL_BUFFER, record_triangle_draw(TEXEL_BUFFER, offset + 0x20), error, error_size);
+    const uint32_t size = record_triangle_draw(TEXEL_BUFFER, offset + 0x20);
+    if (!recorded) return rt_executor_run(x, TEXEL_BUFFER, size, error, error_size);
+    size_t count = 0;
+    const rt_render_call *calls = rt_render_submitted(TEXEL_BUFFER, size, &count);
+    uint64_t ticket = 0;
+    return rt_executor_record_calls(x, calls, count, &ticket, error, error_size) || rt_executor_finish(x, error, error_size) ? -1 : 0;
+}
+
+static int draw_texels(rt_executor *x, uint64_t target, const uint32_t image[8], char *error, size_t error_size)
+{
+    return draw_texels_as(x, target, image, 0, error, error_size);
 }
 
 /* The pixels of target that differ from the reference image (all of them on a failed read). */
@@ -197,7 +207,8 @@ static int two_channel_misses(rt_executor *x, uint64_t target) { return channel_
    a 128 x 64 8_8_8_8 image tiled as Thin2DThin (index 14), its texels placed with runtime/tiling.h,
    draws the reference image; the same bytes described as Display2DThin (index 10) do not. A linear one
    (index 8), DST_SEL z, y, x, w over blue-first bytes, and the guest changing its texels between
-   draws all read what the guest memory holds; so does an 8_8 image. A target larger than the image
+   draws all read what the guest memory holds; so does an 8_8 image, and one in a depth layout whose
+   micro tiles split (tiling index 0, detiled on the GPU). A target larger than the image
    reads outside it and stops by name. */
 static void sampled_images(rt_executor *x)
 {
@@ -371,6 +382,24 @@ static void sampled_images(rt_executor *x)
             image[3] = (image[3] & ~(0x1fu << 20)) | LINEAR_ALIGNED << 20;
             CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0 && channel_misses(x, at(TEXEL_TARGET), cases[c].bytes == 2) > 0);
         }
+    }
+    /* A 256 x 256 8_8_8_8 image in the depth layout of tiling index 0, whose 256-byte micro tiles of
+       32-bit elements split into four 64-byte pieces (detiled by the GPU tile copy, which takes such
+       splits, tile_copy_pieces), reads what rt_tiling_offset placed */
+    {
+        enum { SPLIT = 0x2600000, SPLIT_SIZE = 256, DEPTH_TILING = 0 };
+        rt_tiling layout;
+        CHECK(rt_tiling_layout(DEPTH_TILING, 4, SPLIT_SIZE, SPLIT_SIZE, &layout, error, sizeof error) == 0 && !rt_tiling_uniform_micro(&layout));
+        for (uint32_t y = 0; y < SPLIT_SIZE; y++)
+            for (uint32_t px = 0; px < SPLIT_SIZE; px++) {
+                const uint32_t texel = reference_texel(px % SIZE, y % SIZE);
+                memcpy(guest + SPLIT + rt_tiling_offset(&layout, px, y, 0), &texel, 4);
+            }
+        image_descriptor(image, at(SPLIT), 10, 0, SPLIT_SIZE, SPLIT_SIZE);
+        image[3] |= DEPTH_TILING << 20;
+        drawn = draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error);
+        if (drawn) fprintf(stderr, "split-tile image: %s\n", error);
+        CHECK(drawn == 0 && differing_pixels(x, at(TEXEL_TARGET)) == 0);
     }
     image_descriptor(image, at(SMALL), 10, 0, 8, 8);
     image[3] |= LINEAR_ALIGNED << 20;
@@ -1138,7 +1167,7 @@ static void depth_and_strips(rt_executor *x)
        - tests that read the buffer (depth LESS and LESS_EQUAL, stencil EQUAL) compare with what earlier
          draws wrote; add-and-wrap steps by 1; one reading a depth target no draw wrote, an add stepping
          by another STENCILOPVAL, a depth target smaller than the colour target (a larger one draws),
-         another stencil operation, depth bounds,
+         another stencil operation, depth bounds without their range set,
          DB_RENDER_CONTROL's clears, or a missing DB_STENCILREFMASK stop by name. */
     enum { DEPTH = 0xb40000, DEPTH_COLOUR = 0xb80000, STENCIL_ONLY = 0xbc0000 };
     const uint32_t depth_size = (SIZE / 8 - 1) | (SIZE / 8 - 1) << 11, z = (uint32_t)(at(DEPTH) >> 8), st = (uint32_t)(at(DEPTH + 0x2000) >> 8);
@@ -1387,7 +1416,7 @@ static void depth_and_strips(rt_executor *x)
     const uint32_t incremented[][2] = {DEPTH_TARGET, {0xa10c, 0xff0000}, {0xa10b, 0x50}, {0xa200, 0x1 | 0x7u << 8}};
     CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), incremented, 12, 3, error, sizeof error) == -1 && strstr(error, "stencil operation 5"));
     const uint32_t bounds[][2] = {DEPTH_TARGET, {0xa200, 0x8}};
-    CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), bounds, 10, 3, error, sizeof error) == -1 && strstr(error, "depth bounds"));
+    CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), bounds, 10, 3, error, sizeof error) == -1 && strstr(error, "DB_DEPTH_BOUNDS_MIN"));
     /* a depth-clearing draw (DB_RENDER_CONTROL DEPTH_CLEAR_ENABLE, DB_DEPTH_CLEAR 0.5, always with writes) leaves
        0.5 under the triangle, not the triangle's depth (0): LESS on the triangle then draws it, GREATER nothing;
        the other clears and copies stop by name */
@@ -1405,6 +1434,17 @@ static void depth_and_strips(rt_executor *x)
         const uint32_t greater_after[][2] = {DEPTH_TARGET, {0xa000, 0}, {0xa200, 0x2 | 0x4u << 4}};
         CHECK(run_counted(x, DEPTH_BUFFER, at(CLEARED_GREATER), greater_after, 11, 3, error, sizeof error) == 0);
         CHECK(nothing_drawn(x, at(CLEARED_GREATER)));
+        /* the depth bounds test alone (DEPTH_BOUNDS_ENABLE, no depth test) on the 0.5 the clear left: bounds 0.4
+           to 0.6 draw the triangle, 0.6 to 1 nothing */
+        enum { BOUNDS_HIT = 0x1eb0000, BOUNDS_MISS = 0x1ec0000, POINT_FOUR = 0x3ecccccdu, POINT_SIX = 0x3f19999au, ONE = 0x3f800000u };
+        const uint32_t bounds_hit[][2] = {DEPTH_TARGET, {0xa000, 0}, {0xa008, POINT_FOUR}, {0xa009, POINT_SIX}, {0xa200, 0x8}};
+        drawn = run_counted(x, DEPTH_BUFFER, at(BOUNDS_HIT), bounds_hit, 13, 3, error, sizeof error);
+        if (drawn) fprintf(stderr, "depth bounds: %s\n", error);
+        CHECK(drawn == 0);
+        check_triangle(x, at(BOUNDS_HIT));
+        const uint32_t bounds_miss[][2] = {DEPTH_TARGET, {0xa000, 0}, {0xa008, POINT_SIX}, {0xa009, ONE}, {0xa200, 0x8}};
+        CHECK(run_counted(x, DEPTH_BUFFER, at(BOUNDS_MISS), bounds_miss, 13, 3, error, sizeof error) == 0);
+        CHECK(nothing_drawn(x, at(BOUNDS_MISS)));
         const uint32_t stencil_clearing[][2] = {DEPTH_TARGET, {0xa000, 0x2}, {0xa200, 0x2 | 0x4 | 0x7u << 4}};
         CHECK(run_counted(x, DEPTH_BUFFER, at(DEPTH_COLOUR), stencil_clearing, 11, 3, error, sizeof error) == -1 &&
               strstr(error, "DB_RENDER_CONTROL"));
@@ -1894,7 +1934,7 @@ static void tiled_target_memory(rt_executor *x)
 /* Records the tiled target's draw (tiled_target_memory's) into the target at TILED_TARGET without a
    submit (rt_executor_record_calls, as the renderer does) and runs the batch. */
 enum { TILED_TARGET = 0xec0000, RECORDED_BUFFER = 0xc0fa0000, RECORDED_TILING = 13 };
-static int record_tiled_draw(rt_executor *x, char *error, size_t error_size)
+static int record_tiled_draw_blended(rt_executor *x, uint32_t blend, char *error, size_t error_size)
 {
     rt_render_forget(), rt_executor_reset(x);
     uint32_t offset = record_setup(RECORDED_BUFFER, at(TILED_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
@@ -1902,13 +1942,15 @@ static int record_tiled_draw(rt_executor *x, char *error, size_t error_size)
     color_target(words, at(TILED_TARGET), COLOR_8_8_8_8, SWAP_STD);
     words[5] = RECORDED_TILING;
     if (rt_render_record_color_target(RECORDED_BUFFER, offset, 0, words, error, error_size) ||
-        rt_render_record_register(RECORDED_BUFFER, offset + 0x10, 0xa1e0, 0, error, error_size))
+        rt_render_record_register(RECORDED_BUFFER, offset + 0x10, 0xa1e0, blend, error, error_size))
         return -1;
     size_t count = 0;
     const rt_render_call *calls = rt_render_submitted(RECORDED_BUFFER, record_triangle_draw(RECORDED_BUFFER, offset + 0x20), &count);
     uint64_t ticket = 0;
     return rt_executor_record_calls(x, calls, count, &ticket, error, error_size) || rt_executor_finish(x, error, error_size) ? -1 : 0;
 }
+
+static int record_tiled_draw(rt_executor *x, char *error, size_t error_size) { return record_tiled_draw_blended(x, 0, error, error_size); }
 
 /* Whether the tiled target's memory holds nothing but zeros. */
 static int tiled_memory_zero(void)
@@ -1923,7 +1965,7 @@ static int tiled_memory_zero(void)
 }
 
 static struct {
-    uint64_t address, length;
+    uint64_t address, length, unguarded; /* the last guard's range, the last unguard's address */
     int guards, unguards, answer;
 } guarded;
 
@@ -1935,8 +1977,8 @@ static int test_guard(uint64_t address, uint64_t length)
 
 static void test_unguard(uint64_t address, uint64_t length)
 {
-    CHECK(address == guarded.address && length == guarded.length);
-    guarded.unguards++;
+    CHECK(length > 0);
+    guarded.unguarded = address, guarded.unguards++;
 }
 
 /* Recorded buffers and the CPU (rt_executor_memory's guard): with a guard, the tiled target's draw
@@ -1963,12 +2005,27 @@ static void guarded_targets(int fd, rt_executor *shared)
     CHECK(record_tiled_draw(x, error, sizeof error) == 0); /* drawn again: still guarded, not again */
     CHECK(guarded.guards == 1 && tiled_memory_zero());
     CHECK(rt_executor_resolve(x, at(TILED_TARGET) + 64, 4, error, sizeof error) == 0);
-    CHECK(!tiled_memory_zero() && guarded.unguards == 1);
+    CHECK(!tiled_memory_zero() && guarded.unguards == 1 && guarded.unguarded == at(TILED_TARGET));
     uint32_t image[8];
     image_descriptor(image, at(TILED_TARGET), 10, 0, SIZE, SIZE);
     image[3] |= RECORDED_TILING << 20;
     CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
     CHECK(differing_pixels(x, at(TEXEL_TARGET)) == 0);
+
+    /* an image over a guarded drawn target laid out the same way gets the target's texels on the GPU
+       (image_from_target): the draw shows, and the memory keeps its zeros; drawn again (ZERO + ZERO
+       blending blacks the triangle), the image takes the new texels */
+    memset(memory, 0, rt_tiling_size(&layout, 1));
+    const int guards_before = guarded.guards;
+    CHECK(record_tiled_draw(x, error, sizeof error) == 0);
+    CHECK(guarded.guards == guards_before + 1 && guarded.address == at(TILED_TARGET) && tiled_memory_zero());
+    CHECK(draw_texels_as(x, at(TEXEL_TARGET), image, 1, error, sizeof error) == 0); /* recorded: nothing written back after it */
+    CHECK(differing_pixels(x, at(TEXEL_TARGET)) == 0 && tiled_memory_zero());
+    CHECK(record_tiled_draw_blended(x, 1u << 30, error, sizeof error) == 0);
+    CHECK(draw_texels_as(x, at(TEXEL_TARGET), image, 1, error, sizeof error) == 0);
+    CHECK(differing_pixels(x, at(TEXEL_TARGET)) > 0 && tiled_memory_zero());
+    /* written back (all zeros now: the background was, the triangle is black) and lifted */
+    CHECK(rt_executor_resolve(x, at(TILED_TARGET), 4, error, sizeof error) == 0 && guarded.unguards == 2 && guarded.unguarded == at(TILED_TARGET));
 
     memset(memory, 0, rt_tiling_size(&layout, 1));
     guarded.answer = -1;
