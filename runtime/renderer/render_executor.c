@@ -23,6 +23,7 @@
 #include "runtime/tiling.h"
 
 #include <math.h>
+#include <pthread.h>
 #include <sched.h>
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -35,7 +36,7 @@
 /* What the executor keeps, made on first use: sized for a 3D scene (the character creation preview
    alone samples a few hundred textures through dozens of shaders, into two dozen targets) */
 enum { MAX_SHADERS = 1024, MAX_PIPELINES = 1024, MAX_TARGETS = 128, MAX_RECT_STAGES = 16, MAX_COMPUTE_PIPELINES = 512, MAX_IMAGES = 1024,
-       MAX_VIEWS = 16, MAX_SAMPLERS = 256, MAX_PASSES = 256, BATCH_SETS = 256, MAX_WRITTEN = 256, BATCH_SLOTS = 4, CHANGE_CHUNK = 64 << 10,
+       MAX_VIEWS = 16, MAX_SAMPLERS = 256, MAX_PASSES = 256, BATCH_SETS = 256, MAX_WRITTEN = 256, BATCH_SLOTS = 4, BATCH_WORK_NAMED = 8, CHANGE_CHUNK = 64 << 10,
        MAX_TESS_PASSES = 64, MAX_TESS_CONTROLS = 16, STOP_SLOTS = MAX_SHADERS + MAX_COMPUTE_PIPELINES + MAX_TESS_PASSES };
 enum { MAX_VERTEX_IMAGE_LAYOUTS = 32 };
 /* room for a translation's reasons: in the shader sweep's survey mode, every one a shader has */
@@ -392,6 +393,13 @@ typedef struct {
     unsigned written_count;
     gpu_buffer indirect;             /* its indirect draws' Vulkan arguments (draw_indirect_arguments) */
     unsigned indirect_count;
+    struct {
+        uint64_t first, second;      /* a draw's vertex and pixel shaders; a dispatch's shader and 0 */
+        uint64_t largest;            /* the most vertices x instances (a draw) or workgroups (a dispatch) */
+        unsigned repeats;            /* how many in a row, each with the same shaders */
+    } work[BATCH_WORK_NAMED];        /* its first draws and dispatches, named if it does not finish */
+    unsigned work_kinds;             /* entries used in work */
+    unsigned work_count;             /* all its draws and dispatches */
 } batch_slot;
 
 struct rt_executor {
@@ -528,6 +536,15 @@ struct rt_executor {
     VkSemaphore timeline;
     uint64_t submitted;
     uint64_t call_serial;            /* counts the draws and dispatches recorded (an image they use stays) */
+    uint64_t wait_limit;             /* nanoseconds a wait for a batch gives the GPU (BATCH_WAIT_LIMIT) */
+    /* each batch in flight's work as words, by ticket (ring by BATCH_SLOTS), for a wait on any thread
+       that ends without it (unfinished) */
+    pthread_mutex_t named_lock;
+    struct {
+        uint64_t ticket;
+        unsigned count;
+        char work[1024];
+    } named[BATCH_SLOTS];
     /* the GPU copies between tiled guest memory and linear rows (runtime/tile_copy.h), by bytes per
        element (1, 2, 4, 8, 16: log2 indexes) and direction (to the tiled memory or from it); made on first use */
     VkPipelineLayout tile_copy_layout;
@@ -1288,6 +1305,7 @@ int rt_executor_open(const rt_executor_memory *memory, rt_executor **executor, c
 {
     rt_executor *x = calloc(1, sizeof *x);
     if (!x) return failed(error, error_size, "no memory");
+    pthread_mutex_init(&x->named_lock, NULL);
     if (open_device(x, error, error_size) || import_memory(x, memory, error, error_size) || open_stop_word(x, error, error_size) ||
         sweep_open(x, error, error_size)) {
         rt_executor_close(x);
@@ -1332,25 +1350,94 @@ static void image_barrier(VkCommandBuffer commands, VkImage image, VkImageLayout
 
 /* ---- the batch ---- */
 
-/* Waits until submission `ticket` (and so every one before it) has run. 0, or -1. */
+/* How long a wait for a batch gives the GPU: far past any batch the game's frames make (the slowest
+   seen, at the character creation screen, take well under a second), so a batch still running then
+   holds a shader that does not end or a GPU that faulted. Before, the wait had no end, and such a
+   batch held the title on its loading screen with nothing said (the clinic's load, 12 November 2026,
+   with the kernel reporting a GPU context switch timeout). */
+#define BATCH_WAIT_LIMIT (20 * UINT64_C(1000000000))
+
+/* Waits until submission `ticket` (and so every one before it) has run. 0; 1 when the GPU has not
+   finished it within the wait limit; -1 when the wait failed (the device was lost). */
 static int wait_ticket(rt_executor *x, uint64_t ticket)
 {
     const VkSemaphoreWaitInfo wait = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &x->timeline,
                                       .pValues = &ticket};
-    return vkWaitSemaphores(x->device, &wait, UINT64_MAX) == VK_SUCCESS ? 0 : -1;
+    const VkResult result = vkWaitSemaphores(x->device, &wait, x->wait_limit ? x->wait_limit : BATCH_WAIT_LIMIT);
+    return result == VK_SUCCESS ? 0 : result == VK_TIMEOUT ? 1 : -1;
+}
+
+/* Notes a draw (vertex and pixel shader; its vertices x instances, 0 when the GPU reads them) or a
+   dispatch (shader, 0; its workgroups, 0 when indirect) in the open batch's work: a run of the same
+   shaders is one entry. */
+static void note_work(rt_executor *x, uint64_t first, uint64_t second, uint64_t size)
+{
+    batch_slot *b = &x->slots[x->current];
+    b->work_count++;
+    if (b->work_kinds && b->work[b->work_kinds - 1].first == first && b->work[b->work_kinds - 1].second == second) {
+        b->work[b->work_kinds - 1].repeats++;
+        if (size > b->work[b->work_kinds - 1].largest) b->work[b->work_kinds - 1].largest = size;
+        return;
+    }
+    if (b->work_kinds == BATCH_WORK_NAMED) return;
+    b->work[b->work_kinds].first = first, b->work[b->work_kinds].second = second;
+    b->work[b->work_kinds].largest = size, b->work[b->work_kinds].repeats = 1;
+    b->work_kinds++;
+}
+
+/* Puts the batch about to be submitted as `ticket` into words for unfinished: its first draws and
+   dispatches by their shaders. */
+static void name_work(rt_executor *x, const batch_slot *b, uint64_t ticket)
+{
+    char work[sizeof x->named[0].work] = "";
+    size_t used = 0;
+    unsigned named = 0;
+    for (unsigned i = 0; i < b->work_kinds && used < sizeof work; i++) {
+        const uint64_t first = b->work[i].first, second = b->work[i].second;
+        used += second ? (size_t)snprintf(work + used, sizeof work - used, "%s draw (vertex %#llx, pixel %#llx)", i ? "," : "",
+                                          (unsigned long long)first, (unsigned long long)second)
+                       : (size_t)snprintf(work + used, sizeof work - used, "%s dispatch %#llx", i ? "," : "", (unsigned long long)first);
+        if (used < sizeof work && b->work[i].repeats > 1) used += (size_t)snprintf(work + used, sizeof work - used, " x%u", b->work[i].repeats);
+        if (used < sizeof work && b->work[i].largest)
+            used += (size_t)snprintf(work + used, sizeof work - used, second ? " (up to %llu vertices)" : " (up to %llu workgroups)",
+                                     (unsigned long long)b->work[i].largest);
+        named += b->work[i].repeats;
+    }
+    if (named < b->work_count && used < sizeof work) snprintf(work + used, sizeof work - used, ", ...");
+    pthread_mutex_lock(&x->named_lock);
+    x->named[ticket % BATCH_SLOTS].ticket = ticket, x->named[ticket % BATCH_SLOTS].count = b->work_count;
+    memcpy(x->named[ticket % BATCH_SLOTS].work, work, sizeof work);
+    pthread_mutex_unlock(&x->named_lock);
+}
+
+/* Why a wait ended without its batch (lost: the wait failed; otherwise the limit passed): the oldest
+   batch the GPU has not finished, with its first draws and dispatches by their shaders. Any thread. -1. */
+static int unfinished(rt_executor *x, int lost, char *error, size_t error_size)
+{
+    uint64_t done = 0;
+    if (vkGetSemaphoreCounterValue(x->device, x->timeline, &done) != VK_SUCCESS) done = 0;
+    char work[sizeof x->named[0].work] = "";
+    unsigned count = 0;
+    pthread_mutex_lock(&x->named_lock);
+    if (x->named[(done + 1) % BATCH_SLOTS].ticket == done + 1)
+        count = x->named[(done + 1) % BATCH_SLOTS].count, memcpy(work, x->named[(done + 1) % BATCH_SLOTS].work, sizeof work);
+    pthread_mutex_unlock(&x->named_lock);
+    if (lost) return failed(error, error_size, "the GPU did not finish a batch of draws and dispatches (the device was lost)%s%s", count ? ":" : "", work);
+    return failed(error, error_size, "the GPU did not finish a batch of %u draws and dispatches in %g s (a shader that does not end, or a GPU fault)%s%s",
+                  count, (double)(x->wait_limit ? x->wait_limit : BATCH_WAIT_LIMIT) / 1e9, count ? ":" : "", work);
 }
 
 /* Waits for a submitted batch to have run, then frees what it held (its descriptor sets, its upload
    buffer) for reuse and checks the run-time stop words, which any of its shaders may have written.
-   0, or -1 with the reason. */
+   0, or -1 with the reason. A batch the GPU does not finish is named, and stays in flight. */
 static int slot_retire(rt_executor *x, batch_slot *b, char *error, size_t error_size)
 {
     if (!b->in_flight) return 0;
-    const int ok = wait_ticket(x, b->ticket) == 0;
+    const int waited = wait_ticket(x, b->ticket);
+    if (waited) return unfinished(x, waited < 0, error, error_size);
     b->in_flight = 0;
     vkResetDescriptorPool(x->device, b->descriptors, 0);
     b->memory_pending = b->upload_pending = 0, b->written_count = 0;
-    if (!ok) return failed(error, error_size, "the GPU did not finish a batch of draws and dispatches");
     return check_stop_words(x, error, error_size);
 }
 
@@ -1367,7 +1454,7 @@ static batch_slot *open_batch(rt_executor *x, char *error, size_t error_size)
         failed(error, error_size, "no command buffer");
         return NULL;
     }
-    x->batch_open = 1, b->indirect_count = 0;
+    x->batch_open = 1, b->indirect_count = 0, b->work_count = b->work_kinds = 0;
     return b;
 }
 
@@ -1398,6 +1485,7 @@ static int batch_submit(rt_executor *x, char *error, size_t error_size)
                                  .pCommandBuffers = &b->commands, .signalSemaphoreCount = 1, .pSignalSemaphores = &x->timeline};
     if (vkEndCommandBuffer(b->commands) != VK_SUCCESS || vkQueueSubmit(x->queue, 1, &submit, VK_NULL_HANDLE) != VK_SUCCESS)
         return failed(error, error_size, "the GPU did not take a batch of draws and dispatches");
+    name_work(x, b, ticket);
     x->submitted = ticket, b->ticket = ticket, b->in_flight = 1;
     x->current = (x->current + 1) % BATCH_SLOTS;
     return 0;
@@ -3617,6 +3705,7 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     vkCmdPushConstants(commands, layout, x->vertex_stages, VERTEX_USER_DATA, USER_DATA_BYTES, s->user[STAGE_VERTEX]);
     vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_FRAGMENT_BIT, PIXEL_USER_DATA, USER_DATA_BYTES, s->user[STAGE_PIXEL]);
     const uint32_t instances = s->instances_set ? s->instances : 1; /* NUM_INSTANCES, from instance 0 */
+    note_work(x, s->vertex.code, s->pixel.code, indirect ? 0 : (uint64_t)index_count * instances);
     if (gs) { /* the copy shader over the strips (geometry_passes) */
         vkCmdBindIndexBuffer(commands, x->gs_strips.buffer, 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexedIndirect(commands, x->slots[x->current].indirect.buffer, strip_draw, 1, 0);
@@ -4215,9 +4304,20 @@ static VkImageView image_view(rt_executor *x, image_entry *e, uint32_t first, ui
 
 /* A descriptor's words as the shader sees them (runtime/gcn_spirv.h, gcn_resource_origin): from the
    user data, or from the guest memory at the user data's pointer (48 bits, as s_load takes it) plus the
-   offset, read as the draw or dispatch runs. 0, or -1 with the reason. */
-static int descriptor_words(rt_executor *x, const gcn_resource_origin *origin, const uint32_t *user, uint32_t user_sgprs, uint32_t user_set, uint32_t *words,
-                            unsigned count, char *error, size_t error_size)
+   offset, read as the draw or dispatch runs. 0, or -1 with the reason, which names the shader (its
+   stage and code address). */
+static int descriptor_words_in(rt_executor *x, const gcn_resource_origin *origin, const uint32_t *user, uint32_t user_sgprs, uint32_t user_set,
+                               uint32_t *words, unsigned count, char *error, size_t error_size);
+static int descriptor_words(rt_executor *x, const char *stage, uint64_t code, const gcn_resource_origin *origin, const uint32_t *user,
+                            uint32_t user_sgprs, uint32_t user_set, uint32_t *words, unsigned count, char *error, size_t error_size)
+{
+    char reason[256];
+    if (!descriptor_words_in(x, origin, user, user_sgprs, user_set, words, count, reason, sizeof reason)) return 0;
+    return failed(error, error_size, "%s shader at %#llx: %s", stage, (unsigned long long)code, reason);
+}
+
+static int descriptor_words_in(rt_executor *x, const gcn_resource_origin *origin, const uint32_t *user, uint32_t user_sgprs, uint32_t user_set,
+                               uint32_t *words, unsigned count, char *error, size_t error_size)
 {
     const unsigned first = origin->from_memory ? origin->pointer_sgpr : origin->sgpr, width = origin->from_memory ? 2 : count;
     const uint32_t slots = (uint32_t)(((1ull << width) - 1) << first);
@@ -4329,7 +4429,7 @@ static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64
         if (pixel && (resources[i].access & GCN_IMAGE_WRITE))
             return failed(error, error_size, "a %s shader that writes an image: not drawn yet", stage);
         uint32_t words[RT_IMAGE_DESCRIPTOR_WORDS];
-        if (descriptor_words(x, origin, user, user_sgprs, user_set, words, RT_IMAGE_DESCRIPTOR_WORDS, error, error_size)) return -1;
+        if (descriptor_words(x, stage, code, origin, user, user_sgprs, user_set, words, RT_IMAGE_DESCRIPTOR_WORDS, error, error_size)) return -1;
         rt_image_descriptor d;
         rt_image_descriptor_decode(words, &d);
         const int cube = d.type == RT_IMAGE_CUBE;
@@ -4523,7 +4623,7 @@ static int stage_samplers(rt_executor *x, uint64_t code, const uint32_t *user, u
     }
     for (unsigned i = 0; i < *count; i++) {
         uint32_t words[4];
-        if (descriptor_words(x, &origins[i], user, user_sgprs, user_set, words, 4, error, error_size)) return -1;
+        if (descriptor_words(x, "pixel", code, &origins[i], user, user_sgprs, user_set, words, 4, error, error_size)) return -1;
         if (!(samplers[i] = sampler_for(x, words, error, error_size))) return -1;
         *linear |= (words[2] >> 20 & 3) != 0 || (words[2] >> 22 & 3) != 0; /* any filter but point needs linear filtering */
     }
@@ -4556,7 +4656,7 @@ static int dispatch_store_ranges(rt_executor *x, const rt_compute_shader *c, con
     }
     for (unsigned i = 0; i < n; i++) {
         uint32_t words[4];
-        if (descriptor_words(x, &origins[i], user, c->user_sgprs, user_set, words, 4, error, error_size)) return -1;
+        if (descriptor_words(x, "compute", c->code, &origins[i], user, c->user_sgprs, user_set, words, 4, error, error_size)) return -1;
         const uint64_t base = words[0] | (uint64_t)(words[1] & BASE_HIGH_MASK) << 32, stride = words[1] >> STRIDE_SHIFT & STRIDE_MASK;
         ranges[i][0] = base, ranges[i][1] = stride ? stride * words[2] : words[2];
     }
@@ -4613,9 +4713,9 @@ static int table_copy_spans(rt_executor *x, const rt_compute_shader *c, const gc
     if (c->workgroup_id_enables != 1 || shape->workgroup_sgpr != c->user_sgprs || groups[0] > MAX_GROUPS) return 0;
     uint32_t table[4], source[4], destination[4];
     const gcn_resource_origin t = {.sgpr = shape->table_sgpr}, s = {.sgpr = shape->source_sgpr}, d = {.sgpr = shape->destination_sgpr};
-    if (descriptor_words(x, &t, user, c->user_sgprs, user_set, table, 4, error, error_size) ||
-        descriptor_words(x, &s, user, c->user_sgprs, user_set, source, 4, error, error_size) ||
-        descriptor_words(x, &d, user, c->user_sgprs, user_set, destination, 4, error, error_size))
+    if (descriptor_words(x, "compute", c->code, &t, user, c->user_sgprs, user_set, table, 4, error, error_size) ||
+        descriptor_words(x, "compute", c->code, &s, user, c->user_sgprs, user_set, source, 4, error, error_size) ||
+        descriptor_words(x, "compute", c->code, &d, user, c->user_sgprs, user_set, destination, 4, error, error_size))
         return -1;
     if (((table[1] | source[1] | destination[1]) & swizzle) || ((table[3] | source[3] | destination[3]) & add_tid) || !vsharp_stride(table) ||
         !vsharp_stride(source) || !vsharp_stride(destination))
@@ -4691,7 +4791,7 @@ static int dispatch_reads(rt_executor *x, const rt_compute_shader *c, const uint
     if (*anywhere) return 0;
     for (unsigned i = 0; i < n; i++) {
         uint32_t words[4];
-        if (descriptor_words(x, &found[i].origin, user, c->user_sgprs, user_set, words, found[i].pointer ? 2 : 4, error, error_size)) return -1;
+        if (descriptor_words(x, "compute", c->code, &found[i].origin, user, c->user_sgprs, user_set, words, found[i].pointer ? 2 : 4, error, error_size)) return -1;
         if (found[i].pointer)
             span_add(reads, read_count, ((uint64_t)(words[1] & POINTER_HIGH_MASK) << 32 | words[0]) + found[i].offset, found[i].bytes);
         else
@@ -4766,6 +4866,7 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
     if (set) vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0, NULL);
     vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, USER_DATA_BYTES, s->compute_user);
+    note_work(x, c->code, 0, groups ? (uint64_t)groups[0] * groups[1] * groups[2] : 0);
     if (groups) vkCmdDispatch(commands, groups[0], groups[1], groups[2]);
     else vkCmdDispatchIndirect(commands, x->buffer, arguments - x->guest_base);
     for (unsigned i = 0; i < x->stored_count; i++)
@@ -4880,9 +4981,11 @@ int rt_executor_submit(rt_executor *x, char *error, size_t error_size) { return 
 
 int rt_executor_wait_ticket(rt_executor *x, uint64_t ticket, char *error, size_t error_size)
 {
-    if (ticket && wait_ticket(x, ticket)) return failed(error, error_size, "the GPU did not finish a batch of draws and dispatches");
-    return 0;
+    const int waited = ticket ? wait_ticket(x, ticket) : 0;
+    return waited ? unfinished(x, waited < 0, error, error_size) : 0;
 }
+
+void rt_executor_set_wait_limit(rt_executor *x, uint64_t nanoseconds) { x->wait_limit = nanoseconds; }
 
 int rt_executor_finish(rt_executor *x, char *error, size_t error_size) { return batch_finish(x, error, error_size); }
 
@@ -5242,5 +5345,6 @@ void rt_executor_close(rt_executor *x)
     if (x->instance) vkDestroyInstance(x->instance, NULL);
     free(x->chunk_changed);
     free(x->chunk_outside);
+    pthread_mutex_destroy(&x->named_lock);
     free(x);
 }

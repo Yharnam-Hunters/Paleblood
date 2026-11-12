@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-2.0-or-later
 # Exercise the pre-commit hook in a throwaway clone: a fake ELF, a local-only file,
-# and a stale progress number must each be refused; a clean change must pass.
+# and a hand-edited progress number must each be refused; a clean change must pass.
 set -uo pipefail
 # git exports GIT_DIR, GIT_INDEX_FILE and similar variables to hooks; the gate runs git in other
 # repositories (its tests clone one and commit there), so none of them may leak in.
@@ -89,9 +89,12 @@ for path, row in (('symbols/functions.csv', f'{addr},{size},frame_timing_update,
     lines = open(path).read().splitlines()
     body = sorted(lines[1:] + [row], key=lambda l: int(l.split(',')[0], 16))
     open(path, 'w').write('\n'.join([lines[0]] + body) + '\n')
-# verified needs an approved independent review (CONTRIBUTING.md, "Definition of done")
-with open('symbols/reviews.csv', 'a') as f:
-    f.write(f'{addr},frame_timing_update,2026-01-01,independent session,approved,\n')
+# verified needs an approved independent review (CONTRIBUTING.md, "Definition of done"); the
+# reviews stay in address order too
+lines = open('symbols/reviews.csv').read().splitlines()
+body = sorted(lines[1:] + [f'{addr},frame_timing_update,2026-01-01,independent session,approved,'],
+              key=lambda l: (int(l.split(',')[0], 16), l.split(',')[2]))
+open('symbols/reviews.csv', 'w').write('\n'.join([lines[0]] + body) + '\n')
 PY
 }
 
@@ -125,12 +128,17 @@ git add -f AGENTS.md; expect fail "AGENTS.md staged" "local-only file staged"
 mkdir -p .handoff && echo '{}' > .handoff/handoff.json
 git add -f .handoff/handoff.json; expect fail "handoff staged" "local-only file staged"
 
-# stale progress number: a replaced function with the README block never updated
+# a replaced function with the README block left as it was: main regenerates progress
+# (tools/progress_pr.py), so the branch need not
 fixture_rows
 cat > game/frame_timing/update.c <<'C'
 void bb_frame_timing_update(void) {}
 C
-git add -A; expect fail "stale README progress block" "progress block is stale"
+git add -A; expect pass "row change with the progress block left to main"
+git reset -q --hard HEAD~1
+command cp "$root/tools/hooks/pre-commit" tools/hooks/pre-commit
+command cp "$root/tools/install_hooks.sh" tools/install_hooks.sh
+command cp "$root/tools/pre_push.sh" tools/pre_push.sh
 
 fixture_rows
 cat > game/frame_timing/update.c <<'C'

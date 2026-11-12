@@ -43,17 +43,19 @@ constexpr uint64_t hash_buckets = 0x44f;
 // The heap's state (part of the DLSegregatedRegularHeap object).
 struct Heap {
     uint64_t available;         // free bytes
-    uint8_t unknown_0x08[0x8];
+    uint64_t capacity;          // the free bytes of the empty heap
     uint64_t class_mask;        // bit c: the list of class c is not empty
     uint64_t allocation_count;
-    uint8_t unknown_0x20[0x28];
+    Descriptor end;             // closes the address ring: in use, its address the range's end
     Descriptor **hash_table;    // hash_buckets chains of blocks in use
-    uint8_t unknown_0x50[0x10];
+    uintptr_t range_start;
+    uintptr_t range_end;
     ListNode classes[class_count];
     fixed_allocator::Allocator descriptor_pool;
 };
 static_assert(offsetof(Heap, class_mask) == 0x10 && offsetof(Heap, allocation_count) == 0x18);
-static_assert(offsetof(Heap, hash_table) == 0x48 && offsetof(Heap, classes) == 0x60);
+static_assert(offsetof(Heap, end) == 0x20 && offsetof(Heap, hash_table) == 0x48);
+static_assert(offsetof(Heap, range_start) == 0x50 && offsetof(Heap, classes) == 0x60);
 static_assert(offsetof(Heap, descriptor_pool) == 0x460);
 
 // The descriptor allocator (fixed_allocator_allocate.cpp, fixed_allocator_free.cpp): null when
