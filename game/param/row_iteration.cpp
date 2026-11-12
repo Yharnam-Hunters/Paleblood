@@ -7,7 +7,9 @@
 // - the row count of a table;
 // - the id of the row after or before the row with a given id (file order: PARAM files keep
 //   their rows sorted by id, so this is the next or previous id), which steps through a table;
-// - every row id of a table, appended to an id array.
+// - every row id of a table, appended to an id array;
+// - the same steps and lists restricted to rows with a given field value, and lists that add each
+//   row's reinforced versions after it.
 #include <cstring>
 
 #include "../engine/container.h"
@@ -113,6 +115,84 @@ uint64_t list_all_row_ids(engine::Array<int32_t> *ids, ParamType type, const Pus
     return list_row_ids(ids, type, [](const uint8_t *) { return true; }, push_back);
 }
 
+
+// Reads a field of a row (tables give no alignment guarantee).
+template <typename Field> Field row_field(const uint8_t *data, size_t offset)
+{
+    Field value;
+    std::memcpy(&value, data + offset, sizeof(value));
+    return value;
+}
+
+// The id of the row after the row with id `id` that `accept` takes (given the row's data); a
+// negative id, or one the table doesn't have, starts at the first row. -1 when there is none, or
+// when the table is not loaded (the repository is required even for a negative id). A row number
+// the index gives below -1 ends the search at once.
+template <typename Accept> int32_t next_accepted_row_id(ParamType type, int32_t id, const Accept &accept)
+{
+    const TableHeader *table = loaded_table(type);
+    if (table == nullptr) return no_row_id;
+    const int32_t row_number = id < 0 ? -1 : param::find_row_number(table, static_cast<uint32_t>(id));
+    for (uint32_t next = static_cast<uint32_t>(row_number) + 1; next < table->row_count; ++next) {
+        if (accept(param::row_data(table, next))) return row_id(table, next);
+    }
+    return no_row_id;
+}
+
+// The id of the row before the row with id `id` that `accept` takes; a negative id starts after
+// the last row. -1 when there is none, the id is not in the table, or the table is not loaded.
+// A row the index places past the count is searched from there down, its descriptors read as
+// they are, but a match past the count gives -1.
+template <typename Accept> int32_t previous_accepted_row_id(ParamType type, int32_t id, const Accept &accept)
+{
+    const TableHeader *table = loaded_table(type);
+    if (table == nullptr) return no_row_id;
+    int32_t row_number = id < 0 ? table->row_count : param::find_row_number(table, static_cast<uint32_t>(id));
+    while (row_number > 0) {
+        --row_number;
+        if (!accept(param::row_data(table, static_cast<uint32_t>(row_number)))) continue;
+        if (static_cast<uint32_t>(row_number) >= table->row_count) return no_row_id;
+        return row_id(table, static_cast<uint32_t>(row_number));
+    }
+    return no_row_id;
+}
+
+// An EquipParamProtector row: only the byte the filtered steps compare (its meaning is not known)
+// and the reinforcement entries the variant list reads.
+constexpr size_t protector_step_byte = 0xd2;
+constexpr size_t protector_origins = 0x40;
+// An EquipParamWeapon row: the byte its variant list filters on, its reinforcement entries, and
+// the word the id list can filter on (meanings not known beyond what these lists do with them).
+constexpr size_t weapon_list_byte = 0xe2;
+constexpr size_t weapon_origins = 0x60;
+constexpr size_t weapon_list_word = 0x4;
+constexpr int32_t weapon_unlisted_word = -1;
+
+// The equipment rows hold sixteen 32-bit reinforcement entries, one per upgrade level (each the
+// id an upgrade starts from, judging by their use; -1 when there is none). The variant lists
+// count the leading entries that are not negative, looking at most at the first fifteen.
+constexpr int32_t origins_checked = 15;
+
+int32_t reinforced_version_count(const uint8_t *origins)
+{
+    int32_t count = 0;
+    while (count < origins_checked && row_field<int32_t>(origins, sizeof(int32_t) * count) >= 0) ++count;
+    return count;
+}
+
+// Appends `first` and the `versions` ids after it (wrapping around as 32-bit numbers).
+template <typename PushBack>
+void push_versions(engine::Array<int32_t> *ids, int32_t first, int32_t versions, const PushBack &push_back)
+{
+    for (int32_t k = 0; k <= versions; ++k) {
+        const int32_t id = static_cast<int32_t>(static_cast<uint32_t>(first) + static_cast<uint32_t>(k));
+        push_back(ids, &id);
+    }
+}
+
+RT_ORIGINAL(0x019f8d70, protector_id_array_push_back, void(engine::Array<int32_t> *, const int32_t *id));
+RT_ORIGINAL(0x01b0d5f0, weapon_id_array_push_back, void(engine::Array<int32_t> *, const int32_t *id));
+
 }  // namespace
 
 extern "C" uint32_t bb_param_row_count_chara_init()
@@ -199,4 +279,89 @@ extern "C" uint64_t bb_param_list_listed_ids_equip_param_accessory(engine::Array
         return order >= 0;
     };
     return list_row_ids(ids, ParamType::equip_param_accessory, listed, id_array_push_back_copy);
+}
+
+// The EquipParamProtector row after (or before) the row with id `id` whose byte at +0xd2 equals
+// `value` (a value outside 0-255 never matches).
+extern "C" int32_t bb_param_next_matching_id_equip_param_protector(int32_t id, int32_t value)
+{
+    return next_accepted_row_id(ParamType::equip_param_protector, id, [value](const uint8_t *data) {
+        return static_cast<int32_t>(data[protector_step_byte]) == value;
+    });
+}
+
+extern "C" int32_t bb_param_previous_matching_id_equip_param_protector(int32_t id, int32_t value)
+{
+    return previous_accepted_row_id(ParamType::equip_param_protector, id, [value](const uint8_t *data) {
+        return static_cast<int32_t>(data[protector_step_byte]) == value;
+    });
+}
+
+// Empties `ids` and appends, for every EquipParamProtector row in file order, its id and the ids
+// of its reinforced versions after it. A row whose data is at address zero adds only its id; a
+// row past the count as it is then adds -1. Returns how many ids the array holds.
+extern "C" uint64_t bb_param_list_versions_equip_param_protector(engine::Array<int32_t> *ids)
+{
+    ids->end = ids->begin;
+    if (const TableHeader *table = loaded_table(ParamType::equip_param_protector)) {
+        const int32_t count = table->row_count;
+        for (int32_t row_number = 0; row_number < count; ++row_number) {
+            if (static_cast<uint32_t>(row_number) >= table->row_count) {
+                push_versions(ids, no_row_id, 0, protector_id_array_push_back);
+                continue;
+            }
+            const uint8_t *data = param::row_data(table, static_cast<uint32_t>(row_number));
+            const int32_t versions = data == nullptr ? 0 : reinforced_version_count(data + protector_origins);
+            push_versions(ids, row_id(table, static_cast<uint32_t>(row_number)), versions,
+                          protector_id_array_push_back);
+        }
+    }
+    return id_count(ids);
+}
+
+// The same for the EquipParamWeapon rows whose byte at +0xe2 equals `value`; rows past the
+// count, or whose data is at address zero, are skipped.
+extern "C" uint64_t bb_param_list_versions_equip_param_weapon(engine::Array<int32_t> *ids, int32_t value)
+{
+    ids->end = ids->begin;
+    if (const TableHeader *table = loaded_table(ParamType::equip_param_weapon)) {
+        const int32_t count = table->row_count;
+        for (int32_t row_number = 0; row_number < count; ++row_number) {
+            const uint8_t *data = param::row_data_if_present(table, static_cast<uint32_t>(row_number));
+            if (data == nullptr || static_cast<int32_t>(data[weapon_list_byte]) != value) continue;
+            push_versions(ids, row_id(table, static_cast<uint32_t>(row_number)),
+                          reinforced_version_count(data + weapon_origins), weapon_id_array_push_back);
+        }
+    }
+    return id_count(ids);
+}
+
+// Every EquipParamWeapon row id; with `only_listed` (its low byte), rows whose word at +0x4 is -1
+// are left out.
+extern "C" uint64_t bb_param_list_row_ids_equip_param_weapon(engine::Array<int32_t> *ids, uint32_t only_listed)
+{
+    const bool filter = static_cast<uint8_t>(only_listed) != 0;
+    const auto listed = [filter](const uint8_t *data) {
+        return !filter || row_field<int32_t>(data, weapon_list_word) != weapon_unlisted_word;
+    };
+    return list_row_ids(ids, ParamType::equip_param_weapon, listed, id_array_push_back_copy);
+}
+
+// Two id lists whose walk the compiler removed: each empties the array, requires the repository
+// and returns the array's count.
+static uint64_t clear_id_list(engine::Array<int32_t> *ids)
+{
+    ids->end = ids->begin;
+    engine::require(param::solo_param_repository, param::solo_param_repository_name.address());
+    return id_count(ids);
+}
+
+extern "C" uint64_t bb_param_clear_id_list_equip_param_protector(engine::Array<int32_t> *ids)
+{
+    return clear_id_list(ids);
+}
+
+extern "C" uint64_t bb_param_clear_id_list_equip_param_weapon(engine::Array<int32_t> *ids)
+{
+    return clear_id_list(ids);
 }

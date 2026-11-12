@@ -259,6 +259,11 @@ loading_resource_manager_release_024c1530,edge,,11,11,0,0,e959e231a85590c5,2026-
 loading_stdio_close_files,edge,,9,9,0,0,66b528bb054522f0,2026-11-10
 loading_stdio_stream_open,recorded,,98,98,0,0,66b528bb054522f0,2026-11-12
 loading_stdio_stream_open,edge,,30,30,0,0,66b528bb054522f0,2026-11-12
+menu_gaitem_select_entry_copy_into_pool,edge,,17,17,0,0,980b206a65ca492d,2026-11-12
+menu_gaitem_status_entry_copy,edge,,10,10,0,0,980b206a65ca492d,2026-11-12
+param_check_repository_for_id,edge,,8,8,0,0,a65881d44f466ea7,2026-11-12
+param_clear_id_list_equip_param_protector,edge,,5,5,0,0,ae9f971000891e1c,2026-11-12
+param_clear_id_list_equip_param_weapon,edge,,5,5,0,0,ae9f971000891e1c,2026-11-12
 param_find_row_action_button,edge,,50,50,0,0,80e146de909c868f,2026-11-12
 param_find_row_ai_sound,edge,,50,50,0,0,80e146de909c868f,2026-11-12
 param_find_row_bullet,edge,,50,50,0,0,80e146de909c868f,2026-11-12
@@ -274,6 +279,7 @@ param_find_row_equip_param_protector,edge,,16,16,0,0,4402aff302220582,2026-11-12
 param_find_row_equip_param_weapon,edge,,16,16,0,0,4402aff302220582,2026-11-12
 param_find_row_face,edge,,50,50,0,0,80e146de909c868f,2026-11-12
 param_find_row_face_range,edge,,50,50,0,0,80e146de909c868f,2026-11-12
+param_find_row_game_area,edge,,21,21,0,0,a65881d44f466ea7,2026-11-12
 param_find_row_game_map,edge,,18,18,0,0,7ad89fb7da19707c,2026-11-12
 param_find_row_gem_category,edge,,50,50,0,0,80e146de909c868f,2026-11-12
 param_find_row_gem_drop_doping,edge,,50,50,0,0,80e146de909c868f,2026-11-12
@@ -284,6 +290,7 @@ param_find_row_gem_gen_2,edge,,50,50,0,0,80e146de909c868f,2026-11-12
 param_find_row_hit_mtrl,edge,,50,50,0,0,80e146de909c868f,2026-11-12
 param_find_row_holygrail_ex,edge,,50,50,0,0,80e146de909c868f,2026-11-12
 param_find_row_item_lot,edge,,55,55,0,0,4402aff302220582,2026-11-12
+param_find_row_item_lot_lvdep,edge,,27,27,0,0,a65881d44f466ea7,2026-11-12
 param_find_row_knock_back,edge,,50,50,0,0,80e146de909c868f,2026-11-12
 param_find_row_magic,edge,,50,50,0,0,80e146de909c868f,2026-11-12
 param_find_row_menu_color_table,edge,,50,50,0,0,80e146de909c868f,2026-11-12
@@ -309,11 +316,18 @@ param_list_listed_ids_equip_param_accessory,edge,,14,14,0,0,2d70593a134dc014,202
 param_list_row_ids_equip_param_accessory,edge,,14,14,0,0,2d70593a134dc014,2026-11-12
 param_list_row_ids_equip_param_goods,edge,,14,14,0,0,2d70593a134dc014,2026-11-12
 param_list_row_ids_equip_param_protector,edge,,14,14,0,0,2d70593a134dc014,2026-11-12
+param_list_row_ids_equip_param_weapon,edge,,14,14,0,0,ae9f971000891e1c,2026-11-12
+param_list_versions_equip_param_protector,edge,,12,12,0,0,ae9f971000891e1c,2026-11-12
+param_list_versions_equip_param_weapon,edge,,19,19,0,0,ae9f971000891e1c,2026-11-12
+param_lock_cam_range,edge,,18,18,0,0,a65881d44f466ea7,2026-11-12
+param_menu_property_layout_row,edge,,14,14,0,0,a65881d44f466ea7,2026-11-12
 param_menu_property_spec,edge,,15,15,0,0,4402aff302220582,2026-11-12
+param_next_matching_id_equip_param_protector,edge,,34,34,0,0,ae9f971000891e1c,2026-11-12
 param_next_row_id_equip_param_accessory,edge,,45,45,0,0,2d70593a134dc014,2026-11-12
 param_next_row_id_equip_param_goods,edge,,45,45,0,0,2d70593a134dc014,2026-11-12
 param_next_row_id_equip_param_protector,edge,,45,45,0,0,2d70593a134dc014,2026-11-12
 param_next_row_id_magic,edge,,45,45,0,0,2d70593a134dc014,2026-11-12
+param_previous_matching_id_equip_param_protector,edge,,33,33,0,0,ae9f971000891e1c,2026-11-12
 param_previous_row_id_equip_param_accessory,edge,,45,45,0,0,2d70593a134dc014,2026-11-12
 param_previous_row_id_equip_param_goods,edge,,45,45,0,0,2d70593a134dc014,2026-11-12
 param_previous_row_id_equip_param_protector,edge,,45,45,0,0,2d70593a134dc014,2026-11-12

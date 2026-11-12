@@ -142,6 +142,7 @@ address,replacement,system,returns
 0x0183fb20,bb_camera_follow_yaw,camera,f32
 0x01972900,bb_input_pad_step_01972900,input,void
 0x01c0c2b0,bb_physics_instance_construct_01c0c2b0,physics,void
+0x01c92e90,bb_param_lock_cam_range,param,f32
 0x01cbdb20,bb_character_frame_update_01cbdb20,character,void
 0x01ea47a0,bb_frame_timing_gate_create_handle,frame_timing,i8
 0x01ea4a10,bb_frame_timing_gate_entry_check,frame_timing,i8
@@ -158,8 +159,10 @@ address,replacement,system,returns
 0x01ebb090,bb_frame_timing_dungeon_gate_on_event_1000,frame_timing,void
 0x01ebf060,bb_frame_timing_dungeon_gate_on_event_3000,frame_timing,void
 0x01ec3ef0,bb_frame_timing_leave_modes_around_owner_check_01ec3ef0,frame_timing,i8
+0x01edf560,bb_menu_gaitem_select_entry_copy_into_pool,menu,void
 0x01f03210,bb_frame_timing_holygrail_wait_for_dungeon_mode,frame_timing,i32
 0x01f03680,bb_frame_timing_holygrail_wait_for_ritual_mode,frame_timing,i32
+0x01f1bca0,bb_menu_gaitem_status_entry_copy,menu,i64
 0x01f6a9f0,bb_frame_timing_until_idle_01f6a9f0,frame_timing,i32
 0x01f82cc0,bb_param_find_rows_new_menu_color_table,param,void
 0x01f83130,bb_param_find_rows_char_make_menu_list_item,param,void
@@ -173,6 +176,7 @@ address,replacement,system,returns
 0x020128f0,bb_frame_timing_until_idle_020128f0,frame_timing,i32
 0x02012a60,bb_frame_timing_request_7_02012a60,frame_timing,i32
 0x02012bf0,bb_frame_timing_until_idle_02012bf0,frame_timing,i32
+0x020648f0,bb_param_menu_property_layout_row,param,i64
 0x0206ddd0,bb_param_find_rows_menu_value_table,param,void
 0x0206ecc0,bb_param_menu_property_spec,param,i64
 0x0217ffb0,bb_engine_initialize_static_wide_string_0217ffb0,engine,void
@@ -196,7 +200,9 @@ address,replacement,system,returns
 0x02316c70,bb_param_find_row_dungeon_sub_feat_lot,param,void
 0x02317800,bb_param_row_name_face_gen,param,i64
 0x023192d0,bb_param_find_row_face,param,void
+0x0231ad20,bb_param_check_repository_for_id,param,void
 0x0231af40,bb_param_find_row_face_range,param,void
+0x0231b4c0,bb_param_find_row_game_area,param,void
 0x0231be50,bb_param_find_row_game_map,param,void
 0x0231c1e0,bb_param_find_row_gem_category,param,void
 0x0231ca40,bb_param_find_row_gem_drop_doping,param,void
@@ -218,6 +224,7 @@ address,replacement,system,returns
 0x0231f720,bb_param_find_row_holygrail_ex,param,void
 0x0231f840,bb_param_row_name_holygrail_ex,param,i64
 0x0231ff00,bb_param_row_count_holygrail_ex,param,i32
+0x023202a0,bb_param_find_row_item_lot_lvdep,param,void
 0x02320640,bb_param_find_row_item_lot,param,void
 0x02320dd0,bb_param_find_row_knock_back,param,void
 0x023210e0,bb_param_find_row_magic,param,void
@@ -236,6 +243,10 @@ address,replacement,system,returns
 0x023239d0,bb_param_row_name_equip_param_protector,param,i64
 0x02324fa0,bb_param_next_row_id_equip_param_protector,param,i32
 0x023250e0,bb_param_previous_row_id_equip_param_protector,param,i32
+0x02325240,bb_param_next_matching_id_equip_param_protector,param,i32
+0x023253c0,bb_param_previous_matching_id_equip_param_protector,param,i32
+0x023255c0,bb_param_clear_id_list_equip_param_protector,param,i64
+0x02325620,bb_param_list_versions_equip_param_protector,param,i64
 0x02325820,bb_param_list_row_ids_equip_param_protector,param,i64
 0x02326200,bb_param_find_row_reinforce_param_protector,param,void
 0x023264c0,bb_param_find_row_ragdoll,param,void
@@ -253,6 +264,9 @@ address,replacement,system,returns
 0x02329630,bb_param_row_name_weapon_gen,param,i64
 0x02329aa0,bb_param_find_row_equip_param_weapon,param,void
 0x02329c20,bb_param_row_name_equip_param_weapon,param,i64
+0x0232bc80,bb_param_clear_id_list_equip_param_weapon,param,i64
+0x0232bf50,bb_param_list_row_ids_equip_param_weapon,param,i64
+0x0232c110,bb_param_list_versions_equip_param_weapon,param,i64
 0x0232c930,bb_param_find_row_reinforce_param_weapon,param,void
 0x02377bd0,bb_render_frame_update_02377bd0,render,void
 0x02418d20,bb_frame_timing_frame_step,frame_timing,i8
