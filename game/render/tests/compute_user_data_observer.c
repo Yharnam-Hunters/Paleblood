@@ -14,8 +14,9 @@ enum { MOST_WORDS = 16, COMMAND_WORDS = 64, CURSOR_WORD = 6, SLOT = 2, COUNTED_S
 enum { ONE_WORD = 1, TWO_WORDS = 2, FOUR_WORDS = 4, EIGHT_WORDS = 8, FIRST_COUNTED_VALUE = 21, WORD_BITS = 32, GROUP_AXES = 3 };
 /* the writers' addresses (observe_gpu_library.c) */
 enum { WRITE_ONE = 0x0148ada0, WRITE_POINTER = 0x0148ac90, WRITE_FOUR_MARKER_4 = 0x0148aad0, WRITE_FOUR_MARKER_6 = 0x0148ac00,
-       WRITE_EIGHT = 0x0148ab60, WRITE_COUNTED = 0x0148ad00, SET_INDIRECT_BASE = 0x014742f0, DISPATCH_INDIRECT = 0x01474de0 };
-enum { INDIRECT_DATA_OFFSET = 0x24 };
+       WRITE_EIGHT = 0x0148ab60, WRITE_COUNTED = 0x0148ad00, SET_INDIRECT_BASE = 0x014742f0, DISPATCH_INDIRECT = 0x01474de0,
+       DRAW_INDIRECT = 0x014744d0 };
+enum { INDIRECT_DATA_OFFSET = 0x24, SGPR_WORD = 0x1205, SGPR_BYTE = 0x05, ZERO_LOW_BYTE = 0x3400 };
 static const uint32_t one_value = 0x11223344u;
 static const uint64_t pointer_value = 0x0000002043490060ull;
 
@@ -47,6 +48,16 @@ static struct {
 } indirect;
 void rt_observe_indirect_base(uint64_t b, uint32_t o, uint64_t a) { indirect.bases++, indirect.buffer = b, indirect.offset = o, indirect.base = a; }
 void rt_observe_dispatch_indirect(uint64_t b, uint32_t o, uint32_t d) { indirect.dispatches++, indirect.buffer = b, indirect.offset = o, indirect.data_offset = d; }
+static struct {
+    int draws;
+    uint32_t data_offset, base_vertex_sgpr, start_instance_sgpr;
+    rt_shader_stage stage;
+} indirect_draw;
+void rt_observe_draw_indirect(uint64_t b, uint32_t o, uint32_t d, rt_shader_stage s, uint32_t v, uint32_t i)
+{
+    (void)b, (void)o;
+    indirect_draw.draws++, indirect_draw.data_offset = d, indirect_draw.stage = s, indirect_draw.base_vertex_sgpr = v, indirect_draw.start_instance_sgpr = i;
+}
 void rt_observe_register(uint64_t b, uint32_t o, uint32_t a, uint32_t v) { (void)b, (void)o, (void)a, (void)v; }
 void rt_observe_index_base(uint64_t b, uint32_t o, uint64_t a) { (void)b, (void)o, (void)a; }
 void rt_observe_index_size(uint64_t b, uint32_t o, uint32_t c) { (void)b, (void)o, (void)c; }
@@ -118,6 +129,15 @@ int main(void)
         const uint64_t dispatch_args[RT_OBSERVED_ARGUMENTS] = {object_address, INDIRECT_DATA_OFFSET};
         dispatch_indirect(dispatch_args);
         CHECK(indirect.dispatches == 1 && indirect.data_offset == INDIRECT_DATA_OFFSET);
+    }
+    /* the indirect draw: offset, stage and the two SGPR bytes (higher bits of the registers ignored) */
+    const rt_observer_fn draw = observer(DRAW_INDIRECT);
+    CHECK(draw != NULL);
+    if (draw) {
+        const uint64_t draw_args[RT_OBSERVED_ARGUMENTS] = {object_address, INDIRECT_DATA_OFFSET, RT_STAGE_VERTEX, SGPR_WORD, ZERO_LOW_BYTE};
+        draw(draw_args);
+        CHECK(indirect_draw.draws == 1 && indirect_draw.data_offset == INDIRECT_DATA_OFFSET && indirect_draw.stage == RT_STAGE_VERTEX &&
+              indirect_draw.base_vertex_sgpr == SGPR_BYTE && !indirect_draw.start_instance_sgpr);
     }
     if (failures) fprintf(stderr, "%d failure(s)\n", failures);
     else printf("compute user data observer: ok\n");

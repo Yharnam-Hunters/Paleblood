@@ -786,6 +786,46 @@ static int nothing_drawn(rt_executor *x, uint64_t target)
     return 1;
 }
 
+/* Indirect draws (DRAW_INDIRECT): the triangle's draw with its counts in guest memory at the indirect
+   base plus the offset, written after the calls were recorded. The start vertex (7) does not move the
+   vertex index, which counts from 0, so the triangle's corners are fetched as in a direct draw; two
+   instances blended ONE + ONE double the colour; 0 vertices draw nothing. An indirect draw that writes
+   its start vertex to a user SGPR, and one with no base set, stop by name. */
+static int run_indirect(rt_executor *x, uint64_t buffer, uint64_t target, uint32_t blend, uint32_t base_vertex_sgpr, int with_base,
+                        char *error, size_t error_size)
+{
+    enum { ARGUMENTS = 0x2fc0000, DATA_OFFSET = 0x20 };
+    rt_render_forget(), rt_executor_reset(x);
+    uint32_t offset = record_setup(buffer, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    if (blend) CHECK(rt_render_record_register(buffer, offset, 0xa1e0, blend, error, error_size) == 0);
+    if (with_base) CHECK(rt_render_record_indirect_base(buffer, offset + 0x10, at(ARGUMENTS), error, error_size) == 0);
+    CHECK(rt_render_record_draw_indirect(buffer, offset + 0x20, DATA_OFFSET, RT_STAGE_VERTEX, base_vertex_sgpr, 0, error, error_size) == 0);
+    return rt_executor_run(x, buffer, offset + 0x30, error, error_size);
+}
+
+static void indirect_draws(rt_executor *x)
+{
+    enum { INDIRECT = 0xc1040000, ARGUMENTS = 0x2fc0000, DATA_OFFSET = 0x20, PLAIN = 0x2fd0000, TWICE = 0x2fe0000, NONE = 0x2ff0000, ONE = 1 };
+    char error[200] = "";
+    uint32_t *const counts = (uint32_t *)(uintptr_t)at(ARGUMENTS + DATA_OFFSET);
+    counts[0] = 3, counts[1] = 1, counts[2] = 7, counts[3] = 9; /* vertices, instances, start vertex, start instance */
+    int ran = run_indirect(x, INDIRECT, at(PLAIN), 0, 0, 1, error, sizeof error);
+    if (ran) fprintf(stderr, "indirect draw: %s\n", error);
+    CHECK(ran == 0);
+    check_triangle(x, at(PLAIN));
+    counts[1] = 2;
+    ran = run_indirect(x, INDIRECT, at(TWICE), 1u << 30 | ONE | ONE << 8, 0, 1, error, sizeof error);
+    if (ran) fprintf(stderr, "indirect draw, two instances: %s\n", error);
+    CHECK(ran == 0);
+    CHECK(blended_misses(x, at(TWICE), doubled) == 0);
+    counts[0] = 0, counts[1] = 1;
+    memset((void *)(uintptr_t)at(NONE), 0, SIZE * SIZE * 4);
+    CHECK(run_indirect(x, INDIRECT, at(NONE), 0, 0, 1, error, sizeof error) == 0);
+    CHECK(nothing_drawn(x, at(NONE)));
+    CHECK(run_indirect(x, INDIRECT, at(NONE), 0, 5, 1, error, sizeof error) == -1 && strstr(error, "user SGPRs 5 and 0"));
+    CHECK(run_indirect(x, INDIRECT, at(NONE), 0, 0, 0, error, sizeof error) == -1 && strstr(error, "no indirect base"));
+}
+
 /* Draws the triangle (its second and third corners swapped when reversed) with pixel_face_float, or
    pixel_face_bits and SPI_BARYC_CNTL's FRONT_FACE_ALL_BITS when all_bits; the run's result. */
 static int draw_facing(rt_executor *x, uint64_t target, int all_bits, int reversed, char *error, size_t error_size)
@@ -2238,6 +2278,7 @@ int main(void)
     CHECK(run_with_registers(x, FOURTH, at(TARGET), dual_source, 1, 0, error, sizeof error) == -1 && strstr(error, "blend factor 15"));
     blending(x);
     draws_in_one_batch(x);
+    indirect_draws(x);
     buffers_in_one_submission(x);
     const uint32_t depth[][2] = {{0xa200, 0x2}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), depth, 1, 0, error, sizeof error) == -1 && strstr(error, "depth or stencil"));

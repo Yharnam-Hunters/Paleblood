@@ -651,7 +651,15 @@ Instead:
         and the executor runs the dispatch with `vkCmdDispatchIndirect` on the guest memory
         buffer, so the GPU reads the three workgroup counts at the base plus the offset when the
         dispatch runs, after the work before it (which may have written them). Drawn targets over
-        those 12 bytes are written back first. Compute shaders' **images** are executor-owned Vulkan images
+        those 12 bytes are written back first. **Indirect draws:** `0x014744d0` (command buffer,
+        data offset, stage, base-vertex SGPR, start-instance SGPR) writes `DRAW_INDIRECT`. The GPU
+        reads four words at the base plus the offset: vertices per instance, instances, start vertex
+        and start instance. The start vertex and instance reach the shader only through the named
+        user SGPRs; the vertex index itself counts from 0 (shadPS4's `translate.cpp` subtracts
+        Vulkan's base vertex for that reason). So the executor copies the first two words, on the
+        GPU, into a per-batch buffer whose entries have first vertex and instance 0, and draws them
+        with `vkCmdDrawIndirect`. A vertex shader that takes instance indexes, and SGPRs named for
+        the start vertex or instance, stop by name. Compute shaders' **images** are executor-owned Vulkan images
         found by their descriptor's address and shape: an image the GPU writes stays there and is
         never tiled back into guest memory; a new image whose first use writes it starts cleared.
         An image no shader has written holds the guest memory's texels, detiled with
