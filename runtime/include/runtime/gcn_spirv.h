@@ -61,6 +61,9 @@ enum {
     /* a draw with a geometry shader of more vertices or primitives than its rings or strip buffer hold
        (gcn_geometry_layout); details: the draw's vertex count, its low 24 bits */
     GCN_RUNTIME_STOP_GEOMETRY_LIMIT = 5,
+    /* a read through an image whose descriptor has base address 0 but is not null (gcn_image_binding.unmapped):
+       what the PS4 returns from unmapped memory is not established */
+    GCN_RUNTIME_STOP_UNMAPPED_IMAGE = 7,
 };
 
 /* Images (MIMG). A shader names an image by the SGPRs holding its 8-word descriptor (T#), which the
@@ -100,6 +103,8 @@ typedef struct {
                                         a load's component k is the texel's DST_SEL[k] - 4, a store writes it there;
                                         0 is the identity (sampled images take theirs in the view) */
     int null_descriptor;             /* a sampled image whose descriptor is all 0 (a null descriptor): image_load reads 0 */
+    int unmapped;                    /* a sampled image whose descriptor has base address 0 but is not null: a read through
+                                        it writes GCN_RUNTIME_STOP_UNMAPPED_IMAGE (and reads 0); one never run is harmless */
 } gcn_image_binding;
 
 /* GCN_MAX_IMAGES: up to 16 images a program (Vulkan guarantees 16 sampled images per stage) */

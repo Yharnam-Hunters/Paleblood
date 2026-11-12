@@ -1244,10 +1244,39 @@ static void multiple_targets(rt_executor *x)
     CHECK(draw_two_targets(x, at(MRT_FIRST), at(ODD_THIRD), 0xf0f, 0xf0f, 1, error, sizeof error) == -1 && strstr(error, "different sizes"));
 }
 
+/* Memory reused for a target of another format (YEBIS's post passes reuse theirs): the triangle drawn as
+   8_8_8_8, the same memory then drawn as an 8_8_8_8 target with the other component order keeping what is
+   there (blend ZERO + ONE), then as the first target again, keeping: the first target is written back, set
+   aside, and taken back loaded from the memory, so the triangle is still there; the memory too. */
+static void reshaped_target(rt_executor *x)
+{
+    enum { RESHAPE_BUFFER = 0xc0fd8000, RESHAPED = 0x3ec0000 };
+    char error[200] = "";
+    const uint64_t target = at(RESHAPED);
+    memset((void *)(uintptr_t)target, 0, SIZE * SIZE * 4);
+    rt_render_forget();
+    CHECK(rt_executor_run(x, RESHAPE_BUFFER, record_draw(RESHAPE_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER), error, sizeof error) == 0);
+    check_triangle(x, target);
+    const uint32_t swaps[2] = {SWAP_ALT, SWAP_STD};
+    for (unsigned k = 0; k < 2; k++) {
+        rt_render_forget();
+        const uint32_t offset = record_setup(RESHAPE_BUFFER, target, COLOR_8_8_8_8, swaps[k], PERSP_CENTER);
+        CHECK(rt_render_record_register(RESHAPE_BUFFER, offset, 0xa1e0, 1u << 30 | 0u | 1u << 8, error, sizeof error) == 0); /* ZERO + ONE */
+        const int ran = rt_executor_run(x, RESHAPE_BUFFER, record_triangle_draw(RESHAPE_BUFFER, offset + 0x10), error, sizeof error);
+        if (ran) fprintf(stderr, "reshaped target: %s\n", error);
+        CHECK(ran == 0);
+    }
+    check_triangle(x, target);
+    rt_render_forget();
+    CHECK(rt_executor_finish(x, error, sizeof error) == 0);
+    const uint32_t first = *(const uint32_t *)(uintptr_t)target; /* pixel (0, 0): red 0.5 / 16, green 0.5 / 16, blue 0.25, red first */
+    CHECK(near(first & 0xff, 0.5f / SIZE) && near(first >> 8 & 0xff, 0.5f / SIZE) && near(first >> 16 & 0xff, 0.25f));
+}
+
 /* A null image descriptor (all 8 words 0, as YEBIS binds for a pass that samples nothing there): the
    pixel shader's reads return 0, as from a VK_EXT_robustness2 null descriptor, so the pixels the triangle
-   covers are 0 and the others keep the memory's pattern. One with base address 0 and other fields set
-   stops by name. */
+   covers are 0 and the others keep the memory's pattern. A read through one with base address 0 and other
+   fields set is a run-time stop. */
 static void null_image_descriptor(rt_executor *x)
 {
     enum { NULL_TARGET = 0x3e00000, PATTERN = 0x11223344u };
@@ -1264,9 +1293,10 @@ static void null_image_descriptor(rt_executor *x)
     int zero = 0, other = 0;
     for (int i = 0; i < SIZE * SIZE; i++) zero += bgra[i] == 0, other += bgra[i] != 0 && bgra[i] != shown;
     CHECK(zero > 0 && other == 0);
-    /* base address 0 with a format and type: not a null descriptor, and what the PS4 reads there is not known */
-    const uint32_t base_zero[8] = {0, 10u << 20, 0, 2u << 28 | 0xfac, 0, 0, 0, 0};
-    CHECK(draw_texels(x, at(NULL_TARGET), base_zero, error, sizeof error) == -1 && strstr(error, "base address 0"));
+    /* base address 0 with a format and type (YEBIS's 1x1 8_8_8_8): not a null descriptor, and what the PS4 reads
+       there is not known, so the shader's read of it is a run-time stop */
+    const uint32_t base_zero[8] = {0, 10u << 20, 0, 9u << 28 | 0xfac, 0, 0, 0, 0};
+    CHECK(draw_texels(x, at(NULL_TARGET), base_zero, error, sizeof error) == -1 && strstr(error, "read an image whose descriptor has base address 0"));
 }
 
 /* A render target cleared by a compute shader (as the game clears its G-buffer): a dispatch stores
@@ -2870,6 +2900,7 @@ int main(void)
     multiple_targets(x);
     compute_cleared_target(x);
     null_image_descriptor(x);
+    reshaped_target(x);
     /* a fast-clear eliminate pass (mode 2) over a target without fast clears writes nothing */
     const uint32_t eliminate[][2] = {{0xa202, 0x2u << 4 | 0xccu << 16}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET) + 0x480000, eliminate, 1, 0, error, sizeof error) == 0);

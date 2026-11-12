@@ -178,6 +178,8 @@ typedef struct {
     int staging_current;             /* the staging buffer holds them (since the image last changed) */
     tile_plan plan;                  /* its copies to and from the guest memory */
     metadata_state cmask;
+    int set_aside;                   /* a target of another size or format took its address (target_for): it holds
+                                        nothing the memory lacks, and is taken back when the address has its shape again */
 } target_entry;
 
 /* What a draw does with the depth target: its test and writes, as Vulkan state. No padding: it is
@@ -1156,6 +1158,9 @@ static int stop_reason(uint32_t code, char *error, size_t error_size)
     if (code >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_GEOMETRY_LIMIT)
         return failed(error, error_size, "a draw of %u vertices with a geometry shader, more than its rings or strip buffer hold: not drawn yet",
                       code & 0xffffff);
+    if (code >> GCN_RUNTIME_STOP_KIND_SHIFT == GCN_RUNTIME_STOP_UNMAPPED_IMAGE)
+        return failed(error, error_size, "a pixel shader read an image whose descriptor has base address 0 (not a null descriptor): what the "
+                      "PS4 returns from unmapped memory is not established");
     return failed(error, error_size, "a shader stopped at run time with code %#x", code);
 }
 
@@ -1939,12 +1944,15 @@ static rt_color_target color_slice(rt_color_target c)
     return c;
 }
 
+/* The render target at an address now (one set aside for another shape there is not). */
 static target_entry *find_target(rt_executor *x, uint64_t address)
 {
     for (size_t i = 0; i < x->target_count; i++)
-        if (x->targets[i].address == address) return &x->targets[i];
+        if (x->targets[i].address == address && !x->targets[i].set_aside) return &x->targets[i];
     return NULL;
 }
+
+static int write_back_targets_in(rt_executor *x, const memory_span *spans, unsigned span_count, char *error, size_t error_size);
 
 /* The bytes a render target's texels take in the guest memory, laid out by its tile mode (0 for a layout
    not done yet, which drawing into it stops at). */
@@ -1955,19 +1963,33 @@ static uint64_t target_span(const target_entry *t)
     return rt_tiling_layout(t->tile_index, 4, t->width, t->height, &layout, reason, sizeof reason) ? 0 : rt_tiling_size(&layout, 1);
 }
 
-/* The image standing for a render target: made on first use, cleared to zero, kept by address. */
+static int target_has_shape(const target_entry *t, const rt_color_target *color, VkFormat format)
+{
+    return t->width == color->pitch && t->height == color->height && t->format == format && t->tile_index == color->tile_mode_index;
+}
+
+/* The image standing for a render target: made on first use, cleared to zero, kept by address. Memory a
+   game reuses for a target of another size or format (YEBIS's post passes do) gets another image: the
+   one there is written back and set aside, and taken back, loaded from the memory, when the address has
+   its shape again. */
 static target_entry *target_for(rt_executor *x, const rt_color_target *color, char *error, size_t error_size)
 {
     uint32_t element_bytes;
     const VkFormat format = target_format(color, &element_bytes, error, error_size);
     if (format == VK_FORMAT_UNDEFINED) return NULL;
     target_entry *t = find_target(x, color->address);
+    if (t && target_has_shape(t, color, format)) return t;
     if (t) {
-        if (t->width == color->pitch && t->height == color->height && t->format == format && t->tile_index == color->tile_mode_index)
-            return t;
-        failed(error, error_size, "render target %#llx changed size or format: reallocating it is not done yet",
-               (unsigned long long)color->address);
-        return NULL;
+        const memory_span memory = {t->address, target_span(t)};
+        if (t->drawn && write_back_targets_in(x, &memory, 1, error, error_size)) return NULL;
+        t->set_aside = 1;
+        for (size_t i = 0; i < x->target_count; i++) {
+            target_entry *k = &x->targets[i];
+            if (k->address == color->address && k->set_aside && target_has_shape(k, color, format)) {
+                k->set_aside = 0; /* loaded at its draw: the write-back of the target set aside marked the memory changed */
+                return k;
+            }
+        }
     }
     if (x->target_count == MAX_TARGETS) {
         failed(error, error_size, "more render targets than the executor keeps");
@@ -4463,15 +4485,15 @@ static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64
            the executor's own, at an address past any guest memory (no guest image or depth target matches
            it), made as if written so it is never loaded, and its image_load reads 0 without a range check
            (the binding's null_descriptor). A descriptor with base address 0 but other fields set would read
-           unmapped memory, and what the PS4 returns there is not established: it stops by name. */
+           unmapped memory, and what the PS4 returns there is not established. YEBIS binds one (1x1 8_8_8_8,
+           base 0) in a clinic post pass whose pixel shader samples it only when a constant is 1.0, and the
+           game's own branch skips it otherwise: it binds the same image of zeros (binding.unmapped), and a
+           read the shader does make is a run-time stop (GCN_RUNTIME_STOP_UNMAPPED_IMAGE). */
         enum { ADDRESS_WORD_1_MASK = 0x3f };
         int null_image = pixel;
         for (unsigned w = 0; w < RT_IMAGE_DESCRIPTOR_WORDS; w++) null_image &= !words[w];
-        if (!null_image && !words[0] && !(words[1] & ADDRESS_WORD_1_MASK))
-            return failed(error, error_size, "a %s shader at %#llx reads an image descriptor with base address 0 that is not null "
-                          "(words %08x %08x %08x %08x %08x %08x %08x %08x): what the PS4 returns there is not established", stage,
-                          (unsigned long long)code, words[0], words[1], words[2], words[3], words[4], words[5], words[6], words[7]);
-        if (null_image) {
+        const int unmapped = pixel && !null_image && !words[0] && !(words[1] & ADDRESS_WORD_1_MASK);
+        if (null_image || unmapped) {
             enum { DATA_FORMAT_8_8_8_8 = 10, DATA_FORMAT_SHIFT = 20, TYPE_SHIFT = 28 };
             enum { ADDRESS_HIGH_BITS = 0x3f }; /* the 46-bit address's highest bits: 0x3fffffffff00 */
             memset(words, 0, sizeof words); /* 1x1, one level, one layer */
@@ -4524,9 +4546,9 @@ static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64
         const int one_d = one_dimensional(d.type);
         bindings[i] = (gcn_image_binding){*origin, one_d ? GCN_IMAGE_1D : three_d ? GCN_IMAGE_3D : GCN_IMAGE_2D,
                                           d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY || cube, f.type, f.components, pixel, whole_cube,
-                                          storage_swizzled ? d.swizzle : 0, null_image};
+                                          storage_swizzled ? d.swizzle : 0, null_image, unmapped};
         if (formats) formats[i] = f.format;
-        image_entry *e = image_for(x, &d, &f, null_image ? GCN_IMAGE_WRITE : resources[i].access, error, error_size);
+        image_entry *e = image_for(x, &d, &f, null_image || unmapped ? GCN_IMAGE_WRITE : resources[i].access, error, error_size);
         if (e && !pixel && (resources[i].access & GCN_IMAGE_WRITE) && x->stored_count < GCN_MAX_IMAGES) {
             x->stored[x->stored_count].image = (size_t)(e - x->images), x->stored[x->stored_count].descriptor = d;
             x->stored_count++;

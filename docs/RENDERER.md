@@ -655,6 +655,9 @@ Instead:
           the Contract screen the CPU's waits for the GPU went from about 102 to 90 every 2 s when
           they moved to the GPU; most of the rest are CPU reads of memory inside the depth copy's
           2.2 GB store range.
+          Memory a game draws into as a target of another size or format (YEBIS's post passes reuse
+          theirs) gets another image: the one there is written back and set aside (`target_for`), and taken
+          back, loaded from the memory, when that address has its shape again.
           Showing a frame copies the target's image to a host-visible buffer once per flip.
           `test_render_executor` checks a 1D-tiled target's texels at `rt_tiling_offset` after a
           write-back and a CPU write showing at its pixel after a load; a mutated table fails both.
@@ -818,8 +821,12 @@ Instead:
         `radv_physical_device.c`). The executor binds a 1x1 image of zeros of its own, and the translator writes
         0 for its `image_load` without a range check (`gcn_image_binding.null_descriptor`). YEBIS binds such
         descriptors in the clinic's post-processing passes. A descriptor with base address 0 but other fields
-        set would read unmapped memory; what the PS4 returns there is not established, so it stops by name
-        with its words. Formats: 32 (float, uint, sint), 32_32 and 32_32_32_32 float, 8_8_8_8
+        set would read unmapped memory, and what the PS4 returns there is not established. YEBIS binds one
+        (1x1 8_8_8_8, tiling index 13, base 0) to a clinic post pass whose pixel shader (`0x205700fa00`)
+        samples it only when a constant-buffer value is 1.0: its own branch skips the read otherwise. Such a
+        binding (`gcn_image_binding.unmapped`) gets the same image of zeros, and the translator turns any read
+        through it into a run-time stop (`GCN_RUNTIME_STOP_UNMAPPED_IMAGE`), so a read the game does make
+        stops by name and one it skips costs nothing. Formats: 32 (float, uint, sint), 32_32 and 32_32_32_32 float, 8_8_8_8
         unorm and uint, 8 and 8_8 unorm; 1D and 2D images and their arrays, one level, a view of any of an array's layers
         (slices count from `BASE_ARRAY`, as shadPS4 and Mesa's radeonsi have it), DST_SEL in place.
         On the game, all of the boot's compute passes now run (two clears and a buffer-to-image
