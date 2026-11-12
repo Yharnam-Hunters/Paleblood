@@ -835,6 +835,21 @@ static const uint32_t pixel_compared[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* pixel_minified's coordinates sampled with given derivatives (image_sample_d): 1/32 a pixel in x along x and in
+   y along y, 2 texels of a 64-texel image, the level 1 whatever the coordinates' own derivatives. */
+static const uint32_t pixel_given_derivatives[] = {
+    0x101004ff, 0x3d800000, /* v_mul_f32_e32 v8, 0x3d800000 (1/16), v2 */
+    0x101206ff, 0x3d800000, /* v_mul_f32_e32 v9, 0x3d800000 (1/16), v3 */
+    0x7e0802ff, 0x3d000000, /* v_mov_b32_e32 v4, 0x3d000000 (1/32: ds/dx) */
+    0x7e0a0280, /* v_mov_b32_e32 v5, 0 (dt/dx) */
+    0x7e0c0280, /* v_mov_b32_e32 v6, 0 (ds/dy) */
+    0x7e0e02ff, 0x3d000000, /* v_mov_b32_e32 v7, 0x3d000000 (1/32: dt/dy) */
+    0xf0880f00, 0x00610a04, /* image_sample_d v[10:13], v[4:9], s[4:11], s[12:15] dmask:0xf */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf800180f, 0x0d0c0b0a, /* exp mrt0, v10, v11, v12, v13 done vm */
+    0xbf810000, /* s_endpgm */
+};
+
 /* pixel_minified sampling at level of detail 1 whatever the derivatives (image_sample_l). */
 static const uint32_t pixel_explicit_level[] = {
     0x100804ff, 0x3d800000, /* v_mul_f32_e32 v4, 0x3d800000 (1/16), v2 */
