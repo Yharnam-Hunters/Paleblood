@@ -83,11 +83,11 @@ them. They are edge-verified: none has been recorded in a game run.
 
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
-| `0x01972900` | 426 | `input_pad_step_01972900` | verified | FD4PadManager map: marks two entries, advances an owner by the frame-time step (patched to 1/15 or 1/240 s; the advance branch is idle in the clinic) |
-| `0x02a8bf30` | 108 | `input_mouse_b_open_for_initial_user` | edge-verified | Second mouse device class's open: initial user, close a positive handle at +0x128, sceMouseOpen(user, 0, 0, null); true when the new handle is positive |
-| `0x02a8c210` | 164 | `input_mouse_construct` | edge-verified | Mouse device constructor: base ctor with the third argument, vtable 0x056b7d00, clear 0x140..0x177, load sysmodule 0xa9, sceMouseInit, open via slot 32; handle 0 on any failure |
-| `0x02a8c420` | 108 | `input_initialize_mouse_for_initial_user` | edge-verified | Initializes or reinitializes mouse input for the initial user, closing a previous connection if necessary. |
-| `0x02a9c790` | 84 | `input_pad_set_vibration` | edge-verified | scePadSetVibration on the pad's handle (+0x8) if open (+0xc): large motor from the third argument, small from the second; true on success |
+| `0x01972900` | 426 | `input_pad_step_01972900` | verified | FD4PadManager map: marks two entries; advances an owner by the frame-time step (patched to 1/15 or 1/240 s; the advance branch is idle in the clinic) |
+| `0x02a8bf30` | 108 | `input_mouse_b_open_for_initial_user` | edge-verified | Second mouse device class's open: initial user; close a positive handle at +0x128; sceMouseOpen(user; 0; 0; null); true when the new handle is positive |
+| `0x02a8c210` | 164 | `input_mouse_construct` | edge-verified | Mouse device constructor: base ctor with the third argument; vtable 0x056b7d00; clear 0x140..0x177; load sysmodule 0xa9; sceMouseInit; open via slot 32; handle 0 on any failure |
+| `0x02a8c420` | 108 | `input_initialize_mouse_for_initial_user` | edge-verified | Initializes or reinitializes mouse input for the initial user; closing a previous connection if necessary. |
+| `0x02a9c790` | 84 | `input_pad_set_vibration` | verified | scePadSetVibration on the pad's handle (+0x8) if open (+0xc): large motor from the third argument; small from the second; true on success |
 
 ## Structs and globals
 
