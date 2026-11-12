@@ -1851,6 +1851,44 @@ static void table_copied(rt_executor *x)
 
 }
 
+/* The executor's GDS (rt_executor_memory's gds, imported): a compute dispatch of gcn_programs.h's
+   gds_append_consume reaches the counters the CPU set in it, as the DMA_DATA steps do, and leaves them
+   moved by the lanes' appends and consumes; the slots it stores are each lane's own. */
+enum { TEST_GDS_BYTES = 64 << 10 }; /* the GDS's 64 KB */
+static _Alignas(TEST_GDS_BYTES) uint8_t test_gds[TEST_GDS_BYTES];
+
+static void gds_counters(rt_executor *x)
+{
+    enum { GDS_BUFFER = 0xc0e70000, GDS_CODE = 0x2e000, GDS_OUT = 0x1f80000, LANES = 64, APPENDING = 48, USER_SGPRS = 8 };
+    enum { APPENDED = 0x24 / 4, CONSUMED = 0x28 / 4, APPEND_START = 1000, CONSUME_START = 500 };
+    char error[256] = "";
+    uint32_t *const counters = (uint32_t *)test_gds;
+    counters[APPENDED] = APPEND_START, counters[CONSUMED] = CONSUME_START;
+    memcpy((void *)(uintptr_t)at(GDS_CODE), gds_append_consume, sizeof gds_append_consume);
+    uint32_t *const out = (uint32_t *)(uintptr_t)at(GDS_OUT);
+    memset(out, 0, 3 * LANES * sizeof *out);
+    const uint64_t code = at(GDS_CODE);
+    const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0, USER_SGPRS << 1, LANES, 1, 1};
+    uint32_t user[USER_SGPRS] = {0};
+    descriptor(user + 4, at(GDS_OUT), DWORD_STRIDE);
+    rt_render_forget(), rt_executor_reset(x);
+    CHECK(rt_render_record_compute_shader_at(GDS_BUFFER, shader) == 0);
+    CHECK(rt_render_record_user_data(GDS_BUFFER, 0x10, RT_STAGE_COMPUTE, 0, user, USER_SGPRS, error, sizeof error) == 0);
+    const uint32_t one[3] = {1, 1, 1};
+    CHECK(rt_render_record_dispatch(GDS_BUFFER, 0x20, one, error, sizeof error) == 0);
+    const int ran = rt_executor_run(x, GDS_BUFFER, 0x30, error, sizeof error);
+    if (ran) fprintf(stderr, "GDS counters: %s\n", error);
+    CHECK(ran == 0);
+    CHECK(counters[APPENDED] == APPEND_START + APPENDING && counters[CONSUMED] == (uint32_t)(CONSUME_START - LANES));
+    uint64_t slots = 0, taken = 0;
+    for (uint32_t i = 0; i < LANES; i++) {
+        CHECK(out[128 + i] == i);
+        if (i % 4 && out[i] >= APPEND_START && out[i] < APPEND_START + APPENDING) slots |= 1ull << (out[i] - APPEND_START);
+        if (out[64 + i] <= CONSUME_START && out[64 + i] > CONSUME_START - LANES) taken |= 1ull << (CONSUME_START - out[64 + i]);
+    }
+    CHECK(slots == (1ull << APPENDING) - 1 && taken == ~0ull);
+}
+
 /* User data a shader uses that no call has set stops the draw by name, rather than running on zeros: a
    pixel shader whose image descriptor is in s[0:7], with only slots 0-3 set, and after a reset none. */
 static void unset_user_data(rt_executor *x)
@@ -2006,7 +2044,7 @@ static void indexed_packets(rt_executor *x, int fd)
     /* A low guest window makes the unchecked sum wrap into valid GPU memory.
        With no targets enabled it would be accepted if the overflow guard vanished. */
     const uint64_t low_base = 0x100000000ull;
-    const rt_executor_memory low_memory = {fd, GUEST_SIZE, low_base, NULL, NULL, NULL};
+    const rt_executor_memory low_memory = {fd, GUEST_SIZE, low_base, NULL, NULL, NULL, NULL, 0};
     rt_executor *low = NULL;
     const int opened = rt_executor_open(&low_memory, &low, error, sizeof error);
     if (opened) fprintf(stderr, "low index window: %s\n", error);
@@ -2164,7 +2202,7 @@ static void guarded_targets(int fd, rt_executor *shared)
     rt_tiling layout;
     CHECK(rt_tiling_layout(RECORDED_TILING, 4, SIZE, SIZE, &layout, error, sizeof error) == 0);
     uint8_t *memory = (uint8_t *)(uintptr_t)at(TILED_TARGET);
-    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard};
+    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&with_guard, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -2391,7 +2429,7 @@ static void watched_memory(int fd)
     enum { IMAGE = 0x1e00000, TEXEL_TARGET = 0x1e10000, COMPUTE = 0xc0e40000, COMPUTE_CODE = 0x3000, ZEROS = 0x1e20000, LANES = 64,
            LINEAR_ALIGNED = 8 };
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0};
     rt_executor *x = NULL;
     const int opened = rt_executor_open(&memory, &x, error, sizeof error);
     if (opened) fprintf(stderr, "watched executor: %s\n", error);
@@ -2444,7 +2482,7 @@ static void watched_table_copy(int fd)
     enum { COPY_BUFFER = 0xc0e60000, ZEROS = 0x1f20000, IMAGE = 0x1f40000, TEXEL_TARGET = 0x1f50000, LANES = TABLE_COPY_LANES,
            USER_SGPRS = TABLE_COPY_SGPRS, LINEAR_ALIGNED = 8 };
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes, NULL, NULL, NULL, 0};
     rt_executor *x = NULL;
     CHECK(rt_executor_open(&memory, &x, error, sizeof error) == 0);
     if (!x) return;
@@ -2483,7 +2521,7 @@ int main(void)
     }
     rt_executor *x = NULL;
     char error[256] = "";
-    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL};
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, NULL, NULL, NULL, test_gds, sizeof test_gds};
     if (rt_executor_open(&memory, &x, error, sizeof error)) {
         fprintf(stderr, "skipped: %s\n", error);
         return SKIPPED;
@@ -3185,6 +3223,7 @@ int main(void)
     unset_user_data(x);
     target_read_in_buffer(x);
     table_copied(x);
+    gds_counters(x);
     state_across_buffers(x);
     indexed_draws(x);
     indexed_packets(x, fd);

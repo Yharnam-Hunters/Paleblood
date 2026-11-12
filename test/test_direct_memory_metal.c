@@ -34,7 +34,7 @@ int main(void)
     unsigned char *gpu=NULL,*cpu=NULL;CHECK(map((void **)&gpu,LENGTH,0x33,0,offset,PAGE)==0);
     CHECK(map((void **)&cpu,LENGTH,3,0,offset,PAGE)==0);CHECK((uintptr_t)gpu==rt_gpu_memory_base()+start);
     int fd=-1;uint64_t size=0;CHECK(rt_gpu_memory_pool(&fd,&size)==0 && size==(UINT64_C(5)<<30));
-    rt_executor *executor=NULL;char error[512]="";rt_executor_memory memory={fd,size,rt_gpu_memory_base(),NULL,NULL,NULL};
+    rt_executor *executor=NULL;char error[512]="";rt_executor_memory memory={fd,size,rt_gpu_memory_base(),NULL,NULL,NULL,NULL,0};
     const int opened=rt_executor_open(&memory,&executor,error,sizeof error);if(opened)fprintf(stderr,"runtime pool on Metal: %s\n",error);
     CHECK(opened==0);if(!executor)return 1;
     memcpy(cpu+PROGRAM,scale_add,sizeof scale_add);
