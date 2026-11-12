@@ -1065,11 +1065,11 @@ static void gnm_submit_constant_without_sizes(void)
     uint32_t bytes[1] = {8};
     gnm_submit_fn(1, buffers, bytes, constants, NULL);
 }
+static uint32_t gnm_dma_fill_target[5];
 static void gnm_submit_dma_fill(void)
 {
-    /* DMA_DATA filling memory with a value (source select 2): the stand-in does not fill */
-    static uint32_t target[4];
-    const uint64_t at = (uint64_t)(uintptr_t)target;
+    /* DMA_DATA filling memory with a value (source select 2): every dword of the 16 bytes */
+    const uint64_t at = (uint64_t)(uintptr_t)gnm_dma_fill_target;
     uint32_t p[7] = {0xc0055000u, 0x40000000u, 0x12345678u, 0, (uint32_t)at, (uint32_t)(at >> 32), 16};
     gnm_submit_one(p, 7);
 }
@@ -3248,7 +3248,8 @@ int main(void)
             const uint64_t dma_from = (uint64_t)(uintptr_t)dma_source;
             uint32_t dma[7] = {0xc0055000u, 0x60000000u, (uint32_t)dma_from, (uint32_t)(dma_from >> 32), 0x3022cu, 0, 0x28200064u};
             CHECK(gnm_submit_one_result(dma, 7) == 0 && dma_source[0] == 1 && dma_source[2] == 3);
-            CHECK(died_in_fatal(gnm_submit_dma_fill));
+            gnm_submit_dma_fill();
+            CHECK(gnm_dma_fill_target[0] == 0x12345678u && gnm_dma_fill_target[3] == 0x12345678u && gnm_dma_fill_target[4] == 0);
             CHECK(died_in_fatal(gnm_submit_dma_other_register));
             /* an indexed draw: index type, base and buffer size, then DRAW_INDEX_2; only memory reads */
             static uint16_t indices[3] = {0, 1, 2};
