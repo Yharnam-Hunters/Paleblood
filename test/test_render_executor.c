@@ -1518,6 +1518,57 @@ static void target_read_in_buffer(rt_executor *x)
     CHECK(differing_pixels(x, at(COPIED)) == 0);
 }
 
+/* A table-driven copy (gcn_table_copy_shape, as the game copies depth; test/gcn_programs.h) of 64-lane
+   workgroups, its table at TABLE_COPY_TABLE, through source and destination descriptors spanning the
+   whole memory: the shader words and the user data, s[0:11] (s12 the workgroup index). */
+enum { TABLE_COPY_CODE = 0x6000, TABLE_COPY_TABLE = 0x1f00000, TABLE_COPY_LANES = 64, TABLE_COPY_SGPRS = 12, DWORD_STRIDE = 4 };
+
+static void table_copy_setup(uint32_t shader[RT_COMPUTE_SHADER_WORDS], uint32_t user[TABLE_COPY_SGPRS])
+{
+    enum { ENTRY_STRIDE = 12, TGID_X_EN = 1u << 7 };
+    memcpy((void *)(uintptr_t)at(TABLE_COPY_CODE), table_copy, sizeof table_copy);
+    const uint64_t code = at(TABLE_COPY_CODE);
+    const uint32_t words[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0, TABLE_COPY_SGPRS << 1 | TGID_X_EN,
+                                                    TABLE_COPY_LANES, 1, 1};
+    memcpy(shader, words, sizeof words);
+    descriptor(user, at(TABLE_COPY_TABLE), ENTRY_STRIDE);
+    descriptor(user + 4, GUEST_BASE, DWORD_STRIDE), user[6] = GUEST_SIZE / DWORD_STRIDE;
+    descriptor(user + 8, GUEST_BASE, DWORD_STRIDE), user[10] = GUEST_SIZE / DWORD_STRIDE;
+}
+
+/* Its table, read by the CPU, bounds what the copy reads: a target drawn into earlier in the same
+   buffer, which it copies, is written back first (the copy holds the draw: four workgroups of 64
+   dwords). watched_table_copy checks what it stores. */
+static void table_copied(rt_executor *x)
+{
+    enum { COPY_BUFFER = 0xc0e60000, COPIED = 0x1f10000, DRAWN = 0x1f30000, LANES = TABLE_COPY_LANES, GROUPS = SIZE * SIZE / LANES,
+           USER_SGPRS = TABLE_COPY_SGPRS };
+    char error[256] = "";
+    uint32_t shader[RT_COMPUTE_SHADER_WORDS], user[USER_SGPRS];
+    table_copy_setup(shader, user);
+    uint32_t *table = (uint32_t *)(uintptr_t)at(TABLE_COPY_TABLE);
+    for (uint32_t g = 0; g < GROUPS; g++)
+        table[g * 3] = COPIED / DWORD_STRIDE + g * LANES, table[g * 3 + 1] = DRAWN / DWORD_STRIDE + g * LANES, table[g * 3 + 2] = LANES - 1;
+    memset((void *)(uintptr_t)at(DRAWN), 0, SIZE * SIZE * 4);
+    memset((void *)(uintptr_t)at(COPIED), 0, SIZE * SIZE * 4);
+    rt_render_forget(), rt_executor_reset(x);
+    uint32_t offset = record_triangle_draw(COPY_BUFFER, record_setup(COPY_BUFFER, at(DRAWN), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER));
+    CHECK(rt_render_record_compute_shader_at(COPY_BUFFER + offset, shader) == 0);
+    CHECK(rt_render_record_user_data(COPY_BUFFER, offset + 0x10, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+    CHECK(rt_render_record_user_data(COPY_BUFFER, offset + 0x20, RT_STAGE_COMPUTE, 8, user + 8, 4, error, sizeof error) == 0);
+    const uint32_t groups[3] = {GROUPS, 1, 1};
+    CHECK(rt_render_record_dispatch(COPY_BUFFER, offset + 0x30, groups, error, sizeof error) == 0);
+    const int copied = rt_executor_run(x, COPY_BUFFER, offset + 0x40, error, sizeof error);
+    if (copied) fprintf(stderr, "table copy: %s\n", error);
+    CHECK(copied == 0);
+    const uint32_t *drawn = (const uint32_t *)(uintptr_t)at(DRAWN);
+    int any_drawn = 0;
+    for (int i = 0; i < SIZE * SIZE; i++) any_drawn |= drawn[i] != 0;
+    CHECK(any_drawn);
+    CHECK(memcmp((const void *)(uintptr_t)at(COPIED), drawn, SIZE * SIZE * 4) == 0);
+
+}
+
 /* User data a shader uses that no call has set stops the draw by name, rather than running on zeros: a
    pixel shader whose image descriptor is in s[0:7], with only slots 0-3 set, and after a reset none. */
 static void unset_user_data(rt_executor *x)
@@ -1995,6 +2046,44 @@ static void watched_memory(int fd)
     rt_executor_close(x);
 }
 
+/* With the CPU's writes watched, an image over what a table-driven copy stores (its table's real
+   destination, inside the destination descriptor's range of all the memory) loads again: the next draw
+   samples the 64 copied zeros. */
+static void watched_table_copy(int fd)
+{
+    enum { COPY_BUFFER = 0xc0e60000, ZEROS = 0x1f20000, IMAGE = 0x1f40000, TEXEL_TARGET = 0x1f50000, LANES = TABLE_COPY_LANES,
+           USER_SGPRS = TABLE_COPY_SGPRS, LINEAR_ALIGNED = 8 };
+    char error[256] = "";
+    const rt_executor_memory memory = {fd, GUEST_SIZE, GUEST_BASE, report_writes};
+    rt_executor *x = NULL;
+    CHECK(rt_executor_open(&memory, &x, error, sizeof error) == 0);
+    if (!x) return;
+    uint32_t shader[RT_COMPUTE_SHADER_WORDS], user[USER_SGPRS];
+    table_copy_setup(shader, user);
+    uint32_t *table = (uint32_t *)(uintptr_t)at(TABLE_COPY_TABLE);
+
+    uint32_t *texels = (uint32_t *)(uintptr_t)at(IMAGE);
+    for (uint32_t y = 0; y < SIZE; y++)
+        for (uint32_t px = 0; px < SIZE; px++) texels[y * SIZE + px] = reference_texel(px, y);
+    memset((void *)(uintptr_t)at(ZEROS), 0, LANES * 4);
+    uint32_t image[8];
+    image_descriptor(image, at(IMAGE), 10, 0, SIZE, SIZE);
+    image[3] |= LINEAR_ALIGNED << 20;
+    CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
+    CHECK(differing_pixels(x, at(TEXEL_TARGET)) == 0);
+    table[0] = IMAGE / DWORD_STRIDE, table[1] = ZEROS / DWORD_STRIDE, table[2] = LANES - 1;
+    rt_render_forget(), rt_executor_reset(x);
+    CHECK(rt_render_record_compute_shader_at(COPY_BUFFER + 0x10, shader) == 0);
+    CHECK(rt_render_record_user_data(COPY_BUFFER, 0x20, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+    CHECK(rt_render_record_user_data(COPY_BUFFER, 0x30, RT_STAGE_COMPUTE, 8, user + 8, 4, error, sizeof error) == 0);
+    const uint32_t one[3] = {1, 1, 1};
+    CHECK(rt_render_record_dispatch(COPY_BUFFER, 0x40, one, error, sizeof error) == 0);
+    CHECK(rt_executor_run(x, COPY_BUFFER, 0x50, error, sizeof error) == 0);
+    CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == 0);
+    CHECK(differing_pixels(x, at(TEXEL_TARGET)) == LANES);
+    rt_executor_close(x);
+}
+
 int main(void)
 {
     const int fd = map_guest_memory();
@@ -2062,6 +2151,7 @@ int main(void)
     metadata_store_waits(x);
     metadata_store_clears(x);
     watched_memory(fd);
+    watched_table_copy(fd);
     const uint32_t resolve[][2] = {{0xa202, 0x3u << 4 | 0xccu << 16}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), resolve, 1, 0, error, sizeof error) == -1 && strstr(error, "colour mode 3"));
     const uint32_t unknown[][2] = {{0xa1e8, 0}};
@@ -2552,6 +2642,7 @@ int main(void)
     vertex_image_after_fetch(x);
     unset_user_data(x);
     target_read_in_buffer(x);
+    table_copied(x);
     state_across_buffers(x);
     indexed_draws(x);
     indexed_packets(x, fd);

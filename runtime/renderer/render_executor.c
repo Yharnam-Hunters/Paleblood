@@ -256,14 +256,23 @@ typedef struct {
    (they stop the run). */
 typedef struct {
     uint64_t code, callee;
-    int samplers, used;              /* samplers: 0 the image scan, 1 the sampler scan, 2 the buffer-store scan */
-    int unknown;                     /* the buffer-store scan: some store's descriptor has no known origin */
+    int samplers, used;              /* samplers: 0 the image scan, 1 the sampler scan, 2 the buffer-store scan, 3 the read scan */
+    int unknown;                     /* the buffer-store scan: some store's descriptor has no known origin; the read scan: some load's */
     uint32_t *words, *callee_words;  /* the programs as scanned, through their ends (gcn_program_dwords) */
     size_t dwords, callee_dwords;
     unsigned count;
     gcn_image_resource images[GCN_MAX_IMAGES];
     gcn_resource_origin sampler_origins[GCN_MAX_SAMPLERS];
+    gcn_memory_read reads[GCN_MAX_IMAGES]; /* the read scan (gcn_memory_reads) */
+    int table_copy;                  /* the read scan: the program is a table-driven copy (gcn_table_copy_shape) */
+    gcn_table_copy copy;
 } scan_entry;
+
+/* A range of guest memory. A dispatch's reads and stores are kept as up to DISPATCH_SPANS of them (span_add). */
+typedef struct {
+    uint64_t address, bytes;
+} memory_span;
+enum { DISPATCH_SPANS = 32 };
 enum { SCAN_SLOTS = 4096 }; /* a power of two: open addressing; when full, programs are scanned each time */
 
 /* A depth target's registers from DB_Z_INFO (0xa010) to DB_DEPTH_SLICE (0xa017), in order. */
@@ -1801,15 +1810,37 @@ static int apply_fast_clears(rt_executor *x, const draw_state *s, char *error, s
    (a shader's buffer loads or images, the CPU after the buffer) sees the draws: copied into its linear
    rows and tiled into place on the GPU, with the batch. The memory epoch moves on (images over that
    memory load again); a target's own image already holds what it wrote. 0, or -1 with the reason. */
-static int write_back_depths(rt_executor *x, char *error, size_t error_size);
+static int write_back_depths(rt_executor *x, const memory_span *spans, unsigned span_count, char *error, size_t error_size);
 
-static int write_back_targets(rt_executor *x, char *error, size_t error_size)
+static int spans_overlap(const memory_span *spans, unsigned count, uint64_t address, uint64_t bytes)
 {
-    int any = write_back_depths(x, error, error_size);
+    for (unsigned i = 0; i < count; i++)
+        if (spans[i].address < address + bytes && address < spans[i].address + spans[i].bytes) return 1;
+    return 0;
+}
+
+/* The same for the targets in some memory only (spans, or every target when spans is NULL): those
+   drawn into over it, and with them any other drawn target overlapping one of those (written back in
+   the same order as all of them would be, so what each leaves in memory is the same). */
+static int write_back_targets_in(rt_executor *x, const memory_span *spans, unsigned span_count, char *error, size_t error_size)
+{
+    int any = write_back_depths(x, spans, span_count, error, error_size);
     if (any < 0) return -1;
+    uint8_t picked[MAX_TARGETS] = {0};
+    for (size_t i = 0; i < x->target_count; i++)
+        picked[i] = x->targets[i].drawn && (!spans || spans_overlap(spans, span_count, x->targets[i].address, target_span(&x->targets[i])));
+    for (int grew = spans != NULL; grew;) {
+        grew = 0;
+        for (size_t i = 0; i < x->target_count; i++)
+            for (size_t k = 0; k < x->target_count && picked[i]; k++) {
+                const target_entry *t = &x->targets[i], *o = &x->targets[k];
+                if (!picked[k] && o->drawn && o->address < t->address + target_span(t) && t->address < o->address + target_span(o))
+                    picked[k] = 1, grew = 1;
+            }
+    }
     for (size_t i = 0; i < x->target_count; i++) {
         target_entry *t = &x->targets[i];
-        if (!t->drawn) continue;
+        if (!picked[i]) continue;
         rt_tiling layout;
         uint64_t span;
         if (target_memory(x, t, &layout, &span, error, error_size) || record_target_copy(x, t, 1, error, error_size) ||
@@ -1821,18 +1852,21 @@ static int write_back_targets(rt_executor *x, char *error, size_t error_size)
     if (!any) return 0;
     for (size_t i = 0; i < x->target_count; i++) {
         target_entry *t = &x->targets[i];
-        if (!t->drawn) continue;
+        if (!picked[i]) continue;
         /* its image stays current unless another target written back overlaps it */
         int overlapped = 0;
         for (size_t k = 0; k < x->target_count; k++) {
             const target_entry *o = &x->targets[k];
-            overlapped |= k != i && o->drawn && o->address < t->address + target_span(t) && t->address < o->address + target_span(o);
+            overlapped |= k != i && picked[k] && o->address < t->address + target_span(t) && t->address < o->address + target_span(o);
         }
         if (!overlapped) t->loaded_change = x->change_count;
     }
-    for (size_t i = 0; i < x->target_count; i++) x->targets[i].drawn = 0;
+    for (size_t i = 0; i < x->target_count; i++)
+        if (picked[i]) x->targets[i].drawn = 0;
     return 0;
 }
+
+static int write_back_targets(rt_executor *x, char *error, size_t error_size) { return write_back_targets_in(x, NULL, 0, error, error_size); }
 
 /* ---- depth targets ---- */
 
@@ -2015,18 +2049,19 @@ static int resolve_depth_fast_clear(rt_executor *x, const draw_state *s, depth_e
    batch, as colour targets are (write_back_targets calls it first). Depth targets of 32-bit floats only,
    in a layout runtime/tiling.h has; others keep their memory as it was (nothing read it so far). The
    stencil is not written back. 1 when any was written back, 0 when none, -1 with the reason. */
-static int write_back_depths(rt_executor *x, char *error, size_t error_size)
+static int write_back_depths(rt_executor *x, const memory_span *spans, unsigned span_count, char *error, size_t error_size)
 {
     int any = 0;
     for (size_t i = 0; i < x->depth_count; i++) {
         depth_entry *z = &x->depths[i];
         if (!z->unwritten) continue;
-        z->unwritten = 0;
-        if (z->format != VK_FORMAT_D32_SFLOAT && z->format != VK_FORMAT_D32_SFLOAT_S8_UINT) continue;
         rt_tiling layout;
         char reason[160];
-        if (rt_tiling_layout(z->tile_index, 4, z->width, z->height, &layout, reason, sizeof reason)) continue;
-        const uint64_t span = rt_tiling_size(&layout, 1);
+        const int laid_out = !rt_tiling_layout(z->tile_index, 4, z->width, z->height, &layout, reason, sizeof reason);
+        const uint64_t span = laid_out ? rt_tiling_size(&layout, 1) : (uint64_t)z->width * z->height * 4;
+        if (spans && !spans_overlap(spans, span_count, z->z_address, span)) continue;
+        z->unwritten = 0;
+        if ((z->format != VK_FORMAT_D32_SFLOAT && z->format != VK_FORMAT_D32_SFLOAT_S8_UINT) || !laid_out) continue;
         if (z->z_address < x->guest_base || z->z_address - x->guest_base > x->size || span > x->size - (z->z_address - x->guest_base))
             return failed(error, error_size, "depth target %#llx is outside the GPU-visible memory", (unsigned long long)z->z_address);
         if (!z->plan.table.buffer && tile_plan_make(x, &z->plan, &layout, z->width, z->height, 1, error, error_size)) return -1;
@@ -2781,9 +2816,10 @@ static int load_texels(rt_executor *x, image_entry *e, const rt_image_descriptor
     const uint64_t span = rt_tiling_size(&layout, e->layers);
     if (d->address < x->guest_base || d->address - x->guest_base > x->size || span > x->size - (d->address - x->guest_base))
         return failed(error, error_size, "the image at %#llx is outside the GPU-visible memory", (unsigned long long)d->address);
-    /* a render target drawn into since it was written back holds texels the memory lacks (the write-back
-       takes the other targets drawn into along: the memory would get them at the buffer's end anyway) */
-    if (unwritten_target_over(x, d->address, span) && write_back_targets(x, error, error_size)) return -1;
+    /* a render target drawn into since it was written back holds texels the memory lacks: those over
+       the image are written back first (write_back_targets_in) */
+    const memory_span image_memory = {d->address, span};
+    if (unwritten_target_over(x, d->address, span) && write_back_targets_in(x, &image_memory, 1, error, error_size)) return -1;
     if (e->tiling_index != d->tiling_index || e->pitch != d->pitch) { /* the same memory read another way */
         e->tiling_index = d->tiling_index, e->pitch = d->pitch;
         memory_take(&e->agreed, NULL, 0);
@@ -2883,7 +2919,8 @@ static int load_levels(rt_executor *x, image_entry *e, const rt_image_descriptor
     const uint64_t span = last->offset + rt_tiling_size(&last->layout, e->layers);
     if (d->address < x->guest_base || d->address - x->guest_base > x->size || span > x->size - (d->address - x->guest_base))
         return failed(error, error_size, "the image at %#llx is outside the GPU-visible memory", (unsigned long long)d->address);
-    if (unwritten_target_over(x, d->address, span) && write_back_targets(x, error, error_size)) return -1;
+    const memory_span image_memory = {d->address, span}; /* as load_texels */
+    if (unwritten_target_over(x, d->address, span) && write_back_targets_in(x, &image_memory, 1, error, error_size)) return -1;
     if (e->tiling_index != d->tiling_index || e->pitch != d->pitch) {
         e->tiling_index = d->tiling_index, e->pitch = d->pitch;
         memory_take(&e->agreed, NULL, 0);
@@ -3465,6 +3502,142 @@ static int dispatch_store_ranges(rt_executor *x, const rt_compute_shader *c, con
     return 0;
 }
 
+/* Adds a range to a dispatch's spans: into one it overlaps or touches, or as a new one; past
+   DISPATCH_SPANS, into the nearest, which then covers both (more memory, never less). */
+static void span_add(memory_span *spans, unsigned *count, uint64_t address, uint64_t bytes)
+{
+    if (!bytes) return;
+    const uint64_t end = address + bytes;
+    unsigned nearest = 0;
+    uint64_t best = UINT64_MAX;
+    for (unsigned i = 0; i < *count; i++) {
+        const uint64_t from = spans[i].address, to = from + spans[i].bytes;
+        const uint64_t gap = end < from ? from - end : to < address ? address - to : 0;
+        if (gap < best) best = gap, nearest = i;
+    }
+    if (best && *count < DISPATCH_SPANS) {
+        spans[(*count)++] = (memory_span){address, bytes};
+        return;
+    }
+    memory_span *n = &spans[nearest];
+    const uint64_t from = n->address < address ? n->address : address, to = n->address + n->bytes > end ? n->address + n->bytes : end;
+    *n = (memory_span){from, to - from};
+}
+
+/* A buffer descriptor's (V#) base, stride and NUM_RECORDS (the Sea Islands manual: word 0 BASE_ADDRESS
+   bits 0-31, word 1 its bits 32-39 in 0-7, STRIDE 16-29, SWIZZLE_ENABLE 31; word 2 NUM_RECORDS; word
+   3 DST_SEL_X/Y/Z bits 0-8, NUM_FORMAT 12-14, DATA_FORMAT 15-18, ADD_TID_ENABLE 23), and the bytes its
+   range checking lets accesses reach. */
+enum { VSHARP_STRIDE_SHIFT = 16, VSHARP_STRIDE_MASK = 0x3fff, VSHARP_BASE_HIGH_MASK = 0xff };
+static uint64_t vsharp_base(const uint32_t *w) { return w[0] | (uint64_t)(w[1] & VSHARP_BASE_HIGH_MASK) << 32; }
+static uint64_t vsharp_stride(const uint32_t *w) { return w[1] >> VSHARP_STRIDE_SHIFT & VSHARP_STRIDE_MASK; }
+static uint64_t vsharp_bytes(const uint32_t *w) { return vsharp_stride(w) ? vsharp_stride(w) * w[2] : w[2]; }
+
+/* The table-driven copy's real memory (gcn_table_copy_shape): its table, read now by the CPU, gives
+   each workgroup's first source and destination elements, and the copy reaches the workgroup's width of
+   elements from each (fewer as the entry's count says, taken as all here). Read so only when that is
+   what the dispatch will read: no batch, open or submitted, may store to the table, and no render target
+   with draws not yet written back lies over it. Swizzled descriptors, ones adding the thread id, a stride
+   of 0, a table format other than three 32-bit words in order, more than MAX_GROUPS workgroups, or
+   indices that wrap leave the descriptors' ranges standing. 1 with the spans (the table and sources read,
+   the destinations stored), 0 when they cannot be known so, -1 with the reason. */
+static int table_copy_spans(rt_executor *x, const rt_compute_shader *c, const gcn_table_copy *shape, const uint32_t *user, uint32_t user_set,
+                            const uint32_t groups[3], memory_span *reads, unsigned *read_count, memory_span *stores, unsigned *store_count,
+                            char *error, size_t error_size)
+{
+    enum { ENTRY_BYTES = 12, MAX_GROUPS = 16384, DFMT_32_32_32 = 13, DFMT_32_32_32_32 = 14, NFMT_UINT = 4, NFMT_SINT = 5, NFMT_FLOAT = 7,
+           SELECT_XYZ = 4 | 5 << 3 | 6 << 6, SELECT_MASK = 0x1ff, ELEMENT_MOST = 16 };
+    const uint32_t swizzle = 1u << 31, add_tid = 1u << 23;
+    if (c->workgroup_id_enables != 1 || shape->workgroup_sgpr != c->user_sgprs || groups[0] > MAX_GROUPS) return 0;
+    uint32_t table[4], source[4], destination[4];
+    const gcn_resource_origin t = {.sgpr = shape->table_sgpr}, s = {.sgpr = shape->source_sgpr}, d = {.sgpr = shape->destination_sgpr};
+    if (descriptor_words(x, &t, user, c->user_sgprs, user_set, table, 4, error, error_size) ||
+        descriptor_words(x, &s, user, c->user_sgprs, user_set, source, 4, error, error_size) ||
+        descriptor_words(x, &d, user, c->user_sgprs, user_set, destination, 4, error, error_size))
+        return -1;
+    if (((table[1] | source[1] | destination[1]) & swizzle) || ((table[3] | source[3] | destination[3]) & add_tid) || !vsharp_stride(table) ||
+        !vsharp_stride(source) || !vsharp_stride(destination))
+        return 0;
+    const uint32_t data_format = table[3] >> 15 & 0xf, number_format = table[3] >> 12 & 7;
+    if (shape->table_format && ((data_format != DFMT_32_32_32 && data_format != DFMT_32_32_32_32) ||
+                                (number_format != NFMT_UINT && number_format != NFMT_SINT && number_format != NFMT_FLOAT) ||
+                                (table[3] & SELECT_MASK) != SELECT_XYZ))
+        return 0;
+    const uint64_t entries = groups[0] < table[2] ? groups[0] : table[2], table_base = vsharp_base(table), table_stride = vsharp_stride(table);
+    const uint64_t table_bytes = entries ? (entries - 1) * table_stride + ENTRY_BYTES : 0;
+    if (table_bytes && (table_base < x->guest_base || table_base - x->guest_base > x->size || table_bytes > x->size - (table_base - x->guest_base)))
+        return 0;
+    if (unwritten_target_over(x, table_base, table_bytes)) return 0;
+    for (unsigned k = 0; k < BATCH_SLOTS; k++)
+        if (batch_may_store(x, k, table_base, table_bytes, 0)) return 0;
+    *read_count = 0, *store_count = 0;
+    span_add(reads, read_count, table_base, table_bytes);
+    const uint64_t lanes = c->threads[0];
+    for (uint64_t g = 0; g < groups[0]; g++) {
+        uint32_t entry[3] = {0, 0, 0}; /* past NUM_RECORDS the load returns zeros */
+        if (g < entries) memcpy(entry, (const uint8_t *)x->view + (table_base + g * table_stride - x->guest_base), sizeof entry);
+        const uint32_t *ends[2][2] = {{source, &entry[1]}, {destination, &entry[0]}};
+        for (unsigned side = 0; side < 2; side++) {
+            const uint32_t *v = ends[side][0];
+            const uint64_t first = *ends[side][1], records = v[2];
+            if (first + lanes > 1ull << 32) return 0; /* the index would wrap */
+            const uint64_t from = first < records ? first : records, to = first + lanes < records ? first + lanes : records;
+            if (from < to)
+                span_add(side ? stores : reads, side ? store_count : read_count, vsharp_base(v) + from * vsharp_stride(v),
+                         (to - 1 - from) * vsharp_stride(v) + ELEMENT_MOST);
+        }
+    }
+    return 1;
+}
+
+/* The memory a dispatch of the compute shader reads now, as spans (gcn_memory_reads: each descriptor's
+   range, each s_load's bytes); *anywhere when it cannot be bounded. For a table-driven copy whose table
+   can be read (table_copy_spans), the real reads, and in *exact with `stores` the real stores. 0, or -1
+   with the reason. */
+static int dispatch_reads(rt_executor *x, const rt_compute_shader *c, const uint32_t *user, uint32_t user_set, const uint32_t groups[3],
+                          memory_span *reads, unsigned *read_count, int *anywhere, memory_span *stores, unsigned *store_count, int *exact,
+                          char *error, size_t error_size)
+{
+    enum { POINTER_HIGH_MASK = 0xffff };
+    *read_count = 0, *anywhere = 0, *store_count = 0, *exact = 0;
+    gcn_memory_read found[GCN_MAX_IMAGES];
+    gcn_table_copy shape = {0};
+    unsigned n = 0;
+    int table_copy = 0;
+    scan_entry *scan = scan_for(x, c->code, 0, 3);
+    if (scan && scan->used) {
+        n = scan->count, *anywhere = scan->unknown, table_copy = scan->table_copy, shape = scan->copy;
+        memcpy(found, scan->reads, n * sizeof *found);
+    } else {
+        char reason[300];
+        const uint32_t *code = (const uint32_t *)(uintptr_t)c->code;
+        const size_t dwords = (size_t)((x->guest_base + x->size - c->code) / 4);
+        if (gcn_memory_reads(code, dwords, found, GCN_MAX_IMAGES, &n, anywhere, reason, sizeof reason))
+            return failed(error, error_size, "compute shader at %#llx: %s", (unsigned long long)c->code, reason);
+        table_copy = gcn_table_copy_shape(code, dwords, &shape);
+        if (scan) {
+            scan_keep(x, scan, n, NULL, NULL);
+            if (scan->used) memcpy(scan->reads, found, n * sizeof *found), scan->unknown = *anywhere, scan->table_copy = table_copy, scan->copy = shape;
+        }
+    }
+    if (table_copy) {
+        const int known = table_copy_spans(x, c, &shape, user, user_set, groups, reads, read_count, stores, store_count, error, error_size);
+        if (known < 0) return -1;
+        if (known) return *exact = 1, *anywhere = 0, 0;
+        *read_count = 0, *store_count = 0;
+    }
+    if (*anywhere) return 0;
+    for (unsigned i = 0; i < n; i++) {
+        uint32_t words[4];
+        if (descriptor_words(x, &found[i].origin, user, c->user_sgprs, user_set, words, found[i].pointer ? 2 : 4, error, error_size)) return -1;
+        if (found[i].pointer)
+            span_add(reads, read_count, ((uint64_t)(words[1] & POINTER_HIGH_MASK) << 32 | words[0]) + found[i].offset, found[i].bytes);
+        else
+            span_add(reads, read_count, vsharp_base(words), vsharp_bytes(words));
+    }
+    return 0;
+}
+
 static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3], char *error, size_t error_size)
 {
     if (!s->compute_set) return failed(error, error_size, "a dispatch without a compute shader");
@@ -3474,7 +3647,28 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     if (c->workgroup_id_enables & ~1u)
         return failed(error, error_size, "a compute shader that takes its workgroup's y or z index: not run yet");
     if (c->workgroup_size_enabled) return failed(error, error_size, "a compute shader that takes its workgroup's size information: not run yet");
-    if (write_back_targets(x, error, error_size)) return -1; /* it may read what draws wrote */
+    /* it may read what draws wrote, and what it stores lands over their written-back memory: the
+       targets drawn into over the memory it reads or stores are written back first (all of them when
+       that memory is not known) */
+    uint64_t store_ranges[GCN_MAX_IMAGES][2]; /* the memory its buffer stores may reach: address, bytes */
+    unsigned store_count = 0;
+    int stores_anywhere = 0;
+    if (dispatch_store_ranges(x, c, s->compute_user, s->compute_user_set, store_ranges, &store_count, &stores_anywhere, error, error_size))
+        return -1;
+    memory_span reads[DISPATCH_SPANS], stores[DISPATCH_SPANS], touched[2 * DISPATCH_SPANS];
+    unsigned read_count = 0, store_span_count = 0;
+    int reads_anywhere = 0, exact_stores = 0;
+    if (dispatch_reads(x, c, s->compute_user, s->compute_user_set, groups, reads, &read_count, &reads_anywhere, stores, &store_span_count,
+                       &exact_stores, error, error_size))
+        return -1;
+    if (exact_stores) stores_anywhere = 0;
+    else
+        for (unsigned i = 0; i < store_count; i++) span_add(stores, &store_span_count, store_ranges[i][0], store_ranges[i][1]);
+    memcpy(touched, reads, read_count * sizeof *reads);
+    memcpy(touched + read_count, stores, store_span_count * sizeof *stores);
+    if (reads_anywhere || stores_anywhere ? write_back_targets(x, error, error_size)
+                                          : write_back_targets_in(x, touched, read_count + store_span_count, error, error_size))
+        return -1;
     const int workgroup_id_x_sgpr = (c->workgroup_id_enables & 1u) ? (int)c->user_sgprs : -1;
     gcn_image_binding bindings[GCN_MAX_IMAGES];
     VkImageView views[GCN_MAX_IMAGES];
@@ -3492,11 +3686,6 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     if (image_count && image_set(x, x->image_set_layouts[image_count], VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, views, image_count, NULL, 0, NULL, 0, &set,
                                  error, error_size))
         return -1;
-    uint64_t store_ranges[GCN_MAX_IMAGES][2]; /* the memory its buffer stores may reach: address, bytes */
-    unsigned store_count = 0;
-    int stores_anywhere = 0;
-    if (dispatch_store_ranges(x, c, s->compute_user, s->compute_user_set, store_ranges, &store_count, &stores_anywhere, error, error_size))
-        return -1;
     VkCommandBuffer commands = batch_commands(x);
     if (!commands) return failed(error, error_size, "no command buffer");
     /* what earlier work wrote (images, guest memory) is visible to this dispatch */
@@ -3513,7 +3702,10 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
        loads again (batch_writes) */
     if (stores_anywhere) x->slots[x->current].memory_pending = 1, all_changed_outside(x);
     for (unsigned i = 0; i < store_count; i++) metadata_stored(x, store_ranges[i][0]);
-    for (unsigned i = 0; i < store_count; i++) batch_writes(x, store_ranges[i][0], store_ranges[i][1], 1);
+    if (exact_stores) /* the memory it really stores to (table_copy_spans) */
+        for (unsigned i = 0; i < store_span_count; i++) batch_writes(x, stores[i].address, stores[i].bytes, 0);
+    else
+        for (unsigned i = 0; i < store_count; i++) batch_writes(x, store_ranges[i][0], store_ranges[i][1], 1);
     return 0;              /* the run-time stop word is checked once the batch has run */
 }
 

@@ -2754,6 +2754,164 @@ int gcn_buffer_store_resources(const uint32_t *code, size_t dwords, gcn_resource
     return 0;
 }
 
+/* MUBUF fields (the Sea Islands manual): word 0 OFFSET bits 0-11, OFFEN 12, IDXEN 13, GLC 14, ADDR64 15,
+   LDS 16, OP 18-24; word 1 VADDR bits 0-7, VDATA 8-15, SRSRC 16-20 (4 SGPRs each), SLC 22, TFE 23,
+   SOFFSET 24-31. SMRD: OFFSET bits 0-7, IMM 8, SBASE 9-14 (2 SGPRs each), SDST 15-21. */
+enum { MUBUF_OFFEN = 1u << 12, MUBUF_IDXEN = 1u << 13, MUBUF_ADDR64 = 1u << 15, MUBUF_LDS = 1u << 16, MUBUF_TFE = 1u << 23,
+       MUBUF_OFFSET_MASK = 0xfff, SOFFSET_ZERO = 128, SMRD_IMM = 1u << 8 };
+
+static unsigned mubuf_srsrc(const uint32_t *w) { return ((w[1] >> 16) & 0x1f) * 4; }
+
+/* Adds a read to the list unless it is there already; *unknown past max. */
+static void add_read(gcn_memory_read *reads, unsigned max, unsigned *count, int *unknown, const gcn_memory_read *read)
+{
+    for (unsigned i = 0; i < *count; i++)
+        if (reads[i].pointer == read->pointer && same_origin(&reads[i].origin, &read->origin) && reads[i].offset == read->offset &&
+            reads[i].bytes == read->bytes)
+            return;
+    if (*count == max) *unknown = 1;
+    else reads[(*count)++] = *read;
+}
+
+int gcn_memory_reads(const uint32_t *code, size_t dwords, gcn_memory_read *reads, unsigned max, unsigned *count, int *unknown, char *error,
+                     size_t error_size)
+{
+    enum { BUFFER_DWORDS = 4, POINTER_DWORDS = 2 };
+    *count = 0, *unknown = 0;
+    const long program = gcn_program_dwords(code, dwords);
+    if (program < 0) {
+        snprintf(error, error_size, "no program end found");
+        return -1;
+    }
+    const callee_code no_callee = {NULL, 0};
+    for (size_t at = 0; at < (size_t)program;) {
+        gcn_instruction ins;
+        if (gcn_decode(code + at, (size_t)program - at, &ins) || !ins.name) {
+            snprintf(error, error_size, "dword %zu: an instruction the decoder cannot name", at);
+            return -1;
+        }
+        const uint32_t *w = code + at;
+        char reason[256];
+        gcn_memory_read read = {0};
+        if ((ins.encoding == GCN_MUBUF || ins.encoding == GCN_MTBUF) && strncmp(ins.name, "buffer_store", 12) &&
+            strncmp(ins.name, "tbuffer_store", 13)) {
+            /* a load or an atomic: anywhere in the descriptor's range, unless the address is 64-bit (ADDR64) */
+            if ((ins.encoding == GCN_MUBUF && (w[0] & MUBUF_ADDR64)) ||
+                descriptor_origin(code, (size_t)program, &no_callee, at, mubuf_srsrc(w), BUFFER_DWORDS, &read.origin, reason, sizeof reason))
+                *unknown = 1;
+            else
+                add_read(reads, max, count, unknown, &read);
+        } else if (ins.encoding == GCN_SMRD && !strncmp(ins.name, "s_buffer_load", 13)) {
+            if (descriptor_origin(code, (size_t)program, &no_callee, at, ((w[0] >> 9) & 0x3f) * 2, BUFFER_DWORDS, &read.origin, reason,
+                                  sizeof reason))
+                *unknown = 1;
+            else
+                add_read(reads, max, count, unknown, &read);
+        } else if (ins.encoding == GCN_SMRD && !strncmp(ins.name, "s_load", 6)) {
+            /* from a pointer in the user data at an immediate or literal offset (dwords) */
+            const int immediate = (w[0] & SMRD_IMM) != 0, literal = !immediate && (w[0] & 0xff) == OPERAND_LITERAL;
+            read.pointer = 1;
+            if ((!immediate && !literal) ||
+                descriptor_origin(code, (size_t)program, &no_callee, at, ((w[0] >> 9) & 0x3f) * 2, POINTER_DWORDS, &read.origin, reason,
+                                  sizeof reason) ||
+                read.origin.from_memory) {
+                *unknown = 1;
+            } else {
+                read.offset = (literal ? w[1] : w[0] & 0xff) * BYTES_PER_DWORD, read.bytes = dwords_named(ins.name) * BYTES_PER_DWORD;
+                add_read(reads, max, count, unknown, &read);
+            }
+        } else if (ins.encoding == GCN_FLAT) {
+            *unknown = 1; /* a 64-bit address in VGPRs */
+        }
+        at += ins.dwords;
+    }
+    return 0;
+}
+
+/* What a VGPR holds in the table-driven copy (gcn_table_copy_shape). */
+typedef enum { HOLDS_OTHER, HOLDS_LANE, HOLDS_WORKGROUP, HOLDS_ENTRY_X, HOLDS_ENTRY_Y, HOLDS_ENTRY_COUNT, HOLDS_LANE_PLUS_X, HOLDS_LANE_PLUS_Y,
+               HOLDS_ELEMENT } held_value;
+
+/* Whether a MUBUF access is indexed only (IDXEN, no OFFEN, ADDR64, LDS or TFE, a zero offset and SOFFSET). */
+static int indexed_only(const uint32_t *w)
+{
+    return (w[0] & (MUBUF_OFFEN | MUBUF_IDXEN | MUBUF_ADDR64 | MUBUF_LDS | MUBUF_OFFSET_MASK)) == MUBUF_IDXEN && !(w[1] & MUBUF_TFE) &&
+           (w[1] >> 24) == SOFFSET_ZERO;
+}
+
+int gcn_table_copy_shape(const uint32_t *code, size_t dwords, gcn_table_copy *shape)
+{
+    enum { NONE = ~0u, VGPRS = 256, VOP_SRC_VGPR = 256 };
+    const long program = gcn_program_dwords(code, dwords);
+    if (program < 0) return 0;
+    held_value held[VGPRS] = {[0] = HOLDS_LANE};
+    unsigned table = NONE, source = NONE, destination = NONE, workgroup = NONE;
+    int table_format = 0;
+    for (size_t at = 0; at < (size_t)program;) {
+        gcn_instruction ins;
+        if (gcn_decode(code + at, (size_t)program - at, &ins) || !ins.name) return 0;
+        const uint32_t *w = code + at;
+        const char *name = ins.name;
+        long target;
+        if (ins.encoding == GCN_SOPP) {
+            /* waits, and branches that leave: to the program's last instruction (its s_endpgm) */
+            if (branches(w, &ins, at, &target)) {
+                if (strcmp(name, "s_cbranch_execz") || target < 0 || (size_t)target + 1 != (size_t)program) return 0;
+            } else if (strcmp(name, "s_waitcnt") && strcmp(name, "s_endpgm") && strcmp(name, "s_nop")) {
+                return 0;
+            }
+        } else if (ins.encoding == GCN_SOP1) {
+            if (strcmp(name, "s_mov_b32") && strcmp(name, "s_mov_b64") && strcmp(name, "s_and_saveexec_b64")) return 0;
+        } else if (ins.encoding == GCN_VOPC) {
+            if (strncmp(name, "v_cmp_", 6)) return 0; /* writes VCC only */
+        } else if (ins.encoding == GCN_VOP1) {
+            const unsigned src = w[0] & 0x1ff, vdst = (w[0] >> 17) & 0xff;
+            if (strcmp(name, "v_mov_b32")) return 0;
+            held[vdst] = HOLDS_OTHER;
+            if (src < SGPR_VCC && (workgroup == NONE || workgroup == src)) workgroup = src, held[vdst] = HOLDS_WORKGROUP;
+        } else if (ins.encoding == GCN_VOP2) {
+            const unsigned src0 = w[0] & 0x1ff, vsrc1 = (w[0] >> 9) & 0xff, vdst = (w[0] >> 17) & 0xff;
+            if (strcmp(name, "v_add_i32")) return 0;
+            const held_value a = src0 >= VOP_SRC_VGPR ? held[src0 - VOP_SRC_VGPR] : HOLDS_OTHER, b = held[vsrc1];
+            const held_value entry = a == HOLDS_LANE ? b : b == HOLDS_LANE ? a : HOLDS_OTHER;
+            held[vdst] = entry == HOLDS_ENTRY_X ? HOLDS_LANE_PLUS_X : entry == HOLDS_ENTRY_Y ? HOLDS_LANE_PLUS_Y : HOLDS_OTHER;
+        } else if (ins.encoding == GCN_MUBUF) {
+            const unsigned vaddr = w[1] & 0xff, vdata = (w[1] >> 8) & 0xff, srsrc = mubuf_srsrc(w);
+            if (!indexed_only(w)) return 0;
+            if ((!strcmp(name, "buffer_load_format_xyz") || !strcmp(name, "buffer_load_dwordx3")) && held[vaddr] == HOLDS_WORKGROUP &&
+                table == NONE && vdata + 2 < VGPRS) {
+                table = srsrc, table_format = name[12] == 'f';
+                held[vdata] = HOLDS_ENTRY_X, held[vdata + 1] = HOLDS_ENTRY_Y, held[vdata + 2] = HOLDS_ENTRY_COUNT;
+            } else if ((!strcmp(name, "buffer_load_format_x") || !strcmp(name, "buffer_load_dword")) && held[vaddr] == HOLDS_LANE_PLUS_Y &&
+                       source == NONE) {
+                source = srsrc, held[vdata] = HOLDS_ELEMENT;
+            } else if ((!strcmp(name, "buffer_store_format_x") || !strcmp(name, "buffer_store_dword")) && held[vaddr] == HOLDS_LANE_PLUS_X &&
+                       held[vdata] == HOLDS_ELEMENT && destination == NONE) {
+                destination = srsrc;
+            } else {
+                return 0;
+            }
+        } else {
+            return 0;
+        }
+        at += ins.dwords;
+    }
+    if (table == NONE || source == NONE || destination == NONE || workgroup == NONE) return 0;
+    /* the descriptors and the workgroup index stay as the dispatch set them */
+    const callee_code no_callee = {NULL, 0};
+    for (size_t at = 0; at < (size_t)program;) {
+        gcn_instruction ins;
+        gcn_decode(code + at, (size_t)program - at, &ins);
+        if (writes_sgprs(code + at, &ins, &no_callee, table, 4) || writes_sgprs(code + at, &ins, &no_callee, source, 4) ||
+            writes_sgprs(code + at, &ins, &no_callee, destination, 4) || writes_sgprs(code + at, &ins, &no_callee, workgroup, 1))
+            return 0;
+        at += ins.dwords;
+    }
+    *shape = (gcn_table_copy){.table_sgpr = table, .source_sgpr = source, .destination_sgpr = destination, .workgroup_sgpr = workgroup,
+                              .table_format = table_format};
+    return 1;
+}
+
 int gcn_sampler_resources(const uint32_t *code, size_t dwords, gcn_resource_origin *samplers, unsigned max, unsigned *count, char *error,
                           size_t error_size)
 {
