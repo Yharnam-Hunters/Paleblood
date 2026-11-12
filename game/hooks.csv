@@ -161,6 +161,8 @@ address,replacement,system,returns
 0x01f03210,bb_frame_timing_holygrail_wait_for_dungeon_mode,frame_timing,i32
 0x01f03680,bb_frame_timing_holygrail_wait_for_ritual_mode,frame_timing,i32
 0x01f6a9f0,bb_frame_timing_until_idle_01f6a9f0,frame_timing,i32
+0x01f82cc0,bb_param_find_rows_new_menu_color_table,param,void
+0x01f83130,bb_param_find_rows_char_make_menu_list_item,param,void
 0x0200d8a0,bb_frame_timing_until_idle_0200d8a0,frame_timing,i32
 0x0200e100,bb_frame_timing_until_idle_0200e100,frame_timing,i32
 0x0200e270,bb_frame_timing_request_7_0200e270,frame_timing,i32
@@ -171,14 +173,18 @@ address,replacement,system,returns
 0x020128f0,bb_frame_timing_until_idle_020128f0,frame_timing,i32
 0x02012a60,bb_frame_timing_request_7_02012a60,frame_timing,i32
 0x02012bf0,bb_frame_timing_until_idle_02012bf0,frame_timing,i32
+0x0206ddd0,bb_param_find_rows_menu_value_table,param,void
+0x0206ecc0,bb_param_menu_property_spec,param,i64
 0x0217ffb0,bb_engine_initialize_static_wide_string_0217ffb0,engine,void
 0x0222bc10,bb_ai_hk_frame_update_0222bc10,ai,void
 0x02311c80,bb_param_find_row_equip_param_accessory,param,void
+0x023128a0,bb_param_find_row_action_button,param,void
 0x02312b60,bb_param_find_row_ai_sound,param,void
 0x02314860,bb_param_find_row_bullet,param,void
 0x02314b60,bb_param_find_row_calc_correct_graph,param,void
 0x02314e20,bb_param_find_row_chara_init,param,void
 0x023155c0,bb_param_find_row_decal,param,void
+0x023167f0,bb_param_find_row_dungeon_feature,param,void
 0x02316c70,bb_param_find_row_dungeon_sub_feat_lot,param,void
 0x023192d0,bb_param_find_row_face,param,void
 0x0231af40,bb_param_find_row_face_range,param,void
@@ -191,6 +197,7 @@ address,replacement,system,returns
 0x0231e3d0,bb_param_find_row_equip_param_goods,param,void
 0x0231f460,bb_param_find_row_hit_mtrl,param,void
 0x0231f720,bb_param_find_row_holygrail_ex,param,void
+0x02320640,bb_param_find_row_item_lot,param,void
 0x02320dd0,bb_param_find_row_knock_back,param,void
 0x023210e0,bb_param_find_row_magic,param,void
 0x02321ac0,bb_param_find_row_menu_color_table,param,void
@@ -198,8 +205,10 @@ address,replacement,system,returns
 0x02322260,bb_param_find_row_equip_mtrl_set,param,void
 0x02322b40,bb_param_find_row_npc_think,param,void
 0x02323290,bb_param_find_row_object,param,void
+0x02323840,bb_param_find_row_equip_param_protector,param,void
 0x02326200,bb_param_find_row_reinforce_param_protector,param,void
 0x023264c0,bb_param_find_row_ragdoll,param,void
+0x02326b40,bb_param_find_row_return_point,param,void
 0x02327120,bb_param_find_row_ritual_required_mat,param,void
 0x02327450,bb_param_find_row_shop_lineup,param,void
 0x02327880,bb_param_find_row_skeleton,param,void
@@ -207,6 +216,7 @@ address,replacement,system,returns
 0x02328f90,bb_param_find_row_obj_act,param,void
 0x02329250,bb_param_find_row_talk,param,void
 0x02329510,bb_param_find_row_weapon_gen,param,void
+0x02329aa0,bb_param_find_row_equip_param_weapon,param,void
 0x0232c930,bb_param_find_row_reinforce_param_weapon,param,void
 0x02377bd0,bb_render_frame_update_02377bd0,render,void
 0x02418d20,bb_frame_timing_frame_step,frame_timing,i8
