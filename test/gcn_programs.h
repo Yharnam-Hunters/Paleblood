@@ -395,6 +395,39 @@ static const uint32_t pixel_quad_swizzle[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* Per lane i, from in[i]: out[i] = the half in its low 16 bits as a float (the high 16 bits ignored);
+   out[64 + i] = the same with the source negated (VOP3 neg). */
+static const uint32_t unpack_halves[] = {
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0xe0301000, 0x80000201, /* buffer_load_dword v2, v1, s[0:3], 0 offen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x7e061702, /* v_cvt_f32_f16_e32 v3, v2 */
+    0xd3160004, 0x20000102, /* v_cvt_f32_f16_e64 v4, -v2 */
+    0xe0701000, 0x80010301, /* buffer_store_dword v3, v1, s[4:7], 0 offen */
+    0xe0701100, 0x80010401, /* buffer_store_dword v4, v1, s[4:7], 0 offen offset:256 */
+    0xbf810000, /* s_endpgm */
+};
+
+/* Buffer atomics, all lanes on the same dwords of out: an add of 1 at out[0] returning the old value (GLC),
+   stored at out[1 + i]; an unsigned max of i at out[128] (no return); a compare-exchange at out[129] of i + 1
+   where it holds 0, returning the old value, stored at out[256 + i]. */
+static const uint32_t buffer_atomics[] = {
+    0x7e020281, /* v_mov_b32_e32 v1, 1 */
+    0x7e040280, /* v_mov_b32_e32 v2, 0 */
+    0xe0c85000, 0x80010102, /* buffer_atomic_add v1, v2, s[4:7], 0 offen glc */
+    0x34060082, /* v_lshlrev_b32_e32 v3, 2, v0 */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xe0701004, 0x80010103, /* buffer_store_dword v1, v3, s[4:7], 0 offen offset:4 */
+    0x7e080300, /* v_mov_b32_e32 v4, v0 */
+    0xe0e01200, 0x80010402, /* buffer_atomic_umax v4, v2, s[4:7], 0 offen offset:512 */
+    0x4a0a0081, /* v_add_i32_e32 v5, vcc, 1, v0 */
+    0x7e0c0280, /* v_mov_b32_e32 v6, 0 */
+    0xe0c45204, 0x80010502, /* buffer_atomic_cmpswap v[5:6], v2, s[4:7], 0 offen offset:516 glc */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xe0701400, 0x80010503, /* buffer_store_dword v5, v3, s[4:7], 0 offen offset:1024 */
+    0xbf810000, /* s_endpgm */
+};
+
 /* Per lane i, a one-component format store of i at i * 4 bytes (buffer_store_format_x, the
    descriptor's format). */
 /* Per lane i, (i, i + 1, i + 2, i + 3) stored with one buffer_store_dwordx4 at i * 16 bytes plus the
