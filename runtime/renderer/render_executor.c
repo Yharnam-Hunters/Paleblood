@@ -208,7 +208,7 @@ typedef struct {
 typedef struct {
     uint64_t code;
     uint32_t threads[3], user_sgprs;
-    int workgroup_id_x_sgpr;
+    uint32_t workgroup_id_enables;
     gcn_image_binding images[GCN_MAX_IMAGES];
     unsigned image_count;
     uint32_t user_read;              /* the user SGPRs it reads before writing them (gcn_spirv.h) */
@@ -2641,13 +2641,13 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
 
 /* The pipeline for a compute shader as dispatched now: translated once per workgroup size and
    register layout. VK_NULL_HANDLE after failing. */
-static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *c, int workgroup_id_x_sgpr, const gcn_image_binding *images,
+static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *c, const gcn_image_binding *images,
                                        unsigned image_count, uint32_t *user_read, char *error, size_t error_size)
 {
     for (size_t i = 0; i < x->compute_count; i++) {
         const compute_entry *e = &x->computes[i];
         if (e->code == c->code && !memcmp(e->threads, c->threads, sizeof e->threads) && e->user_sgprs == c->user_sgprs &&
-            e->workgroup_id_x_sgpr == workgroup_id_x_sgpr && e->image_count == image_count &&
+            e->workgroup_id_enables == c->workgroup_id_enables && e->image_count == image_count &&
             !memcmp(e->images, images, image_count * sizeof *images)) {
             *user_read = e->user_read;
             return e->pipeline;
@@ -2662,7 +2662,7 @@ static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *
         return VK_NULL_HANDLE;
     }
     const gcn_compute_layout layout = {.local_size = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
-                                       .workgroup_id_x_sgpr = workgroup_id_x_sgpr, .push_constant_offset = 0,
+                                       .workgroup_id_enables = c->workgroup_id_enables, .push_constant_offset = 0,
                                        .address_offset = x->address_offset, .error_address = stop_slot(x, 1, x->compute_count),
                                        .images = images, .image_count = image_count, .user_data_read = user_read};
     uint32_t *spirv = NULL;
@@ -2694,7 +2694,7 @@ static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *
     }
     compute_entry *e = &x->computes[x->compute_count++];
     *e = (compute_entry){.user_read = *user_read, .code = c->code, .threads = {c->threads[0], c->threads[1], c->threads[2]}, .user_sgprs = c->user_sgprs,
-                         .workgroup_id_x_sgpr = workgroup_id_x_sgpr, .image_count = image_count, .module = module, .pipeline = pipeline};
+                         .workgroup_id_enables = c->workgroup_id_enables, .image_count = image_count, .module = module, .pipeline = pipeline};
     memcpy(e->images, images, image_count * sizeof *images);
     return pipeline;
 }
@@ -3483,11 +3483,8 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     const rt_compute_shader *c = &s->compute;
     if (!c->threads[0] || !c->threads[1] || !c->threads[2])
         return failed(error, error_size, "a compute shader with a workgroup of %u x %u x %u threads", c->threads[0], c->threads[1], c->threads[2]);
-    if (c->workgroup_id_enables & ~1u)
-        return failed(error, error_size, "a compute shader that takes its workgroup's y or z index: not run yet");
     if (c->workgroup_size_enabled) return failed(error, error_size, "a compute shader that takes its workgroup's size information: not run yet");
     if (write_back_targets(x, error, error_size)) return -1; /* it may read what draws wrote */
-    const int workgroup_id_x_sgpr = (c->workgroup_id_enables & 1u) ? (int)c->user_sgprs : -1;
     gcn_image_binding bindings[GCN_MAX_IMAGES];
     VkImageView views[GCN_MAX_IMAGES];
     unsigned image_count = 0;
@@ -3496,7 +3493,7 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
                      error_size))
         return -1;
     uint32_t user_read = 0;
-    const VkPipeline pipeline = compute_pipeline_for(x, c, workgroup_id_x_sgpr, bindings, image_count, &user_read, error, error_size);
+    const VkPipeline pipeline = compute_pipeline_for(x, c, bindings, image_count, &user_read, error, error_size);
     if (!pipeline) return -1;
     if (check_user_data("compute", c->code, user_read, s->compute_user_set, error, error_size)) return -1;
     const VkPipelineLayout layout = image_count ? x->image_layouts[image_count] : x->compute_layout;

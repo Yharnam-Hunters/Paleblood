@@ -51,7 +51,7 @@ typedef struct {
     shader_stage stage;
     uint32_t local_size[3];
     unsigned user_sgprs;
-    int workgroup_id_x_sgpr;
+    uint32_t workgroup_id_enables;   /* a compute shader's (runtime/gcn_spirv.h) */
     unsigned vertex_index_vgpr, barycentric_vgpr, position_enable, position_vgpr;
     int front_face, front_face_all_bits;  /* a pixel shader's front-face input (runtime/gcn_spirv.h) */
     unsigned front_face_vgpr;
@@ -1981,10 +1981,12 @@ static void starting_registers(translator *t, const stage_layout *layout)
         return;
     }
     const uint32_t uvec3 = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_uint(t), 3}, 2);
-    if (layout->workgroup_id_x_sgpr >= 0) {
+    if (layout->workgroup_id_enables) {
         const uint32_t group = load(t, uvec3, t->workgroup_id);
-        store(t, t->out, sgpr(t, (unsigned)layout->workgroup_id_x_sgpr),
-              value(t, SPV_OP_COMPOSITE_EXTRACT, t_uint(t), 2, group, 0));
+        unsigned next = layout->user_sgprs; /* each enabled index takes the next SGPR: x, then y, then z */
+        for (unsigned axis = 0; axis < 3; axis++)
+            if (layout->workgroup_id_enables >> axis & 1u)
+                store(t, t->out, sgpr(t, next++), value(t, SPV_OP_COMPOSITE_EXTRACT, t_uint(t), 2, group, axis));
     }
     t->writing = 0;
     const uint32_t lane = load(t, uvec3, t->local_invocation_id);
@@ -3143,7 +3145,7 @@ int gcn_translate_compute(const uint32_t *code, size_t dwords, const gcn_compute
                           uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size)
 {
     const stage_layout s = {.stage = STAGE_COMPUTE, .local_size = {layout->local_size[0], layout->local_size[1], layout->local_size[2]},
-                            .user_sgprs = layout->user_sgprs, .workgroup_id_x_sgpr = layout->workgroup_id_x_sgpr,
+                            .user_sgprs = layout->user_sgprs, .workgroup_id_enables = layout->workgroup_id_enables,
                             .images = layout->images, .image_count = layout->image_count,
                             .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address,
                             .user_data_read = layout->user_data_read};
@@ -3153,7 +3155,7 @@ int gcn_translate_compute(const uint32_t *code, size_t dwords, const gcn_compute
 int gcn_translate_vertex(const uint32_t *code, size_t dwords, const gcn_vertex_layout *layout,
                          uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size)
 {
-    const stage_layout s = {.stage = STAGE_VERTEX, .user_sgprs = layout->user_sgprs, .workgroup_id_x_sgpr = -1,
+    const stage_layout s = {.stage = STAGE_VERTEX, .user_sgprs = layout->user_sgprs,
                             .vertex_index_vgpr = layout->vertex_index_vgpr, .output_control = layout->output_control,
                             .callee = layout->callee, .callee_dwords = layout->callee_dwords, .code_address = layout->code_address,
                             .images = layout->images, .image_count = layout->image_count, .first_binding = layout->first_binding,
@@ -3165,7 +3167,7 @@ int gcn_translate_vertex(const uint32_t *code, size_t dwords, const gcn_vertex_l
 int gcn_translate_pixel(const uint32_t *code, size_t dwords, const gcn_pixel_layout *layout,
                         uint32_t **spirv, size_t *spirv_word_count, char *error, size_t error_size)
 {
-    const stage_layout s = {.stage = STAGE_PIXEL, .user_sgprs = layout->user_sgprs, .workgroup_id_x_sgpr = -1,
+    const stage_layout s = {.stage = STAGE_PIXEL, .user_sgprs = layout->user_sgprs,
                             .barycentric_vgpr = layout->barycentric_vgpr, .position_enable = layout->position_enable,
                             .position_vgpr = layout->position_vgpr,
                             .front_face = layout->front_face, .front_face_all_bits = layout->front_face_all_bits,

@@ -28,7 +28,7 @@ static int failures;
 
 #define PROGRAM(code) code, sizeof code / sizeof code[0]
 
-static const gcn_compute_layout layout = {.local_size = {64, 1, 1}, .user_sgprs = 8, .workgroup_id_x_sgpr = -1};
+static const gcn_compute_layout layout = {.local_size = {64, 1, 1}, .user_sgprs = 8};
 
 /* Runs spirv-val on the module: 1 valid, 0 invalid, -1 when spirv-val is not installed. */
 static int validate(const uint32_t *spirv, size_t words, const char *name)

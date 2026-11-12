@@ -25,7 +25,7 @@ static uint64_t error_address;  /* the run-time stop word's GPU address, or 0 */
 /* Translates code and runs it over one workgroup of LANES lanes with the given user data. */
 static int run(gpu *g, const uint32_t *code, size_t dwords, const uint32_t *user_data)
 {
-    const gcn_compute_layout layout = {.local_size = {LANES, 1, 1}, .user_sgprs = 8, .workgroup_id_x_sgpr = -1,
+    const gcn_compute_layout layout = {.local_size = {LANES, 1, 1}, .user_sgprs = 8,
                                        .address_offset = address_offset, .error_address = error_address};
     uint32_t *spirv = NULL;
     size_t words = 0;

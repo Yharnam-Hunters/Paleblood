@@ -816,7 +816,7 @@ static id<MTLComputePipelineState> compute_pipeline_for(rt_executor *x, const rt
     gcn_compute_layout layout{};
     std::copy(shader.threads, shader.threads + 3, layout.local_size);
     layout.user_sgprs = shader.user_sgprs;
-    layout.workgroup_id_x_sgpr = workgroup_x ? static_cast<int>(shader.user_sgprs) : -1;
+    layout.workgroup_id_enables = workgroup_x ? 1u : 0u;
     layout.address_offset = x->address_offset;
     layout.error_address = x->stop.gpuAddress;
     layout.user_data_read = &user_read;
