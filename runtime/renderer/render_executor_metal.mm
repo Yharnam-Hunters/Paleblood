@@ -568,9 +568,16 @@ static id<MTLTexture> image_for(rt_executor *x, const uint32_t words[RT_IMAGE_DE
 {
     const char *stage = storage ? "compute" : "pixel";
     const bool one_d = d.type == RT_IMAGE_1D || d.type == RT_IMAGE_1D_ARRAY;
-    const bool arrayed = d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY;
+    /* Bounded host policy: one cube's zero-based face prefix is a flat 2D array.
+       The common unsampled path consumes the third coordinate independently of DA.
+       Multi-cube packing and hardware prefix semantics are outside this policy. */
+    const bool cube = storage && d.type == RT_IMAGE_CUBE && d.data_format == 10 && d.num_format == 0 &&
+        d.depth == 1 && d.layers == 6 && d.width == d.height && !d.pow2_pad &&
+        !d.base_array && d.last_array < 6 && !d.base_level && !d.last_level &&
+        d.tiling_index == 13 && d.pitch % 8 == 0;
+    const bool arrayed = d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY || cube;
     const bool volume = storage && d.type == RT_IMAGE_3D;
-    if (!one_d && d.type != RT_IMAGE_2D && d.type != RT_IMAGE_2D_ARRAY && !volume) {
+    if (!one_d && d.type != RT_IMAGE_2D && d.type != RT_IMAGE_2D_ARRAY && !volume && !cube) {
         if (storage) return failed(error,size,"compute image type %u is outside 1D/2D arrays and the selected 3D volume profile",d.type), nil;
         return failed(error, size, "only 1D/2D %s images and their arrays are modeled",stage), nil;
     }
@@ -664,11 +671,12 @@ static id<MTLTexture> image_for(rt_executor *x, const uint32_t words[RT_IMAGE_DE
         const auto &layout = levels[level];
         const uint32_t width = std::max(1u,d.width >> level), rows = std::max(1u,height >> level);
         const size_t row_bytes = static_cast<size_t>(layout.columns) * format.bytes, slice_bytes = row_bytes * layout.rows;
+        const size_t transfer_row_bytes = cube && rows == 1 ? 0 : row_bytes;
         x->image_rows.resize(slice_bytes * d.layers);
         rt_tiling_detile(&layout.layout,base + layout.offset,x->image_rows.data(),layout.columns,layout.rows,d.layers);
         for (uint32_t slice = 0; slice < d.layers; ++slice)
             [entry->texture replaceRegion:MTLRegionMake2D(0,0,width,rows) mipmapLevel:level slice:slice
-                withBytes:x->image_rows.data() + slice * slice_bytes bytesPerRow:row_bytes bytesPerImage:0];
+                withBytes:x->image_rows.data() + slice * slice_bytes bytesPerRow:transfer_row_bytes bytesPerImage:0];
     }
     return entry->view;
 }
@@ -1123,9 +1131,11 @@ static int compute_resources(rt_executor *x, const rt_compute_shader &shader, co
         if (d.base_level || d.last_level) return failed(error,size,"compute storage images require relative and physical mip zero");
         if ((images[i].access & (GCN_IMAGE_READ | GCN_IMAGE_WRITE)) == (GCN_IMAGE_READ | GCN_IMAGE_WRITE) &&
             storage_read_write(x,format->metal,error,size)) return -1;
+        if (d.type == RT_IMAGE_CUBE && images[i].access != GCN_IMAGE_WRITE)
+            return failed(error,size,"compute cube storage requires write-only access");
         out.images[i] = {images[i].origin,
             d.type == RT_IMAGE_1D || d.type == RT_IMAGE_1D_ARRAY ? GCN_IMAGE_1D : d.type == RT_IMAGE_3D ? GCN_IMAGE_3D : GCN_IMAGE_2D,
-            d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY,format->type,format->components,0,0,
+            d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY || d.type == RT_IMAGE_CUBE,format->type,format->components,0,0,
             format->components == 4 && d.type != RT_IMAGE_3D ? d.swizzle : 0};
         out.access[i] = images[i].access;
         if (!(out.textures[i] = image_for(x,words,d,*format,true,&out.layouts[i],&out.volumes[i],error,size))) return -1;
@@ -1155,14 +1165,15 @@ static void store_compute_image(rt_executor *x, const MetalComputeResources &res
         return;
     }
     const bool one_d = d.type == RT_IMAGE_1D || d.type == RT_IMAGE_1D_ARRAY;
-    const bool arrayed = d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY;
+    const bool arrayed = d.type == RT_IMAGE_1D_ARRAY || d.type == RT_IMAGE_2D_ARRAY || d.type == RT_IMAGE_CUBE;
     const uint32_t height = one_d ? 1 : d.height, first = arrayed ? d.base_array : 0, last = arrayed ? d.last_array : 0;
     const size_t row_bytes = static_cast<size_t>(d.width) * layout.element_bytes, slice_bytes = row_bytes * height;
+    const size_t transfer_row_bytes = d.type == RT_IMAGE_CUBE && height == 1 ? 0 : row_bytes;
     x->image_rows.resize(slice_bytes * d.layers);
     auto *backing = static_cast<uint8_t *>(x->view) + d.address - x->guest_base;
     rt_tiling_detile(&layout,backing,x->image_rows.data(),d.width,height,d.layers);
     for (uint32_t slice = first; slice <= last; ++slice)
-        [resources.textures[i] getBytes:x->image_rows.data() + slice * slice_bytes bytesPerRow:row_bytes bytesPerImage:0
+        [resources.textures[i] getBytes:x->image_rows.data() + slice * slice_bytes bytesPerRow:transfer_row_bytes bytesPerImage:0
             fromRegion:MTLRegionMake2D(0,0,d.width,height) mipmapLevel:0 slice:slice - first];
     rt_tiling_tile(&layout,x->image_rows.data(),backing,d.width,height,d.layers);
 }

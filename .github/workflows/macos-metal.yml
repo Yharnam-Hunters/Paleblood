@@ -32,6 +32,8 @@ on:
       - 'test/volume_fixture.h'
       - 'test/test_metal_permutations.c'
       - 'test/test_metal_srgb_storage.c'
+      - 'test/test_metal_cube_stores.c'
+      - 'test/metal_cube_programs.h'
       - 'test/metal_permutation_programs.h'
       - 'test/metal_storage_programs.h'
       - 'test/metal_image_programs.h'
@@ -73,6 +75,8 @@ on:
       - 'test/volume_fixture.h'
       - 'test/test_metal_permutations.c'
       - 'test/test_metal_srgb_storage.c'
+      - 'test/test_metal_cube_stores.c'
+      - 'test/metal_cube_programs.h'
       - 'test/metal_permutation_programs.h'
       - 'test/metal_storage_programs.h'
       - 'test/metal_image_programs.h'
@@ -117,7 +121,7 @@ jobs:
           assert {'pbmetal', 'pbboot', 'pbloader', 'bbrt', 'bbgame'} <= names
           PY
       - name: Compile Metal library and real-device test
-        run: cmake --build build --target pbmetal test_metal_offscreen test_metal_executor test_metal_compute test_metal_compute_barriers test_metal_coherence test_metal_images test_metal_storage test_metal_volumes test_metal_permutations test_metal_srgb_storage test_compute_thread_ids test_compute_wave_votes test_metal_depth test_metal_rectangles test_metal_rectangle_values test_metal_window_position test_pixel_vm_metal test_metal_shader_order --parallel 2
+        run: cmake --build build --target pbmetal test_metal_offscreen test_metal_executor test_metal_compute test_metal_compute_barriers test_metal_coherence test_metal_images test_metal_storage test_metal_volumes test_metal_permutations test_metal_srgb_storage test_metal_cube_stores test_compute_thread_ids test_compute_wave_votes test_metal_depth test_metal_rectangles test_metal_rectangle_values test_metal_window_position test_pixel_vm_metal test_metal_shader_order --parallel 2
       # Hosted compilation does not qualify a real Metal device or GPU execution.
 
   shaders:

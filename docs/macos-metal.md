@@ -375,7 +375,7 @@ records must contain 1..8 words within the modeled slots. Required user data mus
 have been explicitly written; zero is a valid written value.
 
 Compute images use the common descriptor origins, typed translation and canonical tiling. The
-backend binds up to sixteen single-level 1D/2D storage images, arrays or selected 3D volumes. R8/RG8/RGBA8 UNORM,
+backend binds up to sixteen single-level 1D/2D storage images, arrays, selected 3D volumes or bounded single-cube stores. R8/RG8/RGBA8 UNORM,
 R32 FLOAT/UINT/SINT, RG32/RGBA32 FLOAT and RGBA8 UINT support separate loads/stores; native
 read/write access uses the device's supported [read/write texture tier](https://developer.apple.com/documentation/metal/mtldevice/readwritetexturesupport).
 RG8 UNORM and RG32 FLOAT require separate accesses. Four-component 1D/2D storage images and arrays accept
@@ -399,7 +399,7 @@ backend's [explicit compatibility policy](https://github.com/Yharnam-Hunters/Pal
 native allocation and binding. Values are packed as UNORM without gamma encoding, including
 alpha. The raw descriptor remains the texture-cache key; ordinary current-guest upload and
 completed-store publication preserve untouched texels and padding. Reads, read/write access,
-compressed sRGB storage and 3D descriptors remain refused by this compatibility profile.
+compressed sRGB storage, 3D and cube descriptors remain refused by this compatibility profile.
 
 This is a project compatibility choice, not GFX7 hardware equivalence. The [Sea Islands ISA's
 format table](https://docs.amd.com/api/khub/documents/YO8RUh~LIQ5Cx3M_Kq9qkg/content#page=80) does not list sRGB image writes, and [AMD PAL deliberately converts a write view to
@@ -407,13 +407,46 @@ UNORM](https://github.com/GPUOpen-Drivers/pal/blob/7ce51b199c72021b8d027c50b55da
 write does not establish GFX7 behavior for an sRGB descriptor. `test_metal_srgb_storage` uses
 interior RGB and independent alpha to distinguish this raw-UNORM policy from automatic gamma encoding.
 
+Cube stores have a separate, bounded host policy. A single square RGBA8 UNORM cube
+(`DATA_FORMAT=10`, `NUM_FORMAT=0`, decoded depth one and six physical face layers) uses a
+Metal 2D-array allocation, including when the selected view exposes only one face. The profile
+requires mip zero, tile index 13, pitch aligned to eight texels, no `POW2_PAD`, `BASE_ARRAY=0`
+and `LAST_ARRAY` from zero through five. Access must be exactly write-only. All four channel
+selectors must form a permutation; the common inverse store mapping preserves canonical bytes.
+Reads, read/write access, other formats or tiles, sRGB, multi-cube arrays, nonzero base faces
+and sampling remain outside this profile.
+
+The common unsampled translator consumes the third VGPR coordinate as an unsigned flat face
+index independently of DA. Its image-size check suppresses stores outside the selected prefix
+without changing memory. This is an explicit host policy, matching the common renderer's
+selected 2D-array storage view; DA and partial-view hardware equivalence are not established.
+The [Sea Islands cube coordinate table](https://docs.amd.com/api/khub/documents/YO8RUh~LIQ5Cx3M_Kq9qkg/content#page=73)
+packs the cube slice with an eight-face stride. Only first-cube face IDs zero through five
+coincide with flat layers here; the backend performs no general multi-cube coordinate conversion.
+
+All six physical faces participate in pool bounds and overlapping-image checks. Current guest
+texels from all faces are uploaded before a dispatch. Publication replaces only exposed face
+texels, retaining unexposed faces, other texels and layout padding. Raw descriptor words retain
+type, view and selector identity in the image cache. Native slice transfers use the ordinary
+[2D-array API](https://developer.apple.com/documentation/metal/mtltexture/replace(region:mipmaplevel:slice:withbytes:bytesperrow:bytesperimage:)),
+with zero `bytesPerImage` and zero `bytesPerRow` for a single row. CPU staging retains its
+actual packed row and face strides. This policy does not establish console output or gameplay.
+
+`test_metal_cube_stores` uses owned LLVM-assembled stores and a separate raw GPU buffer
+observer. Literal thin-tile offsets and inverse channel tables check all six physical faces,
+including untouched texels and padding. Cases cover both DA encodings, every prefix and valid
+face, all 24 permutations, successful out-of-range suppression, live cached descriptors and CPU
+updates, exact pool ends and descriptor refusals. Two individually valid cubes also overlap only
+in an unexposed face, checking that allocation-wide alias bounds survive a narrow view. These
+are synthetic host-policy checks; hardware prefix behavior and native cube sampling stay unproven.
+
 Each compute submission completes before a later dispatch or draw consumes its
 shared buffer and image writes. Completed draw pixels are already published into that pool,
 and the next draw reloads it. These checks do not establish a working game boot
 or character-creation rendering on macOS.
 
 3D storage uses true Metal volume textures, not arrays of independent 2D slices. Stored components
-retain identity selectors; permutation support is limited to the separate 1D/2D profile. This profile
+retain identity selectors; permutations belong to the separate 1D/2D and bounded cube-store profiles. This profile
 accepts mip zero, dimensions 1..2048 on each axis, zero `BASE_ARRAY`/`LAST_ARRAY` fields and the
 [index-19 thick microtile layout](volume-tiling.md). Zero array fields select the supported
 whole-volume view; this does not establish the meaning of other 3D descriptor view encodings.
