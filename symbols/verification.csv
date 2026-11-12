@@ -36,8 +36,10 @@ engine_entry_manager_resolve,edge,,25,25,0,0,390da978e6436eea,2026-11-03
 engine_initialize_static_wide_string_0217ffb0,edge,,30,30,0,0,ccdadef0d4bd7152,2026-11-03
 engine_release_owner_storage,edge,,28,28,0,0,e693d2086e8654b0,2026-11-03
 engine_resize_owner_storage,edge,,37,37,0,0,2a08395ca4550ad9,2026-11-03
-engine_robust_heap_allocate_02486810,edge,,34,34,0,0,be34fde7142ce63d,2026-11-12
-engine_robust_heap_allocate_top_02487380,edge,,22,22,0,0,be34fde7142ce63d,2026-11-12
+engine_robust_heap_allocate_02486810,edge,,34,34,0,0,c7e33d925de936b6,2026-11-12
+engine_robust_heap_allocate_aligned_02486cd0,edge,,25,25,0,0,204fe7e1d9844776,2026-11-12
+engine_robust_heap_allocate_aligned_top_02487650,edge,,18,18,0,0,204fe7e1d9844776,2026-11-12
+engine_robust_heap_allocate_top_02487380,edge,,22,22,0,0,c7e33d925de936b6,2026-11-12
 engine_store_word_product,edge,,32,32,0,0,ecb3d664ff30b9e2,2026-11-05
 engine_string_append,edge,,32,32,0,0,f9bbc2ec8f450f14,2026-11-05
 engine_string_append_counted,edge,,48,48,0,0,f7f96f0ac221364a,2026-11-05
