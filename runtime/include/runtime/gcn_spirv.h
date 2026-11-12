@@ -55,6 +55,7 @@ enum {
     /* a draw with a geometry shader of more vertices or primitives than its rings or strip buffer hold
        (gcn_geometry_layout); details: the draw's vertex count, its low 24 bits */
     GCN_RUNTIME_STOP_GEOMETRY_LIMIT = 5,
+    GCN_RUNTIME_STOP_WAVE_PC = 6, /* cooperative compute invocations disagree on the next block */
 };
 
 /* Images (MIMG). A shader names an image by the SGPRs holding its 8-word descriptor (T#), which the
@@ -190,6 +191,12 @@ typedef struct {
     const gcn_image_binding *images;
     unsigned image_count;
     uint32_t *user_data_read; /* when not NULL, set on success to the user SGPRs read before written (User data read, below) */
+    unsigned thread_id_vgprs; /* 1=X, 2=XY, 3=XYZ; 0 preserves the existing XYZ default.
+                                 Other registers retain the translator's deterministic initial value,
+                                 not a hardware guarantee for disabled thread-ID inputs. */
+    unsigned workgroup_wave_votes; /* 1: full 64-thread logical-wave votes with a uniform dispatcher guard.
+                                       Requires exactly 64 local invocations and a runtime-stop word.
+                                       0 preserves native subgroup translation for other backends. */
     gcn_lds lds;              /* the workgroup's LDS (above) */
 } gcn_compute_layout;
 
