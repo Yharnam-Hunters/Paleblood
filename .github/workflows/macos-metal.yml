@@ -10,11 +10,13 @@ on:
       - 'CMakeLists.txt'
       - 'cmake/Metal.cmake'
       - 'cmake/MetalExecutor.cmake'
+      - 'cmake/ComputeThreadIdTests.cmake'
       - 'runtime/graphics_metal.mm'
       - 'runtime/include/runtime/graphics_metal.h'
       - 'test/test_metal_offscreen.mm'
       - 'test/test_metal_executor.c'
       - 'test/test_metal_compute.c'
+      - 'test/test_compute_thread_ids.c'
       - 'test/test_metal_coherence.c'
       - 'test/test_metal_images.c'
       - 'test/metal_image_programs.h'
@@ -33,11 +35,13 @@ on:
       - 'CMakeLists.txt'
       - 'cmake/Metal.cmake'
       - 'cmake/MetalExecutor.cmake'
+      - 'cmake/ComputeThreadIdTests.cmake'
       - 'runtime/graphics_metal.mm'
       - 'runtime/include/runtime/graphics_metal.h'
       - 'test/test_metal_offscreen.mm'
       - 'test/test_metal_executor.c'
       - 'test/test_metal_compute.c'
+      - 'test/test_compute_thread_ids.c'
       - 'test/test_metal_coherence.c'
       - 'test/test_metal_images.c'
       - 'test/metal_image_programs.h'
@@ -81,7 +85,7 @@ jobs:
           assert {'pbmetal', 'pbboot', 'pbloader', 'bbrt', 'bbgame'} <= names
           PY
       - name: Compile Metal library and real-device test
-        run: cmake --build build --target pbmetal test_metal_offscreen test_metal_executor test_metal_compute test_metal_coherence test_metal_images --parallel 2
+        run: cmake --build build --target pbmetal test_metal_offscreen test_metal_executor test_metal_compute test_metal_coherence test_metal_images test_compute_thread_ids --parallel 2
       # Hosted compilation does not qualify a real Metal device or GPU execution.
 
   shaders:
