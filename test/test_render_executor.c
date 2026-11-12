@@ -2401,6 +2401,44 @@ int main(void)
         CHECK(right);
         }
 
+        /* A mip-mapped image in compute shaders: a storage view is the level BASE_LEVEL alone. 64 lanes fill
+           level 1 (32 x 1) of a 2-level 64 x 1 image through a descriptor with BASE_LEVEL 1; read back
+           through the same view, texels 0-31 hold their values; read through BASE_LEVEL 0, level 0 still
+           holds the zeros the image started with (its first use wrote it). */
+        {
+            enum { LEVELED = 0x5a0000, LEVEL_ONE = 32 };
+            for (int view_level = 1; view_level >= 0; view_level--) {
+                uint32_t leveled[8];
+                image_descriptor(leveled, at(LEVELED), 14, 7, LANES, 1);
+                leveled[3] |= (uint32_t)view_level << 12 | 1u << 16; /* BASE_LEVEL, LAST_LEVEL 1 */
+                for (unsigned i = 0; i < LANES * 4; i++) back[i] = -1;
+                if (view_level) rt_render_forget(), rt_executor_reset(x);
+                else rt_render_forget();
+                uint32_t offset = 0x10;
+                for (int pass = view_level ? 0 : 1; pass < 2; pass++) {
+                    const uint64_t code = pass ? codes[2] : codes[0];
+                    const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x3, 16 << 1,
+                                                                      pass ? LEVEL_ONE : LANES, 1, 1};
+                    CHECK(rt_render_record_compute_shader_at(IMAGES + offset, shader) == 0);
+                    memset(user, 0, sizeof user);
+                    if (pass) descriptor(user, at(BACK), 16);
+                    memcpy(user + 8, leveled, sizeof leveled);
+                    CHECK(rt_render_record_user_data(IMAGES, offset + 0x10, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+                    CHECK(rt_render_record_user_data(IMAGES, offset + 0x20, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
+                    CHECK(rt_render_record_dispatch(IMAGES, offset + 0x30, one, error, sizeof error) == 0);
+                    offset += 0x40;
+                }
+                const int ran = rt_executor_run(x, IMAGES, offset, error, sizeof error);
+                if (ran) fprintf(stderr, "mip-mapped storage image (view level %d): %s\n", view_level, error);
+                CHECK(ran == 0);
+                int right = 1;
+                for (unsigned i = 0; i < LEVEL_ONE; i++)
+                    right &= view_level ? back[i * 4] == (float)i && back[i * 4 + 1] == 1.0f && back[i * 4 + 2] == 2.0f && back[i * 4 + 3] == 0.5f
+                                        : back[i * 4] == 0.0f && back[i * 4 + 1] == 0.0f && back[i * 4 + 2] == 0.0f && back[i * 4 + 3] == 0.0f;
+                CHECK(right);
+            }
+        }
+
         /* Stores outside a storage image write nothing: 64 lanes fill a 40-texel image, and 40 lanes
            read it back; texels 0-39 hold their values and nothing past them was touched. */
         {
