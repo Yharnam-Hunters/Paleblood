@@ -233,6 +233,14 @@ typedef struct {
     /* a geometry shader's copy shader (Geometry shaders, below): its ring loads read the GSVS ring, here
        on the GPU; 0 for any other vertex shader */
     uint64_t gsvs_ring, gsvs_ring_bytes;
+    /* instancing: the input VGPRs the hardware fills after the vertex index (VGPR_COMP_CNT, 0 to 3): v1 the
+       instance index over VGT_INSTANCE_STEP_RATE_0, v2 over VGT_INSTANCE_STEP_RATE_1, v3 the instance index
+       (shadPS4's translate.cpp lays them out so, facts only). step_rates holds the two registers, the ones
+       set in step_rates_set (bit 0, bit 1); a program that reads v1 or v2 before writing it, its step rate
+       not set or 0, stops translation (taking the instructions in program order, as User data read below) */
+    unsigned instance_vgprs;
+    uint32_t step_rates[2];
+    unsigned step_rates_set;
 } gcn_vertex_layout;
 
 /* Calls. A vertex shader may start by calling a fetch shader, which loads its vertex inputs:

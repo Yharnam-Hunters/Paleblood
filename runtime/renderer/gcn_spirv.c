@@ -69,6 +69,9 @@ typedef struct {
     size_t callee_dwords;
     uint64_t code_address;
     uint32_t *user_data_read;        /* runtime/gcn_spirv.h, "User data read" */
+    unsigned instance_vgprs;         /* a vertex shader's instancing inputs (runtime/gcn_spirv.h) */
+    uint32_t step_rates[2];
+    unsigned step_rates_set;
     gcn_lds lds;                     /* the workgroup's LDS (runtime/gcn_spirv.h) */
     uint32_t lds_workgroups;         /* the tessellation stages' LDS buffer's workgroups */
     /* tessellation (runtime/gcn_spirv.h): the local and hull shaders run as compute shaders, the domain
@@ -118,6 +121,9 @@ typedef struct {
     uint32_t sampler[GCN_MAX_SAMPLERS]; /* each sampler binding's variable, made on first use */
     size_t program_dwords;           /* the program's length, for finding where its descriptors come from */
     int uses_1d_images, uses_sampled_1d_images, queries_images, reads_images, writes_images, uses_quads;
+    /* input VGPRs whose starting value is not known (a vertex shader's instance index over a step rate no
+       call set), and those of them the program read before writing */
+    uint32_t unknown_inputs, unknown_read;
     /* outside compute shaders, a lane has no known place in the wave, so a scalar write of VCC's halves
        leaves each lane's VCC bit unknown until a vector write sets it; this bool variable (made when the
        program has such a write) says so, and reading VCC as a lane mask while it holds is a run-time stop */
@@ -183,8 +189,11 @@ static uint32_t widen(translator *t, uint32_t bits) { return value(t, SPV_OP_U_C
 static uint32_t udiv(translator *t, uint32_t a, uint32_t b) { return value(t, SPV_OP_U_DIV, t_uint(t), 2, a, b); }
 static uint32_t umod(translator *t, uint32_t a, uint32_t b) { return value(t, SPV_OP_U_MOD, t_uint(t), 2, a, b); }
 
+static void mark_vgpr_access(translator *t, uint32_t pointer, int written);
+
 static void store(translator *t, spirv_words *to, uint32_t pointer, uint32_t v)
 {
+    mark_vgpr_access(t, pointer, 1);
     const uint32_t words[] = {pointer, v};
     spirv_emit(&t->m, to, SPV_OP_STORE, words, 2);
 }
@@ -219,7 +228,23 @@ static uint32_t lane_bit(translator *t, unsigned n)
     return t->lane_bit[n];
 }
 
-static uint32_t load(translator *t, uint32_t type, uint32_t pointer) { return value(t, SPV_OP_LOAD, type, 1, pointer); }
+/* A load or store of one of the VGPRs whose starting value is not known: a load before any store is a read
+   of that value (t->unknown_read); a store makes the VGPR known. */
+static void mark_vgpr_access(translator *t, uint32_t pointer, int written)
+{
+    for (uint32_t pending = t->unknown_inputs; pending; pending &= pending - 1) {
+        const unsigned n = (unsigned)__builtin_ctz(pending);
+        if (!t->vgpr[n] || t->vgpr[n] != pointer) continue;
+        if (written) t->unknown_inputs &= ~(1u << n);
+        else t->unknown_read |= 1u << n;
+    }
+}
+
+static uint32_t load(translator *t, uint32_t type, uint32_t pointer)
+{
+    mark_vgpr_access(t, pointer, 0);
+    return value(t, SPV_OP_LOAD, type, 1, pointer);
+}
 
 /* A source operand's 32 bits. */
 static uint32_t source(translator *t, uint32_t field, const gcn_instruction *ins)
@@ -241,6 +266,7 @@ static uint32_t exec_bit(translator *t) { return load(t, t_bool(t), t->exec); }
 /* Only active lanes (EXEC) write their VGPRs. */
 static void write_vgpr(translator *t, unsigned n, uint32_t bits)
 {
+    mark_vgpr_access(t, vgpr(t, n), 1); /* the inactive lanes keep the old value, which they do not use */
     const uint32_t old = load(t, t_uint(t), vgpr(t, n));
     store(t, t->out, vgpr(t, n), value(t, SPV_OP_SELECT, t_uint(t), 3, exec_bit(t), bits, old));
 }
@@ -2125,6 +2151,22 @@ static uint32_t user_data_block(translator *t)
 /* The starting registers: user data in the first SGPRs, the workgroup index, and v0-v2 the lane's
    position in the workgroup. */
 static void tessellation_registers(translator *t, const stage_layout *layout);
+
+/* A vertex shader's instancing inputs (runtime/gcn_spirv.h): the instance index (InstanceIndex: draws start at
+   instance 0) and its quotients by the step rates; one over a step rate not set, or 0, stays unknown. */
+static void instance_registers(translator *t, const stage_layout *layout)
+{
+    enum { INSTANCE_VGPR = 3, STEP_RATE_VGPRS = 2 };
+    if (!layout->instance_vgprs) return;
+    const uint32_t variable = interface_variable(t, SPV_STORAGE_INPUT, t_int(t), SPV_DECORATION_BUILT_IN, SPV_BUILT_IN_INSTANCE_INDEX);
+    const uint32_t instance = value(t, SPV_OP_BITCAST, t_uint(t), 1, load(t, t_int(t), variable));
+    for (unsigned i = 0; i < STEP_RATE_VGPRS && i < layout->instance_vgprs; i++) {
+        const unsigned n = layout->vertex_index_vgpr + 1 + i;
+        if ((layout->step_rates_set >> i & 1) && layout->step_rates[i]) store(t, t->out, vgpr(t, n), udiv(t, instance, konst(t, layout->step_rates[i])));
+        else (void)vgpr(t, n), t->unknown_inputs |= 1u << n;
+    }
+    if (layout->instance_vgprs >= INSTANCE_VGPR) store(t, t->out, vgpr(t, layout->vertex_index_vgpr + INSTANCE_VGPR), instance);
+}
 static void geometry_registers(translator *t, const stage_layout *layout);
 
 static void starting_registers(translator *t, const stage_layout *layout)
@@ -2149,6 +2191,7 @@ static void starting_registers(translator *t, const stage_layout *layout)
     if (layout->stage == STAGE_VERTEX) {
         const uint32_t index = interface_variable(t, SPV_STORAGE_INPUT, t_int(t), SPV_DECORATION_BUILT_IN, SPV_BUILT_IN_VERTEX_INDEX);
         store(t, t->out, vgpr(t, layout->vertex_index_vgpr), value(t, SPV_OP_BITCAST, t_uint(t), 1, load(t, t_int(t), index)));
+        instance_registers(t, layout);
         t->writing = 0;
         return;
     }
@@ -3903,6 +3946,11 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
         spirv_emit(m, &m->sections[SPIRV_EXECUTION_MODES], SPV_OP_EXECUTION_MODE,
                    (const uint32_t[]){main_id, SPV_EXECUTION_MODE_DEPTH_REPLACING}, 2);
 
+    if (t->unknown_read) {
+        const unsigned n = (unsigned)__builtin_ctz(t->unknown_read);
+        fail(t, "the program reads v%u, the instance index over VGT_INSTANCE_STEP_RATE_%u, which no call set (or set to 0): not done yet", n,
+             n - layout->vertex_index_vgpr - 1);
+    }
     int result = -1;
     if (!t->failed) {
         *spirv = spirv_finish(m, spirv_word_count);
@@ -3937,7 +3985,9 @@ int gcn_translate_vertex(const uint32_t *code, size_t dwords, const gcn_vertex_l
                             .images = layout->images, .image_count = layout->image_count, .first_binding = layout->first_binding,
                             .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address,
                             .user_data_read = layout->user_data_read, .gs = layout->gsvs_ring ? GS_COPY : GS_NONE,
-                            .gsvs_ring = layout->gsvs_ring, .gsvs_ring_bytes = layout->gsvs_ring_bytes};
+                            .gsvs_ring = layout->gsvs_ring, .gsvs_ring_bytes = layout->gsvs_ring_bytes,
+                            .instance_vgprs = layout->instance_vgprs, .step_rates = {layout->step_rates[0], layout->step_rates[1]},
+                            .step_rates_set = layout->step_rates_set};
     return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
 }
 

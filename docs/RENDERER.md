@@ -421,8 +421,13 @@ Instead:
      control, colour control, the target mask, the primitive type) and the instance count. The
      executor understands those registers and, at each draw, stops by name on what it does not
      draw yet: depth or stencil testing, primitives other than triangle lists, colour modes other
-     than a normal copy, more than one instance, and any register it does not interpret. A draw
+     than a normal copy, and any register it does not interpret. A draw
      whose targets are all masked off (and that writes no depth) writes nothing and is skipped.
+     - **Instancing:** a draw takes `NUM_INSTANCES` instances from instance 0. A vertex shader asks for
+       the instance index with `VGPR_COMP_CNT` (the input VGPRs after the vertex index): v1 holds the
+       instance index over `VGT_INSTANCE_STEP_RATE_0`, v2 over `VGT_INSTANCE_STEP_RATE_1`, and v3 the
+       instance index itself. A shader that reads v1 or v2 before writing it, with that step rate never
+       set (or 0), stops by name. So does a draw of 0 instances.
      - **Fast clears** (`CB_COLOR_INFO`'s FAST_CLEAR): before each draw a target whose CMASK is all 0
        (cleared, as radeonsi clears it) gets its memory filled with its `CB_COLORn_CLEAR_WORD0/1` texel
        and its CMASK set to all ones, as an eliminate pass would; eliminate passes then have nothing

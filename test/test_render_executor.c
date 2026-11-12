@@ -1017,6 +1017,55 @@ static void geometry_shader_draws(rt_executor *x)
     }
 }
 
+/* Records the triangle with the vertex shader at code taking vgpr_inputs input VGPRs (VGPR_COMP_CNT), these
+   registers set, and a draw of 2 instances, into a cleared target, and runs it. */
+static int run_instanced(rt_executor *x, uint64_t buffer, uint64_t target, uint64_t code, uint32_t vgpr_inputs, const uint32_t (*registers)[2],
+                         int count, char *error, size_t error_size)
+{
+    enum { VGPR_COMP_CNT_SHIFT = 24, INSTANCES = 2 };
+    memset((void *)(uintptr_t)target, 0, SIZE * SIZE * 4);
+    rt_render_forget(), rt_executor_reset(x);
+    uint32_t offset = record_setup(buffer, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const uint32_t vertex[RT_VERTEX_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2 | vgpr_inputs << VGPR_COMP_CNT_SHIFT,
+                                                     8 << 1, 0, 0x4, 0};
+    CHECK(rt_render_record_vertex_shader(buffer, offset, vertex, error, error_size) == 0);
+    offset += 0x10;
+    for (int i = 0; i < count; i++, offset += 0x10)
+        CHECK(rt_render_record_register(buffer, offset, registers[i][0], registers[i][1], error, error_size) == 0);
+    CHECK(rt_render_record_instances(buffer, offset, INSTANCES, error, error_size) == 0);
+    return rt_executor_run(x, buffer, record_triangle_draw(buffer, offset + 0x10), error, error_size);
+}
+
+static void unchanged(float c[4]) { (void)c; }
+
+/* Instancing (NUM_INSTANCES): 2 instances blended ONE + ONE double the colour. A vertex shader taking the
+   instance index (v3) reads instance 1's colours past the triangle's, where they are 0: the colour is the
+   triangle's, once. One taking the instance index over VGT_INSTANCE_STEP_RATE_0 (v1) stops by name with no
+   step rate set, and with a step rate of 2 reads instance 1's colours at the triangle's (1 / 2 = 0): doubled. */
+static void instanced_draws(rt_executor *x)
+{
+    enum { INSTANCED = 0xc1050000, INSTANCE_CODE = 0x2c00, STEPPED_CODE = 0x2d00, TWICE = 0x2f00000, ONCE = 0x2f10000, STEPPED = 0x2f20000,
+           VERTEX_CODE_AT = VERTEX_CODE, PLAIN_INPUTS = 0, INSTANCE_INPUTS = 3, STEP_RATE_INPUTS = 1, COLOR_RECORDS = 3 };
+    char error[200] = "";
+    const uint32_t add[][2] = {{0xa1e0, 1u << 30 | 1 | 1u << 8}};
+    const uint32_t add_stepped[][2] = {{0xa1e0, 1u << 30 | 1 | 1u << 8}, {0xa2a8, 2}};
+    float *const later_colors = (float *)(uintptr_t)at(COLORS + COLOR_RECORDS * RECORD_STRIDE);
+    memset(later_colors, 0, COLOR_RECORDS * RECORD_STRIDE);
+    memcpy((void *)(uintptr_t)at(INSTANCE_CODE), vertex_instance_color, sizeof vertex_instance_color);
+    memcpy((void *)(uintptr_t)at(STEPPED_CODE), vertex_instance_color_stepped, sizeof vertex_instance_color_stepped);
+    int ran = run_instanced(x, INSTANCED, at(TWICE), at(VERTEX_CODE_AT), PLAIN_INPUTS, add, 1, error, sizeof error);
+    if (ran) fprintf(stderr, "two instances: %s\n", error);
+    CHECK(ran == 0 && blended_misses(x, at(TWICE), doubled) == 0);
+    ran = run_instanced(x, INSTANCED, at(ONCE), at(INSTANCE_CODE), INSTANCE_INPUTS, add, 1, error, sizeof error);
+    if (ran) fprintf(stderr, "instance index: %s\n", error);
+    CHECK(ran == 0 && blended_misses(x, at(ONCE), unchanged) == 0);
+    CHECK(run_instanced(x, INSTANCED, at(STEPPED), at(STEPPED_CODE), STEP_RATE_INPUTS, add, 1, error, sizeof error) == -1 &&
+          strstr(error, "VGT_INSTANCE_STEP_RATE_0"));
+    ran = run_instanced(x, INSTANCED, at(STEPPED), at(STEPPED_CODE), STEP_RATE_INPUTS, add_stepped, 2, error, sizeof error);
+    if (ran) fprintf(stderr, "instance index over a step rate: %s\n", error);
+    CHECK(ran == 0 && blended_misses(x, at(STEPPED), doubled) == 0);
+}
+
 static void indirect_draws(rt_executor *x)
 {
     enum { INDIRECT = 0xc1040000, ARGUMENTS = 0x2fc0000, DATA_OFFSET = 0x20, PLAIN = 0x2fd0000, TWICE = 0x2fe0000, NONE = 0x2ff0000, ONE = 1 };
@@ -2543,7 +2592,7 @@ int main(void)
     size = record_draw(THIRD, at(TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER | 0x10); /* the linear barycentrics */
     CHECK(rt_executor_run(x, THIRD, size, error, sizeof error) == -1 && strstr(error, "pixel-shader inputs"));
     /* The library's registers: the normal state draws as before, a target masked off draws nothing,
-       and what is not drawn yet (blending, depth, other primitives, instances) stops by name. */
+       and what is not drawn yet (blending, depth, other primitives) stops by name. */
     enum { FOURTH = 0xc0e10000 };
     const uint32_t normal[][2] = {{0xa1e0, 0}, {0xa200, 0}, {0xa202, 0x1u << 4 | 0xccu << 16}, {0xa08e, 0xf}, {0xc242, 4}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), normal, 5, 1, error, sizeof error) == 0);
@@ -2557,6 +2606,7 @@ int main(void)
     blending(x);
     draws_in_one_batch(x);
     indirect_draws(x);
+    instanced_draws(x);
     other_viewports(x);
     tessellated_draws(x);
     geometry_shader_draws(x);
@@ -2581,7 +2631,6 @@ int main(void)
     CHECK(run_with_registers(x, FOURTH, at(TARGET), resolve, 1, 0, error, sizeof error) == -1 && strstr(error, "colour mode 3"));
     const uint32_t unknown[][2] = {{0xa1e8, 0}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), unknown, 1, 0, error, sizeof error) == -1 && strstr(error, "0xa1e8"));
-    CHECK(run_with_registers(x, FOURTH, at(TARGET), normal, 0, 2, error, sizeof error) == -1 && strstr(error, "2 instances"));
     CHECK(rt_executor_read_target(x, at(0x300000), bgra, 2, 2, error, sizeof error) == -1 && strstr(error, "no draw"));
     CHECK(rt_executor_read_target(x, at(TARGET), bgra, SIZE + 1, 1, error, sizeof error) == -1);
 
