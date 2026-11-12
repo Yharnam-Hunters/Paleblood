@@ -178,6 +178,10 @@ int self_test()
     /* The call's own frame is never dead, even when its private stack lies just below the caller's
        rsp: here the caller's rsp is put right above where the frame was on the previous call. */
     trace(0x380, arguments(), log);
+    const rt_traced_function frame_import = {"capture_trace_frame_import", 0x400380, "i32", at(0x380)};
+    check(rt::traced_case(log, arguments(), frame_import, 0, "selftest", {image, image + image_size})
+                  .find("\"writes\": [{\"arg\": 0, \"offset\": 0,") != std::string::npos,
+          "import: a change in the call's own frame is scripted through its register");
     rt_trace_log_free(&log);
     uint64_t frame;
     std::memcpy(&frame, image + 0x1808, sizeof frame);
@@ -239,6 +243,11 @@ int self_test()
     check(!log.incomplete && same[0] == 21 && log.import_count == 1 && log.imports[0].writes == 1 &&
               log.writes[0].arg == 0,
           "import: bytes two registers point at are scripted once");
+    const rt_traced_function same_pointer = {"capture_trace_same_pointer", 0x400440, "void", at(0x440)};
+    rt_trace_args same_args = arguments(reinterpret_cast<uint64_t>(same));
+    check(rt::traced_case(log, same_args, same_pointer, 0, "selftest", {image, image + image_size})
+                  .find("\"writes\": [{\"addr\": \"buf:b0+") != std::string::npos,
+          "import: a change in a buffer is scripted at its place");
     rt_trace_log_free(&log);
 
     /* A change far past what the import wrote, on bytes the traced code never touches (another

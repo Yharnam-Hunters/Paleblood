@@ -153,7 +153,11 @@ only when it can be the import's write for the caller:
   through it (a filled buffer whose runs kept some of their values), or on bytes the traced code
   read or wrote before: other threads change memory behind any pointer while the import runs.
 
-The case scripts each call in order: `{"name", "argc": 0, "ret", "writes": [{"arg", "offset", "bytes"}]}`.
+The case scripts each call in order: `{"name", "argc": 0, "ret", "writes": [...]}`. A kept change in
+a buffer or the image is written at its place (`{"addr", "bytes"}`), since the register it was seen
+through need not be an argument (an import that updates labels in the command buffers it was
+given, seen through a register it does not read); a change in the traced call's own frame, which has
+no place in the case, is written through its register (`{"arg", "offset", "bytes"}`).
 Reads of an import's slot are never inputs, since the verifier binds its own stub there.
 
 The host's loader binds the imports, so the runtime finds the slots itself at install time: it maps

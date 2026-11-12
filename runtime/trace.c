@@ -500,7 +500,8 @@ static void import_return(trace_state *t, ucontext_t *uc)
                     break;
                 }
                 memcpy(t->write_bytes + t->write_used, now + off, end - off);
-                t->writes[t->nwrites++] = (rt_trace_write){(uint8_t)i, (uint32_t)off, (uint32_t)(end - off), t->write_used};
+                t->writes[t->nwrites++] =
+                    (rt_trace_write){(uint8_t)i, (uint32_t)off, (uint32_t)(end - off), t->write_used, at + off};
                 t->write_used += end - off;
                 c->writes++;
                 /* Later reads of these bytes see what the import wrote, which the case scripts. */

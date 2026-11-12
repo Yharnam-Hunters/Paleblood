@@ -50,6 +50,7 @@ typedef struct {
     uint8_t arg;               /* rdi = 0 ... r9 = 5 */
     uint32_t offset, size;     /* bytes at arg + offset */
     size_t data;               /* into rt_trace_log.write_bytes */
+    uint64_t addr;             /* where they are: the argument's value + offset */
 } rt_trace_write;
 
 typedef struct {

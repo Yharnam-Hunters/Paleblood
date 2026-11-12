@@ -157,6 +157,14 @@ public:
         return nullptr;
     }
 
+    /* 1 when all n bytes at `a` have a place in the case: one buffer, or the image. */
+    bool placed(uint64_t a, size_t n) const
+    {
+        if (in_image(a)) return in_image(a + n - 1);
+        const Region *r = region(a, false);
+        return r && a + n <= r->end;
+    }
+
     /* Where an input byte lives in the case: an image address or buf:NAME+off. */
     std::string location(uint64_t a) const
     {
@@ -257,7 +265,12 @@ private:
 };
 
 /* The imports the call made, scripted in order: name, return value, and what each changed behind
-   its pointer arguments. Arguments are not compared (argc 0): their count is not known here. A
+   its pointer arguments. Arguments are not compared (argc 0): their count is not known here. What
+   an import changed in a buffer or the image is scripted at that place (`addr`): the register it
+   was seen through need not be one of the import's arguments (a command buffer's labels, seen
+   through a register the import does not read), and a replay sets such registers differently.
+   Only changes in the traced call's own frame, which has no place in the case, are scripted
+   through their register. A
    return value that points into a buffer or the image (memset returns its destination) is written
    as such, like an argument, so the replay's code gets its own address back. */
 std::string imports(const rt_trace_log &log, const Builder &b)
@@ -268,9 +281,11 @@ std::string imports(const rt_trace_log &log, const Builder &b)
         std::string writes;
         for (size_t w = c.first_write; w < c.first_write + c.writes; w++) {
             const rt_trace_write &x = log.writes[w];
-            writes += (writes.empty() ? "" : ", ") + ("{\"arg\": " + std::to_string(x.arg) + ", \"offset\": " +
-                                                      std::to_string(x.offset) + ", \"bytes\": \"" +
-                                                      bytes_hex(log.write_bytes + x.data, x.size) + "\"}");
+            const std::string where = b.placed(x.addr, x.size)
+                                          ? "\"addr\": \"" + b.location(x.addr) + "\""
+                                          : "\"arg\": " + std::to_string(x.arg) + ", \"offset\": " + std::to_string(x.offset);
+            writes += (writes.empty() ? "" : ", ") +
+                      ("{" + where + ", \"bytes\": \"" + bytes_hex(log.write_bytes + x.data, x.size) + "\"}");
         }
         const std::string described = b.describe(c.ret);
         const std::string ret = described.rfind("0x", 0) == 0 ? std::to_string(static_cast<unsigned long long>(c.ret))
