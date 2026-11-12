@@ -3470,10 +3470,11 @@ static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64
                           "only 1D, 2D and 3D images, their arrays and cubes are done yet",
                           stage, (unsigned long long)code, d.type, words[0], words[1], words[2], words[3], words[4], words[5], words[6],
                           words[7]);
-        /* mip levels: a pixel shader's sampled images (a storage image has one level) */
+        /* mip levels: a pixel shader's sampled view has BASE_LEVEL to LAST_LEVEL; a compute shader's storage
+           view is the one level BASE_LEVEL, which image_load and image_store address (AMD's Sea Islands
+           manual: the resource's base level is level 0 of an access without a mip) */
         if (d.base_level > d.last_level || d.last_level >= RT_TILING_MAX_LEVELS)
             return failed(error, error_size, "an image with mip levels %u to %u", d.base_level, d.last_level);
-        if (d.last_level && !pixel) return failed(error, error_size, "a mip-mapped image in a compute shader: not done yet");
         if (d.last_level && three_d) return failed(error, error_size, "a mip-mapped 3D image: not done yet");
         /* a sampled cube is viewed whole: its BASE_ARRAY and LAST_ARRAY are not used (the game's give faces 0
            to 35 of one cube); a storage cube is a 2D array of its faces (the store names the face, shadPS4's
@@ -3515,7 +3516,7 @@ static int stage_images(rt_executor *x, const char *stage, uint64_t code, uint64
         /* a sampled cube is viewed whole, its faces as layers (the shader names the face) */
         const uint32_t first = d.layers > 1 && !whole_cube ? d.base_array : 0,
                        layers = whole_cube ? d.layers : d.layers > 1 ? d.last_array - d.base_array + 1 : 1;
-        if (!e || !(views[i] = image_view(x, e, first, layers, d.base_level, d.last_level - d.base_level + 1,
+        if (!e || !(views[i] = image_view(x, e, first, layers, d.base_level, pixel ? d.last_level - d.base_level + 1 : 1,
                                           pixel ? d.swizzle : (uint32_t)DST_SEL_IDENTITY, error, error_size)))
             return -1;
     }
