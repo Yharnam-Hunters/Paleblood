@@ -199,6 +199,25 @@ static void image_programs(void)
     static uint32_t branch_first[64];
     branch_first[0] = 0xbf840000;                                                      /* s_cbranch_scc0 to the next instruction */
     memcpy(branch_first + 1, pixel_two_images, sizeof pixel_two_images);
+    /* a descriptor restored from spill slots comes from where the spilled SGPRs' did; a slot written twice is not followed */
+    CHECK(gcn_image_resources(PROGRAM(spilled_descriptor), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
+    CHECK(count == 1 && found[0].origin.from_memory && found[0].origin.sgpr == 12 && found[0].origin.pointer_sgpr == 8 &&
+          found[0].origin.offset == 16);
+    {
+        enum { WRITES = 2 + 8, SPILLED = sizeof spilled_descriptor / sizeof spilled_descriptor[0] };
+        uint32_t twice[SPILLED + 1];
+        memcpy(twice, spilled_descriptor, WRITES * sizeof twice[0]);
+        twice[WRITES] = spilled_descriptor[WRITES - 1]; /* v1's lane 9 written again from s7 */
+        memcpy(twice + WRITES + 1, spilled_descriptor + WRITES, (SPILLED - WRITES) * sizeof twice[0]);
+        CHECK(gcn_image_resources(PROGRAM(twice), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
+              strstr(error, "not each written once"));
+        /* an ordinary use of v1 between its spills and restores stops by name */
+        uint32_t used[SPILLED + 1];
+        memcpy(used, spilled_descriptor, WRITES * sizeof used[0]);
+        used[WRITES] = 0x7e020280; /* v_mov_b32 v1, 0 */
+        memcpy(used + WRITES + 1, spilled_descriptor + WRITES, (SPILLED - WRITES) * sizeof used[0]);
+        refused_as(COMPUTE, PROGRAM(used), "v1 holds SGPR spill slots");
+    }
     CHECK(gcn_image_resources(PROGRAM(loaded), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
     CHECK(count == 1 && found[0].origin.from_memory && found[0].origin.sgpr == 0 && found[0].origin.pointer_sgpr == 8 &&
           found[0].origin.offset == 16);
@@ -754,6 +773,7 @@ int main(void)
     translates(PROGRAM(unpack_halves), "unpack_halves");
     translates(PROGRAM(buffer_atomics), "buffer_atomics");
     translates(PROGRAM(integer_batch), "integer_batch");
+    translates(PROGRAM(spill_slots), "spill_slots");
     translates(PROGRAM(scalar_batch), "scalar_batch");
     translates(PROGRAM(vcc_halves), "vcc_halves");
     translates(PROGRAM(whole_quad), "whole_quad");
