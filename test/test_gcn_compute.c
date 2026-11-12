@@ -727,6 +727,16 @@ int main(int argc, char **argv)
     }
     CHECK(winners == 1);
 
+    /* SGPR spill slots: every lane gets the restored scalars' sum and its own mask bit back, through the
+       restored descriptor. */
+    memset(out.mapped, 0, BUFFER_BYTES);
+    CHECK(run(&g, spill_slots, sizeof spill_slots / sizeof spill_slots[0], user) == 0);
+    for (int i = 0; i < LANES; i++) {
+        if (out_words[i] != 0x11111119u || out_words[LANES + i] != (i < 8 ? 1u : 0u))
+            fprintf(stderr, "spill_slots lane %d: 0x%08x %u\n", i, out_words[i], out_words[LANES + i]);
+        CHECK(out_words[i] == 0x11111119u && out_words[LANES + i] == (i < 8 ? 1u : 0u));
+    }
+
     /* valu_batch: each result worked out with plain C from the Sea Islands manual's definitions (floats:
        fminf and fmaxf ignore a NaN, as the NMin and NMax the translation uses; the legacy forms take y when
        either is a NaN). */
