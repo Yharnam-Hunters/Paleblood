@@ -601,7 +601,10 @@ Instead:
           its observe hook reads from the saved frame's xmm0 and xmm1. The buffer's contents in guest memory are never loaded: a depth
           or stencil buffer the CPU or a compute shader writes would not be seen (not found yet). A draw that writes only the depth target (target mask 0, or
           `CB_COLOR_CONTROL`'s mode `CB_DISABLE`) draws without a colour target; one that writes
-          nothing is skipped. Triangle strips (`VGT_PRIMITIVE_TYPE` 6) are drawn too. A view of one
+          nothing is skipped. The hardware shader stages (`VGT_SHADER_STAGES_EN`, from the GPU
+          library's stage setter `0x01476030`) must be vertex and pixel only: tessellation and
+          geometry-shader stages stop by name at the draw, and the local, hull, export and geometry
+          stages' user data is set aside until then. Triangle strips (`VGT_PRIMITIVE_TYPE` 6) are drawn too. A view of one
           slice of an array depth target (`DB_DEPTH_VIEW` SLICE_START = SLICE_MAX) draws into an image
           kept for that slice alone, at that slice's memory: `DB_DEPTH_SLICE` tiles of 64 elements per
           slice past the depth and stencil bases (shadPS4's `GetDepthSliceSize`), where its depth is
