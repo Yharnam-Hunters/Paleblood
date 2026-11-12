@@ -226,7 +226,7 @@ static void image_programs(void)
        in those SGPRs before the load, or an earlier load into them, the load before the use still
        counts. A branch over the load that lands before the use, a loop back to the use from after a
        write to those SGPRs, or a write to the pointer before the load or (with a branch back to the
-       load) anywhere: refused by name. A write to the pointer after the use, with no branch back,
+       load) before that branch: refused by name. A write to the pointer after the use, with no branch back,
        does not matter. */
     static const uint32_t guarded[] = {0xbf880003, 0xc0c00904, 0xf0000f00, 0x00000401, 0xbf810000}; /* s_cbranch_execz to s_endpgm */
     static const uint32_t skipped_load[] = {0xbf840001, 0xc0c00904, 0xf0000f00, 0x00000401, 0xbf810000}; /* s_cbranch_scc0 to the use */
@@ -246,6 +246,12 @@ static void image_programs(void)
     static const uint32_t skipped_into_loop[] = {0xbf880003, 0xc0c00904, 0xf0000f00, 0x00000401, 0xbf800000, 0xbf84fffc, 0xbf810000};
     static const uint32_t pointer_later[] = {0xbf880004, 0xc0c00904, 0xf0000f00, 0x00000401, 0xbe880380, 0xbf810000}; /* s_mov_b32 s8, 0 after */
     static const uint32_t pointer_looped[] = {0xc0c00904, 0xf0000f00, 0x00000401, 0xbe880380, 0xbf84fffb, 0xbf810000}; /* then back to the load */
+    /* a write to the pointer after the last branch back to the load (a clinic compute shader at 0x20d52e8e00
+       reloads s[0:3] over its pointer once its loops are done): from memory */
+    static const uint32_t pointer_after_loop[] = {0xc0c00904, 0xf0000f00, 0x00000401, 0xbf84fffc, 0xbe880380, 0xbf810000};
+    /* a loop back to the load whose pass writes the descriptor's SGPRs after the use (the same shader reuses
+       s[72:79] after its image load, and its loop loads them again before the next one): from memory */
+    static const uint32_t reloaded_in_loop[] = {0xc0c00904, 0xf0000f00, 0x00000401, 0xbe800380, 0xbf84fffb, 0xbf810000};
     CHECK(gcn_image_resources(PROGRAM(guarded), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
     CHECK(count == 1 && found[0].origin.from_memory && found[0].origin.pointer_sgpr == 8 && found[0].origin.offset == 16);
     CHECK(gcn_image_resources(PROGRAM(skipped_load), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
@@ -272,6 +278,12 @@ static void image_programs(void)
           found[0].origin.from_memory && found[0].origin.pointer_sgpr == 8 && found[0].origin.offset == 16);
     CHECK(gcn_image_resources(PROGRAM(pointer_looped), found, GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
           strstr(error, "loaded through s[8:9], which the program writes"));
+    const int after_loops = gcn_image_resources(PROGRAM(pointer_after_loop), found, GCN_MAX_IMAGES, &count, error, sizeof error);
+    if (after_loops) fprintf(stderr, "pointer_after_loop: %s\n", error);
+    CHECK(after_loops == 0 && count == 1 && found[0].origin.from_memory && found[0].origin.pointer_sgpr == 8 && found[0].origin.offset == 16);
+    const int reloaded = gcn_image_resources(PROGRAM(reloaded_in_loop), found, GCN_MAX_IMAGES, &count, error, sizeof error);
+    if (reloaded) fprintf(stderr, "reloaded_in_loop: %s\n", error);
+    CHECK(reloaded == 0 && count == 1 && found[0].origin.from_memory && found[0].origin.pointer_sgpr == 8 && found[0].origin.offset == 16);
     /* the two-image program translates with both bound, and stops naming the loaded one without it */
     const gcn_image_binding two[] = {{{0, 4, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0}, {{1, 4, 2, 16}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0}};
     gcn_pixel_layout both_images = pixel_layout;
@@ -636,6 +648,7 @@ static void tessellation(void)
 {
     compute_lds = (gcn_lds){.bytes = 272};
     translates(PROGRAM(lds_exchange), "lds_exchange");
+    translates(PROGRAM(negated_compares), "negated_compares");
     compute_lds = (gcn_lds){0};
     refused_as(COMPUTE, PROGRAM(lds_exchange), "with no LDS");
     static const uint32_t barrier_in_vertex[] = {0xbf8a0000, 0xbf810000}; /* s_barrier; s_endpgm */
@@ -738,6 +751,8 @@ int main(void)
     translates(PROGRAM(masked_store), "masked_store");
     translates(PROGRAM(typed_buffers), "typed_buffers");
     translates(PROGRAM(pack_halves), "pack_halves");
+    translates(PROGRAM(unpack_halves), "unpack_halves");
+    translates(PROGRAM(buffer_atomics), "buffer_atomics");
     translates(PROGRAM(integer_batch), "integer_batch");
     translates(PROGRAM(scalar_batch), "scalar_batch");
     translates(PROGRAM(vcc_halves), "vcc_halves");
