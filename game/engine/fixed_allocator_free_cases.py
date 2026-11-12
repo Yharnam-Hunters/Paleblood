@@ -3,7 +3,7 @@
 """Edge cases for the fixed-size allocator's free (game/engine/fixed_allocator_free.cpp), for
 tools/verify.py run.
 
-usage: fixed_allocator_cases.py OUT_DIR
+usage: fixed_allocator_free_cases.py OUT_DIR
 
 Each case lays out an allocator (`alloc`) and its chunks side by side in `chunks`, CHUNK bytes
 each with the descriptor at the end: six 0x20-byte elements, then padding. Chunks with free
