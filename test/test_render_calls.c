@@ -291,6 +291,13 @@ static void compute_calls(void)
     const rt_render_call *calls = rt_render_submitted(BUFFER, 0x100, &count);
     CHECK(count == 2 && calls[0].kind == RT_CALL_COMPUTE_SHADER && calls[0].offset == 0x10 && calls[1].kind == RT_CALL_DISPATCH &&
           calls[1].u.dispatch.groups[0] == 4 && calls[1].u.dispatch.groups[1] == 2);
+    /* a new submission: the indirect dispatch; the base keeps bits 3-39, as SET_BASE writes it; the offset must be whole words */
+    CHECK(rt_render_record_indirect_base(BUFFER, 0x40, 0xab00002043490067ull, error, sizeof error) == 0);
+    CHECK(rt_render_record_dispatch_indirect(BUFFER, 0x50, 0x24, error, sizeof error) == 0);
+    CHECK(rt_render_record_dispatch_indirect(BUFFER, 0x60, 0x26, error, sizeof error) == -1 && strstr(error, "whole word"));
+    calls = rt_render_submitted(BUFFER, 0x100, &count);
+    CHECK(count == 2 && calls[0].kind == RT_CALL_INDIRECT_BASE && calls[0].u.indirect_base.address == 0x2043490060ull &&
+          calls[1].kind == RT_CALL_DISPATCH_INDIRECT && calls[1].offset == 0x50 && calls[1].u.dispatch_indirect.data_offset == 0x24);
     rt_render_forget();
 }
 

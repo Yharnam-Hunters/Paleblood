@@ -309,6 +309,8 @@ typedef struct {
     uint64_t index_base;
     uint32_t index_size, index_type;
     int index_base_set, index_size_set, index_type_set;
+    uint64_t indirect_base;          /* SET_BASE: where indirect dispatches' workgroup counts are */
+    int indirect_base_set;
     /* the depth target's registers, as setting it (or switching it off: DB_Z_INFO and DB_STENCIL_INFO 0)
        writes them: DB_Z_INFO to DB_DEPTH_SLICE, and DB_DEPTH_VIEW */
     uint32_t depth_target[DEPTH_TARGET_REGISTERS], depth_view;
@@ -901,7 +903,8 @@ static int import_memory(rt_executor *x, const rt_executor_memory *memory, char 
                                                        .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT};
     const VkBufferCreateInfo buffer = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = &external, .size = memory->size,
                                        .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                                                VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+                                                VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                                                VK_BUFFER_USAGE_TRANSFER_DST_BIT};
     if (vkCreateBuffer(x->device, &buffer, NULL, &x->buffer) != VK_SUCCESS) return failed(error, error_size, "no buffer for the guest memory");
     VkMemoryRequirements need;
     vkGetBufferMemoryRequirements(x->device, x->buffer, &need);
@@ -3663,8 +3666,8 @@ static int table_copy_spans(rt_executor *x, const rt_compute_shader *c, const gc
 
 /* The memory a dispatch of the compute shader reads now, as spans (gcn_memory_reads: each descriptor's
    range, each s_load's bytes); *anywhere when it cannot be bounded. For a table-driven copy whose table
-   can be read (table_copy_spans), the real reads, and in *exact with `stores` the real stores. 0, or -1
-   with the reason. */
+   can be read (table_copy_spans), the real reads, and in *exact with `stores` the real stores; groups is
+   NULL for an indirect dispatch, whose workgroup count only the GPU reads. 0, or -1 with the reason. */
 static int dispatch_reads(rt_executor *x, const rt_compute_shader *c, const uint32_t *user, uint32_t user_set, const uint32_t groups[3],
                           memory_span *reads, unsigned *read_count, int *anywhere, memory_span *stores, unsigned *store_count, int *exact,
                           char *error, size_t error_size)
@@ -3691,7 +3694,7 @@ static int dispatch_reads(rt_executor *x, const rt_compute_shader *c, const uint
             if (scan->used) memcpy(scan->reads, found, n * sizeof *found), scan->unknown = *anywhere, scan->table_copy = table_copy, scan->copy = shape;
         }
     }
-    if (table_copy) {
+    if (table_copy && groups) { /* an indirect dispatch's workgroup count is not known here */
         const int known = table_copy_spans(x, c, &shape, user, user_set, groups, reads, read_count, stores, store_count, error, error_size);
         if (known < 0) return -1;
         if (known) return *exact = 1, *anywhere = 0, 0;
@@ -3709,9 +3712,16 @@ static int dispatch_reads(rt_executor *x, const rt_compute_shader *c, const uint
     return 0;
 }
 
-static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3], char *error, size_t error_size)
+/* A dispatch of the bound compute shader: of groups[0] x groups[1] x groups[2] workgroups, or, with
+   groups NULL, of the counts the GPU reads from guest memory at `arguments` when it runs
+   (DISPATCH_INDIRECT: three 32-bit words, x, y, z, which earlier work may have written). */
+static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3], uint64_t arguments, char *error, size_t error_size)
 {
+    enum { INDIRECT_ARGUMENT_BYTES = 3 * sizeof(uint32_t) };
     if (!s->compute_set) return failed(error, error_size, "a dispatch without a compute shader");
+    if (!groups && (arguments < x->guest_base || arguments - x->guest_base > x->size - INDIRECT_ARGUMENT_BYTES))
+        return failed(error, error_size, "an indirect dispatch's workgroup counts at %#llx, outside the guest memory",
+                      (unsigned long long)arguments);
     const rt_compute_shader *c = &s->compute;
     if (!c->threads[0] || !c->threads[1] || !c->threads[2])
         return failed(error, error_size, "a compute shader with a workgroup of %u x %u x %u threads", c->threads[0], c->threads[1], c->threads[2]);
@@ -3733,6 +3743,7 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     if (exact_stores) stores_anywhere = 0;
     else
         for (unsigned i = 0; i < store_count; i++) span_add(stores, &store_span_count, store_ranges[i][0], store_ranges[i][1]);
+    if (!groups) span_add(reads, &read_count, arguments, INDIRECT_ARGUMENT_BYTES); /* drawn targets over them are written back too */
     memcpy(touched, reads, read_count * sizeof *reads);
     memcpy(touched + read_count, stores, store_span_count * sizeof *stores);
     if (reads_anywhere || stores_anywhere ? write_back_targets(x, error, error_size)
@@ -3758,12 +3769,16 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     if (!commands) return failed(error, error_size, "no command buffer");
     /* what earlier work wrote (images, guest memory) is visible to this dispatch */
     const VkMemoryBarrier earlier = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
-                                     .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
-    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &earlier, 0, NULL, 0, NULL);
+                                     .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                                                      (groups ? 0 : VK_ACCESS_INDIRECT_COMMAND_READ_BIT)};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | (groups ? 0 : VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT), 0, 1, &earlier, 0, NULL,
+                         0, NULL);
     vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
     if (set) vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0, NULL);
     vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, USER_DATA_BYTES, s->compute_user);
-    vkCmdDispatch(commands, groups[0], groups[1], groups[2]);
+    if (groups) vkCmdDispatch(commands, groups[0], groups[1], groups[2]);
+    else vkCmdDispatchIndirect(commands, x->buffer, arguments - x->guest_base);
     for (unsigned i = 0; i < x->stored_count; i++)
         if (write_back_image(x, &x->images[x->stored[i].image], &x->stored[i].descriptor, error, error_size)) return -1;
     /* the CPU reads memory it may store to only once the batch has run; what was loaded from there
@@ -3914,7 +3929,14 @@ static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, 
             s->compute = c->u.compute_shader, s->compute_set = 1;
             break;
         case RT_CALL_DISPATCH:
-            if (dispatch(x, s, c->u.dispatch.groups, error, error_size)) return -1;
+            if (dispatch(x, s, c->u.dispatch.groups, 0, error, error_size)) return -1;
+            break;
+        case RT_CALL_INDIRECT_BASE:
+            s->indirect_base = c->u.indirect_base.address, s->indirect_base_set = 1;
+            break;
+        case RT_CALL_DISPATCH_INDIRECT:
+            if (!s->indirect_base_set) return failed(error, error_size, "an indirect dispatch with no indirect base set");
+            if (dispatch(x, s, NULL, s->indirect_base + c->u.dispatch_indirect.data_offset, error, error_size)) return -1;
             break;
         case RT_CALL_USER_DATA: {
             const uint32_t slots = (uint32_t)(((1ull << c->u.user_data.count) - 1) << c->u.user_data.slot);
