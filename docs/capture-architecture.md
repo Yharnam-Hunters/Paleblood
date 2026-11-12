@@ -146,6 +146,10 @@ markers, and names each from the symbol list (`BB_CAPTURE_IMPORTS`,
 `symbols/imports.csv`; `tools/run_game.sh` points it there) by matching each name's NID. A slot whose
 NID has no name in the list is not scripted, and a call through it ends the trace.
 
+A return value that points into a buffer or the image (`memset` returns its destination) is
+scripted as `buf:NAME+off` or `guest:0xADDRESS`, like an argument, so the replay's code gets its own
+address back; it also widens buffers as a pointer argument does.
+
 Changes below the caller's stack pointer are never scripted: an unused argument register can point
 there, at the thread's own native frames, which the caller cannot see.
 
