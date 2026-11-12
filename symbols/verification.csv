@@ -36,7 +36,8 @@ engine_compare_signed_prefix,recorded,,10,10,0,0,8a6a903a0ad00ffa,2026-11-12
 engine_compare_signed_prefix,edge,,24,24,0,0,8a6a903a0ad00ffa,2026-11-12
 engine_compare_signed_strings,edge,,18,18,0,0,74f4fd8ab8a917df,2026-11-03
 engine_entry_manager_resolve,edge,,25,25,0,0,390da978e6436eea,2026-11-03
-engine_fixed_allocator_free_02484de0,edge,,19,19,0,0,288cd97d8e0cc199,2026-11-12
+engine_fixed_allocator_allocate_02484c70,edge,,24,24,0,0,553cd118426fb425,2026-11-12
+engine_fixed_allocator_free_02484de0,edge,,19,19,0,0,f1c0d6380a0c28d9,2026-11-12
 engine_initialize_static_wide_string_0217ffb0,recorded,,1,1,0,0,ccdadef0d4bd7152,2026-11-12
 engine_initialize_static_wide_string_0217ffb0,edge,,30,30,0,0,ccdadef0d4bd7152,2026-11-12
 engine_regular_heap_free_024858a0,edge,,28,28,0,0,870ec77a4cd23195,2026-11-12
@@ -49,6 +50,11 @@ engine_robust_heap_allocate_top_02487380,edge,,22,22,0,0,99db3f551a546e94,2026-1
 engine_robust_heap_free_02487b50,edge,,20,20,0,0,384d50d46b2da2c0,2026-11-12
 engine_segregated_bi_heap_allocate_bottom_02488030,edge,,25,25,0,0,1907ad8897b13483,2026-11-12
 engine_segregated_bi_heap_free_02488900,edge,,25,25,0,0,0b30a2675eae25a6,2026-11-12
+engine_segregated_regular_heap_allocate_02489620,edge,,21,21,0,0,8ca50456f8933b9a,2026-11-12
+engine_segregated_regular_heap_allocate_aligned_024898c0,edge,,24,24,0,0,d89828715eefbfd4,2026-11-12
+engine_segregated_regular_heap_allocate_aligned_top_02489fc0,edge,,16,16,0,0,036230d57e290c4d,2026-11-12
+engine_segregated_regular_heap_allocate_top_02489d20,edge,,14,14,0,0,4c8a7582932b2fdc,2026-11-12
+engine_segregated_regular_heap_free_0248a400,edge,,13,13,0,0,ac50193a86f50872,2026-11-12
 engine_store_word_product,recorded,,1,1,0,0,ecb3d664ff30b9e2,2026-11-12
 engine_store_word_product,edge,,32,32,0,0,ecb3d664ff30b9e2,2026-11-12
 engine_string_append,recorded,,78,78,0,0,f9bbc2ec8f450f14,2026-11-12

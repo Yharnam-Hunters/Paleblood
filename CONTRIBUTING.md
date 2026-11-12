@@ -197,7 +197,8 @@ A byte-exact match, whose calls and data references were also checked to reach t
 as the original's (`targets_checked=yes`), can stand in for the recorded cases that `verified`
 needs. The edge results and the independent review are still required. Write matching C from your own understanding of
 the function, never from decompiler output, and don't chase matching for large C++ engine
-functions.
+functions. Function family members, which cannot be recorded, use the same rule through
+`tools/match.py family` ([docs/MATCHING.md](docs/MATCHING.md), "Families").
 
 Investigation notes and logs go in the pull request, not in the repository. Game screenshots and
 clips do not belong in the Paleblood code repository, issues, pull requests, or Discussions (see
