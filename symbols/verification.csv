@@ -33,6 +33,7 @@ engine_compare_ascii_ignoring_case,edge,,49,49,0,0,c413999e90adaa80,2026-11-03
 engine_compare_signed_prefix,edge,,24,24,0,0,8a6a903a0ad00ffa,2026-11-03
 engine_compare_signed_strings,edge,,18,18,0,0,74f4fd8ab8a917df,2026-11-03
 engine_entry_manager_resolve,edge,,25,25,0,0,390da978e6436eea,2026-11-03
+engine_fixed_allocator_free_02484de0,edge,,19,19,0,0,288cd97d8e0cc199,2026-11-12
 engine_initialize_static_wide_string_0217ffb0,edge,,30,30,0,0,ccdadef0d4bd7152,2026-11-03
 engine_regular_heap_free_024858a0,edge,,28,28,0,0,870ec77a4cd23195,2026-11-12
 engine_release_owner_storage,edge,,28,28,0,0,e693d2086e8654b0,2026-11-03
