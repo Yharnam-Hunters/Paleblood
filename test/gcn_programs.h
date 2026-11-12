@@ -1132,4 +1132,92 @@ static const uint32_t tess_domain[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* Geometry-shader stages (runtime/gcn_spirv.h, "Geometry shaders"); ring accesses carry GLC and SLC, through
+   s[0:3], whose descriptor is not read. The export shader writes each vertex's (float(vertex index), 0.5)
+   to the ESGS ring (its offset in s4). The geometry shader, for a point list, reads its vertex's two words
+   back (v0 its ESGS offset, the second word 256 bytes on) and emits two strips: a quad over x from index - 1
+   to index and y from 0 to 1, a cut, then a quad over the same x and y from -1 to -0.5; each of its eight
+   vertices is four GSVS dwords (x, y, the index, 0.5) stored at offset (dword * 8 + vertex) * 4 from its
+   GSVS offset in s4, for VGT_GS_MAX_VERT_OUT 8. The copy shader reads its vertex's four dwords (v0 << 2, then
+   8 * 256 bytes a dword on) and exports the position (x, y, 0, 1) and parameter 0 (index, 0.5, 0, 1). */
+static const uint32_t gs_export[] = {
+    0x7e020d00, /* v_cvt_f32_u32_e32 v1, v0 */
+    0x7e0402f0, /* v_mov_b32_e32 v2, 0.5 */
+    0xe0704000, 0x04400100, /* buffer_store_dword v1, off, s[0:3], s4 glc slc */
+    0xe0704004, 0x04400200, /* buffer_store_dword v2, off, s[0:3], s4 offset:4 glc slc */
+    0xbf810000, /* s_endpgm */
+};
+static const uint32_t gs_geometry[] = {
+    0xbefc0305, /* s_mov_b32 m0, s5 */
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0xe0305000, 0x80400301, /* buffer_load_dword v3, v1, s[0:3], 0 offen glc slc */
+    0xb0060100, /* s_movk_i32 s6, 0x100 */
+    0xe0305000, 0x06400401, /* buffer_load_dword v4, v1, s[0:3], s6 offen glc slc */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x060a06f3, /* v_add_f32_e32 v5, -1.0, v3 */
+    0x060c0af2, /* v_add_f32_e32 v6, 1.0, v5 */
+    0x7e0e0280, /* v_mov_b32_e32 v7, 0 */
+    0x7e1002f2, /* v_mov_b32_e32 v8, 1.0 */
+    0x7e1202f3, /* v_mov_b32_e32 v9, -1.0 */
+    0x7e1402f1, /* v_mov_b32_e32 v10, -0.5 */
+    0xe0704000, 0x04400500, /* buffer_store_dword v5, off, s[0:3], s4 glc slc */
+    0xe0704020, 0x04400700, /* buffer_store_dword v7, off, s[0:3], s4 offset:32 glc slc */
+    0xe0704040, 0x04400300, /* buffer_store_dword v3, off, s[0:3], s4 offset:64 glc slc */
+    0xe0704060, 0x04400400, /* buffer_store_dword v4, off, s[0:3], s4 offset:96 glc slc */
+    0xbf900022, /* s_sendmsg sendmsg(MSG_GS, GS_OP_EMIT, 0) */
+    0xe0704004, 0x04400600, /* buffer_store_dword v6, off, s[0:3], s4 offset:4 glc slc */
+    0xe0704024, 0x04400700, /* buffer_store_dword v7, off, s[0:3], s4 offset:36 glc slc */
+    0xe0704044, 0x04400300, /* buffer_store_dword v3, off, s[0:3], s4 offset:68 glc slc */
+    0xe0704064, 0x04400400, /* buffer_store_dword v4, off, s[0:3], s4 offset:100 glc slc */
+    0xbf900022, /* s_sendmsg sendmsg(MSG_GS, GS_OP_EMIT, 0) */
+    0xe0704008, 0x04400500, /* buffer_store_dword v5, off, s[0:3], s4 offset:8 glc slc */
+    0xe0704028, 0x04400800, /* buffer_store_dword v8, off, s[0:3], s4 offset:40 glc slc */
+    0xe0704048, 0x04400300, /* buffer_store_dword v3, off, s[0:3], s4 offset:72 glc slc */
+    0xe0704068, 0x04400400, /* buffer_store_dword v4, off, s[0:3], s4 offset:104 glc slc */
+    0xbf900022, /* s_sendmsg sendmsg(MSG_GS, GS_OP_EMIT, 0) */
+    0xe070400c, 0x04400600, /* buffer_store_dword v6, off, s[0:3], s4 offset:12 glc slc */
+    0xe070402c, 0x04400800, /* buffer_store_dword v8, off, s[0:3], s4 offset:44 glc slc */
+    0xe070404c, 0x04400300, /* buffer_store_dword v3, off, s[0:3], s4 offset:76 glc slc */
+    0xe070406c, 0x04400400, /* buffer_store_dword v4, off, s[0:3], s4 offset:108 glc slc */
+    0xbf900022, /* s_sendmsg sendmsg(MSG_GS, GS_OP_EMIT, 0) */
+    0xbf900012, /* s_sendmsg sendmsg(MSG_GS, GS_OP_CUT, 0) */
+    0xe0704010, 0x04400500, /* buffer_store_dword v5, off, s[0:3], s4 offset:16 glc slc */
+    0xe0704030, 0x04400900, /* buffer_store_dword v9, off, s[0:3], s4 offset:48 glc slc */
+    0xe0704050, 0x04400300, /* buffer_store_dword v3, off, s[0:3], s4 offset:80 glc slc */
+    0xe0704070, 0x04400400, /* buffer_store_dword v4, off, s[0:3], s4 offset:112 glc slc */
+    0xbf900022, /* s_sendmsg sendmsg(MSG_GS, GS_OP_EMIT, 0) */
+    0xe0704014, 0x04400600, /* buffer_store_dword v6, off, s[0:3], s4 offset:20 glc slc */
+    0xe0704034, 0x04400900, /* buffer_store_dword v9, off, s[0:3], s4 offset:52 glc slc */
+    0xe0704054, 0x04400300, /* buffer_store_dword v3, off, s[0:3], s4 offset:84 glc slc */
+    0xe0704074, 0x04400400, /* buffer_store_dword v4, off, s[0:3], s4 offset:116 glc slc */
+    0xbf900022, /* s_sendmsg sendmsg(MSG_GS, GS_OP_EMIT, 0) */
+    0xe0704018, 0x04400500, /* buffer_store_dword v5, off, s[0:3], s4 offset:24 glc slc */
+    0xe0704038, 0x04400a00, /* buffer_store_dword v10, off, s[0:3], s4 offset:56 glc slc */
+    0xe0704058, 0x04400300, /* buffer_store_dword v3, off, s[0:3], s4 offset:88 glc slc */
+    0xe0704078, 0x04400400, /* buffer_store_dword v4, off, s[0:3], s4 offset:120 glc slc */
+    0xbf900022, /* s_sendmsg sendmsg(MSG_GS, GS_OP_EMIT, 0) */
+    0xe070401c, 0x04400600, /* buffer_store_dword v6, off, s[0:3], s4 offset:28 glc slc */
+    0xe070403c, 0x04400a00, /* buffer_store_dword v10, off, s[0:3], s4 offset:60 glc slc */
+    0xe070405c, 0x04400300, /* buffer_store_dword v3, off, s[0:3], s4 offset:92 glc slc */
+    0xe070407c, 0x04400400, /* buffer_store_dword v4, off, s[0:3], s4 offset:124 glc slc */
+    0xbf900022, /* s_sendmsg sendmsg(MSG_GS, GS_OP_EMIT, 0) */
+    0xbf900003, /* s_sendmsg sendmsg(MSG_GS_DONE, GS_OP_NOP) */
+    0xbf810000, /* s_endpgm */
+};
+static const uint32_t gs_copy[] = {
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0xe0305000, 0x80400201, /* buffer_load_dword v2, v1, s[0:3], 0 offen glc slc */
+    0xe0305800, 0x80400301, /* buffer_load_dword v3, v1, s[0:3], 0 offen offset:2048 glc slc */
+    0xb0041000, /* s_movk_i32 s4, 0x1000 */
+    0xe0305000, 0x04400401, /* buffer_load_dword v4, v1, s[0:3], s4 offen glc slc */
+    0xb0041800, /* s_movk_i32 s4, 0x1800 */
+    0xe0305000, 0x04400501, /* buffer_load_dword v5, v1, s[0:3], s4 offen glc slc */
+    0x7e0c0280, /* v_mov_b32_e32 v6, 0 */
+    0x7e0e02f2, /* v_mov_b32_e32 v7, 1.0 */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0xf800020f, 0x07060504, /* exp param0, v4, v5, v6, v7 */
+    0xf80008cf, 0x07060302, /* exp pos0, v2, v3, v6, v7 done */
+    0xbf810000, /* s_endpgm */
+};
+
 #endif

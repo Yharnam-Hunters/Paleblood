@@ -79,9 +79,15 @@ typedef struct {
     uint32_t factor_stride;
     uint64_t factor_ring, factor_ring_bytes, factor_buffer;
     uint32_t domain, partitioning, topology;
+    /* geometry shaders (runtime/gcn_spirv.h): the export and geometry shaders run as compute shaders, the
+       copy shader as a vertex shader; their ring accesses reach these buffers */
+    int gs;
+    uint32_t input_primitive, esgs_itemsize, gsvs_itemsize, max_vertices;
+    uint64_t esgs_ring, esgs_ring_bytes, gsvs_ring, gsvs_ring_bytes, strip_buffer, strip_buffer_bytes;
 } stage_layout;
 
 enum { TESS_NONE, TESS_LOCAL, TESS_HULL, TESS_DOMAIN };
+enum { GS_NONE, GS_EXPORT, GS_GEOMETRY, GS_COPY };
 
 enum { DEPTH_TARGET = 8, POSITION_TARGET = 12, PARAMETER_TARGET_FIRST = 32, PARAMETER_COUNT = 32, COLOR_TARGET_COUNT = 8, MAX_INTERFACE = 80 };
 
@@ -100,6 +106,10 @@ typedef struct {
     unsigned char sgpr_written[SGPR_COUNT];
     uint32_t push_constants, local_invocation_id, workgroup_id;
     uint32_t lds;                    /* the LDS: a workgroup array, or (in a buffer) its base address, a ulong value */
+    /* a geometry shader's emits (runtime/gcn_spirv.h): the vertices it has emitted, the next free index of its
+       strip, whether its strip ends with a restart (function variables), its strip's address (ulong) and the
+       copy shader's vertex index for its slot 0 (uint) */
+    uint32_t gs_emitted, gs_cursor, gs_restarted, gs_strip, gs_first_vertex;
     /* stage inputs and outputs, made on first use, and every one the entry point lists */
     uint32_t position, parameter[PARAMETER_COUNT], color[COLOR_TARGET_COUNT], attribute[PARAMETER_COUNT];
     uint32_t clip_distance;          /* the ClipDistance array, made on first use */
@@ -170,6 +180,8 @@ static uint32_t glsl(translator *t, uint32_t type, uint32_t instruction, uint32_
 static uint32_t as_float(translator *t, uint32_t bits) { return value(t, SPV_OP_BITCAST, t_float(t), 1, bits); }
 static uint32_t as_bits(translator *t, uint32_t f) { return value(t, SPV_OP_BITCAST, t_uint(t), 1, f); }
 static uint32_t widen(translator *t, uint32_t bits) { return value(t, SPV_OP_U_CONVERT, t_ulong(t), 1, bits); }
+static uint32_t udiv(translator *t, uint32_t a, uint32_t b) { return value(t, SPV_OP_U_DIV, t_uint(t), 2, a, b); }
+static uint32_t umod(translator *t, uint32_t a, uint32_t b) { return value(t, SPV_OP_U_MOD, t_uint(t), 2, a, b); }
 
 static void store(translator *t, spirv_words *to, uint32_t pointer, uint32_t v)
 {
@@ -979,6 +991,54 @@ static uint16_t scalar_comparison(const char *name)
     return 0;
 }
 
+/* s_sendmsg's SIMM16 (the Sea Islands manual; shadPS4's SendMsgSimm the same): MSG bits 0-3 (2 GS, 3 GS
+   done), GS_OP 4-5 (0 nop, 1 cut, 2 emit, 3 emit and cut), STREAM 8-9. */
+enum { SENDMSG_GS = 2, SENDMSG_GS_DONE = 3, GS_OP_CUT = 1, GS_OP_EMIT = 2, GS_OP_SHIFT = 4, GS_STREAM_SHIFT = 8, STRIP_RESTART = 0xffffffffu };
+
+static void store_dword(translator *t, uint32_t pointer, uint32_t v);
+
+/* Index `v` at the invocation's next strip slot (runtime/gcn_spirv.h, "Geometry shaders"). */
+static void strip_append(translator *t, uint32_t v)
+{
+    const uint32_t cursor = load(t, t_uint(t), t->gs_cursor);
+    const uint32_t address = value(t, SPV_OP_I_ADD, t_ulong(t), 2, t->gs_strip,
+                                   widen(t, value(t, SPV_OP_I_MUL, t_uint(t), 2, cursor, konst(t, BYTES_PER_DWORD))));
+    store_dword(t, value(t, SPV_OP_CONVERT_U_TO_PTR, spirv_type_pointer(&t->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, t_uint(t)), 1, address), v);
+    store(t, t->out, t->gs_cursor, value(t, SPV_OP_I_ADD, t_uint(t), 2, cursor, konst(t, 1)));
+}
+
+/* A geometry shader's emit and cut messages become its strip's indices and restarts (in the lanes EXEC
+   holds, as the hardware counts each lane's vertices); GS done and the nop say nothing here. */
+static void geometry_message(translator *t, uint32_t simm)
+{
+    const uint32_t message = simm & 0xf, op = (simm >> GS_OP_SHIFT) & 3, stream = (simm >> GS_STREAM_SHIFT) & 3;
+    if (t->layout->gs != GS_GEOMETRY || (message != SENDMSG_GS && message != SENDMSG_GS_DONE)) {
+        fail(t, "s_sendmsg %#x outside a geometry shader's emits is not translated yet", simm);
+        return;
+    }
+    if (message == SENDMSG_GS_DONE || !op) return;
+    if (stream) {
+        fail(t, "s_sendmsg %#x: an emit or cut to stream %u (only stream 0 is drawn) is not translated yet", simm, stream);
+        return;
+    }
+    const uint32_t active = begin_if(t, exec_bit(t));
+    if (op & GS_OP_EMIT) { /* vertex k's slot, while there is one */
+        const uint32_t k = load(t, t_uint(t), t->gs_emitted);
+        const uint32_t room = begin_if(t, value(t, SPV_OP_U_LESS_THAN, t_bool(t), 2, k, konst(t, t->layout->max_vertices)));
+        strip_append(t, value(t, SPV_OP_I_ADD, t_uint(t), 2, t->gs_first_vertex, value(t, SPV_OP_I_MUL, t_uint(t), 2, k, konst(t, GCN_GS_WAVE_LANES))));
+        store(t, t->out, t->gs_emitted, value(t, SPV_OP_I_ADD, t_uint(t), 2, k, konst(t, 1)));
+        store(t, t->out, t->gs_restarted, spirv_constant_bool(&t->m, 0));
+        end_if(t, room);
+    }
+    if (op & GS_OP_CUT) { /* a restart, unless the strip already ends with one */
+        const uint32_t open = begin_if(t, value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, load(t, t_bool(t), t->gs_restarted)));
+        strip_append(t, konst(t, STRIP_RESTART));
+        store(t, t->out, t->gs_restarted, spirv_constant_bool(&t->m, 1));
+        end_if(t, open);
+    }
+    end_if(t, active);
+}
+
 static void scalar_instruction(translator *t, const uint32_t *w, const gcn_instruction *ins)
 {
     const char *name = ins->name;
@@ -1105,6 +1165,8 @@ static void scalar_instruction(translator *t, const uint32_t *w, const gcn_instr
         if (t->layout->lds.address) semantics |= SPV_SEMANTICS_UNIFORM_MEMORY;
         spirv_emit(&t->m, t->out, SPV_OP_CONTROL_BARRIER,
                    (const uint32_t[]){konst(t, SPV_SCOPE_WORKGROUP), konst(t, SPV_SCOPE_WORKGROUP), konst(t, semantics)}, 3);
+    } else if (!strcmp(name, "s_sendmsg")) {
+        geometry_message(t, w[0] & 0xffff);
     } else if (!strcmp(name, "s_waitcnt") || !strcmp(name, "s_nop")) {
         /* Memory completes in order in SPIR-V within an invocation: nothing to wait for. */
     } else {
@@ -1782,6 +1844,56 @@ static void buffer_atomic(translator *t, const uint32_t *w, const gcn_instructio
     end_if(t, merge);
 }
 
+/* A geometry-shader stage's ring access (runtime/gcn_spirv.h, "Geometry shaders"): `dwords` dwords at
+   byte `offset` (the instruction offset plus any VGPR offset) and soffset, swizzled for a store, linear
+   for a load, in the ring its stage meets: the export shader stores to the ESGS ring, the geometry shader
+   loads from it and stores to the GSVS ring, the copy shader loads from that. */
+static void ring_access(translator *t, const gcn_instruction *ins, int load_op, uint32_t dwords, uint32_t soffset, uint32_t offset,
+                        unsigned vdata)
+{
+    const stage_layout *l = t->layout;
+    const int esgs = l->gs == GS_EXPORT || (l->gs == GS_GEOMETRY && load_op);
+    if ((l->gs == GS_EXPORT && load_op) || (l->gs == GS_COPY && !load_op)) {
+        fail(t, "%s: a %s of the %s ring in the %s shader is not translated yet", ins->name, load_op ? "load" : "store",
+             l->gs == GS_EXPORT ? "ESGS" : "GSVS", l->gs == GS_EXPORT ? "export" : "copy");
+        return;
+    }
+    const uint64_t ring = esgs ? l->esgs_ring : l->gsvs_ring, ring_bytes = esgs ? l->esgs_ring_bytes : l->gsvs_ring_bytes;
+    uint32_t lane = konst(t, 0);
+    if (!load_op) {
+        const uint32_t uvec3 = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_uint(t), 3}, 2);
+        lane = value(t, SPV_OP_COMPOSITE_EXTRACT, t_uint(t), 2, load(t, uvec3, t->local_invocation_id), 0);
+    }
+    const uint32_t merge = begin_if(t, exec_bit(t));
+    for (uint32_t i = 0; i < dwords; i++) {
+        const uint32_t byte = value(t, SPV_OP_I_ADD, t_uint(t), 2, offset, konst(t, i * BYTES_PER_DWORD));
+        /* swizzled: dword byte / 4 of the lane at d * 256 + lane * 4 (element size 4, 64 lanes a wave) */
+        const uint32_t within = load_op ? byte
+                                        : value(t, SPV_OP_I_ADD, t_uint(t), 2,
+                                                value(t, SPV_OP_I_MUL, t_uint(t), 2, udiv(t, byte, konst(t, BYTES_PER_DWORD)),
+                                                      konst(t, GCN_GS_WAVE_LANES * BYTES_PER_DWORD)),
+                                                value(t, SPV_OP_I_MUL, t_uint(t), 2, lane, konst(t, BYTES_PER_DWORD)));
+        const uint32_t at = value(t, SPV_OP_I_ADD, t_ulong(t), 2, widen(t, soffset), widen(t, within));
+        const uint32_t in_ring = value(t, SPV_OP_U_LESS_THAN_EQUAL, t_bool(t), 2, value(t, SPV_OP_I_ADD, t_ulong(t), 2, at, ulong_constant(t, BYTES_PER_DWORD)),
+                                       ulong_constant(t, ring_bytes));
+        const uint32_t address = value(t, SPV_OP_I_ADD, t_ulong(t), 2, ulong_constant(t, ring),
+                                       value(t, SPV_OP_BITWISE_AND, t_ulong(t), 2, at, ulong_constant(t, ~(uint64_t)3)));
+        const uint32_t pointer = value(t, SPV_OP_CONVERT_U_TO_PTR, spirv_type_pointer(&t->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, t_uint(t)), 1, address);
+        if (load_op) {
+            const uint32_t slot = function_variable(t, t_uint(t), konst(t, 0));
+            const uint32_t inside = begin_if(t, in_ring);
+            store(t, t->out, slot, load_dword(t, pointer));
+            end_if(t, inside);
+            write_vgpr(t, vdata + i, load(t, t_uint(t), slot));
+        } else {
+            const uint32_t inside = begin_if(t, in_ring);
+            store_dword(t, pointer, load(t, t_uint(t), vgpr(t, vdata + i)));
+            end_if(t, inside);
+        }
+    }
+    end_if(t, merge);
+}
+
 static void buffer_memory(translator *t, const uint32_t *w, const gcn_instruction *ins)
 {
     const char *name = ins->name;
@@ -1806,6 +1918,15 @@ static void buffer_memory(translator *t, const uint32_t *w, const gcn_instructio
     const uint32_t soffset_value = source(t, soffset, ins);
     uint32_t access_offset = konst(t, w[0] & 0xfff);
     if (offen) access_offset = value(t, SPV_OP_I_ADD, t_uint(t), 2, access_offset, load(t, t_uint(t), vgpr(t, vaddr + idxen)));
+    const unsigned glc = (w[0] >> 14) & 1, slc = (w[1] >> 22) & 1;
+    if (t->layout->gs && glc && slc) { /* a ring access (runtime/gcn_spirv.h, "Geometry shaders"), which reads no descriptor */
+        if (idxen || ins->encoding != GCN_MUBUF || strstr(name, "_format_")) {
+            fail(t, "%s: an indexed or format access to a geometry-shader ring is not translated yet", name);
+            return;
+        }
+        ring_access(t, ins, load_op, dwords, soffset_value, access_offset, vdata);
+        return;
+    }
     const uint32_t stride = value(t, SPV_OP_BITWISE_AND, t_uint(t), 2,
                                   value(t, SPV_OP_SHIFT_RIGHT_LOGICAL, t_uint(t), 2, load(t, t_uint(t), sgpr(t, srsrc + 1)),
                                         konst(t, VSHARP_STRIDE_SHIFT)),
@@ -2047,8 +2168,10 @@ static uint32_t user_data_block(translator *t)
 {
     spirv_module *m = &t->m;
     const uint32_t array = spirv_global(m, SPV_OP_TYPE_ARRAY, (const uint32_t[]){t_uint(t), konst(t, GCN_USER_SGPR_MAX)}, 2);
-    /* the local and hull passes also take the draw's words (GCN_TESS_DRAW_*) after the user data */
-    const int draw_words = t->layout->tess == TESS_LOCAL || t->layout->tess == TESS_HULL;
+    /* the local and hull passes, and the export and geometry passes, also take the draw's words
+       (GCN_TESS_DRAW_*) after the user data */
+    const int draw_words = t->layout->tess == TESS_LOCAL || t->layout->tess == TESS_HULL || t->layout->gs == GS_EXPORT ||
+                           t->layout->gs == GS_GEOMETRY;
     const uint32_t draw = spirv_global(m, SPV_OP_TYPE_ARRAY, (const uint32_t[]){t_uint(t), konst(t, 2)}, 2); /* the draw record's address */
     const uint32_t block = draw_words ? spirv_global(m, SPV_OP_TYPE_STRUCT, (const uint32_t[]){array, draw}, 2)
                                       : spirv_global(m, SPV_OP_TYPE_STRUCT, (const uint32_t[]){array}, 1);
@@ -2070,6 +2193,7 @@ static uint32_t user_data_block(translator *t)
 /* The starting registers: user data in the first SGPRs, the workgroup index, and v0-v2 the lane's
    position in the workgroup. */
 static void tessellation_registers(translator *t, const stage_layout *layout);
+static void geometry_registers(translator *t, const stage_layout *layout);
 
 static void starting_registers(translator *t, const stage_layout *layout)
 {
@@ -2082,6 +2206,11 @@ static void starting_registers(translator *t, const stage_layout *layout)
     }
     if (layout->tess) {
         tessellation_registers(t, layout);
+        t->writing = 0;
+        return;
+    }
+    if (layout->gs == GS_EXPORT || layout->gs == GS_GEOMETRY) {
+        geometry_registers(t, layout);
         t->writing = 0;
         return;
     }
@@ -2139,8 +2268,8 @@ static uint32_t workgroup_lds(translator *t, uint32_t group)
     return value(t, SPV_OP_I_ADD, t_ulong(t), 2, ulong_value(t, t->layout->lds.address), offset);
 }
 
-/* Word `word` of the draw's record (runtime/gcn_spirv.h), at the address in the push constants. */
-static uint32_t draw_word(translator *t, unsigned word)
+/* A pointer to word `word` of the draw's record (runtime/gcn_spirv.h), at the address in the push constants. */
+static uint32_t draw_word_pointer(translator *t, unsigned word)
 {
     uint32_t half[2];
     for (unsigned i = 0; i < 2; i++)
@@ -2149,11 +2278,11 @@ static uint32_t draw_word(translator *t, unsigned word)
     const uint32_t record = value(t, SPV_OP_BITWISE_OR, t_ulong(t), 2, half[0],
                                   value(t, SPV_OP_SHIFT_LEFT_LOGICAL, t_ulong(t), 2, half[1], ulong_value(t, 32)));
     const uint32_t address = value(t, SPV_OP_I_ADD, t_ulong(t), 2, record, ulong_value(t, word * BYTES_PER_DWORD));
-    return load_dword(t, value(t, SPV_OP_CONVERT_U_TO_PTR, spirv_type_pointer(&t->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, t_uint(t)), 1, address));
+    return value(t, SPV_OP_CONVERT_U_TO_PTR, spirv_type_pointer(&t->m, SPV_STORAGE_PHYSICAL_STORAGE_BUFFER, t_uint(t)), 1, address);
 }
 
-static uint32_t udiv(translator *t, uint32_t a, uint32_t b) { return value(t, SPV_OP_U_DIV, t_uint(t), 2, a, b); }
-static uint32_t umod(translator *t, uint32_t a, uint32_t b) { return value(t, SPV_OP_U_MOD, t_uint(t), 2, a, b); }
+static uint32_t draw_word(translator *t, unsigned word) { return load_dword(t, draw_word_pointer(t, word)); }
+
 
 /* The local shader's vertex index for the draw's control point n: first + n, or the index buffer's entry
    first + n (2 or 4 bytes each, little-endian). */
@@ -2236,6 +2365,112 @@ static void tessellation_registers(translator *t, const stage_layout *layout)
     if (layout->off_chip) store(t, t->out, sgpr(t, next++), konst(t, 0));
     const uint32_t first_patch = value(t, SPV_OP_I_MUL, t_uint(t), 2, group, konst(t, layout->patches));
     store(t, t->out, sgpr(t, next), value(t, SPV_OP_I_MUL, t_uint(t), 2, first_patch, konst(t, layout->factor_stride)));
+}
+
+/* ---- geometry-shader stages (runtime/gcn_spirv.h, "Geometry shaders") ---- */
+
+/* The primitives a draw of `vertices` vertices makes of the input primitive. */
+static uint32_t geometry_primitives(translator *t, uint32_t vertices)
+{
+    switch (t->layout->input_primitive) {
+    case GCN_GS_INPUT_POINTS: return vertices;
+    case GCN_GS_INPUT_LINES: return udiv(t, vertices, konst(t, 2));
+    case GCN_GS_INPUT_TRIANGLES: return udiv(t, vertices, konst(t, 3));
+    default: { /* a strip: vertices - 2, none for fewer than three */
+        const uint32_t some = value(t, SPV_OP_U_GREATER_THAN, t_bool(t), 2, vertices, konst(t, 2));
+        return value(t, SPV_OP_SELECT, t_uint(t), 3, some, value(t, SPV_OP_I_SUB, t_uint(t), 2, vertices, konst(t, 2)), konst(t, 0));
+    }
+    }
+}
+
+/* Where the export pass left the draw's vertex n in the ESGS ring, in dwords: its wave's block, then its lane. */
+static uint32_t esgs_vertex_offset(translator *t, uint32_t n)
+{
+    const uint32_t wave = udiv(t, n, konst(t, GCN_GS_WAVE_LANES)), lane = umod(t, n, konst(t, GCN_GS_WAVE_LANES));
+    return value(t, SPV_OP_I_ADD, t_uint(t), 2, value(t, SPV_OP_I_MUL, t_uint(t), 2, wave, konst(t, t->layout->esgs_itemsize * GCN_GS_WAVE_LANES)),
+                 lane);
+}
+
+/* The vertices or primitives that fit the rings and strip buffer: past them, no lane runs and the stop
+   word says so. */
+static uint32_t geometry_fits(translator *t, uint32_t count, uint64_t most)
+{
+    const uint32_t fits = value(t, SPV_OP_U_LESS_THAN_EQUAL, t_bool(t), 2, count, konst(t, most > UINT32_MAX ? UINT32_MAX : (uint32_t)most));
+    if (t->layout->error_address) {
+        const uint32_t vertices = draw_word(t, GCN_TESS_DRAW_VERTICES);
+        const uint32_t over = begin_if(t, value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, fits));
+        runtime_stop(t, value(t, SPV_OP_BITWISE_OR, t_uint(t), 2, konst(t, GCN_RUNTIME_STOP_GEOMETRY_LIMIT << GCN_RUNTIME_STOP_KIND_SHIFT),
+                              value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, vertices, konst(t, 0xffffff))));
+        end_if(t, over);
+    }
+    return fits;
+}
+
+static void geometry_registers(translator *t, const stage_layout *layout)
+{
+    const uint32_t uvec3 = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_uint(t), 3}, 2);
+    const uint32_t lane = value(t, SPV_OP_COMPOSITE_EXTRACT, t_uint(t), 2, load(t, uvec3, t->local_invocation_id), 0);
+    const uint32_t group = value(t, SPV_OP_COMPOSITE_EXTRACT, t_uint(t), 2, load(t, uvec3, t->workgroup_id), 0);
+    const uint32_t item = value(t, SPV_OP_I_ADD, t_uint(t), 2, value(t, SPV_OP_I_MUL, t_uint(t), 2, group, konst(t, GCN_GS_WAVE_LANES)), lane);
+    const uint32_t vertices = draw_word(t, GCN_TESS_DRAW_VERTICES);
+    const uint64_t wave_bytes = (uint64_t)(layout->gs == GS_EXPORT ? layout->esgs_itemsize : layout->gsvs_itemsize) * GCN_GS_WAVE_LANES * BYTES_PER_DWORD;
+    if (layout->gs == GS_EXPORT) {
+        const uint32_t fits = geometry_fits(t, vertices, layout->esgs_ring_bytes / wave_bytes * GCN_GS_WAVE_LANES);
+        const uint32_t valid = both(t, fits, value(t, SPV_OP_U_LESS_THAN, t_bool(t), 2, item, vertices));
+        store(t, t->out, t->exec, valid);
+        store(t, t->out, vgpr(t, 0), local_vertex_index(t, value(t, SPV_OP_SELECT, t_uint(t), 3, valid, item, konst(t, 0))));
+        for (unsigned v = 1; v < 4; v++) store(t, t->out, vgpr(t, v), konst(t, 0));
+        store(t, t->out, sgpr(t, layout->user_sgprs), value(t, SPV_OP_I_MUL, t_uint(t), 2, group, konst(t, (uint32_t)wave_bytes)));
+        return;
+    }
+    /* the geometry shader: the primitive's vertices, the strip, the ring offsets */
+    const uint32_t primitives = geometry_primitives(t, vertices);
+    const uint32_t strip_indices = gcn_geometry_strip_indices(layout->max_vertices);
+    uint64_t most = layout->gsvs_ring_bytes / wave_bytes * GCN_GS_WAVE_LANES;
+    if (layout->strip_buffer_bytes / ((uint64_t)strip_indices * BYTES_PER_DWORD) < most)
+        most = layout->strip_buffer_bytes / ((uint64_t)strip_indices * BYTES_PER_DWORD);
+    const uint32_t vertex_room = layout->esgs_ring_bytes / ((uint64_t)layout->esgs_itemsize * GCN_GS_WAVE_LANES * BYTES_PER_DWORD) * GCN_GS_WAVE_LANES;
+    const uint32_t fits = both(t, geometry_fits(t, primitives, most),
+                               value(t, SPV_OP_U_LESS_THAN_EQUAL, t_bool(t), 2, vertices, konst(t, vertex_room)));
+    const uint32_t valid = both(t, fits, value(t, SPV_OP_U_LESS_THAN, t_bool(t), 2, item, primitives));
+    store(t, t->out, t->exec, valid);
+    /* lane 0 of the pass writes the strips' draw: the primitives that run, each its strip's indices, one instance */
+    const uint32_t first_lane = begin_if(t, equals(t, item, konst(t, 0)));
+    const uint32_t drawn = value(t, SPV_OP_SELECT, t_uint(t), 3, fits, primitives, konst(t, 0));
+    const uint32_t arguments[GCN_GS_DRAW_ARGUMENT_WORDS] = {value(t, SPV_OP_I_MUL, t_uint(t), 2, drawn, konst(t, gcn_geometry_strip_indices(layout->max_vertices))),
+                                                           konst(t, 1), konst(t, 0), konst(t, 0), konst(t, 0)};
+    for (unsigned w = 0; w < GCN_GS_DRAW_ARGUMENT_WORDS; w++) store_dword(t, draw_word_pointer(t, GCN_GS_DRAW_ARGUMENTS + w), arguments[w]);
+    end_if(t, first_lane);
+    static const unsigned per_primitive[] = {[GCN_GS_INPUT_POINTS] = 1, [GCN_GS_INPUT_LINES] = 2, [GCN_GS_INPUT_TRIANGLES] = 3,
+                                             [GCN_GS_INPUT_TRIANGLE_STRIP] = 3};
+    static const unsigned offset_vgpr[] = {0, 1, 3}; /* vertex 2's offset follows the primitive's index in v2 */
+    const unsigned count = per_primitive[layout->input_primitive];
+    const int strip = layout->input_primitive == GCN_GS_INPUT_TRIANGLE_STRIP;
+    const uint32_t odd = equals(t, value(t, SPV_OP_BITWISE_AND, t_uint(t), 2, item, konst(t, 1)), konst(t, 1));
+    for (unsigned v = 0; v < 8; v++) store(t, t->out, vgpr(t, v), konst(t, 0));
+    for (unsigned j = 0; j < count; j++) {
+        uint32_t n;
+        if (strip) { /* p, p + 1, p + 2; p + 1, p, p + 2 for odd p */
+            const uint32_t even_n = value(t, SPV_OP_I_ADD, t_uint(t), 2, item, konst(t, j));
+            const uint32_t odd_n = value(t, SPV_OP_I_ADD, t_uint(t), 2, item, konst(t, j == 0 ? 1 : j == 1 ? 0 : 2));
+            n = value(t, SPV_OP_SELECT, t_uint(t), 3, odd, odd_n, even_n);
+        } else {
+            n = value(t, SPV_OP_I_ADD, t_uint(t), 2, value(t, SPV_OP_I_MUL, t_uint(t), 2, item, konst(t, count)), konst(t, j));
+        }
+        store(t, t->out, vgpr(t, offset_vgpr[j]), esgs_vertex_offset(t, value(t, SPV_OP_SELECT, t_uint(t), 3, valid, n, konst(t, 0))));
+    }
+    store(t, t->out, vgpr(t, 2), item);
+    store(t, t->out, sgpr(t, layout->user_sgprs), value(t, SPV_OP_I_MUL, t_uint(t), 2, group, konst(t, (uint32_t)wave_bytes)));
+    store(t, t->out, sgpr(t, layout->user_sgprs + 1), group);
+    /* the strip: emits counted from 0, an empty strip ending as with a restart */
+    t->gs_emitted = function_variable(t, t_uint(t), konst(t, 0));
+    t->gs_cursor = function_variable(t, t_uint(t), konst(t, 0));
+    t->gs_restarted = function_variable(t, t_bool(t), spirv_constant_bool(&t->m, 1));
+    const uint32_t safe = value(t, SPV_OP_SELECT, t_uint(t), 3, valid, item, konst(t, 0));
+    t->gs_strip = value(t, SPV_OP_I_ADD, t_ulong(t), 2, ulong_value(t, layout->strip_buffer),
+                        value(t, SPV_OP_I_MUL, t_ulong(t), 2, widen(t, safe), ulong_value(t, (uint64_t)strip_indices * BYTES_PER_DWORD)));
+    t->gs_first_vertex = value(t, SPV_OP_I_ADD, t_uint(t), 2,
+                               value(t, SPV_OP_I_MUL, t_uint(t), 2, group, konst(t, (uint32_t)(wave_bytes / BYTES_PER_DWORD))), lane);
 }
 
 /* ---- the local data share (ds_*) ----
@@ -3770,7 +4005,52 @@ int gcn_translate_vertex(const uint32_t *code, size_t dwords, const gcn_vertex_l
                             .callee = layout->callee, .callee_dwords = layout->callee_dwords, .code_address = layout->code_address,
                             .images = layout->images, .image_count = layout->image_count, .first_binding = layout->first_binding,
                             .push_constant_offset = layout->push_constant_offset, .address_offset = layout->address_offset, .error_address = layout->error_address,
-                            .user_data_read = layout->user_data_read};
+                            .user_data_read = layout->user_data_read, .gs = layout->gsvs_ring ? GS_COPY : GS_NONE,
+                            .gsvs_ring = layout->gsvs_ring, .gsvs_ring_bytes = layout->gsvs_ring_bytes};
+    return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
+}
+
+/* The export or geometry shader's layout, checked; 0, or -1 with the reason. */
+static int geometry_stage(const gcn_geometry_layout *l, int gs, stage_layout *s, char *error, size_t error_size)
+{
+    enum { MOST_VERTICES = 1024 }; /* VGT_GS_MAX_VERT_OUT's 11 bits, as the GPU library masks them, and no more than D3D's 1024 */
+    const uint64_t wave_dwords = (uint64_t)GCN_GS_WAVE_LANES * (gs == GS_EXPORT ? l->esgs_itemsize : l->gsvs_itemsize);
+    if (!l->esgs_itemsize || !l->esgs_ring || wave_dwords * BYTES_PER_DWORD > UINT32_MAX ||
+        (uint64_t)l->esgs_itemsize * GCN_GS_WAVE_LANES * BYTES_PER_DWORD > l->esgs_ring_bytes ||
+        (gs == GS_GEOMETRY && (!l->max_vertices || l->max_vertices > MOST_VERTICES || !l->gsvs_itemsize || !l->gsvs_ring || !l->strip_buffer ||
+                               l->input_primitive > GCN_GS_INPUT_TRIANGLE_STRIP || wave_dwords * BYTES_PER_DWORD > l->gsvs_ring_bytes ||
+                               (uint64_t)gcn_geometry_strip_indices(l->max_vertices) * BYTES_PER_DWORD > l->strip_buffer_bytes))) {
+        snprintf(error, error_size, "geometry-shader rings of %u and %u dwords an item, %u vertices out, input primitive %u: not drawn",
+                 l->esgs_itemsize, l->gsvs_itemsize, l->max_vertices, l->input_primitive);
+        return -1;
+    }
+    *s = (stage_layout){.stage = STAGE_COMPUTE, .gs = gs, .local_size = {GCN_GS_WAVE_LANES, 1, 1}, .user_sgprs = l->user_sgprs,
+                        .callee = gs == GS_EXPORT ? l->callee : NULL, .callee_dwords = l->callee_dwords, .code_address = l->code_address,
+                        .address_offset = l->address_offset, .error_address = l->error_address, .user_data_read = l->user_data_read,
+                        .input_primitive = l->input_primitive, .esgs_itemsize = l->esgs_itemsize, .gsvs_itemsize = l->gsvs_itemsize,
+                        .max_vertices = l->max_vertices, .esgs_ring = l->esgs_ring, .esgs_ring_bytes = l->esgs_ring_bytes,
+                        .gsvs_ring = l->gsvs_ring, .gsvs_ring_bytes = l->gsvs_ring_bytes, .strip_buffer = l->strip_buffer,
+                        .strip_buffer_bytes = l->strip_buffer_bytes};
+    if (l->user_sgprs + (gs == GS_EXPORT ? 1u : 2u) > SGPR_VCC) {
+        snprintf(error, error_size, "%u user SGPRs leave no room for the ring offsets", l->user_sgprs);
+        return -1;
+    }
+    return 0;
+}
+
+int gcn_translate_export(const uint32_t *code, size_t dwords, const gcn_geometry_layout *layout, uint32_t **spirv, size_t *spirv_word_count,
+                         char *error, size_t error_size)
+{
+    stage_layout s;
+    if (geometry_stage(layout, GS_EXPORT, &s, error, error_size)) return -1;
+    return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
+}
+
+int gcn_translate_geometry(const uint32_t *code, size_t dwords, const gcn_geometry_layout *layout, uint32_t **spirv,
+                           size_t *spirv_word_count, char *error, size_t error_size)
+{
+    stage_layout s;
+    if (geometry_stage(layout, GS_GEOMETRY, &s, error, error_size)) return -1;
     return translate(code, dwords, &s, spirv, spirv_word_count, error, error_size);
 }
 
