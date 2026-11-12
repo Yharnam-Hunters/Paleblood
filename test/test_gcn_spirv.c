@@ -327,7 +327,19 @@ static void image_programs(void)
           strstr(error, "sampler in s[12:15] is not bound"));
     const gcn_image_binding flat[] = {{{0, 4, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0}, {{1, 0, 2, 0}, GCN_IMAGE_1D, 0, GCN_IMAGE_FLOAT, 1, 1, 0, 0}};
     lookup.images = flat, lookup.sampler_count = 1;
-    CHECK(gcn_translate_pixel(PROGRAM(pixel_lookup), &lookup, &spirv, &words, error, sizeof error) == -1 && strstr(error, "DA 1"));
+    /* DA 1 on a 1D image that is not an array: the image's type decides and the slice VGPR is not read;
+       with a LOD VGPR after the coordinates (image_sample_l), where that VGPR is depends on how the
+       slice counts, so it still stops by name. */
+    const int flat_sampled = gcn_translate_pixel(PROGRAM(pixel_lookup), &lookup, &spirv, &words, error, sizeof error);
+    if (flat_sampled) fprintf(stderr, "pixel_lookup (1D): %s\n", error);
+    CHECK(flat_sampled == 0);
+    if (spirv) {
+        CHECK(validate(spirv, words, "pixel_lookup_1d") != 0);
+        CHECK(to_metal(spirv, words, "pixel_lookup_1d") != 0);
+        free(spirv);
+        spirv = NULL;
+    }
+    CHECK(gcn_translate_pixel(PROGRAM(pixel_lookup_level), &lookup, &spirv, &words, error, sizeof error) == -1 && strstr(error, "DA 1"));
 
     /* A pixel shader's image_load_mip from a sampled image (its range checked at run time, so only
        with a stop word); a storage binding refuses image_load_mip. */
@@ -792,12 +804,22 @@ int main(void)
     static const uint32_t sgpr_mask[] = {0xd2480001, 0x00010004, 0xbf810000}; /* v_mbcnt_hi v1, s4, 0 */
     refused_as(COMPUTE, PROGRAM(sgpr_mask), "a mask other than");
     translates(PROGRAM(integer_batch), "integer_batch");
+    translates(PROGRAM(valu_batch), "valu_batch");
     translates(PROGRAM(scalar_batch), "scalar_batch");
     translates(PROGRAM(vcc_halves), "vcc_halves");
     translates(PROGRAM(whole_quad), "whole_quad");
     translates(PROGRAM(transcendentals), "transcendentals");
     translates_as(VERTEX, PROGRAM(vertex_position_color), "vertex_position_color");
     translates_as(PIXEL, PROGRAM(pixel_color), "pixel_color");
+    /* ds_swizzle_b32's quad mode with one source lane: compute and pixel shaders; other patterns, the
+       bit-mask mode and vertex shaders stop by name */
+    translates(PROGRAM(quad_swizzle), "quad_swizzle");
+    translates_as(PIXEL, PROGRAM(pixel_quad_swizzle), "pixel_quad_swizzle");
+    static const uint32_t mixed_quad[] = {0xd8d480e4, 0x03000002, 0xbf810000}; /* ds_swizzle_b32 v3, v2 offset:swizzle(QUAD_PERM,0,1,2,3) */
+    static const uint32_t bit_mask[] = {0xd8d4041f, 0x03000002, 0xbf810000};   /* ds_swizzle_b32 v3, v2 offset:0x41f */
+    refused_as(COMPUTE, PROGRAM(mixed_quad), "offset 0x80e4");
+    refused_as(COMPUTE, PROGRAM(bit_mask), "offset 0x41f");
+    refused_as(VERTEX, PROGRAM(quad_swizzle), "in a vertex shader");
     translates_as(PIXEL, PROGRAM(pixel_discard_left), "pixel_discard_left");
     translates_as(PIXEL, PROGRAM(pixel_user_color), "pixel_user_color");
 
@@ -830,6 +852,16 @@ int main(void)
     char error[256] = "";
     CHECK(gcn_translate_compute(PROGRAM(unsupported), &layout, &spirv, &words, error, sizeof error) == -1);
     CHECK(spirv == NULL && strstr(error, "v_interp_p1_f32") != NULL);
+    /* v_interp_mov_f32 from P0: a Flat input; from P10 or P20, or of an input also read interpolated, refused by name */
+    translates_as(PIXEL, PROGRAM(pixel_flat_color), "pixel_flat_color");
+    {
+        uint32_t from_p10[sizeof pixel_flat_color / sizeof pixel_flat_color[0]], mixed[sizeof pixel_flat_color / sizeof pixel_flat_color[0]];
+        memcpy(from_p10, pixel_flat_color, sizeof from_p10), memcpy(mixed, pixel_flat_color, sizeof mixed);
+        from_p10[1] = 0xc80a0000;                        /* v_interp_mov_f32 v2, p10, attr0.x */
+        mixed[1] = 0xc8080000, mixed[2] = 0xc8090001;     /* attr0.x interpolated into v2 (p1, p2), y still flat */
+        refused_as(PIXEL, PROGRAM(from_p10), "from P10");
+        refused_as(PIXEL, PROGRAM(mixed), "read both flat");
+    }
 
     CHECK(gcn_translate_compute(PROGRAM(typed_unorm), &layout, &spirv, &words, error, sizeof error) == -1);
     CHECK(spirv == NULL && strstr(error, "dfmt 10 nfmt 0") != NULL);
