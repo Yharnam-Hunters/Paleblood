@@ -10,6 +10,7 @@
 #include "runtime/trace.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 
@@ -54,10 +55,14 @@ static void replaced_fn(void) {}
 
 int main(void)
 {
-    if (!rt_trace_available()) {
+    if (!rt_trace_relocation_available()) {
+        if (getenv("PB_REQUIRE_RELOCATION")) {fputs("required relocation unavailable\n",stderr);return 1;}
         puts("observe hooks: skipped (no Capstone: nothing is hooked)");
         return 0;
     }
+#if defined(__APPLE__) && defined(__MACH__)
+    CHECK(!rt_trace_available()); /* Observation does not imply a working single-step tracer. */
+#endif
     unsigned char *image = mmap(NULL, IMAGE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     CHECK(image != MAP_FAILED);
     if (image == MAP_FAILED) return 1;
