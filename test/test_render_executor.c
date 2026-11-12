@@ -1253,18 +1253,30 @@ static void depth_and_strips(rt_executor *x)
 #undef WB_TARGET
     }
     /* Slices of an array depth target (DB_DEPTH_VIEW SLICE_START = SLICE_MAX): a draw into slice 1
-       writes slice 1 only: LESS on slice 1 then draws nothing, a test reading slice 0 meets a slice no
-       draw wrote; a view of two slices stops by name. */
+       writes slice 1 only, written back to slice 1's memory (DB_DEPTH_SLICE: 256 x 256 floats per
+       slice) with slice 0's left as it was: LESS on slice 1 then draws nothing, a test reading slice 0
+       meets a slice no draw wrote; a view of two slices stops by name. */
     {
-        enum { SLICED = 0x1740000, SLICE_COLOUR = 0x1780000, SLICE_ONE = 1u | 1u << 13, SLICES_ZERO_ONE = 0u | 1u << 13 };
-        const uint32_t sz2 = (uint32_t)(at(SLICED) >> 8), sst2 = (uint32_t)(at(SLICED + 0x2000) >> 8);
+        enum { SLICED = 0x3000000, SLICE_COLOUR = 0x3100000, SLICE_ONE = 1u | 1u << 13, SLICES_ZERO_ONE = 0u | 1u << 13,
+               SLICE_SIZE = 256, SLICE_TILES = SLICE_SIZE * SLICE_SIZE / 64, SLICE_FLOATS = SLICE_SIZE * SLICE_SIZE,
+               SLICED_STENCIL = SLICED + 2 * SLICE_FLOATS * 4 };
+        /* 256 x 256 slices (Depth2DThin64 needs whole macro tiles to be written back), drawn in the colour
+           target's 16 x 16 corner */
+        const uint32_t sz2 = (uint32_t)(at(SLICED) >> 8), sst2 = (uint32_t)(at(SLICED_STENCIL) >> 8),
+                       slice_size = (SLICE_SIZE / 8 - 1) | (SLICE_SIZE / 8 - 1) << 11;
 #define SLICED_TARGET(view) {0xa010, 0xa0000003}, {0xa011, 0x20000001}, {0xa012, sz2}, {0xa013, sst2}, {0xa014, sz2}, {0xa015, sst2}, \
-                            {0xa016, depth_size}, {0xa017, 0}, {0xa002, view}
+                            {0xa016, slice_size}, {0xa017, SLICE_TILES - 1}, {0xa002, view}
+        float *sliced = (float *)(uintptr_t)at(SLICED);
+        for (unsigned i = 0; i < 2 * SLICE_FLOATS; i++) sliced[i] = 0.75f;
         const uint32_t write_one[][2] = {SLICED_TARGET(SLICE_ONE), {0xa200, 0x2 | 0x4 | 0x7u << 4}};
         drawn = run_counted(x, DEPTH_BUFFER, at(SLICE_COLOUR), write_one, 10, 3, error, sizeof error);
         if (drawn) fprintf(stderr, "depth slice 1: %s\n", error);
         CHECK(drawn == 0);
         check_triangle(x, at(SLICE_COLOUR));
+        int slice_zero_kept = 1, slice_one_written = 0;
+        for (unsigned i = 0; i < SLICE_FLOATS; i++) slice_zero_kept &= sliced[i] == 0.75f, slice_one_written += sliced[SLICE_FLOATS + i] != 0.75f;
+        CHECK(slice_zero_kept);
+        CHECK(slice_one_written > 0);
         const uint32_t less_one[][2] = {SLICED_TARGET(SLICE_ONE), {0xa200, 0x2 | 0x1u << 4}};
         CHECK(run_counted(x, DEPTH_BUFFER, at(SLICE_COLOUR), less_one, 10, 3, error, sizeof error) == 0);
         const uint32_t less_zero[][2] = {SLICED_TARGET(0), {0xa200, 0x2 | 0x1u << 4}};
