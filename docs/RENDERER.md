@@ -586,8 +586,10 @@ Instead:
           when they step by `STENCILOPVAL` 1, which is Vulkan's increment and decrement). A test that reads the buffer compares with what
           earlier draws wrote into the depth image; one reading a depth image no draw has written yet
           stops by name, as do other stencil operations and steps, depth bounds and `DB_RENDER_CONTROL`'s
-          clears, so the depth image's starting contents (and the HTILE metadata the game may clear
-          it with) are never seen. The buffer's contents in guest memory are never loaded: a depth
+          stencil clears and copies, so the depth image's starting contents (and the HTILE metadata the
+          game may clear it with) are never seen. A depth-clearing draw (`DB_RENDER_CONTROL`
+          DEPTH_CLEAR_ENABLE) writes `DB_DEPTH_CLEAR` as the depth of the pixels it covers, given it as
+          the viewport's depth range. The buffer's contents in guest memory are never loaded: a depth
           or stencil buffer the CPU or a compute shader writes would not be seen (not found yet). A draw that writes only the depth target (target mask 0, or
           `CB_COLOR_CONTROL`'s mode `CB_DISABLE`) draws without a colour target; one that writes
           nothing is skipped. Triangle strips (`VGT_PRIMITIVE_TYPE` 6) are drawn too. A view of one
