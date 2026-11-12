@@ -260,6 +260,11 @@ address,size,name,system,status,notes
 0x024716d0,539,loading_mount_table_reallocate_024716d0,loading,edge-verified,mount table reallocate to exact capacity: copy entries; destroy old (heap text freed); free old buffer; failed allocation: transaction jump or report
 0x0247eb80,16,render_read_present_pool_counter,render,edge-verified,"full-QWORD locked read/writeback retry; XOR before each attempt; caller adds one. Real AMD64 write cycles retained; non-AMD64 bridge unresolved Synthetic edges pass; no recordings."
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
+0x02483fe0,196,kernel_pthread_mutex_initialize,kernel,edge-verified,Dantelion2 PthreadMutex init: recursive attribute then init; ENOMEM/EAGAIN return -1; EINVAL and unknown errors reported with the source line
+0x024840b0,90,kernel_pthread_mutex_destroy,kernel,edge-verified,Dantelion2 PthreadMutex destroy: EBUSY returns -2; EINVAL then the unknown error reported with the source line
+0x02484110,183,kernel_pthread_mutex_lock,kernel,edge-verified,Dantelion2 PthreadMutex lock (untimed when timeout is -1); ETIMEDOUT returns -3; EDEADLK/EINVAL/EAGAIN reports fall through to the runtime error
+0x024841d0,177,kernel_pthread_mutex_try_lock,kernel,edge-verified,Dantelion2 PthreadMutex try lock: EBUSY returns -2; EDEADLK/EINVAL/EAGAIN reports fall through to the runtime error
+0x02484290,71,kernel_pthread_mutex_unlock,kernel,edge-verified,Dantelion2 PthreadMutex unlock: 0 and EPERM accepted; EINVAL or any other result reported with the source line
 0x02484ae0,74,engine_fixed_allocator_release_chunks_02484ae0,engine,edge-verified,"DLFixedAllocator chunk release: left subtree, right subtree, then the node's own chunk back to the backing allocator (vtable +0x70); the tree is left as it was"
 0x02484b30,239,engine_fixed_allocator_initialize_02484b30,engine,edge-verified,DLFixedAllocator set-up: reports a non-power-of-two alignment and room for fewer than two elements; element at least 8 rounded to the alignment; empty chunk list and tree
 0x02484c20,72,engine_fixed_allocator_clear_02484c20,engine,edge-verified,"DLFixedAllocator clear: releases every chunk (0x02484ae0) and forgets them (current, last freed, list, tree); counts untouched"
