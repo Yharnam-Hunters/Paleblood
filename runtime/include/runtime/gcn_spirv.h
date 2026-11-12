@@ -105,6 +105,40 @@ typedef struct {
 int gcn_buffer_store_resources(const uint32_t *code, size_t dwords, gcn_resource_origin *buffers, unsigned max, unsigned *count, int *unknown,
                                char *error, size_t error_size);
 
+/* The memory a program reads (not counting its images): each buffer descriptor its buffer and tbuffer
+   loads, atomics and s_buffer_loads read through (pointer 0: the descriptor's range, found by origin as
+   above), and each s_load from a user-data pointer pair the program does not write, at an immediate or
+   literal offset (pointer 1: `bytes` from the pointer in s[origin.sgpr : origin.sgpr + 1] plus
+   `offset`; a descriptor loaded from memory is read this way too). A caller can then bound what a
+   dispatch reads, and write back only the render targets in that memory. *unknown is set when a load
+   has neither (or there are more than max reads, or the program reads memory some other way): it may
+   read any memory. 0, or -1 with the reason (code that does not decode). */
+typedef struct {
+    int pointer;
+    gcn_resource_origin origin;
+    uint32_t offset, bytes;
+} gcn_memory_read;
+int gcn_memory_reads(const uint32_t *code, size_t dwords, gcn_memory_read *reads, unsigned max, unsigned *count, int *unknown, char *error,
+                     size_t error_size);
+
+/* A table-driven copy: a compute program that loads its workgroup's entry of three 32-bit words (x, y,
+   count) from a table buffer, indexed by its workgroup's x index, and in each thread (lane id v0, its
+   local x index) loads the source buffer's element y + v0 and stores it as the destination buffer's
+   element x + v0 (both indexed, IDXEN, with no offsets), threads past the count doing nothing. The game
+   copies depth this way (the compute shader at 0x20d1b00100), through descriptors whose ranges span
+   most of the memory; its table, written by the CPU, gives the copy's real source and destination.
+   The match is strict: only those three buffer accesses, v_mov_b32, v_add_i32 and compares to build
+   the indices, exec masking, waits and branches to the program's end, and no write to the
+   descriptors' SGPRs or the workgroup index's. Elements past the count are taken as read and stored
+   (lanes up to the workgroup's width), so the caller's ranges cover the copy. 1 and *shape when the
+   program is one, 0 otherwise. */
+typedef struct {
+    unsigned table_sgpr, source_sgpr, destination_sgpr; /* each descriptor's first SGPR, in the user data */
+    unsigned workgroup_sgpr;                           /* the SGPR holding the workgroup's x index */
+    int table_format;                                  /* 1: the table is read by buffer_load_format_xyz, 0: buffer_load_dwordx3 */
+} gcn_table_copy;
+int gcn_table_copy_shape(const uint32_t *code, size_t dwords, gcn_table_copy *shape);
+
 /* Samplers (S#, 4 words), which image_sample names by its SSAMP SGPRs, are found the same way (an
    s_load_dwordx4 for one from memory). The caller binds sampler j at set 0, binding image_count + j,
    and makes it from the descriptor. */

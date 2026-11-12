@@ -440,6 +440,47 @@ static void store_resources(void)
     CHECK(count == 0 && !unknown);
 }
 
+/* What programs read (gcn_memory_reads): scale_add its user-data buffer s[0:3]; an s_load_dwordx4 at
+   dword 4 from the pointer in s[0:1] reads 16 bytes at 16, an s_buffer_load reads its descriptor
+   s[4:7]; a flat load may read anywhere (unknown). */
+static void memory_reads(void)
+{
+    gcn_memory_read found[GCN_MAX_IMAGES];
+    unsigned count = 99;
+    int unknown = 1;
+    char error[300] = "";
+    CHECK(gcn_memory_reads(PROGRAM(scale_add), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
+    CHECK(count == 1 && !unknown && !found[0].pointer && !found[0].origin.from_memory && found[0].origin.sgpr == 0);
+    static const uint32_t scalar[] = {
+        0xc0880104, /* s_load_dwordx4 s[16:19], s[0:1], 0x4 */
+        0xc20a0502, /* s_buffer_load_dword s20, s[4:7], 0x2 */
+        0xbf810000, /* s_endpgm */
+    };
+    CHECK(gcn_memory_reads(PROGRAM(scalar), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
+    CHECK(count == 2 && !unknown);
+    CHECK(found[0].pointer && found[0].origin.sgpr == 0 && found[0].offset == 16 && found[0].bytes == 16);
+    CHECK(!found[1].pointer && found[1].origin.sgpr == 4);
+    static const uint32_t flat[] = {0xdc300000, 0x01000002, /* flat_load_dword v1, v[2:3] */ 0xbf810000};
+    CHECK(gcn_memory_reads(PROGRAM(flat), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
+    CHECK(unknown);
+    CHECK(gcn_memory_reads(PROGRAM(table_copy), found, GCN_MAX_IMAGES, &count, &unknown, error, sizeof error) == 0);
+    CHECK(count == 2 && !unknown && found[0].origin.sgpr == 0 && found[1].origin.sgpr == 4);
+}
+
+/* Table-driven copies (gcn_table_copy_shape): the table in s[0:3] (read as dwords or through its
+   format), the source s[4:7], the destination s[8:11], the workgroup index s12. A store with an offset,
+   or another program, is not one. */
+static void table_copies(void)
+{
+    gcn_table_copy shape = {0};
+    CHECK(gcn_table_copy_shape(PROGRAM(table_copy), &shape) == 1);
+    CHECK(shape.table_sgpr == 0 && shape.source_sgpr == 4 && shape.destination_sgpr == 8 && shape.workgroup_sgpr == 12 && !shape.table_format);
+    CHECK(gcn_table_copy_shape(PROGRAM(table_copy_format), &shape) == 1 && shape.table_format);
+    CHECK(gcn_table_copy_shape(PROGRAM(table_copy_store_offset), &shape) == 0);
+    CHECK(gcn_table_copy_shape(PROGRAM(scale_add), &shape) == 0);
+    CHECK(gcn_table_copy_shape(PROGRAM(indexed_scale_add), &shape) == 0);
+}
+
 /* A buffer_store_dwordx4 translates to a valid module that holds a store of the whole 4-dword vector
    (an OpTypePointer, opcode 32, in PhysicalStorageBuffer, 5349, to a vector, opcode 23, of four 32-bit
    unsigned integers): stores of separate dwords cross the bus to host memory a dword at a time.
@@ -566,6 +607,8 @@ int main(void)
     rect_list_stages();
     tile_copy_shaders();
     store_resources();
+    memory_reads();
+    table_copies();
     vector_stores();
     image_programs();
     calls();
