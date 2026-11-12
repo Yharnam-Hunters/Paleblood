@@ -164,7 +164,8 @@ int gcn_called_image_resources(const uint32_t *code, size_t dwords, const uint32
 typedef struct {
     uint32_t local_size[3];  /* the workgroup's size */
     unsigned user_sgprs;     /* s0 .. s(user_sgprs - 1) start as the user data (push constants) */
-    int workgroup_id_x_sgpr; /* the SGPR that starts as the workgroup's x index, or -1 */
+    uint32_t workgroup_id_enables; /* bits 0-2: the workgroup's x, y, z index each start in an SGPR, in that
+                                      order right after the user data (COMPUTE_PGM_RSRC2's TGID_X/Y/Z_EN) */
     uint32_t push_constant_offset;
     uint64_t address_offset;
     uint64_t error_address;   /* the run-time stop word (GCN_RUNTIME_STOP_*), or 0: run-time cases stop translation */

@@ -243,6 +243,27 @@ int main(void)
         CHECK(steps_seen() == 2 && step_order[1] == 11);
     }
 
+    /* A flip (RT_GPU_STEP_SHOWS_TARGET, its target's address in words[4]) is performed on the completion
+       thread from a copy of the target taken in order with the work: its frame shows the triangle drawn
+       before it, and the renderer's thread does not wait for it. One whose target no draw has used is
+       still performed, and shows nothing. */
+    {
+        enum { FLIPPED = 0xc0ec0000, FOURTH_TARGET = 0x400000, NEVER_DRAWN = 0x500000 };
+        step_count = 0, step_saw_triangle = 0;
+        const uint32_t flipped_size = record_draw(FLIPPED, at(FOURTH_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+        const rt_gpu_step flip = {frame_step, "sceGnmSubmitAndFlipCommandBuffers", RT_GPU_STEP_AFTER_ALL,
+                                  {14, at(FOURTH_TARGET), 0, 0, at(FOURTH_TARGET), 0}, RT_GPU_STEP_SHOWS_TARGET, NULL};
+        rt_renderer_submit("sceGnmSubmitAndFlipCommandBuffers", (const void *)(uintptr_t)FLIPPED, flipped_size, &flip, 1);
+        rt_renderer_wait_idle();
+        CHECK(steps_seen() == 1 && step_order[0] == 14 && step_saw_triangle);
+        step_saw_triangle = 1;
+        const rt_gpu_step blank = {frame_step, "sceGnmSubmitAndFlipCommandBuffers", RT_GPU_STEP_AFTER_ALL,
+                                   {15, at(NEVER_DRAWN), 0, 0, at(NEVER_DRAWN), 0}, RT_GPU_STEP_SHOWS_TARGET, NULL};
+        rt_renderer_submit("sceGnmSubmitAndFlipCommandBuffers", (const void *)(uintptr_t)(FLIPPED + 0x1000), 0x100, &blank, 1);
+        rt_renderer_wait_idle();
+        CHECK(steps_seen() == 2 && step_order[1] == 15 && !step_saw_triangle);
+    }
+
     /* A compute queue's buffer (sceGnmDingDong submits each indirect buffer the ring points to) runs
        like a graphics one: its dispatch (scale_add: out[i] = in[i] * 2.5 + 1, one workgroup of 64)
        has stored its results by the time its completion step is performed. Its calls are taken, so

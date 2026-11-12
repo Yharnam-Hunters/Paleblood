@@ -96,6 +96,22 @@ void rt_executor_reset(rt_executor *executor);
 int rt_executor_read_target(rt_executor *executor, uint64_t address, uint32_t *bgra, uint32_t width, uint32_t height,
                             char *error, size_t error_size);
 
+/* A copy of a render target's image taken in order with the recorded work, for showing at a flip
+   without waiting for the work after it: rt_executor_snapshot_target records the copy into the open
+   batch (after everything recorded so far) and answers the ticket that batch gets and the snapshot's
+   slot; once that ticket has been signalled (rt_executor_wait_ticket, from any thread),
+   rt_executor_read_snapshot gives its pixels as rt_executor_read_target does, and
+   rt_executor_release_snapshot frees the slot. Only read and release may run on another thread than
+   the executor's other calls. A few slots are kept; taking one still held waits for its release. */
+typedef struct {
+    uint64_t ticket;
+    unsigned slot;
+} rt_executor_snapshot;
+int rt_executor_snapshot_target(rt_executor *executor, uint64_t address, rt_executor_snapshot *snapshot, char *error, size_t error_size);
+int rt_executor_read_snapshot(rt_executor *executor, const rt_executor_snapshot *snapshot, uint32_t *bgra, uint32_t width, uint32_t height,
+                              char *error, size_t error_size);
+void rt_executor_release_snapshot(rt_executor *executor, const rt_executor_snapshot *snapshot);
+
 void rt_executor_close(rt_executor *executor);
 
 #ifdef __cplusplus

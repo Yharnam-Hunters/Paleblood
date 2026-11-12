@@ -409,7 +409,12 @@ Instead:
        memory the GPU writes before its batch is done. Descriptors and memory the draws read are
        read when they run, as the PS4's GPU reads them; the title keeps them valid until it sees the
        work's label. A video-out flip from the CPU, and a frame read for the display, wait for the
-       submissions before them. A stop on the renderer's thread still names the submitting call and
+       submissions before them. The submit-and-flip's flip does not hold up the work after it: the
+       renderer copies the flipped target's image into a host-visible buffer in order with the work
+       (`rt_executor_snapshot_target`, a ring of four) and performs the flip on the completion thread
+       once that copy has run, as the PS4's GPU goes on with the commands after a flip. Before, each
+       flip waited for all work and then read the target back, so the GPU sat idle while the CPU
+       recorded the next frame. A stop on the renderer's thread still names the submitting call and
        the shader. Before this, each submit ran its work on the calling thread: the engine's movie
        playback draws from the main thread while its render thread submits, and the render
        thread, held for tens of milliseconds by its own submit, still had the shared graphics
@@ -628,9 +633,11 @@ Instead:
         shadPS4's `gnmdriver.cpp` writes them), placed like the other shaders; the dispatch writers
         `0x01474c50` and `0x0148a350` (command buffer, x, y, z) are observed; and the executor
         translates the shader for its workgroup size and runs the dispatch, its writes in the guest
-        memory before the next call. A workgroup's y or z index and its size information stop by
-        name. The two dispatch writers with a fifth argument (`0x01474d10`, `0x0148a410`) are not
-        observed yet. Compute shaders' **images** are executor-owned Vulkan images
+        memory before the next call. The workgroup's x, y and z indexes (RSRC2's `TGID_X/Y/Z_EN`)
+        start in the SGPRs after the user data, one per enabled axis in that order (AMD's Sea
+        Islands manual, compute shader initial state); its size information stops by name. The
+        two dispatch writers with a fifth argument (`0x01474d10`, `0x0148a410`) are not observed
+        yet. Compute shaders' **images** are executor-owned Vulkan images
         found by their descriptor's address and shape: an image the GPU writes stays there and is
         never tiled back into guest memory; a new image whose first use writes it starts cleared.
         An image no shader has written holds the guest memory's texels, detiled with

@@ -22,6 +22,26 @@ static const uint32_t scale_add[] = {
     0xbf810000, /* s_endpgm */
 };
 
+/* Each lane of workgroup (x, y, z) of a 2 x 3 x 4 dispatch stores x | y << 8 | z << 16 at byte
+   ((z * 3 + y) * 2 + x) * 256 + 4 * lane of the buffer in s[4:7]: the workgroup's indexes start in
+   s8, s9 and s10, after 8 user SGPRs (TGID_X/Y/Z_EN all set). */
+static const uint32_t workgroup_indexes[] = {
+    0x930b830a, /* s_mul_i32 s11, s10, 3 */
+    0x800b090b, /* s_add_u32 s11, s11, s9 */
+    0x8f0b810b, /* s_lshl_b32 s11, s11, 1 */
+    0x800b080b, /* s_add_u32 s11, s11, s8 */
+    0x8f0b880b, /* s_lshl_b32 s11, s11, 8 */
+    0x8f0c8809, /* s_lshl_b32 s12, s9, 8 */
+    0x8f0d900a, /* s_lshl_b32 s13, s10, 16 */
+    0x880c0d0c, /* s_or_b32 s12, s12, s13 */
+    0x880c080c, /* s_or_b32 s12, s12, s8 */
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0x4a02020b, /* v_add_i32_e32 v1, vcc, s11, v1 */
+    0x7e04020c, /* v_mov_b32_e32 v2, s12 */
+    0xe0701000, 0x80010201, /* buffer_store_dword v2, v1, s[4:7], 0 offen */
+    0xbf810000, /* s_endpgm */
+};
+
 /* out[i] = v_rcp_iflag_f32(in[i]), out[64 + i] = v_rcp_f32(in[i]). */
 static const uint32_t reciprocals[] = {
     0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
