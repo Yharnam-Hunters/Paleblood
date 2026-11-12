@@ -470,7 +470,8 @@ enum { DB_RENDER_CONTROL = 0xa000, DB_DEPTH_VIEW = 0xa002, DB_HTILE_DATA_BASE = 
 enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 0x1, Z_ENABLE = 0x2, Z_WRITE_ENABLE = 0x4,
        COLOR_MODE_MASK = 0x70, COLOR_MODE_SHIFT = 4, CB_NORMAL = 1, CB_ELIMINATE_FAST_CLEAR = 2, ROP3_MASK = 0xff0000, ROP3_SHIFT = 16, ROP3_COPY = 0xcc,
        CHANNELS_MASK = 0xf, DI_PT_TRILIST = 4, DI_PT_TRISTRIP = 6, DI_PT_RECTLIST = 17, CB_DISABLE = 0, DEPTH_BOUNDS_ENABLE = 0x8,
-       Z_FORMAT_MASK = 0x3, STENCIL_FORMAT_MASK = 0x1 };
+       Z_FORMAT_MASK = 0x3, STENCIL_FORMAT_MASK = 0x1,
+       DEPTH_CLEAR_ENABLE = 0x1 /* DB_RENDER_CONTROL */ };
 
 /* Keeps a register the library set; 0, or -1 for one the executor does not understand yet. */
 static int set_register(draw_state *s, uint32_t address, uint32_t value)
@@ -487,7 +488,7 @@ static int set_register(draw_state *s, uint32_t address, uint32_t value)
     case DB_RENDER_CONTROL: s->render_control = value, s->render_control_set = 1; return 0;
     case DB_DEPTH_VIEW: s->depth_view = value; return 0;
     /* compression metadata (HTILE) and the depth clear value: a cleared HTILE clears the executor's depth
-       image (resolve_depth_fast_clear); clears through DB_RENDER_CONTROL stop below */
+       image (resolve_depth_fast_clear); DB_RENDER_CONTROL's depth-clearing draws write it (plan_depth) */
     case DB_HTILE_DATA_BASE: s->htile_base = value, s->htile_set = 1; return 0;
     case DB_DEPTH_CLEAR: s->depth_clear = value; return 0;
     case DB_DEPTH_INFO: case DB_HTILE_SURFACE: case DB_STENCIL_CLEAR: return 0;
@@ -582,8 +583,8 @@ static int blend_state(uint32_t control, VkPipelineColorBlendAttachmentState *ou
      (a compare function other than always or never) is planned with reads set: the draw then needs the
      depth target's image to hold what earlier draws wrote (depth_entry's drawn), since the buffer's
      contents in guest memory are never loaded into it. Other operations, depth bounds and
-     DB_RENDER_CONTROL's clears and copies stop by name; so does a test while no depth target was ever
-     set in the buffer.
+     DB_RENDER_CONTROL's stencil clears and copies stop by name (its depth clear is drawn, below); so
+     does a test while no depth target was ever set in the buffer.
    0, or -1 with the reason. */
 static int plan_depth(const draw_state *s, depth_plan *plan, char *error, size_t error_size)
 {
@@ -606,8 +607,16 @@ static int plan_depth(const draw_state *s, depth_plan *plan, char *error, size_t
     const int depth_buffer = (s->depth_target[Z_INFO] & Z_FORMAT_MASK) != 0;
     const int stencil_buffer = (s->depth_target[STENCIL_INFO] & STENCIL_FORMAT_MASK) != 0;
     if ((control & DEPTH_BOUNDS_ENABLE) && depth_buffer) return failed(error, error_size, "a depth bounds test: not drawn yet");
-    if ((depth_buffer || stencil_buffer) && s->render_control_set && s->render_control)
-        return failed(error, error_size, "DB_RENDER_CONTROL %#x (depth or stencil clears and copies): not drawn yet", s->render_control);
+    /* DB_RENDER_CONTROL's DEPTH_CLEAR_ENABLE (bit 0) alone: the draw writes DB_DEPTH_CLEAR as the depth of the
+       pixels it covers (AMD's register reference; Mesa's radeonsi clears depth by such draws), which draw()
+       gives it through the viewport's depth range; a pixel shader exporting depth would override it */
+    if ((depth_buffer || stencil_buffer) && s->render_control_set && s->render_control) {
+        if (s->render_control != DEPTH_CLEAR_ENABLE || !depth_buffer)
+            return failed(error, error_size, "DB_RENDER_CONTROL %#x (depth or stencil clears and copies): not drawn yet", s->render_control);
+        if (s->pixel.code && (pixel_settings(&s->pixel) >> SETTINGS_DEPTH_EXPORT_SHIFT & GCN_DEPTH_EXPORT_Z))
+            return failed(error, error_size, "a depth-clearing draw (DB_RENDER_CONTROL %#x) whose pixel shader exports depth: not drawn yet",
+                          s->render_control);
+    }
     if ((control & Z_ENABLE) && depth_buffer) {
         const uint32_t compare = control >> 4 & 7;
         if (compare != COMPARE_ALWAYS && compare != COMPARE_NEVER) plan->reads = 1;
@@ -2719,7 +2728,12 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
     vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     const float sx = s->viewport_scale[0], sy = s->viewport_scale[1], sz = s->viewport_scale[2];
     const float tx = s->viewport_translate[0], ty = s->viewport_translate[1], tz = s->viewport_translate[2];
-    const VkViewport viewport = {.x = tx - sx, .y = ty - sy, .width = 2 * sx, .height = 2 * sy, .minDepth = tz, .maxDepth = tz + sz};
+    VkViewport viewport = {.x = tx - sx, .y = ty - sy, .width = 2 * sx, .height = 2 * sy, .minDepth = tz, .maxDepth = tz + sz};
+    if (z && s->render_control_set && s->render_control == DEPTH_CLEAR_ENABLE) { /* every pixel's depth is DB_DEPTH_CLEAR (plan_depth) */
+        float clear;
+        memcpy(&clear, &s->depth_clear, sizeof clear);
+        viewport.minDepth = viewport.maxDepth = clear;
+    }
     const VkRect2D scissor = {{0, 0}, {width, height}};
     vkCmdSetViewport(commands, 0, 1, &viewport);
     vkCmdSetScissor(commands, 0, 1, &scissor);
