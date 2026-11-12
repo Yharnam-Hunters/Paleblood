@@ -128,6 +128,12 @@ Instead:
        `SAMPLED_IMAGE`, `OpImageFetch` at the level given), so the view applies the descriptor's
        DST_SEL. A texel outside the image or a level past its last is a run-time stop
        (`GCN_RUNTIME_STOP_IMAGE_RANGE`): what the GPU returns there is not established.
+     - **The image cache** keeps up to 1024 images. When it is full, a new image takes the slot of the
+       least recently used one whose texels are guest memory's (loaded from it, never written by a
+       shader) and that no unfinished batch, and not the draw or dispatch being recorded, uses; if
+       every such image is still in use, the batches are waited for first. The image is loaded again
+       from guest memory at its next use. The clinic's loading screen streams in more textures than
+       the cache held (12 November 2026).
      - **Mip-mapped images** (a pixel shader's sampled images, BASE_LEVEL to LAST_LEVEL): the
        executor makes the image with LAST_LEVEL + 1 levels and views BASE_LEVEL on. Each level's
        texels come from where `rt_tiling_mip_chain` (runtime/tiling.h) puts them: the levels one after

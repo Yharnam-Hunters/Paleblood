@@ -171,6 +171,30 @@ static void float_images(rt_executor *x)
     }
 }
 
+/* More images than the executor keeps (1024): 1100 copies of the reference image, each at its own
+   address, drawn one after another, and then the first again. Each draw reads its image's texels; the
+   cache reuses the least recently used slots whose texels are guest memory's, so every draw succeeds,
+   and the first image, its slot reused meanwhile, is loaded again. */
+static void many_images_cached(rt_executor *x)
+{
+    enum { COPIES = 0x2400000, TARGET = 0x2380000, IMAGES = 1100, IMAGE_BYTES = SIZE * SIZE * 4, LINEAR_ALIGNED = 8, NUM_UNORM = 0, FORMAT_8_8_8_8 = 10 };
+    char error[200] = "";
+    for (uint32_t i = 0; i < IMAGES; i++)
+        for (uint32_t y = 0; y < SIZE; y++)
+            for (uint32_t px = 0; px < SIZE; px++)
+                ((uint32_t *)(uintptr_t)at(COPIES + (uint64_t)i * IMAGE_BYTES))[y * SIZE + px] = reference_texel(px, y);
+    int failures = 0;
+    for (uint32_t i = 0; i <= IMAGES; i++) {
+        uint32_t image[8];
+        image_descriptor(image, at(COPIES + (uint64_t)(i % IMAGES) * IMAGE_BYTES), FORMAT_8_8_8_8, NUM_UNORM, SIZE, SIZE);
+        image[3] |= LINEAR_ALIGNED << 20;
+        if (draw_texels(x, at(TARGET), image, error, sizeof error) || differing_pixels(x, at(TARGET))) {
+            if (!failures++) fprintf(stderr, "many images, image %u: %s\n", i, error);
+        }
+    }
+    CHECK(failures == 0);
+}
+
 /* 16-bit unorm images: the reference image as 16_16_16_16 unorm (DATA_FORMAT 12, NUM_FORMAT 0), and its
    red and green as 16_16 unorm (DATA_FORMAT 5, the particle passes' storage format), linear, read
    texel by texel (pixel_image_texel) into an 8_8_8_8 target: the reference image, and for 16_16 its red
@@ -3338,6 +3362,7 @@ int main(void)
     sampled_images(x);
     sampled_lookup(x);
     float_images(x);
+    many_images_cached(x);
     unorm16_images(x);
     many_images(x);
     sampled_levels(x);
