@@ -20,28 +20,8 @@ namespace {
 
 using namespace engine::segregated_bi_heap;
 
-constexpr uint64_t size_granularity = 16;
-constexpr int32_t line_walk_no_next_block = 0x2f3;
-constexpr int32_t line_no_next_block = 0x310;
-// "Logical error. Alignment operation failed."
-RT_GLOBAL(0x04d3cb87, message_not_aligned, const char);
 constexpr int32_t line_not_aligned = 0xd3;
-// "Logical error. Awkward block split."
-RT_GLOBAL(0x04d3cbb2, message_bad_split, const char);
 constexpr int32_t line_bad_split = 0xd5;
-// "Logical Error. Invaid block is given." (sic)
-RT_GLOBAL(0x04d3cb43, message_invalid_block, const char);
-constexpr int32_t line_invalid_block = 0x1c9;
-
-// Links a new descriptor into the address chain right after `block`.
-void geo_insert_after(Descriptor *block, Descriptor *added)
-{
-    Descriptor *following = block->geo_next;
-    block->geo_next = added;
-    added->geo_prev = block;
-    added->geo_next = following;
-    following->geo_prev = added;
-}
 
 // Links a new descriptor into the address chain right before `block`.
 void geo_insert_before(Descriptor *block, Descriptor *added)
@@ -58,7 +38,7 @@ void geo_insert_before(Descriptor *block, Descriptor *added)
 // list just before the block (which is about to leave it).
 void split(Heap *heap, Descriptor *block, uint64_t needed, uint64_t alignment)
 {
-    void *pool = descriptor_pool(heap);
+    engine::fixed_allocator::Allocator *pool = descriptor_pool(heap);
     Descriptor *rest = pool_allocate(pool);
     if (!rest) {
         block->address = align_up(block->address, alignment);
@@ -94,39 +74,23 @@ void split(Heap *heap, Descriptor *block, uint64_t needed, uint64_t alignment)
 extern "C" uintptr_t bb_engine_segregated_bi_heap_allocate_bottom_02488030(Heap *heap, uint64_t size,
                                                                            uint64_t alignment)
 {
-    const uint64_t needed = (size + size_granularity - 1) & ~(size_granularity - 1);
+    const uint64_t needed = allocation_size(size);
     Descriptor *terminator = &heap->terminator;
     Descriptor *block = terminator->list_next;
-    uint64_t front = 0;
-    uint64_t usable = 0;
+    Fit found;
     for (;; block = block->list_next) {
         if (block == terminator)
             return 0;
-        const uintptr_t end = checked_next(block, line_walk_no_next_block)->address;
-        const uintptr_t start = align_up(block->address, alignment);
-        front = 0;
-        usable = 0;
-        if (start <= end) {
-            front = start - block->address;
-            usable = end - start;
-        }
-        if (usable >= needed)
+        found = fit(block, alignment);
+        if (found.usable >= needed)
             break;
     }
 
     heap->allocation_count += 1;
-    if (front != 0 || usable > needed)
+    if (found.front != 0 || found.usable > needed)
         split(heap, block, needed, alignment);
     Descriptor *next = checked_next(block, line_no_next_block);
     heap->available += block->address - next->address;
-    if (block->list_prev) {
-        if (!block->list_next)
-            report(line_invalid_block, message_invalid_block.address());
-        block->list_prev->list_next = block->list_next;
-        block->list_next->list_prev = block->list_prev;
-    }
-    block->list_next = heap->bottom_allocations;
-    block->list_prev = nullptr;
-    heap->bottom_allocations = block;
+    move_to_chain(block, &heap->bottom_allocations);
     return block->address;
 }
