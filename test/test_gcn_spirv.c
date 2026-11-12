@@ -704,6 +704,8 @@ int main(void)
     translates(PROGRAM(masked_store), "masked_store");
     translates(PROGRAM(typed_buffers), "typed_buffers");
     translates(PROGRAM(pack_halves), "pack_halves");
+    translates(PROGRAM(unpack_halves), "unpack_halves");
+    translates(PROGRAM(buffer_atomics), "buffer_atomics");
     translates(PROGRAM(integer_batch), "integer_batch");
     translates(PROGRAM(scalar_batch), "scalar_batch");
     translates(PROGRAM(vcc_halves), "vcc_halves");
