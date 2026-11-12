@@ -399,6 +399,8 @@ render_emit_present_release_packet,recorded,,99,99,0,0,49b21387b8cdc24b,2026-11-
 render_emit_present_release_packet,edge,,14,14,0,0,49b21387b8cdc24b,2026-11-12
 render_emit_shader_link_words,recorded,,158,158,0,0,f585add345845a60,2026-11-12
 render_emit_shader_link_words,edge,,23,23,0,0,f585add345845a60,2026-11-12
+render_emit_shader_preparation_event_01477f40,recorded,,138,138,0,0,909bd8c50f3d4564,2026-11-13
+render_emit_shader_preparation_range_01475e10,recorded,,75,75,0,0,909bd8c50f3d4564,2026-11-13
 render_finish_present_commands,recorded,,261,261,0,0,3adf6995cef8857d,2026-11-12
 render_finish_present_commands,edge,,12,12,0,0,3adf6995cef8857d,2026-11-12
 render_finish_present_context,recorded,,105,105,0,0,fd9fe3b2f4ad1c02,2026-11-12
