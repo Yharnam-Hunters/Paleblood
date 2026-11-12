@@ -434,6 +434,34 @@ class Matching(unittest.TestCase):
         self.assertEqual(match.byte_exact_members(self.d, self.family), {'leaf_returns_zero_00401000'})
 
 
+class MatchingValues(unittest.TestCase):
+    def test_a_changed_value_makes_the_row_stale(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        family = {'family': 'returns_constant', 'system': 'leaf'}
+        write_csv(os.path.join(d, 'symbols', 'families.csv'), fam.FAMILY_HEADER,
+                  [['returns_constant', 'leaf', 'b8 {u32} c3', 'i64', '2', '12', 'mov eax, imm32; ret']])
+        members = [['0x00401000', '6', '16', '0x2', 'edge-verified'], ['0x00401010', '6', '16', '0x3', 'edge-verified']]
+        write_csv(fam.members_path(d, 'returns_constant'), fam.MEMBER_HEADER, members)
+        path = family_emit.matching_path(d, family)
+        os.makedirs(os.path.dirname(path))
+        with open(path, 'w') as f:
+            f.write(family_emit.render_matching(d, 'returns_constant'))
+        summary = {'family': 'returns_constant', 'source': family_emit.matching_source(family),
+                   'compiler': 'clang-3.4.2', 'flags': 'ps4-o2',
+                   'results': [{'address': a, 'function': fam.member_name(family, a), 'value': v,
+                                'match_percent': '100.0', 'byte_exact': 'yes', 'targets_checked': 'yes'}
+                               for a, _, _, v, _ in members]}
+        match.record_family(d, summary)
+        both = {'leaf_returns_constant_00401000', 'leaf_returns_constant_00401010'}
+        self.assertEqual(match.byte_exact_members(d, family), both)
+        members[0][3] = '0x3'           # the source still has both values, so only the value changed
+        write_csv(fam.members_path(d, 'returns_constant'), fam.MEMBER_HEADER, members)
+        self.assertEqual(match.byte_exact_members(d, family), {'leaf_returns_constant_00401010'})
+        errs = match.check_family(d, family, fam.members(d, 'returns_constant'))
+        self.assertTrue(any("member's value changed" in e for e in errs))
+
+
 class MatchingSources(unittest.TestCase):
     def test_every_family_has_a_matching_template_and_its_symbols(self):
         self.assertEqual(set(family_emit.MATCHING_TEMPLATES), {f['family'] for f in fam.families(ROOT)})

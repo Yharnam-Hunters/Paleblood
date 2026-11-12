@@ -207,7 +207,9 @@ tools/match.py family reads_qword_field --record       # or: tools/match.py fami
   relocations (the scanner excludes them), so a compiled function that keeps any relocation is not
   byte-exact; one with none has nothing left to resolve, and its row has `targets_checked=yes`.
 - **The record** is `symbols/families/<family>.matching.csv`: one row per member, with
-  `symbols/matching.csv`'s columns (`name` is the member's name, `objdiff_percent` empty).
+  `symbols/matching.csv`'s columns (`name` is the member's name, `objdiff_percent` empty, and
+  `source_sha256` the source's hash bound to the member's value, so a row also goes stale when
+  the member's value changes).
   `tools/validate_functions.py` checks its format, that every row is a member under its own name,
   that the source is the family's generated matching source, and that the source has not changed
   since it was matched.

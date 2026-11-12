@@ -72,14 +72,15 @@ def promote_families(dry_run: bool) -> int:
     for family in fam.families(ROOT):
         members = fam.members(ROOT, family['family'])
         evidence = validate_functions.family_evidence(ROOT, family, members)
-        changed = 0
+        changed = waiting = 0
         for m in members:
             member = fam.member_name(family, m['address'])
             if (m['status'] == 'edge-verified' and member in evidence['edge'] and member in evidence['approved']
                     and (member in evidence['recorded'] or member in evidence['matched'])):
                 m['status'] = 'verified'
                 changed += 1
-        waiting = sum(1 for m in members if m['status'] == 'edge-verified')
+            elif m['status'] == 'edge-verified':
+                waiting += 1
         if changed or waiting:
             print(f"promote: {family['family']}: {changed} verified, {waiting} still edge-verified")
         if changed and not dry_run:

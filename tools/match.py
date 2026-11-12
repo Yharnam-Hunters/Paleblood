@@ -939,6 +939,14 @@ def family_table(root: str, family: str) -> str:
     return os.path.join(root, 'symbols', 'families', f'{family}.matching.csv')
 
 
+def member_digest(source_digest: str, value: str) -> str:
+    """A family matching row's source_sha256: the matching source's hash bound to the member's
+    value, so a row stops counting when either the source or the member's value changes."""
+    if not value:
+        return source_digest
+    return hashlib.sha256(f'{source_digest}\0{value}'.encode()).hexdigest()[:SOURCE_HASH_LENGTH]
+
+
 def match_family(root: str, name: str, elf: str, compiler: str = DEFAULT_COMPILER,
                  flags: str = DEFAULT_FLAGS) -> dict:
     """Compiles the family's generated matching source once and compares the function of each
@@ -977,7 +985,7 @@ def match_family(root: str, name: str, elf: str, compiler: str = DEFAULT_COMPILE
                 c_norm = normalize(disassemble(ours, address, work), address, set(relocs))
                 percent = min(99.9, 100.0 * difflib.SequenceMatcher(None, o_norm, c_norm, autojunk=False).ratio())
             results.append({'address': m['address'], 'function': fam.member_name(family, m['address']),
-                            'symbol': symbol, 'match_percent': f'{percent:.1f}',
+                            'symbol': symbol, 'value': m['value'], 'match_percent': f'{percent:.1f}',
                             'byte_exact': 'yes' if exact else 'no', 'targets_checked': 'yes' if exact else 'no'})
     exact = sum(r['byte_exact'] == 'yes' for r in results)
     return {'family': name, 'source': source, 'compiler': compiler, 'flags': flags, 'members': len(results),
@@ -991,22 +999,25 @@ def record_family(root: str, summary: dict) -> None:
     rows = [{'address': r['address'], 'name': r['function'], 'compiler': summary['compiler'],
              'flags': summary['flags'], 'match_percent': r['match_percent'], 'objdiff_percent': '',
              'byte_exact': r['byte_exact'], 'targets_checked': r['targets_checked'],
-             'source': summary['source'], 'source_sha256': digest, 'date': today}
+             'source': summary['source'], 'source_sha256': member_digest(digest, r['value']), 'date': today}
             for r in summary['results']]
     write_rows(family_table(root, summary['family']), rows)
 
 
 def byte_exact_members(root: str, family: dict) -> set[str]:
     """Member names with a byte-exact, target-checked row in the family's matching table whose
-    source is the family's generated matching source, unchanged since it was matched."""
+    source is the family's generated matching source, unchanged since it was matched, for the
+    member's current value."""
+    import families as fam
     import family_emit
     src = family_emit.matching_source(family)
     if not os.path.isfile(os.path.join(root, src)):
         return set()
     digest = source_hash(root, src)
+    value = {m['address']: m['value'] for m in fam.members(root, family['family'])}
     return {r['name'] for r in read_csv(family_table(root, family['family']))
-            if r.get('byte_exact') == 'yes' and r.get('targets_checked') == 'yes'
-            and r.get('source') == src and r.get('source_sha256') == digest}
+            if r.get('byte_exact') == 'yes' and r.get('targets_checked') == 'yes' and r.get('source') == src
+            and r.get('address') in value and r.get('source_sha256') == member_digest(digest, value[r['address']])}
 
 
 def check_family(root: str, family: dict, members: list[dict]) -> list[str]:
@@ -1056,9 +1067,10 @@ def check_family(root: str, family: dict, members: list[dict]) -> list[str]:
             errs.append(f'{where}: date must be YYYY-MM-DD')
         if r['source'] != src:
             errs.append(f"{where}: source must be {src}")
-        elif digest is not None and r['source_sha256'] != digest:
-            errs.append(f"{where}: {src} changed since it was matched: re-run tools/match.py family "
-                        f"{family['family']} --record (docs/MATCHING.md)")
+        elif (digest is not None and r['address'] in by_addr
+              and r['source_sha256'] != member_digest(digest, by_addr[r['address']]['value'])):
+            errs.append(f"{where}: {src} or the member's value changed since it was matched: re-run "
+                        f"tools/match.py family {family['family']} --record (docs/MATCHING.md)")
             break       # one message for the whole table
     return errs
 
