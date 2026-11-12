@@ -605,7 +605,7 @@ Instead:
           nothing is skipped. The hardware shader stages (`VGT_SHADER_STAGES_EN`, from the GPU
           library's stage setter `0x01476030`) must be vertex and pixel only: tessellation and
           geometry-shader stages stop by name at the draw, and the local, hull, export and geometry
-          stages' user data is set aside until then. Triangle strips (`VGT_PRIMITIVE_TYPE` 6) are drawn too. A view of one
+          stages' user data is set aside until then. Their shaders (`sceGnmSetLsShader`, `SetHsShader`, `SetEsShader`, `SetGsShader` and the Update forms, with the argument orders of shadPS4's `gnmdriver.cpp`) are recorded like the vertex shader's (`runtime/render_calls.h` decodes their blocks: the local shader's LDS size, the hull shader's `VGT_TF_PARAM`, tessellation level clamps and `VGT_LS_HS_CONFIG`), and the stop names them. The clinic's first tessellated draw (local shader `0x20d52d5b00`, hull `0x20d52e0100`) draws quads of one control point, 15 patches a workgroup. Triangle strips (`VGT_PRIMITIVE_TYPE` 6) are drawn too. A view of one
           slice of an array depth target (`DB_DEPTH_VIEW` SLICE_START = SLICE_MAX) draws into an image
           kept for that slice alone, at that slice's memory: `DB_DEPTH_SLICE` tiles of 64 elements per
           slice past the depth and stencil bases (shadPS4's `GetDepthSliceSize`), where its depth is
