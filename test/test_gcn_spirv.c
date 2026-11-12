@@ -329,8 +329,19 @@ static void image_programs(void)
     pixel.error_address = 0;
     CHECK(gcn_translate_pixel(PROGRAM(pixel_image_texel), &pixel, &spirv, &words, error, sizeof error) == -1 &&
           strstr(error, "run-time stop word"));
+    /* from a storage image (one level): translated with a run-time stop word (a level past 0 stops
+       there), refused by name without one */
     const gcn_image_binding storage[] = {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 0, 0, 0}};
     pixel.images = storage, pixel.error_address = 0x1000;
+    const int from_storage = gcn_translate_pixel(PROGRAM(pixel_image_texel), &pixel, &spirv, &words, error, sizeof error);
+    if (from_storage) fprintf(stderr, "storage image_load_mip: %s\n", error);
+    CHECK(from_storage == 0);
+    if (spirv) {
+        CHECK(validate(spirv, words, "pixel_image_texel_storage") != 0);
+        free(spirv);
+        spirv = NULL;
+    }
+    pixel.error_address = 0;
     CHECK(gcn_translate_pixel(PROGRAM(pixel_image_texel), &pixel, &spirv, &words, error, sizeof error) == -1 &&
           strstr(error, "image_load_mip"));
 }

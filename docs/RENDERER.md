@@ -136,7 +136,9 @@ Instead:
        slices (AMD's address library for GFX7, as shadPS4's `ComputeImageSize` follows). The levels
        are detiled by the CPU. `image_load` and `image_load_mip` read them exactly, `image_sample`
        at the level its derivatives pick (below). A storage image keeps one level: a compute shader's view
-       of a mip-mapped image is its BASE_LEVEL alone, which `image_load` and `image_store` address.
+       of a mip-mapped image is its BASE_LEVEL alone, which `image_load` and `image_store` address;
+       `image_load_mip` reads it at level 0 of that view, and a level past it stops at run time, as a
+       sampled image's level past its last does.
      - **Cube images** (T# TYPE 11) in pixel shaders: a 2D array of six faces per cube (DEPTH counts
        whole cubes), viewed whole. Sampling takes (s, t, face), whatever DA says: the cube
        instructions leave s and t in [1, 2], so the face's coordinates are one less, and the face
@@ -509,6 +511,12 @@ Instead:
           write every drawn target back. shadPS4 skips such write-backs altogether by default
           (`readbacks_mode` Disabled in its `emulator_settings.h`; facts only). At the Contract screen
           the end-of-buffer write-backs were about 1,250 of the 1,370 target write-backs every 2 s.
+        - **Images straight from targets:** an image over a render target drawn into since its
+          write-back, at the same address with the same tiling index, pitch and texel bytes (2D, one
+          level and layer, within the target, no other unwritten target over it), takes the target's
+          texels with a GPU image copy (`image_from_target`) instead of a write-back and a load: the two
+          would move the same bytes through host memory. It is copied again after the target's next draws.
+          At the Contract screen this removed the image-overlap write-backs (about 700 every 2 s).
         - **One batch per buffer:** a buffer's draws, dispatches and copies are recorded into one Vulkan
           command buffer and submitted once, with barriers between them, instead of each waiting for the
           GPU. The CPU waits only where it reads what the batch produces: a render target written back
@@ -584,14 +592,21 @@ Instead:
           keep, zero, replace with the test value, invert, and add or subtract, clamped or wrapping,
           when they step by `STENCILOPVAL` 1, which is Vulkan's increment and decrement). A test that reads the buffer compares with what
           earlier draws wrote into the depth image; one reading a depth image no draw has written yet
-          stops by name, as do other stencil operations and steps, depth bounds and `DB_RENDER_CONTROL`'s
-          clears, so the depth image's starting contents (and the HTILE metadata the game may clear
-          it with) are never seen. The buffer's contents in guest memory are never loaded: a depth
+          stops by name, as do other stencil operations and steps and `DB_RENDER_CONTROL`'s
+          stencil clears and copies, so the depth image's starting contents (and the HTILE metadata the
+          game may clear it with) are never seen. A depth-clearing draw (`DB_RENDER_CONTROL`
+          DEPTH_CLEAR_ENABLE) writes `DB_DEPTH_CLEAR` as the depth of the pixels it covers, given it as
+          the viewport's depth range. The depth bounds test (`DEPTH_BOUNDS_ENABLE`) passes pixels
+          whose stored depth lies within `DB_DEPTH_BOUNDS_MIN` to `_MAX`, Vulkan's depth bounds test
+          with dynamic bounds; the library's setter (`0x01473520`) takes them as two floats, which
+          its observe hook reads from the saved frame's xmm0 and xmm1. The buffer's contents in guest memory are never loaded: a depth
           or stencil buffer the CPU or a compute shader writes would not be seen (not found yet). A draw that writes only the depth target (target mask 0, or
           `CB_COLOR_CONTROL`'s mode `CB_DISABLE`) draws without a colour target; one that writes
           nothing is skipped. Triangle strips (`VGT_PRIMITIVE_TYPE` 6) are drawn too. A view of one
           slice of an array depth target (`DB_DEPTH_VIEW` SLICE_START = SLICE_MAX) draws into an image
-          kept for that slice alone; a view of several slices stops by name. A colour target's view
+          kept for that slice alone, at that slice's memory: `DB_DEPTH_SLICE` tiles of 64 elements per
+          slice past the depth and stencil bases (shadPS4's `GetDepthSliceSize`), where its depth is
+          written back; a view of several slices stops by name. A colour target's view
           (`CB_COLORn_VIEW`) draws into its first slice (SLICE_START: the shader picks no layer), kept
           as a 2D target of its own at that slice's memory, `CB_COLORn_SLICE` elements per slice past
           the base, its CMASK `CMASK_SLICE` bytes per slice past the first (shadPS4's
@@ -642,7 +657,13 @@ Instead:
         start in the SGPRs after the user data, one per enabled axis in that order (AMD's Sea
         Islands manual, compute shader initial state); its size information stops by name. The
         two dispatch writers with a fifth argument (`0x01474d10`, `0x0148a410`) are not observed
-        yet. Compute shaders' **images** are executor-owned Vulkan images
+        yet. **Indirect dispatches** (found loading Iosefka's Clinic): `0x014742f0` (command
+        buffer, address) writes `SET_BASE` with base index 1, the indirect arguments' base, and
+        `0x01474de0` (command buffer, data offset) writes `DISPATCH_INDIRECT`; both are observed,
+        and the executor runs the dispatch with `vkCmdDispatchIndirect` on the guest memory
+        buffer, so the GPU reads the three workgroup counts at the base plus the offset when the
+        dispatch runs, after the work before it (which may have written them). Drawn targets over
+        those 12 bytes are written back first. Compute shaders' **images** are executor-owned Vulkan images
         found by their descriptor's address and shape: an image the GPU writes stays there and is
         never tiled back into guest memory; a new image whose first use writes it starts cleared.
         An image no shader has written holds the guest memory's texels, detiled with

@@ -21,6 +21,8 @@ static struct {
     __typeof__(rt_render_record_register) *reg;
     __typeof__(rt_render_record_instances) *instances;
     __typeof__(rt_render_record_dispatch) *dispatch;
+    __typeof__(rt_render_record_indirect_base) *indirect_base;
+    __typeof__(rt_render_record_dispatch_indirect) *dispatch_indirect;
     __typeof__(rt_render_record_index_base) *index_base;
     __typeof__(rt_render_record_index_size) *index_size;
     __typeof__(rt_render_record_index_type) *index_type;
@@ -46,6 +48,8 @@ static void look_up(void)
     record.reg = (__typeof__(record.reg))host_function("rt_render_record_register");
     record.instances = (__typeof__(record.instances))host_function("rt_render_record_instances");
     record.dispatch = (__typeof__(record.dispatch))host_function("rt_render_record_dispatch");
+    record.indirect_base = (__typeof__(record.indirect_base))host_function("rt_render_record_indirect_base");
+    record.dispatch_indirect = (__typeof__(record.dispatch_indirect))host_function("rt_render_record_dispatch_indirect");
     record.index_base = (__typeof__(record.index_base))host_function("rt_render_record_index_base");
     record.index_size = (__typeof__(record.index_size))host_function("rt_render_record_index_size");
     record.index_type = (__typeof__(record.index_type))host_function("rt_render_record_index_type");
@@ -120,6 +124,16 @@ void rt_observe_instances(uint64_t buffer, uint32_t offset, uint32_t count)
 void rt_observe_dispatch(uint64_t buffer, uint32_t offset, const uint32_t groups[3])
 {
     FORWARD(dispatch, "render observer: dispatch", buffer, offset, groups);
+}
+
+void rt_observe_indirect_base(uint64_t buffer, uint32_t offset, uint64_t address)
+{
+    FORWARD(indirect_base, "render observer: indirect base", buffer, offset, address);
+}
+
+void rt_observe_dispatch_indirect(uint64_t buffer, uint32_t offset, uint32_t data_offset)
+{
+    FORWARD(dispatch_indirect, "render observer: indirect dispatch", buffer, offset, data_offset);
 }
 
 void rt_observe_index_base(uint64_t buffer, uint32_t offset, uint64_t address)

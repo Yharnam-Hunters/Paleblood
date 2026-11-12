@@ -739,6 +739,15 @@ static void vector_instruction(translator *t, const uint32_t *w, const gcn_instr
             op->opcode == SPV_OP_SHIFT_RIGHT_ARITHMETIC)
             b = shift_amount(t, b);
         write_vgpr(t, o.dst, value(t, op->opcode, t_uint(t), 2, a, b));
+    } else if (!strcmp(name, "v_min_i32") || !strcmp(name, "v_max_i32") || !strcmp(name, "v_min_u32") || !strcmp(name, "v_max_u32")) {
+        /* D = the smaller (min) or larger (max) of S0 and S1, signed (_i32) or unsigned (_u32) (Sea Islands
+           manual) */
+        if (o.abs || o.neg || o.clamp || o.omod) fail(t, "%s: modifiers on an integer operation", name);
+        const int is_signed = strstr(name, "_i32") != NULL, is_min = !strncmp(name, "v_min", 5);
+        const uint32_t a = source(t, o.src[0], ins), b = source(t, o.src[1], ins);
+        const uint16_t less = is_signed ? SPV_OP_S_LESS_THAN : SPV_OP_U_LESS_THAN;
+        const uint32_t a_less = value(t, less, t_bool(t), 2, a, b);
+        write_vgpr(t, o.dst, value(t, SPV_OP_SELECT, t_uint(t), 3, a_less, is_min ? a : b, is_min ? b : a));
     } else if (!strcmp(name, "v_add_i32") || !strcmp(name, "v_sub_i32") || !strcmp(name, "v_subrev_i32")) {
         /* The carry (or borrow) out goes to VCC, or VOP3's SGPR pair, as this lane's bit. */
         uint32_t a = source(t, o.src[0], ins), b = source(t, o.src[1], ins);
@@ -2582,8 +2591,8 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
         fail(t, "%s: a store to a sampled image", name);
         return;
     }
-    if (!b->sampled && op == MIMG_OP_LOAD_MIP) {
-        fail(t, "%s: a storage image has one level; image_load_mip of one is not translated yet", name);
+    if (!b->sampled && op == MIMG_OP_LOAD_MIP && !t->layout->error_address) { /* its level is checked at run time (below) */
+        fail(t, "%s: image_load_mip of a storage image (one level) without a run-time stop word", name);
         return;
     }
     const unsigned axes = b->dim == GCN_IMAGE_1D ? 1 : b->dim == GCN_IMAGE_2D ? 2 : 3;
@@ -2635,7 +2644,11 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
     const uint32_t bvec = coordinates == 1 ? t_bool(t) : spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_bool(t), coordinates}, 2);
     const uint32_t size = value(t, SPV_OP_IMAGE_QUERY_SIZE, uvec, 1, image);
     const uint32_t inside = value(t, SPV_OP_U_LESS_THAN, bvec, 2, value(t, SPV_OP_BITCAST, uvec, 1, coordinate), size);
-    const uint32_t in_range = coordinates == 1 ? inside : value(t, SPV_OP_ALL, t_bool(t), 1, inside);
+    uint32_t in_range = coordinates == 1 ? inside : value(t, SPV_OP_ALL, t_bool(t), 1, inside);
+    /* a storage image is bound as one level: image_load_mip reads it at level 0 (the VGPR after the
+       coordinates), and a level past it stops as a level past the last does for a sampled image */
+    if (op == MIMG_OP_LOAD_MIP)
+        in_range = both(t, in_range, equals(t, load(t, t_uint(t), vgpr(t, vaddr + coordinates)), konst(t, 0)));
     t->queries_images = 1;
     const int load_checked = op != MIMG_OP_STORE && t->layout->error_address; /* stops need the stop word */
     if (load_checked) {

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 /* The compute command buffer's user-data writers (game/render/observe_gpu_library.c): each observer
    reports COMPUTE_USER_DATA from the slot it is given, with the words the call passes, at the command
-   buffer's cursor. The record's functions are stubs here that keep the last call. */
+   buffer's cursor. The record's functions are stubs here that keep the last call. The indirect
+   dispatch's two writers report the base address and the data offset they are given. The depth bounds
+   setter reports its two float arguments, from the saved frame's xmm0 and xmm1, as the two registers. */
 #include "runtime/observe_hooks.h"
 #include "runtime/render_observer.h"
 
@@ -13,7 +15,8 @@ enum { MOST_WORDS = 16, COMMAND_WORDS = 64, CURSOR_WORD = 6, SLOT = 2, COUNTED_S
 enum { ONE_WORD = 1, TWO_WORDS = 2, FOUR_WORDS = 4, EIGHT_WORDS = 8, FIRST_COUNTED_VALUE = 21, WORD_BITS = 32, GROUP_AXES = 3 };
 /* the writers' addresses (observe_gpu_library.c) */
 enum { WRITE_ONE = 0x0148ada0, WRITE_POINTER = 0x0148ac90, WRITE_FOUR_MARKER_4 = 0x0148aad0, WRITE_FOUR_MARKER_6 = 0x0148ac00,
-       WRITE_EIGHT = 0x0148ab60, WRITE_COUNTED = 0x0148ad00 };
+       WRITE_EIGHT = 0x0148ab60, WRITE_COUNTED = 0x0148ad00, SET_INDIRECT_BASE = 0x014742f0, DISPATCH_INDIRECT = 0x01474de0 };
+enum { INDIRECT_DATA_OFFSET = 0x24, SET_DEPTH_BOUNDS = 0x01473520, DB_DEPTH_BOUNDS_MIN = 0xa008, DB_DEPTH_BOUNDS_MAX = 0xa009 };
 static const uint32_t one_value = 0x11223344u;
 static const uint64_t pointer_value = 0x0000002043490060ull;
 
@@ -38,7 +41,24 @@ void rt_observe_user_data(uint64_t buffer, uint32_t offset, rt_shader_stage stag
 }
 void rt_observe_color_target(uint64_t b, uint32_t o, unsigned s, const uint32_t w[RT_COLOR_TARGET_WORDS]) { (void)b, (void)o, (void)s, (void)w; }
 void rt_observe_dispatch(uint64_t b, uint32_t o, const uint32_t g[GROUP_AXES]) { (void)b, (void)o, (void)g; }
-void rt_observe_register(uint64_t b, uint32_t o, uint32_t a, uint32_t v) { (void)b, (void)o, (void)a, (void)v; }
+static struct {
+    uint64_t buffer, base;
+    uint32_t offset, data_offset;
+    int bases, dispatches;
+} indirect;
+void rt_observe_indirect_base(uint64_t b, uint32_t o, uint64_t a) { indirect.bases++, indirect.buffer = b, indirect.offset = o, indirect.base = a; }
+void rt_observe_dispatch_indirect(uint64_t b, uint32_t o, uint32_t d) { indirect.dispatches++, indirect.buffer = b, indirect.offset = o, indirect.data_offset = d; }
+enum { KEPT_REGISTERS = 2 };
+static struct {
+    unsigned count;
+    uint32_t address[KEPT_REGISTERS], value[KEPT_REGISTERS];
+} registers;
+void rt_observe_register(uint64_t b, uint32_t o, uint32_t a, uint32_t v)
+{
+    (void)b, (void)o;
+    if (registers.count < KEPT_REGISTERS) registers.address[registers.count] = a, registers.value[registers.count] = v;
+    registers.count++;
+}
 void rt_observe_index_base(uint64_t b, uint32_t o, uint64_t a) { (void)b, (void)o, (void)a; }
 void rt_observe_index_size(uint64_t b, uint32_t o, uint32_t c) { (void)b, (void)o, (void)c; }
 void rt_observe_index_type(uint64_t b, uint32_t o, uint32_t t) { (void)b, (void)o, (void)t; }
@@ -97,6 +117,32 @@ int main(void)
         const unsigned rest = COUNTED_WORDS - RECORD_CHUNK;
         CHECK(last.calls == TWO_WORDS && last.stage == RT_STAGE_COMPUTE && last.slot == COUNTED_SLOT + RECORD_CHUNK && last.count == rest);
         CHECK(!memcmp(last.words, counted_values + RECORD_CHUNK, rest * sizeof *counted_values));
+    }
+    /* the indirect dispatch: the base and the offset as given, at the cursor */
+    const rt_observer_fn set_base = observer(SET_INDIRECT_BASE), dispatch_indirect = observer(DISPATCH_INDIRECT);
+    CHECK(set_base != NULL && dispatch_indirect != NULL);
+    if (set_base && dispatch_indirect) {
+        const uint64_t base_args[RT_OBSERVED_ARGUMENTS] = {object_address, pointer_value};
+        set_base(base_args);
+        CHECK(indirect.bases == 1 && indirect.base == pointer_value && indirect.buffer == object.begin &&
+              indirect.offset == CURSOR_WORD * sizeof(uint32_t));
+        const uint64_t dispatch_args[RT_OBSERVED_ARGUMENTS] = {object_address, INDIRECT_DATA_OFFSET};
+        dispatch_indirect(dispatch_args);
+        CHECK(indirect.dispatches == 1 && indirect.data_offset == INDIRECT_DATA_OFFSET);
+    }
+    /* the depth bounds: 0.25 and 0.75 in xmm0 and xmm1 of the saved frame */
+    const rt_observer_fn bounds = observer(SET_DEPTH_BOUNDS);
+    CHECK(bounds != NULL);
+    if (bounds) {
+        uint64_t frame[RT_OBSERVED_FRAME_WORDS] = {object_address};
+        const float low = 0.25f, high = 0.75f;
+        memcpy(&frame[RT_OBSERVED_XMM0], &low, sizeof low);
+        memcpy(&frame[RT_OBSERVED_XMM0 + RT_OBSERVED_XMM_WORDS], &high, sizeof high);
+        bounds(frame);
+        uint32_t low_bits, high_bits;
+        memcpy(&low_bits, &low, sizeof low_bits), memcpy(&high_bits, &high, sizeof high_bits);
+        CHECK(registers.count == KEPT_REGISTERS && registers.address[0] == DB_DEPTH_BOUNDS_MIN && registers.value[0] == low_bits &&
+              registers.address[1] == DB_DEPTH_BOUNDS_MAX && registers.value[1] == high_bits);
     }
     if (failures) fprintf(stderr, "%d failure(s)\n", failures);
     else printf("compute user data observer: ok\n");

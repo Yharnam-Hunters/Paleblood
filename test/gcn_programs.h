@@ -91,6 +91,23 @@ static const uint32_t table_copy[] = TABLE_COPY(0xe03c2000, 0);
 static const uint32_t table_copy_format[] = TABLE_COPY(0xe0082000, 0);
 static const uint32_t table_copy_store_offset[] = TABLE_COPY(0xe03c2000, 4);
 
+/* out[i] = v_min_i32(-3, in[i]), out[64 + i] = v_max_i32(-3, in[i]), out[128 + i] = v_min_u32(7, in[i]),
+   out[192 + i] = v_max_u32(7, in[i]). */
+static const uint32_t integer_min_max[] = {
+    0x34020082, /* v_lshlrev_b32_e32 v1, 2, v0 */
+    0xe0301000, 0x80000201, /* buffer_load_dword v2, v1, s[0:3], 0 offen */
+    0xbf8c0f70, /* s_waitcnt vmcnt(0) */
+    0x220604c3, /* v_min_i32_e32 v3, -3, v2 */
+    0x240804c3, /* v_max_i32_e32 v4, -3, v2 */
+    0x260a0487, /* v_min_u32_e32 v5, 7, v2 */
+    0x280c0487, /* v_max_u32_e32 v6, 7, v2 */
+    0xe0701000, 0x80010301, /* buffer_store_dword v3, v1, s[4:7], 0 offen */
+    0xe0701100, 0x80010401, /* buffer_store_dword v4, v1, s[4:7], 0 offen offset:256 */
+    0xe0701200, 0x80010501, /* buffer_store_dword v5, v1, s[4:7], 0 offen offset:512 */
+    0xe0701300, 0x80010601, /* buffer_store_dword v6, v1, s[4:7], 0 offen offset:768 */
+    0xbf810000, /* s_endpgm */
+};
+
 /* out[i] = v_mul_hi_u32(in[i], in[i]), out[64 + i] = v_mul_hi_i32(in[i], in[i]),
    out[128 + i] = v_mul_hi_i32(in[i], 4 * i). */
 static const uint32_t multiply_high[] = {
@@ -415,6 +432,19 @@ static const uint32_t image_copy[] = {
     0xf0200f00, 0x00020401, /* image_store v[4:7], v[1:2], s[8:15] dmask:0xf */
     0xbf810000, /* s_endpgm */
 };
+
+/* image_copy through image_load_mip at level `level` (in v3, after the coordinates). */
+#define IMAGE_COPY_MIP(level) {                                                     \
+    0x7e020300,             /* v_mov_b32_e32 v1, v0 */                              \
+    0x7e040280,             /* v_mov_b32_e32 v2, 0 */                               \
+    0x7e060280 + (level),   /* v_mov_b32_e32 v3, level */                           \
+    0xf0040f00, 0x00000401, /* image_load_mip v[4:7], v[1:3], s[0:7] dmask:0xf */   \
+    0xbf8c0f70,             /* s_waitcnt vmcnt(0) */                                \
+    0xf0200f00, 0x00020401, /* image_store v[4:7], v[1:2], s[8:15] dmask:0xf */     \
+    0xbf810000,             /* s_endpgm */                                          \
+}
+static const uint32_t image_copy_level_0[] = IMAGE_COPY_MIP(0);
+static const uint32_t image_copy_level_1[] = IMAGE_COPY_MIP(1);
 
 /* Per lane i, texel (i, 0) of the image in s[8:15] set to (float(i), 1.0, 2.0, 0.5). */
 static const uint32_t image_fill[] = {
