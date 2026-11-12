@@ -2960,8 +2960,14 @@ static int same_origin(const gcn_resource_origin *a, const gcn_resource_origin *
 /* MIMG fields (the Sea Islands ISA manual): word 0 DMASK bits 8-11, UNORM 12, GLC 13, DA 14, R128 15,
    TFE 16, LWE 17, OP 18-24, SLC 25; word 1 VADDR bits 0-7, VDATA 8-15, SRSRC 16-20 (4 SGPRs each),
    SSAMP 21-25. */
-enum { MIMG_OP_LOAD = 0x00, MIMG_OP_LOAD_MIP = 0x01, MIMG_OP_STORE = 0x08, MIMG_OP_SAMPLE = 0x20, MIMG_OP_SAMPLE_L = 0x24, MIMG_OP_SAMPLE_LZ = 0x27, MIMG_OP_SAMPLE_C_LZ = 0x2f, MIMG_SRSRC_UNIT = 4, RESOURCE_DWORDS = 8,
+enum { MIMG_OP_LOAD = 0x00, MIMG_OP_LOAD_MIP = 0x01, MIMG_OP_STORE = 0x08, MIMG_OP_SAMPLE = 0x20, MIMG_OP_SAMPLE_D = 0x22, MIMG_OP_SAMPLE_L = 0x24, MIMG_OP_SAMPLE_LZ = 0x27, MIMG_OP_SAMPLE_C_LZ = 0x2f, MIMG_SRSRC_UNIT = 4, RESOURCE_DWORDS = 8,
        SAMPLER_DWORDS = 4 };
+
+/* Whether a MIMG opcode is one of the samples the translator does (through a sampler). */
+static int mimg_samples(unsigned op)
+{
+    return op == MIMG_OP_SAMPLE || op == MIMG_OP_SAMPLE_D || op == MIMG_OP_SAMPLE_L || op == MIMG_OP_SAMPLE_LZ || op == MIMG_OP_SAMPLE_C_LZ;
+}
 
 static unsigned mimg_resource_sgpr(const uint32_t *w) { return ((w[1] >> 16) & 0x1f) * MIMG_SRSRC_UNIT; }
 static unsigned mimg_sampler_sgpr(const uint32_t *w) { return ((w[1] >> 21) & 0x1f) * MIMG_SRSRC_UNIT; }
@@ -3137,9 +3143,12 @@ static uint32_t compared_sample(translator *t, const uint32_t *w, const gcn_imag
    its second, y from the first to its third; the slice has none), passed as explicit gradients
    because the translated program's dispatch loop is not uniform control flow for Vulkan's implicit
    derivatives; the quad's lanes take the same path, so its broadcasts are defined. Only active lanes
-   write their VGPRs. image_sample_c_lz is image_sample_lz with a depth compare (compared_sample). */
+   write their VGPRs. image_sample_c_lz is image_sample_lz with a depth compare (compared_sample).
+   image_sample_d (given_gradients) takes the derivatives from VADDR, before the coordinates: x's for each
+   spatial coordinate, then y's (the ISA's address order); cubes stop by name, their derivatives being in
+   the cube's own space. */
 static void image_sample(translator *t, const uint32_t *code, size_t at, const gcn_instruction *ins, unsigned binding, uint32_t texel_type,
-                         unsigned dmask, unsigned vaddr, unsigned vdata, int explicit_lod, int zero_lod, int compare)
+                         unsigned dmask, unsigned vaddr, unsigned vdata, int explicit_lod, int zero_lod, int compare, int given_gradients)
 {
     enum { SPV_OP_COMPOSITE_CONSTRUCT = 80 };
     const uint32_t *w = code + at;
@@ -3179,6 +3188,17 @@ static void image_sample(translator *t, const uint32_t *code, size_t at, const g
     const uint32_t reference = compare ? as_float(t, load(t, t_uint(t), vgpr(t, vaddr))) : 0;
     if (compare) vaddr++;
     const unsigned coordinates = (b->dim == GCN_IMAGE_1D ? 1 : b->dim == GCN_IMAGE_2D ? 2 : 3) + (b->arrayed ? 1 : 0);
+    const unsigned spatial = coordinates - (b->arrayed ? 1 : 0);
+    uint32_t dx[3] = {0}, dy[3] = {0};
+    if (given_gradients) {
+        if (b->cube) {
+            fail(t, "%s of a cube is not translated yet", ins->name);
+            return;
+        }
+        for (unsigned i = 0; i < spatial; i++)
+            dx[i] = as_float(t, load(t, t_uint(t), vgpr(t, vaddr + i))), dy[i] = as_float(t, load(t, t_uint(t), vgpr(t, vaddr + spatial + i)));
+        vaddr += 2 * spatial;
+    }
     uint32_t c[4];
     for (unsigned i = 0; i < coordinates; i++) c[i] = as_float(t, load(t, t_uint(t), vgpr(t, vaddr + i)));
     if (b->cube) {
@@ -3201,16 +3221,14 @@ static void image_sample(translator *t, const uint32_t *code, size_t at, const g
     if (zero_lod) explicit_lod = 1; /* no LOD VGPR: level 0 */
     const uint32_t lod = zero_lod ? konst_float(t, 0.0f) : explicit_lod ? as_float(t, load(t, t_uint(t), vgpr(t, vaddr + coordinates))) : 0;
     /* the gradients, from every lane of the quad (before the active lanes split off) */
-    const unsigned spatial = coordinates - (b->arrayed ? 1 : 0);
-    uint32_t dx[3] = {0}, dy[3] = {0};
-    for (unsigned i = 0; !explicit_lod && i < spatial; i++) {
+    for (unsigned i = 0; !explicit_lod && !given_gradients && i < spatial; i++) {
         uint32_t corner[3];
         for (unsigned q = 0; q < 3; q++)
             corner[q] = value(t, SPV_OP_GROUP_NON_UNIFORM_QUAD_BROADCAST, t_float(t), 3, konst(t, SPV_SCOPE_SUBGROUP), c[i], konst(t, q));
         dx[i] = value(t, SPV_OP_F_SUB, t_float(t), 2, corner[1], corner[0]);
         dy[i] = value(t, SPV_OP_F_SUB, t_float(t), 2, corner[2], corner[0]);
     }
-    if (!explicit_lod) t->uses_quads = 1;
+    if (!explicit_lod && !given_gradients) t->uses_quads = 1;
     uint32_t gradient_x = dx[0], gradient_y = dy[0];
     if (!explicit_lod && spatial > 1) {
         const uint32_t vec = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_float(t), spatial}, 2);
@@ -3254,7 +3272,7 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
     const char *name = ins->name;
     const unsigned op = (w[0] >> 18) & 0x7f, dmask = (w[0] >> 8) & 0xf, r128 = (w[0] >> 15) & 1, tfe = (w[0] >> 16) & 1,
                    lwe = (w[0] >> 17) & 1;
-    const int sample = op == MIMG_OP_SAMPLE || op == MIMG_OP_SAMPLE_L || op == MIMG_OP_SAMPLE_LZ || op == MIMG_OP_SAMPLE_C_LZ;
+    const int sample = mimg_samples(op);
     if (op != MIMG_OP_LOAD && op != MIMG_OP_LOAD_MIP && op != MIMG_OP_STORE && !sample) {
         fail(t, "%s (MIMG) is not translated yet", name);
         return;
@@ -3282,7 +3300,7 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
     if (sample) {
         const uint32_t texel_type = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){texel_component_type(t, b), 4}, 2);
         image_sample(t, code, at, ins, binding, texel_type, dmask, vaddr, vdata, op == MIMG_OP_SAMPLE_L,
-                     op == MIMG_OP_SAMPLE_LZ || op == MIMG_OP_SAMPLE_C_LZ, op == MIMG_OP_SAMPLE_C_LZ);
+                     op == MIMG_OP_SAMPLE_LZ || op == MIMG_OP_SAMPLE_C_LZ, op == MIMG_OP_SAMPLE_C_LZ, op == MIMG_OP_SAMPLE_D);
         return;
     }
     if (b->sampled && op == MIMG_OP_STORE) {
@@ -3422,7 +3440,7 @@ int gcn_called_image_resources(const uint32_t *code, size_t dwords, const uint32
                 resources[i] = (gcn_image_resource){origin, 0};
                 (*count)++;
             }
-            const int samples = op == MIMG_OP_SAMPLE || op == MIMG_OP_SAMPLE_L || op == MIMG_OP_SAMPLE_LZ || op == MIMG_OP_SAMPLE_C_LZ;
+            const int samples = mimg_samples(op);
             resources[i].access |= op == MIMG_OP_STORE ? GCN_IMAGE_WRITE : samples ? GCN_IMAGE_READ | GCN_IMAGE_SAMPLE
                                                                                                          : GCN_IMAGE_READ;
         }
@@ -3642,7 +3660,7 @@ int gcn_sampler_resources(const uint32_t *code, size_t dwords, gcn_resource_orig
             return -1;
         }
         const unsigned mimg_op = (code[at] >> 18) & 0x7f;
-        if (ins.encoding == GCN_MIMG && (mimg_op == MIMG_OP_SAMPLE || mimg_op == MIMG_OP_SAMPLE_L || mimg_op == MIMG_OP_SAMPLE_LZ || mimg_op == MIMG_OP_SAMPLE_C_LZ)) {
+        if (ins.encoding == GCN_MIMG && mimg_samples(mimg_op)) {
             gcn_resource_origin origin;
             const callee_code no_callee = {NULL, 0};
             if (descriptor_origin(code, (size_t)program, &no_callee, at, mimg_sampler_sgpr(code + at), SAMPLER_DWORDS, &origin, error, error_size))
