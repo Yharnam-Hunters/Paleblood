@@ -6,6 +6,7 @@
 #include "gcn_programs.h"
 #include "metal_image_programs.h"
 #include "metal_image_slots.h"
+#include "metal_storage_programs.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -147,6 +148,43 @@ static void draw_source(rt_executor *x,unsigned char *pool)
     const unsigned char *pixel=pool+0x680000+4*(1*16+1);
     CHECK(abs((int)pixel[0]-24)<=2&&abs((int)pixel[1]-24)<=2&&abs((int)pixel[2]-64)<=2&&pixel[3]==255);
 }
+/* Pixel-read and compute-write views of identical descriptor words use compatible storage. */
+static void storage_interop(rt_executor *x,unsigned char *pool)
+{
+    uint32_t pixel[16]={0},compute[16]={0};
+    descriptor(pixel,0x600000,4,7,8,8,16,31,RT_IMAGE_2D,1,0,0,0,0,4|0<<3|1<<6|1<<9);
+    unsigned char initial[16]={0};const float quarter=0.25f;memcpy(initial,&quarter,4);fill(pool,pixel,4,1,initial);
+    buffer_descriptor(pixel+12,PROBE);rt_executor_reset(x);
+    probe(x,pool,image_probe_load,sizeof image_probe_load,pixel,0xffff,NULL);
+    const float before[4]={0.25f,0,1,1};float_results(pool,before,0.00001f);
+    memcpy(compute+8,pixel,8*sizeof *compute);memcpy(pool+COMPUTE_SHADER,storage_store_2d,sizeof storage_store_2d);
+    const float colours[]={0.5f,0.75f,1};
+    for(unsigned round=0;round<3;++round){
+        compute[0]=bits(colours[round]);
+        rt_render_call calls[4]={{0}};
+        calls[0].kind=RT_CALL_COMPUTE_SHADER;calls[0].u.compute_shader=(rt_compute_shader){.code=at(COMPUTE_SHADER),.vgprs=16,.sgprs=40,.user_sgprs=16,.threads={1,1,1},.thread_id_components=2};
+        for(unsigned part=0;part<2;++part){calls[part+1].kind=RT_CALL_USER_DATA;calls[part+1].u.user_data.stage=RT_STAGE_COMPUTE;
+            calls[part+1].u.user_data.slot=part*8;calls[part+1].u.user_data.count=8;memcpy(calls[part+1].u.user_data.words,compute+part*8,8*sizeof *compute);}
+        calls[3].kind=RT_CALL_DISPATCH;calls[3].u.dispatch.groups[0]=calls[3].u.dispatch.groups[1]=calls[3].u.dispatch.groups[2]=1;
+        char error[512]="";int result=rt_executor_run_calls(x,calls,4,error,sizeof error);if(result)fprintf(stderr,"image interop: %s\n",error);CHECK(result==0);++scenarios;
+        CHECK(*(uint32_t *)(pool+0x600000)==bits(colours[round]));
+        probe(x,pool,image_probe_load,sizeof image_probe_load,pixel,0xffff,NULL);
+        const float expected[4]={colours[round],0,1,1};float_results(pool,expected,0.00001f);
+    }
+    /* A rendered target is also valid input for storage-image loads into a buffer. */
+    draw_source(x,pool);memset(compute,0,sizeof compute);
+    descriptor(compute+8,0x680000,10,0,16,16,16,31,RT_IMAGE_2D,1,0,0,0,0,IDENTITY);
+    buffer_descriptor(compute,PROBE);compute[4]=compute[6]=1;memcpy(pool+COMPUTE_SHADER,storage_load_2d,sizeof storage_load_2d);
+    rt_render_call calls[4]={{0}};calls[0].kind=RT_CALL_COMPUTE_SHADER;
+    calls[0].u.compute_shader=(rt_compute_shader){.code=at(COMPUTE_SHADER),.vgprs=16,.sgprs=40,.user_sgprs=16,.threads={1,1,1},.thread_id_components=2};
+    for(unsigned part=0;part<2;++part){calls[part+1].kind=RT_CALL_USER_DATA;calls[part+1].u.user_data.stage=RT_STAGE_COMPUTE;
+        calls[part+1].u.user_data.slot=part*8;calls[part+1].u.user_data.count=8;memcpy(calls[part+1].u.user_data.words,compute+part*8,8*sizeof *compute);}
+    calls[3].kind=RT_CALL_DISPATCH;calls[3].u.dispatch.groups[0]=calls[3].u.dispatch.groups[1]=calls[3].u.dispatch.groups[2]=1;
+    char error[512]="";int result=rt_executor_run_calls(x,calls,4,error,sizeof error);if(result)fprintf(stderr,"draw/storage interop: %s\n",error);CHECK(result==0);++scenarios;
+    float actual[4];memcpy(actual,pool+PROBE,sizeof actual);
+    for(unsigned c=0;c<4;++c)CHECK(fabsf(actual[c]-(float)pool[0x680000+4*17+c]/255)<=0.00001f);
+}
+
 int main(void)
 {
     char name[]="/tmp/paleblood-metal-images-XXXXXX",error[256]="";int fd=mkstemp(name);if(fd<0)return 1;
@@ -359,6 +397,8 @@ int main(void)
     rt_tiling_level fp;CHECK(rt_tiling_mip_chain(31,4,1,0,16,2,2,2,1,1,&fp,error,sizeof error)==0);const float values[4]={0.25f,0.5f,0.75f,1};
     rt_tiling_tile(&fp.layout,(const unsigned char *)values,pool+0x500000,2,2,1);pointer(user+12,OUTPUT_DESCRIPTOR);user[10]=1u<<20|1u<<22;user[14]=user[15]=bits(0.5f);
     rt_executor_reset(x);probe(x,pool,image_probe_sample,sizeof image_probe_sample,user,0xffff,NULL);const float fp_result[4]={0.625f,0,1,1};float_results(pool,fp_result,0.00001f);
+    rt_executor_close(x);x=NULL;CHECK(rt_executor_open(&memory,&x,error,sizeof error)==0);if(!x)return 1;
+    storage_interop(x,pool);
     rt_executor_close(x);CHECK(close(fd)==0);CHECK(munmap(pool,POOL)==0);
     printf("metal images: %u scenarios, %u checks, %u failures\n",scenarios,checks,failures);return failures?1:0;
 }

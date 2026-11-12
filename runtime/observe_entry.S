@@ -6,11 +6,21 @@
    original's relocated entry, the hook's first field. Frame: 0 rdi rsi rdx rcx r8 r9, 48 rax,
    56 hook, 64 xmm0..xmm7. */
 
+#if defined(__APPLE__) && defined(__MACH__)
+#define RT_SYMBOL(name) _##name
+#else
+#define RT_SYMBOL(name) name
+#endif
+
     .text
-    .globl rt_observe_entry
+    .globl RT_SYMBOL(rt_observe_entry)
+#if defined(__APPLE__) && defined(__MACH__)
+    .private_extern RT_SYMBOL(rt_observe_entry)
+#else
     .hidden rt_observe_entry
     .type rt_observe_entry, @function
-rt_observe_entry:
+#endif
+RT_SYMBOL(rt_observe_entry):
     sub $200, %rsp                  /* 8 mod 16 at entry: the call below is aligned */
     mov %rdi, 0(%rsp)
     mov %rsi, 8(%rsp)
@@ -30,7 +40,7 @@ rt_observe_entry:
     movdqu %xmm7, 176(%rsp)
     mov %r11, %rdi
     mov %rsp, %rsi
-    call rt_observe_hook_dispatch
+    call RT_SYMBOL(rt_observe_hook_dispatch)
     movdqu 64(%rsp), %xmm0
     movdqu 80(%rsp), %xmm1
     movdqu 96(%rsp), %xmm2
@@ -49,5 +59,7 @@ rt_observe_entry:
     mov 56(%rsp), %r11
     add $200, %rsp
     jmp *(%r11)
+#if !defined(__APPLE__) || !defined(__MACH__)
     .size rt_observe_entry, .-rt_observe_entry
     .section .note.GNU-stack,"",@progbits
+#endif

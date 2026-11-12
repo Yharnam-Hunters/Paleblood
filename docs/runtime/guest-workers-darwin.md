@@ -56,8 +56,8 @@ Native Mach-O thread-local storage can already be torn down by the time a public
 pthread-key destructor runs; host TLV canaries are checked during entry and guest
 key destructors, while they remain in the guest execution lifetime.
 
-This is worker support, not a complete boot port. Darwin startup still needs to bind
-the main thread inside a recovery scope and pass its qualified displacement to the
-loader. Executable TLS support here does not establish arbitrary FS/GS instruction
-patterns, per-worker dynamic module TLS, cancellation, original-game behavior or
-successful macOS guest startup. No game bytes are used by these tests.
+The standalone worker tests do not exercise CLI startup. The
+[Darwin startup path](startup-darwin.md) binds the main thread inside a recovery scope
+and passes its qualified displacement to the loader. Executable TLS support here does
+not establish arbitrary FS/GS instruction patterns, per-worker dynamic module TLS,
+cancellation or original-game behavior. No game bytes are used by these tests.
