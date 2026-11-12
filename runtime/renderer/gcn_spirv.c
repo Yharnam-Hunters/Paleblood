@@ -135,6 +135,8 @@ typedef struct {
     unsigned interface_count;
     /* v_interp_p1 results waiting for their p2: attribute * 4 + channel + 1 per VGPR, or 0 */
     uint32_t interpolation_pending[VGPR_COUNT];
+    /* per input location: 1 read flat by v_interp_mov_f32 (declared Flat for it), 2 read interpolated */
+    unsigned char attribute_use[PARAMETER_COUNT];
     char *error;
     size_t error_size;
     int failed;
@@ -2312,17 +2314,27 @@ static void export_instruction(translator *t, const uint32_t *w)
 /* v_interp_p1/p2: GCN interpolates an attribute in two halves, from its per-vertex values: p1
    gives P0 + i * P10 and p2 adds j * P20 (i and j the barycentrics). Here the GPU interpolates the
    input itself, so p1 already writes the finished value and p2, which must follow it into the same
-   VGPR for the same channel (as compilers emit the pair), writes it again. */
+   VGPR for the same channel (as compilers emit the pair), writes it again.
+   v_interp_mov_f32 (the Sea Islands manual) copies one of the three without interpolating, by its VSRC
+   field: 0 P10, 1 P20, 2 P0, the attribute at the primitive's first vertex. P0 is a Vulkan Flat input (whose
+   value is the provoking vertex's, the first by default), so an input read that way is declared Flat; one a
+   shader reads both flat and interpolated, and P10 or P20, are not translated yet. The game's particle
+   pixel shaders read packed halves this way (v_interp_mov_f32 then v_cvt_f32_f16 of a half). */
+enum { INTERP_MOV_P0 = 2, ATTRIBUTE_READ_FLAT = 1, ATTRIBUTE_READ_INTERPOLATED = 2 };
 static void interpolation_instruction(translator *t, const uint32_t *w, const gcn_instruction *ins)
 {
     const char *name = ins->name;
     const unsigned vsrc = w[0] & 0xff, channel = (w[0] >> 8) & 3, attribute = (w[0] >> 10) & 0x3f, vdst = (w[0] >> 18) & 0xff;
-    const int first = !strcmp(name, "v_interp_p1_f32"), second = !strcmp(name, "v_interp_p2_f32");
-    if (t->layout->stage != STAGE_PIXEL || (!first && !second)) {
+    const int first = !strcmp(name, "v_interp_p1_f32"), second = !strcmp(name, "v_interp_p2_f32"), mov = !strcmp(name, "v_interp_mov_f32");
+    if (t->layout->stage != STAGE_PIXEL || (!first && !second && !mov)) {
         fail(t, "%s is not translated yet%s", name, t->layout->stage != STAGE_PIXEL ? " outside pixel shaders" : "");
         return;
     }
-    if (vsrc != t->layout->barycentric_vgpr + (second ? 1u : 0u)) {
+    if (mov && vsrc != INTERP_MOV_P0) {
+        fail(t, "%s from P%s (an attribute's difference between vertices) is not translated yet", name, vsrc ? "20" : "10");
+        return;
+    }
+    if (!mov && vsrc != t->layout->barycentric_vgpr + (second ? 1u : 0u)) {
         fail(t, "%s: barycentrics in v%u, not the perspective centre's (another interpolation mode)", name, vsrc);
         return;
     }
@@ -2343,11 +2355,19 @@ static void interpolation_instruction(translator *t, const uint32_t *w, const gc
         write_vgpr(t, vdst, as_bits(t, konst_float(t, defaults[which][channel])));
         return;
     }
-    /* one input per vertex shader parameter read, flat when any attribute reading it says so */
+    /* one input per vertex shader parameter read, flat when any attribute reading it says so, or when
+       v_interp_mov_f32 reads it */
     const unsigned location = control & GCN_PS_INPUT_OFFSET_MASK;
+    const unsigned use = mov && !(control & GCN_PS_INPUT_FLAT_SHADE) ? ATTRIBUTE_READ_FLAT : ATTRIBUTE_READ_INTERPOLATED;
+    if (t->attribute_use[location] && t->attribute_use[location] != use) {
+        fail(t, "%s: the vertex shader's parameter %u read both flat (v_interp_mov_f32) and interpolated is not translated yet", name,
+             location);
+        return;
+    }
+    t->attribute_use[location] = (unsigned char)use;
     if (!t->attribute[location]) {
         t->attribute[location] = interface_variable(t, SPV_STORAGE_INPUT, t_vec4(t), SPV_DECORATION_LOCATION, location);
-        if (control & GCN_PS_INPUT_FLAT_SHADE)
+        if ((control & GCN_PS_INPUT_FLAT_SHADE) || use == ATTRIBUTE_READ_FLAT)
             spirv_emit(&t->m, &t->m.sections[SPIRV_DECORATIONS], SPV_OP_DECORATE, (const uint32_t[]){t->attribute[location], SPV_DECORATION_FLAT}, 2);
     }
     const uint32_t interpolated = load(t, t_float(t), vec4_component(t, SPV_STORAGE_INPUT, t->attribute[location], channel));
