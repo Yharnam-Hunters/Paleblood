@@ -2,6 +2,8 @@ address,size,name,system,status,notes
 0x004632d0,67,frame_timing_get_time_us,frame_timing,original,dead in the stock game: only unwind entries refer to it; the community frame-rate patches overwrite it as a code cave (gettimeofday in microseconds)
 0x00464b90,215,loading_stdio_stream_open,loading,verified,fopen the tagged path with rb/r+b/wb/w+b/ab/a+b from mode bits at +0x28; rewind; map errno (fetched per check) to 0x1001-0x1004; zero +0x30
 0x00466810,19,frame_timing_posix_sleep_ms,frame_timing,edge-verified,Sleep milliseconds through POSIX usleep (32-bit multiply wraps); ignore its result and return true
+0x00829a90,33,loading_allocator_free_headed_00829a90,loading,edge-verified,"Frees a block with a 16-byte header before its data: clears the header word, sized free of header and size+0x10 (32-bit); null ignored"
+0x00836840,70,loading_tagged_string_release_00836840,loading,edge-verified,Tagged string word: below 2 left alone; odd frees word-1 through the thread allocator (0x00829a90); then cleared
 0x0084d5a0,158,loading_fios_directory_delete,loading,edge-verified,"FIOS directory object deleting destructor: close the DH at +0x28; free entries and both tagged paths; free 0x38 bytes (or the header's size) to the thread allocator"
 0x00857cd0,176,loading_fios_open_file,loading,edge-verified,sceFiosFHOpenSync with the caller's 16-bit open flags; on success a 0x18-byte file object from the thread allocator (vtable 0x055c1e00) marked open
 0x0085cda0,174,loading_fios_open_file_read,loading,edge-verified,sceFiosFHOpenSync to read; on success a 0x18-byte file object (vtable 0x055c2190) open when the handle is not negative
@@ -291,12 +293,15 @@ address,size,name,system,status,notes
 0x02489fc0,1081,engine_segregated_regular_heap_allocate_aligned_top_02489fc0,engine,edge-verified,DLSegregatedRegularHeap aligned top allocation: highest-address block holding the size aligned; placed at the highest aligned fit; front and tail stay free
 0x0248a400,688,engine_segregated_regular_heap_free_0248a400,engine,edge-verified,DLSegregatedRegularHeap free: hash-table lookup (unknown address reported); merges with free neighbours; to the front of its class list
 0x024bd150,216,frame_timing_job_take_result,frame_timing,verified,"Job handle result: mode 0 polls (null if not done); 2 takes; others wait 1 ms at a time; bumps the job's holder count under the job lock"
+0x024bd470,28,loading_resource_handle_construct_024bd470,loading,edge-verified,"Base resource handle constructor: stores its vtable and the info, takes a reference (0x02a3a300) when the info is not null"
+0x024bd4c0,25,loading_resource_handle_destroy_024bd4c0,loading,edge-verified,"Base resource handle destructor: stores its vtable, releases the info (0x024bd930) when not null"
 0x024bd930,249,loading_resource_info_release_024bd930,loading,edge-verified,DLResourceInfo drop reference: last one sets releasing once (shared lock); manager release; cancel pending requests from the stream queue
 0x024bdd40,36,frame_timing_job_wait,frame_timing,edge-verified,"Poll a job's state until finished (2); sleeping 1 ms in the kernel between polls"
 0x024be250,343,loading_load_request_construct_024be250,loading,edge-verified,resource load request base constructor: clear words; keep the third argument at +0x20; name string on the request heap (heap check) from wcslen; tail via 0x024be8e0
 0x024be3b0,558,loading_load_request_copy_024be3b0,loading,edge-verified,resource load request copy constructor: base vtable; words/bytes copied; name on the request heap; strings/array via 0x024be8e0 then assigned (strings skip self-copy)
 0x024be8e0,362,loading_load_request_construct_tail_024be8e0,loading,edge-verified,resource load request tail: two owning empty wide strings and an empty byte array on the default container heap (heap check each)
 0x024c1530,152,loading_resource_manager_release_024c1530,loading,edge-verified,DLResourceManagerImpl release of an info: initialized assert; without flag 0x40 leave the file queue and set the signal; under the lock mark released (0x80) and hand to 0x024c3260
+0x024dd8a0,40,loading_transfer_task_cancel_024dd8a0,loading,edge-verified,Atomically sets bit 0 (and bit 1 with the flag) of the state at +0x160 unless bit 2 is set; returns true
 0x024de230,116,loading_memory_stream_read_024de230,loading,edge-verified,VirtualMemoryInputStream read: -1 if not open; min(count; left) cut to 32 bits; copy and advance position and +0x20
 0x02564ed0,25,render_present_encoding_units,render,edge-verified,Return the full 64-bit entry for wrapped encoding minus one when its index is below 99; otherwise return zero.
 0x02565130,30,render_present_record_bit_width,render,verified,Return the bit width of the OR of three 32-bit inputs. All-zero input returns zero; the presentation fallback passes one as the third input.

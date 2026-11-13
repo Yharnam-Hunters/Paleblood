@@ -148,6 +148,10 @@ constexpr uint8_t resource_released = 0x80;           // set by the manager's re
 // own lock.
 RT_ORIGINAL(0x02a3a2a0, resource_info_drop_reference, void(ResourceInfo *));
 RT_ORIGINAL(0x02a3a1b0, resource_info_reference_count, int32_t(ResourceInfo *));
+// Take one reference (under the same lock), and drop one, releasing the info when it was the
+// last (0x024bd930).
+RT_ORIGINAL(0x02a3a300, resource_info_add_reference, void(ResourceInfo *));
+RT_ORIGINAL(0x024bd930, resource_info_release, void(ResourceInfo *));
 
 // The resource manager (its storage is a static, aligned up to 8 where it is used) and its
 // release of a resource info.
@@ -291,13 +295,19 @@ RT_ORIGINAL(0x024c17e0, resource_manager_info_for, ResourceInfo *(ResourceManage
 RT_ORIGINAL(0x02a69b70, load_event_array_push_back, void(LoadEventArray *, const LoadEvent *));
 
 // A transfer task (Dantelion2 TransferTask) reading a resource: +0x10 is the info it loads. Its
-// cancel (0x024dd8a0) sets a bit in its state atomically.
+// cancel (0x024dd8a0) sets bits in its state atomically: the cancel bit, the flag bit when asked,
+// and nothing once the closed bit is set (what the last two mean is not confirmed here).
 struct TransferTask {
     uint8_t unknown_0x00[0x10];
     ResourceInfo *info;
+    uint8_t unknown_0x18[0x148];
+    uint32_t state;
 };
-static_assert(offsetof(TransferTask, info) == 0x10);
-RT_ORIGINAL(0x024dd8a0, transfer_task_cancel, uint64_t(TransferTask *, bool));
+static_assert(offsetof(TransferTask, info) == 0x10 && offsetof(TransferTask, state) == 0x160);
+constexpr uint32_t transfer_task_cancel_bit = 0x1;
+constexpr uint32_t transfer_task_flag_bit = 0x2;
+constexpr uint32_t transfer_task_closed_bit = 0x4;
+RT_ORIGINAL(0x024dd8a0, transfer_task_cancel, bool(TransferTask *, bool));
 
 // The file load queue's transfer tasks: six lists, searched in order, under a read-write lock
 // (Dantelion2 DLReadWriteLock: read lock with a timeout 0x0247f640, unlock 0x0247f710).
