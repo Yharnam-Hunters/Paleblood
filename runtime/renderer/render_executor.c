@@ -45,7 +45,7 @@
 enum { MAX_SHADERS = 1024, MAX_PIPELINES = 1024, MAX_TARGETS = 512, MAX_RECT_STAGES = 16, MAX_COMPUTE_PIPELINES = 512, MAX_IMAGES = 4096,
        MAX_VIEWS = 16, MAX_SAMPLERS = 256, MAX_PASSES = 2 * MAX_TARGETS, BATCH_SETS = 256, MAX_WRITTEN = 256, BATCH_SLOTS = 4, BATCH_WORK_NAMED = 8, WORK_LISTED = 1024, CHANGE_CHUNK = 64 << 10,
        MAX_TESS_PASSES = 64, MAX_TESS_CONTROLS = 16, STOP_SLOTS = MAX_SHADERS + MAX_COMPUTE_PIPELINES + MAX_TESS_PASSES };
-enum { IMAGE_BUCKETS = 4096 };
+enum { IMAGE_BUCKETS = 4096, TABLE_BUCKETS = 2048 }; /* powers of two */
 /* the sink for guest memory accesses outside the guest memory (gcn_guest_memory) after the stop words,
    aligned for a 16-byte vector store */
 enum { STOP_SINK_OFFSET = (STOP_SLOTS * 4 + GCN_GUEST_SINK_BYTES - 1) / GCN_GUEST_SINK_BYTES * GCN_GUEST_SINK_BYTES };
@@ -119,6 +119,7 @@ typedef struct {
     uint64_t tessellation;           /* a domain shader's tessellation settings (tessellation_key), 0 otherwise */
     vertex_instancing instancing;    /* a vertex shader's instancing inputs (vertex_instancing_of), zero otherwise */
     VkShaderModule module;
+    uint32_t bucket_next;            /* the next shader of its bucket (shader_buckets), index + 1; 0 none */
 } shader_entry;
 
 /* A host-visible buffer that texels pass through between an image and the guest memory, kept for reuse:
@@ -249,6 +250,7 @@ typedef struct {
     VkShaderModule control;          /* a tessellated draw's control shader (its vertex shader then the domain shader), or VK_NULL_HANDLE */
     uint32_t patch_points;           /* its control points a patch */
     VkPipeline pipeline;
+    uint32_t bucket_next;            /* the next pipeline of its bucket (pipeline_buckets), index + 1; 0 none */
 } pipeline_entry;
 
 /* A compute shader translated for one workgroup size and starting-register layout, and its pipeline. */
@@ -489,6 +491,11 @@ struct rt_executor {
     size_t shader_count;
     pipeline_entry pipelines[MAX_PIPELINES];
     size_t pipeline_count;
+    /* shaders by code address and stage, pipelines by their shaders and render pass: the first of each
+       bucket, index + 1 (0 none), the rest chained through bucket_next. Every draw looks up its shaders
+       and pipeline, and a frame of the clinic keeps hundreds of each. */
+    uint32_t shader_buckets[TABLE_BUCKETS];
+    uint32_t pipeline_buckets[TABLE_BUCKETS];
     target_entry targets[MAX_TARGETS];
     size_t target_count;
     depth_entry depths[MAX_TARGETS];
@@ -2210,6 +2217,31 @@ static uint64_t target_span(const target_entry *t)
     return rt_tiling_layout(t->tile_index, t->element_bytes, t->width, t->height, &layout, reason, sizeof reason) ? 0 : rt_tiling_size(&layout, 1);
 }
 
+/* The bucket of a shader (shader_buckets) and of a pipeline (pipeline_buckets). */
+static unsigned shader_bucket(uint64_t code, int stage)
+{
+    return (unsigned)(((code >> 2) ^ (uint64_t)stage << 56) * 0x9e3779b97f4a7c15ull >> 40) & (TABLE_BUCKETS - 1);
+}
+
+static unsigned pipeline_bucket(VkShaderModule vertex, VkShaderModule pixel, VkRenderPass pass)
+{
+    const uint64_t key = ((uint64_t)(uintptr_t)vertex * 0x9e3779b97f4a7c15ull) ^ ((uint64_t)(uintptr_t)pixel * 0xff51afd7ed558ccdull) ^
+                         (uint64_t)(uintptr_t)pass;
+    return (unsigned)((key * 0xc4ceb9fe1a85ec53ull) >> 40) & (TABLE_BUCKETS - 1);
+}
+
+/* Puts every pipeline in its bucket again, after pipelines were removed (the last moved into a gap). */
+static void index_pipelines(rt_executor *x)
+{
+    memset(x->pipeline_buckets, 0, sizeof x->pipeline_buckets);
+    for (size_t i = 0; i < x->pipeline_count; i++) {
+        pipeline_entry *p = &x->pipelines[i];
+        const unsigned bucket = pipeline_bucket(p->vertex, p->pixel, p->pass);
+        p->bucket_next = x->pipeline_buckets[bucket];
+        x->pipeline_buckets[bucket] = (uint32_t)(i + 1);
+    }
+}
+
 /* Frees the slot of a render target no unfinished batch and no part of the draw being recorded uses, and
    whose memory holds all of its texels (not drawn since written back): its image, and the render passes
    that draw into it with the pipelines made for them. NULL when no target can go: the one set aside
@@ -2227,6 +2259,7 @@ static target_entry *target_slot_to_free(rt_executor *x)
     }
     if (!pick) return NULL;
     const int index = (int)(pick - x->targets);
+    int removed_pipelines = 0;
     for (size_t i = 0; i < x->pass_count;) {
         pass_entry *p = &x->passes[i];
         int uses = 0;
@@ -2242,11 +2275,13 @@ static target_entry *target_slot_to_free(rt_executor *x)
             }
             vkDestroyPipeline(x->device, x->pipelines[k].pipeline, NULL);
             x->pipelines[k] = x->pipelines[--x->pipeline_count];
+            removed_pipelines = 1;
         }
         vkDestroyFramebuffer(x->device, p->framebuffer, NULL);
         vkDestroyRenderPass(x->device, p->pass, NULL);
         *p = x->passes[--x->pass_count];
     }
+    if (removed_pipelines) index_pipelines(x); /* the pipelines moved */
     for (size_t i = 0; i < x->image_count; i++)
         if (x->images[i].copied_from == pick) x->images[i].copied_from = NULL;
     if (pick->guarded && x->unguard) x->unguard(pick->address, target_span(pick));
@@ -3034,8 +3069,9 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
         instancing = (vertex_instancing){.vgprs = tess->vertex.vgpr_inputs, .step_rates = {tess->step_rates[0], tess->step_rates[1]},
                                          .step_rates_set = tess->step_rates_set};
     const size_t control_bytes = GCN_PIXEL_INPUTS * sizeof *input_controls;
-    for (size_t i = 0; i < x->shader_count; i++) {
-        const shader_entry *s = &x->shaders[i];
+    const unsigned bucket = shader_bucket(code, stage);
+    for (uint32_t i = x->shader_buckets[bucket]; i; i = x->shaders[i - 1].bucket_next) {
+        const shader_entry *s = &x->shaders[i - 1];
         if (s->code == code && s->stage == stage && s->user_sgprs == user_sgprs && s->settings == settings && s->callee == callee &&
             s->first_binding == first_binding && s->has_input_controls == (input_controls != NULL) &&
             (!input_controls || !memcmp(s->input_controls, input_controls, control_bytes)) &&
@@ -3110,7 +3146,9 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
     shader_entry *e = &x->shaders[x->shader_count++];
     *e = (shader_entry){.code = code, .stage = stage, .user_sgprs = user_sgprs, .settings = settings, .image_count = image_count,
                         .sampler_count = sampler_count, .first_binding = first_binding, .callee = callee, .user_read = *user_read,
-                        .tessellation = tessellation, .instancing = instancing, .module = module};
+                        .tessellation = tessellation, .instancing = instancing, .module = module,
+                        .bucket_next = x->shader_buckets[bucket]};
+    x->shader_buckets[bucket] = (uint32_t)x->shader_count;
     memcpy(e->images, images, image_count * sizeof *images);
     memcpy(e->samplers, samplers, sampler_count * sizeof *samplers);
     if (input_controls) memcpy(e->input_controls, input_controls, control_bytes), e->has_input_controls = 1;
@@ -3124,8 +3162,9 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
                                int strip, const depth_plan *depth, int has_depth, VkShaderModule control, uint32_t patch_points,
                                char *error, size_t error_size)
 {
-    for (size_t i = 0; i < x->pipeline_count; i++) {
-        const pipeline_entry *p = &x->pipelines[i];
+    const unsigned bucket = pipeline_bucket(vertex, pixel, pass);
+    for (uint32_t i = x->pipeline_buckets[bucket]; i; i = x->pipelines[i - 1].bucket_next) {
+        const pipeline_entry *p = &x->pipelines[i - 1];
         if (p->vertex == vertex && p->geometry == geometry && p->pixel == pixel && p->pass == pass && p->layout == layout &&
             p->colours == colours && !memcmp(p->blend_control, blend_control, sizeof p->blend_control) && p->write_masks == write_masks &&
             p->strip == strip && !memcmp(&p->depth, depth, sizeof *depth) && p->control == control && p->patch_points == patch_points)
@@ -3211,8 +3250,9 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
     x->pipelines[x->pipeline_count++] =
         (pipeline_entry){.vertex = vertex, .geometry = geometry, .pixel = pixel, .pass = pass, .layout = layout, .colours = colours,
                          .write_masks = write_masks, .strip = strip, .depth = *depth, .control = control, .patch_points = patch_points,
-                         .pipeline = pipeline};
+                         .pipeline = pipeline, .bucket_next = x->pipeline_buckets[bucket]};
     memcpy(x->pipelines[x->pipeline_count - 1].blend_control, blend_control, sizeof x->pipelines[0].blend_control);
+    x->pipeline_buckets[bucket] = (uint32_t)x->pipeline_count;
     return pipeline;
 }
 
