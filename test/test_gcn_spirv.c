@@ -681,6 +681,7 @@ static void tessellation(void)
 {
     compute_lds = (gcn_lds){.bytes = 272};
     translates(PROGRAM(lds_exchange), "lds_exchange");
+    translates(PROGRAM(roundings), "roundings");
     translates(PROGRAM(negated_compares), "negated_compares");
     compute_lds = (gcn_lds){0};
     refused_as(COMPUTE, PROGRAM(lds_exchange), "with no LDS");

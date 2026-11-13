@@ -2,7 +2,7 @@
 
 Paleblood is a decompilation of Bloodborne with its own runtime: the game's code rewritten as readable C++, one verified function at a time.
 <!-- status:start -->
-The game doesn't run on Paleblood yet: 4526 of 157757 functions are verified (2.87%). On [our own runtime](runtime/) the executable's boot gets as far as the run's time limit, still running (no call stopped it), with 686 of 686 system imports implemented.
+The game doesn't run on Paleblood yet: 8303 of 157757 functions are verified (5.26%). On [our own runtime](runtime/) the executable's boot gets as far as the run's time limit, still running (no call stopped it), with 686 of 686 system imports implemented.
 <!-- status:end -->
 
 The goal is a complete source port: every function rewritten and proved, running on our own
@@ -86,9 +86,12 @@ Never copy its code, and never attach or link the files. Do not copy, adapt, or 
 implementation code from another PS4 runtime or emulator. Keep one call or a
 tightly related group in each PR. Runtime-only PRs need no proprietary game dump, captures, or
 function-level `verify.py` results. CI compiles with GCC and Clang, runs the RT_SYSLIB test and
-the rest of CTest, and retains the repository's policy checks. It also builds and tests your PR
-merged with each other open PR that is ready for review (`tools/combined_check.py`), so two PRs
-that pass alone but break together are found before either is queued. CI selects the concise runtime
+the rest of CTest, and retains the repository's policy checks. An advisory `combined` workflow
+(not a required check, never run by the merge queue) also builds and tests your PR merged with up
+to four other open PRs that are ready for review and change the same files or directories
+(`tools/combined_check.py --overlap --max-pairs 4`), so two PRs that pass alone but break together
+are usually found before either is queued; the merge queue still tests the real combination. A new
+push cancels the previous `combined` run, and draft PRs are checked when marked ready. CI selects the concise runtime
 report from changed files, not a manually applied label. Include sources, confirmed behavior,
 unresolved questions, tests, and the clean-room basis in that report.
 
