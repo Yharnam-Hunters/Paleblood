@@ -99,6 +99,14 @@ int rt_executor_finish(rt_executor *executor, char *error, size_t error_size);
 void rt_executor_set_wait_limit(rt_executor *executor, uint64_t nanoseconds);
 /* Forgets the state earlier buffers set, as a GPU fresh from reset has none (tests: independent cases). */
 void rt_executor_reset(rt_executor *executor);
+/* The queue the next calls come from: RT_EXECUTOR_GRAPHICS_QUEUE, or a compute queue's id (1 to
+   RT_EXECUTOR_QUEUES - 1, sceGnmMapComputeQueue's). Each queue keeps its own compute state (the compute
+   shader, its user data, the indirect arguments' base), as each of the console GPU's queues keeps its
+   own registers: a compute queue's buffer dispatches with the shader its queue bound last, whatever
+   another queue bound since. The rest of the state is the graphics queue's. Calls start on the
+   graphics queue. Returns 0, or -1 with the reason (a queue out of range). */
+enum { RT_EXECUTOR_GRAPHICS_QUEUE = 0, RT_EXECUTOR_QUEUES = 65 };
+int rt_executor_select_queue(rt_executor *executor, unsigned queue, char *error, size_t error_size);
 
 /* The pixels of the image standing for the render target at a guest address, width x height
    from its top left, as 8-bit BGRA (the display's frames). Returns 0, or -1 when no draw has used

@@ -59,6 +59,7 @@ engine_fixed_allocator_free_02484de0,edge,,19,19,0,0,1202125b79363097,2026-11-12
 engine_fixed_allocator_initialize_02484b30,edge,,19,19,0,0,55d5c6af7dda9c85,2026-11-12
 engine_fixed_allocator_release_chunks_02484ae0,edge,,10,10,0,0,5dad1163477f190e,2026-11-12
 engine_fixed_allocator_shrink_02484f20,edge,,17,17,0,0,bfe97a652512d54b,2026-11-12
+engine_heap_manager_register_area_0247c000,recorded,,43,43,0,0,139f525843b92c3c,2026-11-13
 engine_initialize_static_wide_string_0217ffb0,recorded,,1,1,0,0,ccdadef0d4bd7152,2026-11-12
 engine_initialize_static_wide_string_0217ffb0,edge,,30,30,0,0,ccdadef0d4bd7152,2026-11-12
 engine_linear_heap_allocate_02485100,edge,,8,8,0,0,b9dafbeebf252424,2026-11-12
@@ -246,6 +247,7 @@ frame_timing_task_013d3520,recorded,,208,208,0,0,c52608f510993456,2026-10-07
 frame_timing_task_013d3520,recorded,uncapped,208,208,0,0,c52608f510993456,2026-10-07
 frame_timing_task_013d3520,edge,,11,11,0,0,c52608f510993456,2026-10-07
 frame_timing_task_013d3520,edge,uncapped,11,11,0,0,c52608f510993456,2026-10-07
+frame_timing_task_clear_items_0143ec40,recorded,,200,200,0,0,2d603cbb0c70b1c4,2026-11-13
 frame_timing_task_dispatch_0138a370,recorded,,51,51,0,0,8882a92dbfe2e577,2026-10-07
 frame_timing_task_dispatch_0138a370,edge,,7,7,0,0,8882a92dbfe2e577,2026-10-07
 frame_timing_task_flush_queue_0143e490,recorded,,200,200,0,0,8882a92dbfe2e577,2026-10-07
@@ -258,6 +260,9 @@ frame_timing_task_run_all_01388c60,recorded,,209,209,0,0,8882a92dbfe2e577,2026-1
 frame_timing_task_run_all_01388c60,edge,,4,4,0,0,8882a92dbfe2e577,2026-10-07
 frame_timing_task_set_frame_value_0143f9f0,recorded,,209,209,0,0,8882a92dbfe2e577,2026-10-07
 frame_timing_task_set_frame_value_0143f9f0,edge,,7,7,0,0,8882a92dbfe2e577,2026-10-07
+frame_timing_task_worker_finish_0143df10,recorded,,84,84,0,0,2d603cbb0c70b1c4,2026-11-13
+frame_timing_task_worker_run_0143deb0,recorded,,58,58,0,0,2d603cbb0c70b1c4,2026-11-13
+frame_timing_task_worker_start_0143de20,recorded,,71,71,0,0,2d603cbb0c70b1c4,2026-11-13
 frame_timing_task_workers_step_014400a0,recorded,,53,53,0,0,8882a92dbfe2e577,2026-10-07
 frame_timing_task_workers_step_014400a0,edge,,1,1,0,0,8882a92dbfe2e577,2026-10-07
 frame_timing_thread_random,edge,,9,9,0,0,1c25b5ded0274744,2026-11-10
@@ -295,6 +300,13 @@ kernel_file_close,edge,,16,16,0,0,c1db581c1d481204,2026-11-03
 kernel_file_open,edge,,42,42,0,0,0cc724e563ffe9e0,2026-11-03
 kernel_file_read_count,edge,,28,28,0,0,a0ca0dd00111123c,2026-11-03
 kernel_file_seek_absolute,edge,,28,28,0,0,3be9b15ca1b66221,2026-11-03
+kernel_light_mutex_construct,recorded,,20,20,0,0,fe13301651d65f97,2026-11-13
+kernel_light_mutex_destruct,recorded,,16,16,0,0,fe13301651d65f97,2026-11-13
+kernel_light_mutex_finalize,recorded,,5,5,0,0,fe13301651d65f97,2026-11-13
+kernel_light_mutex_initialize,recorded,,67,67,0,0,fe13301651d65f97,2026-11-13
+kernel_light_mutex_lock,recorded,,200,200,0,0,fe13301651d65f97,2026-11-13
+kernel_light_mutex_try_lock,recorded,,3,3,0,0,fe13301651d65f97,2026-11-13
+kernel_light_mutex_unlock,recorded,,200,200,0,0,fe13301651d65f97,2026-11-13
 kernel_mutex_create,recorded,,4,4,0,0,d1c4e643de20cba8,2026-11-12
 kernel_mutex_create,edge,,26,26,0,0,d1c4e643de20cba8,2026-11-12
 kernel_mutex_destroy,edge,,17,17,0,0,2916d74498255d53,2026-11-03
@@ -353,6 +365,10 @@ loading_stream_queue_request_02a6cd90,edge,,11,11,0,0,6b65b2b257973490,2026-11-1
 loading_transfer_task_check_close_024ddf20,edge,,32,32,0,0,54d5332b44865286,2026-11-12
 loading_transfer_task_check_read_024dde50,edge,,29,29,0,0,54d5332b44865286,2026-11-12
 loading_transfer_task_initialize_024dd540,edge,,17,17,0,0,54d5332b44865286,2026-11-12
+menu_text_input_close,edge,,18,18,0,0,076e6d850a523d38,2026-11-12
+menu_text_input_destroy,edge,,8,8,0,0,076e6d850a523d38,2026-11-12
+menu_text_input_open,edge,,12,12,0,0,076e6d850a523d38,2026-11-12
+menu_text_input_update,edge,,18,18,0,0,076e6d850a523d38,2026-11-12
 param_apply_char_make_face,edge,,11,11,0,0,2c1320dcc1c0c1ad,2026-11-12
 param_clamp_protector_gen_indexes,edge,,10,10,0,0,81240509ea85581e,2026-11-12
 param_clamp_weapon_gen_indexes,edge,,10,10,0,0,81240509ea85581e,2026-11-12
