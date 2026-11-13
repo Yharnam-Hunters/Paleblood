@@ -15,7 +15,9 @@
 #include "render_fixture.h"
 #include "runtime/tiling.h"
 
+#include <pthread.h>
 #include <stdlib.h>
+#include <time.h>
 
 /* Every pixel of the target holds the triangle's colour. */
 static void check_triangle(rt_executor *x, uint64_t target)
@@ -879,6 +881,47 @@ static void buffers_in_one_submission(rt_executor *x)
     CHECK(rt_executor_submit(x, error, sizeof error) == 0);
     CHECK(rt_executor_wait_ticket(x, second_ticket, error, sizeof error) == 0);
     CHECK(blended_misses(x, at(JOINED), doubled) == 0);
+}
+
+/* A wait on another thread for a ticket still open (as the renderer's completion thread waits for a
+   deferred step's ticket) waits for the batch's handover, then gives the GPU its limit from there: with
+   a 200 ms limit, the batch handed over 600 ms after the wait began is waited for and drawn, not
+   reported as "a batch of 0 draws" the GPU never had. Mutant: the limit counted from the wait. */
+typedef struct {
+    rt_executor *x;
+    uint64_t ticket;
+    int result;
+    char error[300];
+} ticket_wait;
+
+static void *wait_on_other_thread(void *argument)
+{
+    ticket_wait *w = argument;
+    w->result = rt_executor_wait_ticket(w->x, w->ticket, w->error, sizeof w->error);
+    return NULL;
+}
+
+static void wait_before_handover(rt_executor *x)
+{
+    enum { WAIT_BUFFER = 0xc1040000, LATE = 0x2fc0000, LIMIT_NS = 200000000, HANDOVER_LATER_NS = 600000000 };
+    char error[200] = "";
+    rt_render_forget(), rt_executor_reset(x);
+    CHECK(rt_executor_finish(x, error, sizeof error) == 0);
+    const uint32_t size = record_draw(WAIT_BUFFER, at(LATE), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    size_t count = 0;
+    const rt_render_call *calls = rt_render_submitted(WAIT_BUFFER, size, &count);
+    ticket_wait w = {.x = x};
+    CHECK(rt_executor_record_calls(x, calls, count, &w.ticket, error, sizeof error) == 0 && w.ticket);
+    rt_executor_set_wait_limit(x, LIMIT_NS);
+    pthread_t waiter;
+    CHECK(pthread_create(&waiter, NULL, wait_on_other_thread, &w) == 0);
+    nanosleep(&(struct timespec){0, HANDOVER_LATER_NS}, NULL);
+    CHECK(rt_executor_submit(x, error, sizeof error) == 0);
+    pthread_join(waiter, NULL);
+    rt_executor_set_wait_limit(x, 0);
+    if (w.result) fprintf(stderr, "wait before the handover: %s\n", w.error);
+    CHECK(w.result == 0);
+    check_triangle(x, at(LATE));
 }
 
 /* Runs the triangle's state with these registers and a draw of `count` vertices (record_setup's). */
@@ -2827,6 +2870,7 @@ int main(void)
     tessellated_draws(x);
     geometry_shader_draws(x);
     buffers_in_one_submission(x);
+    wait_before_handover(x);
     const uint32_t depth[][2] = {{0xa200, 0x2}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), depth, 1, 0, error, sizeof error) == -1 && strstr(error, "depth or stencil"));
     const uint32_t line_strips[][2] = {{0xc242, 5}};
