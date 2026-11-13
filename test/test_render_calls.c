@@ -253,13 +253,14 @@ static void registers_and_instances(void)
     CHECK(rt_render_record_register(BUFFER, 0x40, 0x2c0c, 1, error, sizeof error) == -1 && strstr(error, "0x2c0c"));
     CHECK(rt_render_record_register(BUFFER, 0x40, 0x9fff, 1, error, sizeof error) == -1);
     CHECK(rt_render_record_register(BUFFER, 0x40, 0xa400, 1, error, sizeof error) == -1);
-    CHECK(rt_render_record_instances(BUFFER, 0x40, 0, error, sizeof error) == -1);
+    CHECK(rt_render_record_instances(BUFFER, 0x40, 0, error, sizeof error) == 0); /* recorded as written; the GPU draws one */
     const rt_render_call *calls = rt_render_submitted(BUFFER, 0x100, &count);
-    CHECK(count == 3);
-    if (count == 3) {
+    CHECK(count == 4);
+    if (count == 4) {
         CHECK(calls[0].kind == RT_CALL_REGISTER && calls[0].u.reg.address == 0xa1e0 && calls[0].u.reg.value == 0x20010001u);
         CHECK(calls[1].kind == RT_CALL_REGISTER && calls[1].u.reg.address == 0xc242 && calls[1].u.reg.value == 4);
         CHECK(calls[2].kind == RT_CALL_INSTANCES && calls[2].u.instances.count == 2);
+        CHECK(calls[3].kind == RT_CALL_INSTANCES && calls[3].u.instances.count == 0);
     }
     rt_render_forget();
 }

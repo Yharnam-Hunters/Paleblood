@@ -131,6 +131,10 @@ reused run ID and case number cannot silently replace an existing recording.
   `rax` remains zero. Stack-argument setup preserves this seed, including when padding an
   odd argument count. Use this only when the original's register contract is established.
 - `buffers`: sandbox memory, laid out in name order; `bytes` is hex, zero-padded to `size`.
+  An optional `origin` (hex) is where a recorded buffer lay in the run. The harness puts the
+  buffer back there when the address is in the runtime's guest mapping window and free, so
+  distances between buffers and addresses the code compares against stay as recorded (a heap
+  block's size is the distance to the next block). Otherwise the buffer goes to the sandbox.
 - `memory`: written before the call, at an image address or at `buf:NAME+off`: `bytes`,
   `pointer` (`NAME[+off]` within a buffer) or `guest` (the host address of a PS4 address, for example a
   game function a fake vtable points at, which the case then stubs).
