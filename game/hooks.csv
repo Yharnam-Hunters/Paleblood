@@ -97,6 +97,7 @@ address,replacement,system,returns
 0x01473fe0,bb_render_set_vgt_primitive_type,render,void
 0x014741b0,bb_render_emit_draw_index_auto,render,void
 0x01474f30,bb_render_set_vertex_reuse,render,void
+0x01474f90,bb_render_set_instance_step_rates,render,void
 0x01475000,bb_render_emit_shader_link_words,render,void
 0x01475210,bb_render_set_db_render_override,render,void
 0x01475370,bb_render_emit_num_instances,render,void
