@@ -2,8 +2,9 @@ name: macos-metal
 
 on:
   push:
-    # main only: a pull request's branch is checked by its pull_request run and the merge queue's
-    # temporary branch by its merge_group run, so a push to either would test the same commit again.
+    # main only: a pull request's branch is checked by its pull_request run. No merge_group run:
+    # this workflow's checks are not required, and merge_group ignores the path filters, so it
+    # would run for every queued pull request.
     branches: [main]
     paths:
       - '.github/workflows/macos-metal.yml'
@@ -20,6 +21,7 @@ on:
       - 'test/test_metal_compute.c'
       - 'test/test_metal_coherence.c'
       - 'test/test_metal_images.c'
+      - 'test/test_metal_blend_banks.c'
       - 'test/metal_image_programs.h'
       - 'test/metal_image_slots.h'
       - 'runtime/include/runtime/tiling.h'
@@ -29,6 +31,7 @@ on:
       - 'runtime/include/runtime/gcn*.h'
       - 'runtime/include/runtime/spirv.h'
       - 'test/test_gcn_spirv.c'
+      - 'test/pixel_constant_wqm_programs.h'
       - 'test/gcn_programs.h'
   pull_request:
     paths:
@@ -46,6 +49,7 @@ on:
       - 'test/test_metal_compute.c'
       - 'test/test_metal_coherence.c'
       - 'test/test_metal_images.c'
+      - 'test/test_metal_blend_banks.c'
       - 'test/metal_image_programs.h'
       - 'test/metal_image_slots.h'
       - 'runtime/include/runtime/tiling.h'
@@ -55,8 +59,8 @@ on:
       - 'runtime/include/runtime/gcn*.h'
       - 'runtime/include/runtime/spirv.h'
       - 'test/test_gcn_spirv.c'
+      - 'test/pixel_constant_wqm_programs.h'
       - 'test/gcn_programs.h'
-  merge_group:
 
 permissions:
   contents: read
@@ -88,7 +92,7 @@ jobs:
           assert {'pbmetal', 'pbboot', 'pbloader', 'bbrt', 'bbgame'} <= names
           PY
       - name: Compile Metal library and owned test executables
-        run: cmake --build build --target pbmetal test_metal_offscreen test_metal_upload test_metal_presentation test_metal_executor test_metal_compute test_metal_coherence test_metal_images --parallel 2
+        run: cmake --build build --target pbmetal test_metal_offscreen test_metal_upload test_metal_presentation test_metal_executor test_metal_compute test_metal_coherence test_metal_images test_metal_blend_banks --parallel 2
       # Hosted compilation does not qualify a real Metal device or GPU execution.
 
   shaders:

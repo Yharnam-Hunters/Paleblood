@@ -61,7 +61,11 @@
    and 32-39 (an even 40-bit address); 0x01475320 (command buffer, count) INDEX_BUFFER_SIZE;
    0x01475270 (command buffer, type) INDEX_TYPE with the type as it is; 0x01474420 (command buffer,
    first, count) DRAW_INDEX_OFFSET_2 with MAX_SIZE = count, INDEX_OFFSET = first, INDEX_COUNT = count and
-   initiator 0, then an event or a NOP.
+   initiator 0, then an event or a NOP. 0x01474360 (command buffer, count, index address) writes
+   DRAW_INDEX_2: the header 0xc0042700 with bit 0 (the predicate) from bit 0 of the command buffer's
+   flags at +0x28, MAX_SIZE = count, INDEX_BASE_LO = the address's low 32 bits with bit 0 cleared,
+   INDEX_BASE_HI = its high 32 bits, INDEX_COUNT = count, DRAW_INITIATOR = 0, then an event or a NOP.
+   YEBIS's indexed draws go through it (its post-processing passes: tone map, glare, depth of field).
    The geometry-shader register writers (from their disassembly): 0x01475a90 (command buffer, item size) writes
    VGT_ESGS_RING_ITEMSIZE (0xa2ab) = the size & 0x7fff; 0x01475af0 (command buffer, a pointer to four 32-bit
    vertex sizes in dwords, one a stream, the most vertices a primitive) writes VGT_GS_VERT_ITEMSIZE to _3
@@ -70,9 +74,17 @@
    and VGT_GSVS_RING_ITEMSIZE (0xa2ac) = (the four sizes' sum) x the most vertices & 0x7fff; 0x014756b0
    (command buffer, mode, cut mode) writes VGT_GS_MODE (0xa290) = the mode with bits 4-5 the cut mode's low two
    bits, and, when the mode is 0, VGT_STRMOUT_CONFIG (0xa2e5) = 0.
+   The viewport scissor setter 0x014766d0 (command buffer, viewport, left, top, right, bottom, and a seventh
+   argument on the stack) writes PA_SC_VPORT_SCISSOR_n_TL (0xa094 + 2 x the viewport) = left & 0x7fff |
+   (top << 16) & 0x7fff0000, with bit 31 (WINDOW_OFFSET_DISABLE) set when the seventh argument is 0, and
+   _BR (the next register) = right & 0x7fff | (bottom << 16) & 0x7fff0000, in one packet (from its
+   disassembly). The deferred lights set each 128x128 screen tile as viewport 0's scissor before a draw.
+   The clip control setter 0x01476b30 (command buffer, value) writes PA_CL_CLIP_CNTL (0xa204) = the value & 0x0f7fe03f
+   in one SET_CONTEXT_REG packet (bbhost's notes name the function and mask, facts only; its disassembly agrees).
    The command buffer starts with its begin and holds its cursor at +0x10 (game/render/command_packets.h). */
 #include "runtime/observe_hooks.h"
 #include "runtime/render_observer.h"
+#include "runtime/render_observer_hooks.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -251,6 +263,18 @@ static void index_type(const uint64_t args[RT_OBSERVED_ARGUMENTS])
     rt_observe_index_type(observed_buffer(args), observed_offset(args), (uint32_t)args[ARGUMENT_INDEX_VALUE]);
 }
 
+enum { COMMAND_BUFFER_FLAGS = 0x28, PREDICATE_FLAG = 1, ARGUMENT_INDEX_ADDRESS = 2 };
+enum { DRAW_INDEX_2_HEADER = 0xc0042700u, INDEX_ADDRESS_BIT_0 = 1, DRAW_INITIATOR_DMA = 0 };
+
+static void draw_index(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    const uint32_t flags = *(const uint32_t *)(uintptr_t)(args[ARGUMENT_COMMAND_BUFFER] + COMMAND_BUFFER_FLAGS);
+    const uint32_t count = (uint32_t)args[ARGUMENT_INDEX_VALUE];
+    const uint64_t address = args[ARGUMENT_INDEX_ADDRESS] & ~(uint64_t)INDEX_ADDRESS_BIT_0; /* INDEX_BASE_LO drops bit 0 */
+    rt_observe_draw_indexed(observed_buffer(args), observed_offset(args), DRAW_INDEX_2_HEADER | (flags & PREDICATE_FLAG), count, address, count,
+                            DRAW_INITIATOR_DMA);
+}
+
 static void draw_index_offset(const uint64_t args[RT_OBSERVED_ARGUMENTS])
 {
     rt_observe_draw_index_offset(observed_buffer(args), observed_offset(args), (uint32_t)args[ARGUMENT_INDEX_VALUE],
@@ -311,6 +335,30 @@ static void gs_mode(const uint64_t args[RT_OBSERVED_ARGUMENTS])
     if (!mode) rt_observe_register(observed_buffer(args), observed_offset(args), VGT_STRMOUT_CONFIG, 0);
 }
 
+enum { PA_SC_VPORT_SCISSOR_0_TL = 0xa094, ARGUMENT_VIEWPORT = 1, ARGUMENT_LEFT = 2, ARGUMENT_TOP = 3, ARGUMENT_RIGHT = 4,
+       ARGUMENT_BOTTOM = 5, STACK_WINDOW_OFFSET = 0, SCISSOR_REGISTERS_A_VIEWPORT = 2, SCISSOR_X_MASK = 0x7fff, SCISSOR_Y_SHIFT = 16 };
+static const uint32_t scissor_y_mask = 0x7fff0000u, window_offset_disable = 1u << 31;
+
+static void viewport_scissor(const uint64_t *frame)
+{
+    const uint32_t left = (uint32_t)frame[ARGUMENT_LEFT], top = (uint32_t)frame[ARGUMENT_TOP];
+    const uint32_t right = (uint32_t)frame[ARGUMENT_RIGHT], bottom = (uint32_t)frame[ARGUMENT_BOTTOM];
+    const uint32_t offset_disable = (uint32_t)rt_observed_stack_argument(frame, STACK_WINDOW_OFFSET) == 0 ? window_offset_disable : 0;
+    const uint32_t top_left = (left & SCISSOR_X_MASK) | (top << SCISSOR_Y_SHIFT & scissor_y_mask) | offset_disable;
+    const uint32_t bottom_right = (right & SCISSOR_X_MASK) | (bottom << SCISSOR_Y_SHIFT & scissor_y_mask);
+    const uint32_t first = PA_SC_VPORT_SCISSOR_0_TL + SCISSOR_REGISTERS_A_VIEWPORT * (uint32_t)frame[ARGUMENT_VIEWPORT];
+    rt_observe_register(observed_buffer(frame), observed_offset(frame), first, top_left);
+    rt_observe_register(observed_buffer(frame), observed_offset(frame), first + 1, bottom_right);
+}
+
+enum { PA_CL_CLIP_CNTL = 0xa204, ARGUMENT_CLIP_CONTROL = 1 };
+static const uint32_t clip_control_mask = 0x0f7fe03f; /* the bits the setter keeps */
+
+static void clip_control(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    rt_observe_register(observed_buffer(args), observed_offset(args), PA_CL_CLIP_CNTL, (uint32_t)args[ARGUMENT_CLIP_CONTROL] & clip_control_mask);
+}
+
 const rt_observe_hook game_observe_hooks[] = {
     {0x01473190, 87, "render_set_stencil_reference", stencil_reference_both},
     {0x014731f0, 99, "render_set_stencil_reference_separate", stencil_reference_each},
@@ -318,6 +366,7 @@ const rt_observe_hook game_observe_hooks[] = {
     {0x014738b0, 246, "render_set_render_target", render_target},
     {0x014739b0, 344, "render_set_depth_render_target", depth_target},
     {0x014742f0, 107, "render_set_indirect_base", indirect_base},
+    {0x01474360, 189, "render_draw_index", draw_index},
     {0x01474420, 176, "render_draw_index_offset", draw_index_offset},
     {0x014744d0, 246, "render_draw_indirect", draw_indirect},
     {0x01474c50, 177, "render_dispatch", dispatch},
@@ -334,7 +383,9 @@ const rt_observe_hook game_observe_hooks[] = {
     {0x014762f0, 156, "render_set_user_data_4_words_marker_6", four_words},
     {0x01476390, 133, "render_set_user_data_2_words", two_words},
     {0x01476420, 126, "render_set_user_data_1_word", one_word},
+    {0x01476b30, 93, "render_set_clip_control", clip_control},
     {0x014764a0, 184, "render_set_user_data_words", counted_words},
+    {0x014766d0, 179, "render_set_viewport_scissor", viewport_scissor},
     {0x0148a350, 177, "render_dispatch_compute_buffer", dispatch},
     {0x0148aad0, 132, "render_compute_user_data_4_words_marker_4", compute_four_words},
     {0x0148ab60, 148, "render_compute_user_data_8_words", compute_eight_words},

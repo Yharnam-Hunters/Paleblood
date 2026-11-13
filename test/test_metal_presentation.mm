@@ -4,10 +4,12 @@
 #import <AppKit/AppKit.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <QuartzCore/CATransaction.h>
+#import <CoreGraphics/CoreGraphics.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -163,6 +165,9 @@ static PresentationTask run_tests()
         NSMutableArray<NSDictionary *> *frame_records = [NSMutableArray array];
         NSMutableArray<NSDictionary *> *pixel_records = [NSMutableArray array];
         NSMutableArray<NSDictionary *> *rejections = [NSMutableArray array];
+        NSMutableArray<NSDictionary *> *display_samples = [NSMutableArray array];
+        constexpr const char *positive_anchor_id = "present/normal-sized-positive-anchor";
+        bool positive_anchor_observed = false;
         NSString *case_id = @"presentation/lifecycle";
         NSString *last_presentation_id = @"none";
         unsigned checks = 0, completed = 0, pixels_checked = 0, startup_frames = 0, verified_presentations = 0;
@@ -219,7 +224,7 @@ static PresentationTask run_tests()
             check(rt_metal_offscreen_upload(context, source.data(), row, source.size(), error, sizeof error) == RT_METAL_OK,
                   "patterned source uploaded");
             auto previous_submission = std::chrono::steady_clock::now() - std::chrono::milliseconds(100);
-            const auto present = [&](const char *name, const rt_metal_bgra_readback *destination, bool startup = false) -> PresentationTask {
+            const auto present = [&](const char *name, const rt_metal_bgra_readback *destination, bool startup = false, bool require_positive = false) -> PresentationTask {
                 case_id = [NSString stringWithUTF8String:name];
                 last_presentation_id = case_id;
                 // This fixture owns its display cadence. Service AppKit at a fixed 10Hz rate,
@@ -235,16 +240,24 @@ static PresentationTask run_tests()
                 const unsigned acquisition = layer->acquisitions;
                 const bool callback = co_await wait_for_presentations(signal, completed);
                 check(callback, "actual drawable reports completion of its presentation scheduling");
+                const double time = signal->last_time.load();
+                const bool own_callback = callback && signal->last_acquisition.load() == acquisition;
+                const bool finite_time = std::isfinite(time) && time >= 0;
+                check(status == RT_METAL_OK && own_callback && finite_time,
+                      "own drawable callback has a finite nonnegative presentation observation");
+                const bool displayed = status == RT_METAL_OK && own_callback && finite_time && time > 0 &&
+                    signal->positive_times.load() == positive_before + 1;
+                NSString *observation = own_callback && finite_time
+                    ? (time > 0 ? @"DISPLAY_OBSERVED" : @"DROP_OR_UNCONFIRMED") : @"INVALID_OR_MISSING";
                 [frame_records addObject:@{@"id":case_id, @"status":@(status), @"acquisition":@(acquisition), @"callback_acquisition":@(signal->last_acquisition.load()),
-                    @"submission":@(completed), @"startup":@(startup),
+                    @"submission":@(completed), @"startup":@(startup), @"required_positive_anchor":@(require_positive),
                     @"GPU_completed":@(status == RT_METAL_OK), @"callback":@(callback),
-                    @"presented_time":@(signal->last_time.load())}];
-                if (startup) {
-                    startup_frames++;
-                } else {
-                    const bool displayed = status == RT_METAL_OK && callback && signal->positive_times.load() == positive_before + 1 && signal->last_time.load() > 0 && signal->last_acquisition.load() == acquisition;
-                    check(displayed, "verified frame has its own positive real drawable presentation timestamp");
-                    if (displayed) verified_presentations++;
+                    @"presented_time":@(time), @"presentation_observation":observation}];
+                if (startup) startup_frames++;
+                else if (displayed) verified_presentations++;
+                if (require_positive) {
+                    positive_anchor_observed = displayed;
+                    check(displayed, "predeclared normal-sized anchor has its own positive presentation timestamp");
                 }
                 co_return 0;
             };
@@ -402,14 +415,81 @@ static PresentationTask run_tests()
                 check(!context && layer.superlayer == view.layer, "thin context destruction preserves caller layer attachment");
             }
 
+            // One fixed normal-sized display anchor; tiny frames retain byte/callback coverage.
+            // A zero timestamp is a documented drop or unconfirmed display, not an API failure.
+            constexpr size_t anchor_width = 320, anchor_height = 180, anchor_row = anchor_width * 4;
+            constexpr size_t anchor_stride = anchor_row + 9, anchor_guard = 11;
+            constexpr size_t anchor_pattern_height = frame_pixels_rgba.size() / frame_pattern_width;
+            case_id = [NSString stringWithUTF8String:positive_anchor_id];
+            check(rt_metal_offscreen_create(anchor_width,anchor_height,&context,error,sizeof error) == RT_METAL_OK && context,
+                  "normal-sized anchor gets an independent context");
+            if (context) {
+                std::vector<uint8_t> anchor_source(anchor_row * anchor_height);
+                for (size_t y = 0; y < anchor_height; ++y) for (size_t x = 0; x < anchor_width; ++x) {
+                    const auto value = frame_pixels_rgba[(y % anchor_pattern_height) * frame_pattern_width + x % frame_pattern_width];
+                    std::memcpy(anchor_source.data() + y * anchor_row + x * 4,value.data(),4);
+                }
+                check(rt_metal_offscreen_upload(context,anchor_source.data(),anchor_row,anchor_source.size(),error,sizeof error) == RT_METAL_OK,
+                      "normal-sized literal frame uploads before layer configuration");
+                std::fill(anchor_source.begin(),anchor_source.end(),0xcc);
+                check(rt_metal_offscreen_configure_layer(context,(__bridge void *)layer,error,sizeof error) == RT_METAL_OK,
+                      "normal-sized layer uses its exact source extent");
+                co_await NextMainLoopTurn{};
+                co_await present("present/startup-normal-sized",nullptr,true);
+                const auto sample_display = [&](const char *phase) {
+                    NSNumber *number = window.screen.deviceDescription[@"NSScreenNumber"];
+                    const CGDirectDisplayID display = number ? number.unsignedIntValue : kCGNullDirectDisplay;
+                    id active = NSNull.null, online = NSNull.null, asleep = NSNull.null;
+                    if (number) {
+                        active = @(CGDisplayIsActive(display)); online = @(CGDisplayIsOnline(display)); asleep = @(CGDisplayIsAsleep(display));
+                    }
+                    [display_samples addObject:@{@"phase":[NSString stringWithUTF8String:phase],
+                        @"host_time":@(CACurrentMediaTime()), @"main_thread":@(NSThread.isMainThread),
+                        @"display_id":@(display), @"display_active":active,
+                        @"display_online":online,
+                        @"display_asleep":asleep,
+                        @"window_visible":@(window.isVisible), @"window_occlusion_state":@(window.occlusionState),
+                        @"window_occlusion_visible":@((window.occlusionState & NSWindowOcclusionStateVisible) != 0),
+                        @"layer_attached":@(layer.superlayer == view.layer),
+                        @"layer_width":@(layer.bounds.size.width), @"layer_height":@(layer.bounds.size.height),
+                        @"drawable_width":@(layer.drawableSize.width), @"drawable_height":@(layer.drawableSize.height),
+                        @"backing_scale":@(window.backingScaleFactor)}];
+                };
+                std::vector<uint8_t> anchor_output(anchor_guard + anchor_stride * anchor_height + anchor_guard,0xa5);
+                const rt_metal_bgra_readback anchor_capture{anchor_output.data() + anchor_guard,anchor_stride,
+                    (anchor_height - 1) * anchor_stride + anchor_row};
+                sample_display("anchor/before");
+                co_await present(positive_anchor_id,&anchor_capture,false,true);
+                sample_display("anchor/after");
+                bool pixels = true, padding = true;
+                for (size_t y = 0; y < anchor_height; ++y) {
+                    for (size_t x = 0; x < anchor_width; ++x) {
+                        const auto expected = frame_pixels_bgra[(y % anchor_pattern_height) * frame_pattern_width + x % frame_pattern_width];
+                        pixels &= std::memcmp(anchor_output.data() + anchor_guard + y * anchor_stride + x * 4,expected.data(),4) == 0;
+                        pixels_checked++;
+                    }
+                    for (size_t x = anchor_row; x < anchor_stride; ++x)
+                        padding &= anchor_output[anchor_guard + y * anchor_stride + x] == 0xa5;
+                }
+                for (size_t x = 0; x < anchor_guard; ++x)
+                    padding &= anchor_output[x] == 0xa5 && anchor_output[anchor_output.size() - 1 - x] == 0xa5;
+                check(pixels, "normal-sized drawable matches literal BGRA channels and rows");
+                check(padding, "normal-sized capture preserves exact capacity, padding and guards");
+                [pixel_records addObject:@{@"id":last_presentation_id, @"pixels_match":@(pixels), @"padding_match":@(padding)}];
+                rt_metal_offscreen_destroy(&context);
+                check(!context && layer.superlayer == view.layer, "normal-sized context destruction preserves caller layer attachment");
+            }
+
         }
         case_id = @"window/close";
         [window orderOut:nil];
         [window close];
         check(!window.isVisible, "caller closes its owned window after releasing all source contexts");
-        NSDictionary *record = @{@"schema":@1, @"status":failures.count ? @"failed" : @"pass", @"architecture":compiled_architecture,
+        NSDictionary *record = @{@"schema":@2, @"status":failures.count ? @"failed" : @"pass", @"architecture":compiled_architecture,
             @"device":device ?: @"unavailable", @"window_visible_before_first_drawable":@(window_visible_before_drawable), @"checks":@(checks), @"GPU_completed_presentation_submissions":@(completed), @"startup_submissions":@(startup_frames), @"fixture_submission_rate_hz":@10,
-            @"verified_positive_presentations":@(verified_presentations), @"frames":frame_records,
+            @"observed_named_positive_presentations":@(verified_presentations), @"frames":frame_records,
+            @"required_positive_frame_id":[NSString stringWithUTF8String:positive_anchor_id], @"positive_anchor_observed":@(positive_anchor_observed),
+            @"display_samples":display_samples, @"display_samples_establish_continuous_visibility":@NO,
             @"pixel_records":pixel_records, @"rejections":rejections,
             @"window_resize_geometry_checked":@(window_resize_geometry_checked), @"no_drawable_timeout_device_loss_OOM_forced":@NO,
             @"drawable_acquisitions":@(layer->acquisitions), @"presented_callbacks":@(signal->callbacks.load()),

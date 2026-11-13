@@ -92,7 +92,9 @@ leaves capture bytes untouched. Apple documents why drawable data must be captur
 
 `RT_METAL_OK` proves command completion and presentation scheduling. A caller can separately
 observe the drawable’s [presented handler](https://developer.apple.com/documentation/metal/mtldrawable/addpresentedhandler(_:))
-and positive [presented time](https://developer.apple.com/documentation/metal/mtldrawable/presentedtime).
+and [presented time](https://developer.apple.com/documentation/metal/mtldrawable/presentedtime).
+A zero time means that the drawable was not presented or its frame was dropped; scheduling
+and completed pre-present pixels do not guarantee that each frame is displayed.
 The 1..30000 ms timeout bounds the GPU wait after commit. Pipeline compilation and
 [`nextDrawable` acquisition](https://developer.apple.com/documentation/quartzcore/cametallayer/nextdrawable())
 are outside that wait; acquisition has its own system timeout. `RT_METAL_NO_DRAWABLE` leaves
@@ -114,10 +116,16 @@ The fixture owns its AppKit application/window and observes genuine drawables. N
 separate actual API status, GPU completion, acquisition identity, callbacks/timestamps and
 literal pre-present BGRA pixel/padding checks. It checks profile/size/format/thread/state
 refusals before acquisition, framebuffer-only presentation, window-bound resize with a fixed
-source extent, and 1x1, 7x1 and 1x5 drawable captures. A single fixed startup submission follows
-each newly configured source or restored profile; startup observations do not satisfy the
-separate positive-timestamp checks. Submissions use a fixed 10 Hz fixture cadence while
-servicing events, without retrying until a frame displays. Its CTest limit is 30 seconds.
+source extent, and 1x1, 7x1 and 1x5 drawable captures. Every valid case requires its own
+callback and a finite nonnegative time; zero is reported as `DROP_OR_UNCONFIRMED`, while a
+positive time is `DISPLAY_OBSERVED`. The predeclared `present/normal-sized-positive-anchor`
+is a separate 320x180 literal capture and must have its own positive time. No other frame
+can satisfy that requirement. A single fixed startup submission follows each newly
+configured source or restored profile, including the normal-sized anchor; startup times
+never satisfy the anchor. Main-thread display and window-occlusion samples immediately
+before and after the anchor describe only those instants, not continuous visibility or the
+cause of a dropped frame. Submissions use a fixed 10 Hz cadence while servicing events,
+without retries until a frame displays. The CTest limit remains 30 seconds.
 
 These tests do not capture the user’s screen, verify physical scanout, force `NO_DRAWABLE`,
 device loss, allocation exhaustion or hardware timeout, or exercise guest execution. The
