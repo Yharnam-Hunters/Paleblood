@@ -577,6 +577,8 @@ render_reset_present_context_state_b528,recorded,,105,105,0,0,ea97afad90ad1322,2
 render_reset_present_context_state_b528,edge,,3,3,0,0,ea97afad90ad1322,2026-11-12
 render_reset_present_preparation_dirty,recorded,,63,63,0,0,dba56abb0d96bbb8,2026-11-12
 render_reset_present_preparation_dirty,edge,,16,16,0,0,dba56abb0d96bbb8,2026-11-12
+render_resource_info_submit_pending_commands_02ab18c0,recorded,,50,50,0,0,7754b8be10e85a63,2026-11-13
+render_resource_info_write_completion_label_02ab1930,recorded,,50,50,0,0,7754b8be10e85a63,2026-11-13
 render_restore_color_target_from_bank,recorded,,104,104,0,0,649b23425dd0ccb1,2026-11-12
 render_restore_color_target_from_bank,edge,,12,12,0,0,649b23425dd0ccb1,2026-11-12
 render_restore_depth_target_from_bank,recorded,,56,56,0,0,8668e2d117190cf8,2026-11-12
