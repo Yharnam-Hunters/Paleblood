@@ -58,6 +58,7 @@ p.note, figcaption, footer { color: #59636e; font-size: 0.9em; }
 table { border-collapse: collapse; width: 100%; }
 th, td { border: 1px solid #d0d7de; padding: 2px 6px; vertical-align: middle; font-size: 14px; }
 td:first-child { overflow-wrap: break-word; }
+table.paths td:first-child { overflow-wrap: anywhere; }  /* long source paths wrap, not widen the table */
 th { background: #f6f8fa; text-align: left; font-weight: 600; }
 td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 td.bar { width: 24%; min-width: 60px; }
@@ -69,9 +70,25 @@ i.v { background: #2da44e; } i.r { background: #d4a72c; } i.p { background: #a5d
 .key i.o { background: #8c959f; }
 .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; }
 .grid > div { min-width: 0; overflow-x: auto; }
+.tw { overflow-x: auto; }
+.mbar { display: none; }
 details { margin-top: 8px; } summary { cursor: pointer; color: #0969da; }
 footer { margin-top: 36px; border-top: 1px solid #d0d7de; padding-top: 8px; }
-@media (max-width: 760px) { .grid { grid-template-columns: 1fr; } td.bar { min-width: 50px; } }
+/* Below the page's full width the paired tables stack. */
+@media (max-width: 999px) { .grid { grid-template-columns: 1fr; gap: 0; } }
+/* Phones and narrow tablets: the bar moves under the row's name, low-value columns go. */
+@media (max-width: 760px) {
+  h1 { font-size: 1.6em; } h2 { font-size: 1.25em; }
+  th, td { padding: 4px 6px; }
+  th.n { white-space: normal; }
+  td, td:first-child, code { overflow-wrap: anywhere; }
+  td.bar, th.bar { display: none; }
+  .mbar { display: flex; margin-top: 3px; height: 8px; background: #8c959f; }
+  table.h2 tr > :nth-child(2), table.h3 tr > :nth-child(3), table.h4 tr > :nth-child(4),
+  table.h5 tr > :nth-child(5), table.h6 tr > :nth-child(6) { display: none; }
+  summary { padding: 8px 0; }
+  .key i { margin-left: 6px; }
+}
 """.strip()
 
 
@@ -256,21 +273,52 @@ def pct_cell(part: int, whole: int) -> str:
     return f'<td class="n">{pm.pct_text(part, whole)}</td>'
 
 
-def bar(whole: int, *segments: tuple[int, str]) -> str:
-    """A bar cell: segments of (value, class) laid left to right over a grey track; any non-zero
+def bar_track(whole: int, *segments: tuple[int, str]) -> str:
+    """The bar itself: segments of (value, class) laid left to right over a grey track; any non-zero
     segment stays visible."""
     parts = []
     for value, cls in segments:
         if value and whole:
             parts.append(f'<i class="{cls}" style="width:{max(0.4, 100 * value / whole):.2f}%"></i>')
-    title = ', '.join(f'{v:,}' for v, _ in segments) + f' of {whole:,}'
-    return f'<td class="bar" title="{esc(title)}"><span>{"".join(parts)}</span></td>'
+    return ''.join(parts)
 
 
-def table(head: list[str], body: list[str], numeric_from: int = 1) -> str:
-    cells = ''.join(f'<th class="n">{esc(h)}</th>' if i >= numeric_from and h else f'<th>{esc(h)}</th>'
-                    for i, h in enumerate(head))
-    return '<table>\n<tr>' + cells + '</tr>\n' + '\n'.join(body) + '\n</table>'
+def bar_title(whole: int, segments: tuple[tuple[int, str], ...]) -> str:
+    return esc(', '.join(f'{v:,}' for v, _ in segments) + f' of {whole:,}')
+
+
+def bar(whole: int, *segments: tuple[int, str]) -> str:
+    """A bar cell (the last column on wide screens)."""
+    return f'<td class="bar" title="{bar_title(whole, segments)}"><span>{bar_track(whole, *segments)}</span></td>'
+
+
+def name_cell(label: str, whole: int, *segments: tuple[int, str], title: str = '') -> str:
+    """A row's first cell: its label (markup) and the same bar as the row's bar cell, which narrow
+    screens show under the label instead of in a column of its own."""
+    attr = f' title="{esc(title)}"' if title else ''
+    return (f'<td{attr}>{label}<span class="bar mbar" title="{bar_title(whole, segments)}">'
+            f'{bar_track(whole, *segments)}</span></td>')
+
+
+def bar_row(label: str, numbers: str, whole: int, *segments: tuple[int, str], title: str = '',
+            cls: str = '') -> str:
+    """A table row: label with its narrow-screen bar, the number cells, then the bar cell."""
+    tr = f'<tr class="{cls}">' if cls else '<tr>'
+    return f'{tr}{name_cell(label, whole, *segments, title=title)}{numbers}{bar(whole, *segments)}</tr>'
+
+
+def table(head: list[str], body: list[str], numeric_from: int = 1, narrow_hide: tuple[int, ...] = (),
+          paths: bool = False) -> str:
+    """A table; an empty last heading is the bar column. narrow_hide lists the 1-based columns that
+    narrow screens leave out (2 to 6, see CSS); paths lets the first column wrap anywhere."""
+    def th(i: int, h: str) -> str:
+        if not h:
+            return '<th class="bar"></th>'
+        return f'<th class="n">{esc(h)}</th>' if i >= numeric_from else f'<th>{esc(h)}</th>'
+    cls = ' '.join([f'h{c}' for c in narrow_hide] + (['paths'] if paths else []))
+    attr = f' class="{cls}"' if cls else ''
+    return (f'<div class="tw"><table{attr}>\n<tr>'
+            + ''.join(th(i, h) for i, h in enumerate(head)) + '</tr>\n' + '\n'.join(body) + '\n</table></div>')
 
 
 def key(*items: tuple[str, str]) -> str:
@@ -285,21 +333,22 @@ def library_tables(d: dict) -> str:
         suffix = '' if unit == 'functions' else '_bytes'
         whole = 'functions' if unit == 'functions' else 'bytes'
         fmt = (lambda n: num(n)) if unit == 'functions' else (lambda n: f'<td class="n">{pm.mb(n)}</td>')
-        out = [f'<tr><td title="{esc(e["name"])}">{esc(e["short"])}</td>{fmt(e[whole])}{fmt(e["replaced" + suffix])}{fmt(e["verified" + suffix])}'
-               f'{pct_cell(e["verified" + suffix], e[whole])}'
-               f'{bar(e[whole], (e["verified" + suffix], "v"), (e["replaced" + suffix] - e["verified" + suffix], "r"))}</tr>'
+        out = [bar_row(esc(e['short']), fmt(e[whole]) + fmt(e['replaced' + suffix]) + fmt(e['verified' + suffix])
+                       + pct_cell(e['verified' + suffix], e[whole]),
+                       e[whole], (e['verified' + suffix], 'v'), (e['replaced' + suffix] - e['verified' + suffix], 'r'),
+                       title=e['name'])
                for e in libs]
         tw, tr, tv = (t['functions'], r['functions'], v['functions']) if unit == 'functions' else \
             (t['bytes'], r['bytes'], v['bytes'])
-        out.append(f'<tr class="total"><td>All</td>{fmt(tw)}{fmt(tr)}{fmt(tv)}{pct_cell(tv, tw)}'
-                   f'{bar(tw, (tv, "v"), (tr - tv, "r"))}</tr>')
+        out.append(bar_row('All', fmt(tw) + fmt(tr) + fmt(tv) + pct_cell(tv, tw), tw, (tv, 'v'), (tr - tv, 'r'),
+                           cls='total'))
         return out
     return ('<h2 id="libraries">Decompilation by library</h2>\n'
             + key(('v', 'verified'), ('r', 'replaced, not yet verified'), ('o', 'not replaced yet'))
             + '<div class="grid">\n<div><h3>Functions</h3>\n'
-            + table(['Library', 'Functions', 'Replaced', 'Verified', '% verified', ''], rows('functions'))
+            + table(['Library', 'Functions', 'Replaced', 'Verified', '% verified', ''], rows('functions'), narrow_hide=(2,))
             + '</div>\n<div><h3>Bytes of code</h3>\n'
-            + table(['Library', 'Bytes', 'Replaced', 'Verified', '% verified', ''], rows('bytes'))
+            + table(['Library', 'Bytes', 'Replaced', 'Verified', '% verified', ''], rows('bytes'), narrow_hide=(2,))
             + '</div>\n</div>\n'
             + '<p class="note">The library of each function comes from the source files it was compiled from '
               '(symbols/source_files.csv); code no library claims yet is counted on its own row.</p>')
@@ -307,23 +356,23 @@ def library_tables(d: dict) -> str:
 
 def source_tables(d: dict) -> str:
     systems = sorted(d['systems'].items(), key=lambda kv: (-kv[1]['replaced'], kv[0]))
-    sys_rows = [f'<tr><td>{esc(k)}</td>{num(s["replaced"])}{num(s["edge_verified"])}{num(s["verified"])}'
-                f'{bar(s["replaced"], (s["verified"], "v"), (s["edge_verified"] - s["verified"], "p"))}</tr>'
+    sys_rows = [bar_row(esc(k), num(s['replaced']) + num(s['edge_verified']) + num(s['verified']),
+                        s['replaced'], (s['verified'], 'v'), (s['edge_verified'] - s['verified'], 'p'))
                 for k, s in systems]
 
     def file_row(e: dict) -> str:
-        return (f'<tr><td>{esc(e["file"])}</td>{num(e["functions"])}{num(e["replaced"])}{num(e["verified"])}'
-                f'{bar(e["functions"], (e["verified"], "v"), (e["replaced"] - e["verified"], "r"))}</tr>')
+        return bar_row(esc(e['file']), num(e['functions']) + num(e['replaced']) + num(e['verified']),
+                       e['functions'], (e['verified'], 'v'), (e['replaced'] - e['verified'], 'r'))
     files = d['source_files']
     head = ['Source file', 'Functions', 'Replaced', 'Verified', '']
-    top = table(head, [file_row(e) for e in files[:TOP_FILES]])
+    top = table(head, [file_row(e) for e in files[:TOP_FILES]], narrow_hide=(2,), paths=True)
     rest = ''
     if len(files) > TOP_FILES:
         rest = (f'<details><summary>The other {len(files) - TOP_FILES:,} source files</summary>\n'
-                + table(head, [file_row(e) for e in files[TOP_FILES:]]) + '\n</details>\n')
+                + table(head, [file_row(e) for e in files[TOP_FILES:]], narrow_hide=(2,), paths=True) + '\n</details>\n')
     fams = d['families']['families']
-    fam_rows = [f'<tr><td title="{esc(f["shape"])}">{esc(k)}</td>{num(f["members"])}'
-                f'{num(f["verified"])}{bar(f["members"], (f["verified"], "v"), (f["edge_verified"] - f["verified"], "p"))}</tr>'
+    fam_rows = [bar_row(esc(k), num(f['members']) + num(f['verified']),
+                        f['members'], (f['verified'], 'v'), (f['edge_verified'] - f['verified'], 'p'), title=f['shape'])
                 for k, f in sorted(fams.items(), key=lambda kv: (-kv[1]['members'], kv[0]))]
     return ('<h2 id="systems">By game system and source file</h2>\n'
             + key(('v', 'verified'), ('p', 'edge-verified only'), ('o', 'replaced only'))
@@ -345,20 +394,20 @@ def source_tables(d: dict) -> str:
 
 def verification_tables(d: dict) -> str:
     v = d['verified']['functions']
-    ev = [f'<tr><td>{esc(k[:1].upper() + k[1:])}</td>{num(n)}{num(v)}{bar(v, (n, "v"))}</tr>'
+    ev = [bar_row(esc(k[:1].upper() + k[1:]), num(n) + num(v), v, (n, 'v'))
           for k, n in d['evidence'].items()]
     summary = []
     t = d['total']
     for label, k in (('Replaced (builds and runs in place of the original)', 'replaced'),
                      ('Edge-verified (passes generated edge cases)', 'edge_verified'),
                      ('Verified', 'verified')):
-        summary.append(f'<tr><td>{esc(label)}</td>{num(d[k]["functions"])}{num(t["functions"])}'
-                       f'{bar(t["functions"], (d[k]["functions"], "v"))}</tr>')
+        summary.append(bar_row(esc(label), num(d[k]['functions']) + num(t['functions']),
+                               t['functions'], (d[k]['functions'], 'v')))
     return ('<h2 id="evidence">Verification</h2>\n<div class="grid">\n<div><h3>Functions by level</h3>\n'
-            + table(['Measure', 'Count', 'Of', ''], summary)
+            + table(['Measure', 'Count', 'Of', ''], summary, narrow_hide=(3,))
             + '<p class="note">Each level includes the next: replaced, then edge-verified, then verified.</p>\n'
               '</div>\n<div><h3>Verified functions by evidence</h3>\n'
-            + table(['Measure', 'Count', 'Of', ''], ev)
+            + table(['Measure', 'Count', 'Of', ''], ev, narrow_hide=(3,))
             + '<p class="note">A function counts as verified when it passes on its edge cases and on inputs '
               'recorded in the game, or matches the original bytes exactly, and an independent review has '
               'approved it. A function can carry several kinds of evidence.</p>\n</div>\n</div>')
@@ -368,13 +417,13 @@ def runtime_tables(d: dict) -> str:
     rt = d['runtime']
 
     def rows(entries: list[dict]) -> list[str]:
-        out = [f'<tr><td>{esc(e["name"] or "(unnamed)")}</td>{num(e["imports"])}{num(e["runtime"])}{num(e["module"])}'
-               f'{pct_cell(e["runtime"] + e["module"], e["imports"])}'
-               f'{bar(e["imports"], (e["runtime"], "v"), (e["module"], "p"))}</tr>' for e in entries]
+        out = [bar_row(esc(e['name'] or '(unnamed)'), num(e['imports']) + num(e['runtime']) + num(e['module'])
+                       + pct_cell(e['runtime'] + e['module'], e['imports']),
+                       e['imports'], (e['runtime'], 'v'), (e['module'], 'p')) for e in entries]
         tot = {k: sum(e[k] for e in entries) for k in ('imports', 'runtime', 'module')}
-        out.append(f'<tr class="total"><td>All</td>{num(tot["imports"])}{num(tot["runtime"])}{num(tot["module"])}'
-                   f'{pct_cell(tot["runtime"] + tot["module"], tot["imports"])}'
-                   f'{bar(tot["imports"], (tot["runtime"], "v"), (tot["module"], "p"))}</tr>')
+        out.append(bar_row('All', num(tot['imports']) + num(tot['runtime']) + num(tot['module'])
+                           + pct_cell(tot['runtime'] + tot['module'], tot['imports']),
+                           tot['imports'], (tot['runtime'], 'v'), (tot['module'], 'p'), cls='total'))
         return out
     imp = d['imports']
     if not imp['executable']:
@@ -390,9 +439,9 @@ def runtime_tables(d: dict) -> str:
     return ('<h2 id="runtime">Runtime: system imports by library</h2>\n' + status
             + key(('v', 'implemented by the runtime'), ('p', 'provided by a bundled module'), ('o', 'not provided'))
             + '<h3>The executable\'s imports</h3>\n'
-            + table(head, rows(imp['executable']))
+            + table(head, rows(imp['executable']), narrow_hide=(4,))
             + '\n<h3>By importer (the executable and its bundled modules)</h3>\n'
-            + table(['Importer', 'Imports', 'Runtime', 'Module', '% provided', ''], rows(imp['importers']))
+            + table(['Importer', 'Imports', 'Runtime', 'Module', '% provided', ''], rows(imp['importers']), narrow_hide=(4,))
             + '<p class="note">From symbols/imports.csv and symbols/boot.json, written by tools/boot.py from a run '
               'of the boot harness. An import counts as implemented when the runtime binds it; how complete '
               'each implementation is shows in the boot milestones, not here.</p>')
@@ -408,9 +457,9 @@ def open_pr_section(d: dict, repo_url: str) -> str:
         g = op['libraries'].get(e['library'], {'replaced': 0, 'verified': 0})
         if not g['replaced'] and not g['verified']:
             continue
-        lib_rows.append(f'<tr><td>{esc(e["name"])}</td>{num(e["replaced"])}{num(e["replaced"] + g["replaced"])}'
-                        f'{num(e["verified"])}{num(e["verified"] + g["verified"])}{num(e["functions"])}'
-                        f'{bar(e["functions"], (e["replaced"], "v"), (g["replaced"], "p"))}</tr>')
+        lib_rows.append(bar_row(esc(e['name']), num(e['replaced']) + num(e['replaced'] + g['replaced'])
+                                + num(e['verified']) + num(e['verified'] + g['verified']) + num(e['functions']),
+                                e['functions'], (e['replaced'], 'v'), (g['replaced'], 'p')))
 
     def pr_link(n: int) -> str:
         return f'<a href="{esc(repo_url)}/pull/{n}">#{n}</a>' if repo_url else f'#{n}'
@@ -424,10 +473,11 @@ def open_pr_section(d: dict, repo_url: str) -> str:
             'review can still change or reject them.</p>\n')
     if lib_rows:
         body += (key(('v', 'replaced on main'), ('p', 'added by open pull requests'), ('o', 'not replaced'))
-                 + table(['Library', 'Replaced', 'With open PRs', 'Verified', 'With open PRs', 'Functions', ''], lib_rows))
+                 + table(['Library', 'Replaced', 'With open PRs', 'Verified', 'With open PRs', 'Functions', ''], lib_rows,
+                       narrow_hide=(4, 5, 6)))
     if pr_rows:
         body += (f'\n<details><summary>{len(pr_rows)} pull requests that change the function tables</summary>\n'
-                 + table(['Pull request', 'Title', 'Author', 'Replaced', 'Verified'], pr_rows, numeric_from=3)
+                 + table(['Pull request', 'Title', 'Author', 'Replaced', 'Verified'], pr_rows, numeric_from=3, narrow_hide=(3,))
                  + '\n</details>')
     return body
 
