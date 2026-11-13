@@ -876,7 +876,11 @@ Instead:
         executor draws rect lists. **Observe hooks** (`runtime/observe_hooks.h`) report what has no replacement yet:
         the hook calls an observer with the call's arguments, then the original runs from its
         first instructions relocated next to the image, so every packet is still the original's.
-        A replacement, when one lands, takes the address and its observe hook is dropped. They
+        A replacement, when one lands, takes the address and its observe hook is dropped. An
+        observer reports a packet where it lands: when the writer's words do not fit before the
+        command buffer's limit, the observer asks the space callback for them first (the writer
+        then finds the room), so a packet that opens a new chunk is filed at that chunk's start,
+        not past the old chunk's end where no submission takes it. They
         cover `setRenderTarget` (`0x014738b0`) and the five user-data writers (`0x01476420`
         one word, `0x01476390` two, `0x014761a0` and `0x014762f0` four, `0x01476240` eight),
         whose arguments come from their disassembly (`game/render/observe_gpu_library.c`). With
