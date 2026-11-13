@@ -14,6 +14,7 @@ One page per game system: summary, key functions, structs and globals, patch poi
 - [Input](input.md)
 - [Kernel](kernel.md)
 - [Loading](loading.md)
+- [Param](param.md)
 - [Physics](physics.md)
 - [Render](render.md)
 
@@ -48,5 +49,6 @@ Family members are tiny functions (one to a few bytes each) that share one repla
 | input | 5 | 5 | 5 | 2 | 890 |
 | kernel | 14 | 14 | 14 | 2 | 993 |
 | loading | 31 | 31 | 31 | 2 | 11,560 |
+| param | 65 | 65 | 65 | 0 | 19,348 |
 | physics | 1 | 1 | 1 | 1 | 3,222 |
 | render | 139 | 139 | 139 | 69 | 67,013 |
