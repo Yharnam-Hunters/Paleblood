@@ -472,7 +472,11 @@ address,size,name,system,status,notes
 0x02ab7ab0,124,render_combine_record_parameters,render,edge-verified,"Combine constructor choices; using only the low flag byte and bounding the four-entry original table before access."
 0x02ab7e40,22,render_reduce_record_parameter,render,edge-verified,"Return the original four-entry scale table value; or zero for an out-of-range unsigned index."
 0x02ab9850,374,render_flush_shader_preparation,render,verified,"Flush the pending barrier/range before the event. Mode 0 keeps the range fields; and a suppressed state returns without touching either group of fields."
+0x02abad70,80,render_resource_info_alternate_copy_admitted_02abad70,render,edge-verified,True when sceKernelQueryMemoryProtection succeeds for a nonzero address and reports CPU read (bit 0)
+0x02abadd0,83,render_resource_info_storage_admitted_02abadd0,render,edge-verified,True when sceKernelQueryMemoryProtection succeeds for a nonzero address and reports GPU read (bit 4)
+0x02abaef0,23,render_resource_info_current_mode_02abaef0,render,edge-verified,Atomically increments the shared counter at 0x056ba180 and returns its old value masked to 24 bits
 0x02abaf10,78,render_record_derive_parameter,render,edge-verified,Derive numeric normalization code; flag priority and mode-dependent base.
+0x02abb4b0,52,render_resource_info_needs_initial_copy_02abb4b0,render,edge-verified,"False for selector 0, 0x59, 0x13-0x16, 0x2c-0x2f and 0x42-0x45 (signed compare); true otherwise"
 0x02abb4f0,31,render_record_auxiliary_predicate,render,edge-verified,"Return the auxiliary-processing predicate: selectors 0x13/0x14 enable it; 0x15/0x16 use flag bit 6; and all other selectors disable it."
 0x02abb6d0,48,render_emit_present_release_delegate,render,verified,Forward address and data to the release writer with fixed flags and mode and a zero final selector.
 0x02abba10,22,render_reset_present_context_state_b518,render,verified,Reset the first 64-bit field to zero and the second to the packed invalid-value sentinel.

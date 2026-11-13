@@ -652,6 +652,9 @@ render_reset_present_context_state_b528,recorded,,105,105,0,0,ea97afad90ad1322,2
 render_reset_present_context_state_b528,edge,,3,3,0,0,ea97afad90ad1322,2026-11-12
 render_reset_present_preparation_dirty,recorded,,63,63,0,0,dba56abb0d96bbb8,2026-11-12
 render_reset_present_preparation_dirty,edge,,16,16,0,0,dba56abb0d96bbb8,2026-11-12
+render_resource_info_alternate_copy_admitted_02abad70,recorded,,63,63,0,0,bfffe08a3bc51183,2026-11-13
+render_resource_info_current_mode_02abaef0,recorded,,121,121,0,0,bfffe08a3bc51183,2026-11-13
+render_resource_info_storage_admitted_02abadd0,recorded,,50,50,0,0,bfffe08a3bc51183,2026-11-13
 render_restore_color_target_from_bank,recorded,,104,104,0,0,649b23425dd0ccb1,2026-11-12
 render_restore_color_target_from_bank,edge,,12,12,0,0,649b23425dd0ccb1,2026-11-12
 render_restore_depth_target_from_bank,recorded,,56,56,0,0,8668e2d117190cf8,2026-11-12
