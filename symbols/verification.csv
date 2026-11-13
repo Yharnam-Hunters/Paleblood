@@ -917,6 +917,7 @@ render_set_cb_color_control,recorded,,126,126,0,0,8ba8cb4828340be9,2026-11-12
 render_set_cb_color_control,edge,,14,14,0,0,8ba8cb4828340be9,2026-11-12
 render_set_cb_target_mask,recorded,,127,127,0,0,6f84fa5f640704a5,2026-11-12
 render_set_cb_target_mask,edge,,14,14,0,0,6f84fa5f640704a5,2026-11-12
+render_set_compute_shader,edge,,134,134,0,0,89eabcce5e067e6e,2026-11-13
 render_set_db_depth_control,recorded,,183,183,0,0,529d9b6f1edf1bbc,2026-11-12
 render_set_db_depth_control,edge,,14,14,0,0,529d9b6f1edf1bbc,2026-11-12
 render_set_db_render_override,edge,,124,124,0,0,e52027238f5df569,2026-11-13
@@ -925,10 +926,13 @@ render_set_db_stencil_control,edge,,18,18,0,0,5cc18e786d28e006,2026-11-12
 render_set_depth_render_target,recorded,,151,151,0,0,3c8b412ea3a8e286,2026-11-12
 render_set_depth_render_target,edge,,21,21,0,0,3c8b412ea3a8e286,2026-11-12
 render_set_dispatch_draw_index,edge,,103,103,0,0,b82ebba1aafc0051,2026-11-13
+render_set_es_shader,edge,,199,199,0,0,aa1e8780742297e4,2026-11-13
+render_set_gds_oa,edge,,124,124,0,0,1f7b4a0a659b7c3b,2026-11-13
 render_set_guard_band_clip_adjust,recorded,,78,78,0,0,2d272dbad04ea940,2026-11-12
 render_set_guard_band_clip_adjust,edge,,13,13,0,0,2d272dbad04ea940,2026-11-12
 render_set_guard_band_discard_adjust,recorded,,79,79,0,0,d796d1a200c99651,2026-11-12
 render_set_guard_band_discard_adjust,edge,,13,13,0,0,d796d1a200c99651,2026-11-12
+render_set_hs_shader,edge,,245,245,0,0,0384de3e1c830f13,2026-11-13
 render_set_instance_step_rates,edge,,102,102,0,0,0579bf8a165662dc,2026-11-13
 render_set_pa_cl_vte_cntl,recorded,,83,83,0,0,70ef1c91ed183e42,2026-11-12
 render_set_pa_cl_vte_cntl,edge,,45,45,0,0,70ef1c91ed183e42,2026-11-12
@@ -976,6 +980,7 @@ render_update_model_wind,edge,,120,120,0,0,4d23637bf11c299c,2026-11-10
 render_update_model_wind,edge,30,120,120,0,0,4d23637bf11c299c,2026-11-10
 render_update_model_wind,edge,60,120,120,0,0,4d23637bf11c299c,2026-11-10
 render_update_model_wind,edge,uncapped,120,120,0,0,4d23637bf11c299c,2026-11-10
+render_update_vs_shader,edge,,199,199,0,0,7db46237e67ccfae,2026-11-13
 render_yebis_get_recursive_sample_parameters,recorded,,234,234,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,recorded,30,234,234,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,recorded,60,234,234,0,0,6e6f0aa41d5607ce,2026-10-07
