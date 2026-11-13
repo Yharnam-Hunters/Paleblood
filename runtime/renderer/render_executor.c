@@ -333,6 +333,19 @@ typedef struct {
 enum { DISPATCH_SPANS = 32 };
 enum { SCAN_SLOTS = 4096 }; /* a power of two: open addressing; when full, programs are scanned each time */
 
+/* Which user-data pair a vertex shader calls its fetch shader through (gcn_call_sgpr), kept by code
+   address with a copy of the program, and used only while the memory still holds that code (as a
+   resource scan, scan_for): finding it decodes the program, at every draw before. Direct-mapped: a slot
+   holds the last program that hashed to it. */
+enum { CALL_SLOTS = 1024 };
+typedef struct {
+    uint64_t code;                   /* 0: empty */
+    int calls;                       /* gcn_call_sgpr's answer: 1 (through pair) or 0 */
+    unsigned pair;
+    uint32_t *words;                 /* the program as decoded, through its end (gcn_program_dwords) */
+    size_t dwords;
+} call_entry;
+
 /* A depth target's registers from DB_Z_INFO (0xa010) to DB_DEPTH_SLICE (0xa017), in order. */
 enum { Z_INFO, STENCIL_INFO, Z_READ_BASE, STENCIL_READ_BASE, Z_WRITE_BASE, STENCIL_WRITE_BASE, DEPTH_SIZE, DEPTH_SLICE,
        DEPTH_TARGET_REGISTERS };
@@ -540,6 +553,7 @@ struct rt_executor {
     } stored[GCN_MAX_IMAGES];
     unsigned stored_count;
     scan_entry scans[SCAN_SLOTS];    /* resource scans, by code (scan_for) */
+    call_entry calls[CALL_SLOTS];    /* vertex shaders' fetch calls, by code (vertex_callee) */
     /* the run-time stop words translated shaders write (runtime/gcn_spirv.h), one per shader */
     VkBuffer stop_buffer;
     VkDeviceMemory stop_memory;
@@ -3373,6 +3387,8 @@ static int graphics_layout_for(rt_executor *x, unsigned n, unsigned m, unsigned 
     return 0;
 }
 
+static int program_copy(rt_executor *x, uint64_t code, uint32_t **words, size_t *dwords);
+
 /* The fetch shader the vertex shader calls (runtime/gcn_spirv.h, gcn_call_sgpr): the address in its
    user data's target pair (48 bits), which must lie in the GPU-visible memory; 0 when it makes no call.
    0, or -1 with the reason. */
@@ -3381,10 +3397,17 @@ static int vertex_callee(rt_executor *x, const draw_state *s, uint64_t *callee, 
     const uint64_t code = s->vertex.code;
     if (code < x->guest_base || code >= x->guest_base + x->size || code % 4)
         return failed(error, error_size, "vertex shader code at %#llx is outside the GPU-visible memory", (unsigned long long)code);
-    unsigned pair = 0;
-    char reason[200];
-    const int calls = gcn_call_sgpr((const uint32_t *)(uintptr_t)code, (size_t)((x->guest_base + x->size - code) / 4), &pair, reason, sizeof reason);
-    if (calls < 0) return failed(error, error_size, "vertex shader at %#llx: %s", (unsigned long long)code, reason);
+    call_entry *kept = &x->calls[(code >> 8) * 0x9e3779b97f4a7c15ull >> 54 & (CALL_SLOTS - 1)];
+    int calls = kept->calls;
+    unsigned pair = kept->pair;
+    if (kept->code != code || memcmp((const void *)(uintptr_t)code, kept->words, kept->dwords * 4)) { /* other code there now */
+        char reason[200];
+        calls = gcn_call_sgpr((const uint32_t *)(uintptr_t)code, (size_t)((x->guest_base + x->size - code) / 4), &pair, reason, sizeof reason);
+        if (calls < 0) return failed(error, error_size, "vertex shader at %#llx: %s", (unsigned long long)code, reason);
+        free(kept->words);
+        *kept = (call_entry){code, calls, pair, NULL, 0};
+        if (program_copy(x, code, &kept->words, &kept->dwords)) kept->code = 0; /* without a copy, not kept */
+    }
     *callee = 0;
     if (!calls) return 0;
     if (pair + 2 > s->vertex.user_sgprs)
@@ -5826,6 +5849,7 @@ void rt_executor_close(rt_executor *x)
             level_plans_free(x, &x->images[i]);
         }
         for (size_t i = 0; i < SCAN_SLOTS; i++) scan_free(&x->scans[i]);
+        for (size_t i = 0; i < CALL_SLOTS; i++) free(x->calls[i].words);
         if (x->stop_buffer) vkDestroyBuffer(x->device, x->stop_buffer, NULL);
         if (x->stop_memory) vkFreeMemory(x->device, x->stop_memory, NULL);
         if (x->gds_buffer) vkDestroyBuffer(x->device, x->gds_buffer, NULL);
