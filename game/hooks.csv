@@ -1,6 +1,8 @@
 address,replacement,system,returns
 0x00464b90,bb_loading_stdio_stream_open,loading,void
 0x00466810,bb_frame_timing_posix_sleep_ms,frame_timing,i8
+0x0083d4d0,bb_camera_transform_matrix_0083d4d0,camera,void
+0x00848e80,bb_camera_axis_angle_quaternion_00848e80,camera,void
 0x0084d5a0,bb_loading_fios_directory_delete,loading,void
 0x00857cd0,bb_loading_fios_open_file,loading,i64
 0x0085cda0,bb_loading_fios_open_file_read,loading,i64
