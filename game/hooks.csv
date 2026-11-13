@@ -484,6 +484,8 @@ address,replacement,system,returns
 0x024e62b0,bb_engine_format_string_argument_024e62b0,engine,i8
 0x024e77f0,bb_engine_format_write_wide_string_024e77f0,engine,i8
 0x024f8110,bb_frame_timing_random_generator_seed_024f8110,frame_timing,void
+0x024f8350,bb_engine_tree_insert_fixup_024f8350,engine,void
+0x024f8460,bb_engine_tree_remove_024f8460,engine,void
 0x02564ed0,bb_render_present_encoding_units,render,i64
 0x02565130,bb_render_present_record_bit_width,render,i32
 0x02565f90,bb_render_initialize_swap_chain_resource,render,i32
