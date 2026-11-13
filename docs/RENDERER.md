@@ -92,6 +92,9 @@ Instead:
        shader, whose GPU address is baked into its translation (`error_address`); a shader meeting a
        case it cannot do exactly writes a code there and skips the access, and the executor checks
        the words once the work has run and stops by name (`GCN_RUNTIME_STOP_*`), naming the shader.
+       The words live in host-cached memory where the device has it: every finished batch reads
+       all 1,600 of them, and from write-combined memory each read crossed the bus (in Iosefka's
+       Clinic that scan was the renderer thread's largest single cost, 13 November 2026).
      - **Guest memory range checks** (`gcn_guest_memory`): every guest memory access a translated
        shader makes through an address it forms (a scalar load's SGPR pair, a buffer descriptor's
        base plus its offsets) is first checked against the imported pool. An access outside goes to
@@ -154,12 +157,19 @@ Instead:
        image's loads (one level: `image_load_mip` past level 0 is outside) read the same. The
        clinic's final LUT pass (pixel shader 0x20d1b00f00) loads the scene target at the flip's
        pixel, and on a loading-to-clinic transition frame the target was smaller than the flip.
-     - **The image cache** keeps up to 1024 images. When it is full, a new image takes the slot of the
-       least recently used one whose texels are guest memory's (loaded from it, never written by a
-       shader) and that no unfinished batch, and not the draw or dispatch being recorded, uses; if
+     - **The image cache** keeps up to 4096 images, found by a hash of their address. When it is
+       full, a new image takes the slot of the least recently used one whose texels are guest
+       memory's (loaded from it, never written by a shader) and that no unfinished batch, and not
+       the draw or dispatch being recorded, uses; if
        every such image is still in use, the batches are waited for first. The image is loaded again
        from guest memory at its next use. The clinic's loading screen streams in more textures than
-       the cache held (12 November 2026).
+       the cache held (12 November 2026). In about one boot in three the clinic itself then used more
+       than the 1024 images the cache held: each draw evicted images the next one needed, and every
+       load made and freed a GPU buffer for its tile copy, so the renderer's thread spent nine tenths
+       of its time in the driver and the clinic ran at 0.3 frames a second (26,000 evictions in one
+       boot, 13 November 2026). The cache was then made four times larger, and a linear search of
+       4096 images at every image a draw binds would have cost more than the search of 1024 did, so
+       the images are kept in buckets by address.
      - **Mip-mapped images** (a pixel shader's sampled images, BASE_LEVEL to LAST_LEVEL): the
        executor makes the image with LAST_LEVEL + 1 levels and views BASE_LEVEL on. Each level's
        texels come from where `rt_tiling_mip_chain` (runtime/tiling.h) puts them: the levels one after
@@ -296,7 +306,10 @@ Instead:
      - **Calls to fetch shaders** (`s_swappc_b64`): the game's vertex shaders call a fetch shader at
        the address in a user-data SGPR pair, which loads the vertex inputs and returns with
        `s_setpc_b64`. The executor reads that address at draw time (`gcn_call_sgpr` names the pair:
-       user data untouched before the call, one call) and the translator inlines the callee in place
+       user data untouched before the call, one call; the pair is kept by the shader's address with
+       a copy of the program, used while the memory still holds that code, since decoding the program
+       at every draw took a sixth of the renderer thread's time in Iosefka's Clinic) and the
+       translator inlines the callee in place
        of the call, the return pair taking the return address. That is exactly what the call runs
        when the callee is straight-line code ending in that return, which it checks; a callee with a
        branch, an image instruction or a write to the return pair stops by name. Descriptor analyses
@@ -498,10 +511,19 @@ Instead:
        of a clinic profile, on the game's submitting threads (the frame rate, bound by the
        renderer's own thread, did not change).
        The lists are found by a hash of the buffer's address, and a list not used for 65,536
-       submissions (hundreds of frames) is forgotten. Placed binds wait in a ring of 16,384, each
-       linked into a bucket by its address's 4 KiB page, so that a submission looks only at the
-       pages of its buffer and merges their binds into the list in one pass, and a bind placed
-       again at an address finds the older one in its page alone.
+       submissions (hundreds of frames) is forgotten. Placed binds wait in a ring, each linked into
+       a bucket by its address's 4 KiB page, so that a submission looks only at the pages of its
+       buffer and merges their binds into the list in one pass, and a bind placed again at an
+       address finds the older one in its page alone. The clinic places two binds a draw while
+       the submissions run behind, and the old fixed array of 4,096 dropped the oldest binds when
+       full: binds of buffers still to be submitted, whose draws and dispatches then ran with the
+       shaders bound before them (a boot logged compute binds taken about 12,000 placements after
+       they were placed). The clinic's timing-dependent stop "the compute shader at 0x20d1ceb800
+       reads an image of type 0" still happens with this fixed, so it has another cause as well.
+       When the ring comes round
+       to a bind still waiting, it now drops it only if its NOP packet has been written over or
+       65,536 binds have been placed since (a buffer abandoned with its memory untouched), and
+       otherwise doubles, up to 262,144.
    - **How the hooks attach:** the library's functions are being decompiled like the rest of the
      game, as replacements verified to write exactly the original packets. The renderer leaves
      those packets alone, so verification still holds. Each of these replacements also makes one
@@ -1007,7 +1029,9 @@ target again at every submitted buffer.
    written: there is no signal handler, and nothing changes for the guest's threads. At each
    buffer the renderer reads the written pages with `PAGEMAP_SCAN`, which protects them again in
    the same step (`PM_SCAN_WP_MATCHING`), so a write between the read and the protection cannot
-   be lost. The facts behind this are shadPS4's page manager (write watchers on cached memory)
+   be lost. The executor first asks whether a collect is due (`cpu_writes_due`: the renderer
+   collects once for all the buffers submitted before the last collect), and only then gathers and
+   sorts the ranges it asks about. The facts behind this are shadPS4's page manager (write watchers on cached memory)
    and the kernel's userfaultfd and pagemap documentation; they are used as facts only. A
    userfaultfd limited to user-mode faults (`UFFD_USER_MODE_ONLY`) needs no privilege, so
    `vm.unprivileged_userfaultfd = 0` does not stop it. Where any of this is missing, the watch
