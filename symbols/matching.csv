@@ -93,6 +93,9 @@ address,name,compiler,flags,match_percent,objdiff_percent,byte_exact,targets_che
 0x02012780,frame_timing_request_10_02012780,clang-3.4.2,ps4-o2-sspall,100.0,96.1,yes,yes,game/matching/frame_timing/fixed_step_states.c,508bfdba745caf63,2026-11-12
 0x020128f0,frame_timing_until_idle_020128f0,clang-3.4.2,ps4-o2-sspall,100.0,96.4,yes,yes,game/matching/frame_timing/fixed_step_states.c,508bfdba745caf63,2026-11-12
 0x02012bf0,frame_timing_until_idle_02012bf0,clang-3.4.2,ps4-o2-sspall,100.0,96.4,yes,yes,game/matching/frame_timing/fixed_step_states.c,508bfdba745caf63,2026-11-12
+0x0237e820,loading_file_copy_copy_file_0237e820,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/loading/file_copy_resource.c,3fe31a03a5211aaf,2026-11-13
+0x0237f5d0,loading_file_copy_copy_file_0237f5d0,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/loading/file_copy_resource.c,3fe31a03a5211aaf,2026-11-13
+0x02380380,loading_file_copy_copy_file_02380380,clang-3.4.2,ps4-o2,100.0,,yes,yes,game/matching/loading/file_copy_resource.c,3fe31a03a5211aaf,2026-11-13
 0x0247eb80,render_read_present_pool_counter,clang-3.4.2,ps4-o2,100.0,100.0,yes,yes,game/matching/render/present.c,c4d7c68af9d03336,2026-11-12
 0x02564ed0,render_present_encoding_units,clang-3.4.2,ps4-o2,100.0,100.0,yes,yes,game/matching/render/present.c,c4d7c68af9d03336,2026-11-12
 0x02565130,render_present_record_bit_width,clang-3.4.2,ps4-o2,100.0,100.0,yes,yes,game/matching/render/present.c,c4d7c68af9d03336,2026-11-12
