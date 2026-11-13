@@ -27,6 +27,8 @@ enum {
     TABLE_BITS = 20,                       /* bytes noted per call: up to half of 2^20 */
     QWORD_LIMIT = 1 << 16,
     PRIVATE_STACK = 16 << 20,
+    STACK_POISON = 1 << 20,                /* bytes below the return slot filled with POISON_BYTE */
+    POISON_BYTE = 0xa5,
     DEAD_STACK = 1 << 20,               /* how far below the caller's rsp import changes are ignored */
     TRAP_FLAG = 0x100,
     DIRECTION_FLAG = 0x400,
@@ -75,6 +77,8 @@ typedef struct {
     uint64_t (*link)[2];               /* far reaches: {base pointer, address reached} */
     size_t links;
     uint32_t *link_index;              /* hash of link, 1-based; 2^LINK_BITS entries */
+    uint64_t origin[16];               /* per general register (gpr_index): the pointer its value
+                                          was computed from by address arithmetic, or 0 */
     unsigned stack_slots;
     uint64_t steps, step_limit;
     unsigned xmm_written;              /* bit n: xmm n written by the traced code */
@@ -154,6 +158,21 @@ static int reg_value(const ucontext_t *uc, x86_reg reg, uint64_t next_rip, uint6
             return 0;
         }
     }
+    return -1;
+}
+
+/* The general register (rax = 0 ... r15 = 15, in REG_* order of the map below) a 64-bit or
+   32-bit register name stands for, or -1. A 32-bit write also replaces the whole register. */
+static int gpr_index(x86_reg reg)
+{
+    static const x86_reg r64[16] = {X86_REG_RAX, X86_REG_RBX, X86_REG_RCX, X86_REG_RDX, X86_REG_RSI, X86_REG_RDI,
+                                    X86_REG_RBP, X86_REG_RSP, X86_REG_R8,  X86_REG_R9,  X86_REG_R10, X86_REG_R11,
+                                    X86_REG_R12, X86_REG_R13, X86_REG_R14, X86_REG_R15};
+    static const x86_reg r32[16] = {X86_REG_EAX, X86_REG_EBX, X86_REG_ECX, X86_REG_EDX, X86_REG_ESI, X86_REG_EDI,
+                                    X86_REG_EBP, X86_REG_ESP, X86_REG_R8D, X86_REG_R9D, X86_REG_R10D, X86_REG_R11D,
+                                    X86_REG_R12D, X86_REG_R13D, X86_REG_R14D, X86_REG_R15D};
+    for (int i = 0; i < 16; i++)
+        if (reg == r64[i] || reg == r32[i]) return i;
     return -1;
 }
 
@@ -513,6 +532,10 @@ static void import_return(trace_state *t, ucontext_t *uc)
     }
     /* What the import left in the argument registers is not the traced code's. */
     t->stale_args = 0x3f;
+    /* Nor are the pointers behind the registers a call may change. */
+    static const int volatile_gprs[] = {0, 2, 3, 4, 5, 8, 9, 10, 11};
+    for (size_t i = 0; i < sizeof volatile_gprs / sizeof volatile_gprs[0]; i++)
+        t->origin[volatile_gprs[i]] = 0;
     t->in_import = 0;
     g[REG_RIP] = (greg_t)t->import_return;
     if (t->incomplete) return;              /* finish untraced */
@@ -541,6 +564,54 @@ static int note_link(trace_state *t, uint64_t base, uint64_t ea)
         }
         if (t->link[k - 1][0] == base && (t->link[k - 1][1] & ~(uint64_t)(LINK_NEAR - 1)) == block) return 0;
     }
+}
+
+/* The pointer a 64-bit register operand's value was computed from: its own origin, or its value. */
+static uint64_t pointer_of(const trace_state *t, const ucontext_t *uc, x86_reg reg, uint64_t next)
+{
+    const int i = gpr_index(reg);
+    uint64_t v;
+    if (i < 0 || reg == X86_REG_RSP || reg_value(uc, reg, next, &v)) return 0;
+    return t->origin[i] ? t->origin[i] : v;
+}
+
+/* Follows pointers through address arithmetic, so that an access through a computed pointer
+   (a table's index at table + its stored size: lea, or add of a loaded offset) is noted as a reach
+   from the pointer it came from and lands in that pointer's buffer. Of the two registers added,
+   the larger value is taken as the pointer (an offset is the smaller). Any other write to a
+   register forgets its origin. */
+static int track_origin(trace_state *t, const ucontext_t *uc, const cs_insn *in, uint64_t next)
+{
+    const cs_x86 *x = &in->detail->x86;
+    const cs_x86_op *op = x->operands;
+    int dst = -1;
+    uint64_t from = 0;
+    if (x->op_count >= 1 && op[0].type == X86_OP_REG && op[0].size == 8) dst = gpr_index(op[0].reg);
+    if (dst >= 0 && x->op_count == 2) {
+        if (in->id == X86_INS_LEA && op[1].mem.base != X86_REG_RIP) {
+            from = pointer_of(t, uc, op[1].mem.base, next);
+            if (!from && op[1].mem.scale == 1) from = pointer_of(t, uc, op[1].mem.index, next);
+        } else if (in->id == X86_INS_MOV && op[1].type == X86_OP_REG) {
+            const int src = gpr_index(op[1].reg);
+            from = src >= 0 && op[1].size == 8 ? t->origin[src] : 0;
+        } else if ((in->id == X86_INS_ADD || in->id == X86_INS_SUB) && op[1].type == X86_OP_IMM) {
+            from = pointer_of(t, uc, op[0].reg, next);
+        } else if (in->id == X86_INS_ADD && op[1].type == X86_OP_REG && op[1].size == 8) {
+            uint64_t a, b;
+            if (!reg_value(uc, op[0].reg, next, &a) && !reg_value(uc, op[1].reg, next, &b))
+                from = pointer_of(t, uc, a >= b ? op[0].reg : op[1].reg, next);
+        }
+    }
+    cs_regs read, written;
+    uint8_t nread = 0, nwritten = 0;
+    if (cs_regs_access(t->cs, in, read, &nread, written, &nwritten) != CS_ERR_OK)
+        return -1;
+    for (unsigned i = 0; i < nwritten; i++) {
+        const int w = gpr_index((x86_reg)written[i]);
+        if (w >= 0) t->origin[w] = 0;
+    }
+    if (dst >= 0 && dst != 7) t->origin[dst] = from;  /* rsp's own reach rules stay */
+    return 0;
 }
 
 static void step(trace_state *t, ucontext_t *uc)
@@ -576,10 +647,19 @@ static void step(trace_state *t, ucontext_t *uc)
         return stop(t, uc, "an instruction the tracer does not model");
     if (check_registers(t, in))
         return stop(t, uc, "a vector argument register other than xmm0 or xmm1 is read");
+    const uint64_t next = rip + in->size;
+    /* Memory operands below use the registers' values before this instruction, as does this. */
+    uint64_t base_origin[8] = {0};
+    for (unsigned i = 0; i < x->op_count && i < 8; i++)
+        if (x->operands[i].type == X86_OP_MEM) {
+            const int b = gpr_index(x->operands[i].mem.base);
+            base_origin[i] = b >= 0 ? t->origin[b] : 0;
+        }
+    if (track_origin(t, uc, in, next))
+        return stop(t, uc, "an instruction's registers could not be read");
     if (no_access(in))
         return;
 
-    const uint64_t next = rip + in->size;
     uint64_t count = 1;
     if (string_op(in) && x->prefix[0] != 0) {
         /* rep, repe, repne: rcx elements; repe/repne may stop sooner, so this can note more
@@ -608,7 +688,7 @@ static void step(trace_state *t, ucontext_t *uc)
         if (import_slot(ea, n))
             continue;                       /* an import's slot: the verifier binds its stub there */
         if (op->mem.base != X86_REG_INVALID && op->mem.base != X86_REG_RIP && op->mem.base != X86_REG_RSP &&
-            note_link(t, base, ea))
+            (note_link(t, base, ea) || (i < 8 && base_origin[i] && note_link(t, base_origin[i], ea))))
             return stop(t, uc, "too many far reaches from base pointers");
         if (op->access & CS_AC_READ) {
             int input = 0;
@@ -773,6 +853,10 @@ int rt_trace_call(const void *entry, const rt_trace_args *args, const rt_code_ra
     uintptr_t ret_slot = top - 8 - 8 * RT_TRACE_STACK_SLOTS - 8;   /* 16-aligned + 8 below */
     if (ret_slot % 16 != 8)
         ret_slot -= 8;
+    /* A fresh mapping is zero: an import that writes zeros into the traced code's frame (a
+       result or count of 0) would change nothing and go unscripted, and the replay would read what
+       its own stack holds there. Over a filled frame every import write is a change. */
+    memset((void *)(ret_slot - STACK_POISON), POISON_BYTE, STACK_POISON);
     *(uint64_t *)ret_slot = (uint64_t)(uintptr_t)rt_trace_landing;
     memcpy((void *)(ret_slot + 8), args->stack, sizeof args->stack);
     *(rt_trace_frame **)(ret_slot + 8 + 8 * RT_TRACE_STACK_SLOTS) = &frame;

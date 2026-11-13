@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Row lookups that do more than find one row: the equipment lookups that also find the
 // reinforcement row, the menu tables read as runs of consecutive ids, the menu property lookup
-// with its built-in fallback, and two lookups with a side condition or side effect. They share
+// with its built-in fallback, and lookups with a side condition or side effect. They share
 // the search of param_repository.h. The menu ones run at the title menus and in character creation.
 #include <cstring>
 
@@ -106,6 +106,22 @@ constexpr int32_t default_new_menu_color_count = 16;
 // Where the DungeonFeatureParam lookup publishes its table's header word 0x06 (as 32 bits).
 RT_GLOBAL(0x05992cb0, dungeon_feature_header_word, uint32_t);
 
+// The NpcParam lookup also returns two header words, and reports a table older than it supports.
+struct NpcRowLookup {
+    int32_t id;
+    uint16_t header_word_06;
+    uint16_t data_version;
+    const uint8_t *row;
+};
+static_assert(offsetof(NpcRowLookup, header_word_06) == 0x4);
+static_assert(offsetof(NpcRowLookup, data_version) == 0x6);
+static_assert(offsetof(NpcRowLookup, row) == 0x8);
+constexpr uint16_t newest_unsupported_npc_version = 2;
+// Its report: "The NPC parameter version is old. Please re-pull the data."
+RT_GLOBAL(0x04d38a20, npc_param_source_file, const char);
+RT_GLOBAL(0x04d38a5a, npc_param_old_version_message, const char);
+constexpr int32_t npc_param_old_version_line = 0x4a;
+
 // ItemLotParam rows are only used from data version 2 on.
 constexpr uint16_t first_item_lot_version = 2;
 
@@ -185,6 +201,25 @@ extern "C" void bb_param_find_row_dungeon_feature(RowLookup *out, int32_t id)
         if (const TableHeader *table = loaded_table(ParamType::dungeon_feature)) {
             row = param::find_row_in_table(table, static_cast<uint32_t>(id));
             dungeon_feature_header_word.get() = table->header_word_06;
+        }
+    }
+    out->id = id;
+    out->row = row;
+}
+
+// As find_row, and also returns the table's header word 0x06 and data version (before the
+// search). A table of version 2 or older is reported and searched anyway.
+extern "C" void bb_param_find_row_npc(NpcRowLookup *out, int32_t id)
+{
+    const uint8_t *row = nullptr;
+    if (id >= 0) {
+        if (const TableHeader *table = loaded_table(ParamType::npc)) {
+            out->header_word_06 = table->header_word_06;
+            out->data_version = table->data_version;
+            if (table->data_version <= newest_unsupported_npc_version)
+                engine::fatal_error(npc_param_source_file.address(), npc_param_old_version_line,
+                                    npc_param_old_version_message.address());
+            row = param::find_row_in_table(table, static_cast<uint32_t>(id));
         }
     }
     out->id = id;

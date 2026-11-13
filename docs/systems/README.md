@@ -22,31 +22,31 @@ One page per game system: summary, key functions, structs and globals, patch poi
 | | Functions (of target) | Bytes (of target) |
 |---|---:|---:|
 | Target (Ghidra export) | 157,757 | 42,487,404 |
-| Replaced | 260 (0.16%) | 126,474 (0.30%) |
-| Edge-verified (includes verified) | 260 (0.16%) | 126,474 (0.30%) |
-| Verified | 21 (0.01%) | 14,010 (0.03%) |
+| Replaced | 370 (0.23%) | 168,326 (0.40%) |
+| Edge-verified (includes verified) | 370 (0.23%) | 168,326 (0.40%) |
+| Verified | 100 (0.06%) | 25,301 (0.06%) |
 
 Counts are cumulative: verified functions are included in edge-verified and replaced totals.
 
 | With function families | Functions (of target) | Bytes (of target) |
 |---|---:|---:|
 | Members of 19 function families | 18,019 (11.42%) | 62,426 (0.15%) |
-| Replaced, with family members | 18,279 (11.59%) | 188,900 (0.44%) |
-| Edge-verified, with family members | 18,279 (11.59%) | 188,900 (0.44%) |
+| Replaced, with family members | 18,389 (11.66%) | 230,752 (0.54%) |
+| Edge-verified, with family members | 18,389 (11.66%) | 230,752 (0.54%) |
 
 Family members are tiny functions (one to a few bytes each) that share one replacement per family: they add far more to the function count than to the bytes.
 
 | System | Tracked | Replaced | Edge-verified (includes verified) | Verified | Replaced bytes |
 |---|---:|---:|---:|---:|---:|
 | ai | 1 | 1 | 1 | 1 | 2,693 |
-| audio | 5 | 5 | 5 | 0 | 413 |
+| audio | 5 | 5 | 5 | 2 | 413 |
 | camera | 3 | 3 | 3 | 0 | 20,199 |
 | character | 1 | 1 | 1 | 1 | 979 |
-| engine | 31 | 31 | 31 | 0 | 13,155 |
-| event | 2 | 2 | 2 | 1 | 545 |
-| frame_timing | 52 | 51 | 51 | 12 | 15,382 |
-| input | 5 | 5 | 5 | 1 | 890 |
-| kernel | 14 | 14 | 14 | 1 | 993 |
-| loading | 7 | 7 | 7 | 0 | 990 |
+| engine | 52 | 52 | 52 | 5 | 25,089 |
+| event | 2 | 2 | 2 | 2 | 545 |
+| frame_timing | 52 | 51 | 51 | 13 | 15,382 |
+| input | 5 | 5 | 5 | 2 | 890 |
+| kernel | 14 | 14 | 14 | 2 | 993 |
+| loading | 31 | 31 | 31 | 2 | 11,560 |
 | physics | 1 | 1 | 1 | 1 | 3,222 |
-| render | 139 | 139 | 139 | 3 | 67,013 |
+| render | 139 | 139 | 139 | 69 | 67,013 |

@@ -14,6 +14,11 @@
 // released and emptied, last declared first) and the old buffer freed. A failed allocation goes
 // to the engine's transaction handling (engine/transaction.h) and the code goes on with the null
 // buffer, as the game does.
+//
+// loading_stream_event_array_push_back_02a6d010 (0x02a6d010) and
+// loading_stream_event_array_reallocate_02a6f140 (0x02a6f140) are the same code for the stream load
+// event queue's array (0x02a6cd90 appends to it): its events carry one more byte, which is copied
+// too, and a copied request gets the stream queue's vtable.
 #include <cstdint>
 
 #include "../engine/transaction.h"
@@ -23,56 +28,44 @@ using namespace loading::resource_queue;
 
 namespace {
 
-void construct_copy(LoadEvent *slot, const LoadEvent &source)
+void construct_copy(LoadEvent *slot, const LoadEvent &source, const uint8_t *request_vtable)
 {
     slot->word_0x00 = source.word_0x00;
     slot->word_0x08 = source.word_0x08;
     load_request_copy(&slot->request, &source.request);
-    slot->request.vtable = queued_request_vtable.address() + engine::vtable_address_point;
+    slot->request.vtable = request_vtable + engine::vtable_address_point;
 }
 
-void empty(WideString *s)
+void construct_copy(LoadEvent *slot, const LoadEvent &source)
 {
-    engine::wide_string_release(s);
-    s->capacity = engine::wide_string_inline_capacity - 1;
-    s->size = 0;
-    s->inline_text[0] = u'\0';
+    construct_copy(slot, source, queued_request_vtable.address());
 }
 
-// The request's destructor, inlined into the array's.
-void destroy(LoadRequest *request)
+void construct_copy(StreamLoadEvent *slot, const StreamLoadEvent &source)
 {
-    request->vtable = base_request_vtable.address() + engine::vtable_address_point;
-    engine::Array<uint8_t> &data = request->data;
-    if (data.begin) {
-        data.allocator->free(data.begin);
-        data.capacity_end = nullptr;
-        data.end = nullptr;
-        data.begin = nullptr;
-    }
-    empty(&request->text_0xd8);
-    empty(&request->text_0xa0);
-    empty(&request->name);
+    construct_copy(&slot->event, source.event, stream_request_vtable.address());
+    slot->byte_0x158 = source.byte_0x158;
 }
 
-}  // namespace
+LoadRequest *request_of(LoadEvent *event) { return &event->request; }
+LoadRequest *request_of(StreamLoadEvent *event) { return &event->event.request; }
 
-extern "C" void bb_loading_load_event_array_reallocate_02a6bc50(LoadEventArray *array, uint64_t capacity)
+template <typename Event> void reallocate(engine::Array<Event> *array, uint64_t capacity)
 {
-    auto *buffer = static_cast<LoadEvent *>(
-        array->allocator->allocate(capacity * sizeof(LoadEvent), engine::array_buffer_alignment));
+    auto *buffer = static_cast<Event *>(
+        array->allocator->allocate(capacity * sizeof(Event), engine::array_buffer_alignment));
     if (!buffer)
         engine::report_failed_allocation();
 
-    LoadEvent *old_begin = array->begin;
-    LoadEvent *old_end = array->end;
-    for (LoadEvent *from = old_begin, *to = buffer; from != old_end; ++from, ++to) {
+    Event *old_begin = array->begin;
+    Event *old_end = array->end;
+    for (Event *from = old_begin, *to = buffer; from != old_end; ++from, ++to) {
         if (to)
             construct_copy(to, *from);
     }
     if (old_begin) {
-        for (LoadEvent *event = old_begin; event != old_end; ++event)
-            destroy(&event->request);
+        for (Event *event = old_begin; event != old_end; ++event)
+            destroy_request(request_of(event));
         array->allocator->free(old_begin);
     }
     array->capacity_end = buffer + capacity;
@@ -80,16 +73,40 @@ extern "C" void bb_loading_load_event_array_reallocate_02a6bc50(LoadEventArray *
     array->begin = buffer;
 }
 
-extern "C" void bb_loading_load_event_array_push_back_02a69b70(LoadEventArray *array, const LoadEvent *event)
+template <typename Event, typename Reallocate>
+void push_back(engine::Array<Event> *array, const Event *event, Reallocate grow)
 {
     const bool inside_array = array->contains(event);
     if (array->end == array->capacity_end) {
         const uint64_t index = inside_array ? event - array->begin : 0;
-        load_event_array_reallocate(array, engine::array_grown_capacity<LoadEvent>(array->count()));
+        grow(array, engine::array_grown_capacity<Event>(array->count()));
         if (inside_array)
             event = array->begin + index;
     }
     if (array->end)
         construct_copy(array->end, *event);
     array->end += 1;
+}
+
+}  // namespace
+
+extern "C" void bb_loading_load_event_array_reallocate_02a6bc50(LoadEventArray *array, uint64_t capacity)
+{
+    reallocate(array, capacity);
+}
+
+extern "C" void bb_loading_load_event_array_push_back_02a69b70(LoadEventArray *array, const LoadEvent *event)
+{
+    push_back(array, event, load_event_array_reallocate);
+}
+
+extern "C" void bb_loading_stream_event_array_reallocate_02a6f140(StreamLoadEventArray *array, uint64_t capacity)
+{
+    reallocate(array, capacity);
+}
+
+extern "C" void bb_loading_stream_event_array_push_back_02a6d010(StreamLoadEventArray *array,
+                                                                  const StreamLoadEvent *event)
+{
+    push_back(array, event, stream_event_array_reallocate);
 }
