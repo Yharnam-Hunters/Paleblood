@@ -702,6 +702,17 @@ Instead:
           texels with a GPU image copy (`image_from_target`) instead of a write-back and a load: the two
           would move the same bytes through host memory. It is copied again after the target's next draws.
           At the Contract screen this removed the image-overlap write-backs (about 700 every 2 s).
+        - **Compute fills on the target:** the game clears render targets with a compute program that
+          stores one value from a constant buffer into every element of a buffer descriptor spanning the
+          target's memory (compute shader `0x20d1b00500`, about ten a frame in Iosefka's Clinic). Each
+          used to write the target's draws back, store the whole target into host memory, and load the
+          target and the images over it back. A program of that shape (`gcn_fill_shape`: scalar loads of
+          the value, indexed stores of it at lane + workgroup x n + offset) whose stores cover exactly a
+          render target's memory in its element size runs only its first workgroup; its elements are
+          copied into the target's linear rows, doubled until full, and into the image, and the target
+          counts as drawn: its memory gets the fill when it is written back. Its earlier draws are not
+          written back. bbhost (`detect_fill`) and shadPS4 (`IsComputeImageClear`) recognise the same
+          clears and clear the image instead (facts only).
         - **One batch per buffer:** a buffer's draws, dispatches and copies are recorded into one Vulkan
           command buffer and submitted once, with barriers between them, instead of each waiting for the
           GPU. The CPU waits only where it reads what the batch produces: a render target written back
@@ -876,7 +887,11 @@ Instead:
         executor draws rect lists. **Observe hooks** (`runtime/observe_hooks.h`) report what has no replacement yet:
         the hook calls an observer with the call's arguments, then the original runs from its
         first instructions relocated next to the image, so every packet is still the original's.
-        A replacement, when one lands, takes the address and its observe hook is dropped. They
+        A replacement, when one lands, takes the address and its observe hook is dropped. An
+        observer reports a packet where it lands: when the writer's words do not fit before the
+        command buffer's limit, the observer asks the space callback for them first (the writer
+        then finds the room), so a packet that opens a new chunk is filed at that chunk's start,
+        not past the old chunk's end where no submission takes it. They
         cover `setRenderTarget` (`0x014738b0`) and the five user-data writers (`0x01476420`
         one word, `0x01476390` two, `0x014761a0` and `0x014762f0` four, `0x01476240` eight),
         whose arguments come from their disassembly (`game/render/observe_gpu_library.c`). With

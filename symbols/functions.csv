@@ -97,11 +97,13 @@ address,size,name,system,status,notes
 0x014739b0,344,render_set_depth_render_target,render,verified,"Emit depth/stencil; view and HTILE registers; or clear DB_Z_INFO and DB_STENCIL_INFO for an absent descriptor. Preserve repeated validity tests and delayed reads when output overlaps descriptor state."
 0x01473fe0,90,render_set_vgt_primitive_type,render,verified,Write the low six primitive-type bits to VGT_PRIMITIVE_TYPE.
 0x014741b0,156,render_emit_draw_index_auto,render,verified,Emit DRAW_INDEX_AUTO and a query-selected THREAD_TRACE_MARKER event or NOP. Reload flags and cursor after overlapping packet stores before selecting and publishing the trailing packet.
+0x01474f30,92,render_set_vertex_reuse,render,edge-verified,Write VGT_REUSE_OFF as the input byte XOR 1; reserve three DWORDs and publish from the captured cursor after ordered stores.
 0x01475000,397,render_emit_shader_link_words,render,verified,Write SPI_PS_INPUT_CNTL entries from last word to first to preserve overlapping reads; retain the unmasked count shift for zero and oversized counts.
 0x01475370,76,render_emit_num_instances,render,verified,Emit NUM_INSTANCES with the complete supplied instance count.
 0x014753c0,86,render_emit_set_ps_shader_014753c0,render,edge-verified,Packet writer: reserves 40 words (space callback when short); sceGnmSetPsShader at the cursor; cursor advanced only on success
 0x01475420,86,render_emit_update_ps_shader_01475420,render,edge-verified,Packet writer: reserves 40 words (space callback when short); sceGnmUpdatePsShader at the cursor; cursor advanced only on success
 0x01475480,98,render_emit_set_vs_shader_01475480,render,edge-verified,Packet writer: reserves 29 words (space callback when short); sceGnmSetVsShader with the shader modifier; cursor advanced only on success
+0x014758a0,90,render_set_border_color_base,render,edge-verified,Write GPU address bits 8-39 to TA_BC_BASE_ADDR after three-word admission; discard low and upper address bits and publish from the captured cursor.
 0x01475da0,101,render_emit_event_write,render,verified,Emit EVENT_WRITE with a masked event type and the original table-selected event index.
 0x01475e10,173,render_emit_shader_preparation_range_01475e10,render,edge-verified,"ACQUIRE_MEM packet (7 words) for a memory range: coherence control from the cache actions, targets and top flag; reserve via the space callback"
 0x01476030,140,render_set_shader_stages_01476030,render,edge-verified,"SET_CONTEXT_REG VGT_SHADER_STAGES_EN (0x2d5) to the stages (3 words), only for the values the game uses; reserve via the space callback first"
@@ -167,7 +169,39 @@ address,size,name,system,status,notes
 0x014a1e80,803,render_initialize_record_level_descriptor,render,edge-verified,"Publish a partial level descriptor in order; reread the source between helper calls; then convert its tile mode."
 0x014a27c0,627,render_get_record_descriptor_size,render,edge-verified,Initialize mandatory outputs after the decoder call; accumulate live values and retain partial outputs on error.
 0x014a2c40,595,render_calculate_record_descriptor_level_offset,render,edge-verified,Accumulate levels inclusively using partial helper totals even after errors; publish the two QWORD outputs in order.
+0x016243a0,74,ai_character_negated_third_column,ai,edge-verified,"AI view slot +0x58: the character transform's third column negated (w 0), zero vector without a character"
+0x01624760,35,ai_character_id,ai,edge-verified,"AI view slot +0x90: the character's id through its vtable slot +0x88, -1 without a character"
+0x01624e50,109,ai_character_flag_module_set,ai,edge-verified,"AI view slot +0x128: the owner's flag module (+0x30) is enabled (+0x384) and flag +0x37f or +0x380 is set"
+0x01657ac0,91,ai_func_get_random_float,ai,edge-verified,AI script binding GetRandam_Float: min + (max - min) * 20-bit random fraction
+0x01657b20,90,ai_func_get_random_int,ai,edge-verified,"AI script binding GetRandam_Int: integer in [min, max] from a 20-bit random fraction (span wraps, truncated)"
+0x01657b80,19,ai_func_set_timer,ai,edge-verified,"AI script binding SetTimer: think timer 0..15 (index checked signed, as the original)"
+0x01657ba0,22,ai_func_set_number,ai,edge-verified,AI script binding SetNumber: think script number 0..63 (index checked unsigned)
+0x0165a1d0,32,ai_func_get_sp,ai,edge-verified,"AI script binding GetSp: the named character's SP through its vtable, 0 without one"
+0x0165a1f0,32,ai_func_get_mp,ai,edge-verified,"AI script binding GetMp: the named character's MP through its vtable, 0 without one"
+0x0165a210,32,ai_func_get_hp,ai,edge-verified,"AI script binding GetHp: the named character's HP through its vtable, 0 without one"
+0x0165a230,34,ai_func_get_hp_rate,ai,edge-verified,"AI script binding GetHpRate: the named character's HP fraction through its vtable, 0.0 without one"
+0x0165aff0,23,ai_func_get_timer,ai,edge-verified,"AI script binding GetTimer: think timer 0..15, 0.0 above"
+0x0165b010,28,ai_func_is_finish_timer,ai,edge-verified,AI script binding IsFinishTimer: think timer <= 0 (true above index 15)
+0x0165b030,26,ai_func_get_number,ai,edge-verified,"AI script binding GetNumber: think script number 0..63, 0.0 above"
+0x0165baf0,22,ai_func_is_battle_state,ai,edge-verified,AI script binding IsBattleState: perception target state == 3 (battle)
+0x0165bb10,27,ai_func_is_change_state,ai,edge-verified,AI script binding IsChangeState: target state differs from last frame's
+0x0165bb30,22,ai_func_is_caution_state,ai,edge-verified,AI script binding IsCautionState: perception target state == 1 (caution)
+0x0165bb50,22,ai_func_is_find_state,ai,edge-verified,AI script binding IsFindState: perception target state == 2 (find)
+0x0165bb70,29,ai_func_get_current_target_state,ai,edge-verified,"AI script binding GetCurrTargetState: forced state (think +0x9a8) unless -1, else the perception's"
+0x0165bb90,18,ai_func_get_previous_target_state,ai,edge-verified,AI script binding GetPrevTargetState: the perception's target state last frame
+0x0167f2a0,22,ai_goal_func_set_timer,ai,edge-verified,AI goal script binding SetTimer: goal timer 0..15 (index checked signed)
+0x0167f2d0,22,ai_goal_func_set_number,ai,edge-verified,AI goal script binding SetNumber: goal script number 0..63 (index checked unsigned)
+0x0167f820,26,ai_goal_func_get_timer,ai,edge-verified,"AI goal script binding GetTimer: goal timer 0..15, 0.0 above"
+0x0167f840,32,ai_goal_func_is_finish_timer,ai,edge-verified,AI goal script binding IsFinishTimer: goal timer <= 0 (false above index 15)
+0x0167f860,20,ai_goal_func_is_finish_turn_timer,ai,edge-verified,AI goal script binding IsFinishTimerForTurnBeforeAtk: the turn-before-attack timer <= 0
+0x0167f880,26,ai_goal_func_get_number,ai,edge-verified,"AI goal script binding GetNumber: goal script number 0..63, 0.0 above"
+0x0169acf0,114,ai_character_has_effect_state,ai,edge-verified,"AI view slot +0x30: an active effect-list entry's row sets state 0x27, 0xb0 or 0xb1 (row bits 0x162:6, 0x162:7, 0x163:0)"
+0x0169ad80,134,ai_character_gather_effect_states,ai,edge-verified,"AI view slot +0x40: ORs states 0x27/0xb0/0xb1 of every active effect-list entry into three bytes"
+0x0169af00,126,ai_character_ready_check,ai,edge-verified,"AI view slot +0x68: module +0x78 owner: mode word == 1 when queries 0x1a8 yes / 0x1c0 no, else AI state slot != 0xff"
+0x0169fad0,155,ai_character_link_ids,ai,edge-verified,"The two ids of the character's link (vtable +0x108, +0x1f8) when its partner's link module is active and unblocked; else -1, -1"
+0x016b30a0,368,ai_target_list_mark_main_matches,ai,edge-verified,"Target list: marks entries matching the highest-priority entry (same character id, or place within 0.5 m); 8 s recheck timer"
 0x016efd00,368,event_emk_add,event,verified,SprjEmkSystem: find or add an event entry in two keyed lists; first advance with the 1/30 s step (1/60 s in the 60 FPS patches)
+0x01708410,168,ai_pending_event_fire,ai,edge-verified,"Pending AI event: character by entity id has this event id pending: post kind 0x1d, clear it; a failed lookup clears the cached index"
 0x017cfcc0,177,event_flag_write,event,verified,finds an exact event-flag group in a tree and sets or clears one bit
 0x0183ac60,20077,camera_update_follow,camera,edge-verified,"Updates subject-relative camera position and orientation through input; chase; collision avoidance and territory constraints; applies selected frame-rate gains"
 0x0183fad0,79,camera_follow_pitch,camera,edge-verified,Pitch from the forward basis; preserve scalar square underflow and zero fallback; call atan2 and XOR the returned sign bits
@@ -363,6 +397,13 @@ address,size,name,system,status,notes
 0x0233d750,383,engine_scaleform_heap_bins_take_best_0233d750,engine,edge-verified,Scaleform bins best fit: head of the first non-empty bin from the length's own (last bin unchecked); head moves to prev
 0x0233d8d0,573,engine_scaleform_heap_bins_take_best_aligned_0233d8d0,engine,edge-verified,Scaleform bins aligned best fit: from the first non-empty bin up; each ring walked backwards for a block holding the length at its first aligned address
 0x0233dc60,739,engine_scaleform_heap_bins_merge_free_0233dc60,engine,edge-verified,Scaleform merge of a freed block with free neighbours (previous through its tail copy); joined block to the head of the joined length's bin
+0x023411d0,116,menu_heap_adapter_free_023411d0,menu,edge-verified,Scaleform heap adapter free (vtable 0x057ab400): null kept; else DLNew release (thread release heap or the owner heap)
+0x02341330,188,menu_heap_adapter_reallocate_02341330,menu,edge-verified,Scaleform heap adapter reallocate: same size returns the buffer; else allocate from heaps[index] and copy the smaller size; DLNew release of the old one
+0x023548d0,162,menu_movie_screen_close_023548d0,menu,edge-verified,movie screen close: with the menu state flush the SprjScaleform player (if any) and close the movie; then queue the request
+0x02354d90,213,menu_movie_screen_step_02354d90,menu,edge-verified,movie screen step: the player step up to twice (+0xd0 counts tries); no player or a failed step marks the menu state and closes the movie; queue the request
+0x02360d80,168,menu_tex_repository_require_02360d80,menu,edge-verified,ScaleformTexRepository: a missing key gets a texture from the owner source (+0x940; vtable slot 0x130)
+0x02363c00,128,menu_work_holder_destroy_02363c00,menu,edge-verified,work holder destructor (vtable 0x05756bd0): base vtable; one user less (last sets the signal at +0x10); one reference less
+0x02363d20,128,menu_work_holder_destroy_02363d20,menu,edge-verified,work holder destructor (vtable 0x05756c00): the same code as 0x02363c00
 0x02377bd0,399,render_frame_update_02377bd0,render,verified,"per-frame: ages a list of ref-counted objects; updates RendMan-side child; steps another child by 1/30 s (Uncap: measured frame time)"
 0x0237e640,129,loading_file_copy_construct_0237e640,loading,edge-verified,constructor: resource base with the resource heap and no copy (class a; vtable 0x057acc60)
 0x0237e6d0,162,loading_file_copy_delete_0237e6d0,loading,edge-verified,deleting destructor (class a)
@@ -376,6 +417,9 @@ address,size,name,system,status,notes
 0x02380230,162,loading_file_copy_delete_02380230,loading,edge-verified,deleting destructor (class c)
 0x023802e0,154,loading_file_copy_destroy_023802e0,loading,edge-verified,destructor: free the file copy through DLNew release then the resource base (class c)
 0x02380380,342,loading_file_copy_copy_file_02380380,loading,edge-verified,vtable slot 7: copy the loaded file bytes into a buffer of its own while holding the file (class c)
+0x02387050,144,menu_file_set_loader_wait_02387050,menu,edge-verified,file set loader step: copy the sizes of the loaded files (state 4); one still loading stops it; then the next step and step done
+0x02387650,164,menu_file_set_loader_build_02387650,menu,edge-verified,file set loader step: build from the first and third files with the name; 0 declined (+0x19a); other than 1 failed (+0x15b); next step and step done
+0x0238a210,166,menu_named_resource_release_0238a210,menu,edge-verified,named resource release when held: handle released; registry entry found by the wide name and released; name emptied; loaded cleared
 0x02415fe0,89,menu_text_input_destroy,menu,edge-verified,"Text input dialog destructor: closes it, frees the text, destroys the Dantelion dialog object"
 0x02416040,574,menu_text_input_close,menu,edge-verified,"Text input dialog: waits for an open dialog to end, then empties its text and resets the state"
 0x024162a0,94,menu_text_input_open,menu,edge-verified,Text input dialog: opens the system keyboard dialog with the given settings once no other is open
