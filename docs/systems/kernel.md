@@ -165,6 +165,14 @@ ignore the result.
 | `0x0111ad80` | 23 | `kernel_semaphore_destroy` | edge-verified | Forward the full opaque handle including null to kernel deletion; preserve kernel writes and translate any nonzero low32 result to 0x21 |
 | `0x0111ada0` | 30 | `kernel_semaphore_wait` | verified | Wait for one unit using the full opaque handle including null and a null timeout pointer; preserve kernel writes; nonzero low32 results map to 0x21 |
 | `0x0111adc0` | 28 | `kernel_semaphore_signal` | verified | Signal one unit using the full opaque handle including null; preserve kernel writes and translate every nonzero low32 result to 0x21 |
+| `0x0247ecb0` | 15 | `kernel_light_mutex_construct` | edge-verified | DLLightMutex constructor: its vtable and a cleared initialized flag; the system mutex handle is left as it was |
+| `0x0247ecc0` | 118 | `kernel_light_mutex_delete` | edge-verified | DLLightMutex deleting destructor: destroys an initialized mutex (errors reported) without clearing the flag then frees the object |
+| `0x0247ed40` | 115 | `kernel_light_mutex_destruct` | edge-verified | DLLightMutex destructor: destroys an initialized mutex; EBUSY keeps the flag set; EINVAL and unknown errors reported |
+| `0x0247edc0` | 124 | `kernel_light_mutex_finalize` | edge-verified | DLLightMutex finalize: asks the vtable; EBUSY returns -2 and keeps the flag; otherwise the flag clears after any error reports |
+| `0x0247ee40` | 49 | `kernel_light_mutex_initialize` | edge-verified | DLLightMutex initialize: asks the vtable; the PthreadMutex initialize (0x02483fe0); a nonzero result is returned and the flag stays clear |
+| `0x0247ee90` | 226 | `kernel_light_mutex_lock` | edge-verified | DLLightMutex lock: the PthreadMutex lock inlined (forever); ETIMEDOUT returns -3; a mutex not initialized is reported then used |
+| `0x0247ef80` | 230 | `kernel_light_mutex_try_lock` | edge-verified | DLLightMutex try lock: the PthreadMutex try lock inlined; EBUSY returns -2; a mutex not initialized is reported then used |
+| `0x0247f070` | 124 | `kernel_light_mutex_unlock` | edge-verified | DLLightMutex unlock: the PthreadMutex unlock inlined; EPERM accepted; a mutex not initialized is reported then used |
 | `0x02483e80` | 204 | `kernel_condition_wait` | verified | Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path |
 
 ## Structs and globals

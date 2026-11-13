@@ -296,6 +296,7 @@ piece of the game's own per-frame work, the next layer to map.
 | `0x024512a0` | 78 | `frame_timing_task_frame_024512a0` | verified | task manager frame entry from the frame step: FD4TaskManager singleton; then 0x01388c60 |
 | `0x024bd150` | 216 | `frame_timing_job_take_result` | verified | Job handle result: mode 0 polls (null if not done); 2 takes; others wait 1 ms at a time; bumps the job's holder count under the job lock |
 | `0x024bdd40` | 36 | `frame_timing_job_wait` | edge-verified | Poll a job's state until finished (2); sleeping 1 ms in the kernel between polls |
+| `0x024f8110` | 170 | `frame_timing_random_generator_seed_024f8110` | edge-verified | Seeds a 64-bit LCG (x*0x5deece66d+11 mod 2^64) with the 32-bit seed stepped once and writes the high 32 bits of that state and the next three to the four words |
 | `0x02c6d580` | 149 | `frame_timing_thread_random` | edge-verified | This thread's random state (thread-local); seeds it once from the 32-bit time of day in microseconds |
 | `0x02e61140` | 67 | `frame_timing_time_of_day_us` | edge-verified | Time of day in microseconds (64-bit multiply and add wrap); the gettimeofday result is ignored |
 | `0x02e61280` | 101 | `frame_timing_time_seed_words` | edge-verified | Four seed words in rax:rdx: 32-bit seconds; microseconds; and both offset by a counter that advances by 2 per call |
