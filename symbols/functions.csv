@@ -98,6 +98,7 @@ address,size,name,system,status,notes
 0x014753c0,86,render_emit_set_ps_shader_014753c0,render,edge-verified,Packet writer: reserves 40 words (space callback when short); sceGnmSetPsShader at the cursor; cursor advanced only on success
 0x01475420,86,render_emit_update_ps_shader_01475420,render,edge-verified,Packet writer: reserves 40 words (space callback when short); sceGnmUpdatePsShader at the cursor; cursor advanced only on success
 0x01475480,98,render_emit_set_vs_shader_01475480,render,edge-verified,Packet writer: reserves 29 words (space callback when short); sceGnmSetVsShader with the shader modifier; cursor advanced only on success
+0x014755d0,98,render_set_hs_shader,render,edge-verified,Reserve 30 DWORDs; read configuration DWORD after callback admission; forward opaque registers to sceGnmSetHsShader; zero low-DWORD result adds 120 to live cursor; AL admits without retry
 0x01475da0,101,render_emit_event_write,render,verified,Emit EVENT_WRITE with a masked event type and the original table-selected event index.
 0x01475e10,173,render_emit_shader_preparation_range_01475e10,render,edge-verified,"ACQUIRE_MEM packet (7 words) for a memory range: coherence control from the cache actions, targets and top flag; reserve via the space callback"
 0x01476030,140,render_set_shader_stages_01476030,render,edge-verified,"SET_CONTEXT_REG VGT_SHADER_STAGES_EN (0x2d5) to the stages (3 words), only for the values the game uses; reserve via the space callback first"
