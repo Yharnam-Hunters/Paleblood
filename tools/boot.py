@@ -365,6 +365,8 @@ def main() -> int:
     ap.add_argument('--display', choices=('none', 'headless', 'window'), default='none',
                     help='show the frames: none (default), headless, or a window (needs Vulkan and SDL3)')
     ap.add_argument('--display-capture', default=None, metavar='DIR', help='write each presented frame to DIR as PPM')
+    ap.add_argument('--frame-log', default=None, metavar='FILE',
+                    help='write a line per presented frame to FILE (port, frame, monotonic ns): tools/frame_stats.py reads it')
     ap.add_argument('--game-lib', default=None, metavar='LIBRARY',
                     help="run the decompilation's replacements (the built game library, build/game/libbbgame.so) "
                          'in place of the originals; not for recorded boots')
@@ -455,6 +457,8 @@ def main() -> int:
                '--display', a.display, '--audio', a.audio, '--input', a.input]
         if a.display_capture:
             cmd += ['--display-capture', a.display_capture]
+        if a.frame_log:
+            cmd += ['--frame-log', os.path.abspath(a.frame_log)]
         if a.input_script:
             spec = a.input_script
             cmd += ['--input-script', '@' + os.path.abspath(spec[1:]) if spec.startswith('@') else spec]

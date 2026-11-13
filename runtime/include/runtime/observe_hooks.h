@@ -32,6 +32,15 @@ extern "C" {
 enum { RT_OBSERVED_ARGUMENTS = 6, RT_OBSERVED_XMM0 = 8, RT_OBSERVED_XMM_WORDS = 2, RT_OBSERVED_FRAME_WORDS = RT_OBSERVED_XMM0 + 8 * RT_OBSERVED_XMM_WORDS };
 typedef void (*rt_observer_fn)(const uint64_t args[RT_OBSERVED_ARGUMENTS]);
 
+/* The call's stack arguments (the seventh integer argument on): rt_observe_entry keeps the caller's rsp and
+   lowers it by its 200-byte frame (RT_OBSERVED_ENTRY_FRAME_BYTES, runtime/observe_entry.S), so above the frame
+   come the return address and then the arguments the caller pushed, from word RT_OBSERVED_STACK. */
+enum { RT_OBSERVED_ENTRY_FRAME_BYTES = 200, RT_OBSERVED_STACK = RT_OBSERVED_ENTRY_FRAME_BYTES / 8 + 1 };
+
+/* The observed call's n-th stack argument (n from 0: the seventh integer argument), as the caller stored
+   it; the frame is the whole saved frame, which the caller's stack continues. */
+static inline uint64_t rt_observed_stack_argument(const uint64_t *frame, unsigned n) { return frame[RT_OBSERVED_STACK + n]; }
+
 /* The observed call's n-th float argument (in xmm n's low 32 bits). */
 static inline float rt_observed_float(const uint64_t frame[RT_OBSERVED_FRAME_WORDS], unsigned n)
 {

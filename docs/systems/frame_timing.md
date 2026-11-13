@@ -252,11 +252,16 @@ piece of the game's own per-frame work, the next layer to map.
 | `0x01388c70` | 171 | `frame_timing_task_run_01388c70` | verified | task manager run: prepare the frame; dispatch through +0x40 (virtual +0x30) with +0x38 set; finish |
 | `0x0138a370` | 330 | `frame_timing_task_dispatch_0138a370` | verified | task dispatcher (virtual +0x30): wakes registered tasks; updates the group record; runs the job like the worker step |
 | `0x013d3520` | 87 | `frame_timing_task_013d3520` | verified | per-frame task: passes the frame-time descriptor and its seconds to three parts; Uncap FPS++ edits it |
+| `0x013daac0` | 96 | `frame_timing_listener_list_notify_013daac0` | edge-verified | Runs the list preparation 0x013dab20, then passes the frame-time descriptor to each listener (vtable slot 2), re-reading the list after every call |
 | `0x0143e490` | 174 | `frame_timing_task_flush_queue_0143e490` | verified | task manager queue flush: lock; run; destroy and free every queued object; empty the list; unlock |
 | `0x0143f9f0` | 18 | `frame_timing_task_set_frame_value_0143f9f0` | verified | task manager: copies the float at +0x8 of the frame information to the global 0x058b7e08 |
 | `0x014400a0` | 180 | `frame_timing_task_workers_step_014400a0` | verified | task manager workers: three rounds over the worker queues +0x58; +0x68; +0x60 |
 | `0x01448580` | 149 | `frame_timing_stopwatch_start` | edge-verified | Start a stopwatch from exactly zero: seconds since game start (double divide; float store) at +0x38; bump counters 0x44 and 0x4c |
 | `0x01448620` | 168 | `frame_timing_stopwatch_stop` | edge-verified | Stop a positive stopwatch: add seconds since its start to the totals at +0x3c and +0x54; clear the start |
+| `0x01456c80` | 39 | `frame_timing_item_list_update_01456c80` | edge-verified | Calls 0x013d4810 on each item pointer between +0x8 and +0x10 (the ends read once) |
+| `0x01456eb0` | 28 | `frame_timing_profile_start_01456eb0` | edge-verified | When the profiling switch at 0x058b8718 is set, starts stopwatch N of the ten at 0x058b86c0 (tail call to 0x01448580) |
+| `0x01456ed0` | 28 | `frame_timing_profile_stop_01456ed0` | edge-verified | When the profiling switch at 0x058b8718 is set, stops stopwatch N of the ten at 0x058b86c0 (tail call to 0x01448620) |
+| `0x01456ef0` | 136 | `frame_timing_profile_frame_end_01456ef0` | edge-verified | When the profiling switch at 0x058b8718 is set, gives each of the ten stopwatches at 0x058b86c0 its end-of-frame tick (0x014486d0) in order |
 | `0x01ea47a0` | 611 | `frame_timing_gate_create_handle` | edge-verified | handle creation of the Chalice Dungeon gate state: idle in mode 1; drops the handle; creates one from two filled blocks; FrpgNetMan+0xa68 and a name; adopts it; request 3 |
 | `0x01ea4a10` | 501 | `frame_timing_gate_entry_check` | edge-verified | entry check of the Chalice Dungeon gate state: online gates as 0x01ea5280; keeps the first keyed entry's object as its handle; then request 4 |
 | `0x01ea4cb0` | 1472 | `frame_timing_gate_create_handle_from_levels` | edge-verified | level creation of the Chalice Dungeon gate state: online gates; four highest set levels (event flags 0x184d+i+7*level); a handle object from them; adopted; request 5 |
