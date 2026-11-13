@@ -43,7 +43,7 @@ engine_fixed_allocator_initialize_02484b30,edge,,19,19,0,0,b47c8dd377efbfac,2026
 engine_fixed_allocator_release_chunks_02484ae0,edge,,10,10,0,0,5dad1163477f190e,2026-11-12
 engine_fixed_allocator_shrink_02484f20,edge,,17,17,0,0,bfe97a652512d54b,2026-11-12
 engine_format_string_argument_024e62b0,edge,,342,342,0,0,50daec529e2efcd9,2026-11-12
-engine_format_write_wide_string_024e77f0,edge,,270,270,0,0,50daec529e2efcd9,2026-11-12
+engine_format_write_wide_string_024e77f0,edge,,294,294,0,0,50daec529e2efcd9,2026-11-12
 engine_initialize_static_wide_string_0217ffb0,recorded,,1,1,0,0,ccdadef0d4bd7152,2026-11-12
 engine_initialize_static_wide_string_0217ffb0,edge,,30,30,0,0,ccdadef0d4bd7152,2026-11-12
 engine_regular_heap_allocate_02485730,edge,,23,23,0,0,ceba07c492cd7255,2026-11-12

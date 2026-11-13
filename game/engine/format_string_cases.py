@@ -92,6 +92,10 @@ def make(which):
                                   count_only=count_only, room=11, length=5))
         for length, room in itertools.product(LENGTHS, ROOMS):
             out.append(write_wide(f'len{length:x}_r{room}', length=length, room=room, width=3, flags=0x11))
+        for room, width, flags in itertools.product((1, 2, 6, 11), (0, 1, 4), (0, 0x10)):
+            # a string exactly as long as the room: one unit is kept for the terminator
+            out.append(write_wide(f'len_is_room_r{room}_w{width}_f{flags:x}', length=room, room=room,
+                                  width=width, flags=flags))
         for room, width, flags in itertools.product((3, 8, 40), (0, 5, 12), (0, 0x10)):
             out.append(write_wide(f'null_r{room}_w{width}_f{flags:x}', text=False, room=room, width=width, flags=flags))
     else:
