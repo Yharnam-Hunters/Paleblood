@@ -1441,6 +1441,36 @@ static void many_targets(rt_executor *x)
     check_triangle(x, at(MANY_FIRST));
 }
 
+/* The pipelines kept after render targets are freed (many_targets leaves all 512 kept): each round draws
+   into a new target, which frees the oldest; that target's pipeline goes and the last pipeline made (the
+   one of the target drawn into the round before) moves into its place. That target is drawn again then.
+   Found where it moved, its pipeline is made once; lost there (the lookup not told of the move), it is
+   made again in every round, and the stale bucket chains soon loop (the run never ends) or the 1024
+   pipelines kept run out. The state many_targets left (its last draw blends ZERO + ONE, keeping what is
+   there) is reset first, so the target drawn last shows the triangle. */
+static void pipelines_after_freed_targets(rt_executor *x)
+{
+    enum { REDRAW_BUFFER = 0xc0fd4000, REDRAW_FIRST = 0x3800000, KEPT = 514, ROUNDS = 1100, TARGET_BYTES = SIZE * SIZE * 4 };
+    char error[200] = "";
+    const uint64_t first = at(REDRAW_FIRST) + (uint64_t)(KEPT - 1) * TARGET_BYTES; /* many_targets' last target */
+    memset((void *)(uintptr_t)(first + TARGET_BYTES), 0, (size_t)ROUNDS * TARGET_BYTES);
+    rt_executor_reset(x);
+    int drawn = 1;
+    for (unsigned k = 0; k < ROUNDS && drawn; k++) {
+        const uint64_t targets[2] = {first + (uint64_t)(k + 1) * TARGET_BYTES, first + (uint64_t)k * TARGET_BYTES}; /* the new one, then the one before */
+        for (unsigned t = 0; t < 2 && drawn; t++) {
+            rt_render_forget();
+            const int ran = rt_executor_run(x, REDRAW_BUFFER, record_draw(REDRAW_BUFFER, targets[t], COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER),
+                                            error, sizeof error);
+            if (ran) fprintf(stderr, "round %u of drawing targets again: %s\n", k, error);
+            drawn = ran == 0;
+        }
+    }
+    CHECK(drawn);
+    check_triangle(x, first + (uint64_t)(ROUNDS - 1) * TARGET_BYTES); /* the target drawn last */
+    CHECK(rt_executor_finish(x, error, sizeof error) == 0);
+}
+
 /* A null image descriptor (all 8 words 0, as YEBIS binds for a pass that samples nothing there): the
    pixel shader's reads return 0, as from a VK_EXT_robustness2 null descriptor, so the pixels the triangle
    covers are 0 and the others keep the memory's pattern. A read through one with base address 0 and other
@@ -3184,6 +3214,7 @@ int main(void)
     null_image_descriptor(x);
     reshaped_target(x);
     many_targets(x);
+    pipelines_after_freed_targets(x);
     /* a fast-clear eliminate pass (mode 2) over a target without fast clears writes nothing */
     const uint32_t eliminate[][2] = {{0xa202, 0x2u << 4 | 0xccu << 16}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET) + 0x480000, eliminate, 1, 0, error, sizeof error) == 0);
