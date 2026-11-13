@@ -16,6 +16,7 @@
 #include "engine.h"
 #include "fixed_allocator.h"
 #include "thread.h"
+#include "runtime/game_guest_pointer.h"
 
 namespace {
 
@@ -58,9 +59,19 @@ constexpr std::ptrdiff_t vtable_entries_offset = 0x10;
 
 constexpr uint64_t default_size = 0x20000;
 
+// Share the runtime-qualified guest TCB with rewritten guest code on Darwin.
+unsigned char *temporary_thread_pointer()
+{
+#if defined(__APPLE__) && defined(__MACH__)
+    return rt_game_guest_thread_pointer();
+#else
+    return engine::thread_pointer();
+#endif
+}
+
 TemporaryHeap *&thread_heap()
 {
-    return *reinterpret_cast<TemporaryHeap **>(engine::thread_pointer() + thread_heap_offset.get());
+    return *reinterpret_cast<TemporaryHeap **>(temporary_thread_pointer() + thread_heap_offset.get());
 }
 
 }  // namespace
@@ -70,7 +81,7 @@ extern "C" void bb_engine_temporary_heap_create_for_thread_0247d250()
     if (thread_heap())
         return;
     const uint64_t setting =
-        *reinterpret_cast<const uint64_t *>(engine::thread_pointer() + thread_heap_size_offset.get());
+        *reinterpret_cast<const uint64_t *>(temporary_thread_pointer() + thread_heap_size_offset.get());
     uint64_t size = default_size;
     if (setting) {
         if (setting < sizeof(TemporaryHeap))

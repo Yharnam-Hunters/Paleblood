@@ -43,4 +43,22 @@ if(TARGET guest_pointer_owned)
     set_target_properties(test_disk_guest_tls PROPERTIES ENABLE_EXPORTS ON)
     add_test(NAME darwin_disk_guest_tls COMMAND test_disk_guest_tls)
     set_tests_properties(darwin_disk_guest_tls PROPERTIES TIMEOUT 15)
+
+    foreach(unit IN ITEMS correct wrong)
+        add_executable(test_temporary_heap_guest_tls_${unit}
+            game/engine/tests/temporary_heap_guest_tls.cpp runtime/process.c)
+        target_link_libraries(test_temporary_heap_guest_tls_${unit}
+            PRIVATE guest_pointer_owned ${CMAKE_DL_LIBS} pthread)
+        target_compile_options(test_temporary_heap_guest_tls_${unit} PRIVATE -ffp-contract=off -fno-fast-math)
+        set_target_properties(test_temporary_heap_guest_tls_${unit} PROPERTIES ENABLE_EXPORTS ON)
+        if(unit STREQUAL "wrong")
+            target_compile_definitions(test_temporary_heap_guest_tls_${unit} PRIVATE PB_TEST_WRONG_TEMPORARY_TCB=1)
+        endif()
+    endforeach()
+    add_test(NAME darwin_temporary_heap_guest_tls COMMAND test_temporary_heap_guest_tls_correct)
+    add_test(NAME darwin_temporary_heap_guest_tls_wrong_getter
+        COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/game/engine/tests/temporary_heap_guest_tls_control.py
+            $<TARGET_FILE:test_temporary_heap_guest_tls_correct> $<TARGET_FILE:test_temporary_heap_guest_tls_wrong>)
+    set_tests_properties(darwin_temporary_heap_guest_tls PROPERTIES TIMEOUT 15)
+    set_tests_properties(darwin_temporary_heap_guest_tls_wrong_getter PROPERTIES TIMEOUT 50)
 endif()
