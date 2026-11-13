@@ -2064,7 +2064,7 @@ static void depth_and_strips(rt_executor *x)
    (32_32_32_32 float, DST_SEL x, y, z, w); the triangle draws the reference image. */
 static void fetch_shader(rt_executor *x)
 {
-    enum { FETCH_BUFFER = 0xc0f50000, VS_CODE = 0x3600, FS_CODE = 0x3700, TABLE = 0x11000, FETCH_TARGET = 0xc00000 };
+    enum { FETCH_BUFFER = 0xc0f50000, VS_CODE = 0x3600, FS_CODE = 0x3700, FS_MOVED = 0x3780, TABLE = 0x11000, FETCH_TARGET = 0xc00000 };
     char error[200] = "";
     memcpy((void *)(uintptr_t)at(VS_CODE), vertex_calling_fetch, sizeof vertex_calling_fetch);
     memcpy((void *)(uintptr_t)at(FS_CODE), fetch_position_color, sizeof fetch_position_color);
@@ -2079,8 +2079,21 @@ static void fetch_shader(rt_executor *x)
     CHECK(rt_render_record_vertex_shader(FETCH_BUFFER, offset, vertex, error, sizeof error) == 0);
     const uint32_t user[4] = {(uint32_t)at(FS_CODE), (uint32_t)(at(FS_CODE) >> 32), (uint32_t)at(TABLE), (uint32_t)(at(TABLE) >> 32)};
     CHECK(rt_render_record_user_data(FETCH_BUFFER, offset + 0x10, RT_STAGE_VERTEX, 0, user, 4, error, sizeof error) == 0);
-    const int drawn = rt_executor_run(x, FETCH_BUFFER, record_triangle_draw(FETCH_BUFFER, offset + 0x20), error, sizeof error);
+    int drawn = rt_executor_run(x, FETCH_BUFFER, record_triangle_draw(FETCH_BUFFER, offset + 0x20), error, sizeof error);
     if (drawn) fprintf(stderr, "fetch shader: %s\n", error);
+    CHECK(drawn == 0);
+    check_triangle(x, at(FETCH_TARGET));
+    /* the same vertex shader with its fetch shader moved (the old place zeroed): the call goes where
+       this draw's user data points, though which pair holds the address is kept from the first draw */
+    memcpy((void *)(uintptr_t)at(FS_MOVED), fetch_position_color, sizeof fetch_position_color);
+    memset((void *)(uintptr_t)at(FS_CODE), 0, sizeof fetch_position_color);
+    rt_render_forget();
+    offset = record_setup(FETCH_BUFFER, at(FETCH_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    CHECK(rt_render_record_vertex_shader(FETCH_BUFFER, offset, vertex, error, sizeof error) == 0);
+    const uint32_t moved[4] = {(uint32_t)at(FS_MOVED), (uint32_t)(at(FS_MOVED) >> 32), (uint32_t)at(TABLE), (uint32_t)(at(TABLE) >> 32)};
+    CHECK(rt_render_record_user_data(FETCH_BUFFER, offset + 0x10, RT_STAGE_VERTEX, 0, moved, 4, error, sizeof error) == 0);
+    drawn = rt_executor_run(x, FETCH_BUFFER, record_triangle_draw(FETCH_BUFFER, offset + 0x20), error, sizeof error);
+    if (drawn) fprintf(stderr, "moved fetch shader: %s\n", error);
     CHECK(drawn == 0);
     check_triangle(x, at(FETCH_TARGET));
 }
