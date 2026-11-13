@@ -110,6 +110,13 @@ struct MetalState {
     bool index_type_set = false, index_base_set = false, index_size_set = false;
     bool index_base_current = false;
 };
+/* What each queue of the GPU keeps of its own (rt_executor_select_queue): the compute shader and its user data. */
+struct MetalQueueState {
+    rt_compute_shader compute{};
+    bool compute_set = false;
+    uint32_t compute_user[GCN_USER_SGPR_MAX] = {};
+    uint32_t compute_user_set = 0;
+};
 struct rt_executor {
     id<MTLDevice> device = nil;
     id<MTLCommandQueue> queue = nil;
@@ -119,6 +126,9 @@ struct rt_executor {
     uint64_t size = 0, guest_base = 0, address_offset = 0;
     bool failed = false;
     MetalState state;
+    /* the compute state of the queues other than the one the calls come from: the running queue's is in state */
+    MetalQueueState queue_states[RT_EXECUTOR_QUEUES];
+    unsigned call_queue = RT_EXECUTOR_GRAPHICS_QUEUE;
     std::vector<MetalShader> shaders;
     std::vector<MetalComputePipeline> compute_pipelines;
     std::vector<MetalTarget> targets;
@@ -1008,7 +1018,25 @@ static int draw_indexed(rt_executor *x, MetalState &state, uint32_t header, uint
 /* Reset only GPU state: completed targets, compiled shaders and device failure remain. */
 extern "C" void rt_executor_reset(rt_executor *x)
 {
-    if (x) x->state = MetalState{};
+    if (!x) return;
+    x->state = MetalState{};
+    for (MetalQueueState &queue : x->queue_states) queue = MetalQueueState{};
+    x->call_queue = RT_EXECUTOR_GRAPHICS_QUEUE;
+}
+
+extern "C" int rt_executor_select_queue(rt_executor *x, unsigned queue, char *error, size_t error_size)
+{
+    if (!x || x->failed) return failed(error, error_size, "a usable executor is required");
+    if (queue >= RT_EXECUTOR_QUEUES) return failed(error, error_size, "calls from queue %u (queues 0-%d)", queue, RT_EXECUTOR_QUEUES - 1);
+    if (queue == x->call_queue) return 0;
+    MetalState &state = x->state;
+    MetalQueueState &from = x->queue_states[x->call_queue], &to = x->queue_states[queue];
+    from.compute = state.compute, from.compute_set = state.compute_set, from.compute_user_set = state.compute_user_set;
+    std::memcpy(from.compute_user, state.compute_user, sizeof from.compute_user);
+    state.compute = to.compute, state.compute_set = to.compute_set, state.compute_user_set = to.compute_user_set;
+    std::memcpy(state.compute_user, to.compute_user, sizeof state.compute_user);
+    x->call_queue = queue;
+    return 0;
 }
 
 extern "C" int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t bytes, char *error, size_t error_size)

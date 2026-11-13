@@ -380,6 +380,16 @@ typedef struct {
     int ps_input_control_set;
 } draw_state;
 
+/* What each queue of the GPU keeps of its own (rt_executor_select_queue): the compute shader, its user
+   data and the indirect arguments' base. */
+typedef struct {
+    rt_compute_shader compute;
+    int compute_set;
+    uint32_t compute_user[GCN_USER_SGPR_MAX], compute_user_set;
+    uint64_t indirect_base;
+    int indirect_base_set;
+} compute_queue_state;
+
 /* One batch: the GPU work recorded between waits, with what it holds until it has run (its descriptor
    sets, the staging buffer its image loads copy from) and what it may store to guest memory. A ring
    of them lets the CPU record the next batch while the GPU runs earlier ones (batch_submit). */
@@ -570,6 +580,10 @@ struct rt_executor {
     /* the GPU's state as the calls run so far set it: registers, user data and shaders carry over from
        one submitted buffer to the next, as on the console's GPU */
     draw_state state;
+    /* the compute state of the queues other than the one the calls come from (rt_executor_select_queue):
+       the running queue's is in state */
+    compute_queue_state queue_states[RT_EXECUTOR_QUEUES];
+    unsigned call_queue;
     struct shader_sweep *sweep; /* BB_SHADER_SWEEP's record, or NULL (the sweep, below) */
 };
 
@@ -5097,7 +5111,38 @@ static int index_range_for(rt_executor *x, const draw_state *s, uint32_t first, 
     return index_range_at(x, s, s->index_base + delta, count, out, error, error_size);
 }
 
-void rt_executor_reset(rt_executor *x) { memset(&x->state, 0, sizeof x->state); }
+void rt_executor_reset(rt_executor *x)
+{
+    memset(&x->state, 0, sizeof x->state);
+    memset(x->queue_states, 0, sizeof x->queue_states);
+    x->call_queue = RT_EXECUTOR_GRAPHICS_QUEUE;
+}
+
+/* Moves the compute state between the running state and a queue's slot (to: into the slot). */
+static void swap_compute_state(draw_state *s, compute_queue_state *q, int to_slot)
+{
+    if (to_slot) {
+        q->compute = s->compute, q->compute_set = s->compute_set;
+        memcpy(q->compute_user, s->compute_user, sizeof q->compute_user);
+        q->compute_user_set = s->compute_user_set;
+        q->indirect_base = s->indirect_base, q->indirect_base_set = s->indirect_base_set;
+    } else {
+        s->compute = q->compute, s->compute_set = q->compute_set;
+        memcpy(s->compute_user, q->compute_user, sizeof s->compute_user);
+        s->compute_user_set = q->compute_user_set;
+        s->indirect_base = q->indirect_base, s->indirect_base_set = q->indirect_base_set;
+    }
+}
+
+int rt_executor_select_queue(rt_executor *x, unsigned queue, char *error, size_t error_size)
+{
+    if (queue >= RT_EXECUTOR_QUEUES) return failed(error, error_size, "calls from queue %u (queues 0-%d)", queue, RT_EXECUTOR_QUEUES - 1);
+    if (queue == x->call_queue) return 0;
+    swap_compute_state(&x->state, &x->queue_states[x->call_queue], 1);
+    swap_compute_state(&x->state, &x->queue_states[queue], 0);
+    x->call_queue = queue;
+    return 0;
+}
 
 static int run_calls(rt_executor *x, const rt_render_call *calls, size_t count, char *error, size_t error_size);
 
