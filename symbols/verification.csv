@@ -132,6 +132,7 @@ engine_linear_heap_walk_02485340,edge,,10,10,0,0,9e4e9d179edbb6de,2026-11-12
 engine_locked_regular_heap_construct_0247c590,edge,,3,3,0,0,d86ef37204a20cc9,2026-11-13
 engine_locked_regular_heap_initialize_0247c5e0,recorded,,1,1,0,0,d86ef37204a20cc9,2026-11-13
 engine_locked_regular_heap_initialize_0247c5e0,edge,,24,24,0,0,d86ef37204a20cc9,2026-11-13
+engine_regular_heap_allocate_02485730,recorded,,200,200,0,0,5fb76586890b3d2a,2026-11-13
 engine_regular_heap_allocate_02485730,edge,,23,23,0,0,5fb76586890b3d2a,2026-11-13
 engine_regular_heap_allocate_aligned_02485a60,edge,,25,25,0,0,433b759023d0daac,2026-11-13
 engine_regular_heap_check_block_02485e20,edge,,35,35,0,0,df8c99890db78683,2026-11-13
@@ -968,6 +969,7 @@ render_swap_chain_present_mode,edge,,19,19,0,0,e1616a0a330d07b9,2026-11-03
 render_swap_chain_submit,edge,,53,53,0,0,8424f6556ab52ba2,2026-11-03
 render_translate_record_secondary_02ab7720,edge,,72,72,0,0,cfe70ede045a3fa9,2026-11-13
 render_translate_record_tertiary_02ab78a0,edge,,72,72,0,0,cfe70ede045a3fa9,2026-11-13
+render_update_hs_shader,edge,,245,245,0,0,1174a8774473cb56,2026-11-13
 render_update_model_wind,edge,,120,120,0,0,4d23637bf11c299c,2026-11-10
 render_update_model_wind,edge,30,120,120,0,0,4d23637bf11c299c,2026-11-10
 render_update_model_wind,edge,60,120,120,0,0,4d23637bf11c299c,2026-11-10
