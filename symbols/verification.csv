@@ -397,8 +397,12 @@ render_emit_present_release_delegate,recorded,,95,95,0,0,44c6a754b371f521,2026-1
 render_emit_present_release_delegate,edge,,8,8,0,0,44c6a754b371f521,2026-11-12
 render_emit_present_release_packet,recorded,,99,99,0,0,49b21387b8cdc24b,2026-11-12
 render_emit_present_release_packet,edge,,14,14,0,0,49b21387b8cdc24b,2026-11-12
+render_emit_shader_address_01476390,recorded,,138,138,0,0,2dfc033fc334c36d,2026-11-13
+render_emit_shader_descriptor16_014761a0,recorded,,200,200,0,0,2dfc033fc334c36d,2026-11-13
+render_emit_shader_descriptor32_01476240,recorded,,90,90,0,0,2dfc033fc334c36d,2026-11-13
 render_emit_shader_link_words,recorded,,158,158,0,0,f585add345845a60,2026-11-12
 render_emit_shader_link_words,edge,,23,23,0,0,f585add345845a60,2026-11-12
+render_emit_shader_sampler16_014762f0,recorded,,63,63,0,0,2dfc033fc334c36d,2026-11-13
 render_finish_present_commands,recorded,,261,261,0,0,3adf6995cef8857d,2026-11-12
 render_finish_present_commands,edge,,12,12,0,0,3adf6995cef8857d,2026-11-12
 render_finish_present_context,recorded,,105,105,0,0,fd9fe3b2f4ad1c02,2026-11-12
@@ -515,6 +519,7 @@ render_reset_present_preparation_dirty,recorded,,63,63,0,0,dba56abb0d96bbb8,2026
 render_reset_present_preparation_dirty,edge,,16,16,0,0,dba56abb0d96bbb8,2026-11-12
 render_restore_color_target_from_bank,edge,,12,12,0,0,649b23425dd0ccb1,2026-11-10
 render_restore_depth_target_from_bank,edge,,12,12,0,0,8668e2d117190cf8,2026-11-10
+render_select_shader_command_mode_01476030,recorded,,107,107,0,0,2dfc033fc334c36d,2026-11-13
 render_set_cb_blend_control,recorded,,200,200,0,0,44e954b7da1bc15e,2026-11-12
 render_set_cb_blend_control,edge,,14,14,0,0,44e954b7da1bc15e,2026-11-12
 render_set_cb_color_control,recorded,,126,126,0,0,8ba8cb4828340be9,2026-11-12
