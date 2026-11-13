@@ -2096,6 +2096,22 @@ static void fetch_shader(rt_executor *x)
     if (drawn) fprintf(stderr, "moved fetch shader: %s\n", error);
     CHECK(drawn == 0);
     check_triangle(x, at(FETCH_TARGET));
+    /* another vertex shader loaded at the same address, calling through s[4:5]: the kept pair is not
+       used for code that is no longer there */
+    uint32_t through_s4[sizeof vertex_calling_fetch / 4];
+    memcpy(through_s4, vertex_calling_fetch, sizeof through_s4);
+    through_s4[0] = 0xbe802104; /* s_swappc_b64 s[0:1], s[4:5] */
+    memcpy((void *)(uintptr_t)at(VS_CODE), through_s4, sizeof through_s4);
+    rt_render_forget();
+    offset = record_setup(FETCH_BUFFER, at(FETCH_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const uint32_t six_user[RT_VERTEX_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 6 << 1, 0, 0x4, 0};
+    CHECK(rt_render_record_vertex_shader(FETCH_BUFFER, offset, six_user, error, sizeof error) == 0);
+    const uint32_t pair_s4[6] = {0, 0, (uint32_t)at(TABLE), (uint32_t)(at(TABLE) >> 32), (uint32_t)at(FS_MOVED), (uint32_t)(at(FS_MOVED) >> 32)};
+    CHECK(rt_render_record_user_data(FETCH_BUFFER, offset + 0x10, RT_STAGE_VERTEX, 0, pair_s4, 6, error, sizeof error) == 0);
+    drawn = rt_executor_run(x, FETCH_BUFFER, record_triangle_draw(FETCH_BUFFER, offset + 0x20), error, sizeof error);
+    if (drawn) fprintf(stderr, "vertex shader replaced: %s\n", error);
+    CHECK(drawn == 0);
+    check_triangle(x, at(FETCH_TARGET));
 }
 
 /* Every pixel of the 16 x 16 target at `target` is `bgra`. */
