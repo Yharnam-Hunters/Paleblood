@@ -80,7 +80,7 @@ address,size,name,system,status,notes
 0x01475000,397,render_emit_shader_link_words,render,verified,Write SPI_PS_INPUT_CNTL entries from last word to first to preserve overlapping reads; retain the unmasked count shift for zero and oversized counts.
 0x01475370,76,render_emit_num_instances,render,verified,Emit NUM_INSTANCES with the complete supplied instance count.
 0x01475da0,101,render_emit_event_write,render,verified,Emit EVENT_WRITE with a masked event type and the original table-selected event index.
-0x01476030,140,render_select_shader_command_mode_01476030,render,edge-verified,"SET_CONTEXT_REG 0x2d5 to the command mode (3 words), only for the modes the game uses; reserve via the space callback first"
+0x01476030,140,render_set_shader_stages_01476030,render,edge-verified,"SET_CONTEXT_REG VGT_SHADER_STAGES_EN (0x2d5) to the stages (3 words), only for the values the game uses; reserve via the space callback first"
 0x014761a0,156,render_emit_shader_descriptor16_014761a0,render,edge-verified,"NOP with descriptor control 0x68750004, then SET_SH_REG of a 16-byte descriptor at the stage base plus slot (8 words)"
 0x01476240,172,render_emit_shader_descriptor32_01476240,render,edge-verified,"NOP with descriptor control 0x68750005, then SET_SH_REG of a 32-byte descriptor at the stage base plus slot (12 words)"
 0x014762f0,156,render_emit_shader_sampler16_014762f0,render,edge-verified,"NOP with descriptor control 0x68750006, then SET_SH_REG of a 16-byte sampler at the stage base plus slot (8 words)"

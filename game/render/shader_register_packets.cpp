@@ -5,8 +5,12 @@
 // The register writers take a stage and a user-data slot: the register is the stage's base from
 // the game's table plus the slot, counted from 0x2c00 (shader_packet_layout.h), and bit 1 of the
 // buffer's flag word (command_flags.h) is carried into the SET_SH_REG header.
-// - render_select_shader_command_mode_01476030: one context register (0x2d5) set to the mode, only
-//   for the modes the game uses; any other mode writes nothing, after the space was reserved.
+// Each writer reports what it writes to the renderer's observer (render_observe.h) at the cursor it
+// reserved, before writing: the shader stages register, or the stage's user data from the slot on.
+// - render_set_shader_stages_01476030: VGT_SHADER_STAGES_EN (context register 0x2d5) set to the
+//   stages, only for the combinations the game uses (vertex and pixel 0, tessellation 0x45,
+//   tessellation with geometry 0xad, export and geometry 0xb0, and 0x200); any other value writes
+//   nothing, after the space was reserved.
 // - render_emit_shader_descriptor16_014761a0 / _descriptor32_01476240 / _sampler16_014762f0: a
 //   two-word NOP carrying a descriptor control word, then SET_SH_REG with 16 or 32 bytes copied
 //   from the descriptor. The cursor moves past the NOP first, and past the rest by reading it
@@ -20,6 +24,7 @@
 #include "command_flags.h"
 #include "command_packets.h"
 #include "command_reservation.h"
+#include "render_observe.h"
 #include "shader_packet_layout.h"
 
 namespace {
@@ -60,6 +65,15 @@ void advance_from_buffer(PacketBuffer *buffer, uint32_t bytes)
     render::set_packet_cursor(buffer, render::packet_cursor(buffer) + bytes);
 }
 
+// The stage's user SGPRs from the slot on, as the observer for the library's user-data writers
+// reported them (the library's stage numbers are rt_shader_stage's).
+void observe_user_data(const PacketBuffer *buffer, uintptr_t cursor, uint32_t stage, uint32_t slot,
+                       const uint32_t *words, unsigned count)
+{
+    rt_observe_user_data(render::observed_buffer(buffer), render::observed_offset(buffer, cursor),
+                         static_cast<rt_shader_stage>(stage), slot, words, count);
+}
+
 // The descriptor packets: a NOP with the control word, SET_SH_REG, then the payload. The payload
 // is copied as the original copies it: for 32 bytes the upper half first, the fourth quad word
 // then the third, each read and written in turn; then the lower half, both quad words read before
@@ -71,6 +85,8 @@ void emit_descriptor(PacketBuffer *buffer, uint32_t stage, uint32_t slot, const 
     uintptr_t cursor;
     if (!render::reserve_words(buffer, words, cursor))
         return;
+    constexpr unsigned words_per_quad = 2;
+    observe_user_data(buffer, cursor, stage, slot, static_cast<const uint32_t *>(descriptor), quads * words_per_quad);
     const uint32_t flags = render::packet_flags(buffer);
     const uint32_t base = render::shader_stage_base(stage);
     render::shader_write_descriptor_header(buffer, cursor, flags, base, slot, control, header);
@@ -90,27 +106,37 @@ void emit_descriptor(PacketBuffer *buffer, uint32_t stage, uint32_t slot, const 
     advance_from_buffer(buffer, register_header_bytes + quads * sizeof(uint64_t));
 }
 
-constexpr bool is_known_command_mode(int32_t mode)
+// VGT_SHADER_STAGES_EN's values the game uses (gfx_7_2_sh_mask.h: LS_EN bits 0-1, HS_EN 2, ES_EN 3-4,
+// GS_EN 5, VS_EN 6-7).
+constexpr int32_t stages_vertex = 0;
+constexpr int32_t stages_tessellation = 0x45;
+constexpr int32_t stages_tessellation_geometry = 0xad;
+constexpr int32_t stages_geometry = 0xb0;
+constexpr int32_t stages_0x200 = 0x200;
+
+constexpr bool is_known_shader_stages(int32_t stages)
 {
-    return mode == 0 || mode == 0x45 || mode == 0xad || mode == 0xb0 || mode == 0x200;
+    return stages == stages_vertex || stages == stages_tessellation || stages == stages_tessellation_geometry ||
+           stages == stages_geometry || stages == stages_0x200;
 }
 
 }  // namespace
 
-extern "C" void bb_render_select_shader_command_mode_01476030(PacketBuffer *buffer, int32_t mode)
+extern "C" void bb_render_set_shader_stages_01476030(PacketBuffer *buffer, int32_t stages)
 {
     constexpr uint32_t words = 3;
     constexpr uint32_t set_context_reg_one_word = 0xc0016900;
-    constexpr uint32_t command_mode_register = 0x2d5;
+    constexpr uint32_t vgt_shader_stages_en = 0x2d5;
     uintptr_t cursor;
     if (!render::reserve_words(buffer, words, cursor))
         return;
-    if (!is_known_command_mode(mode))
+    if (!is_known_shader_stages(stages))
         return;
+    render::observe_context_register(buffer, cursor, vgt_shader_stages_en, static_cast<uint32_t>(stages));
     auto *out = reinterpret_cast<WordPacket *>(cursor);
     out->header.set(set_context_reg_one_word);
-    out->register_index.set(command_mode_register);
-    out->value.set(static_cast<uint32_t>(mode));
+    out->register_index.set(vgt_shader_stages_en);
+    out->value.set(static_cast<uint32_t>(stages));
     render::set_packet_cursor(buffer, cursor + sizeof(WordPacket));
 }
 
@@ -142,6 +168,10 @@ extern "C" void bb_render_emit_shader_address_01476390(PacketBuffer *buffer, uin
     const uint32_t header = sh_reg_header(buffer, set_sh_reg_two_words);
     const uint32_t index = sh_register(stage, slot);
     const auto value = reinterpret_cast<uint64_t>(address);
+    constexpr unsigned address_words = 2;
+    const uint32_t halves[address_words] = {static_cast<uint32_t>(value),
+                                            static_cast<uint32_t>(value >> render::shader_word_bits)};
+    observe_user_data(buffer, cursor, stage, slot, halves, address_words);
     auto *out = reinterpret_cast<render::ShaderPacketWords *>(cursor);
     out->header.set(header);
     out->register_index.set(index);
@@ -159,6 +189,7 @@ extern "C" void bb_render_emit_shader_word_01476420(PacketBuffer *buffer, uint32
         return;
     const uint32_t header = sh_reg_header(buffer, set_sh_reg_one_word);
     const uint32_t index = sh_register(stage, slot);
+    observe_user_data(buffer, cursor, stage, slot, &value, 1);
     auto *out = reinterpret_cast<WordPacket *>(cursor);
     out->header.set(header);
     out->register_index.set(index);

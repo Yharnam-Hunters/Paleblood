@@ -79,7 +79,7 @@ address,replacement,system,returns
 0x01475000,bb_render_emit_shader_link_words,render,void
 0x01475370,bb_render_emit_num_instances,render,void
 0x01475da0,bb_render_emit_event_write,render,void
-0x01476030,bb_render_select_shader_command_mode_01476030,render,void
+0x01476030,bb_render_set_shader_stages_01476030,render,void
 0x014761a0,bb_render_emit_shader_descriptor16_014761a0,render,void
 0x01476240,bb_render_emit_shader_descriptor32_01476240,render,void
 0x014762f0,bb_render_emit_shader_sampler16_014762f0,render,void

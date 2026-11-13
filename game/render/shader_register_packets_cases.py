@@ -11,7 +11,7 @@ callback is a scripted stub at a fake game address. Cases: exactly enough room, 
 refused, a limit below the cursor (the wrapped difference reads as room), a packet that overlaps
 the prefix (the cursor is read again where the original reads it), the flag word's bit 1 alone,
 clear and all bits, every stage the game uses and slots that wrap the register, and per writer:
-every command mode the game uses and its neighbours; a descriptor that overlaps the packet it is
+every shader stages value the game uses and its neighbours; a descriptor that overlaps the packet it is
 copied into (the copy order); low and high address halves; word values.
 """
 import json

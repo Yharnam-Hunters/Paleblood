@@ -435,11 +435,16 @@ render_emit_present_release_delegate,edge,,8,8,0,0,44c6a754b371f521,2026-11-12
 render_emit_present_release_packet,recorded,,99,99,0,0,49b21387b8cdc24b,2026-11-12
 render_emit_present_release_packet,edge,,14,14,0,0,49b21387b8cdc24b,2026-11-12
 render_emit_shader_address_01476390,recorded,,138,138,0,0,2dfc033fc334c36d,2026-11-13
+render_emit_shader_address_01476390,edge,,26,26,0,0,4dee6fa4a094cca6,2026-11-13
 render_emit_shader_descriptor16_014761a0,recorded,,200,200,0,0,2dfc033fc334c36d,2026-11-13
+render_emit_shader_descriptor16_014761a0,edge,,27,27,0,0,4dee6fa4a094cca6,2026-11-13
 render_emit_shader_descriptor32_01476240,recorded,,90,90,0,0,2dfc033fc334c36d,2026-11-13
+render_emit_shader_descriptor32_01476240,edge,,27,27,0,0,4dee6fa4a094cca6,2026-11-13
 render_emit_shader_link_words,recorded,,158,158,0,0,f585add345845a60,2026-11-12
 render_emit_shader_link_words,edge,,23,23,0,0,f585add345845a60,2026-11-12
 render_emit_shader_sampler16_014762f0,recorded,,63,63,0,0,2dfc033fc334c36d,2026-11-13
+render_emit_shader_sampler16_014762f0,edge,,27,27,0,0,4dee6fa4a094cca6,2026-11-13
+render_emit_shader_word_01476420,edge,,25,25,0,0,4dee6fa4a094cca6,2026-11-13
 render_finish_present_commands,recorded,,261,261,0,0,3adf6995cef8857d,2026-11-12
 render_finish_present_commands,edge,,12,12,0,0,3adf6995cef8857d,2026-11-12
 render_finish_present_context,recorded,,105,105,0,0,fd9fe3b2f4ad1c02,2026-11-12
@@ -560,7 +565,6 @@ render_restore_color_target_from_bank,recorded,,104,104,0,0,649b23425dd0ccb1,202
 render_restore_color_target_from_bank,edge,,12,12,0,0,649b23425dd0ccb1,2026-11-12
 render_restore_depth_target_from_bank,recorded,,56,56,0,0,8668e2d117190cf8,2026-11-12
 render_restore_depth_target_from_bank,edge,,12,12,0,0,8668e2d117190cf8,2026-11-12
-render_select_shader_command_mode_01476030,recorded,,107,107,0,0,2dfc033fc334c36d,2026-11-13
 render_set_cb_blend_control,recorded,,200,200,0,0,44e954b7da1bc15e,2026-11-12
 render_set_cb_blend_control,edge,,14,14,0,0,44e954b7da1bc15e,2026-11-12
 render_set_cb_color_control,recorded,,126,126,0,0,8ba8cb4828340be9,2026-11-12
@@ -595,6 +599,8 @@ render_set_render_target,recorded,,200,200,0,0,88dc5b163356670c,2026-11-12
 render_set_render_target,edge,,19,19,0,0,88dc5b163356670c,2026-11-12
 render_set_screen_offset,recorded,,78,78,0,0,cb63cd7b024ef86f,2026-11-12
 render_set_screen_offset,edge,,13,13,0,0,cb63cd7b024ef86f,2026-11-12
+render_set_shader_stages_01476030,recorded,,107,107,0,0,2dfc033fc334c36d,2026-11-13
+render_set_shader_stages_01476030,edge,,27,27,0,0,4dee6fa4a094cca6,2026-11-13
 render_set_vgt_primitive_type,recorded,,130,130,0,0,7e4cfc0d9fe7f87c,2026-11-12
 render_set_vgt_primitive_type,edge,,14,14,0,0,7e4cfc0d9fe7f87c,2026-11-12
 render_setup_swap_chain,edge,,43,43,0,0,5f2a48128c627ac6,2026-11-05

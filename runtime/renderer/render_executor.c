@@ -840,7 +840,7 @@ enum { STAGES_TESSELLATION = 0x45, STAGES_GEOMETRY = 0xb0 };
 static int check_state(const draw_state *s, depth_plan *plan, uint32_t *colours, char *error, size_t error_size)
 {
     /* VGT_SHADER_STAGES_EN (gfx_7_2_sh_mask.h): LS_EN bits 0-1, HS_EN 2, ES_EN 3-4, GS_EN 5, VS_EN 6-7; the
-       GPU library's setter (0x01476030) takes 0 (vertex and pixel shaders), 0x45 (local, hull and vertex:
+       GPU library's shader stage setter takes 0 (vertex and pixel shaders), 0x45 (local, hull and vertex:
        tessellation), 0xad (tessellation with a geometry shader), 0xb0 (export and geometry) and 0x200 */
     if (s->shader_stages && s->shader_stages != STAGES_TESSELLATION && s->shader_stages != STAGES_GEOMETRY)
         return failed(error, error_size,
