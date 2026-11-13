@@ -5,9 +5,13 @@
    dispatch's two writers report the base address and the data offset they are given. The depth bounds
    setter reports its two float arguments, from the saved frame's xmm0 and xmm1, as the two registers.
    The shader stage setter reports VGT_SHADER_STAGES_EN for the values it writes, and nothing for others.
-   The geometry-shader register writers report the registers they write, with the values they compute. */
+   The geometry-shader register writers report the registers they write, with the values they compute.
+   The addressed indexed draw (DRAW_INDEX_2) reports the packet's fields, its predicate from the command buffer's flags.
+   The viewport scissor setter reports the pair of registers it writes, its window-offset bit from its stack argument.
+   The clip control setter reports PA_CL_CLIP_CNTL with the value masked as the setter masks it. */
 #include "runtime/observe_hooks.h"
 #include "runtime/render_observer.h"
+#include "runtime/render_observer_hooks.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,18 +24,27 @@ enum { WRITE_ONE = 0x0148ada0, WRITE_POINTER = 0x0148ac90, WRITE_FOUR_MARKER_4 =
        WRITE_EIGHT = 0x0148ab60, WRITE_COUNTED = 0x0148ad00, SET_INDIRECT_BASE = 0x014742f0, DISPATCH_INDIRECT = 0x01474de0,
        DRAW_INDIRECT = 0x014744d0 };
 enum { INDIRECT_DATA_OFFSET = 0x24, SGPR_WORD = 0x1205, SGPR_BYTE = 0x05, ZERO_LOW_BYTE = 0x3400 };
+enum { DRAW_INDEX = 0x01474360, INDEX_COUNT = 36, ODD_BIT = 1, PREDICATED = 1, TWO_DRAWS = 2 };
+static const uint32_t DRAW_INDEX_2_HEADER = 0xc0042700u;
 enum { SET_DEPTH_BOUNDS = 0x01473520, DB_DEPTH_BOUNDS_MIN = 0xa008, DB_DEPTH_BOUNDS_MAX = 0xa009 };
 enum { SET_GS_MODE = 0x014756b0, SET_ESGS_ITEMSIZE = 0x01475a90, SET_GS_RING_SIZES = 0x01475af0 };
 enum { VGT_GS_MODE = 0xa290, VGT_GSVS_RING_OFFSET_1 = 0xa298, VGT_ESGS_RING_ITEMSIZE = 0xa2ab, VGT_GSVS_RING_ITEMSIZE = 0xa2ac,
        VGT_GS_MAX_VERT_OUT = 0xa2ce, VGT_GS_VERT_ITEMSIZE = 0xa2d7, VGT_STRMOUT_CONFIG = 0xa2e5, GS_STREAMS = 4, GS_VERTICES = 40,
        ITEMSIZE_ARGUMENT = 0x1803c, STREAM_0 = 12, STREAM_1 = 2, STREAM_2 = 0, STREAM_3 = 1, ITEMSIZE_WRITTEN = 0x3c, GS_MODE_ON = 2, GS_CUT_MODE = 1, GS_MODE_WRITTEN = 0x12 };
+enum { SET_VIEWPORT_SCISSOR = 0x014766d0, PA_SC_VPORT_SCISSOR_0_TL = 0xa094, SCISSOR_VIEWPORT = 1, SCISSOR_LEFT = 128,
+       SCISSOR_TOP = 0x18080, SCISSOR_RIGHT = 256, SCISSOR_BOTTOM = 384, SCISSOR_BR_WRITTEN = 0x01800100,
+       SCISSOR_TL_WITH_OFFSET = 0x00800080, SCISSOR_FRAME_WORDS = RT_OBSERVED_STACK + 1, WINDOW_OFFSET_ENABLED = 1 };
+static const uint32_t SCISSOR_TL_WRITTEN = 0x80800080u; /* bit 31: WINDOW_OFFSET_DISABLE */
 enum { SET_SHADER_STAGES = 0x01476030, VGT_SHADER_STAGES_EN = 0xa2d5, TESSELLATION = 0x45, NOT_WRITTEN = 0x7 };
+/* every bit set: the setter keeps 0x0f7fe03f of them (ZCLIP_NEAR_DISABLE and _FAR_DISABLE, bits 26 and 27, among them) */
+enum { SET_CLIP_CONTROL = 0x01476b30, PA_CL_CLIP_CNTL = 0xa204, CLIP_ARGUMENT = 0xffffffff, CLIP_WRITTEN = 0x0f7fe03f };
 static const uint32_t one_value = 0x11223344u;
 static const uint64_t pointer_value = 0x0000002043490060ull;
 
 /* the command buffer object: its begin at +0 and cursor at +0x10, as the observers read them */
 typedef struct {
-    uint64_t begin, limit, cursor, callback;
+    uint64_t begin, limit, cursor, callback, callback_data;
+    uint32_t flags; /* +0x28: bit 0 predicates the packets */
 } command_buffer;
 
 static struct {
@@ -82,6 +95,16 @@ void rt_observe_index_base(uint64_t b, uint32_t o, uint64_t a) { (void)b, (void)
 void rt_observe_index_size(uint64_t b, uint32_t o, uint32_t c) { (void)b, (void)o, (void)c; }
 void rt_observe_index_type(uint64_t b, uint32_t o, uint32_t t) { (void)b, (void)o, (void)t; }
 void rt_observe_draw_index_offset(uint64_t b, uint32_t o, uint32_t f, uint32_t c) { (void)b, (void)o, (void)f, (void)c; }
+static struct {
+    int draws;
+    uint64_t buffer, address;
+    uint32_t offset, header, max_size, count, initiator;
+} addressed_draw;
+void rt_observe_draw_indexed(uint64_t b, uint32_t o, uint32_t h, uint32_t m, uint64_t a, uint32_t c, uint32_t i)
+{
+    addressed_draw.draws++, addressed_draw.buffer = b, addressed_draw.offset = o, addressed_draw.header = h, addressed_draw.max_size = m;
+    addressed_draw.address = a, addressed_draw.count = c, addressed_draw.initiator = i;
+}
 
 extern const rt_observe_hook game_observe_hooks[];
 extern const unsigned game_observe_hook_count;
@@ -158,6 +181,21 @@ int main(void)
         CHECK(indirect_draw.draws == 1 && indirect_draw.data_offset == INDIRECT_DATA_OFFSET && indirect_draw.stage == RT_STAGE_VERTEX &&
               indirect_draw.base_vertex_sgpr == SGPR_BYTE && !indirect_draw.start_instance_sgpr);
     }
+    /* DRAW_INDEX_2 (0x01474360): the count as MAX_SIZE and INDEX_COUNT, the address with bit 0 cleared, the
+       predicate from the command buffer's flags, initiator 0 */
+    const rt_observer_fn draw_index = observer(DRAW_INDEX);
+    CHECK(draw_index != NULL);
+    if (draw_index) {
+        const uint64_t index_args[RT_OBSERVED_ARGUMENTS] = {object_address, INDEX_COUNT, pointer_value | ODD_BIT};
+        draw_index(index_args);
+        CHECK(addressed_draw.draws == 1 && addressed_draw.buffer == object.begin && addressed_draw.offset == CURSOR_WORD * sizeof(uint32_t));
+        CHECK(addressed_draw.header == DRAW_INDEX_2_HEADER && addressed_draw.max_size == INDEX_COUNT && addressed_draw.count == INDEX_COUNT);
+        CHECK(addressed_draw.address == pointer_value && addressed_draw.initiator == 0);
+        object.flags = PREDICATED;
+        draw_index(index_args);
+        CHECK(addressed_draw.draws == TWO_DRAWS && addressed_draw.header == (DRAW_INDEX_2_HEADER | PREDICATED));
+        object.flags = 0;
+    }
     /* the depth bounds: 0.25 and 0.75 in xmm0 and xmm1 of the saved frame */
     const rt_observer_fn bounds = observer(SET_DEPTH_BOUNDS);
     CHECK(bounds != NULL);
@@ -212,6 +250,30 @@ int main(void)
         CHECK(registers.count == MODE_REGISTERS && registers.address[MODE_ON] == VGT_GS_MODE && registers.value[MODE_ON] == GS_MODE_WRITTEN &&
               registers.address[MODE_OFF] == VGT_GS_MODE && registers.value[MODE_OFF] == 0 && registers.address[STREAMOUT_OFF] == VGT_STRMOUT_CONFIG &&
               registers.value[STREAMOUT_OFF] == 0);
+    }
+    /* the viewport scissor: viewport 1's pair (0xa096, 0xa097), x and y masked to 15 bits (top 0x18080 keeps
+       0x0080), WINDOW_OFFSET_DISABLE set for a stack argument of 0 and clear for 1 */
+    const rt_observer_fn scissor = observer(SET_VIEWPORT_SCISSOR);
+    CHECK(scissor != NULL);
+    if (scissor) {
+        uint64_t frame[SCISSOR_FRAME_WORDS] = {object_address, SCISSOR_VIEWPORT, SCISSOR_LEFT, SCISSOR_TOP, SCISSOR_RIGHT, SCISSOR_BOTTOM};
+        memset(&registers, 0, sizeof registers);
+        scissor(frame);
+        frame[RT_OBSERVED_STACK] = WINDOW_OFFSET_ENABLED;
+        scissor(frame);
+        enum { FIRST_TL, FIRST_BR, SECOND_TL, SECOND_BR, SCISSOR_REGISTERS };
+        const uint32_t tl = PA_SC_VPORT_SCISSOR_0_TL + 2 * SCISSOR_VIEWPORT;
+        CHECK(registers.count == SCISSOR_REGISTERS && registers.address[FIRST_TL] == tl && registers.value[FIRST_TL] == SCISSOR_TL_WRITTEN &&
+              registers.address[FIRST_BR] == tl + 1 && registers.value[FIRST_BR] == SCISSOR_BR_WRITTEN &&
+              registers.value[SECOND_TL] == SCISSOR_TL_WITH_OFFSET && registers.value[SECOND_BR] == SCISSOR_BR_WRITTEN);
+    }
+    const rt_observer_fn clip = observer(SET_CLIP_CONTROL);
+    CHECK(clip != NULL);
+    if (clip) {
+        memset(&registers, 0, sizeof registers);
+        const uint64_t clip_args[RT_OBSERVED_ARGUMENTS] = {object_address, CLIP_ARGUMENT};
+        clip(clip_args);
+        CHECK(registers.count == 1 && registers.address[0] == PA_CL_CLIP_CNTL && registers.value[0] == CLIP_WRITTEN);
     }
     if (failures) fprintf(stderr, "%d failure(s)\n", failures);
     else printf("compute user data observer: ok\n");

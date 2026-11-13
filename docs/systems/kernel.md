@@ -156,15 +156,15 @@ ignore the result.
 | `0x0111a6b0` | 23 | `kernel_file_close` | edge-verified | Forward the full opaque descriptor; translate nonzero low32 close status to 19; synthetic wire edge cases only |
 | `0x0111a6e0` | 60 | `kernel_file_read_count` | edge-verified | Publish uint32 transferred bytes after kernel buffer writes; full64 received count controls errors and short reads |
 | `0x0111a720` | 22 | `kernel_file_seek_absolute` | edge-verified | Forward the full opaque descriptor and zero-extended unsigned32 absolute offset; full64 seek result sign maps to 0 or 19; synthetic wire edge cases only |
-| `0x0111a8a0` | 26 | `kernel_thread_self` | edge-verified | Copy the complete opaque current-thread handle to the output and return zero |
-| `0x0111abb0` | 207 | `kernel_mutex_create` | edge-verified | Create a recursive mutex in static or allocated storage; low-byte ownership flag; publish storage only after all kernel stages succeed; no error cleanup |
+| `0x0111a8a0` | 26 | `kernel_thread_self` | verified | Copy the complete opaque current-thread handle to the output and return zero |
+| `0x0111abb0` | 207 | `kernel_mutex_create` | verified | Create a recursive mutex in static or allocated storage; low-byte ownership flag; publish storage only after all kernel stages succeed; no error cleanup |
 | `0x0111ac80` | 78 | `kernel_mutex_destroy` | edge-verified | Destroy the mutex and release storage only after kernel success with a zero low-byte static flag; errors map to 0x21; ignore release result |
 | `0x0111acd0` | 30 | `kernel_mutex_lock` | edge-verified | Accept a null mutex without a call; preserve the full kernel pointer and API writes; map any nonzero low32 result to 0x21 |
 | `0x0111acf0` | 30 | `kernel_mutex_unlock` | edge-verified | Accept a null mutex without a call; forward its full pointer to unlock; preserve API writes and translate nonzero low32 results to 0x21 |
-| `0x0111ad10` | 103 | `kernel_semaphore_create` | edge-verified | Create the fixed empty FIFO semaphore; preserve all six API arguments and full opaque handle; publish only after low32 kernel success; errors map to 0x21 |
+| `0x0111ad10` | 103 | `kernel_semaphore_create` | verified | Create the fixed empty FIFO semaphore; preserve all six API arguments and full opaque handle; publish only after low32 kernel success; errors map to 0x21 |
 | `0x0111ad80` | 23 | `kernel_semaphore_destroy` | edge-verified | Forward the full opaque handle including null to kernel deletion; preserve kernel writes and translate any nonzero low32 result to 0x21 |
-| `0x0111ada0` | 30 | `kernel_semaphore_wait` | edge-verified | Wait for one unit using the full opaque handle including null and a null timeout pointer; preserve kernel writes; nonzero low32 results map to 0x21 |
-| `0x0111adc0` | 28 | `kernel_semaphore_signal` | edge-verified | Signal one unit using the full opaque handle including null; preserve kernel writes and translate every nonzero low32 result to 0x21 |
+| `0x0111ada0` | 30 | `kernel_semaphore_wait` | verified | Wait for one unit using the full opaque handle including null and a null timeout pointer; preserve kernel writes; nonzero low32 results map to 0x21 |
+| `0x0111adc0` | 28 | `kernel_semaphore_signal` | verified | Signal one unit using the full opaque handle including null; preserve kernel writes and translate every nonzero low32 result to 0x21 |
 | `0x02483e80` | 204 | `kernel_condition_wait` | verified | Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path |
 
 ## Structs and globals

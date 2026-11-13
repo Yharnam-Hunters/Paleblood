@@ -2,8 +2,9 @@ name: macos-guest-tls
 
 on:
   push:
-    # main only: a pull request's branch is checked by its pull_request run and the merge queue's
-    # temporary branch by its merge_group run, so a push to either would test the same commit again.
+    # main only: a pull request's branch is checked by its pull_request run. No merge_group run:
+    # this workflow's checks are not required, and merge_group ignores the path filters, so it
+    # would run for every queued pull request.
     branches: [main]
     paths:
       - '.github/workflows/macos-guest-tls.yml'
@@ -82,7 +83,6 @@ on:
       - 'test/game_guest_pointer_module.c'
       - 'test/test_game_guest_pointer.c'
       - 'test/test_game_guest_pointer_control.py'
-  merge_group:
 
 permissions:
   contents: read

@@ -17,6 +17,7 @@
      SPI_PS_IN_CONTROL NUM_INTERP[5:0]
    and ColorFormat from its enum header (gca/gfx_7_2_enum.h). */
 #include "runtime/render_calls.h"
+#include "runtime/render_placed.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -220,6 +221,11 @@ typedef struct {
     rt_render_call *calls;
     size_t count, capacity;
     int submitted;                   /* submitted since its last call: the next call starts it over */
+    /* With a reader (runtime/render_placed.h): the first two words of memory at each call's offset when
+       a submission first took it (calls[0..marked)), for a submission of the buffer again with no new
+       calls (taken_count) */
+    uint64_t *marks;
+    size_t marked, marks_capacity;
 } call_list;
 
 static pthread_mutex_t lists_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -231,12 +237,38 @@ static size_t list_count;
    oldest are dropped. */
 typedef struct {
     uint64_t address;
+    uint32_t header; /* the NOP header at the address when the call was placed (with a reader) */
     rt_render_call call;
 } placed_call;
 
 enum { MAX_PLACED_CALLS = 4096 };
 static placed_call placed[MAX_PLACED_CALLS];
 static size_t placed_count;
+static rt_render_word_reader read_word; /* runtime/render_placed.h */
+
+/* PM4 type-3 packet headers (AMD's public PM4 format): type bits 30-31, the count of the dwords after
+   the header minus one in bits 16-29, the opcode in bits 8-15; NOP is opcode 0x10. */
+#define PM4_TYPE3_NOP_MASK 0xc000ff00u
+#define PM4_TYPE3_NOP 0xc0001000u
+#define PM4_COUNT(header) (((header) >> 16) & 0x3fffu)
+
+void rt_render_check_placed_calls(rt_render_word_reader read)
+{
+    pthread_mutex_lock(&lists_lock);
+    read_word = read;
+    pthread_mutex_unlock(&lists_lock);
+}
+
+/* Whether the memory at a placed call still holds the NOP packet it was placed on. Called with lists_lock held. */
+static int still_placed(const placed_call *p)
+{
+    if (!read_word) return 1;
+    if (read_word(p->address) != p->header || (p->header & PM4_TYPE3_NOP_MASK) != PM4_TYPE3_NOP) return 0;
+    const uint32_t body = PM4_COUNT(p->header) + 1;
+    for (uint32_t i = 1; i <= body; i++)
+        if (read_word(p->address + 4ull * i)) return 0;
+    return 1;
+}
 
 static call_list *list_for(uint64_t buffer)
 {
@@ -327,12 +359,9 @@ int rt_render_record_register(uint64_t buffer, uint32_t offset, uint32_t address
     return record(buffer, &call, error, error_size);
 }
 
+/* NUM_INSTANCES as the game wrote it: 0 included, which the GPU draws as one instance (the executors). */
 int rt_render_record_instances(uint64_t buffer, uint32_t offset, uint32_t count, char *error, size_t error_size)
 {
-    if (!count) {
-        snprintf(error, error_size, "an instance count of 0");
-        return -1;
-    }
     const rt_render_call call = {.kind = RT_CALL_INSTANCES, .offset = offset, .u.instances.count = count};
     return record(buffer, &call, error, error_size);
 }
@@ -384,7 +413,15 @@ static int place(uint64_t address, const rt_render_call *call)
         memmove(placed, placed + 1, (MAX_PLACED_CALLS - 1) * sizeof *placed);
         placed_count--;
     }
-    placed[placed_count++] = (placed_call){.address = address, .call = *call};
+    uint32_t header = 0;
+    if (read_word) {
+        header = read_word(address);
+        size_t kept = 0; /* an older call at this address: its memory has been written again since */
+        for (size_t i = 0; i < placed_count; i++)
+            if (placed[i].address != address) placed[kept++] = placed[i];
+        placed_count = kept;
+    }
+    placed[placed_count++] = (placed_call){.address = address, .header = header, .call = *call};
     pthread_mutex_unlock(&lists_lock);
     return 0;
 }
@@ -495,6 +532,7 @@ static void take_placed(uint64_t buffer, uint32_t size)
             placed[kept++] = *p;
             continue;
         }
+        if (!still_placed(p)) continue; /* placed in an earlier use of this memory: dropped */
         if (!list) {
             list = list_for(buffer);
             if (!list) { placed[kept++] = *p; continue; }
@@ -528,6 +566,42 @@ int rt_render_record_user_data(uint64_t buffer, uint32_t offset, rt_shader_stage
     return record(buffer, &call, error, error_size);
 }
 
+/* The two words at a call's offset in its buffer (the second only inside the size). Called with lists_lock held. */
+static uint64_t mark_at(uint64_t buffer, uint32_t offset, uint32_t size)
+{
+    const uint64_t second = offset + 8ull <= size ? read_word(buffer + offset + 4) : 0;
+    return read_word(buffer + offset) | second << 32;
+}
+
+/* How many of a list's calls a submission of `size` bytes takes: those before the size. A list taken
+   before and given no call since is either the same commands submitted again, or a new use of the
+   memory in a layout nothing recorded (the game writes some buffers from packets alone, DMA and
+   memory writes): with a reader, it is taken again only where the memory still holds what it held at
+   each call's offset when first taken, and otherwise its calls belong to the earlier use and are
+   forgotten (their user data would land on a later dispatch). Called with lists_lock held. */
+static size_t taken_count(call_list *list, uint32_t size)
+{
+    size_t n = 0;
+    while (n < list->count && list->calls[n].offset < size) n++;
+    if (!read_word || !n) return n;
+    if (!list->submitted) list->marked = 0; /* calls recorded since: a new use, marked afresh */
+    for (size_t i = 0; i < list->marked && i < n; i++)
+        if (list->marks[i] != mark_at(list->buffer, list->calls[i].offset, size)) {
+            list->count = list->marked = 0;
+            return 0;
+        }
+    if (n > list->marked) {
+        if (n > list->marks_capacity) {
+            uint64_t *grown = realloc(list->marks, list->capacity * sizeof *grown);
+            if (!grown) return n; /* no memory to mark them: taken unchecked */
+            list->marks = grown, list->marks_capacity = list->capacity;
+        }
+        for (size_t i = list->marked; i < n; i++) list->marks[i] = mark_at(list->buffer, list->calls[i].offset, size);
+        list->marked = n;
+    }
+    return n;
+}
+
 const rt_render_call *rt_render_submitted(uint64_t buffer, uint32_t size, size_t *count)
 {
     pthread_mutex_lock(&lists_lock);
@@ -537,8 +611,8 @@ const rt_render_call *rt_render_submitted(uint64_t buffer, uint32_t size, size_t
     for (size_t i = 0; i < list_count; i++) {
         if (lists[i].buffer != buffer) continue;
         calls = lists[i].calls;
+        *count = taken_count(&lists[i], size);
         lists[i].submitted = 1;
-        while (*count < lists[i].count && lists[i].calls[*count].offset < size) (*count)++;
     }
     pthread_mutex_unlock(&lists_lock);
     return calls;
@@ -552,9 +626,8 @@ rt_render_call *rt_render_take(uint64_t buffer, uint32_t size, size_t *count)
     *count = 0;
     for (size_t i = 0; i < list_count; i++) {
         if (lists[i].buffer != buffer) continue;
+        const size_t n = taken_count(&lists[i], size);
         lists[i].submitted = 1;
-        size_t n = 0;
-        while (n < lists[i].count && lists[i].calls[n].offset < size) n++;
         if (n && (copy = malloc(n * sizeof *copy))) {
             memcpy(copy, lists[i].calls, n * sizeof *copy);
             *count = n;
@@ -569,7 +642,7 @@ rt_render_call *rt_render_take(uint64_t buffer, uint32_t size, size_t *count)
 void rt_render_forget(void)
 {
     pthread_mutex_lock(&lists_lock);
-    for (size_t i = 0; i < list_count; i++) free(lists[i].calls);
+    for (size_t i = 0; i < list_count; i++) free(lists[i].calls), free(lists[i].marks);
     free(lists);
     lists = NULL, list_count = 0;
     placed_count = 0;
