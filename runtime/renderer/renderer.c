@@ -86,6 +86,7 @@ static rt_executor *executor_for(const char *function)
    calls and of the steps that follow them. */
 typedef struct batch {
     const char *function;
+    unsigned queue;                  /* the GPU queue it went to (rt_renderer_submit) */
     rt_render_call *calls;
     size_t call_count;
     rt_gpu_step *steps;
@@ -221,7 +222,9 @@ static void run_calls(batch *b, size_t first, size_t last)
     rt_executor *const x = executor_for(b->function);
     char error[RENDER_ERROR_BYTES];
     uint64_t ticket = 0;
-    if (x && rt_executor_record_calls(x, b->calls + first, last - first, &ticket, error, sizeof error)) rt_fatal(b->function, error);
+    if (x && (rt_executor_select_queue(x, b->queue, error, sizeof error) ||
+              rt_executor_record_calls(x, b->calls + first, last - first, &ticket, error, sizeof error)))
+        rt_fatal(b->function, error);
     if (x) last_ticket = ticket, calls_unsubmitted += last - first;
     unlock_renderer();
 }
@@ -345,7 +348,8 @@ void rt_renderer_wait_idle(void)
     drain_deferred(); /* the last batch's deferred steps (its work: their tickets) */
 }
 
-void rt_renderer_submit(const char *function, const void *buffer, uint32_t bytes, const rt_gpu_step *steps, size_t step_count)
+void rt_renderer_submit(const char *function, unsigned queue, const void *buffer, uint32_t bytes, const rt_gpu_step *steps,
+                        size_t step_count)
 {
     size_t call_count = 0;
     rt_render_call *const calls = rt_render_take((uint64_t)(uintptr_t)buffer, bytes, &call_count);
@@ -360,7 +364,7 @@ void rt_renderer_submit(const char *function, const void *buffer, uint32_t bytes
        come after the work submitted before them. */
     batch *const b = calloc(1, sizeof *b);
     if (!b) rt_fatal(function, "no memory for a submission");
-    b->function = function;
+    b->function = function, b->queue = queue;
     b->calls = calls; /* the batch owns the copy */
     if (step_count && !(b->steps = malloc(step_count * sizeof *b->steps))) rt_fatal(function, "no memory for a submission's steps");
     if (step_count) memcpy(b->steps, steps, step_count * sizeof *b->steps);
