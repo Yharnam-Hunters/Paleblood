@@ -101,6 +101,12 @@ address,size,name,system,status,notes
 0x01475480,98,render_emit_set_vs_shader_01475480,render,edge-verified,Packet writer: reserves 29 words (space callback when short); sceGnmSetVsShader with the shader modifier; cursor advanced only on success
 0x01475da0,101,render_emit_event_write,render,verified,Emit EVENT_WRITE with a masked event type and the original table-selected event index.
 0x01475e10,173,render_emit_shader_preparation_range_01475e10,render,edge-verified,"ACQUIRE_MEM packet (7 words) for a memory range: coherence control from the cache actions, targets and top flag; reserve via the space callback"
+0x01476030,140,render_set_shader_stages_01476030,render,edge-verified,"SET_CONTEXT_REG VGT_SHADER_STAGES_EN (0x2d5) to the stages (3 words), only for the values the game uses; reserve via the space callback first"
+0x014761a0,156,render_emit_shader_descriptor16_014761a0,render,edge-verified,"NOP with descriptor control 0x68750004, then SET_SH_REG of a 16-byte descriptor at the stage base plus slot (8 words)"
+0x01476240,172,render_emit_shader_descriptor32_01476240,render,edge-verified,"NOP with descriptor control 0x68750005, then SET_SH_REG of a 32-byte descriptor at the stage base plus slot (12 words)"
+0x014762f0,156,render_emit_shader_sampler16_014762f0,render,edge-verified,"NOP with descriptor control 0x68750006, then SET_SH_REG of a 16-byte sampler at the stage base plus slot (8 words)"
+0x01476390,133,render_emit_shader_address_01476390,render,edge-verified,SET_SH_REG of a 64-bit address (two words) at the stage base plus slot; flag bit 1 in the header
+0x01476420,126,render_emit_shader_word_01476420,render,edge-verified,SET_SH_REG of one word at the stage base plus slot; flag bit 1 in the header
 0x014765e0,238,render_configure_viewport,render,verified,"Write viewport ZMIN/ZMAX; then X/Y/Z scale and offset values for the selected viewport. Capture all six borrowed source words before output; retain the live and captured cursor publications."
 0x01476790,135,render_configure_screen_scissor,render,verified,Write PA_SC_SCREEN_SCISSOR_TL/BR using the low 16 bits of each supplied coordinate. Packet stores may overlap the cursor; its final increment reads the stored value after those writes.
 0x01476980,93,render_emit_pa_cl_vte_cntl,render,verified,Write PA_CL_VTE_CNTL viewport-transform enable/format bits after capacity admission.
