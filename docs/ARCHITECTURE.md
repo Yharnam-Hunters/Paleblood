@@ -73,6 +73,7 @@ call group (label `runtime`).
 
 ## Progress
 
-`symbols/ghidra_functions.csv` is the denominator: address and size only, from
-`tools/ghidra/ExportFunctions.java` (setup in [GHIDRA.md](GHIDRA.md)). `symbols/functions.csv` is what we track. The
+`symbols/ghidra_functions.csv` is the denominator: address and size of every function, built by
+`tools/function_bounds.py` from the executable's unwind and relocation tables
+([GHIDRA.md](GHIDRA.md), "The function list"). `symbols/functions.csv` is what we track. The
 README block is generated from them by `tools/progress.py`.
