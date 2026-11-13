@@ -260,6 +260,7 @@ address,replacement,system,returns
 0x021d6ea0,bb_ai_draw_world_021d6ea0,ai,void
 0x0222bc10,bb_ai_hk_frame_update_0222bc10,ai,void
 0x02232a60,bb_ai_draw_layer_color_02232a60,ai,vec
+0x02265580,bb_frame_timing_create_handle_from_levels_02265580,frame_timing,i64
 0x02311c80,bb_param_find_row_equip_param_accessory,param,void
 0x02311da0,bb_param_row_name_equip_param_accessory,param,i64
 0x02312070,bb_param_next_row_id_equip_param_accessory,param,i32
@@ -335,6 +336,7 @@ address,replacement,system,returns
 0x0231f460,bb_param_find_row_hit_mtrl,param,void
 0x0231f720,bb_param_find_row_holygrail_ex,param,void
 0x0231f840,bb_param_row_name_holygrail_ex,param,i64
+0x0231fbc0,bb_frame_timing_fill_creation_part1_0231fbc0,frame_timing,i64
 0x0231ff00,bb_param_row_count_holygrail_ex,param,i32
 0x0231ff70,bb_param_holygrail_ex_row_number,param,i32
 0x02320020,bb_param_find_row_number_holygrail_ex,param,void
