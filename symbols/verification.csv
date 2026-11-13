@@ -739,6 +739,7 @@ render_set_render_target,recorded,,200,200,0,0,88dc5b163356670c,2026-11-12
 render_set_render_target,edge,,19,19,0,0,88dc5b163356670c,2026-11-12
 render_set_screen_offset,recorded,,78,78,0,0,cb63cd7b024ef86f,2026-11-12
 render_set_screen_offset,edge,,13,13,0,0,cb63cd7b024ef86f,2026-11-12
+render_set_vertex_reuse,edge,,99,99,0,0,063a818960ba1b19,2026-11-13
 render_set_vgt_primitive_type,recorded,,130,130,0,0,7e4cfc0d9fe7f87c,2026-11-12
 render_set_vgt_primitive_type,edge,,14,14,0,0,7e4cfc0d9fe7f87c,2026-11-12
 render_setup_swap_chain,edge,,43,43,0,0,5f2a48128c627ac6,2026-11-05
