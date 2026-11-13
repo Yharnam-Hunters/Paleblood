@@ -59,6 +59,8 @@ engine_robust_heap_allocate_top_02487380,edge,,22,22,0,0,99db3f551a546e94,2026-1
 engine_robust_heap_check_block_02486080,edge,,41,41,0,0,3ad2d20cc9031713,2026-11-12
 engine_robust_heap_free_02487b50,edge,,20,20,0,0,384d50d46b2da2c0,2026-11-12
 engine_robust_heap_initialize_024863f0,edge,,17,17,0,0,b88ac5b837769baa,2026-11-12
+engine_scaleform_heap_add_page_0233bbe0,recorded,,53,53,0,0,a3fcd5f1b7493c82,2026-11-13
+engine_scaleform_heap_add_page_locked_0233bd20,recorded,,50,50,0,0,a3fcd5f1b7493c82,2026-11-13
 engine_scaleform_heap_allocate_0233c870,edge,,22,22,0,0,1399f291c85fd613,2026-11-12
 engine_scaleform_heap_allocate_aligned_0233ca70,edge,,22,22,0,0,6603b1ed1d5e2cc5,2026-11-12
 engine_scaleform_heap_bin_allocate_0233a7f0,edge,,24,24,0,0,f1dca9eb80e834aa,2026-11-12
