@@ -576,6 +576,7 @@ address,size,name,system,status,notes
 0x02aaddc0,393,render_allocate_shader_upload,render,verified,"Allocate one shader-upload slice of at most 64 KiB. If no suitable block exists; acquire once; reclaim; then retry once. Preserve zero-size requests and delegate block policy to the original manager."
 0x02aaf030,508,render_managed_present_capacity,render,edge-verified,"Acquire managed command space; preserve partial block publication and copy the saved command snapshot in reverse order."
 0x02aaf700,750,render_finish_present_commands,render,edge-verified,"Finish pending command lists with live block and counter reads; then conditionally submit the cursor snapshot."
+0x02aafa00,294,render_submit_pending_commands_02aafa00,render,edge-verified,"Submit the command buffer's region up to the cursor (with the context when a counter wait needs 7 free words; too few asks the space callback for 0 and returns), then restart the region at the cursor"
 0x02aafb30,509,render_command_submit_present,render,verified,"Prepare and delegate a present submission; preserving capacity-failure returns and resetting begin markers to the live cursor."
 0x02ab0b00,326,render_submit_present_finish_snapshot,render,verified,Emit required counter waits and submit nonempty command regions in order; construct an empty second region when optional commands are absent.
 0x02ab0ce0,326,render_command_submit_batch,render,verified,"Emit counter waits and submit nonempty regions with the packed video/index handle; or delegate the snapshot when no optional context exists."
