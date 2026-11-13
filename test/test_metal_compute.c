@@ -102,7 +102,7 @@ int main(void)
     memcpy(pool + IMAGE_CODE, image_copy, sizeof image_copy);
     memcpy(pool + VERTEX_CODE, vertex_position_color, sizeof vertex_position_color);
     memcpy(pool + PIXEL_CODE, pixel_color, sizeof pixel_color);
-    const rt_executor_memory memory = {fd, POOL_BYTES, guest_base, NULL, NULL, NULL, NULL, 0};
+    const rt_executor_memory memory = {fd, POOL_BYTES, guest_base, NULL, NULL, NULL, NULL, 0, NULL};
     rt_executor *x = NULL;
     if (rt_executor_open(&memory, &x, error, sizeof error)) { fprintf(stderr, "Metal device: %s\n", error); return 1; }
     CHECK(close(fd) == 0); /* executor and the host mapping retain the backing object */

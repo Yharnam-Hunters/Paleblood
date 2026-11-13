@@ -103,6 +103,10 @@ typedef struct {
     spirv_words variables, setup, prologue, blocks; /* the entry function's parts */
     spirv_words *out;                               /* where instructions go now */
     uint32_t exec, scc, pc;                         /* EXEC's lane bit, SCC, the next block's index */
+    /* A pixel shader's straight-line EXEC may be provably full or empty. A guest branch or
+       internal conditional ends this local proof; zero means the current value is unknown. */
+    int constant_exec_enabled;
+    uint32_t constant_exec;
     uint32_t glsl;                      /* the GLSL.std.450 import */
     uint32_t vgpr[VGPR_COUNT], sgpr[SGPR_COUNT], lane_bit[SGPR_COUNT]; /* variables, made on first use */
     /* the user SGPRs read before the program writes them, in program order (a bit each); writing is set
@@ -225,6 +229,10 @@ static void mark_vgpr_access(translator *t, uint32_t pointer, int written);
 static void store(translator *t, spirv_words *to, uint32_t pointer, uint32_t v)
 {
     mark_vgpr_access(t, pointer, 1);
+    if (t->constant_exec_enabled && pointer == t->exec) {
+        const uint32_t empty = spirv_constant_bool(&t->m, 0), full = spirv_constant_bool(&t->m, 1);
+        t->constant_exec = v == empty || v == full ? v : 0;
+    }
     const uint32_t words[] = {pointer, v};
     spirv_emit(&t->m, to, SPV_OP_STORE, words, 2);
 }
@@ -431,6 +439,9 @@ static void write_vector_lane_bit(translator *t, unsigned n, uint32_t b)
 /* if (condition) { ... } around code only some lanes run: begin returns the merge label. */
 static uint32_t begin_if(translator *t, uint32_t condition)
 {
+    /* Do not carry a store's constant value across a path which might not execute it. */
+    t->constant_exec_enabled = 0;
+    t->constant_exec = 0;
     const uint32_t then = spirv_new_id(&t->m), merge = spirv_new_id(&t->m);
     spirv_emit(&t->m, t->out, SPV_OP_SELECTION_MERGE, (const uint32_t[]){merge, SPV_SELECTION_CONTROL_NONE}, 2);
     spirv_emit(&t->m, t->out, SPV_OP_BRANCH_CONDITIONAL, (const uint32_t[]){condition, then, merge}, 3);
@@ -1192,6 +1203,7 @@ static uint32_t signed_overflow(translator *t, uint32_t a, uint32_t b, uint32_t 
 /* A 64-bit mask operand as this lane's bit: an SGPR pair, VCC or EXEC, or the constants 0 and -1. */
 static uint32_t mask_source(translator *t, unsigned field, const gcn_instruction *ins)
 {
+    if (field == SGPR_EXEC && t->constant_exec_enabled && t->constant_exec) return t->constant_exec;
     if ((field < SGPR_VCC && field % 2 == 0) || field == SGPR_VCC || field == SGPR_EXEC) return read_mask(t, field);
     if (field == OPERAND_INT_ZERO) return spirv_constant_bool(&t->m, 0);
     if (field == OPERAND_INT_LAST_POSITIVE + 1) return spirv_constant_bool(&t->m, 1); /* -1: all lanes */
@@ -1379,13 +1391,21 @@ static void scalar_instruction(translator *t, const uint32_t *w, const gcn_instr
            a pixel shader) has it; SCC is "any lane set". Vulkan's quad operations work on the same
            quads, so the bit is OR-ed across them with three quad swaps. */
         const uint32_t b = mask_source(t, ssrc0, ins);
-        uint32_t r = b;
-        for (uint32_t direction = 0; direction < 3; direction++) /* horizontal, vertical, diagonal */
-            r = value(t, SPV_OP_LOGICAL_OR, t_bool(t), 2, r,
-                      value(t, SPV_OP_GROUP_NON_UNIFORM_QUAD_SWAP, t_bool(t), 3, konst(t, SPV_SCOPE_SUBGROUP), b, konst(t, direction)));
-        t->uses_quads = 1;
-        write_mask(t, sdst, r, ins);
-        set_scc(t, any_lane(t, r));
+        if (t->layout->stage == STAGE_PIXEL && !survey_mode &&
+            (b == spirv_constant_bool(&t->m, 0) || b == spirv_constant_bool(&t->m, 1))) {
+            /* Expanding an empty/full mask leaves it empty/full, and its wave-wide nonzero
+               flag is the same constant. No quad peer or native subgroup width is involved. */
+            write_mask(t, sdst, b, ins);
+            set_scc(t, b);
+        } else {
+            uint32_t r = b;
+            for (uint32_t direction = 0; direction < 3; direction++) /* horizontal, vertical, diagonal */
+                r = value(t, SPV_OP_LOGICAL_OR, t_bool(t), 2, r,
+                          value(t, SPV_OP_GROUP_NON_UNIFORM_QUAD_SWAP, t_bool(t), 3, konst(t, SPV_SCOPE_SUBGROUP), b, konst(t, direction)));
+            t->uses_quads = 1;
+            write_mask(t, sdst, r, ins);
+            set_scc(t, any_lane(t, r));
+        }
     } else if (!strcmp(name, "s_not_b64")) {
         const uint32_t r = value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, mask_source(t, ssrc0, ins));
         write_mask(t, sdst, r, ins);
@@ -2365,6 +2385,8 @@ static void export_instruction(translator *t, const uint32_t *w)
     const uint32_t variable = extra_position || depth ? 0 : export_variable(t, target);
     if (!extra_position && !depth && !variable) return;
     if (valid_mask && t->layout->stage == STAGE_PIXEL) {
+        t->constant_exec_enabled = 0;
+        t->constant_exec = 0;
         const uint32_t inactive = value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, exec_bit(t));
         const uint32_t discard = spirv_new_id(&t->m), merge = spirv_new_id(&t->m);
         spirv_emit(&t->m, t->out, SPV_OP_SELECTION_MERGE, (const uint32_t[]){merge, SPV_SELECTION_CONTROL_NONE}, 2);
@@ -3431,9 +3453,35 @@ static uint32_t image_variable(translator *t, unsigned binding)
     return id;
 }
 
+/* An image's DST_SEL as four selectors (3 bits a component: 0 zero, 1 one, 4-7 texel x, y, z, w);
+   a binding's 0 is the identity. */
+enum { SEL_ZERO = 0, SEL_ONE = 1, SEL_X = 4, SEL_W = 7 };
+static void image_selectors(const gcn_image_binding *b, unsigned sel[4])
+{
+    for (unsigned k = 0; k < 4; k++) sel[k] = b->swizzle ? (b->swizzle >> (3 * k) & 7) : SEL_X + k;
+}
+
+/* What a load of a texel outside the image (or of a level past the last) gives: the texel (0, 0, 0, 0),
+   or (0, 0, 0, 1) for a format without alpha, through the image's DST_SEL, each component DMASK names
+   written in order from vdata. That is Vulkan's robustImageAccess2 texel replacement (the replaced
+   texel then takes the view's component swizzle), which Mesa's RADV exposes on AMD's hardware with no
+   bounds code in the shader: the hardware returns it. Ones are 1.0 for float data, 1 for integers. */
+static void replacement_texel(translator *t, const gcn_image_binding *b, unsigned dmask, unsigned vdata)
+{
+    enum { FLOAT_ONE = 0x3f800000 };
+    unsigned sel[4], next = vdata;
+    image_selectors(b, sel);
+    const uint32_t one = b->type == GCN_IMAGE_FLOAT ? FLOAT_ONE : 1;
+    for (unsigned i = 0; i < 4; i++) {
+        if (!(dmask >> i & 1)) continue;
+        const int is_one = sel[i] == SEL_ONE || (sel[i] == SEL_W && b->components < 4);
+        write_vgpr(t, next++, konst(t, is_one ? one : 0));
+    }
+}
+
 /* image_load and image_load_mip from a sampled image: OpImageFetch at the coordinates and level. A
-   texel outside the image, or a level past the view's last, is a run-time stop (and the load writes
-   nothing): what GCN returns there is not established here. */
+   texel outside the image, or a level past the view's last, reads the replacement texel
+   (replacement_texel): the fetch itself happens only in range, where Vulkan defines it. */
 static void sampled_load(translator *t, const gcn_image_binding *b, uint32_t variable, uint32_t coordinate, unsigned coordinates,
                          uint32_t level, uint32_t texel_type, unsigned dmask, unsigned vdata)
 {
@@ -3444,10 +3492,6 @@ static void sampled_load(translator *t, const gcn_image_binding *b, uint32_t var
         for (unsigned i = 0; i < 4; i++)
             if (dmask >> i & 1) write_vgpr(t, next++, konst(t, 0));
         end_if(t, merge);
-        return;
-    }
-    if (!t->layout->error_address) {
-        fail(t, "image_load from a sampled image: its range is checked at run time, and there is no run-time stop word");
         return;
     }
     const uint32_t image = load(t, image_type(t, b), variable);
@@ -3475,7 +3519,7 @@ static void sampled_load(translator *t, const gcn_image_binding *b, uint32_t var
     }
     end_if(t, merge);
     merge = begin_if(t, value(t, SPV_OP_LOGICAL_AND, t_bool(t), 2, active, value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, in_range)));
-    runtime_stop(t, konst(t, (uint32_t)GCN_RUNTIME_STOP_IMAGE_RANGE << GCN_RUNTIME_STOP_KIND_SHIFT));
+    replacement_texel(t, b, dmask, vdata);
     end_if(t, merge);
 }
 
@@ -3730,6 +3774,19 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
         return;
     }
     const gcn_image_binding *b = &t->layout->images[binding];
+    if (b->unmapped) { /* a read here would reach unmapped memory: a run-time stop, and the VGPRs read 0 */
+        if (op == MIMG_OP_STORE || !t->layout->error_address) {
+            fail(t, "%s: an image at address 0 %s", name, op == MIMG_OP_STORE ? "stored to" : "read, and there is no run-time stop word");
+            return;
+        }
+        const int compare = op == MIMG_OP_SAMPLE_C_LZ; /* a depth comparison writes one VGPR */
+        const uint32_t merge = begin_if(t, exec_bit(t));
+        runtime_stop(t, konst(t, (uint32_t)GCN_RUNTIME_STOP_UNMAPPED_IMAGE << GCN_RUNTIME_STOP_KIND_SHIFT));
+        const unsigned written = compare ? 1 : (unsigned)__builtin_popcount(dmask);
+        for (unsigned i = 0; i < written; i++) write_vgpr(t, vdata + i, konst(t, 0));
+        end_if(t, merge);
+        return;
+    }
     if (sample) {
         const uint32_t texel_type = spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){texel_component_type(t, b), 4}, 2);
         image_sample(t, code, at, ins, binding, texel_type, dmask, vaddr, vdata, op == MIMG_OP_SAMPLE_L,
@@ -3740,19 +3797,14 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
         fail(t, "%s: a store to a sampled image", name);
         return;
     }
-    if (!b->sampled && op == MIMG_OP_LOAD_MIP && !t->layout->error_address) { /* its level is checked at run time (below) */
-        fail(t, "%s: image_load_mip of a storage image (one level) without a run-time stop word", name);
-        return;
-    }
     const unsigned axes = b->dim == GCN_IMAGE_1D ? 1 : b->dim == GCN_IMAGE_2D ? 2 : 3;
     const unsigned coordinates = axes + (b->arrayed ? 1 : 0);
     /* The storage image's DST_SEL (identity when the binding has none): shader component k is 0 (0), 1 (1)
        or texel component m (4 + m). A load swizzles by it, a store by its inverse, as shadPS4 does for
        storage images. DMASK names the shader components a store's VGPRs hold, in order; every texel
        component of the format must come from exactly one of them. */
-    enum { SEL_ZERO = 0, SEL_ONE = 1, SEL_X = 4 };
     unsigned sel[4], writer[4] = {0};
-    for (unsigned k = 0; k < 4; k++) sel[k] = b->swizzle ? (b->swizzle >> (3 * k) & 7) : SEL_X + k;
+    image_selectors(b, sel);
     if (op == MIMG_OP_STORE)
         for (unsigned m = 0; m < b->components; m++) {
             unsigned writers = 0;
@@ -3784,10 +3836,9 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
         return;
     }
     /* A storage image access outside the image: a store writes nothing, as on the hardware and under
-       Vulkan's robustImageAccess2 (which shadPS4 requires for the same reason); a load stops at run
-       time, as a sampled one does (what it returns is not established; with no stop word it is not
-   checked). Without the check the access
-       is undefined in Vulkan, and the GPU faulted on the LUT pass's stores (0x20d1b00800). */
+       Vulkan's robustImageAccess2 (which shadPS4 requires for the same reason), and a load reads the
+       replacement texel (replacement_texel). Without the check the access is undefined in Vulkan, and
+       the GPU faulted on the LUT pass's stores (0x20d1b00800). */
     const uint32_t image = load(t, image_type(t, b), variable);
     const uint32_t uvec = coordinates == 1 ? t_uint(t) : spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_uint(t), coordinates}, 2);
     const uint32_t bvec = coordinates == 1 ? t_bool(t) : spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_bool(t), coordinates}, 2);
@@ -3795,18 +3846,16 @@ static void image_memory(translator *t, const uint32_t *code, size_t at, const g
     const uint32_t inside = value(t, SPV_OP_U_LESS_THAN, bvec, 2, value(t, SPV_OP_BITCAST, uvec, 1, coordinate), size);
     uint32_t in_range = coordinates == 1 ? inside : value(t, SPV_OP_ALL, t_bool(t), 1, inside);
     /* a storage image is bound as one level: image_load_mip reads it at level 0 (the VGPR after the
-       coordinates), and a level past it stops as a level past the last does for a sampled image */
+       coordinates), and a level past it reads the replacement texel, as past a sampled image's last */
     if (op == MIMG_OP_LOAD_MIP)
         in_range = both(t, in_range, equals(t, load(t, t_uint(t), vgpr(t, vaddr + coordinates)), konst(t, 0)));
     t->queries_images = 1;
-    const int load_checked = op != MIMG_OP_STORE && t->layout->error_address; /* stops need the stop word */
-    if (load_checked) {
-        const uint32_t outside = begin_if(t, value(t, SPV_OP_LOGICAL_AND, t_bool(t), 2, exec_bit(t), value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, in_range)));
-        runtime_stop(t, konst(t, (uint32_t)GCN_RUNTIME_STOP_IMAGE_RANGE << GCN_RUNTIME_STOP_KIND_SHIFT));
+    if (op != MIMG_OP_STORE) {
+        const uint32_t outside = begin_if(t, both(t, exec_bit(t), value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, in_range)));
+        replacement_texel(t, b, dmask, vdata);
         end_if(t, outside);
     }
-    const uint32_t merge = begin_if(t, op == MIMG_OP_STORE || load_checked ? value(t, SPV_OP_LOGICAL_AND, t_bool(t), 2, exec_bit(t), in_range)
-                                                                         : exec_bit(t));
+    const uint32_t merge = begin_if(t, both(t, exec_bit(t), in_range));
     if (op == MIMG_OP_STORE) {
         uint32_t texel[4];
         for (unsigned m = 0; m < 4; m++) {
@@ -4074,6 +4123,132 @@ int gcn_table_copy_shape(const uint32_t *code, size_t dwords, gcn_table_copy *sh
     }
     *shape = (gcn_table_copy){.table_sgpr = table, .source_sgpr = source, .destination_sgpr = destination, .workgroup_sgpr = workgroup,
                               .table_format = table_format};
+    return 1;
+}
+
+/* What a register holds in a constant fill (gcn_fill_shape): an index lane * lane_scale + workgroup *
+   group_scale + constant (lane the lane id, workgroup the workgroup's x index), one of the fill's value
+   words (value: the SGPR its scalar load wrote), or something else. */
+typedef struct {
+    enum { FILL_OTHER, FILL_INDEX, FILL_VALUE } kind;
+    int64_t lane_scale, group_scale, constant;
+    unsigned value;
+} fill_held;
+
+/* A VOP source operand's value: an SGPR's, a VGPR's (VOP_SRC_VGPR + n), or an inline integer constant. */
+static fill_held fill_operand(const fill_held *sgprs, const fill_held *vgprs, unsigned src)
+{
+    enum { VOP_SRC_VGPR = 256, ZERO = 128, POSITIVE_LAST = 192, NEGATIVE_LAST = 208 };
+    if (src >= VOP_SRC_VGPR) return vgprs[src - VOP_SRC_VGPR];
+    if (src < SGPR_VCC) return sgprs[src];
+    if (src >= ZERO && src <= POSITIVE_LAST) return (fill_held){.kind = FILL_INDEX, .constant = src - ZERO};
+    if (src > POSITIVE_LAST && src <= NEGATIVE_LAST) return (fill_held){.kind = FILL_INDEX, .constant = POSITIVE_LAST - (int)src};
+    return (fill_held){.kind = FILL_OTHER};
+}
+
+static fill_held fill_combine(fill_held a, fill_held b, int sign)
+{
+    if (a.kind != FILL_INDEX || b.kind != FILL_INDEX) return (fill_held){.kind = FILL_OTHER};
+    return (fill_held){.kind = FILL_INDEX, .lane_scale = a.lane_scale + sign * b.lane_scale, .group_scale = a.group_scale + sign * b.group_scale,
+                       .constant = a.constant + sign * b.constant};
+}
+
+int gcn_fill_shape(const uint32_t *code, size_t dwords, gcn_fill *shape)
+{
+    enum { NONE = ~0u, SGPRS = 104, VGPRS = 256, SHIFT_MOST = 24, VALUE_WORDS = 4 };
+    const long program = gcn_program_dwords(code, dwords);
+    if (program < 0) return 0;
+    fill_held sgprs[SGPRS], vgprs[VGPRS];
+    for (unsigned i = 0; i < SGPRS; i++) sgprs[i] = (fill_held){.kind = FILL_OTHER};
+    for (unsigned i = 0; i < VGPRS; i++) vgprs[i] = (fill_held){.kind = FILL_OTHER};
+    vgprs[0] = (fill_held){.kind = FILL_INDEX, .lane_scale = 1};
+    gcn_fill found = {.destination_sgpr = NONE, .workgroup_sgpr = NONE, .most_lanes = UINT32_MAX};
+    unsigned value[VALUE_WORDS] = {0}, value_words = 0, stored = 0;
+    for (size_t at = 0; at < (size_t)program;) {
+        gcn_instruction ins;
+        if (gcn_decode(code + at, (size_t)program - at, &ins) || !ins.name) return 0;
+        const uint32_t *w = code + at;
+        const char *name = ins.name;
+        if (ins.encoding == GCN_SOPP) {
+            if (strcmp(name, "s_waitcnt") && strcmp(name, "s_endpgm") && strcmp(name, "s_nop")) return 0;
+        } else if (ins.encoding == GCN_SOP1) {
+            const unsigned sdst = (w[0] >> 16) & 0x7f;
+            if (strcmp(name, "s_mov_b32")) return 0;
+            if (sdst < SGPRS) sgprs[sdst] = (fill_held){.kind = FILL_OTHER};
+        } else if (ins.encoding == GCN_SOP2) {
+            /* s_lshl_b32 of the workgroup index by a constant (the first SGPR an index takes is that index) */
+            const unsigned ssrc0 = w[0] & 0xff, ssrc1 = (w[0] >> 8) & 0xff, sdst = (w[0] >> 16) & 0x7f;
+            if (strcmp(name, "s_lshl_b32") || ssrc0 >= SGPRS || sdst >= SGPRS || ssrc1 < 128 || ssrc1 > 128 + SHIFT_MOST) return 0;
+            if (found.workgroup_sgpr == NONE && sgprs[ssrc0].kind == FILL_OTHER) found.workgroup_sgpr = ssrc0;
+            if (ssrc0 != found.workgroup_sgpr) return 0;
+            sgprs[sdst] = (fill_held){.kind = FILL_INDEX, .group_scale = (int64_t)1 << (ssrc1 - 128)};
+        } else if (ins.encoding == GCN_SMRD) {
+            const unsigned sdst = (w[0] >> 15) & 0x7f;
+            const unsigned n = !strcmp(name, "s_buffer_load_dword") ? 1 : !strcmp(name, "s_buffer_load_dwordx2") ? 2 : !strcmp(name, "s_buffer_load_dwordx4") ? 4 : 0;
+            if (!n || sdst + n > SGPRS) return 0;
+            for (unsigned k = 0; k < n; k++) sgprs[sdst + k] = (fill_held){.kind = FILL_VALUE, .value = sdst + k};
+        } else if (ins.encoding == GCN_VOP1) {
+            const unsigned src = w[0] & 0x1ff, vdst = (w[0] >> 17) & 0xff;
+            if (strcmp(name, "v_mov_b32")) return 0;
+            vgprs[vdst] = fill_operand(sgprs, vgprs, src);
+        } else if (ins.encoding == GCN_VOP2) {
+            const unsigned src0 = w[0] & 0x1ff, vsrc1 = (w[0] >> 9) & 0xff, vdst = (w[0] >> 17) & 0xff;
+            const fill_held a = fill_operand(sgprs, vgprs, src0), v = vgprs[vsrc1];
+            fill_held result = {.kind = FILL_OTHER};
+            if (!strcmp(name, "v_add_i32")) {
+                result = fill_combine(a, v, 1);
+            } else if (!strcmp(name, "v_sub_i32")) {
+                result = fill_combine(a, v, -1);
+            } else if (!strcmp(name, "v_lshlrev_b32") || !strcmp(name, "v_lshrrev_b32")) {
+                if (a.kind != FILL_INDEX || a.lane_scale || a.group_scale || a.constant < 0 || a.constant > SHIFT_MOST || v.kind != FILL_INDEX) return 0;
+                const int64_t by = (int64_t)1 << a.constant;
+                if (!strcmp(name, "v_lshlrev_b32")) {
+                    result = (fill_held){.kind = FILL_INDEX, .lane_scale = v.lane_scale * by, .group_scale = v.group_scale * by, .constant = v.constant * by};
+                } else if (v.lane_scale == 1 && v.group_scale == by && !v.constant) {
+                    /* (lane + workgroup << k) >> k is the workgroup index while the lane stays below 1 << k */
+                    result = (fill_held){.kind = FILL_INDEX, .group_scale = 1};
+                    if ((uint64_t)by < found.most_lanes) found.most_lanes = (uint32_t)by;
+                } else {
+                    return 0;
+                }
+            } else {
+                return 0;
+            }
+            vgprs[vdst] = result;
+        } else if (ins.encoding == GCN_MUBUF) {
+            const unsigned vaddr = w[1] & 0xff, vdata = (w[1] >> 8) & 0xff, srsrc = mubuf_srsrc(w);
+            const unsigned n = !strcmp(name, "buffer_store_format_x") || !strcmp(name, "buffer_store_dword")       ? 1
+                               : !strcmp(name, "buffer_store_format_xy") || !strcmp(name, "buffer_store_dwordx2")  ? 2
+                               : !strcmp(name, "buffer_store_format_xyzw") || !strcmp(name, "buffer_store_dwordx4") ? 4
+                                                                                                                     : 0;
+            const fill_held index = vgprs[vaddr];
+            if (!n || !indexed_only(w) || vdata + n > VGPRS || index.kind != FILL_INDEX || index.lane_scale != 1 || index.group_scale <= 0 ||
+                index.constant < 0 || index.group_scale > UINT32_MAX || index.constant > UINT32_MAX || stored == GCN_FILL_STORES)
+                return 0;
+            if (found.destination_sgpr == NONE) found.destination_sgpr = srsrc, found.group_elements = (uint32_t)index.group_scale, value_words = n;
+            if (srsrc != found.destination_sgpr || index.group_scale != found.group_elements || n != value_words) return 0;
+            for (unsigned k = 0; k < n; k++) { /* the same value words in every store */
+                if (vgprs[vdata + k].kind != FILL_VALUE || (stored && vgprs[vdata + k].value != value[k])) return 0;
+                value[k] = vgprs[vdata + k].value;
+            }
+            found.offsets[stored++] = (uint32_t)index.constant;
+        } else {
+            return 0;
+        }
+        at += ins.dwords;
+    }
+    if (!stored || found.workgroup_sgpr == NONE) return 0;
+    found.store_count = stored;
+    /* the descriptor and the workgroup index stay as the dispatch set them */
+    const callee_code no_callee = {NULL, 0};
+    for (size_t at = 0; at < (size_t)program;) {
+        gcn_instruction ins;
+        gcn_decode(code + at, (size_t)program - at, &ins);
+        if (writes_sgprs(code + at, &ins, &no_callee, found.destination_sgpr, 4) || writes_sgprs(code + at, &ins, &no_callee, found.workgroup_sgpr, 1))
+            return 0;
+        at += ins.dwords;
+    }
+    *shape = found;
     return 1;
 }
 
@@ -4350,6 +4525,8 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
 
     /* Every lane starts active, SCC clear, at block 0. */
     t->exec = function_variable(t, t_bool(t), spirv_constant_bool(m, 1));
+    t->constant_exec_enabled = layout->stage == STAGE_PIXEL && !survey_mode;
+    t->constant_exec = spirv_constant_bool(m, 1);
     t->scc = function_variable(t, t_bool(t), spirv_constant_bool(m, 0));
     t->pc = function_variable(t, t_uint(t), konst(t, 0));
     t->out = &t->prologue;
@@ -4373,6 +4550,12 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
     uint32_t block_count = 0;
     for (long i = 0; i < count; i++)
         if (starts[instructions[i].at]) block_of[instructions[i].at] = block_count++;
+    if (block_count != 1) t->constant_exec_enabled = 0, t->constant_exec = 0;
+    for (long i = 0; t->constant_exec_enabled && i < count; i++) {
+        long target;
+        if (branches(code + instructions[i].at, &instructions[i].ins, instructions[i].at, &target))
+            t->constant_exec_enabled = 0, t->constant_exec = 0;
+    }
     uint32_t *labels = calloc(block_count + 1, sizeof *labels);
     const uint32_t header = spirv_new_id(m), dispatch = spirv_new_id(m), switch_merge = spirv_new_id(m);
     const uint32_t continue_block = spirv_new_id(m), loop_merge = spirv_new_id(m), fallback = spirv_new_id(m);
