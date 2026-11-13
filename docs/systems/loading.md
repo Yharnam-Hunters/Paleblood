@@ -7,7 +7,7 @@ How the game reads its files: the file interfaces the executable imports from th
 **At a glance**
 
 - **Scope:** File access, Fios file and directory handles, PlayGo chunks, and the archive and mount layers above them.
-- **Verified:** Seven functions directly above the file imports (kernel files, Fios handles, C streams) are replaced and edge-verified.
+- **Verified:** Seven functions directly above the file imports (kernel files, Fios handles, C streams) are replaced and edge-verified, and since 12 and 13 November the resource loader above them: mount names, the disk file device's open, load requests, the load event queues and transfer tasks (the function table below gives each one's status).
 - **Open:** Which calls run during a load, and in what order. The boot now reads files from your copy, its scratch folder and its saves, but the game's loading code itself is not mapped.
 
 ## Summary
@@ -86,6 +86,29 @@ edge-verified, not verified.
 
 </details>
 
+### The resource loader above the files
+
+Between the game's request for a resource and the file read sits Dantelion2's resource loader.
+Its first layers were replaced on 12 and 13 November, each with an edge-case generator; all of them
+are reached in coverage boots to character creation:
+
+- **Mount names.** A path the game opens starts with a mount name and a colon (`name:/...`). The
+  PS4 disk file device keeps two tables of (name, target) pairs and rewrites a path's prefix with
+  them in rounds, aliases first and then one root, until none matches; the wide path token scanner
+  they use was called about 11,000 times in one boot ([#685](https://github.com/Yharnam-Hunters/Paleblood/pull/685)). Its open then picks the device
+  registered under the path's mount name, or tries every unnamed device until one opens
+  ([#710](https://github.com/Yharnam-Hunters/Paleblood/pull/710)).
+- **Load requests and events.** The request's copy constructor and the load event queues: a
+  request asks the queue's resource manager for a handle, a load event array grows as a vector does,
+  and removing a resource's info cancels the first transfer task loading it, under the queue's
+  locks ([#685](https://github.com/Yharnam-Hunters/Paleblood/pull/685), [#710](https://github.com/Yharnam-Hunters/Paleblood/pull/710), [#718](https://github.com/Yharnam-Hunters/Paleblood/pull/718)).
+- **Transfer tasks.** The task that moves a file's bytes: its initialization asks the disk file
+  device where it finds the path, then the read, close, start and update steps run a small state
+  machine. Moving from a final state back to a working one is reported ("Tried to shift into lower
+  priority.") and done anyway, as the original does ([#799](https://github.com/Yharnam-Hunters/Paleblood/pull/799)).
+
+How these layers are driven during a real load, and in what order, is still being mapped.
+
 ## Key functions
 
 | Address | Size | Name | Status | Notes |
@@ -107,19 +130,30 @@ edge-verified, not verified.
 | `0x024be3b0` | 558 | `loading_load_request_copy_024be3b0` | edge-verified | resource load request copy constructor: base vtable; words/bytes copied; name on the request heap; strings/array via 0x024be8e0 then assigned (strings skip self-copy) |
 | `0x024be8e0` | 362 | `loading_load_request_construct_tail_024be8e0` | edge-verified | resource load request tail: two owning empty wide strings and an empty byte array on the default container heap (heap check each) |
 | `0x024c1530` | 152 | `loading_resource_manager_release_024c1530` | edge-verified | DLResourceManagerImpl release of an info: initialized assert; without flag 0x40 leave the file queue and set the signal; under the lock mark released (0x80) and hand to 0x024c3260 |
+| `0x024d6730` | 283 | `loading_file_task_initialize_024d6730` | edge-verified | FileTransferTask initialize: copy request (keep heap word if none); invalid -> false; base initialize; queue; flag bit 0; request words |
+| `0x024d6950` | 197 | `loading_file_task_update_024d6950` | edge-verified | FileTransferTask update: under its lock run state handlers (member-function table) until a stop state |
+| `0x024d6e20` | 275 | `loading_file_task_check_read_024d6e20` | edge-verified | FileTransferTask read step: open errors or cancel abort; count pending size; state 8 or 9 |
+| `0x024d7460` | 245 | `loading_file_task_start_024d7460` | edge-verified | FileTransferTask start: manager stop or cancel abort; prepare; chunk limit; begin read; state 6; start slot |
+| `0x024dd540` | 487 | `loading_transfer_task_initialize_024dd540` | edge-verified | TransferTask initialize: clear state; keep manager/info/word; heap by disk device location; claim info; ready |
+| `0x024dde50` | 200 | `loading_transfer_task_check_read_024dde50` | edge-verified | TransferTask read step: submitted -> reading or abort; open errors 0x10/0x11/0x12 abort; else fail code 4 |
+| `0x024ddf20` | 190 | `loading_transfer_task_check_close_024ddf20` | edge-verified | TransferTask close step: free read object; closed and not cancelled -> request close; else finish once |
 | `0x024de230` | 116 | `loading_memory_stream_read_024de230` | edge-verified | VirtualMemoryInputStream read: -1 if not open; min(count; left) cut to 32 bits; copy and advance position and +0x20 |
 | `0x02a2aca0` | 180 | `loading_path_token_next_02a2aca0` | edge-verified | wide path token scanner: skip delimiters (wcschr); return length and start of the next token; cursor moves to the delimiter after it |
 | `0x02a698e0` | 654 | `loading_load_queue_request_02a698e0` | edge-verified | DLResourceLoadEventQueue request (kind 0): validity; manager info or report -0xf8; info remembers the queue; under the lock append an event with a request copy; handle to the info |
 | `0x02a69b70` | 340 | `loading_load_event_array_push_back_02a69b70` | edge-verified | resource load event (0x158) push_back: grow 1.5x when full (source inside found again); copy two words; copy-construct the request; queued vtable |
 | `0x02a69cd0` | 654 | `loading_load_queue_request_kind_4_02a69cd0` | edge-verified | DLResourceLoadEventQueue request (kind 4): same code as 0x02a698e0 |
+| `0x02a69fb0` | 105 | `loading_finished_queue_front_02a69fb0` | edge-verified | Finished-entry list front: under the lock copy the first entry when the count is not 0 |
+| `0x02a6a020` | 140 | `loading_finished_queue_pop_02a6a020` | edge-verified | Finished-entry list pop: under the lock unlink the first node; destroy its entry; free; count one less |
 | `0x02a6af30` | 423 | `loading_load_queue_remove_02a6af30` | edge-verified | DLResourceFileLoadEventQueue: under the queue lock find the transfer task loading an info in six task lists (read-write lock) and cancel it |
 | `0x02a6b520` | 395 | `loading_file_load_slots_construct_02a6b520` | edge-verified | file load event queue: construct its 32 slots (0x338 bytes each) in order with 0x024d63f0 |
 | `0x02a6bc50` | 618 | `loading_load_event_array_reallocate_02a6bc50` | edge-verified | load event array reallocate to exact capacity: copy events; destroy old (base vtable; data freed; three strings released); free old buffer |
+| `0x02a6cd90` | 635 | `loading_stream_queue_request_02a6cd90` | edge-verified | DLResourceStreamLoadEventQueue request: validity; manager info or report -0xf8; stream handle; under the lock append an event with a request copy and its extra byte; handle copy |
 | `0x02a6d010` | 393 | `loading_stream_event_array_push_back_02a6d010` | edge-verified | DLResourceStreamLoadEventQueue event array push_back (0x160 events; same code as 0x02a69b70 plus the byte at +0x158; stream request vtable) |
 | `0x02a6d8e0` | 224 | `loading_stream_queue_remove_02a6d8e0` | edge-verified | DLResourceStreamLoadEventQueue remove request: pool range assert; erase from the in-use array (memmove); append to the give-back array |
 | `0x02a6f140` | 645 | `loading_stream_event_array_reallocate_02a6f140` | edge-verified | DLResourceStreamLoadEventQueue event array reallocate (same code as 0x02a6bc50 for 0x160 events) |
 | `0x02a70890` | 141 | `loading_kernel_file_open` | verified | sceKernelOpen with FreeBSD flags and permissions from the platform mode bits; store the descriptor and set the open bit; -1 on error |
 | `0x02a70920` | 46 | `loading_kernel_file_read` | edge-verified | sceKernelRead the file's descriptor; -1 on a negative count; else store the count when asked and return 0 |
+| `0x02a70a90` | 84 | `loading_stream_handle_construct_02a70a90` | edge-verified | Stream handle constructor: resource handle; stream vtable; queue; info remembers the queue when both are set |
 | `0x02e67d20` | 80 | `loading_stdio_close_files` | edge-verified | fclose and clear the FILE pointers at +0x10; +0x8 and +0x0 in that order; skipping null ones |
 
 The import table records interfaces the executable and its bundled modules can call. The exact
