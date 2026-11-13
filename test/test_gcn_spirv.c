@@ -532,6 +532,24 @@ static void table_copies(void)
     CHECK(gcn_table_copy_shape(PROGRAM(indexed_scale_add), &shape) == 0);
 }
 
+/* Constant fills (gcn_fill_shape, gcn_programs.h): the descriptor s[0:3], the workgroup index s12, each
+   store's element offset, and the widest workgroup the global id's split holds for. A table copy or a
+   program storing the lane id is not one. */
+static void fills(void)
+{
+    gcn_fill shape = {0};
+    CHECK(gcn_fill_shape(PROGRAM(fill_one_store), &shape) == 1);
+    CHECK(shape.destination_sgpr == 0 && shape.workgroup_sgpr == 12 && shape.group_elements == 64 && shape.store_count == 1 && shape.offsets[0] == 0 &&
+          shape.most_lanes == UINT32_MAX);
+    CHECK(gcn_fill_shape(PROGRAM(fill_two_stores), &shape) == 1);
+    CHECK(shape.group_elements == 128 && shape.store_count == 2 && shape.offsets[0] == 0 && shape.offsets[1] == 64 && shape.most_lanes == UINT32_MAX);
+    CHECK(gcn_fill_shape(PROGRAM(fill_from_global_id), &shape) == 1);
+    CHECK(shape.group_elements == 128 && shape.store_count == 2 && shape.offsets[0] == 0 && shape.offsets[1] == 64 && shape.most_lanes == 64);
+    CHECK(gcn_fill_shape(PROGRAM(fill_of_lanes), &shape) == 0);
+    CHECK(gcn_fill_shape(PROGRAM(table_copy), &shape) == 0);
+    CHECK(gcn_fill_shape(PROGRAM(scale_add), &shape) == 0);
+}
+
 /* A buffer_store_dwordx4 translates to a valid module that holds a store of the whole 4-dword vector
    (an OpTypePointer, opcode 32, in PhysicalStorageBuffer, 5349, to a vector, opcode 23, of four 32-bit
    unsigned integers): stores of separate dwords cross the bus to host memory a dword at a time.
@@ -855,6 +873,7 @@ int main(void)
     store_resources();
     memory_reads();
     table_copies();
+    fills();
     vector_stores();
     image_programs();
     calls();
