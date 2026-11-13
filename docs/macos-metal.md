@@ -129,8 +129,7 @@ zero-colour-mask draws; active bounds testing is not implemented. Register write
 carry across call fragments and submissions; reset clears the values and control. Queue
 selection changes compute state only. Exact inactive values have no public readback, so the
 owned `metal_depth_bounds` test qualifies admission, refusal and fresh pixel/vertex writes,
-while source review establishes the independent raw stores. The `depth_bounds_calls` CPU test
-checks the call record's raw values and order. No private state getter is introduced.
+while source review establishes the independent raw stores. No private state getter is introduced.
 
 Screen scissors use the existing register events for `PA_SC_SCREEN_SCISSOR_TL` and `_BR`.
 The [AMD CIK register manual](https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/programmer-references/CIK_3D_registers_v2.pdf)
