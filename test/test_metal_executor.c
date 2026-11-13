@@ -5,6 +5,7 @@
 #include "runtime/render_calls.h"
 #include "gcn_programs.h"
 #include "metal_executor_programs.h"
+#include "pixel_constant_wqm_programs.h"
 
 #include <math.h>
 #include <float.h>
@@ -522,6 +523,67 @@ static void check_written_user_data(const rt_executor_memory *memory, unsigned c
             }
         }
     }
+    rt_executor_close(executor);
+}
+
+/* Red observes the WQM result; green independently observes SCC. Each successful
+   shader is drawn again from the cache. Unknown masks must fail before any pool byte changes. */
+static void check_constant_wqm(const rt_executor_memory *memory, unsigned char *pool)
+{
+    char error[1024] = "";
+    rt_executor *executor = NULL;
+    CHECK(rt_executor_open(memory, &executor, error, sizeof error) == 0);
+    if (!executor) return;
+    unsigned char *before = malloc(POOL_SIZE);
+    CHECK(before != NULL);
+    if (!before) { rt_executor_close(executor); return; }
+    const float scale[3] = {8, 8, 1}, translate[3] = {8, 8, 0};
+    const uint64_t target = at(0x930000);
+    for (unsigned negative = 0; negative < 2; ++negative) {
+        const pb_pixel_constant_wqm_program *programs = negative ? pixel_constant_wqm_negative : pixel_constant_wqm_positive;
+        const size_t count = negative ? PIXEL_CONSTANT_WQM_NEGATIVE_COUNT : PIXEL_CONSTANT_WQM_POSITIVE_COUNT;
+        for (size_t i = 0; i < count; ++i) {
+            const pb_pixel_constant_wqm_program *program = programs + i;
+            CHECK(program->dwords * sizeof(uint32_t) <= 0x1000);
+            if (program->dwords * sizeof(uint32_t) > 0x1000) continue;
+            memset(pool + QUAD_PIXEL_CODE, 0, 0x1000);
+            memcpy(pool + QUAD_PIXEL_CODE, program->code, program->dwords * sizeof(uint32_t));
+            for (unsigned cached = 0; cached < (negative ? 1u : 2u); ++cached) {
+                const uint64_t buffer = 2500 + 4 * i + cached + 64 * negative;
+                uint32_t size = record_setup(buffer, target, 16, 16, 0, scale, translate, COLORS);
+                uint32_t pixel[RT_PIXEL_SHADER_WORDS]; pixel_registers(pixel, QUAD_PIXEL_CODE);
+                pixel[2] = 2 | (1u << 6); /* Twelve VGPRs and sixteen SGPRs cover the owned programs. */
+                pixel[5] = 9; pixel[8] = 0;
+                CHECK(rt_render_record_pixel_shader(buffer, size, pixel, error, sizeof error) == 0); size += 0x10;
+                CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
+                if (negative) {
+                    memcpy(before, pool, POOL_SIZE);
+                    expect_error(executor, buffer, size, "whole-quad shader operations are outside the Metal draw profile");
+                    const int changed = memcmp(before, pool, POOL_SIZE) != 0;
+                    CHECK(!changed);
+                    printf("WQM refusal: %s, pool_changed=%d\n", program->name, changed);
+                    size = record_draw(buffer + 1, target, 16, 16, 0, scale, translate, COLORS);
+                    if (!run(executor, buffer + 1, size)) check_gradient(executor, target, 16, 16, 0);
+                } else if (!run(executor, buffer, size)) {
+                    uint32_t pixels[16 * 16] = {0};
+                    const int read = rt_executor_read_target(executor, target, pixels, 16, 16, error, sizeof error);
+                    CHECK(read == 0);
+                    if (!read) {
+                        const uint32_t wanted = (uint32_t)program->rgba[3] << 24 | (uint32_t)program->rgba[0] << 16 |
+                                                (uint32_t)program->rgba[1] << 8 | program->rgba[2];
+                        unsigned bad = 0;
+                        for (unsigned p = 0; p < 16 * 16; ++p) if (pixels[p] != wanted) bad++;
+                        printf("WQM pixels: %s, cached=%u, wanted=%08x, first=%08x, bad=%u\n",
+                               program->name, cached, wanted, pixels[0], bad);
+                        CHECK(bad == 0);
+                    }
+                }
+                scenarios++;
+            }
+            rt_executor_reset(executor);
+        }
+    }
+    free(before);
     rt_executor_close(executor);
 }
 
@@ -1384,7 +1446,8 @@ int main(void)
         uint32_t pixel[RT_PIXEL_SHADER_WORDS], user[4]; pixel_registers(pixel, FORMAT_PIXEL_CODE);
         pixel[3] = 4 << 1; pixel[5] = 9; pixel[8] = 0;
         descriptor(user, at(SOLID_COLORS));
-        user[3] = f == 1 ? DST_XYZW | 5u << 15 :
+        /* 10_11_11 UNORM remains unsupported; 16_16 UNORM loads are now modeled. */
+        user[3] = f == 1 ? DST_XYZW | 6u << 15 :
             (f == 2 ? DST_ZYXW : f == 3 ? (DST_XYZW & ~7u) | 2 : DST_XYZW) | 7u << 12 | 14u << 15;
         CHECK(rt_render_record_pixel_shader(buffer, size, pixel, error, sizeof error) == 0); size += 0x10;
         CHECK(rt_render_record_user_data(buffer, size, RT_STAGE_PIXEL, 0, user, 4, error, sizeof error) == 0); size += 0x10;
@@ -1507,13 +1570,7 @@ int main(void)
         scenarios++;
         rt_executor_reset(x);
     }
-    size = record_setup(370, at(0x930000), 16, 16, 0, scale, translate, COLORS);
-    uint32_t quad_pixel[RT_PIXEL_SHADER_WORDS]; pixel_registers(quad_pixel, QUAD_PIXEL_CODE); quad_pixel[5] = 9; quad_pixel[8] = 0;
-    CHECK(rt_render_record_pixel_shader(370, size, quad_pixel, error, sizeof error) == 0); size += 0x10;
-    CHECK(rt_render_record_draw_auto(370, size, 3, error, sizeof error) == 0); size += 0x10;
-    expect_error(x, 370, size, "whole-quad shader operations are outside the Metal draw profile");
-    scenarios++;
-    rt_executor_reset(x);
+    check_constant_wqm(&memory, pool);
 
     /* Shader accesses require actual resource descriptors before a native image can be bound. */
     const struct { unsigned code, user_sgprs; int from_memory; const char *reason; } missing_image_descriptors[] = {
