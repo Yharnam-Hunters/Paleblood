@@ -180,6 +180,7 @@ typedef struct {
     uint32_t width, height, tile_index;
     VkFormat format;
     uint32_t element_bytes;          /* a texel's bytes in memory: 4, or 8 for 16_16_16_16 */
+    uint64_t span;                   /* its texels' bytes in memory (target_span), worked out once: its shape never changes */
     VkImage image;
     VkDeviceMemory memory;
     VkImageView view;
@@ -218,6 +219,7 @@ typedef struct {
     uint32_t slice;                  /* DB_DEPTH_VIEW's slice: each slice of an array target is an image of its own */
     uint32_t width, height;
     uint32_t tile_index;             /* DB_Z_INFO's TILE_MODE_INDEX: the depth's layout in memory */
+    uint64_t span;                   /* its depth's bytes in memory (depth_span), worked out once */
     int drawn;
     int unwritten;                   /* its depth changed since it was last written back */
     int guarded;                     /* as a colour target's */
@@ -2202,12 +2204,18 @@ static target_entry *find_target(rt_executor *x, uint64_t address)
 static int write_back_targets_in(rt_executor *x, const memory_span *spans, unsigned span_count, char *error, size_t error_size);
 
 /* The bytes a render target's texels take in the guest memory, laid out by its tile mode (0 for a layout
-   not done yet, which drawing into it stops at). */
-static uint64_t target_span(const target_entry *t)
+   not done yet, which drawing into it stops at). Worked out when the target is made (target_layout_span):
+   every image load and write-back compares its memory with each target's. */
+static uint64_t target_layout_span(const target_entry *t)
 {
     rt_tiling layout;
     char reason[160];
     return rt_tiling_layout(t->tile_index, t->element_bytes, t->width, t->height, &layout, reason, sizeof reason) ? 0 : rt_tiling_size(&layout, 1);
+}
+
+static uint64_t target_span(const target_entry *t)
+{
+    return t->span;
 }
 
 /* Frees the slot of a render target no unfinished batch and no part of the draw being recorded uses, and
@@ -2301,6 +2309,7 @@ static target_entry *target_for(rt_executor *x, const rt_color_target *color, ch
     const int appended = t == &x->targets[x->target_count];
     *t = (target_entry){.cmask.resolved = UINT64_MAX, .loaded_change = UINT64_MAX, .address = color->address, .width = color->pitch, .height = color->height, .tile_index = color->tile_mode_index,
                         .format = format, .element_bytes = element_bytes, .used_ticket = x->submitted + 1, .used_call = x->call_serial};
+    t->span = target_layout_span(t);
     const VkImageCreateInfo image = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = format,
                                      .extent = {t->width, t->height, 1}, .mipLevels = 1, .arrayLayers = 1,
                                      .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
@@ -2430,6 +2439,7 @@ static void target_drawn(rt_executor *x, target_entry *t)
 }
 
 static uint64_t depth_span(const depth_entry *z);
+static uint64_t depth_layout_span(const depth_entry *z);
 
 static void depth_drawn(rt_executor *x, depth_entry *z)
 {
@@ -2739,6 +2749,7 @@ static depth_entry *depth_for(rt_executor *x, const draw_state *s, char *error, 
     depth_entry *d = &x->depths[x->depth_count];
     *d = (depth_entry){.htile.resolved = UINT64_MAX, .z_address = z_address, .stencil_address = stencil_address, .slice = slice, .width = width, .height = height,
                        .tile_index = r[Z_INFO] >> 20 & 7, .format = format};
+    d->span = depth_layout_span(d);
     const VkImageAspectFlags aspects = (format == VK_FORMAT_S8_UINT ? 0 : VK_IMAGE_ASPECT_DEPTH_BIT) |
                                        (format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_D32_SFLOAT ? 0 : VK_IMAGE_ASPECT_STENCIL_BIT);
     const VkImageCreateInfo image = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = format,
@@ -2858,13 +2869,19 @@ static int resolve_depth_fast_clear(rt_executor *x, const draw_state *s, depth_e
    batch, as colour targets are (write_back_targets calls it first). Depth targets of 32-bit floats only,
    in a layout runtime/tiling.h has; others keep their memory as it was (nothing read it so far). The
    stencil is not written back. 1 when any was written back, 0 when none, -1 with the reason. */
-/* The bytes of a depth target's depth in memory: its tile mode's size, or 4 per texel when that is not laid out here. */
-static uint64_t depth_span(const depth_entry *z)
+/* The bytes of a depth target's depth in memory: its tile mode's size, or 4 per texel when that is not laid
+   out here. Worked out when the depth target is made (depth_layout_span), as a colour target's. */
+static uint64_t depth_layout_span(const depth_entry *z)
 {
     rt_tiling layout;
     char reason[160];
     return rt_tiling_layout(z->tile_index, 4, z->width, z->height, &layout, reason, sizeof reason) ? (uint64_t)z->width * z->height * 4
                                                                                                    : rt_tiling_size(&layout, 1);
+}
+
+static uint64_t depth_span(const depth_entry *z)
+{
+    return z->span;
 }
 
 static int write_back_depths(rt_executor *x, const memory_span *spans, unsigned span_count, char *error, size_t error_size)
@@ -4374,6 +4391,11 @@ static int load_levels_on_gpu(rt_executor *x, image_entry *e, const rt_image_des
 static int load_levels(rt_executor *x, image_entry *e, const rt_image_descriptor *d, const texel_format *f, char *error, size_t error_size)
 {
     const unsigned bytes = f->bytes, block = f->block;
+    /* loaded before in this layout, from memory unchanged since and under no unwritten target: the levels'
+       layout is not worked out again (the image's shape and this layout fix it) */
+    if (e->tiling_index == d->tiling_index && e->pitch == d->pitch && e->loaded_change != UINT64_MAX &&
+        !unwritten_target_over(x, d->address, e->loaded_span) && !memory_changed_since(x, d->address, e->loaded_span, e->loaded_change))
+        return 0;
     if (d->pitch % block) return failed(error, error_size, "a block-compressed image at %#llx of pitch %u", (unsigned long long)d->address, d->pitch);
     if (d->pitch < d->width) return failed(error, error_size, "an image at %#llx of width %u and pitch %u", (unsigned long long)d->address,
                                            d->width, d->pitch);
