@@ -57,7 +57,7 @@ will be labeled as observations until their implementation is traced.
 
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
-| `0x0222bc10` | 2693 | `ai_hk_frame_update_0222bc10` | verified | SprjHkAiManager per-frame update: steps the AI world by 1/30 s (the 60 FPS patches: 1/60), AI debug display and drawing |
+| `0x0222bc10` | 2693 | `ai_hk_frame_update_0222bc10` | verified | SprjHkAiManager per-frame update: steps the AI world by 1/30 s (the 60 FPS patches: 1/60); AI debug display and drawing |
 
 ## Structs and globals
 
