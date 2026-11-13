@@ -275,23 +275,6 @@ address,size,name,system,status,notes
 0x0247ea40,61,engine_condition_signal_poll_0247ea40,engine,edge-verified,"DLConditionSignal poll: reports an uncreated object; 0 when signalled, else -2"
 0x0247ea80,40,engine_condition_signal_check_0247ea80,engine,edge-verified,DLConditionSignal check: reports an uncreated object; 0
 0x0247eb80,16,render_read_present_pool_counter,render,edge-verified,"full-QWORD locked read/writeback retry; XOR before each attempt; caller adds one. Real AMD64 write cycles retained; non-AMD64 bridge unresolved Synthetic edges pass; no recordings."
-0x0247ecc0,118,engine_pthread_mutex_delete_0247ecc0,engine,edge-verified,"PthreadMutex deleting destructor: vtable reset, handle still initialized destroyed (busy kept), freed"
-0x0247ed40,115,engine_pthread_mutex_destroy_base_0247ed40,engine,edge-verified,"PthreadMutex base destructor: resets the vtable, destroys a handle still marked initialized (busy kept)"
-0x0247edc0,124,engine_pthread_mutex_finalize_0247edc0,engine,edge-verified,"PthreadMutex finalize: destroys the handle when initialized; -2 when busy; errors reported, then uninitialized"
-0x0247ee40,49,engine_pthread_mutex_initialize_0247ee40,engine,edge-verified,PthreadMutex initialize: creates the handle unless initialized per vtable; marks it on success; returns the creation result
-0x0247ee90,226,engine_light_mutex_lock_0247ee90,engine,edge-verified,"DLLightMutex lock: reports an uninitialized mutex; -3 on ETIMEDOUT; EDEADLK/EINVAL/EAGAIN/other report chains, 0"
-0x0247ef80,230,engine_light_mutex_try_lock_0247ef80,engine,edge-verified,"DLLightMutex try-lock: reports an uninitialized mutex; -2 when busy; EDEADLK/EINVAL/EAGAIN/other report chains, 0"
-0x0247f070,124,engine_light_mutex_unlock_0247f070,engine,edge-verified,DLLightMutex unlock: reports an uninitialized mutex; EPERM ignored; EINVAL and other errors reported; 0
-0x0247f190,81,engine_read_write_lock_delete_0247f190,engine,edge-verified,"DLReadWriteLock deleting destructor: vtable reset, created handle destroyed (EINVAL reported), freed"
-0x0247f1f0,85,engine_read_write_lock_destroy_base_0247f1f0,engine,edge-verified,"DLReadWriteLock base destructor: vtable reset, created handle destroyed, flag cleared unless busy"
-0x0247f250,94,engine_read_write_lock_finalize_0247f250,engine,edge-verified,"DLReadWriteLock finalize: when created per vtable, destroys; -2 when busy; EINVAL reported; else not created, 0"
-0x0247f2b0,244,engine_read_write_lock_create_0247f2b0,engine,edge-verified,"DLReadWriteLock create: unless created; -1 on ENOMEM/EAGAIN; EPERM/EBUSY/EINVAL/EFAULT report chains; created, 0"
-0x0247f3d0,198,engine_read_write_lock_write_lock_0247f3d0,engine,edge-verified,"DLReadWriteLock write lock, forever or timed: -3 on ETIMEDOUT; EINVAL/EDEADLK chains; other results reported unknown; 0"
-0x0247f4a0,146,engine_read_write_lock_try_write_lock_0247f4a0,engine,edge-verified,DLReadWriteLock try write lock: -2 when busy; EINVAL/EDEADLK report chains; 0
-0x0247f540,115,engine_read_write_lock_unlock_0247f540,engine,edge-verified,DLReadWriteLock unlock (one of three identical copies): -4 on EPERM; EINVAL reported; 0
-0x0247f5c0,115,engine_read_write_lock_unlock_0247f5c0,engine,edge-verified,DLReadWriteLock unlock (one of three identical copies): -4 on EPERM; EINVAL reported; 0
-0x0247f640,206,engine_read_write_lock_read_lock_0247f640,engine,edge-verified,"DLReadWriteLock read lock, forever or up to a timeout; -3 on ETIMEDOUT; EINVAL/EAGAIN/EDEADLK report chains; others ignored; 0"
-0x0247f710,115,engine_read_write_lock_unlock_0247f710,engine,edge-verified,DLReadWriteLock unlock (one of three identical copies): -4 on EPERM; EINVAL reported; 0
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
 0x024846f0,105,engine_fast_small_object_allocator_delete_024846f0,engine,edge-verified,"DLFastSmallObjectAllocator deleting destructor: every class allocator released (0x02a3bc40), class array freed to the backing allocator, operator delete"
 0x02484760,106,engine_fast_small_object_allocator_destroy_02484760,engine,edge-verified,"DLFastSmallObjectAllocator destructor: every class allocator released (0x02a3bc40), class array freed and forgotten"
