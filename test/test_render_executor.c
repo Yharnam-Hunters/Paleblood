@@ -554,20 +554,26 @@ static int left_column_sum(rt_executor *x, uint64_t target)
 }
 
 /* The executor keeps more images than the 64 it once did: 100 runs, each drawing a different 16x16
-   linear image (the reference image, written by the CPU) without a reset, all draw it. */
-static void many_images(rt_executor *x)
+   linear image (the reference image, written by the CPU) without a reset, all draw it. With `many`
+   past the cache's 4096 images (256 bytes apart, over the first one's texels: the guest memory is
+   too small for 4096 whole images, and only the first one's pixels are checked), slots are taken
+   over from the oldest ones, and the first image, evicted by then, draws again when it comes back. */
+static void many_images(rt_executor *x, unsigned many)
 {
-    enum { MANY = 100, MANY_BASE = 0x1c00000, MANY_TARGET = 0x1bc0000, MANY_BUFFER = 0xc0ff0000, MANY_CODE = 0x3a00, LINEAR_ALIGNED = 8 };
+    enum { MANY_WHOLE = 1000, MANY_BASE = 0x1c00000, MANY_TARGET = 0x1bc0000, MANY_BUFFER = 0xc0ff0000, MANY_CODE = 0x3a00, LINEAR_ALIGNED = 8 };
     char error[200] = "";
     memcpy((void *)(uintptr_t)at(MANY_CODE), pixel_image_texel, sizeof pixel_image_texel);
     rt_render_forget(), rt_executor_reset(x);
     int all = 1;
-    for (unsigned k = 0; k < MANY; k++) {
-        uint32_t *texels = (uint32_t *)(uintptr_t)at(MANY_BASE + k * 0x1000);
-        for (uint32_t y = 0; y < SIZE; y++)
-            for (uint32_t px = 0; px < SIZE; px++) texels[y * 64 + px] = reference_texel(px, y); /* linear aligned: 64-texel rows */
+    for (unsigned run = 0; run <= many; run++) {
+        const unsigned k = run % many; /* the last run draws the first image again */
+        const uint64_t stride = many > MANY_WHOLE ? 0x100 : 0x1000;
+        uint32_t *texels = (uint32_t *)(uintptr_t)at(MANY_BASE + k * stride);
+        if (stride == 0x1000 || run == 0)
+            for (uint32_t y = 0; y < SIZE; y++)
+                for (uint32_t px = 0; px < SIZE; px++) texels[y * 64 + px] = reference_texel(px, y); /* linear aligned: 64-texel rows */
         uint32_t image[8];
-        image_descriptor(image, at(MANY_BASE + k * 0x1000), 10, 0, SIZE, SIZE);
+        image_descriptor(image, at(MANY_BASE + k * stride), 10, 0, SIZE, SIZE);
         image[3] |= LINEAR_ALIGNED << 20, image[4] = 63u << 13; /* PITCH 64 */
         rt_render_forget();
         uint32_t offset = record_setup(MANY_BUFFER, at(MANY_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
@@ -3800,7 +3806,8 @@ int main(void)
     float_images(x);
     many_images_cached(x);
     unorm16_images(x);
-    many_images(x);
+    many_images(x, 100);
+    many_images(x, 4200);
     sampled_levels(x);
     compared_samples(x);
     sampled_cube(x);

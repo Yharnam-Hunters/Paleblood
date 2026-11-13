@@ -157,12 +157,19 @@ Instead:
        image's loads (one level: `image_load_mip` past level 0 is outside) read the same. The
        clinic's final LUT pass (pixel shader 0x20d1b00f00) loads the scene target at the flip's
        pixel, and on a loading-to-clinic transition frame the target was smaller than the flip.
-     - **The image cache** keeps up to 1024 images. When it is full, a new image takes the slot of the
-       least recently used one whose texels are guest memory's (loaded from it, never written by a
-       shader) and that no unfinished batch, and not the draw or dispatch being recorded, uses; if
+     - **The image cache** keeps up to 4096 images, found by a hash of their address. When it is
+       full, a new image takes the slot of the least recently used one whose texels are guest
+       memory's (loaded from it, never written by a shader) and that no unfinished batch, and not
+       the draw or dispatch being recorded, uses; if
        every such image is still in use, the batches are waited for first. The image is loaded again
        from guest memory at its next use. The clinic's loading screen streams in more textures than
-       the cache held (12 November 2026).
+       the cache held (12 November 2026). In about one boot in three the clinic itself then used more
+       than the 1024 images the cache held: each draw evicted images the next one needed, and every
+       load made and freed a GPU buffer for its tile copy, so the renderer's thread spent nine tenths
+       of its time in the driver and the clinic ran at 0.3 frames a second (26,000 evictions in one
+       boot, 13 November 2026). The cache was then made four times larger, and a linear search of
+       4096 images at every image a draw binds would have cost more than the search of 1024 did, so
+       the images are kept in buckets by address.
      - **Mip-mapped images** (a pixel shader's sampled images, BASE_LEVEL to LAST_LEVEL): the
        executor makes the image with LAST_LEVEL + 1 levels and views BASE_LEVEL on. Each level's
        texels come from where `rt_tiling_mip_chain` (runtime/tiling.h) puts them: the levels one after
