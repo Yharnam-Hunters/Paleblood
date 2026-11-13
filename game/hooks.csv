@@ -4,6 +4,8 @@ address,replacement,system,returns
 0x0084d5a0,bb_loading_fios_directory_delete,loading,void
 0x00857cd0,bb_loading_fios_open_file,loading,i64
 0x0085cda0,bb_loading_fios_open_file_read,loading,i64
+0x00ae3fc0,bb_physics_controller_construct_00ae3fc0,physics,void
+0x00ae8700,bb_physics_body_set_construct_00ae8700,physics,void
 0x00fbc3e0,bb_render_yebis_get_recursive_sample_parameters,render,void
 0x01088550,bb_frame_timing_time_of_day_ticks,frame_timing,i64
 0x0111a620,bb_kernel_file_open,kernel,i32
@@ -615,6 +617,7 @@ address,replacement,system,returns
 0x02ad5dd0,bb_render_swap_chain_present_mode,render,i32
 0x02ad5e90,bb_render_setup_swap_chain,render,i64
 0x02ad6e50,bb_render_swap_chain_submit,render,i32
+0x02bc1ca0,bb_physics_ids_reserve_02bc1ca0,physics,void
 0x02c6d580,bb_frame_timing_thread_random,frame_timing,i64
 0x02e61140,bb_frame_timing_time_of_day_us,frame_timing,i64
 0x02e61280,bb_frame_timing_time_seed_words,frame_timing,i128
