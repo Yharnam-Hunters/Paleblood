@@ -14,6 +14,25 @@ on:
       - 'runtime/include/runtime/guest_tls.h'
       - 'test/test_guest_tls_darwin.c'
       - 'test/test_guest_tls_failures.c'
+      - 'cmake/DarwinGuestPointer.cmake'
+      - 'cmake/DarwinGameGuestPointerTests.cmake'
+      - 'runtime/guest_pointer_darwin.c'
+      - 'runtime/plugin.c'
+      - 'runtime/include/runtime/guest_pointer.h'
+      - 'runtime/include/runtime/game_guest_pointer.h'
+      - 'test/game_guest_pointer_module.c'
+      - 'test/test_game_guest_pointer.c'
+      - 'test/test_game_guest_pointer_control.py'
+      - 'game/engine/temporary_heap.h'
+      - 'game/engine/temporary_heap_create.cpp'
+      - 'game/engine/temporary_heap_operations.cpp'
+      - 'game/engine/fixed_allocator.h'
+      - 'game/engine/linear_heap.h'
+      - 'game/engine/thread.h'
+      - 'game/engine/engine.h'
+      - 'runtime/include/runtime/original.h'
+      - 'game/engine/tests/temporary_operations_guest_tls.cpp'
+      - 'game/engine/tests/temporary_operations_guest_tls_control.py'
   pull_request:
     paths:
       - '.github/workflows/macos-guest-tls.yml'
@@ -23,6 +42,25 @@ on:
       - 'runtime/include/runtime/guest_tls.h'
       - 'test/test_guest_tls_darwin.c'
       - 'test/test_guest_tls_failures.c'
+      - 'cmake/DarwinGuestPointer.cmake'
+      - 'cmake/DarwinGameGuestPointerTests.cmake'
+      - 'runtime/guest_pointer_darwin.c'
+      - 'runtime/plugin.c'
+      - 'runtime/include/runtime/guest_pointer.h'
+      - 'runtime/include/runtime/game_guest_pointer.h'
+      - 'test/game_guest_pointer_module.c'
+      - 'test/test_game_guest_pointer.c'
+      - 'test/test_game_guest_pointer_control.py'
+      - 'game/engine/temporary_heap.h'
+      - 'game/engine/temporary_heap_create.cpp'
+      - 'game/engine/temporary_heap_operations.cpp'
+      - 'game/engine/fixed_allocator.h'
+      - 'game/engine/linear_heap.h'
+      - 'game/engine/thread.h'
+      - 'game/engine/engine.h'
+      - 'runtime/include/runtime/original.h'
+      - 'game/engine/tests/temporary_operations_guest_tls.cpp'
+      - 'game/engine/tests/temporary_operations_guest_tls_control.py'
 
 permissions:
   contents: read
@@ -36,6 +74,6 @@ jobs:
       - name: Configure normal root build
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64
       - name: Build owned library and tests from root
-        run: cmake --build build --target guest_tls_owned test_guest_tls_darwin test_guest_tls_failures --parallel 2
+        run: cmake --build build --target guest_tls_owned test_guest_tls_darwin test_guest_tls_failures test_game_guest_pointer_correct test_game_guest_pointer_wrong test_game_guest_pointer test_game_guest_pointer_absent test_temporary_operations_guest_tls_correct test_temporary_operations_guest_tls_wrong --parallel 2
       - name: Qualify owned GS/TSD profile and failure handling
-        run: ctest --test-dir build -R '^darwin_guest_tls_' --output-on-failure --no-tests=error
+        run: ctest --test-dir build -R '^(darwin_guest_tls_(owned|failures)|darwin_game_guest_pointer(_absent|_wrong_slot)?|darwin_temporary_operations_guest_tls(_wrong_getter)?)$' --output-on-failure --no-tests=error
