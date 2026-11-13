@@ -323,6 +323,7 @@ address,replacement,system,returns
 0x024d7460,bb_loading_file_task_start_024d7460,loading,i8
 0x024d7e50,bb_loading_file_task_end_024d7e50,loading,void
 0x024d8210,bb_loading_file_task_prepare_024d8210,loading,i8
+0x024d8470,bb_loading_file_task_begin_read_024d8470,loading,void
 0x024dd540,bb_loading_transfer_task_initialize_024dd540,loading,i8
 0x024dde50,bb_loading_transfer_task_check_read_024dde50,loading,i8
 0x024ddf20,bb_loading_transfer_task_check_close_024ddf20,loading,i8

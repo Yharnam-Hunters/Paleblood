@@ -129,7 +129,8 @@ struct ResourceInfo {
     int32_t transfer_claimed;     // set to 1 (an atomic exchange) when a transfer task takes it
     uint8_t unknown_0x14[0x1d];
     uint8_t flags;
-    uint8_t unknown_0x32[0x36];
+    uint8_t read_flags;           // 0xff while unset; bit 0 gives a file task's read close status 3
+    uint8_t unknown_0x33[0x35];
     LoadEventQueue *load_queue;   // the load event queue it was queued in (0x02a698e0), if any
     StreamLoadQueue *stream_queue;
     uint8_t unknown_0x78[0x8];
@@ -139,7 +140,7 @@ struct ResourceInfo {
 };
 static_assert(offsetof(ResourceInfo, transfer_claimed) == 0x10);
 static_assert(offsetof(ResourceInfo, flags) == 0x31 && offsetof(ResourceInfo, stream_queue) == 0x70);
-static_assert(offsetof(ResourceInfo, load_queue) == 0x68);
+static_assert(offsetof(ResourceInfo, load_queue) == 0x68 && offsetof(ResourceInfo, read_flags) == 0x32);
 static_assert(offsetof(ResourceInfo, pending_head) == 0x80 && offsetof(ResourceInfo, pending_allocator) == 0x90);
 
 constexpr uint8_t resource_releasing = 0x10;          // the release has started (set once)
