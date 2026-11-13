@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Loading: the file load event queue's dispatch of its queued events and its start of a file
+// Loading: the file load event queue's dispatch of its queued events and its two starts of a file
 // transfer task (structs in resource_queue.h and transfer_task.h).
 //
 // loading_load_queue_dispatch_02a6a7f0 (0x02a6a7f0): under the queue's lock, hands every queued
-// event to its handler by kind: 0 starts a file task (0x02a6a9e0), 3 and 4 go to 0x02a6abc0 and
-// 0x02a6ad50 (each with the queue's transfer tasks; the kind 3 handler does not take the queue),
-// 1 and 2 are skipped, and a larger kind is reported. Then all events are erased (0x02a6b6b0,
+// event to its handler by kind, each with the queue's transfer tasks: 0 starts a file task
+// (0x02a6a9e0), 3 cancels the task loading the event's info (0x02a6abc0, which does not take the
+// queue), 4 starts a file task that needs no buffer (0x02a6ad50), 1 and 2 are skipped, and a
+// larger kind is reported. Then all events are erased (0x02a6b6b0,
 // the engine array's erase, given iterators by value).
 //
 // loading_load_queue_start_file_task_02a6a9e0 (0x02a6a9e0): the transfer tasks are asserted.
@@ -16,6 +17,11 @@
 // manager, flag 0); when that succeeds it is appended to the first transfer task list under the
 // tasks' lock. Without one (the block allocation failed) the queue reports the request with code
 // -0xfa.
+//
+// loading_load_queue_start_file_task_no_buffer_02a6ad50 (0x02a6ad50), the handler of kind 4 events
+// (queued by 0x02a69cd0): the same code with the initialization's flag 1, which sets bit 0 of the
+// task's flags (+0x58), so the task's prepare (0x024d8210) allocates no buffer. Only the line its
+// assertion reports differs.
 #include <cstdint>
 
 #include "../engine/engine.h"
@@ -56,8 +62,8 @@ RT_ORIGINAL(0x02fbe688, c_memset, void *(void *, int32_t value, uint64_t bytes))
 RT_ORIGINAL(0x02a6b520, file_load_slots_construct, void(FileLoadSlots *));
 RT_ORIGINAL(0x02a6b340, transfer_task_list_push_back, void(engine::Array<TransferTask *> *, TransferTask *const *));
 RT_ORIGINAL(0x02a6a9e0, load_queue_start_file_task, void(LoadEventQueue *, LoadEvent *, TransferTasks *));
-RT_ORIGINAL(0x02a6abc0, load_queue_handle_kind_3, void(void *unused, LoadEvent *, TransferTasks *));
-RT_ORIGINAL(0x02a6ad50, load_queue_handle_kind_4, void(LoadEventQueue *, LoadEvent *, TransferTasks *));
+RT_ORIGINAL(0x02a6abc0, load_queue_cancel_event, void(void *unused, LoadEvent *, TransferTasks *));
+RT_ORIGINAL(0x02a6ad50, load_queue_start_file_task_no_buffer, void(LoadEventQueue *, LoadEvent *, TransferTasks *));
 
 // The engine array's iterator as the erase takes it by value: two words the dispatch leaves
 // unset, then the element.
@@ -73,6 +79,7 @@ constexpr int32_t request_no_file_task = -0xfa;
 constexpr uint32_t load_event_kind_3 = 3;
 constexpr uint32_t last_load_event_kind = 4;
 constexpr int32_t start_file_task_line = 0x1ec;
+constexpr int32_t start_file_task_no_buffer_line = 0x219;
 constexpr int32_t dispatch_line = 0x1d5;
 RT_GLOBAL(0x04c6bdb1, invalid_event_kind_message, const char);
 
@@ -106,13 +113,13 @@ FileTransferTask *take_file_task(FileTaskPool *pool)
     return task;
 }
 
-}  // namespace
-
-extern "C" void bb_loading_load_queue_start_file_task_02a6a9e0(LoadEventQueue *queue, LoadEvent *event,
-                                                               TransferTasks *tasks)
+// The two starts: `assert_line` is the line the missing-tasks assertion reports, `no_buffer` the
+// initialization's last argument.
+void start_file_task(LoadEventQueue *queue, LoadEvent *event, TransferTasks *tasks, int32_t assert_line,
+                     bool no_buffer)
 {
     if (!tasks)
-        engine::fatal_error(load_queue_source_file.address(), start_file_task_line, invalid_parameter_message.address());
+        engine::fatal_error(load_queue_source_file.address(), assert_line, invalid_parameter_message.address());
     FileTransferTask *task = take_file_task(tasks->file_task_pool);
     if (!task) {
         queue->vtable->report_failure(queue, &event->request.word_0x80, request_no_file_task, event->request.word_0x20);
@@ -120,7 +127,8 @@ extern "C" void bb_loading_load_queue_start_file_task_02a6a9e0(LoadEventQueue *q
     }
     const bool initialized = file_task_initialize(task, queue, reinterpret_cast<const HeapWordSource *>(queue->manager),
                                                   static_cast<TransferTaskManager *>(queue->transfer_task_manager),
-                                                  reinterpret_cast<ResourceInfo *>(event->word_0x08), &event->request, 0);
+                                                  reinterpret_cast<ResourceInfo *>(event->word_0x08), &event->request,
+                                                  no_buffer);
     if (!initialized)
         return;
     TransferTask *queued = reinterpret_cast<TransferTask *>(task);
@@ -128,6 +136,20 @@ extern "C" void bb_loading_load_queue_start_file_task_02a6a9e0(LoadEventQueue *q
     lock->vtable->lock(lock, wait_forever);
     transfer_task_list_push_back(&tasks->lists[0], &queued);
     lock->vtable->unlock(lock);
+}
+
+}  // namespace
+
+extern "C" void bb_loading_load_queue_start_file_task_02a6a9e0(LoadEventQueue *queue, LoadEvent *event,
+                                                               TransferTasks *tasks)
+{
+    start_file_task(queue, event, tasks, start_file_task_line, false);
+}
+
+extern "C" void bb_loading_load_queue_start_file_task_no_buffer_02a6ad50(LoadEventQueue *queue, LoadEvent *event,
+                                                                         TransferTasks *tasks)
+{
+    start_file_task(queue, event, tasks, start_file_task_no_buffer_line, true);
 }
 
 extern "C" void bb_loading_load_queue_dispatch_02a6a7f0(LoadEventQueue *queue)
@@ -143,9 +165,9 @@ extern "C" void bb_loading_load_queue_dispatch_02a6a7f0(LoadEventQueue *queue)
         else if (kind == static_cast<uint32_t>(load_event_kind_0))
             load_queue_start_file_task(queue, event, queue->transfer_tasks);
         else if (kind == load_event_kind_3)
-            load_queue_handle_kind_3(nullptr, event, queue->transfer_tasks);
+            load_queue_cancel_event(nullptr, event, queue->transfer_tasks);
         else if (kind == static_cast<uint32_t>(load_event_kind_4))
-            load_queue_handle_kind_4(queue, event, queue->transfer_tasks);
+            load_queue_start_file_task_no_buffer(queue, event, queue->transfer_tasks);
     }
     EventIterator first{}, last{};
     first.at = events->begin;

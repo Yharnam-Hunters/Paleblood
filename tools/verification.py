@@ -158,7 +158,8 @@ def order_errors(rows: list[dict], rel: str, key) -> list[str]:
 
 
 def check(root: str, funcs: list[dict]) -> list[str]:
-    """Errors for verified functions without a clean, current record, and for malformed rows."""
+    """Errors for verified functions without a clean, current record, for results of any function
+    that are for other code, and for malformed rows."""
     errs: list[str] = []
     try:
         results = read_csv(os.path.join(root, 'symbols', 'verification.csv'), VERIFICATION_HEADER)
@@ -224,4 +225,24 @@ def check(root: str, funcs: list[dict]) -> list[str]:
             label = r['cases'] + (f" with {r['option']}" if r['option'] else '')
             errs.append(f"{where} but its {label} result (symbols/verification.csv:{r['_line']}) is for other code: "
                         f"run it again with --record")
+    errs += stale_errors(root, by_function, {f['name'] for f in funcs if f['status'] == 'verified'})
+    return errs
+
+
+def stale_errors(root: str, by_function: dict[str, list[dict]], verified: set[str]) -> list[str]:
+    """A result for other code, of a function that is not verified (check() reports those with what
+    verified needs). A change to a file a replacement includes leaves its results stale; caught here,
+    in the pull request that makes the change, they cannot pile up on main unnoticed."""
+    errs = []
+    for name, rows in by_function.items():
+        if name in verified:
+            continue
+        current = source_hash(root, name)
+        for r in rows:
+            if r['source'] != current:
+                label = r['cases'] + (f" with {r['option']}" if r['option'] else '')
+                errs.append(f"symbols/verification.csv:{r['_line']}: the {label} result of {name} is for other "
+                            f"code (its source or a header it includes changed): run it again with "
+                            f"tools/verify.py run --record {r['cases']}, or remove the row if you cannot run "
+                            f"those cases (docs/VERIFY.md, \"Recorded results and quarantine\")")
     return errs

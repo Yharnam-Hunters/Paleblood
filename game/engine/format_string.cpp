@@ -69,7 +69,7 @@ extern "C" bool bb_engine_format_write_wide_string_024e77f0(Output *output, cons
 extern "C" bool bb_engine_format_string_argument_024e62b0(Output *output, VaList *arguments)
 {
     const char16_t *text;
-    if ((output->flags & flag_h_selects_narrow) && output->length == length_short) {
+    if ((output->flags & flag_capital) && output->length == length_short) {
         const signed char *narrow = next_argument<const signed char *>(arguments);
         if (narrow != nullptr)
             return write_string(output, narrow, c_strlen(reinterpret_cast<const char *>(narrow)));

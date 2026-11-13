@@ -42,9 +42,10 @@
 
 /* What the executor keeps, made on first use: sized for a 3D scene (the character creation preview
    alone samples a few hundred textures through dozens of shaders, into two dozen targets) */
-enum { MAX_SHADERS = 1024, MAX_PIPELINES = 1024, MAX_TARGETS = 512, MAX_RECT_STAGES = 16, MAX_COMPUTE_PIPELINES = 512, MAX_IMAGES = 1024,
+enum { MAX_SHADERS = 1024, MAX_PIPELINES = 1024, MAX_TARGETS = 512, MAX_RECT_STAGES = 16, MAX_COMPUTE_PIPELINES = 512, MAX_IMAGES = 4096,
        MAX_VIEWS = 16, MAX_SAMPLERS = 256, MAX_PASSES = 2 * MAX_TARGETS, BATCH_SETS = 256, MAX_WRITTEN = 256, BATCH_SLOTS = 4, BATCH_WORK_NAMED = 8, WORK_LISTED = 1024, CHANGE_CHUNK = 64 << 10,
        MAX_TESS_PASSES = 64, MAX_TESS_CONTROLS = 16, STOP_SLOTS = MAX_SHADERS + MAX_COMPUTE_PIPELINES + MAX_TESS_PASSES };
+enum { IMAGE_BUCKETS = 4096, TABLE_BUCKETS = 2048 }; /* powers of two */
 /* the sink for guest memory accesses outside the guest memory (gcn_guest_memory) after the stop words,
    aligned for a 16-byte vector store */
 enum { STOP_SINK_OFFSET = (STOP_SLOTS * 4 + GCN_GUEST_SINK_BYTES - 1) / GCN_GUEST_SINK_BYTES * GCN_GUEST_SINK_BYTES };
@@ -118,6 +119,7 @@ typedef struct {
     uint64_t tessellation;           /* a domain shader's tessellation settings (tessellation_key), 0 otherwise */
     vertex_instancing instancing;    /* a vertex shader's instancing inputs (vertex_instancing_of), zero otherwise */
     VkShaderModule module;
+    uint32_t bucket_next;            /* the next shader of its bucket (shader_buckets), index + 1; 0 none */
 } shader_entry;
 
 /* A host-visible buffer that texels pass through between an image and the guest memory, kept for reuse:
@@ -179,6 +181,7 @@ typedef struct {
     uint32_t width, height, tile_index;
     VkFormat format;
     uint32_t element_bytes;          /* a texel's bytes in memory: 4, or 8 for 16_16_16_16 */
+    uint64_t span;                   /* its texels' bytes in memory (target_span), worked out once: its shape never changes */
     VkImage image;
     VkDeviceMemory memory;
     VkImageView view;
@@ -217,6 +220,7 @@ typedef struct {
     uint32_t slice;                  /* DB_DEPTH_VIEW's slice: each slice of an array target is an image of its own */
     uint32_t width, height;
     uint32_t tile_index;             /* DB_Z_INFO's TILE_MODE_INDEX: the depth's layout in memory */
+    uint64_t span;                   /* its depth's bytes in memory (depth_span), worked out once */
     int drawn;
     int unwritten;                   /* its depth changed since it was last written back */
     int guarded;                     /* as a colour target's */
@@ -248,6 +252,7 @@ typedef struct {
     VkShaderModule control;          /* a tessellated draw's control shader (its vertex shader then the domain shader), or VK_NULL_HANDLE */
     uint32_t patch_points;           /* its control points a patch */
     VkPipeline pipeline;
+    uint32_t bucket_next;            /* the next pipeline of its bucket (pipeline_buckets), index + 1; 0 none */
 } pipeline_entry;
 
 /* A compute shader translated for one workgroup size and starting-register layout, and its pipeline. */
@@ -295,6 +300,7 @@ typedef struct {
     unsigned view_count;
     uint64_t used_ticket;            /* the batch that last used it (its ticket once submitted) */
     uint64_t used_call;              /* the draw or dispatch that last used it (call_serial) */
+    uint32_t bucket_next;            /* the next image of its address's bucket (image_buckets), index + 1; 0 none */
 } image_entry;
 
 /* A rect-list geometry stage (runtime/rect_list.h), for one vertex-shader output shape. */
@@ -320,6 +326,8 @@ typedef struct {
     gcn_memory_read reads[GCN_MAX_IMAGES]; /* the read scan (gcn_memory_reads) */
     int table_copy;                  /* the read scan: the program is a table-driven copy (gcn_table_copy_shape) */
     gcn_table_copy copy;
+    int fill;                        /* the read scan: the program is a constant fill (gcn_fill_shape) */
+    gcn_fill fill_shape;
 } scan_entry;
 
 /* A range of guest memory. A dispatch's reads and stores are kept as up to DISPATCH_SPANS of them (span_add). */
@@ -328,6 +336,19 @@ typedef struct {
 } memory_span;
 enum { DISPATCH_SPANS = 32 };
 enum { SCAN_SLOTS = 4096 }; /* a power of two: open addressing; when full, programs are scanned each time */
+
+/* Which user-data pair a vertex shader calls its fetch shader through (gcn_call_sgpr), kept by code
+   address with a copy of the program, and used only while the memory still holds that code (as a
+   resource scan, scan_for): finding it decodes the program, at every draw before. Direct-mapped: a slot
+   holds the last program that hashed to it. */
+enum { CALL_SLOTS = 1024 };
+typedef struct {
+    uint64_t code;                   /* 0: empty */
+    int calls;                       /* gcn_call_sgpr's answer: 1 (through pair) or 0 */
+    unsigned pair;
+    uint32_t *words;                 /* the program as decoded, through its end (gcn_program_dwords) */
+    size_t dwords;
+} call_entry;
 
 /* A depth target's registers from DB_Z_INFO (0xa010) to DB_DEPTH_SLICE (0xa017), in order. */
 enum { Z_INFO, STENCIL_INFO, Z_READ_BASE, STENCIL_READ_BASE, Z_WRITE_BASE, STENCIL_WRITE_BASE, DEPTH_SIZE, DEPTH_SLICE,
@@ -487,6 +508,11 @@ struct rt_executor {
     size_t shader_count;
     pipeline_entry pipelines[MAX_PIPELINES];
     size_t pipeline_count;
+    /* shaders by code address and stage, pipelines by their shaders and render pass: the first of each
+       bucket, index + 1 (0 none), the rest chained through bucket_next. Every draw looks up its shaders
+       and pipeline, and a frame of the clinic keeps hundreds of each. */
+    uint32_t shader_buckets[TABLE_BUCKETS];
+    uint32_t pipeline_buckets[TABLE_BUCKETS];
     target_entry targets[MAX_TARGETS];
     size_t target_count;
     depth_entry depths[MAX_TARGETS];
@@ -526,6 +552,8 @@ struct rt_executor {
     size_t compute_count;
     image_entry images[MAX_IMAGES];
     size_t image_count;
+    /* the images by address: each bucket's first image, index + 1 (0 none), chained by bucket_next */
+    uint32_t image_buckets[IMAGE_BUCKETS];
     /* the storage images the dispatch being recorded writes (their index in images, with the descriptor
        that named them, sRGB taken as UNORM): written back to the guest memory after it */
     struct {
@@ -534,6 +562,7 @@ struct rt_executor {
     } stored[GCN_MAX_IMAGES];
     unsigned stored_count;
     scan_entry scans[SCAN_SLOTS];    /* resource scans, by code (scan_for) */
+    call_entry calls[CALL_SLOTS];    /* vertex shaders' fetch calls, by code (vertex_callee) */
     /* the run-time stop words translated shaders write (runtime/gcn_spirv.h), one per shader */
     VkBuffer stop_buffer;
     VkDeviceMemory stop_memory;
@@ -555,6 +584,7 @@ struct rt_executor {
     uint64_t *chunk_outside;
     int (*collect_cpu_writes)(const uint64_t (*ranges)[2], size_t count, void (*written)(void *context, uint64_t pool_offset, uint64_t length),
                               void *context);
+    int (*cpu_writes_due)(void);
     int (*guard)(uint64_t address, uint64_t length); /* rt_executor_memory's */
     void (*unguard)(uint64_t address, uint64_t length);
     /* what note_cpu_writes asks about: the loaded images' and targets' memory, and their metadata */
@@ -922,7 +952,7 @@ enum { STAGES_TESSELLATION = 0x45, STAGES_GEOMETRY = 0xb0 };
 static int check_state(const draw_state *s, depth_plan *plan, uint32_t *colours, char *error, size_t error_size)
 {
     /* VGT_SHADER_STAGES_EN (gfx_7_2_sh_mask.h): LS_EN bits 0-1, HS_EN 2, ES_EN 3-4, GS_EN 5, VS_EN 6-7; the
-       GPU library's setter (0x01476030) takes 0 (vertex and pixel shaders), 0x45 (local, hull and vertex:
+       GPU library's shader stage setter takes 0 (vertex and pixel shaders), 0x45 (local, hull and vertex:
        tessellation), 0xad (tessellation with a geometry shader), 0xb0 (export and geometry) and 0x200 */
     if (s->shader_stages && s->shader_stages != STAGES_TESSELLATION && s->shader_stages != STAGES_GEOMETRY)
         return failed(error, error_size,
@@ -983,8 +1013,16 @@ static uint32_t memory_type(rt_executor *x, uint32_t allowed, VkMemoryPropertyFl
     return UINT32_MAX;
 }
 
-/* Makes s hold at least bytes, mapped: host-visible and coherent memory, host-cached when the device has
-   it (reading uncached memory from the CPU is many times slower). Kept between uses; 0, or -1. */
+/* Host-visible and coherent memory, host-cached when the device has it (reading uncached memory from
+   the CPU is many times slower); UINT32_MAX when there is none. */
+static uint32_t host_memory_type(rt_executor *x, uint32_t allowed)
+{
+    const VkMemoryPropertyFlags coherent = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    const uint32_t cached = memory_type(x, allowed, coherent | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+    return cached != UINT32_MAX ? cached : memory_type(x, allowed, coherent);
+}
+
+/* Makes s hold at least bytes, mapped (host_memory_type). Kept between uses; 0, or -1. */
 static int staging_ready(rt_executor *x, staging_buffer *s, VkDeviceSize bytes)
 {
     if (s->buffer && s->size >= bytes) return 0;
@@ -998,9 +1036,7 @@ static int staging_ready(rt_executor *x, staging_buffer *s, VkDeviceSize bytes)
     if (vkCreateBuffer(x->device, &info, NULL, &s->buffer) != VK_SUCCESS) return -1;
     VkMemoryRequirements need;
     vkGetBufferMemoryRequirements(x->device, s->buffer, &need);
-    const VkMemoryPropertyFlags coherent = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    uint32_t type = memory_type(x, need.memoryTypeBits, coherent | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
-    if (type == UINT32_MAX) type = memory_type(x, need.memoryTypeBits, coherent);
+    const uint32_t type = host_memory_type(x, need.memoryTypeBits);
     const VkMemoryAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = need.size, .memoryTypeIndex = type};
     if (type == UINT32_MAX || vkAllocateMemory(x->device, &allocate, NULL, &s->memory) != VK_SUCCESS ||
         vkBindBufferMemory(x->device, s->buffer, s->memory, 0) != VK_SUCCESS ||
@@ -1237,6 +1273,7 @@ static int import_host(rt_executor *x, void *view, uint64_t bytes, VkBufferUsage
 static int import_memory(rt_executor *x, const rt_executor_memory *memory, char *error, size_t error_size)
 {
     x->size = memory->size, x->guest_base = memory->guest_base, x->collect_cpu_writes = memory->collect_cpu_writes;
+    x->cpu_writes_due = memory->cpu_writes_due;
     if (memory->guard && memory->unguard) x->guard = memory->guard, x->unguard = memory->unguard;
     x->chunk_changed = calloc((size_t)((memory->size + CHANGE_CHUNK - 1) / CHANGE_CHUNK), sizeof *x->chunk_changed);
     x->chunk_outside = calloc((size_t)((memory->size + CHANGE_CHUNK - 1) / CHANGE_CHUNK), sizeof *x->chunk_outside);
@@ -1259,7 +1296,9 @@ static int import_memory(rt_executor *x, const rt_executor_memory *memory, char 
                        &x->gds_buffer, &x->gds_memory, &x->gds_address, "the GDS", error, error_size);
 }
 
-/* The run-time stop words: host-visible, with GPU addresses the translated shaders store to. */
+/* The run-time stop words: host-visible, with GPU addresses the translated shaders store to, and
+   host-cached when the device has it: every finished batch reads all of them, and reading uncached
+   (write-combined) memory from the CPU costs a bus round trip per word. */
 static int open_stop_word(rt_executor *x, char *error, size_t error_size)
 {
     const VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = STOP_SINK_OFFSET + GCN_GUEST_SINK_BYTES,
@@ -1269,8 +1308,7 @@ static int open_stop_word(rt_executor *x, char *error, size_t error_size)
     vkGetBufferMemoryRequirements(x->device, x->stop_buffer, &need);
     const VkMemoryAllocateFlagsInfo flags = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO, .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
     const VkMemoryAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &flags, .allocationSize = need.size,
-                                           .memoryTypeIndex = memory_type(x, need.memoryTypeBits,
-                                                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)};
+                                           .memoryTypeIndex = host_memory_type(x, need.memoryTypeBits)};
     void *mapped = NULL;
     if (allocate.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(x->device, &allocate, NULL, &x->stop_memory) != VK_SUCCESS ||
         vkBindBufferMemory(x->device, x->stop_buffer, x->stop_memory, 0) != VK_SUCCESS ||
@@ -1840,6 +1878,7 @@ static void note_cpu_writes(rt_executor *x)
         all_changed_outside(x);
         return;
     }
+    if (x->cpu_writes_due && !x->cpu_writes_due()) return;
     size_t n = 0;
     for (size_t i = 0; i < x->image_count; i++) {
         const image_entry *e = &x->images[i];
@@ -2188,12 +2227,43 @@ static target_entry *find_target(rt_executor *x, uint64_t address)
 static int write_back_targets_in(rt_executor *x, const memory_span *spans, unsigned span_count, char *error, size_t error_size);
 
 /* The bytes a render target's texels take in the guest memory, laid out by its tile mode (0 for a layout
-   not done yet, which drawing into it stops at). */
-static uint64_t target_span(const target_entry *t)
+   not done yet, which drawing into it stops at). Worked out when the target is made (target_layout_span):
+   every image load and write-back compares its memory with each target's. */
+static uint64_t target_layout_span(const target_entry *t)
 {
     rt_tiling layout;
     char reason[160];
     return rt_tiling_layout(t->tile_index, t->element_bytes, t->width, t->height, &layout, reason, sizeof reason) ? 0 : rt_tiling_size(&layout, 1);
+}
+
+/* The bucket of a shader (shader_buckets) and of a pipeline (pipeline_buckets). */
+static unsigned shader_bucket(uint64_t code, int stage)
+{
+    return (unsigned)(((code >> 2) ^ (uint64_t)stage << 56) * 0x9e3779b97f4a7c15ull >> 40) & (TABLE_BUCKETS - 1);
+}
+
+static unsigned pipeline_bucket(VkShaderModule vertex, VkShaderModule pixel, VkRenderPass pass)
+{
+    const uint64_t key = ((uint64_t)(uintptr_t)vertex * 0x9e3779b97f4a7c15ull) ^ ((uint64_t)(uintptr_t)pixel * 0xff51afd7ed558ccdull) ^
+                         (uint64_t)(uintptr_t)pass;
+    return (unsigned)((key * 0xc4ceb9fe1a85ec53ull) >> 40) & (TABLE_BUCKETS - 1);
+}
+
+/* Puts every pipeline in its bucket again, after pipelines were removed (the last moved into a gap). */
+static void index_pipelines(rt_executor *x)
+{
+    memset(x->pipeline_buckets, 0, sizeof x->pipeline_buckets);
+    for (size_t i = 0; i < x->pipeline_count; i++) {
+        pipeline_entry *p = &x->pipelines[i];
+        const unsigned bucket = pipeline_bucket(p->vertex, p->pixel, p->pass);
+        p->bucket_next = x->pipeline_buckets[bucket];
+        x->pipeline_buckets[bucket] = (uint32_t)(i + 1);
+    }
+}
+
+static uint64_t target_span(const target_entry *t)
+{
+    return t->span;
 }
 
 /* Frees the slot of a render target no unfinished batch and no part of the draw being recorded uses, and
@@ -2213,6 +2283,7 @@ static target_entry *target_slot_to_free(rt_executor *x)
     }
     if (!pick) return NULL;
     const int index = (int)(pick - x->targets);
+    int removed_pipelines = 0;
     for (size_t i = 0; i < x->pass_count;) {
         pass_entry *p = &x->passes[i];
         int uses = 0;
@@ -2228,11 +2299,13 @@ static target_entry *target_slot_to_free(rt_executor *x)
             }
             vkDestroyPipeline(x->device, x->pipelines[k].pipeline, NULL);
             x->pipelines[k] = x->pipelines[--x->pipeline_count];
+            removed_pipelines = 1;
         }
         vkDestroyFramebuffer(x->device, p->framebuffer, NULL);
         vkDestroyRenderPass(x->device, p->pass, NULL);
         *p = x->passes[--x->pass_count];
     }
+    if (removed_pipelines) index_pipelines(x); /* the pipelines moved */
     for (size_t i = 0; i < x->image_count; i++)
         if (x->images[i].copied_from == pick) x->images[i].copied_from = NULL;
     if (pick->guarded && x->unguard) x->unguard(pick->address, target_span(pick));
@@ -2287,6 +2360,7 @@ static target_entry *target_for(rt_executor *x, const rt_color_target *color, ch
     const int appended = t == &x->targets[x->target_count];
     *t = (target_entry){.cmask.resolved = UINT64_MAX, .loaded_change = UINT64_MAX, .address = color->address, .width = color->pitch, .height = color->height, .tile_index = color->tile_mode_index,
                         .format = format, .element_bytes = element_bytes, .used_ticket = x->submitted + 1, .used_call = x->call_serial};
+    t->span = target_layout_span(t);
     const VkImageCreateInfo image = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = format,
                                      .extent = {t->width, t->height, 1}, .mipLevels = 1, .arrayLayers = 1,
                                      .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
@@ -2416,6 +2490,7 @@ static void target_drawn(rt_executor *x, target_entry *t)
 }
 
 static uint64_t depth_span(const depth_entry *z);
+static uint64_t depth_layout_span(const depth_entry *z);
 
 static void depth_drawn(rt_executor *x, depth_entry *z)
 {
@@ -2424,11 +2499,14 @@ static void depth_drawn(rt_executor *x, depth_entry *z)
     if (!z->guarded && x->guard && written_back) z->guarded = x->guard(z->z_address, depth_span(z)) == 0;
 }
 
+/* The bucket of an image's address (image_buckets). */
+static size_t image_bucket(uint64_t address) { return (size_t)((address >> 8) * 0x9e3779b97f4a7c15ull >> 52) & (IMAGE_BUCKETS - 1); }
+
 static int take_written_image(rt_executor *x, target_entry *t, char *error, size_t error_size)
 {
-    image_entry *e = NULL;
-    for (size_t i = 0; i < x->image_count && !e; i++)
-        if (x->images[i].address == t->address && x->images[i].gpu_written) e = &x->images[i];
+    image_entry *e = NULL; /* the first such image in the cache's order */
+    for (uint32_t i = x->image_buckets[image_bucket(t->address)]; i; i = x->images[i - 1].bucket_next)
+        if (x->images[i - 1].address == t->address && x->images[i - 1].gpu_written && (!e || &x->images[i - 1] < e)) e = &x->images[i - 1];
     if (!e) return 0;
     if (!target_takes_image(t->format, e->format, e->type) && e->written_back) {
         /* the memory holds its texels, and the target loads them (memory_changed_since); its draws then
@@ -2473,12 +2551,12 @@ static int one_dimensional(uint32_t type);
 
 static int take_written_alias(rt_executor *x, image_entry *e, char *error, size_t error_size)
 {
-    const image_entry *w = NULL;
-    for (size_t i = 0; i < x->image_count && !w; i++) {
-        const image_entry *k = &x->images[i];
+    const image_entry *w = NULL; /* the first such image in the cache's order */
+    for (uint32_t i = x->image_buckets[image_bucket(e->address)]; i; i = x->images[i - 1].bucket_next) {
+        const image_entry *k = &x->images[i - 1];
         if (k != e && k->gpu_written && k->address == e->address && same_texel_bytes(k->format, e->format) && k->width == e->width &&
             k->height == e->height && k->layers == e->layers && k->depth == e->depth && k->type == e->type && k->levels == 1 &&
-            e->levels == 1)
+            e->levels == 1 && (!w || k < w))
             w = k;
     }
     if (!w) return 0;
@@ -2622,6 +2700,20 @@ static int write_back_targets_in(rt_executor *x, const memory_span *spans, unsig
                     picked[k] = 1, grew = 1;
             }
     }
+    /* the images that took a target's texels on the GPU since its last draw (image_from_target), from
+       memory nothing else changed since: they hold what the write-back puts there */
+    enum { KEPT_IMAGES = 64 };
+    uint32_t kept[KEPT_IMAGES];
+    unsigned kept_count = 0;
+    for (size_t i = 0; i < x->target_count; i++) {
+        const target_entry *t = &x->targets[i];
+        if (!picked[i]) continue;
+        for (uint32_t k = x->image_buckets[image_bucket(t->address)]; k && kept_count < KEPT_IMAGES; k = x->images[k - 1].bucket_next) {
+            const image_entry *e = &x->images[k - 1];
+            if (e->copied_from == t && e->copied_serial == t->drawn_serial && !memory_changed_since(x, e->address, e->loaded_span, e->loaded_change))
+                kept[kept_count++] = k - 1;
+        }
+    }
     for (size_t i = 0; i < x->target_count; i++) {
         target_entry *t = &x->targets[i];
         if (!picked[i]) continue;
@@ -2644,6 +2736,8 @@ static int write_back_targets_in(rt_executor *x, const memory_span *spans, unsig
             overlapped |= k != i && picked[k] && o->address < t->address + target_span(t) && t->address < o->address + target_span(o);
         }
         if (!overlapped) t->loaded_change = x->change_count;
+        for (unsigned k = 0; k < kept_count && !overlapped; k++)
+            if (x->images[kept[k]].copied_from == t) x->images[kept[k]].loaded_change = x->change_count;
     }
     for (size_t i = 0; i < x->target_count; i++)
         if (picked[i]) x->targets[i].drawn = 0;
@@ -2722,6 +2816,7 @@ static depth_entry *depth_for(rt_executor *x, const draw_state *s, char *error, 
     depth_entry *d = &x->depths[x->depth_count];
     *d = (depth_entry){.htile.resolved = UINT64_MAX, .z_address = z_address, .stencil_address = stencil_address, .slice = slice, .width = width, .height = height,
                        .tile_index = r[Z_INFO] >> 20 & 7, .format = format};
+    d->span = depth_layout_span(d);
     const VkImageAspectFlags aspects = (format == VK_FORMAT_S8_UINT ? 0 : VK_IMAGE_ASPECT_DEPTH_BIT) |
                                        (format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_D32_SFLOAT ? 0 : VK_IMAGE_ASPECT_STENCIL_BIT);
     const VkImageCreateInfo image = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = format,
@@ -2841,13 +2936,19 @@ static int resolve_depth_fast_clear(rt_executor *x, const draw_state *s, depth_e
    batch, as colour targets are (write_back_targets calls it first). Depth targets of 32-bit floats only,
    in a layout runtime/tiling.h has; others keep their memory as it was (nothing read it so far). The
    stencil is not written back. 1 when any was written back, 0 when none, -1 with the reason. */
-/* The bytes of a depth target's depth in memory: its tile mode's size, or 4 per texel when that is not laid out here. */
-static uint64_t depth_span(const depth_entry *z)
+/* The bytes of a depth target's depth in memory: its tile mode's size, or 4 per texel when that is not laid
+   out here. Worked out when the depth target is made (depth_layout_span), as a colour target's. */
+static uint64_t depth_layout_span(const depth_entry *z)
 {
     rt_tiling layout;
     char reason[160];
     return rt_tiling_layout(z->tile_index, 4, z->width, z->height, &layout, reason, sizeof reason) ? (uint64_t)z->width * z->height * 4
                                                                                                    : rt_tiling_size(&layout, 1);
+}
+
+static uint64_t depth_span(const depth_entry *z)
+{
+    return z->span;
 }
 
 static int write_back_depths(rt_executor *x, const memory_span *spans, unsigned span_count, char *error, size_t error_size)
@@ -3017,8 +3118,9 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
         instancing = (vertex_instancing){.vgprs = tess->vertex.vgpr_inputs, .step_rates = {tess->step_rates[0], tess->step_rates[1]},
                                          .step_rates_set = tess->step_rates_set};
     const size_t control_bytes = GCN_PIXEL_INPUTS * sizeof *input_controls;
-    for (size_t i = 0; i < x->shader_count; i++) {
-        const shader_entry *s = &x->shaders[i];
+    const unsigned bucket = shader_bucket(code, stage);
+    for (uint32_t i = x->shader_buckets[bucket]; i; i = x->shaders[i - 1].bucket_next) {
+        const shader_entry *s = &x->shaders[i - 1];
         if (s->code == code && s->stage == stage && s->user_sgprs == user_sgprs && s->settings == settings && s->callee == callee &&
             s->first_binding == first_binding && s->has_input_controls == (input_controls != NULL) &&
             (!input_controls || !memcmp(s->input_controls, input_controls, control_bytes)) &&
@@ -3093,7 +3195,9 @@ static VkShaderModule shader_for(rt_executor *x, int stage, uint64_t code, uint3
     shader_entry *e = &x->shaders[x->shader_count++];
     *e = (shader_entry){.code = code, .stage = stage, .user_sgprs = user_sgprs, .settings = settings, .image_count = image_count,
                         .sampler_count = sampler_count, .first_binding = first_binding, .callee = callee, .user_read = *user_read,
-                        .tessellation = tessellation, .instancing = instancing, .module = module};
+                        .tessellation = tessellation, .instancing = instancing, .module = module,
+                        .bucket_next = x->shader_buckets[bucket]};
+    x->shader_buckets[bucket] = (uint32_t)x->shader_count;
     memcpy(e->images, images, image_count * sizeof *images);
     memcpy(e->samplers, samplers, sampler_count * sizeof *samplers);
     if (input_controls) memcpy(e->input_controls, input_controls, control_bytes), e->has_input_controls = 1;
@@ -3107,8 +3211,9 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
                                int strip, const depth_plan *depth, int has_depth, VkShaderModule control, uint32_t patch_points,
                                char *error, size_t error_size)
 {
-    for (size_t i = 0; i < x->pipeline_count; i++) {
-        const pipeline_entry *p = &x->pipelines[i];
+    const unsigned bucket = pipeline_bucket(vertex, pixel, pass);
+    for (uint32_t i = x->pipeline_buckets[bucket]; i; i = x->pipelines[i - 1].bucket_next) {
+        const pipeline_entry *p = &x->pipelines[i - 1];
         if (p->vertex == vertex && p->geometry == geometry && p->pixel == pixel && p->pass == pass && p->layout == layout &&
             p->colours == colours && !memcmp(p->blend_control, blend_control, sizeof p->blend_control) && p->write_masks == write_masks &&
             p->strip == strip && !memcmp(&p->depth, depth, sizeof *depth) && p->control == control && p->patch_points == patch_points)
@@ -3194,8 +3299,9 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
     x->pipelines[x->pipeline_count++] =
         (pipeline_entry){.vertex = vertex, .geometry = geometry, .pixel = pixel, .pass = pass, .layout = layout, .colours = colours,
                          .write_masks = write_masks, .strip = strip, .depth = *depth, .control = control, .patch_points = patch_points,
-                         .pipeline = pipeline};
+                         .pipeline = pipeline, .bucket_next = x->pipeline_buckets[bucket]};
     memcpy(x->pipelines[x->pipeline_count - 1].blend_control, blend_control, sizeof x->pipelines[0].blend_control);
+    x->pipeline_buckets[bucket] = (uint32_t)x->pipeline_count;
     return pipeline;
 }
 
@@ -3339,6 +3445,8 @@ static int graphics_layout_for(rt_executor *x, unsigned n, unsigned m, unsigned 
     return 0;
 }
 
+static int program_copy(rt_executor *x, uint64_t code, uint32_t **words, size_t *dwords);
+
 /* The fetch shader the vertex shader calls (runtime/gcn_spirv.h, gcn_call_sgpr): the address in its
    user data's target pair (48 bits), which must lie in the GPU-visible memory; 0 when it makes no call.
    0, or -1 with the reason. */
@@ -3347,10 +3455,17 @@ static int vertex_callee(rt_executor *x, const draw_state *s, uint64_t *callee, 
     const uint64_t code = s->vertex.code;
     if (code < x->guest_base || code >= x->guest_base + x->size || code % 4)
         return failed(error, error_size, "vertex shader code at %#llx is outside the GPU-visible memory", (unsigned long long)code);
-    unsigned pair = 0;
-    char reason[200];
-    const int calls = gcn_call_sgpr((const uint32_t *)(uintptr_t)code, (size_t)((x->guest_base + x->size - code) / 4), &pair, reason, sizeof reason);
-    if (calls < 0) return failed(error, error_size, "vertex shader at %#llx: %s", (unsigned long long)code, reason);
+    call_entry *kept = &x->calls[(code >> 8) * 0x9e3779b97f4a7c15ull >> 54 & (CALL_SLOTS - 1)];
+    int calls = kept->calls;
+    unsigned pair = kept->pair;
+    if (kept->code != code || memcmp((const void *)(uintptr_t)code, kept->words, kept->dwords * 4)) { /* other code there now */
+        char reason[200];
+        calls = gcn_call_sgpr((const uint32_t *)(uintptr_t)code, (size_t)((x->guest_base + x->size - code) / 4), &pair, reason, sizeof reason);
+        if (calls < 0) return failed(error, error_size, "vertex shader at %#llx: %s", (unsigned long long)code, reason);
+        free(kept->words);
+        *kept = (call_entry){code, calls, pair, NULL, 0};
+        if (program_copy(x, code, &kept->words, &kept->dwords)) kept->code = 0; /* without a copy, not kept */
+    }
     *callee = 0;
     if (!calls) return 0;
     if (pair + 2 > s->vertex.user_sgprs)
@@ -4237,7 +4352,8 @@ static int image_from_target(rt_executor *x, image_entry *e, const rt_image_desc
     const VkMemoryBarrier after = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
                                    .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &after, 0, NULL, 0, NULL);
-    /* once the target is written back, its memory holds what the image now does: it loads again then */
+    /* once the target is written back, its memory holds what the image now does (write_back_targets_in
+       keeps the image loaded then) */
     e->copied_from = t, e->copied_serial = t->drawn_serial, e->loaded_change = x->change_count, e->loaded_span = span;
     e->tiling_index = d->tiling_index, e->pitch = d->pitch;
     return 1;
@@ -4357,6 +4473,11 @@ static int load_levels_on_gpu(rt_executor *x, image_entry *e, const rt_image_des
 static int load_levels(rt_executor *x, image_entry *e, const rt_image_descriptor *d, const texel_format *f, char *error, size_t error_size)
 {
     const unsigned bytes = f->bytes, block = f->block;
+    /* loaded before in this layout, from memory unchanged since and under no unwritten target: the levels'
+       layout is not worked out again (the image's shape and this layout fix it) */
+    if (e->tiling_index == d->tiling_index && e->pitch == d->pitch && e->loaded_change != UINT64_MAX &&
+        !unwritten_target_over(x, d->address, e->loaded_span) && !memory_changed_since(x, d->address, e->loaded_span, e->loaded_change))
+        return 0;
     if (d->pitch % block) return failed(error, error_size, "a block-compressed image at %#llx of pitch %u", (unsigned long long)d->address, d->pitch);
     if (d->pitch < d->width) return failed(error, error_size, "an image at %#llx of width %u and pitch %u", (unsigned long long)d->address,
                                            d->width, d->pitch);
@@ -4420,9 +4541,29 @@ static int load_levels(rt_executor *x, image_entry *e, const rt_image_descriptor
 /* The image the executor keeps for a descriptor, made on first use. A use that reads an image no
    shader has written loads the guest memory's texels first (each time: the guest may have changed
    them); a new image first written is cleared. VK_NULL_HANDLE after failing. */
+/* Enters an image in its address's bucket. */
+static void image_index_add(rt_executor *x, image_entry *e)
+{
+    uint32_t *first = &x->image_buckets[image_bucket(e->address)];
+    e->bucket_next = *first;
+    *first = (uint32_t)(e - x->images) + 1;
+}
+
+/* Takes an image out of its address's bucket (one never entered is not there: nothing changes). */
+static void image_index_remove(rt_executor *x, image_entry *e)
+{
+    const uint32_t index = (uint32_t)(e - x->images) + 1;
+    for (uint32_t *link = &x->image_buckets[image_bucket(e->address)]; *link; link = &x->images[*link - 1].bucket_next)
+        if (*link == index) {
+            *link = e->bucket_next;
+            return;
+        }
+}
+
 /* Frees what an image holds; its slot then matches no descriptor until it is reused. */
 static void image_release(rt_executor *x, image_entry *e)
 {
+    image_index_remove(x, e);
     for (unsigned v = 0; v < e->view_count; v++) vkDestroyImageView(x->device, e->views[v].view, NULL);
     vkDestroyImage(x->device, e->image, NULL);
     vkFreeMemory(x->device, e->memory, NULL);
@@ -4471,8 +4612,8 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
         }
     }
     image_entry *e = NULL;
-    for (size_t i = 0; i < x->image_count && !e; i++) {
-        image_entry *k = &x->images[i];
+    for (uint32_t i = x->image_buckets[image_bucket(d->address)]; i && !e; i = x->images[i - 1].bucket_next) {
+        image_entry *k = &x->images[i - 1];
         if (k->address == d->address && k->format == f->format && k->width == d->width && k->height == d->height && k->layers == d->layers &&
             k->type == d->type && k->levels == d->last_level + 1 && k->pow2 == (int)d->pow2_pad && k->depth == image_depth(d))
             e = k;
@@ -4535,6 +4676,7 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
             return NULL;
         }
         if (!slot) x->image_count++;
+        image_index_add(x, e);
     }
     e->used_ticket = x->submitted + 1, e->used_call = x->call_serial;
     /* an image over a render target's memory loads it even to be written: a store may cover only part of
@@ -5119,6 +5261,94 @@ static int table_copy_spans(rt_executor *x, const rt_compute_shader *c, const gc
     return 1;
 }
 
+/* A dispatch of a constant fill (gcn_fill_shape) that stores every element of its descriptor, whose
+   range is exactly a render target's memory in the target's element size, as the game clears its
+   targets: the render target, or NULL (no fill, or not one so; nothing else then). Only one workgroup
+   needs to run (fill_target_from_group): every element gets the same bytes, so the target's image takes
+   the first workgroup's and its memory is the target's to write back like a draw's, which skips both the
+   write-back of the target's draws before the dispatch (all overwritten) and the target's load after it. */
+static target_entry *fill_target(rt_executor *x, const rt_compute_shader *c, const uint32_t *user, uint32_t user_set, const uint32_t groups[3],
+                                 const memory_span *reads, unsigned read_count, char *error, size_t error_size)
+{
+    const uint32_t swizzle = 1u << 31, add_tid = 1u << 23;
+    scan_entry *scan = scan_for(x, c->code, 0, 3);
+    if (!groups || !scan || !scan->used || !scan->fill || groups[1] != 1 || groups[2] != 1 || c->threads[1] != 1 || c->threads[2] != 1 ||
+        c->workgroup_id_enables != 1)
+        return NULL;
+    const gcn_fill *shape = &scan->fill_shape;
+    const uint32_t lanes = c->threads[0];
+    if (shape->workgroup_sgpr != c->user_sgprs || lanes > shape->most_lanes) return NULL;
+    /* the stores' offsets, each with the workgroup's lanes, tile the workgroup's elements */
+    uint32_t offsets[GCN_FILL_STORES];
+    memcpy(offsets, shape->offsets, shape->store_count * sizeof *offsets);
+    for (unsigned i = 1; i < shape->store_count; i++)
+        for (unsigned k = i; k > 0 && offsets[k - 1] > offsets[k]; k--) {
+            const uint32_t swap = offsets[k];
+            offsets[k] = offsets[k - 1], offsets[k - 1] = swap;
+        }
+    for (unsigned i = 0; i < shape->store_count; i++)
+        if (offsets[i] != (uint64_t)i * lanes) return NULL;
+    if ((uint64_t)shape->store_count * lanes != shape->group_elements) return NULL;
+    uint32_t destination[4];
+    const gcn_resource_origin d = {.sgpr = shape->destination_sgpr};
+    char reason[200];
+    if (descriptor_words(x, "compute", c->code, &d, user, c->user_sgprs, user_set, destination, 4, reason, sizeof reason)) return NULL;
+    (void)error, (void)error_size;
+    const uint64_t base = vsharp_base(destination), stride = vsharp_stride(destination), records = destination[2];
+    if ((destination[1] & swizzle) || (destination[3] & add_tid) || !stride || !records || (uint64_t)groups[0] * shape->group_elements < records)
+        return NULL;
+    target_entry *t = find_target(x, base);
+    rt_tiling layout;
+    if (!t || stride != t->element_bytes || rt_tiling_layout(t->tile_index, t->element_bytes, t->width, t->height, &layout, reason, sizeof reason) ||
+        records * stride != rt_tiling_size(&layout, 1))
+        return NULL;
+    const uint64_t span = records * stride;
+    for (unsigned i = 0; i < read_count; i++)
+        if (reads[i].address < base + span && base < reads[i].address + reads[i].bytes) return NULL;
+    for (size_t i = 0; i < x->target_count; i++) { /* no other target's draws there */
+        const target_entry *o = &x->targets[i];
+        if (o != t && o->drawn && o->address < base + span && base < o->address + target_span(o)) return NULL;
+    }
+    for (size_t i = 0; i < x->depth_count; i++)
+        if (x->depths[i].unwritten && x->depths[i].z_address < base + span && base < x->depths[i].z_address + depth_span(&x->depths[i])) return NULL;
+    return t;
+}
+
+/* After a fill's first workgroup (fill_target): its elements, stored at the start of the target's memory,
+   are copied into the target's linear rows and doubled until the rows are full, then into its image, all
+   on the GPU, with the batch. The target counts as drawn: its memory gets the fill when it is written
+   back. 0, or -1 with the reason. */
+static int fill_target_from_group(rt_executor *x, target_entry *t, uint64_t group_bytes, char *error, size_t error_size)
+{
+    rt_tiling layout;
+    uint64_t span;
+    if (target_memory(x, t, &layout, &span, error, error_size)) return -1;
+    VkCommandBuffer commands = batch_commands(x, error, error_size);
+    if (!commands) return -1;
+    const VkDeviceSize rows = (VkDeviceSize)t->width * t->height * t->element_bytes;
+    if (group_bytes > rows) group_bytes = rows;
+    const VkMemoryBarrier stored = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT |
+                                                                                                VK_ACCESS_SHADER_READ_BIT,
+                                    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &stored, 0,
+                         NULL, 0, NULL);
+    const VkBufferCopy first = {.srcOffset = t->address - x->guest_base, .dstOffset = 0, .size = group_bytes};
+    vkCmdCopyBuffer(commands, x->buffer, t->plan.linear.buffer, 1, &first);
+    const VkMemoryBarrier copied = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT};
+    for (VkDeviceSize filled = group_bytes; filled < rows;) {
+        vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &copied, 0, NULL, 0, NULL);
+        const VkBufferCopy more = {.srcOffset = 0, .dstOffset = filled, .size = filled < rows - filled ? filled : rows - filled};
+        vkCmdCopyBuffer(commands, t->plan.linear.buffer, t->plan.linear.buffer, 1, &more);
+        filled += more.size;
+    }
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &copied, 0, NULL, 0, NULL);
+    if (record_target_copy(x, t, 0, error, error_size)) return -1;
+    target_drawn(x, t);
+    t->loaded_change = x->change_count;
+    return 0;
+}
+
 /* The memory a dispatch of the compute shader reads now, as spans (gcn_memory_reads: each descriptor's
    range, each s_load's bytes); *anywhere when it cannot be bounded. For a table-driven copy whose table
    can be read (table_copy_spans), the real reads, and in *exact with `stores` the real stores; groups is
@@ -5146,7 +5376,10 @@ static int dispatch_reads(rt_executor *x, const rt_compute_shader *c, const uint
         table_copy = gcn_table_copy_shape(code, dwords, &shape);
         if (scan) {
             scan_keep(x, scan, n, NULL, NULL);
-            if (scan->used) memcpy(scan->reads, found, n * sizeof *found), scan->unknown = *anywhere, scan->table_copy = table_copy, scan->copy = shape;
+            if (scan->used) {
+                memcpy(scan->reads, found, n * sizeof *found), scan->unknown = *anywhere, scan->table_copy = table_copy, scan->copy = shape;
+                scan->fill = gcn_fill_shape(code, dwords, &scan->fill_shape);
+            }
         }
     }
     if (table_copy && groups) { /* an indirect dispatch's workgroup count is not known here */
@@ -5200,6 +5433,10 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     else
         for (unsigned i = 0; i < store_count; i++) span_add(stores, &store_span_count, store_ranges[i][0], store_ranges[i][1]);
     if (!groups) span_add(reads, &read_count, arguments, INDIRECT_ARGUMENT_BYTES); /* drawn targets over them are written back too */
+    /* a fill of a render target overwrites all its draws: only what it reads is written back first */
+    target_entry *const filled = reads_anywhere ? NULL : fill_target(x, c, s->compute_user, s->compute_user_set, groups, reads, read_count, error,
+                                                                     error_size);
+    if (filled) store_span_count = 0, stores_anywhere = 0, store_count = 0;
     memcpy(touched, reads, read_count * sizeof *reads);
     memcpy(touched + read_count, stores, store_span_count * sizeof *stores);
     if (reads_anywhere || stores_anywhere ? write_back_targets(x, error, error_size)
@@ -5234,8 +5471,15 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     if (set) vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0, NULL);
     vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, USER_DATA_BYTES, s->compute_user);
     note_work(x, c->code, 0, groups ? (uint64_t)groups[0] * groups[1] * groups[2] : 0);
-    if (groups) vkCmdDispatch(commands, groups[0], groups[1], groups[2]);
+    if (filled) vkCmdDispatch(commands, 1, 1, 1); /* its first workgroup: the rest is the same bytes (fill_target_from_group) */
+    else if (groups) vkCmdDispatch(commands, groups[0], groups[1], groups[2]);
     else vkCmdDispatchIndirect(commands, x->buffer, arguments - x->guest_base);
+    if (filled) {
+        const scan_entry *scan = scan_for(x, c->code, 0, 3);
+        const uint64_t group_bytes = (uint64_t)scan->fill_shape.group_elements * filled->element_bytes;
+        batch_writes(x, filled->address, group_bytes, 1);
+        if (fill_target_from_group(x, filled, group_bytes, error, error_size)) return -1;
+    }
     for (unsigned i = 0; i < x->stored_count; i++)
         if (write_back_image(x, &x->images[x->stored[i].image], &x->stored[i].descriptor, error, error_size)) return -1;
     /* the CPU reads memory it may store to only once the batch has run; what was loaded from there
@@ -5766,6 +6010,7 @@ void rt_executor_close(rt_executor *x)
             level_plans_free(x, &x->images[i]);
         }
         for (size_t i = 0; i < SCAN_SLOTS; i++) scan_free(&x->scans[i]);
+        for (size_t i = 0; i < CALL_SLOTS; i++) free(x->calls[i].words);
         if (x->stop_buffer) vkDestroyBuffer(x->device, x->stop_buffer, NULL);
         if (x->stop_memory) vkFreeMemory(x->device, x->stop_memory, NULL);
         if (x->gds_buffer) vkDestroyBuffer(x->device, x->gds_buffer, NULL);
