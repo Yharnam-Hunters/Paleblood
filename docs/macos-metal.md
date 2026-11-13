@@ -119,6 +119,18 @@ A zero colour mask disables attachment writes while still executing the draw. Th
 observes an owned vertex shader's buffer stores while the attachment remains unchanged. The pipeline cache includes
 the write mask, and restoring it enables colour writes again.
 
+`DB_DEPTH_BOUNDS_MIN` and `_MAX` retain independent raw 32-bit words, including NaNs,
+infinities and signed zero, while depth-bounds testing is disabled. This register layout and
+`DB_DEPTH_CONTROL.DEPTH_BOUNDS_ENABLE` bit 3 follow AMD's
+[GFX7 register definitions](https://github.com/torvalds/linux/blob/ee83899302a0457a3ba47464a13e8682bd7ba27d/drivers/gpu/drm/amd/include/asic_reg/gca/gfx_7_2_d.h)
+and [field masks](https://github.com/torvalds/linux/blob/ee83899302a0457a3ba47464a13e8682bd7ba27d/drivers/gpu/drm/amd/include/asic_reg/gca/gfx_7_2_sh_mask.h).
+An enabled depth-bounds test is refused by name before drawing, including zero-count and
+zero-colour-mask draws; active bounds testing is not implemented. Register writes and state
+carry across call fragments and submissions; reset clears the values and control. Queue
+selection changes compute state only. Exact inactive values have no public readback, so the
+owned `metal_depth_bounds` test qualifies admission, refusal and fresh pixel/vertex writes,
+while source review establishes the independent raw stores. No private state getter is introduced.
+
 Screen scissors use the existing register events for `PA_SC_SCREEN_SCISSOR_TL` and `_BR`.
 The [AMD CIK register manual](https://www.amd.com/content/dam/amd/en/documents/radeon-tech-docs/programmer-references/CIK_3D_registers_v2.pdf)
 defines their components as signed 16-bit values: negative coordinates clamp to zero, the top/left
