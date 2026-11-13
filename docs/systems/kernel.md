@@ -175,6 +175,7 @@ ignore the result.
 | `0x0111ad80` | 23 | `kernel_semaphore_destroy` | edge-verified | Forward the full opaque handle including null to kernel deletion; preserve kernel writes and translate any nonzero low32 result to 0x21 |
 | `0x0111ada0` | 30 | `kernel_semaphore_wait` | verified | Wait for one unit using the full opaque handle including null and a null timeout pointer; preserve kernel writes; nonzero low32 results map to 0x21 |
 | `0x0111adc0` | 28 | `kernel_semaphore_signal` | verified | Signal one unit using the full opaque handle including null; preserve kernel writes and translate every nonzero low32 result to 0x21 |
+| `0x011ab3a0` | 260 | `kernel_memory_pool_free_011ab3a0` | edge-verified | Memory pool free: lazy static lock; header/page/heap size off the counters; callback, page release or heap free; page pools repeat on the context pool |
 | `0x0247ecb0` | 15 | `kernel_light_mutex_construct` | edge-verified | DLLightMutex constructor: its vtable and a cleared initialized flag; the system mutex handle is left as it was |
 | `0x0247ecc0` | 118 | `kernel_light_mutex_delete` | edge-verified | DLLightMutex deleting destructor: destroys an initialized mutex (errors reported) without clearing the flag then frees the object |
 | `0x0247ed40` | 115 | `kernel_light_mutex_destruct` | edge-verified | DLLightMutex destructor: destroys an initialized mutex; EBUSY keeps the flag set; EINVAL and unknown errors reported |
