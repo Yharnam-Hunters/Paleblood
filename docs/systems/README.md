@@ -14,6 +14,7 @@ One page per game system: summary, key functions, structs and globals, patch poi
 - [Input](input.md)
 - [Kernel](kernel.md)
 - [Loading](loading.md)
+- [Menu](menu.md)
 - [Param](param.md)
 - [Physics](physics.md)
 - [Render](render.md)
@@ -52,6 +53,7 @@ Matching tier: 118 functions compile byte for byte to the original from their ow
 | input | 5 | 5 | 5 | 2 | 890 |
 | kernel | 22 | 22 | 22 | 6 | 1,994 |
 | loading | 42 | 42 | 42 | 2 | 14,401 |
+| menu | 6 | 6 | 6 | 0 | 1,728 |
 | param | 137 | 137 | 137 | 0 | 43,266 |
 | physics | 1 | 1 | 1 | 1 | 3,222 |
 | render | 154 | 154 | 154 | 79 | 69,444 |
