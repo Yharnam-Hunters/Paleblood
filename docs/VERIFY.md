@@ -370,6 +370,12 @@ and `edge` results without an option, with any failure that is not quarantined i
 current results, or with a result for other code. `promote.py` records the runs it makes and
 applies the same rule.
 
+It also refuses a result for other code of any function, whatever its status: a change to a
+replacement or to a header it includes (a shared container or heap header, say) has to run the
+sets of every function that includes it again, with `--record`, in the same pull request. When
+you cannot run a set (its recordings are in someone else's library), remove its row instead: a
+result for other code counts for nothing, and a verified function still needs current rows.
+
 ## Community patches and hooks
 
 A hooked function's original bytes no longer run, so a byte patch inside it does nothing while
