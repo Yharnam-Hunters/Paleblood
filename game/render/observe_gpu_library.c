@@ -74,6 +74,8 @@
    and VGT_GSVS_RING_ITEMSIZE (0xa2ac) = (the four sizes' sum) x the most vertices & 0x7fff; 0x014756b0
    (command buffer, mode, cut mode) writes VGT_GS_MODE (0xa290) = the mode with bits 4-5 the cut mode's low two
    bits, and, when the mode is 0, VGT_STRMOUT_CONFIG (0xa2e5) = 0.
+   The clip control setter 0x01476b30 (command buffer, value) writes PA_CL_CLIP_CNTL (0xa204) = the value & 0x0f7fe03f
+   in one SET_CONTEXT_REG packet (bbhost's notes name the function and mask, facts only; its disassembly agrees).
    The command buffer starts with its begin and holds its cursor at +0x10 (game/render/command_packets.h). */
 #include "runtime/observe_hooks.h"
 #include "runtime/render_observer.h"
@@ -328,6 +330,14 @@ static void gs_mode(const uint64_t args[RT_OBSERVED_ARGUMENTS])
     if (!mode) rt_observe_register(observed_buffer(args), observed_offset(args), VGT_STRMOUT_CONFIG, 0);
 }
 
+enum { PA_CL_CLIP_CNTL = 0xa204, ARGUMENT_CLIP_CONTROL = 1 };
+static const uint32_t clip_control_mask = 0x0f7fe03f; /* the bits the setter keeps */
+
+static void clip_control(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    rt_observe_register(observed_buffer(args), observed_offset(args), PA_CL_CLIP_CNTL, (uint32_t)args[ARGUMENT_CLIP_CONTROL] & clip_control_mask);
+}
+
 const rt_observe_hook game_observe_hooks[] = {
     {0x01473190, 87, "render_set_stencil_reference", stencil_reference_both},
     {0x014731f0, 99, "render_set_stencil_reference_separate", stencil_reference_each},
@@ -352,6 +362,7 @@ const rt_observe_hook game_observe_hooks[] = {
     {0x014762f0, 156, "render_set_user_data_4_words_marker_6", four_words},
     {0x01476390, 133, "render_set_user_data_2_words", two_words},
     {0x01476420, 126, "render_set_user_data_1_word", one_word},
+    {0x01476b30, 93, "render_set_clip_control", clip_control},
     {0x014764a0, 184, "render_set_user_data_words", counted_words},
     {0x0148a350, 177, "render_dispatch_compute_buffer", dispatch},
     {0x0148aad0, 132, "render_compute_user_data_4_words_marker_4", compute_four_words},

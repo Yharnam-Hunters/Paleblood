@@ -144,8 +144,16 @@ Instead:
        it even when only written, so a store that covers part of it keeps the rest.
      - **Pixel shaders read images** (`image_load`, `image_load_mip`) as sampled images (Vulkan's
        `SAMPLED_IMAGE`, `OpImageFetch` at the level given), so the view applies the descriptor's
-       DST_SEL. A texel outside the image or a level past its last is a run-time stop
-       (`GCN_RUNTIME_STOP_IMAGE_RANGE`): what the GPU returns there is not established.
+       DST_SEL. A texel outside the image or a level past its last reads the replacement texel
+       (0, 0, 0, 0), or (0, 0, 0, 1) for a format without alpha, through the descriptor's DST_SEL
+       (each 0 or 1 selector its constant, a texel component its replacement): Vulkan's
+       `robustImageAccess2` texel replacement, which the component swizzle then applies, and what
+       AMD's hardware returns (Mesa's RADV exposes `robustImageAccess2` with no bounds code in the
+       shader, `radv_physical_device.c`). The translator checks the range itself and fetches only
+       inside it, so the result does not depend on the device offering the feature; a storage
+       image's loads (one level: `image_load_mip` past level 0 is outside) read the same. The
+       clinic's final LUT pass (pixel shader 0x20d1b00f00) loads the scene target at the flip's
+       pixel, and on a loading-to-clinic transition frame the target was smaller than the flip.
      - **The image cache** keeps up to 1024 images. When it is full, a new image takes the slot of the
        least recently used one whose texels are guest memory's (loaded from it, never written by a
        shader) and that no unfinished batch, and not the draw or dispatch being recorded, uses; if
@@ -728,7 +736,12 @@ Instead:
           its observe hook reads from the saved frame's xmm0 and xmm1. The buffer's contents in guest memory are never loaded: a depth
           or stencil buffer the CPU or a compute shader writes would not be seen (not found yet). A draw that writes only the depth target (target mask 0, or
           `CB_COLOR_CONTROL`'s mode `CB_DISABLE`) draws without a colour target; one that writes
-          nothing is skipped. The hardware shader stages (`VGT_SHADER_STAGES_EN`, from the GPU
+          nothing is skipped. Clipping follows `PA_CL_CLIP_CNTL` (the GPU library's setter `0x01476b30`,
+          which masks the value with `0x0f7fe03f`): with `ZCLIP_NEAR_DISABLE`, `ZCLIP_FAR_DISABLE` or
+          `CLIP_DISABLE` set, z is not clipped and depth is clamped to the viewport's range (Vulkan's
+          `depthClampEnable`, Metal's `MTLDepthClipModeClamp`). The clinic's sun shadow draws set only
+          `DX_CLIP_SPACE_DEF` (0x80000: z from 0 to w, Vulkan's clip space), so they are clipped as
+          before. `DX_RASTERIZATION_KILL` stops by name. The hardware shader stages (`VGT_SHADER_STAGES_EN`, from the GPU
           library's stage setter `0x01476030`) are vertex and pixel, tessellation (0x45, below) or
           a geometry shader (0xb0, below); others stop by name at the draw. Their shaders (`sceGnmSetLsShader`, `SetHsShader`, `SetEsShader`, `SetGsShader` and the Update forms, with the argument orders of shadPS4's `gnmdriver.cpp`) are recorded like the vertex shader's (`runtime/render_calls.h` decodes their blocks: the local shader's LDS size, the hull shader's `VGT_TF_PARAM`, tessellation level clamps and `VGT_LS_HS_CONFIG`), and the stop names them. A tessellated draw (`VGT_SHADER_STAGES_EN` 0x45) is drawn in three steps. First, the local and
           hull shaders run as compute passes over a 16 MiB LDS buffer, one workgroup per `NUM_PATCHES` patches. Second, the hull
