@@ -229,6 +229,7 @@ address,size,name,system,status,notes
 0x0231e680,284,param_row_name_equip_param_goods,param,edge-verified,SoloParamRepository row name lookup for EquipParamGoods (type 3): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
 0x0231ebb0,309,param_next_row_id_equip_param_goods,param,edge-verified,SoloParamRepository id of the row after id in EquipParamGoods (type 3) file order; negative id: first row; -1 when none
 0x0231ecf0,341,param_previous_row_id_equip_param_goods,param,edge-verified,SoloParamRepository id of the row before id in EquipParamGoods (type 3) file order; negative id: last row; -1 when none
+0x0231eec0,518,param_check_set_equip_param_goods,param,edge-verified,EquipParamGoods set check: cache (70 ids/sets of +0x32 built once) marks the looked-up id in a bit set; returns its set when all other members are marked else -1
 0x0231f0e0,390,param_list_row_ids_equip_param_goods,param,edge-verified,SoloParamRepository empties an id array and appends every EquipParamGoods (type 3) row id in file order; returns the count
 0x0231f460,283,param_find_row_hit_mtrl,param,edge-verified,SoloParamRepository row lookup for HitMtrlParam (type 35): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x0231f720,283,param_find_row_holygrail_ex,param,edge-verified,SoloParamRepository row lookup for HolygrailExParam (type 52): binary search of the loader index by id; writes id and row data pointer (null if none)
@@ -261,6 +262,7 @@ address,size,name,system,status,notes
 0x023255c0,80,param_clear_id_list_equip_param_protector,param,edge-verified,"SoloParamRepository id list with its walk compiled away: empties the array, requires the repository, returns the count"
 0x02325620,477,param_list_versions_equip_param_protector,param,edge-verified,SoloParamRepository every EquipParamProtector id plus one id per leading non-negative reinforcement entry at +0x40 (up to 15); returns the count
 0x02325820,390,param_list_row_ids_equip_param_protector,param,edge-verified,SoloParamRepository empties an id array and appends every EquipParamProtector (type 1) row id in file order; returns the count
+0x023259c0,518,param_check_set_equip_param_protector,param,edge-verified,EquipParamProtector set check: cache of 50 (set +0xd8) built once; marks the lookup base id; set read at the row +0xca; set when all other members marked else -1
 0x02326200,283,param_find_row_reinforce_param_protector,param,edge-verified,SoloParamRepository row lookup for ReinforceParamProtector (type 5): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x023264c0,283,param_find_row_ragdoll,param,edge-verified,SoloParamRepository row lookup for RagdollParam (type 26): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x02326780,311,param_find_row_resident_fx,param,edge-verified,SoloParamRepository ResidentFxParam (type 47) row lookup that also returns the index row number and the table
@@ -282,6 +284,7 @@ address,size,name,system,status,notes
 0x0232b6d0,619,param_next_weapon_id_with_flag,param,edge-verified,SoloParamRepository EquipParamWeapon step: from the id move step rows on until the weapon lookup row has flag bit mode (+0x100); other modes stop at once; negative id -> first row
 0x0232b950,679,param_previous_weapon_id_with_flag,param,edge-verified,SoloParamRepository EquipParamWeapon step back: from the id move step rows back until the weapon lookup row has flag bit mode (+0x100); other modes stop at once; negative id -> last row
 0x0232bc80,80,param_clear_id_list_equip_param_weapon,param,edge-verified,"SoloParamRepository id list with its walk compiled away: empties the array, requires the repository, returns the count"
+0x0232bce0,599,param_check_set_equip_param_weapon,param,edge-verified,EquipParamWeapon set check: cache of 50 ids that are multiples of 100000 (set +0xd8) built once; base id rounded to 100000; set when all other members marked else -1
 0x0232bf50,411,param_list_row_ids_equip_param_weapon,param,edge-verified,"SoloParamRepository every EquipParamWeapon (type 0) row id; with the flag, rows whose int at +0x4 is -1 are skipped"
 0x0232c110,481,param_list_versions_equip_param_weapon,param,edge-verified,SoloParamRepository EquipParamWeapon rows whose byte +0xe2 equals value: id plus one per leading non-negative entry at +0x60 (up to 15)
 0x0232c930,283,param_find_row_reinforce_param_weapon,param,edge-verified,SoloParamRepository row lookup for ReinforceParamWeapon (type 4): binary search of the loader index by id; writes id and row data pointer (null if none)

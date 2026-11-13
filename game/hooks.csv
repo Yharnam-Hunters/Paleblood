@@ -228,6 +228,7 @@ address,replacement,system,returns
 0x0231e680,bb_param_row_name_equip_param_goods,param,i64
 0x0231ebb0,bb_param_next_row_id_equip_param_goods,param,i32
 0x0231ecf0,bb_param_previous_row_id_equip_param_goods,param,i32
+0x0231eec0,bb_param_check_set_equip_param_goods,param,i32
 0x0231f0e0,bb_param_list_row_ids_equip_param_goods,param,i64
 0x0231f460,bb_param_find_row_hit_mtrl,param,void
 0x0231f720,bb_param_find_row_holygrail_ex,param,void
@@ -260,6 +261,7 @@ address,replacement,system,returns
 0x023255c0,bb_param_clear_id_list_equip_param_protector,param,i64
 0x02325620,bb_param_list_versions_equip_param_protector,param,i64
 0x02325820,bb_param_list_row_ids_equip_param_protector,param,i64
+0x023259c0,bb_param_check_set_equip_param_protector,param,i32
 0x02326200,bb_param_find_row_reinforce_param_protector,param,void
 0x023264c0,bb_param_find_row_ragdoll,param,void
 0x02326780,bb_param_find_row_resident_fx,param,void
@@ -281,6 +283,7 @@ address,replacement,system,returns
 0x0232b6d0,bb_param_next_weapon_id_with_flag,param,i32
 0x0232b950,bb_param_previous_weapon_id_with_flag,param,i32
 0x0232bc80,bb_param_clear_id_list_equip_param_weapon,param,i64
+0x0232bce0,bb_param_check_set_equip_param_weapon,param,i32
 0x0232bf50,bb_param_list_row_ids_equip_param_weapon,param,i64
 0x0232c110,bb_param_list_versions_equip_param_weapon,param,i64
 0x0232c930,bb_param_find_row_reinforce_param_weapon,param,void
