@@ -171,6 +171,7 @@ engine_tree_remove_024f8460,recorded,,75,75,0,0,b9a813294ed1b1ac,2026-11-13
 engine_tree_remove_024f8460,edge,,156,156,0,0,b9a813294ed1b1ac,2026-11-13
 engine_wide_string_assign_counted_02a2a720,edge,,19,19,0,0,c2e61a00f86b4380,2026-11-13
 engine_wide_string_assign_from_02a279a0,edge,,21,21,0,0,c2e61a00f86b4380,2026-11-13
+engine_wide_string_construct_02bc0e00,recorded,,200,200,0,0,7a364f229445d8e0,2026-11-13
 engine_wide_string_destroy,edge,,28,28,0,0,82e3fd837894b106,2026-11-03
 engine_wide_string_grow_02a27b70,edge,,12,12,0,0,c2e61a00f86b4380,2026-11-13
 engine_write_stderr,edge,,28,28,0,0,f997862b08044f6d,2026-10-31
@@ -180,6 +181,7 @@ event_emk_add,edge,,18,18,0,0,937b4dca128ba863,2026-10-07
 event_emk_add,edge,60,18,18,0,0,937b4dca128ba863,2026-10-07
 event_flag_write,recorded,,101,101,0,0,1a46ef419f934205,2026-11-12
 event_flag_write,edge,,15,15,0,0,1a46ef419f934205,2026-11-12
+frame_timing_config_get_int_024eba00,recorded,,48,48,0,0,ddcaf2bc1351e4b0,2026-11-13
 frame_timing_dungeon_gate_on_event_0,edge,,25,25,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_dungeon_gate_on_event_0,edge,60,25,25,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_dungeon_gate_on_event_1000,edge,,22,22,0,0,cd53367af0bda73a,2026-10-31
@@ -271,6 +273,7 @@ frame_timing_request_7_0200e270,edge,60,12,12,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_request_7_02012a60,edge,,12,12,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_request_7_02012a60,edge,60,12,12,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_sleep_ms,edge,,10,10,0,0,b1ae2eead3597009,2026-10-26
+frame_timing_step_machine_count_step_01ec3000,recorded,,35,35,0,0,9e3c83e666421c7d,2026-11-13
 frame_timing_stopwatch_start,edge,,13,13,0,0,3b3f75b688e0d259,2026-11-10
 frame_timing_stopwatch_stop,edge,,16,16,0,0,3b3f75b688e0d259,2026-11-10
 frame_timing_task_013d3520,recorded,,208,208,0,0,c52608f510993456,2026-10-07
