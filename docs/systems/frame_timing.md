@@ -238,6 +238,20 @@ every registered task (76 in Iosefka's Clinic), then fills a job with the record
 the group mask and runs it through the same five steps as the workers. Each of those tasks is a
 piece of the game's own per-frame work, the next layer to map.
 
+On 13 November contributor [@FFwLo](https://github.com/FFwLo) replaced the parts this path still
+called as originals, all edge-verified ([#814](https://github.com/Yharnam-Hunters/Paleblood/pull/814)). A worker holds a list of 16-byte slots, each a
+lane and the batch given to it, and a busy byte: `0x0143e030` puts a batch in a slot (refused while
+the worker is busy, for a null batch or an index past the slot count); `0x0143de20` marks the worker
+busy and starts every slot that holds a batch, a lane in mode 0 running on the calling thread and any
+other lane on its own thread; `0x0143deb0` runs the mode-0 lanes; `0x0143df10` waits until no lane is
+running, spinning on lanes that belong to other threads as the original does; and `0x0143ec40` frees
+a task's pending items under the task's lock. The per-frame task's own helpers followed
+([#793](https://github.com/Yharnam-Hunters/Paleblood/pull/793)): two profiling stopwatch brackets and the end-of-frame tick of ten profiling stopwatches,
+which do nothing unless the profiling switch byte is set, and the item list and listener list updates
+that pass the frame-time descriptor on. The seeding of a thread's random generator (`0x024f8110`)
+fills four 32-bit words from a 32-bit seed with a 64-bit linear congruential step
+([#790](https://github.com/Yharnam-Hunters/Paleblood/pull/790)); it uses the seed it is given and reads no entropy of its own.
+
 ## Key functions
 
 | Address | Size | Name | Status | Notes |
@@ -252,11 +266,21 @@ piece of the game's own per-frame work, the next layer to map.
 | `0x01388c70` | 171 | `frame_timing_task_run_01388c70` | verified | task manager run: prepare the frame; dispatch through +0x40 (virtual +0x30) with +0x38 set; finish |
 | `0x0138a370` | 330 | `frame_timing_task_dispatch_0138a370` | verified | task dispatcher (virtual +0x30): wakes registered tasks; updates the group record; runs the job like the worker step |
 | `0x013d3520` | 87 | `frame_timing_task_013d3520` | verified | per-frame task: passes the frame-time descriptor and its seconds to three parts; Uncap FPS++ edits it |
+| `0x013daac0` | 96 | `frame_timing_listener_list_notify_013daac0` | edge-verified | Runs the list preparation 0x013dab20, then passes the frame-time descriptor to each listener (vtable slot 2), re-reading the list after every call |
+| `0x0143de20` | 106 | `frame_timing_task_worker_start_0143de20` | edge-verified | Unless busy: marks the worker busy and starts every slot with a batch (mode 0 lanes via 0x01467500, others via 0x01467300) |
+| `0x0143deb0` | 92 | `frame_timing_task_worker_run_0143deb0` | edge-verified | When busy: runs (0x01467530) every mode 0 lane whose slot has a batch |
+| `0x0143df10` | 182 | `frame_timing_task_worker_finish_0143df10` | edge-verified | When busy: runs running mode 0 lanes (restarting the scan) until none runs; takes every batch back (mode 0 lanes finished via 0x014675a0); clears busy |
+| `0x0143e030` | 55 | `frame_timing_task_worker_assign_0143e030` | edge-verified | Assigns a batch to a worker slot by index; false when busy, for a null batch, a negative index or one past the end (unsigned count) |
 | `0x0143e490` | 174 | `frame_timing_task_flush_queue_0143e490` | verified | task manager queue flush: lock; run; destroy and free every queued object; empty the list; unlock |
+| `0x0143ec40` | 185 | `frame_timing_task_clear_items_0143ec40` | edge-verified | Under the task lock (+0x90): frees the pending items last first and their array via the allocator at +0x80; empties the list; empties +0x70/+0x78 when counted |
 | `0x0143f9f0` | 18 | `frame_timing_task_set_frame_value_0143f9f0` | verified | task manager: copies the float at +0x8 of the frame information to the global 0x058b7e08 |
 | `0x014400a0` | 180 | `frame_timing_task_workers_step_014400a0` | verified | task manager workers: three rounds over the worker queues +0x58; +0x68; +0x60 |
 | `0x01448580` | 149 | `frame_timing_stopwatch_start` | edge-verified | Start a stopwatch from exactly zero: seconds since game start (double divide; float store) at +0x38; bump counters 0x44 and 0x4c |
 | `0x01448620` | 168 | `frame_timing_stopwatch_stop` | edge-verified | Stop a positive stopwatch: add seconds since its start to the totals at +0x3c and +0x54; clear the start |
+| `0x01456c80` | 39 | `frame_timing_item_list_update_01456c80` | edge-verified | Calls 0x013d4810 on each item pointer between +0x8 and +0x10 (the ends read once) |
+| `0x01456eb0` | 28 | `frame_timing_profile_start_01456eb0` | edge-verified | When the profiling switch at 0x058b8718 is set, starts stopwatch N of the ten at 0x058b86c0 (tail call to 0x01448580) |
+| `0x01456ed0` | 28 | `frame_timing_profile_stop_01456ed0` | edge-verified | When the profiling switch at 0x058b8718 is set, stops stopwatch N of the ten at 0x058b86c0 (tail call to 0x01448620) |
+| `0x01456ef0` | 136 | `frame_timing_profile_frame_end_01456ef0` | edge-verified | When the profiling switch at 0x058b8718 is set, gives each of the ten stopwatches at 0x058b86c0 its end-of-frame tick (0x014486d0) in order |
 | `0x01ea47a0` | 611 | `frame_timing_gate_create_handle` | edge-verified | handle creation of the Chalice Dungeon gate state: idle in mode 1; drops the handle; creates one from two filled blocks; FrpgNetMan+0xa68 and a name; adopts it; request 3 |
 | `0x01ea4a10` | 501 | `frame_timing_gate_entry_check` | edge-verified | entry check of the Chalice Dungeon gate state: online gates as 0x01ea5280; keeps the first keyed entry's object as its handle; then request 4 |
 | `0x01ea4cb0` | 1472 | `frame_timing_gate_create_handle_from_levels` | edge-verified | level creation of the Chalice Dungeon gate state: online gates; four highest set levels (event flags 0x184d+i+7*level); a handle object from them; adopted; request 5 |
@@ -291,6 +315,7 @@ piece of the game's own per-frame work, the next layer to map.
 | `0x024512a0` | 78 | `frame_timing_task_frame_024512a0` | verified | task manager frame entry from the frame step: FD4TaskManager singleton; then 0x01388c60 |
 | `0x024bd150` | 216 | `frame_timing_job_take_result` | verified | Job handle result: mode 0 polls (null if not done); 2 takes; others wait 1 ms at a time; bumps the job's holder count under the job lock |
 | `0x024bdd40` | 36 | `frame_timing_job_wait` | edge-verified | Poll a job's state until finished (2); sleeping 1 ms in the kernel between polls |
+| `0x024f8110` | 170 | `frame_timing_random_generator_seed_024f8110` | edge-verified | Seeds a 64-bit LCG (x*0x5deece66d+11 mod 2^64) with the 32-bit seed stepped once and writes the high 32 bits of that state and the next three to the four words |
 | `0x02c6d580` | 149 | `frame_timing_thread_random` | edge-verified | This thread's random state (thread-local); seeds it once from the 32-bit time of day in microseconds |
 | `0x02e61140` | 67 | `frame_timing_time_of_day_us` | edge-verified | Time of day in microseconds (64-bit multiply and add wrap); the gettimeofday result is ignored |
 | `0x02e61280` | 101 | `frame_timing_time_seed_words` | edge-verified | Four seed words in rax:rdx: 32-bit seconds; microseconds; and both offset by a counter that advances by 2 per call |

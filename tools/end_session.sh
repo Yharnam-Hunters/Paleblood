@@ -14,7 +14,8 @@ if ! $audit_only; then
     # records how far our runtime boots (both need your own executable; skipped without it)
     python3 tools/promote.py || echo "promote: some edge-verified functions fail their recordings (above)" >&2
     if [ -x build/runtime/pbboot ]; then python3 tools/boot.py || true; fi
-    # progress blocks and the status card are regenerated on main, not here (tools/progress_pr.py)
+    # progress blocks are regenerated on main, not here (tools/progress_pr.py); the progress map
+    # is published from main by .github/workflows/progress-map.yml
 fi
 
 status=0

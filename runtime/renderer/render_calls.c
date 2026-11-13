@@ -221,24 +221,49 @@ typedef struct {
     rt_render_call *calls;
     size_t count, capacity;
     int submitted;                   /* submitted since its last call: the next call starts it over */
+    /* With a reader (runtime/render_placed.h): the first two words of memory at each call's offset when
+       a submission first took it (calls[0..marked)), for a submission of the buffer again with no new
+       calls (taken_count) */
+    uint64_t *marks;
+    size_t marked, marks_capacity;
+    uint64_t used;                   /* the submission clock when it was last recorded into or taken */
 } call_list;
 
 static pthread_mutex_t lists_lock = PTHREAD_MUTEX_INITIALIZER;
 static call_list *lists;
-static size_t list_count;
+static size_t list_count, list_capacity;
+
+/* The lists by buffer address: an open-addressed table of list index + 1 (0 free), a power of two at
+   least twice the lists, rebuilt when it grows and after an eviction. */
+static uint32_t *list_index;
+static size_t index_size;
+
+/* The game carves command buffers from rings, so buffer addresses keep changing and the record
+   would grow without end. Every LIST_SWEEP_PERIOD submissions, the lists not used for LIST_IDLE
+   submissions (several hundred frames: a buffer the game still submits is taken far more often)
+   are forgotten. */
+enum { LIST_SWEEP_PERIOD = 4096, LIST_IDLE = 65536 };
+static uint64_t submissions;
 
 /* Calls placed by guest address (rt_render_record_*_at), waiting for the submission whose buffer
-   holds that address. A buffer that is never submitted leaves its calls here; past the limit the
-   oldest are dropped. */
+   holds that address. They are kept in a ring in the order they were placed: a buffer that is never
+   submitted leaves its calls there until MAX_PLACED_CALLS later placements overwrite them. Each
+   waiting call is also linked into a bucket by its address's 4 KiB page, so that a submission finds
+   the calls inside its buffer, and a call placed again at an address finds the older one, without
+   looking at the rest. */
 typedef struct {
     uint64_t address;
-    uint32_t header; /* the NOP header at the address when the call was placed (with a reader) */
+    uint64_t sequence; /* placements before it: the order calls were placed in */
+    uint32_t header;   /* the NOP header at the address when the call was placed (with a reader) */
+    int waiting;       /* placed and not yet taken, replaced or overwritten */
+    int32_t previous, next; /* its bucket's other waiting calls, -1 at the ends */
     rt_render_call call;
 } placed_call;
 
-enum { MAX_PLACED_CALLS = 4096 };
+enum { MAX_PLACED_CALLS = 16384, PLACED_BUCKETS = 4096, PLACED_PAGE_SHIFT = 12 };
 static placed_call placed[MAX_PLACED_CALLS];
-static size_t placed_count;
+static int32_t placed_buckets[PLACED_BUCKETS]; /* the first waiting call of each bucket + 1 (0: none) */
+static uint64_t placements;
 static rt_render_word_reader read_word; /* runtime/render_placed.h */
 
 /* PM4 type-3 packet headers (AMD's public PM4 format): type bits 30-31, the count of the dwords after
@@ -265,27 +290,99 @@ static int still_placed(const placed_call *p)
     return 1;
 }
 
+static size_t index_slot(uint64_t buffer)
+{
+    return (size_t)(((buffer >> 4) * 0x9e3779b97f4a7c15ull) >> 32) & (index_size - 1);
+}
+
+/* Enters every list in the index. Called with lists_lock held. */
+static void fill_index(void)
+{
+    memset(list_index, 0, index_size * sizeof *list_index);
+    for (size_t i = 0; i < list_count; i++) {
+        size_t slot = index_slot(lists[i].buffer);
+        while (list_index[slot]) slot = (slot + 1) & (index_size - 1);
+        list_index[slot] = (uint32_t)(i + 1);
+    }
+}
+
+/* Gives the index size slots. Returns -1 when there is no memory (the old index stays). */
+static int grow_index(size_t size)
+{
+    uint32_t *table = malloc(size * sizeof *table);
+    if (!table) return -1;
+    free(list_index);
+    list_index = table, index_size = size;
+    fill_index();
+    return 0;
+}
+
+/* The buffer's list, or NULL. Called with lists_lock held. */
+static call_list *find_list(uint64_t buffer)
+{
+    if (!index_size) return NULL;
+    for (size_t slot = index_slot(buffer); list_index[slot]; slot = (slot + 1) & (index_size - 1))
+        if (lists[list_index[slot] - 1].buffer == buffer) return &lists[list_index[slot] - 1];
+    return NULL;
+}
+
+/* The buffer's list, made when it has none; NULL when there is no memory. Called with lists_lock held. */
 static call_list *list_for(uint64_t buffer)
 {
-    for (size_t i = 0; i < list_count; i++)
-        if (lists[i].buffer == buffer) return &lists[i];
-    call_list *grown = realloc(lists, (list_count + 1) * sizeof *lists);
-    if (!grown) return NULL;
-    lists = grown;
-    lists[list_count] = (call_list){.buffer = buffer};
+    call_list *list = find_list(buffer);
+    if (list) return list;
+    if (list_count == list_capacity) {
+        const size_t capacity = list_capacity ? list_capacity * 2 : 256;
+        call_list *grown = realloc(lists, capacity * sizeof *lists);
+        if (!grown) return NULL;
+        lists = grown, list_capacity = capacity;
+    }
+    if (2 * (list_count + 1) > index_size && grow_index(index_size ? index_size * 2 : 1024)) return NULL;
+    lists[list_count] = (call_list){.buffer = buffer, .used = submissions};
+    size_t slot = index_slot(buffer);
+    while (list_index[slot]) slot = (slot + 1) & (index_size - 1);
+    list_index[slot] = (uint32_t)(list_count + 1);
     return &lists[list_count++];
 }
 
-/* Appends a call to its buffer's list; a smaller offset than the last call's starts the list over. */
-static int has_room(call_list *list)
+/* Forgets the lists idle for LIST_IDLE submissions. Called with lists_lock held. */
+static void sweep_lists(void)
 {
-    if (list->count == list->capacity) {
-        const size_t capacity = list->capacity ? list->capacity * 2 : 64;
-        rt_render_call *grown = realloc(list->calls, capacity * sizeof *grown);
-        if (grown) list->calls = grown, list->capacity = capacity;
+    if (submissions < LIST_IDLE) return;
+    size_t kept = 0;
+    for (size_t i = 0; i < list_count; i++) {
+        if (lists[i].used + LIST_IDLE < submissions) {
+            free(lists[i].calls), free(lists[i].marks);
+            continue;
+        }
+        lists[kept++] = lists[i];
     }
-    return list->count < list->capacity;
+    if (kept == list_count) return;
+    list_count = kept;
+    fill_index();
 }
+
+/* A submission took the list: the clock advances, sweeping now and then. Called with lists_lock held. */
+static void count_submission(void)
+{
+    if (++submissions % LIST_SWEEP_PERIOD == 0) sweep_lists();
+}
+
+/* Whether the list has room for needed calls, growing it if not. */
+static int reserve(call_list *list, size_t needed)
+{
+    if (needed <= list->capacity) return 1;
+    size_t capacity = list->capacity ? list->capacity : 64;
+    while (capacity < needed) capacity *= 2;
+    rt_render_call *grown = realloc(list->calls, capacity * sizeof *grown);
+    if (!grown) return 0;
+    list->calls = grown, list->capacity = capacity;
+    return 1;
+}
+
+static int has_room(call_list *list) { return reserve(list, list->count + 1); }
+
+/* Appends a call to its buffer's list; a smaller offset than the last call's starts the list over. */
 
 static int record(uint64_t buffer, const rt_render_call *call, char *error, size_t error_size)
 {
@@ -295,6 +392,7 @@ static int record(uint64_t buffer, const rt_render_call *call, char *error, size
     if (list) {
         if (list->submitted || (list->count && call->offset < list->calls[list->count - 1].offset)) list->count = 0;
         list->submitted = 0;
+        list->used = submissions;
         if (has_room(list)) {
             list->calls[list->count++] = *call;
             result = 0;
@@ -401,22 +499,39 @@ int rt_render_record_pixel_shader(uint64_t buffer, uint32_t offset, const uint32
     return record(buffer, &call, error, error_size);
 }
 
+static size_t page_bucket(uint64_t page) { return (size_t)((page * 0x9e3779b97f4a7c15ull) >> 52) & (PLACED_BUCKETS - 1); }
+static size_t placed_bucket(uint64_t address) { return page_bucket(address >> PLACED_PAGE_SHIFT); }
+
+/* Takes a waiting call out of its bucket. Called with lists_lock held. */
+static void unlink_placed(int32_t i)
+{
+    placed_call *p = &placed[i];
+    if (p->previous >= 0) placed[p->previous].next = p->next;
+    else placed_buckets[placed_bucket(p->address)] = p->next + 1;
+    if (p->next >= 0) placed[p->next].previous = p->previous;
+    p->waiting = 0;
+}
+
 static int place(uint64_t address, const rt_render_call *call)
 {
     pthread_mutex_lock(&lists_lock);
-    if (placed_count == MAX_PLACED_CALLS) { /* drop the oldest: a buffer that was never submitted */
-        memmove(placed, placed + 1, (MAX_PLACED_CALLS - 1) * sizeof *placed);
-        placed_count--;
-    }
+    const size_t bucket = placed_bucket(address);
     uint32_t header = 0;
     if (read_word) {
         header = read_word(address);
-        size_t kept = 0; /* an older call at this address: its memory has been written again since */
-        for (size_t i = 0; i < placed_count; i++)
-            if (placed[i].address != address) placed[kept++] = placed[i];
-        placed_count = kept;
+        /* an older call at this address: its memory has been written again since */
+        for (int32_t i = placed_buckets[bucket] - 1, next; i >= 0; i = next) {
+            next = placed[i].next;
+            if (placed[i].address == address) unlink_placed(i);
+        }
     }
-    placed[placed_count++] = (placed_call){.address = address, .header = header, .call = *call};
+    const int32_t at = (int32_t)(placements % MAX_PLACED_CALLS);
+    if (placed[at].waiting) unlink_placed(at); /* the oldest: a buffer that was never submitted */
+    const int32_t first = placed_buckets[bucket] - 1;
+    placed[at] = (placed_call){.address = address, .sequence = placements++, .header = header, .waiting = 1,
+                               .previous = -1, .next = first, .call = *call};
+    if (first >= 0) placed[first].previous = at;
+    placed_buckets[bucket] = at + 1;
     pthread_mutex_unlock(&lists_lock);
     return 0;
 }
@@ -515,35 +630,95 @@ int rt_render_record_pixel_shader_at(uint64_t address, const uint32_t words[RT_P
     return place(address, &call);
 }
 
+/* Orders waiting calls by address, and those at one address in the order they were placed. */
+static int placed_before(int32_t a, int32_t b)
+{
+    return placed[a].address != placed[b].address ? placed[a].address < placed[b].address
+                                                  : placed[a].sequence < placed[b].sequence;
+}
+
+static int compare_placed(const void *a, const void *b)
+{
+    const int32_t x = *(const int32_t *)a, y = *(const int32_t *)b;
+    return placed_before(x, y) ? -1 : placed_before(y, x);
+}
+
+/* A buffer's calls arrive nearly in order (page by page, each page in the order the command buffer
+   was written): an insertion sort, which gives up to qsort when they turn out not to be. */
+static void sort_placed(int32_t *found, size_t count)
+{
+    size_t moves = 0;
+    const size_t move_limit = 8 * count + 64;
+    for (size_t i = 1; i < count; i++) {
+        const int32_t key = found[i];
+        size_t at = i;
+        while (at && placed_before(key, found[at - 1])) found[at] = found[at - 1], at--, moves++;
+        found[at] = key;
+        if (moves > move_limit) {
+            qsort(found, count, sizeof *found, compare_placed);
+            return;
+        }
+    }
+}
+
+/* Gathers the waiting calls inside [buffer, buffer + size) into found (MAX_PLACED_CALLS entries),
+   ordered by address. Called with lists_lock held. */
+static size_t find_placed(uint64_t buffer, uint32_t size, int32_t *found)
+{
+    size_t count = 0;
+    const uint64_t first_page = buffer >> PLACED_PAGE_SHIFT, last_page = (buffer + size - 1) >> PLACED_PAGE_SHIFT;
+    if (last_page - first_page >= PLACED_BUCKETS) { /* a buffer over every bucket: the whole ring */
+        for (int32_t i = 0; i < MAX_PLACED_CALLS; i++)
+            if (placed[i].waiting && placed[i].address - buffer < size) found[count++] = i;
+    } else {
+        for (uint64_t page = first_page; page <= last_page; page++) {
+            const size_t page_start = count;
+            for (int32_t i = placed_buckets[page_bucket(page)] - 1; i >= 0; i = placed[i].next)
+                /* a bucket also holds other pages' calls: only those of this page, so each is found once */
+                if (placed[i].address >> PLACED_PAGE_SHIFT == page && placed[i].address - buffer < size)
+                    found[count++] = i;
+            for (size_t a = page_start, b = count; a + 1 < b; a++, b--) { /* newest first: reversed */
+                const int32_t swap = found[a];
+                found[a] = found[b - 1], found[b - 1] = swap;
+            }
+        }
+    }
+    sort_placed(found, count);
+    return count;
+}
+
 /* Moves the placed calls inside [buffer, buffer + size) into the buffer's list, each at its offset
-   in order among the calls already there. Called with lists_lock held. */
+   after the calls already there at that offset, in the order they were placed. Called with
+   lists_lock held. */
 static void take_placed(uint64_t buffer, uint32_t size)
 {
-    call_list *list = NULL;
-    size_t kept = 0;
-    for (size_t i = 0; i < placed_count; i++) {
-        const placed_call *p = &placed[i];
-        if (p->address < buffer || p->address - buffer >= size) {
-            placed[kept++] = *p;
+    static int32_t found[MAX_PLACED_CALLS];
+    if (!size) return;
+    size_t count = find_placed(buffer, size, found), taken = 0;
+    for (size_t i = 0; i < count; i++) {
+        if (still_placed(&placed[found[i]])) found[taken++] = found[i];
+        else unlink_placed(found[i]); /* placed in an earlier use of this memory: dropped */
+    }
+    if (!taken) return;
+    call_list *list = list_for(buffer);
+    if (!list) return; /* no memory: they wait for the next submission */
+    if (list->submitted) list->count = 0; /* a new use of the buffer */
+    list->submitted = 0;
+    if (!reserve(list, list->count + taken)) return; /* no memory: they wait */
+    /* merged from the end: a placed call goes after the calls at its offset */
+    size_t recorded = list->count, out = list->count + taken;
+    while (taken) {
+        const placed_call *p = &placed[found[taken - 1]];
+        const uint32_t offset = (uint32_t)(p->address - buffer);
+        if (recorded && list->calls[recorded - 1].offset > offset) {
+            list->calls[--out] = list->calls[--recorded];
             continue;
         }
-        if (!still_placed(p)) continue; /* placed in an earlier use of this memory: dropped */
-        if (!list) {
-            list = list_for(buffer);
-            if (!list) { placed[kept++] = *p; continue; }
-            if (list->submitted) list->count = 0; /* a new use of the buffer */
-            list->submitted = 0;
-        }
-        if (!has_room(list)) { placed[kept++] = *p; continue; }
-        rt_render_call call = p->call;
-        call.offset = (uint32_t)(p->address - buffer);
-        size_t at = list->count;
-        while (at && list->calls[at - 1].offset > call.offset) at--;
-        memmove(list->calls + at + 1, list->calls + at, (list->count - at) * sizeof *list->calls);
-        list->calls[at] = call;
+        list->calls[--out] = p->call;
+        list->calls[out].offset = offset;
+        unlink_placed(found[--taken]);
         list->count++;
     }
-    placed_count = kept;
 }
 
 int rt_render_record_user_data(uint64_t buffer, uint32_t offset, rt_shader_stage stage, unsigned slot, const uint32_t *words,
@@ -561,18 +736,56 @@ int rt_render_record_user_data(uint64_t buffer, uint32_t offset, rt_shader_stage
     return record(buffer, &call, error, error_size);
 }
 
+/* The two words at a call's offset in its buffer (the second only inside the size). Called with lists_lock held. */
+static uint64_t mark_at(uint64_t buffer, uint32_t offset, uint32_t size)
+{
+    const uint64_t second = offset + 8ull <= size ? read_word(buffer + offset + 4) : 0;
+    return read_word(buffer + offset) | second << 32;
+}
+
+/* How many of a list's calls a submission of `size` bytes takes: those before the size. A list taken
+   before and given no call since is either the same commands submitted again, or a new use of the
+   memory in a layout nothing recorded (the game writes some buffers from packets alone, DMA and
+   memory writes): with a reader, it is taken again only where the memory still holds what it held at
+   each call's offset when first taken, and otherwise its calls belong to the earlier use and are
+   forgotten (their user data would land on a later dispatch). Called with lists_lock held. */
+static size_t taken_count(call_list *list, uint32_t size)
+{
+    size_t n = 0;
+    while (n < list->count && list->calls[n].offset < size) n++;
+    if (!read_word || !n) return n;
+    if (!list->submitted) list->marked = 0; /* calls recorded since: a new use, marked afresh */
+    for (size_t i = 0; i < list->marked && i < n; i++)
+        if (list->marks[i] != mark_at(list->buffer, list->calls[i].offset, size)) {
+            list->count = list->marked = 0;
+            return 0;
+        }
+    if (n > list->marked) {
+        if (n > list->marks_capacity) {
+            uint64_t *grown = realloc(list->marks, list->capacity * sizeof *grown);
+            if (!grown) return n; /* no memory to mark them: taken unchecked */
+            list->marks = grown, list->marks_capacity = list->capacity;
+        }
+        for (size_t i = list->marked; i < n; i++) list->marks[i] = mark_at(list->buffer, list->calls[i].offset, size);
+        list->marked = n;
+    }
+    return n;
+}
+
 const rt_render_call *rt_render_submitted(uint64_t buffer, uint32_t size, size_t *count)
 {
     pthread_mutex_lock(&lists_lock);
     take_placed(buffer, size);
     const rt_render_call *calls = NULL;
     *count = 0;
-    for (size_t i = 0; i < list_count; i++) {
-        if (lists[i].buffer != buffer) continue;
-        calls = lists[i].calls;
-        lists[i].submitted = 1;
-        while (*count < lists[i].count && lists[i].calls[*count].offset < size) (*count)++;
+    call_list *list = find_list(buffer);
+    if (list) {
+        calls = list->calls;
+        *count = taken_count(list, size);
+        list->submitted = 1;
+        list->used = submissions;
     }
+    count_submission();
     pthread_mutex_unlock(&lists_lock);
     return calls;
 }
@@ -583,18 +796,19 @@ rt_render_call *rt_render_take(uint64_t buffer, uint32_t size, size_t *count)
     take_placed(buffer, size);
     rt_render_call *copy = NULL;
     *count = 0;
-    for (size_t i = 0; i < list_count; i++) {
-        if (lists[i].buffer != buffer) continue;
-        lists[i].submitted = 1;
-        size_t n = 0;
-        while (n < lists[i].count && lists[i].calls[n].offset < size) n++;
+    call_list *list = find_list(buffer);
+    if (list) {
+        const size_t n = taken_count(list, size);
+        list->submitted = 1;
+        list->used = submissions;
         if (n && (copy = malloc(n * sizeof *copy))) {
-            memcpy(copy, lists[i].calls, n * sizeof *copy);
+            memcpy(copy, list->calls, n * sizeof *copy);
             *count = n;
         } else if (n) {
             *count = SIZE_MAX; /* no memory */
         }
     }
+    count_submission();
     pthread_mutex_unlock(&lists_lock);
     return copy;
 }
@@ -602,10 +816,14 @@ rt_render_call *rt_render_take(uint64_t buffer, uint32_t size, size_t *count)
 void rt_render_forget(void)
 {
     pthread_mutex_lock(&lists_lock);
-    for (size_t i = 0; i < list_count; i++) free(lists[i].calls);
-    free(lists);
-    lists = NULL, list_count = 0;
-    placed_count = 0;
+    for (size_t i = 0; i < list_count; i++) free(lists[i].calls), free(lists[i].marks);
+    free(lists), free(list_index);
+    lists = NULL, list_count = list_capacity = 0;
+    list_index = NULL, index_size = 0;
+    submissions = 0;
+    memset(placed, 0, sizeof placed);
+    memset(placed_buckets, 0, sizeof placed_buckets);
+    placements = 0;
     pthread_mutex_unlock(&lists_lock);
 }
 
