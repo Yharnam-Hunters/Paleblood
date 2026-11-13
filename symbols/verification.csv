@@ -59,6 +59,7 @@ engine_fixed_allocator_free_02484de0,edge,,19,19,0,0,1202125b79363097,2026-11-12
 engine_fixed_allocator_initialize_02484b30,edge,,19,19,0,0,55d5c6af7dda9c85,2026-11-12
 engine_fixed_allocator_release_chunks_02484ae0,edge,,10,10,0,0,5dad1163477f190e,2026-11-12
 engine_fixed_allocator_shrink_02484f20,edge,,17,17,0,0,bfe97a652512d54b,2026-11-12
+engine_heap_manager_register_area_0247c000,recorded,,43,43,0,0,139f525843b92c3c,2026-11-13
 engine_initialize_static_wide_string_0217ffb0,recorded,,1,1,0,0,ccdadef0d4bd7152,2026-11-12
 engine_initialize_static_wide_string_0217ffb0,edge,,30,30,0,0,ccdadef0d4bd7152,2026-11-12
 engine_linear_heap_allocate_02485100,edge,,8,8,0,0,b9dafbeebf252424,2026-11-12
