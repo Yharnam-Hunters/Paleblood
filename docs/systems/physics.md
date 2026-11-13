@@ -64,7 +64,7 @@ reproduce the exact instructions: the truncation works on the float's bits, not 
 
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
-| `0x01c0c2b0` | 3222 | `physics_instance_construct_01c0c2b0` | verified | physics instance constructor over a body set: back-links, shape copy, controller (step 1/30 s; 60 FPS patches 1/60), motion rescale, listeners |
+| `0x01c0c2b0` | 3222 | `physics_instance_construct_01c0c2b0` | verified | physics instance constructor over a body set: back-links; shape copy; controller (step 1/30 s; 60 FPS patches 1/60); motion rescale; listeners |
 
 ## Structs and globals
 

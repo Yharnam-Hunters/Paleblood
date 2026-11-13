@@ -1,0 +1,51 @@
+# Two pull requests can pass alone and break together; the merge queue would stop the second, but
+# only once it is queued. This checks a ready pull request early against the few other ready pull
+# requests that touch the same files or directories. It is advisory, not a required check, and is
+# kept apart from ci.yml so it never runs for the merge queue (which tests the combined result
+# itself) and stays cheap: at most four pairs, one job per pull request, a new push cancelling the
+# old run. Runs unprivileged, like the build.
+name: combined
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: combined-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  combined:
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install the build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libcapstone-dev
+      - name: Fetch the other open pull requests that are ready for review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SELF: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr list --repo "$GITHUB_REPOSITORY" --base main --state open --limit 100 \
+            --json number,isDraft --jq '.[] | select(.isDraft | not) | .number' | sort -n > "$RUNNER_TEMP/others"
+          : > "$RUNNER_TEMP/refs"
+          while read -r n; do
+            [ "$n" = "$SELF" ] && continue
+            git fetch -q origin "pull/$n/head:refs/remotes/pr/$n" && echo "#$n=pr/$n" >> "$RUNNER_TEMP/refs"
+          done < "$RUNNER_TEMP/others"
+      - name: Build and test together with the closest four
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python3 tools/combined_check.py --base "$BASE_SHA" --overlap --max-pairs 4 \
+            --summary "$GITHUB_STEP_SUMMARY" $(cat "$RUNNER_TEMP/refs")
