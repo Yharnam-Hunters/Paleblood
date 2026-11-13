@@ -52,6 +52,7 @@ address,size,name,system,status,notes
 0x01389e10,59,frame_timing_task_entry_at_01389e10,frame_timing,edge-verified,Registered task entry at an index; null for a negative index or one past the end (unsigned count)
 0x0138a370,330,frame_timing_task_dispatch_0138a370,frame_timing,verified,"task dispatcher (virtual +0x30): wakes registered tasks; updates the group record; runs the job like the worker step"
 0x013d3520,87,frame_timing_task_013d3520,frame_timing,verified,per-frame task: passes the frame-time descriptor and its seconds to three parts; Uncap FPS++ edits it
+0x013d5440,346,frame_timing_part_0x10_update_013d5440,frame_timing,edge-verified,"Per-frame task part +0x10: for seconds > 0 steps the source, flags an idle generator, then fills an output buffer (switch on) or steps into a freed scratch buffer"
 0x013daac0,96,frame_timing_listener_list_notify_013daac0,frame_timing,edge-verified,"Runs the list preparation 0x013dab20, then passes the frame-time descriptor to each listener (vtable slot 2), re-reading the list after every call"
 0x0143c360,147,frame_timing_task_record_open_0143c360,frame_timing,edge-verified,"Opens an idle group record: first index, state open, flags cleared then one set from the kind (2 or 4) of the first item when in range; clears +0x64"
 0x0143c450,93,frame_timing_task_record_close_0143c450,frame_timing,edge-verified,"Closes a closing group record (state 4): flags cleared, state idle, no index (-1)"
@@ -216,6 +217,7 @@ address,size,name,system,status,notes
 0x01c92e90,372,param_lock_cam_range,param,edge-verified,"SoloParamRepository LockCamParam (type 33) float at row+0x10 for an id (searched unsigned), else row 0's, else the float at owner+0x2924"
 0x01cbdb20,979,character_frame_update_01cbdb20,character,verified,"per-frame character update: throw animation event; points stat regeneration (stamina-like; -50..max); time-step descriptor; the 30/60 FPS patches fix its frame time"
 0x01cd92b0,218,character_ai_display_update_01cd92b0,character,edge-verified,"Chr +0x1f8 module: if its ready check (0x01cd9390) passes, gives ai_debug_set_position the two positions of the state module; if it still passes, points its two objects at its markers"
+0x01e19e20,308,character_throw_event_01e19e20,character,edge-verified,"Looks a behavior event up by name and appends {id, 0, 0} to the character graph event ring (grown x2 or to 8 when full); skipped when not ready, unknown or no graph"
 0x01e4a490,375,character_state_flags_update_01e4a490,character,edge-verified,"Chr modules +0x68: folds whether the character is shown into two sticky bytes, copies a param float, sets +0x326 from flags or vtable +0x478, counts the frame, sets the link flag"
 0x01e59250,477,character_event_request_update_01e59250,character,edge-verified,"Chr modules +0x58: fires the pending numbered event (formatted wide string on the thread heap) unless suppressed, clears it, and clears chr +0x20 field +4 for one record id"
 0x01e5c440,282,character_counters_refill_01e5c440,character,edge-verified,"Stepped module: five counters gain a global per-second rate * frame time each (fractions carried, truncation), clamped to 0..their maximum"
