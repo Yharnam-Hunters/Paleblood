@@ -92,6 +92,24 @@ Instead:
        shader, whose GPU address is baked into its translation (`error_address`); a shader meeting a
        case it cannot do exactly writes a code there and skips the access, and the executor checks
        the words once the work has run and stops by name (`GCN_RUNTIME_STOP_*`), naming the shader.
+     - **Guest memory range checks** (`gcn_guest_memory`): every guest memory access a translated
+       shader makes through an address it forms (a scalar load's SGPR pair, a buffer descriptor's
+       base plus its offsets) is first checked against the imported pool. An access outside goes to
+       a 256-byte scratch sink after the stop words instead and stops by name
+       (`GCN_RUNTIME_STOP_GUEST_RANGE`, with the address's bits 16-39: 0 means a null pointer plus an
+       offset). Without the check such an access reaches memory Vulkan never gave the shader; on an
+       RTX 3070 that stops the GPU context (NVIDIA Xid 109) and the batch never finishes, which held
+       the clinic's load with no name for the work. On the console the same access would fault the
+       GPU too, so it is an error to report, not behaviour to imitate. The Metal executor does not
+       fill the range yet (its layouts leave it 0: unchecked).
+     - **Device diagnostics**, each used when the device offers it: `robustImageAccess2`
+       (`VK_EXT_robustness2`: an image access outside the image reads zero, alpha 1 for a format
+       without alpha, and writes nothing, as AMD's hardware does; Mesa's RADV exposes that by default
+       with no shader-side bounds code), a checkpoint before each draw and dispatch
+       (`VK_NV_device_diagnostic_checkpoints`), and the fault's addresses on a lost device
+       (`VK_EXT_device_fault`). A batch that does not finish in the wait limit is reported with the
+       work the checkpoints show begun and ended, and with any stop word a shader has already
+       written.
      - **Format buffer accesses** (`buffer_load/store_format_*`): loads of 8- and 16-bit components
        (8, 16, 8_8, 16_16, 8_8_8_8, 16_16_16_16) as uint (zero-extended), sint (sign-extended) and,
        for 8-bit components, unorm (each byte v / 255, correctly rounded), read byte by byte from any
@@ -809,8 +827,20 @@ Instead:
         never tiled back into guest memory; a new image whose first use writes it starts cleared.
         An image no shader has written holds the guest memory's texels, detiled with
         `runtime/tiling.h` and loaded again at a use that reads it when the guest memory changed since
-        (the CPU or a buffer store may have changed them); one that is also a render target stops by name. Pixel shaders' images
-        are found the same way and bound as sampled images. Formats: 32 (float, uint, sint), 32_32 and 32_32_32_32 float, 8_8_8_8
+        (the CPU or a buffer store may have changed them). One a shader writes over a render target first takes
+        the target's texels, and the target takes the image's at its next draw (`take_written_image`); the copy
+        covers the two's overlap, since a target's size counts its pitch and its slice's whole tiles (a 960x540
+        image under a 1024x576 target, 1920x1080 under 1920x1088). Pixel shaders' images
+        are found the same way and bound as sampled images. A pixel shader's null image descriptor (all 8
+        words 0) reads 0: Mesa's radeonsi writes 8 zero words for an unbound sampler view or image
+        (`si_reset_sampler_view_slot`, `si_disable_shader_image`) and RADV zeroes the descriptor of a
+        VK_EXT_robustness2 null descriptor, whose reads must return 0, with `nullDescriptor` on every GPU it
+        supports (GFX6 onward; the PS4's is GFX7) (Mesa `992de21c`, `si_descriptors.c`, `radv_descriptors.c`,
+        `radv_physical_device.c`). The executor binds a 1x1 image of zeros of its own, and the translator writes
+        0 for its `image_load` without a range check (`gcn_image_binding.null_descriptor`). YEBIS binds such
+        descriptors in the clinic's post-processing passes. A descriptor with base address 0 but other fields
+        set would read unmapped memory; what the PS4 returns there is not established, so it stops by name
+        with its words. Formats: 32 (float, uint, sint), 32_32 and 32_32_32_32 float, 8_8_8_8
         unorm and uint, 8 and 8_8 unorm; 1D and 2D images and their arrays, one level, a view of any of an array's layers
         (slices count from `BASE_ARRAY`, as shadPS4 and Mesa's radeonsi have it), DST_SEL in place.
         On the game, all of the boot's compute passes now run (two clears and a buffer-to-image
@@ -951,7 +981,13 @@ unsupported header. A packet's MAX_SIZE counts from its first index, independent
 of INDEX_BUFFER_SIZE. Counts above MAX_SIZE would require DMA zero filling, which
 the executor does not implement.
 
-Vulkan draws supported offset packets. Predicated packets, other headers and
-nonzero initiators fail with a reason. Addressed DRAW_INDEX_2 calls are recorded
-with their complete payload but are not yet executed by Vulkan. The packet
-observer bridge belongs with the GPU-library replacements that first call it.
+Vulkan draws supported offset packets and addressed DRAW_INDEX_2 packets. Predicated
+packets, other headers and nonzero initiators fail with a reason. A DRAW_INDEX_2 draws
+INDEX_COUNT indices from its own address (INDEX_TYPE gives their size) and, as shadPS4's
+`liverpool.cpp` treats it (facts only), its address becomes the index base later offset
+draws count from. The GPU library's addressed writer `0x01474360` (command buffer, count,
+address) is observed (`game/render/observe_gpu_library.c`): YEBIS's indexed draws, its
+post-processing passes, go through it, and without it the clinic's tone map, glare and
+depth of field never reached the renderer (the scene behind the HUD stayed one flat
+grey). Observers that only observe hooks call are declared in
+`runtime/render_observer_hooks.h`, apart from the replacements' `runtime/render_observer.h`.
