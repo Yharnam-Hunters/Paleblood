@@ -793,6 +793,7 @@ render_update_model_wind,edge,,120,120,0,0,4d23637bf11c299c,2026-11-10
 render_update_model_wind,edge,30,120,120,0,0,4d23637bf11c299c,2026-11-10
 render_update_model_wind,edge,60,120,120,0,0,4d23637bf11c299c,2026-11-10
 render_update_model_wind,edge,uncapped,120,120,0,0,4d23637bf11c299c,2026-11-10
+render_update_vs_shader,edge,,199,199,0,0,7db46237e67ccfae,2026-11-13
 render_yebis_get_recursive_sample_parameters,recorded,,234,234,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,recorded,30,234,234,0,0,6e6f0aa41d5607ce,2026-10-07
 render_yebis_get_recursive_sample_parameters,recorded,60,234,234,0,0,6e6f0aa41d5607ce,2026-10-07
