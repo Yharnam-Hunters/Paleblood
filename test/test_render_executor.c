@@ -15,7 +15,9 @@
 #include "render_fixture.h"
 #include "runtime/tiling.h"
 
+#include <pthread.h>
 #include <stdlib.h>
+#include <time.h>
 
 /* Every pixel of the target holds the triangle's colour. */
 static void check_triangle(rt_executor *x, uint64_t target)
@@ -881,6 +883,47 @@ static void buffers_in_one_submission(rt_executor *x)
     CHECK(blended_misses(x, at(JOINED), doubled) == 0);
 }
 
+/* A wait on another thread for a ticket still open (as the renderer's completion thread waits for a
+   deferred step's ticket) waits for the batch's handover, then gives the GPU its limit from there: with
+   a 200 ms limit, the batch handed over 600 ms after the wait began is waited for and drawn, not
+   reported as "a batch of 0 draws" the GPU never had. Mutant: the limit counted from the wait. */
+typedef struct {
+    rt_executor *x;
+    uint64_t ticket;
+    int result;
+    char error[300];
+} ticket_wait;
+
+static void *wait_on_other_thread(void *argument)
+{
+    ticket_wait *w = argument;
+    w->result = rt_executor_wait_ticket(w->x, w->ticket, w->error, sizeof w->error);
+    return NULL;
+}
+
+static void wait_before_handover(rt_executor *x)
+{
+    enum { WAIT_BUFFER = 0xc1040000, LATE = 0x2fc0000, LIMIT_NS = 200000000, HANDOVER_LATER_NS = 600000000 };
+    char error[200] = "";
+    rt_render_forget(), rt_executor_reset(x);
+    CHECK(rt_executor_finish(x, error, sizeof error) == 0);
+    const uint32_t size = record_draw(WAIT_BUFFER, at(LATE), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    size_t count = 0;
+    const rt_render_call *calls = rt_render_submitted(WAIT_BUFFER, size, &count);
+    ticket_wait w = {.x = x};
+    CHECK(rt_executor_record_calls(x, calls, count, &w.ticket, error, sizeof error) == 0 && w.ticket);
+    rt_executor_set_wait_limit(x, LIMIT_NS);
+    pthread_t waiter;
+    CHECK(pthread_create(&waiter, NULL, wait_on_other_thread, &w) == 0);
+    nanosleep(&(struct timespec){0, HANDOVER_LATER_NS}, NULL);
+    CHECK(rt_executor_submit(x, error, sizeof error) == 0);
+    pthread_join(waiter, NULL);
+    rt_executor_set_wait_limit(x, 0);
+    if (w.result) fprintf(stderr, "wait before the handover: %s\n", w.error);
+    CHECK(w.result == 0);
+    check_triangle(x, at(LATE));
+}
+
 /* Runs the triangle's state with these registers and a draw of `count` vertices (record_setup's). */
 static int run_counted(rt_executor *x, uint64_t buffer, uint64_t target, const uint32_t (*registers)[2], int n, uint32_t count, char *error,
                        size_t error_size)
@@ -1250,29 +1293,64 @@ static void multiple_targets(rt_executor *x)
     CHECK(draw_two_targets(x, at(MRT_FIRST), at(ODD_THIRD), 0xf0f, 0xf0f, 1, error, sizeof error) == -1 && strstr(error, "different sizes"));
 }
 
+/* A null image descriptor (all 8 words 0, as YEBIS binds for a pass that samples nothing there): the
+   pixel shader's reads return 0, as from a VK_EXT_robustness2 null descriptor, so the pixels the triangle
+   covers are 0 and the others keep the memory's pattern. One with base address 0 and other fields set
+   stops by name. */
+static void null_image_descriptor(rt_executor *x)
+{
+    enum { NULL_TARGET = 0x3e00000, PATTERN = 0x11223344u };
+    char error[300] = "";
+    uint32_t *const memory = (uint32_t *)(uintptr_t)at(NULL_TARGET);
+    for (int i = 0; i < SIZE * SIZE; i++) memory[i] = PATTERN;
+    const uint32_t null_image[8] = {0};
+    const int drawn = draw_texels(x, at(NULL_TARGET), null_image, error, sizeof error);
+    if (drawn) fprintf(stderr, "null image: %s\n", error);
+    CHECK(drawn == 0);
+    uint32_t bgra[SIZE * SIZE];
+    CHECK(rt_executor_read_target(x, at(NULL_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+    const uint32_t shown = (PATTERN & 0xff00ff00u) | (PATTERN >> 16 & 0xffu) | (PATTERN & 0xffu) << 16; /* red first in memory, blue first read */
+    int zero = 0, other = 0;
+    for (int i = 0; i < SIZE * SIZE; i++) zero += bgra[i] == 0, other += bgra[i] != 0 && bgra[i] != shown;
+    CHECK(zero > 0 && other == 0);
+    /* base address 0 with a format and type: not a null descriptor, and what the PS4 reads there is not known */
+    const uint32_t base_zero[8] = {0, 10u << 20, 0, 2u << 28 | 0xfac, 0, 0, 0, 0};
+    CHECK(draw_texels(x, at(NULL_TARGET), base_zero, error, sizeof error) == -1 && strstr(error, "base address 0"));
+}
+
 /* A render target cleared by a compute shader (as the game clears its G-buffer): a dispatch stores
    (0.25, 0.5, 0.75, 1) over a 16 x 16 8_8_8_8 image at the target's memory, then (in the next buffer)
    a draw into the target
    that keeps what is there (blend ZERO + ONE) leaves the cleared colour, which reaches the memory too;
    a clear by a 32_32_32_32 float image there stops the draw by name. An image of the target's width with
-   fewer rows (a 1080-row image under a target whose slice counts 1088) clears those rows only. */
+   fewer rows (a 1080-row image under a target whose slice counts 1088) clears those rows only; one with
+   fewer columns (a 960-wide image under a target of pitch 1024) clears those columns only. A target already
+   drawn (the triangle) and then cleared by the shader shows the clear too. */
 static void compute_cleared_target(rt_executor *x)
 {
     enum { CLEAR_BUFFER = 0xc0fd0000, DRAW_BUFFER = 0xc0fe0000, CLEAR_CODE = 0x3200, CLEARED = 0x1a80000, WIDE_CLEARED = 0x1ac0000, SHORT_CLEARED = 0x3dc0000,
-           LINEAR_ALIGNED = 8, PLAIN = 0, WIDE = 1, SHORT = 2, SHORT_ROWS = SIZE / 2 };
+           NARROW_CLEARED = 0x3e40000, DRAWN_CLEARED = 0x3e80000, LINEAR_ALIGNED = 8, PLAIN = 0, WIDE = 1, SHORT = 2, NARROW = 3, DRAWN = 4,
+           SHORT_ROWS = SIZE / 2,
+           NARROW_COLUMNS = SIZE / 2 };
     char error[200] = "";
     memcpy((void *)(uintptr_t)at(CLEAR_CODE), image_clear_tile, sizeof image_clear_tile);
-    for (int kind = PLAIN; kind <= (int)SHORT; kind++) {
+    for (int kind = PLAIN; kind <= (int)DRAWN; kind++) {
         const int wide = kind == WIDE;
-        const uint32_t rows = kind == SHORT ? SHORT_ROWS : SIZE;
-        const uint64_t target = at(kind == WIDE ? WIDE_CLEARED : kind == SHORT ? SHORT_CLEARED : CLEARED);
+        const uint32_t rows = kind == SHORT ? SHORT_ROWS : SIZE, columns = kind == NARROW ? NARROW_COLUMNS : SIZE;
+        const uint64_t target = at(kind == WIDE ? WIDE_CLEARED : kind == SHORT ? SHORT_CLEARED : kind == NARROW ? NARROW_CLEARED : kind == DRAWN ? DRAWN_CLEARED : CLEARED);
         memset((void *)(uintptr_t)target, 0, SIZE * SIZE * 16);
         rt_render_forget(), rt_executor_reset(x);
+        if (kind == DRAWN) { /* the triangle first: the target exists, drawn, when the shader writes its memory */
+            const uint32_t drawn_size = record_triangle_draw(DRAW_BUFFER, record_setup(DRAW_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER));
+            CHECK(rt_executor_run(x, DRAW_BUFFER, drawn_size, error, sizeof error) == 0);
+            check_triangle(x, target);
+            rt_render_forget();
+        }
         const uint64_t code = at(CLEAR_CODE);
         const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x3, 16 << 1, SIZE, SIZE, 1};
         CHECK(rt_render_record_compute_shader_at(CLEAR_BUFFER + 0x10, shader) == 0);
         uint32_t user[8];
-        image_descriptor(user, target, wide ? 14 : 10, wide ? 7 : 0, SIZE, rows); /* 32_32_32_32 float, or 8_8_8_8 unorm */
+        image_descriptor(user, target, wide ? 14 : 10, wide ? 7 : 0, columns, rows); /* 32_32_32_32 float, or 8_8_8_8 unorm */
         user[3] |= LINEAR_ALIGNED << 20;
         CHECK(rt_render_record_user_data(CLEAR_BUFFER, 0x20, RT_STAGE_COMPUTE, 8, user, 8, error, sizeof error) == 0);
         const uint32_t one[3] = {1, 1, 1};
@@ -1295,9 +1373,11 @@ static void compute_cleared_target(rt_executor *x)
         CHECK(rt_executor_read_target(x, target, bgra, SIZE, SIZE, error, sizeof error) == 0);
         /* blue first for the display: red 0.25, green 0.5, blue 0.75, alpha 1 (the store's rounding of 0.5 to 127 or 128 either way) */
         int cleared = 1;
-        for (int i = 0; i < SIZE * (int)rows; i++)
-            cleared &= near(bgra[i] >> 16 & 0xff, 0.25f) && near(bgra[i] >> 8 & 0xff, 0.5f) && near(bgra[i] & 0xff, 0.75f) && bgra[i] >> 24 == 0xff;
-        for (int i = SIZE * (int)rows; i < SIZE * SIZE; i++) cleared &= bgra[i] == 0; /* the rows past the image keep the memory's 0 */
+        for (int i = 0; i < SIZE * SIZE; i++) {
+            const int inside = i / SIZE < (int)rows && i % SIZE < (int)columns; /* the texels past the image keep the memory's 0 */
+            cleared &= inside ? near(bgra[i] >> 16 & 0xff, 0.25f) && near(bgra[i] >> 8 & 0xff, 0.5f) && near(bgra[i] & 0xff, 0.75f) && bgra[i] >> 24 == 0xff
+                              : bgra[i] == 0;
+        }
         if (!cleared) fprintf(stderr, "compute-cleared target: %08x\n", bgra[0]);
         CHECK(cleared);
         const uint32_t first = *(const uint32_t *)(uintptr_t)target; /* written back to the memory: red first */
@@ -1438,6 +1518,38 @@ static void metadata_store_clears(rt_executor *x)
         CHECK(pass == 0 ? untouched : cleared);
         CHECK(expanded);
     }
+}
+
+/* PA_CL_CLIP_CNTL (0xa204): the triangle with its corners at z = -0.5 (w 1) lies wholly in front of the near
+   plane. With the register at its reset value (or set to 0) it is clipped away and nothing is drawn; with
+   ZCLIP_NEAR_DISABLE and ZCLIP_FAR_DISABLE (bits 26 and 27, as a shadow pass sets them) it is not clipped, its
+   depth is clamped to the viewport's range, and the whole triangle is drawn; CLIP_DISABLE (bit 16) alone does
+   the same. DX_RASTERIZATION_KILL (bit 22) stops by name. */
+static void clip_control(rt_executor *x)
+{
+    enum { CLIP_BUFFER = 0xc0f40000, CLIPPED = 0x3400000, UNCLIPPED = 0x3440000, CLIP_OFF = 0x3480000, KILLED = 0x34c0000, Z = 2, PA_CL_CLIP_CNTL = 0xa204 };
+    enum { CLIP_DISABLE = 1u << 16, DX_RASTERIZATION_KILL = 1u << 22, ZCLIP_NEAR_DISABLE = 1u << 26, ZCLIP_FAR_DISABLE = 1u << 27 };
+    char error[200] = "";
+    float *corners = (float *)(uintptr_t)at(CORNERS);
+    for (int i = 0; i < 3; i++) corners[i * 4 + Z] = -0.5f;
+    const uint32_t clipping[][2] = {{PA_CL_CLIP_CNTL, 0}};
+    int drawn = run_counted(x, CLIP_BUFFER, at(CLIPPED), clipping, 1, 3, error, sizeof error);
+    if (drawn) fprintf(stderr, "clipped: %s\n", error);
+    CHECK(drawn == 0);
+    CHECK(nothing_drawn(x, at(CLIPPED)));
+    const uint32_t no_zclip[][2] = {{PA_CL_CLIP_CNTL, ZCLIP_NEAR_DISABLE | ZCLIP_FAR_DISABLE}};
+    drawn = run_counted(x, CLIP_BUFFER, at(UNCLIPPED), no_zclip, 1, 3, error, sizeof error);
+    if (drawn) fprintf(stderr, "z clipping off: %s\n", error);
+    CHECK(drawn == 0);
+    check_triangle(x, at(UNCLIPPED));
+    const uint32_t clip_off[][2] = {{PA_CL_CLIP_CNTL, CLIP_DISABLE}};
+    drawn = run_counted(x, CLIP_BUFFER, at(CLIP_OFF), clip_off, 1, 3, error, sizeof error);
+    if (drawn) fprintf(stderr, "clipping off: %s\n", error);
+    CHECK(drawn == 0);
+    check_triangle(x, at(CLIP_OFF));
+    const uint32_t killed[][2] = {{PA_CL_CLIP_CNTL, DX_RASTERIZATION_KILL}};
+    CHECK(run_counted(x, CLIP_BUFFER, at(KILLED), killed, 1, 3, error, sizeof error) == -1 && strstr(error, "rasterization killed"));
+    for (int i = 0; i < 3; i++) corners[i * 4 + Z] = 0.0f;
 }
 
 /* Depth and stencil without a depth buffer, and triangle strips:
@@ -2827,13 +2939,16 @@ int main(void)
     tessellated_draws(x);
     geometry_shader_draws(x);
     buffers_in_one_submission(x);
+    wait_before_handover(x);
     const uint32_t depth[][2] = {{0xa200, 0x2}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), depth, 1, 0, error, sizeof error) == -1 && strstr(error, "depth or stencil"));
     const uint32_t line_strips[][2] = {{0xc242, 5}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), line_strips, 1, 0, error, sizeof error) == -1 && strstr(error, "primitive type 5"));
     depth_and_strips(x);
+    clip_control(x);
     multiple_targets(x);
     compute_cleared_target(x);
+    null_image_descriptor(x);
     /* a fast-clear eliminate pass (mode 2) over a target without fast clears writes nothing */
     const uint32_t eliminate[][2] = {{0xa202, 0x2u << 4 | 0xccu << 16}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET) + 0x480000, eliminate, 1, 0, error, sizeof error) == 0);
