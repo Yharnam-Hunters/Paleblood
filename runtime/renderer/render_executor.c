@@ -563,8 +563,11 @@ struct rt_executor {
     uint64_t call_serial;            /* counts the draws and dispatches recorded (an image they use stays) */
     uint64_t wait_limit;             /* nanoseconds a wait for a batch gives the GPU (BATCH_WAIT_LIMIT) */
     /* each batch in flight's work as words, by ticket (ring by BATCH_SLOTS), for a wait on any thread
-       that ends without it (unfinished) */
+       that ends without it (unfinished); and the last ticket handed to the GPU, for a wait on another
+       thread for a ticket still open (rt_executor_wait_ticket), signalled by handed_over */
     pthread_mutex_t named_lock;
+    pthread_cond_t handed_over;
+    uint64_t handed;
     struct {
         uint64_t ticket;
         unsigned count;
@@ -1397,6 +1400,7 @@ int rt_executor_open(const rt_executor_memory *memory, rt_executor **executor, c
     rt_executor *x = calloc(1, sizeof *x);
     if (!x) return failed(error, error_size, "no memory");
     pthread_mutex_init(&x->named_lock, NULL);
+    pthread_cond_init(&x->handed_over, NULL);
     if (open_device(x, error, error_size) || import_memory(x, memory, error, error_size) || open_stop_word(x, error, error_size) ||
         sweep_open(x, error, error_size)) {
         rt_executor_close(x);
@@ -1566,6 +1570,8 @@ static void name_work(rt_executor *x, const batch_slot *b, uint64_t ticket)
     pthread_mutex_lock(&x->named_lock);
     x->named[ticket % BATCH_SLOTS].ticket = ticket, x->named[ticket % BATCH_SLOTS].count = b->work_count;
     memcpy(x->named[ticket % BATCH_SLOTS].work, work, sizeof work);
+    x->handed = ticket;
+    pthread_cond_broadcast(&x->handed_over);
     pthread_mutex_unlock(&x->named_lock);
 }
 
@@ -5186,8 +5192,17 @@ int rt_executor_resolve(rt_executor *x, uint64_t address, uint64_t length, char 
 
 int rt_executor_submit(rt_executor *x, char *error, size_t error_size) { return batch_submit(x, error, error_size); }
 
+/* A ticket may still be the open batch's, which the recording thread hands to the GPU later (the
+   renderer's completion thread waits for a deferred step's ticket as soon as the step is recorded). The
+   GPU's wait limit counts from the handover: before, it counted from the wait, and a recording thread
+   slowed down past the limit (a loaded machine, a long run of new pipelines) failed the wait with
+   "a batch of 0 draws and dispatches", the GPU having been given nothing. The recording thread hands
+   its open batch over whenever it runs out of work, so this wait ends. */
 int rt_executor_wait_ticket(rt_executor *x, uint64_t ticket, char *error, size_t error_size)
 {
+    pthread_mutex_lock(&x->named_lock);
+    while (x->handed < ticket) pthread_cond_wait(&x->handed_over, &x->named_lock);
+    pthread_mutex_unlock(&x->named_lock);
     const int waited = ticket ? wait_ticket(x, ticket) : 0;
     return waited ? unfinished(x, waited < 0, error, error_size) : 0;
 }
@@ -5575,5 +5590,6 @@ void rt_executor_close(rt_executor *x)
     free(x->chunk_changed);
     free(x->chunk_outside);
     pthread_mutex_destroy(&x->named_lock);
+    pthread_cond_destroy(&x->handed_over);
     free(x);
 }

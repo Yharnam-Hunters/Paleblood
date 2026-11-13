@@ -86,8 +86,10 @@ int rt_executor_resolve(rt_executor *executor, uint64_t address, uint64_t length
 /* Hands the open batch, if any, to the GPU without waiting. Returns 0, or -1 with the reason. */
 int rt_executor_submit(rt_executor *executor, char *error, size_t error_size);
 /* Waits until the submission `ticket` (and every one before it) has run; ticket 0 returns at once. Unlike
-   the other calls it may run on another thread while the executor records. Run-time stops are reported
-   by the next call on the recording thread. Returns 0, or -1 with the reason (the GPU failed). */
+   the other calls it may run on another thread while the executor records; a ticket still open (the
+   batch not yet handed to the GPU) waits for its handover first, and the GPU's wait limit counts from
+   there. Run-time stops are reported by the next call on the recording thread. Returns 0, or -1 with
+   the reason (the GPU failed). */
 int rt_executor_wait_ticket(rt_executor *executor, uint64_t ticket, char *error, size_t error_size);
 /* Waits until all submitted work has run and checks the run-time stop words. Returns 0, or -1 with the
    reason. */
