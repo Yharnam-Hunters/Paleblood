@@ -87,9 +87,23 @@ It supports viewport 0, vertex/pixel shaders and their separate user-data ranges
 component order).
 Targets are limited to 4096 pixels per axis; viewport X/Y scales and translations must be
 finite and within ±4096, with a positive X scale and a nonzero Y scale.
-Only vertex input profile 0, with vertex ID in VGPR0, is modeled by the common translator.
-The other three `VGPR_COMP_CNT` encodings are rejected explicitly; their additional hardware
-inputs cannot be assumed to contain zero. Fetch calls use the same vertex-ID input profile.
+Vertex input profiles 0 through 3 reuse the common translator. VGPR0 holds the vertex ID;
+profiles 1 and 2 add the instance index divided by `VGT_INSTANCE_STEP_RATE_0` in VGPR1 and
+by `VGT_INSTANCE_STEP_RATE_1` in VGPR2, and profile 3 adds the instance index in VGPR3.
+The step-rate words and their written bits persist across call fragments and reset to unwritten.
+A missing or zero step rate is unknown: reading its enabled input before overwriting it stops
+translation by name. Undeclared inputs have no established hardware value. Primitive-ID inputs
+and unmodeled stage state remain outside this profile.
+
+`NUM_INSTANCES` is a full 32-bit count; zero means one instance, as documented for
+`VGT_NUM_INSTANCES` in the [AMD CIK register reference, page 29](https://docs.amd.com/api/khub/documents/9fuBVmqajj07G~5~aeTUig/content).
+The native auto and indexed
+draws use that count with base instance zero (and base vertex zero for indexed draws), so the
+index slice is reused for every instance. This follows Apple's
+[instance-count draw contract](https://developer.apple.com/documentation/metal/mtlrendercommandencoder/drawprimitives(type:vertexstart:vertexcount:instancecount:baseinstance:)).
+No per-instance host allocation or extra DMA bound is inferred. Vertex shader cache keys include
+the input profile, both full step-rate words and written bits; the instance count remains dynamic.
+Fetch calls use the same starting-register and cache contract.
 The recorded viewport clip bounds must be standard 0 and 1 (either signed zero is accepted);
 other bounds stop explicitly. Position and enabled clip-distance vectors require float4 export
 formats. Both clip vectors, including sparse selections of all eight distances, are supported;
@@ -114,7 +128,7 @@ validate every instruction against its declared SGPR/VGPR allocation.
 Readback is tightly packed BGRA, matching the display API. Images are separate GPU resources:
 they are not copied back into the guest pool or interpreted as tiled console surfaces.
 The generic register events validate this backend's supported opaque-triangle profile: blending,
-depth, non-copy colour operations, partial colour masks and multiple instances stop with a reason.
+depth, non-copy colour operations and partial colour masks stop with a reason.
 A zero colour mask disables attachment writes while still executing the draw. The Metal test
 observes an owned vertex shader's buffer stores while the attachment remains unchanged. The pipeline cache includes
 the write mask, and restoring it enables colour writes again.
@@ -284,6 +298,11 @@ checks the selectors for the format's real components; selectors beyond them do 
 
 A GPU timeout or device failure makes the executor unusable; completion retains
 the pool and stop word until in-flight GPU work finishes.
+
+The separate `metal_vertex_instancing` fixture uses owned literal tile geometry and disjoint
+(instance, vertex) records to check both rate quotients and actual instance IDs. Its full-pool
+oracles cover every direct draw route, cached rate changes, explicit zero, reset and named
+unknown-input refusals; its small instance counts do not qualify extreme GPU workloads.
 
 The real-device test uses only owned synthetic GFX7 programs, descriptors and data. It checks
 interpolated triangles, two-parameter interfaces and their capacity guards, all eight clip

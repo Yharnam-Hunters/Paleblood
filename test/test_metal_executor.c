@@ -873,7 +873,7 @@ int main(void)
         rt_executor_reset(x);
     }
 
-    /* The translator initializes only the vertex-ID input; none of the extra hardware profiles is modeled. */
+    /* These loads overwrite enabled incoming inputs before reading them; no step-rate value is required. */
     for (unsigned profile = 1; profile <= 3; ++profile) {
         uint64_t buffer = 43 + profile, code = at(VERTEX_CODE);
         size = record_setup(buffer, at(0x640000), 16, 16, 0, scale, translate, COLORS);
@@ -881,7 +881,7 @@ int main(void)
             2 | profile << 24, 8 << 1, 0, 4, 0};
         CHECK(rt_render_record_vertex_shader(buffer, size, vertex_profile, error, sizeof error) == 0); size += 0x10;
         CHECK(rt_render_record_draw_auto(buffer, size, 3, error, sizeof error) == 0); size += 0x10;
-        expect_error(x, buffer, size, "vertex input VGPR profile");
+        if (!run(x, buffer, size)) check_gradient(x, at(0x640000), 16, 16, 0);
         scenarios++;
         rt_executor_reset(x);
     }
@@ -1235,7 +1235,7 @@ int main(void)
     size = record_setup(27, at(0x3f0000), 16, 16, 0, scale, translate, COLORS);
     CHECK(rt_render_record_instances(27, size, 2, error, sizeof error) == 0); size += 0x10;
     CHECK(rt_render_record_draw_auto(27, size, 3, error, sizeof error) == 0); size += 0x10;
-    expect_error(x, 27, size, "only one");
+    if (!run(x, 27, size)) check_gradient(x, at(0x3f0000), 16, 16, 0);
     scenarios++;
     rt_executor_reset(x);
 
