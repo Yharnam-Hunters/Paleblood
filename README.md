@@ -10,7 +10,7 @@
 <p align="center">
   <img alt="Iosefka's Clinic in Bloodborne: the hooded hunter stands behind an operating table in a dark room lined with shelves of bottles and Gothic arches, a single wall lamp lighting a doorway on the right; the health bar, items and Blood Echoes counter are on screen. Drawn by Paleblood's own renderer on Linux" src="docs/assets/iosefkas-clinic.png" width="100%">
 </p>
-<p align="center"><sub>Iosefka's Clinic with correct lighting, drawn by Paleblood's own renderer on Linux from the maintainer's own copy of the game (a local test build that includes a lighting fix still in review, 13 November 2026), at full resolution. Bloodborne © Sony Interactive Entertainment / FromSoftware.</sub></p>
+<p align="center"><sub>Iosefka's Clinic with correct lighting, drawn by Paleblood's own renderer on Linux from the maintainer's own copy of the game (a local test build, 13 November 2026), at full resolution. Bloodborne © Sony Interactive Entertainment / FromSoftware.</sub></p>
 
 ## What this is
 

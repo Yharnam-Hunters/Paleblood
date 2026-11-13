@@ -3,6 +3,7 @@
 import html.parser
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -91,6 +92,24 @@ class Synthetic(unittest.TestCase):
             self.assertIn(heading, page)
         self.assertIn('adds two &lt;and&gt; verifies one', page)
         json.loads(out[progress_page.DATA])
+
+    def test_fits_a_phone(self):
+        page = progress_page.render_all(self.root, PRS, 'abc123', 'https://example.invalid/r')[progress_page.PAGE]
+        self.assertIn('<meta name="viewport" content="width=device-width, initial-scale=1">', page)
+        css = progress_page.CSS
+        self.assertIn('@media (max-width: 760px)', css)
+        # Nothing forces a width a 360px phone cannot hold (max-width only caps).
+        for prop, value in re.findall(r'(?<![-\w])((?:min-)?width)\s*:\s*(\d+)px', css):
+            self.assertLessEqual(int(value), 120, f'{prop}: {value}px')
+        # Columns hidden on phones are ones the stylesheet knows how to hide.
+        hidable = set(re.findall(r'table\.(h\d) tr > :nth-child', css))
+        for classes in re.findall(r'<table class="([^"]*)"', page):
+            for c in classes.split():
+                self.assertIn(c, hidable | {'paths'})
+        # Every table sits in a scroll wrapper, and every bar cell has its phone copy under the row's name.
+        self.assertEqual(page.count('<table'), page.count('<div class="tw"><table'))
+        self.assertEqual(page.count('<td class="bar"'), page.count('class="bar mbar"'))
+        self.assertGreater(page.count('<td class="bar"'), 0)
 
     def test_totals_agree_with_progress(self):
         d = progress_page.compute(self.root)
