@@ -29,6 +29,7 @@ import csv
 import datetime
 import html
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -50,11 +51,13 @@ MAP_HEIGHT = 560
 PITCH = 5  # one cell: 4 px and a 1 px gap
 
 # How the map names and groups the libraries of symbols/source_files.csv: game/progress_map.csv
-# (library, group, name, short). Groups are drawn in the order they first appear there; a library
-# it does not list goes into OTHER_GROUP under its own name.
+# (library, group, group_short, name, short). Groups are drawn in the order they first appear there;
+# a library it does not list goes into OTHER_GROUP under a title-cased form of its id, and code no
+# library claims (the empty id) into its own group.
 NAMES_TABLE = os.path.join('game', 'progress_map.csv')
-OTHER_GROUP = 'Other libraries'
-UNATTRIBUTED = 'not attributed yet'
+OTHER_GROUP = ('Libraries', 'Libraries')
+UNATTRIBUTED = {'library': '', 'group': 'Code not attributed to a library yet', 'group_short': 'Unattributed',
+                'name': 'Code not attributed to a library yet', 'short': 'Unattributed'}
 
 
 # ---------------------------------------------------------------- data
@@ -72,22 +75,30 @@ class Names:
     def __init__(self, root: str):
         self.rows = {r['library']: r for r in read_csv(os.path.join(root, NAMES_TABLE))}
 
+    def row(self, lib: str) -> dict:
+        if lib in self.rows:
+            return self.rows[lib]
+        if not lib:
+            return UNATTRIBUTED
+        title = ' '.join(part[:1].upper() + part[1:] for part in re.split(r'[-_ ]+', lib) if part)
+        return {'library': lib, 'group': OTHER_GROUP[0], 'group_short': OTHER_GROUP[1], 'name': title,
+                'short': title}
+
     def name(self, lib: str) -> str:
-        return self.rows[lib]['name'] if lib in self.rows else (lib or UNATTRIBUTED)
+        return self.row(lib)['name']
 
     def short(self, lib: str) -> str:
-        return self.rows[lib]['short'] if lib in self.rows else (lib or 'unattributed')
+        return self.row(lib)['short']
 
-    def groups(self, libs: list[str]) -> list[tuple[str, list[str]]]:
-        """(group title, its libraries) in table order, then OTHER_GROUP and unattributed code."""
-        order: dict[str, list[str]] = {r['group']: [] for r in self.rows.values()}
+    def groups(self, libs: list[str]) -> list[tuple[str, str, list[str]]]:
+        """(group title, short title, its libraries) in table order, then the groups of libraries
+        the table does not list."""
+        order: dict[str, tuple[str, list[str]]] = {}
+        for r in [*self.rows.values(), *(self.row(lib) for lib in libs)]:
+            order.setdefault(r['group'], (r['group_short'], []))
         for lib in libs:
-            if lib in self.rows:
-                group = self.rows[lib]['group']
-            else:
-                group = OTHER_GROUP if lib else UNATTRIBUTED[0].upper() + UNATTRIBUTED[1:]
-            order.setdefault(group, []).append(lib)
-        return [(g, members) for g, members in order.items() if members]
+            order[self.row(lib)['group']][1].append(lib)
+        return [(g, short, members) for g, (short, members) in order.items() if members]
 
 
 class Libraries:
@@ -204,8 +215,33 @@ def text_width(s: str, size: float) -> float:
     return units * size
 
 
-def label(x: float, y: float, s: str, size: float = 12, weight: str = 'normal', fill: str = INK,
-          anchor: str = 'start', halo: bool = False) -> str:
+def fit(candidates: list[str], size: float, room: float) -> str:
+    """The first candidate that fits in `room` pixels; else the last one, cut short with an ellipsis."""
+    for s in candidates:
+        if text_width(s, size) <= room:
+            return s
+    s = candidates[-1]
+    while s and text_width(s + '…', size) > room:
+        s = s[:-1]
+    return s.rstrip() + '…' if s else ''
+
+
+def wrap(text: str, size: float, room: float) -> list[str]:
+    """Words of `text` in lines no wider than `room` pixels (a longer single word gets a line of its own)."""
+    lines: list[str] = []
+    for word in text.split():
+        if lines and text_width(f'{lines[-1]} {word}', size) <= room:
+            lines[-1] += f' {word}'
+        else:
+            lines.append(word)
+    return lines
+
+
+def label(x: float, y: float, s: str | list[str], size: float = 12, weight: str = 'normal', fill: str = INK,
+          anchor: str = 'start', halo: bool = False, room: float | None = None) -> str:
+    """A text element; with `room`, the first of the candidate strings `s` that fits that width."""
+    candidates = [s] if isinstance(s, str) else s
+    s = fit(candidates, size, room) if room is not None else candidates[0]
     stroke = f' stroke="{BG}" stroke-width="3" stroke-linejoin="round" paint-order="stroke"' if halo else ''
     return (f'<text x="{x:.1f}" y="{y:.1f}" font-size="{size}" font-weight="{weight}" fill="{fill}" '
             f'text-anchor="{anchor}"{stroke}>{esc(s)}</text>')
@@ -347,16 +383,18 @@ def draw_block(names: Names, key: str, lib: dict, x: float, y: float, w: float, 
 def draw_map(names: Names, libs: dict[str, dict], x: float, y: float, w: float, h: float) -> list[str]:
     present = sorted((k for k in libs if libs[k]['bytes']), key=lambda k: (-libs[k]['bytes'], k))
     groups = names.groups(present)
-    sizes = [sum(libs[k]['bytes'] for k in keys) for _, keys in groups]
+    sizes = [sum(libs[k]['bytes'] for k in keys) for _, _, keys in groups]
     parts = []
     header = 22
-    for (title, keys), (gx, gy, gw, gh) in zip(groups, group_regions(sizes, x, y, w, h, header, 10)):
+    for (title, short, keys), (gx, gy, gw, gh) in zip(groups, group_regions(sizes, x, y, w, h, header, 10)):
         whole = sum(libs[k]['bytes'] for k in keys)
         ver = sum(libs[k]['verified_bytes'] for k in keys)
-        caption = f'{title}: {pct_text(ver, whole)} verified ({mb(whole)})'
-        if text_width(caption, 14) > gw:
-            caption = f'{title}: {pct_text(ver, whole)} ({mb(whole)})'
-        parts.append(label(gx, gy + 15, caption, 14, 'bold'))
+        numbers = f'{pct_text(ver, whole)} verified ({mb(whole)})'
+        parts.append(f'<g><title>{esc(f"{title}: {numbers}")}</title>')
+        parts.append(label(gx, gy + 15, [f'{title}: {numbers}', f'{title}: {pct_text(ver, whole)} ({mb(whole)})',
+                                         f'{short}: {pct_text(ver, whole)} ({mb(whole)})', short],
+                           14, 'bold', room=gw))
+        parts.append('</g>')
         rects = squarify([libs[k]['bytes'] for k in keys], gx, gy + header, gw, gh - header)
         for key, (bx, by, bw, bh) in zip(keys, rects):
             parts += draw_block(names, key, libs[key], bx, by, bw, bh)
@@ -365,16 +403,17 @@ def draw_map(names: Names, libs: dict[str, dict], x: float, y: float, w: float, 
 
 def draw_bars(title: str, rows: list[tuple], x: float, y: float, w: float) -> tuple[list[str], float]:
     """Horizontal bars: rows of (label, [(value, status)...], whole, value text)."""
-    parts = [label(x, y + 15, title, 14, 'bold')]
+    parts = [label(x, y + 15, title, 14, 'bold', room=w)]
     label_w, value_w = 0.0, 0.0
     for name, _, _, value in rows:
         label_w = max(label_w, text_width(name, 12))
         value_w = max(value_w, text_width(value, 12))
+    label_w = min(label_w, 0.4 * w)
     bar_x, bar_w = x + label_w + 10, w - label_w - value_w - 22
     top = y + 26
     for i, (name, segments, whole, value) in enumerate(rows):
         by = top + i * 20
-        parts.append(label(x, by + 11, name, 12, fill=INK))
+        parts.append(label(x, by + 11, name, 12, fill=INK, room=label_w))
         parts.append(f'<rect x="{bar_x:.1f}" y="{by + 2}" width="{bar_w:.1f}" height="11" fill="{STATUS_FILL["open"]}"/>')
         left = 0.0
         for v, status in segments:
@@ -395,16 +434,18 @@ def render_map(root: str, data: dict, rows: list[dict]) -> str:
     t, r, v = data['total'], data['replaced'], data['verified']
     parts = []
     y = 26
+    room = WIDTH - 2 * MARGIN
     parts.append(label(MARGIN, y, f"Functions verified: {pct_text(v['functions'], t['functions'])} "
-                       f"({v['functions']:,}/{t['functions']:,})", 20, 'bold'))
+                       f"({v['functions']:,}/{t['functions']:,})", 20, 'bold', room=room))
     y += 22
-    parts.append(label(MARGIN, y, f"Replaced: {pct_text(r['functions'], t['functions'])} ({r['functions']:,} functions, "
-                       f"{data['families']['replaced']['functions']:,} of them in {data['families']['count']} "
-                       f"function families of tiny identical functions)", 13, fill=MUTED))
+    replaced = f"Replaced: {pct_text(r['functions'], t['functions'])} ({r['functions']:,} functions"
+    parts.append(label(MARGIN, y, [f"{replaced}, {data['families']['replaced']['functions']:,} of them in "
+                                   f"{data['families']['count']} function families of tiny identical functions)",
+                                   replaced + ')'], 13, fill=MUTED, room=room))
     y += 18
     parts.append(label(MARGIN, y, f"Code replaced: {pct_text(r['bytes'], t['bytes'])} of {mb(t['bytes'])} "
                        f"({mb(r['bytes'])}); verified {pct_text(v['bytes'], t['bytes'])} ({mb(v['bytes'])})",
-                       13, fill=MUTED))
+                       13, fill=MUTED, room=room))
     y += 14
     parts += draw_map(names, libs, MARGIN, y, WIDTH - 2 * MARGIN, MAP_HEIGHT)
     y += MAP_HEIGHT + 20
@@ -413,8 +454,11 @@ def render_map(root: str, data: dict, rows: list[dict]) -> str:
         parts.append(f'<rect x="{lx}" y="{y - 10}" width="11" height="11" fill="{STATUS_FILL[status]}"/>')
         parts.append(label(lx + 16, y, STATUS_LABEL[status], 12))
         lx += 16 + text_width(STATUS_LABEL[status], 12) + 18
-    parts.append(label(WIDTH - MARGIN, y, 'Area is code bytes; each cell is an equal share of its block. '
-                       'Any replaced bytes show at least one cell.', 11, fill=MUTED, anchor='end'))
+    parts.append(label(WIDTH - MARGIN, y, ['Area is code bytes; each cell is an equal share of its block. '
+                                           'Any replaced bytes show at least one cell.',
+                                           'Area is code bytes; each cell is an equal share of its block.',
+                                           'Area is code bytes.'],
+                       11, fill=MUTED, anchor='end', room=WIDTH - MARGIN - lx))
     y += 18
 
     col_w = (WIDTH - 2 * MARGIN - 30) / 2
@@ -428,13 +472,16 @@ def render_map(root: str, data: dict, rows: list[dict]) -> str:
     right, rh = draw_bars('Verified functions by evidence', ev_rows, MARGIN + col_w + 30, y, col_w)
     parts += left + right
     note_y = y + rh + 22
-    for line in ('A function counts as verified when it passes on its edge cases and on inputs recorded in the',
-                 'game, or matches the original bytes exactly, and an independent review has approved it.'):
-        parts.append(label(MARGIN + col_w + 30, note_y, line, 11, fill=MUTED))
+    for line in wrap('A function counts as verified when it passes on its edge cases and on inputs recorded in the '
+                     'game, or matches the original bytes exactly, and an independent review has approved it.',
+                     11, col_w):
+        parts.append(label(MARGIN + col_w + 30, note_y, line, 11, fill=MUTED, room=col_w))
         note_y += 15
-    y += max(lh, rh + 52) + 16
-    parts.append(label(MARGIN, y, 'Counted from symbols/ on main (no game data). Generated by tools/progress_map.py; '
-                       'published by .github/workflows/progress-map.yml.', 11, fill=MUTED))
+    y += max(lh, note_y - 15 - y) + 16
+    parts.append(label(MARGIN, y, ['Counted from symbols/ on main (no game data). Generated by tools/progress_map.py; '
+                                   'published by .github/workflows/progress-map.yml.',
+                                   'Counted from symbols/ on main. Generated by tools/progress_map.py.'],
+                       11, fill=MUTED, room=room))
     height = int(y + 12)
     defs = ''.join(f'<pattern id="{s}" width="{PITCH}" height="{PITCH}" patternUnits="userSpaceOnUse">'
                    f'<rect width="{PITCH - 1}" height="{PITCH - 1}" fill="{STATUS_FILL[s]}"/></pattern>'

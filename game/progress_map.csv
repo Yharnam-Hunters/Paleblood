@@ -1,9 +1,9 @@
-library,group,name,short
-engine,Bloodborne engine and game code,"FromSoftware: Dantelion2 and FD4 engine, SPRJ game",Engine and game
-havok,Middleware and Sony SDK libraries,"Havok (physics, animation, AI)",Havok
-scaleform,Middleware and Sony SDK libraries,Scaleform GFx (menus),Scaleform
-fmod,Middleware and Sony SDK libraries,FMOD Ex (audio),FMOD
-yebis,Middleware and Sony SDK libraries,YEBIS (post effects),YEBIS
-havokscript,Middleware and Sony SDK libraries,HavokScript (Lua),HavokScript
-sce-gnmx,Middleware and Sony SDK libraries,Sony Gnmx (GPU),Gnmx
-,Not attributed to a library yet,not attributed yet,Unattributed
+library,group,group_short,name,short
+engine,Bloodborne engine and game code,Engine and game,"FromSoftware: Dantelion2 and FD4 engine, SPRJ game",Engine and game
+havok,Middleware and Sony SDK libraries,Middleware,"Havok (physics, animation, AI)",Havok
+scaleform,Middleware and Sony SDK libraries,Middleware,Scaleform GFx (menus),Scaleform
+fmod,Middleware and Sony SDK libraries,Middleware,FMOD Ex (audio),FMOD
+yebis,Middleware and Sony SDK libraries,Middleware,YEBIS (post effects),YEBIS
+havokscript,Middleware and Sony SDK libraries,Middleware,HavokScript (Lua),HavokScript
+sce-gnmx,Middleware and Sony SDK libraries,Middleware,Sony Gnmx (GPU),Gnmx
+,Code not attributed to a library yet,Unattributed,Code not attributed to a library yet,Unattributed

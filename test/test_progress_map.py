@@ -83,12 +83,60 @@ class Synthetic(unittest.TestCase):
     def test_every_block_has_a_tooltip(self):
         tree = ET.fromstring(progress_map.render_all(self.root)[progress_map.MAP])
         titles = [t.text for t in tree.iter(f'{SVG}title')]
-        for name in ('engine', 'havok', 'not attributed yet'):
+        for name in ('Engine', 'Havok', 'not attributed to a library'):
             self.assertTrue(any(name in t for t in titles), name)
+
+    def test_no_text_leaves_the_canvas_without_the_names_table(self):
+        for text, left, right in text_extents(progress_map.render_all(self.root)[progress_map.MAP]):
+            self.assertTrue(0 <= left and right <= progress_map.WIDTH, text)
 
     def test_no_output_without_the_export(self):
         with tempfile.TemporaryDirectory() as empty:
             self.assertEqual(progress_map.render_all(empty), {})
+
+
+def text_extents(svg: str) -> list[tuple[str, float, float]]:
+    """(text, left, right) of every text element, by the generator's own width estimate."""
+    out = []
+    for el in ET.fromstring(svg if svg.startswith('<svg') else f'<svg xmlns="http://www.w3.org/2000/svg">{svg}</svg>'
+                            ).iter(f'{SVG}text'):
+        x, w = float(el.get('x')), progress_map.text_width(el.text or '', float(el.get('font-size')))
+        anchor = el.get('text-anchor', 'start')
+        left = x - w if anchor == 'end' else x - w / 2 if anchor == 'middle' else x
+        out.append((el.text, left, left + w))
+    return out
+
+
+class Text(unittest.TestCase):
+    def test_fit_takes_the_first_candidate_that_fits_or_cuts_the_last(self):
+        self.assertEqual(progress_map.fit(['a long caption here', 'short'], 12, 40), 'short')
+        cut = progress_map.fit(['a very long caption that cannot fit'], 12, 60)
+        self.assertTrue(cut.endswith('…'))
+        self.assertLessEqual(progress_map.text_width(cut, 12), 60)
+
+    def test_no_text_leaves_the_canvas(self):
+        for root in (ROOT,):
+            svg = progress_map.render_all(root)[progress_map.MAP]
+            for text, left, right in text_extents(svg):
+                self.assertGreaterEqual(left, 0, text)
+                self.assertLessEqual(right, progress_map.WIDTH, text)
+
+    def test_no_text_leaves_its_map_region_even_when_narrow(self):
+        names = progress_map.Names(ROOT)
+        libs = progress_map.library_totals(ROOT, progress_map.status_rows(ROOT))
+        for w, h in ((976, 560), (500, 400), (260, 300)):
+            parts = progress_map.draw_map(names, libs, 10, 10, w, h)
+            for text, left, right in text_extents('\n'.join(parts)):
+                self.assertGreaterEqual(left, 10, text)
+                self.assertLessEqual(right, 10 + w, (w, text))
+
+    def test_without_the_names_table_libraries_get_titles_not_ids(self):
+        with tempfile.TemporaryDirectory() as empty:
+            names = progress_map.Names(empty)
+        self.assertEqual(names.name('sce-gnmx'), 'Sce Gnmx')
+        self.assertEqual(names.short(''), 'Unattributed')
+        groups = names.groups(['engine', 'havok', ''])
+        self.assertEqual([g[0] for g in groups], ['Libraries', 'Code not attributed to a library yet'])
 
 
 class Layout(unittest.TestCase):
