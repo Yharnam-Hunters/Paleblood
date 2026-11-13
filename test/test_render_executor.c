@@ -2827,6 +2827,74 @@ static void guarded_targets(int fd, rt_executor *shared)
     CHECK(!tiled_memory_zero());
 }
 
+/* With a guard, a depth target drawn into keeps its depth in its image (its memory keeps the 0x5a bytes it
+   held); a 32-bit float image over its memory laid out the same way gets the depth on the GPU
+   (image_from_depth): each pixel's red is the depth under it, and the memory still holds the 0x5a bytes.
+   rt_executor_resolve then writes the depth back: the memory holds what the image showed. */
+static void guarded_depth_read(int fd)
+{
+    enum { DEPTH_BUFFER = 0xc0f48000, GD_Z = 0x2700000, GD_HTILE = 0x2780000, GD_COLOUR = 0x2790000, GD_SAMPLED = 0x27a0000, GD_SIZE = 256,
+           GD_WORDS = (GD_SIZE / 8) * (GD_SIZE / 8) };
+    char error[256] = "";
+    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL};
+    rt_executor *x = NULL;
+    CHECK(rt_executor_open(&with_guard, &x, error, sizeof error) == 0);
+    if (!x) return;
+    guarded.answer = 0;
+    const uint32_t gz = (uint32_t)(at(GD_Z) >> 8), gst = (uint32_t)(at(GD_Z + 0x40000) >> 8), gh = (uint32_t)(at(GD_HTILE) >> 8);
+    const uint32_t gd_size = (GD_SIZE / 8 - 1) | (GD_SIZE / 8 - 1) << 11;
+    uint32_t *htile_words = (uint32_t *)(uintptr_t)at(GD_HTILE);
+    for (unsigned i = 0; i < GD_WORDS; i++) htile_words[i] = 0xfffffff0u;
+    uint8_t *depth = (uint8_t *)(uintptr_t)at(GD_Z);
+    memset(depth, 0x5a, GD_SIZE * GD_SIZE * 4);
+#define GD_TARGET {0xa010, 0xa0000003}, {0xa011, 0x20000001}, {0xa012, gz}, {0xa013, gst}, {0xa014, gz}, {0xa015, gst}, \
+                  {0xa016, gd_size}, {0xa017, 0}, {0xa002, 0}, {0xa005, gh}, {0xa00b, 0x3f800000u}
+    const uint32_t write_depth[][2] = {GD_TARGET, {0xa200, 0x2 | 0x4 | 0x7u << 4}}; /* fast-cleared to 1.0, the triangle's depth (0) written */
+#undef GD_TARGET
+    /* recorded (rt_executor_record_calls), as the game's buffers are: nothing is written back after it */
+    rt_render_forget(), rt_executor_reset(x);
+    uint32_t offset = record_setup(DEPTH_BUFFER, at(GD_COLOUR), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    for (unsigned i = 0; i < 12; i++, offset += 0x10)
+        CHECK(rt_render_record_register(DEPTH_BUFFER, offset, write_depth[i][0], write_depth[i][1], error, sizeof error) == 0);
+    CHECK(rt_render_record_draw_auto(DEPTH_BUFFER, offset, 3, error, sizeof error) == 0);
+    size_t count = 0;
+    const rt_render_call *calls = rt_render_submitted(DEPTH_BUFFER, offset + 0x10, &count);
+    uint64_t ticket = 0;
+    int drawn = rt_executor_record_calls(x, calls, count, &ticket, error, sizeof error) || rt_executor_finish(x, error, sizeof error) ? -1 : 0;
+    if (drawn) fprintf(stderr, "guarded depth draw: %s\n", error);
+    CHECK(drawn == 0);
+    int kept = 1;
+    for (unsigned i = 0; i < GD_SIZE * GD_SIZE * 4; i++) kept &= depth[i] == 0x5a;
+    CHECK(kept);
+    uint32_t image[8];
+    image_descriptor(image, at(GD_Z), 4, 7, GD_SIZE, GD_SIZE);
+    image[3] = (image[3] & ~0xfffu) | (4 | 0 << 3 | 0 << 6 | 1 << 9); /* x, 0, 0, 1; tiling index 0 */
+    drawn = draw_texels_as(x, at(GD_SAMPLED), image, 1, error, sizeof error); /* recorded: nothing written back after it */
+    if (drawn) fprintf(stderr, "guarded depth read as an image: %s\n", error);
+    CHECK(drawn == 0);
+    uint32_t bgra[SIZE * SIZE];
+    CHECK(rt_executor_read_target(x, at(GD_SAMPLED), bgra, SIZE, SIZE, error, sizeof error) == 0);
+    kept = 1;
+    for (unsigned i = 0; i < GD_SIZE * GD_SIZE * 4; i++) kept &= depth[i] == 0x5a;
+    CHECK(kept);
+    CHECK(rt_executor_resolve(x, at(GD_Z), 4, error, sizeof error) == 0);
+    rt_tiling layout;
+    char reason[160];
+    CHECK(rt_tiling_layout(0, 4, GD_SIZE, GD_SIZE, &layout, reason, sizeof reason) == 0);
+    int as_depth = 1, zeros = 0;
+    for (int y = 0; y < SIZE; y++)
+        for (int px = 0; px < SIZE; px++) {
+            const uint32_t p = bgra[y * SIZE + px];
+            if (!(p >> 24)) continue; /* outside the sampling triangle */
+            const float under = *(const float *)(depth + rt_tiling_offset(&layout, (uint32_t)px, (uint32_t)y, 0));
+            as_depth &= near(p >> 16 & 0xff, under);
+            zeros += (p >> 16 & 0xff) == 0;
+        }
+    CHECK(as_depth && zeros > 0);
+    rt_executor_close(x);
+    memset(&guarded, 0, sizeof guarded); /* the guard counts start again for the next test */
+}
+
 /* A compute fill of a guarded drawn target (gcn_programs.h's fill_two_stores, its descriptor's range the
    target's memory, 8_8_8_8 elements): the target's image takes the fill on the GPU, its draws dropped,
    and only the first workgroup's 128 elements reach the memory, the rest still holding the zeros;
@@ -4003,6 +4071,7 @@ int main(void)
     target_memory(x);
     tiled_target_memory(x);
     guarded_targets(fd, x);
+    guarded_depth_read(fd);
     guarded_target_fill(fd);
     float_targets(x);
     compressed_image(x);
