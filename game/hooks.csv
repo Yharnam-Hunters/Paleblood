@@ -87,6 +87,7 @@ address,replacement,system,returns
 0x01475420,bb_render_emit_update_ps_shader_01475420,render,void
 0x01475480,bb_render_emit_set_vs_shader_01475480,render,void
 0x01475da0,bb_render_emit_event_write,render,void
+0x01475e10,bb_render_emit_shader_preparation_range_01475e10,render,void
 0x014765e0,bb_render_configure_viewport,render,void
 0x01476790,bb_render_configure_screen_scissor,render,void
 0x01476980,bb_render_emit_pa_cl_vte_cntl,render,void
@@ -94,6 +95,7 @@ address,replacement,system,returns
 0x01477150,bb_render_set_pa_sc_mode_cntl_0,render,void
 0x014778f0,bb_render_emit_present_release_packet,render,i64
 0x01477b30,bb_render_command_emit_counter_operation,render,void
+0x01477f40,bb_render_emit_shader_preparation_event_01477f40,render,void
 0x014784a0,bb_render_command_prepare_submission,render,void
 0x01485070,bb_render_set_present_last_record_depth_compress_disable,render,i64
 0x01485080,bb_render_set_present_last_record_stencil_compress_disable,render,i64
