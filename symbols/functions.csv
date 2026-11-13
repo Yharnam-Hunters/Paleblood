@@ -537,6 +537,8 @@ address,size,name,system,status,notes
 0x02a27b70,311,engine_wide_string_grow_02a27b70,engine,edge-verified,"Wide string growth: capacity length|7 or old*1.5 (max 0x7ffffffffffffffe); allocate 2*cap+2 align 2, transaction on failure; keep chars, free old heap"
 0x02a2a720,477,engine_wide_string_assign_counted_02a2a720,engine,edge-verified,"Wide string assign from counted text: text inside the string is the assign from part of itself (inlined); otherwise too long throws, grow if needed, copy"
 0x02a2aca0,180,loading_path_token_next_02a2aca0,loading,verified,wide path token scanner: skip delimiters (wcschr); return length and start of the next token; cursor moves to the delimiter after it
+0x02a3a1b0,40,loading_resource_info_reference_count_02a3a1b0,loading,edge-verified,"Dantelion2 DLResourceInfo reference count: read under the info's own engine mutex (lock forever, result ignored)"
+0x02a3a2a0,45,loading_resource_info_drop_reference_02a3a2a0,loading,edge-verified,Dantelion2 DLResourceInfo drop reference: decrement under the info's own engine mutex; a count at zero stays zero
 0x02a3ae00,394,engine_semaphore_wait_02a3ae00,engine,edge-verified,"DLSemaphore wait for one unit, forever or up to a timeout; -3 on ETIMEDOUT; ESRCH..EINVAL report chains, unknown errors reported; 0"
 0x02a3b0d0,122,engine_semaphore_signal_02a3b0d0,engine,edge-verified,DLSemaphore signal: EINVAL ignored; ESRCH and other errors reported; 0
 0x02a3baa0,378,engine_fast_fixed_allocator_initialize_02a3baa0,engine,edge-verified,"DLFastFixedAllocator set-up: chunk size rounded up to a power of two, chunks aligned to it; blocks rounded to the alignment (at least 8); reports bad sizes and alignment"
