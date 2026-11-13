@@ -163,6 +163,29 @@ address,size,name,system,status,notes
 0x014a1e80,803,render_initialize_record_level_descriptor,render,edge-verified,"Publish a partial level descriptor in order; reread the source between helper calls; then convert its tile mode."
 0x014a27c0,627,render_get_record_descriptor_size,render,edge-verified,Initialize mandatory outputs after the decoder call; accumulate live values and retain partial outputs on error.
 0x014a2c40,595,render_calculate_record_descriptor_level_offset,render,edge-verified,Accumulate levels inclusively using partial helper totals even after errors; publish the two QWORD outputs in order.
+0x01657ac0,91,ai_func_get_random_float,ai,edge-verified,AI script binding GetRandam_Float: min + (max - min) * 20-bit random fraction
+0x01657b20,90,ai_func_get_random_int,ai,edge-verified,"AI script binding GetRandam_Int: integer in [min, max] from a 20-bit random fraction (span wraps, truncated)"
+0x01657b80,19,ai_func_set_timer,ai,edge-verified,"AI script binding SetTimer: think timer 0..15 (index checked signed, as the original)"
+0x01657ba0,22,ai_func_set_number,ai,edge-verified,AI script binding SetNumber: think script number 0..63 (index checked unsigned)
+0x0165a1d0,32,ai_func_get_sp,ai,edge-verified,"AI script binding GetSp: the named character's SP through its vtable, 0 without one"
+0x0165a1f0,32,ai_func_get_mp,ai,edge-verified,"AI script binding GetMp: the named character's MP through its vtable, 0 without one"
+0x0165a210,32,ai_func_get_hp,ai,edge-verified,"AI script binding GetHp: the named character's HP through its vtable, 0 without one"
+0x0165a230,34,ai_func_get_hp_rate,ai,edge-verified,"AI script binding GetHpRate: the named character's HP fraction through its vtable, 0.0 without one"
+0x0165aff0,23,ai_func_get_timer,ai,edge-verified,"AI script binding GetTimer: think timer 0..15, 0.0 above"
+0x0165b010,28,ai_func_is_finish_timer,ai,edge-verified,AI script binding IsFinishTimer: think timer <= 0 (true above index 15)
+0x0165b030,26,ai_func_get_number,ai,edge-verified,"AI script binding GetNumber: think script number 0..63, 0.0 above"
+0x0165baf0,22,ai_func_is_battle_state,ai,edge-verified,AI script binding IsBattleState: perception target state == 3 (battle)
+0x0165bb10,27,ai_func_is_change_state,ai,edge-verified,AI script binding IsChangeState: target state differs from last frame's
+0x0165bb30,22,ai_func_is_caution_state,ai,edge-verified,AI script binding IsCautionState: perception target state == 1 (caution)
+0x0165bb50,22,ai_func_is_find_state,ai,edge-verified,AI script binding IsFindState: perception target state == 2 (find)
+0x0165bb70,29,ai_func_get_current_target_state,ai,edge-verified,"AI script binding GetCurrTargetState: forced state (think +0x9a8) unless -1, else the perception's"
+0x0165bb90,18,ai_func_get_previous_target_state,ai,edge-verified,AI script binding GetPrevTargetState: the perception's target state last frame
+0x0167f2a0,22,ai_goal_func_set_timer,ai,edge-verified,AI goal script binding SetTimer: goal timer 0..15 (index checked signed)
+0x0167f2d0,22,ai_goal_func_set_number,ai,edge-verified,AI goal script binding SetNumber: goal script number 0..63 (index checked unsigned)
+0x0167f820,26,ai_goal_func_get_timer,ai,edge-verified,"AI goal script binding GetTimer: goal timer 0..15, 0.0 above"
+0x0167f840,32,ai_goal_func_is_finish_timer,ai,edge-verified,AI goal script binding IsFinishTimer: goal timer <= 0 (false above index 15)
+0x0167f860,20,ai_goal_func_is_finish_turn_timer,ai,edge-verified,AI goal script binding IsFinishTimerForTurnBeforeAtk: the turn-before-attack timer <= 0
+0x0167f880,26,ai_goal_func_get_number,ai,edge-verified,"AI goal script binding GetNumber: goal script number 0..63, 0.0 above"
 0x016efd00,368,event_emk_add,event,verified,SprjEmkSystem: find or add an event entry in two keyed lists; first advance with the 1/30 s step (1/60 s in the 60 FPS patches)
 0x017cfcc0,177,event_flag_write,event,verified,finds an exact event-flag group in a tree and sets or clears one bit
 0x0183ac60,20077,camera_update_follow,camera,edge-verified,"Updates subject-relative camera position and orientation through input; chase; collision avoidance and territory constraints; applies selected frame-rate gains"
