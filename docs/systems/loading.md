@@ -117,10 +117,10 @@ How these layers are driven during a real load, and in what order, is still bein
 | `0x0084d5a0` | 158 | `loading_fios_directory_delete` | edge-verified | FIOS directory object deleting destructor: close the DH at +0x28; free entries and both tagged paths; free 0x38 bytes (or the header's size) to the thread allocator |
 | `0x00857cd0` | 176 | `loading_fios_open_file` | edge-verified | sceFiosFHOpenSync with the caller's 16-bit open flags; on success a 0x18-byte file object from the thread allocator (vtable 0x055c1e00) marked open |
 | `0x0085cda0` | 174 | `loading_fios_open_file_read` | edge-verified | sceFiosFHOpenSync to read; on success a 0x18-byte file object (vtable 0x055c2190) open when the handle is not negative |
-| `0x0246cf50` | 549 | `loading_disk_device_resolve_root_0246cf50` | edge-verified | Ps4DiskFileDevice root mounts: split "name:" off the path; first entry with that name replaces name+2 chars with its target; true unless the name is "title" |
-| `0x0246d180` | 558 | `loading_disk_device_resolve_alias_0246d180` | edge-verified | Ps4DiskFileDevice alias mounts: same code as 0x0246cf50 on the alias table (+0x80) |
+| `0x0246cf50` | 549 | `loading_disk_device_resolve_root_0246cf50` | verified | Ps4DiskFileDevice root mounts: split "name:" off the path; first entry with that name replaces name+2 chars with its target; true unless the name is "title" |
+| `0x0246d180` | 558 | `loading_disk_device_resolve_alias_0246d180` | verified | Ps4DiskFileDevice alias mounts: same code as 0x0246cf50 on the alias table (+0x80) |
 | `0x0246d550` | 530 | `loading_disk_device_open_0246d550` | edge-verified | Ps4DiskFileDevice open: keep the requested path (thread heap); resolve aliases/roots in rounds; open only if an alias matched; through the named device or each unnamed one; under the device lock |
-| `0x0246e630` | 467 | `loading_disk_device_find_named_device_0246e630` | edge-verified | Ps4DiskFileDevice: device registered under the path mount name (token at ":"; wcslen+wcsncmp); under the device lock |
+| `0x0246e630` | 467 | `loading_disk_device_find_named_device_0246e630` | verified | Ps4DiskFileDevice: device registered under the path mount name (token at ":"; wcslen+wcsncmp); under the device lock |
 | `0x0246e810` | 390 | `loading_disk_device_open_on_device_0246e810` | edge-verified | Ps4DiskFileDevice: open through one device on a working copy of the path (path copy heap); on success the path takes the copy |
 | `0x0246e9a0` | 714 | `loading_disk_device_open_on_unnamed_devices_0246e9a0` | edge-verified | Ps4DiskFileDevice: try each device not registered under a name; in order; on a working copy of the path; under the device lock |
 | `0x02470d50` | 517 | `loading_mount_table_push_back_02470d50` | edge-verified | mount table push_back: grow 1.5x when full (source inside the table found again); copy name and target; end moves on even without a buffer |
@@ -130,21 +130,34 @@ How these layers are driven during a real load, and in what order, is still bein
 | `0x024be3b0` | 558 | `loading_load_request_copy_024be3b0` | edge-verified | resource load request copy constructor: base vtable; words/bytes copied; name on the request heap; strings/array via 0x024be8e0 then assigned (strings skip self-copy) |
 | `0x024be8e0` | 362 | `loading_load_request_construct_tail_024be8e0` | edge-verified | resource load request tail: two owning empty wide strings and an empty byte array on the default container heap (heap check each) |
 | `0x024c1530` | 152 | `loading_resource_manager_release_024c1530` | edge-verified | DLResourceManagerImpl release of an info: initialized assert; without flag 0x40 leave the file queue and set the signal; under the lock mark released (0x80) and hand to 0x024c3260 |
+| `0x024c3260` | 626 | `loading_resource_manager_remove_released_024c3260` | edge-verified | DLResourceManagerImpl removal of a released info (flags 0x40+0x80): under the lock free the slot holding it (name emptied; appended to the free slots) and unload the info (0x024bdb80) |
 | `0x024d6730` | 283 | `loading_file_task_initialize_024d6730` | edge-verified | FileTransferTask initialize: copy request (keep heap word if none); invalid -> false; base initialize; queue; flag bit 0; request words |
+| `0x024d6850` | 247 | `loading_file_task_reset_024d6850` | edge-verified | FileTransferTask reset: end slot unless ended; clear words; destroy+free chained objects; clear chain/heap word/state |
 | `0x024d6950` | 197 | `loading_file_task_update_024d6950` | edge-verified | FileTransferTask update: under its lock run state handlers (member-function table) until a stop state |
 | `0x024d6e20` | 275 | `loading_file_task_check_read_024d6e20` | edge-verified | FileTransferTask read step: open errors or cancel abort; count pending size; state 8 or 9 |
 | `0x024d7460` | 245 | `loading_file_task_start_024d7460` | edge-verified | FileTransferTask start: manager stop or cancel abort; prepare; chunk limit; begin read; state 6; start slot |
+| `0x024d7e50` | 309 | `loading_file_task_end_024d7e50` | edge-verified | FileTransferTask end (once): manager hands over the info under its lock; completed -> info loaded + queue reports it; else info flag cleared |
+| `0x024d8210` | 605 | `loading_file_task_prepare_024d8210` | edge-verified | FileTransferTask read buffer: free the old one; small 0x2c buffer inside the task or allocate read size (manager allow/release callbacks) |
+| `0x024d8470` | 755 | `loading_file_task_begin_read_024d8470` | edge-verified | FileTransferTask read start: build the 0xb0-byte read request and queue it to the task reader under its lock; close status 3 for a held read object or info read flag bit 0 |
 | `0x024dd540` | 487 | `loading_transfer_task_initialize_024dd540` | edge-verified | TransferTask initialize: clear state; keep manager/info/word; heap by disk device location; claim info; ready |
 | `0x024dde50` | 200 | `loading_transfer_task_check_read_024dde50` | edge-verified | TransferTask read step: submitted -> reading or abort; open errors 0x10/0x11/0x12 abort; else fail code 4 |
 | `0x024ddf20` | 190 | `loading_transfer_task_check_close_024ddf20` | edge-verified | TransferTask close step: free read object; closed and not cancelled -> request close; else finish once |
 | `0x024de230` | 116 | `loading_memory_stream_read_024de230` | edge-verified | VirtualMemoryInputStream read: -1 if not open; min(count; left) cut to 32 bits; copy and advance position and +0x20 |
-| `0x02a2aca0` | 180 | `loading_path_token_next_02a2aca0` | edge-verified | wide path token scanner: skip delimiters (wcschr); return length and start of the next token; cursor moves to the delimiter after it |
+| `0x02a2aca0` | 180 | `loading_path_token_next_02a2aca0` | verified | wide path token scanner: skip delimiters (wcschr); return length and start of the next token; cursor moves to the delimiter after it |
+| `0x02a3a1b0` | 40 | `loading_resource_info_reference_count_02a3a1b0` | edge-verified | Dantelion2 DLResourceInfo reference count: read under the info's own engine mutex (lock forever, result ignored) |
+| `0x02a3a2a0` | 45 | `loading_resource_info_drop_reference_02a3a2a0` | edge-verified | Dantelion2 DLResourceInfo drop reference: decrement under the info's own engine mutex; a count at zero stays zero |
+| `0x02a692d0` | 19 | `loading_load_queue_report_loaded_02a692d0` | edge-verified | load event queue: report a request through vtable slot 0 with code 1 |
 | `0x02a698e0` | 654 | `loading_load_queue_request_02a698e0` | edge-verified | DLResourceLoadEventQueue request (kind 0): validity; manager info or report -0xf8; info remembers the queue; under the lock append an event with a request copy; handle to the info |
 | `0x02a69b70` | 340 | `loading_load_event_array_push_back_02a69b70` | edge-verified | resource load event (0x158) push_back: grow 1.5x when full (source inside found again); copy two words; copy-construct the request; queued vtable |
 | `0x02a69cd0` | 654 | `loading_load_queue_request_kind_4_02a69cd0` | edge-verified | DLResourceLoadEventQueue request (kind 4): same code as 0x02a698e0 |
 | `0x02a69fb0` | 105 | `loading_finished_queue_front_02a69fb0` | edge-verified | Finished-entry list front: under the lock copy the first entry when the count is not 0 |
 | `0x02a6a020` | 140 | `loading_finished_queue_pop_02a6a020` | edge-verified | Finished-entry list pop: under the lock unlink the first node; destroy its entry; free; count one less |
+| `0x02a6a7f0` | 448 | `loading_load_queue_dispatch_02a6a7f0` | edge-verified | file load event queue: under its lock hand each event to its kind handler (0 3 4); erase all |
+| `0x02a6a9e0` | 465 | `loading_load_queue_start_file_task_02a6a9e0` | edge-verified | file load event queue: take a file task slot from the pool (new 32-slot block if none); initialize; append to transfer tasks |
+| `0x02a6abc0` | 392 | `loading_load_queue_cancel_event_02a6abc0` | edge-verified | DLResourceFileLoadEventQueue kind 3 event: find the transfer task loading the event's info in six task lists (read-write lock) and cancel it |
+| `0x02a6ad50` | 465 | `loading_load_queue_start_file_task_no_buffer_02a6ad50` | edge-verified | file load event queue kind 4 event: start a file task as 0x02a6a9e0 with initialization flag 1 (no read buffer) |
 | `0x02a6af30` | 423 | `loading_load_queue_remove_02a6af30` | edge-verified | DLResourceFileLoadEventQueue: under the queue lock find the transfer task loading an info in six task lists (read-write lock) and cancel it |
+| `0x02a6b0e0` | 184 | `loading_finished_queue_post_02a6b0e0` | edge-verified | load event queue: under its lock append a finished entry (request words code word + info handle) |
 | `0x02a6b520` | 395 | `loading_file_load_slots_construct_02a6b520` | edge-verified | file load event queue: construct its 32 slots (0x338 bytes each) in order with 0x024d63f0 |
 | `0x02a6bc50` | 618 | `loading_load_event_array_reallocate_02a6bc50` | edge-verified | load event array reallocate to exact capacity: copy events; destroy old (base vtable; data freed; three strings released); free old buffer |
 | `0x02a6cd90` | 635 | `loading_stream_queue_request_02a6cd90` | edge-verified | DLResourceStreamLoadEventQueue request: validity; manager info or report -0xf8; stream handle; under the lock append an event with a request copy and its extra byte; handle copy |
@@ -154,6 +167,9 @@ How these layers are driven during a real load, and in what order, is still bein
 | `0x02a70890` | 141 | `loading_kernel_file_open` | verified | sceKernelOpen with FreeBSD flags and permissions from the platform mode bits; store the descriptor and set the open bit; -1 on error |
 | `0x02a70920` | 46 | `loading_kernel_file_read` | edge-verified | sceKernelRead the file's descriptor; -1 on a negative count; else store the count when asked and return 0 |
 | `0x02a70a90` | 84 | `loading_stream_handle_construct_02a70a90` | edge-verified | Stream handle constructor: resource handle; stream vtable; queue; info remembers the queue when both are set |
+| `0x02aa4a30` | 128 | `loading_finished_entry_construct_02aa4a30` | edge-verified | finished entry constructor: result base + handle to the info the manager finds for the request words |
+| `0x02aa4ab0` | 75 | `loading_finished_entry_copy_construct_02aa4ab0` | edge-verified | finished entry copy constructor: result base copy + handle assign |
+| `0x02aa4b40` | 46 | `loading_finished_entry_destroy_02aa4b40` | edge-verified | finished entry destructor: drop the handle then the result base |
 | `0x02e67d20` | 80 | `loading_stdio_close_files` | edge-verified | fclose and clear the FILE pointers at +0x10; +0x8 and +0x0 in that order; skipping null ones |
 
 The import table records interfaces the executable and its bundled modules can call. The exact
