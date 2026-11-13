@@ -3,7 +3,10 @@
 """Edge cases for the resource load event array's push_back and reallocation
 (game/loading/load_event_array.cpp), for tools/verify.py run.
 
-usage: load_event_array_cases.py OUT_DIR [push_back|reallocate]
+usage: load_event_array_cases.py OUT_DIR [push_back|reallocate|stream_push_back|stream_reallocate]
+
+The stream modes are the stream load event array's (0x02a6d010, 0x02a6f140): 0x160-byte events,
+the same layout with one more byte at +0x158 (the pattern bytes, compared as written).
 
 Each case lays out an engine array (`array`: begin, end, capacity end, allocator) over synthetic
 load events (`events`, 0x158 bytes: two words and a request with a vtable, three wide strings at
@@ -26,6 +29,7 @@ ALLOCATE_SLOT, FREE_SLOT = 0x58, 0x70
 EVENT = 0x158
 STRINGS = (0x58, 0xb0, 0xe8)       # in declaration order; destroyed last first
 DATA = 0x128
+STREAM_EXTRA_BYTE = 0x158
 MASK = 0xffffffffffffffff
 MAX_EVENTS = MASK // EVENT
 TRANSACTION_FLAG_OFFSET = 0x057e4318
@@ -67,6 +71,9 @@ class Case:
         for i in range(count):
             heaps, data = (layout or {}).get(i, ((), False))
             e = bytearray(b'\xa5' * EVENT)
+            if EVENT > STREAM_EXTRA_BYTE:
+                # The stream event's extra byte: distinct per buffer and event, so its copy shows.
+                e[STREAM_EXTRA_BYTE] = (sum(name.encode()) + 0x11 * i) & 0xff
             e[0:16] = struct.pack('<QQ', 0x1000 + i, 0x2000 + i)
             for base in STRINGS:
                 heap = base in heaps
@@ -208,11 +215,22 @@ def reallocate_cases():
     ]
 
 
+def use_stream_events():
+    global PUSH_BACK, REALLOCATE, EVENT, MAX_EVENTS
+    PUSH_BACK, REALLOCATE = '0x02a6d010', '0x02a6f140'
+    EVENT = 0x160
+    MAX_EVENTS = MASK // EVENT
+
+
 def main():
-    if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] not in ('push_back', 'reallocate')):
+    modes = ('push_back', 'reallocate', 'stream_push_back', 'stream_reallocate')
+    if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] not in modes):
         sys.exit(__doc__)
     out = sys.argv[1]
     which = sys.argv[2] if len(sys.argv) == 3 else 'push_back'
+    if which.startswith('stream_'):
+        use_stream_events()
+        which = which[len('stream_'):]
     generated = push_back_cases() if which == 'push_back' else reallocate_cases()
     os.makedirs(out, exist_ok=True)
     for c in generated:

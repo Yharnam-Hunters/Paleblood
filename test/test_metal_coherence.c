@@ -168,8 +168,12 @@ int main(void)
     calls[4].u.user_data.words[7]=DST_XYZW | 10u << 15; /* 8_8_8_8 UNORM buffer input. */
     run(x,calls,n,NULL); check_solid(*(uint32_t *)(pool+0x2c0000),0,0);
     /* Both pool endpoints and the complete padded span are checked before a texture is used. */
-    const unsigned invalid_modes[]={0,1,32};
-    for(unsigned i=0;i<3;++i){a=target(0x2a0000+i*0x1000,16,16,invalid_modes[i],0,0); n=scene(calls,a,15); run(x,calls,n,"tiling index");}
+    const unsigned bad_layout_modes[]={0,1,32};
+    for(unsigned i=0;i<3;++i) {
+        a=target(0x2a0000+i*0x1000,16,16,bad_layout_modes[i],0,0); n=scene(calls,a,15);
+        /* Mode 0 is supported depth tiling: its undersized pitch reaches macro validation. */
+        run(x,calls,n,bad_layout_modes[i]==0 ? "macro tiles" : "tiling index");
+    }
     a=target(0x2b0000,16,16,10,0,0); n=scene(calls,a,15); run(x,calls,n,"macro tiles");
     a=target(POOL_BYTES-1024,16,16,31,0,0); memset(pool+POOL_BYTES-1024,0,1024); n=scene(calls,a,15); run(x,calls,n,NULL);
     check_solid(*(uint32_t *)(pool+POOL_BYTES-4),0,0);
