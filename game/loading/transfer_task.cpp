@@ -5,7 +5,7 @@
 // loading_transfer_task_initialize_024dd540 (0x024dd540), called by the file task's
 // initialization (0x024d6730): clears the task's state and status words, keeps the manager, the
 // info and a word, asks the disk file device where it finds the path (the request's flags decide
-// the device's third argument) and takes the manager's first heap when that answer is 0, the
+// the device's third argument) and takes the manager's first reader when that answer is 0, the
 // second otherwise. It claims the info (an atomic exchange of its +0x10 with 1) and marks itself
 // ready. Always true.
 //
@@ -82,11 +82,11 @@ uint16_t open_error_flag(int32_t open_status)
     }
 }
 
-engine::Allocator *heap_slot(TransferTaskManager *manager, int index)
+TransferReader *reader_slot(TransferTaskManager *manager, int index)
 {
-    const auto storage = reinterpret_cast<uintptr_t>(manager->heap_storage);
-    const uintptr_t first = (storage + heap_slot_alignment - 1) & ~(heap_slot_alignment - 1);
-    return reinterpret_cast<engine::Allocator *const *>(first)[index];
+    const auto storage = reinterpret_cast<uintptr_t>(manager->reader_storage);
+    const uintptr_t first = (storage + reader_slot_alignment - 1) & ~(reader_slot_alignment - 1);
+    return reinterpret_cast<TransferReader *const *>(first)[index];
 }
 
 }  // namespace
@@ -125,10 +125,10 @@ extern "C" bool bb_loading_transfer_task_initialize_024dd540(TransferTask *task,
 
     const bool preferred = request_flags == request_flags_unset || !(request_flags & request_flag_0x02);
     const int32_t location = disk_file_device_locate(disk_file_device_instance(), path, preferred);
-    engine::Allocator *heap = heap_slot(manager, location == location_first_heap ? 0 : 1);
-    task->heap = heap;
+    TransferReader *reader = reader_slot(manager, location == location_first_reader ? 0 : 1);
+    task->reader = reader;
     task->manager_lock = &manager->lock;
-    task->buffer_heap = heap;
+    task->read_reader = reader;
     __atomic_exchange_n(&info->transfer_claimed, 1, __ATOMIC_SEQ_CST);
     task->ready = 1;
     return true;
