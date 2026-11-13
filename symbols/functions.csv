@@ -173,6 +173,7 @@ address,size,name,system,status,notes
 0x014a1e80,803,render_initialize_record_level_descriptor,render,edge-verified,"Publish a partial level descriptor in order; reread the source between helper calls; then convert its tile mode."
 0x014a27c0,627,render_get_record_descriptor_size,render,edge-verified,Initialize mandatory outputs after the decoder call; accumulate live values and retain partial outputs on error.
 0x014a2c40,595,render_calculate_record_descriptor_level_offset,render,edge-verified,Accumulate levels inclusively using partial helper totals even after errors; publish the two QWORD outputs in order.
+0x014a3410,250,render_copy_initial_level_014a3410,render,edge-verified,"Render: copies one level of initial data through the box copy, in 4x4 blocks for block-compressed or blocked levels; a null level is refused"
 0x016243a0,74,ai_character_negated_third_column,ai,edge-verified,"AI view slot +0x58: the character transform's third column negated (w 0), zero vector without a character"
 0x01624760,35,ai_character_id,ai,edge-verified,"AI view slot +0x90: the character's id through its vtable slot +0x88, -1 without a character"
 0x01624e50,109,ai_character_flag_module_set,ai,edge-verified,"AI view slot +0x128: the owner's flag module (+0x30) is enabled (+0x384) and flag +0x37f or +0x380 is set"
@@ -408,7 +409,9 @@ address,size,name,system,status,notes
 0x02360d80,168,menu_tex_repository_require_02360d80,menu,edge-verified,ScaleformTexRepository: a missing key gets a texture from the owner source (+0x940; vtable slot 0x130)
 0x02363c00,128,menu_work_holder_destroy_02363c00,menu,edge-verified,work holder destructor (vtable 0x05756bd0): base vtable; one user less (last sets the signal at +0x10); one reference less
 0x02363d20,128,menu_work_holder_destroy_02363d20,menu,edge-verified,work holder destructor (vtable 0x05756c00): the same code as 0x02363c00
+0x02373850,590,render_object_update_02373850,render,edge-verified,"Render: refreshes an object's visible flag (owner query or view masks), then idle/running/finishing life cycle with finish and notify requests; false once done"
 0x02377bd0,399,render_frame_update_02377bd0,render,verified,"per-frame: ages a list of ref-counted objects; updates RendMan-side child; steps another child by 1/30 s (Uncap: measured frame time)"
+0x02379d60,391,render_list_prepare_02379d60,render,edge-verified,"Render: engine list splice of another list's range; relinks on one heap (size limit), else inserts each value and erases the range from the other list"
 0x0237e640,129,loading_file_copy_construct_0237e640,loading,edge-verified,constructor: resource base with the resource heap and no copy (class a; vtable 0x057acc60)
 0x0237e6d0,162,loading_file_copy_delete_0237e6d0,loading,edge-verified,deleting destructor (class a)
 0x0237e780,154,loading_file_copy_destroy_0237e780,loading,edge-verified,destructor: free the file copy through DLNew release then the resource base (class a)

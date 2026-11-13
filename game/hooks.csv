@@ -172,6 +172,7 @@ address,replacement,system,returns
 0x014a1e80,bb_render_initialize_record_level_descriptor,render,i32
 0x014a27c0,bb_render_get_record_descriptor_size,render,i32
 0x014a2c40,bb_render_calculate_record_descriptor_level_offset,render,i32
+0x014a3410,bb_render_copy_initial_level_014a3410,render,i32
 0x016243a0,bb_ai_character_negated_third_column,ai,vec
 0x01624760,bb_ai_character_id,ai,i32
 0x01624e50,bb_ai_character_flag_module_set,ai,i8
@@ -407,7 +408,9 @@ address,replacement,system,returns
 0x02360d80,bb_menu_tex_repository_require_02360d80,menu,void
 0x02363c00,bb_menu_work_holder_destroy_02363c00,menu,void
 0x02363d20,bb_menu_work_holder_destroy_02363d20,menu,void
+0x02373850,bb_render_object_update_02373850,render,i8
 0x02377bd0,bb_render_frame_update_02377bd0,render,void
+0x02379d60,bb_render_list_prepare_02379d60,render,void
 0x0237e640,bb_loading_file_copy_construct_0237e640,loading,void
 0x0237e6d0,bb_loading_file_copy_delete_0237e6d0,loading,void
 0x0237e780,bb_loading_file_copy_destroy_0237e780,loading,void
