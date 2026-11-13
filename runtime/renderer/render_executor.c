@@ -381,6 +381,10 @@ typedef struct {
     /* stencil and depth-block state: DB_STENCIL_CONTROL, DB_STENCILREFMASK and _BF, DB_RENDER_CONTROL */
     uint32_t stencil_control, stencil_reference[2], render_control;
     float depth_bounds[2];           /* DB_DEPTH_BOUNDS_MIN and _MAX */
+    /* PA_SC_VPORT_SCISSOR_n_TL and _BR (a pair a viewport) and PA_SC_MODE_CNTL_0, whose VPORT_SCISSOR_ENABLE
+       turns them on (viewport_scissor_rect) */
+    uint32_t viewport_scissor[RT_VIEWPORTS][2], mode_control;
+    uint32_t viewport_scissor_set;   /* which viewports' pairs were written, a bit each */
     uint32_t depth_bounds_set;       /* which of the two were set, a bit each */
     int stencil_control_set, stencil_reference_set[2], render_control_set;
     /* the depth target's HTILE (DB_HTILE_DATA_BASE, the address shifted right by 8) and its clear value
@@ -618,7 +622,8 @@ enum { DB_RENDER_CONTROL = 0xa000, DB_DEPTH_VIEW = 0xa002, DB_HTILE_DATA_BASE = 
        CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242, VGT_SHADER_STAGES_EN = 0xa2d5, SPI_PS_INPUT_CNTL_0 = 0xa191,
        VGT_GS_MODE = 0xa290, VGT_GSVS_RING_OFFSET_1 = 0xa298, VGT_GSVS_RING_OFFSET_3 = 0xa29a, VGT_ESGS_RING_ITEMSIZE = 0xa2ab,
        VGT_GSVS_RING_ITEMSIZE = 0xa2ac, VGT_GS_MAX_VERT_OUT = 0xa2ce, VGT_GS_VERT_ITEMSIZE = 0xa2d7, VGT_GS_VERT_ITEMSIZE_3 = 0xa2da,
-       VGT_STRMOUT_CONFIG = 0xa2e5, VGT_INSTANCE_STEP_RATE_0 = 0xa2a8, VGT_INSTANCE_STEP_RATE_1 = 0xa2a9, PA_CL_CLIP_CNTL = 0xa204 };
+       VGT_STRMOUT_CONFIG = 0xa2e5, VGT_INSTANCE_STEP_RATE_0 = 0xa2a8, VGT_INSTANCE_STEP_RATE_1 = 0xa2a9,
+       PA_SC_VPORT_SCISSOR_0_TL = 0xa094, PA_SC_MODE_CNTL_0 = 0xa292, PA_CL_CLIP_CNTL = 0xa204 };
 enum { CLIP_DISABLE = 1u << 16, DX_RASTERIZATION_KILL = 1u << 22, ZCLIP_NEAR_DISABLE = 1u << 26, ZCLIP_FAR_DISABLE = 1u << 27 };
 enum { GS_REGISTER_ESGS_ITEMSIZE = 1, GS_REGISTER_VERT_ITEMSIZE = 2, GS_REGISTER_MAX_VERT_OUT = 4, GS_REGISTER_GSVS_ITEMSIZE = 8,
        GS_REGISTERS_NEEDED = 15 };
@@ -660,7 +665,14 @@ static int set_register(draw_state *s, uint32_t address, uint32_t value)
         memcpy(&s->depth_bounds[address - DB_DEPTH_BOUNDS_MIN], &value, sizeof value), s->depth_bounds_set |= 1u << (address - DB_DEPTH_BOUNDS_MIN);
         return 0;
     case DB_DEPTH_INFO: case DB_HTILE_SURFACE: case DB_STENCIL_CLEAR: return 0;
+    case PA_SC_MODE_CNTL_0: s->mode_control = value; return 0;
     default:
+        if (address >= PA_SC_VPORT_SCISSOR_0_TL && address < PA_SC_VPORT_SCISSOR_0_TL + 2 * RT_VIEWPORTS) {
+            const uint32_t viewport = (address - PA_SC_VPORT_SCISSOR_0_TL) / 2;
+            s->viewport_scissor[viewport][(address - PA_SC_VPORT_SCISSOR_0_TL) % 2] = value;
+            s->viewport_scissor_set |= 1u << viewport;
+            return 0;
+        }
         if (address >= VGT_GS_VERT_ITEMSIZE && address <= VGT_GS_VERT_ITEMSIZE_3) {
             s->gs_vert_itemsize[address - VGT_GS_VERT_ITEMSIZE] = value;
             if (address == VGT_GS_VERT_ITEMSIZE) s->gs_registers_set |= GS_REGISTER_VERT_ITEMSIZE;
@@ -698,6 +710,40 @@ static int set_register(draw_state *s, uint32_t address, uint32_t value)
         }
         return -1;
     }
+}
+
+/* The viewport scissor (AMD's CIK register reference, PA_SC_VPORT_SCISSOR_0_TL/BR: TL_X bits 0-14, TL_Y 16-30,
+   WINDOW_OFFSET_DISABLE 31; BR_X 0-14, BR_Y 16-30, the bottom right exclusive; Mesa's sid.h names the same
+   fields): with PA_SC_MODE_CNTL_0's VPORT_SCISSOR_ENABLE (bit 1) the GPU draws only the pixels inside
+   viewport 0's rectangle. The game's deferred lights are full-screen quads drawn once per 128x128 screen
+   tile, each tile set as this scissor (the library's setter 0x014766d0, observe_gpu_library.c); drawn
+   without it, every tile's draw lit the whole screen. Off, or never written, the draw covers the whole
+   target. A rectangle that takes the window offset (WINDOW_OFFSET_DISABLE clear, PA_SC_WINDOW_OFFSET
+   added) is not drawn yet (viewport_scissor_check). */
+enum { VPORT_SCISSOR_ENABLE = 1u << 1, SCISSOR_COORDINATE_MASK = 0x7fff, SCISSOR_Y_SHIFT = 16, SCISSOR_TOP_LEFT = 0,
+       SCISSOR_BOTTOM_RIGHT = 1 };
+static const uint32_t window_offset_disable = 1u << 31;
+
+static int viewport_scissor_on(const draw_state *s) { return (s->mode_control & VPORT_SCISSOR_ENABLE) && (s->viewport_scissor_set & 1); }
+
+static int viewport_scissor_check(const draw_state *s, char *error, size_t error_size)
+{
+    if (viewport_scissor_on(s) && !(s->viewport_scissor[0][SCISSOR_TOP_LEFT] & window_offset_disable))
+        return failed(error, error_size, "a viewport scissor that takes the window offset (PA_SC_VPORT_SCISSOR_0_TL %#x): not drawn yet",
+                      s->viewport_scissor[0][SCISSOR_TOP_LEFT]);
+    return 0;
+}
+
+static VkRect2D viewport_scissor_rect(const draw_state *s, uint32_t width, uint32_t height)
+{
+    if (!viewport_scissor_on(s)) return (VkRect2D){{0, 0}, {width, height}};
+    const uint32_t tl = s->viewport_scissor[0][SCISSOR_TOP_LEFT], br = s->viewport_scissor[0][SCISSOR_BOTTOM_RIGHT];
+    uint32_t left = tl & SCISSOR_COORDINATE_MASK, top = tl >> SCISSOR_Y_SHIFT & SCISSOR_COORDINATE_MASK;
+    uint32_t right = br & SCISSOR_COORDINATE_MASK, bottom = br >> SCISSOR_Y_SHIFT & SCISSOR_COORDINATE_MASK;
+    /* Vulkan's scissor must lie within the framebuffer; outside the target there is nothing to draw */
+    left = left < width ? left : width, right = right < width ? right : width;
+    top = top < height ? top : height, bottom = bottom < height ? bottom : height;
+    return (VkRect2D){{(int32_t)left, (int32_t)top}, {right > left ? right - left : 0, bottom > top ? bottom - top : 0}};
 }
 
 /* A target's blending, from its CB_BLENDn_CONTROL (AMD's gfx_7_2_sh_mask.h): COLOR_SRCBLEND bits 0-4,
@@ -897,7 +943,7 @@ static int check_state(const draw_state *s, depth_plan *plan, uint32_t *colours,
                s->primitive_type != DI_PT_TRISTRIP && s->primitive_type != DI_PT_RECTLIST) {
         return failed(error, error_size, "primitive type %u: only triangle lists and strips and rect lists are drawn yet", s->primitive_type);
     }
-    if (plan_depth(s, plan, error, error_size)) return -1;
+    if (plan_depth(s, plan, error, error_size) || viewport_scissor_check(s, error, error_size)) return -1;
     *colours = s->color_enabled;
     if (s->color_control_set) {
         const uint32_t mode = (s->color_control & COLOR_MODE_MASK) >> COLOR_MODE_SHIFT, rop = (s->color_control & ROP3_MASK) >> ROP3_SHIFT;
@@ -3978,7 +4024,7 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
         memcpy(&clear, &s->depth_clear, sizeof clear);
         viewport.minDepth = viewport.maxDepth = clear;
     }
-    const VkRect2D scissor = {{0, 0}, {width, height}};
+    const VkRect2D scissor = viewport_scissor_rect(s, width, height);
     vkCmdSetViewport(commands, 0, 1, &viewport);
     vkCmdSetScissor(commands, 0, 1, &scissor);
     vkCmdSetBlendConstants(commands, s->blend_constants);

@@ -1026,6 +1026,39 @@ static void other_viewports(rt_executor *x)
     check_triangle(x, at(TARGET_ONE));
 }
 
+/* The viewport scissor (PA_SC_VPORT_SCISSOR_0_TL/BR, on with PA_SC_MODE_CNTL_0's VPORT_SCISSOR_ENABLE): the
+   triangle covering the target is drawn only in the left half the scissor keeps, the right half stays
+   clear; with the enable bit off the same scissor changes nothing. A scissor that takes the window offset
+   (WINDOW_OFFSET_DISABLE clear) stops by name. */
+static void viewport_scissor(rt_executor *x)
+{
+    enum { SCISSORED = 0xc1080000, LEFT_HALF = 0x2e50000, UNSCISSORED = 0x2e60000, PA_SC_VPORT_SCISSOR_0_TL = 0xa094,
+           PA_SC_VPORT_SCISSOR_0_BR = 0xa095, PA_SC_MODE_CNTL_0 = 0xa292, VPORT_SCISSOR_ENABLE = 2, HALF = SIZE / 2 };
+    const uint32_t window_offset_disable = 1u << 31, bottom_right = (uint32_t)SIZE << 16 | HALF;
+    char error[200] = "";
+    const uint32_t on[][2] = {{PA_SC_MODE_CNTL_0, VPORT_SCISSOR_ENABLE}, {PA_SC_VPORT_SCISSOR_0_TL, window_offset_disable},
+                              {PA_SC_VPORT_SCISSOR_0_BR, bottom_right}};
+    int drawn = run_with_registers(x, SCISSORED, at(LEFT_HALF), on, 3, 0, error, sizeof error);
+    if (drawn) fprintf(stderr, "viewport scissor: %s\n", error);
+    CHECK(drawn == 0);
+    uint32_t bgra[SIZE * SIZE], reference[SIZE * SIZE];
+    CHECK(rt_executor_read_target(x, at(LEFT_HALF), bgra, SIZE, SIZE, error, sizeof error) == 0);
+    const uint32_t off[][2] = {{PA_SC_MODE_CNTL_0, 0}, {PA_SC_VPORT_SCISSOR_0_TL, window_offset_disable}, {PA_SC_VPORT_SCISSOR_0_BR, bottom_right}};
+    drawn = run_with_registers(x, SCISSORED, at(UNSCISSORED), off, 3, 0, error, sizeof error);
+    if (drawn) fprintf(stderr, "viewport scissor off: %s\n", error);
+    CHECK(drawn == 0);
+    check_triangle(x, at(UNSCISSORED));
+    CHECK(rt_executor_read_target(x, at(UNSCISSORED), reference, SIZE, SIZE, error, sizeof error) == 0);
+    for (int y = 0; y < SIZE; y++)
+        for (int px = 0; px < SIZE; px++) {
+            const uint32_t expected = px < (int)HALF ? reference[y * SIZE + px] : 0, got = bgra[y * SIZE + px];
+            if (got != expected) fprintf(stderr, "scissored pixel (%d, %d) = %08x, not %08x\n", px, y, got, expected);
+            CHECK(got == expected);
+        }
+    const uint32_t offset_taken[][2] = {{PA_SC_MODE_CNTL_0, VPORT_SCISSOR_ENABLE}, {PA_SC_VPORT_SCISSOR_0_TL, 0}, {PA_SC_VPORT_SCISSOR_0_BR, bottom_right}};
+    CHECK(run_with_registers(x, SCISSORED, at(LEFT_HALF), offset_taken, 3, 0, error, sizeof error) == -1 && strstr(error, "window offset"));
+}
+
 /* Tessellation (docs/RENDERER.md): two quad patches of one control point each (gcn_programs.h's tess_local,
    tess_hull and tess_domain). The local pass writes each point's (vertex index, 0.5) to LDS, the hull pass
    six factors of 1.0 to the factor ring, and the domain shader exports the position (u, v) and its patch's
@@ -3059,6 +3092,7 @@ int main(void)
     indirect_draws(x);
     instanced_draws(x);
     other_viewports(x);
+    viewport_scissor(x);
     tessellated_draws(x);
     geometry_shader_draws(x);
     buffers_in_one_submission(x);

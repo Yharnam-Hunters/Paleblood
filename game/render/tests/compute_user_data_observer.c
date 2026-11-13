@@ -7,6 +7,7 @@
    The shader stage setter reports VGT_SHADER_STAGES_EN for the values it writes, and nothing for others.
    The geometry-shader register writers report the registers they write, with the values they compute.
    The addressed indexed draw (DRAW_INDEX_2) reports the packet's fields, its predicate from the command buffer's flags.
+   The viewport scissor setter reports the pair of registers it writes, its window-offset bit from its stack argument.
    The clip control setter reports PA_CL_CLIP_CNTL with the value masked as the setter masks it. */
 #include "runtime/observe_hooks.h"
 #include "runtime/render_observer.h"
@@ -30,6 +31,10 @@ enum { SET_GS_MODE = 0x014756b0, SET_ESGS_ITEMSIZE = 0x01475a90, SET_GS_RING_SIZ
 enum { VGT_GS_MODE = 0xa290, VGT_GSVS_RING_OFFSET_1 = 0xa298, VGT_ESGS_RING_ITEMSIZE = 0xa2ab, VGT_GSVS_RING_ITEMSIZE = 0xa2ac,
        VGT_GS_MAX_VERT_OUT = 0xa2ce, VGT_GS_VERT_ITEMSIZE = 0xa2d7, VGT_STRMOUT_CONFIG = 0xa2e5, GS_STREAMS = 4, GS_VERTICES = 40,
        ITEMSIZE_ARGUMENT = 0x1803c, STREAM_0 = 12, STREAM_1 = 2, STREAM_2 = 0, STREAM_3 = 1, ITEMSIZE_WRITTEN = 0x3c, GS_MODE_ON = 2, GS_CUT_MODE = 1, GS_MODE_WRITTEN = 0x12 };
+enum { SET_VIEWPORT_SCISSOR = 0x014766d0, PA_SC_VPORT_SCISSOR_0_TL = 0xa094, SCISSOR_VIEWPORT = 1, SCISSOR_LEFT = 128,
+       SCISSOR_TOP = 0x18080, SCISSOR_RIGHT = 256, SCISSOR_BOTTOM = 384, SCISSOR_BR_WRITTEN = 0x01800100,
+       SCISSOR_TL_WITH_OFFSET = 0x00800080, SCISSOR_FRAME_WORDS = RT_OBSERVED_STACK + 1, WINDOW_OFFSET_ENABLED = 1 };
+static const uint32_t SCISSOR_TL_WRITTEN = 0x80800080u; /* bit 31: WINDOW_OFFSET_DISABLE */
 enum { SET_SHADER_STAGES = 0x01476030, VGT_SHADER_STAGES_EN = 0xa2d5, TESSELLATION = 0x45, NOT_WRITTEN = 0x7 };
 /* every bit set: the setter keeps 0x0f7fe03f of them (ZCLIP_NEAR_DISABLE and _FAR_DISABLE, bits 26 and 27, among them) */
 enum { SET_CLIP_CONTROL = 0x01476b30, PA_CL_CLIP_CNTL = 0xa204, CLIP_ARGUMENT = 0xffffffff, CLIP_WRITTEN = 0x0f7fe03f };
@@ -245,6 +250,22 @@ int main(void)
         CHECK(registers.count == MODE_REGISTERS && registers.address[MODE_ON] == VGT_GS_MODE && registers.value[MODE_ON] == GS_MODE_WRITTEN &&
               registers.address[MODE_OFF] == VGT_GS_MODE && registers.value[MODE_OFF] == 0 && registers.address[STREAMOUT_OFF] == VGT_STRMOUT_CONFIG &&
               registers.value[STREAMOUT_OFF] == 0);
+    }
+    /* the viewport scissor: viewport 1's pair (0xa096, 0xa097), x and y masked to 15 bits (top 0x18080 keeps
+       0x0080), WINDOW_OFFSET_DISABLE set for a stack argument of 0 and clear for 1 */
+    const rt_observer_fn scissor = observer(SET_VIEWPORT_SCISSOR);
+    CHECK(scissor != NULL);
+    if (scissor) {
+        uint64_t frame[SCISSOR_FRAME_WORDS] = {object_address, SCISSOR_VIEWPORT, SCISSOR_LEFT, SCISSOR_TOP, SCISSOR_RIGHT, SCISSOR_BOTTOM};
+        memset(&registers, 0, sizeof registers);
+        scissor(frame);
+        frame[RT_OBSERVED_STACK] = WINDOW_OFFSET_ENABLED;
+        scissor(frame);
+        enum { FIRST_TL, FIRST_BR, SECOND_TL, SECOND_BR, SCISSOR_REGISTERS };
+        const uint32_t tl = PA_SC_VPORT_SCISSOR_0_TL + 2 * SCISSOR_VIEWPORT;
+        CHECK(registers.count == SCISSOR_REGISTERS && registers.address[FIRST_TL] == tl && registers.value[FIRST_TL] == SCISSOR_TL_WRITTEN &&
+              registers.address[FIRST_BR] == tl + 1 && registers.value[FIRST_BR] == SCISSOR_BR_WRITTEN &&
+              registers.value[SECOND_TL] == SCISSOR_TL_WITH_OFFSET && registers.value[SECOND_BR] == SCISSOR_BR_WRITTEN);
     }
     const rt_observer_fn clip = observer(SET_CLIP_CONTROL);
     CHECK(clip != NULL);
