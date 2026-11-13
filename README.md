@@ -1,10 +1,6 @@
 # Paleblood
 
-*Bloodborne, rewritten as readable C++ one verified function at a time, running natively on a PC on a runtime of its own.*
-
-<!-- status:start -->
-The game doesn't run on Paleblood yet: 8303 of 157757 functions are verified (5.26%). On [our own runtime](runtime/) the executable's boot gets as far as the run's time limit, still running (no call stopped it), with 686 of 686 system imports implemented.
-<!-- status:end -->
+*Bloodborne, rebuilt as readable code that runs natively on a PC.*
 
 **[Start here](https://github.com/Yharnam-Hunters/Paleblood/issues/31)** ·
 **[Documentation](https://yharnam-hunters.github.io/byrgenwerth-site/)** ·
@@ -12,263 +8,60 @@ The game doesn't run on Paleblood yet: 8303 of 157757 functions are verified (5.
 [Contributing](CONTRIBUTING.md)
 
 <p align="center">
-  <img alt="Bloodborne's character creation screen, the Contract, with the hunter in the preview panel on the right in the right colours: white shirt, brown striped waistcoat, grey trousers and a dark cape; the menu and starting attributes on the left. Drawn by Paleblood's own runtime and renderer on Linux and Vulkan" src="docs/assets/character-preview.png" width="100%">
+  <img alt="Iosefka's Clinic in Bloodborne: the hooded hunter stands behind an operating table in a dark room lined with shelves of bottles and Gothic arches, a single wall lamp lighting a doorway on the right; the health bar, items and Blood Echoes counter are on screen. Drawn by Paleblood's own renderer on Linux" src="docs/assets/iosefkas-clinic.png" width="100%">
 </p>
-<p align="center"><sub>The hunter in character creation's 3D preview, lit and in the right colours, drawn on Linux by Paleblood's own runtime and renderer from the maintainer's own copy in a local run (11 November 2026: main with #607, and #609 just before it merged), at full resolution. Bloodborne © Sony Interactive Entertainment / FromSoftware; shown as a technical milestone.</sub></p>
+<p align="center"><sub>Iosefka's Clinic with correct lighting, drawn by Paleblood's own renderer on Linux from the maintainer's own copy of the game (a local test build that includes a lighting fix still in review, 13 November 2026), at full resolution. Bloodborne © Sony Interactive Entertainment / FromSoftware.</sub></p>
 
 ## What this is
 
-Paleblood is two things built side by side:
+Paleblood rewrites Bloodborne's code by hand as readable source, one function at a time, and runs
+it natively on a PC (Linux; macOS is on the way). Every rewritten function is tested against the
+original to prove it behaves the same. It is not an emulator, and it contains no part of the game:
+you bring your own copy.
 
-- **A decompilation.** The game's 1.09 PS4 executable is rewritten as readable C++, function by
-  function. It is a *functional* decompilation: a replacement does not have to compile to the same
-  bytes, it has to **behave** exactly like the original, and each one is proved to, against the
-  original itself.
-- **A native runtime.** The game's x86-64 code runs directly on your PC. Paleblood supplies the
-  PS4 system libraries it calls (threads, memory, files, sound, video out, the GPU), written from
-  public facts. There is no emulator: the GPU is rebuilt at the engine's own level, translating the
-  game's shaders and replaying its own draw calls on Vulkan (Metal on macOS in progress).
+## Status
 
-The goal is a complete source port: every function rewritten and proved, the game running natively
-on Paleblood alone, and a game that can be read, preserved, fixed and modded like any other
-program. You always bring your own copy of the game.
+**The game is not playable yet.** In local test runs it starts up, goes through the title screen,
+menus and character creation, and loads the first area, Iosefka's Clinic.
 
-It is made by people who love this game and want it to outlive the hardware it was made for.
+[![functions verified](https://yharnam-hunters.github.io/Paleblood/badge-verified.svg)](STATUS.md)
+[![functions replaced](https://yharnam-hunters.github.io/Paleblood/badge-replaced.svg)](STATUS.md)
+[![code replaced](https://yharnam-hunters.github.io/Paleblood/badge-code.svg)](STATUS.md)
+[![replaced in 7 days](https://yharnam-hunters.github.io/Paleblood/badge-week.svg)](STATUS.md)
 
-## Where it stands
+[<img alt="Progress map of the game's code: green where a function is rewritten and verified, amber where rewritten, grey where not yet started" src="https://yharnam-hunters.github.io/Paleblood/progress.svg" width="100%">](https://yharnam-hunters.github.io/Paleblood/progress.html)
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/status-dark.svg">
-  <img alt="Paleblood status: system imports by library, imports working at each recorded boot, the boot milestone and the decompilation" src="docs/assets/status-light.svg" width="100%">
-</picture>
-
-<!-- progress:start -->
-| | Functions | Bytes |
-|---|---:|---:|
-| Target (Ghidra export) | 157757 | 42487404 |
-| Replaced | 18389 (11.66%) | 230752 (0.54%) |
-| of which in 19 function families | 18019 (11.42%) | 62426 (0.15%) |
-| Edge-verified | 18389 (11.66%) | 230752 (0.54%) |
-| Verified | 8303 (5.26%) | 67992 (0.16%) |
-
-Each row includes the next: verified functions are also edge-verified and replaced.
-Function families are many tiny identical functions (an empty method, a getter) that share one replacement each (docs/FAMILIES.md): they move the function count much more than the byte count.
-
-| Runtime | |
-|---|---|
-| System imports implemented | 686 of 686 (100.00%): 219 by the game's own modules, 467 by the runtime |
-| Other imports | 0 registered fail-loud diagnostics, 0 unbound |
-| Furthest boot milestone | first flip (8 of 8) |
-| Boot stops at | the run's time limit, still running (no call stopped it) |
-
-Generated by `tools/progress.py --update-readme` from `symbols/`. Do not edit.
-<!-- progress:end -->
-
-- **The runtime checklist is complete.** All eight runtime issues (#34 to #41: kernel, files,
-  input, audio, video out, GPU commands, system services, network) are closed: every system
-  function the executable imports is answered, either by the game's own bundled modules or by
-  Paleblood's runtime, from public facts (the table above). The last calls came from
-  [@EzequielRindello](https://github.com/EzequielRindello) (directories and file removal, #455)
-  and [@evill33t](https://github.com/evill33t) (the groundwork for the thread-attribute CPU mask,
-  #239). Online features answer as a console that is signed out and offline.
-- **The game gets past its title.** In the maintainer's local runs the game plays its company
-  logos and title screen at its own 30 fps cap, takes "Play Offline", creates its save data, shows
-  the brightness and controls screens, plays its opening cinematic in 3D, and reaches character
-  creation. The recorded boot above is the plain run (no display, no input, 30 seconds), so its
-  milestone stays at the first flip.
-- **The renderer draws 3D.** The game's own GCN shaders are translated to SPIR-V and its draws and
-  compute passes replayed on Vulkan, each buffer as one batch, on a thread of its own that keeps
-  the PS4's submission order. Render targets and images are tiled and detiled on the GPU. Depth
-  and stencil tests, depth-only passes, mip chains and many image and buffer formats came with the
-  3D scenes. The latest work is aimed at character creation's 3D character preview: several render
-  targets per draw, float render targets, cube images, anisotropic filtering,
-  fast-clear eliminate passes, up to sixteen images per shader and larger executor tables
-  (#533 to #565). In local runs the preview now draws the hunter: the G-buffer first (#593), then
-  lit once depth targets are written back (#599), the compute queues run (#600, #606), and in the
-  right colours once pixel shader inputs follow SPI_PS_INPUT_CNTL (#607) and compute shaders'
-  image stores reach memory (#609, which fixes the face).
-- **The macOS port has begun.** [@evill33t](https://github.com/evill33t) added an offscreen Metal
-  draw executor behind the same renderer interface (#518), then compute, vertex fetch and render
-  targets kept coherent with guest memory (#562), plus macOS time and file fixes (#538, #541).
-  These build on macOS in CI, and the Metal tests pass on the author's own Macs; a full game boot
-  or a window on macOS is not established yet.
-- **The decompilation** covers the frame loop (clock, frame limiter, per-frame step, frame pacing)
-  and functions in the event, kernel, input, loading, AI, character, physics and render layers,
-  each proved against the original. A batch of render-record functions came from
-  [@evill33t](https://github.com/evill33t). `BB_TARGET_FPS=30|60|uncapped` already does in code
-  what the community frame-rate patches do with byte edits.
-- **Function families.** Tens of thousands of the executable's functions are tiny copies of the
-  same few bytes: empty methods, functions that return 0 or a constant, field getters and setters.
-  Each family gets one readable replacement, proved on every member ([docs/FAMILIES.md](docs/FAMILIES.md)).
-  Read the families row in the table above in both columns: families are a large share of the
-  functions, but a very small share of the code's bytes. Most of the work is still ahead.
-- **Every function has a likely source file.** `tools/source_files.py` tags each function with the
-  library (the engine, Havok, FMOD, YEBIS, ...) and the source file it probably came from, using
-  the paths the game's assertion messages keep (`symbols/source_files.csv`; the lead came from
-  [@sweetbbak](https://github.com/sweetbbak) in #453).
-- **The external scaffold** (`third_party/bbport/`) is still kept for full game runs, until
-  Paleblood's own runtime passes the same run checks.
-
-What happens next is in [STATUS.md](STATUS.md) and the queue in [NEXT.md](NEXT.md); the
-[runtime page](https://yharnam-hunters.github.io/byrgenwerth-site/runtime/) tells the full story.
+**Details:** [full numbers](STATUS.md) · [how it works and what works](docs/OVERVIEW.md) ·
+[the story so far](https://yharnam-hunters.github.io/byrgenwerth-site/runtime/) ·
+[contributors](https://yharnam-hunters.github.io/byrgenwerth-site/hunters/)
 
 ## Try it
 
-You need Linux (the primary platform, tested by CI) or macOS (in progress), and a dump of your own
-copy of the game from your own PS4 (see Legal below).
+You need Linux and a dump of your own copy of the game from your own PS4. Build with CMake, then
+follow [docs/OVERVIEW.md](docs/OVERVIEW.md#running-the-game) to boot the game in a window, or
+[docs/ONBOARDING.md](docs/ONBOARDING.md) to set up for development.
 
-```
-git clone https://github.com/Yharnam-Hunters/Paleblood.git
-cd Paleblood
-cmake -S . -B build && cmake --build build -j && ctest --test-dir build --output-on-failure
-tools/install_hooks.sh
-```
+## Help out
 
-Boot the game in a window, with sound and controls (Vulkan, SDL3 and FFmpeg needed):
-
-```
-python3 tools/boot.py --no-record --game-lib build/game/libbbgame.so \
-    --display window --audio host --input host --timeout 600
-```
-
-Keyboard: WASD and the arrow keys are the sticks, IJKL the D-pad, Enter/Space cross, Backspace
-circle, R square, F triangle, Q/E L1/R1, Z/C L2/R2, Esc options, T the touch pad; a gamepad works
-by button position.
-
-Without a person at the controller, a timed script presses the buttons instead (seconds, or `700f`
-for presented frames; the format is in
-[`runtime/include/runtime/input_host.h`](runtime/include/runtime/input_host.h)):
-
-```
-python3 tools/boot.py --no-record --game-lib build/game/libbbgame.so \
-    --display headless --display-capture frames/ --input-script "45:down,47:cross" --timeout 120
-```
-
-Character creation's contract needs a name: `--keyboard-text Hunter` answers the on-screen
-keyboard as if that name was typed (without it the keyboard is canceled). `--savedata-from DIR`
-starts the run's saves as a copy of DIR, a save folder an earlier boot kept with `--savedata`, so a
-boot can continue from the game's own save instead of replaying the start.
-
-Plain `python3 tools/boot.py` (no options) runs without the replacements, display, sound or
-input, and records how far the boot gets.
-
-[docs/ONBOARDING.md](docs/ONBOARDING.md) goes from your own dump to your first pull request:
-preparing the dump (`tools/prepare_dump.sh`), Ghidra with the GhidraOrbis loader
-([docs/GHIDRA.md](docs/GHIDRA.md)), the verification harness and a first verified function.
-
-## How it works
-
-**Decompilation track**
-
-1. **Map the original.** Our loader ([`runtime/loader.c`](runtime/loader.c)) maps the unmodified
-   executable from your own dump: segments, relocations, and every system import bound.
-2. **Rewrite a function.** A replacement in `game/<system>/`, readable ([STYLE.md](STYLE.md)) and
-   faithful to the original; [`game/hooks.csv`](game/hooks.csv) registers it.
-3. **Prove it.** [`tools/verify.py`](docs/VERIFY.md) runs the original machine code and the
-   replacement side by side on recorded and generated cases and compares return values,
-   registers, every byte written and every library call. Deliberately wrong versions must fail.
-4. **Review it.** An independent reviewer checks the verification and the readability before a
-   function counts as verified (CONTRIBUTING.md, "Definition of done").
-5. **Families** ([docs/FAMILIES.md](docs/FAMILIES.md)): tiny functions with identical bytes share
-   one replacement and are proved member by member in batches, with deliberately wrong versions
-   that must fail. Because a member is a few bytes, families move the function count far more than
-   the byte count; the progress table counts them on their own row, in both.
-6. **Where a function came from.** `symbols/source_files.csv` tags each function with its likely
-   library and source file, so you know what you are reading before you start.
-
-**Runtime track**
-
-7. **System libraries** (`runtime/syslib/`): each PS4 call the game makes is answered from public
-   facts, or stops by name. Nothing is guessed. Online services answer as a signed-out, offline
-   console.
-8. **Renderer** (`runtime/renderer/`, [docs/RENDERER.md](docs/RENDERER.md)): the game's GPU library
-   calls are observed at the engine level, its GCN shaders translated to SPIR-V, and its draws and
-   compute passes replayed on Vulkan, in submission order on the renderer's own thread. No
-   command-stream emulation.
-9. **Movies, sound and input:** movies decode with FFmpeg, sound (ATRAC9) with LibAtrac9, and the
-   controller comes from a gamepad, the keyboard or a timed script.
-10. **Boot further.** `tools/boot.py` measures how far the game gets on the runtime alone.
-
-## Options
-
-| Variable | Effect |
-|---|---|
-| `BB_TARGET_FPS=30`, `60`, `uncapped` | Frame rate target, as the community "30 FPS++", "60 FPS++" and "Uncap FPS++" patches. Unset: the original behaviour, exactly. |
-| `BB_LIMITER_WAIT=sleep` | The frame limiter sleeps instead of spinning while it waits (the game carries this wait but never selects it). |
-
-## Contributing
-
-**Everyone is welcome.** One function or cluster per pull request, verified with
-`tools/verify.py`, readable ([STYLE.md](STYLE.md)) and independently reviewed; runtime work is
-claimable per system call group (issues labelled `runtime`). Every pull request carries a session
-or runtime report that CI checks, along with the build, the tests and the no-game-data rule. Pick a
-good first issue or a target from [NEXT.md](NEXT.md), and read [CONTRIBUTING.md](CONTRIBUTING.md)
-first.
-
-## Documentation
-
-- **[The documentation site](https://yharnam-hunters.github.io/byrgenwerth-site/)**: how each
-  system works, the runtime and renderer story, the devlog, the progress dashboard and the address
-  map. No console or game files needed to read it.
-- [`docs/systems/`](docs/systems/): one page per game system (generated).
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/RENDERER.md](docs/RENDERER.md),
-  [docs/runtime-syscalls.md](docs/runtime-syscalls.md), [docs/VERIFY.md](docs/VERIFY.md),
-  [QUIRKS.md](QUIRKS.md): how the pieces fit, how the renderer works, what each system call does,
-  how replacements are proved, and the traps.
-
-## Layout
-
-| Path | What |
-|---|---|
-| `game/<system>/` | Replacement code, one directory per game system, with its case generators. |
-| `game/hooks.csv` | Hook registry: original address to replacement. |
-| `runtime/` | The native runtime: loader, boot harness, system libraries (`syslib/`), renderer, display, audio, input. Nothing specific to this game. |
-| `symbols/` | `functions.csv` (what we track), `ghidra_functions.csv` (every function, the denominator), boot records. |
-| `tools/` | Verification harness, boot harness, progress, validators, Ghidra scripts, hooks. |
-| `test/` | Unit and GPU tests; system library tests in `test/syslib/`. |
-| `third_party/` | LibAtrac9 (MIT, unmodified) and the external run scaffold, each with its license (`third_party/README.md`). |
-| `docs/` | Onboarding, Ghidra setup, architecture, renderer, verification, system pages. |
-
-## Target
-
-CUSA03173 (EU), update v1.09 merged over the base game. Hashes of the executables converted
-from SELF to ELF (`target.sha256`); addresses in `symbols/` are PS4 virtual addresses (Ghidra
-image base `0x400000`, the same as the community patches). See [QUIRKS.md](QUIRKS.md).
-
-<!-- target:start -->
-```
-ca8813862d7b1345a6791b7d88cc1d383ede2a6bbc944f39dd3c0e0e3ad9e285  eboot.elf
-6552d61af5258817f434c00f759e194c5d97ac97cfc7ce11b1f23aec11f94d0a  libc.elf
-8def93e0cd3224619d3d51ddfda8b3dd745e6707d1398fd399d5f04199a7caab  libSceFace.elf
-16369566417f7bacd34ebd75f8cffb586563da3e2c40fe8880c60d76718e4833  libSceFios2.elf
-6ec2b7bd0cb1dcfe491f3981301c6f30836e34d06e97a1aaaa609580dc2a899a  libSceHand.elf
-3f303ae1bd114380729987698b5aa4cfcfeb11d2dc6c9d09f5d6ae9baa53ce18  libSceHeadTracker.elf
-b653f26abcf0fd185b4110a6aacc123f7e2e8c0d085f8e5ba1698123213b6659  libSceS3DConversion.elf
-a85c286a110f406682dafc97819318eedc9aa1591b79465f1ef9c1929655de8c  libSceSmart.elf
-```
-<!-- target:end -->
+Everyone is welcome: rewrite a function, work on the runtime, or write up how a system works.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) and pick a task from [Start here](https://github.com/Yharnam-Hunters/Paleblood/issues/31).
 
 ## Legal
 
-- **No game files, ever.** This repository contains no code, assets, binaries, decompiler output
-  or extracted data from the game, and never will. What it holds is newly written source, tools
-  and documentation. `tools/check_no_game_data.py` runs in the pre-commit hook and in CI and
-  rejects anything that looks like game data.
-- **Your own console, your own copy.** To build, run or verify anything you need Bloodborne
-  (CUSA03173, EU) with the 1.09 update, dumped from your own PS4. The project does not provide
-  or point to game files, pkgs, firmware, keys or decryption tools, and requests for or links to
-  them are removed ([CONTRIBUTING.md](CONTRIBUTING.md), "Your own copy").
-- **Images.** No extracted game images or assets. The images here are our own work: recordings of
-  our tools, and frames drawn by Paleblood's own renderer, at full resolution, added by the
-  maintainer with attribution (such as the character preview frame above). The checks refuse anything else.
-- **Not affiliated.** This is a fan project. It is not affiliated with, endorsed by or sponsored
-  by Sony Interactive Entertainment or FromSoftware. Bloodborne and related names are trademarks
-  of their respective owners; the frames shown here are theirs, shown for technical commentary.
+- **No game files.** This repository holds only newly written code, tools and documentation; the
+  checks refuse game data.
+- **Your own copy.** You need Bloodborne (CUSA03173, EU) with the 1.09 update, dumped from your
+  own PS4. We never provide or link to game files, firmware, keys or decryption tools.
+- **Not affiliated** with, endorsed by or sponsored by Sony Interactive Entertainment or
+  FromSoftware. Bloodborne and related names are trademarks of their respective owners; the
+  frames shown here are theirs, drawn by Paleblood's own renderer and shown for technical
+  commentary.
+
+Full text: [docs/LEGAL.md](docs/LEGAL.md).
 
 ## License
 
-GPL-2.0-or-later ([LICENSE](LICENSE)). LibAtrac9 is MIT; the external run scaffold has its own
-GPL-2.0-or-later license and attribution notice in `third_party/README.md`. Neither grants any
-right in the game or its code.
+GPL-2.0-or-later ([LICENSE](LICENSE)). Bundled third-party code keeps its own license
+(`third_party/README.md`); none of it grants any right in the game.
 
 *Fear the old blood.*
