@@ -96,11 +96,13 @@ address,replacement,system,returns
 0x014739b0,bb_render_set_depth_render_target,render,void
 0x01473fe0,bb_render_set_vgt_primitive_type,render,void
 0x014741b0,bb_render_emit_draw_index_auto,render,void
+0x01474f30,bb_render_set_vertex_reuse,render,void
 0x01475000,bb_render_emit_shader_link_words,render,void
 0x01475370,bb_render_emit_num_instances,render,void
 0x014753c0,bb_render_emit_set_ps_shader_014753c0,render,void
 0x01475420,bb_render_emit_update_ps_shader_01475420,render,void
 0x01475480,bb_render_emit_set_vs_shader_01475480,render,void
+0x014758a0,bb_render_set_border_color_base,render,void
 0x01475da0,bb_render_emit_event_write,render,void
 0x01475e10,bb_render_emit_shader_preparation_range_01475e10,render,void
 0x01476030,bb_render_set_shader_stages_01476030,render,void
@@ -166,6 +168,9 @@ address,replacement,system,returns
 0x014a1e80,bb_render_initialize_record_level_descriptor,render,i32
 0x014a27c0,bb_render_get_record_descriptor_size,render,i32
 0x014a2c40,bb_render_calculate_record_descriptor_level_offset,render,i32
+0x016243a0,bb_ai_character_negated_third_column,ai,vec
+0x01624760,bb_ai_character_id,ai,i32
+0x01624e50,bb_ai_character_flag_module_set,ai,i8
 0x01657ac0,bb_ai_func_get_random_float,ai,f32
 0x01657b20,bb_ai_func_get_random_int,ai,i32
 0x01657b80,bb_ai_func_set_timer,ai,void
@@ -189,7 +194,13 @@ address,replacement,system,returns
 0x0167f840,bb_ai_goal_func_is_finish_timer,ai,i8
 0x0167f860,bb_ai_goal_func_is_finish_turn_timer,ai,i8
 0x0167f880,bb_ai_goal_func_get_number,ai,f32
+0x0169acf0,bb_ai_character_has_effect_state,ai,i8
+0x0169ad80,bb_ai_character_gather_effect_states,ai,void
+0x0169af00,bb_ai_character_ready_check,ai,i8
+0x0169fad0,bb_ai_character_link_ids,ai,i64
+0x016b30a0,bb_ai_target_list_mark_main_matches,ai,void
 0x016efd00,bb_event_emk_add,event,void
+0x01708410,bb_ai_pending_event_fire,ai,i8
 0x017cfcc0,bb_event_flag_write,event,void
 0x0183ac60,bb_camera_update_follow,camera,void
 0x0183fad0,bb_camera_follow_pitch,camera,f32

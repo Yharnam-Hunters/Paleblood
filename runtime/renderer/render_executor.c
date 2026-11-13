@@ -326,6 +326,8 @@ typedef struct {
     gcn_memory_read reads[GCN_MAX_IMAGES]; /* the read scan (gcn_memory_reads) */
     int table_copy;                  /* the read scan: the program is a table-driven copy (gcn_table_copy_shape) */
     gcn_table_copy copy;
+    int fill;                        /* the read scan: the program is a constant fill (gcn_fill_shape) */
+    gcn_fill fill_shape;
 } scan_entry;
 
 /* A range of guest memory. A dispatch's reads and stores are kept as up to DISPATCH_SPANS of them (span_add). */
@@ -5242,6 +5244,94 @@ static int table_copy_spans(rt_executor *x, const rt_compute_shader *c, const gc
     return 1;
 }
 
+/* A dispatch of a constant fill (gcn_fill_shape) that stores every element of its descriptor, whose
+   range is exactly a render target's memory in the target's element size, as the game clears its
+   targets: the render target, or NULL (no fill, or not one so; nothing else then). Only one workgroup
+   needs to run (fill_target_from_group): every element gets the same bytes, so the target's image takes
+   the first workgroup's and its memory is the target's to write back like a draw's, which skips both the
+   write-back of the target's draws before the dispatch (all overwritten) and the target's load after it. */
+static target_entry *fill_target(rt_executor *x, const rt_compute_shader *c, const uint32_t *user, uint32_t user_set, const uint32_t groups[3],
+                                 const memory_span *reads, unsigned read_count, char *error, size_t error_size)
+{
+    const uint32_t swizzle = 1u << 31, add_tid = 1u << 23;
+    scan_entry *scan = scan_for(x, c->code, 0, 3);
+    if (!groups || !scan || !scan->used || !scan->fill || groups[1] != 1 || groups[2] != 1 || c->threads[1] != 1 || c->threads[2] != 1 ||
+        c->workgroup_id_enables != 1)
+        return NULL;
+    const gcn_fill *shape = &scan->fill_shape;
+    const uint32_t lanes = c->threads[0];
+    if (shape->workgroup_sgpr != c->user_sgprs || lanes > shape->most_lanes) return NULL;
+    /* the stores' offsets, each with the workgroup's lanes, tile the workgroup's elements */
+    uint32_t offsets[GCN_FILL_STORES];
+    memcpy(offsets, shape->offsets, shape->store_count * sizeof *offsets);
+    for (unsigned i = 1; i < shape->store_count; i++)
+        for (unsigned k = i; k > 0 && offsets[k - 1] > offsets[k]; k--) {
+            const uint32_t swap = offsets[k];
+            offsets[k] = offsets[k - 1], offsets[k - 1] = swap;
+        }
+    for (unsigned i = 0; i < shape->store_count; i++)
+        if (offsets[i] != (uint64_t)i * lanes) return NULL;
+    if ((uint64_t)shape->store_count * lanes != shape->group_elements) return NULL;
+    uint32_t destination[4];
+    const gcn_resource_origin d = {.sgpr = shape->destination_sgpr};
+    char reason[200];
+    if (descriptor_words(x, "compute", c->code, &d, user, c->user_sgprs, user_set, destination, 4, reason, sizeof reason)) return NULL;
+    (void)error, (void)error_size;
+    const uint64_t base = vsharp_base(destination), stride = vsharp_stride(destination), records = destination[2];
+    if ((destination[1] & swizzle) || (destination[3] & add_tid) || !stride || !records || (uint64_t)groups[0] * shape->group_elements < records)
+        return NULL;
+    target_entry *t = find_target(x, base);
+    rt_tiling layout;
+    if (!t || stride != t->element_bytes || rt_tiling_layout(t->tile_index, t->element_bytes, t->width, t->height, &layout, reason, sizeof reason) ||
+        records * stride != rt_tiling_size(&layout, 1))
+        return NULL;
+    const uint64_t span = records * stride;
+    for (unsigned i = 0; i < read_count; i++)
+        if (reads[i].address < base + span && base < reads[i].address + reads[i].bytes) return NULL;
+    for (size_t i = 0; i < x->target_count; i++) { /* no other target's draws there */
+        const target_entry *o = &x->targets[i];
+        if (o != t && o->drawn && o->address < base + span && base < o->address + target_span(o)) return NULL;
+    }
+    for (size_t i = 0; i < x->depth_count; i++)
+        if (x->depths[i].unwritten && x->depths[i].z_address < base + span && base < x->depths[i].z_address + depth_span(&x->depths[i])) return NULL;
+    return t;
+}
+
+/* After a fill's first workgroup (fill_target): its elements, stored at the start of the target's memory,
+   are copied into the target's linear rows and doubled until the rows are full, then into its image, all
+   on the GPU, with the batch. The target counts as drawn: its memory gets the fill when it is written
+   back. 0, or -1 with the reason. */
+static int fill_target_from_group(rt_executor *x, target_entry *t, uint64_t group_bytes, char *error, size_t error_size)
+{
+    rt_tiling layout;
+    uint64_t span;
+    if (target_memory(x, t, &layout, &span, error, error_size)) return -1;
+    VkCommandBuffer commands = batch_commands(x, error, error_size);
+    if (!commands) return -1;
+    const VkDeviceSize rows = (VkDeviceSize)t->width * t->height * t->element_bytes;
+    if (group_bytes > rows) group_bytes = rows;
+    const VkMemoryBarrier stored = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT |
+                                                                                                VK_ACCESS_SHADER_READ_BIT,
+                                    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT};
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &stored, 0,
+                         NULL, 0, NULL);
+    const VkBufferCopy first = {.srcOffset = t->address - x->guest_base, .dstOffset = 0, .size = group_bytes};
+    vkCmdCopyBuffer(commands, x->buffer, t->plan.linear.buffer, 1, &first);
+    const VkMemoryBarrier copied = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT};
+    for (VkDeviceSize filled = group_bytes; filled < rows;) {
+        vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &copied, 0, NULL, 0, NULL);
+        const VkBufferCopy more = {.srcOffset = 0, .dstOffset = filled, .size = filled < rows - filled ? filled : rows - filled};
+        vkCmdCopyBuffer(commands, t->plan.linear.buffer, t->plan.linear.buffer, 1, &more);
+        filled += more.size;
+    }
+    vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &copied, 0, NULL, 0, NULL);
+    if (record_target_copy(x, t, 0, error, error_size)) return -1;
+    target_drawn(x, t);
+    t->loaded_change = x->change_count;
+    return 0;
+}
+
 /* The memory a dispatch of the compute shader reads now, as spans (gcn_memory_reads: each descriptor's
    range, each s_load's bytes); *anywhere when it cannot be bounded. For a table-driven copy whose table
    can be read (table_copy_spans), the real reads, and in *exact with `stores` the real stores; groups is
@@ -5269,7 +5359,10 @@ static int dispatch_reads(rt_executor *x, const rt_compute_shader *c, const uint
         table_copy = gcn_table_copy_shape(code, dwords, &shape);
         if (scan) {
             scan_keep(x, scan, n, NULL, NULL);
-            if (scan->used) memcpy(scan->reads, found, n * sizeof *found), scan->unknown = *anywhere, scan->table_copy = table_copy, scan->copy = shape;
+            if (scan->used) {
+                memcpy(scan->reads, found, n * sizeof *found), scan->unknown = *anywhere, scan->table_copy = table_copy, scan->copy = shape;
+                scan->fill = gcn_fill_shape(code, dwords, &scan->fill_shape);
+            }
         }
     }
     if (table_copy && groups) { /* an indirect dispatch's workgroup count is not known here */
@@ -5323,6 +5416,10 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     else
         for (unsigned i = 0; i < store_count; i++) span_add(stores, &store_span_count, store_ranges[i][0], store_ranges[i][1]);
     if (!groups) span_add(reads, &read_count, arguments, INDIRECT_ARGUMENT_BYTES); /* drawn targets over them are written back too */
+    /* a fill of a render target overwrites all its draws: only what it reads is written back first */
+    target_entry *const filled = reads_anywhere ? NULL : fill_target(x, c, s->compute_user, s->compute_user_set, groups, reads, read_count, error,
+                                                                     error_size);
+    if (filled) store_span_count = 0, stores_anywhere = 0, store_count = 0;
     memcpy(touched, reads, read_count * sizeof *reads);
     memcpy(touched + read_count, stores, store_span_count * sizeof *stores);
     if (reads_anywhere || stores_anywhere ? write_back_targets(x, error, error_size)
@@ -5357,8 +5454,15 @@ static int dispatch(rt_executor *x, const draw_state *s, const uint32_t groups[3
     if (set) vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0, NULL);
     vkCmdPushConstants(commands, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, USER_DATA_BYTES, s->compute_user);
     note_work(x, c->code, 0, groups ? (uint64_t)groups[0] * groups[1] * groups[2] : 0);
-    if (groups) vkCmdDispatch(commands, groups[0], groups[1], groups[2]);
+    if (filled) vkCmdDispatch(commands, 1, 1, 1); /* its first workgroup: the rest is the same bytes (fill_target_from_group) */
+    else if (groups) vkCmdDispatch(commands, groups[0], groups[1], groups[2]);
     else vkCmdDispatchIndirect(commands, x->buffer, arguments - x->guest_base);
+    if (filled) {
+        const scan_entry *scan = scan_for(x, c->code, 0, 3);
+        const uint64_t group_bytes = (uint64_t)scan->fill_shape.group_elements * filled->element_bytes;
+        batch_writes(x, filled->address, group_bytes, 1);
+        if (fill_target_from_group(x, filled, group_bytes, error, error_size)) return -1;
+    }
     for (unsigned i = 0; i < x->stored_count; i++)
         if (write_back_image(x, &x->images[x->stored[i].image], &x->stored[i].descriptor, error, error_size)) return -1;
     /* the CPU reads memory it may store to only once the batch has run; what was loaded from there
