@@ -324,14 +324,48 @@ address,size,name,system,status,notes
 0x02470d50,517,loading_mount_table_push_back_02470d50,loading,edge-verified,mount table push_back: grow 1.5x when full (source inside the table found again); copy name and target; end moves on even without a buffer
 0x024716d0,539,loading_mount_table_reallocate_024716d0,loading,edge-verified,mount table reallocate to exact capacity: copy entries; destroy old (heap text freed); free old buffer; failed allocation: transaction jump or report
 0x0247d250,304,engine_temporary_heap_create_for_thread_0247d250,engine,edge-verified,DLTemporaryHeap per-thread creation: the thread's size setting (0x20000 when 0; under 0x38 reported); memory from the default allocator; empty bump region after the 0x38-byte object
+0x0247d3a0,140,engine_temporary_heap_destroy_for_thread_0247d3a0,engine,edge-verified,"DLTemporaryHeap per-thread destruction: range cleared, memory freed through the default allocator (quit query and allocator made when missing), slot cleared"
+0x0247d430,34,engine_temporary_heap_set_size_0247d430,engine,edge-verified,DLTemporaryHeap size setting for the thread (0 -> 0x20000)
+0x0247d470,58,engine_temporary_heap_allocator_0247d470,engine,edge-verified,"DLTemporaryHeap allocator interface of the thread's heap (+0x20), creating the heap first"
+0x0247d4b0,86,engine_temporary_heap_allocate_0247d4b0,engine,edge-verified,DLTemporaryHeap bottom allocation on the thread's heap (linear heap step)
+0x0247d510,121,engine_temporary_heap_allocate_aligned_0247d510,engine,edge-verified,DLTemporaryHeap aligned bottom allocation on the thread's heap (linear heap step)
+0x0247d590,31,engine_temporary_heap_ensure_0247d590,engine,edge-verified,DLTemporaryHeap: creates the thread's heap when missing
+0x0247d5b0,58,engine_temporary_heap_mark_0247d5b0,engine,edge-verified,DLTemporaryHeap mark: the thread heap's bottom
+0x0247d5f0,110,engine_temporary_heap_free_until_0247d5f0,engine,edge-verified,DLTemporaryHeap FreeUntil on the thread's heap: rewinds the bottom; a mark outside the range reported
+0x0247dd30,31,engine_temporary_heap_ensure_0247dd30,engine,edge-verified,DLTemporaryHeap: creates the thread's heap when missing (identical copy)
+0x0247dd60,127,engine_temporary_heap_allocate_top_0247dd60,engine,edge-verified,DLTemporaryHeap 8-aligned top allocation on the thread's heap (linear heap step)
+0x0247dde0,156,engine_temporary_heap_allocate_aligned_top_0247dde0,engine,edge-verified,DLTemporaryHeap aligned top allocation on the thread's heap (linear heap step)
+0x0247e1a0,161,engine_temporary_heap_free_0247e1a0,engine,edge-verified,DLTemporaryHeap top block free on the thread's heap (linear heap step)
+0x0247e400,18,engine_condition_signal_construct_0247e400,engine,edge-verified,"DLConditionSignal constructor: vtable, flags cleared"
+0x0247e420,201,engine_condition_signal_delete_0247e420,engine,edge-verified,"DLConditionSignal deleting destructor: when created, mutex then condition destroyed (busy stops; errors reported); freed"
+0x0247e4f0,198,engine_condition_signal_destroy_base_0247e4f0,engine,edge-verified,"DLConditionSignal base destructor: when created, mutex then condition destroyed; created flag cleared unless busy"
+0x0247e5c0,206,engine_condition_signal_finalize_0247e5c0,engine,edge-verified,"DLConditionSignal finalize: when created per vtable, destroys mutex and condition; -2 when busy, else 0 and not created"
+0x0247e690,211,engine_condition_signal_create_0247e690,engine,edge-verified,"DLConditionSignal create: skipped when created; argument byte -> signalled, waited cleared; mutex failure returned; ENOMEM/EAGAIN -1; EINVAL/EBUSY/other reported, created"
+0x0247e780,366,engine_condition_signal_set_0247e780,engine,edge-verified,DLConditionSignal set/clear under its mutex; setting wakes every waiter (pthread_cond_broadcast) when one has waited; errors reported; 0
+0x0247e8f0,329,engine_condition_signal_wait_0247e8f0,engine,edge-verified,DLConditionSignal wait under its mutex unless already set (marks a waiter); returns the condition wait result or 0
+0x0247ea40,61,engine_condition_signal_poll_0247ea40,engine,edge-verified,"DLConditionSignal poll: reports an uncreated object; 0 when signalled, else -2"
+0x0247ea80,40,engine_condition_signal_check_0247ea80,engine,edge-verified,DLConditionSignal check: reports an uncreated object; 0
 0x0247eb80,16,render_read_present_pool_counter,render,edge-verified,"full-QWORD locked read/writeback retry; XOR before each attempt; caller adds one. Real AMD64 write cycles retained; non-AMD64 bridge unresolved Synthetic edges pass; no recordings."
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
+0x024846f0,105,engine_fast_small_object_allocator_delete_024846f0,engine,edge-verified,"DLFastSmallObjectAllocator deleting destructor: every class allocator released (0x02a3bc40), class array freed to the backing allocator, operator delete"
+0x02484760,106,engine_fast_small_object_allocator_destroy_02484760,engine,edge-verified,"DLFastSmallObjectAllocator destructor: every class allocator released (0x02a3bc40), class array freed and forgotten"
+0x024847d0,309,engine_fast_small_object_allocator_delete_locked_024847d0,engine,edge-verified,"DLFastSmallObjectAllocator deleting destructor, locked variant: classes released, array freed, PthreadMutex torn down (errors reported, busy kept), operator delete"
+0x02484910,307,engine_fast_small_object_allocator_destroy_locked_02484910,engine,edge-verified,"DLFastSmallObjectAllocator destructor, locked variant: classes released, array freed, PthreadMutex torn down (errors reported, busy kept)"
 0x02484ae0,74,engine_fixed_allocator_release_chunks_02484ae0,engine,edge-verified,"DLFixedAllocator chunk release: left subtree, right subtree, then the node's own chunk back to the backing allocator (vtable +0x70); the tree is left as it was"
 0x02484b30,239,engine_fixed_allocator_initialize_02484b30,engine,edge-verified,DLFixedAllocator set-up: reports a non-power-of-two alignment and room for fewer than two elements; element at least 8 rounded to the alignment; empty chunk list and tree
 0x02484c20,72,engine_fixed_allocator_clear_02484c20,engine,edge-verified,"DLFixedAllocator clear: releases every chunk (0x02484ae0) and forgets them (current, last freed, list, tree); counts untouched"
 0x02484c70,361,engine_fixed_allocator_allocate_02484c70,engine,edge-verified,DLFixedAllocator allocation: front element of the current chunk or the first chunk with room; a new chunk from the backing allocator joins the list and the address tree
 0x02484de0,295,engine_fixed_allocator_free_02484de0,engine,edge-verified,DLFixedAllocator free: chunk from the last-freed hint or the address tree; element to the front of its chunk; emptied chunk released past two chunks of free elements
 0x02484f20,162,engine_fixed_allocator_shrink_02484f20,engine,edge-verified,DLFixedAllocator shrink: every chunk in the with-room list whose elements are all free leaves the list and tree and goes back to the backing allocator
+0x02485100,23,engine_linear_heap_allocate_02485100,engine,edge-verified,"DLLinearHeap bottom allocation: the next size bytes, null when the bottom would pass the top"
+0x02485120,56,engine_linear_heap_allocate_aligned_02485120,engine,edge-verified,DLLinearHeap aligned bottom allocation: bottom padded to the alignment first; null for a non-power-of-two alignment or no room
+0x02485160,38,engine_linear_heap_check_owned_02485160,engine,edge-verified,"DLLinearHeap ownership check: reports an address outside [lowest, highest)"
+0x02485190,64,engine_linear_heap_allocate_top_02485190,engine,edge-verified,"DLLinearHeap top allocation: an 8-aligned block below the top with a 16-byte header (previous top, in use); null when it would pass the bottom"
+0x024851d0,91,engine_linear_heap_allocate_aligned_top_024851d0,engine,edge-verified,DLLinearHeap aligned top allocation: aligned to at least 8; null for a non-power-of-two alignment or no room
+0x02485230,113,engine_linear_heap_free_02485230,engine,edge-verified,DLLinearHeap free: the lowest top block moves the top up past the blocks no longer in use; another block is only marked; outside addresses reported
+0x024852d0,65,engine_linear_heap_free_until_024852d0,engine,edge-verified,"DLLinearHeap FreeUntil: rewinds the bottom to a mark below it; a mark outside [lowest, highest] reported"
+0x02485330,16,engine_linear_heap_contains_02485330,engine,edge-verified,"DLLinearHeap: whether an address is in [lowest, highest)"
+0x02485340,183,engine_linear_heap_walk_02485340,engine,edge-verified,"DLLinearHeap walk step: the bottom used region, the free gap, then each top block up to the end"
 0x02485500,256,engine_regular_heap_initialize_02485500,engine,edge-verified,DLRegularHeap set-up: 64 empty lists; one free block from the first 16-aligned payload to the end block; under 0x40 bytes the heap object is zeroed (memset) and false
 0x02485730,356,engine_regular_heap_allocate_02485730,engine,edge-verified,"DLRegularHeap allocation: first block of the lowest non-empty larger list, else first fit in the own list; rest split off into its list"
 0x024858a0,445,engine_regular_heap_free_024858a0,engine,edge-verified,DLRegularHeap free: range and in-use reports (continue); merge free neighbours (16-byte blocks in no list); merged block to the front of list floor(log2(size))
@@ -344,6 +378,7 @@ address,size,name,system,status,notes
 0x02487380,675,engine_robust_heap_allocate_top_02487380,engine,edge-verified,DLRobustHeap top allocation: the highest-address free block that fits (lists and tree) is carved from its end; the front stays free
 0x02487650,1252,engine_robust_heap_allocate_aligned_top_02487650,engine,edge-verified,DLRobustHeap aligned top allocation: highest block whose top aligned payload fits; front and rest stay free
 0x02487b50,481,engine_robust_heap_free_02487b50,engine,edge-verified,DLRobustHeap free: reports double frees and foreign pointers (then frees anyway); merges with free neighbours and files the result by size
+0x02487dd0,117,engine_segregated_bi_heap_reset_02487dd0,engine,edge-verified,"DLSegregatedBiHeap state reset: clears from the set-up flag to the end of the state (terminator, chains, range, counters)"
 0x02487e50,469,engine_segregated_bi_heap_initialize_02487e50,engine,edge-verified,"DLSegregatedBiHeap set-up: 16-aligned range, inline descriptor allocator (0x66 per chunk), terminator at the limit, one free block; no descriptor tears the allocator down and fails"
 0x02488030,677,engine_segregated_bi_heap_allocate_bottom_02488030,engine,edge-verified,DLSegregatedBiHeap bottom allocation: first free block (address order) holding the 16-rounded size aligned; split rest/front via new descriptors; to the bottom chain
 0x024882f0,815,engine_segregated_bi_heap_allocate_top_024882f0,engine,edge-verified,"DLSegregatedBiHeap top allocation: last free block (address order) holding the 16-rounded size aligned; a new descriptor takes its highest aligned place, the gap above stays free; to the top chain"
@@ -358,6 +393,12 @@ address,size,name,system,status,notes
 0x02489d20,672,engine_segregated_regular_heap_allocate_top_02489d20,engine,edge-verified,DLSegregatedRegularHeap top allocation: highest-address fitting free block; the allocation takes its end; the front stays free
 0x02489fc0,1081,engine_segregated_regular_heap_allocate_aligned_top_02489fc0,engine,edge-verified,DLSegregatedRegularHeap aligned top allocation: highest-address block holding the size aligned; placed at the highest aligned fit; front and tail stay free
 0x0248a400,688,engine_segregated_regular_heap_free_0248a400,engine,edge-verified,DLSegregatedRegularHeap free: hash-table lookup (unknown address reported); merges with free neighbours; to the front of its class list
+0x0248a9f0,159,engine_small_object_allocator_delete_0248a9f0,engine,edge-verified,"DLSmallObjectAllocator deleting destructor: every class emptied (chunks released and forgotten), class array freed, operator delete"
+0x0248aa90,160,engine_small_object_allocator_destroy_0248aa90,engine,edge-verified,"DLSmallObjectAllocator destructor: every class emptied (chunks released and forgotten), class array freed and forgotten"
+0x0248ab30,363,engine_small_object_allocator_delete_locked_0248ab30,engine,edge-verified,"DLSmallObjectAllocator deleting destructor, locked variant: classes emptied, array freed, PthreadMutex torn down (errors reported, busy kept), operator delete"
+0x0248adc0,528,engine_thread_construct_0248adc0,engine,edge-verified,"DLThread constructor (default stack): start mutex created and locked, condition signal, name (unnamed when null/empty), thread created; failures reported"
+0x0248afe0,540,engine_thread_construct_with_affinity_0248afe0,engine,edge-verified,DLThread constructor with stack size and core mask: same members; thread created with the mask; failures reported
+0x0248b200,532,engine_thread_construct_sized_0248b200,engine,edge-verified,DLThread constructor with a stack size: same members; failures reported
 0x024bd150,216,frame_timing_job_take_result,frame_timing,verified,"Job handle result: mode 0 polls (null if not done); 2 takes; others wait 1 ms at a time; bumps the job's holder count under the job lock"
 0x024bd930,249,loading_resource_info_release_024bd930,loading,edge-verified,DLResourceInfo drop reference: last one sets releasing once (shared lock); manager release; cancel pending requests from the stream queue
 0x024bdd40,36,frame_timing_job_wait,frame_timing,edge-verified,"Poll a job's state until finished (2); sleeping 1 ms in the kernel between polls"
@@ -382,7 +423,10 @@ address,size,name,system,status,notes
 0x027ec640,583,engine_scaleform_heap_bitset_mark_027ec640,engine,edge-verified,Scaleform page bitset: mark an allocated block (2-bit codes: 1; 2; 3+len-3; 3 3 + 6-bit len-6; 3 3 3 + 32-bit word); last unit 1
 0x027ec890,171,engine_scaleform_heap_bitset_units_027ec890,engine,edge-verified,Scaleform page bitset: read an allocated block's length from its first codes
 0x02a2aca0,180,loading_path_token_next_02a2aca0,loading,edge-verified,wide path token scanner: skip delimiters (wcschr); return length and start of the next token; cursor moves to the delimiter after it
+0x02a3ae00,394,engine_semaphore_wait_02a3ae00,engine,edge-verified,"DLSemaphore wait for one unit, forever or up to a timeout; -3 on ETIMEDOUT; ESRCH..EINVAL report chains, unknown errors reported; 0"
+0x02a3b0d0,122,engine_semaphore_signal_02a3b0d0,engine,edge-verified,DLSemaphore signal: EINVAL ignored; ESRCH and other errors reported; 0
 0x02a3baa0,378,engine_fast_fixed_allocator_initialize_02a3baa0,engine,edge-verified,"DLFastFixedAllocator set-up: chunk size rounded up to a power of two, chunks aligned to it; blocks rounded to the alignment (at least 8); reports bad sizes and alignment"
+0x02a3bc40,173,engine_fast_fixed_allocator_release_02a3bc40,engine,edge-verified,"DLFastFixedAllocator destructor body: every chunk of both chunk lists, then the spare chunk, freed to the backing allocator"
 0x02a44140,59,engine_wide_string_destroy,engine,edge-verified,WideString destructor; unsigned capacity >=8 frees even null; ignores owns; callback before capacity and size reset and two-byte terminator
 0x02a698e0,654,loading_load_queue_request_02a698e0,loading,edge-verified,DLResourceLoadEventQueue request (kind 0): validity; manager info or report -0xf8; info remembers the queue; under the lock append an event with a request copy; handle to the info
 0x02a69b70,340,loading_load_event_array_push_back_02a69b70,loading,edge-verified,resource load event (0x158) push_back: grow 1.5x when full (source inside found again); copy two words; copy-construct the request; queued vtable
@@ -444,6 +488,8 @@ address,size,name,system,status,notes
 0x02e61140,67,frame_timing_time_of_day_us,frame_timing,edge-verified,Time of day in microseconds (64-bit multiply and add wrap); the gettimeofday result is ignored
 0x02e61280,101,frame_timing_time_seed_words,frame_timing,edge-verified,"Four seed words in rax:rdx: 32-bit seconds; microseconds; and both offset by a counter that advances by 2 per call"
 0x02e67d20,80,loading_stdio_close_files,loading,edge-verified,"fclose and clear the FILE pointers at +0x10; +0x8 and +0x0 in that order; skipping null ones"
+0x02fa1640,517,engine_fast_small_object_allocator_construct_02fa1640,engine,edge-verified,"DLFastSmallObjectAllocator constructor: size classes from the largest (rounded to the alignment) down by the step, one DLFastFixedAllocator each; bad sizes reported"
+0x02fa1950,552,engine_fast_small_object_allocator_construct_locked_02fa1950,engine,edge-verified,"DLFastSmallObjectAllocator constructor, locked variant: creates its mutex, then the same size classes"
 0x02fa1e20,872,engine_small_object_allocator_construct_02fa1e20,engine,edge-verified,"DLSmallObjectAllocator constructor: size classes from smallest to largest by the granularity, one checked DLFixedAllocator per class in an array from the backing allocator"
 0x02fa22a0,904,engine_small_object_allocator_construct_locked_02fa22a0,engine,edge-verified,"DLSmallObjectAllocator constructor, locked variant: creates its recursive mutex, then the same size classes"
 0x02fa6af0,2214,render_prepare_resource_descriptor,render,edge-verified,Build the resource descriptor and requirements through ordered original helpers; preserve partial writes on errors and live parameter reads between calls.
