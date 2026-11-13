@@ -731,6 +731,7 @@ render_set_present_last_record_indices,recorded,,16,16,0,0,291c7c22a0fec988,2026
 render_set_present_last_record_indices,edge,,28,28,0,0,291c7c22a0fec988,2026-11-12
 render_set_present_last_record_stencil_compress_disable,recorded,,101,101,0,0,758897980e62c04d,2026-11-12
 render_set_present_last_record_stencil_compress_disable,edge,,28,28,0,0,758897980e62c04d,2026-11-12
+render_set_primitive_id_enable,edge,,103,103,0,0,379384d7c5425964,2026-11-13
 render_set_record_register_enabled,recorded,,50,50,0,0,deea15d098373695,2026-11-12
 render_set_record_register_enabled,edge,,28,28,0,0,deea15d098373695,2026-11-12
 render_set_record_register_range,recorded,,82,82,0,0,ac8358cf6d557f69,2026-11-12
