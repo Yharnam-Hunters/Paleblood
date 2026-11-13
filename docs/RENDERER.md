@@ -836,7 +836,18 @@ Instead:
         and the executor runs the dispatch with `vkCmdDispatchIndirect` on the guest memory
         buffer, so the GPU reads the three workgroup counts at the base plus the offset when the
         dispatch runs, after the work before it (which may have written them). Drawn targets over
-        those 12 bytes are written back first. **Indirect draws:** `0x014744d0` (command buffer,
+        those 12 bytes are written back first. **Each queue keeps its own compute state** (found in
+        Iosefka's Clinic, 13 November 2026): the game's compute-queue buffers (each an indirect
+        buffer of a ring that `sceGnmDingDong` completes) dispatch again without binding the shader
+        their queue bound last, so a single compute state shared by all queues ran the shader another
+        queue had bound since on their user data, a stop that came and went with the threads' timing
+        ("the compute shader at 0x20d1ceb800 reads an image of type 0", two buffer descriptors of
+        another shader in its image's place). Each queue of the GPU keeps its own registers, and
+        shadPS4 keeps a compute program state for each mapped queue (`liverpool.h`, `cs_state`; facts
+        only). The renderer passes each submission's queue (the graphics queue, or the compute
+        queue's id), and the executor keeps the compute shader, its user data and the indirect
+        arguments' base for each queue (`rt_executor_select_queue`); the rest of the state is the
+        graphics queue's. **Indirect draws:** `0x014744d0` (command buffer,
         data offset, stage, base-vertex SGPR, start-instance SGPR) writes `DRAW_INDIRECT`. The GPU
         reads four words at the base plus the offset: vertices per instance, instances, start vertex
         and start instance. The start vertex and instance reach the shader only through the named

@@ -3256,6 +3256,10 @@ int main(void)
         rt_render_forget(), rt_executor_reset(x);
         CHECK(rt_render_record_dispatch(COMPUTE, 0x30, one, error, sizeof error) == 0);
         CHECK(rt_executor_run(x, COMPUTE, 0x40, error, sizeof error) == -1 && strstr(error, "without a compute shader"));
+        /* the queues (rt_executor_select_queue): the graphics queue and the compute queues' ids, no more */
+        CHECK(rt_executor_select_queue(x, RT_EXECUTOR_QUEUES - 1, error, sizeof error) == 0);
+        CHECK(rt_executor_select_queue(x, RT_EXECUTOR_QUEUES, error, sizeof error) == -1 && strstr(error, "calls from queue 65"));
+        CHECK(rt_executor_select_queue(x, RT_EXECUTOR_GRAPHICS_QUEUE, error, sizeof error) == 0);
 
         enum { GROUPS_CODE = 0x3400, GROUPS_OUTPUT = 0x24000, GROUPS = 2 * 3 * 4 };
         memcpy((void *)(uintptr_t)at(GROUPS_CODE), workgroup_indexes, sizeof workgroup_indexes);
