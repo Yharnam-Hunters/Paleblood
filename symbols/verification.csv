@@ -290,7 +290,6 @@ loading_stream_event_array_reallocate_02a6f140,edge,,11,11,0,0,f38fa930120e7ce2,
 loading_stream_handle_construct_02a70a90,edge,,4,4,0,0,5544a37ba3f01f3e,2026-11-12
 loading_stream_queue_remove_02a6d8e0,edge,,12,12,0,0,d6c4fc8316a3e4b2,2026-11-12
 loading_stream_queue_request_02a6cd90,edge,,11,11,0,0,5544a37ba3f01f3e,2026-11-12
-loading_transfer_task_cancel_024dd8a0,edge,,20,20,0,0,1b1d2b121f24a443,2026-11-12
 loading_transfer_task_check_close_024ddf20,edge,,32,32,0,0,8c6edc4f16408e9b,2026-11-12
 loading_transfer_task_check_read_024dde50,edge,,29,29,0,0,8c6edc4f16408e9b,2026-11-12
 loading_transfer_task_initialize_024dd540,edge,,17,17,0,0,8c6edc4f16408e9b,2026-11-12

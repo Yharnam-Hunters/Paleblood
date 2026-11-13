@@ -305,7 +305,6 @@ address,size,name,system,status,notes
 0x024d7e50,309,loading_file_task_end_024d7e50,loading,edge-verified,FileTransferTask end (once): manager hands over the info under its lock; completed -> info loaded + queue reports it; else info flag cleared
 0x024d8210,605,loading_file_task_prepare_024d8210,loading,edge-verified,FileTransferTask read buffer: free the old one; small 0x2c buffer inside the task or allocate read size (manager allow/release callbacks)
 0x024dd540,487,loading_transfer_task_initialize_024dd540,loading,edge-verified,TransferTask initialize: clear state; keep manager/info/word; heap by disk device location; claim info; ready
-0x024dd8a0,40,loading_transfer_task_cancel_024dd8a0,loading,edge-verified,TransferTask cancel: unless completed (bit 4) set cancel bit 0 (and 1) atomically
 0x024dde50,200,loading_transfer_task_check_read_024dde50,loading,edge-verified,TransferTask read step: submitted -> reading or abort; open errors 0x10/0x11/0x12 abort; else fail code 4
 0x024ddf20,190,loading_transfer_task_check_close_024ddf20,loading,edge-verified,TransferTask close step: free read object; closed and not cancelled -> request close; else finish once
 0x024de230,116,loading_memory_stream_read_024de230,loading,edge-verified,VirtualMemoryInputStream read: -1 if not open; min(count; left) cut to 32 bits; copy and advance position and +0x20

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-// Loading: a file transfer task's read buffer (its prepare), its end and reset, and the transfer
-// task's cancel (structs in transfer_task.h).
+// Loading: a file transfer task's read buffer (its prepare), its end and its reset (structs in
+// transfer_task.h).
 //
 // loading_file_task_prepare_024d8210 (0x024d8210), run by the file task's start (0x024d7460):
 // first frees a buffer left from an earlier read (an owned one through its allocator, and the
@@ -26,9 +26,6 @@
 // unless it has ended or has no info, clears the words +0x08..+0x53 and +0x58, destroys and frees
 // (through the given allocator) every object in its chain, and clears the chain, the request's
 // heap word and the state. Always true.
-//
-// loading_transfer_task_cancel_024dd8a0 (0x024dd8a0): unless the task completed (cancel bit 4),
-// sets cancel bit 0, and bit 1 when asked (the argument byte times 2), atomically. Always true.
 #include <cstdint>
 
 #include "../engine/engine.h"
@@ -42,8 +39,7 @@ using loading::resource_queue::ResourceManager;
 namespace {
 
 // The task's cancel bits (+0x160) besides cancel_requested.
-constexpr uint32_t cancel_with_flag = 0x2;   // the cancel's argument
-constexpr uint32_t task_completed = 0x4;     // no cancel is taken after this
+constexpr uint32_t task_completed = 0x4;   // no cancel is taken after this
 
 // More result flags (+0x158).
 constexpr uint16_t result_ended = 0x0200;
@@ -185,17 +181,5 @@ extern "C" bool bb_loading_file_task_reset_024d6850(FileTransferTask *file_task,
     file_task->chain = nullptr;
     file_task->request.word_0x28 = 0;
     task->state = state_idle;
-    return true;
-}
-
-extern "C" bool bb_loading_transfer_task_cancel_024dd8a0(TransferTask *task, uint8_t with_flag)
-{
-    // Callers pass a bool; the original shifts the whole byte into place.
-    const uint32_t bits = cancel_requested | uint32_t{with_flag} * cancel_with_flag;
-    auto *flags = reinterpret_cast<uint32_t *>(&task->cancel_flags);
-    uint32_t current = __atomic_load_n(flags, __ATOMIC_RELAXED);
-    while (!(current & task_completed) &&
-           !__atomic_compare_exchange_n(flags, &current, current | bits, false, __ATOMIC_SEQ_CST, __ATOMIC_RELAXED)) {
-    }
     return true;
 }

@@ -304,7 +304,6 @@ address,replacement,system,returns
 0x024d7e50,bb_loading_file_task_end_024d7e50,loading,void
 0x024d8210,bb_loading_file_task_prepare_024d8210,loading,i8
 0x024dd540,bb_loading_transfer_task_initialize_024dd540,loading,i8
-0x024dd8a0,bb_loading_transfer_task_cancel_024dd8a0,loading,i8
 0x024dde50,bb_loading_transfer_task_check_read_024dde50,loading,i8
 0x024ddf20,bb_loading_transfer_task_check_close_024ddf20,loading,i8
 0x024de230,bb_loading_memory_stream_read_024de230,loading,i32

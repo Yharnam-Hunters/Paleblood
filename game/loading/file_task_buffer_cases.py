@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Edge cases for the file task's buffer, end, reset and the cancel (game/loading/file_task_buffer.cpp),
-for tools/verify.py run.
+"""Edge cases for the file task's buffer, end and reset (game/loading/file_task_buffer.cpp), for
+tools/verify.py run.
 
 usage: file_task_buffer_cases.py OUT_DIR MODE
 
@@ -18,14 +18,13 @@ Every case gives a file task (0x338 bytes, filled with a pattern, then the field
   assertion are scripted stubs.
 - reset (0x024d6850): the info and result flags (the end slot, vtable +0x58, is a stub) and a
   chain of 0 to 3 objects, each destroyed by a stub and freed through the given allocator's stub.
-- cancel (0x024dd8a0): the cancel bits and the argument.
 """
 import json
 import os
 import struct
 import sys
 
-ADDRESSES = {'prepare': '0x024d8210', 'end': '0x024d7e50', 'reset': '0x024d6850', 'cancel': '0x024dd8a0'}
+ADDRESSES = {'prepare': '0x024d8210', 'end': '0x024d7e50', 'reset': '0x024d6850'}
 FATAL, CHECK = '0x024b55b0', '0x02a34320'
 REMOVE, REPORT = '0x024c3260', '0x02a692d0'
 ALLOCATE, FREE, ALLOWED, RELEASED = '0x00500200', '0x00500240', '0x00500280', '0x005002c0'
@@ -274,29 +273,12 @@ def reset_cases():
     return out
 
 
-def cancel(cid, bits, with_flag):
-    c = Case('cancel', cid)
-    put(c.raw['task'], 0x160, '<I', bits)
-    c.args['rsi'] = hex(with_flag)
-    return c
-
-
-def cancel_cases():
-    out = []
-    for bits in (0, 1, 2, 3, 4, 5, 0xfffffffb, 0xffffffff, 0x100):
-        for with_flag in (0, 1):
-            out.append(cancel(f'bits{bits:x}_flag{with_flag}', bits, with_flag))
-    out.append(cancel('flag_upper_bits', 0, 0x1fe))   # only the low byte is the argument
-    out.append(cancel('flag_upper_bits_set', 0, 0x301))
-    return out
-
-
 def main():
     if len(sys.argv) != 3 or sys.argv[2] not in ADDRESSES:
         sys.exit(__doc__)
     out = sys.argv[1]
     os.makedirs(out, exist_ok=True)
-    generated = {'prepare': prepare_cases, 'end': end_cases, 'reset': reset_cases, 'cancel': cancel_cases}[sys.argv[2]]()
+    generated = {'prepare': prepare_cases, 'end': end_cases, 'reset': reset_cases}[sys.argv[2]]()
     for c in generated:
         with open(os.path.join(out, f'{c.cid}.json'), 'w') as f:
             json.dump(c.json(), f, indent=1)
