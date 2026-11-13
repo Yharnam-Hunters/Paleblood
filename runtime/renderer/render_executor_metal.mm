@@ -634,7 +634,7 @@ static int pixel_resources(rt_executor *x, const MetalState &state, MetalPixelRe
         out.images[i] = {images[i].origin,
             descriptor.type == RT_IMAGE_1D || descriptor.type == RT_IMAGE_1D_ARRAY ? GCN_IMAGE_1D : GCN_IMAGE_2D,
             descriptor.type == RT_IMAGE_1D_ARRAY || descriptor.type == RT_IMAGE_2D_ARRAY,format->type,format->components,1,0,
-            descriptor.swizzle != DST_SEL_IDENTITY ? descriptor.swizzle : 0u}; /* for the texel a load outside the image reads */
+            descriptor.swizzle != DST_SEL_IDENTITY ? descriptor.swizzle : 0u, 0}; /* DST_SEL: for the texel a load outside the image reads */
         if (!(out.textures[i] = image_for(x,words,descriptor,*format,error,size))) return -1;
     }
     return 0;

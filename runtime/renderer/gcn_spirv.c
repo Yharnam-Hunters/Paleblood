@@ -3464,6 +3464,14 @@ static void sampled_load(translator *t, const gcn_image_binding *b, uint32_t var
                          uint32_t level, uint32_t texel_type, unsigned dmask, unsigned vdata)
 {
     enum { GLSL_U_MIN = 38 };
+    if (b->null_descriptor) { /* every load reads 0, as from a VK_EXT_robustness2 null descriptor (no range to check) */
+        const uint32_t merge = begin_if(t, exec_bit(t));
+        unsigned next = vdata;
+        for (unsigned i = 0; i < 4; i++)
+            if (dmask >> i & 1) write_vgpr(t, next++, konst(t, 0));
+        end_if(t, merge);
+        return;
+    }
     const uint32_t image = load(t, image_type(t, b), variable);
     const uint32_t uvec = coordinates == 1 ? t_uint(t) : spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_uint(t), coordinates}, 2);
     const uint32_t bvec = coordinates == 1 ? t_bool(t) : spirv_global(&t->m, SPV_OP_TYPE_VECTOR, (const uint32_t[]){t_bool(t), coordinates}, 2);
