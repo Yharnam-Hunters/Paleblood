@@ -58,6 +58,9 @@ will be labeled as observations until their implementation is traced.
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
 | `0x0135d810` | 81 | `ai_debug_draw_axes_0135d810` | edge-verified | Takes the renderer lock (+0x28 slot 3, wait forever), calls renderer slot 5, draws the axis frame into the current slot (0x0135ec80), then tail-calls the lock release (slot 5) |
+| `0x016243a0` | 74 | `ai_character_negated_third_column` | edge-verified | AI view slot +0x58: the character transform's third column negated (w 0), zero vector without a character |
+| `0x01624760` | 35 | `ai_character_id` | edge-verified | AI view slot +0x90: the character's id through its vtable slot +0x88, -1 without a character |
+| `0x01624e50` | 109 | `ai_character_flag_module_set` | edge-verified | AI view slot +0x128: the owner's flag module (+0x30) is enabled (+0x384) and flag +0x37f or +0x380 is set |
 | `0x01657ac0` | 91 | `ai_func_get_random_float` | edge-verified | AI script binding GetRandam_Float: min + (max - min) * 20-bit random fraction |
 | `0x01657b20` | 90 | `ai_func_get_random_int` | edge-verified | AI script binding GetRandam_Int: integer in [min, max] from a 20-bit random fraction (span wraps, truncated) |
 | `0x01657b80` | 19 | `ai_func_set_timer` | edge-verified | AI script binding SetTimer: think timer 0..15 (index checked signed, as the original) |
@@ -81,6 +84,12 @@ will be labeled as observations until their implementation is traced.
 | `0x0167f840` | 32 | `ai_goal_func_is_finish_timer` | edge-verified | AI goal script binding IsFinishTimer: goal timer <= 0 (false above index 15) |
 | `0x0167f860` | 20 | `ai_goal_func_is_finish_turn_timer` | edge-verified | AI goal script binding IsFinishTimerForTurnBeforeAtk: the turn-before-attack timer <= 0 |
 | `0x0167f880` | 26 | `ai_goal_func_get_number` | edge-verified | AI goal script binding GetNumber: goal script number 0..63, 0.0 above |
+| `0x0169acf0` | 114 | `ai_character_has_effect_state` | edge-verified | AI view slot +0x30: an active effect-list entry's row sets state 0x27, 0xb0 or 0xb1 (row bits 0x162:6, 0x162:7, 0x163:0) |
+| `0x0169ad80` | 134 | `ai_character_gather_effect_states` | edge-verified | AI view slot +0x40: ORs states 0x27/0xb0/0xb1 of every active effect-list entry into three bytes |
+| `0x0169af00` | 126 | `ai_character_ready_check` | edge-verified | AI view slot +0x68: module +0x78 owner: mode word == 1 when queries 0x1a8 yes / 0x1c0 no, else AI state slot != 0xff |
+| `0x0169fad0` | 155 | `ai_character_link_ids` | edge-verified | The two ids of the character's link (vtable +0x108, +0x1f8) when its partner's link module is active and unblocked; else -1, -1 |
+| `0x016b30a0` | 368 | `ai_target_list_mark_main_matches` | edge-verified | Target list: marks entries matching the highest-priority entry (same character id, or place within 0.5 m); 8 s recheck timer |
+| `0x01708410` | 168 | `ai_pending_event_fire` | edge-verified | Pending AI event: character by entity id has this event id pending: post kind 0x1d, clear it; a failed lookup clears the cached index |
 | `0x021d6ea0` | 199 | `ai_draw_world_021d6ea0` | edge-verified | No-op without the view renderer (+0x8); sets slot state +0x18=2 +0x1c=0 +0x70=3 +0x78=16.0 (dirty 4/8/0x80, +9 bit 1) when they differ, then 0x021d5960 per section of world+0x50 list |
 | `0x0222bc10` | 2693 | `ai_hk_frame_update_0222bc10` | verified | SprjHkAiManager per-frame update: steps the AI world by 1/30 s (the 60 FPS patches: 1/60); AI debug display and drawing |
 | `0x02232a60` | 104 | `ai_draw_layer_color_02232a60` | edge-verified | Draw colour callback: default (0x04d17e50) when the requested mask is 0, else the mean of palette 0x04b35040 colours for bits 0-19 set in both masks, alpha 1 |
