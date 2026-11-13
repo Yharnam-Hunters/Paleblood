@@ -491,6 +491,17 @@ Instead:
        (`taken_count` in `render_calls.c`, with the reader of `runtime/render_placed.h`). A buffer
        built and never submitted is not checked this way: its calls stay until a new call starts
        it over.
+     - **The record at the game's scale** (Iosefka's Clinic, 13 November 2026): the game carves its
+       command buffers from rings, so the record sees new buffer addresses all the time, and the
+       runtime's GNM calls place thousands of shader binds a frame. Searching every buffer ever seen
+       and compacting one array of placed binds on each call took about a fifth of the CPU samples
+       of a clinic profile, on the game's submitting threads (the frame rate, bound by the
+       renderer's own thread, did not change).
+       The lists are found by a hash of the buffer's address, and a list not used for 65,536
+       submissions (hundreds of frames) is forgotten. Placed binds wait in a ring of 16,384, each
+       linked into a bucket by its address's 4 KiB page, so that a submission looks only at the
+       pages of its buffer and merges their binds into the list in one pass, and a bind placed
+       again at an address finds the older one in its page alone.
    - **How the hooks attach:** the library's functions are being decompiled like the rest of the
      game, as replacements verified to write exactly the original packets. The renderer leaves
      those packets alone, so verification still holds. Each of these replacements also makes one

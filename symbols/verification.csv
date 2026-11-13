@@ -312,6 +312,12 @@ kernel_mutex_create,edge,,26,26,0,0,d1c4e643de20cba8,2026-11-12
 kernel_mutex_destroy,edge,,17,17,0,0,2916d74498255d53,2026-11-03
 kernel_mutex_lock,edge,,20,20,0,0,a424c87376084e89,2026-11-03
 kernel_mutex_unlock,edge,,20,20,0,0,202db4e3da7f3970,2026-11-03
+kernel_read_write_lock_construct,recorded,,1,1,0,0,ba901af962058ba3,2026-11-13
+kernel_read_write_lock_initialize,recorded,,6,6,0,0,ba901af962058ba3,2026-11-13
+kernel_read_write_lock_read,recorded,,97,97,0,0,ba901af962058ba3,2026-11-13
+kernel_read_write_lock_unlock_0247f540,recorded,,38,38,0,0,ba901af962058ba3,2026-11-13
+kernel_read_write_lock_unlock_0247f710,recorded,,2,2,0,0,ba901af962058ba3,2026-11-13
+kernel_read_write_lock_write,recorded,,54,54,0,0,ba901af962058ba3,2026-11-13
 kernel_semaphore_create,recorded,,28,28,0,0,6eb580cbe2062e91,2026-11-12
 kernel_semaphore_create,edge,,22,22,0,0,6eb580cbe2062e91,2026-11-12
 kernel_semaphore_destroy,edge,,22,22,0,0,2c49f7b010f80cfb,2026-11-03
@@ -321,11 +327,14 @@ kernel_semaphore_wait,recorded,,366,366,0,0,ce742838186d2510,2026-11-12
 kernel_semaphore_wait,edge,,22,22,0,0,ce742838186d2510,2026-11-12
 kernel_thread_self,recorded,,17,17,0,0,75626151a8bb5eab,2026-11-12
 kernel_thread_self,edge,,7,7,0,0,75626151a8bb5eab,2026-11-12
+loading_disk_device_find_named_device_0246e630,recorded,,50,50,0,0,f47958c4ce5aa8a3,2026-11-12
 loading_disk_device_find_named_device_0246e630,edge,,19,19,0,0,f47958c4ce5aa8a3,2026-11-12
 loading_disk_device_open_0246d550,edge,,19,19,0,0,f47958c4ce5aa8a3,2026-11-12
 loading_disk_device_open_on_device_0246e810,edge,,11,11,0,0,f47958c4ce5aa8a3,2026-11-12
 loading_disk_device_open_on_unnamed_devices_0246e9a0,edge,,12,12,0,0,f47958c4ce5aa8a3,2026-11-12
+loading_disk_device_resolve_alias_0246d180,recorded,,41,41,0,0,03b21b886c54a231,2026-11-12
 loading_disk_device_resolve_alias_0246d180,edge,,23,23,0,0,03b21b886c54a231,2026-11-12
+loading_disk_device_resolve_root_0246cf50,recorded,,55,55,0,0,03b21b886c54a231,2026-11-12
 loading_disk_device_resolve_root_0246cf50,edge,,23,23,0,0,03b21b886c54a231,2026-11-12
 loading_file_load_slots_construct_02a6b520,edge,,3,3,0,0,6edc74fb72ef0aa6,2026-11-12
 loading_file_task_check_read_024d6e20,edge,,50,50,0,0,54d5332b44865286,2026-11-12
@@ -351,6 +360,7 @@ loading_load_request_copy_024be3b0,edge,,10,10,0,0,29a3040e4b0ff0c6,2026-11-12
 loading_memory_stream_read_024de230,edge,,12,12,0,0,0de848db403b0c24,2026-11-12
 loading_mount_table_push_back_02470d50,edge,,11,11,0,0,56c29f3bfad4ccf6,2026-11-12
 loading_mount_table_reallocate_024716d0,edge,,9,9,0,0,56c29f3bfad4ccf6,2026-11-12
+loading_path_token_next_02a2aca0,recorded,,58,58,0,0,d7482430d506fc6c,2026-11-12
 loading_path_token_next_02a2aca0,edge,,18,18,0,0,d7482430d506fc6c,2026-11-12
 loading_resource_info_release_024bd930,edge,,10,10,0,0,2853661c9a11416e,2026-11-12
 loading_resource_manager_release_024c1530,edge,,11,11,0,0,51bdd79bf1d6878d,2026-11-12
