@@ -1477,6 +1477,38 @@ static void metadata_store_clears(rt_executor *x)
     }
 }
 
+/* PA_CL_CLIP_CNTL (0xa204): the triangle with its corners at z = -0.5 (w 1) lies wholly in front of the near
+   plane. With the register at its reset value (or set to 0) it is clipped away and nothing is drawn; with
+   ZCLIP_NEAR_DISABLE and ZCLIP_FAR_DISABLE (bits 26 and 27, as a shadow pass sets them) it is not clipped, its
+   depth is clamped to the viewport's range, and the whole triangle is drawn; CLIP_DISABLE (bit 16) alone does
+   the same. DX_RASTERIZATION_KILL (bit 22) stops by name. */
+static void clip_control(rt_executor *x)
+{
+    enum { CLIP_BUFFER = 0xc0f40000, CLIPPED = 0x3400000, UNCLIPPED = 0x3440000, CLIP_OFF = 0x3480000, KILLED = 0x34c0000, Z = 2, PA_CL_CLIP_CNTL = 0xa204 };
+    enum { CLIP_DISABLE = 1u << 16, DX_RASTERIZATION_KILL = 1u << 22, ZCLIP_NEAR_DISABLE = 1u << 26, ZCLIP_FAR_DISABLE = 1u << 27 };
+    char error[200] = "";
+    float *corners = (float *)(uintptr_t)at(CORNERS);
+    for (int i = 0; i < 3; i++) corners[i * 4 + Z] = -0.5f;
+    const uint32_t clipping[][2] = {{PA_CL_CLIP_CNTL, 0}};
+    int drawn = run_counted(x, CLIP_BUFFER, at(CLIPPED), clipping, 1, 3, error, sizeof error);
+    if (drawn) fprintf(stderr, "clipped: %s\n", error);
+    CHECK(drawn == 0);
+    CHECK(nothing_drawn(x, at(CLIPPED)));
+    const uint32_t no_zclip[][2] = {{PA_CL_CLIP_CNTL, ZCLIP_NEAR_DISABLE | ZCLIP_FAR_DISABLE}};
+    drawn = run_counted(x, CLIP_BUFFER, at(UNCLIPPED), no_zclip, 1, 3, error, sizeof error);
+    if (drawn) fprintf(stderr, "z clipping off: %s\n", error);
+    CHECK(drawn == 0);
+    check_triangle(x, at(UNCLIPPED));
+    const uint32_t clip_off[][2] = {{PA_CL_CLIP_CNTL, CLIP_DISABLE}};
+    drawn = run_counted(x, CLIP_BUFFER, at(CLIP_OFF), clip_off, 1, 3, error, sizeof error);
+    if (drawn) fprintf(stderr, "clipping off: %s\n", error);
+    CHECK(drawn == 0);
+    check_triangle(x, at(CLIP_OFF));
+    const uint32_t killed[][2] = {{PA_CL_CLIP_CNTL, DX_RASTERIZATION_KILL}};
+    CHECK(run_counted(x, CLIP_BUFFER, at(KILLED), killed, 1, 3, error, sizeof error) == -1 && strstr(error, "rasterization killed"));
+    for (int i = 0; i < 3; i++) corners[i * 4 + Z] = 0.0f;
+}
+
 /* Depth and stencil without a depth buffer, and triangle strips:
    - with the depth target switched off (DB_Z_INFO and DB_STENCIL_INFO 0, as the library's setter
      writes for no target), depth and stencil tests draw as if off; Z_WRITE_ENABLE alone writes nothing
@@ -2869,6 +2901,7 @@ int main(void)
     const uint32_t line_strips[][2] = {{0xc242, 5}};
     CHECK(run_with_registers(x, FOURTH, at(TARGET), line_strips, 1, 0, error, sizeof error) == -1 && strstr(error, "primitive type 5"));
     depth_and_strips(x);
+    clip_control(x);
     multiple_targets(x);
     compute_cleared_target(x);
     null_image_descriptor(x);
