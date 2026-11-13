@@ -33,6 +33,12 @@ Instead:
    - `--display-capture DIR` writes every presented frame as a PPM image, for tests and for
      looking at a run.
    - `tools/boot.py` passes both options on. The default, `none`, leaves boots as they were.
+     Its `--clip FILE` turns a range of presented frames into a silent full-resolution clip
+     (WebM or MP4, via ffmpeg) for local review ([ENEMY_OVERLAY.md](ENEMY_OVERLAY.md),
+     "Recording clips").
+   - A debug overlay that draws enemy hit shapes, detection cones, AI states and target lines over
+     the frame is designed in [ENEMY_OVERLAY.md](ENEMY_OVERLAY.md); it waits for the enemy AI
+     structures to be decompiled.
    - Today the frames are black: nothing draws into them yet. macOS gets a Metal window next
      (building on the offscreen Metal unit of #213).
 2. **Shader translator** (in progress).
