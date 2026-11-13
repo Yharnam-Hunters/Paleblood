@@ -1105,7 +1105,7 @@ extern "C" int rt_executor_run_calls(rt_executor *x, const rt_render_call *calls
                         if (set_register(state, call.u.reg.address, call.u.reg.value))
                             return failed(error, error_size, "register %#x: the executor does not interpret it yet", call.u.reg.address);
                         break;
-                    case RT_CALL_INSTANCES: state.instances = call.u.instances.count; break;
+                    case RT_CALL_INSTANCES: state.instances = call.u.instances.count ? call.u.instances.count : 1; break; /* 0 is one instance (VGT_NUM_INSTANCES) */
                     case RT_CALL_INDEX_TYPE: state.index_type = call.u.index_type.type; state.index_type_set = true; break;
                     case RT_CALL_INDEX_BASE:
                         state.index_base = call.u.index_base.address; state.index_base_set = true; state.index_base_current = true; break;

@@ -22,6 +22,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <initializer_list>
 
 #include "runtime/original.h"
 
@@ -53,6 +54,13 @@ constexpr uint32_t unit_code_mask = 3;
 constexpr uint64_t units_per_bitset_word = 16;
 constexpr uint64_t bitset_word_shift = 4;       // units to bitset words
 constexpr uint64_t unit_code_shift_mask = 0x1e; // shifts stay inside the 32-bit word
+constexpr uint64_t long_length_offset = 0x25;   // see long_length_word
+constexpr uint64_t long_length_shift = 5;
+// A block's length code takes up to its first five units (scaleform_heap_bitset_mark.cpp).
+constexpr uint64_t second_code_unit = 1;
+constexpr uint64_t third_code_unit = 2;
+constexpr uint64_t fourth_code_unit = 3;
+constexpr uint64_t fifth_code_unit = 4;
 
 // The page's descriptor (0x20 bytes, in the arrays the page table points at).
 struct MemoryHeap;
@@ -163,9 +171,10 @@ static_assert(offsetof(LargeBlockNode, children) == 0x8 && offsetof(LargeBlockNo
 constexpr uintptr_t node_flag_bits = 3;
 
 // The bitset's own functions: mark `units` units from `unit` as one allocated block, and read the
-// length of the allocated block that starts at `unit`.
+// length of the allocated block that starts at `unit` (scaleform_heap_bitset_mark.cpp,
+// scaleform_heap_bitset_units.cpp).
 RT_ORIGINAL(0x027ec640, bitset_mark_allocated, void(uint32_t *bitset, uint64_t unit, uint64_t units));
-RT_ORIGINAL(0x027ec890, bitset_allocated_units, uint64_t(const uint32_t *bitset, uint64_t unit));
+RT_ORIGINAL(0x027ec890, bitset_allocated_units, uint32_t(const uint32_t *bitset, uint64_t unit));
 
 // The page descriptor a header names, if the header is one and `address` is inside that page.
 inline Page *page_from_header(const PageHeader *header, uintptr_t address)
@@ -220,6 +229,12 @@ inline uint64_t bin_bit(uint64_t bin)
     return uint64_t{1} << (bin & bin_shift_mask);
 }
 
+// The lowest set bit's index in a non-empty bin mask.
+inline uint64_t lowest_bin(uint64_t mask)
+{
+    return static_cast<uint64_t>(__builtin_ctzll(mask));
+}
+
 // The page of a free block: the pointer it carries when it is long enough, else the lookup (null
 // when the lookup fails; the callers then read through it).
 inline Page *page_of_free_block(const FreeBlock *block)
@@ -260,6 +275,26 @@ inline uint32_t unit_code_bits_at(uint64_t unit)
     return unit_code_mask << ((unit * unit_code_bits) & unit_code_shift_mask);
 }
 
+inline uint32_t unit_code(const uint32_t *bitset, uint64_t unit)
+{
+    return (bitset[unit >> bitset_word_shift] >> ((unit * unit_code_bits) & unit_code_shift_mask)) & unit_code_mask;
+}
+
+// Stores a unit's code (a value wider than two bits spills into the next unit's, as the game's
+// stores do; the marking never passes one).
+inline void set_unit_code(uint32_t *bitset, uint64_t unit, uint32_t code)
+{
+    const uint64_t shift = (unit * unit_code_bits) & unit_code_shift_mask;
+    uint32_t &word = bitset[unit >> bitset_word_shift];
+    word = (word & ~(unit_code_mask << shift)) | (code << shift);
+}
+
+// The word a block longer than 0x25 units keeps its length in (past its first three units).
+inline uint64_t long_length_word(uint64_t unit)
+{
+    return (unit * unit_code_bits + long_length_offset) >> long_length_shift;
+}
+
 inline bool unit_is_free(const uint32_t *bitset, uint64_t unit)
 {
     return (bitset[unit >> bitset_word_shift] & unit_code_bits_at(unit)) == 0;
@@ -294,10 +329,22 @@ inline void write_free_length(FreeBlock *block, uint64_t bytes)
     tail->prev_word = prev_word;
 }
 
-// Puts a free block (its length already written) at the head of its bin.
-inline void push_free(Bins *bins, FreeBlock *block)
+// Writes a free block's length in units into its link words and its last unit (the merge's form:
+// the high nibble's word takes every bit above the low four).
+inline void write_free_units(FreeBlock *block, uint64_t units)
 {
-    const uint64_t bin = bin_of(units_of(block));
+    auto *tail = reinterpret_cast<FreeBlock *>(reinterpret_cast<uintptr_t>(block) + units * unit_bytes - header_bytes);
+    const uint64_t next_word = (units & length_nibble) | (block->next_word & link_mask);
+    block->next_word = next_word;
+    tail->next_word = next_word;
+    const uint64_t prev_word = (units >> length_nibble_bits) | (block->prev_word & link_mask);
+    block->prev_word = prev_word;
+    tail->prev_word = prev_word;
+}
+
+// Puts a free block at the head of a bin.
+inline void push_to_bin(Bins *bins, FreeBlock *block, uint64_t bin)
+{
     FreeBlock *head = bins->heads[bin];
     const uint64_t self = reinterpret_cast<uintptr_t>(block);
     if (head) {
@@ -314,6 +361,12 @@ inline void push_free(Bins *bins, FreeBlock *block)
     bins->mask |= bin_bit(bin);
 }
 
+// Puts a free block (its length already written) at the head of its bin.
+inline void push_free(Bins *bins, FreeBlock *block)
+{
+    push_to_bin(bins, block, bin_of(units_of(block)));
+}
+
 // Makes `bytes` at `address` a free block of the page: length, page pointer, bin, and the bitset
 // ends.
 inline void release_range(Bins *bins, const PageView &view, uintptr_t address, uint64_t bytes)
@@ -325,11 +378,10 @@ inline void release_range(Bins *bins, const PageView &view, uintptr_t address, u
     push_free(bins, block);
 }
 
-// Takes a free block out of its bin. The bin's head moves to the block's previous one, not its
-// next (the order Scaleform's bins keep).
-inline void unlink_free(Bins *bins, FreeBlock *block)
+// Takes a free block out of a bin. The bin's head moves to the block's previous one, not its next
+// (the order Scaleform's bins keep).
+inline void unlink_from_bin(Bins *bins, FreeBlock *block, uint64_t bin)
 {
-    const uint64_t bin = bin_of(units_of(block));
     const uint64_t self = reinterpret_cast<uintptr_t>(block);
     if (reinterpret_cast<uintptr_t>(bins->heads[bin]) == self) {
         const uint64_t previous = link_target(block->prev_word);
@@ -344,6 +396,47 @@ inline void unlink_free(Bins *bins, FreeBlock *block)
     next->prev_word = with_link(next->prev_word, link_target(block->prev_word));
     FreeBlock *prev = link_block(block->prev_word);
     prev->next_word = with_link(prev->next_word, link_target(block->next_word));
+}
+
+// Takes a free block out of the bin of its length.
+inline void unlink_free(Bins *bins, FreeBlock *block)
+{
+    unlink_from_bin(bins, block, bin_of(units_of(block)));
+}
+
+// Adds a page to the bins, taking the page manager's lock; `retry` says whether to try again.
+RT_ORIGINAL(0x0233bbe0, add_page, void(Engine *engine, bool *retry));
+// The same, for a caller that holds the lock.
+RT_ORIGINAL(0x0233bd20, add_page_locked, void(Engine *engine, bool *retry));
+
+// The small allocations' loop (the engine's plain and aligned allocations): `take` allocates
+// `bytes` from the bins and describes the page; when it finds nothing, a page is added and the
+// allocation tried again for as long as that says to retry. A block is counted in its page's headers
+// and in the engine.
+template <typename Take>
+uintptr_t allocate_small_retrying(Engine *engine, uint64_t bytes, AllocationInfo *info, bool locked, Take take)
+{
+    bool retry = false;     // set once; the page functions store it on every call
+    do {
+        PageView view;
+        if (uintptr_t block = take(&view)) {
+            for (PageHeader *header : {view.header_below, view.header_above}) {
+                if (header)
+                    header->block_count += 1;
+            }
+            info->bytes = bytes;
+            info->page = view.page;
+            info->unknown_0x08 = 0;
+            engine->allocation_count += 1;
+            engine->used_bytes += bytes;
+            return block;
+        }
+        if (locked)
+            add_page_locked(engine, &retry);
+        else
+            add_page(engine, &retry);
+    } while (retry);
+    return 0;
 }
 
 }  // namespace engine::scaleform_heap

@@ -61,7 +61,11 @@
    and 32-39 (an even 40-bit address); 0x01475320 (command buffer, count) INDEX_BUFFER_SIZE;
    0x01475270 (command buffer, type) INDEX_TYPE with the type as it is; 0x01474420 (command buffer,
    first, count) DRAW_INDEX_OFFSET_2 with MAX_SIZE = count, INDEX_OFFSET = first, INDEX_COUNT = count and
-   initiator 0, then an event or a NOP.
+   initiator 0, then an event or a NOP. 0x01474360 (command buffer, count, index address) writes
+   DRAW_INDEX_2: the header 0xc0042700 with bit 0 (the predicate) from bit 0 of the command buffer's
+   flags at +0x28, MAX_SIZE = count, INDEX_BASE_LO = the address's low 32 bits with bit 0 cleared,
+   INDEX_BASE_HI = its high 32 bits, INDEX_COUNT = count, DRAW_INITIATOR = 0, then an event or a NOP.
+   YEBIS's indexed draws go through it (its post-processing passes: tone map, glare, depth of field).
    The geometry-shader register writers (from their disassembly): 0x01475a90 (command buffer, item size) writes
    VGT_ESGS_RING_ITEMSIZE (0xa2ab) = the size & 0x7fff; 0x01475af0 (command buffer, a pointer to four 32-bit
    vertex sizes in dwords, one a stream, the most vertices a primitive) writes VGT_GS_VERT_ITEMSIZE to _3
@@ -73,6 +77,7 @@
    The command buffer starts with its begin and holds its cursor at +0x10 (game/render/command_packets.h). */
 #include "runtime/observe_hooks.h"
 #include "runtime/render_observer.h"
+#include "runtime/render_observer_hooks.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -251,6 +256,18 @@ static void index_type(const uint64_t args[RT_OBSERVED_ARGUMENTS])
     rt_observe_index_type(observed_buffer(args), observed_offset(args), (uint32_t)args[ARGUMENT_INDEX_VALUE]);
 }
 
+enum { COMMAND_BUFFER_FLAGS = 0x28, PREDICATE_FLAG = 1, ARGUMENT_INDEX_ADDRESS = 2 };
+enum { DRAW_INDEX_2_HEADER = 0xc0042700u, INDEX_ADDRESS_BIT_0 = 1, DRAW_INITIATOR_DMA = 0 };
+
+static void draw_index(const uint64_t args[RT_OBSERVED_ARGUMENTS])
+{
+    const uint32_t flags = *(const uint32_t *)(uintptr_t)(args[ARGUMENT_COMMAND_BUFFER] + COMMAND_BUFFER_FLAGS);
+    const uint32_t count = (uint32_t)args[ARGUMENT_INDEX_VALUE];
+    const uint64_t address = args[ARGUMENT_INDEX_ADDRESS] & ~(uint64_t)INDEX_ADDRESS_BIT_0; /* INDEX_BASE_LO drops bit 0 */
+    rt_observe_draw_indexed(observed_buffer(args), observed_offset(args), DRAW_INDEX_2_HEADER | (flags & PREDICATE_FLAG), count, address, count,
+                            DRAW_INITIATOR_DMA);
+}
+
 static void draw_index_offset(const uint64_t args[RT_OBSERVED_ARGUMENTS])
 {
     rt_observe_draw_index_offset(observed_buffer(args), observed_offset(args), (uint32_t)args[ARGUMENT_INDEX_VALUE],
@@ -318,6 +335,7 @@ const rt_observe_hook game_observe_hooks[] = {
     {0x014738b0, 246, "render_set_render_target", render_target},
     {0x014739b0, 344, "render_set_depth_render_target", depth_target},
     {0x014742f0, 107, "render_set_indirect_base", indirect_base},
+    {0x01474360, 189, "render_draw_index", draw_index},
     {0x01474420, 176, "render_draw_index_offset", draw_index_offset},
     {0x014744d0, 246, "render_draw_indirect", draw_indirect},
     {0x01474c50, 177, "render_dispatch", dispatch},
