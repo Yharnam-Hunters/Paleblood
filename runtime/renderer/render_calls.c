@@ -221,6 +221,11 @@ typedef struct {
     rt_render_call *calls;
     size_t count, capacity;
     int submitted;                   /* submitted since its last call: the next call starts it over */
+    /* With a reader (runtime/render_placed.h): the first two words of memory at each call's offset when
+       a submission first took it (calls[0..marked)), for a submission of the buffer again with no new
+       calls (taken_count) */
+    uint64_t *marks;
+    size_t marked, marks_capacity;
 } call_list;
 
 static pthread_mutex_t lists_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -561,6 +566,42 @@ int rt_render_record_user_data(uint64_t buffer, uint32_t offset, rt_shader_stage
     return record(buffer, &call, error, error_size);
 }
 
+/* The two words at a call's offset in its buffer (the second only inside the size). Called with lists_lock held. */
+static uint64_t mark_at(uint64_t buffer, uint32_t offset, uint32_t size)
+{
+    const uint64_t second = offset + 8ull <= size ? read_word(buffer + offset + 4) : 0;
+    return read_word(buffer + offset) | second << 32;
+}
+
+/* How many of a list's calls a submission of `size` bytes takes: those before the size. A list taken
+   before and given no call since is either the same commands submitted again, or a new use of the
+   memory in a layout nothing recorded (the game writes some buffers from packets alone, DMA and
+   memory writes): with a reader, it is taken again only where the memory still holds what it held at
+   each call's offset when first taken, and otherwise its calls belong to the earlier use and are
+   forgotten (their user data would land on a later dispatch). Called with lists_lock held. */
+static size_t taken_count(call_list *list, uint32_t size)
+{
+    size_t n = 0;
+    while (n < list->count && list->calls[n].offset < size) n++;
+    if (!read_word || !n) return n;
+    if (!list->submitted) list->marked = 0; /* calls recorded since: a new use, marked afresh */
+    for (size_t i = 0; i < list->marked && i < n; i++)
+        if (list->marks[i] != mark_at(list->buffer, list->calls[i].offset, size)) {
+            list->count = list->marked = 0;
+            return 0;
+        }
+    if (n > list->marked) {
+        if (n > list->marks_capacity) {
+            uint64_t *grown = realloc(list->marks, list->capacity * sizeof *grown);
+            if (!grown) return n; /* no memory to mark them: taken unchecked */
+            list->marks = grown, list->marks_capacity = list->capacity;
+        }
+        for (size_t i = list->marked; i < n; i++) list->marks[i] = mark_at(list->buffer, list->calls[i].offset, size);
+        list->marked = n;
+    }
+    return n;
+}
+
 const rt_render_call *rt_render_submitted(uint64_t buffer, uint32_t size, size_t *count)
 {
     pthread_mutex_lock(&lists_lock);
@@ -570,8 +611,8 @@ const rt_render_call *rt_render_submitted(uint64_t buffer, uint32_t size, size_t
     for (size_t i = 0; i < list_count; i++) {
         if (lists[i].buffer != buffer) continue;
         calls = lists[i].calls;
+        *count = taken_count(&lists[i], size);
         lists[i].submitted = 1;
-        while (*count < lists[i].count && lists[i].calls[*count].offset < size) (*count)++;
     }
     pthread_mutex_unlock(&lists_lock);
     return calls;
@@ -585,9 +626,8 @@ rt_render_call *rt_render_take(uint64_t buffer, uint32_t size, size_t *count)
     *count = 0;
     for (size_t i = 0; i < list_count; i++) {
         if (lists[i].buffer != buffer) continue;
+        const size_t n = taken_count(&lists[i], size);
         lists[i].submitted = 1;
-        size_t n = 0;
-        while (n < lists[i].count && lists[i].calls[n].offset < size) n++;
         if (n && (copy = malloc(n * sizeof *copy))) {
             memcpy(copy, lists[i].calls, n * sizeof *copy);
             *count = n;
@@ -602,7 +642,7 @@ rt_render_call *rt_render_take(uint64_t buffer, uint32_t size, size_t *count)
 void rt_render_forget(void)
 {
     pthread_mutex_lock(&lists_lock);
-    for (size_t i = 0; i < list_count; i++) free(lists[i].calls);
+    for (size_t i = 0; i < list_count; i++) free(lists[i].calls), free(lists[i].marks);
     free(lists);
     lists = NULL, list_count = 0;
     placed_count = 0;
