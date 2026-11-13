@@ -44,6 +44,7 @@ address,replacement,system,returns
 0x01314320,bb_engine_entry_manager_resolve,engine,i64
 0x0132c590,bb_engine_release_owner_storage,engine,void
 0x0132c6c0,bb_engine_resize_owner_storage,engine,void
+0x0135d810,bb_ai_debug_draw_axes_0135d810,ai,void
 0x01388c60,bb_frame_timing_task_run_all_01388c60,frame_timing,void
 0x01388c70,bb_frame_timing_task_run_01388c70,frame_timing,void
 0x01389df0,bb_frame_timing_task_entry_count_01389df0,frame_timing,i32
@@ -220,6 +221,7 @@ address,replacement,system,returns
 0x0217ffb0,bb_engine_initialize_static_wide_string_0217ffb0,engine,void
 0x021d6ea0,bb_ai_draw_world_021d6ea0,ai,void
 0x0222bc10,bb_ai_hk_frame_update_0222bc10,ai,void
+0x02232a60,bb_ai_draw_layer_color_02232a60,ai,vec
 0x02311c80,bb_param_find_row_equip_param_accessory,param,void
 0x02311da0,bb_param_row_name_equip_param_accessory,param,i64
 0x02312070,bb_param_next_row_id_equip_param_accessory,param,i32
