@@ -65,7 +65,7 @@ the other per-frame updates.
 
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
-| `0x01cbdb20` | 979 | `character_frame_update_01cbdb20` | verified | per-frame character update: throw animation event, points stat regeneration (stamina-like, -50..max), time-step descriptor; the 30/60 FPS patches fix its frame time |
+| `0x01cbdb20` | 979 | `character_frame_update_01cbdb20` | verified | per-frame character update: throw animation event; points stat regeneration (stamina-like; -50..max); time-step descriptor; the 30/60 FPS patches fix its frame time |
 
 ## Structs and globals
 
