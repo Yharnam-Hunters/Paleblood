@@ -409,6 +409,11 @@ address,size,name,system,status,notes
 0x0247f640,206,kernel_read_write_lock_read,kernel,edge-verified,DLReadWriteLock read lock (untimed when timeout is -1): ETIMEDOUT returns -3; EINVAL/EAGAIN/EDEADLK reports fall through
 0x0247f710,115,kernel_read_write_lock_unlock_0247f710,kernel,edge-verified,DLReadWriteLock unlock (one of three identical copies): EPERM returns -4; EINVAL reported
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
+0x02483fe0,196,kernel_pthread_mutex_initialize,kernel,edge-verified,Dantelion2 PthreadMutex init: recursive attribute then init; ENOMEM/EAGAIN return -1; EINVAL and unknown errors reported with the source line
+0x024840b0,90,kernel_pthread_mutex_destroy,kernel,edge-verified,Dantelion2 PthreadMutex destroy: EBUSY returns -2; EINVAL then the unknown error reported with the source line
+0x02484110,183,kernel_pthread_mutex_lock,kernel,edge-verified,Dantelion2 PthreadMutex lock (untimed when timeout is -1); ETIMEDOUT returns -3; EDEADLK/EINVAL/EAGAIN reports fall through to the runtime error
+0x024841d0,177,kernel_pthread_mutex_try_lock,kernel,edge-verified,Dantelion2 PthreadMutex try lock: EBUSY returns -2; EDEADLK/EINVAL/EAGAIN reports fall through to the runtime error
+0x02484290,71,kernel_pthread_mutex_unlock,kernel,edge-verified,Dantelion2 PthreadMutex unlock: 0 and EPERM accepted; EINVAL or any other result reported with the source line
 0x024846f0,105,engine_fast_small_object_allocator_delete_024846f0,engine,edge-verified,"DLFastSmallObjectAllocator deleting destructor: every class allocator released (0x02a3bc40), class array freed to the backing allocator, operator delete"
 0x02484760,106,engine_fast_small_object_allocator_destroy_02484760,engine,edge-verified,"DLFastSmallObjectAllocator destructor: every class allocator released (0x02a3bc40), class array freed and forgotten"
 0x024847d0,309,engine_fast_small_object_allocator_delete_locked_024847d0,engine,edge-verified,"DLFastSmallObjectAllocator deleting destructor, locked variant: classes released, array freed, PthreadMutex torn down (errors reported, busy kept), operator delete"
