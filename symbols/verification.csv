@@ -1,4 +1,11 @@
 function,cases,option,total,passed,failed,quarantined,source,date
+ai_character_flag_module_set,edge,,20,20,0,0,96dc05968393fe63,2026-11-13
+ai_character_gather_effect_states,edge,,31,31,0,0,96dc05968393fe63,2026-11-13
+ai_character_has_effect_state,edge,,71,71,0,0,96dc05968393fe63,2026-11-13
+ai_character_id,edge,,7,7,0,0,96dc05968393fe63,2026-11-13
+ai_character_link_ids,edge,,20,20,0,0,96dc05968393fe63,2026-11-13
+ai_character_negated_third_column,edge,,6,6,0,0,96dc05968393fe63,2026-11-13
+ai_character_ready_check,edge,,61,61,0,0,96dc05968393fe63,2026-11-13
 ai_func_get_current_target_state,edge,,174,174,0,0,5431cc868f95569a,2026-11-13
 ai_func_get_hp,edge,,40,40,0,0,5431cc868f95569a,2026-11-13
 ai_func_get_hp_rate,edge,,40,40,0,0,5431cc868f95569a,2026-11-13
@@ -30,6 +37,8 @@ ai_hk_frame_update_0222bc10,edge,,33,33,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,edge,30,33,33,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,edge,60,33,33,0,0,f6e94c85e455f408,2026-10-07
 ai_hk_frame_update_0222bc10,edge,uncapped,33,33,0,0,f6e94c85e455f408,2026-10-07
+ai_pending_event_fire,edge,,21,21,0,0,96dc05968393fe63,2026-11-13
+ai_target_list_mark_main_matches,edge,,12,12,0,0,96dc05968393fe63,2026-11-13
 audio_fmod_output_defaults,edge,,43,43,0,0,132028dafb015e4a,2026-11-04
 audio_fmod_output_driver_count,edge,,18,18,0,0,9ac316ccda703831,2026-11-04
 audio_fmod_string_copy,recorded,,77,77,0,0,c17e74fefe35579f,2026-11-12
