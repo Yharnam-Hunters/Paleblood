@@ -4126,6 +4126,132 @@ int gcn_table_copy_shape(const uint32_t *code, size_t dwords, gcn_table_copy *sh
     return 1;
 }
 
+/* What a register holds in a constant fill (gcn_fill_shape): an index lane * lane_scale + workgroup *
+   group_scale + constant (lane the lane id, workgroup the workgroup's x index), one of the fill's value
+   words (value: the SGPR its scalar load wrote), or something else. */
+typedef struct {
+    enum { FILL_OTHER, FILL_INDEX, FILL_VALUE } kind;
+    int64_t lane_scale, group_scale, constant;
+    unsigned value;
+} fill_held;
+
+/* A VOP source operand's value: an SGPR's, a VGPR's (VOP_SRC_VGPR + n), or an inline integer constant. */
+static fill_held fill_operand(const fill_held *sgprs, const fill_held *vgprs, unsigned src)
+{
+    enum { VOP_SRC_VGPR = 256, ZERO = 128, POSITIVE_LAST = 192, NEGATIVE_LAST = 208 };
+    if (src >= VOP_SRC_VGPR) return vgprs[src - VOP_SRC_VGPR];
+    if (src < SGPR_VCC) return sgprs[src];
+    if (src >= ZERO && src <= POSITIVE_LAST) return (fill_held){.kind = FILL_INDEX, .constant = src - ZERO};
+    if (src > POSITIVE_LAST && src <= NEGATIVE_LAST) return (fill_held){.kind = FILL_INDEX, .constant = POSITIVE_LAST - (int)src};
+    return (fill_held){.kind = FILL_OTHER};
+}
+
+static fill_held fill_combine(fill_held a, fill_held b, int sign)
+{
+    if (a.kind != FILL_INDEX || b.kind != FILL_INDEX) return (fill_held){.kind = FILL_OTHER};
+    return (fill_held){.kind = FILL_INDEX, .lane_scale = a.lane_scale + sign * b.lane_scale, .group_scale = a.group_scale + sign * b.group_scale,
+                       .constant = a.constant + sign * b.constant};
+}
+
+int gcn_fill_shape(const uint32_t *code, size_t dwords, gcn_fill *shape)
+{
+    enum { NONE = ~0u, SGPRS = 104, VGPRS = 256, SHIFT_MOST = 24, VALUE_WORDS = 4 };
+    const long program = gcn_program_dwords(code, dwords);
+    if (program < 0) return 0;
+    fill_held sgprs[SGPRS], vgprs[VGPRS];
+    for (unsigned i = 0; i < SGPRS; i++) sgprs[i] = (fill_held){.kind = FILL_OTHER};
+    for (unsigned i = 0; i < VGPRS; i++) vgprs[i] = (fill_held){.kind = FILL_OTHER};
+    vgprs[0] = (fill_held){.kind = FILL_INDEX, .lane_scale = 1};
+    gcn_fill found = {.destination_sgpr = NONE, .workgroup_sgpr = NONE, .most_lanes = UINT32_MAX};
+    unsigned value[VALUE_WORDS] = {0}, value_words = 0, stored = 0;
+    for (size_t at = 0; at < (size_t)program;) {
+        gcn_instruction ins;
+        if (gcn_decode(code + at, (size_t)program - at, &ins) || !ins.name) return 0;
+        const uint32_t *w = code + at;
+        const char *name = ins.name;
+        if (ins.encoding == GCN_SOPP) {
+            if (strcmp(name, "s_waitcnt") && strcmp(name, "s_endpgm") && strcmp(name, "s_nop")) return 0;
+        } else if (ins.encoding == GCN_SOP1) {
+            const unsigned sdst = (w[0] >> 16) & 0x7f;
+            if (strcmp(name, "s_mov_b32")) return 0;
+            if (sdst < SGPRS) sgprs[sdst] = (fill_held){.kind = FILL_OTHER};
+        } else if (ins.encoding == GCN_SOP2) {
+            /* s_lshl_b32 of the workgroup index by a constant (the first SGPR an index takes is that index) */
+            const unsigned ssrc0 = w[0] & 0xff, ssrc1 = (w[0] >> 8) & 0xff, sdst = (w[0] >> 16) & 0x7f;
+            if (strcmp(name, "s_lshl_b32") || ssrc0 >= SGPRS || sdst >= SGPRS || ssrc1 < 128 || ssrc1 > 128 + SHIFT_MOST) return 0;
+            if (found.workgroup_sgpr == NONE && sgprs[ssrc0].kind == FILL_OTHER) found.workgroup_sgpr = ssrc0;
+            if (ssrc0 != found.workgroup_sgpr) return 0;
+            sgprs[sdst] = (fill_held){.kind = FILL_INDEX, .group_scale = (int64_t)1 << (ssrc1 - 128)};
+        } else if (ins.encoding == GCN_SMRD) {
+            const unsigned sdst = (w[0] >> 15) & 0x7f;
+            const unsigned n = !strcmp(name, "s_buffer_load_dword") ? 1 : !strcmp(name, "s_buffer_load_dwordx2") ? 2 : !strcmp(name, "s_buffer_load_dwordx4") ? 4 : 0;
+            if (!n || sdst + n > SGPRS) return 0;
+            for (unsigned k = 0; k < n; k++) sgprs[sdst + k] = (fill_held){.kind = FILL_VALUE, .value = sdst + k};
+        } else if (ins.encoding == GCN_VOP1) {
+            const unsigned src = w[0] & 0x1ff, vdst = (w[0] >> 17) & 0xff;
+            if (strcmp(name, "v_mov_b32")) return 0;
+            vgprs[vdst] = fill_operand(sgprs, vgprs, src);
+        } else if (ins.encoding == GCN_VOP2) {
+            const unsigned src0 = w[0] & 0x1ff, vsrc1 = (w[0] >> 9) & 0xff, vdst = (w[0] >> 17) & 0xff;
+            const fill_held a = fill_operand(sgprs, vgprs, src0), v = vgprs[vsrc1];
+            fill_held result = {.kind = FILL_OTHER};
+            if (!strcmp(name, "v_add_i32")) {
+                result = fill_combine(a, v, 1);
+            } else if (!strcmp(name, "v_sub_i32")) {
+                result = fill_combine(a, v, -1);
+            } else if (!strcmp(name, "v_lshlrev_b32") || !strcmp(name, "v_lshrrev_b32")) {
+                if (a.kind != FILL_INDEX || a.lane_scale || a.group_scale || a.constant < 0 || a.constant > SHIFT_MOST || v.kind != FILL_INDEX) return 0;
+                const int64_t by = (int64_t)1 << a.constant;
+                if (!strcmp(name, "v_lshlrev_b32")) {
+                    result = (fill_held){.kind = FILL_INDEX, .lane_scale = v.lane_scale * by, .group_scale = v.group_scale * by, .constant = v.constant * by};
+                } else if (v.lane_scale == 1 && v.group_scale == by && !v.constant) {
+                    /* (lane + workgroup << k) >> k is the workgroup index while the lane stays below 1 << k */
+                    result = (fill_held){.kind = FILL_INDEX, .group_scale = 1};
+                    if ((uint64_t)by < found.most_lanes) found.most_lanes = (uint32_t)by;
+                } else {
+                    return 0;
+                }
+            } else {
+                return 0;
+            }
+            vgprs[vdst] = result;
+        } else if (ins.encoding == GCN_MUBUF) {
+            const unsigned vaddr = w[1] & 0xff, vdata = (w[1] >> 8) & 0xff, srsrc = mubuf_srsrc(w);
+            const unsigned n = !strcmp(name, "buffer_store_format_x") || !strcmp(name, "buffer_store_dword")       ? 1
+                               : !strcmp(name, "buffer_store_format_xy") || !strcmp(name, "buffer_store_dwordx2")  ? 2
+                               : !strcmp(name, "buffer_store_format_xyzw") || !strcmp(name, "buffer_store_dwordx4") ? 4
+                                                                                                                     : 0;
+            const fill_held index = vgprs[vaddr];
+            if (!n || !indexed_only(w) || vdata + n > VGPRS || index.kind != FILL_INDEX || index.lane_scale != 1 || index.group_scale <= 0 ||
+                index.constant < 0 || index.group_scale > UINT32_MAX || index.constant > UINT32_MAX || stored == GCN_FILL_STORES)
+                return 0;
+            if (found.destination_sgpr == NONE) found.destination_sgpr = srsrc, found.group_elements = (uint32_t)index.group_scale, value_words = n;
+            if (srsrc != found.destination_sgpr || index.group_scale != found.group_elements || n != value_words) return 0;
+            for (unsigned k = 0; k < n; k++) { /* the same value words in every store */
+                if (vgprs[vdata + k].kind != FILL_VALUE || (stored && vgprs[vdata + k].value != value[k])) return 0;
+                value[k] = vgprs[vdata + k].value;
+            }
+            found.offsets[stored++] = (uint32_t)index.constant;
+        } else {
+            return 0;
+        }
+        at += ins.dwords;
+    }
+    if (!stored || found.workgroup_sgpr == NONE) return 0;
+    found.store_count = stored;
+    /* the descriptor and the workgroup index stay as the dispatch set them */
+    const callee_code no_callee = {NULL, 0};
+    for (size_t at = 0; at < (size_t)program;) {
+        gcn_instruction ins;
+        gcn_decode(code + at, (size_t)program - at, &ins);
+        if (writes_sgprs(code + at, &ins, &no_callee, found.destination_sgpr, 4) || writes_sgprs(code + at, &ins, &no_callee, found.workgroup_sgpr, 1))
+            return 0;
+        at += ins.dwords;
+    }
+    *shape = found;
+    return 1;
+}
+
 int gcn_sampler_resources(const uint32_t *code, size_t dwords, gcn_resource_origin *samplers, unsigned max, unsigned *count, char *error,
                           size_t error_size)
 {
