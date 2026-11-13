@@ -725,7 +725,16 @@ Instead:
           the viewport's depth range. The depth bounds test (`DEPTH_BOUNDS_ENABLE`) passes pixels
           whose stored depth lies within `DB_DEPTH_BOUNDS_MIN` to `_MAX`, Vulkan's depth bounds test
           with dynamic bounds; the library's setter (`0x01473520`) takes them as two floats, which
-          its observe hook reads from the saved frame's xmm0 and xmm1. The buffer's contents in guest memory are never loaded: a depth
+          its observe hook reads from the saved frame's xmm0 and xmm1. The viewport scissor
+          (`PA_SC_VPORT_SCISSOR_0_TL`/`_BR`, on with `PA_SC_MODE_CNTL_0`'s `VPORT_SCISSOR_ENABLE`) is the
+          draw's Vulkan scissor, clipped to the target; off or never written, the draw covers the whole
+          target. The library's setter (`0x014766d0`: command buffer, viewport, left, top, right, bottom,
+          and on the stack the window-offset mode) is observed, its stack argument read above the saved
+          frame (`rt_observed_stack_argument`); the `PA_SC_MODE_CNTL_0` replacement reports its value. The
+          clinic's deferred lights are full-screen quads drawn once per 128x128 screen tile with that tile
+          as the scissor: unclipped, each tile's draw lit the whole screen (the scene came out about 8x too
+          bright, in banded steps). A scissor that takes the window offset (`WINDOW_OFFSET_DISABLE` clear)
+          stops by name; the screen, window and generic scissors are not applied yet. The buffer's contents in guest memory are never loaded: a depth
           or stencil buffer the CPU or a compute shader writes would not be seen (not found yet). A draw that writes only the depth target (target mask 0, or
           `CB_COLOR_CONTROL`'s mode `CB_DISABLE`) draws without a colour target; one that writes
           nothing is skipped. The hardware shader stages (`VGT_SHADER_STAGES_EN`, from the GPU
