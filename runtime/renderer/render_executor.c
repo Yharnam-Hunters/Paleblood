@@ -555,6 +555,7 @@ struct rt_executor {
     uint64_t *chunk_outside;
     int (*collect_cpu_writes)(const uint64_t (*ranges)[2], size_t count, void (*written)(void *context, uint64_t pool_offset, uint64_t length),
                               void *context);
+    int (*cpu_writes_due)(void);
     int (*guard)(uint64_t address, uint64_t length); /* rt_executor_memory's */
     void (*unguard)(uint64_t address, uint64_t length);
     /* what note_cpu_writes asks about: the loaded images' and targets' memory, and their metadata */
@@ -983,8 +984,16 @@ static uint32_t memory_type(rt_executor *x, uint32_t allowed, VkMemoryPropertyFl
     return UINT32_MAX;
 }
 
-/* Makes s hold at least bytes, mapped: host-visible and coherent memory, host-cached when the device has
-   it (reading uncached memory from the CPU is many times slower). Kept between uses; 0, or -1. */
+/* Host-visible and coherent memory, host-cached when the device has it (reading uncached memory from
+   the CPU is many times slower); UINT32_MAX when there is none. */
+static uint32_t host_memory_type(rt_executor *x, uint32_t allowed)
+{
+    const VkMemoryPropertyFlags coherent = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    const uint32_t cached = memory_type(x, allowed, coherent | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+    return cached != UINT32_MAX ? cached : memory_type(x, allowed, coherent);
+}
+
+/* Makes s hold at least bytes, mapped (host_memory_type). Kept between uses; 0, or -1. */
 static int staging_ready(rt_executor *x, staging_buffer *s, VkDeviceSize bytes)
 {
     if (s->buffer && s->size >= bytes) return 0;
@@ -998,9 +1007,7 @@ static int staging_ready(rt_executor *x, staging_buffer *s, VkDeviceSize bytes)
     if (vkCreateBuffer(x->device, &info, NULL, &s->buffer) != VK_SUCCESS) return -1;
     VkMemoryRequirements need;
     vkGetBufferMemoryRequirements(x->device, s->buffer, &need);
-    const VkMemoryPropertyFlags coherent = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    uint32_t type = memory_type(x, need.memoryTypeBits, coherent | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
-    if (type == UINT32_MAX) type = memory_type(x, need.memoryTypeBits, coherent);
+    const uint32_t type = host_memory_type(x, need.memoryTypeBits);
     const VkMemoryAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = need.size, .memoryTypeIndex = type};
     if (type == UINT32_MAX || vkAllocateMemory(x->device, &allocate, NULL, &s->memory) != VK_SUCCESS ||
         vkBindBufferMemory(x->device, s->buffer, s->memory, 0) != VK_SUCCESS ||
@@ -1237,6 +1244,7 @@ static int import_host(rt_executor *x, void *view, uint64_t bytes, VkBufferUsage
 static int import_memory(rt_executor *x, const rt_executor_memory *memory, char *error, size_t error_size)
 {
     x->size = memory->size, x->guest_base = memory->guest_base, x->collect_cpu_writes = memory->collect_cpu_writes;
+    x->cpu_writes_due = memory->cpu_writes_due;
     if (memory->guard && memory->unguard) x->guard = memory->guard, x->unguard = memory->unguard;
     x->chunk_changed = calloc((size_t)((memory->size + CHANGE_CHUNK - 1) / CHANGE_CHUNK), sizeof *x->chunk_changed);
     x->chunk_outside = calloc((size_t)((memory->size + CHANGE_CHUNK - 1) / CHANGE_CHUNK), sizeof *x->chunk_outside);
@@ -1259,7 +1267,9 @@ static int import_memory(rt_executor *x, const rt_executor_memory *memory, char 
                        &x->gds_buffer, &x->gds_memory, &x->gds_address, "the GDS", error, error_size);
 }
 
-/* The run-time stop words: host-visible, with GPU addresses the translated shaders store to. */
+/* The run-time stop words: host-visible, with GPU addresses the translated shaders store to, and
+   host-cached when the device has it: every finished batch reads all of them, and reading uncached
+   (write-combined) memory from the CPU costs a bus round trip per word. */
 static int open_stop_word(rt_executor *x, char *error, size_t error_size)
 {
     const VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = STOP_SINK_OFFSET + GCN_GUEST_SINK_BYTES,
@@ -1269,8 +1279,7 @@ static int open_stop_word(rt_executor *x, char *error, size_t error_size)
     vkGetBufferMemoryRequirements(x->device, x->stop_buffer, &need);
     const VkMemoryAllocateFlagsInfo flags = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO, .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
     const VkMemoryAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &flags, .allocationSize = need.size,
-                                           .memoryTypeIndex = memory_type(x, need.memoryTypeBits,
-                                                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)};
+                                           .memoryTypeIndex = host_memory_type(x, need.memoryTypeBits)};
     void *mapped = NULL;
     if (allocate.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(x->device, &allocate, NULL, &x->stop_memory) != VK_SUCCESS ||
         vkBindBufferMemory(x->device, x->stop_buffer, x->stop_memory, 0) != VK_SUCCESS ||
@@ -1840,6 +1849,7 @@ static void note_cpu_writes(rt_executor *x)
         all_changed_outside(x);
         return;
     }
+    if (x->cpu_writes_due && !x->cpu_writes_due()) return;
     size_t n = 0;
     for (size_t i = 0; i < x->image_count; i++) {
         const image_entry *e = &x->images[i];
