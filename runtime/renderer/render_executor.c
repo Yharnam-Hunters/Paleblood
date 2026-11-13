@@ -370,7 +370,7 @@ typedef struct {
     int local_set, hull_set, export_set, geometry_set;
     uint32_t tess_user[2][GCN_USER_SGPR_MAX], tess_user_set[2]; /* the local and hull shaders' user data */
     uint32_t gs_user[2][GCN_USER_SGPR_MAX], gs_user_set[2];     /* the export and geometry shaders' */
-    /* the geometry-shader registers (GPU library 0x01475a90, 0x01475af0, 0x014756b0): VGT_ESGS_RING_ITEMSIZE,
+    /* the geometry-shader registers (writer provenance: docs/RENDERER.md): VGT_ESGS_RING_ITEMSIZE,
        VGT_GS_VERT_ITEMSIZE (streams 0-3), VGT_GSVS_RING_OFFSET_1-3, VGT_GS_MAX_VERT_OUT, VGT_GSVS_RING_ITEMSIZE,
        VGT_GS_MODE, VGT_STRMOUT_CONFIG, with which were set (GS_REGISTER_* bits) */
     uint32_t esgs_itemsize, gs_vert_itemsize[4], gsvs_ring_offset[3], gs_max_vert_out, gsvs_itemsize, gs_mode, streamout_config;
