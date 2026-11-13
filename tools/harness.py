@@ -48,15 +48,23 @@ MAP_PRIVATE, MAP_ANONYMOUS, MAP_FIXED_NOREPLACE = 0x02, 0x20, 0x100000
 
 # call_capture(block): see docs/VERIFY.md. Block layout: 0 target, 8..48 rdi..r9, 56 rax,
 # 64 rdx, 72 xmm0, 88 xmm1, 104 rbx, 112 rbp, 120 r12, 128 r13, 136 r14, 144 r15,
-# 152 rsp before the call, 160 rsp after it. Callee-saved registers hold sentinels. xmm0 and
-# xmm1 are loaded from their slots before the call (float arguments) and stored back after it.
+# 152 rsp before the call, 160 rsp after it, 168..216 rdi, rsi, rcx, r8, r9, r10, r11 after it,
+# 224..304 xmm2..xmm7. Callee-saved registers hold sentinels. xmm0 and xmm1 are loaded from
+# their slots before the call (float arguments) and stored back after it; xmm2..xmm7 are only
+# loaded (the third to eighth float arguments; zero unless a case gives them).
 # The rax slot also supplies an optional incoming machine-register value; it defaults to zero.
+XMM_ARGS = {'xmm0': 72, 'xmm1': 88, **{f'xmm{n}': 224 + 16 * (n - 2) for n in range(2, 8)}}
+BLOCK_QWORDS = 40
+_LOAD_XMM1 = bytes.fromhex('f3410f6f4b58')                      # movdqu xmm1, [r11+0x58]
 TRAMPOLINE = bytes.fromhex(
     '53554154415541564157574989fb48bb111111111111111148bd222222222222222249bc3333333333333333'
     '49bd444444444444444449be555555555555555549bf66666666666666664989a398000000498b7b08498b73'
     '10498b5318498b4b204d8b43284d8b4b304d8b13f3410f6f4348f3410f6f4b5831c041ffd24c8b1c24498943'
     '3849895340f3410f7f4348f3410f7f4b5849895b6849896b704d8963784d89ab800000004d89b3880000004d'
-    '89bb900000004989a3a00000005f415f415e415d415c5d5bc3')
+    '89bb900000004989a3a00000005f415f415e415d415c5d5bc3').replace(
+    _LOAD_XMM1, _LOAD_XMM1 + b''.join(                         # movdqu xmmN, [r11+disp32]
+        bytes([0xf3, 0x41, 0x0f, 0x6f, 0x83 | n << 3]) + struct.pack('<i', XMM_ARGS[f'xmm{n}'])
+        for n in range(2, 8)))
 SENTINELS = {'rbx': 0x1111111111111111, 'rbp': 0x2222222222222222, 'r12': 0x3333333333333333,
              'r13': 0x4444444444444444, 'r14': 0x5555555555555555, 'r15': 0x6666666666666666}
 ARG_REGS = ('rdi', 'rsi', 'rdx', 'rcx', 'r8', 'r9')
@@ -247,7 +255,7 @@ class Run:
         self.boot, self.case = boot, case
         self.calls: list[dict] = []
         self.errors: list[str] = []
-        self.block = (ctypes.c_uint64 * 28)()
+        self.block = (ctypes.c_uint64 * BLOCK_QWORDS)()
         for field in ('imports', 'stubs'):
             entries = case.get(field, [])
             if not isinstance(entries, list):
@@ -551,7 +559,7 @@ class Run:
 
     def run(self, target: int) -> dict:
         args = self.case.get('args', {})
-        unknown = set(args) - set(ARG_REGS) - {'rax', 'xmm0', 'xmm1'}
+        unknown = set(args) - set(ARG_REGS) - {'rax'} - set(XMM_ARGS)
         if unknown:
             raise BadInput(f'unknown argument registers {sorted(unknown)}')
         observed = self.case.get('observe_registers', [])
@@ -568,7 +576,7 @@ class Run:
         for i, reg in enumerate(ARG_REGS):
             self.block[1 + i] = self.value(args.get(reg, 0))
         self.block[7] = self.value(args.get('rax', 0))
-        for reg, off in (('xmm0', 72), ('xmm1', 88)):
+        for reg, off in XMM_ARGS.items():
             raw = bytes.fromhex(args.get(reg, '')).ljust(16, b'\0')[:16]
             ctypes.memmove(ctypes.addressof(self.block) + off, raw, 16)
         before = self.snapshot()

@@ -158,6 +158,10 @@ def boot_image(stacked_imports=False):
     code[0xbd0:0xbdb] = bytes.fromhex('48034424084803442410c3')
     code[0xbe0:0xbe3] = bytes.fromhex('9c58c3')                    # pushfq; pop rax; ret
     code[0xc60:0xc68] = bytes.fromhex('8d047509000000 c3')         # lea eax, [rsi*2+9], no base
+    # Float arguments past the second: xmm0, xmm1 = xmm2, xmm3; xmm4, xmm5; xmm6, xmm7.
+    code[0xc68:0xc6f] = bytes.fromhex('0f28c2 0f28cb c3')
+    code[0xc70:0xc77] = bytes.fromhex('0f28c4 0f28cd c3')
+    code[0xc78:0xc7f] = bytes.fromhex('0f28c6 0f28cf c3')
     # Tail calls preserve the fixture's six GP registers, overflow slots and XMM0 exactly.
     # A second import is enabled only for the new cases; existing images keep their layout.
     code[0xc80:0xc86] = bytes.fromhex('ff25') + struct.pack('<i', 0x1000 - 0xc86)
@@ -613,6 +617,23 @@ class Harness(unittest.TestCase):
         events = [event for event in result['instruction_trace']['events']
                   if event['region'] == 'buf:memory']
         self.assertEqual([(event['access'], event['width']) for event in events], [('read', 8)])
+
+    def test_float_arguments_past_the_second_are_loaded(self):
+        values = {f'xmm{n}': bytes(range(16 * n, 16 * n + 16)).hex() for n in range(2, 8)}
+        for address, first, second in (('0x00400c68', 'xmm2', 'xmm3'), ('0x00400c70', 'xmm4', 'xmm5'),
+                                       ('0x00400c78', 'xmm6', 'xmm7')):
+            with self.subTest(address=address):
+                case = {'schema': 1, 'address': address, 'id': 'xmm-args', 'returns': 'vec',
+                        'args': dict(values), 'buffers': {}, 'memory': [], 'imports': [], 'stubs': []}
+                Path(self.case).write_text(json.dumps(case))
+                result = self.side_case(self.case, address=address)
+                self.assertEqual(result['ret'], {'xmm0': values[first], 'xmm1': values[second]}, result)
+        case['args'] = {'xmm8': '00'}
+        Path(self.case).write_text(json.dumps(case))
+        cmd = [sys.executable, os.path.join(TOOLS, 'harness.py'), '--elf', self.boot, '--case', self.case,
+               '--address', '0x00400c78']
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        self.assertIn('xmm8', r.stdout + r.stderr)
 
     def test_control_flow_coverage_reports_fixture_branch_paths(self):
         fixtures = [

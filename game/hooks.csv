@@ -323,6 +323,7 @@ address,replacement,system,returns
 0x02a6f140,bb_loading_stream_event_array_reallocate_02a6f140,loading,void
 0x02a70890,bb_loading_kernel_file_open,loading,i32
 0x02a70920,bb_loading_kernel_file_read,loading,i32
+0x02a85e30,bb_render_fractal_noise_02a85e30,render,f32
 0x02a8bf30,bb_input_mouse_b_open_for_initial_user,input,i8
 0x02a8c210,bb_input_mouse_construct,input,void
 0x02a8c420,bb_input_initialize_mouse_for_initial_user,input,i8
