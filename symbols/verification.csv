@@ -180,12 +180,16 @@ frame_timing_task_013d3520,recorded,,208,208,0,0,c52608f510993456,2026-10-07
 frame_timing_task_013d3520,recorded,uncapped,208,208,0,0,c52608f510993456,2026-10-07
 frame_timing_task_013d3520,edge,,11,11,0,0,c52608f510993456,2026-10-07
 frame_timing_task_013d3520,edge,uncapped,11,11,0,0,c52608f510993456,2026-10-07
+frame_timing_task_batch_add_0143d7c0,recorded,,70,70,0,0,0f7b1a925e8b299c,2026-11-13
 frame_timing_task_dispatch_0138a370,recorded,,51,51,0,0,8882a92dbfe2e577,2026-10-07
 frame_timing_task_dispatch_0138a370,edge,,7,7,0,0,8882a92dbfe2e577,2026-10-07
+frame_timing_task_entry_count_01389df0,recorded,,47,47,0,0,0f7b1a925e8b299c,2026-11-13
 frame_timing_task_flush_queue_0143e490,recorded,,200,200,0,0,8882a92dbfe2e577,2026-10-07
 frame_timing_task_flush_queue_0143e490,edge,,4,4,0,0,8882a92dbfe2e577,2026-10-07
 frame_timing_task_frame_024512a0,recorded,,51,51,0,0,8882a92dbfe2e577,2026-10-07
 frame_timing_task_frame_024512a0,edge,,2,2,0,0,8882a92dbfe2e577,2026-10-07
+frame_timing_task_record_close_0143c450,recorded,,51,51,0,0,0f7b1a925e8b299c,2026-11-13
+frame_timing_task_record_open_0143c360,recorded,,51,51,0,0,0f7b1a925e8b299c,2026-11-13
 frame_timing_task_run_01388c70,recorded,,51,51,0,0,8882a92dbfe2e577,2026-10-07
 frame_timing_task_run_01388c70,edge,,7,7,0,0,8882a92dbfe2e577,2026-10-07
 frame_timing_task_run_all_01388c60,recorded,,209,209,0,0,8882a92dbfe2e577,2026-10-07
