@@ -1111,3 +1111,18 @@ post-processing passes, go through it, and without it the clinic's tone map, gla
 depth of field never reached the renderer (the scene behind the HUD stayed one flat
 grey). Observers that only observe hooks call are declared in
 `runtime/render_observer_hooks.h`, apart from the replacements' `runtime/render_observer.h`.
+
+## Measuring frame rate
+
+Two runs of one build differ: in Iosefka's Clinic the same build measured from 4.81 to 7.15 fps
+over a run, with other work on the machine. A speed change counts only when it is larger than that.
+`tools/ab_bench.py run --a 'CMD' --b 'CMD' --out DIR` runs two builds alternately, two rounds each
+by default (A1 B1 A2 B2), and measures each over the same window: a fixed settle, then a fixed
+measure window, counted from the moment the run presents its anchor frame (`--anchor-frame`, a
+frame reached at the same point of the same save). Each build's spread over its rounds is its noise
+floor, and a difference counts only when it is larger than both builds' spreads (the rule of
+bbhost's area check). While a run plays, the load average and the CPUs busy with other work than
+the run's own processes are sampled every second; a run whose window met more than
+`--max-other-cpus` of other work is left out, with the reason. The run command builds before it
+starts the game and holds the GPU lock while it plays, so builds and other GPU work stay outside
+the window. `tools/ab_bench.py compare --out DIR` reports again from the logs a run left.
