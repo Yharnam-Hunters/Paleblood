@@ -74,23 +74,27 @@ static int draw_texels_as(rt_executor *x, uint64_t target, const uint32_t image[
 }
 
 /* A run-time stop in a submitted batch is found when the batch's slot is next opened: the work recorded
-   there then stops with the stop's own reason (not just "no command buffer"). The draw of texels past
-   the image is submitted without waiting, then triangle draws, one a batch, until one meets it. */
-static void stop_found_by_a_later_batch(rt_executor *x, uint64_t target, const uint32_t image[8])
+   there then stops with the stop's own reason (not just "no command buffer"). A draw whose pixel shader
+   reads VCC as a lane mask after a scalar write of its halves (a run-time stop) is submitted without
+   waiting, then triangle draws, one a batch, until one meets it. */
+static void stop_found_by_a_later_batch(rt_executor *x, uint64_t target)
 {
-    enum { TEXEL_BUFFER = 0xc0f00000, TEXEL_CODE = 0x2a00, LATER_BUFFER = 0xc0f40000, MOST_BATCHES = 8 };
+    enum { STOP_BUFFER = 0xc0f00000, STOP_CODE = 0x2a00, LATER_BUFFER = 0xc0f40000, MOST_BATCHES = 8 };
     char error[512] = "";
-    memcpy((void *)(uintptr_t)at(TEXEL_CODE), pixel_image_texel, sizeof pixel_image_texel);
+    static uint32_t read_after[64];
+    read_after[0] = 0xbeeb0380; /* s_mov_b32 vcc_hi, 0 */
+    read_after[1] = 0x00121280; /* v_cndmask_b32_e32 v9, 0, v9, vcc */
+    memcpy(read_after + 2, pixel_position_color, sizeof pixel_position_color);
+    memcpy((void *)(uintptr_t)at(STOP_CODE), read_after, sizeof read_after);
     rt_render_forget(), rt_executor_reset(x);
-    uint32_t offset = record_setup(TEXEL_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
-    const uint64_t code = at(TEXEL_CODE);
+    uint32_t offset = record_setup(STOP_BUFFER, target, COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
+    const uint64_t code = at(STOP_CODE);
     const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0x2, 8 << 1, 0, 0x4, 0x302, 0x302, 0, 0, 0, 0xf};
-    CHECK(rt_render_record_pixel_shader(TEXEL_BUFFER, offset, pixel, error, sizeof error) == 0);
-    CHECK(rt_render_record_user_data(TEXEL_BUFFER, offset + 0x10, RT_STAGE_PIXEL, 0, image, 8, error, sizeof error) == 0);
-    const uint32_t size = record_triangle_draw(TEXEL_BUFFER, offset + 0x20);
+    CHECK(rt_render_record_pixel_shader(STOP_BUFFER, offset, pixel, error, sizeof error) == 0);
+    const uint32_t size = record_triangle_draw(STOP_BUFFER, offset + 0x10);
     size_t count = 0;
     uint64_t ticket = 0;
-    const rt_render_call *calls = rt_render_submitted(TEXEL_BUFFER, size, &count);
+    const rt_render_call *calls = rt_render_submitted(STOP_BUFFER, size, &count);
     CHECK(rt_executor_submit_calls(x, calls, count, &ticket, error, sizeof error) == 0);
     int stopped = 0;
     for (unsigned k = 0; k < MOST_BATCHES && !stopped; k++) {
@@ -98,8 +102,8 @@ static void stop_found_by_a_later_batch(rt_executor *x, uint64_t target, const u
         calls = rt_render_submitted(LATER_BUFFER, later, &count);
         stopped = rt_executor_submit_calls(x, calls, count, &ticket, error, sizeof error) != 0;
     }
-    if (!stopped || !strstr(error, "outside the image")) fprintf(stderr, "stop found by a later batch: %s\n", stopped ? error : "no stop");
-    CHECK(stopped && strstr(error, "no command buffer: ") && strstr(error, "outside the image"));
+    if (!stopped || !strstr(error, "lane mask")) fprintf(stderr, "stop found by a later batch: %s\n", stopped ? error : "no stop");
+    CHECK(stopped && strstr(error, "no command buffer: ") && strstr(error, "lane mask"));
     rt_executor_finish(x, error, sizeof error);
 }
 
@@ -122,6 +126,27 @@ static int differing_pixels(rt_executor *x, uint64_t target)
                         near(p & 0xff, 0.25f) && (p >> 24) == 0xff);
         }
     return differ;
+}
+
+/* The pixels of target (drawn by pixel_image_texel from an 8 x 8 image of the reference image's
+   texels) that are wrong: inside the image the reference image, outside it the colour `outside`
+   (BGRA), the replacement texel a load outside an image reads (all of them on a failed read). */
+static int replacement_misses(rt_executor *x, uint64_t target, uint32_t outside)
+{
+    enum { INSIDE = 8 };
+    uint32_t bgra[SIZE * SIZE];
+    char error[160] = "";
+    if (rt_executor_read_target(x, target, bgra, SIZE, SIZE, error, sizeof error)) return SIZE * SIZE;
+    int misses = 0;
+    for (int y = 0; y < SIZE; y++)
+        for (int px = 0; px < SIZE; px++) {
+            const uint32_t p = bgra[y * SIZE + px];
+            if (px < INSIDE && y < INSIDE)
+                misses += !(near(p >> 16 & 0xff, ((float)px + 0.5f) / SIZE) && near(p >> 8 & 0xff, ((float)y + 0.5f) / SIZE) &&
+                            near(p & 0xff, 0.25f) && (p >> 24) == 0xff);
+            else misses += p != outside;
+        }
+    return misses;
 }
 
 /* A positive float as an unsigned small float of mantissa_bits (5-bit exponent, bias 15), or (with
@@ -457,10 +482,32 @@ static void sampled_images(rt_executor *x)
         if (drawn) fprintf(stderr, "split-tile image: %s\n", error);
         CHECK(drawn == 0 && differing_pixels(x, at(TEXEL_TARGET)) == 0);
     }
-    image_descriptor(image, at(SMALL), 10, 0, 8, 8);
-    image[3] |= LINEAR_ALIGNED << 20;
-    CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == -1 && strstr(error, "outside the image"));
-    stop_found_by_a_later_batch(x, at(TEXEL_TARGET), image);
+    /* Texels outside the image read the replacement texel (0, 0, 0, 0) through DST_SEL, as under Vulkan's
+       robustImageAccess2: an 8 x 8 image drawn over the 16 x 16 target leaves the rest (0, 0, 0, 0)
+       with DST_SEL x, y, z, w and (0, 0, 0, 1) with x, y, z, 1. Mutant: the replacement's DST_SEL
+       ignored (alpha stays 0). */
+    {
+        enum { SMALL_SIZE = 8, OPAQUE_BLACK = 0xff000000u };
+        rt_tiling small;
+        CHECK(rt_tiling_layout(LINEAR_ALIGNED, 4, SMALL_SIZE, SMALL_SIZE, &small, error, sizeof error) == 0);
+        for (uint32_t y = 0; y < SMALL_SIZE; y++)
+            for (uint32_t px = 0; px < SMALL_SIZE; px++) {
+                const uint32_t texel = reference_texel(px, y);
+                memcpy(guest + SMALL + rt_tiling_offset(&small, px, y, 0), &texel, 4);
+            }
+        for (int alpha_one = 0; alpha_one < 2; alpha_one++) {
+            image_descriptor(image, at(SMALL), 10, 0, SMALL_SIZE, SMALL_SIZE);
+            image[3] |= LINEAR_ALIGNED << 20;
+            if (alpha_one) image[3] = (image[3] & ~(7u << 9)) | 1u << 9; /* DST_SEL_W 1 */
+            drawn = draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error);
+            if (drawn) fprintf(stderr, "image read outside its texels: %s\n", error);
+            CHECK(drawn == 0);
+            const int misses = replacement_misses(x, at(TEXEL_TARGET), alpha_one ? OPAQUE_BLACK : 0);
+            if (misses) fprintf(stderr, "outside the image (alpha one %d): %d pixels wrong\n", alpha_one, misses);
+            CHECK(misses == 0);
+        }
+    }
+    stop_found_by_a_later_batch(x, at(TEXEL_TARGET));
     image[3] = (image[3] & ~(0x1fu << 20)) | 2u << 20;
     CHECK(draw_texels(x, at(TEXEL_TARGET), image, error, sizeof error) == -1 && strstr(error, "tiling index 2"));
 }
@@ -3273,7 +3320,8 @@ int main(void)
         }
 
         /* image_load_mip from a storage image (bound as one level): at level 0 the copy pass reads each
-           texel as image_load does; at level 1 (past the only level) it stops at run time by name. */
+           texel as image_load does; at level 1 (past the only level) it reads the replacement texel
+           through the copy's DST_SEL x, 1, z, 1: (0, 1, 0, 1). */
         for (int level = 0; level < 2; level++) {
             enum { MIP_COPY_CODE = 0x4c00 }; /* a program each (compute pipelines are kept by code address) */
             const uint32_t *program = level ? image_copy_level_1 : image_copy_level_0;
@@ -3291,7 +3339,10 @@ int main(void)
                 CHECK(rt_render_record_compute_shader_at(IMAGES + offset, shader) == 0);
                 memset(user, 0, sizeof user);
                 if (pass == 0) memcpy(user + 8, image_a, sizeof image_a);
-                if (pass == 1) memcpy(user, image_a, sizeof image_a), memcpy(user + 8, image_b, sizeof image_b);
+                if (pass == 1) {
+                    memcpy(user, image_a, sizeof image_a), memcpy(user + 8, image_b, sizeof image_b);
+                    if (level) user[3] = (user[3] & ~0xfffu) | (4 | 1 << 3 | 6 << 6 | 1 << 9); /* DST_SEL x, 1, z, 1 */
+                }
                 if (pass == 2) descriptor(user, at(BACK), 16), memcpy(user + 8, image_b, sizeof image_b);
                 CHECK(rt_render_record_user_data(IMAGES, offset + 0x10, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
                 CHECK(rt_render_record_user_data(IMAGES, offset + 0x20, RT_STAGE_COMPUTE, 8, user + 8, 8, error, sizeof error) == 0);
@@ -3299,15 +3350,19 @@ int main(void)
                 offset += 0x40;
             }
             const int ran = rt_executor_run(x, IMAGES, offset, error, sizeof error);
+            if (ran) fprintf(stderr, "image_load_mip of a storage image at level %d: %s\n", level, error);
+            CHECK(ran == 0);
             if (level == 0) {
-                if (ran) fprintf(stderr, "image_load_mip of a storage image: %s\n", error);
-                CHECK(ran == 0);
                 int right = 1;
                 for (unsigned i = 0; i < LANES; i++)
                     right &= back[i * 4] == (float)i && back[i * 4 + 1] == 1.0f && back[i * 4 + 2] == 2.0f && back[i * 4 + 3] == 0.5f;
                 CHECK(right);
             } else {
-                CHECK(ran == -1 && strstr(error, "past its last level"));
+                int right = 1;
+                for (unsigned i = 0; i < LANES; i++)
+                    right &= back[i * 4] == 0.0f && back[i * 4 + 1] == 1.0f && back[i * 4 + 2] == 0.0f && back[i * 4 + 3] == 1.0f;
+                if (!right) fprintf(stderr, "level past a storage image's: lane 0 read %g %g %g %g\n", back[0], back[1], back[2], back[3]);
+                CHECK(right);
             }
         }
 
