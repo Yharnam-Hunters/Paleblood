@@ -280,3 +280,4 @@ add_library(bbfamily_mutants SHARED test/family_mutants.c)
 
 include(cmake/DarwinBootTests.cmake)
 include(cmake/BootArenaTests.cmake)
+include(cmake/DarwinGameGuestPointerTests.cmake)
