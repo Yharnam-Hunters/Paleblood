@@ -182,8 +182,8 @@ bound to a raw packet's independent `MAX_SIZE`.
 Unsupported formats, shader instructions, shader inputs, layered/multisampled targets and
 target reallocations return a named error. Blending, depth and unrecorded state remain outside
 this profile. Pixel image loads and fixed-LOD sampling use the bindings described below.
-Triangle strips and depth-target registers
-remain outside this profile. Rectangle lists need a geometry expansion path and are rejected.
+Depth-target registers remain outside this profile. Rectangle lists need a geometry expansion
+path and are rejected.
 
 ## Vertex fetch calls
 
@@ -319,6 +319,10 @@ The separate `metal_vertex_instancing` fixture uses owned literal tile geometry 
 (instance, vertex) records to check both rate quotients and actual instance IDs. Its full-pool
 oracles cover every direct draw route, cached rate changes, explicit zero, reset and named
 unknown-input refusals; its small instance counts do not qualify extreme GPU workloads.
+The two additional strip groups use the same 31 route/quotient cases with four-corner strips
+and a repeated final-corner tail. Their literal full-tile pixel oracles distinguish a valid
+six-vertex Triangle fallback, including with reversed indices; default triangle-list inputs
+and the 76-case inventory are unchanged.
 
 The real-device test uses only owned synthetic GFX7 programs, descriptors and data. It checks
 interpolated triangles, two-parameter interfaces and their capacity guards, all eight clip

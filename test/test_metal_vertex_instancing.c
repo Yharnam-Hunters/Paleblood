@@ -14,6 +14,7 @@ enum { POOL = 64 << 10, VS = 0x1000, PS = 0x2000, POSITIONS = 0x3000, COLORS = 0
        RECORDS = TILES * VERTICES, INSTANCES = 7, CALLS = 48,
        STEP0 = 0xa2a8, STEP1 = 0xa2a9 };
 static const uint64_t base = UINT64_C(0x3000000000);
+static unsigned primitive=4;
 /* LLVM Bonaire instruction shapes from gcn_programs.h's VERTEX_INSTANCE_COLOR:
    first consume the enabled input, then ordinary loads overwrite v1..v3. */
 #define TILE_PROGRAM(input) { \
@@ -91,7 +92,7 @@ static void setup(Calls *c,unsigned profile,unsigned program,unsigned allocation
     descriptor(r->u.user_data.words,POSITIONS);descriptor(r->u.user_data.words+4,COLORS);
     r=event(c,RT_CALL_USER_DATA);r->u.user_data.stage=RT_STAGE_VERTEX;r->u.user_data.slot=8;r->u.user_data.count=4;
     descriptor(r->u.user_data.words,TUPLES);
-    reg(c,0xa202,0xcc0010);reg(c,0xa08e,15);reg(c,0xc242,4);
+    reg(c,0xa202,0xcc0010);reg(c,0xa08e,15);reg(c,0xc242,primitive);
 }
 static void draw(Calls *c,Route route)
 {
@@ -272,9 +273,17 @@ static void independent(Fixture *f,const rt_executor_memory *memory)
 static int selected(const char *requested,const char *group) { return !requested || !strcmp(requested,group); }
 int main(int argc,char **argv)
 {
-    const char *group=argc==3 && !strcmp(argv[1],"--group")?argv[2]:NULL;
-    if(argc!=1 && !group){fputs("usage: test_metal_vertex_instancing [--group routes|tuples|cache0|cache1|guards|state]\n",stderr);return 2;}
+    const char *group=NULL;int primitive_set=0;
+    for(int i=1;i<argc;++i){
+        if(!strcmp(argv[i],"--group") && !group && i+1<argc)group=argv[++i];
+        else if(!strcmp(argv[i],"--primitive") && !primitive_set && i+1<argc){
+            const char *value=argv[++i];primitive_set=1;
+            if(!strcmp(value,"4"))primitive=4;else if(!strcmp(value,"6"))primitive=6;else return 2;
+        }else return 2;
+    }
     if(group && strcmp(group,"routes") && strcmp(group,"tuples") && strcmp(group,"cache0") && strcmp(group,"cache1") && strcmp(group,"guards") && strcmp(group,"state"))return 2;
+    if(primitive==6 && (!group || (strcmp(group,"routes") && strcmp(group,"tuples"))))return 2;
+    printf("vertex-instancing MODE primitive=%u group=%s\n",primitive,group?group:"full");
     char path[]="/tmp/paleblood-metal-instancing-XXXXXX",error[512]="";
     const int fd=mkstemp(path);CHECK(fd>=0);if(fd<0)return 1;unlink(path);CHECK(ftruncate(fd,POOL)==0);
     unsigned char *pool=mmap(NULL,POOL,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);CHECK(pool!=MAP_FAILED);if(pool==MAP_FAILED)return 1;
@@ -285,7 +294,10 @@ int main(int argc,char **argv)
     for(unsigned tile=0;tile<TILES;++tile){
         const float left=-1+(float)tile*0.25f,right=left+0.25f;
         const float p[VERTICES][4]={{left,-1,0,1},{right,-1,0,1},{left,1,0,1},{left,1,0,1},{right,-1,0,1},{right,1,0,1}};
-        memcpy(pool+POSITIONS+tile*VERTICES*16,p,sizeof p);
+        /* A strip uses four corners followed by a degenerate tail. A Triangle fallback
+           still has six valid vertices, but leaves half of every visible tile untouched. */
+        const float strip[VERTICES][4]={{left,-1,0,1},{right,-1,0,1},{left,1,0,1},{right,1,0,1},{right,1,0,1},{right,1,0,1}};
+        memcpy(pool+POSITIONS+tile*VERTICES*16,primitive==6?strip:p,sizeof p);
         for(unsigned vertex=0;vertex<VERTICES;++vertex)memcpy(pool+COLORS+(tile*VERTICES+vertex)*16,palette[tile],16);
     }
     const uint16_t indices16[8]={UINT16_MAX,5,4,3,2,1,0,UINT16_MAX};
