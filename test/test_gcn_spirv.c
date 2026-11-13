@@ -360,38 +360,28 @@ static void image_programs(void)
     }
     CHECK(gcn_translate_pixel(PROGRAM(pixel_lookup_level), &lookup, &spirv, &words, error, sizeof error) == -1 && strstr(error, "DA 1"));
 
-    /* A pixel shader's image_load_mip from a sampled image (its range checked at run time, so only
-       with a stop word); a storage binding refuses image_load_mip. */
-    const gcn_image_binding texture[] = {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0}};
+    /* A pixel shader's image_load_mip from a sampled image and from a storage image (one level): a
+       texel outside the image (or a level past the last) reads the replacement texel, so both translate
+       and validate with or without a run-time stop word, also with a DST_SEL of constants (x, 1, z, 1). */
+    enum { SEL_X_ONE_Z_ONE = 4 | 1 << 3 | 6 << 6 | 1 << 9 };
+    const gcn_image_binding bindings_loaded[][1] = {{{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0}},
+                                           {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, SEL_X_ONE_Z_ONE}},
+                                           {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 0, 0, 0}},
+                                           {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_UINT, 2, 0, 0, SEL_X_ONE_Z_ONE}}};
     gcn_pixel_layout pixel = pixel_layout;
-    pixel.images = texture, pixel.image_count = 1, pixel.error_address = 0x1000;
-    const int fetched = gcn_translate_pixel(PROGRAM(pixel_image_texel), &pixel, &spirv, &words, error, sizeof error);
-    if (fetched) fprintf(stderr, "pixel_image_texel: %s\n", error);
-    CHECK(fetched == 0);
-    if (spirv) {
-        CHECK(validate(spirv, words, "pixel_image_texel") != 0);
-        CHECK(to_metal(spirv, words, "pixel_image_texel") != 0);
-        free(spirv);
-        spirv = NULL;
-    }
-    pixel.error_address = 0;
-    CHECK(gcn_translate_pixel(PROGRAM(pixel_image_texel), &pixel, &spirv, &words, error, sizeof error) == -1 &&
-          strstr(error, "run-time stop word"));
-    /* from a storage image (one level): translated with a run-time stop word (a level past 0 stops
-       there), refused by name without one */
-    const gcn_image_binding storage[] = {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 0, 0, 0}};
-    pixel.images = storage, pixel.error_address = 0x1000;
-    const int from_storage = gcn_translate_pixel(PROGRAM(pixel_image_texel), &pixel, &spirv, &words, error, sizeof error);
-    if (from_storage) fprintf(stderr, "storage image_load_mip: %s\n", error);
-    CHECK(from_storage == 0);
-    if (spirv) {
-        CHECK(validate(spirv, words, "pixel_image_texel_storage") != 0);
-        free(spirv);
-        spirv = NULL;
-    }
-    pixel.error_address = 0;
-    CHECK(gcn_translate_pixel(PROGRAM(pixel_image_texel), &pixel, &spirv, &words, error, sizeof error) == -1 &&
-          strstr(error, "image_load_mip"));
+    for (size_t k = 0; k < sizeof bindings_loaded / sizeof *bindings_loaded; k++)
+        for (int stop_word = 0; stop_word < 2; stop_word++) {
+            pixel.images = bindings_loaded[k], pixel.image_count = 1, pixel.error_address = stop_word ? 0x1000 : 0;
+            const int fetched = gcn_translate_pixel(PROGRAM(pixel_image_texel), &pixel, &spirv, &words, error, sizeof error);
+            if (fetched) fprintf(stderr, "pixel_image_texel binding %zu stop word %d: %s\n", k, stop_word, error);
+            CHECK(fetched == 0);
+            if (spirv) {
+                CHECK(validate(spirv, words, "pixel_image_texel") != 0);
+                if (bindings_loaded[k][0].sampled) CHECK(to_metal(spirv, words, "pixel_image_texel") != 0);
+                free(spirv);
+                spirv = NULL;
+            }
+        }
 }
 
 /* Calls: gcn_call_sgpr finds the fetch-shader call's target pair; the program translates with the

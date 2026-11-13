@@ -70,8 +70,7 @@ enum {
     /* a vertex or pixel shader read VCC as a lane mask after a scalar write of its halves left each
        lane's bit unknown (a lane has no known place in the wave there) */
     GCN_RUNTIME_STOP_VCC_UNKNOWN = 2,
-    /* image_load/image_load_mip of a texel outside the image, or of a level past its last */
-    GCN_RUNTIME_STOP_IMAGE_RANGE = 3,
+    /* 3 is free: it was image_load of a texel outside the image, which now reads the replacement texel */
     /* a tessellated draw of more patches than the LDS buffer or the factor ring holds (gcn_tessellation_layout);
        details: the draw's patch count, its low 24 bits */
     GCN_RUNTIME_STOP_TESSELLATION_LIMIT = 4,
@@ -116,9 +115,10 @@ typedef struct {
     unsigned components;             /* the format's components, 1 to 4 */
     int sampled;                     /* a sampled image (reads only), not a storage image */
     int cube;                        /* a cube, bound as a 2D array of its faces (dim 2D, arrayed) */
-    uint32_t swizzle;                /* a storage image's DST_SEL (3 bits a component: 4-7 x, y, z, w), a permutation:
-                                        a load's component k is the texel's DST_SEL[k] - 4, a store writes it there;
-                                        0 is the identity (sampled images take theirs in the view) */
+    uint32_t swizzle;                /* the image's DST_SEL (3 bits a component: 0 zero, 1 one, 4-7 x, y, z, w); 0 is the identity.
+                                        A storage image's load takes component k from DST_SEL[k], a store writes it there.
+                                        A sampled image's in-range loads take it from the view; a load outside the image
+                                        applies it to the replacement texel (0, 0, 0, 0), or (0, 0, 0, 1) without alpha */
 } gcn_image_binding;
 
 /* GCN_MAX_IMAGES: up to 16 images a program (Vulkan guarantees 16 sampled images per stage) */
