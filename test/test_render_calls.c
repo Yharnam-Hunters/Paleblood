@@ -3,6 +3,7 @@
    registers decoded as AMD's field layout defines them, and each command buffer's calls taken in
    order up to the submitted size, a restarted buffer dropping its older calls. */
 #include "runtime/render_calls.h"
+#include "runtime/render_placed.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -307,6 +308,51 @@ static void placed_calls(void)
     CHECK(count == 0);
 }
 
+/* With a reader (runtime/render_placed.h), a placed call is taken only where its buffer still holds the
+   NOP packet the GNM call wrote there (a header counting its zero dwords): YEBIS rebuilds its command
+   buffer over the same memory each frame in another layout, and a bind left from an earlier use must
+   not land inside a later packet. A call placed where one already waits replaces it. */
+enum { CHECKED_BUFFER = 0x800000000ull, CHECKED_WORDS = 0x100 };
+static uint32_t checked_memory[CHECKED_WORDS];
+static uint32_t read_checked(uint64_t address) { return checked_memory[(address - CHECKED_BUFFER) / 4 % CHECKED_WORDS]; }
+
+static void nop_at(uint32_t offset, uint32_t dwords)
+{
+    checked_memory[offset / 4] = 0xc0001000u | (dwords - 2) << 16;
+    for (uint32_t i = 1; i < dwords; i++) checked_memory[offset / 4 + i] = 0;
+}
+
+static void checked_placed_calls(void)
+{
+    const uint32_t vertex[RT_VERTEX_SHADER_WORDS] = {0x11111111};
+    const uint32_t pixel[RT_PIXEL_SHADER_WORDS] = {0x22222222}, clear[RT_PIXEL_SHADER_WORDS] = {0x33333333};
+    size_t count = 0;
+    rt_render_forget();
+    memset(checked_memory, 0xee, sizeof checked_memory);
+    rt_render_check_placed_calls(read_checked);
+    /* an earlier use: a clear's binds at 0x40 and 0x80, never taken (the buffer is rewritten first) */
+    nop_at(0x40, 29), nop_at(0x80, 40);
+    CHECK(rt_render_record_vertex_shader_at(CHECKED_BUFFER + 0x40, vertex) == 0);
+    CHECK(rt_render_record_pixel_shader_at(CHECKED_BUFFER + 0x80, clear) == 0);
+    /* the next use: a register write at 0x40; the pixel shader bound again at 0x80; a bind at 0x140
+       whose packet is written over before the submission */
+    checked_memory[0x40 / 4] = 0xc0047600u, checked_memory[0x44 / 4] = 0x10;
+    nop_at(0x80, 40);
+    CHECK(rt_render_record_pixel_shader_at(CHECKED_BUFFER + 0x80, pixel) == 0);
+    nop_at(0x140, 40);
+    CHECK(rt_render_record_pixel_shader_at(CHECKED_BUFFER + 0x140, clear) == 0);
+    checked_memory[0x150 / 4] = 1; /* written over after the bind: not its packet any more */
+    const rt_render_call *calls = rt_render_submitted(CHECKED_BUFFER, 0x200, &count);
+    CHECK(count == 1);
+    if (count == 1) CHECK(calls[0].kind == RT_CALL_PIXEL_SHADER && calls[0].offset == 0x80 && calls[0].u.pixel_shader.code == 0x2222222200ull);
+    /* without a reader nothing is checked */
+    rt_render_check_placed_calls(NULL);
+    CHECK(rt_render_record_vertex_shader_at(CHECKED_BUFFER + 0x40, vertex) == 0);
+    calls = rt_render_submitted(CHECKED_BUFFER, 0x200, &count);
+    CHECK(count == 1 && calls[0].kind == RT_CALL_VERTEX_SHADER && calls[0].offset == 0x40);
+    rt_render_forget();
+}
+
 /* A compute shader's register block and a dispatch. */
 static void compute_calls(void)
 {
@@ -434,6 +480,7 @@ int main(void)
     user_data();
     recording();
     placed_calls();
+    checked_placed_calls();
     compute_calls();
     if (failures) fprintf(stderr, "%d failure(s)\n", failures);
     return failures != 0;
