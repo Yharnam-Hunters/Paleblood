@@ -98,10 +98,12 @@ address,replacement,system,returns
 0x014741b0,bb_render_emit_draw_index_auto,render,void
 0x01474f30,bb_render_set_vertex_reuse,render,void
 0x01475000,bb_render_emit_shader_link_words,render,void
+0x01475210,bb_render_set_db_render_override,render,void
 0x01475370,bb_render_emit_num_instances,render,void
 0x014753c0,bb_render_emit_set_ps_shader_014753c0,render,void
 0x01475420,bb_render_emit_update_ps_shader_01475420,render,void
 0x01475480,bb_render_emit_set_vs_shader_01475480,render,void
+0x01475640,bb_render_update_hs_shader,render,void
 0x014757d0,bb_render_set_ls_shader,render,void
 0x014758a0,bb_render_set_border_color_base,render,void
 0x01475da0,bb_render_emit_event_write,render,void
@@ -397,6 +399,13 @@ address,replacement,system,returns
 0x0233d750,bb_engine_scaleform_heap_bins_take_best_0233d750,engine,i64
 0x0233d8d0,bb_engine_scaleform_heap_bins_take_best_aligned_0233d8d0,engine,i64
 0x0233dc60,bb_engine_scaleform_heap_bins_merge_free_0233dc60,engine,void
+0x023411d0,bb_menu_heap_adapter_free_023411d0,menu,void
+0x02341330,bb_menu_heap_adapter_reallocate_02341330,menu,i64
+0x023548d0,bb_menu_movie_screen_close_023548d0,menu,void
+0x02354d90,bb_menu_movie_screen_step_02354d90,menu,void
+0x02360d80,bb_menu_tex_repository_require_02360d80,menu,void
+0x02363c00,bb_menu_work_holder_destroy_02363c00,menu,void
+0x02363d20,bb_menu_work_holder_destroy_02363d20,menu,void
 0x02377bd0,bb_render_frame_update_02377bd0,render,void
 0x0237e640,bb_loading_file_copy_construct_0237e640,loading,void
 0x0237e6d0,bb_loading_file_copy_delete_0237e6d0,loading,void
@@ -410,6 +419,9 @@ address,replacement,system,returns
 0x02380230,bb_loading_file_copy_delete_02380230,loading,void
 0x023802e0,bb_loading_file_copy_destroy_023802e0,loading,void
 0x02380380,bb_loading_file_copy_copy_file_02380380,loading,void
+0x02387050,bb_menu_file_set_loader_wait_02387050,menu,void
+0x02387650,bb_menu_file_set_loader_build_02387650,menu,void
+0x0238a210,bb_menu_named_resource_release_0238a210,menu,void
 0x02415fe0,bb_menu_text_input_destroy,menu,void
 0x02416040,bb_menu_text_input_close,menu,i8
 0x024162a0,bb_menu_text_input_open,menu,i8
