@@ -352,6 +352,18 @@ address,size,name,system,status,notes
 0x0233d8d0,573,engine_scaleform_heap_bins_take_best_aligned_0233d8d0,engine,edge-verified,Scaleform bins aligned best fit: from the first non-empty bin up; each ring walked backwards for a block holding the length at its first aligned address
 0x0233dc60,739,engine_scaleform_heap_bins_merge_free_0233dc60,engine,edge-verified,Scaleform merge of a freed block with free neighbours (previous through its tail copy); joined block to the head of the joined length's bin
 0x02377bd0,399,render_frame_update_02377bd0,render,verified,"per-frame: ages a list of ref-counted objects; updates RendMan-side child; steps another child by 1/30 s (Uncap: measured frame time)"
+0x0237e640,129,loading_file_copy_construct_0237e640,loading,edge-verified,constructor: resource base with the resource heap and no copy (class a; vtable 0x057acc60)
+0x0237e6d0,162,loading_file_copy_delete_0237e6d0,loading,edge-verified,deleting destructor (class a)
+0x0237e780,154,loading_file_copy_destroy_0237e780,loading,edge-verified,destructor: free the file copy through DLNew release then the resource base (class a)
+0x0237e820,342,loading_file_copy_copy_file_0237e820,loading,edge-verified,vtable slot 7: copy the loaded file bytes into a buffer of its own while holding the file (class a)
+0x0237f3f0,129,loading_file_copy_construct_0237f3f0,loading,edge-verified,constructor: resource base with the resource heap and no copy (class b; vtable 0x057acd50)
+0x0237f480,162,loading_file_copy_delete_0237f480,loading,edge-verified,deleting destructor (class b)
+0x0237f530,154,loading_file_copy_destroy_0237f530,loading,edge-verified,destructor: free the file copy through DLNew release then the resource base (class b)
+0x0237f5d0,342,loading_file_copy_copy_file_0237f5d0,loading,edge-verified,vtable slot 7: copy the loaded file bytes into a buffer of its own while holding the file (class b)
+0x023801a0,129,loading_file_copy_construct_023801a0,loading,edge-verified,constructor: resource base with the resource heap and no copy (class c; vtable 0x057ace40)
+0x02380230,162,loading_file_copy_delete_02380230,loading,edge-verified,deleting destructor (class c)
+0x023802e0,154,loading_file_copy_destroy_023802e0,loading,edge-verified,destructor: free the file copy through DLNew release then the resource base (class c)
+0x02380380,342,loading_file_copy_copy_file_02380380,loading,edge-verified,vtable slot 7: copy the loaded file bytes into a buffer of its own while holding the file (class c)
 0x02415fe0,89,menu_text_input_destroy,menu,edge-verified,"Text input dialog destructor: closes it, frees the text, destroys the Dantelion dialog object"
 0x02416040,574,menu_text_input_close,menu,edge-verified,"Text input dialog: waits for an open dialog to end, then empties its text and resets the state"
 0x024162a0,94,menu_text_input_open,menu,edge-verified,Text input dialog: opens the system keyboard dialog with the given settings once no other is open
