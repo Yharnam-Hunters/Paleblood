@@ -86,6 +86,7 @@ address,replacement,system,returns
 0x014739b0,bb_render_set_depth_render_target,render,void
 0x01473fe0,bb_render_set_vgt_primitive_type,render,void
 0x014741b0,bb_render_emit_draw_index_auto,render,void
+0x01474f90,bb_render_set_instance_step_rates,render,void
 0x01475000,bb_render_emit_shader_link_words,render,void
 0x01475370,bb_render_emit_num_instances,render,void
 0x014753c0,bb_render_emit_set_ps_shader_014753c0,render,void

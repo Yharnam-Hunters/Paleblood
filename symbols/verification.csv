@@ -721,6 +721,7 @@ render_set_guard_band_clip_adjust,recorded,,78,78,0,0,2d272dbad04ea940,2026-11-1
 render_set_guard_band_clip_adjust,edge,,13,13,0,0,2d272dbad04ea940,2026-11-12
 render_set_guard_band_discard_adjust,recorded,,79,79,0,0,d796d1a200c99651,2026-11-12
 render_set_guard_band_discard_adjust,edge,,13,13,0,0,d796d1a200c99651,2026-11-12
+render_set_instance_step_rates,edge,,102,102,0,0,0579bf8a165662dc,2026-11-13
 render_set_pa_cl_vte_cntl,recorded,,83,83,0,0,70ef1c91ed183e42,2026-11-12
 render_set_pa_cl_vte_cntl,edge,,45,45,0,0,70ef1c91ed183e42,2026-11-12
 render_set_pa_sc_mode_cntl_0,recorded,,98,98,0,0,9fcd7c9fe8cf9923,2026-11-13
