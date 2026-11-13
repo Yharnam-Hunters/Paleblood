@@ -34,7 +34,8 @@
 enum { MAX_SHADERS = 256, MAX_PIPELINES = 256, MAX_TARGETS = 64, MAX_DIMENSION = 4096,
        MAX_IMAGES = 64, MAX_SAMPLERS = 64, USER_BYTES = GCN_USER_SGPR_MAX * 4, GCN_WAVE_LANES = 64, MAX_COMPUTE_GROUPS = 65535, THREAD_ID_XYZ = 2 };
 enum { COLOR_8_8_8_8 = 0xa, NUMBER_UNORM = 0, NUMBER_SRGB = 6, SWAP_STD = 0, SWAP_ALT = 1,
-       PERSP_CENTER_ENA = 2, VGT_INDEX_16 = 0, VGT_INDEX_32 = 1, DRAW_INITIATOR_DMA = 0, PM4_PREDICATE = 1 };
+       PERSP_CENTER_ENA = 2, VGT_INDEX_16 = 0, VGT_INDEX_32 = 1, DRAW_INITIATOR_DMA = 0, PM4_PREDICATE = 1,
+       DST_SEL_IDENTITY = 4 | 5 << 3 | 6 << 6 | 7 << 9 };
 enum { SPI_SHADER_FP16_ABGR = 4, SPI_SHADER_32_ABGR = 9, SPI_SHADER_4COMP = 4,
        CLIP_ENABLES = 0xff, CLIP_VECTOR_0 = 1 << 22, CLIP_VECTOR_1 = 1 << 23, PARAMETER_LIMIT = 32 };
 struct MetalPixelResources {
@@ -458,7 +459,7 @@ static bool same_pixel_resources(const MetalShader &shader, const MetalPixelReso
     for (unsigned i = 0; i < images; ++i) {
         const auto &a = shader.images[i], &b = resources->images[i];
         if (!same_origin(a.origin, b.origin) || a.dim != b.dim || a.arrayed != b.arrayed || a.type != b.type ||
-            a.components != b.components || a.sampled != b.sampled || a.cube != b.cube) return false;
+            a.components != b.components || a.sampled != b.sampled || a.cube != b.cube || a.swizzle != b.swizzle) return false;
     }
     for (unsigned i = 0; i < samplers; ++i) if (!same_origin(shader.samplers[i], resources->samplers[i])) return false;
     return true;
@@ -641,7 +642,8 @@ static int pixel_resources(rt_executor *x, const MetalState &state, MetalPixelRe
             return failed(error,size,"sampled image format does not support linear filtering on this Metal device");
         out.images[i] = {images[i].origin,
             descriptor.type == RT_IMAGE_1D || descriptor.type == RT_IMAGE_1D_ARRAY ? GCN_IMAGE_1D : GCN_IMAGE_2D,
-            descriptor.type == RT_IMAGE_1D_ARRAY || descriptor.type == RT_IMAGE_2D_ARRAY,format->type,format->components,1,0,0,0,0};
+            descriptor.type == RT_IMAGE_1D_ARRAY || descriptor.type == RT_IMAGE_2D_ARRAY,format->type,format->components,1,0,
+            descriptor.swizzle != DST_SEL_IDENTITY ? descriptor.swizzle : 0u, 0, 0}; /* DST_SEL: for the texel a load outside the image reads */
         if (!(out.textures[i] = image_for(x,words,descriptor,*format,error,size))) return -1;
     }
     return 0;

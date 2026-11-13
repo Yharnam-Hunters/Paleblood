@@ -144,8 +144,16 @@ Instead:
        it even when only written, so a store that covers part of it keeps the rest.
      - **Pixel shaders read images** (`image_load`, `image_load_mip`) as sampled images (Vulkan's
        `SAMPLED_IMAGE`, `OpImageFetch` at the level given), so the view applies the descriptor's
-       DST_SEL. A texel outside the image or a level past its last is a run-time stop
-       (`GCN_RUNTIME_STOP_IMAGE_RANGE`): what the GPU returns there is not established.
+       DST_SEL. A texel outside the image or a level past its last reads the replacement texel
+       (0, 0, 0, 0), or (0, 0, 0, 1) for a format without alpha, through the descriptor's DST_SEL
+       (each 0 or 1 selector its constant, a texel component its replacement): Vulkan's
+       `robustImageAccess2` texel replacement, which the component swizzle then applies, and what
+       AMD's hardware returns (Mesa's RADV exposes `robustImageAccess2` with no bounds code in the
+       shader, `radv_physical_device.c`). The translator checks the range itself and fetches only
+       inside it, so the result does not depend on the device offering the feature; a storage
+       image's loads (one level: `image_load_mip` past level 0 is outside) read the same. The
+       clinic's final LUT pass (pixel shader 0x20d1b00f00) loads the scene target at the flip's
+       pixel, and on a loading-to-clinic transition frame the target was smaller than the flip.
      - **The image cache** keeps up to 1024 images. When it is full, a new image takes the slot of the
        least recently used one whose texels are guest memory's (loaded from it, never written by a
        shader) and that no unfinished batch, and not the draw or dispatch being recorded, uses; if
