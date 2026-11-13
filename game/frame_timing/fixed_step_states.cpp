@@ -202,8 +202,8 @@ static_assert(offsetof(HandleObject, word_050) == 0x50 && offsetof(HandleObject,
 HandleObject *as_handle_object(engine::RefObject *handle) { return reinterpret_cast<HandleObject *>(handle); }
 
 // Called with the handle's address and a kind (1 or 2) when the handle is passed on, in the local
-// modes (0x02265170) or the server modes (0x02265960); not replaced, and what they do is not
-// analyzed (their results are ignored).
+// modes (0x02265170, pass_on_in_local_mode.cpp) or the server modes (0x02265960, not replaced);
+// their results are ignored.
 RT_ORIGINAL(0x02265170, pass_on_in_local_mode, void(engine::RefObject **handle, int32_t kind));
 RT_ORIGINAL(0x02265960, pass_on_in_server_mode, void(engine::RefObject **handle, int32_t kind));
 // One of the owner's active slots as the ritual slot reset collects it: the slot's key, its index,
@@ -345,7 +345,8 @@ struct SessionId {
     int64_t value;
 };
 constexpr int64_t no_session_id = INT64_MIN;
-// Fills *found with the object for an id, holding a reference the caller drops (or with null).
+// Fills *found with the object for an id, holding a reference the caller drops (or with null);
+// pass_on_in_local_mode.cpp.
 RT_ORIGINAL(0x02265290, lookup_session_object, void(engine::RefObject **found, SessionId *id));
 
 // The step machine's step counter; past 27 steps it also builds a debug message.
