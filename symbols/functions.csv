@@ -352,6 +352,8 @@ address,size,name,system,status,notes
 0x02a6a020,140,loading_finished_queue_pop_02a6a020,loading,edge-verified,Finished-entry list pop: under the lock unlink the first node; destroy its entry; free; count one less
 0x02a6a7f0,448,loading_load_queue_dispatch_02a6a7f0,loading,edge-verified,file load event queue: under its lock hand each event to its kind handler (0 3 4); erase all
 0x02a6a9e0,465,loading_load_queue_start_file_task_02a6a9e0,loading,edge-verified,file load event queue: take a file task slot from the pool (new 32-slot block if none); initialize; append to transfer tasks
+0x02a6abc0,392,loading_load_queue_cancel_event_02a6abc0,loading,edge-verified,DLResourceFileLoadEventQueue kind 3 event: find the transfer task loading the event's info in six task lists (read-write lock) and cancel it
+0x02a6ad50,465,loading_load_queue_start_file_task_no_buffer_02a6ad50,loading,edge-verified,file load event queue kind 4 event: start a file task as 0x02a6a9e0 with initialization flag 1 (no read buffer)
 0x02a6af30,423,loading_load_queue_remove_02a6af30,loading,edge-verified,DLResourceFileLoadEventQueue: under the queue lock find the transfer task loading an info in six task lists (read-write lock) and cancel it
 0x02a6b0e0,184,loading_finished_queue_post_02a6b0e0,loading,edge-verified,load event queue: under its lock append a finished entry (request words code word + info handle)
 0x02a6b520,395,loading_file_load_slots_construct_02a6b520,loading,edge-verified,file load event queue: construct its 32 slots (0x338 bytes each) in order with 0x024d63f0
