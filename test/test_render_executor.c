@@ -2801,6 +2801,65 @@ static void guarded_targets(int fd, rt_executor *shared)
     CHECK(!tiled_memory_zero());
 }
 
+/* A compute fill of a guarded drawn target (gcn_programs.h's fill_two_stores, its descriptor's range the
+   target's memory, 8_8_8_8 elements): the target's image takes the fill on the GPU, its draws dropped,
+   and only the first workgroup's 128 elements reach the memory, the rest still holding the zeros;
+   rt_executor_resolve writes the target back, and its whole memory holds the fill. */
+static void guarded_target_fill(int fd)
+{
+    enum { FILL_BUFFER = 0xc0fa8000, FILL_CODE = 0x6400, FILL_VALUE = 0x1f60000, LANES = 64, GROUP_ELEMENTS = 128, USER_SGPRS = 12,
+           TGID_X_EN = 1u << 7, DFMT_8_8_8_8 = 10, XYZW = 4 | 5 << 3 | 6 << 6 | 7 << 9, FILLED = 0xffff00ffu /* red 1, green 0, blue 1, alpha 1 */ };
+    char error[256] = "";
+    rt_tiling layout;
+    CHECK(rt_tiling_layout(RECORDED_TILING, 4, SIZE, SIZE, &layout, error, sizeof error) == 0);
+    const uint64_t span = rt_tiling_size(&layout, 1);
+    uint32_t *memory = (uint32_t *)(uintptr_t)at(TILED_TARGET);
+    const rt_executor_memory with_guard = {fd, GUEST_SIZE, GUEST_BASE, NULL, test_guard, test_unguard, NULL, 0, NULL};
+    rt_executor *x = NULL;
+    CHECK(rt_executor_open(&with_guard, &x, error, sizeof error) == 0);
+    if (!x) return;
+    guarded.answer = 0;
+    memset(memory, 0, span);
+    CHECK(record_tiled_draw(x, error, sizeof error) == 0 && tiled_memory_zero());
+    memcpy((void *)(uintptr_t)at(FILL_CODE), fill_two_stores, sizeof fill_two_stores);
+    const float value[4] = {1.0f, 0.0f, 1.0f, 1.0f};
+    memcpy((void *)(uintptr_t)at(FILL_VALUE), value, sizeof value);
+    const uint64_t code = at(FILL_CODE);
+    const uint32_t shader[RT_COMPUTE_SHADER_WORDS] = {(uint32_t)(code >> 8), (uint32_t)(code >> 40), 0, USER_SGPRS << 1 | TGID_X_EN, LANES, 1, 1};
+    uint32_t user[USER_SGPRS] = {0};
+    descriptor(user, at(TILED_TARGET), 4), user[2] = (uint32_t)(span / 4), user[3] = XYZW | DFMT_8_8_8_8 << 15;
+    descriptor(user + 8, at(FILL_VALUE), 16), user[10] = 1;
+    rt_render_forget(), rt_executor_reset(x);
+    CHECK(rt_render_record_compute_shader_at(FILL_BUFFER, shader) == 0);
+    CHECK(rt_render_record_user_data(FILL_BUFFER, 0x10, RT_STAGE_COMPUTE, 0, user, 8, error, sizeof error) == 0);
+    CHECK(rt_render_record_user_data(FILL_BUFFER, 0x20, RT_STAGE_COMPUTE, 8, user + 8, 4, error, sizeof error) == 0);
+    const uint32_t groups[3] = {(uint32_t)((span / 4 + GROUP_ELEMENTS - 1) / GROUP_ELEMENTS), 1, 1};
+    CHECK(rt_render_record_dispatch(FILL_BUFFER, 0x30, groups, error, sizeof error) == 0);
+    size_t count = 0;
+    const rt_render_call *calls = rt_render_submitted(FILL_BUFFER, 0x40, &count);
+    uint64_t ticket = 0;
+    const int filled = rt_executor_record_calls(x, calls, count, &ticket, error, sizeof error) || rt_executor_finish(x, error, sizeof error) ? -1 : 0;
+    if (filled) fprintf(stderr, "guarded target fill: %s\n", error);
+    CHECK(filled == 0);
+    int first_group = 1, rest_zero = 1;
+    for (uint64_t i = 0; i < span / 4; i++) {
+        if (i < GROUP_ELEMENTS) first_group &= memory[i] == FILLED;
+        else rest_zero &= memory[i] == 0;
+    }
+    CHECK(first_group && rest_zero);
+    uint32_t bgra[SIZE * SIZE];
+    CHECK(rt_executor_read_target(x, at(TILED_TARGET), bgra, SIZE, SIZE, error, sizeof error) == 0);
+    int shown = 1;
+    for (int i = 0; i < SIZE * SIZE; i++) shown &= bgra[i] == FILLED;
+    CHECK(shown);
+    CHECK(rt_executor_resolve(x, at(TILED_TARGET), 4, error, sizeof error) == 0);
+    int all_filled = 1;
+    for (uint64_t i = 0; i < span / 4; i++) all_filled &= memory[i] == FILLED;
+    CHECK(all_filled);
+    rt_executor_close(x);
+    memset(&guarded, 0, sizeof guarded); /* the guard counts start again for the next test */
+}
+
 /* A half (IEEE binary16) as a float. */
 static float half_value(uint16_t h)
 {
@@ -3885,6 +3944,7 @@ int main(void)
     target_memory(x);
     tiled_target_memory(x);
     guarded_targets(fd, x);
+    guarded_target_fill(fd);
     float_targets(x);
     compressed_image(x);
     bc6h_image(x);
