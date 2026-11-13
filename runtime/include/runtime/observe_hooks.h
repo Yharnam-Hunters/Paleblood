@@ -11,8 +11,9 @@
    (docs/RENDERER.md): a replacement, when one lands, makes the same observer call itself and its
    observe hook is dropped. They are installed only when the host has the renderer's record
    (runtime/render_observer.h) and the instructions can be relocated (Capstone); otherwise nothing is
-   hooked and the game runs as before. An observer runs before the original, so it reports the call
-   even if the original then finds no room for its packets. */
+   hooked and the game runs as before. An observer runs before the original, so one that reports a
+   packet's position asks the command buffer for the room the original will ask for, as the original
+   would (game/render/observe_gpu_library.c), and reports where the packet lands. */
 
 #include <stddef.h>
 #include <stdint.h>
