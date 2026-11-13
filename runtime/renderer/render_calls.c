@@ -246,11 +246,17 @@ enum { LIST_SWEEP_PERIOD = 4096, LIST_IDLE = 65536 };
 static uint64_t submissions;
 
 /* Calls placed by guest address (rt_render_record_*_at), waiting for the submission whose buffer
-   holds that address. They are kept in a ring in the order they were placed: a buffer that is never
-   submitted leaves its calls there until MAX_PLACED_CALLS later placements overwrite them. Each
-   waiting call is also linked into a bucket by its address's 4 KiB page, so that a submission finds
-   the calls inside its buffer, and a call placed again at an address finds the older one, without
-   looking at the rest. */
+   holds that address. They are kept in a ring in the order they were placed. When the ring comes
+   round to a call still waiting, a call whose memory no longer holds its NOP packet belongs to a
+   buffer that was never submitted and is dropped; one whose packet is still there (or any, without
+   a reader) may belong to a buffer the game has yet to submit, and the ring grows instead, up to
+   PLACED_MAX, unless PLACED_KEEP calls have been placed since (an abandoned buffer whose memory was
+   never reused). The clinic places two binds a draw, thousands a frame, while the submissions run
+   behind: its compute buffers take binds placed about 12,000 placements earlier. A fixed 4096
+   dropped binds of buffers still to come, and their draws and dispatches ran with the shaders bound
+   before them. Each waiting call is also linked into a bucket by its
+   address's 4 KiB page, so that a submission finds the calls inside its buffer, and a call placed
+   again at an address finds the older one, without looking at the rest. */
 typedef struct {
     uint64_t address;
     uint64_t sequence; /* placements before it: the order calls were placed in */
@@ -260,8 +266,10 @@ typedef struct {
     rt_render_call call;
 } placed_call;
 
-enum { MAX_PLACED_CALLS = 16384, PLACED_BUCKETS = 4096, PLACED_PAGE_SHIFT = 12 };
-static placed_call placed[MAX_PLACED_CALLS];
+enum { PLACED_FIRST = 4096, PLACED_MAX = 1 << 18, PLACED_KEEP = 1 << 16, PLACED_BUCKETS = 4096, PLACED_PAGE_SHIFT = 12 };
+static placed_call *placed;
+static int32_t *placed_found;           /* take_placed's scratch, placed_capacity entries */
+static size_t placed_capacity, ring_next; /* ring_next % placed_capacity: the next slot to fill, the oldest */
 static int32_t placed_buckets[PLACED_BUCKETS]; /* the first waiting call of each bucket + 1 (0: none) */
 static uint64_t placements;
 static rt_render_word_reader read_word; /* runtime/render_placed.h */
@@ -512,6 +520,52 @@ static void unlink_placed(int32_t i)
     p->waiting = 0;
 }
 
+static void link_placed(int32_t at)
+{
+    const size_t bucket = placed_bucket(placed[at].address);
+    const int32_t first = placed_buckets[bucket] - 1;
+    placed[at].previous = -1, placed[at].next = first;
+    if (first >= 0) placed[first].previous = at;
+    placed_buckets[bucket] = at + 1;
+}
+
+/* Gives the ring capacity slots, the waiting calls whose packets are still in memory first, oldest
+   first (the stale ones, and those placed PLACED_KEEP calls ago, are dropped). 0, or -1 when there is no memory (the ring stays as it was).
+   Called with lists_lock held. */
+static int grow_placed(size_t capacity)
+{
+    placed_call *grown = calloc(capacity, sizeof *grown);
+    int32_t *found = malloc(capacity * sizeof *found);
+    if (!grown || !found) {
+        free(grown), free(found);
+        return -1;
+    }
+    size_t kept = 0;
+    for (size_t i = 0; i < placed_capacity; i++) {
+        const placed_call *p = &placed[(ring_next + i) % placed_capacity];
+        if (p->waiting && placements - p->sequence < PLACED_KEEP && still_placed(p)) grown[kept++] = *p;
+    }
+    free(placed), free(placed_found);
+    placed = grown, placed_found = found, placed_capacity = capacity, ring_next = kept;
+    memset(placed_buckets, 0, sizeof placed_buckets);
+    for (size_t i = 0; i < kept; i++) link_placed((int32_t)i);
+    return 0;
+}
+
+/* The slot for a new placed call: the ring's oldest, dropping the call there when it is stale, or
+   past the ring's end once grown; -1 when there is no memory. Called with lists_lock held. */
+static int32_t placed_slot(void)
+{
+    if (!placed_capacity && grow_placed(PLACED_FIRST)) return -1;
+    int32_t at = (int32_t)(ring_next % placed_capacity);
+    if (placed[at].waiting && placements - placed[at].sequence < PLACED_KEEP && still_placed(&placed[at]) &&
+        placed_capacity < PLACED_MAX && !grow_placed(2 * placed_capacity))
+        at = (int32_t)(ring_next % placed_capacity);
+    if (placed[at].waiting) unlink_placed(at); /* stale, or the ring is at its limit */
+    ring_next++;
+    return at;
+}
+
 static int place(uint64_t address, const rt_render_call *call)
 {
     pthread_mutex_lock(&lists_lock);
@@ -525,15 +579,13 @@ static int place(uint64_t address, const rt_render_call *call)
             if (placed[i].address == address) unlink_placed(i);
         }
     }
-    const int32_t at = (int32_t)(placements % MAX_PLACED_CALLS);
-    if (placed[at].waiting) unlink_placed(at); /* the oldest: a buffer that was never submitted */
-    const int32_t first = placed_buckets[bucket] - 1;
-    placed[at] = (placed_call){.address = address, .sequence = placements++, .header = header, .waiting = 1,
-                               .previous = -1, .next = first, .call = *call};
-    if (first >= 0) placed[first].previous = at;
-    placed_buckets[bucket] = at + 1;
+    const int32_t at = placed_slot();
+    if (at >= 0) {
+        placed[at] = (placed_call){.address = address, .sequence = placements++, .header = header, .waiting = 1, .call = *call};
+        link_placed(at);
+    }
     pthread_mutex_unlock(&lists_lock);
-    return 0;
+    return at >= 0 ? 0 : -1;
 }
 
 int rt_render_record_vertex_shader_at(uint64_t address, const uint32_t words[RT_VERTEX_SHADER_WORDS])
@@ -661,14 +713,14 @@ static void sort_placed(int32_t *found, size_t count)
     }
 }
 
-/* Gathers the waiting calls inside [buffer, buffer + size) into found (MAX_PLACED_CALLS entries),
+/* Gathers the waiting calls inside [buffer, buffer + size) into found (placed_capacity entries),
    ordered by address. Called with lists_lock held. */
 static size_t find_placed(uint64_t buffer, uint32_t size, int32_t *found)
 {
     size_t count = 0;
     const uint64_t first_page = buffer >> PLACED_PAGE_SHIFT, last_page = (buffer + size - 1) >> PLACED_PAGE_SHIFT;
     if (last_page - first_page >= PLACED_BUCKETS) { /* a buffer over every bucket: the whole ring */
-        for (int32_t i = 0; i < MAX_PLACED_CALLS; i++)
+        for (int32_t i = 0; i < (int32_t)placed_capacity; i++)
             if (placed[i].waiting && placed[i].address - buffer < size) found[count++] = i;
     } else {
         for (uint64_t page = first_page; page <= last_page; page++) {
@@ -692,8 +744,8 @@ static size_t find_placed(uint64_t buffer, uint32_t size, int32_t *found)
    lists_lock held. */
 static void take_placed(uint64_t buffer, uint32_t size)
 {
-    static int32_t found[MAX_PLACED_CALLS];
-    if (!size) return;
+    int32_t *const found = placed_found;
+    if (!size || !placed_capacity) return;
     size_t count = find_placed(buffer, size, found), taken = 0;
     for (size_t i = 0; i < count; i++) {
         if (still_placed(&placed[found[i]])) found[taken++] = found[i];
@@ -821,7 +873,8 @@ void rt_render_forget(void)
     lists = NULL, list_count = list_capacity = 0;
     list_index = NULL, index_size = 0;
     submissions = 0;
-    memset(placed, 0, sizeof placed);
+    free(placed), free(placed_found);
+    placed = NULL, placed_found = NULL, placed_capacity = ring_next = 0;
     memset(placed_buckets, 0, sizeof placed_buckets);
     placements = 0;
     pthread_mutex_unlock(&lists_lock);

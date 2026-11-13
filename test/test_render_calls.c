@@ -353,6 +353,40 @@ static void checked_placed_calls(void)
     rt_render_forget();
 }
 
+/* With a reader, the ring of placed calls grows past a call whose NOP packet is still in memory (its
+   buffer may be submitted yet), and drops one whose packet has been written over: 20000 placements in
+   memory with no packet leave the first, and the stale second is gone even once its packet is back;
+   a call 200000 placements old is dropped though its packet is intact. */
+static void placed_ring(void)
+{
+    enum { OTHERS = 20000, ABANDONED_AFTER = 200000, NO_PACKET = 0x380 };
+    const uint32_t vertex[RT_VERTEX_SHADER_WORDS] = {0x11111111}, pixel[RT_PIXEL_SHADER_WORDS] = {0x22222222};
+    size_t count = 0;
+    rt_render_forget();
+    memset(checked_memory, 0xee, sizeof checked_memory);
+    rt_render_check_placed_calls(read_checked);
+    nop_at(0x40, 8);
+    CHECK(rt_render_record_vertex_shader_at(CHECKED_BUFFER + 0x40, vertex) == 0);
+    nop_at(0x80, 8);
+    CHECK(rt_render_record_pixel_shader_at(CHECKED_BUFFER + 0x80, pixel) == 0);
+    checked_memory[0x80 / 4] = 0xeeeeeeeeu; /* written over: stale */
+    for (uint32_t k = 0; k < OTHERS; k++) /* each reads the 0xee words at NO_PACKET (read_checked wraps) */
+        CHECK(rt_render_record_pixel_shader_at(CHECKED_BUFFER + 0x1000ull * (k + 1) + NO_PACKET, pixel) == 0);
+    nop_at(0x80, 8);
+    const rt_render_call *calls = rt_render_submitted(CHECKED_BUFFER, 0x100, &count);
+    CHECK(count == 1 && calls[0].kind == RT_CALL_VERTEX_SHADER && calls[0].offset == 0x40);
+    /* a call 200000 placements old belongs to a buffer abandoned with its packet intact: dropped */
+    const uint64_t abandoned = CHECKED_BUFFER + 0x100000; /* reads the same words (read_checked wraps) */
+    nop_at(0xc0, 8);
+    CHECK(rt_render_record_vertex_shader_at(abandoned + 0xc0, vertex) == 0);
+    for (uint32_t k = 0; k < ABANDONED_AFTER; k++)
+        CHECK(rt_render_record_pixel_shader_at(CHECKED_BUFFER + 0x1000ull * (k + 1) + NO_PACKET, pixel) == 0);
+    rt_render_submitted(abandoned, 0x100, &count);
+    CHECK(count == 0);
+    rt_render_check_placed_calls(NULL);
+    rt_render_forget();
+}
+
 /* With a reader, a buffer submitted again with no call recorded since is taken again only where its
    memory still holds what it held at each call when first taken: the same commands submitted twice
    run twice, but the game also rewrites a buffer from DMA and memory-write packets alone, which
@@ -586,6 +620,7 @@ int main(void)
     recording();
     placed_calls();
     checked_placed_calls();
+    placed_ring();
     resubmitted_calls();
     compute_calls();
     many_buffers();

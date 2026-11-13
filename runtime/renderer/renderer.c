@@ -46,6 +46,7 @@ void rt_renderer_configure(int on)
 
 static int collect_cpu_writes(const uint64_t (*ranges)[2], size_t count, void (*written)(void *context, uint64_t pool_offset, uint64_t length),
                               void *context);
+static int cpu_writes_due(void);
 
 /* Render targets drawn into are guarded from the CPU until written back (runtime/write_watch.h,
    rt_executor_memory): by pool offset there, by guest address in the executor. */
@@ -74,7 +75,8 @@ static rt_executor *executor_for(const char *function)
     const int watched = rt_write_watch_active();
     rt_executor_memory memory = {.guest_base = rt_gpu_memory_base(), .collect_cpu_writes = watched ? collect_cpu_writes : NULL,
                                  .guard = watched ? guard_target : NULL, .unguard = watched ? unguard_target : NULL,
-                                 .gds = rt_gpu_memory_gds(), .gds_bytes = RT_GPU_GDS_BYTES};
+                                 .gds = rt_gpu_memory_gds(), .gds_bytes = RT_GPU_GDS_BYTES,
+                                 .cpu_writes_due = watched ? cpu_writes_due : NULL};
     if (rt_gpu_memory_pool(&memory.fd, &memory.size)) return NULL; /* no direct memory yet: nothing to draw from */
     if (watched) rt_write_watch_set_resolver(resolve_guarded);
     char error[RENDER_ERROR_BYTES];
@@ -389,10 +391,12 @@ void rt_renderer_submit(const char *function, unsigned queue, const void *buffer
 
 /* The executor's collect (on the renderer's thread): nothing new for a buffer submitted before the
    last collect, whose writes before it that collect has reported. */
+static int cpu_writes_due(void) { return running_submission > collected_through; }
+
 static int collect_cpu_writes(const uint64_t (*ranges)[2], size_t count, void (*written)(void *context, uint64_t pool_offset, uint64_t length),
                               void *context)
 {
-    if (running_submission <= collected_through) return 0;
+    if (!cpu_writes_due()) return 0;
     pthread_mutex_lock(&queue_lock);
     const uint64_t through = submissions;
     pthread_mutex_unlock(&queue_lock);

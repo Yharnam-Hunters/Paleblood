@@ -42,9 +42,10 @@
 
 /* What the executor keeps, made on first use: sized for a 3D scene (the character creation preview
    alone samples a few hundred textures through dozens of shaders, into two dozen targets) */
-enum { MAX_SHADERS = 1024, MAX_PIPELINES = 1024, MAX_TARGETS = 512, MAX_RECT_STAGES = 16, MAX_COMPUTE_PIPELINES = 512, MAX_IMAGES = 1024,
+enum { MAX_SHADERS = 1024, MAX_PIPELINES = 1024, MAX_TARGETS = 512, MAX_RECT_STAGES = 16, MAX_COMPUTE_PIPELINES = 512, MAX_IMAGES = 4096,
        MAX_VIEWS = 16, MAX_SAMPLERS = 256, MAX_PASSES = 2 * MAX_TARGETS, BATCH_SETS = 256, MAX_WRITTEN = 256, BATCH_SLOTS = 4, BATCH_WORK_NAMED = 8, WORK_LISTED = 1024, CHANGE_CHUNK = 64 << 10,
        MAX_TESS_PASSES = 64, MAX_TESS_CONTROLS = 16, STOP_SLOTS = MAX_SHADERS + MAX_COMPUTE_PIPELINES + MAX_TESS_PASSES };
+enum { IMAGE_BUCKETS = 4096 };
 /* the sink for guest memory accesses outside the guest memory (gcn_guest_memory) after the stop words,
    aligned for a 16-byte vector store */
 enum { STOP_SINK_OFFSET = (STOP_SLOTS * 4 + GCN_GUEST_SINK_BYTES - 1) / GCN_GUEST_SINK_BYTES * GCN_GUEST_SINK_BYTES };
@@ -179,6 +180,7 @@ typedef struct {
     uint32_t width, height, tile_index;
     VkFormat format;
     uint32_t element_bytes;          /* a texel's bytes in memory: 4, or 8 for 16_16_16_16 */
+    uint64_t span;                   /* its texels' bytes in memory (target_span), worked out once: its shape never changes */
     VkImage image;
     VkDeviceMemory memory;
     VkImageView view;
@@ -217,6 +219,7 @@ typedef struct {
     uint32_t slice;                  /* DB_DEPTH_VIEW's slice: each slice of an array target is an image of its own */
     uint32_t width, height;
     uint32_t tile_index;             /* DB_Z_INFO's TILE_MODE_INDEX: the depth's layout in memory */
+    uint64_t span;                   /* its depth's bytes in memory (depth_span), worked out once */
     int drawn;
     int unwritten;                   /* its depth changed since it was last written back */
     int guarded;                     /* as a colour target's */
@@ -295,6 +298,7 @@ typedef struct {
     unsigned view_count;
     uint64_t used_ticket;            /* the batch that last used it (its ticket once submitted) */
     uint64_t used_call;              /* the draw or dispatch that last used it (call_serial) */
+    uint32_t bucket_next;            /* the next image of its address's bucket (image_buckets), index + 1; 0 none */
 } image_entry;
 
 /* A rect-list geometry stage (runtime/rect_list.h), for one vertex-shader output shape. */
@@ -526,6 +530,8 @@ struct rt_executor {
     size_t compute_count;
     image_entry images[MAX_IMAGES];
     size_t image_count;
+    /* the images by address: each bucket's first image, index + 1 (0 none), chained by bucket_next */
+    uint32_t image_buckets[IMAGE_BUCKETS];
     /* the storage images the dispatch being recorded writes (their index in images, with the descriptor
        that named them, sRGB taken as UNORM): written back to the guest memory after it */
     struct {
@@ -555,6 +561,7 @@ struct rt_executor {
     uint64_t *chunk_outside;
     int (*collect_cpu_writes)(const uint64_t (*ranges)[2], size_t count, void (*written)(void *context, uint64_t pool_offset, uint64_t length),
                               void *context);
+    int (*cpu_writes_due)(void);
     int (*guard)(uint64_t address, uint64_t length); /* rt_executor_memory's */
     void (*unguard)(uint64_t address, uint64_t length);
     /* what note_cpu_writes asks about: the loaded images' and targets' memory, and their metadata */
@@ -922,7 +929,7 @@ enum { STAGES_TESSELLATION = 0x45, STAGES_GEOMETRY = 0xb0 };
 static int check_state(const draw_state *s, depth_plan *plan, uint32_t *colours, char *error, size_t error_size)
 {
     /* VGT_SHADER_STAGES_EN (gfx_7_2_sh_mask.h): LS_EN bits 0-1, HS_EN 2, ES_EN 3-4, GS_EN 5, VS_EN 6-7; the
-       GPU library's setter (0x01476030) takes 0 (vertex and pixel shaders), 0x45 (local, hull and vertex:
+       GPU library's shader stage setter takes 0 (vertex and pixel shaders), 0x45 (local, hull and vertex:
        tessellation), 0xad (tessellation with a geometry shader), 0xb0 (export and geometry) and 0x200 */
     if (s->shader_stages && s->shader_stages != STAGES_TESSELLATION && s->shader_stages != STAGES_GEOMETRY)
         return failed(error, error_size,
@@ -983,8 +990,16 @@ static uint32_t memory_type(rt_executor *x, uint32_t allowed, VkMemoryPropertyFl
     return UINT32_MAX;
 }
 
-/* Makes s hold at least bytes, mapped: host-visible and coherent memory, host-cached when the device has
-   it (reading uncached memory from the CPU is many times slower). Kept between uses; 0, or -1. */
+/* Host-visible and coherent memory, host-cached when the device has it (reading uncached memory from
+   the CPU is many times slower); UINT32_MAX when there is none. */
+static uint32_t host_memory_type(rt_executor *x, uint32_t allowed)
+{
+    const VkMemoryPropertyFlags coherent = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    const uint32_t cached = memory_type(x, allowed, coherent | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+    return cached != UINT32_MAX ? cached : memory_type(x, allowed, coherent);
+}
+
+/* Makes s hold at least bytes, mapped (host_memory_type). Kept between uses; 0, or -1. */
 static int staging_ready(rt_executor *x, staging_buffer *s, VkDeviceSize bytes)
 {
     if (s->buffer && s->size >= bytes) return 0;
@@ -998,9 +1013,7 @@ static int staging_ready(rt_executor *x, staging_buffer *s, VkDeviceSize bytes)
     if (vkCreateBuffer(x->device, &info, NULL, &s->buffer) != VK_SUCCESS) return -1;
     VkMemoryRequirements need;
     vkGetBufferMemoryRequirements(x->device, s->buffer, &need);
-    const VkMemoryPropertyFlags coherent = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    uint32_t type = memory_type(x, need.memoryTypeBits, coherent | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
-    if (type == UINT32_MAX) type = memory_type(x, need.memoryTypeBits, coherent);
+    const uint32_t type = host_memory_type(x, need.memoryTypeBits);
     const VkMemoryAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = need.size, .memoryTypeIndex = type};
     if (type == UINT32_MAX || vkAllocateMemory(x->device, &allocate, NULL, &s->memory) != VK_SUCCESS ||
         vkBindBufferMemory(x->device, s->buffer, s->memory, 0) != VK_SUCCESS ||
@@ -1237,6 +1250,7 @@ static int import_host(rt_executor *x, void *view, uint64_t bytes, VkBufferUsage
 static int import_memory(rt_executor *x, const rt_executor_memory *memory, char *error, size_t error_size)
 {
     x->size = memory->size, x->guest_base = memory->guest_base, x->collect_cpu_writes = memory->collect_cpu_writes;
+    x->cpu_writes_due = memory->cpu_writes_due;
     if (memory->guard && memory->unguard) x->guard = memory->guard, x->unguard = memory->unguard;
     x->chunk_changed = calloc((size_t)((memory->size + CHANGE_CHUNK - 1) / CHANGE_CHUNK), sizeof *x->chunk_changed);
     x->chunk_outside = calloc((size_t)((memory->size + CHANGE_CHUNK - 1) / CHANGE_CHUNK), sizeof *x->chunk_outside);
@@ -1259,7 +1273,9 @@ static int import_memory(rt_executor *x, const rt_executor_memory *memory, char 
                        &x->gds_buffer, &x->gds_memory, &x->gds_address, "the GDS", error, error_size);
 }
 
-/* The run-time stop words: host-visible, with GPU addresses the translated shaders store to. */
+/* The run-time stop words: host-visible, with GPU addresses the translated shaders store to, and
+   host-cached when the device has it: every finished batch reads all of them, and reading uncached
+   (write-combined) memory from the CPU costs a bus round trip per word. */
 static int open_stop_word(rt_executor *x, char *error, size_t error_size)
 {
     const VkBufferCreateInfo info = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = STOP_SINK_OFFSET + GCN_GUEST_SINK_BYTES,
@@ -1269,8 +1285,7 @@ static int open_stop_word(rt_executor *x, char *error, size_t error_size)
     vkGetBufferMemoryRequirements(x->device, x->stop_buffer, &need);
     const VkMemoryAllocateFlagsInfo flags = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO, .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
     const VkMemoryAllocateInfo allocate = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &flags, .allocationSize = need.size,
-                                           .memoryTypeIndex = memory_type(x, need.memoryTypeBits,
-                                                                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)};
+                                           .memoryTypeIndex = host_memory_type(x, need.memoryTypeBits)};
     void *mapped = NULL;
     if (allocate.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(x->device, &allocate, NULL, &x->stop_memory) != VK_SUCCESS ||
         vkBindBufferMemory(x->device, x->stop_buffer, x->stop_memory, 0) != VK_SUCCESS ||
@@ -1840,6 +1855,7 @@ static void note_cpu_writes(rt_executor *x)
         all_changed_outside(x);
         return;
     }
+    if (x->cpu_writes_due && !x->cpu_writes_due()) return;
     size_t n = 0;
     for (size_t i = 0; i < x->image_count; i++) {
         const image_entry *e = &x->images[i];
@@ -2188,12 +2204,18 @@ static target_entry *find_target(rt_executor *x, uint64_t address)
 static int write_back_targets_in(rt_executor *x, const memory_span *spans, unsigned span_count, char *error, size_t error_size);
 
 /* The bytes a render target's texels take in the guest memory, laid out by its tile mode (0 for a layout
-   not done yet, which drawing into it stops at). */
-static uint64_t target_span(const target_entry *t)
+   not done yet, which drawing into it stops at). Worked out when the target is made (target_layout_span):
+   every image load and write-back compares its memory with each target's. */
+static uint64_t target_layout_span(const target_entry *t)
 {
     rt_tiling layout;
     char reason[160];
     return rt_tiling_layout(t->tile_index, t->element_bytes, t->width, t->height, &layout, reason, sizeof reason) ? 0 : rt_tiling_size(&layout, 1);
+}
+
+static uint64_t target_span(const target_entry *t)
+{
+    return t->span;
 }
 
 /* Frees the slot of a render target no unfinished batch and no part of the draw being recorded uses, and
@@ -2287,6 +2309,7 @@ static target_entry *target_for(rt_executor *x, const rt_color_target *color, ch
     const int appended = t == &x->targets[x->target_count];
     *t = (target_entry){.cmask.resolved = UINT64_MAX, .loaded_change = UINT64_MAX, .address = color->address, .width = color->pitch, .height = color->height, .tile_index = color->tile_mode_index,
                         .format = format, .element_bytes = element_bytes, .used_ticket = x->submitted + 1, .used_call = x->call_serial};
+    t->span = target_layout_span(t);
     const VkImageCreateInfo image = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = format,
                                      .extent = {t->width, t->height, 1}, .mipLevels = 1, .arrayLayers = 1,
                                      .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
@@ -2416,6 +2439,7 @@ static void target_drawn(rt_executor *x, target_entry *t)
 }
 
 static uint64_t depth_span(const depth_entry *z);
+static uint64_t depth_layout_span(const depth_entry *z);
 
 static void depth_drawn(rt_executor *x, depth_entry *z)
 {
@@ -2424,11 +2448,14 @@ static void depth_drawn(rt_executor *x, depth_entry *z)
     if (!z->guarded && x->guard && written_back) z->guarded = x->guard(z->z_address, depth_span(z)) == 0;
 }
 
+/* The bucket of an image's address (image_buckets). */
+static size_t image_bucket(uint64_t address) { return (size_t)((address >> 8) * 0x9e3779b97f4a7c15ull >> 52) & (IMAGE_BUCKETS - 1); }
+
 static int take_written_image(rt_executor *x, target_entry *t, char *error, size_t error_size)
 {
-    image_entry *e = NULL;
-    for (size_t i = 0; i < x->image_count && !e; i++)
-        if (x->images[i].address == t->address && x->images[i].gpu_written) e = &x->images[i];
+    image_entry *e = NULL; /* the first such image in the cache's order */
+    for (uint32_t i = x->image_buckets[image_bucket(t->address)]; i; i = x->images[i - 1].bucket_next)
+        if (x->images[i - 1].address == t->address && x->images[i - 1].gpu_written && (!e || &x->images[i - 1] < e)) e = &x->images[i - 1];
     if (!e) return 0;
     if (!target_takes_image(t->format, e->format, e->type) && e->written_back) {
         /* the memory holds its texels, and the target loads them (memory_changed_since); its draws then
@@ -2473,12 +2500,12 @@ static int one_dimensional(uint32_t type);
 
 static int take_written_alias(rt_executor *x, image_entry *e, char *error, size_t error_size)
 {
-    const image_entry *w = NULL;
-    for (size_t i = 0; i < x->image_count && !w; i++) {
-        const image_entry *k = &x->images[i];
+    const image_entry *w = NULL; /* the first such image in the cache's order */
+    for (uint32_t i = x->image_buckets[image_bucket(e->address)]; i; i = x->images[i - 1].bucket_next) {
+        const image_entry *k = &x->images[i - 1];
         if (k != e && k->gpu_written && k->address == e->address && same_texel_bytes(k->format, e->format) && k->width == e->width &&
             k->height == e->height && k->layers == e->layers && k->depth == e->depth && k->type == e->type && k->levels == 1 &&
-            e->levels == 1)
+            e->levels == 1 && (!w || k < w))
             w = k;
     }
     if (!w) return 0;
@@ -2722,6 +2749,7 @@ static depth_entry *depth_for(rt_executor *x, const draw_state *s, char *error, 
     depth_entry *d = &x->depths[x->depth_count];
     *d = (depth_entry){.htile.resolved = UINT64_MAX, .z_address = z_address, .stencil_address = stencil_address, .slice = slice, .width = width, .height = height,
                        .tile_index = r[Z_INFO] >> 20 & 7, .format = format};
+    d->span = depth_layout_span(d);
     const VkImageAspectFlags aspects = (format == VK_FORMAT_S8_UINT ? 0 : VK_IMAGE_ASPECT_DEPTH_BIT) |
                                        (format == VK_FORMAT_D16_UNORM || format == VK_FORMAT_D32_SFLOAT ? 0 : VK_IMAGE_ASPECT_STENCIL_BIT);
     const VkImageCreateInfo image = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = format,
@@ -2841,13 +2869,19 @@ static int resolve_depth_fast_clear(rt_executor *x, const draw_state *s, depth_e
    batch, as colour targets are (write_back_targets calls it first). Depth targets of 32-bit floats only,
    in a layout runtime/tiling.h has; others keep their memory as it was (nothing read it so far). The
    stencil is not written back. 1 when any was written back, 0 when none, -1 with the reason. */
-/* The bytes of a depth target's depth in memory: its tile mode's size, or 4 per texel when that is not laid out here. */
-static uint64_t depth_span(const depth_entry *z)
+/* The bytes of a depth target's depth in memory: its tile mode's size, or 4 per texel when that is not laid
+   out here. Worked out when the depth target is made (depth_layout_span), as a colour target's. */
+static uint64_t depth_layout_span(const depth_entry *z)
 {
     rt_tiling layout;
     char reason[160];
     return rt_tiling_layout(z->tile_index, 4, z->width, z->height, &layout, reason, sizeof reason) ? (uint64_t)z->width * z->height * 4
                                                                                                    : rt_tiling_size(&layout, 1);
+}
+
+static uint64_t depth_span(const depth_entry *z)
+{
+    return z->span;
 }
 
 static int write_back_depths(rt_executor *x, const memory_span *spans, unsigned span_count, char *error, size_t error_size)
@@ -4357,6 +4391,11 @@ static int load_levels_on_gpu(rt_executor *x, image_entry *e, const rt_image_des
 static int load_levels(rt_executor *x, image_entry *e, const rt_image_descriptor *d, const texel_format *f, char *error, size_t error_size)
 {
     const unsigned bytes = f->bytes, block = f->block;
+    /* loaded before in this layout, from memory unchanged since and under no unwritten target: the levels'
+       layout is not worked out again (the image's shape and this layout fix it) */
+    if (e->tiling_index == d->tiling_index && e->pitch == d->pitch && e->loaded_change != UINT64_MAX &&
+        !unwritten_target_over(x, d->address, e->loaded_span) && !memory_changed_since(x, d->address, e->loaded_span, e->loaded_change))
+        return 0;
     if (d->pitch % block) return failed(error, error_size, "a block-compressed image at %#llx of pitch %u", (unsigned long long)d->address, d->pitch);
     if (d->pitch < d->width) return failed(error, error_size, "an image at %#llx of width %u and pitch %u", (unsigned long long)d->address,
                                            d->width, d->pitch);
@@ -4420,9 +4459,29 @@ static int load_levels(rt_executor *x, image_entry *e, const rt_image_descriptor
 /* The image the executor keeps for a descriptor, made on first use. A use that reads an image no
    shader has written loads the guest memory's texels first (each time: the guest may have changed
    them); a new image first written is cleared. VK_NULL_HANDLE after failing. */
+/* Enters an image in its address's bucket. */
+static void image_index_add(rt_executor *x, image_entry *e)
+{
+    uint32_t *first = &x->image_buckets[image_bucket(e->address)];
+    e->bucket_next = *first;
+    *first = (uint32_t)(e - x->images) + 1;
+}
+
+/* Takes an image out of its address's bucket (one never entered is not there: nothing changes). */
+static void image_index_remove(rt_executor *x, image_entry *e)
+{
+    const uint32_t index = (uint32_t)(e - x->images) + 1;
+    for (uint32_t *link = &x->image_buckets[image_bucket(e->address)]; *link; link = &x->images[*link - 1].bucket_next)
+        if (*link == index) {
+            *link = e->bucket_next;
+            return;
+        }
+}
+
 /* Frees what an image holds; its slot then matches no descriptor until it is reused. */
 static void image_release(rt_executor *x, image_entry *e)
 {
+    image_index_remove(x, e);
     for (unsigned v = 0; v < e->view_count; v++) vkDestroyImageView(x->device, e->views[v].view, NULL);
     vkDestroyImage(x->device, e->image, NULL);
     vkFreeMemory(x->device, e->memory, NULL);
@@ -4471,8 +4530,8 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
         }
     }
     image_entry *e = NULL;
-    for (size_t i = 0; i < x->image_count && !e; i++) {
-        image_entry *k = &x->images[i];
+    for (uint32_t i = x->image_buckets[image_bucket(d->address)]; i && !e; i = x->images[i - 1].bucket_next) {
+        image_entry *k = &x->images[i - 1];
         if (k->address == d->address && k->format == f->format && k->width == d->width && k->height == d->height && k->layers == d->layers &&
             k->type == d->type && k->levels == d->last_level + 1 && k->pow2 == (int)d->pow2_pad && k->depth == image_depth(d))
             e = k;
@@ -4535,6 +4594,7 @@ static image_entry *image_for(rt_executor *x, const rt_image_descriptor *d, cons
             return NULL;
         }
         if (!slot) x->image_count++;
+        image_index_add(x, e);
     }
     e->used_ticket = x->submitted + 1, e->used_call = x->call_serial;
     /* an image over a render target's memory loads it even to be written: a store may cover only part of
