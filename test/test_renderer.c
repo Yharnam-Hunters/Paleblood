@@ -100,7 +100,10 @@ static int steps_seen(void)
 
 /* The bound on how far submissions run ahead of the renderer (renderer.c's RENDER_LAG_LIMIT, 4): a
    thread submits buffers while the renderer's thread is held, counting the submits that returned. */
-enum { LAG_LIMIT = 4, LAG_BUFFER = 0xc0e70000 };
+/* The command buffers' addresses are in the guest memory: the renderer reads the words at a buffer's
+   calls (runtime/render_placed.h). */
+enum { LAG_LIMIT = 4 };
+#define LAG_BUFFER (GUEST_BASE + 0x3f40000ull)
 static int lag_returned, lag_flag;
 
 static void *submit_ahead(void *count)
@@ -178,7 +181,7 @@ int main(void)
         }
         rt_executor_close(probe);
     }
-    enum { BUFFER = 0xc0de0000, EMPTY = 0xc0df0000, BAD = 0xc0e00000 };
+    const uint64_t BUFFER = at(0x3f00000), EMPTY = at(0x3f10000), BAD = at(0x3f20000);
     uint32_t frame[SIZE * SIZE];
     rt_render_forget();
     const uint32_t size = record_draw(BUFFER, at(TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
@@ -212,7 +215,7 @@ int main(void)
        submits have returned while neither step has. Opened, the steps run gate first. A step after a
        drawn buffer's calls sees what they drew (the calls ran before it). */
     {
-        enum { GATED = 0xc0e90000 };
+        const uint64_t GATED = at(0x3f50000);
         const rt_gpu_step gate = {gate_step, "sceGnmSubmitCommandBuffers", 0, {9}, 0, NULL};
         const rt_gpu_step after = {note_step, "sceGnmSubmitCommandBuffers", 0, {1}, 0, NULL};
         const rt_gpu_step drawn = {frame_step, "sceGnmSubmitCommandBuffers", RT_GPU_STEP_AFTER_ALL, {2, at(TARGET)}, 0, NULL};
@@ -229,7 +232,7 @@ int main(void)
         CHECK(step_saw_triangle);
         /* A step at the start of a buffer runs before its calls (a wait holds before the draws after
            it): the frame there is not drawn yet; a step after all of them sees it drawn. */
-        enum { FRESH = 0xc0ea0000 };
+        const uint64_t FRESH = at(0x3f60000);
         const uint32_t fresh_size = record_draw(FRESH, at(OTHER_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
         const rt_gpu_step around[] = {{frame_step, "sceGnmSubmitCommandBuffers", 0, {3, at(OTHER_TARGET)}, 0, NULL},
                                       {note_step, "sceGnmSubmitCommandBuffers", RT_GPU_STEP_AFTER_ALL, {4}, 0, NULL}};
@@ -245,7 +248,8 @@ int main(void)
        them drawn; a deferrable step held closed (gate) keeps a later wait-like step (6) and a later
        deferrable one (7) behind it; rt_renderer_wait_idle waits for them all. */
     {
-        enum { DEFERRED = 0xc0eb0000, THIRD_TARGET = 0x300000 };
+        enum { THIRD_TARGET = 0x300000 };
+        const uint64_t DEFERRED = at(0x3f70000);
         step_count = 0, step_saw_triangle = 0;
         gate_open = 0;
         const uint32_t deferred_size = record_draw(DEFERRED, at(THIRD_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
@@ -304,7 +308,8 @@ int main(void)
        before it, and the renderer's thread does not wait for it. One whose target no draw has used is
        still performed, and shows nothing. */
     {
-        enum { FLIPPED = 0xc0ec0000, FOURTH_TARGET = 0x400000, NEVER_DRAWN = 0x500000 };
+        enum { FOURTH_TARGET = 0x400000, NEVER_DRAWN = 0x500000 };
+        const uint64_t FLIPPED = at(0x3f80000);
         step_count = 0, step_saw_triangle = 0;
         const uint32_t flipped_size = record_draw(FLIPPED, at(FOURTH_TARGET), COLOR_8_8_8_8, SWAP_STD, PERSP_CENTER);
         const rt_gpu_step flip = {frame_step, "sceGnmSubmitAndFlipCommandBuffers", RT_GPU_STEP_AFTER_ALL,
