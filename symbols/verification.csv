@@ -194,6 +194,7 @@ frame_timing_task_013d3520,recorded,,208,208,0,0,c52608f510993456,2026-10-07
 frame_timing_task_013d3520,recorded,uncapped,208,208,0,0,c52608f510993456,2026-10-07
 frame_timing_task_013d3520,edge,,11,11,0,0,c52608f510993456,2026-10-07
 frame_timing_task_013d3520,edge,uncapped,11,11,0,0,c52608f510993456,2026-10-07
+frame_timing_task_clear_items_0143ec40,recorded,,200,200,0,0,2d603cbb0c70b1c4,2026-11-13
 frame_timing_task_dispatch_0138a370,recorded,,51,51,0,0,8882a92dbfe2e577,2026-10-07
 frame_timing_task_dispatch_0138a370,edge,,7,7,0,0,8882a92dbfe2e577,2026-10-07
 frame_timing_task_flush_queue_0143e490,recorded,,200,200,0,0,8882a92dbfe2e577,2026-10-07
@@ -206,6 +207,9 @@ frame_timing_task_run_all_01388c60,recorded,,209,209,0,0,8882a92dbfe2e577,2026-1
 frame_timing_task_run_all_01388c60,edge,,4,4,0,0,8882a92dbfe2e577,2026-10-07
 frame_timing_task_set_frame_value_0143f9f0,recorded,,209,209,0,0,8882a92dbfe2e577,2026-10-07
 frame_timing_task_set_frame_value_0143f9f0,edge,,7,7,0,0,8882a92dbfe2e577,2026-10-07
+frame_timing_task_worker_finish_0143df10,recorded,,84,84,0,0,2d603cbb0c70b1c4,2026-11-13
+frame_timing_task_worker_run_0143deb0,recorded,,58,58,0,0,2d603cbb0c70b1c4,2026-11-13
+frame_timing_task_worker_start_0143de20,recorded,,71,71,0,0,2d603cbb0c70b1c4,2026-11-13
 frame_timing_task_workers_step_014400a0,recorded,,53,53,0,0,8882a92dbfe2e577,2026-10-07
 frame_timing_task_workers_step_014400a0,edge,,1,1,0,0,8882a92dbfe2e577,2026-10-07
 frame_timing_thread_random,edge,,9,9,0,0,1c25b5ded0274744,2026-11-10
