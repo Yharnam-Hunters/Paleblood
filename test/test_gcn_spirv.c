@@ -12,6 +12,8 @@
 #include "runtime/tile_copy.h"
 
 #include "gcn_programs.h"
+#include "pixel_constant_wqm_programs.h"
+#include "runtime/spirv.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -775,8 +777,76 @@ static void survey_mode(void)
     CHECK(strstr(error, "v_interp_p1_f32") != NULL && !strstr(error, "s_sendmsg") && error[0] != '@');
 }
 
+/* Constant pixel WQM needs neither quad peers nor a native wave width. A nonconstant mask
+   still emits all three swaps, including after a guest branch or an internal selection. */
+static void constant_wqm_module(stage s, const uint32_t *code, size_t dwords,
+                                unsigned expected_swaps, const char *name)
+{
+    const gcn_pixel_layout pixel = {.user_sgprs = PIXEL_CONSTANT_WQM_USER_SGPRS};
+    const gcn_vertex_layout vertex = {.user_sgprs = 0};
+    const gcn_compute_layout compute = {.local_size = {64, 1, 1}, .user_sgprs = 0};
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    char error[256] = "";
+    const int result = s == PIXEL ? gcn_translate_pixel(code, dwords, &pixel, &spirv, &words, error, sizeof error) :
+                       s == VERTEX ? gcn_translate_vertex(code, dwords, &vertex, &spirv, &words, error, sizeof error) :
+                                     gcn_translate_compute(code, dwords, &compute, &spirv, &words, error, sizeof error);
+    if (result) fprintf(stderr, "  WQM %s: %s\n", name, error);
+    CHECK(result == 0 && spirv && words > 5);
+    if (!spirv) return;
+    unsigned swaps = 0;
+    size_t at = 5;
+    while (at < words) {
+        const size_t count = spirv[at] >> 16;
+        CHECK(count > 0 && count <= words - at);
+        if (!count || count > words - at) break;
+        swaps += (spirv[at] & 0xffffu) == SPV_OP_GROUP_NON_UNIFORM_QUAD_SWAP;
+        at += count;
+    }
+    CHECK(at == words);
+    if (swaps != expected_swaps) fprintf(stderr, "  WQM %s: %u quad swaps, expected %u\n", name, swaps, expected_swaps);
+    CHECK(swaps == expected_swaps);
+    const int valid = validate(spirv, words, name);
+    if (valid < 0) fprintf(stderr, "  WQM %s: spirv-val not installed; validation skipped\n", name);
+    else CHECK(valid == 1);
+    free(spirv);
+}
+
+static void constant_pixel_wqm(void)
+{
+    for (size_t i = 0; i < PIXEL_CONSTANT_WQM_POSITIVE_COUNT; i++) {
+        const pb_pixel_constant_wqm_program *p = &pixel_constant_wqm_positive[i];
+        constant_wqm_module(PIXEL, p->code, p->dwords, p->expected_quad_swaps, p->name);
+    }
+    for (size_t i = 0; i < PIXEL_CONSTANT_WQM_NEGATIVE_COUNT; i++) {
+        const pb_pixel_constant_wqm_program *p = &pixel_constant_wqm_negative[i];
+        constant_wqm_module(PIXEL, p->code, p->dwords, p->expected_quad_swaps, p->name);
+    }
+    /* The optimization is pixel-only: literal masks retain the old three swaps in each
+       compute/vertex module. These small programs deliberately have no pixel export. */
+    constant_wqm_module(COMPUTE, PROGRAM(pixel_wqm_nonpixel_literal_full), 3, "compute_wqm_literal_full");
+    constant_wqm_module(COMPUTE, PROGRAM(pixel_wqm_nonpixel_literal_empty), 3, "compute_wqm_literal_empty");
+    constant_wqm_module(VERTEX, PROGRAM(pixel_wqm_nonpixel_literal_full), 3, "vertex_wqm_literal_full");
+    constant_wqm_module(VERTEX, PROGRAM(pixel_wqm_nonpixel_literal_empty), 3, "vertex_wqm_literal_empty");
+
+    /* A backedge observes the changed EXEC on its second iteration. The decoder requires
+       the unreachable end marker; this loop is translated only, never submitted to a GPU. */
+    static const uint32_t self_loop[] = {0xbefe0a7eu, 0xbefe0480u, 0xbf82fffdu, 0xbf810000u};
+    constant_wqm_module(PIXEL, PROGRAM(self_loop), 3, "pixel_wqm_self_loop");
+
+    /* Survey output is deliberately unoptimized, including literals. Restore the global
+       mode before the rest of this executable, and separately check normal folding returns. */
+    gcn_spirv_set_survey(1);
+    constant_wqm_module(PIXEL, PROGRAM(pixel_wqm_nonpixel_literal_full), 3, "pixel_wqm_survey_full");
+    constant_wqm_module(PIXEL, PROGRAM(pixel_wqm_nonpixel_literal_empty), 3, "pixel_wqm_survey_empty");
+    constant_wqm_module(PIXEL, PROGRAM(pixel_wqm_initial_exec_simple), 3, "pixel_wqm_survey_initial");
+    gcn_spirv_set_survey(0);
+    constant_wqm_module(PIXEL, PROGRAM(pixel_wqm_nonpixel_literal_full), 0, "pixel_wqm_after_survey");
+}
+
 int main(void)
 {
+    constant_pixel_wqm();
     survey_mode();
     tessellation();
     geometry_shaders();

@@ -103,6 +103,10 @@ typedef struct {
     spirv_words variables, setup, prologue, blocks; /* the entry function's parts */
     spirv_words *out;                               /* where instructions go now */
     uint32_t exec, scc, pc;                         /* EXEC's lane bit, SCC, the next block's index */
+    /* A pixel shader's straight-line EXEC may be provably full or empty. A guest branch or
+       internal conditional ends this local proof; zero means the current value is unknown. */
+    int constant_exec_enabled;
+    uint32_t constant_exec;
     uint32_t glsl;                      /* the GLSL.std.450 import */
     uint32_t vgpr[VGPR_COUNT], sgpr[SGPR_COUNT], lane_bit[SGPR_COUNT]; /* variables, made on first use */
     /* the user SGPRs read before the program writes them, in program order (a bit each); writing is set
@@ -225,6 +229,10 @@ static void mark_vgpr_access(translator *t, uint32_t pointer, int written);
 static void store(translator *t, spirv_words *to, uint32_t pointer, uint32_t v)
 {
     mark_vgpr_access(t, pointer, 1);
+    if (t->constant_exec_enabled && pointer == t->exec) {
+        const uint32_t empty = spirv_constant_bool(&t->m, 0), full = spirv_constant_bool(&t->m, 1);
+        t->constant_exec = v == empty || v == full ? v : 0;
+    }
     const uint32_t words[] = {pointer, v};
     spirv_emit(&t->m, to, SPV_OP_STORE, words, 2);
 }
@@ -431,6 +439,9 @@ static void write_vector_lane_bit(translator *t, unsigned n, uint32_t b)
 /* if (condition) { ... } around code only some lanes run: begin returns the merge label. */
 static uint32_t begin_if(translator *t, uint32_t condition)
 {
+    /* Do not carry a store's constant value across a path which might not execute it. */
+    t->constant_exec_enabled = 0;
+    t->constant_exec = 0;
     const uint32_t then = spirv_new_id(&t->m), merge = spirv_new_id(&t->m);
     spirv_emit(&t->m, t->out, SPV_OP_SELECTION_MERGE, (const uint32_t[]){merge, SPV_SELECTION_CONTROL_NONE}, 2);
     spirv_emit(&t->m, t->out, SPV_OP_BRANCH_CONDITIONAL, (const uint32_t[]){condition, then, merge}, 3);
@@ -1192,6 +1203,7 @@ static uint32_t signed_overflow(translator *t, uint32_t a, uint32_t b, uint32_t 
 /* A 64-bit mask operand as this lane's bit: an SGPR pair, VCC or EXEC, or the constants 0 and -1. */
 static uint32_t mask_source(translator *t, unsigned field, const gcn_instruction *ins)
 {
+    if (field == SGPR_EXEC && t->constant_exec_enabled && t->constant_exec) return t->constant_exec;
     if ((field < SGPR_VCC && field % 2 == 0) || field == SGPR_VCC || field == SGPR_EXEC) return read_mask(t, field);
     if (field == OPERAND_INT_ZERO) return spirv_constant_bool(&t->m, 0);
     if (field == OPERAND_INT_LAST_POSITIVE + 1) return spirv_constant_bool(&t->m, 1); /* -1: all lanes */
@@ -1379,13 +1391,21 @@ static void scalar_instruction(translator *t, const uint32_t *w, const gcn_instr
            a pixel shader) has it; SCC is "any lane set". Vulkan's quad operations work on the same
            quads, so the bit is OR-ed across them with three quad swaps. */
         const uint32_t b = mask_source(t, ssrc0, ins);
-        uint32_t r = b;
-        for (uint32_t direction = 0; direction < 3; direction++) /* horizontal, vertical, diagonal */
-            r = value(t, SPV_OP_LOGICAL_OR, t_bool(t), 2, r,
-                      value(t, SPV_OP_GROUP_NON_UNIFORM_QUAD_SWAP, t_bool(t), 3, konst(t, SPV_SCOPE_SUBGROUP), b, konst(t, direction)));
-        t->uses_quads = 1;
-        write_mask(t, sdst, r, ins);
-        set_scc(t, any_lane(t, r));
+        if (t->layout->stage == STAGE_PIXEL && !survey_mode &&
+            (b == spirv_constant_bool(&t->m, 0) || b == spirv_constant_bool(&t->m, 1))) {
+            /* Expanding an empty/full mask leaves it empty/full, and its wave-wide nonzero
+               flag is the same constant. No quad peer or native subgroup width is involved. */
+            write_mask(t, sdst, b, ins);
+            set_scc(t, b);
+        } else {
+            uint32_t r = b;
+            for (uint32_t direction = 0; direction < 3; direction++) /* horizontal, vertical, diagonal */
+                r = value(t, SPV_OP_LOGICAL_OR, t_bool(t), 2, r,
+                          value(t, SPV_OP_GROUP_NON_UNIFORM_QUAD_SWAP, t_bool(t), 3, konst(t, SPV_SCOPE_SUBGROUP), b, konst(t, direction)));
+            t->uses_quads = 1;
+            write_mask(t, sdst, r, ins);
+            set_scc(t, any_lane(t, r));
+        }
     } else if (!strcmp(name, "s_not_b64")) {
         const uint32_t r = value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, mask_source(t, ssrc0, ins));
         write_mask(t, sdst, r, ins);
@@ -2365,6 +2385,8 @@ static void export_instruction(translator *t, const uint32_t *w)
     const uint32_t variable = extra_position || depth ? 0 : export_variable(t, target);
     if (!extra_position && !depth && !variable) return;
     if (valid_mask && t->layout->stage == STAGE_PIXEL) {
+        t->constant_exec_enabled = 0;
+        t->constant_exec = 0;
         const uint32_t inactive = value(t, SPV_OP_LOGICAL_NOT, t_bool(t), 1, exec_bit(t));
         const uint32_t discard = spirv_new_id(&t->m), merge = spirv_new_id(&t->m);
         spirv_emit(&t->m, t->out, SPV_OP_SELECTION_MERGE, (const uint32_t[]){merge, SPV_SELECTION_CONTROL_NONE}, 2);
@@ -4364,6 +4386,8 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
 
     /* Every lane starts active, SCC clear, at block 0. */
     t->exec = function_variable(t, t_bool(t), spirv_constant_bool(m, 1));
+    t->constant_exec_enabled = layout->stage == STAGE_PIXEL && !survey_mode;
+    t->constant_exec = spirv_constant_bool(m, 1);
     t->scc = function_variable(t, t_bool(t), spirv_constant_bool(m, 0));
     t->pc = function_variable(t, t_uint(t), konst(t, 0));
     t->out = &t->prologue;
@@ -4387,6 +4411,12 @@ static int translate(const uint32_t *code, size_t dwords, const stage_layout *la
     uint32_t block_count = 0;
     for (long i = 0; i < count; i++)
         if (starts[instructions[i].at]) block_of[instructions[i].at] = block_count++;
+    if (block_count != 1) t->constant_exec_enabled = 0, t->constant_exec = 0;
+    for (long i = 0; t->constant_exec_enabled && i < count; i++) {
+        long target;
+        if (branches(code + instructions[i].at, &instructions[i].ins, instructions[i].at, &target))
+            t->constant_exec_enabled = 0, t->constant_exec = 0;
+    }
     uint32_t *labels = calloc(block_count + 1, sizeof *labels);
     const uint32_t header = spirv_new_id(m), dispatch = spirv_new_id(m), switch_merge = spirv_new_id(m);
     const uint32_t continue_block = spirv_new_id(m), loop_merge = spirv_new_id(m), fallback = spirv_new_id(m);
