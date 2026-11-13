@@ -153,7 +153,7 @@ int main(void)
     CHECK(unlink(name)==0);CHECK(ftruncate(fd,POOL)==0);unsigned char *pool=mmap(NULL,POOL,PROT_READ|PROT_WRITE,MAP_SHARED,fd,0);if(pool==MAP_FAILED)return 1;
     memcpy(pool+COLOR_SHADER,pixel_color,sizeof pixel_color);memcpy(pool+COMPUTE_SHADER,scale_add,sizeof scale_add);
     memcpy(pool+VS,vertex_position_color,sizeof vertex_position_color);const float positions[12]={-1,-1,0,1,3,-1,0,1,-1,3,0,1};memcpy(pool+POSITIONS,positions,sizeof positions);
-    const rt_executor_memory memory={fd,POOL,guest_base,NULL,NULL,NULL,NULL,0};rt_executor *x=NULL;CHECK(rt_executor_open(&memory,&x,error,sizeof error)==0);if(!x)return 1;
+    const rt_executor_memory memory={fd,POOL,guest_base,NULL,NULL,NULL,NULL,0,NULL};rt_executor *x=NULL;CHECK(rt_executor_open(&memory,&x,error,sizeof error)==0);if(!x)return 1;
     uint32_t user[16]={0};buffer_descriptor((uint32_t *)(pool+OUTPUT_DESCRIPTOR),PROBE);buffer_descriptor(user+12,PROBE);
     const struct {unsigned data,number,components,bytes,block;} formats[]={
         {1,0,1,1,1},{3,0,2,2,1},{4,7,1,4,1},{11,7,2,8,1},{14,7,4,16,1},{10,0,4,4,1},{10,9,4,4,1},
@@ -210,7 +210,9 @@ int main(void)
         probe(x,pool,code,length,user,0xffff,NULL);float_results(pool,expected_mip,0.00001f);
         if(!arrayed){unsigned lod_slot=one_d?9:10;user[lod_slot]=1;probe(x,pool,code,length,user,0xffff,NULL);
             const float last_mip[4]={112.0f/255,66.0f/255,128.0f/255,1};float_results(pool,last_mip,0.00001f);
-            user[lod_slot]=2;probe(x,pool,code,length,user,0xffff,"shader runtime stop");
+            /* Out-of-range LOD on this RGBA view returns a zero replacement texel. */
+            user[lod_slot]=2;probe(x,pool,code,length,user,0xffff,NULL);
+            const float outside_mip[4]={0,0,0,0};float_results(pool,outside_mip,0.00001f);
             user[lod_slot]=0;probe(x,pool,code,length,user,0xffff,NULL);float_results(pool,expected_mip,0.00001f);
         }
     }

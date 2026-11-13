@@ -1579,6 +1579,18 @@ class VerificationRecord(unittest.TestCase):
     def test_edge_verified_is_not_held_to_the_rule(self):
         self.assertEqual(self.v.check(self.root, [dict(self.funcs[0], status='edge-verified')]), [])
 
+    def test_stale_result_of_an_edge_verified_function_is_refused(self):
+        funcs = [dict(self.funcs[0], status='edge-verified')]
+        self.v.record(self.root, 'x_f', 'edge', '', ['e'], [])
+        self.assertEqual(self.v.check(self.root, funcs), [])
+        with open(os.path.join(self.root, 'game', 'x', 'helper.h'), 'a') as f:
+            f.write('// changed\n')
+        errs = self.v.check(self.root, funcs)
+        self.assertEqual(len(errs), 1)
+        self.assertIn('the edge result of x_f is for other code', errs[0])
+        self.v.record(self.root, 'x_f', 'edge', '', ['e'], [])
+        self.assertEqual(self.v.check(self.root, funcs), [])
+
 
 class Promotion(unittest.TestCase):
     """tools/promote.py keeps generated verification results out of the capture library."""
