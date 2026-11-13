@@ -21,7 +21,10 @@ symbols/quarantine.csv     cases that cannot be used, each with the reason.
 
 A function may be verified only when it has current recorded and edge rows without an option,
 and none of its current rows has a failure that is not quarantined (docs/VERIFY.md,
-"Quarantine"); tools/validate_functions.py enforces it.
+"Quarantine"); tools/validate_functions.py enforces it. A current byte-exact row in
+symbols/matching.csv (tools/match.py, docs/MATCHING.md) may stand in for the recorded row, but only
+when its targets_checked is yes: every call, jump and data reference was shown to reach the same
+place as the original's. The edge row and the independent review are still required.
 """
 from __future__ import annotations
 
@@ -133,14 +136,30 @@ def record(root: str, function: str, cases: str, option: str, case_names: list[s
         rows = [r for r in read_csv(path, VERIFICATION_HEADER)
                 if (r['function'], r['cases'], r['option']) != (function, cases, option)]
         rows.append(row)
-        rows.sort(key=lambda r: (r['function'], CASE_SETS.index(r['cases']) if r['cases'] in CASE_SETS else 99,
-                                 r['option']))
+        rows.sort(key=record_order)
         write_csv(path, VERIFICATION_HEADER, rows)
     return row
 
 
+def record_order(r: dict) -> tuple:
+    """The order record() keeps the rows in: by function, case set and option. One row per key,
+    one row per line, so pull requests that record different functions merge without conflicts
+    (CONTRIBUTING.md, "Generated progress and merging main")."""
+    return (r['function'], CASE_SETS.index(r['cases']) if r['cases'] in CASE_SETS else 99, r['option'])
+
+
+def order_errors(rows: list[dict], rel: str, key) -> list[str]:
+    errs = []
+    for prev, r in zip(rows, rows[1:]):
+        if key(r) <= key(prev):
+            errs.append(f"{rel}:{r['_line']}: rows must be unique and in order (tools/verify.py run --record "
+                        "keeps them so; tools/remerge.py restores it after a merge)")
+    return errs
+
+
 def check(root: str, funcs: list[dict]) -> list[str]:
-    """Errors for verified functions without a clean, current record, and for malformed rows."""
+    """Errors for verified functions without a clean, current record, for results of any function
+    that are for other code, and for malformed rows."""
     errs: list[str] = []
     try:
         results = read_csv(os.path.join(root, 'symbols', 'verification.csv'), VERIFICATION_HEADER)
@@ -158,6 +177,9 @@ def check(root: str, funcs: list[dict]) -> list[str]:
             errs.append(f"{where}: a quarantined case needs its reason")
         if not q['case'].strip():
             errs.append(f"{where}: case is empty")
+    errs += order_errors(results, 'symbols/verification.csv', record_order)
+    errs += order_errors(quarantine, 'symbols/quarantine.csv',
+                         lambda q: (*record_order(q), q['case']))
     counts: dict[tuple, int] = {}
     for q in quarantine:
         key = (q['function'], q['cases'], q['option'])
@@ -178,6 +200,8 @@ def check(root: str, funcs: list[dict]) -> list[str]:
         if held > counts.get((r['function'], r['cases'], r['option']), 0):
             errs.append(f'{where}: {held} quarantined, but symbols/quarantine.csv lists fewer cases for it')
         by_function.setdefault(r['function'], []).append(r)
+    import match
+    matched = match.byte_exact_functions(root)       # byte_exact=yes and targets_checked=yes, source current
     for f in funcs:
         if f['status'] != 'verified':
             continue
@@ -187,6 +211,8 @@ def check(root: str, funcs: list[dict]) -> list[str]:
         stale = [r for r in rows if r['source'] != current]
         fresh = [r for r in rows if r['source'] == current]
         for need in ('recorded', 'edge'):
+            if need == 'recorded' and f['name'] in matched:
+                continue        # a current, target-checked byte-exact match stands in (docs/MATCHING.md)
             if not any(r['cases'] == need and r['option'] == '' for r in fresh):
                 errs.append(f"{where} without a current {need} result in symbols/verification.csv "
                             f"(tools/verify.py run --record {need})")
@@ -199,4 +225,24 @@ def check(root: str, funcs: list[dict]) -> list[str]:
             label = r['cases'] + (f" with {r['option']}" if r['option'] else '')
             errs.append(f"{where} but its {label} result (symbols/verification.csv:{r['_line']}) is for other code: "
                         f"run it again with --record")
+    errs += stale_errors(root, by_function, {f['name'] for f in funcs if f['status'] == 'verified'})
+    return errs
+
+
+def stale_errors(root: str, by_function: dict[str, list[dict]], verified: set[str]) -> list[str]:
+    """A result for other code, of a function that is not verified (check() reports those with what
+    verified needs). A change to a file a replacement includes leaves its results stale; caught here,
+    in the pull request that makes the change, they cannot pile up on main unnoticed."""
+    errs = []
+    for name, rows in by_function.items():
+        if name in verified:
+            continue
+        current = source_hash(root, name)
+        for r in rows:
+            if r['source'] != current:
+                label = r['cases'] + (f" with {r['option']}" if r['option'] else '')
+                errs.append(f"symbols/verification.csv:{r['_line']}: the {label} result of {name} is for other "
+                            f"code (its source or a header it includes changed): run it again with "
+                            f"tools/verify.py run --record {r['cases']}, or remove the row if you cannot run "
+                            f"those cases (docs/VERIFY.md, \"Recorded results and quarantine\")")
     return errs

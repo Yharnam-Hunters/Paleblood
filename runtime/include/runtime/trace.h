@@ -28,6 +28,7 @@ typedef struct {
     uint64_t gpr[6];                          /* rdi, rsi, rdx, rcx, r8, r9 */
     uint8_t xmm[8][16];                       /* xmm0..xmm7 */
     uint64_t stack[RT_TRACE_STACK_SLOTS];     /* [rsp+8], [rsp+16], ... at the call */
+    uint64_t caller_rsp;                      /* rsp at the call (the return address), or 0 */
 } rt_trace_args;
 
 typedef struct {
@@ -49,6 +50,7 @@ typedef struct {
     uint8_t arg;               /* rdi = 0 ... r9 = 5 */
     uint32_t offset, size;     /* bytes at arg + offset */
     size_t data;               /* into rt_trace_log.write_bytes */
+    uint64_t addr;             /* where they are: the argument's value + offset */
 } rt_trace_write;
 
 typedef struct {
@@ -64,6 +66,8 @@ typedef struct {
     uint8_t *flags;            /* RT_TRACE_READ: read before written; RT_TRACE_WRITTEN */
     size_t qword_count;        /* addresses of the eight-byte reads that were inputs */
     uint64_t *qword;
+    size_t link_count;         /* far reaches through a base pointer (256 B .. 1 MiB from it) */
+    uint64_t (*link)[2];       /* {base pointer, address reached}: the two belong in one buffer */
     unsigned stack_slots;      /* stack arguments read: 0 .. RT_TRACE_STACK_SLOTS */
     size_t import_count;       /* imports called, in order */
     rt_trace_import_call *imports;

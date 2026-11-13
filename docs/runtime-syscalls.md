@@ -1046,20 +1046,26 @@ modelled, a reset leaves the reported orientation the identity, neither setting 
 reading with no motion, and each call answers 0 (`test/syslib/pad_motion_settings.c`). An
 unknown handle and a setting other than 0 or 1 stop by name.
 
-## The on-screen keyboard, canceled (`libSceImeDialog`, issue #36)
+## The on-screen keyboard, canceled or given a text (`libSceImeDialog`, issue #36)
 
 **Facts.** OpenOrbis `ImeDialog.h` and `_types/ime_dialog.h` give:
 - the shapes: `sceImeDialogInit(setting, extended)`, `GetStatus()`, `GetResult(result)` and
   `Term()`;
 - the statuses: NONE 0, RUNNING 1, STOPPED 2;
 - the result: an end status (OK 0, CANCEL 1, ABORT 2) followed by 12 reserved bytes.
+- the setting (`OrbisImeDialogSetting`, 96 bytes): user, type, 64-bit languages, enter label,
+  input method, a text filter callback (`0x18`), option, maximum text length (`0x24`, 16-bit
+  characters without the terminating zero), the text buffer (`0x28`), position, alignments,
+  placeholder, title and 16 reserved bytes. The text is 16-bit characters (`wchar_t` is 16 bits on
+  the PS4). shadPS4's `OrbisImeDialogParam` has the same fields.
 
 shadPS4's `ime_dialog.cpp` (facts only) gives the states: Init from NONE to RUNNING, Abort from
 RUNNING to finished with ABORT, and Term from finished to NONE.
 
 **The executable's keyboard** (`0x02d03f80`):
-- **Opening.** It fills a setting with a text buffer that holds the initial text, calls Init with
-  no extended setting, and takes 0 as open.
+- **Opening.** It fills a setting on its stack (no text filter; a heap text buffer that holds the
+  initial text), calls Init with no extended setting, takes 0 as open and returns, so the setting's
+  memory is reused before the first status query. The runtime copies the setting at Init.
 - **Polling.** Each frame, `0x02d03df0` asks GetStatus. On 2 it reads the result: end status 0
   takes the buffer's text; 1 and 2 (or a failed GetResult) take none.
 - **Closing.** `0x02d03e70` then calls Term. `0x02d04300` calls Abort while the keyboard is open
@@ -1069,6 +1075,12 @@ RUNNING to finished with ABORT, and Term from finished to NONE.
 - **Cancel.** Init opens the keyboard, and the first GetStatus finds it closed with CANCEL, as if
   the user backed out at once. The title takes no text, the buffer is left as given, and nothing is
   shown.
+- **A given text** (`pbboot --keyboard-text TEXT`, `tools/boot.py --no-record --keyboard-text
+  TEXT`). The first GetStatus writes TEXT (UTF-8 on the command line, written as UTF-16) into the
+  setting's buffer, zero-terminated, and closes the keyboard with OK, as if the user typed it and
+  pressed Done. A title's text filter (shadPS4 calls it from GetStatus on the title's thread; facts
+  only) gets the text first, and its output is what the buffer gets. Character creation needs it: the contract cannot be finished without a name (the
+  game answers "A name is required."). Unattended boots use it with an input script.
 - **Abort and Term.** Abort of an open keyboard closes it with ABORT, and Term closes the library.
 
 **What stops by name:**
@@ -1076,7 +1088,10 @@ RUNNING to finished with ABORT, and Term from finished to NONE.
   `0x80bc0001`; this is not confirmed);
 - GetResult before the keyboard closed, or with no structure;
 - Abort when no keyboard is open;
-- Term before the keyboard closed.
+- Term before the keyboard closed;
+- with a given text: no text buffer, a text filter that refuses the text (non-zero; the keyboard's
+  answer then is not established) or answers more than fits, or a maximum length shorter than the
+  text.
 
 An extended setting is ignored.
 
@@ -1922,7 +1937,9 @@ holding no attribute is `EINVAL`.
 
 The title's saves live in the host folder given to `pbboot --savedata`. `tools/boot.py` gives
 each run a new empty one, so boots start alike, unless `--savedata DIR` names a folder to keep
-them in. A mounted save appears to the title as `/savedataN` (N the lowest free of 16), through
+them in. `--savedata-from DIR` (with `--no-record`) starts the new folder as a copy of a checkpoint
+in the runtime's layout (`<user id>/<directory>/`, below), which the run never changes: a boot can
+load a save the game wrote in an earlier run and start where it left off. A mounted save appears to the title as `/savedataN` (N the lowest free of 16), through
 the same file calls as `/app0` and `/data`, read-only or writable as mounted.
 
 **Sources.** shadPS4's `libSceSaveData` (`savedata.cpp`, `savedata.h`, `savedata_error.h`,
@@ -2428,18 +2445,22 @@ OpenOrbis' `GnmDriver.h` only names this call, so its shape comes from the engin
   the read pointer to 0.
 - The setup then reports success only when that id is not 0.
 
-**What the runtime does.** It does not run the GPU, so the ring is never read. It records each
+**What the runtime does.** It reads the ring only when `sceGnmDingDong` rings (below). It records each
 queue for the engine-level graphics layer, and answers ids from 1.
 
 **What stops by name:** mapping the same pipe and queue twice, and a missing ring or read pointer.
 
-**The renderer and compute queues.** `sceGnmDingDong` completes each indirect buffer the ring points
-to (the temporary stand-in in `runtime/syslib/gnm.c`), then hands it to the renderer, which drops its
-recorded calls without running them (`rt_renderer_skip`): compute queues do not run on the renderer
-yet. Dropping them matters because a shader bound in a command buffer is recorded by its address. A
-compute queue's buffer is never submitted to the graphics queue, so before this its bindings stayed
-waiting, and a graphics buffer later built in the same memory picked them up: on the main menu after
-Play Offline, a stale compute shader replaced the one the graphics buffer had just bound.
+**The renderer and compute queues.** `sceGnmDingDong` reads each indirect buffer the ring points
+to (the temporary stand-in in `runtime/syslib/gnm.c`) as `sceGnmSubmitCommandBuffers` reads a
+graphics buffer, and submits it to the renderer (`rt_renderer_submit`). Its dispatches run on the
+renderer's one queue, in submission order with the graphics work, and its RELEASE_MEM labels are
+steps written once that work has run (at once with the display off). The character creation screen
+needs this: the compute queues fill a 16x16x16 colour volume, composed images and the light data its
+clustered lighting pass reads; when the stand-in dropped their dispatches, the preview stayed unlit.
+Submitting also takes the buffer's recorded calls, which matters because a shader bound in a command
+buffer is recorded by its address: a graphics buffer later built in the same memory must not pick
+up a compute queue's binding (on the main menu after Play Offline, a stale compute shader once
+replaced the one the graphics buffer had just bound).
 
 ## Kernel event queues (`sceKernelCreateEqueue`, `sceKernelWaitEqueue`, `sceKernelDeleteEqueue`, issue #34)
 
@@ -2587,3 +2608,15 @@ metadata.
 - [FreeBSD `pthread_attr(3)`](https://man.freebsd.org/cgi/man.cgi?query=pthread_attr_setdetachstate&sektion=3), [libthr `thr_attr.c`](https://cgit.freebsd.org/src/tree/lib/libthr/thread/thr_attr.c) (`_pthread_attr_setdetachstate`, `_pthread_attr_get_np`), [`thr_create.c`](https://cgit.freebsd.org/src/tree/lib/libthr/thread/thr_create.c) (`_pthread_create`: the default attribute for a null or empty variable) and [`include/pthread.h`](https://cgit.freebsd.org/src/tree/include/pthread.h) (`PTHREAD_CREATE_JOINABLE`, `PTHREAD_CREATE_DETACHED`)
 - [OpenOrbis `include/orbis/_types/pthread.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/_types/pthread.h) - the PS4 homebrew SDK's `ORBIS_PTHREAD_CREATE_*` values, which follow FreeBSD's
 - FreeBSD 9.0 [`mkdir(2)`](https://man.freebsd.org/cgi/man.cgi?query=mkdir&sektion=2&manpath=FreeBSD+9.0-RELEASE), [`rmdir(2)`](https://man.freebsd.org/cgi/man.cgi?query=rmdir&sektion=2&manpath=FreeBSD+9.0-RELEASE), [`unlink(2)`](https://man.freebsd.org/cgi/man.cgi?query=unlink&sektion=2&manpath=FreeBSD+9.0-RELEASE) and [current `unlink(2)`](https://man.freebsd.org/cgi/man.cgi?query=unlink&sektion=2); FreeBSD [`vfs_syscalls.c`](https://cgit.freebsd.org/src/tree/sys/kern/vfs_syscalls.c?h=stable/9) (stable/9 and main: `kern_mkdirat` and its mode, `kern_rmdirat`/`kern_frmdirat`, `kern_unlinkat`/`kern_funlinkat` and `EPERM` for a directory) and [`vfs_lookup.c`](https://cgit.freebsd.org/src/tree/sys/kern/vfs_lookup.c?h=stable/9) (stable/9 and main: the read-only checks and the `.` check, and their order); [OpenOrbis `libkernel.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/libkernel.h) and [`_types/kernel.h`](https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/_types/kernel.h) (`OrbisKernelMode`) for the shapes
+
+## Occlusion query counts (Gnm, a stand-in)
+
+The game's occlusion queries reach the command processor as `EVENT_WRITE` packets with the `ZPASS_DONE`
+index: `PIXEL_PIPE_STAT_CONTROL` before each dump, then `PIXEL_PIPE_STAT_DUMP` with an address, where the
+GPU stores each of its 8 depth blocks' running count of samples that passed the depth test (a 64-bit begin
+and end pair per block, bit 63 the valid bit; the game sums end - begin). `runtime/syslib/gnm.c` skips the
+control event and, for a dump, stores an invented running count (0x10000 more per dump, the same in every
+block, valid bit set), so **every query reads visible**. This is a stand-in, not the GPU's behavior: real
+counts need Vulkan occlusion queries over the draws between two dumps, copied into the game's 8-block
+layout (follow-up). Until then, anything the game decides from visibility (flares, culling of hidden
+objects) behaves as if everything were visible.

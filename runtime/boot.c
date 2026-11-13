@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* pbboot: runs a PS4 executable's entry on Paleblood's runtime, as far as the runtime goes.
 
-     pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--addcont LABEL]... [--app0 DIR] [--data DIR] [--savedata DIR] [--display none|headless|window] [--audio none|host] [--input none|host] [--input-script SPEC|@FILE] [--display-capture DIR] [--nids NID_DB.xml]
+     pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--addcont LABEL]... [--app0 DIR] [--data DIR] [--savedata DIR] [--display none|headless|window] [--audio none|host] [--input none|host] [--input-script SPEC|@FILE] [--keyboard-text TEXT] [--display-capture DIR] [--frame-log FILE] [--nids NID_DB.xml]
             [--module-hook MODULE:OFFSET:SIZE:BYTES:ACTION:NAME]...
             [--status OUT.json] [--timeout SECONDS] [--trace] [--game-lib LIBRARY]
      pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]
@@ -50,6 +50,7 @@
 #include "runtime/nid.h"
 #include "runtime/process.h"
 #include "runtime/audio_host.h"
+#include "runtime/ime_dialog.h"
 #include "runtime/input_host.h"
 #include "runtime/renderer.h"
 #include "runtime/syslib.h"
@@ -214,6 +215,21 @@ static void guest_exit(int code)
     exit_code = code;
     outcome = EXITED;
     siglongjmp(back_to_host, 1);
+}
+
+/* Ends the process once the run is reported. When the guest stops, its other threads are still
+   running or parked where they were (a stop parks the thread that met it, and the timeout
+   interrupts the main thread in whatever call it was making), so locks in libc, the Vulkan driver
+   or the game library may stay held forever. exit() would then run atexit handlers and every
+   library's destructors under those locks and could block for good, after the report was already
+   printed. So, like the guest's own _exit (runtime/syslib/kernel.c), the process ends at once:
+   the report's streams are flushed and nothing else runs. stdout and stderr are flushed by name,
+   not with fflush(NULL), which would lock every open stream, including any a parked thread holds. */
+static _Noreturn void end_after_report(int code)
+{
+    fflush(stdout);
+    fflush(stderr);
+    _exit(code);
 }
 
 static void on_signal(int sig, siginfo_t *info, void *context)
@@ -715,14 +731,14 @@ static int display_mode_named(const char *name, rt_display_mode *mode)
 }
 
 static const char *usage =
-    "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--addcont LABEL]... [--app0 DIR] [--data DIR] [--savedata DIR] [--display none|headless|window] [--audio none|host] [--input none|host] [--input-script SPEC|@FILE] [--display-capture DIR] [--nids NID_DB.xml]\n"
+    "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--addcont LABEL]... [--app0 DIR] [--data DIR] [--savedata DIR] [--display none|headless|window] [--audio none|host] [--input none|host] [--input-script SPEC|@FILE] [--keyboard-text TEXT] [--display-capture DIR] [--frame-log FILE] [--nids NID_DB.xml]\n"
     "              [--module-hook MODULE:OFFSET:SIZE:BYTES:ACTION:NAME]...\n"
     "              [--status OUT.json] [--timeout S] [--trace] [--game-lib LIBRARY]\n"
     "       pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]\n";
 
 int main(int argc, char **argv)
 {
-    const char *nid_path = getenv("BB_NID_DB"), *status_path = NULL, *display_capture = NULL, *game_library_path = NULL,
+    const char *nid_path = getenv("BB_NID_DB"), *status_path = NULL, *display_capture = NULL, *frame_log = NULL, *game_library_path = NULL,
                *input_script = NULL;
     int timeout = 30, trace = 0, list = 0;
     rt_display_mode display_mode = RT_DISPLAY_NONE;
@@ -754,6 +770,8 @@ int main(int argc, char **argv)
         }
         else if (!strcmp(argv[i], "--display-capture") && i + 1 < argc)
             display_capture = argv[++i];
+        else if (!strcmp(argv[i], "--frame-log") && i + 1 < argc)
+            frame_log = argv[++i]; /* a line per presented frame (runtime/display.h), for frame rates */
         else if (!strcmp(argv[i], "--audio") && i + 1 < argc) {
             const char *audio = argv[++i];
             if (strcmp(audio, "none") && strcmp(audio, "host")) {
@@ -777,6 +795,14 @@ int main(int argc, char **argv)
             }
         }
         else if (!strcmp(argv[i], "--input-script") && i + 1 < argc && !input_script) input_script = argv[++i];
+        else if (!strcmp(argv[i], "--keyboard-text") && i + 1 < argc) {
+            /* What the on-screen keyboard answers (runtime/ime_dialog.h): typed, then Done. */
+            char why[128];
+            if (rt_ime_dialog_configure_text(argv[++i], why, sizeof why)) {
+                fprintf(stderr, "pbboot: --keyboard-text: %s\n", why);
+                return 2;
+            }
+        }
         else if (!strcmp(argv[i], "--system-param") && i + 1 < argc) {
             if (add_system_param(argv[++i])) {
                 fprintf(stderr, "pbboot: --system-param %s: want a new ID=VALUE\n", argv[i]);
@@ -840,10 +866,14 @@ int main(int argc, char **argv)
             return 2;
         }
     }
-    if (display_capture && display_mode == RT_DISPLAY_NONE) display_mode = RT_DISPLAY_HEADLESS;
+    if ((display_capture || frame_log) && display_mode == RT_DISPLAY_NONE) display_mode = RT_DISPLAY_HEADLESS;
     rt_renderer_configure(display_mode != RT_DISPLAY_NONE);
     if (rt_display_configure(display_mode, display_capture)) {
         fprintf(stderr, "pbboot: --display window: this build has no window (it needs Vulkan and SDL3)\n");
+        return 2;
+    }
+    if (frame_log && rt_display_log_frames(frame_log)) {
+        fprintf(stderr, "pbboot: --frame-log %s: cannot write the file\n", frame_log);
         return 2;
     }
     char error[512];
@@ -1098,7 +1128,7 @@ int main(int argc, char **argv)
         FILE *f = fopen(status_path, "w");
         if (!f) {
             fprintf(stderr, "pbboot: cannot write %s\n", status_path);
-            return 3;
+            end_after_report(3);
         }
         fprintf(f, "{\n  \"schema\": 2,\n  \"phase\": ");
         json_string(f, phase);
@@ -1187,8 +1217,5 @@ int main(int argc, char **argv)
         fprintf(f, "\n}\n");
         fclose(f);
     }
-    module_tls_cleanup();
-    free(db);
-    free(db_text);
-    return 0;
+    end_after_report(0);
 }

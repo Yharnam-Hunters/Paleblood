@@ -52,11 +52,49 @@ request. Keep them under `$BB_CAPTURES` (for example `/mnt/.../captures/<functio
 - **Real runs.** Inputs recorded while the game ran: one directory per function,
   `$BB_CAPTURES/<function>/*.json`. Verification reuses everything recorded so far: point
   `--captures` at the function's directory. Replacements do not record their own inputs
-  (STYLE.md: no recording code under `game/`); recording is the runtime's job, so new recordings
-  come once Paleblood's runtime runs the game. Until then a new function is `edge-verified`, and
-  `tools/promote.py` upgrades it when recordings for it exist.
+  (STYLE.md: no recording code under `game/`); recording is the runtime's job (below). A new
+  function is `edge-verified` until recordings for it exist, and `tools/promote.py` upgrades it.
 - **Edge cases.** A generator next to the replacement writes the situations a short run does
   not reach (`game/<system>/*_cases.py`).
+
+## Recording in the game
+
+Paleblood's runtime records while it runs the game: `tools/boot.py --capture DIR` turns every
+hook of the game library into a recording thunk, and a sampled call of a replaced function runs
+the game's original code under the tracer, which writes the inputs it read as a case
+(docs/capture-architecture.md). The recorded call always runs the original; other calls run the
+replacements as in any `--game-lib` boot, or, with `--capture-originals`, no replacement runs at
+all. `--capture-functions` picks the functions (`all-edge-verified` by default, `all`, or a list;
+with a `--display`, `all-edge-verified` leaves out the functions whose replacements report what
+they emitted to the runtime's renderer (`runtime/render_observer.h`): a recorded call runs the
+original, which reports nothing, and the renderer would stop at the state it missed; their
+replacements then run for every call, also inside a recorded caller, whose trace ends there; a
+scene with `"display": "none"` records them)
+and `--capture-cases N` caps the distinct cases kept per function and run (200). A case identical
+to one the library already holds, apart from its id and run, is not written again, so repeated
+runs only add new situations.
+
+The whole loop is one command, for every scene the runtime reaches:
+
+```
+tools/capture_loop.py --captures "$BB_CAPTURES"
+```
+
+1. one capture boot per scene of the scene list (`--scenes`, default `$BB_CAPTURE_SCENES`, then
+   `CAPTURES/scenes.json`; kept outside the repository, since a checkpoint is your own save
+   data): a new game through character creation, each save checkpoint (`savedata_from`), with the
+   input script and keyboard text that get there. Each boot holds the GPU lock;
+2. the edge cases of every function with recordings, written to `CAPTURES/NAME/edge` by the
+   generator beside its replacement;
+3. `tools/promote.py --check-unreviewed`: reviewed functions whose recorded and edge cases all
+   pass become `verified`; those that pass without a review are listed as awaiting one (the
+   independent review, CONTRIBUTING.md); a failure is reported (a bug to fix, or a quarantine with
+   its reason, below).
+
+Run it whenever the runtime reaches new game code (a new scene, a new boot record).
+`tools/end_session.sh` warns (`tools/capture_status.py`) when the library was last recorded before
+the newest boot record, and when edge-verified functions have recordings but no recorded result
+for their current code.
 
 ## Case file (schema 1)
 
@@ -93,11 +131,18 @@ reused run ID and case number cannot silently replace an existing recording.
   `rax` remains zero. Stack-argument setup preserves this seed, including when padding an
   odd argument count. Use this only when the original's register contract is established.
 - `buffers`: sandbox memory, laid out in name order; `bytes` is hex, zero-padded to `size`.
+  An optional `origin` (hex) is where a recorded buffer lay in the run. The harness puts the
+  buffer back there when the address is in the runtime's guest mapping window and free, so
+  distances between buffers and addresses the code compares against stay as recorded (a heap
+  block's size is the distance to the next block). Otherwise the buffer goes to the sandbox.
 - `memory`: written before the call, at an image address or at `buf:NAME+off`: `bytes`,
   `pointer` (`NAME[+off]` within a buffer) or `guest` (the host address of a PS4 address, for example a
   game function a fake vtable points at, which the case then stubs).
 - `imports`: scripted calls in order, per library function. `name` is the function name (its
-  NID is computed); `argc` arguments are recorded and compared. Both imports and stubs accept
+  NID is computed); `argc` arguments are recorded and compared. An import's write is made through an
+  argument (`arg`, `offset`) or at a fixed place (`addr`: `buf:NAME+off` or an image address, as in
+  `memory`), which recorded cases use for what an import changed in a buffer or the image, since
+  the register it was seen through need not be an argument. Both imports and stubs accept
   `argi`, `argu8`, `argu32`, `argmem`, and `argf32` as described below. A write may give `size`: a
   write whose bytes do not have that length is reported as an error (a truncated capture).
   For long runs of the same call (a wait that polls the clock), one entry can stand for many
@@ -325,6 +370,12 @@ and `edge` results without an option, with any failure that is not quarantined i
 current results, or with a result for other code. `promote.py` records the runs it makes and
 applies the same rule.
 
+It also refuses a result for other code of any function, whatever its status: a change to a
+replacement or to a header it includes (a shared container or heap header, say) has to run the
+sets of every function that includes it again, with `--record`, in the same pull request. When
+you cannot run a set (its recordings are in someone else's library), remove its row instead: a
+result for other code counts for nothing, and a verified function still needs current rows.
+
 ## Community patches and hooks
 
 A hooked function's original bytes no longer run, so a byte patch inside it does nothing while
@@ -427,3 +478,13 @@ Instruction-level first-divergence state traces and control-flow/CFG coverage re
 No coverage feedback is used to steer exploration. These are blockers for broad automated batch
 decompilation. A match is evidence for supplied fixtures only; it does not promote a function or
 establish observed original-game behavior.
+
+## Matching
+
+`tools/match.py` is a separate, optional check for small C-style functions. It compiles matching
+C source with upstream clang 3.4.2 and the SDK's documented flags, then compares the machine code
+with the original in your dump. A byte-exact match can stand in for recorded cases when its
+references were checked too (`targets_checked=yes`: every call, jump and data reference reaches
+the same function, global or import as the original's); the edge results and the independent
+review stay required. See [MATCHING.md](MATCHING.md). Function family members use the same rule
+with a per-member matching table (MATCHING.md, "Families").

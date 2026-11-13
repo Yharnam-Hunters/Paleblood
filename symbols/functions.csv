@@ -1,11 +1,11 @@
 address,size,name,system,status,notes
 0x004632d0,67,frame_timing_get_time_us,frame_timing,original,dead in the stock game: only unwind entries refer to it; the community frame-rate patches overwrite it as a code cave (gettimeofday in microseconds)
-0x00464b90,215,loading_stdio_stream_open,loading,edge-verified,fopen the tagged path with rb/r+b/wb/w+b/ab/a+b from mode bits at +0x28; rewind; map errno (fetched per check) to 0x1001-0x1004; zero +0x30
+0x00464b90,215,loading_stdio_stream_open,loading,verified,fopen the tagged path with rb/r+b/wb/w+b/ab/a+b from mode bits at +0x28; rewind; map errno (fetched per check) to 0x1001-0x1004; zero +0x30
 0x00466810,19,frame_timing_posix_sleep_ms,frame_timing,edge-verified,Sleep milliseconds through POSIX usleep (32-bit multiply wraps); ignore its result and return true
-0x0084d5a0,158,loading_fios_directory_delete,loading,edge-verified,"FIOS directory object deleting destructor: close the DH at +0x28, free entries and both tagged paths, free 0x38 bytes (or the header's size) to the thread allocator"
+0x0084d5a0,158,loading_fios_directory_delete,loading,edge-verified,"FIOS directory object deleting destructor: close the DH at +0x28; free entries and both tagged paths; free 0x38 bytes (or the header's size) to the thread allocator"
 0x00857cd0,176,loading_fios_open_file,loading,edge-verified,sceFiosFHOpenSync with the caller's 16-bit open flags; on success a 0x18-byte file object from the thread allocator (vtable 0x055c1e00) marked open
 0x0085cda0,174,loading_fios_open_file_read,loading,edge-verified,sceFiosFHOpenSync to read; on success a 0x18-byte file object (vtable 0x055c2190) open when the handle is not negative
-0x00fbc3e0,670,render_yebis_get_recursive_sample_parameters,render,verified,"YEBIS GPUTexUtil_GetRecursiveSampleParameters: blur pass count, last-pass samples and scale; the FPS patches drop its first assertion"
+0x00fbc3e0,670,render_yebis_get_recursive_sample_parameters,render,verified,"YEBIS GPUTexUtil_GetRecursiveSampleParameters: blur pass count; last-pass samples and scale; the FPS patches drop its first assertion"
 0x01088550,83,frame_timing_time_of_day_ticks,frame_timing,edge-verified,Time of day in microseconds divided (unsigned 64-bit) by the owner's tick length at +0x1d8
 0x0111a620,129,kernel_file_open,kernel,edge-verified,Open read-only and query FreeBSD amd64 stat; publish low32 file size before int64 descriptor; compiler stack guard omitted
 0x0111a6b0,23,kernel_file_close,kernel,edge-verified,Forward the full opaque descriptor; translate nonzero low32 close status to 19; synthetic wire edge cases only
@@ -15,116 +15,143 @@ address,size,name,system,status,notes
 0x0111a760,131,frame_timing_get_monotonic_us,frame_timing,edge-verified,Microseconds since the shared monotonic clock base; unsigned 32-bit seconds and nanoseconds truncate and wrap; clock failures preserve output and state
 0x0111a7f0,131,frame_timing_get_monotonic_ms,frame_timing,verified,Milliseconds since its first call from CLOCK_MONOTONIC; keeps the first seconds in the clock state object
 0x0111a880,19,frame_timing_sleep_ms,frame_timing,edge-verified,Convert milliseconds to microseconds with uint32 wrapping; always call the kernel and discard its result
-0x0111a8a0,26,kernel_thread_self,kernel,edge-verified,Copy the complete opaque current-thread handle to the output and return zero
+0x0111a8a0,26,kernel_thread_self,kernel,verified,Copy the complete opaque current-thread handle to the output and return zero
 0x0111a8c0,290,audio_fmod_thread_affinity_lookup,audio,edge-verified,FMOD thread-name affinity masks; eight 64-bit slots; nonblocking uses a 23-byte prefix; unknown names leave output untouched
-0x0111abb0,207,kernel_mutex_create,kernel,edge-verified,Create a recursive mutex in static or allocated storage; low-byte ownership flag; publish storage only after all kernel stages succeed; no error cleanup
+0x0111abb0,207,kernel_mutex_create,kernel,verified,Create a recursive mutex in static or allocated storage; low-byte ownership flag; publish storage only after all kernel stages succeed; no error cleanup
 0x0111ac80,78,kernel_mutex_destroy,kernel,edge-verified,Destroy the mutex and release storage only after kernel success with a zero low-byte static flag; errors map to 0x21; ignore release result
 0x0111acd0,30,kernel_mutex_lock,kernel,edge-verified,Accept a null mutex without a call; preserve the full kernel pointer and API writes; map any nonzero low32 result to 0x21
 0x0111acf0,30,kernel_mutex_unlock,kernel,edge-verified,Accept a null mutex without a call; forward its full pointer to unlock; preserve API writes and translate nonzero low32 results to 0x21
-0x0111ad10,103,kernel_semaphore_create,kernel,edge-verified,Create the fixed empty FIFO semaphore; preserve all six API arguments and full opaque handle; publish only after low32 kernel success; errors map to 0x21
+0x0111ad10,103,kernel_semaphore_create,kernel,verified,Create the fixed empty FIFO semaphore; preserve all six API arguments and full opaque handle; publish only after low32 kernel success; errors map to 0x21
 0x0111ad80,23,kernel_semaphore_destroy,kernel,edge-verified,Forward the full opaque handle including null to kernel deletion; preserve kernel writes and translate any nonzero low32 result to 0x21
-0x0111ada0,30,kernel_semaphore_wait,kernel,edge-verified,Wait for one unit using the full opaque handle including null and a null timeout pointer; preserve kernel writes; nonzero low32 results map to 0x21
-0x0111adc0,28,kernel_semaphore_signal,kernel,edge-verified,Signal one unit using the full opaque handle including null; preserve kernel writes and translate every nonzero low32 result to 0x21
+0x0111ada0,30,kernel_semaphore_wait,kernel,verified,Wait for one unit using the full opaque handle including null and a null timeout pointer; preserve kernel writes; nonzero low32 results map to 0x21
+0x0111adc0,28,kernel_semaphore_signal,kernel,verified,Signal one unit using the full opaque handle including null; preserve kernel writes and translate every nonzero low32 result to 0x21
 0x0111b060,14,audio_fmod_output_driver_count,audio,edge-verified,FMOD Orbis AudioOut descriptor callback installed by 0x0111aed0; optional output receives one driver; return zero
 0x0111b0b0,37,audio_fmod_output_defaults,audio,edge-verified,FMOD output descriptor callback writes 132 then 48000 then 6 to optional outputs; sample-rate and speaker-mode meanings remain hypotheses
-0x011c4510,15,engine_store_word_product,engine,edge-verified,Store low 32-bit input at owner+0x18 and modulo-32-bit product times four at owner+0x1c; valid unaligned byte view and full zero return; field meanings unknown
-0x011c47f0,29,engine_string_length,engine,edge-verified,Engine strlen; scan to the first NUL and return the low 32 length bits zero-extended into RAX; other incoming GP registers are ignored
-0x011c4810,34,audio_fmod_string_copy,audio,edge-verified,NUL-terminated string copy used by FMOD callers; includes terminator and returns destination; finite aliases covered
-0x011c4840,38,audio_fmod_string_copy_counted,audio,edge-verified,FMOD bounded string copy uses low32 count; stops at NUL or count without padding; zero count accesses neither pointer
-0x011c4870,51,engine_string_append,engine,edge-verified,NUL-terminated string append returns original destination; includes prefixes beyond four bytes and finite aliases
+0x011c4510,15,engine_store_word_product,engine,verified,Store low 32-bit input at owner+0x18 and modulo-32-bit product times four at owner+0x1c; valid unaligned byte view and full zero return; field meanings unknown
+0x011c47f0,29,engine_string_length,engine,verified,Engine strlen; scan to the first NUL and return the low 32 length bits zero-extended into RAX; other incoming GP registers are ignored
+0x011c4810,34,audio_fmod_string_copy,audio,verified,NUL-terminated string copy used by FMOD callers; includes terminator and returns destination; finite aliases covered
+0x011c4840,38,audio_fmod_string_copy_counted,audio,verified,FMOD bounded string copy uses low32 count; stops at NUL or count without padding; zero count accesses neither pointer
+0x011c4870,51,engine_string_append,engine,verified,NUL-terminated string append returns original destination; includes prefixes beyond four bytes and finite aliases
 0x011c48b0,60,engine_string_append_counted,engine,edge-verified,Bounded string append uses low32 count; zero count touches neither pointer; appends NUL after count bytes when needed
-0x011c48f0,18,engine_ascii_to_lower,engine,edge-verified,"ASCII lowercase of the low input byte; sign-extend the result byte to 32 bits; the upper 32 bits of RAX are zero"
+0x011c48f0,18,engine_ascii_to_lower,engine,edge-verified,ASCII lowercase of the low input byte; sign-extend the result byte to 32 bits; the upper 32 bits of RAX are zero
 0x011c4910,44,engine_ascii_to_upper_in_place,engine,edge-verified,Convert ASCII a-z to A-Z in place through NUL; retain all other bytes and return original pointer; caller 0x01127ca0
 0x011c4940,44,engine_ascii_to_lower_in_place,engine,edge-verified,Convert ASCII A-Z to a-z in place through NUL; retain all other bytes and return original pointer; caller 0x01127ca0
 0x011c4970,29,engine_compare_signed_strings,engine,edge-verified,Compare zero-terminated strings by signed bytes and return their first differing byte subtraction
-0x011c4990,47,engine_compare_signed_prefix,engine,edge-verified,Compare signed bytes up to a signed 32-bit bound; always compare the first byte even for zero or negative lengths
+0x011c4990,47,engine_compare_signed_prefix,engine,verified,Compare signed bytes up to a signed 32-bit bound; always compare the first byte even for zero or negative lengths
 0x011c49c0,56,engine_compare_ascii_ignoring_case,engine,edge-verified,Case-insensitive string comparison folds ASCII uppercase bytes then returns signed-byte difference as int32; bounded aliases covered
 0x01314320,54,engine_entry_manager_resolve,engine,edge-verified,Resolve an enabled low32 handle index with unsigned bounds; reject full-width handle and entry sentinels; return opaque table pointers unchanged
 0x0132c590,49,engine_release_owner_storage,engine,edge-verified,Free nonnull owner storage through its allocator before clearing the field; wider role unknown; caller 0x02713870
 0x0132c6c0,81,engine_resize_owner_storage,engine,edge-verified,Free old owner storage before clearing; reload allocator after callback and allocate requested low32 byte count aligned to 16; caller 0x02713870
 0x01388c60,16,frame_timing_task_run_all_01388c60,frame_timing,verified,task manager: run the tasks of every group (0x01388c70 with -1)
-0x01388c70,171,frame_timing_task_run_01388c70,frame_timing,verified,"task manager run: prepare the frame, dispatch through +0x40 (virtual +0x30) with +0x38 set, finish"
-0x0138a370,330,frame_timing_task_dispatch_0138a370,frame_timing,verified,"task dispatcher (virtual +0x30): wakes registered tasks, updates the group record, runs the job like the worker step"
+0x01388c70,171,frame_timing_task_run_01388c70,frame_timing,verified,"task manager run: prepare the frame; dispatch through +0x40 (virtual +0x30) with +0x38 set; finish"
+0x01389df0,19,frame_timing_task_entry_count_01389df0,frame_timing,edge-verified,"Number of the dispatcher's registered task entries (vector of 0x88-byte entries), cut to 32 bits"
+0x01389e10,59,frame_timing_task_entry_at_01389e10,frame_timing,edge-verified,Registered task entry at an index; null for a negative index or one past the end (unsigned count)
+0x0138a370,330,frame_timing_task_dispatch_0138a370,frame_timing,verified,"task dispatcher (virtual +0x30): wakes registered tasks; updates the group record; runs the job like the worker step"
 0x013d3520,87,frame_timing_task_013d3520,frame_timing,verified,per-frame task: passes the frame-time descriptor and its seconds to three parts; Uncap FPS++ edits it
-0x0143e490,174,frame_timing_task_flush_queue_0143e490,frame_timing,verified,"task manager queue flush: lock, run, destroy and free every queued object, empty the list, unlock"
+0x013daac0,96,frame_timing_listener_list_notify_013daac0,frame_timing,edge-verified,"Runs the list preparation 0x013dab20, then passes the frame-time descriptor to each listener (vtable slot 2), re-reading the list after every call"
+0x0143c360,147,frame_timing_task_record_open_0143c360,frame_timing,edge-verified,"Opens an idle group record: first index, state open, flags cleared then one set from the kind (2 or 4) of the first item when in range; clears +0x64"
+0x0143c450,93,frame_timing_task_record_close_0143c450,frame_timing,edge-verified,"Closes a closing group record (state 4): flags cleared, state idle, no index (-1)"
+0x0143d7c0,62,frame_timing_task_batch_add_0143d7c0,frame_timing,edge-verified,Pushes a job onto the back of a batch's job deque with the game's push_back; a null job is not added
+0x0143de20,106,frame_timing_task_worker_start_0143de20,frame_timing,edge-verified,"Unless busy: marks the worker busy and starts every slot with a batch (mode 0 lanes via 0x01467500, others via 0x01467300)"
+0x0143deb0,92,frame_timing_task_worker_run_0143deb0,frame_timing,edge-verified,When busy: runs (0x01467530) every mode 0 lane whose slot has a batch
+0x0143df10,182,frame_timing_task_worker_finish_0143df10,frame_timing,edge-verified,When busy: runs running mode 0 lanes (restarting the scan) until none runs; takes every batch back (mode 0 lanes finished via 0x014675a0); clears busy
+0x0143e030,55,frame_timing_task_worker_assign_0143e030,frame_timing,edge-verified,"Assigns a batch to a worker slot by index; false when busy, for a null batch, a negative index or one past the end (unsigned count)"
+0x0143e490,174,frame_timing_task_flush_queue_0143e490,frame_timing,verified,"task manager queue flush: lock; run; destroy and free every queued object; empty the list; unlock"
+0x0143ec40,185,frame_timing_task_clear_items_0143ec40,frame_timing,edge-verified,Under the task lock (+0x90): frees the pending items last first and their array via the allocator at +0x80; empties the list; empties +0x70/+0x78 when counted
+0x0143f720,82,frame_timing_task_lookup_0143f720,frame_timing,edge-verified,"Task under an id in the task table's map (std::map lower bound), null when absent; id 0 is never looked up"
 0x0143f9f0,18,frame_timing_task_set_frame_value_0143f9f0,frame_timing,verified,task manager: copies the float at +0x8 of the frame information to the global 0x058b7e08
-0x014400a0,180,frame_timing_task_workers_step_014400a0,frame_timing,verified,"task manager workers: three rounds over the worker queues +0x58, +0x68, +0x60"
-0x01448580,149,frame_timing_stopwatch_start,frame_timing,edge-verified,"Start a stopwatch from exactly zero: seconds since game start (double divide, float store) at +0x38; bump counters 0x44 and 0x4c"
+0x014400a0,180,frame_timing_task_workers_step_014400a0,frame_timing,verified,"task manager workers: three rounds over the worker queues +0x58; +0x68; +0x60"
+0x01448580,149,frame_timing_stopwatch_start,frame_timing,edge-verified,"Start a stopwatch from exactly zero: seconds since game start (double divide; float store) at +0x38; bump counters 0x44 and 0x4c"
 0x01448620,168,frame_timing_stopwatch_stop,frame_timing,edge-verified,Stop a positive stopwatch: add seconds since its start to the totals at +0x3c and +0x54; clear the start
-0x01471270,57,render_command_buffer_init,render,edge-verified,"Initialize command pointers and callback, rounding capacity down to complete DWORDs while preserving auxiliary fields."
-0x014712d0,51,render_compose_record_encoding_fields,render,edge-verified,Pack one byte and five masked fields into an encoding DWORD; no memory access.
-0x01471310,544,render_pack_record_mapping_word,render,edge-verified,Pack numeric mapping fields with priority masks and full-width mode handling; return a zero-extended DWORD.
+0x01456c80,39,frame_timing_item_list_update_01456c80,frame_timing,edge-verified,Calls 0x013d4810 on each item pointer between +0x8 and +0x10 (the ends read once)
+0x01456eb0,28,frame_timing_profile_start_01456eb0,frame_timing,edge-verified,"When the profiling switch at 0x058b8718 is set, starts stopwatch N of the ten at 0x058b86c0 (tail call to 0x01448580)"
+0x01456ed0,28,frame_timing_profile_stop_01456ed0,frame_timing,edge-verified,"When the profiling switch at 0x058b8718 is set, stops stopwatch N of the ten at 0x058b86c0 (tail call to 0x01448620)"
+0x01456ef0,136,frame_timing_profile_frame_end_01456ef0,frame_timing,edge-verified,"When the profiling switch at 0x058b8718 is set, gives each of the ten stopwatches at 0x058b86c0 its end-of-frame tick (0x014486d0) in order"
+0x01471270,57,render_command_buffer_init,render,verified,"Initialize command pointers and callback; rounding capacity down to complete DWORDs while preserving auxiliary fields."
+0x014712d0,51,render_compose_record_encoding_fields,render,verified,Pack one byte and five masked fields into an encoding DWORD; no memory access.
+0x01471310,544,render_pack_record_mapping_word,render,verified,Pack numeric mapping fields with priority masks and full-width mode handling; return a zero-extended DWORD.
 0x01471600,190,render_record_constructor_pack_pair,render,edge-verified,Pack a full DWORD selector pair into an encoding; the first selector controls flag handling.
 0x01471730,21,render_record_encoding_metadata,render,edge-verified,Bounded first-byte metadata lookup; preserve original table entries and zero fallback.
-0x01471770,27,render_record_encoding_byte_flags,render,edge-verified,"Map encoding byte 4 to 3, byte 2 to 1, and all other byte values to zero."
-0x014717a0,505,render_record_encoding_components,render,edge-verified,Select ordered packed component arrangement; optional output only on success and Boolean AL contract.
-0x014719a0,117,render_record_encoding_category,render,edge-verified,Decode accepted category nibbles; optional DWORD output untouched on rejection.
+0x01471770,27,render_record_encoding_byte_flags,render,edge-verified,"Map encoding byte 4 to 3; byte 2 to 1; and all other byte values to zero."
+0x014717a0,505,render_record_encoding_components,render,verified,Select ordered packed component arrangement; optional output only on success and Boolean AL contract.
+0x014719a0,117,render_record_encoding_category,render,verified,Decode accepted category nibbles; optional DWORD output untouched on rejection.
 0x01471a40,73,render_read_record_descriptor_component,render,edge-verified,Read one encoding DWORD and extract one of four 3-bit components; invalid selectors return 2 without reading input.
-0x014721d0,31,render_set_present_last_record_indices,render,edge-verified,Replace two packed indices while preserving the remaining bits. Return the old preserved bits.
-0x01472870,90,render_emit_present_context_section,render,edge-verified,Keep the low-DWORD capacity decision separate from the full remaining-word count sent to the original import. Its effects may change the live cursor.
-0x01472fd0,86,render_set_cb_target_mask,render,edge-verified,"Write the complete CB_TARGET_MASK value, preserving all supplied component-enable bits."
-0x01473090,109,render_set_cb_blend_control,render,edge-verified,Write masked CB_BLENDn_CONTROL for the selected color-buffer bank.
-0x01473320,117,render_set_cb_color_control,render,edge-verified,Write CB_COLOR_CONTROL.MODE and ROP3 from their masked input fields.
-0x014733a0,93,render_set_db_depth_control,render,edge-verified,Write the observed mask of DB_DEPTH_CONTROL depth/stencil test and write-control fields.
-0x01473400,93,render_set_db_stencil_control,render,edge-verified,"Write the low 24 bits of DB_STENCIL_CONTROL, including front- and back-face stencil operations."
-0x01473590,95,render_emit_present_preparation_scalar,render,edge-verified,Write the captured float bits to DB_DEPTH_CLEAR. Admission tests the callback low byte; rejection returns its full 64-bit result.
-0x014735f0,89,render_emit_present_preparation_byte,render,edge-verified,Write the captured input low byte to DB_STENCIL_CLEAR. Admission tests the callback low byte; rejection returns its full 64-bit result.
-0x01473650,116,render_set_screen_offset,render,edge-verified,Write the observed masked X/Y fields of PA_SU_HARDWARE_SCREEN_OFFSET.
-0x014736d0,124,render_set_guard_band_clip_adjust,render,edge-verified,Write vertical then horizontal guard-band clip adjustments as unchanged float bit patterns. Capture both float representations before the capacity callback and publish from the captured cursor.
-0x01473750,124,render_set_guard_band_discard_adjust,render,edge-verified,Write vertical then horizontal guard-band discard adjustments as unchanged float bit patterns. Capture both float representations before the capacity callback and publish from the captured cursor.
-0x01473840,104,render_present_slot_emit,render,edge-verified,Write the selected color target's two clear-word registers. Prefix stores precede an aliased input read; the final increment uses the live stored cursor.
-0x014738b0,246,render_set_render_target,render,edge-verified,"Emit color-buffer registers, or clear CB_COLORn_INFO for an absent descriptor, then append its NOP payload. Recheck validity after admission and reload the cursor before overlapping trailing writes."
-0x014739b0,344,render_set_depth_render_target,render,edge-verified,"Emit depth/stencil, view and HTILE registers, or clear DB_Z_INFO and DB_STENCIL_INFO for an absent descriptor. Preserve repeated validity tests and delayed reads when output overlaps descriptor state."
-0x01473fe0,90,render_set_vgt_primitive_type,render,edge-verified,Write the low six primitive-type bits to VGT_PRIMITIVE_TYPE.
-0x014741b0,156,render_emit_draw_index_auto,render,edge-verified,Emit DRAW_INDEX_AUTO and a query-selected THREAD_TRACE_MARKER event or NOP. Reload flags and cursor after overlapping packet stores before selecting and publishing the trailing packet.
-0x01475000,397,render_emit_shader_link_words,render,edge-verified,Write SPI_PS_INPUT_CNTL entries from last word to first to preserve overlapping reads; retain the unmasked count shift for zero and oversized counts.
-0x01475370,76,render_emit_num_instances,render,edge-verified,Emit NUM_INSTANCES with the complete supplied instance count.
-0x01475da0,101,render_emit_event_write,render,edge-verified,Emit EVENT_WRITE with a masked event type and the original table-selected event index.
-0x014765e0,238,render_configure_viewport,render,edge-verified,"Write viewport ZMIN/ZMAX, then X/Y/Z scale and offset values for the selected viewport. Capture all six borrowed source words before output; retain the live and captured cursor publications."
-0x01476790,135,render_configure_screen_scissor,render,edge-verified,Write PA_SC_SCREEN_SCISSOR_TL/BR using the low 16 bits of each supplied coordinate. Packet stores may overlap the cursor; its final increment reads the stored value after those writes.
-0x01476980,93,render_emit_pa_cl_vte_cntl,render,edge-verified,Write PA_CL_VTE_CNTL viewport-transform enable/format bits after capacity admission.
-0x014769e0,93,render_emit_present_last_record_packet,render,edge-verified,Write DB_RENDER_CONTROL for the last-record path. Publish and return the captured cursor plus twelve bytes; return the full callback result on rejection.
-0x01477150,109,render_set_pa_sc_mode_cntl_0,render,edge-verified,Write MSAA_ENABLE and VPORT_SCISSOR_ENABLE in PA_SC_MODE_CNTL_0 after reserving three packet words.
-0x014778f0,204,render_emit_present_release_packet,render,edge-verified,"Emit EVENT_WRITE_EOP with by-value selectors, address and data; preserve the complete callback rejection result and final live cursor increment."
-0x01477b30,172,render_command_emit_counter_operation,render,edge-verified,"Emit the seven-word counter packet; callback admission uses its low byte, and the label range selects the masked encoding."
-0x014784a0,82,render_command_prepare_submission,render,edge-verified,Reserve 64 command words; callback admission uses its low byte before two marker stores and the cursor advance.
-0x01485070,16,render_set_present_last_record_depth_compress_disable,render,edge-verified,Replace DEPTH_COMPRESS_DISABLE in the saved DB_RENDER_CONTROL word using the input low bit. Return the old bits with that flag cleared.
-0x01485080,16,render_set_present_last_record_stencil_compress_disable,render,edge-verified,Replace STENCIL_COMPRESS_DISABLE in the saved DB_RENDER_CONTROL word using the input low bit. Return the old bits with that flag cleared.
-0x01485220,81,render_set_pa_cl_vte_cntl,render,edge-verified,"Expand the toggled input byte into overlapping register fields. The original result is the shifted byte, independent of the preserved old bits or the final stored word."
-0x01485390,24,render_set_record_register_range,render,edge-verified,"Pack one bit from the first input and three from the last, preserving all other bits."
-0x014853f0,16,render_set_record_register_enabled,render,edge-verified,Preserve the original byte-wide input: doubling it can contribute bits beyond bit one.
+0x014721d0,31,render_set_present_last_record_indices,render,verified,Replace two packed indices while preserving the remaining bits. Return the old preserved bits.
+0x01472870,90,render_emit_present_context_section,render,verified,Keep the low-DWORD capacity decision separate from the full remaining-word count sent to the original import. Its effects may change the live cursor.
+0x01472fd0,86,render_set_cb_target_mask,render,verified,"Write the complete CB_TARGET_MASK value; preserving all supplied component-enable bits."
+0x01473090,109,render_set_cb_blend_control,render,verified,Write masked CB_BLENDn_CONTROL for the selected color-buffer bank.
+0x01473320,117,render_set_cb_color_control,render,verified,Write CB_COLOR_CONTROL.MODE and ROP3 from their masked input fields.
+0x014733a0,93,render_set_db_depth_control,render,verified,Write the observed mask of DB_DEPTH_CONTROL depth/stencil test and write-control fields.
+0x01473400,93,render_set_db_stencil_control,render,verified,"Write the low 24 bits of DB_STENCIL_CONTROL; including front- and back-face stencil operations."
+0x01473590,95,render_emit_present_preparation_scalar,render,verified,Write the captured float bits to DB_DEPTH_CLEAR. Admission tests the callback low byte; rejection returns its full 64-bit result.
+0x014735f0,89,render_emit_present_preparation_byte,render,verified,Write the captured input low byte to DB_STENCIL_CLEAR. Admission tests the callback low byte; rejection returns its full 64-bit result.
+0x01473650,116,render_set_screen_offset,render,verified,Write the observed masked X/Y fields of PA_SU_HARDWARE_SCREEN_OFFSET.
+0x014736d0,124,render_set_guard_band_clip_adjust,render,verified,Write vertical then horizontal guard-band clip adjustments as unchanged float bit patterns. Capture both float representations before the capacity callback and publish from the captured cursor.
+0x01473750,124,render_set_guard_band_discard_adjust,render,verified,Write vertical then horizontal guard-band discard adjustments as unchanged float bit patterns. Capture both float representations before the capacity callback and publish from the captured cursor.
+0x01473840,104,render_present_slot_emit,render,verified,Write the selected color target's two clear-word registers. Prefix stores precede an aliased input read; the final increment uses the live stored cursor.
+0x014738b0,246,render_set_render_target,render,verified,"Emit color-buffer registers; or clear CB_COLORn_INFO for an absent descriptor; then append its NOP payload. Recheck validity after admission and reload the cursor before overlapping trailing writes."
+0x014739b0,344,render_set_depth_render_target,render,verified,"Emit depth/stencil; view and HTILE registers; or clear DB_Z_INFO and DB_STENCIL_INFO for an absent descriptor. Preserve repeated validity tests and delayed reads when output overlaps descriptor state."
+0x01473fe0,90,render_set_vgt_primitive_type,render,verified,Write the low six primitive-type bits to VGT_PRIMITIVE_TYPE.
+0x014741b0,156,render_emit_draw_index_auto,render,verified,Emit DRAW_INDEX_AUTO and a query-selected THREAD_TRACE_MARKER event or NOP. Reload flags and cursor after overlapping packet stores before selecting and publishing the trailing packet.
+0x01475000,397,render_emit_shader_link_words,render,verified,Write SPI_PS_INPUT_CNTL entries from last word to first to preserve overlapping reads; retain the unmasked count shift for zero and oversized counts.
+0x01475370,76,render_emit_num_instances,render,verified,Emit NUM_INSTANCES with the complete supplied instance count.
+0x014753c0,86,render_emit_set_ps_shader_014753c0,render,edge-verified,Packet writer: reserves 40 words (space callback when short); sceGnmSetPsShader at the cursor; cursor advanced only on success
+0x01475420,86,render_emit_update_ps_shader_01475420,render,edge-verified,Packet writer: reserves 40 words (space callback when short); sceGnmUpdatePsShader at the cursor; cursor advanced only on success
+0x01475480,98,render_emit_set_vs_shader_01475480,render,edge-verified,Packet writer: reserves 29 words (space callback when short); sceGnmSetVsShader with the shader modifier; cursor advanced only on success
+0x01475da0,101,render_emit_event_write,render,verified,Emit EVENT_WRITE with a masked event type and the original table-selected event index.
+0x01475e10,173,render_emit_shader_preparation_range_01475e10,render,edge-verified,"ACQUIRE_MEM packet (7 words) for a memory range: coherence control from the cache actions, targets and top flag; reserve via the space callback"
+0x01476030,140,render_set_shader_stages_01476030,render,edge-verified,"SET_CONTEXT_REG VGT_SHADER_STAGES_EN (0x2d5) to the stages (3 words), only for the values the game uses; reserve via the space callback first"
+0x014761a0,156,render_emit_shader_descriptor16_014761a0,render,edge-verified,"NOP with descriptor control 0x68750004, then SET_SH_REG of a 16-byte descriptor at the stage base plus slot (8 words)"
+0x01476240,172,render_emit_shader_descriptor32_01476240,render,edge-verified,"NOP with descriptor control 0x68750005, then SET_SH_REG of a 32-byte descriptor at the stage base plus slot (12 words)"
+0x014762f0,156,render_emit_shader_sampler16_014762f0,render,edge-verified,"NOP with descriptor control 0x68750006, then SET_SH_REG of a 16-byte sampler at the stage base plus slot (8 words)"
+0x01476390,133,render_emit_shader_address_01476390,render,edge-verified,SET_SH_REG of a 64-bit address (two words) at the stage base plus slot; flag bit 1 in the header
+0x01476420,126,render_emit_shader_word_01476420,render,edge-verified,SET_SH_REG of one word at the stage base plus slot; flag bit 1 in the header
+0x014765e0,238,render_configure_viewport,render,verified,"Write viewport ZMIN/ZMAX; then X/Y/Z scale and offset values for the selected viewport. Capture all six borrowed source words before output; retain the live and captured cursor publications."
+0x01476790,135,render_configure_screen_scissor,render,verified,Write PA_SC_SCREEN_SCISSOR_TL/BR using the low 16 bits of each supplied coordinate. Packet stores may overlap the cursor; its final increment reads the stored value after those writes.
+0x01476980,93,render_emit_pa_cl_vte_cntl,render,verified,Write PA_CL_VTE_CNTL viewport-transform enable/format bits after capacity admission.
+0x014769e0,93,render_emit_present_last_record_packet,render,verified,Write DB_RENDER_CONTROL for the last-record path. Publish and return the captured cursor plus twelve bytes; return the full callback result on rejection.
+0x01477150,109,render_set_pa_sc_mode_cntl_0,render,verified,Write MSAA_ENABLE and VPORT_SCISSOR_ENABLE in PA_SC_MODE_CNTL_0 after reserving three packet words.
+0x014778f0,204,render_emit_present_release_packet,render,verified,"Emit EVENT_WRITE_EOP with by-value selectors; address and data; preserve the complete callback rejection result and final live cursor increment."
+0x01477b30,172,render_command_emit_counter_operation,render,verified,"Emit the seven-word counter packet; callback admission uses its low byte; and the label range selects the masked encoding."
+0x01477f40,160,render_emit_shader_preparation_event_01477f40,render,edge-verified,"ACQUIRE_MEM packet (7 words) for all memory (size 1, base 0): coherence control from the cache actions, targets and top flag"
+0x014784a0,82,render_command_prepare_submission,render,verified,Reserve 64 command words; callback admission uses its low byte before two marker stores and the cursor advance.
+0x01485070,16,render_set_present_last_record_depth_compress_disable,render,verified,Replace DEPTH_COMPRESS_DISABLE in the saved DB_RENDER_CONTROL word using the input low bit. Return the old bits with that flag cleared.
+0x01485080,16,render_set_present_last_record_stencil_compress_disable,render,verified,Replace STENCIL_COMPRESS_DISABLE in the saved DB_RENDER_CONTROL word using the input low bit. Return the old bits with that flag cleared.
+0x01485220,81,render_set_pa_cl_vte_cntl,render,verified,"Expand the toggled input byte into overlapping register fields. The original result is the shifted byte; independent of the preserved old bits or the final stored word."
+0x01485390,24,render_set_record_register_range,render,verified,"Pack one bit from the first input and three from the last; preserving all other bits."
+0x014853f0,16,render_set_record_register_enabled,render,verified,Preserve the original byte-wide input: doubling it can contribute bits beyond bit one.
 0x01485f90,1410,render_record_constructor,render,edge-verified,Clear the 44-byte record prefix and publish partial record and auxiliary outputs; return the packed 64-bit result.
-0x01486520,31,render_record_set_word_0c_fields,render,edge-verified,Store two masked fields; return masked old word. No constructor add/subtract.
-0x01486540,305,render_record_set_encoding,render,edge-verified,Pack accepted encoding into record DWORD10 preserving other bits; invalid input has undefined native extractor locals.
-0x014866e0,33,render_record_set_word_04_repeated_field,render,edge-verified,Duplicate supplied low 11 bits; return preserved old word.
-0x01486710,20,render_record_set_word_08_low22,render,edge-verified,Replace this word's low 22 bits and return the preserved old upper bits.
-0x01486760,20,render_record_set_word_14_second_low5_field,render,edge-verified,Replace the second five-bit field and return the preserved old word bits.
-0x014867c0,21,render_record_set_first_auxiliary_flag,render,edge-verified,Clear only bit 13 then OR full input byte shifted13; return preserved old word.
-0x014867e0,21,render_record_set_second_auxiliary_flag,render,edge-verified,Clear only bit 14 then OR full input byte shifted14; return preserved old word.
-0x01486800,20,render_record_set_word_28_low22,render,edge-verified,Replace this word's low 22 bits and return the preserved old upper bits.
-0x01486cf0,38,render_read_record_mapping_word,render,edge-verified,Read one unaligned mapping DWORD and delegate three extracted fields to the original encoder. Full return is zero-extended.
-0x014873a0,163,render_build_shader_link_words,render,edge-verified,"Match byte-pair keys, then publish each packed word in the original four-store order."
-0x01487ee0,1090,render_initialize_pair_record_descriptor,render,edge-verified,"Clear 32 bytes; admit counts after float rounding, test flag bytes independently, and return packed requirements."
-0x01488370,17,render_record_descriptor_set_high_field,render,edge-verified,Set the descriptor top nibble and return the preserved old low 28 bits.
-0x01488590,969,render_initialize_triple_record_descriptor,render,edge-verified,"Clear 32 bytes in order, delegate flags, retain partial writes and return packed requirements."
-0x01488d90,813,render_convert_constructor_record,render,edge-verified,"Convert a constructor record into a GCN image descriptor. Preserve overlapping reads, ordered component calls and independent low/middle-field tests when choosing its type."
+0x01486520,31,render_record_set_word_0c_fields,render,verified,Store two masked fields; return masked old word. No constructor add/subtract.
+0x01486540,305,render_record_set_encoding,render,verified,Pack accepted encoding into record DWORD10 preserving other bits; invalid input has undefined native extractor locals.
+0x014866e0,33,render_record_set_word_04_repeated_field,render,verified,Duplicate supplied low 11 bits; return preserved old word.
+0x01486710,20,render_record_set_word_08_low22,render,verified,Replace this word's low 22 bits and return the preserved old upper bits.
+0x01486760,20,render_record_set_word_14_second_low5_field,render,verified,Replace the second five-bit field and return the preserved old word bits.
+0x014867c0,21,render_record_set_first_auxiliary_flag,render,verified,Clear only bit 13 then OR full input byte shifted13; return preserved old word.
+0x014867e0,21,render_record_set_second_auxiliary_flag,render,verified,Clear only bit 14 then OR full input byte shifted14; return preserved old word.
+0x01486800,20,render_record_set_word_28_low22,render,verified,Replace this word's low 22 bits and return the preserved old upper bits.
+0x01486cf0,38,render_read_record_mapping_word,render,verified,Read one unaligned mapping DWORD and delegate three extracted fields to the original encoder. Full return is zero-extended.
+0x014873a0,163,render_build_shader_link_words,render,verified,"Match byte-pair keys; then publish each packed word in the original four-store order."
+0x01487ee0,1090,render_initialize_pair_record_descriptor,render,edge-verified,"Clear 32 bytes; admit counts after float rounding; test flag bytes independently; and return packed requirements."
+0x01488370,17,render_record_descriptor_set_high_field,render,verified,Set the descriptor top nibble and return the preserved old low 28 bits.
+0x01488590,969,render_initialize_triple_record_descriptor,render,edge-verified,"Clear 32 bytes in order; delegate flags; retain partial writes and return packed requirements."
+0x01488d90,813,render_convert_constructor_record,render,edge-verified,"Convert a constructor record into a GCN image descriptor. Preserve overlapping reads; ordered component calls and independent low/middle-field tests when choosing its type."
 0x01489910,24,render_record_descriptor_level_count,render,edge-verified,Read bits 16..19 below the upper descriptor partition; otherwise return zero.
 0x01489940,24,render_record_descriptor_count_exponent,render,edge-verified,Read bits 16..19 in the upper descriptor partition; otherwise return zero.
-0x01489960,68,render_record_descriptor_encoding,render,edge-verified,Read packed words at offsets 0x04 then 0x0c; pass six extracted fields to the encoding packer.
-0x01489c40,16,render_record_step_user_pa_enabled,render,edge-verified,"Query the actual import once; no cached global, fallback or service value is invented."
-0x01496f60,525,render_configure_viewport_and_guard_band,render,edge-verified,"Configure viewport transforms, scissor extent and guard-band pairs using ordered float arithmetic, floor rounding and the original upper clamp."
+0x01489960,68,render_record_descriptor_encoding,render,verified,Read packed words at offsets 0x04 then 0x0c; pass six extracted fields to the encoding packer.
+0x01489c40,16,render_record_step_user_pa_enabled,render,verified,"Query the actual import once; no cached global; fallback or service value is invented."
+0x01496f60,525,render_configure_viewport_and_guard_band,render,verified,"Configure viewport transforms; scissor extent and guard-band pairs using ordered float arithmetic; floor rounding and the original upper clamp."
 0x0149c4e0,114,render_initialize_record_geometry_flags,render,edge-verified,Clear the output before selector admission; selectors 7-12 copy the parameter flag only when the full 32-bit parameter equals 1.
 0x0149c660,486,render_record_geometry_resolve_parameter_index,render,edge-verified,Resolve the packed parameter-table index with the original validation order and wrapping scale operations.
 0x0149c850,672,render_record_apply_parameter_tuple,render,edge-verified,Select one output code from normalization tuple; ordered overrides and rejection preserve output.
 0x0149cb30,204,render_record_apply_mapping,render,edge-verified,Map derived normalization code to original layout-helper tuple; unsupported code preserves output.
 0x0149cc60,350,render_convert_record_descriptor_classification,render,edge-verified,Convert a tile-mode table index for the requested array mode; preserve output on error and bypass already matching modes.
-0x0149ce10,5124,render_record_geometry,render,edge-verified,"Calculate record dimensions and alignment, preserving staged output on failure and live reads when descriptor and result overlap."
-0x0149e2d0,295,render_record_constructor_optional_first,render,edge-verified,"Align paired components; retain the pre-increment product and 55-bit quantity, then publish optional outputs in order."
+0x0149ce10,5124,render_record_geometry,render,edge-verified,"Calculate record dimensions and alignment; preserving staged output on failure and live reads when descriptor and result overlap."
+0x0149e2d0,295,render_record_constructor_optional_first,render,edge-verified,"Align paired components; retain the pre-increment product and 55-bit quantity; then publish optional outputs in order."
 0x0149e400,358,render_record_constructor_optional_second,render,edge-verified,Calculate geometry and publish zeroed or partial auxiliary outputs even when a helper reports an error.
 0x0149e570,279,render_calculate_second_auxiliary,render,edge-verified,Calculate the second auxiliary layout through two ordered unit admissions and wrapped alignment. Publish its four optional size and alignment outputs in 8/4/4/4-byte order.
-0x0149e8d0,40,render_record_geometry_round_up_power_of_two,render,edge-verified,Round upward in the unsigned 32-bit domain; zero and an overflowing next power wrap to zero.
+0x0149e8d0,40,render_record_geometry_round_up_power_of_two,render,verified,Round upward in the unsigned 32-bit domain; zero and an overflowing next power wrap to zero.
 0x0149e900,16,render_record_tuple_parameter_supported,render,edge-verified,Nonzero power-of-two test with Boolean AL interface.
-0x0149e920,18,render_record_geometry_index_logarithm,render,edge-verified,"Extract the exponent after converting the positive integer to float, including float rounding near powers of two."
+0x0149e920,18,render_record_geometry_index_logarithm,render,verified,"Extract the exponent after converting the positive integer to float; including float rounding near powers of two."
 0x0149e960,129,render_record_tuple_transform_classification,render,edge-verified,Transform admitted classifications after wrapping 32-bit scaling and unsigned thresholds.
 0x0149ea20,28,render_record_tuple_classification_group,render,edge-verified,Bounded classification-to-group lookup with fallback one and original shared table.
 0x0149ea70,25,render_record_tuple_alternate_classification,render,edge-verified,Recognize bounded alternate-classification subset with zero fallback.
@@ -132,116 +159,471 @@ address,size,name,system,status,notes
 0x0149eac0,40,render_record_geometry_classification,render,edge-verified,Read the four-bit classification of a bounded record word before publishing to possibly aliased output.
 0x0149eb20,40,render_record_geometry_first_exponent,render,edge-verified,Extract the first three-bit exponent used by the record geometry arithmetic.
 0x0149eb50,40,render_record_geometry_second_exponent,render,edge-verified,Extract the second two-bit exponent; reject invalid indices or null output before reading the table.
-0x0149ed30,174,render_record_geometry_parameters,render,edge-verified,"Split one captured parameter word into four optional two-bit outputs, preserving write order when outputs alias."
-0x014a1e80,803,render_initialize_record_level_descriptor,render,edge-verified,"Publish a partial level descriptor in order, reread the source between helper calls, then convert its tile mode."
+0x0149ed30,174,render_record_geometry_parameters,render,edge-verified,"Split one captured parameter word into four optional two-bit outputs; preserving write order when outputs alias."
+0x014a1e80,803,render_initialize_record_level_descriptor,render,edge-verified,"Publish a partial level descriptor in order; reread the source between helper calls; then convert its tile mode."
 0x014a27c0,627,render_get_record_descriptor_size,render,edge-verified,Initialize mandatory outputs after the decoder call; accumulate live values and retain partial outputs on error.
 0x014a2c40,595,render_calculate_record_descriptor_level_offset,render,edge-verified,Accumulate levels inclusively using partial helper totals even after errors; publish the two QWORD outputs in order.
 0x016efd00,368,event_emk_add,event,verified,SprjEmkSystem: find or add an event entry in two keyed lists; first advance with the 1/30 s step (1/60 s in the 60 FPS patches)
-0x017cfcc0,177,event_flag_write,event,edge-verified,finds an exact event-flag group in a tree and sets or clears one bit
-0x0183ac60,20077,camera_update_follow,camera,edge-verified,"Updates subject-relative camera position and orientation through input, chase, collision avoidance and territory constraints; applies selected frame-rate gains"
+0x017cfcc0,177,event_flag_write,event,verified,finds an exact event-flag group in a tree and sets or clears one bit
+0x0183ac60,20077,camera_update_follow,camera,edge-verified,"Updates subject-relative camera position and orientation through input; chase; collision avoidance and territory constraints; applies selected frame-rate gains"
 0x0183fad0,79,camera_follow_pitch,camera,edge-verified,Pitch from the forward basis; preserve scalar square underflow and zero fallback; call atan2 and XOR the returned sign bits
 0x0183fb20,43,camera_follow_yaw,camera,edge-verified,Yaw from the forward X/Z direction; exact signed-zero fallback preserves stored angle; unordered components reach atan2 unchanged
-0x01972900,426,input_pad_step_01972900,input,verified,"FD4PadManager map: marks two entries, advances an owner by the frame-time step (patched to 1/15 or 1/240 s; the advance branch is idle in the clinic)"
-0x01c0c2b0,3222,physics_instance_construct_01c0c2b0,physics,verified,"physics instance constructor over a body set: back-links, shape copy, controller (step 1/30 s; 60 FPS patches 1/60), motion rescale, listeners"
-0x01cbdb20,979,character_frame_update_01cbdb20,character,verified,"per-frame character update: throw animation event, points stat regeneration (stamina-like, -50..max), time-step descriptor; the 30/60 FPS patches fix its frame time"
-0x01ea47a0,611,frame_timing_gate_create_handle,frame_timing,edge-verified,"handle creation of the Chalice Dungeon gate state: idle in mode 1, drops the handle, creates one from two filled blocks, FrpgNetMan+0xa68 and a name, adopts it, request 3"
-0x01ea4a10,501,frame_timing_gate_entry_check,frame_timing,edge-verified,"entry check of the Chalice Dungeon gate state: online gates as 0x01ea5280; keeps the first keyed entry's object as its handle, then request 4"
-0x01ea4cb0,1472,frame_timing_gate_create_handle_from_levels,frame_timing,edge-verified,"level creation of the Chalice Dungeon gate state: online gates; four highest set levels (event flags 0x184d+i+7*level), a handle object from them, adopted; request 5"
-0x01ea5280,553,frame_timing_gate_owner_check,frame_timing,edge-verified,"owner check of the Chalice Dungeon gate state: idle in mode 1, FrpgNetMan flags and an id allow it; keeps the object for the id as its handle, then request 6"
-0x01ea5670,451,frame_timing_gate_ritual_handle_reset,frame_timing,edge-verified,"ritual handle reset of the Chalice Dungeon gate state: in a ritual mode (server: online gates, flag bit clear) clears the handle's +0x124, rebuilds it, then request 8"
-0x01ea5850,708,frame_timing_gate_ritual_slot_reset,frame_timing,edge-verified,"ritual slot reset of the Chalice Dungeon gate state: as 0x01ea5670, but lists the active slots on the container heap and passes them on with the handle"
-0x01ea5c90,354,frame_timing_gate_ritual_or_dungeon_ready,frame_timing,edge-verified,"readiness check of the Chalice Dungeon gate state: idle in a local ritual/dungeon mode with FrpgNetMan's bytes allowing it, or a server one also needing a handle whose +0x50 is zero"
-0x01ea5e20,546,frame_timing_gate_pass_on_kind_1,frame_timing,edge-verified,"when ready (0x01ea5c90): clears the handle's +0x11c and +0x120, passes it on for the mode with kind 1 if its +0x50 is zero, then request 9"
+0x018e4110,432,param_apply_char_make_face,param,edge-verified,Character creation: writes the face being built (sliders; parts/colors/decal for a version 4 table) into a FaceGenParam row
+0x01972900,426,input_pad_step_01972900,input,verified,"FD4PadManager map: marks two entries; advances an owner by the frame-time step (patched to 1/15 or 1/240 s; the advance branch is idle in the clinic)"
+0x01c0c2b0,3222,physics_instance_construct_01c0c2b0,physics,verified,"physics instance constructor over a body set: back-links; shape copy; controller (step 1/30 s; 60 FPS patches 1/60); motion rescale; listeners"
+0x01c92e90,372,param_lock_cam_range,param,edge-verified,"SoloParamRepository LockCamParam (type 33) float at row+0x10 for an id (searched unsigned), else row 0's, else the float at owner+0x2924"
+0x01cbdb20,979,character_frame_update_01cbdb20,character,verified,"per-frame character update: throw animation event; points stat regeneration (stamina-like; -50..max); time-step descriptor; the 30/60 FPS patches fix its frame time"
+0x01ea47a0,611,frame_timing_gate_create_handle,frame_timing,edge-verified,"handle creation of the Chalice Dungeon gate state: idle in mode 1; drops the handle; creates one from two filled blocks; FrpgNetMan+0xa68 and a name; adopts it; request 3"
+0x01ea4a10,501,frame_timing_gate_entry_check,frame_timing,edge-verified,"entry check of the Chalice Dungeon gate state: online gates as 0x01ea5280; keeps the first keyed entry's object as its handle; then request 4"
+0x01ea4cb0,1472,frame_timing_gate_create_handle_from_levels,frame_timing,edge-verified,"level creation of the Chalice Dungeon gate state: online gates; four highest set levels (event flags 0x184d+i+7*level); a handle object from them; adopted; request 5"
+0x01ea5280,553,frame_timing_gate_owner_check,frame_timing,edge-verified,"owner check of the Chalice Dungeon gate state: idle in mode 1; FrpgNetMan flags and an id allow it; keeps the object for the id as its handle; then request 6"
+0x01ea5670,451,frame_timing_gate_ritual_handle_reset,frame_timing,edge-verified,"ritual handle reset of the Chalice Dungeon gate state: in a ritual mode (server: online gates; flag bit clear) clears the handle's +0x124; rebuilds it; then request 8"
+0x01ea5850,708,frame_timing_gate_ritual_slot_reset,frame_timing,edge-verified,"ritual slot reset of the Chalice Dungeon gate state: as 0x01ea5670; but lists the active slots on the container heap and passes them on with the handle"
+0x01ea5c90,354,frame_timing_gate_ritual_or_dungeon_ready,frame_timing,edge-verified,"readiness check of the Chalice Dungeon gate state: idle in a local ritual/dungeon mode with FrpgNetMan's bytes allowing it; or a server one also needing a handle whose +0x50 is zero"
+0x01ea5e20,546,frame_timing_gate_pass_on_kind_1,frame_timing,edge-verified,"when ready (0x01ea5c90): clears the handle's +0x11c and +0x120; passes it on for the mode with kind 1 if its +0x50 is zero; then request 9"
 0x01ea6080,546,frame_timing_gate_pass_on_kind_2,frame_timing,edge-verified,as 0x01ea5e20 with kind 2
-0x01eb5390,182,frame_timing_dungeon_gate_step_init_for_channel_load,frame_timing,edge-verified,"SprjDungeonGateIns::STEP_Init_forChannelLoad: when the gate state is idle in ChannelLoad, request 2 and advance it one fixed step (1/30 s; 1/60 s in the 60 FPS patches)"
-0x01eb5490,246,frame_timing_dungeon_gate_step_mode_switch,frame_timing,edge-verified,"SprjDungeonGateIns::STEP_ModeSwitch: advance the gate state one fixed step while busy, then go to the first step of its mode"
-0x01eb9020,303,frame_timing_dungeon_gate_on_event_0,frame_timing,edge-verified,"SprjDungeonGateIns handler of event 0: request 1, then request 2, each advancing the gate state one fixed step"
-0x01ebb090,184,frame_timing_dungeon_gate_on_event_1000,frame_timing,edge-verified,"SprjDungeonGateIns handler of event 1000: when idle in states 2..5, request 7 and advance the gate state one fixed step"
-0x01ebf060,176,frame_timing_dungeon_gate_on_event_3000,frame_timing,edge-verified,"SprjDungeonGateIns handler of event 3000: when idle, request 10 and advance the gate state one fixed step"
-0x01ec3ef0,795,frame_timing_leave_modes_around_owner_check_01ec3ef0,frame_timing,edge-verified,"state method on the Chalice Dungeon gate: leaves ritual/dungeon modes (request 7), the error mode (request 10); true when check 0x01ea5280 says yes in server dungeon mode"
-0x01f03210,307,frame_timing_holygrail_wait_for_dungeon_mode,frame_timing,edge-verified,"state method: advance the current Chalice Dungeon gate (event flags 9020..9026 pick it) one fixed step while busy, then report whether it is in a dungeon mode; not reached by the routes yet"
-0x01f03680,296,frame_timing_holygrail_wait_for_ritual_mode,frame_timing,edge-verified,"state method: advance the current Chalice Dungeon gate one fixed step while busy, then report whether it is in a ritual mode; not reached by the routes yet"
-0x01f6a9f0,121,frame_timing_until_idle_01f6a9f0,frame_timing,edge-verified,"state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (the Chalice Dungeon gate's state, at +0x108 in SprjDungeonGateIns; not reached by the routes yet)"
-0x0200d8a0,137,frame_timing_until_idle_0200d8a0,frame_timing,edge-verified,"state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (the Chalice Dungeon gate's state, at +0x108 in SprjDungeonGateIns; not reached by the routes yet)"
-0x0200e100,121,frame_timing_until_idle_0200e100,frame_timing,edge-verified,"state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (the Chalice Dungeon gate's state, at +0x108 in SprjDungeonGateIns; not reached by the routes yet)"
-0x0200e270,151,frame_timing_request_7_0200e270,frame_timing,edge-verified,"state method: when idle in states 2..5, request 7 and advance the owner one fixed step (the Chalice Dungeon gate's state, at +0x108 in SprjDungeonGateIns; not reached by the routes yet)"
+0x01eb5390,182,frame_timing_dungeon_gate_step_init_for_channel_load,frame_timing,edge-verified,"SprjDungeonGateIns::STEP_Init_forChannelLoad: when the gate state is idle in ChannelLoad; request 2 and advance it one fixed step (1/30 s; 1/60 s in the 60 FPS patches)"
+0x01eb5490,246,frame_timing_dungeon_gate_step_mode_switch,frame_timing,edge-verified,"SprjDungeonGateIns::STEP_ModeSwitch: advance the gate state one fixed step while busy; then go to the first step of its mode"
+0x01eb9020,303,frame_timing_dungeon_gate_on_event_0,frame_timing,edge-verified,"SprjDungeonGateIns handler of event 0: request 1; then request 2; each advancing the gate state one fixed step"
+0x01ebb090,184,frame_timing_dungeon_gate_on_event_1000,frame_timing,edge-verified,"SprjDungeonGateIns handler of event 1000: when idle in states 2..5; request 7 and advance the gate state one fixed step"
+0x01ebf060,176,frame_timing_dungeon_gate_on_event_3000,frame_timing,edge-verified,"SprjDungeonGateIns handler of event 3000: when idle; request 10 and advance the gate state one fixed step"
+0x01ec3ef0,795,frame_timing_leave_modes_around_owner_check_01ec3ef0,frame_timing,edge-verified,"state method on the Chalice Dungeon gate: leaves ritual/dungeon modes (request 7); the error mode (request 10); true when check 0x01ea5280 says yes in server dungeon mode"
+0x01edf560,254,menu_gaitem_select_entry_copy_into_pool,menu,edge-verified,"GaitemSelectDialog list entry copy into a Dantelion fixed pool slot (0x88 B: int, word, wide string, word, wide string); reports a slot past the in-use count"
+0x01f03210,307,frame_timing_holygrail_wait_for_dungeon_mode,frame_timing,edge-verified,"state method: advance the current Chalice Dungeon gate (event flags 9020..9026 pick it) one fixed step while busy; then report whether it is in a dungeon mode; not reached by the routes yet"
+0x01f03680,296,frame_timing_holygrail_wait_for_ritual_mode,frame_timing,edge-verified,"state method: advance the current Chalice Dungeon gate one fixed step while busy; then report whether it is in a ritual mode; not reached by the routes yet"
+0x01f1bca0,235,menu_gaitem_status_entry_copy,menu,edge-verified,"GaitemStatusDialog list entry copy of entries[index] (0x90 B: two words and wide strings, a ref-counted pointer at +0x80 (count +8 up), a byte)"
+0x01f6a9f0,121,frame_timing_until_idle_01f6a9f0,frame_timing,edge-verified,"state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (the Chalice Dungeon gate's state; at +0x108 in SprjDungeonGateIns; not reached by the routes yet)"
+0x01f82cc0,457,param_find_rows_new_menu_color_table,param,edge-verified,NewMenuColorTableParam run of consecutive ids from an id: first row (a built-in default row when none) and count
+0x01f83130,457,param_find_rows_char_make_menu_list_item,param,edge-verified,Character creation menu list items: first CharMakeMenuListItemParam row of an id and the count of rows with consecutive ids after it
+0x0200d8a0,137,frame_timing_until_idle_0200d8a0,frame_timing,edge-verified,"state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (the Chalice Dungeon gate's state; at +0x108 in SprjDungeonGateIns; not reached by the routes yet)"
+0x0200e100,121,frame_timing_until_idle_0200e100,frame_timing,edge-verified,"state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (the Chalice Dungeon gate's state; at +0x108 in SprjDungeonGateIns; not reached by the routes yet)"
+0x0200e270,151,frame_timing_request_7_0200e270,frame_timing,edge-verified,"state method: when idle in states 2..5; request 7 and advance the owner one fixed step (the Chalice Dungeon gate's state; at +0x108 in SprjDungeonGateIns; not reached by the routes yet)"
 0x0200f970,283,frame_timing_holygrail_until_idle_0200f970,frame_timing,edge-verified,state method: advance the current Chalice Dungeon gate one fixed step while busy; done once idle; not reached by the routes yet
 0x020118f0,283,frame_timing_holygrail_until_idle_020118f0,frame_timing,edge-verified,state method: advance the current Chalice Dungeon gate one fixed step while busy; done once idle; not reached by the routes yet
-0x02012610,121,frame_timing_until_idle_02012610,frame_timing,edge-verified,"state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (the Chalice Dungeon gate's state, at +0x108 in SprjDungeonGateIns; not reached by the routes yet)"
-0x02012780,122,frame_timing_request_10_02012780,frame_timing,edge-verified,"state method: when idle, request 10 and advance the owner one fixed step (the Chalice Dungeon gate's state, at +0x108 in SprjDungeonGateIns; not reached by the routes yet)"
-0x020128f0,121,frame_timing_until_idle_020128f0,frame_timing,edge-verified,"state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (the Chalice Dungeon gate's state, at +0x108 in SprjDungeonGateIns; not reached by the routes yet)"
-0x02012a60,151,frame_timing_request_7_02012a60,frame_timing,edge-verified,"state method: when idle in states 2..5, request 7 and advance the owner one fixed step (the Chalice Dungeon gate's state, at +0x108 in SprjDungeonGateIns; not reached by the routes yet)"
-0x02012bf0,121,frame_timing_until_idle_02012bf0,frame_timing,edge-verified,"state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (the Chalice Dungeon gate's state, at +0x108 in SprjDungeonGateIns; not reached by the routes yet)"
-0x0217ffb0,205,engine_initialize_static_wide_string_0217ffb0,engine,edge-verified,Guarded static empty wide string; byte-only entry test; captured allocator; exact partial stores; destructor registration before full guard publication
-0x0222bc10,2693,ai_hk_frame_update_0222bc10,ai,verified,"SprjHkAiManager per-frame update: steps the AI world by 1/30 s (the 60 FPS patches: 1/60), AI debug display and drawing"
-0x02377bd0,399,render_frame_update_02377bd0,render,verified,"per-frame: ages a list of ref-counted objects, updates RendMan-side child, steps another child by 1/30 s (Uncap: measured frame time)"
+0x02012610,121,frame_timing_until_idle_02012610,frame_timing,edge-verified,"state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (the Chalice Dungeon gate's state; at +0x108 in SprjDungeonGateIns; not reached by the routes yet)"
+0x02012780,122,frame_timing_request_10_02012780,frame_timing,edge-verified,"state method: when idle; request 10 and advance the owner one fixed step (the Chalice Dungeon gate's state; at +0x108 in SprjDungeonGateIns; not reached by the routes yet)"
+0x020128f0,121,frame_timing_until_idle_020128f0,frame_timing,edge-verified,"state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (the Chalice Dungeon gate's state; at +0x108 in SprjDungeonGateIns; not reached by the routes yet)"
+0x02012a60,151,frame_timing_request_7_02012a60,frame_timing,edge-verified,"state method: when idle in states 2..5; request 7 and advance the owner one fixed step (the Chalice Dungeon gate's state; at +0x108 in SprjDungeonGateIns; not reached by the routes yet)"
+0x02012bf0,121,frame_timing_until_idle_02012bf0,frame_timing,edge-verified,"state method: advance the owner one fixed step while busy (1/30 s; 1/60 s in the 60 FPS patches) (the Chalice Dungeon gate's state; at +0x108 in SprjDungeonGateIns; not reached by the routes yet)"
+0x0204a2c0,155,param_table_view,param,edge-verified,SoloParamRepository fills a table view object (vtable 0x05749140 and the table of a type or null); returns it
+0x020648f0,272,param_menu_property_layout_row,param,edge-verified,SoloParamRepository MenuPropertyLayoutParam (type 60) row of an id (searched unsigned) or null
+0x0206ddd0,547,param_find_rows_menu_value_table,param,edge-verified,MenuValueTableParam run of consecutive ids from an id: first row and count; fetches the table again for every id
+0x0206ecc0,313,param_menu_property_spec,param,edge-verified,MenuPropertySpecParam row of an id; else the built-in row (13 at 0x05528730) with that id; else the first built-in row
+0x0217ffb0,205,engine_initialize_static_wide_string_0217ffb0,engine,verified,Guarded static empty wide string; byte-only entry test; captured allocator; exact partial stores; destructor registration before full guard publication
+0x0222bc10,2693,ai_hk_frame_update_0222bc10,ai,verified,"SprjHkAiManager per-frame update: steps the AI world by 1/30 s (the 60 FPS patches: 1/60); AI debug display and drawing"
+0x02311c80,283,param_find_row_equip_param_accessory,param,edge-verified,SoloParamRepository row lookup for EquipParamAccessory (type 2): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02311da0,284,param_row_name_equip_param_accessory,param,edge-verified,SoloParamRepository row name lookup for EquipParamAccessory (type 2): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
+0x02312070,309,param_next_row_id_equip_param_accessory,param,edge-verified,SoloParamRepository id of the row after id in EquipParamAccessory (type 2) file order; negative id: first row; -1 when none
+0x023121b0,341,param_previous_row_id_equip_param_accessory,param,edge-verified,SoloParamRepository id of the row before id in EquipParamAccessory (type 2) file order; negative id: last row; -1 when none
+0x02312370,402,param_list_listed_ids_equip_param_accessory,param,edge-verified,SoloParamRepository as list_row_ids_equip_param_accessory but skips rows whose int16 at +0x26 is negative
+0x02312520,390,param_list_row_ids_equip_param_accessory,param,edge-verified,SoloParamRepository empties an id array and appends every EquipParamAccessory (type 2) row id in file order; returns the count
+0x023128a0,284,param_find_row_action_button,param,edge-verified,SoloParamRepository row lookup for ActionButtonParam (type 39): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02312b60,283,param_find_row_ai_sound,param,edge-verified,SoloParamRepository row lookup for AiSoundParam (type 48): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02312fd0,310,param_find_row_atk_param,param,edge-verified,SoloParamRepository AtkParam row lookup (user 0: AtkParam_Npc type 7; 1: AtkParam_Pc type 8; args out/user/id); stores the user beside the result
+0x023133c0,310,param_find_row_behavior_param,param,edge-verified,SoloParamRepository BehaviorParam row lookup (user 0: BehaviorParam type 12; 1: BehaviorParam_PC type 13; args out/id/user; a negative user gives no row)
+0x02314860,283,param_find_row_bullet,param,edge-verified,SoloParamRepository row lookup for Bullet (type 11): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02314b60,283,param_find_row_calc_correct_graph,param,edge-verified,SoloParamRepository row lookup for CalcCorrectGraph (type 32): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02314e20,283,param_find_row_chara_init,param,edge-verified,SoloParamRepository row lookup for CharaInitParam (type 21): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02314f40,278,param_row_at_chara_init,param,edge-verified,SoloParamRepository row-at accessor for CharaInitParam (type 21): id and data of row number n (id -1; null past the count or when not loaded)
+0x02315060,96,param_row_count_chara_init,param,edge-verified,SoloParamRepository row count of CharaInitParam (type 21); 0 when not loaded
+0x023150d0,284,param_row_name_chara_init,param,edge-verified,SoloParamRepository row name lookup for CharaInitParam (type 21): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
+0x023155c0,283,param_find_row_decal,param,edge-verified,SoloParamRepository row lookup for DecalParam (type 38): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x023167f0,288,param_find_row_dungeon_feature,param,edge-verified,DungeonFeatureParam row lookup (type 53): as the other row lookups; each search also stores the header word 0x06 at 0x05992cb0
+0x02316c70,283,param_find_row_dungeon_sub_feat_lot,param,edge-verified,SoloParamRepository row lookup for DungeonSubFeatLotParam (type 54): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02317560,547,param_find_row_face_gen,param,edge-verified,FaceGenParam row of an id plus a copy of its 50 geometry and 50 texture sliders (zeros without a row)
+0x02317790,103,param_face_gen_is_current,param,edge-verified,Whether FaceGenParam is loaded and of data version 4
+0x02317800,284,param_row_name_face_gen,param,edge-verified,SoloParamRepository row name lookup for FaceGenParam (type 23): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
+0x02317ad0,260,param_face_gen_set_geometry,param,edge-verified,Character creation: sets FaceGenParam faceGeoData[index] (index <= 49) of a row
+0x02317be0,261,param_face_gen_set_texture,param,edge-verified,Character creation: sets FaceGenParam faceTexData[index] (index <= 49) of a row
+0x02317cf0,1384,param_face_gen_set_part,param,edge-verified,Character creation: sets the parts id of FaceGenParam part 0..7 (face/hair/eyes/eyebrow/beard/accessories/decal)
+0x02318280,1543,param_face_gen_set_part_color,param,edge-verified,Character creation: sets color channel 0..2 of FaceGenParam part 0..7
+0x023188b0,317,param_face_gen_set_decal,param,edge-verified,Character creation: copies the 4 decal placement bytes into a FaceGenParam row
+0x023189f0,242,param_face_gen_set_hair_parts_id,param,edge-verified,Sets FaceGenParam hairPartsId of a row
+0x02318af0,242,param_face_gen_set_hair_red,param,edge-verified,Sets FaceGenParam hairColor_R of a row
+0x02318bf0,242,param_face_gen_set_hair_green,param,edge-verified,Sets FaceGenParam hairColor_G of a row
+0x02318cf0,242,param_face_gen_set_hair_blue,param,edge-verified,Sets FaceGenParam hairColor_B of a row
+0x02318df0,242,param_face_gen_set_left_eye_red,param,edge-verified,Sets FaceGenParam eyeLColor_R of a row
+0x02318ef0,242,param_face_gen_set_left_eye_green,param,edge-verified,Sets FaceGenParam eyeLColor_G of a row
+0x02318ff0,242,param_face_gen_set_left_eye_blue,param,edge-verified,Sets FaceGenParam eyeLColor_B of a row
+0x023192d0,283,param_find_row_face,param,edge-verified,SoloParamRepository row lookup for FaceParam (type 24): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x023193f0,103,param_face_is_current,param,edge-verified,Whether FaceParam is loaded and of data version 4
+0x0231a340,305,param_face_set_decal,param,edge-verified,Copies the 4 decal placement bytes into a FaceParam row
+0x0231a480,320,param_face_set_body_scale,param,edge-verified,Sets FaceParam body scale[index] (head/breast/abdomen/arm/leg)
+0x0231a5e0,242,param_face_set_age,param,edge-verified,Sets FaceParam age of a row
+0x0231a6e0,242,param_face_set_gender,param,edge-verified,Sets FaceParam gender of a row
+0x0231a7e0,242,param_face_set_caricature_geometry,param,edge-verified,Sets FaceParam caricatureGeometry of a row
+0x0231a8e0,242,param_face_set_caricature_texture,param,edge-verified,Sets FaceParam caricatureTexture of a row
+0x0231a9e0,261,param_face_set_geometry,param,edge-verified,Sets FaceParam faceGeoData[index] (index <= 60)
+0x0231aaf0,261,param_face_set_texture,param,edge-verified,Sets FaceParam faceTexData[index] (index <= 35)
+0x0231ac00,280,param_face_set_asymmetry,param,edge-verified,Sets FaceParam faceGeoAsymData[index] (index <= 25) when the table is version 4
+0x0231ad20,53,param_check_repository_for_id,param,edge-verified,SoloParamRepository an accessor reduced to its singleton check: reports a missing repository for id >= 0
+0x0231af40,283,param_find_row_face_range,param,edge-verified,SoloParamRepository row lookup for FaceRangeParam (type 25): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x0231b4c0,414,param_find_row_game_area,param,edge-verified,SoloParamRepository GameAreaParam (type 30) row lookup; ids 2900100-2900799 all read row 2900100
+0x0231be50,443,param_find_row_game_map,param,edge-verified,GameMapParam row of a packed map id mAA_BB_CC_DD (row id AABBCCDD); falls back to row 0; id -1 for no map
+0x0231c1e0,283,param_find_row_gem_category,param,edge-verified,SoloParamRepository row lookup for GemCategoryParam (type 44): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x0231c380,366,param_list_gem_category_by_selector_0c,param,edge-verified,SoloParamRepository appends the GemCategoryParam (type 44) row lookup of every row whose int32 at +0x0c matches
+0x0231c510,366,param_list_gem_category_by_selector_08,param,edge-verified,SoloParamRepository appends the GemCategoryParam (type 44) row lookup of every row whose int32 at +0x08 matches
+0x0231ca40,283,param_find_row_gem_drop_doping,param,edge-verified,SoloParamRepository row lookup for GemDropDopingParam (type 45): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x0231cd30,283,param_find_row_gem_drop_modify,param,edge-verified,SoloParamRepository row lookup for GemDropModifyParam (type 46): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x0231d0f0,283,param_find_row_gem_effect,param,edge-verified,SoloParamRepository row lookup for GemeffectParam (type 43): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x0231d210,284,param_row_name_gem_effect,param,edge-verified,SoloParamRepository row name lookup for GemeffectParam (type 43): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
+0x0231d330,329,param_gem_effect_for_level,param,edge-verified,SoloParamRepository GemeffectParam (type 43): id of the row of a group whose level range holds the level with the highest rank up to the level; -1 when none
+0x0231d630,283,param_find_row_gem_gen,param,edge-verified,SoloParamRepository row lookup for GemGenParam (type 42): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x0231d750,284,param_row_name_gem_gen,param,edge-verified,SoloParamRepository row name lookup for GemGenParam (type 42): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
+0x0231da10,209,param_gem_gen_first_row_from,param,edge-verified,SoloParamRepository GemGenParam (type 42): number of the first row whose id is at least id; -1 when none
+0x0231daf0,213,param_gem_gen_last_row_to,param,edge-verified,SoloParamRepository GemGenParam (type 42): number of the last row whose id is at most id; -1 when none
+0x0231dbe0,184,param_gem_gen_row_id,param,edge-verified,SoloParamRepository GemGenParam (type 42): id of row number n (unchecked against the count); -1 for a negative n or no table
+0x0231de40,283,param_find_row_gem_gen_2,param,edge-verified,SoloParamRepository row lookup for GemGenParam (type 42): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x0231df60,284,param_row_name_gem_gen_2,param,edge-verified,SoloParamRepository row name lookup for GemGenParam (type 42): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
+0x0231e3d0,283,param_find_row_equip_param_goods,param,edge-verified,SoloParamRepository row lookup for EquipParamGoods (type 3): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x0231e4f0,278,param_row_at_equip_param_goods,param,edge-verified,SoloParamRepository row-at accessor for EquipParamGoods (type 3): id and data of row number n (id -1; null past the count or when not loaded)
+0x0231e610,96,param_row_count_equip_param_goods,param,edge-verified,SoloParamRepository row count of EquipParamGoods (type 3); 0 when not loaded
+0x0231e680,284,param_row_name_equip_param_goods,param,edge-verified,SoloParamRepository row name lookup for EquipParamGoods (type 3): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
+0x0231ebb0,309,param_next_row_id_equip_param_goods,param,edge-verified,SoloParamRepository id of the row after id in EquipParamGoods (type 3) file order; negative id: first row; -1 when none
+0x0231ecf0,341,param_previous_row_id_equip_param_goods,param,edge-verified,SoloParamRepository id of the row before id in EquipParamGoods (type 3) file order; negative id: last row; -1 when none
+0x0231eec0,518,param_check_set_equip_param_goods,param,edge-verified,EquipParamGoods set check: cache (70 ids/sets of +0x32 built once) marks the looked-up id in a bit set; returns its set when all other members are marked else -1
+0x0231f0e0,390,param_list_row_ids_equip_param_goods,param,edge-verified,SoloParamRepository empties an id array and appends every EquipParamGoods (type 3) row id in file order; returns the count
+0x0231f460,283,param_find_row_hit_mtrl,param,edge-verified,SoloParamRepository row lookup for HitMtrlParam (type 35): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x0231f720,283,param_find_row_holygrail_ex,param,edge-verified,SoloParamRepository row lookup for HolygrailExParam (type 52): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x0231f840,284,param_row_name_holygrail_ex,param,edge-verified,SoloParamRepository row name lookup for HolygrailExParam (type 52): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
+0x0231ff00,96,param_row_count_holygrail_ex,param,edge-verified,SoloParamRepository row count of HolygrailExParam (type 52); 0 when not loaded
+0x0231ff70,168,param_holygrail_ex_row_number,param,edge-verified,SoloParamRepository HolygrailExParam (type 52): index row number of a lookup id; -1 when none
+0x02320020,212,param_find_row_number_holygrail_ex,param,edge-verified,SoloParamRepository HolygrailExParam (type 52): row number n looked up again by its id
+0x023202a0,442,param_find_row_item_lot_lvdep,param,edge-verified,SoloParamRepository ItemLotParam_Lvdep (type 51): from the id's group (id/100*100) the last consecutive row with id <= group + level
+0x02320640,285,param_find_row_item_lot,param,edge-verified,ItemLotParam row lookup (type 19): as the other row lookups; but only for tables of data version 2 or later
+0x02320dd0,283,param_find_row_knock_back,param,edge-verified,SoloParamRepository row lookup for KnockBackParam (type 36): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x023210e0,283,param_find_row_magic,param,edge-verified,SoloParamRepository row lookup for Magic (type 14): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02321200,278,param_row_at_magic,param,edge-verified,SoloParamRepository row-at accessor for Magic (type 14): id and data of row number n (id -1; null past the count or when not loaded)
+0x02321320,96,param_row_count_magic,param,edge-verified,SoloParamRepository row count of Magic (type 14); 0 when not loaded
+0x02321680,302,param_next_row_id_magic,param,edge-verified,SoloParamRepository id of the row after id in Magic (type 14) file order; negative id: first row; -1 when none
+0x023217c0,341,param_previous_row_id_magic,param,edge-verified,SoloParamRepository id of the row before id in Magic (type 14) file order; negative id: last row; -1 when none
+0x02321ac0,283,param_find_row_menu_color_table,param,edge-verified,SoloParamRepository row lookup for MenuColorTableParam (type 18): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02321be0,278,param_row_at_menu_color_table,param,edge-verified,SoloParamRepository row-at accessor for MenuColorTableParam (type 18): id and data of row number n (id -1; null past the count or when not loaded)
+0x02321ea0,283,param_find_row_move,param,edge-verified,SoloParamRepository row lookup for MoveParam (type 20): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02322260,283,param_find_row_equip_mtrl_set,param,edge-verified,SoloParamRepository row lookup for EquipMtrlSetParam (type 22): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x023226c0,343,param_find_row_npc,param,edge-verified,SoloParamRepository row lookup for NpcParam (type 6): also returns header word 0x06 and the data version; reports versions 2 and older (fatal_error) and searches anyway
+0x02322b40,283,param_find_row_npc_think,param,edge-verified,SoloParamRepository row lookup for NpcThinkParam (type 9): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02323290,283,param_find_row_object,param,edge-verified,SoloParamRepository row lookup for ObjectParam (type 10): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x023235b0,231,param_clamp_protector_gen_indexes,param,edge-verified,SoloParamRepository ProtectorGenParam (type 41) after loading: marks entry indexes above 63 as none (0x80000000) in place
+0x02323840,394,param_find_row_equip_param_protector,param,edge-verified,EquipParamProtector lookup: row of the id rounded down to 100; then ReinforceParamProtector row for id%100 + reinforce type (s16 at +0xc8)
+0x023239d0,284,param_row_name_equip_param_protector,param,edge-verified,SoloParamRepository row name lookup for EquipParamProtector (type 1): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
+0x02324fa0,309,param_next_row_id_equip_param_protector,param,edge-verified,SoloParamRepository id of the row after id in EquipParamProtector (type 1) file order; negative id: first row; -1 when none
+0x023250e0,341,param_previous_row_id_equip_param_protector,param,edge-verified,SoloParamRepository id of the row before id in EquipParamProtector (type 1) file order; negative id: last row; -1 when none
+0x02325240,366,param_next_matching_id_equip_param_protector,param,edge-verified,SoloParamRepository next EquipParamProtector (type 1) row after id whose byte +0xd2 equals value; missing or negative id scans from row 0
+0x023253c0,354,param_previous_matching_id_equip_param_protector,param,edge-verified,SoloParamRepository previous EquipParamProtector row before id whose byte +0xd2 equals value; negative id: from the last row
+0x023255c0,80,param_clear_id_list_equip_param_protector,param,edge-verified,"SoloParamRepository id list with its walk compiled away: empties the array, requires the repository, returns the count"
+0x02325620,477,param_list_versions_equip_param_protector,param,edge-verified,SoloParamRepository every EquipParamProtector id plus one id per leading non-negative reinforcement entry at +0x40 (up to 15); returns the count
+0x02325820,390,param_list_row_ids_equip_param_protector,param,edge-verified,SoloParamRepository empties an id array and appends every EquipParamProtector (type 1) row id in file order; returns the count
+0x023259c0,518,param_check_set_equip_param_protector,param,edge-verified,EquipParamProtector set check: cache of 50 (set +0xd8) built once; marks the lookup base id; set read at the row +0xca; set when all other members marked else -1
+0x02326200,283,param_find_row_reinforce_param_protector,param,edge-verified,SoloParamRepository row lookup for ReinforceParamProtector (type 5): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x023264c0,283,param_find_row_ragdoll,param,edge-verified,SoloParamRepository row lookup for RagdollParam (type 26): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02326780,311,param_find_row_resident_fx,param,edge-verified,SoloParamRepository ResidentFxParam (type 47) row lookup that also returns the index row number and the table
+0x02326b40,284,param_find_row_return_point,param,edge-verified,SoloParamRepository row lookup for ReturnPointParam (type 50): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02326c60,238,param_return_point_warp_chair,param,edge-verified,ReturnPointParam scan: warp chair number of the first row with an entity id; or -1
+0x02326d60,241,param_return_point_entity,param,edge-verified,ReturnPointParam scan: entity id of the first row with a warp chair number; or -1
+0x02326e60,271,param_return_points_of_map,param,edge-verified,ReturnPointParam scan: pushes the entity id of every row of an area/block with a warp chair onto an id array
+0x02327120,283,param_find_row_ritual_required_mat,param,edge-verified,SoloParamRepository row lookup for RitualRequiredMatParam (type 55): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02327450,283,param_find_row_shop_lineup,param,edge-verified,SoloParamRepository row lookup for ShopLineupParam (type 27): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02327880,283,param_find_row_skeleton,param,edge-verified,SoloParamRepository row lookup for SkeletonParam (type 31): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02328aa0,283,param_find_row_sp_effect,param,edge-verified,SoloParamRepository row lookup for SpEffectParam (type 15): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02328f90,283,param_find_row_obj_act,param,edge-verified,SoloParamRepository row lookup for ObjActParam (type 34): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02329250,283,param_find_row_talk,param,edge-verified,SoloParamRepository row lookup for TalkParam (type 17): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02329510,283,param_find_row_weapon_gen,param,edge-verified,SoloParamRepository row lookup for WeaponGenParam (type 40): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02329630,284,param_row_name_weapon_gen,param,edge-verified,SoloParamRepository row name lookup for WeaponGenParam (type 40): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
+0x02329810,231,param_clamp_weapon_gen_indexes,param,edge-verified,SoloParamRepository WeaponGenParam (type 40) after loading: marks entry indexes above 63 as none (0x80000000) in place
+0x02329aa0,378,param_find_row_equip_param_weapon,param,edge-verified,EquipParamWeapon lookup: row of the id rounded down to 100; then ReinforceParamWeapon row for id%100 + reinforce type (s16 at +0xd6)
+0x02329c20,268,param_row_name_equip_param_weapon,param,edge-verified,SoloParamRepository row name lookup for EquipParamWeapon (type 0): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
+0x0232b6d0,619,param_next_weapon_id_with_flag,param,edge-verified,SoloParamRepository EquipParamWeapon step: from the id move step rows on until the weapon lookup row has flag bit mode (+0x100); other modes stop at once; negative id -> first row
+0x0232b950,679,param_previous_weapon_id_with_flag,param,edge-verified,SoloParamRepository EquipParamWeapon step back: from the id move step rows back until the weapon lookup row has flag bit mode (+0x100); other modes stop at once; negative id -> last row
+0x0232bc80,80,param_clear_id_list_equip_param_weapon,param,edge-verified,"SoloParamRepository id list with its walk compiled away: empties the array, requires the repository, returns the count"
+0x0232bce0,599,param_check_set_equip_param_weapon,param,edge-verified,EquipParamWeapon set check: cache of 50 ids that are multiples of 100000 (set +0xd8) built once; base id rounded to 100000; set when all other members marked else -1
+0x0232bf50,411,param_list_row_ids_equip_param_weapon,param,edge-verified,"SoloParamRepository every EquipParamWeapon (type 0) row id; with the flag, rows whose int at +0x4 is -1 are skipped"
+0x0232c110,481,param_list_versions_equip_param_weapon,param,edge-verified,SoloParamRepository EquipParamWeapon rows whose byte +0xe2 equals value: id plus one per leading non-negative entry at +0x60 (up to 15)
+0x0232c930,283,param_find_row_reinforce_param_weapon,param,edge-verified,SoloParamRepository row lookup for ReinforceParamWeapon (type 4): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x023392d0,1121,engine_scaleform_heap_reallocate_023392d0,engine,edge-verified,Scaleform MemoryHeapPT realloc: small-page block resized in place under 0x800 (else moved) / large block found in the page manager's radix tree; heap lock then page-manager lock
+0x0233a7f0,803,engine_scaleform_heap_bin_allocate_0233a7f0,engine,edge-verified,Scaleform small-block allocation: bins' best fit; page from the block or its page header; rest binned; bitset marked
+0x0233ab20,680,engine_scaleform_heap_bin_free_0233ab20,engine,edge-verified,Scaleform small-block free: length from the bitset; a free neighbour unit tail-jumps to the merge; else to the head of its bin
+0x0233ae40,1188,engine_scaleform_heap_bin_allocate_aligned_0233ae40,engine,edge-verified,Scaleform aligned small-block allocation: aligned best fit; front and back remainders binned; bitset marked
+0x0233b2f0,1551,engine_scaleform_heap_bin_reallocate_0233b2f0,engine,edge-verified,Scaleform in-place small-block resize: shrink binning the end (joined with a free next block); grow from a free next block within the page half; bin unlink moves the head to prev
+0x0233c0a0,167,engine_scaleform_heap_free_0233c0a0,engine,edge-verified,Scaleform engine free: bins free; used bytes down; header counts down (the last decides); page released at zero; count down
+0x0233c870,474,engine_scaleform_heap_allocate_0233c870,engine,edge-verified,Scaleform engine allocation: alignment > 16 to the aligned path; <= 0x200 from the bins (rounded to 16) with page-add retries; larger under the page-manager lock unless held
+0x0233ca70,464,engine_scaleform_heap_allocate_aligned_0233ca70,engine,edge-verified,Scaleform engine aligned allocation: <= 0x200 from the bins (alignment >= 16) with page-add retries; larger (>= 8-aligned and long; rounded to 8) to the large allocation (locked unless held)
+0x0233d750,383,engine_scaleform_heap_bins_take_best_0233d750,engine,edge-verified,Scaleform bins best fit: head of the first non-empty bin from the length's own (last bin unchecked); head moves to prev
+0x0233d8d0,573,engine_scaleform_heap_bins_take_best_aligned_0233d8d0,engine,edge-verified,Scaleform bins aligned best fit: from the first non-empty bin up; each ring walked backwards for a block holding the length at its first aligned address
+0x0233dc60,739,engine_scaleform_heap_bins_merge_free_0233dc60,engine,edge-verified,Scaleform merge of a freed block with free neighbours (previous through its tail copy); joined block to the head of the joined length's bin
+0x02377bd0,399,render_frame_update_02377bd0,render,verified,"per-frame: ages a list of ref-counted objects; updates RendMan-side child; steps another child by 1/30 s (Uncap: measured frame time)"
+0x02415fe0,89,menu_text_input_destroy,menu,edge-verified,"Text input dialog destructor: closes it, frees the text, destroys the Dantelion dialog object"
+0x02416040,574,menu_text_input_close,menu,edge-verified,"Text input dialog: waits for an open dialog to end, then empties its text and resets the state"
+0x024162a0,94,menu_text_input_open,menu,edge-verified,Text input dialog: opens the system keyboard dialog with the given settings once no other is open
+0x02416300,482,menu_text_input_update,menu,edge-verified,Text input dialog per-frame poll: takes a finished dialog's text (markup characters swapped for glyphs) and how it ended
 0x02418d20,467,frame_timing_frame_step,frame_timing,verified,Per frame: SprjWindow running check; creates SprjFlipper; calls the limiter; runs the task update; returns running and not quitting
 0x02434520,552,frame_timing_flipper_init,frame_timing,verified,SprjFlipper constructor: reads Game.FlipMode (default 4; pending default 3; clamped to 4); unset in the shipped config
 0x02434770,2077,frame_timing_pace_frame,frame_timing,verified,Frame limiter: target interval at +0x18 (1/30 or 1/60 s); spins out the frame (the sleeping wait is compiled in but unused); 32-frame ring; every FPS patch edits it
-0x024512a0,78,frame_timing_task_frame_024512a0,frame_timing,verified,"task manager frame entry from the frame step: FD4TaskManager singleton, then 0x01388c60"
-0x0247eb80,16,render_read_present_pool_counter,render,edge-verified,"full-QWORD locked read/writeback retry, XOR before each attempt; caller adds one. Real AMD64 write cycles retained; non-AMD64 bridge unresolved Synthetic edges pass; no recordings."
+0x024512a0,78,frame_timing_task_frame_024512a0,frame_timing,verified,"task manager frame entry from the frame step: FD4TaskManager singleton; then 0x01388c60"
+0x0246cf50,549,loading_disk_device_resolve_root_0246cf50,loading,verified,Ps4DiskFileDevice root mounts: split "name:" off the path; first entry with that name replaces name+2 chars with its target; true unless the name is "title"
+0x0246d180,558,loading_disk_device_resolve_alias_0246d180,loading,verified,Ps4DiskFileDevice alias mounts: same code as 0x0246cf50 on the alias table (+0x80)
+0x0246d550,530,loading_disk_device_open_0246d550,loading,edge-verified,Ps4DiskFileDevice open: keep the requested path (thread heap); resolve aliases/roots in rounds; open only if an alias matched; through the named device or each unnamed one; under the device lock
+0x0246e630,467,loading_disk_device_find_named_device_0246e630,loading,verified,Ps4DiskFileDevice: device registered under the path mount name (token at ":"; wcslen+wcsncmp); under the device lock
+0x0246e810,390,loading_disk_device_open_on_device_0246e810,loading,edge-verified,Ps4DiskFileDevice: open through one device on a working copy of the path (path copy heap); on success the path takes the copy
+0x0246e9a0,714,loading_disk_device_open_on_unnamed_devices_0246e9a0,loading,edge-verified,Ps4DiskFileDevice: try each device not registered under a name; in order; on a working copy of the path; under the device lock
+0x02470d50,517,loading_mount_table_push_back_02470d50,loading,edge-verified,mount table push_back: grow 1.5x when full (source inside the table found again); copy name and target; end moves on even without a buffer
+0x024716d0,539,loading_mount_table_reallocate_024716d0,loading,edge-verified,mount table reallocate to exact capacity: copy entries; destroy old (heap text freed); free old buffer; failed allocation: transaction jump or report
+0x0247c000,1112,engine_heap_manager_register_area_0247c000,engine,edge-verified,DLHeapManager area registration: under the write lock; sorted insert after the last area starting at or below; same heap there refused; overrun reported; vector growth
+0x0247c4e0,24,render_setup_create_object_0247c4e0,render,edge-verified,"Thunk: the owner's vtable slot 0x58 called as (owner, first, second, first), second again in r8, candidate in r9; returns its result"
+0x0247c590,70,engine_locked_regular_heap_construct_0247c590,engine,edge-verified,Locked regular heap constructor: heap state zeroed (memset); DLLightMutex vtable and cleared flag; allocator interface vtable and owner
+0x0247c5e0,342,engine_locked_regular_heap_initialize_0247c5e0,engine,edge-verified,Locked regular heap set-up: no memory refused; light mutex initialized (PthreadMutex 0x02483fe0) unless its vtable says so; then the regular heap set-up inlined
+0x0247d250,304,engine_temporary_heap_create_for_thread_0247d250,engine,edge-verified,DLTemporaryHeap per-thread creation: the thread's size setting (0x20000 when 0; under 0x38 reported); memory from the default allocator; empty bump region after the 0x38-byte object
+0x0247d3a0,140,engine_temporary_heap_destroy_for_thread_0247d3a0,engine,edge-verified,"DLTemporaryHeap per-thread destruction: range cleared, memory freed through the default allocator (quit query and allocator made when missing), slot cleared"
+0x0247d430,34,engine_temporary_heap_set_size_0247d430,engine,edge-verified,DLTemporaryHeap size setting for the thread (0 -> 0x20000)
+0x0247d470,58,engine_temporary_heap_allocator_0247d470,engine,edge-verified,"DLTemporaryHeap allocator interface of the thread's heap (+0x20), creating the heap first"
+0x0247d4b0,86,engine_temporary_heap_allocate_0247d4b0,engine,edge-verified,DLTemporaryHeap bottom allocation on the thread's heap (linear heap step)
+0x0247d510,121,engine_temporary_heap_allocate_aligned_0247d510,engine,edge-verified,DLTemporaryHeap aligned bottom allocation on the thread's heap (linear heap step)
+0x0247d590,31,engine_temporary_heap_ensure_0247d590,engine,edge-verified,DLTemporaryHeap: creates the thread's heap when missing
+0x0247d5b0,58,engine_temporary_heap_mark_0247d5b0,engine,edge-verified,DLTemporaryHeap mark: the thread heap's bottom
+0x0247d5f0,110,engine_temporary_heap_free_until_0247d5f0,engine,edge-verified,DLTemporaryHeap FreeUntil on the thread's heap: rewinds the bottom; a mark outside the range reported
+0x0247dd30,31,engine_temporary_heap_ensure_0247dd30,engine,edge-verified,DLTemporaryHeap: creates the thread's heap when missing (identical copy)
+0x0247dd60,127,engine_temporary_heap_allocate_top_0247dd60,engine,edge-verified,DLTemporaryHeap 8-aligned top allocation on the thread's heap (linear heap step)
+0x0247dde0,156,engine_temporary_heap_allocate_aligned_top_0247dde0,engine,edge-verified,DLTemporaryHeap aligned top allocation on the thread's heap (linear heap step)
+0x0247e1a0,161,engine_temporary_heap_free_0247e1a0,engine,edge-verified,DLTemporaryHeap top block free on the thread's heap (linear heap step)
+0x0247e400,18,engine_condition_signal_construct_0247e400,engine,edge-verified,"DLConditionSignal constructor: vtable, flags cleared"
+0x0247e420,201,engine_condition_signal_delete_0247e420,engine,edge-verified,"DLConditionSignal deleting destructor: when created, mutex then condition destroyed (busy stops; errors reported); freed"
+0x0247e4f0,198,engine_condition_signal_destroy_base_0247e4f0,engine,edge-verified,"DLConditionSignal base destructor: when created, mutex then condition destroyed; created flag cleared unless busy"
+0x0247e5c0,206,engine_condition_signal_finalize_0247e5c0,engine,edge-verified,"DLConditionSignal finalize: when created per vtable, destroys mutex and condition; -2 when busy, else 0 and not created"
+0x0247e690,211,engine_condition_signal_create_0247e690,engine,edge-verified,"DLConditionSignal create: skipped when created; argument byte -> signalled, waited cleared; mutex failure returned; ENOMEM/EAGAIN -1; EINVAL/EBUSY/other reported, created"
+0x0247e780,366,engine_condition_signal_set_0247e780,engine,edge-verified,DLConditionSignal set/clear under its mutex; setting wakes every waiter (pthread_cond_broadcast) when one has waited; errors reported; 0
+0x0247e8f0,329,engine_condition_signal_wait_0247e8f0,engine,edge-verified,DLConditionSignal wait under its mutex unless already set (marks a waiter); returns the condition wait result or 0
+0x0247ea40,61,engine_condition_signal_poll_0247ea40,engine,edge-verified,"DLConditionSignal poll: reports an uncreated object; 0 when signalled, else -2"
+0x0247ea80,40,engine_condition_signal_check_0247ea80,engine,edge-verified,DLConditionSignal check: reports an uncreated object; 0
+0x0247eb80,16,render_read_present_pool_counter,render,edge-verified,"full-QWORD locked read/writeback retry; XOR before each attempt; caller adds one. Real AMD64 write cycles retained; non-AMD64 bridge unresolved Synthetic edges pass; no recordings."
+0x0247ecb0,15,kernel_light_mutex_construct,kernel,edge-verified,DLLightMutex constructor: its vtable and a cleared initialized flag; the system mutex handle is left as it was
+0x0247ecc0,118,kernel_light_mutex_delete,kernel,edge-verified,DLLightMutex deleting destructor: destroys an initialized mutex (errors reported) without clearing the flag then frees the object
+0x0247ed40,115,kernel_light_mutex_destruct,kernel,edge-verified,DLLightMutex destructor: destroys an initialized mutex; EBUSY keeps the flag set; EINVAL and unknown errors reported
+0x0247edc0,124,kernel_light_mutex_finalize,kernel,edge-verified,DLLightMutex finalize: asks the vtable; EBUSY returns -2 and keeps the flag; otherwise the flag clears after any error reports
+0x0247ee40,49,kernel_light_mutex_initialize,kernel,edge-verified,DLLightMutex initialize: asks the vtable; the PthreadMutex initialize (0x02483fe0); a nonzero result is returned and the flag stays clear
+0x0247ee90,226,kernel_light_mutex_lock,kernel,edge-verified,DLLightMutex lock: the PthreadMutex lock inlined (forever); ETIMEDOUT returns -3; a mutex not initialized is reported then used
+0x0247ef80,230,kernel_light_mutex_try_lock,kernel,edge-verified,DLLightMutex try lock: the PthreadMutex try lock inlined; EBUSY returns -2; a mutex not initialized is reported then used
+0x0247f070,124,kernel_light_mutex_unlock,kernel,edge-verified,DLLightMutex unlock: the PthreadMutex unlock inlined; EPERM accepted; a mutex not initialized is reported then used
+0x0247f180,15,kernel_read_write_lock_construct,kernel,edge-verified,DLReadWriteLock constructor: its vtable and a cleared initialized flag; the system lock handle is left as it was
+0x0247f190,81,kernel_read_write_lock_delete,kernel,edge-verified,DLReadWriteLock deleting destructor: destroys an initialized lock (EINVAL reported) without clearing the flag then frees the object
+0x0247f1f0,85,kernel_read_write_lock_destruct,kernel,edge-verified,DLReadWriteLock destructor: destroys an initialized lock; EBUSY keeps the flag set; EINVAL reported; otherwise the flag clears
+0x0247f250,94,kernel_read_write_lock_finalize,kernel,edge-verified,DLReadWriteLock finalize: asks the vtable; EBUSY returns -2 and keeps the flag; EINVAL reported; otherwise the flag clears
+0x0247f2b0,244,kernel_read_write_lock_initialize,kernel,edge-verified,DLReadWriteLock initialize: ENOMEM/EAGAIN return -1; any other result sets the flag after the EPERM/EBUSY/EINVAL/EFAULT report chain
+0x0247f3d0,198,kernel_read_write_lock_write,kernel,edge-verified,DLReadWriteLock write lock (untimed when timeout is -1): ETIMEDOUT returns -3; EINVAL/EDEADLK reports fall through to the unknown error
+0x0247f4a0,146,kernel_read_write_lock_try_write,kernel,edge-verified,DLReadWriteLock try write lock: EBUSY returns -2; EINVAL then EDEADLK reported; anything else returns 0
+0x0247f540,115,kernel_read_write_lock_unlock_0247f540,kernel,edge-verified,DLReadWriteLock unlock (one of three identical copies): EPERM returns -4; EINVAL reported
+0x0247f5c0,115,kernel_read_write_lock_unlock_0247f5c0,kernel,edge-verified,DLReadWriteLock unlock (one of three identical copies): EPERM returns -4; EINVAL reported
+0x0247f640,206,kernel_read_write_lock_read,kernel,edge-verified,DLReadWriteLock read lock (untimed when timeout is -1): ETIMEDOUT returns -3; EINVAL/EAGAIN/EDEADLK reports fall through
+0x0247f710,115,kernel_read_write_lock_unlock_0247f710,kernel,edge-verified,DLReadWriteLock unlock (one of three identical copies): EPERM returns -4; EINVAL reported
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
-0x024bd150,216,frame_timing_job_take_result,frame_timing,edge-verified,"Job handle result: mode 0 polls (null if not done), 2 takes, others wait 1 ms at a time; bumps the job's holder count under the job lock"
-0x024bdd40,36,frame_timing_job_wait,frame_timing,edge-verified,"Poll a job's state until finished (2), sleeping 1 ms in the kernel between polls"
+0x02483fe0,196,kernel_pthread_mutex_initialize,kernel,edge-verified,Dantelion2 PthreadMutex init: recursive attribute then init; ENOMEM/EAGAIN return -1; EINVAL and unknown errors reported with the source line
+0x024840b0,90,kernel_pthread_mutex_destroy,kernel,edge-verified,Dantelion2 PthreadMutex destroy: EBUSY returns -2; EINVAL then the unknown error reported with the source line
+0x02484110,183,kernel_pthread_mutex_lock,kernel,edge-verified,Dantelion2 PthreadMutex lock (untimed when timeout is -1); ETIMEDOUT returns -3; EDEADLK/EINVAL/EAGAIN reports fall through to the runtime error
+0x024841d0,177,kernel_pthread_mutex_try_lock,kernel,edge-verified,Dantelion2 PthreadMutex try lock: EBUSY returns -2; EDEADLK/EINVAL/EAGAIN reports fall through to the runtime error
+0x02484290,71,kernel_pthread_mutex_unlock,kernel,edge-verified,Dantelion2 PthreadMutex unlock: 0 and EPERM accepted; EINVAL or any other result reported with the source line
+0x024846f0,105,engine_fast_small_object_allocator_delete_024846f0,engine,edge-verified,"DLFastSmallObjectAllocator deleting destructor: every class allocator released (0x02a3bc40), class array freed to the backing allocator, operator delete"
+0x02484760,106,engine_fast_small_object_allocator_destroy_02484760,engine,edge-verified,"DLFastSmallObjectAllocator destructor: every class allocator released (0x02a3bc40), class array freed and forgotten"
+0x024847d0,309,engine_fast_small_object_allocator_delete_locked_024847d0,engine,edge-verified,"DLFastSmallObjectAllocator deleting destructor, locked variant: classes released, array freed, PthreadMutex torn down (errors reported, busy kept), operator delete"
+0x02484910,307,engine_fast_small_object_allocator_destroy_locked_02484910,engine,edge-verified,"DLFastSmallObjectAllocator destructor, locked variant: classes released, array freed, PthreadMutex torn down (errors reported, busy kept)"
+0x02484ae0,74,engine_fixed_allocator_release_chunks_02484ae0,engine,edge-verified,"DLFixedAllocator chunk release: left subtree, right subtree, then the node's own chunk back to the backing allocator (vtable +0x70); the tree is left as it was"
+0x02484b30,239,engine_fixed_allocator_initialize_02484b30,engine,edge-verified,DLFixedAllocator set-up: reports a non-power-of-two alignment and room for fewer than two elements; element at least 8 rounded to the alignment; empty chunk list and tree
+0x02484c20,72,engine_fixed_allocator_clear_02484c20,engine,edge-verified,"DLFixedAllocator clear: releases every chunk (0x02484ae0) and forgets them (current, last freed, list, tree); counts untouched"
+0x02484c70,361,engine_fixed_allocator_allocate_02484c70,engine,edge-verified,DLFixedAllocator allocation: front element of the current chunk or the first chunk with room; a new chunk from the backing allocator joins the list and the address tree
+0x02484de0,295,engine_fixed_allocator_free_02484de0,engine,edge-verified,DLFixedAllocator free: chunk from the last-freed hint or the address tree; element to the front of its chunk; emptied chunk released past two chunks of free elements
+0x02484f20,162,engine_fixed_allocator_shrink_02484f20,engine,edge-verified,DLFixedAllocator shrink: every chunk in the with-room list whose elements are all free leaves the list and tree and goes back to the backing allocator
+0x02485100,23,engine_linear_heap_allocate_02485100,engine,edge-verified,"DLLinearHeap bottom allocation: the next size bytes, null when the bottom would pass the top"
+0x02485120,56,engine_linear_heap_allocate_aligned_02485120,engine,edge-verified,DLLinearHeap aligned bottom allocation: bottom padded to the alignment first; null for a non-power-of-two alignment or no room
+0x02485160,38,engine_linear_heap_check_owned_02485160,engine,edge-verified,"DLLinearHeap ownership check: reports an address outside [lowest, highest)"
+0x02485190,64,engine_linear_heap_allocate_top_02485190,engine,edge-verified,"DLLinearHeap top allocation: an 8-aligned block below the top with a 16-byte header (previous top, in use); null when it would pass the bottom"
+0x024851d0,91,engine_linear_heap_allocate_aligned_top_024851d0,engine,edge-verified,DLLinearHeap aligned top allocation: aligned to at least 8; null for a non-power-of-two alignment or no room
+0x02485230,113,engine_linear_heap_free_02485230,engine,edge-verified,DLLinearHeap free: the lowest top block moves the top up past the blocks no longer in use; another block is only marked; outside addresses reported
+0x024852d0,65,engine_linear_heap_free_until_024852d0,engine,edge-verified,"DLLinearHeap FreeUntil: rewinds the bottom to a mark below it; a mark outside [lowest, highest] reported"
+0x02485330,16,engine_linear_heap_contains_02485330,engine,edge-verified,"DLLinearHeap: whether an address is in [lowest, highest)"
+0x02485340,183,engine_linear_heap_walk_02485340,engine,edge-verified,"DLLinearHeap walk step: the bottom used region, the free gap, then each top block up to the end"
+0x02485500,256,engine_regular_heap_initialize_02485500,engine,edge-verified,DLRegularHeap set-up: 64 empty lists; one free block from the first 16-aligned payload to the end block; under 0x40 bytes the heap object is zeroed (memset) and false
+0x02485730,356,engine_regular_heap_allocate_02485730,engine,edge-verified,"DLRegularHeap allocation: first block of the lowest non-empty larger list, else first fit in the own list; rest split off into its list"
+0x024858a0,445,engine_regular_heap_free_024858a0,engine,edge-verified,DLRegularHeap free: range and in-use reports (continue); merge free neighbours (16-byte blocks in no list); merged block to the front of list floor(log2(size))
+0x02485a60,748,engine_regular_heap_allocate_aligned_02485a60,engine,edge-verified,DLRegularHeap aligned allocation: power of two; up to 16 the plain one; below 0x400 lowest list above the worst case; else first aligned fit; front and rest stay free
+0x02485e20,459,engine_regular_heap_check_block_02485e20,engine,edge-verified,"DLRegularHeap block check: the first broken word around a payload (next words, flags, back pointer, list links and their back links), or null"
+0x02486080,570,engine_robust_heap_check_block_02486080,engine,edge-verified,"DLRobustHeap block check: the first broken word around a payload (next words, flags, back pointer, small-list links or large-tree size and links), or null"
+0x024863f0,841,engine_robust_heap_initialize_024863f0,engine,edge-verified,DLRobustHeap set-up: 31 list sentinels at the memory rounded to 16 then 128; one free block to the end rounded down to 16 less a header-only end block; filed by size; false for no or too little memory
+0x02486810,1192,engine_robust_heap_allocate_02486810,engine,edge-verified,DLRobustHeap best-fit allocation: own small list; larger list split; tree smallest (split in place past 0x200 spare); large: exact or smallest larger
+0x02486cd0,1693,engine_robust_heap_allocate_aligned_02486cd0,engine,edge-verified,DLRobustHeap aligned allocation from the bottom: first block (own list aligned; larger lists; tree in order) used from its start or with an aligned payload inside
+0x02487380,675,engine_robust_heap_allocate_top_02487380,engine,edge-verified,DLRobustHeap top allocation: the highest-address free block that fits (lists and tree) is carved from its end; the front stays free
+0x02487650,1252,engine_robust_heap_allocate_aligned_top_02487650,engine,edge-verified,DLRobustHeap aligned top allocation: highest block whose top aligned payload fits; front and rest stay free
+0x02487b50,481,engine_robust_heap_free_02487b50,engine,edge-verified,DLRobustHeap free: reports double frees and foreign pointers (then frees anyway); merges with free neighbours and files the result by size
+0x02487dd0,117,engine_segregated_bi_heap_reset_02487dd0,engine,edge-verified,"DLSegregatedBiHeap state reset: clears from the set-up flag to the end of the state (terminator, chains, range, counters)"
+0x02487e50,469,engine_segregated_bi_heap_initialize_02487e50,engine,edge-verified,"DLSegregatedBiHeap set-up: 16-aligned range, inline descriptor allocator (0x66 per chunk), terminator at the limit, one free block; no descriptor tears the allocator down and fails"
+0x02488030,677,engine_segregated_bi_heap_allocate_bottom_02488030,engine,edge-verified,DLSegregatedBiHeap bottom allocation: first free block (address order) holding the 16-rounded size aligned; split rest/front via new descriptors; to the bottom chain
+0x024882f0,815,engine_segregated_bi_heap_allocate_top_024882f0,engine,edge-verified,"DLSegregatedBiHeap top allocation: last free block (address order) holding the 16-rounded size aligned; a new descriptor takes its highest aligned place, the gap above stays free; to the top chain"
+0x02488650,203,engine_segregated_bi_heap_finalize_02488650,engine,edge-verified,"DLSegregatedBiHeap tear-down: releases the descriptor allocator when set up; clears the terminator, chains and range (counters kept)"
+0x02488900,1000,engine_segregated_bi_heap_free_02488900,engine,edge-verified,DLSegregatedBiHeap free: find in bottom then top chain; merge free neighbours (descriptors back to the pool); relink into the address-ordered free list
+0x02488cf0,580,engine_segregated_bi_heap_is_consistent_02488cf0,engine,edge-verified,"DLSegregatedBiHeap integrity check: passes when not set up; range and terminator sane, no list loops (Floyd), chains in use, address chain and free list linked back and ordered"
+0x02488f40,586,engine_segregated_bi_heap_free_top_02488f40,engine,edge-verified,DLSegregatedBiHeap BackFree: the free with only the top chain searched; own report lines and message
+0x02489340,482,engine_segregated_regular_heap_initialize_02489340,engine,edge-verified,DLSegregatedRegularHeap set-up: hash table from the allocator (vtable +0x50); descriptor pool (0x66 per 0x1028 chunk); one free block over the 16-aligned range; end descriptor in the heap
+0x02489530,234,engine_segregated_regular_heap_finalize_02489530,engine,edge-verified,"DLSegregatedRegularHeap tear-down: counters, end descriptor, lists and table cleared (count all ones); table freed (vtable +0x70); descriptor pool chunks released and forgotten"
+0x02489620,670,engine_segregated_regular_heap_allocate_02489620,engine,edge-verified,DLSegregatedRegularHeap allocation: first block of the smallest class that surely fits (else first fitting one of its own range class); rest split off
+0x024898c0,1112,engine_segregated_regular_heap_allocate_aligned_024898c0,engine,edge-verified,DLSegregatedRegularHeap aligned allocation: worst-case class up to 0x400 alignment; else first block holding the size from an aligned address; front and rest stay free
+0x02489d20,672,engine_segregated_regular_heap_allocate_top_02489d20,engine,edge-verified,DLSegregatedRegularHeap top allocation: highest-address fitting free block; the allocation takes its end; the front stays free
+0x02489fc0,1081,engine_segregated_regular_heap_allocate_aligned_top_02489fc0,engine,edge-verified,DLSegregatedRegularHeap aligned top allocation: highest-address block holding the size aligned; placed at the highest aligned fit; front and tail stay free
+0x0248a400,688,engine_segregated_regular_heap_free_0248a400,engine,edge-verified,DLSegregatedRegularHeap free: hash-table lookup (unknown address reported); merges with free neighbours; to the front of its class list
+0x0248a9f0,159,engine_small_object_allocator_delete_0248a9f0,engine,edge-verified,"DLSmallObjectAllocator deleting destructor: every class emptied (chunks released and forgotten), class array freed, operator delete"
+0x0248aa90,160,engine_small_object_allocator_destroy_0248aa90,engine,edge-verified,"DLSmallObjectAllocator destructor: every class emptied (chunks released and forgotten), class array freed and forgotten"
+0x0248ab30,363,engine_small_object_allocator_delete_locked_0248ab30,engine,edge-verified,"DLSmallObjectAllocator deleting destructor, locked variant: classes emptied, array freed, PthreadMutex torn down (errors reported, busy kept), operator delete"
+0x0248adc0,528,engine_thread_construct_0248adc0,engine,edge-verified,"DLThread constructor (default stack): start mutex created and locked, condition signal, name (unnamed when null/empty), thread created; failures reported"
+0x0248afe0,540,engine_thread_construct_with_affinity_0248afe0,engine,edge-verified,DLThread constructor with stack size and core mask: same members; thread created with the mask; failures reported
+0x0248b200,532,engine_thread_construct_sized_0248b200,engine,edge-verified,DLThread constructor with a stack size: same members; failures reported
+0x024bd150,216,frame_timing_job_take_result,frame_timing,verified,"Job handle result: mode 0 polls (null if not done); 2 takes; others wait 1 ms at a time; bumps the job's holder count under the job lock"
+0x024bd930,249,loading_resource_info_release_024bd930,loading,edge-verified,DLResourceInfo drop reference: last one sets releasing once (shared lock); manager release; cancel pending requests from the stream queue
+0x024bdd40,36,frame_timing_job_wait,frame_timing,edge-verified,"Poll a job's state until finished (2); sleeping 1 ms in the kernel between polls"
+0x024be250,343,loading_load_request_construct_024be250,loading,edge-verified,resource load request base constructor: clear words; keep the third argument at +0x20; name string on the request heap (heap check) from wcslen; tail via 0x024be8e0
+0x024be3b0,558,loading_load_request_copy_024be3b0,loading,edge-verified,resource load request copy constructor: base vtable; words/bytes copied; name on the request heap; strings/array via 0x024be8e0 then assigned (strings skip self-copy)
+0x024be8e0,362,loading_load_request_construct_tail_024be8e0,loading,edge-verified,resource load request tail: two owning empty wide strings and an empty byte array on the default container heap (heap check each)
+0x024c1530,152,loading_resource_manager_release_024c1530,loading,edge-verified,DLResourceManagerImpl release of an info: initialized assert; without flag 0x40 leave the file queue and set the signal; under the lock mark released (0x80) and hand to 0x024c3260
+0x024c3260,626,loading_resource_manager_remove_released_024c3260,loading,edge-verified,DLResourceManagerImpl removal of a released info (flags 0x40+0x80): under the lock free the slot holding it (name emptied; appended to the free slots) and unload the info (0x024bdb80)
+0x024d6730,283,loading_file_task_initialize_024d6730,loading,edge-verified,FileTransferTask initialize: copy request (keep heap word if none); invalid -> false; base initialize; queue; flag bit 0; request words
+0x024d6850,247,loading_file_task_reset_024d6850,loading,edge-verified,FileTransferTask reset: end slot unless ended; clear words; destroy+free chained objects; clear chain/heap word/state
+0x024d6950,197,loading_file_task_update_024d6950,loading,edge-verified,FileTransferTask update: under its lock run state handlers (member-function table) until a stop state
+0x024d6e20,275,loading_file_task_check_read_024d6e20,loading,edge-verified,FileTransferTask read step: open errors or cancel abort; count pending size; state 8 or 9
+0x024d7460,245,loading_file_task_start_024d7460,loading,edge-verified,FileTransferTask start: manager stop or cancel abort; prepare; chunk limit; begin read; state 6; start slot
+0x024d7e50,309,loading_file_task_end_024d7e50,loading,edge-verified,FileTransferTask end (once): manager hands over the info under its lock; completed -> info loaded + queue reports it; else info flag cleared
+0x024d8210,605,loading_file_task_prepare_024d8210,loading,edge-verified,FileTransferTask read buffer: free the old one; small 0x2c buffer inside the task or allocate read size (manager allow/release callbacks)
+0x024d8470,755,loading_file_task_begin_read_024d8470,loading,edge-verified,FileTransferTask read start: build the 0xb0-byte read request and queue it to the task reader under its lock; close status 3 for a held read object or info read flag bit 0
+0x024dd540,487,loading_transfer_task_initialize_024dd540,loading,edge-verified,TransferTask initialize: clear state; keep manager/info/word; heap by disk device location; claim info; ready
+0x024dde50,200,loading_transfer_task_check_read_024dde50,loading,edge-verified,TransferTask read step: submitted -> reading or abort; open errors 0x10/0x11/0x12 abort; else fail code 4
+0x024ddf20,190,loading_transfer_task_check_close_024ddf20,loading,edge-verified,TransferTask close step: free read object; closed and not cancelled -> request close; else finish once
+0x024de230,116,loading_memory_stream_read_024de230,loading,edge-verified,VirtualMemoryInputStream read: -1 if not open; min(count; left) cut to 32 bits; copy and advance position and +0x20
+0x024df920,524,engine_debug_print_024df920,engine,edge-verified,"Debug print (format, arguments): lazily builds the print lock; locks it; vprintf when forced or enabled; unlocks"
+0x024dfb30,370,engine_debug_print_list_024dfb30,engine,edge-verified,Debug print with a va_list: lazily builds the print lock (and a light mutex beside it); locks it; vprintf when forced or enabled; unlocks
+0x024e2a80,253,engine_text_multibyte_to_wide_024e2a80,engine,edge-verified,"Bytes to wide string: Shift-JIS tables for kinds 2/3 (lead byte cut off by the count stops), UTF-8 through 0x024e88c0; count stored back, then bytes consumed; characters written"
+0x024e2b90,530,engine_text_wide_to_multibyte_024e2b90,engine,edge-verified,"Wide string to bytes: Shift-JIS tables for kinds 2/3 (stops after a terminator, at an unmapped character or a full buffer), UTF-8 for kind 0; count stored back, then characters consumed; bytes written"
+0x024e2dc0,519,engine_text_multibyte_size_024e2dc0,engine,edge-verified,"Bytes a wide string needs: UTF-8 1-3, kind 2 one each, Shift-JIS (halfwidth katakana one byte), kind 4 two outside ASCII; terminator counted when reached; other kinds 0"
+0x024e2ff0,715,engine_text_wide_size_024e2ff0,engine,edge-verified,"Wide characters a byte string makes: UTF-8 (malformed or cut-off sequences stop), kind 2 one per byte, Shift-JIS and kind 4 double-byte counts; terminator counted when reached; other kinds 0"
+0x024e3390,22,engine_format_bytes_list_unbounded_024e3390,engine,edge-verified,"DLFormat vsprintf: tail call of the byte format driver 0x024e4240 with room INT_MAX"
+0x024e33b0,166,engine_format_bytes_024e33b0,engine,edge-verified,"DLFormat variadic byte-string format (snprintf style): va_start, then the byte format driver 0x024e4240 with out, room, format"
+0x024e3460,127,engine_format_allocated_024e3460,engine,edge-verified,"DLFormat into an allocator buffer: measure with 0x024e4240 (null, INT_MAX), allocate length+1 (vtable +0x50), null -> null; empty -> terminator only, else format again with the same va_list"
+0x024e3e80,22,engine_format_wide_list_unbounded_024e3e80,engine,edge-verified,"DLFormat vswprintf without a size: tail call of the wide format driver 0x024e59f0 with room INT_MAX"
+0x024e3ea0,166,engine_format_wide_024e3ea0,engine,edge-verified,"DLFormat variadic wide format (swprintf style): va_start, then the wide format driver 0x024e59f0 with out, room, format"
+0x024e3f50,184,engine_format_wide_unbounded_024e3f50,engine,edge-verified,"DLFormat variadic wide format without a size: va_start, then 0x024e59f0 with room INT_MAX"
+0x024e4010,284,engine_format_to_wide_string_variadic_024e4010,engine,edge-verified,"DLFormat variadic into an engine wide string: va_start, then as 0x024e4130 (measure, resize, format again with the same va_list)"
+0x024e4130,128,engine_format_to_wide_string_024e4130,engine,edge-verified,"DLFormat into an engine wide string: measure with 0x024e59f0 (null, INT_MAX), resize to the length (fill 0, 0x02a2a650), 0 when empty, else format into its text (inline or heap) with room length+1"
+0x024e62b0,401,engine_format_string_argument_024e62b0,engine,edge-verified,"DLFormat %s argument: narrow string (bytes widened as signed) when the caller's flag 0x40 and an 'h' modifier say so, else wide; null narrow -> <NULL>; written as 0x024e77f0 does"
+0x024e6c70,635,engine_format_integer_text_024e6c70,engine,edge-verified,"DLFormat number text, base 2..36 (else 0): signed -> - or + (flag 4); # -> 0x/0X or 0; executable's lower/upper digit tables (flag 0x40); returns the length"
+0x024e6f00,424,engine_format_write_integer_024e6f00,engine,edge-verified,"DLFormat number out: fails when room < width or digits; lone 0 at precision 0 dropped unless 0x100; sign/space; pad, # prefix, zeros, digits (count-only keeps cursor), right pad"
+0x024e70e0,430,engine_format_integer_024e70e0,engine,edge-verified,"DLFormat %d %i %u %o %x %b (others base 10); 64-bit for l/L/I; # dropped for 0 (%#o keeps it); text via 0x024e6c70, written by 0x024e6f00"
+0x024e77f0,233,engine_format_write_wide_string_024e77f0,engine,edge-verified,"DLFormat wide string out (null -> <NULL>): fails when room < width; cut to room-1 and precision; left pad (zero or space) unless left-justified, right spaces; count-only advances without storing"
+0x024f8110,170,frame_timing_random_generator_seed_024f8110,frame_timing,edge-verified,Seeds a 64-bit LCG (x*0x5deece66d+11 mod 2^64) with the 32-bit seed stepped once and writes the high 32 bits of that state and the next three to the four words
+0x024f8350,262,engine_tree_insert_fixup_024f8350,engine,edge-verified,"Red-black tree insert fix-up (robust heap, fixed allocator): children cleared, node red; red uncles recoloured upward; black or missing uncle ends with one or two rotations"
+0x024f8460,695,engine_tree_remove_024f8460,engine,edge-verified,"Red-black tree remove: the child or the successor takes the place; a black removal is rebalanced (a red sibling rotated above the parent first, then finished in place)"
 0x02564ed0,25,render_present_encoding_units,render,edge-verified,Return the full 64-bit entry for wrapped encoding minus one when its index is below 99; otherwise return zero.
-0x02565130,30,render_present_record_bit_width,render,edge-verified,Return the bit width of the OR of three 32-bit inputs. All-zero input returns zero; the presentation fallback passes one as the third input.
-0x02565f90,855,render_initialize_swap_chain_resource,render,edge-verified,"Validate resource parameters, choose independent allocator and owner defaults, prepare resource storage and publish its wrapper. Allocation failure clears the output and releases prepared storage."
-0x02568530,190,render_finish_present_context,render,edge-verified,Run the presentation context's finishing calls in order with a zeroed snapshot.
-0x0256e1d0,6280,render_build_present_source_record,render,edge-verified,"Build a mode-specific presentation record, preserving partial output, unsigned division and packed auxiliary requirements. Constructor selectors are 32-bit values even in stack slots."
-0x025710a0,301,render_record_normalize_mode2,render,edge-verified,"Normalize mode-2 input; preserve ordered 36-byte copy, supplied parameter bypass and helper error/status ordering."
+0x02565130,30,render_present_record_bit_width,render,verified,Return the bit width of the OR of three 32-bit inputs. All-zero input returns zero; the presentation fallback passes one as the third input.
+0x02565f90,855,render_initialize_swap_chain_resource,render,edge-verified,"Validate resource parameters; choose independent allocator and owner defaults; prepare resource storage and publish its wrapper. Allocation failure clears the output and releases prepared storage."
+0x02568530,190,render_finish_present_context,render,verified,Run the presentation context's finishing calls in order with a zeroed snapshot.
+0x0256e1d0,6280,render_build_present_source_record,render,edge-verified,"Build a mode-specific presentation record; preserving partial output; unsigned division and packed auxiliary requirements. Constructor selectors are 32-bit values even in stack slots."
+0x025710a0,301,render_record_normalize_mode2,render,edge-verified,"Normalize mode-2 input; preserve ordered 36-byte copy; supplied parameter bypass and helper error/status ordering."
 0x025711d0,361,render_record_normalize_mode3,render,edge-verified,Normalize mode 3 input through an ordered 48-byte copy; cache mapping across conditional parameter helpers and preserve statuses and padding.
-0x02571340,303,render_record_normalize_mode4,render,edge-verified,"Normalize mode-4 input; preserve ordered 40-byte copy, optional parameter path and status/reload ordering."
+0x02571340,303,render_record_normalize_mode4,render,edge-verified,"Normalize mode-4 input; preserve ordered 40-byte copy; optional parameter path and status/reload ordering."
 0x02571c60,47,render_clear_swap_chain_curve,render,edge-verified,Release the swap-chain curve resource through its owner; clear only the resource after the callback.
 0x02571d60,1324,render_prepare_swap_chain_resource_info,render,edge-verified,Allocate resource storage and publish its descriptor before copying initial data. Re-read entry counts after processing/copy callbacks; copy failures preserve partial output.
 0x02572290,47,render_clear_swap_chain_cached_record,render,edge-verified,Release the swap-chain cached-record resource through its owner; clear only the resource after the callback.
-0x025b2fb0,768,render_swap_chain_present,render,verified,"GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks, maps it to a flip mode, presents (Uncap: mode 0)"
-0x02713870,11646,render_update_model_wind,render,edge-verified,"Ages a model wind receiver's kept influences, lists the live ones and adds or refreshes one per attached wind source; applies selected frame-rate steps"
+0x025b2fb0,768,render_swap_chain_present,render,verified,"GXSwapChainCtrl present: waits for the present interval in 60 Hz vblanks; maps it to a flip mode; presents (Uncap: mode 0)"
+0x02713870,11646,render_update_model_wind,render,edge-verified,"Ages a model wind receiver's kept influences; lists the live ones and adds or refreshes one per attached wind source; applies selected frame-rate steps"
+0x027ec640,583,engine_scaleform_heap_bitset_mark_027ec640,engine,edge-verified,Scaleform page bitset: mark an allocated block (2-bit codes: 1; 2; 3+len-3; 3 3 + 6-bit len-6; 3 3 3 + 32-bit word); last unit 1
+0x027ec890,171,engine_scaleform_heap_bitset_units_027ec890,engine,edge-verified,Scaleform page bitset: read an allocated block's length from its first codes
+0x02a279a0,429,engine_wide_string_assign_from_02a279a0,engine,edge-verified,"Wide string assign(source, position, count): out of range past the end; self-assign cuts the tail, wmemmove front; else grow if capacity < length, wmemcpy"
+0x02a27b70,311,engine_wide_string_grow_02a27b70,engine,edge-verified,"Wide string growth: capacity length|7 or old*1.5 (max 0x7ffffffffffffffe); allocate 2*cap+2 align 2, transaction on failure; keep chars, free old heap"
+0x02a2a720,477,engine_wide_string_assign_counted_02a2a720,engine,edge-verified,"Wide string assign from counted text: text inside the string is the assign from part of itself (inlined); otherwise too long throws, grow if needed, copy"
+0x02a2aca0,180,loading_path_token_next_02a2aca0,loading,verified,wide path token scanner: skip delimiters (wcschr); return length and start of the next token; cursor moves to the delimiter after it
+0x02a3a1b0,40,loading_resource_info_reference_count_02a3a1b0,loading,edge-verified,"Dantelion2 DLResourceInfo reference count: read under the info's own engine mutex (lock forever, result ignored)"
+0x02a3a2a0,45,loading_resource_info_drop_reference_02a3a2a0,loading,edge-verified,Dantelion2 DLResourceInfo drop reference: decrement under the info's own engine mutex; a count at zero stays zero
+0x02a3ae00,394,engine_semaphore_wait_02a3ae00,engine,edge-verified,"DLSemaphore wait for one unit, forever or up to a timeout; -3 on ETIMEDOUT; ESRCH..EINVAL report chains, unknown errors reported; 0"
+0x02a3b0d0,122,engine_semaphore_signal_02a3b0d0,engine,edge-verified,DLSemaphore signal: EINVAL ignored; ESRCH and other errors reported; 0
+0x02a3baa0,378,engine_fast_fixed_allocator_initialize_02a3baa0,engine,edge-verified,"DLFastFixedAllocator set-up: chunk size rounded up to a power of two, chunks aligned to it; blocks rounded to the alignment (at least 8); reports bad sizes and alignment"
+0x02a3bc40,173,engine_fast_fixed_allocator_release_02a3bc40,engine,edge-verified,"DLFastFixedAllocator destructor body: every chunk of both chunk lists, then the spare chunk, freed to the backing allocator"
 0x02a44140,59,engine_wide_string_destroy,engine,edge-verified,WideString destructor; unsigned capacity >=8 frees even null; ignores owns; callback before capacity and size reset and two-byte terminator
-0x02a70890,141,loading_kernel_file_open,loading,edge-verified,sceKernelOpen with FreeBSD flags and permissions from the platform mode bits; store the descriptor and set the open bit; -1 on error
-0x02a70920,46,loading_kernel_file_read,loading,edge-verified,"sceKernelRead the file's descriptor; -1 on a negative count, else store the count when asked and return 0"
-0x02a8bf30,108,input_mouse_b_open_for_initial_user,input,edge-verified,"Second mouse device class's open: initial user, close a positive handle at +0x128, sceMouseOpen(user, 0, 0, null); true when the new handle is positive"
-0x02a8c210,164,input_mouse_construct,input,edge-verified,"Mouse device constructor: base ctor with the third argument, vtable 0x056b7d00, clear 0x140..0x177, load sysmodule 0xa9, sceMouseInit, open via slot 32; handle 0 on any failure"
-0x02a8c420,108,input_initialize_mouse_for_initial_user,input,edge-verified,"Initializes or reinitializes mouse input for the initial user, closing a previous connection if necessary."
-0x02a9c790,84,input_pad_set_vibration,input,edge-verified,"scePadSetVibration on the pad's handle (+0x8) if open (+0xc): large motor from the third argument, small from the second; true on success"
-0x02aaa5a0,124,render_release_present_finish_node,render,edge-verified,"Release the finish node through the manager helper, retaining its head-match decision and reloading commands across retries."
-0x02aaddc0,393,render_allocate_shader_upload,render,edge-verified,"Allocate one shader-upload slice of at most 64 KiB. If no suitable block exists, acquire once, reclaim, then retry once. Preserve zero-size requests and delegate block policy to the original manager."
-0x02aaf030,508,render_managed_present_capacity,render,edge-verified,"Acquire managed command space, preserve partial block publication and copy the saved command snapshot in reverse order."
-0x02aaf700,750,render_finish_present_commands,render,edge-verified,"Finish pending command lists with live block and counter reads, then conditionally submit the cursor snapshot."
-0x02aafb30,509,render_command_submit_present,render,edge-verified,"Prepare and delegate a present submission, preserving capacity-failure returns and resetting begin markers to the live cursor."
-0x02ab0b00,326,render_submit_present_finish_snapshot,render,edge-verified,Emit required counter waits and submit nonempty command regions in order; construct an empty second region when optional commands are absent.
-0x02ab0ce0,326,render_command_submit_batch,render,edge-verified,"Emit counter waits and submit nonempty regions with the packed video/index handle, or delegate the snapshot when no optional context exists."
-0x02ab0e30,213,render_command_submit_snapshot,render,edge-verified,Initialize the auxiliary command buffer and submit nonempty regions using only the video handle.
-0x02ab5a70,1235,render_present_record_consume,render,edge-verified,"Track a resource range or emit record commands; preserve cached tokens, index wrap and final state resets."
-0x02ab6810,1173,render_present_last_record_consume,render,edge-verified,"Consume the final record range, or update its tracking bank when commands are not admitted."
+0x02a692d0,19,loading_load_queue_report_loaded_02a692d0,loading,edge-verified,load event queue: report a request through vtable slot 0 with code 1
+0x02a698e0,654,loading_load_queue_request_02a698e0,loading,edge-verified,DLResourceLoadEventQueue request (kind 0): validity; manager info or report -0xf8; info remembers the queue; under the lock append an event with a request copy; handle to the info
+0x02a69b70,340,loading_load_event_array_push_back_02a69b70,loading,edge-verified,resource load event (0x158) push_back: grow 1.5x when full (source inside found again); copy two words; copy-construct the request; queued vtable
+0x02a69cd0,654,loading_load_queue_request_kind_4_02a69cd0,loading,edge-verified,DLResourceLoadEventQueue request (kind 4): same code as 0x02a698e0
+0x02a69fb0,105,loading_finished_queue_front_02a69fb0,loading,edge-verified,Finished-entry list front: under the lock copy the first entry when the count is not 0
+0x02a6a020,140,loading_finished_queue_pop_02a6a020,loading,edge-verified,Finished-entry list pop: under the lock unlink the first node; destroy its entry; free; count one less
+0x02a6a7f0,448,loading_load_queue_dispatch_02a6a7f0,loading,edge-verified,file load event queue: under its lock hand each event to its kind handler (0 3 4); erase all
+0x02a6a9e0,465,loading_load_queue_start_file_task_02a6a9e0,loading,edge-verified,file load event queue: take a file task slot from the pool (new 32-slot block if none); initialize; append to transfer tasks
+0x02a6abc0,392,loading_load_queue_cancel_event_02a6abc0,loading,edge-verified,DLResourceFileLoadEventQueue kind 3 event: find the transfer task loading the event's info in six task lists (read-write lock) and cancel it
+0x02a6ad50,465,loading_load_queue_start_file_task_no_buffer_02a6ad50,loading,edge-verified,file load event queue kind 4 event: start a file task as 0x02a6a9e0 with initialization flag 1 (no read buffer)
+0x02a6af30,423,loading_load_queue_remove_02a6af30,loading,edge-verified,DLResourceFileLoadEventQueue: under the queue lock find the transfer task loading an info in six task lists (read-write lock) and cancel it
+0x02a6b0e0,184,loading_finished_queue_post_02a6b0e0,loading,edge-verified,load event queue: under its lock append a finished entry (request words code word + info handle)
+0x02a6b520,395,loading_file_load_slots_construct_02a6b520,loading,edge-verified,file load event queue: construct its 32 slots (0x338 bytes each) in order with 0x024d63f0
+0x02a6bc50,618,loading_load_event_array_reallocate_02a6bc50,loading,edge-verified,load event array reallocate to exact capacity: copy events; destroy old (base vtable; data freed; three strings released); free old buffer
+0x02a6cd90,635,loading_stream_queue_request_02a6cd90,loading,edge-verified,DLResourceStreamLoadEventQueue request: validity; manager info or report -0xf8; stream handle; under the lock append an event with a request copy and its extra byte; handle copy
+0x02a6d010,393,loading_stream_event_array_push_back_02a6d010,loading,edge-verified,DLResourceStreamLoadEventQueue event array push_back (0x160 events; same code as 0x02a69b70 plus the byte at +0x158; stream request vtable)
+0x02a6d8e0,224,loading_stream_queue_remove_02a6d8e0,loading,edge-verified,DLResourceStreamLoadEventQueue remove request: pool range assert; erase from the in-use array (memmove); append to the give-back array
+0x02a6f140,645,loading_stream_event_array_reallocate_02a6f140,loading,edge-verified,DLResourceStreamLoadEventQueue event array reallocate (same code as 0x02a6bc50 for 0x160 events)
+0x02a70890,141,loading_kernel_file_open,loading,verified,sceKernelOpen with FreeBSD flags and permissions from the platform mode bits; store the descriptor and set the open bit; -1 on error
+0x02a70920,46,loading_kernel_file_read,loading,edge-verified,"sceKernelRead the file's descriptor; -1 on a negative count; else store the count when asked and return 0"
+0x02a70a90,84,loading_stream_handle_construct_02a70a90,loading,edge-verified,Stream handle constructor: resource handle; stream vtable; queue; info remembers the queue when both are set
+0x02a85e30,153,render_fractal_noise_02a85e30,render,edge-verified,"Sums octaves of the base noise 0x02a85950: scale from 1 times the step, amplitude from 0.5 times the persistence; zero octaves give +0"
+0x02a8bf30,108,input_mouse_b_open_for_initial_user,input,edge-verified,"Second mouse device class's open: initial user; close a positive handle at +0x128; sceMouseOpen(user; 0; 0; null); true when the new handle is positive"
+0x02a8c210,164,input_mouse_construct,input,edge-verified,"Mouse device constructor: base ctor with the third argument; vtable 0x056b7d00; clear 0x140..0x177; load sysmodule 0xa9; sceMouseInit; open via slot 32; handle 0 on any failure"
+0x02a8c420,108,input_initialize_mouse_for_initial_user,input,edge-verified,"Initializes or reinitializes mouse input for the initial user; closing a previous connection if necessary."
+0x02a9c790,84,input_pad_set_vibration,input,verified,"scePadSetVibration on the pad's handle (+0x8) if open (+0xc): large motor from the third argument; small from the second; true on success"
+0x02aa4a30,128,loading_finished_entry_construct_02aa4a30,loading,edge-verified,finished entry constructor: result base + handle to the info the manager finds for the request words
+0x02aa4ab0,75,loading_finished_entry_copy_construct_02aa4ab0,loading,edge-verified,finished entry copy constructor: result base copy + handle assign
+0x02aa4b40,46,loading_finished_entry_destroy_02aa4b40,loading,edge-verified,finished entry destructor: drop the handle then the result base
+0x02aa9d50,87,render_acquire_shader_upload_block_02aa9d50,render,edge-verified,"Under the manager lock (+0xd8, slots 0x18/0x28), one range from the allocator at 0x02aa9db0 with 16-byte alignment"
+0x02aa9db0,487,render_allocate_shader_upload_range_02aa9db0,render,edge-verified,First fit on the free list for size rounded to 16; splits off aligned padding and rest as free ranges when the node pool gives records; counts in use and free bytes
+0x02aaa5a0,124,render_release_present_finish_node,render,verified,"Release the finish node through the manager helper; retaining its head-match decision and reloading commands across retries."
+0x02aaa860,697,render_reclaim_shader_upload_blocks_02aaa860,render,edge-verified,Under the lock drains pending lists +0xa8 +0xb0 +0x98 +0xa0; frees state-4 blocks merging free neighbours; puts the rest back; sets event bits 3 and 0x08000000
+0x02aaddc0,393,render_allocate_shader_upload,render,verified,"Allocate one shader-upload slice of at most 64 KiB. If no suitable block exists; acquire once; reclaim; then retry once. Preserve zero-size requests and delegate block policy to the original manager."
+0x02aaf030,508,render_managed_present_capacity,render,edge-verified,"Acquire managed command space; preserve partial block publication and copy the saved command snapshot in reverse order."
+0x02aaf700,750,render_finish_present_commands,render,edge-verified,"Finish pending command lists with live block and counter reads; then conditionally submit the cursor snapshot."
+0x02aafa00,294,render_submit_pending_commands_02aafa00,render,edge-verified,"Submit the command buffer's region up to the cursor (with the context when a counter wait needs 7 free words; too few asks the space callback for 0 and returns), then restart the region at the cursor"
+0x02aafb30,509,render_command_submit_present,render,verified,"Prepare and delegate a present submission; preserving capacity-failure returns and resetting begin markers to the live cursor."
+0x02ab0b00,326,render_submit_present_finish_snapshot,render,verified,Emit required counter waits and submit nonempty command regions in order; construct an empty second region when optional commands are absent.
+0x02ab0ce0,326,render_command_submit_batch,render,verified,"Emit counter waits and submit nonempty regions with the packed video/index handle; or delegate the snapshot when no optional context exists."
+0x02ab0e30,213,render_command_submit_snapshot,render,verified,Initialize the auxiliary command buffer and submit nonempty regions using only the video handle.
+0x02ab18c0,98,render_resource_info_submit_pending_commands_02ab18c0,render,edge-verified,"Submits the packets since the buffer start as one range (low 32-bit byte count, whole words) to the queue at +0x58, then sets the start to the cursor"
+0x02ab1930,96,render_resource_info_write_completion_label_02ab1930,render,edge-verified,Takes the next label from the services counter (again if it equals the 64-bit reserved value) and writes a compute-done release-memory packet storing it
+0x02ab5a70,1235,render_present_record_consume,render,verified,"Track a resource range or emit record commands; preserve cached tokens; index wrap and final state resets."
+0x02ab6810,1173,render_present_last_record_consume,render,edge-verified,"Consume the final record range; or update its tracking bank when commands are not admitted."
 0x02ab7310,629,render_record_translate_selector,render,edge-verified,Map supported selectors to one output DWORD; unsupported selectors return status 12 and zero the output.
+0x02ab7720,83,render_translate_record_secondary_02ab7720,render,edge-verified,"Selector to secondary value: 0x13-0x16 and 0x27-0x2b give 3, 0x35-0x3b give 1 (status 0); other codes store 0 and return 12"
+0x02ab78a0,83,render_translate_record_tertiary_02ab78a0,render,edge-verified,"Selector to tertiary value: 0x13-0x16 give 1, 0x27-0x2b and 0x35-0x3b give 0 (status 0); other codes store 0 and return 12"
 0x02ab7a20,66,render_choose_record_constructor_selector,render,edge-verified,Choose a constructor selector from supported input values; only the low flag byte affects the extended case.
-0x02ab7ab0,124,render_combine_record_parameters,render,edge-verified,"Combine constructor choices, using only the low flag byte and bounding the four-entry original table before access."
-0x02ab7e40,22,render_reduce_record_parameter,render,edge-verified,"Return the original four-entry scale table value, or zero for an out-of-range unsigned index."
-0x02ab9850,374,render_flush_shader_preparation,render,edge-verified,"Flush the pending barrier/range before the event. Mode 0 keeps the range fields, and a suppressed state returns without touching either group of fields."
+0x02ab7ab0,124,render_combine_record_parameters,render,edge-verified,"Combine constructor choices; using only the low flag byte and bounding the four-entry original table before access."
+0x02ab7e40,22,render_reduce_record_parameter,render,edge-verified,"Return the original four-entry scale table value; or zero for an out-of-range unsigned index."
+0x02ab9850,374,render_flush_shader_preparation,render,verified,"Flush the pending barrier/range before the event. Mode 0 keeps the range fields; and a suppressed state returns without touching either group of fields."
+0x02abad70,80,render_resource_info_alternate_copy_admitted_02abad70,render,edge-verified,True when sceKernelQueryMemoryProtection succeeds for a nonzero address and reports CPU read (bit 0)
+0x02abadd0,83,render_resource_info_storage_admitted_02abadd0,render,edge-verified,True when sceKernelQueryMemoryProtection succeeds for a nonzero address and reports GPU read (bit 4)
+0x02abaef0,23,render_resource_info_current_mode_02abaef0,render,edge-verified,Atomically increments the shared counter at 0x056ba180 and returns its old value masked to 24 bits
 0x02abaf10,78,render_record_derive_parameter,render,edge-verified,Derive numeric normalization code; flag priority and mode-dependent base.
-0x02abb4f0,31,render_record_auxiliary_predicate,render,edge-verified,"Return the auxiliary-processing predicate: selectors 0x13/0x14 enable it, 0x15/0x16 use flag bit 6, and all other selectors disable it."
-0x02abb6d0,48,render_emit_present_release_delegate,render,edge-verified,Forward address and data to the release writer with fixed flags and mode and a zero final selector.
-0x02abba10,22,render_reset_present_context_state_b518,render,edge-verified,Reset the first 64-bit field to zero and the second to the packed invalid-value sentinel.
-0x02acd190,601,render_reset_present_context_shader_state,render,edge-verified,"Clear the conditional command flag, then preserve the sentinel stores around each distinct state-fill call."
-0x02ace1e0,1016,render_configure_record_shader,render,edge-verified,"Populate sparse primary and optional shader bindings, update special-slot caches, bind VS/PS programs, and emit up to 32 PS link words."
-0x02ace5e0,5473,render_configure_record_shader_secondary,render,edge-verified,"Consume two sparse shader binding banks, emit descriptor and address packets, copy selected upload spans, and update shared upload caches."
-0x02acfc20,207,render_finish_record_shader,render,edge-verified,"Finalize two dirty-state passes using cached event flags, clear the source dirty flags, then read the current command mode and apply a pending mode change."
-0x02ad1e30,55,render_restore_color_target_from_bank,render,edge-verified,Restore one color target from the bank selected by flag bit 0. Keep the preparation cache unchanged while delegating the register writes.
-0x02ad1e70,61,render_restore_depth_target_from_bank,render,edge-verified,"Restore the depth target from the bank selected by flag bit 1, independently of the color-target bank in flag bit 0."
+0x02abb4b0,52,render_resource_info_needs_initial_copy_02abb4b0,render,edge-verified,"False for selector 0, 0x59, 0x13-0x16, 0x2c-0x2f and 0x42-0x45 (signed compare); true otherwise"
+0x02abb4f0,31,render_record_auxiliary_predicate,render,edge-verified,"Return the auxiliary-processing predicate: selectors 0x13/0x14 enable it; 0x15/0x16 use flag bit 6; and all other selectors disable it."
+0x02abb6d0,48,render_emit_present_release_delegate,render,verified,Forward address and data to the release writer with fixed flags and mode and a zero final selector.
+0x02abba10,22,render_reset_present_context_state_b518,render,verified,Reset the first 64-bit field to zero and the second to the packed invalid-value sentinel.
+0x02acd190,601,render_reset_present_context_shader_state,render,verified,"Clear the conditional command flag; then preserve the sentinel stores around each distinct state-fill call."
+0x02ace1e0,1016,render_configure_record_shader,render,verified,"Populate sparse primary and optional shader bindings; update special-slot caches; bind VS/PS programs; and emit up to 32 PS link words."
+0x02ace5e0,5473,render_configure_record_shader_secondary,render,edge-verified,"Consume two sparse shader binding banks; emit descriptor and address packets; copy selected upload spans; and update shared upload caches."
+0x02acfc20,207,render_finish_record_shader,render,verified,"Finalize two dirty-state passes using cached event flags; clear the source dirty flags; then read the current command mode and apply a pending mode change."
+0x02ad1e30,55,render_restore_color_target_from_bank,render,verified,Restore one color target from the bank selected by flag bit 0. Keep the preparation cache unchanged while delegating the register writes.
+0x02ad1e70,61,render_restore_depth_target_from_bank,render,verified,"Restore the depth target from the bank selected by flag bit 1; independently of the color-target bank in flag bit 0."
 0x02ad1eb0,194,render_present_source_prepare,render,edge-verified,Flush source state and select an explicit or derived record count. Stop at the first builder error; reload the source parameter before consuming each successful record.
-0x02ad1f80,385,render_present_source_flush_state,render,edge-verified,"Emit dirty non-null slots from the selected bank. Keep count and flags cached on skips; reload the pending value, flags and slot count after each emission."
-0x02ad2c30,120,render_reset_present_preparation_dirty,render,edge-verified,"Emit changed depth and stencil clear values, then cache their post-call values. Preserve the second writer's upper return bits while replacing its low word."
-0x02ad2d20,517,render_reset_present_context_preparation,render,edge-verified,Reset both nine-entry banks and surrounding state; interleave the first eight entries before loading the live scalar.
+0x02ad1f80,385,render_present_source_flush_state,render,verified,"Emit dirty non-null slots from the selected bank. Keep count and flags cached on skips; reload the pending value; flags and slot count after each emission."
+0x02ad2c30,120,render_reset_present_preparation_dirty,render,verified,"Emit changed depth and stencil clear values; then cache their post-call values. Preserve the second writer's upper return bits while replacing its low word."
+0x02ad2d20,517,render_reset_present_context_preparation,render,verified,Reset both nine-entry banks and surrounding state; interleave the first eight entries before loading the live scalar.
 0x02ad3070,351,render_prepare_present_context_scratch,render,edge-verified,Prepare changed live-bank records before finishing; retain eligible pointers across refresh calls and reload the bank each iteration.
-0x02ad3300,76,render_reset_present_context_state_b528,render,edge-verified,Reset the embedded state without changing padding; copy the shared scalar bits unchanged.
+0x02ad3300,76,render_reset_present_context_state_b528,render,verified,Reset the embedded state without changing padding; copy the shared scalar bits unchanged.
 0x02ad3b80,252,render_pop_present_buffer_pool,render,edge-verified,Scan pool entries using the original counter and compare/exchange calls; publish the counter before successful output.
-0x02ad3c80,42,render_process_present_finish_item,render,edge-verified,"Mark the final pool word as processed; pass its address and a fixed selector to the release delegate, forwarding the packet result."
-0x02ad3d40,35,render_capture_present_buffer_pool_record,render,edge-verified,"Return zero for a zero begin address; otherwise locate the containing pool record using wrapped subtraction, arithmetic shift and unsigned division remainder."
-0x02ad5dd0,27,render_swap_chain_present_mode,render,edge-verified,"Validates low DWORD mode; retains object, loads full source pointer at +0x33d0, forwards mode to lower submit Synthetic GCC/Clang edges pass; no recordings."
-0x02ad5e90,3005,render_setup_swap_chain,render,edge-verified,"Allocate and register swap-chain buffers, initialize cached resource data and tone curves, and retain partial publications on the corresponding failure paths."
-0x02ad6e50,499,render_swap_chain_submit,render,edge-verified,"Owned-thread flip polling, source binding and submission; every exit reloads the global guard pointer. Native GPU helper effects remain original Synthetic GCC/Clang edges pass; no recordings."
+0x02ad3c80,42,render_process_present_finish_item,render,verified,"Mark the final pool word as processed; pass its address and a fixed selector to the release delegate; forwarding the packet result."
+0x02ad3d40,35,render_capture_present_buffer_pool_record,render,edge-verified,"Return zero for a zero begin address; otherwise locate the containing pool record using wrapped subtraction; arithmetic shift and unsigned division remainder."
+0x02ad5dd0,27,render_swap_chain_present_mode,render,edge-verified,"Validates low DWORD mode; retains object; loads full source pointer at +0x33d0; forwards mode to lower submit Synthetic GCC/Clang edges pass; no recordings."
+0x02ad5e90,3005,render_setup_swap_chain,render,edge-verified,"Allocate and register swap-chain buffers; initialize cached resource data and tone curves; and retain partial publications on the corresponding failure paths."
+0x02ad6e50,499,render_swap_chain_submit,render,edge-verified,"Owned-thread flip polling; source binding and submission; every exit reloads the global guard pointer. Native GPU helper effects remain original Synthetic GCC/Clang edges pass; no recordings."
 0x02c6d580,149,frame_timing_thread_random,frame_timing,edge-verified,This thread's random state (thread-local); seeds it once from the 32-bit time of day in microseconds
 0x02e61140,67,frame_timing_time_of_day_us,frame_timing,edge-verified,Time of day in microseconds (64-bit multiply and add wrap); the gettimeofday result is ignored
-0x02e61280,101,frame_timing_time_seed_words,frame_timing,edge-verified,"Four seed words in rax:rdx: 32-bit seconds, microseconds, and both offset by a counter that advances by 2 per call"
-0x02e67d20,80,loading_stdio_close_files,loading,edge-verified,"fclose and clear the FILE pointers at +0x10, +0x8 and +0x0 in that order, skipping null ones"
+0x02e61280,101,frame_timing_time_seed_words,frame_timing,edge-verified,"Four seed words in rax:rdx: 32-bit seconds; microseconds; and both offset by a counter that advances by 2 per call"
+0x02e67d20,80,loading_stdio_close_files,loading,edge-verified,"fclose and clear the FILE pointers at +0x10; +0x8 and +0x0 in that order; skipping null ones"
+0x02fa1640,517,engine_fast_small_object_allocator_construct_02fa1640,engine,edge-verified,"DLFastSmallObjectAllocator constructor: size classes from the largest (rounded to the alignment) down by the step, one DLFastFixedAllocator each; bad sizes reported"
+0x02fa1950,552,engine_fast_small_object_allocator_construct_locked_02fa1950,engine,edge-verified,"DLFastSmallObjectAllocator constructor, locked variant: creates its mutex, then the same size classes"
+0x02fa1e20,872,engine_small_object_allocator_construct_02fa1e20,engine,edge-verified,"DLSmallObjectAllocator constructor: size classes from smallest to largest by the granularity, one checked DLFixedAllocator per class in an array from the backing allocator"
+0x02fa22a0,904,engine_small_object_allocator_construct_locked_02fa22a0,engine,edge-verified,"DLSmallObjectAllocator constructor, locked variant: creates its recursive mutex, then the same size classes"
 0x02fa6af0,2214,render_prepare_resource_descriptor,render,edge-verified,Build the resource descriptor and requirements through ordered original helpers; preserve partial writes on errors and live parameter reads between calls.

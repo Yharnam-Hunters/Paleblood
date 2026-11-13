@@ -48,8 +48,12 @@ class Fixture(unittest.TestCase):
                   ['function', 'cases', 'option', 'total', 'passed', 'failed', 'quarantined', 'source', 'date'],
                   [['frame_timing_update', 'recorded', '', '3', '3', '0', '0', '', '2026-01-01'],
                    ['frame_timing_update', 'edge', '', '2', '2', '0', '0', '', '2026-01-01']])
-        with open(f'{self.d}/README.md', 'w') as f:
-            f.write('<!-- target:start -->\n<!-- target:end -->\n<!-- progress:start -->\n<!-- progress:end -->\n')
+        # the generated blocks (tools/progress.py GENERATED_MARKDOWN); the README has none
+        os.makedirs(f'{self.d}/docs', exist_ok=True)
+        with open(f'{self.d}/STATUS.md', 'w') as f:
+            f.write('<!-- progress:start -->\n<!-- progress:end -->\n')
+        with open(f'{self.d}/docs/OVERVIEW.md', 'w') as f:
+            f.write('<!-- target:start -->\n<!-- target:end -->\n')
 
     def tearDown(self):
         shutil.rmtree(self.d)
@@ -79,10 +83,42 @@ class Progress(Fixture):
         self.assertEqual(run('progress.py', '--root', self.d, '--check').returncode, 1)
         self.assertEqual(run('progress.py', '--root', self.d, '--update-readme').returncode, 0)
         self.assertEqual(run('progress.py', '--root', self.d, '--check').returncode, 0)
-        p = f'{self.d}/README.md'
+        p = f'{self.d}/STATUS.md'
         txt = open(p).read().replace('62.50%', '99.00%')
         open(p, 'w').write(txt)
         self.assertEqual(run('progress.py', '--root', self.d, '--check').returncode, 1)
+
+    def test_check_touched_answers_only_for_generated_text_the_change_made(self):
+        # main regenerates progress (tools/progress_pr.py): a branch may leave the block as the base
+        # has it, even when stale, but text it changes must be current
+        def git(*args):
+            subprocess.run(['git', '-c', 'user.name=T', '-c', 'user.email=t@example.invalid',
+                            '-c', f'core.hooksPath={self.d}/no-hooks', *args],
+                           cwd=self.d, check=True, capture_output=True)
+        git('init', '-q')
+        git('add', '-A')
+        git('commit', '-q', '-m', 'base')
+        touched = ('--root', self.d, '--check-touched', 'HEAD')
+        self.assertEqual(run('progress.py', '--root', self.d, '--check').returncode, 1)   # stale, untouched
+        self.assertEqual(run('progress.py', *touched).returncode, 0)
+        self.assertEqual(run('progress.py', '--root', self.d, '--update-readme').returncode, 0)
+        self.assertEqual(run('progress.py', *touched).returncode, 0)                       # touched, current
+        p = f'{self.d}/STATUS.md'
+        with open(p) as f:
+            text = f.read().replace('62.50%', '99.00%')
+        with open(p, 'w') as f:
+            f.write(text)
+        r = run('progress.py', *touched)
+        self.assertEqual(r.returncode, 1)                                                  # touched by hand
+        self.assertIn('STATUS.md (progress block)', r.stderr)
+
+    def test_check_blocks_is_structure_only(self):
+        self.assertEqual(run('progress.py', '--root', self.d, '--check-blocks').returncode, 0)
+        with open(f'{self.d}/STATUS.md', 'w') as f:
+            f.write('Status.\n')
+        r = run('progress.py', '--root', self.d, '--check-blocks')
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('no progress block', r.stderr)
 
     def test_empty_export(self):
         write_csv(f'{self.d}/symbols/ghidra_functions.csv', ['address', 'size'], [])
@@ -1163,6 +1199,49 @@ class Boot(unittest.TestCase):
         finally:
             shutil.rmtree(d)
 
+    def test_boot_starts_the_save_folder_from_a_checkpoint(self):
+        """--savedata-from: the run's save folder starts as a copy of the checkpoint, which the run's
+        writes leave unchanged; it needs --no-record and excludes --savedata."""
+        import boot
+        d = tempfile.mkdtemp()
+        try:
+            for name in ['eboot', *boot.mapped_modules(ROOT)]:
+                open(os.path.join(d, f'{name}.elf'), 'wb').close()
+            checkpoint = os.path.join(d, 'checkpoint', '1', 'SAVE0001')
+            os.makedirs(os.path.join(checkpoint, 'sce_sys'))
+            with open(os.path.join(checkpoint, 'userdata0000'), 'wb') as fh:
+                fh.write(b'before')
+            fake = os.path.join(d, 'pbboot')  # records the save folder's file, then overwrites it, as a save would
+            with open(fake, 'w') as fh:
+                fh.write('#!/usr/bin/env python3\nimport json, os, sys\n'
+                         'saves = sys.argv[sys.argv.index("--savedata") + 1]\n'
+                         'path = os.path.join(saves, "1", "SAVE0001", "userdata0000")\n'
+                         f'json.dump([saves, open(path).read()], open({os.path.join(d, "seen.json")!r}, "w"))\n'
+                         'open(path, "w").write("after")\n'
+                         'open(sys.argv[sys.argv.index("--status") + 1], "w").write("{}")\n')
+            os.chmod(fake, 0o755)
+            keys = b'USER_DEFINED_PARAM_1\0'
+            sfo = struct.pack('<4sIIII', b'\0PSF', 0x101, 20 + 16, 20 + 16 + len(keys), 1)
+            sfo += struct.pack('<HHIII', 0, 0x0404, 4, 4, 0) + keys + struct.pack('<i', 1)
+            with open(os.path.join(d, 'param.sfo'), 'wb') as fh:
+                fh.write(sfo)
+            base = [sys.executable, os.path.join(ROOT, 'tools', 'boot.py'), '--elf', os.path.join(d, 'eboot.elf'),
+                    '--param-sfo', os.path.join(d, 'param.sfo'), '--app0', d, '--savedata-from', os.path.join(d, 'checkpoint')]
+            env = {**os.environ, 'BB_PBBOOT': fake, 'BB_NID_DB': ''}
+            p = subprocess.run(base + ['--no-record'], env=env, capture_output=True, text=True, timeout=60)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            with open(os.path.join(d, 'seen.json')) as fh:
+                saves, seen = json.load(fh)
+            self.assertEqual(seen, 'before')
+            self.assertNotEqual(os.path.realpath(saves), os.path.realpath(os.path.join(d, 'checkpoint')))
+            with open(os.path.join(checkpoint, 'userdata0000')) as fh:
+                self.assertEqual(fh.read(), 'before')
+            for extra in ([], ['--no-record', '--savedata', os.path.join(d, 'kept')]):
+                p = subprocess.run(base + extra, env=env, capture_output=True, text=True, timeout=60)
+                self.assertEqual(p.returncode, 2, p.stderr)
+        finally:
+            shutil.rmtree(d)
+
     def test_a_stop_hook_is_recorded_as_where_the_boot_stops(self):
         import boot
         hook = {'module': 'm.elf', 'offset': '0x80', 'name': 'ns::h', 'returns_to': 'm.elf+0xe'}
@@ -1182,7 +1261,7 @@ class Boot(unittest.TestCase):
                              ('m.elf:ns::h (stop hook)', 'stopped', 'm.elf+0xe'))
         finally:
             shutil.rmtree(d)
-        import progress                                                  # the README's "Boot stops at"
+        import progress                                                  # STATUS.md's "Boot stops at"
         self.assertEqual(progress.boot_stop(status), '`ns::h` (a stop hook in m.elf, called from `m.elf+0xe`)')
 
     def test_a_runtime_stop_is_recorded_as_where_the_boot_stops(self):
@@ -1499,6 +1578,18 @@ class VerificationRecord(unittest.TestCase):
 
     def test_edge_verified_is_not_held_to_the_rule(self):
         self.assertEqual(self.v.check(self.root, [dict(self.funcs[0], status='edge-verified')]), [])
+
+    def test_stale_result_of_an_edge_verified_function_is_refused(self):
+        funcs = [dict(self.funcs[0], status='edge-verified')]
+        self.v.record(self.root, 'x_f', 'edge', '', ['e'], [])
+        self.assertEqual(self.v.check(self.root, funcs), [])
+        with open(os.path.join(self.root, 'game', 'x', 'helper.h'), 'a') as f:
+            f.write('// changed\n')
+        errs = self.v.check(self.root, funcs)
+        self.assertEqual(len(errs), 1)
+        self.assertIn('the edge result of x_f is for other code', errs[0])
+        self.v.record(self.root, 'x_f', 'edge', '', ['e'], [])
+        self.assertEqual(self.v.check(self.root, funcs), [])
 
 
 class Promotion(unittest.TestCase):

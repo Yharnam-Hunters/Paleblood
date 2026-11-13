@@ -31,6 +31,12 @@ symbols/families/<family>.csv      one row per member
 symbols/families/<family>.verification.csv   tools/verify.py family --record results, one row
   per member in symbols/verification.csv's format.
 
+symbols/families/<family>.matching.csv   tools/match.py family --record results, one row per
+  member in symbols/matching.csv's format (docs/MATCHING.md, "Families").
+
+symbols/families/<family>.reviews.csv   independent reviews, one row per reviewed member in
+  symbols/reviews.csv's format.
+
 A member's name is <system>_<family>_<address without 0x>; its replacement is
 bb_<system>_<family>, or bb_<system>_<family>_<value> when the shape has a parameter.
 """

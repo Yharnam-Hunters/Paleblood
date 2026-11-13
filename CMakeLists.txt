@@ -89,6 +89,8 @@ set_tests_properties(capture_trace_replay PROPERTIES
 add_executable(test_capture_hooks test/test_capture_hooks.cpp test/capture_trace_guest.S)
 target_link_libraries(test_capture_hooks bbrt)
 add_test(NAME capture_hooks COMMAND test_capture_hooks --self-test)
+add_test(NAME capture_hooks_original COMMAND test_capture_hooks --original-self-test)
+add_test(NAME capture_hooks_native COMMAND test_capture_hooks --native-self-test)
 add_test(NAME capture_hooks_replay
          COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/capture_trace_integration.py $<TARGET_FILE:test_capture_hooks>
                  capture_trace_scale capture_trace_twice capture_trace_copy capture_trace_use_import)
@@ -105,7 +107,7 @@ file(GLOB PB_TEST_SYSLIB CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/runtime/syslib/
 # The syslib tests use the display's headless mode only, so they build without its window.
 # Each library's tests in their own file (test/syslib_test.h).
 file(GLOB PB_TEST_SYSLIB_TESTS CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/test/syslib/*.c)
-add_executable(test_syslib test/test_syslib.c ${PB_TEST_SYSLIB_TESTS} runtime/process.c runtime/memory.c ${PB_TEST_SYSLIB}
+add_executable(test_syslib test/test_syslib.c ${PB_TEST_SYSLIB_TESTS} runtime/process.c runtime/memory.c runtime/write_watch.c ${PB_TEST_SYSLIB}
                runtime/display/display.c runtime/display/display_window_none.c runtime/renderer/renderer_none.c
                runtime/audio/audio_host_none.c runtime/input/input.c runtime/input/input_script.c runtime/input/input_host_none.c ${PB_MEDIA_SOURCES})
 target_include_directories(test_syslib PRIVATE runtime/include)
@@ -152,6 +154,9 @@ target_include_directories(pbgcn_spirv PUBLIC runtime/include)
 target_link_libraries(pbgcn_spirv PUBLIC pbgcn_decode)
 add_executable(test_gcn_spirv test/test_gcn_spirv.c)
 target_link_libraries(test_gcn_spirv PRIVATE pbgcn_spirv)
+# pbgcn_survey: the translator's coverage survey of a shader program (game/render/tools/shader_survey.py)
+add_executable(pbgcn_survey runtime/renderer/pbgcn_survey.c)
+target_link_libraries(pbgcn_survey PRIVATE pbgcn_spirv)
 add_test(NAME gcn_spirv COMMAND test_gcn_spirv)
 find_package(PkgConfig QUIET)
 if(PkgConfig_FOUND)
@@ -171,7 +176,7 @@ if(PB_TEST_VULKAN_FOUND)
     target_link_libraries(test_render_executor PRIVATE pbrender_executor m)
     add_test(NAME render_executor COMMAND test_render_executor)
     set_tests_properties(render_executor PROPERTIES SKIP_RETURN_CODE 77)
-    add_executable(test_renderer test/test_renderer.c runtime/renderer/renderer.c)
+    add_executable(test_renderer test/test_renderer.c runtime/renderer/renderer.c runtime/write_watch.c)
     target_include_directories(test_renderer PRIVATE runtime/include)
     target_link_libraries(test_renderer PRIVATE pbrender_executor m)
     add_test(NAME renderer COMMAND test_renderer)
@@ -188,7 +193,8 @@ add_test(NAME verify_self_test COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DI
 add_test(NAME validate_functions COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/validate_functions.py)
 add_test(NAME check_agnostic COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_agnostic.py)
 add_test(NAME float_flags COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/check_float_flags.py ${CMAKE_BINARY_DIR})
-add_test(NAME progress_readme COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/progress.py --check)
+# generated progress text this branch changes is current (main regenerates it: tools/progress_pr.py)
+add_test(NAME progress_readme COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/progress.py --check-touched)
 add_test(NAME source_files COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/tools/source_files.py --check)
 
 # Compiled-SDK wire validation over the loader-owned process parameters.
@@ -197,6 +203,13 @@ add_executable(test_compiled_sdk test/test_compiled_sdk.c
 target_include_directories(test_compiled_sdk PRIVATE runtime/include)
 add_test(NAME compiled_sdk COMMAND test_compiled_sdk)
 set_tests_properties(compiled_sdk PROPERTIES TIMEOUT 10)
+
+# The CPU write watch on direct memory (runtime/write_watch.h).
+add_executable(test_write_watch test/test_write_watch.c runtime/write_watch.c)
+target_include_directories(test_write_watch PRIVATE runtime/include)
+target_link_libraries(test_write_watch PRIVATE pthread)
+add_test(NAME write_watch COMMAND test_write_watch)
+set_tests_properties(write_watch PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 20)
 
 # Direct-memory placement, backing ownership and registered provider tests.
 include(cmake/HostMemoryTests.cmake)
@@ -231,6 +244,14 @@ add_test(NAME module_tls_boot
 set_tests_properties(module_tls_boot PROPERTIES TIMEOUT 30
     ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>")
 
+# pbboot ends once it has reported, without running library teardown (test/test_boot_exit.py).
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_library(boot_exit_destructor SHARED test/boot_exit_destructor.c)
+    add_test(NAME boot_exit
+             COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/test_boot_exit.py -v)
+    set_tests_properties(boot_exit PROPERTIES TIMEOUT 60
+        ENVIRONMENT "BB_PBBOOT=$<TARGET_FILE:pbboot>;BB_BOOT_EXIT_FIXTURE=$<TARGET_FILE:boot_exit_destructor>")
+endif()
 
 # Full-width module arguments and proven early invalid-ID statuses.
 add_executable(test_sysmodule_ids test/test_sysmodule_ids.c

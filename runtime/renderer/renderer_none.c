@@ -5,18 +5,14 @@
 
 void rt_renderer_configure(int enabled) { (void)enabled; }
 
-void rt_renderer_submit(const char *function, const void *buffer, uint32_t bytes, const rt_gpu_step *steps, size_t step_count)
+void rt_renderer_submit(const char *function, unsigned queue, const void *buffer, uint32_t bytes, const rt_gpu_step *steps,
+                        size_t step_count)
 {
-    (void)function, (void)buffer, (void)bytes;
+    (void)function, (void)queue, (void)buffer, (void)bytes;
     for (size_t i = 0; i < step_count; i++) steps[i].perform(&steps[i]); /* no GPU: the work is done at once */
 }
 
 void rt_renderer_wait_idle(void) {}
-
-void rt_renderer_skip(const char *function, const void *buffer, uint32_t bytes)
-{
-    (void)function, (void)buffer, (void)bytes;
-}
 
 void rt_renderer_bind_shader(const char *function, rt_renderer_shader kind, const void *at, const uint32_t *words)
 {

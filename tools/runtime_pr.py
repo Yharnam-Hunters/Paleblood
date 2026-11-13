@@ -21,7 +21,9 @@ import session_report
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-RUNTIME_TEST_FILES = {'test/test_syslib.c', 'test/syslib_test.h', 'test/test_plugin.c', 'test/test_host_hooks.c'}
+# The boot harness's own exit test and its preloaded fixture library are runtime tests too.
+RUNTIME_TEST_FILES = {'test/test_syslib.c', 'test/syslib_test.h', 'test/test_plugin.c', 'test/test_host_hooks.c',
+                      'test/test_boot_exit.py', 'test/boot_exit_destructor.c'}
 RUNTIME_CODE_SUFFIXES = {'.c', '.cc', '.cpp', '.h', '.hh', '.hpp', '.s', '.S'}
 RUNTIME_DOC_FILES = {
     'docs/runtime.md',
@@ -63,7 +65,15 @@ def is_runtime_document_path(path: str) -> bool:
     )
 
 
+# Generated documentation files that a documentation-only pull request may carry. The former
+# status card (removed: the progress map is now published by .github/workflows/progress-map.yml)
+# stays listed so that removing it reads as documentation.
+GENERATED_DOC_FILES = {'docs/assets/status-light.svg', 'docs/assets/status-dark.svg'}
+
+
 def is_documentation_path(path: str) -> bool:
+    if path in GENERATED_DOC_FILES:
+        return True
     p = PurePosixPath(path)
     return p.suffix.lower() == '.md' and (
         len(p.parts) == 1 or p.parts[0] == 'docs' or p.parts[0] == '.github'

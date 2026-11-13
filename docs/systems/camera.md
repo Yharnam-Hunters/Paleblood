@@ -131,7 +131,7 @@ it stored last time instead of computing a meaningless one.
 
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
-| `0x0183ac60` | 20077 | `camera_update_follow` | edge-verified | Updates subject-relative camera position and orientation through input, chase, collision avoidance and territory constraints; applies selected frame-rate gains |
+| `0x0183ac60` | 20077 | `camera_update_follow` | edge-verified | Updates subject-relative camera position and orientation through input; chase; collision avoidance and territory constraints; applies selected frame-rate gains |
 | `0x0183fad0` | 79 | `camera_follow_pitch` | edge-verified | Pitch from the forward basis; preserve scalar square underflow and zero fallback; call atan2 and XOR the returned sign bits |
 | `0x0183fb20` | 43 | `camera_follow_yaw` | edge-verified | Yaw from the forward X/Z direction; exact signed-zero fallback preserves stored angle; unordered components reach atan2 unchanged |
 

@@ -109,6 +109,134 @@ increment:
 import_thunk:
     jmp *import_slot(%rip)
 
+/* 0x300: void store_field(struct *s, int32_t v) { s->field_40 = v; } touches only +0x40. */
+    .org 0x300
+    mov %esi, 0x40(%rdi)
+    ret
+/* 0x340: int32_t read_far(const char *table) { return *(int32_t *)(table + 0x1000); } */
+    .org 0x340
+    mov 0x1000(%rdi), %eax
+    ret
+/* 0x380: int32_t frame_import(void) { int32_t local; fill(&local, 7); return local; } and it
+   stores its stack pointer in frame_seen, so the test knows where its frame was. */
+    .org 0x380
+    sub $24, %rsp
+    mov %rsp, frame_seen(%rip)
+    mov %rsp, %rdi
+    mov $7, %esi
+    call import_thunk
+    mov (%rsp), %eax
+    add $24, %rsp
+    ret
+/* 0x3c0: int32_t read_returned(int32_t *p) { return *import(p, 7); } with an import that
+   returns its first argument. */
+    .org 0x3c0
+    sub $8, %rsp
+    mov $7, %esi
+    call import_thunk
+    mov (%rax), %eax
+    add $8, %rsp
+    ret
+/* Native imports (test/test_capture_trace.cpp) called through their own slots below:
+   plain stores 21 at rdi; far also changes the byte 1024 bytes further on, as another thread
+   might; stale counts its calls in a counter of its own, stores the count at rdi and leaves rdx
+   pointing at the counter. */
+/* 0x400: int32_t stale_argument(int32_t *a) { stale(a); stale(a); return *a; } the second call
+   leaves rdx as the first returned it. */
+    .org 0x400
+    push %rbx
+    mov %rdi, %rbx
+    call stale_thunk
+    mov %rbx, %rdi
+    call stale_thunk
+    mov (%rbx), %eax
+    pop %rbx
+    ret
+    .org 0x430
+stale_thunk:
+    jmp *stale_slot(%rip)
+/* 0x440: void same_pointer(int32_t *a) { plain(a) } with rsi = rdi too. */
+    .org 0x440
+    sub $8, %rsp
+    mov %rdi, %rsi
+    call plain_thunk
+    add $8, %rsp
+    ret
+    .org 0x470
+plain_thunk:
+    jmp *plain_slot(%rip)
+/* 0x480: void far_untouched(char *p) { far(p); } */
+    .org 0x480
+    sub $8, %rsp
+    call far_thunk
+    add $8, %rsp
+    ret
+    .org 0x4b0
+far_thunk:
+    jmp *far_slot(%rip)
+/* 0x4c0: int32_t far_touched(char *p) { int32_t v = p[1024]; far(p); return v; } */
+    .org 0x4c0
+    push %rbx
+    movzbl 1024(%rdi), %ebx
+    call far_thunk
+    mov %ebx, %eax
+    pop %rbx
+    ret
+/* 0x500: void two_fields(struct *s) { s->field_0 = 1; s->field_1000 = 2; } */
+    .org 0x500
+    movl $1, (%rdi)
+    movl $2, 0x1000(%rdi)
+    ret
+/* 0x540: void store_last(const struct { int64_t pad, count; } *n, int64_t *slots)
+   { slots[n->count - 1] = 2; } */
+    .org 0x540
+    mov 8(%rdi), %rcx
+    movq $2, -8(%rsi,%rcx,8)
+    ret
+/* 0x580: int32_t index_after(const char *table)
+   { const char *index = table + *(uint32_t *)table; return *(int32_t *)(index + 8); }
+   the index pointer is computed by adding a loaded size, as the param lookups do. */
+    .org 0x580
+    mov (%rdi), %eax
+    add %rdi, %rax
+    mov 8(%rax), %eax
+    ret
+/* 0x5c0: the same through lea: index = table + size, then index[2]. */
+    .org 0x5c0
+    mov (%rdi), %eax
+    lea (%rdi,%rax), %rcx
+    mov 8(%rcx), %eax
+    ret
+/* 0x600: int32_t offset_into(const int32_t *table, const char *other)
+   { return *(int32_t *)(other + table[0]); } with rax first pointing into the table: the 32-bit
+   load replaces rax, so the access through it is no reach from the table. */
+    .org 0x600
+    lea 16(%rdi), %rax
+    mov (%rdi), %eax
+    mov (%rax,%rsi), %eax
+    ret
+/* 0x640: int32_t zero_local(void) { int32_t local; zero(&local); return local; } where the
+   import writes 0, what a fresh stack already holds. */
+    .org 0x640
+    sub $24, %rsp
+    lea 8(%rsp), %rdi
+    call zero_thunk
+    mov 8(%rsp), %eax
+    add $24, %rsp
+    ret
+    .org 0x670
+zero_thunk:
+    jmp *zero_slot(%rip)
+/* 0x680: void nap(void) { sceKernelUsleep(10000); } */
+    .org 0x680
+    sub $8, %rsp
+    mov $10000, %edi
+    call usleep_thunk
+    add $8, %rsp
+    ret
+    .org 0x6b0
+usleep_thunk:
+    jmp *usleep_slot(%rip)
     .org 0x1000
 global:
     .long 1000
@@ -116,6 +244,20 @@ global:
 /* 0x1800: the import's slot; the test (or the verifier's loader) binds it. */
     .org 0x1800
 import_slot:
+    .quad 0
+/* 0x1808: where frame_import leaves its stack pointer. */
+frame_seen:
+    .quad 0
+/* 0x1810..0x1820: the native imports' slots. */
+stale_slot:
+    .quad 0
+plain_slot:
+    .quad 0
+far_slot:
+    .quad 0
+zero_slot:
+    .quad 0
+usleep_slot:
     .quad 0
     .org 0x2000
     .globl capture_trace_guest_end
