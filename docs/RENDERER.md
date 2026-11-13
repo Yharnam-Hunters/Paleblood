@@ -693,6 +693,12 @@ Instead:
           texels with a GPU image copy (`image_from_target`) instead of a write-back and a load: the two
           would move the same bytes through host memory. It is copied again after the target's next draws.
           At the Contract screen this removed the image-overlap write-backs (about 700 every 2 s).
+        - **Depth straight to images:** a 32-bit image over a depth target's depth drawn since its
+          write-back (the same address, tiling index and pitch, slice 0; 2D, one level and layer; no other
+          unwritten target over it) takes the depth on the GPU through the depth target's linear rows
+          (`image_from_depth`) instead of a write-back and a load, again after the depth's next draws. In
+          Iosefka's Clinic that was about two depth write-backs and loads a frame, some 35 MB each way
+          through host memory. bbhost and shadPS4 copy depth into an R32 image on the GPU too (facts only).
         - **One batch per buffer:** a buffer's draws, dispatches and copies are recorded into one Vulkan
           command buffer and submitted once, with barriers between them, instead of each waiting for the
           GPU. The CPU waits only where it reads what the batch produces: a render target written back
