@@ -386,6 +386,8 @@ address,size,name,system,status,notes
 0x02ab0b00,326,render_submit_present_finish_snapshot,render,verified,Emit required counter waits and submit nonempty command regions in order; construct an empty second region when optional commands are absent.
 0x02ab0ce0,326,render_command_submit_batch,render,verified,"Emit counter waits and submit nonempty regions with the packed video/index handle; or delegate the snapshot when no optional context exists."
 0x02ab0e30,213,render_command_submit_snapshot,render,verified,Initialize the auxiliary command buffer and submit nonempty regions using only the video handle.
+0x02ab18c0,98,render_resource_info_submit_pending_commands_02ab18c0,render,edge-verified,"Submits the packets since the buffer start as one range (low 32-bit byte count, whole words) to the queue at +0x58, then sets the start to the cursor"
+0x02ab1930,96,render_resource_info_write_completion_label_02ab1930,render,edge-verified,Takes the next label from the services counter (again if it equals the 64-bit reserved value) and writes a compute-done release-memory packet storing it
 0x02ab5a70,1235,render_present_record_consume,render,verified,"Track a resource range or emit record commands; preserve cached tokens; index wrap and final state resets."
 0x02ab6810,1173,render_present_last_record_consume,render,edge-verified,"Consume the final record range; or update its tracking bank when commands are not admitted."
 0x02ab7310,629,render_record_translate_selector,render,edge-verified,Map supported selectors to one output DWORD; unsupported selectors return status 12 and zero the output.
