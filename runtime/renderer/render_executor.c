@@ -12,7 +12,14 @@
      as many VGPRs as it has values: 2 for each barycentric pair (bits 0-2, 4-6), 3 for the pull model
      (bit 3), 1 for each of the rest (line stipple 7, position x, y, z, w 8-11, front face 12,
      ancillary 13, sample coverage 14, fixed-point position 15), as AMD's register documentation and
-     LLVM's AMDGPU backend (SIRegisterInfo's PS input layout) have it. */
+     LLVM's AMDGPU backend (SIRegisterInfo's PS input layout) have it.
+   - PA_CL_CLIP_CNTL (AMD's gfx_7_2_sh_mask.h): CLIP_DISABLE (bit 16) passes primitives through the
+     clipper, DX_RASTERIZATION_KILL (22) rasterizes nothing, ZCLIP_NEAR_DISABLE (26) and ZCLIP_FAR_DISABLE
+     (27) stop clipping against the near and far planes. Where z is not clipped the depth is clamped to
+     the viewport's depth range, which is Vulkan's depthClampEnable (shadPS4 enables depth clamp and
+     switches depth clipping by the ZCLIP bits; bbhost reads any of the three bits as depth clamp). The
+     library's setter writes the value masked with 0x0f7fe03f (game/render/observe_gpu_library.c); before
+     it was observed every draw was clipped whatever the game asked. */
 #include "runtime/render_executor.h"
 
 #include "runtime/gcn.h"
@@ -197,6 +204,7 @@ typedef struct {
     uint32_t reads;                                     /* a test compares with the buffer (not always or never) */
     uint32_t reference_is_op_value[2];                  /* front, back: the stencil reference is STENCILOPVAL (replace-with-op) */
     uint32_t depth_bounds;                              /* the depth bounds test: draw() sets the bounds */
+    uint32_t depth_clamp;                               /* z is not clipped but clamped to the viewport's range (PA_CL_CLIP_CNTL) */
 } depth_plan;
 
 /* The image standing for a depth target, found by its depth and stencil buffers' addresses and the
@@ -383,6 +391,8 @@ typedef struct {
        until the library sets them, attribute n reads output n */
     uint32_t ps_input_control[GCN_PIXEL_INPUTS];
     int ps_input_control_set;
+    /* PA_CL_CLIP_CNTL as the library set it; 0 until then (every plane clips, as at the register's reset) */
+    uint32_t clip_control;
 } draw_state;
 
 /* One batch: the GPU work recorded between waits, with what it holds until it has run (its descriptor
@@ -471,6 +481,7 @@ struct rt_executor {
     size_t pass_count;
     int geometry_shaders;            /* the device draws geometry stages (rect lists need one) */
     int depth_bounds;                /* the device tests depth bounds (VkPhysicalDeviceFeatures depthBounds) */
+    int depth_clamp;                 /* the device clamps depth (VkPhysicalDeviceFeatures depthClamp) */
     /* tessellation (docs/RENDERER.md, "Tessellation"): whether the device draws it; the stages the vertex user
        data reaches (a domain shader's too); the local and hull passes' LDS buffer and the factor buffer their
        factor-ring accesses reach; the passes' pipeline layout and pipelines; the control shaders; the empty
@@ -557,8 +568,11 @@ struct rt_executor {
     uint64_t call_serial;            /* counts the draws and dispatches recorded (an image they use stays) */
     uint64_t wait_limit;             /* nanoseconds a wait for a batch gives the GPU (BATCH_WAIT_LIMIT) */
     /* each batch in flight's work as words, by ticket (ring by BATCH_SLOTS), for a wait on any thread
-       that ends without it (unfinished) */
+       that ends without it (unfinished); and the last ticket handed to the GPU, for a wait on another
+       thread for a ticket still open (rt_executor_wait_ticket), signalled by handed_over */
     pthread_mutex_t named_lock;
+    pthread_cond_t handed_over;
+    uint64_t handed;
     struct {
         uint64_t ticket;
         unsigned count;
@@ -567,6 +581,10 @@ struct rt_executor {
     /* the GPU copies between tiled guest memory and linear rows (runtime/tile_copy.h), by bytes per
        element (1, 2, 4, 8, 16: log2 indexes) and direction (to the tiled memory or from it); made on first use */
     VkPipelineLayout tile_copy_layout;
+    /* Every pipeline is made through this cache: a pipeline made again for a new render pass that is
+       compatible with an earlier one (a render target freed and made again, a target set aside and a new
+       one at its address) comes from the cache instead of the driver's shader compiler. */
+    VkPipelineCache pipeline_cache;
     VkPipeline tile_copies[TILE_COPY_SIZES][2];
     /* the GPU's state as the calls run so far set it: registers, user data and shaders carry over from
        one submitted buffer to the next, as on the console's GPU */
@@ -586,7 +604,8 @@ enum { DB_RENDER_CONTROL = 0xa000, DB_DEPTH_VIEW = 0xa002, DB_HTILE_DATA_BASE = 
        CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242, VGT_SHADER_STAGES_EN = 0xa2d5, SPI_PS_INPUT_CNTL_0 = 0xa191,
        VGT_GS_MODE = 0xa290, VGT_GSVS_RING_OFFSET_1 = 0xa298, VGT_GSVS_RING_OFFSET_3 = 0xa29a, VGT_ESGS_RING_ITEMSIZE = 0xa2ab,
        VGT_GSVS_RING_ITEMSIZE = 0xa2ac, VGT_GS_MAX_VERT_OUT = 0xa2ce, VGT_GS_VERT_ITEMSIZE = 0xa2d7, VGT_GS_VERT_ITEMSIZE_3 = 0xa2da,
-       VGT_STRMOUT_CONFIG = 0xa2e5, VGT_INSTANCE_STEP_RATE_0 = 0xa2a8, VGT_INSTANCE_STEP_RATE_1 = 0xa2a9 };
+       VGT_STRMOUT_CONFIG = 0xa2e5, VGT_INSTANCE_STEP_RATE_0 = 0xa2a8, VGT_INSTANCE_STEP_RATE_1 = 0xa2a9, PA_CL_CLIP_CNTL = 0xa204 };
+enum { CLIP_DISABLE = 1u << 16, DX_RASTERIZATION_KILL = 1u << 22, ZCLIP_NEAR_DISABLE = 1u << 26, ZCLIP_FAR_DISABLE = 1u << 27 };
 enum { GS_REGISTER_ESGS_ITEMSIZE = 1, GS_REGISTER_VERT_ITEMSIZE = 2, GS_REGISTER_MAX_VERT_OUT = 4, GS_REGISTER_GSVS_ITEMSIZE = 8,
        GS_REGISTERS_NEEDED = 15 };
 enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 0x1, Z_ENABLE = 0x2, Z_WRITE_ENABLE = 0x4,
@@ -617,6 +636,7 @@ static int set_register(draw_state *s, uint32_t address, uint32_t value)
         s->stencil_reference[address - DB_STENCILREFMASK] = value, s->stencil_reference_set[address - DB_STENCILREFMASK] = 1;
         return 0;
     case DB_RENDER_CONTROL: s->render_control = value, s->render_control_set = 1; return 0;
+    case PA_CL_CLIP_CNTL: s->clip_control = value; return 0; /* plan_depth reads its z clipping, draw() its rasterization kill */
     case DB_DEPTH_VIEW: s->depth_view = value; return 0;
     /* compression metadata (HTILE) and the depth clear value: a cleared HTILE clears the executor's depth
        image (resolve_depth_fast_clear); DB_RENDER_CONTROL's depth-clearing draws write it (plan_depth) */
@@ -743,6 +763,7 @@ static int plan_depth(const draw_state *s, depth_plan *plan, char *error, size_t
         [10] = -1, [11] = -1, [12] = -1, [13] = -1, [14] = -1, [15] = -1 /* bitwise with STENCILOPVAL */};
     static const int op_steps[STENCIL_OPS] = {[5] = 1, [6] = 1, [8] = 1, [9] = 1};
     memset(plan, 0, sizeof *plan);
+    plan->depth_clamp = (s->clip_control & (CLIP_DISABLE | ZCLIP_NEAR_DISABLE | ZCLIP_FAR_DISABLE)) != 0; /* with or without a depth test */
     const uint32_t control = s->depth_set ? s->depth_control : 0;
     if (!(control & (Z_ENABLE | STENCIL_ENABLE | DEPTH_BOUNDS_ENABLE))) return 0;
     if (!s->z_info_set || !s->stencil_info_set)
@@ -993,6 +1014,7 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
                                                  .storageBuffer8BitAccess = (VkBool32)x->small_elements};
     x->geometry_shaders = features.features.geometryShader == VK_TRUE;
     x->depth_bounds = features.features.depthBounds == VK_TRUE;
+    x->depth_clamp = features.features.depthClamp == VK_TRUE;
     x->tessellation = features.features.tessellationShader == VK_TRUE;
     x->vertex_stages = VK_SHADER_STAGE_VERTEX_BIT | (x->tessellation ? VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT : 0);
     x->storage_images = features.features.shaderStorageImageReadWithoutFormat && features.features.shaderStorageImageWriteWithoutFormat;
@@ -1004,6 +1026,7 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
                                                            .geometryShader = features.features.geometryShader,
                                                            .samplerAnisotropy = features.features.samplerAnisotropy,
                                                            .depthBounds = features.features.depthBounds,
+                                                           .depthClamp = features.features.depthClamp,
                                                            .tessellationShader = features.features.tessellationShader,
                                                            .shaderStorageImageReadWithoutFormat = (VkBool32)x->storage_images,
                                                            .shaderStorageImageWriteWithoutFormat = (VkBool32)x->storage_images}};
@@ -1111,6 +1134,8 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
                                                      .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE, .initialValue = 0};
     const VkSemaphoreCreateInfo timeline = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &timeline_type};
     if (vkCreateSemaphore(x->device, &timeline, NULL, &x->timeline) != VK_SUCCESS) return failed(error, error_size, "no timeline semaphore");
+    const VkPipelineCacheCreateInfo cache = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+    if (vkCreatePipelineCache(x->device, &cache, NULL, &x->pipeline_cache) != VK_SUCCESS) return failed(error, error_size, "no pipeline cache");
     return 0;
 }
 
@@ -1383,6 +1408,7 @@ int rt_executor_open(const rt_executor_memory *memory, rt_executor **executor, c
     rt_executor *x = calloc(1, sizeof *x);
     if (!x) return failed(error, error_size, "no memory");
     pthread_mutex_init(&x->named_lock, NULL);
+    pthread_cond_init(&x->handed_over, NULL);
     if (open_device(x, error, error_size) || import_memory(x, memory, error, error_size) || open_stop_word(x, error, error_size) ||
         sweep_open(x, error, error_size)) {
         rt_executor_close(x);
@@ -1552,6 +1578,8 @@ static void name_work(rt_executor *x, const batch_slot *b, uint64_t ticket)
     pthread_mutex_lock(&x->named_lock);
     x->named[ticket % BATCH_SLOTS].ticket = ticket, x->named[ticket % BATCH_SLOTS].count = b->work_count;
     memcpy(x->named[ticket % BATCH_SLOTS].work, work, sizeof work);
+    x->handed = ticket;
+    pthread_cond_broadcast(&x->handed_over);
     pthread_mutex_unlock(&x->named_lock);
 }
 
@@ -1996,7 +2024,7 @@ static VkPipeline tile_copy_pipeline(rt_executor *x, unsigned element_bytes, int
         .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
         .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = module, .pName = "main"},
         .layout = x->tile_copy_layout};
-    const VkResult piped = vkCreateComputePipelines(x->device, VK_NULL_HANDLE, 1, &info, NULL, &x->tile_copies[kind][to_tiled]);
+    const VkResult piped = vkCreateComputePipelines(x->device, x->pipeline_cache, 1, &info, NULL, &x->tile_copies[kind][to_tiled]);
     vkDestroyShaderModule(x->device, module, NULL);
     if (piped != VK_SUCCESS) {
         x->tile_copies[kind][to_tiled] = VK_NULL_HANDLE;
@@ -3063,6 +3091,7 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
     const VkPipelineViewportStateCreateInfo viewport = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
                                                         .viewportCount = 1, .scissorCount = 1};
     const VkPipelineRasterizationStateCreateInfo raster = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                                                           .depthClampEnable = depth->depth_clamp ? VK_TRUE : VK_FALSE,
                                                            .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE,
                                                            .lineWidth = 1.0f};
     const VkPipelineMultisampleStateCreateInfo samples = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
@@ -3101,7 +3130,7 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
                                                .pMultisampleState = &samples, .pColorBlendState = &blend, .pDynamicState = &dynamic,
                                                .pDepthStencilState = has_depth ? &depth_stencil : NULL, .layout = layout, .renderPass = pass};
     VkPipeline pipeline = VK_NULL_HANDLE;
-    if (vkCreateGraphicsPipelines(x->device, VK_NULL_HANDLE, 1, &info, NULL, &pipeline) != VK_SUCCESS) {
+    if (vkCreateGraphicsPipelines(x->device, x->pipeline_cache, 1, &info, NULL, &pipeline) != VK_SUCCESS) {
         failed(error, error_size, "the device refused a pipeline");
         return VK_NULL_HANDLE;
     }
@@ -3402,7 +3431,7 @@ static VkPipeline pass_pipeline(rt_executor *x, uint32_t *spirv, size_t words, i
                   .pName = "main"},
         .layout = x->tess_layout};
     VkPipeline pipeline = VK_NULL_HANDLE;
-    const VkResult piped = vkCreateComputePipelines(x->device, VK_NULL_HANDLE, 1, &info, NULL, &pipeline);
+    const VkResult piped = vkCreateComputePipelines(x->device, x->pipeline_cache, 1, &info, NULL, &pipeline);
     vkDestroyShaderModule(x->device, module, NULL);
     if (piped != VK_SUCCESS) {
         failed(error, error_size, "the device refused a %s pass pipeline", pass_names[kind]);
@@ -3821,6 +3850,11 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
         write_masks |= slot_mask(s, slot) << (4 * slot);
     }
     if (plan->depth_bounds && !x->depth_bounds) return failed(error, error_size, "a depth bounds test, which this device does not do");
+    if (plan->depth_clamp && !x->depth_clamp)
+        return failed(error, error_size, "a draw without z clipping (PA_CL_CLIP_CNTL %#x), which needs depth clamping this device does not do",
+                      s->clip_control);
+    if (s->clip_control & DX_RASTERIZATION_KILL)
+        return failed(error, error_size, "a draw with rasterization killed (PA_CL_CLIP_CNTL %#x): not drawn yet", s->clip_control);
     const int uses_depth = plan->depth_test || plan->stencil_test || plan->depth_bounds;
     depth_entry *z = uses_depth ? depth_for(x, s, error, error_size) : NULL;
     if (uses_depth && !z) return -1;
@@ -4024,7 +4058,7 @@ static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *
                   .pName = "main"},
         .layout = image_count ? x->image_layouts[image_count] : x->compute_layout};
     VkPipeline pipeline = VK_NULL_HANDLE;
-    if (vkCreateComputePipelines(x->device, VK_NULL_HANDLE, 1, &info, NULL, &pipeline) != VK_SUCCESS) {
+    if (vkCreateComputePipelines(x->device, x->pipeline_cache, 1, &info, NULL, &pipeline) != VK_SUCCESS) {
         vkDestroyShaderModule(x->device, module, NULL);
         failed(error, error_size, "the device refused a compute pipeline");
         return VK_NULL_HANDLE;
@@ -5265,8 +5299,17 @@ int rt_executor_resolve(rt_executor *x, uint64_t address, uint64_t length, char 
 
 int rt_executor_submit(rt_executor *x, char *error, size_t error_size) { return batch_submit(x, error, error_size); }
 
+/* A ticket may still be the open batch's, which the recording thread hands to the GPU later (the
+   renderer's completion thread waits for a deferred step's ticket as soon as the step is recorded). The
+   GPU's wait limit counts from the handover: before, it counted from the wait, and a recording thread
+   slowed down past the limit (a loaded machine, a long run of new pipelines) failed the wait with
+   "a batch of 0 draws and dispatches", the GPU having been given nothing. The recording thread hands
+   its open batch over whenever it runs out of work, so this wait ends. */
 int rt_executor_wait_ticket(rt_executor *x, uint64_t ticket, char *error, size_t error_size)
 {
+    pthread_mutex_lock(&x->named_lock);
+    while (x->handed < ticket) pthread_cond_wait(&x->handed_over, &x->named_lock);
+    pthread_mutex_unlock(&x->named_lock);
     const int waited = ticket ? wait_ticket(x, ticket) : 0;
     return waited ? unfinished(x, waited < 0, error, error_size) : 0;
 }
@@ -5645,6 +5688,7 @@ void rt_executor_close(rt_executor *x)
             for (unsigned to_tiled = 0; to_tiled < 2; to_tiled++)
                 if (x->tile_copies[k][to_tiled]) vkDestroyPipeline(x->device, x->tile_copies[k][to_tiled], NULL);
         if (x->tile_copy_layout) vkDestroyPipelineLayout(x->device, x->tile_copy_layout, NULL);
+        if (x->pipeline_cache) vkDestroyPipelineCache(x->device, x->pipeline_cache, NULL);
         if (x->pool) vkDestroyCommandPool(x->device, x->pool, NULL);
         vkDestroyDevice(x->device, NULL);
     }
@@ -5653,5 +5697,6 @@ void rt_executor_close(rt_executor *x)
     free(x->chunk_changed);
     free(x->chunk_outside);
     pthread_mutex_destroy(&x->named_lock);
+    pthread_cond_destroy(&x->handed_over);
     free(x);
 }

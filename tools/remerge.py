@@ -6,7 +6,7 @@ Run it in the worktree of the branch (clean, no merge in progress). It
   1. fetches origin and merges origin/main (a merge commit, never a rebase: nothing published is
      rewritten),
   2. leaves the generated progress text (the progress and status blocks of README.md, STATUS.md and
-     CONTRIBUTING.md, and docs/assets/status-*.svg) as main has it: feature branches do not
+     CONTRIBUTING.md) as main has it: feature branches do not
      regenerate it, tools/progress_pr.py does on main,
   3. resolves conflicts in the keyed tables row by row (TABLES below): a row only one side added,
      changed or removed takes that side; a row both sides changed differently is a real conflict
@@ -39,7 +39,9 @@ import time
 
 GENERATED_MARKDOWN = {'README.md': ('status', 'progress', 'target'), 'STATUS.md': ('progress',),
                       'CONTRIBUTING.md': ('status',)}
-GENERATED_FILES = ('docs/assets/status-light.svg', 'docs/assets/status-dark.svg')
+# Whole generated files kept as main has them. None at present: the progress map and badges are
+# built and published by .github/workflows/progress-map.yml, never committed.
+GENERATED_FILES: tuple[str, ...] = ()
 CASE_SETS = ('recorded', 'edge', 'option-recorded')     # tools/verification.py
 
 

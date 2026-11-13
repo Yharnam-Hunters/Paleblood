@@ -1,7 +1,7 @@
 # Whether main's generated progress text is current. No game data is needed or used.
 #
-# Feature branches no longer regenerate the README, STATUS and CONTRIBUTING progress blocks or the
-# status card (docs/assets/status-*.svg): every pull request rewrote the same lines, so parallel
+# Feature branches no longer regenerate the README, STATUS and CONTRIBUTING progress blocks: every
+# pull request rewrote the same lines, so parallel
 # pull requests kept conflicting in the merge queue. Main is regenerated instead, by one pull
 # request on the branch auto/regenerate-progress that tools/progress_pr.py opens or updates and
 # queues (CONTRIBUTING.md, "Generated progress"). This workflow is that gate, moved to main: it
