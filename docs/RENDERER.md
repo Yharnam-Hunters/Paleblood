@@ -92,6 +92,9 @@ Instead:
        shader, whose GPU address is baked into its translation (`error_address`); a shader meeting a
        case it cannot do exactly writes a code there and skips the access, and the executor checks
        the words once the work has run and stops by name (`GCN_RUNTIME_STOP_*`), naming the shader.
+       The words live in host-cached memory where the device has it: every finished batch reads
+       all 1,600 of them, and from write-combined memory each read crossed the bus (in Iosefka's
+       Clinic that scan was the renderer thread's largest single cost, 13 November 2026).
      - **Guest memory range checks** (`gcn_guest_memory`): every guest memory access a translated
        shader makes through an address it forms (a scalar load's SGPR pair, a buffer descriptor's
        base plus its offsets) is first checked against the imported pool. An access outside goes to
@@ -1007,7 +1010,9 @@ target again at every submitted buffer.
    written: there is no signal handler, and nothing changes for the guest's threads. At each
    buffer the renderer reads the written pages with `PAGEMAP_SCAN`, which protects them again in
    the same step (`PM_SCAN_WP_MATCHING`), so a write between the read and the protection cannot
-   be lost. The facts behind this are shadPS4's page manager (write watchers on cached memory)
+   be lost. The executor first asks whether a collect is due (`cpu_writes_due`: the renderer
+   collects once for all the buffers submitted before the last collect), and only then gathers and
+   sorts the ranges it asks about. The facts behind this are shadPS4's page manager (write watchers on cached memory)
    and the kernel's userfaultfd and pagemap documentation; they are used as facts only. A
    userfaultfd limited to user-mode faults (`UFFD_USER_MODE_ONLY`) needs no privilege, so
    `vm.unprivileged_userfaultfd = 0` does not stop it. Where any of this is missing, the watch
