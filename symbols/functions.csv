@@ -44,15 +44,21 @@ address,size,name,system,status,notes
 0x0132c6c0,81,engine_resize_owner_storage,engine,edge-verified,Free old owner storage before clearing; reload allocator after callback and allocate requested low32 byte count aligned to 16; caller 0x02713870
 0x01388c60,16,frame_timing_task_run_all_01388c60,frame_timing,verified,task manager: run the tasks of every group (0x01388c70 with -1)
 0x01388c70,171,frame_timing_task_run_01388c70,frame_timing,verified,"task manager run: prepare the frame; dispatch through +0x40 (virtual +0x30) with +0x38 set; finish"
+0x01389df0,19,frame_timing_task_entry_count_01389df0,frame_timing,edge-verified,"Number of the dispatcher's registered task entries (vector of 0x88-byte entries), cut to 32 bits"
+0x01389e10,59,frame_timing_task_entry_at_01389e10,frame_timing,edge-verified,Registered task entry at an index; null for a negative index or one past the end (unsigned count)
 0x0138a370,330,frame_timing_task_dispatch_0138a370,frame_timing,verified,"task dispatcher (virtual +0x30): wakes registered tasks; updates the group record; runs the job like the worker step"
 0x013d3520,87,frame_timing_task_013d3520,frame_timing,verified,per-frame task: passes the frame-time descriptor and its seconds to three parts; Uncap FPS++ edits it
 0x013daac0,96,frame_timing_listener_list_notify_013daac0,frame_timing,edge-verified,"Runs the list preparation 0x013dab20, then passes the frame-time descriptor to each listener (vtable slot 2), re-reading the list after every call"
+0x0143c360,147,frame_timing_task_record_open_0143c360,frame_timing,edge-verified,"Opens an idle group record: first index, state open, flags cleared then one set from the kind (2 or 4) of the first item when in range; clears +0x64"
+0x0143c450,93,frame_timing_task_record_close_0143c450,frame_timing,edge-verified,"Closes a closing group record (state 4): flags cleared, state idle, no index (-1)"
+0x0143d7c0,62,frame_timing_task_batch_add_0143d7c0,frame_timing,edge-verified,Pushes a job onto the back of a batch's job deque with the game's push_back; a null job is not added
 0x0143de20,106,frame_timing_task_worker_start_0143de20,frame_timing,edge-verified,"Unless busy: marks the worker busy and starts every slot with a batch (mode 0 lanes via 0x01467500, others via 0x01467300)"
 0x0143deb0,92,frame_timing_task_worker_run_0143deb0,frame_timing,edge-verified,When busy: runs (0x01467530) every mode 0 lane whose slot has a batch
 0x0143df10,182,frame_timing_task_worker_finish_0143df10,frame_timing,edge-verified,When busy: runs running mode 0 lanes (restarting the scan) until none runs; takes every batch back (mode 0 lanes finished via 0x014675a0); clears busy
 0x0143e030,55,frame_timing_task_worker_assign_0143e030,frame_timing,edge-verified,"Assigns a batch to a worker slot by index; false when busy, for a null batch, a negative index or one past the end (unsigned count)"
 0x0143e490,174,frame_timing_task_flush_queue_0143e490,frame_timing,verified,"task manager queue flush: lock; run; destroy and free every queued object; empty the list; unlock"
 0x0143ec40,185,frame_timing_task_clear_items_0143ec40,frame_timing,edge-verified,Under the task lock (+0x90): frees the pending items last first and their array via the allocator at +0x80; empties the list; empties +0x70/+0x78 when counted
+0x0143f720,82,frame_timing_task_lookup_0143f720,frame_timing,edge-verified,"Task under an id in the task table's map (std::map lower bound), null when absent; id 0 is never looked up"
 0x0143f9f0,18,frame_timing_task_set_frame_value_0143f9f0,frame_timing,verified,task manager: copies the float at +0x8 of the frame information to the global 0x058b7e08
 0x014400a0,180,frame_timing_task_workers_step_014400a0,frame_timing,verified,"task manager workers: three rounds over the worker queues +0x58; +0x68; +0x60"
 0x01448580,149,frame_timing_stopwatch_start,frame_timing,edge-verified,"Start a stopwatch from exactly zero: seconds since game start (double divide; float store) at +0x38; bump counters 0x44 and 0x4c"
@@ -348,15 +354,17 @@ address,size,name,system,status,notes
 0x02434520,552,frame_timing_flipper_init,frame_timing,verified,SprjFlipper constructor: reads Game.FlipMode (default 4; pending default 3; clamped to 4); unset in the shipped config
 0x02434770,2077,frame_timing_pace_frame,frame_timing,verified,Frame limiter: target interval at +0x18 (1/30 or 1/60 s); spins out the frame (the sleeping wait is compiled in but unused); 32-frame ring; every FPS patch edits it
 0x024512a0,78,frame_timing_task_frame_024512a0,frame_timing,verified,"task manager frame entry from the frame step: FD4TaskManager singleton; then 0x01388c60"
-0x0246cf50,549,loading_disk_device_resolve_root_0246cf50,loading,edge-verified,Ps4DiskFileDevice root mounts: split "name:" off the path; first entry with that name replaces name+2 chars with its target; true unless the name is "title"
-0x0246d180,558,loading_disk_device_resolve_alias_0246d180,loading,edge-verified,Ps4DiskFileDevice alias mounts: same code as 0x0246cf50 on the alias table (+0x80)
+0x0246cf50,549,loading_disk_device_resolve_root_0246cf50,loading,verified,Ps4DiskFileDevice root mounts: split "name:" off the path; first entry with that name replaces name+2 chars with its target; true unless the name is "title"
+0x0246d180,558,loading_disk_device_resolve_alias_0246d180,loading,verified,Ps4DiskFileDevice alias mounts: same code as 0x0246cf50 on the alias table (+0x80)
 0x0246d550,530,loading_disk_device_open_0246d550,loading,edge-verified,Ps4DiskFileDevice open: keep the requested path (thread heap); resolve aliases/roots in rounds; open only if an alias matched; through the named device or each unnamed one; under the device lock
-0x0246e630,467,loading_disk_device_find_named_device_0246e630,loading,edge-verified,Ps4DiskFileDevice: device registered under the path mount name (token at ":"; wcslen+wcsncmp); under the device lock
+0x0246e630,467,loading_disk_device_find_named_device_0246e630,loading,verified,Ps4DiskFileDevice: device registered under the path mount name (token at ":"; wcslen+wcsncmp); under the device lock
 0x0246e810,390,loading_disk_device_open_on_device_0246e810,loading,edge-verified,Ps4DiskFileDevice: open through one device on a working copy of the path (path copy heap); on success the path takes the copy
 0x0246e9a0,714,loading_disk_device_open_on_unnamed_devices_0246e9a0,loading,edge-verified,Ps4DiskFileDevice: try each device not registered under a name; in order; on a working copy of the path; under the device lock
 0x02470d50,517,loading_mount_table_push_back_02470d50,loading,edge-verified,mount table push_back: grow 1.5x when full (source inside the table found again); copy name and target; end moves on even without a buffer
 0x024716d0,539,loading_mount_table_reallocate_024716d0,loading,edge-verified,mount table reallocate to exact capacity: copy entries; destroy old (heap text freed); free old buffer; failed allocation: transaction jump or report
 0x0247c000,1112,engine_heap_manager_register_area_0247c000,engine,edge-verified,DLHeapManager area registration: under the write lock; sorted insert after the last area starting at or below; same heap there refused; overrun reported; vector growth
+0x0247c590,70,engine_locked_regular_heap_construct_0247c590,engine,edge-verified,Locked regular heap constructor: heap state zeroed (memset); DLLightMutex vtable and cleared flag; allocator interface vtable and owner
+0x0247c5e0,342,engine_locked_regular_heap_initialize_0247c5e0,engine,edge-verified,Locked regular heap set-up: no memory refused; light mutex initialized (PthreadMutex 0x02483fe0) unless its vtable says so; then the regular heap set-up inlined
 0x0247d250,304,engine_temporary_heap_create_for_thread_0247d250,engine,edge-verified,DLTemporaryHeap per-thread creation: the thread's size setting (0x20000 when 0; under 0x38 reported); memory from the default allocator; empty bump region after the 0x38-byte object
 0x0247d3a0,140,engine_temporary_heap_destroy_for_thread_0247d3a0,engine,edge-verified,"DLTemporaryHeap per-thread destruction: range cleared, memory freed through the default allocator (quit query and allocator made when missing), slot cleared"
 0x0247d430,34,engine_temporary_heap_set_size_0247d430,engine,edge-verified,DLTemporaryHeap size setting for the thread (0 -> 0x20000)
@@ -388,6 +396,17 @@ address,size,name,system,status,notes
 0x0247ee90,226,kernel_light_mutex_lock,kernel,edge-verified,DLLightMutex lock: the PthreadMutex lock inlined (forever); ETIMEDOUT returns -3; a mutex not initialized is reported then used
 0x0247ef80,230,kernel_light_mutex_try_lock,kernel,edge-verified,DLLightMutex try lock: the PthreadMutex try lock inlined; EBUSY returns -2; a mutex not initialized is reported then used
 0x0247f070,124,kernel_light_mutex_unlock,kernel,edge-verified,DLLightMutex unlock: the PthreadMutex unlock inlined; EPERM accepted; a mutex not initialized is reported then used
+0x0247f180,15,kernel_read_write_lock_construct,kernel,edge-verified,DLReadWriteLock constructor: its vtable and a cleared initialized flag; the system lock handle is left as it was
+0x0247f190,81,kernel_read_write_lock_delete,kernel,edge-verified,DLReadWriteLock deleting destructor: destroys an initialized lock (EINVAL reported) without clearing the flag then frees the object
+0x0247f1f0,85,kernel_read_write_lock_destruct,kernel,edge-verified,DLReadWriteLock destructor: destroys an initialized lock; EBUSY keeps the flag set; EINVAL reported; otherwise the flag clears
+0x0247f250,94,kernel_read_write_lock_finalize,kernel,edge-verified,DLReadWriteLock finalize: asks the vtable; EBUSY returns -2 and keeps the flag; EINVAL reported; otherwise the flag clears
+0x0247f2b0,244,kernel_read_write_lock_initialize,kernel,edge-verified,DLReadWriteLock initialize: ENOMEM/EAGAIN return -1; any other result sets the flag after the EPERM/EBUSY/EINVAL/EFAULT report chain
+0x0247f3d0,198,kernel_read_write_lock_write,kernel,edge-verified,DLReadWriteLock write lock (untimed when timeout is -1): ETIMEDOUT returns -3; EINVAL/EDEADLK reports fall through to the unknown error
+0x0247f4a0,146,kernel_read_write_lock_try_write,kernel,edge-verified,DLReadWriteLock try write lock: EBUSY returns -2; EINVAL then EDEADLK reported; anything else returns 0
+0x0247f540,115,kernel_read_write_lock_unlock_0247f540,kernel,edge-verified,DLReadWriteLock unlock (one of three identical copies): EPERM returns -4; EINVAL reported
+0x0247f5c0,115,kernel_read_write_lock_unlock_0247f5c0,kernel,edge-verified,DLReadWriteLock unlock (one of three identical copies): EPERM returns -4; EINVAL reported
+0x0247f640,206,kernel_read_write_lock_read,kernel,edge-verified,DLReadWriteLock read lock (untimed when timeout is -1): ETIMEDOUT returns -3; EINVAL/EAGAIN/EDEADLK reports fall through
+0x0247f710,115,kernel_read_write_lock_unlock_0247f710,kernel,edge-verified,DLReadWriteLock unlock (one of three identical copies): EPERM returns -4; EINVAL reported
 0x02483e80,204,kernel_condition_wait,kernel,verified,Dantelion2 PthreadCondition wait (untimed when timeout is -1); the FPS patches put a ret on the timed path
 0x024846f0,105,engine_fast_small_object_allocator_delete_024846f0,engine,edge-verified,"DLFastSmallObjectAllocator deleting destructor: every class allocator released (0x02a3bc40), class array freed to the backing allocator, operator delete"
 0x02484760,106,engine_fast_small_object_allocator_destroy_02484760,engine,edge-verified,"DLFastSmallObjectAllocator destructor: every class allocator released (0x02a3bc40), class array freed and forgotten"
@@ -448,10 +467,28 @@ address,size,name,system,status,notes
 0x024be3b0,558,loading_load_request_copy_024be3b0,loading,edge-verified,resource load request copy constructor: base vtable; words/bytes copied; name on the request heap; strings/array via 0x024be8e0 then assigned (strings skip self-copy)
 0x024be8e0,362,loading_load_request_construct_tail_024be8e0,loading,edge-verified,resource load request tail: two owning empty wide strings and an empty byte array on the default container heap (heap check each)
 0x024c1530,152,loading_resource_manager_release_024c1530,loading,edge-verified,DLResourceManagerImpl release of an info: initialized assert; without flag 0x40 leave the file queue and set the signal; under the lock mark released (0x80) and hand to 0x024c3260
+0x024d6730,283,loading_file_task_initialize_024d6730,loading,edge-verified,FileTransferTask initialize: copy request (keep heap word if none); invalid -> false; base initialize; queue; flag bit 0; request words
+0x024d6850,247,loading_file_task_reset_024d6850,loading,edge-verified,FileTransferTask reset: end slot unless ended; clear words; destroy+free chained objects; clear chain/heap word/state
+0x024d6950,197,loading_file_task_update_024d6950,loading,edge-verified,FileTransferTask update: under its lock run state handlers (member-function table) until a stop state
+0x024d6e20,275,loading_file_task_check_read_024d6e20,loading,edge-verified,FileTransferTask read step: open errors or cancel abort; count pending size; state 8 or 9
+0x024d7460,245,loading_file_task_start_024d7460,loading,edge-verified,FileTransferTask start: manager stop or cancel abort; prepare; chunk limit; begin read; state 6; start slot
+0x024d7e50,309,loading_file_task_end_024d7e50,loading,edge-verified,FileTransferTask end (once): manager hands over the info under its lock; completed -> info loaded + queue reports it; else info flag cleared
+0x024d8210,605,loading_file_task_prepare_024d8210,loading,edge-verified,FileTransferTask read buffer: free the old one; small 0x2c buffer inside the task or allocate read size (manager allow/release callbacks)
+0x024dd540,487,loading_transfer_task_initialize_024dd540,loading,edge-verified,TransferTask initialize: clear state; keep manager/info/word; heap by disk device location; claim info; ready
+0x024dde50,200,loading_transfer_task_check_read_024dde50,loading,edge-verified,TransferTask read step: submitted -> reading or abort; open errors 0x10/0x11/0x12 abort; else fail code 4
+0x024ddf20,190,loading_transfer_task_check_close_024ddf20,loading,edge-verified,TransferTask close step: free read object; closed and not cancelled -> request close; else finish once
 0x024de230,116,loading_memory_stream_read_024de230,loading,edge-verified,VirtualMemoryInputStream read: -1 if not open; min(count; left) cut to 32 bits; copy and advance position and +0x20
 0x024df920,524,engine_debug_print_024df920,engine,edge-verified,"Debug print (format, arguments): lazily builds the print lock; locks it; vprintf when forced or enabled; unlocks"
 0x024dfb30,370,engine_debug_print_list_024dfb30,engine,edge-verified,Debug print with a va_list: lazily builds the print lock (and a light mutex beside it); locks it; vprintf when forced or enabled; unlocks
+0x024e2a80,253,engine_text_multibyte_to_wide_024e2a80,engine,edge-verified,"Bytes to wide string: Shift-JIS tables for kinds 2/3 (lead byte cut off by the count stops), UTF-8 through 0x024e88c0; count stored back, then bytes consumed; characters written"
+0x024e2b90,530,engine_text_wide_to_multibyte_024e2b90,engine,edge-verified,"Wide string to bytes: Shift-JIS tables for kinds 2/3 (stops after a terminator, at an unmapped character or a full buffer), UTF-8 for kind 0; count stored back, then characters consumed; bytes written"
+0x024e2dc0,519,engine_text_multibyte_size_024e2dc0,engine,edge-verified,"Bytes a wide string needs: UTF-8 1-3, kind 2 one each, Shift-JIS (halfwidth katakana one byte), kind 4 two outside ASCII; terminator counted when reached; other kinds 0"
+0x024e2ff0,715,engine_text_wide_size_024e2ff0,engine,edge-verified,"Wide characters a byte string makes: UTF-8 (malformed or cut-off sequences stop), kind 2 one per byte, Shift-JIS and kind 4 double-byte counts; terminator counted when reached; other kinds 0"
+0x024e62b0,401,engine_format_string_argument_024e62b0,engine,edge-verified,"DLFormat %s argument: narrow string (bytes widened as signed) when the caller's flag 0x40 and an 'h' modifier say so, else wide; null narrow -> <NULL>; written as 0x024e77f0 does"
+0x024e77f0,233,engine_format_write_wide_string_024e77f0,engine,edge-verified,"DLFormat wide string out (null -> <NULL>): fails when room < width; cut to room-1 and precision; left pad (zero or space) unless left-justified, right spaces; count-only advances without storing"
 0x024f8110,170,frame_timing_random_generator_seed_024f8110,frame_timing,edge-verified,Seeds a 64-bit LCG (x*0x5deece66d+11 mod 2^64) with the 32-bit seed stepped once and writes the high 32 bits of that state and the next three to the four words
+0x024f8350,262,engine_tree_insert_fixup_024f8350,engine,edge-verified,"Red-black tree insert fix-up (robust heap, fixed allocator): children cleared, node red; red uncles recoloured upward; black or missing uncle ends with one or two rotations"
+0x024f8460,695,engine_tree_remove_024f8460,engine,edge-verified,"Red-black tree remove: the child or the successor takes the place; a black removal is rebalanced (a red sibling rotated above the parent first, then finished in place)"
 0x02564ed0,25,render_present_encoding_units,render,edge-verified,Return the full 64-bit entry for wrapped encoding minus one when its index is below 99; otherwise return zero.
 0x02565130,30,render_present_record_bit_width,render,verified,Return the bit width of the OR of three 32-bit inputs. All-zero input returns zero; the presentation fallback passes one as the third input.
 0x02565f90,855,render_initialize_swap_chain_resource,render,edge-verified,"Validate resource parameters; choose independent allocator and owner defaults; prepare resource storage and publish its wrapper. Allocation failure clears the output and releases prepared storage."
@@ -469,28 +506,39 @@ address,size,name,system,status,notes
 0x027ec890,171,engine_scaleform_heap_bitset_units_027ec890,engine,edge-verified,Scaleform page bitset: read an allocated block's length from its first codes
 0x02a279a0,429,engine_wide_string_assign_from_02a279a0,engine,edge-verified,"Wide string assign(source, position, count): out of range past the end; self-assign cuts the tail, wmemmove front; else grow if capacity < length, wmemcpy"
 0x02a27b70,311,engine_wide_string_grow_02a27b70,engine,edge-verified,"Wide string growth: capacity length|7 or old*1.5 (max 0x7ffffffffffffffe); allocate 2*cap+2 align 2, transaction on failure; keep chars, free old heap"
-0x02a2aca0,180,loading_path_token_next_02a2aca0,loading,edge-verified,wide path token scanner: skip delimiters (wcschr); return length and start of the next token; cursor moves to the delimiter after it
+0x02a2aca0,180,loading_path_token_next_02a2aca0,loading,verified,wide path token scanner: skip delimiters (wcschr); return length and start of the next token; cursor moves to the delimiter after it
 0x02a3ae00,394,engine_semaphore_wait_02a3ae00,engine,edge-verified,"DLSemaphore wait for one unit, forever or up to a timeout; -3 on ETIMEDOUT; ESRCH..EINVAL report chains, unknown errors reported; 0"
 0x02a3b0d0,122,engine_semaphore_signal_02a3b0d0,engine,edge-verified,DLSemaphore signal: EINVAL ignored; ESRCH and other errors reported; 0
 0x02a3baa0,378,engine_fast_fixed_allocator_initialize_02a3baa0,engine,edge-verified,"DLFastFixedAllocator set-up: chunk size rounded up to a power of two, chunks aligned to it; blocks rounded to the alignment (at least 8); reports bad sizes and alignment"
 0x02a3bc40,173,engine_fast_fixed_allocator_release_02a3bc40,engine,edge-verified,"DLFastFixedAllocator destructor body: every chunk of both chunk lists, then the spare chunk, freed to the backing allocator"
 0x02a44140,59,engine_wide_string_destroy,engine,edge-verified,WideString destructor; unsigned capacity >=8 frees even null; ignores owns; callback before capacity and size reset and two-byte terminator
+0x02a692d0,19,loading_load_queue_report_loaded_02a692d0,loading,edge-verified,load event queue: report a request through vtable slot 0 with code 1
 0x02a698e0,654,loading_load_queue_request_02a698e0,loading,edge-verified,DLResourceLoadEventQueue request (kind 0): validity; manager info or report -0xf8; info remembers the queue; under the lock append an event with a request copy; handle to the info
 0x02a69b70,340,loading_load_event_array_push_back_02a69b70,loading,edge-verified,resource load event (0x158) push_back: grow 1.5x when full (source inside found again); copy two words; copy-construct the request; queued vtable
 0x02a69cd0,654,loading_load_queue_request_kind_4_02a69cd0,loading,edge-verified,DLResourceLoadEventQueue request (kind 4): same code as 0x02a698e0
+0x02a69fb0,105,loading_finished_queue_front_02a69fb0,loading,edge-verified,Finished-entry list front: under the lock copy the first entry when the count is not 0
+0x02a6a020,140,loading_finished_queue_pop_02a6a020,loading,edge-verified,Finished-entry list pop: under the lock unlink the first node; destroy its entry; free; count one less
+0x02a6a7f0,448,loading_load_queue_dispatch_02a6a7f0,loading,edge-verified,file load event queue: under its lock hand each event to its kind handler (0 3 4); erase all
+0x02a6a9e0,465,loading_load_queue_start_file_task_02a6a9e0,loading,edge-verified,file load event queue: take a file task slot from the pool (new 32-slot block if none); initialize; append to transfer tasks
 0x02a6af30,423,loading_load_queue_remove_02a6af30,loading,edge-verified,DLResourceFileLoadEventQueue: under the queue lock find the transfer task loading an info in six task lists (read-write lock) and cancel it
+0x02a6b0e0,184,loading_finished_queue_post_02a6b0e0,loading,edge-verified,load event queue: under its lock append a finished entry (request words code word + info handle)
 0x02a6b520,395,loading_file_load_slots_construct_02a6b520,loading,edge-verified,file load event queue: construct its 32 slots (0x338 bytes each) in order with 0x024d63f0
 0x02a6bc50,618,loading_load_event_array_reallocate_02a6bc50,loading,edge-verified,load event array reallocate to exact capacity: copy events; destroy old (base vtable; data freed; three strings released); free old buffer
+0x02a6cd90,635,loading_stream_queue_request_02a6cd90,loading,edge-verified,DLResourceStreamLoadEventQueue request: validity; manager info or report -0xf8; stream handle; under the lock append an event with a request copy and its extra byte; handle copy
 0x02a6d010,393,loading_stream_event_array_push_back_02a6d010,loading,edge-verified,DLResourceStreamLoadEventQueue event array push_back (0x160 events; same code as 0x02a69b70 plus the byte at +0x158; stream request vtable)
 0x02a6d8e0,224,loading_stream_queue_remove_02a6d8e0,loading,edge-verified,DLResourceStreamLoadEventQueue remove request: pool range assert; erase from the in-use array (memmove); append to the give-back array
 0x02a6f140,645,loading_stream_event_array_reallocate_02a6f140,loading,edge-verified,DLResourceStreamLoadEventQueue event array reallocate (same code as 0x02a6bc50 for 0x160 events)
 0x02a70890,141,loading_kernel_file_open,loading,verified,sceKernelOpen with FreeBSD flags and permissions from the platform mode bits; store the descriptor and set the open bit; -1 on error
 0x02a70920,46,loading_kernel_file_read,loading,edge-verified,"sceKernelRead the file's descriptor; -1 on a negative count; else store the count when asked and return 0"
+0x02a70a90,84,loading_stream_handle_construct_02a70a90,loading,edge-verified,Stream handle constructor: resource handle; stream vtable; queue; info remembers the queue when both are set
 0x02a85e30,153,render_fractal_noise_02a85e30,render,edge-verified,"Sums octaves of the base noise 0x02a85950: scale from 1 times the step, amplitude from 0.5 times the persistence; zero octaves give +0"
 0x02a8bf30,108,input_mouse_b_open_for_initial_user,input,edge-verified,"Second mouse device class's open: initial user; close a positive handle at +0x128; sceMouseOpen(user; 0; 0; null); true when the new handle is positive"
 0x02a8c210,164,input_mouse_construct,input,edge-verified,"Mouse device constructor: base ctor with the third argument; vtable 0x056b7d00; clear 0x140..0x177; load sysmodule 0xa9; sceMouseInit; open via slot 32; handle 0 on any failure"
 0x02a8c420,108,input_initialize_mouse_for_initial_user,input,edge-verified,"Initializes or reinitializes mouse input for the initial user; closing a previous connection if necessary."
 0x02a9c790,84,input_pad_set_vibration,input,verified,"scePadSetVibration on the pad's handle (+0x8) if open (+0xc): large motor from the third argument; small from the second; true on success"
+0x02aa4a30,128,loading_finished_entry_construct_02aa4a30,loading,edge-verified,finished entry constructor: result base + handle to the info the manager finds for the request words
+0x02aa4ab0,75,loading_finished_entry_copy_construct_02aa4ab0,loading,edge-verified,finished entry copy constructor: result base copy + handle assign
+0x02aa4b40,46,loading_finished_entry_destroy_02aa4b40,loading,edge-verified,finished entry destructor: drop the handle then the result base
 0x02aa9d50,87,render_acquire_shader_upload_block_02aa9d50,render,edge-verified,"Under the manager lock (+0xd8, slots 0x18/0x28), one range from the allocator at 0x02aa9db0 with 16-byte alignment"
 0x02aa9db0,487,render_allocate_shader_upload_range_02aa9db0,render,edge-verified,First fit on the free list for size rounded to 16; splits off aligned padding and rest as free ranges when the node pool gives records; counts in use and free bytes
 0x02aaa5a0,124,render_release_present_finish_node,render,verified,"Release the finish node through the manager helper; retaining its head-match decision and reloading commands across retries."
@@ -502,6 +550,8 @@ address,size,name,system,status,notes
 0x02ab0b00,326,render_submit_present_finish_snapshot,render,verified,Emit required counter waits and submit nonempty command regions in order; construct an empty second region when optional commands are absent.
 0x02ab0ce0,326,render_command_submit_batch,render,verified,"Emit counter waits and submit nonempty regions with the packed video/index handle; or delegate the snapshot when no optional context exists."
 0x02ab0e30,213,render_command_submit_snapshot,render,verified,Initialize the auxiliary command buffer and submit nonempty regions using only the video handle.
+0x02ab18c0,98,render_resource_info_submit_pending_commands_02ab18c0,render,edge-verified,"Submits the packets since the buffer start as one range (low 32-bit byte count, whole words) to the queue at +0x58, then sets the start to the cursor"
+0x02ab1930,96,render_resource_info_write_completion_label_02ab1930,render,edge-verified,Takes the next label from the services counter (again if it equals the 64-bit reserved value) and writes a compute-done release-memory packet storing it
 0x02ab5a70,1235,render_present_record_consume,render,verified,"Track a resource range or emit record commands; preserve cached tokens; index wrap and final state resets."
 0x02ab6810,1173,render_present_last_record_consume,render,edge-verified,"Consume the final record range; or update its tracking bank when commands are not admitted."
 0x02ab7310,629,render_record_translate_selector,render,edge-verified,Map supported selectors to one output DWORD; unsupported selectors return status 12 and zero the output.
