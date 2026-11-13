@@ -26,6 +26,7 @@ address,replacement,system,returns
 0x0111adc0,bb_kernel_semaphore_signal,kernel,i32
 0x0111b060,bb_audio_fmod_output_driver_count,audio,i64
 0x0111b0b0,bb_audio_fmod_output_defaults,audio,i64
+0x011ab3a0,bb_kernel_memory_pool_free_011ab3a0,kernel,void
 0x011c4510,bb_engine_store_word_product,engine,i64
 0x011c47f0,bb_engine_string_length,engine,i64
 0x011c4810,bb_audio_fmod_string_copy,audio,i64
@@ -533,6 +534,7 @@ address,replacement,system,returns
 0x024e6f00,bb_engine_format_write_integer_024e6f00,engine,i8
 0x024e70e0,bb_engine_format_integer_024e70e0,engine,i8
 0x024e77f0,bb_engine_format_write_wide_string_024e77f0,engine,i8
+0x024eba00,bb_frame_timing_config_get_int_024eba00,frame_timing,i32
 0x024f8110,bb_frame_timing_random_generator_seed_024f8110,frame_timing,void
 0x024f8350,bb_engine_tree_insert_fixup_024f8350,engine,void
 0x024f8460,bb_engine_tree_remove_024f8460,engine,void

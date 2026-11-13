@@ -27,6 +27,7 @@ address,size,name,system,status,notes
 0x0111adc0,28,kernel_semaphore_signal,kernel,verified,Signal one unit using the full opaque handle including null; preserve kernel writes and translate every nonzero low32 result to 0x21
 0x0111b060,14,audio_fmod_output_driver_count,audio,edge-verified,FMOD Orbis AudioOut descriptor callback installed by 0x0111aed0; optional output receives one driver; return zero
 0x0111b0b0,37,audio_fmod_output_defaults,audio,edge-verified,FMOD output descriptor callback writes 132 then 48000 then 6 to optional outputs; sample-rate and speaker-mode meanings remain hypotheses
+0x011ab3a0,260,kernel_memory_pool_free_011ab3a0,kernel,edge-verified,"Memory pool free: lazy static lock; header/page/heap size off the counters; callback, page release or heap free; page pools repeat on the context pool"
 0x011c4510,15,engine_store_word_product,engine,verified,Store low 32-bit input at owner+0x18 and modulo-32-bit product times four at owner+0x1c; valid unaligned byte view and full zero return; field meanings unknown
 0x011c47f0,29,engine_string_length,engine,verified,Engine strlen; scan to the first NUL and return the low 32 length bits zero-extended into RAX; other incoming GP registers are ignored
 0x011c4810,34,audio_fmod_string_copy,audio,verified,NUL-terminated string copy used by FMOD callers; includes terminator and returns destination; finite aliases covered
@@ -534,6 +535,7 @@ address,size,name,system,status,notes
 0x024e6f00,424,engine_format_write_integer_024e6f00,engine,edge-verified,"DLFormat number out: fails when room < width or digits; lone 0 at precision 0 dropped unless 0x100; sign/space; pad, # prefix, zeros, digits (count-only keeps cursor), right pad"
 0x024e70e0,430,engine_format_integer_024e70e0,engine,edge-verified,"DLFormat %d %i %u %o %x %b (others base 10); 64-bit for l/L/I; # dropped for 0 (%#o keeps it); text via 0x024e6c70, written by 0x024e6f00"
 0x024e77f0,233,engine_format_write_wide_string_024e77f0,engine,edge-verified,"DLFormat wide string out (null -> <NULL>): fails when room < width; cut to room-1 and precision; left pad (zero or space) unless left-justified, right spaces; count-only advances without storing"
+0x024eba00,328,frame_timing_config_get_int_024eba00,frame_timing,edge-verified,"Config map lookup (fallback when missing); copy the value, expand each reference marker, return the low 32 bits of a base-10 wcstol; free a heap copy"
 0x024f8110,170,frame_timing_random_generator_seed_024f8110,frame_timing,edge-verified,Seeds a 64-bit LCG (x*0x5deece66d+11 mod 2^64) with the 32-bit seed stepped once and writes the high 32 bits of that state and the next three to the four words
 0x024f8350,262,engine_tree_insert_fixup_024f8350,engine,edge-verified,"Red-black tree insert fix-up (robust heap, fixed allocator): children cleared, node red; red uncles recoloured upward; black or missing uncle ends with one or two rotations"
 0x024f8460,695,engine_tree_remove_024f8460,engine,edge-verified,"Red-black tree remove: the child or the successor takes the place; a black removal is rebalanced (a red sibling rotated above the parent first, then finished in place)"
