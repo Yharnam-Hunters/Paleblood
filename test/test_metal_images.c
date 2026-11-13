@@ -210,7 +210,9 @@ int main(void)
         probe(x,pool,code,length,user,0xffff,NULL);float_results(pool,expected_mip,0.00001f);
         if(!arrayed){unsigned lod_slot=one_d?9:10;user[lod_slot]=1;probe(x,pool,code,length,user,0xffff,NULL);
             const float last_mip[4]={112.0f/255,66.0f/255,128.0f/255,1};float_results(pool,last_mip,0.00001f);
-            user[lod_slot]=2;probe(x,pool,code,length,user,0xffff,"shader runtime stop");
+            /* Out-of-range LOD on this RGBA view returns a zero replacement texel. */
+            user[lod_slot]=2;probe(x,pool,code,length,user,0xffff,NULL);
+            const float outside_mip[4]={0,0,0,0};float_results(pool,outside_mip,0.00001f);
             user[lod_slot]=0;probe(x,pool,code,length,user,0xffff,NULL);float_results(pool,expected_mip,0.00001f);
         }
     }
