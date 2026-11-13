@@ -377,6 +377,7 @@ frames. #279, #286 and #287 were brought up to date with `main` from #209, #259 
 | `0x014741b0` | 156 | `render_emit_draw_index_auto` | verified | Emit DRAW_INDEX_AUTO and a query-selected THREAD_TRACE_MARKER event or NOP. Reload flags and cursor after overlapping packet stores before selecting and publishing the trailing packet. |
 | `0x01474f30` | 92 | `render_set_vertex_reuse` | edge-verified | Write VGT_REUSE_OFF as the input byte XOR 1; reserve three DWORDs and publish from the captured cursor after ordered stores. |
 | `0x01475000` | 397 | `render_emit_shader_link_words` | verified | Write SPI_PS_INPUT_CNTL entries from last word to first to preserve overlapping reads; retain the unmasked count shift for zero and oversized counts. |
+| `0x01475210` | 93 | `render_set_db_render_override` | edge-verified | Writes DB_RENDER_OVERRIDE with input DWORD masked by 0xf8000040; byte-result callback admission and cursor redirection; publishes the captured cursor after all stores |
 | `0x01475370` | 76 | `render_emit_num_instances` | verified | Emit NUM_INSTANCES with the complete supplied instance count. |
 | `0x014753c0` | 86 | `render_emit_set_ps_shader_014753c0` | edge-verified | Packet writer: reserves 40 words (space callback when short); sceGnmSetPsShader at the cursor; cursor advanced only on success |
 | `0x01475420` | 86 | `render_emit_update_ps_shader_01475420` | edge-verified | Packet writer: reserves 40 words (space callback when short); sceGnmUpdatePsShader at the cursor; cursor advanced only on success |
