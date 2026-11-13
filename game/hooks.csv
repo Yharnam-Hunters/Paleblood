@@ -338,6 +338,8 @@ address,replacement,system,returns
 0x02ab5a70,bb_render_present_record_consume,render,void
 0x02ab6810,bb_render_present_last_record_consume,render,void
 0x02ab7310,bb_render_record_translate_selector,render,i32
+0x02ab7720,bb_render_translate_record_secondary_02ab7720,render,i32
+0x02ab78a0,bb_render_translate_record_tertiary_02ab78a0,render,i32
 0x02ab7a20,bb_render_choose_record_constructor_selector,render,i32
 0x02ab7ab0,bb_render_combine_record_parameters,render,i32
 0x02ab7e40,bb_render_reduce_record_parameter,render,i32
