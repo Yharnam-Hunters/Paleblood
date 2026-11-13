@@ -15,10 +15,12 @@ on:
       - 'runtime/include/runtime/graphics_metal.h'
       - 'test/test_metal_offscreen.mm'
       - 'test/test_metal_executor.c'
+      - 'test/test_metal_triangle_strips.c'
       - 'test/test_metal_compute.c'
       - 'test/test_metal_coherence.c'
       - 'test/test_metal_images.c'
       - 'test/test_metal_blend_banks.c'
+      - 'test/test_metal_vertex_instancing.c'
       - 'test/metal_image_programs.h'
       - 'test/metal_image_slots.h'
       - 'runtime/include/runtime/tiling.h'
@@ -40,10 +42,12 @@ on:
       - 'runtime/include/runtime/graphics_metal.h'
       - 'test/test_metal_offscreen.mm'
       - 'test/test_metal_executor.c'
+      - 'test/test_metal_triangle_strips.c'
       - 'test/test_metal_compute.c'
       - 'test/test_metal_coherence.c'
       - 'test/test_metal_images.c'
       - 'test/test_metal_blend_banks.c'
+      - 'test/test_metal_vertex_instancing.c'
       - 'test/metal_image_programs.h'
       - 'test/metal_image_slots.h'
       - 'runtime/include/runtime/tiling.h'
@@ -85,7 +89,7 @@ jobs:
           assert {'pbmetal', 'pbboot', 'pbloader', 'bbrt', 'bbgame'} <= names
           PY
       - name: Compile Metal library and real-device test
-        run: cmake --build build --target pbmetal test_metal_offscreen test_metal_executor test_metal_compute test_metal_coherence test_metal_images test_metal_blend_banks --parallel 2
+        run: cmake --build build --target pbmetal test_metal_offscreen test_metal_executor test_metal_compute test_metal_coherence test_metal_images test_metal_blend_banks test_metal_triangle_strips test_metal_vertex_instancing --parallel 2
       # Hosted compilation does not qualify a real Metal device or GPU execution.
 
   shaders:
