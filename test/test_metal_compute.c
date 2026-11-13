@@ -228,7 +228,9 @@ int main(void)
     /* A reserved format still stops, then the same context completes a normal dispatch. */
     data[3] = 15u << 15;
     shader(FORMAT_CODE, 8, local, 0, 2); user_data(RT_STAGE_COMPUTE, 0, data, 8);
-    execute(x, 1, "DATA_FORMAT 15");
+    clear_output(output); execute(x, 1, "DATA_FORMAT 15");
+    /* The stop word is checked after dispatch: later raw stores may still run. */
+    for (unsigned i = 32 * 4; i < OUTPUT_WORDS; ++i) CHECK(output[i] == SENTINEL);
     data[3] = 0;
     shader(CODE, 8, local, 0, 2); clear_output(output); execute(x, 1, NULL); check_scale(output, 32, 2.5f, 1);
 
