@@ -865,6 +865,7 @@ render_swap_chain_present,edge,60,23,23,0,0,cecf62710c015474,2026-10-07
 render_swap_chain_present,edge,uncapped,23,23,0,0,cecf62710c015474,2026-10-07
 render_swap_chain_present_mode,edge,,19,19,0,0,e1616a0a330d07b9,2026-11-03
 render_swap_chain_submit,edge,,53,53,0,0,8424f6556ab52ba2,2026-11-03
+render_update_hs_shader,edge,,245,245,0,0,1174a8774473cb56,2026-11-13
 render_update_model_wind,edge,,120,120,0,0,4d23637bf11c299c,2026-11-10
 render_update_model_wind,edge,30,120,120,0,0,4d23637bf11c299c,2026-11-10
 render_update_model_wind,edge,60,120,120,0,0,4d23637bf11c299c,2026-11-10
