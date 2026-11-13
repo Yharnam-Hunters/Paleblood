@@ -85,6 +85,8 @@ engine_linear_heap_free_02485230,edge,,12,12,0,0,a14e1703332f9a0d,2026-11-12
 engine_linear_heap_free_until_024852d0,edge,,8,8,0,0,a14e1703332f9a0d,2026-11-12
 engine_linear_heap_walk_02485340,edge,,10,10,0,0,9e4e9d179edbb6de,2026-11-12
 engine_locked_regular_heap_initialize_0247c5e0,recorded,,1,1,0,0,d86ef37204a20cc9,2026-11-13
+engine_mutex_construct_02a3a840,edge,,4,4,0,0,9b92bcbacef4a2e3,2026-11-13
+engine_mutex_initialize_02a3a920,edge,,16,16,0,0,9b92bcbacef4a2e3,2026-11-13
 engine_regular_heap_allocate_02485730,edge,,23,23,0,0,ceba07c492cd7255,2026-11-12
 engine_regular_heap_allocate_aligned_02485a60,edge,,25,25,0,0,7e5a8ce832324bd5,2026-11-12
 engine_regular_heap_check_block_02485e20,edge,,35,35,0,0,ecd40822cc0dfbde,2026-11-12
