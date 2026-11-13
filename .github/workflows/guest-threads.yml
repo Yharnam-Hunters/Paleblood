@@ -52,7 +52,6 @@ on:
       - 'test/syslib/thread_join.c'
       - 'test/syslib_test.h'
       - 'test/ps4elf.py'
-  merge_group:
 
 permissions:
   contents: read
