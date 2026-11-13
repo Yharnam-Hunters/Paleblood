@@ -491,6 +491,17 @@ Instead:
        (`taken_count` in `render_calls.c`, with the reader of `runtime/render_placed.h`). A buffer
        built and never submitted is not checked this way: its calls stay until a new call starts
        it over.
+     - **The record at the game's scale** (Iosefka's Clinic, 13 November 2026): the game carves its
+       command buffers from rings, so the record sees new buffer addresses all the time, and the
+       runtime's GNM calls place thousands of shader binds a frame. Searching every buffer ever seen
+       and compacting one array of placed binds on each call took about a fifth of the CPU samples
+       of a clinic profile, on the game's submitting threads (the frame rate, bound by the
+       renderer's own thread, did not change).
+       The lists are found by a hash of the buffer's address, and a list not used for 65,536
+       submissions (hundreds of frames) is forgotten. Placed binds wait in a ring of 16,384, each
+       linked into a bucket by its address's 4 KiB page, so that a submission looks only at the
+       pages of its buffer and merges their binds into the list in one pass, and a bind placed
+       again at an address finds the older one in its page alone.
    - **How the hooks attach:** the library's functions are being decompiled like the rest of the
      game, as replacements verified to write exactly the original packets. The renderer leaves
      those packets alone, so verification still holds. Each of these replacements also makes one
@@ -703,10 +714,12 @@ Instead:
           Memory a game draws into as a target of another size or format (YEBIS's post passes reuse
           theirs) gets another image: the one there is written back and set aside (`target_for`), and taken
           back, loaded from the memory, when that address has its shape again.
-          When all 128 target slots are taken, the one set aside longest (else the least recently used)
+          When all 512 target slots are taken, the one set aside longest (else the least recently used)
           whose texels are all in its memory and that no unfinished batch uses is freed, with the render
           passes and pipelines made for it (`target_slot_to_free`); the GPU's work is waited for when none
-          is free.
+          is free. Freeing is a fallback, not a steady state: with 128 slots the clinic's YEBIS passes
+          freed and made again about 39 targets a frame (their images, copy buffers, passes and pipelines),
+          about 3 of each 6 seconds a frame took; 512 slots hold all of them (with twice as many render passes).
           Showing a frame copies the target's image to a host-visible buffer once per flip.
           `test_render_executor` checks a 1D-tiled target's texels at `rt_tiling_offset` after a
           write-back and a CPU write showing at its pixel after a load; a mutated table fails both.

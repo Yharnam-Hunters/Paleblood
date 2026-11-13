@@ -125,7 +125,9 @@ struct StreamLoadQueue;
 struct LoadEventQueue;
 
 struct ResourceInfo {
-    uint8_t unknown_0x00[0x31];
+    uint8_t unknown_0x00[0x10];
+    int32_t transfer_claimed;     // set to 1 (an atomic exchange) when a transfer task takes it
+    uint8_t unknown_0x14[0x1d];
     uint8_t flags;
     uint8_t unknown_0x32[0x36];
     LoadEventQueue *load_queue;   // the load event queue it was queued in (0x02a698e0), if any
@@ -135,6 +137,7 @@ struct ResourceInfo {
     uint64_t pending_count;
     engine::Allocator *pending_allocator;
 };
+static_assert(offsetof(ResourceInfo, transfer_claimed) == 0x10);
 static_assert(offsetof(ResourceInfo, flags) == 0x31 && offsetof(ResourceInfo, stream_queue) == 0x70);
 static_assert(offsetof(ResourceInfo, load_queue) == 0x68);
 static_assert(offsetof(ResourceInfo, pending_head) == 0x80 && offsetof(ResourceInfo, pending_allocator) == 0x90);
@@ -190,13 +193,24 @@ RT_ORIGINAL(0x024c3260, resource_manager_remove_released, uint64_t(ResourceManag
 using RequestPointerArray = engine::Array<void *>;
 constexpr uintptr_t request_storage_alignment = 8;
 constexpr size_t request_storage_size = sizeof(RequestPointerArray) + request_storage_alignment;
+struct LoadEventQueueVtable;
+constexpr uintptr_t stream_event_storage_alignment = 8;
+constexpr size_t stream_event_storage_size = sizeof(StreamLoadEventArray) + stream_event_storage_alignment;
 struct StreamLoadQueue {
-    uint8_t unknown_0x00[0xc8];
+    const LoadEventQueueVtable *vtable;   // its first slot reports a request it could not queue
+    uint64_t unknown_0x08;
+    ResourceManager *manager;             // the original reads it through a one-line getter
+    uint8_t unknown_0x18[0x60];
+    uint8_t event_storage[stream_event_storage_size];
+    frame_timing::job::JobLock lock;
+    uint8_t unknown_0xb0[0x18];
     uint8_t *pool;
     uint64_t pool_size;
     uint8_t released_storage[request_storage_size];
     uint8_t in_use_storage[request_storage_size];
 };
+static_assert(offsetof(StreamLoadQueue, manager) == 0x10 && offsetof(StreamLoadQueue, event_storage) == 0x78);
+static_assert(offsetof(StreamLoadQueue, lock) == 0xa8);
 static_assert(offsetof(StreamLoadQueue, pool) == 0xc8 && offsetof(StreamLoadQueue, released_storage) == 0xd8);
 static_assert(offsetof(StreamLoadQueue, in_use_storage) == 0x108);
 
@@ -257,6 +271,25 @@ RT_ORIGINAL(0x024bd470, resource_handle_construct, void(ResourceHandle *, Resour
 RT_ORIGINAL(0x024bd4c0, resource_handle_destroy, void(ResourceHandle *));
 RT_GLOBAL(0x057b4af0, load_handle_vtable, const uint8_t);
 
+// The stream queue's request: a load request and one more byte, which its queued event keeps.
+struct StreamLoadRequest {
+    LoadRequest request;
+    uint8_t byte_0x148;
+};
+static_assert(offsetof(StreamLoadRequest, byte_0x148) == 0x148);
+
+// The stream queue's handle: a resource handle that also knows the queue (its constructor
+// 0x02a70a90 makes the info remember the queue, +0x70, when it has both).
+struct StreamHandle {
+    ResourceHandle handle;
+    StreamLoadQueue *queue;
+};
+static_assert(offsetof(StreamHandle, queue) == 0x10 && sizeof(StreamHandle) == 0x18);
+RT_GLOBAL(0x056b6f90, stream_handle_vtable, const uint8_t);
+RT_ORIGINAL(0x02a70a90, stream_handle_construct, void(StreamHandle *, ResourceInfo *, StreamLoadQueue *));
+RT_ORIGINAL(0x02a6d010, stream_event_array_push_back, void(StreamLoadEventArray *, const StreamLoadEvent *));
+constexpr int32_t stream_event_kind = 0;
+
 // The resource load event queue (Dantelion2 DLResourceLoadEventQueue and its file load
 // subclass): its first vtable slot reports a request it could not queue; its events (an array
 // stored at +0x70 aligned up to 8) are guarded by the lock at +0xa0. The file load queue keeps its
@@ -272,7 +305,8 @@ struct LoadEventQueue {
     const LoadEventQueueVtable *vtable;
     uint64_t unknown_0x08;
     ResourceManager *manager;   // the original reads it through a one-line getter
-    uint8_t unknown_0x18[0x10];
+    void *transfer_task_manager;  // the same (+0x18, another getter)
+    uint8_t unknown_0x20[0x8];
     TransferTasks *transfer_tasks;
     uint8_t unknown_0x30[0x40];
     uint8_t event_storage[event_storage_size];
@@ -305,17 +339,80 @@ struct ReadWriteLock {
     uint8_t unknown_0x00[0x10];
 };
 constexpr int transfer_task_list_count = 6;
+struct FileTaskPool;
 struct TransferTasks {
     uint8_t unknown_0x00[0x18];
     engine::Array<TransferTask *> lists[transfer_task_list_count];
     ReadWriteLock lock;
+    uint8_t unknown_0x118[0x8];
+    FileTaskPool *file_task_pool;   // where the file load queue takes its file tasks from
 };
 static_assert(offsetof(TransferTasks, lists) == 0x18 && offsetof(TransferTasks, lock) == 0x108);
+static_assert(offsetof(TransferTasks, file_task_pool) == 0x120);
 RT_ORIGINAL(0x0247f640, read_write_lock_read, uint64_t(ReadWriteLock *, int32_t timeout));
 RT_ORIGINAL(0x0247f710, read_write_lock_unlock, uint64_t(ReadWriteLock *));
 // The removal's assertion: no transfer tasks ("Invalid Parameter...").
 RT_GLOBAL(0x04c6bd3c, load_queue_source_file, const char);
 RT_GLOBAL(0x04c6bdd3, invalid_parameter_message, const char);
 constexpr int32_t load_queue_remove_line = 0x247;
+
+// The load event queue's finished entries (0x02a6b0e0 posts one, 0x02a69fb0 copies the front,
+// 0x02a6a020 drops it): an MSVC-style list (head node, count, allocator) stored at +0x30 aligned
+// up to 8, guarded by the lock at +0x58. An entry is a result (a base class: four words of the
+// request, a code and a word; constructor 0x024bcfa0, copy 0x024bcfe0; its destructor is empty)
+// and a handle to the request's resource info (the manager finds it from the four words,
+// 0x024c1630). Copied by 0x02aa4b90.
+struct FinishedEntry;
+struct FinishedEntryVtable {
+    void (*destroy)(FinishedEntry *);
+};
+constexpr int request_word_count = 4;
+struct RequestWords {
+    uint64_t words[request_word_count];
+};
+struct FinishedEntry {
+    const FinishedEntryVtable *vtable;
+    RequestWords request_words;
+    int32_t code;
+    uint8_t unknown_0x2c[0x4];
+    uint64_t request_word_0x20;
+    ResourceHandle handle;
+};
+static_assert(offsetof(FinishedEntry, code) == 0x28 && offsetof(FinishedEntry, handle) == 0x38);
+static_assert(sizeof(FinishedEntry) == 0x48);
+struct FinishedNode {
+    FinishedNode *next;
+    FinishedNode *previous;
+    FinishedEntry entry;
+};
+static_assert(offsetof(FinishedNode, entry) == 0x10);
+RT_ORIGINAL(0x024bcfa0, result_construct, void(FinishedEntry *, const RequestWords *, int32_t code, uint64_t request_word_0x20));
+RT_ORIGINAL(0x024bcfe0, result_copy, void(FinishedEntry *, const FinishedEntry *source));
+RT_ORIGINAL(0x024c1630, resource_manager_find_info, ResourceInfo *(ResourceManager *, RequestWords request_words));
+RT_ORIGINAL(0x024bd310, resource_handle_assign, void(ResourceHandle *, const ResourceHandle *source));
+RT_GLOBAL(0x056b9a40, finished_entry_vtable, const uint8_t);
+RT_ORIGINAL(0x02aa4a30, finished_entry_construct,
+            void(FinishedEntry *, const RequestWords *, int32_t code, uint64_t request_word_0x20, ResourceManager *));
+RT_ORIGINAL(0x02aa4b40, finished_entry_destroy, void(FinishedEntry *));
+struct FinishedList {
+    uint64_t unknown_0x00;
+    FinishedNode *head;
+    uint64_t count;
+    engine::Allocator *allocator;
+};
+static_assert(offsetof(FinishedList, count) == 0x10 && sizeof(FinishedList) == 0x20);
+constexpr uintptr_t finished_storage_alignment = 8;
+struct FinishedQueue {
+    uint8_t unknown_0x00[0x10];
+    ResourceManager *manager;   // as in the load event queue; read through a one-line getter
+    uint8_t unknown_0x18[0x18];
+    uint8_t finished_storage[sizeof(FinishedList) + finished_storage_alignment];
+    frame_timing::job::JobLock lock;
+};
+static_assert(offsetof(FinishedQueue, finished_storage) == 0x30 && offsetof(FinishedQueue, lock) == 0x58);
+RT_ORIGINAL(0x02aa4b90, finished_entry_copy, FinishedEntry *(FinishedEntry *, const FinishedEntry *source));
+// The list's push_back of a copy (0x02a6b1a0, a standard list template instance on the engine's
+// allocator).
+RT_ORIGINAL(0x02a6b1a0, finished_list_push_back, void(FinishedList *, const FinishedEntry *));
 
 }  // namespace loading::resource_queue
