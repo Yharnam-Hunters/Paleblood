@@ -6,7 +6,7 @@ Most of Bloodborne's numbers are not in its code. Weapon damage and scaling, arm
 
 **At a glance**
 
-- **Scope:** Paleblood's `game/param/`: the solo parameter repository, the per-table row lookups, the equipment, menu, map and return-point lookups, row names and rows by position.
+- **Scope:** Paleblood's `game/param/`: the solo parameter repository, the per-table row lookups, the equipment, menu, map and return-point lookups, row names and rows by position, table walks, the attack and behavior pairs, gem searches and character creation's face tables.
 - **Verified:** Every replaced lookup is edge-verified against the original on invented tables. None is `verified` yet: none has been checked on frames recorded from a real game run.
 - **Open:** The loader that reads the files and builds their search index; most header words; why the row-name lookups exist in the retail build.
 
@@ -112,6 +112,30 @@ all built from a few templates, and Paleblood's replacements share one implement
     - ReturnPointParam lists the return points: the lamps players warp between and revive at. It
       is searched row by row, in file order: the warp-menu slot of a lamp, the lamp in a warp-menu
       slot, or every lamp with a warp-menu slot in one map area and block.
+- **Walking a table** ([#730](https://github.com/Yharnam-Hunters/Paleblood/pull/730)). The equipment and item tables (weapons, attire, badges, items)
+  have a row count, the id after or before a given id (rows are sorted by id, so this steps through
+  the table; a negative id starts at the first or last row) and a list of every row id. The badge
+  list leaves out rows with a negative value in one field, whose meaning is unknown.
+- **Filtered walks** ([#823](https://github.com/Yharnam-Hunters/Paleblood/pull/823)). The attire table can be stepped through among rows with a given
+  byte at `+0xd2` only, and the weapon and attire "version" lists add, after each row's id, one id
+  per upgrade level the row lists. Weapons can also be stepped through until one with a given
+  property bit, and three set checks (goods, attire, weapons) build a small cache of set numbers on
+  their first call.
+- **Pairs of tables** ([#733](https://github.com/Yharnam-Hunters/Paleblood/pull/733)). The attack lookup picks AtkParam_Npc or AtkParam_Pc, and the
+  behavior lookup BehaviorParam or BehaviorParam_PC, by a 0/1 argument.
+- **Searches by content** ([#733](https://github.com/Yharnam-Hunters/Paleblood/pull/733)). The gem effect for a group at a level (the highest rank up
+  to the level among rows whose level range holds it), GemGenParam row numbers by id range, and
+  GemCategoryParam rows by one of two fields. After loading, the chalice weapon and attire
+  generation tables are fixed up in place: an entry index above 63 is marked as none.
+- **Special cases** ([#823](https://github.com/Yharnam-Hunters/Paleblood/pull/823)). GameAreaParam ids 2900100 to 2900799 all read row 2900100.
+  ItemLotParam_Lvdep picks, in an id's group of 100, the last consecutive row within the group's
+  first id plus a level. The lock-on camera's largest distance (LockCamParam `+0x10`) falls back to
+  row 0, then to a value the camera object keeps.
+- **Character creation's face** ([#724](https://github.com/Yharnam-Hunters/Paleblood/pull/724)). The FaceGenParam row the creation screen builds (50
+  geometry and 50 texture sliders, eight parts each with a colour, decal placement) and the FaceParam
+  presets (body proportions, age, gender, caricature, asymmetry) are edited in place by setters. The
+  originals never handle a missing row (they search forever or write through a null row); the
+  replacements stop by name there.
 
 <details>
 <summary>How the lookups were verified</summary>
@@ -119,8 +143,9 @@ all built from a few templates, and Paleblood's replacements share one implement
 Each replacement is readable C++ in `game/param/` and passes `verify.py` against the original
 on invented tables built by the fixtures beside it (synthetic cases, never game files). They
 are recorded as edge-verified in [#687](https://github.com/Yharnam-Hunters/Paleblood/pull/687),
-[#697](https://github.com/Yharnam-Hunters/Paleblood/pull/697) and
-[#714](https://github.com/Yharnam-Hunters/Paleblood/pull/714). None has been checked on frames
+[#697](https://github.com/Yharnam-Hunters/Paleblood/pull/697),
+[#714](https://github.com/Yharnam-Hunters/Paleblood/pull/714), [#724](https://github.com/Yharnam-Hunters/Paleblood/pull/724), [#730](https://github.com/Yharnam-Hunters/Paleblood/pull/730),
+[#733](https://github.com/Yharnam-Hunters/Paleblood/pull/733) and [#823](https://github.com/Yharnam-Hunters/Paleblood/pull/823). None has been checked on frames
 recorded from a real game run, so none is `verified`. The row-name lookups did not run in the
 coverage boots #714 describes.
 
@@ -131,13 +156,19 @@ coverage boots #714 describes.
 | Address | Size | Name | Status | Notes |
 |---|---:|---|---|---|
 | `0x018e4110` | 432 | `param_apply_char_make_face` | edge-verified | Character creation: writes the face being built (sliders; parts/colors/decal for a version 4 table) into a FaceGenParam row |
+| `0x01c92e90` | 372 | `param_lock_cam_range` | edge-verified | SoloParamRepository LockCamParam (type 33) float at row+0x10 for an id (searched unsigned), else row 0's, else the float at owner+0x2924 |
 | `0x01f82cc0` | 457 | `param_find_rows_new_menu_color_table` | edge-verified | NewMenuColorTableParam run of consecutive ids from an id: first row (a built-in default row when none) and count |
 | `0x01f83130` | 457 | `param_find_rows_char_make_menu_list_item` | edge-verified | Character creation menu list items: first CharMakeMenuListItemParam row of an id and the count of rows with consecutive ids after it |
 | `0x0204a2c0` | 155 | `param_table_view` | edge-verified | SoloParamRepository fills a table view object (vtable 0x05749140 and the table of a type or null); returns it |
+| `0x020648f0` | 272 | `param_menu_property_layout_row` | edge-verified | SoloParamRepository MenuPropertyLayoutParam (type 60) row of an id (searched unsigned) or null |
 | `0x0206ddd0` | 547 | `param_find_rows_menu_value_table` | edge-verified | MenuValueTableParam run of consecutive ids from an id: first row and count; fetches the table again for every id |
 | `0x0206ecc0` | 313 | `param_menu_property_spec` | edge-verified | MenuPropertySpecParam row of an id; else the built-in row (13 at 0x05528730) with that id; else the first built-in row |
 | `0x02311c80` | 283 | `param_find_row_equip_param_accessory` | edge-verified | SoloParamRepository row lookup for EquipParamAccessory (type 2): binary search of the loader index by id; writes id and row data pointer (null if none) |
 | `0x02311da0` | 284 | `param_row_name_equip_param_accessory` | edge-verified | SoloParamRepository row name lookup for EquipParamAccessory (type 2): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed |
+| `0x02312070` | 309 | `param_next_row_id_equip_param_accessory` | edge-verified | SoloParamRepository id of the row after id in EquipParamAccessory (type 2) file order; negative id: first row; -1 when none |
+| `0x023121b0` | 341 | `param_previous_row_id_equip_param_accessory` | edge-verified | SoloParamRepository id of the row before id in EquipParamAccessory (type 2) file order; negative id: last row; -1 when none |
+| `0x02312370` | 402 | `param_list_listed_ids_equip_param_accessory` | edge-verified | SoloParamRepository as list_row_ids_equip_param_accessory but skips rows whose int16 at +0x26 is negative |
+| `0x02312520` | 390 | `param_list_row_ids_equip_param_accessory` | edge-verified | SoloParamRepository empties an id array and appends every EquipParamAccessory (type 2) row id in file order; returns the count |
 | `0x023128a0` | 284 | `param_find_row_action_button` | edge-verified | SoloParamRepository row lookup for ActionButtonParam (type 39): binary search of the loader index by id; writes id and row data pointer (null if none) |
 | `0x02312b60` | 283 | `param_find_row_ai_sound` | edge-verified | SoloParamRepository row lookup for AiSoundParam (type 48): binary search of the loader index by id; writes id and row data pointer (null if none) |
 | `0x02312fd0` | 310 | `param_find_row_atk_param` | edge-verified | SoloParamRepository AtkParam row lookup (user 0: AtkParam_Npc type 7; 1: AtkParam_Pc type 8; args out/user/id); stores the user beside the result |
@@ -146,6 +177,7 @@ coverage boots #714 describes.
 | `0x02314b60` | 283 | `param_find_row_calc_correct_graph` | edge-verified | SoloParamRepository row lookup for CalcCorrectGraph (type 32): binary search of the loader index by id; writes id and row data pointer (null if none) |
 | `0x02314e20` | 283 | `param_find_row_chara_init` | edge-verified | SoloParamRepository row lookup for CharaInitParam (type 21): binary search of the loader index by id; writes id and row data pointer (null if none) |
 | `0x02314f40` | 278 | `param_row_at_chara_init` | edge-verified | SoloParamRepository row-at accessor for CharaInitParam (type 21): id and data of row number n (id -1; null past the count or when not loaded) |
+| `0x02315060` | 96 | `param_row_count_chara_init` | edge-verified | SoloParamRepository row count of CharaInitParam (type 21); 0 when not loaded |
 | `0x023150d0` | 284 | `param_row_name_chara_init` | edge-verified | SoloParamRepository row name lookup for CharaInitParam (type 21): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed |
 | `0x023155c0` | 283 | `param_find_row_decal` | edge-verified | SoloParamRepository row lookup for DecalParam (type 38): binary search of the loader index by id; writes id and row data pointer (null if none) |
 | `0x023167f0` | 288 | `param_find_row_dungeon_feature` | edge-verified | DungeonFeatureParam row lookup (type 53): as the other row lookups; each search also stores the header word 0x06 at 0x05992cb0 |
@@ -176,7 +208,9 @@ coverage boots #714 describes.
 | `0x0231a9e0` | 261 | `param_face_set_geometry` | edge-verified | Sets FaceParam faceGeoData[index] (index <= 60) |
 | `0x0231aaf0` | 261 | `param_face_set_texture` | edge-verified | Sets FaceParam faceTexData[index] (index <= 35) |
 | `0x0231ac00` | 280 | `param_face_set_asymmetry` | edge-verified | Sets FaceParam faceGeoAsymData[index] (index <= 25) when the table is version 4 |
+| `0x0231ad20` | 53 | `param_check_repository_for_id` | edge-verified | SoloParamRepository an accessor reduced to its singleton check: reports a missing repository for id >= 0 |
 | `0x0231af40` | 283 | `param_find_row_face_range` | edge-verified | SoloParamRepository row lookup for FaceRangeParam (type 25): binary search of the loader index by id; writes id and row data pointer (null if none) |
+| `0x0231b4c0` | 414 | `param_find_row_game_area` | edge-verified | SoloParamRepository GameAreaParam (type 30) row lookup; ids 2900100-2900799 all read row 2900100 |
 | `0x0231be50` | 443 | `param_find_row_game_map` | edge-verified | GameMapParam row of a packed map id mAA_BB_CC_DD (row id AABBCCDD); falls back to row 0; id -1 for no map |
 | `0x0231c1e0` | 283 | `param_find_row_gem_category` | edge-verified | SoloParamRepository row lookup for GemCategoryParam (type 44): binary search of the loader index by id; writes id and row data pointer (null if none) |
 | `0x0231c380` | 366 | `param_list_gem_category_by_selector_0c` | edge-verified | SoloParamRepository appends the GemCategoryParam (type 44) row lookup of every row whose int32 at +0x0c matches |
@@ -195,16 +229,26 @@ coverage boots #714 describes.
 | `0x0231df60` | 284 | `param_row_name_gem_gen_2` | edge-verified | SoloParamRepository row name lookup for GemGenParam (type 42): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed |
 | `0x0231e3d0` | 283 | `param_find_row_equip_param_goods` | edge-verified | SoloParamRepository row lookup for EquipParamGoods (type 3): binary search of the loader index by id; writes id and row data pointer (null if none) |
 | `0x0231e4f0` | 278 | `param_row_at_equip_param_goods` | edge-verified | SoloParamRepository row-at accessor for EquipParamGoods (type 3): id and data of row number n (id -1; null past the count or when not loaded) |
+| `0x0231e610` | 96 | `param_row_count_equip_param_goods` | edge-verified | SoloParamRepository row count of EquipParamGoods (type 3); 0 when not loaded |
 | `0x0231e680` | 284 | `param_row_name_equip_param_goods` | edge-verified | SoloParamRepository row name lookup for EquipParamGoods (type 3): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed |
+| `0x0231ebb0` | 309 | `param_next_row_id_equip_param_goods` | edge-verified | SoloParamRepository id of the row after id in EquipParamGoods (type 3) file order; negative id: first row; -1 when none |
+| `0x0231ecf0` | 341 | `param_previous_row_id_equip_param_goods` | edge-verified | SoloParamRepository id of the row before id in EquipParamGoods (type 3) file order; negative id: last row; -1 when none |
+| `0x0231eec0` | 518 | `param_check_set_equip_param_goods` | edge-verified | EquipParamGoods set check: cache (70 ids/sets of +0x32 built once) marks the looked-up id in a bit set; returns its set when all other members are marked else -1 |
+| `0x0231f0e0` | 390 | `param_list_row_ids_equip_param_goods` | edge-verified | SoloParamRepository empties an id array and appends every EquipParamGoods (type 3) row id in file order; returns the count |
 | `0x0231f460` | 283 | `param_find_row_hit_mtrl` | edge-verified | SoloParamRepository row lookup for HitMtrlParam (type 35): binary search of the loader index by id; writes id and row data pointer (null if none) |
 | `0x0231f720` | 283 | `param_find_row_holygrail_ex` | edge-verified | SoloParamRepository row lookup for HolygrailExParam (type 52): binary search of the loader index by id; writes id and row data pointer (null if none) |
 | `0x0231f840` | 284 | `param_row_name_holygrail_ex` | edge-verified | SoloParamRepository row name lookup for HolygrailExParam (type 52): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed |
+| `0x0231ff00` | 96 | `param_row_count_holygrail_ex` | edge-verified | SoloParamRepository row count of HolygrailExParam (type 52); 0 when not loaded |
 | `0x0231ff70` | 168 | `param_holygrail_ex_row_number` | edge-verified | SoloParamRepository HolygrailExParam (type 52): index row number of a lookup id; -1 when none |
 | `0x02320020` | 212 | `param_find_row_number_holygrail_ex` | edge-verified | SoloParamRepository HolygrailExParam (type 52): row number n looked up again by its id |
+| `0x023202a0` | 442 | `param_find_row_item_lot_lvdep` | edge-verified | SoloParamRepository ItemLotParam_Lvdep (type 51): from the id's group (id/100*100) the last consecutive row with id <= group + level |
 | `0x02320640` | 285 | `param_find_row_item_lot` | edge-verified | ItemLotParam row lookup (type 19): as the other row lookups; but only for tables of data version 2 or later |
 | `0x02320dd0` | 283 | `param_find_row_knock_back` | edge-verified | SoloParamRepository row lookup for KnockBackParam (type 36): binary search of the loader index by id; writes id and row data pointer (null if none) |
 | `0x023210e0` | 283 | `param_find_row_magic` | edge-verified | SoloParamRepository row lookup for Magic (type 14): binary search of the loader index by id; writes id and row data pointer (null if none) |
 | `0x02321200` | 278 | `param_row_at_magic` | edge-verified | SoloParamRepository row-at accessor for Magic (type 14): id and data of row number n (id -1; null past the count or when not loaded) |
+| `0x02321320` | 96 | `param_row_count_magic` | edge-verified | SoloParamRepository row count of Magic (type 14); 0 when not loaded |
+| `0x02321680` | 302 | `param_next_row_id_magic` | edge-verified | SoloParamRepository id of the row after id in Magic (type 14) file order; negative id: first row; -1 when none |
+| `0x023217c0` | 341 | `param_previous_row_id_magic` | edge-verified | SoloParamRepository id of the row before id in Magic (type 14) file order; negative id: last row; -1 when none |
 | `0x02321ac0` | 283 | `param_find_row_menu_color_table` | edge-verified | SoloParamRepository row lookup for MenuColorTableParam (type 18): binary search of the loader index by id; writes id and row data pointer (null if none) |
 | `0x02321be0` | 278 | `param_row_at_menu_color_table` | edge-verified | SoloParamRepository row-at accessor for MenuColorTableParam (type 18): id and data of row number n (id -1; null past the count or when not loaded) |
 | `0x02321ea0` | 283 | `param_find_row_move` | edge-verified | SoloParamRepository row lookup for MoveParam (type 20): binary search of the loader index by id; writes id and row data pointer (null if none) |
@@ -215,6 +259,14 @@ coverage boots #714 describes.
 | `0x023235b0` | 231 | `param_clamp_protector_gen_indexes` | edge-verified | SoloParamRepository ProtectorGenParam (type 41) after loading: marks entry indexes above 63 as none (0x80000000) in place |
 | `0x02323840` | 394 | `param_find_row_equip_param_protector` | edge-verified | EquipParamProtector lookup: row of the id rounded down to 100; then ReinforceParamProtector row for id%100 + reinforce type (s16 at +0xc8) |
 | `0x023239d0` | 284 | `param_row_name_equip_param_protector` | edge-verified | SoloParamRepository row name lookup for EquipParamProtector (type 1): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed |
+| `0x02324fa0` | 309 | `param_next_row_id_equip_param_protector` | edge-verified | SoloParamRepository id of the row after id in EquipParamProtector (type 1) file order; negative id: first row; -1 when none |
+| `0x023250e0` | 341 | `param_previous_row_id_equip_param_protector` | edge-verified | SoloParamRepository id of the row before id in EquipParamProtector (type 1) file order; negative id: last row; -1 when none |
+| `0x02325240` | 366 | `param_next_matching_id_equip_param_protector` | edge-verified | SoloParamRepository next EquipParamProtector (type 1) row after id whose byte +0xd2 equals value; missing or negative id scans from row 0 |
+| `0x023253c0` | 354 | `param_previous_matching_id_equip_param_protector` | edge-verified | SoloParamRepository previous EquipParamProtector row before id whose byte +0xd2 equals value; negative id: from the last row |
+| `0x023255c0` | 80 | `param_clear_id_list_equip_param_protector` | edge-verified | SoloParamRepository id list with its walk compiled away: empties the array, requires the repository, returns the count |
+| `0x02325620` | 477 | `param_list_versions_equip_param_protector` | edge-verified | SoloParamRepository every EquipParamProtector id plus one id per leading non-negative reinforcement entry at +0x40 (up to 15); returns the count |
+| `0x02325820` | 390 | `param_list_row_ids_equip_param_protector` | edge-verified | SoloParamRepository empties an id array and appends every EquipParamProtector (type 1) row id in file order; returns the count |
+| `0x023259c0` | 518 | `param_check_set_equip_param_protector` | edge-verified | EquipParamProtector set check: cache of 50 (set +0xd8) built once; marks the lookup base id; set read at the row +0xca; set when all other members marked else -1 |
 | `0x02326200` | 283 | `param_find_row_reinforce_param_protector` | edge-verified | SoloParamRepository row lookup for ReinforceParamProtector (type 5): binary search of the loader index by id; writes id and row data pointer (null if none) |
 | `0x023264c0` | 283 | `param_find_row_ragdoll` | edge-verified | SoloParamRepository row lookup for RagdollParam (type 26): binary search of the loader index by id; writes id and row data pointer (null if none) |
 | `0x02326780` | 311 | `param_find_row_resident_fx` | edge-verified | SoloParamRepository ResidentFxParam (type 47) row lookup that also returns the index row number and the table |
@@ -233,6 +285,12 @@ coverage boots #714 describes.
 | `0x02329810` | 231 | `param_clamp_weapon_gen_indexes` | edge-verified | SoloParamRepository WeaponGenParam (type 40) after loading: marks entry indexes above 63 as none (0x80000000) in place |
 | `0x02329aa0` | 378 | `param_find_row_equip_param_weapon` | edge-verified | EquipParamWeapon lookup: row of the id rounded down to 100; then ReinforceParamWeapon row for id%100 + reinforce type (s16 at +0xd6) |
 | `0x02329c20` | 268 | `param_row_name_equip_param_weapon` | edge-verified | SoloParamRepository row name lookup for EquipParamWeapon (type 0): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed |
+| `0x0232b6d0` | 619 | `param_next_weapon_id_with_flag` | edge-verified | SoloParamRepository EquipParamWeapon step: from the id move step rows on until the weapon lookup row has flag bit mode (+0x100); other modes stop at once; negative id -> first row |
+| `0x0232b950` | 679 | `param_previous_weapon_id_with_flag` | edge-verified | SoloParamRepository EquipParamWeapon step back: from the id move step rows back until the weapon lookup row has flag bit mode (+0x100); other modes stop at once; negative id -> last row |
+| `0x0232bc80` | 80 | `param_clear_id_list_equip_param_weapon` | edge-verified | SoloParamRepository id list with its walk compiled away: empties the array, requires the repository, returns the count |
+| `0x0232bce0` | 599 | `param_check_set_equip_param_weapon` | edge-verified | EquipParamWeapon set check: cache of 50 ids that are multiples of 100000 (set +0xd8) built once; base id rounded to 100000; set when all other members marked else -1 |
+| `0x0232bf50` | 411 | `param_list_row_ids_equip_param_weapon` | edge-verified | SoloParamRepository every EquipParamWeapon (type 0) row id; with the flag, rows whose int at +0x4 is -1 are skipped |
+| `0x0232c110` | 481 | `param_list_versions_equip_param_weapon` | edge-verified | SoloParamRepository EquipParamWeapon rows whose byte +0xe2 equals value: id plus one per leading non-negative entry at +0x60 (up to 15) |
 | `0x0232c930` | 283 | `param_find_row_reinforce_param_weapon` | edge-verified | SoloParamRepository row lookup for ReinforceParamWeapon (type 4): binary search of the loader index by id; writes id and row data pointer (null if none) |
 
 ## Structs and globals

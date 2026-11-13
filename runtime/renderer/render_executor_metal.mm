@@ -102,8 +102,9 @@ struct MetalState {
     uint32_t compute_user_set = 0;
     uint32_t user[2][GCN_USER_SGPR_MAX] = {};
     uint32_t user_set[2] = {};
-    uint32_t blend = 0, depth = 0, color_control = 0, target_mask = 0, primitive = 0, instances = 1;
-    bool blend_set = false, depth_set = false, color_control_set = false, target_mask_set = false, primitive_set = false;
+    uint32_t blend_control[RT_COLOR_TARGETS] = {}, blend_set = 0; /* CB_BLENDn_CONTROL and written bits */
+    uint32_t depth = 0, color_control = 0, target_mask = 0, primitive = 0, instances = 1;
+    bool depth_set = false, color_control_set = false, target_mask_set = false, primitive_set = false;
     uint32_t scissor_tl = 0, scissor_br = 0;
     bool scissor_tl_set = false, scissor_br_set = false;
     /* PA_SC_VPORT_SCISSOR_0_TL/BR and PA_SC_MODE_CNTL_0 (VPORT_SCISSOR_ENABLE) */
@@ -157,7 +158,7 @@ static int failed(char *error, size_t size, const char *format, ...)
 }
 
 /* Validate the supported opaque-triangle profile using AMD GFX7 register fields. */
-enum { CB_TARGET_MASK = 0xa08e, DB_STENCIL_CONTROL = 0xa10b, CB_BLEND0_CONTROL = 0xa1e0,
+enum { CB_TARGET_MASK = 0xa08e, DB_STENCIL_CONTROL = 0xa10b, CB_BLEND0_CONTROL = 0xa1e0, CB_BLEND7_CONTROL = 0xa1e7,
        DB_DEPTH_CONTROL = 0xa200, CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242,
        PA_SC_SCREEN_SCISSOR_TL = 0xa00c, PA_SC_SCREEN_SCISSOR_BR = 0xa00d, SPI_PS_INPUT_CNTL_0 = 0xa191, PS_INPUTS = 32,
        PA_SC_VPORT_SCISSOR_0_TL = 0xa094, PA_SC_VPORT_SCISSOR_0_BR = 0xa095, PA_SC_VPORT_SCISSOR_LAST = 0xa0b3, PA_SC_MODE_CNTL_0 = 0xa292, PA_CL_CLIP_CNTL = 0xa204 };
@@ -171,7 +172,6 @@ enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 1, Z_ENABLE = 2, Z_WRITE_ENAB
 static int set_register(MetalState &state, uint32_t address, uint32_t value)
 {
     switch (address) {
-    case CB_BLEND0_CONTROL: state.blend = value; state.blend_set = true; return 0;
     case DB_DEPTH_CONTROL: state.depth = value; state.depth_set = true; return 0;
     case CB_COLOR_CONTROL: state.color_control = value; state.color_control_set = true; return 0;
     case CB_TARGET_MASK: state.target_mask = value; state.target_mask_set = true; return 0;
@@ -184,6 +184,10 @@ static int set_register(MetalState &state, uint32_t address, uint32_t value)
     case PA_SC_VPORT_SCISSOR_0_BR: state.viewport_scissor_br = value; state.viewport_scissor_set = true; return 0;
     case PA_SC_MODE_CNTL_0: state.mode_control = value; return 0;
     default:
+        if (address >= CB_BLEND0_CONTROL && address <= CB_BLEND7_CONTROL) {
+            const unsigned slot = address - CB_BLEND0_CONTROL;
+            state.blend_control[slot] = value; state.blend_set |= 1u << slot; return 0;
+        }
         /* the other viewports' scissors: a draw uses viewport 0 */
         if (address > PA_SC_VPORT_SCISSOR_0_BR && address <= PA_SC_VPORT_SCISSOR_LAST) return 0;
         /* SPI_PS_INPUT_CNTL_n: only attribute n reading vertex output n, interpolated, is in the profile */
@@ -201,7 +205,9 @@ static int check_state(const MetalState &state, char *error, size_t size)
         return failed(error, size, "a draw with rasterization killed (PA_CL_CLIP_CNTL %#x): not drawn yet", state.clip_control);
     if (state.primitive_set && state.primitive != DI_PT_TRILIST)
         return failed(error, size, "primitive type %u: only triangle lists are drawn yet", state.primitive);
-    if (state.blend_set && (state.blend & BLEND_ENABLE)) return failed(error, size, "blending is not drawn yet");
+    /* Only attachment 0 can be drawn; draw() refuses higher attachments. */
+    if ((state.blend_set & 1u) && (state.blend_control[0] & BLEND_ENABLE))
+        return failed(error, size, "blending is not drawn yet");
     if (state.depth_set && (state.depth & (STENCIL_ENABLE | Z_ENABLE | Z_WRITE_ENABLE)))
         return failed(error, size, "depth or stencil testing is not drawn yet");
     if (state.color_control_set) {
