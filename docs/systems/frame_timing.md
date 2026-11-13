@@ -238,6 +238,20 @@ every registered task (76 in Iosefka's Clinic), then fills a job with the record
 the group mask and runs it through the same five steps as the workers. Each of those tasks is a
 piece of the game's own per-frame work, the next layer to map.
 
+On 13 November contributor [@FFwLo](https://github.com/FFwLo) replaced the parts this path still
+called as originals, all edge-verified ([#814](https://github.com/Yharnam-Hunters/Paleblood/pull/814)). A worker holds a list of 16-byte slots, each a
+lane and the batch given to it, and a busy byte: `0x0143e030` puts a batch in a slot (refused while
+the worker is busy, for a null batch or an index past the slot count); `0x0143de20` marks the worker
+busy and starts every slot that holds a batch, a lane in mode 0 running on the calling thread and any
+other lane on its own thread; `0x0143deb0` runs the mode-0 lanes; `0x0143df10` waits until no lane is
+running, spinning on lanes that belong to other threads as the original does; and `0x0143ec40` frees
+a task's pending items under the task's lock. The per-frame task's own helpers followed
+([#793](https://github.com/Yharnam-Hunters/Paleblood/pull/793)): two profiling stopwatch brackets and the end-of-frame tick of ten profiling stopwatches,
+which do nothing unless the profiling switch byte is set, and the item list and listener list updates
+that pass the frame-time descriptor on. The seeding of a thread's random generator (`0x024f8110`)
+fills four 32-bit words from a 32-bit seed with a 64-bit linear congruential step
+([#790](https://github.com/Yharnam-Hunters/Paleblood/pull/790)); it uses the seed it is given and reads no entropy of its own.
+
 ## Key functions
 
 | Address | Size | Name | Status | Notes |

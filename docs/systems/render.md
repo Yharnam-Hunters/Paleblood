@@ -251,6 +251,19 @@ verified once recordings from the game exist.
 
 </details>
 
+### More GPU library replacements (13 November)
+
+Contributor [@FFwLo](https://github.com/FFwLo) replaced functions that earlier replacements still
+called as originals, all edge-verified: three shader packet writers, among them the pixel shader
+setter ([#769](https://github.com/Yharnam-Hunters/Paleblood/pull/769)); the two cache-coherence packets (`ACQUIRE_MEM`) that shader preparation emits
+([#770](https://github.com/Yharnam-Hunters/Paleblood/pull/770)); the two selector translations of the command record's normalization, which sort a
+selector code into one of three groups ([#779](https://github.com/Yharnam-Hunters/Paleblood/pull/779)); four small queries of the swap chain's resource
+info ([#784](https://github.com/Yharnam-Hunters/Paleblood/pull/784)); and the block manager of the shader upload arena, which tiles its memory with
+range records kept in address order with a free list ([#794](https://github.com/Yharnam-Hunters/Paleblood/pull/794)). The fractal noise that the
+[model wind](#wind-on-models) samples for its gusts and its jittered direction (`0x02a85e30`) is
+replaced too, with results compared bit for bit ([#792](https://github.com/Yharnam-Hunters/Paleblood/pull/792)); the base noise under it stays
+original.
+
 ### How the renderer learns what the game draws
 
 Paleblood does not replay the finished GPU commands. Instead, the GPU library's replacements, with
@@ -288,6 +301,18 @@ on your GPU (see Runtime: the renderer):
   vertex, start instance) at the indirect base plus the offset. Its caller at `0x02569a89` passes
   no SGPRs. A related dispatch writer with a third argument (`0x01474e80`) is not
   observed yet.
+- **Iosefka's Clinic** [#761](https://github.com/Yharnam-Hunters/Paleblood/pull/761), [#802](https://github.com/Yharnam-Hunters/Paleblood/pull/802), [#807](https://github.com/Yharnam-Hunters/Paleblood/pull/807): three more library functions are observed
+  at their entry. The addressed indexed-draw writer (`0x01474360`: command buffer, count, index
+  address) writes `DRAW_INDEX_2`; the YEBIS post-processing chain draws with it, so until it was
+  observed nothing read the clinic's HDR scene target and the scene behind the HUD was flat grey.
+  The clip-control setter (`0x01476b30`) writes `PA_CL_CLIP_CNTL`, which says among other things
+  whether depth clipping is on. The viewport-scissor setter (`0x014766d0`: command buffer,
+  viewport, left, top, right, bottom, and a seventh argument on the stack, the window-offset mode)
+  writes `PA_SC_VPORT_SCISSOR_n_TL` and `_BR`. The game draws each deferred light as a full-screen
+  quad once per 128x128 screen tile, with the tile as the viewport scissor (about 340 light draws
+  a frame); without the scissor every tile's draw lit the whole screen, and the clinic was about
+  eight times too bright. The `PA_SC_MODE_CNTL_0` replacement now reports its value too, which turns
+  the viewport scissor on (its packet is unchanged; recorded 98/98 and edge 15/15 again).
 
 This needs the game library built from the decompilation (`tools/boot.py --game-lib`). In the
 maintainer's local runs it was enough to draw the studio logos and the title screen [#441](https://github.com/Yharnam-Hunters/Paleblood/pull/441).

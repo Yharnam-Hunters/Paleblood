@@ -6,7 +6,7 @@ Most of Bloodborne's numbers are not in its code. Weapon damage and scaling, arm
 
 **At a glance**
 
-- **Scope:** Paleblood's `game/param/`: the solo parameter repository, the per-table row lookups, the equipment, menu, map and return-point lookups, row names and rows by position.
+- **Scope:** Paleblood's `game/param/`: the solo parameter repository, the per-table row lookups, the equipment, menu, map and return-point lookups, row names and rows by position, table walks, the attack and behavior pairs, gem searches and character creation's face tables.
 - **Verified:** Every replaced lookup is edge-verified against the original on invented tables. None is `verified` yet: none has been checked on frames recorded from a real game run.
 - **Open:** The loader that reads the files and builds their search index; most header words; why the row-name lookups exist in the retail build.
 
@@ -112,6 +112,30 @@ all built from a few templates, and Paleblood's replacements share one implement
     - ReturnPointParam lists the return points: the lamps players warp between and revive at. It
       is searched row by row, in file order: the warp-menu slot of a lamp, the lamp in a warp-menu
       slot, or every lamp with a warp-menu slot in one map area and block.
+- **Walking a table** ([#730](https://github.com/Yharnam-Hunters/Paleblood/pull/730)). The equipment and item tables (weapons, attire, badges, items)
+  have a row count, the id after or before a given id (rows are sorted by id, so this steps through
+  the table; a negative id starts at the first or last row) and a list of every row id. The badge
+  list leaves out rows with a negative value in one field, whose meaning is unknown.
+- **Filtered walks** ([#823](https://github.com/Yharnam-Hunters/Paleblood/pull/823)). The attire table can be stepped through among rows with a given
+  byte at `+0xd2` only, and the weapon and attire "version" lists add, after each row's id, one id
+  per upgrade level the row lists. Weapons can also be stepped through until one with a given
+  property bit, and three set checks (goods, attire, weapons) build a small cache of set numbers on
+  their first call.
+- **Pairs of tables** ([#733](https://github.com/Yharnam-Hunters/Paleblood/pull/733)). The attack lookup picks AtkParam_Npc or AtkParam_Pc, and the
+  behavior lookup BehaviorParam or BehaviorParam_PC, by a 0/1 argument.
+- **Searches by content** ([#733](https://github.com/Yharnam-Hunters/Paleblood/pull/733)). The gem effect for a group at a level (the highest rank up
+  to the level among rows whose level range holds it), GemGenParam row numbers by id range, and
+  GemCategoryParam rows by one of two fields. After loading, the chalice weapon and attire
+  generation tables are fixed up in place: an entry index above 63 is marked as none.
+- **Special cases** ([#823](https://github.com/Yharnam-Hunters/Paleblood/pull/823)). GameAreaParam ids 2900100 to 2900799 all read row 2900100.
+  ItemLotParam_Lvdep picks, in an id's group of 100, the last consecutive row within the group's
+  first id plus a level. The lock-on camera's largest distance (LockCamParam `+0x10`) falls back to
+  row 0, then to a value the camera object keeps.
+- **Character creation's face** ([#724](https://github.com/Yharnam-Hunters/Paleblood/pull/724)). The FaceGenParam row the creation screen builds (50
+  geometry and 50 texture sliders, eight parts each with a colour, decal placement) and the FaceParam
+  presets (body proportions, age, gender, caricature, asymmetry) are edited in place by setters. The
+  originals never handle a missing row (they search forever or write through a null row); the
+  replacements stop by name there.
 
 <details>
 <summary>How the lookups were verified</summary>
@@ -119,8 +143,9 @@ all built from a few templates, and Paleblood's replacements share one implement
 Each replacement is readable C++ in `game/param/` and passes `verify.py` against the original
 on invented tables built by the fixtures beside it (synthetic cases, never game files). They
 are recorded as edge-verified in [#687](https://github.com/Yharnam-Hunters/Paleblood/pull/687),
-[#697](https://github.com/Yharnam-Hunters/Paleblood/pull/697) and
-[#714](https://github.com/Yharnam-Hunters/Paleblood/pull/714). None has been checked on frames
+[#697](https://github.com/Yharnam-Hunters/Paleblood/pull/697),
+[#714](https://github.com/Yharnam-Hunters/Paleblood/pull/714), [#724](https://github.com/Yharnam-Hunters/Paleblood/pull/724), [#730](https://github.com/Yharnam-Hunters/Paleblood/pull/730),
+[#733](https://github.com/Yharnam-Hunters/Paleblood/pull/733) and [#823](https://github.com/Yharnam-Hunters/Paleblood/pull/823). None has been checked on frames
 recorded from a real game run, so none is `verified`. The row-name lookups did not run in the
 coverage boots #714 describes.
 

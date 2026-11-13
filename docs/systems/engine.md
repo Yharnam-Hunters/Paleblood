@@ -7,7 +7,7 @@ The engine's shared plumbing that every system leans on: its fatal error report,
 **At a glance**
 
 - **Scope:** Engine-wide helpers in Paleblood's `game/engine/`: the fatal error report and singleton check, reference counting, and replaced engine utility functions.
-- **Verified:** `engine_write_stderr`, the string helpers (comparisons, appends, case changes), wide-string set-up, owner storage, a word-and-product store and a handle-table lookup are edge-verified against constructed cases.
+- **Verified:** `engine_write_stderr`, the string helpers (comparisons, appends, case changes), wide-string set-up, owner storage, a word-and-product store and a handle-table lookup are edge-verified against constructed cases. Since 12 and 13 November most of the engine's memory system (its heaps and allocators), its threads and its kernel synchronization objects are replaced too; the function table below gives each one's status.
 - **Open:** Who calls the stderr writer during play, and with what text.
 
 ## Summary
@@ -106,6 +106,39 @@ lowercase ([#125](https://github.com/Yharnam-Hunters/Paleblood/pull/125), 291 ge
 cases pass against the original. None was checked on recorded game runs.
 
 </details>
+
+### Memory: the engine's heaps
+
+The engine (FromSoftware's Dantelion2 library) never asks the system for memory one object at a
+time. It carves a few large ranges into heaps, each with its own strategy, and every system
+allocates from one of them. On 12 and 13 November the heaps' allocation, free, set-up and
+diagnostic paths were replaced, function by function, each with its own edge-case generator that
+builds heaps of known shape:
+
+- **The robust heap** (`DLRobustHeap`): 31 small-size free lists plus a red-black tree of larger
+  free blocks. It allocates by best fit from the bottom or by the highest-addressed fit from the
+  top, aligned or not, and its free reports a double free or an address outside the heap through
+  the engine's error report, then frees the block anyway, as the game does
+  ([#667](https://github.com/Yharnam-Hunters/Paleblood/pull/667), [#670](https://github.com/Yharnam-Hunters/Paleblood/pull/670), [#708](https://github.com/Yharnam-Hunters/Paleblood/pull/708), [#721](https://github.com/Yharnam-Hunters/Paleblood/pull/721)).
+- **The regular heap** (`DLRegularHeap`): 64 size lists; its free was the most called heap function
+  in a coverage boot to character creation ([#675](https://github.com/Yharnam-Hunters/Paleblood/pull/675), [#708](https://github.com/Yharnam-Hunters/Paleblood/pull/708), [#721](https://github.com/Yharnam-Hunters/Paleblood/pull/721)). A locked variant
+  guards it with a mutex, and the heap manager keeps every heap's range in an array sorted by start
+  under a read-write lock ([#758](https://github.com/Yharnam-Hunters/Paleblood/pull/758), by [@FFwLo](https://github.com/FFwLo)).
+- **The segregated heaps** (`DLSegregatedBiHeap`, `DLSegregatedRegularHeap`): the block
+  descriptors live outside the memory they manage, handed out by a fixed-size allocator
+  (`DLFixedAllocator`); the bi-heap allocates from both ends and checks its own consistency before
+  reporting a bad free ([#677](https://github.com/Yharnam-Hunters/Paleblood/pull/677), [#680](https://github.com/Yharnam-Hunters/Paleblood/pull/680), [#690](https://github.com/Yharnam-Hunters/Paleblood/pull/690), [#717](https://github.com/Yharnam-Hunters/Paleblood/pull/717)).
+- **Small objects and per-thread memory**: the small object allocators and their fast variants,
+  the per-thread temporary heap (well over a hundred functions create it on entry) and the linear
+  heap, used from both ends ([#721](https://github.com/Yharnam-Hunters/Paleblood/pull/721), [#803](https://github.com/Yharnam-Hunters/Paleblood/pull/803)).
+- **The user interface's heap**: identified as Scaleform 4's page-table heap from its page
+  signature, with bins of free blocks and a two-bits-per-unit page bitset; its allocation,
+  aligned allocation, reallocation in place and free are replaced ([#699](https://github.com/Yharnam-Hunters/Paleblood/pull/699), [#732](https://github.com/Yharnam-Hunters/Paleblood/pull/732)).
+
+The same work replaced the engine's thread helpers, condition signals and semaphores
+([#803](https://github.com/Yharnam-Hunters/Paleblood/pull/803); the engine's mutex wrappers are on the [Kernel](kernel.md) page) and, by
+[@FFwLo](https://github.com/FFwLo), the wide string's assign from part of another string and its
+growth ([#737](https://github.com/Yharnam-Hunters/Paleblood/pull/737)).
 
 ### Vector and rotation math
 

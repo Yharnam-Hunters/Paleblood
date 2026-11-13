@@ -55,6 +55,16 @@ All of them turn any kernel error into `0x21` (a failed allocation gives `0x2b`)
 its constructed edge cases pass against the original on current `main`, and an independent review
 approved it.
 
+### The engine's light mutex
+
+`DLLightMutex` wraps one system mutex (at `+0x08`) with an "initialized" flag (at `+0x10`). Eight of
+its members (`0x0247ecb0`–`0x0247f070`: constructor, destructors, initialize, finalize, lock, try
+lock, unlock) were replaced by contributor [@FFwLo](https://github.com/FFwLo) and are edge-verified
+([#748](https://github.com/Yharnam-Hunters/Paleblood/pull/748)). Every member asks whether the mutex is initialized through the object's third virtual
+function (`0x0247ee80`), which is only four bytes long, too short to hook, so it stays original. A
+destructor leaves the flag set when the system says the mutex is busy (`EBUSY`), and reports any
+other failure through the engine's error report.
+
 ### How a condition wait works
 
 `kernel_condition_wait` (`0x02483e80`) waits on a condition variable. It has two paths:

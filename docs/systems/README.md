@@ -34,8 +34,11 @@ Counts are cumulative: verified functions are included in edge-verified and repl
 | Members of 19 function families | 18,019 (11.42%) | 62,426 (0.15%) |
 | Replaced, with family members | 18,574 (11.77%) | 280,583 (0.66%) |
 | Edge-verified, with family members | 18,574 (11.77%) | 280,583 (0.66%) |
+| Verified, with family members | 18,133 (11.49%) | 91,542 (0.22%) |
 
 Family members are tiny functions (one to a few bytes each) that share one replacement per family: they add far more to the function count than to the bytes.
+
+Matching tier: 118 functions compile byte for byte to the original from their own C (clang-3.4.2, every reference checked; `symbols/matching.csv`). Matching is optional evidence and is not a separate status.
 
 | System | Tracked | Replaced | Edge-verified (includes verified) | Verified | Replaced bytes |
 |---|---:|---:|---:|---:|---:|

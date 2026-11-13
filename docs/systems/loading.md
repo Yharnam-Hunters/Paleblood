@@ -7,7 +7,7 @@ How the game reads its files: the file interfaces the executable imports from th
 **At a glance**
 
 - **Scope:** File access, Fios file and directory handles, PlayGo chunks, and the archive and mount layers above them.
-- **Verified:** Seven functions directly above the file imports (kernel files, Fios handles, C streams) are replaced and edge-verified.
+- **Verified:** Seven functions directly above the file imports (kernel files, Fios handles, C streams) are replaced and edge-verified, and since 12 and 13 November the resource loader above them: mount names, the disk file device's open, load requests, the load event queues and transfer tasks (the function table below gives each one's status).
 - **Open:** Which calls run during a load, and in what order. The boot now reads files from your copy, its scratch folder and its saves, but the game's loading code itself is not mapped.
 
 ## Summary
@@ -85,6 +85,29 @@ community patch edits them. None has been recorded in a game run yet, so they ar
 edge-verified, not verified.
 
 </details>
+
+### The resource loader above the files
+
+Between the game's request for a resource and the file read sits Dantelion2's resource loader.
+Its first layers were replaced on 12 and 13 November, each with an edge-case generator; all of them
+are reached in coverage boots to character creation:
+
+- **Mount names.** A path the game opens starts with a mount name and a colon (`name:/...`). The
+  PS4 disk file device keeps two tables of (name, target) pairs and rewrites a path's prefix with
+  them in rounds, aliases first and then one root, until none matches; the wide path token scanner
+  they use was called about 11,000 times in one boot ([#685](https://github.com/Yharnam-Hunters/Paleblood/pull/685)). Its open then picks the device
+  registered under the path's mount name, or tries every unnamed device until one opens
+  ([#710](https://github.com/Yharnam-Hunters/Paleblood/pull/710)).
+- **Load requests and events.** The request's copy constructor and the load event queues: a
+  request asks the queue's resource manager for a handle, a load event array grows as a vector does,
+  and removing a resource's info cancels the first transfer task loading it, under the queue's
+  locks ([#685](https://github.com/Yharnam-Hunters/Paleblood/pull/685), [#710](https://github.com/Yharnam-Hunters/Paleblood/pull/710), [#718](https://github.com/Yharnam-Hunters/Paleblood/pull/718)).
+- **Transfer tasks.** The task that moves a file's bytes: its initialization asks the disk file
+  device where it finds the path, then the read, close, start and update steps run a small state
+  machine. Moving from a final state back to a working one is reported ("Tried to shift into lower
+  priority.") and done anyway, as the original does ([#799](https://github.com/Yharnam-Hunters/Paleblood/pull/799)).
+
+How these layers are driven during a real load, and in what order, is still being mapped.
 
 ## Key functions
 
