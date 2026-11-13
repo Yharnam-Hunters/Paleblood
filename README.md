@@ -10,7 +10,7 @@
 <p align="center">
   <img alt="Iosefka's Clinic in Bloodborne: the hooded hunter stands behind an operating table in a dark room lined with shelves of bottles and Gothic arches, a single wall lamp lighting a doorway on the right; the health bar, items and Blood Echoes counter are on screen. Drawn by Paleblood's own renderer on Linux" src="docs/assets/iosefkas-clinic.png" width="100%">
 </p>
-<p align="center"><sub>Iosefka's Clinic with correct lighting, drawn by Paleblood's own renderer on Linux from the maintainer's own copy of the game (a local test build that includes a lighting fix still in review, 13 November 2026), at full resolution. Bloodborne © Sony Interactive Entertainment / FromSoftware.</sub></p>
+<p align="center"><sub>Iosefka's Clinic with correct lighting, drawn by Paleblood's own renderer on Linux from the maintainer's own copy of the game (a local test build, 13 November 2026), at full resolution. Bloodborne © Sony Interactive Entertainment / FromSoftware.</sub></p>
 
 ## What this is
 
@@ -29,7 +29,7 @@ menus and character creation, and loads the first area, Iosefka's Clinic.
 [![code replaced](https://yharnam-hunters.github.io/Paleblood/badge-code.svg)](STATUS.md)
 [![replaced in 7 days](https://yharnam-hunters.github.io/Paleblood/badge-week.svg)](STATUS.md)
 
-[<img alt="Progress map of the game's code: green where a function is rewritten and verified, amber where rewritten, grey where not yet started" src="https://yharnam-hunters.github.io/Paleblood/progress.svg" width="100%">](STATUS.md)
+[<img alt="Progress map of the game's code: green where a function is rewritten and verified, amber where rewritten, grey where not yet started" src="https://yharnam-hunters.github.io/Paleblood/progress.svg" width="100%">](https://yharnam-hunters.github.io/Paleblood/progress.html)
 
 **Details:** [full numbers](STATUS.md) · [how it works and what works](docs/OVERVIEW.md) ·
 [the story so far](https://yharnam-hunters.github.io/byrgenwerth-site/runtime/) ·
