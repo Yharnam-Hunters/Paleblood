@@ -250,13 +250,13 @@ struct SlotItemList {
     Heap *heap;
 };
 static_assert(offsetof(SlotItemList, begin) == 0x8 && offsetof(SlotItemList, heap) == 0x20);
-// Appends a copy of an item (0x01e9d960, not replaced).
+// Appends a copy of an item (0x01e9d960, replaced in handle_pass_on.cpp).
 RT_ORIGINAL(0x01e9d960, append_slot_item, void(SlotItemList *list, const SlotItem *item));
-// Called with the handle's address and the list (0x01e9cd20, not replaced; not analyzed).
+// Called with the handle's address and the list (0x01e9cd20, replaced in handle_pass_on.cpp).
 RT_ORIGINAL(0x01e9cd20, pass_handle_on_with_items, void(engine::RefObject **handle, SlotItemList *list));
 
-// Called with the handle's address by the reset, which ignores its result; not replaced, and what
-// it does is not analyzed (the name only says how the reset uses it).
+// Called with the handle's address by the reset, which ignores its result (0x01e9cb80, replaced in
+// handle_pass_on.cpp).
 RT_ORIGINAL(0x01e9cb80, pass_handle_on, void(engine::RefObject **handle));
 
 // What the handle creation (0x01ea47a0) is given: an object with a word at +0x10 that it passes on
