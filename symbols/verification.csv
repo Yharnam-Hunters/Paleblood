@@ -529,6 +529,8 @@ render_emit_present_release_delegate,recorded,,95,95,0,0,44c6a754b371f521,2026-1
 render_emit_present_release_delegate,edge,,8,8,0,0,44c6a754b371f521,2026-11-12
 render_emit_present_release_packet,recorded,,99,99,0,0,49b21387b8cdc24b,2026-11-12
 render_emit_present_release_packet,edge,,14,14,0,0,49b21387b8cdc24b,2026-11-12
+render_emit_set_ps_shader_014753c0,recorded,,70,70,0,0,38220377991f253f,2026-11-13
+render_emit_set_vs_shader_01475480,recorded,,70,70,0,0,38220377991f253f,2026-11-13
 render_emit_shader_link_words,recorded,,158,158,0,0,f585add345845a60,2026-11-12
 render_emit_shader_link_words,edge,,23,23,0,0,f585add345845a60,2026-11-12
 render_finish_present_commands,recorded,,261,261,0,0,3adf6995cef8857d,2026-11-12
