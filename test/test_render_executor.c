@@ -1446,13 +1446,15 @@ static void many_targets(rt_executor *x)
    one of the target drawn into the round before) moves into its place. That target is drawn again then.
    Found where it moved, its pipeline is made once; lost there (the lookup not told of the move), it is
    made again in every round, and the stale bucket chains soon loop (the run never ends) or the 1024
-   pipelines kept run out. */
+   pipelines kept run out. The state many_targets left (its last draw blends ZERO + ONE, keeping what is
+   there) is reset first, so the target drawn last shows the triangle. */
 static void pipelines_after_freed_targets(rt_executor *x)
 {
     enum { REDRAW_BUFFER = 0xc0fd4000, REDRAW_FIRST = 0x3800000, KEPT = 514, ROUNDS = 1100, TARGET_BYTES = SIZE * SIZE * 4 };
     char error[200] = "";
     const uint64_t first = at(REDRAW_FIRST) + (uint64_t)(KEPT - 1) * TARGET_BYTES; /* many_targets' last target */
     memset((void *)(uintptr_t)(first + TARGET_BYTES), 0, (size_t)ROUNDS * TARGET_BYTES);
+    rt_executor_reset(x);
     int drawn = 1;
     for (unsigned k = 0; k < ROUNDS && drawn; k++) {
         const uint64_t targets[2] = {first + (uint64_t)(k + 1) * TARGET_BYTES, first + (uint64_t)k * TARGET_BYTES}; /* the new one, then the one before */
@@ -1465,6 +1467,7 @@ static void pipelines_after_freed_targets(rt_executor *x)
         }
     }
     CHECK(drawn);
+    check_triangle(x, first + (uint64_t)(ROUNDS - 1) * TARGET_BYTES); /* the target drawn last */
     CHECK(rt_executor_finish(x, error, sizeof error) == 0);
 }
 
