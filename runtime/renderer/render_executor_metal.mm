@@ -34,7 +34,8 @@
 enum { MAX_SHADERS = 256, MAX_PIPELINES = 256, MAX_TARGETS = 64, MAX_DIMENSION = 4096,
        MAX_IMAGES = 64, MAX_SAMPLERS = 64, USER_BYTES = GCN_USER_SGPR_MAX * 4, GCN_WAVE_LANES = 64, MAX_COMPUTE_GROUPS = 65535, THREAD_ID_XYZ = 2 };
 enum { COLOR_8_8_8_8 = 0xa, NUMBER_UNORM = 0, NUMBER_SRGB = 6, SWAP_STD = 0, SWAP_ALT = 1,
-       PERSP_CENTER_ENA = 2, VGT_INDEX_16 = 0, VGT_INDEX_32 = 1, DRAW_INITIATOR_DMA = 0, PM4_PREDICATE = 1 };
+       PERSP_CENTER_ENA = 2, VGT_INDEX_16 = 0, VGT_INDEX_32 = 1, DRAW_INITIATOR_DMA = 0, PM4_PREDICATE = 1,
+       DST_SEL_IDENTITY = 4 | 5 << 3 | 6 << 6 | 7 << 9 };
 enum { SPI_SHADER_FP16_ABGR = 4, SPI_SHADER_32_ABGR = 9, SPI_SHADER_4COMP = 4,
        CLIP_ENABLES = 0xff, CLIP_VECTOR_0 = 1 << 22, CLIP_VECTOR_1 = 1 << 23, PARAMETER_LIMIT = 32 };
 struct MetalPixelResources {
@@ -53,12 +54,24 @@ struct MetalSampler {
     std::array<uint32_t,4> words{};
     id<MTLSamplerState> state = nil;
 };
+/* Values baked into the vertex translation; draw instance count remains native dynamic state. */
+struct MetalVertexInstancing {
+    unsigned vgprs = 0;
+    uint32_t step_rates[2] = {};
+    unsigned step_rates_set = 0;
+    bool operator==(const MetalVertexInstancing &other) const
+    {
+        return vgprs == other.vgprs && step_rates[0] == other.step_rates[0] &&
+            step_rates[1] == other.step_rates[1] && step_rates_set == other.step_rates_set;
+    }
+};
 struct MetalShader {
     uint64_t code, callee;
     unsigned user, output;
     unsigned required_parameters;
     uint32_t user_read;
     bool vertex, flip_y;
+    MetalVertexInstancing instancing;
     std::vector<uint32_t> program, fetch;
     std::vector<gcn_image_binding> images;
     std::vector<gcn_resource_origin> samplers;
@@ -101,14 +114,27 @@ struct MetalState {
     uint32_t compute_user_set = 0;
     uint32_t user[2][GCN_USER_SGPR_MAX] = {};
     uint32_t user_set[2] = {};
-    uint32_t blend = 0, depth = 0, color_control = 0, target_mask = 0, primitive = 0, instances = 1;
-    bool blend_set = false, depth_set = false, color_control_set = false, target_mask_set = false, primitive_set = false;
+    uint32_t step_rates[2] = {}, step_rates_set = 0;
+    uint32_t blend_control[RT_COLOR_TARGETS] = {}, blend_set = 0; /* CB_BLENDn_CONTROL and written bits */
+    uint32_t depth = 0, color_control = 0, target_mask = 0, primitive = 0, instances = 1;
+    bool depth_set = false, color_control_set = false, target_mask_set = false, primitive_set = false;
     uint32_t scissor_tl = 0, scissor_br = 0;
     bool scissor_tl_set = false, scissor_br_set = false;
+    /* PA_SC_VPORT_SCISSOR_0_TL/BR and PA_SC_MODE_CNTL_0 (VPORT_SCISSOR_ENABLE) */
+    uint32_t viewport_scissor_tl = 0, viewport_scissor_br = 0, mode_control = 0;
+    bool viewport_scissor_set = false;
+    uint32_t clip_control = 0; /* PA_CL_CLIP_CNTL; 0 until set: every plane clips */
     uint32_t index_type = 0, index_size = 0;
     uint64_t index_base = 0;
     bool index_type_set = false, index_base_set = false, index_size_set = false;
     bool index_base_current = false;
+};
+/* What each queue of the GPU keeps of its own (rt_executor_select_queue): the compute shader and its user data. */
+struct MetalQueueState {
+    rt_compute_shader compute{};
+    bool compute_set = false;
+    uint32_t compute_user[GCN_USER_SGPR_MAX] = {};
+    uint32_t compute_user_set = 0;
 };
 struct rt_executor {
     id<MTLDevice> device = nil;
@@ -119,6 +145,9 @@ struct rt_executor {
     uint64_t size = 0, guest_base = 0, address_offset = 0;
     bool failed = false;
     MetalState state;
+    /* the compute state of the queues other than the one the calls come from: the running queue's is in state */
+    MetalQueueState queue_states[RT_EXECUTOR_QUEUES];
+    unsigned call_queue = RT_EXECUTOR_GRAPHICS_QUEUE;
     std::vector<MetalShader> shaders;
     std::vector<MetalComputePipeline> compute_pipelines;
     std::vector<MetalTarget> targets;
@@ -142,24 +171,43 @@ static int failed(char *error, size_t size, const char *format, ...)
 }
 
 /* Validate the supported opaque-triangle profile using AMD GFX7 register fields. */
-enum { CB_TARGET_MASK = 0xa08e, DB_STENCIL_CONTROL = 0xa10b, CB_BLEND0_CONTROL = 0xa1e0,
+enum { CB_TARGET_MASK = 0xa08e, DB_STENCIL_CONTROL = 0xa10b, CB_BLEND0_CONTROL = 0xa1e0, CB_BLEND7_CONTROL = 0xa1e7,
        DB_DEPTH_CONTROL = 0xa200, CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242,
-       PA_SC_SCREEN_SCISSOR_TL = 0xa00c, PA_SC_SCREEN_SCISSOR_BR = 0xa00d, SPI_PS_INPUT_CNTL_0 = 0xa191, PS_INPUTS = 32 };
+       VGT_INSTANCE_STEP_RATE_0 = 0xa2a8, VGT_INSTANCE_STEP_RATE_1 = 0xa2a9,
+       PA_SC_SCREEN_SCISSOR_TL = 0xa00c, PA_SC_SCREEN_SCISSOR_BR = 0xa00d, SPI_PS_INPUT_CNTL_0 = 0xa191, PS_INPUTS = 32,
+       PA_SC_VPORT_SCISSOR_0_TL = 0xa094, PA_SC_VPORT_SCISSOR_0_BR = 0xa095, PA_SC_VPORT_SCISSOR_LAST = 0xa0b3, PA_SC_MODE_CNTL_0 = 0xa292, PA_CL_CLIP_CNTL = 0xa204 };
+/* PA_CL_CLIP_CNTL (gfx_7_2_sh_mask.h): CLIP_DISABLE, DX_RASTERIZATION_KILL, ZCLIP_NEAR_DISABLE, ZCLIP_FAR_DISABLE. Where z
+   is not clipped the depth is clamped to the viewport's range: Metal's MTLDepthClipModeClamp, as the Vulkan executor's
+   depth clamp (render_executor.c). */
+enum { CLIP_DISABLE = 1u << 16, DX_RASTERIZATION_KILL = 1u << 22, ZCLIP_NEAR_DISABLE = 1u << 26, ZCLIP_FAR_DISABLE = 1u << 27 };
 enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 1, Z_ENABLE = 2, Z_WRITE_ENABLE = 4,
        COLOR_MODE_MASK = 0x70, COLOR_MODE_SHIFT = 4, CB_NORMAL = 1, ROP3_MASK = 0xff0000,
-       ROP3_SHIFT = 16, ROP3_COPY = 0xcc, TARGET0_MASK = 15, DI_PT_TRILIST = 4, DI_PT_RECTLIST = 17 };
+       ROP3_SHIFT = 16, ROP3_COPY = 0xcc, TARGET0_MASK = 15, DI_PT_TRILIST = 4, DI_PT_TRISTRIP = 6, DI_PT_RECTLIST = 17 };
 static int set_register(MetalState &state, uint32_t address, uint32_t value)
 {
     switch (address) {
-    case CB_BLEND0_CONTROL: state.blend = value; state.blend_set = true; return 0;
     case DB_DEPTH_CONTROL: state.depth = value; state.depth_set = true; return 0;
     case CB_COLOR_CONTROL: state.color_control = value; state.color_control_set = true; return 0;
     case CB_TARGET_MASK: state.target_mask = value; state.target_mask_set = true; return 0;
     case VGT_PRIMITIVE_TYPE: state.primitive = value; state.primitive_set = true; return 0;
+    case VGT_INSTANCE_STEP_RATE_0: case VGT_INSTANCE_STEP_RATE_1: {
+        const unsigned slot = address - VGT_INSTANCE_STEP_RATE_0;
+        state.step_rates[slot] = value; state.step_rates_set |= 1u << slot; return 0;
+    }
     case PA_SC_SCREEN_SCISSOR_TL: state.scissor_tl = value; state.scissor_tl_set = true; return 0;
     case PA_SC_SCREEN_SCISSOR_BR: state.scissor_br = value; state.scissor_br_set = true; return 0;
+    case PA_CL_CLIP_CNTL: state.clip_control = value; return 0;
     case DB_STENCIL_CONTROL: return 0; /* Stencil testing itself is rejected before drawing. */
+    case PA_SC_VPORT_SCISSOR_0_TL: state.viewport_scissor_tl = value; state.viewport_scissor_set = true; return 0;
+    case PA_SC_VPORT_SCISSOR_0_BR: state.viewport_scissor_br = value; state.viewport_scissor_set = true; return 0;
+    case PA_SC_MODE_CNTL_0: state.mode_control = value; return 0;
     default:
+        if (address >= CB_BLEND0_CONTROL && address <= CB_BLEND7_CONTROL) {
+            const unsigned slot = address - CB_BLEND0_CONTROL;
+            state.blend_control[slot] = value; state.blend_set |= 1u << slot; return 0;
+        }
+        /* the other viewports' scissors: a draw uses viewport 0 */
+        if (address > PA_SC_VPORT_SCISSOR_0_BR && address <= PA_SC_VPORT_SCISSOR_LAST) return 0;
         /* SPI_PS_INPUT_CNTL_n: only attribute n reading vertex output n, interpolated, is in the profile */
         if (address >= SPI_PS_INPUT_CNTL_0 && address < SPI_PS_INPUT_CNTL_0 + PS_INPUTS) return value == address - SPI_PS_INPUT_CNTL_0 ? 0 : -1;
         return -1;
@@ -171,9 +219,13 @@ static int check_state(const MetalState &state, char *error, size_t size)
 {
     if (state.primitive_set && state.primitive == DI_PT_RECTLIST)
         return failed(error, size, "rectangle lists require a geometry expansion profile, which Metal does not implement");
-    if (state.primitive_set && state.primitive != DI_PT_TRILIST)
-        return failed(error, size, "primitive type %u: only triangle lists are drawn yet", state.primitive);
-    if (state.blend_set && (state.blend & BLEND_ENABLE)) return failed(error, size, "blending is not drawn yet");
+    if (state.clip_control & DX_RASTERIZATION_KILL)
+        return failed(error, size, "a draw with rasterization killed (PA_CL_CLIP_CNTL %#x): not drawn yet", state.clip_control);
+    if (state.primitive_set && state.primitive != DI_PT_TRILIST && state.primitive != DI_PT_TRISTRIP)
+        return failed(error, size, "primitive type %u: only triangle lists and strips are drawn yet", state.primitive);
+    /* Only attachment 0 can be drawn; draw() refuses higher attachments. */
+    if ((state.blend_set & 1u) && (state.blend_control[0] & BLEND_ENABLE))
+        return failed(error, size, "blending is not drawn yet");
     if (state.depth_set && (state.depth & (STENCIL_ENABLE | Z_ENABLE | Z_WRITE_ENABLE)))
         return failed(error, size, "depth or stencil testing is not drawn yet");
     if (state.color_control_set) {
@@ -182,7 +234,6 @@ static int check_state(const MetalState &state, char *error, size_t size)
         if (mode != CB_NORMAL || rop != ROP3_COPY)
             return failed(error, size, "colour mode %u, raster operation %#x: only normal copies are drawn yet", mode, rop);
     }
-    if (state.instances != 1) return failed(error, size, "%u instances: only one is drawn yet", state.instances);
     if (state.target_mask_set && (state.target_mask & TARGET0_MASK) != 0 &&
         (state.target_mask & TARGET0_MASK) != TARGET0_MASK)
         return failed(error, size, "colour write mask %#x: only all four channels are drawn yet", state.target_mask & TARGET0_MASK);
@@ -191,8 +242,11 @@ static int check_state(const MetalState &state, char *error, size_t size)
 
 static int shader_profile(const MetalState &state, char *error, size_t size)
 {
-    if (state.vertex.vgpr_inputs)
-        return failed(error, size, "vertex input VGPR profile %u: only vertex ID in VGPR0 is supported", state.vertex.vgpr_inputs);
+    if (state.vertex.vgpr_inputs > 3)
+        return failed(error, size, "vertex input VGPR profile %u exceeds VGPR_COMP_CNT", state.vertex.vgpr_inputs);
+    if (state.vertex.vgprs <= state.vertex.vgpr_inputs || state.vertex.vgprs > 256)
+        return failed(error, size, "vertex input profile %u exceeds its declared VGPR allocation %u",
+                      state.vertex.vgpr_inputs, state.vertex.vgprs);
     if (state.vertex.user_sgprs > GCN_USER_SGPR_MAX || state.pixel.user_sgprs > GCN_USER_SGPR_MAX)
         return failed(error, size, "shader user SGPR count exceeds the modeled user-data range");
     if (state.vertex.user_sgprs > state.vertex.sgprs || state.pixel.user_sgprs > state.pixel.sgprs)
@@ -245,6 +299,24 @@ static int screen_scissor(const MetalState &state, const MetalTarget &target, MT
     bottom = std::clamp(bottom, 0, static_cast<int32_t>(target.height));
     rect = {static_cast<NSUInteger>(left), static_cast<NSUInteger>(top),
         static_cast<NSUInteger>(std::max(0, right - left)), static_cast<NSUInteger>(std::max(0, bottom - top))};
+    return 0;
+}
+
+/* AMD CIK 3D registers, PA_SC_VPORT_SCISSOR_0_TL/BR: x in bits 0-14, y in 16-30, WINDOW_OFFSET_DISABLE in
+   bit 31 of TL, the bottom right exclusive; on with PA_SC_MODE_CNTL_0's VPORT_SCISSOR_ENABLE (bit 1). The
+   rectangle narrows the screen scissor's. One that takes the window offset is not drawn yet. */
+static int viewport_scissor(const MetalState &state, MTLScissorRect &rect, char *error, size_t size)
+{
+    enum { VPORT_SCISSOR_ENABLE = 2, COORDINATE_MASK = 0x7fff, Y_SHIFT = 16 };
+    constexpr uint32_t window_offset_disable = 1u << 31;
+    if (!(state.mode_control & VPORT_SCISSOR_ENABLE) || !state.viewport_scissor_set) return 0;
+    if (!(state.viewport_scissor_tl & window_offset_disable))
+        return failed(error, size, "a viewport scissor that takes the window offset: not drawn yet");
+    const NSUInteger left = std::max<NSUInteger>(rect.x, state.viewport_scissor_tl & COORDINATE_MASK);
+    const NSUInteger top = std::max<NSUInteger>(rect.y, state.viewport_scissor_tl >> Y_SHIFT & COORDINATE_MASK);
+    const NSUInteger right = std::min<NSUInteger>(rect.x + rect.width, state.viewport_scissor_br & COORDINATE_MASK);
+    const NSUInteger bottom = std::min<NSUInteger>(rect.y + rect.height, state.viewport_scissor_br >> Y_SHIFT & COORDINATE_MASK);
+    rect = {std::min(left, rect.x + rect.width), std::min(top, rect.y + rect.height), right > left ? right - left : 0, bottom > top ? bottom - top : 0};
     return 0;
 }
 
@@ -449,7 +521,7 @@ static bool same_pixel_resources(const MetalShader &shader, const MetalPixelReso
     for (unsigned i = 0; i < images; ++i) {
         const auto &a = shader.images[i], &b = resources->images[i];
         if (!same_origin(a.origin, b.origin) || a.dim != b.dim || a.arrayed != b.arrayed || a.type != b.type ||
-            a.components != b.components || a.sampled != b.sampled || a.cube != b.cube) return false;
+            a.components != b.components || a.sampled != b.sampled || a.cube != b.cube || a.swizzle != b.swizzle) return false;
     }
     for (unsigned i = 0; i < samplers; ++i) if (!same_origin(shader.samplers[i], resources->samplers[i])) return false;
     return true;
@@ -632,7 +704,8 @@ static int pixel_resources(rt_executor *x, const MetalState &state, MetalPixelRe
             return failed(error,size,"sampled image format does not support linear filtering on this Metal device");
         out.images[i] = {images[i].origin,
             descriptor.type == RT_IMAGE_1D || descriptor.type == RT_IMAGE_1D_ARRAY ? GCN_IMAGE_1D : GCN_IMAGE_2D,
-            descriptor.type == RT_IMAGE_1D_ARRAY || descriptor.type == RT_IMAGE_2D_ARRAY,format->type,format->components,1,0,0};
+            descriptor.type == RT_IMAGE_1D_ARRAY || descriptor.type == RT_IMAGE_2D_ARRAY,format->type,format->components,1,0,
+            descriptor.swizzle != DST_SEL_IDENTITY ? descriptor.swizzle : 0u, 0, 0}; /* DST_SEL: for the texel a load outside the image reads */
         if (!(out.textures[i] = image_for(x,words,descriptor,*format,error,size))) return -1;
     }
     return 0;
@@ -640,13 +713,15 @@ static int pixel_resources(rt_executor *x, const MetalState &state, MetalPixelRe
 
 static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, unsigned user, unsigned output,
                                  unsigned parameter_capacity, bool flip_y, const uint32_t *data, uint32_t written,
-                                 const MetalPixelResources *pixel, uint32_t &user_read, char *error, size_t error_size)
+                                 const MetalPixelResources *pixel, uint32_t &user_read, char *error, size_t error_size,
+                                 const MetalVertexInstancing &instancing = {})
 {
     MetalProgram program, callee; uint32_t target_read = 0;
     if (program_view(x, code, false, program, error, error_size) ||
         (vertex && vertex_callee(x, program, user, data, written, callee, target_read, error, error_size))) return nil;
     for (const auto &shader : x->shaders)
         if (shader.code == code && shader.vertex == vertex && shader.user == user && shader.output == output && shader.flip_y == flip_y &&
+            shader.instancing == instancing &&
             shader.callee == callee.address && shader.program.size() == program.dwords &&
             std::equal(shader.program.begin(), shader.program.end(), program.words) && shader.fetch.size() == callee.dwords &&
             (!callee.dwords || std::equal(shader.fetch.begin(), shader.fetch.end(), callee.words)) && same_pixel_resources(shader,pixel)) {
@@ -664,6 +739,9 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
         layout.address_offset = x->address_offset; layout.error_address = x->stop.gpuAddress;
         layout.user_data_read = &user_read;
         layout.callee = callee.words; layout.callee_dwords = callee.dwords; layout.code_address = code;
+        layout.instance_vgprs = instancing.vgprs;
+        layout.step_rates[0] = instancing.step_rates[0]; layout.step_rates[1] = instancing.step_rates[1];
+        layout.step_rates_set = instancing.step_rates_set;
         result = gcn_translate_vertex(program.words, program.dwords, &layout, &spirv, &count, reason, sizeof reason);
     } else {
         /* Only perspective-center barycentrics occupy VGPR0/1. Resources use the common origins. */
@@ -714,7 +792,7 @@ static id<MTLFunction> shader_for(rt_executor *x, bool vertex, uint64_t code, un
         if (!function) return nil;
         std::vector<uint32_t> fetch;
         if (callee.dwords) fetch.assign(callee.words, callee.words + callee.dwords);
-        x->shaders.push_back({code, callee.address, user, output, required_parameters, user_read, vertex, flip_y,
+        x->shaders.push_back({code, callee.address, user, output, required_parameters, user_read, vertex, flip_y, instancing,
             std::vector<uint32_t>(program.words, program.words + program.dwords), std::move(fetch),
             pixel ? std::vector<gcn_image_binding>(pixel->images,pixel->images + pixel->image_count) : std::vector<gcn_image_binding>{},
             pixel ? std::vector<gcn_resource_origin>(pixel->samplers,pixel->samplers + pixel->sampler_count) : std::vector<gcn_resource_origin>{},function});
@@ -908,13 +986,15 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     MetalTarget *target = target_for(x, state.color, error, size);
     if (!target) return -1;
     MTLScissorRect scissor;
-    if (screen_scissor(state, *target, scissor, error, size)) return -1;
+    if (screen_scissor(state, *target, scissor, error, size) || viewport_scissor(state, scissor, error, size)) return -1;
     MetalPixelResources resources;
     if (pixel_resources(x,state,resources,error,size)) return -1;
     uint32_t vertex_read = 0, pixel_read = 0;
+    const MetalVertexInstancing instancing{state.vertex.vgpr_inputs,
+        {state.step_rates[0], state.step_rates[1]}, state.step_rates_set};
     id<MTLFunction> vertex = shader_for(x, true, state.vertex.code, state.vertex.user_sgprs,
                                       state.vertex.output_control, state.vertex.parameter_count, state.scale[1] > 0,
-                                      state.user[0], state.user_set[0], nullptr, vertex_read, error, size);
+                                      state.user[0], state.user_set[0], nullptr, vertex_read, error, size, instancing);
     id<MTLFunction> pixel = vertex ? shader_for(x, false, state.pixel.code, state.pixel.user_sgprs, 0,
                                              state.pixel.interpolated, false, state.user[1], state.user_set[1], &resources, pixel_read, error, size) : nil;
     if (!pixel) return -1;
@@ -934,6 +1014,7 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     id<MTLRenderCommandEncoder> encoder = [command renderCommandEncoderWithDescriptor:pass];
     if (!command || !encoder) return failed(error, size, "Metal draw encoder allocation failed");
     [encoder setRenderPipelineState:pipeline]; [encoder setCullMode:MTLCullModeNone];
+    if (state.clip_control & (CLIP_DISABLE | ZCLIP_NEAR_DISABLE | ZCLIP_FAR_DISABLE)) [encoder setDepthClipMode:MTLDepthClipModeClamp];
     const double sy = std::fabs(state.scale[1]);
     const MTLViewport viewport = {state.translate[0] - state.scale[0], state.translate[1] - sy,
         2 * state.scale[0], 2 * sy, state.translate[2], state.translate[2] + state.scale[2]};
@@ -945,10 +1026,12 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     for (unsigned i = 0; i < resources.sampler_count; ++i) [encoder setFragmentSamplerState:resources.states[i] atIndex:i];
     [encoder useResource:x->memory usage:MTLResourceUsageRead | MTLResourceUsageWrite stages:MTLRenderStageVertex | MTLRenderStageFragment];
     [encoder useResource:x->stop usage:MTLResourceUsageWrite stages:MTLRenderStageVertex | MTLRenderStageFragment];
+    const MTLPrimitiveType primitive = state.primitive_set && state.primitive == DI_PT_TRISTRIP
+        ? MTLPrimitiveTypeTriangleStrip : MTLPrimitiveTypeTriangle;
     if (indices)
-        [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle indexCount:count indexType:indices->type
-            indexBuffer:x->memory indexBufferOffset:indices->offset];
-    else [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:count];
+        [encoder drawIndexedPrimitives:primitive indexCount:count indexType:indices->type
+            indexBuffer:x->memory indexBufferOffset:indices->offset instanceCount:state.instances baseVertex:0 baseInstance:0];
+    else [encoder drawPrimitives:primitive vertexStart:0 vertexCount:count instanceCount:state.instances baseInstance:0];
     [encoder endEncoding];
     if (complete_commands(x, command, error, size)) return -1;
     store_target(x, *target);
@@ -1002,13 +1085,44 @@ static int draw_indexed(rt_executor *x, MetalState &state, uint32_t header, uint
         indices.offset = static_cast<NSUInteger>(address - x->guest_base);
     }
     if (check_state(state, error, size)) return -1;
+    /* Metal always interprets its maximum-width index as a strip restart. Guest restart
+       state is not modeled here: refuse that incompatible value, never silently cut a strip.
+       Only inspect the fetched range, after its address, alignment and DMA bounds passed. */
+    if (count && state.primitive_set && state.primitive == DI_PT_TRISTRIP) {
+        const auto *source = static_cast<const uint8_t *>(x->view) + indices.offset;
+        const uint32_t restart = width == 2 ? UINT16_MAX : UINT32_MAX;
+        for (uint32_t i = 0; i < count; ++i) {
+            uint32_t value = 0;
+            std::memcpy(&value, source + static_cast<uint64_t>(i) * width, static_cast<size_t>(width));
+            if (value == restart)
+                return failed(error, size, "indexed triangle strip contains a Metal restart index; guest restart state is not modeled");
+        }
+    }
     return draw(x, state, count, error, size, &indices);
 }
 
 /* Reset only GPU state: completed targets, compiled shaders and device failure remain. */
 extern "C" void rt_executor_reset(rt_executor *x)
 {
-    if (x) x->state = MetalState{};
+    if (!x) return;
+    x->state = MetalState{};
+    for (MetalQueueState &queue : x->queue_states) queue = MetalQueueState{};
+    x->call_queue = RT_EXECUTOR_GRAPHICS_QUEUE;
+}
+
+extern "C" int rt_executor_select_queue(rt_executor *x, unsigned queue, char *error, size_t error_size)
+{
+    if (!x || x->failed) return failed(error, error_size, "a usable executor is required");
+    if (queue >= RT_EXECUTOR_QUEUES) return failed(error, error_size, "calls from queue %u (queues 0-%d)", queue, RT_EXECUTOR_QUEUES - 1);
+    if (queue == x->call_queue) return 0;
+    MetalState &state = x->state;
+    MetalQueueState &from = x->queue_states[x->call_queue], &to = x->queue_states[queue];
+    from.compute = state.compute, from.compute_set = state.compute_set, from.compute_user_set = state.compute_user_set;
+    std::memcpy(from.compute_user, state.compute_user, sizeof from.compute_user);
+    state.compute = to.compute, state.compute_set = to.compute_set, state.compute_user_set = to.compute_user_set;
+    std::memcpy(state.compute_user, to.compute_user, sizeof state.compute_user);
+    x->call_queue = queue;
+    return 0;
 }
 
 extern "C" int rt_executor_run(rt_executor *x, uint64_t buffer, uint32_t bytes, char *error, size_t error_size)
@@ -1105,7 +1219,7 @@ extern "C" int rt_executor_run_calls(rt_executor *x, const rt_render_call *calls
                         if (set_register(state, call.u.reg.address, call.u.reg.value))
                             return failed(error, error_size, "register %#x: the executor does not interpret it yet", call.u.reg.address);
                         break;
-                    case RT_CALL_INSTANCES: state.instances = call.u.instances.count; break;
+                    case RT_CALL_INSTANCES: state.instances = call.u.instances.count ? call.u.instances.count : 1; break; /* 0 is one instance (VGT_NUM_INSTANCES) */
                     case RT_CALL_INDEX_TYPE: state.index_type = call.u.index_type.type; state.index_type_set = true; break;
                     case RT_CALL_INDEX_BASE:
                         state.index_base = call.u.index_base.address; state.index_base_set = true; state.index_base_current = true; break;

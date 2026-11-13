@@ -91,6 +91,57 @@ static const uint32_t table_copy[] = TABLE_COPY(0xe03c2000, 0);
 static const uint32_t table_copy_format[] = TABLE_COPY(0xe0082000, 0);
 static const uint32_t table_copy_store_offset[] = TABLE_COPY(0xe03c2000, 4);
 
+/* Constant fills (gcn_fill_shape): the value loaded from the constant buffer s[8:11] into s[16:19],
+   stored through the descriptor s[0:3] at element lane + workgroup (s12) x 64; at lane + workgroup x 128
+   and 64 past it; and at the same two elements built from the thread's global id ((id >> 6) << 7 plus
+   id - (id >> 6) << 6, which holds for workgroups of up to 64 lanes). One storing the lane id (not the
+   loaded value) is not one. */
+#define FILL_VALUE_LOAD 0xc2880900, /* s_buffer_load_dwordx4 s[16:19], s[8:11], 0x0 */ \
+    0xbf8c007f, /* s_waitcnt lgkmcnt(0) */                                             \
+    0x7e020210, /* v_mov_b32 v1, s16 */                                                \
+    0x7e040211, /* v_mov_b32 v2, s17 */                                                \
+    0x7e060212, /* v_mov_b32 v3, s18 */                                                \
+    0x7e080213  /* v_mov_b32 v4, s19 */
+static const uint32_t fill_one_store[] = {
+    0x8f0d860c, /* s_lshl_b32 s13, s12, 6 */
+    0x4a00000d, /* v_add_i32 v0, vcc, s13, v0 */
+    FILL_VALUE_LOAD,
+    0xe01c2000, 0x80000100, /* buffer_store_format_xyzw v[1:4], v0, s[0:3], 0 idxen */
+    0xbf810000, /* s_endpgm */
+};
+static const uint32_t fill_two_stores[] = {
+    0x8f0d870c, /* s_lshl_b32 s13, s12, 7 */
+    0x4a00000d, /* v_add_i32 v0, vcc, s13, v0 */
+    FILL_VALUE_LOAD,
+    0x4a0a00c0, /* v_add_i32 v5, vcc, 64, v0 */
+    0xe01c2000, 0x80000100, /* buffer_store_format_xyzw v[1:4], v0, s[0:3], 0 idxen */
+    0xe01c2000, 0x80000105, /* buffer_store_format_xyzw v[1:4], v5, s[0:3], 0 idxen */
+    0xbf810000, /* s_endpgm */
+};
+static const uint32_t fill_from_global_id[] = {
+    0x8f0d860c, /* s_lshl_b32 s13, s12, 6 */
+    0x4a00000d, /* v_add_i32 v0, vcc, s13, v0: the global id */
+    0x2c0c0086, /* v_lshrrev_b32 v6, 6, v0 */
+    0x340e0c86, /* v_lshlrev_b32 v7, 6, v6 */
+    0x4c0e0f00, /* v_sub_i32 v7, vcc, v0, v7: the lane */
+    0x340c0c87, /* v_lshlrev_b32 v6, 7, v6 */
+    0x4a000d07, /* v_add_i32 v0, vcc, v7, v6 */
+    FILL_VALUE_LOAD,
+    0x4a0a00c0, /* v_add_i32 v5, vcc, 64, v0 */
+    0xe01c2000, 0x80000100, /* buffer_store_format_xyzw v[1:4], v0, s[0:3], 0 idxen */
+    0xe01c2000, 0x80000105, /* buffer_store_format_xyzw v[1:4], v5, s[0:3], 0 idxen */
+    0xbf810000, /* s_endpgm */
+};
+static const uint32_t fill_of_lanes[] = {
+    0x8f0d860c, /* s_lshl_b32 s13, s12, 6 */
+    0x4a00000d, /* v_add_i32 v0, vcc, s13, v0 */
+    FILL_VALUE_LOAD,
+    0x7e020300, /* v_mov_b32 v1, v0 */
+    0xe01c2000, 0x80000100, /* buffer_store_format_xyzw v[1:4], v0, s[0:3], 0 idxen */
+    0xbf810000, /* s_endpgm */
+};
+#undef FILL_VALUE_LOAD
+
 /* out[i] = v_min_i32(-3, in[i]), out[64 + i] = v_max_i32(-3, in[i]), out[128 + i] = v_min_u32(7, in[i]),
    out[192 + i] = v_max_u32(7, in[i]). */
 static const uint32_t integer_min_max[] = {
