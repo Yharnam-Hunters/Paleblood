@@ -2701,6 +2701,20 @@ static int write_back_targets_in(rt_executor *x, const memory_span *spans, unsig
                     picked[k] = 1, grew = 1;
             }
     }
+    /* the images that took a target's texels on the GPU since its last draw (image_from_target), from
+       memory nothing else changed since: they hold what the write-back puts there */
+    enum { KEPT_IMAGES = 64 };
+    uint32_t kept[KEPT_IMAGES];
+    unsigned kept_count = 0;
+    for (size_t i = 0; i < x->target_count; i++) {
+        const target_entry *t = &x->targets[i];
+        if (!picked[i]) continue;
+        for (uint32_t k = x->image_buckets[image_bucket(t->address)]; k && kept_count < KEPT_IMAGES; k = x->images[k - 1].bucket_next) {
+            const image_entry *e = &x->images[k - 1];
+            if (e->copied_from == t && e->copied_serial == t->drawn_serial && !memory_changed_since(x, e->address, e->loaded_span, e->loaded_change))
+                kept[kept_count++] = k - 1;
+        }
+    }
     for (size_t i = 0; i < x->target_count; i++) {
         target_entry *t = &x->targets[i];
         if (!picked[i]) continue;
@@ -2723,6 +2737,8 @@ static int write_back_targets_in(rt_executor *x, const memory_span *spans, unsig
             overlapped |= k != i && picked[k] && o->address < t->address + target_span(t) && t->address < o->address + target_span(o);
         }
         if (!overlapped) t->loaded_change = x->change_count;
+        for (unsigned k = 0; k < kept_count && !overlapped; k++)
+            if (x->images[kept[k]].copied_from == t) x->images[kept[k]].loaded_change = x->change_count;
     }
     for (size_t i = 0; i < x->target_count; i++)
         if (picked[i]) x->targets[i].drawn = 0;
@@ -4363,7 +4379,8 @@ static int image_from_target(rt_executor *x, image_entry *e, const rt_image_desc
     const VkMemoryBarrier after = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
                                    .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
     vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &after, 0, NULL, 0, NULL);
-    /* once the target is written back, its memory holds what the image now does: it loads again then */
+    /* once the target is written back, its memory holds what the image now does (write_back_targets_in
+       keeps the image loaded then) */
     e->copied_from = t, e->copied_serial = t->drawn_serial, e->loaded_change = x->change_count, e->loaded_span = span;
     e->tiling_index = d->tiling_index, e->pitch = d->pitch;
     return 1;
