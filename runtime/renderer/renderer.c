@@ -6,6 +6,7 @@
 #include "runtime/process.h"
 #include "runtime/render_calls.h"
 #include "runtime/render_executor.h"
+#include "runtime/render_placed.h"
 #include "runtime/write_watch.h"
 
 #include <pthread.h>
@@ -33,7 +34,15 @@ static void unlock_renderer(void)
     pthread_mutex_unlock(&renderer_lock);
 }
 
-void rt_renderer_configure(int on) { enabled = on; }
+/* Placed calls are checked against the command buffer they were placed in (runtime/render_placed.h): a
+   guest address is the host's address of that memory. */
+static uint32_t guest_word(uint64_t address) { return *(const volatile uint32_t *)(uintptr_t)address; }
+
+void rt_renderer_configure(int on)
+{
+    enabled = on;
+    rt_render_check_placed_calls(on ? guest_word : NULL);
+}
 
 static int collect_cpu_writes(const uint64_t (*ranges)[2], size_t count, void (*written)(void *context, uint64_t pool_offset, uint64_t length),
                               void *context);
@@ -96,6 +105,16 @@ static uint64_t submissions;        /* buffers submitted so far (queue_lock) */
    the reloads it saves (the character creation screen submits 70 buffers at once). */
 static uint64_t running_submission, collected_through;
 static pid_t thread_process;        /* a child after fork has no renderer thread: it starts its own */
+/* How far the game may submit ahead of the renderer's thread: a submission returns only once the
+   renderer has taken a buffer at most RENDER_LAG_LIMIT before it (queue_lock). The console's GPU starts
+   on a buffer soon after it is submitted, and the game's per-frame GPU memory rings rely on it: with
+   no bound, the renderer fell tens of seconds behind during the clinic's load (each constant-engine
+   step waits for the GPU), the game's ring allocations ran out, and it wrote draws with null table
+   pointers that faulted the GPU (12 November 2026). While the renderer's thread performs a wait step
+   (one with holds: memory the game may have yet to write, step_waiting), submissions are not held, so
+   that wait can end. */
+enum { RENDER_LAG_LIMIT = 4 };
+static int step_waiting;            /* the renderer's thread is performing a waiting step (queue_lock) */
 static _Thread_local int on_renderer_thread;
 
 /* Deferred steps (RT_GPU_STEP_DEFERRABLE) waiting for the GPU, oldest first: each with the ticket of
@@ -236,6 +255,27 @@ static void show_later(const rt_gpu_step *step)
    already is performed at once, and one that a deferred step will satisfy is passed (the GPU runs the
    work after it after the work before it in any case); any other waits for all earlier steps and
    work, and is performed here. */
+/* Performs a step on the renderer's thread. A wait step (holds) may be for memory a submitting thread
+   has yet to write, so submissions are not held while it runs (RENDER_LAG_LIMIT). */
+static void set_step_waiting(int waiting)
+{
+    pthread_mutex_lock(&queue_lock);
+    step_waiting = waiting;
+    pthread_cond_broadcast(&queue_changed);
+    pthread_mutex_unlock(&queue_lock);
+}
+
+static void perform_step(const rt_gpu_step *step)
+{
+    if (!step->holds) {
+        step->perform(step);
+        return;
+    }
+    set_step_waiting(1);
+    step->perform(step);
+    set_step_waiting(0);
+}
+
 static void run_batch(batch *b)
 {
     size_t done = 0;
@@ -253,7 +293,7 @@ static void run_batch(batch *b)
             continue;
         }
         if (b->steps[i].holds && b->steps[i].holds(&b->steps[i], NULL)) { /* a wait that holds already: the GPU passes it */
-            b->steps[i].perform(&b->steps[i]);
+            perform_step(&b->steps[i]);
             continue;
         }
         if (b->steps[i].holds && deferred_satisfies(&b->steps[i])) continue; /* the work ahead of it on the GPU writes what it waits for */
@@ -263,7 +303,7 @@ static void run_batch(batch *b)
         char error[RENDER_ERROR_BYTES];
         if (executor && rt_executor_finish(executor, error, sizeof error)) rt_fatal(b->steps[i].function, error);
         unlock_renderer();
-        b->steps[i].perform(&b->steps[i]);
+        perform_step(&b->steps[i]);
     }
     run_calls(b, done, b->call_count);
 }
@@ -338,6 +378,8 @@ void rt_renderer_submit(const char *function, const void *buffer, uint32_t bytes
     queue_tail = b;
     b->submission = ++submissions;
     pthread_cond_broadcast(&queue_changed);
+    if (!on_renderer_thread && !on_completion_thread)
+        while (b->submission > running_submission + RENDER_LAG_LIMIT && !step_waiting) pthread_cond_wait(&queue_changed, &queue_lock);
     pthread_mutex_unlock(&queue_lock);
 }
 
