@@ -350,6 +350,10 @@ loading_stdio_stream_open,edge,,30,30,0,0,66b528bb054522f0,2026-11-12
 loading_stream_event_array_push_back_02a6d010,edge,,11,11,0,0,fbc19c29bc64beca,2026-11-12
 loading_stream_event_array_reallocate_02a6f140,edge,,11,11,0,0,fbc19c29bc64beca,2026-11-12
 loading_stream_queue_remove_02a6d8e0,edge,,12,12,0,0,86688eb0b1115bf9,2026-11-12
+menu_text_input_close,edge,,18,18,0,0,076e6d850a523d38,2026-11-12
+menu_text_input_destroy,edge,,8,8,0,0,076e6d850a523d38,2026-11-12
+menu_text_input_open,edge,,12,12,0,0,076e6d850a523d38,2026-11-12
+menu_text_input_update,edge,,18,18,0,0,076e6d850a523d38,2026-11-12
 param_apply_char_make_face,edge,,11,11,0,0,2c1320dcc1c0c1ad,2026-11-12
 param_clamp_protector_gen_indexes,edge,,10,10,0,0,81240509ea85581e,2026-11-12
 param_clamp_weapon_gen_indexes,edge,,10,10,0,0,81240509ea85581e,2026-11-12
