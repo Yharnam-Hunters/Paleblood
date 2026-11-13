@@ -85,7 +85,7 @@ def git(cwd, *args):
 
 class WholeMerge(unittest.TestCase):
     """A branch and main that both add a function row next to the same row and both regenerate the
-    README progress block: the merge keeps both rows, in order, and main's generated text."""
+    STATUS.md progress block: the merge keeps both rows, in order, and main's generated text."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='pb-remerge-test-')
@@ -101,7 +101,7 @@ class WholeMerge(unittest.TestCase):
         git(self.origin, 'config', 'core.hooksPath', os.path.join(self.tmp.name, 'no-hooks'))
         self.write(self.origin, 'symbols/functions.csv', FUNCS + '0x00401000,8,a,engine,original,\n'
                    '0x00403000,8,c,engine,original,\n')
-        self.write(self.origin, 'README.md', 'Intro.\n<!-- progress:start -->\n1 replaced\n<!-- progress:end -->\n')
+        self.write(self.origin, 'STATUS.md', 'Intro.\n<!-- progress:start -->\n1 replaced\n<!-- progress:end -->\n')
         git(self.origin, 'add', '-A')
         git(self.origin, 'commit', '-q', '-m', 'base')
         self.clone = os.path.join(self.tmp.name, 'clone')
@@ -124,11 +124,11 @@ class WholeMerge(unittest.TestCase):
     def test_merge(self):
         self.write(self.origin, 'symbols/functions.csv', FUNCS + '0x00401000,8,a,engine,original,\n'
                    '0x00402000,8,b1,loading,replaced,\n0x00403000,8,c,engine,original,\n')
-        self.write(self.origin, 'README.md', 'Intro.\n<!-- progress:start -->\n2 replaced\n<!-- progress:end -->\n')
+        self.write(self.origin, 'STATUS.md', 'Intro.\n<!-- progress:start -->\n2 replaced\n<!-- progress:end -->\n')
         git(self.origin, 'commit', '-q', '-am', 'main adds b1')
         self.write(self.clone, 'symbols/functions.csv', FUNCS + '0x00401000,8,a,engine,original,\n'
                    '0x00402800,8,b2,engine,replaced,\n0x00403000,8,c,engine,original,\n')
-        self.write(self.clone, 'README.md', 'Intro, edited.\n<!-- progress:start -->\n9 replaced\n<!-- progress:end -->\n')
+        self.write(self.clone, 'STATUS.md', 'Intro, edited.\n<!-- progress:start -->\n9 replaced\n<!-- progress:end -->\n')
         git(self.clone, 'commit', '-q', '-am', 'feature adds b2')
 
         r = subprocess.run([sys.executable, os.path.join(ROOT, 'tools', 'remerge.py'), '--no-build'],
@@ -137,7 +137,7 @@ class WholeMerge(unittest.TestCase):
         with open(os.path.join(self.clone, 'symbols/functions.csv')) as f:
             self.assertEqual(f.read(), FUNCS + '0x00401000,8,a,engine,original,\n0x00402000,8,b1,loading,replaced,\n'
                                        '0x00402800,8,b2,engine,replaced,\n0x00403000,8,c,engine,original,\n')
-        with open(os.path.join(self.clone, 'README.md')) as f:
+        with open(os.path.join(self.clone, 'STATUS.md')) as f:
             self.assertEqual(f.read(), 'Intro, edited.\n<!-- progress:start -->\n2 replaced\n<!-- progress:end -->\n')
         self.assertEqual(git(self.clone, 'status', '--porcelain', '--untracked-files=no'), '')
         self.assertEqual(len(git(self.clone, 'rev-list', '--parents', '-n1', 'HEAD').split()), 3)

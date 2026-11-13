@@ -13,6 +13,7 @@
 #include "engine.h"
 #include "fixed_allocator.h"
 #include "fixed_allocator_initialize.h"
+#include "pthread_mutex.h"
 
 namespace engine::small_object_allocator {
 
@@ -30,13 +31,8 @@ struct SizeClasses {
 };
 static_assert(sizeof(SizeClasses) == 0x38);
 
-// The lock of the locked variant: a mutex object with its own vtable.
-struct Mutex {
-    const void *vtable;
-    void *handle;
-    bool initialized;
-};
-static_assert(offsetof(Mutex, handle) == 0x8 && offsetof(Mutex, initialized) == 0x10);
+// The lock of the locked variant: the engine's mutex object (pthread_mutex.h).
+using pthread_mutex::Mutex;
 
 struct Plain {
     const void *vtable;

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* pbboot: runs a PS4 executable's entry on Paleblood's runtime, as far as the runtime goes.
 
-     pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--addcont LABEL]... [--app0 DIR] [--data DIR] [--savedata DIR] [--display none|headless|window] [--audio none|host] [--input none|host] [--input-script SPEC|@FILE] [--keyboard-text TEXT] [--display-capture DIR] [--nids NID_DB.xml]
+     pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--addcont LABEL]... [--app0 DIR] [--data DIR] [--savedata DIR] [--display none|headless|window] [--audio none|host] [--input none|host] [--input-script SPEC|@FILE] [--keyboard-text TEXT] [--display-capture DIR] [--frame-log FILE] [--nids NID_DB.xml]
             [--module-hook MODULE:OFFSET:SIZE:BYTES:ACTION:NAME]...
             [--status OUT.json] [--timeout SECONDS] [--trace] [--game-lib LIBRARY]
      pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]
@@ -731,14 +731,14 @@ static int display_mode_named(const char *name, rt_display_mode *mode)
 }
 
 static const char *usage =
-    "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--addcont LABEL]... [--app0 DIR] [--data DIR] [--savedata DIR] [--display none|headless|window] [--audio none|host] [--input none|host] [--input-script SPEC|@FILE] [--keyboard-text TEXT] [--display-capture DIR] [--nids NID_DB.xml]\n"
+    "usage: pbboot EBOOT.elf [--module MODULE.elf]... [--stub-module ID:NAME]... [--app-param ID=VALUE]... [--system-param ID=VALUE]... [--addcont LABEL]... [--app0 DIR] [--data DIR] [--savedata DIR] [--display none|headless|window] [--audio none|host] [--input none|host] [--input-script SPEC|@FILE] [--keyboard-text TEXT] [--display-capture DIR] [--frame-log FILE] [--nids NID_DB.xml]\n"
     "              [--module-hook MODULE:OFFSET:SIZE:BYTES:ACTION:NAME]...\n"
     "              [--status OUT.json] [--timeout S] [--trace] [--game-lib LIBRARY]\n"
     "       pbboot EBOOT.elf [--module MODULE.elf]... --imports [--nids NID_DB.xml]\n";
 
 int main(int argc, char **argv)
 {
-    const char *nid_path = getenv("BB_NID_DB"), *status_path = NULL, *display_capture = NULL, *game_library_path = NULL,
+    const char *nid_path = getenv("BB_NID_DB"), *status_path = NULL, *display_capture = NULL, *frame_log = NULL, *game_library_path = NULL,
                *input_script = NULL;
     int timeout = 30, trace = 0, list = 0;
     rt_display_mode display_mode = RT_DISPLAY_NONE;
@@ -770,6 +770,8 @@ int main(int argc, char **argv)
         }
         else if (!strcmp(argv[i], "--display-capture") && i + 1 < argc)
             display_capture = argv[++i];
+        else if (!strcmp(argv[i], "--frame-log") && i + 1 < argc)
+            frame_log = argv[++i]; /* a line per presented frame (runtime/display.h), for frame rates */
         else if (!strcmp(argv[i], "--audio") && i + 1 < argc) {
             const char *audio = argv[++i];
             if (strcmp(audio, "none") && strcmp(audio, "host")) {
@@ -864,10 +866,14 @@ int main(int argc, char **argv)
             return 2;
         }
     }
-    if (display_capture && display_mode == RT_DISPLAY_NONE) display_mode = RT_DISPLAY_HEADLESS;
+    if ((display_capture || frame_log) && display_mode == RT_DISPLAY_NONE) display_mode = RT_DISPLAY_HEADLESS;
     rt_renderer_configure(display_mode != RT_DISPLAY_NONE);
     if (rt_display_configure(display_mode, display_capture)) {
         fprintf(stderr, "pbboot: --display window: this build has no window (it needs Vulkan and SDL3)\n");
+        return 2;
+    }
+    if (frame_log && rt_display_log_frames(frame_log)) {
+        fprintf(stderr, "pbboot: --frame-log %s: cannot write the file\n", frame_log);
         return 2;
     }
     char error[512];
