@@ -264,6 +264,8 @@ loading_memory_stream_read_024de230,edge,,12,12,0,0,0de848db403b0c24,2026-11-12
 loading_mount_table_push_back_02470d50,edge,,11,11,0,0,56c29f3bfad4ccf6,2026-11-12
 loading_mount_table_reallocate_024716d0,edge,,9,9,0,0,56c29f3bfad4ccf6,2026-11-12
 loading_path_token_next_02a2aca0,edge,,18,18,0,0,d7482430d506fc6c,2026-11-12
+loading_resource_handle_construct_024bd470,recorded,,35,35,0,0,1127843eea3f0297,2026-11-13
+loading_resource_handle_destroy_024bd4c0,recorded,,46,46,0,0,1127843eea3f0297,2026-11-13
 loading_resource_info_release_024bd930,edge,,10,10,0,0,d3a6f64f145f445e,2026-11-12
 loading_resource_manager_release_024c1530,edge,,11,11,0,0,c10eba1a72ea7bd4,2026-11-12
 loading_stdio_close_files,edge,,9,9,0,0,66b528bb054522f0,2026-11-10
@@ -272,6 +274,8 @@ loading_stdio_stream_open,edge,,30,30,0,0,66b528bb054522f0,2026-11-12
 loading_stream_event_array_push_back_02a6d010,edge,,11,11,0,0,fbc19c29bc64beca,2026-11-12
 loading_stream_event_array_reallocate_02a6f140,edge,,11,11,0,0,fbc19c29bc64beca,2026-11-12
 loading_stream_queue_remove_02a6d8e0,edge,,12,12,0,0,86688eb0b1115bf9,2026-11-12
+loading_tagged_string_release_00836840,recorded,,2,2,0,0,1127843eea3f0297,2026-11-13
+loading_transfer_task_cancel_024dd8a0,recorded,,2,2,0,0,1127843eea3f0297,2026-11-13
 param_find_row_action_button,edge,,50,50,0,0,80e146de909c868f,2026-11-12
 param_find_row_ai_sound,edge,,50,50,0,0,80e146de909c868f,2026-11-12
 param_find_row_bullet,edge,,50,50,0,0,80e146de909c868f,2026-11-12
