@@ -139,8 +139,8 @@ RT_GLOBAL(0x0593b100, event_flag_man_instance, EventFlagMan *);
 RT_GLOBAL(0x04d3b19a, event_flag_man_name, const char);
 // The bits of `count` event flags starting at `first`.
 RT_ORIGINAL(0x017cfd80, event_flag_read_bits, uint32_t(EventFlagMan *, uint32_t first, uint32_t count));
-// A question about the gate's state (it reads FrpgNetMan in some modes); one caller asks it and
-// ignores the answer.
+// Whether the gate's state allows a ritual reset (the test ritual_reset_allowed makes below;
+// fixed_step_helpers.cpp); one caller asks it and ignores the answer.
 RT_ORIGINAL(0x01ea5570, gate_state_query, bool(StateOwner *));
 
 constexpr uint32_t gate_flag_first = 9020, gate_flag_count = 7;
@@ -348,7 +348,8 @@ constexpr int64_t no_session_id = INT64_MIN;
 // Fills *found with the object for an id, holding a reference the caller drops (or with null).
 RT_ORIGINAL(0x02265290, lookup_session_object, void(engine::RefObject **found, SessionId *id));
 
-// The step machine's step counter; past 27 steps it also builds a debug message.
+// The step machine's step counter; when the next step is past the gate's 27 it also passes on a
+// debug message (fixed_step_helpers.cpp).
 RT_ORIGINAL(0x01ec3000, step_machine_count_step, void(DungeonGate *));
 
 // What the methods return (the state machine's codes; their names are not known).
