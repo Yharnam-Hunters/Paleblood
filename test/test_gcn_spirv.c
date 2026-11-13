@@ -12,6 +12,8 @@
 #include "runtime/tile_copy.h"
 
 #include "gcn_programs.h"
+#include "pixel_constant_wqm_programs.h"
+#include "runtime/spirv.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -153,7 +155,7 @@ static void image_programs(void)
     CHECK(gcn_image_resources(PROGRAM(image_copy), found, GCN_MAX_IMAGES, &count, error, sizeof error) == 0);
     CHECK(count == 2 && !found[0].origin.from_memory && found[0].origin.sgpr == 0 && found[0].access == GCN_IMAGE_READ &&
           !found[1].origin.from_memory && found[1].origin.sgpr == 8 && found[1].access == GCN_IMAGE_WRITE);
-    const gcn_image_binding images[] = {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 0, 0, 0, 0}, {{0, 8, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 0, 0, 0, 0}};
+    const gcn_image_binding images[] = {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 0, 0, 0, 0, 0}, {{0, 8, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 0, 0, 0, 0, 0}};
     gcn_compute_layout with_images = layout;
     with_images.user_sgprs = 16, with_images.images = images, with_images.image_count = 2;
     uint32_t *spirv = NULL;
@@ -306,7 +308,7 @@ static void image_programs(void)
     if (reloaded) fprintf(stderr, "reloaded_in_loop: %s\n", error);
     CHECK(reloaded == 0 && count == 1 && found[0].origin.from_memory && found[0].origin.pointer_sgpr == 8 && found[0].origin.offset == 16);
     /* the two-image program translates with both bound, and stops naming the loaded one without it */
-    const gcn_image_binding two[] = {{{0, 4, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0, 0}, {{1, 4, 2, 16}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0, 0}};
+    const gcn_image_binding two[] = {{{0, 4, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0, 0, 0}, {{1, 4, 2, 16}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0, 0, 0}};
     gcn_pixel_layout both_images = pixel_layout;
     both_images.user_sgprs = 12, both_images.images = two, both_images.image_count = 2, both_images.error_address = 0x1000;
     const int two_translated = gcn_translate_pixel(PROGRAM(pixel_two_images), &both_images, &spirv, &words, error, sizeof error);
@@ -327,8 +329,8 @@ static void image_programs(void)
     gcn_resource_origin samplers[GCN_MAX_SAMPLERS];
     CHECK(gcn_sampler_resources(PROGRAM(pixel_lookup), samplers, GCN_MAX_SAMPLERS, &count, error, sizeof error) == 0);
     CHECK(count == 1 && !samplers[0].from_memory && samplers[0].sgpr == 12);
-    const gcn_image_binding lookup_images[] = {{{0, 4, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0, 0},
-                                               {{1, 0, 2, 0}, GCN_IMAGE_1D, 1, GCN_IMAGE_FLOAT, 1, 1, 0, 0, 0}};
+    const gcn_image_binding lookup_images[] = {{{0, 4, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0, 0, 0},
+                                               {{1, 0, 2, 0}, GCN_IMAGE_1D, 1, GCN_IMAGE_FLOAT, 1, 1, 0, 0, 0, 0}};
     gcn_pixel_layout lookup = pixel_layout;
     lookup.user_sgprs = 16, lookup.images = lookup_images, lookup.image_count = 2, lookup.samplers = samplers, lookup.sampler_count = 1;
     lookup.error_address = 0x1000;
@@ -344,7 +346,7 @@ static void image_programs(void)
     lookup.sampler_count = 0;
     CHECK(gcn_translate_pixel(PROGRAM(pixel_lookup), &lookup, &spirv, &words, error, sizeof error) == -1 &&
           strstr(error, "sampler in s[12:15] is not bound"));
-    const gcn_image_binding flat[] = {{{0, 4, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0, 0}, {{1, 0, 2, 0}, GCN_IMAGE_1D, 0, GCN_IMAGE_FLOAT, 1, 1, 0, 0, 0}};
+    const gcn_image_binding flat[] = {{{0, 4, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0, 0, 0}, {{1, 0, 2, 0}, GCN_IMAGE_1D, 0, GCN_IMAGE_FLOAT, 1, 1, 0, 0, 0, 0}};
     lookup.images = flat, lookup.sampler_count = 1;
     /* DA 1 on a 1D image that is not an array: the image's type decides and the slice VGPR is not read;
        with a LOD VGPR after the coordinates (image_sample_l), where that VGPR is depends on how the
@@ -364,10 +366,10 @@ static void image_programs(void)
        texel outside the image (or a level past the last) reads the replacement texel, so both translate
        and validate with or without a run-time stop word, also with a DST_SEL of constants (x, 1, z, 1). */
     enum { SEL_X_ONE_Z_ONE = 4 | 1 << 3 | 6 << 6 | 1 << 9 };
-    const gcn_image_binding bindings_loaded[][1] = {{{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0, 0}},
-                                           {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, SEL_X_ONE_Z_ONE, 0}},
-                                           {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 0, 0, 0, 0}},
-                                           {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_UINT, 2, 0, 0, SEL_X_ONE_Z_ONE, 0}}};
+    const gcn_image_binding bindings_loaded[][1] = {{{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0, 0, 0}},
+                                           {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, SEL_X_ONE_Z_ONE, 0, 0}},
+                                           {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 0, 0, 0, 0, 0}},
+                                           {{{0, 0, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_UINT, 2, 0, 0, SEL_X_ONE_Z_ONE, 0, 0}}};
     gcn_pixel_layout pixel = pixel_layout;
     for (size_t k = 0; k < sizeof bindings_loaded / sizeof *bindings_loaded; k++)
         for (int stop_word = 0; stop_word < 2; stop_word++) {
@@ -433,7 +435,7 @@ static void calls(void)
     CHECK(gcn_called_image_resources(PROGRAM(vertex_fetch_then_image), fetch_into_image_sgprs, sizeof fetch_into_image_sgprs / 4, found,
                                      GCN_MAX_IMAGES, &count, error, sizeof error) == -1 &&
           strstr(error, "s_swappc_b64"));
-    const gcn_image_binding texture[] = {{{0, 8, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0, 0}};
+    const gcn_image_binding texture[] = {{{0, 8, 0, 0}, GCN_IMAGE_2D, 0, GCN_IMAGE_FLOAT, 4, 1, 0, 0, 0, 0}};
     layout.callee = fetch_position_only, layout.callee_dwords = sizeof fetch_position_only / 4;
     layout.images = texture, layout.image_count = 1, layout.first_binding = 3;
     const int loaded = gcn_translate_vertex(PROGRAM(vertex_fetch_then_image), &layout, &spirv, &words, error, sizeof error);
@@ -775,8 +777,76 @@ static void survey_mode(void)
     CHECK(strstr(error, "v_interp_p1_f32") != NULL && !strstr(error, "s_sendmsg") && error[0] != '@');
 }
 
+/* Constant pixel WQM needs neither quad peers nor a native wave width. A nonconstant mask
+   still emits all three swaps, including after a guest branch or an internal selection. */
+static void constant_wqm_module(stage s, const uint32_t *code, size_t dwords,
+                                unsigned expected_swaps, const char *name)
+{
+    const gcn_pixel_layout pixel = {.user_sgprs = PIXEL_CONSTANT_WQM_USER_SGPRS};
+    const gcn_vertex_layout vertex = {.user_sgprs = 0};
+    const gcn_compute_layout compute = {.local_size = {64, 1, 1}, .user_sgprs = 0};
+    uint32_t *spirv = NULL;
+    size_t words = 0;
+    char error[256] = "";
+    const int result = s == PIXEL ? gcn_translate_pixel(code, dwords, &pixel, &spirv, &words, error, sizeof error) :
+                       s == VERTEX ? gcn_translate_vertex(code, dwords, &vertex, &spirv, &words, error, sizeof error) :
+                                     gcn_translate_compute(code, dwords, &compute, &spirv, &words, error, sizeof error);
+    if (result) fprintf(stderr, "  WQM %s: %s\n", name, error);
+    CHECK(result == 0 && spirv && words > 5);
+    if (!spirv) return;
+    unsigned swaps = 0;
+    size_t at = 5;
+    while (at < words) {
+        const size_t count = spirv[at] >> 16;
+        CHECK(count > 0 && count <= words - at);
+        if (!count || count > words - at) break;
+        swaps += (spirv[at] & 0xffffu) == SPV_OP_GROUP_NON_UNIFORM_QUAD_SWAP;
+        at += count;
+    }
+    CHECK(at == words);
+    if (swaps != expected_swaps) fprintf(stderr, "  WQM %s: %u quad swaps, expected %u\n", name, swaps, expected_swaps);
+    CHECK(swaps == expected_swaps);
+    const int valid = validate(spirv, words, name);
+    if (valid < 0) fprintf(stderr, "  WQM %s: spirv-val not installed; validation skipped\n", name);
+    else CHECK(valid == 1);
+    free(spirv);
+}
+
+static void constant_pixel_wqm(void)
+{
+    for (size_t i = 0; i < PIXEL_CONSTANT_WQM_POSITIVE_COUNT; i++) {
+        const pb_pixel_constant_wqm_program *p = &pixel_constant_wqm_positive[i];
+        constant_wqm_module(PIXEL, p->code, p->dwords, p->expected_quad_swaps, p->name);
+    }
+    for (size_t i = 0; i < PIXEL_CONSTANT_WQM_NEGATIVE_COUNT; i++) {
+        const pb_pixel_constant_wqm_program *p = &pixel_constant_wqm_negative[i];
+        constant_wqm_module(PIXEL, p->code, p->dwords, p->expected_quad_swaps, p->name);
+    }
+    /* The optimization is pixel-only: literal masks retain the old three swaps in each
+       compute/vertex module. These small programs deliberately have no pixel export. */
+    constant_wqm_module(COMPUTE, PROGRAM(pixel_wqm_nonpixel_literal_full), 3, "compute_wqm_literal_full");
+    constant_wqm_module(COMPUTE, PROGRAM(pixel_wqm_nonpixel_literal_empty), 3, "compute_wqm_literal_empty");
+    constant_wqm_module(VERTEX, PROGRAM(pixel_wqm_nonpixel_literal_full), 3, "vertex_wqm_literal_full");
+    constant_wqm_module(VERTEX, PROGRAM(pixel_wqm_nonpixel_literal_empty), 3, "vertex_wqm_literal_empty");
+
+    /* A backedge observes the changed EXEC on its second iteration. The decoder requires
+       the unreachable end marker; this loop is translated only, never submitted to a GPU. */
+    static const uint32_t self_loop[] = {0xbefe0a7eu, 0xbefe0480u, 0xbf82fffdu, 0xbf810000u};
+    constant_wqm_module(PIXEL, PROGRAM(self_loop), 3, "pixel_wqm_self_loop");
+
+    /* Survey output is deliberately unoptimized, including literals. Restore the global
+       mode before the rest of this executable, and separately check normal folding returns. */
+    gcn_spirv_set_survey(1);
+    constant_wqm_module(PIXEL, PROGRAM(pixel_wqm_nonpixel_literal_full), 3, "pixel_wqm_survey_full");
+    constant_wqm_module(PIXEL, PROGRAM(pixel_wqm_nonpixel_literal_empty), 3, "pixel_wqm_survey_empty");
+    constant_wqm_module(PIXEL, PROGRAM(pixel_wqm_initial_exec_simple), 3, "pixel_wqm_survey_initial");
+    gcn_spirv_set_survey(0);
+    constant_wqm_module(PIXEL, PROGRAM(pixel_wqm_nonpixel_literal_full), 0, "pixel_wqm_after_survey");
+}
+
 int main(void)
 {
+    constant_pixel_wqm();
     survey_mode();
     tessellation();
     geometry_shaders();
