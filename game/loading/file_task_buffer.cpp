@@ -43,10 +43,7 @@ constexpr uint32_t task_completed = 0x4;   // no cancel is taken after this
 
 // More result flags (+0x158).
 constexpr uint16_t result_ended = 0x0200;
-constexpr uint16_t result_small_read = 0x0400;
 constexpr uint16_t result_buffer_allocated = 0x0800;
-constexpr uint16_t chunk_flag_0x04 = 0x0004;
-constexpr uint8_t task_flag_no_buffer = 0x01;   // bit 0 of the flags at +0x58
 
 // The resource info's flag set when its task completed, and the word (+0x10) its end stores.
 constexpr uint8_t info_loaded = 0x01;
@@ -58,11 +55,6 @@ ResourceManager *resource_manager()
     const auto storage = reinterpret_cast<uintptr_t>(resource_manager_storage.address());
     return reinterpret_cast<ResourceManager *>((storage + resource_manager_alignment - 1) &
                                                ~(resource_manager_alignment - 1));
-}
-
-const char16_t *path_text(const engine::WideString *path)
-{
-    return path->capacity >= engine::wide_string_inline_capacity ? path->heap : path->inline_text;
 }
 
 void tell_buffer_released(TransferTaskManager *manager, engine::Allocator *allocator, uint64_t size)
@@ -87,7 +79,7 @@ extern "C" bool bb_loading_file_task_prepare_024d8210(FileTransferTask *file_tas
     if (task->flags_0x58 & task_flag_no_buffer)
         return true;
 
-    if (path_check(path_text(&task->path)) && task->close_status != 0 && task->close_status != close_status_requested)
+    if (path_check(wide_text(&task->path)) && task->close_status != 0 && task->close_status != close_status_requested)
         return true;
 
     if (!(task->chunk_flags & chunk_flag_0x04) && (task->result_flags & result_small_read) &&
@@ -164,9 +156,9 @@ extern "C" bool bb_loading_file_task_reset_024d6850(FileTransferTask *file_task,
     task->word_0x08 = 0;
     task->info = nullptr;
     task->manager = nullptr;
-    task->heap = nullptr;
+    task->reader = nullptr;
     task->manager_lock = nullptr;
-    task->buffer_heap = nullptr;
+    task->read_reader = nullptr;
     task->word_0x38 = task->word_0x40 = task->word_0x48 = 0;
     task->dword_0x50 = 0;
 

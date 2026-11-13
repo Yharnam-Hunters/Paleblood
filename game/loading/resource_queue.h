@@ -125,11 +125,14 @@ struct StreamLoadQueue;
 struct LoadEventQueue;
 
 struct ResourceInfo {
-    uint8_t unknown_0x00[0x10];
+    uintptr_t mutex;            // the engine's PthreadMutex guarding the count
+    int32_t reference_count;
+    uint8_t unknown_0x0c[0x04];
     int32_t transfer_claimed;     // set to 1 (an atomic exchange) when a transfer task takes it
     uint8_t unknown_0x14[0x1d];
     uint8_t flags;
-    uint8_t unknown_0x32[0x36];
+    uint8_t read_flags;           // 0xff while unset; bit 0 gives a file task's read close status 3
+    uint8_t unknown_0x33[0x35];
     LoadEventQueue *load_queue;   // the load event queue it was queued in (0x02a698e0), if any
     StreamLoadQueue *stream_queue;
     uint8_t unknown_0x78[0x8];
@@ -137,9 +140,9 @@ struct ResourceInfo {
     uint64_t pending_count;
     engine::Allocator *pending_allocator;
 };
-static_assert(offsetof(ResourceInfo, transfer_claimed) == 0x10);
+static_assert(offsetof(ResourceInfo, reference_count) == 0x08 && offsetof(ResourceInfo, transfer_claimed) == 0x10);
 static_assert(offsetof(ResourceInfo, flags) == 0x31 && offsetof(ResourceInfo, stream_queue) == 0x70);
-static_assert(offsetof(ResourceInfo, load_queue) == 0x68);
+static_assert(offsetof(ResourceInfo, load_queue) == 0x68 && offsetof(ResourceInfo, read_flags) == 0x32);
 static_assert(offsetof(ResourceInfo, pending_head) == 0x80 && offsetof(ResourceInfo, pending_allocator) == 0x90);
 
 constexpr uint8_t resource_releasing = 0x10;          // the release has started (set once)
@@ -164,15 +167,38 @@ struct ConditionSignal {
 };
 RT_ORIGINAL(0x0247e780, condition_signal_set, uint64_t(ConditionSignal *, bool signalled));
 
-// The resource manager (Dantelion2 DLResourceManagerImpl), as far as its release uses it.
+// A slot of the resource manager's: the info it holds and its name. A slot in use has bit 0 of its
+// flags set; a freed slot is cleared and goes to the manager's free slots.
+struct ResourceSlot {
+    uint64_t word_0x00;
+    uint64_t word_0x08;
+    uint64_t word_0x10;
+    ResourceInfo *info;
+    uint8_t flags;
+    uint8_t unknown_0x21[0x7];
+    engine::WideString name;
+};
+static_assert(offsetof(ResourceSlot, info) == 0x18 && offsetof(ResourceSlot, name) == 0x28);
+static_assert(sizeof(ResourceSlot) == 0x60);
+constexpr uint8_t resource_slot_in_use = 0x01;
+using ResourceSlotArray = engine::Array<ResourceSlot>;
+using ResourceSlotPointerArray = engine::Array<ResourceSlot *>;
+constexpr uintptr_t slot_storage_alignment = 8;
+
+// The resource manager (Dantelion2 DLResourceManagerImpl), as far as its release and its removal
+// of a released info use it. Its slot arrays are stored aligned up to 8.
 struct ResourceManager {
     uint8_t flags;   // bit 0: initialized
     uint8_t unknown_0x001[0x647];
     frame_timing::job::JobLock lock;
     uint8_t unknown_0x650[0x50];
     ConditionSignal signal;   // a release of an info outside the 0x40 state sets it
+    uint8_t unknown_0x6e0[0x6d8];
+    uint8_t slot_storage[sizeof(ResourceSlotArray) + slot_storage_alignment];
+    uint8_t free_slot_storage[sizeof(ResourceSlotPointerArray) + slot_storage_alignment];
 };
 static_assert(offsetof(ResourceManager, lock) == 0x648 && offsetof(ResourceManager, signal) == 0x6a0);
+static_assert(offsetof(ResourceManager, slot_storage) == 0xdb8 && offsetof(ResourceManager, free_slot_storage) == 0xde8);
 constexpr uint8_t resource_manager_initialized = 0x01;
 RT_ORIGINAL(0x024c1530, resource_manager_release, void(ResourceManager *, ResourceInfo *));
 
@@ -182,10 +208,10 @@ RT_GLOBAL(0x04d3d566, resource_manager_source_file, const char);
 RT_GLOBAL(0x04d3d5d4, resource_manager_not_initialized, const char);
 constexpr int32_t resource_manager_release_line = 0x2e6;
 
-// The file load queue's removal of a resource info, and what the manager does next with a
-// released info (0x024c3260, not analyzed beyond its checks of flags 0x40 and 0x80).
+// The file load queue's removal of a resource info, and the manager's removal of a released info
+// (0x024c3260: frees the info's slot and unloads it).
 RT_ORIGINAL(0x02a6af30, load_queue_remove, void(LoadEventQueue *, ResourceInfo *));
-RT_ORIGINAL(0x024c3260, resource_manager_remove_released, uint64_t(ResourceManager *, ResourceInfo *));
+RT_ORIGINAL(0x024c3260, resource_manager_remove_released, bool(ResourceManager *, ResourceInfo *));
 
 // The stream load queue (Dantelion2 DLResourceStreamLoadEventQueue), as far as the removal of a
 // request uses it: requests live in a pool (+0xc8, +0xd0 bytes); the requests in use and the
