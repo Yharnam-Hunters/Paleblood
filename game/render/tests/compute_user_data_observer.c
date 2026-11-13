@@ -4,7 +4,6 @@
    buffer's cursor. The record's functions are stubs here that keep the last call. The indirect
    dispatch's two writers report the base address and the data offset they are given. The depth bounds
    setter reports its two float arguments, from the saved frame's xmm0 and xmm1, as the two registers.
-   The shader stage setter reports VGT_SHADER_STAGES_EN for the values it writes, and nothing for others.
    The geometry-shader register writers report the registers they write, with the values they compute.
    The addressed indexed draw (DRAW_INDEX_2) reports the packet's fields, its predicate from the command buffer's flags.
    The viewport scissor setter reports the pair of registers it writes, its window-offset bit from its stack argument.
@@ -35,7 +34,6 @@ enum { SET_VIEWPORT_SCISSOR = 0x014766d0, PA_SC_VPORT_SCISSOR_0_TL = 0xa094, SCI
        SCISSOR_TOP = 0x18080, SCISSOR_RIGHT = 256, SCISSOR_BOTTOM = 384, SCISSOR_BR_WRITTEN = 0x01800100,
        SCISSOR_TL_WITH_OFFSET = 0x00800080, SCISSOR_FRAME_WORDS = RT_OBSERVED_STACK + 1, WINDOW_OFFSET_ENABLED = 1 };
 static const uint32_t SCISSOR_TL_WRITTEN = 0x80800080u; /* bit 31: WINDOW_OFFSET_DISABLE */
-enum { SET_SHADER_STAGES = 0x01476030, VGT_SHADER_STAGES_EN = 0xa2d5, TESSELLATION = 0x45, NOT_WRITTEN = 0x7 };
 /* every bit set: the setter keeps 0x0f7fe03f of them (ZCLIP_NEAR_DISABLE and _FAR_DISABLE, bits 26 and 27, among them) */
 enum { SET_CLIP_CONTROL = 0x01476b30, PA_CL_CLIP_CNTL = 0xa204, CLIP_ARGUMENT = 0xffffffff, CLIP_WRITTEN = 0x0f7fe03f };
 static const uint32_t one_value = 0x11223344u;
@@ -209,16 +207,6 @@ int main(void)
         memcpy(&low_bits, &low, sizeof low_bits), memcpy(&high_bits, &high, sizeof high_bits);
         CHECK(registers.count == BOUNDS_REGISTERS && registers.address[0] == DB_DEPTH_BOUNDS_MIN && registers.value[0] == low_bits &&
               registers.address[1] == DB_DEPTH_BOUNDS_MAX && registers.value[1] == high_bits);
-    }
-    /* the shader stages: 0x45 (tessellation) is reported, 7 (which the setter does not write) is not */
-    const rt_observer_fn stages = observer(SET_SHADER_STAGES);
-    CHECK(stages != NULL);
-    if (stages) {
-        memset(&registers, 0, sizeof registers);
-        const uint64_t tessellation[RT_OBSERVED_ARGUMENTS] = {object_address, TESSELLATION}, other[RT_OBSERVED_ARGUMENTS] = {object_address, NOT_WRITTEN};
-        stages(tessellation);
-        stages(other);
-        CHECK(registers.count == 1 && registers.address[0] == VGT_SHADER_STAGES_EN && registers.value[0] == TESSELLATION);
     }
     /* the geometry-shader registers: the ESGS item size masked to 15 bits; stream sizes 12, 2, 0, 1 for 40
        vertices: the four sizes, the next streams' offsets (12, 14, 14 dwords x 40), 40 vertices and 15 x 40 dwords

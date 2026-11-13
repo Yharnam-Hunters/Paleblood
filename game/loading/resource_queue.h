@@ -125,7 +125,9 @@ struct StreamLoadQueue;
 struct LoadEventQueue;
 
 struct ResourceInfo {
-    uint8_t unknown_0x00[0x10];
+    uintptr_t mutex;            // the engine's PthreadMutex guarding the count
+    int32_t reference_count;
+    uint8_t unknown_0x0c[0x04];
     int32_t transfer_claimed;     // set to 1 (an atomic exchange) when a transfer task takes it
     uint8_t unknown_0x14[0x1d];
     uint8_t flags;
@@ -138,7 +140,7 @@ struct ResourceInfo {
     uint64_t pending_count;
     engine::Allocator *pending_allocator;
 };
-static_assert(offsetof(ResourceInfo, transfer_claimed) == 0x10);
+static_assert(offsetof(ResourceInfo, reference_count) == 0x08 && offsetof(ResourceInfo, transfer_claimed) == 0x10);
 static_assert(offsetof(ResourceInfo, flags) == 0x31 && offsetof(ResourceInfo, stream_queue) == 0x70);
 static_assert(offsetof(ResourceInfo, load_queue) == 0x68 && offsetof(ResourceInfo, read_flags) == 0x32);
 static_assert(offsetof(ResourceInfo, pending_head) == 0x80 && offsetof(ResourceInfo, pending_allocator) == 0x90);

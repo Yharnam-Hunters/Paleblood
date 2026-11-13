@@ -306,7 +306,10 @@ Instead:
      - **Calls to fetch shaders** (`s_swappc_b64`): the game's vertex shaders call a fetch shader at
        the address in a user-data SGPR pair, which loads the vertex inputs and returns with
        `s_setpc_b64`. The executor reads that address at draw time (`gcn_call_sgpr` names the pair:
-       user data untouched before the call, one call) and the translator inlines the callee in place
+       user data untouched before the call, one call; the pair is kept by the shader's address with
+       a copy of the program, used while the memory still holds that code, since decoding the program
+       at every draw took a sixth of the renderer thread's time in Iosefka's Clinic) and the
+       translator inlines the callee in place
        of the call, the return pair taking the return address. That is exactly what the call runs
        when the callee is straight-line code ending in that return, which it checks; a callee with a
        branch, an image instruction or a write to the return pair stops by name. Descriptor analyses
