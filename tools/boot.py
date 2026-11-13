@@ -49,6 +49,17 @@ would otherwise miss that state and stop. --capture-cases caps the
 distinct cases kept per function and run. A case identical to one DIR already holds is not
 written again.
 
+--clip FILE writes presented frames of the run to a silent video at full resolution: FILE ends in
+.webm (VP9) or .mp4 (H.264), and must be outside the repository (it holds your own game's frames;
+never commit it). --clip-start is the first presented frame (numbered from 0, as --display-capture
+names them) and --clip-frames how many follow. The clip plays them at --clip-fps (30, the game's
+presentation rate), one presented frame per step, however fast the run itself went. It has no
+audio track and is never scaled (an odd width or height gets one row or column of black padding,
+which the encoders need). The frames come from the display capture: into --display-capture's DIR
+if given, else into a scratch folder next to FILE that keeps only the frames in range while the
+run goes and is removed afterwards. Needs ffmpeg ($BB_FFMPEG, else on PATH). The wiki's media rule
+caps a clip at 8 MiB; a larger result is written with a warning.
+
 --elf defaults to $BB_ELF, then $BB_DATA_ROOT/elf/eboot.elf. --nids (a public NID database, for
 names) defaults to $BB_NID_DB, then GhidraOrbis's nid_db.xml under ../tools. The harness binary
 is $BB_PBBOOT or build/runtime/pbboot.
@@ -67,6 +78,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HISTORY_FIELDS = ('date', 'milestone', 'milestone_index', 'imports_total', 'imports_bundled', 'imports_implemented',
@@ -262,6 +274,78 @@ def capture_environment(root: str, directory: str, which: str, cases: int, elf: 
     return env
 
 
+# --clip: presented frames to a silent video (docs/ENEMY_OVERLAY.md, "Recording clips").
+CLIP_ENCODERS = {
+    '.webm': ['-c:v', 'libvpx-vp9', '-crf', '30', '-b:v', '0', '-row-mt', '1', '-deadline', 'good'],
+    '.mp4': ['-c:v', 'libx264', '-crf', '18', '-preset', 'slow', '-movflags', '+faststart'],
+}
+CLIP_SIZE_CAP = 8 * 1024 * 1024
+FRAME_NAME = re.compile(r'frame-(\d+)\.ppm$')
+
+
+def clip_frames(directory: str, start: int, count: int) -> list[str]:
+    """The capture's frames start..start+count-1 in order; an error names the first one missing."""
+    paths = [os.path.join(directory, f'frame-{n:06d}.ppm') for n in range(start, start + count)]
+    for n, path in enumerate(paths, start):
+        if not os.path.isfile(path):
+            have = sorted(int(m.group(1)) for m in map(FRAME_NAME.match, os.listdir(directory)) if m)
+            got = f'frames {have[0]}..{have[-1]}' if have else 'no frames'
+            raise ValueError(f'--clip: frame {n} was never presented (the capture has {got}); '
+                             'lower --clip-start or --clip-frames, or raise --timeout')
+    return paths
+
+
+def clip_command(ffmpeg: str, pattern: str, fps: int, out: str) -> list[str]:
+    """ffmpeg reading numbered PPM frames (pattern, e.g. DIR/clip-%06d.ppm) into a silent clip at the
+    frames' own size: no scaling, only padding an odd dimension to the even size 4:2:0 needs."""
+    encoder = CLIP_ENCODERS[os.path.splitext(out)[1].lower()]
+    return [ffmpeg, '-hide_banner', '-loglevel', 'error', '-y', '-framerate', str(fps), '-i', pattern,
+            '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2', '-pix_fmt', 'yuv420p', *encoder, '-an', out]
+
+
+def write_clip(ffmpeg: str, directory: str, start: int, count: int, fps: int, out: str) -> int:
+    """Encode frames start..start+count-1 of a display capture to out; returns its size in bytes."""
+    frames = clip_frames(directory, start, count)
+    with tempfile.TemporaryDirectory(dir=os.path.dirname(os.path.abspath(out))) as staged:
+        for i, path in enumerate(frames):
+            os.symlink(os.path.abspath(path), os.path.join(staged, f'clip-{i:06d}.ppm'))
+        subprocess.run(clip_command(ffmpeg, os.path.join(staged, 'clip-%06d.ppm'), fps, out), check=True)
+    return os.path.getsize(out)
+
+
+class FramePruner:
+    """Keeps a scratch display capture to the clip's frames while the run goes: every half second it
+    removes the frames outside start..start+count-1, so a long boot never fills the disk. (Removing
+    a frame the writer still has open is safe: its data goes when the writer closes it.)"""
+
+    def __init__(self, directory: str, start: int, count: int):
+        self.directory, self.start, self.end = directory, start, start + count
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self.run, daemon=True)
+
+    def prune(self) -> None:
+        for name in os.listdir(self.directory):
+            m = FRAME_NAME.match(name)
+            if m and not self.start <= int(m.group(1)) < self.end:
+                try:
+                    os.unlink(os.path.join(self.directory, name))
+                except FileNotFoundError:
+                    pass
+
+    def run(self) -> None:
+        while not self.stop.wait(0.5):
+            self.prune()
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.stop.set()
+        self.thread.join()
+        self.prune()
+
+
 def stops_at(b: dict) -> str:
     s = b.get('first_unimplemented')
     if s:
@@ -365,6 +449,12 @@ def main() -> int:
     ap.add_argument('--display', choices=('none', 'headless', 'window'), default='none',
                     help='show the frames: none (default), headless, or a window (needs Vulkan and SDL3)')
     ap.add_argument('--display-capture', default=None, metavar='DIR', help='write each presented frame to DIR as PPM')
+    ap.add_argument('--clip', default=None, metavar='FILE',
+                    help='write presented frames to a silent full-resolution clip FILE (.webm or .mp4, outside the '
+                         'repository; needs ffmpeg). Not for recorded boots')
+    ap.add_argument('--clip-start', type=int, default=0, metavar='N', help='with --clip: the first presented frame (default 0)')
+    ap.add_argument('--clip-frames', type=int, default=None, metavar='N', help='with --clip: how many frames (required)')
+    ap.add_argument('--clip-fps', type=int, default=30, metavar='N', help='with --clip: frames per second of the clip (default 30)')
     ap.add_argument('--frame-log', default=None, metavar='FILE',
                     help='write a line per presented frame to FILE (port, frame, monotonic ns): tools/frame_stats.py reads it')
     ap.add_argument('--game-lib', default=None, metavar='LIBRARY',
@@ -414,6 +504,23 @@ def main() -> int:
         ap.error('--input host reads the gamepad and keyboard through the window: add --display window')
     if a.game_lib and not a.no_record:
         ap.error('--game-lib runs replacements in place of the originals: such a boot is not recorded (add --no-record)')
+    ffmpeg = None
+    if a.clip:
+        if not a.no_record:
+            ap.error('--clip records a video of the run: such a boot is not recorded (add --no-record)')
+        if os.path.splitext(a.clip)[1].lower() not in CLIP_ENCODERS:
+            ap.error('--clip: the file must end in .webm or .mp4')
+        if os.path.realpath(a.clip).startswith(os.path.realpath(ROOT) + os.sep):
+            ap.error('--clip: the clip holds frames of your own game; keep it outside the repository')
+        if not os.path.isdir(os.path.dirname(os.path.abspath(a.clip))):
+            ap.error(f'--clip {a.clip}: its folder does not exist')
+        if a.clip_frames is None or a.clip_frames < 1 or a.clip_start < 0 or a.clip_fps < 1:
+            ap.error('--clip needs --clip-frames N >= 1, --clip-start >= 0 and --clip-fps >= 1')
+        ffmpeg = os.environ.get('BB_FFMPEG') or shutil.which('ffmpeg')
+        if not ffmpeg:
+            ap.error('--clip needs ffmpeg: install it or set BB_FFMPEG')
+    elif a.clip_frames is not None:
+        ap.error('--clip-frames goes with --clip FILE')
     elf = a.elf or default_elf()
     pbboot = os.environ.get('BB_PBBOOT') or os.path.join(ROOT, 'build', 'runtime', 'pbboot')
     for path, what in ((elf, 'executable (your own dump\'s eboot.elf)'), (pbboot, 'boot harness: build the repository')):
@@ -455,8 +562,14 @@ def main() -> int:
         cmd = [pbboot, *objects, *stubs, *hooks, '--data', data, '--savedata', savedata, '--status', out,
                '--timeout', str(a.timeout), *names,
                '--display', a.display, '--audio', a.audio, '--input', a.input]
-        if a.display_capture:
-            cmd += ['--display-capture', a.display_capture]
+        frames_dir = a.display_capture
+        scratch = None
+        if a.clip and not frames_dir:
+            # A scratch capture next to the clip (not in the temporary folder, which may be memory).
+            scratch = tempfile.TemporaryDirectory(prefix='.frames-', dir=os.path.dirname(os.path.abspath(a.clip)))
+            frames_dir = scratch.name
+        if frames_dir:
+            cmd += ['--display-capture', frames_dir]
         if a.frame_log:
             cmd += ['--frame-log', os.path.abspath(a.frame_log)]
         if a.input_script:
@@ -477,12 +590,30 @@ def main() -> int:
         if a.game_lib:
             cmd += ['--game-lib', a.game_lib]
         # The guest runs in this process's child; a hard limit covers a runaway harness.
-        p = subprocess.run(cmd, timeout=a.timeout + 60, env=env)
-        if p.returncode != 0 or not os.path.isfile(out):
-            print(f'boot: harness failed (exit {p.returncode})', file=sys.stderr)
-            return 3
-        with open(out) as f:
-            status = json.load(f)
+        try:
+            if scratch:
+                with FramePruner(frames_dir, a.clip_start, a.clip_frames):
+                    p = subprocess.run(cmd, timeout=a.timeout + 60, env=env)
+            else:
+                p = subprocess.run(cmd, timeout=a.timeout + 60, env=env)
+            if p.returncode != 0 or not os.path.isfile(out):
+                print(f'boot: harness failed (exit {p.returncode})', file=sys.stderr)
+                return 3
+            with open(out) as f:
+                status = json.load(f)
+            if a.clip:
+                try:
+                    size = write_clip(ffmpeg, frames_dir, a.clip_start, a.clip_frames, a.clip_fps, a.clip)
+                except (ValueError, subprocess.CalledProcessError) as e:
+                    print(f'boot: {e}', file=sys.stderr)
+                    return 3
+                print(f'clip: {a.clip}: frames {a.clip_start}..{a.clip_start + a.clip_frames - 1}, '
+                      f'{a.clip_frames / a.clip_fps:.2f} s at {a.clip_fps} fps, {size} bytes, silent')
+                if size > CLIP_SIZE_CAP:
+                    print('clip: larger than the 8 MiB the wiki allows a clip; use fewer frames', file=sys.stderr)
+        finally:
+            if scratch:
+                scratch.cleanup()
     if a.no_record:
         return 0
     listing = subprocess.run([pbboot, *objects, '--imports', *names], capture_output=True, text=True, timeout=120)
