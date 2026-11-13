@@ -19,6 +19,12 @@ namespace loading::transfer_task {
 using resource_queue::LoadRequest;
 using resource_queue::ResourceInfo;
 
+// A wide string's text: inline up to 7 characters, else on the heap.
+inline const char16_t *wide_text(const engine::WideString *text)
+{
+    return text->capacity >= engine::wide_string_inline_capacity ? text->heap : text->inline_text;
+}
+
 // The task's states (+0x60). A task in one of its final states may not be moved back to a
 // working state: such a move is reported ("Tried to shift into lower priority.") and made anyway.
 enum TaskState : int32_t {
@@ -60,24 +66,83 @@ constexpr int32_t step_status_done = 0xb;         // the two step statuses (+0x6
 // The cancel bits (+0x160), set atomically by the cancel (0x024dd8a0).
 constexpr uint32_t cancel_requested = 0x1;
 
-// The chunk flags (+0x12a): bit 3 makes a step wait for the close.
+// The chunk flags (+0x12a): bit 3 makes a step wait for the close; the read start sets bit 2 for
+// a task holding a read object.
+constexpr uint16_t chunk_flag_0x04 = 0x0004;
 constexpr uint16_t chunk_wait_for_close = 0x0008;
+constexpr uint16_t result_small_read = 0x0400;   // a result flag (+0x158)
+constexpr uint8_t task_flag_no_buffer = 0x01;    // bit 0 of the flags at +0x58
 
 // The request's flags byte (LoadRequest +0x40): 0xff while unset; with bit 1 clear the file is
 // looked up as a "preferred" location (the device's third argument).
 constexpr uint8_t request_flags_unset = 0xff;
 constexpr uint8_t request_flag_0x02 = 0x02;
 
-// The transfer task manager, as far as a task uses it: two heaps a task's buffers come from
-// (pointers stored at +0x5d0, each aligned up to 8, chosen by where the device finds the file),
-// its lock (+0xe0) and its stop flag.
-constexpr uintptr_t heap_slot_alignment = 8;
-constexpr int heap_count = 2;
+// A file task's read request: what the task's read start (0x024d8470) hands to a reader, copied
+// whole into the reader's queue. The reader reports back through the pointers into the task.
+struct ReadRequestExtra {               // the request's two texts and its data, when it has data
+    const char16_t *text_0xa0;
+    const char16_t *text_0xd8;
+    const uint8_t *data;
+    int32_t value_0x138;
+};
+static_assert(sizeof(ReadRequestExtra) == 0x20);
+struct FileTransferTask;
+struct TransferTask;
+struct ReadRequest {
+    const char16_t *path;
+    uint64_t chunk_limit;               // the task's chunk limit before the read
+    uint8_t *destination;               // where the read goes on in the task's buffer
+    uint64_t size_left;
+    uint64_t word_0x20;                 // 0
+    uint64_t *task_word_0xb0;
+    int32_t *step_status_0x68;
+    int32_t *step_status_0x6c;
+    int32_t *open_status;
+    int32_t close_status;
+    int32_t dword_0x80;
+    uint8_t *small_buffer;              // the small read's buffer and size, else null and 0
+    uint64_t small_size;
+    uint64_t buffer_size;               // the small read's buffer size, else 0
+    uint64_t word_0x150;
+    ReadRequestExtra extra;
+    FileTransferTask *task;
+    TransferTask *dependent;
+    uint64_t *task_word_0x38;
+    bool small_read;
+    bool byte_0xa9;                     // false
+    bool no_buffer;                     // bit 0 of the task's flags at +0x58
+};
+static_assert(offsetof(ReadRequest, close_status) == 0x48 && offsetof(ReadRequest, extra) == 0x70);
+static_assert(offsetof(ReadRequest, task) == 0x90 && offsetof(ReadRequest, small_read) == 0xa8);
+static_assert(sizeof(ReadRequest) == 0xb0);
+
+// A transfer reader: the worker a task's reads go to (the manager has two). Its read requests are
+// a queue (an engine deque, stored at +0x28 aligned up to 8) guarded by its lock (+0x110); queueing
+// one sets its signal (+0xd0). The deque's push_back is 0x024d37d0.
+struct ReadRequestQueue;
+constexpr size_t read_queue_size = 0x30;   // a word, the block map, its size, the offset, the count, the allocator
+constexpr uintptr_t read_queue_alignment = 8;
+struct TransferReader {
+    uint8_t unknown_0x000[0x28];
+    uint8_t read_queue_storage[read_queue_size + read_queue_alignment];
+    uint8_t unknown_0x060[0x70];
+    resource_queue::ConditionSignal signal;
+    frame_timing::job::JobLock lock;
+};
+static_assert(offsetof(TransferReader, signal) == 0xd0 && offsetof(TransferReader, lock) == 0x110);
+RT_ORIGINAL(0x024d37d0, read_request_queue_push_back, void(ReadRequestQueue *, const ReadRequest *));
+
+// The transfer task manager, as far as a task uses it: its two readers (pointers stored at
+// +0x5d0, aligned up to 8; a task takes one by where the device finds the file), its lock (+0xe0)
+// and its stop flag.
+constexpr uintptr_t reader_slot_alignment = 8;
+constexpr int reader_count = 2;
 struct TransferTaskManager {
     uint8_t unknown_0x000[0xe0];
     frame_timing::job::JobLock lock;
     uint8_t unknown_0x0e8[0x4e8];
-    uint8_t heap_storage[heap_count * sizeof(engine::Allocator *) + heap_slot_alignment];
+    uint8_t reader_storage[reader_count * sizeof(TransferReader *) + reader_slot_alignment];
     uint8_t unknown_0x5e8[0x12c];
     uint8_t flags_0x714;   // bit 0: stop: a file task's start aborts it
     uint8_t unknown_0x715[0x3];
@@ -89,7 +154,7 @@ struct TransferTaskManager {
     void (*buffer_released)(engine::Allocator *, uint64_t size, void *context);
     void *buffer_released_context;
 };
-static_assert(offsetof(TransferTaskManager, lock) == 0xe0 && offsetof(TransferTaskManager, heap_storage) == 0x5d0);
+static_assert(offsetof(TransferTaskManager, lock) == 0xe0 && offsetof(TransferTaskManager, reader_storage) == 0x5d0);
 static_assert(offsetof(TransferTaskManager, flags_0x714) == 0x714);
 static_assert(offsetof(TransferTaskManager, buffer_allowed) == 0x718 && offsetof(TransferTaskManager, buffer_released) == 0x728);
 constexpr uint8_t manager_stopping = 0x01;
@@ -111,7 +176,6 @@ struct ReadObject {
 };
 RT_ORIGINAL(0x0247b720, allocator_of, engine::Allocator *(ReadObject *));
 
-struct TransferTask;
 struct TransferTaskVtable {
     void (*start)(TransferTask *);      // called once a file task has started
     void (*finish)(TransferTask *);     // called once when the task finishes
@@ -136,9 +200,9 @@ struct TransferTask {
                                         // task's read buffer comes from (0x024d8210)
     ResourceInfo *info;                 // the resource it loads
     TransferTaskManager *manager;
-    engine::Allocator *heap;            // the heap chosen for the file (also at +0x30)
+    TransferReader *reader;             // the reader chosen for the file (also at +0x30)
     frame_timing::job::JobLock *manager_lock;
-    engine::Allocator *buffer_heap;
+    TransferReader *read_reader;        // the reader its reads are queued to
     uint64_t word_0x38;
     uint64_t word_0x40;
     uint64_t word_0x48;
@@ -159,7 +223,9 @@ struct TransferTask {
     uint8_t unknown_0x84[0x4];
     TransferTask *dependent;            // a task made ready once this one's read buffer exists
     OwnedObject owned;
-    uint8_t unknown_0x0a8[0x20];
+    uint8_t unknown_0x0a8[0x8];
+    uint64_t word_0xb0;                 // a read request points at it
+    uint8_t unknown_0x0b8[0x10];
     engine::WideString path;            // the path a file task's prepare checks
     ReadObject *read_object;
     uint64_t chunk_size;                // copied to +0x118 when a file task starts, if set
@@ -181,8 +247,8 @@ struct TransferTask {
     int32_t cancel_flags;
     uint8_t unknown_0x164[0x4];
 };
-static_assert(offsetof(TransferTask, info) == 0x10 && offsetof(TransferTask, heap) == 0x20);
-static_assert(offsetof(TransferTask, buffer_heap) == 0x30 && offsetof(TransferTask, dword_0x50) == 0x50);
+static_assert(offsetof(TransferTask, info) == 0x10 && offsetof(TransferTask, reader) == 0x20);
+static_assert(offsetof(TransferTask, read_reader) == 0x30 && offsetof(TransferTask, dword_0x50) == 0x50);
 static_assert(offsetof(TransferTask, flags_0x58) == 0x58 && offsetof(TransferTask, state) == 0x60);
 static_assert(offsetof(TransferTask, read_status) == 0x70 && offsetof(TransferTask, close_status) == 0x78);
 static_assert(offsetof(TransferTask, dependent) == 0x88 && offsetof(TransferTask, owned) == 0x90);
@@ -233,14 +299,14 @@ static_assert(offsetof(FileTransferTask, small_buffer) == 0x300 && offsetof(File
 static_assert(sizeof(FileTransferTask) == 0x338);
 
 // The base initialization, and what it asks the disk file device: where it finds the file
-// (0 or not), which picks one of the manager's two heaps.
+// (0 or not), which picks one of the manager's two readers.
 RT_ORIGINAL(0x024dd540, transfer_task_initialize,
             bool(TransferTask *, const engine::WideString *path, TransferTaskManager *, ResourceInfo *,
                  uint64_t word_0x08, uint8_t request_flags));
 struct DiskFileDevice;
 RT_ORIGINAL(0x0246be70, disk_file_device_instance, DiskFileDevice *());
 RT_ORIGINAL(0x0246e3d0, disk_file_device_locate, int32_t(DiskFileDevice *, const engine::WideString *path, bool preferred));
-constexpr int32_t location_first_heap = 0;
+constexpr int32_t location_first_reader = 0;
 
 // The file task's initialization (it also runs the base initialization).
 RT_ORIGINAL(0x024d6730, file_task_initialize,
@@ -254,6 +320,9 @@ RT_ORIGINAL(0x024be630, load_request_assign, LoadRequest *(LoadRequest *, const 
 // with what is left to read).
 RT_ORIGINAL(0x024d8210, file_task_prepare, bool(FileTransferTask *));
 RT_ORIGINAL(0x024d8470, file_task_begin_read, void(FileTransferTask *, uint64_t size_left));
+constexpr int32_t step_status_queued = 3;     // the read step status (+0x68) once a read is queued
+constexpr int32_t close_status_3 = 3;         // a read request's close status for a cached info or a held read object
+constexpr int32_t state_15 = 15;              // a state in which the small read is not used
 
 // The file task's state handlers, as a table of pointers to member functions (16 bytes each:
 // the function, or a vtable offset plus one; then the adjustment to `this`), indexed by state.
