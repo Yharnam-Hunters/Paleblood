@@ -204,6 +204,7 @@ address,size,name,system,status,notes
 0x0206ddd0,547,param_find_rows_menu_value_table,param,edge-verified,MenuValueTableParam run of consecutive ids from an id: first row and count; fetches the table again for every id
 0x0206ecc0,313,param_menu_property_spec,param,edge-verified,MenuPropertySpecParam row of an id; else the built-in row (13 at 0x05528730) with that id; else the first built-in row
 0x0217ffb0,205,engine_initialize_static_wide_string_0217ffb0,engine,verified,Guarded static empty wide string; byte-only entry test; captured allocator; exact partial stores; destructor registration before full guard publication
+0x021d6ea0,199,ai_draw_world_021d6ea0,ai,edge-verified,"No-op without the view renderer (+0x8); sets slot state +0x18=2 +0x1c=0 +0x70=3 +0x78=16.0 (dirty 4/8/0x80, +9 bit 1) when they differ, then 0x021d5960 per section of world+0x50 list"
 0x0222bc10,2693,ai_hk_frame_update_0222bc10,ai,verified,"SprjHkAiManager per-frame update: steps the AI world by 1/30 s (the 60 FPS patches: 1/60); AI debug display and drawing"
 0x02311c80,283,param_find_row_equip_param_accessory,param,edge-verified,SoloParamRepository row lookup for EquipParamAccessory (type 2): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x02311da0,284,param_row_name_equip_param_accessory,param,edge-verified,SoloParamRepository row name lookup for EquipParamAccessory (type 2): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
@@ -502,6 +503,7 @@ address,size,name,system,status,notes
 0x02713870,11646,render_update_model_wind,render,edge-verified,"Ages a model wind receiver's kept influences; lists the live ones and adds or refreshes one per attached wind source; applies selected frame-rate steps"
 0x027ec640,583,engine_scaleform_heap_bitset_mark_027ec640,engine,edge-verified,Scaleform page bitset: mark an allocated block (2-bit codes: 1; 2; 3+len-3; 3 3 + 6-bit len-6; 3 3 3 + 32-bit word); last unit 1
 0x027ec890,171,engine_scaleform_heap_bitset_units_027ec890,engine,edge-verified,Scaleform page bitset: read an allocated block's length from its first codes
+0x029ae440,418,ai_entity_point_029ae440,ai,edge-verified,"Face point of a nav-mesh-like source: mean of its edges start vertices through the transform at +0x70 (face/edge maps, added faces/edges/vertices), times refined rcpps of the count; writes 16 bytes"
 0x02a279a0,429,engine_wide_string_assign_from_02a279a0,engine,edge-verified,"Wide string assign(source, position, count): out of range past the end; self-assign cuts the tail, wmemmove front; else grow if capacity < length, wmemcpy"
 0x02a27b70,311,engine_wide_string_grow_02a27b70,engine,edge-verified,"Wide string growth: capacity length|7 or old*1.5 (max 0x7ffffffffffffffe); allocate 2*cap+2 align 2, transaction on failure; keep chars, free old heap"
 0x02a2aca0,180,loading_path_token_next_02a2aca0,loading,verified,wide path token scanner: skip delimiters (wcschr); return length and start of the next token; cursor moves to the delimiter after it
