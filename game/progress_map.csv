@@ -1,0 +1,9 @@
+library,group,group_short,name,short
+engine,Bloodborne engine and game code,Engine and game,FromSoftware: Dantelion2/FD4 engine and game,Engine and game
+havok,Middleware and Sony SDK libraries,Middleware,"Havok (physics, animation, AI)",Havok
+scaleform,Middleware and Sony SDK libraries,Middleware,Scaleform GFx (menus),Scaleform
+fmod,Middleware and Sony SDK libraries,Middleware,FMOD (audio),FMOD
+yebis,Middleware and Sony SDK libraries,Middleware,YEBIS (post-processing),YEBIS
+havokscript,Middleware and Sony SDK libraries,Middleware,HavokScript,HavokScript
+sce-gnmx,Middleware and Sony SDK libraries,Middleware,Sony GNMX,GNMX
+,Not attributed to a library yet,Unattributed,Not attributed to a library yet,Unattributed

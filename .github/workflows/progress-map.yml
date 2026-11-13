@@ -1,0 +1,57 @@
+# The README's decompilation progress map and badges, published on GitHub Pages.
+#
+# They are not committed: this workflow builds them with tools/progress_map.py from the committed
+# tables under symbols/ (no game data, no secrets) on every push to main and deploys them to
+# https://yharnam-hunters.github.io/Paleblood/ (progress.svg, badge-*.svg), which the README
+# embeds, so the map is never behind main. The schedule and manual runs are a backstop. A failed
+# generation fails the run; nothing is deployed then and the last good map stays up.
+name: progress-map
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '41 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: progress-map
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the map and badges from symbols/
+        run: |
+          set -euo pipefail
+          python3 tools/progress_map.py --out-dir "$RUNNER_TEMP/site"
+          for f in progress.svg badge-verified.svg badge-replaced.svg badge-code.svg badge-week.svg; do
+            test -s "$RUNNER_TEMP/site/$f" || { echo "progress-map: $f was not generated" >&2; exit 1; }
+          done
+          {
+            echo '### Progress map'
+            echo
+            echo "Built from main ${GITHUB_SHA::12}:"
+            python3 tools/progress.py --status-line
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ runner.temp }}/site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
