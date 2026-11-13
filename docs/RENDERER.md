@@ -658,10 +658,12 @@ Instead:
           Memory a game draws into as a target of another size or format (YEBIS's post passes reuse
           theirs) gets another image: the one there is written back and set aside (`target_for`), and taken
           back, loaded from the memory, when that address has its shape again.
-          When all 128 target slots are taken, the one set aside longest (else the least recently used)
+          When all 512 target slots are taken, the one set aside longest (else the least recently used)
           whose texels are all in its memory and that no unfinished batch uses is freed, with the render
           passes and pipelines made for it (`target_slot_to_free`); the GPU's work is waited for when none
-          is free.
+          is free. Freeing is a fallback, not a steady state: with 128 slots the clinic's YEBIS passes
+          freed and made again about 39 targets a frame (their images, copy buffers, passes and pipelines),
+          about 3 of each 6 seconds a frame took; 512 slots hold all of them (with twice as many render passes).
           Showing a frame copies the target's image to a host-visible buffer once per flip.
           `test_render_executor` checks a 1D-tiled target's texels at `rt_tiling_offset` after a
           write-back and a CPU write showing at its pixel after a load; a mutated table fails both.

@@ -1273,13 +1273,13 @@ static void reshaped_target(rt_executor *x)
     CHECK(near(first & 0xff, 0.5f / SIZE) && near(first >> 8 & 0xff, 0.5f / SIZE) && near(first >> 16 & 0xff, 0.25f));
 }
 
-/* More render targets than the executor keeps (YEBIS moves its post targets through memory): 130 targets
-   drawn one after another, each written back at its buffer's end; the oldest are freed for the newest. The
-   first target's memory still holds its triangle, and drawn again keeping what is there, the target made
-   for it anew loads the triangle from the memory. */
+/* More render targets than the executor keeps (YEBIS moves its post targets through memory): 514 targets
+   drawn one after another, each written back at its buffer's end. 401 of them are all kept; past 512 the
+   oldest are freed for the newest. The first target's memory still holds its triangle, and drawn again
+   keeping what is there, the target made for it anew loads the triangle from the memory. */
 static void many_targets(rt_executor *x)
 {
-    enum { MANY_BUFFER = 0xc0fd4000, MANY_FIRST = 0x3800000, MANY = 130, TARGET_BYTES = SIZE * SIZE * 4 };
+    enum { MANY_BUFFER = 0xc0fd4000, MANY_FIRST = 0x3800000, MANY = 514, /* the executor keeps 512 */ TARGET_BYTES = SIZE * SIZE * 4 };
     char error[200] = "";
     rt_render_forget(), rt_executor_reset(x);
     memset((void *)(uintptr_t)at(MANY_FIRST), 0, (size_t)MANY * TARGET_BYTES);
@@ -1290,6 +1290,10 @@ static void many_targets(rt_executor *x)
                                                                      PERSP_CENTER), error, sizeof error);
         if (ran && drawn) fprintf(stderr, "target %u of many: %s\n", k, error);
         drawn &= ran == 0;
+        if (k == 400) { /* 401 targets fit: the first is still kept (the clinic's YEBIS passes use more than 128) */
+            uint32_t pixels[SIZE * SIZE];
+            CHECK(rt_executor_read_target(x, at(MANY_FIRST), pixels, SIZE, SIZE, error, sizeof error) == 0);
+        }
     }
     CHECK(drawn);
     CHECK(rt_executor_finish(x, error, sizeof error) == 0);
