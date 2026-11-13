@@ -37,18 +37,23 @@ It is made by people who love this game and want it to outlive the hardware it w
 
 ## Where it stands
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/status-dark.svg">
-  <img alt="Paleblood status: system imports by library, imports working at each recorded boot, the boot milestone and the decompilation" src="docs/assets/status-light.svg" width="100%">
-</picture>
+[![functions verified](https://yharnam-hunters.github.io/Paleblood/badge-verified.svg)](#where-it-stands)
+[![functions replaced](https://yharnam-hunters.github.io/Paleblood/badge-replaced.svg)](#where-it-stands)
+[![code replaced](https://yharnam-hunters.github.io/Paleblood/badge-code.svg)](#where-it-stands)
+[![replaced in 7 days](https://yharnam-hunters.github.io/Paleblood/badge-week.svg)](symbols/functions.csv)
+
+<img alt="Paleblood decompilation progress map: the executable's code by library, its area in bytes, each block's cells green where verified, amber where replaced and grey where not yet replaced; with functions replaced by library and verified functions by evidence" src="https://yharnam-hunters.github.io/Paleblood/progress.svg" width="100%">
+
+The map and badges are built from `symbols/` on every push to main
+([tools/progress_map.py](tools/progress_map.py)); the runtime's numbers are in the table below.
 
 <!-- progress:start -->
 | | Functions | Bytes |
 |---|---:|---:|
 | Target (Ghidra export) | 157757 | 42487404 |
-| Replaced | 18416 (11.67%) | 240914 (0.57%) |
+| Replaced | 18526 (11.74%) | 266546 (0.63%) |
 | of which in 19 function families | 18019 (11.42%) | 62426 (0.15%) |
-| Edge-verified | 18416 (11.67%) | 240914 (0.57%) |
+| Edge-verified | 18526 (11.74%) | 266546 (0.63%) |
 | Verified | 18133 (11.49%) | 91542 (0.22%) |
 
 Each row includes the next: verified functions are also edge-verified and replaced.

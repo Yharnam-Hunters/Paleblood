@@ -126,29 +126,93 @@ def replacement_sources(root: str) -> dict[str, str]:
     return out
 
 
-def edge_generator(root: str, name: str, system: str, source: str | None) -> str | None:
-    """The edge-case generator: named after the function in its system's directory
-    (game/<system>/<name without the system prefix>_cases.py), else beside the replacement's file
-    (a file holding several replacements has one generator per function, named after it)."""
+def edge_generators(root: str, name: str, system: str, source: str | None) -> list[str]:
+    """The edge-case generators that may hold the function's cases, most specific first: named
+    after the function in its system's directory (game/<system>/<name without the system
+    prefix>_cases.py), beside the replacement's file, any generator next to the replacement whose
+    docstring names the replacement's file, then the other generators next to it. One generator
+    may serve several functions (robust_heap_cases.py writes the robust heap's allocations and its
+    free, picked by a variant), so write_edge_cases keeps only cases for the function's address."""
     candidates = []
     if name.startswith(system + '_'):
         candidates.append(os.path.join(root, 'game', system, name[len(system) + 1:] + '_cases.py'))
     if source:
         candidates.append(os.path.splitext(source)[0] + '_cases.py')
-    return next((c for c in candidates if os.path.isfile(c)), None)
+        directory, filename = os.path.split(source)
+        others = sorted(os.path.join(directory, g) for g in os.listdir(directory) if g.endswith('_cases.py'))
+        candidates += [g for g in others if filename in generator_doc(g)]
+        candidates += others
+    found = []
+    for c in candidates:
+        if os.path.isfile(c) and c not in found:
+            found.append(c)
+    return found
 
 
-def write_edge_cases(name: str, generator: str | None, captures: str) -> str | None:
-    """Regenerates CAPTURES/NAME/edge with the function's generator; a problem, or None."""
-    if not generator:
+def generator_doc(path: str) -> str:
+    """A generator's docstring, the place its usage line and the files it covers are written."""
+    with open(path, errors='replace') as f:
+        m = re.search(r'"""(.*?)"""', f.read(4000), re.S)
+    return m.group(1) if m else ''
+
+
+def generator_variants(path: str) -> list[str | None]:
+    """The variants a generator's usage line offers, optional (usage: X_cases.py OUT_DIR [a|b|c])
+    or required (OUT_DIR a|b|c, which may wrap onto the next line after a `|`), or the
+    generator's one default when it lists none."""
+    m = re.search(r'^usage:\s*\S+\s+OUT_DIR\s+\[?((?:[A-Za-z0-9_]+\|\s*)+[A-Za-z0-9_]+)\]?',
+                  generator_doc(path), re.M)
+    return [v.strip() for v in m.group(1).split('|')] if m else [None]
+
+
+def case_address(path: str) -> int | None:
+    try:
+        with open(path) as f:
+            return int(str(json.load(f).get('address')), 16)
+    except (OSError, ValueError, AttributeError, json.JSONDecodeError):
+        return None
+
+
+def write_edge_cases(name: str, address: str, generators: list[str], captures: str) -> str | None:
+    """Regenerates CAPTURES/NAME/edge with the cases its generators write for the function's own
+    address; a problem, or None. A generator for several functions is run with each variant its
+    usage line lists; its cases are taken from anywhere in its output (some write a capture
+    library, OUT/<function>/edge), and only cases for this address are kept, so a function is
+    never checked against another function's cases."""
+    if not generators:
         return 'no edge-case generator found'
-    # Generators make their output directory themselves: write a new one, then swap it in.
+    want = int(address, 16)
     edge = os.path.join(captures, name, 'edge')
     with tempfile.TemporaryDirectory(prefix='.edge-', dir=os.path.join(captures, name)) as scratch:
         fresh = os.path.join(scratch, 'edge')
-        p = subprocess.run([sys.executable, generator, fresh], capture_output=True, text=True)
-        if p.returncode or not os.path.isdir(fresh):
-            return f'{os.path.relpath(generator, ROOT)} failed: ' + (p.stderr.strip().splitlines() or ['no output'])[-1]
+        tried, failures = [], []
+        for generator in generators:
+            for variant in generator_variants(generator):
+                # Generators make their output directory themselves: write a new one per run.
+                out = os.path.join(scratch, f'run{len(tried)}')
+                tried.append(os.path.relpath(generator, ROOT) + (f' {variant}' if variant else ''))
+                p = subprocess.run([sys.executable, generator, out] + ([variant] if variant else []),
+                                   capture_output=True, text=True)
+                if p.returncode or not os.path.isdir(out):
+                    # A neighbour that fails is not this function's generator; reported only when
+                    # no generator writes the function's cases.
+                    failures.append(f'{tried[-1]} failed: ' + (p.stderr.strip().splitlines() or ['no output'])[-1])
+                    continue
+                mine = [os.path.join(d, c) for d, _, files in os.walk(out) for c in files
+                        if c.endswith('.json') and case_address(os.path.join(d, c)) == want]
+                if mine:
+                    os.mkdir(fresh)
+                    for case in mine:
+                        target = os.path.join(fresh, os.path.basename(case))
+                        if os.path.exists(target):
+                            return f'{tried[-1]}: two cases for {address} named {os.path.basename(case)}'
+                        os.rename(case, target)
+                    break
+            if os.path.isdir(fresh):
+                break
+        if not os.path.isdir(fresh):
+            return f'no generator writes cases for {address} (tried {", ".join(tried)})' + \
+                ''.join(f'; {f}' for f in failures)
         if os.path.isdir(edge):
             for old in os.listdir(edge):
                 if old.endswith('.json'):
@@ -166,11 +230,12 @@ def recorded_functions(captures: str, names: set[str]) -> list[str]:
                   and any(f.endswith('.json') for f in os.listdir(os.path.join(captures, n))))
 
 
-def edge_verified(root: str) -> dict[str, str]:
-    """Each edge-verified function's system."""
+def edge_verified(root: str) -> dict[str, tuple[str, str]]:
+    """Each edge-verified function's system and address."""
     import csv
     with open(os.path.join(root, 'symbols', 'functions.csv'), newline='') as f:
-        return {r['name']: r['system'] for r in csv.DictReader(f) if r['status'] == 'edge-verified'}
+        return {r['name']: (r['system'], r['address'])
+                for r in csv.DictReader(f) if r['status'] == 'edge-verified'}
 
 
 def main() -> int:
@@ -217,7 +282,8 @@ def main() -> int:
     recorded = recorded_functions(captures, set(candidates))
     sources = replacement_sources(ROOT)
     for name in recorded:
-        problem = write_edge_cases(name, edge_generator(ROOT, name, candidates[name], sources.get(name)), captures)
+        system, address = candidates[name]
+        problem = write_edge_cases(name, address, edge_generators(ROOT, name, system, sources.get(name)), captures)
         if problem:
             print(f'capture_loop: {name}: edge cases: {problem}', file=sys.stderr)
     print(f'capture_loop: {len(recorded)} of {len(candidates)} edge-verified functions have recordings', flush=True)
