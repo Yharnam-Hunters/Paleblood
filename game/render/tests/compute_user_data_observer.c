@@ -5,7 +5,8 @@
    dispatch's two writers report the base address and the data offset they are given. The depth bounds
    setter reports its two float arguments, from the saved frame's xmm0 and xmm1, as the two registers.
    The shader stage setter reports VGT_SHADER_STAGES_EN for the values it writes, and nothing for others.
-   The geometry-shader register writers report the registers they write, with the values they compute. */
+   The geometry-shader register writers report the registers they write, with the values they compute.
+   The clip control setter reports PA_CL_CLIP_CNTL with the value masked as the setter masks it. */
 #include "runtime/observe_hooks.h"
 #include "runtime/render_observer.h"
 
@@ -26,6 +27,8 @@ enum { VGT_GS_MODE = 0xa290, VGT_GSVS_RING_OFFSET_1 = 0xa298, VGT_ESGS_RING_ITEM
        VGT_GS_MAX_VERT_OUT = 0xa2ce, VGT_GS_VERT_ITEMSIZE = 0xa2d7, VGT_STRMOUT_CONFIG = 0xa2e5, GS_STREAMS = 4, GS_VERTICES = 40,
        ITEMSIZE_ARGUMENT = 0x1803c, STREAM_0 = 12, STREAM_1 = 2, STREAM_2 = 0, STREAM_3 = 1, ITEMSIZE_WRITTEN = 0x3c, GS_MODE_ON = 2, GS_CUT_MODE = 1, GS_MODE_WRITTEN = 0x12 };
 enum { SET_SHADER_STAGES = 0x01476030, VGT_SHADER_STAGES_EN = 0xa2d5, TESSELLATION = 0x45, NOT_WRITTEN = 0x7 };
+/* every bit set: the setter keeps 0x0f7fe03f of them (ZCLIP_NEAR_DISABLE and _FAR_DISABLE, bits 26 and 27, among them) */
+enum { SET_CLIP_CONTROL = 0x01476b30, PA_CL_CLIP_CNTL = 0xa204, CLIP_ARGUMENT = 0xffffffff, CLIP_WRITTEN = 0x0f7fe03f };
 static const uint32_t one_value = 0x11223344u;
 static const uint64_t pointer_value = 0x0000002043490060ull;
 
@@ -212,6 +215,14 @@ int main(void)
         CHECK(registers.count == MODE_REGISTERS && registers.address[MODE_ON] == VGT_GS_MODE && registers.value[MODE_ON] == GS_MODE_WRITTEN &&
               registers.address[MODE_OFF] == VGT_GS_MODE && registers.value[MODE_OFF] == 0 && registers.address[STREAMOUT_OFF] == VGT_STRMOUT_CONFIG &&
               registers.value[STREAMOUT_OFF] == 0);
+    }
+    const rt_observer_fn clip = observer(SET_CLIP_CONTROL);
+    CHECK(clip != NULL);
+    if (clip) {
+        memset(&registers, 0, sizeof registers);
+        const uint64_t clip_args[RT_OBSERVED_ARGUMENTS] = {object_address, CLIP_ARGUMENT};
+        clip(clip_args);
+        CHECK(registers.count == 1 && registers.address[0] == PA_CL_CLIP_CNTL && registers.value[0] == CLIP_WRITTEN);
     }
     if (failures) fprintf(stderr, "%d failure(s)\n", failures);
     else printf("compute user data observer: ok\n");

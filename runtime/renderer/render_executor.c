@@ -12,7 +12,14 @@
      as many VGPRs as it has values: 2 for each barycentric pair (bits 0-2, 4-6), 3 for the pull model
      (bit 3), 1 for each of the rest (line stipple 7, position x, y, z, w 8-11, front face 12,
      ancillary 13, sample coverage 14, fixed-point position 15), as AMD's register documentation and
-     LLVM's AMDGPU backend (SIRegisterInfo's PS input layout) have it. */
+     LLVM's AMDGPU backend (SIRegisterInfo's PS input layout) have it.
+   - PA_CL_CLIP_CNTL (AMD's gfx_7_2_sh_mask.h): CLIP_DISABLE (bit 16) passes primitives through the
+     clipper, DX_RASTERIZATION_KILL (22) rasterizes nothing, ZCLIP_NEAR_DISABLE (26) and ZCLIP_FAR_DISABLE
+     (27) stop clipping against the near and far planes. Where z is not clipped the depth is clamped to
+     the viewport's depth range, which is Vulkan's depthClampEnable (shadPS4 enables depth clamp and
+     switches depth clipping by the ZCLIP bits; bbhost reads any of the three bits as depth clamp). The
+     library's setter writes the value masked with 0x0f7fe03f (game/render/observe_gpu_library.c); before
+     it was observed every draw was clipped whatever the game asked. */
 #include "runtime/render_executor.h"
 
 #include "runtime/gcn.h"
@@ -188,6 +195,7 @@ typedef struct {
     uint32_t reads;                                     /* a test compares with the buffer (not always or never) */
     uint32_t reference_is_op_value[2];                  /* front, back: the stencil reference is STENCILOPVAL (replace-with-op) */
     uint32_t depth_bounds;                              /* the depth bounds test: draw() sets the bounds */
+    uint32_t depth_clamp;                               /* z is not clipped but clamped to the viewport's range (PA_CL_CLIP_CNTL) */
 } depth_plan;
 
 /* The image standing for a depth target, found by its depth and stencil buffers' addresses and the
@@ -373,6 +381,8 @@ typedef struct {
        until the library sets them, attribute n reads output n */
     uint32_t ps_input_control[GCN_PIXEL_INPUTS];
     int ps_input_control_set;
+    /* PA_CL_CLIP_CNTL as the library set it; 0 until then (every plane clips, as at the register's reset) */
+    uint32_t clip_control;
 } draw_state;
 
 /* One batch: the GPU work recorded between waits, with what it holds until it has run (its descriptor
@@ -452,6 +462,7 @@ struct rt_executor {
     size_t pass_count;
     int geometry_shaders;            /* the device draws geometry stages (rect lists need one) */
     int depth_bounds;                /* the device tests depth bounds (VkPhysicalDeviceFeatures depthBounds) */
+    int depth_clamp;                 /* the device clamps depth (VkPhysicalDeviceFeatures depthClamp) */
     /* tessellation (docs/RENDERER.md, "Tessellation"): whether the device draws it; the stages the vertex user
        data reaches (a domain shader's too); the local and hull passes' LDS buffer and the factor buffer their
        factor-ring accesses reach; the passes' pipeline layout and pipelines; the control shaders; the empty
@@ -567,7 +578,8 @@ enum { DB_RENDER_CONTROL = 0xa000, DB_DEPTH_VIEW = 0xa002, DB_HTILE_DATA_BASE = 
        CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242, VGT_SHADER_STAGES_EN = 0xa2d5, SPI_PS_INPUT_CNTL_0 = 0xa191,
        VGT_GS_MODE = 0xa290, VGT_GSVS_RING_OFFSET_1 = 0xa298, VGT_GSVS_RING_OFFSET_3 = 0xa29a, VGT_ESGS_RING_ITEMSIZE = 0xa2ab,
        VGT_GSVS_RING_ITEMSIZE = 0xa2ac, VGT_GS_MAX_VERT_OUT = 0xa2ce, VGT_GS_VERT_ITEMSIZE = 0xa2d7, VGT_GS_VERT_ITEMSIZE_3 = 0xa2da,
-       VGT_STRMOUT_CONFIG = 0xa2e5, VGT_INSTANCE_STEP_RATE_0 = 0xa2a8, VGT_INSTANCE_STEP_RATE_1 = 0xa2a9 };
+       VGT_STRMOUT_CONFIG = 0xa2e5, VGT_INSTANCE_STEP_RATE_0 = 0xa2a8, VGT_INSTANCE_STEP_RATE_1 = 0xa2a9, PA_CL_CLIP_CNTL = 0xa204 };
+enum { CLIP_DISABLE = 1u << 16, DX_RASTERIZATION_KILL = 1u << 22, ZCLIP_NEAR_DISABLE = 1u << 26, ZCLIP_FAR_DISABLE = 1u << 27 };
 enum { GS_REGISTER_ESGS_ITEMSIZE = 1, GS_REGISTER_VERT_ITEMSIZE = 2, GS_REGISTER_MAX_VERT_OUT = 4, GS_REGISTER_GSVS_ITEMSIZE = 8,
        GS_REGISTERS_NEEDED = 15 };
 enum { BLEND_ENABLE = 0x40000000, STENCIL_ENABLE = 0x1, Z_ENABLE = 0x2, Z_WRITE_ENABLE = 0x4,
@@ -598,6 +610,7 @@ static int set_register(draw_state *s, uint32_t address, uint32_t value)
         s->stencil_reference[address - DB_STENCILREFMASK] = value, s->stencil_reference_set[address - DB_STENCILREFMASK] = 1;
         return 0;
     case DB_RENDER_CONTROL: s->render_control = value, s->render_control_set = 1; return 0;
+    case PA_CL_CLIP_CNTL: s->clip_control = value; return 0; /* plan_depth reads its z clipping, draw() its rasterization kill */
     case DB_DEPTH_VIEW: s->depth_view = value; return 0;
     /* compression metadata (HTILE) and the depth clear value: a cleared HTILE clears the executor's depth
        image (resolve_depth_fast_clear); DB_RENDER_CONTROL's depth-clearing draws write it (plan_depth) */
@@ -724,6 +737,7 @@ static int plan_depth(const draw_state *s, depth_plan *plan, char *error, size_t
         [10] = -1, [11] = -1, [12] = -1, [13] = -1, [14] = -1, [15] = -1 /* bitwise with STENCILOPVAL */};
     static const int op_steps[STENCIL_OPS] = {[5] = 1, [6] = 1, [8] = 1, [9] = 1};
     memset(plan, 0, sizeof *plan);
+    plan->depth_clamp = (s->clip_control & (CLIP_DISABLE | ZCLIP_NEAR_DISABLE | ZCLIP_FAR_DISABLE)) != 0; /* with or without a depth test */
     const uint32_t control = s->depth_set ? s->depth_control : 0;
     if (!(control & (Z_ENABLE | STENCIL_ENABLE | DEPTH_BOUNDS_ENABLE))) return 0;
     if (!s->z_info_set || !s->stencil_info_set)
@@ -975,6 +989,7 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
                                                  .storageBuffer8BitAccess = (VkBool32)x->small_elements};
     x->geometry_shaders = features.features.geometryShader == VK_TRUE;
     x->depth_bounds = features.features.depthBounds == VK_TRUE;
+    x->depth_clamp = features.features.depthClamp == VK_TRUE;
     x->tessellation = features.features.tessellationShader == VK_TRUE;
     x->vertex_stages = VK_SHADER_STAGE_VERTEX_BIT | (x->tessellation ? VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT : 0);
     x->storage_images = features.features.shaderStorageImageReadWithoutFormat && features.features.shaderStorageImageWriteWithoutFormat;
@@ -986,6 +1001,7 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
                                                            .geometryShader = features.features.geometryShader,
                                                            .samplerAnisotropy = features.features.samplerAnisotropy,
                                                            .depthBounds = features.features.depthBounds,
+                                                           .depthClamp = features.features.depthClamp,
                                                            .tessellationShader = features.features.tessellationShader,
                                                            .shaderStorageImageReadWithoutFormat = (VkBool32)x->storage_images,
                                                            .shaderStorageImageWriteWithoutFormat = (VkBool32)x->storage_images}};
@@ -2816,6 +2832,7 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
     const VkPipelineViewportStateCreateInfo viewport = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
                                                         .viewportCount = 1, .scissorCount = 1};
     const VkPipelineRasterizationStateCreateInfo raster = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                                                           .depthClampEnable = depth->depth_clamp ? VK_TRUE : VK_FALSE,
                                                            .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE,
                                                            .lineWidth = 1.0f};
     const VkPipelineMultisampleStateCreateInfo samples = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
@@ -3574,6 +3591,11 @@ static int draw(rt_executor *x, const draw_state *s, const depth_plan *plan, uin
         write_masks |= slot_mask(s, slot) << (4 * slot);
     }
     if (plan->depth_bounds && !x->depth_bounds) return failed(error, error_size, "a depth bounds test, which this device does not do");
+    if (plan->depth_clamp && !x->depth_clamp)
+        return failed(error, error_size, "a draw without z clipping (PA_CL_CLIP_CNTL %#x), which needs depth clamping this device does not do",
+                      s->clip_control);
+    if (s->clip_control & DX_RASTERIZATION_KILL)
+        return failed(error, error_size, "a draw with rasterization killed (PA_CL_CLIP_CNTL %#x): not drawn yet", s->clip_control);
     const int uses_depth = plan->depth_test || plan->stencil_test || plan->depth_bounds;
     depth_entry *z = uses_depth ? depth_for(x, s, error, error_size) : NULL;
     if (uses_depth && !z) return -1;
