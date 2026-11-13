@@ -117,6 +117,18 @@ How these layers are driven during a real load, and in what order, is still bein
 | `0x0084d5a0` | 158 | `loading_fios_directory_delete` | edge-verified | FIOS directory object deleting destructor: close the DH at +0x28; free entries and both tagged paths; free 0x38 bytes (or the header's size) to the thread allocator |
 | `0x00857cd0` | 176 | `loading_fios_open_file` | edge-verified | sceFiosFHOpenSync with the caller's 16-bit open flags; on success a 0x18-byte file object from the thread allocator (vtable 0x055c1e00) marked open |
 | `0x0085cda0` | 174 | `loading_fios_open_file_read` | edge-verified | sceFiosFHOpenSync to read; on success a 0x18-byte file object (vtable 0x055c2190) open when the handle is not negative |
+| `0x0237e640` | 129 | `loading_file_copy_construct_0237e640` | edge-verified | constructor: resource base with the resource heap and no copy (class a; vtable 0x057acc60) |
+| `0x0237e6d0` | 162 | `loading_file_copy_delete_0237e6d0` | edge-verified | deleting destructor (class a) |
+| `0x0237e780` | 154 | `loading_file_copy_destroy_0237e780` | edge-verified | destructor: free the file copy through DLNew release then the resource base (class a) |
+| `0x0237e820` | 342 | `loading_file_copy_copy_file_0237e820` | edge-verified | vtable slot 7: copy the loaded file bytes into a buffer of its own while holding the file (class a) |
+| `0x0237f3f0` | 129 | `loading_file_copy_construct_0237f3f0` | edge-verified | constructor: resource base with the resource heap and no copy (class b; vtable 0x057acd50) |
+| `0x0237f480` | 162 | `loading_file_copy_delete_0237f480` | edge-verified | deleting destructor (class b) |
+| `0x0237f530` | 154 | `loading_file_copy_destroy_0237f530` | edge-verified | destructor: free the file copy through DLNew release then the resource base (class b) |
+| `0x0237f5d0` | 342 | `loading_file_copy_copy_file_0237f5d0` | edge-verified | vtable slot 7: copy the loaded file bytes into a buffer of its own while holding the file (class b) |
+| `0x023801a0` | 129 | `loading_file_copy_construct_023801a0` | edge-verified | constructor: resource base with the resource heap and no copy (class c; vtable 0x057ace40) |
+| `0x02380230` | 162 | `loading_file_copy_delete_02380230` | edge-verified | deleting destructor (class c) |
+| `0x023802e0` | 154 | `loading_file_copy_destroy_023802e0` | edge-verified | destructor: free the file copy through DLNew release then the resource base (class c) |
+| `0x02380380` | 342 | `loading_file_copy_copy_file_02380380` | edge-verified | vtable slot 7: copy the loaded file bytes into a buffer of its own while holding the file (class c) |
 | `0x0246cf50` | 549 | `loading_disk_device_resolve_root_0246cf50` | verified | Ps4DiskFileDevice root mounts: split "name:" off the path; first entry with that name replaces name+2 chars with its target; true unless the name is "title" |
 | `0x0246d180` | 558 | `loading_disk_device_resolve_alias_0246d180` | verified | Ps4DiskFileDevice alias mounts: same code as 0x0246cf50 on the alias table (+0x80) |
 | `0x0246d550` | 530 | `loading_disk_device_open_0246d550` | edge-verified | Ps4DiskFileDevice open: keep the requested path (thread heap); resolve aliases/roots in rounds; open only if an alias matched; through the named device or each unnamed one; under the device lock |
@@ -125,6 +137,10 @@ How these layers are driven during a real load, and in what order, is still bein
 | `0x0246e9a0` | 714 | `loading_disk_device_open_on_unnamed_devices_0246e9a0` | edge-verified | Ps4DiskFileDevice: try each device not registered under a name; in order; on a working copy of the path; under the device lock |
 | `0x02470d50` | 517 | `loading_mount_table_push_back_02470d50` | edge-verified | mount table push_back: grow 1.5x when full (source inside the table found again); copy name and target; end moves on even without a buffer |
 | `0x024716d0` | 539 | `loading_mount_table_reallocate_024716d0` | edge-verified | mount table reallocate to exact capacity: copy entries; destroy old (heap text freed); free old buffer; failed allocation: transaction jump or report |
+| `0x02479710` | 156 | `loading_owned_object_release_02479710` | edge-verified | Releases the two parts a transfer task owns at +0x90 (+0x10 then +0x08): slot +0xb0, then destroy and free through its allocator; clears the slot |
+| `0x024bcfa0` | 49 | `loading_result_construct_024bcfa0` | edge-verified | Load result base constructor: vtable, four request words, code and word |
+| `0x024bcfe0` | 89 | `loading_result_copy_024bcfe0` | edge-verified | Load result base copy constructor: vtable, request words cleared then copied, code and word |
+| `0x024bd310` | 65 | `loading_resource_handle_assign_024bd310` | edge-verified | Resource handle assignment: unless the infos match, drops the old info reference, takes the source info and adds a reference; returns the handle |
 | `0x024bd930` | 249 | `loading_resource_info_release_024bd930` | edge-verified | DLResourceInfo drop reference: last one sets releasing once (shared lock); manager release; cancel pending requests from the stream queue |
 | `0x024be250` | 343 | `loading_load_request_construct_024be250` | edge-verified | resource load request base constructor: clear words; keep the third argument at +0x20; name string on the request heap (heap check) from wcslen; tail via 0x024be8e0 |
 | `0x024be3b0` | 558 | `loading_load_request_copy_024be3b0` | edge-verified | resource load request copy constructor: base vtable; words/bytes copied; name on the request heap; strings/array via 0x024be8e0 then assigned (strings skip self-copy) |
@@ -170,6 +186,7 @@ How these layers are driven during a real load, and in what order, is still bein
 | `0x02aa4a30` | 128 | `loading_finished_entry_construct_02aa4a30` | edge-verified | finished entry constructor: result base + handle to the info the manager finds for the request words |
 | `0x02aa4ab0` | 75 | `loading_finished_entry_copy_construct_02aa4ab0` | edge-verified | finished entry copy constructor: result base copy + handle assign |
 | `0x02aa4b40` | 46 | `loading_finished_entry_destroy_02aa4b40` | edge-verified | finished entry destructor: drop the handle then the result base |
+| `0x02aa4b90` | 42 | `loading_finished_entry_assign_02aa4b90` | edge-verified | Finished entry assignment: result base assign (0x024bd080) then resource handle assign; returns the entry |
 | `0x02e67d20` | 80 | `loading_stdio_close_files` | edge-verified | fclose and clear the FILE pointers at +0x10; +0x8 and +0x0 in that order; skipping null ones |
 
 The import table records interfaces the executable and its bundled modules can call. The exact
