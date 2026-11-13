@@ -567,6 +567,10 @@ struct rt_executor {
     /* the GPU copies between tiled guest memory and linear rows (runtime/tile_copy.h), by bytes per
        element (1, 2, 4, 8, 16: log2 indexes) and direction (to the tiled memory or from it); made on first use */
     VkPipelineLayout tile_copy_layout;
+    /* Every pipeline is made through this cache: a pipeline made again for a new render pass that is
+       compatible with an earlier one (a render target freed and made again, a target set aside and a new
+       one at its address) comes from the cache instead of the driver's shader compiler. */
+    VkPipelineCache pipeline_cache;
     VkPipeline tile_copies[TILE_COPY_SIZES][2];
     /* the GPU's state as the calls run so far set it: registers, user data and shaders carry over from
        one submitted buffer to the next, as on the console's GPU */
@@ -1111,6 +1115,8 @@ static int open_device(rt_executor *x, char *error, size_t error_size)
                                                      .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE, .initialValue = 0};
     const VkSemaphoreCreateInfo timeline = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &timeline_type};
     if (vkCreateSemaphore(x->device, &timeline, NULL, &x->timeline) != VK_SUCCESS) return failed(error, error_size, "no timeline semaphore");
+    const VkPipelineCacheCreateInfo cache = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+    if (vkCreatePipelineCache(x->device, &cache, NULL, &x->pipeline_cache) != VK_SUCCESS) return failed(error, error_size, "no pipeline cache");
     return 0;
 }
 
@@ -1996,7 +2002,7 @@ static VkPipeline tile_copy_pipeline(rt_executor *x, unsigned element_bytes, int
         .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
         .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = module, .pName = "main"},
         .layout = x->tile_copy_layout};
-    const VkResult piped = vkCreateComputePipelines(x->device, VK_NULL_HANDLE, 1, &info, NULL, &x->tile_copies[kind][to_tiled]);
+    const VkResult piped = vkCreateComputePipelines(x->device, x->pipeline_cache, 1, &info, NULL, &x->tile_copies[kind][to_tiled]);
     vkDestroyShaderModule(x->device, module, NULL);
     if (piped != VK_SUCCESS) {
         x->tile_copies[kind][to_tiled] = VK_NULL_HANDLE;
@@ -3101,7 +3107,7 @@ static VkPipeline pipeline_for(rt_executor *x, VkShaderModule vertex, VkShaderMo
                                                .pMultisampleState = &samples, .pColorBlendState = &blend, .pDynamicState = &dynamic,
                                                .pDepthStencilState = has_depth ? &depth_stencil : NULL, .layout = layout, .renderPass = pass};
     VkPipeline pipeline = VK_NULL_HANDLE;
-    if (vkCreateGraphicsPipelines(x->device, VK_NULL_HANDLE, 1, &info, NULL, &pipeline) != VK_SUCCESS) {
+    if (vkCreateGraphicsPipelines(x->device, x->pipeline_cache, 1, &info, NULL, &pipeline) != VK_SUCCESS) {
         failed(error, error_size, "the device refused a pipeline");
         return VK_NULL_HANDLE;
     }
@@ -3402,7 +3408,7 @@ static VkPipeline pass_pipeline(rt_executor *x, uint32_t *spirv, size_t words, i
                   .pName = "main"},
         .layout = x->tess_layout};
     VkPipeline pipeline = VK_NULL_HANDLE;
-    const VkResult piped = vkCreateComputePipelines(x->device, VK_NULL_HANDLE, 1, &info, NULL, &pipeline);
+    const VkResult piped = vkCreateComputePipelines(x->device, x->pipeline_cache, 1, &info, NULL, &pipeline);
     vkDestroyShaderModule(x->device, module, NULL);
     if (piped != VK_SUCCESS) {
         failed(error, error_size, "the device refused a %s pass pipeline", pass_names[kind]);
@@ -4024,7 +4030,7 @@ static VkPipeline compute_pipeline_for(rt_executor *x, const rt_compute_shader *
                   .pName = "main"},
         .layout = image_count ? x->image_layouts[image_count] : x->compute_layout};
     VkPipeline pipeline = VK_NULL_HANDLE;
-    if (vkCreateComputePipelines(x->device, VK_NULL_HANDLE, 1, &info, NULL, &pipeline) != VK_SUCCESS) {
+    if (vkCreateComputePipelines(x->device, x->pipeline_cache, 1, &info, NULL, &pipeline) != VK_SUCCESS) {
         vkDestroyShaderModule(x->device, module, NULL);
         failed(error, error_size, "the device refused a compute pipeline");
         return VK_NULL_HANDLE;
@@ -5645,6 +5651,7 @@ void rt_executor_close(rt_executor *x)
             for (unsigned to_tiled = 0; to_tiled < 2; to_tiled++)
                 if (x->tile_copies[k][to_tiled]) vkDestroyPipeline(x->device, x->tile_copies[k][to_tiled], NULL);
         if (x->tile_copy_layout) vkDestroyPipelineLayout(x->device, x->tile_copy_layout, NULL);
+        if (x->pipeline_cache) vkDestroyPipelineCache(x->device, x->pipeline_cache, NULL);
         if (x->pool) vkDestroyCommandPool(x->device, x->pool, NULL);
         vkDestroyDevice(x->device, NULL);
     }
