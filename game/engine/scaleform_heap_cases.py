@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-or-later
-"""Edge cases for the Scaleform heap's small-block engine (game/engine/scaleform_heap_bin_*.cpp),
+"""Edge cases for the Scaleform heap's small-block engine (game/engine/scaleform_heap_bin_*.cpp,
+scaleform_heap_bins_*.cpp),
 for tools/verify.py run. Each replacement's own generator (scaleform_heap_<name>_cases.py) calls
 this one with its function.
 
-usage: scaleform_heap_cases.py OUT_DIR bin_allocate|bin_allocate_aligned|bin_free|bin_reallocate
+usage: scaleform_heap_cases.py OUT_DIR bin_allocate|bin_allocate_aligned|bin_free|bin_reallocate|
+                                      bins_take_best|bins_take_best_aligned|bins_merge_free
 
 Each case lays out one small-block page in `mem` (0x2000 bytes, so the page's machine page
 boundary is at mem+0x1000): its two headers, its bitset and its blocks, described in units from the
@@ -22,6 +24,7 @@ import struct
 import sys
 
 BIN_ALLOCATE, BIN_ALIGNED, BIN_FREE, BIN_REALLOCATE = '0x0233a7f0', '0x0233ae40', '0x0233ab20', '0x0233b2f0'
+TAKE_BEST, TAKE_BEST_ALIGNED, MERGE_FREE = '0x0233d750', '0x0233d8d0', '0x0233dc60'
 PAGE_TABLE = 0x05994470
 SIGNATURE = 0x5fc0
 MEM = 0x2000
@@ -323,12 +326,83 @@ def bin_reallocate_cases():
     ]
 
 
+def bins_take_best_cases():
+    def c(cid, units, **kw):
+        return case(TAKE_BEST, cid, {'rdi': BINS_ARG, 'rsi': units}, **kw)[0]
+    three = [(3, 'f'), (1, 'u'), (3, 'f'), (1, 'u'), (3, 'f'), (1, 'u')]
+    return [
+        c('own_bin_alone', 3, low=[(3, 'f'), (1, 'u')]),
+        c('own_bin_head_of_three', 3, low=three, orders={2: [('l', 2), ('l', 0), ('l', 4)]}),
+        c('own_bin_head_of_two', 3, low=three[:4]),
+        c('larger_bin', 2, low=[(1, 'f'), (1, 'u'), (5, 'f'), (1, 'u'), (9, 'f'), (1, 'u')]),
+        c('lowest_of_many_bins', 4, low=[(9, 'f'), (1, 'u'), (40, 'f'), (1, 'u'), (6, 'f'), (1, 'u')]),
+        c('last_bin_unchecked', 100, low=[(70, 'f'), (1, 'u')]),
+        c('last_bin_only', 1, low=[(80, 'f'), (1, 'u')]),
+        c('units_zero_last_bin', 0, low=[(3, 'f'), (1, 'u'), (70, 'f'), (1, 'u')]),
+        c('nothing_large_enough', 6, low=[(3, 'f'), (1, 'u'), (5, 'f'), (1, 'u')]),
+        c('no_free_blocks', 1, low=[(4, 'u')]),
+        c('bin_32', 33, low=[(33, 'f'), (1, 'u'), (34, 'f'), (1, 'u')]),
+    ]
+
+
+def bins_take_best_aligned_cases():
+    def c(cid, units, alignment, **kw):
+        return case(TAKE_BEST_ALIGNED, cid, {'rdi': BINS_ARG, 'rsi': units, 'rdx': alignment - 1}, **kw)[0]
+    # The page's start is mem+0x800, so unit u is 2^k-aligned when 16u is a multiple of 2^k.
+    return [
+        c('head_fits', 4, 0x40, low=[(4, 'f'), (1, 'u')]),
+        c('head_fits_after_alignment', 2, 0x40, low=[(2, 'u'), (6, 'f'), (1, 'u')]),
+        c('head_misfit_previous_fits', 4, 0x40, low=[(1, 'u'), (4, 'f'), (3, 'u'), (4, 'f'), (1, 'u')]),
+        c('walk_backwards', 4, 0x40,
+          low=[(1, 'u'), (4, 'f'), (3, 'u'), (4, 'f'), (4, 'f'), (1, 'u'), (2, 'u'), (4, 'f'), (1, 'u')],
+          orders={3: [('l', 1), ('l', 7), ('l', 3), ('l', 4)]}),
+        c('bin_none_fits_next_bin', 4, 0x40, low=[(1, 'u'), (4, 'f'), (1, 'u'), (7, 'f'), (1, 'u')]),
+        c('empty_bins_between', 2, 0x100, low=[(1, 'u'), (2, 'f'), (1, 'u'), (30, 'f'), (1, 'u')]),
+        c('none_fits', 4, 0x100, low=[(1, 'u'), (8, 'f'), (1, 'u')]),
+        c('no_free_blocks', 1, 0x20, low=[(4, 'u')]),
+        c('last_bin', 10, 0x400, low=[(1, 'u'), (100, 'f'), (1, 'u')]),
+        c('alignment_16', 3, 0x10, low=[(1, 'u'), (3, 'f'), (1, 'u')]),
+        c('fit_exact_end', 4, 0x80, low=[(4, 'u'), (8, 'f'), (1, 'u')]),
+        c('fit_one_short', 5, 0x80, low=[(4, 'u'), (8, 'f'), (1, 'u'), (20, 'f'), (1, 'u')]),
+    ]
+
+
+def bins_merge_free_cases():
+    def c(cid, position, units, previous, following, **kw):
+        out, blocks, page = case(MERGE_FREE, cid, {}, returns='void', **kw)
+        offset = blocks[('l', position)][0]
+        out['args'] = {'rdi': BINS_ARG, 'rsi': f'buf:mem+{offset}', 'rdx': units * 16,
+                       'rcx': previous, 'r8': following, 'r9': PAGE_ARG}
+        return out
+    return [
+        c('alone', 1, 3, 0, 0, low=[(1, 'u'), (3, 'u'), (1, 'u')]),
+        c('alone_two_units', 1, 2, 0, 0, low=[(1, 'u'), (2, 'u'), (1, 'u')]),
+        c('alone_bin_nonempty', 1, 3, 0, 0, low=[(1, 'u'), (3, 'u'), (1, 'u'), (3, 'f'), (1, 'u')]),
+        c('previous', 1, 2, 1, 0, low=[(4, 'f'), (2, 'u'), (1, 'u')]),
+        c('previous_one_unit', 1, 1, 1, 0, low=[(1, 'f'), (1, 'u'), (1, 'u')]),
+        c('previous_head_of_two', 1, 2, 1, 0, low=[(4, 'f'), (2, 'u'), (1, 'u'), (4, 'f'), (1, 'u')]),
+        c('previous_not_head', 1, 2, 1, 0, low=[(4, 'f'), (2, 'u'), (1, 'u'), (4, 'f'), (1, 'u')],
+          orders={3: [('l', 3), ('l', 0)]}),
+        c('next', 1, 2, 0, 1, low=[(1, 'u'), (2, 'u'), (5, 'f'), (1, 'u')]),
+        c('next_head_of_three', 1, 2, 0, 1,
+          low=[(1, 'u'), (2, 'u'), (5, 'f'), (1, 'u'), (5, 'f'), (1, 'u'), (5, 'f'), (1, 'u')],
+          orders={4: [('l', 2), ('l', 4), ('l', 6)]}),
+        c('both', 1, 3, 1, 1, low=[(4, 'f'), (3, 'u'), (6, 'f'), (1, 'u')]),
+        c('both_same_bin', 1, 3, 1, 1, low=[(4, 'f'), (3, 'u'), (4, 'f'), (1, 'u')]),
+        c('both_to_last_bin', 1, 30, 1, 1, low=[(20, 'f'), (30, 'u'), (25, 'f'), (1, 'u')]),
+        c('long_high_nibble', 1, 0x30, 0, 0, low=[(1, 'u'), (0x30, 'u'), (1, 'u')]),
+        c('unaligned_base', 1, 3, 1, 1, base=0xa08, low=[(4, 'f'), (3, 'u'), (6, 'f'), (1, 'u')]),
+    ]
+
+
 def page_units(base):
     return Page(base).low_units
 
 
 WHICH = {'bin_allocate': bin_allocate_cases, 'bin_allocate_aligned': bin_allocate_aligned_cases,
-         'bin_free': bin_free_cases, 'bin_reallocate': bin_reallocate_cases}
+         'bin_free': bin_free_cases, 'bin_reallocate': bin_reallocate_cases,
+         'bins_take_best': bins_take_best_cases, 'bins_take_best_aligned': bins_take_best_aligned_cases,
+         'bins_merge_free': bins_merge_free_cases}
 
 
 def main(argv):

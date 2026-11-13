@@ -327,12 +327,9 @@ int rt_render_record_register(uint64_t buffer, uint32_t offset, uint32_t address
     return record(buffer, &call, error, error_size);
 }
 
+/* NUM_INSTANCES as the game wrote it: 0 included, which the GPU draws as one instance (the executors). */
 int rt_render_record_instances(uint64_t buffer, uint32_t offset, uint32_t count, char *error, size_t error_size)
 {
-    if (!count) {
-        snprintf(error, error_size, "an instance count of 0");
-        return -1;
-    }
     const rt_render_call call = {.kind = RT_CALL_INSTANCES, .offset = offset, .u.instances.count = count};
     return record(buffer, &call, error, error_size);
 }
