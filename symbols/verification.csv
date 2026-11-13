@@ -401,8 +401,8 @@ loading_mount_table_push_back_02470d50,edge,,11,11,0,0,56c29f3bfad4ccf6,2026-11-
 loading_mount_table_reallocate_024716d0,edge,,9,9,0,0,56c29f3bfad4ccf6,2026-11-12
 loading_path_token_next_02a2aca0,recorded,,58,58,0,0,d7482430d506fc6c,2026-11-12
 loading_path_token_next_02a2aca0,edge,,18,18,0,0,d7482430d506fc6c,2026-11-12
-loading_resource_handle_construct_024bd470,recorded,,35,35,0,0,1127843eea3f0297,2026-11-13
-loading_resource_handle_destroy_024bd4c0,recorded,,46,46,0,0,1127843eea3f0297,2026-11-13
+loading_resource_handle_construct_024bd470,recorded,,2,2,0,0,c8e3b37bad30cce1,2026-11-13
+loading_resource_handle_destroy_024bd4c0,recorded,,1,1,0,0,c8e3b37bad30cce1,2026-11-13
 loading_resource_info_release_024bd930,edge,,10,10,0,0,0854052617192db7,2026-11-13
 loading_resource_manager_release_024c1530,edge,,11,11,0,0,85daabd8235c7d2d,2026-11-13
 loading_resource_manager_remove_released_024c3260,edge,,21,21,0,0,85daabd8235c7d2d,2026-11-13
@@ -414,8 +414,8 @@ loading_stream_event_array_reallocate_02a6f140,edge,,11,11,0,0,06cdcd57f873cf0c,
 loading_stream_handle_construct_02a70a90,edge,,4,4,0,0,1ffdf9478d54ac73,2026-11-13
 loading_stream_queue_remove_02a6d8e0,edge,,12,12,0,0,4c4401d333fc75f2,2026-11-13
 loading_stream_queue_request_02a6cd90,edge,,11,11,0,0,1ffdf9478d54ac73,2026-11-13
-loading_tagged_string_release_00836840,recorded,,2,2,0,0,1127843eea3f0297,2026-11-13
-loading_transfer_task_cancel_024dd8a0,recorded,,2,2,0,0,1127843eea3f0297,2026-11-13
+loading_tagged_string_release_00836840,recorded,,2,2,0,0,c8e3b37bad30cce1,2026-11-13
+loading_transfer_task_cancel_024dd8a0,recorded,,3,3,0,0,c8e3b37bad30cce1,2026-11-13
 loading_transfer_task_check_close_024ddf20,edge,,32,32,0,0,f7ef9a2d8feca8b5,2026-11-13
 loading_transfer_task_check_read_024dde50,edge,,29,29,0,0,f7ef9a2d8feca8b5,2026-11-13
 loading_transfer_task_initialize_024dd540,edge,,17,17,0,0,f7ef9a2d8feca8b5,2026-11-13
