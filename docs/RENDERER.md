@@ -702,6 +702,8 @@ Instead:
           texels with a GPU image copy (`image_from_target`) instead of a write-back and a load: the two
           would move the same bytes through host memory. It is copied again after the target's next draws.
           At the Contract screen this removed the image-overlap write-backs (about 700 every 2 s).
+          Once the target is written back, an image that took its texels since its last draw stays loaded
+          (its memory changed in no other way since the copy) instead of loading the same bytes again.
         - **Compute fills on the target:** the game clears render targets with a compute program that
           stores one value from a constant buffer into every element of a buffer descriptor spanning the
           target's memory (compute shader `0x20d1b00500`, about ten a frame in Iosefka's Clinic). Each
