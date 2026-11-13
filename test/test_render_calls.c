@@ -353,6 +353,51 @@ static void checked_placed_calls(void)
     rt_render_forget();
 }
 
+/* With a reader, a buffer submitted again with no call recorded since is taken again only where its
+   memory still holds what it held at each call when first taken: the same commands submitted twice
+   run twice, but the game also rewrites a buffer from DMA and memory-write packets alone, which
+   record nothing, and the earlier use's user data and dispatch must not run with it. Without a reader
+   a second submission takes the calls unchecked. */
+static void resubmitted_calls(void)
+{
+    char error[128] = "";
+    const uint32_t user[2] = {0x43450070, 0x20}, one[3] = {1, 1, 1};
+    size_t count = 0;
+    rt_render_forget();
+    memset(checked_memory, 0, sizeof checked_memory);
+    rt_render_check_placed_calls(read_checked);
+    checked_memory[0x10 / 4] = 0xc0027602u, checked_memory[0x14 / 4] = 0x242; /* SET_SH_REG: user data 2-3 */
+    checked_memory[0x20 / 4] = 0xc0031502u, checked_memory[0x24 / 4] = 1;     /* DISPATCH_DIRECT */
+    CHECK(rt_render_record_user_data(CHECKED_BUFFER, 0x10, RT_STAGE_COMPUTE, 2, user, 2, error, sizeof error) == 0);
+    CHECK(rt_render_record_dispatch(CHECKED_BUFFER, 0x20, one, error, sizeof error) == 0);
+    rt_render_submitted(CHECKED_BUFFER, 0x40, &count);
+    CHECK(count == 2);
+    rt_render_submitted(CHECKED_BUFFER, 0x40, &count); /* the same commands again */
+    CHECK(count == 2);
+    checked_memory[0x24 / 4] = 0x00ff0000; /* the dispatch's second word changed: not its packet any more */
+    rt_render_submitted(CHECKED_BUFFER, 0x40, &count);
+    CHECK(count == 0);
+    checked_memory[0x24 / 4] = 1; /* forgotten, even where the words come back */
+    rt_render_submitted(CHECKED_BUFFER, 0x40, &count);
+    CHECK(count == 0);
+    /* a shorter submission of a rewritten buffer: a DMA packet over the user data's place */
+    CHECK(rt_render_record_user_data(CHECKED_BUFFER, 0x10, RT_STAGE_COMPUTE, 2, user, 2, error, sizeof error) == 0);
+    CHECK(rt_render_record_dispatch(CHECKED_BUFFER, 0x20, one, error, sizeof error) == 0);
+    rt_render_submitted(CHECKED_BUFFER, 0x40, &count);
+    CHECK(count == 2);
+    checked_memory[0x10 / 4] = 0xc0055000u, checked_memory[0x14 / 4] = 0xc4004000u;
+    rt_render_submitted(CHECKED_BUFFER, 0x18, &count);
+    CHECK(count == 0);
+    /* without a reader nothing is checked */
+    rt_render_check_placed_calls(NULL);
+    CHECK(rt_render_record_dispatch(CHECKED_BUFFER, 0x20, one, error, sizeof error) == 0);
+    rt_render_submitted(CHECKED_BUFFER, 0x40, &count);
+    checked_memory[0x20 / 4] = 0;
+    rt_render_submitted(CHECKED_BUFFER, 0x40, &count);
+    CHECK(count == 1);
+    rt_render_forget();
+}
+
 /* A compute shader's register block and a dispatch. */
 static void compute_calls(void)
 {
@@ -481,6 +526,7 @@ int main(void)
     recording();
     placed_calls();
     checked_placed_calls();
+    resubmitted_calls();
     compute_calls();
     if (failures) fprintf(stderr, "%d failure(s)\n", failures);
     return failures != 0;
