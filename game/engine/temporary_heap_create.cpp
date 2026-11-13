@@ -14,26 +14,11 @@
 #include <cstdint>
 
 #include "engine.h"
-#include "fixed_allocator.h"
-#include "thread.h"
-#include "runtime/game_guest_pointer.h"
+#include "temporary_heap.h"
+
+using namespace engine::temporary_heap;
 
 namespace {
-
-using engine::fixed_allocator::BackingAllocator;
-
-// The heap object: the region it hands out (twice: a start and end pair, and the current pair),
-// then the vtables of its two bases, the second of which points back at the first.
-struct TemporaryHeap {
-    uint8_t *start;
-    uint8_t *end;
-    uint8_t *current_start;
-    uint8_t *current_end;
-    const void *vtable;
-    const void *allocator_vtable;
-    const void **owner;
-};
-static_assert(sizeof(TemporaryHeap) == 0x38 && offsetof(TemporaryHeap, vtable) == 0x20);
 
 // "N:\SPRJ\Source\Library\Dantelion2\dist_ps4\source\ClassLibrary\Core\Kernel\Source\DLTemporaryHeap.cpp"
 RT_GLOBAL(0x04d3bb5e, source_file, const char);
@@ -44,35 +29,11 @@ constexpr int32_t line_setting_too_small = 0x101;
 RT_GLOBAL(0x04d3bbe9, message_out_of_memory, const char);
 constexpr int32_t line_out_of_memory = 0x104;
 
-// Where the thread's heap pointer and its size setting sit, from the thread pointer.
-RT_GLOBAL(0x057e4568, thread_heap_offset, const int64_t);
-RT_GLOBAL(0x057e4600, thread_heap_size_offset, const int64_t);
-RT_GLOBAL(0x05aa54f8, quit_query_instance, void *);
-RT_ORIGINAL(0x024e2550, quit_query_create, void *());
-RT_GLOBAL(0x05940670, default_allocator, BackingAllocator *);
-RT_ORIGINAL(0x02fa2b10, default_allocator_create, BackingAllocator *());
 RT_GLOBAL(0x0575b540, temporary_heap_vtable, const uint8_t);
 // The second base's vtable: its address points 0x10 into this object (past the offset-to-top
 // and type-info words).
 RT_GLOBAL(0x057b3140, temporary_heap_allocator_vtable, const uint8_t);
 constexpr std::ptrdiff_t vtable_entries_offset = 0x10;
-
-constexpr uint64_t default_size = 0x20000;
-
-// Share the runtime-qualified guest TCB with rewritten guest code on Darwin.
-unsigned char *temporary_thread_pointer()
-{
-#if defined(__APPLE__) && defined(__MACH__)
-    return rt_game_guest_thread_pointer();
-#else
-    return engine::thread_pointer();
-#endif
-}
-
-TemporaryHeap *&thread_heap()
-{
-    return *reinterpret_cast<TemporaryHeap **>(temporary_thread_pointer() + thread_heap_offset.get());
-}
 
 }  // namespace
 
@@ -80,34 +41,27 @@ extern "C" void bb_engine_temporary_heap_create_for_thread_0247d250()
 {
     if (thread_heap())
         return;
-    const uint64_t setting =
-        *reinterpret_cast<const uint64_t *>(temporary_thread_pointer() + thread_heap_size_offset.get());
+    const uint64_t setting = thread_heap_size();
     uint64_t size = default_size;
     if (setting) {
         if (setting < sizeof(TemporaryHeap))
             engine::fatal_error(source_file.address(), line_setting_too_small, message_setting_too_small.address());
         size = setting;
     }
-    if (!quit_query_instance.get())
-        quit_query_create();
-    BackingAllocator *allocator = default_allocator.get();
-    if (!allocator) {
-        allocator = default_allocator_create();
-        default_allocator.get() = allocator;
-    }
+    BackingAllocator *allocator = prepare_default_allocator();
     thread_heap() = static_cast<TemporaryHeap *>(allocator->vtable->allocate(allocator, size));
     if (!thread_heap())
         engine::fatal_error(source_file.address(), line_out_of_memory, message_out_of_memory.address());
     TemporaryHeap *heap = thread_heap();
     if (!heap)
         return;
-    uint8_t *memory = reinterpret_cast<uint8_t *>(heap);
+    const uintptr_t memory = reinterpret_cast<uintptr_t>(heap);
     *heap = TemporaryHeap{};
     heap->vtable = temporary_heap_vtable.address();
     heap->allocator_vtable = temporary_heap_allocator_vtable.address() + vtable_entries_offset;
     heap->owner = &heap->vtable;
-    heap->current_start = memory + sizeof(TemporaryHeap);
-    heap->start = memory + sizeof(TemporaryHeap);
-    heap->current_end = memory + size;
-    heap->end = memory + size;
+    heap->region.bottom = memory + sizeof(TemporaryHeap);
+    heap->region.lowest = memory + sizeof(TemporaryHeap);
+    heap->region.top = memory + size;
+    heap->region.highest = memory + size;
 }

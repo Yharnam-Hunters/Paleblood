@@ -106,6 +106,9 @@ struct MetalState {
     bool blend_set = false, depth_set = false, color_control_set = false, target_mask_set = false, primitive_set = false;
     uint32_t scissor_tl = 0, scissor_br = 0;
     bool scissor_tl_set = false, scissor_br_set = false;
+    /* PA_SC_VPORT_SCISSOR_0_TL/BR and PA_SC_MODE_CNTL_0 (VPORT_SCISSOR_ENABLE) */
+    uint32_t viewport_scissor_tl = 0, viewport_scissor_br = 0, mode_control = 0;
+    bool viewport_scissor_set = false;
     uint32_t clip_control = 0; /* PA_CL_CLIP_CNTL; 0 until set: every plane clips */
     uint32_t index_type = 0, index_size = 0;
     uint64_t index_base = 0;
@@ -157,7 +160,7 @@ static int failed(char *error, size_t size, const char *format, ...)
 enum { CB_TARGET_MASK = 0xa08e, DB_STENCIL_CONTROL = 0xa10b, CB_BLEND0_CONTROL = 0xa1e0,
        DB_DEPTH_CONTROL = 0xa200, CB_COLOR_CONTROL = 0xa202, VGT_PRIMITIVE_TYPE = 0xc242,
        PA_SC_SCREEN_SCISSOR_TL = 0xa00c, PA_SC_SCREEN_SCISSOR_BR = 0xa00d, SPI_PS_INPUT_CNTL_0 = 0xa191, PS_INPUTS = 32,
-       PA_CL_CLIP_CNTL = 0xa204 };
+       PA_SC_VPORT_SCISSOR_0_TL = 0xa094, PA_SC_VPORT_SCISSOR_0_BR = 0xa095, PA_SC_VPORT_SCISSOR_LAST = 0xa0b3, PA_SC_MODE_CNTL_0 = 0xa292, PA_CL_CLIP_CNTL = 0xa204 };
 /* PA_CL_CLIP_CNTL (gfx_7_2_sh_mask.h): CLIP_DISABLE, DX_RASTERIZATION_KILL, ZCLIP_NEAR_DISABLE, ZCLIP_FAR_DISABLE. Where z
    is not clipped the depth is clamped to the viewport's range: Metal's MTLDepthClipModeClamp, as the Vulkan executor's
    depth clamp (render_executor.c). */
@@ -177,7 +180,12 @@ static int set_register(MetalState &state, uint32_t address, uint32_t value)
     case PA_SC_SCREEN_SCISSOR_BR: state.scissor_br = value; state.scissor_br_set = true; return 0;
     case PA_CL_CLIP_CNTL: state.clip_control = value; return 0;
     case DB_STENCIL_CONTROL: return 0; /* Stencil testing itself is rejected before drawing. */
+    case PA_SC_VPORT_SCISSOR_0_TL: state.viewport_scissor_tl = value; state.viewport_scissor_set = true; return 0;
+    case PA_SC_VPORT_SCISSOR_0_BR: state.viewport_scissor_br = value; state.viewport_scissor_set = true; return 0;
+    case PA_SC_MODE_CNTL_0: state.mode_control = value; return 0;
     default:
+        /* the other viewports' scissors: a draw uses viewport 0 */
+        if (address > PA_SC_VPORT_SCISSOR_0_BR && address <= PA_SC_VPORT_SCISSOR_LAST) return 0;
         /* SPI_PS_INPUT_CNTL_n: only attribute n reading vertex output n, interpolated, is in the profile */
         if (address >= SPI_PS_INPUT_CNTL_0 && address < SPI_PS_INPUT_CNTL_0 + PS_INPUTS) return value == address - SPI_PS_INPUT_CNTL_0 ? 0 : -1;
         return -1;
@@ -265,6 +273,24 @@ static int screen_scissor(const MetalState &state, const MetalTarget &target, MT
     bottom = std::clamp(bottom, 0, static_cast<int32_t>(target.height));
     rect = {static_cast<NSUInteger>(left), static_cast<NSUInteger>(top),
         static_cast<NSUInteger>(std::max(0, right - left)), static_cast<NSUInteger>(std::max(0, bottom - top))};
+    return 0;
+}
+
+/* AMD CIK 3D registers, PA_SC_VPORT_SCISSOR_0_TL/BR: x in bits 0-14, y in 16-30, WINDOW_OFFSET_DISABLE in
+   bit 31 of TL, the bottom right exclusive; on with PA_SC_MODE_CNTL_0's VPORT_SCISSOR_ENABLE (bit 1). The
+   rectangle narrows the screen scissor's. One that takes the window offset is not drawn yet. */
+static int viewport_scissor(const MetalState &state, MTLScissorRect &rect, char *error, size_t size)
+{
+    enum { VPORT_SCISSOR_ENABLE = 2, COORDINATE_MASK = 0x7fff, Y_SHIFT = 16 };
+    constexpr uint32_t window_offset_disable = 1u << 31;
+    if (!(state.mode_control & VPORT_SCISSOR_ENABLE) || !state.viewport_scissor_set) return 0;
+    if (!(state.viewport_scissor_tl & window_offset_disable))
+        return failed(error, size, "a viewport scissor that takes the window offset: not drawn yet");
+    const NSUInteger left = std::max<NSUInteger>(rect.x, state.viewport_scissor_tl & COORDINATE_MASK);
+    const NSUInteger top = std::max<NSUInteger>(rect.y, state.viewport_scissor_tl >> Y_SHIFT & COORDINATE_MASK);
+    const NSUInteger right = std::min<NSUInteger>(rect.x + rect.width, state.viewport_scissor_br & COORDINATE_MASK);
+    const NSUInteger bottom = std::min<NSUInteger>(rect.y + rect.height, state.viewport_scissor_br >> Y_SHIFT & COORDINATE_MASK);
+    rect = {std::min(left, rect.x + rect.width), std::min(top, rect.y + rect.height), right > left ? right - left : 0, bottom > top ? bottom - top : 0};
     return 0;
 }
 
@@ -653,7 +679,7 @@ static int pixel_resources(rt_executor *x, const MetalState &state, MetalPixelRe
         out.images[i] = {images[i].origin,
             descriptor.type == RT_IMAGE_1D || descriptor.type == RT_IMAGE_1D_ARRAY ? GCN_IMAGE_1D : GCN_IMAGE_2D,
             descriptor.type == RT_IMAGE_1D_ARRAY || descriptor.type == RT_IMAGE_2D_ARRAY,format->type,format->components,1,0,
-            descriptor.swizzle != DST_SEL_IDENTITY ? descriptor.swizzle : 0u, 0}; /* DST_SEL: for the texel a load outside the image reads */
+            descriptor.swizzle != DST_SEL_IDENTITY ? descriptor.swizzle : 0u, 0, 0}; /* DST_SEL: for the texel a load outside the image reads */
         if (!(out.textures[i] = image_for(x,words,descriptor,*format,error,size))) return -1;
     }
     return 0;
@@ -929,7 +955,7 @@ static int draw(rt_executor *x, const MetalState &state, uint32_t count, char *e
     MetalTarget *target = target_for(x, state.color, error, size);
     if (!target) return -1;
     MTLScissorRect scissor;
-    if (screen_scissor(state, *target, scissor, error, size)) return -1;
+    if (screen_scissor(state, *target, scissor, error, size) || viewport_scissor(state, scissor, error, size)) return -1;
     MetalPixelResources resources;
     if (pixel_resources(x,state,resources,error,size)) return -1;
     uint32_t vertex_read = 0, pixel_read = 0;

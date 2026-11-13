@@ -74,6 +74,11 @@
    and VGT_GSVS_RING_ITEMSIZE (0xa2ac) = (the four sizes' sum) x the most vertices & 0x7fff; 0x014756b0
    (command buffer, mode, cut mode) writes VGT_GS_MODE (0xa290) = the mode with bits 4-5 the cut mode's low two
    bits, and, when the mode is 0, VGT_STRMOUT_CONFIG (0xa2e5) = 0.
+   The viewport scissor setter 0x014766d0 (command buffer, viewport, left, top, right, bottom, and a seventh
+   argument on the stack) writes PA_SC_VPORT_SCISSOR_n_TL (0xa094 + 2 x the viewport) = left & 0x7fff |
+   (top << 16) & 0x7fff0000, with bit 31 (WINDOW_OFFSET_DISABLE) set when the seventh argument is 0, and
+   _BR (the next register) = right & 0x7fff | (bottom << 16) & 0x7fff0000, in one packet (from its
+   disassembly). The deferred lights set each 128x128 screen tile as viewport 0's scissor before a draw.
    The clip control setter 0x01476b30 (command buffer, value) writes PA_CL_CLIP_CNTL (0xa204) = the value & 0x0f7fe03f
    in one SET_CONTEXT_REG packet (bbhost's notes name the function and mask, facts only; its disassembly agrees).
    The command buffer starts with its begin and holds its cursor at +0x10 (game/render/command_packets.h). */
@@ -330,6 +335,22 @@ static void gs_mode(const uint64_t args[RT_OBSERVED_ARGUMENTS])
     if (!mode) rt_observe_register(observed_buffer(args), observed_offset(args), VGT_STRMOUT_CONFIG, 0);
 }
 
+enum { PA_SC_VPORT_SCISSOR_0_TL = 0xa094, ARGUMENT_VIEWPORT = 1, ARGUMENT_LEFT = 2, ARGUMENT_TOP = 3, ARGUMENT_RIGHT = 4,
+       ARGUMENT_BOTTOM = 5, STACK_WINDOW_OFFSET = 0, SCISSOR_REGISTERS_A_VIEWPORT = 2, SCISSOR_X_MASK = 0x7fff, SCISSOR_Y_SHIFT = 16 };
+static const uint32_t scissor_y_mask = 0x7fff0000u, window_offset_disable = 1u << 31;
+
+static void viewport_scissor(const uint64_t *frame)
+{
+    const uint32_t left = (uint32_t)frame[ARGUMENT_LEFT], top = (uint32_t)frame[ARGUMENT_TOP];
+    const uint32_t right = (uint32_t)frame[ARGUMENT_RIGHT], bottom = (uint32_t)frame[ARGUMENT_BOTTOM];
+    const uint32_t offset_disable = (uint32_t)rt_observed_stack_argument(frame, STACK_WINDOW_OFFSET) == 0 ? window_offset_disable : 0;
+    const uint32_t top_left = (left & SCISSOR_X_MASK) | (top << SCISSOR_Y_SHIFT & scissor_y_mask) | offset_disable;
+    const uint32_t bottom_right = (right & SCISSOR_X_MASK) | (bottom << SCISSOR_Y_SHIFT & scissor_y_mask);
+    const uint32_t first = PA_SC_VPORT_SCISSOR_0_TL + SCISSOR_REGISTERS_A_VIEWPORT * (uint32_t)frame[ARGUMENT_VIEWPORT];
+    rt_observe_register(observed_buffer(frame), observed_offset(frame), first, top_left);
+    rt_observe_register(observed_buffer(frame), observed_offset(frame), first + 1, bottom_right);
+}
+
 enum { PA_CL_CLIP_CNTL = 0xa204, ARGUMENT_CLIP_CONTROL = 1 };
 static const uint32_t clip_control_mask = 0x0f7fe03f; /* the bits the setter keeps */
 
@@ -364,6 +385,7 @@ const rt_observe_hook game_observe_hooks[] = {
     {0x01476420, 126, "render_set_user_data_1_word", one_word},
     {0x01476b30, 93, "render_set_clip_control", clip_control},
     {0x014764a0, 184, "render_set_user_data_words", counted_words},
+    {0x014766d0, 179, "render_set_viewport_scissor", viewport_scissor},
     {0x0148a350, 177, "render_dispatch_compute_buffer", dispatch},
     {0x0148aad0, 132, "render_compute_user_data_4_words_marker_4", compute_four_words},
     {0x0148ab60, 148, "render_compute_user_data_8_words", compute_eight_words},

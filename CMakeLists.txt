@@ -261,3 +261,5 @@ set_tests_properties(sysmodule_ids PROPERTIES TIMEOUT 10)
 # Deliberately wrong replacements for the function families' mutation tests (tools/verify.py
 # family); a test library, never loaded by the runtime.
 add_library(bbfamily_mutants SHARED test/family_mutants.c)
+
+include(cmake/DarwinGameGuestPointerTests.cmake)
