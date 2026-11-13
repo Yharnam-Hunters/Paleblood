@@ -705,6 +705,7 @@ render_restore_color_target_from_bank,recorded,,104,104,0,0,649b23425dd0ccb1,202
 render_restore_color_target_from_bank,edge,,12,12,0,0,649b23425dd0ccb1,2026-11-12
 render_restore_depth_target_from_bank,recorded,,56,56,0,0,8668e2d117190cf8,2026-11-12
 render_restore_depth_target_from_bank,edge,,12,12,0,0,8668e2d117190cf8,2026-11-12
+render_set_border_color_base,edge,,127,127,0,0,f8944a8bdaf3e1a2,2026-11-13
 render_set_cb_blend_control,recorded,,200,200,0,0,44e954b7da1bc15e,2026-11-12
 render_set_cb_blend_control,edge,,14,14,0,0,44e954b7da1bc15e,2026-11-12
 render_set_cb_color_control,recorded,,126,126,0,0,8ba8cb4828340be9,2026-11-12

@@ -91,6 +91,7 @@ address,replacement,system,returns
 0x014753c0,bb_render_emit_set_ps_shader_014753c0,render,void
 0x01475420,bb_render_emit_update_ps_shader_01475420,render,void
 0x01475480,bb_render_emit_set_vs_shader_01475480,render,void
+0x014758a0,bb_render_set_border_color_base,render,void
 0x01475da0,bb_render_emit_event_write,render,void
 0x01475e10,bb_render_emit_shader_preparation_range_01475e10,render,void
 0x014765e0,bb_render_configure_viewport,render,void
