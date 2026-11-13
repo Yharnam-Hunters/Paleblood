@@ -505,9 +505,9 @@ Instead:
        the submissions run behind, and the old fixed array of 4,096 dropped the oldest binds when
        full: binds of buffers still to be submitted, whose draws and dispatches then ran with the
        shaders bound before them (a boot logged compute binds taken about 12,000 placements after
-       they were placed: the clinic's timing-dependent stops "the compute shader at 0x20d1ceb800
-       reads an image of type 0" and "... at 0x20d1b00800: a shader reached outside the guest
-       memory" ran a dispatch with the shader bound before its own). When the ring comes round
+       they were placed). The clinic's timing-dependent stop "the compute shader at 0x20d1ceb800
+       reads an image of type 0" still happens with this fixed, so it has another cause as well.
+       When the ring comes round
        to a bind still waiting, it now drops it only if its NOP packet has been written over or
        65,536 binds have been placed since (a buffer abandoned with its memory untouched), and
        otherwise doubles, up to 262,144.
