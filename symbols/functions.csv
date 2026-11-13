@@ -187,6 +187,10 @@ address,size,name,system,status,notes
 0x0222bc10,2693,ai_hk_frame_update_0222bc10,ai,verified,"SprjHkAiManager per-frame update: steps the AI world by 1/30 s (the 60 FPS patches: 1/60); AI debug display and drawing"
 0x02311c80,283,param_find_row_equip_param_accessory,param,edge-verified,SoloParamRepository row lookup for EquipParamAccessory (type 2): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x02311da0,284,param_row_name_equip_param_accessory,param,edge-verified,SoloParamRepository row name lookup for EquipParamAccessory (type 2): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
+0x02312070,309,param_next_row_id_equip_param_accessory,param,edge-verified,SoloParamRepository id of the row after id in EquipParamAccessory (type 2) file order; negative id: first row; -1 when none
+0x023121b0,341,param_previous_row_id_equip_param_accessory,param,edge-verified,SoloParamRepository id of the row before id in EquipParamAccessory (type 2) file order; negative id: last row; -1 when none
+0x02312370,402,param_list_listed_ids_equip_param_accessory,param,edge-verified,SoloParamRepository as list_row_ids_equip_param_accessory but skips rows whose int16 at +0x26 is negative
+0x02312520,390,param_list_row_ids_equip_param_accessory,param,edge-verified,SoloParamRepository empties an id array and appends every EquipParamAccessory (type 2) row id in file order; returns the count
 0x023128a0,284,param_find_row_action_button,param,edge-verified,SoloParamRepository row lookup for ActionButtonParam (type 39): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x02312b60,283,param_find_row_ai_sound,param,edge-verified,SoloParamRepository row lookup for AiSoundParam (type 48): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x02312fd0,310,param_find_row_atk_param,param,edge-verified,SoloParamRepository AtkParam row lookup (user 0: AtkParam_Npc type 7; 1: AtkParam_Pc type 8; args out/user/id); stores the user beside the result
@@ -195,6 +199,7 @@ address,size,name,system,status,notes
 0x02314b60,283,param_find_row_calc_correct_graph,param,edge-verified,SoloParamRepository row lookup for CalcCorrectGraph (type 32): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x02314e20,283,param_find_row_chara_init,param,edge-verified,SoloParamRepository row lookup for CharaInitParam (type 21): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x02314f40,278,param_row_at_chara_init,param,edge-verified,SoloParamRepository row-at accessor for CharaInitParam (type 21): id and data of row number n (id -1; null past the count or when not loaded)
+0x02315060,96,param_row_count_chara_init,param,edge-verified,SoloParamRepository row count of CharaInitParam (type 21); 0 when not loaded
 0x023150d0,284,param_row_name_chara_init,param,edge-verified,SoloParamRepository row name lookup for CharaInitParam (type 21): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
 0x023155c0,283,param_find_row_decal,param,edge-verified,SoloParamRepository row lookup for DecalParam (type 38): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x023167f0,288,param_find_row_dungeon_feature,param,edge-verified,DungeonFeatureParam row lookup (type 53): as the other row lookups; each search also stores the header word 0x06 at 0x05992cb0
@@ -244,16 +249,24 @@ address,size,name,system,status,notes
 0x0231df60,284,param_row_name_gem_gen_2,param,edge-verified,SoloParamRepository row name lookup for GemGenParam (type 42): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
 0x0231e3d0,283,param_find_row_equip_param_goods,param,edge-verified,SoloParamRepository row lookup for EquipParamGoods (type 3): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x0231e4f0,278,param_row_at_equip_param_goods,param,edge-verified,SoloParamRepository row-at accessor for EquipParamGoods (type 3): id and data of row number n (id -1; null past the count or when not loaded)
+0x0231e610,96,param_row_count_equip_param_goods,param,edge-verified,SoloParamRepository row count of EquipParamGoods (type 3); 0 when not loaded
 0x0231e680,284,param_row_name_equip_param_goods,param,edge-verified,SoloParamRepository row name lookup for EquipParamGoods (type 3): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
+0x0231ebb0,309,param_next_row_id_equip_param_goods,param,edge-verified,SoloParamRepository id of the row after id in EquipParamGoods (type 3) file order; negative id: first row; -1 when none
+0x0231ecf0,341,param_previous_row_id_equip_param_goods,param,edge-verified,SoloParamRepository id of the row before id in EquipParamGoods (type 3) file order; negative id: last row; -1 when none
+0x0231f0e0,390,param_list_row_ids_equip_param_goods,param,edge-verified,SoloParamRepository empties an id array and appends every EquipParamGoods (type 3) row id in file order; returns the count
 0x0231f460,283,param_find_row_hit_mtrl,param,edge-verified,SoloParamRepository row lookup for HitMtrlParam (type 35): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x0231f720,283,param_find_row_holygrail_ex,param,edge-verified,SoloParamRepository row lookup for HolygrailExParam (type 52): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x0231f840,284,param_row_name_holygrail_ex,param,edge-verified,SoloParamRepository row name lookup for HolygrailExParam (type 52): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
+0x0231ff00,96,param_row_count_holygrail_ex,param,edge-verified,SoloParamRepository row count of HolygrailExParam (type 52); 0 when not loaded
 0x0231ff70,168,param_holygrail_ex_row_number,param,edge-verified,SoloParamRepository HolygrailExParam (type 52): index row number of a lookup id; -1 when none
 0x02320020,212,param_find_row_number_holygrail_ex,param,edge-verified,SoloParamRepository HolygrailExParam (type 52): row number n looked up again by its id
 0x02320640,285,param_find_row_item_lot,param,edge-verified,ItemLotParam row lookup (type 19): as the other row lookups; but only for tables of data version 2 or later
 0x02320dd0,283,param_find_row_knock_back,param,edge-verified,SoloParamRepository row lookup for KnockBackParam (type 36): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x023210e0,283,param_find_row_magic,param,edge-verified,SoloParamRepository row lookup for Magic (type 14): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x02321200,278,param_row_at_magic,param,edge-verified,SoloParamRepository row-at accessor for Magic (type 14): id and data of row number n (id -1; null past the count or when not loaded)
+0x02321320,96,param_row_count_magic,param,edge-verified,SoloParamRepository row count of Magic (type 14); 0 when not loaded
+0x02321680,302,param_next_row_id_magic,param,edge-verified,SoloParamRepository id of the row after id in Magic (type 14) file order; negative id: first row; -1 when none
+0x023217c0,341,param_previous_row_id_magic,param,edge-verified,SoloParamRepository id of the row before id in Magic (type 14) file order; negative id: last row; -1 when none
 0x02321ac0,283,param_find_row_menu_color_table,param,edge-verified,SoloParamRepository row lookup for MenuColorTableParam (type 18): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x02321be0,278,param_row_at_menu_color_table,param,edge-verified,SoloParamRepository row-at accessor for MenuColorTableParam (type 18): id and data of row number n (id -1; null past the count or when not loaded)
 0x02321ea0,283,param_find_row_move,param,edge-verified,SoloParamRepository row lookup for MoveParam (type 20): binary search of the loader index by id; writes id and row data pointer (null if none)
@@ -264,6 +277,9 @@ address,size,name,system,status,notes
 0x023235b0,231,param_clamp_protector_gen_indexes,param,edge-verified,SoloParamRepository ProtectorGenParam (type 41) after loading: marks entry indexes above 63 as none (0x80000000) in place
 0x02323840,394,param_find_row_equip_param_protector,param,edge-verified,EquipParamProtector lookup: row of the id rounded down to 100; then ReinforceParamProtector row for id%100 + reinforce type (s16 at +0xc8)
 0x023239d0,284,param_row_name_equip_param_protector,param,edge-verified,SoloParamRepository row name lookup for EquipParamProtector (type 1): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
+0x02324fa0,309,param_next_row_id_equip_param_protector,param,edge-verified,SoloParamRepository id of the row after id in EquipParamProtector (type 1) file order; negative id: first row; -1 when none
+0x023250e0,341,param_previous_row_id_equip_param_protector,param,edge-verified,SoloParamRepository id of the row before id in EquipParamProtector (type 1) file order; negative id: last row; -1 when none
+0x02325820,390,param_list_row_ids_equip_param_protector,param,edge-verified,SoloParamRepository empties an id array and appends every EquipParamProtector (type 1) row id in file order; returns the count
 0x02326200,283,param_find_row_reinforce_param_protector,param,edge-verified,SoloParamRepository row lookup for ReinforceParamProtector (type 5): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x023264c0,283,param_find_row_ragdoll,param,edge-verified,SoloParamRepository row lookup for RagdollParam (type 26): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x02326780,311,param_find_row_resident_fx,param,edge-verified,SoloParamRepository ResidentFxParam (type 47) row lookup that also returns the index row number and the table
