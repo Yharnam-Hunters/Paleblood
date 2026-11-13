@@ -479,6 +479,18 @@ Instead:
        modifier, which replaces `PGM_RSRC1`'s SGPR and input-VGPR counts. A null pixel shader
        (a depth-only pass) is recorded too: such a draw is drawn with no pixel stage when it writes
        no colour target, and stops by name when it would.
+     - **A buffer submitted again with nothing recorded since** (found in Iosefka's Clinic, 13
+       November 2026): the record keeps each buffer's calls until a later call starts it over, so
+       a second submission of the same address with no call recorded in between took the earlier
+       use's calls again. The game rewrites some small buffers from packets alone (DMA and memory
+       writes, which record nothing) at the address of an earlier compute buffer, and that earlier
+       use's user data and dispatches ran again (they fed the clinic's timing-dependent stop "the
+       compute shader at 0x20d1b00800: a shader reached outside the guest memory"). The first submission that takes a buffer's calls now notes the two words at each
+       call's offset; a later submission with no new call takes them again only where the memory
+       still holds those words (the same commands submitted twice), and otherwise forgets them
+       (`taken_count` in `render_calls.c`, with the reader of `runtime/render_placed.h`). A buffer
+       built and never submitted is not checked this way: its calls stay until a new call starts
+       it over.
    - **How the hooks attach:** the library's functions are being decompiled like the rest of the
      game, as replacements verified to write exactly the original packets. The renderer leaves
      those packets alone, so verification still holds. Each of these replacements also makes one
