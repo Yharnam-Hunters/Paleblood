@@ -29,7 +29,7 @@ menus and character creation, and loads the first area, Iosefka's Clinic.
 [![code replaced](https://yharnam-hunters.github.io/Paleblood/badge-code.svg)](STATUS.md)
 [![replaced in 7 days](https://yharnam-hunters.github.io/Paleblood/badge-week.svg)](STATUS.md)
 
-[<img alt="Progress map of the game's code: green where a function is rewritten and verified, amber where rewritten, grey where not yet started" src="https://yharnam-hunters.github.io/Paleblood/progress.svg" width="100%">](STATUS.md)
+[<img alt="Progress map of the game's code: green where a function is rewritten and verified, amber where rewritten, grey where not yet started" src="https://yharnam-hunters.github.io/Paleblood/progress.svg" width="100%">](https://yharnam-hunters.github.io/Paleblood/progress.html)
 
 **Details:** [full numbers](STATUS.md) · [how it works and what works](docs/OVERVIEW.md) ·
 [the story so far](https://yharnam-hunters.github.io/byrgenwerth-site/runtime/) ·
