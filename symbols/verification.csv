@@ -151,11 +151,14 @@ frame_timing_holygrail_wait_for_dungeon_mode,edge,,59,59,0,0,cd53367af0bda73a,20
 frame_timing_holygrail_wait_for_dungeon_mode,edge,60,59,59,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_holygrail_wait_for_ritual_mode,edge,,59,59,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_holygrail_wait_for_ritual_mode,edge,60,59,59,0,0,cd53367af0bda73a,2026-10-31
+frame_timing_item_list_update_01456c80,recorded,,53,53,0,0,ef8ef3f096df299e,2026-11-13
+frame_timing_item_list_update_01456c80,edge,,6,6,0,0,ef8ef3f096df299e,2026-11-13
 frame_timing_job_take_result,recorded,,2,2,0,0,28e2fcb9414a9bc0,2026-11-12
 frame_timing_job_take_result,edge,,28,28,0,0,28e2fcb9414a9bc0,2026-11-12
 frame_timing_job_wait,edge,,16,16,0,0,28e2fcb9414a9bc0,2026-11-10
 frame_timing_leave_modes_around_owner_check_01ec3ef0,edge,,37,37,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_leave_modes_around_owner_check_01ec3ef0,edge,60,37,37,0,0,cd53367af0bda73a,2026-10-31
+frame_timing_listener_list_notify_013daac0,edge,,10,10,0,0,ef8ef3f096df299e,2026-11-13
 frame_timing_pace_frame,recorded,,585,585,0,0,a3d44cba82dab3c2,2026-10-09
 frame_timing_pace_frame,recorded,30,585,585,0,0,a3d44cba82dab3c2,2026-10-07
 frame_timing_pace_frame,recorded,60,585,585,0,0,a3d44cba82dab3c2,2026-10-07
@@ -167,6 +170,9 @@ frame_timing_pace_frame,edge,uncapped,26,26,0,0,a3d44cba82dab3c2,2026-10-07
 frame_timing_pace_frame,option-recorded,60,209,209,0,0,a3d44cba82dab3c2,2026-10-07
 frame_timing_pace_frame,option-recorded,uncapped,51,29,0,22,a3d44cba82dab3c2,2026-10-07
 frame_timing_posix_sleep_ms,edge,,11,11,0,0,316683d176b2d7b8,2026-11-10
+frame_timing_profile_frame_end_01456ef0,edge,,6,6,0,0,ef8ef3f096df299e,2026-11-13
+frame_timing_profile_start_01456eb0,edge,,12,12,0,0,ef8ef3f096df299e,2026-11-13
+frame_timing_profile_stop_01456ed0,edge,,12,12,0,0,ef8ef3f096df299e,2026-11-13
 frame_timing_request_10_02012780,edge,,5,5,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_request_10_02012780,edge,60,5,5,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_request_7_0200e270,edge,,12,12,0,0,cd53367af0bda73a,2026-10-31
