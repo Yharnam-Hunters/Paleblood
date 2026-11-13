@@ -133,6 +133,55 @@ extern "C" void bb_param_find_row_equip_param_weapon(EquipRowLookup *out, int32_
                    find_reinforce_weapon_row);
 }
 
+// The weapon steps: from the EquipParamWeapon row with id `id`, move `step` rows on (or back) in
+// file order, look the id found there up as a weapon, and stop at the first whose row has the
+// flag `mode` asks for (bit 0, 1 or 2 of the 40-bit flag field at +0x100; a mode other than 0-2
+// stops at once). A negative id gives the first (last) row's id. -1 when the table is not loaded
+// or empty, an id is not in the table, or the step leaves the table. The looked-up row is read
+// without a check: an id whose base item (rounded down to 100) is missing would crash the original.
+namespace {
+
+constexpr size_t weapon_step_flags_offset = 0x100;
+constexpr int32_t weapon_step_modes = 3;
+
+bool weapon_step_stops(int32_t id, int32_t mode)
+{
+    if (mode < 0 || mode >= weapon_step_modes) return true;
+    EquipRowLookup lookup;
+    bb_param_find_row_equip_param_weapon(&lookup, id);
+    return lookup.equip.row[weapon_step_flags_offset] & (1u << mode);
+}
+
+template <typename Step> int32_t step_weapon_id(int32_t id, int32_t mode, bool backwards, const Step &step)
+{
+    const TableHeader *table = loaded_table(ParamType::equip_param_weapon);
+    if (table == nullptr) return -1;
+    if (id < 0) {
+        if (table->row_count == 0) return -1;
+        return static_cast<int32_t>(param::describe_row(table, backwards ? table->row_count - 1u : 0).id);
+    }
+    for (;;) {
+        const int32_t row_number = param::find_row_number(table, static_cast<uint32_t>(id));
+        if (row_number < 0) return -1;
+        const uint32_t stepped = step(static_cast<uint32_t>(row_number));
+        if (stepped >= table->row_count) return -1;
+        id = static_cast<int32_t>(param::describe_row(table, stepped).id);
+        if (weapon_step_stops(id, mode)) return id;
+    }
+}
+
+}  // namespace
+
+extern "C" int32_t bb_param_next_weapon_id_with_flag(int32_t id, int32_t step, int32_t mode)
+{
+    return step_weapon_id(id, mode, false, [step](uint32_t row_number) { return row_number + static_cast<uint32_t>(step); });
+}
+
+extern "C" int32_t bb_param_previous_weapon_id_with_flag(int32_t id, int32_t step, int32_t mode)
+{
+    return step_weapon_id(id, mode, true, [step](uint32_t row_number) { return row_number - static_cast<uint32_t>(step); });
+}
+
 extern "C" void bb_param_find_row_equip_param_protector(EquipRowLookup *out, int32_t id)
 {
     find_equip_row(out, id, ParamType::equip_param_protector, protector_reinforce_type_offset,

@@ -31,18 +31,27 @@ FUNCTIONS = {
     'param_find_rows_menu_value_table': ('0x0206ddd0', 'run', MENU_VALUE, 'void'),
     'param_menu_property_spec': ('0x0206ecc0', 'spec', MENU_PROPERTY_SPEC, 'i64'),
 }
+# The weapon steps (0x0232b6d0 next, 0x0232b950 previous): (address, kind, slot, backwards).
+FUNCTIONS.update({
+    'param_next_weapon_id_with_flag': ('0x0232b6d0', 'weapon_step', EQUIP_WEAPON, False),
+    'param_previous_weapon_id_with_flag': ('0x0232b950', 'weapon_step', EQUIP_WEAPON, True),
+})
+WEAPON_STEP_FLAGS = 0x100   # the 40-bit flag field the steps test (bit 0, 1 or 2 by mode)
+GARBAGE = 0xaaaaaaaa00000000  # upper half of a 32-bit argument register, to be ignored
 # Where an equipment row keeps its reinforcement type (a signed 16-bit value).
 REINFORCE_TYPE = {EQUIP_WEAPON: (0xd6, REINFORCE_WEAPON), EQUIP_PROTECTOR: (0xc8, REINFORCE_PROTECTOR)}
 ROW_SIZE = 0x100
 
 
-def table_with_rows(index, rows, format=2):
-    """A table whose rows hold data: `rows` are each row's bytes (padded to ROW_SIZE), placed
+def table_with_rows(index, rows, format=2, row_size=ROW_SIZE, flags=0, ids=None):
+    """A table whose rows hold data: `rows` are each row's bytes (padded to row_size), placed
     after the descriptors, with the index after them."""
     start = 0x30 if format == 2 else 0x40
-    first_row = (start + 12 * len(rows) + 15) & ~15
-    offsets = [first_row + ROW_SIZE * k for k in range(len(rows))]
-    data, header = table_bytes(index, format=format, offsets=offsets, size=first_row + ROW_SIZE * len(rows))
+    descriptor = 24 if format >= 4 and flags & 2 else 12
+    first_row = (start + descriptor * len(rows) + 15) & ~15
+    offsets = [first_row + row_size * k for k in range(len(rows))]
+    data, header = table_bytes(index, format=format, flags=flags, offsets=offsets, ids=ids,
+                               size=first_row + row_size * len(rows))
     data = bytearray(data)
     for k, row in enumerate(rows):
         at = header + offsets[k]
@@ -190,11 +199,70 @@ def spec_cases(address, slot):
     ]
 
 
+def weapon_step_cases(address, slot, backwards):
+    # Weapon ids (index and descriptor ids alike) and the flags of each row; 105 and 410 are
+    # upgrades whose lookup reads their base rows 100 and 400.
+    ids = [100, 105, 200, 300, 400, 410, 500, 600]
+    flags = [0b001, 0b110, 0b010, 0b000, 0b100, 0b011, 0b111, 0b011]
+    weapon_row_size = 0x110
+
+    def rows(values):
+        out = []
+        for v in values:
+            data = bytearray(b'\x5a' * weapon_row_size)
+            data[WEAPON_STEP_FLAGS:WEAPON_STEP_FLAGS + 5] = bytes([v | 0xf8, 0xff, 0xff, 0xff, 0xff])
+            out.append(bytes(data))
+        return out
+
+    def table(index=None, format=2, table_flags=0, descriptor_ids=None, n=len(ids)):
+        index = [(i, k) for k, i in enumerate(ids[:n])] if index is None else index
+        return table_with_rows(index, rows(flags[:n]), format=format, row_size=weapon_row_size, flags=table_flags,
+                               ids=ids[:n] if descriptor_ids is None else descriptor_ids)
+
+    def c(cid, id, step, mode, t=None, tables=None):
+        if tables is None:
+            tables = {slot: table() if t is None else t}
+        args = {'rdi': GARBAGE | (id & 0xffffffff), 'rsi': GARBAGE | (step & 0xffffffff),
+                'rdx': GARBAGE | (mode & 0xffffffff)}
+        return case(address, 'i32', cid, args, Repository(tables))
+
+    start = 600 if backwards else 100
+    out = []
+    for mode in (0, 1, 2, 3, 7, -1):
+        for id in (100, 105, 200, 300, 400, 410, 500, 600):
+            out.append(c(f'mode{mode & 0xff:x}_from{id}', id, 1, mode))
+    for step in (2, 3, 7, 8, -1, -2, 0x7fffffff, -0x80000000):
+        for mode in (0, 2):
+            out.append(c(f'step{step & 0xffffffff:x}_mode{mode}', start, step, mode))
+    out += [
+        c('step0_flag_set', 100, 0, 0), c('step0_mode3', 300, 0, 3),
+        c('negative_id', -1, 1, 0), c('negative_id_mode3', -5, 1, 3), c('most_negative_id', -0x80000000, 1, 1),
+        c('missing_id', 150, 1, 0), c('missing_above', 700, 1, 0), c('missing_below', 50, 1, 2),
+        c('row_number_negative', 300, 1, 0, table(index=[(i, -2 if i == 300 else k) for k, i in enumerate(ids)])),
+        c('row_number_past_count', 300, 1, 0, table(index=[(i, 20 if i == 300 else k) for k, i in enumerate(ids)])),
+        # Row 4's descriptor names an id the index lacks: the walk stops there unless it matches.
+        c('descriptor_not_indexed', start, 1, 1, table(descriptor_ids=ids[:4] + [403] + ids[5:])),
+        c('one_row', 100, 1, 0, table(n=1)), c('one_row_negative', -1, 1, 0, table(n=1)),
+        c('empty', 100, 1, 0, table(n=0)), c('empty_negative', -1, 1, 0, table(n=0)),
+        c('wide_format', start, 1, 2, table(format=5, table_flags=2)),
+        c('wide_negative', -1, 1, 2, table(format=4, table_flags=2)),
+        c('format_4_narrow', start, 1, 1, table(format=4)),
+        c('format_1', start, 1, 0, table(format=1)), c('format_1_negative', -1, 1, 0, table(format=1)),
+        c('not_loaded', 100, 1, 0, tables={slot: 'missing'}),
+        c('not_loaded_negative', -1, 1, 0, tables={slot: 'missing'}),
+        c('without_holder', 100, 1, 0, tables={slot: 'no_holder'}),
+    ]
+    return out
+
+
 def write(name, doc):
     if len(sys.argv) != 2:
         sys.exit(doc)
-    address, kind, slot, _ = FUNCTIONS[name]
-    cases = {'equip': equip_cases, 'run': run_cases, 'spec': spec_cases}[kind](address, slot)
+    address, kind, slot, extra = FUNCTIONS[name]
+    if kind == 'weapon_step':
+        cases = weapon_step_cases(address, slot, extra)
+    else:
+        cases = {'equip': equip_cases, 'run': run_cases, 'spec': spec_cases}[kind](address, slot)
     target = sys.argv[1]
     os.makedirs(target, exist_ok=True)
     for c in cases:
