@@ -141,6 +141,7 @@ address,size,name,system,status,notes
 0x0183ac60,20077,camera_update_follow,camera,edge-verified,"Updates subject-relative camera position and orientation through input; chase; collision avoidance and territory constraints; applies selected frame-rate gains"
 0x0183fad0,79,camera_follow_pitch,camera,edge-verified,Pitch from the forward basis; preserve scalar square underflow and zero fallback; call atan2 and XOR the returned sign bits
 0x0183fb20,43,camera_follow_yaw,camera,edge-verified,Yaw from the forward X/Z direction; exact signed-zero fallback preserves stored angle; unordered components reach atan2 unchanged
+0x018e4110,432,param_apply_char_make_face,param,edge-verified,Character creation: writes the face being built (sliders; parts/colors/decal for a version 4 table) into a FaceGenParam row
 0x01972900,426,input_pad_step_01972900,input,verified,"FD4PadManager map: marks two entries; advances an owner by the frame-time step (patched to 1/15 or 1/240 s; the advance branch is idle in the clinic)"
 0x01c0c2b0,3222,physics_instance_construct_01c0c2b0,physics,verified,"physics instance constructor over a body set: back-links; shape copy; controller (step 1/30 s; 60 FPS patches 1/60); motion rescale; listeners"
 0x01cbdb20,979,character_frame_update_01cbdb20,character,verified,"per-frame character update: throw animation event; points stat regeneration (stamina-like; -50..max); time-step descriptor; the 30/60 FPS patches fix its frame time"
@@ -193,8 +194,32 @@ address,size,name,system,status,notes
 0x023155c0,283,param_find_row_decal,param,edge-verified,SoloParamRepository row lookup for DecalParam (type 38): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x023167f0,288,param_find_row_dungeon_feature,param,edge-verified,DungeonFeatureParam row lookup (type 53): as the other row lookups; each search also stores the header word 0x06 at 0x05992cb0
 0x02316c70,283,param_find_row_dungeon_sub_feat_lot,param,edge-verified,SoloParamRepository row lookup for DungeonSubFeatLotParam (type 54): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x02317560,547,param_find_row_face_gen,param,edge-verified,FaceGenParam row of an id plus a copy of its 50 geometry and 50 texture sliders (zeros without a row)
+0x02317790,103,param_face_gen_is_current,param,edge-verified,Whether FaceGenParam is loaded and of data version 4
 0x02317800,284,param_row_name_face_gen,param,edge-verified,SoloParamRepository row name lookup for FaceGenParam (type 23): name of the row with the id a lookup result holds (index row number checked against the row count); null if none or unnamed
+0x02317ad0,260,param_face_gen_set_geometry,param,edge-verified,Character creation: sets FaceGenParam faceGeoData[index] (index <= 49) of a row
+0x02317be0,261,param_face_gen_set_texture,param,edge-verified,Character creation: sets FaceGenParam faceTexData[index] (index <= 49) of a row
+0x02317cf0,1384,param_face_gen_set_part,param,edge-verified,Character creation: sets the parts id of FaceGenParam part 0..7 (face/hair/eyes/eyebrow/beard/accessories/decal)
+0x02318280,1543,param_face_gen_set_part_color,param,edge-verified,Character creation: sets color channel 0..2 of FaceGenParam part 0..7
+0x023188b0,317,param_face_gen_set_decal,param,edge-verified,Character creation: copies the 4 decal placement bytes into a FaceGenParam row
+0x023189f0,242,param_face_gen_set_hair_parts_id,param,edge-verified,Sets FaceGenParam hairPartsId of a row
+0x02318af0,242,param_face_gen_set_hair_red,param,edge-verified,Sets FaceGenParam hairColor_R of a row
+0x02318bf0,242,param_face_gen_set_hair_green,param,edge-verified,Sets FaceGenParam hairColor_G of a row
+0x02318cf0,242,param_face_gen_set_hair_blue,param,edge-verified,Sets FaceGenParam hairColor_B of a row
+0x02318df0,242,param_face_gen_set_left_eye_red,param,edge-verified,Sets FaceGenParam eyeLColor_R of a row
+0x02318ef0,242,param_face_gen_set_left_eye_green,param,edge-verified,Sets FaceGenParam eyeLColor_G of a row
+0x02318ff0,242,param_face_gen_set_left_eye_blue,param,edge-verified,Sets FaceGenParam eyeLColor_B of a row
 0x023192d0,283,param_find_row_face,param,edge-verified,SoloParamRepository row lookup for FaceParam (type 24): binary search of the loader index by id; writes id and row data pointer (null if none)
+0x023193f0,103,param_face_is_current,param,edge-verified,Whether FaceParam is loaded and of data version 4
+0x0231a340,305,param_face_set_decal,param,edge-verified,Copies the 4 decal placement bytes into a FaceParam row
+0x0231a480,320,param_face_set_body_scale,param,edge-verified,Sets FaceParam body scale[index] (head/breast/abdomen/arm/leg)
+0x0231a5e0,242,param_face_set_age,param,edge-verified,Sets FaceParam age of a row
+0x0231a6e0,242,param_face_set_gender,param,edge-verified,Sets FaceParam gender of a row
+0x0231a7e0,242,param_face_set_caricature_geometry,param,edge-verified,Sets FaceParam caricatureGeometry of a row
+0x0231a8e0,242,param_face_set_caricature_texture,param,edge-verified,Sets FaceParam caricatureTexture of a row
+0x0231a9e0,261,param_face_set_geometry,param,edge-verified,Sets FaceParam faceGeoData[index] (index <= 60)
+0x0231aaf0,261,param_face_set_texture,param,edge-verified,Sets FaceParam faceTexData[index] (index <= 35)
+0x0231ac00,280,param_face_set_asymmetry,param,edge-verified,Sets FaceParam faceGeoAsymData[index] (index <= 25) when the table is version 4
 0x0231af40,283,param_find_row_face_range,param,edge-verified,SoloParamRepository row lookup for FaceRangeParam (type 25): binary search of the loader index by id; writes id and row data pointer (null if none)
 0x0231be50,443,param_find_row_game_map,param,edge-verified,GameMapParam row of a packed map id mAA_BB_CC_DD (row id AABBCCDD); falls back to row 0; id -1 for no map
 0x0231c1e0,283,param_find_row_gem_category,param,edge-verified,SoloParamRepository row lookup for GemCategoryParam (type 44): binary search of the loader index by id; writes id and row data pointer (null if none)
