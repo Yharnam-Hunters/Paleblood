@@ -711,6 +711,7 @@ render_set_cb_color_control,recorded,,126,126,0,0,8ba8cb4828340be9,2026-11-12
 render_set_cb_color_control,edge,,14,14,0,0,8ba8cb4828340be9,2026-11-12
 render_set_cb_target_mask,recorded,,127,127,0,0,6f84fa5f640704a5,2026-11-12
 render_set_cb_target_mask,edge,,14,14,0,0,6f84fa5f640704a5,2026-11-12
+render_set_compute_shader,edge,,134,134,0,0,89eabcce5e067e6e,2026-11-13
 render_set_db_depth_control,recorded,,183,183,0,0,529d9b6f1edf1bbc,2026-11-12
 render_set_db_depth_control,edge,,14,14,0,0,529d9b6f1edf1bbc,2026-11-12
 render_set_db_stencil_control,recorded,,158,158,0,0,5cc18e786d28e006,2026-11-12
