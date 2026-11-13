@@ -61,6 +61,7 @@ BYTES = {
     'utf8_lone_trail': b'\x80A\x00',
     'single_lead_end': b'AB\x82',
     'single_ascii_end': b'AB',
+    'katakana_byte_edges': b'\xa0A\x9fA\xdfA\xe0A\x00',
 }
 
 

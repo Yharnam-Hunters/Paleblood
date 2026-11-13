@@ -93,8 +93,8 @@ engine_string_append_counted,edge,,48,48,0,0,f7f96f0ac221364a,2026-11-05
 engine_string_length,recorded,,70,70,0,0,dbb33699bb2cc030,2026-11-12
 engine_string_length,edge,,30,30,0,0,dbb33699bb2cc030,2026-11-12
 engine_text_multibyte_size_024e2dc0,edge,,504,504,0,0,c18f18cab02e2a51,2026-11-12
-engine_text_multibyte_to_wide_024e2a80,edge,,443,443,0,0,c18f18cab02e2a51,2026-11-12
-engine_text_wide_size_024e2ff0,edge,,1064,1064,0,0,c18f18cab02e2a51,2026-11-12
+engine_text_multibyte_to_wide_024e2a80,edge,,466,466,0,0,c18f18cab02e2a51,2026-11-12
+engine_text_wide_size_024e2ff0,edge,,1120,1120,0,0,c18f18cab02e2a51,2026-11-12
 engine_text_wide_to_multibyte_024e2b90,edge,,236,236,0,0,c18f18cab02e2a51,2026-11-12
 engine_wide_string_destroy,edge,,28,28,0,0,82e3fd837894b106,2026-11-03
 engine_write_stderr,edge,,28,28,0,0,f997862b08044f6d,2026-10-31
