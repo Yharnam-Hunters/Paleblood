@@ -160,6 +160,7 @@ event_emk_add,edge,,18,18,0,0,937b4dca128ba863,2026-10-07
 event_emk_add,edge,60,18,18,0,0,937b4dca128ba863,2026-10-07
 event_flag_write,recorded,,101,101,0,0,1a46ef419f934205,2026-11-12
 event_flag_write,edge,,15,15,0,0,1a46ef419f934205,2026-11-12
+frame_timing_config_get_int_024eba00,recorded,,48,48,0,0,ddcaf2bc1351e4b0,2026-11-13
 frame_timing_dungeon_gate_on_event_0,edge,,25,25,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_dungeon_gate_on_event_0,edge,60,25,25,0,0,cd53367af0bda73a,2026-10-31
 frame_timing_dungeon_gate_on_event_1000,edge,,22,22,0,0,cd53367af0bda73a,2026-10-31
