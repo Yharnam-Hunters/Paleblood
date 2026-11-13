@@ -59,6 +59,8 @@ engine_fixed_allocator_free_02484de0,edge,,19,19,0,0,1202125b79363097,2026-11-12
 engine_fixed_allocator_initialize_02484b30,edge,,19,19,0,0,55d5c6af7dda9c85,2026-11-12
 engine_fixed_allocator_release_chunks_02484ae0,edge,,10,10,0,0,5dad1163477f190e,2026-11-12
 engine_fixed_allocator_shrink_02484f20,edge,,17,17,0,0,bfe97a652512d54b,2026-11-12
+engine_format_string_argument_024e62b0,edge,,342,342,0,0,50daec529e2efcd9,2026-11-13
+engine_format_write_wide_string_024e77f0,edge,,294,294,0,0,50daec529e2efcd9,2026-11-13
 engine_heap_manager_register_area_0247c000,recorded,,43,43,0,0,139f525843b92c3c,2026-11-13
 engine_initialize_static_wide_string_0217ffb0,recorded,,1,1,0,0,ccdadef0d4bd7152,2026-11-12
 engine_initialize_static_wide_string_0217ffb0,edge,,30,30,0,0,ccdadef0d4bd7152,2026-11-12
@@ -141,6 +143,10 @@ engine_temporary_heap_free_0247e1a0,edge,,12,12,0,0,9579e710cd20648e,2026-11-12
 engine_temporary_heap_free_until_0247d5f0,edge,,8,8,0,0,9579e710cd20648e,2026-11-12
 engine_temporary_heap_mark_0247d5b0,edge,,4,4,0,0,9579e710cd20648e,2026-11-12
 engine_temporary_heap_set_size_0247d430,edge,,5,5,0,0,9579e710cd20648e,2026-11-12
+engine_text_multibyte_size_024e2dc0,edge,,504,504,0,0,c18f18cab02e2a51,2026-11-13
+engine_text_multibyte_to_wide_024e2a80,edge,,466,466,0,0,c18f18cab02e2a51,2026-11-13
+engine_text_wide_size_024e2ff0,edge,,1120,1120,0,0,c18f18cab02e2a51,2026-11-13
+engine_text_wide_to_multibyte_024e2b90,edge,,236,236,0,0,c18f18cab02e2a51,2026-11-13
 engine_thread_construct_0248adc0,edge,,21,21,0,0,cd113196e8b733cb,2026-11-12
 engine_thread_construct_sized_0248b200,edge,,23,23,0,0,cd113196e8b733cb,2026-11-12
 engine_thread_construct_with_affinity_0248afe0,edge,,23,23,0,0,cd113196e8b733cb,2026-11-12
